@@ -27,9 +27,11 @@ import {
 } from '../src/lib/analytics-queries';
 
 describe('analytics query builders', () => {
-	it('queryDailyActiveUsers returns valid SQL referencing MCP_ANALYTICS', () => {
+	it('queryDailyActiveUsers returns valid SQL referencing the AE dataset (not the binding name)', () => {
 		const sql = queryDailyActiveUsers('1');
-		expect(sql).toContain('MCP_ANALYTICS');
+		// AE queries by DATASET name; the binding name MCP_ANALYTICS returns 0 rows.
+		expect(sql).toContain('FROM bv_dns_security_mcp');
+		expect(sql).not.toContain('MCP_ANALYTICS');
 		expect(sql).toContain('blob9'); // session hash
 		expect(sql).toContain('SUM(_sample_interval)');
 		expect(sql).toContain("INTERVAL '1' DAY");
@@ -45,6 +47,18 @@ describe('analytics query builders', () => {
 		const sql = queryErrorRate('1');
 		expect(sql).toContain("blob3 = 'error'");
 		expect(sql).toContain('tool_call');
+	});
+
+	it('queryErrorRate splits input-validation vs real errors', () => {
+		const sql = queryErrorRate('1');
+		// input_errors = errored WITH no domain dispatched (blob4='none' → pre-dispatch rejection)
+		expect(sql).toContain('input_errors');
+		expect(sql).toContain("blob4 = 'none'");
+		// real_errors / real_error_pct = the tool actually ran and errored (blob4!='none')
+		expect(sql).toContain('real_errors');
+		expect(sql).toContain('real_error_pct');
+		expect(sql).toContain("blob4 != 'none'");
+		expect(sql).toContain('error_pct'); // back-compat column retained
 	});
 
 	it('queryLatencyPercentiles uses quantile function', () => {
@@ -242,6 +256,14 @@ describe('per-tier analytics query builders', () => {
 		expect(sql).toContain("blob3 = 'error'");
 		expect(sql).toContain('error_pct');
 		expect(sql).toContain('GREATEST');
+	});
+
+	it('queryTierErrorRate splits input-validation vs real errors', () => {
+		const sql = queryTierErrorRate('7');
+		expect(sql).toContain('input_errors');
+		expect(sql).toContain('real_errors');
+		expect(sql).toContain('real_error_pct');
+		expect(sql).toContain("blob4 != 'none'");
 	});
 
 	it('queryTierCachePerformance groups by cache status', () => {

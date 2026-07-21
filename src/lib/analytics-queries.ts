@@ -1,10 +1,21 @@
 // SPDX-License-Identifier: BUSL-1.1
+// bv-oversize-ok: cohesive flat SSOT of pre-built AE SQL query builders (one fn per
+// query); splitting by consumer would scatter the telemetry-schema contract.
 
 /**
  * Pre-built SQL queries for Cloudflare Analytics Engine.
  *
  * Returns query strings for the Analytics Engine SQL API.
- * Dataset name is always MCP_ANALYTICS.
+ *
+ * IMPORTANT — dataset vs binding name: AE's SQL API queries by DATASET name, NOT
+ * by Worker binding name. The binding `MCP_ANALYTICS` maps to the dataset
+ * `bv_dns_security_mcp` in prod (and `bv_mcp_usage_reporting` locally). Querying
+ * `FROM MCP_ANALYTICS` (the binding name) silently returns 0 rows. The dataset is
+ * therefore injected per-call (defaulting to {@link DEFAULT_ANALYTICS_DATASET}) and
+ * validated against `/^[a-z0-9_]+$/` before interpolation. Override via the
+ * `ANALYTICS_DATASET` env var, threaded from the query call sites the same way
+ * `CF_ACCOUNT_ID` / `CF_ANALYTICS_TOKEN` are.
+ *
  * Callers must account for _sample_interval in aggregations.
  *
  * Blob positions (mcp_request): blob1=method, blob2=transport, blob3=status,
@@ -19,7 +30,22 @@
  * Blob positions (session): blob1=action, blob2=country, blob3=clientType, blob4=tier
  */
 
-const DS = 'MCP_ANALYTICS';
+/**
+ * Default Analytics Engine DATASET name (not the Worker binding name). This is the
+ * prod dataset the `MCP_ANALYTICS` binding writes to; using it as the in-code default
+ * means prod works with zero config. Overridable per-deploy via `ANALYTICS_DATASET`.
+ */
+export const DEFAULT_ANALYTICS_DATASET = 'bv_dns_security_mcp';
+
+/**
+ * Resolve + validate a dataset name for safe SQL interpolation. Since the name can
+ * now come from env, it is validated against `/^[a-z0-9_]+$/` (defense-in-depth) and
+ * any empty/invalid value falls back to {@link DEFAULT_ANALYTICS_DATASET}. Idempotent,
+ * so call sites and the builders can both apply it.
+ */
+export function resolveAnalyticsDataset(name: string | undefined): string {
+	return name && /^[a-z0-9_]+$/.test(name) ? name : DEFAULT_ANALYTICS_DATASET;
+}
 
 /** Sanitize interval parameter to prevent SQL injection. */
 function safeInterval(value: string): string {
@@ -28,13 +54,13 @@ function safeInterval(value: string): string {
 }
 
 /** Unique sessions (by hashed session ID) in the given interval. */
-export function queryDailyActiveUsers(days: string): string {
+export function queryDailyActiveUsers(days: string, dataset?: string): string {
 	days = safeInterval(days);
 	return `SELECT
   toStartOfDay(timestamp) AS day,
   COUNT(DISTINCT blob9) AS unique_sessions,
   SUM(_sample_interval) AS total_requests
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'mcp_request'
   AND blob9 != 'none'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
@@ -43,38 +69,51 @@ ORDER BY day DESC`;
 }
 
 /** Tool call counts ranked by popularity. */
-export function queryToolPopularity(days: string): string {
+export function queryToolPopularity(days: string, dataset?: string): string {
 	days = safeInterval(days);
 	return `SELECT
   blob1 AS tool_name,
   SUM(_sample_interval) AS call_count,
   SUM(CASE WHEN blob2 = 'pass' THEN _sample_interval ELSE 0 END) AS pass_count,
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS error_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY tool_name
 ORDER BY call_count DESC`;
 }
 
-/** Error rate per tool over the given interval. */
-export function queryErrorRate(days: string): string {
+/**
+ * Error rate per tool over the given interval.
+ *
+ * Splits errors into `input_errors` (blob3='error' AND blob4='none' — the request
+ * failed at pre-dispatch arg validation, e.g. a missing/invalid domain, so no tool
+ * work ran) and `real_errors` (blob3='error' AND blob4!='none' — the tool actually
+ * executed and errored). `real_error_pct` is the honest per-tool failure signal;
+ * `error_pct` (kept for back-compat) conflates both. Rationale: a small fixed floor
+ * of fuzz/probe calls with no domain otherwise inflates the error % of low-volume
+ * domain-required tools (e.g. check_mx read ~16% but was ~0% real failures).
+ */
+export function queryErrorRate(days: string, dataset?: string): string {
 	days = safeInterval(days);
 	return `SELECT
   blob1 AS tool_name,
   SUM(_sample_interval) AS total,
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS errors,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0 / SUM(_sample_interval) AS error_pct
-FROM ${DS}
+  SUM(CASE WHEN blob3 = 'error' AND blob4 = 'none' THEN _sample_interval ELSE 0 END) AS input_errors,
+  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) AS real_errors,
+  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0 / SUM(_sample_interval) AS error_pct,
+  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) * 100.0 / SUM(_sample_interval) AS real_error_pct
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY tool_name
 HAVING total > 10
-ORDER BY error_pct DESC`;
+ORDER BY real_error_pct DESC`;
 }
 
 /** Latency percentiles per tool. */
-export function queryLatencyPercentiles(days: string): string {
+export function queryLatencyPercentiles(days: string, dataset?: string): string {
 	days = safeInterval(days);
 	return `SELECT
   blob1 AS tool_name,
@@ -82,7 +121,7 @@ export function queryLatencyPercentiles(days: string): string {
   quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms,
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms,
   quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY tool_name
@@ -90,13 +129,13 @@ ORDER BY call_count DESC`;
 }
 
 /** Request breakdown by MCP client type. */
-export function queryClientBreakdown(days: string): string {
+export function queryClientBreakdown(days: string, dataset?: string): string {
 	days = safeInterval(days);
 	return `SELECT
   blob7 AS client_type,
   SUM(_sample_interval) AS request_count,
   COUNT(DISTINCT blob9) AS unique_sessions
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'mcp_request'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY client_type
@@ -104,13 +143,13 @@ ORDER BY request_count DESC`;
 }
 
 /** Geographic distribution by country. */
-export function queryGeoDistribution(days: string): string {
+export function queryGeoDistribution(days: string, dataset?: string): string {
 	days = safeInterval(days);
 	return `SELECT
   blob6 AS country,
   SUM(_sample_interval) AS request_count,
   COUNT(DISTINCT blob9) AS unique_sessions
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'mcp_request'
   AND blob6 != 'unknown'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
@@ -125,7 +164,7 @@ LIMIT 30`;
  * blob13=region, blob14=city, blob15=asn — see analytics.ts), so positions
  * 1–12 are untouched. Sampled: sums `_sample_interval`.
  */
-export function queryGeoRollup(days: string): string {
+export function queryGeoRollup(days: string, dataset?: string): string {
 	days = safeInterval(days);
 	return `SELECT
   blob5 AS country,
@@ -133,7 +172,7 @@ export function queryGeoRollup(days: string): string {
   blob14 AS city,
   blob15 AS asn,
   SUM(_sample_interval) AS calls
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY country, region, city, asn
@@ -142,13 +181,13 @@ LIMIT 1000`;
 }
 
 /** Rate limit hit counts by type. */
-export function queryRateLimitHits(days: string): string {
+export function queryRateLimitHits(days: string, dataset?: string): string {
 	days = safeInterval(days);
 	return `SELECT
   blob1 AS limit_type,
   blob2 AS tool_name,
   SUM(_sample_interval) AS hit_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'rate_limit'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY limit_type, tool_name
@@ -156,12 +195,12 @@ ORDER BY hit_count DESC`;
 }
 
 /** Auth tier distribution. */
-export function queryTierBreakdown(days: string): string {
+export function queryTierBreakdown(days: string, dataset?: string): string {
 	days = safeInterval(days);
 	return `SELECT
   blob8 AS tier,
   SUM(_sample_interval) AS request_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'mcp_request'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY tier
@@ -169,7 +208,7 @@ ORDER BY request_count DESC`;
 }
 
 /** Anomaly detection query for alerting. Returns error rate and p95 latency for the last N minutes. */
-export function queryRecentAnomalies(minutes: string): string {
+export function queryRecentAnomalies(minutes: string, dataset?: string): string {
 	minutes = safeInterval(minutes);
 	return `SELECT
   SUM(_sample_interval) AS total_calls,
@@ -177,7 +216,7 @@ export function queryRecentAnomalies(minutes: string): string {
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0
     / GREATEST(SUM(_sample_interval), 1) AS error_pct,
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE`;
 }
@@ -190,7 +229,7 @@ WHERE index1 = 'tool_call'
  * `HAVING total_calls > 0` drops empty colos. Excludes the `'unknown'` colo
  * (off-CF / local) so it doesn't pollute the per-datacenter view.
  */
-export function queryRecentAnomaliesByColo(minutes: string): string {
+export function queryRecentAnomaliesByColo(minutes: string, dataset?: string): string {
 	minutes = safeInterval(minutes);
 	return `SELECT
   blob11 AS colo,
@@ -199,7 +238,7 @@ export function queryRecentAnomaliesByColo(minutes: string): string {
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0
     / GREATEST(SUM(_sample_interval), 1) AS error_pct,
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND blob11 != 'unknown'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
@@ -209,11 +248,11 @@ ORDER BY p95_ms DESC`;
 }
 
 /** Rate limit surge detection for alerting. */
-export function queryRateLimitSurge(minutes: string): string {
+export function queryRateLimitSurge(minutes: string, dataset?: string): string {
 	minutes = safeInterval(minutes);
 	return `SELECT
   SUM(_sample_interval) AS total_hits
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'rate_limit'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE`;
 }
@@ -236,13 +275,13 @@ WHERE index1 = 'rate_limit'
  *
  * Blob positions (degradation): blob1=degradationType, blob2=component.
  */
-export function queryBindingDegradation(minutes: string): string {
+export function queryBindingDegradation(minutes: string, dataset?: string): string {
 	minutes = safeInterval(minutes);
 	return `SELECT
   blob2 AS component,
   blob1 AS degradation_type,
   SUM(_sample_interval) AS event_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'degradation'
   AND blob1 != 'kv_fallback'
   AND blob1 != 'quota_coordinator_fallback'
@@ -263,7 +302,7 @@ ORDER BY event_count DESC`;
  *
  * Blob positions (quota_shard): blob1=shardIndex, blob2=country, blob3=tier.
  */
-export function queryQuotaShardSkew(minutes: string): string {
+export function queryQuotaShardSkew(minutes: string, dataset?: string): string {
 	minutes = safeInterval(minutes);
 	return `SELECT
   max(shard_load) AS max_shard_load,
@@ -274,7 +313,7 @@ FROM (
   SELECT
     blob1 AS shard,
     SUM(_sample_interval) AS shard_load
-  FROM ${DS}
+  FROM ${resolveAnalyticsDataset(dataset)}
   WHERE index1 = 'quota_shard'
     AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
   GROUP BY shard
@@ -292,14 +331,14 @@ FROM (
  * Blob positions (queue_batch): blob1=handler, blob2=outcome. Doubles:
  *   double1=durationMs, double2=failureCount, double3=messageCount.
  */
-export function queryQueueFailures(minutes: string): string {
+export function queryQueueFailures(minutes: string, dataset?: string): string {
 	minutes = safeInterval(minutes);
 	return `SELECT
   blob1 AS handler,
   SUM(_sample_interval) AS batch_count,
   SUM(CASE WHEN blob2 = 'error' THEN _sample_interval ELSE 0 END) AS error_batch_count,
   SUM(double2 * _sample_interval) AS failure_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'queue_batch'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
 GROUP BY handler
@@ -308,7 +347,7 @@ ORDER BY failure_count DESC`;
 }
 
 /** Fatal Worker exception detection from Tail Worker exports. */
-export function queryTailExceptions(minutes: string): string {
+export function queryTailExceptions(minutes: string, dataset?: string): string {
 	minutes = safeInterval(minutes);
 	// emitTailAggregate (analytics.ts) writes blob1=colo, blob2=outcome,
 	// double1=invocations in the bucket. Fatal invocations are the ones in
@@ -316,7 +355,7 @@ export function queryTailExceptions(minutes: string): string {
 	// sampled-correct invocation count (mirrors queryQueueFailures above).
 	return `SELECT
   SUM(double1 * _sample_interval) AS exception_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tail'
   AND blob2 = 'exception'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE`;
@@ -350,7 +389,7 @@ function tierGroupBy(tier: string | undefined, alias: string): string {
 }
 
 /** Tool popularity breakdown per tier. Which tools does each tier use most? */
-export function queryTierToolUsage(days: string, tier?: string): string {
+export function queryTierToolUsage(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob7 AS tier,'}
@@ -358,7 +397,7 @@ export function queryTierToolUsage(days: string, tier?: string): string {
   SUM(_sample_interval) AS call_count,
   SUM(CASE WHEN blob2 = 'pass' THEN _sample_interval ELSE 0 END) AS pass_count,
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS error_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'${tierClause(tier, 'blob7')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY ${tier ? 'tool_name' : 'tier, tool_name'}
@@ -366,7 +405,7 @@ ORDER BY ${tier ? 'call_count DESC' : 'tier, call_count DESC'}`;
 }
 
 /** P50/P95/P99 latency per tier. */
-export function queryTierLatency(days: string, tier?: string): string {
+export function queryTierLatency(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob7 AS tier,'}
@@ -374,36 +413,45 @@ export function queryTierLatency(days: string, tier?: string): string {
   quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms,
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms,
   quantileExactWeighted(0.99)(double1, _sample_interval) AS p99_ms
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'${tierClause(tier, 'blob7')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY${tierGroupBy(tier, 'tier')}
 ORDER BY ${tier ? 'call_count DESC' : 'tier'}`;
 }
 
-/** Error rate per tier. */
-export function queryTierErrorRate(days: string, tier?: string): string {
+/**
+ * Error rate per tier. Adds the same input-vs-real error split as {@link queryErrorRate}:
+ * `input_errors` (pre-dispatch validation rejections, blob4='none') vs `real_errors`
+ * (the tool actually ran and errored, blob4!='none'), with `real_error_pct` as the
+ * honest signal. `error_pct` is kept for back-compat.
+ */
+export function queryTierErrorRate(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob7 AS tier,'}
   SUM(_sample_interval) AS total,
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS errors,
+  SUM(CASE WHEN blob3 = 'error' AND blob4 = 'none' THEN _sample_interval ELSE 0 END) AS input_errors,
+  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) AS real_errors,
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0
-    / GREATEST(SUM(_sample_interval), 1) AS error_pct
-FROM ${DS}
+    / GREATEST(SUM(_sample_interval), 1) AS error_pct,
+  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) * 100.0
+    / GREATEST(SUM(_sample_interval), 1) AS real_error_pct
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'${tierClause(tier, 'blob7')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY${tierGroupBy(tier, 'tier')}
 HAVING total > 0
-ORDER BY ${tier ? 'error_pct DESC' : 'tier'}`;
+ORDER BY ${tier ? 'real_error_pct DESC' : 'tier'}`;
 }
 
 /** Cache hit/miss ratio per tier. */
-export function queryTierCachePerformance(days: string, tier?: string): string {
+export function queryTierCachePerformance(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob7 AS tier,'}
   blob8 AS cache_status,
   SUM(_sample_interval) AS call_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND blob8 != 'n/a'${tierClause(tier, 'blob7')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY
@@ -412,14 +460,14 @@ ORDER BY ${tier ? 'call_count DESC' : 'tier, call_count DESC'}`;
 }
 
 /** Rate limit hits per tier. */
-export function queryTierRateLimits(days: string, tier?: string): string {
+export function queryTierRateLimits(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob4 AS tier,'}
   blob1 AS limit_type,
   blob2 AS tool_name,
   SUM(_sample_interval) AS hit_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'rate_limit'${tierClause(tier, 'blob4')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY ${tier ? 'limit_type, tool_name' : 'tier, limit_type, tool_name'}
@@ -427,13 +475,13 @@ ORDER BY ${tier ? 'hit_count DESC' : 'tier, hit_count DESC'}`;
 }
 
 /** Session creation/termination per tier. */
-export function queryTierSessions(days: string, tier?: string): string {
+export function queryTierSessions(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob4 AS tier,'}
   blob1 AS action,
   SUM(_sample_interval) AS event_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'session'${tierClause(tier, 'blob4')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY ${tier ? 'action' : 'tier, action'}
@@ -441,13 +489,13 @@ ORDER BY ${tier ? 'event_count DESC' : 'tier, event_count DESC'}`;
 }
 
 /** Unique domains scanned per tier. */
-export function queryTierDomainDiversity(days: string, tier?: string): string {
+export function queryTierDomainDiversity(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob7 AS tier,'}
   COUNT(DISTINCT blob4) AS unique_domains,
   SUM(_sample_interval) AS total_calls
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND blob4 != 'none'${tierClause(tier, 'blob7')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY${tierGroupBy(tier, 'tier')}
@@ -455,7 +503,7 @@ ORDER BY ${tier ? 'total_calls DESC' : 'tier'}`;
 }
 
 /** Scan score distribution per tier (average, min, max). */
-export function queryTierScoreDistribution(days: string, tier?: string): string {
+export function queryTierScoreDistribution(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob7 AS tier,'}
@@ -464,7 +512,7 @@ export function queryTierScoreDistribution(days: string, tier?: string): string 
   min(double2) AS min_score,
   max(double2) AS max_score,
   quantileExactWeighted(0.50)(double2, _sample_interval) AS median_score
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND blob1 = 'scan_domain'
   AND double2 > 0${tierClause(tier, 'blob7')}
@@ -473,14 +521,14 @@ ORDER BY ${tier ? 'scan_count DESC' : 'tier'}`;
 }
 
 /** Daily request volume trended over time, per tier. */
-export function queryTierDailyTrend(days: string, tier?: string): string {
+export function queryTierDailyTrend(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT
   toStartOfDay(timestamp) AS day,${tier ? '' : '\n  blob8 AS tier,'}
   SUM(_sample_interval) AS request_count,
   COUNT(DISTINCT blob9) AS unique_sessions
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'mcp_request'${tierClause(tier, 'blob8')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY ${tier ? 'day' : 'day, tier'}
@@ -488,14 +536,14 @@ ORDER BY day DESC${tier ? '' : ', tier'}`;
 }
 
 /** MCP client type distribution per tier. */
-export function queryTierClientTypes(days: string, tier?: string): string {
+export function queryTierClientTypes(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob8 AS tier,'}
   blob7 AS client_type,
   SUM(_sample_interval) AS request_count,
   COUNT(DISTINCT blob9) AS unique_sessions
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'mcp_request'${tierClause(tier, 'blob8')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY ${tier ? 'client_type' : 'tier, client_type'}
@@ -503,7 +551,7 @@ ORDER BY ${tier ? 'request_count DESC' : 'tier, request_count DESC'}`;
 }
 
 /** Per-API-key usage breakdown. Requires keyHash blob (blob9 in tool_call). */
-export function queryKeyUsage(days: string, keyHash?: string): string {
+export function queryKeyUsage(days: string, keyHash?: string, dataset?: string): string {
 	days = safeInterval(days);
 	const keyFilter = keyHash ? `\n  AND blob9 = '${safeTier(keyHash) ?? 'none'}'` : `\n  AND blob9 != 'none'`;
 	return `SELECT
@@ -514,7 +562,7 @@ export function queryKeyUsage(days: string, keyHash?: string): string {
   COUNT(DISTINCT blob4) AS unique_domains,
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS error_count,
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'${keyFilter}
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY key_hash, tier
@@ -523,7 +571,7 @@ LIMIT 50`;
 }
 
 /** Daily tier usage digest — all tiers in one query, aggregated for the past N hours. */
-export function queryTierDigest(hours: string): string {
+export function queryTierDigest(hours: string, dataset?: string): string {
 	hours = safeInterval(hours);
 	return `SELECT
   blob7 AS tier,
@@ -536,7 +584,7 @@ export function queryTierDigest(hours: string): string {
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms,
   SUM(CASE WHEN blob8 = 'hit' THEN _sample_interval ELSE 0 END) AS cache_hits,
   SUM(CASE WHEN blob8 = 'miss' THEN _sample_interval ELSE 0 END) AS cache_misses
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${hours}' HOUR
 GROUP BY tier
@@ -544,13 +592,13 @@ ORDER BY total_calls DESC`;
 }
 
 /** Top tools per tier for digest. */
-export function queryTierTopTools(hours: string): string {
+export function queryTierTopTools(hours: string, dataset?: string): string {
 	hours = safeInterval(hours);
 	return `SELECT
   blob7 AS tier,
   blob1 AS tool_name,
   SUM(_sample_interval) AS call_count
-FROM ${DS}
+FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${hours}' HOUR
 GROUP BY tier, tool_name

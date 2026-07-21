@@ -1034,7 +1034,10 @@ export const TOOL_REGISTRY: Record<
 };
 
 /** Known interactive LLM client types that benefit from compact output. */
-const INTERACTIVE_CLIENTS = new Set(['claude_mobile', 'claude_code', 'cursor', 'vscode', 'claude_desktop', 'windsurf']);
+// `claude_connector` = the Anthropic-hosted remote MCP connector (Claude in the
+// browser/Desktop): an interactive LLM client, so it gets compact output like the
+// other Claude clients (the LLM re-narrates; structuredContent is returned regardless).
+const INTERACTIVE_CLIENTS = new Set(['claude_mobile', 'claude_code', 'cursor', 'vscode', 'claude_desktop', 'claude_connector', 'windsurf']);
 
 /** Determine if the client type is a known interactive LLM IDE. */
 function isInteractiveClient(clientType?: string): boolean {
@@ -1247,7 +1250,18 @@ export async function handleToolsCall(
 					const scanOptions = { ...runtimeOptions, ...(profile && { profile }), ...(forceRefresh && { forceRefresh }) };
 					const result = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					logResult = result.score.grade;
-					logDetails = result;
+					// Summary only, not the full result: scan_domain's ~19-category CheckResult[]
+					// (with per-category findings + metadata) logged in full on every call was the
+					// dominant contributor to "Log size limit exceeded" warnings on the tenant
+					// scan-queue path, where a whole MessageBatch's worth of domains accumulate
+					// against the Workers 256KB-per-invocation log cap in one queue invocation.
+					logDetails = {
+						grade: result.score.grade,
+						overall: result.score.overall,
+						cached: result.cached,
+						categoryCount: result.checks.length,
+						findingCount: result.checks.reduce((n, c) => n + c.findings.length, 0),
+					};
 					// scanDomain sets `cached: true` only when the top-level cache:<domain>
 					// key returned a hit. Threading that into the analytics emit so
 					// `tool_call.blob8` reflects the orchestrator-level cache hit/miss

@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-dns",
-	"version": "3.30.0",
+	"version": "3.32.0",
 	"license": "BUSL-1.1",
 	"type": "module",
 	"bin": {
@@ -39,7 +39,7 @@
 		"validate:internal-deps": "node scripts/maintenance/validate-internal-deps.mjs",
 		"audit:repo-safety": "node scripts/repo-safety/scan-sensitive-surface.mjs",
 		"audit:licenses": "node scripts/license-check.mjs",
-		"audit:oss-safety": "node scripts/vitest-filter-workerd.mjs run test/audits/oss-fixture-safety.audit.test.ts test/audits/no-tracked-secrets.audit.test.ts test/audits/npm-publish-surface.audit.test.ts test/audits/busl-positioning.audit.test.ts test/audits/readme-tool-surface.audit.test.ts test/audits/infra-probe-wrangler.audit.test.ts test/audits/repo-safety-policy.audit.test.ts test/audits/repo-safety-scanner.audit.test.ts test/audits/hook-coverage.audit.test.ts test/audits/workflow-safety-gates.audit.test.ts test/audits/repo-safety-docs.audit.test.ts && node scripts/vitest-filter-workerd.mjs run --config vitest.node.config.mts test/audits/repo-safety-push-range-scanner.audit.test.ts test/audits/license-headers.audit.test.ts test/audits/dependency-license.audit.test.ts && npm run audit:licenses",
+		"audit:oss-safety": "node scripts/vitest-filter-workerd.mjs run test/audits/oss-fixture-safety.audit.test.ts test/audits/no-tracked-secrets.audit.test.ts test/audits/npm-publish-surface.audit.test.ts test/audits/busl-positioning.audit.test.ts test/audits/readme-tool-surface.audit.test.ts test/audits/infra-probe-wrangler.audit.test.ts test/audits/repo-safety-policy.audit.test.ts test/audits/repo-safety-scanner.audit.test.ts test/audits/hook-coverage.audit.test.ts test/audits/workflow-safety-gates.audit.test.ts test/audits/repo-safety-docs.audit.test.ts && node scripts/vitest-filter-workerd.mjs run --config vitest.node.config.mts test/audits/repo-safety-push-range-scanner.audit.test.ts test/audits/license-headers.audit.test.ts test/audits/dependency-license.audit.test.ts test/audits/workflow-cost.audit.test.ts && npm run audit:licenses",
 		"generate-report": "bash scripts/generate-report.sh",
 		"report:qa": "node scripts/audits/brand-report-qa.mjs",
 		"report:quality-audit": "node scripts/audits/brand-report-quality-audit.mjs",
@@ -63,8 +63,8 @@
 		"zod": "4.4.3"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.18.4",
-		"@cloudflare/workers-types": "5.20260713.1",
+		"@cloudflare/vitest-pool-workers": "^0.18.6",
+		"@cloudflare/workers-types": "5.20260721.1",
 		"@types/marked": "^6.0.0",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.10",
@@ -75,7 +75,7 @@
 		"typescript": "6.0.3",
 		"typescript-eslint": "8.63.0",
 		"vitest": "4.1.10",
-		"wrangler": "^4.110.0"
+		"wrangler": "^4.112.0"
 	},
 	"pnpm": {
 		"overrides": {

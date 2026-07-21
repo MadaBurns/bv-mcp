@@ -44,6 +44,7 @@ import {
 	FREE_TOOL_DAILY_LIMITS,
 	MAX_REQUEST_BODY_BYTES,
 	isValidOAuthSigningSecret,
+	isContractFlagGateEnabled,
 	parseCacheTtl,
 	parseGlobalDailyLimit,
 	parsePerCheckTimeout,
@@ -119,6 +120,15 @@ type BvMcpEnv = {
 	 */
 	PROFILE_ACCUMULATOR_SHARDING?: string;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
+	/**
+	 * Optional override for the Analytics Engine DATASET name that the alerting cron
+	 * and `/internal/analytics/*` reads query FROM. Defaults in code to
+	 * `bv_dns_security_mcp` (the dataset the `MCP_ANALYTICS` binding writes to in prod)
+	 * via `resolveAnalyticsDataset` in `lib/analytics-queries.ts`. This is the AE
+	 * DATASET name, NOT the Worker binding name (`MCP_ANALYTICS`) — querying the
+	 * binding name returns 0 rows.
+	 */
+	ANALYTICS_DATASET?: string;
 	BV_API_KEY?: string;
 	/** Comma-separated IP allowlist for owner tier. When set, an owner-tier credential (static `BV_API_KEY` or owner JWT) from a non-listed client IP is downgraded to `partner` (`applyOwnerIpGate` in `lib/tier-auth.ts`). Unset/empty → owner unrestricted (self-hosted/dev). */
 	OWNER_ALLOW_IPS?: string;
@@ -304,6 +314,13 @@ type BvMcpEnv = {
 	TENANT_ROUTING_MODE?: string;
 	/** Optional override of the global unauthenticated daily tools/call cap (clamped [10000, 5000000]). */
 	GLOBAL_DAILY_TOOL_LIMIT?: string;
+	/**
+	 * D2 contract-flag gate switch. `'true'` activates the per-contract enumeration
+	 * entitlement gate (enumeration/recon tools require a `contractFlag` JWT claim,
+	 * not merely a paid tier). Default/unset = OFF. Activate only together with the
+	 * bv-web-prod developer-claim carve-out.
+	 */
+	ENFORCE_CONTRACT_FLAG_GATE?: string;
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
@@ -821,6 +838,7 @@ app.post('/mcp', async (c) => {
 					quotaCoordinator: c.env.QUOTA_COORDINATOR,
 					quotaShardRouting: resolveQuotaShardRouting(c.env),
 					globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
+			contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
 					sessionStore: c.env.SESSION_STORE,
 					scanCache: c.env.SCAN_CACHE,
 					providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -923,6 +941,7 @@ app.post('/mcp', async (c) => {
 		quotaCoordinator: c.env.QUOTA_COORDINATOR,
 		quotaShardRouting: resolveQuotaShardRouting(c.env),
 		globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
+		contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
 		sessionStore: c.env.SESSION_STORE,
 		scanCache: c.env.SCAN_CACHE,
 		providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -1109,6 +1128,7 @@ app.post('/mcp/messages', async (c) => {
 				quotaCoordinator: c.env.QUOTA_COORDINATOR,
 				quotaShardRouting: resolveQuotaShardRouting(c.env),
 				globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
+			contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
 				sessionStore: c.env.SESSION_STORE,
 				scanCache: c.env.SCAN_CACHE,
 				providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,

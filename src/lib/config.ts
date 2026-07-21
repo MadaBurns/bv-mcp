@@ -497,6 +497,161 @@ export function isAgentAllowedTool(toolName: string): boolean {
 export const UPGRADE_URL = 'https://blackveilsecurity.com/pricing';
 
 /**
+ * Self-serve checkout URL — the upgrade destination for tools a free caller can
+ * plausibly convert on directly (bounded-scope, non-enumerating). Defaults to the
+ * pricing/checkout page. PUBLIC-SURFACE: operator-owned copy.
+ */
+export const UPGRADE_SELF_SERVE_URL = UPGRADE_URL;
+
+/**
+ * Sales/contact URL — the upgrade destination for enumerating recon/OSINT tools
+ * that we do NOT want a self-serve free→paid flow to unlock without a vetted
+ * conversation (abuse surface). PUBLIC-SURFACE: operator-owned copy.
+ */
+export const UPGRADE_SALES_URL = 'https://blackveilsecurity.com/contact';
+
+/**
+ * Exit-door channel partition of {@link GATED_PAID_ONLY_TOOLS}.
+ *
+ * `SELF_SERVE_UPGRADE_TOOLS` — the (small, curated) subset a free caller may be
+ * routed to a self-serve checkout for. Everything else in the gated set is an
+ * enumerating recon/OSINT/brand-discovery tool whose upgrade path must go through
+ * sales (vetting), NOT a one-click self-serve unlock. This is the "enumerable
+ * access is never gated by plan tier alone" invariant expressed at the upgrade
+ * boundary: money alone does not open the enumeration surface.
+ *
+ * `ENUMERABLE_RECON_UPGRADE_TOOLS` is DERIVED (gated − self-serve) so the two sets
+ * are a guaranteed partition of the gated set — no hand-maintained second list to
+ * drift. The `upgrade-channel-ssot` audit pins the partition + a name-pattern
+ * tripwire that blocks an enumerator from silently joining the self-serve set.
+ */
+export const SELF_SERVE_UPGRADE_TOOLS: ReadonlySet<string> = new Set<string>(['batch_scan', 'compare_domains']);
+
+/** Derived: the gated tools whose upgrade path routes to SALES (all non-self-serve gated tools). */
+export const ENUMERABLE_RECON_UPGRADE_TOOLS: ReadonlySet<string> = new Set<string>(
+	[...GATED_PAID_ONLY_TOOLS].filter((tool) => !SELF_SERVE_UPGRADE_TOOLS.has(tool)),
+);
+
+/** Upgrade channel for a paywalled response: self-serve checkout vs vetted sales. */
+export type UpgradeChannel = 'self_serve' | 'sales';
+
+/**
+ * Resolve the upgrade channel for a paywalled tool.
+ *
+ * DEFAULT-SALES: an unknown/new gated tool routes to sales (the safe default —
+ * we never auto-open a new enumeration surface to self-serve). A tool is
+ * self-serve ONLY when it is explicitly in {@link SELF_SERVE_UPGRADE_TOOLS}, OR
+ * when the block is a pure volume limit (`isVolume429` — the caller exhausted a
+ * free daily quota on a tool they CAN already reach, so self-serve is correct).
+ */
+export function resolveUpgradeChannel(toolName: string, isVolume429 = false): UpgradeChannel {
+	if (isVolume429 || SELF_SERVE_UPGRADE_TOOLS.has(toolName)) return 'self_serve';
+	return 'sales';
+}
+
+/** Structured upgrade affordance attached to a paywalled JSON-RPC error's `data`. */
+export interface UpgradeData {
+	channel: UpgradeChannel;
+	url: string;
+	tool: string;
+	tier_required: 'developer';
+	/**
+	 * Ready-to-display call-to-action, co-located with the structured affordance so
+	 * a programmatic client can render an actionable upgrade prompt WITHOUT parsing
+	 * the top-level prose `error.message`. Names the gated tool; self-serve copy also
+	 * names the minimum tier. PUBLIC-SURFACE, operator-owned copy — price-free and
+	 * plan-name-free by design (see the operator note below); the destination URL
+	 * lives in `url`, not the string.
+	 */
+	cta: string;
+}
+
+/**
+ * Build the human-readable CTA for a paywalled response.
+ *
+ * OPERATOR NOTE (public-surface copy): intentionally neutral — it names only the
+ * gated tool and the existing `developer` tier, and carries NO price, plan name, or
+ * marketing headline (the operator owns those; the destination URL is in `url`).
+ * Edit this copy or route it through an env-configured string if the operator wants
+ * different wording.
+ */
+function buildUpgradeCta(toolName: string, channel: UpgradeChannel): string {
+	return channel === 'self_serve'
+		? `Upgrade to the developer tier to unlock ${toolName}.`
+		: `Contact us to enable ${toolName} on a vetted plan.`;
+}
+
+/** Build the `data.upgrade` envelope for a paywalled (403) response. */
+export function buildUpgradeData(toolName: string, isVolume429 = false): { upgrade: UpgradeData } {
+	const channel = resolveUpgradeChannel(toolName, isVolume429);
+	return {
+		upgrade: {
+			channel,
+			url: channel === 'self_serve' ? UPGRADE_SELF_SERVE_URL : UPGRADE_SALES_URL,
+			tool: toolName,
+			tier_required: 'developer',
+			cta: buildUpgradeCta(toolName, channel),
+		},
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Contract-flag gate (D2 — INERT scaffold; default OFF)
+// ---------------------------------------------------------------------------
+//
+// The enumeration/recon surface must never be unlocked by a paid TIER alone —
+// "money alone never opens the enumeration surface" (see the upgrade-channel
+// partition above). Today a `developer` claim unlocks the WHOLE gated set, which
+// at a $49 self-serve price would sell 500/day of `discover_subdomains` +
+// `map_supply_chain` for one cheap seat (the canonical hole). The carve-out
+// (D2): the ENUMERABLE_RECON tools move behind an explicit per-contract
+// entitlement — a `contractFlag` JWT claim — NOT granted by any self-serve plan.
+//
+// This gate is the bv-mcp half. It is INERT until `ENFORCE_CONTRACT_FLAG_GATE`
+// is set true AND bv-web-prod is emitting the `contractFlag` claim (the D2
+// sequence: D1 exit-door → carve-out gate → flip Stripe price). Default OFF means
+// a true no-op — a `developer` caller keeps unlocking the gated set exactly as
+// today until the operator activates it together with the bv-web-prod carve-out.
+
+/** Tools that require an explicit contract-flag entitlement once the gate is ON (= the enumerable-recon set). */
+export const CONTRACT_FLAGGED_TOOLS: ReadonlySet<string> = ENUMERABLE_RECON_UPGRADE_TOOLS;
+
+/** True when `toolName` needs a contract-flag claim (gate-independent membership test). */
+export function isContractFlaggedTool(toolName: string): boolean {
+	return CONTRACT_FLAGGED_TOOLS.has(toolName);
+}
+
+/**
+ * Tiers that bypass the contract-flag gate. ONLY `owner` (the operator's own
+ * credential) — for every other tier the flag IS the enumeration entitlement,
+ * granted per-contract by bv-web-prod, never implied by the tier. (Reconcile this
+ * with bv-web-prod's claim emission when activating: if paid enterprise/partner
+ * contracts are meant to carry enumeration unconditionally, they must set
+ * `contractFlag`, not be bypassed here.)
+ */
+export const CONTRACT_FLAG_BYPASS_TIERS: ReadonlySet<string> = new Set<string>(['owner']);
+
+/** Resolve whether the contract-flag gate is active from the `ENFORCE_CONTRACT_FLAG_GATE` env var (default OFF). */
+export function isContractFlagGateEnabled(envValue: string | undefined): boolean {
+	return envValue === 'true';
+}
+
+/**
+ * Pure decision: should this authenticated call be blocked for lacking a
+ * contract-flag entitlement? Blocks iff the gate is ON, the tool is
+ * contract-flagged, the caller's tier does not bypass, and no contract-flag claim
+ * is present. Off/bypass/flagged-caller/non-flagged-tool all fall through to
+ * allow — so with the gate OFF this is always `false` (no behavior change).
+ */
+export function contractFlagBlocks(args: { gateEnabled: boolean; tier: string; tool: string; hasContractFlag: boolean }): boolean {
+	const { gateEnabled, tier, tool, hasContractFlag } = args;
+	if (!gateEnabled) return false;
+	if (hasContractFlag) return false;
+	if (CONTRACT_FLAG_BYPASS_TIERS.has(tier)) return false;
+	return isContractFlaggedTool(tool);
+}
+
+/**
  * Per-IP daily cap on the number of DISTINCT domains an unauthenticated caller
  * may scan (across domain-bearing tools). Speed-bump against mass/3rd-party
  * scanning of the still-free hygiene tools. Best-effort (KV, fail-open).

@@ -107,6 +107,8 @@ export type ScanQueueConsumerEnv = ResolverEnv & {
 	/** R10 - ProfileAccumulator write-sharding mode (default-off). See BvMcpEnv in index.ts. */
 	PROFILE_ACCUMULATOR_SHARDING?: string;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
+	/** Optional AE dataset-name override; defaults to `bv_dns_security_mcp` (see `resolveAnalyticsDataset`). NOT the binding name. */
+	ANALYTICS_DATASET?: string;
 	PROVIDER_SIGNATURES_URL?: string;
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
 	PROVIDER_SIGNATURES_SHA256?: string;

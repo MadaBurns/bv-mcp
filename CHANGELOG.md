@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.32.0] - 2026-07-21
+
+Analytics & observability release from an MCP analytics/usage review — **relights the silently-dead alerting + admin analytics reader**, adds **remote-connector client detection**, an **actionable paid-gate CTA**, and an **honest per-tool error metric**.
+
+### Fixed
+
+- **Analytics Engine reader queried the wrong dataset.** `src/lib/analytics-queries.ts` sent `FROM MCP_ANALYTICS` (the Worker *binding* name) to the AE SQL API, which resolves by *dataset* name (`bv_dns_security_mcp`). Every read returned 0 rows, silently: all six 15-min cron alerts never fired, and every `/internal/analytics/*` endpoint returned empty — including `/internal/analytics/geo`, which bv-web-prod's admin dashboard reads (it had been rendering placeholder `representative` data). Now env-driven via `ANALYTICS_DATASET` (default `bv_dns_security_mcp`, validated), with a CI regression guard and a log-only reader-blind self-check. (#528)
+
+### Added
+
+- **`claude_connector` client detection** — the Anthropic-hosted remote MCP connector (`Claude-User` UA), previously the bulk of traffic mislabeled `unknown`. Classified as an interactive client (compact output). (#529)
+- **`data.upgrade.cta`** on the gated-tool 403 upgrade envelope — a ready-to-display upgrade prompt so a client needn't parse the prose `error.message`. Price/plan-name-free; reuses existing operator-owned URLs. (#530)
+- **Honest per-tool error metric** — `queryErrorRate` / `queryTierErrorRate` split pre-dispatch input-validation rejections (`input_errors`, no domain dispatched) from real tool failures (`real_errors` / `real_error_pct`); `error_pct` retained for back-compat. (#532)
+
+### Security
+
+- `npm audit fix` for the `brace-expansion` ReDoS advisory (GHSA-3jxr-9vmj-r5cp), a transitive dev-dependency (lockfile-only). (#531)
+
+## [3.31.2] - 2026-07-20
+
+Patch release: **RDAP `rdap_lookup` WHOIS-fallback now surfaces registration dates + registrant privacy** (no new tools, schema, or API surface).
+
+### Fixed
+
+- `rdap_lookup` previously extracted only the registrar from the WHOIS fallback (used when RDAP returns HTTP 530 or the TLD has no RDAP server, e.g. `.co` / `.nz`), silently dropping the creation/updated/expiry dates and registrant-privacy state present in the same response. The WHOIS-fallback parser (`packages/dns-checks/src/whois/parse.ts`, threaded through the `bv-whois` shim and `check-rdap-lookup`) now parses Created/Updated/Expires across common label variants plus registrant org + privacy-redaction state, normalizes dates to ISO where parseable, and the RDAP-failure primary finding no longer reports "Registration data unavailable" when WHOIS answered. Fail-soft and deterministic. (#526)
+
+## [3.31.1] - 2026-07-17
+
+Patch release: **unread-fetch-body and log-volume fixes** from a review of production Workers Observability logs/analytics (no new tools, schema, or API surface).
+
+### Fixed
+
+- **"A stalled HTTP response was canceled to prevent deadlock"** (~10 occurrences/week in prod). Several early-return/race-loser fetch call sites checked `response.status`/`.ok`/`.headers` without ever reading or cancelling the body, holding the underlying connection open until the platform force-cancelled it. Fixed the shared `withRobotsGate` helper (`packages/dns-checks/src/robots-gate.ts`, independently instantiated by `check_http_security`/`check_bimi`/`check_mta_sts`/`check_ssl`/`check_subdomain_takeover` — the highest-frequency contributor since most scanned domains lack or block `/robots.txt`); `check_http_security`'s `TOTAL_BUDGET_MS` timeout, which now aborts the losing fetch via `AbortController` instead of merely out-racing it, and drains discarded redirect-hop and dual-HEAD-probe bodies; `get_domain_rank`'s C1-benchmark timeout race; and three smaller `if (!resp.ok) return ...` sites in `check_dnssec`, `check_lookalikes`, and `check_agent_discovery`.
+- **"Log size limit exceeded: More than 256KB..."** (~30 occurrences/week on the `bv-scanner-queue` tenant-scan queue). `scan_domain`'s success log unconditionally serialized the full ~19-category `CheckResult[]` (every finding + metadata) on every call; a single queue invocation processing a whole `MessageBatch` of domains stacked N domains' full results against the Workers 256KB-per-invocation log cap. Replaced with a small summary (`grade`/`overall`/`cached`/`categoryCount`/`findingCount`), matching the pattern `batch_scan` already used.
+
+## [3.31.0] - 2026-07-16
+
+Minor release: **checkout exit-door + INERT enumeration entitlement gate** — the D1/D2 monetization surface from the commercialization review. Paywall (403) and free-tier volume (429) responses now carry a structured `error.data.upgrade` affordance with a self-serve-vs-sales channel partition ("money alone never opens the enumeration surface"); the D2 contract-flag gate ships wired-but-dormant (default OFF).
+
+### Added
+
+- **Contract-flag gate scaffold (D2, INERT — default OFF).** Wires the bv-mcp half of the developer-tier carve-out: with `ENFORCE_CONTRACT_FLAG_GATE=true`, enumeration/recon tools (the `CONTRACT_FLAGGED_TOOLS` set = the enumerable-recon partition) require an explicit per-contract `contractFlag` JWT claim, not merely a paid tier — a `developer` caller without the flag gets the same sales-channel 403 as an unpaid caller (`owner` bypasses). Default OFF is a true no-op (proven by test): a `developer` claim keeps unlocking the gated set exactly as today until the operator activates the gate **together with** the bv-web-prod claim-emission carve-out. Pure decision fn `contractFlagBlocks()`; `TierAuthResult.contractFlag` read from the JWT; threaded via `ExecuteMcpRequestOptions.contractFlagGateEnabled` at all 3 execute-path sites. Closes the "$49 buys 500/day of `discover_subdomains`" hole once activated.
+
+### Changed
+
+- **Paywall (HTTP 403) responses now carry a structured `error.data.upgrade` affordance** instead of a hardcoded pricing URL in prose. The gated set is partitioned by upgrade **channel**: a small curated self-serve set (`batch_scan`, `compare_domains`) routes to self-serve checkout (`/pricing`); every enumerating recon/OSINT/brand-discovery tool routes to a vetted **sales** channel (`/contact`) — money alone never unlocks the enumeration surface. `resolveUpgradeChannel` **default-sales**, so a newly-added gated tool can never silently become self-serve-unlockable; `ENUMERABLE_RECON_UPGRADE_TOOLS` is derived (`gated − self_serve`) so there is no second list to drift. The human message is now price-free. Pinned by the new `upgrade-channel-ssot` audit (partition + disjointness + union + enumerator name-pattern tripwire). `jsonRpcError` gained an optional spec-compliant `data` member (omitted when absent — existing call sites byte-identical).
+- **Free-tier volume-limit (HTTP 429) responses now carry the same `error.data.upgrade` affordance** on the personal daily ceilings a paid upgrade removes — per-IP daily, per-tool daily, and the distinct-domain cap — always the **self-serve** channel (`isVolume429`). The human prose is unchanged (additive machine field only); the abuse/capacity limits (per-minute, `force_refresh` sub-limit, global daily capacity) and the authenticated per-tier daily (developer→enterprise is sales-led) deliberately do **not** carry a buy affordance.
+
 ## [3.30.0] - 2026-07-16
 
 Minor release: **brand-audit PDF delivery finally works + Cloudflare KV TTL correctness sweep** (findings from a full Cloudflare-docs SDK review).

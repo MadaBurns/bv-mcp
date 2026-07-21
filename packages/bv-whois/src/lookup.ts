@@ -10,8 +10,27 @@ import { resolveWhoisServer, type KVLike, type WhoisQueryFn } from './resolver';
 export interface WhoisLookupResult {
 	registrar: string | null;
 	registrarIanaId: string | null;
+	/** Raw creation/registration date (ISO where the registry emits it). */
+	creationDate: string | null;
+	/** Raw last-updated/last-modified date. */
+	updatedDate: string | null;
+	/** Raw expiry/expiration date. */
+	expiryDate: string | null;
+	/** Registrant organisation/name (may be a privacy-proxy label). */
+	registrantOrg: string | null;
+	/** True when the registrant record is redacted behind a privacy/proxy service. */
+	registrantPrivacy: boolean;
 	source: 'whois' | 'redacted' | 'notfound' | 'error';
 }
+
+/** Registration-detail fields default to absent — the registrar-only short-circuit paths carry no dates. */
+const EMPTY_REGISTRATION_DETAILS = {
+	creationDate: null,
+	updatedDate: null,
+	expiryDate: null,
+	registrantOrg: null,
+	registrantPrivacy: false,
+} as const;
 
 export interface LookupDeps {
 	kv: KVLike;
@@ -52,30 +71,39 @@ const ALWAYS_REDACTED_TLDS = new Set<string>([
  */
 export async function lookupRegistrar(domain: string, deps: LookupDeps): Promise<WhoisLookupResult> {
 	if (typeof domain !== 'string' || !DOMAIN_RE.test(domain)) {
-		return { registrar: null, registrarIanaId: null, source: 'error' };
+		return { registrar: null, registrarIanaId: null, ...EMPTY_REGISTRATION_DETAILS, source: 'error' };
 	}
 
 	const labels = domain.toLowerCase().split('.');
 	const tld = labels[labels.length - 1];
 
 	if (ALWAYS_REDACTED_TLDS.has(tld)) {
-		return { registrar: null, registrarIanaId: null, source: 'redacted' };
+		return { registrar: null, registrarIanaId: null, ...EMPTY_REGISTRATION_DETAILS, source: 'redacted' };
 	}
 
 	const server = await resolveWhoisServer(tld, deps);
-	if (!server) return { registrar: null, registrarIanaId: null, source: 'error' };
+	if (!server) return { registrar: null, registrarIanaId: null, ...EMPTY_REGISTRATION_DETAILS, source: 'error' };
 
 	let response: string;
 	try {
 		response = await deps.whoisQuery(server, domain);
 	} catch {
-		return { registrar: null, registrarIanaId: null, source: 'error' };
+		return { registrar: null, registrarIanaId: null, ...EMPTY_REGISTRATION_DETAILS, source: 'error' };
 	}
 
 	const parsed = parseWhoisResponse(response);
+	// Registration details ride along with every parsed response — a redacted or
+	// not-found registrar can still carry public creation/expiry dates.
+	const details = {
+		creationDate: parsed.creationDate,
+		updatedDate: parsed.updatedDate,
+		expiryDate: parsed.expiryDate,
+		registrantOrg: parsed.registrantOrg,
+		registrantPrivacy: parsed.registrantPrivacy,
+	};
 
-	if (parsed.registrar) return { registrar: parsed.registrar, registrarIanaId: parsed.registrarIanaId ?? null, source: 'whois' };
-	if (parsed.redacted) return { registrar: null, registrarIanaId: null, source: 'redacted' };
-	if (parsed.notFound) return { registrar: null, registrarIanaId: null, source: 'notfound' };
-	return { registrar: null, registrarIanaId: null, source: 'error' };
+	if (parsed.registrar) return { registrar: parsed.registrar, registrarIanaId: parsed.registrarIanaId ?? null, ...details, source: 'whois' };
+	if (parsed.redacted) return { registrar: null, registrarIanaId: null, ...details, source: 'redacted' };
+	if (parsed.notFound) return { registrar: null, registrarIanaId: null, ...details, source: 'notfound' };
+	return { registrar: null, registrarIanaId: null, ...details, source: 'error' };
 }

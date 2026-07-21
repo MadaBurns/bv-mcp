@@ -13,10 +13,99 @@ export const MAX_RESPONSE_BYTES = 64 * 1024;
 export interface WhoisParseResult {
 	registrar: string | null;
 	registrarIanaId: string | null;
+	/** Raw registration/creation date string as found (label variants normalised at the surface). */
+	creationDate: string | null;
+	/** Raw last-updated/last-modified date string as found. */
+	updatedDate: string | null;
+	/** Raw expiry/expiration date string as found. */
+	expiryDate: string | null;
+	/** Registrant organisation/name string as found (may be a privacy-proxy name). */
+	registrantOrg: string | null;
+	/** True when the registrant record is redacted behind a privacy/proxy service. */
+	registrantPrivacy: boolean;
 	/** True when the registry explicitly indicated no record exists. */
 	notFound: boolean;
 	/** True when the registry returned data but redacted the registrar (e.g. DENIC). */
 	redacted: boolean;
+}
+
+/**
+ * Registration-date label variants seen across gTLD/ccTLD WHOIS templates,
+ * ordered specific → generic. The matcher (`matchLabelledValue`) returns the
+ * first label with any line hit, so a specific `Creation Date` wins over a bare
+ * `Created`. Anchored strictly at line start after a colon, so a label can't
+ * false-match a longer field name (`^Created:` never matches `Created On:`).
+ */
+const CREATION_DATE_LABELS = [
+	'Creation Date',
+	'Created On',
+	'Created Date',
+	'Domain Registration Date',
+	'Original Created', // .nz
+	'Registered On',
+	'Registered on',
+	'Created', // includes lowercase `created:` via the /i flag (RIPE-style ccTLD)
+	'Registered',
+] as const;
+
+const UPDATED_DATE_LABELS = [
+	'Updated Date',
+	'Last Modified',
+	'Last Updated',
+	'Last Update',
+	'Updated On',
+	'Updated', // includes lowercase `changed:` below
+	'changed',
+	'modified',
+] as const;
+
+const EXPIRY_DATE_LABELS = [
+	'Registry Expiry Date',
+	'Registrar Registration Expiration Date',
+	'Expiration Date',
+	'Expiry Date',
+	'Expire Date',
+	'Expires On',
+	'Expires', // includes lowercase `expires:` via the /i flag (RIPE-style ccTLD)
+	'paid-till',
+] as const;
+
+const REGISTRANT_ORG_LABELS = [
+	'Registrant Organization',
+	'Registrant Organisation',
+	'Registrant Org',
+	'Registrant Name',
+	'Registrant',
+] as const;
+
+/** Privacy/proxy registrant markers — the redaction states the RDAP fallback must surface. */
+const REGISTRANT_PRIVACY_RE = /redacted for privacy|withheld for privacy|privacy service|data protected/i;
+
+/** Longest usable value length per field — keeps values under the RDAP tool's Zod caps (dates 64, org 256). */
+const MAX_DATE_LEN = 64;
+const MAX_ORG_LEN = 256;
+
+function escapeWhoisLabel(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Return the first non-empty value for any of `labels` (label priority order),
+ * matching `^Label:\s*<value>$` line-anchored + case-insensitively. Pure.
+ */
+function matchLabelledValue(lines: readonly string[], labels: readonly string[], maxLen: number): string | null {
+	for (const label of labels) {
+		const re = new RegExp(`^${escapeWhoisLabel(label)}\\s*:\\s*(.+?)\\s*$`, 'i');
+		for (const raw of lines) {
+			const line = raw.replace(/\r$/, '').replace(/^\s+/, '');
+			const m = line.match(re);
+			if (m) {
+				const value = m[1].trim();
+				if (value.length > 0) return value.length > maxLen ? value.slice(0, maxLen) : value;
+			}
+		}
+	}
+	return null;
 }
 
 /**
@@ -138,9 +227,20 @@ export function parseWhoisResponse(input: string): WhoisParseResult {
 
 	const resolved = registrar ?? registrarName ?? sponsoring ?? registrarOrganization ?? authorizedAgency;
 
+	const creationDate = matchLabelledValue(lines, CREATION_DATE_LABELS, MAX_DATE_LEN);
+	const updatedDate = matchLabelledValue(lines, UPDATED_DATE_LABELS, MAX_DATE_LEN);
+	const expiryDate = matchLabelledValue(lines, EXPIRY_DATE_LABELS, MAX_DATE_LEN);
+	const registrantOrg = matchLabelledValue(lines, REGISTRANT_ORG_LABELS, MAX_ORG_LEN);
+	const registrantPrivacy = REGISTRANT_PRIVACY_RE.test(truncated);
+
 	return {
 		registrar: resolved,
 		registrarIanaId,
+		creationDate,
+		updatedDate,
+		expiryDate,
+		registrantOrg,
+		registrantPrivacy,
 		notFound: notFound && !resolved,
 		redacted: !resolved && denicRedacted,
 	};

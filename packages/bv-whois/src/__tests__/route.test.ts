@@ -28,7 +28,7 @@ describe('POST /lookup', () => {
 		});
 
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ registrar: 'TestReg Inc.', registrarIanaId: null, source: 'whois' });
+		expect(await res.json()).toEqual({ registrar: 'TestReg Inc.', registrarIanaId: null, creationDate: null, updatedDate: null, expiryDate: null, registrantOrg: null, registrantPrivacy: false, source: 'whois' });
 	});
 
 	it('returns registrar IANA ID in the JSON response when WHOIS includes it', async () => {
@@ -43,7 +43,7 @@ describe('POST /lookup', () => {
 		});
 
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ registrar: 'TestReg Inc.', registrarIanaId: '299', source: 'whois' });
+		expect(await res.json()).toEqual({ registrar: 'TestReg Inc.', registrarIanaId: '299', creationDate: null, updatedDate: null, expiryDate: null, registrantOrg: null, registrantPrivacy: false, source: 'whois' });
 	});
 
 	it('returns 400 when domain field is missing', async () => {
@@ -110,7 +110,7 @@ describe('POST /lookup', () => {
 		});
 
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ registrar: null, registrarIanaId: null, source: 'redacted' });
+		expect(await res.json()).toEqual({ registrar: null, registrarIanaId: null, creationDate: null, updatedDate: null, expiryDate: null, registrantOrg: null, registrantPrivacy: false, source: 'redacted' });
 	});
 
 	it('rejects body larger than 1KB', async () => {

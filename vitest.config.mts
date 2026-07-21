@@ -45,6 +45,19 @@ export default defineConfig({
 			// BrandAudit audit calibration specs are run via vitest.calibration.config.mts
 			// (node env, can read fs). Excluding from the default workers-pool run.
 			'scripts/brand-audit-*.spec.ts',
+			// Needs real node:fs directory/file reads against .github/workflows — the
+			// Workers pool has no real filesystem (readdirSync ENOENTs against the
+			// sandboxed /bundle path). Runs only under vitest.node.config.mts, wired
+			// via the `audit:oss-safety` npm script (the "File hygiene check" CI job).
+			'test/audits/workflow-cost.audit.test.ts',
+			// scripts/ hosts standalone node:test scripts (e.g. dogfood-scan.test.mjs)
+			// that are run directly via `node --test`, not collected by Vitest. Vitest's
+			// default include glob (**/*.test.mjs) would otherwise sweep these into the
+			// Workers pool, where node:test/node:child_process aren't real -- producing a
+			// hard SIGSEGV, not the benign pool-teardown noise documented above.
+			// Deliberately broad (all of scripts/) so it also covers future scripts
+			// (e.g. scripts/ci/verify-deploy.test.mjs).
+			'scripts/**',
 		],
 		poolMatchGlobs: [
 			['test/pdf-engine.spec.ts', 'forks'],
