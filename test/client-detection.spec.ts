@@ -38,6 +38,24 @@ describe('detectMcpClient', () => {
 		expect(detectMcpClient('ClaudeDesktop/1.0.0')).toBe('claude_desktop');
 	});
 
+	it('detects the Anthropic-hosted remote MCP connector (Claude-User UA)', () => {
+		// The claude.ai / claude.com / Desktop / mobile "custom connector" reaches the
+		// worker from Anthropic's cloud infra with User-Agent `Claude-User` (verified via
+		// the 2026-07-02 connector-unblock incident). Robust to a version/URL suffix.
+		expect(detectMcpClient('Claude-User/1.0')).toBe('claude_connector');
+		expect(detectMcpClient('Claude-User/1.0 (+https://claude.ai)')).toBe('claude_connector');
+		expect(detectMcpClient('claude_user/2.0')).toBe('claude_connector');
+		expect(detectMcpClient('ClaudeUser')).toBe('claude_connector');
+	});
+
+	it('does not confuse the connector with local Claude clients', () => {
+		// Claude-User must NOT steal claude_code / claude_desktop / claude_mobile, and
+		// those local-client UAs must NOT collapse into the connector bucket.
+		expect(detectMcpClient('claude-code/2.1.0')).toBe('claude_code');
+		expect(detectMcpClient('claude-desktop/1.0.0')).toBe('claude_desktop');
+		expect(detectMcpClient('claude-mobile/1.0.0')).toBe('claude_mobile');
+	});
+
 	it('detects Windsurf', () => {
 		expect(detectMcpClient('windsurf/1.0.0')).toBe('windsurf');
 		expect(detectMcpClient('Windsurf/2.0')).toBe('windsurf');
