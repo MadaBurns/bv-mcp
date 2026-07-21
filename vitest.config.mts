@@ -45,6 +45,11 @@ export default defineConfig({
 			// BrandAudit audit calibration specs are run via vitest.calibration.config.mts
 			// (node env, can read fs). Excluding from the default workers-pool run.
 			'scripts/brand-audit-*.spec.ts',
+			// Needs real node:fs directory/file reads against .github/workflows — the
+			// Workers pool has no real filesystem (readdirSync ENOENTs against the
+			// sandboxed /bundle path). Runs only under vitest.node.config.mts, wired
+			// via the `audit:oss-safety` npm script (the "File hygiene check" CI job).
+			'test/audits/workflow-cost.audit.test.ts',
 		],
 		poolMatchGlobs: [
 			['test/pdf-engine.spec.ts', 'forks'],
