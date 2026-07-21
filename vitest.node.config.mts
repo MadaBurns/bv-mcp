@@ -13,6 +13,7 @@ export default defineConfig({
 			'test/audits/repo-safety-push-range-scanner.audit.test.ts',
 			'test/audits/license-headers.audit.test.ts',
 			'test/audits/dependency-license.audit.test.ts',
+			'test/audits/workflow-cost.audit.test.ts',
 			'test/audits/vitest-workerd-stderr-filter.node.test.ts',
 			'test/audits/score-stability-chaos-script.node.test.ts',
 		],

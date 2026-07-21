@@ -1,0 +1,91 @@
+name: Deploy Prod
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: Git ref to deploy
+        required: false
+        default: main
+  push:
+    tags: ['v*']
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - name: Check required secrets
+        env:
+          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          OVERLAY: ${{ secrets.WRANGLER_DEPLOY_OVERLAY_B64 }}
+          DEV_KEY: ${{ secrets.BV_INTERNAL_DEV_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "$CF_TOKEN" ]; then echo "::error::CLOUDFLARE_API_TOKEN not configured"; exit 1; fi
+          if [ -z "$OVERLAY" ]; then echo "::error::WRANGLER_DEPLOY_OVERLAY_B64 not configured"; exit 1; fi
+          if [ -z "$DEV_KEY" ]; then echo "::error::BV_INTERNAL_DEV_KEY not configured"; exit 1; fi
+
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          ref: ${{ github.event.inputs.ref || github.ref }}
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Reconstruct private deploy overlay
+        env:
+          OVERLAY: ${{ secrets.WRANGLER_DEPLOY_OVERLAY_B64 }}
+        run: |
+          set -euo pipefail
+          mkdir -p .dev
+          printf '%s' "$OVERLAY" | base64 -d > .dev/wrangler.deploy.jsonc
+          # Non-content, non-leaking sanity check only: confirm the base64 decode
+          # produced a non-empty file. Real JSONC validation happens inside
+          # `npm run deploy:prod`'s own string-aware parseJsonc() (inject-private-config.cjs).
+          # A regex-based `//`-stripping check here would false-fail any overlay
+          # containing a URL (the `//` in `https://...`) and could echo a decoded
+          # private-config fragment into this PUBLIC Actions log on parse failure.
+          [ -s .dev/wrangler.deploy.jsonc ] || { echo "::error::decoded overlay is empty"; exit 1; }
+
+      - name: Restore wasm-pack binary
+        id: wasmpack
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.cargo/bin/wasm-pack
+          key: wasm-pack-bin-0.13.1
+      - name: Install wasm-pack
+        if: steps.wasmpack.outputs.cache-hit != 'true'
+        run: cargo install wasm-pack --version 0.13.1 --locked
+      - run: npm run build:wasm
+
+      - name: Deploy to Cloudflare (prod)
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npm run deploy:prod
+
+      - name: Verify live deployment
+        env:
+          EXPECTED_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
+          BV_INTERNAL_DEV_KEY: ${{ secrets.BV_INTERNAL_DEV_KEY }}
+        run: |
+          set -euo pipefail
+          # For a tag deploy, strip the leading 'v'; for manual dispatch, read package.json.
+          if [ -n "${EXPECTED_VERSION:-}" ]; then
+            EXPECTED_VERSION="${EXPECTED_VERSION#v}"
+          else
+            EXPECTED_VERSION="$(node -p "require('./package.json').version")"
+          fi
+          export EXPECTED_VERSION
+          node scripts/ci/verify-deploy.mjs
