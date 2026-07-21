@@ -49,6 +49,18 @@ describe('analytics query builders', () => {
 		expect(sql).toContain('tool_call');
 	});
 
+	it('queryErrorRate splits input-validation vs real errors', () => {
+		const sql = queryErrorRate('1');
+		// input_errors = errored WITH no domain dispatched (blob4='none' → pre-dispatch rejection)
+		expect(sql).toContain('input_errors');
+		expect(sql).toContain("blob4 = 'none'");
+		// real_errors / real_error_pct = the tool actually ran and errored (blob4!='none')
+		expect(sql).toContain('real_errors');
+		expect(sql).toContain('real_error_pct');
+		expect(sql).toContain("blob4 != 'none'");
+		expect(sql).toContain('error_pct'); // back-compat column retained
+	});
+
 	it('queryLatencyPercentiles uses quantile function', () => {
 		const sql = queryLatencyPercentiles('1');
 		expect(sql).toMatch(/quantile/i);
@@ -244,6 +256,14 @@ describe('per-tier analytics query builders', () => {
 		expect(sql).toContain("blob3 = 'error'");
 		expect(sql).toContain('error_pct');
 		expect(sql).toContain('GREATEST');
+	});
+
+	it('queryTierErrorRate splits input-validation vs real errors', () => {
+		const sql = queryTierErrorRate('7');
+		expect(sql).toContain('input_errors');
+		expect(sql).toContain('real_errors');
+		expect(sql).toContain('real_error_pct');
+		expect(sql).toContain("blob4 != 'none'");
 	});
 
 	it('queryTierCachePerformance groups by cache status', () => {

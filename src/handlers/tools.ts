@@ -1034,7 +1034,10 @@ export const TOOL_REGISTRY: Record<
 };
 
 /** Known interactive LLM client types that benefit from compact output. */
-const INTERACTIVE_CLIENTS = new Set(['claude_mobile', 'claude_code', 'cursor', 'vscode', 'claude_desktop', 'windsurf']);
+// `claude_connector` = the Anthropic-hosted remote MCP connector (Claude in the
+// browser/Desktop): an interactive LLM client, so it gets compact output like the
+// other Claude clients (the LLM re-narrates; structuredContent is returned regardless).
+const INTERACTIVE_CLIENTS = new Set(['claude_mobile', 'claude_code', 'cursor', 'vscode', 'claude_desktop', 'claude_connector', 'windsurf']);
 
 /** Determine if the client type is a known interactive LLM IDE. */
 function isInteractiveClient(clientType?: string): boolean {
