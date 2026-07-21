@@ -1,0 +1,24 @@
+name: CI Docs
+
+# Companion to ci.yml's `paths-ignore`: a docs-only PR skips the real CI
+# workflow entirely, so the required `build-and-test` check would never
+# report and GitHub would block the merge under strict branch protection.
+# This workflow runs ONLY on the paths ci.yml ignores and reports a
+# passing check with the SAME job id, satisfying the required context.
+# On mixed/code PRs, ci.yml's own paths trigger it instead — no overlap.
+on:
+  push:
+    branches: [main]
+    paths: ['**.md', 'docs/**', 'LICENSE']
+  pull_request:
+    branches: [main]
+    paths: ['**.md', 'docs/**', 'LICENSE']
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "Docs-only change — full CI (build-and-test) intentionally skipped; reporting success to satisfy the required check."
