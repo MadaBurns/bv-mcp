@@ -120,6 +120,15 @@ type BvMcpEnv = {
 	 */
 	PROFILE_ACCUMULATOR_SHARDING?: string;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
+	/**
+	 * Optional override for the Analytics Engine DATASET name that the alerting cron
+	 * and `/internal/analytics/*` reads query FROM. Defaults in code to
+	 * `bv_dns_security_mcp` (the dataset the `MCP_ANALYTICS` binding writes to in prod)
+	 * via `resolveAnalyticsDataset` in `lib/analytics-queries.ts`. This is the AE
+	 * DATASET name, NOT the Worker binding name (`MCP_ANALYTICS`) — querying the
+	 * binding name returns 0 rows.
+	 */
+	ANALYTICS_DATASET?: string;
 	BV_API_KEY?: string;
 	/** Comma-separated IP allowlist for owner tier. When set, an owner-tier credential (static `BV_API_KEY` or owner JWT) from a non-listed client IP is downgraded to `partner` (`applyOwnerIpGate` in `lib/tier-auth.ts`). Unset/empty → owner unrestricted (self-hosted/dev). */
 	OWNER_ALLOW_IPS?: string;

@@ -72,6 +72,7 @@ import {
 	queryKeyUsage,
 	queryTierDigest,
 	queryGeoRollup,
+	resolveAnalyticsDataset,
 } from './lib/analytics-queries';
 
 type InternalEnv = {
@@ -82,6 +83,12 @@ type InternalEnv = {
 	/** R10 - ProfileAccumulator write-sharding mode (default-off). See BvMcpEnv in index.ts. */
 	PROFILE_ACCUMULATOR_SHARDING?: string;
 	MCP_ANALYTICS?: AnalyticsEngineDataset;
+	/**
+	 * Optional AE DATASET-name override for the `/internal/analytics/*` read queries.
+	 * Defaults in code to `bv_dns_security_mcp` (the dataset the `MCP_ANALYTICS`
+	 * binding writes to) via `resolveAnalyticsDataset`. NOT the Worker binding name.
+	 */
+	ANALYTICS_DATASET?: string;
 	PROVIDER_SIGNATURES_URL?: string;
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
 	PROVIDER_SIGNATURES_SHA256?: string;
@@ -779,10 +786,10 @@ internalRoutes.get('/trial-keys', async (c) => {
 
 // ─── Analytics Endpoints ───────────────────────────────────────────────
 
-/** Validate analytics prerequisites (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN). */
-function requireAnalyticsConfig(env: InternalEnv): { accountId: string; token: string } | null {
+/** Validate analytics prerequisites (CF_ACCOUNT_ID + CF_ANALYTICS_TOKEN) + resolve the AE dataset name. */
+function requireAnalyticsConfig(env: InternalEnv): { accountId: string; token: string; dataset: string } | null {
 	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return null;
-	return { accountId: env.CF_ACCOUNT_ID, token: env.CF_ANALYTICS_TOKEN };
+	return { accountId: env.CF_ACCOUNT_ID, token: env.CF_ANALYTICS_TOKEN, dataset: resolveAnalyticsDataset(env.ANALYTICS_DATASET) };
 }
 
 /** Parse and clamp the `days` query parameter (1–90, default 7). */
@@ -814,14 +821,14 @@ internalRoutes.get('/analytics/tier-summary', async (c) => {
 
 	try {
 		const [usage, latency, errors, cache, rateLimits, sessions, trend, topTools] = await Promise.all([
-			queryAnalyticsEngine(config.accountId, config.token, queryTierToolUsage(days, tier)),
-			queryAnalyticsEngine(config.accountId, config.token, queryTierLatency(days, tier)),
-			queryAnalyticsEngine(config.accountId, config.token, queryTierErrorRate(days, tier)),
-			queryAnalyticsEngine(config.accountId, config.token, queryTierCachePerformance(days, tier)),
-			queryAnalyticsEngine(config.accountId, config.token, queryTierRateLimits(days, tier)),
-			queryAnalyticsEngine(config.accountId, config.token, queryTierSessions(days, tier)),
-			queryAnalyticsEngine(config.accountId, config.token, queryTierDailyTrend(days, tier)),
-			queryAnalyticsEngine(config.accountId, config.token, queryTierTopTools(hours)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierToolUsage(days, tier, config.dataset)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierLatency(days, tier, config.dataset)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierErrorRate(days, tier, config.dataset)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierCachePerformance(days, tier, config.dataset)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierRateLimits(days, tier, config.dataset)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierSessions(days, tier, config.dataset)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierDailyTrend(days, tier, config.dataset)),
+			queryAnalyticsEngine(config.accountId, config.token, queryTierTopTools(hours, config.dataset)),
 		]);
 
 		return c.json({
@@ -860,7 +867,7 @@ internalRoutes.get('/analytics/key-usage', async (c) => {
 	const keyHashPrefix = url.searchParams.get('key_hash') ?? undefined;
 
 	try {
-		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryKeyUsage(days, keyHashPrefix));
+		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryKeyUsage(days, keyHashPrefix, config.dataset));
 		return c.json({ days, keyHash: keyHashPrefix ?? 'all', usage: rows });
 	} catch (err) {
 		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
@@ -926,7 +933,7 @@ internalRoutes.get('/analytics/digest', async (c) => {
 	const hours = String(Number(days) * 24);
 
 	try {
-		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryTierDigest(hours));
+		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryTierDigest(hours, config.dataset));
 		return c.json({ days, tiers: rows });
 	} catch (err) {
 		return c.json({ error: 'Analytics query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);
@@ -945,7 +952,7 @@ internalRoutes.get('/analytics/geo', async (c) => {
 	}
 	const days = parseDays(new URL(c.req.url));
 	try {
-		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryGeoRollup(days));
+		const rows = await queryAnalyticsEngine(config.accountId, config.token, queryGeoRollup(days, config.dataset));
 		return c.json({ days, geo: rows });
 	} catch (err) {
 		return c.json({ error: 'Geo query failed', detail: err instanceof Error ? err.message.slice(0, 100) : 'unknown' }, 502);

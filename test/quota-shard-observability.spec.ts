@@ -82,7 +82,9 @@ describe('quota_shard_salt_missing degradation member', () => {
 describe('analytics-queries — quota shard skew + degradation exclusion', () => {
 	it('queryQuotaShardSkew aggregates per-shard load into max/mean/ratio', () => {
 		const sql = queryQuotaShardSkew('60');
-		expect(sql).toContain('MCP_ANALYTICS');
+		// AE queries by DATASET name, not the binding name MCP_ANALYTICS.
+		expect(sql).toContain('FROM bv_dns_security_mcp');
+		expect(sql).not.toContain('MCP_ANALYTICS');
 		expect(sql).toContain("index1 = 'quota_shard'");
 		expect(sql).toContain('max_shard_load');
 		expect(sql).toContain('mean_shard_load');
