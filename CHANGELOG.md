@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.33.0] - 2026-07-22
+
+Feature + platform release: **session-scoped connector attribution** and **`analyze_drift` argument-forgiveness**, plus a **$0-cost CI/CD pipeline** (approval-gated deploy, self-hosted dogfood scan, cost guard).
+
+### Added
+
+- **Connector attribution via `initialize` `clientInfo.name`** — the `session` `created` analytics event now carries the client-declared name (`blob7`, bounded/normalized, analytics-only — never used for auth). Complements the UA-based `claude_connector` detection from 3.32.0 (#529) to chip away at the residual `unknown` client volume. (#520)
+- **`analyze_drift` argument-forgiveness** — `baseline` now defaults to `'cached'` instead of being required, so a bare `{ domain }` call succeeds against the cached baseline. (#520)
+
+### Changed
+
+- **$0-cost CI/CD pipeline.** Approval-gated `deploy-prod.yml` (workflow_dispatch + `v*` tags → `production` Environment reviewer → real `deploy:prod` with the private overlay reconstructed from a secret → live version + scan verify); `dns-security.yml` now runs a **free dogfood scan** with bv-mcp's own scanner (replacing the paid action); a `workflow-cost.audit` guard fails CI on any self-hosted runner or paid marketplace action (`docs/ci-cost-posture.md`); `ci.yml` caches the wasm-pack binary, adds a parallel `fast-checks` job, and skips the full suite on docs-only changes. (#534)
+
+### Dependencies
+
+- `marked` 18.0.5 → 18.0.7; `eslint` 10.6.0 → 10.7.0; `typescript-eslint` 8.63.0 → 8.65.0; `actions/setup-node` v6.4.0 → v7.0.0; Cloudflare dev-dependency group (3 updates). (#513, #514, #516, #517, #518)
+
 ## [3.32.0] - 2026-07-21
 
 Analytics & observability release from an MCP analytics/usage review — **relights the silently-dead alerting + admin analytics reader**, adds **remote-connector client detection**, an **actionable paid-gate CTA**, and an **honest per-tool error metric**.
