@@ -18,6 +18,7 @@ import {
 	queryBindingDegradation,
 	queryQueueFailures,
 	queryTailExceptions,
+	resolveAnalyticsDataset,
 } from './lib/analytics-queries';
 import { buildAlertPayload, buildDigestPayload, sendAlert } from './lib/alerting';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
@@ -61,6 +62,14 @@ interface TailExceptionRow {
 export interface ScheduledEnv {
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
+	/**
+	 * Optional override for the Analytics Engine DATASET name the alert queries read
+	 * FROM. Defaults in code to `bv_dns_security_mcp` (the prod dataset the
+	 * `MCP_ANALYTICS` binding writes to) — see `resolveAnalyticsDataset`. Set only if a
+	 * deploy writes telemetry to a differently-named dataset (e.g. local
+	 * `bv_mcp_usage_reporting`). NOT the Worker binding name.
+	 */
+	ANALYTICS_DATASET?: string;
 	ALERT_WEBHOOK_URL?: string;
 	ALERT_ERROR_THRESHOLD?: string;
 	ALERT_P95_THRESHOLD?: string;
@@ -310,6 +319,11 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	if (!webhookUrl) return;
 	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
 
+	// Resolve the AE DATASET name once (defaults to bv_dns_security_mcp — the prod
+	// dataset the MCP_ANALYTICS binding writes to; NOT the binding name). Threaded
+	// into every query builder below the same way accountId/token are.
+	const dataset = resolveAnalyticsDataset(env.ANALYTICS_DATASET);
+
 	const parsedError = parseFloat(env.ALERT_ERROR_THRESHOLD ?? '');
 	const errorThreshold = Number.isFinite(parsedError) ? parsedError : DEFAULT_ERROR_THRESHOLD;
 	const parsedP95 = parseFloat(env.ALERT_P95_THRESHOLD ?? '');
@@ -330,9 +344,30 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		const anomalyRows = (await queryAnalyticsEngine(
 			env.CF_ACCOUNT_ID,
 			env.CF_ANALYTICS_TOKEN,
-			queryRecentAnomalies(lookback),
+			queryRecentAnomalies(lookback, dataset),
 		)) as AnomalyRow[];
 		const anomaly = anomalyRows[0];
+
+		// Reader-blind self-check (log-only, non-paging). For a live service that
+		// receives traffic, an anomaly query returning ZERO tool_call rows over the
+		// lookback window almost always means the reader is querying the wrong/empty
+		// AE dataset (the exact failure this fix addresses — binding name vs dataset
+		// name) rather than a genuine traffic lull. We only LOG (never sendAlert) so a
+		// genuinely idle self-host that opted into analytics can't be paged — the line
+		// is greppable in tail/logpush where the misconfig is diagnosable.
+		if (!anomaly || !anomaly.total_calls || anomaly.total_calls <= 0) {
+			logEvent({
+				timestamp: new Date().toISOString(),
+				category: 'scheduled',
+				result: 'ok',
+				severity: 'warn',
+				details: {
+					message: 'Analytics reader saw 0 tool_call rows over the lookback window — if this service is receiving traffic, the AE reader may be querying the wrong/empty dataset (check ANALYTICS_DATASET vs the MCP_ANALYTICS binding dataset).',
+					dataset,
+					lookbackMinutes: lookback,
+				},
+			});
+		}
 
 		if (anomaly && anomaly.total_calls && anomaly.total_calls > 0) {
 			const errorPct = anomaly.error_pct ?? 0;
@@ -375,7 +410,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		const rateLimitRows = (await queryAnalyticsEngine(
 			env.CF_ACCOUNT_ID,
 			env.CF_ANALYTICS_TOKEN,
-			queryRateLimitSurge(lookback),
+			queryRateLimitSurge(lookback, dataset),
 		)) as RateLimitRow[];
 		const rateLimitData = rateLimitRows[0];
 
@@ -399,7 +434,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		const degradationRows = (await queryAnalyticsEngine(
 			env.CF_ACCOUNT_ID,
 			env.CF_ANALYTICS_TOKEN,
-			queryBindingDegradation(lookback),
+			queryBindingDegradation(lookback, dataset),
 		)) as BindingDegradationRow[];
 		const totalDegradations = degradationRows.reduce((sum, r) => sum + (r.event_count ?? 0), 0);
 
@@ -434,7 +469,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		const queueFailureRows = (await queryAnalyticsEngine(
 			env.CF_ACCOUNT_ID,
 			env.CF_ANALYTICS_TOKEN,
-			queryQueueFailures(lookback),
+			queryQueueFailures(lookback, dataset),
 		)) as QueueFailureRow[];
 		const totalQueueFailures = queueFailureRows.reduce((sum, r) => sum + (r.failure_count ?? 0), 0);
 		const totalErrorBatches = queueFailureRows.reduce((sum, r) => sum + (r.error_batch_count ?? 0), 0);
@@ -462,7 +497,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		const tailExceptionRows = (await queryAnalyticsEngine(
 			env.CF_ACCOUNT_ID,
 			env.CF_ANALYTICS_TOKEN,
-			queryTailExceptions(lookback),
+			queryTailExceptions(lookback, dataset),
 		)) as TailExceptionRow[];
 		const tailExceptionCount = tailExceptionRows[0]?.exception_count ?? 0;
 
@@ -673,7 +708,11 @@ export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
 	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
 
 	try {
-		const rows = await queryAnalyticsEngine(env.CF_ACCOUNT_ID, env.CF_ANALYTICS_TOKEN, queryTierDigest('1'));
+		const rows = await queryAnalyticsEngine(
+			env.CF_ACCOUNT_ID,
+			env.CF_ANALYTICS_TOKEN,
+			queryTierDigest('1', resolveAnalyticsDataset(env.ANALYTICS_DATASET)),
+		);
 		const payload = buildDigestPayload(rows, 1);
 		await sendAlert(digestWebhookUrl, payload);
 
