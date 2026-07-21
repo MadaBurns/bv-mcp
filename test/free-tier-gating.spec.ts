@@ -70,7 +70,53 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 			tool: 'discover_subdomains',
 			tier_required: 'developer',
 		});
+		// Enriched actionable surface: a ready-to-display CTA co-located in the
+		// structured data (so a programmatic client need not parse the prose message),
+		// naming the gated tool.
+		expect(typeof payload.error.data?.upgrade?.cta).toBe('string');
+		expect(payload.error.data?.upgrade?.cta).toContain('discover_subdomains');
 		expect(result.useErrorEnvelope).toBe(true);
+	});
+
+	it('carries a self-serve enriched data.upgrade CTA for a free caller hitting batch_scan', async () => {
+		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const result = await executeMcpRequest(
+			baseOptions({
+				body: {
+					jsonrpc: '2.0',
+					id: 110,
+					method: 'tools/call',
+					params: { name: 'batch_scan', arguments: { domains: ['example.com'] } },
+				} as JsonRpcRequest,
+				isAuthenticated: false,
+			}),
+		);
+
+		expect(result.kind).toBe('response');
+		if (result.kind !== 'response') throw new Error('expected response');
+		expect(result.httpStatus).toBe(403);
+		const payload = result.payload as {
+			error: {
+				code: number;
+				message: string;
+				data?: { upgrade?: { channel: string; url: string; tool: string; tier_required: string; cta: string } };
+			};
+		};
+		expect(payload.error.code).toBe(-32003);
+		// batch_scan is a bounded multi-domain tool → self-serve upgrade channel.
+		expect(payload.error.data?.upgrade).toMatchObject({
+			channel: 'self_serve',
+			tool: 'batch_scan',
+			tier_required: 'developer',
+		});
+		// The upgrade pointer is a real URL (reused operator-owned const), not empty.
+		expect(payload.error.data?.upgrade?.url).toMatch(/^https:\/\//);
+		// A self-serve CTA names the tool AND the minimum tier so the caller knows
+		// exactly what to buy and what it unlocks.
+		const cta = payload.error.data?.upgrade?.cta;
+		expect(typeof cta).toBe('string');
+		expect(cta).toContain('batch_scan');
+		expect(cta).toContain('developer');
 	});
 
 	it('returns HTTP 403 for authenticated free-tier caller hitting simulate_attack_paths', async () => {

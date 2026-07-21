@@ -555,6 +555,30 @@ export interface UpgradeData {
 	url: string;
 	tool: string;
 	tier_required: 'developer';
+	/**
+	 * Ready-to-display call-to-action, co-located with the structured affordance so
+	 * a programmatic client can render an actionable upgrade prompt WITHOUT parsing
+	 * the top-level prose `error.message`. Names the gated tool; self-serve copy also
+	 * names the minimum tier. PUBLIC-SURFACE, operator-owned copy — price-free and
+	 * plan-name-free by design (see the operator note below); the destination URL
+	 * lives in `url`, not the string.
+	 */
+	cta: string;
+}
+
+/**
+ * Build the human-readable CTA for a paywalled response.
+ *
+ * OPERATOR NOTE (public-surface copy): intentionally neutral — it names only the
+ * gated tool and the existing `developer` tier, and carries NO price, plan name, or
+ * marketing headline (the operator owns those; the destination URL is in `url`).
+ * Edit this copy or route it through an env-configured string if the operator wants
+ * different wording.
+ */
+function buildUpgradeCta(toolName: string, channel: UpgradeChannel): string {
+	return channel === 'self_serve'
+		? `Upgrade to the developer tier to unlock ${toolName}.`
+		: `Contact us to enable ${toolName} on a vetted plan.`;
 }
 
 /** Build the `data.upgrade` envelope for a paywalled (403) response. */
@@ -566,6 +590,7 @@ export function buildUpgradeData(toolName: string, isVolume429 = false): { upgra
 			url: channel === 'self_serve' ? UPGRADE_SELF_SERVE_URL : UPGRADE_SALES_URL,
 			tool: toolName,
 			tier_required: 'developer',
+			cta: buildUpgradeCta(toolName, channel),
 		},
 	};
 }
