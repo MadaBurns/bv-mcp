@@ -363,12 +363,12 @@ Eight event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `
 - `rate_limit`: limitType, toolName, country, authTier
 - `session`: action, country, clientType, authTier, method, keyHash
 
-**`mcp_access_log`** (D1 `INTELLIGENCE_DB`) is the faithful per-event store (vs AE's sampled rollups), enriched with geo/ASN/PTR/`key_hash`/`client_type`/colo/session/method/transport/status, gated by `ANALYTICS_PII_LEVEL` (`coarse` default → no city/lat-long/PTR/ciphertext/user_agent). Writes route through the `MCP_ANALYTICS_QUEUE` consumer (PTR reverse-lookup + encrypt-at-rest + batched D1 insert); inline-insert fallback (no PTR) when the queue is unbound. Both honor `ANALYTICS_PII_LEVEL`; fail-open throughout.
+**`mcp_access_log`** (D1 `INTELLIGENCE_DB`) is the faithful per-event store (vs AE's sampled rollups), enriched with geo/ASN/PTR/`key_hash`/`client_type`/colo/session/method/transport/status, gated by `ANALYTICS_PII_LEVEL` (`coarse` default → no city/lat-long/PTR/ciphertext/user_agent). Writes route through the `MCP_ANALYTICS_QUEUE` consumer (PTR reverse-lookup + encrypt-at-rest + batched D1 insert); inline-insert fallback (no PTR) when the queue is unbound. **In the current public/prod config the queue is NOT bound, so the inline path is the ACTIVE one (no PTR captured regardless of `ANALYTICS_PII_LEVEL`); provision `MCP_ANALYTICS_QUEUE` to enable the queue + PTR path.** Both honor `ANALYTICS_PII_LEVEL`; fail-open throughout.
 
 Per-IP investigations belong in operator-only notes. Hash IPs locally and avoid
 committing raw IPs or token-bearing analytics commands.
 
-Client detection (`client-detection.ts`): `claude_mobile`, `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf`, `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `bv_load_test`, `unknown`. For analytics + format auto-detection, never security. `bv_load_test` matches `bv-{load,chaos,tranco}-{test,scan}` UAs — non-interactive.
+Client detection (`client-detection.ts`): `claude_mobile`, `claude_code`, `cursor`, `vscode`, `claude_desktop`, `claude_connector`, `windsurf`, `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `bv_load_test`, `unknown`. For analytics + format auto-detection, never security. `bv_load_test` matches `bv-{load,chaos,tranco}-{test,scan}` UAs — non-interactive. `claude_connector` = the Anthropic-hosted remote MCP connector (`Claude-User` control-plane UA; the claude.ai/claude.com/Desktop custom connector — the bulk of prod traffic); it's in `INTERACTIVE_CLIENTS` (compact output). Residual: the connector's data-plane fetches use a bare `node` UA and still fall to `unknown` (durable fix = detect via `initialize` `clientInfo.name`, needs session storage).
 
 ## False Positive Reduction
 
