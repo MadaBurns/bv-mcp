@@ -72,6 +72,53 @@ describe('dispatch re-initialize session invalidation', () => {
 		}
 	});
 
+	it('threads clientInfo.name from the initialize handshake into the session analytics event', async () => {
+		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
+		const { resetSessions } = await import('../src/lib/session');
+		const emitSessionEvent = vi.fn();
+		try {
+			await dispatchMcpMethod({
+				id: 1,
+				method: 'initialize',
+				params: { protocolVersion: '2025-06-18', clientInfo: { name: 'claude-ai-connector', version: '1.2.3' } },
+				ip: '198.51.100.1',
+				isAuthenticated: true,
+				rateHeaders: {},
+				serverVersion: '1.0.0',
+				createSessionOnInitialize: true,
+				clientType: 'unknown',
+				analytics: { emitSessionEvent } as unknown as import('../src/lib/analytics').AnalyticsClient,
+			});
+			expect(emitSessionEvent).toHaveBeenCalledOnce();
+			expect(emitSessionEvent.mock.calls[0][0]).toMatchObject({ action: 'created', declaredClient: 'claude-ai-connector' });
+		} finally {
+			resetSessions();
+		}
+	});
+
+	it('omits declaredClient when the initialize handshake carries no clientInfo', async () => {
+		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
+		const { resetSessions } = await import('../src/lib/session');
+		const emitSessionEvent = vi.fn();
+		try {
+			await dispatchMcpMethod({
+				id: 1,
+				method: 'initialize',
+				params: { protocolVersion: '2025-06-18' },
+				ip: '198.51.100.1',
+				isAuthenticated: true,
+				rateHeaders: {},
+				serverVersion: '1.0.0',
+				createSessionOnInitialize: true,
+				clientType: 'unknown',
+				analytics: { emitSessionEvent } as unknown as import('../src/lib/analytics').AnalyticsClient,
+			});
+			expect(emitSessionEvent.mock.calls[0][0].declaredClient).toBeUndefined();
+		} finally {
+			resetSessions();
+		}
+	});
+
 	it('does not delete old session when createSessionOnInitialize is false', async () => {
 		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
 		const { createSession, validateSession, resetSessions } = await import('../src/lib/session');

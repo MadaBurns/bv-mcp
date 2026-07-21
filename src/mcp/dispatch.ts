@@ -252,12 +252,19 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				const sessionId = createSessionOnInitialize ? await createSession(options.sessionStore, options.analytics, options.waitUntil) : options.existingSessionId;
 				if (createSessionOnInitialize && sessionId) {
 					auditSessionCreated(options.ip, sessionId);
+					// The client's DECLARED identity from the initialize handshake —
+					// the attribution key for the unknown-UA connector surge. Read
+					// defensively (client-controlled, optional per MCP spec) and used
+					// for analytics only, never auth/tier.
+					const clientInfo = options.params?.clientInfo as { name?: unknown } | undefined;
+					const declaredClient = typeof clientInfo?.name === 'string' ? clientInfo.name : undefined;
 					options.analytics?.emitSessionEvent({
 						action: 'created',
 						country: options.country,
 						clientType: options.clientType as import('../lib/client-detection').McpClientType,
 						authTier: options.authTier,
 						keyHash: options.keyHash,
+						declaredClient,
 					});
 				}
 

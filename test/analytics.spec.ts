@@ -184,7 +184,22 @@ describe('createAnalyticsClient', () => {
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		expect(point.indexes).toEqual(['session']);
-		expect(point.blobs).toEqual(['created', 'NZ', 'claude_code', 'agent', 'unknown', 'none']);
+		// blob7 (declaredClient, append-only) defaults to 'unspecified' when the
+		// initialize handshake carried no clientInfo.name.
+		expect(point.blobs).toEqual(['created', 'NZ', 'claude_code', 'agent', 'unknown', 'none', 'unspecified']);
+	});
+
+	it('emitSessionEvent records the declared clientInfo.name as blob7', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitSessionEvent({
+			action: 'created',
+			declaredClient: 'Claude.ai-Connector/1.0',
+			...ctx,
+		});
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		// normalizeIndex lowercases + trims; attribution for the unknown-UA surge.
+		expect(point.blobs[6]).toBe('claude.ai-connector/1.0');
 	});
 
 	it('no-ops gracefully when dataset is undefined', () => {
