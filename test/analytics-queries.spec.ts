@@ -27,9 +27,11 @@ import {
 } from '../src/lib/analytics-queries';
 
 describe('analytics query builders', () => {
-	it('queryDailyActiveUsers returns valid SQL referencing MCP_ANALYTICS', () => {
+	it('queryDailyActiveUsers returns valid SQL referencing the AE dataset (not the binding name)', () => {
 		const sql = queryDailyActiveUsers('1');
-		expect(sql).toContain('MCP_ANALYTICS');
+		// AE queries by DATASET name; the binding name MCP_ANALYTICS returns 0 rows.
+		expect(sql).toContain('FROM bv_dns_security_mcp');
+		expect(sql).not.toContain('MCP_ANALYTICS');
 		expect(sql).toContain('blob9'); // session hash
 		expect(sql).toContain('SUM(_sample_interval)');
 		expect(sql).toContain("INTERVAL '1' DAY");
