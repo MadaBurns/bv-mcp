@@ -220,8 +220,15 @@ export const AnalyzeDriftArgs = z
 			.string()
 			.min(1)
 			.max(50_000)
+			// Default to the documented "cached" shortcut so a blind first call
+			// (domain only) resolves against the last cached scan instead of
+			// throwing a missing-arg error. If no cached scan exists the tool
+			// returns a clean, actionable "run scan_domain first" result (a
+			// non-error), not a thrown validation failure — the common case is a
+			// warm cache from the caller's just-prior scan.
+			.default('cached')
 			.describe(
-				'Prior scan reference for drift-over-time analysis: a previous ScanScore JSON STRING, or the literal "cached" to reuse the last cached scan. NOT a policy/requirements object — for compliance enforcement against required controls, use compare_baseline instead.',
+				'Prior scan reference for drift-over-time analysis: a previous ScanScore JSON STRING, or the literal "cached" to reuse the last cached scan (the default when omitted). NOT a policy/requirements object — for compliance enforcement against required controls, use compare_baseline instead.',
 			),
 		force_refresh: z.boolean().optional().describe('Bypass cache and run a fresh check. Useful after DNS changes.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
