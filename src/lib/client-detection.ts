@@ -5,12 +5,17 @@
  * Used for analytics segmentation — not security decisions.
  */
 
-export type McpClientType = 'claude_mobile' | 'claude_code' | 'cursor' | 'vscode' | 'claude_desktop' | 'windsurf' | 'mcp_remote' | 'blackveil_dns_action' | 'bv_claude_dns_proxy' | 'bv_load_test' | 'unknown';
+export type McpClientType = 'claude_mobile' | 'claude_code' | 'cursor' | 'vscode' | 'claude_desktop' | 'claude_connector' | 'windsurf' | 'mcp_remote' | 'blackveil_dns_action' | 'bv_claude_dns_proxy' | 'bv_load_test' | 'unknown';
 
 const CLIENT_PATTERNS: ReadonlyArray<[RegExp, McpClientType]> = [
 	[/claude[-_]?mobile|claude\.ai\/(android|ios)|claudeai[-_]?mobile/i, 'claude_mobile'],
 	[/claude[-_]?code/i, 'claude_code'],
 	[/claude[-_]?desktop/i, 'claude_desktop'],
+	// Anthropic-hosted remote MCP connector (claude.ai / claude.com / Desktop / mobile
+	// "custom connector"). Reaches the worker from Anthropic's cloud infra with the
+	// `Claude-User` control-plane UA (verified in the 2026-07-02 connector-unblock
+	// incident). Its data-plane fetches use a bare `node` UA, too generic to classify.
+	[/claude[-_]?user/i, 'claude_connector'],
 	[/cursor/i, 'cursor'],
 	[/windsurf/i, 'windsurf'],
 	[/visual studio code|vscode|github copilot/i, 'vscode'],
