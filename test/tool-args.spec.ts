@@ -100,7 +100,15 @@ describe('tool-args helpers', () => {
 		const result = validateToolArgs('analyze_drift', { domain: 'example.com', baseline: 'cached' });
 		expect(result).toHaveProperty('domain');
 		expect(result).toHaveProperty('baseline', 'cached');
-		expect(() => validateToolArgs('analyze_drift', { domain: 'example.com' })).toThrow('Missing required parameters');
+	});
+
+	it('analyze_drift baseline defaults to "cached" when omitted (arg-forgiveness)', () => {
+		// A blind first call (domain only) no longer throws a missing-arg error —
+		// it resolves against the last cached scan. Cuts the tool's dominant
+		// first-call failure; with no cache the tool returns a clean actionable
+		// non-error downstream, not a validation throw.
+		const result = validateToolArgs('analyze_drift', { domain: 'example.com' });
+		expect(result).toHaveProperty('baseline', 'cached');
 	});
 
 	it('validates generate(artifact=rollout_plan) args', () => {
