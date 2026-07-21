@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.32.0] - 2026-07-21
+
+Analytics & observability release from an MCP analytics/usage review — **relights the silently-dead alerting + admin analytics reader**, adds **remote-connector client detection**, an **actionable paid-gate CTA**, and an **honest per-tool error metric**.
+
+### Fixed
+
+- **Analytics Engine reader queried the wrong dataset.** `src/lib/analytics-queries.ts` sent `FROM MCP_ANALYTICS` (the Worker *binding* name) to the AE SQL API, which resolves by *dataset* name (`bv_dns_security_mcp`). Every read returned 0 rows, silently: all six 15-min cron alerts never fired, and every `/internal/analytics/*` endpoint returned empty — including `/internal/analytics/geo`, which bv-web-prod's admin dashboard reads (it had been rendering placeholder `representative` data). Now env-driven via `ANALYTICS_DATASET` (default `bv_dns_security_mcp`, validated), with a CI regression guard and a log-only reader-blind self-check. (#528)
+
+### Added
+
+- **`claude_connector` client detection** — the Anthropic-hosted remote MCP connector (`Claude-User` UA), previously the bulk of traffic mislabeled `unknown`. Classified as an interactive client (compact output). (#529)
+- **`data.upgrade.cta`** on the gated-tool 403 upgrade envelope — a ready-to-display upgrade prompt so a client needn't parse the prose `error.message`. Price/plan-name-free; reuses existing operator-owned URLs. (#530)
+- **Honest per-tool error metric** — `queryErrorRate` / `queryTierErrorRate` split pre-dispatch input-validation rejections (`input_errors`, no domain dispatched) from real tool failures (`real_errors` / `real_error_pct`); `error_pct` retained for back-compat. (#532)
+
+### Security
+
+- `npm audit fix` for the `brace-expansion` ReDoS advisory (GHSA-3jxr-9vmj-r5cp), a transitive dev-dependency (lockfile-only). (#531)
+
 ## [3.31.2] - 2026-07-20
 
 Patch release: **RDAP `rdap_lookup` WHOIS-fallback now surfaces registration dates + registrant privacy** (no new tools, schema, or API surface).
