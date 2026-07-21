@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
+// bv-oversize-ok: cohesive flat SSOT of pre-built AE SQL query builders (one fn per
+// query); splitting by consumer would scatter the telemetry-schema contract.
 
 /**
  * Pre-built SQL queries for Cloudflare Analytics Engine.
@@ -81,20 +83,33 @@ GROUP BY tool_name
 ORDER BY call_count DESC`;
 }
 
-/** Error rate per tool over the given interval. */
+/**
+ * Error rate per tool over the given interval.
+ *
+ * Splits errors into `input_errors` (blob3='error' AND blob4='none' — the request
+ * failed at pre-dispatch arg validation, e.g. a missing/invalid domain, so no tool
+ * work ran) and `real_errors` (blob3='error' AND blob4!='none' — the tool actually
+ * executed and errored). `real_error_pct` is the honest per-tool failure signal;
+ * `error_pct` (kept for back-compat) conflates both. Rationale: a small fixed floor
+ * of fuzz/probe calls with no domain otherwise inflates the error % of low-volume
+ * domain-required tools (e.g. check_mx read ~16% but was ~0% real failures).
+ */
 export function queryErrorRate(days: string, dataset?: string): string {
 	days = safeInterval(days);
 	return `SELECT
   blob1 AS tool_name,
   SUM(_sample_interval) AS total,
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS errors,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0 / SUM(_sample_interval) AS error_pct
+  SUM(CASE WHEN blob3 = 'error' AND blob4 = 'none' THEN _sample_interval ELSE 0 END) AS input_errors,
+  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) AS real_errors,
+  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0 / SUM(_sample_interval) AS error_pct,
+  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) * 100.0 / SUM(_sample_interval) AS real_error_pct
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
 GROUP BY tool_name
 HAVING total > 10
-ORDER BY error_pct DESC`;
+ORDER BY real_error_pct DESC`;
 }
 
 /** Latency percentiles per tool. */
@@ -404,20 +419,29 @@ WHERE index1 = 'tool_call'${tierClause(tier, 'blob7')}
 ORDER BY ${tier ? 'call_count DESC' : 'tier'}`;
 }
 
-/** Error rate per tier. */
+/**
+ * Error rate per tier. Adds the same input-vs-real error split as {@link queryErrorRate}:
+ * `input_errors` (pre-dispatch validation rejections, blob4='none') vs `real_errors`
+ * (the tool actually ran and errored, blob4!='none'), with `real_error_pct` as the
+ * honest signal. `error_pct` is kept for back-compat.
+ */
 export function queryTierErrorRate(days: string, tier?: string, dataset?: string): string {
 	days = safeInterval(days);
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob7 AS tier,'}
   SUM(_sample_interval) AS total,
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS errors,
+  SUM(CASE WHEN blob3 = 'error' AND blob4 = 'none' THEN _sample_interval ELSE 0 END) AS input_errors,
+  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) AS real_errors,
   SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0
-    / GREATEST(SUM(_sample_interval), 1) AS error_pct
+    / GREATEST(SUM(_sample_interval), 1) AS error_pct,
+  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) * 100.0
+    / GREATEST(SUM(_sample_interval), 1) AS real_error_pct
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'${tierClause(tier, 'blob7')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY${tierGroupBy(tier, 'tier')}
 HAVING total > 0
-ORDER BY ${tier ? 'error_pct DESC' : 'tier'}`;
+ORDER BY ${tier ? 'real_error_pct DESC' : 'tier'}`;
 }
 
 /** Cache hit/miss ratio per tier. */
