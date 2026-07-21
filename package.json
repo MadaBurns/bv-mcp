@@ -73,7 +73,7 @@
 		"playwright": "^1.61.1",
 		"tsup": "8.5.1",
 		"typescript": "6.0.3",
-		"typescript-eslint": "8.63.0",
+		"typescript-eslint": "8.65.0",
 		"vitest": "4.1.10",
 		"wrangler": "^4.112.0"
 	},
