@@ -93,6 +93,16 @@ export interface AnalyticsClient {
 		event: {
 			action: 'created' | 'terminated' | 'revived';
 			method?: string;
+			/**
+			 * MCP `initialize` params.clientInfo.name as DECLARED by the client
+			 * (blob7, append-only). Distinct from `clientType` (derived from the
+			 * UA): the claude.com/claude.ai connector surge lands in `unknown`
+			 * clientType because its UA isn't keyable, but well-behaved clients
+			 * still declare an identity here. Attribution/analytics only — never
+			 * an auth or tier signal (the declared name is client-controlled and
+			 * spoofable). Bounded + normalized by `normalizeIndex`.
+			 */
+			declaredClient?: string;
 		} & AnalyticsContext,
 	): void;
 	emitDegradationEvent(
@@ -307,6 +317,9 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.authTier ?? 'anon',
 					event.method ?? 'unknown',
 					event.keyHash ?? 'none',
+					// blob7 (append-only) — declared clientInfo.name, de-fogs the
+					// unknown-clientType surge. normalizeIndex trims/lowercases/caps at 64.
+					normalizeIndex(event.declaredClient ?? 'unspecified'),
 				],
 			});
 		},
