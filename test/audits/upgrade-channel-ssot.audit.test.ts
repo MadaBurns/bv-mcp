@@ -69,13 +69,14 @@ describe('upgrade-channel SSOT', () => {
 		expect(resolveUpgradeChannel('scan_domain', true)).toBe('self_serve');
 	});
 
-	it('buildUpgradeData attaches the channel-correct URL and developer tier', () => {
+	it('buildUpgradeData attaches the channel-correct URL, developer tier, and a tool-naming CTA', () => {
 		const selfServe = buildUpgradeData('batch_scan');
 		expect(selfServe.upgrade).toEqual({
 			channel: 'self_serve',
 			url: UPGRADE_SELF_SERVE_URL,
 			tool: 'batch_scan',
 			tier_required: 'developer',
+			cta: 'Upgrade to the developer tier to unlock batch_scan.',
 		});
 
 		const sales = buildUpgradeData('discover_subdomains');
@@ -84,6 +85,17 @@ describe('upgrade-channel SSOT', () => {
 			url: UPGRADE_SALES_URL,
 			tool: 'discover_subdomains',
 			tier_required: 'developer',
+			cta: 'Contact us to enable discover_subdomains on a vetted plan.',
 		});
+	});
+
+	it('the CTA is price-free and plan-name-free (public-surface copy invariant)', () => {
+		// The CTA must never leak a price or a marketing plan name — those are
+		// operator-owned. It may name the existing `developer` tier and the tool.
+		for (const tool of ['batch_scan', 'discover_subdomains', 'map_supply_chain']) {
+			const { cta } = buildUpgradeData(tool).upgrade;
+			expect(cta).toContain(tool);
+			expect(cta).not.toMatch(/\$\d|\bUSD\b|\bpro\b|\benterprise\b|\bstarter\b|\bbusiness\b/i);
+		}
 	});
 });
