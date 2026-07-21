@@ -5,7 +5,11 @@ name: CI Docs
 # report and GitHub would block the merge under strict branch protection.
 # This workflow runs ONLY on the paths ci.yml ignores and reports a
 # passing check with the SAME job id, satisfying the required context.
-# On mixed/code PRs, ci.yml's own paths trigger it instead — no overlap.
+# A docs-only PR triggers this (ci.yml is skipped); a code-only PR triggers
+# ci.yml (this is skipped). A mixed PR triggers BOTH — `paths-ignore` skips
+# ci.yml only when ALL files match, while `paths` fires this when ANY file
+# matches — producing two `build-and-test` runs that both must pass. Both do
+# (this one trivially), so there is no deadlock; GitHub aggregates by name.
 on:
   push:
     branches: [main]
