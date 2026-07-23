@@ -33,17 +33,24 @@ export async function checkDNSSEC(
 	const rawQueryDNS = options?.rawQueryDNS;
 	const findings: Finding[] = [];
 
+	// A non-apex label with no zone of its own inherits DNSSEC posture from its
+	// signed zone apex (resolved by `resolveZoneApex` upstream) — evaluate the
+	// AD flag / DNSKEY / DS / NSEC3PARAM at the apex instead of the empty
+	// subdomain, else every such label gets a false "DNSSEC not enabled" −40
+	// penalty. Apex targets (or no zone context) are unaffected: target === domain.
+	const target = options?.zone && !options.zone.isApex && options.zone.delegationStatus === 'inherited' ? options.zone.zoneApex : domain;
+
 	// Check AD flag via raw DoH query
 	let adFlag = false;
 	try {
 		if (rawQueryDNS) {
-			const resp = await rawQueryDNS(domain, 'A', true, { timeout });
+			const resp = await rawQueryDNS(target, 'A', true, { timeout });
 			adFlag = resp.AD === true;
 		}
 		// If no rawQueryDNS provided, we can't check AD flag — continue without it
 	} catch {
 		findings.push(
-			createFinding('dnssec', 'DNSSEC check failed', 'medium', `Could not verify DNSSEC status for ${domain}. The DNS query failed.`),
+			createFinding('dnssec', 'DNSSEC check failed', 'medium', `Could not verify DNSSEC status for ${target}. The DNS query failed.`),
 		);
 		return buildCheckResult('dnssec', findings);
 	}
@@ -54,21 +61,35 @@ export async function checkDNSSEC(
 	let nsec3ParamRecords: string[] = [];
 
 	try {
-		dnskeyRecords = await queryDNS(domain, 'DNSKEY', { timeout });
+		dnskeyRecords = await queryDNS(target, 'DNSKEY', { timeout });
 	} catch {
 		// Non-critical: DNSKEY query failure — treat as absent
 	}
 
 	try {
-		dsRecords = await queryDNS(domain, 'DS', { timeout });
+		dsRecords = await queryDNS(target, 'DS', { timeout });
 	} catch {
 		// Non-critical: DS query failure — treat as absent
 	}
 
 	try {
-		nsec3ParamRecords = await queryDNS(domain, 'NSEC3PARAM', { timeout });
+		nsec3ParamRecords = await queryDNS(target, 'NSEC3PARAM', { timeout });
 	} catch {
 		// Non-critical: NSEC3PARAM query failure — domain may use NSEC instead of NSEC3
+	}
+
+	// Non-apex inherited target: lead with an INFO note attributing the verdict
+	// that follows (for `target`) back to the scanned label.
+	if (target !== domain) {
+		findings.push(
+			createFinding(
+				'dnssec',
+				'DNSSEC posture inherited from signed zone',
+				'info',
+				`${domain} has no signed zone of its own; DNSSEC posture is inherited from the zone apex ${target}.`,
+				{ inheritedFromApex: target },
+			),
+		);
 	}
 
 	// Consolidated finding logic
@@ -90,7 +111,7 @@ export async function checkDNSSEC(
 				'dnssec',
 				'DNSSEC not enabled',
 				'high',
-				`DNSSEC is not configured for ${domain}. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.`,
+				`DNSSEC is not configured for ${target}. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.`,
 				{ penaltyOverride: 40 },
 			),
 		);
@@ -102,7 +123,7 @@ export async function checkDNSSEC(
 				'dnssec',
 				'DNSSEC chain of trust incomplete',
 				'high',
-				`DNSKEY records are published for ${domain} but no DS records exist in the parent zone. The chain of trust is broken — DNSSEC validation will fail.`,
+				`DNSKEY records are published for ${target} but no DS records exist in the parent zone. The chain of trust is broken — DNSSEC validation will fail.`,
 				{ missingControl: true },
 			),
 		);
@@ -115,7 +136,7 @@ export async function checkDNSSEC(
 				'dnssec',
 				'DNSSEC validation failing',
 				'high',
-				`DNSKEY and DS records are present for ${domain} but the AD flag is not set. DNSSEC is deployed but validation is failing — this is worse than not having DNSSEC.`,
+				`DNSKEY and DS records are present for ${target} but the AD flag is not set. DNSSEC is deployed but validation is failing — this is worse than not having DNSSEC.`,
 				{ missingControl: true },
 			),
 		);
@@ -127,13 +148,13 @@ export async function checkDNSSEC(
 	// bv-web historically used — 50 would rank a validated zone BELOW an unsigned one
 	// (60), which is incoherent. Detection is fail-safe (false when indeterminate).
 	if (adFlag && dnskeyRecords.length > 0 && dsRecords.length > 0) {
-		if (await isRegistryManagedDnssec(domain, queryDNS, timeout)) {
+		if (await isRegistryManagedDnssec(target, queryDNS, timeout)) {
 			findings.push(
 				createFinding(
 					'dnssec',
 					'DNSSEC is registry-managed',
 					'medium',
-					`The DNSSEC chain for ${domain} validates, but the zone is signed by its ccTLD registry rather than independently configured by the domain owner. The zone is cryptographically protected, but the owner has less direct control over key management.`,
+					`The DNSSEC chain for ${target} validates, but the zone is signed by its ccTLD registry rather than independently configured by the domain owner. The zone is cryptographically protected, but the owner has less direct control over key management.`,
 				),
 			);
 		}
@@ -141,23 +162,26 @@ export async function checkDNSSEC(
 
 	// Algorithm/digest audits (only when records exist)
 	if (dnskeyRecords.length > 0) {
-		findings.push(...auditDnskeyAlgorithms(domain, dnskeyRecords));
+		findings.push(...auditDnskeyAlgorithms(target, dnskeyRecords));
 	}
 	if (dsRecords.length > 0) {
-		findings.push(...auditDsDigestTypes(domain, dsRecords));
+		findings.push(...auditDsDigestTypes(target, dsRecords));
 	}
 	if (nsec3ParamRecords.length > 0) {
-		findings.push(...auditNsec3Params(domain, nsec3ParamRecords));
+		findings.push(...auditNsec3Params(target, nsec3ParamRecords));
 	}
 
 	// If DNSSEC is valid and no issues found (only info findings at most)
+	// Note: with a non-apex inherited target, the prepended INFO finding above
+	// means `findings.length === 0` never holds here, so this branch only ever
+	// fires for the apex/direct case — intentionally unchanged.
 	if (findings.length === 0) {
 		findings.push(
 			createFinding(
 				'dnssec',
 				'DNSSEC enabled and validated',
 				'info',
-				`DNSSEC is properly configured for ${domain}. DNS responses are cryptographically verified.`,
+				`DNSSEC is properly configured for ${target}. DNS responses are cryptographically verified.`,
 			),
 		);
 	}

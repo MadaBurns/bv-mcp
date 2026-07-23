@@ -98,6 +98,13 @@ async function augmentWithSource(domain: string, baseResult: CheckResult, dnsOpt
  */
 export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions, zone?: ZoneContext): Promise<CheckResult> {
 	const resolvedZone = zone ?? (await resolveZoneApex(domain, dnsOptions));
+	// A non-apex label with no zone of its own inherits DNSSEC posture from its
+	// signed zone apex — thread the same target into the source-labelling
+	// (augmentWithSource) and AD-confirmation (confirmAdWithGoogle) helpers so
+	// they operate on the apex, not the empty subdomain. Apex targets (or an
+	// unresolved zone) are unaffected: dnssecTarget === domain.
+	const dnssecTarget =
+		resolvedZone && !resolvedZone.isApex && resolvedZone.delegationStatus === 'inherited' ? resolvedZone.zoneApex : domain;
 	try {
 	const baseResult = await checkDNSSEC(
 		domain,
@@ -136,7 +143,7 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions, 
 	// The AD flag flaps across Cloudflare edge nodes — Google provides a stable second opinion.
 	const validationFailing = baseResult.findings.some((f) => f.title === 'DNSSEC validation failing');
 	if (validationFailing) {
-		const googleConfirmsAd = await confirmAdWithGoogle(domain, dnsOptions?.timeoutMs ?? AD_CONFIRM_TIMEOUT_MS);
+		const googleConfirmsAd = await confirmAdWithGoogle(dnssecTarget, dnsOptions?.timeoutMs ?? AD_CONFIRM_TIMEOUT_MS);
 		if (googleConfirmsAd) {
 			// Google says AD=true — re-run with corrected flag to get the right findings
 			const correctedResult = await checkDNSSEC(
@@ -151,13 +158,13 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions, 
 					},
 				},
 			) as CheckResult;
-			return augmentWithSource(domain, correctedResult, dnsOptions);
+			return augmentWithSource(dnssecTarget, correctedResult, dnsOptions);
 		}
 		// Google also says AD=false (or failed) — keep the original finding
 		return baseResult;
 	}
 
-	return augmentWithSource(domain, baseResult, dnsOptions);
+	return augmentWithSource(dnssecTarget, baseResult, dnsOptions);
 	} catch (err) {
 		if (err instanceof DnsQueryError) {
 			const message = err.message;
