@@ -46,7 +46,7 @@ export async function checkNS(
 		if (zone.delegationStatus === 'unknown') {
 			// Resolver could not classify — inconclusive, exclude from scoring, self-heal.
 			const result = buildCheckResult('ns', [getUndelegatedInconclusiveFinding(domain)]);
-			return { ...result, score: 0, checkStatus: 'error', partial: true };
+			return { ...result, score: 0, passed: false, checkStatus: 'error', partial: true };
 		}
 		if (zone.delegationStatus === 'inherited') {
 			findings.push(getInheritedNsFinding(zone));

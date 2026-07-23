@@ -59,5 +59,6 @@ describe('checkNs — non-apex', () => {
 		expect(r.findings.some((f) => f.severity === 'critical')).toBe(false);
 		expect(r.checkStatus).toBe('error');
 		expect(r.partial).toBe(true);
+		expect(r.passed).toBe(false);
 	});
 });
