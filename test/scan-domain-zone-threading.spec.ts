@@ -10,11 +10,27 @@
  * scan target with no NS records of its own forces `resolveZoneApex` to walk
  * up to the registrable-domain ancestor that does own an NS RRset, which is
  * only observable if the zone-apex resolution genuinely ran.
+ *
+ * The discriminating assertion (below) is the CALL COUNT of `resolveZoneApex`
+ * during a single scan, not the set of NS query names — both queried-name-set
+ * elements are reachable via the shared `scanDns.queryCache` regardless of
+ * whether `scanDomain()` computes `zone` once and threads it (1 call) or the
+ * threading is broken/reverted and all four wrappers independently fall back
+ * to `zone ?? (await resolveZoneApex(...))` (4 calls, +1 for scanDomain's own
+ * = 5). `scan-domain.ts` and all four wrappers (`check-ns.ts`, `check-caa.ts`,
+ * `check-dnssec.ts`, `check-mta-sts.ts`) import `resolveZoneApex` from the
+ * SAME specifier `../lib/zone-apex`, so a single `vi.mock` on that specifier
+ * intercepts every call site.
  */
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
 import { IN_MEMORY_CACHE } from '../src/lib/cache';
+
+vi.mock('../src/lib/zone-apex', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('../src/lib/zone-apex')>();
+	return { ...actual, resolveZoneApex: vi.fn(actual.resolveZoneApex) };
+});
 
 const { restore } = setupFetchMock();
 
@@ -80,6 +96,9 @@ describe('scan-domain zone threading (Task 2 no-op wiring)', () => {
 		const nsQueryNames = new Set<string>();
 		mockAllChecksWithNsWalk(nsQueryNames);
 
+		const { resolveZoneApex } = await import('../src/lib/zone-apex');
+		vi.mocked(resolveZoneApex).mockClear();
+
 		const { scanDomain } = await import('../src/tools/scan-domain');
 		const result = await scanDomain('sub.example.com');
 
@@ -99,5 +118,18 @@ describe('scan-domain zone threading (Task 2 no-op wiring)', () => {
 		// apex short-circuit probe, reused by the ns check via the shared cache).
 		expect(nsQueryNames.has('sub.example.com')).toBe(true);
 		expect(nsQueryNames.has('example.com')).toBe(true);
+
+		// Discriminating proof: `resolveZoneApex` runs EXACTLY ONCE for the whole
+		// scan. `scan-domain.ts` and each of the four zone-sensitive wrappers
+		// import it from the same `../lib/zone-apex` specifier, so this single
+		// module mock observes every call site. Compute-once-and-thread ⇒ 1 call
+		// (scanDomain's own; the wrappers receive `zone` and skip their
+		// `zone ?? (await resolveZoneApex(...))` fallback). If the scan-level
+		// threading were removed or reverted, each of the four wrappers would
+		// independently fall back and this count would jump to 5 (1 scan-level +
+		// 4 per-wrapper) — a set-based assertion on NS query names alone cannot
+		// tell these two scenarios apart, since both hit the same
+		// `scanDns.queryCache` and produce an identical queried-name set.
+		expect(vi.mocked(resolveZoneApex)).toHaveBeenCalledTimes(1);
 	});
 });
