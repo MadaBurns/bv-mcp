@@ -6,8 +6,10 @@
  */
 
 import { checkDNSSEC } from '@blackveil/dns-checks';
+import type { ZoneContext } from '@blackveil/dns-checks';
 import { queryDns, queryDnsRecords, DnsQueryError } from '../lib/dns';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
+import { resolveZoneApex } from '../lib/zone-apex';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult } from '../lib/scoring';
@@ -94,13 +96,15 @@ async function augmentWithSource(domain: string, baseResult: CheckResult, dnsOpt
  * fires a confirmation probe to Google DoH. If Google says AD=true (edge flap), re-runs the
  * check with the corrected flag to avoid score instability.
  */
-export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
+export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions, zone?: ZoneContext): Promise<CheckResult> {
+	const resolvedZone = zone ?? (await resolveZoneApex(domain, dnsOptions));
 	try {
 	const baseResult = await checkDNSSEC(
 		domain,
 		makeQueryDNS(dnsOptions),
 		{
 			timeout: dnsOptions?.timeoutMs ?? 5000,
+			zone: resolvedZone,
 			rawQueryDNS: async (d, type, dnssecFlag) => {
 				const resp = await queryDns(d, type as Parameters<typeof queryDns>[1], dnssecFlag ?? false, dnsOptions);
 				return { AD: resp.AD, Answer: resp.Answer };
@@ -140,6 +144,7 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions):
 				makeQueryDNS(dnsOptions),
 				{
 					timeout: dnsOptions?.timeoutMs ?? 5000,
+					zone: resolvedZone,
 					rawQueryDNS: async (d, type, dnssecFlag) => {
 						const resp = await queryDns(d, type as Parameters<typeof queryDns>[1], dnssecFlag ?? false, dnsOptions);
 						return { AD: true, Answer: resp.Answer };

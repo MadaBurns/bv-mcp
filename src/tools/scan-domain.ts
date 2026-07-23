@@ -24,6 +24,8 @@ import {
 	detectDomainContext,
 	getProfileWeights,
 } from '../lib/scoring';
+import type { ZoneContext } from '@blackveil/dns-checks';
+import { resolveZoneApex } from '../lib/zone-apex';
 import {
 	adaptiveWeightsToContext,
 	generateScoringNote,
@@ -127,6 +129,7 @@ type CheckRunner = (
 	dnsOptions: QueryDnsOptions,
 	rt?: ScanRuntimeOptions,
 	perCheckSignal?: AbortSignal,
+	zone?: ZoneContext,
 ) => Promise<CheckResult>;
 
 /**
@@ -142,14 +145,14 @@ const CHECK_DISPATCH: Record<string, CheckRunner> = {
 	spf: (d, dns) => checkSpf(d, dns),
 	dmarc: (d, dns) => checkDmarc(d, dns),
 	dkim: (d, dns) => checkDkim(d, undefined, dns),
-	dnssec: (d, dns) => checkDnssec(d, dns),
+	dnssec: (d, dns, _rt, _sig, zone) => checkDnssec(d, dns, zone),
 	// R7: the raw-`fetch` checks take the narrower per-check signal (4th arg) so a
 	// per-check / scan-level timeout aborts their in-flight HTTPS subrequests.
 	// undefined outside scan context (direct calls / retry path) → unchanged.
 	ssl: (d, _dns, rt, sig) => checkSsl(d, { ...resolveSslOptions(rt), signal: sig }),
-	mta_sts: (d, dns) => checkMtaSts(d, dns),
-	ns: (d, dns) => checkNs(d, dns),
-	caa: (d, dns) => checkCaa(d, dns),
+	mta_sts: (d, dns, _rt, _sig, zone) => checkMtaSts(d, dns, zone),
+	ns: (d, dns, _rt, _sig, zone) => checkNs(d, dns, zone),
+	caa: (d, dns, _rt, _sig, zone) => checkCaa(d, dns, zone),
 	bimi: (d, dns) => checkBimi(d, dns),
 	tlsrpt: (d, dns) => checkTlsrpt(d, dns),
 	subdomain_takeover: (d, dns) => checkSubdomainTakeover(d, dns),
@@ -552,6 +555,11 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		}
 	}
 
+	// Resolve the governing zone apex ONCE per scan (shared across ns/caa/dnssec/mta_sts).
+	// Reuses scanDns.queryCache, so the apex NS query above is not repeated. Fail-soft:
+	// resolveZoneApex never throws (returns delegationStatus:'unknown' on resolver error).
+	const zone = isAuthoritativeInfraProfile ? undefined : await resolveZoneApex(domain, scanDns);
+
 	const forceRefresh = runtimeOptions?.forceRefresh;
 	const cacheTtl = runtimeOptions?.cacheTtlSeconds;
 
@@ -579,7 +587,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			domain,
 			cat,
 			() =>
-				safeCheck(cat, () => CHECK_DISPATCH[cat](domain, scanDns, runtimeOptions, perCheckSignal), timeoutBudget.perCheckTimeoutMs, () =>
+				safeCheck(cat, () => CHECK_DISPATCH[cat](domain, scanDns, runtimeOptions, perCheckSignal, zone), timeoutBudget.perCheckTimeoutMs, () =>
 					perCheckAbort.abort(),
 				),
 			kv,

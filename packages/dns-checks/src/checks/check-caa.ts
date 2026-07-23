@@ -8,7 +8,7 @@
  * Licensed under BUSL-1.1
  */
 
-import type { CheckResult, DNSQueryFunction, Finding } from '../types';
+import type { CheckResult, DNSQueryFunction, Finding, ZoneContext } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { type CaaRecord, parseCaaRecord, getCaaConfiguredFinding, getCaaValidationFindings, summarizeCaaTags } from './caa-analysis';
 
@@ -21,7 +21,7 @@ import { type CaaRecord, parseCaaRecord, getCaaConfiguredFinding, getCaaValidati
 export async function checkCAA(
 	domain: string,
 	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number },
+	options?: { timeout?: number; zone?: ZoneContext },
 ): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 	const findings: Finding[] = [];

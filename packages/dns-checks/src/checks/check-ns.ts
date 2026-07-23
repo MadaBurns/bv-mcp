@@ -8,7 +8,7 @@
  * Licensed under BUSL-1.1
  */
 
-import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';
+import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import {
 	getNameserverDiversityFinding,
@@ -30,7 +30,7 @@ import {
 export async function checkNS(
 	domain: string,
 	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number; rawQueryDNS?: RawDNSQueryFunction },
+	options?: { timeout?: number; rawQueryDNS?: RawDNSQueryFunction; zone?: ZoneContext },
 ): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 	const rawQueryDNS = options?.rawQueryDNS;

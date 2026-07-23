@@ -8,7 +8,7 @@
  * Licensed under BUSL-1.1
  */
 
-import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';
+import type { CheckResult, DNSQueryFunction, FetchFunction, Finding, ZoneContext } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { isNullMxRecord, parseMxRecords } from './mx-analysis';
 import {
@@ -44,7 +44,7 @@ function parseMxFromRaw(answers: string[]): Array<{ exchange: string }> {
 export async function checkMTASTS(
 	domain: string,
 	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number; fetchFn?: FetchFunction },
+	options?: { timeout?: number; fetchFn?: FetchFunction; zone?: ZoneContext },
 ): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 	const fetchFn = options?.fetchFn;

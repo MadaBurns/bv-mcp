@@ -18,7 +18,9 @@
  */
 
 import { checkMTASTS, withRobotsGate, RobotsDisallowedError } from '@blackveil/dns-checks';
+import type { ZoneContext } from '@blackveil/dns-checks';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
+import { resolveZoneApex } from '../lib/zone-apex';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
@@ -163,7 +165,8 @@ function excludeForPolicyThrow(result: CheckResult, domain: string): CheckResult
  * Check MTA-STS configuration for a domain.
  * Queries _mta-sts.<domain> TXT records and optionally fetches the policy file.
  */
-export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
+export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions, zone?: ZoneContext): Promise<CheckResult> {
+	const resolvedZone = zone ?? (await resolveZoneApex(domain, dnsOptions));
 	// Observe the policy-file fetch so a WAF challenge/block can be distinguished from a
 	// genuine origin error. The wrapper only OBSERVES — it returns the original response
 	// (or re-throws the original error) untouched so the package's behavior is unchanged;
@@ -223,6 +226,7 @@ export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions):
 	const result = (await checkMTASTS(domain, makeQueryDNS(dnsOptions), {
 		timeout: dnsOptions?.timeoutMs ?? HTTPS_TIMEOUT_MS,
 		fetchFn: observingFetch,
+		zone: resolvedZone,
 	})) as CheckResult;
 
 	if (policyWafEvent) return excludeForWaf(result, domain, policyWafEvent, policyWafStatus);

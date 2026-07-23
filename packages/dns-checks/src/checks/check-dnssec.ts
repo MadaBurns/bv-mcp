@@ -9,7 +9,7 @@
  * Licensed under BUSL-1.1
  */
 
-import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';
+import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { auditDnskeyAlgorithms, auditDsDigestTypes, auditNsec3Params } from './dnssec-analysis';
 import { isRegistryManagedDnssec } from './registry-managed-dnssec';
@@ -27,7 +27,7 @@ export { parseDnskeyAlgorithm, parseDsRecord } from './dnssec-analysis';
 export async function checkDNSSEC(
 	domain: string,
 	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number; rawQueryDNS?: RawDNSQueryFunction },
+	options?: { timeout?: number; rawQueryDNS?: RawDNSQueryFunction; zone?: ZoneContext },
 ): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 	const rawQueryDNS = options?.rawQueryDNS;
