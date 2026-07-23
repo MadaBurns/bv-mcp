@@ -32,8 +32,12 @@
  * - 1.2.0 — `enterprise_mail` now requires enforcing DMARC (p=quarantine|reject) behind a
  *   managed provider, not provider + any one auto-provisioned control (DKIM). Tightens the
  *   stricter-lens membership; reclassified domains move to `mail_enabled` (slightly more lenient).
+ * - 1.3.0 — non-apex scan targets no longer fire a false NS/CAA/DNSSEC "missing record"
+ *   finding: a subdomain that owns no NS RRset inherits its zone apex's posture
+ *   (resolveZoneApex). Removes the CRITICAL missingControl-zero on delegated-parent
+ *   subdomains (e.g. mail-sending hosts). Apex-domain scores are unchanged.
  */
-export const SCORING_MODEL_VERSION = '1.2.0';
+export const SCORING_MODEL_VERSION = '1.3.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

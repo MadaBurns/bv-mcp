@@ -6,6 +6,19 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.34.0] - 2026-07-24
+
+Bugfix + scoring release: **non-apex scan targets no longer emit false "missing record" findings**. A subdomain that owns no zone of its own (normal DNS behaviour for undelegated labels — e.g. a Mailgun/SendGrid sending host like `mg.ii.inc`) now inherits its zone apex's DNS posture instead of firing a spurious CRITICAL. Apex-domain scores are byte-identical. Scoring model bumped to **1.3.0**.
+
+### Fixed
+
+- **NS false-positive on non-apex hostnames.** A scanned subdomain with no NS RRset of its own previously produced a CRITICAL "No NS records found" that zeroed the NS category. A new PSL-bounded zone-apex walk (`resolveZoneApex`) resolves the governing zone apex, and the NS check now **inherits the apex's nameserver posture** (INFO, not CRITICAL). A genuinely NS-less apex, a broken/lame delegation, and NXDOMAIN still surface as findings; a resolver timeout during the walk yields an inconclusive (score-excluded) result rather than a false CRITICAL.
+
+### Changed
+
+- **Apex-aware CAA / DNSSEC / MTA-STS.** For a non-apex target: CAA climbs the tree per RFC 8659 (inherits the nearest ancestor's CAA); DNSSEC is evaluated at the signed zone apex; MTA-STS is treated as scope-inapplicable (per-mail-host, not inherited — RFC 8461) rather than a missing control. Apex-domain output is byte-identical.
+- **Scoring model → 1.3.0** (`SCORING_MODEL_VERSION`): the missing-control rule and category scoring change for **non-apex targets only**; apex scores and grades are unchanged.
+
 ## [3.33.0] - 2026-07-22
 
 Feature + platform release: **session-scoped connector attribution** and **`analyze_drift` argument-forgiveness**, plus a **$0-cost CI/CD pipeline** (approval-gated deploy, self-hosted dogfood scan, cost guard).

@@ -218,3 +218,24 @@ export const SEVERITY_PENALTIES: Record<Severity, number> = {
 export const CATEGORY_PENALTY_CAPS: Partial<Record<CheckCategory, number>> = {
 	subdomain_takeover: 75,
 };
+
+export type ZoneDelegationStatus =
+	| 'apex' // scanned label IS its zone apex (registrable domain, or has its own NS RRset)
+	| 'inherited' // not delegated; posture governed by an ancestor zone apex
+	| 'undelegated_broken' // no NS anywhere up to the registrable apex (genuine failure)
+	| 'unknown'; // resolver could not determine (timeout/error) — inconclusive
+
+export interface ZoneContext {
+	/** The exact hostname that was scanned. */
+	scannedLabel: string;
+	/** PSL registrable domain — the hard floor the walk never crosses. */
+	registrableDomain: string;
+	/** True when the scanned label is (or is equivalent to) its own zone apex. */
+	isApex: boolean;
+	/** Nearest ancestor (<= registrableDomain) that owns an NS RRset. */
+	zoneApex: string;
+	/** NS records at zoneApex (empty for undelegated_broken/unknown). */
+	apexNsRecords: string[];
+	/** How the label relates to its zone apex. */
+	delegationStatus: ZoneDelegationStatus;
+}

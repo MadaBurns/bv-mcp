@@ -22,17 +22,13 @@ export type {
 	FindingConfidence,
 	CategoryTier,
 	ScanScore,
+	ZoneDelegationStatus,
+	ZoneContext,
 } from './types';
 export { SEVERITY_PENALTIES, CATEGORY_TIERS, CATEGORY_DISPLAY_WEIGHTS } from './types';
 
 // Check utilities
-export {
-	createFinding,
-	buildCheckResult,
-	computeCategoryScore,
-	inferFindingConfidence,
-	sanitizeDnsData,
-} from './check-utils';
+export { createFinding, buildCheckResult, computeCategoryScore, inferFindingConfidence, sanitizeDnsData } from './check-utils';
 
 // Robot policy
 export { SCANNER_USER_AGENT, RobotsDisallowedError, withRobotsGate } from './robots-gate';

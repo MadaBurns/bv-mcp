@@ -8,7 +8,7 @@
  * Licensed under BUSL-1.1
  */
 
-import type { Finding } from '../types';
+import type { Finding, ZoneContext } from '../types';
 import { createFinding } from '../check-utils';
 
 const RESILIENT_NS_PROVIDERS: Record<string, string> = {
@@ -168,4 +168,34 @@ export function getSoaValidationFindings(soaValues: ParsedSoaValues): Finding[] 
 
 export function getNsConfiguredFinding(nsRecords: string[]): Finding {
 	return createFinding('ns', 'Nameservers properly configured', 'info', `${nsRecords.length} nameservers found: ${nsRecords.join(', ')}`);
+}
+
+/**
+ * INFO finding for a non-apex label that inherits its NS posture from the zone
+ * apex. Not a missing control — the label legitimately has no NS RRset of its own.
+ */
+export function getInheritedNsFinding(zone: ZoneContext): Finding {
+	return createFinding(
+		'ns',
+		`${zone.scannedLabel} is not a delegated zone`,
+		'info',
+		`${zone.scannedLabel} has no nameserver records of its own — this is normal for a subdomain that is not separately delegated. ` +
+			`Nameserver posture is inherited from the zone apex ${zone.zoneApex} (${zone.apexNsRecords.join(', ')}).`,
+		{ inheritedFromApex: zone.zoneApex },
+	);
+}
+
+/**
+ * Inconclusive finding when the zone-apex walk could not be resolved (resolver
+ * timeout/error). Carries the transient shape so scoring EXCLUDES the category
+ * rather than emitting a false CRITICAL.
+ */
+export function getUndelegatedInconclusiveFinding(domain: string): Finding {
+	return createFinding(
+		'ns',
+		'NS zone resolution inconclusive',
+		'low',
+		`Could not determine the governing zone for ${domain} (the nameserver lookup did not complete). Nameserver posture is unknown for this run.`,
+		{ errorKind: 'dns_error', inconclusive: true },
+	);
 }
