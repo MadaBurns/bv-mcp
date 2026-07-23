@@ -11,11 +11,13 @@
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import {
+	getInheritedNsFinding,
 	getNameserverDiversityFinding,
 	getNsConfiguredFinding,
 	getNsVisibilityFinding,
 	getSingleNsFinding,
 	getSoaValidationFindings,
+	getUndelegatedInconclusiveFinding,
 	normalizeNsRecords,
 	parseSoaValues,
 } from './ns-analysis';
@@ -35,6 +37,28 @@ export async function checkNS(
 	const timeout = options?.timeout ?? 5000;
 	const rawQueryDNS = options?.rawQueryDNS;
 	const findings: Finding[] = [];
+	const zone = options?.zone;
+
+	// Non-apex label: attribute posture to the zone apex instead of firing a false
+	// "no NS records" finding. Apex targets (zone.isApex, or no zone) fall through
+	// to the unchanged logic below → byte-identical output.
+	if (zone && !zone.isApex) {
+		if (zone.delegationStatus === 'unknown') {
+			// Resolver could not classify — inconclusive, exclude from scoring, self-heal.
+			const result = buildCheckResult('ns', [getUndelegatedInconclusiveFinding(domain)]);
+			return { ...result, score: 0, checkStatus: 'error', partial: true };
+		}
+		if (zone.delegationStatus === 'inherited') {
+			findings.push(getInheritedNsFinding(zone));
+			const single = getSingleNsFinding(zone.apexNsRecords);
+			if (single) findings.push(single);
+			const diversity = getNameserverDiversityFinding(zone.apexNsRecords);
+			if (diversity) findings.push(diversity);
+			return buildCheckResult('ns', findings);
+		}
+		// delegationStatus === 'undelegated_broken' falls through: the registrable apex
+		// itself has no NS → the existing no-NS logic (below) correctly reports it.
+	}
 
 	let nsRecords: string[] = [];
 	try {
