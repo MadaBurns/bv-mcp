@@ -169,4 +169,11 @@ describe('checkNs', () => {
 		expect(r.findings[0].detail).toContain('3 nameservers');
 		expect(r.passed).toBe(true);
 	});
+
+	it('apex example.com with no NS and no A still returns the CRITICAL (unchanged)', async () => {
+		mockNsResponses([]);
+		const result = await run('example.com'); // apex → zone.isApex true → existing path
+		expect(result.findings[0].severity).toBe('critical');
+		expect(result.findings[0].title).toMatch(/No NS records/i);
+	});
 });

@@ -6,7 +6,9 @@
  */
 
 import { checkCAA } from '@blackveil/dns-checks';
+import type { ZoneContext } from '@blackveil/dns-checks';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
+import { resolveZoneApex } from '../lib/zone-apex';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult } from '../lib/scoring';
 
@@ -14,10 +16,11 @@ import type { CheckResult } from '../lib/scoring';
  * Check CAA records for a domain.
  * Validates that CAA records exist and are properly configured.
  */
-export async function checkCaa(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
+export async function checkCaa(domain: string, dnsOptions?: QueryDnsOptions, zone?: ZoneContext): Promise<CheckResult> {
+	const resolvedZone = zone ?? (await resolveZoneApex(domain, dnsOptions));
 	return checkCAA(
 		domain,
 		makeQueryDNS(dnsOptions),
-		{ timeout: dnsOptions?.timeoutMs ?? 5000 },
+		{ timeout: dnsOptions?.timeoutMs ?? 5000, zone: resolvedZone },
 	) as Promise<CheckResult>;
 }
