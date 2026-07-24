@@ -71,6 +71,29 @@ describe('checkMtaSts — non-apex', () => {
 		expect(r.findings.some((f) => f.severity === 'medium' || f.severity === 'high' || f.severity === 'critical')).toBe(false);
 		expect(r.passed).toBeTruthy();
 	});
+
+	it('mail.acme.com: non-apex label that ACCEPTS mail (own MX) still yields medium + missingControl', async () => {
+		// `mail.acme.com` shares nameservers with `acme.com` (no separate NS delegation →
+		// classified `inherited`, isApex:false) BUT owns an MX record, so it is a genuine
+		// mail-receiving host. MTA-STS applicability follows the label's inbound-mail role
+		// (RFC 8461), NOT its zone-delegation status — its missing policy is a real finding,
+		// not "not applicable". Regression guard for the bare-`!isApex` short-circuit.
+		mockNonApexMailQueries({
+			domain: 'mail.acme.com',
+			apex: 'acme.com',
+			apexNs: ['ns1.cloudflare.com.', 'ns2.cloudflare.com.'],
+			mxRecords: [{ priority: 10, exchange: 'mx1.acme.com' }],
+		});
+
+		const r = await run('mail.acme.com');
+
+		const missing = r.findings.find((f) => f.title.includes('No MTA-STS'));
+		expect(missing).toBeDefined();
+		expect(missing!.severity).toBe('medium');
+		expect(missing!.metadata?.missingControl).toBe(true);
+		// Must NOT be suppressed to the "not applicable" info.
+		expect(r.findings.some((f) => /not applicable/i.test(f.title))).toBe(false);
+	});
 });
 
 describe('checkMtaSts — apex regression (unchanged)', () => {

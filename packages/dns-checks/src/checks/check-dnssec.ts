@@ -84,9 +84,9 @@ export async function checkDNSSEC(
 		findings.push(
 			createFinding(
 				'dnssec',
-				'DNSSEC posture inherited from signed zone',
+				'DNSSEC posture inherited from zone apex',
 				'info',
-				`${domain} has no signed zone of its own; DNSSEC posture is inherited from the zone apex ${target}.`,
+				`${domain} is not a separately delegated zone, so its DNSSEC posture is inherited from and evaluated at the zone apex ${target} — the verdict below applies to ${target}.`,
 				{ inheritedFromApex: target },
 			),
 		);
