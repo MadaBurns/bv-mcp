@@ -59,7 +59,7 @@
 		"marked": "^18.0.7",
 		"pdf-lib": "^1.17.1",
 		"punycode": "^2.3.1",
-		"tldts": "^7.4.8",
+		"tldts": "^7.4.9",
 		"zod": "4.4.3"
 	},
 	"devDependencies": {
