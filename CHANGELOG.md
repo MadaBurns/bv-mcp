@@ -6,6 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.34.1] - 2026-07-24
+
+Follow-up bugfix release to 3.34.0: two non-apex regressions found in review, plus a broader false-positive class where a **transient** query/fetch failure was scored as a real deficiency. All corrections are in `@blackveil/dns-checks` (**1.5.0 → 1.5.2**); apex-domain output stays byte-identical.
+
+### Fixed
+
+- **Transient failures are now inconclusive, not scored (dns-checks 1.5.2).** A thrown DNS query or HTTP fetch (resolver timeout, SERVFAIL, network flake, or an origin 5xx/530) was caught and returned as a **scored** finding, so a healthy domain could receive a false deficiency — `check_ns` fired a CRITICAL "NS query failed", and `check_ssl` scored a temporarily-erroring origin as an HSTS/redirect gap. These paths now return an inconclusive result (`checkStatus: 'error' | 'timeout'` + an INFO "… not assessed" finding), so the scoring engine **excludes and renormalizes** the affected category instead of penalizing it. Applies to `check_ns`, `check_ssl`, `check_dnssec`, `check_mx`, and `check_caa`. Empty-NOERROR "record absent" results are unchanged (a real missing record still scores).
+- **MTA-STS false negative on mail-receiving subdomains (dns-checks 1.5.1).** 3.34.0 gated the non-apex MTA-STS summary on a bare `!isApex` and skipped the MX probe, wrongly downgrading a real `medium`/missing-control finding to an INFO "not applicable" on a subdomain that genuinely accepts inbound mail (its own MX, e.g. `mail.acme.com`). Applicability now follows the label's own inbound-mail role (RFC 8461 — always probe MX), not its NS-delegation status.
+- **DNSSEC inheritance wording (dns-checks 1.5.1).** The non-apex inheritance note claimed a signed zone unconditionally, contradicting the "DNSSEC not enabled" verdict when the apex is genuinely unsigned; reworded neutrally. No score/missing-control change.
+
 ## [3.34.0] - 2026-07-24
 
 Bugfix + scoring release: **non-apex scan targets no longer emit false "missing record" findings**. A subdomain that owns no zone of its own (normal DNS behaviour for undelegated labels — e.g. a Mailgun/SendGrid sending host like `mg.ii.inc`) now inherits its zone apex's DNS posture instead of firing a spurious CRITICAL. Apex-domain scores are byte-identical. Scoring model bumped to **1.3.0**.
