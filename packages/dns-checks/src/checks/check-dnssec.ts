@@ -49,10 +49,22 @@ export async function checkDNSSEC(
 		}
 		// If no rawQueryDNS provided, we can't check AD flag — continue without it
 	} catch {
-		findings.push(
-			createFinding('dnssec', 'DNSSEC check failed', 'medium', `Could not verify DNSSEC status for ${target}. The DNS query failed.`),
-		);
-		return buildCheckResult('dnssec', findings);
+		// Transient resolver failure on the AD-flag probe — we could not MEASURE DNSSEC. Mark the
+		// category INCONCLUSIVE (checkStatus) so the scoring engine renormalizes over the remaining
+		// categories instead of penalizing a possibly-healthy domain with a scored deficiency.
+		// (The DNSKEY/DS/NSEC3PARAM catches below are legitimate fail-soft "treat as absent" and
+		// stay unchanged.)
+		return {
+			...buildCheckResult('dnssec', [
+				createFinding(
+					'dnssec',
+					'DNSSEC not assessed',
+					'info',
+					`Could not query DNSSEC status for ${target} due to a transient DNS failure; this control was not assessed.`,
+				),
+			]),
+			checkStatus: 'error',
+		};
 	}
 
 	// Query DNSKEY, DS, and NSEC3PARAM records independently; default to empty on failure

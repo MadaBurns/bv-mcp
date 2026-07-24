@@ -64,8 +64,21 @@ export async function checkNS(
 	try {
 		nsRecords = normalizeNsRecords(await queryDNS(domain, 'NS', { timeout }));
 	} catch {
-		findings.push(createFinding('ns', 'NS query failed', 'critical', `Could not query nameserver records for ${domain}.`));
-		return buildCheckResult('ns', findings);
+		// Transient resolver failure (timeout / SERVFAIL / network flake) — we could not
+		// MEASURE the nameserver posture. Mark the category INCONCLUSIVE (checkStatus) so the
+		// scoring engine renormalizes over the remaining categories instead of penalizing a
+		// possibly-healthy domain with a scored "NS query failed" deficiency.
+		return {
+			...buildCheckResult('ns', [
+				createFinding(
+					'ns',
+					'Nameserver configuration not assessed',
+					'info',
+					`Could not query nameserver (NS) records for ${domain} due to a transient DNS failure; this control was not assessed.`,
+				),
+			]),
+			checkStatus: 'error',
+		};
 	}
 
 	if (nsRecords.length === 0) {
