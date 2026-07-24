@@ -13,7 +13,7 @@
 	},
 	"dependencies": {
 		"@blackveil/dns-checks": "*",
-		"hono": "^4.12.30",
+		"hono": "^4.12.31",
 		"zod": "^4.4.3"
 	},
 	"devDependencies": {
