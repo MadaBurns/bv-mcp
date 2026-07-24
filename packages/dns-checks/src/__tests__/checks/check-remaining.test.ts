@@ -114,10 +114,14 @@ describe('checkMX', () => {
 });
 
 describe('checkNS', () => {
-	it('returns critical when NS query fails', async () => {
+	it('marks the category inconclusive (not a scored deficiency) when the NS query fails transiently', async () => {
+		// A thrown NS query is a transient resolver failure — we could not MEASURE the posture, so
+		// the category is excluded from scoring (checkStatus 'error') with an info-only finding,
+		// rather than penalizing a possibly-healthy domain with a critical "NS query failed".
 		const queryDNS: DNSQueryFunction = vi.fn(async () => { throw new Error('fail'); });
 		const result = await checkNS('example.com', queryDNS);
-		expect(result.findings[0].severity).toBe('critical');
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings[0].severity).toBe('info');
 	});
 
 	it('detects single nameserver', async () => {

@@ -118,12 +118,16 @@ describe('checkNs', () => {
 		expect(r.findings[0].detail).toContain('parent zone');
 	});
 
-	it('returns critical finding when NS query fails', async () => {
+	it('marks the category inconclusive (not a scored deficiency) when the NS query fails transiently', async () => {
+		// A thrown NS query is a transient resolver failure — the posture could not be MEASURED, so
+		// the category is excluded from scoring (checkStatus 'error') with an info-only finding,
+		// not a scored "NS query failed" critical against a possibly-healthy domain.
 		mockFetchError();
 		const r = await run();
+		expect(r.checkStatus).toBe('error');
 		expect(r.findings).toHaveLength(1);
-		expect(r.findings[0].severity).toBe('critical');
-		expect(r.findings[0].title).toContain('NS query failed');
+		expect(r.findings[0].severity).toBe('info');
+		expect(r.findings[0].title).toContain('not assessed');
 	});
 
 	it('returns medium finding when no SOA record exists', async () => {

@@ -119,20 +119,19 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions, 
 		},
 	) as CheckResult;
 
-	// If the inner check returned a transport-error sentinel finding, surface checkStatus='error'.
-	// checkDNSSEC catches transport failures internally and returns a 'DNSSEC check failed' finding
-	// rather than throwing — we detect this to distinguish transport errors from "no DNSSEC deployed".
-	const isDnsTransportError = baseResult.findings.some((f) => f.title === 'DNSSEC check failed');
-	if (isDnsTransportError) {
-		return { ...baseResult, checkStatus: 'error' as const };
+	// checkDNSSEC marks a transient transport failure as inconclusive (checkStatus:'error' + an
+	// info "DNSSEC not assessed" finding) rather than throwing — propagate that so a transient DNS
+	// failure is excluded from scoring, not misread as "no DNSSEC deployed".
+	if (baseResult.checkStatus === 'error') {
+		return baseResult;
 	}
 
 	// Skip augmentation when DNSSEC is definitively absent, failed, or misconfigured at the domain level.
 	// 'DNSSEC chain of trust incomplete' means the domain has DNSKEY but no DS — it is domain-operator-configured
 	// (just broken), not TLD-inherited.
+	// (A transient transport failure already returned above via checkStatus:'error'.)
 	const dnssecAbsent =
 		baseResult.findings.some((f) => f.title === 'DNSSEC not enabled') ||
-		baseResult.findings.some((f) => f.title === 'DNSSEC check failed') ||
 		baseResult.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete');
 	if (dnssecAbsent) {
 		return baseResult;

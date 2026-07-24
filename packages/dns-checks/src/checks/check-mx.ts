@@ -31,7 +31,20 @@ export async function checkMX(
 	try {
 		answers = await queryDNS(domain, 'MX', { timeout });
 	} catch {
-		return buildCheckResult('mx', [createFinding('mx', 'DNS query failed', 'medium', 'MX record lookup failed')]);
+		// Transient resolver failure — we could not MEASURE the mail-exchange posture. Mark the
+		// category INCONCLUSIVE (checkStatus) so the scoring engine renormalizes over the remaining
+		// categories instead of penalizing a possibly-healthy domain with a scored deficiency.
+		return {
+			...buildCheckResult('mx', [
+				createFinding(
+					'mx',
+					'MX records not assessed',
+					'info',
+					`Could not query mail-exchange (MX) records for ${domain} due to a transient DNS failure; this control was not assessed.`,
+				),
+			]),
+			checkStatus: 'error',
+		};
 	}
 
 	if (!answers || answers.length === 0) {

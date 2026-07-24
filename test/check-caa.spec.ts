@@ -35,12 +35,15 @@ describe('checkCaa', () => {
 		expect(result.findings[0].title).toMatch(/No CAA/i);
 	});
 
-	it('should report medium finding when CAA query fails', async () => {
+	it('marks the category inconclusive (not a scored deficiency) when the CAA query fails transiently', async () => {
+		// A thrown CAA query is a transient resolver failure — excluded from scoring (checkStatus
+		// 'error') with an info-only "not assessed" finding, not a scored medium deficiency.
 		mockCaaFailure();
 		const result = await run();
+		expect(result.checkStatus).toBe('error');
 		expect(result.findings).toHaveLength(1);
-		expect(result.findings[0].severity).toBe('medium');
-		expect(result.findings[0].title).toMatch(/failed/i);
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].title).toMatch(/not assessed/i);
 	});
 
 	it('should report medium finding when no issue tag present', async () => {

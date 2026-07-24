@@ -34,8 +34,10 @@ export async function checkMx(domain: string, options?: CheckMxOptions, dnsOptio
 	// Early return if MX check already returned critical/error findings (no MX records, etc.)
 	// Only add provider detection when we have meaningful MX records
 	const hasCritical = baseResult.findings.some((f) => f.severity === 'critical');
-	const hasMediumQueryFailed = baseResult.findings.some((f) => f.title === 'DNS query failed');
-	if (hasCritical || hasMediumQueryFailed) {
+	// A transient MX-query failure is now marked inconclusive (checkStatus:'error') by the package
+	// check — skip provider-detection augmentation and propagate it rather than sniffing a title.
+	const isInconclusive = baseResult.checkStatus === 'error';
+	if (hasCritical || isInconclusive) {
 		return baseResult;
 	}
 
