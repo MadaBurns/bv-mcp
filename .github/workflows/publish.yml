@@ -63,7 +63,10 @@ jobs:
         run: npm test
 
       - name: Security audit
-        run: npm audit --audit-level=high
+        # --omit=dev: the release artifact is the Cloudflare Worker (production
+        # deps only). Dev-tooling advisories don't reach the runtime and must not
+        # fail a release's pre-flight; Dependabot tracks them. Mirrors security.yml.
+        run: npm audit --omit=dev --audit-level=high
 
   version-bump:
     name: Sync version to tag
