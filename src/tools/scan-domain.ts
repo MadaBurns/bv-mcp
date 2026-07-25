@@ -854,7 +854,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				provider: domainContext.detectedProvider,
 				categoryFindings: checkResults.map((r) => ({ category: r.category, score: r.score, passed: r.passed })),
 				timestamp: Date.now(),
-				overallScore: score.overall ?? 0,
+				overallScore: score.overall,
 			};
 			// R10 PROPOSAL (default-off): route the /ingest write to the per-profile
 			// shard so write traffic spreads across ~6 DO input gates instead of one

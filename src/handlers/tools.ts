@@ -1524,8 +1524,12 @@ export async function handleToolsCall(
 						baselineScore = cached.score;
 						// A CACHED scan can legitimately be ungraded (NXDOMAIN, unresolvable zone).
 						// There is nothing to measure drift against, so abstain rather than diff
-						// against a null and report a fabricated delta.
-						if (!isGraded(baselineScore)) {
+						// against it and report a fabricated delta — e.g. a domain that NXDOMAINed
+						// and was later configured properly would otherwise render
+						// "Score: +73 pts (N/A -> B), improving" against a baseline never measured.
+						// The `'N/A'` half is the legacy sentinel the producers still emit and is
+						// REMOVED IN TASK 3, when `isGraded()` alone becomes sufficient here.
+						if (!isGraded(baselineScore) || baselineScore.grade === 'N/A') {
 							return buildToolErrorResult(
 								`Invalid baseline: the cached scan for ${validDomain} was never graded, so there is nothing to measure drift against. Re-run scan_domain.`,
 							);

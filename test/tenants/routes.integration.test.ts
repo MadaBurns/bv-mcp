@@ -449,6 +449,74 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 		expect(body.findings_by_category.length).toBe(2);
 	});
 
+	it('excludes ungraded scans from BOTH the numerator and the denominator of mean_score', async () => {
+		const cycleId = 'cycle_ungraded_mean';
+		// A realistic tenant cycle: 3 domains resolve and score, 2 do not resolve at all
+		// and were persisted with score/grade NULL (the `?? null` the persistence side
+		// already writes correctly).
+		const tenant = makeMockD1({
+			'SELECT score, grade FROM scans WHERE cycle_id = ?': [
+				{ score: 90, grade: 'A' },
+				{ score: 80, grade: 'B' },
+				{ score: 70, grade: 'C' },
+				{ score: null, grade: null },
+				{ score: null, grade: null },
+			],
+			'SELECT category, severity, COUNT(*) as count FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE cycle_id = ?) GROUP BY category, severity':
+				[],
+		});
+		const registry = makeMockD1({
+			[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'fake-d1-uuid', active: 1 }],
+		});
+		const customEnv = {
+			...env,
+			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			REQUIRE_INTERNAL_AUTH: 'true',
+			TENANT_REGISTRY_DB: registry.db,
+			[TEST_TENANT_BINDING]: tenant.db,
+		} as TestEnv;
+		const res = await sendRequest(makeReq(cycleId), customEnv);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { summary: { domains: number; mean_score: number | null; grade_dist: Record<string, number> } };
+
+		// Pre-fix: (90+80+70+0+0)/5 = 48 — the tenant's reported portfolio mean depressed
+		// by 22 points by two domains that were never measured.
+		expect(body.summary.mean_score).toBeCloseTo(80, 5);
+		// `domains` still counts every attempted domain — only the MEAN abstains.
+		expect(body.summary.domains).toBe(5);
+		expect(body.summary.grade_dist.unknown).toBe(2);
+	});
+
+	it('reports mean_score null (not 0) when no scan in the cycle was graded', async () => {
+		const cycleId = 'cycle_all_ungraded';
+		const tenant = makeMockD1({
+			'SELECT score, grade FROM scans WHERE cycle_id = ?': [
+				{ score: null, grade: null },
+				{ score: null, grade: null },
+			],
+			'SELECT category, severity, COUNT(*) as count FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE cycle_id = ?) GROUP BY category, severity':
+				[],
+		});
+		const registry = makeMockD1({
+			[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'fake-d1-uuid', active: 1 }],
+		});
+		const customEnv = {
+			...env,
+			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			REQUIRE_INTERNAL_AUTH: 'true',
+			TENANT_REGISTRY_DB: registry.db,
+			[TEST_TENANT_BINDING]: tenant.db,
+		} as TestEnv;
+		const res = await sendRequest(makeReq(cycleId), customEnv);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { summary: { domains: number; mean_score: number | null } };
+
+		// `0` would read as "this tenant's entire portfolio scores zero" — a confident
+		// claim about domains that were never measured.
+		expect(body.summary.mean_score).toBeNull();
+		expect(body.summary.domains).toBe(2);
+	});
+
 	it('writes an audit_events row for report.read with the cycle_id as resourceId', async () => {
 		const cycleId = 'cycle_audit_report';
 		const tenant = makeMockD1({

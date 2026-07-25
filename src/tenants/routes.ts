@@ -1238,8 +1238,16 @@ tenantRoutes.get('/report/:cycle_id', async (c) => {
 		const scanRows = scans.results ?? [];
 		const findingRows = findings.results ?? [];
 
-		const scoreSum = scanRows.reduce((acc, r) => acc + (r.score ?? 0), 0);
-		const meanScore = scanRows.length > 0 ? scoreSum / scanRows.length : 0;
+		// A scan row with a NULL score was never graded (domain does not resolve, zone
+		// unresolvable) — it is "not measured", not "scored zero". It must leave BOTH the
+		// numerator and the DENOMINATOR: `(sum + 0) / allRows` silently depresses the
+		// tenant's reported portfolio mean by every domain that could not be measured
+		// (3 graded + 2 ungraded reported 48 instead of 80). `null` when nothing was
+		// graded, because `0` reads as a confident "this portfolio scores zero".
+		// `domains` deliberately still counts every attempted domain, and `grade_dist`
+		// already buckets ungraded rows as 'unknown'.
+		const gradedScores = scanRows.map((r) => r.score).filter((s): s is number => s !== null && s !== undefined);
+		const meanScore = gradedScores.length > 0 ? gradedScores.reduce((acc, s) => acc + s, 0) / gradedScores.length : null;
 		const gradeDist: Record<string, number> = {};
 		for (const r of scanRows) {
 			const g = r.grade ?? 'unknown';
