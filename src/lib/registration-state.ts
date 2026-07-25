@@ -65,10 +65,7 @@ function isTimeoutError(err: unknown): boolean {
  *
  * Never throws: transport failures are folded into `{ state: 'unknown' }`.
  */
-export async function resolveRegistrationUncached(
-	domain: string,
-	opts?: QueryDnsOptions,
-): Promise<RegistrationState> {
+export async function resolveRegistrationUncached(domain: string, opts?: QueryDnsOptions): Promise<RegistrationState> {
 	const settled = await Promise.allSettled([queryDns(domain, 'NS', false, opts), queryDns(domain, 'SOA', false, opts)]);
 
 	const responses: DohResponse[] = [];
@@ -137,11 +134,7 @@ export async function resolveRegistrationUncached(
  *
  * Never throws: transport failures are folded into `{ state: 'unknown' }`.
  */
-export async function resolveRegistration(
-	domain: string,
-	opts?: QueryDnsOptions,
-	cache?: RegistrationCache,
-): Promise<RegistrationState> {
+export async function resolveRegistration(domain: string, opts?: QueryDnsOptions, cache?: RegistrationCache): Promise<RegistrationState> {
 	if (!cache) return resolveRegistrationUncached(domain, opts);
 	const key = domain.toLowerCase();
 	const existing = cache.get(key);

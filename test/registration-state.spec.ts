@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, nxdomainResponse, servfailResponse } from './helpers/dns-mock';
+import type { RegistrationState } from '../src/lib/registration-state';
 
 const { restore } = setupFetchMock();
 afterEach(() => restore());
@@ -137,11 +138,21 @@ describe('resolveRegistration', () => {
 		const fetchSpy = vi.fn(async () => nsAnswer('bnz.nz', ['ns1.bnz.co.nz.']));
 		globalThis.fetch = fetchSpy as unknown as typeof fetch;
 		const { resolveRegistration } = await import('../src/lib/registration-state');
-		const cache = new Map();
+		const cache = new Map<string, Promise<RegistrationState>>();
 		const first = await resolveRegistration('bnz.nz', undefined, cache);
 		const callsAfterFirst = fetchSpy.mock.calls.length;
 		const second = await resolveRegistration('bnz.nz', undefined, cache);
 		expect(second).toEqual(first);
 		expect(fetchSpy.mock.calls.length).toBe(callsAfterFirst);
+	});
+
+	it('shares one in-flight lookup between concurrent callers', async () => {
+		const fetchSpy = vi.fn(async () => nsAnswer('bnz.nz', ['ns1.bnz.co.nz.']));
+		globalThis.fetch = fetchSpy as unknown as typeof fetch;
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const cache = new Map<string, Promise<RegistrationState>>();
+		const [a, b] = await Promise.all([resolveRegistration('bnz.nz', undefined, cache), resolveRegistration('bnz.nz', undefined, cache)]);
+		expect(a).toEqual(b);
+		expect(fetchSpy.mock.calls.length).toBe(3); // ONE lookup (NS + SOA + internal query), not two
 	});
 });
