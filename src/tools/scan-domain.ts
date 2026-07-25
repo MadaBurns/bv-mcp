@@ -206,7 +206,7 @@ export interface ScanDomainResult {
 	 *   (DNSSEC-bogus or lame/broken delegation). Not scored — see
 	 *   {@link buildDnsBrokenResult}.
 	 * Aggregators should exclude `resolves === false` and `resolves === 'broken'`
-	 * results rather than averaging their grade N/A into a population score.
+	 * results rather than averaging an ungraded result into a population score.
 	 */
 	resolves?: boolean | 'broken';
 }
@@ -218,7 +218,7 @@ export interface ScanDomainResult {
  *
  * The checks already ran successfully, so we preserve their findings and
  * per-category scores and surface them to the operator; only the weighted
- * overall score and grade are marked unavailable. This converts a total scan
+ * overall score and grade are marked unavailable (`null`). This converts a total scan
  * failure (a generic "unexpected error" for every domain) into a graceful
  * degradation. Deliberately calls NO scoring-package function, since the
  * scoring package is exactly what failed.
@@ -233,8 +233,8 @@ function buildUnscoredResult(domain: string, checkResults: CheckResult[], reason
 	return {
 		domain,
 		score: {
-			overall: 0,
-			grade: 'N/A',
+			overall: null,
+			grade: null,
 			categoryScores,
 			findings,
 			summary: reason,
@@ -267,7 +267,7 @@ function buildUnscoredResult(domain: string, checkResults: CheckResult[], reason
  * checks never run: a non-existent domain has no security posture to assess, and
  * running the matrix would only fabricate "absence = missing control" findings —
  * producing a misleading D+/F for a domain that simply isn't registered. We emit
- * NO findings and NO per-category scores; grade is `N/A` and `resolves` is false
+ * NO findings and NO per-category scores; the score and grade are `null` and `resolves` is false
  * so aggregators exclude it rather than averaging it in.
  */
 function buildNonResolvingResult(domain: string): ScanDomainResult {
@@ -275,8 +275,8 @@ function buildNonResolvingResult(domain: string): ScanDomainResult {
 	return {
 		domain,
 		score: {
-			overall: 0,
-			grade: 'N/A',
+			overall: null,
+			grade: null,
 			categoryScores: {} as Record<CheckCategory, number>,
 			findings: [],
 			summary: reason,
@@ -321,8 +321,8 @@ type DnsBrokenKind = 'dnssec_bogus' | 'unresolvable';
  *
  * Like the non-resolving case, we emit NO findings and NO per-category scores:
  * a zone we cannot resolve has no measurable posture, and running the matrix
- * would only fabricate "absence = missing control" findings. Grade is `N/A`
- * and `resolves` is `'broken'` so aggregators exclude it.
+ * would only fabricate "absence = missing control" findings. The score and
+ * grade are `null` and `resolves` is `'broken'` so aggregators exclude it.
  */
 function buildDnsBrokenResult(domain: string, kind: DnsBrokenKind): ScanDomainResult {
 	const reason =
@@ -338,8 +338,8 @@ function buildDnsBrokenResult(domain: string, kind: DnsBrokenKind): ScanDomainRe
 	return {
 		domain,
 		score: {
-			overall: 0,
-			grade: 'N/A',
+			overall: null,
+			grade: null,
 			categoryScores: {} as Record<CheckCategory, number>,
 			findings: [],
 			summary: reason,

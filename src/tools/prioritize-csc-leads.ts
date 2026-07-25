@@ -46,7 +46,7 @@ export interface PortfolioGrade {
 	grade: string;
 	/** Weighted-average scan score across contributing domains, 0–100, Math.round'd to an integer. */
 	weightedScore: number;
-	/** Count of leads whose ownership bucket carries a non-zero rollup weight (and grade ≠ 'N/A'). */
+	/** Count of leads whose ownership bucket carries a non-zero rollup weight AND that carry a real grade (grade !== null). */
 	contributingDomains: number;
 }
 
@@ -113,7 +113,7 @@ const PORTFOLIO_ROLLUP_WEIGHTS: Record<OwnershipBucket, number> = {
 /**
  * Weighted portfolio rollup grade (PURE). weightedScore = round( Σ(w[bucket]*score) / Σ(w[bucket]) )
  * over all leads, where w = PORTFOLIO_ROLLUP_WEIGHTS. Domains with weight 0 (impersonation buckets)
- * and graceful `grade === 'N/A'` results (NXDOMAIN / SERVFAIL-broken / scoring-bundle failure) drop
+ * and ungraded (`grade === null`) results (NXDOMAIN / SERVFAIL-broken / scoring-bundle failure) drop
  * out — averaging their 0 score would silently sink the portfolio (see scan-domain.ts aggregator
  * contract). Returns null when `leads` is empty OR Σ(weight) === 0 (no contributing domains).
  * NEVER averages letters and NEVER inlines band thresholds — it rounds the numeric weighted average
@@ -125,12 +125,10 @@ export function computePortfolioGrade(leads: Pick<CscLead, 'score' | 'ownershipB
 	let denominator = 0;
 	let contributingDomains = 0;
 	for (const lead of leads) {
-		// An ungraded lead has no score to average. Both forms are excluded: the new
-		// `null` (from a widened ScanScore) and the legacy `'N/A'` sentinel that the
-		// producers still emit until it is removed at source. Averaging their 0 score
-		// would silently sink the whole portfolio.
+		// An ungraded lead has no score to average — `null` is the SINGLE representation
+		// of that state (3.35.0 retired the string sentinel the producers used to emit).
+		// Averaging a coerced 0 in its place would silently sink the whole portfolio.
 		if (lead.score === null || lead.grade === null) continue;
-		if (lead.grade === 'N/A') continue;
 		const weight = PORTFOLIO_ROLLUP_WEIGHTS[lead.ownershipBucket];
 		if (weight === 0) continue;
 		numerator += weight * lead.score;

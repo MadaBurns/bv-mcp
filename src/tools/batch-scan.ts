@@ -155,11 +155,12 @@ export function formatBatchScan(results: BatchScanResultItem[], format: OutputFo
 	lines.push('');
 
 	for (const r of results) {
-		// `!r.measured` catches the case buildStructuredScanResult doesn't yet null at
-		// the source (Task 2): an NXDOMAIN/SERVFAIL scan_domain result (buildNonResolvingResult
-		// / buildDnsBrokenResult) runs zero checks but still carries a raw `score.overall: 0`
-		// and `grade: 'N/A'` — neither is `null`, so gating on nullness alone would still
-		// render `0/100 (N/A)` for a domain that was never measured. Mirrors the same
+		// `!r.measured` is defence-in-depth alongside the nullness checks. The producers
+		// now emit `null` for an unmeasured domain, but before 3.35.0 an NXDOMAIN/SERVFAIL
+		// scan_domain result ran zero checks and still carried a raw score/grade pair —
+		// neither of them null — so gating on nullness alone rendered a confident
+		// `0/100 (F)` for a domain that was never measured. Any future ScanScore source
+		// that reintroduces a placeholder pair is still caught here. Mirrors the same
 		// conjunction compare-domains.ts uses for its `rankable` filter.
 		if (!r.measured || r.score === null || r.grade === null) {
 			const why = r.error ? `: ${r.error}` : '';

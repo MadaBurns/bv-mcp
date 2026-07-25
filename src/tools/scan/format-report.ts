@@ -10,9 +10,9 @@ import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scori
 
 /**
  * The SINGLE rendered token for a scan that produced no grade. One constant so
- * the same state cannot render as 'N/A' in one report and 'unknown' in another.
- * Deliberately NOT 'N/A' — that reads as "not applicable", a different state
- * already tracked by `notApplicableCategories`.
+ * the same state cannot render one way in one report and another way elsewhere.
+ * Deliberately NOT the retired N/A sentinel — that reads as "not applicable", a
+ * different state already tracked by `notApplicableCategories`.
  */
 export const UNGRADED_DISPLAY = 'not measured';
 
@@ -25,14 +25,14 @@ export const UNGRADED_DISPLAY = 'not measured';
  * switch.
  *
  * Returns `null` when the scan was never graded — callers must render
- * {@link UNGRADED_DISPLAY} rather than substitute a letter. The legacy `'N/A'`
- * sentinel is still passed through verbatim (Task 3 removes it at the producers);
- * mapping it onto `nistScoreToGrade(0)` here would fabricate an 'F' for a domain
- * that does not resolve — the exact defect this slice exists to remove.
+ * {@link UNGRADED_DISPLAY} rather than substitute a letter. An unscored scan
+ * yields `null`, rendered as {@link UNGRADED_DISPLAY}; mapping it onto
+ * `nistScoreToGrade(0)` here would fabricate an 'F' for a domain that does not
+ * resolve — the exact defect this slice exists to remove.
  */
 function displayGradeFor(score: { overall: number | null; grade: string | null }): string | null {
 	if (score.overall === null || score.grade === null) return null;
-	return score.grade === 'N/A' ? 'N/A' : nistScoreToGrade(score.overall);
+	return nistScoreToGrade(score.overall);
 }
 
 /** Structured scan result for machine-readable consumption (e.g., CI/CD actions). */
@@ -331,12 +331,10 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 	lines.push(displayGrade === null ? `Overall Score: ${UNGRADED_DISPLAY}` : `Overall Score: ${result.score.overall}/100 (${displayGrade})`);
 	// The engine bakes the canonical 9-band grade into `summary` ("…Grade: X"); rewrite
 	// that one token to the display (NIST) grade so the text never disagrees with the
-	// score line above. No-op when the summary carries no grade (e.g. degraded 'N/A')
-	// and when the scan was never graded at all.
+	// score line above. No-op when the scan was never graded at all — the summary of a
+	// degraded scan is a prose reason, not a graded verdict, and must survive verbatim.
 	lines.push(
-		displayGrade === null || displayGrade === 'N/A'
-			? `${result.score.summary}`
-			: result.score.summary.replace(/Grade: [A-F][+-]?/g, `Grade: ${displayGrade}`),
+		displayGrade === null ? `${result.score.summary}` : result.score.summary.replace(/Grade: [A-F][+-]?/g, `Grade: ${displayGrade}`),
 	);
 	lines.push('');
 

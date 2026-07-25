@@ -4,26 +4,49 @@
  * Abstain-on-ungraded behaviour across every consumer widened by the nullable
  * `ScanScore.overall` / `ScanScore.grade` migration.
  *
- * These branches are NOT reachable through the live tool surface yet — the scan
- * producers still emit the legacy `overall: 0, grade: 'N/A'` shape and only start
- * emitting `null` in a later task. That is exactly why they are pinned here: without
- * these tests, every branch would execute for the FIRST time in production the day
- * the producers flip, and a mistake in any of them would ship silently green.
- *
- * Each case builds a `ScanScore` literal with nulls directly, so no producer change
- * is required to exercise the real code path.
+ * Most cases build a `ScanScore` literal with nulls directly, so the consumer's own
+ * abstain branch is exercised without routing through a producer. They were written
+ * while the producers still emitted the pre-3.35.0 `overall: 0, grade: <placeholder>`
+ * shape, so that no branch would execute for the FIRST time in production the day
+ * the producers flipped. The producers HAVE now flipped, and the last two describes
+ * exercise the reachable end-to-end paths (`analyze_drift`'s two baseline sources and
+ * the `scan_domain` tool_call analytics verdict) through the real tool surface.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { ScanScore } from '@blackveil/dns-checks/scoring';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
-import { setupFetchMock } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, nxdomainResponse } from './helpers/dns-mock';
+import { IN_MEMORY_CACHE } from '../src/lib/cache';
 
 const { restore } = setupFetchMock();
 afterEach(() => {
 	restore();
+	IN_MEMORY_CACHE.clear();
 	vi.restoreAllMocks();
 });
+
+/** Every DoH query answers NOERROR-with-no-records; every other fetch is a benign 200. */
+function installEmptyDnsFetch() {
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+		const url = String(input instanceof Request ? input.url : input);
+		if (/dns-query|\/resolve|dns-json|dns\.google|cloudflare-dns/.test(url)) {
+			return Promise.resolve(createDohResponse([], []));
+		}
+		return Promise.resolve(new Response('', { status: 200 }));
+	}) as unknown as typeof globalThis.fetch;
+}
+
+/** Every DoH query answers NXDOMAIN, so scanDomain short-circuits to the ungraded result. */
+function installNxdomainDnsFetch(domain: string) {
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+		const url = String(input instanceof Request ? input.url : input);
+		if (/dns-query|\/resolve|dns-json|dns\.google|cloudflare-dns/.test(url)) {
+			return Promise.resolve(nxdomainResponse(domain));
+		}
+		return Promise.resolve(new Response('', { status: 200 }));
+	}) as unknown as typeof globalThis.fetch;
+}
 
 /** A fully-populated ScanScore with NO measurement behind it. */
 function ungradedScore(overrides: Partial<ScanScore> = {}): ScanScore {
@@ -292,13 +315,15 @@ describe('analyze_drift cached baseline — ungraded cached scan is rejected', (
 		} as unknown as KVNamespace;
 	}
 
-	it("rejects a cached scan carrying the legacy 'N/A' sentinel instead of diffing against it", async () => {
+	it('rejects a cached scan whose grade is a placeholder, not a real grade letter', async () => {
 		const { buildScanCacheKey } = await import('../src/lib/cache');
 		const { handleToolsCall } = await import('../src/handlers/tools');
 
-		// The exact shape buildNonResolvingResult writes for an NXDOMAIN apex: zero
-		// checks, but score/grade populated with degraded placeholders — so isGraded()
-		// alone returns TRUE and waves it through.
+		// The shape buildNonResolvingResult wrote for an NXDOMAIN apex BEFORE 3.35.0:
+		// zero checks, but score/grade populated with degraded placeholders — so
+		// isGraded() alone returns TRUE and waves it through. The producer no longer
+		// emits it, but a version-matched cache entry or any other ScanScore source
+		// still could, and the fabricated-delta consequence is unchanged.
 		const cachedUngraded = scanResult(ungradedScore({ overall: 0, grade: 'N/A' }), { resolves: false });
 		const kv = makeKv({ [buildScanCacheKey('example.com')]: cachedUngraded });
 
@@ -336,5 +361,108 @@ describe('analyze_drift cached baseline — ungraded cached scan is rejected', (
 		const text = result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
 		expect(text).toContain('no cached scan');
 		expect(text).not.toContain('never graded');
+	});
+
+	// The CALLER-SUPPLIED baseline is the same fabricated-delta hazard from the other
+	// direction: `analyze_drift` accepts an arbitrary ScanScore JSON string, and a
+	// `typeof grade === 'string'` check waves through any placeholder a caller pastes
+	// in — including the exact `{overall: 0, grade: <placeholder>}` shape the scan
+	// producers used to emit and that a caller may still have stored from an older run.
+	it('rejects a caller-supplied JSON baseline whose grade is a placeholder, not a real grade letter', async () => {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		const baseline = JSON.stringify({ overall: 0, grade: 'N/A', categoryScores: {}, findings: [], summary: 'does not resolve' });
+
+		const result = await handleToolsCall({ name: 'analyze_drift', arguments: { domain: 'example.com', baseline } }, makeKv());
+
+		expect(result.isError).toBe(true);
+		const text = result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
+		// Without the letter check this returns a drift REPORT reading e.g.
+		// "Score: +73 pts (N/A → B), IMPROVING" — a fabricated 73-point improvement
+		// against a baseline that was never measured.
+		expect(text).toContain('Invalid baseline:');
+		expect(text).not.toContain('IMPROVING');
+	});
+
+	it('rejects a caller-supplied JSON baseline whose overall is a non-finite number', async () => {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		// `JSON.parse('{"overall":1e999}')` yields Infinity, and `typeof Infinity` is
+		// 'number' — so the type check alone admits it and every delta becomes NaN.
+		const baseline = '{"overall":1e999,"grade":"B","categoryScores":{},"findings":[],"summary":"x"}';
+
+		const result = await handleToolsCall({ name: 'analyze_drift', arguments: { domain: 'example.com', baseline } }, makeKv());
+
+		expect(result.isError).toBe(true);
+		const text = result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
+		expect(text).toContain('Invalid baseline:');
+	});
+
+	it('still accepts a caller-supplied JSON baseline carrying a real grade letter (control)', async () => {
+		installEmptyDnsFetch();
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		const baseline = JSON.stringify({ overall: 78, grade: 'B', categoryScores: {}, findings: [], summary: 'Grade: B' });
+
+		const result = await handleToolsCall({ name: 'analyze_drift', arguments: { domain: 'example.com', baseline } }, makeKv());
+
+		// Without this control every assertion above would also pass under a guard
+		// that rejected EVERY caller-supplied baseline.
+		expect(result.isError).toBeFalsy();
+		const text = result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
+		expect(text).toContain('Drift Analysis');
+	});
+});
+
+describe('scan_domain tool_call analytics — ungraded scan', () => {
+	it("emits status 'inconclusive' rather than a confident 'fail' for a domain that does not resolve", async () => {
+		const emitted: Array<{ toolName: string; status: string }> = [];
+		const analytics = {
+			enabled: true,
+			emitRequestEvent: () => {},
+			emitToolEvent: (event: { toolName: string; status: string }) => emitted.push(event),
+			emitRateLimitEvent: () => {},
+			emitSessionEvent: () => {},
+			emitDegradationEvent: () => {},
+			emitQueueBatchEvent: () => {},
+			emitQuotaShardEvent: () => {},
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		} as any;
+
+		installNxdomainDnsFetch('nxdomain-analytics-probe.com');
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		await handleToolsCall({ name: 'scan_domain', arguments: { domain: 'nxdomain-analytics-probe.com', force_refresh: true } }, undefined, {
+			analytics,
+		});
+
+		const scanEvents = emitted.filter((e) => e.toolName === 'scan_domain');
+		expect(scanEvents.length).toBeGreaterThan(0);
+		// `null >= 50` is `false`, so the un-fixed ternary reported a confident 'fail'
+		// — a security verdict for a domain that was never assessed.
+		expect(scanEvents[0].status).toBe('inconclusive');
+	});
+
+	it("still emits 'pass'/'fail' for a domain that WAS measured (control)", async () => {
+		const emitted: Array<{ toolName: string; status: string }> = [];
+		const analytics = {
+			enabled: true,
+			emitRequestEvent: () => {},
+			emitToolEvent: (event: { toolName: string; status: string }) => emitted.push(event),
+			emitRateLimitEvent: () => {},
+			emitSessionEvent: () => {},
+			emitDegradationEvent: () => {},
+			emitQueueBatchEvent: () => {},
+			emitQuotaShardEvent: () => {},
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		} as any;
+
+		installEmptyDnsFetch();
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		await handleToolsCall({ name: 'scan_domain', arguments: { domain: 'measured-analytics-probe.com', force_refresh: true } }, undefined, {
+			analytics,
+		});
+
+		const scanEvents = emitted.filter((e) => e.toolName === 'scan_domain');
+		expect(scanEvents.length).toBeGreaterThan(0);
+		// Proves the assertion above discriminates: the same emit path yields a real
+		// verdict once there is a measurement behind it.
+		expect(['pass', 'fail']).toContain(scanEvents[0].status);
 	});
 });

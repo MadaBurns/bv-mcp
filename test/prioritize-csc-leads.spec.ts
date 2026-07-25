@@ -15,7 +15,7 @@ function rec(product: CscProductKey, recommended: boolean, priority: CscPriority
 }
 
 /** Build a CscProductReport with all 4 recommendations in fixed order; missing ones default to not-recommended/none. */
-function makeReport(domain: string, score: number, grade: string, recs: CscProductRecommendation[]): CscProductReport {
+function makeReport(domain: string, score: number | null, grade: string | null, recs: CscProductRecommendation[]): CscProductReport {
 	const byKey = new Map(recs.map((r) => [r.product, r]));
 	const recommendations = PRODUCT_ORDER.map((k) => byKey.get(k) ?? rec(k, false, 'none'));
 	return {
@@ -76,7 +76,13 @@ describe('computeGapSeverity', () => {
 });
 
 /** Build a lead entry: a report (with the given recommendations) + an ownership bucket. */
-function entry(domain: string, score: number, grade: string, recs: CscProductRecommendation[], bucket: OwnershipBucket): CscLeadEntry {
+function entry(
+	domain: string,
+	score: number | null,
+	grade: string | null,
+	recs: CscProductRecommendation[],
+	bucket: OwnershipBucket,
+): CscLeadEntry {
 	return { report: makeReport(domain, score, grade, recs), ownershipBucket: bucket };
 }
 
@@ -122,12 +128,12 @@ describe('rankCscLeads — per-lead fields', () => {
 		expect(rankCscLeads([clean]).rankedLeads[0].topPriority).toBe('none');
 	});
 
-	it('pass-through: domain/score/grade/ownershipBucket copied verbatim; grade "N/A" preserved', () => {
-		const e = entry('p.com', 0, 'N/A', [rec('csc_multilock', true, 'high')], 'shadowIt');
+	it('pass-through: domain/score/grade/ownershipBucket copied verbatim; a null grade is preserved', () => {
+		const e = entry('p.com', null, null, [rec('csc_multilock', true, 'high')], 'shadowIt');
 		const lead = rankCscLeads([e]).rankedLeads[0];
 		expect(lead.domain).toBe('p.com');
-		expect(lead.score).toBe(0);
-		expect(lead.grade).toBe('N/A');
+		expect(lead.score).toBeNull();
+		expect(lead.grade).toBeNull();
 		expect(lead.ownershipBucket).toBe('shadowIt');
 	});
 });
@@ -168,7 +174,11 @@ describe('rankCscLeads — summary', () => {
 });
 
 /** Build a minimal lead-shaped object for the pure portfolio-grade helper (score + bucket + grade). */
-function pl(bucket: OwnershipBucket, score: number, grade = 'B'): Pick<CscLeadEntry['report'], 'score' | 'grade'> & { ownershipBucket: OwnershipBucket } {
+function pl(
+	bucket: OwnershipBucket,
+	score: number | null,
+	grade: string | null = 'B',
+): Pick<CscLeadEntry['report'], 'score' | 'grade'> & { ownershipBucket: OwnershipBucket } {
 	return { score, grade, ownershipBucket: bucket };
 }
 
@@ -223,9 +233,9 @@ describe('computePortfolioGrade', () => {
 		expect(computePortfolioGrade([pl('consolidated', 90), pl('unknown', 91)])).toEqual({ grade: 'A', weightedScore: 90, contributingDomains: 2 });
 	});
 
-	it('excludes graceful N/A leads (NXDOMAIN / broken) from the rollup entirely', () => {
-		// N/A unknown lead skipped: (2*95 + 2*90)/4 = 370/4 = 92.5 → round 93 → A, contributing 2 (not 3)
-		const withNa = computePortfolioGrade([pl('consolidated', 95, 'A+'), pl('consolidated', 90, 'A'), pl('unknown', 0, 'N/A')]);
+	it('excludes ungraded leads (NXDOMAIN / broken) from the rollup entirely', () => {
+		// ungraded unknown lead skipped: (2*95 + 2*90)/4 = 370/4 = 92.5 → round 93 → A, contributing 2 (not 3)
+		const withNa = computePortfolioGrade([pl('consolidated', 95, 'A+'), pl('consolidated', 90, 'A'), pl('unknown', null, null)]);
 		const withoutNa = computePortfolioGrade([pl('consolidated', 95, 'A+'), pl('consolidated', 90, 'A')]);
 		expect(withNa).toEqual({ grade: 'A', weightedScore: 93, contributingDomains: 2 });
 		expect(withNa).toEqual(withoutNa);

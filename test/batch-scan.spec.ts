@@ -101,11 +101,12 @@ describe('batchScan', () => {
 	});
 
 	it('formatBatchScan does not fabricate a score for a scan that ran zero checks (NXDOMAIN/SERVFAIL shape)', async () => {
-		// Mirrors buildNonResolvingResult / buildDnsBrokenResult in scan-domain.ts: a
-		// domain that never resolves runs NO checks, but the raw ScanScore still carries
-		// overall: 0 / grade: 'N/A' (neither is null) — only `checks: []` (→ measured:
-		// false) signals "not measured". Gating formatBatchScan on score/grade nullness
-		// alone would still render "0/100 (N/A)" and count it as a successful scan.
+		// Mirrors what buildNonResolvingResult / buildDnsBrokenResult emitted BEFORE 3.35.0:
+		// a domain that never resolves runs NO checks, but the raw ScanScore still carries a
+		// placeholder overall/grade pair (neither is null) — only `checks: []` (→ measured:
+		// false) signals "not measured". The producers now emit nulls; this hostile pair stays
+		// pinned because gating formatBatchScan on score/grade nullness alone would render a
+		// confident score for any OTHER ScanScore source that reintroduces a placeholder.
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const nonResolvingScan = (async (domain: string): Promise<any> => ({
 			domain,

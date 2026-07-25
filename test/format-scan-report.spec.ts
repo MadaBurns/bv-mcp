@@ -5,14 +5,14 @@ import { SCORING_MODEL_VERSION } from '../src/lib/scoring-version';
 
 describe('format-scan-report', () => {
 	it('tolerates a non-resolving result (empty checks/categoryScores/findings)', () => {
-		// Mirrors buildNonResolvingResult: grade N/A, resolves:false, nothing scored.
+		// Mirrors buildNonResolvingResult: ungraded (null score/grade), resolves:false, nothing scored.
 		// Both formatters must iterate empty collections without indexing a fixed
 		// category and without throwing.
 		const result: ScanDomainResult = {
 			domain: 'does-not-exist-zzz.example',
 			score: {
-				overall: 0,
-				grade: 'N/A',
+				overall: null,
+				grade: null,
 				categoryScores: {} as ScanDomainResult['score']['categoryScores'],
 				findings: [],
 				summary:
@@ -30,12 +30,13 @@ describe('format-scan-report', () => {
 		};
 
 		const report = formatScanReport(result);
-		expect(report).toContain('Overall Score: 0/100 (N/A)');
+		expect(report).toContain('Overall Score: not measured');
 		expect(report).toContain('does not resolve');
 
 		const structured = buildStructuredScanResult(result);
-		expect(structured.grade).toBe('N/A');
-		expect(structured.passed).toBe(false);
+		expect(structured.grade).toBeNull();
+		expect(structured.score).toBeNull();
+		expect(structured.passed).toBeNull();
 		expect(Object.keys(structured.categoryScores)).toHaveLength(0);
 		expect(structured.findingCounts).toEqual({ critical: 0, high: 0, medium: 0, low: 0 });
 		expect(structured.notApplicableCategories).toHaveLength(0);
@@ -264,14 +265,14 @@ describe('format-scan-report', () => {
 	});
 
 	it("passes through resolves:'broken' and renders the broken result without throwing", () => {
-		// Mirrors buildDnsBrokenResult: grade N/A, empty checks/categoryScores/findings,
+		// Mirrors buildDnsBrokenResult: ungraded (null score/grade), empty checks/categoryScores/findings,
 		// resolves:'broken'. The tri-state value must pass through buildStructuredScanResult
 		// and both formatters must render it without indexing a fixed category.
 		const result: ScanDomainResult = {
 			domain: 'broken-dnssec.example',
 			score: {
-				overall: 0,
-				grade: 'N/A',
+				overall: null,
+				grade: null,
 				categoryScores: {} as ScanDomainResult['score']['categoryScores'],
 				findings: [],
 				summary: 'broken-dnssec.example DNS resolution is broken (DNSSEC validation failure).',
@@ -294,12 +295,13 @@ describe('format-scan-report', () => {
 
 		const structured = buildStructuredScanResult(result);
 		expect(structured.resolves).toBe('broken');
-		expect(structured.grade).toBe('N/A');
-		expect(structured.passed).toBe(false);
+		expect(structured.grade).toBeNull();
+		expect(structured.score).toBeNull();
+		expect(structured.passed).toBeNull();
 		expect(Object.keys(structured.categoryScores)).toHaveLength(0);
 
 		const report = formatScanReport(result);
-		expect(report).toContain('Overall Score: 0/100 (N/A)');
+		expect(report).toContain('Overall Score: not measured');
 		expect(report).toContain('DNS resolution');
 	});
 

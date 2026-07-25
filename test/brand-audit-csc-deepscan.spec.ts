@@ -101,13 +101,15 @@ describe('runDeepScan', () => {
 		expect(result.postureSnapshot.stage).toBe('ready');
 	});
 
-	it("excludes an unresolvable apex (measured:false, legacy 'N/A' sentinel) from the grade distribution and median", async () => {
+	it('excludes an unresolvable apex (measured:false + a placeholder score/grade pair) from the grade distribution and median', async () => {
 		const mockInternalCall = async (tool: string, args: { domain: string }): Promise<unknown> => {
 			if (tool === 'discover_subdomains') {
 				return { content: [], structured: { domain: args.domain, totalSubdomains: 0, subdomains: [] } };
 			}
-			// nxdomain.com mirrors buildNonResolvingResult's real wire shape: zero checks ran
-			// (`measured: false`) but the degraded score/grade placeholders are still populated.
+			// nxdomain.com mirrors the wire shape buildNonResolvingResult emitted BEFORE 3.35.0:
+			// zero checks ran (`measured: false`) but the degraded score/grade placeholders are
+			// still populated. The producer now emits nulls; this keeps the hostile pair pinned,
+			// since `measured` — not nullness — is the load-bearing exclusion signal here.
 			if (args.domain === 'nxdomain.com') {
 				return {
 					content: [],
@@ -129,7 +131,8 @@ describe('runDeepScan', () => {
 
 		// Only the one genuinely-graded apex may appear in the customer-visible rollup.
 		expect(result.postureSnapshot.distribution).toEqual({ A: 1 });
-		// 'N/A' sorts after 'F' lexically, so counting it drags the median to the worst bucket.
+		// The placeholder letter sorts after 'F' lexically, so counting it drags the median to
+		// the worst bucket.
 		expect(result.postureSnapshot.medianGrade).toBe('A');
 
 		const ungraded = result.postureSnapshot.apexes.find((a) => a.apex === 'nxdomain.com');

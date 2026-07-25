@@ -101,17 +101,15 @@ function extractDanglingFromScan(apex: string, scan: ScanDomainStructured | unde
 
 /**
  * The abstain gate for an apex scan, matching the conjunction already used by
- * `batch_scan` and `compare_domains` (`!measured || score === null || grade === null`),
- * plus the legacy `'N/A'` sentinel that the scan producers still emit for an
- * unresolvable zone.
+ * `batch_scan` and `compare_domains` (`!measured || score === null || grade === null`).
  *
  * Returns all-null rather than a placeholder so an unmeasured apex cannot appear in
  * the customer-visible grade distribution or be sorted into the portfolio median —
- * `'N/A'` sorts lexically AFTER 'F', so counting it dragged the median to the worst
- * bucket, and a degenerate zero-check scan carries a literal 'A+'.
+ * the retired string sentinel sorted lexically AFTER 'F', so counting it dragged the
+ * median to the worst bucket, and a degenerate zero-check scan carries a literal 'A+'.
  */
 function gradedApexPosture(scan: ScanDomainStructured): { score: number | null; grade: string | null } {
-	if (scan.measured === false || scan.score === null || scan.grade === null || scan.grade === 'N/A') {
+	if (scan.measured === false || scan.score === null || scan.grade === null) {
 		return { score: null, grade: null };
 	}
 	return { score: scan.score, grade: scan.grade };

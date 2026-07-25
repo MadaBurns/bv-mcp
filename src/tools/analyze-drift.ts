@@ -44,6 +44,38 @@ export interface DriftReport {
 	timestamp: string;
 }
 
+/**
+ * The letters either grade scale can emit. The canonical 9-band `scoreToGrade`
+ * (A+ A B+ B C+ C D+ D F) is the superset; the NIST 6-band display scale is a
+ * strict subset of it. Anything outside this set — a placeholder, an empty
+ * string, an invented letter — was never a measured grade.
+ */
+const REAL_GRADE_LETTERS: ReadonlySet<string> = new Set(['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'F']);
+
+/**
+ * Whether a drift baseline carries a real measurement to diff against.
+ *
+ * Two sources reach {@link computeDrift} and BOTH could smuggle in an ungraded
+ * scan: the `"cached"` path (a stored ScanScore) and the caller-supplied JSON
+ * path (any object a caller pastes in). A structural `typeof grade === 'string'`
+ * check admits the degraded `{ overall: 0, grade: <placeholder> }` pair the scan
+ * producers emitted before 3.35.0 — and diffing against it renders a confident
+ * fabricated delta ("Score: +73 pts (… → B), IMPROVING") against a baseline that
+ * was never measured. Checking the grade is a REAL letter closes both sources
+ * with one rule, and needs no reference to the retired sentinel value.
+ *
+ * `Number.isFinite` is part of the same gate: `JSON.parse('{"overall":1e999}')`
+ * yields `Infinity`, whose `typeof` is `'number'`, and every delta computed
+ * from it is `NaN`.
+ */
+export function isUsableDriftBaseline(value: unknown): value is ScanScore & { overall: number; grade: string } {
+	if (typeof value !== 'object' || value === null) return false;
+	const candidate = value as { overall?: unknown; grade?: unknown; findings?: unknown };
+	if (typeof candidate.overall !== 'number' || !Number.isFinite(candidate.overall)) return false;
+	if (typeof candidate.grade !== 'string' || !REAL_GRADE_LETTERS.has(candidate.grade)) return false;
+	return Array.isArray(candidate.findings);
+}
+
 /** Build a unique key for matching findings across snapshots. */
 function findingKey(f: { category: string; title: string }): string {
 	return `${f.category}::${f.title}`;

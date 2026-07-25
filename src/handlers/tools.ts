@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { CheckResult } from '../lib/scoring';
-import { isGraded } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
 import { buildCheckCacheKey, buildScanCacheKey, runWithCacheTracked } from '../lib/cache';
 import { withRequestDedup } from '../lib/request-dedup';
@@ -50,7 +49,7 @@ import { checkResolverConsistency, formatResolverConsistency } from '../tools/ch
 import { validateFix, formatValidateFix } from '../tools/validate-fix';
 import { mapSupplyChain, formatSupplyChain } from '../tools/map-supply-chain';
 import { generateRolloutPlan, formatRolloutPlan } from '../tools/generate-rollout-plan';
-import { computeDrift, formatDriftReport } from '../tools/analyze-drift';
+import { computeDrift, formatDriftReport, isUsableDriftBaseline } from '../tools/analyze-drift';
 import { resolveSpfChain, formatSpfChain } from '../tools/resolve-spf-chain';
 import { discoverSubdomains, formatSubdomainDiscovery, DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS } from '../tools/discover-subdomains';
 import { mapCompliance, formatCompliance } from '../tools/map-compliance';
@@ -1526,10 +1525,8 @@ export async function handleToolsCall(
 						// There is nothing to measure drift against, so abstain rather than diff
 						// against it and report a fabricated delta — e.g. a domain that NXDOMAINed
 						// and was later configured properly would otherwise render
-						// "Score: +73 pts (N/A -> B), improving" against a baseline never measured.
-						// The `'N/A'` half is the legacy sentinel the producers still emit and is
-						// REMOVED IN TASK 3, when `isGraded()` alone becomes sufficient here.
-						if (!isGraded(baselineScore) || baselineScore.grade === 'N/A') {
+						// "Score: +73 pts (… -> B), improving" against a baseline never measured.
+						if (!isUsableDriftBaseline(baselineScore)) {
 							return buildToolErrorResult(
 								`Invalid baseline: the cached scan for ${validDomain} was never graded, so there is nothing to measure drift against. Re-run scan_domain.`,
 							);
@@ -1537,9 +1534,11 @@ export async function handleToolsCall(
 					} else {
 						try {
 							const parsed = JSON.parse(baselineStr);
-							if (typeof parsed?.overall !== 'number' || typeof parsed?.grade !== 'string' || !Array.isArray(parsed?.findings)) {
+							// Same gate as the cached path: a caller-supplied baseline whose grade is
+							// a placeholder rather than a real letter fabricates the identical delta.
+							if (!isUsableDriftBaseline(parsed)) {
 								return buildToolErrorResult(
-									'Invalid baseline: JSON must contain overall (number), grade (string), and findings (array). An ungraded scan cannot be used as a drift baseline.',
+									'Invalid baseline: JSON must contain overall (a finite number), grade (a real grade letter), and findings (array). An ungraded scan cannot be used as a drift baseline.',
 								);
 							}
 							baselineScore = parsed;
