@@ -13,10 +13,24 @@
 import { describe, it, expect } from 'vitest';
 
 // Vitest's Workers pool has no `fs`; the source corpus is inlined at build time
-// by import.meta.glob (eager, raw) so this audit runs inside workerd. Only
-// `src/**` is globbed, so the quoted sentinel in THIS file's own prose and
-// assertions is never scanned.
-const SOURCES = import.meta.glob('../../src/**/*.ts', { eager: true, query: '?raw', import: 'default' }) as Record<string, string>;
+// by import.meta.glob (eager, raw) so this audit runs inside workerd. Only the two
+// SOURCE trees are globbed — never `test/**` — so the quoted sentinel in THIS
+// file's own prose and assertions is never scanned.
+//
+// `packages/dns-checks/src` is in the corpus deliberately: `ScanScore`,
+// `scoreToGrade` and `isGraded` all live there, so a sentinel reintroduced in the
+// vendored core would otherwise be invisible to this audit. Its `__tests__/`
+// subtree is excluded below — those are test fixtures, not shipped code.
+const SOURCES = import.meta.glob(['../../src/**/*.ts', '../../packages/dns-checks/src/**/*.ts'], {
+	eager: true,
+	query: '?raw',
+	import: 'default',
+}) as Record<string, string>;
+
+/** Shipped source only: drop the vendored core's colocated test suites. */
+function shippedSources(): Array<[string, string]> {
+	return Object.entries(SOURCES).filter(([path]) => !path.includes('/__tests__/'));
+}
 
 // Files where the literal 'N/A' is legitimate and unrelated to grading.
 const ALLOWED = new Set([
@@ -24,22 +38,73 @@ const ALLOWED = new Set([
 	'../../src/tools/check-fast-flux.ts',
 ]);
 
+/**
+ * The ONE module allowed to build a `score/grade` display string. Every other
+ * formatter must call its helper rather than interpolate the pair itself.
+ */
+const SCORE_GRADE_RENDERER = '../../src/lib/ungraded-display.ts';
+
 describe('ungraded representation', () => {
-	it('scanned a non-trivial source corpus', () => {
-		// Non-vacuity guard: if the glob resolves to nothing, every assertion
+	it('scanned a non-trivial source corpus spanning BOTH source trees', () => {
+		// Non-vacuity guard: if either glob resolves to nothing, every assertion
 		// below passes trivially and this audit protects nothing.
-		expect(Object.keys(SOURCES).length).toBeGreaterThan(50);
+		expect(shippedSources().length).toBeGreaterThan(250);
+		expect(shippedSources().some(([p]) => p.startsWith('../../src/'))).toBe(true);
+		expect(shippedSources().some(([p]) => p.startsWith('../../packages/dns-checks/src/'))).toBe(true);
 	});
 
-	it("never uses the string 'N/A' as a grade value anywhere in src/", () => {
+	it("never uses the string 'N/A' as a grade value anywhere in the shipped source", () => {
 		const offenders: string[] = [];
-		for (const [path, source] of Object.entries(SOURCES)) {
+		for (const [path, source] of shippedSources()) {
 			if (ALLOWED.has(path)) continue;
-			if (source.includes("'N/A'") || source.includes('"N/A"')) {
+			// All three quoting forms — a backtick `N/A` in a template literal or a
+			// doc comment escapes a check that only looks for the two quote styles.
+			if (source.includes("'N/A'") || source.includes('"N/A"') || source.includes('`N/A`')) {
 				offenders.push(path);
 			}
 		}
 		expect(offenders).toEqual([]);
+	});
+
+	/**
+	 * The mechanical rule behind the `null/100 (null)` regression.
+	 *
+	 * `${score}/100 (${grade})` over a `number | null` / `string | null` pair is
+	 * invisible to TypeScript (`${null}` is legal under strict), to eslint and to
+	 * every existing spec — four shipped tools began printing `null/100 (null)`
+	 * into client reports with all gates green. One rule catches every instance,
+	 * present and future; the per-formatter fixtures in
+	 * `ungraded-formatter-rendering.spec.ts` only catch the ones someone thought of.
+	 *
+	 * Matches a `/100 (…)` interpolation whose PARENTHESISED expression mentions a
+	 * grade — that is what distinguishes a nullable score/grade pair from the
+	 * non-nullable `${spoofabilityScore}/100 (${riskLevel})` and
+	 * `${populationMeanScore}/100 (… points above average)` renderings, which are
+	 * legitimately not this shape.
+	 */
+	it('never interpolates a score/grade pair directly; every formatter routes through the shared renderer', () => {
+		const SCORE_GRADE_INTERPOLATION = /\$\{[^{}]*\}\/100\s*\(\$\{[^{}]*grade[^{}]*\}\)/i;
+		const offenders: string[] = [];
+		for (const [path, source] of shippedSources()) {
+			if (path === SCORE_GRADE_RENDERER) continue;
+			if (SCORE_GRADE_INTERPOLATION.test(source)) offenders.push(path);
+		}
+		expect(offenders).toEqual([]);
+	});
+
+	it('the shared renderer abstains on either half being null', async () => {
+		const { formatScoreGrade, UNGRADED_DISPLAY } = await import('../../src/lib/ungraded-display');
+
+		expect(formatScoreGrade(null, null)).toBe(UNGRADED_DISPLAY);
+		// Each half independently: a score with no grade, and a grade with no score,
+		// are both "not measured" — neither may render its surviving half.
+		expect(formatScoreGrade(73, null)).toBe(UNGRADED_DISPLAY);
+		expect(formatScoreGrade(null, 'C+')).toBe(UNGRADED_DISPLAY);
+		// Control — without it every assertion above holds for a function that
+		// returned the token unconditionally.
+		expect(formatScoreGrade(73, 'C+')).toBe('73/100 (C+)');
+		// A real zero is a MEASUREMENT and must still render as one.
+		expect(formatScoreGrade(0, 'F')).toBe('0/100 (F)');
 	});
 
 	it('exports exactly one ungraded display token', async () => {

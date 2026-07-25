@@ -13,6 +13,7 @@ import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../lib/scoring-
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { StructuredScanResult } from './scan/format-report';
 import type { OutputFormat } from '../handlers/tool-args';
+import { formatScoreGrade } from '../lib/ungraded-display';
 
 export interface BatchScanResultItem extends StructuredScanResult {
 	error?: string;
@@ -168,7 +169,7 @@ export function formatBatchScan(results: BatchScanResultItem[], format: OutputFo
 			continue;
 		}
 		const icon = r.score >= 80 ? '✓' : r.score >= 50 ? '⚠' : '✗';
-		lines.push(`${icon} ${r.domain.padEnd(40)} ${r.score}/100 (${r.grade})`);
+		lines.push(`${icon} ${r.domain.padEnd(40)} ${formatScoreGrade(r.score, r.grade)}`);
 		if (format === 'full') {
 			lines.push(`   Profile: ${r.scoringProfile} | Maturity: Stage ${r.maturityStage ?? '?'}`);
 			const critHigh = r.findingCounts.critical + r.findingCounts.high;

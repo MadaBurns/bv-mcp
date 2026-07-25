@@ -16,6 +16,7 @@
 import type { OutputFormat } from '../handlers/tool-args';
 import type { Finding, ScanScore } from '@blackveil/dns-checks/scoring';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { isGraded } from '../lib/scoring';
 import { UNGRADED_DISPLAY } from './scan/format-report';
 
 /** Overall drift direction classification. */
@@ -67,10 +68,16 @@ const REAL_GRADE_LETTERS: ReadonlySet<string> = new Set(['A+', 'A', 'B+', 'B', '
  * `Number.isFinite` is part of the same gate: `JSON.parse('{"overall":1e999}')`
  * yields `Infinity`, whose `typeof` is `'number'`, and every delta computed
  * from it is `NaN`.
+ *
+ * Layered on {@link isGraded} rather than duplicating it, so "carries a grade"
+ * has ONE definition fleet-wide: `isGraded` is the SSOT nullness rule, and the
+ * checks below are the extra shape/domain narrowing the untrusted JSON path
+ * needs on top of it (`isGraded` alone would accept `overall: "80"`).
  */
 export function isUsableDriftBaseline(value: unknown): value is ScanScore & { overall: number; grade: string } {
 	if (typeof value !== 'object' || value === null) return false;
-	const candidate = value as { overall?: unknown; grade?: unknown; findings?: unknown };
+	const candidate = value as ScanScore;
+	if (!isGraded(candidate)) return false;
 	if (typeof candidate.overall !== 'number' || !Number.isFinite(candidate.overall)) return false;
 	if (typeof candidate.grade !== 'string' || !REAL_GRADE_LETTERS.has(candidate.grade)) return false;
 	return Array.isArray(candidate.findings);

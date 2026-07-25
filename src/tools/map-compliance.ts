@@ -11,6 +11,7 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { formatScoreGrade } from '../lib/ungraded-display';
 
 export type ComplianceFramework = 'nist_800_177' | 'pci_dss_4' | 'soc2' | 'cis_controls';
 
@@ -200,8 +201,19 @@ export async function mapCompliance(domain: string, kv?: KVNamespace, runtimeOpt
 export function formatCompliance(report: ComplianceReport, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 
+	// A control with NO matching check data is scored `fail` (see the mapping loop
+	// above). An unmeasured scan matches nothing, so every control fails and the
+	// report reads as a complete framework-by-framework compliance FAILURE for a
+	// domain that was never assessed — under a header that already says the score
+	// is not measured. Until the control status itself carries a "not assessed"
+	// state, say so explicitly so the ✗ column cannot be read as a real verdict.
+	const unmeasured = report.score === null || report.grade === null;
+	const UNMEASURED_CAVEAT =
+		'No checks ran for this domain, so the control results below are NOT assessable — every control shows as failing because there is no evidence either way, not because a requirement was found unmet.';
+
 	if (format === 'compact') {
-		lines.push(`Compliance: ${sanitizeOutputText(report.domain, 253)} — ${report.score}/100 (${report.grade})`);
+		lines.push(`Compliance: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}`);
+		if (unmeasured) lines.push(UNMEASURED_CAVEAT);
 		lines.push('');
 
 		for (const fw of FRAMEWORK_ORDER) {
@@ -219,7 +231,8 @@ export function formatCompliance(report: ComplianceReport, format: OutputFormat 
 		}
 	} else {
 		lines.push(`# Compliance Report: ${sanitizeOutputText(report.domain, 253)}`);
-		lines.push(`**Score:** ${report.score}/100 (${report.grade})`);
+		lines.push(`**Score:** ${formatScoreGrade(report.score, report.grade)}`);
+		if (unmeasured) lines.push(`> **${UNMEASURED_CAVEAT}**`);
 		lines.push('');
 
 		for (const fw of FRAMEWORK_ORDER) {

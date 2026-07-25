@@ -7,14 +7,12 @@ import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
+import { formatScoreGrade } from '../../lib/ungraded-display';
 
-/**
- * The SINGLE rendered token for a scan that produced no grade. One constant so
- * the same state cannot render one way in one report and another way elsewhere.
- * Deliberately NOT the retired N/A sentinel — that reads as "not applicable", a
- * different state already tracked by `notApplicableCategories`.
- */
-export const UNGRADED_DISPLAY = 'not measured';
+// Both live in a tiny leaf module so every formatter in src/tools/ can share them
+// without importing the scan orchestrator. Re-exported here because this is where
+// consumers have always found UNGRADED_DISPLAY.
+export { UNGRADED_DISPLAY } from '../../lib/ungraded-display';
 
 /**
  * The SINGLE customer-facing display grade for the scan-output tools
@@ -328,7 +326,7 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 	const displayGrade = displayGradeFor(result.score);
 	lines.push(`DNS Security Scan: ${result.domain}`);
 	lines.push(`${'='.repeat(40)}`);
-	lines.push(displayGrade === null ? `Overall Score: ${UNGRADED_DISPLAY}` : `Overall Score: ${result.score.overall}/100 (${displayGrade})`);
+	lines.push(`Overall Score: ${formatScoreGrade(result.score.overall, displayGrade)}`);
 	// The engine bakes the canonical 9-band grade into `summary` ("…Grade: X"); rewrite
 	// that one token to the display (NIST) grade so the text never disagrees with the
 	// score line above. No-op when the scan was never graded at all — the summary of a

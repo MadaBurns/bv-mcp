@@ -49,6 +49,7 @@ import { checkResolverConsistency, formatResolverConsistency } from '../tools/ch
 import { validateFix, formatValidateFix } from '../tools/validate-fix';
 import { mapSupplyChain, formatSupplyChain } from '../tools/map-supply-chain';
 import { generateRolloutPlan, formatRolloutPlan } from '../tools/generate-rollout-plan';
+import { isGraded } from '../lib/scoring';
 import { computeDrift, formatDriftReport, isUsableDriftBaseline } from '../tools/analyze-drift';
 import { resolveSpfChain, formatSpfChain } from '../tools/resolve-spf-chain';
 import { discoverSubdomains, formatSubdomainDiscovery, DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS } from '../tools/discover-subdomains';
@@ -1550,6 +1551,20 @@ export async function handleToolsCall(
 					const forceRefresh = extractForceRefresh(validatedArgs);
 					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
 					const scanResult = await scanDomain(validDomain, scanCacheKV, scanOptions);
+					// The CURRENT side needs the same abstain as the baseline side, and for a
+					// sharper reason: computeDrift diffs finding SETS, so an unmeasured current
+					// scan makes every baseline finding "disappear" and reports them as RESOLVED.
+					// A monitored client domain that lapses (NXDOMAIN) rendered "STABLE" with a
+					// HIGH and a MEDIUM finding ticked off as fixed — nothing was fixed, the
+					// domain stopped existing. categoryDeltas' `?? 0` likewise turned an empty
+					// categoryScores map into a confident `spf: 80 -> 0 (-80)`. Abstaining BEFORE
+					// computeDrift is what makes both unconstructible; Task 6's inconclusive
+					// classification is a verdict change layered on top of this, not a substitute.
+					if (!isGraded(scanResult.score)) {
+						return buildToolErrorResult(
+							`Domain ${validDomain} could not be scored on this run (it does not resolve, or its zone is unresolvable), so there is nothing to compare against the baseline. Drift cannot be measured.`,
+						);
+					}
 					const drift = computeDrift(validDomain, baselineScore, scanResult.score);
 					logResult = drift.classification;
 					logDetails = drift;

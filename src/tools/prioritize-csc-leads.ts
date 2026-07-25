@@ -21,6 +21,7 @@ import { checkRdapLookup, RDAP_LOOKUP_SYNC_BUDGET_MS } from './check-rdap-lookup
 import { brandAuditSingle } from './brand-audit-single';
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
 import type { ScanRuntimeOptions } from './scan/post-processing';
+import { UNGRADED_DISPLAY, formatScoreGrade } from '../lib/ungraded-display';
 
 /** Portfolio ownership lens (from classifyCandidate) + 'unknown' for a bare domain list. */
 export type OwnershipBucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation' | 'impersonationSurface' | 'unknown';
@@ -278,7 +279,7 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 		lines.push(`CSC leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot${portfolioSegment}`);
 		for (const lead of report.rankedLeads) {
 			lines.push(
-				`${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${lead.gapSeverity} — ${lead.score}/100 (${lead.grade}) — ${lead.recommendedCount} product(s)`,
+				`${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${lead.gapSeverity} — ${formatScoreGrade(lead.score, lead.grade)} — ${lead.recommendedCount} product(s)`,
 			);
 		}
 		return lines.join('\n').trimEnd();
@@ -291,12 +292,14 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 			`**Portfolio grade: ${report.portfolioGrade.grade}** (weighted ${report.portfolioGrade.weightedScore}/100 across ${report.portfolioGrade.contributingDomains} domain(s))`,
 		);
 	} else {
-		lines.push('**Portfolio grade: N/A** (no gradeable domains)');
+		lines.push(`**Portfolio grade: ${UNGRADED_DISPLAY}** (no gradeable domains)`);
 	}
 	lines.push('');
 	for (const lead of report.rankedLeads) {
 		lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${lead.gapSeverity}`);
-		lines.push(`  - Score: ${lead.score}/100 (${lead.grade}) | Ownership: ${lead.ownershipBucket} | Top priority: ${lead.topPriority}`);
+		lines.push(
+			`  - Score: ${formatScoreGrade(lead.score, lead.grade)} | Ownership: ${lead.ownershipBucket} | Top priority: ${lead.topPriority}`,
+		);
 		if (lead.recommendedCscProducts.length > 0) {
 			lines.push(`  - Recommended CSC products: ${lead.recommendedCscProducts.join(', ')}`);
 		} else {

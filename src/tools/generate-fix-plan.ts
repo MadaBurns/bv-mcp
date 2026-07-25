@@ -14,6 +14,7 @@ import type { CheckResult, Finding, Severity, CheckCategory } from '@blackveil/d
 import { IMPORTANCE_WEIGHTS } from '@blackveil/dns-checks/scoring';
 import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
+import { formatScoreGrade } from '../lib/ungraded-display';
 
 /** A single remediation action in a fix plan. */
 export interface FixAction {
@@ -155,7 +156,7 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 	const lines: string[] = [];
 
 	if (format === 'compact') {
-		lines.push(`Fix Plan: ${plan.domain} — ${plan.score}/100 (${plan.grade}), ${plan.totalActions} actions`);
+		lines.push(`Fix Plan: ${plan.domain} — ${formatScoreGrade(plan.score, plan.grade)}, ${plan.totalActions} actions`);
 		if (plan.actions.length === 0) {
 			lines.push('No actionable findings.');
 			return lines.join('\n');
@@ -173,7 +174,7 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 	}
 
 	lines.push(`# Fix Plan: ${plan.domain}`);
-	lines.push(`Score: ${plan.score}/100 (${plan.grade}) | Maturity Stage: ${plan.maturityStage}/4`);
+	lines.push(`Score: ${formatScoreGrade(plan.score, plan.grade)} | Maturity Stage: ${plan.maturityStage}/4`);
 	lines.push(`${plan.totalActions} remediation action${plan.totalActions !== 1 ? 's' : ''} identified`);
 	lines.push('');
 

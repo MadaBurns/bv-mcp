@@ -11,6 +11,7 @@ import { computeScoringConfigHash } from '../lib/scoring-version';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { StructuredScanResult } from './scan/format-report';
 import type { OutputFormat } from '../handlers/tool-args';
+import { formatScoreGrade } from '../lib/ungraded-display';
 
 /**
  * Wall-clock budget for the synchronous `compare_domains` tool path, threaded
@@ -219,7 +220,7 @@ export function formatDomainComparison(result: DomainComparisonResult, format: O
 		}
 		const icon = score >= 80 ? '✓' : score >= 50 ? '⚠' : '✗';
 		const winMark = result.winner === domain ? ' ← best' : '';
-		lines.push(`  ${icon} ${domain.padEnd(40)} ${score}/100 (${grade})${winMark}`);
+		lines.push(`  ${icon} ${domain.padEnd(40)} ${formatScoreGrade(score, grade)}${winMark}`);
 	}
 	lines.push('');
 

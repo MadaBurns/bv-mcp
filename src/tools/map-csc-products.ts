@@ -15,6 +15,7 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { formatScoreGrade } from '../lib/ungraded-display';
 
 export type CscProductKey = 'csc_multilock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
 
@@ -156,7 +157,7 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 
 	if (format === 'compact') {
 		lines.push(
-			`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${report.score}/100 (${report.grade}) — ${report.recommendedCount} upsell(s)`,
+			`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)} — ${report.recommendedCount} upsell(s)`,
 		);
 		for (const key of CSC_PRODUCT_ORDER) {
 			const r = byKey.get(key)!;
@@ -166,7 +167,7 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 		}
 	} else {
 		lines.push(`# CSC Product Recommendations: ${sanitizeOutputText(report.domain, 253)}`);
-		lines.push(`**Score:** ${report.score}/100 (${report.grade}) | **${report.recommendedCount}** recommended`);
+		lines.push(`**Score:** ${formatScoreGrade(report.score, report.grade)} | **${report.recommendedCount}** recommended`);
 		lines.push('');
 		for (const key of CSC_PRODUCT_ORDER) {
 			const r = byKey.get(key)!;

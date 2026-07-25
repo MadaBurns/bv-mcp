@@ -6,6 +6,7 @@ import type { CscProductKey, CscPriority, CscProductReport, CscProductRecommenda
 import type { CheckResult } from '../src/lib/scoring';
 import { bucketFromClassification, computeGapSeverity, computePortfolioGrade, rankCscLeads, formatCscLeads, extractDiscoveredCandidates } from '../src/tools/prioritize-csc-leads';
 import type { OwnershipBucket, CscLeadEntry } from '../src/tools/prioritize-csc-leads';
+import { UNGRADED_DISPLAY } from '../src/lib/ungraded-display';
 
 const PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
 
@@ -271,11 +272,17 @@ describe('formatCscLeads — portfolio grade line', () => {
 		expect(out).toContain('2 domain(s)');
 	});
 
-	it('full output renders an N/A portfolio line when there are no gradeable domains', () => {
+	it('full output renders the shared ungraded token on the portfolio line when there are no gradeable domains', () => {
 		const report = rankCscLeads([], 'acme');
 		const out = formatCscLeads(report, 'full');
-		expect(out).toContain('Portfolio grade: N/A');
+		// Was 'Portfolio grade: N/A'. One prioritize_csc_leads output could carry THREE
+		// vocabularies for the same state — a lead line saying `null/100 (null)`, this
+		// portfolio line saying N/A, and the scan surfaces saying 'not measured'. The
+		// assertion is unchanged in intent: the line still names the ungraded state and
+		// still explains why; it now uses the one token every other surface uses.
+		expect(out).toContain(`Portfolio grade: ${UNGRADED_DISPLAY}`);
 		expect(out).toContain('no gradeable domains');
+		expect(out).not.toContain('N/A');
 	});
 
 	it('compact output appends a portfolio segment when present', () => {

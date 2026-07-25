@@ -411,6 +411,76 @@ describe('analyze_drift cached baseline — ungraded cached scan is rejected', (
 	});
 });
 
+describe('analyze_drift CURRENT side — an unmeasured current scan cannot fabricate a diff', () => {
+	function makeKv(): KVNamespace {
+		return {
+			async get(): Promise<unknown> {
+				return null;
+			},
+			async put(): Promise<void> {},
+			async delete(): Promise<void> {},
+			async list(): Promise<unknown> {
+				return { keys: [], list_complete: true, cacheStatus: null };
+			},
+			async getWithMetadata(): Promise<unknown> {
+				return { value: null, metadata: null };
+			},
+		} as unknown as KVNamespace;
+	}
+
+	/** A graded baseline carrying two findings that a diff could "resolve". */
+	const GRADED_BASELINE = JSON.stringify({
+		overall: 78,
+		grade: 'B',
+		categoryScores: { spf: 80, dmarc: 60 },
+		summary: 'Grade: B',
+		findings: [
+			{ category: 'spf', title: 'SPF too permissive', severity: 'high', detail: 'x' },
+			{ category: 'dmarc', title: 'DMARC p=none', severity: 'medium', detail: 'y' },
+		],
+	});
+
+	it('abstains instead of reporting the baseline findings as RESOLVED when the domain has lapsed', async () => {
+		installNxdomainDnsFetch('lapsed-drift-probe.com');
+		const { handleToolsCall } = await import('../src/handlers/tools');
+
+		const result = await handleToolsCall(
+			{ name: 'analyze_drift', arguments: { domain: 'lapsed-drift-probe.com', baseline: GRADED_BASELINE, force_refresh: true } },
+			makeKv(),
+		);
+		const text = result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
+
+		expect(result.isError).toBe(true);
+		// The defect: a monitored client domain stops existing, and the report says
+		// posture is STABLE and a HIGH plus a MEDIUM finding were RESOLVED. Nothing
+		// was resolved — there is no current scan to hold the findings.
+		expect(text).not.toContain('Resolved');
+		expect(text).not.toContain('SPF too permissive');
+		expect(text).not.toContain('STABLE');
+		// …and no fabricated category delta from an empty categoryScores map
+		// (`current ?? 0` renders a confident `spf: 80 -> 0 (-80)`).
+		expect(text).not.toContain('-80');
+		// Allowlisted prefix, or sanitizeErrorMessage() replaces it over the wire.
+		expect(text).toContain('Domain ');
+	});
+
+	it('still produces a real drift report when the current scan IS measured (control)', async () => {
+		installEmptyDnsFetch();
+		const { handleToolsCall } = await import('../src/handlers/tools');
+
+		const result = await handleToolsCall(
+			{ name: 'analyze_drift', arguments: { domain: 'measured-drift-probe.com', baseline: GRADED_BASELINE, force_refresh: true } },
+			makeKv(),
+		);
+		const text = result.content.map((c) => (c.type === 'text' ? c.text : '')).join('\n');
+
+		// Without this the assertions above would hold under a guard that rejected
+		// EVERY drift request.
+		expect(result.isError).toBeFalsy();
+		expect(text).toContain('Drift Analysis');
+	});
+});
+
 describe('scan_domain tool_call analytics — ungraded scan', () => {
 	it("emits status 'inconclusive' rather than a confident 'fail' for a domain that does not resolve", async () => {
 		const emitted: Array<{ toolName: string; status: string }> = [];
