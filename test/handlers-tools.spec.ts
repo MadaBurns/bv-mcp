@@ -856,6 +856,59 @@ describe('handleToolsCall - resultCapture', () => {
 		expect((captured as Record<string, unknown>).category).toBe('spf');
 		expect(typeof (captured as Record<string, unknown>).score).toBe('number');
 	});
+
+	// Regression: scan_domain is dispatched from the `switch`, not TOOL_REGISTRY, so it
+	// never reached the registry path's resultCapture call. The callback silently never
+	// fired and every tenant scan row persisted score/grade null.
+	it('invokes resultCapture with the aggregate scan result for scan_domain', async () => {
+		mockAllChecks();
+		let fired = false;
+		let captured: unknown = null;
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		const result = await handleToolsCall({ name: 'scan_domain', arguments: { domain: 'example.com' } }, undefined, {
+			resultCapture: (r) => {
+				fired = true;
+				captured = r;
+			},
+		});
+		expect(result.isError).toBeUndefined();
+		expect(fired).toBe(true);
+
+		const payload = captured as Record<string, unknown>;
+		// A real, persistable score/grade — not the null that reached D1 before.
+		expect(typeof payload.score).toBe('number');
+		expect(payload.score).toBeGreaterThan(0);
+		expect(typeof payload.grade).toBe('string');
+		expect(payload.grade).not.toBe('');
+		expect(payload.domain).toBe('example.com');
+		// Findings are flattened off the per-category checks so tenant rows can persist them.
+		expect(Array.isArray(payload.findings)).toBe(true);
+	});
+
+	it('captures a payload scan consumers can narrow with isCapturedScanResult', async () => {
+		mockAllChecks();
+		mockTxtRecords(['v=spf1 -all']);
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		const { isCapturedScanResult } = await import('../src/lib/captured-result');
+
+		let scanCapture: unknown = null;
+		await handleToolsCall({ name: 'scan_domain', arguments: { domain: 'example.com' } }, undefined, {
+			resultCapture: (r) => {
+				if (isCapturedScanResult(r)) scanCapture = r;
+			},
+		});
+		expect(scanCapture).not.toBeNull();
+
+		// The guard must NOT swallow a per-category CheckResult as a scan aggregate —
+		// internal.ts relies on that distinction to keep its structured contract stable.
+		let checkCapture: unknown = null;
+		await handleToolsCall({ name: 'check_spf', arguments: { domain: 'example.com' } }, undefined, {
+			resultCapture: (r) => {
+				if (isCapturedScanResult(r)) checkCapture = r;
+			},
+		});
+		expect(checkCapture).toBeNull();
+	});
 });
 
 // -- tool routing for additional registry tools --

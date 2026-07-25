@@ -164,9 +164,14 @@ describe('Tenant queue consumer chaos: handleScanQueue wrapper resilience', () =
 			}
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
 			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
+				domain: 'example.com',
 				score: 90,
+				grade: 'A',
+				passed: true,
+				// `categoryScores` is what marks this as scan_domain's aggregate payload
+				// (CapturedScanResult) rather than a per-category CheckResult. The tenant
+				// path only ever calls scan_domain, so that is the shape it really receives.
+				categoryScores: { spf: 90 },
 				findings: [],
 			});
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
@@ -213,9 +218,14 @@ describe('Tenant queue consumer chaos: handleScanQueue wrapper resilience', () =
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
 			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
+				domain: 'example.com',
 				score: 90,
+				grade: 'A',
+				passed: true,
+				// `categoryScores` is what marks this as scan_domain's aggregate payload
+				// (CapturedScanResult) rather than a per-category CheckResult. The tenant
+				// path only ever calls scan_domain, so that is the shape it really receives.
+				categoryScores: { spf: 90 },
 				findings: [],
 			});
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };

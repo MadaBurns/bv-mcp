@@ -158,9 +158,14 @@ describe('processScanMessage', () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
 			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
+				domain: 'example.com',
 				score: 90,
+				grade: 'A',
+				passed: true,
+				// `categoryScores` is what marks this as scan_domain's aggregate payload
+				// (CapturedScanResult) rather than a per-category CheckResult. The tenant
+				// path only ever calls scan_domain, so that is the shape it really receives.
+				categoryScores: { spf: 90 },
 				findings: [
 					{ category: 'spf', severity: 'info', title: 'spf_ok', detail: 'looks good' },
 					{ category: 'spf', severity: 'low', title: 'spf_pct', detail: 'pct=100' },
@@ -242,9 +247,14 @@ describe('processScanMessage', () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
 			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
+				domain: 'example.com',
 				score: 90,
+				grade: 'A',
+				passed: true,
+				// `categoryScores` is what marks this as scan_domain's aggregate payload
+				// (CapturedScanResult) rather than a per-category CheckResult. The tenant
+				// path only ever calls scan_domain, so that is the shape it really receives.
+				categoryScores: { spf: 90 },
 				findings: [{ category: 'spf', severity: 'info', title: 'spf_ok', detail: 'looks good' }],
 			});
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
@@ -321,9 +331,14 @@ describe('processScanMessage', () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
 			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
+				domain: 'example.com',
 				score: 90,
+				grade: 'A',
+				passed: true,
+				// `categoryScores` is what marks this as scan_domain's aggregate payload
+				// (CapturedScanResult) rather than a per-category CheckResult. The tenant
+				// path only ever calls scan_domain, so that is the shape it really receives.
+				categoryScores: { spf: 90 },
 				findings: [],
 			});
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
@@ -391,9 +406,14 @@ describe('handleScanQueue', () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
 			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
+				domain: 'example.com',
 				score: 90,
+				grade: 'A',
+				passed: true,
+				// `categoryScores` is what marks this as scan_domain's aggregate payload
+				// (CapturedScanResult) rather than a per-category CheckResult. The tenant
+				// path only ever calls scan_domain, so that is the shape it really receives.
+				categoryScores: { spf: 90 },
 				findings: [],
 			});
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };

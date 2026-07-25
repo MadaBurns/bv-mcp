@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { CheckResult } from '../lib/scoring';
+// Re-exported so existing `handlers/tools` importers keep working; the canonical
+// home is `lib/captured-result` (see the note there about vi.mock).
+export { isCapturedScanResult, type CapturedScanResult, type CapturedToolResult } from '../lib/captured-result';
+import type { CapturedToolResult } from '../lib/captured-result';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
 import { buildCheckCacheKey, buildScanCacheKey, runWithCacheTracked } from '../lib/cache';
 import { withRequestDedup } from '../lib/request-dedup';
@@ -203,8 +207,18 @@ interface ToolRuntimeOptions {
 	profileAccumulatorShardMode?: import('../lib/profile-accumulator').AccumulatorShardMode;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
-	/** When provided, receives the raw CheckResult before MCP text formatting. Used by internal structured response mode. */
-	resultCapture?: (result: CheckResult) => void;
+	/**
+	 * When provided, receives the raw tool result before MCP text formatting. Used by
+	 * the internal structured response mode and by the tenant scan-persistence paths.
+	 *
+	 * The payload is NOT always a `CheckResult`: registry (per-category) tools emit a
+	 * `CheckResult`, while `scan_domain` emits the aggregate `CapturedScanResult`.
+	 * Declaring the union is deliberate — the old `(result: CheckResult) => void`
+	 * signature was a type lie that let the tenant call sites read `score` as a plain
+	 * `number` and hid both the missing `grade` field and its nullability. Consumers
+	 * must narrow with `isCapturedScanResult()`.
+	 */
+	resultCapture?: (result: CapturedToolResult) => void;
 	/** Override cache TTL in seconds for scan results. Threaded to scanDomain. */
 	cacheTtlSeconds?: number;
 	/** Scan-level wall-clock budget in milliseconds. Threaded to scanDomain. */
@@ -1278,6 +1292,16 @@ export async function handleToolsCall(
 					});
 					const structured = buildStructuredScanResult(result, {
 						scoringConfigHash: computeScoringConfigHash(runtimeOptions?.scoringConfig),
+					});
+					// scan_domain is dispatched from this switch, NOT from TOOL_REGISTRY, so it
+					// never reached the registry path's resultCapture call. Every tenant scan row
+					// therefore persisted `score: null, grade: null` and zero findings, which made
+					// the /reports `mean_score` and `grade_dist` aggregates meaningless. The
+					// payload is the structured report plus the flattened per-category findings —
+					// see CapturedScanResult.
+					runtimeOptions?.resultCapture?.({
+						...structured,
+						findings: result.checks.flatMap((c) => c.findings),
 					});
 					return buildToolResult(formatScanReport(result, effectiveFormat), structured, effectiveFormat);
 				}

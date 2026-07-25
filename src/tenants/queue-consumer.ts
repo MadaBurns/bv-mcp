@@ -21,11 +21,12 @@
  * per-message Worker CPU budget proves tight; for the first cut we fold writes
  * into the scanner consumer to keep the blast radius small. If this becomes a
  * bottleneck, introduce `BV_SCAN_WRITER_QUEUE` and have the scanner emit its
- * captured `CheckResult` to it instead of inserting directly.
+ * captured `CapturedScanResult` to it instead of inserting directly.
  */
 
 import { ZodError } from 'zod';
 import { handleToolsCall } from '../handlers/tools';
+import { isCapturedScanResult, type CapturedScanResult } from '../lib/captured-result';
 import { createAnalyticsClient } from '../lib/analytics';
 import { parseScoringConfigCached } from '../lib/scoring-config';
 import { parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from '../lib/config';
@@ -33,7 +34,7 @@ import { ScanQueueMessageSchema, type ScanQueueMessage } from '../schemas/tenant
 import { streamScanResult } from '../lib/hooks/analytics-stream';
 import { resolveTenant, type ResolverEnv, type TenantDbHandle } from './tenant-resolver';
 import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
-import type { CheckResult, Finding } from '../lib/scoring';
+import type { Finding } from '../lib/scoring';
 
 /** Wall-clock budget for one message — covers handleToolsCall + the D1 inserts. */
 export const QUEUE_MESSAGE_TIMEOUT_MS = 20_000;
@@ -185,11 +186,11 @@ async function writeDlqRow(
 async function persistScan(
 	tenantDb: TenantDbHandle,
 	msg: ScanQueueMessage,
-	captured: CheckResult | null,
+	captured: CapturedScanResult | null,
 ): Promise<void> {
 	const scanId = newRowId();
 	const score = captured?.score ?? null;
-	const grade = (captured as unknown as { grade?: string } | null)?.grade ?? null;
+	const grade = captured?.grade ?? null;
 	const findingCount = captured?.findings?.length ?? 0;
 	await tenantDb
 		.prepare(SCANS_INSERT_SQL)
@@ -304,7 +305,7 @@ export async function processScanMessage(
 		secondaryDoh: env.BV_DOH_ENDPOINT ? { endpoint: env.BV_DOH_ENDPOINT, token: env.BV_DOH_TOKEN } : undefined,
 	};
 
-	let captured: CheckResult | null = null;
+	let captured: CapturedScanResult | null = null;
 	try {
 		// Phase 6: Fingerprint pre-flight
 		if (!parsed.force_refresh) {
@@ -333,7 +334,7 @@ export async function processScanMessage(
 							// to keep the cycle consistent with the skip logic.
 							// But wait, the cycle alert sweep needs a scan row for THIS cycle_id
 							// to find the findings. So we DO need to persist it.
-							captured = JSON.parse(lastScan.result_json) as CheckResult;
+							captured = JSON.parse(lastScan.result_json) as CapturedScanResult;
 						}
 					}
 				}
@@ -349,8 +350,11 @@ export async function processScanMessage(
 					env.SCAN_CACHE,
 					{
 						...runtimeOptions,
+						// Narrowed rather than assigned blind: `resultCapture` is typed as the
+						// CheckResult | CapturedScanResult union, and only the scan aggregate
+						// carries the score/grade this row persists.
 						resultCapture: (r) => {
-							captured = r;
+							if (isCapturedScanResult(r)) captured = r;
 						},
 					},
 				),
@@ -376,11 +380,11 @@ export async function processScanMessage(
 	}
 
 	try {
-		await persistScan(tenantDb, parsed, captured as CheckResult | null);
+		await persistScan(tenantDb, parsed, captured as CapturedScanResult | null);
 		ctx.waitUntil(streamScanResult(env, {
 			domain: parsed.domain,
-			grade: (captured as unknown as { grade?: string } | null)?.grade ?? null,
-			score: captured?.score ?? null,
+			grade: (captured as CapturedScanResult | null)?.grade ?? null,
+			score: (captured as CapturedScanResult | null)?.score ?? null,
 			sub_tenant_id: parsed.sub_tenant_id,
 			cycle_id: parsed.cycle_id
 		}));

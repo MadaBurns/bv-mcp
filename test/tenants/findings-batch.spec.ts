@@ -147,7 +147,7 @@ describe('queue-consumer persistScan — findings batching (T3)', () => {
 		const n = 25;
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({ category: 'spf', passed: true, score: 80, findings: makeFindings(n) });
+			opts?.resultCapture?.({ domain: 'example.com', score: 80, grade: 'A', passed: true, categoryScores: { spf: 80 }, findings: makeFindings(n) });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
@@ -172,7 +172,7 @@ describe('queue-consumer persistScan — findings batching (T3)', () => {
 		const n = 12;
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({ category: 'spf', passed: true, score: 80, findings: makeFindings(n) });
+			opts?.resultCapture?.({ domain: 'example.com', score: 80, grade: 'A', passed: true, categoryScores: { spf: 80 }, findings: makeFindings(n) });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
@@ -190,7 +190,7 @@ describe('queue-consumer persistScan — findings batching (T3)', () => {
 	it('writes no findings INSERT when the scan has zero findings', async () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({ category: 'spf', passed: true, score: 100, findings: [] });
+			opts?.resultCapture?.({ domain: 'example.com', score: 100, grade: 'A', passed: true, categoryScores: { spf: 100 }, findings: [] });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
@@ -224,7 +224,7 @@ describe('routes POST /internal/tenants/scan — findings batching (T3)', () => 
 		const n = 25;
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({ category: 'spf', passed: true, score: 80, findings: makeFindings(n) });
+			opts?.resultCapture?.({ domain: 'example.com', score: 80, grade: 'A', passed: true, categoryScores: { spf: 80 }, findings: makeFindings(n) });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const worker = (await import('../../src')).default;

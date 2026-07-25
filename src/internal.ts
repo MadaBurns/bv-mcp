@@ -34,6 +34,7 @@ import { ZodError } from 'zod';
 import { logError } from './lib/log';
 import { tenantRoutes } from './tenants/routes';
 import { handleToolsCall } from './handlers/tools';
+import { isCapturedScanResult } from './lib/captured-result';
 import { isAuthorizedRequest } from './lib/auth';
 import { createAnalyticsClient } from './lib/analytics';
 import { parseScoringConfigCached } from './lib/scoring-config';
@@ -310,8 +311,13 @@ internalRoutes.post('/tools/call', async (c) => {
 		...buildBrandTierLookups(c.env),
 		...(wantStructured
 			? {
-					resultCapture: (r: import('@blackveil/dns-checks/scoring').CheckResult) => {
-						capturedResult = r;
+					// resultCapture now also fires for scan_domain (previously it never did).
+					// scan_domain is NOT a CheckResult tool, and this door already surfaces its
+					// report via the `result.structuredContent` branch below — which bv-web reads
+					// as `payload.result`. Ignoring the scan aggregate here keeps that contract
+					// byte-identical instead of silently swapping in a differently-shaped payload.
+					resultCapture: (r) => {
+						if (!isCapturedScanResult(r)) capturedResult = r;
 					},
 				}
 			: {}),
@@ -585,8 +591,11 @@ internalRoutes.post('/tools/batch', async (c) => {
 						...buildBrandTierLookups(c.env),
 						...(wantStructured
 							? {
-									resultCapture: (r: import('@blackveil/dns-checks/scoring').CheckResult) => {
-										capturedResult = r;
+									// See the single-call door above: scan_domain's aggregate is
+									// deliberately not captured here so the batch structured
+									// contract stays unchanged.
+									resultCapture: (r) => {
+										if (!isCapturedScanResult(r)) capturedResult = r;
 									},
 								}
 							: {}),

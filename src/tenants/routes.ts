@@ -18,6 +18,7 @@ import { Hono } from 'hono';
 import { drizzle } from 'drizzle-orm/d1';
 import { ZodError } from 'zod';
 import { handleToolsCall } from '../handlers/tools';
+import { isCapturedScanResult, type CapturedScanResult } from '../lib/captured-result';
 import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from '../lib/analytics';
 import { resolveClientIpFromHeaderGetter } from '../lib/client-ip';
 import { parseScoringConfigCached } from '../lib/scoring-config';
@@ -816,7 +817,7 @@ tenantRoutes.post('/scan', async (c) => {
 							if (isRecent) {
 								const fp = await computeFingerprint(domain);
 								if (fp.kind === 'ok' && !fingerprintsDiffer(fp.fingerprint, domainRow?.fingerprint ?? null)) {
-									const captured = JSON.parse(lastScan.result_json) as CheckResult;
+									const captured = JSON.parse(lastScan.result_json) as CapturedScanResult;
 									// Return the cached result as if it were a fresh scan, but skip handleToolsCall
 									return { domain, result: { isError: false }, captured, skippedByFingerprint: true };
 								}
@@ -827,18 +828,21 @@ tenantRoutes.post('/scan', async (c) => {
 					}
 				}
 
-				let captured: CheckResult | null = null;
+				let captured: CapturedScanResult | null = null;
 				const result = await handleToolsCall(
 					{ name: 'scan_domain', arguments: { domain } },
 					c.env.SCAN_CACHE,
 					{
 						...runtimeBase,
+						// Narrowed rather than assigned blind: `resultCapture` is typed as the
+						// CheckResult | CapturedScanResult union, and only the scan aggregate
+						// carries the score/grade this row persists.
 						resultCapture: (r) => {
-							captured = r;
+							if (isCapturedScanResult(r)) captured = r;
 						},
 					},
 				);
-				return { domain, result, captured: captured as CheckResult | null, skippedByFingerprint: false };
+				return { domain, result, captured: captured as CapturedScanResult | null, skippedByFingerprint: false };
 			}),
 		);
 
@@ -847,7 +851,7 @@ tenantRoutes.post('/scan', async (c) => {
 				errored += 1;
 				continue;
 			}
-			const { domain, result, captured, skippedByFingerprint } = s.value as { domain: string; result: { isError: boolean }; captured: CheckResult | null; skippedByFingerprint: boolean };
+			const { domain, result, captured, skippedByFingerprint } = s.value as { domain: string; result: { isError: boolean }; captured: CapturedScanResult | null; skippedByFingerprint: boolean };
 			if (result.isError) {
 				errored += 1;
 				continue;
@@ -863,7 +867,7 @@ tenantRoutes.post('/scan', async (c) => {
 			try {
 				const scanId = newRowId();
 				const score = captured?.score ?? null;
-				const grade = (captured as unknown as { grade?: string } | null)?.grade ?? null;
+				const grade = captured?.grade ?? null;
 				const findingCount = captured?.findings?.length ?? 0;
 				await tenantDb
 					.prepare(SCANS_INSERT_SQL)

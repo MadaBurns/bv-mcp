@@ -117,6 +117,52 @@ export locations in ignored notes.
   migrations, restore a synthetic tenant backup into a disposable D1 database,
   run the tenant schema/audit tests, and verify a queued scan can complete.
 
+### Legacy `scans` rows with a null score (pre-`resultCapture` fix)
+
+Until the `scan_domain` `resultCapture` wiring was fixed, both tenant scan paths
+persisted every row with `score NULL`, `grade NULL`, `finding_count 0`,
+`result_json NULL`, and no matching `findings` rows. `scan_domain` is dispatched
+from the `switch` in `src/handlers/tools.ts`, not from `TOOL_REGISTRY`, so the
+capture callback the tenant paths pass was never invoked.
+
+**These rows cannot be backfilled.** The scan output was never written anywhere —
+`result_json` is null, and the per-finding rows were never inserted — so there is
+no stored artifact to recompute from. A re-scan measures the domain's DNS *today*,
+which is a new observation, not a reconstruction of the historical one. Do not
+present a re-scan as a backfill of a past cycle.
+
+Identify the affected rows (placeholder tenant, read-only first):
+
+```sql
+SELECT cycle_id, COUNT(*) AS rows, MIN(scan_at), MAX(scan_at)
+FROM scans WHERE score IS NULL GROUP BY cycle_id ORDER BY MIN(scan_at);
+```
+
+Recommended handling:
+
+- **Flag, don't fabricate.** Leave the columns null and exclude null-score rows
+  from the `/report/:cycle_id` `mean_score` denominator rather than coercing them
+  to `0` — a coerced zero reads as "measured and terrible" instead of "never
+  measured". Report the measured-row count alongside `domains` so a consumer can
+  see the denominator shrink.
+- **Treat historical `mean_score` / `grade_dist` as void**, not merely inaccurate.
+  Before the fix `mean_score` was always `0` and `grade_dist` was always
+  `{ unknown: N }`. Any report, alert threshold, or customer-facing trend derived
+  from a pre-fix cycle should be withdrawn rather than reinterpreted.
+- **Re-scan forward.** Run a fresh cycle per affected tenant to establish a valid
+  current baseline, and label it as a new baseline in any customer communication.
+- Note that DLQ rows (`writeDlqRow`) are a separate case: they carry a hardcoded
+  `score = 0` with `result_json = {"error": ...}`, so they are NOT null-filtered
+  and will drag a mean down as if the domain genuinely scored zero. Exclude them
+  explicitly when computing a cycle mean.
+
+One behaviour change to expect on the first post-fix cycle: the 24-hour
+fingerprint pre-flight in both scan paths requires a non-null `result_json` to
+short-circuit a re-scan. With every historical row null it could never fire, so
+every cycle did full work. Once rows carry `result_json`, unchanged domains
+within the window start being skipped as designed — a drop in per-cycle scan
+volume there is expected, not a regression.
+
 ## Cost Governance
 
 Quota changes must be explicit and audited. The public quota maps in
