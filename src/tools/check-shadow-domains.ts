@@ -12,6 +12,7 @@ import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { extractBrandName, getEffectiveTld } from '../lib/public-suffix';
 import { validateDomain } from '../lib/sanitize';
+import { resolveRegistration, type RegistrationCache, type UnknownReason } from '../lib/registration-state';
 
 /** Wall-clock timeout for the entire shadow domain check (ms). */
 const SHADOW_TIMEOUT_MS = 20_000;
@@ -147,24 +148,54 @@ async function probeVariant(variant: string, dnsOpts: QueryDnsOptions, prefetche
 	return { variant, ns, hasA, mx, hasSpf, dmarcPolicy };
 }
 
+/** Per-variant registration outcome, partitioned three ways. */
+interface VariantRegistrationBuckets {
+	/** Registered variants → their NS records (possibly empty when proven via A). */
+	registered: Map<string, string[]>;
+	/** Variants proven non-existent by NXDOMAIN. */
+	unregistered: string[];
+	/** Variants whose registration could not be determined, with the reason. */
+	unknown: Array<{ variant: string; reason: UnknownReason }>;
+}
+
 /**
- * Phase 1: Fast NS existence check for all variants in parallel.
- * Returns a Map of variant -> NS records for registered domains.
+ * Phase 1: resolve registration for every variant.
+ *
+ * Replaces the previous NS-existence filter, which treated an empty NS result
+ * as proof of non-registration and so reported SERVFAILing and slow-resolving
+ * domains as available for defensive registration.
  */
-async function filterByNsExistence(variants: string[], dnsOpts: QueryDnsOptions): Promise<Map<string, string[]>> {
+async function bucketVariantsByRegistration(
+	variants: string[],
+	dnsOpts: QueryDnsOptions,
+	cache?: RegistrationCache,
+): Promise<VariantRegistrationBuckets> {
 	const registered = new Map<string, string[]>();
+	const unregistered: string[] = [];
+	const unknown: Array<{ variant: string; reason: UnknownReason }> = [];
+
 	const results = await Promise.allSettled(
-		variants.map(async (variant) => {
-			const ns = await queryDnsRecords(variant, 'NS', { ...dnsOpts, ...PHASE1_DNS_OPTS });
-			return { variant, ns };
-		}),
+		variants.map(async (variant) => ({
+			variant,
+			state: await resolveRegistration(variant, { ...dnsOpts, ...PHASE1_DNS_OPTS }, cache),
+		})),
 	);
-	for (const result of results) {
-		if (result.status === 'fulfilled' && result.value.ns.length > 0) {
-			registered.set(result.value.variant, result.value.ns);
+
+	for (let i = 0; i < results.length; i++) {
+		const outcome = results[i];
+		if (outcome.status !== 'fulfilled') {
+			// resolveRegistration does not reject, but stay defensive: an unexpected
+			// throw is a measurement failure, never evidence of non-registration.
+			unknown.push({ variant: variants[i], reason: 'network' });
+			continue;
 		}
+		const { variant, state } = outcome.value;
+		if (state.state === 'registered') registered.set(variant, state.ns);
+		else if (state.state === 'unregistered') unregistered.push(variant);
+		else unknown.push({ variant, reason: state.reason });
 	}
-	return registered;
+
+	return { registered, unregistered, unknown };
 }
 
 /**
@@ -444,45 +475,34 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		);
 	}
 
-	// Phase 1: Fast NS existence check — filter out unregistered variants
-	const registeredVariants = await filterByNsExistence(variants, dnsOpts);
+	// Phase 1: partition variants by registration state.
+	const buckets = await bucketVariantsByRegistration(variants, dnsOpts);
+	const registeredVariants = buckets.registered;
 
-	// Phase 1.5: Fallback A-record check for variants Phase 1 rejected.
-	//
-	// Phase 1's NS query runs with tight PHASE1_DNS_OPTS (timeoutMs=2000, retries=0).
-	// Slow ccTLD authoritative servers — observed empirically on .nl — can exceed
-	// that window, producing an empty NS result that the classifier would otherwise
-	// treat as "unregistered". An A record is independent positive evidence that
-	// the domain is registered, so any variant with A>0 is routed to Phase 2
-	// (with prefetchedNs=[]) instead of being prematurely classified.
-	const candidateUnregistered = variants.filter((v) => !registeredVariants.has(v));
-	if (candidateUnregistered.length > 0) {
-		const aResults = await Promise.allSettled(
-			candidateUnregistered.map(async (variant) => ({
-				variant,
-				hasA: (await queryDnsRecords(variant, 'A', { ...dnsOpts, ...PHASE1_DNS_OPTS })).length > 0,
-			})),
+	// Only NXDOMAIN supports an "unregistered" claim.
+	for (const variant of buckets.unregistered) {
+		findings.push(
+			createFinding(
+				'shadow_domains',
+				'Brand variant unregistered',
+				'info',
+				`${variant} returned NXDOMAIN and does not appear to be registered. Consider defensive registration to prevent brand abuse.`,
+				{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null, registrationState: 'unregistered', confidence: 'probable' },
+			),
 		);
-		for (const result of aResults) {
-			if (result.status === 'fulfilled' && result.value.hasA) {
-				registeredVariants.set(result.value.variant, []);
-			}
-		}
 	}
 
-	// Classify truly-unregistered variants (no NS AND no A) as info findings.
-	for (const variant of variants) {
-		if (!registeredVariants.has(variant)) {
-			findings.push(
-				createFinding(
-					'shadow_domains',
-					'Brand variant unregistered',
-					'info',
-					`${variant} does not appear to be registered. Consider defensive registration to prevent brand abuse.`,
-					{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null },
-				),
-			);
-		}
+	// Everything else is a measurement failure, NOT an availability claim.
+	for (const { variant, reason } of buckets.unknown) {
+		findings.push(
+			createFinding(
+				'shadow_domains',
+				'Brand variant registration unknown',
+				'info',
+				`Could not determine whether ${variant} is registered (${reason}). No conclusion is drawn about this domain.`,
+				{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null, registrationState: 'unknown', reason, confidence: 'inconclusive' },
+			),
+		);
 	}
 
 	// Phase 2: Detail probe only registered variants with NS passthrough

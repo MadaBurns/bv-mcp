@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, nxdomainResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -164,12 +164,13 @@ describe('checkShadowDomains', () => {
 				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
 			}
 
-			// example.net has no NS → unregistered
+			// example.net returns NXDOMAIN — genuinely non-existent, the only state that
+			// supports an "unregistered" claim.
 			if (name === 'example.net') {
-				return Promise.resolve(emptyResponse());
+				return Promise.resolve(nxdomainResponse(name));
 			}
 			if (name === '_dmarc.example.net') {
-				return Promise.resolve(emptyResponse());
+				return Promise.resolve(nxdomainResponse(name));
 			}
 
 			return Promise.resolve(emptyResponse());
@@ -331,10 +332,14 @@ describe('checkShadowDomains', () => {
 		expect(sharedNsFinding).toBeDefined();
 	});
 
-	it('should classify variant as unregistered only when NS AND A are both empty (Phase 1 + 1.5 filter)', async () => {
-		// Updated semantics: a variant with no NS records is NOT immediately classified as
-		// unregistered. Phase 1.5 checks A as a fallback to avoid the slow-ccTLD false-negative
-		// trap. A variant is only classified as "unregistered" when both NS AND A are empty.
+	it('should classify a variant as unregistered only on NXDOMAIN', async () => {
+		// Registration contract (src/lib/registration-state.ts): NXDOMAIN is the ONLY
+		// state that supports an "unregistered" claim. NOERROR-with-no-answers (on NS,
+		// SOA, and the A escalation alike), SERVFAIL, and transport failures are all
+		// genuinely inconclusive and must surface as "registration unknown" instead —
+		// never as "unregistered". This replaces the old NS+A-empty heuristic (removed
+		// Phase 1.5 A-record fallback), which conflated "no records returned" with
+		// "domain does not exist".
 		const target = 'example.com';
 
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
@@ -346,13 +351,12 @@ describe('checkShadowDomains', () => {
 				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
 			}
 
-			// example.net is truly unregistered — NS empty, A empty, MX empty (the only state
-			// where the "unregistered" classification should fire).
+			// example.net returns NXDOMAIN — genuinely non-existent.
 			if (name === 'example.net') {
-				return Promise.resolve(emptyResponse());
+				return Promise.resolve(nxdomainResponse(name));
 			}
 			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
-				return Promise.resolve(emptyResponse());
+				return Promise.resolve(nxdomainResponse(name));
 			}
 
 			return Promise.resolve(emptyResponse());
@@ -946,5 +950,56 @@ describe('checkShadowDomains — Phase 1 constants', () => {
 			skipSecondaryConfirmation: true,
 		});
 		expect(mod.FAILURE_THRESHOLD).toBe(0);
+	});
+});
+
+describe('registration-state correctness', () => {
+	it('does NOT claim unregistered when the NS lookup SERVFAILs', async () => {
+		const { servfailResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			// Primary resolves normally; every variant SERVFAILs.
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			return servfailResponse(q.name, q.type === 'NS' ? 2 : 1);
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		expect(result.findings.some((f) => f.title === 'Brand variant unregistered')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'Brand variant registration unknown')).toBe(true);
+	});
+
+	it('DOES claim unregistered on a clean NXDOMAIN', async () => {
+		const { nxdomainResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			return nxdomainResponse(q.name, q.type === 'NS' ? 2 : 1);
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		expect(result.findings.some((f) => f.title === 'Brand variant unregistered')).toBe(true);
+	});
+
+	it('never recommends defensive registration on an inconclusive lookup', async () => {
+		const { servfailResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			return servfailResponse(q.name, q.type === 'NS' ? 2 : 1);
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		for (const f of result.findings) {
+			expect(f.detail).not.toMatch(/defensive registration/i);
+		}
 	});
 });
