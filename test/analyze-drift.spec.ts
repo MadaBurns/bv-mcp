@@ -63,6 +63,33 @@ describe('analyzeDrift', () => {
 			expect(drift.improvements.some((f) => f.title === 'Old finding')).toBe(true);
 			expect(drift.regressions.some((f) => f.title === 'New finding')).toBe(true);
 		});
+
+		it('classifies drift as inconclusive when either side is ungraded, never as stable', async () => {
+			const { computeDrift } = await import('../src/tools/analyze-drift');
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const graded: any = { overall: 80, grade: 'B', categoryScores: {}, findings: [], summary: 'ok' };
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const ungraded: any = { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'not measured' };
+
+			const currentUngraded = computeDrift('example.com', graded, ungraded);
+			expect(currentUngraded.classification).toBe('inconclusive');
+			expect(currentUngraded.scoreDelta).toBeNull();
+
+			const baselineUngraded = computeDrift('example.com', ungraded, graded);
+			expect(baselineUngraded.classification).toBe('inconclusive');
+			expect(baselineUngraded.scoreDelta).toBeNull();
+		});
+
+		it('still classifies a fully graded pair exactly as before', async () => {
+			const { computeDrift } = await import('../src/tools/analyze-drift');
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const before: any = { overall: 80, grade: 'B', categoryScores: {}, findings: [], summary: 'ok' };
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const after: any = { overall: 90, grade: 'A', categoryScores: {}, findings: [], summary: 'ok' };
+			const drift = computeDrift('example.com', before, after);
+			expect(drift.scoreDelta).toBe(10);
+			expect(drift.classification).toBe('improving');
+		});
 	});
 
 	describe('classifyDrift', () => {

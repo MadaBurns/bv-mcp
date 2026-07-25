@@ -20,7 +20,7 @@ import { isGraded } from '../lib/scoring';
 import { UNGRADED_DISPLAY } from './scan/format-report';
 
 /** Overall drift direction classification. */
-export type DriftClassification = 'improving' | 'stable' | 'regressing' | 'mixed';
+export type DriftClassification = 'improving' | 'stable' | 'regressing' | 'mixed' | 'inconclusive';
 
 /** A finding that appeared or disappeared between baseline and current. */
 export interface DriftFinding {
@@ -33,6 +33,11 @@ export interface DriftFinding {
 /** Full drift analysis report. */
 export interface DriftReport {
 	domain: string;
+	/**
+	 * `'inconclusive'` = at least one side of the comparison carries no grade,
+	 * so no drift statement can be made. Distinct from `'stable'`, which asserts
+	 * that a real measurement did not move.
+	 */
 	classification: DriftClassification;
 	/** Current score minus baseline score, or `null` when either side was never graded. */
 	scoreDelta: number | null;
@@ -132,7 +137,13 @@ export function classifyDrift(scoreDelta: number | null, newCriticalHighCount: n
  * Same finding with different severity is reported as changed.
  */
 export function computeDrift(domain: string, baseline: ScanScore, current: ScanScore): DriftReport {
-	const scoreDelta = current.overall !== null && baseline.overall !== null ? current.overall - baseline.overall : null;
+	// Two separate `const`s, not one combined expression: TypeScript's aliased-
+	// condition narrowing (4.4+) then lets the ternary below see both sides as
+	// non-null, so no `!` assertion is needed (eslint bans them here).
+	const baselineGraded = isGraded(baseline);
+	const currentGraded = isGraded(current);
+	const bothGraded = baselineGraded && currentGraded;
+	const scoreDelta = baselineGraded && currentGraded ? current.overall - baseline.overall : null;
 	const gradeChange = { from: baseline.grade, to: current.grade };
 
 	// --- Category deltas (only changed categories) ---
@@ -186,7 +197,7 @@ export function computeDrift(domain: string, baseline: ScanScore, current: ScanS
 	// Count critical/high regressions for classification
 	const newCriticalHighCount = regressions.filter((f) => f.severity === 'critical' || f.severity === 'high').length;
 
-	const classification = classifyDrift(scoreDelta, newCriticalHighCount, improvements.length);
+	const classification = bothGraded ? classifyDrift(scoreDelta ?? 0, newCriticalHighCount, improvements.length) : 'inconclusive';
 
 	return {
 		domain,
