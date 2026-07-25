@@ -43,9 +43,13 @@ export interface DriftReport {
 	scoreDelta: number | null;
 	/** Either side is `null` when that scan carried no grade. Never a fabricated letter. */
 	gradeChange: { from: string | null; to: string | null };
+	/** Empty when `classification` is `'inconclusive'` — nothing real to diff. */
 	categoryDeltas: Record<string, { from: number; to: number; delta: number }>;
+	/** Empty when `classification` is `'inconclusive'` — nothing real to diff. */
 	improvements: DriftFinding[];
+	/** Empty when `classification` is `'inconclusive'` — nothing real to diff. */
 	regressions: DriftFinding[];
+	/** Empty when `classification` is `'inconclusive'` — nothing real to diff. */
 	changed: Array<DriftFinding & { previousSeverity: string }>;
 	timestamp: string;
 }
@@ -146,51 +150,62 @@ export function computeDrift(domain: string, baseline: ScanScore, current: ScanS
 	const scoreDelta = baselineGraded && currentGraded ? current.overall - baseline.overall : null;
 	const gradeChange = { from: baseline.grade, to: current.grade };
 
-	// --- Category deltas (only changed categories) ---
-	const allCategories = new Set([...Object.keys(baseline.categoryScores ?? {}), ...Object.keys(current.categoryScores ?? {})]);
+	// Every derived comparison below (category deltas, resolved/new/changed findings) is
+	// gated on `bothGraded`. An ungraded side has no real categoryScores/findings to diff
+	// against — computing "deltas" from an ungraded scan's empty categoryScores/findings
+	// would render e.g. `spf: 100 -> 0 (-100)` and a baseline's findings as "RESOLVED" for
+	// a domain that simply stopped existing, underneath a classification that already says
+	// 'inconclusive'. The label must suppress that content, not just sit above it. Empty
+	// arrays/object (not omitted fields) so `DriftReport`'s shape and every existing
+	// consumer that iterates these fields unconditionally are unaffected; `classification`
+	// is the authoritative signal for "nothing was computed" vs. "computed and empty".
 	const categoryDeltas: DriftReport['categoryDeltas'] = {};
-	for (const cat of allCategories) {
-		const baseVal = (baseline.categoryScores as Record<string, number>)?.[cat] ?? 0;
-		const curVal = (current.categoryScores as Record<string, number>)?.[cat] ?? 0;
-		if (baseVal !== curVal) {
-			categoryDeltas[cat] = { from: baseVal, to: curVal, delta: curVal - baseVal };
-		}
-	}
-
-	// --- Finding diffs ---
-	const baselineMap = new Map<string, Finding>();
-	for (const f of baseline.findings ?? []) {
-		baselineMap.set(findingKey(f), f);
-	}
-	const currentMap = new Map<string, Finding>();
-	for (const f of current.findings ?? []) {
-		currentMap.set(findingKey(f), f);
-	}
-
 	const improvements: DriftFinding[] = [];
 	const regressions: DriftFinding[] = [];
 	const changed: DriftReport['changed'] = [];
 
-	// Findings in baseline but not in current → improvements (resolved)
-	for (const [key, f] of baselineMap) {
-		const cur = currentMap.get(key);
-		if (!cur) {
-			improvements.push({ category: f.category, title: f.title, severity: f.severity, detail: f.detail });
-		} else if (cur.severity !== f.severity) {
-			changed.push({
-				category: f.category,
-				title: f.title,
-				severity: cur.severity,
-				detail: cur.detail,
-				previousSeverity: f.severity,
-			});
+	if (bothGraded) {
+		// --- Category deltas (only changed categories) ---
+		const allCategories = new Set([...Object.keys(baseline.categoryScores ?? {}), ...Object.keys(current.categoryScores ?? {})]);
+		for (const cat of allCategories) {
+			const baseVal = (baseline.categoryScores as Record<string, number>)?.[cat] ?? 0;
+			const curVal = (current.categoryScores as Record<string, number>)?.[cat] ?? 0;
+			if (baseVal !== curVal) {
+				categoryDeltas[cat] = { from: baseVal, to: curVal, delta: curVal - baseVal };
+			}
 		}
-	}
 
-	// Findings in current but not in baseline → regressions (new issues)
-	for (const [key, f] of currentMap) {
-		if (!baselineMap.has(key)) {
-			regressions.push({ category: f.category, title: f.title, severity: f.severity, detail: f.detail });
+		// --- Finding diffs ---
+		const baselineMap = new Map<string, Finding>();
+		for (const f of baseline.findings ?? []) {
+			baselineMap.set(findingKey(f), f);
+		}
+		const currentMap = new Map<string, Finding>();
+		for (const f of current.findings ?? []) {
+			currentMap.set(findingKey(f), f);
+		}
+
+		// Findings in baseline but not in current → improvements (resolved)
+		for (const [key, f] of baselineMap) {
+			const cur = currentMap.get(key);
+			if (!cur) {
+				improvements.push({ category: f.category, title: f.title, severity: f.severity, detail: f.detail });
+			} else if (cur.severity !== f.severity) {
+				changed.push({
+					category: f.category,
+					title: f.title,
+					severity: cur.severity,
+					detail: cur.detail,
+					previousSeverity: f.severity,
+				});
+			}
+		}
+
+		// Findings in current but not in baseline → regressions (new issues)
+		for (const [key, f] of currentMap) {
+			if (!baselineMap.has(key)) {
+				regressions.push({ category: f.category, title: f.title, severity: f.severity, detail: f.detail });
+			}
 		}
 	}
 
