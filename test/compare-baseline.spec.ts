@@ -228,10 +228,62 @@ describe('compareBaseline', () => {
 		expect(result.passed).toBeNull();
 		expect(result.violations).toHaveLength(0);
 		expect(result.checkedRules).toBe(0);
+		// Includes `max_critical_findings`, which passed pre-fix by counting an EMPTY
+		// findings array — "zero criticals" asserted about a domain nobody scanned.
 		expect(result.inconclusiveRules).toEqual(['require_dmarc_enforce', 'require_spf', 'max_critical_findings']);
-		// `max_critical_findings: 0` passed pre-fix by counting an EMPTY findings
-		// array — "zero criticals" asserted about a domain nobody scanned.
-		expect(result.inconclusiveRules).toContain('max_critical_findings');
+	});
+
+	/**
+	 * The PASSING side of the finding caps, which the failing-side tests cannot pin.
+	 *
+	 * "Zero criticals because nothing was measured" and "zero criticals because the
+	 * domain is genuinely clean" are the two states this slice must keep apart, and
+	 * only the first was guarded. The naive fix a reader takes straight from the bug
+	 * description — `if (!scanMeasured || scan.score.findings.length === 0)` — is
+	 * indistinguishable from the correct one on every failing-side fixture, because
+	 * they all carry findings. It turns every genuinely-clean domain INCONCLUSIVE:
+	 * a CI gate that can never go green, for the customers in the best shape.
+	 */
+	it('PASSES the finding caps for a measured, genuinely-clean scan — an empty findings list is a real result', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		// Checks ran; the domain is simply clean. `findings: []` here is a
+		// MEASUREMENT of zero, not an absence of measurement.
+		const measuredAndClean = createMockScan({ domain: 'clean.example' });
+		expect(measuredAndClean.score.findings).toHaveLength(0);
+		expect(measuredAndClean.checks.length).toBeGreaterThan(0);
+
+		const result = compareBaseline(measuredAndClean, { max_critical_findings: 0, max_high_findings: 0 });
+
+		expect(result.passed).toBe(true);
+		expect(result.inconclusiveRules).toEqual([]);
+		expect(result.violations).toHaveLength(0);
+		// Both caps were genuinely evaluated, not quietly skipped.
+		expect(result.checkedRules).toBe(2);
+	});
+
+	it('PASSES the critical cap for a scan with findings but none of that severity', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		// Distinct from the case above: findings EXIST, just none critical. Pins the
+		// severity filter itself rather than the emptiness of the array.
+		const noCriticals = createMockScan({
+			domain: 'no-criticals.example',
+			score: {
+				...createMockScan().score,
+				findings: [
+					{ category: 'dnssec', title: 'DNSSEC not enabled', severity: 'high', detail: '' },
+					{ category: 'caa', title: 'No CAA record', severity: 'medium', detail: '' },
+				],
+			},
+		});
+
+		const result = compareBaseline(noCriticals, { max_critical_findings: 0 });
+
+		expect(result.passed).toBe(true);
+		expect(result.inconclusiveRules).toEqual([]);
+		expect(result.checkedRules).toBe(1);
+		// Control: the same scan DOES breach a high cap, so the fixture is not
+		// vacuously clean.
+		expect(compareBaseline(noCriticals, { max_high_findings: 0 }).passed).toBe(false);
 	});
 
 	it('still FAILS a genuinely-measured control breach — the inconclusive path must not swallow real failures', async () => {
@@ -418,6 +470,10 @@ describe('formatBaselineResult', () => {
 			// The domain resolved and its SPF check ran — saying otherwise is false.
 			expect(text).not.toContain('domain not measured');
 			expect(text).not.toContain('domain was not measured');
+			// Second guard against the over-reaching fix (abstain whenever the scan is
+			// ungraded): that would list require_spf here, discarding a real SPF result.
+			// Cheap, and at a different layer from the object-level assertion above.
+			expect(text).not.toContain('require_spf');
 		}
 	});
 });
