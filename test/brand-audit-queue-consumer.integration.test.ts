@@ -124,7 +124,7 @@ describe('handleBrandAuditQueue — deep_scan branch', () => {
 		// internalCall is the network/tool boundary — the correct mock point.
 		const internalCall = vi.fn().mockResolvedValue({
 			content: [],
-			structured: { domain: 'ford.com', score: 80, grade: 'B+', categoryScores: {}, findings: [], totalSubdomains: 0, subdomains: [] },
+			structuredContent: { domain: 'ford.com', score: 80, grade: 'B+', categoryScores: {}, totalSubdomains: 0, subdomains: [] },
 		});
 		const { batch, ack, retry } = makeDeepScanBatch('audit-3', 'ford.com');
 

@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- **CSC deep-scan read a field the internal call never emits, so it silently reported nothing.** `runDeepScan` (`src/lib/brand-audit-csc-deepscan.ts`) unwrapped each internal tool call as `envelope.structured`, but the production `internalCall` closure returns `handleToolsCall`'s MCP result — `{ content, structuredContent?, isError? }`, which has no `structured` field. Every apex therefore resolved to `undefined` and the deep-scan wrote `apexesScanned: 0` with an empty grade distribution instead of failing. Two further shape mismatches on the same path are fixed alongside it: `scan_domain`'s `structuredContent` carries `categoryScores` as plain numbers and **no per-finding array** (only `findingCounts`), so dangling-DNS detail now comes from a `check_subdomain_takeover` call per apex rather than from a `scan.findings` array that never existed; and a `Finding` has no `subdomain` field, so the dangling FQDN + CNAME target are recovered from the finding text. A failed `discover_subdomains` / `check_subdomain_takeover` is now a per-section partial that keeps the apex's posture, and `isError` envelopes are treated as failures rather than zero-value results. Operator-deploy only (requires `BRAND_AUDIT_QUEUE`); BSL self-hosts never reached this path.
+
 ## [3.34.1] - 2026-07-24
 
 Follow-up bugfix release to 3.34.0: two non-apex regressions found in review, plus a broader false-positive class where a **transient** query/fetch failure was scored as a real deficiency. All corrections are in `@blackveil/dns-checks` (**1.5.0 → 1.5.2**); apex-domain output stays byte-identical.
