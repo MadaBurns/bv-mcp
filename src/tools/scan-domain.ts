@@ -815,7 +815,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 					deltas[cat] = adaptiveWeights[cat].importance - staticWeights[cat].importance;
 				}
 
-				const scoreDelta = adaptiveScore.overall - staticScore.overall;
+				const scoreDelta =
+					adaptiveScore.overall !== null && staticScore.overall !== null ? adaptiveScore.overall - staticScore.overall : 0;
 				scoringNote = generateScoringNote(deltas, scoreDelta, domainContext.detectedProvider);
 				adaptiveWeightDeltas = deltas;
 			}
@@ -826,7 +827,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		score = adjustedScore;
 
 		const rawMaturity = computeMaturityStage(checkResults, domainContext?.profile);
-		const maturity = capMaturityStage(rawMaturity, score.overall);
+		// An ungraded scan has no score to cap the stage with — leave the raw stage alone
+		// rather than coercing `null` to 0 (which would silently cap every ungraded scan).
+		const maturity = score.overall === null ? rawMaturity : capMaturityStage(rawMaturity, score.overall);
 
 		result = {
 			domain,
@@ -841,14 +844,17 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			interactionEffects,
 		};
 
-		// POST telemetry to DO (best-effort, non-blocking)
-		if (runtimeOptions?.profileAccumulator) {
+		// POST telemetry to DO (best-effort, non-blocking).
+		// An ungraded scan (`score.overall === null`) carries no measurement, so it must NOT
+		// train the adaptive-weight EMA — feeding it in would pull every profile's weights
+		// toward a domain that was never actually measured.
+		if (runtimeOptions?.profileAccumulator && score.overall !== null) {
 			const telemetry: ScanTelemetry = {
 				profile: domainContext.profile,
 				provider: domainContext.detectedProvider,
 				categoryFindings: checkResults.map((r) => ({ category: r.category, score: r.score, passed: r.passed })),
 				timestamp: Date.now(),
-				overallScore: score.overall,
+				overallScore: score.overall ?? 0,
 			};
 			// R10 PROPOSAL (default-off): route the /ingest write to the per-profile
 			// shard so write traffic spreads across ~6 DO input gates instead of one
@@ -900,7 +906,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			const fallbackContext = fallbackScoring.context;
 			const score = fallbackScoring.score;
 			const rawMaturity = computeMaturityStage(checkResults, fallbackContext?.profile);
-			const maturity = capMaturityStage(rawMaturity, score.overall);
+			const maturity = score.overall === null ? rawMaturity : capMaturityStage(rawMaturity, score.overall);
 			result = {
 				domain,
 				score,

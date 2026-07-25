@@ -20,10 +20,22 @@ const SAMPLE_SUBDOMAIN_CAP = 10;
 
 type InternalCallFn = (tool: string, args: { domain: string }) => Promise<unknown>;
 
+/**
+ * Hand-written mirror of `scan_domain`'s wire shape (`StructuredScanResult`), read
+ * back off the internal-call envelope. It is deliberately structural and tolerant —
+ * but that also means widening the real type flags NOTHING here, so any abstain gate
+ * has to be maintained by hand against `src/tools/scan/format-report.ts`.
+ */
 interface ScanDomainStructured {
 	domain: string;
 	score: number | null;
 	grade: string | null;
+	/**
+	 * `false` = the scan ran ZERO checks, so whatever `score`/`grade` carry are
+	 * placeholders, not measurements. Optional because older/other producers may
+	 * omit it — absent is treated as measured, preserving prior behaviour.
+	 */
+	measured?: boolean;
 	categoryScores?: Record<
 		string,
 		{ score?: number; findings?: Array<{ severity?: string; category?: string; detail?: string; subdomain?: string }> }
@@ -87,6 +99,24 @@ function extractDanglingFromScan(apex: string, scan: ScanDomainStructured | unde
 	return dangling;
 }
 
+/**
+ * The abstain gate for an apex scan, matching the conjunction already used by
+ * `batch_scan` and `compare_domains` (`!measured || score === null || grade === null`),
+ * plus the legacy `'N/A'` sentinel that the scan producers still emit for an
+ * unresolvable zone.
+ *
+ * Returns all-null rather than a placeholder so an unmeasured apex cannot appear in
+ * the customer-visible grade distribution or be sorted into the portfolio median —
+ * `'N/A'` sorts lexically AFTER 'F', so counting it dragged the median to the worst
+ * bucket, and a degenerate zero-check scan carries a literal 'A+'.
+ */
+function gradedApexPosture(scan: ScanDomainStructured): { score: number | null; grade: string | null } {
+	if (scan.measured === false || scan.score === null || scan.grade === null || scan.grade === 'N/A') {
+		return { score: null, grade: null };
+	}
+	return { score: scan.score, grade: scan.grade };
+}
+
 function medianGrade(grades: Array<string | null>): string | null {
 	const present = grades.filter((g): g is string => g !== null);
 	if (present.length === 0) return null;
@@ -132,10 +162,11 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 
 	for (const r of perApex) {
 		if (!r.ok || !r.scan) continue;
+		const posture = gradedApexPosture(r.scan);
 		postureApexes.push({
 			apex: r.apex,
-			grade: r.scan.grade,
-			score: r.scan.score,
+			grade: posture.grade,
+			score: posture.score,
 			dmarc: null,
 			spf: null,
 			dnssec: null,
@@ -143,7 +174,7 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 			mtaSts: null,
 			scannedAt: new Date().toISOString(),
 		});
-		grades.push(r.scan.grade);
+		grades.push(posture.grade);
 		const apexDangling = extractDanglingFromScan(r.apex, r.scan);
 		dangling.push(...apexDangling);
 		if (r.discover) {

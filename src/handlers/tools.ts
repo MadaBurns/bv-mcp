@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { CheckResult } from '../lib/scoring';
+import { isGraded } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
 import { buildCheckCacheKey, buildScanCacheKey, runWithCacheTracked } from '../lib/cache';
 import { withRequestDedup } from '../lib/request-dedup';
@@ -911,7 +912,8 @@ export const TOOL_REGISTRY: Record<
 		cacheTtlSeconds: 15,
 	},
 	scan_buckets_findings: {
-		cacheKey: (a, ro) => `bucketfindings:${ro?.keyHash ?? ro?.principalId ?? 'anon'}:${String(a.scanId)}:${String(a.target ?? '')}:${JSON.stringify(a.providers ?? [])}`,
+		cacheKey: (a, ro) =>
+			`bucketfindings:${ro?.keyHash ?? ro?.principalId ?? 'anon'}:${String(a.scanId)}:${String(a.target ?? '')}:${JSON.stringify(a.providers ?? [])}`,
 		execute: (_d, a, ro) =>
 			import('../tools/scan-buckets').then((m) =>
 				m.scanBucketsFindings(
@@ -1249,7 +1251,7 @@ export async function handleToolsCall(
 					const forceRefresh = extractForceRefresh(validatedArgs);
 					const scanOptions = { ...runtimeOptions, ...(profile && { profile }), ...(forceRefresh && { forceRefresh }) };
 					const result = await scanDomain(validDomain, scanCacheKV, scanOptions);
-					logResult = result.score.grade;
+					logResult = result.score.grade ?? 'ungraded';
 					// Summary only, not the full result: scan_domain's ~19-category CheckResult[]
 					// (with per-category findings + metadata) logged in full on every call was the
 					// dominant contributor to "Log size limit exceeded" warnings on the tenant
@@ -1270,7 +1272,7 @@ export async function handleToolsCall(
 					const cacheStatus: 'hit' | 'miss' = result.cached ? 'hit' : 'miss';
 					logToolSuccess({
 						...ctx(),
-						status: result.score.overall >= 50 ? 'pass' : 'fail',
+						status: result.score.overall === null ? 'inconclusive' : result.score.overall >= 50 ? 'pass' : 'fail',
 						logResult,
 						logDetails,
 						severity: 'info',
@@ -1362,7 +1364,7 @@ export async function handleToolsCall(
 							const forceRefresh = extractForceRefresh(validatedArgs);
 							const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
 							const plan = await generateFixPlan(validDomain, scanCacheKV, scanOptions);
-							logResult = plan.grade;
+							logResult = plan.grade ?? 'ungraded';
 							logDetails = plan;
 							logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 							return buildToolResult(formatFixPlan(plan, effectiveFormat), plan, effectiveFormat);
@@ -1429,7 +1431,13 @@ export async function handleToolsCall(
 						{ authToken: runtimeOptions?.bvWebBenchmarkAuthToken },
 					);
 					logDetails = result;
-					logToolSuccess({ ...ctx(), status: result.representative ? 'pass' : 'pass', logResult: result.status, logDetails, severity: 'info' });
+					logToolSuccess({
+						...ctx(),
+						status: result.representative ? 'pass' : 'pass',
+						logResult: result.status,
+						logDetails,
+						severity: 'info',
+					});
 					return buildToolResult(formatDomainRank(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'get_benchmark': {
@@ -1444,7 +1452,12 @@ export async function handleToolsCall(
 						return buildToolErrorResult('Missing required parameter: provider');
 					}
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
-					const result = await getProviderInsights(runtimeOptions?.profileAccumulator, provider, profile, runtimeOptions?.profileAccumulatorShardMode);
+					const result = await getProviderInsights(
+						runtimeOptions?.profileAccumulator,
+						provider,
+						profile,
+						runtimeOptions?.profileAccumulatorShardMode,
+					);
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: result.status, logDetails: result, severity: 'info' });
 					return buildToolResult(formatProviderInsights(result, effectiveFormat), result, effectiveFormat);
 				}
@@ -1509,11 +1522,21 @@ export async function handleToolsCall(
 							);
 						}
 						baselineScore = cached.score;
+						// A CACHED scan can legitimately be ungraded (NXDOMAIN, unresolvable zone).
+						// There is nothing to measure drift against, so abstain rather than diff
+						// against a null and report a fabricated delta.
+						if (!isGraded(baselineScore)) {
+							return buildToolErrorResult(
+								`Invalid baseline: the cached scan for ${validDomain} was never graded, so there is nothing to measure drift against. Re-run scan_domain.`,
+							);
+						}
 					} else {
 						try {
 							const parsed = JSON.parse(baselineStr);
 							if (typeof parsed?.overall !== 'number' || typeof parsed?.grade !== 'string' || !Array.isArray(parsed?.findings)) {
-								return buildToolErrorResult('Invalid baseline: JSON must contain overall (number), grade (string), and findings (array).');
+								return buildToolErrorResult(
+									'Invalid baseline: JSON must contain overall (number), grade (string), and findings (array). An ungraded scan cannot be used as a drift baseline.',
+								);
 							}
 							baselineScore = parsed;
 						} catch {

@@ -76,10 +76,15 @@ function renderBadge(label: string, value: string, color: string): string {
 /**
  * Generate an SVG badge displaying a DNS security grade.
  *
- * @param grade - The letter grade (e.g., "A+", "B", "F")
+ * @param grade - The letter grade (e.g., "A+", "B", "F"), or `null` when the scan
+ *   produced no grade at all. A null grade currently renders the error badge — a
+ *   conservative stopgap that at least does not fabricate a letter. It is still
+ *   wrong (an unmeasured domain is not a server error) and gets its own explicit
+ *   "unknown" badge in a follow-up task.
  * @returns SVG string
  */
-export function gradeBadge(grade: string): string {
+export function gradeBadge(grade: string | null): string {
+	if (grade === null) return errorBadge();
 	const color = GRADE_COLORS[grade] ?? ERROR_COLOR;
 	return renderBadge('DNS Security', grade, color);
 }

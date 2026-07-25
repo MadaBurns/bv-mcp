@@ -23,19 +23,15 @@ import { validateDomain, sanitizeDomain } from '../lib/sanitize';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 
 /** Portfolio ownership lens (from classifyCandidate) + 'unknown' for a bare domain list. */
-export type OwnershipBucket =
-	| 'consolidated'
-	| 'shadowIt'
-	| 'indeterminate'
-	| 'impersonation'
-	| 'impersonationSurface'
-	| 'unknown';
+export type OwnershipBucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation' | 'impersonationSurface' | 'unknown';
 
 /** A single ranked sales lead. */
 export interface CscLead {
 	domain: string;
-	score: number;
-	grade: string;
+	/** `null` when the scan produced no gradeable measurement. Never a coerced 0. */
+	score: number | null;
+	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
+	grade: string | null;
 	ownershipBucket: OwnershipBucket;
 	recommendedCscProducts: CscProductKey[];
 	gapSeverity: number;
@@ -129,6 +125,11 @@ export function computePortfolioGrade(leads: Pick<CscLead, 'score' | 'ownershipB
 	let denominator = 0;
 	let contributingDomains = 0;
 	for (const lead of leads) {
+		// An ungraded lead has no score to average. Both forms are excluded: the new
+		// `null` (from a widened ScanScore) and the legacy `'N/A'` sentinel that the
+		// producers still emit until it is removed at source. Averaging their 0 score
+		// would silently sink the whole portfolio.
+		if (lead.score === null || lead.grade === null) continue;
 		if (lead.grade === 'N/A') continue;
 		const weight = PORTFOLIO_ROLLUP_WEIGHTS[lead.ownershipBucket];
 		if (weight === 0) continue;
@@ -198,7 +199,12 @@ export function rankCscLeads(
 		topPriority: topPriorityOf(e.report),
 	}));
 
-	leads.sort((a, b) => b.gapSeverity - a.gapSeverity || a.score - b.score || a.domain.localeCompare(b.domain));
+	// An ungraded lead carries no score to rank on. Sorting it as `0` would rank an
+	// unmeasured domain as the worst-scoring (highest-priority) lead in the list, so
+	// it sorts AFTER every graded lead instead; two ungraded leads fall through to the
+	// domain tiebreak (Infinity - Infinity is NaN, which is falsy).
+	const scoreRank = (l: CscLead): number => (l.score === null ? Number.POSITIVE_INFINITY : l.score);
+	leads.sort((a, b) => b.gapSeverity - a.gapSeverity || scoreRank(a) - scoreRank(b) || a.domain.localeCompare(b.domain));
 	leads.forEach((lead, i) => {
 		lead.priorityRank = i + 1;
 	});
@@ -253,7 +259,9 @@ export function extractDiscoveredCandidates(result: CheckResult): DiscoveredCand
 		if (typeof candidate !== 'string' || candidate.length === 0) continue;
 		const rawBucket = meta?.bucket;
 		const bucket: OwnershipBucket =
-			typeof rawBucket === 'string' && KNOWN_BUCKETS.has(rawBucket as Bucket) ? bucketFromClassification(rawBucket as Bucket) : 'indeterminate';
+			typeof rawBucket === 'string' && KNOWN_BUCKETS.has(rawBucket as Bucket)
+				? bucketFromClassification(rawBucket as Bucket)
+				: 'indeterminate';
 		out.push({ domain: candidate, ownershipBucket: bucket });
 	}
 	return out;
@@ -266,7 +274,9 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 
 	if (format === 'compact') {
 		// Append the portfolio segment only when gradeable; omit entirely when null (keeps compact lean).
-		const portfolioSegment = report.portfolioGrade ? ` — portfolio ${report.portfolioGrade.grade} (${report.portfolioGrade.weightedScore})` : '';
+		const portfolioSegment = report.portfolioGrade
+			? ` — portfolio ${report.portfolioGrade.grade} (${report.portfolioGrade.weightedScore})`
+			: '';
 		lines.push(`CSC leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot${portfolioSegment}`);
 		for (const lead of report.rankedLeads) {
 			lines.push(
@@ -279,7 +289,9 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 	lines.push(`# CSC Sales Leads: ${brandLabel}`);
 	lines.push(`**${report.totalDomains}** domain(s) ranked | **${report.summary.hotLeads}** hot lead(s)`);
 	if (report.portfolioGrade) {
-		lines.push(`**Portfolio grade: ${report.portfolioGrade.grade}** (weighted ${report.portfolioGrade.weightedScore}/100 across ${report.portfolioGrade.contributingDomains} domain(s))`);
+		lines.push(
+			`**Portfolio grade: ${report.portfolioGrade.grade}** (weighted ${report.portfolioGrade.weightedScore}/100 across ${report.portfolioGrade.contributingDomains} domain(s))`,
+		);
 	} else {
 		lines.push('**Portfolio grade: N/A** (no gradeable domains)');
 	}
@@ -300,7 +312,9 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 		lines.push(`  - ${key}: ${report.summary.byProduct[key]} domain(s)`);
 	}
 	if (report.summary.skipped.length > 0) {
-		lines.push(`  - Skipped: ${report.summary.skipped.map((s) => `${sanitizeOutputText(s.domain, 253)} (${sanitizeOutputText(s.reason, 60)})`).join(', ')}`);
+		lines.push(
+			`  - Skipped: ${report.summary.skipped.map((s) => `${sanitizeOutputText(s.domain, 253)} (${sanitizeOutputText(s.reason, 60)})`).join(', ')}`,
+		);
 	}
 
 	return lines.join('\n').trimEnd();
@@ -338,12 +352,21 @@ const defaultDiscoverPortfolio: DiscoverPortfolioFn = async (brand, opts) => {
 	// kv is not part of BrandAuditPipelineOptions (the latent bug hidden by `as never`).
 	// ScanRuntimeOptions fields spread in from opts.runtimeOptions are silently ignored
 	// by the pipeline; the spread is kept for any future overlap but is currently a no-op.
-	const result = await brandAuditSingle(brand, { timeoutBehavior: 'async_handoff', deadlineMs: opts.deadlineMs, ...opts.runtimeOptions }, {});
+	const result = await brandAuditSingle(
+		brand,
+		{ timeoutBehavior: 'async_handoff', deadlineMs: opts.deadlineMs, ...opts.runtimeOptions },
+		{},
+	);
 	return extractDiscoveredCandidates(result);
 };
 
 /** Evaluate one domain → a CscLeadEntry (scan + RDAP + Spec B pure evaluation). */
-async function evaluateOne(domain: string, ownershipBucket: OwnershipBucket, kv: KVNamespace | undefined, runtimeOptions: CscRuntimeOptions | undefined): Promise<CscLeadEntry> {
+async function evaluateOne(
+	domain: string,
+	ownershipBucket: OwnershipBucket,
+	kv: KVNamespace | undefined,
+	runtimeOptions: CscRuntimeOptions | undefined,
+): Promise<CscLeadEntry> {
 	const scanResult = await scanDomain(domain, kv, runtimeOptions);
 	const rdap = await checkRdapLookup(domain, {
 		whoisBinding: runtimeOptions?.whoisBinding,
@@ -386,7 +409,9 @@ export async function prioritizeCscLeads(
 			return rankCscLeads([], brand, skipped);
 		}
 		// Prefer sellable buckets when truncating to the lead budget.
-		const ordered = [...candidates].sort((a, b) => Number(SELLABLE_BUCKETS.has(b.ownershipBucket)) - Number(SELLABLE_BUCKETS.has(a.ownershipBucket)));
+		const ordered = [...candidates].sort(
+			(a, b) => Number(SELLABLE_BUCKETS.has(b.ownershipBucket)) - Number(SELLABLE_BUCKETS.has(a.ownershipBucket)),
+		);
 		work = ordered.slice(0, LEAD_BUDGET).map((c) => ({ domain: c.domain, ownershipBucket: c.ownershipBucket }));
 	} else {
 		const domains = (args.domains ?? []).slice(0, LEAD_BUDGET);

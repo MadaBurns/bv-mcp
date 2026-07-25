@@ -11,12 +11,7 @@ import {
 	type ScanScore,
 } from './model';
 import type { DomainContext } from './profiles';
-import {
-	detectDomainContext,
-	getProfileWeights,
-	PROFILE_CRITICAL_CATEGORIES,
-	PROFILE_EMAIL_BONUS_ELIGIBLE,
-} from './profiles';
+import { detectDomainContext, getProfileWeights, PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './profiles';
 import type { ScoringConfig } from './config';
 import { DEFAULT_SCORING_CONFIG } from './config';
 import { computeGenericScore } from './generic';
@@ -62,15 +57,26 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 
 /** Core-tier importance weights (SPF, DMARC, DKIM, DNSSEC, SSL). Used by the three-tier scoring formula. */
 export const CORE_WEIGHTS: Record<string, number> = {
-	dmarc: 16, dkim: 10, spf: 10, dnssec: 10, ssl: 8, authoritative_dns_infra: 0,
+	dmarc: 16,
+	dkim: 10,
+	spf: 10,
+	dnssec: 10,
+	ssl: 8,
+	authoritative_dns_infra: 0,
 };
 
 /** Protective-tier importance weights. Used by the three-tier scoring formula. */
 export const PROTECTIVE_WEIGHTS: Record<string, number> = {
-	subdomain_takeover: 4, http_security: 3, mta_sts: 3, subdomailing: 3, mx: 2,
-	caa: 2, ns: 2, lookalikes: 2, shadow_domains: 2,
+	subdomain_takeover: 4,
+	http_security: 3,
+	mta_sts: 3,
+	subdomailing: 3,
+	mx: 2,
+	caa: 2,
+	ns: 2,
+	lookalikes: 2,
+	shadow_domains: 2,
 };
-
 
 /** Map numeric score to letter grade */
 export function scoreToGrade(score: number, config?: ScoringConfig): string {
@@ -84,6 +90,18 @@ export function scoreToGrade(score: number, config?: ScoringConfig): string {
 	if (score >= g.dPlus) return 'D+';
 	if (score >= g.d) return 'D';
 	return 'F';
+}
+
+/**
+ * Narrow a {@link ScanScore} to one that carries a real measurement.
+ *
+ * `false` means the scan produced no gradeable result at all — the correct
+ * response is to ABSTAIN (skip the rule, omit the entry, render "not measured"),
+ * never to substitute a default. Substituting `0`/`'F'` is the fabricated-grade
+ * defect this guard exists to prevent.
+ */
+export function isGraded(score: ScanScore): score is ScanScore & { overall: number; grade: string } {
+	return score.overall !== null && score.grade !== null;
 }
 
 /** The 6 letters the NIST-aligned DISPLAY scale can emit. */
@@ -218,9 +236,7 @@ function buildGenericContext(
 	// Critical penalty: original only counts findings with severity=critical AND confidence=verified.
 	// Generic applies penalty when findingSeverityCounts.critical > 0.
 	// To match: pass only verified critical findings as the critical count.
-	const verifiedCriticalCount = allFindings.filter(
-		(f) => f.severity === 'critical' && inferFindingConfidence(f) === 'verified',
-	).length;
+	const verifiedCriticalCount = allFindings.filter((f) => f.severity === 'critical' && inferFindingConfidence(f) === 'verified').length;
 
 	// For critical penalty equivalence, use verified-only count as the "critical" count.
 	// The original engine only applies the penalty for verified critical findings.
@@ -233,9 +249,7 @@ function buildGenericContext(
 	};
 
 	// --- Critical categories ---
-	const criticalCategories = context
-		? PROFILE_CRITICAL_CATEGORIES[context.profile]
-		: DEFAULT_CRITICAL_CATEGORIES;
+	const criticalCategories = context ? PROFILE_CRITICAL_CATEGORIES[context.profile] : DEFAULT_CRITICAL_CATEGORIES;
 
 	// --- Email bonus eligibility ---
 	// Original engine requires actual SPF and DMARC results to exist for the bonus

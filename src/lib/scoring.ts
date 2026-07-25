@@ -17,6 +17,7 @@ export {
 	computeScanScore,
 	computeProfileAwareScanScore,
 	scoreToGrade,
+	isGraded,
 	nistScoreToGrade,
 	NIST_GRADE_THRESHOLDS,
 	IMPORTANCE_WEIGHTS,
@@ -49,15 +50,6 @@ export type {
 	NistGrade,
 } from '@blackveil/dns-checks/scoring';
 
-export {
-	adaptiveWeightsToContext,
-	generateScoringNote,
-	computeAdaptiveWeight,
-	blendWeights,
-} from './adaptive-weights';
+export { adaptiveWeightsToContext, generateScoringNote, computeAdaptiveWeight, blendWeights } from './adaptive-weights';
 
-export type {
-	AdaptiveWeightsResponse,
-	ScanTelemetry,
-	WeightBound,
-} from './adaptive-weights';
+export type { AdaptiveWeightsResponse, ScanTelemetry, WeightBound } from './adaptive-weights';

@@ -9,14 +9,29 @@ import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
 
 /**
+ * The SINGLE rendered token for a scan that produced no grade. One constant so
+ * the same state cannot render as 'N/A' in one report and 'unknown' in another.
+ * Deliberately NOT 'N/A' — that reads as "not applicable", a different state
+ * already tracked by `notApplicableCategories`.
+ */
+export const UNGRADED_DISPLAY = 'not measured';
+
+/**
  * The SINGLE customer-facing display grade for the scan-output tools
  * (`scan_domain` / `batch_scan` / `compare_domains`): the NIST-aligned 6-band
  * letter, recomputed from the unchanged 0-100 score. The engine's `score.grade`
  * stays on the canonical 9-band scale for every OTHER consumer (compare_baseline
  * ordering, the badge, drift/compliance/fix-plan); only these display surfaces
- * switch. The degraded `'N/A'` sentinel (unscored scans) is preserved verbatim.
+ * switch.
+ *
+ * Returns `null` when the scan was never graded — callers must render
+ * {@link UNGRADED_DISPLAY} rather than substitute a letter. The legacy `'N/A'`
+ * sentinel is still passed through verbatim (Task 3 removes it at the producers);
+ * mapping it onto `nistScoreToGrade(0)` here would fabricate an 'F' for a domain
+ * that does not resolve — the exact defect this slice exists to remove.
  */
-function displayGradeFor(score: { overall: number; grade: string }): string {
+function displayGradeFor(score: { overall: number | null; grade: string | null }): string | null {
+	if (score.overall === null || score.grade === null) return null;
 	return score.grade === 'N/A' ? 'N/A' : nistScoreToGrade(score.overall);
 }
 
@@ -270,7 +285,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		domain: result.domain,
 		score: result.score.overall,
 		grade: displayGradeFor(result.score),
-		passed: result.score.overall >= 50,
+		passed: result.score.overall === null ? null : result.score.overall >= 50,
 		measured: result.checks.length > 0,
 		maturityStage: result.maturity?.stage ?? null,
 		maturityLabel: result.maturity?.label ?? null,
@@ -313,12 +328,15 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 	const displayGrade = displayGradeFor(result.score);
 	lines.push(`DNS Security Scan: ${result.domain}`);
 	lines.push(`${'='.repeat(40)}`);
-	lines.push(`Overall Score: ${result.score.overall}/100 (${displayGrade})`);
+	lines.push(displayGrade === null ? `Overall Score: ${UNGRADED_DISPLAY}` : `Overall Score: ${result.score.overall}/100 (${displayGrade})`);
 	// The engine bakes the canonical 9-band grade into `summary` ("…Grade: X"); rewrite
 	// that one token to the display (NIST) grade so the text never disagrees with the
-	// score line above. No-op when the summary carries no grade (e.g. degraded 'N/A').
+	// score line above. No-op when the summary carries no grade (e.g. degraded 'N/A')
+	// and when the scan was never graded at all.
 	lines.push(
-		displayGrade === 'N/A' ? `${result.score.summary}` : result.score.summary.replace(/Grade: [A-F][+-]?/g, `Grade: ${displayGrade}`),
+		displayGrade === null || displayGrade === 'N/A'
+			? `${result.score.summary}`
+			: result.score.summary.replace(/Grade: [A-F][+-]?/g, `Grade: ${displayGrade}`),
 	);
 	lines.push('');
 

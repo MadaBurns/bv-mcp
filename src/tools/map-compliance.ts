@@ -33,8 +33,10 @@ export interface ComplianceFrameworkSummary {
 
 export interface ComplianceReport {
 	domain: string;
-	score: number;
-	grade: string;
+	/** `null` when the scan produced no gradeable measurement. Never a coerced 0. */
+	score: number | null;
+	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
+	grade: string | null;
 	frameworks: Record<ComplianceFramework, ComplianceFrameworkSummary>;
 }
 
@@ -93,7 +95,12 @@ const FRAMEWORK_LABELS: Record<ComplianceFramework, string> = {
  * Evaluate compliance control status from check results (pure function).
  * Exported for direct unit testing without needing to mock scanDomain.
  */
-export function evaluateCompliance(checkResults: CheckResult[], domain: string, score: number, grade: string): ComplianceReport {
+export function evaluateCompliance(
+	checkResults: CheckResult[],
+	domain: string,
+	score: number | null,
+	grade: string | null,
+): ComplianceReport {
 	const resultsByCategory = new Map<string, CheckResult>();
 	for (const r of checkResults) {
 		resultsByCategory.set(r.category, r);

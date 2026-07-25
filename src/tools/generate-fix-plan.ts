@@ -30,8 +30,10 @@ export interface FixAction {
 /** Full fix plan result. */
 export interface FixPlanResult {
 	domain: string;
-	score: number;
-	grade: string;
+	/** `null` when the scan produced no gradeable measurement. Never a coerced 0. */
+	score: number | null;
+	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
+	grade: string | null;
 	maturityStage: number;
 	totalActions: number;
 	actions: FixAction[];
@@ -76,10 +78,14 @@ const DEPENDENCY_MAP: Partial<Record<CheckCategory, string[]>> = {
 /** Map severity to impact label. */
 function severityToImpact(severity: Severity): 'critical' | 'high' | 'medium' | 'low' {
 	switch (severity) {
-		case 'critical': return 'critical';
-		case 'high': return 'high';
-		case 'medium': return 'medium';
-		default: return 'low';
+		case 'critical':
+			return 'critical';
+		case 'high':
+			return 'high';
+		case 'medium':
+			return 'medium';
+		default:
+			return 'low';
 	}
 }
 
@@ -107,11 +113,7 @@ function findingToAction(finding: Finding): string {
  * @param runtimeOptions - Scan runtime options
  * @returns Prioritized fix plan
  */
-export async function generateFixPlan(
-	domain: string,
-	kv?: KVNamespace,
-	runtimeOptions?: ScanRuntimeOptions,
-): Promise<FixPlanResult> {
+export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<FixPlanResult> {
 	const scanResult = await scanDomain(domain, kv, runtimeOptions);
 
 	const actionableFindings = scanResult.checks

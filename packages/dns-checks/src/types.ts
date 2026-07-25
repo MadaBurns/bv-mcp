@@ -140,8 +140,17 @@ export interface CheckResult {
 }
 
 export interface ScanScore {
-	overall: number;
-	grade: string;
+	/**
+	 * Overall 0–100 score, or `null` when the scan produced NO gradeable
+	 * measurement (domain does not resolve, zone unresolvable, scoring bundle
+	 * failed). `null` means "not measured" — it is NOT a zero. Consumers must
+	 * exclude it from comparison, ranking and policy evaluation; in JS
+	 * `null < n` is `true` and `null - n` is `NaN`, so coercion inverts
+	 * exactly the decisions that matter. Narrow with `isGraded()`.
+	 */
+	overall: number | null;
+	/** Canonical 9-band grade letter, or `null` when `overall` is null. Never a sentinel string. */
+	grade: string | null;
 	categoryScores: Record<CheckCategory, number>;
 	findings: Finding[];
 	summary: string;

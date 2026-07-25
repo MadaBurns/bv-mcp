@@ -87,27 +87,38 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 	const violations: BaselineViolation[] = [];
 	let checkedRules = 0;
 
+	// An ungraded scan carries no grade/score to evaluate, so the rule is SKIPPED rather
+	// than evaluated against a null. Coercion here fails in OPPOSITE directions on the same
+	// scan — `GRADE_ORDER.indexOf(null)` is -1 so `gradeWorseThan` silently PASSES, while
+	// `null < 50` coerces to `0 < 50` and FAILS — meaning whichever rule the caller happened
+	// to configure decided the verdict of a CI/CD policy gate. Skipping is not yet sufficient
+	// (a skipped rule still yields `passed: true`); the explicit inconclusive verdict lands
+	// in a follow-up task.
 	if (baseline.grade !== undefined) {
-		checkedRules++;
-		if (gradeWorseThan(scan.score.grade, baseline.grade)) {
-			violations.push({
-				rule: 'grade',
-				message: `Grade ${scan.score.grade} is below minimum ${baseline.grade}`,
-				expected: baseline.grade,
-				actual: scan.score.grade,
-			});
+		if (scan.score.grade !== null) {
+			checkedRules++;
+			if (gradeWorseThan(scan.score.grade, baseline.grade)) {
+				violations.push({
+					rule: 'grade',
+					message: `Grade ${scan.score.grade} is below minimum ${baseline.grade}`,
+					expected: baseline.grade,
+					actual: scan.score.grade,
+				});
+			}
 		}
 	}
 
 	if (baseline.score !== undefined) {
-		checkedRules++;
-		if (scan.score.overall < baseline.score) {
-			violations.push({
-				rule: 'score',
-				message: `Score ${scan.score.overall} is below minimum ${baseline.score}`,
-				expected: baseline.score,
-				actual: scan.score.overall,
-			});
+		if (scan.score.overall !== null) {
+			checkedRules++;
+			if (scan.score.overall < baseline.score) {
+				violations.push({
+					rule: 'score',
+					message: `Score ${scan.score.overall} is below minimum ${baseline.score}`,
+					expected: baseline.score,
+					actual: scan.score.overall,
+				});
+			}
 		}
 	}
 
@@ -176,7 +187,9 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 /** Format baseline result as readable markdown text for MCP clients. */
 export function formatBaselineResult(result: BaselineResult, format: OutputFormat = 'full'): string {
 	if (format === 'compact') {
-		const lines = [`Baseline: ${result.domain} — ${result.passed ? 'PASS' : 'FAIL'} (${result.violations.length}/${result.checkedRules} violated)`];
+		const lines = [
+			`Baseline: ${result.domain} — ${result.passed ? 'PASS' : 'FAIL'} (${result.violations.length}/${result.checkedRules} violated)`,
+		];
 		for (const v of result.violations) {
 			lines.push(`- ${v.rule}: expected ${v.expected}, got ${v.actual}`);
 		}

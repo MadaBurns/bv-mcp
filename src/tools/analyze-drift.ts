@@ -16,6 +16,7 @@
 import type { OutputFormat } from '../handlers/tool-args';
 import type { Finding, ScanScore } from '@blackveil/dns-checks/scoring';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { UNGRADED_DISPLAY } from './scan/format-report';
 
 /** Overall drift direction classification. */
 export type DriftClassification = 'improving' | 'stable' | 'regressing' | 'mixed';
@@ -32,8 +33,10 @@ export interface DriftFinding {
 export interface DriftReport {
 	domain: string;
 	classification: DriftClassification;
-	scoreDelta: number;
-	gradeChange: { from: string; to: string };
+	/** Current score minus baseline score, or `null` when either side was never graded. */
+	scoreDelta: number | null;
+	/** Either side is `null` when that scan carried no grade. Never a fabricated letter. */
+	gradeChange: { from: string | null; to: string | null };
 	categoryDeltas: Record<string, { from: number; to: number; delta: number }>;
 	improvements: DriftFinding[];
 	regressions: DriftFinding[];
@@ -49,22 +52,27 @@ function findingKey(f: { category: string; title: string }): string {
 /**
  * Classify the overall drift direction.
  *
- * @param scoreDelta - Current score minus baseline score
+ * @param scoreDelta - Current score minus baseline score, or `null` when either
+ *   side was never graded (no score signal — the finding-based rules still apply).
  * @param newCriticalHighCount - Number of new critical/high findings (regressions)
  * @param resolvedCount - Number of resolved findings (improvements)
  */
-export function classifyDrift(scoreDelta: number, newCriticalHighCount: number, resolvedCount: number): DriftClassification {
+export function classifyDrift(scoreDelta: number | null, newCriticalHighCount: number, resolvedCount: number): DriftClassification {
+	// `null` = no score signal, NOT a delta of zero-meaning-stable. Treating it as 0 here
+	// neutralises the score thresholds so only the finding-based rules classify; Task 6
+	// replaces this with an explicit `inconclusive` classification.
+	const delta = scoreDelta ?? 0;
 	const hasRegressions = newCriticalHighCount > 0;
-	const hasImprovements = resolvedCount > 0 || scoreDelta > 2;
+	const hasImprovements = resolvedCount > 0 || delta > 2;
 
 	// Mixed: both regressions and improvements present
 	if (hasRegressions && hasImprovements) return 'mixed';
 
 	// Regressing: score dropped significantly or has critical/high regressions with no improvements
-	if (scoreDelta < -2 || (hasRegressions && !hasImprovements)) return 'regressing';
+	if (delta < -2 || (hasRegressions && !hasImprovements)) return 'regressing';
 
 	// Improving: score increased significantly and no critical/high regressions
-	if (scoreDelta > 2 && !hasRegressions) return 'improving';
+	if (delta > 2 && !hasRegressions) return 'improving';
 
 	// Stable: within threshold and no regressions
 	return 'stable';
@@ -78,14 +86,11 @@ export function classifyDrift(scoreDelta: number, newCriticalHighCount: number, 
  * Same finding with different severity is reported as changed.
  */
 export function computeDrift(domain: string, baseline: ScanScore, current: ScanScore): DriftReport {
-	const scoreDelta = current.overall - baseline.overall;
+	const scoreDelta = current.overall !== null && baseline.overall !== null ? current.overall - baseline.overall : null;
 	const gradeChange = { from: baseline.grade, to: current.grade };
 
 	// --- Category deltas (only changed categories) ---
-	const allCategories = new Set([
-		...Object.keys(baseline.categoryScores ?? {}),
-		...Object.keys(current.categoryScores ?? {}),
-	]);
+	const allCategories = new Set([...Object.keys(baseline.categoryScores ?? {}), ...Object.keys(current.categoryScores ?? {})]);
 	const categoryDeltas: DriftReport['categoryDeltas'] = {};
 	for (const cat of allCategories) {
 		const baseVal = (baseline.categoryScores as Record<string, number>)?.[cat] ?? 0;
@@ -158,10 +163,25 @@ export function formatDriftReport(report: DriftReport, format: OutputFormat = 'f
 	return formatDriftFull(report);
 }
 
+/**
+ * Render the score-delta token. `null` (either side ungraded) renders as
+ * {@link UNGRADED_DISPLAY} — never as `0 pts`, which would read as "stable".
+ */
+function driftDeltaText(scoreDelta: number | null): string {
+	if (scoreDelta === null) return UNGRADED_DISPLAY;
+	return `${scoreDelta > 0 ? '+' : ''}${scoreDelta} pts`;
+}
+
+/** Render one side of the grade change; an ungraded scan has no letter to show. */
+function driftGradeText(grade: string | null): string {
+	return grade ?? UNGRADED_DISPLAY;
+}
+
 function formatDriftCompact(report: DriftReport): string {
 	const lines: string[] = [];
-	const arrow = report.scoreDelta > 0 ? '+' : '';
-	lines.push(`Drift: ${report.domain} — ${report.classification.toUpperCase()} (${arrow}${report.scoreDelta} pts, ${report.gradeChange.from} -> ${report.gradeChange.to})`);
+	lines.push(
+		`Drift: ${report.domain} — ${report.classification.toUpperCase()} (${driftDeltaText(report.scoreDelta)}, ${driftGradeText(report.gradeChange.from)} -> ${driftGradeText(report.gradeChange.to)})`,
+	);
 
 	if (Object.keys(report.categoryDeltas).length > 0) {
 		const deltas = Object.entries(report.categoryDeltas)
@@ -174,10 +194,14 @@ function formatDriftCompact(report: DriftReport): string {
 		lines.push(`Resolved (${report.improvements.length}): ${report.improvements.map((f) => sanitizeOutputText(f.title, 60)).join(', ')}`);
 	}
 	if (report.regressions.length > 0) {
-		lines.push(`New issues (${report.regressions.length}): ${report.regressions.map((f) => `[${f.severity.toUpperCase()}] ${sanitizeOutputText(f.title, 60)}`).join(', ')}`);
+		lines.push(
+			`New issues (${report.regressions.length}): ${report.regressions.map((f) => `[${f.severity.toUpperCase()}] ${sanitizeOutputText(f.title, 60)}`).join(', ')}`,
+		);
 	}
 	if (report.changed.length > 0) {
-		lines.push(`Changed (${report.changed.length}): ${report.changed.map((f) => `${sanitizeOutputText(f.title, 60)} (${f.previousSeverity}->${f.severity})`).join(', ')}`);
+		lines.push(
+			`Changed (${report.changed.length}): ${report.changed.map((f) => `${sanitizeOutputText(f.title, 60)} (${f.previousSeverity}->${f.severity})`).join(', ')}`,
+		);
 	}
 
 	return lines.join('\n');
@@ -185,12 +209,13 @@ function formatDriftCompact(report: DriftReport): string {
 
 function formatDriftFull(report: DriftReport): string {
 	const lines: string[] = [];
-	const arrow = report.scoreDelta > 0 ? '+' : '';
 
 	lines.push(`## Drift Analysis: ${report.domain}`);
 	lines.push('');
 	lines.push(`**Classification:** ${report.classification.toUpperCase()}`);
-	lines.push(`**Score:** ${arrow}${report.scoreDelta} pts (${report.gradeChange.from} → ${report.gradeChange.to})`);
+	lines.push(
+		`**Score:** ${driftDeltaText(report.scoreDelta)} (${driftGradeText(report.gradeChange.from)} → ${driftGradeText(report.gradeChange.to)})`,
+	);
 	lines.push('');
 
 	// Category deltas

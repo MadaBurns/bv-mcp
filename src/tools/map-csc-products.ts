@@ -32,8 +32,10 @@ export interface CscProductRecommendation {
 
 export interface CscProductReport {
 	domain: string;
-	score: number;
-	grade: string;
+	/** `null` when the scan produced no gradeable measurement. Never a coerced 0. */
+	score: number | null;
+	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
+	grade: string | null;
 	lockPosture: LockPosture | null;
 	recommendations: CscProductRecommendation[];
 	recommendedCount: number;
@@ -94,8 +96,8 @@ export function evaluateCscProducts(
 	checkResults: CheckResult[],
 	lockPosture: LockPosture | null,
 	domain: string,
-	score: number,
-	grade: string,
+	score: number | null,
+	grade: string | null,
 ): CscProductReport {
 	const byCategory = new Map<string, CheckResult>();
 	for (const r of checkResults) byCategory.set(r.category, r);
@@ -153,7 +155,9 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 	const byKey = new Map(report.recommendations.map((r) => [r.product, r]));
 
 	if (format === 'compact') {
-		lines.push(`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${report.score}/100 (${report.grade}) — ${report.recommendedCount} upsell(s)`);
+		lines.push(
+			`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${report.score}/100 (${report.grade}) — ${report.recommendedCount} upsell(s)`,
+		);
 		for (const key of CSC_PRODUCT_ORDER) {
 			const r = byKey.get(key)!;
 			const icon = r.recommended ? ' →' : ' ✓';

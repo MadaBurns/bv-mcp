@@ -17,22 +17,14 @@ export {
 	buildCheckResult,
 	createFinding,
 } from './model';
-export type {
-	CheckCategory,
-	CategoryTier,
-	Finding,
-	FindingConfidence,
-	CheckResult,
-	CheckStatus,
-	ScanScore,
-	Severity,
-} from './model';
+export type { CheckCategory, CategoryTier, Finding, FindingConfidence, CheckResult, CheckStatus, ScanScore, Severity } from './model';
 
 export {
 	IMPORTANCE_WEIGHTS,
 	CORE_WEIGHTS,
 	PROTECTIVE_WEIGHTS,
 	scoreToGrade,
+	isGraded,
 	nistScoreToGrade,
 	NIST_GRADE_THRESHOLDS,
 	computeScanScore,
@@ -40,11 +32,7 @@ export {
 } from './engine';
 export type { ProfileAwareScanScore, NistGrade } from './engine';
 
-export {
-	DEFAULT_SCORING_CONFIG,
-	toImportanceRecord,
-	parseScoringConfig,
-} from './config';
+export { DEFAULT_SCORING_CONFIG, toImportanceRecord, parseScoringConfig } from './config';
 export type { ScoringConfig } from './config';
 
 export {
