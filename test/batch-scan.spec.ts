@@ -90,14 +90,46 @@ describe('batchScan', () => {
 		}
 	});
 
-	it('formatBatchScan never renders a fabricated letter or a literal null for an unmeasured domain', async () => {
+	it('formatBatchScan renders "not measured" for an invalid domain', async () => {
 		const { batchScan, formatBatchScan } = await import('../src/tools/batch-scan');
 		const results = await batchScan(['not--valid--domain!@#'], { kv: env.SCAN_CACHE });
 		const text = formatBatchScan(results, 'full');
+		// This fixture's result always carries `error` truthy (validateDomain fails),
+		// so it never reaches the score-rendering branch under either the buggy or
+		// the fixed formatter — only this assertion is discriminating for this fixture.
 		expect(text).toContain('not measured');
-		expect(text).not.toContain('/100');
-		expect(text).not.toContain('(F)');
-		expect(text).not.toContain('null');
+	});
+
+	it('formatBatchScan does not fabricate a score for a scan that ran zero checks (NXDOMAIN/SERVFAIL shape)', async () => {
+		// Mirrors buildNonResolvingResult / buildDnsBrokenResult in scan-domain.ts: a
+		// domain that never resolves runs NO checks, but the raw ScanScore still carries
+		// overall: 0 / grade: 'N/A' (neither is null) — only `checks: []` (→ measured:
+		// false) signals "not measured". Gating formatBatchScan on score/grade nullness
+		// alone would still render "0/100 (N/A)" and count it as a successful scan.
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const nonResolvingScan = (async (domain: string): Promise<any> => ({
+			domain,
+			score: { overall: 0, grade: 'N/A', summary: 'does not resolve', categoryScores: {}, findings: [] },
+			checks: [],
+			maturity: { stage: 0, label: 'Does not resolve', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+			scoringNote: null,
+			adaptiveWeightDeltas: null,
+			interactionEffects: [],
+			resolves: false,
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		})) as any;
+
+		const { batchScan, formatBatchScan } = await import('../src/tools/batch-scan');
+		const results = await batchScan(['nxprobe.com'], { kv: env.SCAN_CACHE, scanFn: nonResolvingScan });
+		expect(results[0].measured).toBe(false);
+
+		const text = formatBatchScan(results, 'full');
+		expect(text).toContain('not measured');
+		expect(text).not.toContain('0/100');
+		expect(text).toContain('Scanned 0/1 domain(s) successfully');
 	});
 
 	it('formatBatchScan handles an ungraded result that carries NO error field', async () => {

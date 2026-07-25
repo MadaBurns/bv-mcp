@@ -73,6 +73,11 @@ describe('compareDomains', () => {
 
 		const text = formatDomainComparison(result, 'compact');
 		expect(text).toContain('not measured');
-		expect(text).not.toContain('ungraded.com                              0/100');
+		// Locate the ungraded domain's own line — asserting on the exact padded column
+		// width is fragile (a prior version of this test miscounted the padEnd(40) gap
+		// by one space and could never fail) — and confirm it never renders a score.
+		const ungradedLine = text.split('\n').find((line) => line.includes('ungraded.com'));
+		expect(ungradedLine).toBeDefined();
+		expect(ungradedLine).not.toContain('/100');
 	});
 });
