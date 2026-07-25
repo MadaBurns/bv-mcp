@@ -19,7 +19,6 @@ import {
 	type RegistrationEvidence,
 	type UnknownReason,
 } from '../lib/registration-state';
-import { getLogger } from '../lib/log';
 
 /** Wall-clock timeout for the entire shadow domain check (ms). */
 const SHADOW_TIMEOUT_MS = 20_000;
@@ -260,9 +259,14 @@ function isNullMxExchange(exchange: string): boolean {
 
 /**
  * Hard invariant: a domain exhibiting ANY observed record cannot be
- * unregistered. Any code path about to emit an "unregistered" claim must
- * clear this first. Deliberately a total function over the observed record
- * set rather than a heuristic — there is no threshold to tune.
+ * unregistered. Deliberately a total function over the observed record set
+ * rather than a heuristic — there is no threshold to tune.
+ *
+ * Not called on the current claim path: `RegistrationState`'s `unregistered`
+ * arm carries no payload, so the invariant is enforced by the type rather than
+ * at runtime. Exported and unit-tested so any FUTURE site that threads real
+ * observed records alongside a non-existence claim has a ready predicate to
+ * clear rather than reinventing one.
  */
 export function canClaimUnregistered(observed: { ns: string[]; mx: string[]; hasSpf: boolean }): boolean {
 	return observed.ns.length === 0 && observed.mx.length === 0 && !observed.hasSpf;
@@ -392,9 +396,8 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primary
 	//
 	// No `canClaimUnregistered` guard here: this branch makes no unregistered
 	// claim, and a parked defensive registration proven via SOA/A that publishes
-	// `v=spf1 -all` legitimately fails that predicate. The guard belongs at the
-	// sites that actually claim non-existence (see `checkShadowDomains`), not
-	// here, where it fired `warn` on every correct result.
+	// `v=spf1 -all` legitimately fails that predicate — the guard fired `warn` on
+	// every correct result.
 	//
 	// The detail must describe only what was ACTUALLY observed. `ns` and `mx` are
 	// always empty here (both earlier branches return first), but `hasSpf` may be
@@ -537,35 +540,20 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 
 	// Only NXDOMAIN supports an "unregistered" claim.
 	for (const variant of buckets.unregistered) {
-		// Nothing was observed for these variants — they are never detail-probed.
-		// The guard below is defence in depth at the point of the claim: it reads
-		// the SAME object the finding carries, so any future change that threads
-		// real observed records into this site is checked rather than trusted.
-		// The other half of this net lives in `resolveRegistrationUncached`, where
-		// the `unregistered` arm is reachable only from an NXDOMAIN with no
-		// contradicting positive record.
+		// Nothing was observed for these variants — they are never detail-probed,
+		// so `observed` is a constant empty record set.
+		//
+		// The invariant "an unregistered claim may not carry observed records" is
+		// enforced STRUCTURALLY by the `RegistrationState` type, not by a runtime
+		// check here: its `unregistered` arm carries no payload, so there is no
+		// conflicting evidence for a guard to cross-check. A
+		// `canClaimUnregistered(observed)` call at this site read the hardcoded
+		// literal below and was therefore unconditionally true — an unreachable,
+		// untestable branch. The other half of the net lives in
+		// `resolveRegistrationUncached`, where the `unregistered` arm is reachable
+		// only from an NXDOMAIN with no contradicting positive record and no
+		// failure rcode anywhere in the response set.
 		const observed = { ns: [] as string[], mx: [] as string[], hasSpf: false };
-		if (!canClaimUnregistered(observed)) {
-			// Fail-safe: downgrade to the inconclusive wording, never throw, never
-			// emit a non-existence claim that its own metadata contradicts.
-			getLogger().warn('shadow_domains registration invariant violated', {
-				category: 'shadow-domains',
-				variant,
-				hasNs: observed.ns.length > 0,
-				hasMx: observed.mx.length > 0,
-				hasSpf: observed.hasSpf,
-			});
-			findings.push(
-				createFinding(
-					'shadow_domains',
-					'Brand variant registration unknown',
-					'info',
-					`Could not determine whether ${variant} is registered — the lookup reported it as non-existent while records were still observed for it. No conclusion is drawn about this domain.`,
-					{ variant, ...observed, dmarcPolicy: null, registrationState: 'unknown', confidence: 'heuristic' },
-				),
-			);
-			continue;
-		}
 		findings.push(
 			createFinding(
 				'shadow_domains',

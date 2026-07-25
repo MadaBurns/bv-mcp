@@ -1108,11 +1108,30 @@ describe('registration-state correctness', () => {
 		expect(fm.hasSpf).toBe(true);
 		expect(fallthrough!.detail).not.toMatch(/no .*SPF records were observed/i);
 
-		// This is the exact shape the relocated invariant guard used to fire on:
-		// registered via A/SOA evidence, `ns: []`, and a published SPF record.
-		// It is a correct, non-contradictory result and must log no violation.
+		// The log capture is retained only to prove the sentinel path works; the
+		// former "registration invariant violated" warn was deleted along with the
+		// tautological guard that emitted it (no call site can produce that string
+		// any more, so asserting its absence could never fail).
 		expect(logged).toMatch(/__log-capture-sentinel__/);
-		expect(logged).not.toMatch(/registration invariant violated/);
+	});
+
+	describe('canClaimUnregistered', () => {
+		// The predicate is no longer called on the claim path — `RegistrationState`'s
+		// payload-free `unregistered` arm enforces the invariant structurally — but it
+		// stays exported for any future site that threads real observed records
+		// alongside a non-existence claim. These exercise it directly so the retained
+		// export is not untested.
+		it('permits the claim only when nothing at all was observed', async () => {
+			const { canClaimUnregistered } = await import('../src/tools/check-shadow-domains');
+			expect(canClaimUnregistered({ ns: [], mx: [], hasSpf: false })).toBe(true);
+		});
+
+		it('refuses the claim when ANY record was observed', async () => {
+			const { canClaimUnregistered } = await import('../src/tools/check-shadow-domains');
+			expect(canClaimUnregistered({ ns: ['ns1.example.'], mx: [], hasSpf: false })).toBe(false);
+			expect(canClaimUnregistered({ ns: [], mx: ['10 mail.example.'], hasSpf: false })).toBe(false);
+			expect(canClaimUnregistered({ ns: [], mx: [], hasSpf: true })).toBe(false);
+		});
 	});
 
 	it('re-queries NS in Phase 2 when Phase 1 proved registration without NS evidence', async () => {
