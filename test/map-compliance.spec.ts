@@ -223,7 +223,7 @@ describe('evaluateCompliance', () => {
 		expect(report.frameworks.cis_controls).toBeDefined();
 	});
 
-	it('should handle missing check categories gracefully as fail', () => {
+	it('should report a control with NO check evidence as not_assessed, never as fail', () => {
 		// Only provide SPF — all controls referencing other categories should reflect accordingly
 		const results = [makeCheckResult('spf', true)];
 		const report = evaluateCompliance(results, 'sparse.com', 20, 'F');
@@ -232,13 +232,138 @@ describe('evaluateCompliance', () => {
 		const spfControl = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§4.3.1');
 		expect(spfControl!.status).toBe('pass');
 
-		// NIST §4.3.2 DKIM — fail (no dkim data)
+		// NIST §4.3.2 DKIM — no dkim check ran, so there is no evidence either way.
+		// Reporting that as `fail` asserts a requirement was found unmet; it wasn't looked at.
 		const dkimControl = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§4.3.2');
-		expect(dkimControl!.status).toBe('fail');
+		expect(dkimControl!.status).toBe('not_assessed');
 
-		// PCI 8.3.1 — [spf, dkim, dmarc], requirePass: false — only spf present and passes → partial
+		// PCI 8.3.1 — [spf, dkim, dmarc], requirePass: false — only spf present and passes → partial.
+		// A control with SOME evidence is still graded; only ZERO evidence abstains.
 		const pci831 = report.frameworks.pci_dss_4.mappings.find((m) => m.controlId === '8.3.1');
 		expect(pci831!.status).toBe('partial');
+
+		// The framework summary drops the unassessable control from its denominator
+		// rather than counting it as a failure.
+		const nist = report.frameworks.nist_800_177;
+		expect(nist.totalControls).toBe(8);
+		expect(nist.notAssessed).toBe(7);
+		expect(nist.assessedControls).toBe(1);
+		expect(nist.passing + nist.failing + nist.partial).toBe(nist.assessedControls);
+		// The one assessable control passed. Computing this over `totalControls`
+		// instead would report 13% — a compliance number driven by how much was
+		// never looked at. This assertion is what separates the two denominators.
+		expect(nist.percentage).toBe(100);
+	});
+});
+
+/**
+ * The banked defect. `map_compliance` returns `buildToolResult(text, result, format)`,
+ * so the raw `ComplianceReport` becomes BOTH the MCP `structuredContent` and the
+ * `STRUCTURED_RESULT` comment. Task 3 corrected the PROSE (a "not measured" score
+ * line plus a caveat) but left the payload emitting, per control:
+ *
+ *     {"passing":0,"failing":5,"percentage":0,"status":"fail"}
+ *
+ * — a fabricated 0% compliance verdict, with no caveat field at all, for a domain
+ * that was never assessed. `percentage: 0` is a number something will chart.
+ * A domain that does not exist has not failed SOC 2.
+ *
+ * These assertions run against the SERIALIZED wire payload deliberately: a
+ * prose-only fix is exactly the defect being closed, so asserting on rendered
+ * text could not have caught it.
+ */
+describe('map_compliance structured payload — a domain that was never measured', () => {
+	const FRAMEWORKS = ['nist_800_177', 'pci_dss_4', 'soc2', 'cis_controls'] as const;
+
+	async function unmeasuredReport() {
+		const { evaluateCompliance: evaluate } = await import('../src/tools/map-compliance');
+		return evaluate([], 'never-measured.example', null, null);
+	}
+
+	it('marks every control not_assessed — absence of evidence is not a failed requirement', async () => {
+		const report = await unmeasuredReport();
+		const mappings = FRAMEWORKS.flatMap((fw) => report.frameworks[fw].mappings);
+
+		// Fixture-reachability guard: with an empty mappings list every assertion
+		// below would hold vacuously and this test would protect nothing.
+		expect(mappings.length).toBeGreaterThan(20);
+		expect(mappings.filter((m) => m.status === 'fail')).toEqual([]);
+		expect(mappings.every((m) => m.status === 'not_assessed')).toBe(true);
+	});
+
+	it('omits the compliance percentage instead of reporting 0%', async () => {
+		const report = await unmeasuredReport();
+		for (const fw of FRAMEWORKS) {
+			const summary = report.frameworks[fw];
+			expect(summary.totalControls).toBeGreaterThan(0);
+			expect(summary.percentage).toBeNull();
+			expect(summary.assessedControls).toBe(0);
+			expect(summary.notAssessed).toBe(summary.totalControls);
+			expect(summary.failing).toBe(0);
+			expect(summary.passing).toBe(0);
+		}
+	});
+
+	it('carries the caveat as DATA, not only as prose', async () => {
+		const report = await unmeasuredReport();
+		expect(report.assessed).toBe(false);
+		expect(report.caveat).toMatch(/not assessable/i);
+	});
+
+	it('emits no fabricated verdict on either machine channel (structuredContent AND the STRUCTURED_RESULT comment)', async () => {
+		const { formatCompliance: format } = await import('../src/tools/map-compliance');
+		const { buildToolResult } = await import('../src/handlers/tool-formatters');
+		const report = await unmeasuredReport();
+		const result = buildToolResult(format(report, 'full'), report, 'full');
+
+		// Channel 1 — the MCP-standard structuredContent field.
+		expect(result.structuredContent).toBeDefined();
+		const wire = JSON.stringify(result.structuredContent);
+		expect(wire).not.toContain('"status":"fail"');
+		expect(wire).not.toContain('"percentage":0');
+		expect(wire).toContain('"status":"not_assessed"');
+		expect(wire).toContain('"assessed":false');
+
+		// Channel 2 — the legacy STRUCTURED_RESULT comment some clients still parse.
+		const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));
+		expect(comment).toBeDefined();
+		expect(comment).not.toContain('"status":"fail"');
+		expect(comment).not.toContain('"percentage":0');
+		expect(comment).toContain('"assessed":false');
+	});
+
+	it('still emits a real fail verdict and a numeric percentage for a MEASURED domain (control)', async () => {
+		const { evaluateCompliance: evaluate, formatCompliance: format } = await import('../src/tools/map-compliance');
+		const { buildToolResult } = await import('../src/handlers/tool-formatters');
+		// 5 of the 8 NIST controls pass; mta_sts/dane/caa genuinely fail.
+		const measured = evaluate(
+			[
+				makeCheckResult('spf', true),
+				makeCheckResult('dkim', true),
+				makeCheckResult('dmarc', true),
+				makeCheckResult('mta_sts', false, [{ title: 'Missing MTA-STS', severity: 'medium' }]),
+				makeCheckResult('dane', false, [{ title: 'Missing DANE', severity: 'low' }]),
+				makeCheckResult('tlsrpt', true),
+				makeCheckResult('dnssec', true),
+				makeCheckResult('caa', false, [{ title: 'Missing CAA', severity: 'medium' }]),
+				makeCheckResult('ssl', true),
+				makeCheckResult('http_security', true),
+				makeCheckResult('ns', true),
+			],
+			'measured.example',
+			73,
+			'C+',
+		);
+		const wire = JSON.stringify(buildToolResult(format(measured, 'full'), measured, 'full').structuredContent);
+
+		// Without these the assertions above would all hold under an implementation
+		// that reported EVERY control as not_assessed and every percentage as null.
+		expect(measured.assessed).toBe(true);
+		expect(measured.caveat).toBeNull();
+		expect(wire).toContain('"status":"fail"');
+		expect(measured.frameworks.nist_800_177.percentage).toBe(63);
+		expect(measured.frameworks.nist_800_177.notAssessed).toBe(0);
+		expect(measured.frameworks.nist_800_177.assessedControls).toBe(8);
 	});
 });
 
@@ -289,6 +414,19 @@ describe('formatCompliance', () => {
 		// Should show related findings as sub-items
 		expect(output).toContain('DNSSEC not enabled');
 		expect(output).toContain('No MTA-STS record');
+	});
+
+	it.each(['compact', 'full'] as const)('renders "not measured" instead of null/100 (null) for an ungraded scan [%s]', async (format) => {
+		const { evaluateCompliance: evaluate, formatCompliance: fmt } = await import('../src/tools/map-compliance');
+		const report = evaluate([], 'never-measured.example', null, null);
+		const text = fmt(report, format);
+
+		expect(text).toContain('not measured');
+		expect(text).not.toContain('null');
+		expect(text).not.toContain('/100');
+		// The per-control column must not read as a failure verdict either.
+		expect(text).not.toMatch(/\bFAIL\b/);
+		expect(text.toLowerCase()).toContain('not assessed');
 	});
 
 	it('should not show related findings for passing controls in compact format', () => {

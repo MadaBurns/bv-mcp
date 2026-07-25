@@ -302,6 +302,10 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 		);
 		if (lead.recommendedCscProducts.length > 0) {
 			lines.push(`  - Recommended CSC products: ${lead.recommendedCscProducts.join(', ')}`);
+		} else if (lead.score === null || lead.grade === null) {
+			// "Posture clean" is a security reassurance. An ungraded lead was never
+			// measured, so having nothing to upsell says nothing about its posture.
+			lines.push(`  - No CSC upsell — posture ${UNGRADED_DISPLAY}`);
 		} else {
 			lines.push('  - No CSC upsell — posture clean');
 		}

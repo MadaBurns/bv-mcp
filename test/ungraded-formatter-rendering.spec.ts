@@ -32,12 +32,20 @@ function expectUngraded(text: string, label: string) {
 }
 
 describe('formatCompliance — ungraded scan', () => {
+	// The two fixtures are the two real states: nothing measured (so nothing
+	// assessable, and no percentage to report), and a measured scan whose one
+	// control genuinely failed.
 	function report(score: number | null, grade: string | null) {
-		const summary = { totalControls: 1, passing: 0, failing: 1, partial: 0, percentage: 0, mappings: [] };
+		const assessed = score !== null;
+		const summary = assessed
+			? { totalControls: 1, passing: 0, failing: 1, partial: 0, notAssessed: 0, assessedControls: 1, percentage: 0, mappings: [] }
+			: { totalControls: 1, passing: 0, failing: 0, partial: 0, notAssessed: 1, assessedControls: 0, percentage: null, mappings: [] };
 		return {
 			domain: 'nxdomain-probe.com',
 			score,
 			grade,
+			assessed,
+			caveat: assessed ? null : 'No checks ran for this domain, so the controls below are NOT assessable.',
 			frameworks: { nist_800_177: summary, pci_dss_4: summary, soc2: summary, cis_controls: summary },
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} as any;
@@ -57,12 +65,12 @@ describe('formatCompliance — ungraded scan', () => {
 		expect(text).not.toContain('not measured');
 	});
 
-	// map_compliance is the sharpest case: `map-compliance.ts:123-125` marks a control
-	// `fail` whenever NO check data matched it, and an unmeasured domain matches
-	// nothing — so the body renders a complete framework-by-framework FAILURE for a
-	// domain that was never assessed, directly under a header that says "not measured".
-	// Fixing the control STATUS is a semantic change owned by a later task; the
-	// interim requirement is that the report cannot be read as a real failure verdict.
+	// map_compliance was the sharpest case: a control with NO matching check data
+	// was marked `fail`, and an unmeasured domain matches nothing — so the body
+	// rendered a complete framework-by-framework FAILURE for a domain that was
+	// never assessed, directly under a header saying "not measured". The control
+	// STATUS itself now abstains (`not_assessed`, see map-compliance.spec.ts); this
+	// pins the customer-facing qualifier that must accompany it.
 	it.each(FORMATS)('qualifies the per-control results so they cannot read as a real failure verdict [%s]', async (format) => {
 		const { formatCompliance } = await import('../src/tools/map-compliance');
 		const text = formatCompliance(report(null, null), format);
@@ -141,7 +149,19 @@ describe('formatCscProducts — ungraded scan', () => {
 
 describe('formatFixPlan — ungraded scan', () => {
 	function plan(score: number | null, grade: string | null) {
-		return { domain: 'nxdomain-probe.com', score, grade, maturityStage: 0, totalActions: 0, actions: [] };
+		const assessed = score !== null;
+		return {
+			domain: 'nxdomain-probe.com',
+			score,
+			grade,
+			// A domain nobody measured has no maturity stage either — stage 0 means
+			// "Unprotected", which is a verdict.
+			maturityStage: assessed ? 2 : null,
+			totalActions: 0,
+			actions: [],
+			assessed,
+			caveat: assessed ? null : 'No checks ran for this domain, so no remediation actions could be planned.',
+		};
 	}
 
 	it.each(FORMATS)('renders the ungraded token, not null/100 (null) [%s]', async (format) => {

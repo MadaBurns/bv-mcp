@@ -207,4 +207,24 @@ describe('formatCscProducts', () => {
 		expect(compact.length).toBeLessThan(full.length);
 		expect(compact).toContain('CSC MultiLock');
 	});
+
+	it('renders "not measured" instead of null/100 (null) for an ungraded scan', async () => {
+		const { evaluateCscProducts: evaluate, formatCscProducts: fmt } = await import('../src/tools/map-csc-products');
+		const report = evaluate([], null, 'never-measured.example', null, null);
+		const text = fmt(report, 'full');
+
+		expect(text).toContain('not measured');
+		expect(text).not.toContain('null');
+		// The product lines must describe absence of observation, never a measured gap.
+		expect(text).toContain('not observed');
+	});
+
+	it('still renders the real score for a measured scan (control)', async () => {
+		const { formatCscProducts: fmt } = await import('../src/tools/map-csc-products');
+		// Without this the assertion above would hold under a formatter that printed
+		// the ungraded token unconditionally.
+		const text = fmt(sampleReport(), 'full');
+		expect(text).toContain('55/100 (F)');
+		expect(text).not.toContain('not measured');
+	});
 });

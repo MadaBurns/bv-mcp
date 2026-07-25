@@ -11,15 +11,25 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { formatScoreGrade } from '../lib/ungraded-display';
+import { formatScoreGrade, isMeasured, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 
 export type ComplianceFramework = 'nist_800_177' | 'pci_dss_4' | 'soc2' | 'cis_controls';
+
+/**
+ * A control's verdict.
+ *
+ * `not_assessed` is NOT a soft failure — it is the absence of a verdict. A control
+ * whose mapped categories produced no check data was never looked at, and reporting
+ * that as `fail` asserts a requirement was found unmet. A domain that does not
+ * exist has not failed SOC 2.
+ */
+export type ComplianceStatus = 'pass' | 'fail' | 'partial' | 'not_assessed';
 
 export interface ComplianceMapping {
 	framework: ComplianceFramework;
 	controlId: string;
 	controlName: string;
-	status: 'pass' | 'fail' | 'partial';
+	status: ComplianceStatus;
 	relatedFindings: string[];
 }
 
@@ -28,7 +38,16 @@ export interface ComplianceFrameworkSummary {
 	passing: number;
 	failing: number;
 	partial: number;
-	percentage: number;
+	/** Controls with NO check evidence — excluded from `percentage`, never counted as failures. */
+	notAssessed: number;
+	/** `totalControls - notAssessed` — the denominator `percentage` is computed over. */
+	assessedControls: number;
+	/**
+	 * Percent of ASSESSED controls passing, or `null` when nothing could be
+	 * assessed. Deliberately nullable rather than 0: a `0` here is a number a
+	 * dashboard will chart as total non-compliance for a domain nobody measured.
+	 */
+	percentage: number | null;
 	mappings: ComplianceMapping[];
 }
 
@@ -38,8 +57,25 @@ export interface ComplianceReport {
 	score: number | null;
 	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
 	grade: string | null;
+	/**
+	 * Did ANY check evidence exist for this domain? `false` means the control
+	 * results carry no verdict at all. Machine consumers (bv-web-prod, dashboards,
+	 * LLM clients reading `structuredContent`) must gate on this before charting
+	 * anything — it is the structured twin of the prose caveat below.
+	 */
+	assessed: boolean;
+	/** Populated only when `assessed` is false; `null` otherwise. */
+	caveat: string | null;
 	frameworks: Record<ComplianceFramework, ComplianceFrameworkSummary>;
 }
+
+/**
+ * The single wording of the "nothing was assessed" qualifier, carried on BOTH
+ * surfaces — the prose a customer reads and the `caveat` field a machine consumes.
+ * Task 3 corrected only the prose; the payload kept shipping a fabricated 0%.
+ */
+export const UNASSESSED_COMPLIANCE_CAVEAT =
+	'No checks ran for this domain, so the controls below are NOT assessable — each is reported as NOT ASSESSED (absence of evidence), never as a requirement found unmet.';
 
 interface ComplianceControlDef {
 	framework: ComplianceFramework;
@@ -117,12 +153,15 @@ export function evaluateCompliance(
 			.map((cat) => resultsByCategory.get(cat))
 			.filter((r): r is CheckResult => r !== undefined);
 
-		let status: 'pass' | 'fail' | 'partial';
+		let status: ComplianceStatus;
 		const relatedFindings: string[] = [];
 
 		if (matchedResults.length === 0) {
-			// No check data for any mapped category — treat as fail
-			status = 'fail';
+			// No check data for ANY mapped category — there is no evidence either way,
+			// so this control has no verdict. It used to be reported as `fail`, which
+			// made an unmeasured domain (NXDOMAIN / broken zone — `checks: []`) render
+			// as a complete framework-by-framework compliance failure.
+			status = 'not_assessed';
 		} else {
 			const passingCount = matchedResults.filter((r) => r.passed).length;
 			const failingResults = matchedResults.filter((r) => !r.passed);
@@ -170,19 +209,28 @@ export function evaluateCompliance(
 		const passing = mappings.filter((m) => m.status === 'pass').length;
 		const failing = mappings.filter((m) => m.status === 'fail').length;
 		const partial = mappings.filter((m) => m.status === 'partial').length;
+		const notAssessed = mappings.filter((m) => m.status === 'not_assessed').length;
 		const total = mappings.length;
+		const assessedControls = total - notAssessed;
 
 		frameworks[fw] = {
 			totalControls: total,
 			passing,
 			failing,
 			partial,
-			percentage: total > 0 ? Math.round((passing / total) * 100) : 0,
+			notAssessed,
+			assessedControls,
+			// OMIT rather than zero. A control nobody could assess is out of the
+			// denominator; with none assessable there is no percentage to report.
+			// When every control has evidence (the normal case) this is identical to
+			// the previous `passing / totalControls`.
+			percentage: assessedControls > 0 ? Math.round((passing / assessedControls) * 100) : null,
 			mappings,
 		};
 	}
 
-	return { domain, score, grade, frameworks };
+	const assessed = isMeasured(checkResults);
+	return { domain, score, grade, assessed, caveat: assessed ? null : UNASSESSED_COMPLIANCE_CAVEAT, frameworks };
 }
 
 /**
@@ -196,33 +244,61 @@ export async function mapCompliance(domain: string, kv?: KVNamespace, runtimeOpt
 }
 
 /**
+ * Per-status display vocabulary. `not_assessed` gets its OWN glyph and label —
+ * reusing the failure glyph would put an unassessable control back in the same
+ * visual column as a real failure, which is the defect in a different costume.
+ */
+const STATUS_ICON_COMPACT: Record<ComplianceStatus, string> = {
+	pass: ' ✓',
+	partial: ' ~',
+	fail: ' ✗',
+	not_assessed: ' ?',
+};
+
+const STATUS_ICON_FULL: Record<ComplianceStatus, string> = {
+	pass: '✅',
+	partial: '⚠️',
+	fail: '❌',
+	not_assessed: '❓',
+};
+
+const STATUS_LABEL: Record<ComplianceStatus, string> = {
+	pass: 'PASS',
+	partial: 'PARTIAL',
+	fail: 'FAIL',
+	not_assessed: 'NOT ASSESSED',
+};
+
+/**
  * Format a compliance report for display.
  */
 export function formatCompliance(report: ComplianceReport, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 
-	// A control with NO matching check data is scored `fail` (see the mapping loop
-	// above). An unmeasured scan matches nothing, so every control fails and the
-	// report reads as a complete framework-by-framework compliance FAILURE for a
-	// domain that was never assessed — under a header that already says the score
-	// is not measured. Until the control status itself carries a "not assessed"
-	// state, say so explicitly so the ✗ column cannot be read as a real verdict.
-	const unmeasured = report.score === null || report.grade === null;
-	const UNMEASURED_CAVEAT =
-		'No checks ran for this domain, so the control results below are NOT assessable — every control shows as failing because there is no evidence either way, not because a requirement was found unmet.';
+	// Driven by whether anything was MEASURED, not by whether the scan scored: a
+	// domain whose checks ran but whose scoring bundle failed has a null score
+	// alongside genuinely evaluable control results, and telling that customer
+	// "no checks ran" would itself be false.
+	const unassessed = !report.assessed;
+	const caveat = report.caveat ?? UNASSESSED_COMPLIANCE_CAVEAT;
 
 	if (format === 'compact') {
 		lines.push(`Compliance: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}`);
-		if (unmeasured) lines.push(UNMEASURED_CAVEAT);
+		if (unassessed) lines.push(caveat);
 		lines.push('');
 
 		for (const fw of FRAMEWORK_ORDER) {
 			const summary = report.frameworks[fw];
 			const label = FRAMEWORK_LABELS[fw];
-			lines.push(`${label}: ${summary.passing}/${summary.totalControls} controls passing (${summary.percentage}%)`);
+			lines.push(
+				summary.assessedControls === 0
+					? `${label}: ${UNGRADED_DISPLAY} \u2014 0 of ${summary.totalControls} controls assessable`
+					: `${label}: ${summary.passing}/${summary.assessedControls} controls passing (${summary.percentage}%)` +
+							(summary.notAssessed > 0 ? ` | ${summary.notAssessed} not assessed` : ''),
+			);
 
 			for (const m of summary.mappings) {
-				const icon = m.status === 'pass' ? ' \u2713' : m.status === 'partial' ? ' ~' : ' \u2717';
+				const icon = STATUS_ICON_COMPACT[m.status];
 				const findingSuffix =
 					m.relatedFindings.length > 0 ? ` — ${sanitizeOutputText(m.relatedFindings[0], 80)}` : '';
 				lines.push(`${icon} ${m.controlId} ${sanitizeOutputText(m.controlName, 60)}${m.status !== 'pass' ? findingSuffix : ''}`);
@@ -232,7 +308,7 @@ export function formatCompliance(report: ComplianceReport, format: OutputFormat 
 	} else {
 		lines.push(`# Compliance Report: ${sanitizeOutputText(report.domain, 253)}`);
 		lines.push(`**Score:** ${formatScoreGrade(report.score, report.grade)}`);
-		if (unmeasured) lines.push(`> **${UNMEASURED_CAVEAT}**`);
+		if (unassessed) lines.push(`> **${caveat}**`);
 		lines.push('');
 
 		for (const fw of FRAMEWORK_ORDER) {
@@ -240,14 +316,17 @@ export function formatCompliance(report: ComplianceReport, format: OutputFormat 
 			const label = FRAMEWORK_LABELS[fw];
 			lines.push(`## ${label}`);
 			lines.push(
-				`**${summary.passing}/${summary.totalControls}** controls passing (${summary.percentage}%) | ` +
-					`${summary.failing} failing | ${summary.partial} partial`,
+				summary.assessedControls === 0
+					? `**No control could be assessed** — 0 of ${summary.totalControls} had any check evidence (${UNGRADED_DISPLAY}).`
+					: `**${summary.passing}/${summary.assessedControls}** controls passing (${summary.percentage}%) | ` +
+							`${summary.failing} failing | ${summary.partial} partial` +
+							(summary.notAssessed > 0 ? ` | ${summary.notAssessed} not assessed` : ''),
 			);
 			lines.push('');
 
 			for (const m of summary.mappings) {
-				const icon = m.status === 'pass' ? '\u2705' : m.status === 'partial' ? '\u26A0\uFE0F' : '\u274C';
-				lines.push(`${icon} **${m.controlId} ${sanitizeOutputText(m.controlName, 60)}** — ${m.status.toUpperCase()}`);
+				const icon = STATUS_ICON_FULL[m.status];
+				lines.push(`${icon} **${m.controlId} ${sanitizeOutputText(m.controlName, 60)}** — ${STATUS_LABEL[m.status]}`);
 
 				if (m.relatedFindings.length > 0) {
 					for (const f of m.relatedFindings) {

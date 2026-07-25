@@ -11,10 +11,10 @@
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import type { CheckResult, Finding, Severity, CheckCategory } from '@blackveil/dns-checks/scoring';
-import { IMPORTANCE_WEIGHTS } from '@blackveil/dns-checks/scoring';
+import { IMPORTANCE_WEIGHTS, isGraded } from '@blackveil/dns-checks/scoring';
 import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
-import { formatScoreGrade } from '../lib/ungraded-display';
+import { formatScoreGrade, isMeasured, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 
 /** A single remediation action in a fix plan. */
 export interface FixAction {
@@ -35,10 +35,31 @@ export interface FixPlanResult {
 	score: number | null;
 	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
 	grade: string | null;
-	maturityStage: number;
+	/**
+	 * `null` when no checks ran. The three degraded scan builders all hardcode
+	 * `maturity.stage = 0` as a placeholder, and stage 0 means "Unprotected" — a
+	 * posture verdict. Copying it through renders "Maturity Stage: 0/4" for a
+	 * domain nobody looked at, and puts a chartable 0 on the wire.
+	 */
+	maturityStage: number | null;
 	totalActions: number;
 	actions: FixAction[];
+	/**
+	 * Did any check run? `totalActions: 0` means two very different things — a
+	 * clean domain, or a domain that was never examined. Machine consumers must
+	 * gate on this before reading zero actions as a clean bill of health.
+	 */
+	assessed: boolean;
+	/** Populated only when `assessed` is false; `null` otherwise. */
+	caveat: string | null;
 }
+
+/**
+ * The single wording of the "nothing was examined" qualifier, carried on BOTH
+ * surfaces — the prose a customer reads and the `caveat` field a machine consumes.
+ */
+export const UNASSESSED_FIX_PLAN_CAVEAT =
+	'No checks ran for this domain, so no remediation actions could be planned. This is an absence of evidence, not a clean bill of health.';
 
 /** Severity to numeric weight for priority computation. */
 const SEVERITY_WEIGHT: Record<Severity, number> = {
@@ -141,13 +162,22 @@ export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeO
 	// Sort by priority descending (highest impact first)
 	actions.sort((a, b) => b.priority - a.priority);
 
+	// Two independent questions, each answered by its own shared primitive.
+	// `assessed`: did anything run at all (drives the caveat and the zero-actions
+	// wording)? `isGraded`: did the scan produce a real overall score — the three
+	// degraded builders and an all-inconclusive scan alike hardcode or derive a
+	// placeholder `maturity.stage` that is not a posture measurement.
+	const assessed = isMeasured(scanResult.checks);
+
 	return {
 		domain,
 		score: scanResult.score.overall,
 		grade: scanResult.score.grade,
-		maturityStage: scanResult.maturity.stage,
+		maturityStage: isGraded(scanResult.score) ? scanResult.maturity.stage : null,
 		totalActions: actions.length,
 		actions,
+		assessed,
+		caveat: assessed ? null : UNASSESSED_FIX_PLAN_CAVEAT,
 	};
 }
 
@@ -158,7 +188,7 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 	if (format === 'compact') {
 		lines.push(`Fix Plan: ${plan.domain} — ${formatScoreGrade(plan.score, plan.grade)}, ${plan.totalActions} actions`);
 		if (plan.actions.length === 0) {
-			lines.push('No actionable findings.');
+			lines.push(plan.assessed ? 'No actionable findings.' : (plan.caveat ?? UNASSESSED_FIX_PLAN_CAVEAT));
 			return lines.join('\n');
 		}
 		const maxShow = 5;
@@ -173,13 +203,15 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 		return lines.join('\n');
 	}
 
+	const maturity = plan.maturityStage === null ? UNGRADED_DISPLAY : `${plan.maturityStage}/4`;
 	lines.push(`# Fix Plan: ${plan.domain}`);
-	lines.push(`Score: ${formatScoreGrade(plan.score, plan.grade)} | Maturity Stage: ${plan.maturityStage}/4`);
+	lines.push(`Score: ${formatScoreGrade(plan.score, plan.grade)} | Maturity Stage: ${maturity}`);
 	lines.push(`${plan.totalActions} remediation action${plan.totalActions !== 1 ? 's' : ''} identified`);
 	lines.push('');
 
 	if (plan.actions.length === 0) {
-		lines.push('No actionable findings. Domain security posture is strong.');
+		// Zero actions is only good news when something was actually examined.
+		lines.push(plan.assessed ? 'No actionable findings. Domain security posture is strong.' : (plan.caveat ?? UNASSESSED_FIX_PLAN_CAVEAT));
 		return lines.join('\n');
 	}
 

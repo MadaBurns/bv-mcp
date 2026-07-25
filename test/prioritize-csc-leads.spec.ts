@@ -325,6 +325,47 @@ describe('formatCscLeads', () => {
 		expect(compact.length).toBeLessThan(full.length);
 		expect(compact).toContain('hot.com');
 	});
+
+	it('renders "not measured" for an ungraded lead and excludes it from the portfolio rollup', async () => {
+		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const report = rank([entry('graded.com', 90, 'A', [], 'consolidated'), entry('ungraded.com', null, null, [], 'consolidated')]);
+
+		const ungradedLead = report.rankedLeads.filter((l) => l.domain === 'ungraded.com');
+		// Non-empty guard — without it the assertions below never execute.
+		expect(ungradedLead).toHaveLength(1);
+		expect(ungradedLead[0].grade).toBeNull();
+
+		expect(report.portfolioGrade).not.toBeNull();
+		// The ungraded domain is dropped from the weighted average, not averaged as 0.
+		expect(report.portfolioGrade!.contributingDomains).toBe(1);
+		expect(report.portfolioGrade!.weightedScore).toBe(90);
+
+		const text = fmt(report, 'full');
+		expect(text).toContain(UNGRADED_DISPLAY);
+		expect(text).not.toContain('null/100');
+		// Control — the graded lead still carries its real score in the same output.
+		expect(text).toContain('90/100 (A)');
+	});
+
+	it('never calls an ungraded lead "posture clean" — no recommendations is not a clean posture', async () => {
+		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		// No recommendations AND no measurement: the "nothing to upsell" line reads as
+		// a security reassurance for a domain that was never scanned.
+		const report = rank([entry('ungraded.com', null, null, [], 'consolidated')]);
+		expect(report.rankedLeads[0].recommendedCscProducts).toEqual([]);
+
+		const text = fmt(report, 'full');
+		expect(text).not.toContain('posture clean');
+		expect(text).toContain(UNGRADED_DISPLAY);
+	});
+
+	it('still calls a graded lead with no gaps "posture clean" (control)', async () => {
+		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		// Without this the assertion above would hold under a formatter that dropped
+		// the "posture clean" line entirely.
+		const text = fmt(rank([entry('clean.com', 95, 'A+', [], 'consolidated')]), 'full');
+		expect(text).toContain('posture clean');
+	});
 });
 
 describe('extractDiscoveredCandidates', () => {
