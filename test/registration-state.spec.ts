@@ -64,6 +64,43 @@ describe('resolveRegistration', () => {
 		expect((await resolveRegistration('bnz.kiwi')).state).toBe('unregistered');
 	});
 
+	it('returns unknown/servfail when NS SERVFAILs and only SOA says NXDOMAIN', async () => {
+		// MIXED EVIDENCE. The NXDOMAIN alone used to win outright, so a domain
+		// whose NAMESERVER lookup failed could still be reported "not registered.
+		// Consider defensive registration" — the exact customer-visible claim this
+		// module exists to prevent. An rcode set containing a failure is ambiguous,
+		// and ambiguity resolves to `unknown` carrying the failure's reason.
+		// (A answers NOERROR-empty here, so the escalation adds no positive
+		// evidence and the deferred servfail reason is what surfaces.)
+		routeByType({ NS: servfailResponse('bnz.de'), SOA: nxdomainResponse('bnz.de', 6) });
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const result = await resolveRegistration('bnz.de');
+		expect(result.state).toBe('unknown');
+		if (result.state !== 'unknown') throw new Error('narrowing');
+		expect(result.reason).toBe('servfail');
+	});
+
+	it('returns unknown/refused when NS is REFUSED and only SOA says NXDOMAIN', async () => {
+		routeByType({
+			NS: createDohResponse([{ name: 'bnz.de', type: 2 }], [], { status: 5 }),
+			SOA: nxdomainResponse('bnz.de', 6),
+		});
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const result = await resolveRegistration('bnz.de');
+		expect(result.state).toBe('unknown');
+		if (result.state !== 'unknown') throw new Error('narrowing');
+		expect(result.reason).toBe('refused');
+	});
+
+	it('still reports unregistered when BOTH NS and SOA return NXDOMAIN', async () => {
+		// Regression pin against over-correcting: a clean, unanimous NXDOMAIN with
+		// no failure rcode anywhere in the set is still the one conclusive
+		// non-existence signal, and must keep producing `unregistered`.
+		routeByType({ NS: nxdomainResponse('bnz.kiwi'), SOA: nxdomainResponse('bnz.kiwi', 6) });
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		expect((await resolveRegistration('bnz.kiwi')).state).toBe('unregistered');
+	});
+
 	it('returns unknown/servfail for SERVFAIL — never unregistered', async () => {
 		routeByType({ NS: servfailResponse('bnz.com'), SOA: servfailResponse('bnz.com', 6) });
 		const { resolveRegistration } = await import('../src/lib/registration-state');

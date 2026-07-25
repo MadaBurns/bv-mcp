@@ -118,16 +118,23 @@ export async function resolveRegistrationUncached(domain: string, opts?: QueryDn
 	// 2. A truncated answer is never conclusive in either direction.
 	if (responses.some((r) => r.TC)) return { state: 'unknown', reason: 'truncated' };
 
-	// 3. NXDOMAIN — the ONLY path to an "unregistered" claim.
-	if (responses.some((r) => r.Status === RCODE_NXDOMAIN)) return { state: 'unregistered' };
-
-	// 4. Explicit resolver-side failures. Recorded but NOT returned yet: a lame
-	//    or DNSSEC-broken delegation SERVFAILs on NS/SOA while the name itself
-	//    still resolves, and short-circuiting here made genuinely spoofable
-	//    variants invisible. The A escalation below runs for these too.
+	// 3. Explicit resolver-side failures. Computed BEFORE the NXDOMAIN check so
+	//    that a failure rcode anywhere in the set can veto it (see step 4).
+	//    Recorded but NOT returned yet: a lame or DNSSEC-broken delegation
+	//    SERVFAILs on NS/SOA while the name itself still resolves, and
+	//    short-circuiting here made genuinely spoofable variants invisible. The A
+	//    escalation below runs for these too.
 	let deferredReason: UnknownReason | null = null;
 	if (responses.some((r) => r.Status === RCODE_SERVFAIL)) deferredReason = 'servfail';
 	else if (responses.some((r) => r.Status === RCODE_REFUSED)) deferredReason = 'refused';
+
+	// 4. NXDOMAIN — the ONLY path to an "unregistered" claim, and only when NO
+	//    other response in the set carries a failure rcode. `NS = SERVFAIL` with
+	//    `SOA = NXDOMAIN` is MIXED evidence on a domain whose nameserver lookup
+	//    FAILED: the NXDOMAIN cannot be trusted as proof of non-existence, and
+	//    ambiguity must resolve to `unknown` carrying the failure's reason rather
+	//    than to the confident, customer-visible "not registered" claim.
+	if (deferredReason === null && responses.some((r) => r.Status === RCODE_NXDOMAIN)) return { state: 'unregistered' };
 
 	// 5. Nothing answered at all — there is no rcode to escalate from.
 	if (responses.length === 0 && transportFailures > 0) {
