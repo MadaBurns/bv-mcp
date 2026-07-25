@@ -27,30 +27,61 @@ const UNREGISTERED_TITLES = new Set(['Brand variant unregistered']);
  */
 const ABSENCE_CONFIDENCE = new Set(['heuristic']);
 
+/** Extract the variant names a set of findings makes a claim about. */
+function variantsIn(findings: Array<{ title: string; metadata?: Record<string, unknown> }>, title: string): string[] {
+	return findings.filter((f) => f.title === title).map((f) => String((f.metadata as { variant?: string } | undefined)?.variant ?? ''));
+}
+
 describe('registration invariants (audit)', () => {
-	it('no unregistered finding coexists with observed records, across mixed rcodes', async () => {
+	it('routes each rcode to the right verdict — only NXDOMAIN may claim unregistered', async () => {
+		// Three rcodes, three required outcomes, asserted on the STATE RESOLUTION
+		// rather than on the shape of the emitted metadata literal. The previous
+		// version of this test looped over unregistered findings asserting
+		// `canClaimUnregistered(metadata)`, but the sole producer of that title
+		// hardcodes `{ ns: [], mx: [], hasSpf: false }` — so it asserted that `[]`
+		// has length 0 and stayed green with the original SERVFAIL->unregistered
+		// bug reintroduced.
 		routeAll((name, type) => {
-			if (name.endsWith('bnz.co.nz')) return createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'a1-97.akam.net.' }]);
+			// Primary + a registered variant (bnz.com) so classifyVariant actually
+			// runs and the mixed-rcode claim is genuinely exercised.
+			if (name.endsWith('bnz.co.nz') || name === 'bnz.com') {
+				return type === 'NS'
+					? createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'a1-97.akam.net.' }])
+					: createDohResponse([], []);
+			}
 			if (name.startsWith('bnz.de')) return servfailResponse(name, type === 'NS' ? 2 : 1);
 			if (name.startsWith('bnz.kiwi')) return nxdomainResponse(name, type === 'NS' ? 2 : 1);
 			return createDohResponse([], []);
 		});
 
-		const { checkShadowDomains, canClaimUnregistered } = await import('../../src/tools/check-shadow-domains');
+		const { checkShadowDomains } = await import('../../src/tools/check-shadow-domains');
 		const result = await checkShadowDomains('bnz.co.nz');
 
-		for (const f of result.findings) {
-			if (!UNREGISTERED_TITLES.has(f.title)) continue;
-			const m = (f.metadata ?? {}) as { ns?: string[]; mx?: string[]; hasSpf?: boolean };
-			expect(canClaimUnregistered({ ns: m.ns ?? [], mx: m.mx ?? [], hasSpf: m.hasSpf === true })).toBe(true);
-		}
+		const claimedUnregistered = variantsIn(result.findings, 'Brand variant unregistered');
+		const claimedUnknown = variantsIn(result.findings, 'Brand variant registration unknown');
 
-		// A genuine NXDOMAIN (bnz.kiwi, routed above) IS a parsed authoritative
-		// answer, so 'deterministic' is the correct confidence here. This scenario
-		// always produces exactly one such finding, so the guard below is not
-		// theatre — it fails loudly if a future regression stops emitting it,
-		// rather than letting the loop below pass vacuously over zero elements.
-		const unregistered = result.findings.filter((f) => f.title === 'Brand variant unregistered');
+		// NXDOMAIN is the only rcode that may support a non-existence claim.
+		expect(claimedUnregistered).toContain('bnz.kiwi');
+		// SERVFAIL is a measurement failure. Reintroducing the original bug — making
+		// resolveRegistrationUncached return `unregistered` on SERVFAIL — moves
+		// bnz.de into the list above and fails this line.
+		expect(claimedUnregistered).not.toContain('bnz.de');
+		expect(claimedUnknown).toContain('bnz.de');
+
+		// The mixed-rcode scenario must reach classifyVariant, or the registered
+		// arm of this matrix is never exercised.
+		expect(result.findings.some((f) => f.title.startsWith('Shadow domain '))).toBe(true);
+
+		// A genuine NXDOMAIN IS a parsed authoritative answer, so 'deterministic' is
+		// the correct confidence. LIMIT OF THIS ASSERTION: `inferFindingConfidence`
+		// (packages/dns-checks/src/scoring/model.ts) rejects any out-of-union value
+		// and falls through to a 'deterministic' DEFAULT, so this line passes for
+		// the correct literal, for an invalid literal, and for no declaration at
+		// all. It pins the customer-visible confidence, NOT the emission site's
+		// declaration. The discriminating half of the pair is the 'heuristic'
+		// assertion in the next test — 'heuristic' is only reachable by declaring
+		// it explicitly (or by keyword inference, which these details do not trip).
+		const unregistered = result.findings.filter((f) => UNREGISTERED_TITLES.has(f.title));
 		expect(unregistered.length).toBeGreaterThan(0);
 		for (const f of unregistered) {
 			expect((f.metadata as { confidence?: string } | undefined)?.confidence).toBe('deterministic');
