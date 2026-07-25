@@ -14,6 +14,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import type { CheckCategory, Finding } from '../lib/scoring';
+import { isMeasured } from '../lib/ungraded-display';
 import type { ScanDomainResult } from './scan-domain';
 
 const GRADE_ORDER = ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E', 'F'] as const;
@@ -135,25 +136,31 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 		}
 	}
 
-	if (baseline.require_dmarc_enforce) {
-		checkedRules++;
-		if (!dmarcEnforced(scan)) {
-			violations.push({
-				rule: 'require_dmarc_enforce',
-				message: 'DMARC enforcement (p=quarantine or p=reject) is required but not met',
-				expected: true,
-				actual: false,
-			});
-		}
-	}
+	// The control and finding-cap rules read `scan.checks` / `scan.score.findings`.
+	// When the scan ran ZERO checks (`buildNonResolvingResult` for NXDOMAIN and
+	// `buildDnsBrokenResult` for SERVFAIL/DNSSEC-bogus both emit `checks: []` AND
+	// `findings: []`) those arrays are empty because nothing was measured, not
+	// because the controls are absent. Evaluating them anyway turned absence into a
+	// confident policy verdict in BOTH directions: `categoryPassed`'s
+	// `check?.passed ?? false` produced "SPF is required but check did not pass",
+	// while `max_critical_findings: 0` counted an empty array and PASSED — "zero
+	// criticals" asserted about a domain nobody scanned.
+	//
+	// `buildUnscoredResult` is deliberately NOT in this bucket: its checks ran and
+	// only the scoring bundle failed, so its per-check results stay genuinely
+	// evaluable. A measured scan whose SPF check simply failed is a real breach and
+	// must still FAIL — only the nothing-ran case abstains.
+	const scanMeasured = isMeasured(scan.checks);
 
-	for (const requirement of CATEGORY_REQUIREMENTS) {
-		if (baseline[requirement.key]) {
+	if (baseline.require_dmarc_enforce) {
+		if (!scanMeasured) {
+			inconclusiveRules.push('require_dmarc_enforce');
+		} else {
 			checkedRules++;
-			if (!categoryPassed(scan, requirement.category)) {
+			if (!dmarcEnforced(scan)) {
 				violations.push({
-					rule: requirement.key,
-					message: `${requirement.label} is required but check did not pass`,
+					rule: 'require_dmarc_enforce',
+					message: 'DMARC enforcement (p=quarantine or p=reject) is required but not met',
 					expected: true,
 					actual: false,
 				});
@@ -161,29 +168,55 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 		}
 	}
 
+	for (const requirement of CATEGORY_REQUIREMENTS) {
+		if (baseline[requirement.key]) {
+			if (!scanMeasured) {
+				inconclusiveRules.push(requirement.key);
+			} else {
+				checkedRules++;
+				if (!categoryPassed(scan, requirement.category)) {
+					violations.push({
+						rule: requirement.key,
+						message: `${requirement.label} is required but check did not pass`,
+						expected: true,
+						actual: false,
+					});
+				}
+			}
+		}
+	}
+
 	if (baseline.max_critical_findings !== undefined) {
-		checkedRules++;
-		const criticalCount = scan.score.findings.filter((finding: Finding) => finding.severity === 'critical').length;
-		if (criticalCount > baseline.max_critical_findings) {
-			violations.push({
-				rule: 'max_critical_findings',
-				message: `${criticalCount} critical findings exceed maximum of ${baseline.max_critical_findings}`,
-				expected: baseline.max_critical_findings,
-				actual: criticalCount,
-			});
+		if (!scanMeasured) {
+			inconclusiveRules.push('max_critical_findings');
+		} else {
+			checkedRules++;
+			const criticalCount = scan.score.findings.filter((finding: Finding) => finding.severity === 'critical').length;
+			if (criticalCount > baseline.max_critical_findings) {
+				violations.push({
+					rule: 'max_critical_findings',
+					message: `${criticalCount} critical findings exceed maximum of ${baseline.max_critical_findings}`,
+					expected: baseline.max_critical_findings,
+					actual: criticalCount,
+				});
+			}
 		}
 	}
 
 	if (baseline.max_high_findings !== undefined) {
-		checkedRules++;
-		const highCount = scan.score.findings.filter((finding: Finding) => finding.severity === 'high').length;
-		if (highCount > baseline.max_high_findings) {
-			violations.push({
-				rule: 'max_high_findings',
-				message: `${highCount} high findings exceed maximum of ${baseline.max_high_findings}`,
-				expected: baseline.max_high_findings,
-				actual: highCount,
-			});
+		if (!scanMeasured) {
+			inconclusiveRules.push('max_high_findings');
+		} else {
+			checkedRules++;
+			const highCount = scan.score.findings.filter((finding: Finding) => finding.severity === 'high').length;
+			if (highCount > baseline.max_high_findings) {
+				violations.push({
+					rule: 'max_high_findings',
+					message: `${highCount} high findings exceed maximum of ${baseline.max_high_findings}`,
+					expected: baseline.max_high_findings,
+					actual: highCount,
+				});
+			}
 		}
 	}
 
@@ -208,7 +241,7 @@ export function formatBaselineResult(result: BaselineResult, format: OutputForma
 	if (format === 'compact') {
 		const lines = [`Baseline: ${result.domain} — ${verdict} (${result.violations.length}/${result.checkedRules} violated)`];
 		if (result.inconclusiveRules.length > 0) {
-			lines.push(`- not evaluated (domain not measured): ${result.inconclusiveRules.join(', ')}`);
+			lines.push(`- not evaluated (no measurement available): ${result.inconclusiveRules.join(', ')}`);
 		}
 		for (const v of result.violations) {
 			lines.push(`- ${v.rule}: expected ${v.expected}, got ${v.actual}`);
@@ -223,7 +256,14 @@ export function formatBaselineResult(result: BaselineResult, format: OutputForma
 	lines.push(`**Rules checked:** ${result.checkedRules}`);
 	lines.push(`**Violations:** ${result.violations.length}`);
 	if (result.inconclusiveRules.length > 0) {
-		lines.push(`**Not evaluated (domain was not measured):** ${result.inconclusiveRules.join(', ')}`);
+		// Deliberately attributes the abstention to the MISSING MEASUREMENT, not to the
+		// customer's domain. `passed: null` fires for two causes: the domain genuinely
+		// not resolving, AND `buildUnscoredResult`, where the domain resolved and its
+		// checks ran but OUR scoring bundle failed. "domain was not measured" is false
+		// in the second case and blames the customer for a scanner-side outage —
+		// scan_domain's own nextStep for that path says "the scoring service is
+		// degraded — check the deployment."
+		lines.push(`**Not evaluated (no measurement available for this scan):** ${result.inconclusiveRules.join(', ')}`);
 	}
 	lines.push('');
 

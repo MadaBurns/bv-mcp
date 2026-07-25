@@ -118,7 +118,7 @@ ${TOOL_COUNT} MCP tools, including ${CHECK_TOOL_COUNT} \`check_*\` tools and \`s
 - **\`scan_domain\`** - 18 scan categories in parallel, returns score + grade + prioritized findings
 - **Brand audit tools** - \`discover_brand_domains\`, \`brand_audit_single\`, \`brand_audit_batch_start\`, \`brand_audit_status\`, \`brand_audit_get_report\`, \`list_brand_audit_watches\`, \`register_brand_audit_watch\`, \`delete_brand_audit_watch\`
 - **\`explain_finding\`** - plain-language context + remediation for any finding
-- **\`compare_baseline\`** - pass/fail/inconclusive against minimum security standards (\`passed\` is \`null\` when the domain could not be measured)
+- **\`compare_baseline\`** - pass/fail/inconclusive against minimum security standards (\`passed\` is \`null\` when the scan produced no measurement to evaluate)
 `,
 
 	'dns-security://guides/scoring': `# Scoring Methodology
@@ -172,7 +172,7 @@ A+: 92+ | A: 87-91 | B+: 82-86 | B: 76-81 | C+: 70-75 | C: 63-69 | D+: 56-62 | D
 
 **Brand Protection:** \`check_lookalikes\` -> \`check_shadow_domains\` -> \`scan_domain\` for baseline
 
-**CI/CD Gate:** \`compare_baseline\` with \`{"grade":"B","require_spf":true,"require_dmarc_enforce":true,"require_dkim":true,"max_critical_findings":0}\` -> returns \`passed\` (\`true\`/\`false\`/\`null\`) + violations + \`inconclusiveRules\`. Gate on \`passed === true\`; \`null\` means the domain was never measured — re-run, do not treat as a pass or a fail.
+**CI/CD Gate:** \`compare_baseline\` with \`{"grade":"B","require_spf":true,"require_dmarc_enforce":true,"require_dkim":true,"max_critical_findings":0}\` -> returns \`passed\` (\`true\`/\`false\`/\`null\`) + violations + \`inconclusiveRules\`. Gate on \`passed === true\`; \`null\` means the scan produced no measurement for at least one requested rule — re-run, do not treat as a pass or a fail.
 
 ## Tips
 - \`scan_domain\` caches 5 min; subsequent checks use cached data

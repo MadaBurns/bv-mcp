@@ -33,3 +33,25 @@ export function formatScoreGrade(score: number | null | undefined, grade: string
 	if (score === null || score === undefined || grade === null || grade === undefined) return UNGRADED_DISPLAY;
 	return `${score}/100 (${grade})`;
 }
+
+/**
+ * Did this scan actually run any checks?
+ *
+ * The SINGLE spelling of "was anything measured", shared by
+ * `StructuredScanResult.measured` and `compare_baseline`'s abstention. A second
+ * spelling is how the same state ends up handled in one consumer and coerced in
+ * another — which is precisely the bug this predicate closes: `compare_baseline`
+ * read `check?.passed ?? false`, turning ABSENCE of measurement into a confident
+ * policy FAIL.
+ *
+ * `buildNonResolvingResult` (NXDOMAIN) and `buildDnsBrokenResult`
+ * (SERVFAIL/DNSSEC-bogus) emit `checks: []`; `buildUnscoredResult` does NOT — its
+ * checks ran and only the scoring bundle failed, so its per-check results stay
+ * genuinely evaluable. This predicate keeps those two cases apart.
+ *
+ * Deliberately typed on the array's length alone (`readonly unknown[]`) so this
+ * stays an import-free leaf module with no edge to the scan orchestrator.
+ */
+export function isMeasured(checks: readonly unknown[]): boolean {
+	return checks.length > 0;
+}

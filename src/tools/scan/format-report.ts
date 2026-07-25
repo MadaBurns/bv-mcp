@@ -7,7 +7,7 @@ import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
-import { formatScoreGrade } from '../../lib/ungraded-display';
+import { formatScoreGrade, isMeasured } from '../../lib/ungraded-display';
 
 // Both live in a tiny leaf module so every formatter in src/tools/ can share them
 // without importing the scan orchestrator. Re-exported here because this is where
@@ -284,7 +284,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		score: result.score.overall,
 		grade: displayGradeFor(result.score),
 		passed: result.score.overall === null ? null : result.score.overall >= 50,
-		measured: result.checks.length > 0,
+		measured: isMeasured(result.checks),
 		maturityStage: result.maturity?.stage ?? null,
 		maturityLabel: result.maturity?.label ?? null,
 		categoryScores,

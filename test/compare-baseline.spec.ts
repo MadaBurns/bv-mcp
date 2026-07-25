@@ -201,6 +201,87 @@ describe('compareBaseline', () => {
 		expect(result.inconclusiveRules).toContain('grade');
 	});
 
+	it('returns inconclusive for the control rules too when the scan ran zero checks', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		// The NXDOMAIN / DNS-broken shape: buildNonResolvingResult and
+		// buildDnsBrokenResult BOTH emit `checks: []` AND `findings: []`.
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const unmeasuredScan: any = {
+			domain: 'never-measured.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'does not resolve' },
+			checks: [],
+			maturity: { stage: 0, label: 'Does not resolve', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		};
+
+		// The common CI baseline — note it carries NO grade/score key, so the
+		// grade/score inconclusive path cannot rescue it.
+		const result = compareBaseline(unmeasuredScan, { require_spf: true, require_dmarc_enforce: true, max_critical_findings: 0 });
+
+		// Pre-fix this returned a confident `passed: false` with TWO violations
+		// ("SPF is required but check did not pass") and `Rules checked: 3`, from
+		// `check?.passed ?? false` coercing absence-of-measurement into failure —
+		// i.e. a client report asserting a named org fails SPF and DMARC on a
+		// domain that is not registered.
+		expect(result.passed).toBeNull();
+		expect(result.violations).toHaveLength(0);
+		expect(result.checkedRules).toBe(0);
+		expect(result.inconclusiveRules).toEqual(['require_dmarc_enforce', 'require_spf', 'max_critical_findings']);
+		// `max_critical_findings: 0` passed pre-fix by counting an EMPTY findings
+		// array — "zero criticals" asserted about a domain nobody scanned.
+		expect(result.inconclusiveRules).toContain('max_critical_findings');
+	});
+
+	it('still FAILS a genuinely-measured control breach — the inconclusive path must not swallow real failures', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		// Checks DID run. SPF is genuinely absent and a critical finding is
+		// genuinely present. This is a real policy breach and must stay one.
+		const measuredButFailing = createMockScan({
+			domain: 'measured-and-failing.example',
+			score: {
+				...createMockScan().score,
+				overall: 30,
+				grade: 'F',
+				findings: [{ category: 'ssl', title: 'Cert expired', severity: 'critical', detail: '' }],
+			},
+			checks: [
+				{ category: 'spf', passed: false, score: 0, findings: [] },
+				{ category: 'dmarc', passed: false, score: 10, findings: [] },
+			],
+		});
+
+		const result = compareBaseline(measuredButFailing, { require_spf: true, require_dmarc_enforce: true, max_critical_findings: 0 });
+
+		expect(result.passed).toBe(false);
+		expect(result.inconclusiveRules).toEqual([]);
+		expect(result.checkedRules).toBe(3);
+		expect(result.violations.map((v) => v.rule).sort()).toEqual(['max_critical_findings', 'require_dmarc_enforce', 'require_spf']);
+	});
+
+	it('evaluates control rules normally when checks ran but SCORING failed (the unscored shape)', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		// buildUnscoredResult keeps `checks: checkResults` — the checks genuinely
+		// ran, only the scoring bundle failed. The control rules ARE measurable
+		// here; only grade/score are not. Collapsing "no score" into "nothing was
+		// measured" would throw away a real, usable SPF result.
+		const unscored = createMockScan({
+			domain: 'unscored.example',
+			score: { ...createMockScan().score, overall: null, grade: null, findings: [] },
+			checks: [{ category: 'spf', passed: true, score: 90, findings: [] }],
+		});
+
+		const result = compareBaseline(unscored, { score: 50, require_spf: true });
+
+		expect(result.inconclusiveRules).toEqual(['score']);
+		// require_spf was genuinely evaluated, and genuinely met.
+		expect(result.checkedRules).toBe(1);
+		expect(result.violations).toHaveLength(0);
+		// Still no overall verdict: the score rule the caller asked for is unanswerable.
+		expect(result.passed).toBeNull();
+	});
+
 	it('still passes and still fails a graded scan exactly as before', async () => {
 		const { compareBaseline } = await import('../src/tools/compare-baseline');
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -266,7 +347,7 @@ describe('formatBaselineResult', () => {
 		// Names WHICH rule went unevaluated, and never claims the rules were met —
 		// "All baseline rules met." on a domain that was never resolved is the same
 		// confident-output-from-nothing this change removes.
-		expect(text).toContain('score');
+		expect(text).toContain('**Not evaluated (no measurement available for this scan):** score');
 		expect(text).not.toContain('All baseline rules met.');
 	});
 
@@ -287,7 +368,57 @@ describe('formatBaselineResult', () => {
 		expect(compact).toContain('INCONCLUSIVE');
 		expect(compact).not.toContain('PASS');
 		expect(compact).not.toContain('FAIL');
-		expect(compact).toContain('not evaluated (domain not measured): grade, score');
+		expect(compact).toContain('not evaluated (no measurement available): grade, score');
+	});
+
+	it('never renders a control-rule breach for a scan that ran zero checks', async () => {
+		const { compareBaseline, formatBaselineResult } = await import('../src/tools/compare-baseline');
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const unmeasuredScan: any = {
+			domain: 'never-measured.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'does not resolve' },
+			checks: [],
+			maturity: { stage: 0, label: 'Does not resolve', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		};
+		const text = formatBaselineResult(
+			compareBaseline(unmeasuredScan, { require_spf: true, require_dmarc_enforce: true, max_critical_findings: 0 }),
+			'full',
+		);
+
+		expect(text).toContain('INCONCLUSIVE');
+		expect(text).not.toContain('**Result:** FAIL');
+		// The pre-fix prose asserted a check outcome that never happened.
+		expect(text).not.toContain('did not pass');
+		expect(text).not.toContain('### Violations');
+		expect(text).toContain('**Rules checked:** 0');
+	});
+
+	/**
+	 * Minor-1 wording: `passed: null` also fires for the UNSCORED shape, where the
+	 * domain resolved and checks ran but the scoring bundle failed — a
+	 * scanner-side degradation. Blaming the customer's domain ("domain was not
+	 * measured") misattributes that; scan_domain's own nextStep for the same path
+	 * says "the scoring service is degraded — check the deployment."
+	 */
+	it('attributes the abstention to the missing measurement, not to the customer domain', async () => {
+		const { compareBaseline, formatBaselineResult } = await import('../src/tools/compare-baseline');
+		const unscored = createMockScan({
+			domain: 'scoring-degraded.example',
+			score: { ...createMockScan().score, overall: null, grade: null, findings: [] },
+			checks: [{ category: 'spf', passed: true, score: 90, findings: [] }],
+		});
+		const result = compareBaseline(unscored, { score: 50, require_spf: true });
+
+		for (const text of [formatBaselineResult(result, 'full'), formatBaselineResult(result, 'compact')]) {
+			expect(text).toContain('INCONCLUSIVE');
+			expect(text).toContain('no measurement available');
+			// The domain resolved and its SPF check ran — saying otherwise is false.
+			expect(text).not.toContain('domain not measured');
+			expect(text).not.toContain('domain was not measured');
+		}
 	});
 });
 

@@ -168,7 +168,7 @@ describe('gradeBadge — null grade', () => {
 	});
 });
 
-describe('compareBaseline — ungraded scan skips its grade/score rules', () => {
+describe('compareBaseline — ungraded scan records its grade/score rules as inconclusive', () => {
 	it('records neither a grade nor a score violation, and counts neither rule as checked', async () => {
 		const { compareBaseline } = await import('../src/tools/compare-baseline');
 		const result = compareBaseline(scanResult(ungradedScore()), { grade: 'B', score: 50 });
@@ -179,6 +179,11 @@ describe('compareBaseline — ungraded scan skips its grade/score rules', () => 
 		// the same scan, in a CI/CD policy gate.
 		expect(result.violations).toHaveLength(0);
 		expect(result.checkedRules).toBe(0);
+		// Skipping the rules was only half the fix: a skipped rule still yielded
+		// `passed: true`, which a pipeline gating on `passed === true` reads as
+		// "policy met" for a domain that was never measured.
+		expect(result.passed).toBeNull();
+		expect(result.inconclusiveRules).toEqual(['grade', 'score']);
 	});
 
 	it('still evaluates both rules for a measured scan (control)', async () => {
@@ -187,6 +192,8 @@ describe('compareBaseline — ungraded scan skips its grade/score rules', () => 
 
 		expect(result.checkedRules).toBe(2);
 		expect(result.violations.map((v) => v.rule).sort()).toEqual(['grade', 'score']);
+		expect(result.passed).toBe(false);
+		expect(result.inconclusiveRules).toEqual([]);
 	});
 });
 
