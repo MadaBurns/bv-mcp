@@ -27,8 +27,10 @@ export interface DomainComparisonResult {
 	domains: string[];
 	/** Domain with the highest overall score. Null on tie or if fewer than 2 valid results. */
 	winner: string | null;
-	scores: Record<string, number>;
-	grades: Record<string, string>;
+	/** Overall score per domain. `null` when the domain was not measured. */
+	scores: Record<string, number | null>;
+	/** Grade per domain. `null` when the domain was not measured. */
+	grades: Record<string, string | null>;
 	/** Per-category scores: [{ category, scores: { 'example.com': 100, 'test.com': 85 } }] */
 	categoryComparison: Array<{ category: string; scores: Record<string, number> }>;
 	/** Categories where ALL scanned domains score below 50. */
@@ -127,17 +129,26 @@ export async function compareDomains(rawDomains: string[], options: CompareDomai
 
 	const validResults = Object.entries(structuredResults).filter((entry): entry is [string, StructuredScanResult] => entry[1] !== null);
 
-	const scores: Record<string, number> = {};
-	const grades: Record<string, string> = {};
+	const scores: Record<string, number | null> = {};
+	const grades: Record<string, string | null> = {};
 	for (const [domain, r] of validResults) {
-		scores[domain] = r.score;
-		grades[domain] = r.grade;
+		// `measured === false` means this domain contributed no checks — its raw
+		// `score`/`grade` are not yet nulled at the source (that's Task 2's SSOT
+		// widening), so the invariant "unmeasured implies null" is enforced here
+		// at the DomainComparisonResult boundary instead.
+		scores[domain] = r.measured ? r.score : null;
+		grades[domain] = r.measured ? r.grade : null;
 	}
 
-	// Winner: highest score, null on tie or fewer than 2 valid results
+	// Winner: highest score among GRADED domains only. An unmeasured domain has no
+	// score to compare, so it is excluded rather than sorted as 0. Null on tie or
+	// fewer than 2 graded results.
+	const rankable = validResults.filter(
+		(e): e is [string, StructuredScanResult & { score: number }] => e[1].measured && e[1].score !== null,
+	);
 	let winner: string | null = null;
-	if (validResults.length >= 2) {
-		const sorted = [...validResults].sort((a, b) => b[1].score - a[1].score);
+	if (rankable.length >= 2) {
+		const sorted = [...rankable].sort((a, b) => b[1].score - a[1].score);
 		if (sorted[0][1].score > sorted[1][1].score) {
 			winner = sorted[0][0];
 		}
@@ -200,8 +211,12 @@ export function formatDomainComparison(result: DomainComparisonResult, format: O
 			lines.push(`  ✗ ${domain.padEnd(40)} Error: ${result.errors[domain]}`);
 			continue;
 		}
-		const score = result.scores[domain] ?? 0;
-		const grade = result.grades[domain] ?? 'F';
+		const score = result.scores[domain];
+		const grade = result.grades[domain];
+		if (score === null || score === undefined || grade === null || grade === undefined) {
+			lines.push(`  · ${domain.padEnd(40)} not measured`);
+			continue;
+		}
 		const icon = score >= 80 ? '✓' : score >= 50 ? '⚠' : '✗';
 		const winMark = result.winner === domain ? ' ← best' : '';
 		lines.push(`  ${icon} ${domain.padEnd(40)} ${score}/100 (${grade})${winMark}`);

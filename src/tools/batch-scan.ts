@@ -37,12 +37,20 @@ const DEFAULT_BUDGET_MS = 25_000;
 const DEFAULT_CONCURRENCY = 3;
 const MAX_DOMAINS = 10;
 
+/**
+ * Placeholder for a domain that was NEVER MEASURED — invalid input, batch budget
+ * exceeded before the scan started, or the scan threw. It carries no score, no
+ * grade and no verdict, because none were observed. Emitting `score: 0, grade: 'F'`
+ * here (the pre-3.35.0 behaviour) published a fabricated failing measurement about
+ * a real named organisation into customer reports.
+ */
 function emptyResult(domain: string, error: string): BatchScanResultItem {
 	return {
 		domain,
-		score: 0,
-		grade: 'F',
-		passed: false,
+		score: null,
+		grade: null,
+		passed: null,
+		measured: false,
 		maturityStage: null,
 		maturityLabel: null,
 		categoryScores: {},
@@ -147,8 +155,9 @@ export function formatBatchScan(results: BatchScanResultItem[], format: OutputFo
 	lines.push('');
 
 	for (const r of results) {
-		if (r.error) {
-			lines.push(`✗ ${r.domain.padEnd(40)} Error: ${r.error}`);
+		if (r.score === null || r.grade === null) {
+			const why = r.error ? `: ${r.error}` : '';
+			lines.push(`· ${r.domain.padEnd(40)} not measured${why}`);
 			continue;
 		}
 		const icon = r.score >= 80 ? '✓' : r.score >= 50 ? '⚠' : '✗';
@@ -163,6 +172,6 @@ export function formatBatchScan(results: BatchScanResultItem[], format: OutputFo
 	}
 
 	lines.push('');
-	lines.push(`Scanned ${results.filter((r) => !r.error).length}/${results.length} domain(s) successfully`);
+	lines.push(`Scanned ${results.filter((r) => r.score !== null).length}/${results.length} domain(s) successfully`);
 	return lines.join('\n');
 }

@@ -22,9 +22,12 @@ type InternalCallFn = (tool: string, args: { domain: string }) => Promise<unknow
 
 interface ScanDomainStructured {
 	domain: string;
-	score: number;
-	grade: string;
-	categoryScores?: Record<string, { score?: number; findings?: Array<{ severity?: string; category?: string; detail?: string; subdomain?: string }> }>;
+	score: number | null;
+	grade: string | null;
+	categoryScores?: Record<
+		string,
+		{ score?: number; findings?: Array<{ severity?: string; category?: string; detail?: string; subdomain?: string }> }
+	>;
 	findings?: Array<{ severity?: string; category?: string; detail?: string; subdomain?: string }>;
 }
 
@@ -84,15 +87,21 @@ function extractDanglingFromScan(apex: string, scan: ScanDomainStructured | unde
 	return dangling;
 }
 
-function medianGrade(grades: string[]): string | null {
-	if (grades.length === 0) return null;
-	const sorted = [...grades].sort();
+function medianGrade(grades: Array<string | null>): string | null {
+	const present = grades.filter((g): g is string => g !== null);
+	if (present.length === 0) return null;
+	const sorted = [...present].sort();
 	return sorted[Math.floor(sorted.length / 2)];
 }
 
-function distribution(grades: string[]): Record<string, number> {
+function distribution(grades: Array<string | null>): Record<string, number> {
 	const out: Record<string, number> = {};
-	for (const g of grades) out[g] = (out[g] ?? 0) + 1;
+	for (const g of grades) {
+		// An unmeasured apex contributes no grade — counting it would create a
+		// literal "null" bucket in the customer-visible distribution.
+		if (g === null) continue;
+		out[g] = (out[g] ?? 0) + 1;
+	}
 	return out;
 }
 
@@ -119,7 +128,7 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 	const postureApexes: BrandAuditCsc['postureSnapshot']['apexes'] = [];
 	const dangling: BrandAuditCsc['deepScan']['danglingDns'] = [];
 	const inventory: BrandAuditCsc['deepScan']['subdomainInventoryByApex'] = {};
-	const grades: string[] = [];
+	const grades: Array<string | null> = [];
 
 	for (const r of perApex) {
 		if (!r.ok || !r.scan) continue;
@@ -142,7 +151,10 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 				total: r.discover.totalSubdomains,
 				dangling: apexDangling.length,
 				source: 'certificate_transparency',
-				sample: (r.discover.subdomains ?? []).slice(0, SAMPLE_SUBDOMAIN_CAP).map((s) => s.subdomain ?? s.name ?? '').filter(Boolean),
+				sample: (r.discover.subdomains ?? [])
+					.slice(0, SAMPLE_SUBDOMAIN_CAP)
+					.map((s) => s.subdomain ?? s.name ?? '')
+					.filter(Boolean),
 				partial: false,
 			};
 		}

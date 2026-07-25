@@ -18,22 +18,28 @@ describe('batchScan', () => {
 		expect(results).toHaveLength(2);
 		expect(results[0].domain).toBe('example.com');
 		expect(results[1].domain).toBe('test.com');
+		// A domain that actually scanned must carry a real measurement.
+		expect(results[0].measured).toBe(true);
 		expect(typeof results[0].score).toBe('number');
 		expect(typeof results[0].grade).toBe('string');
+	});
+
+	it('emits null score/grade/passed for an invalid domain instead of a fabricated F', async () => {
+		const { batchScan } = await import('../src/tools/batch-scan');
+		const results = await batchScan(['example.com', 'not--valid--domain!@#'], { kv: env.SCAN_CACHE });
+		const errorResult = results.find((r) => r.error);
+		expect(errorResult).toBeDefined();
+		expect(errorResult!.score).toBeNull();
+		expect(errorResult!.grade).toBeNull();
+		expect(errorResult!.passed).toBeNull();
+		expect(errorResult!.maturityStage).toBeNull();
+		expect(errorResult!.measured).toBe(false);
 	});
 
 	it('should reject more than 10 domains', async () => {
 		const { batchScan } = await import('../src/tools/batch-scan');
 		const tooMany = Array.from({ length: 11 }, (_, i) => `domain${i}.com`);
 		await expect(batchScan(tooMany)).rejects.toThrow(/max.*10/i);
-	});
-
-	it('should return error result for invalid domain without throwing', async () => {
-		const { batchScan } = await import('../src/tools/batch-scan');
-		const results = await batchScan(['example.com', 'not--valid--domain!@#'], { kv: env.SCAN_CACHE });
-		const errorResult = results.find((r) => r.error);
-		expect(errorResult).toBeDefined();
-		expect(errorResult!.score).toBe(0);
 	});
 
 	// ---- Global wall-clock budget (production p95=p99=28,000ms finding) ----
@@ -61,6 +67,55 @@ describe('batchScan', () => {
 			interactionEffects: [],
 		};
 	}
+
+	it('emits null score/grade for a budget-exceeded domain instead of a fabricated F', async () => {
+		const { batchScan } = await import('../src/tools/batch-scan');
+		// Each scan takes 300ms; a 10ms budget guarantees every domain is
+		// budget-exceeded before its worker slot opens.
+		const slowScan = (async (domain: string) => {
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			return fakeScanResult(domain);
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		}) as any;
+		const results = await batchScan(['a.com', 'b.com'], { kv: env.SCAN_CACHE, budgetMs: 10, scanFn: slowScan });
+
+		const budgetExceeded = results.filter((r) => r.error === 'batch_budget_exceeded');
+		// Non-empty guard: without this the loop below is vacuous.
+		expect(budgetExceeded.length).toBeGreaterThan(0);
+		for (const r of budgetExceeded) {
+			expect(r.score).toBeNull();
+			expect(r.grade).toBeNull();
+			expect(r.passed).toBeNull();
+			expect(r.measured).toBe(false);
+		}
+	});
+
+	it('formatBatchScan never renders a fabricated letter or a literal null for an unmeasured domain', async () => {
+		const { batchScan, formatBatchScan } = await import('../src/tools/batch-scan');
+		const results = await batchScan(['not--valid--domain!@#'], { kv: env.SCAN_CACHE });
+		const text = formatBatchScan(results, 'full');
+		expect(text).toContain('not measured');
+		expect(text).not.toContain('/100');
+		expect(text).not.toContain('(F)');
+		expect(text).not.toContain('null');
+	});
+
+	it('formatBatchScan handles an ungraded result that carries NO error field', async () => {
+		// Slice 3 (the evidence gate) will emit ungraded results with no `error`.
+		// The formatter must key off the null score, not off `error`, or that
+		// future result renders as `null/100 (null)`. Constructed directly here
+		// because no code path produces this shape yet.
+		const { batchScan, formatBatchScan } = await import('../src/tools/batch-scan');
+		const results = await batchScan(['example.com'], { kv: env.SCAN_CACHE });
+		expect(results).toHaveLength(1);
+		const ungraded = { ...results[0], score: null, grade: null, passed: null, measured: true };
+		delete (ungraded as { error?: string }).error;
+
+		const text = formatBatchScan([ungraded], 'full');
+		expect(text).toContain('not measured');
+		expect(text).not.toContain('null');
+		expect(text).not.toContain('/100');
+	});
 
 	it('respects global wall-clock budget when scans are slow', async () => {
 		const { batchScan } = await import('../src/tools/batch-scan');

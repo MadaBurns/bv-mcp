@@ -43,4 +43,36 @@ describe('compareDomains', () => {
 		// Only example.com scans successfully; winner should be null (< 2 valid results)
 		expect(result.winner).toBeNull();
 	});
+
+	it('excludes an ungraded domain from ranking and never renders a fabricated F for it', async () => {
+		const { compareDomains, formatDomainComparison } = await import('../src/tools/compare-domains');
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const scanStub = (async (domain: string): Promise<any> => ({
+			domain,
+			score:
+				domain === 'ungraded.com'
+					? { overall: 0, grade: 'N/A', summary: 'unscored', categoryScores: {}, findings: [] }
+					: { overall: 80, grade: 'B', summary: 'ok', categoryScores: {}, findings: [] },
+			checks: domain === 'ungraded.com' ? [] : [{ category: 'spf', passed: true, score: 80, findings: [] }],
+			maturity: { stage: 2, label: 'Baseline', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+			scoringNote: null,
+			adaptiveWeightDeltas: null,
+			interactionEffects: [],
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		})) as any;
+
+		const result = await compareDomains(['graded.com', 'ungraded.com'], { scanFn: scanStub });
+
+		// `measured: false` for the unscored domain must exclude it from the winner race,
+		// so a 2-domain compare has only ONE rankable entry and therefore no winner.
+		expect(result.winner).toBeNull();
+		expect(result.grades['graded.com']).toBe('B');
+
+		const text = formatDomainComparison(result, 'compact');
+		expect(text).toContain('not measured');
+		expect(text).not.toContain('ungraded.com                              0/100');
+	});
 });

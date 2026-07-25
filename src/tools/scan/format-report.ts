@@ -23,9 +23,24 @@ function displayGradeFor(score: { overall: number; grade: string }): string {
 /** Structured scan result for machine-readable consumption (e.g., CI/CD actions). */
 export interface StructuredScanResult {
 	domain: string;
-	score: number;
-	grade: string;
-	passed: boolean;
+	/**
+	 * Overall 0–100 score, or `null` when the domain was NOT graded — no checks
+	 * ran (invalid domain, budget exceeded, NXDOMAIN, unresolvable zone). `null`
+	 * means "not measured", never "measured and scored zero". Consumers MUST
+	 * exclude a null score from comparison, ranking and policy evaluation rather
+	 * than coercing it: `null < n` is `true` and `null - n` is `NaN` in JS.
+	 */
+	score: number | null;
+	/** Display grade letter, or `null` when `score` is null. Never a sentinel string. */
+	grade: string | null;
+	/** Pass/fail verdict, or `null` when the domain was not graded. */
+	passed: boolean | null;
+	/**
+	 * `false` when NO check contributed a measurement at all (zero `checks`).
+	 * Distinct from "checks ran but most failed" — that state is not represented
+	 * here. Invariant: `measured === false` implies `score === null`.
+	 */
+	measured: boolean;
 	maturityStage: number | null;
 	maturityLabel: string | null;
 	/**
@@ -192,10 +207,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		// so only a genuinely validated/configured zone (no deficiency finding) defaults
 		// to `domain_configured`.
 		const dnssecDeficient = dnssecCheck.findings.some(
-			(f) =>
-				f.title === 'DNSSEC not enabled' ||
-				f.title === 'DNSSEC chain of trust incomplete' ||
-				f.title === 'DNSSEC validation failing',
+			(f) => f.title === 'DNSSEC not enabled' || f.title === 'DNSSEC chain of trust incomplete' || f.title === 'DNSSEC validation failing',
 		);
 		if (dnssecSource === null && dnssecCheck.passed && !dnssecDeficient && (checkStatuses['dnssec'] ?? 'completed') === 'completed') {
 			dnssecSource = 'domain_configured';
@@ -259,6 +271,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		score: result.score.overall,
 		grade: displayGradeFor(result.score),
 		passed: result.score.overall >= 50,
+		measured: result.checks.length > 0,
 		maturityStage: result.maturity?.stage ?? null,
 		maturityLabel: result.maturity?.label ?? null,
 		categoryScores,
@@ -305,9 +318,7 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 	// that one token to the display (NIST) grade so the text never disagrees with the
 	// score line above. No-op when the summary carries no grade (e.g. degraded 'N/A').
 	lines.push(
-		displayGrade === 'N/A'
-			? `${result.score.summary}`
-			: result.score.summary.replace(/Grade: [A-F][+-]?/g, `Grade: ${displayGrade}`),
+		displayGrade === 'N/A' ? `${result.score.summary}` : result.score.summary.replace(/Grade: [A-F][+-]?/g, `Grade: ${displayGrade}`),
 	);
 	lines.push('');
 
