@@ -12,8 +12,14 @@ import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { extractBrandName, getEffectiveTld } from '../lib/public-suffix';
 import { validateDomain } from '../lib/sanitize';
-import { resolveRegistration, type RegistrationCache, type UnknownReason } from '../lib/registration-state';
-import { logError } from '../lib/log';
+import {
+	resolveRegistration,
+	UNKNOWN_REASON_PHRASES,
+	type RegistrationCache,
+	type RegistrationEvidence,
+	type UnknownReason,
+} from '../lib/registration-state';
+import { getLogger } from '../lib/log';
 
 /** Wall-clock timeout for the entire shadow domain check (ms). */
 const SHADOW_TIMEOUT_MS = 20_000;
@@ -149,10 +155,27 @@ async function probeVariant(variant: string, dnsOpts: QueryDnsOptions, prefetche
 	return { variant, ns, hasA, mx, hasSpf, dmarcPolicy };
 }
 
+/**
+ * What Phase 1 learned about a registered variant.
+ *
+ * `evidence` is carried alongside `ns` deliberately: an empty `ns` means
+ * something completely different depending on whether NS was the record type
+ * that PROVED registration. Collapsing the two — passing a bare `string[]`
+ * downstream — makes "NS measured and empty" indistinguishable from "NS never
+ * measured", which is how an incomplete Phase-1 lookup ended up driving a
+ * confident Phase-2 severity.
+ */
+interface RegisteredVariant {
+	/** NS records observed in Phase 1. Empty unless `evidence` includes `'ns'`. */
+	ns: string[];
+	/** Which record types positively demonstrated the name exists. */
+	evidence: RegistrationEvidence[];
+}
+
 /** Per-variant registration outcome, partitioned three ways. */
 interface VariantRegistrationBuckets {
-	/** Registered variants → their NS records (possibly empty when proven via A). */
-	registered: Map<string, string[]>;
+	/** Registered variants → what proved it, and any NS observed while proving it. */
+	registered: Map<string, RegisteredVariant>;
 	/** Variants proven non-existent by NXDOMAIN. */
 	unregistered: string[];
 	/** Variants whose registration could not be determined, with the reason. */
@@ -171,7 +194,7 @@ async function bucketVariantsByRegistration(
 	dnsOpts: QueryDnsOptions,
 	cache?: RegistrationCache,
 ): Promise<VariantRegistrationBuckets> {
-	const registered = new Map<string, string[]>();
+	const registered = new Map<string, RegisteredVariant>();
 	const unregistered: string[] = [];
 	const unknown: Array<{ variant: string; reason: UnknownReason }> = [];
 
@@ -191,7 +214,7 @@ async function bucketVariantsByRegistration(
 			continue;
 		}
 		const { variant, state } = outcome.value;
-		if (state.state === 'registered') registered.set(variant, state.ns);
+		if (state.state === 'registered') registered.set(variant, { ns: state.ns, evidence: state.evidence });
 		else if (state.state === 'unregistered') unregistered.push(variant);
 		else unknown.push({ variant, reason: state.reason });
 	}
@@ -366,14 +389,13 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primary
 	// claim — the pre-fix code emitted "unregistered" here while carrying the
 	// live probe's own metadata, producing findings that asserted a domain did
 	// not exist while reporting its SPF record.
-	if (!canClaimUnregistered({ ns, mx, hasSpf })) {
-		logError('shadow_domains registration invariant violated', {
-			severity: 'warn',
-			category: 'shadow-domains',
-			details: { variant, hasNs: ns.length > 0, hasMx: mx.length > 0, hasSpf },
-		});
-	}
-
+	//
+	// No `canClaimUnregistered` guard here: this branch makes no unregistered
+	// claim, and a parked defensive registration proven via SOA/A that publishes
+	// `v=spf1 -all` legitimately fails that predicate. The guard belongs at the
+	// sites that actually claim non-existence (see `checkShadowDomains`), not
+	// here, where it fired `warn` on every correct result.
+	//
 	// The detail must describe only what was ACTUALLY observed. `ns` and `mx` are
 	// always empty here (both earlier branches return first), but `hasSpf` may be
 	// true — a domain registered via an A record can still publish SPF. Asserting
@@ -505,19 +527,52 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		);
 	}
 
-	// Phase 1: partition variants by registration state.
-	const buckets = await bucketVariantsByRegistration(variants, dnsOpts);
+	// Phase 1: partition variants by registration state. The cache is scoped to
+	// this single invocation, so there is no cross-request state — it exists to
+	// dedup repeat lookups of the same variant within one scan and to guarantee
+	// two lookups of one name cannot disagree inside a single report.
+	const registrationCache: RegistrationCache = new Map();
+	const buckets = await bucketVariantsByRegistration(variants, dnsOpts, registrationCache);
 	const registeredVariants = buckets.registered;
 
 	// Only NXDOMAIN supports an "unregistered" claim.
 	for (const variant of buckets.unregistered) {
+		// Nothing was observed for these variants — they are never detail-probed.
+		// The guard below is defence in depth at the point of the claim: it reads
+		// the SAME object the finding carries, so any future change that threads
+		// real observed records into this site is checked rather than trusted.
+		// The other half of this net lives in `resolveRegistrationUncached`, where
+		// the `unregistered` arm is reachable only from an NXDOMAIN with no
+		// contradicting positive record.
+		const observed = { ns: [] as string[], mx: [] as string[], hasSpf: false };
+		if (!canClaimUnregistered(observed)) {
+			// Fail-safe: downgrade to the inconclusive wording, never throw, never
+			// emit a non-existence claim that its own metadata contradicts.
+			getLogger().warn('shadow_domains registration invariant violated', {
+				category: 'shadow-domains',
+				variant,
+				hasNs: observed.ns.length > 0,
+				hasMx: observed.mx.length > 0,
+				hasSpf: observed.hasSpf,
+			});
+			findings.push(
+				createFinding(
+					'shadow_domains',
+					'Brand variant registration unknown',
+					'info',
+					`Could not determine whether ${variant} is registered — the lookup reported it as non-existent while records were still observed for it. No conclusion is drawn about this domain.`,
+					{ variant, ...observed, dmarcPolicy: null, registrationState: 'unknown', confidence: 'heuristic' },
+				),
+			);
+			continue;
+		}
 		findings.push(
 			createFinding(
 				'shadow_domains',
 				'Brand variant unregistered',
 				'info',
 				`${variant} returned NXDOMAIN and does not appear to be registered. Consider defensive registration to prevent brand abuse.`,
-				{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null, registrationState: 'unregistered', confidence: 'deterministic' },
+				{ variant, ...observed, dmarcPolicy: null, registrationState: 'unregistered', confidence: 'deterministic' },
 			),
 		);
 	}
@@ -529,7 +584,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 				'shadow_domains',
 				'Brand variant registration unknown',
 				'info',
-				`Could not determine whether ${variant} is registered (${reason}). No conclusion is drawn about this domain.`,
+				`Could not determine whether ${variant} is registered — ${UNKNOWN_REASON_PHRASES[reason]}. No conclusion is drawn about this domain.`,
 				{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null, registrationState: 'unknown', reason, confidence: 'heuristic' },
 			),
 		);
@@ -554,7 +609,14 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		}
 
 		const batch = registeredList.slice(i, i + batchSize);
-		const batchResults = await Promise.allSettled(batch.map(([variant, ns]) => probeVariant(variant, dnsOpts, ns)));
+		const batchResults = await Promise.allSettled(
+			// Reuse the Phase-1 NS answer ONLY when NS is what proved registration.
+			// For soa/a-evidence variants Phase 1 never established an NS answer, so
+			// hand `undefined` and let `probeVariant` re-query under full options —
+			// at most one extra NS query per variant Phase 2 already probes, with no
+			// new fan-out stage.
+			batch.map(([variant, reg]) => probeVariant(variant, dnsOpts, reg.evidence.includes('ns') ? reg.ns : undefined)),
+		);
 
 		let failures = 0;
 		for (const result of batchResults) {

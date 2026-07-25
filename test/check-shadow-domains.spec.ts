@@ -45,6 +45,13 @@ function mxRecords(domain: string, records: string[]) {
 	);
 }
 
+function soaRecords(domain: string) {
+	return createDohResponse(
+		[{ name: domain, type: 6 }],
+		[{ name: domain, type: 6, TTL: 300, data: 'ns1.shared.example. hostmaster.shared.example. 1 7200 3600 1209600 3600' }],
+	);
+}
+
 function txtRecords(domain: string, records: string[]) {
 	return createDohResponse(
 		[{ name: domain, type: 16 }],
@@ -1052,33 +1059,95 @@ describe('registration-state correctness', () => {
 			return emptyResponse();
 		}) as unknown as typeof fetch;
 
-		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
-		const result = await checkShadowDomains('bnz.co.nz');
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		// Sentinel: proves the capture below is live. Without it, a spy that stopped
+		// recording (or a snapshot taken after `mockRestore()` cleared the calls)
+		// would make the "no violation logged" assertion pass vacuously.
+		console.log('__log-capture-sentinel__');
+		let result;
+		let logged: string;
+		try {
+			const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+			result = await checkShadowDomains('bnz.co.nz');
+		} finally {
+			// Snapshot BEFORE restoring: `mockRestore()` also resets the mock, which
+			// clears `mock.calls` and would leave the log assertion below vacuous.
+			logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+			logSpy.mockRestore();
+		}
 
-		// Guard against a vacuous pass: if the filter below matches nothing the
-		// loop body never runs and the test proves nothing.
+		// Guard against a vacuous pass: the assertions below are only meaningful
+		// if the scan produced findings at all.
 		expect(result.findings.length).toBeGreaterThan(0);
 
 		// Assert the invariant over EVERY finding, matching on the semantic claim
 		// rather than one title string — a title rename must not silently disarm
-		// this test. Any finding asserting non-existence must carry no records.
-		let checked = 0;
-		for (const f of result.findings) {
-			if (!/unregistered|not registered|does not exist/i.test(`${f.title} ${f.detail}`)) continue;
-			checked++;
-			const m = f.metadata as { hasSpf?: boolean; mx?: string[]; ns?: string[] };
-			expect(m.hasSpf).not.toBe(true);
-			expect(m.mx?.length ?? 0).toBe(0);
-			expect(m.ns?.length ?? 0).toBe(0);
-		}
+		// this test. In this scenario every variant is registered via the A
+		// escalation, so NOTHING may assert non-existence. Asserted as an empty
+		// list rather than a filtered loop: a loop body here would be dead by
+		// construction and could never fail.
+		const nonExistenceClaims = result.findings.filter((f) => /unregistered|not registered|does not exist/i.test(`${f.title} ${f.detail}`));
+		expect(nonExistenceClaims.map((f) => f.title)).toEqual([]);
 
 		// The fallthrough finding must exist and must NOT contradict its own metadata.
 		const fallthrough = result.findings.find((f) => f.title === 'Shadow domain registered, records not observed');
 		expect(fallthrough).toBeDefined();
+		// Asserted unconditionally: wrapping the detail check in `if (hasSpf)` let a
+		// regression that flipped hasSpf to false skip the check instead of failing.
 		const fm = fallthrough!.metadata as { hasSpf?: boolean };
-		if (fm.hasSpf === true) {
-			expect(fallthrough!.detail).not.toMatch(/no .*SPF records were observed/i);
-		}
-		expect(checked).toBe(0); // post-fix, nothing may assert non-existence in this scenario
+		expect(fm.hasSpf).toBe(true);
+		expect(fallthrough!.detail).not.toMatch(/no .*SPF records were observed/i);
+
+		// This is the exact shape the relocated invariant guard used to fire on:
+		// registered via A/SOA evidence, `ns: []`, and a published SPF record.
+		// It is a correct, non-contradictory result and must log no violation.
+		expect(logged).toMatch(/__log-capture-sentinel__/);
+		expect(logged).not.toMatch(/registration invariant violated/);
+	});
+
+	it('re-queries NS in Phase 2 when Phase 1 proved registration without NS evidence', async () => {
+		// A customer's own defensive registration, parked on the primary's
+		// nameservers. Its Phase-1 NS query comes back empty under the lean
+		// `timeoutMs: 2000, retries: 0` budget, but its SOA answers — so it is
+		// bucketed `registered` with `ns: []` and `evidence: ['soa']`.
+		//
+		// Passing that empty `ns` straight through as `prefetchedNs` suppressed
+		// the Phase-2 NS query, forcing `sharesNsWithPrimary` to false and making
+		// the same-owner downgrade unreachable. The customer's own domain was then
+		// reported to them as a CRITICAL hostile shadow domain. An incomplete
+		// Phase-1 measurement must not drive a confident Phase-2 severity.
+		const SHARED_NS = ['ns1.shared.example.', 'ns2.shared.example.'];
+		let variantNsQueries = 0;
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'example.com') {
+				if (q.type === 'NS') return nsRecords(q.name, SHARED_NS);
+				return emptyResponse();
+			}
+			if (q.name !== 'example.net') return emptyResponse();
+			if (q.type === 'NS') {
+				// First (Phase-1, lean budget) answer is empty; the Phase-2 re-query
+				// under full options sees the real delegation.
+				variantNsQueries++;
+				return variantNsQueries === 1 ? emptyResponse() : nsRecords(q.name, SHARED_NS);
+			}
+			if (q.type === 'SOA') return soaRecords(q.name);
+			if (q.type === 'MX') return mxRecords(q.name, ['10 mail.shadow.example.']);
+			return emptyResponse();
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('example.com');
+
+		// Phase 2 must actually re-query NS for the soa-evidence variant.
+		expect(variantNsQueries).toBeGreaterThanOrEqual(2);
+
+		const spoofable = result.findings.find((f) => (f.metadata as { variant?: string } | undefined)?.variant === 'example.net');
+		expect(spoofable).toBeDefined();
+		expect(spoofable!.title).toBe('Shadow domain fully spoofable');
+		expect((spoofable!.metadata as { ns?: string[] }).ns).toEqual(SHARED_NS);
+		// Shared nameservers => same owner => downgraded from critical to high.
+		expect(spoofable!.severity).toBe('high');
 	});
 });
