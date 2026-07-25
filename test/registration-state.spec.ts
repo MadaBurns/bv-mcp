@@ -23,6 +23,29 @@ function nsAnswer(domain: string, hosts: string[]) {
 	);
 }
 
+/**
+ * Build a DoH response with the TC (truncated) flag set. `createDohResponse`
+ * has no TC option, so this is constructed inline rather than extending the
+ * shared `dns-mock.ts` helper (out of scope for this task).
+ */
+function truncatedResponse(domain: string, type: number, status = 0): Response {
+	const json = {
+		Status: status,
+		TC: true,
+		RD: true,
+		RA: true,
+		AD: false,
+		CD: false,
+		Question: [{ name: domain, type }],
+		Answer: [],
+	};
+	return {
+		ok: true,
+		status: 200,
+		json: () => Promise.resolve(json),
+	} as unknown as Response;
+}
+
 describe('resolveRegistration', () => {
 	it('returns registered with NS evidence when NS records are present', async () => {
 		routeByType({ NS: nsAnswer('bnz.nz', ['ns1.bnz.co.nz.']), SOA: createDohResponse([], []) });
@@ -47,6 +70,34 @@ describe('resolveRegistration', () => {
 		expect(result.state).toBe('unknown');
 		if (result.state !== 'unknown') throw new Error('narrowing');
 		expect(result.reason).toBe('servfail');
+	});
+
+	it('returns unknown/refused for REFUSED — never unregistered', async () => {
+		routeByType({
+			NS: createDohResponse([{ name: 'bnz.com', type: 2 }], [], { status: 5 }),
+			SOA: createDohResponse([{ name: 'bnz.com', type: 6 }], [], { status: 5 }),
+		});
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const result = await resolveRegistration('bnz.com');
+		expect(result.state).toBe('unknown');
+		if (result.state !== 'unknown') throw new Error('narrowing');
+		expect(result.reason).toBe('refused');
+	});
+
+	it('returns unknown/truncated when TC is set — even with an NXDOMAIN rcode', async () => {
+		// Status: 3 (NXDOMAIN) alongside TC: true asserts the priority order in
+		// registration-state.ts: the truncation check runs BEFORE the NXDOMAIN
+		// check, so a truncated answer must never resolve to `unregistered`
+		// even when its rcode looks like NXDOMAIN.
+		routeByType({
+			NS: truncatedResponse('bnz.com', 2, 3),
+			SOA: truncatedResponse('bnz.com', 6, 3),
+		});
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const result = await resolveRegistration('bnz.com');
+		expect(result.state).toBe('unknown');
+		if (result.state !== 'unknown') throw new Error('narrowing');
+		expect(result.reason).toBe('truncated');
 	});
 
 	it('returns unknown/timeout when the transport throws', async () => {
