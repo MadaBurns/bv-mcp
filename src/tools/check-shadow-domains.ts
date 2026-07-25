@@ -487,7 +487,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 				'Brand variant unregistered',
 				'info',
 				`${variant} returned NXDOMAIN and does not appear to be registered. Consider defensive registration to prevent brand abuse.`,
-				{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null, registrationState: 'unregistered', confidence: 'probable' },
+				{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null, registrationState: 'unregistered', confidence: 'deterministic' },
 			),
 		);
 	}
@@ -500,7 +500,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 				'Brand variant registration unknown',
 				'info',
 				`Could not determine whether ${variant} is registered (${reason}). No conclusion is drawn about this domain.`,
-				{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null, registrationState: 'unknown', reason, confidence: 'inconclusive' },
+				{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null, registrationState: 'unknown', reason, confidence: 'heuristic' },
 			),
 		);
 	}

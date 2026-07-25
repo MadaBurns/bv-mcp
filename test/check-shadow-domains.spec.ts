@@ -1002,4 +1002,35 @@ describe('registration-state correctness', () => {
 			expect(f.detail).not.toMatch(/defensive registration/i);
 		}
 	});
+
+	it('pins post-buildCheckResult confidence: heuristic for unknown, deterministic for unregistered', async () => {
+		// FindingConfidence (packages/dns-checks/src/scoring/model.ts) is exactly
+		// 'deterministic' | 'heuristic' | 'verified'. An out-of-union value declared in
+		// metadata.confidence is silently rejected by isExplicitConfidence() and falls
+		// through inferFindingConfidence()'s keyword matching to the 'deterministic'
+		// default — so a value must be asserted on the finding AFTER it passes through
+		// buildCheckResult's withConfidenceMetadata plumbing, not on the pre-build object,
+		// or a regression back to an invalid value would go undetected.
+		const { servfailResponse, nxdomainResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			// One variant is a clean NXDOMAIN (→ unregistered); every other variant SERVFAILs
+			// (→ registration unknown).
+			if (q.name === 'bnz.kiwi') return nxdomainResponse(q.name, q.type === 'NS' ? 2 : 1);
+			return servfailResponse(q.name, q.type === 'NS' ? 2 : 1);
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		const unknown = result.findings.find((f) => f.title === 'Brand variant registration unknown');
+		expect(unknown).toBeDefined();
+		expect(unknown!.metadata?.confidence).toBe('heuristic');
+
+		const unregistered = result.findings.find((f) => f.title === 'Brand variant unregistered');
+		expect(unregistered).toBeDefined();
+		expect(unregistered!.metadata?.confidence).toBe('deterministic');
+	});
 });
