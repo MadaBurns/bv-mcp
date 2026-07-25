@@ -125,6 +125,91 @@ describe('resolveRegistration', () => {
 		expect(result.evidence).toContain('a');
 	});
 
+	it('escalates past SERVFAIL to A, and reports registered on an A hit', async () => {
+		// A lame or DNSSEC-broken delegation SERVFAILs on NS and SOA while the
+		// name itself still resolves. Short-circuiting at the SERVFAIL made these
+		// variants invisible to the detail probe, so a genuinely spoofable brand
+		// variant dropped out of the report entirely.
+		routeByType({
+			NS: servfailResponse('brand.de'),
+			SOA: servfailResponse('brand.de', 6),
+			A: createDohResponse([{ name: 'brand.de', type: 1 }], [{ name: 'brand.de', type: 1, TTL: 300, data: '203.0.113.7' }]),
+		});
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const result = await resolveRegistration('brand.de');
+		expect(result.state).toBe('registered');
+		if (result.state !== 'registered') throw new Error('narrowing');
+		expect(result.evidence).toContain('a');
+	});
+
+	it('keeps the ORIGINAL servfail reason when the A escalation returns NXDOMAIN', async () => {
+		// Contradictory evidence: NS/SOA SERVFAIL but A says NXDOMAIN. Only
+		// positive evidence may overturn an inconclusive lookup — an NXDOMAIN
+		// here must NOT be promoted to an `unregistered` claim, and the reason
+		// must stay `servfail`, not be relabelled `empty_noerror`.
+		routeByType({ NS: servfailResponse('brand.de'), SOA: servfailResponse('brand.de', 6), A: nxdomainResponse('brand.de', 1) });
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const result = await resolveRegistration('brand.de');
+		expect(result.state).toBe('unknown');
+		if (result.state !== 'unknown') throw new Error('narrowing');
+		expect(result.reason).toBe('servfail');
+	});
+
+	it('keeps the ORIGINAL refused reason when the A escalation returns NXDOMAIN', async () => {
+		routeByType({
+			NS: createDohResponse([{ name: 'brand.de', type: 2 }], [], { status: 5 }),
+			SOA: createDohResponse([{ name: 'brand.de', type: 6 }], [], { status: 5 }),
+			A: nxdomainResponse('brand.de', 1),
+		});
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const result = await resolveRegistration('brand.de');
+		expect(result.state).toBe('unknown');
+		if (result.state !== 'unknown') throw new Error('narrowing');
+		expect(result.reason).toBe('refused');
+	});
+
+	it('reports unregistered when the A escalation itself returns NXDOMAIN after NOERROR-empty NS/SOA', async () => {
+		// The second of only two paths to the `unregistered` verdict — the most
+		// liability-bearing output this module produces. Pinned so a refactor
+		// cannot widen it.
+		routeByType({ NS: createDohResponse([], []), SOA: createDohResponse([], []), A: nxdomainResponse('gone.example', 1) });
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		expect((await resolveRegistration('gone.example')).state).toBe('unregistered');
+	});
+
+	it('reports the transport failure honestly when the A escalation throws', async () => {
+		// NS and SOA answer NOERROR-empty, then the A escalation times out. The
+		// outcome is a timed-out measurement, not "the nameservers answered with
+		// no records" — mislabelling it hides a transient failure behind a
+		// definitive-sounding reason in a customer report.
+		let call = 0;
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const type = new URL(href).searchParams.get('type') ?? '';
+			call++;
+			if (type === 'A') throw new DOMException('The operation timed out.', 'TimeoutError');
+			return createDohResponse([], []);
+		}) as unknown as typeof fetch;
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const result = await resolveRegistration('flaky.example');
+		expect(call).toBeGreaterThan(0);
+		expect(result.state).toBe('unknown');
+		if (result.state !== 'unknown') throw new Error('narrowing');
+		expect(result.reason).toBe('timeout');
+	});
+
+	it('treats a trailing-dot FQDN as the same cache entry', async () => {
+		const fetchSpy = vi.fn(async () => nsAnswer('bnz.nz', ['ns1.bnz.co.nz.']));
+		globalThis.fetch = fetchSpy as unknown as typeof fetch;
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const cache = new Map<string, Promise<RegistrationState>>();
+		const first = await resolveRegistration('bnz.nz', undefined, cache);
+		const callsAfterFirst = fetchSpy.mock.calls.length;
+		const second = await resolveRegistration('BNZ.nz.', undefined, cache);
+		expect(second).toEqual(first);
+		expect(fetchSpy.mock.calls.length).toBe(callsAfterFirst);
+	});
+
 	it('returns unknown/empty_noerror when nothing answers and nothing errors', async () => {
 		routeByType({ NS: createDohResponse([], []), SOA: createDohResponse([], []), A: createDohResponse([], []) });
 		const { resolveRegistration } = await import('../src/lib/registration-state');

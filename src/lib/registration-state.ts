@@ -26,6 +26,23 @@ export type RegistrationEvidence = 'ns' | 'soa' | 'a';
 export type UnknownReason = 'servfail' | 'refused' | 'timeout' | 'truncated' | 'network' | 'empty_noerror';
 
 /**
+ * Human-readable rendering of each {@link UnknownReason}.
+ *
+ * These strings reach customer-facing reports about named organisations, where
+ * a raw internal enum (`empty_noerror`) is both meaningless and unprofessional.
+ * The machine-readable `reason` stays in finding metadata; only the prose is
+ * substituted. Written as clause fragments so they compose into a sentence.
+ */
+export const UNKNOWN_REASON_PHRASES: Record<UnknownReason, string> = {
+	servfail: 'the resolver returned SERVFAIL, which usually indicates a broken delegation or a DNSSEC validation failure',
+	refused: 'the resolver refused to answer the query',
+	timeout: 'the lookup timed out before an answer arrived',
+	truncated: 'the answer was truncated and could not be read in full',
+	network: 'the lookup could not be completed',
+	empty_noerror: 'the nameservers answered without returning any records',
+};
+
+/**
  * Tri-state registration result. `unregistered` is deliberately the narrowest
  * arm: it is reachable only from an NXDOMAIN with no contradicting positive
  * record, and it carries no payload, so it is structurally impossible to
@@ -60,8 +77,11 @@ function isTimeoutError(err: unknown): boolean {
  * Resolve whether a domain is registered (internal uncached implementation).
  *
  * Costs 2 subrequests (NS + SOA) in the common case, escalating to a third (A)
- * only when both come back NOERROR-with-no-answers — the empty-non-terminal
- * case, where a name legitimately exists without records at that exact label.
+ * only when neither produced positive evidence AND the outcome is either
+ * NOERROR-with-no-answers (the empty-non-terminal case, where a name legitimately
+ * exists without records at that exact label) or an explicit SERVFAIL/REFUSED
+ * (where the delegation is broken but the name may still resolve). Positive
+ * evidence and transport-level failure both skip it.
  *
  * Never throws: transport failures are folded into `{ state: 'unknown' }`.
  */
@@ -101,28 +121,44 @@ export async function resolveRegistrationUncached(domain: string, opts?: QueryDn
 	// 3. NXDOMAIN — the ONLY path to an "unregistered" claim.
 	if (responses.some((r) => r.Status === RCODE_NXDOMAIN)) return { state: 'unregistered' };
 
-	// 4. Explicit resolver-side failures.
-	if (responses.some((r) => r.Status === RCODE_SERVFAIL)) return { state: 'unknown', reason: 'servfail' };
-	if (responses.some((r) => r.Status === RCODE_REFUSED)) return { state: 'unknown', reason: 'refused' };
+	// 4. Explicit resolver-side failures. Recorded but NOT returned yet: a lame
+	//    or DNSSEC-broken delegation SERVFAILs on NS/SOA while the name itself
+	//    still resolves, and short-circuiting here made genuinely spoofable
+	//    variants invisible. The A escalation below runs for these too.
+	let deferredReason: UnknownReason | null = null;
+	if (responses.some((r) => r.Status === RCODE_SERVFAIL)) deferredReason = 'servfail';
+	else if (responses.some((r) => r.Status === RCODE_REFUSED)) deferredReason = 'refused';
 
-	// 5. Nothing answered at all.
+	// 5. Nothing answered at all — there is no rcode to escalate from.
 	if (responses.length === 0 && transportFailures > 0) {
 		return { state: 'unknown', reason: sawTimeout ? 'timeout' : 'network' };
 	}
 
-	// 6. NOERROR with no answers. The name may be an empty non-terminal, so one
-	//    escalation to A before abstaining.
+	// 6. Escalate to A. Two distinct entry conditions, with deliberately
+	//    different exit rules:
+	//    - NOERROR with no answers (`deferredReason === null`): the name may be
+	//      an empty non-terminal, so the A answer IS conclusive in both
+	//      directions — records mean registered, NXDOMAIN means unregistered.
+	//    - After SERVFAIL/REFUSED: only POSITIVE evidence may change the verdict.
+	//      An NXDOMAIN on A after a SERVFAIL on NS/SOA is contradictory evidence,
+	//      not proof of non-existence, so it must stay `unknown` carrying the
+	//      ORIGINAL reason.
 	try {
 		const aResp = await queryDns(domain, 'A', false, opts);
 		if (answersOfType(aResp, RecordType.A).length > 0) {
 			return { state: 'registered', ns: [], evidence: ['a'] };
 		}
-		if (aResp.Status === RCODE_NXDOMAIN) return { state: 'unregistered' };
-	} catch {
-		// Escalation is best-effort; fall through to `unknown`.
+		if (deferredReason === null && aResp.Status === RCODE_NXDOMAIN) return { state: 'unregistered' };
+	} catch (err) {
+		// Escalation is best-effort and never throws outward. With no earlier
+		// rcode to fall back on, report the transport failure honestly rather
+		// than mislabelling it as an empty NOERROR answer.
+		if (deferredReason === null) {
+			return { state: 'unknown', reason: isTimeoutError(err) ? 'timeout' : 'network' };
+		}
 	}
 
-	return { state: 'unknown', reason: 'empty_noerror' };
+	return { state: 'unknown', reason: deferredReason ?? 'empty_noerror' };
 }
 
 /**
@@ -136,7 +172,10 @@ export async function resolveRegistrationUncached(domain: string, opts?: QueryDn
  */
 export async function resolveRegistration(domain: string, opts?: QueryDnsOptions, cache?: RegistrationCache): Promise<RegistrationState> {
 	if (!cache) return resolveRegistrationUncached(domain, opts);
-	const key = domain.toLowerCase();
+	// Normalise the key: DNS names are case-insensitive and `example.com.` is the
+	// same name as `example.com`, so both must share one cache entry rather than
+	// producing two lookups that could disagree within a single scan.
+	const key = domain.toLowerCase().replace(/\.$/, '');
 	const existing = cache.get(key);
 	if (existing) return existing;
 	const promise = resolveRegistrationUncached(domain, opts);
