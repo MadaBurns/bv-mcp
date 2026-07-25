@@ -36,6 +36,13 @@ export type RegistrationState =
 	| { state: 'unregistered' }
 	| { state: 'unknown'; reason: UnknownReason };
 
+/**
+ * Per-scan memoisation. Keyed by lowercased domain, holding the in-flight
+ * Promise so concurrent callers share one lookup. Mirrors the existing
+ * `QueryDnsOptions.queryCache` convention.
+ */
+export type RegistrationCache = Map<string, Promise<RegistrationState>>;
+
 /** DNS RCODEs (RFC 1035 §4.1.1, RFC 2136). */
 const RCODE_SERVFAIL = 2;
 const RCODE_NXDOMAIN = 3;
@@ -50,7 +57,7 @@ function isTimeoutError(err: unknown): boolean {
 }
 
 /**
- * Resolve whether a domain is registered.
+ * Resolve whether a domain is registered (internal uncached implementation).
  *
  * Costs 2 subrequests (NS + SOA) in the common case, escalating to a third (A)
  * only when both come back NOERROR-with-no-answers — the empty-non-terminal
@@ -58,7 +65,10 @@ function isTimeoutError(err: unknown): boolean {
  *
  * Never throws: transport failures are folded into `{ state: 'unknown' }`.
  */
-export async function resolveRegistration(domain: string, opts?: QueryDnsOptions): Promise<RegistrationState> {
+export async function resolveRegistrationUncached(
+	domain: string,
+	opts?: QueryDnsOptions,
+): Promise<RegistrationState> {
 	const settled = await Promise.allSettled([queryDns(domain, 'NS', false, opts), queryDns(domain, 'SOA', false, opts)]);
 
 	const responses: DohResponse[] = [];
@@ -116,4 +126,27 @@ export async function resolveRegistration(domain: string, opts?: QueryDnsOptions
 	}
 
 	return { state: 'unknown', reason: 'empty_noerror' };
+}
+
+/**
+ * Resolve whether a domain is registered.
+ *
+ * When a `cache` is provided, deduplicates concurrent lookups for the same
+ * domain and ensures two tools scanning overlapping domains cannot report
+ * contradictory registration facts within one run.
+ *
+ * Never throws: transport failures are folded into `{ state: 'unknown' }`.
+ */
+export async function resolveRegistration(
+	domain: string,
+	opts?: QueryDnsOptions,
+	cache?: RegistrationCache,
+): Promise<RegistrationState> {
+	if (!cache) return resolveRegistrationUncached(domain, opts);
+	const key = domain.toLowerCase();
+	const existing = cache.get(key);
+	if (existing) return existing;
+	const promise = resolveRegistrationUncached(domain, opts);
+	cache.set(key, promise);
+	return promise;
 }

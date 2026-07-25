@@ -132,4 +132,16 @@ describe('resolveRegistration', () => {
 		if (result.state !== 'unknown') throw new Error('narrowing');
 		expect(result.reason).toBe('empty_noerror');
 	});
+
+	it('deduplicates repeat lookups through a shared cache', async () => {
+		const fetchSpy = vi.fn(async () => nsAnswer('bnz.nz', ['ns1.bnz.co.nz.']));
+		globalThis.fetch = fetchSpy as unknown as typeof fetch;
+		const { resolveRegistration } = await import('../src/lib/registration-state');
+		const cache = new Map();
+		const first = await resolveRegistration('bnz.nz', undefined, cache);
+		const callsAfterFirst = fetchSpy.mock.calls.length;
+		const second = await resolveRegistration('bnz.nz', undefined, cache);
+		expect(second).toEqual(first);
+		expect(fetchSpy.mock.calls.length).toBe(callsAfterFirst);
+	});
 });
