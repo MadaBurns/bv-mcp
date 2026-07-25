@@ -149,11 +149,17 @@ describe('buildStructuredScanResult — ungraded scan', () => {
 });
 
 describe('gradeBadge — null grade', () => {
-	it('renders the error badge rather than an SVG carrying a fabricated letter', async () => {
+	it('renders an explicit "unknown" badge rather than an SVG carrying a fabricated letter', async () => {
+		// Task 2 shipped an interim stopgap that routed a null grade through
+		// errorBadge() — better than fabricating a letter, but still conflated
+		// "not measured" with "server error". Task 5 finalizes the distinction:
+		// gradeBadge(null) now renders its own "unknown" value text, and is no
+		// longer identical to errorBadge()'s "error" value text.
 		const { gradeBadge, errorBadge } = await import('../src/lib/badge');
 		const svg = gradeBadge(null);
 
-		expect(svg).toBe(errorBadge());
+		expect(svg).toContain('unknown');
+		expect(svg).not.toBe(errorBadge());
 		for (const letter of ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'F']) {
 			expect(svg).not.toContain(`>${letter}<`);
 		}
