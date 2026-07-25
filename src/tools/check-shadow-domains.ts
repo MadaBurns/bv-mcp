@@ -13,6 +13,7 @@ import { buildCheckResult, createFinding } from '../lib/scoring';
 import { extractBrandName, getEffectiveTld } from '../lib/public-suffix';
 import { validateDomain } from '../lib/sanitize';
 import { resolveRegistration, type RegistrationCache, type UnknownReason } from '../lib/registration-state';
+import { logError } from '../lib/log';
 
 /** Wall-clock timeout for the entire shadow domain check (ms). */
 const SHADOW_TIMEOUT_MS = 20_000;
@@ -235,6 +236,16 @@ function isNullMxExchange(exchange: string): boolean {
 }
 
 /**
+ * Hard invariant: a domain exhibiting ANY observed record cannot be
+ * unregistered. Any code path about to emit an "unregistered" claim must
+ * clear this first. Deliberately a total function over the observed record
+ * set rather than a heuristic — there is no threshold to tune.
+ */
+export function canClaimUnregistered(observed: { ns: string[]; mx: string[]; hasSpf: boolean }): boolean {
+	return observed.ns.length === 0 && observed.mx.length === 0 && !observed.hasSpf;
+}
+
+/**
  * Classify a probed variant into a finding based on risk.
  * When the variant shares nameservers with the primary domain (indicating common ownership),
  * email-auth findings are downgraded one severity level.
@@ -350,13 +361,25 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primary
 		);
 	}
 
-	// Not registered → info
+	// Reached only for a variant Phase 1 proved registered whose detail probe
+	// observed no records. That is a measurement gap, never an availability
+	// claim — the pre-fix code emitted "unregistered" here while carrying the
+	// live probe's own metadata, producing findings that asserted a domain did
+	// not exist while reporting its SPF record.
+	if (!canClaimUnregistered({ ns, mx, hasSpf })) {
+		logError('shadow_domains registration invariant violated', {
+			severity: 'warn',
+			category: 'shadow-domains',
+			details: { variant, hasNs: ns.length > 0, hasMx: mx.length > 0, hasSpf },
+		});
+	}
+
 	return createFinding(
 		'shadow_domains',
-		'Brand variant unregistered',
+		'Shadow domain registered, records not observed',
 		'info',
-		`${variant} does not appear to be registered. Consider defensive registration to prevent brand abuse.`,
-		meta,
+		`${variant} is registered but no NS, MX or SPF records were observed during this scan.`,
+		{ ...meta, registrationState: 'registered', confidence: 'heuristic' },
 	);
 }
 

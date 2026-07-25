@@ -1033,4 +1033,34 @@ describe('registration-state correctness', () => {
 		expect(unregistered).toBeDefined();
 		expect(unregistered!.metadata?.confidence).toBe('deterministic');
 	});
+
+	it('never emits an unregistered finding alongside observed records', async () => {
+		// Registration evidence comes from an A-only escalation (NS + SOA both
+		// NOERROR/empty for variants, so resolveRegistration falls through to the
+		// A-record escalation), which — like the SOA-only path — proves
+		// "registered" while leaving `ns` empty. That is exactly the shape that
+		// reached classifyVariant's fallthrough pre-fix: registered (so Task 3's
+		// gate lets it through), but with no NS and no MX, so it fell to the final
+		// "Brand variant unregistered" branch while still carrying the SPF record
+		// this probe observed.
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.type === 'NS') return q.name === 'bnz.co.nz' ? nsRecords(q.name, ['ns1.bnz.co.nz.']) : emptyResponse();
+			if (q.type === 'A') return aRecords(q.name, ['203.0.113.10']);
+			if (q.type === 'TXT') return txtRecords(q.name, ['v=spf1 mx -all']);
+			return emptyResponse();
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		for (const f of result.findings) {
+			if (f.title !== 'Brand variant unregistered') continue;
+			const m = f.metadata as { hasSpf?: boolean; mx?: string[]; ns?: string[] };
+			expect(m.hasSpf).not.toBe(true);
+			expect(m.mx?.length ?? 0).toBe(0);
+			expect(m.ns?.length ?? 0).toBe(0);
+		}
+	});
 });
