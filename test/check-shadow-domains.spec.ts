@@ -1041,13 +1041,11 @@ describe('registration-state correctness', () => {
 
 		const unregistered = result.findings.find((f) => f.title === 'Brand variant unregistered');
 		expect(unregistered).toBeDefined();
-		// LIMIT OF THIS ASSERTION: 'deterministic' is inferFindingConfidence()'s
-		// fallback, so this passes for the correct literal, for an out-of-union
-		// literal, and for no declaration at all. It pins the customer-visible
-		// value, not the emission site's declaration. The 'heuristic' assertion
-		// above is the discriminating half — 'heuristic' cannot be reached by
-		// falling through, only by declaring it (or by keyword inference, which
-		// this detail does not trip).
+		// SCOPE: pins the CUSTOMER-VISIBLE value only. 'deterministic' is
+		// inferFindingConfidence()'s fallback, so this line cannot distinguish the
+		// correct literal from an out-of-union one at the emission site — the
+		// declaration itself is pinned pre-normalisation by the createFinding
+		// interception test in test/audits/registration-invariant.audit.test.ts.
 		expect(unregistered!.metadata?.confidence).toBe('deterministic');
 	});
 

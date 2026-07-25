@@ -1,8 +1,35 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, servfailResponse, nxdomainResponse } from '../helpers/dns-mock';
 
+/**
+ * Capture of every `createFinding` call, recorded at the CALL boundary — i.e.
+ * BEFORE `withConfidenceMetadata` rewrites `metadata.confidence` with
+ * `inferFindingConfidence`. Asserting the post-normalisation value cannot
+ * discriminate: an out-of-union literal is rejected by `isExplicitConfidence`
+ * and falls through to the `'deterministic'` DEFAULT, so a typo'd or invented
+ * member reads identically to the correct one. Intercepting here is the only
+ * way to pin what the emission site actually DECLARED.
+ *
+ * `vi.hoisted` because `vi.mock` factories are hoisted above the imports.
+ */
+const captured = vi.hoisted(() => ({ calls: [] as Array<{ title: string; confidence: unknown }> }));
+
+vi.mock('@blackveil/dns-checks/scoring', async (importOriginal) => {
+	const orig = await importOriginal<typeof import('@blackveil/dns-checks/scoring')>();
+	return {
+		...orig,
+		createFinding: (category: string, title: string, severity: string, detail: string, metadata?: Record<string, unknown>) => {
+			captured.calls.push({ title, confidence: metadata?.confidence });
+			return (orig.createFinding as (...a: unknown[]) => unknown)(category, title, severity, detail, metadata);
+		},
+	};
+});
+
 const { restore } = setupFetchMock();
-afterEach(() => restore());
+afterEach(() => {
+	restore();
+	captured.calls.length = 0;
+});
 
 function routeAll(builder: (name: string, type: string) => Response) {
 	globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
@@ -73,14 +100,11 @@ describe('registration invariants (audit)', () => {
 		expect(result.findings.some((f) => f.title.startsWith('Shadow domain '))).toBe(true);
 
 		// A genuine NXDOMAIN IS a parsed authoritative answer, so 'deterministic' is
-		// the correct confidence. LIMIT OF THIS ASSERTION: `inferFindingConfidence`
-		// (packages/dns-checks/src/scoring/model.ts) rejects any out-of-union value
-		// and falls through to a 'deterministic' DEFAULT, so this line passes for
-		// the correct literal, for an invalid literal, and for no declaration at
-		// all. It pins the customer-visible confidence, NOT the emission site's
-		// declaration. The discriminating half of the pair is the 'heuristic'
-		// assertion in the next test — 'heuristic' is only reachable by declaring
-		// it explicitly (or by keyword inference, which these details do not trip).
+		// the correct confidence. SCOPE OF THIS ASSERTION: it pins the
+		// CUSTOMER-VISIBLE value only — `inferFindingConfidence` normalises any
+		// out-of-union declaration to a 'deterministic' default, so this line alone
+		// cannot detect a wrong literal at the emission site. The declaration itself
+		// is pinned pre-normalisation by the last test in this file.
 		const unregistered = result.findings.filter((f) => UNREGISTERED_TITLES.has(f.title));
 		expect(unregistered.length).toBeGreaterThan(0);
 		for (const f of unregistered) {
@@ -141,5 +165,60 @@ describe('registration invariants (audit)', () => {
 		for (const f of fallthrough) {
 			expect((f.metadata as { confidence?: string } | undefined)?.confidence).toBe('heuristic');
 		}
+	});
+
+	it('DECLARES the right confidence at each emission site (asserted pre-normalisation)', async () => {
+		// The discriminating counterpart to the assertions above. Those read
+		// `finding.metadata.confidence` AFTER `withConfidenceMetadata` has rewritten
+		// it, so 'deterministic' is unfalsifiable there. This one reads the literal
+		// handed to `createFinding`, where an invented member like 'probable' — the
+		// exact defect that slipped past tests, typecheck, eslint and prettier
+		// earlier on this branch — shows up as itself and fails.
+		//
+		// One mock producing all three registration outcomes in a single scan:
+		//   bnz.kiwi  NXDOMAIN everywhere      -> 'Brand variant unregistered'
+		//   bnz.de    SERVFAIL everywhere      -> 'Brand variant registration unknown'
+		//   bnz.com   NS/SOA empty + A hit     -> 'Shadow domain registered, records not observed'
+		routeAll((name, type) => {
+			if (name.endsWith('bnz.co.nz')) {
+				return type === 'NS'
+					? createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'a1-97.akam.net.' }])
+					: createDohResponse([], []);
+			}
+			if (name.startsWith('bnz.kiwi')) return nxdomainResponse(name, type === 'NS' ? 2 : 1);
+			if (name.startsWith('bnz.de')) return servfailResponse(name, type === 'NS' ? 2 : 1);
+			if (name.startsWith('bnz.com')) {
+				// Registered via the A escalation only: no NS, no SOA, no MX — the
+				// shape that reaches classifyVariant's final fallthrough.
+				if (type === 'A') return createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '203.0.113.10' }]);
+				if (type === 'TXT') return createDohResponse([{ name, type: 16 }], [{ name, type: 16, TTL: 300, data: '"v=spf1 mx -all"' }]);
+				return createDohResponse([], []);
+			}
+			return createDohResponse([], []);
+		});
+
+		captured.calls.length = 0;
+		const { checkShadowDomains } = await import('../../src/tools/check-shadow-domains');
+		await checkShadowDomains('bnz.co.nz');
+
+		// The interception itself must be live, or every assertion below is vacuous.
+		expect(captured.calls.length).toBeGreaterThan(0);
+
+		const declaredFor = (title: string) => captured.calls.filter((c) => c.title === title).map((c) => c.confidence);
+
+		// An NXDOMAIN is a parsed protocol answer — 'deterministic' is correct here,
+		// and is now pinned as the DECLARED literal rather than the default.
+		const unregistered = declaredFor('Brand variant unregistered');
+		expect(unregistered.length).toBeGreaterThan(0);
+		expect([...new Set(unregistered)]).toEqual(['deterministic']);
+
+		// Both absence-derived sites must declare 'heuristic' explicitly.
+		const unknown = declaredFor('Brand variant registration unknown');
+		expect(unknown.length).toBeGreaterThan(0);
+		expect([...new Set(unknown)]).toEqual(['heuristic']);
+
+		const fallthrough = declaredFor('Shadow domain registered, records not observed');
+		expect(fallthrough.length).toBeGreaterThan(0);
+		expect([...new Set(fallthrough)]).toEqual(['heuristic']);
 	});
 });
