@@ -61,6 +61,13 @@ export function classifyDrift(scoreDelta: number | null, newCriticalHighCount: n
 	// `null` = no score signal, NOT a delta of zero-meaning-stable. Treating it as 0 here
 	// neutralises the score thresholds so only the finding-based rules classify; Task 6
 	// replaces this with an explicit `inconclusive` classification.
+	//
+	// NOTE: this `?? 0` is DOCUMENTARY, not load-bearing — `delta` is only ever used in
+	// relational comparisons below, and JS already evaluates `null > 2` / `null < -2`
+	// identically to `0 > 2` / `0 < -2` (verified exhaustively: no reachable input
+	// distinguishes the two forms, so no test can guard it). It is kept so the intent is
+	// explicit and so a future refactor that does ARITHMETIC on `delta` gets 0 rather
+	// than NaN. Do not read its presence as evidence that a test covers it.
 	const delta = scoreDelta ?? 0;
 	const hasRegressions = newCriticalHighCount > 0;
 	const hasImprovements = resolvedCount > 0 || delta > 2;

@@ -451,14 +451,21 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 
 	it('excludes ungraded scans from BOTH the numerator and the denominator of mean_score', async () => {
 		const cycleId = 'cycle_ungraded_mean';
-		// A realistic tenant cycle: 3 domains resolve and score, 2 do not resolve at all
+		// A realistic tenant cycle: 4 domains resolve and score, 2 do not resolve at all
 		// and were persisted with score/grade NULL (the `?? null` the persistence side
 		// already writes correctly).
+		//
+		// The `{ score: 0, grade: 'F' }` row is load-bearing: it is a domain that WAS
+		// measured and genuinely scored zero. Without it, a `filter(Boolean)` predicate
+		// is indistinguishable from the correct `!== null` one — and `filter(Boolean)`
+		// is the same fabrication inverted, silently dropping every legitimately-failing
+		// domain out of the tenant's mean.
 		const tenant = makeMockD1({
 			'SELECT score, grade FROM scans WHERE cycle_id = ?': [
 				{ score: 90, grade: 'A' },
 				{ score: 80, grade: 'B' },
 				{ score: 70, grade: 'C' },
+				{ score: 0, grade: 'F' },
 				{ score: null, grade: null },
 				{ score: null, grade: null },
 			],
@@ -479,12 +486,15 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as { summary: { domains: number; mean_score: number | null; grade_dist: Record<string, number> } };
 
-		// Pre-fix: (90+80+70+0+0)/5 = 48 — the tenant's reported portfolio mean depressed
-		// by 22 points by two domains that were never measured.
-		expect(body.summary.mean_score).toBeCloseTo(80, 5);
+		// Correct: (90+80+70+0)/4 = 60 — the four MEASURED domains, including the real F.
+		// Pre-fix (nulls coerced to 0, kept in the denominator): 240/6 = 40.
+		// `filter(Boolean)` (drops the genuine 0 too): 240/3 = 80.
+		expect(body.summary.mean_score).toBeCloseTo(60, 5);
 		// `domains` still counts every attempted domain — only the MEAN abstains.
-		expect(body.summary.domains).toBe(5);
+		expect(body.summary.domains).toBe(6);
 		expect(body.summary.grade_dist.unknown).toBe(2);
+		// The genuinely-failing domain is still represented everywhere it should be.
+		expect(body.summary.grade_dist.F).toBe(1);
 	});
 
 	it('reports mean_score null (not 0) when no scan in the cycle was graded', async () => {

@@ -107,6 +107,9 @@ describe('buildStructuredScanResult — ungraded scan', () => {
 		// The defect: `null >= 50` is `false`, so an unmeasured domain reported a
 		// confident `passed: false` — a security failure it was never assessed for.
 		expect(structured.passed).toBeNull();
+		// NOT a guard on the null-score handling — `measured` is derived from
+		// `checks.length > 0` and holds under the un-fixed code too. It is here to pin
+		// the documented invariant that `measured === false` accompanies a null score.
 		expect(structured.measured).toBe(false);
 	});
 
@@ -174,14 +177,24 @@ describe('computeDrift / classifyDrift — ungraded side', () => {
 		expect(report.gradeChange).toEqual({ from: 'B', to: null });
 	});
 
-	it('renders "not measured" in both the compact and full text, never NaN/null/0 pts', async () => {
+	it('renders "not measured" in the SCORE-DELTA segment specifically, in both compact and full', async () => {
 		const { computeDrift, formatDriftReport } = await import('../src/tools/analyze-drift');
-		const { UNGRADED_DISPLAY } = await import('../src/tools/scan/format-report');
 		const report = computeDrift('example.com', gradedScore(), ungradedScore());
 
-		for (const format of ['compact', 'full'] as const) {
-			const text = formatDriftReport(report, format);
-			expect(text, format).toContain(UNGRADED_DISPLAY);
+		// Deliberately NOT a bare `toContain(UNGRADED_DISPLAY)`: in this fixture the
+		// current GRADE is also null, so the grade segment alone satisfies a bare check
+		// and the delta segment goes unpinned. These assert the delta position itself —
+		// they fail if the delta renders as a number (e.g. `null - 78` coercing to -78).
+		const compact = formatDriftReport(report, 'compact');
+		expect(compact).toContain('(not measured,');
+
+		const full = formatDriftReport(report, 'full');
+		expect(full).toContain('**Score:** not measured');
+
+		for (const [format, text] of [
+			['compact', compact],
+			['full', full],
+		] as const) {
 			expect(text, format).not.toContain('NaN');
 			expect(text, format).not.toContain('null');
 			expect(text, format).not.toContain('0 pts');
@@ -199,7 +212,22 @@ describe('computeDrift / classifyDrift — ungraded side', () => {
 		expect(text).not.toContain(UNGRADED_DISPLAY);
 	});
 
-	it('classifies on the finding-based rules alone when there is no score signal', async () => {
+	/**
+	 * CHARACTERIZATION ONLY — this does NOT guard `classifyDrift`'s `?? 0`.
+	 *
+	 * `classifyDrift` uses `delta` in exactly three relational comparisons
+	 * (`> 2`, `< -2`, `> 2`), and JS evaluates `null > 2` and `null < -2` identically
+	 * to `0 > 2` and `0 < -2`. So the abstaining form (`scoreDelta ?? 0`) and a raw
+	 * coercing cast produce the SAME classification for every reachable input —
+	 * verified exhaustively over newCriticalHighCount/resolvedCount 0..5: zero
+	 * divergent pairs. No fixture can distinguish them through the public surface.
+	 *
+	 * These cases therefore pin the CONTRACT (a missing score signal must not suppress
+	 * a finding-based verdict) rather than the null-handling itself. Kept because they
+	 * would catch a future refactor that changed the finding-based rules, and labelled
+	 * so nobody mistakes them for a guard on the `?? 0`.
+	 */
+	it('[characterization] classifies on the finding-based rules alone when there is no score signal', async () => {
 		const { classifyDrift } = await import('../src/tools/analyze-drift');
 
 		// No score signal and no finding movement → nothing to call a regression.
