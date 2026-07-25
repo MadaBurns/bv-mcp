@@ -1055,12 +1055,30 @@ describe('registration-state correctness', () => {
 		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
 		const result = await checkShadowDomains('bnz.co.nz');
 
+		// Guard against a vacuous pass: if the filter below matches nothing the
+		// loop body never runs and the test proves nothing.
+		expect(result.findings.length).toBeGreaterThan(0);
+
+		// Assert the invariant over EVERY finding, matching on the semantic claim
+		// rather than one title string — a title rename must not silently disarm
+		// this test. Any finding asserting non-existence must carry no records.
+		let checked = 0;
 		for (const f of result.findings) {
-			if (f.title !== 'Brand variant unregistered') continue;
+			if (!/unregistered|not registered|does not exist/i.test(`${f.title} ${f.detail}`)) continue;
+			checked++;
 			const m = f.metadata as { hasSpf?: boolean; mx?: string[]; ns?: string[] };
 			expect(m.hasSpf).not.toBe(true);
 			expect(m.mx?.length ?? 0).toBe(0);
 			expect(m.ns?.length ?? 0).toBe(0);
 		}
+
+		// The fallthrough finding must exist and must NOT contradict its own metadata.
+		const fallthrough = result.findings.find((f) => f.title === 'Shadow domain registered, records not observed');
+		expect(fallthrough).toBeDefined();
+		const fm = fallthrough!.metadata as { hasSpf?: boolean };
+		if (fm.hasSpf === true) {
+			expect(fallthrough!.detail).not.toMatch(/no .*SPF records were observed/i);
+		}
+		expect(checked).toBe(0); // post-fix, nothing may assert non-existence in this scenario
 	});
 });

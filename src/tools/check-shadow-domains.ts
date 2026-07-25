@@ -374,11 +374,18 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primary
 		});
 	}
 
+	// The detail must describe only what was ACTUALLY observed. `ns` and `mx` are
+	// always empty here (both earlier branches return first), but `hasSpf` may be
+	// true — a domain registered via an A record can still publish SPF. Asserting
+	// "no SPF records were observed" in that case reproduces the same
+	// prose-contradicts-metadata defect this task exists to remove.
 	return createFinding(
 		'shadow_domains',
 		'Shadow domain registered, records not observed',
 		'info',
-		`${variant} is registered but no NS, MX or SPF records were observed during this scan.`,
+		hasSpf
+			? `${variant} is registered and publishes an SPF record, but no nameserver or mail records were observed during this scan.`
+			: `${variant} is registered but no nameserver, mail or SPF records were observed during this scan.`,
 		{ ...meta, registrationState: 'registered', confidence: 'heuristic' },
 	);
 }
