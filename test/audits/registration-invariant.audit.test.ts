@@ -36,14 +36,24 @@ describe('registration invariants (audit)', () => {
 			return createDohResponse([], []);
 		});
 
-		const { checkShadowDomains } = await import('../../src/tools/check-shadow-domains');
-		const { canClaimUnregistered } = await import('../../src/tools/check-shadow-domains');
+		const { checkShadowDomains, canClaimUnregistered } = await import('../../src/tools/check-shadow-domains');
 		const result = await checkShadowDomains('bnz.co.nz');
 
 		for (const f of result.findings) {
 			if (!UNREGISTERED_TITLES.has(f.title)) continue;
 			const m = (f.metadata ?? {}) as { ns?: string[]; mx?: string[]; hasSpf?: boolean };
 			expect(canClaimUnregistered({ ns: m.ns ?? [], mx: m.mx ?? [], hasSpf: m.hasSpf === true })).toBe(true);
+		}
+
+		// A genuine NXDOMAIN (bnz.kiwi, routed above) IS a parsed authoritative
+		// answer, so 'deterministic' is the correct confidence here. This scenario
+		// always produces exactly one such finding, so the guard below is not
+		// theatre — it fails loudly if a future regression stops emitting it,
+		// rather than letting the loop below pass vacuously over zero elements.
+		const unregistered = result.findings.filter((f) => f.title === 'Brand variant unregistered');
+		expect(unregistered.length).toBeGreaterThan(0);
+		for (const f of unregistered) {
+			expect((f.metadata as { confidence?: string } | undefined)?.confidence).toBe('deterministic');
 		}
 	});
 
@@ -57,18 +67,48 @@ describe('registration invariants (audit)', () => {
 		const result = await checkShadowDomains('bnz.co.nz');
 
 		// A FAILED/ambiguous lookup must never inherit the 'deterministic' default.
+		// (This mock has no NXDOMAIN branch, so no 'Brand variant unregistered'
+		// finding is ever produced here — that pairing is asserted in the first
+		// test above, against a scenario that actually produces one.)
 		const unknownFindings = result.findings.filter((f) => f.title === 'Brand variant registration unknown');
 		expect(unknownFindings.length).toBeGreaterThan(0);
 		for (const f of unknownFindings) {
 			const declared = (f.metadata as { confidence?: string } | undefined)?.confidence;
 			expect(ABSENCE_CONFIDENCE.has(declared ?? 'deterministic')).toBe(true);
 		}
+	});
 
-		// A genuine NXDOMAIN IS a parsed authoritative answer, so 'deterministic'
-		// is correct there — asserted separately so the two cases cannot be
-		// conflated into one permissive set.
-		for (const f of result.findings.filter((f) => f.title === 'Brand variant unregistered')) {
-			expect((f.metadata as { confidence?: string } | undefined)?.confidence).toBe('deterministic');
+	it('the Phase-2 registered-but-no-records fallthrough declares heuristic confidence', async () => {
+		// Mirrors test/check-shadow-domains.spec.ts's "never emits an unregistered
+		// finding alongside observed records" mock shape: NS answers only for the
+		// primary domain (empty for every variant), so resolveRegistration
+		// escalates to A — which IS present — and reports `registered` with
+		// `ns: []`. TXT answers an SPF record for every queried name, including
+		// the `_dmarc.<variant>` probe, whose value doesn't start with
+		// 'v=dmarc1' and so contributes no DMARC policy. That combination reaches
+		// classifyVariant's final fallthrough: registered (via A evidence), but
+		// with no NS and no MX observed at the detail-probe stage — the exact
+		// shape that emits 'Shadow domain registered, records not observed' with
+		// `confidence: 'heuristic'` declared in its metadata
+		// (src/tools/check-shadow-domains.ts:389).
+		routeAll((name, type) => {
+			if (type === 'NS') {
+				return name === 'bnz.co.nz'
+					? createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.bnz.co.nz.' }])
+					: createDohResponse([], []);
+			}
+			if (type === 'A') return createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '203.0.113.10' }]);
+			if (type === 'TXT') return createDohResponse([{ name, type: 16 }], [{ name, type: 16, TTL: 300, data: '"v=spf1 mx -all"' }]);
+			return createDohResponse([], []);
+		});
+
+		const { checkShadowDomains } = await import('../../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		const fallthrough = result.findings.filter((f) => f.title === 'Shadow domain registered, records not observed');
+		expect(fallthrough.length).toBeGreaterThan(0);
+		for (const f of fallthrough) {
+			expect((f.metadata as { confidence?: string } | undefined)?.confidence).toBe('heuristic');
 		}
 	});
 });
