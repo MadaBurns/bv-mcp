@@ -37,8 +37,16 @@ export interface BaselineViolation {
 /** Result of comparing one scan against one baseline. */
 export interface BaselineResult {
 	domain: string;
-	passed: boolean;
+	/**
+	 * `true` = every evaluated rule met. `false` = at least one violated.
+	 * `null` = INCONCLUSIVE: at least one requested rule could not be evaluated
+	 * because the scan produced no measurement. A policy gate must treat `null`
+	 * as "re-run", never as a pass and never as a fail.
+	 */
+	passed: boolean | null;
 	violations: BaselineViolation[];
+	/** Rules the caller requested that could not be evaluated (unmeasured scan). */
+	inconclusiveRules: string[];
 	checkedRules: number;
 	scoringProfile?: string;
 	timestamp: string;
@@ -85,17 +93,20 @@ function dmarcEnforced(scan: ScanDomainResult): boolean {
 /** Compare a scan result against a policy baseline. */
 export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline): BaselineResult {
 	const violations: BaselineViolation[] = [];
+	const inconclusiveRules: string[] = [];
 	let checkedRules = 0;
 
-	// An ungraded scan carries no grade/score to evaluate, so the rule is SKIPPED rather
-	// than evaluated against a null. Coercion here fails in OPPOSITE directions on the same
-	// scan — `GRADE_ORDER.indexOf(null)` is -1 so `gradeWorseThan` silently PASSES, while
-	// `null < 50` coerces to `0 < 50` and FAILS — meaning whichever rule the caller happened
-	// to configure decided the verdict of a CI/CD policy gate. Skipping is not yet sufficient
-	// (a skipped rule still yields `passed: true`); the explicit inconclusive verdict lands
-	// in a follow-up task.
+	// An ungraded scan carries no grade/score to evaluate, so the rule is recorded as
+	// INCONCLUSIVE rather than evaluated against a null. Coercion here fails in OPPOSITE
+	// directions on the same scan — `GRADE_ORDER.indexOf(null)` is -1 so `gradeWorseThan`
+	// silently PASSES, while `null < 50` coerces to `0 < 50` and FAILS — meaning whichever
+	// rule the caller happened to configure decided the verdict of a CI/CD policy gate.
+	// Merely skipping is not sufficient either: a skipped rule still yields `passed: true`,
+	// which a pipeline testing `passed === true` reads as "policy met".
 	if (baseline.grade !== undefined) {
-		if (scan.score.grade !== null) {
+		if (scan.score.grade === null) {
+			inconclusiveRules.push('grade');
+		} else {
 			checkedRules++;
 			if (gradeWorseThan(scan.score.grade, baseline.grade)) {
 				violations.push({
@@ -109,7 +120,9 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 	}
 
 	if (baseline.score !== undefined) {
-		if (scan.score.overall !== null) {
+		if (scan.score.overall === null) {
+			inconclusiveRules.push('score');
+		} else {
 			checkedRules++;
 			if (scan.score.overall < baseline.score) {
 				violations.push({
@@ -176,8 +189,12 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 
 	return {
 		domain: scan.domain,
-		passed: violations.length === 0,
+		// An unevaluatable rule poisons the whole verdict: reporting `passed: true`
+		// because the failing rule was skipped is exactly the confident-output-from-
+		// incomplete-measurement pathology this change exists to remove.
+		passed: inconclusiveRules.length > 0 ? null : violations.length === 0,
 		violations,
+		inconclusiveRules,
 		checkedRules,
 		scoringProfile: scan.context?.profile,
 		timestamp: new Date().toISOString(),
@@ -186,10 +203,13 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 
 /** Format baseline result as readable markdown text for MCP clients. */
 export function formatBaselineResult(result: BaselineResult, format: OutputFormat = 'full'): string {
+	const verdict = result.passed === null ? 'INCONCLUSIVE' : result.passed ? 'PASS' : 'FAIL';
+
 	if (format === 'compact') {
-		const lines = [
-			`Baseline: ${result.domain} — ${result.passed ? 'PASS' : 'FAIL'} (${result.violations.length}/${result.checkedRules} violated)`,
-		];
+		const lines = [`Baseline: ${result.domain} — ${verdict} (${result.violations.length}/${result.checkedRules} violated)`];
+		if (result.inconclusiveRules.length > 0) {
+			lines.push(`- not evaluated (domain not measured): ${result.inconclusiveRules.join(', ')}`);
+		}
 		for (const v of result.violations) {
 			lines.push(`- ${v.rule}: expected ${v.expected}, got ${v.actual}`);
 		}
@@ -199,13 +219,16 @@ export function formatBaselineResult(result: BaselineResult, format: OutputForma
 	const lines: string[] = [];
 
 	lines.push(`## Baseline Comparison: ${result.domain}`);
-	lines.push(`**Result:** ${result.passed ? 'PASS' : 'FAIL'}`);
+	lines.push(`**Result:** ${verdict}`);
 	lines.push(`**Rules checked:** ${result.checkedRules}`);
 	lines.push(`**Violations:** ${result.violations.length}`);
+	if (result.inconclusiveRules.length > 0) {
+		lines.push(`**Not evaluated (domain was not measured):** ${result.inconclusiveRules.join(', ')}`);
+	}
 	lines.push('');
 
 	if (result.violations.length === 0) {
-		lines.push('All baseline rules met.');
+		lines.push(result.passed === null ? 'No verdict: one or more rules could not be evaluated.' : 'All baseline rules met.');
 		return lines.join('\n');
 	}
 

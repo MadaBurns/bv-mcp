@@ -1349,9 +1349,13 @@ export async function handleToolsCall(
 					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
 					const scan = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					const result = compareBaseline(scan, baseline);
-					logResult = result.passed ? 'pass' : 'fail';
+					// `passed === null` is the third state (a rule the scan could not measure).
+					// Collapsing it to 'fail' via a boolean test would misreport an unmeasured
+					// domain as a policy breach in the analytics/log stream.
+					const baselineStatus = result.passed === null ? 'inconclusive' : result.passed ? 'pass' : 'fail';
+					logResult = baselineStatus;
 					logDetails = result;
-					logToolSuccess({ ...ctx(), status: result.passed ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					logToolSuccess({ ...ctx(), status: baselineStatus, logResult, logDetails, severity: 'info' });
 					return buildToolResult(formatBaselineResult(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'generate': {

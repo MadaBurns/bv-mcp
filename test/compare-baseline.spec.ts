@@ -175,6 +175,51 @@ describe('compareBaseline', () => {
 		expect(result.passed).toBe(false);
 		expect(result.violations).toContainEqual(expect.objectContaining({ rule: 'max_critical_findings', expected: 0, actual: 2 }));
 	});
+
+	it('returns an inconclusive verdict — never pass, never fail — for an ungraded scan', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const ungradedScan: any = {
+			domain: 'never-measured.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'does not resolve' },
+			checks: [],
+			maturity: { stage: 0, label: 'Does not resolve', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		};
+
+		const result = compareBaseline(ungradedScan, { score: 50, grade: 'B' });
+
+		// The whole point of R7: `null < 50` is true in JS, so the pre-fix code
+		// FAILED an unmeasured domain on the score rule while silently PASSING it
+		// on the grade rule. Neither verdict is permitted now.
+		expect(result.passed).toBeNull();
+		expect(result.violations.filter((v) => v.rule === 'score')).toHaveLength(0);
+		expect(result.violations.filter((v) => v.rule === 'grade')).toHaveLength(0);
+		expect(result.inconclusiveRules).toContain('score');
+		expect(result.inconclusiveRules).toContain('grade');
+	});
+
+	it('still passes and still fails a graded scan exactly as before', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const gradedScan = (overall: number, grade: string): any => ({
+			domain: 'measured.example',
+			score: { overall, grade, categoryScores: {}, findings: [], summary: 'ok' },
+			checks: [],
+			maturity: { stage: 2, label: 'Baseline', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		});
+
+		expect(compareBaseline(gradedScan(90, 'A'), { score: 50 }).passed).toBe(true);
+		const failed = compareBaseline(gradedScan(30, 'F'), { score: 50 });
+		expect(failed.passed).toBe(false);
+		expect(failed.violations.map((v) => v.rule)).toContain('score');
+		expect(failed.inconclusiveRules).toEqual([]);
+	});
 });
 
 describe('formatBaselineResult', () => {
@@ -187,6 +232,7 @@ describe('formatBaselineResult', () => {
 				{ rule: 'grade', message: 'Grade F is below minimum B', expected: 'B', actual: 'F' },
 				{ rule: 'require_spf', message: 'SPF not detected', expected: 'present', actual: 'missing' },
 			],
+			inconclusiveRules: [],
 			checkedRules: 5,
 			scoringProfile: 'mail_enabled',
 			timestamp: '2026-01-01T00:00:00Z',
@@ -199,6 +245,96 @@ describe('formatBaselineResult', () => {
 		expect(compact).toContain('expected B, got F');
 		expect(compact).not.toContain('##');
 		expect(compact).not.toContain('### Violations');
+	});
+
+	it('renders the inconclusive verdict in prose rather than PASS or FAIL', async () => {
+		const { compareBaseline, formatBaselineResult } = await import('../src/tools/compare-baseline');
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const ungradedScan: any = {
+			domain: 'never-measured.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'does not resolve' },
+			checks: [],
+			maturity: { stage: 0, label: 'Does not resolve', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		};
+		const text = formatBaselineResult(compareBaseline(ungradedScan, { score: 50 }), 'full');
+		expect(text).toContain('INCONCLUSIVE');
+		expect(text).not.toContain('**Result:** PASS');
+		expect(text).not.toContain('**Result:** FAIL');
+		// Names WHICH rule went unevaluated, and never claims the rules were met —
+		// "All baseline rules met." on a domain that was never resolved is the same
+		// confident-output-from-nothing this change removes.
+		expect(text).toContain('score');
+		expect(text).not.toContain('All baseline rules met.');
+	});
+
+	it('renders the inconclusive verdict in compact mode too — the format interactive clients receive', async () => {
+		const { compareBaseline, formatBaselineResult } = await import('../src/tools/compare-baseline');
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const ungradedScan: any = {
+			domain: 'never-measured.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'does not resolve' },
+			checks: [],
+			maturity: { stage: 0, label: 'Does not resolve', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		};
+		const compact = formatBaselineResult(compareBaseline(ungradedScan, { score: 50, grade: 'B' }), 'compact');
+
+		expect(compact).toContain('INCONCLUSIVE');
+		expect(compact).not.toContain('PASS');
+		expect(compact).not.toContain('FAIL');
+		expect(compact).toContain('not evaluated (domain not measured): grade, score');
+	});
+});
+
+/**
+ * The sibling defect this change must not repeat: `map_compliance` had its PROSE
+ * corrected while its structured payload kept shipping a fabricated verdict to
+ * every machine consumer. `compare_baseline` exists to be read by CI, so the
+ * inconclusive state has to survive the serialization boundary — `undefined`
+ * would be silently dropped by `JSON.stringify`, leaving a CI gate unable to
+ * distinguish "not measured" from "field absent".
+ */
+describe('compare_baseline structured payload', () => {
+	it('carries the inconclusive verdict into structuredContent and the STRUCTURED_RESULT comment', async () => {
+		const { compareBaseline, formatBaselineResult } = await import('../src/tools/compare-baseline');
+		const { buildToolResult } = await import('../src/handlers/tool-formatters');
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const ungradedScan: any = {
+			domain: 'never-measured.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'does not resolve' },
+			checks: [],
+			maturity: { stage: 0, label: 'Does not resolve', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		};
+
+		const result = compareBaseline(ungradedScan, { score: 50, grade: 'B' });
+		const wire = buildToolResult(formatBaselineResult(result, 'full'), result, 'full');
+
+		// MCP-standard machine channel.
+		expect(wire.structuredContent?.passed).toBeNull();
+		expect(wire.structuredContent?.inconclusiveRules).toEqual(['grade', 'score']);
+
+		// Legacy comment channel — assert on the SERIALIZED text, because an
+		// `undefined` verdict would vanish here while still reading as "not true"
+		// in memory.
+		const comment = wire.content.find((c) => c.text.includes('STRUCTURED_RESULT'));
+		expect(comment).toBeDefined();
+		expect(comment?.text).toContain('"passed":null');
+		expect(comment?.text).toContain('"inconclusiveRules":["grade","score"]');
+
+		// Control — a measured scan still serializes a real boolean verdict.
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const gradedScan: any = { ...ungradedScan, score: { ...ungradedScan.score, overall: 90, grade: 'A' } };
+		const gradedWire = buildToolResult('', compareBaseline(gradedScan, { score: 50, grade: 'B' }), 'full');
+		expect(gradedWire.structuredContent?.passed).toBe(true);
+		expect(gradedWire.structuredContent?.inconclusiveRules).toEqual([]);
 	});
 });
 
