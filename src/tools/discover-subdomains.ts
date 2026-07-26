@@ -45,7 +45,16 @@ export const DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS = 24_000;
 const CT_SOURCE_TIMEOUT_MS = 10_000;
 
 /**
- * Retries per direct CT source on a transient outcome (timeout / 5xx / network).
+ * Per-attempt timeout for the Certspotter fallback (ms). Tighter than crt.sh's:
+ * it is a plain JSON API that normally answers in well under a second, so a
+ * shorter bound keeps a full failover pass comfortably inside the ~24s handler
+ * budget instead of letting one slow fallback consume it.
+ */
+const CERTSPOTTER_TIMEOUT_MS = 8_000;
+
+/**
+ * Retry PASSES over the whole source list on a transient outcome (timeout / 5xx
+ * / network). A pass retries sources only after every source has been tried once.
  * One retry is enough to ride out a single cold-query blip on crt.sh (Postgres-
  * backed, frequently slow) without blowing the synchronous budget — every
  * attempt is still gated by the caller's `deadlineMs`.
@@ -612,35 +621,47 @@ function delayWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
 }
 
 /**
- * Query the ordered direct public CT sources (crt.sh → Certspotter) with a
- * bounded per-source retry, per-source health logging, and deadline gating.
- * Stops at the FIRST source that responds authoritatively:
+ * Query the direct public CT sources with per-source health logging and deadline
+ * gating. Stops at the FIRST source that responds authoritatively:
  *   - `ok`    → real data; return it.
  *   - `empty` → a genuine "no subdomains" answer; return available-but-empty.
- * A transient outcome (timeout / 5xx / network) retries the same source once,
- * then falls through to the next. `available:false` means every source failed —
- * the caller then decides between last-known-good and an explicit outage error.
  *
- * NOTE: this is sequential first-authoritative-wins, not a fan-out+merge. Under
- * the ~24s synchronous budget a merge (querying every source) would blow the
- * deadline; failover to the first responding source is what the budget allows.
+ * Ordering is **failover-first, retry-second**: pass 1 tries every source once
+ * (crt.sh → Certspotter) before any source is retried. Re-asking a source that
+ * just timed out is the worst use of a tight budget — it costs another full
+ * timeout and delays the source that would actually rescue the caller. Only when
+ * every source has failed and budget remains do we spend it on a retry pass.
+ *
+ * `available:false` means every source failed — the caller then decides between
+ * last-known-good and an explicit outage error.
+ *
+ * NOTE: sequential first-authoritative-wins, not a fan-out+merge. Under the ~24s
+ * synchronous budget, querying every source to merge results would blow the
+ * deadline; failing over to the first responder is what the budget allows.
  */
 async function queryDirectSources(
 	domain: string,
 	options?: DiscoverSubdomainsOptions,
 ): Promise<{ available: boolean; entries: CrtShEntry[] }> {
-	const sources: Array<{ name: string; fetch: (d: string, signal: AbortSignal) => Promise<SourceResult> }> = [
-		{ name: 'crtsh', fetch: fetchCrtShEntries },
-		{ name: 'certspotter', fetch: fetchCertspotterEntries },
+	// Per-source timeouts differ by backend: crt.sh is Postgres-backed and often
+	// slow on a cold query, while Certspotter is a fast JSON API — giving the
+	// fallback a tighter bound keeps both inside one budget.
+	const sources: Array<{ name: string; timeoutMs: number; fetch: (d: string, signal: AbortSignal) => Promise<SourceResult> }> = [
+		{ name: 'crtsh', timeoutMs: CT_SOURCE_TIMEOUT_MS, fetch: fetchCrtShEntries },
+		{ name: 'certspotter', timeoutMs: CERTSPOTTER_TIMEOUT_MS, fetch: fetchCertspotterEntries },
 	];
 
-	for (const source of sources) {
-		for (let attempt = 0; attempt <= CT_SOURCE_MAX_RETRIES; attempt++) {
+	for (let pass = 0; pass <= CT_SOURCE_MAX_RETRIES; pass++) {
+		// Backoff applies BETWEEN passes, not between sources — failover should be
+		// immediate, only a repeat attempt at the same source needs to back off.
+		if (pass > 0) await delayWithSignal(CT_SOURCE_RETRY_BACKOFF_MS, options?.signal);
+
+		for (const source of sources) {
 			// Never start an attempt we can't finish inside the budget.
-			if (deadlineExceeded(options) || !hasBudgetFor(options, CT_SOURCE_TIMEOUT_MS)) {
+			if (deadlineExceeded(options) || !hasBudgetFor(options, source.timeoutMs)) {
 				return { available: false, entries: [] };
 			}
-			const composed = composeAbortSignal(CT_SOURCE_TIMEOUT_MS, options?.signal);
+			const composed = composeAbortSignal(source.timeoutMs, options?.signal);
 			let res: SourceResult;
 			try {
 				res = await source.fetch(domain, composed.signal);
@@ -650,10 +671,6 @@ async function queryDirectSources(
 			logCtSource(domain, source.name, res.outcome);
 			if (res.outcome === 'ok') return { available: true, entries: res.entries };
 			if (res.outcome === 'empty') return { available: true, entries: [] };
-			// Transient — retry the same source once (with backoff) before the next.
-			if (attempt < CT_SOURCE_MAX_RETRIES) {
-				await delayWithSignal(CT_SOURCE_RETRY_BACKOFF_MS, options?.signal);
-			}
 		}
 	}
 	return { available: false, entries: [] };

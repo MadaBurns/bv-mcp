@@ -72,6 +72,33 @@ describe('discoverSubdomains — multi-source resilience', () => {
 		expect(result.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'secure.example.com']);
 	});
 
+	// Ordering guard: re-asking a source that just timed out costs another full
+	// timeout and delays the source that could actually answer. Every source must
+	// be tried ONCE before any source is retried — a same-source retry ahead of
+	// failover previously pushed a caller past its 15s budget.
+	it('tries every source once before retrying any source', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const order: string[] = [];
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) {
+				order.push('crtsh');
+				return Response.json({}, { status: 503 });
+			}
+			if (s.includes('certspotter.com')) {
+				order.push('certspotter');
+				return Response.json({}, { status: 503 });
+			}
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+
+		await discoverSubdomains('example.com');
+
+		// First pass must be one attempt per source, in failover order — NOT
+		// ['crtsh','crtsh',...].
+		expect(order.slice(0, 2)).toEqual(['crtsh', 'certspotter']);
+	});
+
 	it('emits a per-source health log line for each attempted CT source', async () => {
 		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
 		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
