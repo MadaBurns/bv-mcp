@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetAllRateLimits, resetGlobalDailyLimit, resetConcurrencyLimits } from '../src/lib/rate-limiter';
 import { resetSessions } from '../src/lib/session';
 import type { ExecuteMcpRequestOptions } from '../src/mcp/execute';
@@ -31,9 +31,14 @@ beforeEach(() => {
 });
 
 afterEach(() => {
-	// vi.restoreAllMocks and vi.resetModules intentionally omitted here because
-	// we use dynamic imports inside each test for isolation (matching the existing
-	// mcp-execute.spec.ts pattern), but we don't mock modules across tests.
+	// REQUIRED, not optional: tests below use vi.doMock('../src/mcp/dispatch'),
+	// and doMock only affects imports resolved AFTER it. Earlier tests in this
+	// file already import ../src/mcp/execute, so without resetModules the cached
+	// graph (holding the REAL dispatch) wins and those mocks silently no-op —
+	// the tool then executes for real against unmocked fetch, making the test
+	// depend on live CT-source wall-clock timing. Matches mcp-execute.spec.ts.
+	vi.restoreAllMocks();
+	vi.resetModules();
 });
 
 // ---------------------------------------------------------------------------
@@ -165,7 +170,6 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 
 	it('does NOT return HTTP 403 for authenticated developer-tier caller hitting discover_subdomains', async () => {
 		// developer tier is allowed; mock dispatch to succeed
-		const { vi } = await import('vitest');
 		vi.doMock('../src/mcp/dispatch', () => ({
 			dispatchMcpMethod: vi.fn().mockResolvedValue({
 				kind: 'success',
@@ -213,7 +217,6 @@ describe('executeMcpRequest — paid-gated tool enforcement', () => {
 	it('does NOT return HTTP 403 for unauthenticated caller hitting non-gated check_spf', async () => {
 		// check_spf is a regular tool; the call will go through normal quota checks
 		// and eventually hit dispatch. Mock dispatch to succeed.
-		const { vi } = await import('vitest');
 		vi.doMock('../src/lib/rate-limiter', async (importOriginal) => {
 			const actual = await importOriginal<typeof import('../src/lib/rate-limiter')>();
 			return {
