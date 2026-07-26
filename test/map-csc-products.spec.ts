@@ -407,3 +407,62 @@ describe('evaluateCscProducts: a total outage (all checks attempted, none comple
 		expect(dmarc.priority).toBe('high');
 	});
 });
+
+/**
+ * Round 6c, N2: `unassessedScanProduct` used to classify by comparing the
+ * `caveat` STRING against `UNASSESSED_CSC_NOTE` identity, with "anything
+ * else" silently defaulting to the transient branch. That meant a renamed
+ * `UNASSESSED_CSC_NOTE` constant, an edited `buildAllTransientCscNote`
+ * wording, or a third failure-mode string introduced later would have
+ * misclassified with no compiler or test signal. It now takes a
+ * `caveatKind: CaveatKind | null` parameter instead and never reads prose at
+ * all — these tests pin that decoupling directly, at the unit responsible
+ * for the classification, independent of whatever `evaluateCscProducts`
+ * happens to compute for `caveat`.
+ */
+describe('unassessedScanProduct — classifies by caveatKind, never by comparing the caveat string (round 6c, N2 pin)', () => {
+	it('caveatKind "all_transient" always reads as attempted-none-completed, regardless of any caveat prose', async () => {
+		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const rec = unassessedScanProduct('managed_dmarc', 'DMARC', 'all_transient');
+		expect(rec.justifyingGap).toContain('checks attempted, none completed');
+		expect(rec.justifyingGap.toLowerCase()).not.toContain('no checks ran');
+		expect(rec.recommended).toBe(false);
+		expect(rec.priority).toBe('none');
+	});
+
+	it('caveatKind "never_ran" always reads as no-checks-ran, regardless of any caveat prose', async () => {
+		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const rec = unassessedScanProduct('digital_certificates', 'TLS/SSL', 'never_ran');
+		expect(rec.justifyingGap).toContain('no checks ran');
+		expect(rec.justifyingGap).not.toContain('attempted, none completed');
+	});
+
+	it('caveatKind null (defensive — should not occur for a real unassessed report) still classifies as never-ran, not transient', async () => {
+		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const rec = unassessedScanProduct('dnssec_management', 'DNSSEC', null);
+		expect(rec.justifyingGap).toContain('no checks ran');
+	});
+
+	it('PIN: a renamed/edited caveat constant does not flip classification — the old string-identity code would have misclassified it', async () => {
+		const { unassessedScanProduct, UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+
+		// The pre-fix implementation, reconstructed here to demonstrate the bug it
+		// had: `caveat === UNASSESSED_CSC_NOTE ? never-ran : transient` (anything
+		// that isn't an EXACT match defaults to transient). A wording edit to the
+		// never-ran constant — e.g. adding a trailing space, rephrasing a clause —
+		// breaks that exact-match test and silently flips a never-ran domain to
+		// read as a transient outage.
+		const oldStyleIsNeverRan = (caveat: string | null): boolean => caveat === UNASSESSED_CSC_NOTE;
+		const renamedNeverRanWording = `${UNASSESSED_CSC_NOTE} `; // trailing space: a realistic, easy-to-miss edit
+
+		// The OLD code misclassifies the renamed wording as transient:
+		expect(oldStyleIsNeverRan(renamedNeverRanWording)).toBe(false);
+
+		// The NEW code is immune — `unassessedScanProduct` takes `caveatKind`
+		// directly and never compares against the constant's current text at all,
+		// so this exact renamed-wording scenario cannot reach it:
+		const rec = unassessedScanProduct('managed_dmarc', 'DMARC', 'never_ran');
+		expect(rec.justifyingGap).toContain('no checks ran');
+		expect(rec.justifyingGap.toLowerCase()).not.toContain('attempted, none completed');
+	});
+});

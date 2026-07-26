@@ -19,6 +19,18 @@ import { formatScoreGrade, hasCompletedEvidence } from '../lib/ungraded-display'
 
 export type CscProductKey = 'csc_multilock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
 
+/**
+ * The STRUCTURAL twin of `caveat`. `caveat` is prose meant to be read; `caveatKind`
+ * is the machine-readable reason a classifier should branch on. Before this existed,
+ * `unassessedScanProduct` (here) and `isNeverRanCaveat` (`prioritize_csc_leads`)
+ * classified state by comparing the `caveat` STRING against `UNASSESSED_CSC_NOTE`
+ * identity, with "anything else" silently defaulting to the transient branch — a
+ * renamed constant, an edited wording, or a third failure mode introduced later
+ * would misclassify with no compiler or test signal. `caveatKind` cannot drift from
+ * its own meaning the way a string comparison can.
+ */
+export type CaveatKind = 'never_ran' | 'all_transient';
+
 /** Sales-upsell priority — NOT a security severity. */
 export type CscPriority = 'high' | 'medium' | 'low' | 'none';
 
@@ -67,6 +79,14 @@ export interface CscProductReport {
 	 * "no checks ran" text before this was made required.
 	 */
 	caveat: string | null;
+	/**
+	 * REQUIRED — the STRUCTURAL discriminant paired with `caveat`: `null` exactly
+	 * when `caveat` is `null` (`assessed: true`), `'never_ran'` or `'all_transient'`
+	 * otherwise. Classifiers (`unassessedScanProduct` here,
+	 * `prioritize_csc_leads`' render helpers) MUST branch on this field, never on
+	 * `caveat`'s string content — see the type doc on {@link CaveatKind}.
+	 */
+	caveatKind: CaveatKind | null;
 	lockPosture: LockPosture | null;
 	/**
 	 * Always the four products in fixed order. When `assessed` is `false` the three
@@ -165,17 +185,21 @@ function evalScanProduct(
  * strength of non-observation. This states the absence of evidence instead of
  * pricing it.
  *
- * `caveat` (the SAME producer-computed reason carried on `CscProductReport.caveat`)
- * picks the wording: "no checks ran" is false — and this exact text, ending up
- * on the `recommendations[].justifyingGap` WIRE field even though `formatCscProducts`
- * never prints it to prose — for a total-outage scan where N checks WERE attempted.
+ * `caveatKind` (the STRUCTURAL discriminant carried on `CscProductReport.caveatKind`
+ * — see its type doc) picks the wording: "no checks ran" is false — and this exact
+ * text, ending up on the `recommendations[].justifyingGap` WIRE field even though
+ * `formatCscProducts` never prints it to prose — for a total-outage scan where N
+ * checks WERE attempted. Classifying on `caveatKind` rather than comparing the
+ * `caveat` STRING means a renamed/edited caveat wording cannot silently flip which
+ * branch this takes. Exported for direct unit testing of that decoupling — see
+ * the round-6c pin test in `test/map-csc-products.spec.ts`.
  */
-function unassessedScanProduct(
+export function unassessedScanProduct(
 	product: Exclude<CscProductKey, 'csc_multilock'>,
 	concern: string,
-	caveat: string | null,
+	caveatKind: CaveatKind | null,
 ): CscProductRecommendation {
-	const reason = caveat !== null && caveat !== UNASSESSED_CSC_NOTE ? 'checks attempted, none completed' : 'no checks ran';
+	const reason = caveatKind === 'all_transient' ? 'checks attempted, none completed' : 'no checks ran';
 	return {
 		product,
 		productName: CSC_PRODUCT_NAMES[product],
@@ -207,6 +231,7 @@ export function evaluateCscProducts(
 	// `evalScanProduct` priced an upsell off `passed: false` + a "check error"
 	// finding manufactured by the transient failure, not off a real gap.
 	const assessed = hasCompletedEvidence(checkResults);
+	const caveatKind: CaveatKind | null = assessed ? null : checkResults.length === 0 ? 'never_ran' : 'all_transient';
 	const caveat = assessed ? null : checkResults.length === 0 ? UNASSESSED_CSC_NOTE : buildAllTransientCscNote(checkResults.length);
 
 	// MultiLock is deliberately NOT gated on `assessed`: it reads the RDAP lock
@@ -221,21 +246,21 @@ export function evaluateCscProducts(
 					failing: 'DMARC present but not passing',
 					absent: 'DMARC not observed',
 				})
-			: unassessedScanProduct('managed_dmarc', 'DMARC', caveat),
+			: unassessedScanProduct('managed_dmarc', 'DMARC', caveatKind),
 		assessed
 			? evalScanProduct('digital_certificates', byCategory.get('ssl'), {
 					passing: 'TLS/SSL configuration healthy',
 					failing: 'TLS/SSL issues detected',
 					absent: 'TLS/SSL not observed',
 				})
-			: unassessedScanProduct('digital_certificates', 'TLS/SSL', caveat),
+			: unassessedScanProduct('digital_certificates', 'TLS/SSL', caveatKind),
 		assessed
 			? evalScanProduct('dnssec_management', byCategory.get('dnssec'), {
 					passing: 'DNSSEC enabled',
 					failing: 'DNSSEC not enabled',
 					absent: 'DNSSEC not observed',
 				})
-			: unassessedScanProduct('dnssec_management', 'DNSSEC', caveat),
+			: unassessedScanProduct('dnssec_management', 'DNSSEC', caveatKind),
 	];
 
 	return {
@@ -244,6 +269,7 @@ export function evaluateCscProducts(
 		grade,
 		assessed,
 		caveat,
+		caveatKind,
 		lockPosture,
 		recommendations,
 		recommendedCount: recommendations.filter((r) => r.recommended).length,

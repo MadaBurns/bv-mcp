@@ -2,7 +2,7 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Bucket } from '../src/lib/brand-classification';
-import type { CscProductKey, CscPriority, CscProductReport, CscProductRecommendation } from '../src/tools/map-csc-products';
+import type { CscProductKey, CscPriority, CscProductReport, CscProductRecommendation, CaveatKind } from '../src/tools/map-csc-products';
 import type { CheckResult } from '../src/lib/scoring';
 import { bucketFromClassification, computeGapSeverity, computePortfolioGrade, rankCscLeads, formatCscLeads, extractDiscoveredCandidates } from '../src/tools/prioritize-csc-leads';
 import type { OwnershipBucket, CscLeadEntry } from '../src/tools/prioritize-csc-leads';
@@ -30,6 +30,7 @@ function makeReport(domain: string, score: number | null, grade: string | null, 
 		// unobserved" shape that defect lives in.
 		assessed: true,
 		caveat: null,
+		caveatKind: null,
 		lockPosture: null,
 		recommendations,
 		recommendedCount: recommendations.filter((r) => r.recommended).length,
@@ -952,5 +953,84 @@ describe('prioritize_csc_leads — a total outage (all checks attempted, none co
 		expect(lead.assessed).toBe(true);
 		expect(lead.caveat).toBeNull();
 		expect(lead.recommendedCscProducts).toContain('managed_dmarc');
+	});
+});
+
+/**
+ * Round 6c, N2: `isNeverRanCaveat` (the pre-fix name) classified a lead by
+ * comparing `caveat` against `UNASSESSED_CSC_NOTE` STRING identity, with
+ * "anything else" defaulting to the transient branch. `isNeverRanKind` (the
+ * fix) reads the STRUCTURAL `caveatKind` field instead — these tests build
+ * `CscProductReport` fixtures where `caveat` (the prose) and `caveatKind`
+ * (the discriminant) deliberately DISAGREE, proving the render helpers follow
+ * `caveatKind`, never the prose. A real producer can never produce such a
+ * disagreement — only a hand-built fixture can isolate the classifier this
+ * way, which is the point: it proves the classifier no longer trusts prose at
+ * all, not merely that today's two real prose strings happen to differ.
+ */
+describe('prioritize_csc_leads — classifies by caveatKind, never by comparing the caveat string (round 6c, N2 pin)', () => {
+	/** A CscProductReport with mismatched caveat prose vs. caveatKind — only constructible by hand. */
+	function mismatchedReport(domain: string, caveat: string, caveatKind: CaveatKind): CscProductReport {
+		return {
+			domain,
+			score: null,
+			grade: null,
+			assessed: false,
+			caveat,
+			caveatKind,
+			lockPosture: null,
+			recommendations: PRODUCT_ORDER.map((k) => rec(k, false, 'none')),
+			recommendedCount: 0,
+		};
+	}
+
+	it('PIN: caveatKind "all_transient" renders the attempted-none-completed wording even when the caveat PROSE says "no checks ran"', async () => {
+		const { rankCscLeads, formatCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		// The prose text is EXACTLY the never-ran sentence, but the structural
+		// kind says all_transient. Under the OLD string-identity code, `caveat
+		// === UNASSESSED_CSC_NOTE` would have been TRUE here (exact match),
+		// misclassifying this as never-ran. The kind-based classifier must not be
+		// fooled by prose that happens to match the constant exactly.
+		const report = mismatchedReport(
+			'mismatched-a.example',
+			'No checks ran for this domain, so no product gap could be assessed.',
+			'all_transient',
+		);
+		const leadsReport = rankCscLeads([{ report, ownershipBucket: 'unknown' }]);
+		const lead = leadsReport.rankedLeads[0];
+
+		expect(lead.caveatKind).toBe('all_transient');
+
+		// Compact mode's wording is derived ENTIRELY from caveatKind (never
+		// touches the caveat prose) — the cleanest proof the branch decision
+		// came from the structural field, not from string comparison.
+		const compact = formatCscLeads(leadsReport, 'compact');
+		expect(compact).toContain('checks attempted, none completed');
+		expect(compact).not.toMatch(/\bno checks ran\b/i);
+	});
+
+	it('PIN: caveatKind "never_ran" renders the no-checks-ran wording even when the caveat PROSE says "attempted"', async () => {
+		const { rankCscLeads, formatCscLeads, UNASSESSED_LEAD_NOTE } = await import('../src/tools/prioritize-csc-leads');
+		// The prose text here is a renamed/edited transient-style wording, but the
+		// structural kind says never_ran. Under the OLD string-identity code,
+		// `caveat === UNASSESSED_CSC_NOTE` would have been FALSE (the prose
+		// doesn't match the exact constant), and "anything else" defaulted to the
+		// TRANSIENT branch — misclassifying this as transient. The kind-based
+		// classifier must not default that way.
+		const report = mismatchedReport(
+			'mismatched-b.example',
+			'5 checks were attempted for this domain, but none of them completed (a renamed edit of the real wording).',
+			'never_ran',
+		);
+		const leadsReport = rankCscLeads([{ report, ownershipBucket: 'unknown' }]);
+		const lead = leadsReport.rankedLeads[0];
+
+		expect(lead.caveatKind).toBe('never_ran');
+
+		const compact = formatCscLeads(leadsReport, 'compact');
+		const full = formatCscLeads(leadsReport, 'full');
+		expect(compact).toContain('no checks ran');
+		expect(compact).not.toContain('checks attempted, none completed');
+		expect(full).toContain(UNASSESSED_LEAD_NOTE);
 	});
 });

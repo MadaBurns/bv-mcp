@@ -225,7 +225,15 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 	if (format === 'compact') {
 		lines.push(`Fix Plan: ${plan.domain} — ${formatScoreGrade(plan.score, plan.grade)}, ${plan.totalActions} actions`);
 		if (plan.actions.length === 0) {
-			lines.push(plan.assessed ? 'No actionable findings.' : (plan.caveat ?? UNASSESSED_FIX_PLAN_CAVEAT));
+			// `caveat` is REQUIRED on `FixPlanResult`, so the real producer
+			// (`generateFixPlan`) always states which reason applies whenever
+			// `!assessed`. Falling back to `UNASSESSED_FIX_PLAN_CAVEAT` specifically
+			// is the same silent-wrong-prose shape closed elsewhere this fix round
+			// (map_csc_products, map_compliance): a fabricated/hand-built plan with
+			// a somehow-unset `caveat` would render the never-ran-specific text
+			// even for an all-transient state. The only genuinely safe fallback
+			// here makes no specific claim.
+			lines.push(plan.assessed ? 'No actionable findings.' : (plan.caveat ?? 'This domain could not be assessed.'));
 			return lines.join('\n');
 		}
 		const maxShow = 5;
@@ -248,7 +256,11 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 
 	if (plan.actions.length === 0) {
 		// Zero actions is only good news when something was actually examined.
-		lines.push(plan.assessed ? 'No actionable findings. Domain security posture is strong.' : (plan.caveat ?? UNASSESSED_FIX_PLAN_CAVEAT));
+		// See the compact-mode fallback above for why this does NOT fall back to
+		// `UNASSESSED_FIX_PLAN_CAVEAT` specifically.
+		lines.push(
+			plan.assessed ? 'No actionable findings. Domain security posture is strong.' : (plan.caveat ?? 'This domain could not be assessed.'),
+		);
 		return lines.join('\n');
 	}
 

@@ -10,7 +10,7 @@
  */
 
 import type { Bucket } from '../lib/brand-classification';
-import type { CscProductKey, CscPriority, CscProductReport } from './map-csc-products';
+import type { CscProductKey, CscPriority, CscProductReport, CaveatKind } from './map-csc-products';
 import { evaluateCscProducts, extractLockPosture, UNASSESSED_CSC_NOTE } from './map-csc-products';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
@@ -54,6 +54,15 @@ export interface CscLead {
 	 * ended up printing the false "no checks ran" sentence.
 	 */
 	caveat: string | null;
+	/**
+	 * REQUIRED — the STRUCTURAL discriminant paired with `caveat`, threaded
+	 * straight through from `CscProductReport.caveatKind`. `null` exactly when
+	 * `assessed` is `true`. The render helpers below (`leadUnassessedNote`,
+	 * `compactUnassessedNote`, `buildReportCaveat`) MUST branch on this field,
+	 * never on `caveat`'s string content — see the type doc on `CaveatKind` in
+	 * `map_csc_products`.
+	 */
+	caveatKind: CaveatKind | null;
 	/**
 	 * Did this domain produce a gradeable SCORE? (`isGraded`.) Gates only what the
 	 * score supports: the portfolio-grade contribution and the score line.
@@ -162,15 +171,18 @@ export interface CscLeadReport {
 export const UNASSESSED_LEAD_NOTE = `${UNASSESSED_CSC_NOTE} It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.`;
 
 /**
- * True when a per-lead `caveat` is the producer's "no checks ran" reason
- * (never-ran: NXDOMAIN, broken zone) rather than its "checks were attempted
- * but none of them completed" reason (a total DoH/network outage). `null` is
- * treated as never-ran defensively — it should not occur for an unassessed
- * lead (the producer always sets a real string there), but a fabricated fixture
- * that violates the contract must not read as the transient state either.
+ * True when a per-lead `caveatKind` is the producer's never-ran reason
+ * (NXDOMAIN, broken zone) rather than its all-transient reason (a total
+ * DoH/network outage). STRUCTURAL — reads the discriminant, never the
+ * `caveat` string. `null`/`'never_ran'` both classify as never-ran; only the
+ * literal `'all_transient'` classifies as transient. A round-1 version of
+ * this compared `caveat === UNASSESSED_CSC_NOTE` by STRING IDENTITY, with
+ * "anything else" defaulting to transient — a renamed constant or a third
+ * wording introduced later would have silently misclassified. `caveatKind`
+ * cannot drift that way: it is a closed union the producer sets explicitly.
  */
-function isNeverRanCaveat(caveat: string | null): boolean {
-	return caveat === null || caveat === UNASSESSED_CSC_NOTE;
+function isNeverRanKind(caveatKind: CaveatKind | null): boolean {
+	return caveatKind !== 'all_transient';
 }
 
 /**
@@ -179,17 +191,18 @@ function isNeverRanCaveat(caveat: string | null): boolean {
  * {@link UNASSESSED_LEAD_NOTE}. Before this, EVERY unassessed lead printed "no
  * checks ran" — false for a lead whose checks were attempted and errored out
  * (a total-outage scan), which is exactly the state `map_csc_products` already
- * distinguishes via `CscProductReport.caveat`. This tool only had to start
- * reading that field.
+ * distinguishes via `CscProductReport.caveatKind`. This tool only had to start
+ * reading that field. `caveat` (the prose) is still what gets PRINTED; only the
+ * BRANCH is decided by `caveatKind`.
  */
-function leadUnassessedNote(caveat: string | null): string {
-	if (isNeverRanCaveat(caveat)) return UNASSESSED_LEAD_NOTE;
+function leadUnassessedNote(caveat: string | null, caveatKind: CaveatKind | null): string {
+	if (isNeverRanKind(caveatKind)) return UNASSESSED_LEAD_NOTE;
 	return `${caveat} It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.`;
 }
 
 /** The COMPACT-format per-lead qualifier — same distinction as {@link leadUnassessedNote}, terser. */
-function compactUnassessedNote(caveat: string | null): string {
-	return isNeverRanCaveat(caveat) ? 'no checks ran' : 'checks attempted, none completed';
+function compactUnassessedNote(caveatKind: CaveatKind | null): string {
+	return isNeverRanKind(caveatKind) ? 'no checks ran' : 'checks attempted, none completed';
 }
 
 /**
@@ -219,23 +232,25 @@ function domainCount(n: number): string {
 
 /**
  * Compose the report-level caveat from the unassessed leads' own producer
- * caveats plus the unscored-domain count, or `null` when every lead was fully
- * measured. Each clause is a statement about the REPORT.
+ * caveat KINDS plus the unscored-domain count, or `null` when every lead was
+ * fully measured. Each clause is a statement about the REPORT.
  *
- * STATE-AWARE: `unassessedCaveats` is one entry per unassessed lead (its own
- * `caveat`, threaded from `CscProductReport.caveat`), not a bare count. A
- * hardcoded "no checks ran" reason here was false whenever the exclusions were
- * actually a total-outage scan (checks attempted, none completed) — the exact
- * same defect this fix round addresses at the per-lead render sites, one level
- * up. A MIXED population (some leads never ran, others hit a transient outage)
- * states both reasons rather than picking one arbitrarily.
+ * STATE-AWARE: `unassessedKinds` is one entry per unassessed lead (its own
+ * `caveatKind`, threaded from `CscProductReport.caveatKind`), not a bare
+ * count. A hardcoded "no checks ran" reason here was false whenever the
+ * exclusions were actually a total-outage scan (checks attempted, none
+ * completed) — the exact same defect this fix round addresses at the
+ * per-lead render sites, one level up. A MIXED population (some leads never
+ * ran, others hit a transient outage) states both reasons rather than
+ * picking one arbitrarily. Classifies by the STRUCTURAL `caveatKind`, not by
+ * comparing prose strings — see {@link isNeverRanKind}.
  */
-function buildReportCaveat(unassessedCaveats: ReadonlyArray<string | null>, unscoredDomains: number): string | null {
+function buildReportCaveat(unassessedKinds: ReadonlyArray<CaveatKind | null>, unscoredDomains: number): string | null {
 	const parts: string[] = [];
-	const unassessedDomains = unassessedCaveats.length;
+	const unassessedDomains = unassessedKinds.length;
 	if (unassessedDomains > 0) {
-		const anyNeverRan = unassessedCaveats.some(isNeverRanCaveat);
-		const anyTransient = unassessedCaveats.some((c) => !isNeverRanCaveat(c));
+		const anyNeverRan = unassessedKinds.some(isNeverRanKind);
+		const anyTransient = unassessedKinds.some((k) => !isNeverRanKind(k));
 		const reason =
 			anyNeverRan && anyTransient
 				? 'some had no checks run at all, and others had checks attempted but none of them completed (transient DNS/network failure)'
@@ -392,6 +407,9 @@ export function rankCscLeads(
 			// says the SAME reason `map_csc_products` would say about the same
 			// domain. `null` exactly when `assessed` is `true`.
 			caveat: e.report.caveat,
+			// The STRUCTURAL twin, likewise threaded straight through. See the
+			// type doc on `CscLead.caveatKind`.
+			caveatKind: e.report.caveatKind,
 			graded,
 			ownershipBucket: e.ownershipBucket,
 			recommendedCscProducts: recommendedProducts(e.report),
@@ -448,7 +466,7 @@ export function rankCscLeads(
 		// report, which is what let an all-transient portfolio print the false
 		// "no checks ran" sentence.
 		caveat: buildReportCaveat(
-			unassessedLeads.map((l) => l.caveat),
+			unassessedLeads.map((l) => l.caveatKind),
 			unscoredDomains,
 		),
 		summary: {
@@ -513,7 +531,7 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 			lines.push(
 				lead.assessed
 					? `${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${lead.gapSeverity} — ${formatScoreGrade(lead.score, lead.grade)} — ${lead.recommendedCount} product(s)`
-					: `${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${UNGRADED_DISPLAY} — ${UNGRADED_DISPLAY} — ${compactUnassessedNote(lead.caveat)}`,
+					: `${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${UNGRADED_DISPLAY} — ${UNGRADED_DISPLAY} — ${compactUnassessedNote(lead.caveatKind)}`,
 			);
 		}
 		return lines.join('\n').trimEnd();
@@ -545,7 +563,7 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 		if (!lead.assessed) {
 			lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${UNGRADED_DISPLAY}`);
 			lines.push(`  - Score: ${formatScoreGrade(lead.score, lead.grade)} | Ownership: ${lead.ownershipBucket}`);
-			lines.push(`  - ${leadUnassessedNote(lead.caveat)}`);
+			lines.push(`  - ${leadUnassessedNote(lead.caveat, lead.caveatKind)}`);
 			continue;
 		}
 		lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${lead.gapSeverity}`);

@@ -417,7 +417,15 @@ export function formatCompliance(report: ComplianceReport, format: OutputFormat 
 	// alongside genuinely evaluable control results, and telling that customer
 	// "no checks ran" would itself be false.
 	const unassessed = !report.assessed;
-	const caveat = report.caveat ?? UNASSESSED_COMPLIANCE_CAVEAT;
+	// `caveat` is REQUIRED on `ComplianceReport`, so the real producer
+	// (`evaluateCompliance`) always states which reason applies whenever
+	// `!assessed`. Falling back to `UNASSESSED_COMPLIANCE_CAVEAT` specifically
+	// is the same silent-wrong-prose shape closed elsewhere this fix round
+	// (map_csc_products, generate_fix_plan): a fabricated/hand-built report
+	// with a somehow-unset `caveat` would render the never-ran-specific text
+	// even for an all-transient state. The only genuinely safe fallback here
+	// makes no specific claim.
+	const caveat = report.caveat ?? 'This domain could not be assessed.';
 
 	if (format === 'compact') {
 		lines.push(`Compliance: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}`);
