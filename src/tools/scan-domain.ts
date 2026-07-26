@@ -19,6 +19,7 @@ import {
 	type ScanScore,
 	buildCheckResult,
 	computeProfileAwareScanScore,
+	computeScanEvidence,
 	computeScanScore,
 	createFinding,
 	detectDomainContext,
@@ -238,6 +239,7 @@ function buildUnscoredResult(domain: string, checkResults: CheckResult[], reason
 			categoryScores,
 			findings,
 			summary: reason,
+			evidence: computeScanEvidence(checkResults),
 		},
 		checks: checkResults,
 		maturity: {
@@ -280,6 +282,7 @@ function buildNonResolvingResult(domain: string): ScanDomainResult {
 			categoryScores: {} as Record<CheckCategory, number>,
 			findings: [],
 			summary: reason,
+			evidence: { attempted: 0, completed: 0, ratio: 0 },
 		},
 		checks: [],
 		maturity: {
@@ -343,6 +346,7 @@ function buildDnsBrokenResult(domain: string, kind: DnsBrokenKind): ScanDomainRe
 			categoryScores: {} as Record<CheckCategory, number>,
 			findings: [],
 			summary: reason,
+			evidence: { attempted: 0, completed: 0, ratio: 0 },
 		},
 		checks: [],
 		maturity: {

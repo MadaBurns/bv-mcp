@@ -71,4 +71,19 @@ export const ScanScoreSchema = z.object({
 	categoryScores: z.record(z.string(), z.number()),
 	findings: z.array(FindingSchema),
 	summary: z.string(),
+	/**
+	 * OPTIONAL on the wire even though `ScanScore.evidence` is required in TypeScript:
+	 * strict producer, tolerant reader. A consumer vendoring an older copy of this
+	 * package emits payloads without it, and rejecting those would re-create the
+	 * runtime-validation break this schema exists to prevent.
+	 */
+	evidence: z
+		.object({
+			attempted: z.number(),
+			completed: z.number(),
+			ratio: z.number(),
+		})
+		.optional(),
+	evidenceInsufficient: z.boolean().optional(),
+	evidenceNote: z.string().optional(),
 });

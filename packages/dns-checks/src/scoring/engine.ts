@@ -14,6 +14,7 @@ import type { DomainContext } from './profiles';
 import { detectDomainContext, getProfileWeights, PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './profiles';
 import type { ScoringConfig } from './config';
 import { DEFAULT_SCORING_CONFIG } from './config';
+import { computeScanEvidence } from './evidence';
 import { computeGenericScore } from './generic';
 import type { GenericScoringContext, FindingSeverityCounts } from './generic';
 
@@ -317,6 +318,7 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 			categoryScores,
 			findings: [],
 			summary: `Excellent! No security issues found. Grade: ${scoreToGrade(100, config)}`,
+			evidence: { attempted: 0, completed: 0, ratio: 0 },
 		};
 	}
 
@@ -365,6 +367,7 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		findings: allFindings,
 		summary,
 		tierBreakdown: genericResult.tierBreakdown,
+		evidence: computeScanEvidence(results),
 	};
 }
 

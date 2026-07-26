@@ -139,6 +139,22 @@ export interface CheckResult {
 	metadata?: Record<string, unknown>;
 }
 
+/**
+ * Coverage of a single scan. Emitted on EVERY `ScanScore` so a caller can always
+ * judge for itself how much of the scan actually ran, whether or not a grade was
+ * produced.
+ *
+ * - `attempted` — number of `CheckResult`s handed to the scorer.
+ * - `completed` — those whose `checkStatus` is `'completed'`, or ABSENT (an absent
+ *   status means the same thing; only the degraded paths set it explicitly).
+ * - `ratio`     — `completed / attempted`, and `0` when `attempted === 0`.
+ */
+export interface ScanEvidence {
+	attempted: number;
+	completed: number;
+	ratio: number;
+}
+
 export interface ScanScore {
 	/**
 	 * Overall 0–100 score, or `null` when the scan produced NO gradeable
@@ -163,6 +179,21 @@ export interface ScanScore {
 	 * no-checks result.
 	 */
 	tierBreakdown?: { core: number; protective: number; hardening: number };
+	/**
+	 * Coverage of this scan: how many checks were attempted and how many completed.
+	 * Present on EVERY result, graded or not, so a consumer can always judge the
+	 * scan's own reliability rather than inferring it from a missing grade.
+	 */
+	evidence: ScanEvidence;
+	/**
+	 * `true` when the scan completed too few of its attempted checks to be graded,
+	 * so `overall` and `grade` are `null`. Only ever `true` when
+	 * `evidence.attempted > 0` — "nothing ran at all" is a DIFFERENT state, carried
+	 * by `StructuredScanResult.measured === false`.
+	 */
+	evidenceInsufficient?: boolean;
+	/** Human-readable explanation when `evidenceInsufficient` is `true`. Safe to render verbatim. */
+	evidenceNote?: string;
 }
 
 /** Display/UI weight distribution for categories. NOT used in scoring — see IMPORTANCE_WEIGHTS for actual scoring weights. Exists for category registry and display purposes only. */
