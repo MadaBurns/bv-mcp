@@ -90,10 +90,16 @@ describe('formatCompliance — ungraded scan', () => {
 
 describe('formatCscProducts — ungraded scan', () => {
 	function report(score: number | null, grade: string | null) {
+		// `assessed` is what the formatter gates the product list on, so this fixture
+		// must carry it: an ungraded fixture that omitted the flag was read as
+		// unassessed, and the MEASURED control below would then have been checked
+		// against the unassessed rendering.
+		const assessed = score !== null;
 		return {
 			domain: 'nxdomain-probe.com',
 			score,
 			grade,
+			assessed,
 			lockPosture: null,
 			recommendations: [
 				{

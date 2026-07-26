@@ -11,7 +11,7 @@
 
 import type { Bucket } from '../lib/brand-classification';
 import type { CscProductKey, CscPriority, CscProductReport } from './map-csc-products';
-import { evaluateCscProducts, extractLockPosture } from './map-csc-products';
+import { evaluateCscProducts, extractLockPosture, UNASSESSED_CSC_NOTE } from './map-csc-products';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import type { CheckResult } from '../lib/scoring';
@@ -125,11 +125,13 @@ export interface CscLeadReport {
 
 /**
  * The per-lead qualifier for "no check ran" — the domain does not resolve, or its
- * zone is broken. Every recommendation for such a domain is an artifact of
- * non-observation, so nothing derived from them is reported.
+ * zone is broken. Nothing derived from the checks is reported for such a domain.
+ *
+ * The first sentence is {@link UNASSESSED_CSC_NOTE}, shared with
+ * `map_csc_products` so both tools say the same thing about the same state; the
+ * second is the leads-specific consequence.
  */
-export const UNASSESSED_LEAD_NOTE =
-	'No checks ran for this domain, so no product gap could be assessed. It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.';
+export const UNASSESSED_LEAD_NOTE = `${UNASSESSED_CSC_NOTE} It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.`;
 
 /**
  * The per-lead qualifier for "checks ran, scan could not be scored".

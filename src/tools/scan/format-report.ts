@@ -7,12 +7,13 @@ import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
-import { formatScoreGrade, isMeasured } from '../../lib/ungraded-display';
+import { formatScoreGrade, isMeasured, UNGRADED_DISPLAY } from '../../lib/ungraded-display';
 
-// Both live in a tiny leaf module so every formatter in src/tools/ can share them
-// without importing the scan orchestrator. Re-exported here because this is where
-// consumers have always found UNGRADED_DISPLAY.
-export { UNGRADED_DISPLAY } from '../../lib/ungraded-display';
+// All three live in a tiny leaf module so every formatter in src/tools/ can share
+// them without importing the scan orchestrator. Re-exported here because this is
+// where consumers have always found UNGRADED_DISPLAY — new importers should take it
+// from the leaf module directly.
+export { UNGRADED_DISPLAY };
 
 /**
  * The SINGLE customer-facing display grade for the scan-output tools
@@ -344,10 +345,24 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 	lines.push('');
 
 	if (result.maturity) {
+		// The prose must abstain on exactly the condition `buildStructuredScanResult`
+		// abstains on (`maturityStage: isGraded(...) ? stage : null`). The three degraded
+		// builders all emit a maturity object carrying a PLACEHOLDER `stage: 0`, whose
+		// canonical label is "Unprotected" — so an NXDOMAIN scan printed
+		// "Stage 0 — Does not resolve" directly under "Overall Score: not measured",
+		// while its own structuredContent said `maturityStage: null` and
+		// generate_fix_plan said "not measured" for the same domain.
+		//
+		// The LABEL is kept either way: "Does not resolve" is information. Only the
+		// NUMBER — the part that charts, sorts and maps through a stage table — is
+		// withheld, and the ungraded token takes its place so the same state reads the
+		// same way here as everywhere else. A GRADED domain that genuinely sits at
+		// stage 0 still prints "Stage 0"; that zero is a measurement.
+		const stageText = isGraded(result.score) ? `Stage ${result.maturity.stage}` : UNGRADED_DISPLAY;
 		if (format === 'compact') {
-			lines.push(`Maturity: Stage ${result.maturity.stage} — ${result.maturity.label}`);
+			lines.push(`Maturity: ${stageText} — ${result.maturity.label}`);
 		} else {
-			lines.push(`Email Security Maturity: Stage ${result.maturity.stage} — ${result.maturity.label}`);
+			lines.push(`Email Security Maturity: ${stageText} — ${result.maturity.label}`);
 			lines.push(result.maturity.description);
 			if (result.maturity.nextStep) {
 				lines.push(`Next step: ${result.maturity.nextStep}`);

@@ -27,6 +27,13 @@ export type {
 } from './types';
 export { SEVERITY_PENALTIES, CATEGORY_TIERS, CATEGORY_DISPLAY_WEIGHTS } from './types';
 
+// The nullable-`ScanScore` narrowing guard. Exported from the PACKAGE ROOT as well
+// as from `./scoring`: the breaking change (`overall`/`grade` became nullable) is
+// visible to anyone importing `ScanScore` from here, so its remedy must be
+// reachable from the same entrypoint — otherwise a consumer meets the break at one
+// specifier and has to discover the fix at another.
+export { isGraded } from './scoring/engine';
+
 // Check utilities
 export { createFinding, buildCheckResult, computeCategoryScore, inferFindingConfidence, sanitizeDnsData } from './check-utils';
 

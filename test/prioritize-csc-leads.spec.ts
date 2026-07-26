@@ -444,11 +444,18 @@ describe('rankCscLeads — a never-measured domain must not outrank a measured o
 	it('assigns the unmeasured domain NO gap severity, so it cannot outrank a measured one', async () => {
 		const report = await mixedPortfolio();
 
-		// Fixture-reachability guard: the producer really does recommend three
-		// products purely from non-observation. Without this the test could pass
-		// against a producer that returned nothing and never reached the defect.
+		// Fixture-reachability guard: this really is the never-measured producer
+		// output. The producer used to recommend all three scan-driven products
+		// purely from non-observation (gapValue 7, above the hot threshold); it now
+		// emits them as `recommended: false` with an "not assessed" gap, so the
+		// severity can no longer be manufactured at the source. The lead-level
+		// abstention below is defence-in-depth on top of that, and the assertions
+		// still discriminate: a lead-level regression would resurface a severity of
+		// 0 (and a rank ahead of the measured domain), not `null`.
 		const ungradedInput = await ungradedReport('never-measured.example');
-		expect(ungradedInput.recommendedCount).toBe(3);
+		expect(ungradedInput.assessed).toBe(false);
+		expect(ungradedInput.recommendedCount).toBe(0);
+		expect(ungradedInput.recommendations.map((r) => r.recommended)).toEqual([false, false, false, false]);
 
 		const byDomain = new Map(report.rankedLeads.map((l) => [l.domain, l]));
 		expect(byDomain.get('never-measured.example')!.gapSeverity).toBeNull();

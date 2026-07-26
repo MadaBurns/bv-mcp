@@ -215,8 +215,6 @@ describe('formatCscProducts', () => {
 
 		expect(text).toContain('not measured');
 		expect(text).not.toContain('null');
-		// The product lines must describe absence of observation, never a measured gap.
-		expect(text).toContain('not observed');
 	});
 
 	it('still renders the real score for a measured scan (control)', async () => {
@@ -226,5 +224,106 @@ describe('formatCscProducts', () => {
 		const text = fmt(sampleReport(), 'full');
 		expect(text).toContain('55/100 (F)');
 		expect(text).not.toContain('not measured');
+	});
+});
+
+/**
+ * `map_csc_products` sold three products for a domain nobody measured.
+ *
+ * `evaluateCscProducts` set `assessed: isMeasured(checkResults)` and
+ * `formatCscProducts` never read it, so an NXDOMAIN domain rendered
+ * "**Score:** not measured | **3** recommended" followed by three priority-tagged
+ * upsells justified by "DMARC not observed" — every one of them derived from
+ * having observed nothing. `prioritize_csc_leads` suppresses exactly this from the
+ * SAME producer output ("printing them under a 'not measured' score would sell
+ * products for a domain nobody looked at"); two tools, one input, opposite answers.
+ *
+ * Both directions are pinned here: abstain when nothing ran, and never suppress a
+ * product gap that rests on real evidence.
+ */
+describe('formatCscProducts — a domain where no check ran', () => {
+	/** The exact producer output for a domain that does not resolve: no checks, no RDAP posture. */
+	async function unassessed(domain = 'never-measured-domain.com') {
+		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		return evaluate([], null, domain, null, null);
+	}
+
+	it('emits no priced product gap on the wire', async () => {
+		const report = await unassessed();
+
+		// Fixture-reachability guard: this is the state under test.
+		expect(report.assessed).toBe(false);
+		// Was 3, each `recommended: true, priority: 'low'`, on the strength of
+		// non-observation. A consumer reading `recommendations` without consulting
+		// `assessed` could not tell those apart from measured gaps.
+		expect(report.recommendedCount).toBe(0);
+		expect(report.recommendations.every((r) => r.recommended === false)).toBe(true);
+		expect(report.recommendations.every((r) => r.priority === 'none')).toBe(true);
+		// The four products still appear in fixed order — the shape is unchanged, only
+		// the verdict abstains.
+		expect(report.recommendations.map((r) => r.product)).toEqual([
+			'csc_multilock',
+			'managed_dmarc',
+			'digital_certificates',
+			'dnssec_management',
+		]);
+	});
+
+	it.each(['compact', 'full'] as const)('prints the honest note and no recommendation list [%s]', async (format) => {
+		const { formatCscProducts: fmt, UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+		const text = fmt(await unassessed(), format);
+
+		expect(text, format).toContain('not measured');
+		// The established wording, shared with prioritize_csc_leads — not a third
+		// vocabulary for the same state.
+		expect(text, format).toContain(UNASSESSED_CSC_NOTE);
+		// No product line, and no count claim about products.
+		expect(text, format).not.toContain('Managed DMARC');
+		expect(text, format).not.toContain('Digital Certificates');
+		expect(text, format).not.toContain('DNSSEC management');
+		expect(text, format).not.toContain('recommended');
+		expect(text, format).not.toContain('upsell');
+		// The banked defect verbatim, in each format's own phrasing.
+		expect(text, format).not.toContain('not observed');
+		expect(text, format).not.toMatch(/\[low\]|— LOW/);
+	});
+
+	it.each(['compact', 'full'] as const)('still lists every product for a MEASURED domain [%s] (control)', async (format) => {
+		const { evaluateCscProducts: evaluate, formatCscProducts: fmt, UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+		// Without this control every assertion above would hold under a formatter that
+		// suppressed the product list unconditionally.
+		const report = evaluate(
+			[makeCheck('dmarc', false, [{ title: 'No DMARC record', severity: 'high' }]), makeCheck('ssl', true), makeCheck('dnssec', true)],
+			lp({ level: 'unlocked', transferLocked: false }),
+			'measured-domain.com',
+			55,
+			'F',
+		);
+		const text = fmt(report, format);
+
+		expect(report.assessed).toBe(true);
+		expect(report.recommendedCount).toBe(2);
+		expect(text, format).toContain('Managed DMARC');
+		expect(text, format).toContain('CSC MultiLock');
+		expect(text, format).not.toContain(UNASSESSED_CSC_NOTE);
+		expect(text, format).toContain('55/100 (F)');
+	});
+
+	it('does NOT suppress a real RDAP lock gap just because the scan measured nothing (mirror)', async () => {
+		const { evaluateCscProducts: evaluate, formatCscProducts: fmt } = await import('../src/tools/map-csc-products');
+		// A registered domain whose zone is broken still has an observable registrar
+		// lock status: RDAP is fetched independently of the scan. That gap is a real
+		// measurement, and abstaining on it would be the over-abstain mirror of the
+		// defect above.
+		const report = evaluate([], lp({ level: 'unlocked', transferLocked: false }), 'broken-zone-domain.com', null, null);
+
+		expect(report.assessed).toBe(false);
+		expect(report.recommendedCount).toBe(1);
+		const full = fmt(report, 'full');
+		expect(full).toContain('CSC MultiLock');
+		expect(full).toContain('Domain transfer not locked');
+		// …while the three CHECK-derived products stay suppressed.
+		expect(full).not.toContain('Managed DMARC');
+		expect(full).not.toContain('DNSSEC management');
 	});
 });

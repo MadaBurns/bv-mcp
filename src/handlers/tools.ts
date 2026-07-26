@@ -1306,7 +1306,11 @@ export async function handleToolsCall(
 					logToolSuccess({
 						...ctx(),
 						status: 'pass',
-						logResult: `${batchResults.filter((r) => !r.error).length}/${batchResults.length} domains`,
+						// Same predicate as formatBatchScan's "Scanned N/M domain(s) successfully"
+						// footer. `!r.error` counted a domain that resolved but produced no
+						// measurement as a success, so the ops stream and the customer's report
+						// disagreed about the same run.
+						logResult: `${batchResults.filter((r) => r.measured && r.score !== null).length}/${batchResults.length} domains`,
 						logDetails: { totalDomains: batchResults.length },
 						severity: 'info',
 					});
@@ -1337,7 +1341,10 @@ export async function handleToolsCall(
 					logToolSuccess({
 						...ctx(),
 						status: 'pass',
-						logResult: `${Object.keys(compareResults.scores).length}/${compareResults.domains.length} domains compared`,
+						// `Object.keys(scores)` includes the domains whose score is `null` — the
+						// formatter prints those as "not measured", so counting them as compared
+						// made the ops stream claim a comparison the report never made.
+						logResult: `${Object.values(compareResults.scores).filter((s) => s !== null).length}/${compareResults.domains.length} domains compared`,
 						logDetails: { totalDomains: compareResults.domains.length, winner: compareResults.winner },
 						severity: 'info',
 					});
@@ -1562,8 +1569,9 @@ export async function handleToolsCall(
 					// HIGH and a MEDIUM finding ticked off as fixed — nothing was fixed, the
 					// domain stopped existing. categoryDeltas' `?? 0` likewise turned an empty
 					// categoryScores map into a confident `spf: 80 -> 0 (-80)`. Abstaining BEFORE
-					// computeDrift is what makes both unconstructible; Task 6's inconclusive
-					// classification is a verdict change layered on top of this, not a substitute.
+					// computeDrift is what makes both unconstructible; computeDrift's own
+					// `'inconclusive'` classification is a verdict change layered on top of this
+					// guard for the callers that do reach it, not a substitute for it.
 					if (!isGraded(scanResult.score)) {
 						return buildToolErrorResult(
 							`Domain ${validDomain} could not be scored on this run (it does not resolve, or its zone is unresolvable), so there is nothing to compare against the baseline. Drift cannot be measured.`,

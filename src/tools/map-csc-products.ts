@@ -42,16 +42,36 @@ export interface CscProductReport {
 	 *
 	 * Distinct from having a SCORE. `buildUnscoredResult` — the shipped
 	 * scoring-bundle-failure path — produces real checks with real findings and a
-	 * `null` score, so `assessed` is true while the score is absent. Every
-	 * recommendation below is derived from the CHECKS, not from the score, so this
-	 * is the flag that says whether they mean anything: with no checks they are
-	 * pure "not observed" artifacts; with checks they are measured evidence.
+	 * `null` score, so `assessed` is true while the score is absent. The three
+	 * scan-driven recommendations are derived from the CHECKS, not from the score,
+	 * so this is the flag that says whether they mean anything — and when it is
+	 * `false` they are not emitted as recommendations at all (see
+	 * `unassessedScanProduct`), so no consumer can read a product gap out of a
+	 * domain nobody measured by ignoring this flag.
 	 */
 	assessed: boolean;
 	lockPosture: LockPosture | null;
+	/**
+	 * Always the four products in fixed order. When `assessed` is `false` the three
+	 * scan-driven entries are `recommended: false, priority: 'none'` — absence of
+	 * evidence, never a priced gap. Only `csc_multilock` can still be recommended
+	 * there, and only on independent RDAP evidence.
+	 */
 	recommendations: CscProductRecommendation[];
+	/** Count of `recommended` entries — 0 for an unassessed domain with no RDAP lock gap. */
 	recommendedCount: number;
 }
+
+/**
+ * The SINGLE sentence for "no check ran, so no product gap could be assessed".
+ *
+ * Owned here because this is where `assessed` is computed; `prioritize_csc_leads`
+ * composes its per-lead note from it (leads imports from this module, never the
+ * reverse). One sentence, so the two tools cannot describe the same state in two
+ * vocabularies — which is exactly how they came to give opposite answers about the
+ * same producer output.
+ */
+export const UNASSESSED_CSC_NOTE = 'No checks ran for this domain, so no product gap could be assessed.';
 
 const CSC_PRODUCT_NAMES: Record<CscProductKey, string> = {
 	csc_multilock: 'CSC MultiLock',
@@ -101,6 +121,25 @@ function evalScanProduct(
 }
 
 /**
+ * The scan-driven product line for a domain where NO check ran.
+ *
+ * `evalScanProduct`'s `absent` branch ("DMARC not observed") means "we looked and
+ * found nothing" — a real, sellable gap. With zero checks nobody looked, so the
+ * same branch would recommend all three products at once on the strength of
+ * non-observation. This states the absence of evidence instead of pricing it.
+ */
+function unassessedScanProduct(product: Exclude<CscProductKey, 'csc_multilock'>, concern: string): CscProductRecommendation {
+	return {
+		product,
+		productName: CSC_PRODUCT_NAMES[product],
+		recommended: false,
+		priority: 'none',
+		justifyingGap: `${concern} not assessed — no checks ran`,
+		relatedFindings: [],
+	};
+}
+
+/**
  * Evaluate CSC product recommendations from scan results + RDAP lock posture (PURE).
  * Exported for direct unit testing without mocking scanDomain/checkRdapLookup.
  */
@@ -113,31 +152,42 @@ export function evaluateCscProducts(
 ): CscProductReport {
 	const byCategory = new Map<string, CheckResult>();
 	for (const r of checkResults) byCategory.set(r.category, r);
+	const assessed = isMeasured(checkResults);
 
+	// MultiLock is deliberately NOT gated on `assessed`: it reads the RDAP lock
+	// posture, which is fetched independently of the scan. A registered domain whose
+	// zone is broken can still show a genuinely unlocked transfer status, and that is
+	// a real measurement — suppressing it would be the mirror defect.
 	const recommendations: CscProductRecommendation[] = [
 		evalMultiLock(lockPosture),
-		evalScanProduct('managed_dmarc', byCategory.get('dmarc'), {
-			passing: 'DMARC policy in effect',
-			failing: 'DMARC present but not passing',
-			absent: 'DMARC not observed',
-		}),
-		evalScanProduct('digital_certificates', byCategory.get('ssl'), {
-			passing: 'TLS/SSL configuration healthy',
-			failing: 'TLS/SSL issues detected',
-			absent: 'TLS/SSL not observed',
-		}),
-		evalScanProduct('dnssec_management', byCategory.get('dnssec'), {
-			passing: 'DNSSEC enabled',
-			failing: 'DNSSEC not enabled',
-			absent: 'DNSSEC not observed',
-		}),
+		assessed
+			? evalScanProduct('managed_dmarc', byCategory.get('dmarc'), {
+					passing: 'DMARC policy in effect',
+					failing: 'DMARC present but not passing',
+					absent: 'DMARC not observed',
+				})
+			: unassessedScanProduct('managed_dmarc', 'DMARC'),
+		assessed
+			? evalScanProduct('digital_certificates', byCategory.get('ssl'), {
+					passing: 'TLS/SSL configuration healthy',
+					failing: 'TLS/SSL issues detected',
+					absent: 'TLS/SSL not observed',
+				})
+			: unassessedScanProduct('digital_certificates', 'TLS/SSL'),
+		assessed
+			? evalScanProduct('dnssec_management', byCategory.get('dnssec'), {
+					passing: 'DNSSEC enabled',
+					failing: 'DNSSEC not enabled',
+					absent: 'DNSSEC not observed',
+				})
+			: unassessedScanProduct('dnssec_management', 'DNSSEC'),
 	];
 
 	return {
 		domain,
 		score,
 		grade,
-		assessed: isMeasured(checkResults),
+		assessed,
 		lockPosture,
 		recommendations,
 		recommendedCount: recommendations.filter((r) => r.recommended).length,
@@ -162,27 +212,43 @@ export function extractLockPosture(rdap: CheckResult): LockPosture | null {
 
 const CSC_PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
 
-/** Render a CSC product report for display. */
+/**
+ * Render a CSC product report for display.
+ *
+ * `assessed` is load-bearing here, not decoration. Before it was read, an
+ * unassessed domain rendered "**Score:** not measured | **3** recommended"
+ * followed by three priority-tagged upsells justified by "DMARC not observed" —
+ * recommendations derived entirely from non-observation, sitting under a score line
+ * that admitted nothing was measured. `prioritize_csc_leads` already refused to
+ * print exactly that from the same producer output; this is the other half of that
+ * decision, stated once for both tools.
+ */
 export function formatCscProducts(report: CscProductReport, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 	const byKey = new Map(report.recommendations.map((r) => [r.product, r]));
+	// Unassessed: no product list and no count claim — except a product that is STILL
+	// recommended, which can only be MultiLock on independent RDAP evidence. Withholding
+	// that would suppress a real measurement.
+	const shown = CSC_PRODUCT_ORDER.map((key) => byKey.get(key)).filter(
+		(r): r is CscProductRecommendation => r !== undefined && (report.assessed || r.recommended),
+	);
 
 	if (format === 'compact') {
-		lines.push(
-			`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)} — ${report.recommendedCount} upsell(s)`,
-		);
-		for (const key of CSC_PRODUCT_ORDER) {
-			const r = byKey.get(key)!;
+		const countSegment = report.assessed ? ` — ${report.recommendedCount} upsell(s)` : '';
+		lines.push(`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}${countSegment}`);
+		if (!report.assessed) lines.push(UNASSESSED_CSC_NOTE);
+		for (const r of shown) {
 			const icon = r.recommended ? ' →' : ' ✓';
 			const suffix = r.recommended ? ` [${r.priority}] ${sanitizeOutputText(r.justifyingGap, 80)}` : '';
 			lines.push(`${icon} ${sanitizeOutputText(r.productName, 40)}${suffix}`);
 		}
 	} else {
 		lines.push(`# CSC Product Recommendations: ${sanitizeOutputText(report.domain, 253)}`);
-		lines.push(`**Score:** ${formatScoreGrade(report.score, report.grade)} | **${report.recommendedCount}** recommended`);
+		const countSegment = report.assessed ? ` | **${report.recommendedCount}** recommended` : '';
+		lines.push(`**Score:** ${formatScoreGrade(report.score, report.grade)}${countSegment}`);
+		if (!report.assessed) lines.push(UNASSESSED_CSC_NOTE);
 		lines.push('');
-		for (const key of CSC_PRODUCT_ORDER) {
-			const r = byKey.get(key)!;
+		for (const r of shown) {
 			const icon = r.recommended ? '✅' : '➖';
 			const tag = r.recommended ? ` — ${r.priority.toUpperCase()}` : ' — OK';
 			lines.push(`${icon} **${sanitizeOutputText(r.productName, 40)}**${tag}`);

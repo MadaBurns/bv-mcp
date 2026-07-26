@@ -158,13 +158,22 @@ describe('ungraded representation', () => {
 				// controls for a domain that does not exist.
 				forbidden: ['"percentage":0', '"status":"fail"', '"score":0'],
 				required: ['"score":null', '"grade":null', '"assessed":false'],
+				proseForbidden: [] as string[],
+				proseRequired: ['not measured'],
 			},
 			{
 				tool: 'map_csc_products',
 				text: formatCscProducts(unmeasuredCsc, 'full'),
 				data: unmeasuredCsc as unknown,
-				forbidden: ['"score":0', '"grade":"'],
-				required: ['"score":null', '"grade":null'],
+				// `assessed` was on the wire from the start and the formatter simply
+				// never read it, so a payload rule alone did not catch the defect: the
+				// prose sold three priority-tagged products under a "not measured"
+				// score. Both channels are now stated, and the payload no longer carries
+				// a recommendation derived from non-observation for a consumer to find.
+				forbidden: ['"score":0', '"grade":"', '"recommended":true', '"recommendedCount":3'],
+				required: ['"score":null', '"grade":null', '"assessed":false', '"recommendedCount":0'],
+				proseForbidden: ['recommended', 'not observed', 'Managed DMARC', 'DNSSEC management'],
+				proseRequired: ['not measured', 'No checks ran for this domain, so no product gap could be assessed.'],
 			},
 			{
 				tool: 'prioritize_csc_leads',
@@ -174,6 +183,8 @@ describe('ungraded representation', () => {
 				// that includes a domain nobody measured.
 				forbidden: ['"gapSeverity":7', '"assessed":true', '"hotLeads":1', '"score":0'],
 				required: ['"score":null', '"grade":null', '"assessed":false', '"graded":false', '"gapSeverity":null'],
+				proseForbidden: ['Recommended CSC products', 'Top priority'],
+				proseRequired: ['not measured', 'No checks ran for this domain, so no product gap could be assessed.'],
 			},
 		];
 
@@ -184,7 +195,13 @@ describe('ungraded representation', () => {
 		expect(unmeasuredCsc.recommendations.length).toBeGreaterThan(0);
 		expect(unmeasuredLeads.rankedLeads.length).toBeGreaterThan(0);
 
-		for (const { tool, text, data, forbidden, required } of surfaces) {
+		for (const { tool, text, data, forbidden, required, proseForbidden, proseRequired } of surfaces) {
+			// The prose is the other half of the same result. `map_csc_products` shipped
+			// a clean payload and a fabricated report for four commits because only the
+			// payload was under a rule here.
+			for (const token of proseForbidden) expect(text, `${tool}/prose: must not contain ${token}`).not.toContain(token);
+			for (const token of proseRequired) expect(text, `${tool}/prose: must contain ${token}`).toContain(token);
+
 			const result = buildToolResult(text, data, 'full');
 			const structured = JSON.stringify(result.structuredContent);
 			const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));

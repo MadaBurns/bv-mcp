@@ -17,7 +17,9 @@ import type { OutputFormat } from '../handlers/tool-args';
 import type { Finding, ScanScore } from '@blackveil/dns-checks/scoring';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isGraded } from '../lib/scoring';
-import { UNGRADED_DISPLAY } from './scan/format-report';
+// The leaf module, not the `scan/format-report` re-export: that re-export drags the
+// scan orchestrator's import graph in for one string constant.
+import { UNGRADED_DISPLAY } from '../lib/ungraded-display';
 
 /** Overall drift direction classification. */
 export type DriftClassification = 'improving' | 'stable' | 'regressing' | 'mixed' | 'inconclusive';
@@ -107,8 +109,9 @@ function findingKey(f: { category: string; title: string }): string {
  */
 export function classifyDrift(scoreDelta: number | null, newCriticalHighCount: number, resolvedCount: number): DriftClassification {
 	// `null` = no score signal, NOT a delta of zero-meaning-stable. Treating it as 0 here
-	// neutralises the score thresholds so only the finding-based rules classify; Task 6
-	// replaces this with an explicit `inconclusive` classification.
+	// neutralises the score thresholds so only the finding-based rules classify. The
+	// ungraded case never reaches those rules anyway: `computeDrift` short-circuits to
+	// `'inconclusive'` before calling this function whenever either side carries no grade.
 	//
 	// NOTE: this `?? 0` is DOCUMENTARY, not load-bearing — `delta` is only ever used in
 	// relational comparisons below, and JS already evaluates `null > 2` / `null < -2`

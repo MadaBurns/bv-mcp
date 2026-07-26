@@ -118,6 +118,61 @@ describe('formatScanReport — ungraded scan', () => {
 		expect(scoreLine).toContain('78/100');
 		expect(scoreLine).not.toContain(UNGRADED_DISPLAY);
 	});
+
+	/**
+	 * The prose printed a maturity STAGE NUMBER while the payload built from the same
+	 * result abstained.
+	 *
+	 * The three degraded builders all emit a maturity object carrying a placeholder
+	 * `stage: 0`, whose canonical label is "Unprotected" — a posture verdict. So an
+	 * NXDOMAIN scan rendered "Overall Score: not measured" and then "Email Security
+	 * Maturity: Stage 0 — Does not resolve", while its own
+	 * `structuredContent.maturityStage` was `null` (`buildStructuredScanResult` gates
+	 * on `isGraded`) and `generate_fix_plan` said "Maturity Stage: not measured" for
+	 * the same domain. Same fact, three answers.
+	 */
+	it.each(['compact', 'full'] as const)('withholds the maturity stage NUMBER but keeps its label [%s]', async (format) => {
+		const { formatScanReport, UNGRADED_DISPLAY } = await import('../src/tools/scan/format-report');
+		const result = scanResult(ungradedScore(), {
+			maturity: { stage: 0, label: 'Does not resolve', description: 'The domain does not exist in DNS.', nextStep: null },
+		});
+		const text = formatScanReport(result, format);
+
+		const line = text.split('\n').find((l) => l.includes('Maturity'));
+		expect(line, format).toBeDefined();
+		// The banked defect verbatim.
+		expect(line, format).not.toContain('Stage 0');
+		expect(line, format).toContain(UNGRADED_DISPLAY);
+		// The LABEL is information and must survive — this is not a suppression.
+		expect(line, format).toContain('Does not resolve');
+		// …and the payload built from the same result agrees.
+		const { buildStructuredScanResult } = await import('../src/tools/scan/format-report');
+		const structured = buildStructuredScanResult(result);
+		expect(structured.maturityStage, format).toBeNull();
+		expect(structured.maturityLabel, format).toBe('Does not resolve');
+	});
+
+	it.each(['compact', 'full'] as const)(
+		'still prints Stage 0 for a MEASURED domain that genuinely sits there [%s] (mirror)',
+		async (format) => {
+			const { formatScanReport, UNGRADED_DISPLAY } = await import('../src/tools/scan/format-report');
+			// `scanResult`'s default maturity IS stage 0 / "Unprotected". A graded scan that
+			// scores there has measured that posture, and zero is the measurement — gating
+			// the stage on the mere value `0` rather than on `isGraded` would delete it.
+			const result = scanResult(gradedScore({ overall: 12, grade: 'F' }), {
+				checks: [{ category: 'spf', passed: false, score: 0, findings: [] }],
+			});
+			const text = formatScanReport(result, format);
+
+			const line = text.split('\n').find((l) => l.includes('Maturity'));
+			expect(line, format).toBeDefined();
+			expect(line, format).toContain('Stage 0');
+			expect(line, format).toContain('Unprotected');
+			expect(line, format).not.toContain(UNGRADED_DISPLAY);
+			const { buildStructuredScanResult } = await import('../src/tools/scan/format-report');
+			expect(buildStructuredScanResult(result).maturityStage, format).toBe(0);
+		},
+	);
 });
 
 describe('buildStructuredScanResult — ungraded scan', () => {
