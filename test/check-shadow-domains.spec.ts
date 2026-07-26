@@ -1078,6 +1078,73 @@ describe('registration-state correctness', () => {
 		expect(result.findings.some((f) => f.title === 'Brand variant unregistered')).toBe(true);
 	});
 
+	it('re-probing an unknown variant can never yield an "unregistered" verdict, even when the re-probe itself NXDOMAINs', async () => {
+		// The unknown-bucket re-probe (added when main's mail-only regression test
+		// exposed that a MX/SPF-only variant was reported unknown with a hardcoded
+		// `hasSpf: false`) must only ever move a variant `unknown → registered`.
+		//
+		// This is the hostile case for that invariant: Phase 1 SERVFAILs on NS+SOA
+		// (→ unknown/servfail), and then EVERY re-probe query comes back NXDOMAIN.
+		// A naive "no evidence found on re-probe ⇒ unregistered" would fire here —
+		// but an NXDOMAIN reached after a SERVFAIL is contradictory evidence, not
+		// proof of non-existence. NXDOMAIN resolved in Phase 1 by
+		// `resolveRegistration` remains the SOLE path to an unregistered claim.
+		const { servfailResponse, nxdomainResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			// Phase 1 looks at NS (2) and SOA (6) — both SERVFAIL, so the variant is
+			// UNKNOWN, never unregistered. Everything the re-probe asks for NXDOMAINs.
+			if (q.type === 'NS' || q.type === '2') return servfailResponse(q.name, 2);
+			if (q.type === 'SOA' || q.type === '6') return servfailResponse(q.name, 6);
+			return nxdomainResponse(q.name, q.type === 'A' || q.type === '1' ? 1 : 16);
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		// Non-vacuous: the unknown bucket must actually be populated, or the
+		// assertion below proves nothing.
+		expect(result.findings.some((f) => f.title === 'Brand variant registration unknown')).toBe(true);
+		// The invariant itself.
+		expect(result.findings.some((f) => f.title === 'Brand variant unregistered')).toBe(false);
+		expect(result.findings.some((f) => /does not appear to be registered/i.test(f.detail))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.registrationState === 'unregistered')).toBe(false);
+	});
+
+	it('an unknown variant whose re-probe finds nothing keeps state "unknown" carrying the probe\'s actual observations', async () => {
+		// Negative-path honesty pin. The re-probe's observations are threaded into
+		// the finding rather than a hardcoded literal set; on this path the probe
+		// genuinely observes nothing, so the metadata must report exactly that —
+		// empty record sets, `hasSpf: false`, `dmarcPolicy: null` — while the state
+		// stays `unknown` and the reason stays the Phase-1 rcode ('servfail'), NOT a
+		// value invented by the re-probe.
+		const { servfailResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			if (q.type === 'NS' || q.type === '2') return servfailResponse(q.name, 2);
+			if (q.type === 'SOA' || q.type === '6') return servfailResponse(q.name, 6);
+			return emptyResponse();
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		const unknownFindings = result.findings.filter((f) => f.title === 'Brand variant registration unknown');
+		expect(unknownFindings.length).toBeGreaterThan(0);
+		for (const f of unknownFindings) {
+			expect(f.metadata?.registrationState).toBe('unknown');
+			expect(f.metadata?.reason).toBe('servfail');
+			expect(f.metadata?.hasSpf).toBe(false);
+			expect(f.metadata?.dmarcPolicy).toBeNull();
+			expect(f.metadata?.ns).toEqual([]);
+			expect(f.metadata?.mx).toEqual([]);
+		}
+	});
+
 	it('never recommends defensive registration on an inconclusive lookup', async () => {
 		const { servfailResponse } = await import('./helpers/dns-mock');
 		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
