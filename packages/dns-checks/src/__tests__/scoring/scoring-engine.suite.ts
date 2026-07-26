@@ -263,6 +263,24 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				expect(score.evidenceInsufficient).toBeUndefined();
 			});
 
+			it('falls back to the default threshold when a hand-built config supplies a NaN, not just a missing key', () => {
+				// `Number(undefined)` is NaN, not undefined — a vendoring consumer building
+				// `{ evidenceSufficiency: Number(undefined) }` bypasses the `?? EVIDENCE_SUFFICIENCY_THRESHOLD`
+				// fallback (`??` only catches null/undefined) and lands directly in the clamp:
+				// `Math.max(0, Math.min(1, NaN))` is NaN, and `ratio >= NaN` is always false, so
+				// EVERY scan — including a fully-measured, healthy one — would ungrade. The engine
+				// must detect the non-finite value and fall back to the named constant instead of
+				// clamping it.
+				const nanThreshold = {
+					...DEFAULT_SCORING_CONFIG,
+					thresholds: { ...DEFAULT_SCORING_CONFIG.thresholds, evidenceSufficiency: NaN },
+				};
+				const score = computeScanScore(scan(19), undefined, nanThreshold);
+				expect(score.overall).not.toBeNull();
+				expect(score.grade).not.toBeNull();
+				expect(score.evidenceInsufficient).toBeUndefined();
+			});
+
 			it('ungrades the empty result set — zero submitted evidence yields no grade (DD1 as overridden)', () => {
 				const score = computeScanScore([]);
 				expect(score.overall).toBeNull();

@@ -327,10 +327,7 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	// vendoring an older copy of this package (or hand-building a `ScoringConfig`
 	// that predates this key) can hand us a `thresholds` object with no
 	// `evidenceSufficiency` property at all, i.e. `undefined`, which `??` catches
-	// and replaces with the constant. (This is NOT a NaN guard: `??` only catches
-	// `null`/`undefined`, and a NaN threshold would make `ratio >= NaN` false for
-	// every ratio — the gate would fire on EVERY scan, ungrading the whole fleet,
-	// the opposite of "silently disabled".)
+	// and replaces with the constant.
 	//
 	// The [0, 1] clamp below is a SECOND enforcement of the same rule `config.ts`
 	// already applies inside `parseScoringConfig` — that clamp only runs for
@@ -342,7 +339,20 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	// every scan that reaches this function directly, not just every scan that goes
 	// through env-var config parsing. `??` runs FIRST so a missing key still falls back
 	// to the named constant before the clamp ever sees it.
-	const evidenceThreshold = Math.max(0, Math.min(1, cfg.thresholds.evidenceSufficiency ?? EVIDENCE_SUFFICIENCY_THRESHOLD));
+	//
+	// The `Number.isFinite` guard handles a THIRD hand-built shape `??` cannot catch:
+	// a non-null but non-finite value, e.g. `evidenceSufficiency: Number(undefined)`
+	// (NaN) from a consumer's own coercion bug. `??` only substitutes on `null`/
+	// `undefined`, so a NaN sails past it straight into `Math.max(0, Math.min(1, NaN))`,
+	// which is itself NaN — and `ratio >= NaN` is `false` for every ratio, so the gate
+	// would fire on EVERY scan, ungrading the whole fleet from a single bad config value.
+	// A non-finite threshold is treated the same as a missing one: fall back to the
+	// named constant instead of clamping garbage.
+	const rawEvidenceThreshold = cfg.thresholds.evidenceSufficiency ?? EVIDENCE_SUFFICIENCY_THRESHOLD;
+	const evidenceThreshold = Math.max(
+		0,
+		Math.min(1, Number.isFinite(rawEvidenceThreshold) ? rawEvidenceThreshold : EVIDENCE_SUFFICIENCY_THRESHOLD),
+	);
 
 	if (results.length === 0) {
 		// Zero submitted evidence is NEVER sufficient, unconditionally — this is not a
