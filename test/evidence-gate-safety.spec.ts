@@ -9,36 +9,19 @@
  * fire"), which is the most vacuity-prone shape there is — so each case pins a
  * concrete non-null grade rather than merely asserting the absence of a flag, and the
  * whole file is validated by the mutation check in this task's Step 4.
+ *
+ * The category set is deliberately NOT hard-coded here: it is pulled from the real
+ * `SCAN_CATEGORIES` SSOT (`src/tools/scan-domain.ts`) via dynamic import in every
+ * test body, so this corpus tracks the actual scanned set (currently 19, but never
+ * assumed) rather than a private copy that can silently drift from it.
  */
 
 import { describe, expect, it } from 'vitest';
-import type { CheckCategory, CheckResult } from '../src/lib/scoring';
-
-/** The 19 categories a real scan_domain run submits. */
-const SCAN_CATEGORIES: CheckCategory[] = [
-	'spf',
-	'dmarc',
-	'dkim',
-	'dnssec',
-	'ssl',
-	'mta_sts',
-	'ns',
-	'caa',
-	'subdomain_takeover',
-	'mx',
-	'bimi',
-	'tlsrpt',
-	'txt_hygiene',
-	'http_security',
-	'dane',
-	'subdomailing',
-	'zone_hygiene',
-	'srv',
-	'ptr',
-];
+import type { CheckResult } from '../src/lib/scoring';
 
 describe('evidence gate does NOT fire on a measured scan', () => {
-	it('a fully healthy 19/19 scan keeps its grade and reports ratio 1', async () => {
+	it('a fully healthy scan keeps its grade and reports ratio 1', async () => {
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { computeScanScore, buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 		const results: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
 			...buildCheckResult(c, [createFinding(c, `${c} OK`, 'info', 'Check passed')], true),
@@ -47,7 +30,7 @@ describe('evidence gate does NOT fire on a measured scan', () => {
 
 		const score = computeScanScore(results);
 
-		expect(score.evidence).toEqual({ attempted: 19, completed: 19, ratio: 1 });
+		expect(score.evidence).toEqual({ attempted: SCAN_CATEGORIES.length, completed: SCAN_CATEGORIES.length, ratio: 1 });
 		expect(score.evidenceInsufficient).toBeUndefined();
 		expect(score.overall).toBeGreaterThan(0);
 		expect(typeof score.grade).toBe('string');
@@ -55,6 +38,7 @@ describe('evidence gate does NOT fire on a measured scan', () => {
 	});
 
 	it('a genuinely BAD but fully measured scan is still graded — a bad domain is not an unmeasured one', async () => {
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { computeScanScore, buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 		// Every check ran; every check failed. This must produce a real (low) grade.
 		const results: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
@@ -66,35 +50,45 @@ describe('evidence gate does NOT fire on a measured scan', () => {
 
 		const score = computeScanScore(results);
 
-		expect(score.evidence.completed).toBe(19);
+		expect(score.evidence.completed).toBe(SCAN_CATEGORIES.length);
 		expect(score.evidenceInsufficient).toBeUndefined();
 		expect(score.overall).not.toBeNull();
 		expect(score.grade).not.toBeNull();
 	});
 
 	it('a scan with a MINORITY of failed-to-run checks is still graded', async () => {
-		const { computeScanScore, buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
-		// 14 completed, 5 timed out = 73.7%, comfortably above the 60% threshold.
-		const results: CheckResult[] = SCAN_CATEGORIES.map((c, i) =>
-			i < 14
-				? { ...buildCheckResult(c, [createFinding(c, `${c} OK`, 'info', 'ok')], true), checkStatus: 'completed' as const }
-				: {
-						...buildCheckResult(c, [createFinding(c, `${c} timed out`, 'low', 'no run')]),
-						score: 0,
-						passed: false,
-						checkStatus: 'timeout' as const,
-					},
-		);
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { computeScanScore, buildCheckResult, createFinding, EVIDENCE_SUFFICIENCY_THRESHOLD } =
+			await import('@blackveil/dns-checks/scoring');
+		// 14 completed, 5 failed-to-run — comfortably above EVIDENCE_SUFFICIENCY_THRESHOLD.
+		// The 5 non-completed checks are split across BOTH transient classes: 2 'error'
+		// (the dominant real-world class — buildDnsErrorResult's shape) and 3 'timeout',
+		// so this doesn't accidentally only exercise one of the two.
+		const nCompleted = 14;
+		const results: CheckResult[] = SCAN_CATEGORIES.map((c, i) => {
+			if (i < nCompleted) {
+				return { ...buildCheckResult(c, [createFinding(c, `${c} OK`, 'info', 'ok')], true), checkStatus: 'completed' as const };
+			}
+			const failedIndex = i - nCompleted;
+			const checkStatus = failedIndex < 2 ? ('error' as const) : ('timeout' as const);
+			return {
+				...buildCheckResult(c, [createFinding(c, `${c} ${checkStatus === 'error' ? 'errored' : 'timed out'}`, 'low', 'no run')]),
+				score: 0,
+				passed: false,
+				checkStatus,
+			};
+		});
 
 		const score = computeScanScore(results);
 
-		expect(score.evidence.completed).toBe(14);
-		expect(score.evidence.ratio).toBeGreaterThan(0.6);
+		expect(score.evidence.completed).toBe(nCompleted);
+		expect(score.evidence.ratio).toBeGreaterThan(EVIDENCE_SUFFICIENCY_THRESHOLD);
 		expect(score.evidenceInsufficient).toBeUndefined();
 		expect(score.overall).not.toBeNull();
 	});
 
 	it('the profile-aware entry point behaves identically on a healthy scan', async () => {
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { computeProfileAwareScanScore, buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 		const results: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
 			...buildCheckResult(c, [createFinding(c, `${c} OK`, 'info', 'Check passed')], true),
@@ -112,6 +106,7 @@ describe('evidence gate does NOT fire on a measured scan', () => {
 	// is self-enforcing — the moment Task 6 lands this turns RED and Task 6 must flip it
 	// to a plain it().
 	it.fails('the structured wire result of a healthy scan carries a grade and full coverage', async () => {
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { buildStructuredScanResult } = await import('../src/tools/scan/format-report');
 		const { computeScanScore, buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 		const checks: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
@@ -136,7 +131,7 @@ describe('evidence gate does NOT fire on a measured scan', () => {
 		expect(structured.score).not.toBeNull();
 		expect(structured.grade).not.toBeNull();
 		expect(structured.evidenceInsufficient).toBe(false);
-		expect(structured.evidence).toEqual({ attempted: 19, completed: 19, ratio: 1 });
+		expect(structured.evidence).toEqual({ attempted: SCAN_CATEGORIES.length, completed: SCAN_CATEGORIES.length, ratio: 1 });
 		expect(structured.measured).toBe(true);
 	});
 });
