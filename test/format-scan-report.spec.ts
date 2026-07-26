@@ -17,6 +17,9 @@ describe('format-scan-report', () => {
 				findings: [],
 				summary:
 					'does-not-exist-zzz.example does not resolve (NXDOMAIN) — the domain does not exist in DNS, so there is no security posture to assess.',
+				// NXDOMAIN short-circuits before any check runs (`checks: []` below) — nothing
+				// was attempted, so evidence is honestly zero, not a fabricated full ratio.
+				evidence: { attempted: 0, completed: 0, ratio: 0 },
 			},
 			checks: [],
 			maturity: { stage: 0, label: 'Does not resolve', description: 'no posture', nextStep: 'Confirm the domain is registered.' },
@@ -326,6 +329,9 @@ describe('format-scan-report', () => {
 				categoryScores: {} as ScanDomainResult['score']['categoryScores'],
 				findings: [],
 				summary: 'broken-dnssec.example DNS resolution is broken (DNSSEC validation failure).',
+				// Broken-zone short-circuits before any check runs (`checks: []` below) —
+				// nothing was attempted, so evidence is honestly zero.
+				evidence: { attempted: 0, completed: 0, ratio: 0 },
 			},
 			checks: [],
 			maturity: {

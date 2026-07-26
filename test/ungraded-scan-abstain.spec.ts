@@ -56,6 +56,9 @@ function ungradedScore(overrides: Partial<ScanScore> = {}): ScanScore {
 		categoryScores: {} as ScanScore['categoryScores'],
 		findings: [],
 		summary: 'Scan could not be scored.',
+		// "NO measurement behind it" per the docstring above — evidence is honestly
+		// zero, not a fabricated ratio for a scan that never ran.
+		evidence: { attempted: 0, completed: 0, ratio: 0 },
 		...overrides,
 	};
 }
@@ -68,6 +71,8 @@ function gradedScore(overrides: Partial<ScanScore> = {}): ScanScore {
 		categoryScores: { spf: 100, dmarc: 80 } as unknown as ScanScore['categoryScores'],
 		findings: [],
 		summary: 'Reasonable configuration. Grade: B',
+		// Control fixture: a normal fully measured scan, so evidence is honestly full.
+		evidence: { attempted: 19, completed: 19, ratio: 1 },
 		...overrides,
 	};
 }

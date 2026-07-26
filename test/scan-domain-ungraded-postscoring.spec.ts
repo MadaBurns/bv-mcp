@@ -52,22 +52,28 @@ function installEmptyDnsFetch() {
 }
 
 function ungradedScore(): ScanScore {
+	// Mocks the engine returning null outright — "could not be scored" carries no
+	// measurement behind it, so evidence is honestly zero rather than a fabricated
+	// full or partial ratio.
 	return {
 		overall: null,
 		grade: null,
 		categoryScores: {} as ScanScore['categoryScores'],
 		findings: [],
 		summary: 'Scan could not be scored.',
+		evidence: { attempted: 0, completed: 0, ratio: 0 },
 	};
 }
 
 function gradedScore(overall: number, grade: string): ScanScore {
+	// Control representing a normal, fully measured scan — evidence is honestly full.
 	return {
 		overall,
 		grade,
 		categoryScores: {} as ScanScore['categoryScores'],
 		findings: [],
 		summary: `Measured. Grade: ${grade}`,
+		evidence: { attempted: 19, completed: 19, ratio: 1 },
 	};
 }
 
