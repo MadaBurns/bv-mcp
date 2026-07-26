@@ -185,13 +185,29 @@ export async function checkMTASTS(
 	// note. Without the branch, paypal/stripe-class domains (with real MX) get
 	// the "do not accept inbound email" copy, which is factually wrong.
 	if (shouldSummarizeMissingMailProtections(findings, hasTxtRecord, tlsRptChecked, hasTlsRptRecord)) {
-		// Non-apex short-circuit: MTA-STS is defined per mail host (RFC 8461), NOT
-		// inherited from a parent zone, so a subdomain's absent MTA-STS/TLS-RPT is
-		// out of scope rather than a deficiency. Skip the MX probe entirely (saves
-		// a query) — the apex path below is unchanged.
+		// MTA-STS applicability follows the scanned LABEL's own inbound-mail role
+		// (RFC 8461), NOT its NS-delegation status: a non-apex label can still be a
+		// genuine mail-receiving host (its own MX), so ALWAYS probe MX and treat a
+		// missing policy as a real finding whenever the label accepts inbound mail.
+		// Only when the label accepts NO inbound mail is the absence out of scope —
+		// worded as an info "not applicable" for a non-apex (e.g. an ESP sending
+		// subdomain), or the existing low informational for an apex with no mail.
+		// (Gating the info purely on `!isApex` previously suppressed the real medium
+		// on a mail-receiving subdomain — a false negative.)
+		const hasMx = await detectInboundMail(domain, queryDNS, timeout);
 		const nonApex = !!(options?.zone && !options.zone.isApex);
-		if (nonApex) {
-			findings = [];
+		findings = [];
+		if (hasMx) {
+			findings.push(
+				createFinding(
+					'mta_sts',
+					'No MTA-STS or TLS-RPT records found',
+					'medium',
+					`${domain} accepts inbound email (MX records present) but has neither MTA-STS nor TLS-RPT configured. Sending MTAs cannot enforce TLS or report failures for mail to this domain.`,
+					{ missingControl: true },
+				),
+			);
+		} else if (nonApex) {
 			findings.push(
 				createFinding(
 					'mta_sts',
@@ -201,27 +217,15 @@ export async function checkMTASTS(
 				),
 			);
 		} else {
-			const hasMx = await detectInboundMail(domain, queryDNS, timeout);
-			findings = [];
 			findings.push(
-				hasMx
-					? createFinding(
-							'mta_sts',
-							'No MTA-STS or TLS-RPT records found',
-							'medium',
-							`${domain} accepts inbound email (MX records present) but has neither MTA-STS nor TLS-RPT configured. Sending MTAs cannot enforce TLS or report failures for mail to this domain.`,
-							{ missingControl: true },
-						)
-					: createFinding(
-							'mta_sts',
-							'No MTA-STS or TLS-RPT records found',
-							// No inbound MX → this domain does not receive mail, so missing MTA-STS
-							// is NOT a deficiency (low, no missingControl → ~95). Penalizing a parked
-							// domain here harder than for a missing optional control would be
-							// inconsistent. The has-MX branch above keeps missingControl (real gap).
-							'low',
-							`Neither MTA-STS nor TLS-RPT records are present for ${domain}. This is normal for domains that do not accept inbound email, but consider adding these records if you operate a mail server.`,
-						),
+				createFinding(
+					'mta_sts',
+					'No MTA-STS or TLS-RPT records found',
+					// No inbound MX → this domain does not receive mail, so missing MTA-STS
+					// is NOT a deficiency (low, no missingControl → ~95).
+					'low',
+					`Neither MTA-STS nor TLS-RPT records are present for ${domain}. This is normal for domains that do not accept inbound email, but consider adding these records if you operate a mail server.`,
+				),
 			);
 		}
 	}

@@ -345,16 +345,23 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 			},
 		});
 
+		// Production MCP envelope: the machine-readable payload is `structuredContent`.
 		const internalCall = async (_tool: string, args: { domain: string }): Promise<unknown> => ({
 			content: [],
-			structured: { domain: args.domain, score: 80, grade: 'B+', categoryScores: {}, findings: [], totalSubdomains: 100, subdomains: [] },
+			structuredContent: { domain: args.domain, score: 80, grade: 'B+', categoryScores: {}, totalSubdomains: 100, subdomains: [] },
 		});
 
 		const { runDeepScanFromStepStore } = await import('../src/lib/brand-audit-csc-deepscan-job');
 		await runDeepScanFromStepStore({ auditId: 'a-1', target: 'ford.com', stepStore: stepStore as never, internalCall });
 
-		const full = stored.get('a-1:ford.com:csc_complement_full') as { status: string; payload: { postureSnapshot: { stage: string } } };
+		const full = stored.get('a-1:ford.com:csc_complement_full') as {
+			status: string;
+			payload: { postureSnapshot: { stage: string; apexesScanned: number; apexes: Array<{ apex: string; grade: string }> } };
+		};
 		expect(full.status).toBe('completed');
 		expect(full.payload.postureSnapshot.stage).toBe('ready');
+		// Not vacuous: the merge must carry real per-apex posture, not an empty snapshot.
+		expect(full.payload.postureSnapshot.apexesScanned).toBe(1);
+		expect(full.payload.postureSnapshot.apexes[0]).toMatchObject({ apex: 'ford.com', grade: 'B+' });
 	});
 });
