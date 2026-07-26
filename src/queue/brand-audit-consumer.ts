@@ -43,22 +43,45 @@ import type { Tier1Result } from '../lib/brand-tier1-graph';
 import type { Tier2Result } from '../lib/brand-tier2-evidence';
 
 /**
- * Per-message budget for the orchestrator. The AbortController-driven catch
- * path commits a `failed` row only when the inner orchestrator is well-behaved
- * — the abort `setTimeout` macrotask competes with whatever microtasks the
- * orchestrator generates, and for fan-out-heavy brands (tier-1 portfolios)
- * the microtask queue stays saturated long enough that the worker is
- * killed before any catch UPDATE can flush. Those rows are recovered by the
- * cron reaper (`reapStuckBrandAudits`) ~15 min later — see the 2026-05-19
- * tier-1 investigation for the trace evidence. Until AbortSignal is plumbed
- * through `dns-transport`/`safe-fetch` (so in-flight fetches actually cancel),
- * the reaper is the durability boundary for oversized audits.
- *
- * 300s matches the report-generation runner's per-target poll contract and
- * gives large tier-1 brands enough room for registrar fallback enrichment.
- * Oversized audits still return a controlled failure before the 15-min reaper.
+ * The Cloudflare Workers CPU cap for this consumer, mirrored from `wrangler.jsonc`
+ * `limits.cpu_ms`. The platform KILLS the isolate at this bound — anything past it
+ * (including the AbortController catch that writes the terminal `failed` row) never
+ * runs. **Keep in lockstep with wrangler.jsonc `limits.cpu_ms`.**
  */
-export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS = 300_000;
+export const PLATFORM_CONSUMER_CPU_CAP_MS = 300_000;
+
+/**
+ * Headroom reserved BELOW the platform cap for the abort to unwind + the terminal
+ * D1 write to flush.
+ *
+ * History (the deep-discovery terminal-state bug, Bug #1): the abort budget used to
+ * EQUAL the platform cap (both 300s), leaving zero headroom. A fan-out-heavy `deep`
+ * discovery run consumed the whole budget, so the isolate was killed at the cap
+ * before the AbortController catch could flush its `failed` UPDATE — stranding the
+ * target in `running` until the 7-min read-path/reaper force-failed it (surfacing as
+ * "consumer cap did not flip status"). Standard runs (~27s) never approach the cap,
+ * so they always flip terminal — which is why only deep hung. With the abort now
+ * threaded into `dnsContext` (new probes short-circuit on abort, so in-flight work
+ * drains within a DoH timeout), the ONLY remaining gap was this missing headroom:
+ * the abort must fire strictly before the cap. Since CPU time ≤ wall time, an abort
+ * at `cap - headroom` wall leaves ≥ `headroom` of CPU budget under the cap for the
+ * terminal write. The reaper stays as the last-resort durability boundary, no longer
+ * the normal path for oversized audits.
+ */
+export const BRAND_AUDIT_TERMINAL_WRITE_HEADROOM_MS = 30_000;
+
+/**
+ * Per-message budget for the orchestrator — DERIVED from the platform cap minus the
+ * terminal-write headroom so it can never silently drift back up to the cap. Shared
+ * by the full-audit (`processBrandAuditMessage`) and discovery (`processDiscoverOnlyMessage`)
+ * paths; both get the same terminal-state guarantee. Threaded into the orchestrator
+ * as both the abort `setTimeout` delay and `deadlineMs`, so deadline-aware phases
+ * (e.g. recursive SAN) also skip earlier. Comfortably covers large tier-1 brands +
+ * registrar fallback enrichment; oversized audits return a controlled `failed`
+ * before the cap, not via the cron reaper.
+ */
+export const BRAND_AUDIT_MESSAGE_TIMEOUT_MS =
+	PLATFORM_CONSUMER_CPU_CAP_MS - BRAND_AUDIT_TERMINAL_WRITE_HEADROOM_MS;
 
 /** Wire format for a brand-audit queue message. Validated on the consumer side as defense in depth. */
 export const BrandAuditQueueMessageSchema = z.object({
