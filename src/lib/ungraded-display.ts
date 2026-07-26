@@ -35,14 +35,20 @@ export function formatScoreGrade(score: number | null | undefined, grade: string
 }
 
 /**
- * Did this scan actually run any checks?
+ * Did this scan attempt any checks at all?
  *
- * The SINGLE spelling of "was anything measured", shared by
- * `StructuredScanResult.measured` and `compare_baseline`'s abstention. A second
- * spelling is how the same state ends up handled in one consumer and coerced in
- * another — which is precisely the bug this predicate closes: `compare_baseline`
- * read `check?.passed ?? false`, turning ABSENCE of measurement into a confident
- * policy FAIL.
+ * The SINGLE spelling of "was anything attempted", shared by
+ * `StructuredScanResult.measured` (its documented meaning there — see
+ * `hasCompletedEvidence`'s doc below) and by the never-ran (`checks: []`)
+ * branch every `assessed`/`caveat` computation in `map_compliance`,
+ * `generate_fix_plan`, `map_csc_products`, and `compare_baseline` special-cases.
+ * None of those four surfaces use `isMeasured` alone as their assessed/measured
+ * predicate any more — a total-outage scan (`checks.length > 0`, but every
+ * check's `checkStatus` is `'timeout' | 'error'`) is `isMeasured: true` despite
+ * carrying zero usable evidence, which is exactly the gap `hasCompletedEvidence`
+ * closes. `isMeasured` still answers a real, narrower question — "did anything
+ * run at all" — used to distinguish the never-ran case from both of the other
+ * two states.
  *
  * `buildNonResolvingResult` (NXDOMAIN) and `buildDnsBrokenResult`
  * (SERVFAIL/DNSSEC-bogus) emit `checks: []`; `buildUnscoredResult` does NOT — its

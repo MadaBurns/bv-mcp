@@ -34,11 +34,26 @@ export interface CscLead {
 	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
 	grade: string | null;
 	/**
-	 * Did any check run for this domain? (`isMeasured`.) Gates everything derived
-	 * from the CHECKS: `gapSeverity`, the product list, and every sales rollup.
-	 * Same meaning as the `assessed` flag on `map_compliance`/`generate_fix_plan`.
+	 * Is there any COMPLETED check evidence for this domain? (`hasCompletedEvidence`,
+	 * via `evaluateCscProducts` — NOT `isMeasured`: a total-outage scan has checks
+	 * with `checkStatus: 'timeout' | 'error'` on every one of them, which
+	 * `isMeasured` alone could not tell apart from a genuinely measured scan.)
+	 * Gates everything derived from the CHECKS: `gapSeverity`, the product list,
+	 * and every sales rollup. Same meaning as the `assessed` flag on
+	 * `map_compliance`/`generate_fix_plan`.
 	 */
 	assessed: boolean;
+	/**
+	 * `null` when `assessed` is `true`; otherwise the producer's own
+	 * (`evaluateCscProducts`'s) explanation of WHY — "no checks ran"
+	 * ({@link UNASSESSED_CSC_NOTE}) vs. "checks were attempted but none
+	 * completed" (`buildAllTransientCscNote`, from `map_csc_products`).
+	 * Threaded straight through from `CscProductReport.caveat` so this tool
+	 * never re-derives or re-guesses the reason — it only had ONE reason to say
+	 * before this field existed, which is exactly how an all-transient lead
+	 * ended up printing the false "no checks ran" sentence.
+	 */
+	caveat: string | null;
 	/**
 	 * Did this domain produce a gradeable SCORE? (`isGraded`.) Gates only what the
 	 * score supports: the portfolio-grade contribution and the score line.
@@ -111,7 +126,13 @@ export interface CscLeadReport {
 		totalRecommendations: number;
 		byProduct: Record<CscProductKey, number>;
 		hotLeads: number;
-		/** Ranked leads where NO check ran — excluded from every rollup above. */
+		/**
+		 * Ranked leads with no COMPLETED check evidence — excluded from every
+		 * rollup above. Two distinct causes collapse into this one count: the
+		 * domain never resolved (no checks ran), or every attempted check hit a
+		 * transient DNS/network failure and never completed. `rankedLeads[].caveat`
+		 * says which, per lead.
+		 */
 		unassessedDomains: number;
 		/**
 		 * Ranked leads whose checks ran but which produced no score. They DO count in
@@ -130,8 +151,46 @@ export interface CscLeadReport {
  * The first sentence is {@link UNASSESSED_CSC_NOTE}, shared with
  * `map_csc_products` so both tools say the same thing about the same state; the
  * second is the leads-specific consequence.
+ *
+ * Byte-identical to its pre-fix-round wording — kept as the CONTROL a lead
+ * whose producer caveat genuinely is {@link UNASSESSED_CSC_NOTE} still renders.
+ * A lead whose caveat is the DIFFERENT "attempted, none completed" sentence
+ * (a total-outage scan) must NOT render this constant — see
+ * {@link leadUnassessedNote}, which chooses between the two using the
+ * producer's own `caveat`.
  */
 export const UNASSESSED_LEAD_NOTE = `${UNASSESSED_CSC_NOTE} It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.`;
+
+/**
+ * True when a per-lead `caveat` is the producer's "no checks ran" reason
+ * (never-ran: NXDOMAIN, broken zone) rather than its "checks were attempted
+ * but none of them completed" reason (a total DoH/network outage). `null` is
+ * treated as never-ran defensively — it should not occur for an unassessed
+ * lead (the producer always sets a real string there), but a fabricated fixture
+ * that violates the contract must not read as the transient state either.
+ */
+function isNeverRanCaveat(caveat: string | null): boolean {
+	return caveat === null || caveat === UNASSESSED_CSC_NOTE;
+}
+
+/**
+ * The FULL-format per-lead note for an unassessed lead, choosing between the
+ * two producer-computed reasons rather than always printing
+ * {@link UNASSESSED_LEAD_NOTE}. Before this, EVERY unassessed lead printed "no
+ * checks ran" — false for a lead whose checks were attempted and errored out
+ * (a total-outage scan), which is exactly the state `map_csc_products` already
+ * distinguishes via `CscProductReport.caveat`. This tool only had to start
+ * reading that field.
+ */
+function leadUnassessedNote(caveat: string | null): string {
+	if (isNeverRanCaveat(caveat)) return UNASSESSED_LEAD_NOTE;
+	return `${caveat} It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.`;
+}
+
+/** The COMPACT-format per-lead qualifier — same distinction as {@link leadUnassessedNote}, terser. */
+function compactUnassessedNote(caveat: string | null): string {
+	return isNeverRanCaveat(caveat) ? 'no checks ran' : 'checks attempted, none completed';
+}
 
 /**
  * The per-lead qualifier for "checks ran, scan could not be scored".
@@ -159,14 +218,32 @@ function domainCount(n: number): string {
 }
 
 /**
- * Compose the report-level caveat from the two exclusion counts, or `null` when
- * every lead was fully measured. Each clause is a statement about the REPORT.
+ * Compose the report-level caveat from the unassessed leads' own producer
+ * caveats plus the unscored-domain count, or `null` when every lead was fully
+ * measured. Each clause is a statement about the REPORT.
+ *
+ * STATE-AWARE: `unassessedCaveats` is one entry per unassessed lead (its own
+ * `caveat`, threaded from `CscProductReport.caveat`), not a bare count. A
+ * hardcoded "no checks ran" reason here was false whenever the exclusions were
+ * actually a total-outage scan (checks attempted, none completed) — the exact
+ * same defect this fix round addresses at the per-lead render sites, one level
+ * up. A MIXED population (some leads never ran, others hit a transient outage)
+ * states both reasons rather than picking one arbitrarily.
  */
-function buildReportCaveat(unassessedDomains: number, unscoredDomains: number): string | null {
+function buildReportCaveat(unassessedCaveats: ReadonlyArray<string | null>, unscoredDomains: number): string | null {
 	const parts: string[] = [];
+	const unassessedDomains = unassessedCaveats.length;
 	if (unassessedDomains > 0) {
+		const anyNeverRan = unassessedCaveats.some(isNeverRanCaveat);
+		const anyTransient = unassessedCaveats.some((c) => !isNeverRanCaveat(c));
+		const reason =
+			anyNeverRan && anyTransient
+				? 'some had no checks run at all, and others had checks attempted but none of them completed (transient DNS/network failure)'
+				: anyTransient
+					? 'checks were attempted but none of them completed (transient DNS/network failure)'
+					: 'no checks ran';
 		parts.push(
-			`${domainCount(unassessedDomains)} could not be assessed: no checks ran, so ${unassessedDomains === 1 ? 'it is' : 'they are'} excluded from the hot-lead count, the recommendation totals and the portfolio grade.`,
+			`${domainCount(unassessedDomains)} could not be assessed: ${reason}, so ${unassessedDomains === 1 ? 'it is' : 'they are'} excluded from the hot-lead count, the recommendation totals and the portfolio grade.`,
 		);
 	}
 	if (unscoredDomains > 0) {
@@ -301,8 +378,9 @@ export function rankCscLeads(
 	const leads: CscLead[] = entries.map((e) => {
 		// Two predicates, deliberately separate. `graded` is the SAME condition
 		// `computePortfolioGrade` has always used to drop a lead from the weighted
-		// average. `assessed` is whether any check ran — the producer computes it
-		// with `isMeasured`, and it is what the check-derived numbers hang on.
+		// average. `assessed` is whether there is any COMPLETED check evidence —
+		// the producer computes it with `hasCompletedEvidence`, and it is what the
+		// check-derived numbers hang on.
 		const graded = e.report.score !== null && e.report.grade !== null;
 		const assessed = e.report.assessed;
 		return {
@@ -310,6 +388,10 @@ export function rankCscLeads(
 			score: e.report.score,
 			grade: e.report.grade,
 			assessed,
+			// Threaded straight from the producer — never re-derived — so this tool
+			// says the SAME reason `map_csc_products` would say about the same
+			// domain. `null` exactly when `assessed` is `true`.
+			caveat: e.report.caveat,
 			graded,
 			ownershipBucket: e.ownershipBucket,
 			recommendedCscProducts: recommendedProducts(e.report),
@@ -351,7 +433,8 @@ export function rankCscLeads(
 	}
 
 	const portfolioGrade = computePortfolioGrade(leads);
-	const unassessedDomains = leads.length - assessedLeads.length;
+	const unassessedLeads = leads.filter((l) => !l.assessed);
+	const unassessedDomains = unassessedLeads.length;
 	const unscoredDomains = assessedLeads.filter((l) => !l.graded).length;
 
 	return {
@@ -359,7 +442,15 @@ export function rankCscLeads(
 		totalDomains: leads.length,
 		rankedLeads: leads,
 		portfolioGrade,
-		caveat: buildReportCaveat(unassessedDomains, unscoredDomains),
+		// State-aware: each unassessed lead carries its OWN producer-computed
+		// reason (never-ran vs. attempted-none-completed); `buildReportCaveat`
+		// reads those rather than hardcoding a single reason for the whole
+		// report, which is what let an all-transient portfolio print the false
+		// "no checks ran" sentence.
+		caveat: buildReportCaveat(
+			unassessedLeads.map((l) => l.caveat),
+			unscoredDomains,
+		),
 		summary: {
 			totalRecommendations: assessedLeads.reduce((sum, l) => sum + l.recommendedCount, 0),
 			byProduct,
@@ -422,7 +513,7 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 			lines.push(
 				lead.assessed
 					? `${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${lead.gapSeverity} — ${formatScoreGrade(lead.score, lead.grade)} — ${lead.recommendedCount} product(s)`
-					: `${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${UNGRADED_DISPLAY} — ${UNGRADED_DISPLAY} — no checks ran`,
+					: `${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${UNGRADED_DISPLAY} — ${UNGRADED_DISPLAY} — ${compactUnassessedNote(lead.caveat)}`,
 			);
 		}
 		return lines.join('\n').trimEnd();
@@ -454,7 +545,7 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 		if (!lead.assessed) {
 			lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${UNGRADED_DISPLAY}`);
 			lines.push(`  - Score: ${formatScoreGrade(lead.score, lead.grade)} | Ownership: ${lead.ownershipBucket}`);
-			lines.push(`  - ${UNASSESSED_LEAD_NOTE}`);
+			lines.push(`  - ${leadUnassessedNote(lead.caveat)}`);
 			continue;
 		}
 		lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${lead.gapSeverity}`);

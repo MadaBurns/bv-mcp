@@ -29,6 +29,7 @@ function makeReport(domain: string, score: number | null, grade: string | null, 
 		// because only the producer manufactures the "recommended because
 		// unobserved" shape that defect lives in.
 		assessed: true,
+		caveat: null,
 		lockPosture: null,
 		recommendations,
 		recommendedCount: recommendations.filter((r) => r.recommended).length,
@@ -809,5 +810,147 @@ describe('extractDiscoveredCandidates', () => {
 			findings: [{ category: 'brand_discovery', title: 'Brand audit requires async processing', severity: 'info', detail: '', metadata: { asyncHandoff: true } }],
 		} as unknown as CheckResult;
 		expect(extractDiscoveredCandidates(result)).toEqual([]);
+	});
+});
+
+/**
+ * Fix round 1, F1 (MEDIUM regression from Task 6b, commit ec984197): before
+ * ec984197, `evaluateCscProducts` read `assessed: isMeasured(checkResults)`,
+ * so an all-transient lead (checks attempted, none completed) was
+ * `assessed: true` and `UNASSESSED_LEAD_NOTE`/`buildReportCaveat`'s "no
+ * checks ran" wording was UNREACHABLE for it. ec984197 made `assessed`
+ * correctly `false` for that state — which made the hardcoded "no checks
+ * ran" prose REACHABLE, and false: N checks WERE attempted. This closes that
+ * gap by threading `CscProductReport.caveat` (map_csc_products already
+ * computes the correct sentence) into `CscLead.caveat` and reading it at
+ * every per-lead and report-level render site, using the REAL producer
+ * (`evaluateCscProducts` → `rankCscLeads` → `formatCscLeads`) throughout —
+ * no hand-built `CscLead`/`CscLeadReport` literals, since only the real
+ * producer manufactures the exact shape the defect lived in.
+ */
+describe('prioritize_csc_leads — a total outage (all checks attempted, none completed) is honestly unassessed (fix round 1, F1)', () => {
+	/** One all-transient CscLeadEntry via the REAL producer chain (evaluateCscProducts). */
+	async function allTransientEntry(domain: string, ownershipBucket: OwnershipBucket = 'unknown'): Promise<CscLeadEntry> {
+		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		const allTransient: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
+			...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+			score: 0,
+			passed: false,
+			checkStatus: 'error' as const,
+			partial: true,
+		}));
+		// Non-vacuity guard: prove check data actually existed (unlike the
+		// never-ran control below) before asserting on it.
+		expect(allTransient.length).toBeGreaterThan(10);
+
+		const report = evaluateCscProducts(allTransient, null, domain, null, null);
+		return { report, ownershipBucket };
+	}
+
+	/** One never-ran CscLeadEntry via the REAL producer chain — the byte-identical control. */
+	async function neverRanEntry(domain: string, ownershipBucket: OwnershipBucket = 'unknown'): Promise<CscLeadEntry> {
+		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+		return { report: evaluateCscProducts([], null, domain, null, null), ownershipBucket };
+	}
+
+	it('threads the producer caveat onto CscLead, distinct from the never-ran wording', async () => {
+		const { rankCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		const entry = await allTransientEntry('total-outage.example');
+		const report = rankCscLeads([entry]);
+		const lead = report.rankedLeads[0];
+
+		expect(lead.assessed).toBe(false);
+		expect(lead.caveat).not.toBeNull();
+		expect(lead.caveat!.toLowerCase()).not.toContain('no checks ran');
+		expect(lead.caveat).toMatch(/attempted/i);
+	});
+
+	it.each(['compact', 'full'] as const)(
+		'renders the attempted-none-completed wording per lead, NOT "no checks ran" [%s]',
+		async (format) => {
+			const { rankCscLeads, formatCscLeads } = await import('../src/tools/prioritize-csc-leads');
+			const entry = await allTransientEntry('total-outage.example');
+			const report = rankCscLeads([entry]);
+			const text = formatCscLeads(report, format);
+
+			expect(text.toLowerCase()).not.toContain('no checks ran');
+			expect(text).toMatch(/attempted/i);
+		},
+	);
+
+	it('the report-level caveat (buildReportCaveat) is also state-aware — not the false "no checks ran" reason', async () => {
+		const { rankCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		const entry = await allTransientEntry('total-outage.example');
+		const report = rankCscLeads([entry]);
+
+		expect(report.caveat).not.toBeNull();
+		expect(report.caveat!.toLowerCase()).not.toContain('no checks ran');
+		expect(report.caveat).toMatch(/attempted/i);
+	});
+
+	it('a MIXED unassessed population states both reasons at the report level rather than picking one', async () => {
+		const { rankCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		const transient = await allTransientEntry('total-outage.example');
+		const neverRan = await neverRanEntry('never-measured.example');
+		const report = rankCscLeads([transient, neverRan]);
+
+		expect(report.summary.unassessedDomains).toBe(2);
+		expect(report.caveat).toMatch(/no checks run at all/i);
+		expect(report.caveat).toMatch(/attempted/i);
+	});
+
+	it('keeps the never-ran case byte-identical to its pre-fix-round wording at every site (control)', async () => {
+		const { rankCscLeads, formatCscLeads, UNASSESSED_LEAD_NOTE } = await import('../src/tools/prioritize-csc-leads');
+		const { UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+		const entry = await neverRanEntry('never-measured.example');
+		const report = rankCscLeads([entry]);
+		const lead = report.rankedLeads[0];
+
+		// Without this control, the "not 'no checks ran'" assertions above could
+		// hold under an implementation that stopped saying "no checks ran" ANYWHERE.
+		expect(lead.assessed).toBe(false);
+		expect(lead.caveat).toBe(UNASSESSED_CSC_NOTE);
+
+		const compact = formatCscLeads(report, 'compact');
+		const full = formatCscLeads(report, 'full');
+		expect(compact).toContain('no checks ran');
+		expect(full).toContain(UNASSESSED_LEAD_NOTE);
+		expect(report.caveat).toContain('no checks ran');
+	});
+
+	it('still lists real recommendations for a MEASURED lead (guard — no over-abstain, 1-of-N completed)', async () => {
+		const { rankCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		const mostlyTransient: CheckResult[] = SCAN_CATEGORIES.map((c) => {
+			if (c === 'dmarc') {
+				return {
+					...buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record', 'high', 'missing')]),
+					score: 0,
+					passed: false,
+				};
+			}
+			return {
+				...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'error' as const,
+				partial: true,
+			};
+		});
+		expect(mostlyTransient.length).toBeGreaterThan(10);
+
+		const report = evaluateCscProducts(mostlyTransient, null, 'partial-outage.example', null, null);
+		const leadsReport = rankCscLeads([{ report, ownershipBucket: 'unknown' }]);
+		const lead = leadsReport.rankedLeads[0];
+
+		expect(lead.assessed).toBe(true);
+		expect(lead.caveat).toBeNull();
+		expect(lead.recommendedCscProducts).toContain('managed_dmarc');
 	});
 });

@@ -272,6 +272,185 @@ describe('ungraded representation', () => {
 		}
 	});
 
+	/**
+	 * Fix round 1, F5: the sibling invariant to the never-ran block above, for the
+	 * FOURTH surface state — checks attempted, none of them COMPLETED
+	 * (`checkStatus: 'timeout' | 'error'` on every one). `hasCompletedEvidence`
+	 * exists to distinguish this from the never-ran (`checks: []`) state above,
+	 * and this is the EXACT state F1 caught a regression in: commit ec984197
+	 * correctly flipped `prioritize_csc_leads`' `assessed` to `false` for it, but
+	 * every per-lead/report-level note kept printing the never-ran "no checks
+	 * ran" sentence — false, since N checks DID run. Had this invariant existed
+	 * before ec984197, it would have failed on that commit.
+	 *
+	 * `map_csc_products`, `prioritize_csc_leads`, and `compare_baseline` are
+	 * built by their REAL producers (`evaluateCscProducts` /
+	 * `rankCscLeads` over it / `compareBaseline`) from a hand-built all-transient
+	 * `CheckResult[]` — the SAME fixture pattern as the transient-`map_compliance`
+	 * block above and `map-compliance.spec.ts`'s own fixture, since a corpus
+	 * audit must not mock `scanDomain`.
+	 *
+	 * `generate_fix_plan` has no pure evaluator to call this way — its logic
+	 * lives inline in the impure `generateFixPlan` orchestrator (mirrors the
+	 * never-ran block's exclusion above, for the same reason). Its row here is a
+	 * hand-built `FixPlanResult` instead: it proves the WIRE serialization does
+	 * not fabricate or collapse the all-transient wording once the result exists,
+	 * not that the producer computes that result correctly — that producer-level
+	 * proof lives in `test/reporting-surfaces-unmeasured.integration.test.ts`'s
+	 * "a total outage" describe block (added alongside this audit extension).
+	 */
+	it('no reporting tool renders the never-ran wording on the wire for an attempted-none-completed (all-transient) domain', async () => {
+		const { buildToolResult } = await import('../../src/handlers/tool-formatters');
+		const { evaluateCscProducts, formatCscProducts, buildAllTransientCscNote, UNASSESSED_CSC_NOTE } =
+			await import('../../src/tools/map-csc-products');
+		const { rankCscLeads, formatCscLeads } = await import('../../src/tools/prioritize-csc-leads');
+		const { compareBaseline, formatBaselineResult } = await import('../../src/tools/compare-baseline');
+		const { buildAllTransientFixPlanCaveat, formatFixPlan } = await import('../../src/tools/generate-fix-plan');
+		const { SCAN_CATEGORIES } = await import('../../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		// Every attempted check errored out — mirrors the buildDnsErrorResult/safeCheck
+		// shape exactly, same as this file's transient-`map_compliance` fixture below.
+		const allTransient: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
+			...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+			score: 0,
+			passed: false,
+			checkStatus: 'error' as const,
+			partial: true,
+		}));
+		// Non-vacuity guard: prove check data actually existed (unlike the
+		// never-ran block above) before asserting on it.
+		expect(allTransient.length).toBeGreaterThan(10);
+
+		const cscReport = evaluateCscProducts(allTransient, null, 'total-outage.example', null, null);
+		const leadsReport = rankCscLeads([{ report: cscReport, ownershipBucket: 'consolidated' as const }]);
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const baselineScan: any = {
+			domain: 'total-outage.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'transient outage' },
+			checks: allTransient,
+			maturity: { stage: 0, label: 'Unknown', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		};
+		const baselineResult = compareBaseline(baselineScan, {
+			require_spf: true,
+			require_dmarc_enforce: true,
+			max_critical_findings: 0,
+		});
+		// Hand-built — see the JSDoc above for why generate_fix_plan cannot use a
+		// real producer here. The caveat is the SAME helper generateFixPlan itself
+		// calls, so this pins the wire-serialization contract, not a re-derivation.
+		const fixPlan = {
+			domain: 'total-outage.example',
+			score: null,
+			grade: null,
+			maturityStage: null,
+			totalActions: 0,
+			actions: [],
+			assessed: false,
+			caveat: buildAllTransientFixPlanCaveat(allTransient.length),
+		};
+
+		const surfaces = [
+			{
+				tool: 'map_csc_products',
+				text: formatCscProducts(cscReport, 'full'),
+				data: cscReport as unknown,
+				// Names the transient state explicitly (`buildAllTransientCscNote`).
+				proseNamesTransient: true,
+			},
+			{
+				tool: 'prioritize_csc_leads',
+				text: formatCscLeads(leadsReport, 'full'),
+				data: leadsReport as unknown,
+				// Threads the SAME wording via `CscLead.caveat` (F1).
+				proseNamesTransient: true,
+			},
+			{
+				tool: 'compare_baseline',
+				text: formatBaselineResult(baselineResult, 'full'),
+				data: baselineResult as unknown,
+				// Deliberately generic ("no measurement available") — true for BOTH
+				// the never-ran and all-transient states without naming either, so
+				// it never needed a wording change (Task 6b). It must still never
+				// say the never-ran-SPECIFIC sentence, which the loop below checks
+				// unconditionally; it just doesn't positively name "attempted" either.
+				proseNamesTransient: false,
+			},
+			{
+				tool: 'generate_fix_plan',
+				text: formatFixPlan(fixPlan, 'full'),
+				data: fixPlan as unknown,
+				// Names the transient state explicitly (`buildAllTransientFixPlanCaveat`).
+				proseNamesTransient: true,
+			},
+		];
+
+		// Non-vacuity: every surface must carry at least one rule-worthy fixture,
+		// and the producers must have actually produced something to inspect.
+		expect(surfaces).toHaveLength(4);
+		expect(cscReport.assessed).toBe(false);
+		expect(leadsReport.rankedLeads).toHaveLength(1);
+		expect(leadsReport.rankedLeads[0]!.assessed).toBe(false);
+		expect(baselineResult.passed).toBeNull();
+		expect(baselineResult.inconclusiveRules.length).toBeGreaterThan(0);
+
+		// The never-ran sentence, in the exact wording every one of these four
+		// tools shares (`map_csc_products`' `UNASSESSED_CSC_NOTE`, or the leads/
+		// fix-plan constants built from it). It must not appear ANYWHERE for an
+		// all-transient result — neither in prose nor on either wire channel.
+		const NEVER_RAN_SENTENCE = 'No checks ran for this domain';
+		expect(NEVER_RAN_SENTENCE).toBe(UNASSESSED_CSC_NOTE.slice(0, NEVER_RAN_SENTENCE.length));
+
+		// Non-vacuity for the flag itself: at least one surface names the
+		// transient state and at least one deliberately doesn't (compare_baseline)
+		// — otherwise the per-surface branch below is dead code in one direction.
+		expect(surfaces.some((s) => s.proseNamesTransient)).toBe(true);
+		expect(surfaces.some((s) => !s.proseNamesTransient)).toBe(true);
+
+		for (const { tool, text, data, proseNamesTransient } of surfaces) {
+			expect(text, `${tool}/prose: must not render the never-ran sentence`).not.toContain(NEVER_RAN_SENTENCE);
+			if (proseNamesTransient) {
+				expect(text, `${tool}/prose: must name the transient/attempted state`).toMatch(/attempted/i);
+			}
+
+			const result = buildToolResult(text, data, 'full');
+			const structured = JSON.stringify(result.structuredContent);
+			const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));
+			expect(comment, `${tool}: STRUCTURED_RESULT comment`).toBeDefined();
+
+			for (const [channel, payload] of [
+				['structuredContent', structured],
+				['STRUCTURED_RESULT', comment!],
+			] as const) {
+				expect(payload, `${tool}/${channel}: must not carry the never-ran sentence`).not.toContain(NEVER_RAN_SENTENCE);
+				// Case-insensitive and NOT anchored to the full sentence — catches the
+				// fragment anywhere on the wire, including NESTED text a top-level
+				// `caveat` field doesn't cover. `map_csc_products`' own
+				// `recommendations[].justifyingGap` used to hardcode "…not assessed —
+				// no checks ran" regardless of WHY the domain was unassessed, which sat
+				// on this exact wire channel (via `structuredContent`) even though
+				// `formatCscProducts` never printed it to prose — a fabrication this
+				// substring check alone can catch where the sentence-level check above
+				// cannot. None of the correct all-transient wordings contain this
+				// fragment (they say "no checks running at ALL", not "ran").
+				expect(payload.toLowerCase(), `${tool}/${channel}: must not carry "no checks ran" anywhere, incl. nested text`).not.toContain(
+					'no checks ran',
+				);
+			}
+		}
+
+		// Control — the SAME never-ran sentence, from the SAME producers, still
+		// renders for a genuinely never-ran domain. Without this, every assertion
+		// above could hold under a producer that stopped saying the never-ran
+		// sentence ANYWHERE, including where it is still correct.
+		const neverRanCsc = evaluateCscProducts([], null, 'never-measured.example', null, null);
+		expect(formatCscProducts(neverRanCsc, 'full')).toContain(NEVER_RAN_SENTENCE);
+		expect(buildAllTransientCscNote(allTransient.length)).not.toContain(NEVER_RAN_SENTENCE);
+	});
+
 	// Spec §D1's scoring-boundary guard, expressed as an invariant over the three
 	// zero-check paths (NXDOMAIN, unresolvable zone, scoring-bundle failure) plus
 	// the batch placeholder: no path may return a grade with nothing measured.

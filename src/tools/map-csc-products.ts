@@ -38,7 +38,11 @@ export interface CscProductReport {
 	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
 	grade: string | null;
 	/**
-	 * Did any check actually run? (`isMeasured` over the input results.)
+	 * Is there any COMPLETED check evidence? (`hasCompletedEvidence` over the
+	 * input results — NOT `isMeasured`: a total-outage scan has `checks.length >
+	 * 0` too, with every check's `checkStatus` `'timeout' | 'error'`, and
+	 * `isMeasured` alone could not tell that apart from a genuinely measured
+	 * scan.)
 	 *
 	 * Distinct from having a SCORE. `buildUnscoredResult` — the shipped
 	 * scoring-bundle-failure path — produces real checks with real findings and a
@@ -51,13 +55,18 @@ export interface CscProductReport {
 	 */
 	assessed: boolean;
 	/**
-	 * Populated only when `assessed` is `false`; `null` otherwise. Distinguishes
-	 * "no checks ran" ({@link UNASSESSED_CSC_NOTE}) from "checks were attempted
-	 * but none of them completed" ({@link buildAllTransientCscNote}) — the two
-	 * failure modes `hasCompletedEvidence` collapses into the same `assessed:
-	 * false`, but which are NOT the same fact and get distinct wording.
+	 * REQUIRED — `null` when `assessed` is `true`, a non-null string otherwise.
+	 * Distinguishes "no checks ran" ({@link UNASSESSED_CSC_NOTE}) from "checks
+	 * were attempted but none of them completed"
+	 * ({@link buildAllTransientCscNote}) — the two failure modes
+	 * `hasCompletedEvidence` collapses into the same `assessed: false`, but which
+	 * are NOT the same fact and get distinct wording. Required (not optional) so
+	 * every construction site — the real producer AND every hand-built test
+	 * fixture — must state explicitly which reason applies; an omitted field
+	 * here is exactly how a transient-outage report silently rendered the
+	 * "no checks ran" text before this was made required.
 	 */
-	caveat?: string | null;
+	caveat: string | null;
 	lockPosture: LockPosture | null;
 	/**
 	 * Always the four products in fixed order. When `assessed` is `false` the three
@@ -148,20 +157,31 @@ function evalScanProduct(
 }
 
 /**
- * The scan-driven product line for a domain where NO check ran.
+ * The scan-driven product line for a domain with no COMPLETED check evidence.
  *
  * `evalScanProduct`'s `absent` branch ("DMARC not observed") means "we looked and
- * found nothing" — a real, sellable gap. With zero checks nobody looked, so the
- * same branch would recommend all three products at once on the strength of
- * non-observation. This states the absence of evidence instead of pricing it.
+ * found nothing" — a real, sellable gap. With no completed evidence nobody
+ * looked, so the same branch would recommend all three products at once on the
+ * strength of non-observation. This states the absence of evidence instead of
+ * pricing it.
+ *
+ * `caveat` (the SAME producer-computed reason carried on `CscProductReport.caveat`)
+ * picks the wording: "no checks ran" is false — and this exact text, ending up
+ * on the `recommendations[].justifyingGap` WIRE field even though `formatCscProducts`
+ * never prints it to prose — for a total-outage scan where N checks WERE attempted.
  */
-function unassessedScanProduct(product: Exclude<CscProductKey, 'csc_multilock'>, concern: string): CscProductRecommendation {
+function unassessedScanProduct(
+	product: Exclude<CscProductKey, 'csc_multilock'>,
+	concern: string,
+	caveat: string | null,
+): CscProductRecommendation {
+	const reason = caveat !== null && caveat !== UNASSESSED_CSC_NOTE ? 'checks attempted, none completed' : 'no checks ran';
 	return {
 		product,
 		productName: CSC_PRODUCT_NAMES[product],
 		recommended: false,
 		priority: 'none',
-		justifyingGap: `${concern} not assessed — no checks ran`,
+		justifyingGap: `${concern} not assessed — ${reason}`,
 		relatedFindings: [],
 	};
 }
@@ -201,21 +221,21 @@ export function evaluateCscProducts(
 					failing: 'DMARC present but not passing',
 					absent: 'DMARC not observed',
 				})
-			: unassessedScanProduct('managed_dmarc', 'DMARC'),
+			: unassessedScanProduct('managed_dmarc', 'DMARC', caveat),
 		assessed
 			? evalScanProduct('digital_certificates', byCategory.get('ssl'), {
 					passing: 'TLS/SSL configuration healthy',
 					failing: 'TLS/SSL issues detected',
 					absent: 'TLS/SSL not observed',
 				})
-			: unassessedScanProduct('digital_certificates', 'TLS/SSL'),
+			: unassessedScanProduct('digital_certificates', 'TLS/SSL', caveat),
 		assessed
 			? evalScanProduct('dnssec_management', byCategory.get('dnssec'), {
 					passing: 'DNSSEC enabled',
 					failing: 'DNSSEC not enabled',
 					absent: 'DNSSEC not observed',
 				})
-			: unassessedScanProduct('dnssec_management', 'DNSSEC'),
+			: unassessedScanProduct('dnssec_management', 'DNSSEC', caveat),
 	];
 
 	return {
@@ -269,7 +289,14 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 		(r): r is CscProductRecommendation => r !== undefined && (report.assessed || r.recommended),
 	);
 
-	const caveat = report.caveat ?? UNASSESSED_CSC_NOTE;
+	// `caveat` is REQUIRED on `CscProductReport`, so the real producer
+	// (`evaluateCscProducts`) always states which reason applies whenever
+	// `!assessed`. Falling back to `UNASSESSED_CSC_NOTE` specifically was the
+	// same silent-wrong-prose shape this fix round exists to remove: a
+	// transient-outage report with a somehow-unset `caveat` would render the
+	// "no checks ran" text even though N checks DID run. The only genuinely
+	// safe fallback here makes no specific claim.
+	const caveat = report.caveat ?? 'This domain could not be assessed.';
 
 	if (format === 'compact') {
 		const countSegment = report.assessed ? ` — ${report.recommendedCount} upsell(s)` : '';
