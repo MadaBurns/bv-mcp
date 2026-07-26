@@ -160,7 +160,19 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 	]);
 }
 
-/** Persist a DLQ marker so the cycle report still includes the domain. */
+/**
+ * Persist a DLQ marker so the cycle report still includes the domain.
+ *
+ * `score` is deliberately NULL, not 0. A DLQ row means the domain was never
+ * successfully measured — the scan timed out or exhausted its retries — which
+ * is a different fact from "measured, and scored zero". Writing 0 made the row
+ * indistinguishable from a genuinely catastrophic domain and dragged the cycle's
+ * `mean_score` down as if it were one; because 0 is not null, a null-skipping
+ * aggregate could not filter it out either. The report's mean now counts only
+ * rows that carry a real score (see `/report/:cycle_id`), and the domain still
+ * appears in the cycle via its `queue_dlq` finding and its `grade_dist`
+ * `unknown` bucket.
+ */
 async function writeDlqRow(
 	tenantDb: TenantDbHandle,
 	msg: ScanQueueMessage,
@@ -170,7 +182,7 @@ async function writeDlqRow(
 	try {
 		await tenantDb
 			.prepare(SCANS_INSERT_SQL)
-			.bind(scanId, msg.domain, Date.now(), 0, null, null, 1, JSON.stringify({ error: reason }), msg.cycle_id)
+			.bind(scanId, msg.domain, Date.now(), null, null, null, 1, JSON.stringify({ error: reason }), msg.cycle_id)
 			.run();
 		await tenantDb
 			.prepare(FINDINGS_INSERT_SQL)

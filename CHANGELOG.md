@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- **DLQ rows were scored `0`, dragging every cycle's `mean_score` down.** `writeDlqRow` (`src/tenants/queue-consumer.ts`) persisted a hardcoded `score: 0` for a domain that timed out or exhausted its retries. That domain was never measured, so `0` reported it as a genuinely catastrophic score — and because `0` is not null, it also survived any null-skipping filter downstream. DLQ rows now write a null score, matching every other unmeasured row. The domain still appears in the cycle via its `queue_dlq` finding and its `grade_dist` `unknown` bucket.
+- **`/report/:cycle_id` counted unmeasured domains as zeros.** The cycle mean was `scanRows.reduce((acc, r) => acc + (r.score ?? 0), 0) / scanRows.length`, so any row without a score (a DLQ row, or one written before the `scanResultCapture` fix) was averaged in as a 0 rather than excluded. `mean_score` is now computed over measured rows only, and the summary gains **`measured_domains`** so the denominator is visible instead of inferred. **Response-shape change for consumers:** `mean_score` is now `number | null` — it is `null` when no row in the cycle carried a score, because `0` would be a fabricated result for a cycle that measured nothing.
+
 ## [3.35.0] - 2026-07-26
 
 Three "silently empty" defects of one shape — a consumer reading a field or hook the producer never populates, with tests that fabricated the missing shape and so passed while production returned nothing. Plus the dependency work that unblocked the `contract` CI gate, red on `main` since 2026-07-23.

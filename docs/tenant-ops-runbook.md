@@ -117,6 +117,71 @@ export locations in ignored notes.
   migrations, restore a synthetic tenant backup into a disposable D1 database,
   run the tenant schema/audit tests, and verify a queued scan can complete.
 
+### Legacy `scans` rows with a null score
+
+Two separate defects left null scores in the `scans` table. They need different
+handling, so identify which one produced a given row before acting on it.
+
+**1. Pre-fix rows: the capture hook never fired.** Until `scanResultCapture` was
+added (`src/handlers/tools.ts`, with the projection in
+`src/tenants/scan-snapshot.ts`), both tenant scan paths collected their
+`scan_domain` result through a hook that only fired on the single-`CheckResult`
+`TOOL_REGISTRY` path. `scan_domain` is an orchestrator and never invoked it, so
+every row landed with null `score`, null `grade`, null `result_json` and
+`finding_count` 0, and no rows reached the `findings` table.
+
+**These rows cannot be backfilled.** The scan output was never written anywhere —
+`result_json` is null and the per-finding rows never existed — so there is nothing
+to recompute from. A re-scan measures the domain's DNS *today*, which is a new
+observation, not a reconstruction of the historical one. Do not present a re-scan
+as a backfill of a past cycle.
+
+**2. DLQ rows: a domain that was never measured.** `writeDlqRow` in the queue
+consumer writes a marker row when a domain exhausts its retries or times out.
+These rows carry `result_json = {"error": ...}` and a `queue_dlq` finding. They
+now write a **null** score; before that fix they wrote a hardcoded `0`, which
+misreported an unmeasured domain as a real catastrophic score and, being
+non-null, survived any null-skipping filter.
+
+Identify which is which (placeholder tenant, read-only first):
+
+```sql
+SELECT
+  CASE
+    WHEN result_json IS NULL                    THEN 'pre_fix_capture_gap'
+    WHEN json_extract(result_json,'$.error') IS NOT NULL THEN 'dlq'
+    ELSE 'other'
+  END AS kind,
+  COUNT(*) AS rows, MIN(scan_at), MAX(scan_at)
+FROM scans WHERE score IS NULL GROUP BY kind;
+```
+
+Recommended handling:
+
+- **Flag, don't fabricate.** Leave the columns null. `/report/:cycle_id` computes
+  `mean_score` over measured rows only and returns `measured_domains` alongside
+  `domains`, so the shrunken denominator is visible rather than inferred; a cycle
+  with nothing measured reports `mean_score: null`, not `0`. Do not reintroduce a
+  `?? 0` coercion anywhere that aggregates this column — a coerced zero reads as
+  "measured and terrible" instead of "never measured".
+- **Treat pre-fix `mean_score` / `grade_dist` as void**, not merely inaccurate.
+  Before the capture fix, `mean_score` was always `0` and `grade_dist` always
+  `{ unknown: N }`. Any report, alert threshold, or customer-facing trend derived
+  from such a cycle should be withdrawn rather than reinterpreted.
+- **Re-scan forward.** Run a fresh cycle per affected tenant to establish a valid
+  current baseline, and label it as a new baseline in customer communication.
+- **A persistent DLQ population is an operational signal, not a data-quality
+  one.** A domain that DLQs every cycle is failing to scan; chase the queue
+  troubleshooting table above rather than the row's null score.
+
+One behaviour change to expect on the first cycle after the capture fix: the
+24-hour fingerprint pre-flight requires a parseable snapshot in `result_json` to
+short-circuit a re-scan. With every historical row null it could never fire, so
+every cycle did full work. Once rows carry a snapshot, unchanged domains within
+the window start being skipped as designed — a drop in per-cycle scan volume is
+expected there, not a regression. `parseTenantScanSnapshot` deliberately rejects
+DLQ and legacy rows, so neither can be mistaken for a reusable result.
+
 ## Cost Governance
 
 Quota changes must be explicit and audited. The public quota maps in

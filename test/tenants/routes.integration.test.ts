@@ -449,6 +449,68 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 		expect(body.findings_by_category.length).toBe(2);
 	});
 
+	/** Build a report-route env whose `scans` query returns the given rows. */
+	function makeReportEnv(scanRows: Array<{ score: number | null; grade: string | null }>) {
+		const tenant = makeMockD1({
+			'SELECT score, grade FROM scans WHERE cycle_id = ?': scanRows,
+		});
+		const registry = makeMockD1({
+			[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'fake-d1-uuid', active: 1 }],
+		});
+		return {
+			...env,
+			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			REQUIRE_INTERNAL_AUTH: 'true',
+			TENANT_REGISTRY_DB: registry.db,
+			[TEST_TENANT_BINDING]: tenant.db,
+		} as TestEnv;
+	}
+
+	type ReportSummary = {
+		domains: number;
+		measured_domains: number;
+		mean_score: number | null;
+		grade_dist: Record<string, number>;
+		severity_counts: Record<string, number>;
+	};
+
+	// Regression: unmeasured rows (a DLQ row, or a scan that errored) carry a null
+	// score. The mean used to coerce them with `?? 0`, so an unscanned domain was
+	// averaged in as a catastrophic one and dragged the cycle mean down.
+	it('excludes null-score rows from mean_score instead of counting them as zero', async () => {
+		const customEnv = makeReportEnv([
+			{ score: 80, grade: 'B' },
+			{ score: 90, grade: 'A' },
+			{ score: null, grade: null },
+		]);
+		const res = await sendRequest(makeReq('cycle_null_score'), customEnv);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { summary: ReportSummary };
+
+		// Mean of the two MEASURED rows — not (80 + 90 + 0) / 3 = 56.67.
+		expect(body.summary.mean_score).toBeCloseTo(85, 5);
+		expect(body.summary.mean_score).not.toBeCloseTo((80 + 90) / 3, 5);
+		// The unmeasured domain is still reported, just not scored.
+		expect(body.summary.domains).toBe(3);
+		expect(body.summary.measured_domains).toBe(2);
+		expect(body.summary.grade_dist.unknown).toBe(1);
+	});
+
+	it('reports mean_score null rather than 0 when no row in the cycle was measured', async () => {
+		const customEnv = makeReportEnv([
+			{ score: null, grade: null },
+			{ score: null, grade: null },
+		]);
+		const res = await sendRequest(makeReq('cycle_all_null'), customEnv);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { summary: ReportSummary };
+
+		// 0 would be a fabricated score for a cycle that measured nothing.
+		expect(body.summary.mean_score).toBeNull();
+		expect(body.summary.domains).toBe(2);
+		expect(body.summary.measured_domains).toBe(0);
+	});
+
 	it('writes an audit_events row for report.read with the cycle_id as resourceId', async () => {
 		const cycleId = 'cycle_audit_report';
 		const tenant = makeMockD1({
