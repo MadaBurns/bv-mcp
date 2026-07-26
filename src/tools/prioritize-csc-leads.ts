@@ -196,7 +196,10 @@ function isNeverRanKind(caveatKind: CaveatKind | null): boolean {
  * BRANCH is decided by `caveatKind`.
  */
 function leadUnassessedNote(caveat: string | null, caveatKind: CaveatKind | null): string {
-	if (isNeverRanKind(caveatKind)) return UNASSESSED_LEAD_NOTE;
+	// caveat === null guard: the producer sets caveat and caveatKind together, but a
+	// hand-built report violating that contract would interpolate a literal "null"
+	// into customer prose here — the exact shape of the null/100 (null) regression.
+	if (isNeverRanKind(caveatKind) || caveat === null) return UNASSESSED_LEAD_NOTE;
 	return `${caveat} It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.`;
 }
 
