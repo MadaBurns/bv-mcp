@@ -85,5 +85,17 @@ export function defineScoringEvidenceSuite(s: ScoringModule): void {
 			// It must read as a measurement gap, not a security verdict.
 			expect(note).toContain('not a security verdict');
 		});
+
+		it('never states an achieved percentage that rounds up to (or past) the threshold it claims to be below', () => {
+			// 119/200 = 0.595 → Math.round gives 60%, which reads as "60% is below the
+			// 60% threshold" — a self-contradiction. The achieved percentage must be
+			// floored so a note claiming "below the threshold" never names a percentage
+			// that equals or exceeds it.
+			const note = buildEvidenceNote({ attempted: 200, completed: 119, ratio: 119 / 200 }, 0.6);
+			expect(note).toContain('119 of 200');
+			expect(note).toContain('59%');
+			expect(note).not.toContain('60%,');
+			expect(note).toContain('60% evidence threshold');
+		});
 	});
 }

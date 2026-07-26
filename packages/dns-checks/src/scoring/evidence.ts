@@ -65,7 +65,13 @@ export function isEvidenceSufficient(evidence: ScanEvidence, threshold: number =
 
 /** Human-readable explanation for an ungraded scan. Safe to render verbatim in a customer report. */
 export function buildEvidenceNote(evidence: ScanEvidence, threshold: number): string {
-	const pct = Math.round(evidence.ratio * 100);
+	// Floor the achieved percentage (never round it up): this note only renders when
+	// evidence is insufficient, so it always claims the achieved percentage is BELOW
+	// the threshold percentage. Rounding both the same way can make the two collide
+	// at the boundary (e.g. 119/200 = 59.5% rounds to "60%", which self-contradicts
+	// "60% is below the 60% threshold"). The threshold percentage stays rounded — it
+	// is a configured value, not a measurement, so there is no boundary hazard there.
+	const pct = Math.floor(evidence.ratio * 100);
 	const minPct = Math.round(threshold * 100);
 	return (
 		`Only ${evidence.completed} of ${evidence.attempted} checks completed (${pct}%), below the ${minPct}% evidence threshold. ` +
