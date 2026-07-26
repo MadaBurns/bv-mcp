@@ -4,9 +4,9 @@
  * Ownership-attribution primitive (P2, 2026-07-26 correctness-defects design §4).
  *
  * Classifies a registered candidate domain's ownership relative to a seed
- * domain. This is the single gate that decides whether a shadow-domain or
- * lookalike finding may exceed `info` severity — see
- * `docs/superpowers/specs/2026-07-26-bv-mcp-correctness-defects-design.md`
+ * domain. `capAttributionSeverity()` below is the single gate that decides
+ * whether a shadow-domain or lookalike finding may exceed `info` severity —
+ * see `docs/superpowers/specs/2026-07-26-bv-mcp-correctness-defects-design.md`
  * §4 (P2) and §5 (D4).
  *
  * Pure function, no DNS I/O: callers gather NS records and registration
@@ -22,32 +22,48 @@
  * severity gating keys ONLY on `verdict === 'owned_by_seed'` vs everything
  * else. The `third_party` / `unattributed` distinction changes report
  * wording, never severity — a misclassification between those two can never
- * produce a false high-severity finding. `capAttributionSeverity()` below
- * enforces this: it treats `third_party` and `unattributed` identically.
+ * produce a false high-severity finding. `capAttributionSeverity()` enforces
+ * this and takes `verdict` ALONE — no other input can move the ceiling.
  *
  * DEMOTE, NEVER DELETE (controller amendment 1, binding ruling from the
- * human partner): `passesAttributionGuard()` is a CLASSIFIER of corroboration
- * confidence, not a suppressor. The campaign's own seed brand in this slice's
- * fixture corpus (`bnz`) is 3 characters — the same length class as the
- * impersonator the guard was sized against (`hnz`) — so a guard that OMITS
- * findings on failure would delete real measurements about the customer's
- * OWN assets, which is worse than the false-positive it exists to prevent.
- * `capAttributionSeverity()` is the safe API surface for callers: it always
- * returns a concrete, truthy value (a `Severity` or the `'unbounded'`
- * sentinel) — there is no `null`/`undefined` return that a caller could
- * mistake for "omit this finding". A real measurement must never be
+ * human partner): `attributionConfidence()` is a CLASSIFIER of wording
+ * confidence, not a severity gate and not a suppressor — see fix-round F1/F3
+ * below for why it must never be consulted for the severity ceiling.
+ * `capAttributionSeverity()` is the ONLY exported severity-decision surface:
+ * it always returns a concrete, truthy value (a `Severity` or the
+ * `'unbounded'` sentinel) — there is no `null`/`undefined` return a caller
+ * could mistake for "omit this finding". A real measurement must never be
  * suppressed; only its severity is capped and its wording kept neutral.
+ *
+ * FIX ROUND 1 (2026-07-27, post-review): the first implementation had
+ * `capAttributionSeverity()` consult the D4 label-length/corroboration guard
+ * BEFORE the ownership verdict, so any non-owned candidate with a brand
+ * label >= `MIN_ATTRIBUTION_LABEL_LENGTH` characters (e.g. `westpac`, a
+ * competing bank) came back `'unbounded'` — the exact defect this slice
+ * exists to fix, on the safety-critical function. Corrected:
+ * `capAttributionSeverity()` now takes ONLY `verdict` and gates on ownership
+ * FIRST. The label-length/corroboration guard (`attributionConfidence()`,
+ * renamed from `passesAttributionGuard()`) still exists but now governs
+ * WORDING/CONFIDENCE prose only — it is never consulted for severity, and
+ * its non-boolean `'corroborated' | 'uncorroborated'` return shape (renamed
+ * from a raw boolean) makes it read as a confidence classifier rather than
+ * a permission gate a caller might branch into a suppression.
  */
 
 import type { Severity } from '@blackveil/dns-checks/scoring';
 import { getRegistrableDomain } from './public-suffix';
-import type { RegistrationState } from './registration-state';
-import { UNKNOWN_REASON_PHRASES } from './registration-state';
+import { UNKNOWN_REASON_PHRASES, type RegistrationState } from './registration-state';
 
 /** Final attribution verdict. */
 export type OwnershipVerdict = 'owned_by_seed' | 'third_party' | 'unattributed';
 
-export type OwnershipStrength = 'strong' | 'medium' | 'weak' | 'none';
+/**
+ * `classifyOwnership()` only ever returns `'strong'`, `'medium'`, or
+ * `'none'` — there is no rule in the current precedence table that yields
+ * `'weak'`. Kept out of the union rather than left as a dead member so a
+ * caller `switch` can be exhaustive.
+ */
+export type OwnershipStrength = 'strong' | 'medium' | 'none';
 
 export type OwnershipSignal =
 	| 'ns_in_bailiwick'
@@ -83,6 +99,23 @@ export interface ClassifyOwnershipInput {
 	 * (neither tool parses SPF `include:` targets, SOA RNAME, or HTTP
 	 * redirect targets today) — accepted here so a future slice can wire a
 	 * real probe without touching this function's precedence logic again.
+	 *
+	 * SECURITY — CALLER OBLIGATION (flagged in fix-round F4, mapping change
+	 * itself is UNRESOLVED — do not treat this comment as having fixed it):
+	 * all three of `soaInBailiwick`, `spfIncludesSeedApex`, and
+	 * `httpRedirectToSeedApex` are attacker-influenceable. Unlike
+	 * `ns_in_bailiwick` (which requires the candidate to control its own
+	 * delegated zone), an attacker who registers `evilbnz.co.nz` can
+	 * unilaterally publish an SPF `include:` pointing at the seed apex or an
+	 * HTTP redirect to it, with NO cooperation from the seed's owner. As
+	 * currently wired, ANY ONE of these three flags alone is sufficient for
+	 * `classifyOwnership()` to return `owned_by_seed`/`strong` — the inverse
+	 * of the false-attribution defect this slice fixes. A future caller that
+	 * wires a real probe for any of these MUST NOT let it alone produce
+	 * `owned_by_seed`; it should require corroboration from an
+	 * owner-controlled signal (NS delegation) or be demoted to a weaker
+	 * verdict/strength. This file does not change the verdict mapping —
+	 * that call belongs to the design owner, not to this fix.
 	 */
 	soaInBailiwick?: boolean;
 	spfIncludesSeedApex?: boolean;
@@ -94,7 +127,7 @@ const DEDICATED_NS_MATCH_RATIO = 0.5;
 /** Minimum absolute count of dedicated shared NS hosts, alongside the ratio above. */
 const DEDICATED_NS_MATCH_MIN_COUNT = 2;
 
-/** Minimum brand-label length below which a non-owned candidate needs corroboration to be scored at full confidence (D4). */
+/** Minimum brand-label length below which a non-owned candidate needs corroboration to be worded with full confidence (D4). Governs WORDING ONLY — see `attributionConfidence()`. */
 export const MIN_ATTRIBUTION_LABEL_LENGTH = 5;
 
 function normHost(h: string): string {
@@ -134,6 +167,11 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
  *     operational plumbing, not ownership evidence).
  *  8. Registered with its own resolvable NS, no ownership signal → `third_party`.
  *  9. Everything else (no NS info at all) → `unattributed`.
+ *
+ * Steps 3-4 accept attacker-influenceable evidence — see the caller-
+ * obligation note on `ClassifyOwnershipInput`'s `soaInBailiwick` /
+ * `spfIncludesSeedApex` / `httpRedirectToSeedApex` fields. That mapping is
+ * unchanged and unresolved by this fix round; flagged, not altered.
  */
 export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAssessment {
 	const { registration, candidateDomain } = input;
@@ -159,7 +197,8 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 		};
 	}
 
-	const seedApex = getRegistrableDomain(input.seedDomain) ?? normHost(input.seedDomain);
+	const normalisedSeedDomain = normHost(input.seedDomain);
+	const seedApex = getRegistrableDomain(normalisedSeedDomain) ?? normalisedSeedDomain;
 	const candidateNs = registration.ns.map(normHost).filter(Boolean);
 	const seedNs = input.seedNs.map(normHost).filter(Boolean);
 
@@ -173,6 +212,12 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 		};
 	}
 
+	// SECURITY: soaInBailiwick / spfIncludesSeedApex / httpRedirectToSeedApex
+	// are attacker-influenceable (see the ClassifyOwnershipInput caller-
+	// obligation note above) — unlike ns_in_bailiwick, none of these require
+	// the candidate to control its own delegated zone. Not gathered by any
+	// caller in this slice; the mapping below is unresolved, flagged for the
+	// design owner, and intentionally NOT altered by this fix round.
 	if (input.soaInBailiwick) {
 		return {
 			verdict: 'owned_by_seed',
@@ -237,11 +282,20 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 	};
 }
 
+/** {@link attributionConfidence} return type — deliberately not a boolean; see its JSDoc for why. */
+export type AttributionConfidence = 'corroborated' | 'uncorroborated';
+
 /**
- * D4 corroboration classifier: does a non-owned candidate's brand-label
- * match meet the confidence bar to stand on its own?
+ * D4 WORDING/CONFIDENCE classifier: does a non-owned candidate's brand-label
+ * match meet the bar to be worded with full confidence in a report, versus
+ * hedged/neutral wording? THIS FUNCTION MUST NEVER BE CONSULTED FOR
+ * SEVERITY — that is `capAttributionSeverity()`'s job, and it takes
+ * `verdict` alone. (Renamed from `passesAttributionGuard()` in fix round 1:
+ * the original boolean-returning name/shape invited exactly the misuse this
+ * rename and the `'corroborated' | 'uncorroborated'` return type resist —
+ * see F3 in the fix-round report.)
  *
- * `owned_by_seed` always passes — it is the strongest available
+ * `owned_by_seed` is always `'corroborated'` — it is the strongest available
  * corroborating brand signal by construction. Any other verdict needs
  * EITHER a brand label at least `MIN_ATTRIBUTION_LABEL_LENGTH` characters
  * long, OR an explicit corroborating signal supplied by the caller
@@ -250,39 +304,31 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
  * fetches them today). Below the threshold with no corroboration, a short
  * brand label (e.g. `bnz`, 3 characters) collides with too much unrelated
  * global DNS for a bare label match to mean anything on its own — see spec
- * §5 D4.
- *
- * THIS FUNCTION IS A CLASSIFIER, NOT A SUPPRESSION GATE. A caller MUST NOT
- * branch a `false` result into omitting a finding — do that and a real
- * measurement about the customer's own short-labelled brand (this
- * campaign's seed, `bnz`, is itself 3 characters) silently vanishes from the
- * report. Use `capAttributionSeverity()` instead: its return type has no
- * value that means "no finding", only a severity ceiling.
+ * §5 D4. This is a WORDING signal only: whatever it returns, the finding is
+ * still emitted, at the severity `capAttributionSeverity()` computed.
  */
-export function passesAttributionGuard(verdict: OwnershipVerdict, brandLabel: string, corroborated: boolean): boolean {
-	if (verdict === 'owned_by_seed') return true;
-	return brandLabel.length >= MIN_ATTRIBUTION_LABEL_LENGTH || corroborated;
+export function attributionConfidence(verdict: OwnershipVerdict, brandLabel: string, corroborated: boolean): AttributionConfidence {
+	if (verdict === 'owned_by_seed') return 'corroborated';
+	return brandLabel.length >= MIN_ATTRIBUTION_LABEL_LENGTH || corroborated ? 'corroborated' : 'uncorroborated';
 }
 
 /**
- * Severity ceiling a non-owned candidate's finding may not exceed —
- * `'unbounded'` when no cap applies, or the literal `Severity` value
- * (currently always `'info'`) the caller must clamp down to otherwise.
+ * THE single exported severity-decision surface (fix-round F1/F3). Every
+ * non-owned candidate is capped at `'info'` — full stop, regardless of
+ * brand-label length or corroboration. Those factors govern report WORDING
+ * only, via `attributionConfidence()` above; they must never move the
+ * severity ceiling. `owned_by_seed` is the only verdict exempt.
  *
- * DEMOTE, NEVER DELETE: unlike a boolean gate, this type has no falsy /
- * null / undefined member, so there is no value a caller could mistake for
- * "omit this finding" — every return is a concrete instruction to either
- * leave the computed severity alone (`'unbounded'`) or clamp it
- * (`'info'`). The finding itself is ALWAYS emitted by the caller; only its
- * severity and wording change. See the file-header note on controller
- * amendment 1 for the incident this fixes (a length-5 guard, sized against
- * the impersonator `hnz`, would otherwise have deleted findings about this
- * campaign's own 3-character seed brand `bnz`).
+ * DEMOTE, NEVER DELETE: this type has no falsy / null / undefined member,
+ * so there is no value a caller could mistake for "omit this finding" —
+ * every return is a concrete instruction to either leave the computed
+ * severity alone (`'unbounded'`) or clamp it (`'info'`). The finding itself
+ * is ALWAYS emitted by the caller; only its severity and wording change.
  *
- * Per the load-bearing safety property (amendment 2), `third_party` and
- * `unattributed` are treated identically here — only `owned_by_seed` is
- * ever exempt from the cap.
+ * Per the load-bearing safety property (controller amendment 2), `third_party`
+ * and `unattributed` are capped identically — only `owned_by_seed` is ever
+ * exempt.
  */
-export function capAttributionSeverity(verdict: OwnershipVerdict, brandLabel: string, corroborated: boolean): Severity | 'unbounded' {
-	return passesAttributionGuard(verdict, brandLabel, corroborated) ? 'unbounded' : 'info';
+export function capAttributionSeverity(verdict: OwnershipVerdict): Severity | 'unbounded' {
+	return verdict === 'owned_by_seed' ? 'unbounded' : 'info';
 }

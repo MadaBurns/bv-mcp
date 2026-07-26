@@ -65,7 +65,7 @@ describe('classifyOwnership — §4 fixture corpus (2026-07-26 correctness-defec
 		expect(result.signals).toContain('ns_shared_provider_complete');
 	});
 
-	it('does NOT attribute anz.co.nz or westpac.co.nz to the seed — the 1/6 Akamai trap', async () => {
+	it('does NOT attribute anz.co.nz or westpac.co.nz to the seed — the 1/6 Akamai trap (F5: tightened to exact verdict)', async () => {
 		const { classifyOwnership } = await loadModule();
 		const anzResult = classifyOwnership({
 			seedDomain: SEED,
@@ -81,7 +81,7 @@ describe('classifyOwnership — §4 fixture corpus (2026-07-26 correctness-defec
 			]),
 			isSharedNsHost,
 		});
-		expect(anzResult.verdict).not.toBe('owned_by_seed');
+		expect(anzResult.verdict).toBe('third_party');
 
 		const westpacResult = classifyOwnership({
 			seedDomain: SEED,
@@ -97,7 +97,7 @@ describe('classifyOwnership — §4 fixture corpus (2026-07-26 correctness-defec
 			]),
 			isSharedNsHost,
 		});
-		expect(westpacResult.verdict).not.toBe('owned_by_seed');
+		expect(westpacResult.verdict).toBe('third_party');
 	});
 
 	it('a 3-of-6 overlap confined entirely to shared-provider NS hosts is NOT treated as dedicated-NS evidence', async () => {
@@ -117,7 +117,6 @@ describe('classifyOwnership — §4 fixture corpus (2026-07-26 correctness-defec
 			registration: registered([SEED_NS[0], SEED_NS[1], SEED_NS[2], 'x1-1.akam.net', 'x2-2.akam.net', 'x3-3.akam.net']),
 			isSharedNsHost,
 		});
-		expect(result.verdict).not.toBe('owned_by_seed');
 		expect(result.verdict).toBe('third_party');
 	});
 
@@ -142,7 +141,6 @@ describe('classifyOwnership — §4 fixture corpus (2026-07-26 correctness-defec
 			]),
 			isSharedNsHost,
 		});
-		expect(result.verdict).not.toBe('owned_by_seed');
 		expect(result.verdict).toBe('third_party');
 	});
 
@@ -237,63 +235,112 @@ describe('isInBailiwick', () => {
 			registration: registered(['ns1.evilbnz.co.nz', 'ns2.evilbnz.co.nz']),
 			isSharedNsHost,
 		});
-		expect(result.verdict).not.toBe('owned_by_seed');
 		expect(result.verdict).toBe('third_party');
 	});
 });
 
-describe('passesAttributionGuard — D4 minimum label length (CLASSIFIER, not a suppressor)', () => {
-	it('always passes for owned_by_seed regardless of label length', async () => {
-		const { passesAttributionGuard } = await loadModule();
-		expect(passesAttributionGuard('owned_by_seed', 'bnz', false)).toBe(true);
+describe('F4 (security, flagged not fixed): attacker-influenceable evidence branches — pinning CURRENT behaviour', () => {
+	// These three flags are NOT gathered by any caller in this slice, but the
+	// branches exist and were previously untested. Per the reviewer's F4
+	// instruction, the verdict mapping itself is NOT being changed here (that
+	// call belongs to the design owner) — these tests only pin what the
+	// current code does, so a future change to the mapping is a deliberate,
+	// visible diff here rather than a silent behaviour change.
+	it('soaInBailiwick ALONE (no NS evidence at all) currently produces owned_by_seed/strong', async () => {
+		const { classifyOwnership } = await loadModule();
+		const result = classifyOwnership({
+			seedDomain: SEED,
+			seedNs: SEED_NS,
+			candidateDomain: 'evilbnz.co.nz',
+			registration: registered(['ns1.totally-unrelated-registrar.example']),
+			isSharedNsHost,
+			soaInBailiwick: true,
+		});
+		expect(result.verdict).toBe('owned_by_seed');
+		expect(result.strength).toBe('strong');
+		expect(result.signals).toContain('soa_in_bailiwick');
 	});
 
-	it('does not pass a short-label non-owned candidate with no corroboration', async () => {
-		const { passesAttributionGuard } = await loadModule();
-		expect(passesAttributionGuard('third_party', 'hnz', false)).toBe(false);
+	it('spfIncludesSeedApex ALONE currently produces owned_by_seed/strong — attacker-controllable, unresolved', async () => {
+		const { classifyOwnership } = await loadModule();
+		const result = classifyOwnership({
+			seedDomain: SEED,
+			seedNs: SEED_NS,
+			candidateDomain: 'evilbnz.co.nz',
+			registration: registered(['ns1.totally-unrelated-registrar.example']),
+			isSharedNsHost,
+			spfIncludesSeedApex: true,
+		});
+		expect(result.verdict).toBe('owned_by_seed');
+		expect(result.strength).toBe('strong');
+		expect(result.signals).toContain('spf_include_seed');
 	});
 
-	it('passes a short-label non-owned candidate when corroborated', async () => {
-		const { passesAttributionGuard } = await loadModule();
-		expect(passesAttributionGuard('third_party', 'hnz', true)).toBe(true);
-	});
-
-	it('passes a non-owned candidate at or above the minimum length with no corroboration needed', async () => {
-		const { passesAttributionGuard } = await loadModule();
-		expect(passesAttributionGuard('third_party', 'bankof', false)).toBe(true);
+	it('httpRedirectToSeedApex ALONE currently produces owned_by_seed/strong — attacker-controllable, unresolved', async () => {
+		const { classifyOwnership } = await loadModule();
+		const result = classifyOwnership({
+			seedDomain: SEED,
+			seedNs: SEED_NS,
+			candidateDomain: 'evilbnz.co.nz',
+			registration: registered(['ns1.totally-unrelated-registrar.example']),
+			isSharedNsHost,
+			httpRedirectToSeedApex: true,
+		});
+		expect(result.verdict).toBe('owned_by_seed');
+		expect(result.strength).toBe('strong');
+		expect(result.signals).toContain('http_redirect_seed');
 	});
 });
 
-describe('capAttributionSeverity — DEMOTE NEVER DELETE (controller amendment 1)', () => {
-	it('never caps owned_by_seed, regardless of label length or corroboration', async () => {
-		const { capAttributionSeverity } = await loadModule();
-		expect(capAttributionSeverity('owned_by_seed', 'bnz', false)).toBe('unbounded');
-		expect(capAttributionSeverity('owned_by_seed', 'x', false)).toBe('unbounded');
+describe('attributionConfidence — D4 minimum label length (WORDING classifier, renamed from passesAttributionGuard, never a severity gate)', () => {
+	it('always corroborated for owned_by_seed regardless of label length', async () => {
+		const { attributionConfidence } = await loadModule();
+		expect(attributionConfidence('owned_by_seed', 'bnz', false)).toBe('corroborated');
 	});
 
-	it("caps a short-label, non-corroborated non-owned candidate at 'info' — but the type offers no way to omit the finding", async () => {
-		const { capAttributionSeverity } = await loadModule();
-		// bnz is the campaign's own seed brand and is 3 characters — this is
-		// EXACTLY the case the human partner's "demote never delete" ruling
-		// exists to protect: it must be capped, never dropped.
-		expect(capAttributionSeverity('third_party', 'bnz', false)).toBe('info');
-		expect(capAttributionSeverity('unattributed', 'hnz', false)).toBe('info');
+	it('uncorroborated for a short-label non-owned candidate with no corroboration', async () => {
+		const { attributionConfidence } = await loadModule();
+		expect(attributionConfidence('third_party', 'hnz', false)).toBe('uncorroborated');
 	});
 
-	it('does not cap a short-label non-owned candidate when corroborated', async () => {
-		const { capAttributionSeverity } = await loadModule();
-		expect(capAttributionSeverity('third_party', 'hnz', true)).toBe('unbounded');
+	it('corroborated for a short-label non-owned candidate when the caller supplies corroboration', async () => {
+		const { attributionConfidence } = await loadModule();
+		expect(attributionConfidence('third_party', 'hnz', true)).toBe('corroborated');
 	});
 
-	it('does not cap a non-owned candidate at/above the minimum label length', async () => {
+	it('corroborated for a non-owned candidate at or above the minimum length with no corroboration needed', async () => {
+		const { attributionConfidence } = await loadModule();
+		expect(attributionConfidence('third_party', 'bankof', false)).toBe('corroborated');
+	});
+});
+
+describe('capAttributionSeverity — F1 FIX: severity gates on ownership FIRST, never on label length/corroboration', () => {
+	it('never caps owned_by_seed', async () => {
 		const { capAttributionSeverity } = await loadModule();
-		expect(capAttributionSeverity('third_party', 'bankof', false)).toBe('unbounded');
+		expect(capAttributionSeverity('owned_by_seed')).toBe('unbounded');
+	});
+
+	it("caps a SHORT-label non-owned candidate at 'info' (bnz is the campaign's own seed brand, 3 chars — demote never delete)", async () => {
+		const { capAttributionSeverity } = await loadModule();
+		expect(capAttributionSeverity('third_party')).toBe('info');
+		expect(capAttributionSeverity('unattributed')).toBe('info');
+	});
+
+	it("F1 REGRESSION PIN: caps a LONG-label (>= MIN_ATTRIBUTION_LABEL_LENGTH) non-owned candidate at 'info' too — e.g. a competing bank like westpac must NEVER come back unbounded merely because its label is long enough to pass the D4 wording guard", async () => {
+		// This is the exact defect F1 flagged: the first implementation
+		// consulted attributionConfidence('third_party', 'westpac', false) —
+		// which is 'corroborated' because 'westpac'.length (7) >=
+		// MIN_ATTRIBUTION_LABEL_LENGTH (5) — and returned 'unbounded'. Label
+		// length must NEVER be able to lift the ceiling off a non-owned verdict.
+		const { capAttributionSeverity, MIN_ATTRIBUTION_LABEL_LENGTH } = await loadModule();
+		expect('westpac'.length).toBeGreaterThanOrEqual(MIN_ATTRIBUTION_LABEL_LENGTH);
+		expect(capAttributionSeverity('third_party')).toBe('info');
 	});
 
 	it('the return type structurally cannot represent "no finding" — only a Severity or the unbounded sentinel', async () => {
 		const { capAttributionSeverity } = await loadModule();
-		const capped = capAttributionSeverity('third_party', 'hnz', false);
-		const uncapped = capAttributionSeverity('third_party', 'bankof', false);
+		const capped = capAttributionSeverity('third_party');
+		const uncapped = capAttributionSeverity('owned_by_seed');
 		// Both are truthy, non-null strings — a caller cannot `if (!cap) continue`
 		// their way into suppressing a finding, because there is no falsy value
 		// this function can ever return.
@@ -307,8 +354,8 @@ describe('capAttributionSeverity — DEMOTE NEVER DELETE (controller amendment 1
 describe('load-bearing safety property (controller amendment 2): severity gates ONLY on owned_by_seed vs everything else', () => {
 	it('third_party and unattributed are equally non-owned for capping purposes — the distinction is wording-only', async () => {
 		const { capAttributionSeverity } = await loadModule();
-		const thirdPartyCap = capAttributionSeverity('third_party', 'x', false);
-		const unattributedCap = capAttributionSeverity('unattributed', 'x', false);
+		const thirdPartyCap = capAttributionSeverity('third_party');
+		const unattributedCap = capAttributionSeverity('unattributed');
 		expect(thirdPartyCap).toBe(unattributedCap);
 		expect(thirdPartyCap).toBe('info');
 	});
