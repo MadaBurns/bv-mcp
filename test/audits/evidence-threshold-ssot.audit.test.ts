@@ -15,10 +15,15 @@
  * emailBonusImportance→emailBonusMid migration factor `v * 0.6`) that have nothing to
  * do with the evidence-sufficiency gate. A whole-file literal ban would false-positive
  * on those forever. Instead this matches the SHAPES a threshold regression actually
- * takes: a comparison operator adjacent to `0.6` (`< 0.6`, `>= 0.6`, `= 0.6`, …) or the
- * literal sitting next to the `evidenceSufficiency` key — both are how a divergent
- * hard-coded threshold would actually be written; a colon-assignment to an unrelated
- * key or a multiplication factor is not.
+ * takes:
+ *   - a comparison operator adjacent to `0.6` (`< 0.6`, `>= 0.6`, `= 0.6`, …)
+ *   - the literal sitting next to the `evidenceSufficiency` key
+ *   - the literal in ARGUMENT position of a call, e.g. a hard-coded
+ *     `isEvidenceSufficient(evidence, 0.6)` — a divergent call site that bypasses the
+ *     config-threaded threshold entirely without ever writing a comparison operator
+ * — none of which a colon-assignment to an unrelated key (`proofpoint: 0.6`) or a
+ * multiplication factor (`v * 0.6`) can produce, since those have no `(`/`,`/`)`
+ * immediately adjacent to the literal.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -29,8 +34,16 @@ import formatReportSource from '../../src/tools/scan/format-report.ts?raw';
 import batchScanSource from '../../src/tools/batch-scan.ts?raw';
 import { EVIDENCE_SUFFICIENCY_THRESHOLD, DEFAULT_SCORING_CONFIG } from '@blackveil/dns-checks/scoring';
 
-/** Comparison-shaped or evidenceSufficiency-adjacent `0.6` — see file-level doc above. */
-const SUSPICIOUS_THRESHOLD_LITERAL = /[=<>!]=?\s*0\.6\b|\b0\.6\s*[=<>!]|evidenceSufficiency[^\n]{0,30}0\.6/;
+/**
+ * Comparison-shaped, evidenceSufficiency-adjacent, or call-argument-position `0.6` —
+ * see file-level doc above. The last alternative (`[(,]\s*0\.6\s*[,)]`) catches a
+ * literal sitting where a function argument would (immediately after `(` or `,`, and
+ * immediately before `,` or `)`) — e.g. `isEvidenceSufficient(evidence, 0.6)` — without
+ * requiring a comparison operator anywhere. A colon-assignment (`proofpoint: 0.6`) has
+ * `:` before the literal, never `(`/`,`; a multiplication factor (`v * 0.6`) has `* `
+ * before it — neither is adjacent to a call-argument delimiter, so both stay unmatched.
+ */
+const SUSPICIOUS_THRESHOLD_LITERAL = /[=<>!]=?\s*0\.6\b|\b0\.6\s*[=<>!]|evidenceSufficiency[^\n]{0,30}0\.6|[(,]\s*0\.6\s*[,)]/;
 
 describe('evidence threshold SSOT', () => {
 	it('declares the literal 0.6 exactly once, in evidence.ts', () => {
