@@ -6,7 +6,15 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-## [3.35.1] - 2026-07-26
+## [3.36.0] - 2026-07-26
+
+Four scanner defects surfaced by a live scan of `bnz.co.nz` (2026-07-26). Each was root-caused at source and covered by a regression test. `@blackveil/dns-checks` moves from 1.5.3 to 1.5.4 (composite-scoring fix, parity corpus version in lockstep).
+
+### Fixed
+
+- **Composite `scan_domain` awarded phantom `100`s for categories the scan roster never ran (`@blackveil/dns-checks` 1.5.4).** A scored category that the composite scan never measured (e.g. `lookalikes`/`shadow_domains`, which are surfaced only by the dedicated deep-scan tools) defaulted to `?? 100` in the weighted core/protective accumulation, silently awarding full unearned protective credit and inflating the overall score. The seed-to-100 loop is removed; a never-run core/protective category is now excluded from `categoryScores` AND renormalized out of the tier weight (treated exactly like an inconclusive check), so the composite reflects only what was actually measured. Per-check parity is unchanged — only the composite aggregation moves. Measured on a 17-check web scan: composite `overall` drops 1–2 points only for domains carrying a real protective deduction (0 when protective is perfect); no sampled scenario crossed a grade band.
+- **`check_shadow_domains` emitted a hardcoded "unregistered" verdict that contradicted positive registration evidence.** An unregistered brand variant was reported from an inline placeholder (`ns:[], mx:[], hasSpf:false, dmarcPolicy:null`) without ever probing the residual variants, so a variant with genuine registration signal (its own MX + SPF but no apex A/NS — e.g. a mail-only label) was still labelled "unregistered." Residual variants now get a full timeout-bounded probe; a variant with registration evidence is classified from its real records, and only a variant with no evidence keeps the "unregistered" info finding — with its true `hasSpf`/`mx`/`ns`/`dmarcPolicy` metadata.
+- **Deep brand-domain discovery could hang ~7 minutes and then be force-failed by the watchdog before its terminal D1 write flushed.** The brand-audit queue consumer's in-isolate abort budget was pinned to the full `300000ms` platform CPU cap, leaving no headroom for the terminal status write — the isolate was killed before the "done" row committed, so the watchdog reported "consumer cap did not flip status." The message-processing budget is now derived as `PLATFORM_CONSUMER_CPU_CAP_MS - BRAND_AUDIT_TERMINAL_WRITE_HEADROOM_MS` (270000ms), reserving 30s for the terminal write to land inside the cap. The chaos test now asserts the headroom invariant rather than the raw cap constant.
 
 Patch release for honest handling of unmeasured tenant results and non-apex DNS zone-resolution edge cases. `@blackveil/dns-checks` moves from 1.5.2 to 1.5.3 with the parity corpus version kept in lockstep.
 
