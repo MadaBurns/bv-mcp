@@ -68,8 +68,23 @@ export function isMeasured(checks: readonly unknown[]): boolean {
  * `CheckResult`, so this file stays a zero-import leaf with no edge to the
  * scan orchestrator.
  */
-interface CheckStatusBearer {
+export interface CheckStatusBearer {
 	readonly checkStatus?: 'completed' | 'timeout' | 'error';
+}
+
+/**
+ * Did THIS check produce completed (usable) evidence? The single-check
+ * predicate underneath {@link hasCompletedEvidence}, exported so per-finding
+ * consumers (`generate_fix_plan`'s action list, `map_csc_products`'
+ * per-category pricing) can apply the SAME completed-spelling to one
+ * `CheckResult` instead of re-deriving it inline — a fourth hand-rolled
+ * spelling is exactly what `test/audits/completed-predicate-agreement`
+ * exists to prevent. Absent `checkStatus` means the legacy shape and counts
+ * as completed, mirroring `computeScanEvidence` in
+ * `@blackveil/dns-checks/scoring`.
+ */
+export function isCompletedCheck(check: CheckStatusBearer): boolean {
+	return check.checkStatus === undefined || check.checkStatus === 'completed';
 }
 
 /**
@@ -99,5 +114,5 @@ interface CheckStatusBearer {
  * `evidenceInsufficient` rather than by switching predicates.
  */
 export function hasCompletedEvidence(checks: readonly CheckStatusBearer[]): boolean {
-	return checks.some((c) => c.checkStatus === undefined || c.checkStatus === 'completed');
+	return checks.some(isCompletedCheck);
 }

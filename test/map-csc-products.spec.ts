@@ -406,6 +406,113 @@ describe('evaluateCscProducts: a total outage (all checks attempted, none comple
 		expect(dmarc.recommended).toBe(true);
 		expect(dmarc.priority).toBe('high');
 	});
+
+	/**
+	 * The partial-outage residual (final whole-branch review of the evidence-gate
+	 * slice): once ONE check completed, `assessed` is true and every OTHER
+	 * category's TRANSIENT result (`checkStatus: 'timeout' | 'error'`) fell
+	 * through `evalScanProduct`'s `passed: false` branch — pricing an upsell as
+	 * `recommended: true, priority: 'high'` off a "check error" finding that
+	 * measured nothing, with no caveat anywhere. A transient category must
+	 * abstain per product, exactly as `map_compliance` already abstains per
+	 * control.
+	 */
+	it('does not price a TRANSIENT category into an upsell when the scan is otherwise assessed (per-category abstention)', async () => {
+		const { evaluateCscProducts: evaluate, formatCscProducts: fmt } = await import('../src/tools/map-csc-products');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		// dmarc completed and genuinely failing; ssl and dnssec attempted but
+		// never completed — the buildDnsErrorResult/safeCheck shape.
+		const checks: CheckResult[] = [
+			{
+				...buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record', 'high', 'missing')]),
+				score: 0,
+				passed: false,
+			},
+			{
+				...buildCheckResult('ssl', [createFinding('ssl', 'ssl check error', 'high', 'Check failed: DNS query failed')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'error' as const,
+				partial: true,
+			},
+			{
+				...buildCheckResult('dnssec', [createFinding('dnssec', 'dnssec check timed out', 'high', 'Check did not complete in time')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'timeout' as const,
+				partial: true,
+			},
+		];
+
+		const report = evaluate(checks, null, 'partial-outage.example', null, null);
+
+		// The scan as a whole IS assessed (dmarc completed) …
+		expect(report.assessed).toBe(true);
+		expect(report.caveat).toBeNull();
+
+		// … and the completed failing check still prices normally (no over-abstain).
+		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
+		expect(dmarc.recommended).toBe(true);
+		expect(dmarc.priority).toBe('high');
+
+		// The transient categories must NOT be priced — not as a failing gap
+		// (the defect) and not as an "absent → not observed" low-priority lead
+		// (nobody observed anything; "not observed" claims we looked).
+		for (const product of ['digital_certificates', 'dnssec_management'] as const) {
+			const rec = report.recommendations.find((r) => r.product === product)!;
+			expect(rec.recommended).toBe(false);
+			expect(rec.priority).toBe('none');
+			expect(rec.notAssessed).toBe(true);
+			expect(rec.justifyingGap).toMatch(/not assessed/i);
+			expect(rec.justifyingGap.toLowerCase()).not.toContain('not observed');
+			expect(rec.justifyingGap.toLowerCase()).not.toContain('no checks ran');
+			// The transient check's manufactured finding must not surface as sales evidence.
+			expect(rec.relatedFindings).toEqual([]);
+		}
+		expect(report.recommendedCount).toBe(1);
+
+		// Prose: the transient products must not render as "OK" (a confident
+		// verdict from no measurement) nor as priced upsells.
+		const full = fmt(report, 'full');
+		expect(full).toMatch(/Digital Certificates[^\n]*NOT ASSESSED/);
+		expect(full).toMatch(/DNSSEC management[^\n]*NOT ASSESSED/);
+		expect(full).not.toMatch(/Digital Certificates[^\n]*OK/);
+		expect(full).not.toMatch(/DNSSEC management[^\n]*OK/);
+		const compact = fmt(report, 'compact');
+		expect(compact).toMatch(/\? Digital Certificates/);
+		expect(compact).not.toMatch(/✓ Digital Certificates/);
+	});
+
+	it('a transient category still abstains when the OTHER evidence is passing (control against passed-branch leakage)', async () => {
+		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		const checks: CheckResult[] = [
+			{ ...buildCheckResult('dmarc', []), score: 100, passed: true },
+			{
+				...buildCheckResult('ssl', [createFinding('ssl', 'ssl check error', 'high', 'Check failed: DNS query failed')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'error' as const,
+				partial: true,
+			},
+		];
+
+		const report = evaluate(checks, null, 'partial-outage-pass.example', null, null);
+		expect(report.assessed).toBe(true);
+		const ssl = report.recommendations.find((r) => r.product === 'digital_certificates')!;
+		expect(ssl.recommended).toBe(false);
+		expect(ssl.priority).toBe('none');
+		expect(ssl.notAssessed).toBe(true);
+		// dnssec has NO result at all — that stays the genuine "not observed"
+		// low-priority lead: absence-of-record is a real observation when the
+		// scan has completed evidence, and must never be suppressed.
+		const dnssec = report.recommendations.find((r) => r.product === 'dnssec_management')!;
+		expect(dnssec.recommended).toBe(true);
+		expect(dnssec.priority).toBe('low');
+		expect(dnssec.justifyingGap).toContain('not observed');
+	});
 });
 
 /**

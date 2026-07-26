@@ -230,14 +230,18 @@ describe('generateFixPlan — producer wiring for a total outage (all checks att
 		expect(allTransient.caveat).not.toBe(neverRan.caveat);
 	});
 
-	it('keeps the current behaviour when at least one check completed (guard — no over-abstain)', async () => {
+	it('surfaces only completed-check actions when at least one check completed (per-finding transient filter)', async () => {
 		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 
 		// 1 of N checks completed (dmarc genuinely fails); the rest are
 		// transient. This must produce exactly the one real remediation
 		// action — `hasCompletedEvidence` must not require EVERY check to
-		// complete before the plan is treated as assessed.
+		// complete before the plan is treated as assessed, AND the transient
+		// checks' own "check error" findings must not be dressed up as
+		// remediation actions. Before the per-finding filter, this scan
+		// produced `checks.length` actions — one bogus "Fix X: X check error"
+		// per transient category alongside the single real one.
 		const checks: CheckResult[] = SCAN_CATEGORIES.map((c) => {
 			if (c === 'dmarc') {
 				return {
@@ -267,14 +271,63 @@ describe('generateFixPlan — producer wiring for a total outage (all checks att
 		const { generateFixPlan } = await import('../src/tools/generate-fix-plan');
 		const plan = await generateFixPlan('partial-outage.example');
 
-		// Once ANY check completed, this must behave EXACTLY as it did before this
-		// change — including still surfacing an action per transient "check error"
-		// finding (pre-existing behaviour for a partial outage, out of scope for
-		// this fix, and pinned here so a future change doesn't silently narrow it).
+		// One check completed, so the plan IS assessed (no over-abstain) …
 		expect(plan.assessed).toBe(true);
 		expect(plan.caveat).toBeNull();
-		expect(plan.totalActions).toBe(checks.length);
-		expect(plan.actions.some((a) => a.category === 'dmarc' && a.findingTitle === 'DMARC policy is p=none')).toBe(true);
+		// … but the plan contains ONLY the completed check's real action. The
+		// transient checks' findings are a measurement failure, not remediation
+		// items — the governing invariant, applied per finding.
+		expect(plan.totalActions).toBe(1);
+		expect(plan.actions).toHaveLength(1);
+		expect(plan.actions[0].category).toBe('dmarc');
+		expect(plan.actions[0].findingTitle).toBe('DMARC policy is p=none');
+		expect(plan.actions.some((a) => /check error/i.test(a.findingTitle))).toBe(false);
+	});
+
+	it('never suppresses a real finding from a completed check that sits NEXT TO transient ones (invariant mirror)', async () => {
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		// Two completed checks with real findings (one failing, one passing-with-
+		// warning), the rest transient. Both real findings must survive the
+		// transient filter — "a real measurement must never be suppressed".
+		const checks: CheckResult[] = SCAN_CATEGORIES.map((c) => {
+			if (c === 'dmarc') {
+				return {
+					...buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC policy is p=none', 'high', 'p=none')]),
+					score: 40,
+					passed: false,
+				};
+			}
+			if (c === 'spf') {
+				return {
+					...buildCheckResult('spf', [createFinding('spf', 'SPF uses ~all (softfail)', 'medium', 'softfail')]),
+					score: 70,
+					passed: true,
+				};
+			}
+			return {
+				...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'error' as const,
+				partial: true,
+			};
+		});
+
+		mockScanDomain.mockResolvedValue({
+			domain: 'partial-outage-2.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'partial outage' },
+			checks,
+			maturity: { stage: 0, label: 'Unknown', description: 'x', nextStep: 'y' },
+			resolves: true,
+		});
+
+		const { generateFixPlan } = await import('../src/tools/generate-fix-plan');
+		const plan = await generateFixPlan('partial-outage-2.example');
+
+		expect(plan.totalActions).toBe(2);
+		expect(plan.actions.map((a) => a.findingTitle).sort()).toEqual(['DMARC policy is p=none', 'SPF uses ~all (softfail)']);
 	});
 });
 

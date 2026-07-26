@@ -15,7 +15,7 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { formatScoreGrade, hasCompletedEvidence } from '../lib/ungraded-display';
+import { formatScoreGrade, hasCompletedEvidence, isCompletedCheck } from '../lib/ungraded-display';
 
 export type CscProductKey = 'csc_multilock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
 
@@ -41,6 +41,18 @@ export interface CscProductRecommendation {
 	priority: CscPriority;
 	justifyingGap: string;
 	relatedFindings: string[];
+	/**
+	 * `true` when this product line ABSTAINS — its evidence never completed
+	 * (per-category transient result on an otherwise-assessed scan, or a
+	 * report-level unassessed state). The STRUCTURAL twin of the abstaining
+	 * `justifyingGap` wording, so renderers and consumers branch on this field
+	 * rather than sniffing the prose (the same string-vs-structure rule as
+	 * {@link CaveatKind}). Absent/`false` means the line is a real verdict:
+	 * `recommended: false` then genuinely means "no gap" — a verdict the
+	 * formatter may label "OK" — whereas `notAssessed: true` means "no
+	 * measurement", which must never render as OK.
+	 */
+	notAssessed?: boolean;
 }
 
 export interface CscProductReport {
@@ -162,11 +174,22 @@ function evalMultiLock(lockPosture: LockPosture | null): CscProductRecommendatio
 function evalScanProduct(
 	product: Exclude<CscProductKey, 'csc_multilock'>,
 	result: CheckResult | undefined,
-	gaps: { passing: string; failing: string; absent: string },
+	gaps: { passing: string; failing: string; absent: string; transient: string },
 ): CscProductRecommendation {
 	const base = { product, productName: CSC_PRODUCT_NAMES[product] };
 	if (result === undefined) {
 		return { ...base, recommended: true, priority: 'low', justifyingGap: gaps.absent, relatedFindings: [] };
+	}
+	if (!isCompletedCheck(result)) {
+		// A transient result (`checkStatus: 'timeout' | 'error'`) reaches here
+		// only on an otherwise-assessed scan (>=1 completed check — the
+		// all-transient case never calls this function). It is NOT a failing
+		// gap: `passed: false` + a "check error" finding is a measurement
+		// failure, and pricing it made a DoH hiccup read as a HIGH-priority
+		// upsell with no caveat. It is not the `absent` branch either — "not
+		// observed" claims we looked. Per-product abstention, mirroring
+		// `map_compliance`'s per-control transient exclusion.
+		return { ...base, recommended: false, priority: 'none', notAssessed: true, justifyingGap: gaps.transient, relatedFindings: [] };
 	}
 	if (result.passed) {
 		return { ...base, recommended: false, priority: 'none', justifyingGap: gaps.passing, relatedFindings: [] };
@@ -205,6 +228,7 @@ export function unassessedScanProduct(
 		productName: CSC_PRODUCT_NAMES[product],
 		recommended: false,
 		priority: 'none',
+		notAssessed: true,
 		justifyingGap: `${concern} not assessed — ${reason}`,
 		relatedFindings: [],
 	};
@@ -245,6 +269,7 @@ export function evaluateCscProducts(
 					passing: 'DMARC policy in effect',
 					failing: 'DMARC present but not passing',
 					absent: 'DMARC not observed',
+					transient: 'DMARC not assessed — check attempted, did not complete (transient DNS/network failure)',
 				})
 			: unassessedScanProduct('managed_dmarc', 'DMARC', caveatKind),
 		assessed
@@ -252,6 +277,7 @@ export function evaluateCscProducts(
 					passing: 'TLS/SSL configuration healthy',
 					failing: 'TLS/SSL issues detected',
 					absent: 'TLS/SSL not observed',
+					transient: 'TLS/SSL not assessed — check attempted, did not complete (transient DNS/network failure)',
 				})
 			: unassessedScanProduct('digital_certificates', 'TLS/SSL', caveatKind),
 		assessed
@@ -259,6 +285,7 @@ export function evaluateCscProducts(
 					passing: 'DNSSEC enabled',
 					failing: 'DNSSEC not enabled',
 					absent: 'DNSSEC not observed',
+					transient: 'DNSSEC not assessed — check attempted, did not complete (transient DNS/network failure)',
 				})
 			: unassessedScanProduct('dnssec_management', 'DNSSEC', caveatKind),
 	];
@@ -329,7 +356,10 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 		lines.push(`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}${countSegment}`);
 		if (!report.assessed) lines.push(caveat);
 		for (const r of shown) {
-			const icon = r.recommended ? ' →' : ' ✓';
+			// `notAssessed` gets its own glyph: rendering it with the pass glyph
+			// would put "no measurement" in the same visual column as "no gap" —
+			// same rule as map_compliance's `not_assessed` vocabulary.
+			const icon = r.recommended ? ' →' : r.notAssessed ? ' ?' : ' ✓';
 			const suffix = r.recommended ? ` [${r.priority}] ${sanitizeOutputText(r.justifyingGap, 80)}` : '';
 			lines.push(`${icon} ${sanitizeOutputText(r.productName, 40)}${suffix}`);
 		}
@@ -340,8 +370,11 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 		if (!report.assessed) lines.push(caveat);
 		lines.push('');
 		for (const r of shown) {
-			const icon = r.recommended ? '✅' : '➖';
-			const tag = r.recommended ? ` — ${r.priority.toUpperCase()}` : ' — OK';
+			// "OK" is a verdict; a `notAssessed` line has no verdict to render —
+			// labelling a never-completed measurement OK is the defect in a
+			// different costume (same rule as map_compliance's `not_assessed`).
+			const icon = r.recommended ? '✅' : r.notAssessed ? '❓' : '➖';
+			const tag = r.recommended ? ` — ${r.priority.toUpperCase()}` : r.notAssessed ? ' — NOT ASSESSED' : ' — OK';
 			lines.push(`${icon} **${sanitizeOutputText(r.productName, 40)}**${tag}`);
 			lines.push(`  - ${sanitizeOutputText(r.justifyingGap, 160)}`);
 			for (const f of r.relatedFindings) lines.push(`  - ${sanitizeOutputText(f, 120)}`);

@@ -14,7 +14,7 @@ import type { CheckResult, Finding, Severity, CheckCategory } from '@blackveil/d
 import { IMPORTANCE_WEIGHTS, isGraded } from '@blackveil/dns-checks/scoring';
 import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
-import { formatScoreGrade, hasCompletedEvidence, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { formatScoreGrade, hasCompletedEvidence, isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 
 /** A single remediation action in a fix plan. */
 export interface FixAction {
@@ -169,9 +169,18 @@ export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeO
 	// COMPLETED, so an all-transient outage abstains the same way a
 	// zero-check scan does.
 	const hasEvidence = hasCompletedEvidence(scanResult.checks);
-	const actionableFindings = hasEvidence
-		? scanResult.checks.flatMap((check: CheckResult) => check.findings).filter((f: Finding) => f.severity !== 'info')
-		: [];
+
+	// Per-finding transient filter: only COMPLETED checks contribute actions. On
+	// a partial-outage scan (>=1 completed, so the abstention above doesn't
+	// fire), a transient check's own "check error"/"timed out" finding is a
+	// measurement failure, not a remediation item — up to 14 bogus "Fix X: check
+	// error" actions on a 5-of-19 scan. Mirrors `map_compliance`'s per-control
+	// exclusion of transient categories. Real findings from completed checks
+	// pass through untouched — a real measurement must never be suppressed.
+	const actionableFindings = scanResult.checks
+		.filter(isCompletedCheck)
+		.flatMap((check: CheckResult) => check.findings)
+		.filter((f: Finding) => f.severity !== 'info');
 
 	const actions: FixAction[] = actionableFindings.map((finding: Finding) => {
 		const importanceWeight = IMPORTANCE_WEIGHTS[finding.category]?.importance ?? 0;
