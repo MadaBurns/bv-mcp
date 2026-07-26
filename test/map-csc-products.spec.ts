@@ -327,3 +327,83 @@ describe('formatCscProducts — a domain where no check ran', () => {
 		expect(full).not.toContain('DNSSEC management');
 	});
 });
+
+/**
+ * Task 6b: a total outage — every attempted check errors out — previously read
+ * `assessed: isMeasured(checkResults)` as `true` (checks.length > 0), so
+ * `evalScanProduct` priced an upsell off `passed: false` + a "check error"
+ * finding manufactured by the transient failure — a confident sales gap from
+ * zero completed evidence. `hasCompletedEvidence` must read this the same way
+ * as zero checks, with DISTINCT wording ("no checks ran" would be false when
+ * N checks DID run).
+ */
+describe('evaluateCscProducts: a total outage (all checks attempted, none completed) is honestly unassessed', () => {
+	it('assessed is false with a truthful, distinct caveat, and no priced product gap', async () => {
+		const {
+			evaluateCscProducts: evaluate,
+			buildAllTransientCscNote,
+			UNASSESSED_CSC_NOTE: NOTE,
+		} = await import('../src/tools/map-csc-products');
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		const allTransient: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
+			...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+			score: 0,
+			passed: false,
+			checkStatus: 'error' as const,
+			partial: true,
+		}));
+		expect(allTransient.length).toBeGreaterThan(10);
+
+		const report = evaluate(allTransient, null, 'total-outage.example', null, null);
+
+		expect(report.assessed).toBe(false);
+		expect(report.recommendedCount).toBe(0);
+		expect(report.recommendations.every((r) => r.recommended === false)).toBe(true);
+		expect(report.recommendations.every((r) => r.priority === 'none')).toBe(true);
+		expect(report.caveat).toBe(buildAllTransientCscNote(allTransient.length));
+		expect(report.caveat).not.toBe(NOTE);
+		expect(report.caveat).toMatch(/attempted/i);
+		expect(report.caveat!.toLowerCase()).not.toContain('no checks ran');
+	});
+
+	it('keeps the genuine no-evidence case byte-identical to its pre-existing wording (control)', async () => {
+		const { evaluateCscProducts: evaluate, UNASSESSED_CSC_NOTE: NOTE } = await import('../src/tools/map-csc-products');
+		const report = evaluate([], null, 'never-measured.example', null, null);
+		expect(report.assessed).toBe(false);
+		expect(report.caveat).toBe(NOTE);
+	});
+
+	it('still lists real recommendations for a MEASURED domain (guard — no over-abstain, 1-of-N completed)', async () => {
+		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		const mostlyTransient: CheckResult[] = SCAN_CATEGORIES.map((c) => {
+			if (c === 'dmarc') {
+				return {
+					...buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record', 'high', 'missing')]),
+					score: 0,
+					passed: false,
+				};
+			}
+			return {
+				...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'error' as const,
+				partial: true,
+			};
+		});
+		expect(mostlyTransient.length).toBeGreaterThan(10);
+
+		const report = evaluate(mostlyTransient, null, 'partial-outage.example', null, null);
+
+		expect(report.assessed).toBe(true);
+		expect(report.caveat).toBeNull();
+		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
+		expect(dmarc.recommended).toBe(true);
+		expect(dmarc.priority).toBe('high');
+	});
+});

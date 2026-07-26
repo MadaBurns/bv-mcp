@@ -14,7 +14,7 @@ import type { CheckResult, Finding, Severity, CheckCategory } from '@blackveil/d
 import { IMPORTANCE_WEIGHTS, isGraded } from '@blackveil/dns-checks/scoring';
 import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
-import { formatScoreGrade, isMeasured, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { formatScoreGrade, hasCompletedEvidence, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 
 /** A single remediation action in a fix plan. */
 export interface FixAction {
@@ -60,6 +60,26 @@ export interface FixPlanResult {
  */
 export const UNASSESSED_FIX_PLAN_CAVEAT =
 	'No checks ran for this domain, so no remediation actions could be planned. This is an absence of evidence, not a clean bill of health.';
+
+/**
+ * A SEPARATE wording from {@link UNASSESSED_FIX_PLAN_CAVEAT} for a different
+ * failure mode. `UNASSESSED_FIX_PLAN_CAVEAT` describes "no checks ran"
+ * (NXDOMAIN, broken zone — `checks: []`). This describes "checks ran, none of
+ * them finished" — a total DoH/network outage where every attempted check
+ * carries a transient `checkStatus: 'timeout'`/`'error'`
+ * (`buildDnsErrorResult`/`safeCheck`). Saying "no checks ran" there would be
+ * false — N checks DID run, and each one's own "check error" finding would
+ * otherwise be mistaken for a real remediation item (see
+ * `generateFixPlan`'s `hasEvidence` gate). Mirrors `map_compliance`'s
+ * `buildAllTransientCaveat`.
+ */
+export function buildAllTransientFixPlanCaveat(attempted: number): string {
+	return (
+		`${attempted} check${attempted === 1 ? '' : 's'} ${attempted === 1 ? 'was' : 'were'} attempted for this domain, ` +
+		`but none of them completed (transient DNS/network failure) — no remediation actions could be planned from this scan. ` +
+		`This is different from no checks running at all: retry once the transient condition clears.`
+	);
+}
 
 /** Severity to numeric weight for priority computation. */
 const SEVERITY_WEIGHT: Record<Severity, number> = {
@@ -138,9 +158,20 @@ function findingToAction(finding: Finding): string {
 export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<FixPlanResult> {
 	const scanResult = await scanDomain(domain, kv, runtimeOptions);
 
-	const actionableFindings = scanResult.checks
-		.flatMap((check: CheckResult) => check.findings)
-		.filter((f: Finding) => f.severity !== 'info');
+	// `isMeasured` (`checks.length > 0`) cannot tell "19 healthy checks" apart
+	// from "19 checks that all timed out" — both are truthy. A total
+	// DoH/network outage where every attempted check carries a transient
+	// `checkStatus: 'timeout' | 'error'` previously read as `assessed: true`
+	// and turned each check's own "check error" finding into a bogus
+	// remediation action ("Fix DMARC: DMARC check error — Check failed: ...")
+	// — confident output manufactured from zero completed evidence.
+	// `hasCompletedEvidence` requires at least one check to have actually
+	// COMPLETED, so an all-transient outage abstains the same way a
+	// zero-check scan does.
+	const hasEvidence = hasCompletedEvidence(scanResult.checks);
+	const actionableFindings = hasEvidence
+		? scanResult.checks.flatMap((check: CheckResult) => check.findings).filter((f: Finding) => f.severity !== 'info')
+		: [];
 
 	const actions: FixAction[] = actionableFindings.map((finding: Finding) => {
 		const importanceWeight = IMPORTANCE_WEIGHTS[finding.category]?.importance ?? 0;
@@ -163,11 +194,17 @@ export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeO
 	actions.sort((a, b) => b.priority - a.priority);
 
 	// Two independent questions, each answered by its own shared primitive.
-	// `assessed`: did anything run at all (drives the caveat and the zero-actions
-	// wording)? `isGraded`: did the scan produce a real overall score — the three
-	// degraded builders and an all-inconclusive scan alike hardcode or derive a
-	// placeholder `maturity.stage` that is not a posture measurement.
-	const assessed = isMeasured(scanResult.checks);
+	// `assessed`: is there any COMPLETED evidence (drives the caveat and the
+	// zero-actions wording)? `isGraded`: did the scan produce a real overall
+	// score — the three degraded builders and an all-inconclusive scan alike
+	// hardcode or derive a placeholder `maturity.stage` that is not a posture
+	// measurement.
+	const assessed = hasEvidence;
+	const caveat = assessed
+		? null
+		: scanResult.checks.length === 0
+			? UNASSESSED_FIX_PLAN_CAVEAT
+			: buildAllTransientFixPlanCaveat(scanResult.checks.length);
 
 	return {
 		domain,
@@ -177,7 +214,7 @@ export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeO
 		totalActions: actions.length,
 		actions,
 		assessed,
-		caveat: assessed ? null : UNASSESSED_FIX_PLAN_CAVEAT,
+		caveat,
 	};
 }
 

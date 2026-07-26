@@ -355,6 +355,101 @@ describe('compareBaseline', () => {
 	});
 });
 
+/**
+ * Task 6b: a total outage — every attempted check errors out — previously read
+ * `scanMeasured = isMeasured(scan.checks)` as `true` (checks.length > 0), so
+ * `categoryPassed`'s `check?.passed ?? false` turned each transient
+ * `checkStatus: 'error'` check into a genuine "did not pass" and manufactured
+ * confident violations ("SPF is required but check did not pass",
+ * "N critical findings exceed maximum of 0" from a findings array assembled
+ * entirely from `check error` artifacts) for a domain nobody actually
+ * measured. `hasCompletedEvidence` must read this the same way as zero checks:
+ * every `scanMeasured`-gated rule becomes inconclusive, never evaluated.
+ */
+describe('compareBaseline: a total outage (all checks attempted, none completed) is honestly inconclusive', () => {
+	it('treats all-transient like never-ran for every scanMeasured-gated rule', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		// Every attempted check errored out — a total outage, NOT the zero-check
+		// (NXDOMAIN/broken-zone) case: there IS a CheckResult per category, it just
+		// never completed. Mirrors the buildDnsErrorResult/safeCheck shape exactly
+		// (see map-compliance.spec.ts's identical fixture pattern).
+		const allTransient = SCAN_CATEGORIES.map((c) => ({
+			...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+			score: 0,
+			passed: false,
+			checkStatus: 'error' as const,
+			partial: true,
+		}));
+		// Non-vacuity guard: prove check data actually existed before asserting on it.
+		expect(allTransient.length).toBeGreaterThan(10);
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const allTransientScan: any = {
+			domain: 'total-outage.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'transient outage' },
+			checks: allTransient,
+			maturity: { stage: 0, label: 'Unknown', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		};
+
+		const result = compareBaseline(allTransientScan, {
+			require_spf: true,
+			require_dmarc_enforce: true,
+			max_critical_findings: 0,
+		});
+
+		expect(result.passed).toBeNull();
+		expect(result.violations).toHaveLength(0);
+		expect(result.checkedRules).toBe(0);
+		expect(result.inconclusiveRules).toEqual(['require_dmarc_enforce', 'require_spf', 'max_critical_findings']);
+	});
+
+	it('keeps evaluating normally when at least one check completed (guard — no over-abstain)', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		// 1 of N checks completed (spf passes); the rest are transient. This must
+		// evaluate exactly as it did before this change — `hasCompletedEvidence`
+		// must not require EVERY check to complete.
+		const mostlyTransient = SCAN_CATEGORIES.map((c) => {
+			if (c === 'spf') {
+				return { ...buildCheckResult('spf', []), score: 90, passed: true };
+			}
+			return {
+				...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'error' as const,
+				partial: true,
+			};
+		});
+		expect(mostlyTransient.length).toBeGreaterThan(10);
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		const scan: any = {
+			domain: 'partial-outage.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'partial outage' },
+			checks: mostlyTransient,
+			maturity: { stage: 0, label: 'Unknown', description: 'x', nextStep: null },
+			context: { profile: 'mail_enabled', signals: [] },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		};
+
+		const result = compareBaseline(scan, { require_spf: true });
+		expect(result.inconclusiveRules).toEqual([]);
+		expect(result.checkedRules).toBe(1);
+		expect(result.violations).toHaveLength(0);
+		expect(result.passed).toBe(true);
+	});
+});
+
 describe('formatBaselineResult', () => {
 	it('compact mode uses terse violation lines without headings', async () => {
 		const { formatBaselineResult } = await import('../src/tools/compare-baseline');

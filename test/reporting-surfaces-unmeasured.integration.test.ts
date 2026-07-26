@@ -21,9 +21,14 @@ import type { CheckResult } from '../src/lib/scoring';
 const mockScanDomain = vi.fn();
 const mockCheckRdap = vi.fn();
 
-vi.mock('../src/tools/scan-domain', () => ({
-	scanDomain: (...args: unknown[]) => mockScanDomain(...args),
-}));
+// `importOriginal` preserves the module's other named exports (e.g.
+// `SCAN_CATEGORIES`, used by the all-transient fixture below to build one
+// CheckResult per real scan category) while still overriding `scanDomain`
+// itself.
+vi.mock('../src/tools/scan-domain', async (importOriginal) => {
+	const orig = await importOriginal<typeof import('../src/tools/scan-domain')>();
+	return { ...orig, scanDomain: (...args: unknown[]) => mockScanDomain(...args) };
+});
 
 // The leads orchestrator calls RDAP alongside the scan; unmocked it goes to the
 // network, throws, and the domain lands in `skipped` — which is why every
@@ -100,6 +105,36 @@ function scoringFailedScan(domain: string) {
 	};
 }
 
+/**
+ * The FOURTH state, distinct from all three above: a total DoH/network outage
+ * where every attempted check errors out (`checkStatus: 'error'`, the
+ * `buildDnsErrorResult`/`safeCheck` shape) — as opposed to `nonResolvingScan`'s
+ * NXDOMAIN/broken-zone shape, where NO CheckResult exists at all. `isMeasured`
+ * (`checks.length > 0`) could not tell "19 healthy checks" apart from "19
+ * checks that all timed out" — both are truthy — so this shape previously
+ * slipped through as `assessed: true`.
+ */
+async function allTransientScan(domain: string) {
+	const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+	const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+	const checks: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
+		...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+		score: 0,
+		passed: false,
+		checkStatus: 'error' as const,
+		partial: true,
+	}));
+
+	return {
+		domain,
+		score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'transient outage' },
+		checks,
+		maturity: { stage: 0, label: 'Unknown', description: 'x', nextStep: 'y' },
+		resolves: true,
+	};
+}
+
 describe('generateFixPlan — producer wiring for an unmeasured domain', () => {
 	it('marks the plan unassessed and abstains on the maturity stage', async () => {
 		mockScanDomain.mockResolvedValue(nonResolvingScan('never-measured.example'));
@@ -142,6 +177,104 @@ describe('generateFixPlan — producer wiring for an unmeasured domain', () => {
 		// a posture measurement and must not be rendered as one.
 		expect(plan.score).toBeNull();
 		expect(plan.maturityStage).toBeNull();
+	});
+});
+
+/**
+ * Task 6b: a total outage — every attempted check errors out — previously
+ * read `assessed: isMeasured(scanResult.checks)` as `true` (checks.length >
+ * 0), so each transient check's own "check error" finding (severity `high`)
+ * flowed straight into `actionableFindings` and rendered as a bogus
+ * remediation action — confident output manufactured from zero completed
+ * evidence. `hasCompletedEvidence` must read this the same way as zero
+ * checks, with DISTINCT caveat wording ("no checks ran" would be false when N
+ * checks DID run).
+ */
+describe('generateFixPlan — producer wiring for a total outage (all checks attempted, none completed)', () => {
+	it('marks the plan unassessed, emits zero actions, and abstains on the maturity stage', async () => {
+		const scan = await allTransientScan('total-outage.example');
+		// Non-vacuity guard: prove check data actually existed (unlike the
+		// zero-check case above) before asserting on it.
+		expect(scan.checks.length).toBeGreaterThan(10);
+		mockScanDomain.mockResolvedValue(scan);
+
+		const { generateFixPlan, buildAllTransientFixPlanCaveat, UNASSESSED_FIX_PLAN_CAVEAT } = await import('../src/tools/generate-fix-plan');
+		const plan = await generateFixPlan('total-outage.example');
+
+		expect(plan.assessed).toBe(false);
+		// Pre-fix this was 19 — one bogus "Fix X: X check error" action per
+		// transient category, none of them a real remediation item.
+		expect(plan.totalActions).toBe(0);
+		expect(plan.actions).toEqual([]);
+		expect(plan.maturityStage).toBeNull();
+		expect(plan.score).toBeNull();
+		expect(plan.grade).toBeNull();
+		expect(plan.caveat).toBe(buildAllTransientFixPlanCaveat(scan.checks.length));
+		// Distinct from the genuine no-evidence wording — "no checks ran" would
+		// be false here, since `scan.checks.length` checks DID run.
+		expect(plan.caveat).not.toBe(UNASSESSED_FIX_PLAN_CAVEAT);
+		expect(plan.caveat).toMatch(/attempted/i);
+		expect(plan.caveat!.toLowerCase()).not.toContain('no checks ran');
+	});
+
+	it('does not repeat the caveat wording of the genuine no-evidence case (discriminator)', async () => {
+		const { generateFixPlan, UNASSESSED_FIX_PLAN_CAVEAT } = await import('../src/tools/generate-fix-plan');
+
+		mockScanDomain.mockResolvedValue(nonResolvingScan('never-measured-again.example'));
+		const neverRan = await generateFixPlan('never-measured-again.example');
+		expect(neverRan.caveat).toBe(UNASSESSED_FIX_PLAN_CAVEAT);
+
+		mockScanDomain.mockResolvedValue(await allTransientScan('total-outage-2.example'));
+		const allTransient = await generateFixPlan('total-outage-2.example');
+		expect(allTransient.caveat).not.toBe(UNASSESSED_FIX_PLAN_CAVEAT);
+		expect(allTransient.caveat).not.toBe(neverRan.caveat);
+	});
+
+	it('keeps the current behaviour when at least one check completed (guard — no over-abstain)', async () => {
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		// 1 of N checks completed (dmarc genuinely fails); the rest are
+		// transient. This must produce exactly the one real remediation
+		// action — `hasCompletedEvidence` must not require EVERY check to
+		// complete before the plan is treated as assessed.
+		const checks: CheckResult[] = SCAN_CATEGORIES.map((c) => {
+			if (c === 'dmarc') {
+				return {
+					...buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC policy is p=none', 'high', 'p=none')]),
+					score: 40,
+					passed: false,
+				};
+			}
+			return {
+				...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'error' as const,
+				partial: true,
+			};
+		});
+		expect(checks.length).toBeGreaterThan(10);
+
+		mockScanDomain.mockResolvedValue({
+			domain: 'partial-outage.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'partial outage' },
+			checks,
+			maturity: { stage: 0, label: 'Unknown', description: 'x', nextStep: 'y' },
+			resolves: true,
+		});
+
+		const { generateFixPlan } = await import('../src/tools/generate-fix-plan');
+		const plan = await generateFixPlan('partial-outage.example');
+
+		// Once ANY check completed, this must behave EXACTLY as it did before this
+		// change — including still surfacing an action per transient "check error"
+		// finding (pre-existing behaviour for a partial outage, out of scope for
+		// this fix, and pinned here so a future change doesn't silently narrow it).
+		expect(plan.assessed).toBe(true);
+		expect(plan.caveat).toBeNull();
+		expect(plan.totalActions).toBe(checks.length);
+		expect(plan.actions.some((a) => a.category === 'dmarc' && a.findingTitle === 'DMARC policy is p=none')).toBe(true);
 	});
 });
 

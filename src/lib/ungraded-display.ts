@@ -55,3 +55,43 @@ export function formatScoreGrade(score: number | null | undefined, grade: string
 export function isMeasured(checks: readonly unknown[]): boolean {
 	return checks.length > 0;
 }
+
+/**
+ * Minimal shape this leaf module needs from a check result to answer "did
+ * anything complete" — a local structural type instead of importing
+ * `CheckResult`, so this file stays a zero-import leaf with no edge to the
+ * scan orchestrator.
+ */
+interface CheckStatusBearer {
+	readonly checkStatus?: 'completed' | 'timeout' | 'error';
+}
+
+/**
+ * There are THREE distinct states a scan's checks can be in, and each is
+ * answered by a DIFFERENT predicate:
+ *
+ * 1. No checks at all — the scan never ran (NXDOMAIN, broken zone;
+ *    `checks: []`). `isMeasured` answers "attempted anything at all?" and is
+ *    `false` here.
+ * 2. Checks were attempted but none of them COMPLETED — a total DoH/network
+ *    outage where every `CheckResult` carries a transient
+ *    `checkStatus: 'timeout' | 'error'` (the `buildDnsErrorResult`/`safeCheck`
+ *    shape). `isMeasured` is `true` here (`checks.length > 0`) even though
+ *    there is zero usable evidence — this is precisely the gap that let
+ *    `generate_fix_plan`/`map_csc_products`/`compare_baseline` claim a
+ *    confident `assessed: true` for a domain nobody actually measured.
+ * 3. At least one check produced COMPLETED evidence — `checkStatus` absent
+ *    (legacy shape, treated as completed) or `'completed'`. This is the only
+ *    state in which a consumer has anything real to grade, count, or price.
+ *
+ * `isMeasured` answers "was anything ATTEMPTED" (state 1 vs. states 2+3).
+ * `hasCompletedEvidence` answers "is there any USABLE evidence" (state 3 vs.
+ * states 1+2) — the predicate a surface must use before it claims it
+ * assessed a domain. `scan_domain`'s own `StructuredScanResult.measured`
+ * field is a deliberate, documented exception: it means "attempted anything"
+ * by contract, disambiguated on the wire via `evidence` counts and
+ * `evidenceInsufficient` rather than by switching predicates.
+ */
+export function hasCompletedEvidence(checks: readonly CheckStatusBearer[]): boolean {
+	return checks.some((c) => c.checkStatus === undefined || c.checkStatus === 'completed');
+}

@@ -15,7 +15,7 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { formatScoreGrade, isMeasured } from '../lib/ungraded-display';
+import { formatScoreGrade, hasCompletedEvidence } from '../lib/ungraded-display';
 
 export type CscProductKey = 'csc_multilock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
 
@@ -50,6 +50,14 @@ export interface CscProductReport {
 	 * domain nobody measured by ignoring this flag.
 	 */
 	assessed: boolean;
+	/**
+	 * Populated only when `assessed` is `false`; `null` otherwise. Distinguishes
+	 * "no checks ran" ({@link UNASSESSED_CSC_NOTE}) from "checks were attempted
+	 * but none of them completed" ({@link buildAllTransientCscNote}) — the two
+	 * failure modes `hasCompletedEvidence` collapses into the same `assessed:
+	 * false`, but which are NOT the same fact and get distinct wording.
+	 */
+	caveat?: string | null;
 	lockPosture: LockPosture | null;
 	/**
 	 * Always the four products in fixed order. When `assessed` is `false` the three
@@ -72,6 +80,25 @@ export interface CscProductReport {
  * same producer output.
  */
 export const UNASSESSED_CSC_NOTE = 'No checks ran for this domain, so no product gap could be assessed.';
+
+/**
+ * A SEPARATE wording from {@link UNASSESSED_CSC_NOTE} for a different failure
+ * mode. `UNASSESSED_CSC_NOTE` describes "no checks ran" (NXDOMAIN, broken
+ * zone — `checkResults: []`). This describes "checks ran, none of them
+ * finished" — a total DoH/network outage where every attempted check carries
+ * a transient `checkStatus: 'timeout'`/`'error'`
+ * (`buildDnsErrorResult`/`safeCheck`). Saying "no checks ran" there would be
+ * false — N checks DID run — and would misprice the domain's condition to a
+ * sales team reading this note as "nothing observed" rather than "transient,
+ * retry". Mirrors `map_compliance`'s `buildAllTransientCaveat`.
+ */
+export function buildAllTransientCscNote(attempted: number): string {
+	return (
+		`${attempted} check${attempted === 1 ? '' : 's'} ${attempted === 1 ? 'was' : 'were'} attempted for this domain, ` +
+		`but none of them completed (transient DNS/network failure) — no product gap could be assessed from this scan. ` +
+		`This is different from no checks running at all: retry once the transient condition clears.`
+	);
+}
 
 const CSC_PRODUCT_NAMES: Record<CscProductKey, string> = {
 	csc_multilock: 'CSC MultiLock',
@@ -152,7 +179,15 @@ export function evaluateCscProducts(
 ): CscProductReport {
 	const byCategory = new Map<string, CheckResult>();
 	for (const r of checkResults) byCategory.set(r.category, r);
-	const assessed = isMeasured(checkResults);
+
+	// `isMeasured` (`checks.length > 0`) cannot tell "19 healthy checks" apart
+	// from "19 checks that all timed out" — both are truthy. A total DoH/network
+	// outage where every attempted check carries a transient `checkStatus:
+	// 'timeout' | 'error'` previously read as `assessed: true`, so
+	// `evalScanProduct` priced an upsell off `passed: false` + a "check error"
+	// finding manufactured by the transient failure, not off a real gap.
+	const assessed = hasCompletedEvidence(checkResults);
+	const caveat = assessed ? null : checkResults.length === 0 ? UNASSESSED_CSC_NOTE : buildAllTransientCscNote(checkResults.length);
 
 	// MultiLock is deliberately NOT gated on `assessed`: it reads the RDAP lock
 	// posture, which is fetched independently of the scan. A registered domain whose
@@ -188,6 +223,7 @@ export function evaluateCscProducts(
 		score,
 		grade,
 		assessed,
+		caveat,
 		lockPosture,
 		recommendations,
 		recommendedCount: recommendations.filter((r) => r.recommended).length,
@@ -233,10 +269,12 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 		(r): r is CscProductRecommendation => r !== undefined && (report.assessed || r.recommended),
 	);
 
+	const caveat = report.caveat ?? UNASSESSED_CSC_NOTE;
+
 	if (format === 'compact') {
 		const countSegment = report.assessed ? ` — ${report.recommendedCount} upsell(s)` : '';
 		lines.push(`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}${countSegment}`);
-		if (!report.assessed) lines.push(UNASSESSED_CSC_NOTE);
+		if (!report.assessed) lines.push(caveat);
 		for (const r of shown) {
 			const icon = r.recommended ? ' →' : ' ✓';
 			const suffix = r.recommended ? ` [${r.priority}] ${sanitizeOutputText(r.justifyingGap, 80)}` : '';
@@ -246,7 +284,7 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 		lines.push(`# CSC Product Recommendations: ${sanitizeOutputText(report.domain, 253)}`);
 		const countSegment = report.assessed ? ` | **${report.recommendedCount}** recommended` : '';
 		lines.push(`**Score:** ${formatScoreGrade(report.score, report.grade)}${countSegment}`);
-		if (!report.assessed) lines.push(UNASSESSED_CSC_NOTE);
+		if (!report.assessed) lines.push(caveat);
 		lines.push('');
 		for (const r of shown) {
 			const icon = r.recommended ? '✅' : '➖';

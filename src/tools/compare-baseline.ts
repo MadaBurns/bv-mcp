@@ -14,7 +14,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import type { CheckCategory, Finding } from '../lib/scoring';
-import { isMeasured } from '../lib/ungraded-display';
+import { hasCompletedEvidence } from '../lib/ungraded-display';
 import type { ScanDomainResult } from './scan-domain';
 
 const GRADE_ORDER = ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E', 'F'] as const;
@@ -150,7 +150,18 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 	// only the scoring bundle failed, so its per-check results stay genuinely
 	// evaluable. A measured scan whose SPF check simply failed is a real breach and
 	// must still FAIL — only the nothing-ran case abstains.
-	const scanMeasured = isMeasured(scan.checks);
+	//
+	// `isMeasured` (`checks.length > 0`) is the WRONG predicate here: a total
+	// DoH/network outage where every attempted check carries a transient
+	// `checkStatus: 'timeout' | 'error'` (`buildDnsErrorResult`/`safeCheck`) is
+	// `checks.length > 0` too, and `categoryPassed`'s `check?.passed ?? false`
+	// read each transient check's `passed: false` as a genuine control failure —
+	// manufacturing confident violations from zero completed evidence, exactly
+	// the pathology `passed: null` above exists to remove. `hasCompletedEvidence`
+	// requires at least one check to have actually COMPLETED (`checkStatus`
+	// absent or `'completed'`), so an all-transient outage abstains the same way
+	// a zero-check scan does.
+	const scanMeasured = hasCompletedEvidence(scan.checks);
 
 	if (baseline.require_dmarc_enforce) {
 		if (!scanMeasured) {
