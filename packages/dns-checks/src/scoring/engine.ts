@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import {
-	CATEGORY_DISPLAY_WEIGHTS,
 	CATEGORY_TIERS,
 	type CheckCategory,
 	type CheckResult,
@@ -181,6 +180,21 @@ function buildGenericContext(
 		}
 	}
 
+	// A core/protective category that produced NO result at all was never measured — treat it
+	// exactly like a transient/inconclusive failure: exclude it from the weighted tier so the
+	// score renormalizes over what WAS measured, instead of letting generic.ts's `?? 100`
+	// default award full unearned credit (which masked real findings — e.g. the scan_domain
+	// roster omits lookalikes/shadow_domains, so those never-run protective categories were
+	// silently scored a perfect 100). Hardening is intentionally left alone: its denominator
+	// legitimately counts every hardening category (an unconfigured bonus is an unearned bonus,
+	// handled via hardeningPassed), so a never-run hardening category must NOT be excluded here.
+	for (const cat of Object.keys(CATEGORY_TIERS) as CheckCategory[]) {
+		const tier = CATEGORY_TIERS[cat];
+		if ((tier === 'core' || tier === 'protective') && !resultMap.has(cat)) {
+			transientFailures[cat] = true;
+		}
+	}
+
 	// --- Build hardeningPassed map ---
 	// The original engine iterates ALL hardening categories from CATEGORY_TIERS (not just
 	// those with results). It uses hardeningCount = total hardening categories.
@@ -283,16 +297,15 @@ function buildGenericContext(
  * critical gap categories, and email bonus eligibility instead of defaults.
  */
 export function computeScanScore(results: CheckResult[], context?: DomainContext, config?: ScoringConfig): ScanScore {
-	const partialScores: Partial<Record<CheckCategory, number>> = {};
+	// Only categories that produced a conclusive result appear here. A category that was NEVER
+	// run (absent from `results`) is "not measured", NOT a perfect 100 — seeding it to 100 both
+	// showed a misleading phantom score (a never-run category read as clean) and, via the generic
+	// engine's `?? 100` default, silently awarded it full weight, masking real findings the
+	// dedicated deep-scan tools surface (e.g. lookalikes/shadow_domains are excluded from the
+	// scan_domain roster). Transient (timeout/error) checks are likewise excluded. See
+	// buildGenericContext, which excludes both classes from the weighted overall (renormalized).
+	const categoryScores: Partial<Record<CheckCategory, number>> = {};
 	const allFindings: Finding[] = [];
-
-	// Seed all categories to 100 (default for absent results)
-	for (const category of Object.keys(CATEGORY_DISPLAY_WEIGHTS) as CheckCategory[]) {
-		partialScores[category] = 100;
-	}
-
-	// All CheckCategory keys are populated above — safe to widen from Partial
-	const categoryScores = partialScores as Record<CheckCategory, number>;
 
 	const cfg = config ?? DEFAULT_SCORING_CONFIG;
 
@@ -300,31 +313,28 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		return {
 			overall: 100,
 			grade: scoreToGrade(100, config),
-			categoryScores,
+			categoryScores: categoryScores as Record<CheckCategory, number>,
 			findings: [],
 			summary: `Excellent! No security issues found. Grade: ${scoreToGrade(100, config)}`,
 		};
 	}
 
 	// Populate category scores from actual results. Transient (checkStatus 'timeout'/'error')
-	// checks are INCONCLUSIVE — exclude them from the category-score output (shown as n/a, never
-	// a misleading 0) and from the finding counts; buildGenericContext also excludes them from
-	// the weighted overall score via transientFailures.
-	const transientCategories = new Set<CheckCategory>();
+	// checks are INCONCLUSIVE — omitted from the category-score output (shown as n/a, never a
+	// misleading 0) and from the finding counts; buildGenericContext also excludes them from the
+	// weighted overall score via transientFailures.
 	for (const result of results) {
 		if (result.checkStatus === 'timeout' || result.checkStatus === 'error') {
-			transientCategories.add(result.category);
 			continue;
 		}
 		categoryScores[result.category] = result.score;
 		allFindings.push(...result.findings);
 	}
-	for (const cat of transientCategories) {
-		delete (categoryScores as Partial<Record<CheckCategory, number>>)[cat];
-	}
 
-	// Build the generic context and delegate to the generic engine
-	const genericContext = buildGenericContext(results, categoryScores, allFindings, context, cfg);
+	// Build the generic context and delegate to the generic engine. `categoryScores` is a partial
+	// map (never-run + transient categories are absent); the generic engine treats absent scored
+	// keys via `transientFailures` exclusion, so the widening cast is runtime-safe.
+	const genericContext = buildGenericContext(results, categoryScores as Record<CheckCategory, number>, allFindings, context, cfg);
 	const genericResult = computeGenericScore(genericContext, config);
 
 	// --- Build summary using original logic ---
@@ -347,7 +357,7 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	return {
 		overall: genericResult.overall,
 		grade: genericResult.grade,
-		categoryScores,
+		categoryScores: categoryScores as Record<CheckCategory, number>,
 		findings: allFindings,
 		summary,
 		tierBreakdown: genericResult.tierBreakdown,
