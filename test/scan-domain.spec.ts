@@ -825,7 +825,7 @@ describe('scanDomain — non-resolving (NXDOMAIN) short-circuit', () => {
 	// NS query. Such a domain has no posture to assess — running the full check
 	// matrix and emitting "absence = missing control" findings fabricates a D+/F
 	// for a domain that simply isn't registered. scanDomain probes the apex first
-	// and short-circuits to a dedicated non-resolving result (grade N/A, resolves:false,
+	// and short-circuits to a dedicated non-resolving result (ungraded, resolves:false,
 	// no fabricated category scores) instead.
 	function mockNxdomain(domain: string) {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
@@ -835,17 +835,28 @@ describe('scanDomain — non-resolving (NXDOMAIN) short-circuit', () => {
 		});
 	}
 
-	it('returns a non-resolving result (grade N/A, resolves:false, no categories) on NXDOMAIN apex', async () => {
+	it('returns a non-resolving result (ungraded, resolves:false, no categories) on NXDOMAIN apex', async () => {
 		mockNxdomain('does-not-exist-zzz.example');
 		const { scanDomain } = await import('../src/tools/scan-domain');
 		const result = await scanDomain('does-not-exist-zzz.example', undefined, { forceRefresh: true });
 
 		expect(result.resolves).toBe(false);
-		expect(result.score.grade).toBe('N/A');
-		expect(result.score.overall).toBe(0);
+		expect(result.score.grade).toBeNull();
+		expect(result.score.overall).toBeNull();
 		// No fabricated per-category scores or findings for a domain that doesn't exist.
 		expect(result.checks).toHaveLength(0);
 		expect(Object.keys(result.score.categoryScores)).toHaveLength(0);
+	});
+
+	it('a non-resolving domain is ungraded (null), not scored zero', async () => {
+		mockNxdomain('does-not-exist-yyy.example');
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const result = await scanDomain('does-not-exist-yyy.example', undefined, { forceRefresh: true });
+
+		expect(result.score.grade).toBeNull();
+		expect(result.score.overall).toBeNull();
+		expect(result.resolves).toBe(false);
+		expect(result.checks).toHaveLength(0);
 	});
 
 	it('fails open: a transient NS probe error does NOT abort the scan (falls through to the matrix)', async () => {
@@ -865,7 +876,7 @@ describe('scanDomain — non-resolving (NXDOMAIN) short-circuit', () => {
 		// Must resolve (not reject) and must not short-circuit to a non-resolving result.
 		const result = await scanDomain('transient-ns.example', undefined, { forceRefresh: true });
 		expect(result.resolves).not.toBe(false);
-		expect(result.score.grade).not.toBe('N/A');
+		expect(result.score.grade).not.toBeNull();
 		expect(result.checks.length).toBeGreaterThan(0);
 	});
 
@@ -912,8 +923,8 @@ describe('scanDomain — SERVFAIL "DNS resolution broken" state', () => {
 		const result = await scanDomain('bogus-dnssec.example', undefined, { forceRefresh: true });
 
 		expect(result.resolves).toBe('broken');
-		expect(result.score.grade).toBe('N/A');
-		expect(result.score.overall).toBe(0);
+		expect(result.score.grade).toBeNull();
+		expect(result.score.overall).toBeNull();
 		expect(result.maturity.label).toBe('DNS resolution broken');
 		expect(result.maturity.description).toMatch(/DNSSEC/i);
 		// No fabricated check findings for a zone that can't be resolved.
@@ -936,7 +947,7 @@ describe('scanDomain — SERVFAIL "DNS resolution broken" state', () => {
 		const result = await scanDomain('lame-delegation.example', undefined, { forceRefresh: true });
 
 		expect(result.resolves).toBe('broken');
-		expect(result.score.grade).toBe('N/A');
+		expect(result.score.grade).toBeNull();
 		expect(result.maturity.label).toBe('DNS resolution broken');
 		expect(result.maturity.description).toMatch(/unresolvable|delegation/i);
 		expect(result.checks).toHaveLength(0);
@@ -954,7 +965,7 @@ describe('scanDomain — SERVFAIL "DNS resolution broken" state', () => {
 
 		expect(result.resolves).toBe(false);
 		expect(result.maturity.label).toBe('Does not resolve');
-		expect(result.score.grade).toBe('N/A');
+		expect(result.score.grade).toBeNull();
 	});
 
 	it('case 4 (regression): apex NOERROR → proceeds to full matrix, scored normally', async () => {
@@ -971,7 +982,7 @@ describe('scanDomain — SERVFAIL "DNS resolution broken" state', () => {
 
 		expect(result.resolves).not.toBe('broken');
 		expect(result.resolves).not.toBe(false);
-		expect(result.score.grade).not.toBe('N/A');
+		expect(result.score.grade).not.toBeNull();
 		expect(result.checks.length).toBeGreaterThan(0);
 	});
 });

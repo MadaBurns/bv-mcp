@@ -74,6 +74,25 @@ describe('handlePromptsGet', () => {
 		expect(result.messages[0].content.text).toContain('"B"');
 	});
 
+	/**
+	 * `compare_baseline` returns THREE states; this prompt is handed to an LLM, so
+	 * telling it to "Report pass/fail" instructs the model to collapse the third
+	 * into one of two. Failure mode: a domain that does not resolve returns
+	 * INCONCLUSIVE, the model picks the nearer of the two states it was asked for
+	 * — most likely "fail" — and writes that into a client's report. The tool does
+	 * the right thing and the prompt undoes it.
+	 */
+	it('does not instruct the model to binarise the three-state verdict', () => {
+		const result = handlePromptsGet({ name: 'policy-compliance-check', arguments: { domain: 'corp.io' } });
+		const text = result.messages[0].content.text;
+
+		expect(text).not.toContain('Report pass/fail');
+		// Names the third state explicitly, so the model has somewhere to put it.
+		expect(text.toLowerCase()).toContain('inconclusive');
+		// And tells it what that state means rather than leaving it to guess.
+		expect(text).toContain('passed');
+	});
+
 	it('uses custom minimum_grade when provided', () => {
 		const result = handlePromptsGet({
 			name: 'policy-compliance-check',

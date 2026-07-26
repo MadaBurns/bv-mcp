@@ -49,7 +49,8 @@ export const INTERACTION_RULES: InteractionRule[] = [
 			{ category: 'dmarc', maxScore: 60 },
 		],
 		overallPenalty: 5,
-		narrative: 'Weak DKIM combined with permissive DMARC creates multiplicative spoofing risk — attackers can forge messages that pass relaxed alignment checks.',
+		narrative:
+			'Weak DKIM combined with permissive DMARC creates multiplicative spoofing risk — attackers can forge messages that pass relaxed alignment checks.',
 	},
 	{
 		id: 'no_spf_no_dmarc',
@@ -96,7 +97,8 @@ export const INTERACTION_RULES: InteractionRule[] = [
 			{ category: 'dnssec', maxScore: 40 },
 		],
 		overallPenalty: 3,
-		narrative: 'Strong email authentication is in place but DNSSEC is weak or absent — DNS tampering could undermine authentication records.',
+		narrative:
+			'Strong email authentication is in place but DNSSEC is weak or absent — DNS tampering could undermine authentication records.',
 	},
 	{
 		id: 'no_spf_no_dkim',
@@ -105,7 +107,8 @@ export const INTERACTION_RULES: InteractionRule[] = [
 			{ category: 'dkim', maxScore: 0 },
 		],
 		overallPenalty: 5,
-		narrative: 'Neither SPF nor DKIM is configured — DMARC alignment cannot be satisfied through either mechanism, making enforcement ineffective even if DMARC is published.',
+		narrative:
+			'Neither SPF nor DKIM is configured — DMARC alignment cannot be satisfied through either mechanism, making enforcement ineffective even if DMARC is published.',
 	},
 	{
 		id: 'weak_ssl_no_http_security',
@@ -114,7 +117,8 @@ export const INTERACTION_RULES: InteractionRule[] = [
 			{ category: 'http_security', maxScore: 30 },
 		],
 		overallPenalty: 3,
-		narrative: 'Weak SSL/TLS combined with missing HTTP security headers exposes the domain to man-in-the-middle attacks and content injection.',
+		narrative:
+			'Weak SSL/TLS combined with missing HTTP security headers exposes the domain to man-in-the-middle attacks and content injection.',
 	},
 ];
 
@@ -143,6 +147,12 @@ export function applyInteractionPenalties(
 	score: ScanScore,
 	config?: ScoringConfig,
 ): { adjustedScore: ScanScore; effects: InteractionEffect[] } {
+	// An ungraded score has nothing to penalise. Returning it untouched keeps
+	// `null` propagating rather than turning it into NaN via `null - penalty`.
+	if (score.overall === null || score.grade === null) {
+		return { adjustedScore: score, effects: [] };
+	}
+
 	const effects: InteractionEffect[] = [];
 	let totalPenalty = 0;
 

@@ -139,9 +139,34 @@ export interface CheckResult {
 	metadata?: Record<string, unknown>;
 }
 
+/**
+ * Coverage of a single scan. Emitted on EVERY `ScanScore` so a caller can always
+ * judge for itself how much of the scan actually ran, whether or not a grade was
+ * produced.
+ *
+ * - `attempted` — number of `CheckResult`s handed to the scorer.
+ * - `completed` — those whose `checkStatus` is `'completed'`, or ABSENT (an absent
+ *   status means the same thing; only the degraded paths set it explicitly).
+ * - `ratio`     — `completed / attempted`, and `0` when `attempted === 0`.
+ */
+export interface ScanEvidence {
+	attempted: number;
+	completed: number;
+	ratio: number;
+}
+
 export interface ScanScore {
-	overall: number;
-	grade: string;
+	/**
+	 * Overall 0–100 score, or `null` when the scan produced NO gradeable
+	 * measurement (domain does not resolve, zone unresolvable, scoring bundle
+	 * failed). `null` means "not measured" — it is NOT a zero. Consumers must
+	 * exclude it from comparison, ranking and policy evaluation; in JS
+	 * `null < n` is `true` and `null - n` is `NaN`, so coercion inverts
+	 * exactly the decisions that matter. Narrow with `isGraded()`.
+	 */
+	overall: number | null;
+	/** Canonical 9-band grade letter, or `null` when `overall` is null. Never a sentinel string. */
+	grade: string | null;
 	categoryScores: Record<CheckCategory, number>;
 	findings: Finding[];
 	summary: string;
@@ -154,6 +179,23 @@ export interface ScanScore {
 	 * no-checks result.
 	 */
 	tierBreakdown?: { core: number; protective: number; hardening: number };
+	/**
+	 * Coverage of this scan: how many checks were attempted and how many completed.
+	 * Present on EVERY result, graded or not, so a consumer can always judge the
+	 * scan's own reliability rather than inferring it from a missing grade.
+	 */
+	evidence: ScanEvidence;
+	/**
+	 * `true` when the scan did not complete enough of its attempted checks to be
+	 * graded, so `overall` and `grade` are `null`. This includes the zero-results
+	 * case (`evidence.attempted === 0`) — a published SSOT must not hand out a
+	 * confident grade for zero submitted evidence. `StructuredScanResult.measured
+	 * === false` is a separate, Worker-layer signal for "the domain never
+	 * resolved at all"; it is not implied or replaced by this flag.
+	 */
+	evidenceInsufficient?: boolean;
+	/** Human-readable explanation when `evidenceInsufficient` is `true`. Safe to render verbatim. */
+	evidenceNote?: string;
 }
 
 /** Display/UI weight distribution for categories. NOT used in scoring — see IMPORTANCE_WEIGHTS for actual scoring weights. Exists for category registry and display purposes only. */

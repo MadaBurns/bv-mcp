@@ -1916,4 +1916,21 @@ describe('DNS Security MCP Server', () => {
 			}
 		});
 	});
+
+	describe('gradeBadge', () => {
+		it('renders an explicit unknown badge for an ungraded scan, never the literal "null"', async () => {
+			const { gradeBadge } = await import('../src/lib/badge');
+			const svg = gradeBadge(null);
+			expect(svg).toContain('unknown');
+			expect(svg).not.toContain('>null<');
+			expect(svg).not.toMatch(/>\s*F\s*</);
+			expect(svg.startsWith('<svg')).toBe(true);
+		});
+
+		it('still renders a real grade unchanged', async () => {
+			const { gradeBadge } = await import('../src/lib/badge');
+			expect(gradeBadge('A+')).toContain('A+');
+			expect(gradeBadge('F')).toContain('F');
+		});
+	});
 });

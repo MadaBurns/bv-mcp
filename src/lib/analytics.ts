@@ -67,7 +67,8 @@ export interface AnalyticsClient {
 	emitToolEvent(
 		event: {
 			toolName: string;
-			status: 'pass' | 'fail' | 'error' | 'unknown';
+			/** `'inconclusive'` = ran cleanly but produced no gradeable measurement (ungraded scan). */
+			status: 'pass' | 'fail' | 'error' | 'unknown' | 'inconclusive';
 			durationMs: number;
 			domain?: string;
 			isError: boolean;

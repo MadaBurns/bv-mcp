@@ -1,14 +1,11 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { CheckResult } from '../src/lib/scoring';
-import { evaluateCompliance, formatCompliance } from '../src/tools/map-compliance';
+import { evaluateCompliance, formatCompliance, UNASSESSED_COMPLIANCE_CAVEAT, buildAllTransientCaveat } from '../src/tools/map-compliance';
 import type { ComplianceReport } from '../src/tools/map-compliance';
+import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
 
 /** Helper to build a minimal CheckResult for compliance mapping tests. */
-function makeCheckResult(
-	category: string,
-	passed: boolean,
-	findings: Array<{ title: string; severity: string }> = [],
-): CheckResult {
+function makeCheckResult(category: string, passed: boolean, findings: Array<{ title: string; severity: string }> = []): CheckResult {
 	return {
 		category,
 		passed,
@@ -109,9 +106,7 @@ describe('evaluateCompliance', () => {
 	it('maps authoritative DNS infra failures into DNS infrastructure controls', () => {
 		const results = [
 			...makeAllPassing(),
-			makeCheckResult('authoritative_dns_infra', false, [
-				{ title: 'Route leak or hijack signal observed', severity: 'critical' },
-			]),
+			makeCheckResult('authoritative_dns_infra', false, [{ title: 'Route leak or hijack signal observed', severity: 'critical' }]),
 		];
 
 		const report = evaluateCompliance(results, 'a.root-servers.net', 40, 'F');
@@ -223,7 +218,7 @@ describe('evaluateCompliance', () => {
 		expect(report.frameworks.cis_controls).toBeDefined();
 	});
 
-	it('should handle missing check categories gracefully as fail', () => {
+	it('should report a control with NO check evidence as not_assessed, never as fail', () => {
 		// Only provide SPF — all controls referencing other categories should reflect accordingly
 		const results = [makeCheckResult('spf', true)];
 		const report = evaluateCompliance(results, 'sparse.com', 20, 'F');
@@ -232,13 +227,412 @@ describe('evaluateCompliance', () => {
 		const spfControl = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§4.3.1');
 		expect(spfControl!.status).toBe('pass');
 
-		// NIST §4.3.2 DKIM — fail (no dkim data)
+		// NIST §4.3.2 DKIM — no dkim check ran, so there is no evidence either way.
+		// Reporting that as `fail` asserts a requirement was found unmet; it wasn't looked at.
 		const dkimControl = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§4.3.2');
-		expect(dkimControl!.status).toBe('fail');
+		expect(dkimControl!.status).toBe('not_assessed');
 
-		// PCI 8.3.1 — [spf, dkim, dmarc], requirePass: false — only spf present and passes → partial
+		// PCI 8.3.1 — [spf, dkim, dmarc], requirePass: false — only spf present and passes → partial.
+		// A control with SOME evidence is still graded; only ZERO evidence abstains.
 		const pci831 = report.frameworks.pci_dss_4.mappings.find((m) => m.controlId === '8.3.1');
 		expect(pci831!.status).toBe('partial');
+
+		// The framework summary drops the unassessable control from its denominator
+		// rather than counting it as a failure.
+		const nist = report.frameworks.nist_800_177;
+		expect(nist.totalControls).toBe(8);
+		expect(nist.notAssessed).toBe(7);
+		expect(nist.assessedControls).toBe(1);
+		expect(nist.passing + nist.failing + nist.partial).toBe(nist.assessedControls);
+		// The one assessable control passed. Computing this over `totalControls`
+		// instead would report 13% — a compliance number driven by how much was
+		// never looked at. This assertion is what separates the two denominators.
+		expect(nist.percentage).toBe(100);
+	});
+});
+
+/**
+ * A check that never COMPLETED (checkStatus 'timeout'/'error') must not grade as a
+ * compliance FAIL. `buildDnsErrorResult`/`safeCheck` return transient failures as a
+ * `CheckResult` with `passed: false` and `checkStatus: 'error' | 'timeout'` — indistinguishable
+ * from a genuine failure unless the compliance mapper partitions on `checkStatus`. Every
+ * case here goes through the REAL producer (`mapCompliance` → `scanDomain` → the actual
+ * check modules) via DNS mocks, not a hand-built `CheckResult[]`, because the banked defect
+ * is specifically about what the real pipeline hands `evaluateCompliance`.
+ *
+ * `.com` domains only — `.example` is a BLOCKED TLD that `validateDomain` rejects before
+ * any mock is reached, which would make these tests pass for the wrong reason (never
+ * reaching `matchedResults` at all).
+ */
+describe('map_compliance treats a never-completed check as not_assessed, not fail', () => {
+	const { restore } = setupFetchMock();
+	afterEach(() => restore());
+
+	/**
+	 * A full-scan DNS/HTTPS mock, healthy by default. Two knobs:
+	 *  - `dmarc`: 'reject' makes the `_dmarc.<domain>` DoH query throw — check-dmarc.ts's
+	 *    top-level catch converts that into `buildDnsErrorResult` (`checkStatus: 'error'`,
+	 *    the dominant real-world transient-failure shape, byte-identical to a genuine
+	 *    timeout for compliance-mapping purposes). 'missing' returns NODATA — dmarcTreeWalk
+	 *    walks to the apex and gives a genuine completed high-severity "No DMARC record
+	 *    found" (passed: false, score 0) — this is real, COMPLETED evidence of failure.
+	 *  - `tlsrpt`: 'reject' makes the `_smtp._tls.<domain>` DoH query throw — check-tlsrpt.ts
+	 *    (package function has no internal try/catch around this query) propagates the
+	 *    throw to the Worker wrapper's catch, same transient shape as dmarc.
+	 *
+	 * `http_security` is deliberately NOT parameterized: this mock's generic `httpResponse`
+	 * carries no CSP/X-Frame-Options/X-Content-Type-Options/Permissions-Policy/Referrer-Policy
+	 * headers, so `check_http_security` deterministically scores 45 (< 50, `passed: false`) —
+	 * a reliable completed genuine failure used as the mirror fixture's evidence.
+	 */
+	function mockFullScan(domain: string, opts: { dmarc?: 'missing' | 'reject'; tlsrpt?: 'reject' } = {}) {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('_dmarc.') && opts.dmarc === 'reject') return Promise.reject(new Error('Simulated check failure'));
+			if (url.includes('_smtp._tls.') && opts.tlsrpt === 'reject') return Promise.reject(new Error('Simulated check failure'));
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) {
+						if (opts.dmarc === 'missing') return Promise.resolve(createDohResponse([{ name: `_dmarc.${domain}`, type: 16 }], []));
+						return Promise.resolve(txtResponse(`_dmarc.${domain}`, ['v=DMARC1; p=reject']));
+					}
+					if (url.includes('_domainkey.')) return Promise.resolve(txtResponse(`default._domainkey.${domain}`, ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse(`_mta-sts.${domain}`, ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse(`_smtp._tls.${domain}`, [`v=TLSRPTv1; rua=mailto:tls@${domain}`]));
+					if (url.includes('default._bimi.'))
+						return Promise.resolve(txtResponse(`default._bimi.${domain}`, [`v=BIMI1; l=https://${domain}/logo.svg`]));
+					return Promise.resolve(txtResponse(domain, ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse(domain, [`ns1.${domain}.`, `ns2.${domain}.`]));
+				if (url.includes('type=CAA') || url.includes('type=257'))
+					return Promise.resolve(caaResponse(domain, ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse(domain, true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known')) {
+				return Promise.resolve(httpResponse(`version: STSv1\nmode: enforce\nmx: *.${domain}\nmax_age: 86400`));
+			}
+			// Generic OK for SSL/HTTP-security/subdomain-takeover/etc. — no security headers,
+			// which is what makes check_http_security a reliable deterministic completed-fail.
+			return Promise.resolve(httpResponse('OK'));
+		});
+	}
+
+	it('a control whose only check timed out is not_assessed, not fail', async () => {
+		mockFullScan('nist-dmarc-transient.com', { dmarc: 'reject' });
+		const { mapCompliance, formatCompliance: format } = await import('../src/tools/map-compliance');
+		const { buildToolResult } = await import('../src/handlers/tool-formatters');
+		const report = await mapCompliance('nist-dmarc-transient.com');
+
+		// NIST §4.3.3 is the ONLY control mapping solely to `dmarc` — the exact "a control
+		// whose matched checks ALL carry a transient checkStatus" shape.
+		const nist = report.frameworks.nist_800_177;
+		const dmarcControl = nist.mappings.find((m) => m.controlId === '§4.3.3');
+		// Fixture-reachability guard: if the fixture never reached matchedResults (e.g. the
+		// domain was rejected by validateDomain, or the mock never matched), this control
+		// wouldn't even be found and the assertion below would throw, not pass vacuously.
+		expect(dmarcControl).toBeDefined();
+		expect(dmarcControl!.status).toBe('not_assessed');
+		expect(dmarcControl!.relatedFindings).toEqual([]);
+
+		// No framework summary counts a never-completed check as a failure. Every other
+		// NIST category in this fixture completed and passed, so the only effect of the
+		// transient dmarc check is to remove it from the denominator — not to zero it out
+		// as one more failure.
+		expect(nist.failing).toBe(0);
+		expect(nist.notAssessed).toBe(1);
+		expect(nist.assessedControls).toBe(7);
+		expect(nist.passing).toBe(7);
+		expect(nist.percentage).toBe(100);
+
+		// The serialized wire payload — both machine channels — must not pair this specific
+		// control with a fabricated "fail" verdict.
+		const result = buildToolResult(format(report, 'full'), report, 'full');
+		const wire = JSON.stringify(result.structuredContent);
+		expect(wire).not.toContain('"controlId":"§4.3.3","controlName":"DMARC Policy","status":"fail"');
+		expect(wire).toContain('"controlId":"§4.3.3","controlName":"DMARC Policy","status":"not_assessed"');
+		const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));
+		expect(comment).toBeDefined();
+		expect(comment).not.toContain('"controlId":"§4.3.3","controlName":"DMARC Policy","status":"fail"');
+
+		// Prose must not name DMARC as a failing control either — a customer's SOC 2 report
+		// must not read "DMARC Policy — FAIL" for a check that never ran to completion.
+		const prose = format(report, 'full');
+		const dmarcLine = prose.split('\n').find((l) => l.includes('§4.3.3'));
+		expect(dmarcLine).toBeDefined();
+		expect(dmarcLine).toContain('NOT ASSESSED');
+		expect(dmarcLine).not.toMatch(/\bFAIL\b/);
+	}, 15_000);
+
+	it('a control with one completed-failing and one timed-out check grades on the completed one', async () => {
+		// SOC 2 CC7.1 (Monitoring and Detection) maps exactly [tlsrpt, dmarc], requirePass: false.
+		// dmarc genuinely fails (completed, real evidence); tlsrpt errors out (transient).
+		mockFullScan('soc2-mixed-evidence.com', { dmarc: 'missing', tlsrpt: 'reject' });
+		const { mapCompliance } = await import('../src/tools/map-compliance');
+		const report = await mapCompliance('soc2-mixed-evidence.com');
+
+		const cc71 = report.frameworks.soc2.mappings.find((m) => m.controlId === 'CC7.1');
+		expect(cc71).toBeDefined();
+		// The completed DMARC failure is real evidence and must NOT be suppressed just
+		// because a sibling category in the same control happened to time out — this is
+		// the over-abstain mirror of the first test.
+		expect(cc71!.status).toBe('fail');
+		// Only the COMPLETED failure contributes a related finding; the transient tlsrpt
+		// check contributes to neither the passing nor the failing count, so its "check
+		// error" title must not appear here as if it were a graded finding.
+		expect(cc71!.relatedFindings).toEqual(['No DMARC record found']);
+	}, 15_000);
+
+	it('mirror: a control whose checks all completed and failed still fails', async () => {
+		// PCI DSS 6.4.2 (Web Application Firewall / CSP) maps solely to `http_security`,
+		// requirePass: true. No transient statuses anywhere in this fixture — http_security
+		// completes normally and genuinely fails (score 45, no security headers).
+		mockFullScan('pci-mirror-baseline.com');
+		const { mapCompliance } = await import('../src/tools/map-compliance');
+		const report = await mapCompliance('pci-mirror-baseline.com');
+
+		const pci = report.frameworks.pci_dss_4;
+		const waf = pci.mappings.find((m) => m.controlId === '6.4.2');
+		expect(waf).toBeDefined();
+		expect(waf!.status).toBe('fail');
+
+		// Nothing here is transient, so `completed === matchedResults` exactly — this
+		// fixture's framework summary is untouched by the partition and must match the
+		// values the pre-fix code already produced for it (a mutation that broke this
+		// would be over-abstaining, not fixing the banked defect).
+		expect(pci.totalControls).toBe(5);
+		expect(pci.passing).toBe(3);
+		expect(pci.failing).toBe(1);
+		expect(pci.partial).toBe(1);
+		expect(pci.notAssessed).toBe(0);
+		expect(pci.assessedControls).toBe(5);
+		expect(pci.percentage).toBe(60);
+	}, 15_000);
+
+	/**
+	 * F1 (fix round 1): the completed/transient partition fixed *grading* on a
+	 * transient category, but `totalCategories = control.categories.length` still
+	 * counted the transient category itself in the denominator — so a multi-category
+	 * control with one PASSING completed check and one transient check landed on
+	 * 'partial' instead of 'pass' (a never-completed check silently costing a control
+	 * its pass verdict, the same class of defect one level up from the original bug).
+	 * Measured on this exact shape (SOC2 CC7.1, healthy domain, one transient category):
+	 * before the fix, soc2/pci_dss_4/cis_controls percentages were all measurably lower
+	 * than the honest value — see task-8-report.md's "Fix round 1" section for the full
+	 * before/after table across all four frameworks.
+	 */
+	it('a control with one completed-passing and one timed-out check still passes (F1)', async () => {
+		// SOC2 CC7.1 maps [tlsrpt, dmarc], requirePass: false. dmarc completes and
+		// PASSES; tlsrpt times out (transient). The transient category must not occupy
+		// a non-passing slot in the denominator either — this control has exactly one
+		// piece of REAL evidence and it's clean, so the verdict must be 'pass', not
+		// 'partial'.
+		mockFullScan('soc2-transient-still-passes.com', { tlsrpt: 'reject' });
+		const { mapCompliance } = await import('../src/tools/map-compliance');
+		const mixedReport = await mapCompliance('soc2-transient-still-passes.com');
+
+		const cc71Mixed = mixedReport.frameworks.soc2.mappings.find((m) => m.controlId === 'CC7.1');
+		expect(cc71Mixed).toBeDefined();
+		expect(cc71Mixed!.status).toBe('pass');
+		expect(cc71Mixed!.relatedFindings).toEqual([]);
+
+		// Same fixture, but tlsrpt completes and passes instead of timing out — the
+		// ENTIRE soc2 framework summary must be identical, because the only thing that
+		// changed between the two scans is which category carried the (already-passing,
+		// otherwise irrelevant) evidence for CC7.1.
+		mockFullScan('soc2-transient-baseline.com');
+		const baselineReport = await mapCompliance('soc2-transient-baseline.com');
+		const cc71Baseline = baselineReport.frameworks.soc2.mappings.find((m) => m.controlId === 'CC7.1');
+		expect(cc71Baseline!.status).toBe('pass');
+
+		expect(mixedReport.frameworks.soc2.percentage).toBe(baselineReport.frameworks.soc2.percentage);
+		expect(mixedReport.frameworks.soc2.passing).toBe(baselineReport.frameworks.soc2.passing);
+		expect(mixedReport.frameworks.soc2.failing).toBe(baselineReport.frameworks.soc2.failing);
+		expect(mixedReport.frameworks.soc2.partial).toBe(baselineReport.frameworks.soc2.partial);
+		expect(mixedReport.frameworks.soc2.notAssessed).toBe(baselineReport.frameworks.soc2.notAssessed);
+	}, 20_000);
+});
+
+/**
+ * F3 (fix round 1): a total DoH/network outage — every attempted check errors out —
+ * previously reported `assessed: true, caveat: null` and rendered "No control could be
+ * assessed — 0 of 8 had any check evidence (not measured)". That is FALSE: there were
+ * N real `CheckResult`s, they just never completed (`checkStatus: 'error'`/`'timeout'`).
+ * `isMeasured` (`checks.length > 0`) could not tell "19 healthy checks" apart from "19
+ * checks that all timed out" — both were truthy. `assessed` must be `false` for the
+ * outage case too, but with DISTINCT wording from the genuine no-evidence case: "no
+ * checks ran" is itself false when 19 checks DID run.
+ *
+ * Built via hand-built `CheckResult[]` (mirrors this file's own `evaluateCompliance`
+ * describe block above, and `evidence-gate-safety.spec.ts`'s `SCAN_CATEGORIES`-driven
+ * fixture pattern) rather than a full DNS mock: several individual check modules
+ * self-catch a raw DNS-query rejection into a low-severity COMPLETED finding rather
+ * than propagating it as a transient `checkStatus` (e.g. `check-mta-sts.ts`'s package
+ * function), so simulating a clean "all 19 categories transient" outage via `fetch`
+ * mocking alone is unreliable — asserting directly on the shape `evaluateCompliance`
+ * actually receives is the precise way to pin this invariant.
+ */
+describe('map_compliance: a total outage (all checks attempted, none completed) is honestly unassessed', () => {
+	it('assessed is false with a truthful, distinct caveat, and every control is not_assessed', async () => {
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		// Every attempted check errored out — a total outage, NOT the zero-check
+		// (NXDOMAIN/broken-zone) case: there IS a CheckResult per category, it just
+		// never completed. Mirrors the buildDnsErrorResult/safeCheck shape exactly.
+		const allTransient: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
+			...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+			score: 0,
+			passed: false,
+			checkStatus: 'error' as const,
+			partial: true,
+		}));
+
+		// Non-vacuity guard: prove check data actually existed (unlike the zero-check
+		// case below) before asserting on it.
+		expect(allTransient.length).toBeGreaterThan(10);
+
+		const report = evaluateCompliance(allTransient, 'total-outage.example', null, null);
+
+		expect(report.assessed).toBe(false);
+		expect(report.caveat).toBe(buildAllTransientCaveat(allTransient.length));
+		// Distinct from the genuine no-evidence wording — "no checks ran" would be
+		// false here, since `allTransient.length` checks DID run.
+		expect(report.caveat).not.toBe(UNASSESSED_COMPLIANCE_CAVEAT);
+		expect(report.caveat).toMatch(/attempted/i);
+		expect(report.caveat!.toLowerCase()).not.toContain('no checks ran');
+
+		const allMappings = (['nist_800_177', 'pci_dss_4', 'soc2', 'cis_controls'] as const).flatMap((fw) => report.frameworks[fw].mappings);
+		// Non-vacuity guard for the mapping-level assertions below.
+		expect(allMappings.length).toBeGreaterThan(20);
+		expect(allMappings.every((m) => m.status === 'not_assessed')).toBe(true);
+		expect(allMappings.filter((m) => m.status === 'fail')).toEqual([]);
+	});
+
+	it('keeps the genuine no-evidence case (checks: []) byte-identical to its pre-F3 wording', () => {
+		// The slice-2/Task-3 case: NXDOMAIN / broken zone — no CheckResults at all.
+		// F3 must not touch this path's caveat text or its `assessed` value.
+		const report = evaluateCompliance([], 'never-measured.example', null, null);
+		expect(report.assessed).toBe(false);
+		expect(report.caveat).toBe(UNASSESSED_COMPLIANCE_CAVEAT);
+		expect(report.caveat).toBe(
+			'No checks ran for this domain, so the controls below are NOT assessable — each is reported as NOT ASSESSED (absence of evidence), never as a requirement found unmet.',
+		);
+	});
+});
+
+/**
+ * The banked defect. `map_compliance` returns `buildToolResult(text, result, format)`,
+ * so the raw `ComplianceReport` becomes BOTH the MCP `structuredContent` and the
+ * `STRUCTURED_RESULT` comment. Task 3 corrected the PROSE (a "not measured" score
+ * line plus a caveat) but left the payload emitting, per control:
+ *
+ *     {"passing":0,"failing":5,"percentage":0,"status":"fail"}
+ *
+ * — a fabricated 0% compliance verdict, with no caveat field at all, for a domain
+ * that was never assessed. `percentage: 0` is a number something will chart.
+ * A domain that does not exist has not failed SOC 2.
+ *
+ * These assertions run against the SERIALIZED wire payload deliberately: a
+ * prose-only fix is exactly the defect being closed, so asserting on rendered
+ * text could not have caught it.
+ */
+describe('map_compliance structured payload — a domain that was never measured', () => {
+	const FRAMEWORKS = ['nist_800_177', 'pci_dss_4', 'soc2', 'cis_controls'] as const;
+
+	async function unmeasuredReport() {
+		const { evaluateCompliance: evaluate } = await import('../src/tools/map-compliance');
+		return evaluate([], 'never-measured.example', null, null);
+	}
+
+	it('marks every control not_assessed — absence of evidence is not a failed requirement', async () => {
+		const report = await unmeasuredReport();
+		const mappings = FRAMEWORKS.flatMap((fw) => report.frameworks[fw].mappings);
+
+		// Fixture-reachability guard: with an empty mappings list every assertion
+		// below would hold vacuously and this test would protect nothing.
+		expect(mappings.length).toBeGreaterThan(20);
+		expect(mappings.filter((m) => m.status === 'fail')).toEqual([]);
+		expect(mappings.every((m) => m.status === 'not_assessed')).toBe(true);
+	});
+
+	it('omits the compliance percentage instead of reporting 0%', async () => {
+		const report = await unmeasuredReport();
+		for (const fw of FRAMEWORKS) {
+			const summary = report.frameworks[fw];
+			expect(summary.totalControls).toBeGreaterThan(0);
+			expect(summary.percentage).toBeNull();
+			expect(summary.assessedControls).toBe(0);
+			expect(summary.notAssessed).toBe(summary.totalControls);
+			expect(summary.failing).toBe(0);
+			expect(summary.passing).toBe(0);
+		}
+	});
+
+	it('carries the caveat as DATA, not only as prose', async () => {
+		const report = await unmeasuredReport();
+		expect(report.assessed).toBe(false);
+		expect(report.caveat).toMatch(/not assessable/i);
+	});
+
+	it('emits no fabricated verdict on either machine channel (structuredContent AND the STRUCTURED_RESULT comment)', async () => {
+		const { formatCompliance: format } = await import('../src/tools/map-compliance');
+		const { buildToolResult } = await import('../src/handlers/tool-formatters');
+		const report = await unmeasuredReport();
+		const result = buildToolResult(format(report, 'full'), report, 'full');
+
+		// Channel 1 — the MCP-standard structuredContent field.
+		expect(result.structuredContent).toBeDefined();
+		const wire = JSON.stringify(result.structuredContent);
+		expect(wire).not.toContain('"status":"fail"');
+		expect(wire).not.toContain('"percentage":0');
+		expect(wire).toContain('"status":"not_assessed"');
+		expect(wire).toContain('"assessed":false');
+
+		// Channel 2 — the legacy STRUCTURED_RESULT comment some clients still parse.
+		const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));
+		expect(comment).toBeDefined();
+		expect(comment).not.toContain('"status":"fail"');
+		expect(comment).not.toContain('"percentage":0');
+		expect(comment).toContain('"assessed":false');
+	});
+
+	it('still emits a real fail verdict and a numeric percentage for a MEASURED domain (control)', async () => {
+		const { evaluateCompliance: evaluate, formatCompliance: format } = await import('../src/tools/map-compliance');
+		const { buildToolResult } = await import('../src/handlers/tool-formatters');
+		// 5 of the 8 NIST controls pass; mta_sts/dane/caa genuinely fail.
+		const measured = evaluate(
+			[
+				makeCheckResult('spf', true),
+				makeCheckResult('dkim', true),
+				makeCheckResult('dmarc', true),
+				makeCheckResult('mta_sts', false, [{ title: 'Missing MTA-STS', severity: 'medium' }]),
+				makeCheckResult('dane', false, [{ title: 'Missing DANE', severity: 'low' }]),
+				makeCheckResult('tlsrpt', true),
+				makeCheckResult('dnssec', true),
+				makeCheckResult('caa', false, [{ title: 'Missing CAA', severity: 'medium' }]),
+				makeCheckResult('ssl', true),
+				makeCheckResult('http_security', true),
+				makeCheckResult('ns', true),
+			],
+			'measured.example',
+			73,
+			'C+',
+		);
+		const wire = JSON.stringify(buildToolResult(format(measured, 'full'), measured, 'full').structuredContent);
+
+		// Without these the assertions above would all hold under an implementation
+		// that reported EVERY control as not_assessed and every percentage as null.
+		expect(measured.assessed).toBe(true);
+		expect(measured.caveat).toBeNull();
+		expect(wire).toContain('"status":"fail"');
+		expect(measured.frameworks.nist_800_177.percentage).toBe(63);
+		expect(measured.frameworks.nist_800_177.notAssessed).toBe(0);
+		expect(measured.frameworks.nist_800_177.assessedControls).toBe(8);
 	});
 });
 
@@ -289,6 +683,19 @@ describe('formatCompliance', () => {
 		// Should show related findings as sub-items
 		expect(output).toContain('DNSSEC not enabled');
 		expect(output).toContain('No MTA-STS record');
+	});
+
+	it.each(['compact', 'full'] as const)('renders "not measured" instead of null/100 (null) for an ungraded scan [%s]', async (format) => {
+		const { evaluateCompliance: evaluate, formatCompliance: fmt } = await import('../src/tools/map-compliance');
+		const report = evaluate([], 'never-measured.example', null, null);
+		const text = fmt(report, format);
+
+		expect(text).toContain('not measured');
+		expect(text).not.toContain('null');
+		expect(text).not.toContain('/100');
+		// The per-control column must not read as a failure verdict either.
+		expect(text).not.toMatch(/\bFAIL\b/);
+		expect(text.toLowerCase()).toContain('not assessed');
 	});
 
 	it('should not show related findings for passing controls in compact format', () => {

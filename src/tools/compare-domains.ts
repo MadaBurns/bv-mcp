@@ -11,6 +11,7 @@ import { computeScoringConfigHash } from '../lib/scoring-version';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { StructuredScanResult } from './scan/format-report';
 import type { OutputFormat } from '../handlers/tool-args';
+import { formatScoreGrade, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 
 /**
  * Wall-clock budget for the synchronous `compare_domains` tool path, threaded
@@ -27,13 +28,28 @@ export interface DomainComparisonResult {
 	domains: string[];
 	/** Domain with the highest overall score. Null on tie or if fewer than 2 valid results. */
 	winner: string | null;
-	scores: Record<string, number>;
-	grades: Record<string, string>;
-	/** Per-category scores: [{ category, scores: { 'example.com': 100, 'test.com': 85 } }] */
-	categoryComparison: Array<{ category: string; scores: Record<string, number> }>;
-	/** Categories where ALL scanned domains score below 50. */
+	/** Overall score per domain. `null` when the domain was not measured. */
+	scores: Record<string, number | null>;
+	/** Grade per domain. `null` when the domain was not measured. */
+	grades: Record<string, string | null>;
+	/**
+	 * Per-category scores: [{ category, scores: { 'example.com': 100, 'test.com': 85 } }].
+	 *
+	 * Keyed ONLY by the domains that were actually measured — an unmeasured domain
+	 * (NXDOMAIN, budget exceeded, scan threw) contributes no per-category claim at
+	 * all rather than a key. A `null` value means the category was measured-as-
+	 * not-applicable for that domain (e.g. MTA-STS on a non-mail domain); it is not
+	 * a score of 0 and is skipped by every gap predicate and column below.
+	 */
+	categoryComparison: Array<{ category: string; scores: Record<string, number | null> }>;
+	/**
+	 * Categories where every domain that carries a real score there fails (<50).
+	 * A measured domain whose score for the category is `null` (not applicable)
+	 * is skipped by the predicate, so it is neither claimed as failing nor able
+	 * to veto the gap.
+	 */
 	commonGaps: string[];
-	/** Categories where only one domain scores below 50 (unique weakness). */
+	/** Categories where only one domain with a real score there scores below 50 (unique weakness). */
 	uniqueGaps: Array<{ domain: string; categories: string[] }>;
 	/** Errors keyed by domain, for domains that failed validation or scanning. */
 	errors: Record<string, string>;
@@ -127,46 +143,86 @@ export async function compareDomains(rawDomains: string[], options: CompareDomai
 
 	const validResults = Object.entries(structuredResults).filter((entry): entry is [string, StructuredScanResult] => entry[1] !== null);
 
-	const scores: Record<string, number> = {};
-	const grades: Record<string, string> = {};
+	const scores: Record<string, number | null> = {};
+	const grades: Record<string, string | null> = {};
 	for (const [domain, r] of validResults) {
-		scores[domain] = r.score;
-		grades[domain] = r.grade;
+		// `measured === false` means this domain contributed no checks. The scan
+		// producers now null its `score`/`grade` at the source, so this is a
+		// belt-and-braces restatement of the invariant "unmeasured implies null" at
+		// the DomainComparisonResult boundary: any future ScanScore source that
+		// reintroduces a placeholder pair is still nulled here.
+		scores[domain] = r.measured ? r.score : null;
+		grades[domain] = r.measured ? r.grade : null;
 	}
 
-	// Winner: highest score, null on tie or fewer than 2 valid results
+	// Winner: highest score among GRADED domains only. An unmeasured domain has no
+	// score to compare, so it is excluded rather than sorted as 0. Null on tie or
+	// fewer than 2 graded results.
+	const rankable = validResults.filter(
+		(e): e is [string, StructuredScanResult & { score: number }] => e[1].measured && e[1].score !== null,
+	);
 	let winner: string | null = null;
-	if (validResults.length >= 2) {
-		const sorted = [...validResults].sort((a, b) => b[1].score - a[1].score);
+	if (rankable.length >= 2) {
+		const sorted = [...rankable].sort((a, b) => b[1].score - a[1].score);
 		if (sorted[0][1].score > sorted[1][1].score) {
 			winner = sorted[0][0];
 		}
 	}
 
-	// Category comparison
+	// Category comparison — over the MEASURED domains only.
+	//
+	// The domain set is `measured`, not `rankable`: a scan whose checks all ran but
+	// whose scoring bundle failed (`buildUnscoredResult`) has no overall score yet has
+	// genuine per-category numbers, and dropping it would suppress a real measurement.
+	// An unmeasured domain is the opposite case — `categoryScores` is `{}` — and the
+	// old `?? 0` turned that absence into a full set of failing zeros: ~18 named
+	// "unique weaknesses" for a domain nobody looked at, printed directly beneath its
+	// own "not measured" line, AND (because a fabricated 0 sits in every OTHER
+	// domain's `others` list) the deletion of the measured domain's real deficiencies
+	// from `uniqueGaps`. Excluding it emits no per-category claim for it in any
+	// channel: gaps, table, or `structuredContent.categoryComparison`.
+	const measuredResults = validResults.filter(([, r]) => r.measured);
+
 	const allCategories = new Set<string>();
-	for (const [, r] of validResults) {
+	for (const [, r] of measuredResults) {
 		Object.keys(r.categoryScores).forEach((c) => allCategories.add(c));
 	}
-	const categoryComparison = [...allCategories].map((category) => ({
+	// `null`, never `0`, for a category this domain does not carry: absent from its
+	// map (the category was not evaluated for this domain) or explicitly null (measured
+	// as NOT APPLICABLE — MTA-STS on a non-mail domain). Both are "no score here", and
+	// a `✗ 0` column is a failing verdict neither of them supports.
+	const categoryComparison: DomainComparisonResult['categoryComparison'] = [...allCategories].map((category) => ({
 		category,
-		scores: Object.fromEntries(validResults.map(([d, r]) => [d, r.categoryScores[category] ?? 0])),
+		scores: Object.fromEntries(measuredResults.map(([d, r]) => [d, r.categoryScores[category] ?? null])),
 	}));
 
-	// Common gaps: categories where ALL valid domains score below 50
+	/** The scores a gap predicate may reason about: real numbers only. */
+	const realScores = (scores: Record<string, number | null>, exclude?: string): number[] =>
+		Object.entries(scores)
+			.filter(([d]) => d !== exclude)
+			.map(([, s]) => s)
+			.filter((s): s is number => s !== null);
+
+	// Common gaps: categories where EVERY domain that has a real score there fails.
+	// `length > 0` is the non-vacuity guard — a category nobody scored is not a gap
+	// shared by all.
 	const commonGaps: string[] = categoryComparison
-		.filter((cc) => validResults.length > 0 && Object.values(cc.scores).every((s) => s < 50))
+		.filter((cc) => {
+			const scored = realScores(cc.scores);
+			return scored.length > 0 && scored.every((s) => s < 50);
+		})
 		.map((cc) => cc.category);
 
-	// Unique gaps: categories where exactly one domain scores below 50
+	// Unique gaps: categories where exactly one measured domain scores below 50.
 	const uniqueGaps: Array<{ domain: string; categories: string[] }> = [];
-	for (const [domain] of validResults) {
+	for (const [domain] of measuredResults) {
 		const unique = categoryComparison
 			.filter((cc) => {
-				const domScore = cc.scores[domain] ?? 100;
-				const others = Object.entries(cc.scores)
-					.filter(([d]) => d !== domain)
-					.map(([, s]) => s);
+				const domScore = cc.scores[domain];
+				// No score of its own → nothing to call a weakness (the old `?? 100`
+				// silently asserted a passing score for an unevaluated category).
+				if (domScore === null || domScore === undefined) return false;
+				const others = realScores(cc.scores, domain);
 				return domScore < 50 && others.length > 0 && others.every((s) => s >= 50);
 			})
 			.map((cc) => cc.category);
@@ -200,16 +256,23 @@ export function formatDomainComparison(result: DomainComparisonResult, format: O
 			lines.push(`  ✗ ${domain.padEnd(40)} Error: ${result.errors[domain]}`);
 			continue;
 		}
-		const score = result.scores[domain] ?? 0;
-		const grade = result.grades[domain] ?? 'F';
+		const score = result.scores[domain];
+		const grade = result.grades[domain];
+		if (score === null || score === undefined || grade === null || grade === undefined) {
+			lines.push(`  · ${domain.padEnd(40)} not measured`);
+			continue;
+		}
 		const icon = score >= 80 ? '✓' : score >= 50 ? '⚠' : '✗';
 		const winMark = result.winner === domain ? ' ← best' : '';
-		lines.push(`  ${icon} ${domain.padEnd(40)} ${score}/100 (${grade})${winMark}`);
+		lines.push(`  ${icon} ${domain.padEnd(40)} ${formatScoreGrade(score, grade)}${winMark}`);
 	}
 	lines.push('');
 
 	if (result.commonGaps.length > 0) {
-		lines.push(`Common gaps (all domains fail): ${result.commonGaps.join(', ')}`);
+		// "all domains" was true of the old predicate only because an unmeasured domain
+		// was coerced to 0 and therefore always "failed". The predicate is now "every
+		// domain that has a score in this category", so the sentence says that.
+		lines.push(`Common gaps (every domain scored here fails): ${result.commonGaps.join(', ')}`);
 		lines.push('');
 	}
 
@@ -222,22 +285,32 @@ export function formatDomainComparison(result: DomainComparisonResult, format: O
 	}
 
 	if (format === 'full' && result.categoryComparison.length > 0) {
-		const validDomains = result.domains.filter((d) => !result.errors[d]);
-		lines.push('Category Scores:');
-		lines.push('-'.repeat(30));
-		const header = '  Category'.padEnd(16) + validDomains.map((d) => d.substring(0, 18).padEnd(20)).join('');
-		lines.push(header);
-		for (const cc of result.categoryComparison) {
-			const row =
-				`  ${cc.category.toUpperCase().padEnd(14)}` +
-				validDomains
-					.map((d) => {
-						const s = cc.scores[d] ?? 0;
-						const mark = s >= 80 ? '✓' : s >= 50 ? '⚠' : '✗';
-						return `${mark} ${String(s).padEnd(18)}`;
-					})
-					.join('');
-			lines.push(row);
+		// Columns come from the comparison itself, in input order — NOT from
+		// `domains.filter(d => !errors[d])`, which kept a column for a domain that
+		// validated but was never measured and rendered `✗ 0` down every category for
+		// it. `categoryComparison` is already keyed by the measured domains only, so a
+		// domain with no key gets no column.
+		const comparedDomains = result.domains.filter((d) => result.categoryComparison.some((cc) => d in cc.scores));
+		if (comparedDomains.length > 0) {
+			lines.push('Category Scores:');
+			lines.push('-'.repeat(30));
+			const header = '  Category'.padEnd(16) + comparedDomains.map((d) => d.substring(0, 18).padEnd(20)).join('');
+			lines.push(header);
+			for (const cc of result.categoryComparison) {
+				const row =
+					`  ${cc.category.toUpperCase().padEnd(14)}` +
+					comparedDomains
+						.map((d) => {
+							const s = cc.scores[d];
+							// A category with no score for this domain (not applicable, or not
+							// evaluated) renders as the ungraded token — never as a failing 0.
+							if (s === null || s === undefined) return `  ${UNGRADED_DISPLAY.padEnd(18)}`;
+							const mark = s >= 80 ? '✓' : s >= 50 ? '⚠' : '✗';
+							return `${mark} ${String(s).padEnd(18)}`;
+						})
+						.join('');
+				lines.push(row);
+			}
 		}
 	}
 

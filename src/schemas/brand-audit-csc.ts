@@ -75,8 +75,10 @@ const DefensiveRegistrationsSchema = z.object({
 /** Single apex posture snapshot: grade, score, and individual protocol statuses. */
 const PostureApexSchema = z.object({
 	apex: z.string(),
-	grade: z.string(),
-	score: z.number().int(),
+	/** `null` when the apex was not measured (scan produced no checks). */
+	grade: z.string().nullable(),
+	/** `null` when the apex was not measured (scan produced no checks). */
+	score: z.number().int().nullable(),
 	dmarc: z.string().nullable(),
 	spf: z.string().nullable(),
 	dnssec: z.boolean().nullable(),

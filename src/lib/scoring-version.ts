@@ -36,8 +36,20 @@
  *   finding: a subdomain that owns no NS RRset inherits its zone apex's posture
  *   (resolveZoneApex). Removes the CRITICAL missingControl-zero on delegated-parent
  *   subdomains (e.g. mail-sending hosts). Apex-domain scores are unchanged.
+ * - 1.4.0 — three measurement-vs-measurement-failure corrections. (a) `detectDomainContext`'s
+ *   `failureRatio` now counts only MEASURED checks, so a timed-out/errored check can no
+ *   longer push a domain into the lenient `minimal` weight table — i.e. the measurement
+ *   failure no longer selects the lens that grades the domain. Scans in which every check
+ *   completed are unaffected. (b) A scan completing under `thresholds.evidenceSufficiency`
+ *   (default 60%) of its attempted checks is now UNGRADED (`overall`/`grade` null,
+ *   `evidenceInsufficient: true`) rather than receiving a confident letter. Grade bands,
+ *   category weights and the check matrix are unchanged. (c) Compliance/reporting surfaces
+ *   (`map_compliance`, `generate_fix_plan`, `map_csc_products`, `compare_baseline`,
+ *   `prioritize_csc_leads`) now ABSTAIN on a check that never completed — `not_assessed` /
+ *   `assessed: false` — rather than grading it as a pass or fail; see the `[3.37.0]`
+ *   CHANGELOG.md entry for the full per-tool breakdown.
  */
-export const SCORING_MODEL_VERSION = '1.3.0';
+export const SCORING_MODEL_VERSION = '1.4.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

@@ -167,7 +167,7 @@ Summarize spoofing/phishing protection status and steps to fix gaps.`,
 					content: {
 						type: 'text',
 						text: `Use compare_baseline on ${domain} with baseline: {"grade":"${grade}","require_spf":true,"require_dmarc_enforce":true,"require_dkim":true,"max_critical_findings":0}
-Report pass/fail with each violation and remediation needed.`,
+Report the verdict with each violation and remediation needed. The verdict has THREE states, not two: \`passed: true\` (pass), \`passed: false\` (fail), and \`passed: null\` (INCONCLUSIVE — one or more rules could not be evaluated because the scan produced no measurement; the rules are listed in \`inconclusiveRules\`). Report an inconclusive result as inconclusive and recommend re-running the scan. Never convert it into a pass or a fail.`,
 					},
 				},
 			];

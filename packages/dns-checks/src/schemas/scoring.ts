@@ -10,10 +10,32 @@ import { z } from 'zod';
 
 /** All valid check categories. */
 export const CheckCategorySchema = z.enum([
-	'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa',
-	'subdomain_takeover', 'mx', 'bimi', 'tlsrpt', 'lookalikes', 'shadow_domains',
-	'txt_hygiene', 'http_security', 'dane', 'ptr', 'mx_reputation', 'srv', 'zone_hygiene',
-	'dane_https', 'svcb_https', 'subdomailing', 'brand_discovery', 'authoritative_dns_infra',
+	'spf',
+	'dmarc',
+	'dkim',
+	'dnssec',
+	'ssl',
+	'mta_sts',
+	'ns',
+	'caa',
+	'subdomain_takeover',
+	'mx',
+	'bimi',
+	'tlsrpt',
+	'lookalikes',
+	'shadow_domains',
+	'txt_hygiene',
+	'http_security',
+	'dane',
+	'ptr',
+	'mx_reputation',
+	'srv',
+	'zone_hygiene',
+	'dane_https',
+	'svcb_https',
+	'subdomailing',
+	'brand_discovery',
+	'authoritative_dns_infra',
 ]);
 
 /** Severity levels. */
@@ -44,9 +66,24 @@ export const CheckResultSchema = z.object({
 
 /** Scan score result. */
 export const ScanScoreSchema = z.object({
-	overall: z.number(),
-	grade: z.string(),
+	overall: z.number().nullable(),
+	grade: z.string().nullable(),
 	categoryScores: z.record(z.string(), z.number()),
 	findings: z.array(FindingSchema),
 	summary: z.string(),
+	/**
+	 * OPTIONAL on the wire even though `ScanScore.evidence` is required in TypeScript:
+	 * strict producer, tolerant reader. A consumer vendoring an older copy of this
+	 * package emits payloads without it, and rejecting those would re-create the
+	 * runtime-validation break this schema exists to prevent.
+	 */
+	evidence: z
+		.object({
+			attempted: z.number(),
+			completed: z.number(),
+			ratio: z.number(),
+		})
+		.optional(),
+	evidenceInsufficient: z.boolean().optional(),
+	evidenceNote: z.string().optional(),
 });

@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { buildCheckResult, createFinding, computeCategoryScore, computeScanScore, CATEGORY_DISPLAY_WEIGHTS, inferFindingConfidence } from '../src/lib/scoring';
+import {
+	buildCheckResult,
+	createFinding,
+	computeCategoryScore,
+	computeScanScore,
+	CATEGORY_DISPLAY_WEIGHTS,
+	inferFindingConfidence,
+} from '../src/lib/scoring';
 import type { Finding, CheckResult } from '../src/lib/scoring';
 
 describe('scoring', () => {
@@ -76,12 +83,16 @@ describe('scoring', () => {
 	});
 
 	describe('computeScanScore', () => {
-		it('returns perfect score with no results', () => {
+		it('withholds the grade with no results (zero evidence, never a fabricated perfect score)', () => {
+			// Was: "returns perfect score with no results" — a scan of nothing used to be
+			// indistinguishable from a scan that measured a perfectly clean domain. The
+			// intent this test pins — "no results is handled and produces findings: []" —
+			// survives; only the fabricated grade is gone.
 			const scan = computeScanScore([]);
-			expect(scan.overall).toBe(100);
-			expect(scan.grade).toBe('A+');
+			expect(scan.overall).toBeNull();
+			expect(scan.grade).toBeNull();
 			expect(scan.findings).toEqual([]);
-			expect(scan.summary).toContain('Excellent');
+			expect(scan.evidenceInsufficient).toBe(true);
 		});
 
 		it('computes weighted average from check results', () => {

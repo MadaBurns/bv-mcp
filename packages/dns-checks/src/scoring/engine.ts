@@ -10,14 +10,10 @@ import {
 	type ScanScore,
 } from './model';
 import type { DomainContext } from './profiles';
-import {
-	detectDomainContext,
-	getProfileWeights,
-	PROFILE_CRITICAL_CATEGORIES,
-	PROFILE_EMAIL_BONUS_ELIGIBLE,
-} from './profiles';
+import { detectDomainContext, getProfileWeights, PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './profiles';
 import type { ScoringConfig } from './config';
 import { DEFAULT_SCORING_CONFIG } from './config';
+import { buildEvidenceNote, computeScanEvidence, isEvidenceSufficient, EVIDENCE_SUFFICIENCY_THRESHOLD } from './evidence';
 import { computeGenericScore } from './generic';
 import type { GenericScoringContext, FindingSeverityCounts } from './generic';
 
@@ -61,15 +57,26 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 
 /** Core-tier importance weights (SPF, DMARC, DKIM, DNSSEC, SSL). Used by the three-tier scoring formula. */
 export const CORE_WEIGHTS: Record<string, number> = {
-	dmarc: 16, dkim: 10, spf: 10, dnssec: 10, ssl: 8, authoritative_dns_infra: 0,
+	dmarc: 16,
+	dkim: 10,
+	spf: 10,
+	dnssec: 10,
+	ssl: 8,
+	authoritative_dns_infra: 0,
 };
 
 /** Protective-tier importance weights. Used by the three-tier scoring formula. */
 export const PROTECTIVE_WEIGHTS: Record<string, number> = {
-	subdomain_takeover: 4, http_security: 3, mta_sts: 3, subdomailing: 3, mx: 2,
-	caa: 2, ns: 2, lookalikes: 2, shadow_domains: 2,
+	subdomain_takeover: 4,
+	http_security: 3,
+	mta_sts: 3,
+	subdomailing: 3,
+	mx: 2,
+	caa: 2,
+	ns: 2,
+	lookalikes: 2,
+	shadow_domains: 2,
 };
-
 
 /** Map numeric score to letter grade */
 export function scoreToGrade(score: number, config?: ScoringConfig): string {
@@ -83,6 +90,18 @@ export function scoreToGrade(score: number, config?: ScoringConfig): string {
 	if (score >= g.dPlus) return 'D+';
 	if (score >= g.d) return 'D';
 	return 'F';
+}
+
+/**
+ * Narrow a {@link ScanScore} to one that carries a real measurement.
+ *
+ * `false` means the scan produced no gradeable result at all — the correct
+ * response is to ABSTAIN (skip the rule, omit the entry, render "not measured"),
+ * never to substitute a default. Substituting `0`/`'F'` is the fabricated-grade
+ * defect this guard exists to prevent.
+ */
+export function isGraded(score: ScanScore): score is ScanScore & { overall: number; grade: string } {
+	return score.overall !== null && score.grade !== null;
 }
 
 /** The 6 letters the NIST-aligned DISPLAY scale can emit. */
@@ -232,9 +251,7 @@ function buildGenericContext(
 	// Critical penalty: original only counts findings with severity=critical AND confidence=verified.
 	// Generic applies penalty when findingSeverityCounts.critical > 0.
 	// To match: pass only verified critical findings as the critical count.
-	const verifiedCriticalCount = allFindings.filter(
-		(f) => f.severity === 'critical' && inferFindingConfidence(f) === 'verified',
-	).length;
+	const verifiedCriticalCount = allFindings.filter((f) => f.severity === 'critical' && inferFindingConfidence(f) === 'verified').length;
 
 	// For critical penalty equivalence, use verified-only count as the "critical" count.
 	// The original engine only applies the penalty for verified critical findings.
@@ -247,9 +264,7 @@ function buildGenericContext(
 	};
 
 	// --- Critical categories ---
-	const criticalCategories = context
-		? PROFILE_CRITICAL_CATEGORIES[context.profile]
-		: DEFAULT_CRITICAL_CATEGORIES;
+	const criticalCategories = context ? PROFILE_CRITICAL_CATEGORIES[context.profile] : DEFAULT_CRITICAL_CATEGORIES;
 
 	// --- Email bonus eligibility ---
 	// Original engine requires actual SPF and DMARC results to exist for the bonus
@@ -308,14 +323,53 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	const allFindings: Finding[] = [];
 
 	const cfg = config ?? DEFAULT_SCORING_CONFIG;
+	// The `?? EVIDENCE_SUFFICIENCY_THRESHOLD` fallback is deliberate — a consumer
+	// vendoring an older copy of this package (or hand-building a `ScoringConfig`
+	// that predates this key) can hand us a `thresholds` object with no
+	// `evidenceSufficiency` property at all, i.e. `undefined`, which `??` catches
+	// and replaces with the constant.
+	//
+	// The [0, 1] clamp below is a SECOND enforcement of the same rule `config.ts`
+	// already applies inside `parseScoringConfig` — that clamp only runs for
+	// configs that were parsed from a `SCORING_CONFIG` JSON string. `computeScanScore`
+	// is a published, directly-callable API: a caller can hand-build a `ScoringConfig`
+	// object and pass it straight in, bypassing `parseScoringConfig` (and its clamp)
+	// entirely. Without clamping here too, a hand-built `{ thresholds: {
+	// evidenceSufficiency: 60 } }` (an operator's percent-not-ratio typo) would ungrade
+	// every scan that reaches this function directly, not just every scan that goes
+	// through env-var config parsing. `??` runs FIRST so a missing key still falls back
+	// to the named constant before the clamp ever sees it.
+	//
+	// The `Number.isFinite` guard handles a THIRD hand-built shape `??` cannot catch:
+	// a non-null but non-finite value, e.g. `evidenceSufficiency: Number(undefined)`
+	// (NaN) from a consumer's own coercion bug. `??` only substitutes on `null`/
+	// `undefined`, so a NaN sails past it straight into `Math.max(0, Math.min(1, NaN))`,
+	// which is itself NaN — and `ratio >= NaN` is `false` for every ratio, so the gate
+	// would fire on EVERY scan, ungrading the whole fleet from a single bad config value.
+	// A non-finite threshold is treated the same as a missing one: fall back to the
+	// named constant instead of clamping garbage.
+	const rawEvidenceThreshold = cfg.thresholds.evidenceSufficiency ?? EVIDENCE_SUFFICIENCY_THRESHOLD;
+	const evidenceThreshold = Math.max(
+		0,
+		Math.min(1, Number.isFinite(rawEvidenceThreshold) ? rawEvidenceThreshold : EVIDENCE_SUFFICIENCY_THRESHOLD),
+	);
 
 	if (results.length === 0) {
+		// Zero submitted evidence is NEVER sufficient, unconditionally — this is not a
+		// policy knob. A published SSOT must not hand a confident grade (the legacy
+		// seeded 100/'A+') to a caller that submitted nothing to measure. See
+		// evidence.ts's `isEvidenceSufficient` doc for the same invariant.
+		const evidence = { attempted: 0, completed: 0, ratio: 0 };
+		const evidenceNote = buildEvidenceNote(evidence, evidenceThreshold);
 		return {
-			overall: 100,
-			grade: scoreToGrade(100, config),
+			overall: null,
+			grade: null,
 			categoryScores: categoryScores as Record<CheckCategory, number>,
 			findings: [],
-			summary: `Excellent! No security issues found. Grade: ${scoreToGrade(100, config)}`,
+			summary: evidenceNote,
+			evidence,
+			evidenceInsufficient: true,
+			evidenceNote,
 		};
 	}
 
@@ -354,6 +408,26 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		summary = `${totalIssues} issue(s) found. Grade: ${genericResult.grade}`;
 	}
 
+	// --- Evidence-sufficiency gate ---
+	// When most checks could not RUN, any letter grade would describe the scan's own
+	// failure rather than the domain's posture. Withhold it. findings and categoryScores
+	// are still returned: everything that WAS measured stays available to the caller.
+	const evidence = computeScanEvidence(results);
+	if (!isEvidenceSufficient(evidence, evidenceThreshold)) {
+		const evidenceNote = buildEvidenceNote(evidence, evidenceThreshold);
+		return {
+			overall: null,
+			grade: null,
+			categoryScores: categoryScores as Record<CheckCategory, number>,
+			findings: allFindings,
+			summary: evidenceNote,
+			tierBreakdown: genericResult.tierBreakdown,
+			evidence,
+			evidenceInsufficient: true,
+			evidenceNote,
+		};
+	}
+
 	return {
 		overall: genericResult.overall,
 		grade: genericResult.grade,
@@ -361,6 +435,7 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		findings: allFindings,
 		summary,
 		tierBreakdown: genericResult.tierBreakdown,
+		evidence,
 	};
 }
 

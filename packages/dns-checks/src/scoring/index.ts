@@ -17,22 +17,14 @@ export {
 	buildCheckResult,
 	createFinding,
 } from './model';
-export type {
-	CheckCategory,
-	CategoryTier,
-	Finding,
-	FindingConfidence,
-	CheckResult,
-	CheckStatus,
-	ScanScore,
-	Severity,
-} from './model';
+export type { CheckCategory, CategoryTier, Finding, FindingConfidence, CheckResult, CheckStatus, ScanScore, Severity } from './model';
 
 export {
 	IMPORTANCE_WEIGHTS,
 	CORE_WEIGHTS,
 	PROTECTIVE_WEIGHTS,
 	scoreToGrade,
+	isGraded,
 	nistScoreToGrade,
 	NIST_GRADE_THRESHOLDS,
 	computeScanScore,
@@ -40,11 +32,7 @@ export {
 } from './engine';
 export type { ProfileAwareScanScore, NistGrade } from './engine';
 
-export {
-	DEFAULT_SCORING_CONFIG,
-	toImportanceRecord,
-	parseScoringConfig,
-} from './config';
+export { DEFAULT_SCORING_CONFIG, toImportanceRecord, parseScoringConfig } from './config';
 export type { ScoringConfig } from './config';
 
 export {
@@ -67,6 +55,9 @@ export {
 
 export { computeGenericScore } from './generic';
 export type { GenericScoringContext, GenericScanScore, FindingSeverityCounts, EmailBonusKeyMap, TierBreakdown } from './generic';
+
+export { EVIDENCE_SUFFICIENCY_THRESHOLD, computeScanEvidence, isEvidenceSufficient, buildEvidenceNote } from './evidence';
+export type { ScanEvidence } from './evidence';
 
 export { classifyDmarc, appendDmarcCleanInfo } from './classifiers/dmarc';
 export type { DmarcFacts } from './classifiers/dmarc';

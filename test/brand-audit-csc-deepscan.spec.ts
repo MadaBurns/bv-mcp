@@ -18,14 +18,35 @@
 
 import { describe, it, expect } from 'vitest';
 import { checkSubdomainTakeover } from '@blackveil/dns-checks';
+import { computeScanEvidence } from '@blackveil/dns-checks/scoring';
 import { buildToolResult, formatCheckResult } from '../src/handlers/tool-formatters';
 import { buildStructuredScanResult, formatScanReport } from '../src/tools/scan/format-report';
 import { formatSubdomainDiscovery } from '../src/tools/discover-subdomains';
 import type { SubdomainDiscoveryResult } from '../src/tools/discover-subdomains';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
 
-/** A minimal-but-real `ScanDomainResult`, the input `buildStructuredScanResult` takes in production. */
-function makeScanResult(domain: string, overall: number, grade: string): ScanDomainResult {
+/**
+ * A minimal-but-real `ScanDomainResult`, the input `buildStructuredScanResult` takes
+ * in production.
+ *
+ * `checks` is non-empty by default and that is load-bearing, not decoration:
+ * `buildStructuredScanResult` derives the wire field `measured` from
+ * `checks.length > 0` (`isMeasured`, `src/lib/ungraded-display.ts`), and the deep-scan
+ * orchestrator abstains (null grade + null score) for any apex whose scan reports
+ * `measured: false`. A `checks: []` fixture is therefore an UNMEASURED scan, never a
+ * clean one — pass `measured: false` to build that case deliberately.
+ *
+ * `evidence` FOLLOWS that same flag rather than being hand-written: a measured
+ * fixture derives it from its real `checks` (1 of 1 completed, ratio 1), and an
+ * unmeasured one is 0/0/0 — the value `computeScanEvidence([])` actually returns.
+ * Hard-coding a non-zero ratio onto a `checks: []` fixture would assert evidence
+ * the fixture does not have, which is the contradiction these tests exist to catch.
+ */
+function makeScanResult(domain: string, overall: number, grade: string, opts?: { measured?: boolean }): ScanDomainResult {
+	const checks: ScanDomainResult['checks'] =
+		opts?.measured === false
+			? []
+			: [{ category: 'spf', score: 80, passed: true, findings: [] as ScanDomainResult['checks'][number]['findings'] }];
 	return {
 		domain,
 		score: {
@@ -34,8 +55,9 @@ function makeScanResult(domain: string, overall: number, grade: string): ScanDom
 			categoryScores: { spf: 80, dmarc: 70, subdomain_takeover: 100 } as ScanDomainResult['score']['categoryScores'],
 			findings: [],
 			summary: `${domain} scored ${overall}/100. Grade: ${grade}`,
+			evidence: computeScanEvidence(checks),
 		},
-		checks: [],
+		checks,
 		maturity: { stage: 2, label: 'Developing', description: 'partial coverage', nextStep: 'Enforce DMARC.' },
 		context: { profile: 'mail_enabled', signals: [], weights: {} as never, detectedProvider: null },
 		cached: false,
@@ -246,5 +268,76 @@ describe('runDeepScan — production internal-call envelope', () => {
 
 		expect(result.postureSnapshot.apexesScanned).toBe(0);
 		expect(result.postureSnapshot.apexesTotal).toBe(1);
+	});
+
+	// ---------------------------------------------------------------------------
+	// Ungraded-abstention coverage (nullable ScanScore branch). These pin that the
+	// orchestrator excludes an UNMEASURED apex from every customer-visible rollup,
+	// no matter what score/grade letters that apex's payload happens to carry.
+	// ---------------------------------------------------------------------------
+
+	/** Production envelope for one apex, with `measured` under test control. */
+	async function postureCall(postures: Record<string, { overall: number; grade: string; measured: boolean }>) {
+		return async (tool: string, args: { domain: string }): Promise<unknown> => {
+			if (tool === 'scan_domain') {
+				const p = postures[args.domain];
+				const scan = makeScanResult(args.domain, p.overall, p.grade, { measured: p.measured });
+				return buildToolResult(formatScanReport(scan), buildStructuredScanResult(scan), 'full');
+			}
+			if (tool === 'discover_subdomains') {
+				const discovery = makeDiscoveryResult(args.domain, []);
+				return buildToolResult(formatSubdomainDiscovery(discovery), discovery, 'full');
+			}
+			return { content: [] };
+		};
+	}
+
+	it('excludes an unresolvable apex (measured:false carrying a placeholder score/grade pair) from the grade distribution and median', async () => {
+		// nxdomain.com mirrors the wire shape the non-resolving path emitted BEFORE the
+		// nullable-grade work: zero checks ran (`measured: false`) but the degraded
+		// score/grade placeholders are still populated. `measured` — not nullness — is
+		// the load-bearing exclusion signal, so the hostile pair stays pinned here.
+		const internalCall = await postureCall({
+			'graded.com': { overall: 90, grade: 'A', measured: true },
+			'nxdomain.com': { overall: 0, grade: 'F', measured: false },
+		});
+		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const result = await runDeepScan({ anchorApex: 'graded.com', apexes: ['graded.com', 'nxdomain.com'], internalCall });
+
+		// Only the one genuinely-graded apex may appear in the customer-visible rollup.
+		expect(result.postureSnapshot.distribution).toEqual({ A: 1 });
+		expect(result.postureSnapshot.medianGrade).toBe('A');
+
+		const ungraded = result.postureSnapshot.apexes.find((a) => a.apex === 'nxdomain.com');
+		expect(ungraded).toBeDefined();
+		expect(ungraded?.grade).toBeNull();
+		expect(ungraded?.score).toBeNull();
+	});
+
+	it('excludes a measured:false apex even when it carries a real-looking letter (degenerate zero-check A+)', async () => {
+		// This fixture hand-crafts overall 100 / grade 'A+' with measured: false to model
+		// the pre-evidence-gate defect (`computeScanScore([])` used to seed exactly this
+		// value for a scan that ran ZERO checks — now fixed, it returns overall/grade
+		// null instead). The fixture keeps the old shape deliberately: `measured` is the
+		// signal this rollup logic relies on to separate a real-looking letter with no
+		// measurement behind it from a genuine A+, independent of how the scorer itself
+		// behaves.
+		const internalCall = await postureCall({
+			'graded.com': { overall: 85, grade: 'B', measured: true },
+			'nochecks.com': { overall: 100, grade: 'A+', measured: false },
+		});
+		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const result = await runDeepScan({ anchorApex: 'graded.com', apexes: ['graded.com', 'nochecks.com'], internalCall });
+
+		// NOTE (same as the envelope test above): `buildStructuredScanResult` recomputes
+		// the display letter from the numeric score via the NIST 6-band `displayGradeFor`,
+		// so 85 → 'B' regardless of the fixture's letter. The point of the assertion is
+		// that the distribution has exactly ONE entry — the unmeasured A+ apex is absent.
+		expect(result.postureSnapshot.distribution).toEqual({ B: 1 });
+
+		const ungraded = result.postureSnapshot.apexes.find((a) => a.apex === 'nochecks.com');
+		expect(ungraded).toBeDefined();
+		expect(ungraded?.grade).toBeNull();
+		expect(ungraded?.score).toBeNull();
 	});
 });

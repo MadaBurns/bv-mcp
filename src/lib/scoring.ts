@@ -17,6 +17,7 @@ export {
 	computeScanScore,
 	computeProfileAwareScanScore,
 	scoreToGrade,
+	isGraded,
 	nistScoreToGrade,
 	NIST_GRADE_THRESHOLDS,
 	IMPORTANCE_WEIGHTS,
@@ -31,6 +32,10 @@ export {
 	DEFAULT_SCORING_CONFIG,
 	toImportanceRecord,
 	parseScoringConfig,
+	EVIDENCE_SUFFICIENCY_THRESHOLD,
+	computeScanEvidence,
+	isEvidenceSufficient,
+	buildEvidenceNote,
 } from '@blackveil/dns-checks/scoring';
 
 export type {
@@ -41,6 +46,7 @@ export type {
 	Finding,
 	FindingConfidence,
 	ScanScore,
+	ScanEvidence,
 	Severity,
 	DomainContext,
 	DomainProfile,
@@ -49,15 +55,6 @@ export type {
 	NistGrade,
 } from '@blackveil/dns-checks/scoring';
 
-export {
-	adaptiveWeightsToContext,
-	generateScoringNote,
-	computeAdaptiveWeight,
-	blendWeights,
-} from './adaptive-weights';
+export { adaptiveWeightsToContext, generateScoringNote, computeAdaptiveWeight, blendWeights } from './adaptive-weights';
 
-export type {
-	AdaptiveWeightsResponse,
-	ScanTelemetry,
-	WeightBound,
-} from './adaptive-weights';
+export type { AdaptiveWeightsResponse, ScanTelemetry, WeightBound } from './adaptive-weights';

@@ -5,18 +5,21 @@ import { SCORING_MODEL_VERSION } from '../src/lib/scoring-version';
 
 describe('format-scan-report', () => {
 	it('tolerates a non-resolving result (empty checks/categoryScores/findings)', () => {
-		// Mirrors buildNonResolvingResult: grade N/A, resolves:false, nothing scored.
+		// Mirrors buildNonResolvingResult: ungraded (null score/grade), resolves:false, nothing scored.
 		// Both formatters must iterate empty collections without indexing a fixed
 		// category and without throwing.
 		const result: ScanDomainResult = {
 			domain: 'does-not-exist-zzz.example',
 			score: {
-				overall: 0,
-				grade: 'N/A',
+				overall: null,
+				grade: null,
 				categoryScores: {} as ScanDomainResult['score']['categoryScores'],
 				findings: [],
 				summary:
 					'does-not-exist-zzz.example does not resolve (NXDOMAIN) — the domain does not exist in DNS, so there is no security posture to assess.',
+				// NXDOMAIN short-circuits before any check runs (`checks: []` below) — nothing
+				// was attempted, so evidence is honestly zero, not a fabricated full ratio.
+				evidence: { attempted: 0, completed: 0, ratio: 0 },
 			},
 			checks: [],
 			maturity: { stage: 0, label: 'Does not resolve', description: 'no posture', nextStep: 'Confirm the domain is registered.' },
@@ -30,12 +33,13 @@ describe('format-scan-report', () => {
 		};
 
 		const report = formatScanReport(result);
-		expect(report).toContain('Overall Score: 0/100 (N/A)');
+		expect(report).toContain('Overall Score: not measured');
 		expect(report).toContain('does not resolve');
 
 		const structured = buildStructuredScanResult(result);
-		expect(structured.grade).toBe('N/A');
-		expect(structured.passed).toBe(false);
+		expect(structured.grade).toBeNull();
+		expect(structured.score).toBeNull();
+		expect(structured.passed).toBeNull();
 		expect(Object.keys(structured.categoryScores)).toHaveLength(0);
 		expect(structured.findingCounts).toEqual({ critical: 0, high: 0, medium: 0, low: 0 });
 		expect(structured.notApplicableCategories).toHaveLength(0);
@@ -191,6 +195,56 @@ describe('format-scan-report', () => {
 		expect(structured.scoringSignals).toEqual([]);
 	});
 
+	/**
+	 * The degraded-builder shape, which the "missing maturity" test below cannot
+	 * reach. `buildNonResolvingResult` / `buildDnsBrokenResult` / `buildUnscoredResult`
+	 * all emit a maturity OBJECT with a placeholder `stage: 0`, so `?? null` never
+	 * fires and a literal 0 rode the wire. Stage 0's canonical label is
+	 * "Unprotected": a numeric consumer charting `maturityStage`, or mapping it
+	 * through its own stage→label table, reads a posture verdict for a domain
+	 * nobody looked at. `maturityLabel` and `measured` sit alongside it, but a
+	 * consumer reading the number will not see them.
+	 */
+	it('buildStructuredScanResult abstains on the placeholder stage 0 of a degraded result', async () => {
+		const { buildStructuredScanResult: build } = await import('../src/tools/scan/format-report');
+		const result = {
+			domain: 'does-not-resolve.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'does not resolve' },
+			checks: [],
+			// Present, exactly as buildNonResolvingResult emits it — this is what the
+			// `?? null` guard could never catch.
+			maturity: { stage: 0, label: 'Does not resolve', description: 'x', nextStep: 'y' },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+			resolves: false,
+		} as unknown as ScanDomainResult;
+
+		const structured = build(result);
+
+		expect(structured.maturityStage).toBeNull();
+		// The label stays — "Does not resolve" is information, not a fabricated verdict.
+		expect(structured.maturityLabel).toBe('Does not resolve');
+		expect(structured.measured).toBe(false);
+		expect(JSON.stringify(structured)).not.toContain('"maturityStage":0');
+	});
+
+	it('buildStructuredScanResult keeps a real maturity stage for a scored domain (control)', async () => {
+		const { buildStructuredScanResult: build } = await import('../src/tools/scan/format-report');
+		const result = {
+			domain: 'scored.example',
+			score: { overall: 73, grade: 'C+', categoryScores: { spf: 100 }, findings: [], summary: '' },
+			checks: [{ category: 'spf', passed: true, score: 100, findings: [] }],
+			maturity: { stage: 0, label: 'Unprotected', description: 'x', nextStep: 'y' },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		} as unknown as ScanDomainResult;
+
+		// Stage 0 is a REAL measurement here — the scan scored, the domain is simply
+		// unprotected. Without this control the assertion above would hold under an
+		// implementation that nulled every stage, or that nulled stage 0 specifically.
+		expect(build(result).maturityStage).toBe(0);
+	});
+
 	it('buildStructuredScanResult handles missing maturity', () => {
 		const result = {
 			domain: 'no-maturity.com',
@@ -264,17 +318,20 @@ describe('format-scan-report', () => {
 	});
 
 	it("passes through resolves:'broken' and renders the broken result without throwing", () => {
-		// Mirrors buildDnsBrokenResult: grade N/A, empty checks/categoryScores/findings,
+		// Mirrors buildDnsBrokenResult: ungraded (null score/grade), empty checks/categoryScores/findings,
 		// resolves:'broken'. The tri-state value must pass through buildStructuredScanResult
 		// and both formatters must render it without indexing a fixed category.
 		const result: ScanDomainResult = {
 			domain: 'broken-dnssec.example',
 			score: {
-				overall: 0,
-				grade: 'N/A',
+				overall: null,
+				grade: null,
 				categoryScores: {} as ScanDomainResult['score']['categoryScores'],
 				findings: [],
 				summary: 'broken-dnssec.example DNS resolution is broken (DNSSEC validation failure).',
+				// Broken-zone short-circuits before any check runs (`checks: []` below) —
+				// nothing was attempted, so evidence is honestly zero.
+				evidence: { attempted: 0, completed: 0, ratio: 0 },
 			},
 			checks: [],
 			maturity: {
@@ -294,12 +351,13 @@ describe('format-scan-report', () => {
 
 		const structured = buildStructuredScanResult(result);
 		expect(structured.resolves).toBe('broken');
-		expect(structured.grade).toBe('N/A');
-		expect(structured.passed).toBe(false);
+		expect(structured.grade).toBeNull();
+		expect(structured.score).toBeNull();
+		expect(structured.passed).toBeNull();
 		expect(Object.keys(structured.categoryScores)).toHaveLength(0);
 
 		const report = formatScanReport(result);
-		expect(report).toContain('Overall Score: 0/100 (N/A)');
+		expect(report).toContain('Overall Score: not measured');
 		expect(report).toContain('DNS resolution');
 	});
 
@@ -314,5 +372,14 @@ describe('format-scan-report', () => {
 
 		expect(formatScanReport(result, 'full')).toContain(`Scoring model: v${SCORING_MODEL_VERSION}`);
 		expect(formatScanReport(result, 'compact')).not.toContain('Scoring model:');
+	});
+
+	it('carries evidence through buildToolResult into structuredContent', async () => {
+		const { buildToolResult } = await import('../src/handlers/tool-formatters');
+		const structured = { domain: 'x.example', evidence: { attempted: 19, completed: 4, ratio: 4 / 19 }, evidenceInsufficient: true };
+		const out = buildToolResult('text', structured, 'full');
+		expect(out.structuredContent).toBeDefined();
+		expect(out.structuredContent!.evidence).toEqual({ attempted: 19, completed: 4, ratio: 4 / 19 });
+		expect(out.structuredContent!.evidenceInsufficient).toBe(true);
 	});
 });

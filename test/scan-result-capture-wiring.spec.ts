@@ -94,14 +94,47 @@ describe('handleToolsCall capture-hook wiring', () => {
 		});
 
 		const snapshot = toTenantScanSnapshot(scanCaptured as unknown as ScanDomainResult);
-		// The columns the tenant `scans` row binds must be populated, not null.
+		// This domain resolves and scores, so the columns the tenant `scans` row
+		// binds must be populated, not null.
 		expect(typeof snapshot.score).toBe('number');
-		expect(snapshot.grade.length).toBeGreaterThan(0);
+		expect(typeof snapshot.grade).toBe('string');
+		expect((snapshot.grade ?? '').length).toBeGreaterThan(0);
 
 		// result_json is written from the snapshot and read back by the
 		// fingerprint pre-flight — the two directions must agree.
 		const reparsed = parseTenantScanSnapshot(JSON.stringify(snapshot));
 		expect(reparsed).toEqual(snapshot);
+	});
+
+	it('projects an UNGRADED scan onto a null-score snapshot row, never 0/F', () => {
+		// A scan whose zone is unresolvable produces `overall: null` / `grade: null`.
+		// Persisting `0` / `'F'` would write a fabricated FAILING measurement about a
+		// real tenant domain — and unlike null, `0` survives every null-skipping
+		// filter downstream, which is precisely what dragged `mean_score` down.
+		const ungraded = {
+			domain: 'nxdomain.example.com',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'not measured' },
+			checks: [],
+			maturity: null,
+		} as unknown as ScanDomainResult;
+
+		const snapshot = toTenantScanSnapshot(ungraded);
+		expect(snapshot.score).toBeNull();
+		expect(snapshot.grade).toBeNull();
+		expect(snapshot.score).not.toBe(0);
+		expect(snapshot.grade).not.toBe('F');
+		expect(snapshot.maturityStage).toBeNull();
+		expect(snapshot.findings).toEqual([]);
+
+		// The tenant `scans` row binds `captured?.score ?? null` — a null snapshot
+		// score must stay null through that bind, not become 0.
+		expect(snapshot.score ?? null).toBeNull();
+
+		// An ungraded snapshot must still round-trip: the fingerprint pre-flight has
+		// to recognise it, or an unchanged unresolvable domain gets rescanned forever.
+		const reparsed = parseTenantScanSnapshot(JSON.stringify(snapshot));
+		expect(reparsed).toEqual(snapshot);
+		expect(reparsed?.score).toBeNull();
 	});
 
 	it('rejects unusable result_json rows (DLQ marker, malformed, legacy) rather than re-persisting them', () => {

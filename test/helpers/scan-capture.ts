@@ -16,7 +16,8 @@
  * actually returns.
  */
 
-import type { Finding } from '../../src/lib/scoring';
+import { computeScanEvidence } from '@blackveil/dns-checks/scoring';
+import type { CheckResult, Finding } from '../../src/lib/scoring';
 import type { ScanDomainResult } from '../../src/tools/scan-domain';
 
 export interface ScanCaptureOptions {
@@ -26,11 +27,36 @@ export interface ScanCaptureOptions {
 	findings?: Finding[];
 }
 
-/** Build a minimal-but-shape-accurate `ScanDomainResult`. */
+/**
+ * Build a minimal-but-shape-accurate `ScanDomainResult`.
+ *
+ * `checks` is non-empty and that is load-bearing, not decoration. Every caller of
+ * this helper wants a GRADED scan (they assert a real `score`/`grade` landed in
+ * the tenant `scans` row), and on this branch a graded scan is one that actually
+ * measured something: `checks: []` alongside a confident 80/'B+' models a scan
+ * that ran zero checks yet carries a grade — the exact contradiction the evidence
+ * accounting exists to remove (`isMeasured` reads `checks.length > 0`, and
+ * `computeScanEvidence([])` yields `ratio: 0`, below every valid threshold).
+ *
+ * So the helper emits one completed `CheckResult` that mirrors `categoryScores`
+ * and carries the same findings the aggregate does, and derives `evidence` from
+ * that array via the real `computeScanEvidence` rather than a hand-written
+ * literal — so the two can never drift apart.
+ */
 export function makeScanDomainResult(domain: string, opts: ScanCaptureOptions = {}): ScanDomainResult {
 	const overall = opts.score ?? 80;
 	const grade = opts.grade ?? 'B+';
 	const findings = opts.findings ?? [];
+	// One real, completed check backing the single `categoryScores` entry below.
+	const checks: CheckResult[] = [
+		{
+			category: 'spf',
+			passed: overall >= 50,
+			score: overall,
+			findings,
+			checkStatus: 'completed',
+		},
+	];
 	return {
 		domain,
 		score: {
@@ -39,8 +65,11 @@ export function makeScanDomainResult(domain: string, opts: ScanCaptureOptions = 
 			categoryScores: { spf: overall } as ScanDomainResult['score']['categoryScores'],
 			findings,
 			summary: `${domain} scored ${overall}/100. Grade: ${grade}`,
+			// Derived, never hand-written: 1 of 1 attempted checks completed (ratio 1),
+			// which is consistent with emitting a confident grade.
+			evidence: computeScanEvidence(checks),
 		},
-		checks: [],
+		checks,
 		maturity: {
 			stage: opts.maturityStage ?? 2,
 			label: 'Developing',

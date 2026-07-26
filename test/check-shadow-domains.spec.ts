@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, nxdomainResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -42,6 +42,13 @@ function mxRecords(domain: string, records: string[]) {
 	return createDohResponse(
 		[{ name: domain, type: 15 }],
 		records.map((data) => ({ name: domain, type: 15, TTL: 300, data })),
+	);
+}
+
+function soaRecords(domain: string) {
+	return createDohResponse(
+		[{ name: domain, type: 6 }],
+		[{ name: domain, type: 6, TTL: 300, data: 'ns1.shared.example. hostmaster.shared.example. 1 7200 3600 1209600 3600' }],
 	);
 }
 
@@ -164,12 +171,13 @@ describe('checkShadowDomains', () => {
 				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
 			}
 
-			// example.net has no NS → unregistered
+			// example.net returns NXDOMAIN — genuinely non-existent, the only state that
+			// supports an "unregistered" claim.
 			if (name === 'example.net') {
-				return Promise.resolve(emptyResponse());
+				return Promise.resolve(nxdomainResponse(name));
 			}
 			if (name === '_dmarc.example.net') {
-				return Promise.resolve(emptyResponse());
+				return Promise.resolve(nxdomainResponse(name));
 			}
 
 			return Promise.resolve(emptyResponse());
@@ -331,10 +339,14 @@ describe('checkShadowDomains', () => {
 		expect(sharedNsFinding).toBeDefined();
 	});
 
-	it('should classify variant as unregistered only when NS AND A are both empty (Phase 1 + 1.5 filter)', async () => {
-		// Updated semantics: a variant with no NS records is NOT immediately classified as
-		// unregistered. Phase 1.5 checks A as a fallback to avoid the slow-ccTLD false-negative
-		// trap. A variant is only classified as "unregistered" when both NS AND A are empty.
+	it('should classify a variant as unregistered only on NXDOMAIN', async () => {
+		// Registration contract (src/lib/registration-state.ts): NXDOMAIN is the ONLY
+		// state that supports an "unregistered" claim. NOERROR-with-no-answers (on NS,
+		// SOA, and the A escalation alike), SERVFAIL, and transport failures are all
+		// genuinely inconclusive and must surface as "registration unknown" instead —
+		// never as "unregistered". This replaces the old NS+A-empty heuristic (removed
+		// Phase 1.5 A-record fallback), which conflated "no records returned" with
+		// "domain does not exist".
 		const target = 'example.com';
 
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
@@ -346,13 +358,12 @@ describe('checkShadowDomains', () => {
 				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
 			}
 
-			// example.net is truly unregistered — NS empty, A empty, MX empty (the only state
-			// where the "unregistered" classification should fire).
+			// example.net returns NXDOMAIN — genuinely non-existent.
 			if (name === 'example.net') {
-				return Promise.resolve(emptyResponse());
+				return Promise.resolve(nxdomainResponse(name));
 			}
 			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
-				return Promise.resolve(emptyResponse());
+				return Promise.resolve(nxdomainResponse(name));
 			}
 
 			return Promise.resolve(emptyResponse());
@@ -1031,5 +1042,369 @@ describe('checkShadowDomains — Phase 1 constants', () => {
 			skipSecondaryConfirmation: true,
 		});
 		expect(mod.FAILURE_THRESHOLD).toBe(0);
+	});
+});
+
+describe('registration-state correctness', () => {
+	it('does NOT claim unregistered when the NS lookup SERVFAILs', async () => {
+		const { servfailResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			// Primary resolves normally; every variant SERVFAILs.
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			return servfailResponse(q.name, q.type === 'NS' ? 2 : 1);
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		expect(result.findings.some((f) => f.title === 'Brand variant unregistered')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'Brand variant registration unknown')).toBe(true);
+	});
+
+	it('DOES claim unregistered on a clean NXDOMAIN', async () => {
+		const { nxdomainResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			return nxdomainResponse(q.name, q.type === 'NS' ? 2 : 1);
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		expect(result.findings.some((f) => f.title === 'Brand variant unregistered')).toBe(true);
+	});
+
+	it('re-probing an unknown variant can never yield an "unregistered" verdict, even when the re-probe itself NXDOMAINs', async () => {
+		// The unknown-bucket re-probe (added when main's mail-only regression test
+		// exposed that a MX/SPF-only variant was reported unknown with a hardcoded
+		// `hasSpf: false`) must only ever move a variant `unknown → registered`.
+		//
+		// This is the hostile case for that invariant: Phase 1 SERVFAILs on NS+SOA
+		// (→ unknown/servfail), and then EVERY re-probe query comes back NXDOMAIN.
+		// A naive "no evidence found on re-probe ⇒ unregistered" would fire here —
+		// but an NXDOMAIN reached after a SERVFAIL is contradictory evidence, not
+		// proof of non-existence. NXDOMAIN resolved in Phase 1 by
+		// `resolveRegistration` remains the SOLE path to an unregistered claim.
+		const { servfailResponse, nxdomainResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			// Phase 1 looks at NS (2) and SOA (6) — both SERVFAIL, so the variant is
+			// UNKNOWN, never unregistered. Everything the re-probe asks for NXDOMAINs.
+			if (q.type === 'NS' || q.type === '2') return servfailResponse(q.name, 2);
+			if (q.type === 'SOA' || q.type === '6') return servfailResponse(q.name, 6);
+			return nxdomainResponse(q.name, q.type === 'A' || q.type === '1' ? 1 : 16);
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		// Non-vacuous: the unknown bucket must actually be populated, or the
+		// assertion below proves nothing.
+		expect(result.findings.some((f) => f.title === 'Brand variant registration unknown')).toBe(true);
+		// The invariant itself.
+		expect(result.findings.some((f) => f.title === 'Brand variant unregistered')).toBe(false);
+		expect(result.findings.some((f) => /does not appear to be registered/i.test(f.detail))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.registrationState === 'unregistered')).toBe(false);
+	});
+
+	it('an unknown variant whose re-probe finds nothing keeps state "unknown" carrying the probe\'s actual observations', async () => {
+		// Negative-path honesty pin. The re-probe's observations are threaded into
+		// the finding rather than a hardcoded literal set; on this path the probe
+		// genuinely observes nothing, so the metadata must report exactly that —
+		// empty record sets, `hasSpf: false`, `dmarcPolicy: null` — while the state
+		// stays `unknown` and the reason stays the Phase-1 rcode ('servfail'), NOT a
+		// value invented by the re-probe.
+		const { servfailResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			if (q.type === 'NS' || q.type === '2') return servfailResponse(q.name, 2);
+			if (q.type === 'SOA' || q.type === '6') return servfailResponse(q.name, 6);
+			return emptyResponse();
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		const unknownFindings = result.findings.filter((f) => f.title === 'Brand variant registration unknown');
+		expect(unknownFindings.length).toBeGreaterThan(0);
+		for (const f of unknownFindings) {
+			expect(f.metadata?.registrationState).toBe('unknown');
+			expect(f.metadata?.reason).toBe('servfail');
+			expect(f.metadata?.hasSpf).toBe(false);
+			expect(f.metadata?.dmarcPolicy).toBeNull();
+			expect(f.metadata?.ns).toEqual([]);
+			expect(f.metadata?.mx).toEqual([]);
+		}
+	});
+
+	it('reserves budget for Phase 2: an exhausted re-probe sub-deadline emits every unknown finding, probes none, and Phase 2 still runs', async () => {
+		// Budget-reservation contract. The unknown re-probe may consume at most half
+		// the check's budget (`reprobeDeadline`), so a flaky ccTLD family cannot
+		// starve Phase 2 — whose detail probes produce the check's most valuable
+		// output (fully-spoofable / lacks-DMARC criticals on REGISTERED variants).
+		//
+		// Wall-clock starvation is not reproducible in-suite (mocked DNS resolves
+		// instantly), so the clock is advanced directly instead of slept through:
+		// `Date.now` jumps to start+15s the moment Phase 1 is under way. That is past
+		// `reprobeDeadline` (start + SHADOW_TIMEOUT_MS/2 = 10s) but short of the full
+		// `deadline` (start + 20s) — precisely the window the reservation exists to
+		// protect. The jump is keyed on the first SOA query because `resolveRegistration`
+		// (Phase 1) is the ONLY caller that asks for SOA; `probeVariant` queries
+		// NS/A/MX/TXT and never SOA, so this cannot fire from a probe stage. Phase 1
+		// itself checks no deadline, so advancing the clock mid-bucketing is inert.
+		const { servfailResponse } = await import('./helpers/dns-mock');
+		const realNow = Date.now;
+		const base = realNow.call(Date);
+		let phase1Started = false;
+		const probeQueriedNames = new Set<string>();
+
+		try {
+			Date.now = () => (phase1Started ? base + 15_000 : base);
+
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+				const q = parseDohQuery(input);
+				if (!q) return emptyResponse();
+				const isSoa = q.type === 'SOA' || q.type === '6';
+				if (isSoa) phase1Started = true;
+				// Only `probeVariant` asks for MX/TXT — record those to prove which
+				// variants were (and were not) re-probed.
+				if (q.type === 'MX' || q.type === '15' || q.type === 'TXT' || q.type === '16') {
+					probeQueriedNames.add(q.name.replace(/^_dmarc\./, ''));
+				}
+
+				if (q.name === 'example.com') {
+					if (q.type === 'MX' || q.type === '15') return mxRecords('example.com', ['10 mail.example.com.']);
+					return nsRecords('example.com', ['ns1.example.com.']);
+				}
+				// One REGISTERED variant, so Phase 2 has work to do.
+				if (q.name === 'example.net') {
+					if (q.type === 'NS' || q.type === '2') return nsRecords('example.net', ['ns1.registrar.com.']);
+					return emptyResponse();
+				}
+				// Every other variant SERVFAILs its Phase-1 NS+SOA → unknown bucket.
+				return servfailResponse(q.name, isSoa ? 6 : 2);
+			}) as unknown as typeof fetch;
+
+			const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+			const result = await checkShadowDomains('example.com');
+
+			const unknownFindings = result.findings.filter((f) => f.title === 'Brand variant registration unknown');
+			// Non-vacuous: the unknown bucket must actually be populated.
+			expect(unknownFindings.length).toBeGreaterThan(0);
+
+			// (1) EVERY unknown-bucket variant still gets its finding — the sub-deadline
+			//     degrades the re-probe, it never silently drops a variant.
+			for (const f of unknownFindings) {
+				expect(f.metadata?.registrationState).toBe('unknown');
+			}
+
+			// (2) …and NONE of them was re-probed: the stage bailed at loop entry.
+			for (const f of unknownFindings) {
+				expect(probeQueriedNames.has(String(f.metadata?.variant))).toBe(false);
+			}
+
+			// (3) Phase 2 still ran on the budget the reservation protected: the
+			//     registered variant WAS detail-probed and produced a real classification,
+			//     not an unknown/timeout placeholder.
+			expect(probeQueriedNames.has('example.net')).toBe(true);
+			const netFinding = result.findings.find((f) => f.metadata?.variant === 'example.net');
+			expect(netFinding).toBeDefined();
+			expect(netFinding?.title).not.toBe('Brand variant registration unknown');
+		} finally {
+			Date.now = realNow;
+		}
+	});
+
+	it('never recommends defensive registration on an inconclusive lookup', async () => {
+		const { servfailResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			return servfailResponse(q.name, q.type === 'NS' ? 2 : 1);
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		// Non-vacuous guard: an empty findings list would make the loop below prove
+		// nothing.
+		expect(result.findings.length).toBeGreaterThan(0);
+		for (const f of result.findings) {
+			expect(f.detail).not.toMatch(/defensive registration/i);
+		}
+	});
+
+	it('pins post-buildCheckResult confidence: heuristic for unknown, deterministic for unregistered', async () => {
+		// FindingConfidence (packages/dns-checks/src/scoring/model.ts) is exactly
+		// 'deterministic' | 'heuristic' | 'verified'. An out-of-union value declared in
+		// metadata.confidence is silently rejected by isExplicitConfidence() and falls
+		// through inferFindingConfidence()'s keyword matching to the 'deterministic'
+		// default — so a value must be asserted on the finding AFTER it passes through
+		// buildCheckResult's withConfidenceMetadata plumbing, not on the pre-build object,
+		// or a regression back to an invalid value would go undetected.
+		const { servfailResponse, nxdomainResponse } = await import('./helpers/dns-mock');
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'bnz.co.nz') return nsRecords('bnz.co.nz', ['a1-97.akam.net.']);
+			// One variant is a clean NXDOMAIN (→ unregistered); every other variant SERVFAILs
+			// (→ registration unknown).
+			if (q.name === 'bnz.kiwi') return nxdomainResponse(q.name, q.type === 'NS' ? 2 : 1);
+			return servfailResponse(q.name, q.type === 'NS' ? 2 : 1);
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('bnz.co.nz');
+
+		const unknown = result.findings.find((f) => f.title === 'Brand variant registration unknown');
+		expect(unknown).toBeDefined();
+		expect(unknown!.metadata?.confidence).toBe('heuristic');
+
+		const unregistered = result.findings.find((f) => f.title === 'Brand variant unregistered');
+		expect(unregistered).toBeDefined();
+		// SCOPE: pins the CUSTOMER-VISIBLE value only. 'deterministic' is
+		// inferFindingConfidence()'s fallback, so this line cannot distinguish the
+		// correct literal from an out-of-union one at the emission site — the
+		// declaration itself is pinned pre-normalisation by the createFinding
+		// interception test in test/audits/registration-invariant.audit.test.ts.
+		expect(unregistered!.metadata?.confidence).toBe('deterministic');
+	});
+
+	it('never emits an unregistered finding alongside observed records', async () => {
+		// Registration evidence comes from an A-only escalation (NS + SOA both
+		// NOERROR/empty for variants, so resolveRegistration falls through to the
+		// A-record escalation), which — like the SOA-only path — proves
+		// "registered" while leaving `ns` empty. That is exactly the shape that
+		// reached classifyVariant's fallthrough pre-fix: registered (so Task 3's
+		// gate lets it through), but with no NS and no MX, so it fell to the final
+		// "Brand variant unregistered" branch while still carrying the SPF record
+		// this probe observed.
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.type === 'NS') return q.name === 'bnz.co.nz' ? nsRecords(q.name, ['ns1.bnz.co.nz.']) : emptyResponse();
+			if (q.type === 'A') return aRecords(q.name, ['203.0.113.10']);
+			if (q.type === 'TXT') return txtRecords(q.name, ['v=spf1 mx -all']);
+			return emptyResponse();
+		}) as unknown as typeof fetch;
+
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		// Sentinel: proves the capture below is live. Without it, a spy that stopped
+		// recording (or a snapshot taken after `mockRestore()` cleared the calls)
+		// would make the "no violation logged" assertion pass vacuously.
+		console.log('__log-capture-sentinel__');
+		let result;
+		let logged: string;
+		try {
+			const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+			result = await checkShadowDomains('bnz.co.nz');
+		} finally {
+			// Snapshot BEFORE restoring: `mockRestore()` also resets the mock, which
+			// clears `mock.calls` and would leave the log assertion below vacuous.
+			logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+			logSpy.mockRestore();
+		}
+
+		// Guard against a vacuous pass: the assertions below are only meaningful
+		// if the scan produced findings at all.
+		expect(result.findings.length).toBeGreaterThan(0);
+
+		// Assert the invariant over EVERY finding, matching on the semantic claim
+		// rather than one title string — a title rename must not silently disarm
+		// this test. In this scenario every variant is registered via the A
+		// escalation, so NOTHING may assert non-existence. Asserted as an empty
+		// list rather than a filtered loop: a loop body here would be dead by
+		// construction and could never fail.
+		const nonExistenceClaims = result.findings.filter((f) => /unregistered|not registered|does not exist/i.test(`${f.title} ${f.detail}`));
+		expect(nonExistenceClaims.map((f) => f.title)).toEqual([]);
+
+		// The fallthrough finding must exist and must NOT contradict its own metadata.
+		const fallthrough = result.findings.find((f) => f.title === 'Shadow domain registered, records not observed');
+		expect(fallthrough).toBeDefined();
+		// Asserted unconditionally: wrapping the detail check in `if (hasSpf)` let a
+		// regression that flipped hasSpf to false skip the check instead of failing.
+		const fm = fallthrough!.metadata as { hasSpf?: boolean };
+		expect(fm.hasSpf).toBe(true);
+		expect(fallthrough!.detail).not.toMatch(/no .*SPF records were observed/i);
+
+		// The log capture is retained only to prove the sentinel path works; the
+		// former "registration invariant violated" warn was deleted along with the
+		// tautological guard that emitted it (no call site can produce that string
+		// any more, so asserting its absence could never fail).
+		expect(logged).toMatch(/__log-capture-sentinel__/);
+	});
+
+	describe('canClaimUnregistered', () => {
+		// The predicate is no longer called on the claim path — `RegistrationState`'s
+		// payload-free `unregistered` arm enforces the invariant structurally — but it
+		// stays exported for any future site that threads real observed records
+		// alongside a non-existence claim. These exercise it directly so the retained
+		// export is not untested.
+		it('permits the claim only when nothing at all was observed', async () => {
+			const { canClaimUnregistered } = await import('../src/tools/check-shadow-domains');
+			expect(canClaimUnregistered({ ns: [], mx: [], hasSpf: false })).toBe(true);
+		});
+
+		it('refuses the claim when ANY record was observed', async () => {
+			const { canClaimUnregistered } = await import('../src/tools/check-shadow-domains');
+			expect(canClaimUnregistered({ ns: ['ns1.example.'], mx: [], hasSpf: false })).toBe(false);
+			expect(canClaimUnregistered({ ns: [], mx: ['10 mail.example.'], hasSpf: false })).toBe(false);
+			expect(canClaimUnregistered({ ns: [], mx: [], hasSpf: true })).toBe(false);
+		});
+	});
+
+	it('re-queries NS in Phase 2 when Phase 1 proved registration without NS evidence', async () => {
+		// A customer's own defensive registration, parked on the primary's
+		// nameservers. Its Phase-1 NS query comes back empty under the lean
+		// `timeoutMs: 2000, retries: 0` budget, but its SOA answers — so it is
+		// bucketed `registered` with `ns: []` and `evidence: ['soa']`.
+		//
+		// Passing that empty `ns` straight through as `prefetchedNs` suppressed
+		// the Phase-2 NS query, forcing `sharesNsWithPrimary` to false and making
+		// the same-owner downgrade unreachable. The customer's own domain was then
+		// reported to them as a CRITICAL hostile shadow domain. An incomplete
+		// Phase-1 measurement must not drive a confident Phase-2 severity.
+		const SHARED_NS = ['ns1.shared.example.', 'ns2.shared.example.'];
+		let variantNsQueries = 0;
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const q = parseDohQuery(input);
+			if (!q) return emptyResponse();
+			if (q.name === 'example.com') {
+				if (q.type === 'NS') return nsRecords(q.name, SHARED_NS);
+				return emptyResponse();
+			}
+			if (q.name !== 'example.net') return emptyResponse();
+			if (q.type === 'NS') {
+				// First (Phase-1, lean budget) answer is empty; the Phase-2 re-query
+				// under full options sees the real delegation.
+				variantNsQueries++;
+				return variantNsQueries === 1 ? emptyResponse() : nsRecords(q.name, SHARED_NS);
+			}
+			if (q.type === 'SOA') return soaRecords(q.name);
+			if (q.type === 'MX') return mxRecords(q.name, ['10 mail.shadow.example.']);
+			return emptyResponse();
+		}) as unknown as typeof fetch;
+
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains('example.com');
+
+		// Phase 2 must actually re-query NS for the soa-evidence variant.
+		expect(variantNsQueries).toBeGreaterThanOrEqual(2);
+
+		const spoofable = result.findings.find((f) => (f.metadata as { variant?: string } | undefined)?.variant === 'example.net');
+		expect(spoofable).toBeDefined();
+		expect(spoofable!.title).toBe('Shadow domain fully spoofable');
+		expect((spoofable!.metadata as { ns?: string[] }).ns).toEqual(SHARED_NS);
+		// Shared nameservers => same owner => downgraded from critical to high.
+		expect(spoofable!.severity).toBe('high');
 	});
 });

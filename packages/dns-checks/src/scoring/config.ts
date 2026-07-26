@@ -15,6 +15,7 @@
 import type { CheckCategory } from '../types';
 import { CATEGORY_TIERS } from '../types';
 import type { DomainProfile } from './profiles';
+import { EVIDENCE_SUFFICIENCY_THRESHOLD } from './evidence';
 
 /** All tunable scoring parameters. */
 export interface ScoringConfig {
@@ -46,6 +47,12 @@ export interface ScoringConfig {
 		spfStrongThreshold: number;
 		criticalOverallPenalty: number;
 		criticalGapCeiling: number;
+		/**
+		 * Minimum fraction of attempted checks that must COMPLETE for a scan to be
+		 * graded at all (0–1). Not a scoring cut-point: it never changes what a grade
+		 * means, only whether one is emitted. Clamped to [0, 1] on parse.
+		 */
+		evidenceSufficiency: number;
 	};
 
 	/** Grade boundaries (minimum score for each grade). */
@@ -122,6 +129,7 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 		spfStrongThreshold: 57,
 		criticalOverallPenalty: 15,
 		criticalGapCeiling: 64,
+		evidenceSufficiency: EVIDENCE_SUFFICIENCY_THRESHOLD,
 	},
 	grades: {
 		aPlus: 92,
@@ -329,6 +337,10 @@ export function parseScoringConfig(raw: string | undefined): ScoringConfig {
 			thresholds.emailBonusPartial = Math.ceil(v * 0.4);
 		}
 	}
+
+	// A fraction, not a percentage. Clamp so a `60`-for-60% typo in SCORING_CONFIG
+	// cannot ungrade every scan in the fleet.
+	thresholds.evidenceSufficiency = Math.max(0, Math.min(1, thresholds.evidenceSufficiency));
 
 	// Merge grades — silently ignore legacy 'e' grade
 	const rawGrades = parsed.grades as Record<string, unknown> | undefined;
