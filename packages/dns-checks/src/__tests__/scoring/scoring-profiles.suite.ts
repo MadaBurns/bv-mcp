@@ -293,6 +293,11 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 					checkStatus: 'timeout' as const,
 				};
 			}
+			/** A check that ran and passed but predates the `checkStatus` field (absent checkStatus) —
+			 * a legacy CheckResult shape that must still count as measured, not be silently excluded. */
+			function legacy(category: CheckCategory): CheckResult {
+				return buildCheckResult(category, [createFinding(category, `${category} OK`, 'info', 'Check passed')], true);
+			}
 
 			it('does NOT flip to the minimal profile when the majority of checks merely FAILED TO RUN', () => {
 				// 3 measured and passing, 7 unmeasured. Old behaviour: 7/10 = 0.7 > 0.5 → minimal.
@@ -331,6 +336,52 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				const ctx = detectDomainContext(results);
 				expect(ctx.profile).toBe('mail_enabled');
 				expect(ctx.signals.filter((sig) => sig.includes('checks failed'))).toHaveLength(0); // 2/5 = 0.4, not > 0.5
+			});
+
+			it('flips to minimal when ALL measured checks failed, even though unmeasured checks outnumber them (denominator must exclude unmeasured too)', () => {
+				// 3 measured, all genuinely failed; 7 unmeasured. Correct: 3 failed / 3 measured = 100% → minimal.
+				// A half-fix that filters only the numerator but still divides by results.length (10)
+				// would compute 3/10 = 30% → mail_enabled, silently making `minimal` unreachable whenever
+				// timeouts coexist with real failures. This test pins the DENOMINATOR half of the fix.
+				const results: CheckResult[] = [
+					failed('spf'),
+					failed('dmarc'),
+					failed('dnssec'),
+					unmeasured('ssl'),
+					unmeasured('caa'),
+					unmeasured('ns'),
+					unmeasured('mta_sts'),
+					unmeasured('subdomain_takeover'),
+					unmeasured('http_security'),
+					unmeasured('bimi'),
+				];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).toBe('minimal');
+				const failureSignals = ctx.signals.filter((sig) => sig.includes('checks failed'));
+				expect(failureSignals.length).toBeGreaterThan(0);
+				expect(failureSignals[0]).toContain('100%'); // 3 failed of 3 measured
+			});
+
+			it('does not flip or emit a signal when NO check was measured at all (denominator-zero guard)', () => {
+				// All checks unmeasured — totalChecks === 0 is reachable with a non-empty result set.
+				// failureRatio must resolve to 0 (not NaN), so there is no flip and no signal.
+				const results: CheckResult[] = [unmeasured('spf'), unmeasured('dmarc'), unmeasured('dnssec'), unmeasured('ssl'), unmeasured('caa')];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).not.toBe('minimal');
+				expect(ctx.signals.filter((sig) => sig.includes('checks failed'))).toHaveLength(0);
+			});
+
+			it('treats a check with ABSENT checkStatus (legacy CheckResult shape) as measured', () => {
+				// 2 legacy-passing (no checkStatus property at all) + 3 explicit-failed = 5 measured;
+				// 3/5 = 60% > 50% → minimal. A wrong-predicate mutation (checkStatus === 'completed'
+				// instead of !== 'timeout' && !== 'error') would exclude the legacy checks from BOTH
+				// counts, landing on 3/3 = 100% instead — the '60%' assertion below catches that.
+				const results: CheckResult[] = [legacy('spf'), legacy('caa'), failed('dmarc'), failed('dnssec'), failed('ssl')];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).toBe('minimal');
+				const failureSignals = ctx.signals.filter((sig) => sig.includes('checks failed'));
+				expect(failureSignals.length).toBeGreaterThan(0);
+				expect(failureSignals[0]).toContain('60%'); // 3 failed of 5 measured (incl. 2 legacy-passing)
 			});
 		});
 

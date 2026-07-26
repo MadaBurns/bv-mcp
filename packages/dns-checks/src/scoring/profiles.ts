@@ -339,7 +339,7 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	const totalChecks = measuredChecks.length;
 	const failedChecks = measuredChecks.filter((r) => !r.passed).length;
 	const failureRatio = totalChecks > 0 ? failedChecks / totalChecks : 0;
-	if (failureRatio > 0.5) signals.push(`>${Math.round(failureRatio * 100)}% checks failed`);
+	if (failureRatio > 0.5) signals.push(`>${Math.round(failureRatio * 100)}% of measured checks failed`);
 
 	// Detection priority
 	let profile: DomainProfile;
