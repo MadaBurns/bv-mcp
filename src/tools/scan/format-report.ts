@@ -83,15 +83,22 @@ export interface StructuredScanResult {
 	/** CDN provider detected from HTTP response headers. null when no CDN detected or check did not run. */
 	cdnProvider: string | null;
 	/**
-	 * Categories the scan MEASURED and found genuinely inapplicable to this domain
-	 * (no MX → mail-only categories under `web_only`/`non_mail`). Always reported as
-	 * `null` in `categoryScores` to avoid a misleading 100 or 0.
+	 * Categories the scan MEASURED (a `CheckResult` was recorded) and found genuinely
+	 * inapplicable to this domain (no MX → mail-only categories under
+	 * `web_only`/`non_mail`). Always reported as `null` in `categoryScores` to avoid a
+	 * misleading 100 or 0.
 	 *
-	 * **Semantic change (dns-checks 1.7.0): this array is now DISJOINT from
+	 * **Semantic change (as of blackveil-dns 3.37.0, ships alongside
+	 * `@blackveil/dns-checks` 1.7.0): this array is now DISJOINT from
 	 * `inconclusiveCategories`.** It previously conflated two reasons — a deliberate
 	 * skip and a measurement failure — and `inconclusiveCategories` was documented as a
 	 * subset of it. A consumer that read this array as the union of "not scored" must
 	 * now read `notApplicableCategories.concat(inconclusiveCategories)`.
+	 *
+	 * Caveat: a category can appear here with no `CheckResult` at all if
+	 * `categoryScores[cat] === 100` and the engine never ran that check — a
+	 * library-consumer-only path (see `isCategoryNonApplicable`'s Rule 3 no-check
+	 * branch) that the production scan engine never produces.
 	 */
 	notApplicableCategories: string[];
 	/**
@@ -99,10 +106,11 @@ export interface StructuredScanResult {
 	 * out or errored (`checkStatuses[cat]` is `'timeout'`/`'error'`) — rather than the
 	 * control genuinely not applying. Treat these as "could not measure / retry later".
 	 *
-	 * **DISJOINT from `notApplicableCategories`** as of dns-checks 1.7.0 (previously a
-	 * subset of it). The two states are deliberately separate: *inconclusive* means we
-	 * could not measure it; *not applicable* means we measured and it does not apply.
-	 * Both are `null` in `categoryScores`. Empty when every check ran.
+	 * **DISJOINT from `notApplicableCategories`** as of blackveil-dns 3.37.0 (ships
+	 * alongside `@blackveil/dns-checks` 1.7.0; previously a subset of it). The two
+	 * states are deliberately separate: *inconclusive* means we could not measure it;
+	 * *not applicable* means we measured and it does not apply. Both are `null` in
+	 * `categoryScores`. Empty when every check ran.
 	 */
 	inconclusiveCategories: string[];
 	timestamp: string;
@@ -148,11 +156,19 @@ const EMAIL_CATEGORIES_HEURISTIC_NA = new Set<string>(['spf', 'dmarc', 'dkim', '
  * The rules combined are the single source of truth that `categoryScores` and
  * `notApplicableCategories` both derive from (defect G — single-source CategoryEvaluation).
  *
- * This function answers ONLY "we measured, and it genuinely does not apply". It is never
- * asked about a check that failed to run: the caller short-circuits those into
- * `inconclusiveCategories` before reaching here. (A former "Rule 1" returned `true` for a
- * timed-out/errored check, which filed a MEASUREMENT FAILURE as a deliberate N/A — the
- * conflation this removal fixes.)
+ * For any category carrying a `CheckResult` (`check` is defined), this function answers
+ * ONLY "we measured, and it genuinely does not apply" — it is never asked about a check
+ * that timed out or errored: the caller short-circuits those into `inconclusiveCategories`
+ * before reaching here. (A former "Rule 1" returned `true` for a timed-out/errored check,
+ * which filed a MEASUREMENT FAILURE as a deliberate N/A — the conflation this removal
+ * fixes.)
+ *
+ * Caveat (Rule 3, `check === undefined` branch, out of scope for this fix): a category
+ * with NO `CheckResult` at all — i.e. never run, not even attempted — can still be filed
+ * as N/A here if `categoryScores[cat] === 100`. This is a library-consumer-only path (the
+ * production scan engine always records a `CheckResult` for every category it seeds a
+ * score for, so it never produces this shape); a hand-built `categoryScores`/`checks` pair
+ * from an external caller could reach it.
  */
 function isCategoryNonApplicable(check: CheckResult | undefined, category: string, profile: string, score: number | undefined): boolean {
 	const isNonMailProfile = profile === 'non_mail' || profile === 'web_only';

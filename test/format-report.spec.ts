@@ -262,7 +262,12 @@ describe('buildStructuredScanResult', () => {
 				score: {
 					overall: 70,
 					grade: 'C+',
-					categoryScores: { ssl: 70 } as Record<CheckCategory, number>,
+					// mta_sts: 0 pins the raw-number-leak path: the engine can still have
+					// seeded a numeric score for a category whose check errored (the score
+					// and the check outcome are computed independently upstream). The
+					// inconclusive short-circuit must win over that raw number, not just
+					// over the absence of one.
+					categoryScores: { ssl: 70, mta_sts: 0 } as Record<CheckCategory, number>,
 					findings: [],
 					summary: 'ok',
 					evidence: computeScanEvidence(checks),
@@ -272,7 +277,8 @@ describe('buildStructuredScanResult', () => {
 			const s = buildStructuredScanResult(result);
 			const overlap = s.inconclusiveCategories.filter((c) => s.notApplicableCategories.includes(c));
 			expect(overlap, `profile ${profile} produced overlap: ${overlap.join(', ')}`).toEqual([]);
-			// mta_sts errored: inconclusive in every profile, never not-applicable, always null.
+			// mta_sts errored: inconclusive in every profile, never not-applicable, always
+			// null — even though sourceCategoryScores carries a raw 0 for it.
 			expect(s.inconclusiveCategories).toContain('mta_sts');
 			expect(s.notApplicableCategories).not.toContain('mta_sts');
 			expect(s.categoryScores.mta_sts).toBeNull();
