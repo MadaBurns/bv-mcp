@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+
+- **Tenant scan rows persisted null scores (`resultCapture` never fired for `scan_domain`).** `runtimeOptions.resultCapture` was only invoked on the `TOOL_REGISTRY` dispatch path, but `scan_domain` is dispatched from the `switch` in `handlers/tools.ts`. Both tenant scan paths (the sync `POST /internal/tenants/scan` route and the queue consumer) pass a `resultCapture` and so always received nothing: every `scans` row persisted `score: null`, `grade: null`, `finding_count: 0`, a null `result_json`, and no `findings` rows. The `/report/:cycle_id` aggregates were consequently meaningless — `mean_score` always `0`, `grade_dist` always `{ unknown: N }`. `scan_domain` now emits the structured report plus its flattened per-category findings. Historical null-score rows **cannot be backfilled** (the scan output was never stored); see the tenant ops runbook for identification and handling.
+- **`resultCapture` type lie.** The callback was declared `(result: CheckResult) => void` while the tenant sites consumed the aggregate scan shape, so `tsc` saw `score` as a plain `number` and `grade` only through an `as unknown as { grade?: string }` cast — hiding nullability at the exact sites that persist those columns. Replaced with a `CheckResult | CapturedScanResult` union plus an `isCapturedScanResult()` guard (`src/lib/captured-result.ts`). The `?format=structured` contract on `/internal/tools/{call,batch}` is unchanged.
+
 ## [3.34.1] - 2026-07-24
 
 Follow-up bugfix release to 3.34.0: two non-apex regressions found in review, plus a broader false-positive class where a **transient** query/fetch failure was scored as a real deficiency. All corrections are in `@blackveil/dns-checks` (**1.5.0 → 1.5.2**); apex-domain output stays byte-identical.
