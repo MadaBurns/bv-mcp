@@ -143,6 +143,24 @@ describe('checkDnssec — dnssecSource detection', () => {
 		expect(hasDomainConfigured).toBe(true);
 	});
 
+	it('does not tag the inherited-posture attribution finding as domain_configured', async () => {
+		mockDnssecResponses(true, true, true);
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		const result = await checkDnssec('app.example.com', undefined, {
+			scannedLabel: 'app.example.com',
+			registrableDomain: 'example.com',
+			isApex: false,
+			zoneApex: 'example.com',
+			apexNsRecords: ['ns1.example.com'],
+			delegationStatus: 'inherited',
+		});
+		const inheritedPosture = result.findings.find((f) => f.title === 'DNSSEC posture inherited from zone apex');
+
+		expect(inheritedPosture).toBeDefined();
+		expect(inheritedPosture?.metadata?.dnssecSource).toBeUndefined();
+		expect(result.findings.some((f) => f !== inheritedPosture && f.metadata?.dnssecSource === 'domain_configured')).toBe(true);
+	});
+
 	it('does not add dnssecSource metadata when DNSSEC is fully absent', async () => {
 		// AD=false, no DNSKEY, no DS — base result will contain 'DNSSEC not enabled'
 		mockDnssecResponses(false, false, false);

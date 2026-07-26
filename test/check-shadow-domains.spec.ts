@@ -375,6 +375,47 @@ describe('checkShadowDomains', () => {
 		);
 		expect(unregistered).toBeDefined();
 	});
+
+	it('does NOT label a mail-only variant "unregistered" when NS+A are absent but MX/SPF exist (Bug #4 residual path)', async () => {
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			// example.net is a MAIL-ONLY registration: no NS (or slow-server NS that
+			// missed the tight window), no web A record — but a real MX + SPF. The old
+			// NS+A-only classifier wrongly emitted "unregistered" with a hardcoded
+			// hasSpf:false. The residual full-timeout probe must find the MX/SPF
+			// evidence and classify it as registered, never unregistered.
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(emptyResponse());
+				if (type === 'A' || type === '1') return Promise.resolve(emptyResponse());
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.attacker.net.']));
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 include:sendgrid.net ~all']));
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(emptyResponse());
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const netFindings = result.findings.filter((f) => f.detail.includes('example.net') || f.metadata?.variant === 'example.net');
+		// No "unregistered" verdict for a variant that publishes MX + SPF.
+		expect(netFindings.some((f) => /unregistered/i.test(f.title))).toBe(false);
+		// And no finding may carry the contradictory positive-SPF + unregistered pair,
+		// nor the old hardcoded hasSpf:false when SPF is actually present.
+		const varFinding = netFindings.find((f) => f.metadata?.variant === 'example.net');
+		expect(varFinding).toBeDefined();
+		expect(varFinding?.metadata?.hasSpf).toBe(true);
+	});
 });
 
 describe('generateVariants', () => {
@@ -545,6 +586,50 @@ describe('checkShadowDomains — classification edge cases', () => {
 			(f) => f.detail.includes('example.net') && /does not appear to be registered/i.test(f.detail),
 		);
 		expect(wronglyUnregistered).toBeUndefined();
+	});
+
+	it('should NOT call a variant unregistered when it publishes SPF but has no NS/MX (bnz.co contradiction)', async () => {
+		// bnz.co resolved an A record + published an SPF TXT (brand discovery independently
+		// surfaced it as a live 0.95 candidate via http_redirect), but its NS query came back
+		// empty and it has no MX. The classifier used NS/MX presence ONLY, so it emitted
+		// "Brand variant unregistered" WHILE its own metadata carried hasSpf:true — an internally
+		// contradictory verdict (an unregistered domain cannot publish SPF). A published SPF/A
+		// record is proof of registration.
+		const target = 'example.com';
+
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+
+			if (name === target && (type === 'MX' || type === '15')) {
+				return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(emptyResponse()); // NS empty (as observed)
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.50'])); // resolves
+				if (type === 'MX' || type === '15') return Promise.resolve(emptyResponse()); // no mail
+				if (type === 'TXT' || type === '16') return Promise.resolve(txtRecords(name, ['v=spf1 -all'])); // SPF published
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				return Promise.resolve(emptyResponse());
+			}
+
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const netFindings = result.findings.filter((f) => f.detail.includes('example.net'));
+
+		// It must not be labelled unregistered…
+		expect(netFindings.some((f) => /unregistered|does not appear to be registered/i.test(`${f.title} ${f.detail}`))).toBe(false);
+		// …and NO finding may claim unregistered while its metadata reports positive SPF evidence.
+		expect(
+			netFindings.some(
+				(f) => f.metadata?.hasSpf === true && /unregistered|does not appear to be registered/i.test(`${f.title} ${f.detail}`),
+			),
+		).toBe(false);
 	});
 
 	it('should classify RFC 7505 null MX (MX 0 .) as INFO non-mail, not as spoofable', async () => {

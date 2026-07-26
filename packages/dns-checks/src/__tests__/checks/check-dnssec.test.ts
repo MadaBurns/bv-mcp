@@ -2,7 +2,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { checkDNSSEC } from '../../checks/check-dnssec';
-import type { DNSQueryFunction, RawDNSQueryFunction } from '../../types';
+import type { DNSQueryFunction, RawDNSQueryFunction, ZoneContext } from '../../types';
 
 function createMockDNS(records: Record<string, string[]>): DNSQueryFunction {
 	return vi.fn(async (domain: string, _type: string) => {
@@ -63,5 +63,30 @@ describe('checkDNSSEC', () => {
 		const rawQueryDNS: RawDNSQueryFunction = vi.fn(async () => ({ AD: true }));
 		const result = await checkDNSSEC('example.com', mockDNS, { rawQueryDNS });
 		expect(result.findings.some((f) => f.title.includes('Deprecated DNSKEY algorithm'))).toBe(true);
+	});
+
+	it('marks a non-apex unknown zone walk inconclusive without querying DNSSEC', async () => {
+		const queryDNS: DNSQueryFunction = vi.fn(async () => ['257 3 13 base64key...']);
+		const rawQueryDNS: RawDNSQueryFunction = vi.fn(async () => ({ AD: true }));
+		const zone: ZoneContext = {
+			scannedLabel: 'app.example.com',
+			registrableDomain: 'example.com',
+			isApex: false,
+			zoneApex: 'example.com',
+			apexNsRecords: [],
+			delegationStatus: 'unknown',
+		};
+
+		const result = await checkDNSSEC('app.example.com', queryDNS, { rawQueryDNS, zone });
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings).toEqual([
+			expect.objectContaining({
+				title: 'DNSSEC not assessed',
+				severity: 'info',
+			}),
+		]);
+		expect(queryDNS).not.toHaveBeenCalled();
+		expect(rawQueryDNS).not.toHaveBeenCalled();
 	});
 });

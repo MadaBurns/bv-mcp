@@ -40,6 +40,7 @@ import * as registrySchema from './db/schema/registry';
 import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
 import type { AuditEvent } from '../schemas/audit';
 import type { CheckResult, Finding } from '../lib/scoring';
+import { parseTenantScanSnapshot, toTenantScanSnapshot, type TenantScanSnapshot } from './scan-snapshot';
 
 /**
  * Minimal `Queue<T>` shape — Cloudflare's runtime types pin this to the
@@ -816,7 +817,7 @@ tenantRoutes.post('/scan', async (c) => {
 							if (isRecent) {
 								const fp = await computeFingerprint(domain);
 								if (fp.kind === 'ok' && !fingerprintsDiffer(fp.fingerprint, domainRow?.fingerprint ?? null)) {
-									const captured = JSON.parse(lastScan.result_json) as CheckResult;
+									const captured = parseTenantScanSnapshot(lastScan.result_json);
 									// Return the cached result as if it were a fresh scan, but skip handleToolsCall
 									return { domain, result: { isError: false }, captured, skippedByFingerprint: true };
 								}
@@ -827,18 +828,22 @@ tenantRoutes.post('/scan', async (c) => {
 					}
 				}
 
-				let captured: CheckResult | null = null;
+				let captured: TenantScanSnapshot | null = null;
 				const result = await handleToolsCall(
 					{ name: 'scan_domain', arguments: { domain } },
 					c.env.SCAN_CACHE,
 					{
 						...runtimeBase,
-						resultCapture: (r) => {
-							captured = r;
+						// scan_domain is an orchestrator and never invokes `resultCapture`
+						// (a single-CheckResult hook). Using that hook here left `captured`
+						// null on every scan, so every persisted row carried null
+						// score/grade/result_json and no findings rows.
+						scanResultCapture: (r) => {
+							captured = toTenantScanSnapshot(r);
 						},
 					},
 				);
-				return { domain, result, captured: captured as CheckResult | null, skippedByFingerprint: false };
+				return { domain, result, captured: captured as TenantScanSnapshot | null, skippedByFingerprint: false };
 			}),
 		);
 
@@ -847,7 +852,7 @@ tenantRoutes.post('/scan', async (c) => {
 				errored += 1;
 				continue;
 			}
-			const { domain, result, captured, skippedByFingerprint } = s.value as { domain: string; result: { isError: boolean }; captured: CheckResult | null; skippedByFingerprint: boolean };
+			const { domain, result, captured, skippedByFingerprint } = s.value as { domain: string; result: { isError: boolean }; captured: TenantScanSnapshot | null; skippedByFingerprint: boolean };
 			if (result.isError) {
 				errored += 1;
 				continue;
@@ -862,15 +867,22 @@ tenantRoutes.post('/scan', async (c) => {
 			// design — D1 write failures get re-enqueued elsewhere).
 			try {
 				const scanId = newRowId();
-				const score = captured?.score ?? null;
-				const grade = (captured as unknown as { grade?: string } | null)?.grade ?? null;
-				const findingCount = captured?.findings?.length ?? 0;
 				await tenantDb
 					.prepare(SCANS_INSERT_SQL)
-					.bind(scanId, domain, Date.now(), score, grade, null, findingCount, captured ? JSON.stringify(captured) : null, cycleId)
+					.bind(
+						scanId,
+						domain,
+						Date.now(),
+						captured?.score ?? null,
+						captured?.grade ?? null,
+						captured?.maturityStage ?? null,
+						captured?.findings.length ?? 0,
+						captured ? JSON.stringify(captured) : null,
+						cycleId,
+					)
 					.run();
 
-				if (captured?.findings) {
+				if (captured?.findings.length) {
 					await persistFindings(tenantDb, scanId, domain, captured.findings);
 				}
 			} catch {
@@ -1238,16 +1250,17 @@ tenantRoutes.get('/report/:cycle_id', async (c) => {
 		const scanRows = scans.results ?? [];
 		const findingRows = findings.results ?? [];
 
-		// A scan row with a NULL score was never graded (domain does not resolve, zone
-		// unresolvable) — it is "not measured", not "scored zero". It must leave BOTH the
-		// numerator and the DENOMINATOR: `(sum + 0) / allRows` silently depresses the
-		// tenant's reported portfolio mean by every domain that could not be measured
-		// (3 graded + 2 ungraded reported 48 instead of 80). `null` when nothing was
-		// graded, because `0` reads as a confident "this portfolio scores zero".
-		// `domains` deliberately still counts every attempted domain, and `grade_dist`
-		// already buckets ungraded rows as 'unknown'.
-		const gradedScores = scanRows.map((r) => r.score).filter((s): s is number => s !== null && s !== undefined);
-		const meanScore = gradedScores.length > 0 ? gradedScores.reduce((acc, s) => acc + s, 0) / gradedScores.length : null;
+		// Mean over MEASURED rows only. A null score means the domain was never
+		// successfully scanned (a DLQ row, or a scan that errored), which is not the
+		// same fact as "scored zero" — coercing it with `?? 0` silently reported an
+		// unmeasured domain as a catastrophic one and pulled the cycle mean down.
+		// `measured_domains` is returned alongside `domains` so a consumer can see
+		// the denominator rather than having to infer it.
+		const measuredRows = scanRows.filter((r): r is { score: number; grade: string | null } => typeof r.score === 'number');
+		const scoreSum = measuredRows.reduce((acc, r) => acc + r.score, 0);
+		// Null (not 0) when nothing was measured: a cycle where every domain failed
+		// has no mean, and reporting 0 would be a fabricated score.
+		const meanScore = measuredRows.length > 0 ? scoreSum / measuredRows.length : null;
 		const gradeDist: Record<string, number> = {};
 		for (const r of scanRows) {
 			const g = r.grade ?? 'unknown';
@@ -1264,13 +1277,16 @@ tenantRoutes.get('/report/:cycle_id', async (c) => {
 			resourceId: params.cycle_id,
 			subTenantId: tenantOrErr,
 			outcome: 'success',
-			blob: { domains: scanRows.length },
+			blob: { domains: scanRows.length, measured: measuredRows.length },
 		});
 
 		return c.json({
 			cycle_id: params.cycle_id,
 			summary: {
 				domains: scanRows.length,
+				/** Rows carrying a real score — the `mean_score` denominator. `domains - measured_domains` were never scanned. */
+				measured_domains: measuredRows.length,
+				/** Mean over measured rows only; null when nothing in the cycle was measured. */
 				mean_score: meanScore,
 				grade_dist: gradeDist,
 				severity_counts: severityCounts,

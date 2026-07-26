@@ -91,6 +91,8 @@ Both publish together from `publish.yml` on version tags.
 
 **Subrequest ceiling** (operating constraint, not a bug): a cold-cache `scan_domain` fans out ~20 subrequests/domain (19 categories, mostly DoH + 2 HTTPS); `/internal/tools/batch` can fan out to ~50×19. Cloudflare Workers caps subrequests per invocation at 50 (Free) / 10,000 default on Paid — raisable to 10M via the `limits.subrequests` Wrangler setting (changed 2026-02-11; was 1000). BlackVeil production runs on a paid plan, so this is not a prod concern. BSL self-hosters on the Free plan should keep batch size / scan concurrency modest (cache hits don't count) or upgrade.
 
+A cold non-apex scan can add up to ~20 DNS subrequests for the bounded NS walk, CAA climb, and apex DNSSEC evaluation; deeply nested labels can therefore approach the Free-plan 50-subrequest ceiling.
+
 **Post-processing**:
 
 - Non-mail (no MX): parent DMARC `sp=`/`p=` → downgrade email-auth findings to `info`
@@ -292,7 +294,7 @@ ignored env only; never commit it or paste it into workflow logs.
 
 ## Service Binding Integration
 
-`/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`. `/internal/tools/batch` runs one tool across many domains (max 500, concurrency 1–50, 256 KB body). `?format=structured` returns raw `CheckResult` per domain.
+`/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`. `/internal/tools/batch` runs one tool across many domains (max 500, concurrency 1–50, 256 KB body). `?format=structured` returns the tool's **payload** under `result` per domain — the raw `CheckResult` for `check_*` tools, or `structuredContent` for the custom-shape tools in `NON_CHECK_RESULT_TOOLS` (`scan_domain`, `explain_finding`, `compare_baseline`, `get_benchmark`). Same `payload.result` contract as the single-call door; cross-door parity is asserted in `test/internal.spec.ts`.
 
 | Layer                                                             | Public `/mcp` | Internal `/internal/*` |
 | ----------------------------------------------------------------- | :-----------: | :--------------------: |

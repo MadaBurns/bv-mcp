@@ -69,11 +69,17 @@ async function augmentWithSource(domain: string, baseResult: CheckResult, dnsOpt
 		return buildCheckResult('dnssec', [...baseResult.findings, inheritedFinding]);
 	}
 
-	// domain_configured — tag the first non-info finding with the source, or add a carrier finding
-	if (baseResult.findings.length > 0) {
-		const [first, ...rest] = baseResult.findings;
-		const tagged = { ...first, metadata: { ...(first.metadata ?? {}), dnssecSource: 'domain_configured' } };
-		return buildCheckResult('dnssec', [tagged, ...rest]);
+	// domain_configured — never tag the non-apex attribution note: that finding describes
+	// the scanned label's inheritance relationship, while this metadata describes the
+	// evaluated zone apex. Tag the first actual DNSSEC verdict/audit finding instead.
+	const sourceCarrierIndex = baseResult.findings.findIndex((finding) => finding.title !== 'DNSSEC posture inherited from zone apex');
+	if (sourceCarrierIndex >= 0) {
+		const findings = baseResult.findings.map((finding, index) =>
+			index === sourceCarrierIndex
+				? { ...finding, metadata: { ...(finding.metadata ?? {}), dnssecSource: 'domain_configured' } }
+				: finding,
+		);
+		return buildCheckResult('dnssec', findings);
 	}
 
 	const configuredFinding = createFinding(

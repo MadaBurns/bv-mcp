@@ -20,6 +20,7 @@ function ancestorChainToFloor(label: string, floor: string): string[] {
 	const chain: string[] = [];
 	let current = label;
 	for (let i = 0; i <= MAX_CAA_CLIMB_DEPTH; i += 1) {
+		if (current.length < floor.length) break;
 		chain.push(current);
 		if (current === floor) break;
 		const dot = current.indexOf('.');
@@ -72,6 +73,20 @@ export async function checkCAA(
 	const findings: Finding[] = [];
 	const zone = options?.zone;
 
+	if (zone && !zone.isApex && zone.delegationStatus === 'unknown') {
+		return {
+			...buildCheckResult('caa', [
+				createFinding(
+					'caa',
+					'CAA records not assessed',
+					'info',
+					`Could not determine the authoritative zone for ${zone.scannedLabel} due to a transient DNS failure; CAA inheritance was not assessed.`,
+				),
+			]),
+			checkStatus: 'error',
+		};
+	}
+
 	let rawRecords: string[];
 	try {
 		rawRecords = await queryDNS(domain, 'CAA', { timeout });
@@ -105,7 +120,7 @@ export async function checkCAA(
 		// or no zone) skip this — byte-identical output. Gated strictly on isApex, NOT
 		// delegationStatus: CAA inheritance follows the DNS tree, independent of NS delegation.
 		if (zone && !zone.isApex) {
-			const climbed = await climbForCaa(domain, zone.registrableDomain, queryDNS, timeout);
+			const climbed = await climbForCaa(zone.scannedLabel, zone.registrableDomain, queryDNS, timeout);
 			if (climbed.records.length > 0 && climbed.foundAt) {
 				findings.push(
 					createFinding(

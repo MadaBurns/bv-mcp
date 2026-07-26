@@ -565,17 +565,54 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		);
 	}
 
-	// Everything else is a measurement failure, NOT an availability claim.
-	for (const { variant, reason } of buckets.unknown) {
-		findings.push(
-			createFinding(
-				'shadow_domains',
-				'Brand variant registration unknown',
-				'info',
-				`Could not determine whether ${variant} is registered — ${UNKNOWN_REASON_PHRASES[reason]}. No conclusion is drawn about this domain.`,
-				{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null, registrationState: 'unknown', reason, confidence: 'heuristic' },
-			),
-		);
+	// Everything else is a measurement failure, NOT an availability claim — but
+	// "the NS/SOA/A probe could not settle it" is not the same as "nothing is
+	// there". `resolveRegistration` deliberately looks only at NS, SOA and A,
+	// which leaves a real blind spot: a MAIL-ONLY registration (MX + SPF, no web
+	// A record, NS missed under the tight Phase-1 window) resolves to
+	// `empty_noerror` and would be reported as unknown while carrying a hardcoded
+	// `hasSpf: false` — suppressing a measurement we can actually make, and
+	// asserting a measured-looking negative about a domain that publishes SPF.
+	//
+	// So each unknown variant is re-probed ONCE at the full timeout. Positive
+	// records prove the name exists, so it is classified from its real records;
+	// only a variant that still shows nothing keeps the unknown verdict, and even
+	// then the finding carries the probe's ACTUAL observations rather than
+	// hardcoded falses.
+	//
+	// This never widens the `unregistered` claim: variants only move from
+	// `unknown` to `registered`. NXDOMAIN remains the sole path to "unregistered".
+	if (buckets.unknown.length > 0) {
+		const unknownProbes = await Promise.allSettled(buckets.unknown.map(({ variant }) => probeVariant(variant, dnsOpts)));
+		for (let i = 0; i < buckets.unknown.length; i++) {
+			const { variant, reason } = buckets.unknown[i];
+			const settled = unknownProbes[i];
+			const probe: VariantProbeResult =
+				settled.status === 'fulfilled' ? settled.value : { variant, ns: [], hasA: false, mx: [], hasSpf: false, dmarcPolicy: null };
+			const hasEvidence = probe.ns.length > 0 || probe.hasA || probe.mx.length > 0 || probe.hasSpf || probe.dmarcPolicy !== null;
+			if (hasEvidence) {
+				findings.push(classifyVariant(probe, primaryMx, primaryNs));
+				continue;
+			}
+			findings.push(
+				createFinding(
+					'shadow_domains',
+					'Brand variant registration unknown',
+					'info',
+					`Could not determine whether ${variant} is registered — ${UNKNOWN_REASON_PHRASES[reason]}. No conclusion is drawn about this domain.`,
+					{
+						variant,
+						ns: probe.ns,
+						mx: probe.mx,
+						hasSpf: probe.hasSpf,
+						dmarcPolicy: probe.dmarcPolicy,
+						registrationState: 'unknown',
+						reason,
+						confidence: 'heuristic',
+					},
+				),
+			);
+		}
 	}
 
 	// Phase 2: Detail probe only registered variants with NS passthrough

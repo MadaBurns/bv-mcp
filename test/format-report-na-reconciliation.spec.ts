@@ -245,3 +245,51 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 		expect(s.categoryScores.mta_sts).toBe(60);
 	});
 });
+
+describe('categoryScores never lists a category that never ran (end-to-end engine → format-report)', () => {
+	// Reproduces the bnz.co.nz symptom: scan_domain runs a fixed roster that OMITS lookalikes/
+	// shadow_domains, yet the composite reported categoryScores.lookalikes = 100 (and
+	// shadow_domains = 100) with NO checkStatuses entry — a never-run brand-abuse dimension
+	// reading "perfect". Runs the REAL engine so a regression of the 100-seed is caught here too.
+	it('a never-run category is absent from categoryScores and every score key has a checkStatus', async () => {
+		const { computeProfileAwareScanScore, buildCheckResult, createFinding } = await import('../src/lib/scoring');
+
+		// A realistic scan_domain-style roster: core + several protective ran; lookalikes and
+		// shadow_domains were NEVER dispatched (not in CHECK_DISPATCH).
+		const ranChecks: CheckResult[] = [
+			{ ...buildCheckResult('spf', []), score: 100, passed: true },
+			{ ...buildCheckResult('dmarc', []), score: 100, passed: true },
+			{ ...buildCheckResult('dkim', []), score: 100, passed: true },
+			{ ...buildCheckResult('dnssec', []), score: 100, passed: true },
+			{ ...buildCheckResult('ssl', []), score: 100, passed: true },
+			{
+				...buildCheckResult('subdomain_takeover', [
+					createFinding('subdomain_takeover', 'Dangling delegation', 'high', 'takeover risk'),
+				]),
+				score: 0,
+				passed: false,
+			},
+			{ ...buildCheckResult('http_security', []), score: 90, passed: true },
+		];
+		const scored = computeProfileAwareScanScore(ranChecks);
+		const result = makeMockScanResult({
+			score: scored.score,
+			context: { ...scored.context },
+			checks: ranChecks,
+		});
+
+		const s = buildStructuredScanResult(result);
+
+		// The never-run brand-abuse categories must NOT surface as a phantom 100.
+		expect(s.categoryScores.lookalikes ?? null).toBeNull();
+		expect(s.categoryScores.shadow_domains ?? null).toBeNull();
+
+		// Acceptance invariant: every category carrying a NON-null numeric score must have run
+		// (i.e. appear in checkStatuses). A score with no execution status is the exact defect.
+		for (const [category, score] of Object.entries(s.categoryScores)) {
+			if (score !== null) {
+				expect(s.checkStatuses).toHaveProperty(category);
+			}
+		}
+	});
+});

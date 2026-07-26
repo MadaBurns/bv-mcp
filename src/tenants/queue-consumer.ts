@@ -33,7 +33,8 @@ import { ScanQueueMessageSchema, type ScanQueueMessage } from '../schemas/tenant
 import { streamScanResult } from '../lib/hooks/analytics-stream';
 import { resolveTenant, type ResolverEnv, type TenantDbHandle } from './tenant-resolver';
 import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
-import type { CheckResult, Finding } from '../lib/scoring';
+import { parseTenantScanSnapshot, toTenantScanSnapshot, type TenantScanSnapshot } from './scan-snapshot';
+import type { Finding } from '../lib/scoring';
 
 /** Wall-clock budget for one message — covers handleToolsCall + the D1 inserts. */
 export const QUEUE_MESSAGE_TIMEOUT_MS = 20_000;
@@ -159,7 +160,19 @@ async function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 	]);
 }
 
-/** Persist a DLQ marker so the cycle report still includes the domain. */
+/**
+ * Persist a DLQ marker so the cycle report still includes the domain.
+ *
+ * `score` is deliberately NULL, not 0. A DLQ row means the domain was never
+ * successfully measured — the scan timed out or exhausted its retries — which
+ * is a different fact from "measured, and scored zero". Writing 0 made the row
+ * indistinguishable from a genuinely catastrophic domain and dragged the cycle's
+ * `mean_score` down as if it were one; because 0 is not null, a null-skipping
+ * aggregate could not filter it out either. The report's mean now counts only
+ * rows that carry a real score (see `/report/:cycle_id`), and the domain still
+ * appears in the cycle via its `queue_dlq` finding and its `grade_dist`
+ * `unknown` bucket.
+ */
 async function writeDlqRow(
 	tenantDb: TenantDbHandle,
 	msg: ScanQueueMessage,
@@ -169,7 +182,7 @@ async function writeDlqRow(
 	try {
 		await tenantDb
 			.prepare(SCANS_INSERT_SQL)
-			.bind(scanId, msg.domain, Date.now(), 0, null, null, 1, JSON.stringify({ error: reason }), msg.cycle_id)
+			.bind(scanId, msg.domain, Date.now(), null, null, null, 1, JSON.stringify({ error: reason }), msg.cycle_id)
 			.run();
 		await tenantDb
 			.prepare(FINDINGS_INSERT_SQL)
@@ -185,28 +198,25 @@ async function writeDlqRow(
 async function persistScan(
 	tenantDb: TenantDbHandle,
 	msg: ScanQueueMessage,
-	captured: CheckResult | null,
+	captured: TenantScanSnapshot | null,
 ): Promise<void> {
 	const scanId = newRowId();
-	const score = captured?.score ?? null;
-	const grade = (captured as unknown as { grade?: string } | null)?.grade ?? null;
-	const findingCount = captured?.findings?.length ?? 0;
 	await tenantDb
 		.prepare(SCANS_INSERT_SQL)
 		.bind(
 			scanId,
 			msg.domain,
 			Date.now(),
-			score,
-			grade,
-			null,
-			findingCount,
+			captured?.score ?? null,
+			captured?.grade ?? null,
+			captured?.maturityStage ?? null,
+			captured?.findings.length ?? 0,
 			captured ? JSON.stringify(captured) : null,
 			msg.cycle_id,
 		)
 		.run();
 
-	if (captured?.findings) {
+	if (captured?.findings.length) {
 		await persistFindings(tenantDb, scanId, msg.domain, captured.findings);
 	}
 }
@@ -304,7 +314,7 @@ export async function processScanMessage(
 		secondaryDoh: env.BV_DOH_ENDPOINT ? { endpoint: env.BV_DOH_ENDPOINT, token: env.BV_DOH_TOKEN } : undefined,
 	};
 
-	let captured: CheckResult | null = null;
+	let captured: TenantScanSnapshot | null = null;
 	try {
 		// Phase 6: Fingerprint pre-flight
 		if (!parsed.force_refresh) {
@@ -333,7 +343,7 @@ export async function processScanMessage(
 							// to keep the cycle consistent with the skip logic.
 							// But wait, the cycle alert sweep needs a scan row for THIS cycle_id
 							// to find the findings. So we DO need to persist it.
-							captured = JSON.parse(lastScan.result_json) as CheckResult;
+							captured = parseTenantScanSnapshot(lastScan.result_json);
 						}
 					}
 				}
@@ -349,8 +359,13 @@ export async function processScanMessage(
 					env.SCAN_CACHE,
 					{
 						...runtimeOptions,
-						resultCapture: (r) => {
-							captured = r;
+						// scan_domain is an orchestrator and never invokes `resultCapture`
+						// (a single-CheckResult hook). Using that hook here left `captured`
+						// null on every scan, so every persisted row carried null
+						// score/grade/result_json, no findings rows, and the fingerprint
+						// pre-flight above could never find a payload to reuse.
+						scanResultCapture: (r) => {
+							captured = toTenantScanSnapshot(r);
 						},
 					},
 				),
@@ -376,11 +391,12 @@ export async function processScanMessage(
 	}
 
 	try {
-		await persistScan(tenantDb, parsed, captured as CheckResult | null);
+		const snapshot = captured as TenantScanSnapshot | null;
+		await persistScan(tenantDb, parsed, snapshot);
 		ctx.waitUntil(streamScanResult(env, {
 			domain: parsed.domain,
-			grade: (captured as unknown as { grade?: string } | null)?.grade ?? null,
-			score: captured?.score ?? null,
+			grade: snapshot?.grade ?? null,
+			score: snapshot?.score ?? null,
 			sub_tenant_id: parsed.sub_tenant_id,
 			cycle_id: parsed.cycle_id
 		}));

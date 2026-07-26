@@ -3,13 +3,24 @@
 /**
  * Deep-scan orchestrator for CSC-complement view.
  *
- * For each top-N apex (default cap 25), runs scan_domain and discover_subdomains
- * via an injected internal-call function. Aggregates per-apex posture
- * (grade/score) and dangling-DNS findings (via scan_domain's internal
- * check_subdomain_takeover category) into the cscComplement payload.
+ * For each top-N apex (default cap 25), runs scan_domain, discover_subdomains
+ * and check_subdomain_takeover via an injected internal-call function.
+ * Aggregates per-apex posture (grade/score), subdomain inventory, and
+ * dangling-DNS findings into the cscComplement payload.
  *
- * Parallel cap 5. Per-apex failures are partial: that apex is omitted from
- * the result, apexesScanned < apexesTotal, stage still reaches 'ready'.
+ * The injected `internalCall` is `handleToolsCall` (see `src/index.ts` — the
+ * brand-audit queue consumer's closure), so every response is an MCP tool
+ * result: `{ content, structuredContent?, isError? }`. The machine-readable
+ * payload lives in **`structuredContent`** — there is no `structured` field on
+ * that path. Reading the wrong key yields `undefined` for every apex and the
+ * whole deep-scan silently reports zero results, so the envelope shape is
+ * pinned by `test/brand-audit-csc-deepscan.spec.ts` against payloads built by
+ * the real production builders.
+ *
+ * Parallel cap 5. Per-apex failures are partial: a failed scan_domain omits
+ * that apex (apexesScanned < apexesTotal); a failed discover_subdomains or
+ * check_subdomain_takeover only drops that apex's inventory / dangling
+ * section. Stage still reaches 'ready'.
  */
 
 import type { BrandAuditCsc } from '../schemas/brand-audit-csc';
@@ -21,10 +32,16 @@ const SAMPLE_SUBDOMAIN_CAP = 10;
 type InternalCallFn = (tool: string, args: { domain: string }) => Promise<unknown>;
 
 /**
- * Hand-written mirror of `scan_domain`'s wire shape (`StructuredScanResult`), read
- * back off the internal-call envelope. It is deliberately structural and tolerant —
- * but that also means widening the real type flags NOTHING here, so any abstain gate
- * has to be maintained by hand against `src/tools/scan/format-report.ts`.
+ * The subset of `scan_domain`'s `structuredContent` this orchestrator reads.
+ * Mirrors `StructuredScanResult` (`src/tools/scan/format-report.ts`) — note
+ * `categoryScores` values are plain numbers (or `null` for N/A categories),
+ * and the payload carries **no per-finding array**, only `findingCounts`.
+ * Dangling-DNS detail therefore has to come from `check_subdomain_takeover`.
+ *
+ * `score`/`grade` are nullable: an ungraded scan (zero checks ran, unresolvable
+ * zone, scoring-bundle failure) emits `null` rather than a fabricated `0`/`'F'`.
+ * This is a hand-written mirror, so widening the real type flags NOTHING here —
+ * the abstain gate below has to be maintained by hand against `format-report.ts`.
  */
 interface ScanDomainStructured {
 	domain: string;
@@ -36,22 +53,44 @@ interface ScanDomainStructured {
 	 * omit it — absent is treated as measured, preserving prior behaviour.
 	 */
 	measured?: boolean;
-	categoryScores?: Record<
-		string,
-		{ score?: number; findings?: Array<{ severity?: string; category?: string; detail?: string; subdomain?: string }> }
-	>;
-	findings?: Array<{ severity?: string; category?: string; detail?: string; subdomain?: string }>;
+	categoryScores?: Record<string, number | null>;
 }
 
+/** The subset of `discover_subdomains`' `structuredContent` this orchestrator reads. */
 interface DiscoverSubdomainsStructured {
 	domain: string;
 	totalSubdomains: number;
-	subdomains?: Array<{ subdomain?: string; name?: string }>;
+	subdomains?: Array<{ subdomain?: string }>;
+	/** Sync-budget tripped mid-pipeline — inventory is incomplete. */
+	partial?: boolean;
+	/** Certificate Transparency source could not be queried at all. */
+	sourceUnavailable?: boolean;
 }
 
+/** A `CheckResult` finding as it appears in `check_subdomain_takeover`'s `structuredContent`. */
+interface TakeoverFinding {
+	category?: string;
+	title?: string;
+	severity?: string;
+	detail?: string;
+	metadata?: Record<string, unknown>;
+}
+
+/** The subset of `check_subdomain_takeover`'s `structuredContent` (a `CheckResult`) this orchestrator reads. */
+interface SubdomainTakeoverStructured {
+	category?: string;
+	findings?: TakeoverFinding[];
+}
+
+/**
+ * MCP tool-call result envelope as returned by `handleToolsCall`.
+ * `structuredContent` is the machine-readable channel; `content` is the
+ * human-readable text array.
+ */
 interface InternalCallEnvelope<T> {
-	structured?: T;
 	content?: unknown;
+	structuredContent?: T;
+	isError?: boolean;
 }
 
 export interface RunDeepScanInput {
@@ -79,20 +118,85 @@ async function runWithConcurrency<T, U>(items: ReadonlyArray<T>, limit: number, 
 	return results;
 }
 
-function extractDanglingFromScan(apex: string, scan: ScanDomainStructured | undefined): BrandAuditCsc['deepScan']['danglingDns'] {
-	if (!scan) return [];
-	const findings = scan.categoryScores?.subdomain_takeover?.findings ?? scan.findings ?? [];
+/**
+ * Unwrap one internal tool call. Returns `undefined` when the call rejected,
+ * when the tool reported `isError`, or when the tool emitted no
+ * `structuredContent` — every one of which is a per-section partial, never a
+ * whole-scan abort.
+ */
+async function callStructured<T>(internalCall: InternalCallFn, tool: string, domain: string): Promise<T | undefined> {
+	try {
+		const envelope = (await internalCall(tool, { domain })) as InternalCallEnvelope<T> | null | undefined;
+		if (!envelope || envelope.isError) return undefined;
+		return envelope.structuredContent;
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Pull the dangling subdomain + CNAME target out of a takeover finding.
+ *
+ * `Finding` carries no dedicated `subdomain`/`target` field, so the FQDN is
+ * recovered from the finding's own text. All three dangling-CNAME producers in
+ * `packages/dns-checks/src/checks/subdomain-takeover-analysis.ts` emit one of:
+ *   - title  `Dangling CNAME[ (operational drift)]: <fqdn> → <cname>`
+ *   - title  `CNAME resolution failed: <fqdn> → <cname>`
+ *   - detail `Subdomain <fqdn> points to <cname>, which …`
+ *   - detail `Could not resolve CNAME target <cname> for <fqdn>.`
+ * `metadata.subdomain` / `metadata.cnameTarget` are preferred if a future
+ * package version starts emitting them.
+ */
+function parseTakeoverTarget(finding: TakeoverFinding): { subdomain: string; target: string | null } | null {
+	const meta = finding.metadata ?? {};
+	if (typeof meta.subdomain === 'string' && meta.subdomain.length > 0) {
+		return { subdomain: meta.subdomain, target: typeof meta.cnameTarget === 'string' ? meta.cnameTarget : null };
+	}
+
+	const title = finding.title ?? '';
+	const detail = finding.detail ?? '';
+
+	const arrow = title.match(/([A-Za-z0-9._*-]+)\s*(?:→|->)\s*([A-Za-z0-9._-]+)/);
+	if (arrow) return { subdomain: arrow[1], target: arrow[2] };
+
+	const pointsTo = detail.match(/Subdomain\s+([A-Za-z0-9._*-]+)\s+points to\s+([A-Za-z0-9._-]+)/);
+	if (pointsTo) return { subdomain: pointsTo[1], target: pointsTo[2] };
+
+	const unresolved = detail.match(/Could not resolve CNAME target\s+([A-Za-z0-9._-]+)\s+for\s+([A-Za-z0-9._*-]+)/);
+	if (unresolved) return { subdomain: unresolved[2], target: unresolved[1] };
+
+	return null;
+}
+
+/** Provider name from a `Subdomain possible takeover signal (<provider>)` title, else null. */
+function parseTakeoverProvider(finding: TakeoverFinding): string | null {
+	const match = (finding.title ?? '').match(/takeover signal\s*\(([^)]+)\)/i);
+	return match ? match[1] : null;
+}
+
+const DANGLING_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
+
+/**
+ * Map `check_subdomain_takeover`'s `CheckResult` findings onto dangling-DNS
+ * entries. `info` findings (the "no dangling CNAME records found" all-clear)
+ * and findings with no recoverable FQDN are skipped.
+ */
+function extractDangling(apex: string, takeover: SubdomainTakeoverStructured | undefined): BrandAuditCsc['deepScan']['danglingDns'] {
+	if (!takeover) return [];
 	const dangling: BrandAuditCsc['deepScan']['danglingDns'] = [];
-	for (const f of findings) {
-		if (f.category !== 'subdomain_takeover') continue;
-		const sev = (f.severity ?? 'medium') as 'critical' | 'high' | 'medium' | 'low' | 'info';
+	for (const f of takeover.findings ?? []) {
+		if (f.category !== undefined && f.category !== 'subdomain_takeover') continue;
+		const severity = (f.severity ?? 'medium').toLowerCase();
+		if (!DANGLING_SEVERITIES.has(severity)) continue;
+		const parsed = parseTakeoverTarget(f);
+		if (!parsed) continue;
 		dangling.push({
-			subdomain: f.subdomain ?? '',
+			subdomain: parsed.subdomain,
 			apex,
 			recordType: 'CNAME',
-			target: null,
-			takeoverProvider: null,
-			severity: sev,
+			target: parsed.target,
+			takeoverProvider: parseTakeoverProvider(f),
+			severity: severity as 'critical' | 'high' | 'medium' | 'low' | 'info',
 			evidence: f.detail,
 		});
 	}
@@ -142,15 +246,12 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 	const apexes = input.apexes.slice(0, MAX_APEXES);
 
 	const perApex = await runWithConcurrency(apexes, PARALLEL_CAP, async (apex) => {
-		try {
-			const [scanRes, discoverRes] = await Promise.all([
-				input.internalCall('scan_domain', { domain: apex }) as Promise<InternalCallEnvelope<ScanDomainStructured>>,
-				input.internalCall('discover_subdomains', { domain: apex }) as Promise<InternalCallEnvelope<DiscoverSubdomainsStructured>>,
-			]);
-			return { apex, scan: scanRes.structured, discover: discoverRes.structured, ok: true };
-		} catch {
-			return { apex, scan: undefined, discover: undefined, ok: false };
-		}
+		const [scan, discover, takeover] = await Promise.all([
+			callStructured<ScanDomainStructured>(input.internalCall, 'scan_domain', apex),
+			callStructured<DiscoverSubdomainsStructured>(input.internalCall, 'discover_subdomains', apex),
+			callStructured<SubdomainTakeoverStructured>(input.internalCall, 'check_subdomain_takeover', apex),
+		]);
+		return { apex, scan, discover, takeover };
 	});
 
 	const postureApexes: BrandAuditCsc['postureSnapshot']['apexes'] = [];
@@ -159,7 +260,9 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 	const grades: Array<string | null> = [];
 
 	for (const r of perApex) {
-		if (!r.ok || !r.scan) continue;
+		// scan_domain is the load-bearing call: without a posture there is nothing
+		// to report for this apex, so it is omitted entirely (partial result).
+		if (!r.scan) continue;
 		const posture = gradedApexPosture(r.scan);
 		postureApexes.push({
 			apex: r.apex,
@@ -173,7 +276,7 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 			scannedAt: new Date().toISOString(),
 		});
 		grades.push(posture.grade);
-		const apexDangling = extractDanglingFromScan(r.apex, r.scan);
+		const apexDangling = extractDangling(r.apex, r.takeover);
 		dangling.push(...apexDangling);
 		if (r.discover) {
 			inventory[r.apex] = {
@@ -182,9 +285,9 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 				source: 'certificate_transparency',
 				sample: (r.discover.subdomains ?? [])
 					.slice(0, SAMPLE_SUBDOMAIN_CAP)
-					.map((s) => s.subdomain ?? s.name ?? '')
+					.map((s) => s.subdomain ?? '')
 					.filter(Boolean),
-				partial: false,
+				partial: Boolean(r.discover.partial || r.discover.sourceUnavailable),
 			};
 		}
 	}

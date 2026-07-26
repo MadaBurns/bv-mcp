@@ -449,42 +449,86 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 		expect(body.findings_by_category.length).toBe(2);
 	});
 
-	it('excludes ungraded scans from BOTH the numerator and the denominator of mean_score', async () => {
-		const cycleId = 'cycle_ungraded_mean';
-		// A realistic tenant cycle: 4 domains resolve and score, 2 do not resolve at all
-		// and were persisted with score/grade NULL (the `?? null` the persistence side
-		// already writes correctly).
-		//
-		// The `{ score: 0, grade: 'F' }` row is load-bearing: it is a domain that WAS
-		// measured and genuinely scored zero. Without it, a `filter(Boolean)` predicate
-		// is indistinguishable from the correct `!== null` one — and `filter(Boolean)`
-		// is the same fabrication inverted, silently dropping every legitimately-failing
-		// domain out of the tenant's mean.
+	/** Build a report-route env whose `scans` query returns the given rows. */
+	function makeReportEnv(scanRows: Array<{ score: number | null; grade: string | null }>) {
 		const tenant = makeMockD1({
-			'SELECT score, grade FROM scans WHERE cycle_id = ?': [
-				{ score: 90, grade: 'A' },
-				{ score: 80, grade: 'B' },
-				{ score: 70, grade: 'C' },
-				{ score: 0, grade: 'F' },
-				{ score: null, grade: null },
-				{ score: null, grade: null },
-			],
-			'SELECT category, severity, COUNT(*) as count FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE cycle_id = ?) GROUP BY category, severity':
-				[],
+			'SELECT score, grade FROM scans WHERE cycle_id = ?': scanRows,
 		});
 		const registry = makeMockD1({
 			[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'fake-d1-uuid', active: 1 }],
 		});
-		const customEnv = {
+		return {
 			...env,
 			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 			[TEST_TENANT_BINDING]: tenant.db,
 		} as TestEnv;
-		const res = await sendRequest(makeReq(cycleId), customEnv);
+	}
+
+	type ReportSummary = {
+		domains: number;
+		measured_domains: number;
+		mean_score: number | null;
+		grade_dist: Record<string, number>;
+		severity_counts: Record<string, number>;
+	};
+
+	// Regression: unmeasured rows (a DLQ row, or a scan that errored) carry a null
+	// score. The mean used to coerce them with `?? 0`, so an unscanned domain was
+	// averaged in as a catastrophic one and dragged the cycle mean down.
+	it('excludes null-score rows from mean_score instead of counting them as zero', async () => {
+		const customEnv = makeReportEnv([
+			{ score: 80, grade: 'B' },
+			{ score: 90, grade: 'A' },
+			{ score: null, grade: null },
+		]);
+		const res = await sendRequest(makeReq('cycle_null_score'), customEnv);
 		expect(res.status).toBe(200);
-		const body = (await res.json()) as { summary: { domains: number; mean_score: number | null; grade_dist: Record<string, number> } };
+		const body = (await res.json()) as { summary: ReportSummary };
+
+		// Mean of the two MEASURED rows — not (80 + 90 + 0) / 3 = 56.67.
+		expect(body.summary.mean_score).toBeCloseTo(85, 5);
+		expect(body.summary.mean_score).not.toBeCloseTo((80 + 90) / 3, 5);
+		// The unmeasured domain is still reported, just not scored.
+		expect(body.summary.domains).toBe(3);
+		expect(body.summary.measured_domains).toBe(2);
+		expect(body.summary.grade_dist.unknown).toBe(1);
+	});
+
+	it('reports mean_score null rather than 0 when no row in the cycle was measured', async () => {
+		const customEnv = makeReportEnv([
+			{ score: null, grade: null },
+			{ score: null, grade: null },
+		]);
+		const res = await sendRequest(makeReq('cycle_all_null'), customEnv);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { summary: ReportSummary };
+
+		// 0 would be a fabricated score for a cycle that measured nothing.
+		expect(body.summary.mean_score).toBeNull();
+		expect(body.summary.domains).toBe(2);
+		expect(body.summary.measured_domains).toBe(0);
+	});
+
+	// Ported from the nullable-grade branch: the `{ score: 0, grade: 'F' }` row is
+	// load-bearing. It is a domain that WAS measured and genuinely scored zero.
+	// Without it, a `filter(Boolean)` predicate is indistinguishable from the correct
+	// `typeof r.score === 'number'` one — and `filter(Boolean)` is the same
+	// fabrication inverted, silently dropping every legitimately-failing domain out
+	// of the tenant's mean.
+	it('excludes ungraded scans from BOTH the numerator and the denominator, without dropping a real zero', async () => {
+		const customEnv = makeReportEnv([
+			{ score: 90, grade: 'A' },
+			{ score: 80, grade: 'B' },
+			{ score: 70, grade: 'C' },
+			{ score: 0, grade: 'F' },
+			{ score: null, grade: null },
+			{ score: null, grade: null },
+		]);
+		const res = await sendRequest(makeReq('cycle_ungraded_mean'), customEnv);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { summary: ReportSummary };
 
 		// Correct: (90+80+70+0)/4 = 60 — the four MEASURED domains, including the real F.
 		// Pre-fix (nulls coerced to 0, kept in the denominator): 240/6 = 40.
@@ -492,39 +536,10 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 		expect(body.summary.mean_score).toBeCloseTo(60, 5);
 		// `domains` still counts every attempted domain — only the MEAN abstains.
 		expect(body.summary.domains).toBe(6);
+		expect(body.summary.measured_domains).toBe(4);
 		expect(body.summary.grade_dist.unknown).toBe(2);
 		// The genuinely-failing domain is still represented everywhere it should be.
 		expect(body.summary.grade_dist.F).toBe(1);
-	});
-
-	it('reports mean_score null (not 0) when no scan in the cycle was graded', async () => {
-		const cycleId = 'cycle_all_ungraded';
-		const tenant = makeMockD1({
-			'SELECT score, grade FROM scans WHERE cycle_id = ?': [
-				{ score: null, grade: null },
-				{ score: null, grade: null },
-			],
-			'SELECT category, severity, COUNT(*) as count FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE cycle_id = ?) GROUP BY category, severity':
-				[],
-		});
-		const registry = makeMockD1({
-			[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'fake-d1-uuid', active: 1 }],
-		});
-		const customEnv = {
-			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
-			REQUIRE_INTERNAL_AUTH: 'true',
-			TENANT_REGISTRY_DB: registry.db,
-			[TEST_TENANT_BINDING]: tenant.db,
-		} as TestEnv;
-		const res = await sendRequest(makeReq(cycleId), customEnv);
-		expect(res.status).toBe(200);
-		const body = (await res.json()) as { summary: { domains: number; mean_score: number | null } };
-
-		// `0` would read as "this tenant's entire portfolio scores zero" — a confident
-		// claim about domains that were never measured.
-		expect(body.summary.mean_score).toBeNull();
-		expect(body.summary.domains).toBe(2);
 	});
 
 	it('writes an audit_events row for report.read with the cycle_id as resourceId', async () => {
