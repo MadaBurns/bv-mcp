@@ -19,7 +19,7 @@ import type { CheckCategory, CheckResult, DomainContext } from '../../scoring';
 type ScoringModule = typeof import('../../scoring');
 
 export function defineScoringProfilesSuite(s: ScoringModule): void {
-	const { computeScanScore, computeProfileAwareScanScore, buildCheckResult, createFinding, getProfileWeights, PROFILE_WEIGHTS, PROFILE_CRITICAL_CATEGORIES } =
+	const { computeScanScore, computeProfileAwareScanScore, buildCheckResult, createFinding, getProfileWeights, PROFILE_WEIGHTS, PROFILE_CRITICAL_CATEGORIES, detectDomainContext } =
 		s;
 
 	function makeResult(category: CheckCategory, score: number, title?: string, severity?: 'info' | 'low' | 'medium' | 'high' | 'critical'): CheckResult {
@@ -267,6 +267,70 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				const defaultScore = computeScanScore(results);
 				const nonMailScore = computeScanScore(results, makeNonMailContext());
 				expect(nonMailScore.overall).toBeGreaterThan(defaultScore.overall);
+			});
+		});
+
+		describe('failureRatio counts only MEASURED checks', () => {
+			/** A check that ran and passed. */
+			function ok(category: CheckCategory): CheckResult {
+				return { ...buildCheckResult(category, [createFinding(category, `${category} OK`, 'info', 'Check passed')], true), checkStatus: 'completed' };
+			}
+			/** A check that ran and genuinely failed. */
+			function failed(category: CheckCategory): CheckResult {
+				return {
+					...buildCheckResult(category, [createFinding(category, `No ${category} record found`, 'critical', 'Missing record')], false),
+					score: 0,
+					passed: false,
+					checkStatus: 'completed' as const,
+				};
+			}
+			/** A check that never ran — exactly the shape scan-domain.ts:671 produces on a per-check timeout. */
+			function unmeasured(category: CheckCategory): CheckResult {
+				return {
+					...buildCheckResult(category, [createFinding(category, `${category.toUpperCase()} check timed out`, 'low', 'Did not complete')]),
+					score: 0,
+					passed: false,
+					checkStatus: 'timeout' as const,
+				};
+			}
+
+			it('does NOT flip to the minimal profile when the majority of checks merely FAILED TO RUN', () => {
+				// 3 measured and passing, 7 unmeasured. Old behaviour: 7/10 = 0.7 > 0.5 → minimal.
+				// New behaviour: the ratio is computed over the 3 measured checks, 0/3 = 0 → no flip.
+				const results: CheckResult[] = [
+					ok('mx'),
+					ok('spf'),
+					ok('dmarc'),
+					unmeasured('dnssec'),
+					unmeasured('ssl'),
+					unmeasured('caa'),
+					unmeasured('ns'),
+					unmeasured('mta_sts'),
+					unmeasured('subdomain_takeover'),
+					unmeasured('http_security'),
+				];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).not.toBe('minimal');
+				const failureSignals = ctx.signals.filter((sig) => sig.includes('checks failed'));
+				expect(failureSignals).toHaveLength(0);
+			});
+
+			it('STILL flips to minimal when the majority of checks ran and genuinely failed (behaviour preserved)', () => {
+				const results: CheckResult[] = [ok('mx'), ok('spf'), failed('dmarc'), failed('dnssec'), failed('ssl'), failed('caa'), failed('ns')];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).toBe('minimal');
+				const failureSignals = ctx.signals.filter((sig) => sig.includes('checks failed'));
+				// Non-empty guard: without it the signal-content assertion below could never execute.
+				expect(failureSignals.length).toBeGreaterThan(0);
+				expect(failureSignals[0]).toContain('71%'); // 5 failed of 7 measured
+			});
+
+			it('is UNCHANGED for a result set where every check completed', () => {
+				// The "73 stays 73" guarantee: with no unmeasured checks, the filter is a no-op.
+				const results: CheckResult[] = [ok('mx'), ok('spf'), ok('dmarc'), failed('dnssec'), failed('ssl')];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).toBe('mail_enabled');
+				expect(ctx.signals.filter((sig) => sig.includes('checks failed'))).toHaveLength(0); // 2/5 = 0.4, not > 0.5
 			});
 		});
 

@@ -327,9 +327,17 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	if (sslPass) signals.push('SSL valid');
 	if (caaPass) signals.push('CAA present');
 
-	// Count failed/timed-out checks
-	const totalChecks = results.length;
-	const failedChecks = results.filter((r) => !r.passed).length;
+	// Count failed checks over MEASURED checks only. A check whose execution failed
+	// (checkStatus 'timeout'/'error') was NOT measured, and counting it as "failed" let a
+	// transient DNS/fetch failure push failureRatio past 0.5 and flip the domain to the
+	// `minimal` profile — i.e. the measurement failure selected the weight table that then
+	// graded the domain. Excluding unmeasured checks from BOTH numerator and denominator
+	// leaves genuine measured failures (what `minimal` was designed for) behaving exactly as
+	// before, so a scan in which every check completed produces an identical ratio, profile
+	// and score.
+	const measuredChecks = results.filter((r) => r.checkStatus !== 'timeout' && r.checkStatus !== 'error');
+	const totalChecks = measuredChecks.length;
+	const failedChecks = measuredChecks.filter((r) => !r.passed).length;
 	const failureRatio = totalChecks > 0 ? failedChecks / totalChecks : 0;
 	if (failureRatio > 0.5) signals.push(`>${Math.round(failureRatio * 100)}% checks failed`);
 
