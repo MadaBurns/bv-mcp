@@ -239,4 +239,61 @@ describe('correlateNs', () => {
 		expect(result.coOwnedDomains).toHaveLength(1);
 		expect(result.coOwnedDomains[0].confidence).toBeCloseTo(1.0, 2);
 	});
+
+	// D6.1 (2026-07-26 correctness-defects design §3.4) — in-bailiwick matching.
+	// A candidate's own NS records being delegated UNDER the seed's apex is
+	// ownership-bearing regardless of whether the candidate shares any NS
+	// *hostname* with the seed. Set-intersection alone misses this whenever
+	// the seed sits on different (often shared-provider) infrastructure —
+	// exactly bnz.co.nz's real situation: seed on Akamai, six of seven owned
+	// variants on ns1-4.bnz.co.nz, zero overlap between the two NS sets.
+
+	it('classifies a candidate whose own NS are in-bailiwick to the seed apex as confidence 1.0, even with zero NS-set overlap', async () => {
+		const dnsQuery = dnsQueryFromMap({
+			'bnz.co.nz': ['a1-97.akam.net.', 'a3-67.akam.net.'],
+			'bnz.nz': ['ns1.bnz.co.nz.', 'ns2.bnz.co.nz.'],
+		});
+		const result = await correlateNs('bnz.co.nz', { dnsQuery, candidateDomains: ['bnz.nz'] });
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toHaveLength(1);
+		expect(result.coOwnedDomains[0]).toMatchObject({
+			domain: 'bnz.nz',
+			confidence: 1,
+			matchType: 'in_bailiwick',
+		});
+		expect(result.coOwnedDomains[0].sharedNs).toEqual(['ns1.bnz.co.nz', 'ns2.bnz.co.nz']);
+	});
+
+	it('tags a normal set-overlap match with matchType set_overlap', async () => {
+		const dnsQuery = dnsQueryFromMap({
+			'foo.com': ['ns1.cloudflare.com.', 'ns2.cloudflare.com.'],
+			'bar.com': ['ns1.cloudflare.com.', 'ns2.cloudflare.com.'],
+		});
+		const result = await correlateNs('foo.com', { dnsQuery, candidateDomains: ['bar.com'] });
+		expect(result.coOwnedDomains[0]).toMatchObject({ domain: 'bar.com', matchType: 'set_overlap' });
+	});
+
+	it('does not treat an unrelated candidate as in-bailiwick just because it shares a TLD suffix', async () => {
+		const dnsQuery = dnsQueryFromMap({
+			'bnz.co.nz': ['a1-97.akam.net.'],
+			'notbnz.co.nz': ['ns1.someotherregistrar.example.'],
+		});
+		const result = await correlateNs('bnz.co.nz', { dnsQuery, candidateDomains: ['notbnz.co.nz'] });
+		expect(result.coOwnedDomains).toEqual([]);
+	});
+
+	// Discriminates a bare `hostname.endsWith(seedApex)` regression (no dot
+	// boundary) from the correct `isInBailiwick` dot-boundary check. The
+	// candidate's own NS host `ns.evilbnz.co.nz` contains the seed apex
+	// `bnz.co.nz` as a trailing SUBSTRING but not as a label suffix — a bare
+	// endsWith would wrongly match it in-bailiwick; the dot-boundary check
+	// must not.
+	it('does not in-bailiwick-match a candidate NS host that merely contains the seed apex as a substring, without a dot boundary', async () => {
+		const dnsQuery = dnsQueryFromMap({
+			'bnz.co.nz': ['a1-97.akam.net.'],
+			'evilbnz.co.nz': ['ns.evilbnz.co.nz.'],
+		});
+		const result = await correlateNs('bnz.co.nz', { dnsQuery, candidateDomains: ['evilbnz.co.nz'] });
+		expect(result.coOwnedDomains).toEqual([]);
+	});
 });
