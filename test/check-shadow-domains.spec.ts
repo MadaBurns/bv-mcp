@@ -1145,6 +1145,84 @@ describe('registration-state correctness', () => {
 		}
 	});
 
+	it('reserves budget for Phase 2: an exhausted re-probe sub-deadline emits every unknown finding, probes none, and Phase 2 still runs', async () => {
+		// Budget-reservation contract. The unknown re-probe may consume at most half
+		// the check's budget (`reprobeDeadline`), so a flaky ccTLD family cannot
+		// starve Phase 2 — whose detail probes produce the check's most valuable
+		// output (fully-spoofable / lacks-DMARC criticals on REGISTERED variants).
+		//
+		// Wall-clock starvation is not reproducible in-suite (mocked DNS resolves
+		// instantly), so the clock is advanced directly instead of slept through:
+		// `Date.now` jumps to start+15s the moment Phase 1 is under way. That is past
+		// `reprobeDeadline` (start + SHADOW_TIMEOUT_MS/2 = 10s) but short of the full
+		// `deadline` (start + 20s) — precisely the window the reservation exists to
+		// protect. The jump is keyed on the first SOA query because `resolveRegistration`
+		// (Phase 1) is the ONLY caller that asks for SOA; `probeVariant` queries
+		// NS/A/MX/TXT and never SOA, so this cannot fire from a probe stage. Phase 1
+		// itself checks no deadline, so advancing the clock mid-bucketing is inert.
+		const { servfailResponse } = await import('./helpers/dns-mock');
+		const realNow = Date.now;
+		const base = realNow.call(Date);
+		let phase1Started = false;
+		const probeQueriedNames = new Set<string>();
+
+		try {
+			Date.now = () => (phase1Started ? base + 15_000 : base);
+
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+				const q = parseDohQuery(input);
+				if (!q) return emptyResponse();
+				const isSoa = q.type === 'SOA' || q.type === '6';
+				if (isSoa) phase1Started = true;
+				// Only `probeVariant` asks for MX/TXT — record those to prove which
+				// variants were (and were not) re-probed.
+				if (q.type === 'MX' || q.type === '15' || q.type === 'TXT' || q.type === '16') {
+					probeQueriedNames.add(q.name.replace(/^_dmarc\./, ''));
+				}
+
+				if (q.name === 'example.com') {
+					if (q.type === 'MX' || q.type === '15') return mxRecords('example.com', ['10 mail.example.com.']);
+					return nsRecords('example.com', ['ns1.example.com.']);
+				}
+				// One REGISTERED variant, so Phase 2 has work to do.
+				if (q.name === 'example.net') {
+					if (q.type === 'NS' || q.type === '2') return nsRecords('example.net', ['ns1.registrar.com.']);
+					return emptyResponse();
+				}
+				// Every other variant SERVFAILs its Phase-1 NS+SOA → unknown bucket.
+				return servfailResponse(q.name, isSoa ? 6 : 2);
+			}) as unknown as typeof fetch;
+
+			const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+			const result = await checkShadowDomains('example.com');
+
+			const unknownFindings = result.findings.filter((f) => f.title === 'Brand variant registration unknown');
+			// Non-vacuous: the unknown bucket must actually be populated.
+			expect(unknownFindings.length).toBeGreaterThan(0);
+
+			// (1) EVERY unknown-bucket variant still gets its finding — the sub-deadline
+			//     degrades the re-probe, it never silently drops a variant.
+			for (const f of unknownFindings) {
+				expect(f.metadata?.registrationState).toBe('unknown');
+			}
+
+			// (2) …and NONE of them was re-probed: the stage bailed at loop entry.
+			for (const f of unknownFindings) {
+				expect(probeQueriedNames.has(String(f.metadata?.variant))).toBe(false);
+			}
+
+			// (3) Phase 2 still ran on the budget the reservation protected: the
+			//     registered variant WAS detail-probed and produced a real classification,
+			//     not an unknown/timeout placeholder.
+			expect(probeQueriedNames.has('example.net')).toBe(true);
+			const netFinding = result.findings.find((f) => f.metadata?.variant === 'example.net');
+			expect(netFinding).toBeDefined();
+			expect(netFinding?.title).not.toBe('Brand variant registration unknown');
+		} finally {
+			Date.now = realNow;
+		}
+	});
+
 	it('never recommends defensive registration on an inconclusive lookup', async () => {
 		const { servfailResponse } = await import('./helpers/dns-mock');
 		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {

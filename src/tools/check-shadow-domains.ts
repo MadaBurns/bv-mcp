@@ -613,15 +613,42 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 			);
 		};
 
+		// STAGE SUB-DEADLINE — this stage may consume at most half the check's budget.
+		//
+		// Sharing Phase 2's `deadline` bounded the overrun but reserved nothing for
+		// Phase 2 itself, and batching (correctly) serialized what used to be one
+		// burst, so the wall clock this stage can burn grew. A flaky ccTLD family
+		// with ~26 unknowns at ~7s per batch of 4 needs ~7 batches — it would eat
+		// the whole 20s, and Phase 2 would then break on its FIRST iteration with
+		// `timedOut`, emitting ZERO detail findings. That silently discards the
+		// registered variants' fully-spoofable / lacks-DMARC criticals, which are
+		// the check's most valuable output — a strictly worse trade than the
+		// metadata honesty this stage buys.
+		//
+		// Derived from the same `startTime` reference `deadline` uses (see the top of
+		// this function), so the two can never drift apart. Phase 2 keeps checking
+		// the FULL `deadline` and is therefore guaranteed at least half the budget.
+		const reprobeDeadline = Math.min(deadline, startTime + SHADOW_TIMEOUT_MS / 2);
+
 		let unknownBatchSize = INITIAL_BATCH_SIZE;
 		let unknownDelayMs = 0;
-		for (let i = 0; i < buckets.unknown.length; i += unknownBatchSize) {
-			const remaining = buckets.unknown.slice(i);
-			// Deadline exhausted: every remaining variant KEEPS its unknown finding
+		let unknownCursor = 0;
+		while (unknownCursor < buckets.unknown.length) {
+			// Capture the batch size BEFORE the adaptive resize at the end of the body
+			// can mutate it. A `for (…; i += unknownBatchSize)` advance evaluates the
+			// size AFTER that resize: on SHRINK the cursor advances less than the slice
+			// consumed, so variants are re-probed and emit DOUBLE findings; on GROW it
+			// advances further than the slice consumed, silently SKIPPING a variant —
+			// the exact drop the deadline branch below exists to prevent. Latent only
+			// while `probeVariant` cannot reject; live the moment it gains a throwing
+			// path. Do not fold this back into a for-loop increment.
+			const size = unknownBatchSize;
+
+			// Stage budget exhausted: every remaining variant KEEPS its unknown finding
 			// (never silently dropped) — it just keeps it un-re-probed, which is the
 			// honest pre-re-probe state rather than a fabricated verdict.
-			if (Date.now() >= deadline) {
-				for (const { variant, reason } of remaining) pushUnknownFinding(variant, reason);
+			if (Date.now() >= reprobeDeadline) {
+				for (const { variant, reason } of buckets.unknown.slice(unknownCursor)) pushUnknownFinding(variant, reason);
 				break;
 			}
 
@@ -629,7 +656,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 				await new Promise((resolve) => setTimeout(resolve, unknownDelayMs));
 			}
 
-			const batch = buckets.unknown.slice(i, i + unknownBatchSize);
+			const batch = buckets.unknown.slice(unknownCursor, unknownCursor + size);
 			const batchResults = await Promise.allSettled(batch.map(({ variant }) => probeVariant(variant, dnsOpts)));
 
 			let failures = 0;
@@ -655,7 +682,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 				else pushUnknownFinding(variant, reason, probe);
 			}
 
-			// Same adaptive sizing as Phase 2.
+			// Same adaptive sizing as Phase 2. This is the mutation `size` guards against.
 			if (failures > FAILURE_THRESHOLD) {
 				unknownBatchSize = Math.max(MIN_BATCH_SIZE, Math.floor(unknownBatchSize / 2));
 				unknownDelayMs = BACKOFF_DELAY_MS;
@@ -663,6 +690,9 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 				unknownBatchSize = Math.min(INITIAL_BATCH_SIZE, unknownBatchSize + 1);
 				unknownDelayMs = 0;
 			}
+
+			// Advance by what was actually consumed, never by the resized value.
+			unknownCursor += size;
 		}
 	}
 
@@ -674,7 +704,15 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 	const variantsChecked = registeredList.length;
 	let timedOut = false;
 
-	for (let i = 0; i < registeredList.length; i += batchSize) {
+	let cursor = 0;
+	while (cursor < registeredList.length) {
+		// Same cursor-capture trap as the unknown re-probe loop above: the adaptive
+		// resize at the end of this body mutates `batchSize`, and a
+		// `for (…; i += batchSize)` advance would read the RESIZED value — shrinking
+		// re-probes variants (duplicate detail findings), growing skips one entirely.
+		// Capture what this iteration actually consumes and advance by that.
+		const size = batchSize;
+
 		if (Date.now() >= deadline) {
 			timedOut = true;
 			break;
@@ -684,7 +722,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 			await new Promise((resolve) => setTimeout(resolve, delayMs));
 		}
 
-		const batch = registeredList.slice(i, i + batchSize);
+		const batch = registeredList.slice(cursor, cursor + size);
 		const batchResults = await Promise.allSettled(
 			// Reuse the Phase-1 NS answer ONLY when NS is what proved registration.
 			// For soa/a-evidence variants Phase 1 never established an NS answer, so
@@ -703,7 +741,7 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 			}
 		}
 
-		// Adaptive batch sizing
+		// Adaptive batch sizing. This is the mutation `size` guards against.
 		if (failures > FAILURE_THRESHOLD) {
 			batchSize = Math.max(MIN_BATCH_SIZE, Math.floor(batchSize / 2));
 			delayMs = BACKOFF_DELAY_MS;
@@ -711,6 +749,9 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 			batchSize = Math.min(INITIAL_BATCH_SIZE, batchSize + 1);
 			delayMs = 0;
 		}
+
+		// Advance by what was actually consumed, never by the resized value.
+		cursor += size;
 	}
 
 	// Classify each completed probe
