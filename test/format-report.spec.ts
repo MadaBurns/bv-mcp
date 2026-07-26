@@ -53,11 +53,23 @@ describe('buildStructuredScanResult', () => {
 
 	it('derives dnssecSource from finding metadata', () => {
 		const result = makeMockScanResult({
-			checks: [{
-				category: 'dnssec', passed: true, score: 100,
-				findings: [{ category: 'dnssec', title: 'DNSSEC inherited from TLD', severity: 'info', detail: 'x', metadata: { dnssecSource: 'tld_inherited' } }],
-				checkStatus: 'completed',
-			}] as CheckResult[],
+			checks: [
+				{
+					category: 'dnssec',
+					passed: true,
+					score: 100,
+					findings: [
+						{
+							category: 'dnssec',
+							title: 'DNSSEC inherited from TLD',
+							severity: 'info',
+							detail: 'x',
+							metadata: { dnssecSource: 'tld_inherited' },
+						},
+					],
+					checkStatus: 'completed',
+				},
+			] as CheckResult[],
 		});
 		const s = buildStructuredScanResult(result);
 		expect(s.dnssecSource).toBe('tld_inherited');
@@ -114,10 +126,14 @@ describe('buildStructuredScanResult', () => {
 
 	it('derives cdnProvider from http_security finding metadata', () => {
 		const result = makeMockScanResult({
-			checks: [{
-				category: 'http_security', passed: true, score: 100,
-				findings: [{ category: 'http_security', title: 'CDN', severity: 'info', detail: 'x', metadata: { cdnProvider: 'Cloudflare' } }],
-			}] as CheckResult[],
+			checks: [
+				{
+					category: 'http_security',
+					passed: true,
+					score: 100,
+					findings: [{ category: 'http_security', title: 'CDN', severity: 'info', detail: 'x', metadata: { cdnProvider: 'Cloudflare' } }],
+				},
+			] as CheckResult[],
 		});
 		const s = buildStructuredScanResult(result);
 		expect(s.cdnProvider).toBe('Cloudflare');
@@ -131,10 +147,14 @@ describe('buildStructuredScanResult', () => {
 
 	it('sets cdnProvider to null when no cdnProvider metadata in findings', () => {
 		const result = makeMockScanResult({
-			checks: [{
-				category: 'http_security', passed: true, score: 100,
-				findings: [{ category: 'http_security', title: 'HSTS', severity: 'info', detail: 'x', metadata: {} }],
-			}] as CheckResult[],
+			checks: [
+				{
+					category: 'http_security',
+					passed: true,
+					score: 100,
+					findings: [{ category: 'http_security', title: 'HSTS', severity: 'info', detail: 'x', metadata: {} }],
+				},
+			] as CheckResult[],
 		});
 		const s = buildStructuredScanResult(result);
 		expect(s.cdnProvider).toBeNull();
@@ -144,7 +164,12 @@ describe('buildStructuredScanResult', () => {
 		const result = makeMockScanResult({
 			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 			checks: [
-				{ category: 'spf', passed: true, score: 100, findings: [{ category: 'spf', title: 'No SPF record found', severity: 'info', detail: 'expected' }] },
+				{
+					category: 'spf',
+					passed: true,
+					score: 100,
+					findings: [{ category: 'spf', title: 'No SPF record found', severity: 'info', detail: 'expected' }],
+				},
 				{ category: 'dmarc', passed: true, score: 100, findings: [] },
 			] as CheckResult[],
 		});
@@ -158,7 +183,12 @@ describe('buildStructuredScanResult', () => {
 			context: { profile: 'non_mail', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 			checks: [
 				{ category: 'dkim', passed: true, score: 100, findings: [] },
-				{ category: 'mta_sts', passed: true, score: 100, findings: [{ category: 'mta_sts', title: 'No MTA-STS', severity: 'info', detail: 'N/A' }] },
+				{
+					category: 'mta_sts',
+					passed: true,
+					score: 100,
+					findings: [{ category: 'mta_sts', title: 'No MTA-STS', severity: 'info', detail: 'N/A' }],
+				},
 			] as CheckResult[],
 		});
 		const s = buildStructuredScanResult(result);
@@ -169,9 +199,7 @@ describe('buildStructuredScanResult', () => {
 	it('does not set notApplicableCategories for mail_enabled profile', () => {
 		const result = makeMockScanResult({
 			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
-			checks: [
-				{ category: 'spf', passed: true, score: 100, findings: [] },
-			] as CheckResult[],
+			checks: [{ category: 'spf', passed: true, score: 100, findings: [] }] as CheckResult[],
 		});
 		const s = buildStructuredScanResult(result);
 		expect(s.notApplicableCategories).toEqual([]);
@@ -181,7 +209,12 @@ describe('buildStructuredScanResult', () => {
 		const result = makeMockScanResult({
 			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 			checks: [
-				{ category: 'spf', passed: false, score: 50, findings: [{ category: 'spf', title: 'Weak SPF', severity: 'medium', detail: 'some issue' }] },
+				{
+					category: 'spf',
+					passed: false,
+					score: 50,
+					findings: [{ category: 'spf', title: 'Weak SPF', severity: 'medium', detail: 'some issue' }],
+				},
 			] as CheckResult[],
 		});
 		const s = buildStructuredScanResult(result);
@@ -210,8 +243,20 @@ describe('buildStructuredScanResult', () => {
 				]),
 			} as ScanScore,
 			checks: [
-				{ category: 'ssl', passed: true, score: 70, findings: [{ category: 'ssl', title: 'Valid cert', severity: 'info', detail: 'x' }], checkStatus: 'completed' },
-				{ category: 'dkim', passed: false, score: 0, findings: [{ category: 'dkim', title: 'No DKIM', severity: 'info', detail: 'x' }], checkStatus: 'completed' },
+				{
+					category: 'ssl',
+					passed: true,
+					score: 70,
+					findings: [{ category: 'ssl', title: 'Valid cert', severity: 'info', detail: 'x' }],
+					checkStatus: 'completed',
+				},
+				{
+					category: 'dkim',
+					passed: false,
+					score: 0,
+					findings: [{ category: 'dkim', title: 'No DKIM', severity: 'info', detail: 'x' }],
+					checkStatus: 'completed',
+				},
 				{ category: 'http_security', passed: false, score: 0, findings: [], checkStatus: 'error' },
 				{ category: 'dnssec', passed: false, score: 0, findings: [], checkStatus: 'timeout' },
 			] as CheckResult[],
@@ -305,6 +350,61 @@ describe('buildStructuredScanResult', () => {
 		expect(s.percentileRank).toBe(75);
 		expect(s.spoofabilityScore).toBe(30);
 	});
+
+	it('surfaces evidence coverage derived from the checks the report is rendering', () => {
+		const result = makeMockScanResult({
+			checks: [
+				{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+				{ category: 'dmarc', passed: true, score: 100, findings: [] }, // absent status === completed
+				{ category: 'dnssec', passed: false, score: 0, findings: [], checkStatus: 'timeout' },
+				{ category: 'ssl', passed: false, score: 0, findings: [], checkStatus: 'error' },
+			] as CheckResult[],
+		});
+		const s = buildStructuredScanResult(result);
+		expect(s.evidence).toEqual({ attempted: 4, completed: 2, ratio: 0.5 });
+	});
+
+	it('reports evidenceInsufficient and the note from the SCORE, not from a local re-decision', () => {
+		const result = makeMockScanResult({
+			score: {
+				overall: null,
+				grade: null,
+				categoryScores: {} as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'Only 1 of 4 checks completed (25%).',
+				evidence: { attempted: 4, completed: 1, ratio: 0.25 },
+				evidenceInsufficient: true,
+				evidenceNote: 'Only 1 of 4 checks completed (25%).',
+			} as unknown as ScanScore,
+			checks: [
+				{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+				{ category: 'dmarc', passed: false, score: 0, findings: [], checkStatus: 'error' },
+				{ category: 'dnssec', passed: false, score: 0, findings: [], checkStatus: 'timeout' },
+				{ category: 'ssl', passed: false, score: 0, findings: [], checkStatus: 'timeout' },
+			] as CheckResult[],
+		});
+		const s = buildStructuredScanResult(result);
+		expect(s.evidenceInsufficient).toBe(true);
+		expect(s.evidenceNote).toContain('1 of 4');
+		expect(s.score).toBeNull();
+		expect(s.grade).toBeNull();
+	});
+
+	it('defaults evidenceInsufficient to false and the note to null on a graded scan', () => {
+		const s = buildStructuredScanResult(
+			makeMockScanResult({ checks: [{ category: 'spf', passed: true, score: 100, findings: [] }] as CheckResult[] }),
+		);
+		expect(s.evidenceInsufficient).toBe(false);
+		expect(s.evidenceNote).toBeNull();
+	});
+
+	it('keeps `measured` and `evidenceInsufficient` mutually exclusive (slice 2 DD4)', () => {
+		// Nothing ran at all: measured false, and the evidence gate did NOT fire.
+		const s = buildStructuredScanResult(makeMockScanResult({ checks: [] }));
+		expect(s.measured).toBe(false);
+		expect(s.evidenceInsufficient).toBe(false);
+		expect(s.evidence).toEqual({ attempted: 0, completed: 0, ratio: 0 });
+	});
 });
 
 describe('formatScanReport web-only email categories', () => {
@@ -322,7 +422,9 @@ describe('formatScanReport web-only email categories', () => {
 			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 			checks: [
 				{
-					category: 'spf', passed: true, score: 100,
+					category: 'spf',
+					passed: true,
+					score: 100,
 					findings: [{ category: 'spf', title: 'No SPF record found', severity: 'info', detail: 'expected' }],
 				},
 				{ category: 'dmarc', passed: true, score: 100, findings: [] },
@@ -368,12 +470,14 @@ describe('formatScanReport compact truncation', () => {
 				overall: 50,
 				grade: 'D',
 				categoryScores: {} as Record<CheckCategory, number>,
-				findings: [{
-					category: 'spf' as CheckCategory,
-					title: 'Critical SPF issue',
-					severity: 'critical' as const,
-					detail: longDetail,
-				}],
+				findings: [
+					{
+						category: 'spf' as CheckCategory,
+						title: 'Critical SPF issue',
+						severity: 'critical' as const,
+						detail: longDetail,
+					},
+				],
 				summary: 'ok',
 				// `checks: []` below — nothing attempted, so evidence is honestly zero.
 				evidence: { attempted: 0, completed: 0, ratio: 0 },
@@ -391,12 +495,14 @@ describe('formatScanReport compact truncation', () => {
 				overall: 70,
 				grade: 'C',
 				categoryScores: {} as Record<CheckCategory, number>,
-				findings: [{
-					category: 'spf' as CheckCategory,
-					title: 'Medium SPF issue',
-					severity: 'medium' as const,
-					detail: longDetail,
-				}],
+				findings: [
+					{
+						category: 'spf' as CheckCategory,
+						title: 'Medium SPF issue',
+						severity: 'medium' as const,
+						detail: longDetail,
+					},
+				],
 				summary: 'ok',
 				// `checks: []` below — nothing attempted, so evidence is honestly zero.
 				evidence: { attempted: 0, completed: 0, ratio: 0 },
@@ -410,5 +516,25 @@ describe('formatScanReport compact truncation', () => {
 		// Since it's all B's, just check the total finding line doesn't include all 350 B's
 		const bCount = (output.match(/B/g) || []).length;
 		expect(bCount).toBeLessThanOrEqual(300);
+	});
+});
+
+describe('formatScanReport evidence coverage', () => {
+	it('names the coverage gap in the text report when checks did not complete', () => {
+		const result = makeMockScanResult({
+			checks: [
+				{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+				{ category: 'dmarc', passed: false, score: 0, findings: [], checkStatus: 'timeout' },
+			] as CheckResult[],
+		});
+		const text = formatScanReport(result, 'full');
+		expect(text).toContain('Checks completed: 1/2');
+	});
+
+	it('does NOT add a coverage line when every check completed', () => {
+		const result = makeMockScanResult({
+			checks: [{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' }] as CheckResult[],
+		});
+		expect(formatScanReport(result, 'full')).not.toContain('Checks completed:');
 	});
 });

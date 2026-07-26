@@ -2,7 +2,7 @@
 
 import type { ScanDomainResult } from '../scan-domain';
 import type { CheckResult, Finding } from '../../lib/scoring';
-import { isGraded, nistScoreToGrade } from '../../lib/scoring';
+import { isGraded, nistScoreToGrade, computeScanEvidence } from '../../lib/scoring';
 import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
@@ -95,10 +95,11 @@ export interface StructuredScanResult {
 	 * subset of it. A consumer that read this array as the union of "not scored" must
 	 * now read `notApplicableCategories.concat(inconclusiveCategories)`.
 	 *
-	 * Caveat: a category can appear here with no `CheckResult` at all if
-	 * `categoryScores[cat] === 100` and the engine never ran that check — a
-	 * library-consumer-only path (see `isCategoryNonApplicable`'s Rule 3 no-check
-	 * branch) that the production scan engine never produces.
+	 * Caveat: a category can appear here with no `CheckResult` at all if it still has a
+	 * `categoryScores` entry — via Rule 2 (`MAIL_ONLY_CATEGORIES_FOR_NON_MAIL_PROFILE`,
+	 * which fires at ANY score) or Rule 3's narrower `categoryScores[cat] === 100`
+	 * branch — a library-consumer-only path (see `isCategoryNonApplicable`'s no-check
+	 * branches) that the production scan engine never produces.
 	 */
 	notApplicableCategories: string[];
 	/**
@@ -113,6 +114,21 @@ export interface StructuredScanResult {
 	 * `categoryScores`. Empty when every check ran.
 	 */
 	inconclusiveCategories: string[];
+	/**
+	 * How much of this scan actually ran: `attempted` checks submitted, `completed`
+	 * that finished, and their `ratio`. Present on every result so a report reader can
+	 * judge the scan's own coverage instead of inferring it from a missing grade.
+	 */
+	evidence: { attempted: number; completed: number; ratio: number };
+	/**
+	 * `true` when the scan completed too few checks to be graded, so `score` and
+	 * `grade` are `null` for a MEASUREMENT reason rather than a security one.
+	 * Mutually exclusive with `measured === false` ("nothing ran at all"): this flag is
+	 * only ever `true` when `evidence.attempted > 0`.
+	 */
+	evidenceInsufficient: boolean;
+	/** Human-readable explanation when `evidenceInsufficient` is `true`; `null` otherwise. */
+	evidenceNote: string | null;
 	timestamp: string;
 	cached: boolean;
 	/**
@@ -163,12 +179,14 @@ const EMAIL_CATEGORIES_HEURISTIC_NA = new Set<string>(['spf', 'dmarc', 'dkim', '
  * which filed a MEASUREMENT FAILURE as a deliberate N/A — the conflation this removal
  * fixes.)
  *
- * Caveat (Rule 3, `check === undefined` branch, out of scope for this fix): a category
- * with NO `CheckResult` at all — i.e. never run, not even attempted — can still be filed
- * as N/A here if `categoryScores[cat] === 100`. This is a library-consumer-only path (the
+ * Caveat (the `check === undefined` branches of Rule 2 and Rule 3, out of scope for this
+ * fix): a category with NO `CheckResult` at all — i.e. never run, not even attempted —
+ * can still be filed as N/A here: unconditionally via Rule 2 (any score) when the
+ * category is mail-only, or via Rule 3's narrower `categoryScores[cat] === 100` branch
+ * for the heuristic email categories. This is a library-consumer-only path (the
  * production scan engine always records a `CheckResult` for every category it seeds a
- * score for, so it never produces this shape); a hand-built `categoryScores`/`checks` pair
- * from an external caller could reach it.
+ * score for, so it never produces this shape); a hand-built `categoryScores`/`checks`
+ * pair from an external caller could reach it.
  */
 function isCategoryNonApplicable(check: CheckResult | undefined, category: string, profile: string, score: number | undefined): boolean {
 	const isNonMailProfile = profile === 'non_mail' || profile === 'web_only';
@@ -349,6 +367,13 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		cdnProvider,
 		notApplicableCategories,
 		inconclusiveCategories,
+		// The RATIO is a fact about the checks this report is rendering, so derive it here
+		// with the same exported helper the engine uses (one definition, no drift). The
+		// VERDICT belongs to the scorer alone — the wire layer must never re-decide whether
+		// a scan was gradeable.
+		evidence: computeScanEvidence(result.checks),
+		evidenceInsufficient: result.score.evidenceInsufficient === true,
+		evidenceNote: result.score.evidenceNote ?? null,
 		timestamp: result.timestamp,
 		cached: result.cached,
 		scoringModelVersion: SCORING_MODEL_VERSION,
@@ -373,6 +398,14 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 	lines.push(
 		displayGrade === null ? `${result.score.summary}` : result.score.summary.replace(/Grade: [A-F][+-]?/g, `Grade: ${displayGrade}`),
 	);
+	// Name the coverage gap explicitly. A reader must be able to see that a scan was
+	// partial without reverse-engineering it from the category table.
+	const reportEvidence = computeScanEvidence(result.checks);
+	if (reportEvidence.attempted > 0 && reportEvidence.completed < reportEvidence.attempted) {
+		lines.push(
+			`Checks completed: ${reportEvidence.completed}/${reportEvidence.attempted} (${Math.round(reportEvidence.ratio * 100)}%) — the rest did not run`,
+		);
+	}
 	lines.push('');
 
 	if (result.maturity) {

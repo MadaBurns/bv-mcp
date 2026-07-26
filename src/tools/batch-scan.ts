@@ -68,6 +68,13 @@ function emptyResult(domain: string, error: string): BatchScanResultItem {
 		cdnProvider: null,
 		notApplicableCategories: [],
 		inconclusiveCategories: [],
+		// Nothing ran, so there is no evidence to report. `evidenceInsufficient` stays
+		// FALSE deliberately: that flag means "checks ran but too few completed". The
+		// "nothing ran at all" state is carried by `measured: false`, and the two are
+		// mutually exclusive by contract.
+		evidence: { attempted: 0, completed: 0, ratio: 0 },
+		evidenceInsufficient: false,
+		evidenceNote: null,
 		timestamp: new Date().toISOString(),
 		cached: false,
 		// No scan ran for an error placeholder (invalid domain / budget exceeded),
@@ -172,6 +179,9 @@ export function formatBatchScan(results: BatchScanResultItem[], format: OutputFo
 		lines.push(`${icon} ${r.domain.padEnd(40)} ${formatScoreGrade(r.score, r.grade)}`);
 		if (format === 'full') {
 			lines.push(`   Profile: ${r.scoringProfile} | Maturity: Stage ${r.maturityStage ?? '?'}`);
+			if (r.evidence.attempted > 0 && r.evidence.completed < r.evidence.attempted) {
+				lines.push(`   Checks completed: ${r.evidence.completed}/${r.evidence.attempted}`);
+			}
 			const critHigh = r.findingCounts.critical + r.findingCounts.high;
 			if (critHigh > 0) {
 				lines.push(`   Critical/High findings: ${critHigh}`);

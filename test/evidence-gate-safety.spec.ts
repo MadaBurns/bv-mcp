@@ -102,10 +102,9 @@ describe('evidence gate does NOT fire on a measured scan', () => {
 		expect(score.grade).not.toBeNull();
 	});
 
-	// Task 6 dependency: buildStructuredScanResult does not carry evidence yet. it.fails
-	// is self-enforcing — the moment Task 6 lands this turns RED and Task 6 must flip it
-	// to a plain it().
-	it.fails('the structured wire result of a healthy scan carries a grade and full coverage', async () => {
+	// Task 6 landed: buildStructuredScanResult now carries evidence, so this runs as a
+	// normal assertion rather than the `it.fails` placeholder that pinned the gap.
+	it('the structured wire result of a healthy scan carries a grade and full coverage', async () => {
 		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { buildStructuredScanResult } = await import('../src/tools/scan/format-report');
 		const { computeScanScore, buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');

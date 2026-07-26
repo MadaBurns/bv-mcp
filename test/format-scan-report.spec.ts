@@ -373,4 +373,13 @@ describe('format-scan-report', () => {
 		expect(formatScanReport(result, 'full')).toContain(`Scoring model: v${SCORING_MODEL_VERSION}`);
 		expect(formatScanReport(result, 'compact')).not.toContain('Scoring model:');
 	});
+
+	it('carries evidence through buildToolResult into structuredContent', async () => {
+		const { buildToolResult } = await import('../src/handlers/tool-formatters');
+		const structured = { domain: 'x.example', evidence: { attempted: 19, completed: 4, ratio: 4 / 19 }, evidenceInsufficient: true };
+		const out = buildToolResult('text', structured, 'full');
+		expect(out.structuredContent).toBeDefined();
+		expect(out.structuredContent!.evidence).toEqual({ attempted: 19, completed: 4, ratio: 4 / 19 });
+		expect(out.structuredContent!.evidenceInsufficient).toBe(true);
+	});
 });

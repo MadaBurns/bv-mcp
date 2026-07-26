@@ -114,6 +114,15 @@ describe('batchScan', () => {
 		expect(errorResult!.measured).toBe(false);
 	});
 
+	it('an error placeholder reports zero evidence and does NOT claim the evidence gate fired', async () => {
+		const { batchScan } = await import('../src/tools/batch-scan');
+		const results = await batchScan(['not a domain']);
+		expect(results).toHaveLength(1);
+		expect(results[0].evidence).toEqual({ attempted: 0, completed: 0, ratio: 0 });
+		expect(results[0].evidenceInsufficient).toBe(false);
+		expect(results[0].evidenceNote).toBeNull();
+	});
+
 	it('should reject more than 10 domains', async () => {
 		const { batchScan } = await import('../src/tools/batch-scan');
 		const tooMany = Array.from({ length: 11 }, (_, i) => `domain${i}.com`);

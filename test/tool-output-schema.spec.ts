@@ -75,6 +75,16 @@ describe('outputSchema declarations on TOOLS', () => {
 			expect(tool.outputSchema).toEqual(derived);
 		}
 	});
+
+	it('scan-shaped tools publish NO outputSchema, so added structured fields cannot break validation', async () => {
+		const { TOOLS } = await import('../src/schemas/tool-definitions');
+		const names = ['scan_domain', 'batch_scan', 'compare_domains'];
+		for (const name of names) {
+			const tool = TOOLS.find((t) => t.name === name);
+			expect(tool, `${name} must exist in TOOLS`).toBeDefined();
+			expect(tool!.outputSchema, `${name} must not declare an outputSchema`).toBeUndefined();
+		}
+	});
 });
 
 describe('tools/list emits outputSchema for CheckResult tools only', () => {
