@@ -586,6 +586,94 @@ describe('Internal service binding routes', () => {
 			expect(typeof body.results[0].result.score).toBe('number');
 		});
 
+		it('returns the payload (not the MCP frame) for custom-shape tools with format=structured', async () => {
+			// Regression: `result` fell through to the MCP-framed tool result for tools
+			// that produce no CheckResult, so a batched custom-shape tool returned
+			// `{ content, structuredContent }` while a batched check tool returned a
+			// bare payload — one `payload.result` read could not serve both.
+			const { httpResponse, createDohResponse } = await import('./helpers/dns-mock');
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.startsWith('https://example.com') || url.startsWith('http://example.com')) {
+					return Promise.resolve(httpResponse('', 200));
+				}
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 1 }], []));
+			});
+
+			const request = new Request<unknown, IncomingRequestCfProperties>(
+				'http://example.com/internal/tools/batch?format=structured',
+				{
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ domains: ['example.com'], tool: 'scan_domain' }),
+				},
+			);
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, testEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(200);
+			const body = (await response.json()) as {
+				results: { domain: string; result: Record<string, unknown>; isError: boolean }[];
+			};
+			const entry = body.results[0];
+			expect(entry.isError).toBe(false);
+			// The payload itself — the same StructuredScanResult the single-call door
+			// surfaces under `result`.
+			expect(entry.result.domain).toBe('example.com');
+			expect(typeof entry.result.score).toBe('number');
+			expect(typeof entry.result.grade).toBe('string');
+			// NOT the MCP frame.
+			expect(entry.result.content).toBeUndefined();
+			expect(entry.result.structuredContent).toBeUndefined();
+		});
+
+		it('batch and single-call doors agree on the structured payload shape for the same tool', async () => {
+			// The two doors are one contract: `payload.result` must mean the same
+			// thing whether bv-web calls /tools/call or /tools/batch.
+			const { httpResponse, createDohResponse } = await import('./helpers/dns-mock');
+			const mockDns = () => {
+				globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+					const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+					if (url.startsWith('https://example.com') || url.startsWith('http://example.com')) {
+						return Promise.resolve(httpResponse('', 200));
+					}
+					return Promise.resolve(createDohResponse([{ name: 'example.com', type: 1 }], []));
+				});
+			};
+
+			mockDns();
+			const singleCtx = createExecutionContext();
+			const singleRes = await worker.fetch(
+				new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call?format=structured', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name: 'scan_domain', arguments: { domain: 'example.com' } }),
+				}),
+				testEnv,
+				singleCtx,
+			);
+			await waitOnExecutionContext(singleCtx);
+			const singleBody = (await singleRes.json()) as { result: Record<string, unknown> };
+
+			mockDns();
+			const batchCtx = createExecutionContext();
+			const batchRes = await worker.fetch(
+				new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch?format=structured', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ domains: ['example.com'], tool: 'scan_domain' }),
+				}),
+				testEnv,
+				batchCtx,
+			);
+			await waitOnExecutionContext(batchCtx);
+			const batchBody = (await batchRes.json()) as { results: { result: Record<string, unknown> }[] };
+
+			// Same key set — values differ only by per-run fields (timestamp, cached).
+			expect(Object.keys(batchBody.results[0].result).sort()).toEqual(Object.keys(singleBody.result).sort());
+		});
+
 		it('returns 413 when body exceeds 256 KB', async () => {
 			// Generate a body larger than 262,144 bytes (each domain ~540 chars × 500 = ~270KB)
 			const largeDomains = Array.from({ length: 500 }, (_, i) => `${'a'.repeat(510)}${i}.example.com`);

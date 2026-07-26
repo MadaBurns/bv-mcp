@@ -292,7 +292,7 @@ ignored env only; never commit it or paste it into workflow logs.
 
 ## Service Binding Integration
 
-`/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`. `/internal/tools/batch` runs one tool across many domains (max 500, concurrency 1–50, 256 KB body). `?format=structured` returns raw `CheckResult` per domain.
+`/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`. `/internal/tools/batch` runs one tool across many domains (max 500, concurrency 1–50, 256 KB body). `?format=structured` returns the tool's **payload** under `result` per domain — the raw `CheckResult` for `check_*` tools, or `structuredContent` for the custom-shape tools in `NON_CHECK_RESULT_TOOLS` (`scan_domain`, `explain_finding`, `compare_baseline`, `get_benchmark`). Same `payload.result` contract as the single-call door; cross-door parity is asserted in `test/internal.spec.ts`.
 
 | Layer                                                             | Public `/mcp` | Internal `/internal/*` |
 | ----------------------------------------------------------------- | :-----------: | :--------------------: |

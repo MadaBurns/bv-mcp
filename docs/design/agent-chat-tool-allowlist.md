@@ -74,12 +74,27 @@ internal allowlists, e.g. near `ALLOWED_BATCH_ARGS` / the gated-tools sets).
 
 ## Result-format note (informs bv-web, documented here for the contract)
 
-`?format=structured` on `/internal/tools/call` returns raw `CheckResult` JSON **only** for
-the `check_*` cohort. The four non-`CheckResult` tools in the allowlist — `scan_domain`,
-`explain_finding`, `compare_baseline`, `get_benchmark` (members of `NON_CHECK_RESULT_TOOLS`)
-— fall through to MCP-framed `content` blocks even with `format=structured` (see
-`test/internal.spec.ts`). bv-web's gateway requests `format=compact` for those four and reads
-the text content. No change required here; recorded so the contract is explicit.
+`?format=structured` on **both** internal doors (`/internal/tools/call` and
+`/internal/tools/batch`) surfaces the tool's payload under `result`. Two mechanisms
+produce it:
+
+- the `check_*` cohort → the raw `CheckResult`, captured via `resultCapture`;
+- the non-`CheckResult` tools in the allowlist — `scan_domain`, `explain_finding`,
+  `compare_baseline`, `get_benchmark` (members of `NON_CHECK_RESULT_TOOLS`) — produce no
+  `CheckResult` but do set `structuredContent`, which is surfaced under the same `result`
+  key.
+
+So a single `payload.result` read serves every tool on either door. This supersedes an
+earlier note here stating those four "fall through to MCP-framed `content` blocks even with
+`format=structured`": that stopped being true for `/internal/tools/call` when the
+`structuredContent` fallback landed, and for `/internal/tools/batch` when the same fallback
+was added there. On the single-call door the fallback is additive — the MCP-framed
+`content` / `structuredContent` remain alongside `result`; on the batch door `result` is
+the payload alone, matching how batched `check_*` results have always been returned. See
+`test/internal.spec.ts` (including the cross-door parity test).
+
+bv-web's gateway historically requested `format=compact` for those four and read the text
+content; that still works and needs no change.
 
 ## Quota / analytics note
 
