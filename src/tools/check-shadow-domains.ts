@@ -582,18 +582,17 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 	//
 	// This never widens the `unregistered` claim: variants only move from
 	// `unknown` to `registered`. NXDOMAIN remains the sole path to "unregistered".
+	//
+	// The re-probe is BATCHED and DEADLINE-CHECKED exactly like Phase 2 below.
+	// Unbatched it would fan out `unknown.length × 5` DoH queries at once (~26
+	// variants → ~130 concurrent full-timeout queries); if those burn
+	// SHADOW_TIMEOUT_MS, Phase 2 breaks on its first iteration and the REAL
+	// criticals from the registered variants are never emitted — trading a
+	// cosmetic metadata fix for the loss of the check's actual output. Sharing
+	// the same `deadline` keeps this stage from starving the one that matters.
 	if (buckets.unknown.length > 0) {
-		const unknownProbes = await Promise.allSettled(buckets.unknown.map(({ variant }) => probeVariant(variant, dnsOpts)));
-		for (let i = 0; i < buckets.unknown.length; i++) {
-			const { variant, reason } = buckets.unknown[i];
-			const settled = unknownProbes[i];
-			const probe: VariantProbeResult =
-				settled.status === 'fulfilled' ? settled.value : { variant, ns: [], hasA: false, mx: [], hasSpf: false, dmarcPolicy: null };
-			const hasEvidence = probe.ns.length > 0 || probe.hasA || probe.mx.length > 0 || probe.hasSpf || probe.dmarcPolicy !== null;
-			if (hasEvidence) {
-				findings.push(classifyVariant(probe, primaryMx, primaryNs));
-				continue;
-			}
+		/** Emit the honest unknown verdict, carrying whatever the probe actually observed. */
+		const pushUnknownFinding = (variant: string, reason: UnknownReason, probe?: VariantProbeResult) => {
 			findings.push(
 				createFinding(
 					'shadow_domains',
@@ -602,16 +601,68 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 					`Could not determine whether ${variant} is registered — ${UNKNOWN_REASON_PHRASES[reason]}. No conclusion is drawn about this domain.`,
 					{
 						variant,
-						ns: probe.ns,
-						mx: probe.mx,
-						hasSpf: probe.hasSpf,
-						dmarcPolicy: probe.dmarcPolicy,
+						ns: probe?.ns ?? [],
+						mx: probe?.mx ?? [],
+						hasSpf: probe?.hasSpf ?? false,
+						dmarcPolicy: probe?.dmarcPolicy ?? null,
 						registrationState: 'unknown',
 						reason,
 						confidence: 'heuristic',
 					},
 				),
 			);
+		};
+
+		let unknownBatchSize = INITIAL_BATCH_SIZE;
+		let unknownDelayMs = 0;
+		for (let i = 0; i < buckets.unknown.length; i += unknownBatchSize) {
+			const remaining = buckets.unknown.slice(i);
+			// Deadline exhausted: every remaining variant KEEPS its unknown finding
+			// (never silently dropped) — it just keeps it un-re-probed, which is the
+			// honest pre-re-probe state rather than a fabricated verdict.
+			if (Date.now() >= deadline) {
+				for (const { variant, reason } of remaining) pushUnknownFinding(variant, reason);
+				break;
+			}
+
+			if (unknownDelayMs > 0) {
+				await new Promise((resolve) => setTimeout(resolve, unknownDelayMs));
+			}
+
+			const batch = buckets.unknown.slice(i, i + unknownBatchSize);
+			const batchResults = await Promise.allSettled(batch.map(({ variant }) => probeVariant(variant, dnsOpts)));
+
+			let failures = 0;
+			for (let j = 0; j < batch.length; j++) {
+				const { variant, reason } = batch[j];
+				const settled = batchResults[j];
+				if (settled.status !== 'fulfilled') {
+					failures++;
+					pushUnknownFinding(variant, reason);
+					continue;
+				}
+				const probe = settled.value;
+				// Positive records prove the name exists → classify from its real
+				// records. Nothing observed → the unknown verdict stands, carrying the
+				// probe's ACTUAL (empty) observations rather than hardcoded literals.
+				//
+				// There is deliberately NO `unregistered` branch here: this path can
+				// only ever move a variant `unknown → registered`. NXDOMAIN, resolved
+				// in Phase 1 by `resolveRegistration`, remains the sole path to an
+				// "unregistered" claim.
+				const hasEvidence = probe.ns.length > 0 || probe.hasA || probe.mx.length > 0 || probe.hasSpf || probe.dmarcPolicy !== null;
+				if (hasEvidence) findings.push(classifyVariant(probe, primaryMx, primaryNs));
+				else pushUnknownFinding(variant, reason, probe);
+			}
+
+			// Same adaptive sizing as Phase 2.
+			if (failures > FAILURE_THRESHOLD) {
+				unknownBatchSize = Math.max(MIN_BATCH_SIZE, Math.floor(unknownBatchSize / 2));
+				unknownDelayMs = BACKOFF_DELAY_MS;
+			} else if (unknownDelayMs > 0) {
+				unknownBatchSize = Math.min(INITIAL_BATCH_SIZE, unknownBatchSize + 1);
+				unknownDelayMs = 0;
+			}
 		}
 	}
 
