@@ -18,10 +18,13 @@ export type ComplianceFramework = 'nist_800_177' | 'pci_dss_4' | 'soc2' | 'cis_c
 /**
  * A control's verdict.
  *
- * `not_assessed` is NOT a soft failure — it is the absence of a verdict. A control
- * whose mapped categories produced no check data was never looked at, and reporting
- * that as `fail` asserts a requirement was found unmet. A domain that does not
- * exist has not failed SOC 2.
+ * `not_assessed` is NOT a soft failure — it is the absence of a verdict. A control is
+ * `not_assessed` when its mapped categories produced NO check data at all, OR when they
+ * produced check data that never COMPLETED (`checkStatus: 'timeout'`/`'error'` — a
+ * transient DNS/network failure, not a measurement). Either way the control was never
+ * actually looked at, and reporting that as `fail` asserts a requirement was found
+ * unmet. A domain that does not exist has not failed SOC 2 — and neither has one whose
+ * resolver was slow.
  */
 export type ComplianceStatus = 'pass' | 'fail' | 'partial' | 'not_assessed';
 
@@ -38,7 +41,11 @@ export interface ComplianceFrameworkSummary {
 	passing: number;
 	failing: number;
 	partial: number;
-	/** Controls with NO check evidence — excluded from `percentage`, never counted as failures. */
+	/**
+	 * Controls with no COMPLETED check evidence — either no check data at all, or every
+	 * matched check timed out/errored before finishing. Excluded from `percentage`,
+	 * never counted as failures.
+	 */
 	notAssessed: number;
 	/** `totalControls - notAssessed` — the denominator `percentage` is computed over. */
 	assessedControls: number;
@@ -265,7 +272,18 @@ export function evaluateCompliance(
 					}
 				}
 
-				const totalCategories = control.categories.length;
+				// F1: a category that only produced TRANSIENT evidence must not occupy a
+				// non-passing slot in the denominator either — that's the same bug as
+				// grading on it, just one level up. `control.categories.length` still
+				// counts a category with NO data at all as "not passing" (pre-existing,
+				// intentional — see the sparse-evidence test), so only the categories that
+				// matched AND were excluded as transient are subtracted here. Since we're
+				// past the `completed.length === 0` guard above, `completed.length >= 1`,
+				// and `totalCategories >= completed.length` always holds — the all-transient
+				// case (denominator hitting 0) already short-circuited to `not_assessed`
+				// before this line, so no separate zero-check is needed here.
+				const transientCount = matchedResults.length - completed.length;
+				const totalCategories = control.categories.length - transientCount;
 
 				if (control.requirePass) {
 					// All mapped categories must pass (and be present)

@@ -412,6 +412,49 @@ describe('map_compliance treats a never-completed check as not_assessed, not fai
 		expect(pci.assessedControls).toBe(5);
 		expect(pci.percentage).toBe(60);
 	}, 15_000);
+
+	/**
+	 * F1 (fix round 1): the completed/transient partition fixed *grading* on a
+	 * transient category, but `totalCategories = control.categories.length` still
+	 * counted the transient category itself in the denominator — so a multi-category
+	 * control with one PASSING completed check and one transient check landed on
+	 * 'partial' instead of 'pass' (a never-completed check silently costing a control
+	 * its pass verdict, the same class of defect one level up from the original bug).
+	 * Measured on this exact shape (SOC2 CC7.1, healthy domain, one transient category):
+	 * before the fix, soc2/pci_dss_4/cis_controls percentages were all measurably lower
+	 * than the honest value — see task-8-report.md's "Fix round 1" section for the full
+	 * before/after table across all four frameworks.
+	 */
+	it('a control with one completed-passing and one timed-out check still passes (F1)', async () => {
+		// SOC2 CC7.1 maps [tlsrpt, dmarc], requirePass: false. dmarc completes and
+		// PASSES; tlsrpt times out (transient). The transient category must not occupy
+		// a non-passing slot in the denominator either — this control has exactly one
+		// piece of REAL evidence and it's clean, so the verdict must be 'pass', not
+		// 'partial'.
+		mockFullScan('soc2-transient-still-passes.com', { tlsrpt: 'reject' });
+		const { mapCompliance } = await import('../src/tools/map-compliance');
+		const mixedReport = await mapCompliance('soc2-transient-still-passes.com');
+
+		const cc71Mixed = mixedReport.frameworks.soc2.mappings.find((m) => m.controlId === 'CC7.1');
+		expect(cc71Mixed).toBeDefined();
+		expect(cc71Mixed!.status).toBe('pass');
+		expect(cc71Mixed!.relatedFindings).toEqual([]);
+
+		// Same fixture, but tlsrpt completes and passes instead of timing out — the
+		// ENTIRE soc2 framework summary must be identical, because the only thing that
+		// changed between the two scans is which category carried the (already-passing,
+		// otherwise irrelevant) evidence for CC7.1.
+		mockFullScan('soc2-transient-baseline.com');
+		const baselineReport = await mapCompliance('soc2-transient-baseline.com');
+		const cc71Baseline = baselineReport.frameworks.soc2.mappings.find((m) => m.controlId === 'CC7.1');
+		expect(cc71Baseline!.status).toBe('pass');
+
+		expect(mixedReport.frameworks.soc2.percentage).toBe(baselineReport.frameworks.soc2.percentage);
+		expect(mixedReport.frameworks.soc2.passing).toBe(baselineReport.frameworks.soc2.passing);
+		expect(mixedReport.frameworks.soc2.failing).toBe(baselineReport.frameworks.soc2.failing);
+		expect(mixedReport.frameworks.soc2.partial).toBe(baselineReport.frameworks.soc2.partial);
+		expect(mixedReport.frameworks.soc2.notAssessed).toBe(baselineReport.frameworks.soc2.notAssessed);
+	}, 20_000);
 });
 
 /**
