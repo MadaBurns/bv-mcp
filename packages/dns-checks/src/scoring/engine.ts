@@ -324,9 +324,25 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 
 	const cfg = config ?? DEFAULT_SCORING_CONFIG;
 	// The `?? EVIDENCE_SUFFICIENCY_THRESHOLD` fallback is deliberate — a consumer
-	// vendoring an older copy of this package can hand us a config whose `thresholds`
-	// predates this key, and a NaN comparison there would silently disable the gate.
-	const evidenceThreshold = cfg.thresholds.evidenceSufficiency ?? EVIDENCE_SUFFICIENCY_THRESHOLD;
+	// vendoring an older copy of this package (or hand-building a `ScoringConfig`
+	// that predates this key) can hand us a `thresholds` object with no
+	// `evidenceSufficiency` property at all, i.e. `undefined`, which `??` catches
+	// and replaces with the constant. (This is NOT a NaN guard: `??` only catches
+	// `null`/`undefined`, and a NaN threshold would make `ratio >= NaN` false for
+	// every ratio — the gate would fire on EVERY scan, ungrading the whole fleet,
+	// the opposite of "silently disabled".)
+	//
+	// The [0, 1] clamp below is a SECOND enforcement of the same rule `config.ts`
+	// already applies inside `parseScoringConfig` — that clamp only runs for
+	// configs that were parsed from a `SCORING_CONFIG` JSON string. `computeScanScore`
+	// is a published, directly-callable API: a caller can hand-build a `ScoringConfig`
+	// object and pass it straight in, bypassing `parseScoringConfig` (and its clamp)
+	// entirely. Without clamping here too, a hand-built `{ thresholds: {
+	// evidenceSufficiency: 60 } }` (an operator's percent-not-ratio typo) would ungrade
+	// every scan that reaches this function directly, not just every scan that goes
+	// through env-var config parsing. `??` runs FIRST so a missing key still falls back
+	// to the named constant before the clamp ever sees it.
+	const evidenceThreshold = Math.max(0, Math.min(1, cfg.thresholds.evidenceSufficiency ?? EVIDENCE_SUFFICIENCY_THRESHOLD));
 
 	if (results.length === 0) {
 		// Zero submitted evidence is NEVER sufficient, unconditionally — this is not a

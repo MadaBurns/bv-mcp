@@ -51,13 +51,20 @@ export function computeScanEvidence(results: CheckResult[]): ScanEvidence {
 /**
  * Whether a scan measured enough to be graded.
  *
- * `attempted === 0` yields `ratio: 0`, which is below every valid threshold, so
- * an empty result set is NEVER sufficient evidence. This is deliberate: the
- * legacy behaviour (`computeScanScore([])` → seeded 100 / 'A+') handed the best
- * possible grade to a caller that submitted zero evidence, and this package is a
- * published SSOT — an external consumer must not be able to obtain a confident
- * grade from nothing. Production scan paths are unaffected (they back-fill all
- * 19 categories, so `attempted` is never 0 there).
+ * `attempted === 0` yields `ratio: 0`, which is below every threshold in the
+ * NORMAL (0, 1] operating range — but NOT below a threshold of exactly `0`:
+ * `0 >= 0` is `true`, so this predicate alone would call zero evidence
+ * "sufficient" for a caller that configures `evidenceSufficiency: 0`. There is
+ * deliberately no `attempted === 0` carve-out inside this function; instead
+ * `computeScanScore`'s own `results.length === 0` branch enforces "zero
+ * evidence is NEVER sufficient" unconditionally, independent of whatever
+ * threshold a config supplies — see the engine-level test pinning this. The
+ * legacy behaviour (`computeScanScore([])` → seeded 100 / 'A+') handed the
+ * best possible grade to a caller that submitted zero evidence, and this
+ * package is a published SSOT — an external consumer must not be able to
+ * obtain a confident grade from nothing, not even via a `0` threshold.
+ * Production scan paths are unaffected (they back-fill all 19 categories, so
+ * `attempted` is never 0 there).
  */
 export function isEvidenceSufficient(evidence: ScanEvidence, threshold: number = EVIDENCE_SUFFICIENCY_THRESHOLD): boolean {
 	return evidence.ratio >= threshold;
@@ -65,6 +72,14 @@ export function isEvidenceSufficient(evidence: ScanEvidence, threshold: number =
 
 /** Human-readable explanation for an ungraded scan. Safe to render verbatim in a customer report. */
 export function buildEvidenceNote(evidence: ScanEvidence, threshold: number): string {
+	// The zero-submission case gets its OWN sentence rather than falling through to the
+	// percentage-based prose below: "Only 0 of 0 checks completed (0%)... Re-run the
+	// scan." is an awkward, borderline-nonsensical thing to hand a customer — there is
+	// no scan to re-run, no partial coverage to describe, just an empty submission.
+	if (evidence.attempted === 0) {
+		return 'No checks were submitted for scoring, so no grade can be issued. This is a measurement gap, not a security verdict.';
+	}
+
 	// Floor the achieved percentage (never round it up): this note only renders when
 	// evidence is insufficient, so it always claims the achieved percentage is BELOW
 	// the threshold percentage. Rounding both the same way can make the two collide
