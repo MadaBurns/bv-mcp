@@ -413,6 +413,32 @@ async function mixedPortfolio() {
 	]);
 }
 
+/** The buildUnscoredResult shape: real findings, no score. */
+async function unscoredReport(domain: string) {
+	const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+	const checks = [
+		{
+			category: 'ssl',
+			passed: false,
+			score: 0,
+			findings: [{ category: 'ssl', title: 'Certificate expired', severity: 'critical', detail: '' }],
+		},
+		{
+			category: 'dmarc',
+			passed: false,
+			score: 0,
+			findings: [{ category: 'dmarc', title: 'No DMARC record', severity: 'high', detail: '' }],
+		},
+		{
+			category: 'dnssec',
+			passed: false,
+			score: 40,
+			findings: [{ category: 'dnssec', title: 'DNSSEC not enabled', severity: 'medium', detail: '' }],
+		},
+	] as unknown as CheckResult[];
+	return evaluateCscProducts(checks, null, domain, null, null);
+}
+
 describe('rankCscLeads — a never-measured domain must not outrank a measured one', () => {
 
 	it('assigns the unmeasured domain NO gap severity, so it cannot outrank a measured one', async () => {
@@ -543,31 +569,6 @@ describe('rankCscLeads — a never-measured domain must not outrank a measured o
  * true, and it is what now gates it.
  */
 describe('rankCscLeads — checks ran but the scan could not be scored', () => {
-	/** The buildUnscoredResult shape: real findings, no score. */
-	async function unscoredReport(domain: string) {
-		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
-		const checks = [
-			{
-				category: 'ssl',
-				passed: false,
-				score: 0,
-				findings: [{ category: 'ssl', title: 'Certificate expired', severity: 'critical', detail: '' }],
-			},
-			{
-				category: 'dmarc',
-				passed: false,
-				score: 0,
-				findings: [{ category: 'dmarc', title: 'No DMARC record', severity: 'high', detail: '' }],
-			},
-			{
-				category: 'dnssec',
-				passed: false,
-				score: 40,
-				findings: [{ category: 'dnssec', title: 'DNSSEC not enabled', severity: 'medium', detail: '' }],
-			},
-		] as unknown as CheckResult[];
-		return evaluateCscProducts(checks, null, domain, null, null);
-	}
 
 	it('does NOT claim that no checks ran', async () => {
 		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
@@ -597,8 +598,11 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
 		expect(lead.assessed).toBe(true);
 		expect(lead.graded).toBe(false);
 		// Was null, and the whole lead was demoted. csc_multilock is not recommended
-		// (no RDAP posture), so 3 (dmarc high) + 2 (ssl high) + 2 (dnssec medium)...
-		expect(lead.gapSeverity).toBeGreaterThan(0);
+		// (no RDAP posture); the three scan-driven products give
+		// 3x3 (dmarc high) + 2x3 (ssl high) + 2x2 (dnssec medium) = 19, x1.0 for
+		// `consolidated`. Asserted exactly: a merely-positive severity would also be
+		// satisfied by a wrong computation.
+		expect(lead.gapSeverity).toBe(19);
 		// Was 0 for all three — the critical expired certificate vanished.
 		expect(report.summary.totalRecommendations).toBe(3);
 		expect(report.summary.byProduct.digital_certificates).toBe(1);
@@ -625,6 +629,45 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
 		expect(full).not.toMatch(/Score: \d+\/100/);
 	});
 
+	it('does not promise "the gaps below are real" when the lead has no gaps', async () => {
+		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		// Reachable whenever the scoring bundle fails on a CLEAN domain: checks ran,
+		// everything passed, registry lock in place — so no product is recommended.
+		const clean = evaluateCscProducts(
+			[
+				{ category: 'dmarc', passed: true, score: 100, findings: [] },
+				{ category: 'ssl', passed: true, score: 100, findings: [] },
+				{ category: 'dnssec', passed: true, score: 100, findings: [] },
+			] as unknown as CheckResult[],
+			{ level: 'registry-lock', registryLevel: true, transferLocked: true } as never,
+			'clean-unscored.example',
+			null,
+			null,
+		);
+		const report = rank([{ report: clean, ownershipBucket: 'consolidated' }]);
+		// Fixture-reachability guard: this really is the no-gaps shape.
+		expect(report.rankedLeads[0].recommendedCscProducts).toEqual([]);
+		expect(report.rankedLeads[0].assessed).toBe(true);
+		expect(report.rankedLeads[0].graded).toBe(false);
+
+		const text = fmt(report, 'full');
+		// The dangling referent: the sentence promised gaps, the next line said there were none.
+		expect(text).not.toContain('the gaps below are real');
+		// The unscored FACT must survive — only the promise of gaps goes.
+		expect(text).toMatch(/could not be scored/i);
+		expect(text).toContain('No CSC upsell — posture clean');
+	});
+
+	it('still says "the gaps below are real" when there ARE gaps (control)', async () => {
+		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const report = rank([{ report: await unscoredReport('unscored.example'), ownershipBucket: 'consolidated' }]);
+		// Without this the assertion above would hold under an implementation that
+		// dropped the phrase unconditionally, losing the distinction from the
+		// unassessed case where the products ARE artifacts of non-observation.
+		expect(fmt(report, 'full')).toContain('the gaps below are real');
+	});
+
 	it('ranks an unscored-but-measured lead by its REAL severity, above a lower-severity graded lead', async () => {
 		const { rankCscLeads: rank } = await import('../src/tools/prioritize-csc-leads');
 		// graded.example has severity 6; the unscored domain has genuine gaps worth
@@ -636,6 +679,86 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
 		]);
 		expect(report.rankedLeads[0].domain).toBe('unscored.example');
 		expect(report.rankedLeads[0].gapSeverity).toBeGreaterThan(6);
+	});
+});
+
+/**
+ * Report-level sentences must be true of the REPORT, not of one lead.
+ *
+ * `caveat` is hoisted out of the per-lead prose and read on its own by dashboards,
+ * so a lead-shaped sentence ("this domain…") loses its referent there. Concatenating
+ * the two per-lead notes produced a self-contradiction: "No checks ran for this
+ * domain… The checks for this domain ran…".
+ */
+describe('formatCscLeads / rankCscLeads — report-level sentences', () => {
+	it('states the caveat in report-level terms, with no singular referent and no contradiction', async () => {
+		const { rankCscLeads: rank } = await import('../src/tools/prioritize-csc-leads');
+		const report = rank([
+			{ report: await ungradedReport('nothing-ran.example'), ownershipBucket: 'consolidated' },
+			{ report: await unscoredReport('unscored.example'), ownershipBucket: 'consolidated' },
+		]);
+
+		// Fixture-reachability guard: this really is the mixed shape that produced
+		// the contradiction — one of each kind.
+		expect(report.summary.unassessedDomains).toBe(1);
+		expect(report.summary.unscoredDomains).toBe(1);
+
+		const caveat = report.caveat!;
+		expect(caveat).toBeTruthy();
+		// The contradiction, and its cause: a per-lead referent in a report-level field.
+		expect(caveat).not.toContain('this domain');
+		expect(caveat).not.toContain('the gaps below');
+		// Both facts still stated, each counted.
+		expect(caveat).toMatch(/1 domain could not be assessed/i);
+		expect(caveat).toMatch(/1 domain could not be scored/i);
+	});
+
+	it('pluralises and omits the half that does not apply', async () => {
+		const { rankCscLeads: rank } = await import('../src/tools/prioritize-csc-leads');
+		const onlyUnassessed = rank([
+			{ report: await ungradedReport('a.example'), ownershipBucket: 'consolidated' },
+			{ report: await ungradedReport('b.example'), ownershipBucket: 'consolidated' },
+		]);
+		expect(onlyUnassessed.caveat).toMatch(/2 domains could not be assessed/i);
+		expect(onlyUnassessed.caveat).not.toMatch(/could not be scored/i);
+
+		const onlyUnscored = rank([{ report: await unscoredReport('c.example'), ownershipBucket: 'consolidated' }]);
+		expect(onlyUnscored.caveat).toMatch(/1 domain could not be scored/i);
+		expect(onlyUnscored.caveat).not.toMatch(/could not be assessed/i);
+
+		// Control — a clean portfolio carries no caveat at all.
+		expect(rank([{ report: await gradedReport('d.example'), ownershipBucket: 'consolidated' }]).caveat).toBeNull();
+	});
+
+	/**
+	 * Pre-existing: `computePortfolioGrade` returns null both when nothing is
+	 * gradeable AND when every graded domain sits in a weight-0 (impersonation)
+	 * bucket. One sentence covered both, so a portfolio of graded impersonation
+	 * domains printed "no gradeable domains" directly above `Score: 91/100 (A)`.
+	 */
+	it('does not claim "no gradeable domains" when every domain IS graded but carries no rollup weight', async () => {
+		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const report = rank([{ report: await gradedReport('impersonator.example'), ownershipBucket: 'impersonation' }]);
+
+		// Fixture-reachability guard: graded, yet no portfolio grade — the exact
+		// state the old sentence misdescribed.
+		expect(report.rankedLeads[0].graded).toBe(true);
+		expect(report.portfolioGrade).toBeNull();
+
+		const text = fmt(report, 'full');
+		expect(text).toContain('73/100 (C+)');
+		expect(text).not.toContain('no gradeable domains');
+		expect(text).toMatch(/rollup weight/i);
+	});
+
+	it('still says "no gradeable domains" when nothing is graded (control)', async () => {
+		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const report = rank([{ report: await ungradedReport('nothing-ran.example'), ownershipBucket: 'consolidated' }]);
+		// Without this the assertion above would hold under an implementation that
+		// printed the rollup-weight wording for every ungradeable portfolio.
+		const text = fmt(report, 'full');
+		expect(text).toContain('no gradeable domains');
+		expect(text).not.toMatch(/rollup weight/i);
 	});
 });
 

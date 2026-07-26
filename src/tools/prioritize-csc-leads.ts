@@ -91,15 +91,20 @@ export interface CscLeadReport {
 	/** NEW — additive/optional. rankCscLeads ALWAYS sets it (PortfolioGrade or null). */
 	portfolioGrade?: PortfolioGrade | null;
 	/**
-	 * Set when at least one ranked lead is ungraded; `null` otherwise. The
-	 * report-level twin of the per-lead `graded` flag, so a consumer reading only
-	 * the rollups still learns they exclude domains.
+	 * Set when at least one ranked lead was not fully measured; `null` otherwise.
+	 * A consumer reading only the rollups still learns they exclude domains.
+	 *
+	 * Phrased in REPORT-level terms — counts, never "this domain". A dashboard
+	 * renders this field on its own, away from the per-lead prose, so a lead-shaped
+	 * sentence loses its referent here: concatenating the two per-lead notes read as
+	 * a flat self-contradiction ("No checks ran for this domain… The checks for this
+	 * domain ran…") even though each half was true of a different lead.
 	 *
 	 * There is deliberately no report-level `assessed` boolean: on a multi-domain
 	 * report that word would have to mean "every lead was measured", a different
 	 * proposition from the per-domain flag of the same name on the single-domain
-	 * reports. `summary.ungradedDomains` says exactly how many, which a boolean
-	 * cannot.
+	 * reports. `summary.unassessedDomains` / `summary.unscoredDomains` say exactly
+	 * how many of each, which a boolean cannot.
 	 */
 	caveat?: string | null;
 	summary: {
@@ -136,6 +141,39 @@ export const UNASSESSED_LEAD_NOTE =
  */
 export const UNSCORED_LEAD_NOTE =
 	'The checks for this domain ran and the gaps below are real, but the scan could not be scored, so this domain is excluded from the portfolio grade.';
+
+/**
+ * The same fact for an unscored lead with NO recommendations — reachable whenever
+ * the scoring bundle fails on a clean domain. {@link UNSCORED_LEAD_NOTE} promises
+ * "the gaps below are real" and the next line then reads "No CSC upsell — posture
+ * clean": a dangling referent, a promise the output immediately breaks.
+ */
+export const UNSCORED_LEAD_NOTE_NO_GAPS =
+	'The checks for this domain ran and found no product gap, but the scan could not be scored, so this domain is excluded from the portfolio grade.';
+
+/** `1 domain` / `N domains` — report-level counts read on their own, so they must not be bare numbers. */
+function domainCount(n: number): string {
+	return n === 1 ? '1 domain' : `${n} domains`;
+}
+
+/**
+ * Compose the report-level caveat from the two exclusion counts, or `null` when
+ * every lead was fully measured. Each clause is a statement about the REPORT.
+ */
+function buildReportCaveat(unassessedDomains: number, unscoredDomains: number): string | null {
+	const parts: string[] = [];
+	if (unassessedDomains > 0) {
+		parts.push(
+			`${domainCount(unassessedDomains)} could not be assessed: no checks ran, so ${unassessedDomains === 1 ? 'it is' : 'they are'} excluded from the hot-lead count, the recommendation totals and the portfolio grade.`,
+		);
+	}
+	if (unscoredDomains > 0) {
+		parts.push(
+			`${domainCount(unscoredDomains)} could not be scored: the checks ran and ${unscoredDomains === 1 ? 'its gaps are' : 'their gaps are'} counted in the totals, but ${unscoredDomains === 1 ? 'it is' : 'they are'} excluded from the portfolio grade.`,
+		);
+	}
+	return parts.length > 0 ? parts.join(' ') : null;
+}
 
 /** A domain to rank, paired with its portfolio ownership lens. */
 export interface CscLeadEntry {
@@ -313,16 +351,13 @@ export function rankCscLeads(
 	const portfolioGrade = computePortfolioGrade(leads);
 	const unassessedDomains = leads.length - assessedLeads.length;
 	const unscoredDomains = assessedLeads.filter((l) => !l.graded).length;
-	const notes = [unassessedDomains > 0 ? UNASSESSED_LEAD_NOTE : null, unscoredDomains > 0 ? UNSCORED_LEAD_NOTE : null].filter(
-		(n): n is string => n !== null,
-	);
 
 	return {
 		brand,
 		totalDomains: leads.length,
 		rankedLeads: leads,
 		portfolioGrade,
-		caveat: notes.length > 0 ? notes.join(' ') : null,
+		caveat: buildReportCaveat(unassessedDomains, unscoredDomains),
 		summary: {
 			totalRecommendations: assessedLeads.reduce((sum, l) => sum + l.recommendedCount, 0),
 			byProduct,
@@ -398,7 +433,14 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 			`**Portfolio grade: ${report.portfolioGrade.grade}** (weighted ${report.portfolioGrade.weightedScore}/100 across ${report.portfolioGrade.contributingDomains} domain(s))`,
 		);
 	} else {
-		lines.push(`**Portfolio grade: ${UNGRADED_DISPLAY}** (no gradeable domains)`);
+		// `computePortfolioGrade` returns null for TWO different states, and one
+		// sentence covered both: a portfolio of graded impersonation domains printed
+		// "no gradeable domains" directly above `Score: 91/100 (A)`. Distinguish
+		// "nothing carries a score" from "nothing carries rollup WEIGHT".
+		const reason = report.rankedLeads.some((l) => l.graded)
+			? 'no domain carries rollup weight — every graded domain sits in an impersonation bucket'
+			: 'no gradeable domains';
+		lines.push(`**Portfolio grade: ${UNGRADED_DISPLAY}** (${reason})`);
 	}
 	lines.push('');
 	for (const lead of report.rankedLeads) {
@@ -417,9 +459,12 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 		lines.push(
 			`  - Score: ${formatScoreGrade(lead.score, lead.grade)} | Ownership: ${lead.ownershipBucket} | Top priority: ${lead.topPriority}`,
 		);
-		// Checks ran, so the gaps below are real; only the score is missing. Say
-		// exactly that rather than reusing the "no checks ran" sentence.
-		if (!lead.graded) lines.push(`  - ${UNSCORED_LEAD_NOTE}`);
+		// Checks ran, so only the score is missing. Say exactly that rather than
+		// reusing the "no checks ran" sentence — and only promise gaps when the next
+		// line will actually list some.
+		if (!lead.graded) {
+			lines.push(`  - ${lead.recommendedCscProducts.length > 0 ? UNSCORED_LEAD_NOTE : UNSCORED_LEAD_NOTE_NO_GAPS}`);
+		}
 		if (lead.recommendedCscProducts.length > 0) {
 			lines.push(`  - Recommended CSC products: ${lead.recommendedCscProducts.join(', ')}`);
 		} else {
