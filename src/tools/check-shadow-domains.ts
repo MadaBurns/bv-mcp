@@ -486,18 +486,37 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		}
 	}
 
-	// Classify truly-unregistered variants (no NS AND no A) as info findings.
-	for (const variant of variants) {
-		if (!registeredVariants.has(variant)) {
-			findings.push(
-				createFinding(
-					'shadow_domains',
-					'Brand variant unregistered',
-					'info',
-					`${variant} does not appear to be registered. Consider defensive registration to prevent brand abuse.`,
-					{ variant, ns: [], mx: [], hasSpf: false, dmarcPolicy: null },
-				),
-			);
+	// Variants that failed BOTH the tight NS (Phase 1) and tight A (Phase 1.5) checks
+	// are NOT yet proven unregistered: a tight-timeout miss on a slow ccTLD server is
+	// not proof of non-registration, and NS/A absence alone ignores a mail-only
+	// registration (MX/SPF/DMARC with no web A record). Re-probe each ONCE with the
+	// full timeout and gate the verdict on the SAME `hasRegistrationEvidence` SSOT
+	// that `classifyVariant` uses (Bug #4 — one verdict, one helper, across both
+	// tools). A variant with ANY registration evidence is classified as registered
+	// with its real metadata; "unregistered" is reserved for a variant with NO
+	// evidence at all, and even then the finding carries the actual probe metadata
+	// (never a hardcoded `hasSpf:false` that could contradict a positive signal).
+	const residualUnregistered = variants.filter((variant) => !registeredVariants.has(variant));
+	if (residualUnregistered.length > 0) {
+		const residualProbes = await Promise.allSettled(residualUnregistered.map((variant) => probeVariant(variant, dnsOpts)));
+		for (let i = 0; i < residualUnregistered.length; i++) {
+			const variant = residualUnregistered[i];
+			const settled = residualProbes[i];
+			const probe: VariantProbeResult =
+				settled.status === 'fulfilled' ? settled.value : { variant, ns: [], hasA: false, mx: [], hasSpf: false, dmarcPolicy: null };
+			if (hasRegistrationEvidence(probe)) {
+				findings.push(classifyVariant(probe, primaryMx, primaryNs));
+			} else {
+				findings.push(
+					createFinding(
+						'shadow_domains',
+						'Brand variant unregistered',
+						'info',
+						`${variant} does not appear to be registered. Consider defensive registration to prevent brand abuse.`,
+						{ variant, ns: probe.ns, mx: probe.mx, hasSpf: probe.hasSpf, dmarcPolicy: probe.dmarcPolicy },
+					),
+				);
+			}
 		}
 	}
 
