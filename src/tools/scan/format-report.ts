@@ -83,20 +83,26 @@ export interface StructuredScanResult {
 	/** CDN provider detected from HTTP response headers. null when no CDN detected or check did not run. */
 	cdnProvider: string | null;
 	/**
-	 * Categories that don't apply to this domain (no MX → mail-only categories under
-	 * `web_only`/`non_mail`; check timed-out/errored → inconclusive). These categories
-	 * are always reported as `null` in `categoryScores` to avoid the misleading 100 or 0.
-	 * NOTE: this array deliberately conflates two reasons — a deliberate skip and a
-	 * measurement failure. Use `inconclusiveCategories` (a subset) to tell them apart.
+	 * Categories the scan MEASURED and found genuinely inapplicable to this domain
+	 * (no MX → mail-only categories under `web_only`/`non_mail`). Always reported as
+	 * `null` in `categoryScores` to avoid a misleading 100 or 0.
+	 *
+	 * **Semantic change (dns-checks 1.7.0): this array is now DISJOINT from
+	 * `inconclusiveCategories`.** It previously conflated two reasons — a deliberate
+	 * skip and a measurement failure — and `inconclusiveCategories` was documented as a
+	 * subset of it. A consumer that read this array as the union of "not scored" must
+	 * now read `notApplicableCategories.concat(inconclusiveCategories)`.
 	 */
 	notApplicableCategories: string[];
 	/**
-	 * Subset of `notApplicableCategories` whose `null` score is due to a transient
-	 * measurement FAILURE (the check timed-out or errored, `checkStatuses[cat]` is
-	 * `'timeout'`/`'error'`) rather than the control genuinely not applying to this
-	 * domain. A consumer should treat these as "could not measure / retry later", not
-	 * as a deliberate N/A. Always a subset: every entry here is also in
-	 * `notApplicableCategories` and `null` in `categoryScores`. Empty when every check ran.
+	 * Categories whose `null` score is due to a measurement FAILURE — the check timed
+	 * out or errored (`checkStatuses[cat]` is `'timeout'`/`'error'`) — rather than the
+	 * control genuinely not applying. Treat these as "could not measure / retry later".
+	 *
+	 * **DISJOINT from `notApplicableCategories`** as of dns-checks 1.7.0 (previously a
+	 * subset of it). The two states are deliberately separate: *inconclusive* means we
+	 * could not measure it; *not applicable* means we measured and it does not apply.
+	 * Both are `null` in `categoryScores`. Empty when every check ran.
 	 */
 	inconclusiveCategories: string[];
 	timestamp: string;
@@ -139,13 +145,16 @@ const EMAIL_CATEGORIES_HEURISTIC_NA = new Set<string>(['spf', 'dmarc', 'dkim', '
 
 /**
  * Decide whether a single check should be reported as N/A given the active scoring profile.
- * The two rules combined are the single source of truth that `categoryScores` and
+ * The rules combined are the single source of truth that `categoryScores` and
  * `notApplicableCategories` both derive from (defect G — single-source CategoryEvaluation).
+ *
+ * This function answers ONLY "we measured, and it genuinely does not apply". It is never
+ * asked about a check that failed to run: the caller short-circuits those into
+ * `inconclusiveCategories` before reaching here. (A former "Rule 1" returned `true` for a
+ * timed-out/errored check, which filed a MEASUREMENT FAILURE as a deliberate N/A — the
+ * conflation this removal fixes.)
  */
 function isCategoryNonApplicable(check: CheckResult | undefined, category: string, profile: string, score: number | undefined): boolean {
-	// Rule 1: transient/inconclusive checks are always N/A (could not measure).
-	if (check && (check.checkStatus === 'timeout' || check.checkStatus === 'error')) return true;
-
 	const isNonMailProfile = profile === 'non_mail' || profile === 'web_only';
 	if (!isNonMailProfile) return false;
 
@@ -263,15 +272,21 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		const rawScore: number | undefined = Object.prototype.hasOwnProperty.call(sourceCategoryScores, category)
 			? sourceCategoryScores[category]
 			: undefined;
+		const status = check?.checkStatus;
+
+		// INCONCLUSIVE — the check timed out or threw, so we could not measure it. This is
+		// checked FIRST and returns early, because it must win over any profile-based
+		// applicability rule: a check that never ran cannot be declared inapplicable on the
+		// strength of the profile it would have been judged under. Disjoint from
+		// `notApplicableCategories`; the score is null in both cases.
+		if (status === 'timeout' || status === 'error') {
+			inconclusiveCategories.push(category);
+			categoryScores[category] = null;
+			continue;
+		}
+
 		if (isCategoryNonApplicable(check, category, profile, rawScore)) {
 			notApplicableCategories.push(category);
-			// A category is "inconclusive" (could-not-measure) — rather than a deliberate
-			// N/A — exactly when Rule 1 fired: its check timed-out or errored. Deriving it
-			// here, inside the same branch that nulls the score, keeps `inconclusiveCategories`
-			// a guaranteed subset of `notApplicableCategories` with a null `categoryScores`.
-			if (check && (check.checkStatus === 'timeout' || check.checkStatus === 'error')) {
-				inconclusiveCategories.push(category);
-			}
 			categoryScores[category] = null;
 		} else if (rawScore !== undefined) {
 			categoryScores[category] = rawScore;

@@ -224,18 +224,59 @@ describe('buildStructuredScanResult', () => {
 		expect(s.inconclusiveCategories).not.toContain('dkim'); // genuine N/A, measured fine
 		expect(s.inconclusiveCategories).not.toContain('ssl'); // applicable, measured fine
 
-		// dual-listing preserved: every inconclusive category is also in notApplicableCategories
+		// DISJOINT (spec D2.7): an inconclusive category is "we could not measure it" and
+		// must NEVER be filed as "we measured, and it does not apply". The previous
+		// subset/superset relationship conflated the two.
 		for (const cat of s.inconclusiveCategories) {
-			expect(s.notApplicableCategories).toContain(cat);
+			expect(s.notApplicableCategories, `${cat} is inconclusive and must not also be listed not-applicable`).not.toContain(cat);
 		}
+		// Non-empty guard: without it the loop above is vacuous if inconclusiveCategories empties.
+		expect(s.inconclusiveCategories.length).toBeGreaterThan(0);
 		expect(s.notApplicableCategories).toContain('dkim'); // genuine N/A stays
 		expect(s.notApplicableCategories).not.toContain('ssl'); // applicable web category
+		expect(s.notApplicableCategories).not.toContain('http_security'); // errored → inconclusive only
+		expect(s.notApplicableCategories).not.toContain('dnssec'); // timed out → inconclusive only
 
 		// reconciliation invariant holds for both buckets: score is null
 		expect(s.categoryScores.http_security).toBeNull();
 		expect(s.categoryScores.dnssec).toBeNull();
 		expect(s.categoryScores.dkim).toBeNull();
 		expect(s.categoryScores.ssl).toBe(70);
+	});
+
+	it('never lists a category in BOTH buckets, across mixed profiles', () => {
+		for (const profile of ['mail_enabled', 'web_only', 'non_mail'] as const) {
+			const checks = [
+				{ category: 'ssl', passed: true, score: 70, findings: [], checkStatus: 'completed' },
+				{
+					category: 'dkim',
+					passed: false,
+					score: 0,
+					findings: [{ category: 'dkim', title: 'No DKIM', severity: 'info', detail: 'x' }],
+					checkStatus: 'completed',
+				},
+				{ category: 'mta_sts', passed: false, score: 0, findings: [], checkStatus: 'error' },
+			] as CheckResult[];
+			const result = makeMockScanResult({
+				context: { profile, signals: [], weights: {}, detectedProvider: null } as DomainContext,
+				score: {
+					overall: 70,
+					grade: 'C+',
+					categoryScores: { ssl: 70 } as Record<CheckCategory, number>,
+					findings: [],
+					summary: 'ok',
+					evidence: computeScanEvidence(checks),
+				} as ScanScore,
+				checks,
+			});
+			const s = buildStructuredScanResult(result);
+			const overlap = s.inconclusiveCategories.filter((c) => s.notApplicableCategories.includes(c));
+			expect(overlap, `profile ${profile} produced overlap: ${overlap.join(', ')}`).toEqual([]);
+			// mta_sts errored: inconclusive in every profile, never not-applicable, always null.
+			expect(s.inconclusiveCategories).toContain('mta_sts');
+			expect(s.notApplicableCategories).not.toContain('mta_sts');
+			expect(s.categoryScores.mta_sts).toBeNull();
+		}
 	});
 
 	it('returns empty inconclusiveCategories when all checks completed', () => {
