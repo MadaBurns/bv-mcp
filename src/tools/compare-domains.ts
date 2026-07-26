@@ -42,9 +42,14 @@ export interface DomainComparisonResult {
 	 * a score of 0 and is skipped by every gap predicate and column below.
 	 */
 	categoryComparison: Array<{ category: string; scores: Record<string, number | null> }>;
-	/** Categories where ALL measured domains score below 50. */
+	/**
+	 * Categories where every domain that carries a real score there fails (<50).
+	 * A measured domain whose score for the category is `null` (not applicable)
+	 * is skipped by the predicate, so it is neither claimed as failing nor able
+	 * to veto the gap.
+	 */
 	commonGaps: string[];
-	/** Categories where only one measured domain scores below 50 (unique weakness). */
+	/** Categories where only one domain with a real score there scores below 50 (unique weakness). */
 	uniqueGaps: Array<{ domain: string; categories: string[] }>;
 	/** Errors keyed by domain, for domains that failed validation or scanning. */
 	errors: Record<string, string>;
@@ -267,7 +272,7 @@ export function formatDomainComparison(result: DomainComparisonResult, format: O
 		// "all domains" was true of the old predicate only because an unmeasured domain
 		// was coerced to 0 and therefore always "failed". The predicate is now "every
 		// domain that has a score in this category", so the sentence says that.
-		lines.push(`Common gaps (all measured domains fail): ${result.commonGaps.join(', ')}`);
+		lines.push(`Common gaps (every domain scored here fails): ${result.commonGaps.join(', ')}`);
 		lines.push('');
 	}
 
