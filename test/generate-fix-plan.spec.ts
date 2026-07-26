@@ -191,8 +191,11 @@ describe('formatFixPlan', () => {
 			maturityStage: 4,
 			totalActions: 0,
 			actions: [],
+			assessed: true,
+			caveat: null,
 		});
 		expect(text).toContain('No actionable findings');
+		expect(text).toContain('posture is strong');
 	});
 
 	it('compact mode uses one-liners and caps at 5 actions', async () => {
@@ -205,8 +208,9 @@ describe('formatFixPlan', () => {
 			impact: 'high' as const,
 			dependencies: ['dep'],
 		}));
-		const compact = formatFixPlan({ domain: 'test.com', score: 30, grade: 'F', maturityStage: 0, totalActions: 7, actions }, 'compact');
-		const full = formatFixPlan({ domain: 'test.com', score: 30, grade: 'F', maturityStage: 0, totalActions: 7, actions }, 'full');
+		const plan = { domain: 'test.com', score: 30, grade: 'F', maturityStage: 0, totalActions: 7, actions, assessed: true, caveat: null };
+		const compact = formatFixPlan(plan, 'compact');
+		const full = formatFixPlan(plan, 'full');
 		expect(compact.length).toBeLessThan(full.length);
 		expect(compact).toContain('Fix Plan: test.com');
 		expect(compact).toContain('7 actions');
@@ -215,5 +219,78 @@ describe('formatFixPlan', () => {
 		expect(compact).toContain('... and 2 more');
 		expect(compact).not.toContain('##');
 		expect(compact).not.toContain('Dependencies');
+	});
+});
+
+/**
+ * A fix plan for a domain that was never measured has zero actions — and the
+ * formatter answered that with "No actionable findings. Domain security posture
+ * is strong." plus "Maturity Stage: 0/4". Both are fabricated: nothing was
+ * looked at, so there is neither a clean bill of health nor a stage-0 posture.
+ * `maturityStage: 0` also rides the structured payload, where it is a number
+ * something will chart.
+ */
+describe('formatFixPlan — a domain that was never measured', () => {
+	async function unmeasuredPlan() {
+		const { UNASSESSED_FIX_PLAN_CAVEAT } = await import('../src/tools/generate-fix-plan');
+		return {
+			domain: 'never-measured.example',
+			score: null,
+			grade: null,
+			maturityStage: null,
+			totalActions: 0,
+			actions: [],
+			assessed: false,
+			caveat: UNASSESSED_FIX_PLAN_CAVEAT,
+		};
+	}
+
+	it.each(['compact', 'full'] as const)('never reports a clean bill of health for an unassessed domain [%s]', async (format) => {
+		const { formatFixPlan } = await import('../src/tools/generate-fix-plan');
+		const text = formatFixPlan(await unmeasuredPlan(), format);
+
+		expect(text).toContain('not measured');
+		expect(text).not.toContain('null');
+		expect(text).not.toContain('posture is strong');
+		expect(text).not.toContain('No actionable findings');
+		expect(text.toLowerCase()).toMatch(/no checks ran/);
+	});
+
+	it('renders the maturity stage as not measured rather than 0/4', async () => {
+		const { formatFixPlan } = await import('../src/tools/generate-fix-plan');
+		const text = formatFixPlan(await unmeasuredPlan(), 'full');
+
+		expect(text).not.toContain('0/4');
+		expect(text).toMatch(/Maturity Stage: not measured/);
+	});
+
+	it('still reports a real stage and a clean bill of health for a MEASURED domain (control)', async () => {
+		const { formatFixPlan } = await import('../src/tools/generate-fix-plan');
+		// Without this control the assertions above would hold under a formatter that
+		// abstained unconditionally.
+		const text = formatFixPlan(
+			{ domain: 'clean.example', score: 95, grade: 'A+', maturityStage: 4, totalActions: 0, actions: [], assessed: true, caveat: null },
+			'full',
+		);
+
+		expect(text).toContain('Maturity Stage: 4/4');
+		expect(text).toContain('posture is strong');
+		expect(text).not.toContain('not measured');
+	});
+
+	it('emits the abstention on the machine channel, not only in the prose', async () => {
+		const { formatFixPlan } = await import('../src/tools/generate-fix-plan');
+		const { buildToolResult } = await import('../src/handlers/tool-formatters');
+		const plan = await unmeasuredPlan();
+		const result = buildToolResult(formatFixPlan(plan, 'full'), plan, 'full');
+
+		const wire = JSON.stringify(result.structuredContent);
+		expect(wire).toContain('"assessed":false');
+		expect(wire).toContain('"maturityStage":null');
+		expect(wire).not.toContain('"maturityStage":0');
+
+		const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));
+		expect(comment).toBeDefined();
+		expect(comment).toContain('"maturityStage":null');
 	});
 });

@@ -2,11 +2,18 @@
 
 import type { ScanDomainResult } from '../scan-domain';
 import type { CheckResult, Finding } from '../../lib/scoring';
-import { nistScoreToGrade } from '../../lib/scoring';
+import { isGraded, nistScoreToGrade, computeScanEvidence } from '../../lib/scoring';
 import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
+import { formatScoreGrade, isMeasured, UNGRADED_DISPLAY } from '../../lib/ungraded-display';
+
+// All three live in a tiny leaf module so every formatter in src/tools/ can share
+// them without importing the scan orchestrator. Re-exported here because this is
+// where consumers have always found UNGRADED_DISPLAY — new importers should take it
+// from the leaf module directly.
+export { UNGRADED_DISPLAY };
 
 /**
  * The SINGLE customer-facing display grade for the scan-output tools
@@ -14,18 +21,40 @@ import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scori
  * letter, recomputed from the unchanged 0-100 score. The engine's `score.grade`
  * stays on the canonical 9-band scale for every OTHER consumer (compare_baseline
  * ordering, the badge, drift/compliance/fix-plan); only these display surfaces
- * switch. The degraded `'N/A'` sentinel (unscored scans) is preserved verbatim.
+ * switch.
+ *
+ * Returns `null` when the scan was never graded — callers must render
+ * {@link UNGRADED_DISPLAY} rather than substitute a letter. An unscored scan
+ * yields `null`, rendered as {@link UNGRADED_DISPLAY}; mapping it onto
+ * `nistScoreToGrade(0)` here would fabricate an 'F' for a domain that does not
+ * resolve — the exact defect this slice exists to remove.
  */
-function displayGradeFor(score: { overall: number; grade: string }): string {
-	return score.grade === 'N/A' ? 'N/A' : nistScoreToGrade(score.overall);
+function displayGradeFor(score: { overall: number | null; grade: string | null }): string | null {
+	if (score.overall === null || score.grade === null) return null;
+	return nistScoreToGrade(score.overall);
 }
 
 /** Structured scan result for machine-readable consumption (e.g., CI/CD actions). */
 export interface StructuredScanResult {
 	domain: string;
-	score: number;
-	grade: string;
-	passed: boolean;
+	/**
+	 * Overall 0–100 score, or `null` when the domain was NOT graded — no checks
+	 * ran (invalid domain, budget exceeded, NXDOMAIN, unresolvable zone). `null`
+	 * means "not measured", never "measured and scored zero". Consumers MUST
+	 * exclude a null score from comparison, ranking and policy evaluation rather
+	 * than coercing it: `null < n` is `true` and `null - n` is `NaN` in JS.
+	 */
+	score: number | null;
+	/** Display grade letter, or `null` when `score` is null. Never a sentinel string. */
+	grade: string | null;
+	/** Pass/fail verdict, or `null` when the domain was not graded. */
+	passed: boolean | null;
+	/**
+	 * `false` when NO check contributed a measurement at all (zero `checks`).
+	 * Distinct from "checks ran but most failed" — that state is not represented
+	 * here. Invariant: `measured === false` implies `score === null`.
+	 */
+	measured: boolean;
 	maturityStage: number | null;
 	maturityLabel: string | null;
 	/**
@@ -54,22 +83,55 @@ export interface StructuredScanResult {
 	/** CDN provider detected from HTTP response headers. null when no CDN detected or check did not run. */
 	cdnProvider: string | null;
 	/**
-	 * Categories that don't apply to this domain (no MX → mail-only categories under
-	 * `web_only`/`non_mail`; check timed-out/errored → inconclusive). These categories
-	 * are always reported as `null` in `categoryScores` to avoid the misleading 100 or 0.
-	 * NOTE: this array deliberately conflates two reasons — a deliberate skip and a
-	 * measurement failure. Use `inconclusiveCategories` (a subset) to tell them apart.
+	 * Categories the scan MEASURED (a `CheckResult` was recorded) and found genuinely
+	 * inapplicable to this domain (no MX → mail-only categories under
+	 * `web_only`/`non_mail`). Always reported as `null` in `categoryScores` to avoid a
+	 * misleading 100 or 0.
+	 *
+	 * **Semantic change (as of blackveil-dns 3.37.0, ships alongside
+	 * `@blackveil/dns-checks` 1.7.0): this array is now DISJOINT from
+	 * `inconclusiveCategories`.** It previously conflated two reasons — a deliberate
+	 * skip and a measurement failure — and `inconclusiveCategories` was documented as a
+	 * subset of it. A consumer that read this array as the union of "not scored" must
+	 * now read `notApplicableCategories.concat(inconclusiveCategories)`.
+	 *
+	 * Caveat: a category can appear here with no `CheckResult` at all if it still has a
+	 * `categoryScores` entry — via Rule 2 (`MAIL_ONLY_CATEGORIES_FOR_NON_MAIL_PROFILE`,
+	 * which fires at ANY score) or Rule 3's narrower `categoryScores[cat] === 100`
+	 * branch — a library-consumer-only path (see `isCategoryNonApplicable`'s no-check
+	 * branches) that the production scan engine never produces.
 	 */
 	notApplicableCategories: string[];
 	/**
-	 * Subset of `notApplicableCategories` whose `null` score is due to a transient
-	 * measurement FAILURE (the check timed-out or errored, `checkStatuses[cat]` is
-	 * `'timeout'`/`'error'`) rather than the control genuinely not applying to this
-	 * domain. A consumer should treat these as "could not measure / retry later", not
-	 * as a deliberate N/A. Always a subset: every entry here is also in
-	 * `notApplicableCategories` and `null` in `categoryScores`. Empty when every check ran.
+	 * Categories whose `null` score is due to a measurement FAILURE — the check timed
+	 * out or errored (`checkStatuses[cat]` is `'timeout'`/`'error'`) — rather than the
+	 * control genuinely not applying. Treat these as "could not measure / retry later".
+	 *
+	 * **DISJOINT from `notApplicableCategories`** as of blackveil-dns 3.37.0 (ships
+	 * alongside `@blackveil/dns-checks` 1.7.0; previously a subset of it). The two
+	 * states are deliberately separate: *inconclusive* means we could not measure it;
+	 * *not applicable* means we measured and it does not apply. Both are `null` in
+	 * `categoryScores`. Empty when every check ran.
 	 */
 	inconclusiveCategories: string[];
+	/**
+	 * How much of this scan actually ran: `attempted` checks submitted, `completed`
+	 * that finished, and their `ratio`. Present on every result so a report reader can
+	 * judge the scan's own coverage instead of inferring it from a missing grade.
+	 */
+	evidence: { attempted: number; completed: number; ratio: number };
+	/**
+	 * `true` when the scan completed too few checks to be graded, so `score` and
+	 * `grade` are `null` for a MEASUREMENT reason rather than a security one.
+	 * Mutually exclusive with `measured === false` ("nothing ran at all"): this flag is
+	 * only ever `true` when `evidence.attempted > 0`. Enforced at `buildStructuredScanResult`
+	 * (not merely documented): `computeScanScore`'s own zero-check branch stamps
+	 * `evidenceInsufficient: true` on a zero-checks result, which is suppressed to `false`
+	 * here so the invariant holds even though the underlying producer does not honor it.
+	 */
+	evidenceInsufficient: boolean;
+	/** Human-readable explanation when `evidenceInsufficient` is `true`; `null` otherwise. */
+	evidenceNote: string | null;
 	timestamp: string;
 	cached: boolean;
 	/**
@@ -110,13 +172,26 @@ const EMAIL_CATEGORIES_HEURISTIC_NA = new Set<string>(['spf', 'dmarc', 'dkim', '
 
 /**
  * Decide whether a single check should be reported as N/A given the active scoring profile.
- * The two rules combined are the single source of truth that `categoryScores` and
+ * The rules combined are the single source of truth that `categoryScores` and
  * `notApplicableCategories` both derive from (defect G — single-source CategoryEvaluation).
+ *
+ * For any category carrying a `CheckResult` (`check` is defined), this function answers
+ * ONLY "we measured, and it genuinely does not apply" — it is never asked about a check
+ * that timed out or errored: the caller short-circuits those into `inconclusiveCategories`
+ * before reaching here. (A former "Rule 1" returned `true` for a timed-out/errored check,
+ * which filed a MEASUREMENT FAILURE as a deliberate N/A — the conflation this removal
+ * fixes.)
+ *
+ * Caveat (the `check === undefined` branches of Rule 2 and Rule 3, out of scope for this
+ * fix): a category with NO `CheckResult` at all — i.e. never run, not even attempted —
+ * can still be filed as N/A here: unconditionally via Rule 2 (any score) when the
+ * category is mail-only, or via Rule 3's narrower `categoryScores[cat] === 100` branch
+ * for the heuristic email categories. This is a library-consumer-only path (the
+ * production scan engine always records a `CheckResult` for every category it seeds a
+ * score for, so it never produces this shape); a hand-built `categoryScores`/`checks`
+ * pair from an external caller could reach it.
  */
 function isCategoryNonApplicable(check: CheckResult | undefined, category: string, profile: string, score: number | undefined): boolean {
-	// Rule 1: transient/inconclusive checks are always N/A (could not measure).
-	if (check && (check.checkStatus === 'timeout' || check.checkStatus === 'error')) return true;
-
 	const isNonMailProfile = profile === 'non_mail' || profile === 'web_only';
 	if (!isNonMailProfile) return false;
 
@@ -192,10 +267,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		// so only a genuinely validated/configured zone (no deficiency finding) defaults
 		// to `domain_configured`.
 		const dnssecDeficient = dnssecCheck.findings.some(
-			(f) =>
-				f.title === 'DNSSEC not enabled' ||
-				f.title === 'DNSSEC chain of trust incomplete' ||
-				f.title === 'DNSSEC validation failing',
+			(f) => f.title === 'DNSSEC not enabled' || f.title === 'DNSSEC chain of trust incomplete' || f.title === 'DNSSEC validation failing',
 		);
 		if (dnssecSource === null && dnssecCheck.passed && !dnssecDeficient && (checkStatuses['dnssec'] ?? 'completed') === 'completed') {
 			dnssecSource = 'domain_configured';
@@ -237,15 +309,21 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		const rawScore: number | undefined = Object.prototype.hasOwnProperty.call(sourceCategoryScores, category)
 			? sourceCategoryScores[category]
 			: undefined;
+		const status = check?.checkStatus;
+
+		// INCONCLUSIVE — the check timed out or threw, so we could not measure it. This is
+		// checked FIRST and returns early, because it must win over any profile-based
+		// applicability rule: a check that never ran cannot be declared inapplicable on the
+		// strength of the profile it would have been judged under. Disjoint from
+		// `notApplicableCategories`; the score is null in both cases.
+		if (status === 'timeout' || status === 'error') {
+			inconclusiveCategories.push(category);
+			categoryScores[category] = null;
+			continue;
+		}
+
 		if (isCategoryNonApplicable(check, category, profile, rawScore)) {
 			notApplicableCategories.push(category);
-			// A category is "inconclusive" (could-not-measure) — rather than a deliberate
-			// N/A — exactly when Rule 1 fired: its check timed-out or errored. Deriving it
-			// here, inside the same branch that nulls the score, keeps `inconclusiveCategories`
-			// a guaranteed subset of `notApplicableCategories` with a null `categoryScores`.
-			if (check && (check.checkStatus === 'timeout' || check.checkStatus === 'error')) {
-				inconclusiveCategories.push(category);
-			}
 			categoryScores[category] = null;
 		} else if (rawScore !== undefined) {
 			categoryScores[category] = rawScore;
@@ -254,12 +332,38 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		// "only keys with a score appear" behaviour.
 	}
 
+	// The RATIO is a fact about the checks this report is rendering, so derive it here
+	// with the same exported helper the engine uses (one definition, no drift). The
+	// VERDICT belongs to the scorer alone — the wire layer never re-decides whether a
+	// scan was gradeable from these checks; it only reads `result.score.evidenceInsufficient`.
+	//
+	// The one thing the wire DOES enforce itself is the `evidence.attempted > 0` guard.
+	// This is not a second opinion on the verdict: `computeScanScore`'s own zero-check
+	// branch (checks.length === 0) stamps `evidenceInsufficient: true` on a result that
+	// also has `measured: false` — a shape that, read naively, would violate this
+	// interface's documented invariant that the two are mutually exclusive. The guard
+	// refuses to RAISE the flag for the "nothing ran at all" state that `measured: false`
+	// already owns; it never suppresses a true insufficiency the score actually raised
+	// for a scan that attempted something (`evidence.attempted > 0` in every real
+	// insufficiency case). `evidenceNote` is gated on this ENFORCED flag, not the raw
+	// score flag, so it is non-null only when `evidenceInsufficient` is `true`.
+	const evidence = computeScanEvidence(result.checks);
+	const evidenceInsufficient = result.score.evidenceInsufficient === true && evidence.attempted > 0;
+
 	return {
 		domain: result.domain,
 		score: result.score.overall,
 		grade: displayGradeFor(result.score),
-		passed: result.score.overall >= 50,
-		maturityStage: result.maturity?.stage ?? null,
+		passed: result.score.overall === null ? null : result.score.overall >= 50,
+		measured: isMeasured(result.checks),
+		// `?? null` alone is not enough: the three degraded builders all emit a
+		// maturity OBJECT carrying a placeholder `stage: 0`, so the guard never
+		// fires and a literal 0 — whose canonical label is "Unprotected" — reaches
+		// any consumer charting this number or mapping it through its own
+		// stage->label table. Gate on the scan having actually scored, exactly as
+		// generate_fix_plan does one layer up. The LABEL is kept: "Does not resolve"
+		// is information, not a fabricated verdict.
+		maturityStage: isGraded(result.score) ? (result.maturity?.stage ?? null) : null,
 		maturityLabel: result.maturity?.label ?? null,
 		categoryScores,
 		findingCounts: {
@@ -284,6 +388,9 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		cdnProvider,
 		notApplicableCategories,
 		inconclusiveCategories,
+		evidence,
+		evidenceInsufficient,
+		evidenceNote: evidenceInsufficient ? (result.score.evidenceNote ?? null) : null,
 		timestamp: result.timestamp,
 		cached: result.cached,
 		scoringModelVersion: SCORING_MODEL_VERSION,
@@ -300,22 +407,49 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 	const displayGrade = displayGradeFor(result.score);
 	lines.push(`DNS Security Scan: ${result.domain}`);
 	lines.push(`${'='.repeat(40)}`);
-	lines.push(`Overall Score: ${result.score.overall}/100 (${displayGrade})`);
+	lines.push(`Overall Score: ${formatScoreGrade(result.score.overall, displayGrade)}`);
 	// The engine bakes the canonical 9-band grade into `summary` ("…Grade: X"); rewrite
 	// that one token to the display (NIST) grade so the text never disagrees with the
-	// score line above. No-op when the summary carries no grade (e.g. degraded 'N/A').
+	// score line above. No-op when the scan was never graded at all — the summary of a
+	// degraded scan is a prose reason, not a graded verdict, and must survive verbatim.
 	lines.push(
-		displayGrade === 'N/A'
-			? `${result.score.summary}`
-			: result.score.summary.replace(/Grade: [A-F][+-]?/g, `Grade: ${displayGrade}`),
+		displayGrade === null ? `${result.score.summary}` : result.score.summary.replace(/Grade: [A-F][+-]?/g, `Grade: ${displayGrade}`),
 	);
+	// Name the coverage gap explicitly. A reader must be able to see that a scan was
+	// partial without reverse-engineering it from the category table.
+	const reportEvidence = computeScanEvidence(result.checks);
+	if (reportEvidence.attempted > 0 && reportEvidence.completed < reportEvidence.attempted) {
+		// Floor, never round, the achieved percentage — the same rule `buildEvidenceNote`
+		// (packages/dns-checks/src/scoring/evidence.ts) uses for the summary line above.
+		// Rounding here while that helper floors let the SAME measurement render two
+		// different percentages on consecutive lines (e.g. 11/19 = "57%" in the summary,
+		// "58%" here) — a self-contradiction commit 33608fe1 already fixed once in
+		// `buildEvidenceNote` itself; this is the sibling fix for this second renderer.
+		lines.push(
+			`Checks completed: ${reportEvidence.completed}/${reportEvidence.attempted} (${Math.floor(reportEvidence.ratio * 100)}%) — the rest did not complete`,
+		);
+	}
 	lines.push('');
 
 	if (result.maturity) {
+		// The prose must abstain on exactly the condition `buildStructuredScanResult`
+		// abstains on (`maturityStage: isGraded(...) ? stage : null`). The three degraded
+		// builders all emit a maturity object carrying a PLACEHOLDER `stage: 0`, whose
+		// canonical label is "Unprotected" — so an NXDOMAIN scan printed
+		// "Stage 0 — Does not resolve" directly under "Overall Score: not measured",
+		// while its own structuredContent said `maturityStage: null` and
+		// generate_fix_plan said "not measured" for the same domain.
+		//
+		// The LABEL is kept either way: "Does not resolve" is information. Only the
+		// NUMBER — the part that charts, sorts and maps through a stage table — is
+		// withheld, and the ungraded token takes its place so the same state reads the
+		// same way here as everywhere else. A GRADED domain that genuinely sits at
+		// stage 0 still prints "Stage 0"; that zero is a measurement.
+		const stageText = isGraded(result.score) ? `Stage ${result.maturity.stage}` : UNGRADED_DISPLAY;
 		if (format === 'compact') {
-			lines.push(`Maturity: Stage ${result.maturity.stage} — ${result.maturity.label}`);
+			lines.push(`Maturity: ${stageText} — ${result.maturity.label}`);
 		} else {
-			lines.push(`Email Security Maturity: Stage ${result.maturity.stage} — ${result.maturity.label}`);
+			lines.push(`Email Security Maturity: ${stageText} — ${result.maturity.label}`);
 			lines.push(result.maturity.description);
 			if (result.maturity.nextStep) {
 				lines.push(`Next step: ${result.maturity.nextStep}`);

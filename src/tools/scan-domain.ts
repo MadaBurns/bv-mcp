@@ -19,6 +19,7 @@ import {
 	type ScanScore,
 	buildCheckResult,
 	computeProfileAwareScanScore,
+	computeScanEvidence,
 	computeScanScore,
 	createFinding,
 	detectDomainContext,
@@ -206,7 +207,7 @@ export interface ScanDomainResult {
 	 *   (DNSSEC-bogus or lame/broken delegation). Not scored — see
 	 *   {@link buildDnsBrokenResult}.
 	 * Aggregators should exclude `resolves === false` and `resolves === 'broken'`
-	 * results rather than averaging their grade N/A into a population score.
+	 * results rather than averaging an ungraded result into a population score.
 	 */
 	resolves?: boolean | 'broken';
 }
@@ -218,7 +219,7 @@ export interface ScanDomainResult {
  *
  * The checks already ran successfully, so we preserve their findings and
  * per-category scores and surface them to the operator; only the weighted
- * overall score and grade are marked unavailable. This converts a total scan
+ * overall score and grade are marked unavailable (`null`). This converts a total scan
  * failure (a generic "unexpected error" for every domain) into a graceful
  * degradation. Deliberately calls NO scoring-package function, since the
  * scoring package is exactly what failed.
@@ -233,11 +234,12 @@ function buildUnscoredResult(domain: string, checkResults: CheckResult[], reason
 	return {
 		domain,
 		score: {
-			overall: 0,
-			grade: 'N/A',
+			overall: null,
+			grade: null,
 			categoryScores,
 			findings,
 			summary: reason,
+			evidence: computeScanEvidence(checkResults),
 		},
 		checks: checkResults,
 		maturity: {
@@ -267,7 +269,7 @@ function buildUnscoredResult(domain: string, checkResults: CheckResult[], reason
  * checks never run: a non-existent domain has no security posture to assess, and
  * running the matrix would only fabricate "absence = missing control" findings —
  * producing a misleading D+/F for a domain that simply isn't registered. We emit
- * NO findings and NO per-category scores; grade is `N/A` and `resolves` is false
+ * NO findings and NO per-category scores; the score and grade are `null` and `resolves` is false
  * so aggregators exclude it rather than averaging it in.
  */
 function buildNonResolvingResult(domain: string): ScanDomainResult {
@@ -275,11 +277,12 @@ function buildNonResolvingResult(domain: string): ScanDomainResult {
 	return {
 		domain,
 		score: {
-			overall: 0,
-			grade: 'N/A',
+			overall: null,
+			grade: null,
 			categoryScores: {} as Record<CheckCategory, number>,
 			findings: [],
 			summary: reason,
+			evidence: { attempted: 0, completed: 0, ratio: 0 },
 		},
 		checks: [],
 		maturity: {
@@ -321,8 +324,8 @@ type DnsBrokenKind = 'dnssec_bogus' | 'unresolvable';
  *
  * Like the non-resolving case, we emit NO findings and NO per-category scores:
  * a zone we cannot resolve has no measurable posture, and running the matrix
- * would only fabricate "absence = missing control" findings. Grade is `N/A`
- * and `resolves` is `'broken'` so aggregators exclude it.
+ * would only fabricate "absence = missing control" findings. The score and
+ * grade are `null` and `resolves` is `'broken'` so aggregators exclude it.
  */
 function buildDnsBrokenResult(domain: string, kind: DnsBrokenKind): ScanDomainResult {
 	const reason =
@@ -338,11 +341,12 @@ function buildDnsBrokenResult(domain: string, kind: DnsBrokenKind): ScanDomainRe
 	return {
 		domain,
 		score: {
-			overall: 0,
-			grade: 'N/A',
+			overall: null,
+			grade: null,
 			categoryScores: {} as Record<CheckCategory, number>,
 			findings: [],
 			summary: reason,
+			evidence: { attempted: 0, completed: 0, ratio: 0 },
 		},
 		checks: [],
 		maturity: {
@@ -815,7 +819,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 					deltas[cat] = adaptiveWeights[cat].importance - staticWeights[cat].importance;
 				}
 
-				const scoreDelta = adaptiveScore.overall - staticScore.overall;
+				const scoreDelta =
+					adaptiveScore.overall !== null && staticScore.overall !== null ? adaptiveScore.overall - staticScore.overall : 0;
 				scoringNote = generateScoringNote(deltas, scoreDelta, domainContext.detectedProvider);
 				adaptiveWeightDeltas = deltas;
 			}
@@ -826,7 +831,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		score = adjustedScore;
 
 		const rawMaturity = computeMaturityStage(checkResults, domainContext?.profile);
-		const maturity = capMaturityStage(rawMaturity, score.overall);
+		// An ungraded scan has no score to cap the stage with — leave the raw stage alone
+		// rather than coercing `null` to 0 (which would silently cap every ungraded scan).
+		const maturity = score.overall === null ? rawMaturity : capMaturityStage(rawMaturity, score.overall);
 
 		result = {
 			domain,
@@ -841,8 +848,11 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			interactionEffects,
 		};
 
-		// POST telemetry to DO (best-effort, non-blocking)
-		if (runtimeOptions?.profileAccumulator) {
+		// POST telemetry to DO (best-effort, non-blocking).
+		// An ungraded scan (`score.overall === null`) carries no measurement, so it must NOT
+		// train the adaptive-weight EMA — feeding it in would pull every profile's weights
+		// toward a domain that was never actually measured.
+		if (runtimeOptions?.profileAccumulator && score.overall !== null) {
 			const telemetry: ScanTelemetry = {
 				profile: domainContext.profile,
 				provider: domainContext.detectedProvider,
@@ -900,7 +910,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			const fallbackContext = fallbackScoring.context;
 			const score = fallbackScoring.score;
 			const rawMaturity = computeMaturityStage(checkResults, fallbackContext?.profile);
-			const maturity = capMaturityStage(rawMaturity, score.overall);
+			const maturity = score.overall === null ? rawMaturity : capMaturityStage(rawMaturity, score.overall);
 			result = {
 				domain,
 				score,

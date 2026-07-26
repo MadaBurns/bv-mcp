@@ -13,6 +13,7 @@ import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../lib/scoring-
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { StructuredScanResult } from './scan/format-report';
 import type { OutputFormat } from '../handlers/tool-args';
+import { formatScoreGrade } from '../lib/ungraded-display';
 
 export interface BatchScanResultItem extends StructuredScanResult {
 	error?: string;
@@ -37,12 +38,20 @@ const DEFAULT_BUDGET_MS = 25_000;
 const DEFAULT_CONCURRENCY = 3;
 const MAX_DOMAINS = 10;
 
+/**
+ * Placeholder for a domain that was NEVER MEASURED — invalid input, batch budget
+ * exceeded before the scan started, or the scan threw. It carries no score, no
+ * grade and no verdict, because none were observed. Emitting `score: 0, grade: 'F'`
+ * here (the pre-3.35.0 behaviour) published a fabricated failing measurement about
+ * a real named organisation into customer reports.
+ */
 function emptyResult(domain: string, error: string): BatchScanResultItem {
 	return {
 		domain,
-		score: 0,
-		grade: 'F',
-		passed: false,
+		score: null,
+		grade: null,
+		passed: null,
+		measured: false,
 		maturityStage: null,
 		maturityLabel: null,
 		categoryScores: {},
@@ -59,6 +68,13 @@ function emptyResult(domain: string, error: string): BatchScanResultItem {
 		cdnProvider: null,
 		notApplicableCategories: [],
 		inconclusiveCategories: [],
+		// Nothing ran, so there is no evidence to report. `evidenceInsufficient` stays
+		// FALSE deliberately: that flag means "checks ran but too few completed". The
+		// "nothing ran at all" state is carried by `measured: false`, and the two are
+		// mutually exclusive by contract.
+		evidence: { attempted: 0, completed: 0, ratio: 0 },
+		evidenceInsufficient: false,
+		evidenceNote: null,
 		timestamp: new Date().toISOString(),
 		cached: false,
 		// No scan ran for an error placeholder (invalid domain / budget exceeded),
@@ -147,14 +163,33 @@ export function formatBatchScan(results: BatchScanResultItem[], format: OutputFo
 	lines.push('');
 
 	for (const r of results) {
-		if (r.error) {
-			lines.push(`✗ ${r.domain.padEnd(40)} Error: ${r.error}`);
+		// `!r.measured` is defence-in-depth alongside the nullness checks. The producers
+		// now emit `null` for an unmeasured domain, but before 3.35.0 an NXDOMAIN/SERVFAIL
+		// scan_domain result ran zero checks and still carried a raw score/grade pair —
+		// neither of them null — so gating on nullness alone rendered a confident
+		// `0/100 (F)` for a domain that was never measured. Any future ScanScore source
+		// that reintroduces a placeholder pair is still caught here. Mirrors the same
+		// conjunction compare-domains.ts uses for its `rankable` filter.
+		if (!r.measured || r.score === null || r.grade === null) {
+			// A gate-fired domain (checks ran, evidence was too thin to grade) is NOT the
+			// same state as a domain that was never scanned at all (invalid input / budget
+			// exceeded / threw) — rendering both as bare "not measured" made a real partial
+			// scan with real findings byte-identical to a domain that never resolved.
+			if (r.evidenceInsufficient) {
+				lines.push(`· ${r.domain.padEnd(40)} evidence insufficient (${r.evidence.completed}/${r.evidence.attempted} checks completed)`);
+			} else {
+				const why = r.error ? `: ${r.error}` : '';
+				lines.push(`· ${r.domain.padEnd(40)} not measured${why}`);
+			}
 			continue;
 		}
 		const icon = r.score >= 80 ? '✓' : r.score >= 50 ? '⚠' : '✗';
-		lines.push(`${icon} ${r.domain.padEnd(40)} ${r.score}/100 (${r.grade})`);
+		lines.push(`${icon} ${r.domain.padEnd(40)} ${formatScoreGrade(r.score, r.grade)}`);
 		if (format === 'full') {
 			lines.push(`   Profile: ${r.scoringProfile} | Maturity: Stage ${r.maturityStage ?? '?'}`);
+			if (r.evidence.attempted > 0 && r.evidence.completed < r.evidence.attempted) {
+				lines.push(`   Checks completed: ${r.evidence.completed}/${r.evidence.attempted}`);
+			}
 			const critHigh = r.findingCounts.critical + r.findingCounts.high;
 			if (critHigh > 0) {
 				lines.push(`   Critical/High findings: ${critHigh}`);
@@ -163,6 +198,6 @@ export function formatBatchScan(results: BatchScanResultItem[], format: OutputFo
 	}
 
 	lines.push('');
-	lines.push(`Scanned ${results.filter((r) => !r.error).length}/${results.length} domain(s) successfully`);
+	lines.push(`Scanned ${results.filter((r) => r.measured && r.score !== null).length}/${results.length} domain(s) successfully`);
 	return lines.join('\n');
 }

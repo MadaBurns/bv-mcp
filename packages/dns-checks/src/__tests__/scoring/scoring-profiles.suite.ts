@@ -19,10 +19,23 @@ import type { CheckCategory, CheckResult, DomainContext } from '../../scoring';
 type ScoringModule = typeof import('../../scoring');
 
 export function defineScoringProfilesSuite(s: ScoringModule): void {
-	const { computeScanScore, computeProfileAwareScanScore, buildCheckResult, createFinding, getProfileWeights, PROFILE_WEIGHTS, PROFILE_CRITICAL_CATEGORIES } =
-		s;
+	const {
+		computeScanScore,
+		computeProfileAwareScanScore,
+		buildCheckResult,
+		createFinding,
+		getProfileWeights,
+		PROFILE_WEIGHTS,
+		PROFILE_CRITICAL_CATEGORIES,
+		detectDomainContext,
+	} = s;
 
-	function makeResult(category: CheckCategory, score: number, title?: string, severity?: 'info' | 'low' | 'medium' | 'high' | 'critical'): CheckResult {
+	function makeResult(
+		category: CheckCategory,
+		score: number,
+		title?: string,
+		severity?: 'info' | 'low' | 'medium' | 'high' | 'critical',
+	): CheckResult {
 		const findings = [];
 		if (score === 100) {
 			findings.push(createFinding(category, title ?? `${category} OK`, 'info', 'Check passed'));
@@ -150,9 +163,13 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				expect(withoutContext.grade).toBe(withUndefined.grade);
 			});
 
-			it('empty results still return 100', () => {
+			it('empty results are ungraded, not context-dependent (evidence gate fires before profile logic)', () => {
+				// Was: "empty results still return 100" — pinning that the no-context path
+				// behaves the same regardless of profile context. That intent survives: the
+				// evidence gate fires uniformly for both, before any profile weighting runs.
 				const score = computeScanScore([]);
-				expect(score.overall).toBe(100);
+				expect(score.overall).toBeNull();
+				expect(score.evidenceInsufficient).toBe(true);
 			});
 		});
 
@@ -270,6 +287,124 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 			});
 		});
 
+		describe('failureRatio counts only MEASURED checks', () => {
+			/** A check that ran and passed. */
+			function ok(category: CheckCategory): CheckResult {
+				return {
+					...buildCheckResult(category, [createFinding(category, `${category} OK`, 'info', 'Check passed')], true),
+					checkStatus: 'completed',
+				};
+			}
+			/** A check that ran and genuinely failed. */
+			function failed(category: CheckCategory): CheckResult {
+				return {
+					...buildCheckResult(category, [createFinding(category, `No ${category} record found`, 'critical', 'Missing record')], false),
+					score: 0,
+					passed: false,
+					checkStatus: 'completed' as const,
+				};
+			}
+			/** A check that never ran — exactly the shape scan-domain.ts:671 produces on a per-check timeout. */
+			function unmeasured(category: CheckCategory): CheckResult {
+				return {
+					...buildCheckResult(category, [createFinding(category, `${category.toUpperCase()} check timed out`, 'low', 'Did not complete')]),
+					score: 0,
+					passed: false,
+					checkStatus: 'timeout' as const,
+				};
+			}
+			/** A check that ran and passed but predates the `checkStatus` field (absent checkStatus) —
+			 * a legacy CheckResult shape that must still count as measured, not be silently excluded. */
+			function legacy(category: CheckCategory): CheckResult {
+				return buildCheckResult(category, [createFinding(category, `${category} OK`, 'info', 'Check passed')], true);
+			}
+
+			it('does NOT flip to the minimal profile when the majority of checks merely FAILED TO RUN', () => {
+				// 3 measured and passing, 7 unmeasured. Old behaviour: 7/10 = 0.7 > 0.5 → minimal.
+				// New behaviour: the ratio is computed over the 3 measured checks, 0/3 = 0 → no flip.
+				const results: CheckResult[] = [
+					ok('mx'),
+					ok('spf'),
+					ok('dmarc'),
+					unmeasured('dnssec'),
+					unmeasured('ssl'),
+					unmeasured('caa'),
+					unmeasured('ns'),
+					unmeasured('mta_sts'),
+					unmeasured('subdomain_takeover'),
+					unmeasured('http_security'),
+				];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).not.toBe('minimal');
+				const failureSignals = ctx.signals.filter((sig) => sig.includes('checks failed'));
+				expect(failureSignals).toHaveLength(0);
+			});
+
+			it('STILL flips to minimal when the majority of checks ran and genuinely failed (behaviour preserved)', () => {
+				const results: CheckResult[] = [ok('mx'), ok('spf'), failed('dmarc'), failed('dnssec'), failed('ssl'), failed('caa'), failed('ns')];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).toBe('minimal');
+				const failureSignals = ctx.signals.filter((sig) => sig.includes('checks failed'));
+				// Non-empty guard: without it the signal-content assertion below could never execute.
+				expect(failureSignals.length).toBeGreaterThan(0);
+				expect(failureSignals[0]).toContain('71%'); // 5 failed of 7 measured
+			});
+
+			it('is UNCHANGED for a result set where every check completed', () => {
+				// The "73 stays 73" guarantee: with no unmeasured checks, the filter is a no-op.
+				const results: CheckResult[] = [ok('mx'), ok('spf'), ok('dmarc'), failed('dnssec'), failed('ssl')];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).toBe('mail_enabled');
+				expect(ctx.signals.filter((sig) => sig.includes('checks failed'))).toHaveLength(0); // 2/5 = 0.4, not > 0.5
+			});
+
+			it('flips to minimal when ALL measured checks failed, even though unmeasured checks outnumber them (denominator must exclude unmeasured too)', () => {
+				// 3 measured, all genuinely failed; 7 unmeasured. Correct: 3 failed / 3 measured = 100% → minimal.
+				// A half-fix that filters only the numerator but still divides by results.length (10)
+				// would compute 3/10 = 30% → mail_enabled, silently making `minimal` unreachable whenever
+				// timeouts coexist with real failures. This test pins the DENOMINATOR half of the fix.
+				const results: CheckResult[] = [
+					failed('spf'),
+					failed('dmarc'),
+					failed('dnssec'),
+					unmeasured('ssl'),
+					unmeasured('caa'),
+					unmeasured('ns'),
+					unmeasured('mta_sts'),
+					unmeasured('subdomain_takeover'),
+					unmeasured('http_security'),
+					unmeasured('bimi'),
+				];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).toBe('minimal');
+				const failureSignals = ctx.signals.filter((sig) => sig.includes('checks failed'));
+				expect(failureSignals.length).toBeGreaterThan(0);
+				expect(failureSignals[0]).toContain('100%'); // 3 failed of 3 measured
+			});
+
+			it('does not flip or emit a signal when NO check was measured at all (denominator-zero guard)', () => {
+				// All checks unmeasured — totalChecks === 0 is reachable with a non-empty result set.
+				// failureRatio must resolve to 0 (not NaN), so there is no flip and no signal.
+				const results: CheckResult[] = [unmeasured('spf'), unmeasured('dmarc'), unmeasured('dnssec'), unmeasured('ssl'), unmeasured('caa')];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).not.toBe('minimal');
+				expect(ctx.signals.filter((sig) => sig.includes('checks failed'))).toHaveLength(0);
+			});
+
+			it('treats a check with ABSENT checkStatus (legacy CheckResult shape) as measured', () => {
+				// 2 legacy-passing (no checkStatus property at all) + 3 explicit-failed = 5 measured;
+				// 3/5 = 60% > 50% → minimal. A wrong-predicate mutation (checkStatus === 'completed'
+				// instead of !== 'timeout' && !== 'error') would exclude the legacy checks from BOTH
+				// counts, landing on 3/3 = 100% instead — the '60%' assertion below catches that.
+				const results: CheckResult[] = [legacy('spf'), legacy('caa'), failed('dmarc'), failed('dnssec'), failed('ssl')];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).toBe('minimal');
+				const failureSignals = ctx.signals.filter((sig) => sig.includes('checks failed'));
+				expect(failureSignals.length).toBeGreaterThan(0);
+				expect(failureSignals[0]).toContain('60%'); // 3 failed of 5 measured (incl. 2 legacy-passing)
+			});
+		});
+
 		describe('scoring v2 profile weights', () => {
 			it('mail_enabled core weights sum to 54', () => {
 				const core = PROFILE_WEIGHTS.mail_enabled;
@@ -279,10 +414,9 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 
 			it('mail_enabled protective weights sum to 20', () => {
 				const p = PROFILE_WEIGHTS.mail_enabled;
-				const protSum = (['subdomain_takeover', 'http_security', 'mta_sts', 'mx', 'caa', 'ns', 'lookalikes', 'shadow_domains'] as const).reduce(
-					(sum, k) => sum + p[k].importance,
-					0,
-				);
+				const protSum = (
+					['subdomain_takeover', 'http_security', 'mta_sts', 'mx', 'caa', 'ns', 'lookalikes', 'shadow_domains'] as const
+				).reduce((sum, k) => sum + p[k].importance, 0);
 				expect(protSum).toBe(20);
 			});
 

@@ -24,15 +24,31 @@
 import type { Finding } from '@blackveil/dns-checks/scoring';
 import type { ScanDomainResult } from '../tools/scan-domain';
 
-/** Compact, round-trippable projection of a completed scan. */
+/**
+ * Compact, round-trippable projection of a completed scan.
+ *
+ * `score` and `grade` are nullable because `ScanScore.overall` / `.grade` are:
+ * a scan whose checks all came back inconclusive (unresolvable zone, NXDOMAIN,
+ * scoring-bundle failure) is UNGRADED, and `null` is the single representation
+ * of that. Substituting `0` / `'F'` here would persist a fabricated *failing
+ * measurement* about a real domain into the tenant's `scans` table — and unlike
+ * `null`, `0` survives every null-skipping filter downstream (it is the exact
+ * defect `mean_score` and the DLQ writer were fixed for). The columns have
+ * always been nullable, so no migration is involved.
+ */
 export interface TenantScanSnapshot {
-	score: number;
-	grade: string;
+	score: number | null;
+	grade: string | null;
 	maturityStage: number | null;
 	findings: Finding[];
 }
 
-/** Project a completed `ScanDomainResult` onto the persisted snapshot. */
+/**
+ * Project a completed `ScanDomainResult` onto the persisted snapshot.
+ *
+ * Threads `overall` / `grade` through unchanged, nulls included — never
+ * defaulted.
+ */
 export function toTenantScanSnapshot(result: ScanDomainResult): TenantScanSnapshot {
 	return {
 		score: result.score.overall,
@@ -59,10 +75,19 @@ export function parseTenantScanSnapshot(json: string | null | undefined): Tenant
 	}
 	if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
 	const candidate = parsed as Partial<TenantScanSnapshot>;
-	if (typeof candidate.score !== 'number' || typeof candidate.grade !== 'string') return null;
+	// Recognition is by KEY PRESENCE, not by value type. `score`/`grade` are
+	// legitimately `null` on an ungraded scan, so a type-only guard would reject a
+	// perfectly valid ungraded snapshot and force a needless full rescan of a
+	// domain whose fingerprint is unchanged. Requiring the keys still rejects
+	// everything this guard exists to reject: a DLQ `{ error }` row (neither key),
+	// and a stray `CheckResult` row (`{ category, score, findings }` — has `score`
+	// but no `grade`).
+	const hasScore = 'score' in candidate && (typeof candidate.score === 'number' || candidate.score === null);
+	const hasGrade = 'grade' in candidate && (typeof candidate.grade === 'string' || candidate.grade === null);
+	if (!hasScore || !hasGrade) return null;
 	return {
-		score: candidate.score,
-		grade: candidate.grade,
+		score: typeof candidate.score === 'number' ? candidate.score : null,
+		grade: typeof candidate.grade === 'string' ? candidate.grade : null,
 		maturityStage: typeof candidate.maturityStage === 'number' ? candidate.maturityStage : null,
 		findings: Array.isArray(candidate.findings) ? (candidate.findings as Finding[]) : [],
 	};

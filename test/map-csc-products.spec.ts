@@ -207,4 +207,262 @@ describe('formatCscProducts', () => {
 		expect(compact.length).toBeLessThan(full.length);
 		expect(compact).toContain('CSC MultiLock');
 	});
+
+	it('renders "not measured" instead of null/100 (null) for an ungraded scan', async () => {
+		const { evaluateCscProducts: evaluate, formatCscProducts: fmt } = await import('../src/tools/map-csc-products');
+		const report = evaluate([], null, 'never-measured.example', null, null);
+		const text = fmt(report, 'full');
+
+		expect(text).toContain('not measured');
+		expect(text).not.toContain('null');
+	});
+
+	it('still renders the real score for a measured scan (control)', async () => {
+		const { formatCscProducts: fmt } = await import('../src/tools/map-csc-products');
+		// Without this the assertion above would hold under a formatter that printed
+		// the ungraded token unconditionally.
+		const text = fmt(sampleReport(), 'full');
+		expect(text).toContain('55/100 (F)');
+		expect(text).not.toContain('not measured');
+	});
+});
+
+/**
+ * `map_csc_products` sold three products for a domain nobody measured.
+ *
+ * `evaluateCscProducts` set `assessed: isMeasured(checkResults)` and
+ * `formatCscProducts` never read it, so an NXDOMAIN domain rendered
+ * "**Score:** not measured | **3** recommended" followed by three priority-tagged
+ * upsells justified by "DMARC not observed" — every one of them derived from
+ * having observed nothing. `prioritize_csc_leads` suppresses exactly this from the
+ * SAME producer output ("printing them under a 'not measured' score would sell
+ * products for a domain nobody looked at"); two tools, one input, opposite answers.
+ *
+ * Both directions are pinned here: abstain when nothing ran, and never suppress a
+ * product gap that rests on real evidence.
+ */
+describe('formatCscProducts — a domain where no check ran', () => {
+	/** The exact producer output for a domain that does not resolve: no checks, no RDAP posture. */
+	async function unassessed(domain = 'never-measured-domain.com') {
+		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		return evaluate([], null, domain, null, null);
+	}
+
+	it('emits no priced product gap on the wire', async () => {
+		const report = await unassessed();
+
+		// Fixture-reachability guard: this is the state under test.
+		expect(report.assessed).toBe(false);
+		// Was 3, each `recommended: true, priority: 'low'`, on the strength of
+		// non-observation. A consumer reading `recommendations` without consulting
+		// `assessed` could not tell those apart from measured gaps.
+		expect(report.recommendedCount).toBe(0);
+		expect(report.recommendations.every((r) => r.recommended === false)).toBe(true);
+		expect(report.recommendations.every((r) => r.priority === 'none')).toBe(true);
+		// The four products still appear in fixed order — the shape is unchanged, only
+		// the verdict abstains.
+		expect(report.recommendations.map((r) => r.product)).toEqual([
+			'csc_multilock',
+			'managed_dmarc',
+			'digital_certificates',
+			'dnssec_management',
+		]);
+	});
+
+	it.each(['compact', 'full'] as const)('prints the honest note and no recommendation list [%s]', async (format) => {
+		const { formatCscProducts: fmt, UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+		const text = fmt(await unassessed(), format);
+
+		expect(text, format).toContain('not measured');
+		// The established wording, shared with prioritize_csc_leads — not a third
+		// vocabulary for the same state.
+		expect(text, format).toContain(UNASSESSED_CSC_NOTE);
+		// No product line, and no count claim about products.
+		expect(text, format).not.toContain('Managed DMARC');
+		expect(text, format).not.toContain('Digital Certificates');
+		expect(text, format).not.toContain('DNSSEC management');
+		expect(text, format).not.toContain('recommended');
+		expect(text, format).not.toContain('upsell');
+		// The banked defect verbatim, in each format's own phrasing.
+		expect(text, format).not.toContain('not observed');
+		expect(text, format).not.toMatch(/\[low\]|— LOW/);
+	});
+
+	it.each(['compact', 'full'] as const)('still lists every product for a MEASURED domain [%s] (control)', async (format) => {
+		const { evaluateCscProducts: evaluate, formatCscProducts: fmt, UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+		// Without this control every assertion above would hold under a formatter that
+		// suppressed the product list unconditionally.
+		const report = evaluate(
+			[makeCheck('dmarc', false, [{ title: 'No DMARC record', severity: 'high' }]), makeCheck('ssl', true), makeCheck('dnssec', true)],
+			lp({ level: 'unlocked', transferLocked: false }),
+			'measured-domain.com',
+			55,
+			'F',
+		);
+		const text = fmt(report, format);
+
+		expect(report.assessed).toBe(true);
+		expect(report.recommendedCount).toBe(2);
+		expect(text, format).toContain('Managed DMARC');
+		expect(text, format).toContain('CSC MultiLock');
+		expect(text, format).not.toContain(UNASSESSED_CSC_NOTE);
+		expect(text, format).toContain('55/100 (F)');
+	});
+
+	it('does NOT suppress a real RDAP lock gap just because the scan measured nothing (mirror)', async () => {
+		const { evaluateCscProducts: evaluate, formatCscProducts: fmt } = await import('../src/tools/map-csc-products');
+		// A registered domain whose zone is broken still has an observable registrar
+		// lock status: RDAP is fetched independently of the scan. That gap is a real
+		// measurement, and abstaining on it would be the over-abstain mirror of the
+		// defect above.
+		const report = evaluate([], lp({ level: 'unlocked', transferLocked: false }), 'broken-zone-domain.com', null, null);
+
+		expect(report.assessed).toBe(false);
+		expect(report.recommendedCount).toBe(1);
+		const full = fmt(report, 'full');
+		expect(full).toContain('CSC MultiLock');
+		expect(full).toContain('Domain transfer not locked');
+		// …while the three CHECK-derived products stay suppressed.
+		expect(full).not.toContain('Managed DMARC');
+		expect(full).not.toContain('DNSSEC management');
+	});
+});
+
+/**
+ * Task 6b: a total outage — every attempted check errors out — previously read
+ * `assessed: isMeasured(checkResults)` as `true` (checks.length > 0), so
+ * `evalScanProduct` priced an upsell off `passed: false` + a "check error"
+ * finding manufactured by the transient failure — a confident sales gap from
+ * zero completed evidence. `hasCompletedEvidence` must read this the same way
+ * as zero checks, with DISTINCT wording ("no checks ran" would be false when
+ * N checks DID run).
+ */
+describe('evaluateCscProducts: a total outage (all checks attempted, none completed) is honestly unassessed', () => {
+	it('assessed is false with a truthful, distinct caveat, and no priced product gap', async () => {
+		const {
+			evaluateCscProducts: evaluate,
+			buildAllTransientCscNote,
+			UNASSESSED_CSC_NOTE: NOTE,
+		} = await import('../src/tools/map-csc-products');
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		const allTransient: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
+			...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+			score: 0,
+			passed: false,
+			checkStatus: 'error' as const,
+			partial: true,
+		}));
+		expect(allTransient.length).toBeGreaterThan(10);
+
+		const report = evaluate(allTransient, null, 'total-outage.example', null, null);
+
+		expect(report.assessed).toBe(false);
+		expect(report.recommendedCount).toBe(0);
+		expect(report.recommendations.every((r) => r.recommended === false)).toBe(true);
+		expect(report.recommendations.every((r) => r.priority === 'none')).toBe(true);
+		expect(report.caveat).toBe(buildAllTransientCscNote(allTransient.length));
+		expect(report.caveat).not.toBe(NOTE);
+		expect(report.caveat).toMatch(/attempted/i);
+		expect(report.caveat!.toLowerCase()).not.toContain('no checks ran');
+	});
+
+	it('keeps the genuine no-evidence case byte-identical to its pre-existing wording (control)', async () => {
+		const { evaluateCscProducts: evaluate, UNASSESSED_CSC_NOTE: NOTE } = await import('../src/tools/map-csc-products');
+		const report = evaluate([], null, 'never-measured.example', null, null);
+		expect(report.assessed).toBe(false);
+		expect(report.caveat).toBe(NOTE);
+	});
+
+	it('still lists real recommendations for a MEASURED domain (guard — no over-abstain, 1-of-N completed)', async () => {
+		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		const mostlyTransient: CheckResult[] = SCAN_CATEGORIES.map((c) => {
+			if (c === 'dmarc') {
+				return {
+					...buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record', 'high', 'missing')]),
+					score: 0,
+					passed: false,
+				};
+			}
+			return {
+				...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'error' as const,
+				partial: true,
+			};
+		});
+		expect(mostlyTransient.length).toBeGreaterThan(10);
+
+		const report = evaluate(mostlyTransient, null, 'partial-outage.example', null, null);
+
+		expect(report.assessed).toBe(true);
+		expect(report.caveat).toBeNull();
+		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
+		expect(dmarc.recommended).toBe(true);
+		expect(dmarc.priority).toBe('high');
+	});
+});
+
+/**
+ * Round 6c, N2: `unassessedScanProduct` used to classify by comparing the
+ * `caveat` STRING against `UNASSESSED_CSC_NOTE` identity, with "anything
+ * else" silently defaulting to the transient branch. That meant a renamed
+ * `UNASSESSED_CSC_NOTE` constant, an edited `buildAllTransientCscNote`
+ * wording, or a third failure-mode string introduced later would have
+ * misclassified with no compiler or test signal. It now takes a
+ * `caveatKind: CaveatKind | null` parameter instead and never reads prose at
+ * all — these tests pin that decoupling directly, at the unit responsible
+ * for the classification, independent of whatever `evaluateCscProducts`
+ * happens to compute for `caveat`.
+ */
+describe('unassessedScanProduct — classifies by caveatKind, never by comparing the caveat string (round 6c, N2 pin)', () => {
+	it('caveatKind "all_transient" always reads as attempted-none-completed, regardless of any caveat prose', async () => {
+		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const rec = unassessedScanProduct('managed_dmarc', 'DMARC', 'all_transient');
+		expect(rec.justifyingGap).toContain('checks attempted, none completed');
+		expect(rec.justifyingGap.toLowerCase()).not.toContain('no checks ran');
+		expect(rec.recommended).toBe(false);
+		expect(rec.priority).toBe('none');
+	});
+
+	it('caveatKind "never_ran" always reads as no-checks-ran, regardless of any caveat prose', async () => {
+		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const rec = unassessedScanProduct('digital_certificates', 'TLS/SSL', 'never_ran');
+		expect(rec.justifyingGap).toContain('no checks ran');
+		expect(rec.justifyingGap).not.toContain('attempted, none completed');
+	});
+
+	it('caveatKind null (defensive — should not occur for a real unassessed report) still classifies as never-ran, not transient', async () => {
+		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const rec = unassessedScanProduct('dnssec_management', 'DNSSEC', null);
+		expect(rec.justifyingGap).toContain('no checks ran');
+	});
+
+	it('PIN: a renamed/edited caveat constant does not flip classification — the old string-identity code would have misclassified it', async () => {
+		const { unassessedScanProduct, UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+
+		// The pre-fix implementation, reconstructed here to demonstrate the bug it
+		// had: `caveat === UNASSESSED_CSC_NOTE ? never-ran : transient` (anything
+		// that isn't an EXACT match defaults to transient). A wording edit to the
+		// never-ran constant — e.g. adding a trailing space, rephrasing a clause —
+		// breaks that exact-match test and silently flips a never-ran domain to
+		// read as a transient outage.
+		const oldStyleIsNeverRan = (caveat: string | null): boolean => caveat === UNASSESSED_CSC_NOTE;
+		const renamedNeverRanWording = `${UNASSESSED_CSC_NOTE} `; // trailing space: a realistic, easy-to-miss edit
+
+		// The OLD code misclassifies the renamed wording as transient:
+		expect(oldStyleIsNeverRan(renamedNeverRanWording)).toBe(false);
+
+		// The NEW code is immune — `unassessedScanProduct` takes `caveatKind`
+		// directly and never compares against the constant's current text at all,
+		// so this exact renamed-wording scenario cannot reach it:
+		const rec = unassessedScanProduct('managed_dmarc', 'DMARC', 'never_ran');
+		expect(rec.justifyingGap).toContain('no checks ran');
+		expect(rec.justifyingGap.toLowerCase()).not.toContain('attempted, none completed');
+	});
 });

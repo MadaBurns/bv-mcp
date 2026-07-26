@@ -74,12 +74,19 @@ function renderBadge(label: string, value: string, color: string): string {
 }
 
 /**
- * Generate an SVG badge displaying a DNS security grade.
+ * Generate an SVG grade badge.
  *
- * @param grade - The letter grade (e.g., "A+", "B", "F")
+ * A `null` grade means the domain was NOT measured — the badge says so
+ * explicitly rather than defaulting to a letter. Rendering `F` here would
+ * publish a fabricated failing measurement on a public, embeddable image.
+ *
+ * @param grade - Canonical 9-band grade letter, or `null` when ungraded
  * @returns SVG string
  */
-export function gradeBadge(grade: string): string {
+export function gradeBadge(grade: string | null): string {
+	if (grade === null) {
+		return renderBadge('DNS Security', 'unknown', ERROR_COLOR);
+	}
 	const color = GRADE_COLORS[grade] ?? ERROR_COLOR;
 	return renderBadge('DNS Security', grade, color);
 }

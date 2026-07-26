@@ -4,7 +4,12 @@ import { logEvent, logError } from '../lib/log';
 import type { AnalyticsClient } from '../lib/analytics';
 import type { McpClientType } from '../lib/client-detection';
 
-type ToolSuccessStatus = 'pass' | 'fail';
+/**
+ * `'inconclusive'` = the tool ran without erroring but produced no gradeable
+ * measurement (an ungraded scan). Analytics-only; labelling it `'fail'` would
+ * record every unmeasured scan as a failure — the same fabrication one layer down.
+ */
+type ToolSuccessStatus = 'pass' | 'fail' | 'inconclusive';
 type ToolFailureSeverity = 'warn' | 'error';
 
 interface ToolExecutionBase {
@@ -70,12 +75,14 @@ export function buildLogContext(
 	};
 }
 
-export function logToolSuccess(options: ToolExecutionBase & {
-	status: ToolSuccessStatus;
-	logResult: string;
-	logDetails: unknown;
-	severity?: 'info' | 'warn';
-}): void {
+export function logToolSuccess(
+	options: ToolExecutionBase & {
+		status: ToolSuccessStatus;
+		logResult: string;
+		logDetails: unknown;
+		severity?: 'info' | 'warn';
+	},
+): void {
 	options.analytics?.emitToolEvent({
 		toolName: options.toolName,
 		status: options.status,
@@ -106,11 +113,13 @@ export function logToolSuccess(options: ToolExecutionBase & {
 	});
 }
 
-export function logToolFailure(options: ToolExecutionBase & {
-	error: unknown;
-	args: Record<string, unknown>;
-	severity?: ToolFailureSeverity;
-}): void {
+export function logToolFailure(
+	options: ToolExecutionBase & {
+		error: unknown;
+		args: Record<string, unknown>;
+		severity?: ToolFailureSeverity;
+	},
+): void {
 	options.analytics?.emitToolEvent({
 		toolName: options.toolName,
 		status: 'error',

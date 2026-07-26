@@ -511,6 +511,37 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 		expect(body.summary.measured_domains).toBe(0);
 	});
 
+	// Ported from the nullable-grade branch: the `{ score: 0, grade: 'F' }` row is
+	// load-bearing. It is a domain that WAS measured and genuinely scored zero.
+	// Without it, a `filter(Boolean)` predicate is indistinguishable from the correct
+	// `typeof r.score === 'number'` one — and `filter(Boolean)` is the same
+	// fabrication inverted, silently dropping every legitimately-failing domain out
+	// of the tenant's mean.
+	it('excludes ungraded scans from BOTH the numerator and the denominator, without dropping a real zero', async () => {
+		const customEnv = makeReportEnv([
+			{ score: 90, grade: 'A' },
+			{ score: 80, grade: 'B' },
+			{ score: 70, grade: 'C' },
+			{ score: 0, grade: 'F' },
+			{ score: null, grade: null },
+			{ score: null, grade: null },
+		]);
+		const res = await sendRequest(makeReq('cycle_ungraded_mean'), customEnv);
+		expect(res.status).toBe(200);
+		const body = (await res.json()) as { summary: ReportSummary };
+
+		// Correct: (90+80+70+0)/4 = 60 — the four MEASURED domains, including the real F.
+		// Pre-fix (nulls coerced to 0, kept in the denominator): 240/6 = 40.
+		// `filter(Boolean)` (drops the genuine 0 too): 240/3 = 80.
+		expect(body.summary.mean_score).toBeCloseTo(60, 5);
+		// `domains` still counts every attempted domain — only the MEAN abstains.
+		expect(body.summary.domains).toBe(6);
+		expect(body.summary.measured_domains).toBe(4);
+		expect(body.summary.grade_dist.unknown).toBe(2);
+		// The genuinely-failing domain is still represented everywhere it should be.
+		expect(body.summary.grade_dist.F).toBe(1);
+	});
+
 	it('writes an audit_events row for report.read with the cycle_id as resourceId', async () => {
 		const cycleId = 'cycle_audit_report';
 		const tenant = makeMockD1({

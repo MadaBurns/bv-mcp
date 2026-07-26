@@ -13,12 +13,15 @@ function buildScore(categoryScores: Partial<Record<CheckCategory, number>>, over
 		http_security: 100, dane: 100, mx_reputation: 100, srv: 100, zone_hygiene: 100,
 	};
 	const merged = { ...defaults, ...categoryScores };
+	// All 20 categories in `defaults` are populated (this fixture models a fully
+	// completed scan), so evidence is honestly full: nothing was left unmeasured.
 	return {
 		overall,
 		grade: 'B',
 		categoryScores: merged,
 		findings: [],
 		summary: `Grade: B`,
+		evidence: { attempted: 20, completed: 20, ratio: 1 },
 	};
 }
 

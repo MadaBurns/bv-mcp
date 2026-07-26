@@ -73,8 +73,9 @@ describe('scanDomain — scoring-failure degradation', () => {
 		// Checks ran and their findings are preserved for the operator.
 		expect(result.checks.length).toBeGreaterThan(0);
 
-		// Overall score is explicitly marked unavailable, not a misleading real 0.
-		expect(result.score.grade).toBe('N/A');
+		// Overall score is explicitly marked unavailable (null), not a misleading real 0.
+		expect(result.score.grade).toBeNull();
+		expect(result.score.overall).toBeNull();
 		expect(result.scoringNote).toBeTruthy();
 		expect(result.scoringNote!.toLowerCase()).toMatch(/scoring (unavailable|could not)/);
 

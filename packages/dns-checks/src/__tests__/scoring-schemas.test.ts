@@ -14,10 +14,32 @@ import {
 describe('CheckCategorySchema', () => {
 	it('accepts all valid categories', () => {
 		const categories = [
-			'spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'ns', 'caa',
-			'subdomain_takeover', 'mx', 'bimi', 'tlsrpt', 'lookalikes', 'shadow_domains',
-			'txt_hygiene', 'http_security', 'dane', 'ptr', 'mx_reputation', 'srv', 'zone_hygiene',
-			'dane_https', 'svcb_https', 'subdomailing', 'brand_discovery', 'authoritative_dns_infra',
+			'spf',
+			'dmarc',
+			'dkim',
+			'dnssec',
+			'ssl',
+			'mta_sts',
+			'ns',
+			'caa',
+			'subdomain_takeover',
+			'mx',
+			'bimi',
+			'tlsrpt',
+			'lookalikes',
+			'shadow_domains',
+			'txt_hygiene',
+			'http_security',
+			'dane',
+			'ptr',
+			'mx_reputation',
+			'srv',
+			'zone_hygiene',
+			'dane_https',
+			'svcb_https',
+			'subdomailing',
+			'brand_discovery',
+			'authoritative_dns_infra',
 		];
 		for (const cat of categories) {
 			const result = CheckCategorySchema.safeParse(cat);
@@ -303,5 +325,54 @@ describe('ScanScoreSchema', () => {
 			const result = ScanScoreSchema.safeParse({ ...validScanScore, grade });
 			expect(result.success, `expected grade '${grade}' to be valid`).toBe(true);
 		}
+	});
+
+	it('accepts a null overall and a null grade (ungraded scan)', () => {
+		const result = ScanScoreSchema.safeParse({ ...validScanScore, overall: null, grade: null });
+		expect(result.success).toBe(true);
+	});
+
+	it('accepts a null overall with a present grade and vice versa (schema does not couple them)', () => {
+		expect(ScanScoreSchema.safeParse({ ...validScanScore, overall: null }).success).toBe(true);
+		expect(ScanScoreSchema.safeParse({ ...validScanScore, grade: null }).success).toBe(true);
+	});
+
+	it('still rejects a non-numeric overall and a non-string grade', () => {
+		expect(ScanScoreSchema.safeParse({ ...validScanScore, overall: 'nope' }).success).toBe(false);
+		expect(ScanScoreSchema.safeParse({ ...validScanScore, grade: 42 }).success).toBe(false);
+	});
+
+	it('accepts a scan score with a well-formed evidence object', () => {
+		const result = ScanScoreSchema.safeParse({
+			...validScanScore,
+			evidence: { attempted: 19, completed: 19, ratio: 1 },
+			evidenceInsufficient: false,
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it('accepts an ungraded, evidence-insufficient scan score', () => {
+		const result = ScanScoreSchema.safeParse({
+			...validScanScore,
+			overall: null,
+			grade: null,
+			evidence: { attempted: 19, completed: 4, ratio: 4 / 19 },
+			evidenceInsufficient: true,
+			evidenceNote: 'Only 4 of 19 checks completed (21%).',
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it('still accepts a payload with NO evidence field (tolerant reader for older vendored copies)', () => {
+		// validScanScore deliberately has no `evidence` key.
+		expect('evidence' in validScanScore).toBe(false);
+		expect(ScanScoreSchema.safeParse(validScanScore).success).toBe(true);
+	});
+
+	it('rejects a malformed evidence object — optional must not degrade into unchecked', () => {
+		expect(ScanScoreSchema.safeParse({ ...validScanScore, evidence: { attempted: 'nineteen', completed: 4, ratio: 0.2 } }).success).toBe(
+			false,
+		);
+		expect(ScanScoreSchema.safeParse({ ...validScanScore, evidenceInsufficient: 'yes' }).success).toBe(false);
 	});
 });

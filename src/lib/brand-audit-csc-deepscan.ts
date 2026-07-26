@@ -37,11 +37,22 @@ type InternalCallFn = (tool: string, args: { domain: string }) => Promise<unknow
  * `categoryScores` values are plain numbers (or `null` for N/A categories),
  * and the payload carries **no per-finding array**, only `findingCounts`.
  * Dangling-DNS detail therefore has to come from `check_subdomain_takeover`.
+ *
+ * `score`/`grade` are nullable: an ungraded scan (zero checks ran, unresolvable
+ * zone, scoring-bundle failure) emits `null` rather than a fabricated `0`/`'F'`.
+ * This is a hand-written mirror, so widening the real type flags NOTHING here —
+ * the abstain gate below has to be maintained by hand against `format-report.ts`.
  */
 interface ScanDomainStructured {
 	domain: string;
-	score: number;
-	grade: string;
+	score: number | null;
+	grade: string | null;
+	/**
+	 * `false` = the scan ran ZERO checks, so whatever `score`/`grade` carry are
+	 * placeholders, not measurements. Optional because older/other producers may
+	 * omit it — absent is treated as measured, preserving prior behaviour.
+	 */
+	measured?: boolean;
 	categoryScores?: Record<string, number | null>;
 }
 
@@ -192,15 +203,37 @@ function extractDangling(apex: string, takeover: SubdomainTakeoverStructured | u
 	return dangling;
 }
 
-function medianGrade(grades: string[]): string | null {
-	if (grades.length === 0) return null;
-	const sorted = [...grades].sort();
+/**
+ * The abstain gate for an apex scan, matching the conjunction already used by
+ * `batch_scan` and `compare_domains` (`!measured || score === null || grade === null`).
+ *
+ * Returns all-null rather than a placeholder so an unmeasured apex cannot appear in
+ * the customer-visible grade distribution or be sorted into the portfolio median —
+ * the retired string sentinel sorted lexically AFTER 'F', so counting it dragged the
+ * median to the worst bucket, and a degenerate zero-check scan carries a literal 'A+'.
+ */
+function gradedApexPosture(scan: ScanDomainStructured): { score: number | null; grade: string | null } {
+	if (scan.measured === false || scan.score === null || scan.grade === null) {
+		return { score: null, grade: null };
+	}
+	return { score: scan.score, grade: scan.grade };
+}
+
+function medianGrade(grades: Array<string | null>): string | null {
+	const present = grades.filter((g): g is string => g !== null);
+	if (present.length === 0) return null;
+	const sorted = [...present].sort();
 	return sorted[Math.floor(sorted.length / 2)];
 }
 
-function distribution(grades: string[]): Record<string, number> {
+function distribution(grades: Array<string | null>): Record<string, number> {
 	const out: Record<string, number> = {};
-	for (const g of grades) out[g] = (out[g] ?? 0) + 1;
+	for (const g of grades) {
+		// An unmeasured apex contributes no grade — counting it would create a
+		// literal "null" bucket in the customer-visible distribution.
+		if (g === null) continue;
+		out[g] = (out[g] ?? 0) + 1;
+	}
 	return out;
 }
 
@@ -224,16 +257,17 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 	const postureApexes: BrandAuditCsc['postureSnapshot']['apexes'] = [];
 	const dangling: BrandAuditCsc['deepScan']['danglingDns'] = [];
 	const inventory: BrandAuditCsc['deepScan']['subdomainInventoryByApex'] = {};
-	const grades: string[] = [];
+	const grades: Array<string | null> = [];
 
 	for (const r of perApex) {
 		// scan_domain is the load-bearing call: without a posture there is nothing
 		// to report for this apex, so it is omitted entirely (partial result).
 		if (!r.scan) continue;
+		const posture = gradedApexPosture(r.scan);
 		postureApexes.push({
 			apex: r.apex,
-			grade: r.scan.grade,
-			score: r.scan.score,
+			grade: posture.grade,
+			score: posture.score,
 			dmarc: null,
 			spf: null,
 			dnssec: null,
@@ -241,7 +275,7 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 			mtaSts: null,
 			scannedAt: new Date().toISOString(),
 		});
-		grades.push(r.scan.grade);
+		grades.push(posture.grade);
 		const apexDangling = extractDangling(r.apex, r.takeover);
 		dangling.push(...apexDangling);
 		if (r.discover) {

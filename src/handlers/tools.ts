@@ -49,7 +49,8 @@ import { checkResolverConsistency, formatResolverConsistency } from '../tools/ch
 import { validateFix, formatValidateFix } from '../tools/validate-fix';
 import { mapSupplyChain, formatSupplyChain } from '../tools/map-supply-chain';
 import { generateRolloutPlan, formatRolloutPlan } from '../tools/generate-rollout-plan';
-import { computeDrift, formatDriftReport } from '../tools/analyze-drift';
+import { isGraded } from '../lib/scoring';
+import { computeDrift, formatDriftReport, isUsableDriftBaseline } from '../tools/analyze-drift';
 import { resolveSpfChain, formatSpfChain } from '../tools/resolve-spf-chain';
 import { discoverSubdomains, formatSubdomainDiscovery, DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS } from '../tools/discover-subdomains';
 import { mapCompliance, formatCompliance } from '../tools/map-compliance';
@@ -930,7 +931,8 @@ export const TOOL_REGISTRY: Record<
 		cacheTtlSeconds: 15,
 	},
 	scan_buckets_findings: {
-		cacheKey: (a, ro) => `bucketfindings:${ro?.keyHash ?? ro?.principalId ?? 'anon'}:${String(a.scanId)}:${String(a.target ?? '')}:${JSON.stringify(a.providers ?? [])}`,
+		cacheKey: (a, ro) =>
+			`bucketfindings:${ro?.keyHash ?? ro?.principalId ?? 'anon'}:${String(a.scanId)}:${String(a.target ?? '')}:${JSON.stringify(a.providers ?? [])}`,
 		execute: (_d, a, ro) =>
 			import('../tools/scan-buckets').then((m) =>
 				m.scanBucketsFindings(
@@ -1272,7 +1274,9 @@ export async function handleToolsCall(
 					// Callers persisting a scan (tenant queue consumer / scan routes) read
 					// the full ScanDomainResult from here — resultCapture cannot carry it.
 					runtimeOptions?.scanResultCapture?.(result);
-					logResult = result.score.grade;
+					// `grade` is nullable on an ungraded scan; the analytics log label
+					// abstains explicitly rather than emitting an empty/`null` result field.
+					logResult = result.score.grade ?? 'ungraded';
 					// Summary only, not the full result: scan_domain's ~19-category CheckResult[]
 					// (with per-category findings + metadata) logged in full on every call was the
 					// dominant contributor to "Log size limit exceeded" warnings on the tenant
@@ -1293,7 +1297,7 @@ export async function handleToolsCall(
 					const cacheStatus: 'hit' | 'miss' = result.cached ? 'hit' : 'miss';
 					logToolSuccess({
 						...ctx(),
-						status: result.score.overall >= 50 ? 'pass' : 'fail',
+						status: result.score.overall === null ? 'inconclusive' : result.score.overall >= 50 ? 'pass' : 'fail',
 						logResult,
 						logDetails,
 						severity: 'info',
@@ -1327,7 +1331,11 @@ export async function handleToolsCall(
 					logToolSuccess({
 						...ctx(),
 						status: 'pass',
-						logResult: `${batchResults.filter((r) => !r.error).length}/${batchResults.length} domains`,
+						// Same predicate as formatBatchScan's "Scanned N/M domain(s) successfully"
+						// footer. `!r.error` counted a domain that resolved but produced no
+						// measurement as a success, so the ops stream and the customer's report
+						// disagreed about the same run.
+						logResult: `${batchResults.filter((r) => r.measured && r.score !== null).length}/${batchResults.length} domains`,
 						logDetails: { totalDomains: batchResults.length },
 						severity: 'info',
 					});
@@ -1358,7 +1366,10 @@ export async function handleToolsCall(
 					logToolSuccess({
 						...ctx(),
 						status: 'pass',
-						logResult: `${Object.keys(compareResults.scores).length}/${compareResults.domains.length} domains compared`,
+						// `Object.keys(scores)` includes the domains whose score is `null` — the
+						// formatter prints those as "not measured", so counting them as compared
+						// made the ops stream claim a comparison the report never made.
+						logResult: `${Object.values(compareResults.scores).filter((s) => s !== null).length}/${compareResults.domains.length} domains compared`,
 						logDetails: { totalDomains: compareResults.domains.length, winner: compareResults.winner },
 						severity: 'info',
 					});
@@ -1370,9 +1381,13 @@ export async function handleToolsCall(
 					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
 					const scan = await scanDomain(validDomain, scanCacheKV, scanOptions);
 					const result = compareBaseline(scan, baseline);
-					logResult = result.passed ? 'pass' : 'fail';
+					// `passed === null` is the third state (a rule the scan could not measure).
+					// Collapsing it to 'fail' via a boolean test would misreport an unmeasured
+					// domain as a policy breach in the analytics/log stream.
+					const baselineStatus = result.passed === null ? 'inconclusive' : result.passed ? 'pass' : 'fail';
+					logResult = baselineStatus;
 					logDetails = result;
-					logToolSuccess({ ...ctx(), status: result.passed ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					logToolSuccess({ ...ctx(), status: baselineStatus, logResult, logDetails, severity: 'info' });
 					return buildToolResult(formatBaselineResult(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'generate': {
@@ -1385,7 +1400,7 @@ export async function handleToolsCall(
 							const forceRefresh = extractForceRefresh(validatedArgs);
 							const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
 							const plan = await generateFixPlan(validDomain, scanCacheKV, scanOptions);
-							logResult = plan.grade;
+							logResult = plan.grade ?? 'ungraded';
 							logDetails = plan;
 							logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 							return buildToolResult(formatFixPlan(plan, effectiveFormat), plan, effectiveFormat);
@@ -1452,7 +1467,13 @@ export async function handleToolsCall(
 						{ authToken: runtimeOptions?.bvWebBenchmarkAuthToken },
 					);
 					logDetails = result;
-					logToolSuccess({ ...ctx(), status: result.representative ? 'pass' : 'pass', logResult: result.status, logDetails, severity: 'info' });
+					logToolSuccess({
+						...ctx(),
+						status: result.representative ? 'pass' : 'pass',
+						logResult: result.status,
+						logDetails,
+						severity: 'info',
+					});
 					return buildToolResult(formatDomainRank(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'get_benchmark': {
@@ -1467,7 +1488,12 @@ export async function handleToolsCall(
 						return buildToolErrorResult('Missing required parameter: provider');
 					}
 					const profile = typeof validatedArgs.profile === 'string' ? validatedArgs.profile : 'mail_enabled';
-					const result = await getProviderInsights(runtimeOptions?.profileAccumulator, provider, profile, runtimeOptions?.profileAccumulatorShardMode);
+					const result = await getProviderInsights(
+						runtimeOptions?.profileAccumulator,
+						provider,
+						profile,
+						runtimeOptions?.profileAccumulatorShardMode,
+					);
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: result.status, logDetails: result, severity: 'info' });
 					return buildToolResult(formatProviderInsights(result, effectiveFormat), result, effectiveFormat);
 				}
@@ -1532,11 +1558,25 @@ export async function handleToolsCall(
 							);
 						}
 						baselineScore = cached.score;
+						// A CACHED scan can legitimately be ungraded (NXDOMAIN, unresolvable zone).
+						// There is nothing to measure drift against, so abstain rather than diff
+						// against it and report a fabricated delta — e.g. a domain that NXDOMAINed
+						// and was later configured properly would otherwise render
+						// "Score: +73 pts (… -> B), improving" against a baseline never measured.
+						if (!isUsableDriftBaseline(baselineScore)) {
+							return buildToolErrorResult(
+								`Invalid baseline: the cached scan for ${validDomain} was never graded, so there is nothing to measure drift against. Re-run scan_domain.`,
+							);
+						}
 					} else {
 						try {
 							const parsed = JSON.parse(baselineStr);
-							if (typeof parsed?.overall !== 'number' || typeof parsed?.grade !== 'string' || !Array.isArray(parsed?.findings)) {
-								return buildToolErrorResult('Invalid baseline: JSON must contain overall (number), grade (string), and findings (array).');
+							// Same gate as the cached path: a caller-supplied baseline whose grade is
+							// a placeholder rather than a real letter fabricates the identical delta.
+							if (!isUsableDriftBaseline(parsed)) {
+								return buildToolErrorResult(
+									'Invalid baseline: JSON must contain overall (a finite number), grade (a real grade letter), and findings (array). An ungraded scan cannot be used as a drift baseline.',
+								);
 							}
 							baselineScore = parsed;
 						} catch {
@@ -1547,6 +1587,21 @@ export async function handleToolsCall(
 					const forceRefresh = extractForceRefresh(validatedArgs);
 					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
 					const scanResult = await scanDomain(validDomain, scanCacheKV, scanOptions);
+					// The CURRENT side needs the same abstain as the baseline side, and for a
+					// sharper reason: computeDrift diffs finding SETS, so an unmeasured current
+					// scan makes every baseline finding "disappear" and reports them as RESOLVED.
+					// A monitored client domain that lapses (NXDOMAIN) rendered "STABLE" with a
+					// HIGH and a MEDIUM finding ticked off as fixed — nothing was fixed, the
+					// domain stopped existing. categoryDeltas' `?? 0` likewise turned an empty
+					// categoryScores map into a confident `spf: 80 -> 0 (-80)`. Abstaining BEFORE
+					// computeDrift is what makes both unconstructible; computeDrift's own
+					// `'inconclusive'` classification is a verdict change layered on top of this
+					// guard for the callers that do reach it, not a substitute for it.
+					if (!isGraded(scanResult.score)) {
+						return buildToolErrorResult(
+							`Domain ${validDomain} could not be scored on this run (it does not resolve, or its zone is unresolvable), so there is nothing to compare against the baseline. Drift cannot be measured.`,
+						);
+					}
 					const drift = computeDrift(validDomain, baselineScore, scanResult.score);
 					logResult = drift.classification;
 					logDetails = drift;

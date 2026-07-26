@@ -23,6 +23,24 @@ Controls whose absence creates direct, exploitable risk. Missing-control rule ap
 
 **Confidence gate**: `scoreIndicatesMissingControl()` only fires for `deterministic`/`verified` confidence findings. Heuristic "not found" results from selector probing do not zero the category.
 
+### Evidence sufficiency
+
+A scan must complete at least **60%** of its attempted checks to receive a grade. Below
+that, `scan_domain` returns `score: null` / `grade: null` with `evidenceInsufficient: true`
+and a plain-English `evidenceNote`, rendered as `not measured`. Findings and per-category
+scores for the checks that *did* run are still returned.
+
+Every scan — graded or not — reports `evidence: { attempted, completed, ratio }` so a
+reader can see the scan's own coverage. The threshold is a single constant
+(`EVIDENCE_SUFFICIENCY_THRESHOLD` in `@blackveil/dns-checks`), overridable via
+`SCORING_CONFIG` → `thresholds.evidenceSufficiency` and clamped to `[0, 1]`.
+
+This is not a scoring cut-point: it changes only whether a grade is emitted, never what
+an emitted grade means. Two states stay strictly separate — **inconclusive** ("we could
+not measure it", `inconclusiveCategories`) and **not applicable** ("we measured, and it
+genuinely does not apply", `notApplicableCategories`). As of dns-checks 1.7.0 those two
+arrays are **disjoint**; read the union as the concatenation of both.
+
 ### Protective (20% of score)
 
 Active defenses against known attack vectors. Findings penalize but cannot trigger missing-control zeroing.
@@ -162,7 +180,7 @@ Source: `scoreToGrade()` in `packages/dns-checks/src/scoring/engine.ts` (re-expo
 
 The 9-band scale above is the **internal / SSOT** scale — used by `compare_baseline` ordering, the `/badge` SVG, `analyze_drift`, `map_compliance`, `generate_fix_plan`, cohort-percentile math, golden tests, and `ScanScore.grade`.
 
-The **customer-facing display scale is a NIST-aligned 6-band** (`nistScoreToGrade()`, also in `engine.ts`), shown by `scan_domain`, `batch_scan`, and `compare_domains` ONLY — recomputed from the same 0–100 score at the `format-report.ts` `displayGradeFor` chokepoint (`'N/A'` preserved):
+The **customer-facing display scale is a NIST-aligned 6-band** (`nistScoreToGrade()`, also in `engine.ts`), shown by `scan_domain`, `batch_scan`, and `compare_domains` ONLY — recomputed from the same 0–100 score at the `format-report.ts` `displayGradeFor` chokepoint (an ungraded scan stays `null` — there is no grade sentinel):
 
 - A+: `≥95`
 - A: `≥90`
@@ -183,7 +201,7 @@ Scores are unchanged by the display scale — only the letter differs. bv-web-pr
 | `enterprise_mail` | MX + enterprise provider + hardening signal | Email auth slightly higher, MTA-STS/TLS-RPT elevated |
 | `non_mail` | No MX, no web indicators | Email auth near-zero, DNSSEC/SubdomainTakeover elevated |
 | `web_only` | No MX + CAA or SSL present | Email auth near-zero, SSL elevated |
-| `minimal` | >50% checks failed | Weights spread evenly, lower total |
+| `minimal` | >50% of measured checks failed | Weights spread evenly, lower total |
 | `authoritative_dns_infra` | Explicit infrastructure assessment profile | Mail/web controls are non-scoring; authoritative DNS infra, DNSSEC, NS, and zone hygiene dominate |
 
 - **Email bonus**: only for `mail_enabled` and `enterprise_mail`
