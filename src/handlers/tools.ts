@@ -1561,12 +1561,23 @@ export async function handleToolsCall(
 					return buildToolResult(formatSpfChain(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'discover_subdomains': {
+					const forceRefresh = extractForceRefresh(validatedArgs);
 					const result = await discoverSubdomains(validDomain, runtimeOptions?.certstream, runtimeOptions?.certstreamAuthToken, {
 						signal: AbortSignal.timeout(DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS),
 						deadlineMs: Date.now() + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
+						...(forceRefresh && { forceRefresh }),
 					});
 					logResult = `${result.totalSubdomains} subdomains`;
-					logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length };
+					logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length, sourceUnavailable: result.sourceUnavailable ?? false };
+					// A CT-source outage (sourceUnavailable) is NOT a clean "0 subdomains found" — for a
+					// security tool the two are dangerously indistinguishable. Surface it as a failed/
+					// inconclusive tool call (isError) so a machine consumer cannot read "source down" as
+					// "genuinely no subdomains". The formatted text already explains the outage + suggests
+					// a retry; the structured payload carries sourceUnavailable:true for programmatic checks.
+					if (result.sourceUnavailable) {
+						logToolSuccess({ ...ctx(), status: 'fail', logResult: 'CT source unavailable', logDetails, severity: 'warn' });
+						return { ...buildToolResult(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat), isError: true };
+					}
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 					return buildToolResult(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat);
 				}

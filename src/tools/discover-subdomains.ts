@@ -150,6 +150,12 @@ export interface SubdomainDiscoveryResult {
 export interface DiscoverSubdomainsOptions {
 	signal?: AbortSignal;
 	deadlineMs?: number;
+	/**
+	 * When true, ask the certstream worker to bypass its cache (`force_refresh=true`) so a
+	 * stale cached result — e.g. an empty snapshot captured during a prior CT-source outage —
+	 * is not re-served. The crt.sh fallback is uncached, so this only affects the fast path.
+	 */
+	forceRefresh?: boolean;
 }
 
 /** Extract CN= value from an issuer_name string (e.g. "C=US, O=Let's Encrypt, CN=R3" -> "R3"). */
@@ -451,7 +457,8 @@ async function queryCertstreamEndpoint<T>(
 	const composed = composeAbortSignal(CRT_SH_TIMEOUT_MS, options?.signal);
 
 	try {
-		const response = await certstream.fetch(`https://certstream/${path}?domain=${encodeURIComponent(domain)}`, {
+		const forceRefreshParam = options?.forceRefresh ? '&force_refresh=true' : '';
+		const response = await certstream.fetch(`https://certstream/${path}?domain=${encodeURIComponent(domain)}${forceRefreshParam}`, {
 			...(certstreamAuthToken ? { headers: { Authorization: `Bearer ${certstreamAuthToken}` } } : {}),
 			signal: composed.signal,
 		});
