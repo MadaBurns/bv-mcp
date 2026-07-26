@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.35.0] - 2026-07-26
+
+Three "silently empty" defects of one shape — a consumer reading a field or hook the producer never populates, with tests that fabricated the missing shape and so passed while production returned nothing. Plus the dependency work that unblocked the `contract` CI gate, red on `main` since 2026-07-23.
+
+Production dependencies moved: `hono` 4.12.30 → 4.12.32 (includes the honojs/hono#5161 prototype-pollution hardening; verified against our usage — we do not use `streamSSE`, `secureHeaders`, or `parseBody`) and `tldts` 7.4.8 → 7.4.9 (Public Suffix List refresh, which feeds `resolveZoneApex` and the PSL-bounded NS walk). No scoring-model or tool-surface change; `@blackveil/dns-checks` stays at 1.5.2.
+
 ### Fixed
 
 - **`/internal/tools/batch?format=structured` returned the MCP frame instead of the payload for custom-shape tools.** The batch door only unwrapped results captured through `resultCapture` (the `check_*` cohort) and fell through to the MCP-framed tool result for everything else, so a batched `scan_domain` / `explain_finding` / `compare_baseline` / `get_benchmark` yielded `{ content, structuredContent }` under `result` while a batched `check_*` yielded a bare payload. One `payload.result` read could not serve both. The batch door now falls back to `structuredContent` exactly as the single-call door does, so `result` is the payload for every tool on both doors. **Response-shape change** for structured batch callers of those four tools: `result` is now the report itself rather than a wrapper around it (`result.structuredContent` → `result`); `check_*` batch results are unchanged. `test/internal.spec.ts` gains a cross-door parity test asserting the two doors agree on the payload shape for the same tool. Also corrects the stale claim in `docs/design/agent-chat-tool-allowlist.md` that these tools fall through to MCP-framed content under `format=structured` — untrue for the single-call door since its fallback landed, and now untrue for the batch door too.
