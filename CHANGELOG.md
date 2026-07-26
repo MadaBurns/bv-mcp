@@ -10,7 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 Correctness release: an unmeasured domain (never scanned, or scanned but not scoreable) no longer
 receives a fabricated *failing* grade anywhere in the stack. `@blackveil/dns-checks` widens
-`ScanScore.overall` / `ScanScore.grade` to nullable (**1.5.2 → 1.6.0**), and every downstream
+`ScanScore.overall` / `ScanScore.grade` to nullable (**1.5.4 → 1.6.0**), and every downstream
 consumer — `batch_scan`, `compare_baseline`, `compare_domains`, `analyze_drift`, the `/badge` SVG,
 `map_compliance`, `generate_fix_plan`, `prioritize_csc_leads` — now abstains instead of coercing
 `null` into `0` / `'F'` / `false` / `'stable'`.
@@ -25,7 +25,7 @@ consumer — `batch_scan`, `compare_baseline`, `compare_domains`, `analyze_drift
 
 ### Changed
 
-- **BREAKING (`@blackveil/dns-checks` 1.5.2 → 1.6.0): `ScanScore.overall` is now `number | null` and `ScanScore.grade` is `string | null`.** `ScanScoreSchema` is widened in lockstep, so runtime validation accepts an ungraded result. A new `isGraded(score)` type guard is exported from `@blackveil/dns-checks/scoring` — narrow with it and **abstain**; never substitute a default. `PARITY_CORPUS_VERSION` moves to `1.6.0` in lockstep with the package version, which also invalidates every pre-existing scan cache key (`src/lib/cache.ts`), so no cached old-shape result can be read back.
+- **BREAKING (`@blackveil/dns-checks` 1.5.4 → 1.6.0): `ScanScore.overall` is now `number | null` and `ScanScore.grade` is `string | null`.** `ScanScoreSchema` is widened in lockstep, so runtime validation accepts an ungraded result. A new `isGraded(score)` type guard is exported from `@blackveil/dns-checks/scoring` — narrow with it and **abstain**; never substitute a default. `PARITY_CORPUS_VERSION` moves to `1.6.0` in lockstep with the package version, which also invalidates every pre-existing scan cache key (`src/lib/cache.ts`), so no cached old-shape result can be read back.
 - **The `'N/A'` grade sentinel is retired.** `scan_domain`'s three degraded paths (NXDOMAIN, unresolvable/DNSSEC-bogus zone, scoring-bundle failure) emitted `grade: 'N/A', overall: 0`; they now emit `grade: null, overall: null`. `null` is the single representation of "not graded", and a single exported `UNGRADED_DISPLAY = 'not measured'` token is the single rendered form. Locked in by `test/audits/ungraded-representation.audit.test.ts`.
 - **Grade cut-points, category weights, profile weights, severity penalties and the check matrix are unchanged.** Both grade scales are unchanged: the canonical 9-band `scoreToGrade` and the NIST 6-band `nistScoreToGrade` at the `displayGradeFor` chokepoint. This change alters only whether a grade can be *absent*, never what a present grade means.
 - **Version bump.** `SERVER_VERSION` (root `package.json`) moves 3.36.0 → 3.37.0 alongside the `@blackveil/dns-checks` bump. This is load-bearing, not cosmetic: `buildScanCacheKey`/`buildCheckCacheKey` embed both `SERVER_VERSION` and `DNS_CHECKS_VERSION`, and `cacheGet` is an unchecked cast over KV — without the root bump, a cached pre-release `{overall: 0, grade: 'N/A'}` scan could in principle resurrect and render as a confident `0/100 (N/A)` rather than `not measured`. The `dns-checks` half of the key already changed in Task 2; this closes the other half.
