@@ -611,7 +611,21 @@ internalRoutes.post('/tools/batch', async (c) => {
 					waitUntil: (p: Promise<unknown>) => c.executionCtx.waitUntil(p),
 				});
 
-				const result = wantStructured && capturedResult !== null ? capturedResult : toolResult;
+				// Parity with the single-call door (`/internal/tools/call`): under
+				// `?format=structured`, `result` is the tool's PAYLOAD, never the
+				// MCP frame. Two kinds of tool produce that payload differently:
+				//
+				//   1. TOOL_REGISTRY CheckResult tools → captured via `resultCapture`.
+				//   2. Custom-shape tools (scan_domain, prioritize_csc_leads,
+				//      map_csc_products, … — the `NON_CHECK_RESULT_TOOLS` set) produce
+				//      no CheckResult but DO set `structuredContent`.
+				//
+				// Case 2 previously fell through to `toolResult`, so a batched
+				// custom-shape tool returned the MCP frame while a batched check tool
+				// returned a bare payload — the same `payload.result` read could not
+				// serve both. That asymmetry is the bug this branch fixes.
+				const structuredPayload = capturedResult ?? toolResult.structuredContent;
+				const result = wantStructured && structuredPayload !== undefined && structuredPayload !== null ? structuredPayload : toolResult;
 				return { domain: entry.input, result, isError };
 			}),
 		);
