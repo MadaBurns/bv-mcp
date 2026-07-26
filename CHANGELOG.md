@@ -6,10 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.35.1] - 2026-07-26
+
+Patch release for honest handling of unmeasured tenant results and non-apex DNS zone-resolution edge cases. `@blackveil/dns-checks` moves from 1.5.2 to 1.5.3 with the parity corpus version kept in lockstep.
+
 ### Fixed
 
 - **DLQ rows were scored `0`, dragging every cycle's `mean_score` down.** `writeDlqRow` (`src/tenants/queue-consumer.ts`) persisted a hardcoded `score: 0` for a domain that timed out or exhausted its retries. That domain was never measured, so `0` reported it as a genuinely catastrophic score — and because `0` is not null, it also survived any null-skipping filter downstream. DLQ rows now write a null score, matching every other unmeasured row. The domain still appears in the cycle via its `queue_dlq` finding and its `grade_dist` `unknown` bucket.
 - **`/report/:cycle_id` counted unmeasured domains as zeros.** The cycle mean was `scanRows.reduce((acc, r) => acc + (r.score ?? 0), 0) / scanRows.length`, so any row without a score (a DLQ row, or one written before the `scanResultCapture` fix) was averaged in as a 0 rather than excluded. `mean_score` is now computed over measured rows only, and the summary gains **`measured_domains`** so the denominator is visible instead of inferred. **Response-shape change for consumers:** `mean_score` is now `number | null` — it is `null` when no row in the cycle carried a score, because `0` would be a fabricated result for a cycle that measured nothing.
+- **CAA and DNSSEC could score a false deficiency after an inconclusive non-apex zone walk.** When authoritative-zone discovery returned `delegationStatus: 'unknown'`, CAA could report a missing policy and DNSSEC could evaluate the literal subdomain as unsigned. Both now return the canonical score-excluded `checkStatus: 'error'` shape without issuing follow-on record queries.
+- **The RFC 8659 CAA climb could cross its registrable-domain floor if handed an unnormalized label.** Ancestor traversal now starts from the normalized `ZoneContext.scannedLabel` and stops before any candidate shorter than the registrable floor, so a case or trailing-dot mismatch cannot trigger a bare-TLD query.
+- **Non-apex DNSSEC attribution could carry misleading source metadata.** `dnssecSource: 'domain_configured'` is now attached to an actual DNSSEC verdict or audit finding rather than the leading “posture inherited from zone apex” note, keeping the evaluated apex configuration distinct from the scanned label’s inheritance relationship.
+- **Documented non-apex subrequest overhead for Free-plan self-hosters.** The `scan_domain` operating note now calls out the bounded NS walk, CAA climb, and apex DNSSEC evaluation that can bring deeply nested labels close to the 50-subrequest ceiling.
 
 ## [3.35.0] - 2026-07-26
 
