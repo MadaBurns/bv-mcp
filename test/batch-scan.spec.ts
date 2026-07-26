@@ -220,21 +220,64 @@ describe('batchScan', () => {
 		expect(text).toContain('Scanned 0/1 domain(s) successfully');
 	});
 
-	it('formatBatchScan handles an ungraded result that carries NO error field', async () => {
-		// Slice 3 (the evidence gate) will emit ungraded results with no `error`.
-		// The formatter must key off the null score, not off `error`, or that
-		// future result renders as `null/100 (null)`. Constructed directly here
-		// because no code path produces this shape yet.
+	it('formatBatchScan handles an ungraded result that carries NO error field and is not evidence-insufficient', async () => {
+		// The formatter must key off the null score, not off `error`, or that result
+		// renders as `null/100 (null)`. Constructed directly here to isolate the GENERIC
+		// ungraded fallback from the evidence-insufficient case (F3 pins that one
+		// separately, below) — this fixture explicitly clears evidenceInsufficient even
+		// though `example.com`'s real batchScan result under this file's blanket fetch
+		// mock happens to be evidence-insufficient itself, so the override is deliberate.
 		const { batchScan, formatBatchScan } = await import('../src/tools/batch-scan');
 		const results = await batchScan(['example.com'], { kv: env.SCAN_CACHE });
 		expect(results).toHaveLength(1);
-		const ungraded = { ...results[0], score: null, grade: null, passed: null, measured: true };
+		const ungraded = {
+			...results[0],
+			score: null,
+			grade: null,
+			passed: null,
+			measured: true,
+			evidenceInsufficient: false,
+			evidenceNote: null,
+		};
 		delete (ungraded as { error?: string }).error;
 
 		const text = formatBatchScan([ungraded], 'full');
 		expect(text).toContain('not measured');
 		expect(text).not.toContain('null');
 		expect(text).not.toContain('/100');
+		expect(text).not.toContain('evidence insufficient');
+	});
+
+	// F3 (fix round 1): a gate-fired item (checks ran, evidence too thin to grade) must
+	// render distinctly from a domain that was never scanned at all — both used to collapse
+	// to the same "not measured" text.
+	it('formatBatchScan renders "evidence insufficient" (not "not measured") for a gate-fired item', async () => {
+		const { batchScan, formatBatchScan } = await import('../src/tools/batch-scan');
+		const results = await batchScan(['example.com'], { kv: env.SCAN_CACHE });
+		expect(results).toHaveLength(1);
+		const gateFired = {
+			...results[0],
+			score: null,
+			grade: null,
+			passed: null,
+			measured: true,
+			evidence: { attempted: 19, completed: 8, ratio: 8 / 19 },
+			evidenceInsufficient: true,
+			evidenceNote: 'Only 8 of 19 checks completed (42%), below the 60% evidence threshold.',
+		};
+		delete (gateFired as { error?: string }).error;
+
+		const text = formatBatchScan([gateFired], 'full');
+		expect(text).toContain('evidence insufficient (8/19 checks completed)');
+		expect(text).not.toContain('not measured');
+	});
+
+	it('formatBatchScan still renders "not measured" (not "evidence insufficient") for a truly never-ran domain', async () => {
+		const { batchScan, formatBatchScan } = await import('../src/tools/batch-scan');
+		const results = await batchScan(['not--valid--domain!@#'], { kv: env.SCAN_CACHE });
+		const text = formatBatchScan(results, 'full');
+		expect(text).toContain('not measured');
+		expect(text).not.toContain('evidence insufficient');
 	});
 
 	it('respects global wall-clock budget when scans are slow', async () => {

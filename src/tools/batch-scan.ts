@@ -171,8 +171,16 @@ export function formatBatchScan(results: BatchScanResultItem[], format: OutputFo
 		// that reintroduces a placeholder pair is still caught here. Mirrors the same
 		// conjunction compare-domains.ts uses for its `rankable` filter.
 		if (!r.measured || r.score === null || r.grade === null) {
-			const why = r.error ? `: ${r.error}` : '';
-			lines.push(`· ${r.domain.padEnd(40)} not measured${why}`);
+			// A gate-fired domain (checks ran, evidence was too thin to grade) is NOT the
+			// same state as a domain that was never scanned at all (invalid input / budget
+			// exceeded / threw) — rendering both as bare "not measured" made a real partial
+			// scan with real findings byte-identical to a domain that never resolved.
+			if (r.evidenceInsufficient) {
+				lines.push(`· ${r.domain.padEnd(40)} evidence insufficient (${r.evidence.completed}/${r.evidence.attempted} checks completed)`);
+			} else {
+				const why = r.error ? `: ${r.error}` : '';
+				lines.push(`· ${r.domain.padEnd(40)} not measured${why}`);
+			}
 			continue;
 		}
 		const icon = r.score >= 80 ? '✓' : r.score >= 50 ? '⚠' : '✗';
