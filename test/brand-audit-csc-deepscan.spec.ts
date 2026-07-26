@@ -18,6 +18,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { checkSubdomainTakeover } from '@blackveil/dns-checks';
+import { computeScanEvidence } from '@blackveil/dns-checks/scoring';
 import { buildToolResult, formatCheckResult } from '../src/handlers/tool-formatters';
 import { buildStructuredScanResult, formatScanReport } from '../src/tools/scan/format-report';
 import { formatSubdomainDiscovery } from '../src/tools/discover-subdomains';
@@ -34,6 +35,12 @@ import type { ScanDomainResult } from '../src/tools/scan-domain';
  * orchestrator abstains (null grade + null score) for any apex whose scan reports
  * `measured: false`. A `checks: []` fixture is therefore an UNMEASURED scan, never a
  * clean one — pass `measured: false` to build that case deliberately.
+ *
+ * `evidence` FOLLOWS that same flag rather than being hand-written: a measured
+ * fixture derives it from its real `checks` (1 of 1 completed, ratio 1), and an
+ * unmeasured one is 0/0/0 — the value `computeScanEvidence([])` actually returns.
+ * Hard-coding a non-zero ratio onto a `checks: []` fixture would assert evidence
+ * the fixture does not have, which is the contradiction these tests exist to catch.
  */
 function makeScanResult(domain: string, overall: number, grade: string, opts?: { measured?: boolean }): ScanDomainResult {
 	const checks: ScanDomainResult['checks'] =
@@ -48,6 +55,7 @@ function makeScanResult(domain: string, overall: number, grade: string, opts?: {
 			categoryScores: { spf: 80, dmarc: 70, subdomain_takeover: 100 } as ScanDomainResult['score']['categoryScores'],
 			findings: [],
 			summary: `${domain} scored ${overall}/100. Grade: ${grade}`,
+			evidence: computeScanEvidence(checks),
 		},
 		checks,
 		maturity: { stage: 2, label: 'Developing', description: 'partial coverage', nextStep: 'Enforce DMARC.' },
