@@ -186,10 +186,12 @@ export interface ScanScore {
 	 */
 	evidence: ScanEvidence;
 	/**
-	 * `true` when the scan completed too few of its attempted checks to be graded,
-	 * so `overall` and `grade` are `null`. Only ever `true` when
-	 * `evidence.attempted > 0` — "nothing ran at all" is a DIFFERENT state, carried
-	 * by `StructuredScanResult.measured === false`.
+	 * `true` when the scan did not complete enough of its attempted checks to be
+	 * graded, so `overall` and `grade` are `null`. This includes the zero-results
+	 * case (`evidence.attempted === 0`) — a published SSOT must not hand out a
+	 * confident grade for zero submitted evidence. `StructuredScanResult.measured
+	 * === false` is a separate, Worker-layer signal for "the domain never
+	 * resolved at all"; it is not implied or replaced by this flag.
 	 */
 	evidenceInsufficient?: boolean;
 	/** Human-readable explanation when `evidenceInsufficient` is `true`. Safe to render verbatim. */

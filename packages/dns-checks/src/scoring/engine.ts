@@ -13,7 +13,7 @@ import type { DomainContext } from './profiles';
 import { detectDomainContext, getProfileWeights, PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './profiles';
 import type { ScoringConfig } from './config';
 import { DEFAULT_SCORING_CONFIG } from './config';
-import { computeScanEvidence } from './evidence';
+import { buildEvidenceNote, computeScanEvidence, isEvidenceSufficient, EVIDENCE_SUFFICIENCY_THRESHOLD } from './evidence';
 import { computeGenericScore } from './generic';
 import type { GenericScoringContext, FindingSeverityCounts } from './generic';
 
@@ -323,15 +323,27 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 	const allFindings: Finding[] = [];
 
 	const cfg = config ?? DEFAULT_SCORING_CONFIG;
+	// The `?? EVIDENCE_SUFFICIENCY_THRESHOLD` fallback is deliberate — a consumer
+	// vendoring an older copy of this package can hand us a config whose `thresholds`
+	// predates this key, and a NaN comparison there would silently disable the gate.
+	const evidenceThreshold = cfg.thresholds.evidenceSufficiency ?? EVIDENCE_SUFFICIENCY_THRESHOLD;
 
 	if (results.length === 0) {
+		// Zero submitted evidence is NEVER sufficient, unconditionally — this is not a
+		// policy knob. A published SSOT must not hand a confident grade (the legacy
+		// seeded 100/'A+') to a caller that submitted nothing to measure. See
+		// evidence.ts's `isEvidenceSufficient` doc for the same invariant.
+		const evidence = { attempted: 0, completed: 0, ratio: 0 };
+		const evidenceNote = buildEvidenceNote(evidence, evidenceThreshold);
 		return {
-			overall: 100,
-			grade: scoreToGrade(100, config),
+			overall: null,
+			grade: null,
 			categoryScores: categoryScores as Record<CheckCategory, number>,
 			findings: [],
-			summary: `Excellent! No security issues found. Grade: ${scoreToGrade(100, config)}`,
-			evidence: { attempted: 0, completed: 0, ratio: 0 },
+			summary: evidenceNote,
+			evidence,
+			evidenceInsufficient: true,
+			evidenceNote,
 		};
 	}
 
@@ -370,6 +382,26 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		summary = `${totalIssues} issue(s) found. Grade: ${genericResult.grade}`;
 	}
 
+	// --- Evidence-sufficiency gate ---
+	// When most checks could not RUN, any letter grade would describe the scan's own
+	// failure rather than the domain's posture. Withhold it. findings and categoryScores
+	// are still returned: everything that WAS measured stays available to the caller.
+	const evidence = computeScanEvidence(results);
+	if (!isEvidenceSufficient(evidence, evidenceThreshold)) {
+		const evidenceNote = buildEvidenceNote(evidence, evidenceThreshold);
+		return {
+			overall: null,
+			grade: null,
+			categoryScores: categoryScores as Record<CheckCategory, number>,
+			findings: allFindings,
+			summary: evidenceNote,
+			tierBreakdown: genericResult.tierBreakdown,
+			evidence,
+			evidenceInsufficient: true,
+			evidenceNote,
+		};
+	}
+
 	return {
 		overall: genericResult.overall,
 		grade: genericResult.grade,
@@ -377,7 +409,7 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		findings: allFindings,
 		summary,
 		tierBreakdown: genericResult.tierBreakdown,
-		evidence: computeScanEvidence(results),
+		evidence,
 	};
 }
 

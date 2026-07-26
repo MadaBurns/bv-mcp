@@ -315,9 +315,13 @@ describe('runDeepScan — production internal-call envelope', () => {
 	});
 
 	it('excludes a measured:false apex even when it carries a real-looking letter (degenerate zero-check A+)', async () => {
-		// `computeScanScore([])` returns overall 100 / grade 'A+' for a scan that ran ZERO
-		// checks — a real-looking letter with no measurement behind it. `measured` is the
-		// only signal separating it from a genuine A+.
+		// This fixture hand-crafts overall 100 / grade 'A+' with measured: false to model
+		// the pre-evidence-gate defect (`computeScanScore([])` used to seed exactly this
+		// value for a scan that ran ZERO checks — now fixed, it returns overall/grade
+		// null instead). The fixture keeps the old shape deliberately: `measured` is the
+		// signal this rollup logic relies on to separate a real-looking letter with no
+		// measurement behind it from a genuine A+, independent of how the scorer itself
+		// behaves.
 		const internalCall = await postureCall({
 			'graded.com': { overall: 85, grade: 'B', measured: true },
 			'nochecks.com': { overall: 100, grade: 'A+', measured: false },

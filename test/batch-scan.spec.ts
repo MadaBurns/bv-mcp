@@ -18,10 +18,17 @@ describe('batchScan', () => {
 		expect(results).toHaveLength(2);
 		expect(results[0].domain).toBe('example.com');
 		expect(results[1].domain).toBe('test.com');
-		// A domain that actually scanned must carry a real measurement.
+		// This suite's blanket `globalThis.fetch` mock (above) returns plain-text "OK"
+		// for EVERY fetch, DoH lookups included, so most check categories fail to parse
+		// a response and error out (checkStatus: 'error') — under the evidence-sufficiency
+		// gate (packages/dns-checks/src/scoring/engine.ts), a scan that completes fewer
+		// than 60% of its attempted checks is correctly ungraded (score/grade: null),
+		// same as a domain suffering a real DNS outage. `measured` stays true because
+		// checks DID run (and produced errored/inconclusive results, not zero checks) —
+		// it is a different signal from "was the evidence sufficient to grade".
 		expect(results[0].measured).toBe(true);
-		expect(typeof results[0].score).toBe('number');
-		expect(typeof results[0].grade).toBe('string');
+		expect(results[0].score).toBeNull();
+		expect(results[0].grade).toBeNull();
 	});
 
 	it('emits null score/grade/passed for an invalid domain instead of a fabricated F', async () => {

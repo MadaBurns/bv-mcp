@@ -42,92 +42,146 @@ export function defineScoringConfigSuite(s: ScoringModule): void {
 		});
 
 		it('merges partial weight overrides with defaults', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				weights: { spf: 15, dmarc: 30 },
-			}));
+			const config = parseScoringConfig(
+				JSON.stringify({
+					weights: { spf: 15, dmarc: 30 },
+				}),
+			);
 			expect(config.weights.spf).toBe(15);
 			expect(config.weights.dmarc).toBe(30);
 			expect(config.weights.dkim).toBe(DEFAULT_SCORING_CONFIG.weights.dkim);
 		});
 
 		it('merges partial profile weight overrides', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				profileWeights: {
-					enterprise_mail: { dmarc: 30 },
-				},
-			}));
+			const config = parseScoringConfig(
+				JSON.stringify({
+					profileWeights: {
+						enterprise_mail: { dmarc: 30 },
+					},
+				}),
+			);
 			expect(config.profileWeights.enterprise_mail.dmarc).toBe(30);
 			expect(config.profileWeights.enterprise_mail.dkim).toBe(DEFAULT_SCORING_CONFIG.profileWeights.enterprise_mail.dkim);
 			expect(config.profileWeights.mail_enabled).toEqual(DEFAULT_SCORING_CONFIG.profileWeights.mail_enabled);
 		});
 
 		it('merges threshold overrides', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				thresholds: { emailBonusImportance: 10, criticalGapCeiling: 70 },
-			}));
+			const config = parseScoringConfig(
+				JSON.stringify({
+					thresholds: { emailBonusImportance: 10, criticalGapCeiling: 70 },
+				}),
+			);
 			expect(config.thresholds.emailBonusImportance).toBe(10);
 			expect(config.thresholds.criticalGapCeiling).toBe(70);
 			expect(config.thresholds.spfStrongThreshold).toBe(DEFAULT_SCORING_CONFIG.thresholds.spfStrongThreshold);
 		});
 
+		it('merges an evidenceSufficiency override numerically, like any other threshold', () => {
+			const config = parseScoringConfig(
+				JSON.stringify({
+					thresholds: { evidenceSufficiency: 0.8 },
+				}),
+			);
+			expect(config.thresholds.evidenceSufficiency).toBe(0.8);
+			// Untouched siblings stay at their defaults.
+			expect(config.thresholds.spfStrongThreshold).toBe(DEFAULT_SCORING_CONFIG.thresholds.spfStrongThreshold);
+		});
+
+		it('clamps an evidenceSufficiency override to [0, 1] — a percent-not-ratio typo must not ungrade the fleet', () => {
+			// An operator writing `60` meaning "60%" instead of the ratio `0.6` must not silently
+			// set the bar to "60 attempted checks must complete" (impossible — no scan attempts
+			// anywhere near that many categories), which would ungrade every scan in production.
+			// Clamping to 1 makes the mistake merely maximally strict, not catastrophic.
+			const tooHigh = parseScoringConfig(
+				JSON.stringify({
+					thresholds: { evidenceSufficiency: 60 },
+				}),
+			);
+			expect(tooHigh.thresholds.evidenceSufficiency).toBe(1);
+
+			// A negative override (typo, bad config generation) must not disable the gate below 0.
+			const tooLow = parseScoringConfig(
+				JSON.stringify({
+					thresholds: { evidenceSufficiency: -1 },
+				}),
+			);
+			expect(tooLow.thresholds.evidenceSufficiency).toBe(0);
+		});
+
 		it('merges grade overrides', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				grades: { aPlus: 95 },
-			}));
+			const config = parseScoringConfig(
+				JSON.stringify({
+					grades: { aPlus: 95 },
+				}),
+			);
 			expect(config.grades.aPlus).toBe(95);
 			expect(config.grades.a).toBe(DEFAULT_SCORING_CONFIG.grades.a);
 		});
 
 		it('merges baseline failure rate overrides', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				baselineFailureRates: { dmarc: 0.50, spf: 0.30 },
-			}));
-			expect(config.baselineFailureRates.dmarc).toBe(0.50);
-			expect(config.baselineFailureRates.spf).toBe(0.30);
+			const config = parseScoringConfig(
+				JSON.stringify({
+					baselineFailureRates: { dmarc: 0.5, spf: 0.3 },
+				}),
+			);
+			expect(config.baselineFailureRates.dmarc).toBe(0.5);
+			expect(config.baselineFailureRates.spf).toBe(0.3);
 			expect(config.baselineFailureRates.ssl).toBe(DEFAULT_SCORING_CONFIG.baselineFailureRates.ssl);
 		});
 
 		it('ignores unknown top-level keys', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				unknownKey: 'value',
-				weights: { spf: 15 },
-			}));
+			const config = parseScoringConfig(
+				JSON.stringify({
+					unknownKey: 'value',
+					weights: { spf: 15 },
+				}),
+			);
 			expect(config.weights.spf).toBe(15);
 			expect(config).not.toHaveProperty('unknownKey');
 		});
 
 		it('clamps negative weights to 0', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				weights: { spf: -5 },
-			}));
+			const config = parseScoringConfig(
+				JSON.stringify({
+					weights: { spf: -5 },
+				}),
+			);
 			expect(config.weights.spf).toBe(0);
 		});
 
 		it('ignores non-numeric weight values', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				weights: { spf: 'high' },
-			}));
+			const config = parseScoringConfig(
+				JSON.stringify({
+					weights: { spf: 'high' },
+				}),
+			);
 			expect(config.weights.spf).toBe(DEFAULT_SCORING_CONFIG.weights.spf);
 		});
 
 		it('ignores non-numeric threshold values', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				thresholds: { emailBonusImportance: true },
-			}));
+			const config = parseScoringConfig(
+				JSON.stringify({
+					thresholds: { emailBonusImportance: true },
+				}),
+			);
 			expect(config.thresholds.emailBonusImportance).toBe(DEFAULT_SCORING_CONFIG.thresholds.emailBonusImportance);
 		});
 
 		it('ignores Infinity and NaN weights', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				weights: { spf: null },
-			}));
+			const config = parseScoringConfig(
+				JSON.stringify({
+					weights: { spf: null },
+				}),
+			);
 			expect(config.weights.spf).toBe(DEFAULT_SCORING_CONFIG.weights.spf);
 		});
 
 		it('ignores unknown weight categories', () => {
-			const config = parseScoringConfig(JSON.stringify({
-				weights: { unknown_check: 99, spf: 15 },
-			}));
+			const config = parseScoringConfig(
+				JSON.stringify({
+					weights: { unknown_check: 99, spf: 15 },
+				}),
+			);
 			expect(config.weights.spf).toBe(15);
 			expect(config.weights).not.toHaveProperty('unknown_check');
 		});
@@ -141,7 +195,12 @@ export function defineScoringConfigSuite(s: ScoringModule): void {
 
 		it('DEFAULT_SCORING_CONFIG has coreWeights', () => {
 			expect(DEFAULT_SCORING_CONFIG.coreWeights).toEqual({
-				dmarc: 16, dkim: 10, spf: 10, dnssec: 10, ssl: 8, authoritative_dns_infra: 0,
+				dmarc: 16,
+				dkim: 10,
+				spf: 10,
+				dnssec: 10,
+				ssl: 8,
+				authoritative_dns_infra: 0,
 			});
 		});
 
@@ -201,8 +260,9 @@ export function defineScoringConfigSuite(s: ScoringModule): void {
 				const configWeights = DEFAULT_SCORING_CONFIG.profileWeights[profile];
 				const profileWeights = PROFILE_WEIGHTS[profile];
 				for (const [key, value] of Object.entries(profileWeights)) {
-					expect(configWeights[key as keyof typeof configWeights],
-						`${profile}.${key}: config=${configWeights[key as keyof typeof configWeights]}, profiles=${value.importance}`
+					expect(
+						configWeights[key as keyof typeof configWeights],
+						`${profile}.${key}: config=${configWeights[key as keyof typeof configWeights]}, profiles=${value.importance}`,
 					).toBe(value.importance);
 				}
 			}

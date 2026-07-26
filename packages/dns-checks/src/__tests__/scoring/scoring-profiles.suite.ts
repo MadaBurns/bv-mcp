@@ -19,10 +19,23 @@ import type { CheckCategory, CheckResult, DomainContext } from '../../scoring';
 type ScoringModule = typeof import('../../scoring');
 
 export function defineScoringProfilesSuite(s: ScoringModule): void {
-	const { computeScanScore, computeProfileAwareScanScore, buildCheckResult, createFinding, getProfileWeights, PROFILE_WEIGHTS, PROFILE_CRITICAL_CATEGORIES, detectDomainContext } =
-		s;
+	const {
+		computeScanScore,
+		computeProfileAwareScanScore,
+		buildCheckResult,
+		createFinding,
+		getProfileWeights,
+		PROFILE_WEIGHTS,
+		PROFILE_CRITICAL_CATEGORIES,
+		detectDomainContext,
+	} = s;
 
-	function makeResult(category: CheckCategory, score: number, title?: string, severity?: 'info' | 'low' | 'medium' | 'high' | 'critical'): CheckResult {
+	function makeResult(
+		category: CheckCategory,
+		score: number,
+		title?: string,
+		severity?: 'info' | 'low' | 'medium' | 'high' | 'critical',
+	): CheckResult {
 		const findings = [];
 		if (score === 100) {
 			findings.push(createFinding(category, title ?? `${category} OK`, 'info', 'Check passed'));
@@ -150,9 +163,13 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				expect(withoutContext.grade).toBe(withUndefined.grade);
 			});
 
-			it('empty results still return 100', () => {
+			it('empty results are ungraded, not context-dependent (evidence gate fires before profile logic)', () => {
+				// Was: "empty results still return 100" — pinning that the no-context path
+				// behaves the same regardless of profile context. That intent survives: the
+				// evidence gate fires uniformly for both, before any profile weighting runs.
 				const score = computeScanScore([]);
-				expect(score.overall).toBe(100);
+				expect(score.overall).toBeNull();
+				expect(score.evidenceInsufficient).toBe(true);
 			});
 		});
 
@@ -273,7 +290,10 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 		describe('failureRatio counts only MEASURED checks', () => {
 			/** A check that ran and passed. */
 			function ok(category: CheckCategory): CheckResult {
-				return { ...buildCheckResult(category, [createFinding(category, `${category} OK`, 'info', 'Check passed')], true), checkStatus: 'completed' };
+				return {
+					...buildCheckResult(category, [createFinding(category, `${category} OK`, 'info', 'Check passed')], true),
+					checkStatus: 'completed',
+				};
 			}
 			/** A check that ran and genuinely failed. */
 			function failed(category: CheckCategory): CheckResult {
@@ -394,10 +414,9 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 
 			it('mail_enabled protective weights sum to 20', () => {
 				const p = PROFILE_WEIGHTS.mail_enabled;
-				const protSum = (['subdomain_takeover', 'http_security', 'mta_sts', 'mx', 'caa', 'ns', 'lookalikes', 'shadow_domains'] as const).reduce(
-					(sum, k) => sum + p[k].importance,
-					0,
-				);
+				const protSum = (
+					['subdomain_takeover', 'http_security', 'mta_sts', 'mx', 'caa', 'ns', 'lookalikes', 'shadow_domains'] as const
+				).reduce((sum, k) => sum + p[k].importance, 0);
 				expect(protSum).toBe(20);
 			});
 
