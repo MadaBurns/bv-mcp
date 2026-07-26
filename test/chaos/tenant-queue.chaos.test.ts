@@ -20,6 +20,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { env, createExecutionContext } from 'cloudflare:test';
 import { resetTenantResolverCache } from '../../src/tenants/tenant-resolver';
+import { emitScanCapture } from '../helpers/scan-capture';
 
 const handleToolsCallMock = vi.hoisted(() =>
 	vi.fn<
@@ -162,13 +163,7 @@ describe('Tenant queue consumer chaos: handleScanQueue wrapper resilience', () =
 			if (callCount === 2) {
 				throw new Error('synthetic_failure_on_msg_2');
 			}
-			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
-				score: 90,
-				findings: [],
-			});
+			emitScanCapture(runtimeOptions, 'example.com', { score: 90, grade: 'A' });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 
@@ -211,13 +206,7 @@ describe('Tenant queue consumer chaos: handleScanQueue wrapper resilience', () =
 
 	it('retries the message with a transient D1 insert failure; idempotency probe runs on every delivery', async () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
-			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
-				score: 90,
-				findings: [],
-			});
+			emitScanCapture(runtimeOptions, 'example.com', { score: 90, grade: 'A' });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const { handleScanQueue } = await import('../../src/tenants/queue-consumer');

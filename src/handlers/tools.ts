@@ -203,8 +203,27 @@ interface ToolRuntimeOptions {
 	profileAccumulatorShardMode?: import('../lib/profile-accumulator').AccumulatorShardMode;
 	waitUntil?: (promise: Promise<unknown>) => void;
 	scoringConfig?: import('@blackveil/dns-checks/scoring').ScoringConfig;
-	/** When provided, receives the raw CheckResult before MCP text formatting. Used by internal structured response mode. */
+	/**
+	 * When provided, receives the raw CheckResult before MCP text formatting. Used by internal structured response mode.
+	 *
+	 * Fires ONLY on the `TOOL_REGISTRY` (single-`CheckResult`) path and
+	 * `check_resolver_consistency`. `scan_domain` is an orchestrator, not a
+	 * check — it produces a `ScanDomainResult`, never a `CheckResult` — so it
+	 * does NOT invoke this. Use `scanResultCapture` for scan_domain.
+	 */
 	resultCapture?: (result: CheckResult) => void;
+	/**
+	 * When provided, receives the raw `ScanDomainResult` from `scan_domain`
+	 * before MCP text formatting — the scan-orchestrator counterpart to
+	 * `resultCapture`.
+	 *
+	 * Exists because `scan_domain` returns a `ScanDomainResult` (nested
+	 * `score.overall` / `score.grade` / `score.findings` plus `maturity`), which
+	 * does not fit `resultCapture`'s `CheckResult` contract. Callers that need
+	 * the full scan — the tenant scan-persistence paths — must use this hook;
+	 * `resultCapture` silently never fires for scan_domain.
+	 */
+	scanResultCapture?: (result: import('../tools/scan-domain').ScanDomainResult) => void;
 	/** Override cache TTL in seconds for scan results. Threaded to scanDomain. */
 	cacheTtlSeconds?: number;
 	/** Scan-level wall-clock budget in milliseconds. Threaded to scanDomain. */
@@ -1249,6 +1268,10 @@ export async function handleToolsCall(
 					const forceRefresh = extractForceRefresh(validatedArgs);
 					const scanOptions = { ...runtimeOptions, ...(profile && { profile }), ...(forceRefresh && { forceRefresh }) };
 					const result = await scanDomain(validDomain, scanCacheKV, scanOptions);
+					// Orchestrator counterpart to the TOOL_REGISTRY path's resultCapture.
+					// Callers persisting a scan (tenant queue consumer / scan routes) read
+					// the full ScanDomainResult from here — resultCapture cannot carry it.
+					runtimeOptions?.scanResultCapture?.(result);
 					logResult = result.score.grade;
 					// Summary only, not the full result: scan_domain's ~19-category CheckResult[]
 					// (with per-category findings + metadata) logged in full on every call was the

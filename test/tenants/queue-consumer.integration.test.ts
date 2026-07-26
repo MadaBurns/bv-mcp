@@ -18,6 +18,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { env, createExecutionContext } from 'cloudflare:test';
 import { resetTenantResolverCache } from '../../src/tenants/tenant-resolver';
+import { emitScanCapture } from '../helpers/scan-capture';
 
 // Hoisted mock state so vi.mock factory can read it.
 const handleToolsCallMock = vi.hoisted(() =>
@@ -156,11 +157,9 @@ describe('processScanMessage', () => {
 
 	it('returns ack on the happy path and writes 1 scan row + a single batched findings INSERT', async () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
-			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
+			emitScanCapture(runtimeOptions, 'example.com', {
 				score: 90,
+				grade: 'A',
 				findings: [
 					{ category: 'spf', severity: 'info', title: 'spf_ok', detail: 'looks good' },
 					{ category: 'spf', severity: 'low', title: 'spf_pct', detail: 'pct=100' },
@@ -181,6 +180,37 @@ describe('processScanMessage', () => {
 		expect(findingInserts.length).toBe(1);
 		// 2 findings × 8 columns = 16 bound params in the single statement.
 		expect(findingInserts[0]!.binds.length).toBe(16);
+	});
+
+	it('persists the captured score/grade/maturity/result_json rather than nulls', async () => {
+		// Regression guard: the scan paths subscribed to `resultCapture`, which
+		// scan_domain never invokes, so every row landed with null score, null
+		// grade, null result_json and finding_count 0 — a silently empty scan.
+		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
+			emitScanCapture(runtimeOptions, 'example.com', {
+				score: 74,
+				grade: 'C+',
+				maturityStage: 3,
+				findings: [{ category: 'spf', severity: 'low', title: 'spf_soft', detail: '~all' }],
+			});
+			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
+		});
+		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+		const { customEnv, tenantCalls } = buildEnv();
+
+		expect(await processScanMessage(validMsg, 1, customEnv, makeCtx())).toBe('ack');
+
+		const scanInsert = tenantCalls.find((c) => c.sql === SCANS_INSERT_SQL);
+		expect(scanInsert).toBeDefined();
+		// Column order: id, domain, scan_at, score, grade, maturity_stage, finding_count, result_json, cycle_id
+		const [, domain, , score, grade, maturityStage, findingCount, resultJson] = scanInsert!.binds;
+		expect(domain).toBe('example.com');
+		expect(score).toBe(74);
+		expect(grade).toBe('C+');
+		expect(maturityStage).toBe(3);
+		expect(findingCount).toBe(1);
+		expect(typeof resultJson).toBe('string');
+		expect(JSON.parse(resultJson as string)).toMatchObject({ score: 74, grade: 'C+', maturityStage: 3 });
 	});
 
 	it('returns ack without writing when an existing scan row is found (idempotency)', async () => {
@@ -240,11 +270,9 @@ describe('processScanMessage', () => {
 
 	it('does not treat a partial scan row as idempotently complete', async () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
-			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
+			emitScanCapture(runtimeOptions, 'example.com', {
 				score: 90,
+				grade: 'A',
 				findings: [{ category: 'spf', severity: 'info', title: 'spf_ok', detail: 'looks good' }],
 			});
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
@@ -319,13 +347,7 @@ describe('processScanMessage', () => {
 
 	it('returns ack and writes DLQ persist_failed when D1 insert throws on the last attempt', async () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
-			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
-				score: 90,
-				findings: [],
-			});
+			emitScanCapture(runtimeOptions, 'example.com', { score: 90, grade: 'A' });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const { processScanMessage, MAX_ATTEMPTS } = await import('../../src/tenants/queue-consumer');
@@ -389,13 +411,7 @@ describe('handleScanQueue', () => {
 
 	it('routes ack/retry per-message based on processScanMessage outcome', async () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
-			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({
-				category: 'spf',
-				passed: true,
-				score: 90,
-				findings: [],
-			});
+			emitScanCapture(runtimeOptions, 'example.com', { score: 90, grade: 'A' });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const { handleScanQueue } = await import('../../src/tenants/queue-consumer');

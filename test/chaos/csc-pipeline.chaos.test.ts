@@ -55,14 +55,15 @@ describe('CHAOS: CSC pipeline failure modes', () => {
 			if (args.domain === 'broken.com' && tool === 'scan_domain') {
 				throw new Error('upstream timeout');
 			}
-			// Return valid response structure for other calls
+			// Return the production MCP envelope shape: the machine-readable payload
+			// lives in `structuredContent` (see handlers/tool-formatters.ts).
 			return {
-				structured: {
+				content: [],
+				structuredContent: {
 					domain: args.domain,
 					score: 70,
 					grade: 'C+',
 					categoryScores: {},
-					findings: [],
 					totalSubdomains: 10,
 					subdomains: [],
 				},
@@ -96,12 +97,12 @@ describe('CHAOS: CSC pipeline failure modes', () => {
 			}
 			// scan_domain succeeds
 			return {
-				structured: {
+				content: [],
+				structuredContent: {
 					domain: args.domain,
 					score: 60,
 					grade: 'C',
 					categoryScores: {},
-					findings: [],
 					totalSubdomains: 0,
 					subdomains: [],
 				},
@@ -120,5 +121,9 @@ describe('CHAOS: CSC pipeline failure modes', () => {
 		expect(['ready', 'running']).toContain(result.deepScan.stage);
 		// Both apexes should be in the total count
 		expect(result.deepScan.apexesTotal).toBe(2);
+		// A discover_subdomains failure is a per-section partial: posture (which comes
+		// from scan_domain) survives for both apexes, only the inventory is omitted.
+		expect(result.postureSnapshot.apexesScanned).toBe(2);
+		expect(result.deepScan.subdomainInventoryByApex).toEqual({});
 	});
 });
