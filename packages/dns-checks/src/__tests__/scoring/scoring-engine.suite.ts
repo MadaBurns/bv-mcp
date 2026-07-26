@@ -99,14 +99,13 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				]),
 			]);
 
-			// Protective tier: subdomain_takeover gets a penalty (score=60, weight=4 out of 20 total protective)
-			// Core: all absent → 100% → 70 points
-			// Protective earned: (60/100)*4 + (100/100)*16 = 2.4+16 = 18.4/20 = 0.92 → 0.92*20 = 18.4
-			// Hardening: 0 (no hardening results)
-			// Base: 70 + 18.4 + 0 = 88.4 → 88
-			// Then -15 for verified critical penalty = 73
-			expect(scan.overall).toBeLessThanOrEqual(75);
-			expect(scan.overall).toBeGreaterThanOrEqual(70);
+			// Core: all never-run → excluded (empty tier renormalizes to 100%) → 70 points.
+			// Protective: ONLY subdomain_takeover ran (score=60, weight=4); every other protective
+			// category is never-run and excluded (NOT padded to 100 — that was the masking bug), so
+			// protective renormalizes over the single measured category: (60/100)*4 / 4 = 0.6 → 12.
+			// Base: 70 + 12 + 0 = 82; no email bonus (spf/dmarc absent); then -15 verified-critical = 67.
+			expect(scan.overall).toBeLessThanOrEqual(70);
+			expect(scan.overall).toBeGreaterThanOrEqual(64);
 		});
 
 		it('IMPORTANCE_WEIGHTS covers every CheckCategory value', () => {
@@ -115,12 +114,16 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 			expect(importanceKeys).toEqual(displayKeys);
 		});
 
-		it('computeScanScore initialises all category scores even without results', () => {
+		it('computeScanScore reports NO category scores when nothing ran (never a phantom 100)', () => {
+			// A category that produced no result was not measured — it must be absent from
+			// categoryScores, never seeded to a misleading perfect 100 (which read as "clean" and
+			// silently earned full weight). With zero results, the map is empty.
 			const scan = computeScanScore([]);
 			const categories: CheckCategory[] = Object.keys(CATEGORY_DISPLAY_WEIGHTS) as CheckCategory[];
 			for (const cat of categories) {
-				expect(scan.categoryScores[cat]).toBe(100);
+				expect(scan.categoryScores[cat]).toBeUndefined();
 			}
+			expect(Object.keys(scan.categoryScores)).toHaveLength(0);
 		});
 
 		it('exports CORE_WEIGHTS and PROTECTIVE_WEIGHTS', () => {
@@ -236,6 +239,57 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				const httpBad: CheckResult = { ...buildCheckResult('http_security', [createFinding('http_security', 'No CSP', 'medium', 'missing')]), score: 0, passed: false };
 				// Genuinely measured 0 (no transient status) must still drag the score down.
 				expect(computeScanScore([...passingCore(), httpBad]).overall).toBeLessThan(baseline.overall);
+			});
+		});
+
+		describe('never-run categories are excluded, not scored 100', () => {
+			// scan_domain runs a FIXED roster that excludes some scored categories entirely —
+			// notably `lookalikes` and `shadow_domains` (protective weight 2 each), which are
+			// surfaced only by the dedicated deep-scan tools. Historically the engine seeded
+			// EVERY category to 100, so a never-run category surfaced as a perfect 100 in
+			// categoryScores AND was silently awarded full protective weight — masking the real
+			// brand-abuse findings the dedicated tools return. A never-run scored category must
+			// be treated like an inconclusive one: absent from categoryScores and excluded from
+			// the weighted tier (renormalized), never a phantom 100.
+			const passingCore = (): CheckResult[] => [
+				{ ...buildCheckResult('spf', []), score: 100, passed: true },
+				{ ...buildCheckResult('dmarc', []), score: 100, passed: true },
+				{ ...buildCheckResult('dkim', []), score: 100, passed: true },
+				{ ...buildCheckResult('dnssec', []), score: 100, passed: true },
+				{ ...buildCheckResult('ssl', []), score: 100, passed: true },
+			];
+			const takeoverFail = (): CheckResult => ({
+				...buildCheckResult('subdomain_takeover', [
+					createFinding('subdomain_takeover', 'Dangling delegation', 'high', 'takeover risk'),
+				]),
+				score: 0,
+				passed: false,
+			});
+
+			it('a never-run scored category is absent from categoryScores (never a phantom 100)', () => {
+				const scan = computeScanScore([...passingCore(), takeoverFail()]);
+				expect(scan.categoryScores.lookalikes).toBeUndefined();
+				expect(scan.categoryScores.shadow_domains).toBeUndefined();
+				// Only categories that actually produced a result appear — categoryScores can never
+				// list a category with no corresponding checkStatus.
+				expect(Object.keys(scan.categoryScores).sort()).toEqual(
+					['dkim', 'dmarc', 'dnssec', 'spf', 'ssl', 'subdomain_takeover'],
+				);
+			});
+
+			it('a never-run protective category does NOT inflate the overall (excluded + renormalized)', () => {
+				const measured = [...passingCore(), takeoverFail()];
+				const excluded = computeScanScore(measured).overall;
+				// Actually MEASURING lookalikes+shadow_domains as perfect can only hold or raise the
+				// overall — never lower it. Pre-fix the two un-run categories were auto-padded to 100,
+				// making these identical; that padding IS the masking bug, so the fixed engine must
+				// score the excluded case strictly lower when a real protective failure is present.
+				const withPerfectExtras = computeScanScore([
+					...measured,
+					{ ...buildCheckResult('lookalikes', []), score: 100, passed: true },
+					{ ...buildCheckResult('shadow_domains', []), score: 100, passed: true },
+				]).overall;
+				expect(excluded).toBeLessThan(withPerfectExtras);
 			});
 		});
 	});
