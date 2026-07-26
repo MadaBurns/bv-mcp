@@ -46,12 +46,15 @@ describe('checkDnssec', () => {
 		expect(result.findings[0].title).toMatch(/Modern DNSSEC algorithm/i);
 	});
 
-	it('returns medium finding when DNS query fails entirely', async () => {
+	it('marks the category inconclusive (not a scored deficiency) when the DNS query fails transiently', async () => {
+		// A thrown AD-probe is a transient resolver failure — excluded from scoring (checkStatus
+		// 'error') with an info-only "not assessed" finding, not a scored medium deficiency.
 		mockFetchError();
 		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('check failed'));
+		expect(r.checkStatus).toBe('error');
+		const f = r.findings.find((f) => f.title.includes('not assessed'));
 		expect(f).toBeDefined();
-		expect(f!.severity).toBe('medium');
+		expect(f!.severity).toBe('info');
 	});
 
 	it('adds tld_inherited info finding when AD=true but no DNSKEY/DS on domain', async () => {
