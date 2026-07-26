@@ -1621,9 +1621,19 @@ export async function handleToolsCall(
 						signal: AbortSignal.timeout(DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS),
 						deadlineMs: Date.now() + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
 						...(forceRefresh && { forceRefresh }),
+						// Last-known-good resilience cache: a clean enumeration is stored here
+						// and re-served (marked stale) when every live CT source is down.
+						...(scanCacheKV && { cacheKv: scanCacheKV }),
+						...(runtimeOptions?.waitUntil && { waitUntil: runtimeOptions.waitUntil }),
 					});
 					logResult = `${result.totalSubdomains} subdomains`;
-					logDetails = { totalSubdomains: result.totalSubdomains, issues: result.issues.length, sourceUnavailable: result.sourceUnavailable ?? false };
+					logDetails = {
+						totalSubdomains: result.totalSubdomains,
+						issues: result.issues.length,
+						sourceUnavailable: result.sourceUnavailable ?? false,
+						stale: result.stale ?? false,
+						...(result.stale ? { cacheAgeMinutes: result.cacheAgeMinutes ?? 0 } : {}),
+					};
 					// A CT-source outage (sourceUnavailable) is NOT a clean "0 subdomains found" — for a
 					// security tool the two are dangerously indistinguishable. Surface it as a failed/
 					// inconclusive tool call (isError) so a machine consumer cannot read "source down" as
@@ -1632,6 +1642,12 @@ export async function handleToolsCall(
 					if (result.sourceUnavailable) {
 						logToolSuccess({ ...ctx(), status: 'fail', logResult: 'CT source unavailable', logDetails, severity: 'warn' });
 						return { ...buildToolResult(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat), isError: true };
+					}
+					// A stale (last-known-good) result carries real data, so it is NOT an error —
+					// but log it warn-level so a live-source outage is still visible in tail.
+					if (result.stale) {
+						logToolSuccess({ ...ctx(), status: 'pass', logResult: `${logResult} (stale)`, logDetails, severity: 'warn' });
+						return buildToolResult(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat);
 					}
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 					return buildToolResult(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat);
