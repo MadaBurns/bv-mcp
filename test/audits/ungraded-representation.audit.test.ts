@@ -172,8 +172,8 @@ describe('ungraded representation', () => {
 				data: unmeasuredLeads as unknown,
 				// A severity manufactured from non-observation, and a hot-lead count
 				// that includes a domain nobody measured.
-				forbidden: ['"gapSeverity":7', '"graded":true', '"hotLeads":1', '"score":0'],
-				required: ['"score":null', '"grade":null', '"graded":false', '"gapSeverity":null'],
+				forbidden: ['"gapSeverity":7', '"assessed":true', '"hotLeads":1', '"score":0'],
+				required: ['"score":null', '"grade":null', '"assessed":false', '"graded":false', '"gapSeverity":null'],
 			},
 		];
 

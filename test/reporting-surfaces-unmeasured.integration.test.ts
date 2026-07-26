@@ -19,14 +19,29 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 import type { CheckResult } from '../src/lib/scoring';
 
 const mockScanDomain = vi.fn();
+const mockCheckRdap = vi.fn();
 
 vi.mock('../src/tools/scan-domain', () => ({
 	scanDomain: (...args: unknown[]) => mockScanDomain(...args),
 }));
 
+// The leads orchestrator calls RDAP alongside the scan; unmocked it goes to the
+// network, throws, and the domain lands in `skipped` — which is why every
+// assertion below is preceded by a reachability guard on `rankedLeads`.
+vi.mock('../src/tools/check-rdap-lookup', async (importOriginal) => {
+	const orig = await importOriginal<typeof import('../src/tools/check-rdap-lookup')>();
+	return { ...orig, checkRdapLookup: (...args: unknown[]) => mockCheckRdap(...args) };
+});
+
 afterEach(() => {
 	mockScanDomain.mockReset();
+	mockCheckRdap.mockReset();
 });
+
+/** RDAP with no lock posture — MultiLock degrades to "unobservable", the scan-driven products still evaluate. */
+function rdapNoPosture(): CheckResult {
+	return { category: 'rdap', passed: true, score: 100, findings: [] } as unknown as CheckResult;
+}
 
 /** The NXDOMAIN / DNS-broken shape: nothing ran, nothing scored, stage is a placeholder. */
 function nonResolvingScan(domain: string) {
@@ -130,11 +145,78 @@ describe('generateFixPlan — producer wiring for an unmeasured domain', () => {
 	});
 });
 
+/**
+ * The leads surface on the SCORING-FAILURE shape.
+ *
+ * `scoringFailedScan` was modelled here for `map_compliance` and
+ * `generate_fix_plan` but never for `prioritize_csc_leads`, whose fixtures only
+ * ever used the nothing-ran flavour of ungraded. That gap is exactly why the tool
+ * shipped a note claiming "No checks ran for this domain" about a domain whose
+ * checks ran and found a critical expired certificate.
+ */
+describe('prioritizeCscLeads — producer wiring across BOTH ungraded shapes', () => {
+	// NOTE: real-shaped `.com` domains — the orchestrator runs `validateDomain`,
+	// and `.example` is a BLOCKED TLD, so a reserved-TLD fixture never reaches the
+	// scan and lands in `skipped` instead. The reachability guards below caught it.
+	/** The full orchestrator path, so the report reaches `rankCscLeads` as production builds it. */
+	async function runLeads(domain: string) {
+		mockCheckRdap.mockResolvedValue(rdapNoPosture());
+		const { prioritizeCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		return prioritizeCscLeads({ domains: [domain] });
+	}
+
+	it('does not claim "no checks ran" when the checks ran but the scan did not score', async () => {
+		mockScanDomain.mockResolvedValue(scoringFailedScan('unscored-scan.com'));
+		const { formatCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		const report = await runLeads('unscored-scan.com');
+
+		// Reachability guard: the orchestrator really produced a lead from the
+		// mocked scan. Without it every assertion below could pass on an empty list.
+		expect(report.rankedLeads).toHaveLength(1);
+		const lead = report.rankedLeads[0];
+
+		expect(lead.assessed).toBe(true);
+		expect(lead.graded).toBe(false);
+		expect(report.caveat).not.toMatch(/no checks ran/i);
+		expect(formatCscLeads(report, 'full')).not.toMatch(/no checks ran/i);
+	});
+
+	it('does not drop the measured findings of a scan that failed to score', async () => {
+		mockScanDomain.mockResolvedValue(scoringFailedScan('unscored-scan.com'));
+		const report = await runLeads('unscored-scan.com');
+		const lead = report.rankedLeads[0];
+
+		// The DMARC failure is real evidence and must survive into the sales rollups.
+		expect(lead.gapSeverity).not.toBeNull();
+		expect(lead.gapSeverity!).toBeGreaterThan(0);
+		expect(lead.recommendedCscProducts).toContain('managed_dmarc');
+		expect(report.summary.totalRecommendations).toBeGreaterThan(0);
+		expect(report.summary.byProduct.managed_dmarc).toBe(1);
+		expect(report.summary.unassessedDomains).toBe(0);
+		expect(report.summary.unscoredDomains).toBe(1);
+	});
+
+	it('still abstains completely when NO check ran (control — the other ungraded shape)', async () => {
+		mockScanDomain.mockResolvedValue(nonResolvingScan('never-measured-domain.com'));
+		const report = await runLeads('never-measured-domain.com');
+		const lead = report.rankedLeads[0];
+
+		// Without this control the assertions above would hold under an
+		// implementation that stopped abstaining altogether.
+		expect(lead.assessed).toBe(false);
+		expect(lead.gapSeverity).toBeNull();
+		expect(report.summary.totalRecommendations).toBe(0);
+		expect(report.summary.hotLeads).toBe(0);
+		expect(report.summary.unassessedDomains).toBe(1);
+		expect(report.caveat).toMatch(/no checks ran/i);
+	});
+});
+
 describe('mapCompliance — producer wiring for an unmeasured domain', () => {
 	it('marks the report unassessed and every control not_assessed', async () => {
-		mockScanDomain.mockResolvedValue(nonResolvingScan('never-measured.example'));
+		mockScanDomain.mockResolvedValue(nonResolvingScan('never-measured-domain.com'));
 		const { mapCompliance } = await import('../src/tools/map-compliance');
-		const report = await mapCompliance('never-measured.example');
+		const report = await mapCompliance('never-measured-domain.com');
 
 		expect(report.assessed).toBe(false);
 		expect(report.caveat).toMatch(/not assessable/i);
@@ -160,9 +242,9 @@ describe('mapCompliance — producer wiring for an unmeasured domain', () => {
 	});
 
 	it('does not claim "no checks ran" for a scan whose checks ran but did not score (discriminator)', async () => {
-		mockScanDomain.mockResolvedValue(scoringFailedScan('unscored.example'));
+		mockScanDomain.mockResolvedValue(scoringFailedScan('unscored-scan.com'));
 		const { mapCompliance, formatCompliance } = await import('../src/tools/map-compliance');
-		const report = await mapCompliance('unscored.example');
+		const report = await mapCompliance('unscored-scan.com');
 
 		// The score line abstains, but the control results are real evidence — so the
 		// "no checks ran" caveat must NOT fire. Spelling `assessed` as

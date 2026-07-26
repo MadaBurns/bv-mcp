@@ -15,7 +15,7 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { formatScoreGrade } from '../lib/ungraded-display';
+import { formatScoreGrade, isMeasured } from '../lib/ungraded-display';
 
 export type CscProductKey = 'csc_multilock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
 
@@ -37,6 +37,17 @@ export interface CscProductReport {
 	score: number | null;
 	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
 	grade: string | null;
+	/**
+	 * Did any check actually run? (`isMeasured` over the input results.)
+	 *
+	 * Distinct from having a SCORE. `buildUnscoredResult` — the shipped
+	 * scoring-bundle-failure path — produces real checks with real findings and a
+	 * `null` score, so `assessed` is true while the score is absent. Every
+	 * recommendation below is derived from the CHECKS, not from the score, so this
+	 * is the flag that says whether they mean anything: with no checks they are
+	 * pure "not observed" artifacts; with checks they are measured evidence.
+	 */
+	assessed: boolean;
 	lockPosture: LockPosture | null;
 	recommendations: CscProductRecommendation[];
 	recommendedCount: number;
@@ -126,6 +137,7 @@ export function evaluateCscProducts(
 		domain,
 		score,
 		grade,
+		assessed: isMeasured(checkResults),
 		lockPosture,
 		recommendations,
 		recommendedCount: recommendations.filter((r) => r.recommended).length,

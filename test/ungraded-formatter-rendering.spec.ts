@@ -183,6 +183,8 @@ describe('formatCscLeads — ungraded lead', () => {
 	// `evaluateCscProducts` recommending every product it could not observe.
 	function leadReport(score: number | null, grade: string | null) {
 		const graded = score !== null;
+		// This fixture stands for the nothing-ran case: no severity, not hot.
+		const assessed = graded;
 		return {
 			brand: 'dead-brand',
 			totalDomains: 1,
@@ -192,6 +194,7 @@ describe('formatCscLeads — ungraded lead', () => {
 					score,
 					grade,
 					graded,
+					assessed,
 					ownershipBucket: 'consolidated',
 					gapSeverity: graded ? 7 : null,
 					priorityRank: 1,
@@ -206,7 +209,8 @@ describe('formatCscLeads — ungraded lead', () => {
 				totalRecommendations: 0,
 				byProduct: {},
 				hotLeads: graded ? 1 : 0,
-				ungradedDomains: graded ? 0 : 1,
+				unassessedDomains: graded ? 0 : 1,
+				unscoredDomains: 0,
 				skipped: [],
 			},
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any

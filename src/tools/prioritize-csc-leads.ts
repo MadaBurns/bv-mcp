@@ -34,18 +34,27 @@ export interface CscLead {
 	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
 	grade: string | null;
 	/**
-	 * Did this domain produce a gradeable measurement? The single gate a machine
-	 * consumer reads before trusting any other number on this lead. Deliberately
-	 * NOT named `assessed` (the flag `map_compliance`/`generate_fix_plan` carry):
-	 * those answer "did any check run" via `isMeasured`, whereas ranking and the
-	 * portfolio rollup turn on having a SCORE — the condition `computePortfolioGrade`
-	 * has always used. Same word, different question, so a different word.
+	 * Did any check run for this domain? (`isMeasured`.) Gates everything derived
+	 * from the CHECKS: `gapSeverity`, the product list, and every sales rollup.
+	 * Same meaning as the `assessed` flag on `map_compliance`/`generate_fix_plan`.
+	 */
+	assessed: boolean;
+	/**
+	 * Did this domain produce a gradeable SCORE? (`isGraded`.) Gates only what the
+	 * score supports: the portfolio-grade contribution and the score line.
+	 *
+	 * The two flags genuinely diverge on `buildUnscoredResult` — the shipped
+	 * scoring-bundle-failure path — where every check ran and found real problems
+	 * but the weighted score did not compute: `assessed` true, `graded` false. Each
+	 * claim this tool makes is gated by the predicate that makes it true; using one
+	 * for the other is how the tool ended up telling an MSSP "no checks ran" about
+	 * a domain with a critical expired certificate.
 	 */
 	graded: boolean;
 	ownershipBucket: OwnershipBucket;
 	recommendedCscProducts: CscProductKey[];
 	/**
-	 * `null` for an ungraded lead — NOT 0.
+	 * `null` for an UNASSESSED lead — NOT 0, and not merely for an ungraded one.
 	 *
 	 * `evaluateCscProducts` recommends every scan-driven product it could not
 	 * observe ("DMARC not observed", …), so a domain that does not resolve
@@ -54,6 +63,10 @@ export interface CscLead {
 	 * presented a non-existent domain as the top-priority hot lead, outranking a
 	 * real domain with a genuinely failing DMARC policy. A severity derived from
 	 * absence of observation is not a severity.
+	 *
+	 * The gate is `assessed`, not `graded`, because this number is derived from the
+	 * recommendations and therefore from the CHECKS — the score never enters it. A
+	 * scoring-failure domain has genuine gaps and keeps its real severity.
 	 */
 	gapSeverity: number | null;
 	priorityRank: number;
@@ -93,18 +106,36 @@ export interface CscLeadReport {
 		totalRecommendations: number;
 		byProduct: Record<CscProductKey, number>;
 		hotLeads: number;
-		/** Ranked leads with no gradeable measurement — excluded from every rollup above. */
-		ungradedDomains: number;
+		/** Ranked leads where NO check ran — excluded from every rollup above. */
+		unassessedDomains: number;
+		/**
+		 * Ranked leads whose checks ran but which produced no score. They DO count in
+		 * the rollups above (their gaps are measured evidence) and are excluded only
+		 * from the score-derived portfolio grade.
+		 */
+		unscoredDomains: number;
 		skipped: Array<{ domain: string; reason: string }>;
 	};
 }
 
 /**
- * The single wording of the per-lead "nothing was measured" qualifier, carried on
- * BOTH surfaces — the prose an MSSP reads and the report's `caveat` field.
+ * The per-lead qualifier for "no check ran" — the domain does not resolve, or its
+ * zone is broken. Every recommendation for such a domain is an artifact of
+ * non-observation, so nothing derived from them is reported.
  */
-export const UNGRADED_LEAD_NOTE =
+export const UNASSESSED_LEAD_NOTE =
 	'No checks ran for this domain, so no product gap could be assessed. It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.';
+
+/**
+ * The per-lead qualifier for "checks ran, scan could not be scored".
+ *
+ * A DIFFERENT sentence for a different fact. Reusing the "no checks ran" wording
+ * here stated a falsehood about a domain whose checks ran and found a critical
+ * expired certificate — the note was gated on `graded` while asserting something
+ * only `isMeasured` could support.
+ */
+export const UNSCORED_LEAD_NOTE =
+	'The checks for this domain ran and the gaps below are real, but the scan could not be scored, so this domain is excluded from the portfolio grade.';
 
 /** A domain to rank, paired with its portfolio ownership lens. */
 export interface CscLeadEntry {
@@ -228,18 +259,22 @@ export function rankCscLeads(
 	skipped: Array<{ domain: string; reason: string }> = [],
 ): CscLeadReport {
 	const leads: CscLead[] = entries.map((e) => {
-		// The SAME condition `computePortfolioGrade` has always used to drop a lead
-		// from the weighted average — reused rather than respelled.
+		// Two predicates, deliberately separate. `graded` is the SAME condition
+		// `computePortfolioGrade` has always used to drop a lead from the weighted
+		// average. `assessed` is whether any check ran — the producer computes it
+		// with `isMeasured`, and it is what the check-derived numbers hang on.
 		const graded = e.report.score !== null && e.report.grade !== null;
+		const assessed = e.report.assessed;
 		return {
 			domain: e.report.domain,
 			score: e.report.score,
 			grade: e.report.grade,
+			assessed,
 			graded,
 			ownershipBucket: e.ownershipBucket,
 			recommendedCscProducts: recommendedProducts(e.report),
 			// Absence of observation is not a gap. See the `gapSeverity` doc above.
-			gapSeverity: graded ? computeGapSeverity(e.report, e.ownershipBucket) : null,
+			gapSeverity: assessed ? computeGapSeverity(e.report, e.ownershipBucket) : null,
 			priorityRank: 0, // assigned after the sort
 			recommendedCount: e.report.recommendedCount,
 			topPriority: topPriorityOf(e.report),
@@ -257,35 +292,43 @@ export function rankCscLeads(
 		lead.priorityRank = i + 1;
 	});
 
-	// Every rollup below aggregates MEASURED domains only — the same exclusion
-	// `computePortfolioGrade` applies to the weighted score. An ungraded lead's
-	// recommendations exist solely because nothing was observed; counting them
-	// inflates the portfolio's apparent sales surface.
-	const gradedLeads = leads.filter((l) => l.graded);
+	// The sales rollups aggregate ASSESSED domains — every number in them is
+	// derived from the checks. An unassessed lead's recommendations exist solely
+	// because nothing was observed; counting them inflates the portfolio's apparent
+	// sales surface. An unscored-but-assessed lead's gaps ARE measured evidence and
+	// are counted: withholding them hid a critical expired certificate.
+	// Only the score-derived portfolio grade uses `graded`, inside
+	// `computePortfolioGrade` where that condition has always lived.
+	const assessedLeads = leads.filter((l) => l.assessed);
 	const byProduct: Record<CscProductKey, number> = {
 		csc_multilock: 0,
 		managed_dmarc: 0,
 		digital_certificates: 0,
 		dnssec_management: 0,
 	};
-	for (const lead of gradedLeads) {
+	for (const lead of assessedLeads) {
 		for (const key of lead.recommendedCscProducts) byProduct[key] += 1;
 	}
 
 	const portfolioGrade = computePortfolioGrade(leads);
-	const ungradedDomains = leads.length - gradedLeads.length;
+	const unassessedDomains = leads.length - assessedLeads.length;
+	const unscoredDomains = assessedLeads.filter((l) => !l.graded).length;
+	const notes = [unassessedDomains > 0 ? UNASSESSED_LEAD_NOTE : null, unscoredDomains > 0 ? UNSCORED_LEAD_NOTE : null].filter(
+		(n): n is string => n !== null,
+	);
 
 	return {
 		brand,
 		totalDomains: leads.length,
 		rankedLeads: leads,
 		portfolioGrade,
-		caveat: ungradedDomains > 0 ? UNGRADED_LEAD_NOTE : null,
+		caveat: notes.length > 0 ? notes.join(' ') : null,
 		summary: {
-			totalRecommendations: gradedLeads.reduce((sum, l) => sum + l.recommendedCount, 0),
+			totalRecommendations: assessedLeads.reduce((sum, l) => sum + l.recommendedCount, 0),
 			byProduct,
-			hotLeads: gradedLeads.filter((l) => l.gapSeverity !== null && l.gapSeverity >= HOT_LEAD_THRESHOLD).length,
-			ungradedDomains,
+			hotLeads: assessedLeads.filter((l) => l.gapSeverity !== null && l.gapSeverity >= HOT_LEAD_THRESHOLD).length,
+			unassessedDomains,
+			unscoredDomains,
 			skipped,
 		},
 	};
@@ -335,8 +378,12 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 			: '';
 		lines.push(`CSC leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot${portfolioSegment}`);
 		for (const lead of report.rankedLeads) {
+			// Only an UNASSESSED lead loses its severity and product count. An
+			// unscored-but-assessed lead keeps both — `formatScoreGrade` already
+			// renders its missing score as the ungraded token, which is the only part
+			// that is genuinely unknown.
 			lines.push(
-				lead.graded
+				lead.assessed
 					? `${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${lead.gapSeverity} — ${formatScoreGrade(lead.score, lead.grade)} — ${lead.recommendedCount} product(s)`
 					: `${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${UNGRADED_DISPLAY} — ${UNGRADED_DISPLAY} — no checks ran`,
 			);
@@ -355,21 +402,24 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 	}
 	lines.push('');
 	for (const lead of report.rankedLeads) {
-		// An ungraded lead gets a header with no severity, its score qualified, and
+		// An UNASSESSED lead gets a header with no severity, its score qualified, and
 		// the note — and NONE of the derived sales claims. `topPriority` and the
 		// product list for such a lead are artifacts of having observed nothing
 		// ("DMARC not observed"), so printing them under a "not measured" score
 		// would sell products for a domain nobody looked at.
-		if (!lead.graded) {
+		if (!lead.assessed) {
 			lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${UNGRADED_DISPLAY}`);
 			lines.push(`  - Score: ${formatScoreGrade(lead.score, lead.grade)} | Ownership: ${lead.ownershipBucket}`);
-			lines.push(`  - ${UNGRADED_LEAD_NOTE}`);
+			lines.push(`  - ${UNASSESSED_LEAD_NOTE}`);
 			continue;
 		}
 		lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${lead.gapSeverity}`);
 		lines.push(
 			`  - Score: ${formatScoreGrade(lead.score, lead.grade)} | Ownership: ${lead.ownershipBucket} | Top priority: ${lead.topPriority}`,
 		);
+		// Checks ran, so the gaps below are real; only the score is missing. Say
+		// exactly that rather than reusing the "no checks ran" sentence.
+		if (!lead.graded) lines.push(`  - ${UNSCORED_LEAD_NOTE}`);
 		if (lead.recommendedCscProducts.length > 0) {
 			lines.push(`  - Recommended CSC products: ${lead.recommendedCscProducts.join(', ')}`);
 		} else {
