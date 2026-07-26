@@ -19,6 +19,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { resetTenantResolverCache } from '../../src/tenants/tenant-resolver';
+import { emitScanCapture } from '../helpers/scan-capture';
 
 const handleToolsCallMock = vi.hoisted(() =>
 	vi.fn<(...args: unknown[]) => Promise<{ isError?: boolean; content: unknown[] }>>(),
@@ -146,8 +147,7 @@ describe('queue-consumer persistScan — findings batching (T3)', () => {
 	it('persists 25 findings in 3 bounded multi-row INSERTs (not 25), each ≤ 100 params', async () => {
 		const n = 25;
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
-			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({ category: 'spf', passed: true, score: 80, findings: makeFindings(n) });
+			emitScanCapture(runtimeOptions, 'example.com', { score: 80, findings: makeFindings(n) });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
@@ -171,8 +171,7 @@ describe('queue-consumer persistScan — findings batching (T3)', () => {
 	it('persists exactly 12 findings in a single statement (chunk boundary)', async () => {
 		const n = 12;
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
-			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({ category: 'spf', passed: true, score: 80, findings: makeFindings(n) });
+			emitScanCapture(runtimeOptions, 'example.com', { score: 80, findings: makeFindings(n) });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
@@ -189,8 +188,7 @@ describe('queue-consumer persistScan — findings batching (T3)', () => {
 
 	it('writes no findings INSERT when the scan has zero findings', async () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
-			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({ category: 'spf', passed: true, score: 100, findings: [] });
+			emitScanCapture(runtimeOptions, 'example.com', { score: 100 });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
@@ -223,8 +221,7 @@ describe('routes POST /internal/tenants/scan — findings batching (T3)', () => 
 	it('persists 25 findings in 3 bounded multi-row INSERTs via the sync scan path', async () => {
 		const n = 25;
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
-			const opts = runtimeOptions as { resultCapture?: (r: unknown) => void } | undefined;
-			opts?.resultCapture?.({ category: 'spf', passed: true, score: 80, findings: makeFindings(n) });
+			emitScanCapture(runtimeOptions, 'example.com', { score: 80, findings: makeFindings(n) });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
 		});
 		const worker = (await import('../../src')).default;
