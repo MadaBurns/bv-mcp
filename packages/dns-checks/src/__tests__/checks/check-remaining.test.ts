@@ -13,7 +13,7 @@ import { checkSSL } from '../../checks/check-ssl';
 import { checkHTTPSecurity } from '../../checks/check-http-security';
 import { checkSubdomainTakeover } from '../../checks/check-subdomain-takeover';
 import { checkMTASTS } from '../../checks/check-mta-sts';
-import type { DNSQueryFunction, FetchFunction } from '../../types';
+import type { DNSQueryFunction, FetchFunction, ZoneContext } from '../../types';
 
 function createMockDNS(records: Record<string, string[]>): DNSQueryFunction {
 	return vi.fn(async (domain: string, _type: string) => {
@@ -81,6 +81,50 @@ describe('checkCAA', () => {
 		});
 		const result = await checkCAA('example.com', queryDNS);
 		expect(result.findings.some((f) => f.title === 'CAA properly configured')).toBe(true);
+	});
+
+	it('climbs from the normalized scanned label and never queries below the registrable floor', async () => {
+		const queries: string[] = [];
+		const queryDNS: DNSQueryFunction = vi.fn(async (domain) => {
+			queries.push(domain);
+			return [];
+		});
+		const zone: ZoneContext = {
+			scannedLabel: 'deep.sub.example.com',
+			registrableDomain: 'example.com',
+			isApex: false,
+			zoneApex: 'example.com',
+			apexNsRecords: ['ns1.example.com'],
+			delegationStatus: 'inherited',
+		};
+
+		await checkCAA('DEEP.SUB.EXAMPLE.COM.', queryDNS, { zone });
+
+		expect(queries).toEqual(['DEEP.SUB.EXAMPLE.COM.', 'sub.example.com', 'example.com']);
+		expect(queries).not.toContain('com');
+	});
+
+	it('marks a non-apex unknown zone walk inconclusive without querying CAA', async () => {
+		const queryDNS: DNSQueryFunction = vi.fn(async () => ['0 issue "letsencrypt.org"']);
+		const zone: ZoneContext = {
+			scannedLabel: 'app.example.com',
+			registrableDomain: 'example.com',
+			isApex: false,
+			zoneApex: 'example.com',
+			apexNsRecords: [],
+			delegationStatus: 'unknown',
+		};
+
+		const result = await checkCAA('app.example.com', queryDNS, { zone });
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings).toEqual([
+			expect.objectContaining({
+				title: 'CAA records not assessed',
+				severity: 'info',
+			}),
+		]);
+		expect(queryDNS).not.toHaveBeenCalled();
 	});
 });
 
