@@ -6,6 +6,54 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.35.0] - 2026-07-26
+
+Correctness release: an unmeasured domain (never scanned, or scanned but not scoreable) no longer
+receives a fabricated *failing* grade anywhere in the stack. `@blackveil/dns-checks` widens
+`ScanScore.overall` / `ScanScore.grade` to nullable (**1.5.2 → 1.6.0**), and every downstream
+consumer — `batch_scan`, `compare_baseline`, `compare_domains`, `analyze_drift`, the `/badge` SVG,
+`map_compliance`, `generate_fix_plan`, `prioritize_csc_leads` — now abstains instead of coercing
+`null` into `0` / `'F'` / `false` / `'stable'`.
+
+### Fixed
+
+- **`batch_scan` no longer fabricates a failing grade for a domain it never measured.** `emptyResult()` hardcoded `score: 0, grade: 'F', passed: false` for an invalid domain, an exhausted batch budget, or a scan that threw — publishing a fabricated failing *measurement* about a real named organisation into customer reports. Those results now carry `score: null`, `grade: null`, `passed: null`, `maturityStage: null` and a new always-present `measured: false`, and every text surface renders `not measured`. The same fabrication in `compare_domains`' formatter (`result.grades[domain] ?? 'F'`) is removed.
+- **Ungraded results are no longer silently coerced by downstream consumers.** `compare_baseline` returned `passed: false` for an unmeasured domain on the score rule (`null < 50` is `true` in JS) while silently *passing* it on the grade rule (`GRADE_ORDER.indexOf(null)` is `-1`) — a CI/CD policy gate failing and passing the same unmeasured domain at once. It now returns `passed: null` (INCONCLUSIVE) plus `inconclusiveRules`, never a pass and never a fail. `analyze_drift` returned `'stable'` on a `NaN` delta and now returns `'inconclusive'`. `compare_domains` excludes ungraded domains from the winner race instead of sorting them as `0`. The `/badge` SVG renders an explicit `unknown` badge. `map_compliance`, `map_csc_products`, `prioritize_csc_leads` and `generate_fix_plan` render `not measured` instead of `null/100 (null)`. `prioritize_csc_leads`' portfolio rollup excludes ungraded leads instead of averaging them in at zero.
+
+### Changed
+
+- **BREAKING (`@blackveil/dns-checks` 1.5.2 → 1.6.0): `ScanScore.overall` is now `number | null` and `ScanScore.grade` is `string | null`.** `ScanScoreSchema` is widened in lockstep, so runtime validation accepts an ungraded result. A new `isGraded(score)` type guard is exported from `@blackveil/dns-checks/scoring` — narrow with it and **abstain**; never substitute a default. `PARITY_CORPUS_VERSION` moves to `1.6.0` in lockstep with the package version, which also invalidates every pre-existing scan cache key (`src/lib/cache.ts`), so no cached old-shape result can be read back.
+- **The `'N/A'` grade sentinel is retired.** `scan_domain`'s three degraded paths (NXDOMAIN, unresolvable/DNSSEC-bogus zone, scoring-bundle failure) emitted `grade: 'N/A', overall: 0`; they now emit `grade: null, overall: null`. `null` is the single representation of "not graded", and a single exported `UNGRADED_DISPLAY = 'not measured'` token is the single rendered form. Locked in by `test/audits/ungraded-representation.audit.test.ts`.
+- **Grade cut-points, category weights, profile weights, severity penalties and the check matrix are unchanged.** Both grade scales are unchanged: the canonical 9-band `scoreToGrade` and the NIST 6-band `nistScoreToGrade` at the `displayGradeFor` chokepoint. This change alters only whether a grade can be *absent*, never what a present grade means.
+- **Version bump.** `SERVER_VERSION` (root `package.json`) moves 3.34.1 → 3.35.0 alongside the `@blackveil/dns-checks` bump. This is load-bearing, not cosmetic: `buildScanCacheKey`/`buildCheckCacheKey` embed both `SERVER_VERSION` and `DNS_CHECKS_VERSION`, and `cacheGet` is an unchecked cast over KV — without the root bump, a cached pre-release `{overall: 0, grade: 'N/A'}` scan could in principle resurrect and render as a confident `0/100 (N/A)` rather than `not measured`. The `dns-checks` half of the key already changed in Task 2; this closes the other half.
+
+### Cross-repo
+
+- **`bv-web-prod` must re-vendor the `@blackveil/dns-checks` tarball at 1.6.0** and absorb the nullable `ScanScore.overall` / `.grade`. Its `parity.contract.test.ts` will fail on drift until it does. Approved by the operator ahead of this change; tracked as a follow-up issue on that repo — it cannot be verified from this repo. Consolidated compatibility note for that re-vendor, covering every wire-shape change in this release:
+
+  **Removed — silent `undefined` for existing consumers:**
+  - `CscLeadReport.summary.ungradedDomains` — **REMOVED**, replaced by two fields that split the state it conflated: `summary.unassessedDomains` (no checks ran at all) and `summary.unscoredDomains` (checks ran, but the scoring bundle failed). A consumer still reading the old field name gets `undefined` — rendered as a blank or `NaN`, not a loud failure. This is the one item on this list that fails silently; update it first.
+
+  **Type widened (`number` / `string` → nullable, or `boolean` → nullable):**
+  - `ScanScore.overall`: `number` → `number | null`; `ScanScore.grade`: `string` → `string | null` (the SSOT change itself — everything below follows from it).
+  - `compare_baseline`'s `passed`: `boolean` → `boolean | null`, plus a new `inconclusiveRules` field — an unmeasured domain now returns INCONCLUSIVE rather than a coerced pass or fail.
+  - `analyze_drift`'s JSON-baseline `grade` fields narrow to the nine canonical grade letters (no longer an arbitrary string, and `'N/A'` no longer appears); a `NaN`/ungraded delta now classifies as `'inconclusive'`, not `'stable'`.
+  - `ComplianceFrameworkSummary.percentage`: `number` → `number | null`; the denominator changed from `totalControls` to `assessedControls` (over-claim direction for a partially-assessed framework — e.g. a domain measuring only SPF now shows NIST 800-177 at 100% (1/1) with `notAssessed: 7`; read `percentage` together with `notAssessed`, never alone).
+  - `FixPlanResult.maturityStage`: `number` → `number | null`.
+  - `CscLead.gapSeverity`: `number` → `number | null`.
+
+  **Value change only (type was already nullable):**
+  - `StructuredScanResult.maturityStage` — now actually `null` for any degraded/unmeasured scan. Previously hardcoded `0` ("Unprotected", a real posture verdict) despite the field's pre-existing nullable type.
+
+  **New members / fields (additive):**
+  - `ComplianceMapping.status` gains a fourth member, `not_assessed` (zero check evidence for a control, distinct from a real `fail`).
+  - `ComplianceFrameworkSummary` gains `notAssessed`, `assessedControls`.
+  - `ComplianceReport`, `FixPlanResult` gain `assessed: boolean`, `caveat: string | null`.
+  - `CscProductReport` gains `assessed: boolean`.
+  - `CscLead` gains `assessed: boolean`, `graded: boolean`.
+  - `CscLeadReport` gains `caveat: string | null`.
+  - `batch_scan` / `StructuredScanResult` gain an always-present `measured: boolean`.
+
 ## [3.34.1] - 2026-07-24
 
 Follow-up bugfix release to 3.34.0: two non-apex regressions found in review, plus a broader false-positive class where a **transient** query/fetch failure was scored as a real deficiency. All corrections are in `@blackveil/dns-checks` (**1.5.0 → 1.5.2**); apex-domain output stays byte-identical.
