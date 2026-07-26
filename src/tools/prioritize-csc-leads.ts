@@ -33,9 +33,29 @@ export interface CscLead {
 	score: number | null;
 	/** `null` when the scan produced no gradeable measurement. Never a fabricated letter. */
 	grade: string | null;
+	/**
+	 * Did this domain produce a gradeable measurement? The single gate a machine
+	 * consumer reads before trusting any other number on this lead. Deliberately
+	 * NOT named `assessed` (the flag `map_compliance`/`generate_fix_plan` carry):
+	 * those answer "did any check run" via `isMeasured`, whereas ranking and the
+	 * portfolio rollup turn on having a SCORE — the condition `computePortfolioGrade`
+	 * has always used. Same word, different question, so a different word.
+	 */
+	graded: boolean;
 	ownershipBucket: OwnershipBucket;
 	recommendedCscProducts: CscProductKey[];
-	gapSeverity: number;
+	/**
+	 * `null` for an ungraded lead — NOT 0.
+	 *
+	 * `evaluateCscProducts` recommends every scan-driven product it could not
+	 * observe ("DMARC not observed", …), so a domain that does not resolve
+	 * manufactures gapValue 3+2+2 = 7 — above HOT_LEAD_THRESHOLD — purely from
+	 * having measured nothing. Since `gapSeverity` is the FIRST sort key, that
+	 * presented a non-existent domain as the top-priority hot lead, outranking a
+	 * real domain with a genuinely failing DMARC policy. A severity derived from
+	 * absence of observation is not a severity.
+	 */
+	gapSeverity: number | null;
 	priorityRank: number;
 	recommendedCount: number;
 	topPriority: CscPriority;
@@ -57,13 +77,34 @@ export interface CscLeadReport {
 	rankedLeads: CscLead[];
 	/** NEW — additive/optional. rankCscLeads ALWAYS sets it (PortfolioGrade or null). */
 	portfolioGrade?: PortfolioGrade | null;
+	/**
+	 * Set when at least one ranked lead is ungraded; `null` otherwise. The
+	 * report-level twin of the per-lead `graded` flag, so a consumer reading only
+	 * the rollups still learns they exclude domains.
+	 *
+	 * There is deliberately no report-level `assessed` boolean: on a multi-domain
+	 * report that word would have to mean "every lead was measured", a different
+	 * proposition from the per-domain flag of the same name on the single-domain
+	 * reports. `summary.ungradedDomains` says exactly how many, which a boolean
+	 * cannot.
+	 */
+	caveat?: string | null;
 	summary: {
 		totalRecommendations: number;
 		byProduct: Record<CscProductKey, number>;
 		hotLeads: number;
+		/** Ranked leads with no gradeable measurement — excluded from every rollup above. */
+		ungradedDomains: number;
 		skipped: Array<{ domain: string; reason: string }>;
 	};
 }
+
+/**
+ * The single wording of the per-lead "nothing was measured" qualifier, carried on
+ * BOTH surfaces — the prose an MSSP reads and the report's `caveat` field.
+ */
+export const UNGRADED_LEAD_NOTE =
+	'No checks ran for this domain, so no product gap could be assessed. It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.';
 
 /** A domain to rank, paired with its portfolio ownership lens. */
 export interface CscLeadEntry {
@@ -186,49 +227,65 @@ export function rankCscLeads(
 	brand: string | null = null,
 	skipped: Array<{ domain: string; reason: string }> = [],
 ): CscLeadReport {
-	const leads: CscLead[] = entries.map((e) => ({
-		domain: e.report.domain,
-		score: e.report.score,
-		grade: e.report.grade,
-		ownershipBucket: e.ownershipBucket,
-		recommendedCscProducts: recommendedProducts(e.report),
-		gapSeverity: computeGapSeverity(e.report, e.ownershipBucket),
-		priorityRank: 0, // assigned after the sort
-		recommendedCount: e.report.recommendedCount,
-		topPriority: topPriorityOf(e.report),
-	}));
+	const leads: CscLead[] = entries.map((e) => {
+		// The SAME condition `computePortfolioGrade` has always used to drop a lead
+		// from the weighted average — reused rather than respelled.
+		const graded = e.report.score !== null && e.report.grade !== null;
+		return {
+			domain: e.report.domain,
+			score: e.report.score,
+			grade: e.report.grade,
+			graded,
+			ownershipBucket: e.ownershipBucket,
+			recommendedCscProducts: recommendedProducts(e.report),
+			// Absence of observation is not a gap. See the `gapSeverity` doc above.
+			gapSeverity: graded ? computeGapSeverity(e.report, e.ownershipBucket) : null,
+			priorityRank: 0, // assigned after the sort
+			recommendedCount: e.report.recommendedCount,
+			topPriority: topPriorityOf(e.report),
+		};
+	});
 
-	// An ungraded lead carries no score to rank on. Sorting it as `0` would rank an
-	// unmeasured domain as the worst-scoring (highest-priority) lead in the list, so
-	// it sorts AFTER every graded lead instead; two ungraded leads fall through to the
-	// domain tiebreak (Infinity - Infinity is NaN, which is falsy).
+	// An ungraded lead has no severity to rank on, so it sorts AFTER every graded
+	// lead (-Infinity under the descending primary key) rather than being ordered by
+	// a severity manufactured from non-observation. Two ungraded leads then fall
+	// through to the score key — also absent — and finally to the domain tiebreak.
+	const severityRank = (l: CscLead): number => (l.gapSeverity === null ? Number.NEGATIVE_INFINITY : l.gapSeverity);
 	const scoreRank = (l: CscLead): number => (l.score === null ? Number.POSITIVE_INFINITY : l.score);
-	leads.sort((a, b) => b.gapSeverity - a.gapSeverity || scoreRank(a) - scoreRank(b) || a.domain.localeCompare(b.domain));
+	leads.sort((a, b) => severityRank(b) - severityRank(a) || scoreRank(a) - scoreRank(b) || a.domain.localeCompare(b.domain));
 	leads.forEach((lead, i) => {
 		lead.priorityRank = i + 1;
 	});
 
+	// Every rollup below aggregates MEASURED domains only — the same exclusion
+	// `computePortfolioGrade` applies to the weighted score. An ungraded lead's
+	// recommendations exist solely because nothing was observed; counting them
+	// inflates the portfolio's apparent sales surface.
+	const gradedLeads = leads.filter((l) => l.graded);
 	const byProduct: Record<CscProductKey, number> = {
 		csc_multilock: 0,
 		managed_dmarc: 0,
 		digital_certificates: 0,
 		dnssec_management: 0,
 	};
-	for (const lead of leads) {
+	for (const lead of gradedLeads) {
 		for (const key of lead.recommendedCscProducts) byProduct[key] += 1;
 	}
 
 	const portfolioGrade = computePortfolioGrade(leads);
+	const ungradedDomains = leads.length - gradedLeads.length;
 
 	return {
 		brand,
 		totalDomains: leads.length,
 		rankedLeads: leads,
 		portfolioGrade,
+		caveat: ungradedDomains > 0 ? UNGRADED_LEAD_NOTE : null,
 		summary: {
-			totalRecommendations: leads.reduce((sum, l) => sum + l.recommendedCount, 0),
+			totalRecommendations: gradedLeads.reduce((sum, l) => sum + l.recommendedCount, 0),
 			byProduct,
-			hotLeads: leads.filter((l) => l.gapSeverity >= HOT_LEAD_THRESHOLD).length,
+			hotLeads: gradedLeads.filter((l) => l.gapSeverity !== null && l.gapSeverity >= HOT_LEAD_THRESHOLD).length,
+			ungradedDomains,
 			skipped,
 		},
 	};
@@ -279,7 +336,9 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 		lines.push(`CSC leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot${portfolioSegment}`);
 		for (const lead of report.rankedLeads) {
 			lines.push(
-				`${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${lead.gapSeverity} — ${formatScoreGrade(lead.score, lead.grade)} — ${lead.recommendedCount} product(s)`,
+				lead.graded
+					? `${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${lead.gapSeverity} — ${formatScoreGrade(lead.score, lead.grade)} — ${lead.recommendedCount} product(s)`
+					: `${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — sev ${UNGRADED_DISPLAY} — ${UNGRADED_DISPLAY} — no checks ran`,
 			);
 		}
 		return lines.join('\n').trimEnd();
@@ -296,16 +355,23 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 	}
 	lines.push('');
 	for (const lead of report.rankedLeads) {
+		// An ungraded lead gets a header with no severity, its score qualified, and
+		// the note — and NONE of the derived sales claims. `topPriority` and the
+		// product list for such a lead are artifacts of having observed nothing
+		// ("DMARC not observed"), so printing them under a "not measured" score
+		// would sell products for a domain nobody looked at.
+		if (!lead.graded) {
+			lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${UNGRADED_DISPLAY}`);
+			lines.push(`  - Score: ${formatScoreGrade(lead.score, lead.grade)} | Ownership: ${lead.ownershipBucket}`);
+			lines.push(`  - ${UNGRADED_LEAD_NOTE}`);
+			continue;
+		}
 		lines.push(`## ${lead.priorityRank}. ${sanitizeOutputText(lead.domain, 253)} — gap severity ${lead.gapSeverity}`);
 		lines.push(
 			`  - Score: ${formatScoreGrade(lead.score, lead.grade)} | Ownership: ${lead.ownershipBucket} | Top priority: ${lead.topPriority}`,
 		);
 		if (lead.recommendedCscProducts.length > 0) {
 			lines.push(`  - Recommended CSC products: ${lead.recommendedCscProducts.join(', ')}`);
-		} else if (lead.score === null || lead.grade === null) {
-			// "Posture clean" is a security reassurance. An ungraded lead was never
-			// measured, so having nothing to upsell says nothing about its posture.
-			lines.push(`  - No CSC upsell — posture ${UNGRADED_DISPLAY}`);
 		} else {
 			lines.push('  - No CSC upsell — posture clean');
 		}

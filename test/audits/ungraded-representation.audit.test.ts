@@ -124,47 +124,67 @@ describe('ungraded representation', () => {
 	 * field, so every dashboard still charted a 0% compliance verdict for a domain
 	 * that was never assessed. The same trap has now appeared twice on this branch.
 	 *
-	 * So the rule is stated over the WIRE payload, for every reporting tool at once:
-	 * given an input with nothing measured, the serialized result may not contain a
-	 * fabricated verdict number or letter.
+	 * So the rule is stated over the WIRE payload: given an input with nothing
+	 * measured, the serialized result may not contain a fabricated verdict.
+	 *
+	 * Every surface here is built by its REAL producer from an empty check list —
+	 * no hand-written literals, because a literal with `score: null` already baked
+	 * in cannot fail a `"score":null` assertion, and an invariant that cannot fail
+	 * is decoration. `generate_fix_plan` is deliberately ABSENT: its producer needs
+	 * a mocked `scanDomain`, which does not belong in a corpus audit, so its wire
+	 * payload is pinned producer-side in
+	 * `test/reporting-surfaces-unmeasured.integration.test.ts` instead.
+	 *
+	 * `forbidden` is per surface rather than shared, so no surface carries a rule
+	 * about a field it does not have — a globally-shared forbidden list would be
+	 * vacuously satisfied by three of the four and read as broader than it is.
 	 */
 	it('no reporting tool emits a fabricated verdict on the wire for an unmeasured domain', async () => {
 		const { buildToolResult } = await import('../../src/handlers/tool-formatters');
 		const { evaluateCompliance, formatCompliance } = await import('../../src/tools/map-compliance');
 		const { evaluateCscProducts, formatCscProducts } = await import('../../src/tools/map-csc-products');
-		const { formatFixPlan, UNASSESSED_FIX_PLAN_CAVEAT } = await import('../../src/tools/generate-fix-plan');
 		const { rankCscLeads, formatCscLeads } = await import('../../src/tools/prioritize-csc-leads');
 
 		const unmeasuredCsc = evaluateCscProducts([], null, 'never-measured.example', null, null);
-		const surfaces: Array<{ tool: string; text: string; data: unknown }> = [
-			(() => {
-				const r = evaluateCompliance([], 'never-measured.example', null, null);
-				return { tool: 'map_compliance', text: formatCompliance(r, 'full'), data: r };
-			})(),
-			{ tool: 'map_csc_products', text: formatCscProducts(unmeasuredCsc, 'full'), data: unmeasuredCsc },
-			(() => {
-				const p = {
-					domain: 'never-measured.example',
-					score: null,
-					grade: null,
-					maturityStage: null,
-					totalActions: 0,
-					actions: [],
-					assessed: false,
-					caveat: UNASSESSED_FIX_PLAN_CAVEAT,
-				};
-				return { tool: 'generate:fix_plan', text: formatFixPlan(p, 'full'), data: p };
-			})(),
-			(() => {
-				const r = rankCscLeads([{ report: unmeasuredCsc, ownershipBucket: 'consolidated' as const }]);
-				return { tool: 'prioritize_csc_leads', text: formatCscLeads(r, 'full'), data: r };
-			})(),
+		const unmeasuredCompliance = evaluateCompliance([], 'never-measured.example', null, null);
+		const unmeasuredLeads = rankCscLeads([{ report: unmeasuredCsc, ownershipBucket: 'consolidated' as const }]);
+
+		const surfaces = [
+			{
+				tool: 'map_compliance',
+				text: formatCompliance(unmeasuredCompliance, 'full'),
+				data: unmeasuredCompliance as unknown,
+				// The banked defect verbatim: a 0% compliance verdict and eight failed
+				// controls for a domain that does not exist.
+				forbidden: ['"percentage":0', '"status":"fail"', '"score":0'],
+				required: ['"score":null', '"grade":null', '"assessed":false'],
+			},
+			{
+				tool: 'map_csc_products',
+				text: formatCscProducts(unmeasuredCsc, 'full'),
+				data: unmeasuredCsc as unknown,
+				forbidden: ['"score":0', '"grade":"'],
+				required: ['"score":null', '"grade":null'],
+			},
+			{
+				tool: 'prioritize_csc_leads',
+				text: formatCscLeads(unmeasuredLeads, 'full'),
+				data: unmeasuredLeads as unknown,
+				// A severity manufactured from non-observation, and a hot-lead count
+				// that includes a domain nobody measured.
+				forbidden: ['"gapSeverity":7', '"graded":true', '"hotLeads":1', '"score":0'],
+				required: ['"score":null', '"grade":null', '"graded":false', '"gapSeverity":null'],
+			},
 		];
 
-		// Non-vacuity: an empty or short list would make every assertion below trivial.
-		expect(surfaces).toHaveLength(4);
+		// Non-vacuity: every surface must carry at least one rule, and the producers
+		// must have actually produced something to inspect.
+		expect(surfaces).toHaveLength(3);
+		expect(unmeasuredCompliance.frameworks.soc2.mappings.length).toBeGreaterThan(0);
+		expect(unmeasuredCsc.recommendations.length).toBeGreaterThan(0);
+		expect(unmeasuredLeads.rankedLeads.length).toBeGreaterThan(0);
 
-		for (const { tool, text, data } of surfaces) {
+		for (const { tool, text, data, forbidden, required } of surfaces) {
 			const result = buildToolResult(text, data, 'full');
 			const structured = JSON.stringify(result.structuredContent);
 			const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));
@@ -175,14 +195,8 @@ describe('ungraded representation', () => {
 				['STRUCTURED_RESULT', comment!],
 			] as const) {
 				const label = `${tool}/${channel}`;
-				// A score or grade that was never measured is `null` on the wire —
-				// never a coerced 0 and never a fabricated letter.
-				expect(payload, label).toContain('"score":null');
-				expect(payload, label).not.toContain('"score":0');
-				expect(payload, label).toContain('"grade":null');
-				// And no compliance verdict may be manufactured from that absence.
-				expect(payload, label).not.toContain('"percentage":0');
-				expect(payload, label).not.toContain('"status":"fail"');
+				for (const token of forbidden) expect(payload, `${label}: must not contain ${token}`).not.toContain(token);
+				for (const token of required) expect(payload, `${label}: must contain ${token}`).toContain(token);
 			}
 		}
 	});

@@ -178,7 +178,11 @@ describe('formatFixPlan — ungraded scan', () => {
 });
 
 describe('formatCscLeads — ungraded lead', () => {
+	// An ungraded lead carries NO gap severity and is excluded from the hot-lead
+	// count — a severity of 7 for a domain nobody measured is manufactured by
+	// `evaluateCscProducts` recommending every product it could not observe.
 	function leadReport(score: number | null, grade: string | null) {
+		const graded = score !== null;
 		return {
 			brand: 'dead-brand',
 			totalDomains: 1,
@@ -187,8 +191,9 @@ describe('formatCscLeads — ungraded lead', () => {
 					domain: 'dead-brand.com',
 					score,
 					grade,
+					graded,
 					ownershipBucket: 'consolidated',
-					gapSeverity: 7,
+					gapSeverity: graded ? 7 : null,
 					priorityRank: 1,
 					recommendedCscProducts: [],
 					recommendedCount: 0,
@@ -196,7 +201,14 @@ describe('formatCscLeads — ungraded lead', () => {
 				},
 			],
 			portfolioGrade: null,
-			summary: { totalRecommendations: 0, byProduct: {}, hotLeads: 1, skipped: [] },
+			caveat: graded ? null : 'No checks ran for this domain.',
+			summary: {
+				totalRecommendations: 0,
+				byProduct: {},
+				hotLeads: graded ? 1 : 0,
+				ungradedDomains: graded ? 0 : 1,
+				skipped: [],
+			},
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} as any;
 	}

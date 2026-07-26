@@ -347,24 +347,161 @@ describe('formatCscLeads', () => {
 		expect(text).toContain('90/100 (A)');
 	});
 
-	it('never calls an ungraded lead "posture clean" — no recommendations is not a clean posture', async () => {
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
-		// No recommendations AND no measurement: the "nothing to upsell" line reads as
-		// a security reassurance for a domain that was never scanned.
-		const report = rank([entry('ungraded.com', null, null, [], 'consolidated')]);
-		expect(report.rankedLeads[0].recommendedCscProducts).toEqual([]);
-
-		const text = fmt(report, 'full');
-		expect(text).not.toContain('posture clean');
-		expect(text).toContain(UNGRADED_DISPLAY);
-	});
-
 	it('still calls a graded lead with no gaps "posture clean" (control)', async () => {
 		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
-		// Without this the assertion above would hold under a formatter that dropped
-		// the "posture clean" line entirely.
 		const text = fmt(rank([entry('clean.com', 95, 'A+', [], 'consolidated')]), 'full');
 		expect(text).toContain('posture clean');
+	});
+});
+
+/**
+ * A never-measured domain was ranked as the #1 HOT lead.
+ *
+ * `evaluateCscProducts([], null, …)` — the real producer for a domain that does
+ * not resolve — marks all three scan-driven products `recommended: true,
+ * priority: 'low'` on the strength of having observed nothing ("DMARC not
+ * observed", …). That is gapValue 3+2+2 = 7, and `consolidated` multiplies by
+ * 1.0, so gapSeverity 7 — above HOT_LEAD_THRESHOLD (6). `gapSeverity` is the
+ * FIRST sort key (the score tiebreak is second and never gets a say), so the
+ * unmeasured domain outranks a real domain with a genuinely failing DMARC
+ * policy, and is counted in `hotLeads`. Nothing on the wire let a dashboard
+ * gate on it.
+ *
+ * Every fixture below is built by the REAL producers — `evaluateCscProducts`
+ * over real CheckResults — because a hand-built lead shape cannot reach this
+ * defect: it is the producer's own "recommended because unobserved" output that
+ * manufactures the severity.
+ */
+describe('rankCscLeads — a never-measured domain must not outrank a measured one', () => {
+	/** The exact producer output for a domain that does not resolve: no checks, no score. */
+	async function ungradedReport(domain: string) {
+		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+		return evaluateCscProducts([], null, domain, null, null);
+	}
+
+	/**
+	 * A measured domain with ONE medium DMARC failure → managed_dmarc recommended
+	 * `medium` → gapValue 3x2 = 6, gapSeverity 6. Deliberately BELOW the 7 an
+	 * unmeasured domain used to manufacture, so the ordering assertion has teeth.
+	 */
+	async function gradedReport(domain: string) {
+		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+		const checks = [
+			{
+				category: 'dmarc',
+				passed: false,
+				score: 40,
+				findings: [{ category: 'dmarc', title: 'DMARC policy is p=none', severity: 'medium', detail: '' }],
+			},
+			{ category: 'ssl', passed: true, score: 100, findings: [] },
+			{ category: 'dnssec', passed: true, score: 100, findings: [] },
+		] as unknown as CheckResult[];
+		const locked = { level: 'registry-lock', registryLevel: true, transferLocked: true } as never;
+		return evaluateCscProducts(checks, locked, domain, 73, 'C+');
+	}
+
+	async function mixedPortfolio() {
+		const { rankCscLeads: rank } = await import('../src/tools/prioritize-csc-leads');
+		return rank([
+			{ report: await ungradedReport('never-measured.example'), ownershipBucket: 'consolidated' },
+			{ report: await gradedReport('measured.example'), ownershipBucket: 'consolidated' },
+		]);
+	}
+
+	it('assigns the unmeasured domain NO gap severity, so it cannot outrank a measured one', async () => {
+		const report = await mixedPortfolio();
+
+		// Fixture-reachability guard: the producer really does recommend three
+		// products purely from non-observation. Without this the test could pass
+		// against a producer that returned nothing and never reached the defect.
+		const ungradedInput = await ungradedReport('never-measured.example');
+		expect(ungradedInput.recommendedCount).toBe(3);
+
+		const byDomain = new Map(report.rankedLeads.map((l) => [l.domain, l]));
+		expect(byDomain.get('never-measured.example')!.gapSeverity).toBeNull();
+		expect(byDomain.get('never-measured.example')!.graded).toBe(false);
+		// The measured domain keeps its real, lower severity — and now ranks first.
+		expect(byDomain.get('measured.example')!.gapSeverity).toBe(6);
+		expect(report.rankedLeads.map((l) => l.domain)).toEqual(['measured.example', 'never-measured.example']);
+		expect(report.rankedLeads.map((l) => l.priorityRank)).toEqual([1, 2]);
+	});
+
+	it('excludes the unmeasured domain from the hot-lead count and the sales rollups', async () => {
+		const report = await mixedPortfolio();
+
+		// Was 2 — the unmeasured domain counted as hot at severity 7.
+		expect(report.summary.hotLeads).toBe(1);
+		// Only the measured domain's single real recommendation is rolled up.
+		expect(report.summary.totalRecommendations).toBe(1);
+		expect(report.summary.byProduct.managed_dmarc).toBe(1);
+		expect(report.summary.byProduct.digital_certificates).toBe(0);
+		expect(report.summary.byProduct.dnssec_management).toBe(0);
+		expect(report.summary.ungradedDomains).toBe(1);
+	});
+
+	it('carries the qualifier on the wire so a dashboard can gate on it', async () => {
+		const { formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { buildToolResult } = await import('../src/handlers/tool-formatters');
+		const report = await mixedPortfolio();
+		const result = buildToolResult(fmt(report, 'full'), report, 'full');
+
+		const wire = JSON.stringify(result.structuredContent);
+		expect(wire).toContain('"graded":false');
+		expect(wire).toContain('"gapSeverity":null');
+		expect(wire).toContain('"ungradedDomains":1');
+		expect(report.caveat).toMatch(/no checks ran/i);
+
+		const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));
+		expect(comment).toBeDefined();
+		expect(comment).toContain('"gapSeverity":null');
+	});
+
+	it('never presents the unmeasured domain as a severity-bearing lead in the prose', async () => {
+		const { formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const report = await mixedPortfolio();
+
+		for (const format of ['compact', 'full'] as const) {
+			const text = fmt(report, format);
+			expect(text, format).not.toContain('gap severity 7');
+			expect(text, format).not.toContain('sev 7');
+			expect(text, format).toContain(UNGRADED_DISPLAY);
+			// The measured lead keeps its real severity in the same output (control).
+			expect(text, format).toMatch(/(gap severity|sev) 6/);
+		}
+		// The unmeasured lead must not advertise products recommended purely because
+		// nothing was observed — it states why instead. Scoped to that lead's OWN
+		// block: the four per-product rollup lines in the Summary always name every
+		// product key, so a whole-document search would match them and prove nothing.
+		const full = fmt(report, 'full');
+		const ungradedBlock = full.split('\n## ').find((b) => b.startsWith('2. never-measured.example'));
+		expect(ungradedBlock).toBeDefined();
+		expect(ungradedBlock).toMatch(/No checks ran/i);
+		expect(ungradedBlock).not.toContain('Recommended CSC products');
+		expect(ungradedBlock).not.toContain('digital_certificates');
+		expect(ungradedBlock).not.toContain('Top priority');
+
+		// Control — the measured lead's block still carries every sales claim.
+		const gradedBlock = full.split('\n## ').find((b) => b.startsWith('1. measured.example'));
+		expect(gradedBlock).toContain('Recommended CSC products: managed_dmarc');
+		expect(gradedBlock).toContain('Top priority: medium');
+	});
+
+	it('leaves an all-measured portfolio completely unchanged (control)', async () => {
+		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const report = rank([
+			{ report: await gradedReport('a.example'), ownershipBucket: 'consolidated' },
+			{ report: await gradedReport('b.example'), ownershipBucket: 'consolidated' },
+		]);
+
+		// Without this the assertions above would hold under an implementation that
+		// nulled every gap severity and rolled nothing up.
+		expect(report.rankedLeads.map((l) => l.gapSeverity)).toEqual([6, 6]);
+		expect(report.rankedLeads.every((l) => l.graded)).toBe(true);
+		expect(report.summary.hotLeads).toBe(2);
+		expect(report.summary.totalRecommendations).toBe(2);
+		expect(report.summary.ungradedDomains).toBe(0);
+		expect(report.caveat).toBeNull();
+		expect(fmt(report, 'full')).not.toContain(UNGRADED_DISPLAY);
 	});
 });
 

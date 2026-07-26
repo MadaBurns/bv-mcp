@@ -192,6 +192,56 @@ describe('format-scan-report', () => {
 		expect(structured.scoringSignals).toEqual([]);
 	});
 
+	/**
+	 * The degraded-builder shape, which the "missing maturity" test below cannot
+	 * reach. `buildNonResolvingResult` / `buildDnsBrokenResult` / `buildUnscoredResult`
+	 * all emit a maturity OBJECT with a placeholder `stage: 0`, so `?? null` never
+	 * fires and a literal 0 rode the wire. Stage 0's canonical label is
+	 * "Unprotected": a numeric consumer charting `maturityStage`, or mapping it
+	 * through its own stage→label table, reads a posture verdict for a domain
+	 * nobody looked at. `maturityLabel` and `measured` sit alongside it, but a
+	 * consumer reading the number will not see them.
+	 */
+	it('buildStructuredScanResult abstains on the placeholder stage 0 of a degraded result', async () => {
+		const { buildStructuredScanResult: build } = await import('../src/tools/scan/format-report');
+		const result = {
+			domain: 'does-not-resolve.example',
+			score: { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'does not resolve' },
+			checks: [],
+			// Present, exactly as buildNonResolvingResult emits it — this is what the
+			// `?? null` guard could never catch.
+			maturity: { stage: 0, label: 'Does not resolve', description: 'x', nextStep: 'y' },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+			resolves: false,
+		} as unknown as ScanDomainResult;
+
+		const structured = build(result);
+
+		expect(structured.maturityStage).toBeNull();
+		// The label stays — "Does not resolve" is information, not a fabricated verdict.
+		expect(structured.maturityLabel).toBe('Does not resolve');
+		expect(structured.measured).toBe(false);
+		expect(JSON.stringify(structured)).not.toContain('"maturityStage":0');
+	});
+
+	it('buildStructuredScanResult keeps a real maturity stage for a scored domain (control)', async () => {
+		const { buildStructuredScanResult: build } = await import('../src/tools/scan/format-report');
+		const result = {
+			domain: 'scored.example',
+			score: { overall: 73, grade: 'C+', categoryScores: { spf: 100 }, findings: [], summary: '' },
+			checks: [{ category: 'spf', passed: true, score: 100, findings: [] }],
+			maturity: { stage: 0, label: 'Unprotected', description: 'x', nextStep: 'y' },
+			cached: false,
+			timestamp: '2026-07-26T00:00:00.000Z',
+		} as unknown as ScanDomainResult;
+
+		// Stage 0 is a REAL measurement here — the scan scored, the domain is simply
+		// unprotected. Without this control the assertion above would hold under an
+		// implementation that nulled every stage, or that nulled stage 0 specifically.
+		expect(build(result).maturityStage).toBe(0);
+	});
+
 	it('buildStructuredScanResult handles missing maturity', () => {
 		const result = {
 			domain: 'no-maturity.com',

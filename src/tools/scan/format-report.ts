@@ -2,7 +2,7 @@
 
 import type { ScanDomainResult } from '../scan-domain';
 import type { CheckResult, Finding } from '../../lib/scoring';
-import { nistScoreToGrade } from '../../lib/scoring';
+import { isGraded, nistScoreToGrade } from '../../lib/scoring';
 import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
@@ -285,7 +285,14 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		grade: displayGradeFor(result.score),
 		passed: result.score.overall === null ? null : result.score.overall >= 50,
 		measured: isMeasured(result.checks),
-		maturityStage: result.maturity?.stage ?? null,
+		// `?? null` alone is not enough: the three degraded builders all emit a
+		// maturity OBJECT carrying a placeholder `stage: 0`, so the guard never
+		// fires and a literal 0 — whose canonical label is "Unprotected" — reaches
+		// any consumer charting this number or mapping it through its own
+		// stage->label table. Gate on the scan having actually scored, exactly as
+		// generate_fix_plan does one layer up. The LABEL is kept: "Does not resolve"
+		// is information, not a fabricated verdict.
+		maturityStage: isGraded(result.score) ? (result.maturity?.stage ?? null) : null,
 		maturityLabel: result.maturity?.label ?? null,
 		categoryScores,
 		findingCounts: {
