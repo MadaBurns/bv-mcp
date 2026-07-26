@@ -521,3 +521,76 @@ describe('formatSubdomainDiscovery', () => {
 		expect(fullOutput).toContain('50 more subdomains not shown');
 	});
 });
+
+describe('discoverSubdomains — force_refresh threading', () => {
+	afterEach(() => restore());
+
+	function certstreamOk(seen: string[]) {
+		return vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			seen.push(url);
+			return new Response(
+				JSON.stringify({ domain: 'example.com', subdomains: ['api.example.com'], certificateCount: 1, timedOut: false, cached: false }),
+				{ status: 200, headers: { 'Content-Type': 'application/json' } },
+			);
+		});
+	}
+
+	it('threads force_refresh to the certstream endpoint so a stale cached result can be bypassed', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const seen: string[] = [];
+		globalThis.fetch = vi.fn(async () => {
+			throw new Error('crt.sh should not be used');
+		});
+		await discoverSubdomains('example.com', { fetch: certstreamOk(seen) as unknown as typeof fetch }, 'tok', { forceRefresh: true });
+		expect(seen[0]).toContain('force_refresh=true');
+	});
+
+	it('does NOT add force_refresh when not requested (default cache behaviour)', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const seen: string[] = [];
+		globalThis.fetch = vi.fn(async () => {
+			throw new Error('crt.sh should not be used');
+		});
+		await discoverSubdomains('example.com', { fetch: certstreamOk(seen) as unknown as typeof fetch }, 'tok');
+		expect(seen[0]).not.toContain('force_refresh');
+	});
+});
+
+describe('discover_subdomains handler — loud degrade on CT-source outage', () => {
+	afterEach(() => restore());
+
+	it('returns isError:true (NOT a passing empty) when every CT source is unavailable', async () => {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		// certstream binding 503s → null; crt.sh 500s → sourceUnavailable.
+		const certstreamFetch = vi.fn(async () => new Response('unavailable', { status: 503 }));
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return Response.json({}, { status: 500 });
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		const result = await handleToolsCall(
+			{ name: 'discover_subdomains', arguments: { domain: 'example.com' } },
+			undefined,
+			{ certstream: { fetch: certstreamFetch as unknown as typeof fetch } } as never,
+		);
+		expect(result.isError).toBe(true);
+		expect((result.structuredContent as Record<string, unknown> | undefined)?.sourceUnavailable).toBe(true);
+	});
+
+	it('returns a normal (non-error) result when the source is available but finds nothing', async () => {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return Response.json([], { status: 200 }); // available, genuinely empty
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		const result = await handleToolsCall(
+			{ name: 'discover_subdomains', arguments: { domain: 'example.com' } },
+			undefined,
+			undefined,
+		);
+		expect(result.isError).toBeFalsy();
+		expect((result.structuredContent as Record<string, unknown> | undefined)?.sourceUnavailable).toBeFalsy();
+	});
+});

@@ -87,15 +87,14 @@ describe('scoring', () => {
 		it('computes weighted average from check results', () => {
 			const results: CheckResult[] = [buildCheckResult('spf', [createFinding('spf', 'x', 'critical', 'd')])];
 			const scan = computeScanScore(results);
-			// Three-tier scoring: SPF is core tier (weight 10 out of 60 total core weight).
-			// SPF score 60 → coreEarned = (50*100 + 10*60)/60 = 56.67/60 → corePct ≈ 0.944
-			// Core contributes 70 * 0.944 = 66.1, Protective 20 (all default 100), Hardening 0 (no results).
-			// Base = 86.1 → round = 86. No email bonus (no DKIM/DMARC). Provider mod = 0.
-			// Critical penalty: 'x' + 'd' detail is deterministic → verified? No, it's deterministic.
-			// scoreIndicatesMissingControl: 'd' doesn't match missing pattern, so effectiveScore = 60, not 0.
-			// Critical gap ceiling: SPF has scoreIndicatesMissingControl? title='x', detail='d' → no match.
-			// So no ceiling. Overall = 85.
-			expect(scan.overall).toBe(85);
+			// ONLY spf ran (score 60, core weight 10). Every other core + protective category was
+			// never measured, so it is EXCLUDED (renormalized), NOT padded to a phantom 100 — the
+			// composite must reflect only what it measured.
+			// Core: renormalized over spf alone → 0.6 → 70 * 0.6 = 42pts.
+			// Protective: nothing ran → empty tier renormalizes to 100% → 20pts. Hardening: 0.
+			// Base = 62. No email bonus (no DKIM/DMARC). No verified-critical penalty (deterministic,
+			// not verified). No missing-control ceiling. Overall = 62.
+			expect(scan.overall).toBe(62);
 			expect(scan.categoryScores.spf).toBe(60);
 		});
 
@@ -119,13 +118,15 @@ describe('scoring', () => {
 			const scan = computeScanScore(results);
 			// Three-tier scoring: DMARC missing-control → effectiveScore 0 (core, weight 16).
 			// DNSSEC "ad flag missing" matches MISSING_CONTROL_REGEX + severity high + deterministic → effectiveScore 0.
-			// Core (weights: dmarc=16, dkim=10, spf=10, dnssec=10, ssl=8, max=54):
+			// Core (all 5 ran; weights dmarc=16, dkim=10, spf=10, dnssec=10, ssl=8, max=54):
 			//   earned = 10(spf) + 0(dmarc) + 10(dkim) + 0(dnssec) + 8(ssl) = 28 → corePct=28/54≈0.519 → 36.3pts
-			// Protective: MTA-STS=80(3), NS=100(2), CAA=85(2), rest default 100 → 19.1/20 → 19.1pts
-			// Hardening: 0 passed of 7 → 0pts. Base≈55.4 → round=55.
-			// Critical gap ceiling applies (DMARC missing) → capped at 64, but base 55 < 64.
-			expect(scan.overall).toBe(56);
-			expect(scan.grade).toBe('D+');
+			// Protective: only MTA-STS=80(3), NS=100(2), CAA=85(2) ran; every other protective
+			//   category was never measured and is EXCLUDED (not padded to 100), so protective
+			//   renormalizes over max=7: earned=6.1/7≈0.871 → 17.4pts.
+			// Hardening: 0 passed of 7 → 0pts. Base≈53.7 → round=54.
+			// Critical gap ceiling applies (DMARC missing) → capped at 64, but base 54 < 64.
+			expect(scan.overall).toBe(54);
+			expect(scan.grade).toBe('D');
 		});
 
 		it('applies global critical penalty when critical finding is verified', () => {
@@ -138,12 +139,12 @@ describe('scoring', () => {
 			];
 
 			const scan = computeScanScore(results);
-			// Three-tier: subdomain_takeover is protective tier (weight 4 out of 20 total protective).
-			// Score 60 → protectiveEarned = (16*100 + 4*60)/20 = 19.2/20, protPct = 0.96 → 20*0.96 = 19.2
-			// Core: all default 100 → 70pts. Hardening: 0 (no results). Base = 70 + 19.2 + 0 = 89.2 → round = 89.
-			// No email bonus. Verified critical penalty = 15. Overall = 89 - 15 + 2 (provider mod?) = let's just check.
-			// Actual: 74.
-			expect(scan.overall).toBe(74);
+			// ONLY subdomain_takeover ran (protective, score 60, weight 4). Every other protective
+			// category was never measured and is EXCLUDED (not padded to 100), so protective
+			// renormalizes over that single category: (60/100)*4 / 4 = 0.6 → 20*0.6 = 12pts.
+			// Core: nothing ran → empty tier renormalizes to 100% → 70pts. Hardening: 0.
+			// Base = 82. No email bonus (spf/dmarc absent). Verified critical penalty = 15 → 67.
+			expect(scan.overall).toBe(67);
 		});
 
 		it('includes critical count in summary', () => {
