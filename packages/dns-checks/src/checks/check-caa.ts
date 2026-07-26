@@ -76,8 +76,21 @@ export async function checkCAA(
 	try {
 		rawRecords = await queryDNS(domain, 'CAA', { timeout });
 	} catch {
-		findings.push(createFinding('caa', 'CAA query failed', 'medium', `Could not query CAA records for ${domain}.`));
-		return buildCheckResult('caa', findings);
+		// Transient resolver failure — we could not MEASURE the CAA posture. Mark the category
+		// INCONCLUSIVE (checkStatus) so the scoring engine renormalizes over the remaining
+		// categories instead of penalizing a possibly-healthy domain with a scored deficiency.
+		// (The per-ancestor climb catch above is a legitimate fail-soft and stays unchanged.)
+		return {
+			...buildCheckResult('caa', [
+				createFinding(
+					'caa',
+					'CAA records not assessed',
+					'info',
+					`Could not query CAA records for ${domain} due to a transient DNS failure; this control was not assessed.`,
+				),
+			]),
+			checkStatus: 'error',
+		};
 	}
 
 	// Parse raw CAA record data into structured records

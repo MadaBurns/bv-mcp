@@ -27,7 +27,7 @@ export async function checkSSL(domain: string, fetchFn: FetchFunction, options?:
 	const timeoutMs = options?.timeout ?? HTTPS_TIMEOUT_MS;
 	const findings: Finding[] = [];
 
-	const { findings: httpsFindings, reachable, robotsDisallowed } = await checkHttps(domain, fetchFn, timeoutMs);
+	const { findings: httpsFindings, reachable, robotsDisallowed, inconclusive } = await checkHttps(domain, fetchFn, timeoutMs);
 	findings.push(...httpsFindings);
 
 	// The entire `ssl` category signal comes from fetching the target — when robots.txt disallows
@@ -35,6 +35,14 @@ export async function checkSSL(domain: string, fetchFn: FetchFunction, options?:
 	// findings = 100) or letting a downstream check run against a target we were told not to touch.
 	if (robotsDisallowed) {
 		return { ...buildCheckResult('ssl', findings, undefined), checkStatus: 'error' };
+	}
+
+	// A transient connection failure/timeout, or an origin the server itself could not serve
+	// (status 0 / 5xx), means the HTTPS/HSTS posture could not be MEASURED. Exclude the category
+	// (checkStatus) so a momentary blip doesn't score a false "No HSTS"/"redirect" deficiency, and
+	// skip the HTTP-redirect leg (there's nothing reliable to compare it against).
+	if (inconclusive) {
+		return { ...buildCheckResult('ssl', findings, reachable), checkStatus: inconclusive };
 	}
 
 	// Only check HTTP redirect if HTTPS is working (no critical findings)
@@ -70,9 +78,13 @@ async function checkHttps(
 	domain: string,
 	fetchFn: FetchFunction,
 	timeoutMs: number,
-): Promise<{ findings: Finding[]; reachable: boolean | undefined; robotsDisallowed: boolean }> {
+): Promise<{ findings: Finding[]; reachable: boolean | undefined; robotsDisallowed: boolean; inconclusive?: 'timeout' | 'error' }> {
 	const findings: Finding[] = [];
 	let reachable = false;
+	// Set when the HTTPS/HSTS posture could not actually be MEASURED (execution failure or an
+	// unassessable origin), as opposed to a real header gap. checkSSL excludes the category from
+	// scoring when this is set — see the scoring-engine transientFailures handling.
+	let inconclusive: 'timeout' | 'error' | undefined;
 
 	try {
 		const response = await fetchFn(`https://${domain}`, {
@@ -82,14 +94,29 @@ async function checkHttps(
 		});
 		reachable = true;
 
-		const isRedirect = response.status >= 300 && response.status < 400;
-		const location = isRedirect ? response.headers.get('location') : null;
-		const isDowngrade = location?.startsWith('http://') ?? false;
-		const isHttpsRedirect = isRedirect && !isDowngrade;
+		if (response.status === 0 || response.status >= 500) {
+			// Origin-unreachable / server error (e.g. Cloudflare 530): the page is NOT assessable, so
+			// do NOT emit the "No HSTS"/redirect scored findings — a transient origin blip must not
+			// read as a security deficiency. One honest info finding + exclude from scoring.
+			inconclusive = 'error';
+			findings.push(
+				createFinding(
+					'ssl',
+					`HTTPS endpoint not assessable (status ${response.status})`,
+					'info',
+					`https://${domain} returned status ${response.status}; the HTTPS endpoint could not be reached to assess HSTS/redirect posture, so this control was not assessed.`,
+				),
+			);
+		} else {
+			const isRedirect = response.status >= 300 && response.status < 400;
+			const location = isRedirect ? response.headers.get('location') : null;
+			const isDowngrade = location?.startsWith('http://') ?? false;
+			const isHttpsRedirect = isRedirect && !isDowngrade;
 
-		if (!isHttpsRedirect) {
-			const redirectTarget = isDowngrade ? (location ?? undefined) : undefined;
-			findings.push(...getHttpsFindings(domain, redirectTarget, response.headers.get('strict-transport-security')));
+			if (!isHttpsRedirect) {
+				const redirectTarget = isDowngrade ? (location ?? undefined) : undefined;
+				findings.push(...getHttpsFindings(domain, redirectTarget, response.headers.get('strict-transport-security')));
+			}
 		}
 	} catch (err) {
 		if (err instanceof RobotsDisallowedError) {
@@ -103,10 +130,13 @@ async function checkHttps(
 			err instanceof Error && (err.message.includes('timeout') || err.message.includes('abort'))
 				? 'Connection timeout'
 				: 'Connection failed';
+		// A thrown fetch is a transient execution failure — exclude the category rather than scoring
+		// the connection-failure finding as a real deficiency. The existing finding is retained.
+		inconclusive = message === 'Connection timeout' ? 'timeout' : 'error';
 		findings.push(getHttpsErrorFinding(domain, message));
 	}
 
-	return { findings, reachable, robotsDisallowed: false };
+	return { findings, reachable, robotsDisallowed: false, inconclusive };
 }
 
 /** Check if HTTP redirects to HTTPS */
