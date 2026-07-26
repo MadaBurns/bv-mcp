@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
+import type { CheckResult } from '../../src/lib/scoring';
 
 // Vitest's Workers pool has no `fs`; the source corpus is inlined at build time
 // by import.meta.glob (eager, raw) so this audit runs inside workerd. Only the two
@@ -215,6 +216,59 @@ describe('ungraded representation', () => {
 				for (const token of forbidden) expect(payload, `${label}: must not contain ${token}`).not.toContain(token);
 				for (const token of required) expect(payload, `${label}: must contain ${token}`).toContain(token);
 			}
+		}
+	});
+
+	/**
+	 * Task 8's banked defect, as a corpus invariant rather than a producer-level fixture:
+	 * a check that never COMPLETED (`checkStatus: 'timeout'`/`'error'` — the
+	 * `buildDnsErrorResult`/`safeCheck` shape) is not evidence of a failed control. Before
+	 * the fix, `map_compliance` filtered matched results only on category membership, so a
+	 * transient DNS failure (one slow resolver) rendered as `"status":"fail"` on the wire —
+	 * on a HEALTHY domain, unlike the empty-`checks[]` case covered above.
+	 *
+	 * Built via the REAL `evaluateCompliance` producer from a hand-built `CheckResult[]`
+	 * (not `mapCompliance`/`scanDomain` — a corpus audit does not belong mocking DNS; that
+	 * full-pipeline shape is covered by `test/map-compliance.spec.ts` instead), matching
+	 * this file's existing pattern for the `map_compliance` surface above.
+	 */
+	it('a transient (never-completed) check renders not_assessed, not fail, on the wire', async () => {
+		const { evaluateCompliance, formatCompliance: format } = await import('../../src/tools/map-compliance');
+		const { buildToolResult } = await import('../../src/handlers/tool-formatters');
+
+		// Only DMARC ran, and it never completed — a slow resolver, not a measured failure.
+		const transientDmarc: CheckResult = {
+			category: 'dmarc',
+			passed: false,
+			score: 0,
+			findings: [{ category: 'dmarc', title: 'DMARC check timed out', severity: 'low', detail: 'Check did not complete in time.' }],
+			checkStatus: 'timeout',
+		};
+		const report = evaluateCompliance([transientDmarc], 'slow-resolver.example', null, null);
+
+		// NIST §4.3.3 is the only control mapping solely to `dmarc`.
+		const dmarcControl = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§4.3.3');
+		// Non-vacuity guard: prove the control actually exists in the output before
+		// asserting its status — an empty/missing mapping would make the assertion below
+		// pass for a producer that emitted nothing at all.
+		expect(dmarcControl).toBeDefined();
+		expect(dmarcControl!.status).toBe('not_assessed');
+
+		const result = buildToolResult(format(report, 'full'), report, 'full');
+		const structured = JSON.stringify(result.structuredContent);
+		const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));
+		expect(comment, 'STRUCTURED_RESULT comment').toBeDefined();
+
+		for (const [channel, payload] of [
+			['structuredContent', structured],
+			['STRUCTURED_RESULT', comment!],
+		] as const) {
+			expect(payload, `${channel}: must not fabricate a fail verdict`).not.toContain(
+				'"controlId":"§4.3.3","controlName":"DMARC Policy","status":"fail"',
+			);
+			expect(payload, `${channel}: must carry not_assessed`).toContain(
+				'"controlId":"§4.3.3","controlName":"DMARC Policy","status":"not_assessed"',
+			);
 		}
 	});
 

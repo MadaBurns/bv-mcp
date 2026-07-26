@@ -94,27 +94,105 @@ const COMPLIANCE_CONTROLS: ComplianceControlDef[] = [
 	{ framework: 'nist_800_177', controlId: '§4.5', controlName: 'DANE for SMTP', categories: ['dane'], requirePass: true },
 	{ framework: 'nist_800_177', controlId: '§4.6', controlName: 'TLS Reporting', categories: ['tlsrpt'], requirePass: true },
 	{ framework: 'nist_800_177', controlId: '§5.1', controlName: 'DNSSEC Validation', categories: ['dnssec'], requirePass: true },
-	{ framework: 'nist_800_177', controlId: '§5.2', controlName: 'Certificate Authority Authorization', categories: ['caa'], requirePass: true },
+	{
+		framework: 'nist_800_177',
+		controlId: '§5.2',
+		controlName: 'Certificate Authority Authorization',
+		categories: ['caa'],
+		requirePass: true,
+	},
 
 	// PCI DSS 4.0
-	{ framework: 'pci_dss_4', controlId: '4.2.1', controlName: 'Strong Cryptography for Transmission', categories: ['ssl', 'mta_sts'], requirePass: false },
-	{ framework: 'pci_dss_4', controlId: '6.4.1', controlName: 'Public-Facing Web Application Security', categories: ['http_security', 'ssl'], requirePass: false },
-	{ framework: 'pci_dss_4', controlId: '6.4.2', controlName: 'Web Application Firewall / CSP', categories: ['http_security'], requirePass: true },
-	{ framework: 'pci_dss_4', controlId: '8.3.1', controlName: 'Authentication Controls', categories: ['spf', 'dkim', 'dmarc'], requirePass: false },
-	{ framework: 'pci_dss_4', controlId: '11.3.1', controlName: 'Vulnerability Management', categories: ['ssl', 'dnssec'], requirePass: false },
+	{
+		framework: 'pci_dss_4',
+		controlId: '4.2.1',
+		controlName: 'Strong Cryptography for Transmission',
+		categories: ['ssl', 'mta_sts'],
+		requirePass: false,
+	},
+	{
+		framework: 'pci_dss_4',
+		controlId: '6.4.1',
+		controlName: 'Public-Facing Web Application Security',
+		categories: ['http_security', 'ssl'],
+		requirePass: false,
+	},
+	{
+		framework: 'pci_dss_4',
+		controlId: '6.4.2',
+		controlName: 'Web Application Firewall / CSP',
+		categories: ['http_security'],
+		requirePass: true,
+	},
+	{
+		framework: 'pci_dss_4',
+		controlId: '8.3.1',
+		controlName: 'Authentication Controls',
+		categories: ['spf', 'dkim', 'dmarc'],
+		requirePass: false,
+	},
+	{
+		framework: 'pci_dss_4',
+		controlId: '11.3.1',
+		controlName: 'Vulnerability Management',
+		categories: ['ssl', 'dnssec'],
+		requirePass: false,
+	},
 
 	// SOC 2 (Trust Services Criteria)
-	{ framework: 'soc2', controlId: 'CC6.1', controlName: 'Logical Access Security', categories: ['spf', 'dkim', 'dmarc', 'dnssec'], requirePass: false },
-	{ framework: 'soc2', controlId: 'CC6.6', controlName: 'System Boundary Protection', categories: ['http_security', 'ssl', 'caa', 'authoritative_dns_infra'], requirePass: false },
-	{ framework: 'soc2', controlId: 'CC6.7', controlName: 'Data-in-Transit Encryption', categories: ['ssl', 'mta_sts', 'dane'], requirePass: false },
+	{
+		framework: 'soc2',
+		controlId: 'CC6.1',
+		controlName: 'Logical Access Security',
+		categories: ['spf', 'dkim', 'dmarc', 'dnssec'],
+		requirePass: false,
+	},
+	{
+		framework: 'soc2',
+		controlId: 'CC6.6',
+		controlName: 'System Boundary Protection',
+		categories: ['http_security', 'ssl', 'caa', 'authoritative_dns_infra'],
+		requirePass: false,
+	},
+	{
+		framework: 'soc2',
+		controlId: 'CC6.7',
+		controlName: 'Data-in-Transit Encryption',
+		categories: ['ssl', 'mta_sts', 'dane'],
+		requirePass: false,
+	},
 	{ framework: 'soc2', controlId: 'CC7.1', controlName: 'Monitoring and Detection', categories: ['tlsrpt', 'dmarc'], requirePass: false },
 	{ framework: 'soc2', controlId: 'CC8.1', controlName: 'Change Management', categories: ['dnssec', 'ns'], requirePass: false },
 
 	// CIS Controls v8
-	{ framework: 'cis_controls', controlId: '9.2', controlName: 'DNS Filtering and Monitoring', categories: ['dnssec', 'ns'], requirePass: false },
-	{ framework: 'cis_controls', controlId: '9.3', controlName: 'Email Security', categories: ['spf', 'dkim', 'dmarc', 'mta_sts'], requirePass: false },
-	{ framework: 'cis_controls', controlId: '3.10', controlName: 'Encrypt Data in Transit', categories: ['ssl', 'mta_sts', 'dane'], requirePass: false },
-	{ framework: 'cis_controls', controlId: '12.1', controlName: 'DNS Infrastructure', categories: ['dnssec', 'ns', 'caa', 'authoritative_dns_infra'], requirePass: false },
+	{
+		framework: 'cis_controls',
+		controlId: '9.2',
+		controlName: 'DNS Filtering and Monitoring',
+		categories: ['dnssec', 'ns'],
+		requirePass: false,
+	},
+	{
+		framework: 'cis_controls',
+		controlId: '9.3',
+		controlName: 'Email Security',
+		categories: ['spf', 'dkim', 'dmarc', 'mta_sts'],
+		requirePass: false,
+	},
+	{
+		framework: 'cis_controls',
+		controlId: '3.10',
+		controlName: 'Encrypt Data in Transit',
+		categories: ['ssl', 'mta_sts', 'dane'],
+		requirePass: false,
+	},
+	{
+		framework: 'cis_controls',
+		controlId: '12.1',
+		controlName: 'DNS Infrastructure',
+		categories: ['dnssec', 'ns', 'caa', 'authoritative_dns_infra'],
+		requirePass: false,
+	},
 ];
 
 /** All framework keys in stable display order. */
@@ -149,9 +227,7 @@ export function evaluateCompliance(
 	}
 
 	for (const control of COMPLIANCE_CONTROLS) {
-		const matchedResults = control.categories
-			.map((cat) => resultsByCategory.get(cat))
-			.filter((r): r is CheckResult => r !== undefined);
+		const matchedResults = control.categories.map((cat) => resultsByCategory.get(cat)).filter((r): r is CheckResult => r !== undefined);
 
 		let status: ComplianceStatus;
 		const relatedFindings: string[] = [];
@@ -163,31 +239,46 @@ export function evaluateCompliance(
 			// as a complete framework-by-framework compliance failure.
 			status = 'not_assessed';
 		} else {
-			const passingCount = matchedResults.filter((r) => r.passed).length;
-			const failingResults = matchedResults.filter((r) => !r.passed);
+			// A matched result whose check never COMPLETED (checkStatus 'timeout'/'error')
+			// is not evidence either way — `buildDnsErrorResult`/`safeCheck` return those
+			// as `passed: false`, indistinguishable from a genuine failure unless we
+			// partition on `checkStatus` here. Absent or 'completed' means the check ran
+			// normally (mirrors profiles.ts's `measuredChecks` predicate).
+			const completed = matchedResults.filter((r) => r.checkStatus !== 'timeout' && r.checkStatus !== 'error');
 
-			// Collect finding titles from failing categories
-			for (const r of failingResults) {
-				for (const f of r.findings) {
-					if (f.severity !== 'info') {
-						relatedFindings.push(f.title);
+			if (completed.length === 0) {
+				// Every matched category was measured-AT but never measured — one slow
+				// resolver must not turn into "DMARC Policy — FAIL" on a healthy domain.
+				status = 'not_assessed';
+			} else {
+				const passingCount = completed.filter((r) => r.passed).length;
+				const failingResults = completed.filter((r) => !r.passed);
+
+				// Collect finding titles from failing categories — completed ones only, so a
+				// transient check's "check error"/"timed out" title never reads as a graded
+				// compliance finding.
+				for (const r of failingResults) {
+					for (const f of r.findings) {
+						if (f.severity !== 'info') {
+							relatedFindings.push(f.title);
+						}
 					}
 				}
-			}
 
-			const totalCategories = control.categories.length;
+				const totalCategories = control.categories.length;
 
-			if (control.requirePass) {
-				// All mapped categories must pass (and be present)
-				status = passingCount === totalCategories ? 'pass' : 'fail';
-			} else {
-				// Partial pass allowed — missing categories count as not passing
-				if (passingCount === totalCategories) {
-					status = 'pass';
-				} else if (passingCount > 0) {
-					status = 'partial';
+				if (control.requirePass) {
+					// All mapped categories must pass (and be present)
+					status = passingCount === totalCategories ? 'pass' : 'fail';
 				} else {
-					status = 'fail';
+					// Partial pass allowed — missing categories count as not passing
+					if (passingCount === totalCategories) {
+						status = 'pass';
+					} else if (passingCount > 0) {
+						status = 'partial';
+					} else {
+						status = 'fail';
+					}
 				}
 			}
 		}
@@ -299,8 +390,7 @@ export function formatCompliance(report: ComplianceReport, format: OutputFormat 
 
 			for (const m of summary.mappings) {
 				const icon = STATUS_ICON_COMPACT[m.status];
-				const findingSuffix =
-					m.relatedFindings.length > 0 ? ` — ${sanitizeOutputText(m.relatedFindings[0], 80)}` : '';
+				const findingSuffix = m.relatedFindings.length > 0 ? ` — ${sanitizeOutputText(m.relatedFindings[0], 80)}` : '';
 				lines.push(`${icon} ${m.controlId} ${sanitizeOutputText(m.controlName, 60)}${m.status !== 'pass' ? findingSuffix : ''}`);
 			}
 			lines.push('');
