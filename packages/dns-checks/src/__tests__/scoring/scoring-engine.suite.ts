@@ -73,7 +73,7 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 			expect(scan.overall).toBeNull();
 			expect(scan.grade).toBeNull();
 			expect(scan.evidenceInsufficient).toBe(true);
-			expect(scan.summary).toContain('No grade is reported');
+			expect(scan.summary).toContain('No checks were submitted for scoring');
 		});
 
 		it('surfaces the three-tier breakdown on the scan score', () => {
@@ -174,6 +174,15 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				return CATS.map((c, i) => (i < nCompleted ? ok(c) : unmeasured(c)));
 			}
 
+			// 20 categories — one more than CATS — chosen SPECIFICALLY so the default 60%
+			// threshold lands on a whole number (12/20 = 0.60 exactly). 19 categories can
+			// never hit the boundary (12/19 = 63.2%, 11/19 = 57.9%), so a `>=` → `>` mutation
+			// in `isEvidenceSufficient` would survive every OTHER assertion in this file.
+			const CATS_AT_BOUNDARY: CheckCategory[] = [...CATS, 'lookalikes'];
+			function scanAtBoundary(nCompleted: number): CheckResult[] {
+				return CATS_AT_BOUNDARY.map((c, i) => (i < nCompleted ? ok(c) : unmeasured(c)));
+			}
+
 			it('withholds the grade when fewer than 60% of attempted checks completed', () => {
 				// 4/19 = 21%.
 				const score = computeScanScore(scan(4));
@@ -181,6 +190,13 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				expect(score.grade).toBeNull();
 				expect(score.evidenceInsufficient).toBe(true);
 				expect(score.evidence).toEqual({ attempted: 19, completed: 4, ratio: 4 / 19 });
+				// tierBreakdown is brief-mandated payload on the ungraded (non-empty-input)
+				// path — it was computed before the gate fired and stays available so a
+				// caller can still see the tier-weighted composition behind the (withheld)
+				// number, same as findings/categoryScores. Deleting the `tierBreakdown:
+				// genericResult.tierBreakdown` line from the gate's return object survives
+				// every OTHER assertion in this file, so this must be pinned directly.
+				expect(score.tierBreakdown).toBeDefined();
 			});
 
 			it('explains WHY the grade is absent, in the note and in the summary', () => {
@@ -200,16 +216,19 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				expect(Object.keys(score.categoryScores).length).toBeGreaterThan(0);
 			});
 
-			it('grades normally at exactly the threshold (gate is strict-less-than)', () => {
-				// 12/19 = 63.2% ≥ 60% → graded. 11/19 = 57.9% → ungraded.
-				const graded = computeScanScore(scan(12));
-				expect(graded.overall).not.toBeNull();
-				expect(graded.grade).not.toBeNull();
-				expect(graded.evidenceInsufficient).toBeUndefined();
+			it('grades AT the threshold exactly, ungrades just below it (gate compares ratio >= threshold, never >)', () => {
+				// 12/20 = 0.60 lands exactly ON the default threshold: the gate must still grade,
+				// because it withholds on ratio < threshold, not <=. A `>=` → `>` mutation in
+				// isEvidenceSufficient would incorrectly ungrade this case.
+				const atThreshold = computeScanScore(scanAtBoundary(12));
+				expect(atThreshold.overall).not.toBeNull();
+				expect(atThreshold.grade).not.toBeNull();
+				expect(atThreshold.evidenceInsufficient).toBeUndefined();
 
-				const ungraded = computeScanScore(scan(11));
-				expect(ungraded.overall).toBeNull();
-				expect(ungraded.evidenceInsufficient).toBe(true);
+				// 11/20 = 0.55 — one check short of the boundary — must ungrade.
+				const justBelow = computeScanScore(scanAtBoundary(11));
+				expect(justBelow.overall).toBeNull();
+				expect(justBelow.evidenceInsufficient).toBe(true);
 			});
 
 			it('respects a SCORING_CONFIG threshold override', () => {
@@ -222,12 +241,51 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				expect(computeScanScore(scan(4), undefined, lenient).overall).not.toBeNull();
 			});
 
+			it('clamps an out-of-range threshold on a HAND-BUILT config too, not just one parsed via parseScoringConfig', () => {
+				// parseScoringConfig's own [0,1] clamp (config.ts) only runs for configs
+				// parsed from a SCORING_CONFIG JSON string. computeScanScore is a published,
+				// directly-callable API — a caller (this package's own vendoring consumers
+				// included) can hand-build a ScoringConfig and pass it straight in, bypassing
+				// that clamp entirely. A percent-not-ratio typo (60 meaning "60%") must not
+				// ungrade every scan that reaches the function this way; it must clamp to 1
+				// (maximally strict) exactly like the parsed path does.
+				const percentTypo = {
+					...DEFAULT_SCORING_CONFIG,
+					thresholds: { ...DEFAULT_SCORING_CONFIG.thresholds, evidenceSufficiency: 60 },
+				};
+				// If the clamp is missing, 60 stays 60 and NOTHING can satisfy `ratio >= 60`
+				// (ratio never exceeds 1) — every scan, including a fully-complete one, would
+				// ungrade. Using a fully-complete 19/19 scan proves the clamp lands at exactly
+				// 1 (the maximally strict, still-satisfiable value), not merely "less broken".
+				const score = computeScanScore(scan(19), undefined, percentTypo);
+				expect(score.overall).not.toBeNull();
+				expect(score.grade).not.toBeNull();
+				expect(score.evidenceInsufficient).toBeUndefined();
+			});
+
 			it('ungrades the empty result set — zero submitted evidence yields no grade (DD1 as overridden)', () => {
 				const score = computeScanScore([]);
 				expect(score.overall).toBeNull();
 				expect(score.grade).toBeNull();
 				expect(score.evidenceInsufficient).toBe(true);
 				expect(score.evidence).toEqual({ attempted: 0, completed: 0, ratio: 0 });
+			});
+
+			it('ungrades the empty result set even with an evidenceSufficiency:0 config (empty-branch is deliberately stricter than the predicate)', () => {
+				// isEvidenceSufficient({ratio:0}, 0) evaluates `0 >= 0` = true — the predicate
+				// alone would call zero evidence "sufficient" at a zero threshold. The empty-
+				// results branch in computeScanScore does NOT delegate to isEvidenceSufficient
+				// for this reason: it returns null/null/evidenceInsufficient UNCONDITIONALLY,
+				// regardless of what threshold a hand-built or vendored config supplies. This
+				// pins that choice so a future "cleanup" that refactors the empty branch into
+				// `if (!isEvidenceSufficient(evidence, evidenceThreshold)) { ... }` (removing
+				// the special case as apparently-redundant) goes RED instead of silently
+				// re-opening the zero-evidence-grade defect this whole gate exists to close.
+				const zeroThreshold = { ...DEFAULT_SCORING_CONFIG, thresholds: { ...DEFAULT_SCORING_CONFIG.thresholds, evidenceSufficiency: 0 } };
+				const score = computeScanScore([], undefined, zeroThreshold);
+				expect(score.overall).toBeNull();
+				expect(score.grade).toBeNull();
+				expect(score.evidenceInsufficient).toBe(true);
 			});
 		});
 	});

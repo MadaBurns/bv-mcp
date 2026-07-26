@@ -60,14 +60,18 @@ export function defineScoringEvidenceSuite(s: ScoringModule): void {
 			expect(isEvidenceSufficient({ attempted: 20, completed: 11, ratio: 0.55 })).toBe(false);
 		});
 
-		it('treats an EMPTY result set as INSUFFICIENT — zero evidence can never earn a grade (DD1 as overridden)', () => {
-			// ratio 0 sits below every valid threshold, and there is deliberately no
-			// attempted === 0 carve-out: this package is a published SSOT, and the legacy
-			// seeded-100/'A+' for an empty submission handed the best possible grade to a
-			// caller that provided zero evidence.
+		it('treats an EMPTY result set as INSUFFICIENT at the default threshold — zero evidence can never earn a grade (DD1 as overridden)', () => {
+			// ratio 0 sits below every threshold in the NORMAL (0, 1] range — including the
+			// default — and there is deliberately no `attempted === 0` carve-out inside this
+			// predicate: this package is a published SSOT, and the legacy seeded-100/'A+' for
+			// an empty submission handed the best possible grade to a caller that provided
+			// zero evidence. NOTE: this predicate alone is NOT the sole enforcement — a
+			// threshold of exactly `0` makes `ratio >= threshold` true even for zero evidence
+			// (`0 >= 0`). `computeScanScore`'s own `results.length === 0` branch is what
+			// actually makes the empty case unconditional, independent of any configured
+			// threshold; see the engine-level "ungrades the empty set even at threshold 0" test.
 			expect(isEvidenceSufficient({ attempted: 0, completed: 0, ratio: 0 })).toBe(false);
-			// And the same holds when the caller passes an explicit threshold — there is no
-			// carve-out to fall through on any path.
+			// Holds for the default AND for an explicit non-zero threshold.
 			expect(isEvidenceSufficient(computeScanEvidence([]), 0.6)).toBe(false);
 		});
 
@@ -96,6 +100,17 @@ export function defineScoringEvidenceSuite(s: ScoringModule): void {
 			expect(note).toContain('59%');
 			expect(note).not.toContain('60%,');
 			expect(note).toContain('60% evidence threshold');
+		});
+
+		it('gives the zero-submission case its own sentence, not "Only 0 of 0 checks completed (0%)... Re-run the scan"', () => {
+			// The percentage-based prose is awkward and borderline-nonsensical for zero
+			// submitted checks (there's no scan to re-run, no partial coverage to name).
+			const note = buildEvidenceNote({ attempted: 0, completed: 0, ratio: 0 }, 0.6);
+			expect(note).toBe(
+				'No checks were submitted for scoring, so no grade can be issued. This is a measurement gap, not a security verdict.',
+			);
+			expect(note).not.toContain('Only 0 of 0');
+			expect(note).not.toContain('Re-run the scan');
 		});
 	});
 }
