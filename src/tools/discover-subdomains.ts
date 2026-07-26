@@ -1,13 +1,25 @@
 // SPDX-License-Identifier: BUSL-1.1
+// bv-oversize-ok: single-tool file — CT enumeration + multi-source failover +
+// last-known-good resilience + output formatting for discover_subdomains are
+// one cohesive responsibility; the pure helpers already sit below the exports.
 
 /**
  * Subdomain Discovery tool.
- * Queries Certificate Transparency logs (crt.sh) to discover subdomains
- * that have had certificates issued. Reveals shadow IT, forgotten services,
- * and unauthorized certificate issuance.
+ * Queries Certificate Transparency logs to discover subdomains that have had
+ * certificates issued. Reveals shadow IT, forgotten services, and unauthorized
+ * certificate issuance.
+ *
+ * Source resilience (a CT outage must not read as "no subdomains"):
+ *   1. bv-certstream-worker binding (fast, cached) when present, then
+ *   2. direct public sources in order — crt.sh → Certspotter — each with a
+ *      bounded retry and a per-source `ct_source` health log, then
+ *   3. last-known-good KV cache, returned marked `stale` with its age.
+ * Only when all of the above are exhausted do we report `sourceUnavailable`.
  */
 
 import type { OutputFormat } from '../handlers/tool-args';
+import { cacheGet, cacheSet } from '../lib/cache';
+import { logEvent } from '../lib/log';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { disposeUnreadResponseBody, readBoundedOrNull } from '../lib/response-body';
 
@@ -29,11 +41,36 @@ import { disposeUnreadResponseBody, readBoundedOrNull } from '../lib/response-bo
  */
 export const DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS = 24_000;
 
-/** Timeout for the crt.sh API request (ms). */
-const CRT_SH_TIMEOUT_MS = 10_000;
+/** Per-attempt timeout for a direct public CT source request (ms). */
+const CT_SOURCE_TIMEOUT_MS = 10_000;
 
-/** Maximum bytes accepted from the public crt.sh fallback. */
-const CRT_SH_MAX_BODY_BYTES = 5 * 1024 * 1024;
+/**
+ * Retries per direct CT source on a transient outcome (timeout / 5xx / network).
+ * One retry is enough to ride out a single cold-query blip on crt.sh (Postgres-
+ * backed, frequently slow) without blowing the synchronous budget — every
+ * attempt is still gated by the caller's `deadlineMs`.
+ */
+const CT_SOURCE_MAX_RETRIES = 1;
+
+/** Backoff before a same-source retry (ms). */
+const CT_SOURCE_RETRY_BACKOFF_MS = 500;
+
+/** Maximum bytes accepted from a direct public CT source response. */
+const CT_SOURCE_MAX_BODY_BYTES = 5 * 1024 * 1024;
+
+/**
+ * Last-known-good cache key prefix + TTL for the resilience fallback.
+ *
+ * A successful enumeration is written here; when EVERY live CT source fails we
+ * re-serve it (marked `stale`) rather than returning nothing. TTL is a week so
+ * the net survives a multi-hour (or multi-day) upstream outage — a week-old
+ * subdomain list flagged stale is far more useful to a security caller than an
+ * empty "source unavailable". Distinct from the certstream worker's own short
+ * fast-path cache: this layer exists precisely for when that worker (or its
+ * sources) is unreachable.
+ */
+const SUBDOMAIN_LKG_KEY_PREFIX = 'cache:subdomains-lkg:';
+const SUBDOMAIN_LKG_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 /** Maximum subdomains to return (CT logs can contain thousands). */
 const MAX_SUBDOMAINS = 100;
@@ -136,6 +173,15 @@ export interface SubdomainDiscoveryResult {
 	 * downstream stages were skipped. Earlier stages that succeeded are kept.
 	 */
 	partial?: boolean;
+	/**
+	 * True when this result was served from the last-known-good cache because
+	 * every live CT source was unreachable. The data is a prior successful
+	 * enumeration, NOT a fresh answer — pair with {@link cacheAgeMinutes} to
+	 * judge freshness. `sourceUnavailable` stays false here (we DO have data).
+	 */
+	stale?: boolean;
+	/** Age of a `stale` result in whole minutes since it was cached. */
+	cacheAgeMinutes?: number;
 }
 
 /**
@@ -153,9 +199,24 @@ export interface DiscoverSubdomainsOptions {
 	/**
 	 * When true, ask the certstream worker to bypass its cache (`force_refresh=true`) so a
 	 * stale cached result — e.g. an empty snapshot captured during a prior CT-source outage —
-	 * is not re-served. The crt.sh fallback is uncached, so this only affects the fast path.
+	 * is not re-served. The direct-source path is uncached upstream, so this only affects the
+	 * fast path. It does NOT suppress the last-known-good stale fallback on a total outage:
+	 * a stale list beats an empty result.
 	 */
 	forceRefresh?: boolean;
+	/**
+	 * Optional KV namespace backing the last-known-good resilience cache. A
+	 * clean successful enumeration is written here (best-effort); on a total
+	 * live-source outage it is read back and returned marked `stale`. Absent →
+	 * no resilience cache (behaviour reverts to the pre-cache path). Never read
+	 * on the happy path — the live sources stay authoritative.
+	 */
+	cacheKv?: KVNamespace;
+	/**
+	 * Defers the best-effort LKG cache write off the response path when provided
+	 * (`ctx.waitUntil`). Absent → the write is awaited inline (still best-effort).
+	 */
+	waitUntil?: (promise: Promise<unknown>) => void;
 }
 
 /** Extract CN= value from an issuer_name string (e.g. "C=US, O=Let's Encrypt, CN=R3" -> "R3"). */
@@ -214,56 +275,55 @@ export async function discoverSubdomains(
 	certstreamAuthToken?: string,
 	options?: DiscoverSubdomainsOptions,
 ): Promise<SubdomainDiscoveryResult> {
-	// Fast path: use certstream service binding
+	// Fast path: certstream service binding (bv-certstream-worker; itself
+	// multi-source + short-cached). On a clean result, prime the LKG cache.
 	if (certstream) {
 		const result = await queryCertstream(domain, certstream, certstreamAuthToken, options);
-		if (result) return result;
-		// Fall through to crt.sh if service binding fails
+		if (result) {
+			await cacheSuccess(domain, result, options);
+			return result;
+		}
+		// Fall through to the direct public sources if the binding failed.
 	}
 
-	// Deadline gate before the crt.sh fallback (slowest stage).
+	// Deadline gate before the (slowest) direct-source stage. A budget trip after
+	// the fast path already failed is still "no live source answered" from the
+	// caller's side, so consult last-known-good before giving up — a KV read costs
+	// milliseconds, unlike the 10s fetch we no longer have budget for.
 	if (deadlineExceeded(options)) {
-		return emptyResult(domain, true, true);
+		const staleOnDeadline = await readLastKnownGood(domain, options);
+		return staleOnDeadline ? { ...staleOnDeadline, partial: true } : emptyResult(domain, true, true);
 	}
 
+	// Direct public CT sources, tried in order with per-source health logging
+	// and a bounded retry: crt.sh (rich metadata) → Certspotter (names + dates).
+	const direct = await queryDirectSources(domain, options);
+	if (direct.available) {
+		const result = direct.entries.length > 0 ? buildResultFromEntries(domain, direct.entries) : emptyResult(domain);
+		await cacheSuccess(domain, result, options);
+		return result;
+	}
+
+	// Total live-source outage. Serve last-known-good (stale) if we have it — a
+	// stale list with an age beats an empty "source unavailable". force_refresh
+	// intentionally does NOT suppress this; it only bypasses the live-fetch cache.
+	const stale = await readLastKnownGood(domain, options);
+	if (stale) return stale;
+
+	return emptyResult(domain, true);
+}
+
+/**
+ * Aggregate raw CT log entries (crt.sh / Certspotter, normalized to
+ * {@link CrtShEntry}) into a full {@link SubdomainDiscoveryResult}: dedupe by
+ * subdomain, track first/last-seen + issuer per name, and derive the wildcard /
+ * expired / many-issuers / shadow-subdomain issues. Pure — no I/O.
+ */
+export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[]): SubdomainDiscoveryResult {
 	const now = new Date();
-	let entries: CrtShEntry[];
-
-	try {
-		const composed = composeAbortSignal(CRT_SH_TIMEOUT_MS, options?.signal);
-
-		const response = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json&exclude=expired`, {
-			signal: composed.signal,
-			redirect: 'manual',
-		});
-
-		composed.cleanup();
-
-		if (!response.ok) {
-			return emptyResult(domain, true);
-		}
-
-		const declaredLength = Number(response.headers.get('content-length'));
-		if (Number.isFinite(declaredLength) && declaredLength > CRT_SH_MAX_BODY_BYTES) {
-			await disposeUnreadResponseBody(response);
-			return emptyResult(domain, true);
-		}
-
-		const rawBody = await readBoundedOrNull(response.body, CRT_SH_MAX_BODY_BYTES);
-		if (rawBody === null) return emptyResult(domain, true);
-		entries = JSON.parse(rawBody) as CrtShEntry[];
-	} catch {
-		return emptyResult(domain, true);
-	}
-
-	if (!Array.isArray(entries) || entries.length === 0) {
-		return emptyResult(domain);
-	}
 
 	// Cap entries to prevent memory exhaustion on domains with huge CT histories
-	if (entries.length > 5000) {
-		entries = entries.slice(0, 5000);
-	}
+	const entries = rawEntries.length > 5000 ? rawEntries.slice(0, 5000) : rawEntries;
 
 	// Parse and aggregate subdomain data
 	const trackers = new Map<string, SubdomainTracker>();
@@ -412,6 +472,247 @@ export async function discoverSubdomains(
 	};
 }
 
+/** Per-source health outcome, emitted to the `ct_source` log for observability. */
+type CtSourceOutcome = 'ok' | 'empty' | 'http_error' | 'timeout' | 'error';
+
+/** Normalized result of one direct-source attempt. */
+interface SourceResult {
+	outcome: CtSourceOutcome;
+	entries: CrtShEntry[];
+}
+
+/** A single Certspotter issuance (with `expand=dns_names&expand=issuer`). */
+interface CertspotterIssuance {
+	dns_names?: string[];
+	not_before?: string;
+	not_after?: string;
+	issuer?: { name?: string };
+}
+
+/** Persisted last-known-good cache envelope. */
+interface SubdomainLkgEntry {
+	cachedAt: number;
+	result: SubdomainDiscoveryResult;
+}
+
+/** Classify a thrown fetch error as an inner-timeout abort vs a generic error. */
+function classifyFetchError(err: unknown): 'timeout' | 'error' {
+	const name = (err as { name?: string } | null)?.name;
+	return name === 'AbortError' || name === 'TimeoutError' ? 'timeout' : 'error';
+}
+
+/**
+ * Emit a per-source CT health line so upstream outages are observable/alertable
+ * rather than silently degrading the tool. Fail-open — logging never throws.
+ */
+function logCtSource(domain: string, source: string, outcome: CtSourceOutcome): void {
+	try {
+		logEvent({
+			timestamp: new Date().toISOString(),
+			tool: 'discover_subdomains',
+			domain,
+			category: 'ct_source',
+			severity: outcome === 'ok' || outcome === 'empty' ? 'info' : 'warn',
+			result: outcome,
+			details: { source },
+		});
+	} catch {
+		/* logging must never break discovery */
+	}
+}
+
+/** Fetch + parse crt.sh into normalized entries. Bounded body, no throw. */
+async function fetchCrtShEntries(domain: string, signal: AbortSignal): Promise<SourceResult> {
+	try {
+		const response = await fetch(`https://crt.sh/?q=%25.${encodeURIComponent(domain)}&output=json&exclude=expired`, {
+			signal,
+			redirect: 'manual',
+		});
+		if (!response.ok) {
+			await disposeUnreadResponseBody(response);
+			return { outcome: 'http_error', entries: [] };
+		}
+		const declaredLength = Number(response.headers.get('content-length'));
+		if (Number.isFinite(declaredLength) && declaredLength > CT_SOURCE_MAX_BODY_BYTES) {
+			await disposeUnreadResponseBody(response);
+			return { outcome: 'http_error', entries: [] };
+		}
+		const rawBody = await readBoundedOrNull(response.body, CT_SOURCE_MAX_BODY_BYTES);
+		if (rawBody === null) return { outcome: 'http_error', entries: [] };
+		const parsed = JSON.parse(rawBody) as unknown;
+		if (!Array.isArray(parsed)) return { outcome: 'error', entries: [] };
+		const entries = parsed as CrtShEntry[];
+		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries };
+	} catch (err) {
+		return { outcome: classifyFetchError(err), entries: [] };
+	}
+}
+
+/**
+ * Fetch + parse Certspotter issuances into normalized {@link CrtShEntry}s so the
+ * shared aggregation applies unchanged. Unauthenticated (rate-limited but
+ * functional for occasional failover); `not_before`/`not_after` are best-effort.
+ */
+async function fetchCertspotterEntries(domain: string, signal: AbortSignal): Promise<SourceResult> {
+	try {
+		const url = `https://api.certspotter.com/v1/issuances?domain=${encodeURIComponent(domain)}&include_subdomains=true&expand=dns_names&expand=issuer`;
+		const response = await fetch(url, { signal, redirect: 'manual' });
+		if (!response.ok) {
+			await disposeUnreadResponseBody(response);
+			return { outcome: 'http_error', entries: [] };
+		}
+		const declaredLength = Number(response.headers.get('content-length'));
+		if (Number.isFinite(declaredLength) && declaredLength > CT_SOURCE_MAX_BODY_BYTES) {
+			await disposeUnreadResponseBody(response);
+			return { outcome: 'http_error', entries: [] };
+		}
+		const rawBody = await readBoundedOrNull(response.body, CT_SOURCE_MAX_BODY_BYTES);
+		if (rawBody === null) return { outcome: 'http_error', entries: [] };
+		const parsed = JSON.parse(rawBody) as unknown;
+		if (!Array.isArray(parsed)) return { outcome: 'error', entries: [] };
+		const entries: CrtShEntry[] = [];
+		for (const item of parsed as CertspotterIssuance[]) {
+			if (!item || !Array.isArray(item.dns_names) || item.dns_names.length === 0) continue;
+			entries.push({
+				name_value: item.dns_names.join('\n'),
+				issuer_name: item.issuer?.name ?? '',
+				not_before: item.not_before ?? '',
+				not_after: item.not_after ?? '',
+			});
+		}
+		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries };
+	} catch (err) {
+		return { outcome: classifyFetchError(err), entries: [] };
+	}
+}
+
+/** True when the remaining deadline budget can fit another `ms` attempt. */
+function hasBudgetFor(options: DiscoverSubdomainsOptions | undefined, ms: number): boolean {
+	if (typeof options?.deadlineMs !== 'number') return true;
+	return options.deadlineMs - Date.now() >= ms;
+}
+
+/** Signal-aware delay used for same-source retry backoff. Resolves on abort. */
+function delayWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
+	return new Promise((resolve) => {
+		if (signal?.aborted) {
+			resolve();
+			return;
+		}
+		const id = setTimeout(resolve, ms);
+		signal?.addEventListener(
+			'abort',
+			() => {
+				clearTimeout(id);
+				resolve();
+			},
+			{ once: true },
+		);
+	});
+}
+
+/**
+ * Query the ordered direct public CT sources (crt.sh → Certspotter) with a
+ * bounded per-source retry, per-source health logging, and deadline gating.
+ * Stops at the FIRST source that responds authoritatively:
+ *   - `ok`    → real data; return it.
+ *   - `empty` → a genuine "no subdomains" answer; return available-but-empty.
+ * A transient outcome (timeout / 5xx / network) retries the same source once,
+ * then falls through to the next. `available:false` means every source failed —
+ * the caller then decides between last-known-good and an explicit outage error.
+ *
+ * NOTE: this is sequential first-authoritative-wins, not a fan-out+merge. Under
+ * the ~24s synchronous budget a merge (querying every source) would blow the
+ * deadline; failover to the first responding source is what the budget allows.
+ */
+async function queryDirectSources(
+	domain: string,
+	options?: DiscoverSubdomainsOptions,
+): Promise<{ available: boolean; entries: CrtShEntry[] }> {
+	const sources: Array<{ name: string; fetch: (d: string, signal: AbortSignal) => Promise<SourceResult> }> = [
+		{ name: 'crtsh', fetch: fetchCrtShEntries },
+		{ name: 'certspotter', fetch: fetchCertspotterEntries },
+	];
+
+	for (const source of sources) {
+		for (let attempt = 0; attempt <= CT_SOURCE_MAX_RETRIES; attempt++) {
+			// Never start an attempt we can't finish inside the budget.
+			if (deadlineExceeded(options) || !hasBudgetFor(options, CT_SOURCE_TIMEOUT_MS)) {
+				return { available: false, entries: [] };
+			}
+			const composed = composeAbortSignal(CT_SOURCE_TIMEOUT_MS, options?.signal);
+			let res: SourceResult;
+			try {
+				res = await source.fetch(domain, composed.signal);
+			} finally {
+				composed.cleanup();
+			}
+			logCtSource(domain, source.name, res.outcome);
+			if (res.outcome === 'ok') return { available: true, entries: res.entries };
+			if (res.outcome === 'empty') return { available: true, entries: [] };
+			// Transient — retry the same source once (with backoff) before the next.
+			if (attempt < CT_SOURCE_MAX_RETRIES) {
+				await delayWithSignal(CT_SOURCE_RETRY_BACKOFF_MS, options?.signal);
+			}
+		}
+	}
+	return { available: false, entries: [] };
+}
+
+/** LKG cache key for a domain. */
+function subdomainLkgKey(domain: string): string {
+	return `${SUBDOMAIN_LKG_KEY_PREFIX}${domain.toLowerCase()}`;
+}
+
+/** Strip transient/served-state flags so the cached copy is a clean answer. */
+function stripTransientFlags(result: SubdomainDiscoveryResult): SubdomainDiscoveryResult {
+	const { stale: _stale, cacheAgeMinutes: _age, sourceUnavailable: _unavail, partial: _partial, ...clean } = result;
+	return clean;
+}
+
+/**
+ * Persist a clean enumeration as last-known-good (best-effort). Never stores a
+ * non-answer (source-unavailable / partial / already-stale) so the fallback net
+ * can't be poisoned by an outage. Deferred via `waitUntil` when available.
+ */
+async function cacheSuccess(domain: string, result: SubdomainDiscoveryResult, options?: DiscoverSubdomainsOptions): Promise<void> {
+	if (!options?.cacheKv) return;
+	if (result.sourceUnavailable || result.partial || result.stale) return;
+	// An empty enumeration is a worthless fallback: re-serving "0 subdomains
+	// (stale)" during an outage tells the caller nothing the explicit outage
+	// error doesn't, and invites reading it as a confirmed empty.
+	if (result.totalSubdomains === 0) return;
+	const entry: SubdomainLkgEntry = { cachedAt: Date.now(), result: stripTransientFlags(result) };
+	const write = cacheSet(subdomainLkgKey(domain), entry, options.cacheKv, SUBDOMAIN_LKG_TTL_SECONDS).catch(() => {
+		/* best-effort; KV is not a lock */
+	});
+	if (options.waitUntil) options.waitUntil(write);
+	else await write;
+}
+
+/**
+ * Read the last-known-good enumeration for a total-outage fallback. Returns the
+ * cached result marked `stale:true` with its age in minutes, or null when there
+ * is no cache / KV is absent / the read fails.
+ */
+async function readLastKnownGood(domain: string, options?: DiscoverSubdomainsOptions): Promise<SubdomainDiscoveryResult | null> {
+	if (!options?.cacheKv) return null;
+	let entry: SubdomainLkgEntry | undefined;
+	try {
+		entry = await cacheGet<SubdomainLkgEntry>(subdomainLkgKey(domain), options.cacheKv);
+	} catch {
+		return null;
+	}
+	if (!entry || !entry.result) return null;
+	const cachedAt = typeof entry.cachedAt === 'number' ? entry.cachedAt : Date.now();
+	const ageMs = Math.max(0, Date.now() - cachedAt);
+	return {
+		...stripTransientFlags(entry.result),
+		stale: true,
+		cacheAgeMinutes: Math.floor(ageMs / 60_000),
+	};
+}
+
 /**
  * Query bv-certstream-worker via service binding. Returns null on failure.
  *
@@ -454,7 +755,7 @@ async function queryCertstreamEndpoint<T>(
 	certstreamAuthToken?: string,
 	options?: DiscoverSubdomainsOptions,
 ): Promise<T | null> {
-	const composed = composeAbortSignal(CRT_SH_TIMEOUT_MS, options?.signal);
+	const composed = composeAbortSignal(CT_SOURCE_TIMEOUT_MS, options?.signal);
 
 	try {
 		const forceRefreshParam = options?.forceRefresh ? '&force_refresh=true' : '';
@@ -619,14 +920,23 @@ export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, forma
 		return `Subdomain Discovery: ${result.domain} — Certificate Transparency source unavailable (the CT log endpoint returned an error or was unreachable); could not enumerate subdomains. This does not mean the domain has no subdomains — retry shortly.`;
 	}
 	if (result.totalSubdomains === 0) {
-		return `Subdomain Discovery: ${result.domain} — no subdomains found in Certificate Transparency logs`;
+		// A STALE empty set is not a confident "none found" — say so, or the
+		// original failure mode (an unreliable answer read as authoritative)
+		// comes back through the zero branch.
+		return result.stale
+			? `${staleBanner(result)}\n\nSubdomain Discovery: ${result.domain} — the cached enumeration contains no subdomains; this is NOT a confirmed empty result.`
+			: `Subdomain Discovery: ${result.domain} — no subdomains found in Certificate Transparency logs`;
 	}
 
-	if (format === 'compact') {
-		return formatCompact(result);
-	}
+	const body = format === 'compact' ? formatCompact(result) : formatFull(result);
+	return result.stale ? `${staleBanner(result)}\n\n${body}` : body;
+}
 
-	return formatFull(result);
+/** Staleness notice prepended when a result came from the last-known-good cache. */
+function staleBanner(result: SubdomainDiscoveryResult): string {
+	const age = result.cacheAgeMinutes ?? 0;
+	const ageText = age < 60 ? `${age} minute${age === 1 ? '' : 's'}` : `${Math.floor(age / 60)} hour${Math.floor(age / 60) === 1 ? '' : 's'}`;
+	return `⚠️ STALE RESULT (cached ${ageText} ago): every live Certificate Transparency source is currently unreachable, so this is the last known good enumeration — not a fresh one. Newly-issued certificates may be missing.`;
 }
 
 /** Compact format: concise one-line-per-subdomain output. */
