@@ -1,11 +1,50 @@
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { env } from 'cloudflare:test';
-import { IN_MEMORY_CACHE } from '../src/lib/cache';
-import { setupFetchMock } from './helpers/dns-mock';
+import { IN_MEMORY_CACHE, buildScanCacheKey, buildCheckCacheKey } from '../src/lib/cache';
+import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
+import { SCAN_CATEGORIES } from '../src/tools/scan-domain';
 
 const { restore } = setupFetchMock();
 beforeEach(() => IN_MEMORY_CACHE.clear());
 afterEach(() => restore());
+
+/**
+ * Multi-dispatch fetch mock returning parseable DoH/HTTP responses for every check
+ * category, so a scan completes (not errors) across the board — same routing shape
+ * as scan-domain.spec.ts's `mockAllChecks`, duplicated here rather than imported
+ * (that helper is module-local to scan-domain.spec.ts) to prove batchScan's REAL
+ * scoring path independent of this suite's blanket-garbage `fetch` mock used by the
+ * other tests in this file.
+ */
+function mockRealisticChecks(domain: string) {
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+		if (url.includes('cloudflare-dns.com')) {
+			if (url.includes('type=TXT') || url.includes('type=16')) {
+				if (url.includes('_dmarc.')) return Promise.resolve(txtResponse(`_dmarc.${domain}`, ['v=DMARC1; p=reject']));
+				if (url.includes('_domainkey.')) return Promise.resolve(txtResponse(`default._domainkey.${domain}`, ['v=DKIM1; k=rsa; p=MIGf']));
+				if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse(`_mta-sts.${domain}`, ['v=STSv1; id=20240101']));
+				if (url.includes('_smtp._tls.'))
+					return Promise.resolve(txtResponse(`_smtp._tls.${domain}`, ['v=TLSRPTv1; rua=mailto:tls@' + domain]));
+				if (url.includes('default._bimi.'))
+					return Promise.resolve(txtResponse(`default._bimi.${domain}`, [`v=BIMI1; l=https://${domain}/logo.svg`]));
+				return Promise.resolve(txtResponse(domain, ['v=spf1 include:_spf.google.com -all']));
+			}
+			if (url.includes('type=NS') || url.includes('type=2'))
+				return Promise.resolve(nsResponse(domain, [`ns1.${domain}.`, `ns2.${domain}.`]));
+			if (url.includes('type=CAA') || url.includes('type=257')) return Promise.resolve(caaResponse(domain, ['0 issue "letsencrypt.org"']));
+			if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse(domain, true));
+			// Fallback: valid, empty (NOERROR) DoH response — "no records found", a
+			// genuine completed measurement, never a parse failure.
+			return Promise.resolve(createDohResponse([], []));
+		}
+		if (url.includes('mta-sts.') && url.includes('.well-known')) {
+			return Promise.resolve(httpResponse('version: STSv1\nmode: enforce\nmx: *.' + domain + '\nmax_age: 86400'));
+		}
+		return Promise.resolve(httpResponse('OK'));
+	});
+}
 
 describe('batchScan', () => {
 	beforeEach(() => {
@@ -29,6 +68,38 @@ describe('batchScan', () => {
 		expect(results[0].measured).toBe(true);
 		expect(results[0].score).toBeNull();
 		expect(results[0].grade).toBeNull();
+	});
+
+	it('carries a numeric score and non-null grade for a genuinely well-measured scan (real scoring path, not a stub)', async () => {
+		// L6 coverage regression fix: the test above proves the evidence gate correctly
+		// ungrades a mostly-broken mock, but with its assertion flipped to null it no
+		// longer proves batchScan can carry a REAL graded result end-to-end — a
+		// regression that ungraded every batch scan unconditionally would now pass
+		// every test in this file. This test closes that gap with a properly-routed
+		// DoH/HTTP mock (mockRealisticChecks) so every check category gets a parseable
+		// response and genuinely completes, driving evidence comfortably over the 60%
+		// gate via the real scan_domain → computeScanScore path (no scanFn stub).
+		const domain = 'realistic-scan-example.com';
+		// Clear both cache-key shapes explicitly (in addition to the beforeEach's
+		// blanket IN_MEMORY_CACHE.clear()) so a stale entry from another case can never
+		// leak a cached score into this assertion.
+		IN_MEMORY_CACHE.delete(buildScanCacheKey(domain));
+		for (const category of SCAN_CATEGORIES) {
+			IN_MEMORY_CACHE.delete(buildCheckCacheKey(domain, category));
+		}
+		mockRealisticChecks(domain);
+
+		const { batchScan } = await import('../src/tools/batch-scan');
+		const results = await batchScan([domain], { kv: env.SCAN_CACHE });
+
+		expect(results).toHaveLength(1);
+		expect(results[0].domain).toBe(domain);
+		expect(results[0].measured).toBe(true);
+		expect(typeof results[0].score).toBe('number');
+		expect(results[0].score).toBeGreaterThanOrEqual(0);
+		expect(results[0].score).toBeLessThanOrEqual(100);
+		expect(typeof results[0].grade).toBe('string');
+		expect(results[0].grade).not.toBeNull();
 	});
 
 	it('emits null score/grade/passed for an invalid domain instead of a fabricated F', async () => {
