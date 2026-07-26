@@ -124,7 +124,10 @@ export interface StructuredScanResult {
 	 * `true` when the scan completed too few checks to be graded, so `score` and
 	 * `grade` are `null` for a MEASUREMENT reason rather than a security one.
 	 * Mutually exclusive with `measured === false` ("nothing ran at all"): this flag is
-	 * only ever `true` when `evidence.attempted > 0`.
+	 * only ever `true` when `evidence.attempted > 0`. Enforced at `buildStructuredScanResult`
+	 * (not merely documented): `computeScanScore`'s own zero-check branch stamps
+	 * `evidenceInsufficient: true` on a zero-checks result, which is suppressed to `false`
+	 * here so the invariant holds even though the underlying producer does not honor it.
 	 */
 	evidenceInsufficient: boolean;
 	/** Human-readable explanation when `evidenceInsufficient` is `true`; `null` otherwise. */
@@ -329,6 +332,24 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		// "only keys with a score appear" behaviour.
 	}
 
+	// The RATIO is a fact about the checks this report is rendering, so derive it here
+	// with the same exported helper the engine uses (one definition, no drift). The
+	// VERDICT belongs to the scorer alone — the wire layer never re-decides whether a
+	// scan was gradeable from these checks; it only reads `result.score.evidenceInsufficient`.
+	//
+	// The one thing the wire DOES enforce itself is the `evidence.attempted > 0` guard.
+	// This is not a second opinion on the verdict: `computeScanScore`'s own zero-check
+	// branch (checks.length === 0) stamps `evidenceInsufficient: true` on a result that
+	// also has `measured: false` — a shape that, read naively, would violate this
+	// interface's documented invariant that the two are mutually exclusive. The guard
+	// refuses to RAISE the flag for the "nothing ran at all" state that `measured: false`
+	// already owns; it never suppresses a true insufficiency the score actually raised
+	// for a scan that attempted something (`evidence.attempted > 0` in every real
+	// insufficiency case). `evidenceNote` is gated on this ENFORCED flag, not the raw
+	// score flag, so it is non-null only when `evidenceInsufficient` is `true`.
+	const evidence = computeScanEvidence(result.checks);
+	const evidenceInsufficient = result.score.evidenceInsufficient === true && evidence.attempted > 0;
+
 	return {
 		domain: result.domain,
 		score: result.score.overall,
@@ -367,13 +388,9 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		cdnProvider,
 		notApplicableCategories,
 		inconclusiveCategories,
-		// The RATIO is a fact about the checks this report is rendering, so derive it here
-		// with the same exported helper the engine uses (one definition, no drift). The
-		// VERDICT belongs to the scorer alone — the wire layer must never re-decide whether
-		// a scan was gradeable.
-		evidence: computeScanEvidence(result.checks),
-		evidenceInsufficient: result.score.evidenceInsufficient === true,
-		evidenceNote: result.score.evidenceNote ?? null,
+		evidence,
+		evidenceInsufficient,
+		evidenceNote: evidenceInsufficient ? (result.score.evidenceNote ?? null) : null,
 		timestamp: result.timestamp,
 		cached: result.cached,
 		scoringModelVersion: SCORING_MODEL_VERSION,
@@ -402,8 +419,14 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 	// partial without reverse-engineering it from the category table.
 	const reportEvidence = computeScanEvidence(result.checks);
 	if (reportEvidence.attempted > 0 && reportEvidence.completed < reportEvidence.attempted) {
+		// Floor, never round, the achieved percentage — the same rule `buildEvidenceNote`
+		// (packages/dns-checks/src/scoring/evidence.ts) uses for the summary line above.
+		// Rounding here while that helper floors let the SAME measurement render two
+		// different percentages on consecutive lines (e.g. 11/19 = "57%" in the summary,
+		// "58%" here) — a self-contradiction commit 33608fe1 already fixed once in
+		// `buildEvidenceNote` itself; this is the sibling fix for this second renderer.
 		lines.push(
-			`Checks completed: ${reportEvidence.completed}/${reportEvidence.attempted} (${Math.round(reportEvidence.ratio * 100)}%) — the rest did not run`,
+			`Checks completed: ${reportEvidence.completed}/${reportEvidence.attempted} (${Math.floor(reportEvidence.ratio * 100)}%) — the rest did not complete`,
 		);
 	}
 	lines.push('');

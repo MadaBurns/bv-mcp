@@ -398,11 +398,85 @@ describe('buildStructuredScanResult', () => {
 		expect(s.evidenceNote).toBeNull();
 	});
 
-	it('keeps `measured` and `evidenceInsufficient` mutually exclusive (slice 2 DD4)', () => {
-		// Nothing ran at all: measured false, and the evidence gate did NOT fire.
-		const s = buildStructuredScanResult(makeMockScanResult({ checks: [] }));
+	// F1 (fix round 1): these two cases discriminate "reads evidenceInsufficient off the
+	// score" from "re-derives it locally from these checks" — a mutation that replaces the
+	// populate line with a local re-decision (e.g. `!isEvidenceSufficient(evidence, ...)`)
+	// passes every OTHER test in this file but fails one of these two, because each fixture
+	// deliberately makes the local checks-derived ratio disagree with the score's own flag.
+	it('reads evidenceInsufficient from the SCORE even when the LOCAL checks ratio looks fully covered', () => {
+		const result = makeMockScanResult({
+			score: {
+				overall: null,
+				grade: null,
+				categoryScores: {} as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'Evidence insufficient per an upstream policy override.',
+				// Honest evidence field matching the checks below (2 attempted, 2 completed,
+				// ratio 1) — a LOCAL re-derivation from these checks would conclude "fully
+				// sufficient" and compute evidenceInsufficient: false. The score disagrees.
+				evidence: { attempted: 2, completed: 2, ratio: 1 },
+				evidenceInsufficient: true,
+				evidenceNote: 'Evidence insufficient per an upstream policy override.',
+			} as unknown as ScanScore,
+			checks: [
+				{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+				{ category: 'dmarc', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+			] as CheckResult[],
+		});
+		const s = buildStructuredScanResult(result);
+		// A local re-decision (ratio 1 → "sufficient") would say false here; the wire must
+		// still say true because the SCORE said true.
+		expect(s.evidenceInsufficient).toBe(true);
+	});
+
+	it('does NOT raise evidenceInsufficient from a LOW local checks ratio when the score does not flag it', () => {
+		const checks: CheckResult[] = [
+			{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+			...Array.from(
+				{ length: 9 },
+				(_, i) =>
+					({ category: `t${i}` as CheckCategory, passed: false, score: 0, findings: [], checkStatus: 'timeout' as const }) as CheckResult,
+			),
+		];
+		const result = makeMockScanResult({
+			score: {
+				overall: 80,
+				grade: 'B',
+				categoryScores: { spf: 100 } as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'ok',
+				// 1/10 completed locally (ratio 0.1) — well under any sufficiency threshold —
+				// but the score carries NO evidenceInsufficient flag at all (graded normally,
+				// as if upstream policy exempted this scan from the gate). A local
+				// re-derivation from these checks would conclude "insufficient" and compute
+				// evidenceInsufficient: true.
+				evidence: { attempted: 10, completed: 1, ratio: 0.1 },
+			} as ScanScore,
+			checks,
+		});
+		const s = buildStructuredScanResult(result);
+		// A local re-decision (ratio 0.1 → "insufficient") would say true here; the wire
+		// must still say false because the SCORE never raised the flag.
+		expect(s.evidenceInsufficient).toBe(false);
+	});
+
+	it('keeps `measured` and `evidenceInsufficient` mutually exclusive against the REAL zero-check producer (slice 2 DD4)', async () => {
+		// The engine's own zero-check branch (packages/dns-checks/src/scoring/engine.ts,
+		// `results.length === 0`) returns evidenceInsufficient: true for a scan that ran
+		// zero checks — which, taken at face value, would violate this interface's
+		// documented invariant that `measured: false` and `evidenceInsufficient: true` are
+		// mutually exclusive. Pin the real producer's actual (contradictory) shape first,
+		// then prove buildStructuredScanResult enforces disjointness itself rather than
+		// trusting the producer to honor it.
+		const { computeScanScore } = await import('@blackveil/dns-checks/scoring');
+		const score = computeScanScore([]);
+		expect(score.evidenceInsufficient).toBe(true);
+		expect(score.evidence).toEqual({ attempted: 0, completed: 0, ratio: 0 });
+
+		const s = buildStructuredScanResult(makeMockScanResult({ score: score as unknown as ScanScore, checks: [] }));
 		expect(s.measured).toBe(false);
 		expect(s.evidenceInsufficient).toBe(false);
+		expect(s.evidenceNote).toBeNull();
 		expect(s.evidence).toEqual({ attempted: 0, completed: 0, ratio: 0 });
 	});
 });
@@ -536,5 +610,66 @@ describe('formatScanReport evidence coverage', () => {
 			checks: [{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' }] as CheckResult[],
 		});
 		expect(formatScanReport(result, 'full')).not.toContain('Checks completed:');
+	});
+
+	it('also names the coverage gap in compact mode (F6 — the line is deliberate for interactive clients too)', () => {
+		const result = makeMockScanResult({
+			checks: [
+				{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+				{ category: 'dmarc', passed: false, score: 0, findings: [], checkStatus: 'timeout' },
+			] as CheckResult[],
+		});
+		expect(formatScanReport(result, 'compact')).toContain('Checks completed: 1/2');
+	});
+
+	it('floors the coverage percentage to match buildEvidenceNote — no 57%/58% split for the same measurement (F4)', async () => {
+		const {
+			buildEvidenceNote,
+			EVIDENCE_SUFFICIENCY_THRESHOLD,
+			computeScanEvidence: realComputeScanEvidence,
+		} = await import('@blackveil/dns-checks/scoring');
+		const checks: CheckResult[] = [
+			...Array.from(
+				{ length: 11 },
+				(_, i) =>
+					({
+						category: `c${i}` as CheckCategory,
+						passed: true,
+						score: 100,
+						findings: [],
+						checkStatus: 'completed' as const,
+					}) as CheckResult,
+			),
+			...Array.from(
+				{ length: 8 },
+				(_, i) =>
+					({ category: `t${i}` as CheckCategory, passed: false, score: 0, findings: [], checkStatus: 'timeout' as const }) as CheckResult,
+			),
+		];
+		const evidence = realComputeScanEvidence(checks);
+		expect(evidence).toEqual({ attempted: 19, completed: 11, ratio: 11 / 19 });
+		const evidenceNote = buildEvidenceNote(evidence, EVIDENCE_SUFFICIENCY_THRESHOLD);
+		// Pin the real producer's own percentage first: floor(11/19*100) = 57, not round's 58.
+		expect(evidenceNote).toContain('57%');
+
+		const result = makeMockScanResult({
+			score: {
+				overall: null,
+				grade: null,
+				categoryScores: {} as Record<CheckCategory, number>,
+				findings: [],
+				summary: evidenceNote,
+				evidence,
+				evidenceInsufficient: true,
+				evidenceNote,
+			} as unknown as ScanScore,
+			checks,
+		});
+
+		const text = formatScanReport(result, 'full');
+		// Both the summary line (buildEvidenceNote's own text) and this report's coverage
+		// line describe the SAME measurement — they must agree, and never emit "58%".
+		expect(text).toContain('Checks completed: 11/19 (57%)');
+		expect(text).not.toContain('58%');
 	});
 });
