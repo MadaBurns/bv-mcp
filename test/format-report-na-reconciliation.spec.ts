@@ -11,12 +11,21 @@
 import { describe, it, expect } from 'vitest';
 import type { ScanDomainResult, MaturityStage } from '../src/tools/scan-domain';
 import type { CheckCategory, CheckResult, ScanScore, DomainContext } from '../src/lib/scoring';
+import { computeScanEvidence } from '../src/lib/scoring';
 import { buildStructuredScanResult } from '../src/tools/scan/format-report';
 
 function makeMockScanResult(overrides: Partial<ScanDomainResult> = {}): ScanDomainResult {
 	return {
 		domain: 'example.com',
-		score: { overall: 80, grade: 'B', categoryScores: {} as Record<CheckCategory, number>, findings: [], summary: 'ok' } as ScanScore,
+		// Default `checks: []` below — nothing attempted, so evidence is honestly zero.
+		score: {
+			overall: 80,
+			grade: 'B',
+			categoryScores: {} as Record<CheckCategory, number>,
+			findings: [],
+			summary: 'ok',
+			evidence: { attempted: 0, completed: 0, ratio: 0 },
+		} as ScanScore,
 		checks: [],
 		maturity: null as unknown as MaturityStage,
 		context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
@@ -39,6 +48,8 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 				categoryScores: { spf: 100, ssl: 90, dnssec: 100 } as Record<CheckCategory, number>,
 				findings: [],
 				summary: 'ok',
+				// One CheckResult below (spf), no checkStatus set → completed.
+				evidence: { attempted: 1, completed: 1, ratio: 1 },
 			} as ScanScore,
 			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 			checks: [
@@ -63,6 +74,8 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 				categoryScores: { spf: 100 } as Record<CheckCategory, number>,
 				findings: [],
 				summary: 'ok',
+				// One CheckResult below (spf), no checkStatus set → completed.
+				evidence: { attempted: 1, completed: 1, ratio: 1 },
 			} as ScanScore,
 			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 			checks: [
@@ -136,6 +149,8 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 					categoryScores: Object.fromEntries(input.checks.map((c) => [c.category, c.score])) as Record<CheckCategory, number>,
 					findings: [],
 					summary: 'ok',
+					// Matches this iteration's real checks array (varies per corpus entry).
+					evidence: computeScanEvidence(input.checks),
 				} as ScanScore,
 			});
 			const s = buildStructuredScanResult(result);
@@ -160,6 +175,8 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 					categoryScores: { [category]: 0 } as Record<CheckCategory, number>,
 					findings: [],
 					summary: 'ok',
+					// One CheckResult below, no checkStatus set → completed.
+					evidence: { attempted: 1, completed: 1, ratio: 1 },
 				} as ScanScore,
 				context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 				checks: [
@@ -185,6 +202,8 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 				categoryScores: { ssl: 90, dnssec: 100, http_security: 85 } as Record<CheckCategory, number>,
 				findings: [],
 				summary: 'ok',
+				// Three CheckResults below, none with checkStatus set → all completed.
+				evidence: { attempted: 3, completed: 3, ratio: 1 },
 			} as ScanScore,
 			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 			checks: [
@@ -210,6 +229,8 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 				categoryScores: { dkim: 75, mta_sts: 60 } as Record<CheckCategory, number>,
 				findings: [],
 				summary: 'ok',
+				// Two CheckResults below, no checkStatus set → completed.
+				evidence: { attempted: 2, completed: 2, ratio: 1 },
 			} as ScanScore,
 			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 			checks: [

@@ -7,12 +7,17 @@ function makeFinding(category: string, title: string, severity: string): Finding
 }
 
 function makeScanScore(overall: number, grade: string, categories: Record<string, number>, findings: Finding[]): ScanScore {
+	// A normal, fully graded scan — every caller passes a real numeric overall/grade
+	// (the ungraded/null-score cases in this file use separate `any`-typed literals,
+	// not this helper), so full evidence is the honest default. No override param:
+	// no caller needs a different value.
 	return {
 		overall,
 		grade,
 		categoryScores: categories as Record<string, number>,
 		findings,
 		summary: '',
+		evidence: { attempted: 19, completed: 19, ratio: 1 },
 	} as ScanScore;
 }
 

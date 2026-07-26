@@ -3,12 +3,21 @@
 import { describe, it, expect } from 'vitest';
 import type { ScanDomainResult, MaturityStage } from '../src/tools/scan-domain';
 import type { CheckCategory, CheckResult, ScanScore, DomainContext } from '../src/lib/scoring';
+import { computeScanEvidence } from '../src/lib/scoring';
 import { buildStructuredScanResult, formatScanReport } from '../src/tools/scan/format-report';
 
 function makeMockScanResult(overrides: Partial<ScanDomainResult> = {}): ScanDomainResult {
 	return {
 		domain: 'example.com',
-		score: { overall: 80, grade: 'B', categoryScores: {} as Record<CheckCategory, number>, findings: [], summary: 'ok' } as ScanScore,
+		// Default `checks: []` below — nothing attempted, so evidence is honestly zero.
+		score: {
+			overall: 80,
+			grade: 'B',
+			categoryScores: {} as Record<CheckCategory, number>,
+			findings: [],
+			summary: 'ok',
+			evidence: { attempted: 0, completed: 0, ratio: 0 },
+		} as ScanScore,
 		checks: [],
 		maturity: null as unknown as MaturityStage,
 		context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
@@ -185,7 +194,21 @@ describe('buildStructuredScanResult', () => {
 		// two are "could not measure", not "does not apply".
 		const result = makeMockScanResult({
 			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
-			score: { overall: 70, grade: 'C+', categoryScores: { ssl: 70 } as Record<CheckCategory, number>, findings: [], summary: 'ok' } as ScanScore,
+			score: {
+				overall: 70,
+				grade: 'C+',
+				categoryScores: { ssl: 70 } as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'ok',
+				// Matches the real checks array below: 4 attempted, 2 completed
+				// (ssl, dkim), 2 not (http_security errored, dnssec timed out).
+				evidence: computeScanEvidence([
+					{ category: 'ssl', passed: true, score: 70, findings: [], checkStatus: 'completed' },
+					{ category: 'dkim', passed: false, score: 0, findings: [], checkStatus: 'completed' },
+					{ category: 'http_security', passed: false, score: 0, findings: [], checkStatus: 'error' },
+					{ category: 'dnssec', passed: false, score: 0, findings: [], checkStatus: 'timeout' },
+				]),
+			} as ScanScore,
 			checks: [
 				{ category: 'ssl', passed: true, score: 70, findings: [{ category: 'ssl', title: 'Valid cert', severity: 'info', detail: 'x' }], checkStatus: 'completed' },
 				{ category: 'dkim', passed: false, score: 0, findings: [{ category: 'dkim', title: 'No DKIM', severity: 'info', detail: 'x' }], checkStatus: 'completed' },
@@ -246,6 +269,8 @@ describe('formatScanReport web-only email categories', () => {
 				categoryScores: { spf: 100, dmarc: 100, ssl: 90 } as Record<CheckCategory, number>,
 				findings: [],
 				summary: 'ok',
+				// Three CheckResults below, none with checkStatus set → all completed.
+				evidence: { attempted: 3, completed: 3, ratio: 1 },
 			} as ScanScore,
 			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 			checks: [
@@ -274,6 +299,8 @@ describe('formatScanReport web-only email categories', () => {
 				categoryScores: { spf: 100 } as Record<CheckCategory, number>,
 				findings: [],
 				summary: 'ok',
+				// One CheckResult below, no checkStatus set → completed.
+				evidence: { attempted: 1, completed: 1, ratio: 1 },
 			} as ScanScore,
 			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
 			checks: [
@@ -301,6 +328,8 @@ describe('formatScanReport compact truncation', () => {
 					detail: longDetail,
 				}],
 				summary: 'ok',
+				// `checks: []` below — nothing attempted, so evidence is honestly zero.
+				evidence: { attempted: 0, completed: 0, ratio: 0 },
 			} as ScanScore,
 			checks: [],
 		});
@@ -322,6 +351,8 @@ describe('formatScanReport compact truncation', () => {
 					detail: longDetail,
 				}],
 				summary: 'ok',
+				// `checks: []` below — nothing attempted, so evidence is honestly zero.
+				evidence: { attempted: 0, completed: 0, ratio: 0 },
 			} as ScanScore,
 			checks: [],
 		});
