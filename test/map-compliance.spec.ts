@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { CheckResult } from '../src/lib/scoring';
-import { evaluateCompliance, formatCompliance } from '../src/tools/map-compliance';
+import { evaluateCompliance, formatCompliance, UNASSESSED_COMPLIANCE_CAVEAT, buildAllTransientCaveat } from '../src/tools/map-compliance';
 import type { ComplianceReport } from '../src/tools/map-compliance';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
 
@@ -455,6 +455,74 @@ describe('map_compliance treats a never-completed check as not_assessed, not fai
 		expect(mixedReport.frameworks.soc2.partial).toBe(baselineReport.frameworks.soc2.partial);
 		expect(mixedReport.frameworks.soc2.notAssessed).toBe(baselineReport.frameworks.soc2.notAssessed);
 	}, 20_000);
+});
+
+/**
+ * F3 (fix round 1): a total DoH/network outage — every attempted check errors out —
+ * previously reported `assessed: true, caveat: null` and rendered "No control could be
+ * assessed — 0 of 8 had any check evidence (not measured)". That is FALSE: there were
+ * N real `CheckResult`s, they just never completed (`checkStatus: 'error'`/`'timeout'`).
+ * `isMeasured` (`checks.length > 0`) could not tell "19 healthy checks" apart from "19
+ * checks that all timed out" — both were truthy. `assessed` must be `false` for the
+ * outage case too, but with DISTINCT wording from the genuine no-evidence case: "no
+ * checks ran" is itself false when 19 checks DID run.
+ *
+ * Built via hand-built `CheckResult[]` (mirrors this file's own `evaluateCompliance`
+ * describe block above, and `evidence-gate-safety.spec.ts`'s `SCAN_CATEGORIES`-driven
+ * fixture pattern) rather than a full DNS mock: several individual check modules
+ * self-catch a raw DNS-query rejection into a low-severity COMPLETED finding rather
+ * than propagating it as a transient `checkStatus` (e.g. `check-mta-sts.ts`'s package
+ * function), so simulating a clean "all 19 categories transient" outage via `fetch`
+ * mocking alone is unreliable — asserting directly on the shape `evaluateCompliance`
+ * actually receives is the precise way to pin this invariant.
+ */
+describe('map_compliance: a total outage (all checks attempted, none completed) is honestly unassessed', () => {
+	it('assessed is false with a truthful, distinct caveat, and every control is not_assessed', async () => {
+		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		// Every attempted check errored out — a total outage, NOT the zero-check
+		// (NXDOMAIN/broken-zone) case: there IS a CheckResult per category, it just
+		// never completed. Mirrors the buildDnsErrorResult/safeCheck shape exactly.
+		const allTransient: CheckResult[] = SCAN_CATEGORIES.map((c) => ({
+			...buildCheckResult(c, [createFinding(c, `${c} check error`, 'high', 'Check failed: DNS query failed')]),
+			score: 0,
+			passed: false,
+			checkStatus: 'error' as const,
+			partial: true,
+		}));
+
+		// Non-vacuity guard: prove check data actually existed (unlike the zero-check
+		// case below) before asserting on it.
+		expect(allTransient.length).toBeGreaterThan(10);
+
+		const report = evaluateCompliance(allTransient, 'total-outage.example', null, null);
+
+		expect(report.assessed).toBe(false);
+		expect(report.caveat).toBe(buildAllTransientCaveat(allTransient.length));
+		// Distinct from the genuine no-evidence wording — "no checks ran" would be
+		// false here, since `allTransient.length` checks DID run.
+		expect(report.caveat).not.toBe(UNASSESSED_COMPLIANCE_CAVEAT);
+		expect(report.caveat).toMatch(/attempted/i);
+		expect(report.caveat!.toLowerCase()).not.toContain('no checks ran');
+
+		const allMappings = (['nist_800_177', 'pci_dss_4', 'soc2', 'cis_controls'] as const).flatMap((fw) => report.frameworks[fw].mappings);
+		// Non-vacuity guard for the mapping-level assertions below.
+		expect(allMappings.length).toBeGreaterThan(20);
+		expect(allMappings.every((m) => m.status === 'not_assessed')).toBe(true);
+		expect(allMappings.filter((m) => m.status === 'fail')).toEqual([]);
+	});
+
+	it('keeps the genuine no-evidence case (checks: []) byte-identical to its pre-F3 wording', () => {
+		// The slice-2/Task-3 case: NXDOMAIN / broken zone — no CheckResults at all.
+		// F3 must not touch this path's caveat text or its `assessed` value.
+		const report = evaluateCompliance([], 'never-measured.example', null, null);
+		expect(report.assessed).toBe(false);
+		expect(report.caveat).toBe(UNASSESSED_COMPLIANCE_CAVEAT);
+		expect(report.caveat).toBe(
+			'No checks ran for this domain, so the controls below are NOT assessable — each is reported as NOT ASSESSED (absence of evidence), never as a requirement found unmet.',
+		);
+	});
 });
 
 /**

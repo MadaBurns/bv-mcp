@@ -11,7 +11,7 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { formatScoreGrade, isMeasured, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { formatScoreGrade, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 
 export type ComplianceFramework = 'nist_800_177' | 'pci_dss_4' | 'soc2' | 'cis_controls';
 
@@ -83,6 +83,24 @@ export interface ComplianceReport {
  */
 export const UNASSESSED_COMPLIANCE_CAVEAT =
 	'No checks ran for this domain, so the controls below are NOT assessable — each is reported as NOT ASSESSED (absence of evidence), never as a requirement found unmet.';
+
+/**
+ * F3: a SEPARATE wording from {@link UNASSESSED_COMPLIANCE_CAVEAT} for a different
+ * failure mode. `UNASSESSED_COMPLIANCE_CAVEAT` describes "no checks ran" (NXDOMAIN,
+ * broken zone — `checks: []`). This describes "checks ran, none of them finished" — a
+ * total DoH/network outage where every attempted check carries a transient
+ * `checkStatus: 'timeout'`/`'error'` (the `buildDnsErrorResult`/`safeCheck` shape).
+ * Saying "no checks ran" there would be false — N checks DID run — and would mislead a
+ * customer/operator into thinking the domain has no measurable DNS presence at all,
+ * rather than that a retry (once the transient condition clears) would work.
+ */
+export function buildAllTransientCaveat(attempted: number): string {
+	return (
+		`${attempted} check${attempted === 1 ? '' : 's'} ${attempted === 1 ? 'was' : 'were'} attempted for this domain, ` +
+		`but none of them completed (transient DNS/network failure) — the controls below are NOT assessable from this scan. ` +
+		`This is different from no checks running at all: retry once the transient condition clears.`
+	);
+}
 
 interface ComplianceControlDef {
 	framework: ComplianceFramework;
@@ -338,8 +356,18 @@ export function evaluateCompliance(
 		};
 	}
 
-	const assessed = isMeasured(checkResults);
-	return { domain, score, grade, assessed, caveat: assessed ? null : UNASSESSED_COMPLIANCE_CAVEAT, frameworks };
+	// F3: `assessed` must be false whenever there is no COMPLETED evidence — either no
+	// checks ran at all (`checkResults.length === 0`, the slice-2/Task-3 case) OR every
+	// attempted check failed to complete (a total DoH/network outage, all `checkStatus`
+	// transient). `isMeasured` (checks.length > 0) alone can't tell these apart from a
+	// genuinely measured scan — it was true for BOTH "19 healthy checks" and "19 checks
+	// that all timed out", which is exactly the dishonesty this closes. The two failure
+	// modes get DISTINCT caveat wording (different remediation: nothing to retry vs.
+	// retry once the transient condition clears), even though both report `assessed: false`.
+	const hasCompletedEvidence = checkResults.some((r) => r.checkStatus !== 'timeout' && r.checkStatus !== 'error');
+	const assessed = hasCompletedEvidence;
+	const caveat = assessed ? null : checkResults.length === 0 ? UNASSESSED_COMPLIANCE_CAVEAT : buildAllTransientCaveat(checkResults.length);
+	return { domain, score, grade, assessed, caveat, frameworks };
 }
 
 /**
