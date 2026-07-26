@@ -33,6 +33,20 @@ export async function checkDNSSEC(
 	const rawQueryDNS = options?.rawQueryDNS;
 	const findings: Finding[] = [];
 
+	if (options?.zone && !options.zone.isApex && options.zone.delegationStatus === 'unknown') {
+		return {
+			...buildCheckResult('dnssec', [
+				createFinding(
+					'dnssec',
+					'DNSSEC not assessed',
+					'info',
+					`Could not determine the authoritative zone for ${options.zone.scannedLabel} due to a transient DNS failure; DNSSEC posture was not assessed.`,
+				),
+			]),
+			checkStatus: 'error',
+		};
+	}
+
 	// A non-apex label with no zone of its own inherits DNSSEC posture from its
 	// signed zone apex (resolved by `resolveZoneApex` upstream) — evaluate the
 	// AD flag / DNSKEY / DS / NSEC3PARAM at the apex instead of the empty
