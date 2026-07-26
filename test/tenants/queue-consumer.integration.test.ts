@@ -334,6 +334,15 @@ describe('processScanMessage', () => {
 		expect(findingInserts).toHaveLength(1);
 		const dlqFinding = findingInserts[0]!;
 		expect(dlqFinding.binds[5]).toBe('queue_dlq');
+
+		// Regression: the DLQ row used to bind a hardcoded score of 0. A domain that
+		// exhausted its retries was never measured, so 0 misreported it as a real
+		// catastrophic score — and being non-null, it survived any null-skipping
+		// filter in the cycle-report mean. Bind positions: 3 = score, 4 = grade.
+		const dlqScan = scanInserts[0]!;
+		expect(dlqScan.binds[3]).toBeNull();
+		expect(dlqScan.binds[3]).not.toBe(0);
+		expect(dlqScan.binds[4]).toBeNull();
 	});
 
 	it('returns retry when handleToolsCall throws on a non-final attempt', async () => {

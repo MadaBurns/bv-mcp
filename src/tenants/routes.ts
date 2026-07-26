@@ -1250,8 +1250,17 @@ tenantRoutes.get('/report/:cycle_id', async (c) => {
 		const scanRows = scans.results ?? [];
 		const findingRows = findings.results ?? [];
 
-		const scoreSum = scanRows.reduce((acc, r) => acc + (r.score ?? 0), 0);
-		const meanScore = scanRows.length > 0 ? scoreSum / scanRows.length : 0;
+		// Mean over MEASURED rows only. A null score means the domain was never
+		// successfully scanned (a DLQ row, or a scan that errored), which is not the
+		// same fact as "scored zero" — coercing it with `?? 0` silently reported an
+		// unmeasured domain as a catastrophic one and pulled the cycle mean down.
+		// `measured_domains` is returned alongside `domains` so a consumer can see
+		// the denominator rather than having to infer it.
+		const measuredRows = scanRows.filter((r): r is { score: number; grade: string | null } => typeof r.score === 'number');
+		const scoreSum = measuredRows.reduce((acc, r) => acc + r.score, 0);
+		// Null (not 0) when nothing was measured: a cycle where every domain failed
+		// has no mean, and reporting 0 would be a fabricated score.
+		const meanScore = measuredRows.length > 0 ? scoreSum / measuredRows.length : null;
 		const gradeDist: Record<string, number> = {};
 		for (const r of scanRows) {
 			const g = r.grade ?? 'unknown';
@@ -1268,13 +1277,16 @@ tenantRoutes.get('/report/:cycle_id', async (c) => {
 			resourceId: params.cycle_id,
 			subTenantId: tenantOrErr,
 			outcome: 'success',
-			blob: { domains: scanRows.length },
+			blob: { domains: scanRows.length, measured: measuredRows.length },
 		});
 
 		return c.json({
 			cycle_id: params.cycle_id,
 			summary: {
 				domains: scanRows.length,
+				/** Rows carrying a real score — the `mean_score` denominator. `domains - measured_domains` were never scanned. */
+				measured_domains: measuredRows.length,
+				/** Mean over measured rows only; null when nothing in the cycle was measured. */
 				mean_score: meanScore,
 				grade_dist: gradeDist,
 				severity_counts: severityCounts,
