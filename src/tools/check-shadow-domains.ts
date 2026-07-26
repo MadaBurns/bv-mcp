@@ -12,6 +12,7 @@ import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { extractBrandName, getEffectiveTld } from '../lib/public-suffix';
 import { validateDomain } from '../lib/sanitize';
+import { hasRegistrationEvidence } from '../lib/registration-evidence';
 
 /** Wall-clock timeout for the entire shadow domain check (ms). */
 const SHADOW_TIMEOUT_MS = 20_000;
@@ -319,7 +320,22 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primary
 		);
 	}
 
-	// Not registered → info
+	// No NS and no MX, but other authoritative DNS presence (an A record, a published SPF TXT,
+	// or a DMARC policy) still proves the domain is registered and resolving. Emitting
+	// "unregistered" here produced a self-contradictory finding — an "unregistered" verdict
+	// carrying hasSpf:true — and disagreed with brand discovery, which correctly saw the same
+	// domain as live. Route the verdict through the shared registration-evidence SSOT.
+	if (hasRegistrationEvidence(probe)) {
+		return createFinding(
+			'shadow_domains',
+			'Shadow domain registered, no mail',
+			'info',
+			`${variant} is registered (resolves DNS records) but has no mail infrastructure configured.`,
+			meta,
+		);
+	}
+
+	// Truly unregistered — no NS, A, MX, SPF, or DMARC evidence → info.
 	return createFinding(
 		'shadow_domains',
 		'Brand variant unregistered',
