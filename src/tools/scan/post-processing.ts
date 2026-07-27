@@ -501,18 +501,23 @@ function adjustBimiForNonMailDomain(results: CheckResult[]): CheckResult[] {
  * finding (a calibrated lookalike/typosquat with real infrastructure). Info-level
  * findings — defensive registrations, shared-NS matches — are deliberately excluded.
  *
- * TASK 7B (2026-07-27) — what a medium-or-higher `lookalikes` finding now MEANS.
- * Under the D4 ownership gate (Task 7) this predicate was unreachable: every
- * `lookalikes` finding was capped at `info`, so no scan could signal
- * impersonation. Task 7b split the axes, and the severities this predicate sees
- * come exclusively from the THREAT-OBSERVATION axis
- * (`metadata.findingAxis === 'threat_observation'` — a #264-calibrated
- * observation about infrastructure, e.g. a confusable domain with live MX on a
- * disposable provider). ATTRIBUTION-axis findings (`'attribution'`) stay capped
- * at `info` for every non-`owned_by_seed` verdict and can never trip this, and
- * an `owned_by_seed` candidate emits no threat finding at all — so escalating
- * DMARC to critical here is keyed on OBSERVED impersonation-shaped
- * infrastructure, never on an ownership claim about a third party's domain.
+ * TASK 7B (2026-07-27) — what a medium-or-higher `lookalikes` finding MEANS.
+ * The severities this predicate sees come from the THREAT-OBSERVATION axis
+ * (`metadata.findingAxis === 'threat_observation'`): the #264-calibrated
+ * per-candidate observations about infrastructure (e.g. a confusable domain
+ * with live MX on a disposable provider), the aggregate HIGH summary, and — on
+ * an operator deploy with the BV_RECON binding — the `'medium'` CT-corroboration
+ * finding. ATTRIBUTION-axis findings (`'attribution'`) are capped at `info` for
+ * every non-`owned_by_seed` verdict and can never trip this, and an
+ * `owned_by_seed` candidate emits no threat finding at all — so the DMARC
+ * escalation is keyed on OBSERVED impersonation-shaped infrastructure, never on
+ * an ownership claim about a third party's domain.
+ *
+ * CORRECTION (fix round 1, F3): an earlier revision of this note claimed the
+ * predicate was "unreachable" under Task 7 because every `lookalikes` finding
+ * was capped at `info`. That was FALSE — the recon CT-corroboration finding has
+ * never been routed through the ownership gate and emits `'medium'` regardless.
+ * The Task 7 gate broke the DNS-derived path only; 7b restored it.
  *
  * This keys on `lookalikes` ONLY, deliberately matching the `impersonation_weak_dmarc`
  * interaction rule in `category-interactions.ts`, which scores `lookalikes <= 85`

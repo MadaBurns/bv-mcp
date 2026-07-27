@@ -15,13 +15,14 @@ import type { ReconBinding, BindingDegradationSink } from '../lib/recon-binding'
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { generateCombosquats, generateLookalikes } from './lookalike-analysis';
-import { FALLBACK_RDAP_SERVERS, extractRegistrantOrg } from './check-rdap-lookup';
+import { FALLBACK_RDAP_SERVERS, extractRegistrantOrg, isRedactedRegistrantOrg } from './check-rdap-lookup';
 import { calibrateLookalikeSeverity, isDisposableMxHost, type LookalikeSeverity, type LookalikeSignals } from './lookalike-severity';
 import {
 	buildNonOwnedGateFinding,
 	capAttributionSeverity,
 	classifyOwnership,
 	type OwnershipAssessment,
+	type OwnershipVerdict,
 } from '../lib/ownership-attribution';
 import { isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
 import { extractBrandName } from '../lib/public-suffix';
@@ -49,10 +50,27 @@ import { extractBrandName } from '../lib/public-suffix';
  *    organisation) and demand no action ON that domain; only defensive
  *    options on the scanned organisation's own side are suggested.
  *
+ *  - `'scan_status'` — the RUN itself, not any candidate: the "no active
+ *    lookalike domains detected" notices and the timeout notice. Always
+ *    `info`. Split out in fix round 1 (F2) because forcing these into
+ *    `'threat_observation'` made the threat-axis invariants below unstateable.
+ *
+ * INVARIANTS (true of this file, pinned by `test/check-lookalikes.spec.ts`, and
+ * what Task 8's cross-cutting audit will key on):
+ *   1. every finding carries one of the three literals;
+ *   2. every `'scan_status'` finding is `info`;
+ *   3. no `'threat_observation'` finding carries `ownershipVerdict ===
+ *      'owned_by_seed'` — a threat observation is never about a domain the
+ *      scanned organisation owns;
+ *   4. every `'threat_observation'` finding names what it observed in metadata:
+ *      `lookalikeDomain` (per candidate), `lookalikeDomains` (the aggregate
+ *      summary), or `domain` (the recon CT corroboration, which is scoped to
+ *      the scanned domain rather than to one candidate).
+ *
  * The axis marker is STRUCTURAL, not prose: downstream consumers (and Task
  * 8's cross-cutting audit) key on the exact literals, never on wording.
  */
-export type LookalikeFindingAxis = 'attribution' | 'threat_observation';
+export type LookalikeFindingAxis = 'attribution' | 'threat_observation' | 'scan_status';
 
 /** Default and minimum batch sizes for adaptive batching */
 export const INITIAL_BATCH_SIZE = 10;
@@ -322,16 +340,24 @@ function buildThreatObservationFinding(
 	signals: LookalikeSignals,
 	ownership: OwnershipAssessment,
 	corroboratorReasons: string,
+	sharedRegistrantOrg: string | undefined,
 ): Finding {
 	const infraPhrase = signals.hasMX
 		? `active mail infrastructure (MX records), so it is capable of sending mail that resembles ${seedDomain}`
 		: 'web infrastructure (A records) and no active mail infrastructure';
 	const observed = corroboratorReasons ? `${infraPhrase}; also observed: ${corroboratorReasons}` : infraPhrase;
+	// FIX ROUND 1 (F1): when the #263 correlation found a shared registrant-org
+	// string, it is RECORDED here — as an unverified observation — but it does
+	// NOT reduce the severity and does not suppress this finding. An org string
+	// anyone can type into a registrar form earns a sentence, not a discount.
+	const registrantNote = sharedRegistrantOrg
+		? ` Its RDAP registrant-organisation string matches the one published for ${seedDomain} ("${sharedRegistrantOrg}"); that field is self-declared, unverified by the registry, and frequently a shared privacy-service placeholder, so it is recorded but does not reduce what was observed here.`
+		: '';
 	return createFinding(
 		'lookalikes',
 		`Impersonation-shaped ${signals.hasMX ? 'infrastructure' : 'web infrastructure'} observed: ${candidateDomain}`,
 		severity,
-		`${candidateDomain} is a confusable variant of ${seedDomain} and was observed with ${observed}. This is an infrastructure observation only: ${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested. Defensive options that need no access to ${candidateDomain}: monitor it, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`,
+		`${candidateDomain} is a confusable variant of ${seedDomain} and was observed with ${observed}. This is an infrastructure observation only: ${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested.${registrantNote} Defensive options that need no access to ${candidateDomain}: monitor it, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`,
 		{
 			lookalikeDomain: candidateDomain,
 			hasA: signals.hasA,
@@ -344,6 +370,7 @@ function buildThreatObservationFinding(
 			// included, so a consumer can read "high observed threat, NOT owned by
 			// the customer" off a single object rather than correlating two.
 			ownershipVerdict: ownership.verdict,
+			...(sharedRegistrantOrg ? { sharedRegistrantOrg } : {}),
 		},
 	);
 }
@@ -402,7 +429,7 @@ export async function checkLookalikes(
 				'Lookalike check incomplete',
 				'info',
 				'Lookalike check did not complete within the time limit. Results may be incomplete — try again shortly.',
-				{ findingAxis: 'threat_observation' satisfies LookalikeFindingAxis },
+				{ findingAxis: 'scan_status' satisfies LookalikeFindingAxis },
 			),
 		]);
 		// Mark as partial so callers can skip caching
@@ -429,7 +456,7 @@ async function checkLookalikesCore(
 				'No active lookalike domains detected',
 				'info',
 				`No lookalike domain permutations could be generated for ${domain}.`,
-				{ findingAxis: 'threat_observation' satisfies LookalikeFindingAxis },
+				{ findingAxis: 'scan_status' satisfies LookalikeFindingAxis },
 			),
 		);
 		return buildCheckResult('lookalikes', findings);
@@ -485,7 +512,7 @@ async function checkLookalikesCore(
 				'No active lookalike domains detected',
 				'info',
 				`Checked ${permutations.length} domain permutations of ${domain}. No active registrations detected.`,
-				{ findingAxis: 'threat_observation' satisfies LookalikeFindingAxis },
+				{ findingAxis: 'scan_status' satisfies LookalikeFindingAxis },
 			),
 		);
 		return buildCheckResult('lookalikes', findings);
@@ -550,16 +577,19 @@ async function checkLookalikesCore(
 	// fetch as registrationDays), so this adds exactly ONE extra RDAP fetch (the
 	// primary), not one-per-candidate. The eligible set is capped at
 	// SAME_ENTITY_RDAP_CAP, highest-severity first. Fail-soft: if the primary
-	// RDAP org is unknown, NO downgrade happens (a real threat is never
-	// suppressed because RDAP was unavailable).
+	// RDAP org is unknown, NO correlation happens.
+	//
+	// FIX ROUND 1 (review finding F1): a match here NO LONGER suppresses the
+	// threat axis — see the emission site below — and every use of it is gated
+	// by `isSameEntityOrgMatch()`, which rejects privacy-proxy / redacted /
+	// generic strings on BOTH sides.
 	const sameEntityCandidates = computeSameEntityCandidates(results, ownershipByDomain, enrichment);
 	const primaryRegistrantOrg = sameEntityCandidates.length > 0 ? await probePrimaryRegistrantOrg(domain) : null;
 	const sameEntityMatches = new Map<string, string>();
-	if (primaryRegistrantOrg !== null) {
-		for (const candidateDomain of sameEntityCandidates) {
-			if (enrichment.get(candidateDomain)?.registrantOrg === primaryRegistrantOrg) {
-				sameEntityMatches.set(candidateDomain, primaryRegistrantOrg);
-			}
+	for (const candidateDomain of sameEntityCandidates) {
+		const candidateOrg = enrichment.get(candidateDomain)?.registrantOrg ?? null;
+		if (candidateOrg !== null && isSameEntityOrgMatch(primaryRegistrantOrg, candidateOrg)) {
+			sameEntityMatches.set(candidateDomain, candidateOrg);
 		}
 	}
 
@@ -574,6 +604,10 @@ async function checkLookalikesCore(
 	// highs, which the ownership cap no longer touches. Under Task 7 it could
 	// never increment and the summary finding below was dead code.
 	let highCount = 0;
+	/** The counted candidates, so the aggregate summary can name what it counted (invariant 4). */
+	const highDomains: string[] = [];
+	/** Their ownership verdicts — always non-owned, since owned candidates never reach the counter. */
+	const highVerdicts = new Set<OwnershipVerdict>();
 	for (const result of results) {
 		const ownership: OwnershipAssessment = ownershipByDomain.get(result.domain) ?? {
 			verdict: 'unattributed',
@@ -653,6 +687,9 @@ async function checkLookalikesCore(
 		// structural NS-based evidence, whose own finding is quoted verbatim.
 		const matchedOrg = sameEntityMatches.get(result.domain);
 		if (matchedOrg !== undefined) {
+			// AXIS 1 — the registrant-org observation REPLACES the neutral D4 gate
+			// template for this candidate (it is strictly more informative), but it
+			// is still an attribution statement capped at info.
 			findings.push(
 				createFinding(
 					'lookalikes',
@@ -670,67 +707,63 @@ async function checkLookalikesCore(
 					},
 				),
 			);
-			// Task 7b: no threat-observation finding either. DELIBERATE, and
-			// asymmetric with the plain third_party path below — a registrant-org
-			// MATCH is AFFIRMATIVE evidence of a benign explanation (the org's own
-			// defensive/regional registration, issue #263), which is a different
-			// thing from the mere ABSENCE of ownership evidence that Task 7 wrongly
-			// treated as grounds for suppression. Flagged for the design owner and
-			// pinned by a dedicated test so it can only be reversed on purpose.
-			continue;
+		} else {
+			// AXIS 1 — the ownership verdict caps the ATTRIBUTION finding's severity: a candidate
+			// with no ownership signal linking it to the scanned organisation can
+			// never surface above info, regardless of how threatening its raw
+			// infrastructure signals look. `attributionConfidence()` (fed the
+			// MX-overlap corroboration signal below) governs WORDING/CONFIDENCE
+			// only — see `applyOwnershipGate()`'s JSDoc.
+			const mxOverlapsPrimary = result.mxExchanges.some((ex) => primaryMx.has(ex));
+			const rawFinding = result.hasMX
+				? createFinding(
+						'lookalikes',
+						`Lookalike domain with mail infrastructure: ${result.domain}`,
+						severity,
+						`The domain ${result.domain} is registered with active mail servers (MX records), which could be used for phishing or email spoofing targeting ${domain}.${corroboratorReasons ? ` Corroborating signals: ${corroboratorReasons}.` : ''}`,
+						{
+							lookalikeDomain: result.domain,
+							hasA: result.hasA,
+							hasMX: result.hasMX,
+							registrationDays: signals.registrationDays,
+							mxOnDisposable: signals.mxOnDisposable,
+							hasWebContent: signals.hasWebContent,
+							findingAxis: 'attribution' satisfies LookalikeFindingAxis,
+						},
+					)
+				: createFinding(
+						'lookalikes',
+						`Lookalike domain registered: ${result.domain}`,
+						severity,
+						`The domain ${result.domain} is registered (has web presence) but no mail infrastructure detected. It could still be used for phishing websites targeting ${domain}.${corroboratorReasons ? ` Corroborating signals: ${corroboratorReasons}.` : ''}`,
+						{
+							lookalikeDomain: result.domain,
+							hasA: result.hasA,
+							hasMX: result.hasMX,
+							registrationDays: signals.registrationDays,
+							mxOnDisposable: signals.mxOnDisposable,
+							hasWebContent: signals.hasWebContent,
+							findingAxis: 'attribution' satisfies LookalikeFindingAxis,
+						},
+					);
+
+			// Attribution pushed FIRST so a consumer scanning for the ownership
+			// statement about a candidate finds it ahead of the threat observation.
+			findings.push(applyOwnershipGate(rawFinding, ownership, brand, mxOverlapsPrimary));
 		}
 
-		// AXIS 1 — the ownership verdict caps the ATTRIBUTION finding's severity: a candidate
-		// with no ownership signal linking it to the scanned organisation can
-		// never surface above info, regardless of how threatening its raw
-		// infrastructure signals look. `attributionConfidence()` (fed the
-		// MX-overlap corroboration signal below) governs WORDING/CONFIDENCE
-		// only — see `applyOwnershipGate()`'s JSDoc.
-		const mxOverlapsPrimary = result.mxExchanges.some((ex) => primaryMx.has(ex));
-		const rawFinding = result.hasMX
-			? createFinding(
-					'lookalikes',
-					`Lookalike domain with mail infrastructure: ${result.domain}`,
-					severity,
-					`The domain ${result.domain} is registered with active mail servers (MX records), which could be used for phishing or email spoofing targeting ${domain}.${corroboratorReasons ? ` Corroborating signals: ${corroboratorReasons}.` : ''}`,
-					{
-						lookalikeDomain: result.domain,
-						hasA: result.hasA,
-						hasMX: result.hasMX,
-						registrationDays: signals.registrationDays,
-						mxOnDisposable: signals.mxOnDisposable,
-						hasWebContent: signals.hasWebContent,
-						findingAxis: 'attribution' satisfies LookalikeFindingAxis,
-					},
-				)
-			: createFinding(
-					'lookalikes',
-					`Lookalike domain registered: ${result.domain}`,
-					severity,
-					`The domain ${result.domain} is registered (has web presence) but no mail infrastructure detected. It could still be used for phishing websites targeting ${domain}.${corroboratorReasons ? ` Corroborating signals: ${corroboratorReasons}.` : ''}`,
-					{
-						lookalikeDomain: result.domain,
-						hasA: result.hasA,
-						hasMX: result.hasMX,
-						registrationDays: signals.registrationDays,
-						mxOnDisposable: signals.mxOnDisposable,
-						hasWebContent: signals.hasWebContent,
-						findingAxis: 'attribution' satisfies LookalikeFindingAxis,
-					},
-				);
-
-		// AXIS 1 — attribution, capped at info with neutral wording. Pushed FIRST
-		// so a consumer scanning for the ownership statement about a candidate
-		// finds it ahead of the threat observation.
-		findings.push(applyOwnershipGate(rawFinding, ownership, brand, mxOverlapsPrimary));
-
-		// AXIS 2 — the observed threat, at the severity the #264 matrix already
-		// computed and Task 7 used to discard. Emitted only for non-owned
-		// candidates (the `sameOwner` branch above `continue`s), and only when the
-		// #263 same-entity RDAP correlation did NOT supply an affirmative benign
-		// explanation (that branch `continue`s too — see its comment).
-		findings.push(buildThreatObservationFinding(result.domain, domain, severity, signals, ownership, corroboratorReasons));
-		if (result.hasMX && severity === 'high') highCount++;
+		// AXIS 2 — the observed threat, at the severity the #264 matrix computed
+		// and Task 7 used to discard. Emitted for EVERY non-owned candidate,
+		// including one whose RDAP registrant org matched the seed's (fix round 1,
+		// F1: that string is unverified and collision-prone, so it may annotate the
+		// observation but must never switch the axis off). Only `owned_by_seed`
+		// candidates are exempt — they `continue` above.
+		findings.push(buildThreatObservationFinding(result.domain, domain, severity, signals, ownership, corroboratorReasons, matchedOrg));
+		if (result.hasMX && severity === 'high') {
+			highCount++;
+			highDomains.push(result.domain);
+			highVerdicts.add(ownership.verdict);
+		}
 	}
 
 	// Summary finding for high-severity lookalikes (AXIS 2). Only fires when at
@@ -743,7 +776,16 @@ async function checkLookalikesCore(
 				`${highCount} lookalike domain${highCount > 1 ? 's' : ''} with mail capability detected`,
 				'high',
 				`${highCount} lookalike domain${highCount > 1 ? 's' : ''} of ${domain} ${highCount > 1 ? 'have' : 'has'} active mail infrastructure with corroborating signals consistent with pre-phishing staging. ${highCount > 1 ? 'None of them appear' : 'It does not appear'} to belong to the scanned organisation, and no action on ${highCount > 1 ? 'them' : 'it'} is requested here. Defensive options: monitor ${highCount > 1 ? 'them' : 'it'}, and enforce DMARC p=reject on ${domain} itself so receivers reject mail spoofing that name.`,
-				{ lookalikeDomainCount: highCount, findingAxis: 'threat_observation' satisfies LookalikeFindingAxis },
+				{
+					lookalikeDomainCount: highCount,
+					lookalikeDomains: highDomains,
+					// Present whenever the counted set shares one verdict (the realistic
+					// case — a non-owned registered candidate is always `third_party`).
+					// Omitted rather than fabricated for a mixed set; either way it can
+					// never be `owned_by_seed`, since owned candidates never reach here.
+					...(highVerdicts.size === 1 ? { ownershipVerdict: [...highVerdicts][0] } : {}),
+					findingAxis: 'threat_observation' satisfies LookalikeFindingAxis,
+				},
 			),
 		);
 	}
@@ -756,7 +798,7 @@ async function checkLookalikesCore(
 				'No active lookalike domains detected',
 				'info',
 				`Checked ${permutations.length} domain permutations of ${domain}. No active registrations with DNS or mail infrastructure detected.`,
-				{ findingAxis: 'threat_observation' satisfies LookalikeFindingAxis },
+				{ findingAxis: 'scan_status' satisfies LookalikeFindingAxis },
 			),
 		);
 	}
@@ -800,6 +842,29 @@ interface LookalikeCorroborators {
 	 * stands; a real threat is never suppressed on missing RDAP).
 	 */
 	registrantOrg: string | null;
+}
+
+/**
+ * THE single predicate deciding whether two RDAP registrant-org strings may be
+ * treated as the same entity (issue #263). Added in Task 7b fix round 1 for
+ * review finding F1.
+ *
+ * The org field is free text the registrant TYPES and RDAP does not verify it.
+ * Raw string equality was therefore both forgeable (one registrar form field)
+ * and — far more damaging — trivially collision-prone: seed and candidate
+ * sitting behind the SAME privacy service normalise equal for reasons that
+ * carry zero identity information. Both sides are gated through
+ * `isRedactedRegistrantOrg()`, so a redacted / proxy / generic value can never
+ * produce a match.
+ *
+ * A surviving match is still only a WEAK, unverified signal: it earns a
+ * sentence in the report, never a severity discount. The threat-observation
+ * finding is emitted at its full calibrated severity regardless.
+ */
+function isSameEntityOrgMatch(primaryOrg: string | null, candidateOrg: string | null): boolean {
+	if (primaryOrg === null || candidateOrg === null) return false;
+	if (isRedactedRegistrantOrg(primaryOrg) || isRedactedRegistrantOrg(candidateOrg)) return false;
+	return primaryOrg === candidateOrg;
 }
 
 /**

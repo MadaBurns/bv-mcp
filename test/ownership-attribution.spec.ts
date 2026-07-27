@@ -466,7 +466,12 @@ describe('buildNonOwnedGateFinding — cross-tool wording parity (F1, 2026-07-27
 			}) as unknown as typeof fetch;
 			const { checkLookalikes } = await import('../src/tools/check-lookalikes');
 			const lookalikeResult = await checkLookalikes('contoso.com');
-			const lookalikeFinding = lookalikeResult.findings.find((f) => f.metadata?.ownershipVerdict === 'third_party');
+			// Task 7b fix round 1 (F4): select on the AXIS, not on the verdict. Since
+			// 7b the verdict travels on the threat-observation finding too, so the
+			// old `ownershipVerdict === 'third_party'` selector matched BOTH axes and
+			// landed on the attribution finding only by push order — the parity
+			// contract is about the ATTRIBUTION wording, so say so structurally.
+			const lookalikeFinding = lookalikeResult.findings.find((f) => f.metadata?.findingAxis === 'attribution');
 			expect(lookalikeFinding).toBeDefined();
 
 			// --- check_shadow_domains: seed example.com, third-party variant with MX, no SPF/DMARC ---

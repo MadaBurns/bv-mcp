@@ -70,7 +70,7 @@ describe('checkLookalikes', () => {
 		expect(attribution.every((f) => f.metadata?.ownershipVerdict === 'third_party')).toBe(true);
 		// Axis 2 (threat observation) carries the #264 mail-infra-alone MEDIUM
 		// that Task 7 used to discard.
-		const threat = result.findings.filter((f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain);
+		const threat = result.findings.filter((f) => f.metadata?.findingAxis === 'threat_observation');
 		expect(threat.length).toBeGreaterThan(0);
 		expect(threat.every((f) => f.severity === 'medium')).toBe(true);
 		// Still no HIGH: mail infrastructure alone, with no corroborator.
@@ -101,7 +101,7 @@ describe('checkLookalikes', () => {
 		expect(attribution.every((f) => f.severity === 'info')).toBe(true);
 		// Axis 2 — web-only with no corroborator is the matrix's LOW tier, and
 		// never more than that.
-		const threat = result.findings.filter((f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain);
+		const threat = result.findings.filter((f) => f.metadata?.findingAxis === 'threat_observation');
 		expect(threat.length).toBeGreaterThan(0);
 		expect(threat.every((f) => f.severity === 'low')).toBe(true);
 		expect(result.findings.some((f) => f.severity === 'medium' || f.severity === 'high')).toBe(false);
@@ -1858,12 +1858,12 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 		expect(result.findings.every((f) => f.severity === 'info')).toBe(true);
 	});
 
-	it('2. every finding this tool emits carries a findingAxis marker with one of the two exact literals', async () => {
+	it('2. every finding this tool emits carries a findingAxis marker with one of the three exact literals', async () => {
 		mockPrePhishingFixture();
 		const result = await run('testco.com');
 		expect(result.findings.length).toBeGreaterThan(0);
 		for (const finding of result.findings) {
-			expect(['attribution', 'threat_observation']).toContain(finding.metadata?.findingAxis);
+			expect(['attribution', 'threat_observation', 'scan_status']).toContain(finding.metadata?.findingAxis);
 		}
 		// Both axes are actually represented (a non-discriminating "all axes are
 		// 'attribution'" world would otherwise satisfy the loop above).
@@ -1871,18 +1871,63 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 		expect(result.findings.some((f) => f.metadata?.findingAxis === 'threat_observation')).toBe(true);
 	});
 
+	it('the scan-level "no active lookalikes" notice is tagged scan_status, not threat_observation', async () => {
+		globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(createDohResponse([], [])));
+		const result = await run('test.com');
+		const notice = result.findings.find((f) => /No active lookalike/i.test(f.title));
+		expect(notice).toBeDefined();
+		expect(notice!.metadata?.findingAxis).toBe('scan_status');
+		expect(notice!.severity).toBe('info');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Task 7b FIX ROUND 1 (review findings F1/F2).
+//   F1 — the issue #263 RDAP registrant-org match must NOT suppress the threat
+//        axis, and every use of that match must be gated behind a
+//        privacy-proxy / redaction filter (the string is free text the
+//        registrant types, is unverified, and collides trivially).
+//   F2 — a third axis literal, `scan_status`, plus the two invariants Task 8
+//        will audit: scan_status findings are always `info`; threat_observation
+//        findings never carry `owned_by_seed` and always name a domain.
+// ---------------------------------------------------------------------------
+describe('checkLookalikes - Task 7b fix round 1 (RDAP org gating + scan_status axis)', () => {
+	async function run(domain = 'example.com') {
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		return checkLookalikes(domain);
+	}
+
 	/**
-	 * DELIBERATE ASYMMETRY, flagged for the design owner: the issue #263
-	 * same-entity RDAP correlation branch emits an attribution finding and
-	 * `continue`s, so it produces NO threat observation either. This is NOT the
-	 * Task-7 defect resurfacing: a registrant-org MATCH is AFFIRMATIVE evidence
-	 * of a benign explanation (the org's own defensive/regional registration),
-	 * which is a different thing from the mere ABSENCE of ownership evidence
-	 * that Task 7 wrongly treated as a reason to suppress. Pinned here so the
-	 * choice is visible and can be reversed intentionally rather than by drift.
+	 * The axis invariants Task 8's cross-cutting audit will key on. Applied to
+	 * every fixture in this block, clean scans included — a check that only ever
+	 * ran against candidate-bearing scans would pass vacuously on exactly the
+	 * finding shapes (status notices with no domain in metadata) the invariants
+	 * exist to keep off the threat axis.
 	 */
-	it('the #263 same-entity RDAP branch emits no threat-observation finding (affirmative benign explanation, not absence of evidence)', async () => {
-		const rdap = {
+	function assertAxisInvariants(findings: Awaited<ReturnType<typeof run>>['findings']): void {
+		expect(findings.length).toBeGreaterThan(0);
+		for (const finding of findings) {
+			expect(['attribution', 'threat_observation', 'scan_status']).toContain(finding.metadata?.findingAxis);
+			if (finding.metadata?.findingAxis === 'scan_status') {
+				expect(finding.severity).toBe('info');
+			}
+			if (finding.metadata?.findingAxis === 'threat_observation') {
+				// Never about a domain the scanned organisation owns.
+				expect(finding.metadata?.ownershipVerdict).not.toBe('owned_by_seed');
+				// Always names what it observed: a single candidate, the aggregate
+				// candidate list, or (recon corroboration) the scanned domain.
+				const named =
+					finding.metadata?.lookalikeDomain ??
+					(finding.metadata?.lookalikeDomains as string[] | undefined)?.[0] ??
+					finding.metadata?.domain;
+				expect(named).toBeTruthy();
+			}
+		}
+	}
+
+	/** RDAP payload with a registrant vCard `org` of the caller's choosing. */
+	function rdapOrg(org: string) {
+		return {
 			events: [{ eventAction: 'registration', eventDate: new Date(Date.now() - 1500 * 86400_000).toISOString() }],
 			entities: [
 				{
@@ -1892,12 +1937,22 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 						'vcard',
 						[
 							['version', {}, 'text', '4.0'],
-							['org', {}, 'text', 'Contoso Limited'],
+							['org', {}, 'text', org],
 						],
 					],
 				},
 			],
 		};
+	}
+
+	/**
+	 * Seed `test.com` on its own NS; candidate `tst.com` on UNRELATED NS with
+	 * live MX (third_party, #264 mail-infra-alone MEDIUM). Both domains' RDAP
+	 * returns `org` — same string on both sides, so the #263 same-entity
+	 * correlation fires whenever the string survives the redaction filter.
+	 */
+	function mockSharedOrg(org: string): void {
+		const payload = rdapOrg(org);
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 			if (url.includes('cloudflare-dns.com')) {
@@ -1916,25 +1971,127 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 				return Promise.resolve(createDohResponse([], []));
 			}
 			if (url.includes('rdap')) {
-				return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(rdap) } as unknown as Response);
+				return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(payload) } as unknown as Response);
 			}
 			return Promise.resolve(createDohResponse([], []));
 		});
+	}
+
+	/**
+	 * F1(1) — a GENUINE shared registrant org still produces the #263
+	 * observation, but it may no longer switch the threat axis off. An
+	 * unverified string earns a sentence, not a severity discount.
+	 */
+	it('F1: a genuine shared registrant org keeps the #263 observation AND still emits the threat finding at the full calibrated severity', async () => {
+		mockSharedOrg('Contoso Limited');
 		const result = await run('test.com');
-		const tst = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'tst.com');
-		expect(tst.length).toBe(1);
-		expect(tst[0].metadata?.sharedRegistrantOrg).toBe('contoso limited');
-		expect(tst[0].metadata?.findingAxis).toBe('attribution');
-		expect(tst[0].severity).toBe('info');
-		expect(result.findings.some((f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain)).toBe(false);
+
+		const attribution = result.findings.filter(
+			(f) => f.metadata?.findingAxis === 'attribution' && f.metadata?.lookalikeDomain === 'tst.com',
+		);
+		expect(attribution.length).toBe(1);
+		expect(attribution[0].title).toMatch(/shares registrant organisation/i);
+		expect(attribution[0].metadata?.sharedRegistrantOrg).toBe('contoso limited');
+		expect(attribution[0].severity).toBe('info');
+
+		const threat = result.findings.filter(
+			(f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain === 'tst.com',
+		);
+		expect(threat.length).toBe(1);
+		// NOT tiered down for the org match — mail-infra-alone is MEDIUM.
+		expect(threat[0].severity).toBe('medium');
+		// The observation is noted in the detail, flagged as unverified.
+		expect(threat[0].detail).toMatch(/registrant/i);
+		expect(threat[0].detail).toMatch(/self-declared|unverified/i);
+		expect(threat[0].metadata?.sharedRegistrantOrg).toBe('contoso limited');
+		assertAxisInvariants(result.findings);
 	});
 
-	it('the scan-level "no active lookalikes" finding also carries an axis marker', async () => {
+	/**
+	 * F1(2)/(3) — the ZERO-EFFORT collision. Both domains sit behind the same
+	 * privacy service, so their normalised registrant strings are equal for
+	 * reasons that carry no identity information at all. No same-entity
+	 * observation may be produced, and the threat axis must be untouched.
+	 */
+	it.each(['REDACTED FOR PRIVACY', 'Domains By Proxy, LLC', 'Privacy service provided by Withheld for Privacy ehf', 'Whois Privacy Corp.'])(
+		'F1: privacy-proxy collision (%s) produces NO same-entity observation and still emits the threat finding',
+		async (org) => {
+			mockSharedOrg(org);
+			const result = await run('test.com');
+
+			// No same-entity observation anywhere — neither the title nor the metadata.
+			expect(result.findings.some((f) => /shares registrant organisation/i.test(f.title))).toBe(false);
+			expect(result.findings.some((f) => f.metadata?.sharedRegistrantOrg !== undefined)).toBe(false);
+
+			// The attribution finding falls back to the neutral D4 gate template.
+			const attribution = result.findings.filter(
+				(f) => f.metadata?.findingAxis === 'attribution' && f.metadata?.lookalikeDomain === 'tst.com',
+			);
+			expect(attribution.length).toBe(1);
+			expect(attribution[0].severity).toBe('info');
+			expect(attribution[0].metadata?.severityCappedBy).toBe('ownership_attribution');
+
+			// The threat axis is unaffected by the collision.
+			const threat = result.findings.filter(
+				(f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain === 'tst.com',
+			);
+			expect(threat.length).toBe(1);
+			expect(threat[0].severity).toBe('medium');
+			assertAxisInvariants(result.findings);
+		},
+	);
+
+	/** F2 — the scan-status axis, and both Task 8 invariants, on a clean scan. */
+	it('F2: a clean scan emits only scan_status findings, all at info', async () => {
 		globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(createDohResponse([], [])));
 		const result = await run('test.com');
+		// Invariants first: a mis-tagged status notice must be reported as the
+		// invariant violation it is (a threat finding naming no domain), not
+		// merely as "this scan isn't all scan_status".
+		assertAxisInvariants(result.findings);
 		expect(result.findings.length).toBeGreaterThan(0);
-		for (const finding of result.findings) {
-			expect(['attribution', 'threat_observation']).toContain(finding.metadata?.findingAxis);
-		}
+		expect(result.findings.every((f) => f.metadata?.findingAxis === 'scan_status')).toBe(true);
+		expect(result.findings.every((f) => f.severity === 'info')).toBe(true);
+	});
+
+	/**
+	 * F2 — the two invariants Task 8's cross-cutting audit will key on, asserted
+	 * on a scan that emits ALL THREE axes' shapes at once (per-candidate
+	 * attribution + per-candidate threat + the aggregate HIGH summary).
+	 */
+	it('F2: axis invariants — scan_status is always info; threat_observation never carries owned_by_seed and always names a domain', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'testco.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
+			}
+			if (name === 'twstco.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('testco.com');
+
+		const axes = result.findings.map((f) => f.metadata?.findingAxis);
+		expect(axes.every((a) => a === 'attribution' || a === 'threat_observation' || a === 'scan_status')).toBe(true);
+		// The fixture really does exercise both non-status axes, including the
+		// aggregate summary (which names no single candidate) — otherwise the
+		// invariant loops below would pass vacuously.
+		expect(axes.filter((a) => a === 'attribution').length).toBe(1);
+		expect(axes.filter((a) => a === 'threat_observation').length).toBe(2);
+
+		assertAxisInvariants(result.findings);
+
+		// The aggregate summary specifically: it names the counted candidates and
+		// declares their (non-owned) verdict rather than leaving both blank.
+		const summary = result.findings.find((f) => /with mail capability detected/i.test(f.title));
+		expect(summary).toBeDefined();
+		expect(summary!.metadata?.lookalikeDomains).toEqual(['twstco.com']);
+		expect(summary!.metadata?.ownershipVerdict).toBe('third_party');
 	});
 });
