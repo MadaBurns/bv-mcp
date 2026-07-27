@@ -21,7 +21,10 @@ npm run typecheck                           # tsc --noEmit
 npm run lint[:fix]
 npm run deploy:prod                         # Inject private bindings + deploy
 git config core.hooksPath .githooks         # One-time hook setup
+scripts/worktree-setup.sh                   # New worktree: verify Node 22, npm ci, build dns-checks
 ```
+
+**Never symlink `node_modules`** into a new worktree instead of running `scripts/worktree-setup.sh` (or a plain `npm ci`). A symlinked `node_modules` resolves the `@blackveil/dns-checks` workspace package (and everything else) to whatever happens to be installed in the OTHER checkout — so your tests validate code you did not write, and pass or fail based on a different session's dependency tree, silently. This is exactly how `7864d851` (#576) reached `main`: a tracked `node_modules` symlink with an absolute target resolved cleanly on the authoring machine but pointed at a different checkout's `node_modules`, corrupting that session's verification. `#579` untracked it and closed the `.gitignore` trailing-slash bypass it exploited (a directory-only pattern like `node_modules/` doesn't match a symlink); the durable follow-up added a repo-wide `.gitignore` sweep, a pre-commit gate that default-denies staged symlinks (reads the staged index, so `git add -f` can't route around it), and a CI `symlink-portability` job (`.github/workflows/symlink-escape-gate.yml`) that fails any tracked symlink with an absolute or `~`-relative target.
 
 ## Tech
 
@@ -243,7 +246,7 @@ Pattern-based, emits `fuzzing_suspected` to the resolved alert webhook URL (see 
 
 ### Pre-commit (`.githooks/pre-commit`)
 
-Four gates: (1) blocked paths (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`, `.dev/`, `.dev.vars*`, `.worktrees/`, generated deploy configs, reports, PDFs, `*.env*`); (2) generated files (`*.pyc`, `__pycache__/`, `worker-configuration.d.ts`, `*.wasm`, `*.sqlite`, `*.db`) even with `git add -f`; (3) Gitleaks secret/PII scan; (4) repo-safety scanner (`scripts/repo-safety/scan-sensitive-surface.mjs` via `policy.json` — forbidden paths, internal hostnames, hashed client domains, public IPs, real emails; same scanner the required `File hygiene check` CI gate runs). Public docs (`docs/client-setup.md`, `docs/scoring.md`) are committable when they use placeholders. Override with `--no-verify` only for reviewed false positives.
+Five gates: (1) blocked paths (`docs/plans/`, `docs/code-review/`, `docs/superpowers/`, `.dev/`, `.dev.vars*`, `.worktrees/`, generated deploy configs, reports, PDFs, `*.env*`); (2) generated files (`*.pyc`, `__pycache__/`, `worker-configuration.d.ts`, `*.wasm`, `*.sqlite`, `*.db`) even with `git add -f`; (3) symlinks — any staged mode-120000 entry is blocked by default (empty `SYMLINK_ALLOWLIST`), read from the staged index so `git add -f` can't bypass it either (see the "Never symlink `node_modules`" note below); (4) Gitleaks secret/PII scan; (5) repo-safety scanner (`scripts/repo-safety/scan-sensitive-surface.mjs` via `policy.json` — forbidden paths, internal hostnames, hashed client domains, public IPs, real emails; same scanner the required `File hygiene check` CI gate runs). Public docs (`docs/client-setup.md`, `docs/scoring.md`) are committable when they use placeholders. Override with `--no-verify` only for reviewed false positives.
 
 ## CI/CD
 
