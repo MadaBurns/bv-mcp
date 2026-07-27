@@ -16,6 +16,7 @@ import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { formatScoreGrade, hasCompletedEvidence } from '../lib/ungraded-display';
+import { isDnsErrorFinding } from '../lib/dns-error-result';
 
 export type CscProductKey = 'csc_multilock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
 
@@ -136,10 +137,16 @@ const CSC_PRODUCT_NAMES: Record<CscProductKey, string> = {
 	dnssec_management: 'DNSSEC management',
 };
 
-/** Non-info finding titles from a failing CheckResult (mirrors map-compliance). */
+/**
+ * Non-info finding titles from a failing CheckResult (mirrors map-compliance).
+ * Also excludes the synthetic "check error" finding a transient DNS/network
+ * failure produces (`isDnsErrorFinding`) — that finding is the ABSENCE of a
+ * measurement, not a sellable gap, and must never surface as a
+ * `relatedFinding` justifying an upsell.
+ */
 function nonInfoTitles(result: CheckResult | undefined): string[] {
 	if (!result) return [];
-	return result.findings.filter((f) => f.severity !== 'info').map((f) => f.title);
+	return result.findings.filter((f) => f.severity !== 'info' && !isDnsErrorFinding(f)).map((f) => f.title);
 }
 
 /** MultiLock recommendation — reads the booleans, not `level` alone (Spec A handoff). */
@@ -158,21 +165,39 @@ function evalMultiLock(lockPosture: LockPosture | null): CscProductRecommendatio
 	return { ...base, recommended: true, priority: 'medium', justifyingGap: 'Registrar lock only — no registry-level (server) lock' };
 }
 
-/** Scan-driven product (dmarc/ssl/dnssec). Missing category → low-priority "not observed" lead. */
+/**
+ * Scan-driven product (dmarc/ssl/dnssec). Missing category → low-priority "not observed" lead.
+ *
+ * `concern` (e.g. 'DMARC') is only used on the transient branch, to build the same
+ * "not assessed" wording {@link unassessedScanProduct} uses for a whole-report
+ * outage — see its doc for why a category whose OWN check never completed must not
+ * be priced as a gap even when `assessed` is `true` overall (other categories DID
+ * complete). Checking `checkStatus` here (mirrors `map_compliance`'s `completed`
+ * filter) is necessary in addition to the `isDnsErrorFinding` filter in
+ * `nonInfoTitles`/below: after that filter a transient result's `findings` and
+ * `titles` are both empty, but `result.passed` is still `false` (set explicitly by
+ * `buildDnsErrorResult`), so without this branch the code below would still fall
+ * through to `recommended: true, priority: 'medium'` — an upsell justified by
+ * nothing, for a category nobody actually measured.
+ */
 function evalScanProduct(
 	product: Exclude<CscProductKey, 'csc_multilock'>,
 	result: CheckResult | undefined,
 	gaps: { passing: string; failing: string; absent: string },
+	concern: string,
 ): CscProductRecommendation {
 	const base = { product, productName: CSC_PRODUCT_NAMES[product] };
 	if (result === undefined) {
 		return { ...base, recommended: true, priority: 'low', justifyingGap: gaps.absent, relatedFindings: [] };
 	}
+	if (result.checkStatus === 'error' || result.checkStatus === 'timeout') {
+		return unassessedScanProduct(product, concern, 'all_transient');
+	}
 	if (result.passed) {
 		return { ...base, recommended: false, priority: 'none', justifyingGap: gaps.passing, relatedFindings: [] };
 	}
 	const titles = nonInfoTitles(result);
-	const hasSevere = result.findings.some((f) => f.severity === 'critical' || f.severity === 'high');
+	const hasSevere = result.findings.some((f) => (f.severity === 'critical' || f.severity === 'high') && !isDnsErrorFinding(f));
 	return { ...base, recommended: true, priority: hasSevere ? 'high' : 'medium', justifyingGap: gaps.failing, relatedFindings: titles };
 }
 
@@ -241,25 +266,40 @@ export function evaluateCscProducts(
 	const recommendations: CscProductRecommendation[] = [
 		evalMultiLock(lockPosture),
 		assessed
-			? evalScanProduct('managed_dmarc', byCategory.get('dmarc'), {
-					passing: 'DMARC policy in effect',
-					failing: 'DMARC present but not passing',
-					absent: 'DMARC not observed',
-				})
+			? evalScanProduct(
+					'managed_dmarc',
+					byCategory.get('dmarc'),
+					{
+						passing: 'DMARC policy in effect',
+						failing: 'DMARC present but not passing',
+						absent: 'DMARC not observed',
+					},
+					'DMARC',
+				)
 			: unassessedScanProduct('managed_dmarc', 'DMARC', caveatKind),
 		assessed
-			? evalScanProduct('digital_certificates', byCategory.get('ssl'), {
-					passing: 'TLS/SSL configuration healthy',
-					failing: 'TLS/SSL issues detected',
-					absent: 'TLS/SSL not observed',
-				})
+			? evalScanProduct(
+					'digital_certificates',
+					byCategory.get('ssl'),
+					{
+						passing: 'TLS/SSL configuration healthy',
+						failing: 'TLS/SSL issues detected',
+						absent: 'TLS/SSL not observed',
+					},
+					'TLS/SSL',
+				)
 			: unassessedScanProduct('digital_certificates', 'TLS/SSL', caveatKind),
 		assessed
-			? evalScanProduct('dnssec_management', byCategory.get('dnssec'), {
-					passing: 'DNSSEC enabled',
-					failing: 'DNSSEC not enabled',
-					absent: 'DNSSEC not observed',
-				})
+			? evalScanProduct(
+					'dnssec_management',
+					byCategory.get('dnssec'),
+					{
+						passing: 'DNSSEC enabled',
+						failing: 'DNSSEC not enabled',
+						absent: 'DNSSEC not observed',
+					},
+					'DNSSEC',
+				)
 			: unassessedScanProduct('dnssec_management', 'DNSSEC', caveatKind),
 	];
 
