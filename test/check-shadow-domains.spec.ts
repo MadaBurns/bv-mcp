@@ -779,9 +779,22 @@ describe('checkShadowDomains — classification edge cases', () => {
 		expect((notEnforcing!.metadata as { dmarcPolicy?: string | null }).dmarcPolicy).toBe('none');
 	});
 
-	// D4 fixture repair: the subject is trailing-dot normalisation in the
-	// MX-infrastructure comparison, only observable on an owned variant.
-	it('should normalize trailing dot on MX hostname for comparison', async () => {
+	// HONEST SCOPE (fix round 1, F3 — corrects an overclaim in the round-0
+	// report). This test does NOT observe trailing-dot normalisation. The DoH
+	// fixture carries a root dot on the primary's MX and none on the variant's,
+	// but `queryMxRecords` strips the root dot upstream, so both sides reach
+	// `isSameMxInfra` already normalised — deleting BOTH `.replace(/\.$/, '')`
+	// calls from that predicate leaves this test GREEN (verified by executing
+	// that mutation). What this test actually covers is the end-to-end
+	// same-MX-infrastructure path producing the well-managed rung rather than
+	// the divergent one. The normalisation itself is pinned by the
+	// `isSameMxInfra (unit)` describe at the bottom of this file, which passes
+	// unnormalised inputs and DOES go red under that mutation.
+	//
+	// The D4 fixture repair here (variant moved onto the primary's own NS pair)
+	// is still required: without it the variant is `third_party` and the gate
+	// caps the finding at info, hiding the well-managed/divergent distinction.
+	it('matches MX infrastructure end-to-end despite a trailing dot in the wire data', async () => {
 		const target = 'example.com';
 		const ownNs = ['ns1.example-dns.net.', 'ns2.example-dns.net.'];
 
@@ -1662,5 +1675,246 @@ describe('checkShadowDomains — D4 ownership-gated severity', () => {
 		expect(reclassified!.severity).toBe('info');
 		expect(/lacks DMARC/i.test(reclassified!.title)).toBe(false);
 		for (const f of netFindings) expect(f.severity).toBe('info');
+	});
+});
+
+describe('checkShadowDomains — D4 wording: no ownership framing on a non-owned candidate', () => {
+	async function run(domain: string) {
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		return checkShadowDomains(domain);
+	}
+
+	/**
+	 * The single ownership-framed title still reachable on a non-owned candidate.
+	 * `test/audits/registration-invariant.audit.test.ts:163` filters findings on
+	 * this exact literal and may not be edited from this task, so the Phase-2
+	 * fallthrough title cannot be neutralised yet. Carved out EXPLICITLY here so
+	 * the guard is honest about its one hole rather than quietly matching a
+	 * looser pattern. Verified by execution: adding it to NEUTRAL_INFO_TITLES
+	 * fails that audit with `expected 0 to be greater than 0`.
+	 */
+	const AUDIT_PINNED = 'Shadow domain registered, records not observed';
+
+	/** Nouns that file a domain into the SCANNED organisation's inventory. */
+	function hasOwnershipFraming(title: string): boolean {
+		return /shadow domain/i.test(title);
+	}
+
+	it('never titles a non-owned variant as the customer’s "shadow domain" — registered, no mail', async () => {
+		// example.net is registered on an unrelated registrar's nameservers with no
+		// mail => third_party, and the `info` rung 'Shadow domain registered, no
+		// mail'. The severity was already correct; the TITLE still filed a
+		// competitor's domain into the customer's shadow-domain inventory while
+		// the detail disclaimed exactly that. Split surface, prose half.
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.primary-dns.net.', 'ns2.primary-dns.net.']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.example.com.']));
+			}
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.unrelated-registrar.net.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.1']));
+			}
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const netFindings = result.findings.filter((f) => (f.metadata as { variant?: string } | undefined)?.variant === 'example.net');
+		expect(netFindings.length).toBeGreaterThan(0);
+		expect((netFindings[0].metadata as { ownershipVerdict?: string }).ownershipVerdict).toBe('third_party');
+		for (const f of netFindings) {
+			expect(hasOwnershipFraming(f.title)).toBe(false);
+		}
+	});
+
+	it('never titles a non-owned variant as the customer’s "shadow domain" — RFC 7505 null MX', async () => {
+		// The null-MX rung: 'Shadow domain explicit non-mail (RFC 7505)'.
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.primary-dns.net.', 'ns2.primary-dns.net.']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.example.com.']));
+			}
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.unrelated-registrar.net.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.1']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['0 .']));
+			}
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const netFindings = result.findings.filter((f) => (f.metadata as { variant?: string } | undefined)?.variant === 'example.net');
+		expect(netFindings.length).toBeGreaterThan(0);
+		expect((netFindings[0].metadata as { ownershipVerdict?: string }).ownershipVerdict).toBe('third_party');
+		expect(netFindings.some((f) => /RFC 7505/i.test(f.title))).toBe(true);
+		for (const f of netFindings) {
+			expect(hasOwnershipFraming(f.title)).toBe(false);
+		}
+	});
+
+	it('keeps "shadow domain" framing for a variant the seed genuinely owns', async () => {
+		// The gate must not sand the language off a REAL shadow domain: the
+		// framing is accurate when the customer owns the name, and stripping it
+		// everywhere would be an equal-and-opposite defect.
+		const target = 'example.com';
+		const ownNs = ['ns1.example-dns.net.', 'ns2.example-dns.net.'];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ownNs));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.example.com.']));
+			}
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ownNs));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.1']));
+			}
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const netFindings = result.findings.filter((f) => (f.metadata as { variant?: string } | undefined)?.variant === 'example.net');
+		expect(netFindings.length).toBeGreaterThan(0);
+		expect((netFindings[0].metadata as { ownershipVerdict?: string }).ownershipVerdict).toBe('owned_by_seed');
+		expect(netFindings.some((f) => hasOwnershipFraming(f.title))).toBe(true);
+	});
+
+	it('sweeps a whole scan: the ONLY ownership-framed title on a non-owned variant is the audit-pinned one', async () => {
+		// Whole-result sweep rather than a single hand-picked finding, so a NEW
+		// ownership-framed title added to classifyVariant later cannot slip past
+		// by simply not being one of the cases above.
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.primary-dns.net.', 'ns2.primary-dns.net.']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.example.com.']));
+			}
+			// A spread of non-owned shapes across several variants at once.
+			if (name === 'example.net' || name === 'example.org' || name === 'example.io') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.unrelated-registrar.net.']));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.1']));
+				if (name === 'example.org' && (type === 'MX' || type === '15')) return Promise.resolve(mxRecords(name, ['10 mail.elsewhere.net.']));
+				if (name === 'example.io' && (type === 'MX' || type === '15')) return Promise.resolve(mxRecords(name, ['0 .']));
+			}
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const nonOwned = result.findings.filter(
+			(f) => (f.metadata as { ownershipVerdict?: string } | undefined)?.ownershipVerdict === 'third_party',
+		);
+		expect(nonOwned.length).toBeGreaterThanOrEqual(3);
+		const offenders = nonOwned.filter((f) => hasOwnershipFraming(f.title) && f.title !== AUDIT_PINNED);
+		expect(offenders.map((f) => f.title)).toEqual([]);
+	});
+});
+
+describe('checkShadowDomains — unattributed is never treated as ownership', () => {
+	async function run(domain: string) {
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		return checkShadowDomains(domain);
+	}
+
+	it('caps a Phase-2 variant registered via SOA/A with no NS observed', async () => {
+		// Registration is PROVEN (SOA answers) but no NS is ever observed, so
+		// classifyOwnership() has no NS evidence either way => `unattributed`.
+		// "We could not tell" must be treated as NOT-owned: a verdict of
+		// `unattributed` returning 'unbounded' would let a full ladder rung
+		// through on a domain nothing links to the customer.
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.primary-dns.net.', 'ns2.primary-dns.net.']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.example.com.']));
+			}
+			if (name === 'example.net') {
+				// NS never answers; SOA proves the name exists; MX + no SPF/DMARC is
+				// the top ladder rung.
+				if (type === 'SOA' || type === '6') return Promise.resolve(soaRecords(name));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.elsewhere.net.']));
+			}
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const netFindings = result.findings.filter((f) => (f.metadata as { variant?: string } | undefined)?.variant === 'example.net');
+		expect(netFindings.length).toBeGreaterThan(0);
+		const gated = netFindings[0];
+		expect((gated.metadata as { ownershipVerdict?: string }).ownershipVerdict).toBe('unattributed');
+		expect(gated.severity).toBe('info');
+		expect(gated.title).not.toMatch(/fully spoofable/i);
+		// Neutral wording must be the unattributed variant, not the third-party one.
+		expect(gated.detail).toMatch(/could not be attributed to the scanned organisation/i);
+		expect(gated.detail).not.toMatch(/registered to a different organisation/i);
+	});
+
+	it('caps a null-MX variant whose registration is proven without NS', async () => {
+		// A second unattributed shape on a different classifyVariant branch, so
+		// the `unattributed` arm is not pinned by one code path alone.
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.primary-dns.net.', 'ns2.primary-dns.net.']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.example.com.']));
+			}
+			if (name === 'example.net') {
+				if (type === 'SOA' || type === '6') return Promise.resolve(soaRecords(name));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['0 .']));
+			}
+			return Promise.resolve(emptyResponse());
+		});
+
+		const result = await run(target);
+		const netFindings = result.findings.filter((f) => (f.metadata as { variant?: string } | undefined)?.variant === 'example.net');
+		expect(netFindings.length).toBeGreaterThan(0);
+		for (const f of netFindings) {
+			expect((f.metadata as { ownershipVerdict?: string }).ownershipVerdict).toBe('unattributed');
+			expect(f.severity).toBe('info');
+			expect(/shadow domain/i.test(f.title)).toBe(false);
+		}
+	});
+});
+
+describe('isSameMxInfra (unit)', () => {
+	// F3: this predicate's trailing-dot normalisation is UNOBSERVABLE through
+	// checkShadowDomains — queryMxRecords strips the root dot upstream, so both
+	// sides arrive already normalised and deleting the .replace() calls leaves
+	// every integration test green. Pinned directly here instead, with inputs
+	// that are NOT pre-normalised.
+	it('matches hostnames that differ only by a trailing root dot', async () => {
+		const { isSameMxInfra } = await import('../src/tools/check-shadow-domains');
+		expect(isSameMxInfra(['mail.example.com'], ['mail.example.com.'])).toBe(true);
+		expect(isSameMxInfra(['mail.example.com.'], ['mail.example.com'])).toBe(true);
+		expect(isSameMxInfra(['mail.example.com.'], ['mail.example.com.'])).toBe(true);
+	});
+
+	it('matches case-insensitively', async () => {
+		const { isSameMxInfra } = await import('../src/tools/check-shadow-domains');
+		expect(isSameMxInfra(['MAIL.Example.COM.'], ['mail.example.com'])).toBe(true);
+	});
+
+	it('requires the variant set to be a subset, and rejects an empty variant set', async () => {
+		const { isSameMxInfra } = await import('../src/tools/check-shadow-domains');
+		expect(isSameMxInfra(['mail.example.com', 'mail2.other.net'], ['mail.example.com.'])).toBe(false);
+		expect(isSameMxInfra([], ['mail.example.com.'])).toBe(false);
+		expect(isSameMxInfra(['mail.elsewhere.net'], ['mail.example.com.'])).toBe(false);
 	});
 });
