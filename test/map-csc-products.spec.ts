@@ -42,7 +42,13 @@ function recFor(report: CscProductReport, key: CscProductRecommendation['product
 
 describe('evaluateCscProducts — CSC MultiLock (reads booleans, not level)', () => {
 	it('registry-lock posture (registryLevel true) → not recommended, none', () => {
-		const r = evaluateCscProducts(allPassing(), lp({ level: 'registry-lock', registryLevel: true, transferLocked: true }), 'a.com', 90, 'A');
+		const r = evaluateCscProducts(
+			allPassing(),
+			lp({ level: 'registry-lock', registryLevel: true, transferLocked: true }),
+			'a.com',
+			90,
+			'A',
+		);
 		const m = recFor(r, 'csc_multilock');
 		expect(m.recommended).toBe(false);
 		expect(m.priority).toBe('none');
@@ -57,7 +63,13 @@ describe('evaluateCscProducts — CSC MultiLock (reads booleans, not level)', ()
 	});
 
 	it('registrar-lock posture (registrarLevel true, registryLevel false) → recommended medium', () => {
-		const r = evaluateCscProducts(allPassing(), lp({ level: 'registrar-lock', registrarLevel: true, transferLocked: true }), 'a.com', 90, 'A');
+		const r = evaluateCscProducts(
+			allPassing(),
+			lp({ level: 'registrar-lock', registrarLevel: true, transferLocked: true }),
+			'a.com',
+			90,
+			'A',
+		);
 		const m = recFor(r, 'csc_multilock');
 		expect(m.recommended).toBe(true);
 		expect(m.priority).toBe('medium');
@@ -79,9 +91,66 @@ describe('evaluateCscProducts — CSC MultiLock (reads booleans, not level)', ()
 	});
 
 	it('BOOLEANS guard: level=unlocked but registryLevel=true (server delete lock, no transfer lock) → NOT recommended', () => {
-		const r = evaluateCscProducts(allPassing(), lp({ level: 'unlocked', registryLevel: true, transferLocked: false, deleteLocked: true }), 'a.com', 90, 'A');
+		const r = evaluateCscProducts(
+			allPassing(),
+			lp({ level: 'unlocked', registryLevel: true, transferLocked: false, deleteLocked: true }),
+			'a.com',
+			90,
+			'A',
+		);
 		const m = recFor(r, 'csc_multilock');
 		expect(m.recommended).toBe(false);
+	});
+
+	/**
+	 * Final review round, item 1: `lockPosture === null` (RDAP never reached —
+	 * no server for the TLD, a non-OK HTTP status, or a fetch/parse failure)
+	 * and `lockPosture.level === 'unknown'` (RDAP DID answer, the record just
+	 * carries no EPP status codes) used to share `assessed: true` and one
+	 * "unavailable/redacted" gap sentence. That let an unreachable RDAP lookup
+	 * render byte-identical to a genuine clean pass (`✓ CSC MultiLock`, no
+	 * disclosure) — an incomplete measurement presented with full confidence.
+	 * `assessed` must now distinguish the two: null is NOT an observation,
+	 * `level: 'unknown'` (non-null) IS one.
+	 */
+	it('null posture (RDAP unreachable) → assessed: false — an incomplete measurement, not a clean pass', () => {
+		const r = evaluateCscProducts(allPassing(), null, 'a.com', 90, 'A');
+		const m = recFor(r, 'csc_multilock');
+		expect(m.assessed).toBe(false);
+	});
+
+	it('level=unknown but posture object present (RDAP answered, no EPP status) → assessed: true — a real observation (control)', () => {
+		const r = evaluateCscProducts(allPassing(), lp({ level: 'unknown' }), 'a.com', 90, 'A');
+		const m = recFor(r, 'csc_multilock');
+		expect(m.assessed).toBe(true);
+	});
+});
+
+/**
+ * Final review round, item 1 (render side): `formatCscProducts` must use the
+ * per-recommendation `assessed` discriminant for MultiLock exactly like it
+ * already does for the three scan-driven products — a not-assessed MultiLock
+ * must never render the same icon/tag a genuine clean pass gets, in EITHER
+ * format.
+ */
+describe('formatCscProducts — an unassessed MultiLock (null lock posture) renders distinct from a clean pass', () => {
+	function unreachableRdapReport() {
+		return evaluateCscProducts(allPassing(), null, 'rdap-unreachable.com', 90, 'A');
+	}
+
+	it('compact: shows "?" and the unobservable gap text, never the clean-pass "✓" with no disclosure', () => {
+		const compact = formatCscProducts(unreachableRdapReport(), 'compact');
+		const line = compact.split('\n').find((l) => l.includes('CSC MultiLock'));
+		expect(line).toBeDefined();
+		expect(line).not.toContain('✓');
+		expect(line).toContain('?');
+		expect(line!.toLowerCase()).toContain('unobservable');
+	});
+
+	it('full: shows the ❓ / NOT ASSESSED tag, never "➖ … — OK"', () => {
+		const full = formatCscProducts(unreachableRdapReport(), 'full');
+		expect(full).toContain('❓ **CSC MultiLock** — NOT ASSESSED');
+		expect(full).not.toContain('➖ **CSC MultiLock** — OK');
 	});
 });
 
@@ -92,7 +161,11 @@ describe('evaluateCscProducts — scan-driven products', () => {
 	});
 
 	it('dmarc failing with a high finding → recommended high, relatedFindings carries title', () => {
-		const checks = [makeCheck('dmarc', false, [{ title: 'No DMARC record', severity: 'high' }]), makeCheck('ssl', true), makeCheck('dnssec', true)];
+		const checks = [
+			makeCheck('dmarc', false, [{ title: 'No DMARC record', severity: 'high' }]),
+			makeCheck('ssl', true),
+			makeCheck('dnssec', true),
+		];
 		const m = recFor(evaluateCscProducts(checks, null, 'a.com', 50, 'F'), 'managed_dmarc');
 		expect(m.recommended).toBe(true);
 		expect(m.priority).toBe('high');
@@ -100,7 +173,11 @@ describe('evaluateCscProducts — scan-driven products', () => {
 	});
 
 	it('dmarc failing with only medium findings → priority medium', () => {
-		const checks = [makeCheck('dmarc', false, [{ title: 'Weak DMARC policy', severity: 'medium' }]), makeCheck('ssl', true), makeCheck('dnssec', true)];
+		const checks = [
+			makeCheck('dmarc', false, [{ title: 'Weak DMARC policy', severity: 'medium' }]),
+			makeCheck('ssl', true),
+			makeCheck('dnssec', true),
+		];
 		expect(recFor(evaluateCscProducts(checks, null, 'a.com', 60, 'D'), 'managed_dmarc').priority).toBe('medium');
 	});
 
@@ -113,20 +190,35 @@ describe('evaluateCscProducts — scan-driven products', () => {
 	});
 
 	it('ssl failing → digital_certificates recommended; ssl passing → not', () => {
-		const fail = [makeCheck('dmarc', true), makeCheck('ssl', false, [{ title: 'Certificate expired', severity: 'high' }]), makeCheck('dnssec', true)];
+		const fail = [
+			makeCheck('dmarc', true),
+			makeCheck('ssl', false, [{ title: 'Certificate expired', severity: 'high' }]),
+			makeCheck('dnssec', true),
+		];
 		expect(recFor(evaluateCscProducts(fail, null, 'a.com', 60, 'D'), 'digital_certificates').recommended).toBe(true);
 		expect(recFor(evaluateCscProducts(allPassing(), null, 'a.com', 90, 'A'), 'digital_certificates').recommended).toBe(false);
 	});
 
 	it('dnssec failing → dnssec_management medium; absent → low', () => {
-		const fail = [makeCheck('dmarc', true), makeCheck('ssl', true), makeCheck('dnssec', false, [{ title: 'DNSSEC not enabled', severity: 'medium' }])];
+		const fail = [
+			makeCheck('dmarc', true),
+			makeCheck('ssl', true),
+			makeCheck('dnssec', false, [{ title: 'DNSSEC not enabled', severity: 'medium' }]),
+		];
 		expect(recFor(evaluateCscProducts(fail, null, 'a.com', 70, 'C'), 'dnssec_management').priority).toBe('medium');
 		const absent = [makeCheck('dmarc', true), makeCheck('ssl', true)];
 		expect(recFor(evaluateCscProducts(absent, null, 'a.com', 70, 'C'), 'dnssec_management').priority).toBe('low');
 	});
 
 	it('relatedFindings excludes info-severity findings', () => {
-		const checks = [makeCheck('dmarc', false, [{ title: 'Real gap', severity: 'high' }, { title: 'Just info', severity: 'info' }]), makeCheck('ssl', true), makeCheck('dnssec', true)];
+		const checks = [
+			makeCheck('dmarc', false, [
+				{ title: 'Real gap', severity: 'high' },
+				{ title: 'Just info', severity: 'info' },
+			]),
+			makeCheck('ssl', true),
+			makeCheck('dnssec', true),
+		];
 		const m = recFor(evaluateCscProducts(checks, null, 'a.com', 50, 'F'), 'managed_dmarc');
 		expect(m.relatedFindings).toContain('Real gap');
 		expect(m.relatedFindings).not.toContain('Just info');
@@ -136,8 +228,19 @@ describe('evaluateCscProducts — scan-driven products', () => {
 describe('evaluateCscProducts — report shape', () => {
 	it('exactly 4 recommendations in fixed order; recommendedCount matches; passthrough fields', () => {
 		const posture = lp({ level: 'unlocked', transferLocked: false });
-		const r = evaluateCscProducts([makeCheck('dmarc', false, [{ title: 'x', severity: 'high' }]), makeCheck('ssl', true), makeCheck('dnssec', true)], posture, 'shape.com', 42, 'F');
-		expect(r.recommendations.map((x) => x.product)).toEqual(['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management']);
+		const r = evaluateCscProducts(
+			[makeCheck('dmarc', false, [{ title: 'x', severity: 'high' }]), makeCheck('ssl', true), makeCheck('dnssec', true)],
+			posture,
+			'shape.com',
+			42,
+			'F',
+		);
+		expect(r.recommendations.map((x) => x.product)).toEqual([
+			'csc_multilock',
+			'managed_dmarc',
+			'digital_certificates',
+			'dnssec_management',
+		]);
 		expect(r.recommendedCount).toBe(r.recommendations.filter((x) => x.recommended).length);
 		expect(r.recommendedCount).toBe(2); // multilock high + dmarc high
 		expect(r.lockPosture).toEqual(posture);
@@ -147,7 +250,13 @@ describe('evaluateCscProducts — report shape', () => {
 	});
 
 	it('all-clean: all-pass checks + registry-lock posture → recommendedCount 0, every priority none', () => {
-		const r = evaluateCscProducts(allPassing(), lp({ level: 'registry-lock', registryLevel: true, transferLocked: true }), 'clean.com', 98, 'A+');
+		const r = evaluateCscProducts(
+			allPassing(),
+			lp({ level: 'registry-lock', registryLevel: true, transferLocked: true }),
+			'clean.com',
+			98,
+			'A+',
+		);
 		expect(r.recommendedCount).toBe(0);
 		expect(r.recommendations.every((x) => x.priority === 'none')).toBe(true);
 		expect(r.recommendations.every((x) => x.recommended === false)).toBe(true);
@@ -171,7 +280,9 @@ describe('extractLockPosture', () => {
 			category: 'rdap',
 			passed: false,
 			score: 0,
-			findings: [{ category: 'rdap', title: 'RDAP lookup failed', severity: 'low', detail: '', metadata: { registrarSource: 'lookup_failed' } }],
+			findings: [
+				{ category: 'rdap', title: 'RDAP lookup failed', severity: 'low', detail: '', metadata: { registrarSource: 'lookup_failed' } },
+			],
 		} as unknown as CheckResult;
 		expect(extractLockPosture(rdap)).toBeNull();
 	});
@@ -405,6 +516,141 @@ describe('evaluateCscProducts: a total outage (all checks attempted, none comple
 		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
 		expect(dmarc.recommended).toBe(true);
 		expect(dmarc.priority).toBe('high');
+	});
+});
+
+/**
+ * Task R4 (residual of the correctness-defect campaign): the PRICED category's
+ * OWN check can be the one that failed transiently, while OTHER categories
+ * completed normally (`assessed: true` overall). Before this fix,
+ * `evalScanProduct` read the transient CheckResult's `passed: false` and its
+ * synthetic "check error" finding (severity `high`, no real content) as a
+ * genuine DMARC gap, pricing an upsell — "DMARC present but not passing" —
+ * against a category nobody actually measured. Mirrors the equivalent
+ * `map_compliance`/`generate_fix_plan` fix (see `src/tools/map-compliance.ts:272`
+ * for the reference implementation this is modeled on).
+ */
+describe('evaluateCscProducts: the priced category itself failed transiently (not the whole scan)', () => {
+	async function buildFixtures() {
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+		const transientDmarc = {
+			...buildCheckResult('dmarc', [
+				createFinding('dmarc', 'DMARC check error', 'high', 'Check failed: DNS query failed', { errorKind: 'dns_error' }),
+			]),
+			score: 0,
+			passed: false,
+			checkStatus: 'error' as const,
+			partial: true,
+		};
+		// A genuine, non-transient high-severity finding on a DIFFERENT category —
+		// this one MUST still be priced. A wrong implementation that filters on
+		// `severity === 'high'` instead of the errorKind marker would swallow this
+		// too, which is exactly what this fixture is designed to catch.
+		const genuineSsl = {
+			...buildCheckResult('ssl', [createFinding('ssl', 'Certificate expired', 'high', 'The TLS certificate expired 3 days ago')]),
+			score: 0,
+			passed: false,
+		};
+		return { transientDmarc, genuineSsl };
+	}
+
+	it('managed_dmarc is NOT priced as an upsell when DMARC itself is the transient category, but digital_certificates IS priced from the genuine ssl finding', async () => {
+		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { transientDmarc, genuineSsl } = await buildFixtures();
+
+		const report = evaluate([transientDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
+
+		expect(report.assessed).toBe(true); // ssl completed
+		expect(report.caveat).toBeNull();
+
+		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
+		expect(dmarc.recommended).toBe(false);
+		expect(dmarc.priority).toBe('none');
+		expect(dmarc.assessed).toBe(false);
+		expect(dmarc.relatedFindings).not.toContain('DMARC check error');
+
+		const ssl = report.recommendations.find((r) => r.product === 'digital_certificates')!;
+		expect(ssl.recommended).toBe(true);
+		expect(ssl.priority).toBe('high');
+		expect(ssl.assessed).toBe(true);
+		expect(ssl.relatedFindings).toContain('Certificate expired');
+	});
+
+	it('the transient category is REPRESENTED (not assessed), not silently dropped from the recommendation list', async () => {
+		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { transientDmarc, genuineSsl } = await buildFixtures();
+
+		const report = evaluate([transientDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
+		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
+
+		// Not "DMARC policy in effect" (a false pass) and not "DMARC present but not
+		// passing" (a phantom gap) — a distinct, honest "not assessed" wording.
+		expect(dmarc.justifyingGap.toLowerCase()).toContain('not assessed');
+		expect(dmarc.justifyingGap.toLowerCase()).not.toContain('policy in effect');
+	});
+
+	/**
+	 * F6 (review round 1): `unassessedScanProduct`'s "checks attempted, none
+	 * completed" wording is TRUE for the whole-report `'all_transient'` case
+	 * (every category failed) but was, before this fix, ALSO used verbatim for
+	 * THIS per-category case — where digital_certificates (`genuineSsl`)
+	 * completed in the very same scan. "none completed" is a false statement
+	 * about a scan where a sibling category plainly did complete.
+	 */
+	it('the per-category transient wording does not falsely claim the whole scan failed to complete (F6)', async () => {
+		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { transientDmarc, genuineSsl } = await buildFixtures();
+
+		const report = evaluate([transientDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
+		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
+
+		expect(dmarc.justifyingGap.toLowerCase()).not.toContain('none completed');
+		expect(dmarc.justifyingGap.toLowerCase()).toMatch(/this category/);
+
+		// Control: the WHOLE-report all-transient case genuinely has nothing that
+		// completed, so "none completed" IS true there and must still render.
+		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const wholeReport = unassessedScanProduct('managed_dmarc', 'DMARC', 'all_transient');
+		expect(wholeReport.justifyingGap.toLowerCase()).toContain('none completed');
+	});
+
+	/**
+	 * F3 (review round 1): the original version of this test only asserted
+	 * `toContain('dmarc')` (satisfied by the ever-present product name "Managed
+	 * DMARC") and `not.toContain('dmarc check error')` (satisfied by an EMPTY
+	 * `relatedFindings`, regardless of how the row otherwise rendered) — both
+	 * stayed GREEN under a full silent-drop mutation (compact mode rendering
+	 * `✓ Managed DMARC` with no gap text at all, identical to a clean pass), so
+	 * neither assertion was actually testing what the title claimed. Rewritten
+	 * to directly compare the TRANSIENT render against a CLEAN-PASS render of
+	 * the same product and assert they differ — the property F1 exists to
+	 * guarantee — instead of grepping for a substring a silent drop can still
+	 * satisfy.
+	 */
+	it('formatCscProducts renders an unassessed transient product as visually DISTINCT from a genuine clean pass — not a silent omission', async () => {
+		const { evaluateCscProducts: evaluate, formatCscProducts } = await import('../src/tools/map-csc-products');
+		const { buildCheckResult } = await import('@blackveil/dns-checks/scoring');
+		const { transientDmarc, genuineSsl } = await buildFixtures();
+		const cleanDmarc = { ...buildCheckResult('dmarc', []), score: 100, passed: true };
+
+		const transientReport = evaluate([transientDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
+		const cleanReport = evaluate([cleanDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
+
+		const dmarcLine = (text: string) => text.split('\n').find((l) => l.includes('Managed DMARC'))!;
+
+		for (const format of ['full', 'compact'] as const) {
+			const transientLine = dmarcLine(formatCscProducts(transientReport, format));
+			const cleanLine = dmarcLine(formatCscProducts(cleanReport, format));
+
+			// The core F1 property: the two states must never render identically.
+			expect(transientLine).not.toBe(cleanLine);
+			// And specifically via the markers a clean pass uses in each mode —
+			// the transient render must use NEITHER.
+			expect(transientLine).not.toContain('✓');
+			expect(transientLine).not.toContain('➖');
+			expect(transientLine.toLowerCase()).not.toContain('— ok');
+			expect(transientLine.toLowerCase()).toMatch(/not assessed/);
+		}
 	});
 });
 

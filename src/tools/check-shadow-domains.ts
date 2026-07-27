@@ -19,6 +19,15 @@ import {
 	type RegistrationEvidence,
 	type UnknownReason,
 } from '../lib/registration-state';
+import {
+	attributionConfidence,
+	buildNonOwnedGateFinding,
+	buildOwnershipGateMetadata,
+	capAttributionSeverity,
+	classifyOwnership,
+	type OwnershipAssessment,
+} from '../lib/ownership-attribution';
+import { isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
 
 /** Wall-clock timeout for the entire shadow domain check (ms). */
 const SHADOW_TIMEOUT_MS = 20_000;
@@ -223,24 +232,22 @@ async function bucketVariantsByRegistration(
 
 /**
  * Check whether the variant MX set is a subset of the primary MX set.
- * Compares sorted exchange hostnames (case-insensitive).
+ * Compares exchange hostnames case-insensitively, tolerating a trailing root
+ * dot on either side.
+ *
+ * EXPORTED FOR TEST (fix round 1, F3): the trailing-dot normalisation is
+ * unobservable through `checkShadowDomains`, because `queryMxRecords` already
+ * strips the root dot before either side reaches here — deleting both
+ * `.replace(/\.$/, '')` calls leaves every integration test green. The
+ * normalisation is still a real part of this predicate's contract for any
+ * caller that passes unnormalised hostnames, so it is pinned by a direct unit
+ * test instead of by an integration test that cannot see it. Mirrors the
+ * existing `canClaimUnregistered` export precedent below.
  */
-function isSameMxInfra(variantMx: string[], primaryMx: string[]): boolean {
+export function isSameMxInfra(variantMx: string[], primaryMx: string[]): boolean {
 	if (variantMx.length === 0) return false;
 	const primarySet = new Set(primaryMx.map((h) => h.toLowerCase().replace(/\.$/, '')));
 	return variantMx.every((h) => primarySet.has(h.toLowerCase().replace(/\.$/, '')));
-}
-
-/**
- * Check whether a variant's NS records overlap with the primary domain's NS records.
- * Compares normalized (lowercased, trailing-dot-stripped) nameserver hostnames.
- * Returns true when at least 2 nameservers are shared (typical NS pair).
- */
-function sharesNsWithPrimary(variantNs: string[], primaryNs: string[]): boolean {
-	if (variantNs.length === 0 || primaryNs.length === 0) return false;
-	const primarySet = new Set(primaryNs.map((n) => n.toLowerCase().replace(/\.$/, '')));
-	const shared = variantNs.filter((n) => primarySet.has(n.toLowerCase().replace(/\.$/, '')));
-	return shared.length >= 2;
 }
 
 /**
@@ -274,17 +281,40 @@ export function canClaimUnregistered(observed: { ns: string[]; mx: string[]; has
 
 /**
  * Classify a probed variant into a finding based on risk.
- * When the variant shares nameservers with the primary domain (indicating common ownership),
- * email-auth findings are downgraded one severity level.
+ * When the variant is owned by the seed organisation, email-auth findings are
+ * downgraded one severity level (it is the customer's own domain to fix, not a
+ * hostile shadow).
+ *
+ * D4 (2026-07-26 correctness-defects design §5) — same-owner detection is
+ * driven by `classifyOwnership()`'s structural verdict, replacing the naive
+ * `sharesNsWithPrimary()` >=2-shared-hostname set-overlap heuristic. That
+ * heuristic was actively dangerous on shared-NS providers (§3.3): two unrelated
+ * banks pooled onto Akamai could reach its threshold by luck and have a genuine
+ * third party's finding softened, while a customer's own domain delegated
+ * in-bailiwick (`ns1.<seed>`) scored zero overlap and was reported to them as a
+ * hostile CRITICAL. The severity CEILING is applied separately, by
+ * {@link applyOwnershipGate}; this function only computes the unclamped ladder.
  */
-function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primaryNs: string[]): Finding {
+function classifyVariant(probe: VariantProbeResult, primaryMx: string[], ownership: OwnershipAssessment): Finding {
 	const { variant, ns, mx, hasSpf, dmarcPolicy } = probe;
 	const hasNullMxOnly = mx.length > 0 && mx.every(isNullMxExchange);
 	const hasMx = mx.length > 0 && !hasNullMxOnly;
 	const hasNs = ns.length > 0;
-	const sameOwner = sharesNsWithPrimary(ns, primaryNs);
-	const meta = { variant, ns, mx, hasSpf, dmarcPolicy };
-	const ownerNote = ' Likely same owner based on shared nameservers — still recommended to add DMARC.';
+	const sameOwner = ownership.verdict === 'owned_by_seed';
+	// The verdict travels on EVERY classified finding, owned or not, so the
+	// structured payload carries the same attribution the prose does.
+	const meta = {
+		variant,
+		ns,
+		mx,
+		hasSpf,
+		dmarcPolicy,
+		ownershipVerdict: ownership.verdict,
+		ownershipRationale: ownership.rationale,
+	};
+	// States the evidence that actually produced the verdict rather than a fixed
+	// "shared nameservers" sentence, which is wrong for the in-bailiwick case.
+	const ownerNote = ` Likely same owner (${ownership.rationale}) — still recommended to add DMARC.`;
 
 	// RFC 7505 explicit non-mail posture — the domain is doing the right thing for a
 	// non-mail name. Don't pretend it's spoofable.
@@ -299,34 +329,45 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primary
 	}
 
 	if (hasMx) {
+		// LADDER ARMS ARE OWNED-ONLY BY CONSTRUCTION (fix round 1, F2). Each rung
+		// below used to read `sameOwner ? X : Y`, where the `Y` (non-owned) arm
+		// carried the harsher severity — `'critical'` on the rung immediately
+		// below. Those arms are now UNREACHABLE in output: `sameOwner` is exactly
+		// `verdict === 'owned_by_seed'`, so `Y` is only ever computed for a finding
+		// `applyOwnershipGate()` immediately clamps to `info` and re-words. Leaving
+		// a live `'critical'` literal here was a latent trap — any future
+		// relaxation of the gate would silently resurrect a critical
+		// shadow-domain finding about a third party's mail hygiene. The arms are
+		// collapsed to the owned-domain severity so the dead arm cannot be reached
+		// by construction; the rung itself is still named by the finding title.
 		if (!hasSpf && dmarcPolicy === null) {
-			// MX present, no SPF AND no DMARC → critical (or high if same owner)
+			// MX present, no SPF AND no DMARC → the top rung, on the seed's own domain.
 			return createFinding(
 				'shadow_domains',
 				'Shadow domain fully spoofable',
-				sameOwner ? 'high' : 'critical',
+				'high',
 				`${variant} has mail servers but no SPF or DMARC records. Any sender can forge email from this domain.${sameOwner ? ownerNote : ''}`,
 				meta,
 			);
 		}
 
 		if (hasSpf && dmarcPolicy === null) {
-			// MX present, SPF but no DMARC → high (or medium if same owner)
+			// MX present, SPF but no DMARC.
 			return createFinding(
 				'shadow_domains',
 				'Shadow domain lacks DMARC',
-				sameOwner ? 'medium' : 'high',
+				'medium',
 				`${variant} has mail servers and SPF but no DMARC record. Without DMARC, SPF alone cannot prevent spoofing.${sameOwner ? ownerNote : ''}`,
 				meta,
 			);
 		}
 
 		if (dmarcPolicy === 'none') {
-			// MX present, DMARC p=none → high (or medium if same owner)
+			// MX present, DMARC p=none.
 			return createFinding(
 				'shadow_domains',
 				'Shadow domain DMARC not enforcing',
-				sameOwner ? 'medium' : 'high',
+				'medium',
 				`${variant} has mail servers with DMARC policy set to "none" — spoofed emails are monitored but not blocked.${sameOwner ? ownerNote.replace('add DMARC', 'enforce DMARC') : ''}`,
 				meta,
 			);
@@ -336,7 +377,9 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primary
 		if (dmarcPolicy === 'quarantine' || dmarcPolicy === 'reject') {
 			if (!isSameMxInfra(mx, primaryMx)) {
 				// Divergent MX infrastructure → medium
-				const divergentNote = sameOwner ? ` Shared nameservers suggest common ownership despite different mail servers.` : '';
+				const divergentNote = sameOwner
+					? ` Nameserver evidence indicates common ownership (${ownership.rationale}) despite the different mail servers.`
+					: '';
 				return createFinding(
 					'shadow_domains',
 					'Shadow domain divergent mail infrastructure',
@@ -413,6 +456,128 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], primary
 			: `${variant} is registered but no nameserver, mail or SPF records were observed during this scan.`,
 		{ ...meta, registrationState: 'registered', confidence: 'heuristic' },
 	);
+}
+
+/**
+ * Neutral replacements for the `info`-severity titles that use ownership
+ * framing. "Shadow domain" is a possessive noun phrase: it files the name into
+ * the SCANNED organisation's inventory. Applied only to non-owned candidates —
+ * an `owned_by_seed` variant genuinely IS a shadow domain of the seed and keeps
+ * the original wording.
+ */
+const NEUTRAL_INFO_TITLES: Record<string, string> = {
+	'Shadow domain explicit non-mail (RFC 7505)': 'Confusable domain declares no mail (RFC 7505)',
+	'Shadow domain registered, no mail': 'Confusable domain registered, no mail',
+};
+
+/**
+ * KNOWN RESIDUAL, verified by execution (not by reading): the third
+ * ownership-framed `info` title, `'Shadow domain registered, records not
+ * observed'` (the Phase-2 fallthrough), is NOT in the map above because
+ * `test/audits/registration-invariant.audit.test.ts:163` filters
+ * `result.findings` on that exact title literal, and that audit is a slice-3
+ * safety net that may not be edited from here. Adding the entry was tried and
+ * fails it with `expected 0 to be greater than 0`. The clean fix belongs in a
+ * task permitted to touch the audit: re-pin its assertion on
+ * `metadata.registrationState === 'registered'` + `confidence === 'heuristic'`
+ * instead of the title string, then add the third entry here. Tracked by
+ * {@link AUDIT_PINNED_OWNERSHIP_FRAMED_TITLE}, which the D4 title-framing
+ * guard carves out explicitly rather than silently.
+ */
+export const AUDIT_PINNED_OWNERSHIP_FRAMED_TITLE = 'Shadow domain registered, records not observed';
+
+/**
+ * D4 severity ceiling. `owned_by_seed` findings pass through untouched —
+ * `classifyVariant`'s ladder already applies to a domain the customer controls.
+ * Every other verdict is clamped to `info` with wording that never implies the
+ * scanned organisation controls the domain or owes it any action.
+ *
+ * DEMOTE, NEVER DELETE (binding ruling): this returns a `Finding`, never
+ * `null`/`undefined`. A real measurement is never suppressed — an unrelated
+ * organisation's domain is still reported, just neutrally and at `info`.
+ * `attributionConfidence()` is consulted for WORDING ONLY; it can never move
+ * the ceiling, which `capAttributionSeverity()` derives from the verdict alone.
+ *
+ * WORDING, not just severity. "Shadow domain X" files a name into the
+ * CUSTOMER's inventory; on a domain that is demonstrably not theirs, that is
+ * the same false attribution the severity cap exists to prevent, just spelled
+ * in the title. So:
+ *   - above `info`: the risk-ladder title AND detail are replaced outright —
+ *     they assert a spoofing posture the customer supposedly owns and owes
+ *     action on;
+ *   - at `info`: the detail is a bare observation and is kept (plus the
+ *     attribution sentence), but the TITLE is still remapped through
+ *     {@link NEUTRAL_INFO_TITLES} when it uses ownership framing. An earlier
+ *     revision claimed info-level titles "are already bare registration
+ *     observations"; that was false — two of the three begin with the
+ *     ownership noun.
+ *
+ * The neutral-wording sentence and metadata shape for the ABOVE-`info` case
+ * live in `buildNonOwnedGateFinding()` (`src/lib/ownership-attribution.ts`),
+ * shared with `check-lookalikes.ts` (fix round 2, F1) — the two tools had
+ * already drifted apart within this slice ("Its mail posture" + quoted
+ * `"${brand}"` here vs "Its DNS/mail posture" + no brand quote there) before
+ * this was noticed. The `'info'`-severity branch below stays LOCAL to this
+ * file per the fix-round instruction — `check-lookalikes.ts` never reaches
+ * it (`calibrateLookalikeSeverity()` never returns `'info'`), so there is no
+ * shared behaviour to extract there, only the four-field metadata shape
+ * (`buildOwnershipGateMetadata()`).
+ */
+function applyOwnershipGate(finding: Finding, ownership: OwnershipAssessment, brand: string, corroborated: boolean): Finding {
+	const ceiling = capAttributionSeverity(ownership.verdict);
+	if (ceiling === 'unbounded') return finding;
+
+	if (finding.severity === 'info') {
+		const confidence = attributionConfidence(ownership.verdict, brand, corroborated);
+		return createFinding(
+			'shadow_domains',
+			NEUTRAL_INFO_TITLES[finding.title] ?? finding.title,
+			ceiling,
+			`${finding.detail} ${ownership.rationale}`,
+			buildOwnershipGateMetadata(finding, ownership, confidence),
+		);
+	}
+
+	// `postureNoun` MUST match `check-lookalikes.ts`'s value byte-for-byte
+	// (parity pinned by `test/ownership-attribution.spec.ts`).
+	return buildNonOwnedGateFinding(finding, ownership, brand, corroborated, ceiling, {
+		category: 'shadow_domains',
+		domainMetadataKey: 'variant',
+		postureNoun: 'DNS/mail posture',
+	});
+}
+
+/**
+ * Assess ownership for one probed variant and emit its GATED finding.
+ *
+ * The single chokepoint through which every `classifyVariant` result reaches
+ * `findings` — used by BOTH emission sites (the unknown-bucket re-probe and the
+ * Phase-2 completed-probe loop). Wiring the gate at only one of them left the
+ * other emitting ungated `critical`/`high` findings with no ownership verdict
+ * at all, so the decision is centralised here rather than duplicated per site.
+ *
+ * `classifyOwnership()` is pure and does no DNS I/O: it is fed from what the
+ * probe already resolved.
+ */
+function classifyAndGate(probe: VariantProbeResult, seedDomain: string, seedNs: string[], primaryMx: string[], brand: string): Finding {
+	// Evidence is recorded for honesty only — `classifyOwnership()` reads
+	// `state` and `ns`. A probe proven registered by MX/SPF alone legitimately
+	// contributes no NS/SOA/A evidence.
+	const evidence: RegistrationEvidence[] = [];
+	if (probe.ns.length > 0) evidence.push('ns');
+	if (probe.hasA) evidence.push('a');
+
+	const ownership = classifyOwnership({
+		seedDomain,
+		seedNs,
+		candidateDomain: probe.variant,
+		registration: { state: 'registered', ns: probe.ns, evidence },
+		isSharedNsHost,
+	});
+
+	// Shared mail infrastructure with the primary is the one corroborating
+	// signal available here (neither cert SANs nor page content are fetched).
+	return applyOwnershipGate(classifyVariant(probe, primaryMx, ownership), ownership, brand, isSameMxInfra(probe.mx, primaryMx));
 }
 
 /**
@@ -678,7 +843,10 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 				// in Phase 1 by `resolveRegistration`, remains the sole path to an
 				// "unregistered" claim.
 				const hasEvidence = probe.ns.length > 0 || probe.hasA || probe.mx.length > 0 || probe.hasSpf || probe.dmarcPolicy !== null;
-				if (hasEvidence) findings.push(classifyVariant(probe, primaryMx, primaryNs));
+				//
+				// CALL SITE 1 of 2 for `classifyAndGate` — this path is as capable of
+				// emitting a `critical` as Phase 2 is, so it is gated identically.
+				if (hasEvidence) findings.push(classifyAndGate(probe, domain, primaryNs, primaryMx, brand));
 				else pushUnknownFinding(variant, reason, probe);
 			}
 
@@ -754,9 +922,10 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		cursor += size;
 	}
 
-	// Classify each completed probe
+	// Classify each completed probe.
+	// CALL SITE 2 of 2 for `classifyAndGate`.
 	for (const probe of completedProbes) {
-		findings.push(classifyVariant(probe, primaryMx, primaryNs));
+		findings.push(classifyAndGate(probe, domain, primaryNs, primaryMx, brand));
 	}
 
 	// Detect shared NS pairs

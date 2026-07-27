@@ -351,6 +351,7 @@ describe('ungraded representation', () => {
 			actions: [],
 			assessed: false,
 			caveat: buildAllTransientFixPlanCaveat(allTransient.length),
+			transientCategories: [],
 		};
 
 		const surfaces = [
