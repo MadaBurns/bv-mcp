@@ -77,22 +77,28 @@ export const INTERACTION_RULES: InteractionRule[] = [
 		// gate below fails and neither mechanism fires.
 		id: 'impersonation_weak_dmarc',
 		conditions: [
-			// F3(a) (2026-07-27 fix round 2): corrected — this used to claim
-			// "lookalikes score drops below 100 only when a calibrated
-			// medium/high lookalike is found". That stopped being true once the
-			// D4 ownership-attribution gate (check-lookalikes.ts) shipped: every
-			// `lookalikes` finding — owned_by_seed or ownership-demoted third
-			// party alike — is now emitted at `info` severity, so the category
-			// score is always 100 and this `maxScore: 85` condition cannot
-			// currently be satisfied. Its sibling predicate,
-			// `hasActiveImpersonation()` in scan/post-processing.ts, checks for
-			// the same medium/high/critical severities and is equally
-			// unreachable today. Both are effectively dead code as a direct
-			// consequence of the D4 gate — the same defect the reviewer's Major
-			// finding on Task 7 flagged (escalated to the design owner
-			// separately; NOT fixed here, per explicit instruction not to
-			// change the gate or the cap in this round). Left in place and
-			// documented honestly pending that decision.
+			// REACHABLE AGAIN as of Task 7b (2026-07-27). History, because this
+			// comment has now been wrong in both directions:
+			//   - Originally: "lookalikes drops below 100 only when a calibrated
+			//     medium/high lookalike is found" — true pre-D4.
+			//   - F3(a) (fix round 2): corrected to "unreachable", because the D4
+			//     ownership gate capped EVERY `lookalikes` finding at `info`, so
+			//     the category always scored 100 and `maxScore: 85` could never
+			//     be satisfied. That was the honest state at the time and the
+			//     defect the reviewer's Major finding on Task 7 flagged.
+			//   - Task 7b: the design owner ruled the two axes apart. A non-owned
+			//     candidate now carries BOTH an `info` ATTRIBUTION finding (the
+			//     ownership claim, still capped) and a separate
+			//     THREAT-OBSERVATION finding at the #264-calibrated severity
+			//     (`metadata.findingAxis === 'threat_observation'`). A live
+			//     typosquat with mail infrastructure therefore drops the
+			//     `lookalikes` category well below 85 again, and this condition
+			//     is satisfiable exactly as originally intended. Its sibling
+			//     predicate, `hasActiveImpersonation()` in
+			//     scan/post-processing.ts, is reachable again on the same signal.
+			// Owned-by-seed candidates still emit ONLY an `info` attribution
+			// finding, so a customer's own defensive registration can never
+			// trigger this rule.
 			{ category: 'lookalikes', maxScore: 85 },
 			// Weak/absent DMARC, as left by the escalation pass (see above).
 			{ category: 'dmarc', maxScore: 60 },

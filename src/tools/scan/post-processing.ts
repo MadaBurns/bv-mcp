@@ -501,6 +501,19 @@ function adjustBimiForNonMailDomain(results: CheckResult[]): CheckResult[] {
  * finding (a calibrated lookalike/typosquat with real infrastructure). Info-level
  * findings — defensive registrations, shared-NS matches — are deliberately excluded.
  *
+ * TASK 7B (2026-07-27) — what a medium-or-higher `lookalikes` finding now MEANS.
+ * Under the D4 ownership gate (Task 7) this predicate was unreachable: every
+ * `lookalikes` finding was capped at `info`, so no scan could signal
+ * impersonation. Task 7b split the axes, and the severities this predicate sees
+ * come exclusively from the THREAT-OBSERVATION axis
+ * (`metadata.findingAxis === 'threat_observation'` — a #264-calibrated
+ * observation about infrastructure, e.g. a confusable domain with live MX on a
+ * disposable provider). ATTRIBUTION-axis findings (`'attribution'`) stay capped
+ * at `info` for every non-`owned_by_seed` verdict and can never trip this, and
+ * an `owned_by_seed` candidate emits no threat finding at all — so escalating
+ * DMARC to critical here is keyed on OBSERVED impersonation-shaped
+ * infrastructure, never on an ownership claim about a third party's domain.
+ *
  * This keys on `lookalikes` ONLY, deliberately matching the `impersonation_weak_dmarc`
  * interaction rule in `category-interactions.ts`, which scores `lookalikes <= 85`
  * (≈ "at least one medium-or-higher finding"). Keeping the label-escalation here and

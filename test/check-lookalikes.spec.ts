@@ -62,11 +62,19 @@ describe('checkLookalikes', () => {
 			return Promise.resolve(createDohResponse([], []));
 		});
 		const result = await run('test.com');
-		// No MEDIUM or HIGH is emitted for any non-owned candidate.
-		expect(result.findings.some((f) => f.severity === 'medium' || f.severity === 'high')).toBe(false);
-		const gated = result.findings.filter((f) => f.metadata?.ownershipVerdict === 'third_party');
-		expect(gated.length).toBeGreaterThan(0);
-		expect(gated.every((f) => f.severity === 'info')).toBe(true);
+		// Task 7b: the two axes are pinned SEPARATELY. Axis 1 (attribution) is
+		// still capped at info for every non-owned candidate — D4 unchanged.
+		const attribution = result.findings.filter((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution.length).toBeGreaterThan(0);
+		expect(attribution.every((f) => f.severity === 'info')).toBe(true);
+		expect(attribution.every((f) => f.metadata?.ownershipVerdict === 'third_party')).toBe(true);
+		// Axis 2 (threat observation) carries the #264 mail-infra-alone MEDIUM
+		// that Task 7 used to discard.
+		const threat = result.findings.filter((f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain);
+		expect(threat.length).toBeGreaterThan(0);
+		expect(threat.every((f) => f.severity === 'medium')).toBe(true);
+		// Still no HIGH: mail infrastructure alone, with no corroborator.
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
 	});
 
 	it('caps web-only lookalikes with no ownership signal at info (web-only, no corroborator, D4-capped)', async () => {
@@ -85,10 +93,18 @@ describe('checkLookalikes', () => {
 			return Promise.resolve(createDohResponse([], []));
 		});
 		const result = await run('test.com');
-		expect(result.findings.some((f) => f.severity === 'low')).toBe(false);
-		const gated = result.findings.filter((f) => f.metadata?.ownershipVerdict === 'third_party' && f.metadata?.hasMX === false);
-		expect(gated.length).toBeGreaterThan(0);
-		expect(gated.every((f) => f.severity === 'info')).toBe(true);
+		// Axis 1 — attribution capped at info.
+		const attribution = result.findings.filter(
+			(f) => f.metadata?.findingAxis === 'attribution' && f.metadata?.ownershipVerdict === 'third_party' && f.metadata?.hasMX === false,
+		);
+		expect(attribution.length).toBeGreaterThan(0);
+		expect(attribution.every((f) => f.severity === 'info')).toBe(true);
+		// Axis 2 — web-only with no corroborator is the matrix's LOW tier, and
+		// never more than that.
+		const threat = result.findings.filter((f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain);
+		expect(threat.length).toBeGreaterThan(0);
+		expect(threat.every((f) => f.severity === 'low')).toBe(true);
+		expect(result.findings.some((f) => f.severity === 'medium' || f.severity === 'high')).toBe(false);
 	});
 
 	it('surfaces a registered combosquat (brand + lure affix) that edit-distance generation misses, capped at info (no ownership signal)', async () => {
@@ -116,7 +132,10 @@ describe('checkLookalikes', () => {
 		const result = await run('paypal.com');
 		const surfaced = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'paypal-login.com');
 		expect(surfaced.length).toBeGreaterThan(0);
-		expect(surfaced.every((f) => f.severity === 'info')).toBe(true);
+		// Task 7b: attribution capped at info; the #264 mail-infra MEDIUM now
+		// surfaces on the threat axis instead of being discarded.
+		expect(surfaced.filter((f) => f.metadata?.findingAxis === 'attribution').every((f) => f.severity === 'info')).toBe(true);
+		expect(surfaced.filter((f) => f.metadata?.findingAxis === 'threat_observation').every((f) => f.severity === 'medium')).toBe(true);
 		expect(JSON.stringify(result.findings)).toContain('paypal-login.com');
 	});
 
@@ -245,7 +264,11 @@ describe('checkLookalikes - null MX filtering', () => {
 		const gated = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'tst.com' || f.metadata?.lookalikeDomain === 'tes.com');
 		expect(gated.length).toBeGreaterThan(0);
 		expect(gated.every((f) => f.metadata?.hasMX === false)).toBe(true);
-		expect(gated.every((f) => f.severity === 'info')).toBe(true);
+		// Task 7b: severity is axis-scoped — attribution stays info; the threat
+		// axis reports the web-only LOW tier (NOT a mail-infra MEDIUM/HIGH,
+		// which is the null-MX point this test exists for).
+		expect(gated.filter((f) => f.metadata?.findingAxis === 'attribution').every((f) => f.severity === 'info')).toBe(true);
+		expect(gated.filter((f) => f.metadata?.findingAxis === 'threat_observation').every((f) => f.severity === 'low')).toBe(true);
 	});
 
 	it('should not flag legacy null MX (0 localhost.) as mail infrastructure', async () => {
@@ -314,19 +337,26 @@ describe('checkLookalikes - null MX filtering', () => {
 		// web-only) still runs internally but is capped to info. What this test
 		// actually still needs to prove — real MX registers, null MX does not —
 		// is pinned on the `hasMX` metadata rather than the severity/title.
-		const testtFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'testt.com');
+		const testtFinding = result.findings.find(
+			(f) => f.metadata?.lookalikeDomain === 'testt.com' && f.metadata?.findingAxis === 'attribution',
+		);
 		expect(testtFinding).toBeDefined();
 		expect(testtFinding!.metadata?.hasMX).toBe(true);
 		expect(testtFinding!.severity).toBe('info');
 
-		const tesFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tes.com');
+		const tesFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tes.com' && f.metadata?.findingAxis === 'attribution');
 		expect(tesFinding).toBeDefined();
 		expect(tesFinding!.metadata?.hasMX).toBe(false);
 		expect(tesFinding!.severity).toBe('info');
 
-		// Neither should be HIGH or MEDIUM regardless (ownership cap, not just
-		// the null-MX distinction).
-		expect(result.findings.some((f) => f.severity === 'high' || f.severity === 'medium')).toBe(false);
+		// Task 7b: the threat axis is where the null-MX distinction now shows up
+		// numerically — real MX → mail-infra MEDIUM, null MX → web-only LOW.
+		// Neither reaches HIGH (no corroborator on either).
+		const threatFor = (d: string) =>
+			result.findings.find((f) => f.metadata?.lookalikeDomain === d && f.metadata?.findingAxis === 'threat_observation');
+		expect(threatFor('testt.com')!.severity).toBe('medium');
+		expect(threatFor('tes.com')!.severity).toBe('low');
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
 	});
 });
 
@@ -1412,10 +1442,11 @@ describe('checkLookalikes - D4 ownership-gated severity (2026-07-26 correctness-
 		// always present in the output.
 		expect(twstFindings.length).toBeGreaterThan(0);
 		expect(twstFindings.some((f) => f.title.includes('likely owned by same entity'))).toBe(false);
-		// Capped at info, not left at the mail-infra medium/high the calibrator
-		// would otherwise assign.
-		expect(twstFindings.every((f) => f.severity === 'info')).toBe(true);
-		const gated = twstFindings.find((f) => f.metadata?.ownershipVerdict !== undefined);
+		// Task 7b: the ATTRIBUTION axis is capped at info (D4 unchanged). The
+		// mail-infra MEDIUM the calibrator assigns now rides the threat axis.
+		expect(twstFindings.filter((f) => f.metadata?.findingAxis === 'attribution').every((f) => f.severity === 'info')).toBe(true);
+		expect(twstFindings.filter((f) => f.metadata?.findingAxis === 'threat_observation').every((f) => f.severity === 'medium')).toBe(true);
+		const gated = twstFindings.find((f) => f.metadata?.severityCappedBy !== undefined);
 		expect(gated).toBeDefined();
 		expect(gated!.metadata?.ownershipVerdict).toBe('third_party');
 		expect(gated!.metadata?.severityCappedBy).toBe('ownership_attribution');
@@ -1458,8 +1489,11 @@ describe('checkLookalikes - D4 ownership-gated severity (2026-07-26 correctness-
 		const result = await run('contoso.com');
 		const findings = result.findings.filter((f) => f.detail.includes('contos0.com'));
 		expect(findings.length).toBeGreaterThan(0);
-		expect(findings.every((f) => f.severity === 'info')).toBe(true);
-		const gated = findings.find((f) => f.metadata?.ownershipVerdict === 'third_party');
+		// Task 7b: the verdict-only cap applies to the ATTRIBUTION axis. A long
+		// brand label plus MX-overlap corroboration must still not lift the
+		// attribution finding above info.
+		expect(findings.filter((f) => f.metadata?.findingAxis === 'attribution').every((f) => f.severity === 'info')).toBe(true);
+		const gated = findings.find((f) => f.metadata?.findingAxis === 'attribution' && f.metadata?.ownershipVerdict === 'third_party');
 		expect(gated).toBeDefined();
 		// Corroboration affects wording (confidence), never the ceiling.
 		expect(gated!.metadata?.attributionConfidence).toBe('corroborated');
@@ -1643,7 +1677,8 @@ describe('checkLookalikes - D4 ownership-gated severity (2026-07-26 correctness-
 		// third-party direction: hnz.co.nz present, capped at info, neutral title.
 		const hnzFindings = result.findings.filter((f) => f.detail.includes('hnz.co.nz') || f.metadata?.lookalikeDomain === 'hnz.co.nz');
 		expect(hnzFindings.length).toBeGreaterThan(0);
-		expect(hnzFindings.every((f) => f.severity === 'info')).toBe(true);
+		// Task 7b: axis-scoped — attribution info, threat axis free to calibrate.
+		expect(hnzFindings.filter((f) => f.metadata?.findingAxis === 'attribution').every((f) => f.severity === 'info')).toBe(true);
 		expect(hnzFindings.some((f) => f.metadata?.ownershipVerdict === 'third_party')).toBe(true);
 		expect(hnzFindings.some((f) => f.title.includes('likely owned by same entity'))).toBe(false);
 
@@ -1657,5 +1692,249 @@ describe('checkLookalikes - D4 ownership-gated severity (2026-07-26 correctness-
 		// finding is NOT routed through the D4 demotion template. Pin the actual
 		// contract explicitly rather than leaving it implied by the title check.
 		expect(bnzComFindings.every((f) => f.severity === 'info')).toBe(true);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Task 7b (human-partner ruling 2026-07-27): the two axes are SPLIT.
+//   Axis 1 — attribution confidence (WHO owns it): still capped at `info` with
+//            neutral wording for every non-`owned_by_seed` verdict (D4).
+//   Axis 2 — observed-threat severity (WHAT it is doing): a NEW finding at the
+//            already-computed #264 calibrated severity, asserting nothing about
+//            ownership and demanding nothing of the customer on that domain.
+// Both axes are machine-discriminable via `metadata.findingAxis`.
+// ---------------------------------------------------------------------------
+describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observation)', () => {
+	async function run(domain = 'example.com') {
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		return checkLookalikes(domain);
+	}
+
+	/**
+	 * The textbook pre-phishing setup the opus review proved Task 7 had made
+	 * invisible: a confusable label on unrelated nameservers (third_party) with
+	 * LIVE mail infrastructure on a disposable provider — the #264 matrix's HIGH
+	 * tier. `mailgun.org` is in DISPOSABLE_MX_PROVIDERS, so the HIGH is reached
+	 * without needing an RDAP registration-age mock.
+	 */
+	function mockPrePhishingFixture(): void {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'testco.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
+			}
+			if (name === 'twstco.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+	}
+
+	it('6(a) emits BOTH axes for a live third-party typosquat: attribution capped at info, threat at the calibrated HIGH', async () => {
+		mockPrePhishingFixture();
+		const result = await run('testco.com');
+
+		const attribution = result.findings.filter(
+			(f) => f.metadata?.findingAxis === 'attribution' && f.metadata?.lookalikeDomain === 'twstco.com',
+		);
+		expect(attribution.length).toBe(1);
+		// Axis 1 unchanged — D4's safety property preserved verbatim.
+		expect(attribution[0].severity).toBe('info');
+		expect(attribution[0].metadata?.ownershipVerdict).toBe('third_party');
+		expect(attribution[0].metadata?.severityCappedBy).toBe('ownership_attribution');
+
+		// Axis 2 — the observed threat, at the severity the #264 matrix computed.
+		const threat = result.findings.filter(
+			(f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain === 'twstco.com',
+		);
+		expect(threat.length).toBe(1);
+		expect(threat[0].severity).toBe('high');
+		// The verdict travels on EVERY classified finding — a consumer must be
+		// able to read "high threat, NOT owned by the customer" off one object.
+		expect(threat[0].metadata?.ownershipVerdict).toBe('third_party');
+	});
+
+	it('6(a) un-deadens scoring: the lookalikes category no longer scores 100/passed on a live typosquat', async () => {
+		mockPrePhishingFixture();
+		const result = await run('testco.com');
+		expect(result.score).toBeLessThan(100);
+		// A HIGH threat observation is a -25 penalty; the summary finding adds
+		// another. Pin the direction, not a brittle exact number.
+		expect(result.score).toBeLessThanOrEqual(75);
+	});
+
+	it('un-deadens the summary path: the previously-unreachable HIGH "mail capability" summary finding fires again', async () => {
+		mockPrePhishingFixture();
+		const result = await run('testco.com');
+		const summary = result.findings.find((f) => /lookalike domains? with mail capability detected/i.test(f.title));
+		expect(summary).toBeDefined();
+		expect(summary!.severity).toBe('high');
+		expect(summary!.metadata?.findingAxis).toBe('threat_observation');
+		expect(summary!.metadata?.lookalikeDomainCount).toBe(1);
+	});
+
+	it('3. the threat finding states what was OBSERVED and uses no ownership/control framing', async () => {
+		mockPrePhishingFixture();
+		const result = await run('testco.com');
+		const threat = result.findings.find(
+			(f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain === 'twstco.com',
+		);
+		expect(threat).toBeDefined();
+		// States the observation.
+		expect(threat!.title).toMatch(/^Impersonation-shaped .*observed: twstco\.com$/);
+		expect(threat!.detail).toMatch(/mail infrastructure/i);
+		expect(threat!.detail).toMatch(/disposable MX provider/i);
+		// Explicitly disclaims ownership, per the ruling.
+		expect(threat!.detail).toMatch(/does not appear to belong to the scanned organisation/i);
+		// Banned framing — title AND detail (a split surface where the prose
+		// contradicts the axis marker is the failure mode this pins).
+		for (const text of [threat!.title, threat!.detail]) {
+			expect(text).not.toMatch(/\byour\b/i);
+			expect(text).not.toMatch(/shadow domain/i);
+			expect(text).not.toMatch(/\bowned by\b/i);
+			expect(text).not.toMatch(/\bmalicious\b/i);
+			expect(text).not.toMatch(/\battacker\b/i);
+		}
+	});
+
+	it('6(b) a benign parked third-party lookalike (web only, no MX) yields NO high/medium threat finding', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'testco.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
+			}
+			if (name === 'twstco.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('testco.com');
+		expect(result.findings.some((f) => f.severity === 'high' || f.severity === 'medium')).toBe(false);
+		const threat = result.findings.find(
+			(f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain === 'twstco.com',
+		);
+		expect(threat).toBeDefined();
+		// Matrix LOW tier — web-only, no corroborator.
+		expect(threat!.severity).toBe('low');
+	});
+
+	it('6(c) an owned_by_seed candidate gets NO threat-observation finding (a domain is not an impersonation threat to itself)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'bnz.co.nz' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns-cloud1.googledomains.com.' }]));
+			}
+			if (name === 'bnz.com') {
+				if (type === 'NS' || type === '2') {
+					// In-bailiwick to the seed apex — owned_by_seed.
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.bnz.co.nz.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					// Live mail infra on a DISPOSABLE provider — the #264 HIGH tier.
+					// If ownership were ignored on the threat axis this would surface
+					// as a HIGH against the customer's own domain.
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('bnz.co.nz');
+		const owned = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'bnz.com');
+		expect(owned.length).toBe(1);
+		expect(owned[0].metadata?.ownershipVerdict).toBe('owned_by_seed');
+		expect(owned[0].metadata?.findingAxis).toBe('attribution');
+		// No threat axis anywhere in this scan — including no HIGH summary.
+		expect(result.findings.some((f) => f.metadata?.findingAxis === 'threat_observation')).toBe(false);
+		expect(result.findings.every((f) => f.severity === 'info')).toBe(true);
+	});
+
+	it('2. every finding this tool emits carries a findingAxis marker with one of the two exact literals', async () => {
+		mockPrePhishingFixture();
+		const result = await run('testco.com');
+		expect(result.findings.length).toBeGreaterThan(0);
+		for (const finding of result.findings) {
+			expect(['attribution', 'threat_observation']).toContain(finding.metadata?.findingAxis);
+		}
+		// Both axes are actually represented (a non-discriminating "all axes are
+		// 'attribution'" world would otherwise satisfy the loop above).
+		expect(result.findings.some((f) => f.metadata?.findingAxis === 'attribution')).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.findingAxis === 'threat_observation')).toBe(true);
+	});
+
+	/**
+	 * DELIBERATE ASYMMETRY, flagged for the design owner: the issue #263
+	 * same-entity RDAP correlation branch emits an attribution finding and
+	 * `continue`s, so it produces NO threat observation either. This is NOT the
+	 * Task-7 defect resurfacing: a registrant-org MATCH is AFFIRMATIVE evidence
+	 * of a benign explanation (the org's own defensive/regional registration),
+	 * which is a different thing from the mere ABSENCE of ownership evidence
+	 * that Task 7 wrongly treated as a reason to suppress. Pinned here so the
+	 * choice is visible and can be reversed intentionally rather than by drift.
+	 */
+	it('the #263 same-entity RDAP branch emits no threat-observation finding (affirmative benign explanation, not absence of evidence)', async () => {
+		const rdap = {
+			events: [{ eventAction: 'registration', eventDate: new Date(Date.now() - 1500 * 86400_000).toISOString() }],
+			entities: [
+				{
+					objectClassName: 'entity',
+					roles: ['registrant'],
+					vcardArray: [
+						'vcard',
+						[
+							['version', {}, 'text', '4.0'],
+							['org', {}, 'text', 'Contoso Limited'],
+						],
+					],
+				},
+			],
+		};
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				const { name, type } = parseDohQuery(input);
+				if (name === 'test.com' && (type === 'NS' || type === '2')) {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
+				}
+				if (name === 'tst.com') {
+					if (type === 'NS' || type === '2') {
+						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.other-dns.com.' }]));
+					}
+					if (type === 'MX' || type === '15') {
+						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.example.com.' }]));
+					}
+				}
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('rdap')) {
+				return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(rdap) } as unknown as Response);
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('test.com');
+		const tst = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'tst.com');
+		expect(tst.length).toBe(1);
+		expect(tst[0].metadata?.sharedRegistrantOrg).toBe('contoso limited');
+		expect(tst[0].metadata?.findingAxis).toBe('attribution');
+		expect(tst[0].severity).toBe('info');
+		expect(result.findings.some((f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain)).toBe(false);
+	});
+
+	it('the scan-level "no active lookalikes" finding also carries an axis marker', async () => {
+		globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(createDohResponse([], [])));
+		const result = await run('test.com');
+		expect(result.findings.length).toBeGreaterThan(0);
+		for (const finding of result.findings) {
+			expect(['attribution', 'threat_observation']).toContain(finding.metadata?.findingAxis);
+		}
 	});
 });
