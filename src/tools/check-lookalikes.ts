@@ -7,7 +7,7 @@
  * Standalone check — not included in scan_domain due to query volume.
  */
 
-import { queryDnsRecords } from '../lib/dns';
+import { queryDnsRecords, queryMxRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { callReconScan, isReconHit } from '../lib/recon-binding';
 import { safeFetch } from '../lib/safe-fetch';
@@ -17,6 +17,15 @@ import { buildCheckResult, createFinding } from '../lib/scoring';
 import { generateCombosquats, generateLookalikes } from './lookalike-analysis';
 import { FALLBACK_RDAP_SERVERS, extractRegistrantOrg } from './check-rdap-lookup';
 import { calibrateLookalikeSeverity, isDisposableMxHost, type LookalikeSignals } from './lookalike-severity';
+import {
+	attributionConfidence,
+	capAttributionSeverity,
+	classifyOwnership,
+	MIN_ATTRIBUTION_LABEL_LENGTH,
+	type OwnershipAssessment,
+} from '../lib/ownership-attribution';
+import { isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
+import { extractBrandName } from '../lib/public-suffix';
 
 /** Default and minimum batch sizes for adaptive batching */
 export const INITIAL_BATCH_SIZE = 10;
@@ -48,9 +57,6 @@ interface LookalikeResult {
 /** Budgets for the Defect L enrichment probes. Both are intentionally tight so 12 candidates × (RDAP + HEAD) stays under LOOKALIKE_TIMEOUT_MS. */
 const RDAP_PROBE_TIMEOUT_MS = 2500;
 const WEB_PROBE_TIMEOUT_MS = 2500;
-
-/** Minimum number of NS records that must overlap to consider domains as sharing nameservers. */
-const SHARED_NS_THRESHOLD = 1;
 
 /**
  * Cap on the number of medium/high-severity lookalikes for which we attempt
@@ -185,21 +191,6 @@ function normalizeNsSet(nsRecords: string[]): Set<string> {
 }
 
 /**
- * Check whether two NS sets share at least SHARED_NS_THRESHOLD nameservers.
- * Shared nameservers are a strong signal that both domains are controlled by the same entity.
- */
-function sharesNameservers(primaryNs: Set<string>, lookalikeNs: Set<string>): boolean {
-	let overlap = 0;
-	for (const ns of lookalikeNs) {
-		if (primaryNs.has(ns)) {
-			overlap++;
-			if (overlap >= SHARED_NS_THRESHOLD) return true;
-		}
-	}
-	return false;
-}
-
-/**
  * Query NS records for the primary domain to use for ownership comparison.
  * Returns an empty set if the query fails.
  */
@@ -210,6 +201,72 @@ async function queryPrimaryNs(domain: string): Promise<Set<string>> {
 	} catch {
 		return new Set<string>();
 	}
+}
+
+/**
+ * Query MX records for the primary domain — the D4 (2026-07-26
+ * correctness-defects design) MX-overlap corroboration signal for
+ * `attributionConfidence()`. Fail-soft: an empty set just means the guard
+ * falls back to "no corroboration" rather than throwing.
+ */
+async function queryPrimaryMx(domain: string): Promise<Set<string>> {
+	try {
+		const mx = await queryMxRecords(domain, PHASE1_DNS_OPTS);
+		return new Set(mx.map((r) => r.exchange.toLowerCase().replace(/\.$/, '')));
+	} catch {
+		return new Set<string>();
+	}
+}
+
+/**
+ * D4 severity ceiling for a lookalike finding, mirroring `applyOwnershipGate()`
+ * in `check-shadow-domains.ts` — see that file's JSDoc for the full rationale;
+ * this is the same pattern reused for a second tool so the two stay
+ * consistent for downstream consumers.
+ *
+ * `owned_by_seed` findings pass through unclamped — `checkLookalikesCore`'s
+ * main loop already emits its own dedicated "likely owned by same entity"
+ * finding for that verdict before this function is ever reached, so in
+ * practice every call here receives a non-owned verdict. The passthrough
+ * branch exists anyway so the invariant is explicit and enforced at this
+ * chokepoint rather than merely assumed by the caller.
+ *
+ * DEMOTE, NEVER DELETE (binding ruling): this returns a `Finding`, never
+ * `null`/`undefined` — a real measurement (an active registration with
+ * MX/A records) is never suppressed, only its severity capped and its
+ * wording made neutral. `attributionConfidence()` governs WORDING/CONFIDENCE
+ * ONLY; it can never move the ceiling, which `capAttributionSeverity()`
+ * derives from `ownership.verdict` alone.
+ */
+function applyOwnershipGate(finding: Finding, ownership: OwnershipAssessment, brand: string, corroborated: boolean): Finding {
+	const ceiling = capAttributionSeverity(ownership.verdict);
+	if (ceiling === 'unbounded') return finding;
+
+	const confidence = attributionConfidence(ownership.verdict, brand, corroborated);
+	const lookalikeDomain = typeof finding.metadata?.lookalikeDomain === 'string' ? finding.metadata.lookalikeDomain : 'This domain';
+	const metadata = {
+		...finding.metadata,
+		ownershipVerdict: ownership.verdict,
+		ownershipRationale: ownership.rationale,
+		attributionConfidence: confidence,
+		severityCappedBy: 'ownership_attribution',
+	};
+
+	const relation =
+		ownership.verdict === 'third_party'
+			? 'is registered to a different organisation'
+			: 'could not be attributed to the scanned organisation';
+	const hedge =
+		confidence === 'uncorroborated'
+			? ` The shared label is under ${MIN_ATTRIBUTION_LABEL_LENGTH} characters and nothing else corroborates a link, so the name similarity alone means little.`
+			: '';
+	return createFinding(
+		'lookalikes',
+		`Unrelated domain, confusable label: ${lookalikeDomain}`,
+		ceiling,
+		`${lookalikeDomain} shares a similar label with the scanned domain but ${relation}. ${ownership.rationale} Its DNS/mail posture is reported for awareness only: no action by the scanned organisation is implied, and this finding asserts no control over ${lookalikeDomain}.${hedge}`,
+		metadata,
+	);
 }
 
 /**
@@ -329,9 +386,15 @@ async function checkLookalikesCore(
 
 	const permsToProbe = [...nonDotInsertionPerms, ...filteredDotInsertionPerms];
 
-	// Phase 1: Fast NS existence check — filter out unregistered domains
-	// Also query the primary domain's NS for ownership comparison
-	const [nsResult, primaryNs] = await Promise.all([filterByNsExistence(permsToProbe), queryPrimaryNs(domain)]);
+	// Phase 1: Fast NS existence check — filter out unregistered domains.
+	// Also query the primary domain's NS + MX for ownership comparison: NS for
+	// the ownership verdict itself, MX for the D4 MX-overlap corroboration
+	// signal consulted by `attributionConfidence()` (wording only).
+	const [nsResult, primaryNs, primaryMx] = await Promise.all([
+		filterByNsExistence(permsToProbe),
+		queryPrimaryNs(domain),
+		queryPrimaryMx(domain),
+	]);
 	const { registered: registeredPerms, nsMap: lookalikeNsMap } = nsResult;
 
 	if (registeredPerms.length === 0) {
@@ -346,6 +409,33 @@ async function checkLookalikesCore(
 		return buildCheckResult('lookalikes', findings);
 	}
 
+	// D4 (2026-07-26 correctness-defects design) — classify every registered
+	// candidate's ownership ONCE, up front, reused across all three same-owner
+	// decision points below (the enrichment filter, the main classification
+	// loop, and the same-entity RDAP-eligibility filter). Replaces
+	// sharesNameservers() (SHARED_NS_THRESHOLD = 1 — a single shared NS host,
+	// e.g. a pooled Akamai hostname, was already enough to mark two unrelated
+	// organisations as the same owner — an even weaker version of the
+	// shadow-domains bug this design also fixes). Every registered candidate
+	// here was proven registered via NS (filterByNsExistence only returns
+	// domains with NS records), so `registration.ns` is always non-empty.
+	const primaryNsList = Array.from(primaryNs);
+	const brand = extractBrandName(domain) ?? '';
+	const ownershipByDomain = new Map<string, OwnershipAssessment>();
+	for (const perm of registeredPerms) {
+		const candidateNs = Array.from(lookalikeNsMap.get(perm) ?? []);
+		ownershipByDomain.set(
+			perm,
+			classifyOwnership({
+				seedDomain: domain,
+				seedNs: primaryNsList,
+				candidateDomain: perm,
+				registration: { state: 'registered', ns: candidateNs, evidence: candidateNs.length > 0 ? ['ns'] : ['a'] },
+				isSharedNsHost,
+			}),
+		);
+	}
+
 	// Phase 2: Detail probe only registered domains
 	const probeResults = await probeWithAdaptiveBatching(registeredPerms);
 	const results: LookalikeResult[] = [];
@@ -357,12 +447,12 @@ async function checkLookalikesCore(
 
 	// Enrichment (Defect L / issue #264): for each non-defensively-registered
 	// lookalike with mail or web infrastructure, gather corroborating signals
-	// so the calibrator can pick the right severity tier. Lookalikes that
-	// share nameservers with the primary domain skip enrichment entirely (they
-	// short-circuit to info-severity defensive-registration findings).
+	// so the calibrator can pick the right severity tier. Lookalikes the
+	// ownership verdict already attributes to the same organisation skip
+	// enrichment entirely (they short-circuit to info-severity
+	// defensive-registration findings in the main loop below).
 	const candidatesToEnrich: LookalikeResult[] = results.filter((r) => {
-		const lookalikeNs = lookalikeNsMap.get(r.domain);
-		const sameOwner = primaryNs.size > 0 && lookalikeNs !== undefined && sharesNameservers(primaryNs, lookalikeNs);
+		const sameOwner = ownershipByDomain.get(r.domain)?.verdict === 'owned_by_seed';
 		return !sameOwner && (r.hasMX || r.hasA);
 	});
 	const enrichment = await enrichLookalikes(candidatesToEnrich);
@@ -370,7 +460,7 @@ async function checkLookalikesCore(
 	// Same-entity correlation (issue #263): a flagged lookalike that shares the
 	// scan domain's RDAP registrant org is almost certainly the org's own
 	// defensive registration / regional subsidiary (e.g. a vendor's regional
-	// presence on a DIFFERENT DNS provider, which the shared-NS pass above
+	// presence on a DIFFERENT DNS provider, which the ownership verdict above
 	// misses). We only fetch the primary's registrant org — and only apply the
 	// correlation — when at least one enriched candidate would surface at
 	// medium/high severity, so a clean scan pays no RDAP cost. The candidates'
@@ -380,7 +470,7 @@ async function checkLookalikesCore(
 	// SAME_ENTITY_RDAP_CAP, highest-severity first. Fail-soft: if the primary
 	// RDAP org is unknown, NO downgrade happens (a real threat is never
 	// suppressed because RDAP was unavailable).
-	const sameEntityCandidates = computeSameEntityCandidates(results, lookalikeNsMap, primaryNs, enrichment);
+	const sameEntityCandidates = computeSameEntityCandidates(results, ownershipByDomain, enrichment);
 	const primaryRegistrantOrg = sameEntityCandidates.length > 0 ? await probePrimaryRegistrantOrg(domain) : null;
 	const sameEntityMatches = new Map<string, string>();
 	if (primaryRegistrantOrg !== null) {
@@ -391,21 +481,28 @@ async function checkLookalikesCore(
 		}
 	}
 
-	// Classify results — check for shared nameservers with primary domain to detect defensive registrations
+	// Classify results — route the ownership verdict computed above through
+	// the D4 gate so a shared-provider/no-signal candidate can never surface
+	// above info (see classifyOwnership()'s JSDoc in ../lib/ownership-attribution).
 	let highCount = 0;
 	for (const result of results) {
-		const lookalikeNs = lookalikeNsMap.get(result.domain);
-		const sameOwner = primaryNs.size > 0 && lookalikeNs !== undefined && sharesNameservers(primaryNs, lookalikeNs);
+		const ownership: OwnershipAssessment = ownershipByDomain.get(result.domain) ?? {
+			verdict: 'unattributed',
+			strength: 'none',
+			signals: [],
+			rationale: `No ownership signal is available for ${result.domain}.`,
+		};
+		const sameOwner = ownership.verdict === 'owned_by_seed';
 
 		if (sameOwner) {
-			// Shared nameservers — likely a defensive registration by the same entity
+			// Structurally owned by the seed — the customer's own domain.
 			findings.push(
 				createFinding(
 					'lookalikes',
 					`Lookalike domain likely owned by same entity: ${result.domain}`,
 					'info',
-					`The domain ${result.domain} shares nameservers with ${domain}, indicating it is likely a defensive registration by the same owner.${result.hasMX ? ' Has active mail infrastructure.' : ''}${result.hasA ? ' Has web presence.' : ''}`,
-					{ lookalikeDomain: result.domain, hasA: result.hasA, hasMX: result.hasMX, sharedNs: true },
+					`The domain ${result.domain} is owned by the same organisation as ${domain} (${ownership.rationale}).${result.hasMX ? ' Has active mail infrastructure.' : ''}${result.hasA ? ' Has web presence.' : ''}`,
+					{ lookalikeDomain: result.domain, hasA: result.hasA, hasMX: result.hasMX, ownershipVerdict: ownership.verdict },
 				),
 			);
 			continue;
@@ -449,10 +546,15 @@ async function checkLookalikesCore(
 			continue;
 		}
 
-		if (result.hasMX) {
-			if (severity === 'high') highCount++;
-			findings.push(
-				createFinding(
+		// D4 — the ownership verdict caps the calibrated severity: a candidate
+		// with no ownership signal linking it to the scanned organisation can
+		// never surface above info, regardless of how threatening its raw
+		// infrastructure signals look. `attributionConfidence()` (fed the
+		// MX-overlap corroboration signal below) governs WORDING/CONFIDENCE
+		// only — see `applyOwnershipGate()`'s JSDoc.
+		const mxOverlapsPrimary = result.mxExchanges.some((ex) => primaryMx.has(ex));
+		const rawFinding = result.hasMX
+			? createFinding(
 					'lookalikes',
 					`Lookalike domain with mail infrastructure: ${result.domain}`,
 					severity,
@@ -465,12 +567,8 @@ async function checkLookalikesCore(
 						mxOnDisposable: signals.mxOnDisposable,
 						hasWebContent: signals.hasWebContent,
 					},
-				),
-			);
-		} else {
-			// Web-only
-			findings.push(
-				createFinding(
+				)
+			: createFinding(
 					'lookalikes',
 					`Lookalike domain registered: ${result.domain}`,
 					severity,
@@ -483,9 +581,11 @@ async function checkLookalikesCore(
 						mxOnDisposable: signals.mxOnDisposable,
 						hasWebContent: signals.hasWebContent,
 					},
-				),
-			);
-		}
+				);
+
+		const gatedFinding = applyOwnershipGate(rawFinding, ownership, brand, mxOverlapsPrimary);
+		if (result.hasMX && gatedFinding.severity === 'high') highCount++;
+		findings.push(gatedFinding);
 	}
 
 	// Summary finding for high-severity lookalikes. Only fires when at least one
@@ -559,22 +659,22 @@ interface LookalikeCorroborators {
  * Determine which lookalike candidates are eligible for the issue #263
  * same-entity (shared-registrant) downgrade. Eligibility mirrors the
  * classification loop's decision so we never fetch the primary's registrant
- * org speculatively: a candidate qualifies only when it is NOT already a
- * shared-NS same-owner hit, has mail/web infra, AND its calibrated severity is
- * medium or high (low web-only matches aren't worth the RDAP cost). The result
+ * org speculatively: a candidate qualifies only when `ownershipByDomain`
+ * does NOT already attribute it to the seed (`owned_by_seed` — CALL SITE 3
+ * of the D4 2026-07-26 correctness-defects design's ownership gate), has
+ * mail/web infra, AND its calibrated severity is medium or high (low
+ * web-only matches aren't worth the RDAP cost). The result
  * is sorted high-before-medium and capped at {@link SAME_ENTITY_RDAP_CAP} so a
  * permutation explosion can't widen the RDAP fan-out unbounded.
  */
 function computeSameEntityCandidates(
 	results: LookalikeResult[],
-	lookalikeNsMap: Map<string, Set<string>>,
-	primaryNs: Set<string>,
+	ownershipByDomain: Map<string, OwnershipAssessment>,
 	enrichment: Map<string, LookalikeCorroborators>,
 ): string[] {
 	const eligible: Array<{ domain: string; severity: 'medium' | 'high' }> = [];
 	for (const result of results) {
-		const lookalikeNs = lookalikeNsMap.get(result.domain);
-		const sameOwner = primaryNs.size > 0 && lookalikeNs !== undefined && sharesNameservers(primaryNs, lookalikeNs);
+		const sameOwner = ownershipByDomain.get(result.domain)?.verdict === 'owned_by_seed';
 		if (sameOwner) continue;
 		if (!result.hasMX && !result.hasA) continue;
 		const corroborators = enrichment.get(result.domain);

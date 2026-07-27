@@ -34,9 +34,16 @@ describe('checkLookalikes', () => {
 		expect(info!.severity).toBe('info');
 	});
 
-	it('should return medium finding for lookalike with mail-infra but no corroborator (issue #264 matrix)', async () => {
-		// Updated for issue #264: mail-infra alone is MEDIUM, not HIGH.
-		// HIGH requires a corroborator (recent registration, disposable MX, or no web content).
+	// D4 fixture repair (2026-07-26 correctness-defects design): these
+	// candidates' NS ('ns1.registrar.com.') carries no ownership signal —
+	// third_party under classifyOwnership() — so the calibrated #264
+	// mail-infra-alone MEDIUM is now capped to info by the ownership gate
+	// (a third_party verdict can never exceed info). The #264 calibration
+	// still runs internally (it drives wording/metadata), it just no longer
+	// surfaces as an elevated `.severity` for a domain the scanner cannot
+	// attribute to the scanned organisation. The `describeCorroborators`
+	// hedge stays observable in `.detail`.
+	it('caps mail-infra-alone lookalikes with no ownership signal at info, never elevates them (issue #264 matrix, D4-capped)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 
@@ -55,18 +62,14 @@ describe('checkLookalikes', () => {
 			return Promise.resolve(createDohResponse([], []));
 		});
 		const result = await run('test.com');
-		const mediumFindings = result.findings.filter((f) => f.severity === 'medium');
-		expect(mediumFindings.length).toBeGreaterThan(0);
-		const mxFinding = mediumFindings.find((f) => /mail infrastructure/i.test(f.title));
-		expect(mxFinding).toBeDefined();
-		// And no HIGH should be emitted (no corroborating signal)
-		const highFindings = result.findings.filter((f) => f.severity === 'high');
-		expect(highFindings.length).toBe(0);
+		// No MEDIUM or HIGH is emitted for any non-owned candidate.
+		expect(result.findings.some((f) => f.severity === 'medium' || f.severity === 'high')).toBe(false);
+		const gated = result.findings.filter((f) => f.metadata?.ownershipVerdict === 'third_party');
+		expect(gated.length).toBeGreaterThan(0);
+		expect(gated.every((f) => f.severity === 'info')).toBe(true);
 	});
 
-	it('should return low finding for lookalike with A but no MX (web-only, no corroborator)', async () => {
-		// Updated for issue #264: web-only lookalikes default to LOW.
-		// MEDIUM is reserved for web-only + recent registration (<90d).
+	it('caps web-only lookalikes with no ownership signal at info (web-only, no corroborator, D4-capped)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 
@@ -82,17 +85,19 @@ describe('checkLookalikes', () => {
 			return Promise.resolve(createDohResponse([], []));
 		});
 		const result = await run('test.com');
-		const lowFindings = result.findings.filter((f) => f.severity === 'low');
-		expect(lowFindings.length).toBeGreaterThan(0);
-		const registeredFinding = lowFindings.find((f) => /Lookalike domain registered/i.test(f.title));
-		expect(registeredFinding).toBeDefined();
+		expect(result.findings.some((f) => f.severity === 'low')).toBe(false);
+		const gated = result.findings.filter((f) => f.metadata?.ownershipVerdict === 'third_party' && f.metadata?.hasMX === false);
+		expect(gated.length).toBeGreaterThan(0);
+		expect(gated.every((f) => f.severity === 'info')).toBe(true);
 	});
 
-	it('surfaces a registered combosquat (brand + lure affix) that edit-distance generation misses', async () => {
+	it('surfaces a registered combosquat (brand + lure affix) that edit-distance generation misses, capped at info (no ownership signal)', async () => {
 		// `paypal-login.com` is a combosquat of `paypal.com`: generateLookalikes
 		// (edit-distance mutators) never produces it — generateCombosquats does.
-		// Give it mail infrastructure so it surfaces at MEDIUM per the #264 matrix,
-		// proving Part 3 generation feeds the same severity pipeline.
+		// It has mail infrastructure and would calibrate to MEDIUM per the #264
+		// matrix, but carries no ownership signal (third_party) so the D4 gate
+		// caps it at info — proving Part 3 generation still feeds the same
+		// ownership-gated pipeline as every other detection path.
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 			if (name === 'paypal-login.com') {
@@ -109,8 +114,9 @@ describe('checkLookalikes', () => {
 			return Promise.resolve(createDohResponse([], []));
 		});
 		const result = await run('paypal.com');
-		const surfaced = result.findings.filter((f) => f.severity === 'medium' || f.severity === 'high');
+		const surfaced = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'paypal-login.com');
 		expect(surfaced.length).toBeGreaterThan(0);
+		expect(surfaced.every((f) => f.severity === 'info')).toBe(true);
 		expect(JSON.stringify(result.findings)).toContain('paypal-login.com');
 	});
 
@@ -198,7 +204,10 @@ describe('checkLookalikes', () => {
 		const result = await run('test.com');
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('low');
+		// D4-capped: no ownership signal (ns1.registrar.com) → third_party → info,
+		// not the raw web-only LOW the #264 calibrator computes internally.
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('third_party');
 	});
 });
 
@@ -228,13 +237,15 @@ describe('checkLookalikes - null MX filtering', () => {
 		});
 		const result = await run('test.com');
 
-		// Should NOT have any high findings (null MX is not real mail infra)
-		const mxFindings = result.findings.filter((f) => /mail infrastructure/i.test(f.title));
-		expect(mxFindings.length).toBe(0);
-
-		// Should have low findings (A record present, but no real MX → web-only LOW under #264)
-		const lowFindings = result.findings.filter((f) => f.severity === 'low');
-		expect(lowFindings.length).toBeGreaterThan(0);
+		// D4-capped: no ownership signal, so severity is 'info' regardless — the
+		// title-based "mail infrastructure" check no longer discriminates null-MX
+		// filtering (every capped finding is retitled "Unrelated domain,
+		// confusable label: X"). The actual point — null MX must NOT register as
+		// real mail infra — is now pinned on the preserved `hasMX` metadata.
+		const gated = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'tst.com' || f.metadata?.lookalikeDomain === 'tes.com');
+		expect(gated.length).toBeGreaterThan(0);
+		expect(gated.every((f) => f.metadata?.hasMX === false)).toBe(true);
+		expect(gated.every((f) => f.severity === 'info')).toBe(true);
 	});
 
 	it('should not flag legacy null MX (0 localhost.) as mail infrastructure', async () => {
@@ -257,8 +268,13 @@ describe('checkLookalikes - null MX filtering', () => {
 			return Promise.resolve(createDohResponse([], []));
 		});
 		const result = await run('test.com');
-		const mxFindings = result.findings.filter((f) => /mail infrastructure/i.test(f.title));
-		expect(mxFindings.length).toBe(0);
+		// D4-capped (third_party, no ownership signal): title no longer carries
+		// "mail infrastructure" wording for ANY capped finding, so the actual
+		// point — legacy null MX must not register as real mail infra — is
+		// pinned on the preserved `hasMX` metadata instead.
+		const gated = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'tst.com' || f.metadata?.lookalikeDomain === 'tes.com');
+		expect(gated.length).toBeGreaterThan(0);
+		expect(gated.every((f) => f.metadata?.hasMX === false)).toBe(true);
 	});
 
 	it('should flag real MX but ignore null MX in mixed responses', async () => {
@@ -293,20 +309,24 @@ describe('checkLookalikes - null MX filtering', () => {
 		});
 		const result = await run('test.com');
 
-		// testt.com has real MX but no corroborating signal → MEDIUM under #264 matrix
-		const testtMedium = result.findings.find((f) => f.severity === 'medium' && f.title.includes('testt.com'));
-		expect(testtMedium).toBeDefined();
+		// D4-capped (neither has an ownership signal — third_party): the raw
+		// #264 calibration (testt.com → MEDIUM mail-infra, tes.com → LOW
+		// web-only) still runs internally but is capped to info. What this test
+		// actually still needs to prove — real MX registers, null MX does not —
+		// is pinned on the `hasMX` metadata rather than the severity/title.
+		const testtFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'testt.com');
+		expect(testtFinding).toBeDefined();
+		expect(testtFinding!.metadata?.hasMX).toBe(true);
+		expect(testtFinding!.severity).toBe('info');
 
-		// tes.com has only A record (web-only, no MX) — LOW under #264 matrix.
-		// (Previously MEDIUM; the calibrator now reserves MEDIUM for web-only + recent registration.)
-		const tesLow = result.findings.find((f) => f.severity === 'low' && f.title.includes('tes.com'));
-		expect(tesLow).toBeDefined();
+		const tesFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tes.com');
+		expect(tesFinding).toBeDefined();
+		expect(tesFinding!.metadata?.hasMX).toBe(false);
+		expect(tesFinding!.severity).toBe('info');
 
-		// Neither should be HIGH
-		const tesHigh = result.findings.find((f) => f.severity === 'high' && f.title.includes('tes.com'));
-		expect(tesHigh).toBeUndefined();
-		const testtHigh = result.findings.find((f) => f.severity === 'high' && f.title.includes('testt.com'));
-		expect(testtHigh).toBeUndefined();
+		// Neither should be HIGH or MEDIUM regardless (ownership cap, not just
+		// the null-MX distinction).
+		expect(result.findings.some((f) => f.severity === 'high' || f.severity === 'medium')).toBe(false);
 	});
 });
 
@@ -362,7 +382,9 @@ describe('checkLookalikes - wildcard DNS filtering', () => {
 		// te.st.com should remain because st.com has no wildcard
 		const teStFinding = result.findings.find((f) => f.title.includes('te.st.com'));
 		expect(teStFinding).toBeDefined();
-		expect(teStFinding!.severity).toBe('low'); // web-only baseline (#264)
+		// D4-capped: no ownership signal → third_party → info (the web-only LOW
+		// baseline still computes internally but is capped at the tool boundary).
+		expect(teStFinding!.severity).toBe('info');
 	});
 
 	it('should not affect non-dot-insertion permutations regardless of wildcard', async () => {
@@ -386,7 +408,8 @@ describe('checkLookalikes - wildcard DNS filtering', () => {
 		// tst.com is a same-label-count permutation (char omission), not dot-insertion — should be kept
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('low'); // web-only baseline (#264)
+		// D4-capped: no ownership signal → third_party → info.
+		expect(tstFinding!.severity).toBe('info');
 	});
 
 	it('exports WILDCARD_CANARY_LABEL constant', async () => {
@@ -445,21 +468,30 @@ describe('checkLookalikes - shared nameserver detection', () => {
 
 		const result = await run('test.com');
 
-		// tst.com should be info (shared NS = likely same owner), NOT high
+		// tst.com should be info (2/2 dedicated NS match = owned_by_seed under
+		// classifyOwnership), NOT high.
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
 		expect(tstFinding!.severity).toBe('info');
 		expect(tstFinding!.title).toContain('likely owned by same entity');
-		expect(tstFinding!.detail).toContain('shares nameservers');
+		expect(tstFinding!.detail).toContain('dedicated nameservers');
 		expect(tstFinding!.detail).toContain('mail infrastructure');
-		expect(tstFinding!.metadata?.sharedNs).toBe(true);
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('owned_by_seed');
 
 		// Should NOT appear in the high count summary
 		const highSummary = result.findings.find((f) => /mail capability detected/i.test(f.title));
 		expect(highSummary).toBeUndefined();
 	});
 
-	it('should keep high severity when lookalike has different nameservers', async () => {
+	// D4-capped (2026-07-26 correctness-defects design): tst.com's NS
+	// ('ns1.attacker-dns.com.') carries no ownership signal against the
+	// primary — third_party. What USED to be described as "keep high
+	// severity" is now capped at info by the ownership gate: a domain the
+	// scanner cannot attribute to the scanned organisation can never surface
+	// above info, regardless of how threatening its raw MX signal looks. The
+	// underlying #264 calibration (MX-alone → medium) still runs internally,
+	// preserved in `hasMX` metadata, but the visible severity is capped.
+	it('caps a lookalike with different (unrelated) nameservers at info despite active MX (D4 ownership cap)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 
@@ -468,7 +500,8 @@ describe('checkLookalikes - shared nameserver detection', () => {
 				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com.' }]));
 			}
 
-			// tst.com has DIFFERENT nameservers + MX → should remain HIGH
+			// tst.com has DIFFERENT (unrelated) nameservers + MX — no ownership
+			// signal against the primary.
 			if (name === 'tst.com') {
 				if (type === 'NS' || type === '2') {
 					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.attacker-dns.com.' }]));
@@ -488,24 +521,47 @@ describe('checkLookalikes - shared nameserver detection', () => {
 
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		// MX present but no corroborator → MEDIUM under issue #264 matrix.
-		expect(tstFinding!.severity).toBe('medium');
-		expect(tstFinding!.title).toContain('mail infrastructure');
+		// D4-capped: third_party (unrelated NS) — capped at info regardless of
+		// the raw #264 MX-alone MEDIUM the calibrator computes internally.
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('third_party');
+		expect(tstFinding!.metadata?.hasMX).toBe(true);
 	});
 
-	it('should downgrade medium to info when lookalike with A record shares NS', async () => {
+	// D4 fixture repair: classifyOwnership()'s dedicated NS-set-match rule
+	// (rule 5) requires >= 2 matching dedicated hosts, not a single host — a
+	// SINGLE arbitrary hostname match is exactly the naive threshold=1
+	// coincidence this design closes off (§3.3). Two dedicated hosts here
+	// keeps the scenario genuinely owned_by_seed.
+	it('should downgrade medium to info when lookalike with A record shares a 2-host dedicated NS pair', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 
 			// Primary domain NS
 			if (name === 'test.com' && (type === 'NS' || type === '2')) {
-				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' }]));
+				return Promise.resolve(
+					createDohResponse(
+						[{ name, type: 2 }],
+						[
+							{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' },
+							{ name, type: 2, TTL: 300, data: 'ns2.example-dns.com.' },
+						],
+					),
+				);
 			}
 
-			// tst.com shares NS, has A record but no MX
+			// tst.com shares the same 2-host dedicated NS pair, has an A record but no MX
 			if (name === 'tst.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' }]));
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[
+								{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' },
+								{ name, type: 2, TTL: 300, data: 'ns2.example-dns.com.' },
+							],
+						),
+					);
 				}
 				if (type === 'A' || type === '1') {
 					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
@@ -523,21 +579,43 @@ describe('checkLookalikes - shared nameserver detection', () => {
 		expect(tstFinding!.severity).toBe('info');
 		expect(tstFinding!.title).toContain('likely owned by same entity');
 		expect(tstFinding!.detail).toContain('web presence');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('owned_by_seed');
 	});
 
+	// D4 fixture repair: same 2-host minimum as above — a single normalized
+	// hostname match doesn't clear classifyOwnership()'s rule-5 threshold, so
+	// a second host is added to both sides. Casing/trailing-dot variation is
+	// kept on one host pair to still exercise the normalization this test is
+	// actually about.
 	it('should handle NS comparison case-insensitively and strip trailing dots', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 
 			// Primary domain NS with trailing dot and mixed case
 			if (name === 'test.com' && (type === 'NS' || type === '2')) {
-				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'NS1.CloudFlare.COM.' }]));
+				return Promise.resolve(
+					createDohResponse(
+						[{ name, type: 2 }],
+						[
+							{ name, type: 2, TTL: 300, data: 'NS1.CloudFlare.COM.' },
+							{ name, type: 2, TTL: 300, data: 'NS2.CloudFlare.COM.' },
+						],
+					),
+				);
 			}
 
-			// tst.com has same NS but different casing/trailing dot
+			// tst.com has the same NS but different casing/trailing dot
 			if (name === 'tst.com') {
 				if (type === 'NS' || type === '2') {
-					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com' }]));
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							[
+								{ name, type: 2, TTL: 300, data: 'ns1.cloudflare.com' },
+								{ name, type: 2, TTL: 300, data: 'ns2.cloudflare.com' },
+							],
+						),
+					);
 				}
 				if (type === 'A' || type === '1') {
 					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
@@ -582,13 +660,15 @@ describe('checkLookalikes - shared nameserver detection', () => {
 
 		const result = await run('test.com');
 
-		// Primary NS unknown (empty set — can't compare). Mail-infra present without
-		// corroborator → MEDIUM under issue #264 matrix. The shared-NS gate is
-		// independent of the severity calibration.
+		// Primary NS unknown (empty set — can't compare) → third_party (no
+		// ownership signal at all) → D4-capped at info, same numeric outcome as
+		// an explicit ownership downgrade would produce, but via the "no
+		// evidence" path rather than a same-owner claim.
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('medium');
-		// And must NOT be downgraded to info (no shared NS detected)
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('third_party');
+		// And must NOT carry the same-owner claim (no shared NS detected).
 		expect(tstFinding!.title).not.toContain('likely owned by same entity');
 	});
 
@@ -648,17 +728,20 @@ describe('checkLookalikes - shared nameserver detection', () => {
 
 		const result = await run('test.com');
 
-		// tst.com should be info (shared NS)
+		// tst.com should be info (2/2 dedicated NS match = owned_by_seed)
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
 		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('owned_by_seed');
 
-		// testt.com has different NS + MX but no corroborator → MEDIUM under #264 matrix
-		// (was HIGH under the old "any MX → high" rule).
-		const testtFinding = result.findings.find((f) => f.severity === 'medium' && f.title.includes('testt.com'));
+		// testt.com has different (unrelated) NS + MX — third_party — D4-capped
+		// at info regardless of the raw #264 MX-alone MEDIUM computed internally.
+		const testtFinding = result.findings.find((f) => f.title.includes('testt.com'));
 		expect(testtFinding).toBeDefined();
+		expect(testtFinding!.severity).toBe('info');
+		expect(testtFinding!.metadata?.ownershipVerdict).toBe('third_party');
 
-		// No HIGH summary fires because no lookalike scored HIGH under the new matrix.
+		// No HIGH summary fires because nothing surfaces above info.
 		const summary = result.findings.find((f) => /mail capability detected/i.test(f.title));
 		expect(summary).toBeUndefined();
 	});
@@ -709,12 +792,7 @@ describe('checkLookalikes - issue #264 severity calibration wiring', () => {
 	 * to ok:true (fail-soft → hasWebContent=true) unless the test overrides
 	 * the URL to be parked/refused.
 	 */
-	function mockWithRdap(opts: {
-		mailDomain: string;
-		mxExchange?: string;
-		registrationDaysAgo?: number | null;
-		hasWebContent?: boolean;
-	}) {
+	function mockWithRdap(opts: { mailDomain: string; mxExchange?: string; registrationDaysAgo?: number | null; hasWebContent?: boolean }) {
 		const { mailDomain, mxExchange = 'mail.example.com.', registrationDaysAgo, hasWebContent = true } = opts;
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -754,46 +832,66 @@ describe('checkLookalikes - issue #264 severity calibration wiring', () => {
 				if (!hasWebContent) {
 					return Promise.reject(new Error('connection refused'));
 				}
-				return Promise.resolve({ ok: true, status: 200, headers: new Headers(), text: () => Promise.resolve(''), json: () => Promise.resolve({}) } as unknown as Response);
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					headers: new Headers(),
+					text: () => Promise.resolve(''),
+					json: () => Promise.resolve({}),
+				} as unknown as Response);
 			}
 
 			return Promise.resolve(createDohResponse([], []));
 		});
 	}
 
-	it('elevates mail-infra + recent registration to HIGH', async () => {
+	// D4-capped (2026-07-26 correctness-defects design): 'ns1.registrar.com.'
+	// carries no ownership signal against the (unmocked, empty) primary NS —
+	// third_party. Every RDAP-driven elevation in this describe block still
+	// runs internally (it is what produces the `registrationDays`/
+	// `mxOnDisposable`/`hasWebContent` metadata pinned below, proving the
+	// wiring is intact), but the OUTPUT severity is now capped at info for a
+	// domain the scanner cannot attribute to the scanned organisation — a
+	// domain that genuinely calibrates to HIGH under #264 is exactly the
+	// riskiest case for a false-attribution claim, so it is not exempted.
+	it('caps mail-infra + recent registration at info despite calibrating internally to HIGH', async () => {
 		mockWithRdap({ mailDomain: 'tst.com', registrationDaysAgo: 30 });
 		const result = await run('test.com');
-		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		const tstFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tst.com');
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('high');
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('third_party');
+		expect(tstFinding!.metadata?.registrationDays).toBe(30);
 	});
 
-	it('keeps mail-infra at MEDIUM when registration is old (≥90d)', async () => {
+	it('caps mail-infra at info when registration is old (≥90d) — internal calibration stays MEDIUM-shaped in metadata', async () => {
 		mockWithRdap({ mailDomain: 'tst.com', registrationDaysAgo: 1500 });
 		const result = await run('test.com');
-		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		const tstFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tst.com');
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('medium');
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.registrationDays).toBe(1500);
 	});
 
-	it('elevates mail-infra + disposable MX to HIGH', async () => {
+	it('caps mail-infra + disposable MX at info despite calibrating internally to HIGH', async () => {
 		mockWithRdap({ mailDomain: 'tst.com', mxExchange: 'smtp.mailgun.org.', registrationDaysAgo: null });
 		const result = await run('test.com');
-		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		const tstFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tst.com');
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('high');
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.mxOnDisposable).toBe(true);
 	});
 
-	it('elevates mail-infra + no web content (parked/refused) to HIGH', async () => {
+	it('caps mail-infra + no web content (parked/refused) at info despite calibrating internally to HIGH', async () => {
 		mockWithRdap({ mailDomain: 'tst.com', registrationDaysAgo: null, hasWebContent: false });
 		const result = await run('test.com');
-		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		const tstFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tst.com');
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('high');
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.hasWebContent).toBe(false);
 	});
 
-	it('elevates web-only + recent registration to MEDIUM', async () => {
+	it('caps web-only + recent registration at info despite calibrating internally to MEDIUM', async () => {
 		// Build a slightly different mock — no MX, A only, recent registration.
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -818,14 +916,22 @@ describe('checkLookalikes - issue #264 severity calibration wiring', () => {
 				} as unknown as Response);
 			}
 			if (url.startsWith('https://') || url.startsWith('http://')) {
-				return Promise.resolve({ ok: true, status: 200, headers: new Headers(), text: () => Promise.resolve(''), json: () => Promise.resolve({}) } as unknown as Response);
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					headers: new Headers(),
+					text: () => Promise.resolve(''),
+					json: () => Promise.resolve({}),
+				} as unknown as Response);
 			}
 			return Promise.resolve(createDohResponse([], []));
 		});
 		const result = await run('test.com');
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('medium');
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('third_party');
+		expect(tstFinding!.metadata?.registrationDays).toBe(30);
 	});
 });
 
@@ -848,9 +954,15 @@ describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation',
 						{
 							objectClassName: 'entity',
 							roles: ['registrant'],
-							vcardArray: ['vcard', [['version', {}, 'text', '4.0'], ['org', {}, 'text', org]]],
+							vcardArray: [
+								'vcard',
+								[
+									['version', {}, 'text', '4.0'],
+									['org', {}, 'text', org],
+								],
+							],
 						},
-				  ];
+					];
 		return { events, entities };
 	}
 
@@ -905,7 +1017,13 @@ describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation',
 
 			// HEAD probe — reachable web content (fail-soft true)
 			if (url.startsWith('https://') || url.startsWith('http://')) {
-				return Promise.resolve({ ok: true, status: 200, headers: new Headers(), text: () => Promise.resolve(''), json: () => Promise.resolve({}) } as unknown as Response);
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					headers: new Headers(),
+					text: () => Promise.resolve(''),
+					json: () => Promise.resolve({}),
+				} as unknown as Response);
 			}
 			return Promise.resolve(createDohResponse([], []));
 		});
@@ -935,21 +1053,30 @@ describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation',
 		expect(summary).toBeUndefined();
 	});
 
-	it('keeps the calibrated threat severity when the registrant org differs (real third-party lookalike preserved)', async () => {
+	// D4-capped: tst.com's NS ('ns1.other-dns.com.', deliberately distinct
+	// from the primary's 'ns1.primary-dns.com.' per mockSameEntity) carries no
+	// ownership signal — third_party — so even a genuine "Phishing Co"
+	// registrant with a recent-registration HIGH calibration is capped at
+	// info. This is the deliberately conservative D4 trade-off: the tool no
+	// longer distinguishes a real phishing lookalike's threat tier in
+	// `.severity` once ownership can't be established, but it is still
+	// reported (never suppressed) with the calibration preserved in metadata.
+	it('caps a real third-party phishing lookalike at info even when its RDAP registrant org differs (D4 ownership cap)', async () => {
 		mockSameEntity({
 			lookalike: 'tst.com',
-			lookalikeRdap: rdapWithRegistrant('Phishing Co', 30), // recent reg + mail-infra → HIGH
+			lookalikeRdap: rdapWithRegistrant('Phishing Co', 30), // recent reg + mail-infra → HIGH internally
 			primaryRdap: rdapWithRegistrant('<Vendor> Limited'),
 		});
 		const result = await run('test.com');
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('high');
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('third_party');
 		expect(tstFinding!.title).not.toContain('likely owned by same entity');
-		expect(tstFinding!.title).toContain('mail infrastructure');
+		expect(tstFinding!.metadata?.registrationDays).toBe(30);
 	});
 
-	it('falls back to the threat severity when RDAP fails for the lookalike (fail-soft, never suppresses)', async () => {
+	it('caps at info when RDAP fails for the lookalike, never suppresses (fail-soft)', async () => {
 		mockSameEntity({
 			lookalike: 'tst.com',
 			lookalikeRdap: { fail: true }, // RDAP unavailable → registrantOrg unknown
@@ -958,13 +1085,22 @@ describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation',
 		const result = await run('test.com');
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
-		// Mail-infra, no corroborator, RDAP age unknown → MEDIUM (issue #264 default). NOT downgraded to info.
-		expect(tstFinding!.severity).toBe('medium');
+		// Mail-infra, no corroborator, RDAP age unknown → MEDIUM internally
+		// (issue #264 default), but third_party → D4-capped at info. Present,
+		// not suppressed, and not carrying the same-owner claim.
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('third_party');
 		expect(tstFinding!.title).not.toContain('likely owned by same entity');
 	});
 
-	it('detects a shared-NS same-entity lookalike WITHOUT issuing any RDAP fetch (cheap path preserved)', async () => {
-		const sharedNs = 'ns1.shared-dns.com.';
+	// D4 fixture repair: a SINGLE shared NS host (not flagged as a shared
+	// provider) no longer clears classifyOwnership()'s rule-5 threshold
+	// (>= 2 dedicated hosts) — that single-host coincidence is exactly the
+	// naive threshold=1 bug this design closes. A second shared host is added
+	// so the scenario is genuinely owned_by_seed, keeping this test's actual
+	// subject (the cheap shared-NS path skips RDAP entirely) observable.
+	it('detects a 2-host dedicated-NS same-entity lookalike WITHOUT issuing any RDAP fetch (cheap path preserved)', async () => {
+		const sharedNs = ['ns1.shared-dns.com.', 'ns2.shared-dns.com.'];
 		const rdapCalls: string[] = [];
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -972,11 +1108,21 @@ describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation',
 			if (url.includes('cloudflare-dns.com')) {
 				const { name, type } = parseDohQuery(input);
 				if (name === 'test.com' && (type === 'NS' || type === '2')) {
-					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: sharedNs }]));
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							sharedNs.map((d) => ({ name, type: 2, TTL: 300, data: d })),
+						),
+					);
 				}
 				if (name === 'tst.com') {
 					if (type === 'NS' || type === '2') {
-						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: sharedNs }]));
+						return Promise.resolve(
+							createDohResponse(
+								[{ name, type: 2 }],
+								sharedNs.map((d) => ({ name, type: 2, TTL: 300, data: d })),
+							),
+						);
 					}
 					if (type === 'MX' || type === '15') {
 						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.tst.com.' }]));
@@ -994,7 +1140,7 @@ describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation',
 		expect(tstFinding).toBeDefined();
 		expect(tstFinding!.severity).toBe('info');
 		expect(tstFinding!.title).toContain('likely owned by same entity');
-		expect(tstFinding!.detail).toContain('shares nameservers');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('owned_by_seed');
 		// The cheaper shared-NS path must short-circuit BEFORE any RDAP call.
 		expect(rdapCalls.length).toBe(0);
 	});
@@ -1106,7 +1252,13 @@ describe('checkLookalikes - probeRdap routes through safeFetch (SSRF parity, P3 
 				return Promise.resolve(createDohResponse([], []));
 			}
 			// HEAD web-content probe — reachable (fail-soft true).
-			return Promise.resolve({ ok: true, status: 200, headers: new Headers(), text: () => Promise.resolve(''), json: () => Promise.resolve({}) } as unknown as Response);
+			return Promise.resolve({
+				ok: true,
+				status: 200,
+				headers: new Headers(),
+				text: () => Promise.resolve(''),
+				json: () => Promise.resolve({}),
+			} as unknown as Response);
 		};
 	}
 
@@ -1143,10 +1295,15 @@ describe('checkLookalikes - probeRdap routes through safeFetch (SSRF parity, P3 
 		// the validated URL is the hardcoded public RDAP host — proves it passes validateOutboundUrl
 		expect(rdapUrls.some((u) => u.startsWith('https://rdap.verisign.com/'))).toBe(true);
 
-		// (2) the legitimate RDAP response still parses → recent registration elevates to HIGH
-		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		// (2) the legitimate RDAP response still parses → recent registration is
+		// captured in metadata (registrationDays). Severity itself is D4-capped
+		// at info: 'ns1.registrar.com.' carries no ownership signal
+		// (third_party), so even the internally-HIGH calibration this recent
+		// registration would produce is capped.
+		const tstFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tst.com');
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('high');
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.registrationDays).toBe(30);
 	});
 
 	it('degrades fail-soft (no throw, registration unknown) when safeFetch blocks the RDAP host', async () => {
@@ -1167,9 +1324,283 @@ describe('checkLookalikes - probeRdap routes through safeFetch (SSRF parity, P3 
 		// Must not throw out of the tool — the probe's try/catch absorbs the block.
 		const result = await checkLookalikes('test.com');
 
-		// Registration age is unknown (probe blocked) → mail-infra stays MEDIUM, not HIGH.
-		const tstFinding = result.findings.find((f) => f.title.includes('tst.com') && /mail infrastructure/i.test(f.title));
+		// Registration age is unknown (probe blocked) → mail-infra stays
+		// MEDIUM-shaped internally, not HIGH — and third_party (no ownership
+		// signal) caps the OUTPUT severity at info regardless.
+		const tstFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tst.com');
 		expect(tstFinding).toBeDefined();
-		expect(tstFinding!.severity).toBe('medium');
+		expect(tstFinding!.severity).toBe('info');
+		expect(tstFinding!.metadata?.registrationDays).toBeNull();
+	});
+});
+
+describe('checkLookalikes - D4 ownership-gated severity (2026-07-26 correctness-defects design)', () => {
+	async function run(domain = 'example.com') {
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		return checkLookalikes(domain);
+	}
+
+	// CALL SITE 2 (main classification loop). Old sharesNameservers()/
+	// SHARED_NS_THRESHOLD=1 fired on a SINGLE shared Akamai host and would
+	// have relabelled this "likely owned by same entity" at info. Under
+	// classifyOwnership(), a partial overlap confined to a shared-provider
+	// host (a1-97.akam.net) is explicitly NOT ownership evidence (§3.3), so
+	// the verdict is third_party. DEMOTE, NEVER DELETE: the finding must
+	// still be present (a real measurement, never suppressed) but capped at
+	// info with neutral wording — never the ownership-framed title.
+	it('does not mark a lookalike as same-owner off a single shared Akamai NS host — demotes to info, never suppresses', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'testco.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name, type: 2 }],
+						['a1-97.akam.net.', 'a3-67.akam.net.'].map((d) => ({ name, type: 2, TTL: 300, data: d })),
+					),
+				);
+			}
+			if (name === 'twstco.com') {
+				if (type === 'NS' || type === '2') {
+					// Shares exactly ONE Akamai host (a1-97) with the primary — the
+					// old SHARED_NS_THRESHOLD=1 bug would call this "same owner".
+					return Promise.resolve(
+						createDohResponse(
+							[{ name, type: 2 }],
+							['a1-97.akam.net.', 'a99-99.akam.net.'].map((d) => ({ name, type: 2, TTL: 300, data: d })),
+						),
+					);
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.example.com.' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('testco.com');
+		const twstFindings = result.findings.filter((f) => f.detail.includes('twstco.com'));
+		// DEMOTE, NEVER DELETE: a real, positively-probed candidate (has MX) is
+		// always present in the output.
+		expect(twstFindings.length).toBeGreaterThan(0);
+		expect(twstFindings.some((f) => f.title.includes('likely owned by same entity'))).toBe(false);
+		// Capped at info, not left at the mail-infra medium/high the calibrator
+		// would otherwise assign.
+		expect(twstFindings.every((f) => f.severity === 'info')).toBe(true);
+		const gated = twstFindings.find((f) => f.metadata?.ownershipVerdict !== undefined);
+		expect(gated).toBeDefined();
+		expect(gated!.metadata?.ownershipVerdict).toBe('third_party');
+		expect(gated!.metadata?.severityCappedBy).toBe('ownership_attribution');
+	});
+
+	// CALL SITE 2 + the load-bearing safety property: severity gates on the
+	// VERDICT alone, never on attributionConfidence/label length/
+	// corroboration. Brand label here is 7 chars (>= MIN_ATTRIBUTION_LABEL_LENGTH)
+	// AND the candidate's MX exchange overlaps the primary's — both signals
+	// that would make attributionConfidence() return 'corroborated'. If
+	// severity were (wrongly) gated on attributionConfidence instead of
+	// capAttributionSeverity(verdict), a 'third_party' + 'corroborated'
+	// candidate would be treated as unbounded and surface above info. It
+	// must not: third_party is capped at info regardless of corroboration.
+	it('caps a third_party verdict at info even with a long brand label AND MX-overlap corroboration (verdict-only gate)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'contoso.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.shared-mx.com.' }]));
+				}
+			}
+			if (name === 'contos0.com') {
+				if (type === 'NS' || type === '2') {
+					// Completely distinct NS from the primary — no ownership signal.
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.attacker-dns.com.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					// Same MX exchange as the primary — a genuine MX-overlap
+					// corroboration signal, wired for WORDING only.
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.shared-mx.com.' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('contoso.com');
+		const findings = result.findings.filter((f) => f.detail.includes('contos0.com'));
+		expect(findings.length).toBeGreaterThan(0);
+		expect(findings.every((f) => f.severity === 'info')).toBe(true);
+		const gated = findings.find((f) => f.metadata?.ownershipVerdict === 'third_party');
+		expect(gated).toBeDefined();
+		// Corroboration affects wording (confidence), never the ceiling.
+		expect(gated!.metadata?.attributionConfidence).toBe('corroborated');
+	});
+
+	// CALL SITE 2 (the demoted rung must be neutrally worded, not just
+	// numerically capped). A split-surface bug (severity right, title still
+	// ownership-framed) is exactly what bit Task 6's first review pass.
+	it('never uses ownership-implying prose ("owned", "your domain") for a non-owned candidate at the capped severity', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'testco.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
+			}
+			if (name === 'twstco.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.attacker-dns.com.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.evil.com.' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('testco.com');
+		const gated = result.findings.find((f) => f.metadata?.ownershipVerdict === 'third_party' && f.detail.includes('twstco.com'));
+		expect(gated).toBeDefined();
+		expect(gated!.severity).toBe('info');
+		expect(gated!.title).not.toMatch(/owned by same entity/i);
+		expect(gated!.detail).not.toMatch(/is owned by the same organisation/i);
+	});
+
+	// CALL SITE 1 (the enrichment gate) AND CALL SITE 2 together, on the
+	// OPPOSITE direction from the Akamai test: an in-bailiwick NS delegation
+	// is ownership evidence with ZERO literal hostname overlap against the
+	// primary's own NS set, so the OLD sharesNameservers()/threshold=1 check
+	// (exact-hostname set intersection) would see NO overlap and treat this
+	// as a third party — while classifyOwnership() correctly recognises
+	// in-bailiwick delegation as owned_by_seed. This is the discriminator for
+	// call site 1: with the old code, this candidate would NOT be excluded
+	// from enrichment (an RDAP fetch would fire); with the fix, ownership is
+	// resolved from the NS verdict alone and RDAP is never consulted for an
+	// owned candidate. The finding must surface UNCLAMPED (medium/high, not
+	// capped to info) since verdict is owned_by_seed.
+	it('recognises in-bailiwick NS delegation as owned_by_seed with zero literal NS-hostname overlap, skips RDAP enrichment, and leaves severity unclamped', async () => {
+		const rdapCalls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('rdap')) rdapCalls.push(url);
+			const { name, type } = parseDohQuery(input);
+			// Primary's own NS is a totally distinct hostname from the candidate's.
+			if (name === 'bnz.co.nz' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns-cloud1.googledomains.com.' }]));
+			}
+			if (name === 'bnz.com') {
+				if (type === 'NS' || type === '2') {
+					// In-bailiwick to the seed apex bnz.co.nz — zero literal overlap
+					// with the primary's own NS hostname above.
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.bnz.co.nz.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.bnz.co.nz.' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('bnz.co.nz');
+		const bnzComFindings = result.findings.filter((f) => f.detail.includes('bnz.com') || f.metadata?.lookalikeDomain === 'bnz.com');
+		expect(bnzComFindings.length).toBeGreaterThan(0);
+		expect(bnzComFindings.some((f) => f.title.includes('likely owned by same entity'))).toBe(true);
+		expect(bnzComFindings.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(true);
+		// Call site 1: an owned candidate must never trigger the RDAP enrichment
+		// probe (the old exact-hostname-overlap check would have missed the
+		// in-bailiwick relationship and enriched it anyway).
+		expect(rdapCalls.length).toBe(0);
+	});
+
+	// CALL SITE 3 (computeSameEntityCandidates' RDAP-eligibility filter). Seed
+	// TLD is deliberately .com (FALLBACK_RDAP_SERVERS has an entry — unlike
+	// .nz, used elsewhere in this block, which has none and would make a
+	// "no primary RDAP fetch" assertion pass trivially regardless of gating).
+	// The ONLY candidate with mail infrastructure in this scan is the
+	// in-bailiwick owned combosquat 'mail-contoso.com'; if call site 3 is left
+	// on the old exact-hostname-overlap check it would (wrongly) treat this
+	// owned candidate as eligible for the same-entity RDAP correlation and
+	// fetch the PRIMARY's own registrant org even though nothing needs
+	// correlating — an unnecessary RDAP fetch this test catches directly by
+	// asserting no RDAP call for the primary domain occurs.
+	it('excludes an owned_by_seed candidate from the same-entity RDAP-eligibility set (no primary RDAP fetch)', async () => {
+		const primaryRdapCalls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('rdap') && url.includes('/domain/contoso.com')) primaryRdapCalls.push(url);
+			const { name, type } = parseDohQuery(input);
+			if (name === 'contoso.com' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
+			}
+			// mail-contoso.com — a combosquat, delegated in-bailiwick to the seed
+			// apex contoso.com — owned_by_seed with zero literal NS-hostname
+			// overlap against the primary's own NS above.
+			if (name === 'mail-contoso.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.contoso.com.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.contoso.com.' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		await run('contoso.com');
+		expect(primaryRdapCalls.length).toBe(0);
+	});
+
+	// D4 spec row for this tool, BOTH directions pinned together (a test that
+	// proves only one direction does not discriminate): a short (3-char)
+	// brand label with a third_party verdict and no corroboration is
+	// suppressed FROM ELEVATION (present at info, neutral wording) while a
+	// short (3-char) brand label with an owned_by_seed verdict (NS in
+	// bailiwick — the strongest corroborating signal by construction) still
+	// surfaces at full computed severity.
+	it('D4 short-label pin: third-party short label capped at info; owned_by_seed short label surfaces unclamped', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'bnz.co.nz' && (type === 'NS' || type === '2')) {
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns-cloud1.googledomains.com.' }]));
+			}
+			// hnz.co.nz — a homoglyph of bnz.co.nz (b -> h), registered on its own
+			// unrelated NS. Brand label 'bnz' is 3 chars, below
+			// MIN_ATTRIBUTION_LABEL_LENGTH, and there is no MX overlap with the
+			// primary — third_party, uncorroborated.
+			if (name === 'hnz.co.nz') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(
+						createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-registrar.com.' }]),
+					);
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.hnz.co.nz.' }]));
+				}
+			}
+			// bnz.com — a TLD-swap variant delegated in-bailiwick to bnz.co.nz.
+			// Same 3-char brand label, but owned_by_seed via NS in-bailiwick.
+			if (name === 'bnz.com') {
+				if (type === 'NS' || type === '2') {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.bnz.co.nz.' }]));
+				}
+				if (type === 'MX' || type === '15') {
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.bnz.co.nz.' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const result = await run('bnz.co.nz');
+
+		// third-party direction: hnz.co.nz present, capped at info, neutral title.
+		const hnzFindings = result.findings.filter((f) => f.detail.includes('hnz.co.nz') || f.metadata?.lookalikeDomain === 'hnz.co.nz');
+		expect(hnzFindings.length).toBeGreaterThan(0);
+		expect(hnzFindings.every((f) => f.severity === 'info')).toBe(true);
+		expect(hnzFindings.some((f) => f.metadata?.ownershipVerdict === 'third_party')).toBe(true);
+		expect(hnzFindings.some((f) => f.title.includes('likely owned by same entity'))).toBe(false);
+
+		// owned_by_seed direction: bnz.com present, unclamped, ownership title.
+		const bnzComFindings = result.findings.filter((f) => f.detail.includes('bnz.com') || f.metadata?.lookalikeDomain === 'bnz.com');
+		expect(bnzComFindings.length).toBeGreaterThan(0);
+		expect(bnzComFindings.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(true);
+		expect(bnzComFindings.some((f) => f.title.includes('likely owned by same entity'))).toBe(true);
 	});
 });
