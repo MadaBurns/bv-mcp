@@ -476,7 +476,7 @@ describe('evaluateCscProducts: a total outage (all checks attempted, none comple
  * synthetic "check error" finding (severity `high`, no real content) as a
  * genuine DMARC gap, pricing an upsell — "DMARC present but not passing" —
  * against a category nobody actually measured. Mirrors the equivalent
- * `map_compliance`/`generate_fix_plan` fix (see `src/lib/map-compliance.ts:272`
+ * `map_compliance`/`generate_fix_plan` fix (see `src/tools/map-compliance.ts:272`
  * for the reference implementation this is modeled on).
  */
 describe('evaluateCscProducts: the priced category itself failed transiently (not the whole scan)', () => {
@@ -515,11 +515,13 @@ describe('evaluateCscProducts: the priced category itself failed transiently (no
 		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
 		expect(dmarc.recommended).toBe(false);
 		expect(dmarc.priority).toBe('none');
+		expect(dmarc.assessed).toBe(false);
 		expect(dmarc.relatedFindings).not.toContain('DMARC check error');
 
 		const ssl = report.recommendations.find((r) => r.product === 'digital_certificates')!;
 		expect(ssl.recommended).toBe(true);
 		expect(ssl.priority).toBe('high');
+		expect(ssl.assessed).toBe(true);
 		expect(ssl.relatedFindings).toContain('Certificate expired');
 	});
 
@@ -536,15 +538,67 @@ describe('evaluateCscProducts: the priced category itself failed transiently (no
 		expect(dmarc.justifyingGap.toLowerCase()).not.toContain('policy in effect');
 	});
 
-	it('formatCscProducts renders the transient category as not-assessed prose, not a silent omission', async () => {
-		const { evaluateCscProducts: evaluate, formatCscProducts } = await import('../src/tools/map-csc-products');
+	/**
+	 * F6 (review round 1): `unassessedScanProduct`'s "checks attempted, none
+	 * completed" wording is TRUE for the whole-report `'all_transient'` case
+	 * (every category failed) but was, before this fix, ALSO used verbatim for
+	 * THIS per-category case — where digital_certificates (`genuineSsl`)
+	 * completed in the very same scan. "none completed" is a false statement
+	 * about a scan where a sibling category plainly did complete.
+	 */
+	it('the per-category transient wording does not falsely claim the whole scan failed to complete (F6)', async () => {
+		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
 		const { transientDmarc, genuineSsl } = await buildFixtures();
 
 		const report = evaluate([transientDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
+		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
 
-		for (const text of [formatCscProducts(report, 'full'), formatCscProducts(report, 'compact')]) {
-			expect(text.toLowerCase()).toContain('dmarc');
-			expect(text.toLowerCase()).not.toContain('dmarc check error');
+		expect(dmarc.justifyingGap.toLowerCase()).not.toContain('none completed');
+		expect(dmarc.justifyingGap.toLowerCase()).toMatch(/this category/);
+
+		// Control: the WHOLE-report all-transient case genuinely has nothing that
+		// completed, so "none completed" IS true there and must still render.
+		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const wholeReport = unassessedScanProduct('managed_dmarc', 'DMARC', 'all_transient');
+		expect(wholeReport.justifyingGap.toLowerCase()).toContain('none completed');
+	});
+
+	/**
+	 * F3 (review round 1): the original version of this test only asserted
+	 * `toContain('dmarc')` (satisfied by the ever-present product name "Managed
+	 * DMARC") and `not.toContain('dmarc check error')` (satisfied by an EMPTY
+	 * `relatedFindings`, regardless of how the row otherwise rendered) — both
+	 * stayed GREEN under a full silent-drop mutation (compact mode rendering
+	 * `✓ Managed DMARC` with no gap text at all, identical to a clean pass), so
+	 * neither assertion was actually testing what the title claimed. Rewritten
+	 * to directly compare the TRANSIENT render against a CLEAN-PASS render of
+	 * the same product and assert they differ — the property F1 exists to
+	 * guarantee — instead of grepping for a substring a silent drop can still
+	 * satisfy.
+	 */
+	it('formatCscProducts renders an unassessed transient product as visually DISTINCT from a genuine clean pass — not a silent omission', async () => {
+		const { evaluateCscProducts: evaluate, formatCscProducts } = await import('../src/tools/map-csc-products');
+		const { buildCheckResult } = await import('@blackveil/dns-checks/scoring');
+		const { transientDmarc, genuineSsl } = await buildFixtures();
+		const cleanDmarc = { ...buildCheckResult('dmarc', []), score: 100, passed: true };
+
+		const transientReport = evaluate([transientDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
+		const cleanReport = evaluate([cleanDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
+
+		const dmarcLine = (text: string) => text.split('\n').find((l) => l.includes('Managed DMARC'))!;
+
+		for (const format of ['full', 'compact'] as const) {
+			const transientLine = dmarcLine(formatCscProducts(transientReport, format));
+			const cleanLine = dmarcLine(formatCscProducts(cleanReport, format));
+
+			// The core F1 property: the two states must never render identically.
+			expect(transientLine).not.toBe(cleanLine);
+			// And specifically via the markers a clean pass uses in each mode —
+			// the transient render must use NEITHER.
+			expect(transientLine).not.toContain('✓');
+			expect(transientLine).not.toContain('➖');
+			expect(transientLine.toLowerCase()).not.toContain('— ok');
+			expect(transientLine.toLowerCase()).toMatch(/not assessed/);
 		}
 	});
 });

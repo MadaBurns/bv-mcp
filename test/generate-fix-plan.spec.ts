@@ -328,7 +328,7 @@ describe('formatFixPlan — a domain that was never measured', () => {
  * synthetic "check error" finding `buildDnsErrorResult` attaches carries
  * `metadata.errorKind: 'dns_error'` — that finding is the ABSENCE of a
  * measurement, not a customer gap to fix. Mirrors the equivalent
- * `map_compliance`/`map_csc_products` fix (see `src/lib/map-compliance.ts:272`
+ * `map_compliance`/`map_csc_products` fix (see `src/tools/map-compliance.ts:272`
  * for the reference implementation this is modeled on).
  */
 describe('evaluateFixPlan: a category that failed transiently is not turned into a remediation action', () => {
@@ -401,5 +401,108 @@ describe('evaluateFixPlan: a category that failed transiently is not turned into
 			expect(text.toLowerCase()).toContain('dmarc');
 			expect(text.toLowerCase()).toMatch(/not assess|could not be assessed|transient/);
 		}
+	});
+
+	/**
+	 * F2 (review round 1): `buildFixtures()` above uses `buildDnsErrorResult`-shaped
+	 * transients (`metadata.errorKind: 'dns_error'`). But the ORCHESTRATOR's own
+	 * transient producer — `safeCheck()` in `src/tools/scan-domain.ts`, which is
+	 * what actually runs for any check with no top-level internal DNS-error
+	 * handling of its own — sets `checkStatus: 'error' | 'timeout'` and NEVER sets
+	 * `errorKind`. A fix gated only on `errorKind` would miss every
+	 * safeCheck-produced transient: a `checkStatus: 'timeout'` result would render
+	 * BOTH as a fix action ("Fix DMARC: DMARC check timed out — ...") AND, in the
+	 * SAME plan, as a `transientCategories` entry — self-contradictory output.
+	 * `evaluateFixPlan` gates on `checkStatus` (not `errorKind`) for exactly this
+	 * reason; these fixtures are built the way `safeCheck` actually produces
+	 * results to prove that gate is what is doing the work, covering both
+	 * `checkStatus` values `safeCheck` can produce.
+	 */
+	describe('a safeCheck-shaped transient (no errorKind metadata) is still excluded — covers both checkStatus values', () => {
+		async function safeCheckShapedFixtures() {
+			const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+			// No `metadata` argument at all — matches safeCheck()'s own
+			// `createFinding(category, title, severity, detail)` call exactly.
+			const timedOutDmarc = {
+				...buildCheckResult('dmarc', [
+					createFinding('dmarc', 'DMARC check timed out', 'low', 'Check did not complete within the 8s limit'),
+				]),
+				score: 0,
+				checkStatus: 'timeout' as const,
+				partial: true,
+			};
+			const erroredMx = {
+				...buildCheckResult('mx', [createFinding('mx', 'MX check error', 'high', 'Check failed: DNS query failed')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'error' as const,
+				partial: true,
+			};
+			const cleanSsl = { ...buildCheckResult('ssl', []), score: 100, passed: true };
+			return { timedOutDmarc, erroredMx, cleanSsl };
+		}
+
+		it('neither the timeout- nor the error-shaped safeCheck transient becomes a fix action, and both are represented in transientCategories', async () => {
+			const { evaluateFixPlan } = await import('../src/tools/generate-fix-plan');
+			const { timedOutDmarc, erroredMx, cleanSsl } = await safeCheckShapedFixtures();
+
+			const plan = evaluateFixPlan([timedOutDmarc, erroredMx, cleanSsl], 'safecheck-outage.example', 90, 'A', 4);
+
+			expect(plan.assessed).toBe(true); // ssl completed
+			expect(plan.totalActions).toBe(0);
+			const titles = plan.actions.map((a) => a.findingTitle);
+			expect(titles).not.toContain('DMARC check timed out');
+			expect(titles).not.toContain('MX check error');
+			expect(plan.transientCategories.sort()).toEqual(['dmarc', 'mx']);
+		});
+
+		it('formatFixPlan never emits a self-contradictory plan (an action for a category ALSO listed as not-assessed)', async () => {
+			const { evaluateFixPlan, formatFixPlan } = await import('../src/tools/generate-fix-plan');
+			const { timedOutDmarc, erroredMx, cleanSsl } = await safeCheckShapedFixtures();
+
+			const plan = evaluateFixPlan([timedOutDmarc, erroredMx, cleanSsl], 'safecheck-outage.example', 90, 'A', 4);
+
+			for (const text of [formatFixPlan(plan, 'full'), formatFixPlan(plan, 'compact')]) {
+				expect(text).not.toContain('DMARC check timed out');
+				expect(text).not.toContain('MX check error');
+				expect(text.toLowerCase()).toMatch(/not|transient/);
+			}
+		});
+	});
+
+	/**
+	 * Proves the `isDnsErrorFinding` per-finding filter is NOT dead code in this
+	 * file (contrast with map-csc-products.ts, where the reviewer's M2a proved
+	 * the equivalent per-finding filters ARE dead once the `checkStatus` guard
+	 * exists). A check can COMPLETE (`checkStatus` absent/'completed') and still
+	 * attach its OWN errorKind-tagged finding for a narrower reason than a full
+	 * check failure — e.g. `discover-brand-domains.ts`'s "Brand-domain discovery
+	 * could not complete" finding, emitted when every discovery signal failed
+	 * but the check itself ran to completion. The `checkStatus`-level filter
+	 * (F2's fix) cannot see this state at all — `checkStatus` is never
+	 * `'error'`/`'timeout'` here — so only the per-finding filter catches it.
+	 */
+	it('a COMPLETED check whose own finding is errorKind-tagged still never becomes a fix action (proves the per-finding filter is load-bearing here)', async () => {
+		const { evaluateFixPlan } = await import('../src/tools/generate-fix-plan');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		// checkStatus intentionally ABSENT — the check itself completed normally;
+		// only its own finding is errorKind-tagged.
+		const inconclusiveBrandDiscovery = buildCheckResult('brand_discovery', [
+			createFinding('brand_discovery', 'Brand-domain discovery could not complete', 'high', 'All signals failed', {
+				errorKind: 'dns_error',
+				missingControl: true,
+			}),
+		]);
+		const cleanSsl = { ...buildCheckResult('ssl', []), score: 100, passed: true };
+
+		const plan = evaluateFixPlan([inconclusiveBrandDiscovery, cleanSsl], 'inconclusive.example', 90, 'A', 4);
+
+		expect(plan.assessed).toBe(true);
+		expect(plan.actions.some((a) => a.category === 'brand_discovery')).toBe(false);
+		// Not in transientCategories either — its checkStatus was never
+		// 'error'/'timeout', so this state is invisible to that channel; it is
+		// caught SOLELY by the per-finding errorKind filter.
+		expect(plan.transientCategories).not.toContain('brand_discovery');
 	});
 });

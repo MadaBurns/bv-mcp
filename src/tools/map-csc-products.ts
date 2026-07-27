@@ -42,6 +42,20 @@ export interface CscProductRecommendation {
 	priority: CscPriority;
 	justifyingGap: string;
 	relatedFindings: string[];
+	/**
+	 * `false` exactly for a product built by {@link unassessedScanProduct} — the
+	 * category (or the whole scan) was never actually observed. Every OTHER
+	 * construction site (`evalMultiLock`, `evalScanProduct`'s pass/fail/absent
+	 * branches) sets this `true`. This is the render-time discriminant
+	 * `formatCscProducts` MUST use to keep an unassessed product visually
+	 * distinct from a genuine clean pass — before this field existed, both
+	 * states shared `recommended: false` and rendered byte-identical
+	 * (`✓ Managed DMARC` / `➖ Managed DMARC — OK`) in both format modes, so a
+	 * transient DMARC failure was indistinguishable from a passing DMARC check
+	 * on the surface most interactive clients see (compact is auto-selected
+	 * for them).
+	 */
+	assessed: boolean;
 }
 
 export interface CscProductReport {
@@ -149,9 +163,21 @@ function nonInfoTitles(result: CheckResult | undefined): string[] {
 	return result.findings.filter((f) => f.severity !== 'info' && !isDnsErrorFinding(f)).map((f) => f.title);
 }
 
-/** MultiLock recommendation — reads the booleans, not `level` alone (Spec A handoff). */
+/**
+ * MultiLock recommendation — reads the booleans, not `level` alone (Spec A handoff).
+ * Always `assessed: true`: MultiLock reads RDAP independently of the scan (see
+ * `evaluateCscProducts`'s doc on why it is never gated on `assessed`), including
+ * the "unobservable" branch — RDAP genuinely returning nothing is itself a
+ * definitive lookup outcome, not a transient scan failure. Out of scope for this
+ * fix round.
+ */
 function evalMultiLock(lockPosture: LockPosture | null): CscProductRecommendation {
-	const base = { product: 'csc_multilock' as const, productName: CSC_PRODUCT_NAMES.csc_multilock, relatedFindings: [] as string[] };
+	const base = {
+		product: 'csc_multilock' as const,
+		productName: CSC_PRODUCT_NAMES.csc_multilock,
+		relatedFindings: [] as string[],
+		assessed: true as const,
+	};
 	if (lockPosture == null || lockPosture.level === 'unknown') {
 		return { ...base, recommended: false, priority: 'none', justifyingGap: 'Lock posture unobservable (RDAP unavailable/redacted)' };
 	}
@@ -186,12 +212,19 @@ function evalScanProduct(
 	gaps: { passing: string; failing: string; absent: string },
 	concern: string,
 ): CscProductRecommendation {
-	const base = { product, productName: CSC_PRODUCT_NAMES[product] };
+	const base = { product, productName: CSC_PRODUCT_NAMES[product], assessed: true as const };
 	if (result === undefined) {
 		return { ...base, recommended: true, priority: 'low', justifyingGap: gaps.absent, relatedFindings: [] };
 	}
 	if (result.checkStatus === 'error' || result.checkStatus === 'timeout') {
-		return unassessedScanProduct(product, concern, 'all_transient');
+		// This ONE category's own check failed transiently — other categories in
+		// this scan (the ones NOT reaching this branch) may well have completed,
+		// which is why `'category_transient'` gets its own wording distinct from
+		// the whole-report `'all_transient'` case (see `unassessedScanProduct`'s
+		// doc): "checks attempted, none completed" would be a false claim about
+		// this scan when it is specifically this category, not every category,
+		// that never completed.
+		return unassessedScanProduct(product, concern, 'category_transient');
 	}
 	if (result.passed) {
 		return { ...base, recommended: false, priority: 'none', justifyingGap: gaps.passing, relatedFindings: [] };
@@ -202,7 +235,23 @@ function evalScanProduct(
 }
 
 /**
- * The scan-driven product line for a domain with no COMPLETED check evidence.
+ * The three reasons a product can go unassessed. `never_ran`/`all_transient`
+ * mirror {@link CaveatKind} exactly (the WHOLE-REPORT states — every category
+ * failed, or nothing ran at all). `category_transient` is a THIRD, narrower
+ * state introduced by `evalScanProduct`'s `checkStatus` branch: THIS category's
+ * own check failed transiently while the rest of the scan may well have
+ * completed normally — `CaveatKind` deliberately does NOT gain this value
+ * (it is a per-report field consumed elsewhere, e.g. `prioritize_csc_leads`'
+ * `isNeverRanKind`, which is not written to expect a third state), so this is
+ * a local, wider type instead of a change to the exported `CaveatKind` union.
+ */
+type UnassessedReason = CaveatKind | 'category_transient';
+
+/**
+ * The scan-driven product line for a domain with no COMPLETED check evidence —
+ * either the WHOLE report (`caveatKind`/`'never_ran'`/`'all_transient'`, via
+ * `evaluateCscProducts`) or a SINGLE category within an otherwise-assessed scan
+ * (`'category_transient'`, via `evalScanProduct`'s `checkStatus` branch).
  *
  * `evalScanProduct`'s `absent` branch ("DMARC not observed") means "we looked and
  * found nothing" — a real, sellable gap. With no completed evidence nobody
@@ -210,27 +259,35 @@ function evalScanProduct(
  * strength of non-observation. This states the absence of evidence instead of
  * pricing it.
  *
- * `caveatKind` (the STRUCTURAL discriminant carried on `CscProductReport.caveatKind`
- * — see its type doc) picks the wording: "no checks ran" is false — and this exact
- * text, ending up on the `recommendations[].justifyingGap` WIRE field even though
- * `formatCscProducts` never prints it to prose — for a total-outage scan where N
- * checks WERE attempted. Classifying on `caveatKind` rather than comparing the
- * `caveat` STRING means a renamed/edited caveat wording cannot silently flip which
- * branch this takes. Exported for direct unit testing of that decoupling — see
- * the round-6c pin test in `test/map-csc-products.spec.ts`.
+ * `reason` (the STRUCTURAL discriminant, {@link UnassessedReason}) picks the
+ * wording: "no checks ran" is false — and this exact text, ending up on the
+ * `recommendations[].justifyingGap` WIRE field even though `formatCscProducts`
+ * never prints it to prose — for a total-outage scan where N checks WERE
+ * attempted; "checks attempted, none completed" is equally false when it is
+ * ONE category, not the whole scan, that never completed. Classifying on
+ * `reason` rather than comparing the `caveat` STRING means a renamed/edited
+ * caveat wording cannot silently flip which branch this takes. Exported for
+ * direct unit testing of that decoupling — see the round-6c pin test in
+ * `test/map-csc-products.spec.ts`.
  */
 export function unassessedScanProduct(
 	product: Exclude<CscProductKey, 'csc_multilock'>,
 	concern: string,
-	caveatKind: CaveatKind | null,
+	reason: UnassessedReason | null,
 ): CscProductRecommendation {
-	const reason = caveatKind === 'all_transient' ? 'checks attempted, none completed' : 'no checks ran';
+	const reasonText =
+		reason === 'category_transient'
+			? "this category's check failed transiently — other categories in this scan may have completed normally"
+			: reason === 'all_transient'
+				? 'checks attempted, none completed'
+				: 'no checks ran';
 	return {
 		product,
 		productName: CSC_PRODUCT_NAMES[product],
 		recommended: false,
 		priority: 'none',
-		justifyingGap: `${concern} not assessed — ${reason}`,
+		assessed: false,
+		justifyingGap: `${concern} not assessed — ${reasonText}`,
 		relatedFindings: [],
 	};
 }
@@ -369,8 +426,19 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 		lines.push(`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}${countSegment}`);
 		if (!report.assessed) lines.push(caveat);
 		for (const r of shown) {
-			const icon = r.recommended ? ' →' : ' ✓';
-			const suffix = r.recommended ? ` [${r.priority}] ${sanitizeOutputText(r.justifyingGap, 80)}` : '';
+			// `!r.assessed` (F1, review round 1): a product `unassessedScanProduct`
+			// built — the category itself (or the whole scan) was never observed —
+			// MUST NOT render as `✓`, the SAME icon a genuine clean pass gets. Before
+			// this branch, both states shared `recommended: false` and rendered
+			// byte-identical in compact mode (`✓ Managed DMARC`, no gap text at all)
+			// — the silent drop this task exists to close, on the format every
+			// interactive LLM client auto-selects.
+			const icon = !r.assessed ? ' ?' : r.recommended ? ' →' : ' ✓';
+			const suffix = !r.assessed
+				? ` ${sanitizeOutputText(r.justifyingGap, 80)}`
+				: r.recommended
+					? ` [${r.priority}] ${sanitizeOutputText(r.justifyingGap, 80)}`
+					: '';
 			lines.push(`${icon} ${sanitizeOutputText(r.productName, 40)}${suffix}`);
 		}
 	} else {
@@ -380,8 +448,12 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 		if (!report.assessed) lines.push(caveat);
 		lines.push('');
 		for (const r of shown) {
-			const icon = r.recommended ? '✅' : '➖';
-			const tag = r.recommended ? ` — ${r.priority.toUpperCase()}` : ' — OK';
+			// Same F1 fix as compact mode above: an unassessed product must not tag
+			// as `— OK` (indistinguishable from a genuine clean pass) even though the
+			// gap line below already names it correctly — the TAG line is what a
+			// skimming reader sees first.
+			const icon = !r.assessed ? '❓' : r.recommended ? '✅' : '➖';
+			const tag = !r.assessed ? ' — NOT ASSESSED' : r.recommended ? ` — ${r.priority.toUpperCase()}` : ' — OK';
 			lines.push(`${icon} **${sanitizeOutputText(r.productName, 40)}**${tag}`);
 			lines.push(`  - ${sanitizeOutputText(r.justifyingGap, 160)}`);
 			for (const f of r.relatedFindings) lines.push(`  - ${sanitizeOutputText(f, 120)}`);

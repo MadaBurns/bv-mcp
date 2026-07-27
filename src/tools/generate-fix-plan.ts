@@ -183,15 +183,38 @@ export function evaluateFixPlan(
 	// zero-check scan does.
 	const hasEvidence = hasCompletedEvidence(checkResults);
 	// Even when SOME categories completed (`hasEvidence: true`), an individual
-	// category's OWN check can still have failed transiently — its CheckResult
-	// carries only the synthetic "check error" finding `isDnsErrorFinding`
-	// marks (see `dns-error-result.ts`). That finding is the ABSENCE of a
-	// measurement, not a customer's real posture, so it must never become a
-	// remediation action ("Fix DMARC: DMARC check error — ..."). Filtering it
-	// out here — rather than dropping it silently — pairs with
-	// `transientCategories` below so the exclusion still reaches the customer.
+	// category's OWN check can still have failed transiently. There are TWO
+	// distinct producers of that shape, and only one of them tags the finding:
+	// `buildDnsErrorResult` (used by tools with their own top-level DNS-error
+	// handling, e.g. check-dmarc.ts) sets BOTH `checkStatus: 'error'` AND
+	// `metadata.errorKind: 'dns_error'`. `safeCheck` — scan_domain's OWN
+	// orchestrator-level catch, `src/tools/scan-domain.ts`'s `safeCheck()`,
+	// which is what actually runs during a real production scan for any check
+	// that doesn't have its own internal DNS-error handling — sets
+	// `checkStatus: 'error' | 'timeout'` but NEVER `errorKind`. A per-finding
+	// `errorKind` filter alone therefore misses every safeCheck-produced
+	// transient: `checkStatus: 'timeout'` would render as an action
+	// ("Fix DMARC: DMARC check timed out — ...") in the SAME plan that also
+	// lists that category under `transientCategories` — self-contradictory
+	// output. Filtering on `checkStatus` at the CHECK level first (mirrors
+	// `map_compliance`'s `completed` filter and this file's own
+	// `transientCategories` below) catches BOTH producers regardless of
+	// whether the errorKind marker was set.
+	//
+	// The `isDnsErrorFinding` filter is kept as a SECOND, independent guard —
+	// not redundant with the checkStatus filter above. A check can COMPLETE
+	// (`checkStatus` absent/'completed') and still attach an errorKind-tagged
+	// finding for a narrower reason than a full check failure — e.g.
+	// `discover-brand-domains.ts`'s "Brand-domain discovery could not
+	// complete" finding, emitted when every discovery SIGNAL failed but the
+	// check itself ran to completion. That finding would survive the
+	// checkStatus filter (the check completed) but must still never become a
+	// fix action, so both filters stay in force.
 	const actionableFindings = hasEvidence
-		? checkResults.flatMap((check: CheckResult) => check.findings).filter((f: Finding) => f.severity !== 'info' && !isDnsErrorFinding(f))
+		? checkResults
+				.filter((c) => c.checkStatus !== 'error' && c.checkStatus !== 'timeout')
+				.flatMap((check: CheckResult) => check.findings)
+				.filter((f: Finding) => f.severity !== 'info' && !isDnsErrorFinding(f))
 		: [];
 
 	const actions: FixAction[] = actionableFindings.map((finding: Finding) => {
