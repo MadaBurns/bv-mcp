@@ -198,8 +198,9 @@ function evalMultiLock(lockPosture: LockPosture | null): CscProductRecommendatio
  * "not assessed" wording {@link unassessedScanProduct} uses for a whole-report
  * outage — see its doc for why a category whose OWN check never completed must not
  * be priced as a gap even when `assessed` is `true` overall (other categories DID
- * complete). Checking `checkStatus` here (mirrors `map_compliance`'s `completed`
- * filter) is necessary in addition to the `isDnsErrorFinding` filter in
+ * complete). Checking `checkStatus` via `isCompletedCheck` here (shares the same
+ * predicate as `map_compliance`'s `completed` filter, by import) is necessary
+ * in addition to the `isDnsErrorFinding` filter in
  * `nonInfoTitles`/below: after that filter a transient result's `findings` and
  * `titles` are both empty, but `result.passed` is still `false` (set explicitly by
  * `buildDnsErrorResult`), so without this branch the code below would still fall

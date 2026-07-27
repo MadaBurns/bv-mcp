@@ -7,8 +7,8 @@
  * A deliberately tiny leaf module (no imports) so every formatter in `src/tools/`
  * can depend on it without an import cycle through the scan orchestrator.
  *
- * `isCompletedCheck`/`hasCompletedEvidence` below are the SSOT for "did this
- * check/scan produce usable evidence" on the `src/` side only —
+ * `isCompletedCheck`/`hasCompletedEvidence`/`normalizeCheckStatus` below are the
+ * SSOT for "did this check/scan produce usable evidence" on the `src/` side only —
  * `test/audits/completed-evidence-predicate-ssot.audit.test.ts` bans any other
  * `src/` module from re-deriving the same check. `packages/dns-checks/src/scoring/evidence.ts`
  * (`computeScanEvidence`'s per-result completed/attempted accounting) is a
@@ -136,4 +136,20 @@ export function hasCompletedEvidence(checks: readonly CheckStatusBearer[]): bool
  */
 export function isCompletedCheck(check: CheckStatusBearer): boolean {
 	return check.checkStatus === undefined || check.checkStatus === 'completed';
+}
+
+/**
+ * The VALUE-normalizing twin of `isCompletedCheck`'s BOOLEAN question — same
+ * `undefined → 'completed'` rule, spelled for a caller that needs the concrete
+ * status string rather than yes/no. The only known consumer is
+ * `StructuredScanResult.checkStatuses` (`format-report.ts`), which is
+ * customer-facing and contractually typed `Record<string, 'completed' | 'timeout' | 'error'>`
+ * — it cannot carry `undefined`, so an absent `checkStatus` must be normalized
+ * to a concrete member before it can go on the wire. Sharing this rule with
+ * `isCompletedCheck` (rather than re-deriving `?? 'completed'` at the call
+ * site) is what keeps the two in lockstep if a new `CheckStatus` member is
+ * ever added.
+ */
+export function normalizeCheckStatus(checkStatus: 'completed' | 'timeout' | 'error' | undefined): 'completed' | 'timeout' | 'error' {
+	return checkStatus ?? 'completed';
 }

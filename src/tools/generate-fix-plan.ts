@@ -196,10 +196,11 @@ export function evaluateFixPlan(
 	// transient: `checkStatus: 'timeout'` would render as an action
 	// ("Fix DMARC: DMARC check timed out — ...") in the SAME plan that also
 	// lists that category under `transientCategories` — self-contradictory
-	// output. Filtering on `checkStatus` at the CHECK level first (mirrors
-	// `map_compliance`'s `completed` filter and this file's own
-	// `transientCategories` below) catches BOTH producers regardless of
-	// whether the errorKind marker was set.
+	// output. Filtering on `checkStatus` at the CHECK level first (shares
+	// `isCompletedCheck` with `map_compliance`'s `completed` filter and this
+	// file's own `transientCategories` below — by import, not duplication)
+	// catches BOTH producers regardless of whether the errorKind marker was
+	// set.
 	//
 	// The `isDnsErrorFinding` filter is kept as a SECOND, independent guard —
 	// not redundant with the checkStatus filter above. A check can COMPLETE
