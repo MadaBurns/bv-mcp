@@ -44,6 +44,27 @@
  * of this same audit (see FORBIDDEN_SHAPES doc for the specific evasions this
  * closes, and for the one judged infeasible to add without an unacceptable
  * false-positive rate).
+ *
+ * ROUND 2: an independent review found the shapes above were still anchored
+ * to the literal token `checkStatus`, so two more evasions slipped past: (E1)
+ * `new Set(['timeout','error']).has(checkStatus)` / a hoisted
+ * `const X = ['timeout','error']; ... X.includes(checkStatus)` — the same
+ * NOT-COMPLETED question spelled via Set/collection membership instead of
+ * `.includes`/`||`; and (E2) a locally renamed identifier, e.g.
+ * `const { checkStatus: cs } = check; cs !== 'timeout' && cs !== 'error'`,
+ * which no `checkStatus`-anchored regex can see. E1 is closed the same way
+ * as M5a/M5b (new shapes below). E2 is closed by PROVENANCE tracking, not
+ * blind identifier-agnostic matching: `findCheckStatusAliases()` traces a
+ * local name back to `checkStatus` via a destructuring rename
+ * (`const { checkStatus: X } = ...`) or a direct initializer
+ * (`const X = obj.checkStatus;`), and only THOSE traced names — never an
+ * arbitrary identifier — are folded into the shape regexes alongside the
+ * literal `checkStatus` token. A blind "any identifier compared against both
+ * literals" version was tried first and rejected: it flagged genuine
+ * unrelated code (e.g. `src/lib/brand-audit-depth.ts` and
+ * `src/tools/discover-brand-domains.ts`, both branching on an unrelated
+ * `status` variable that was never derived from `checkStatus`) — see
+ * `findCheckStatusAliases`'s doc for the exact boundary this leaves.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -110,11 +131,72 @@ const SSOT_PATH = '../../src/lib/ungraded-display.ts';
 const KNOWN_DIFFERENT_PURPOSE = new Set(['../../src/tools/scan-domain.ts', '../../src/tools/check-http-security.ts']);
 
 /**
+ * Traces a local identifier back to `checkStatus` via one of the two shapes
+ * a developer actually reaches for when renaming/aliasing it (round 2, E2):
+ *
+ *   - a destructuring rename: `const { checkStatus: cs } = check;` — matched
+ *     ONLY when the `{ ... } =` braces open directly after `const`/`let`/`var`
+ *     (i.e. it's really the LHS of a destructuring assignment), not when
+ *     `checkStatus: someVar` appears as a plain object-literal property on
+ *     the RHS of an assignment (e.g. `return { ...base, checkStatus: status }`
+ *     in `scan-domain.ts` — the OPPOSITE direction, writing INTO a
+ *     `checkStatus` field, not reading a local alias OUT of one; conflating
+ *     the two was tried and produced a false alias there).
+ *   - a direct initializer: `const cs = checkStatus;` or
+ *     `const cs = result.checkStatus;` — matched only when the initializer is
+ *     JUST that reference (immediately followed by `;`/`,`/`)`/newline), not
+ *     an arbitrary expression that merely mentions `checkStatus` (e.g.
+ *     `const isUnanalyzable = result.checkStatus === 'error' || ...` in
+ *     `check-http-security.ts` is deliberately NOT treated as an alias of
+ *     `checkStatus` — `isUnanalyzable` is a derived boolean, not the status
+ *     value itself, so tracing it would be both wrong and, worse, a source
+ *     of false positives on unrelated later comparisons of that name).
+ *
+ * This is PROVENANCE tracking, not blind identifier-agnostic matching — the
+ * distinction matters. An earlier version of this function returned any
+ * identifier ever compared against BOTH `'timeout'` and `'error'`, with no
+ * requirement that it be traceable to `checkStatus` at all; run against the
+ * full `src/` corpus that flagged two genuine false positives —
+ * `src/lib/brand-audit-depth.ts` and `src/tools/discover-brand-domains.ts`,
+ * both branching on an unrelated `status` value with its own `'timeout'`/
+ * `'error'`/`'failed'` members that were never derived from `checkStatus`.
+ * Anchoring to provable provenance instead of the name closes the E2 evasion
+ * (`cs` is caught because it demonstrably came FROM `checkStatus`) without
+ * that false-positive rate — verified empirically: zero offenders across the
+ * corpus below with this version, vs. two with the blind version.
+ *
+ * Known remaining gap (undetectable by a text scanner, same class as the
+ * "NOT attempted" note further down): an alias assigned outside its
+ * declaration (`let cs; cs = checkStatus;`) or threaded through an
+ * intermediate function call (`const cs = pick(checkStatus);`) is NOT traced
+ * — review-time concern, not this audit's job.
+ */
+function findCheckStatusAliases(source: string): string[] {
+	const aliases = new Set<string>();
+	for (const m of source.matchAll(/\b(?:const|let|var)\s*\{[^{}]{0,200}?checkStatus\s*:\s*(\w+)[^{}]{0,200}?\}\s*=/g)) {
+		if (m[1] !== 'checkStatus') aliases.add(m[1]);
+	}
+	for (const m of source.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*(?:\w+\.)?checkStatus\s*[;,)\n]/g)) {
+		if (m[1] !== 'checkStatus') aliases.add(m[1]);
+	}
+	return [...aliases];
+}
+
+/** `checkStatus`, or an alternation of it plus every traced alias in this file — see `findCheckStatusAliases`. */
+function identifierPattern(aliases: string[]): string {
+	return `\\b(?:${['checkStatus', ...aliases].join('|')})\\b`;
+}
+
+/**
  * Every shape (both comparison orders, where applicable) known to re-derive
- * the completed/not-completed question outside the SSOT. Matched against
- * COMMENT-STRIPPED source (see `stripComments`) with a modest gap that only
- * needs to bridge whitespace/arrow-function syntax now that comments can no
- * longer pad it out:
+ * the completed/not-completed question outside the SSOT, parameterized on
+ * `idPat` — `identifierPattern(findCheckStatusAliases(source))` for the file
+ * under test, so each shape matches `checkStatus` OR any alias PROVABLY
+ * traced back to it in that same file (round 2, E2 — see
+ * `findCheckStatusAliases` doc). Matched against COMMENT-STRIPPED source
+ * (see `stripComments`) with a modest gap that only needs to bridge
+ * whitespace/arrow-function syntax now that comments can no longer pad it
+ * out:
  *
  *   - DENYLIST-AND: `!== 'timeout' && ... !== 'error'` (found in the local
  *     shadow, the inline copy inside `map_compliance`, and the fix-plan
@@ -133,6 +215,14 @@ const KNOWN_DIFFERENT_PURPOSE = new Set(['../../src/tools/scan-domain.ts', '../.
  *     and `case 'error':` fall through together (either order) — the same
  *     grouping of the two transient members into one bucket, spelled as
  *     control flow instead of a boolean expression.
+ *   - SET-MEMBERSHIP (round 2, E1): `new Set(['timeout','error']).has(checkStatus)`,
+ *     either literal order — the same NOT-COMPLETED question spelled via
+ *     `Set#has` instead of `Array#includes`/`||`.
+ *   - HOISTED-COLLECTION (round 2, E1): the denylist array/Set held in a
+ *     NAMED const declared earlier (`const TRANSIENT = ['timeout','error'] as
+ *     const;` … `TRANSIENT.includes(checkStatus)`), rather than inlined right
+ *     before `.includes`/`.has` — a backreference (`\1`) ties the later call
+ *     back to the SAME hoisted name, either literal order.
  *
  * Comparison operators are `!==?`/`===?` (an optional second `=`) rather
  * than a hard-coded `!==`/`===`, so a re-spelling that loosens to `!=`/`==`
@@ -143,27 +233,41 @@ const KNOWN_DIFFERENT_PURPOSE = new Set(['../../src/tools/scan-domain.ts', '../.
  * NOT attempted: a fully abstracted local re-implementation under a novel
  * name with no textual relationship to `checkStatus`/`timeout`/`error`/
  * `completed` at all (e.g. a bitmask, a lookup table keyed on something
- * else, or a helper imported from a brand-new, unreviewed module). No text
- * scanner can catch an arbitrary rename with an arbitrary algorithm without
- * either becoming a full type-aware linter or producing unworkable false
- * positives on unrelated code — that class of evasion needs code review to
- * catch, not an audit. This is a judgement call, not a silent gap: it is why
- * this audit is a SUPPLEMENT to review, not a replacement for it.
+ * else, or a helper imported from a brand-new, unreviewed module), NOR an
+ * alias whose provenance can't be traced back to `checkStatus` by
+ * `findCheckStatusAliases` (see that function's "known remaining gap" note).
+ * No text scanner can catch an arbitrary rename with an arbitrary algorithm
+ * without either becoming a full type-aware linter or producing unworkable
+ * false positives on unrelated code — that class of evasion needs code
+ * review to catch, not an audit. This is a judgement call, not a silent gap:
+ * it is why this audit is a SUPPLEMENT to review, not a replacement for it.
  */
-const FORBIDDEN_SHAPES: RegExp[] = [
-	/checkStatus\s*!==?\s*'timeout'[\s\S]{0,100}?checkStatus\s*!==?\s*'error'/,
-	/checkStatus\s*!==?\s*'error'[\s\S]{0,100}?checkStatus\s*!==?\s*'timeout'/,
-	/checkStatus\s*===?\s*undefined[\s\S]{0,100}?checkStatus\s*===?\s*'completed'/,
-	/checkStatus\s*===?\s*'completed'[\s\S]{0,100}?checkStatus\s*===?\s*undefined/,
-	/checkStatus\s*===?\s*'error'[\s\S]{0,100}?checkStatus\s*===?\s*'timeout'/,
-	/checkStatus\s*===?\s*'timeout'[\s\S]{0,100}?checkStatus\s*===?\s*'error'/,
-	// M5a — array-membership form, either literal order.
-	/\[\s*'timeout'\s*,\s*'error'\s*\][\s\S]{0,60}?\.includes\([^)]*checkStatus[^)]*\)/,
-	/\[\s*'error'\s*,\s*'timeout'\s*\][\s\S]{0,60}?\.includes\([^)]*checkStatus[^)]*\)/,
-	// M5b — switch/case fall-through form, either case order.
-	/switch\s*\([^)]*checkStatus[^)]*\)[\s\S]{0,200}?case\s*'timeout'\s*:[\s\S]{0,80}?case\s*'error'\s*:/,
-	/switch\s*\([^)]*checkStatus[^)]*\)[\s\S]{0,200}?case\s*'error'\s*:[\s\S]{0,80}?case\s*'timeout'\s*:/,
-];
+function buildForbiddenShapes(idPat: string): RegExp[] {
+	return [
+		new RegExp(`${idPat}\\s*!==?\\s*'timeout'[\\s\\S]{0,100}?${idPat}\\s*!==?\\s*'error'`),
+		new RegExp(`${idPat}\\s*!==?\\s*'error'[\\s\\S]{0,100}?${idPat}\\s*!==?\\s*'timeout'`),
+		new RegExp(`${idPat}\\s*===?\\s*undefined[\\s\\S]{0,100}?${idPat}\\s*===?\\s*'completed'`),
+		new RegExp(`${idPat}\\s*===?\\s*'completed'[\\s\\S]{0,100}?${idPat}\\s*===?\\s*undefined`),
+		new RegExp(`${idPat}\\s*===?\\s*'error'[\\s\\S]{0,100}?${idPat}\\s*===?\\s*'timeout'`),
+		new RegExp(`${idPat}\\s*===?\\s*'timeout'[\\s\\S]{0,100}?${idPat}\\s*===?\\s*'error'`),
+		// M5a — array-membership form, either literal order.
+		new RegExp(`\\[\\s*'timeout'\\s*,\\s*'error'\\s*\\][\\s\\S]{0,60}?\\.includes\\([^)]*${idPat}[^)]*\\)`),
+		new RegExp(`\\[\\s*'error'\\s*,\\s*'timeout'\\s*\\][\\s\\S]{0,60}?\\.includes\\([^)]*${idPat}[^)]*\\)`),
+		// M5b — switch/case fall-through form, either case order.
+		new RegExp(`switch\\s*\\([^)]*${idPat}[^)]*\\)[\\s\\S]{0,200}?case\\s*'timeout'\\s*:[\\s\\S]{0,80}?case\\s*'error'\\s*:`),
+		new RegExp(`switch\\s*\\([^)]*${idPat}[^)]*\\)[\\s\\S]{0,200}?case\\s*'error'\\s*:[\\s\\S]{0,80}?case\\s*'timeout'\\s*:`),
+		// Round 2, E1 — Set-membership form, either literal order.
+		new RegExp(`new\\s+Set\\(\\s*\\[\\s*'timeout'\\s*,\\s*'error'\\s*\\]\\s*\\)[\\s\\S]{0,60}?\\.has\\([^)]*${idPat}[^)]*\\)`),
+		new RegExp(`new\\s+Set\\(\\s*\\[\\s*'error'\\s*,\\s*'timeout'\\s*\\]\\s*\\)[\\s\\S]{0,60}?\\.has\\([^)]*${idPat}[^)]*\\)`),
+		// Round 2, E1 — hoisted array/Set held in a named const, either literal order.
+		new RegExp(
+			`\\bconst\\s+(\\w+)\\s*(?::\\s*[^=]+)?=\\s*(?:new\\s+Set\\()?\\[\\s*'timeout'\\s*,\\s*'error'\\s*\\](?:\\s*as\\s*const)?\\)?[\\s\\S]{0,400}?\\1\\.(?:includes|has)\\([^)]*${idPat}[^)]*\\)`,
+		),
+		new RegExp(
+			`\\bconst\\s+(\\w+)\\s*(?::\\s*[^=]+)?=\\s*(?:new\\s+Set\\()?\\[\\s*'error'\\s*,\\s*'timeout'\\s*\\](?:\\s*as\\s*const)?\\)?[\\s\\S]{0,400}?\\1\\.(?:includes|has)\\([^)]*${idPat}[^)]*\\)`,
+		),
+	];
+}
 
 /** A local re-declaration of the SSOT's own exported names, anywhere outside the SSOT file. */
 const REDECLARATION_SHAPES: RegExp[] = [
@@ -172,10 +276,10 @@ const REDECLARATION_SHAPES: RegExp[] = [
 	/\b(?:export\s+)?(?:const|let|var|function)\s+normalizeCheckStatus\b/,
 ];
 
-/** Total forbidden-shape matches (all shapes, each counted with a global flag) in one file's stripped source. */
+/** Total forbidden-shape matches (all shapes for THIS file's traced identifier set, each counted with a global flag) in one file's stripped source. */
 function countForbiddenShapeMatches(source: string): number {
 	let total = 0;
-	for (const shape of FORBIDDEN_SHAPES) {
+	for (const shape of buildForbiddenShapes(identifierPattern(findCheckStatusAliases(source)))) {
 		const global = new RegExp(shape.source, 'g');
 		total += source.match(global)?.length ?? 0;
 	}
@@ -219,13 +323,16 @@ describe('completed-evidence predicate SSOT (src/ only)', () => {
 		expect(source).toMatch(/checks\.some\(isCompletedCheck\)/);
 	});
 
-	it('has no OTHER src/ module re-deriving the completed/not-completed check inline (copy-paste OR rewritten)', () => {
+	it('has no OTHER src/ module re-deriving the completed/not-completed check inline (copy-paste OR rewritten, incl. renamed/aliased identifiers)', () => {
 		const offenders: Array<{ path: string; shape: string }> = [];
 		for (const path of shippedSourcePaths()) {
 			if (path === SSOT_PATH) continue;
 			if (KNOWN_DIFFERENT_PURPOSE.has(path)) continue;
 			const source = STRIPPED[path];
-			for (const shape of FORBIDDEN_SHAPES) {
+			// Per-file: checkStatus plus any alias PROVABLY traced back to it in
+			// THIS file — see findCheckStatusAliases doc for why this is not a
+			// blind "any identifier" match.
+			for (const shape of buildForbiddenShapes(identifierPattern(findCheckStatusAliases(source)))) {
 				if (shape.test(source)) offenders.push({ path, shape: shape.source });
 			}
 		}
