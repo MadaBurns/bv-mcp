@@ -25,12 +25,20 @@ describe('repo safety policy coverage', () => {
 
 		expect(forbiddenPaths).toEqual(
 			expect.arrayContaining([
-				'.dev/',
+				// No trailing slash on directory-shaped patterns (`.dev`, `reports`,
+				// `.reports`) — a trailing "/" here mirrors the .gitignore
+				// directory-only bypass (see .gitignore's own header comment and
+				// #576/#579): `pathMatchesPattern()` in scanner-core.mjs treats the
+				// slash and no-slash forms identically for a bare directory name
+				// (`file === pattern.replace(/\/$/, '') || file.startsWith(...)`),
+				// so dropping it doesn't change scanner behavior, only keeps this
+				// policy consistent with the corrected .gitignore convention.
+				'.dev',
 				'.dev.vars',
 				'.mcp-registry-key.pem',
 				'wrangler.production.jsonc',
-				'reports/',
-				'.reports/',
+				'reports',
+				'.reports',
 				'*.pdf',
 				'*.env',
 				'scripts/tranco-*.json',
