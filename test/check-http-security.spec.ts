@@ -239,6 +239,39 @@ describe('checkHttpSecurity', () => {
 		expect(result.passed).toBe(false);
 	});
 
+	it('relabels a Cloudflare-fronted 401 (edge signals) as an edge-challenge artifact, not auth-required (#567)', async () => {
+		// Live repro (api-au.spotto.ai): the scanner is fingerprinted/challenged at the edge and
+		// gets HTTP 401 while curl/browser get HTTP 200 for a public page. Must NOT read as
+		// "endpoint requires authentication".
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: false,
+			status: 401,
+			headers: new Headers({ 'cf-ray': '91xyz4567-SYD', server: 'cloudflare' }),
+			text: async () => '<html><head><title>Spotto API Documentation</title></head><body>Public docs</body></html>',
+		} as unknown as Response);
+		const result = await run('api-au.spotto.ai');
+		// Graceful inconclusive is preserved.
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		// Attributed to the edge (Cloudflare), not to origin auth.
+		const ev = result.findings.find((f) => f.metadata?.wafEvent === 'cloudflare');
+		expect(ev).toBeDefined();
+		expect(ev!.metadata?.wafKind).toBe('edge-artifact');
+		expect(ev!.metadata?.inconclusive).toBe(true);
+		// The misleading "requires authentication" label must be gone.
+		expect(result.findings.some((f) => f.title === 'HTTP check requires authentication')).toBe(false);
+		expect(result.findings.every((f) => !/requires authentication/i.test(f.detail ?? ''))).toBe(true);
+	});
+
+	it('still labels a genuine 401 with NO edge signals as auth-required (#567 guard)', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 401, headers: new Headers() });
+		const result = await run();
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('HTTP check requires authentication');
+		expect(result.findings[0].severity).toBe('info');
+	});
+
 	it('should return rejected finding for other 4xx responses', async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 429, headers: new Headers() });
 		const result = await run();
