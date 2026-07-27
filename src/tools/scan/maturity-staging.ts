@@ -247,8 +247,14 @@ function computeWebOnlyLadder(byCategory: Map<string, CheckResult>): MaturitySta
 			stage: 0,
 			indeterminate: true,
 			label: 'Not determined (TLS not measured)',
+			// Deliberately states NO cause. `check-ssl.ts` funnels every thrown fetch into
+			// one catch: an edge/WAF block, a network timeout and a plain ECONNREFUSED (no
+			// HTTPS listener at all) are ALL reported as checkStatus 'error'/'timeout' and
+			// are not distinguishable from here. Naming a cause would re-introduce exactly
+			// the unsupported public claim this abstention exists to remove. The retained
+			// connection finding carries the raw probe result for anyone who needs it.
 			description:
-				'The TLS probe for this domain did not complete — it was blocked or timed out at the edge (a CDN or WAF commonly does this to automated clients). This is a measurement gap, NOT a security verdict: no conclusion about this domain’s transport security can be drawn from it, in either direction.',
+				'The TLS probe for this domain did not complete, so its transport security was not measured. A probe can fail because an edge/CDN/WAF blocked the automated request, because the connection timed out, or because no HTTPS service responded at all — these are not distinguishable from the outside. This is a measurement gap, NOT a security verdict: no conclusion can be drawn from it in either direction. See the connection finding for the raw probe result.',
 			nextStep:
 				'Re-scan later, or verify HTTPS directly from an unblocked network (for example `openssl s_client -connect <domain>:443`), before reading anything into this result.',
 		};
