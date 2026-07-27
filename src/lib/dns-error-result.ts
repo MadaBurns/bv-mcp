@@ -29,10 +29,24 @@
  * generate-records). An errored check did not pass.
  */
 
-import { buildCheckResult, createFinding, type CheckCategory, type CheckResult } from './scoring';
+import { buildCheckResult, createFinding, type CheckCategory, type CheckResult, type Finding } from './scoring';
 
 // Mirrors safeCheck()'s allowlist so the surfaced detail stays bounded/safe.
 const SAFE_PREFIXES = ['DNS query', 'Check timed out', 'Check failed', 'Connection', 'timeout'];
+
+/**
+ * True for the synthetic "check error" finding this module builds — a transient
+ * DNS/network failure, not a measurement of the customer's posture. Consumers that
+ * derive remediation actions, compliance verdicts, or priced upsells from findings
+ * MUST exclude these: there is nothing to remediate and nothing to sell against a
+ * category that was never actually observed. The single spelling of the
+ * `errorKind` marker check, so every consumer filters on the exact same predicate
+ * rather than re-deriving `severity === 'high'` (which would also swallow genuine
+ * high-severity findings) or comparing detail/title prose.
+ */
+export function isDnsErrorFinding(f: Pick<Finding, 'metadata'>): boolean {
+	return f.metadata?.errorKind === 'dns_error';
+}
 
 /**
  * Build a transient-failure CheckResult for a caught DNS error. `label` is the

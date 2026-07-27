@@ -51,6 +51,13 @@ export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	'secureserver.net',
 	// Namecheap registrar-default
 	'registrar-servers.com',
+	// Akamai — assigns NS hostnames from a shared pool reused across unrelated
+	// customer zones (2026-07-26 correctness-defects design §3.3, verified
+	// live: bnz.co.nz shares a9-65.akam.net with anz.co.nz and a3-67.akam.net
+	// with westpac.co.nz). Overlap on an Akamai hostname alone is NOT
+	// ownership evidence; only a complete NS-set match is (see
+	// `classifyOwnership()` in `src/lib/ownership-attribution.ts`).
+	'akam.net',
 ]);
 
 /**

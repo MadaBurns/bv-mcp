@@ -11,7 +11,7 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { formatScoreGrade, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { formatScoreGrade, hasCompletedEvidence, isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 
 export type ComplianceFramework = 'nist_800_177' | 'pci_dss_4' | 'soc2' | 'cis_controls';
 
@@ -267,9 +267,10 @@ export function evaluateCompliance(
 			// A matched result whose check never COMPLETED (checkStatus 'timeout'/'error')
 			// is not evidence either way — `buildDnsErrorResult`/`safeCheck` return those
 			// as `passed: false`, indistinguishable from a genuine failure unless we
-			// partition on `checkStatus` here. Absent or 'completed' means the check ran
-			// normally (mirrors profiles.ts's `measuredChecks` predicate).
-			const completed = matchedResults.filter((r) => r.checkStatus !== 'timeout' && r.checkStatus !== 'error');
+			// partition on `checkStatus` here. `isCompletedCheck` is the single SSOT
+			// spelling of "absent or 'completed' means the check ran normally" — see
+			// `test/audits/*evidence*` for the ban on re-deriving this locally.
+			const completed = matchedResults.filter(isCompletedCheck);
 
 			if (completed.length === 0) {
 				// Every matched category was measured-AT but never measured — one slow
@@ -364,8 +365,7 @@ export function evaluateCompliance(
 	// that all timed out", which is exactly the dishonesty this closes. The two failure
 	// modes get DISTINCT caveat wording (different remediation: nothing to retry vs.
 	// retry once the transient condition clears), even though both report `assessed: false`.
-	const hasCompletedEvidence = checkResults.some((r) => r.checkStatus !== 'timeout' && r.checkStatus !== 'error');
-	const assessed = hasCompletedEvidence;
+	const assessed = hasCompletedEvidence(checkResults);
 	const caveat = assessed ? null : checkResults.length === 0 ? UNASSESSED_COMPLIANCE_CAVEAT : buildAllTransientCaveat(checkResults.length);
 	return { domain, score, grade, assessed, caveat, frameworks };
 }

@@ -98,6 +98,7 @@ function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBr
 			findings: [],
 		}),
 		domainLabelSimilarity: vi.fn().mockReturnValue(0),
+		generateVariants: vi.fn().mockReturnValue([]),
 		...overrides,
 	};
 }
@@ -1225,5 +1226,70 @@ describe('discoverBrandDomains — discovery_mode=tiered', () => {
 			.filter((f) => f.metadata?.candidate)
 			.map((f) => f.metadata?.candidate as string);
 		expect(surfaced).not.toContain('opted-out.example.net');
+	});
+});
+
+describe('D6 — NS as a discovery signal (2026-07-26 correctness-defects design)', () => {
+	it('probes TLD variants of the seed brand for NS, not just candidates other signals proposed', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const { generateVariants } = await import('../src/tools/check-shadow-domains');
+		// IMPORTANT: 'bnz.nz' is NOT a valid discriminator here — the pre-existing
+		// `buildBrandCandidateUniverse()` tld_sweep (src/lib/brand-candidate-universe.ts)
+		// already seeds `${brand}.nz` on every standard-depth run (`.nz` is in its
+		// own STANDARD_TLDS list), completely independent of this task's NS
+		// TLD-variant union. A candidate that already reaches `candidatesForSignal`
+		// through that unrelated path would make this assertion pass even with
+		// the union deleted (verified: this was the actual failure mode hit while
+		// writing this test — see task-5-report.md). `.kiwi` is unique to
+		// `generateVariants`'s NZ_REGIONAL set and is NOT in tld_sweep's TLD list,
+		// so 'bnz.kiwi' only reaches the NS probe via the D6.2 union.
+		const correlateNs = vi.fn().mockImplementation(async (_seed: string, opts: { candidateDomains?: string[] }) => ({
+			seedDomain: 'bnz.co.nz',
+			seedNs: ['a1-97.akam.net'],
+			coOwnedDomains: (opts.candidateDomains ?? []).includes('bnz.kiwi')
+				? [{ domain: 'bnz.kiwi', sharedNs: ['ns1.bnz.co.nz'], confidence: 1, matchType: 'in_bailiwick' as const }]
+				: [],
+			queryStatus: 'ok' as const,
+		}));
+		// Wire the REAL generateVariants (not the default empty-array stub) so this
+		// test exercises the actual production generator end to end.
+		const deps = makeDeps({ correlateNs, generateVariants });
+
+		const result = await discoverBrandDomains('bnz.co.nz', { signals: ['ns'] }, deps);
+
+		expect(correlateNs).toHaveBeenCalledTimes(1);
+		const [, callOptions] = correlateNs.mock.calls[0] as [string, { candidateDomains: string[] }];
+		expect(callOptions.candidateDomains).toEqual(expect.arrayContaining(['bnz.kiwi']));
+
+		const bnzKiwiFinding = result.findings.find((f) => f.metadata?.candidate === 'bnz.kiwi');
+		expect(bnzKiwiFinding).toBeDefined();
+		expect((bnzKiwiFinding!.metadata?.sources as Record<string, unknown>)?.ns).toMatchObject({ matchType: 'in_bailiwick' });
+	});
+
+	it('names every non-completed signal in the summary finding text', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			correlateNs: vi.fn().mockResolvedValue({
+				seedDomain: 'example.com',
+				seedNs: [],
+				coOwnedDomains: [],
+				queryStatus: 'partial' as const,
+			}),
+		});
+
+		const result = await discoverBrandDomains('example.com', { signals: ['ns', 'san'] }, deps);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary).toBeDefined();
+		// NOTE: createFinding() (@blackveil/dns-checks/scoring, a vendored SSOT we
+		// cannot modify) auto-sanitizes `detail` and strips `[`/`]` as markdown-
+		// injection characters (same as it already does to the pre-existing
+		// `signals=[...]` segment above). The brief's literal `degraded=\[...\]`
+		// regex can therefore never match real output — assert on the
+		// bracket-stripped text instead, which still discriminates: it requires
+		// both the `degraded=` marker AND the `ns:partial` status pair to be
+		// present, so it goes RED if the degraded list is omitted from the
+		// summary OR if `partial` is dropped from the degraded-status set.
+		expect(summary!.detail).toMatch(/degraded=.*ns:partial/);
 	});
 });

@@ -58,12 +58,7 @@ const STRONG_SIGNALS: ReadonlySet<BrandEvidenceSignal> = new Set([
 	'bounty_scope',
 ]);
 
-const MEDIUM_SIGNALS: ReadonlySet<BrandEvidenceSignal> = new Set([
-	'ns',
-	'dmarc_rua',
-	'mx_overlap',
-	'san',
-]);
+const MEDIUM_SIGNALS: ReadonlySet<BrandEvidenceSignal> = new Set(['dmarc_rua', 'mx_overlap', 'san']);
 
 const WEAK_SIGNALS: ReadonlySet<BrandEvidenceSignal> = new Set([
 	'markov_gen',
@@ -90,6 +85,14 @@ export function evidenceTier(signal: BrandEvidenceSignal, metadata?: Record<stri
 	if (signal === 'mx_platform') {
 		const sharedMxPlatform = normalizedMetadataValue(metadata, 'sharedMxPlatform');
 		return sharedMxPlatform && BROAD_MX_PLATFORMS.has(sharedMxPlatform) ? 'weak' : 'medium';
+	}
+	if (signal === 'ns') {
+		// D6.3 (2026-07-26 correctness-defects design) — an in-bailiwick NS match
+		// (the candidate's own nameservers delegated under the seed's apex) is
+		// near-deterministic ownership evidence, unlike a plain NS-set overlap
+		// (which can land on a shared provider and needs corroboration).
+		const matchType = normalizedMetadataValue(metadata, 'matchType');
+		return matchType === 'in_bailiwick' ? 'strong' : 'medium';
 	}
 	if (STRONG_SIGNALS.has(signal)) return 'strong';
 	if (MEDIUM_SIGNALS.has(signal)) return 'medium';
