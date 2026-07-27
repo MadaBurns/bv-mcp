@@ -1026,7 +1026,7 @@ export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, forma
 		// comes back through the zero branch.
 		return result.stale
 			? `${staleBanner(result)}\n\nSubdomain Discovery: ${result.domain} — the cached enumeration contains no subdomains; this is NOT a confirmed empty result.`
-			: `Subdomain Discovery: ${result.domain} — no subdomains found in Certificate Transparency logs`;
+			: `Subdomain Discovery: ${result.domain} — no subdomains found in Certificate Transparency logs (unconfirmed: CT logs only capture certificate issuance, so this is not a verified absence)`;
 	}
 
 	const body = format === 'compact' ? formatCompact(result) : formatFull(result);

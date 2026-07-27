@@ -101,6 +101,57 @@ describe('evaluateCscProducts — CSC MultiLock (reads booleans, not level)', ()
 		const m = recFor(r, 'csc_multilock');
 		expect(m.recommended).toBe(false);
 	});
+
+	/**
+	 * Final review round, item 1: `lockPosture === null` (RDAP never reached —
+	 * no server for the TLD, a non-OK HTTP status, or a fetch/parse failure)
+	 * and `lockPosture.level === 'unknown'` (RDAP DID answer, the record just
+	 * carries no EPP status codes) used to share `assessed: true` and one
+	 * "unavailable/redacted" gap sentence. That let an unreachable RDAP lookup
+	 * render byte-identical to a genuine clean pass (`✓ CSC MultiLock`, no
+	 * disclosure) — an incomplete measurement presented with full confidence.
+	 * `assessed` must now distinguish the two: null is NOT an observation,
+	 * `level: 'unknown'` (non-null) IS one.
+	 */
+	it('null posture (RDAP unreachable) → assessed: false — an incomplete measurement, not a clean pass', () => {
+		const r = evaluateCscProducts(allPassing(), null, 'a.com', 90, 'A');
+		const m = recFor(r, 'csc_multilock');
+		expect(m.assessed).toBe(false);
+	});
+
+	it('level=unknown but posture object present (RDAP answered, no EPP status) → assessed: true — a real observation (control)', () => {
+		const r = evaluateCscProducts(allPassing(), lp({ level: 'unknown' }), 'a.com', 90, 'A');
+		const m = recFor(r, 'csc_multilock');
+		expect(m.assessed).toBe(true);
+	});
+});
+
+/**
+ * Final review round, item 1 (render side): `formatCscProducts` must use the
+ * per-recommendation `assessed` discriminant for MultiLock exactly like it
+ * already does for the three scan-driven products — a not-assessed MultiLock
+ * must never render the same icon/tag a genuine clean pass gets, in EITHER
+ * format.
+ */
+describe('formatCscProducts — an unassessed MultiLock (null lock posture) renders distinct from a clean pass', () => {
+	function unreachableRdapReport() {
+		return evaluateCscProducts(allPassing(), null, 'rdap-unreachable.com', 90, 'A');
+	}
+
+	it('compact: shows "?" and the unobservable gap text, never the clean-pass "✓" with no disclosure', () => {
+		const compact = formatCscProducts(unreachableRdapReport(), 'compact');
+		const line = compact.split('\n').find((l) => l.includes('CSC MultiLock'));
+		expect(line).toBeDefined();
+		expect(line).not.toContain('✓');
+		expect(line).toContain('?');
+		expect(line!.toLowerCase()).toContain('unobservable');
+	});
+
+	it('full: shows the ❓ / NOT ASSESSED tag, never "➖ … — OK"', () => {
+		const full = formatCscProducts(unreachableRdapReport(), 'full');
+		expect(full).toContain('❓ **CSC MultiLock** — NOT ASSESSED');
+		expect(full).not.toContain('➖ **CSC MultiLock** — OK');
+	});
 });
 
 describe('evaluateCscProducts — scan-driven products', () => {

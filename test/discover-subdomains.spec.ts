@@ -660,6 +660,42 @@ describe('formatSubdomainDiscovery', () => {
 		expect(output).toContain('no subdomains found');
 	});
 
+	/**
+	 * Final review round, item 2: `emptyResult` always attaches a high-severity
+	 * `unconfirmed_zero` issue — CT logs are indirect evidence, so even a
+	 * completed query cannot positively confirm zero subdomains (see
+	 * `emptyResult`'s doc). The prose zero-branch used to render the bare "no
+	 * subdomains found" sentence with no disclosure of that caveat — a
+	 * confident prose surface next to an honest structured one, the exact
+	 * split-surface defect this campaign closes elsewhere. The prose must now
+	 * say the zero is unconfirmed, in wording consistent with the issue detail.
+	 */
+	it('R4 (final review, item 2): the zero-branch prose discloses the zero is unconfirmed, matching the structured unconfirmed_zero issue', async () => {
+		const formatSubdomainDiscovery = await getFormatter();
+
+		const result = {
+			domain: 'example.com',
+			totalSubdomains: 0,
+			totalCertificates: 0,
+			subdomains: [],
+			wildcardCerts: 0,
+			expiredCerts: 0,
+			uniqueIssuers: [],
+			issues: [
+				{
+					type: 'unconfirmed_zero' as const,
+					severity: 'high' as const,
+					detail:
+						'No Certificate Transparency source has positively confirmed example.com has zero subdomains — CT logs only capture certificate issuance, so this is an unconfirmed measurement, not a verified absence.',
+				},
+			],
+		};
+
+		const output = formatSubdomainDiscovery(result, 'compact');
+		expect(output).toContain('no subdomains found');
+		expect(output.toLowerCase()).toContain('unconfirmed');
+	});
+
 	it('should show overflow count when subdomains are truncated', async () => {
 		const formatSubdomainDiscovery = await getFormatter();
 

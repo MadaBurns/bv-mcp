@@ -165,30 +165,72 @@ function nonInfoTitles(result: CheckResult | undefined): string[] {
 
 /**
  * MultiLock recommendation — reads the booleans, not `level` alone (Spec A handoff).
- * Always `assessed: true`: MultiLock reads RDAP independently of the scan (see
- * `evaluateCscProducts`'s doc on why it is never gated on `assessed`), including
- * the "unobservable" branch — RDAP genuinely returning nothing is itself a
- * definitive lookup outcome, not a transient scan failure. Out of scope for this
- * fix round.
+ * MultiLock reads RDAP independently of the scan (see `evaluateCscProducts`'s doc
+ * on why it is never gated on the report-level `assessed`), but it has its OWN
+ * two-way assessed split — distinct from `evalScanProduct`'s transient-check
+ * split — because `lockPosture == null` and `lockPosture.level === 'unknown'` are
+ * NOT the same fact:
+ *   - `lockPosture === null` — RDAP was never actually reached: no RDAP server
+ *     resolved for the TLD, a non-OK HTTP status, or a fetch/parse failure (see
+ *     `checkRdapLookup`'s failure branches — none of them populate
+ *     `metadata.lockPosture`, which is what `extractLockPosture` needs to
+ *     produce a non-null value). Nothing was observed, so `assessed: false`.
+ *   - `lockPosture.level === 'unknown'` — RDAP WAS reached and answered (a 200
+ *     with a parsed response); the record just carries no EPP status codes. An
+ *     empty status array is itself an answer, not a missing one, so this is a
+ *     real observation and stays `assessed: true`.
+ * A prior version of this function set `assessed: true` on BOTH branches, and its
+ * doc claimed "RDAP genuinely returning nothing is itself a definitive lookup
+ * outcome" — that was wrong for the null case: an unreachable RDAP server is an
+ * INCOMPLETE measurement, not a definitive one, and rendering it identically to a
+ * clean pass (`✓`/`➖ … — OK`, no disclosure) is exactly the defect this campaign
+ * exists to close. The doc also conflated "unavailable" with "redacted"; the two
+ * branches above are the actual, distinguishable causes.
  */
 function evalMultiLock(lockPosture: LockPosture | null): CscProductRecommendation {
 	const base = {
 		product: 'csc_multilock' as const,
 		productName: CSC_PRODUCT_NAMES.csc_multilock,
 		relatedFindings: [] as string[],
-		assessed: true as const,
 	};
-	if (lockPosture == null || lockPosture.level === 'unknown') {
-		return { ...base, recommended: false, priority: 'none', justifyingGap: 'Lock posture unobservable (RDAP unavailable/redacted)' };
+	if (lockPosture == null) {
+		return {
+			...base,
+			recommended: false,
+			priority: 'none',
+			assessed: false,
+			justifyingGap: 'Lock posture unobservable — RDAP was unreachable for this domain',
+		};
+	}
+	if (lockPosture.level === 'unknown') {
+		return {
+			...base,
+			recommended: false,
+			priority: 'none',
+			assessed: true,
+			justifyingGap: 'Lock posture unobservable — RDAP responded but reported no EPP status codes',
+		};
 	}
 	if (lockPosture.registryLevel === true) {
-		return { ...base, recommended: false, priority: 'none', justifyingGap: 'Registry lock already in effect' };
+		return { ...base, recommended: false, priority: 'none', assessed: true, justifyingGap: 'Registry lock already in effect' };
 	}
 	if (lockPosture.transferLocked === false) {
-		return { ...base, recommended: true, priority: 'high', justifyingGap: 'Domain transfer not locked — no registry or registrar lock' };
+		return {
+			...base,
+			recommended: true,
+			priority: 'high',
+			assessed: true,
+			justifyingGap: 'Domain transfer not locked — no registry or registrar lock',
+		};
 	}
 	// registrarLevel true (or defensive fallback): registrar lock only, no server lock.
-	return { ...base, recommended: true, priority: 'medium', justifyingGap: 'Registrar lock only — no registry-level (server) lock' };
+	return {
+		...base,
+		recommended: true,
+		priority: 'medium',
+		assessed: true,
+		justifyingGap: 'Registrar lock only — no registry-level (server) lock',
+	};
 }
 
 /**
