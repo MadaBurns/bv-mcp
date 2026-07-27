@@ -70,6 +70,43 @@ describe('detectWafEvent — Cloudflare branch (unchanged)', () => {
 	});
 });
 
+describe('detectWafEvent — edge-challenged 401 (#567)', () => {
+	it('classifies a 401 carrying Cloudflare edge signals as an edge-artifact (not a real auth gate)', async () => {
+		const { detectWafEvent } = await import('../src/lib/waf-detection');
+		// Live repro (api-au.spotto.ai): the scanner receives HTTP 401 from a Cloudflare-fronted
+		// origin while a normal client gets HTTP 200 for a fully public page. The 401 is an edge
+		// fingerprinting/challenge artifact, not an origin auth requirement.
+		expect(
+			detectWafEvent(
+				headers({ 'cf-ray': '91xyz4567-SYD', server: 'cloudflare' }),
+				'<html><head><title>Spotto API Documentation</title></head><body>Public docs</body></html>',
+				401,
+			),
+		).toEqual({ provider: 'cloudflare', kind: 'edge-artifact' });
+	});
+
+	it('classifies a 401 with cf-ray only (no block/challenge body) as an edge-artifact', async () => {
+		const { detectWafEvent } = await import('../src/lib/waf-detection');
+		expect(detectWafEvent(headers({ 'cf-ray': '91xyz4567-SYD' }), '', 401)).toEqual({
+			provider: 'cloudflare',
+			kind: 'edge-artifact',
+		});
+	});
+
+	it('returns null for a genuine 401 with NO edge signals (a real auth-gated origin)', async () => {
+		const { detectWafEvent } = await import('../src/lib/waf-detection');
+		expect(detectWafEvent(headers({}), '', 401)).toBeNull();
+	});
+
+	it('still prefers the challenge classification over edge-artifact for a "Just a moment" 401', async () => {
+		const { detectWafEvent } = await import('../src/lib/waf-detection');
+		expect(detectWafEvent(headers({ 'cf-ray': '91xyz4567-SYD', server: 'cloudflare' }), 'Just a moment...', 401)).toEqual({
+			provider: 'cloudflare',
+			kind: 'challenge',
+		});
+	});
+});
+
 describe('buildWafFinding — canonical inconclusive WAF info-finding', () => {
 	it('builds an info-severity finding with the canonical metadata contract', async () => {
 		const { buildWafFinding } = await import('../src/lib/waf-detection');
