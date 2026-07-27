@@ -371,6 +371,174 @@ describe('discoverSubdomains', () => {
 	});
 });
 
+describe('discoverSubdomains — honest zero (D5 residual gaps: R1/R2/R3)', () => {
+	async function run(domain = 'example.com') {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		return discoverSubdomains(domain);
+	}
+
+	// R1: emptyResult() must never surface a bare `issues: []` — structured
+	// consumers read `issues[]` directly and drop `isError` (a handler-layer
+	// concern), so an empty issues array on a zero-subdomain result is a
+	// success-shaped zero indistinguishable from a genuinely verified absence.
+	it('R1: a corroborated-empty direct-source result still carries a high-severity unconfirmed_zero issue', async () => {
+		mockCrtSh([]); // crt.sh: outcome 'empty'. Certspotter falls to mockCrtSh's
+		// generic non-Response fallback, which throws inside fetchCertspotterEntries
+		// and is caught as outcome 'error' — so this exercises "one source spoke
+		// (empty), the other never confirmed" exactly as R3 requires.
+		const result = await run();
+
+		expect(result.totalSubdomains).toBe(0);
+		expect(result.sourceUnavailable).toBeFalsy();
+		const issue = result.issues.find((i) => i.type === 'unconfirmed_zero');
+		expect(issue).toBeDefined();
+		expect(issue?.severity).toBe('high');
+	});
+
+	it('R1: a total-outage emptyResult also carries the unconfirmed_zero issue (belt-and-braces with isError)', async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
+		const result = await run();
+
+		expect(result.sourceUnavailable).toBe(true);
+		const issue = result.issues.find((i) => i.type === 'unconfirmed_zero');
+		expect(issue).toBeDefined();
+		expect(issue?.severity).toBe('high');
+	});
+
+	// R2: CertstreamEnumerateResponse.timedOut / CertstreamSansResponse.timedOut
+	// are declared but were never read — a `{subdomains: [], timedOut: true}`
+	// response was accepted as a confident zero.
+	it('R2: a timed-out /enumerate response with an EMPTY list is not accepted as a confident zero — falls through to /sans', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const certstreamFetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (url === 'https://certstream/enumerate?domain=example.com') {
+				return Response.json({ domain: 'example.com', subdomains: [], certificateCount: 0, timedOut: true, cached: false });
+			}
+			if (url === 'https://certstream/sans?domain=example.com') {
+				return Response.json({
+					domain: 'example.com',
+					names: ['api.example.com'],
+					certificateCount: 1,
+					timedOut: false,
+					truncated: false,
+					cached: false,
+				});
+			}
+			throw new Error(`unexpected certstream URL: ${url}`);
+		});
+		globalThis.fetch = vi.fn(async () => {
+			throw new Error('crt.sh fallback should not be used');
+		});
+
+		const result = await discoverSubdomains('example.com', { fetch: certstreamFetch as unknown as typeof fetch }, 'shared-internal-key');
+
+		// The enumerate timeout must not have been treated as a final answer —
+		// /sans had to be consulted.
+		expect(certstreamFetch).toHaveBeenCalledTimes(2);
+		expect(result.totalSubdomains).toBe(1);
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
+		expect(result.sourceUnavailable).toBeFalsy();
+	});
+
+	it('R2: a timed-out /enumerate response WITH data is kept and marked partial, not suppressed', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const certstreamFetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (url === 'https://certstream/enumerate?domain=example.com') {
+				return Response.json({
+					domain: 'example.com',
+					subdomains: ['api.example.com'],
+					certificateCount: 1,
+					timedOut: true,
+					cached: false,
+				});
+			}
+			throw new Error(`unexpected certstream URL: ${url} (should not reach /sans — enumerate already had data)`);
+		});
+		globalThis.fetch = vi.fn(async () => {
+			throw new Error('crt.sh fallback should not be used');
+		});
+
+		const result = await discoverSubdomains('example.com', { fetch: certstreamFetch as unknown as typeof fetch }, 'shared-internal-key');
+
+		expect(certstreamFetch).toHaveBeenCalledTimes(1);
+		expect(result.totalSubdomains).toBe(1);
+		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
+		expect(result.partial).toBe(true);
+		expect(result.sourceUnavailable).toBeFalsy();
+	});
+
+	it('R2: a timed-out /sans response with an empty list falls through to the direct public sources', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const certstreamFetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
+			if (url === 'https://certstream/enumerate?domain=example.com') {
+				return new Response(JSON.stringify({ error: 'upstream transient' }), {
+					status: 502,
+					headers: { 'Content-Type': 'application/json' },
+				});
+			}
+			if (url === 'https://certstream/sans?domain=example.com') {
+				return Response.json({ domain: 'example.com', names: [], certificateCount: 0, timedOut: true, truncated: false, cached: false });
+			}
+			throw new Error(`unexpected certstream URL: ${url}`);
+		});
+		mockCrtSh([{ name_value: 'fromcrtsh.example.com', issuer_name: 'CN=R3', not_before: '2026-01-01', not_after: '2026-04-01' }]);
+
+		const result = await discoverSubdomains('example.com', { fetch: certstreamFetch as unknown as typeof fetch }, 'shared-internal-key');
+
+		expect(result.subdomains.map((s) => s.subdomain)).toContain('fromcrtsh.example.com');
+		expect(result.sourceUnavailable).toBeFalsy();
+	});
+
+	// R3: a first-source (crt.sh) HTTP-200 `[]` was treated as available:true
+	// and short-circuited before Certspotter (the #562 cross-check) ever ran.
+	it('R3: a first-source empty does not short-circuit — falls through to corroborate with the second source', async () => {
+		let certspotterCalled = false;
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return Response.json([], { status: 200 }); // empty
+			if (s.includes('certspotter.com')) {
+				certspotterCalled = true;
+				return Response.json(
+					[
+						{
+							dns_names: ['found.example.com'],
+							issuer: { name: "C=US, O=Let's Encrypt, CN=R3" },
+							not_before: '2026-01-01',
+							not_after: '2026-04-01',
+						},
+					],
+					{ status: 200 },
+				);
+			}
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+
+		const result = await run();
+
+		expect(certspotterCalled).toBe(true);
+		expect(result.subdomains.map((s) => s.subdomain)).toContain('found.example.com');
+		expect(result.sourceUnavailable).toBeFalsy();
+	});
+
+	it('R3: an empty confirmed by BOTH direct sources is still reported unconfirmed (issues[] carries the caution), not a clean 0', async () => {
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return Response.json([], { status: 200 });
+			if (s.includes('certspotter.com')) return Response.json([], { status: 200 });
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+
+		const result = await run();
+
+		expect(result.totalSubdomains).toBe(0);
+		expect(result.sourceUnavailable).toBeFalsy();
+		expect(result.issues.some((i) => i.type === 'unconfirmed_zero')).toBe(true);
+	});
+});
+
 describe('formatSubdomainDiscovery', () => {
 	async function getFormatter() {
 		const { formatSubdomainDiscovery } = await import('../src/tools/discover-subdomains');
@@ -519,6 +687,29 @@ describe('formatSubdomainDiscovery', () => {
 
 		const fullOutput = formatSubdomainDiscovery(result, 'full');
 		expect(fullOutput).toContain('50 more subdomains not shown');
+	});
+
+	it('formats a partial (timed-out-but-productive) result with a partial banner, distinct from stale', async () => {
+		const formatSubdomainDiscovery = await getFormatter();
+
+		const result = {
+			domain: 'example.com',
+			totalSubdomains: 1,
+			totalCertificates: 1,
+			subdomains: [
+				{ subdomain: 'api.example.com', firstSeen: '', lastSeen: '', issuer: '', certCount: 1, isWildcard: false, isExpired: false },
+			],
+			wildcardCerts: 0,
+			expiredCerts: 0,
+			uniqueIssuers: [],
+			issues: [],
+			partial: true,
+		};
+
+		const output = formatSubdomainDiscovery(result, 'compact');
+		expect(output).toMatch(/partial/i);
+		expect(output).not.toMatch(/stale/i);
+		expect(output).toContain('api.example.com');
 	});
 });
 

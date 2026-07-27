@@ -156,7 +156,7 @@ export interface DiscoveredSubdomain {
 
 /** An issue detected during subdomain discovery. */
 export interface SubdomainIssue {
-	type: 'expired_subdomain' | 'wildcard_exposure' | 'many_issuers' | 'recent_issuance' | 'shadow_subdomain';
+	type: 'expired_subdomain' | 'wildcard_exposure' | 'many_issuers' | 'recent_issuance' | 'shadow_subdomain' | 'unconfirmed_zero';
 	severity: 'high' | 'medium' | 'low' | 'info';
 	detail: string;
 }
@@ -622,22 +622,38 @@ function delayWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
 
 /**
  * Query the direct public CT sources with per-source health logging and deadline
- * gating. Stops at the FIRST source that responds authoritatively:
- *   - `ok`    → real data; return it.
- *   - `empty` → a genuine "no subdomains" answer; return available-but-empty.
+ * gating.
+ *
+ *   - `ok`    → real data; return it immediately (a later empty answer never
+ *               overrides real data already in hand).
+ *   - `empty` → NOT authoritative on its own. crt.sh (or Certspotter) can be
+ *               behind on indexing a domain even when it is up, so a single
+ *               source's "nothing here" is corroborated by trying the next
+ *               source before it is trusted — an uncorroborated single-source
+ *               empty is exactly the success-shaped-zero this tool must not
+ *               produce. Only once a full pass over every source completes
+ *               without any `ok` do we report `available:true` with an empty
+ *               set (the caller routes this through `emptyResult()`, which
+ *               always carries the `unconfirmed_zero` issue regardless of how
+ *               many sources agreed — CT-log absence is never positive proof).
  *
  * Ordering is **failover-first, retry-second**: pass 1 tries every source once
  * (crt.sh → Certspotter) before any source is retried. Re-asking a source that
  * just timed out is the worst use of a tight budget — it costs another full
- * timeout and delays the source that would actually rescue the caller. Only when
- * every source has failed and budget remains do we spend it on a retry pass.
+ * timeout and delays the source that would actually rescue the caller. A pass
+ * that ends with at least one authoritative `empty` and no `ok` stops there
+ * (that is real information, not a gap to paper over with a retry pass); a
+ * pass that ends with ONLY failures (http_error / timeout / error — no source
+ * answered at all) spends a retry pass chasing what is presumed transient.
  *
- * `available:false` means every source failed — the caller then decides between
- * last-known-good and an explicit outage error.
+ * `available:false` means no source ever answered authoritatively — the
+ * caller then decides between last-known-good and an explicit outage error.
  *
- * NOTE: sequential first-authoritative-wins, not a fan-out+merge. Under the ~24s
- * synchronous budget, querying every source to merge results would blow the
- * deadline; failing over to the first responder is what the budget allows.
+ * NOTE: sequential first-authoritative-wins on `ok`, not a fan-out+merge.
+ * Under the ~24s synchronous budget, querying every source to merge results
+ * on every call would blow the deadline; failing over to the first
+ * `ok` responder is what the budget allows. `empty` is the one outcome that
+ * deliberately keeps trying rather than winning immediately.
  */
 async function queryDirectSources(
 	domain: string,
@@ -651,15 +667,24 @@ async function queryDirectSources(
 		{ name: 'certspotter', timeoutMs: CERTSPOTTER_TIMEOUT_MS, fetch: fetchCertspotterEntries },
 	];
 
+	// True once ANY source has returned an authoritative "no subdomains"
+	// answer. Tracked across sources (and, if reached, retry passes) so a
+	// first-source empty is never reported until at least one other source
+	// has had a chance to corroborate it or supersede it with real data.
+	let sawEmpty = false;
+
 	for (let pass = 0; pass <= CT_SOURCE_MAX_RETRIES; pass++) {
 		// Backoff applies BETWEEN passes, not between sources — failover should be
 		// immediate, only a repeat attempt at the same source needs to back off.
 		if (pass > 0) await delayWithSignal(CT_SOURCE_RETRY_BACKOFF_MS, options?.signal);
 
 		for (const source of sources) {
-			// Never start an attempt we can't finish inside the budget.
+			// Never start an attempt we can't finish inside the budget. An empty
+			// answer already gathered from an earlier source in this loop is real
+			// information — surface it rather than downgrading to a bare outage
+			// just because we ran out of budget to corroborate further.
 			if (deadlineExceeded(options) || !hasBudgetFor(options, source.timeoutMs)) {
-				return { available: false, entries: [] };
+				return sawEmpty ? { available: true, entries: [] } : { available: false, entries: [] };
 			}
 			const composed = composeAbortSignal(source.timeoutMs, options?.signal);
 			let res: SourceResult;
@@ -670,8 +695,16 @@ async function queryDirectSources(
 			}
 			logCtSource(domain, source.name, res.outcome);
 			if (res.outcome === 'ok') return { available: true, entries: res.entries };
-			if (res.outcome === 'empty') return { available: true, entries: [] };
+			if (res.outcome === 'empty') sawEmpty = true;
+			// empty / http_error / timeout / error all fall through to try the
+			// next source instead of short-circuiting.
 		}
+
+		// A full pass completed without any source returning real data. An
+		// authoritative empty from at least one source is a real (if
+		// unconfirmed) answer — report it rather than burning a retry pass
+		// chasing a source that merely failed to respond.
+		if (sawEmpty) return { available: true, entries: [] };
 	}
 	return { available: false, entries: [] };
 }
@@ -737,6 +770,16 @@ async function readLastKnownGood(domain: string, options?: DiscoverSubdomainsOpt
  * check the optional deadline; if tripped, we either return the enumerate
  * result tagged `partial:true` (when it had data) or signal the orchestrator
  * to skip remaining stages by returning a partial empty result.
+ *
+ * `timedOut` handling (mirrors `attemptCertstreamSans` in
+ * `src/tenants/discovery/san-correlator.ts`): the worker itself hit ITS
+ * upstream timeout mid-query. A `timedOut:true` response with data is a real,
+ * if incomplete, measurement — returned marked `partial:true` rather than
+ * discarded. A `timedOut:true` response with NO data carries no signal at
+ * all (we don't know whether there truly are zero subdomains, or whether the
+ * timeout hit before anything could be found) — that is treated like a
+ * failure so the caller falls through to the next stage instead of accepting
+ * an incomplete measurement as a confident zero.
  */
 async function queryCertstream(
 	domain: string,
@@ -748,12 +791,24 @@ async function queryCertstream(
 		return emptyResult(domain, true, true);
 	}
 
-	const enumerate = await queryCertstreamEndpoint<CertstreamEnumerateResponse>('enumerate', domain, certstream, certstreamAuthToken, options);
-	const enumerateResult =
-		enumerate && !enumerate.error && Array.isArray(enumerate.subdomains)
-			? buildCertstreamResult(domain, enumerate.subdomains, enumerate.certificateCount)
-			: null;
-	if (enumerateResult) return enumerateResult;
+	const enumerate = await queryCertstreamEndpoint<CertstreamEnumerateResponse>(
+		'enumerate',
+		domain,
+		certstream,
+		certstreamAuthToken,
+		options,
+	);
+	const enumerateOk = Boolean(enumerate) && !enumerate?.error && Array.isArray(enumerate?.subdomains);
+	if (enumerateOk && enumerate) {
+		if (!enumerate.timedOut) {
+			return buildCertstreamResult(domain, enumerate.subdomains, enumerate.certificateCount);
+		}
+		if (enumerate.subdomains.length > 0) {
+			return { ...buildCertstreamResult(domain, enumerate.subdomains, enumerate.certificateCount), partial: true };
+		}
+		// timedOut:true with an empty list — fall through to /sans below rather
+		// than accepting an incomplete measurement as a confident zero.
+	}
 
 	// Deadline gate: if we already burned the budget on /enumerate, skip /sans
 	// and let the orchestrator decide whether to fall through to crt.sh.
@@ -762,7 +817,18 @@ async function queryCertstream(
 	}
 
 	const sans = await queryCertstreamEndpoint<CertstreamSansResponse>('sans', domain, certstream, certstreamAuthToken, options);
-	return sans && !sans.error && Array.isArray(sans.names) ? buildCertstreamResult(domain, sans.names, sans.certificateCount) : null;
+	const sansOk = Boolean(sans) && !sans?.error && Array.isArray(sans?.names);
+	if (!sansOk || !sans) return null;
+	if (!sans.timedOut) {
+		return buildCertstreamResult(domain, sans.names, sans.certificateCount);
+	}
+	if (sans.names.length > 0) {
+		return { ...buildCertstreamResult(domain, sans.names, sans.certificateCount), partial: true };
+	}
+	// timedOut:true with an empty list — return null so the orchestrator falls
+	// through to the direct public sources (crt.sh → Certspotter) instead of
+	// treating this as a confident zero.
+	return null;
 }
 
 async function queryCertstreamEndpoint<T>(
@@ -915,6 +981,16 @@ function buildCertstreamResult(domain: string, names: string[], certificateCount
  * Build an empty result. `sourceUnavailable` distinguishes a CT lookup failure
  * (crt.sh non-OK / network error) from a successful query that found nothing.
  * `partial` indicates the deadline tripped before a stage could run.
+ *
+ * Every call carries a `high`-severity `unconfirmed_zero` issue: `isError`
+ * (set by the handler for `sourceUnavailable`) is dropped by structured
+ * consumers that read `issues[]` directly, so a bare `totalSubdomains: 0` +
+ * `issues: []` reads as a confidently-verified absence of subdomains — the
+ * success-shaped-zero this tool must never produce. CT logs are indirect
+ * evidence at best (a subdomain with no certificate never appears in them),
+ * so even a query that ran to completion cannot *positively* confirm zero
+ * subdomains — it can only report that no certificate-issuance evidence was
+ * found.
  */
 function emptyResult(domain: string, sourceUnavailable = false, partial = false): SubdomainDiscoveryResult {
 	return {
@@ -925,7 +1001,15 @@ function emptyResult(domain: string, sourceUnavailable = false, partial = false)
 		wildcardCerts: 0,
 		expiredCerts: 0,
 		uniqueIssuers: [],
-		issues: [],
+		issues: [
+			{
+				type: 'unconfirmed_zero',
+				severity: 'high',
+				detail: sourceUnavailable
+					? `Certificate Transparency enumeration for ${domain} did not complete — this zero-subdomain result reflects a lookup failure, not a confirmed absence of subdomains.`
+					: `No Certificate Transparency source has positively confirmed ${domain} has zero subdomains — CT logs only capture certificate issuance, so this is an unconfirmed measurement, not a verified absence.`,
+			},
+		],
 		sourceUnavailable,
 		...(partial ? { partial: true } : {}),
 	};
@@ -946,14 +1030,29 @@ export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, forma
 	}
 
 	const body = format === 'compact' ? formatCompact(result) : formatFull(result);
-	return result.stale ? `${staleBanner(result)}\n\n${body}` : body;
+	const banners: string[] = [];
+	if (result.stale) banners.push(staleBanner(result));
+	// Distinct from `stale` (served from the last-known-good cache): `partial`
+	// here means a live source answered but timed out mid-query, so the data
+	// shown is real but the enumeration may be incomplete. Skip when `stale`
+	// already fired for this result — the stale banner already says the data
+	// may not be current, and the two flags are not expected to co-occur from
+	// the paths that set `partial:true` with real subdomain data.
+	if (result.partial && !result.stale) banners.push(partialBanner());
+	return banners.length > 0 ? `${banners.join('\n\n')}\n\n${body}` : body;
 }
 
 /** Staleness notice prepended when a result came from the last-known-good cache. */
 function staleBanner(result: SubdomainDiscoveryResult): string {
 	const age = result.cacheAgeMinutes ?? 0;
-	const ageText = age < 60 ? `${age} minute${age === 1 ? '' : 's'}` : `${Math.floor(age / 60)} hour${Math.floor(age / 60) === 1 ? '' : 's'}`;
+	const ageText =
+		age < 60 ? `${age} minute${age === 1 ? '' : 's'}` : `${Math.floor(age / 60)} hour${Math.floor(age / 60) === 1 ? '' : 's'}`;
 	return `⚠️ STALE RESULT (cached ${ageText} ago): every live Certificate Transparency source is currently unreachable, so this is the last known good enumeration — not a fresh one. Newly-issued certificates may be missing.`;
+}
+
+/** Partial notice prepended when a live source answered but timed out mid-query. */
+function partialBanner(): string {
+	return `⚠️ PARTIAL RESULT: the Certificate Transparency source timed out before finishing this enumeration — the subdomains below are real, but there may be more that were not found in time.`;
 }
 
 /** Compact format: concise one-line-per-subdomain output. */
