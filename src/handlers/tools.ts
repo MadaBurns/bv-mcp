@@ -1632,6 +1632,13 @@ export async function handleToolsCall(
 						issues: result.issues.length,
 						sourceUnavailable: result.sourceUnavailable ?? false,
 						stale: result.stale ?? false,
+						// #573: an under-reported enumeration must be visible in tail, not
+						// just in the payload — a rising truncated-rate is the alarm for a
+						// CT source that has quietly started capping us.
+						truncated: result.truncated ?? false,
+						returned: result.returned ?? result.subdomains.length,
+						enumerationComplete: result.enumerationComplete ?? true,
+						...(result.sources ? { sources: result.sources.join(',') } : {}),
 						...(result.stale ? { cacheAgeMinutes: result.cacheAgeMinutes ?? 0 } : {}),
 					};
 					// A CT-source outage (sourceUnavailable) is NOT a clean "0 subdomains found" — for a

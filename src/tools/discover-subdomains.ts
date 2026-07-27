@@ -45,12 +45,23 @@ export const DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS = 24_000;
 const CT_SOURCE_TIMEOUT_MS = 10_000;
 
 /**
- * Per-attempt timeout for the Certspotter fallback (ms). Tighter than crt.sh's:
- * it is a plain JSON API that normally answers in well under a second, so a
- * shorter bound keeps a full failover pass comfortably inside the ~24s handler
- * budget instead of letting one slow fallback consume it.
+ * Per-ATTEMPT timeout for the Certspotter fallback (ms) — this bounds the whole
+ * paginated run, not one page: `queryDirectSources` composes ONE abort signal per
+ * source attempt and threads it through every page fetch.
+ *
+ * Sized against {@link MAX_CT_PAGES}: 8 pages at the measured ~1.5s/page is ~12s,
+ * so 8s (the pre-pagination value, set when this was a single request) would have
+ * aborted mid-run around page 5 and silently capped recall — the exact under-
+ * delivery this pagination work exists to remove. 14s fits the full 8 pages with
+ * headroom.
+ *
+ * This does NOT risk the ~24s handler budget: {@link CERTSPOTTER_PAGE_BUDGET_MS}
+ * is re-checked against the caller's real deadline before every page after the
+ * first, so a slow crt.sh attempt ahead of this one still clamps pagination — the
+ * caller's budget stays authoritative and the stop is non-fatal (pages already
+ * read are kept, `enumerationComplete: false`).
  */
-const CERTSPOTTER_TIMEOUT_MS = 8_000;
+const CERTSPOTTER_TIMEOUT_MS = 14_000;
 
 /**
  * Retry PASSES over the whole source list on a transient outcome (timeout / 5xx
@@ -81,8 +92,66 @@ const CT_SOURCE_MAX_BODY_BYTES = 5 * 1024 * 1024;
 const SUBDOMAIN_LKG_KEY_PREFIX = 'cache:subdomains-lkg:';
 const SUBDOMAIN_LKG_TTL_SECONDS = 7 * 24 * 60 * 60;
 
-/** Maximum subdomains to return (CT logs can contain thousands). */
-const MAX_SUBDOMAINS = 100;
+/**
+ * Maximum subdomains carried in the STRUCTURED result (CT logs can contain
+ * thousands).
+ *
+ * Raised 100 → 500 for issue #573. The list is sorted `lastSeen` DESCENDING
+ * before the cap is applied, so a 100-name cap does not truncate randomly — it
+ * truncates the long-lived production hosts that renew infrequently while
+ * keeping recently-issued throwaways. On a real bank's estate that dropped
+ * `internetbanking`, `payonline`, `mybnz` and kept `test-fc1` / `m.www.sandbox`.
+ * 500 covers the overwhelming majority of real estates; whatever it still cuts
+ * is now reported explicitly via {@link SubdomainDiscoveryResult.truncated}.
+ */
+const MAX_SUBDOMAINS = 500;
+
+/**
+ * Maximum subdomains RENDERED into the human/LLM-readable text.
+ *
+ * Deliberately far below {@link MAX_SUBDOMAINS}: `formatFull` emits ~4 lines per
+ * host, so 500 hosts is ~100KB of prose that would swamp an LLM context window
+ * for no analytical gain. The full list stays available in `structuredContent`;
+ * the text says honestly how many it is not showing.
+ */
+const MAX_RENDERED_SUBDOMAINS = 100;
+
+/**
+ * Cap on per-NAME issue rows emitted for a single issue type.
+ *
+ * The derived COUNTS (`wildcardCerts` / `expiredCerts`) are always whole-set —
+ * only the enumerated rows are bounded, with a roll-up row naming the
+ * remainder. Without this a 500-name estate could emit 500 issue rows.
+ */
+const MAX_PER_NAME_ISSUES = 25;
+
+/**
+ * Maximum Certspotter pages followed per attempt.
+ *
+ * Certspotter paginates at 100 issuances and ignores `&limit=` without an API
+ * key, so following `Link: <…>; rel="next"` via `&after=<last id>` is the only
+ * lever on recall. Measured ~1.5s/page unauthenticated; 8 pages is ~800
+ * issuances, more than any realistic estate.
+ *
+ * TWO INDEPENDENT BOUNDS apply, and the page counter is NOT the binding one in
+ * practice — {@link CERTSPOTTER_TIMEOUT_MS} is a single abort signal composed
+ * ONCE per source attempt (see `queryDirectSources`), so it caps the WHOLE
+ * paginated run, not each page. It is sized to fit `MAX_CT_PAGES` at the
+ * measured per-page cost with headroom; if either constant moves, re-check that
+ * `MAX_CT_PAGES * ~1.5s` still fits inside it, or pagination will silently stop
+ * early. The per-page {@link CERTSPOTTER_PAGE_BUDGET_MS} check additionally
+ * yields to the caller's synchronous deadline. Both stop paths are non-fatal:
+ * pages already read are kept and `enumerationComplete: false` is reported.
+ */
+const MAX_CT_PAGES = 8;
+
+/**
+ * Budget an additional Certspotter page must fit inside before it is started.
+ * Measured page cost is ~1.5s; 2s carries headroom without letting the page
+ * loop erode the ~24s handler budget. The caller's `deadlineMs` stays
+ * authoritative — see {@link hasBudgetFor}.
+ */
+const CERTSPOTTER_PAGE_BUDGET_MS = 2_000;
 
 /** Common subdomain prefixes that are expected infrastructure. */
 const COMMON_SUBDOMAINS = new Set([
@@ -191,6 +260,31 @@ export interface SubdomainDiscoveryResult {
 	stale?: boolean;
 	/** Age of a `stale` result in whole minutes since it was cached. */
 	cacheAgeMinutes?: number;
+	/**
+	 * True when this result is NOT the whole story — either the returned
+	 * {@link subdomains} array is a strict subset of what was enumerated
+	 * (`returned < totalSubdomains`, the {@link MAX_SUBDOMAINS} cap), or the
+	 * upstream enumeration itself was incomplete ({@link enumerationComplete}
+	 * false). A security caller that sweeps only `subdomains` MUST branch on
+	 * this: before #573 the cap was silent and the tool read as authoritative.
+	 */
+	truncated?: boolean;
+	/** How many entries the {@link subdomains} array actually carries. */
+	returned?: number;
+	/** Which CT source(s) produced this answer, e.g. `['crtsh']`, `['certspotter']`. */
+	sources?: string[];
+	/**
+	 * True when we believe we read the source's index exhaustively: every page
+	 * followed, no upstream truncation flag, no entry-cap applied. False means
+	 * `totalSubdomains` is a FLOOR, not a total — the real count is higher.
+	 */
+	enumerationComplete?: boolean;
+}
+
+/** Provenance/completeness metadata threaded from a source into the result builders. */
+interface EnumerationMeta {
+	sources?: string[];
+	enumerationComplete?: boolean;
 }
 
 /**
@@ -308,7 +402,9 @@ export async function discoverSubdomains(
 	// and a bounded retry: crt.sh (rich metadata) → Certspotter (names + dates).
 	const direct = await queryDirectSources(domain, options);
 	if (direct.available) {
-		const result = direct.entries.length > 0 ? buildResultFromEntries(domain, direct.entries) : emptyResult(domain);
+		const meta: EnumerationMeta = { sources: direct.sources, enumerationComplete: direct.enumerationComplete };
+		const result =
+			direct.entries.length > 0 ? buildResultFromEntries(domain, direct.entries, meta) : emptyResult(domain, false, false, meta);
 		await cacheSuccess(domain, result, options);
 		return result;
 	}
@@ -328,11 +424,14 @@ export async function discoverSubdomains(
  * subdomain, track first/last-seen + issuer per name, and derive the wildcard /
  * expired / many-issuers / shadow-subdomain issues. Pure — no I/O.
  */
-export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[]): SubdomainDiscoveryResult {
+export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[], meta?: EnumerationMeta): SubdomainDiscoveryResult {
 	const now = new Date();
 
-	// Cap entries to prevent memory exhaustion on domains with huge CT histories
-	const entries = rawEntries.length > 5000 ? rawEntries.slice(0, 5000) : rawEntries;
+	// Cap entries to prevent memory exhaustion on domains with huge CT histories.
+	// Hitting this cap makes the enumeration incomplete regardless of what the
+	// source reported — the discarded certs may carry names nothing else covers.
+	const entryCapHit = rawEntries.length > 5000;
+	const entries = entryCapHit ? rawEntries.slice(0, 5000) : rawEntries;
 
 	// Parse and aggregate subdomain data
 	const trackers = new Map<string, SubdomainTracker>();
@@ -407,7 +506,10 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[])
 	// Sort by lastSeen descending (most recent first)
 	allSubdomains.sort((a, b) => (b.lastSeen > a.lastSeen ? 1 : b.lastSeen < a.lastSeen ? -1 : 0));
 
-	// Limit to MAX_SUBDOMAINS
+	// Limit to MAX_SUBDOMAINS. NOTE: every derived statistic below is computed
+	// over `allSubdomains`, NOT this slice — the counts describe the ESTATE, and
+	// a count taken after the display cut is a silently wrong security answer
+	// (issue #573 defect C: 3 wildcards on the wire were reported as 2).
 	const subdomains = allSubdomains.slice(0, MAX_SUBDOMAINS);
 
 	// Collect unique issuers
@@ -417,22 +519,32 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[])
 	}
 	const uniqueIssuers = Array.from(issuerSet);
 
-	// Count wildcards and expired
-	const wildcardCerts = subdomains.filter((s) => s.isWildcard).length;
-	const expiredCerts = subdomains.filter((s) => s.isExpired).length;
+	// Count wildcards and expired — whole set, never the returned slice.
+	const wildcardCerts = allSubdomains.filter((s) => s.isWildcard).length;
+	const expiredCerts = allSubdomains.filter((s) => s.isExpired).length;
 
 	// Detect issues
 	const issues: SubdomainIssue[] = [];
 
-	// Expired subdomains — only certs expired
-	for (const sd of subdomains) {
-		if (sd.isExpired) {
-			issues.push({
-				type: 'expired_subdomain',
-				severity: 'medium',
-				detail: `${sd.subdomain} has only expired certificates — may be abandoned`,
-			});
-		}
+	// Expired subdomains — only certs expired. Rows are bounded (a 500-name
+	// estate must not emit 500 rows) but the roll-up keeps the total honest.
+	let expiredRows = 0;
+	for (const sd of allSubdomains) {
+		if (!sd.isExpired) continue;
+		if (expiredRows >= MAX_PER_NAME_ISSUES) break;
+		expiredRows++;
+		issues.push({
+			type: 'expired_subdomain',
+			severity: 'medium',
+			detail: `${sd.subdomain} has only expired certificates — may be abandoned`,
+		});
+	}
+	if (expiredCerts > expiredRows) {
+		issues.push({
+			type: 'expired_subdomain',
+			severity: 'medium',
+			detail: `…and ${expiredCerts - expiredRows} further subdomains have only expired certificates (rows capped at ${MAX_PER_NAME_ISSUES} for readability; see the full list in the structured result)`,
+		});
 	}
 
 	// Wildcard exposure
@@ -453,14 +565,21 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[])
 		});
 	}
 
-	// Shadow subdomains — not matching common patterns, with recent certs
+	// Shadow subdomains — not matching common patterns, with recent certs.
+	// Swept over the whole set (a shadow host that fell past the return cap is
+	// exactly the one worth naming), with the same bounded-rows discipline.
 	const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000).toISOString();
-	for (const sd of subdomains) {
+	let shadowRows = 0;
+	let shadowTotal = 0;
+	for (const sd of allSubdomains) {
 		if (sd.isWildcard || sd.isExpired) continue;
 		const label = sd.subdomain.replace(domainSuffix, '').replace(/\.$/, '');
 		// Only consider single-label subdomains for shadow detection
 		if (label.includes('.')) continue;
 		if (!COMMON_SUBDOMAINS.has(label) && sd.lastSeen >= thirtyDaysAgo) {
+			shadowTotal++;
+			if (shadowRows >= MAX_PER_NAME_ISSUES) continue;
+			shadowRows++;
 			issues.push({
 				type: 'shadow_subdomain',
 				severity: 'info',
@@ -468,6 +587,15 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[])
 			});
 		}
 	}
+	if (shadowTotal > shadowRows) {
+		issues.push({
+			type: 'shadow_subdomain',
+			severity: 'info',
+			detail: `…and ${shadowTotal - shadowRows} further subdomains with recent certificate activity are not common service names (rows capped at ${MAX_PER_NAME_ISSUES} for readability; see the full list in the structured result)`,
+		});
+	}
+
+	const enumerationComplete = (meta?.enumerationComplete ?? true) && !entryCapHit;
 
 	return {
 		domain,
@@ -478,6 +606,28 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[])
 		expiredCerts,
 		uniqueIssuers,
 		issues,
+		...enumerationFlags(allSubdomains.length, subdomains.length, meta?.sources, enumerationComplete),
+	};
+}
+
+/**
+ * Build the {@link SubdomainDiscoveryResult} truncation contract from a
+ * (total, returned) pair. `truncated` is deliberately the UNION of both ways an
+ * answer can be partial — the return cap bit, or the upstream enumeration being
+ * incomplete — because a caller asking "is this the whole estate?" needs one
+ * flag, with `enumerationComplete` available to say WHICH.
+ */
+function enumerationFlags(
+	total: number,
+	returned: number,
+	sources: string[] | undefined,
+	enumerationComplete: boolean,
+): Pick<SubdomainDiscoveryResult, 'truncated' | 'returned' | 'sources' | 'enumerationComplete'> {
+	return {
+		returned,
+		truncated: returned < total || !enumerationComplete,
+		enumerationComplete,
+		...(sources && sources.length > 0 ? { sources } : {}),
 	};
 }
 
@@ -488,10 +638,20 @@ type CtSourceOutcome = 'ok' | 'empty' | 'http_error' | 'timeout' | 'error';
 interface SourceResult {
 	outcome: CtSourceOutcome;
 	entries: CrtShEntry[];
+	/**
+	 * False when the source's index was NOT read exhaustively (pagination cut
+	 * short by {@link MAX_CT_PAGES}, the budget, or a mid-pagination failure).
+	 * Defaults to true for single-shot sources.
+	 */
+	enumerationComplete?: boolean;
 }
 
-/** A single Certspotter issuance (with `expand=dns_names&expand=issuer`). */
+/**
+ * A single Certspotter issuance (with `expand=dns_names&expand=issuer`).
+ * `id` is the pagination cursor — `&after=<id>` fetches the next page.
+ */
 interface CertspotterIssuance {
+	id?: string | number;
 	dns_names?: string[];
 	not_before?: string;
 	not_after?: string;
@@ -551,46 +711,116 @@ async function fetchCrtShEntries(domain: string, signal: AbortSignal): Promise<S
 		const parsed = JSON.parse(rawBody) as unknown;
 		if (!Array.isArray(parsed)) return { outcome: 'error', entries: [] };
 		const entries = parsed as CrtShEntry[];
-		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries };
+		// crt.sh answers the whole query in one response — no pagination to miss.
+		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries, enumerationComplete: true };
 	} catch (err) {
 		return { outcome: classifyFetchError(err), entries: [] };
 	}
+}
+
+/** True when a Certspotter response advertises another page (`Link: …; rel="next"`). */
+function hasNextCertspotterPage(response: Response): boolean {
+	const link = response.headers.get('link');
+	return typeof link === 'string' && /rel\s*=\s*"?next"?/i.test(link);
 }
 
 /**
  * Fetch + parse Certspotter issuances into normalized {@link CrtShEntry}s so the
  * shared aggregation applies unchanged. Unauthenticated (rate-limited but
  * functional for occasional failover); `not_before`/`not_after` are best-effort.
+ *
+ * PAGINATION (issue #573): Certspotter serves 100 issuances per page and
+ * **silently ignores `&limit=` without an API key**, so a single request is
+ * page 1 of N — for bnz.co.nz that was 140 names reported out of 165 the index
+ * actually holds. We follow `Link: <…>; rel="next"` by re-requesting with
+ * `&after=<last issuance id>` until a short page, a missing next link,
+ * {@link MAX_CT_PAGES}, or the caller's budget stops us.
+ *
+ * Failure posture is asymmetric on purpose: a failure on page 1 is a SOURCE
+ * failure (failover to the next source), while a failure mid-pagination keeps
+ * the pages already read and marks the enumeration incomplete — partial real
+ * data beats discarding it and reporting an outage.
  */
-async function fetchCertspotterEntries(domain: string, signal: AbortSignal): Promise<SourceResult> {
+async function fetchCertspotterEntries(domain: string, signal: AbortSignal, options?: DiscoverSubdomainsOptions): Promise<SourceResult> {
+	const base = `https://api.certspotter.com/v1/issuances?domain=${encodeURIComponent(domain)}&include_subdomains=true&expand=dns_names&expand=issuer`;
+	const entries: CrtShEntry[] = [];
+	let after: string | undefined;
+	let pagesRead = 0;
+	let enumerationComplete = true;
+
+	/** A mid-pagination stop: keep what we have, flag the gap. */
+	const stopIncomplete = (): boolean => {
+		enumerationComplete = false;
+		return true;
+	};
+
 	try {
-		const url = `https://api.certspotter.com/v1/issuances?domain=${encodeURIComponent(domain)}&include_subdomains=true&expand=dns_names&expand=issuer`;
-		const response = await fetch(url, { signal, redirect: 'manual' });
-		if (!response.ok) {
-			await disposeUnreadResponseBody(response);
-			return { outcome: 'http_error', entries: [] };
+		while (pagesRead < MAX_CT_PAGES) {
+			// The caller's synchronous budget stays authoritative over the page
+			// loop — an extra page is never worth tripping the 28s guillotine.
+			if (pagesRead > 0 && (deadlineExceeded(options) || !hasBudgetFor(options, CERTSPOTTER_PAGE_BUDGET_MS))) {
+				stopIncomplete();
+				break;
+			}
+
+			const url = after ? `${base}&after=${encodeURIComponent(after)}` : base;
+			const response = await fetch(url, { signal, redirect: 'manual' });
+
+			if (!response.ok) {
+				await disposeUnreadResponseBody(response);
+				if (pagesRead === 0) return { outcome: 'http_error', entries: [] };
+				stopIncomplete();
+				break;
+			}
+			const declaredLength = Number(response.headers.get('content-length'));
+			if (Number.isFinite(declaredLength) && declaredLength > CT_SOURCE_MAX_BODY_BYTES) {
+				await disposeUnreadResponseBody(response);
+				if (pagesRead === 0) return { outcome: 'http_error', entries: [] };
+				stopIncomplete();
+				break;
+			}
+			const rawBody = await readBoundedOrNull(response.body, CT_SOURCE_MAX_BODY_BYTES);
+			if (rawBody === null) {
+				if (pagesRead === 0) return { outcome: 'http_error', entries: [] };
+				stopIncomplete();
+				break;
+			}
+			const parsed = JSON.parse(rawBody) as unknown;
+			if (!Array.isArray(parsed)) {
+				if (pagesRead === 0) return { outcome: 'error', entries: [] };
+				stopIncomplete();
+				break;
+			}
+
+			const page = parsed as CertspotterIssuance[];
+			pagesRead++;
+			let lastId: string | undefined;
+			for (const item of page) {
+				if (item && (typeof item.id === 'string' || typeof item.id === 'number')) lastId = String(item.id);
+				if (!item || !Array.isArray(item.dns_names) || item.dns_names.length === 0) continue;
+				entries.push({
+					name_value: item.dns_names.join('\n'),
+					issuer_name: item.issuer?.name ?? '',
+					not_before: item.not_before ?? '',
+					not_after: item.not_after ?? '',
+				});
+			}
+
+			// Index exhausted, or the server says this is the last page.
+			if (page.length === 0 || !hasNextCertspotterPage(response)) break;
+			// A next page exists but we cannot address it (no usable cursor) or we
+			// have spent the page budget — either way the enumeration is partial.
+			if (!lastId || pagesRead >= MAX_CT_PAGES) {
+				stopIncomplete();
+				break;
+			}
+			after = lastId;
 		}
-		const declaredLength = Number(response.headers.get('content-length'));
-		if (Number.isFinite(declaredLength) && declaredLength > CT_SOURCE_MAX_BODY_BYTES) {
-			await disposeUnreadResponseBody(response);
-			return { outcome: 'http_error', entries: [] };
-		}
-		const rawBody = await readBoundedOrNull(response.body, CT_SOURCE_MAX_BODY_BYTES);
-		if (rawBody === null) return { outcome: 'http_error', entries: [] };
-		const parsed = JSON.parse(rawBody) as unknown;
-		if (!Array.isArray(parsed)) return { outcome: 'error', entries: [] };
-		const entries: CrtShEntry[] = [];
-		for (const item of parsed as CertspotterIssuance[]) {
-			if (!item || !Array.isArray(item.dns_names) || item.dns_names.length === 0) continue;
-			entries.push({
-				name_value: item.dns_names.join('\n'),
-				issuer_name: item.issuer?.name ?? '',
-				not_before: item.not_before ?? '',
-				not_after: item.not_after ?? '',
-			});
-		}
-		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries };
+
+		return { outcome: entries.length === 0 ? 'empty' : 'ok', entries, enumerationComplete };
 	} catch (err) {
+		// An abort/network error AFTER a successful page is still usable data.
+		if (entries.length > 0) return { outcome: 'ok', entries, enumerationComplete: false };
 		return { outcome: classifyFetchError(err), entries: [] };
 	}
 }
@@ -658,11 +888,15 @@ function delayWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
 async function queryDirectSources(
 	domain: string,
 	options?: DiscoverSubdomainsOptions,
-): Promise<{ available: boolean; entries: CrtShEntry[] }> {
+): Promise<{ available: boolean; entries: CrtShEntry[]; sources?: string[]; enumerationComplete?: boolean }> {
 	// Per-source timeouts differ by backend: crt.sh is Postgres-backed and often
 	// slow on a cold query, while Certspotter is a fast JSON API — giving the
 	// fallback a tighter bound keeps both inside one budget.
-	const sources: Array<{ name: string; timeoutMs: number; fetch: (d: string, signal: AbortSignal) => Promise<SourceResult> }> = [
+	const sources: Array<{
+		name: string;
+		timeoutMs: number;
+		fetch: (d: string, signal: AbortSignal, options?: DiscoverSubdomainsOptions) => Promise<SourceResult>;
+	}> = [
 		{ name: 'crtsh', timeoutMs: CT_SOURCE_TIMEOUT_MS, fetch: fetchCrtShEntries },
 		{ name: 'certspotter', timeoutMs: CERTSPOTTER_TIMEOUT_MS, fetch: fetchCertspotterEntries },
 	];
@@ -689,12 +923,17 @@ async function queryDirectSources(
 			const composed = composeAbortSignal(source.timeoutMs, options?.signal);
 			let res: SourceResult;
 			try {
-				res = await source.fetch(domain, composed.signal);
+				res = await source.fetch(domain, composed.signal, options);
 			} finally {
 				composed.cleanup();
 			}
 			logCtSource(domain, source.name, res.outcome);
-			if (res.outcome === 'ok') return { available: true, entries: res.entries };
+			// #573 metadata (which source answered, was its enumeration complete) rides
+			// on the ok path only. #575's `sawEmpty` fall-through is preserved: an
+			// `empty` outcome must NOT short-circuit, because a source that answers
+			// "nothing" is not authoritative until every source has been tried.
+			const meta = { sources: [source.name], enumerationComplete: res.enumerationComplete ?? true };
+			if (res.outcome === 'ok') return { available: true, entries: res.entries, ...meta };
 			if (res.outcome === 'empty') sawEmpty = true;
 			// empty / http_error / timeout / error all fall through to try the
 			// next source instead of short-circuiting.
@@ -803,8 +1042,13 @@ async function queryCertstream(
 		if (!enumerate.timedOut) {
 			return buildCertstreamResult(domain, enumerate.subdomains, enumerate.certificateCount);
 		}
+		// #575's partial semantics, now also carrying #573's upstream metadata so the
+		// timed-out enumeration is reported incomplete rather than merely `partial`.
 		if (enumerate.subdomains.length > 0) {
-			return { ...buildCertstreamResult(domain, enumerate.subdomains, enumerate.certificateCount), partial: true };
+			return {
+				...buildCertstreamResult(domain, enumerate.subdomains, enumerate.certificateCount, { timedOut: true }),
+				partial: true,
+			};
 		}
 		// timedOut:true with an empty list — fall through to /sans below rather
 		// than accepting an incomplete measurement as a confident zero.
@@ -817,13 +1061,19 @@ async function queryCertstream(
 	}
 
 	const sans = await queryCertstreamEndpoint<CertstreamSansResponse>('sans', domain, certstream, certstreamAuthToken, options);
+	// `/sans` reports its own upstream truncation — read it (declared and silently
+	// discarded before #573) so an incomplete SAN sweep is never served as a
+	// complete enumeration. Layered over #575's timed-out control flow.
 	const sansOk = Boolean(sans) && !sans?.error && Array.isArray(sans?.names);
 	if (!sansOk || !sans) return null;
 	if (!sans.timedOut) {
-		return buildCertstreamResult(domain, sans.names, sans.certificateCount);
+		return buildCertstreamResult(domain, sans.names, sans.certificateCount, { truncated: sans.truncated });
 	}
 	if (sans.names.length > 0) {
-		return { ...buildCertstreamResult(domain, sans.names, sans.certificateCount), partial: true };
+		return {
+			...buildCertstreamResult(domain, sans.names, sans.certificateCount, { truncated: sans.truncated, timedOut: true }),
+			partial: true,
+		};
 	}
 	// timedOut:true with an empty list — return null so the orchestrator falls
 	// through to the direct public sources (crt.sh → Certspotter) instead of
@@ -903,7 +1153,20 @@ function composeAbortSignal(timeoutMs: number, outer?: AbortSignal): ComposedSig
 	return { signal: controller.signal, cleanup: () => clearTimeout(timeoutId) };
 }
 
-function buildCertstreamResult(domain: string, names: string[], certificateCount: number | undefined): SubdomainDiscoveryResult {
+/**
+ * Aggregate a certstream name list into a result.
+ *
+ * Issue #573 defect D: this path used to `.slice(0, MAX_SUBDOMAINS)` BEFORE
+ * counting, so `totalSubdomains` could never exceed the cap and the overflow
+ * line could never render — strictly worse than the crt.sh path. Totals are now
+ * taken over the full deduped set and the slice is applied afterwards.
+ */
+function buildCertstreamResult(
+	domain: string,
+	names: string[],
+	certificateCount: number | undefined,
+	upstream?: { truncated?: boolean; timedOut?: boolean },
+): SubdomainDiscoveryResult {
 	const domainLower = domain.toLowerCase();
 	const domainSuffix = `.${domainLower}`;
 	const subdomains: DiscoveredSubdomain[] = [];
@@ -939,8 +1202,10 @@ function buildCertstreamResult(domain: string, names: string[], certificateCount
 		}
 	}
 
-	const deduped = Array.from(seen.values()).slice(0, MAX_SUBDOMAINS);
-	const wildcardCerts = deduped.filter((s) => s.isWildcard).length;
+	// Count over the WHOLE deduped set; slice only what we return.
+	const dedupedAll = Array.from(seen.values());
+	const deduped = dedupedAll.slice(0, MAX_SUBDOMAINS);
+	const wildcardCerts = dedupedAll.filter((s) => s.isWildcard).length;
 
 	const issues: SubdomainIssue[] = [];
 	if (wildcardCerts > 0) {
@@ -951,12 +1216,17 @@ function buildCertstreamResult(domain: string, names: string[], certificateCount
 		});
 	}
 
-	// Shadow subdomain detection
-	for (const sd of deduped) {
+	// Shadow subdomain detection — whole set, bounded rows (see MAX_PER_NAME_ISSUES).
+	let shadowRows = 0;
+	let shadowTotal = 0;
+	for (const sd of dedupedAll) {
 		if (sd.isWildcard) continue;
 		const label = sd.subdomain.replace(domainSuffix, '').replace(/\.$/, '');
 		if (label.includes('.')) continue;
 		if (!COMMON_SUBDOMAINS.has(label)) {
+			shadowTotal++;
+			if (shadowRows >= MAX_PER_NAME_ISSUES) continue;
+			shadowRows++;
 			issues.push({
 				type: 'shadow_subdomain',
 				severity: 'info',
@@ -964,16 +1234,26 @@ function buildCertstreamResult(domain: string, names: string[], certificateCount
 			});
 		}
 	}
+	if (shadowTotal > shadowRows) {
+		issues.push({
+			type: 'shadow_subdomain',
+			severity: 'info',
+			detail: `…and ${shadowTotal - shadowRows} further subdomains are not common service names (rows capped at ${MAX_PER_NAME_ISSUES} for readability; see the full list in the structured result)`,
+		});
+	}
+
+	const enumerationComplete = !upstream?.truncated && !upstream?.timedOut;
 
 	return {
 		domain,
-		totalSubdomains: deduped.length,
-		totalCertificates: certificateCount ?? deduped.length,
+		totalSubdomains: dedupedAll.length,
+		totalCertificates: certificateCount ?? dedupedAll.length,
 		subdomains: deduped,
 		wildcardCerts,
 		expiredCerts: 0,
 		uniqueIssuers: [],
 		issues,
+		...enumerationFlags(dedupedAll.length, deduped.length, ['certstream'], enumerationComplete),
 	};
 }
 
@@ -992,7 +1272,10 @@ function buildCertstreamResult(domain: string, names: string[], certificateCount
  * subdomains — it can only report that no certificate-issuance evidence was
  * found.
  */
-function emptyResult(domain: string, sourceUnavailable = false, partial = false): SubdomainDiscoveryResult {
+function emptyResult(domain: string, sourceUnavailable = false, partial = false, meta?: EnumerationMeta): SubdomainDiscoveryResult {
+	// A source outage or a budget trip is by definition not an exhaustive
+	// enumeration — never let an empty error read as a complete "none found".
+	const enumerationComplete = sourceUnavailable || partial ? false : (meta?.enumerationComplete ?? true);
 	return {
 		domain,
 		totalSubdomains: 0,
@@ -1012,6 +1295,7 @@ function emptyResult(domain: string, sourceUnavailable = false, partial = false)
 		],
 		sourceUnavailable,
 		...(partial ? { partial: true } : {}),
+		...enumerationFlags(0, 0, meta?.sources, enumerationComplete),
 	};
 }
 
@@ -1050,6 +1334,35 @@ function staleBanner(result: SubdomainDiscoveryResult): string {
 	return `⚠️ STALE RESULT (cached ${ageText} ago): every live Certificate Transparency source is currently unreachable, so this is the last known good enumeration — not a fresh one. Newly-issued certificates may be missing.`;
 }
 
+/**
+ * Honest overflow/completeness lines for a rendered subdomain list.
+ *
+ * Two distinct truths, reported separately (issue #573 defect A): how many
+ * enumerated names the TEXT is not showing, and whether the ENUMERATION itself
+ * was complete. The old wording collapsed both into "…and N more", which under
+ * a capped upstream fetch under-states the remainder and reads as reassurance —
+ * bnz.co.nz rendered "and 40 more" when ~320 more existed.
+ */
+function overflowLines(result: SubdomainDiscoveryResult, shownCount: number, style: 'compact' | 'full'): string[] {
+	const lines: string[] = [];
+	const hidden = Math.max(0, result.totalSubdomains - shownCount);
+	const incomplete = result.enumerationComplete === false;
+
+	if (hidden > 0) {
+		// "at least N" — never a bare N — once the enumeration is known partial.
+		const count = incomplete ? `at least ${hidden}` : `${hidden}`;
+		lines.push(style === 'compact' ? ` ...and ${count} more` : `_...and ${count} more subdomains not shown_`);
+	}
+
+	if (incomplete) {
+		const source = result.sources && result.sources.length > 0 ? result.sources.join(', ') : 'the Certificate Transparency source';
+		const note = `⚠️ Enumeration INCOMPLETE (${source}): ${result.totalSubdomains} is a FLOOR, not a total — more subdomains exist than were retrieved. Treat this as a partial inventory.`;
+		lines.push(style === 'compact' ? ` ${note}` : `_${note}_`);
+	}
+
+	return lines;
+}
+
 /** Partial notice prepended when a live source answered but timed out mid-query. */
 function partialBanner(): string {
 	return `⚠️ PARTIAL RESULT: the Certificate Transparency source timed out before finishing this enumeration — the subdomains below are real, but there may be more that were not found in time.`;
@@ -1063,7 +1376,10 @@ function formatCompact(result: SubdomainDiscoveryResult): string {
 		lines.push(`Issuers: ${result.uniqueIssuers.map((i) => sanitizeOutputText(i, 60)).join(', ')}`);
 	}
 
-	for (const sd of result.subdomains) {
+	// Text rendering is capped well below the structural cap — the full list
+	// stays in `structuredContent`.
+	const shown = result.subdomains.slice(0, MAX_RENDERED_SUBDOMAINS);
+	for (const sd of shown) {
 		const tags: string[] = [];
 		if (sd.isWildcard) tags.push('[WILDCARD]');
 		if (sd.isExpired) tags.push('[EXPIRED]');
@@ -1074,9 +1390,7 @@ function formatCompact(result: SubdomainDiscoveryResult): string {
 		);
 	}
 
-	if (result.totalSubdomains > result.subdomains.length) {
-		lines.push(` ...and ${result.totalSubdomains - result.subdomains.length} more`);
-	}
+	lines.push(...overflowLines(result, shown.length, 'compact'));
 
 	if (result.issues.length > 0) {
 		lines.push('');
@@ -1100,7 +1414,10 @@ function formatFull(result: SubdomainDiscoveryResult): string {
 	lines.push('');
 
 	lines.push('## Subdomains');
-	for (const sd of result.subdomains) {
+	// ~4 lines per host, so the rendered list is capped far below the structural
+	// cap; the complete list is in the structured payload.
+	const shown = result.subdomains.slice(0, MAX_RENDERED_SUBDOMAINS);
+	for (const sd of shown) {
 		const tags: string[] = [];
 		if (sd.isWildcard) tags.push('🔓 WILDCARD');
 		if (sd.isExpired) tags.push('⏰ EXPIRED');
@@ -1111,8 +1428,9 @@ function formatFull(result: SubdomainDiscoveryResult): string {
 		lines.push('');
 	}
 
-	if (result.totalSubdomains > result.subdomains.length) {
-		lines.push(`_...and ${result.totalSubdomains - result.subdomains.length} more subdomains not shown_`);
+	const overflow = overflowLines(result, shown.length, 'full');
+	if (overflow.length > 0) {
+		lines.push(...overflow);
 		lines.push('');
 	}
 
