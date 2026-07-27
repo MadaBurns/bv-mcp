@@ -53,7 +53,12 @@ export function toTenantScanSnapshot(result: ScanDomainResult): TenantScanSnapsh
 	return {
 		score: result.score.overall,
 		grade: result.score.grade,
-		maturityStage: result.maturity?.stage ?? null,
+		// An INDETERMINATE stage (#574 — a load-bearing check was never measured) is a
+		// placeholder, not a posture measurement. Persisting its 0 into the tenant's
+		// `scans.maturity_stage` column would bake a fabricated "Unprotected" into
+		// history and every trend built off it; `null` is the honest value, and the
+		// column has always been nullable.
+		maturityStage: result.maturity?.indeterminate === true ? null : (result.maturity?.stage ?? null),
 		findings: result.score.findings ?? [],
 	};
 }
