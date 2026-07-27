@@ -239,14 +239,84 @@ describe('isInBailiwick', () => {
 	});
 });
 
-describe('F4 (security, flagged not fixed): attacker-influenceable evidence branches — pinning CURRENT behaviour', () => {
+describe('Ruling B (2026-07-27 task-7c): in-bailiwick NS requires resolution evidence (the lame-delegation trap)', () => {
+	// The attack: an attacker sets NS = ns1.bnz.co.nz in THEIR OWN parent-zone
+	// delegation, but the seed's server never actually serves that zone (a
+	// lame delegation). `RegistrationState` is a discriminated union — only
+	// the `registered` arm carries an `ns` field, and `registered.ns` is
+	// populated ONLY from an actually-resolved NS answer set (see
+	// `resolveRegistrationUncached()` in `src/lib/registration-state.ts`,
+	// which SERVFAILs/returns 'unknown' rather than fabricating `ns` data
+	// when the delegation is broken). So the in-bailiwick verdict is
+	// structurally unreachable without resolution evidence — this is a
+	// PINNING test of that structural guarantee, not a behaviour change.
+	it('the in-bailiwick verdict never fires for an unregistered candidate (no ns field exists on that arm)', async () => {
+		const { classifyOwnership } = await loadModule();
+		const result = classifyOwnership({
+			seedDomain: SEED,
+			seedNs: SEED_NS,
+			candidateDomain: 'lame-delegation.co.nz',
+			registration: unregistered,
+			isSharedNsHost,
+		});
+		expect(result.verdict).not.toBe('owned_by_seed');
+		expect(result.signals).not.toContain('ns_in_bailiwick');
+	});
+
+	it('the in-bailiwick verdict never fires for a registration-unknown (SERVFAIL) candidate, even if an in-bailiwick NS host is force-attached to the object', async () => {
+		// Simulates the exact regression class the mandatory mutation targets:
+		// something upstream (a bug, or a future refactor) forces NS data onto
+		// an `unknown` registration state. The type system already forbids this
+		// (`{ state: 'unknown'; reason }` has no `ns` member) — the cast below
+		// is the only way to construct the malformed object at all, proving the
+		// guard is the early `state === 'unknown'` return, not the type system
+		// alone protecting runtime callers who bypass it (e.g. via `as any`
+		// from an untyped boundary).
+		const { classifyOwnership } = await loadModule();
+		const forcedUnknownWithNs = {
+			state: 'unknown',
+			reason: 'servfail',
+			ns: ['ns1.bnz.co.nz'],
+		} as unknown as RegistrationState;
+		const result = classifyOwnership({
+			seedDomain: SEED,
+			seedNs: SEED_NS,
+			candidateDomain: 'lame-delegation.co.nz',
+			registration: forcedUnknownWithNs,
+			isSharedNsHost,
+		});
+		expect(result.verdict).toBe('unattributed');
+		expect(result.signals).not.toContain('ns_in_bailiwick');
+	});
+
+	it('a registered candidate whose only positive evidence is an A record (ns: []) cannot in-bailiwick-match, even against a seed apex it would otherwise nest under', async () => {
+		// registration-state.ts's A-record escalation path returns `ns: []`
+		// (evidence: ['a']) precisely because NS/SOA never resolved — this is
+		// the "registered but no NS observed" shape a lame delegation produces
+		// once the A-record fallback succeeds. There is no candidate NS to
+		// filter for bailiwick, so the arm cannot fire.
+		const { classifyOwnership } = await loadModule();
+		const result = classifyOwnership({
+			seedDomain: SEED,
+			seedNs: SEED_NS,
+			candidateDomain: 'a-only-lame.co.nz',
+			registration: { state: 'registered', ns: [], evidence: ['a'] },
+			isSharedNsHost,
+		});
+		expect(result.verdict).not.toBe('owned_by_seed');
+		expect(result.signals).not.toContain('ns_in_bailiwick');
+	});
+});
+
+describe('Ruling A (2026-07-27 task-7c): candidate-side signals are corroborating-only, NEVER verdict-bearing', () => {
 	// These three flags are NOT gathered by any caller in this slice, but the
-	// branches exist and were previously untested. Per the reviewer's F4
-	// instruction, the verdict mapping itself is NOT being changed here (that
-	// call belongs to the design owner) — these tests only pin what the
-	// current code does, so a future change to the mapping is a deliberate,
-	// visible diff here rather than a silent behaviour change.
-	it('soaInBailiwick ALONE (no NS evidence at all) currently produces owned_by_seed/strong', async () => {
+	// branches exist and are exercised directly here. Task 2's fix round left
+	// them verdict-bearing (flagged, not fixed) — task-7c resolves the
+	// mapping: none of them may establish `owned_by_seed` alone or combined.
+	// With no seed-side NS evidence (a single unrelated registrar host), the
+	// candidate falls through to the "registered with its own NS, no
+	// ownership signal" arm → `third_party`.
+	it('soaInBailiwick ALONE (no seed-side NS evidence) does NOT produce owned_by_seed — falls through to third_party', async () => {
 		const { classifyOwnership } = await loadModule();
 		const result = classifyOwnership({
 			seedDomain: SEED,
@@ -256,12 +326,11 @@ describe('F4 (security, flagged not fixed): attacker-influenceable evidence bran
 			isSharedNsHost,
 			soaInBailiwick: true,
 		});
-		expect(result.verdict).toBe('owned_by_seed');
-		expect(result.strength).toBe('strong');
-		expect(result.signals).toContain('soa_in_bailiwick');
+		expect(result.verdict).toBe('third_party');
+		expect(result.signals).not.toContain('soa_in_bailiwick');
 	});
 
-	it('spfIncludesSeedApex ALONE currently produces owned_by_seed/strong — attacker-controllable, unresolved', async () => {
+	it('spfIncludesSeedApex ALONE (no seed-side NS evidence) does NOT produce owned_by_seed — falls through to third_party', async () => {
 		const { classifyOwnership } = await loadModule();
 		const result = classifyOwnership({
 			seedDomain: SEED,
@@ -271,12 +340,11 @@ describe('F4 (security, flagged not fixed): attacker-influenceable evidence bran
 			isSharedNsHost,
 			spfIncludesSeedApex: true,
 		});
-		expect(result.verdict).toBe('owned_by_seed');
-		expect(result.strength).toBe('strong');
-		expect(result.signals).toContain('spf_include_seed');
+		expect(result.verdict).toBe('third_party');
+		expect(result.signals).not.toContain('spf_include_seed');
 	});
 
-	it('httpRedirectToSeedApex ALONE currently produces owned_by_seed/strong — attacker-controllable, unresolved', async () => {
+	it('httpRedirectToSeedApex ALONE (no seed-side NS evidence) does NOT produce owned_by_seed — falls through to third_party', async () => {
 		const { classifyOwnership } = await loadModule();
 		const result = classifyOwnership({
 			seedDomain: SEED,
@@ -286,9 +354,49 @@ describe('F4 (security, flagged not fixed): attacker-influenceable evidence bran
 			isSharedNsHost,
 			httpRedirectToSeedApex: true,
 		});
-		expect(result.verdict).toBe('owned_by_seed');
-		expect(result.strength).toBe('strong');
-		expect(result.signals).toContain('http_redirect_seed');
+		expect(result.verdict).toBe('third_party');
+		expect(result.signals).not.toContain('http_redirect_seed');
+	});
+
+	it('all THREE candidate-side signals combined, with no seed-side signal, still does NOT produce owned_by_seed', async () => {
+		// The attacker who registers evilbnz.co.nz controls all three of these
+		// simultaneously (SOA RNAME, SPF include, HTTP redirect) — none of them
+		// require cooperation from the seed's owner, so stacking all three must
+		// not add up to ownership either.
+		const { classifyOwnership } = await loadModule();
+		const result = classifyOwnership({
+			seedDomain: SEED,
+			seedNs: SEED_NS,
+			candidateDomain: 'evilbnz.co.nz',
+			registration: registered(['ns1.totally-unrelated-registrar.example']),
+			isSharedNsHost,
+			soaInBailiwick: true,
+			spfIncludesSeedApex: true,
+			httpRedirectToSeedApex: true,
+		});
+		expect(result.verdict).toBe('third_party');
+		expect(result.signals).not.toContain('soa_in_bailiwick');
+		expect(result.signals).not.toContain('spf_include_seed');
+		expect(result.signals).not.toContain('http_redirect_seed');
+	});
+
+	it('candidate-side signals cannot rescue a candidate that would otherwise be unattributed (no NS at all)', async () => {
+		// A registered-by-A-record-only candidate (RegistrationEvidence 'a', no
+		// NS resolved) has no NS to check bailiwick/set-overlap against at all —
+		// this is the "everything else" unattributed arm, not third_party. The
+		// three candidate-side flags must not be able to flip that either.
+		const { classifyOwnership } = await loadModule();
+		const result = classifyOwnership({
+			seedDomain: SEED,
+			seedNs: SEED_NS,
+			candidateDomain: 'a-only-evilbnz.co.nz',
+			registration: { state: 'registered', ns: [], evidence: ['a'] },
+			isSharedNsHost,
+			soaInBailiwick: true,
+			spfIncludesSeedApex: true,
+			httpRedirectToSeedApex: true,
+		});
+		expect(result.verdict).toBe('unattributed');
 	});
 });
 

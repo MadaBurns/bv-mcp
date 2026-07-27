@@ -48,6 +48,16 @@
  * its non-boolean `'corroborated' | 'uncorroborated'` return shape (renamed
  * from a raw boolean) makes it read as a confidence classifier rather than
  * a permission gate a caller might branch into a suppression.
+ *
+ * TASK 7c (2026-07-27, two rulings amending the P2 signal table — see
+ * `.superpowers/sdd/2026-07-26-slice4-ownership-attribution/task-7c-brief.md`):
+ * Ruling A — the candidate-side signals (`soaInBailiwick`,
+ * `spfIncludesSeedApex`, `httpRedirectToSeedApex`) are attacker-influenceable
+ * and NEVER independently verdict-bearing; see the OWNERSHIP RULE note on
+ * `ClassifyOwnershipInput`. Ruling B — an in-bailiwick NS observation is
+ * ownership-bearing only when it comes from an actually-resolved NS answer
+ * set; see `classifyOwnership()`'s precedence-table JSDoc and
+ * `resolveRegistrationUncached()` in `./registration-state`.
  */
 
 import type { CheckCategory, Finding, Severity } from '@blackveil/dns-checks/scoring';
@@ -96,27 +106,32 @@ export interface ClassifyOwnershipInput {
 	 */
 	isSharedNsHost: (nsHost: string) => boolean;
 	/**
-	 * Additional strong signals. Not gathered by any caller in this slice
-	 * (neither tool parses SPF `include:` targets, SOA RNAME, or HTTP
+	 * Candidate-side corroboration inputs. Not gathered by any caller in this
+	 * slice (neither tool parses SPF `include:` targets, SOA RNAME, or HTTP
 	 * redirect targets today) — accepted here so a future slice can wire a
 	 * real probe without touching this function's precedence logic again.
 	 *
-	 * SECURITY — CALLER OBLIGATION (flagged in fix-round F4, mapping change
-	 * itself is UNRESOLVED — do not treat this comment as having fixed it):
-	 * all three of `soaInBailiwick`, `spfIncludesSeedApex`, and
-	 * `httpRedirectToSeedApex` are attacker-influenceable. Unlike
-	 * `ns_in_bailiwick` (which requires the candidate to control its own
-	 * delegated zone), an attacker who registers `evilbnz.co.nz` can
-	 * unilaterally publish an SPF `include:` pointing at the seed apex or an
-	 * HTTP redirect to it, with NO cooperation from the seed's owner. As
-	 * currently wired, ANY ONE of these three flags alone is sufficient for
-	 * `classifyOwnership()` to return `owned_by_seed`/`strong` — the inverse
-	 * of the false-attribution defect this slice fixes. A future caller that
-	 * wires a real probe for any of these MUST NOT let it alone produce
-	 * `owned_by_seed`; it should require corroboration from an
-	 * owner-controlled signal (NS delegation) or be demoted to a weaker
-	 * verdict/strength. This file does not change the verdict mapping —
-	 * that call belongs to the design owner, not to this fix.
+	 * OWNERSHIP RULE (Ruling A, 2026-07-27 task-7c — supersedes the prior F4
+	 * "flagged, not fixed" note): all three of `soaInBailiwick`,
+	 * `spfIncludesSeedApex`, and `httpRedirectToSeedApex` are
+	 * attacker-influenceable. Unlike `ns_in_bailiwick` / `ns_set_match` /
+	 * `ns_shared_provider_complete` (which all require the CANDIDATE's own
+	 * resolved NS records to actually nest under or match the seed's — i.e.
+	 * seed-side control), an attacker who registers `evilbnz.co.nz` can
+	 * unilaterally publish an SPF `include:` pointing at the seed apex, an
+	 * HTTP redirect to it, or an in-bailiwick SOA RNAME, with NO cooperation
+	 * from the seed's owner. Ownership verdicts therefore require a seed-side
+	 * signal. These three fields:
+	 *  - may RAISE `strength`/wording confidence on a verdict ALREADY earned
+	 *    by a seed-side signal (steps 2-4 in `classifyOwnership()`'s
+	 *    precedence table);
+	 *  - may serve as CORROBORATION for `attributionConfidence()`'s wording
+	 *    channel;
+	 *  - must NEVER, alone or in any combination with each other, produce
+	 *    `owned_by_seed` — `classifyOwnership()` does not consult them at all
+	 *    for the verdict.
+	 * A future caller that wires a real probe for any of these MUST NOT let
+	 * it alone (or all three together) produce `owned_by_seed`.
 	 */
 	soaInBailiwick?: boolean;
 	spfIncludesSeedApex?: boolean;
@@ -156,23 +171,35 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
 /**
  * Classify a candidate's ownership relative to a seed domain.
  *
- * Precedence (design doc §4 P2, corrected per §3.3):
+ * Precedence (design doc §4 P2, corrected per §3.3, and per Ruling A
+ * 2026-07-27 task-7c — see the OWNERSHIP RULE note on
+ * `ClassifyOwnershipInput`'s candidate-side fields):
  *  1. Non-registered / registration-unknown → `unattributed` (attribution is moot).
- *  2. NS in-bailiwick to the seed apex → `owned_by_seed`, strong.
- *  3. SOA RNAME in-bailiwick (caller-supplied) → `owned_by_seed`, strong.
- *  4. SPF include / HTTP redirect to seed apex (caller-supplied) → `owned_by_seed`, strong.
- *  5. NS set match on hosts NOT flagged shared, >=50% AND >=2 shared → `owned_by_seed`, strong.
- *  6. Complete (100%) NS set match where every shared host is on a SHARED provider → `owned_by_seed`, medium.
- *  7. Partial overlap confined to shared-provider hosts → not evidence (falls through silently —
+ *     RegistrationState is a discriminated union: only the `registered` arm
+ *     carries an `ns` field at all, so an in-bailiwick match is structurally
+ *     unreachable for `unregistered`/`unknown` (Ruling B) — this precedence
+ *     step returns before `registration.ns` is ever read.
+ *  2. NS in-bailiwick to the seed apex → `owned_by_seed`, strong. Because
+ *     `registration.ns` is only ever populated from an ACTUALLY-RESOLVED NS
+ *     answer set (see `resolveRegistrationUncached()` in
+ *     `./registration-state`), a lame delegation — attacker sets NS =
+ *     `ns1.bnz.co.nz` in the candidate's own parent-zone delegation, but the
+ *     seed's server never actually serves that zone — SERVFAILs at
+ *     resolution and never reaches this arm with a matching host (Ruling B:
+ *     "in-bailiwick NS requires resolution evidence").
+ *  3. NS set match on hosts NOT flagged shared, >=50% AND >=2 shared → `owned_by_seed`, strong.
+ *  4. Complete (100%) NS set match where every shared host is on a SHARED provider → `owned_by_seed`, medium.
+ *  5. Partial overlap confined to shared-provider hosts → not evidence (falls through silently —
  *     this is the ANZ/Westpac 1/6-Akamai trap: a single shared-provider NS host in common is
  *     operational plumbing, not ownership evidence).
- *  8. Registered with its own resolvable NS, no ownership signal → `third_party`.
- *  9. Everything else (no NS info at all) → `unattributed`.
+ *  6. Registered with its own resolvable NS, no ownership signal → `third_party`.
+ *  7. Everything else (no NS info at all) → `unattributed`.
  *
- * Steps 3-4 accept attacker-influenceable evidence — see the caller-
- * obligation note on `ClassifyOwnershipInput`'s `soaInBailiwick` /
- * `spfIncludesSeedApex` / `httpRedirectToSeedApex` fields. That mapping is
- * unchanged and unresolved by this fix round; flagged, not altered.
+ * `soaInBailiwick` / `spfIncludesSeedApex` / `httpRedirectToSeedApex`
+ * (Ruling A) are candidate-side, attacker-influenceable signals and play NO
+ * role in this precedence table — they can never independently (or combined)
+ * produce `owned_by_seed`; see the OWNERSHIP RULE note on
+ * `ClassifyOwnershipInput` for what a future caller may use them for.
  */
 export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAssessment {
 	const { registration, candidateDomain } = input;
@@ -213,32 +240,12 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 		};
 	}
 
-	// SECURITY: soaInBailiwick / spfIncludesSeedApex / httpRedirectToSeedApex
-	// are attacker-influenceable (see the ClassifyOwnershipInput caller-
-	// obligation note above) — unlike ns_in_bailiwick, none of these require
-	// the candidate to control its own delegated zone. Not gathered by any
-	// caller in this slice; the mapping below is unresolved, flagged for the
-	// design owner, and intentionally NOT altered by this fix round.
-	if (input.soaInBailiwick) {
-		return {
-			verdict: 'owned_by_seed',
-			strength: 'strong',
-			signals: ['soa_in_bailiwick'],
-			rationale: `${candidateDomain}'s SOA responsible party is in-bailiwick to ${seedApex}.`,
-		};
-	}
-	if (input.spfIncludesSeedApex || input.httpRedirectToSeedApex) {
-		const signal: OwnershipSignal = input.spfIncludesSeedApex ? 'spf_include_seed' : 'http_redirect_seed';
-		return {
-			verdict: 'owned_by_seed',
-			strength: 'strong',
-			signals: [signal],
-			rationale:
-				signal === 'spf_include_seed'
-					? `${candidateDomain}'s SPF record includes a policy rooted at ${seedApex}.`
-					: `${candidateDomain}'s HTTP root redirects to ${seedApex}.`,
-		};
-	}
+	// Ruling A (2026-07-27, task-7c): soaInBailiwick / spfIncludesSeedApex /
+	// httpRedirectToSeedApex are candidate-side, attacker-influenceable
+	// signals (see the OWNERSHIP RULE note on `ClassifyOwnershipInput`) and
+	// are DELIBERATELY not consulted here — they can never independently (or
+	// combined) establish `owned_by_seed`. Only seed-side signals (this arm
+	// and the two below) may do that.
 
 	const sharedNs = candidateNs.filter((ns) => seedNs.includes(ns));
 	const dedicatedShared = sharedNs.filter((ns) => !input.isSharedNsHost(ns));

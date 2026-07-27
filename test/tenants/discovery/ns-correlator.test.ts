@@ -223,9 +223,7 @@ describe('correlateNs', () => {
 		expect(result.coOwnedDomains).toHaveLength(1);
 		// Only the cloudflare NS counts toward confidence; sharedNs retained for transparency.
 		expect(result.coOwnedDomains[0].confidence).toBeCloseTo(0.5, 2);
-		expect(result.coOwnedDomains[0].sharedNs).toEqual(
-			['alice.ns.cloudflare.com', 'ns1.sedoparking.com'],
-		);
+		expect(result.coOwnedDomains[0].sharedNs).toEqual(['alice.ns.cloudflare.com', 'ns1.sedoparking.com']);
 	});
 
 	it('keeps a candidate whose shared NS are all genuine hyperscale-DNS hostnames', async () => {
@@ -294,6 +292,51 @@ describe('correlateNs', () => {
 			'evilbnz.co.nz': ['ns.evilbnz.co.nz.'],
 		});
 		const result = await correlateNs('bnz.co.nz', { dnsQuery, candidateDomains: ['evilbnz.co.nz'] });
+		expect(result.coOwnedDomains).toEqual([]);
+	});
+
+	// Ruling B (2026-07-27 task-7c) — in-bailiwick NS requires resolution
+	// evidence (the lame-delegation trap). The attack: an attacker's OWN
+	// parent-zone delegation lists NS = ns1.bnz.co.nz, but the seed's server
+	// never actually serves that zone, so a resolver following the
+	// delegation SERVFAILs rather than returning an NS answer for the
+	// candidate. `fetchNsSet()` builds its NS set purely from `resp.Answer`
+	// (see ns-correlator.ts), which a SERVFAIL response carries none of — so
+	// this is a PINNING test of already-correct behaviour, not a fix.
+	it('a candidate whose NS query SERVFAILs (lame delegation) yields NO in-bailiwick observation, even though the delegated hostname matches the seed apex', async () => {
+		const dnsQuery = vi.fn(async (name: string) => {
+			const key = name.toLowerCase().replace(/\.$/, '');
+			if (key === 'bnz.co.nz') return nsResponse([{ name: 'bnz.co.nz', data: 'a1-97.akam.net.' }]);
+			if (key === 'lame-evilbnz.co.nz') {
+				// SERVFAIL (RCODE 2): the resolver could not obtain an answer —
+				// no Answer records, regardless of what the parent-zone
+				// delegation glue claims the NS hostnames are.
+				return {
+					Status: 2,
+					TC: false,
+					RD: true,
+					RA: true,
+					AD: false,
+					CD: false,
+					Question: [{ name: key, type: 2 }],
+					Answer: [],
+				} satisfies DohResponse;
+			}
+			return emptyDnsResponse();
+		});
+		const result = await correlateNs('bnz.co.nz', { dnsQuery, candidateDomains: ['lame-evilbnz.co.nz'] });
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toEqual([]);
+	});
+
+	it('a candidate whose NS query errors/throws (transport failure) yields NO in-bailiwick observation and marks the run partial', async () => {
+		const dnsQuery = vi.fn(async (name: string) => {
+			const key = name.toLowerCase().replace(/\.$/, '');
+			if (key === 'bnz.co.nz') return nsResponse([{ name: 'bnz.co.nz', data: 'a1-97.akam.net.' }]);
+			throw new Error('lame delegation: no response');
+		});
+		const result = await correlateNs('bnz.co.nz', { dnsQuery, candidateDomains: ['lame-evilbnz.co.nz'] });
+		expect(result.queryStatus).toBe('partial');
 		expect(result.coOwnedDomains).toEqual([]);
 	});
 });
