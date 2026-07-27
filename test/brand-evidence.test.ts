@@ -9,6 +9,17 @@ describe('brand evidence tier policy', () => {
 		expect(evidenceTier('mx_platform', { sharedMxPlatform: 'google_workspace' })).toBe('weak');
 	});
 
+	it('treats an in-bailiwick NS match as strong evidence, clearing ownership alone', () => {
+		expect(evidenceTier('ns', { matchType: 'in_bailiwick' })).toBe('strong');
+		expect(clearsOwnershipGate([{ signal: 'ns', confidence: 1, metadata: { matchType: 'in_bailiwick' } }])).toBe(true);
+	});
+
+	it('keeps a plain NS set-overlap match at medium — needs a second signal to clear ownership', () => {
+		expect(evidenceTier('ns', { matchType: 'set_overlap' })).toBe('medium');
+		expect(evidenceTier('ns')).toBe('medium');
+		expect(clearsOwnershipGate([{ signal: 'ns', confidence: 0.5, metadata: { matchType: 'set_overlap' } }])).toBe(false);
+	});
+
 	it('does not let markov generation plus broad MX platform clear ownership', () => {
 		expect(
 			clearsOwnershipGate(
