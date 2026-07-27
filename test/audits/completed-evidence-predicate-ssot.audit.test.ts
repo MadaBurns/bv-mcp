@@ -65,6 +65,36 @@
  * `src/tools/discover-brand-domains.ts`, both branching on an unrelated
  * `status` variable that was never derived from `checkStatus`) — see
  * `findCheckStatusAliases`'s doc for the exact boundary this leaves.
+ *
+ * ROUND 3: the final-wave reviewer found two more evasions of the round-2
+ * machinery, both closed:
+ *   (b) a cast/parenthesis wedged between a HOISTED collection name and its
+ *       `.includes`/`.has` call — `(TRANSIENT as readonly string[]).includes(cs)`
+ *       — defeated the backreference in the M5a/E1 hoisted-collection shapes,
+ *       which required `\1` immediately followed by `.includes`/`.has` with no
+ *       gap. The plain, uncast `TRANSIENT.includes(cs)` was already caught.
+ *       Fixed by allowing an optional `(… as …)` wrapper around the
+ *       backreference in those two shapes.
+ *   (N3) `const cs = check.checkStatus ?? 'completed';` — the direct-initializer
+ *       alias regex in `findCheckStatusAliases` required the initializer to be
+ *       JUST `checkStatus`/`x.checkStatus`, terminated immediately by
+ *       `[;,)\n]`, so a `?? 'completed'` tail (this repo's OWN pre-3813f07c
+ *       value-normalization spelling — see `normalizeCheckStatus`'s body in
+ *       the SSOT file) fell through untraced. Fixed by allowing that exact
+ *       optional tail before the terminator.
+ * Two classes remain KNOWN-OPEN, deliberately not chased (a text scanner
+ * cannot close them without an unacceptable false-positive rate — see
+ * `findCheckStatusAliases`'s doc for the full boundary):
+ *   (N1) a TWO-HOP alias chain — `const a = check.checkStatus; const b = a;`
+ *       — `a` is traced (RHS is literally `checkStatus`), but `b`'s RHS is
+ *       the identifier `a`, not the literal `checkStatus` token, so the
+ *       direct-initializer regex does not extend the chain to `b`.
+ *   (N2) `check.checkStatus` passed directly into a helper function's
+ *       parameter — `someHelper(check.checkStatus)` — the parameter name
+ *       inside the helper is never traced back to the call-site expression at
+ *       all; this is the same "threaded through an intermediate function
+ *       call" gap already noted below, restated here for the doc-vs-code
+ *       parity the final review round asked for.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -143,9 +173,14 @@ const KNOWN_DIFFERENT_PURPOSE = new Set(['../../src/tools/scan-domain.ts', '../.
  *     `checkStatus` field, not reading a local alias OUT of one; conflating
  *     the two was tried and produced a false alias there).
  *   - a direct initializer: `const cs = checkStatus;` or
- *     `const cs = result.checkStatus;` — matched only when the initializer is
- *     JUST that reference (immediately followed by `;`/`,`/`)`/newline), not
- *     an arbitrary expression that merely mentions `checkStatus` (e.g.
+ *     `const cs = result.checkStatus;`, OPTIONALLY followed by the SSOT's
+ *     own `?? 'completed'` value-normalization tail (round 3, N3 — e.g.
+ *     `const cs = check.checkStatus ?? 'completed';`, this repo's OWN
+ *     pre-3813f07c spelling, matching `normalizeCheckStatus`'s own body) —
+ *     matched only when the initializer is JUST that reference (plus the
+ *     optional `?? 'completed'` tail), immediately followed by
+ *     `;`/`,`/`)`/newline, not an arbitrary expression that merely mentions
+ *     `checkStatus` (e.g.
  *     `const isUnanalyzable = result.checkStatus === 'error' || ...` in
  *     `check-http-security.ts` is deliberately NOT treated as an alias of
  *     `checkStatus` — `isUnanalyzable` is a derived boolean, not the status
@@ -165,18 +200,29 @@ const KNOWN_DIFFERENT_PURPOSE = new Set(['../../src/tools/scan-domain.ts', '../.
  * that false-positive rate — verified empirically: zero offenders across the
  * corpus below with this version, vs. two with the blind version.
  *
- * Known remaining gap (undetectable by a text scanner, same class as the
- * "NOT attempted" note further down): an alias assigned outside its
- * declaration (`let cs; cs = checkStatus;`) or threaded through an
- * intermediate function call (`const cs = pick(checkStatus);`) is NOT traced
- * — review-time concern, not this audit's job.
+ * Known remaining gaps (undetectable by a text scanner, same class as the
+ * "NOT attempted" note further down; round 3 named these explicitly as
+ * N1/N2 so the doc's claimed coverage never runs ahead of the code):
+ *   (N1) a TWO-HOP alias chain — `const a = check.checkStatus; const b = a;`
+ *       — `a` is traced (its initializer is literally `checkStatus`), but
+ *       `b`'s initializer is the identifier `a`, not the literal
+ *       `checkStatus` token, so the chain does not extend to `b`.
+ *   (N2) `check.checkStatus` passed directly into a helper function's
+ *       parameter — `someHelper(check.checkStatus)` — the parameter name
+ *       inside the helper has no textual link back to `checkStatus` at the
+ *       call site, so it can never be traced. (This is the same class as
+ *       the `const cs = pick(checkStatus);` intermediate-function-call gap
+ *       below, restated under its round-3 name.)
+ * An alias assigned outside its declaration (`let cs; cs = checkStatus;`)
+ * is the same undetectable shape as N1/N2 — review-time concern, not this
+ * audit's job.
  */
 function findCheckStatusAliases(source: string): string[] {
 	const aliases = new Set<string>();
 	for (const m of source.matchAll(/\b(?:const|let|var)\s*\{[^{}]{0,200}?checkStatus\s*:\s*(\w+)[^{}]{0,200}?\}\s*=/g)) {
 		if (m[1] !== 'checkStatus') aliases.add(m[1]);
 	}
-	for (const m of source.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*(?:\w+\.)?checkStatus\s*[;,)\n]/g)) {
+	for (const m of source.matchAll(/\b(?:const|let)\s+(\w+)\s*=\s*(?:\w+\.)?checkStatus\s*(?:\?\?\s*['"]completed['"]\s*)?[;,)\n]/g)) {
 		if (m[1] !== 'checkStatus') aliases.add(m[1]);
 	}
 	return [...aliases];
@@ -218,11 +264,16 @@ function identifierPattern(aliases: string[]): string {
  *   - SET-MEMBERSHIP (round 2, E1): `new Set(['timeout','error']).has(checkStatus)`,
  *     either literal order — the same NOT-COMPLETED question spelled via
  *     `Set#has` instead of `Array#includes`/`||`.
- *   - HOISTED-COLLECTION (round 2, E1): the denylist array/Set held in a
- *     NAMED const declared earlier (`const TRANSIENT = ['timeout','error'] as
- *     const;` … `TRANSIENT.includes(checkStatus)`), rather than inlined right
- *     before `.includes`/`.has` — a backreference (`\1`) ties the later call
- *     back to the SAME hoisted name, either literal order.
+ *   - HOISTED-COLLECTION (round 2, E1; cast-tolerant since round 3, (b)): the
+ *     denylist array/Set held in a NAMED const declared earlier
+ *     (`const TRANSIENT = ['timeout','error'] as const;` …
+ *     `TRANSIENT.includes(checkStatus)`), rather than inlined right before
+ *     `.includes`/`.has` — a backreference (`\1`) ties the later call back to
+ *     the SAME hoisted name, either literal order. The backreference tolerates
+ *     an optional `(NAME as SomeType)` cast/parenthesis wedged between the
+ *     name and the call — `(TRANSIENT as readonly string[]).includes(cs)` —
+ *     which round 3's (b) found defeated a version that required `\1`
+ *     immediately followed by `.includes`/`.has` with no gap.
  *
  * Comparison operators are `!==?`/`===?` (an optional second `=`) rather
  * than a hard-coded `!==`/`===`, so a re-spelling that loosens to `!=`/`==`
@@ -259,12 +310,16 @@ function buildForbiddenShapes(idPat: string): RegExp[] {
 		// Round 2, E1 — Set-membership form, either literal order.
 		new RegExp(`new\\s+Set\\(\\s*\\[\\s*'timeout'\\s*,\\s*'error'\\s*\\]\\s*\\)[\\s\\S]{0,60}?\\.has\\([^)]*${idPat}[^)]*\\)`),
 		new RegExp(`new\\s+Set\\(\\s*\\[\\s*'error'\\s*,\\s*'timeout'\\s*\\]\\s*\\)[\\s\\S]{0,60}?\\.has\\([^)]*${idPat}[^)]*\\)`),
-		// Round 2, E1 — hoisted array/Set held in a named const, either literal order.
+		// Round 2, E1 — hoisted array/Set held in a named const, either literal
+		// order. Round 3, (b): the backreference tolerates an optional
+		// `(NAME as SomeType)` cast/parenthesis between the hoisted name and the
+		// `.includes`/`.has` call — a bare `\1\.(?:includes|has)\(` (no gap
+		// allowed) let a cast defeat the backreference entirely.
 		new RegExp(
-			`\\bconst\\s+(\\w+)\\s*(?::\\s*[^=]+)?=\\s*(?:new\\s+Set\\()?\\[\\s*'timeout'\\s*,\\s*'error'\\s*\\](?:\\s*as\\s*const)?\\)?[\\s\\S]{0,400}?\\1\\.(?:includes|has)\\([^)]*${idPat}[^)]*\\)`,
+			`\\bconst\\s+(\\w+)\\s*(?::\\s*[^=]+)?=\\s*(?:new\\s+Set\\()?\\[\\s*'timeout'\\s*,\\s*'error'\\s*\\](?:\\s*as\\s*const)?\\)?[\\s\\S]{0,400}?\\(?\\s*\\1(?:\\s+as\\s+[^()]*)?\\s*\\)?\\s*\\.(?:includes|has)\\([^)]*${idPat}[^)]*\\)`,
 		),
 		new RegExp(
-			`\\bconst\\s+(\\w+)\\s*(?::\\s*[^=]+)?=\\s*(?:new\\s+Set\\()?\\[\\s*'error'\\s*,\\s*'timeout'\\s*\\](?:\\s*as\\s*const)?\\)?[\\s\\S]{0,400}?\\1\\.(?:includes|has)\\([^)]*${idPat}[^)]*\\)`,
+			`\\bconst\\s+(\\w+)\\s*(?::\\s*[^=]+)?=\\s*(?:new\\s+Set\\()?\\[\\s*'error'\\s*,\\s*'timeout'\\s*\\](?:\\s*as\\s*const)?\\)?[\\s\\S]{0,400}?\\(?\\s*\\1(?:\\s+as\\s+[^()]*)?\\s*\\)?\\s*\\.(?:includes|has)\\([^)]*${idPat}[^)]*\\)`,
 		),
 	];
 }

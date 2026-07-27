@@ -205,12 +205,20 @@ export function evaluateFixPlan(
 	// The `isDnsErrorFinding` filter is kept as a SECOND, independent guard —
 	// not redundant with the checkStatus filter above. A check can COMPLETE
 	// (`checkStatus` absent/'completed') and still attach an errorKind-tagged
-	// finding for a narrower reason than a full check failure — e.g.
-	// `discover-brand-domains.ts`'s "Brand-domain discovery could not
-	// complete" finding, emitted when every discovery SIGNAL failed but the
-	// check itself ran to completion. That finding would survive the
-	// checkStatus filter (the check completed) but must still never become a
-	// fix action, so both filters stay in force.
+	// finding for a narrower reason than a full check failure. NOT via
+	// `discover-brand-domains.ts`'s `brand_discovery` category in production:
+	// `brand_discovery` is a `CheckCategory` but is absent from `scan-domain.ts`'s
+	// `CHECK_DISPATCH`/`SCAN_CATEGORIES`, so `scanDomain()` never produces one
+	// and `generateFixPlan` (which feeds `evaluateFixPlan` exclusively from
+	// `scanResult.checks`) can never see it. This function is exported and
+	// callable directly with an arbitrary `checkResults` array, though — that
+	// is the actual reason the guard earns its keep: a caller of the pure
+	// `evaluateFixPlan` entry point is not restricted to `scan_domain`'s
+	// dispatched categories, so a completed check carrying an errorKind-tagged
+	// finding from ANY category (a future scored category, a hand-built test
+	// fixture, or a direct non-scan caller) must still never become a fix
+	// action. Both filters stay in force as defence-in-depth for that entry
+	// point, not because of a reachable production path today.
 	const actionableFindings = hasEvidence
 		? checkResults
 				.filter(isCompletedCheck)
