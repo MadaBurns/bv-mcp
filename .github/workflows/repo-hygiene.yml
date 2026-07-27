@@ -184,7 +184,23 @@ jobs:
       - name: Check .gitignore covers essentials
         run: |
           REQUIRED_PATTERNS=(
-            'node_modules/'
+            # NO TRAILING SLASH — deliberate, do not "fix" this back to
+            # 'node_modules/'. In gitignore syntax a trailing slash matches
+            # DIRECTORIES ONLY, so 'node_modules/' does not ignore a
+            # `node_modules` SYMLINK — which is exactly how commit 7864d851
+            # got a self-referential node_modules symlink swept into the index
+            # by `git add -A` (see the "Reject tracked symlinks" step above).
+            # The slashless form is the STRICTER pattern: it matches files,
+            # symlinks and directories alike. #579 moved .gitignore to it, and
+            # this required-pattern entry lagged behind — the fixed-string
+            # grep below could never match, so this step emitted a spurious
+            # ::warning:: on every run while simultaneously demanding the
+            # weaker pattern we deliberately abandoned. Note `grep -qF` on the
+            # slashless string still matches a 'node_modules/' .gitignore line
+            # as a substring; both forms are accepted here on purpose, because
+            # the mode-120000 gate above is what actually enforces the outcome
+            # this pattern only approximates.
+            'node_modules'
             '.DS_Store'
             '*.log'
           )
