@@ -32,6 +32,76 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      # Runs FIRST (before npm ci) — it reads only the git index, so it needs
+      # no install and fails fast.
+      #
+      # Blind spot this closes (real incident, not hypothetical): commit
+      # 7864d851 tracked the repo root's own `node_modules` as a symlink
+      # (git mode 120000) whose target was the absolute path
+      # `/Applications/Github/bv-mcp/node_modules` — i.e. it pointed at
+      # ITSELF. It reached origin/main, and every fresh clone then
+      # materialised a link that resolves only on the authoring machine and
+      # dangles everywhere else. `git add -A` swept it in because .gitignore
+      # said `node_modules/` — a trailing slash matches directories only, and
+      # a symlink is not a directory. Fixed by #579 (4eea74fc).
+      #
+      # Neither existing gate could see it. `symlink-escape-gate.yml` models
+      # symlinks that resolve OUTSIDE the repo root; a self-reference resolves
+      # INSIDE, so it is not an escape by construction. That gate is also
+      # doubly blind here: its `find` prunes `-name node_modules` (it must —
+      # a real installed tree is full of legitimate links), and it
+      # deliberately `continue`s on absolute targets as a documented
+      # non-generalizable class. This workflow's existing checks missed it too
+      # because no BLOCKED_PATTERNS entry matches `node_modules`.
+      #
+      # The durable rule is therefore not "which target shape is bad" but
+      # "a tracked symlink at all". Verified against the whole tree of
+      # origin/main at the time of writing: `git ls-files -s` yields 1227
+      # mode-100644 + 15 mode-100755 entries and ZERO mode-120000 entries, so
+      # a blanket ban needs no allowlist. This check reads the INDEX, which
+      # makes it immune to both of the escape gate's blind spots — the index
+      # has no prune paths and does not care what the target looks like.
+      - name: Reject tracked symlinks
+        run: |
+          set -euo pipefail
+
+          # `git ls-files -s` prints "<mode> <object> <stage>\t<path>".
+          # 120000 is git's symlink mode. Split on the TAB so paths containing
+          # spaces survive intact.
+          LINKS="$(git ls-files -s | awk -F'\t' '$1 ~ /^120000 /{print $2}')"
+
+          if [ -n "$LINKS" ]; then
+            echo "::error::Tracked symlink(s) found in the git index (git mode 120000):"
+            printf '%s\n' "$LINKS" | while IFS= read -r path; do
+              target="$(readlink "$path" 2>/dev/null || true)"
+              [ -n "$target" ] || target='<unreadable/dangling>'
+              echo "  $path -> $target"
+              echo "::error file=$path::TRACKED_SYMLINK — symlink committed to the index (-> $target)"
+            done
+            echo ""
+            echo "WHY this is rejected:"
+            echo "  A symlink in the index is a machine-local pointer stored as repo"
+            echo "  content. Fresh clones on any other machine get a link that dangles"
+            echo "  (absolute target), escapes the workspace (../ target, CWE-61), or"
+            echo "  points at itself (the 7864d851 node_modules incident). No tracked"
+            echo "  symlink in this repo has ever been legitimate."
+            echo ""
+            echo "HOW to fix:"
+            echo "  1. Untrack it (this does NOT delete your local link):"
+            echo "       git rm --cached <path>"
+            echo "  2. Make .gitignore actually match it. A pattern with a TRAILING"
+            echo "     SLASH matches directories ONLY, and a symlink is not a"
+            echo "     directory — 'node_modules/' does not ignore a 'node_modules'"
+            echo "     symlink, 'node_modules' does. Drop the slash."
+            echo "  3. Re-check with:  git ls-files -s | awk '\$1==\"120000\"{print \$4}'"
+            echo ""
+            echo "  If you are here because you symlinked node_modules into a git"
+            echo "  worktree: don't. Run 'npm ci' inside the worktree instead."
+            exit 1
+          fi
+
+          echo "✓ No tracked symlinks (git mode 120000) in the index."
+
       - name: Block generated/compiled files
         env:
           EXTRA_PATTERNS: ${{ inputs.extra_blocked_patterns }}
@@ -114,7 +184,23 @@ jobs:
       - name: Check .gitignore covers essentials
         run: |
           REQUIRED_PATTERNS=(
-            'node_modules/'
+            # NO TRAILING SLASH — deliberate, do not "fix" this back to
+            # 'node_modules/'. In gitignore syntax a trailing slash matches
+            # DIRECTORIES ONLY, so 'node_modules/' does not ignore a
+            # `node_modules` SYMLINK — which is exactly how commit 7864d851
+            # got a self-referential node_modules symlink swept into the index
+            # by `git add -A` (see the "Reject tracked symlinks" step above).
+            # The slashless form is the STRICTER pattern: it matches files,
+            # symlinks and directories alike. #579 moved .gitignore to it, and
+            # this required-pattern entry lagged behind — the fixed-string
+            # grep below could never match, so this step emitted a spurious
+            # ::warning:: on every run while simultaneously demanding the
+            # weaker pattern we deliberately abandoned. Note `grep -qF` on the
+            # slashless string still matches a 'node_modules/' .gitignore line
+            # as a substring; both forms are accepted here on purpose, because
+            # the mode-120000 gate above is what actually enforces the outcome
+            # this pattern only approximates.
+            'node_modules'
             '.DS_Store'
             '*.log'
           )
