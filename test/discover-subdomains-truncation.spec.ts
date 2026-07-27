@@ -6,7 +6,7 @@
 //
 // Four defect classes are locked here:
 //   A. cap with no signal          → `truncated` / `returned` / `sources` /
-//                                    `enumerationComplete` on the result.
+//                                    `sourceIndexExhausted` on the result.
 //   B. single-page Certspotter     → follow `Link: rel="next"` via `after=`,
 //                                    bounded by MAX_CT_PAGES + the sync budget.
 //   C. wildcard/expired counted     → counts are taken over the WHOLE enumerated
@@ -125,7 +125,7 @@ describe('discover_subdomains — explicit truncation contract (defect A)', () =
 		expect(result.sources).toContain('crtsh');
 		// crt.sh answers in one shot — the ENUMERATION was complete even though
 		// the returned list is capped.
-		expect(result.enumerationComplete).toBe(true);
+		expect(result.sourceIndexExhausted).toBe(true);
 	});
 
 	it('leaves truncated falsy and reports `returned` when the set fits under the cap', async () => {
@@ -137,7 +137,7 @@ describe('discover_subdomains — explicit truncation contract (defect A)', () =
 		expect(result.totalSubdomains).toBe(12);
 		expect(result.returned).toBe(12);
 		expect(result.truncated).toBeFalsy();
-		expect(result.enumerationComplete).toBe(true);
+		expect(result.sourceIndexExhausted).toBe(true);
 	});
 
 	it('surfaces the contract through the MCP handler structuredContent', async () => {
@@ -211,7 +211,7 @@ describe('discover_subdomains — Certspotter pagination (defect B)', () => {
 		expect(names).toContain('page2-b.example.com');
 		expect(result.totalSubdomains).toBe(102);
 		expect(result.sources).toContain('certspotter');
-		expect(result.enumerationComplete).toBe(true);
+		expect(result.sourceIndexExhausted).toBe(true);
 		expect(result.truncated).toBeFalsy();
 	});
 
@@ -235,7 +235,7 @@ describe('discover_subdomains — Certspotter pagination (defect B)', () => {
 		const result = await discoverSubdomains('example.com');
 
 		expect(pages).toBe(8); // MAX_CT_PAGES
-		expect(result.enumerationComplete).toBe(false);
+		expect(result.sourceIndexExhausted).toBe(false);
 		expect(result.truncated).toBe(true);
 		expect(result.totalSubdomains).toBe(160);
 	});
@@ -269,7 +269,7 @@ describe('discover_subdomains — Certspotter pagination (defect B)', () => {
 
 		expect(pages).toBe(1);
 		expect(result.subdomains.map((s) => s.subdomain)).toContain('p1-0.example.com');
-		expect(result.enumerationComplete).toBe(false);
+		expect(result.sourceIndexExhausted).toBe(false);
 		expect(result.truncated).toBe(true);
 	});
 
@@ -311,7 +311,7 @@ describe('discover_subdomains — certstream path totals (defect D)', () => {
 		expect(result.sources).toContain('certstream');
 	});
 
-	it('reads the certstream /sans `truncated` flag into enumerationComplete', async () => {
+	it('reads the certstream /sans `truncated` flag into sourceIndexExhausted', async () => {
 		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
 		const certstreamFetch = vi.fn(async (input: RequestInfo | URL) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
@@ -332,7 +332,7 @@ describe('discover_subdomains — certstream path totals (defect D)', () => {
 		const result = await discoverSubdomains('example.com', { fetch: certstreamFetch as unknown as typeof fetch });
 
 		expect(result.totalSubdomains).toBe(2);
-		expect(result.enumerationComplete).toBe(false);
+		expect(result.sourceIndexExhausted).toBe(false);
 		// An incomplete upstream enumeration is a truncated answer even though
 		// every enumerated name was returned.
 		expect(result.truncated).toBe(true);
@@ -369,28 +369,28 @@ describe('discover_subdomains — honest overflow wording', () => {
 
 	it('caps the RENDERED host list at 100 even when 500 are returned structurally', async () => {
 		const formatSubdomainDiscovery = await fmt();
-		const output = formatSubdomainDiscovery(bulkResult({ returned: 140, truncated: false, enumerationComplete: true }), 'full');
+		const output = formatSubdomainDiscovery(bulkResult({ returned: 140, truncated: false, sourceIndexExhausted: true }), 'full');
 
 		expect(output).toContain('sub99.bnz.co.nz');
 		expect(output).not.toContain('sub100.bnz.co.nz');
 		expect(output).toContain('40 more subdomains not shown');
 	});
 
-	it('says "at least N more" and names the source when the enumeration was incomplete', async () => {
+	it('says "at least N more" and names the source when the source index was not exhausted', async () => {
 		const formatSubdomainDiscovery = await fmt();
-		const result = bulkResult({ returned: 140, truncated: true, enumerationComplete: false, sources: ['certspotter'] });
+		const result = bulkResult({ returned: 140, truncated: true, sourceIndexExhausted: false, sources: ['certspotter'] });
 
 		const full = formatSubdomainDiscovery(result, 'full');
 		expect(full).toContain('at least 40 more');
-		expect(full).toMatch(/incomplete/i);
+		expect(full).toMatch(/index not exhausted/i);
 		expect(full).toContain('certspotter');
 
 		const compact = formatSubdomainDiscovery(result, 'compact');
 		expect(compact).toContain('at least 40 more');
-		expect(compact).toMatch(/incomplete/i);
+		expect(compact).toMatch(/index not exhausted/i);
 	});
 
-	it('warns about an incomplete enumeration even when nothing is hidden by the display cap', async () => {
+	it('warns that the source index was not exhausted even when nothing is hidden by the display cap', async () => {
 		const formatSubdomainDiscovery = await fmt();
 		const result = {
 			domain: 'bnz.co.nz',
@@ -406,12 +406,12 @@ describe('discover_subdomains — honest overflow wording', () => {
 			issues: [],
 			returned: 2,
 			truncated: true,
-			enumerationComplete: false,
+			sourceIndexExhausted: false,
 			sources: ['certspotter'],
 		};
 
 		const full = formatSubdomainDiscovery(result, 'full');
-		expect(full).toMatch(/incomplete/i);
+		expect(full).toMatch(/index not exhausted/i);
 		expect(full).toContain('certspotter');
 		// No phantom "and 0 more".
 		expect(full).not.toMatch(/and (at least )?0 more/);
@@ -419,7 +419,7 @@ describe('discover_subdomains — honest overflow wording', () => {
 
 	it('keeps the exact wording when the display cap alone hides names', async () => {
 		const formatSubdomainDiscovery = await fmt();
-		const output = formatSubdomainDiscovery(bulkResult({ returned: 140, truncated: false, enumerationComplete: true }), 'compact');
+		const output = formatSubdomainDiscovery(bulkResult({ returned: 140, truncated: false, sourceIndexExhausted: true }), 'compact');
 
 		expect(output).toContain('...and 40 more');
 		expect(output).not.toContain('at least');
