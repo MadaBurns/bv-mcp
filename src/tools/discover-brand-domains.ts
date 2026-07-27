@@ -68,6 +68,8 @@ import { checkLookalikes as defaultCheckLookalikes } from './check-lookalikes';
 import { clearsOwnershipGate, type BrandEvidenceObservation } from '../lib/brand-evidence';
 import { detectAppLinks } from '../tenants/discovery/app-links-detector';
 import { detectBountyScope, type BountyPlatform } from '../tenants/discovery/bounty-scope-detector';
+import { generateVariants } from './check-shadow-domains';
+import { extractBrandName, getEffectiveTld } from '../lib/public-suffix';
 import type { Tier0Result } from '../lib/brand-tier0-enterprise';
 import type { Tier1Result } from '../lib/brand-tier1-graph';
 import type { Tier2Result } from '../lib/brand-tier2-evidence';
@@ -229,6 +231,7 @@ export interface DiscoverBrandDomainsDeps {
 	generateMarkovLookalikes: typeof generateMarkovLookalikes;
 	checkLookalikes: typeof defaultCheckLookalikes;
 	domainLabelSimilarity: typeof defaultDomainLabelSimilarity;
+	generateVariants: typeof generateVariants;
 	createDnsContext?: typeof createDiscoveryDnsContext;
 	/** Tier 0 lookup (tenant-declared portfolio via bv-enterprise). Tiered mode only. */
 	tier0Lookup?: (domain: string) => Promise<Tier0Result>;
@@ -369,6 +372,7 @@ function defaultDeps(): DiscoverBrandDomainsDeps {
 		generateMarkovLookalikes: generateMarkovLookalikes,
 		checkLookalikes: defaultCheckLookalikes,
 		domainLabelSimilarity: defaultDomainLabelSimilarity,
+		generateVariants: generateVariants,
 	};
 }
 
@@ -1116,7 +1120,22 @@ export async function discoverBrandDomains(
 		jobs.push({
 			name: 'ns',
 			run: async () => {
-				const nsCandidates = recordCandidateSignalProbes('ns', candidatesForSignal('ns'));
+				// D6.2 (2026-07-26 correctness-defects design §3.4) — NS becomes a
+				// discovery signal, not only a confirmation signal. TLD variants of
+				// the seed's own brand (the same generator check_shadow_domains
+				// uses) are probed directly, additive to whatever candidates other
+				// signals already proposed — so this signal can find an owned
+				// domain no other signal happened to generate. Additive (unioned in
+				// after candidatesForSignal), so these precision candidates are
+				// never crowded out by planner caps competing with markov_gen noise
+				// (D6.4).
+				const brand = extractBrandName(seedDomain);
+				const effectiveTld = getEffectiveTld(seedDomain);
+				const tldVariantCandidates = brand && effectiveTld ? d.generateVariants(brand, effectiveTld, seedDomain) : [];
+				const nsCandidates = recordCandidateSignalProbes(
+					'ns',
+					Array.from(new Set([...candidatesForSignal('ns'), ...tldVariantCandidates])),
+				);
 				const out = await runTrackedSignal<NsCorrelationResult>(
 					'ns',
 					() => d.correlateNs(seedDomain, { candidateDomains: nsCandidates, dnsContext }),
@@ -1132,6 +1151,7 @@ export async function discoverBrandDomains(
 					addObservation(aggregator, c.domain, 'ns', c.confidence, {
 						sharedNs: c.sharedNs,
 						nsConfidence: c.confidence,
+						matchType: c.matchType,
 					});
 				}
 			},
@@ -1611,12 +1631,21 @@ export async function discoverBrandDomains(
 		tieredState.tier3Count = tier3Count;
 	}
 
+	// D6.5 (2026-07-26 correctness-defects design) — name every degraded signal
+	// in the human-readable summary text, so "1 candidate" is never read as
+	// "this brand owns exactly one other domain" when a precision signal
+	// (ns, http_redirect, ...) actually failed or ran out of budget.
+	const DEGRADED_STATUSES = new Set(['partial', 'budget_exceeded', 'timeout', 'failed']);
+	const degradedSignals = signals.filter((s) => DEGRADED_STATUSES.has(signalStatus[s]?.status ?? ''));
+	const degradedNote =
+		degradedSignals.length > 0 ? ` degraded=[${degradedSignals.map((s) => `${s}:${signalStatus[s]?.status}`).join(', ')}]` : '';
+
 	// Always emit a summary finding so the formatter has something to print.
 	const summary = createFinding(
 		'brand_discovery',
 		`Brand-domain discovery: ${candidateFindings.length} candidate(s) at confidence ≥ ${minConfidence}`,
 		'info',
-		`Seed=${seedDomain.trim().toLowerCase()} signals=[${signals.join(', ')}] aggregated_total=${aggregator.size} surfaced=${candidateFindings.length}`,
+		`Seed=${seedDomain.trim().toLowerCase()} signals=[${signals.join(', ')}] aggregated_total=${aggregator.size} surfaced=${candidateFindings.length}${degradedNote}`,
 		{
 			summary: true,
 			signals,
