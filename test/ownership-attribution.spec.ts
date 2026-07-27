@@ -308,97 +308,28 @@ describe('Ruling B (2026-07-27 task-7c): in-bailiwick NS requires resolution evi
 	});
 });
 
-describe('Ruling A (2026-07-27 task-7c): candidate-side signals are corroborating-only, NEVER verdict-bearing', () => {
-	// These three flags are NOT gathered by any caller in this slice, but the
-	// branches exist and are exercised directly here. Task 2's fix round left
-	// them verdict-bearing (flagged, not fixed) — task-7c resolves the
-	// mapping: none of them may establish `owned_by_seed` alone or combined.
-	// With no seed-side NS evidence (a single unrelated registrar host), the
-	// candidate falls through to the "registered with its own NS, no
-	// ownership signal" arm → `third_party`.
-	it('soaInBailiwick ALONE (no seed-side NS evidence) does NOT produce owned_by_seed — falls through to third_party', async () => {
-		const { classifyOwnership } = await loadModule();
-		const result = classifyOwnership({
-			seedDomain: SEED,
-			seedNs: SEED_NS,
-			candidateDomain: 'evilbnz.co.nz',
-			registration: registered(['ns1.totally-unrelated-registrar.example']),
-			isSharedNsHost,
-			soaInBailiwick: true,
-		});
-		expect(result.verdict).toBe('third_party');
-		expect(result.signals).not.toContain('soa_in_bailiwick');
-	});
-
-	it('spfIncludesSeedApex ALONE (no seed-side NS evidence) does NOT produce owned_by_seed — falls through to third_party', async () => {
-		const { classifyOwnership } = await loadModule();
-		const result = classifyOwnership({
-			seedDomain: SEED,
-			seedNs: SEED_NS,
-			candidateDomain: 'evilbnz.co.nz',
-			registration: registered(['ns1.totally-unrelated-registrar.example']),
-			isSharedNsHost,
-			spfIncludesSeedApex: true,
-		});
-		expect(result.verdict).toBe('third_party');
-		expect(result.signals).not.toContain('spf_include_seed');
-	});
-
-	it('httpRedirectToSeedApex ALONE (no seed-side NS evidence) does NOT produce owned_by_seed — falls through to third_party', async () => {
-		const { classifyOwnership } = await loadModule();
-		const result = classifyOwnership({
-			seedDomain: SEED,
-			seedNs: SEED_NS,
-			candidateDomain: 'evilbnz.co.nz',
-			registration: registered(['ns1.totally-unrelated-registrar.example']),
-			isSharedNsHost,
-			httpRedirectToSeedApex: true,
-		});
-		expect(result.verdict).toBe('third_party');
-		expect(result.signals).not.toContain('http_redirect_seed');
-	});
-
-	it('all THREE candidate-side signals combined, with no seed-side signal, still does NOT produce owned_by_seed', async () => {
-		// The attacker who registers evilbnz.co.nz controls all three of these
-		// simultaneously (SOA RNAME, SPF include, HTTP redirect) — none of them
-		// require cooperation from the seed's owner, so stacking all three must
-		// not add up to ownership either.
-		const { classifyOwnership } = await loadModule();
-		const result = classifyOwnership({
-			seedDomain: SEED,
-			seedNs: SEED_NS,
-			candidateDomain: 'evilbnz.co.nz',
-			registration: registered(['ns1.totally-unrelated-registrar.example']),
-			isSharedNsHost,
-			soaInBailiwick: true,
-			spfIncludesSeedApex: true,
-			httpRedirectToSeedApex: true,
-		});
-		expect(result.verdict).toBe('third_party');
-		expect(result.signals).not.toContain('soa_in_bailiwick');
-		expect(result.signals).not.toContain('spf_include_seed');
-		expect(result.signals).not.toContain('http_redirect_seed');
-	});
-
-	it('candidate-side signals cannot rescue a candidate that would otherwise be unattributed (no NS at all)', async () => {
-		// A registered-by-A-record-only candidate (RegistrationEvidence 'a', no
-		// NS resolved) has no NS to check bailiwick/set-overlap against at all —
-		// this is the "everything else" unattributed arm, not third_party. The
-		// three candidate-side flags must not be able to flip that either.
-		const { classifyOwnership } = await loadModule();
-		const result = classifyOwnership({
-			seedDomain: SEED,
-			seedNs: SEED_NS,
-			candidateDomain: 'a-only-evilbnz.co.nz',
-			registration: { state: 'registered', ns: [], evidence: ['a'] },
-			isSharedNsHost,
-			soaInBailiwick: true,
-			spfIncludesSeedApex: true,
-			httpRedirectToSeedApex: true,
-		});
-		expect(result.verdict).toBe('unattributed');
-	});
-});
+// Ruling A (2026-07-27 task-7c) established that candidate-side signals
+// (SOA RNAME, SPF `include:` target, HTTP redirect target) are corroborating
+// only, NEVER verdict-bearing — an attacker who registers `evilbnz.co.nz`
+// controls all three unilaterally, with no cooperation from the seed's
+// owner. This file used to pin that rule with a `describe('Ruling A ...')`
+// block driving `classifyOwnership()` via the (then-existing)
+// `soaInBailiwick` / `spfIncludesSeedApex` / `httpRedirectToSeedApex` fields
+// on `ClassifyOwnershipInput`.
+//
+// 2026-07-27 (ownership-attribution followups, item 2, "delete them" ruling):
+// those three fields were DELETED from `ClassifyOwnershipInput` — they were
+// accepted but never read by `classifyOwnership()`, and no production caller
+// (`check-lookalikes.ts` / `check-shadow-domains.ts`) ever populated them, so
+// they existed only as an attacker-influenceable footgun. That makes the
+// block above UNCONSTRUCTIBLE (the fields no longer exist on the type) and it
+// was removed rather than left disabled or type-cast around. The underlying
+// rule is now enforced at the TYPE level — there is no input surface left
+// for a candidate-side signal to reach `classifyOwnership()` at all — and is
+// recorded in full in the `OWNERSHIP RULE` JSDoc on `ClassifyOwnershipInput`
+// (`src/lib/ownership-attribution.ts`). A future author wiring a real
+// SOA/SPF/redirect probe must read that note and re-derive the
+// corroboration-only rule before reintroducing any such field.
 
 describe('attributionConfidence — D4 minimum label length (WORDING classifier, renamed from passesAttributionGuard, never a severity gate)', () => {
 	it('always corroborated for owned_by_seed regardless of label length', async () => {
