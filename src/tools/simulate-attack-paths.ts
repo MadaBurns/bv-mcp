@@ -84,14 +84,24 @@ function isSpfWeakOrMissing(findings: Finding[]): boolean {
 	});
 }
 
-/** Check if DMARC is missing or has p=none. */
+/** Check if DMARC is missing or set to a non-enforcing policy (p=none). */
 function isDmarcWeakOrMissing(findings: Finding[]): boolean {
 	return hasFindings(findings, (f) => {
 		if (f.category !== 'dmarc') return false;
 		if (f.severity === 'info') return false;
 		const t = f.title.toLowerCase();
 		const d = f.detail.toLowerCase();
-		return t.includes('no dmarc') || t.includes('missing') || d.includes('p=none');
+		// Missing record, missing p= tag, or multiple-records-no-valid-policy.
+		if (t.includes('no dmarc') || t.includes('missing') || t.includes('no valid policy')) return true;
+		// Non-enforcing organizational policy (p=none). Match the policy-none title, and
+		// only a boundary-anchored "p=none" in the detail. Issue #564: the SUBDOMAIN
+		// (sp=none) and non-existent-subdomain (np=none) findings both carry the substring
+		// "p=none", which previously false-tripped this direct-spoof gate on well-protected
+		// domains (SPF -all + DMARC p=quarantine). Those are subdomain risks, handled by the
+		// separate email_spoof_subdomain path — they must NOT imply direct org-domain spoofing.
+		if (t.includes('policy set to none')) return true;
+		if (/(?:^|[^a-z])p=none/.test(d)) return true;
+		return false;
 	});
 }
 
@@ -243,7 +253,12 @@ const ATTACK_PATH_DEFINITIONS: AttackPathDefinition[] = [
 		name: 'Direct Email Spoofing',
 		severity: 'critical',
 		feasibility: 'trivial',
-		condition: (findings) => isSpfWeakOrMissing(findings) || isDmarcWeakOrMissing(findings),
+		// Issue #564: direct exact-domain spoofing is trivial ONLY when SPF is missing/permissive
+		// AND DMARC is missing/p=none — both stated prerequisites must actually hold. A well-protected
+		// domain (SPF -all + DMARC p=quarantine/reject) is NOT trivially spoofable; its residual gap is
+		// subdomain spoofing, covered by the separate email_spoof_subdomain path. This was an OR that
+		// fired critical/trivial on either signal alone, contradicting assess_spoofability.
+		condition: (findings) => isSpfWeakOrMissing(findings) && isDmarcWeakOrMissing(findings),
 		prerequisites: ['SPF missing or permissive', 'DMARC missing or set to p=none'],
 		steps: [
 			'Send email as ceo@domain using any SMTP server',
