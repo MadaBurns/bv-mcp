@@ -363,7 +363,13 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		// stage->label table. Gate on the scan having actually scored, exactly as
 		// generate_fix_plan does one layer up. The LABEL is kept: "Does not resolve"
 		// is information, not a fabricated verdict.
-		maturityStage: isGraded(result.score) ? (result.maturity?.stage ?? null) : null,
+		// The `indeterminate` half is the #574 case, and `isGraded` cannot see it: the
+		// scan IS graded (the affected hosts scored 67 with 17/19 checks completed —
+		// a 0.894 evidence ratio, far over the 0.6 sufficiency threshold), yet the
+		// ladder's one load-bearing input was never measured, so its stage number is
+		// not a measurement either. Same treatment, same reason: withhold the NUMBER,
+		// keep the LABEL.
+		maturityStage: isGraded(result.score) && result.maturity?.indeterminate !== true ? (result.maturity?.stage ?? null) : null,
 		maturityLabel: result.maturity?.label ?? null,
 		categoryScores,
 		findingCounts: {
@@ -445,7 +451,14 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 		// withheld, and the ungraded token takes its place so the same state reads the
 		// same way here as everywhere else. A GRADED domain that genuinely sits at
 		// stage 0 still prints "Stage 0"; that zero is a measurement.
-		const stageText = isGraded(result.score) ? `Stage ${result.maturity.stage}` : UNGRADED_DISPLAY;
+		//
+		// #574 adds the second condition: a graded scan whose ladder abstained
+		// (`indeterminate`) also has no stage NUMBER to print, for the same reason —
+		// the number behind it is a placeholder, not a measurement. Its label carries
+		// the state ("Not determined (TLS not measured)") and its description explains
+		// the gap, so the reader loses nothing.
+		const stageText =
+			isGraded(result.score) && result.maturity.indeterminate !== true ? `Stage ${result.maturity.stage}` : UNGRADED_DISPLAY;
 		if (format === 'compact') {
 			lines.push(`Maturity: ${stageText} — ${result.maturity.label}`);
 		} else {

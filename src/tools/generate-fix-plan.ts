@@ -210,7 +210,11 @@ export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeO
 		domain,
 		score: scanResult.score.overall,
 		grade: scanResult.score.grade,
-		maturityStage: isGraded(scanResult.score) ? scanResult.maturity.stage : null,
+		// `indeterminate` (#574): a GRADED scan whose maturity ladder abstained because
+		// a load-bearing check was never measured carries a placeholder stage, exactly
+		// like a degraded builder's — so it is withheld here too, or "Maturity Stage:
+		// 0/4" renders a posture verdict nobody measured.
+		maturityStage: isGraded(scanResult.score) && scanResult.maturity.indeterminate !== true ? scanResult.maturity.stage : null,
 		totalActions: actions.length,
 		actions,
 		assessed,
