@@ -13,7 +13,7 @@ import type { DomainContext } from './profiles';
 import { detectDomainContext, getProfileWeights, PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE } from './profiles';
 import type { ScoringConfig } from './config';
 import { DEFAULT_SCORING_CONFIG } from './config';
-import { buildEvidenceNote, computeScanEvidence, isEvidenceSufficient, EVIDENCE_SUFFICIENCY_THRESHOLD } from './evidence';
+import { buildEvidenceNote, computeScanEvidence, isCheckMeasured, isEvidenceSufficient, EVIDENCE_SUFFICIENCY_THRESHOLD } from './evidence';
 import { computeGenericScore } from './generic';
 import type { GenericScoringContext, FindingSeverityCounts } from './generic';
 
@@ -187,14 +187,18 @@ function buildGenericContext(
 	}
 
 	// --- Build transientFailures map ---
-	// A check whose execution failed (checkStatus 'timeout'/'error') is INCONCLUSIVE — we
-	// couldn't measure it. That is distinct from a genuinely-missing control (missingControl).
-	// Exclude inconclusive categories from the weighted score (renormalized over the rest)
-	// rather than scoring them 0, so a transient fetch/DNS failure doesn't make the overall
-	// score fluctuate. See generic.ts: transientFailures keys are skipped in the tier partition.
+	// A check whose execution failed (checkStatus 'timeout'/'error', or any other non-measured
+	// status) is INCONCLUSIVE — we couldn't measure it. That is distinct from a genuinely-missing
+	// control (missingControl). Exclude inconclusive categories from the weighted score
+	// (renormalized over the rest) rather than scoring them 0, so a transient fetch/DNS failure
+	// doesn't make the overall score fluctuate. See generic.ts: transientFailures keys are
+	// skipped in the tier partition. Uses the shared `isCheckMeasured` allowlist predicate (see
+	// evidence.ts) rather than a local denylist: a `checkStatus` value outside the closed
+	// 'completed'|'timeout'|'error' union (reachable via an unvalidated cache re-read) must also
+	// be excluded here, not silently treated as measured and scored at full weight.
 	const transientFailures: Record<string, boolean> = {};
 	for (const result of results) {
-		if (result.checkStatus === 'timeout' || result.checkStatus === 'error') {
+		if (!isCheckMeasured(result.checkStatus)) {
 			transientFailures[result.category] = true;
 		}
 	}
@@ -373,12 +377,15 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 		};
 	}
 
-	// Populate category scores from actual results. Transient (checkStatus 'timeout'/'error')
-	// checks are INCONCLUSIVE — omitted from the category-score output (shown as n/a, never a
-	// misleading 0) and from the finding counts; buildGenericContext also excludes them from the
-	// weighted overall score via transientFailures.
+	// Populate category scores from actual results. Transient (checkStatus 'timeout'/'error',
+	// or any other non-measured status) checks are INCONCLUSIVE — omitted from the
+	// category-score output (shown as n/a, never a misleading 0) and from the finding counts;
+	// buildGenericContext also excludes them from the weighted overall score via
+	// transientFailures. Uses the shared `isCheckMeasured` allowlist predicate so an
+	// out-of-union `checkStatus` doesn't slip through here and land a garbage/stale `score`
+	// (or worse, `generic.ts`'s `?? 100` default for a missing one) as full category credit.
 	for (const result of results) {
-		if (result.checkStatus === 'timeout' || result.checkStatus === 'error') {
+		if (!isCheckMeasured(result.checkStatus)) {
 			continue;
 		}
 		categoryScores[result.category] = result.score;

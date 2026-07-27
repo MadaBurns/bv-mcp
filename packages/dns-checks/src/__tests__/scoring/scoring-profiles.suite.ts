@@ -318,6 +318,18 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 			function legacy(category: CheckCategory): CheckResult {
 				return buildCheckResult(category, [createFinding(category, `${category} OK`, 'info', 'Check passed')], true);
 			}
+			/** A check whose `checkStatus` is OUTSIDE the closed CheckStatus union — reachable at
+			 * runtime via an unvalidated re-read of a cached CheckResult (e.g. a version-skewed
+			 * deploy), never constructible through the typed CheckResult surface. Must NOT count as
+			 * measured: a denylist predicate (`!== 'timeout' && !== 'error'`) would let it through. */
+			function unknownStatus(category: CheckCategory): CheckResult {
+				return {
+					...buildCheckResult(category, [createFinding(category, `${category} check`, 'low', 'stale cache entry')]),
+					score: 0,
+					passed: false,
+					checkStatus: 'pending_migration' as unknown as CheckResult['checkStatus'],
+				};
+			}
 
 			it('does NOT flip to the minimal profile when the majority of checks merely FAILED TO RUN', () => {
 				// 3 measured and passing, 7 unmeasured. Old behaviour: 7/10 = 0.7 > 0.5 → minimal.
@@ -402,6 +414,18 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				const failureSignals = ctx.signals.filter((sig) => sig.includes('checks failed'));
 				expect(failureSignals.length).toBeGreaterThan(0);
 				expect(failureSignals[0]).toContain('60%'); // 3 failed of 5 measured (incl. 2 legacy-passing)
+			});
+
+			it('treats an OUT-OF-UNION checkStatus (e.g. a version-skewed cache re-read) as UNMEASURED, excluded from both numerator and denominator', () => {
+				// 2 measured-passing + 3 unrecognized-status entries. If a denylist predicate let the
+				// unrecognized status through as "measured", these 3 (each `passed: false`) would count
+				// as measured failures: 3 failed / 5 measured = 60% > 50% -> minimal, and the 'checks
+				// failed' signal would report '60%'. The allowlist form must exclude them from BOTH
+				// counts instead, leaving 0 measured failures out of 2 measured -> no flip, no signal.
+				const results: CheckResult[] = [ok('mx'), ok('spf'), unknownStatus('dnssec'), unknownStatus('ssl'), unknownStatus('caa')];
+				const ctx = detectDomainContext(results);
+				expect(ctx.profile).not.toBe('minimal');
+				expect(ctx.signals.filter((sig) => sig.includes('checks failed'))).toHaveLength(0);
 			});
 		});
 
