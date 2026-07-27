@@ -19,8 +19,16 @@
 import { createFinding } from './scoring';
 import type { CheckCategory, Finding } from './scoring';
 
-/** A detected WAF interception — either an interstitial challenge or a terminal block. */
-export type WafEvent = { provider: 'cloudflare' | 'akamai'; kind: 'challenge' | 'block' };
+/**
+ * A detected WAF interception:
+ * - `challenge` — an interstitial JS/interactive challenge page.
+ * - `block` — a terminal access-block page.
+ * - `edge-artifact` — the edge answered the automated probe with an HTTP 401 while a normal
+ *   client gets a different (public) response. This is edge fingerprinting/challenge, NOT an
+ *   origin auth requirement, so the "requires authentication" label would be misleading
+ *   (issue #567, same class as the #455 403-challenge false positive).
+ */
+export type WafEvent = { provider: 'cloudflare' | 'akamai'; kind: 'challenge' | 'block' | 'edge-artifact' };
 
 /** Cloudflare access-block body signatures (distinct from the "Just a moment" JS challenge). */
 const CF_BLOCK_BODY = /sorry, you have been blocked|attention required|error 10(09|10|12|13|15|20)/i;
@@ -50,6 +58,17 @@ export function looksLikeWaf(headers: Headers): boolean {
  * The Akamai branch mirrors the same rigor: a bare `Server: AkamaiGHost` header is present on
  * ordinary responses, so a block requires a 4xx PLUS an Akamai access-denied body signature —
  * a genuine origin 403/404/500 behind Akamai is NOT mis-attributed to a WAF block.
+ *
+ * HTTP 401 special case (issue #567): a Cloudflare-fronted origin frequently answers an
+ * automated probe with `401` (edge fingerprinting/challenge) while a normal client gets a
+ * public `200` at the same URL. Unlike the 403 block path this carries NO block-body signature —
+ * the returned page is often the real (or a generic) page — so the 401 status ITSELF, combined
+ * with a Cloudflare edge signal, is the discriminator. It is classified as `edge-artifact` so the
+ * caller can label it "challenged/blocked at the edge" instead of the misleading "endpoint
+ * requires authentication". A 401 with NO Cloudflare signal (a genuine auth-gated origin) is left
+ * untouched → `null` → the caller keeps the honest auth-required finding. The challenge and block
+ * classifications are still checked FIRST, so a 401 that IS a "Just a moment" challenge or a
+ * block-body page keeps its more specific kind.
  */
 export function detectWafEvent(headers: Headers, body: string | undefined, status: number): WafEvent | null {
 	const server = (headers.get('server') ?? '').toLowerCase();
@@ -60,6 +79,7 @@ export function detectWafEvent(headers: Headers, body: string | undefined, statu
 	if (cfRay || cfMitigated || server.includes('cloudflare')) {
 		if (/just a moment/i.test(b) || cfMitigated === 'challenge') return { provider: 'cloudflare', kind: 'challenge' };
 		if (status >= 400 && (CF_BLOCK_BODY.test(b) || !!cfMitigated)) return { provider: 'cloudflare', kind: 'block' };
+		if (status === 401) return { provider: 'cloudflare', kind: 'edge-artifact' };
 	}
 	if (server.includes('akamaighost') && status >= 400 && AKAMAI_BLOCK_BODY.test(b)) {
 		return { provider: 'akamai', kind: 'block' };

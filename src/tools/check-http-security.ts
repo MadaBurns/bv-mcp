@@ -417,12 +417,24 @@ async function checkHttpSecurityInner(domain: string, callerSignal?: AbortSignal
 		const event = detectWafEvent(headersForWaf, body, dualResult.status);
 		if (event) {
 			const provider = event.provider.charAt(0).toUpperCase() + event.provider.slice(1);
-			const title =
-				event.kind === 'block' ? `${provider} WAF blocked external header inspection` : `${provider} WAF challenge intercepted`;
-			const detail =
-				event.kind === 'block'
-					? `https://${domain} returned an HTTP ${dualResult.status} ${provider} block page, not the site. Security headers cannot be inspected externally.`
-					: `The fetched response appears to be a ${provider} challenge page, not the real site. Header analysis is inconclusive.`;
+			let title: string;
+			let detail: string;
+			if (event.kind === 'block') {
+				title = `${provider} WAF blocked external header inspection`;
+				detail = `https://${domain} returned an HTTP ${dualResult.status} ${provider} block page, not the site. Security headers cannot be inspected externally.`;
+			} else if (event.kind === 'edge-artifact') {
+				// An HTTP 401 to the scanner that a normal client does not see (issue #567). The
+				// request was challenged/blocked at the edge — NOT an origin auth requirement, so we
+				// deliberately avoid the misleading "requires authentication" wording.
+				title = `${provider} edge challenged the HTTP security probe`;
+				detail =
+					`https://${domain} returned HTTP ${dualResult.status} to the scanner while presenting ${provider} edge signals; ` +
+					`the request was challenged/blocked at the edge, not authenticated at the origin. A normal client may receive a different ` +
+					`response at this URL, so security headers are not externally verifiable here.`;
+			} else {
+				title = `${provider} WAF challenge intercepted`;
+				detail = `The fetched response appears to be a ${provider} challenge page, not the real site. Header analysis is inconclusive.`;
+			}
 			const finding = buildWafFinding('http_security', event, dualResult.status, { title, detail });
 			const base = buildCheckResult('http_security', [finding]);
 			return { ...base, score: 0, passed: false, checkStatus: 'error' };

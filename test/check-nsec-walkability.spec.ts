@@ -19,17 +19,69 @@ function nsec3paramResponse(domain: string, records: string[]) {
 	);
 }
 
+/** Build a DoH JSON response carrying an AUTHORITY section (denial-of-existence RRs). */
+function dohWithAuthority(question: { name: string; type: number }, authority: Array<{ name: string; type: number; TTL: number; data: string }>) {
+	const json = {
+		Status: 0, // NXNAME / compact-denial replies are NOERROR, not NXDOMAIN (3)
+		TC: false,
+		RD: true,
+		RA: true,
+		AD: false,
+		CD: false,
+		Question: [question],
+		Answer: [],
+		Authority: authority,
+	};
+	return { ok: true, status: 200, json: () => Promise.resolve(json) } as unknown as Response;
+}
+
 /**
  * Route DoH queries by type-name (the transport sends `type=NSEC3PARAM|DNSKEY|DS`).
  * `signed` controls whether DNSKEY/DS lookups return records, gating the
  * DNSSEC-signed-zone check. NSEC3PARAM always returns empty here (the "missing
  * NSEC3PARAM" path) so the signed/unsigned branch is exercised.
+ *
+ * `denial` controls the DO=1 NXDOMAIN probe's authority-section NSEC:
+ *  - 'minimally-covering': RFC 4470 black-lie NSEC (next-name = `\000.<qname>`) → NOT walkable
+ *  - 'walkable': a genuine plain-NSEC chain (next-name is a different existing owner) → walkable
+ *  - 'none' (default): no NSEC returned → inconclusive
  */
-function routeByType(domain: string, opts: { signed: boolean }) {
+function routeByType(domain: string, opts: { signed: boolean; denial?: 'minimally-covering' | 'walkable' | 'none' }) {
+	const denial = opts.denial ?? 'none';
 	return vi.fn().mockImplementation((url: string | URL) => {
 		const u = new URL(typeof url === 'string' ? url : url.toString());
 		const name = u.searchParams.get('name') ?? domain;
 		const typeName = (u.searchParams.get('type') ?? '').toUpperCase();
+		const dnssecOk = u.searchParams.get('do') === '1';
+
+		// DO=1 NXDOMAIN probe under the zone (type A on a synthetic non-existent label).
+		if (typeName === 'A' && dnssecOk && name !== domain) {
+			if (denial === 'minimally-covering') {
+				// Cloudflare/RFC 4470 black lie: owner = qname, next = `\000.<qname>`, minimally-covering bitmap.
+				return Promise.resolve(
+					dohWithAuthority({ name, type: 1 }, [
+						{ name: domain, type: 6, TTL: 1800, data: 'ns.example.com. dns.example.com. 1 10000 2400 604800 1800' },
+						{ name, type: 47, TTL: 1800, data: `\\000.${name}. RRSIG NSEC NXNAME` },
+					]),
+				);
+			}
+			if (denial === 'walkable') {
+				// Genuine plain NSEC: next-name is a REAL, different existing owner name.
+				return Promise.resolve(
+					dohWithAuthority({ name, type: 1 }, [
+						{ name: domain, type: 6, TTL: 1800, data: 'ns.example.com. dns.example.com. 1 10000 2400 604800 1800' },
+						{ name: `alpha.${domain}`, type: 47, TTL: 1800, data: `mail.${domain}. A AAAA RRSIG NSEC` },
+					]),
+				);
+			}
+			// 'none' — only the SOA comes back (no NSEC), probe inconclusive.
+			return Promise.resolve(
+				dohWithAuthority({ name, type: 1 }, [
+					{ name: domain, type: 6, TTL: 1800, data: 'ns.example.com. dns.example.com. 1 10000 2400 604800 1800' },
+				]),
+			);
+		}
+
 		const TYPE_CODE: Record<string, number> = { NSEC3PARAM: 51, DNSKEY: 48, DS: 43 };
 		const typeCode = TYPE_CODE[typeName] ?? 0;
 		if (opts.signed && (typeName === 'DNSKEY' || typeName === 'DS')) {
@@ -77,9 +129,10 @@ describe('checkNsecWalkability', () => {
 		expect(mediumFinding!.detail).toMatch(/low enumeration cost|RFC 9276/i);
 	});
 
-	it('should flag missing NSEC3PARAM as high severity ONLY when the zone is DNSSEC-signed', async () => {
-		// No NSEC3PARAM, but DNSKEY/DS present → signed zone using plain NSEC → walkable HIGH.
-		globalThis.fetch = routeByType('example.com', { signed: true });
+	it('should flag a GENUINELY walkable plain-NSEC zone (signed, no NSEC3PARAM, real different next-name) as high', async () => {
+		// Signed, no NSEC3PARAM, and the DO=1 probe returns a plain NSEC whose next-name
+		// is a REAL different existing owner → the chain is walkable → HIGH.
+		globalThis.fetch = routeByType('example.com', { signed: true, denial: 'walkable' });
 
 		const result = await run();
 		expect(result.category).toBe('nsec_walkability');
@@ -89,6 +142,43 @@ describe('checkNsecWalkability', () => {
 		expect(highFinding!.detail).toMatch(/walkable|plain NSEC/i);
 		expect(highFinding!.metadata?.walkable).toBe(true);
 		expect(highFinding!.metadata?.dnssecSigned).toBe(true);
+	});
+
+	it('should NOT flag walkability for an RFC 4470 minimally-covering NSEC (Cloudflare black lies): signed, no NSEC3PARAM', async () => {
+		// spotto.ai scenario (#565): DNSSEC-signed (DNSKEY/DS present), no NSEC3PARAM,
+		// but the DO=1 NXDOMAIN probe returns a minimally-covering NSEC whose next-name
+		// is the synthesized `\000.<qname>` → RFC 4470 → the zone is NOT walkable.
+		globalThis.fetch = routeByType('example.com', { signed: true, denial: 'minimally-covering' });
+
+		const result = await run();
+		expect(result.category).toBe('nsec_walkability');
+
+		// Must NOT be a high walkability false positive.
+		const highFinding = result.findings.find((f) => f.severity === 'high');
+		expect(highFinding).toBeUndefined();
+
+		const infoFinding = result.findings.find((f) => f.severity === 'info');
+		expect(infoFinding).toBeDefined();
+		expect(infoFinding!.detail).toMatch(/RFC 4470|minimally.covering|black lie|not walkable/i);
+		expect(infoFinding!.metadata?.walkable).toBe(false);
+		expect(infoFinding!.metadata?.dnssecSigned).toBe(true);
+	});
+
+	it('should downgrade to info (NOT high) when the NSEC denial probe is inconclusive', async () => {
+		// Signed, no NSEC3PARAM, but the probe returns no NSEC (only SOA) → cannot confirm
+		// plain NSEC vs. minimally-covering → must NOT assert a confident high/walkable.
+		globalThis.fetch = routeByType('example.com', { signed: true, denial: 'none' });
+
+		const result = await run();
+		expect(result.category).toBe('nsec_walkability');
+
+		const highFinding = result.findings.find((f) => f.severity === 'high');
+		expect(highFinding).toBeUndefined();
+
+		const infoFinding = result.findings.find((f) => f.severity === 'info');
+		expect(infoFinding).toBeDefined();
+		expect(infoFinding!.metadata?.walkable).not.toBe(true);
+		expect(infoFinding!.metadata?.dnssecSigned).toBe(true);
 	});
 
 	it('should NOT flag walkability for an UNSIGNED zone (no NSEC3PARAM, no DNSKEY/DS)', async () => {
