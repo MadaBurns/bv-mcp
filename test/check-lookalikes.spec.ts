@@ -1041,8 +1041,16 @@ describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation',
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
 		expect(tstFinding!.severity).toBe('info');
-		expect(tstFinding!.title).toContain('likely owned by same entity');
+		// F2 (2026-07-27 fix round 2): retitled from "likely owned by same
+		// entity" — the structural verdict at this branch is always
+		// third_party (RDAP registrant-org matching is deliberately NOT fed
+		// into classifyOwnership()), so the title no longer claims ownership
+		// outright, and the verdict now travels in metadata alongside it.
+		expect(tstFinding!.title).toContain('shares registrant organisation');
+		expect(tstFinding!.title).not.toContain('likely owned by same entity');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('third_party');
 		expect(tstFinding!.detail).toContain('registrant organisation');
+		expect(tstFinding!.detail).toContain('not structural ownership evidence');
 		// `createFinding` now sanitizes metadata strings at the chokepoint (F7 / issue
 		// #389): the `< >` in the placeholder org are neutralized to spaces. The match
 		// logic itself runs pre-sanitize on the raw RDAP value, so the same-entity
@@ -1155,8 +1163,29 @@ describe('checkLookalikes - issue #263 same-entity RDAP registrant correlation',
 		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
 		expect(tstFinding).toBeDefined();
 		expect(tstFinding!.severity).toBe('info');
-		expect(tstFinding!.title).toContain('likely owned by same entity');
+		expect(tstFinding!.title).toContain('shares registrant organisation');
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('third_party');
 		expect(tstFinding!.metadata?.sharedRegistrantOrg).toBe('xero limited');
+	});
+
+	// F2 pin (2026-07-27 fix round 2): the reviewer's exact defect — a
+	// third_party structural verdict must not be titled as owned-by-same-
+	// entity without the metadata saying so. Proves BOTH halves of the fix
+	// together: the verdict travels in metadata, AND the title no longer
+	// overclaims common ownership from an unverified RDAP org-name match
+	// alone.
+	it('F2: carries the third_party ownershipVerdict on the RDAP same-entity finding and does not title it as owned-by-same-entity', async () => {
+		mockSameEntity({
+			lookalike: 'tst.com',
+			lookalikeRdap: rdapWithRegistrant('<Vendor> Limited'),
+			primaryRdap: rdapWithRegistrant('<Vendor> Limited'),
+		});
+		const result = await run('test.com');
+		const tstFinding = result.findings.find((f) => f.title.includes('tst.com'));
+		expect(tstFinding).toBeDefined();
+		expect(tstFinding!.metadata?.ownershipVerdict).toBe('third_party');
+		expect(tstFinding!.metadata?.sharedRegistrantOrg).toBe('vendor limited');
+		expect(tstFinding!.title).not.toContain('likely owned by same entity');
 	});
 });
 
@@ -1474,9 +1503,18 @@ describe('checkLookalikes - D4 ownership-gated severity (2026-07-26 correctness-
 	// call site 1: with the old code, this candidate would NOT be excluded
 	// from enrichment (an RDAP fetch would fire); with the fix, ownership is
 	// resolved from the NS verdict alone and RDAP is never consulted for an
-	// owned candidate. The finding must surface UNCLAMPED (medium/high, not
-	// capped to info) since verdict is owned_by_seed.
-	it('recognises in-bailiwick NS delegation as owned_by_seed with zero literal NS-hostname overlap, skips RDAP enrichment, and leaves severity unclamped', async () => {
+	// owned candidate.
+	//
+	// F3(b) (2026-07-27 fix round 2): renamed from "...and leaves severity
+	// unclamped" — that name overstated the assertions. The `sameOwner`
+	// branch in check-lookalikes.ts (`:485`) hardcodes severity to `'info'`
+	// unconditionally; there is no medium/high value it is ever "unclamped"
+	// from. What this test actually discriminates is that an owned_by_seed
+	// candidate keeps its NATIVE same-owner finding (title + rationale-based
+	// detail) rather than being routed through the D4 gate's non-owned
+	// demotion template (`buildNonOwnedGateFinding`) — pinned below via the
+	// explicit `severity === 'info'` assertion plus the title/verdict checks.
+	it('recognises in-bailiwick NS delegation as owned_by_seed with zero literal NS-hostname overlap, skips RDAP enrichment, and keeps the native same-owner info finding (not the D4 demotion template)', async () => {
 		const rdapCalls: string[] = [];
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -1551,11 +1589,19 @@ describe('checkLookalikes - D4 ownership-gated severity (2026-07-26 correctness-
 	// D4 spec row for this tool, BOTH directions pinned together (a test that
 	// proves only one direction does not discriminate): a short (3-char)
 	// brand label with a third_party verdict and no corroboration is
-	// suppressed FROM ELEVATION (present at info, neutral wording) while a
-	// short (3-char) brand label with an owned_by_seed verdict (NS in
-	// bailiwick — the strongest corroborating signal by construction) still
-	// surfaces at full computed severity.
-	it('D4 short-label pin: third-party short label capped at info; owned_by_seed short label surfaces unclamped', async () => {
+	// demoted to the neutral info template (`buildNonOwnedGateFinding`),
+	// while a short (3-char) brand label with an owned_by_seed verdict (NS in
+	// bailiwick — the strongest corroborating signal by construction) keeps
+	// its native same-owner info finding instead.
+	//
+	// F3(b) (2026-07-27 fix round 2): renamed from "...owned_by_seed short
+	// label surfaces unclamped" — both directions are 'info' by construction
+	// (calibrateLookalikeSeverity never runs for the sameOwner branch), so
+	// "unclamped" never meant medium/high. What differs is WHICH template
+	// produced the info finding — the demotion template (neutral wording, no
+	// ownership title) vs. the native same-owner finding (ownership title,
+	// rationale-based detail). Both severities are now pinned explicitly.
+	it('D4 short-label pin: third-party short label demoted to the neutral info template; owned_by_seed short label keeps its native same-owner info finding', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
 			if (name === 'bnz.co.nz' && (type === 'NS' || type === '2')) {
@@ -1602,5 +1648,10 @@ describe('checkLookalikes - D4 ownership-gated severity (2026-07-26 correctness-
 		expect(bnzComFindings.length).toBeGreaterThan(0);
 		expect(bnzComFindings.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(true);
 		expect(bnzComFindings.some((f) => f.title.includes('likely owned by same entity'))).toBe(true);
+		// F3(b): the promised severity assertion — 'unclamped' does not mean
+		// medium/high here (the sameOwner branch hardcodes 'info'); it means the
+		// finding is NOT routed through the D4 demotion template. Pin the actual
+		// contract explicitly rather than leaving it implied by the title check.
+		expect(bnzComFindings.every((f) => f.severity === 'info')).toBe(true);
 	});
 });

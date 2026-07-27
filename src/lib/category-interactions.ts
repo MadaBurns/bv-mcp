@@ -77,11 +77,22 @@ export const INTERACTION_RULES: InteractionRule[] = [
 		// gate below fails and neither mechanism fires.
 		id: 'impersonation_weak_dmarc',
 		conditions: [
-			// lookalikes score drops below 100 only when a calibrated medium/high
-			// lookalike is found (defensive registrations / shared-NS matches stay
-			// info-severity and don't move the score). <= 85 == "at least one
-			// medium-or-higher active impersonation domain" — the same predicate
-			// hasActiveImpersonation() uses on the label side.
+			// F3(a) (2026-07-27 fix round 2): corrected — this used to claim
+			// "lookalikes score drops below 100 only when a calibrated
+			// medium/high lookalike is found". That stopped being true once the
+			// D4 ownership-attribution gate (check-lookalikes.ts) shipped: every
+			// `lookalikes` finding — owned_by_seed or ownership-demoted third
+			// party alike — is now emitted at `info` severity, so the category
+			// score is always 100 and this `maxScore: 85` condition cannot
+			// currently be satisfied. Its sibling predicate,
+			// `hasActiveImpersonation()` in scan/post-processing.ts, checks for
+			// the same medium/high/critical severities and is equally
+			// unreachable today. Both are effectively dead code as a direct
+			// consequence of the D4 gate — the same defect the reviewer's Major
+			// finding on Task 7 flagged (escalated to the design owner
+			// separately; NOT fixed here, per explicit instruction not to
+			// change the gate or the cap in this round). Left in place and
+			// documented honestly pending that decision.
 			{ category: 'lookalikes', maxScore: 85 },
 			// Weak/absent DMARC, as left by the escalation pass (see above).
 			{ category: 'dmarc', maxScore: 60 },

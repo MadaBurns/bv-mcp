@@ -21,9 +21,10 @@ import {
 } from '../lib/registration-state';
 import {
 	attributionConfidence,
+	buildNonOwnedGateFinding,
+	buildOwnershipGateMetadata,
 	capAttributionSeverity,
 	classifyOwnership,
-	MIN_ATTRIBUTION_LABEL_LENGTH,
 	type OwnershipAssessment,
 } from '../lib/ownership-attribution';
 import { isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
@@ -510,46 +511,40 @@ export const AUDIT_PINNED_OWNERSHIP_FRAMED_TITLE = 'Shadow domain registered, re
  *     revision claimed info-level titles "are already bare registration
  *     observations"; that was false — two of the three begin with the
  *     ownership noun.
+ *
+ * The neutral-wording sentence and metadata shape for the ABOVE-`info` case
+ * live in `buildNonOwnedGateFinding()` (`src/lib/ownership-attribution.ts`),
+ * shared with `check-lookalikes.ts` (fix round 2, F1) — the two tools had
+ * already drifted apart within this slice ("Its mail posture" + quoted
+ * `"${brand}"` here vs "Its DNS/mail posture" + no brand quote there) before
+ * this was noticed. The `'info'`-severity branch below stays LOCAL to this
+ * file per the fix-round instruction — `check-lookalikes.ts` never reaches
+ * it (`calibrateLookalikeSeverity()` never returns `'info'`), so there is no
+ * shared behaviour to extract there, only the four-field metadata shape
+ * (`buildOwnershipGateMetadata()`).
  */
 function applyOwnershipGate(finding: Finding, ownership: OwnershipAssessment, brand: string, corroborated: boolean): Finding {
 	const ceiling = capAttributionSeverity(ownership.verdict);
 	if (ceiling === 'unbounded') return finding;
 
-	const confidence = attributionConfidence(ownership.verdict, brand, corroborated);
-	const variant = typeof finding.metadata?.variant === 'string' ? finding.metadata.variant : 'This domain';
-	const metadata = {
-		...finding.metadata,
-		ownershipVerdict: ownership.verdict,
-		ownershipRationale: ownership.rationale,
-		attributionConfidence: confidence,
-		severityCappedBy: 'ownership_attribution',
-	};
-
 	if (finding.severity === 'info') {
+		const confidence = attributionConfidence(ownership.verdict, brand, corroborated);
 		return createFinding(
 			'shadow_domains',
 			NEUTRAL_INFO_TITLES[finding.title] ?? finding.title,
 			ceiling,
 			`${finding.detail} ${ownership.rationale}`,
-			metadata,
+			buildOwnershipGateMetadata(finding, ownership, confidence),
 		);
 	}
 
-	const relation =
-		ownership.verdict === 'third_party'
-			? 'is registered to a different organisation'
-			: 'could not be attributed to the scanned organisation';
-	const hedge =
-		confidence === 'uncorroborated'
-			? ` The shared label is under ${MIN_ATTRIBUTION_LABEL_LENGTH} characters and nothing else corroborates a link, so the name similarity alone means little.`
-			: '';
-	return createFinding(
-		'shadow_domains',
-		`Unrelated domain, confusable label: ${variant}`,
-		ceiling,
-		`${variant} shares the "${brand}" label with the scanned domain but ${relation}. ${ownership.rationale} Its mail posture is reported for awareness only: no action by the scanned organisation is implied, and this finding asserts no control over ${variant}.${hedge}`,
-		metadata,
-	);
+	// `postureNoun` MUST match `check-lookalikes.ts`'s value byte-for-byte
+	// (parity pinned by `test/ownership-attribution.spec.ts`).
+	return buildNonOwnedGateFinding(finding, ownership, brand, corroborated, ceiling, {
+		category: 'shadow_domains',
+		domainMetadataKey: 'variant',
+		postureNoun: 'DNS/mail posture',
+	});
 }
 
 /**

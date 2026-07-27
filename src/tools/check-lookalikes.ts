@@ -18,10 +18,9 @@ import { generateCombosquats, generateLookalikes } from './lookalike-analysis';
 import { FALLBACK_RDAP_SERVERS, extractRegistrantOrg } from './check-rdap-lookup';
 import { calibrateLookalikeSeverity, isDisposableMxHost, type LookalikeSignals } from './lookalike-severity';
 import {
-	attributionConfidence,
+	buildNonOwnedGateFinding,
 	capAttributionSeverity,
 	classifyOwnership,
-	MIN_ATTRIBUTION_LABEL_LENGTH,
 	type OwnershipAssessment,
 } from '../lib/ownership-attribution';
 import { isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
@@ -222,7 +221,11 @@ async function queryPrimaryMx(domain: string): Promise<Set<string>> {
  * D4 severity ceiling for a lookalike finding, mirroring `applyOwnershipGate()`
  * in `check-shadow-domains.ts` — see that file's JSDoc for the full rationale;
  * this is the same pattern reused for a second tool so the two stay
- * consistent for downstream consumers.
+ * consistent for downstream consumers. The neutral-wording sentence and
+ * metadata shape live in `buildNonOwnedGateFinding()`
+ * (`src/lib/ownership-attribution.ts`), shared with `check-shadow-domains.ts`
+ * (fix round 2, F1) — the two tools had already drifted apart within this
+ * slice when each hand-rolled its own copy.
  *
  * `owned_by_seed` findings pass through unclamped — `checkLookalikesCore`'s
  * main loop already emits its own dedicated "likely owned by same entity"
@@ -242,31 +245,16 @@ function applyOwnershipGate(finding: Finding, ownership: OwnershipAssessment, br
 	const ceiling = capAttributionSeverity(ownership.verdict);
 	if (ceiling === 'unbounded') return finding;
 
-	const confidence = attributionConfidence(ownership.verdict, brand, corroborated);
-	const lookalikeDomain = typeof finding.metadata?.lookalikeDomain === 'string' ? finding.metadata.lookalikeDomain : 'This domain';
-	const metadata = {
-		...finding.metadata,
-		ownershipVerdict: ownership.verdict,
-		ownershipRationale: ownership.rationale,
-		attributionConfidence: confidence,
-		severityCappedBy: 'ownership_attribution',
-	};
-
-	const relation =
-		ownership.verdict === 'third_party'
-			? 'is registered to a different organisation'
-			: 'could not be attributed to the scanned organisation';
-	const hedge =
-		confidence === 'uncorroborated'
-			? ` The shared label is under ${MIN_ATTRIBUTION_LABEL_LENGTH} characters and nothing else corroborates a link, so the name similarity alone means little.`
-			: '';
-	return createFinding(
-		'lookalikes',
-		`Unrelated domain, confusable label: ${lookalikeDomain}`,
-		ceiling,
-		`${lookalikeDomain} shares a similar label with the scanned domain but ${relation}. ${ownership.rationale} Its DNS/mail posture is reported for awareness only: no action by the scanned organisation is implied, and this finding asserts no control over ${lookalikeDomain}.${hedge}`,
-		metadata,
-	);
+	// `calibrateLookalikeSeverity()` never returns `'info'`, so unlike
+	// `check-shadow-domains.ts` there is no local info-severity branch here —
+	// every candidate reaching this point goes through the shared non-owned
+	// rewrite. `postureNoun` MUST match `check-shadow-domains.ts`'s value
+	// byte-for-byte (parity pinned by `test/ownership-attribution.spec.ts`).
+	return buildNonOwnedGateFinding(finding, ownership, brand, corroborated, ceiling, {
+		category: 'lookalikes',
+		domainMetadataKey: 'lookalikeDomain',
+		postureNoun: 'DNS/mail posture',
+	});
 }
 
 /**
@@ -528,19 +516,44 @@ async function checkLookalikesCore(
 
 		// Same-entity correlation (issue #263): the calibrated severity is a
 		// threat tier (low/medium/high), but if this lookalike's RDAP registrant
-		// org matches the scan domain's, it's the org's own defensive / regional
-		// registration. Downgrade to an info finding instead of a threat. Only
-		// medium/high candidates are eligible (see computeSameEntityCandidates);
-		// LOW web-only matches stay as-is (cheap, low-noise, not worth the fetch).
+		// org matches the scan domain's, it's PLAUSIBLY the org's own defensive /
+		// regional registration. Downgrade to an info finding instead of a
+		// threat. Only medium/high candidates are eligible (see
+		// computeSameEntityCandidates); LOW web-only matches stay as-is (cheap,
+		// low-noise, not worth the fetch).
+		//
+		// F2 (2026-07-27 fix round 2): a RDAP registrant-org match is
+		// DELIBERATELY NOT fed into `classifyOwnership()` as an ownership
+		// signal — the org field is self-declared and unverified by most
+		// registries (the same attacker-influenceable class flagged for
+		// `soaInBailiwick`/`spfIncludesSeedApex`/`httpRedirectToSeedApex` in
+		// `ClassifyOwnershipInput`'s JSDoc), so it must never be able to
+		// silently produce an `owned_by_seed` verdict. Every candidate reaching
+		// this branch therefore still carries the STRUCTURAL verdict computed
+		// earlier (`third_party` here — `sameOwner` above already filtered out
+		// `owned_by_seed`), and the verdict now travels on this finding too
+		// (`ownershipVerdict` in metadata) per the same "verdict travels on
+		// EVERY classified finding" invariant `check-shadow-domains.ts` states
+		// for its own emission sites. The title/prose no longer asserts common
+		// ownership outright — it's reworded to state plainly that this is a
+		// registrant-organisation SIGNAL, distinct from (and weaker than) the
+		// structural NS-based evidence, whose own finding is quoted verbatim.
 		const matchedOrg = sameEntityMatches.get(result.domain);
 		if (matchedOrg !== undefined) {
 			findings.push(
 				createFinding(
 					'lookalikes',
-					`Lookalike domain likely owned by same entity: ${result.domain}`,
+					`Lookalike domain shares registrant organisation with scanned domain: ${result.domain}`,
 					'info',
-					`The domain ${result.domain} shares the same RDAP registrant organisation as ${domain} ("${matchedOrg}"), indicating it is likely a defensive registration or regional presence by the same owner rather than a third-party lookalike.${result.hasMX ? ' Has active mail infrastructure.' : ''}${result.hasA ? ' Has web presence.' : ''}`,
-					{ lookalikeDomain: result.domain, hasA: result.hasA, hasMX: result.hasMX, sharedRegistrantOrg: matchedOrg },
+					`The domain ${result.domain} shares the same RDAP registrant organisation as ${domain} ("${matchedOrg}"), which may indicate a defensive registration or regional presence by the same owner. This is a registrant-organisation signal, not structural ownership evidence — RDAP registrant fields are self-declared and not independently verified. Nameserver-based evidence: ${ownership.rationale}${result.hasMX ? ' Has active mail infrastructure.' : ''}${result.hasA ? ' Has web presence.' : ''}`,
+					{
+						lookalikeDomain: result.domain,
+						hasA: result.hasA,
+						hasMX: result.hasMX,
+						sharedRegistrantOrg: matchedOrg,
+						ownershipVerdict: ownership.verdict,
+						ownershipRationale: ownership.rationale,
+					},
 				),
 			);
 			continue;

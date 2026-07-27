@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 import { isSharedNsHost } from '../src/tenants/discovery/shared-ns-hosts';
 import { UNKNOWN_REASON_PHRASES } from '../src/lib/registration-state';
 import type { RegistrationState } from '../src/lib/registration-state';
@@ -358,5 +358,151 @@ describe('load-bearing safety property (controller amendment 2): severity gates 
 		const unattributedCap = capAttributionSeverity('unattributed');
 		expect(thirdPartyCap).toBe(unattributedCap);
 		expect(thirdPartyCap).toBe('info');
+	});
+});
+
+describe('buildNonOwnedGateFinding — cross-tool wording parity (F1, 2026-07-27 fix round 2)', () => {
+	let restoreAfterThisTest: (() => void) | undefined;
+	afterEach(() => {
+		restoreAfterThisTest?.();
+		restoreAfterThisTest = undefined;
+	});
+
+	/**
+	 * F1: check-lookalikes.ts and check-shadow-domains.ts each used to
+	 * hand-roll their own copy of the non-owned hedge sentence and had
+	 * already drifted apart within a single slice ("Its DNS/mail posture" +
+	 * no brand quote in lookalikes vs "Its mail posture" + quoted `"${brand}"`
+	 * in shadow-domains) before review caught it. Both now call the SAME
+	 * `buildNonOwnedGateFinding()` (`src/lib/ownership-attribution.ts`) with
+	 * the same `postureNoun`. This is a UNIT-level pin on the shared function
+	 * itself: if the two call sites ever again pass different `postureNoun`
+	 * values, this test does not catch that (it can't see call-site source —
+	 * see the end-to-end pin below for that). What it pins is that the shared
+	 * function, given the SAME inputs, produces byte-identical output
+	 * regardless of category/domain-key — i.e. there is no per-tool special
+	 * casing hiding inside the shared function that could reintroduce drift.
+	 */
+	it('produces byte-identical hedge wording for two different (category, domainMetadataKey) callers given the same postureNoun', async () => {
+		const { buildNonOwnedGateFinding, classifyOwnership } = await loadModule();
+		const ownership = classifyOwnership({
+			seedDomain: 'contoso.com',
+			seedNs: ['ns1.primary-dns.com'],
+			candidateDomain: 'contos0.com',
+			registration: registered(['ns1.attacker-dns.com']),
+			isSharedNsHost,
+		});
+		expect(ownership.verdict).toBe('third_party');
+
+		const rawFinding = {
+			category: 'lookalikes' as const,
+			title: 'raw',
+			severity: 'medium' as const,
+			detail: 'raw detail',
+			metadata: { lookalikeDomain: 'contos0.com' },
+		};
+		const lookalikeStyle = buildNonOwnedGateFinding(rawFinding, ownership, 'contoso', false, 'info', {
+			category: 'lookalikes',
+			domainMetadataKey: 'lookalikeDomain',
+			postureNoun: 'DNS/mail posture',
+		});
+
+		const shadowStyleRaw = { ...rawFinding, category: 'shadow_domains' as const, metadata: { variant: 'contos0.com' } };
+		const shadowStyle = buildNonOwnedGateFinding(shadowStyleRaw, ownership, 'contoso', false, 'info', {
+			category: 'shadow_domains',
+			domainMetadataKey: 'variant',
+			postureNoun: 'DNS/mail posture',
+		});
+
+		// Only the finding category differs (each tool's own CheckCategory) —
+		// the title and detail (the customer-facing legal-hedge sentence) are
+		// byte-for-byte identical, since both resolve to the same candidate
+		// domain string and the same postureNoun.
+		expect(lookalikeStyle.title).toBe(shadowStyle.title);
+		expect(lookalikeStyle.detail).toBe(shadowStyle.detail);
+		expect(lookalikeStyle.category).toBe('lookalikes');
+		expect(shadowStyle.category).toBe('shadow_domains');
+	});
+
+	/**
+	 * End-to-end pin (proves the REAL call sites, not just the shared
+	 * function, agree): runs both `checkLookalikes` and `checkShadowDomains`
+	 * against a third_party MX-having candidate and asserts their emitted
+	 * findings share the exact fixed frame around the posture noun. This is
+	 * what catches a FUTURE regression where one tool's call site is edited
+	 * to pass a different `postureNoun` while the other is not — the unit
+	 * test above cannot see that (it calls the shared function directly with
+	 * matched arguments), but this test exercises the actual production call
+	 * sites in `check-lookalikes.ts` and `check-shadow-domains.ts`.
+	 */
+	it('check-lookalikes.ts and check-shadow-domains.ts emit the same fixed posture-noun frame end-to-end', async () => {
+		const { setupFetchMock, createDohResponse } = await import('./helpers/dns-mock');
+		const { restore } = setupFetchMock();
+		restoreAfterThisTest = restore;
+		{
+			function parseDohQuery(input: string | URL | Request): { name: string; type: string } {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				const parsed = new URL(url);
+				return { name: parsed.searchParams.get('name') ?? '', type: parsed.searchParams.get('type') ?? '' };
+			}
+
+			// --- check_lookalikes: seed contoso.com, third-party candidate with MX ---
+			globalThis.fetch = (async (input: string | URL | Request) => {
+				const { name, type } = parseDohQuery(input);
+				if (name === 'contoso.com') {
+					if (type === 'NS' || type === '2') {
+						return createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]);
+					}
+				}
+				if (name === 'contos0.com') {
+					if (type === 'NS' || type === '2') {
+						return createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.attacker-dns.com.' }]);
+					}
+					if (type === 'MX' || type === '15') {
+						return createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.evil.com.' }]);
+					}
+				}
+				return createDohResponse([], []);
+			}) as unknown as typeof fetch;
+			const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+			const lookalikeResult = await checkLookalikes('contoso.com');
+			const lookalikeFinding = lookalikeResult.findings.find((f) => f.metadata?.ownershipVerdict === 'third_party');
+			expect(lookalikeFinding).toBeDefined();
+
+			// --- check_shadow_domains: seed example.com, third-party variant with MX, no SPF/DMARC ---
+			globalThis.fetch = (async (input: string | URL | Request) => {
+				const { name, type } = parseDohQuery(input);
+				if (name === 'example.com' && (type === 'MX' || type === '15')) {
+					return createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.example.com.' }]);
+				}
+				if (name === 'example.net') {
+					if (type === 'NS' || type === '2') {
+						return createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]);
+					}
+					if (type === 'A' || type === '1') {
+						return createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]);
+					}
+					if (type === 'MX' || type === '15') {
+						return createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.shadow.com.' }]);
+					}
+				}
+				return createDohResponse([], []);
+			}) as unknown as typeof fetch;
+			const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+			const shadowResult = await checkShadowDomains('example.com');
+			const shadowFinding = shadowResult.findings.find(
+				(f) =>
+					(f.metadata as { variant?: string } | undefined)?.variant === 'example.net' && f.metadata?.ownershipVerdict === 'third_party',
+			);
+			expect(shadowFinding).toBeDefined();
+
+			// The fixed frame around the posture noun — everything except the
+			// noun itself and the candidate-domain substitutions — must be
+			// byte-identical between the two tools.
+			const FRAME =
+				'is reported for awareness only: no action by the scanned organisation is implied, and this finding asserts no control over';
+			expect(lookalikeFinding!.detail).toContain(`DNS/mail posture ${FRAME}`);
+			expect(shadowFinding!.detail).toContain(`DNS/mail posture ${FRAME}`);
+		}
 	});
 });
