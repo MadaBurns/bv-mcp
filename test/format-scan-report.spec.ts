@@ -374,6 +374,62 @@ describe('format-scan-report', () => {
 		expect(formatScanReport(result, 'compact')).not.toContain('Scoring model:');
 	});
 
+	/**
+	 * Issue #574. `isGraded` is the wrong instrument for THIS state: the scan IS
+	 * graded (17/19 checks completed, ratio 0.894 — comfortably over the 0.6
+	 * evidence-sufficiency threshold), so the existing gate passes the stage
+	 * straight through. But the ladder's one load-bearing input (`ssl`) was never
+	 * measured, so its stage number is not a measurement. The number is withheld;
+	 * the LABEL stays, because "Not determined (TLS not measured)" is information.
+	 */
+	function indeterminateMaturityResult(): ScanDomainResult {
+		return {
+			domain: 'secure.bank.example',
+			score: {
+				overall: 67,
+				grade: 'C',
+				categoryScores: { dnssec: 60, ns: 95, caa: 100 },
+				findings: [],
+				summary: 'Grade: C',
+				evidence: { attempted: 19, completed: 17, ratio: 17 / 19 },
+			},
+			checks: [
+				{ category: 'dnssec', passed: true, score: 60, findings: [] },
+				{ category: 'ssl', passed: false, score: 0, findings: [], checkStatus: 'error' },
+			],
+			maturity: {
+				stage: 0,
+				label: 'Not determined (TLS not measured)',
+				description: 'The TLS probe did not complete.',
+				nextStep: 'Re-scan later.',
+				indeterminate: true,
+			},
+			cached: false,
+			timestamp: '2026-07-27T00:00:00.000Z',
+		} as unknown as ScanDomainResult;
+	}
+
+	it('#574 withholds the stage NUMBER for an indeterminate maturity on a GRADED scan', () => {
+		const result = indeterminateMaturityResult();
+		// Non-vacuity: the scan really is graded, so `isGraded` alone would emit 0.
+		expect(result.score.overall).toBe(67);
+
+		const structured = buildStructuredScanResult(result);
+		expect(structured.maturityStage).toBeNull();
+		// The label survives — abstention, not suppression.
+		expect(structured.maturityLabel).toBe('Not determined (TLS not measured)');
+		expect(JSON.stringify(structured)).not.toContain('"maturityStage":0');
+	});
+
+	it.each(['compact', 'full'] as const)('#574 prose never prints "Stage 0" for an indeterminate maturity [%s]', (format) => {
+		const text = formatScanReport(indeterminateMaturityResult(), format);
+		const line = text.split('\n').find((l) => l.includes('Maturity'));
+		expect(line, format).toBeDefined();
+		expect(line, format).not.toContain('Stage 0');
+		expect(line, format).toContain('Not determined');
+		expect(text, format).not.toMatch(/No TLS detected/i);
+	});
+
 	it('carries evidence through buildToolResult into structuredContent', async () => {
 		const { buildToolResult } = await import('../src/handlers/tool-formatters');
 		const structured = { domain: 'x.example', evidence: { attempted: 19, completed: 4, ratio: 4 / 19 }, evidenceInsufficient: true };

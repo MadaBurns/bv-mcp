@@ -295,7 +295,13 @@ export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeO
 		domain,
 		scanResult.score.overall,
 		scanResult.score.grade,
-		isGraded(scanResult.score) ? scanResult.maturity.stage : null,
+		// `indeterminate` (#574) is the half `isGraded` cannot see: a scan can produce a
+		// real overall score AND still have the maturity ladder abstain, because a
+		// load-bearing check (TLS, or SPF/DMARC) was never measured. That stage 0 is a
+		// placeholder, not a posture measurement, so it is withheld here exactly like a
+		// degraded builder's — otherwise `plan.maturityStage` renders "0/4" (see the
+		// UNGRADED_DISPLAY branch below) as a verdict nobody measured.
+		isGraded(scanResult.score) && scanResult.maturity.indeterminate !== true ? scanResult.maturity.stage : null,
 	);
 }
 
