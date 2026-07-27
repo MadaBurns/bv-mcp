@@ -8,11 +8,111 @@
  */
 
 import { queryDnsRecords } from '../lib/dns';
-import type { QueryDnsOptions } from '../lib/dns-types';
+import type { QueryDnsOptions, DnsAuthority, DohResponse } from '../lib/dns-types';
+import { DNS_TIMEOUT_MS } from '../lib/config';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 
 const CATEGORY = 'nsec_walkability' as CheckCategory;
+
+/** Cloudflare DoH JSON endpoint. Used for the DO=1 denial-of-existence probe. */
+const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
+/** DNS record type codes for denial-of-existence records. */
+const NSEC_TYPE = 47;
+const NSEC3_TYPE = 50;
+
+/**
+ * Verdict of the DO=1 NXDOMAIN denial-of-existence probe.
+ * - `walkable`         — a real plain-NSEC chain (next-name is a different existing owner)
+ * - `minimally-covering` — RFC 4470 "black lie" NSEC (next-name = `\000.<qname>`); NOT walkable
+ * - `nsec3`            — an NSEC3 record proved hashed denial despite no NSEC3PARAM; not walkable
+ * - `inconclusive`     — no NSEC/NSEC3 could be read (probe failed / authority stripped)
+ */
+type DenialVerdict = 'walkable' | 'minimally-covering' | 'nsec3' | 'inconclusive';
+
+interface DenialProbeResult {
+	probeName: string;
+	verdict: DenialVerdict;
+	/** The observed NSEC next-name (first rdata token), when an NSEC was read. */
+	nextName?: string;
+}
+
+/** Random, almost-certainly-nonexistent label so the probe forces an NXDOMAIN/NXNAME reply. */
+function probeNonce(): string {
+	const uuid = globalThis.crypto?.randomUUID?.();
+	return (uuid ?? Math.random().toString(36).slice(2)).replace(/-/g, '').slice(0, 16);
+}
+
+/**
+ * Classify the authority-section denial records for a probed non-existent name.
+ *
+ * RFC 4470 minimally-covering NSEC (Cloudflare's default for signed zones — "NSEC
+ * black lies") synthesizes an NSEC whose owner is the queried name and whose
+ * next-name is `\000.<qname>` (a `\x00` label prepended to the qname), carrying a
+ * minimally-covering type bitmap (`RRSIG NSEC`, often with `NXNAME`/`TYPE128`).
+ * Such a zone publishes no NSEC3PARAM yet is NOT walkable. Only an NSEC whose
+ * next-name is a genuinely different existing owner name indicates a walkable
+ * plain-NSEC chain.
+ */
+function classifyDenial(probeName: string, authority: DnsAuthority[] | null): { verdict: DenialVerdict; nextName?: string } {
+	if (!authority) return { verdict: 'inconclusive' };
+
+	// NSEC3 in the authority section → hashed denial-of-existence → not plain-walkable.
+	if (authority.some((rr) => rr.type === NSEC3_TYPE)) return { verdict: 'nsec3' };
+
+	const nsec = authority.find((rr) => rr.type === NSEC_TYPE);
+	if (!nsec) return { verdict: 'inconclusive' };
+
+	const tokens = nsec.data.trim().split(/\s+/);
+	const rawNext = tokens[0] ?? '';
+	const bitmap = tokens.slice(1).map((t) => t.toUpperCase());
+	const nextName = rawNext.replace(/\.$/, '');
+	const qname = probeName.replace(/\.$/, '').toLowerCase();
+	const nn = nextName.toLowerCase();
+
+	// RFC 4470 / compact-denial signatures of a minimally-covering (black-lie) NSEC:
+	const isSynthesizedNext =
+		nn === `\\000.${qname}` || // Cloudflare's exact `\x00`-prepended next-name
+		nn.startsWith('\\000.') ||
+		nn.startsWith('\\x00.') ||
+		nn.startsWith('\\0.') ||
+		nn === qname; // owner==next epsilon form
+	const isMinimalBitmap = bitmap.includes('NXNAME') || bitmap.includes('TYPE128');
+
+	if (isSynthesizedNext || isMinimalBitmap) return { verdict: 'minimally-covering', nextName };
+
+	// A real, different existing next owner name → the plain-NSEC chain is walkable.
+	return { verdict: 'walkable', nextName };
+}
+
+/**
+ * Probe a guaranteed-nonexistent label under the zone with the DNSSEC OK (DO=1)
+ * bit set and read the authority-section denial-of-existence records. This is the
+ * only way to distinguish a walkable plain-NSEC chain from RFC 4470 minimally-
+ * covering NSEC — the absence of NSEC3PARAM alone cannot.
+ *
+ * Self-contained fetch (not the shared DoH transport) because the transport does
+ * not expose the DO bit; without DO=1 the resolver strips the NSEC RRs. Fail-soft:
+ * any error → `inconclusive` (never a false "walkable").
+ */
+async function probeDenialNsec(domain: string, dnsOptions?: QueryDnsOptions): Promise<DenialProbeResult> {
+	const probeName = `bvnsec-probe-${probeNonce()}.${domain}`;
+	const params = new URLSearchParams({ name: probeName, type: 'A', do: '1' });
+	const url = `${DOH_ENDPOINT}?${params.toString()}`;
+	try {
+		const resp = await fetch(url, {
+			method: 'GET',
+			headers: { Accept: 'application/dns-json' },
+			signal: AbortSignal.timeout(dnsOptions?.timeoutMs ?? DNS_TIMEOUT_MS),
+		});
+		if (!resp.ok) return { probeName, verdict: 'inconclusive' };
+		const data = (await resp.json()) as DohResponse;
+		const { verdict, nextName } = classifyDenial(probeName, data.Authority ?? []);
+		return { probeName, verdict, nextName };
+	} catch {
+		return { probeName, verdict: 'inconclusive' };
+	}
+}
 
 /** NSEC3 hash algorithm names (RFC 5155 §11). Only algorithm 1 is defined. */
 const NSEC3_HASH_ALGORITHMS: Record<number, string> = {
@@ -78,12 +178,13 @@ async function isZoneSigned(domain: string, dnsOptions?: QueryDnsOptions): Promi
 }
 
 /**
- * Assess NSEC3 zone walkability risk by analyzing NSEC3PARAM records.
+ * Assess NSEC zone walkability risk.
  *
- * Limitations (disclosed in findings):
- * - Cannot probe for actual NSEC/NSEC3 denial records via DoH
- * - Cannot definitively confirm plain NSEC vs. absent NSEC3PARAM
- * - Analyzes configuration parameters only
+ * For signed zones with no NSEC3PARAM, a DO=1 denial-of-existence probe reads the
+ * authority-section NSEC to distinguish a walkable plain-NSEC chain from RFC 4470
+ * minimally-covering NSEC ("black lies"), which is not walkable (#565). When the
+ * probe cannot read a denial record, walkability is reported inconclusive (info)
+ * rather than a confident high, since NSEC3PARAM absence alone does not prove it.
  *
  * @param domain - The domain to check (must already be validated and sanitized)
  * @param dnsOptions - Optional DNS query options
@@ -128,13 +229,62 @@ export async function checkNsecWalkability(domain: string, dnsOptions?: QueryDns
 			return buildCheckResult(CATEGORY, findings) as CheckResult;
 		}
 
+		// Absence of NSEC3PARAM does NOT prove the zone is walkable. RFC 4470
+		// "minimally-covering" NSEC (a.k.a. NSEC black lies — Cloudflare's default
+		// for signed zones) publishes no NSEC3PARAM and no NSEC3, yet is NOT walkable.
+		// Actively probe: query a guaranteed-nonexistent label with DO=1 and inspect
+		// the authority-section NSEC record to distinguish the two cases (#565).
+		const probe = await probeDenialNsec(domain, dnsOptions);
+
+		if (probe.verdict === 'walkable') {
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'Zone is walkable via plain NSEC',
+					'high',
+					`The zone for ${domain} is DNSSEC-signed (DNSKEY/DS present), publishes no NSEC3PARAM, and a DO=1 denial-of-existence probe returned a plain NSEC record whose next-name (${probe.nextName}) is a genuinely different existing owner name. The zone therefore uses plain NSEC and is fully walkable — an attacker can enumerate all zone contents by following NSEC chain links.`,
+					{ domain, walkable: true, dnssecSigned: true, nextName: probe.nextName ?? null, probe: 'nsec-next-name' },
+				),
+			);
+			return buildCheckResult(CATEGORY, findings) as CheckResult;
+		}
+
+		if (probe.verdict === 'minimally-covering') {
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'Signed zone uses minimally-covering NSEC (RFC 4470) — not walkable',
+					'info',
+					`The zone for ${domain} is DNSSEC-signed and publishes no NSEC3PARAM, but a DO=1 denial-of-existence probe returned a minimally-covering NSEC record (RFC 4470 "NSEC black lies", the Cloudflare default for signed zones): the NSEC next-name is the synthesized \`\\000.<qname>\` (${probe.nextName}) rather than a real adjacent owner. This proves the zone is NOT walkable — an attacker cannot enumerate zone contents from the NSEC chain — even though no NSEC3PARAM is published.`,
+					{ domain, walkable: false, dnssecSigned: true, nextName: probe.nextName ?? null, probe: 'nsec-next-name', minimallyCovering: true },
+				),
+			);
+			return buildCheckResult(CATEGORY, findings) as CheckResult;
+		}
+
+		if (probe.verdict === 'nsec3') {
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'Signed zone uses NSEC3 denial-of-existence — not trivially walkable',
+					'info',
+					`The zone for ${domain} is DNSSEC-signed and publishes no NSEC3PARAM record, but a DO=1 denial-of-existence probe returned an NSEC3 (hashed) denial record. The zone therefore uses NSEC3 rather than plain NSEC, so it is not trivially walkable. (A missing NSEC3PARAM is unusual for an NSEC3 zone but does not by itself imply walkability.)`,
+					{ domain, walkable: false, dnssecSigned: true, probe: 'nsec3-observed' },
+				),
+			);
+			return buildCheckResult(CATEGORY, findings) as CheckResult;
+		}
+
+		// Inconclusive: signed, no NSEC3PARAM, but the probe could not read an NSEC/NSEC3
+		// record (probe failed or authority section stripped). Do NOT assert a confident
+		// high/walkable on the absence of NSEC3PARAM alone — downgrade to info (#565).
 		findings.push(
 			createFinding(
 				CATEGORY,
-				'No NSEC3PARAM record found',
-				'high',
-				`The zone for ${domain} is DNSSEC-signed (DNSKEY/DS present) but publishes no NSEC3PARAM record. The signed zone therefore likely uses plain NSEC, which makes it fully walkable — an attacker can enumerate all zone contents by following NSEC chain links. Limitation: DoH cannot probe for actual NSEC/NSEC3 denial-of-existence records, so this assessment is based on the absence of NSEC3PARAM configuration only.`,
-				{ domain, walkable: true, dnssecSigned: true },
+				'Zone walkability could not be confirmed',
+				'info',
+				`The zone for ${domain} is DNSSEC-signed (DNSKEY/DS present) and publishes no NSEC3PARAM record, so it may use plain NSEC (walkable) or RFC 4470 minimally-covering NSEC (not walkable). A DO=1 denial-of-existence probe could not read an authority-section NSEC/NSEC3 record to confirm which, so zone walkability is inconclusive. If the zone genuinely uses plain NSEC, deploying NSEC3 would prevent enumeration.`,
+				{ domain, walkable: null, dnssecSigned: true, probe: 'inconclusive' },
 			),
 		);
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
