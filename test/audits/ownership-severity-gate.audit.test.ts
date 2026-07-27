@@ -9,6 +9,10 @@
  * or is an explicitly-named threat OBSERVATION about a candidate that is NOT
  * the scanned organisation's own domain. Nothing else above `info` is
  * permitted to slip through `checkShadowDomains()` / `checkLookalikes()`.
+ * Ownership framing in prose ("shadow domain", "your", "owned by same
+ * entity") is likewise never permitted on a non-owned finding, on EITHER
+ * axis — a threat observation describes the CANDIDATE's behaviour, never
+ * the scanned organisation's ownership of it.
  *
  * CONTROLLER AMENDMENTS TO THE ORIGINAL TASK-8 BRIEF (binding, see
  * `.superpowers/sdd/2026-07-26-slice4-ownership-attribution/task-8-brief.md`
@@ -22,7 +26,12 @@
  *        (`ownershipVerdict === 'owned_by_seed'`) OR
  *        (`findingAxis === 'threat_observation'` AND `ownershipVerdict` is
  *         present and `!== 'owned_by_seed'` AND a candidate domain is named
- *         in metadata).
+ *         in metadata that is DISTINCT FROM THE SCANNED SEED — `lookalikeDomain`
+ *         preferred; `lookalikeDomains`/`domain` accepted only as a fallback,
+ *         and only when the value is not the seed itself (fix round 1, F4 —
+ *         the predicate used to accept a bare `meta.domain` unconditionally,
+ *         which is exactly what the recon-corroboration emission site in
+ *         `check-lookalikes.ts` used to set to the SEED, not a candidate)).
  *      A finding with NEITHER above `info` is an AUDIT FAILURE, full stop.
  *
  *  (2) THE AXIS MODEL (lookalikes only — `check-shadow-domains.ts` has no
@@ -33,17 +42,22 @@
  *          | 'scan_status'`;
  *        - every `'scan_status'` finding is `info`;
  *        - every `'threat_observation'` finding carries `ownershipVerdict
- *          !== 'owned_by_seed'` and names a candidate;
- *        - every `'attribution'` finding for a non-owned candidate is `info`
- *          AND carries no ownership-framed prose ("shadow domain", "your",
- *          "owned by same entity") in its title or detail.
+ *          !== 'owned_by_seed'` and names a candidate (per the tightened
+ *          predicate in (1));
+ *        - every finding of ANY axis for a non-owned candidate carries NO
+ *          ownership-framed prose ("shadow domain", "your", "owned by same
+ *          entity") in its title or detail (fix round 1, F2 — the original
+ *          version of this audit only framing-checked the `attribution` axis,
+ *          leaving a `critical` `threat_observation` titled e.g. "Your shadow
+ *          domain portfolio is exposed" undetected).
  *      `check-shadow-domains.ts` carries a SEPARATE, single carve-out for
  *      this same framing rule — `AUDIT_PINNED_OWNERSHIP_FRAMED_TITLE` (the
  *      Phase-2 "records not observed" fallthrough keeps its ownership-framed
  *      title because `registration-invariant.audit.test.ts` — byte-frozen —
  *      pins that exact title literal). This audit asserts that carve-out is
  *      EXACTLY one title and EXACTLY the known string, so it cannot silently
- *      widen to swallow other framed titles.
+ *      widen to swallow other framed titles. `checkLookalikes` has NO such
+ *      carve-out — the framing sweep against it is unconditional.
  *
  *  (3) THE PRIMITIVE-LEVEL INVARIANT (task 7c). The three candidate-side
  *      signals (`soaInBailiwick`, `spfIncludesSeedApex`, `httpRedirectToSeedApex`)
@@ -52,12 +66,33 @@
  *      already pin it) so a future "optimisation" of those unit tests can't
  *      silently drop the property from BOTH places at once.
  *
+ *  (4) FIX ROUND 1 (2026-07-27, adversarial re-review). Four findings, all
+ *      addressed:
+ *        F1 — LIVE VIOLATION. `check-lookalikes.ts`'s recon-corroboration
+ *             emission site (`CT_LOOKALIKE`) emitted a `medium`
+ *             `threat_observation` with NO `ownershipVerdict` and
+ *             `domain: <the seed>` — a real production bug this audit's
+ *             ORIGINAL fixture set never exercised (no recon-binding
+ *             fixture existed). Fixed at the SOURCE (see
+ *             `extractReconMatchedDomain()` + the emission site in
+ *             `check-lookalikes.ts`) and now covered by
+ *             `runLookalikesReconFixture()` below, permanently inside the
+ *             sweep.
+ *        F2 — the framing sweep now covers every axis, not just `attribution`
+ *             (see amendment (2) above).
+ *        F3 — an EXPECTED-VERDICT map (`assertExpectedVerdicts` below) pins
+ *             each fixture's candidates to their REQUIRED stamped verdict, so
+ *             a mutation that stamps `owned_by_seed` everywhere (which would
+ *             trivially satisfy the severity-justification sweep AND exit the
+ *             framing filter simultaneously) is still caught.
+ *        F4 — the named-candidate predicate tightened (see amendment (1)).
+ *
  * METHOD NOTE: every clause below was proven to go RED by a real source
- * mutation (ungating a call site, retagging a `scan_status` finding, undoing
- * Ruling A, widening the framed-title carve-out, forcing an empty findings
- * array) — see `.superpowers/sdd/2026-07-26-slice4-ownership-attribution/
- * task-8-report.md` for the mutation-by-mutation evidence. The mutations
- * themselves are not preserved in this file; only their proof they were run.
+ * mutation — see `.superpowers/sdd/2026-07-26-slice4-ownership-attribution/
+ * task-8-report.md` (fix round 1 addendum) for the mutation-by-mutation
+ * evidence, including the F1 live-violation fix, the A5/A8b/A8c re-runs. The
+ * mutations themselves are not preserved in this file; only their proof they
+ * were run.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -121,12 +156,44 @@ interface Violation {
 	reason: string;
 }
 
+function normalizeDomain(d: string): string {
+	return d.trim().toLowerCase().replace(/\.$/, '');
+}
+
+/**
+ * F4 (fix round 1): the named-candidate predicate. `lookalikeDomain` is
+ * PREFERRED and authoritative when present — it is never overridden by a
+ * fallback field even if it happens to equal the seed (in which case this
+ * correctly returns false rather than silently trying `domain` next).
+ * `lookalikeDomains` (the aggregate summary) and `domain` (the shadow-domains
+ * "variant" field lives under a different key entirely — see
+ * `assertExpectedVerdicts`'s `domainKeys` param — this predicate is scoped to
+ * the fields `checkLookalikes` actually emits) are accepted as fallbacks, and
+ * ONLY when the named value is not the seed itself.
+ */
+function namesNonSeedCandidate(meta: Record<string, unknown> | undefined, seedNorm: string): boolean {
+	if (typeof meta?.lookalikeDomain === 'string') {
+		const v = meta.lookalikeDomain.trim();
+		return v !== '' && normalizeDomain(v) !== seedNorm;
+	}
+	if (Array.isArray(meta?.lookalikeDomains) && meta.lookalikeDomains.length > 0) {
+		return meta.lookalikeDomains.some((d) => typeof d === 'string' && d.trim() !== '' && normalizeDomain(d) !== seedNorm);
+	}
+	if (typeof meta?.domain === 'string') {
+		const v = meta.domain.trim();
+		return v !== '' && normalizeDomain(v) !== seedNorm;
+	}
+	return false;
+}
+
 /**
  * Amendment (1) — THE positive-assertion rule. Returns violations rather than
- * throwing immediately so a single sweep can report every offender at once
- * (and so the "exactly one framed title" check elsewhere can reuse it).
+ * throwing immediately so a single sweep can report every offender at once.
+ * `seedDomain` is required (F4) so the named-candidate check can reject a
+ * self-referential match.
  */
-function findSeverityViolations(tool: string, findings: readonly Finding[]): Violation[] {
+function findSeverityViolations(tool: string, seedDomain: string, findings: readonly Finding[]): Violation[] {
+	const seedNorm = normalizeDomain(seedDomain);
 	const violations: Violation[] = [];
 	for (const f of findings) {
 		if (f.severity === 'info') continue;
@@ -136,12 +203,13 @@ function findSeverityViolations(tool: string, findings: readonly Finding[]): Vio
 
 		const axis = meta?.findingAxis;
 		if (axis === 'threat_observation' && verdict !== undefined && verdict !== 'owned_by_seed') {
-			const named =
-				typeof meta?.lookalikeDomain === 'string' ||
-				(Array.isArray(meta?.lookalikeDomains) && (meta.lookalikeDomains as unknown[]).length > 0) ||
-				typeof meta?.domain === 'string';
-			if (named) continue;
-			violations.push({ tool, title: f.title, severity: f.severity, reason: 'threat_observation above info names no candidate domain' });
+			if (namesNonSeedCandidate(meta, seedNorm)) continue;
+			violations.push({
+				tool,
+				title: f.title,
+				severity: f.severity,
+				reason: 'threat_observation above info names no candidate domain distinct from the seed',
+			});
 			continue;
 		}
 
@@ -160,9 +228,9 @@ function assertNonEmpty(tool: string, findings: readonly Finding[]) {
 	expect(findings.length, `${tool}: fixture produced zero findings — the sweep below would be vacuously green`).toBeGreaterThan(0);
 }
 
-function assertSeverityJustified(tool: string, findings: readonly Finding[]) {
+function assertSeverityJustified(tool: string, seedDomain: string, findings: readonly Finding[]) {
 	assertNonEmpty(tool, findings);
-	const violations = findSeverityViolations(tool, findings);
+	const violations = findSeverityViolations(tool, seedDomain, findings);
 	expect(violations, `${tool}: unjustified above-info findings:\n${JSON.stringify(violations, null, 2)}`).toEqual([]);
 }
 
@@ -172,6 +240,67 @@ function framingViolations(title: string, detail: string): string[] {
 	return BANNED_FRAMING.filter((re) => re.test(title) || re.test(detail)).map((re) => re.source);
 }
 
+/**
+ * F2 (fix round 1) — framing sweep across EVERY finding whose stamped
+ * verdict is present and `!== 'owned_by_seed'`, regardless of `findingAxis`.
+ * `carveOutTitle`, when supplied, exempts exactly one title
+ * (`check-shadow-domains.ts`'s `AUDIT_PINNED_OWNERSHIP_FRAMED_TITLE`) — never
+ * a pattern, never a prefix, so it cannot silently widen.
+ */
+function findFramingViolations(tool: string, findings: readonly Finding[], carveOutTitle?: string): Violation[] {
+	const violations: Violation[] = [];
+	for (const f of findings) {
+		const verdict = (f.metadata as Record<string, unknown> | undefined)?.ownershipVerdict;
+		if (verdict === undefined || verdict === 'owned_by_seed') continue;
+		if (carveOutTitle !== undefined && f.title === carveOutTitle) continue;
+		const hits = framingViolations(f.title, f.detail);
+		if (hits.length > 0) {
+			violations.push({ tool, title: f.title, severity: f.severity, reason: `ownership-framed prose: ${hits.join(', ')}` });
+		}
+	}
+	return violations;
+}
+
+/**
+ * F3 (fix round 1) — EXPECTED-VERDICT map. Asserts every finding that names a
+ * fixture-known candidate (via one of `domainKeys`, checked in priority
+ * order) carries the REQUIRED stamped verdict for that candidate. This is
+ * the check that survives a mutation stamping `owned_by_seed` on every
+ * finding: such a mutation trivially satisfies `findSeverityViolations` (the
+ * exemption fires) AND `findFramingViolations` (the framing filter exits
+ * early on `owned_by_seed`) simultaneously — only a check that TRUSTS NOTHING
+ * about the stamped verdict and instead compares it against an independently
+ * declared expectation can catch it.
+ */
+function assertExpectedVerdicts(
+	tool: string,
+	findings: readonly Finding[],
+	domainKeys: readonly string[],
+	mustBeOwned: ReadonlySet<string>,
+	mustNotBeOwned: ReadonlySet<string>,
+) {
+	for (const f of findings) {
+		const meta = f.metadata as Record<string, unknown> | undefined;
+		let candidate: string | undefined;
+		for (const key of domainKeys) {
+			const v = meta?.[key];
+			if (typeof v === 'string' && v.trim() !== '') {
+				candidate = v;
+				break;
+			}
+		}
+		if (candidate === undefined) continue;
+		const norm = normalizeDomain(candidate);
+		const verdict = meta?.ownershipVerdict;
+		if (mustBeOwned.has(norm)) {
+			expect(verdict, `${tool}: "${f.title}" for ${candidate} must be stamped owned_by_seed`).toBe('owned_by_seed');
+		}
+		if (mustNotBeOwned.has(norm)) {
+			expect(verdict, `${tool}: "${f.title}" for ${candidate} must NOT be stamped owned_by_seed`).not.toBe('owned_by_seed');
+		}
+	}
+}
+
 // =============================================================================
 // Fixture A — checkShadowDomains, one combined scan carrying every required
 // scenario: owned (in-bailiwick), third-party with active-MX threat signals,
@@ -179,16 +308,19 @@ function framingViolations(title: string, detail: string): string[] {
 // records not observed" unattributed carve-out branch.
 // =============================================================================
 
+const SHADOW_SEED = 'bnz.co.nz';
+const SHADOW_MUST_BE_OWNED = new Set(['bnz.com']);
+const SHADOW_MUST_NOT_BE_OWNED = new Set(['bnz.de', 'bnz.eu', 'bnz.ca', 'bnz.jp']);
+
 async function runShadowDomainsFixture() {
-	const seed = 'bnz.co.nz';
 	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 		const q = parseDohQuery(input);
 		if (!q) return Promise.resolve(empty());
 		const { name, type } = q;
 
-		if (name === seed) {
-			if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(seed, SEED_AKAMAI_NS));
-			if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(seed, ['10 mail.bnz.co.nz.']));
+		if (name === SHADOW_SEED) {
+			if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(SHADOW_SEED, SEED_AKAMAI_NS));
+			if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(SHADOW_SEED, ['10 mail.bnz.co.nz.']));
 		}
 
 		// OWNED — in-bailiwick NS, fully spoofable shape. Must stay unclamped:
@@ -237,7 +369,7 @@ async function runShadowDomainsFixture() {
 	});
 
 	const { checkShadowDomains } = await import('../../src/tools/check-shadow-domains');
-	return checkShadowDomains(seed);
+	return checkShadowDomains(SHADOW_SEED);
 }
 
 /** A fully clean scan: nothing registered anywhere. Sanity + vacuous-green guard target. */
@@ -254,14 +386,18 @@ async function runShadowDomainsCleanFixture() {
 // the shared-provider (Akamai) partial-overlap trap.
 // =============================================================================
 
-async function runLookalikesFixture() {
-	const seed = 'testco.com';
+const LOOKALIKES_SEED = 'testco.com';
+const LOOKALIKES_MUST_BE_OWNED = new Set(['testc0.com']);
+const LOOKALIKES_MUST_NOT_BE_OWNED = new Set(['twstco.com', 'trstco.com']);
+
+/** DNS mock shared by every checkLookalikes fixture below (recon options vary per caller). */
+function mockLookalikesFixtureDns() {
 	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 		const q = parseDohQuery(input);
 		if (!q) return Promise.resolve(empty());
 		const { name, type } = q;
 
-		if (name === seed && (type === 'NS' || type === '2')) return Promise.resolve(nsRecords(seed, SEED_AKAMAI_NS));
+		if (name === LOOKALIKES_SEED && (type === 'NS' || type === '2')) return Promise.resolve(nsRecords(LOOKALIKES_SEED, SEED_AKAMAI_NS));
 
 		// OWNED (in-bailiwick) — even with a disposable-MX shape, an owned
 		// candidate must get NO threat_observation finding at all (Task 7b
@@ -289,9 +425,12 @@ async function runLookalikesFixture() {
 
 		return Promise.resolve(empty());
 	});
+}
 
+async function runLookalikesFixture() {
+	mockLookalikesFixtureDns();
 	const { checkLookalikes } = await import('../../src/tools/check-lookalikes');
-	return checkLookalikes(seed);
+	return checkLookalikes(LOOKALIKES_SEED);
 }
 
 /** A fully clean scan: nothing registered anywhere. Sanity + vacuous-green guard target. */
@@ -301,6 +440,59 @@ async function runLookalikesCleanFixture() {
 	return checkLookalikes('nomatch918273brand.com');
 }
 
+/**
+ * F1 (fix round 1) — the recon-binding fixture. Stubs `BV_RECON` (the
+ * operator-deploy-only enrichment binding — this code path ships in prod)
+ * returning a CT_LOOKALIKE hit naming `twstco.com` as `metadata.matchedDomain`
+ * — a candidate ALSO generated/probed locally by this same scan (so
+ * `ownershipByDomain` genuinely resolves it, exercising the "reuse the local
+ * assessment" branch of the source fix, not just its null-fallback branch).
+ * This keeps the recon emission site permanently INSIDE the sweep.
+ */
+async function runLookalikesReconFixture() {
+	mockLookalikesFixtureDns();
+	const reconBinding = {
+		fetch: vi.fn(
+			async () =>
+				new Response(
+					JSON.stringify({
+						checkType: 'CT_LOOKALIKE',
+						status: 'warning',
+						details: 'Certificate transparency logs show lookalike activity for twstco.com',
+						metadata: { matchedDomain: 'twstco.com' },
+					}),
+					{ status: 200, headers: { 'Content-Type': 'application/json' } },
+				),
+		),
+	};
+	const { checkLookalikes } = await import('../../src/tools/check-lookalikes');
+	return checkLookalikes(LOOKALIKES_SEED, { reconBinding, reconAuthToken: 'tok' });
+}
+
+/**
+ * A5 re-run target — the post-loop `if (findings.length === 0)` scan_status
+ * notice (`check-lookalikes.ts` ~line 793) is reachable ONLY when at least
+ * one permutation is registered (so the tool doesn't early-return before
+ * reaching the main classification loop) AND every registered permutation
+ * has neither an A nor an MX record (so the loop's
+ * `if (!result.hasMX && !result.hasA) continue;` guard skips it, pushing
+ * NOTHING). `tstco.com` here is registered (NS only) with no A/MX — the
+ * ONLY registered permutation in this fixture — so `findings` is genuinely
+ * empty when the loop exits.
+ */
+async function runLookalikesPostLoopScanStatusFixture() {
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+		const q = parseDohQuery(input);
+		if (!q) return Promise.resolve(empty());
+		const { name, type } = q;
+		if (name === LOOKALIKES_SEED && (type === 'NS' || type === '2')) return Promise.resolve(nsRecords(LOOKALIKES_SEED, SEED_AKAMAI_NS));
+		if (name === 'tstco.com' && (type === 'NS' || type === '2')) return Promise.resolve(nsRecords(name, ['ns1.registrar.com.']));
+		return Promise.resolve(empty());
+	});
+	const { checkLookalikes } = await import('../../src/tools/check-lookalikes');
+	return checkLookalikes(LOOKALIKES_SEED);
+}
+
 // =============================================================================
 // Tests
 // =============================================================================
@@ -308,7 +500,8 @@ async function runLookalikesCleanFixture() {
 describe('ownership severity gate (audit) — load-bearing safety property', () => {
 	it('checkShadowDomains: no above-info finding without ownership justification (positive-assertion sweep, exhaustive)', async () => {
 		const result = await runShadowDomainsFixture();
-		assertSeverityJustified('checkShadowDomains', result.findings);
+		assertSeverityJustified('checkShadowDomains', SHADOW_SEED, result.findings);
+		assertExpectedVerdicts('checkShadowDomains', result.findings, ['variant'], SHADOW_MUST_BE_OWNED, SHADOW_MUST_NOT_BE_OWNED);
 
 		// Sanity the fixture actually exercised both directions, not just a
 		// uniformly-info result that would make the sweep trivially green.
@@ -319,28 +512,23 @@ describe('ownership severity gate (audit) — load-bearing safety property', () 
 
 	it('checkShadowDomains: clean scan sweeps green and is never vacuously empty', async () => {
 		const result = await runShadowDomainsCleanFixture();
-		assertSeverityJustified('checkShadowDomains (clean)', result.findings);
+		assertSeverityJustified('checkShadowDomains (clean)', 'cleanbrand9182.com', result.findings);
 		expect(result.findings.every((f) => f.severity === 'info')).toBe(true);
 	});
 
-	it('checkShadowDomains: ownership framing absent from non-owned findings, except the exactly-one audit-pinned carve-out', async () => {
+	it('checkShadowDomains: ownership framing absent from non-owned findings (all axes — shadow-domains has none — so this is unconditional), except the exactly-one audit-pinned carve-out', async () => {
 		const { AUDIT_PINNED_OWNERSHIP_FRAMED_TITLE } = await import('../../src/tools/check-shadow-domains');
 		expect(AUDIT_PINNED_OWNERSHIP_FRAMED_TITLE).toBe('Shadow domain registered, records not observed');
 
 		const result = await runShadowDomainsFixture();
-		const nonOwned = result.findings.filter((f) => {
+		const nonOwnedCount = result.findings.filter((f) => {
 			const v = f.metadata?.ownershipVerdict;
 			return v !== undefined && v !== 'owned_by_seed';
-		});
-		expect(nonOwned.length).toBeGreaterThan(0);
+		}).length;
+		expect(nonOwnedCount).toBeGreaterThan(0);
 
-		const framedTitles = new Set<string>();
-		for (const f of nonOwned) {
-			if (f.title === AUDIT_PINNED_OWNERSHIP_FRAMED_TITLE) continue; // the one sanctioned carve-out
-			const hits = framingViolations(f.title, f.detail);
-			if (hits.length > 0) framedTitles.add(f.title);
-		}
-		expect([...framedTitles]).toEqual([]);
+		const violations = findFramingViolations('checkShadowDomains', result.findings, AUDIT_PINNED_OWNERSHIP_FRAMED_TITLE);
+		expect(violations, `framed titles: ${JSON.stringify(violations, null, 2)}`).toEqual([]);
 
 		// The carve-out itself must actually have been exercised by this
 		// fixture (bnz.ca) — otherwise "exactly one" is an unverified claim.
@@ -349,7 +537,8 @@ describe('ownership severity gate (audit) — load-bearing safety property', () 
 
 	it('checkLookalikes: no above-info finding without ownership justification (positive-assertion sweep, exhaustive)', async () => {
 		const result = await runLookalikesFixture();
-		assertSeverityJustified('checkLookalikes', result.findings);
+		assertSeverityJustified('checkLookalikes', LOOKALIKES_SEED, result.findings);
+		assertExpectedVerdicts('checkLookalikes', result.findings, ['lookalikeDomain'], LOOKALIKES_MUST_BE_OWNED, LOOKALIKES_MUST_NOT_BE_OWNED);
 
 		expect(result.findings.some((f) => f.severity === 'high')).toBe(true);
 		expect(result.findings.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(true);
@@ -358,7 +547,7 @@ describe('ownership severity gate (audit) — load-bearing safety property', () 
 
 	it('checkLookalikes: clean scan sweeps green and is never vacuously empty', async () => {
 		const result = await runLookalikesCleanFixture();
-		assertSeverityJustified('checkLookalikes (clean)', result.findings);
+		assertSeverityJustified('checkLookalikes (clean)', 'nomatch918273brand.com', result.findings);
 		expect(result.findings.every((f) => f.severity === 'info')).toBe(true);
 	});
 
@@ -389,21 +578,16 @@ describe('ownership severity gate (audit) — load-bearing safety property', () 
 			if (f.metadata?.findingAxis !== 'threat_observation') continue;
 			expect(f.metadata?.ownershipVerdict, `threat_observation "${f.title}" carries no ownershipVerdict`).toBeDefined();
 			expect(f.metadata?.ownershipVerdict, `threat_observation "${f.title}" carries owned_by_seed`).not.toBe('owned_by_seed');
-			const named =
-				typeof f.metadata?.lookalikeDomain === 'string' ||
-				(Array.isArray(f.metadata?.lookalikeDomains) && (f.metadata.lookalikeDomains as unknown[]).length > 0) ||
-				typeof f.metadata?.domain === 'string';
-			expect(named, `threat_observation "${f.title}" names no candidate`).toBe(true);
+			expect(
+				namesNonSeedCandidate(f.metadata as Record<string, unknown> | undefined, normalizeDomain(LOOKALIKES_SEED)),
+				`threat_observation "${f.title}" names no candidate distinct from the seed`,
+			).toBe(true);
 		}
 
-		for (const f of result.findings) {
-			if (f.metadata?.findingAxis !== 'attribution') continue;
-			const verdict = f.metadata?.ownershipVerdict;
-			if (verdict === undefined || verdict === 'owned_by_seed') continue;
-			expect(f.severity, `non-owned attribution finding "${f.title}" is above info`).toBe('info');
-			const hits = framingViolations(f.title, f.detail);
-			expect(hits, `non-owned attribution finding "${f.title}" carries ownership-framed prose: ${hits.join(', ')}`).toEqual([]);
-		}
+		// F2: framing sweep across EVERY axis for this fixture set — not just
+		// 'attribution'. checkLookalikes carries no carve-out.
+		const violations = findFramingViolations('checkLookalikes', result.findings);
+		expect(violations, `framed findings: ${JSON.stringify(violations, null, 2)}`).toEqual([]);
 	});
 
 	it('checkLookalikes: an owned_by_seed candidate gets no threat_observation finding at all', async () => {
@@ -412,6 +596,49 @@ describe('ownership severity gate (audit) — load-bearing safety property', () 
 			(f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain === 'testc0.com',
 		);
 		expect(ownedThreat).toEqual([]);
+	});
+
+	// F1 (fix round 1) — the recon-corroboration emission site, permanently
+	// inside the sweep. Runs the FULL invariant battery (severity
+	// justification, expected-verdict map, and framing) against a fixture
+	// whose ONLY new finding relative to `runLookalikesFixture()` is the
+	// recon-corroboration one, so a regression at that specific emission
+	// site cannot hide behind the other candidates' correct output.
+	it('checkLookalikes: the recon-corroboration finding (CT_LOOKALIKE) carries a real ownershipVerdict and names the matched candidate, not the seed', async () => {
+		const result = await runLookalikesReconFixture();
+		assertSeverityJustified('checkLookalikes (recon)', LOOKALIKES_SEED, result.findings);
+		assertExpectedVerdicts(
+			'checkLookalikes (recon)',
+			result.findings,
+			['lookalikeDomain'],
+			LOOKALIKES_MUST_BE_OWNED,
+			LOOKALIKES_MUST_NOT_BE_OWNED,
+		);
+		const framingHits = findFramingViolations('checkLookalikes (recon)', result.findings);
+		expect(framingHits).toEqual([]);
+
+		const reconFindings = result.findings.filter((f) => f.metadata?.reconEnriched === true);
+		expect(reconFindings).toHaveLength(1);
+		const reconFinding = reconFindings[0];
+		expect(reconFinding.severity).toBe('medium');
+		expect(reconFinding.metadata?.findingAxis).toBe('threat_observation');
+		expect(reconFinding.metadata?.lookalikeDomain).toBe('twstco.com');
+		expect(reconFinding.metadata?.domain).toBeUndefined();
+		expect(reconFinding.metadata?.ownershipVerdict).toBe('third_party');
+	});
+
+	// A5 re-run (fix round 1) — this branch was UNREACHABLE by either the
+	// main or clean fixture before this dedicated fixture was added (the main
+	// fixture always has findings before reaching it; the clean fixture
+	// early-returns before it). Proves it is now reachable AND swept.
+	it('checkLookalikes: the previously-unreachable post-loop scan_status notice fires and is swept', async () => {
+		const result = await runLookalikesPostLoopScanStatusFixture();
+		assertNonEmpty('checkLookalikes (post-loop scan_status)', result.findings);
+		const notice = result.findings.find((f) => f.title === 'No active lookalike domains detected');
+		expect(notice, 'the post-loop scan_status notice did not fire — the fixture no longer reaches it').toBeDefined();
+		expect(notice!.metadata?.findingAxis).toBe('scan_status');
+		expect(notice!.severity).toBe('info');
+		assertSeverityJustified('checkLookalikes (post-loop scan_status)', LOOKALIKES_SEED, result.findings);
 	});
 
 	it('classifyOwnership(): candidate-side signals — soaInBailiwick, spfIncludesSeedApex, httpRedirectToSeedApex — never independently or combined produce owned_by_seed (Ruling A, task 7c)', async () => {

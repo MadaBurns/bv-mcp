@@ -11,7 +11,7 @@ import { queryDnsRecords, queryMxRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { callReconScan, isReconHit } from '../lib/recon-binding';
 import { safeFetch } from '../lib/safe-fetch';
-import type { ReconBinding, BindingDegradationSink } from '../lib/recon-binding';
+import type { ReconBinding, BindingDegradationSink, ReconScanResult } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { generateCombosquats, generateLookalikes } from './lookalike-analysis';
@@ -415,6 +415,26 @@ async function probeWithAdaptiveBatching(permutations: string[]): Promise<Promis
  * Generates domain permutations and checks for active registrations using adaptive batching.
  * Filters out false positives from wildcard DNS on parent domains and null MX records.
  */
+/**
+ * Extract a specific candidate domain bv-recon's CT_LOOKALIKE hit names, if
+ * any (fix round 1, F1). The check response schema's only extension point
+ * for this is the passthrough `metadata` bag (`ReconScanResponseSchema` in
+ * `../lib/recon-binding`); a `matchedDomain` string there is treated as the
+ * named candidate. Defensively normalised (trim/lowercase/strip trailing
+ * dot); rejected outright — returns `null` rather than the seed — when it is
+ * empty or equal to the SEED domain itself, so a recon response that merely
+ * echoes the query target can never satisfy the threat-observation naming
+ * invariant without actually naming a distinct candidate.
+ */
+export function extractReconMatchedDomain(reconResult: ReconScanResult, seedDomain: string): string | null {
+	const raw = reconResult.metadata?.matchedDomain;
+	if (typeof raw !== 'string') return null;
+	const normalized = raw.trim().toLowerCase().replace(/\.$/, '');
+	const seedNormalized = seedDomain.trim().toLowerCase().replace(/\.$/, '');
+	if (normalized === '' || normalized === seedNormalized) return null;
+	return normalized;
+}
+
 export async function checkLookalikes(
 	domain: string,
 	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
@@ -803,7 +823,16 @@ async function checkLookalikesCore(
 		);
 	}
 
-	// Recon enrichment: additive-only, fail-soft
+	// Recon enrichment: additive-only, fail-soft.
+	//
+	// FIX ROUND 1, F1 (2026-07-27, post-review): this block used to emit a
+	// `medium`-severity `threat_observation` with NO `ownershipVerdict` and
+	// `domain: domain` (the SEED, not any candidate) — a live violation of
+	// this slice's own load-bearing safety property, caught by the Task 8
+	// audit's adversarial review (`ownership-severity-gate.audit.test.ts`).
+	// bv-recon's CT_LOOKALIKE check is scoped to the seed's own CT-log
+	// neighbourhood; it does not always name a specific confusable domain, so
+	// `extractReconMatchedDomain()` below may legitimately return null.
 	if (reconOptions.reconBinding) {
 		const reconResult = await callReconScan(
 			reconOptions.reconBinding,
@@ -814,16 +843,51 @@ async function checkLookalikesCore(
 			reconOptions.onBindingDegradation,
 		);
 		const hit = reconResult && isReconHit(reconResult.status);
-		if (hit) {
-			findings.push(
-				createFinding(
-					'lookalikes',
-					'CT-observed lookalike corroboration',
-					'medium',
-					reconResult.details ?? `Threat intelligence corroborates CT-observed lookalike signal for ${domain}.`,
-					{ domain, reconEnriched: true, findingAxis: 'threat_observation' satisfies LookalikeFindingAxis },
-				),
-			);
+		if (hit && reconResult) {
+			const matchedDomain = extractReconMatchedDomain(reconResult, domain);
+			const detail = reconResult.details ?? `Threat intelligence corroborates CT-observed lookalike signal for ${domain}.`;
+
+			if (matchedDomain) {
+				// A named candidate — reuse the SAME ownership assessment the local
+				// classification loop above computed when we also generated/probed
+				// this permutation ourselves. When bv-recon names a domain outside
+				// our own generated permutation set, default to `unattributed`
+				// (never `owned_by_seed` — an externally-sourced, unverified match
+				// is never sufficient to claim the candidate is the customer's own).
+				const reconOwnership: OwnershipAssessment = ownershipByDomain.get(matchedDomain) ?? {
+					verdict: 'unattributed',
+					strength: 'none',
+					signals: [],
+					rationale: `No ownership signal is available for ${matchedDomain}.`,
+				};
+				// Task 7b requirement 5: a candidate already known to be the
+				// customer's own domain gets no threat_observation finding — this
+				// enrichment is additive-only and adds nothing new for one.
+				if (reconOwnership.verdict !== 'owned_by_seed') {
+					findings.push(
+						createFinding('lookalikes', 'CT-observed lookalike corroboration', 'medium', detail, {
+							lookalikeDomain: matchedDomain,
+							reconEnriched: true,
+							findingAxis: 'threat_observation' satisfies LookalikeFindingAxis,
+							ownershipVerdict: reconOwnership.verdict,
+						}),
+					);
+				}
+			} else {
+				// No specific candidate nameable — never fabricate one. A
+				// scan-level notice about the run's own CT signal, not a
+				// per-candidate threat claim, so it stays `info`/`scan_status`
+				// (DEMOTE, NEVER DELETE: the real signal is still surfaced).
+				findings.push(
+					createFinding(
+						'lookalikes',
+						'CT-observed lookalike corroboration (no specific candidate identified)',
+						'info',
+						`${detail} No specific confusable domain was identified by this signal, so no candidate-level claim is made.`,
+						{ domain, reconEnriched: true, findingAxis: 'scan_status' satisfies LookalikeFindingAxis },
+					),
+				);
+			}
 		}
 	}
 
