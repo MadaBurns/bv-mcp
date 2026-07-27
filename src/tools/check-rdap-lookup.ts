@@ -38,9 +38,7 @@ export interface LockPosture {
  */
 export function deriveLockPosture(eppStatus: readonly string[]): LockPosture {
 	const norm = new Set(
-		(Array.isArray(eppStatus) ? eppStatus : [])
-			.map((s) => String(s).toLowerCase().replace(/\s+/g, ''))
-			.filter((s) => s.length > 0),
+		(Array.isArray(eppStatus) ? eppStatus : []).map((s) => String(s).toLowerCase().replace(/\s+/g, '')).filter((s) => s.length > 0),
 	);
 	const has = (code: string) => norm.has(code);
 
@@ -333,6 +331,95 @@ export function normalizeRegistrantOrg(value: string | null | undefined): string
 	return normalized.length > 0 ? normalized : null;
 }
 
+/**
+ * Substrings that, when present in a NORMALISED registrant-org string, mean the
+ * field carries no identity information — a privacy/proxy service placeholder,
+ * a redaction marker, or a generic filler.
+ *
+ * WHY THIS EXISTS (Task 7b fix round 1, review finding F1). The registrant org
+ * is free text the registrant TYPES; RDAP does not verify it, and no part of
+ * the parse path (`extractVcardName` → `normalizeRegistrantOrg`) filters
+ * redaction. Two consequences make it unsafe to treat equality as an identity
+ * signal:
+ *   (a) FORGERY — anyone can type the target's org name into one registrar form
+ *       field and manufacture a "match";
+ *   (b) COLLISION (the bigger problem, and zero-effort) — a large fraction of
+ *       real registrations sit behind the same handful of privacy services, so
+ *       seed and candidate normalise EQUAL for reasons that say nothing about
+ *       who owns either domain.
+ *
+ * Matching is substring-on-normalised (already lowercased and
+ * whitespace-collapsed by {@link normalizeRegistrantOrg}). The generic tokens
+ * subsume the named services listed after them — the named entries are kept for
+ * documentation value, so a reader can see which real-world strings motivated
+ * the list.
+ */
+export const REDACTED_REGISTRANT_ORG_TOKENS: readonly string[] = [
+	// Generic redaction / privacy-proxy vocabulary.
+	'redacted',
+	'privacy',
+	'whois',
+	'proxy',
+	'withheld',
+	'not disclosed',
+	'non-public',
+	'data protected',
+	'gdpr',
+	'masked',
+	'masking',
+	'anonym',
+	'identity protect',
+	'registration private',
+	// Named services (redundant with the tokens above; retained as documentation).
+	'domains by proxy',
+	'perfect privacy',
+	'contact privacy',
+	'withheld for privacy',
+	'privacyguardian',
+	'namecheap inc', // resells "WhoisGuard"-style masking under its own name
+];
+
+/**
+ * Normalised registrant-org strings that are present but carry no identity —
+ * filler a registrar or registrant left in the field. Exact-match (not
+ * substring) so a real organisation whose name merely CONTAINS one of these
+ * words is unaffected.
+ */
+const GENERIC_REGISTRANT_ORG_VALUES: ReadonlySet<string> = new Set([
+	'',
+	'-',
+	'.',
+	'n/a',
+	'na',
+	'none',
+	'null',
+	'nil',
+	'unknown',
+	'not applicable',
+	'not available',
+	'private',
+	'registrant',
+	'domain administrator',
+	'domain admin',
+	'individual',
+	'personal',
+]);
+
+/**
+ * True when a normalised registrant-org string must NOT be used as a
+ * same-entity signal — it is absent, a privacy-proxy/redaction placeholder, or
+ * generic filler. See {@link REDACTED_REGISTRANT_ORG_TOKENS} for the rationale.
+ *
+ * Callers MUST gate every use of a registrant-org match behind this predicate,
+ * on BOTH sides of the comparison.
+ */
+export function isRedactedRegistrantOrg(normalizedOrg: string | null | undefined): boolean {
+	if (typeof normalizedOrg !== 'string') return true;
+	const value = normalizedOrg.trim().toLowerCase().replace(/\s+/g, ' ');
+	if (GENERIC_REGISTRANT_ORG_VALUES.has(value)) return true;
+	return REDACTED_REGISTRANT_ORG_TOKENS.some((token) => value.includes(token));
+}
+
 /** Extract country from a vCard adr property. */
 function extractVcardCountry(entity: RdapEntity): string | null {
 	if (!entity.vcardArray || entity.vcardArray[0] !== 'vcard') return null;
@@ -410,9 +497,7 @@ function parseRetryAfterMs(value: string | null, remainingBudgetMs?: number): nu
 	if (typeof remainingBudgetMs === 'number' && remainingBudgetMs <= 0) return 0;
 
 	const ceiling =
-		typeof remainingBudgetMs === 'number'
-			? Math.max(0, Math.min(RDAP_RETRY_MAX_DELAY_MS, remainingBudgetMs))
-			: RDAP_RETRY_MAX_DELAY_MS;
+		typeof remainingBudgetMs === 'number' ? Math.max(0, Math.min(RDAP_RETRY_MAX_DELAY_MS, remainingBudgetMs)) : RDAP_RETRY_MAX_DELAY_MS;
 
 	if (!value) return Math.min(RDAP_RETRY_DEFAULT_DELAY_MS, ceiling);
 	const seconds = Number(value);
@@ -697,8 +782,7 @@ export interface RdapCheckOptions {
  * (the fetch returns immediately, the caller handles it as `caller_aborted`).
  */
 function composeFetchSignal(callerSignal: AbortSignal | undefined, remainingBudgetMs?: number): AbortSignal {
-	const perRequestMs =
-		typeof remainingBudgetMs === 'number' ? Math.max(0, Math.min(RDAP_TIMEOUT_MS, remainingBudgetMs)) : RDAP_TIMEOUT_MS;
+	const perRequestMs = typeof remainingBudgetMs === 'number' ? Math.max(0, Math.min(RDAP_TIMEOUT_MS, remainingBudgetMs)) : RDAP_TIMEOUT_MS;
 	const timeoutSignal = AbortSignal.timeout(perRequestMs);
 	if (!callerSignal) return timeoutSignal;
 	return AbortSignal.any([timeoutSignal, callerSignal]);

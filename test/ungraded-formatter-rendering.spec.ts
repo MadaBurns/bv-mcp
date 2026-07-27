@@ -167,6 +167,7 @@ describe('formatFixPlan — ungraded scan', () => {
 			actions: [],
 			assessed,
 			caveat: assessed ? null : 'No checks ran for this domain, so no remediation actions could be planned.',
+			transientCategories: [],
 		};
 	}
 

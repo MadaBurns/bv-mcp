@@ -124,6 +124,24 @@ describe('buildStructuredScanResult', () => {
 		expect(s.dnssecSource).toBeNull();
 	});
 
+	/**
+	 * The `'timeout'` case above and this `'error'` case are DELIBERATELY separate
+	 * tests, not one parameterized over both values: `dnssecSource`'s completed-gate
+	 * (`isCompletedCheck(dnssecCheck)`, `format-report.ts`) is a boolean over the
+	 * FULL three-member `CheckStatus` union, and a mutation that widens the gate to
+	 * also accept ONE of the two transient values (e.g. treating 'error' as
+	 * completed while still excluding 'timeout') would slip past a suite that only
+	 * ever exercised 'timeout' here. Pins the collapse onto `isCompletedCheck`
+	 * independently for BOTH transient members.
+	 */
+	it('sets dnssecSource to null when dnssec check errored (even if passed=true)', () => {
+		const result = makeMockScanResult({
+			checks: [{ category: 'dnssec', passed: true, score: 100, findings: [], checkStatus: 'error' }] as CheckResult[],
+		});
+		const s = buildStructuredScanResult(result);
+		expect(s.dnssecSource).toBeNull();
+	});
+
 	it('derives cdnProvider from http_security finding metadata', () => {
 		const result = makeMockScanResult({
 			checks: [

@@ -230,14 +230,18 @@ describe('generateFixPlan — producer wiring for a total outage (all checks att
 		expect(allTransient.caveat).not.toBe(neverRan.caveat);
 	});
 
-	it('keeps the current behaviour when at least one check completed (guard — no over-abstain)', async () => {
+	it('produces exactly the one real remediation action, not one per transient category (F2/F4, review round 1)', async () => {
 		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 
 		// 1 of N checks completed (dmarc genuinely fails); the rest are
-		// transient. This must produce exactly the one real remediation
-		// action — `hasCompletedEvidence` must not require EVERY check to
-		// complete before the plan is treated as assessed.
+		// safeCheck()-shaped transients — `checkStatus: 'error'`, NO
+		// `metadata.errorKind` (safeCheck's own catch in scan-domain.ts never
+		// sets that marker; only tools with their own internal
+		// buildDnsErrorResult handling do). `hasCompletedEvidence` must not
+		// require EVERY check to complete before the plan is treated as
+		// assessed, and each transient category must NOT read as its own
+		// remediation action.
 		const checks: CheckResult[] = SCAN_CATEGORIES.map((c) => {
 			if (c === 'dmarc') {
 				return {
@@ -267,14 +271,26 @@ describe('generateFixPlan — producer wiring for a total outage (all checks att
 		const { generateFixPlan } = await import('../src/tools/generate-fix-plan');
 		const plan = await generateFixPlan('partial-outage.example');
 
-		// Once ANY check completed, this must behave EXACTLY as it did before this
-		// change — including still surfacing an action per transient "check error"
-		// finding (pre-existing behaviour for a partial outage, out of scope for
-		// this fix, and pinned here so a future change doesn't silently narrow it).
+		// F2/F4 (review round 1): this test used to assert
+		// `plan.totalActions === checks.length` — ONE bogus "Fix X: X check
+		// error" action per transient category, plus the one real DMARC
+		// action — labeled "pre-existing behaviour ... out of scope for this
+		// fix" even though the comment two lines above it already said the
+		// opposite ("must produce exactly the one real remediation action").
+		// That assertion PINNED the bug this task exists to close: it passed
+		// only because these safeCheck-shaped fixtures (no `errorKind`) did
+		// not match the `buildDnsErrorResult`-shaped ones the original filter
+		// checked for. Corrected to match what the surrounding comment always
+		// said should happen.
 		expect(plan.assessed).toBe(true);
 		expect(plan.caveat).toBeNull();
-		expect(plan.totalActions).toBe(checks.length);
+		expect(plan.totalActions).toBe(1);
 		expect(plan.actions.some((a) => a.category === 'dmarc' && a.findingTitle === 'DMARC policy is p=none')).toBe(true);
+		// Every OTHER category's synthetic "check error" finding must be
+		// excluded, not turned into its own fix action.
+		expect(plan.actions.every((a) => a.category === 'dmarc')).toBe(true);
+		expect(plan.transientCategories.length).toBe(checks.length - 1);
+		expect(plan.transientCategories).not.toContain('dmarc');
 	});
 });
 

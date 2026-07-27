@@ -31,6 +31,11 @@ const SHARED_NS_MUST_MATCH: ReadonlyArray<readonly [string, string]> = [
 	['ns1.secureserver.net', 'GoDaddy secureserver'],
 	// Namecheap registrar default
 	['dns1.registrar-servers.com', 'Namecheap registrar-default NS'],
+	// Akamai — hostnames are shared across unrelated customers (2026-07-26
+	// correctness-defects design §3.3: bnz.co.nz shares a9-65.akam.net with
+	// anz.co.nz and a3-67.akam.net with westpac.co.nz — three competing banks).
+	['a1-97.akam.net', 'Akamai — shared across unrelated customer zones'],
+	['a9-65.akam.net', 'Akamai — shared across unrelated customer zones'],
 ];
 
 const SHARED_NS_MUST_NOT_MATCH: ReadonlyArray<readonly [string, string]> = [

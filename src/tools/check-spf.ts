@@ -9,6 +9,7 @@ import { checkSPF } from '@blackveil/dns-checks';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildDnsErrorResult } from '../lib/dns-error-result';
+import { isCompletedCheck } from '../lib/ungraded-display';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { analyzeTrustSurface, type TrustSurfaceContext } from './spf-trust-surface';
 
@@ -47,14 +48,10 @@ export async function checkSpf(domain: string, dnsOptions?: QueryDnsOptions): Pr
  * non-trust-surface finding are passed through unchanged — this only rewrites the
  * informational trust-surface findings. Fail-soft: any error returns `core` untouched.
  */
-async function augmentTrustSurface(
-	core: CheckResult,
-	domain: string,
-	dnsOptions?: QueryDnsOptions,
-): Promise<CheckResult> {
+async function augmentTrustSurface(core: CheckResult, domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	try {
 		// A failed/transient check has unreliable findings — never post-process it.
-		if (core.checkStatus === 'error' || core.checkStatus === 'timeout') {
+		if (!isCompletedCheck(core)) {
 			return core;
 		}
 
@@ -77,9 +74,7 @@ async function augmentTrustSurface(
 			? {
 					corroboratedByWeakDmarc: ctxSource.dmarcCorroborated === true,
 					...(typeof ctxSource.dmarcPolicy === 'string' ? { dmarcPolicy: ctxSource.dmarcPolicy } : {}),
-					...(typeof ctxSource.dmarcAlignmentMode === 'string'
-						? { dmarcAlignmentMode: ctxSource.dmarcAlignmentMode }
-						: {}),
+					...(typeof ctxSource.dmarcAlignmentMode === 'string' ? { dmarcAlignmentMode: ctxSource.dmarcAlignmentMode } : {}),
 				}
 			: {};
 
@@ -94,9 +89,7 @@ async function augmentTrustSurface(
 		// worker analysis surfaced a real (non-info) trust finding, drop a now-stale
 		// "configured" finding so output stays self-consistent (does NOT affect score).
 		const hasNonInfoTrust = workerTrustFindings.some((f) => f.severity !== 'info');
-		const mergedNonTrust = hasNonInfoTrust
-			? nonTrustFindings.filter((f) => f.title !== 'SPF record configured')
-			: nonTrustFindings;
+		const mergedNonTrust = hasNonInfoTrust ? nonTrustFindings.filter((f) => f.title !== 'SPF record configured') : nonTrustFindings;
 
 		return { ...core, findings: [...mergedNonTrust, ...workerTrustFindings] };
 	} catch {

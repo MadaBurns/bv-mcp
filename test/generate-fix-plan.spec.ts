@@ -52,22 +52,23 @@ function mockScanResponses(options: { hasSpf?: boolean; hasDmarc?: boolean; hasD
 			}
 			// MX records
 			if (type === 15) {
-				return Promise.resolve(createDohResponse([{ name, type }], [
-					{ name, type: 15, TTL: 300, data: '10 mail.example.com.' },
-				]));
+				return Promise.resolve(createDohResponse([{ name, type }], [{ name, type: 15, TTL: 300, data: '10 mail.example.com.' }]));
 			}
 			// NS records
 			if (type === 2) {
-				return Promise.resolve(createDohResponse([{ name, type }], [
-					{ name, type: 2, TTL: 300, data: 'ns1.example.com.' },
-					{ name, type: 2, TTL: 300, data: 'ns2.example.com.' },
-				]));
+				return Promise.resolve(
+					createDohResponse(
+						[{ name, type }],
+						[
+							{ name, type: 2, TTL: 300, data: 'ns1.example.com.' },
+							{ name, type: 2, TTL: 300, data: 'ns2.example.com.' },
+						],
+					),
+				);
 			}
 			// A records
 			if (type === 1) {
-				return Promise.resolve(createDohResponse([{ name, type }], [
-					{ name, type: 1, TTL: 300, data: '93.184.216.34' },
-				]));
+				return Promise.resolve(createDohResponse([{ name, type }], [{ name, type: 1, TTL: 300, data: '93.184.216.34' }]));
 			}
 			// AAAA
 			if (type === 28) {
@@ -95,9 +96,12 @@ function mockScanResponses(options: { hasSpf?: boolean; hasDmarc?: boolean; hasD
 			}
 			// SOA
 			if (type === 6) {
-				return Promise.resolve(createDohResponse([{ name, type }], [
-					{ name, type: 6, TTL: 300, data: 'ns1.example.com. admin.example.com. 2024010101 3600 900 604800 86400' },
-				]));
+				return Promise.resolve(
+					createDohResponse(
+						[{ name, type }],
+						[{ name, type: 6, TTL: 300, data: 'ns1.example.com. admin.example.com. 2024010101 3600 900 604800 86400' }],
+					),
+				);
 			}
 			// SRV
 			if (type === 33) {
@@ -193,6 +197,7 @@ describe('formatFixPlan', () => {
 			actions: [],
 			assessed: true,
 			caveat: null,
+			transientCategories: [],
 		});
 		expect(text).toContain('No actionable findings');
 		expect(text).toContain('posture is strong');
@@ -208,7 +213,17 @@ describe('formatFixPlan', () => {
 			impact: 'high' as const,
 			dependencies: ['dep'],
 		}));
-		const plan = { domain: 'test.com', score: 30, grade: 'F', maturityStage: 0, totalActions: 7, actions, assessed: true, caveat: null };
+		const plan = {
+			domain: 'test.com',
+			score: 30,
+			grade: 'F',
+			maturityStage: 0,
+			totalActions: 7,
+			actions,
+			assessed: true,
+			caveat: null,
+			transientCategories: [],
+		};
 		const compact = formatFixPlan(plan, 'compact');
 		const full = formatFixPlan(plan, 'full');
 		expect(compact.length).toBeLessThan(full.length);
@@ -242,6 +257,7 @@ describe('formatFixPlan — a domain that was never measured', () => {
 			actions: [],
 			assessed: false,
 			caveat: UNASSESSED_FIX_PLAN_CAVEAT,
+			transientCategories: [],
 		};
 	}
 
@@ -269,7 +285,17 @@ describe('formatFixPlan — a domain that was never measured', () => {
 		// Without this control the assertions above would hold under a formatter that
 		// abstained unconditionally.
 		const text = formatFixPlan(
-			{ domain: 'clean.example', score: 95, grade: 'A+', maturityStage: 4, totalActions: 0, actions: [], assessed: true, caveat: null },
+			{
+				domain: 'clean.example',
+				score: 95,
+				grade: 'A+',
+				maturityStage: 4,
+				totalActions: 0,
+				actions: [],
+				assessed: true,
+				caveat: null,
+				transientCategories: [],
+			},
 			'full',
 		);
 
@@ -292,5 +318,191 @@ describe('formatFixPlan — a domain that was never measured', () => {
 		const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));
 		expect(comment).toBeDefined();
 		expect(comment).toContain('"maturityStage":null');
+	});
+});
+
+/**
+ * Task R4 (residual of the correctness-defect campaign): a transient DNS/network
+ * failure for ONE category (e.g. DMARC) must not turn into a remediation action
+ * just because OTHER categories completed normally (`assessed: true`). The
+ * synthetic "check error" finding `buildDnsErrorResult` attaches carries
+ * `metadata.errorKind: 'dns_error'` — that finding is the ABSENCE of a
+ * measurement, not a customer gap to fix. Mirrors the equivalent
+ * `map_compliance`/`map_csc_products` fix (see `src/tools/map-compliance.ts:272`
+ * for the reference implementation this is modeled on).
+ */
+describe('evaluateFixPlan: a category that failed transiently is not turned into a remediation action', () => {
+	async function buildFixtures() {
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+		const transientDmarc = {
+			...buildCheckResult('dmarc', [
+				createFinding('dmarc', 'DMARC check error', 'high', 'Check failed: DNS query failed', { errorKind: 'dns_error' }),
+			]),
+			score: 0,
+			passed: false,
+			checkStatus: 'error' as const,
+			partial: true,
+		};
+		// A genuine, non-transient high-severity finding on a DIFFERENT category —
+		// this one MUST survive. A wrong implementation that filters on
+		// `severity === 'high'` instead of the errorKind marker would drop this too,
+		// which is exactly what this fixture is designed to catch.
+		const genuineSsl = {
+			...buildCheckResult('ssl', [createFinding('ssl', 'Certificate expired', 'high', 'The TLS certificate expired 3 days ago')]),
+			score: 0,
+			passed: false,
+		};
+		const cleanDnssec = { ...buildCheckResult('dnssec', []), score: 100, passed: true };
+		return { transientDmarc, genuineSsl, cleanDnssec };
+	}
+
+	it('the transient "check error" finding never becomes a fix action, but a genuine finding on another category still does (discriminates errorKind from severity)', async () => {
+		const { evaluateFixPlan } = await import('../src/tools/generate-fix-plan');
+		const { transientDmarc, genuineSsl, cleanDnssec } = await buildFixtures();
+
+		const plan = evaluateFixPlan([transientDmarc, genuineSsl, cleanDnssec], 'partial-outage.example', 40, 'F', 1);
+
+		expect(plan.assessed).toBe(true); // ssl + dnssec completed
+		expect(plan.caveat).toBeNull();
+
+		const titles = plan.actions.map((a) => a.findingTitle);
+		expect(titles).not.toContain('DMARC check error');
+		expect(titles).toContain('Certificate expired');
+		expect(plan.actions.some((a) => a.category === 'dmarc')).toBe(false);
+		expect(plan.actions.some((a) => a.category === 'ssl')).toBe(true);
+	});
+
+	it('the excluded category is represented in transientCategories, not silently dropped', async () => {
+		const { evaluateFixPlan } = await import('../src/tools/generate-fix-plan');
+		const { transientDmarc, cleanDnssec } = await buildFixtures();
+		const { buildCheckResult } = await import('@blackveil/dns-checks/scoring');
+		const cleanSsl = { ...buildCheckResult('ssl', []), score: 100, passed: true };
+
+		const plan = evaluateFixPlan([transientDmarc, cleanSsl, cleanDnssec], 'quiet-outage.example', 90, 'A', 4);
+
+		// ssl/dnssec are clean and DMARC's only evidence was transient — zero real
+		// actions — but this must NOT read as a clean bill of health: DMARC was
+		// never actually measured.
+		expect(plan.totalActions).toBe(0);
+		expect(plan.assessed).toBe(true);
+		expect(plan.transientCategories).toEqual(['dmarc']);
+	});
+
+	it('formatFixPlan surfaces the transient category instead of claiming a clean bill of health', async () => {
+		const { evaluateFixPlan, formatFixPlan } = await import('../src/tools/generate-fix-plan');
+		const { transientDmarc, cleanDnssec } = await buildFixtures();
+		const { buildCheckResult } = await import('@blackveil/dns-checks/scoring');
+		const cleanSsl = { ...buildCheckResult('ssl', []), score: 100, passed: true };
+
+		const plan = evaluateFixPlan([transientDmarc, cleanSsl, cleanDnssec], 'quiet-outage.example', 90, 'A', 4);
+
+		for (const text of [formatFixPlan(plan, 'full'), formatFixPlan(plan, 'compact')]) {
+			expect(text.toLowerCase()).not.toContain('posture is strong');
+			expect(text.toLowerCase()).toContain('dmarc');
+			expect(text.toLowerCase()).toMatch(/not assess|could not be assessed|transient/);
+		}
+	});
+
+	/**
+	 * F2 (review round 1): `buildFixtures()` above uses `buildDnsErrorResult`-shaped
+	 * transients (`metadata.errorKind: 'dns_error'`). But the ORCHESTRATOR's own
+	 * transient producer — `safeCheck()` in `src/tools/scan-domain.ts`, which is
+	 * what actually runs for any check with no top-level internal DNS-error
+	 * handling of its own — sets `checkStatus: 'error' | 'timeout'` and NEVER sets
+	 * `errorKind`. A fix gated only on `errorKind` would miss every
+	 * safeCheck-produced transient: a `checkStatus: 'timeout'` result would render
+	 * BOTH as a fix action ("Fix DMARC: DMARC check timed out — ...") AND, in the
+	 * SAME plan, as a `transientCategories` entry — self-contradictory output.
+	 * `evaluateFixPlan` gates on `checkStatus` (not `errorKind`) for exactly this
+	 * reason; these fixtures are built the way `safeCheck` actually produces
+	 * results to prove that gate is what is doing the work, covering both
+	 * `checkStatus` values `safeCheck` can produce.
+	 */
+	describe('a safeCheck-shaped transient (no errorKind metadata) is still excluded — covers both checkStatus values', () => {
+		async function safeCheckShapedFixtures() {
+			const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+			// No `metadata` argument at all — matches safeCheck()'s own
+			// `createFinding(category, title, severity, detail)` call exactly.
+			const timedOutDmarc = {
+				...buildCheckResult('dmarc', [
+					createFinding('dmarc', 'DMARC check timed out', 'low', 'Check did not complete within the 8s limit'),
+				]),
+				score: 0,
+				checkStatus: 'timeout' as const,
+				partial: true,
+			};
+			const erroredMx = {
+				...buildCheckResult('mx', [createFinding('mx', 'MX check error', 'high', 'Check failed: DNS query failed')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'error' as const,
+				partial: true,
+			};
+			const cleanSsl = { ...buildCheckResult('ssl', []), score: 100, passed: true };
+			return { timedOutDmarc, erroredMx, cleanSsl };
+		}
+
+		it('neither the timeout- nor the error-shaped safeCheck transient becomes a fix action, and both are represented in transientCategories', async () => {
+			const { evaluateFixPlan } = await import('../src/tools/generate-fix-plan');
+			const { timedOutDmarc, erroredMx, cleanSsl } = await safeCheckShapedFixtures();
+
+			const plan = evaluateFixPlan([timedOutDmarc, erroredMx, cleanSsl], 'safecheck-outage.example', 90, 'A', 4);
+
+			expect(plan.assessed).toBe(true); // ssl completed
+			expect(plan.totalActions).toBe(0);
+			const titles = plan.actions.map((a) => a.findingTitle);
+			expect(titles).not.toContain('DMARC check timed out');
+			expect(titles).not.toContain('MX check error');
+			expect(plan.transientCategories.sort()).toEqual(['dmarc', 'mx']);
+		});
+
+		it('formatFixPlan never emits a self-contradictory plan (an action for a category ALSO listed as not-assessed)', async () => {
+			const { evaluateFixPlan, formatFixPlan } = await import('../src/tools/generate-fix-plan');
+			const { timedOutDmarc, erroredMx, cleanSsl } = await safeCheckShapedFixtures();
+
+			const plan = evaluateFixPlan([timedOutDmarc, erroredMx, cleanSsl], 'safecheck-outage.example', 90, 'A', 4);
+
+			for (const text of [formatFixPlan(plan, 'full'), formatFixPlan(plan, 'compact')]) {
+				expect(text).not.toContain('DMARC check timed out');
+				expect(text).not.toContain('MX check error');
+				expect(text.toLowerCase()).toMatch(/not|transient/);
+			}
+		});
+	});
+
+	/**
+	 * Proves the `isDnsErrorFinding` per-finding filter is NOT dead code in this
+	 * file (contrast with map-csc-products.ts, where the reviewer's M2a proved
+	 * the equivalent per-finding filters ARE dead once the `checkStatus` guard
+	 * exists). A check can COMPLETE (`checkStatus` absent/'completed') and still
+	 * attach its OWN errorKind-tagged finding for a narrower reason than a full
+	 * check failure — e.g. `discover-brand-domains.ts`'s "Brand-domain discovery
+	 * could not complete" finding, emitted when every discovery signal failed
+	 * but the check itself ran to completion. The `checkStatus`-level filter
+	 * (F2's fix) cannot see this state at all — `checkStatus` is never
+	 * `'error'`/`'timeout'` here — so only the per-finding filter catches it.
+	 */
+	it('a COMPLETED check whose own finding is errorKind-tagged still never becomes a fix action (proves the per-finding filter is load-bearing here)', async () => {
+		const { evaluateFixPlan } = await import('../src/tools/generate-fix-plan');
+		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
+
+		// checkStatus intentionally ABSENT — the check itself completed normally;
+		// only its own finding is errorKind-tagged.
+		const inconclusiveBrandDiscovery = buildCheckResult('brand_discovery', [
+			createFinding('brand_discovery', 'Brand-domain discovery could not complete', 'high', 'All signals failed', {
+				errorKind: 'dns_error',
+				missingControl: true,
+			}),
+		]);
+		const cleanSsl = { ...buildCheckResult('ssl', []), score: 100, passed: true };
+
+		const plan = evaluateFixPlan([inconclusiveBrandDiscovery, cleanSsl], 'inconclusive.example', 90, 'A', 4);
+
+		expect(plan.assessed).toBe(true);
+		expect(plan.actions.some((a) => a.category === 'brand_discovery')).toBe(false);
+		// Not in transientCategories either — its checkStatus was never
+		// 'error'/'timeout', so this state is invisible to that channel; it is
+		// caught SOLELY by the per-finding errorKind filter.
+		expect(plan.transientCategories).not.toContain('brand_discovery');
 	});
 });

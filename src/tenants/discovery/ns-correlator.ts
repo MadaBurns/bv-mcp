@@ -18,6 +18,8 @@
 
 import { queryDns } from '../../lib/dns-transport';
 import type { DohResponse, RecordTypeName } from '../../lib/dns-types';
+import { isInBailiwick } from '../../lib/ownership-attribution';
+import { getRegistrableDomain } from '../../lib/public-suffix';
 import { mapConcurrent } from '../../lib/map-concurrent';
 import { validateDomain } from '../../lib/sanitize';
 import { isSharedNsHost } from './shared-ns-hosts';
@@ -40,10 +42,12 @@ export interface NsCorrelationOptions {
 export interface NsCoOwnedCandidate {
 	/** Lowercase, trailing-dot-stripped candidate domain. */
 	domain: string;
-	/** Lowercase nameserver hostnames shared with the seed. */
+	/** Lowercase nameserver hostnames shared with the seed, or (for in-bailiwick matches) the candidate's own in-bailiwick NS hosts. */
 	sharedNs: string[];
-	/** |intersection| / |seed_NS_set|, rounded to 2 decimals. 1.0 = full overlap. */
+	/** |intersection| / |seed_NS_set|, rounded to 2 decimals. 1.0 = full overlap or an in-bailiwick match. */
 	confidence: number;
+	/** `in_bailiwick` — candidate's own NS delegated under the seed apex (D6.1). `set_overlap` — shares NS hostnames with the seed (pre-existing logic). */
+	matchType: 'in_bailiwick' | 'set_overlap';
 }
 
 export interface NsCorrelationResult {
@@ -117,6 +121,7 @@ export async function correlateNs(
 	}
 	const seedNsSet = seedOutcome.set;
 	const seedNs = Array.from(seedNsSet).sort();
+	const seedApex = getRegistrableDomain(seedLower) ?? seedLower;
 
 	const candidates = options.candidateDomains ?? [];
 	if (candidates.length === 0) {
@@ -134,6 +139,23 @@ export async function correlateNs(
 		if (candidateOutcome.kind === 'error') {
 			return { candidate: null, failed: true };
 		}
+		// D6.1 (2026-07-26 correctness-defects design §3.4) — in-bailiwick match.
+		// A candidate whose OWN nameservers are delegated under the seed's apex
+		// (e.g. ns2.bnz.co.nz under bnz.co.nz) is ownership-bearing regardless
+		// of whether it shares any NS *hostname* with the seed — set
+		// intersection alone misses this whenever the seed itself sits on
+		// different (often shared-provider) infrastructure, as bnz.co.nz's
+		// Akamai delegation does relative to its self-hosted NS variants.
+		const inBailiwick = Array.from(candidateOutcome.set)
+			.filter((ns) => isInBailiwick(ns, seedApex))
+			.sort();
+		if (inBailiwick.length > 0) {
+			return {
+				candidate: { domain: candidate, sharedNs: inBailiwick, confidence: 1, matchType: 'in_bailiwick' },
+				failed: false,
+			};
+		}
+
 		const shared: string[] = [];
 		for (const ns of candidateOutcome.set) {
 			if (seedNsSet.has(ns)) shared.push(ns);
@@ -154,6 +176,7 @@ export async function correlateNs(
 				domain: candidate,
 				sharedNs: shared.sort(),
 				confidence: round2(ownershipBearingShared.length / seedNsSet.size),
+				matchType: 'set_overlap',
 			},
 			failed: false,
 		};

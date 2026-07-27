@@ -7,7 +7,7 @@ import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
-import { formatScoreGrade, isMeasured, UNGRADED_DISPLAY } from '../../lib/ungraded-display';
+import { formatScoreGrade, isCompletedCheck, isMeasured, normalizeCheckStatus, UNGRADED_DISPLAY } from '../../lib/ungraded-display';
 
 // All three live in a tiny leaf module so every formatter in src/tools/ can share
 // them without importing the scan orchestrator. Re-exported here because this is
@@ -245,7 +245,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 	// checkStatuses
 	const checkStatuses: Record<string, 'completed' | 'timeout' | 'error'> = {};
 	for (const check of result.checks) {
-		checkStatuses[check.category] = check.checkStatus ?? 'completed';
+		checkStatuses[check.category] = normalizeCheckStatus(check.checkStatus);
 	}
 
 	// dnssecSource
@@ -269,7 +269,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		const dnssecDeficient = dnssecCheck.findings.some(
 			(f) => f.title === 'DNSSEC not enabled' || f.title === 'DNSSEC chain of trust incomplete' || f.title === 'DNSSEC validation failing',
 		);
-		if (dnssecSource === null && dnssecCheck.passed && !dnssecDeficient && (checkStatuses['dnssec'] ?? 'completed') === 'completed') {
+		if (dnssecSource === null && dnssecCheck.passed && !dnssecDeficient && isCompletedCheck(dnssecCheck)) {
 			dnssecSource = 'domain_configured';
 		}
 	}
@@ -309,14 +309,15 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		const rawScore: number | undefined = Object.prototype.hasOwnProperty.call(sourceCategoryScores, category)
 			? sourceCategoryScores[category]
 			: undefined;
-		const status = check?.checkStatus;
 
 		// INCONCLUSIVE — the check timed out or threw, so we could not measure it. This is
 		// checked FIRST and returns early, because it must win over any profile-based
 		// applicability rule: a check that never ran cannot be declared inapplicable on the
 		// strength of the profile it would have been judged under. Disjoint from
-		// `notApplicableCategories`; the score is null in both cases.
-		if (status === 'timeout' || status === 'error') {
+		// `notApplicableCategories`; the score is null in both cases. A category with no
+		// `CheckResult` at all (`check === undefined`) is never inconclusive by this rule —
+		// `isCompletedCheck` only answers the question for a check that actually ran.
+		if (check !== undefined && !isCompletedCheck(check)) {
 			inconclusiveCategories.push(category);
 			categoryScores[category] = null;
 			continue;
