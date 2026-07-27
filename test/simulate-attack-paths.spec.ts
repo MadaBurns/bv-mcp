@@ -648,6 +648,108 @@ function mockNoCaaDomain() {
 	});
 }
 
+/**
+ * Mock for a well-protected mail domain that is directly spoof-resistant but has a
+ * subdomain gap (issue #564 repro — modelled on spotto.ai):
+ *   SPF = v=spf1 include:... -all   (hard fail — NOT permissive)
+ *   DMARC = v=DMARC1; p=quarantine; sp=none   (quarantine — NOT none/missing)
+ * The direct-spoof path must NOT fire at critical/trivial, but the SUBDOMAIN path
+ * (sp=none) legitimately remains. Everything else is configured correctly.
+ */
+function mockSpoofResistantSubdomainGapDomain() {
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+		if (url.includes('cloudflare-dns.com')) {
+			if (url.includes('type=TXT') || url.includes('type=16')) {
+				if (url.includes('_dmarc.')) {
+					// Enforcing org policy (quarantine) but weak subdomain policy (sp=none)
+					return Promise.resolve(
+						txtResponse('_dmarc.example.com', [
+							'v=DMARC1; p=quarantine; sp=none; rua=mailto:dmarc@example.com; adkim=s; aspf=s',
+						]),
+					);
+				}
+				if (url.includes('_domainkey.')) {
+					return Promise.resolve(
+						txtResponse('default._domainkey.example.com', [
+							'v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA',
+						]),
+					);
+				}
+				if (url.includes('_mta-sts.')) {
+					return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+				}
+				if (url.includes('_smtp._tls.')) {
+					return Promise.resolve(
+						txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+					);
+				}
+				// SPF hard fail (-all)
+				return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
+			}
+
+			if (url.includes('type=NS') || url.includes('type=2')) {
+				return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+			}
+
+			if (url.includes('type=CAA') || url.includes('type=257')) {
+				return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"', '0 issuewild ";"']));
+			}
+
+			if (url.includes('type=A') || url.includes('type=1')) {
+				return Promise.resolve(dnssecResponse('example.com', true));
+			}
+
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name: 'example.com', type: 15 }],
+						[{ name: 'example.com', type: 15, TTL: 300, data: '10 mx1.example.com.' }],
+					),
+				);
+			}
+
+			if (url.includes('type=TLSA') || url.includes('type=52')) {
+				return Promise.resolve(
+					tlsaResponse('_25._tcp.mx1.example.com', [
+						{ usage: 3, selector: 1, matchingType: 1, certData: 'aabbccddee' },
+					]),
+				);
+			}
+
+			return Promise.resolve(createDohResponse([], []));
+		}
+
+		if (url.includes('mta-sts.') && url.includes('.well-known')) {
+			return Promise.resolve(
+				httpResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'),
+			);
+		}
+
+		if (url.startsWith('https://')) {
+			return Promise.resolve({
+				ok: true,
+				status: 200,
+				headers: new Headers({
+					'content-security-policy': "default-src 'self'; script-src 'self'; frame-ancestors 'none'",
+					'x-frame-options': 'DENY',
+					'x-content-type-options': 'nosniff',
+					'permissions-policy': 'camera=(), microphone=()',
+					'referrer-policy': 'strict-origin-when-cross-origin',
+					'cross-origin-resource-policy': 'same-origin',
+					'cross-origin-opener-policy': 'same-origin',
+					'strict-transport-security': 'max-age=31536000; includeSubDomains',
+				}),
+				text: () => Promise.resolve('OK'),
+				json: () => Promise.resolve({}),
+			} as unknown as Response);
+		}
+
+		return Promise.resolve(createDohResponse([], []));
+	});
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -684,6 +786,35 @@ describe('simulateAttackPaths', () => {
 		expect(emailSpoof!.severity).toBe('critical');
 		expect(emailSpoof!.feasibility).toBe('trivial');
 		expect(emailSpoof!.mitigations.length).toBeGreaterThan(0);
+	});
+
+	it('does NOT emit critical/trivial direct email spoofing when SPF hard-fails and DMARC enforces (issue #564)', async () => {
+		// spotto.ai repro: SPF -all + DMARC p=quarantine; sp=none is a well-protected
+		// mail domain — assess_spoofability rates it low. The direct-spoof path must not
+		// be emitted at critical/trivial just because a subdomain (sp=none / np=none)
+		// finding carries the "p=none" substring.
+		mockSpoofResistantSubdomainGapDomain();
+		const result = await run();
+
+		const criticalDirect = result.attackPaths.find(
+			(p) => p.id === 'email_spoof_direct' && (p.severity === 'critical' || p.feasibility === 'trivial'),
+		);
+		expect(criticalDirect).toBeUndefined();
+
+		// The genuine residual — subdomain spoofing via sp=none — must still fire.
+		const subdomainSpoof = result.attackPaths.find((p) => p.id === 'email_spoof_subdomain');
+		expect(subdomainSpoof).toBeDefined();
+		expect(subdomainSpoof!.severity).toBe('high');
+	});
+
+	it('still emits critical/trivial direct email spoofing when SPF and DMARC are both missing (issue #564)', async () => {
+		mockEmailSpoofOnlyDomain();
+		const result = await run();
+
+		const emailSpoof = result.attackPaths.find((p) => p.id === 'email_spoof_direct');
+		expect(emailSpoof).toBeDefined();
+		expect(emailSpoof!.severity).toBe('critical');
+		expect(emailSpoof!.feasibility).toBe('trivial');
 	});
 
 	it('detects DNS hijack path when DNSSEC is disabled (high)', async () => {
