@@ -6,6 +6,19 @@
  *
  * A deliberately tiny leaf module (no imports) so every formatter in `src/tools/`
  * can depend on it without an import cycle through the scan orchestrator.
+ *
+ * `isCompletedCheck`/`hasCompletedEvidence` below are the SSOT for "did this
+ * check/scan produce usable evidence" on the `src/` side only —
+ * `test/audits/completed-evidence-predicate-ssot.audit.test.ts` bans any other
+ * `src/` module from re-deriving the same check. `packages/dns-checks/src/scoring/evidence.ts`
+ * (`computeScanEvidence`'s per-result completed/attempted accounting) is a
+ * DELIBERATE, KNOWN twin on the other side of the package boundary — it is a
+ * published SSOT vendored by another repo and frozen for this campaign, so it
+ * cannot import from `src/`, and this module cannot be vendored into it
+ * without inverting the dependency direction (`src/` already depends on
+ * `@blackveil/dns-checks`, not the other way around). The two are kept in
+ * semantic lockstep by hand, not by a shared import; a change to what
+ * "completed" means must be applied to BOTH deliberately.
  */
 
 /**
@@ -99,5 +112,28 @@ interface CheckStatusBearer {
  * `evidenceInsufficient` rather than by switching predicates.
  */
 export function hasCompletedEvidence(checks: readonly CheckStatusBearer[]): boolean {
-	return checks.some((c) => c.checkStatus === undefined || c.checkStatus === 'completed');
+	return checks.some(isCompletedCheck);
+}
+
+/**
+ * The per-check half of {@link hasCompletedEvidence} — "did THIS check produce
+ * usable evidence" (`checkStatus` absent/`'completed'`) rather than "did ANY
+ * check in a collection". Exported so a caller that needs the individual
+ * check-level partition (e.g. `matchedResults.filter(isCompletedCheck)` to
+ * separate completed evidence from transient noise within one control's
+ * matched categories) shares the exact same predicate `hasCompletedEvidence`
+ * uses internally, instead of re-deriving it — see `test/audits/*evidence*`
+ * for the ban on re-spelling this check.
+ *
+ * Deliberately an ALLOWLIST (`undefined | 'completed'` counts as completed),
+ * not a denylist (`!== 'timeout' && !== 'error'`). Both forms agree today
+ * because `CheckStatus` is a closed 3-member union, but they diverge the
+ * moment a new member is added: a denylist silently treats an unrecognized
+ * future status as "completed" (wrong — an incomplete measurement must never
+ * read as confident evidence, the campaign invariant this whole module
+ * exists to protect), while this allowlist correctly treats it as NOT
+ * completed until a maintainer deliberately adds it here.
+ */
+export function isCompletedCheck(check: CheckStatusBearer): boolean {
+	return check.checkStatus === undefined || check.checkStatus === 'completed';
 }

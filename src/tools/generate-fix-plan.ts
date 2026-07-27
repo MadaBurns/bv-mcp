@@ -14,7 +14,7 @@ import type { CheckResult, Finding, Severity, CheckCategory } from '@blackveil/d
 import { IMPORTANCE_WEIGHTS, isGraded } from '@blackveil/dns-checks/scoring';
 import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
-import { formatScoreGrade, hasCompletedEvidence, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { formatScoreGrade, hasCompletedEvidence, isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 import { isDnsErrorFinding } from '../lib/dns-error-result';
 
 /** A single remediation action in a fix plan. */
@@ -212,7 +212,7 @@ export function evaluateFixPlan(
 	// fix action, so both filters stay in force.
 	const actionableFindings = hasEvidence
 		? checkResults
-				.filter((c) => c.checkStatus !== 'error' && c.checkStatus !== 'timeout')
+				.filter(isCompletedCheck)
 				.flatMap((check: CheckResult) => check.findings)
 				.filter((f: Finding) => f.severity !== 'info' && !isDnsErrorFinding(f))
 		: [];
@@ -255,9 +255,7 @@ export function evaluateFixPlan(
 	// all-transient/never-ran case is already fully represented by `caveat`,
 	// and listing every category here too would just restate the same fact in
 	// a second vocabulary.
-	const transientCategories: CheckCategory[] = assessed
-		? checkResults.filter((c) => c.checkStatus === 'error' || c.checkStatus === 'timeout').map((c) => c.category)
-		: [];
+	const transientCategories: CheckCategory[] = assessed ? checkResults.filter((c) => !isCompletedCheck(c)).map((c) => c.category) : [];
 
 	return {
 		domain,

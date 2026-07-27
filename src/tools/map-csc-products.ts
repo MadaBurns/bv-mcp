@@ -15,7 +15,7 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { formatScoreGrade, hasCompletedEvidence } from '../lib/ungraded-display';
+import { formatScoreGrade, hasCompletedEvidence, isCompletedCheck } from '../lib/ungraded-display';
 import { isDnsErrorFinding } from '../lib/dns-error-result';
 
 export type CscProductKey = 'csc_multilock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
@@ -216,7 +216,7 @@ function evalScanProduct(
 	if (result === undefined) {
 		return { ...base, recommended: true, priority: 'low', justifyingGap: gaps.absent, relatedFindings: [] };
 	}
-	if (result.checkStatus === 'error' || result.checkStatus === 'timeout') {
+	if (!isCompletedCheck(result)) {
 		// This ONE category's own check failed transiently — other categories in
 		// this scan (the ones NOT reaching this branch) may well have completed,
 		// which is why `'category_transient'` gets its own wording distinct from
