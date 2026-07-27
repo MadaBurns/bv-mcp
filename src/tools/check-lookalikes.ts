@@ -860,8 +860,29 @@ interface LookalikeCorroborators {
  * A surviving match is still only a WEAK, unverified signal: it earns a
  * sentence in the report, never a severity discount. The threat-observation
  * finding is emitted at its full calibrated severity regardless.
+ *
+ * EQUALITY-MATCHING INVARIANT — READ BEFORE CHANGING THE COMPARISON (fix round
+ * 2, re-review residual). The final test is STRICT EQUALITY, and
+ * `isRedactedRegistrantOrg()` is a pure function of its string. Therefore
+ * whenever the two orgs are equal the predicate returns the SAME verdict for
+ * both, and checking one side is currently EXACTLY equivalent to checking both.
+ * That was verified by execution: mutating this function to gate the candidate
+ * side only left the entire suite green, and no end-to-end fixture can
+ * discriminate — for a one-sided gate to wrongly match, the two strings would
+ * have to differ in redaction status while still being equal, which equality
+ * matching makes impossible.
+ *
+ * The both-sides form is kept as DEFENCE IN DEPTH for the day that comparison
+ * stops being equality. ANY change to fuzzy/containment/token-overlap/edit-
+ * distance matching MUST (a) keep the gate on BOTH sides — under fuzzy matching
+ * a redacted string can match a non-redacted one, so a one-sided gate becomes a
+ * real hole — and (b) ship a fixture that discriminates one-sided from
+ * two-sided, which only becomes constructible once equality is gone. Until
+ * then the semantics are pinned directly by the unit tests on this function in
+ * `test/check-lookalikes.spec.ts` (exported for exactly that purpose), not by
+ * an end-to-end fixture that cannot tell the two implementations apart.
  */
-function isSameEntityOrgMatch(primaryOrg: string | null, candidateOrg: string | null): boolean {
+export function isSameEntityOrgMatch(primaryOrg: string | null, candidateOrg: string | null): boolean {
 	if (primaryOrg === null || candidateOrg === null) return false;
 	if (isRedactedRegistrantOrg(primaryOrg) || isRedactedRegistrantOrg(candidateOrg)) return false;
 	return primaryOrg === candidateOrg;

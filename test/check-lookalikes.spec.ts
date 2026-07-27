@@ -2095,3 +2095,87 @@ describe('checkLookalikes - Task 7b fix round 1 (RDAP org gating + scan_status a
 		expect(summary!.metadata?.ownershipVerdict).toBe('third_party');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Task 7b FIX ROUND 2 — residual: the both-sides redaction gate was UNPINNED.
+//
+// The re-reviewer mutated `isSameEntityOrgMatch` to check `isRedactedRegistrantOrg`
+// on the CANDIDATE side only and the whole suite stayed green. Analysis, confirmed
+// by re-running that mutation: NO fixture can discriminate. The final comparison is
+// strict equality (`primaryOrg === candidateOrg`), and `isRedactedRegistrantOrg` is a
+// pure function of its string, so whenever the two orgs are equal the predicate
+// returns the SAME verdict for both — a one-sided check is currently EXACTLY
+// equivalent to a two-sided one. For a one-sided check to wrongly match, the two
+// strings would have to differ in redaction status while still being equal, which is
+// impossible under equality matching.
+//
+// The correct pins are therefore semantic rather than fixture-based:
+//   (a) these direct unit tests on `isSameEntityOrgMatch` (exported for the purpose),
+//       which DO die when the redaction gate is removed altogether; and
+//   (b) the equality-matching invariant recorded on the function's JSDoc, obliging any
+//       future fuzzy/containment matcher to re-establish both-sides gating WITH a
+//       discriminating test — at which point a fixture becomes constructible.
+// ---------------------------------------------------------------------------
+describe('isSameEntityOrgMatch - fix round 2 residual (direct semantic pin)', () => {
+	async function load() {
+		const [{ isSameEntityOrgMatch }, { isRedactedRegistrantOrg }] = await Promise.all([
+			import('../src/tools/check-lookalikes'),
+			import('../src/tools/check-rdap-lookup'),
+		]);
+		return { isSameEntityOrgMatch, isRedactedRegistrantOrg };
+	}
+
+	it('rejects an IDENTICAL redacted string on both sides (the privacy-proxy collision, pinned at the predicate)', async () => {
+		const { isSameEntityOrgMatch } = await load();
+		expect(isSameEntityOrgMatch('redacted for privacy', 'redacted for privacy')).toBe(false);
+		expect(isSameEntityOrgMatch('domains by proxy, llc', 'domains by proxy, llc')).toBe(false);
+		expect(
+			isSameEntityOrgMatch('privacy service provided by withheld for privacy ehf', 'privacy service provided by withheld for privacy ehf'),
+		).toBe(false);
+	});
+
+	it('accepts an identical GENUINE org string — the gate suppresses redaction, not correlation', async () => {
+		const { isSameEntityOrgMatch } = await load();
+		expect(isSameEntityOrgMatch('contoso limited', 'contoso limited')).toBe(true);
+	});
+
+	it('rejects a null on either side, and rejects two different genuine orgs', async () => {
+		const { isSameEntityOrgMatch } = await load();
+		expect(isSameEntityOrgMatch(null, 'contoso limited')).toBe(false);
+		expect(isSameEntityOrgMatch('contoso limited', null)).toBe(false);
+		expect(isSameEntityOrgMatch(null, null)).toBe(false);
+		expect(isSameEntityOrgMatch('contoso limited', 'fabrikam limited')).toBe(false);
+	});
+
+	/**
+	 * THE invariant that makes a one-sided check equivalent TODAY, asserted rather
+	 * than assumed. If a future change makes matching fuzzy (containment, token
+	 * overlap, edit distance), this test keeps passing while the equivalence it
+	 * documents silently stops holding — which is exactly why the JSDoc on
+	 * `isSameEntityOrgMatch` obliges that change to re-establish both-sides gating
+	 * with its own discriminating fixture.
+	 */
+	it('equality invariant: for any org string, a self-match is allowed iff the string is not redacted', async () => {
+		const { isSameEntityOrgMatch, isRedactedRegistrantOrg } = await load();
+		const corpus = [
+			'contoso limited',
+			'fabrikam nz limited',
+			'redacted for privacy',
+			'domains by proxy, llc',
+			'whois privacy corp.',
+			'withheld for privacy ehf',
+			'gdpr masked',
+			'n/a',
+			'unknown',
+			'private',
+			'',
+		];
+		// The corpus must exercise BOTH outcomes, else the biconditional below is
+		// satisfiable by a predicate that always returns one value.
+		expect(corpus.some((org) => isRedactedRegistrantOrg(org))).toBe(true);
+		expect(corpus.some((org) => !isRedactedRegistrantOrg(org))).toBe(true);
+		for (const org of corpus) {
+			expect(isSameEntityOrgMatch(org, org)).toBe(!isRedactedRegistrantOrg(org));
+		}
+	});
+});
