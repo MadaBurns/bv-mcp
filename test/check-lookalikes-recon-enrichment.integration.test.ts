@@ -156,6 +156,38 @@ describe('checkLookalikes recon enrichment', () => {
 		expect(enriched[0].metadata?.findingAxis).toBe('scan_status');
 	});
 
+	// FIX WAVE (2026-07-27, final-review mutation gap): the reviewer proved by
+	// mutation that flipping the `ownershipByDomain.get(matchedDomain) ?? {...}`
+	// fallback verdict at check-lookalikes.ts:857-866 from `'unattributed'` to
+	// `'owned_by_seed'` — which SILENTLY SUPPRESSES the threat finding, since
+	// the emission site skips any candidate resolved as `owned_by_seed` — left
+	// every test in this file (and the other 79 relevant tests) green. Both
+	// prior fixtures above name `tst.com`, a candidate this scan ALSO
+	// generated/probed locally (present in `ownershipByDomain`), so the
+	// fallback branch itself was never exercised. This fixture's
+	// `matchedDomain` is a domain bv-recon names that this scan's own
+	// permutation generator never produced, so it is guaranteed absent from
+	// `ownershipByDomain` and must hit the fallback.
+	it('enriched, named candidate OUTSIDE the locally probed/permutation set: falls back to unattributed, threat finding still fires (guards the fallback verdict)', async () => {
+		buildLookalikeFetchMock();
+
+		const reconBinding = makeReconHitBinding(
+			'Certificate transparency logs show lookalike activity for an externally-sourced candidate',
+			'external-not-probed-locally.example',
+		);
+
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		const result = await checkLookalikes('test.com', { reconBinding, reconAuthToken: 'tok' });
+
+		const enriched = result.findings.filter((f) => f.metadata?.reconEnriched === true);
+		expect(enriched).toHaveLength(1);
+		expect(enriched[0].severity).toBe('medium');
+		expect(enriched[0].metadata?.findingAxis).toBe('threat_observation');
+		expect(enriched[0].metadata?.lookalikeDomain).toBe('external-not-probed-locally.example');
+		expect(enriched[0].metadata?.domain).toBeUndefined();
+		expect(enriched[0].metadata?.ownershipVerdict).toBe('unattributed');
+	});
+
 	it('enriched: no corroboration finding when recon returns a benign status', async () => {
 		buildLookalikeFetchMock();
 

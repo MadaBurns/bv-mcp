@@ -62,10 +62,12 @@ import { extractBrandName } from '../lib/public-suffix';
  *   3. no `'threat_observation'` finding carries `ownershipVerdict ===
  *      'owned_by_seed'` — a threat observation is never about a domain the
  *      scanned organisation owns;
- *   4. every `'threat_observation'` finding names what it observed in metadata:
- *      `lookalikeDomain` (per candidate), `lookalikeDomains` (the aggregate
- *      summary), or `domain` (the recon CT corroboration, which is scoped to
- *      the scanned domain rather than to one candidate).
+ *   4. every `'threat_observation'` finding names the candidate it observed via
+ *      `lookalikeDomain` (per candidate, INCLUDING the named-candidate recon CT
+ *      corroboration) or `lookalikeDomains` (the aggregate summary). Bare
+ *      `domain` metadata (scoped to the scanned domain, not a candidate) only
+ *      ever appears on the demoted `'scan_status'` finding emitted when recon
+ *      names no specific candidate — never on a `'threat_observation'` finding.
  *
  * The axis marker is STRUCTURAL, not prose: downstream consumers (and Task
  * 8's cross-cutting audit) key on the exact literals, never on wording.
