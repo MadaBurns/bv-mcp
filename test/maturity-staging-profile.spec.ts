@@ -38,7 +38,9 @@ function govUkChecks(): CheckResult[] {
 		]),
 		passingCheck('dnssec', 'DNSSEC validated'),
 		passingCheck('ssl', 'SSL certificate valid'),
-		buildCheckResult('http_security', [createFinding('http_security', 'HSTS configured (preload)', 'info', 'HSTS preload + max-age >= 1y')]),
+		buildCheckResult('http_security', [
+			createFinding('http_security', 'HSTS configured (preload)', 'info', 'HSTS preload + max-age >= 1y'),
+		]),
 	];
 }
 
@@ -48,9 +50,7 @@ function stripeChecks(): CheckResult[] {
 		buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 records')]),
 		passingCheck('spf', 'SPF record configured'),
 		buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC record found', 'info', 'p=reject')]),
-		buildCheckResult('dkim', [
-			createFinding('dkim', 'DKIM configured', 'info', 'selectors found', { selectorsFound: ['s1', 's2'] }),
-		]),
+		buildCheckResult('dkim', [createFinding('dkim', 'DKIM configured', 'info', 'selectors found', { selectorsFound: ['s1', 's2'] })]),
 		buildCheckResult('caa', [createFinding('caa', 'CAA records found', 'info', '0 issue "amazon.com"')]),
 		buildCheckResult('ssl', [createFinding('ssl', 'SSL certificate valid', 'info', 'ok')]),
 		// No DNSSEC, no MTA-STS, no BIMI, no DANE — stripe.com lacks transport hardening.
@@ -187,5 +187,199 @@ describe('Defect I — computeMaturityStage accepts profile and respects it', ()
 		const stage = computeMaturityStage(checks, 'web_only');
 		expect(stage.stage).toBeGreaterThanOrEqual(3);
 		expect(stage.label).toBe('Defensive');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Issue #574 — an UNMEASURABLE input must produce an abstention, never a
+// confident negative verdict (the principle already established for
+// `check_mta_sts` by #455 / v3.25.4).
+//
+// Live repro 2026-07-27: 22+ `bnz.co.nz` hosts whose `ssl` probe Akamai blocked
+// were published as "Stage 0 — Unprotected / No TLS detected on this web-only
+// domain. Traffic is not authenticated or encrypted." Those hosts (named
+// consumer-banking hostnames) demonstrably DO serve TLS. The ladder read only
+// `passed`, which the scan pipeline forcibly stamps `false` on any inconclusive
+// check — so a measurement GAP became an affirmative security CLAIM.
+// ---------------------------------------------------------------------------
+
+/** The exact shape `scan-domain.ts` re-stamps onto an inconclusive check. */
+function erroredCheck(category: Parameters<typeof buildCheckResult>[0]): CheckResult {
+	return {
+		...buildCheckResult(category, [
+			createFinding(category, `${category} check error`, 'high', 'Check failed: connection blocked at the edge'),
+		]),
+		score: 0,
+		passed: false,
+		checkStatus: 'error' as const,
+		partial: true,
+	};
+}
+
+/**
+ * The CONTROL half of the one-variable pair: a web-only domain with anti-spoof
+ * email policy + TLS + DNSSEC, and an http_security check that COMPLETED and
+ * found no HSTS. Ladder A places it at stage 3 "Defensive".
+ */
+function defensiveWebOnlyChecks(): CheckResult[] {
+	return [
+		buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'web-only')]),
+		buildCheckResult('spf', [createFinding('spf', 'SPF record found', 'info', 'v=spf1 -all')]),
+		buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC record found', 'info', 'p=reject')]),
+		passingCheck('ssl', 'SSL certificate valid'),
+		passingCheck('dnssec', 'DNSSEC validated'),
+		buildCheckResult('http_security', [createFinding('http_security', 'No HSTS header', 'medium', 'Strict-Transport-Security absent')]),
+	];
+}
+
+/** The VARIABLE half: byte-identical, except the TLS probe never completed. */
+function tlsUnmeasuredWebOnlyChecks(): CheckResult[] {
+	return defensiveWebOnlyChecks().map((c) => (c.category === 'ssl' ? erroredCheck('ssl') : c));
+}
+
+describe('#574 — web-only ladder abstains when the TLS probe was never measured', () => {
+	it('CONTROL: the measured variant is unchanged at stage 3 "Defensive"', () => {
+		// Non-vacuity guard. Without this, a fix that abstained on EVERYTHING
+		// would satisfy every assertion below.
+		const stage = computeMaturityStage(defensiveWebOnlyChecks(), 'web_only');
+		expect(stage.stage).toBe(3);
+		expect(stage.label).toBe('Defensive');
+		expect(stage.indeterminate).toBeUndefined();
+	});
+
+	it('VARIABLE: an errored ssl check yields an indeterminate result, not stage 0', () => {
+		const stage = computeMaturityStage(tlsUnmeasuredWebOnlyChecks(), 'web_only');
+		expect(stage.indeterminate).toBe(true);
+	});
+
+	it('VARIABLE: the "No TLS detected" claim is unreachable when ssl was never measured', () => {
+		const stage = computeMaturityStage(tlsUnmeasuredWebOnlyChecks(), 'web_only');
+		const prose = `${stage.label} ${stage.description} ${stage.nextStep}`;
+		// The exact published sentence, and its component claims.
+		expect(prose).not.toMatch(/No TLS detected/i);
+		expect(prose).not.toMatch(/not authenticated or encrypted/i);
+		expect(stage.label).not.toBe('Unprotected');
+	});
+
+	it('VARIABLE: the prose names the measurement gap and how to resolve it', () => {
+		const stage = computeMaturityStage(tlsUnmeasuredWebOnlyChecks(), 'web_only');
+		expect(stage.label).toMatch(/not determined/i);
+		// It must read as a measurement gap, not a verdict…
+		expect(stage.description).toMatch(/could not be measured|not measured|blocked|timed out/i);
+		expect(stage.description).toMatch(/not a security verdict|measurement gap/i);
+		// …and tell the reader what to do about it.
+		expect(stage.nextStep).toMatch(/re-?scan|verify/i);
+	});
+
+	it('a timed-out ssl check abstains the same way an errored one does', () => {
+		const checks = defensiveWebOnlyChecks().map((c) =>
+			c.category === 'ssl' ? { ...erroredCheck('ssl'), checkStatus: 'timeout' as const } : c,
+		);
+		expect(computeMaturityStage(checks, 'web_only').indeterminate).toBe(true);
+	});
+
+	it('non_mail domains route through the same ladder and abstain identically', () => {
+		expect(computeMaturityStage(tlsUnmeasuredWebOnlyChecks(), 'non_mail').indeterminate).toBe(true);
+	});
+});
+
+describe('#574 — web-only ladder keeps the stage but discloses an unmeasured http_security', () => {
+	it('an errored http_security (ssl measured) keeps the honest stage-3 floor', () => {
+		const checks = defensiveWebOnlyChecks().map((c) => (c.category === 'http_security' ? erroredCheck('http_security') : c));
+		const stage = computeMaturityStage(checks, 'web_only');
+		// The stage is a LOWER BOUND and remains honest — only stage 4 was gated on HSTS.
+		expect(stage.stage).toBe(3);
+		expect(stage.label).toBe('Defensive');
+		expect(stage.indeterminate).toBeUndefined();
+	});
+
+	it('…and discloses that HSTS could not be measured, so stage 4 was not assessable', () => {
+		const checks = defensiveWebOnlyChecks().map((c) => (c.category === 'http_security' ? erroredCheck('http_security') : c));
+		const stage = computeMaturityStage(checks, 'web_only');
+		const prose = `${stage.description} ${stage.nextStep}`;
+		expect(prose).toMatch(/HSTS/);
+		expect(prose).toMatch(/could not be measured|not measured/i);
+	});
+
+	it('CONTROL: a completed http_security adds no disclosure', () => {
+		const stage = computeMaturityStage(defensiveWebOnlyChecks(), 'web_only');
+		expect(`${stage.description} ${stage.nextStep}`).not.toMatch(/could not be measured/i);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Ladder B (mail-enabled). OPPOSITE polarity, and arguably worse: `hasSpf` /
+// `hasDmarc` are ABSENCE-of-finding tests, so an errored spf/dmarc — which emits
+// a "check error" finding rather than a "No SPF record" finding — read TRUE and
+// a measurement failure inflated maturity UPWARD. False reassurance.
+// ---------------------------------------------------------------------------
+describe('#574 — mail ladder: an unmeasured spf/dmarc never reads as present', () => {
+	function enforcingMailChecks(): CheckResult[] {
+		return [
+			buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 records')]),
+			buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'ok')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC record found', 'info', 'p=reject')]),
+		];
+	}
+
+	it('CONTROL: the measured variant is unchanged at stage 3 "Enforcing"', () => {
+		const stage = computeMaturityStage(enforcingMailChecks(), 'mail_enabled');
+		expect(stage.stage).toBe(3);
+		expect(stage.label).toBe('Enforcing');
+		expect(stage.indeterminate).toBeUndefined();
+	});
+
+	it('an errored spf check no longer inflates the domain to "Enforcing"', () => {
+		const checks = enforcingMailChecks().map((c) => (c.category === 'spf' ? erroredCheck('spf') : c));
+		const stage = computeMaturityStage(checks, 'mail_enabled');
+		expect(stage.label).not.toBe('Enforcing');
+		expect(stage.stage).not.toBe(3);
+	});
+
+	it('an errored dmarc check no longer inflates the domain to "Enforcing"', () => {
+		const checks = enforcingMailChecks().map((c) => (c.category === 'dmarc' ? erroredCheck('dmarc') : c));
+		const stage = computeMaturityStage(checks, 'mail_enabled');
+		expect(stage.label).not.toBe('Enforcing');
+	});
+
+	it('…and abstains rather than swapping false reassurance for a false alarm', () => {
+		// Deflating an unmeasured check into stage 0 "No email authentication — any
+		// server can send email as this domain" would be the SAME defect pointing the
+		// other way. The unmeasured input abstains at BOTH ends.
+		const checks = enforcingMailChecks().map((c) => (c.category === 'dmarc' ? erroredCheck('dmarc') : c));
+		const stage = computeMaturityStage(checks, 'mail_enabled');
+		expect(stage.indeterminate).toBe(true);
+		expect(`${stage.label} ${stage.description}`).not.toMatch(/No email authentication|any server can send/i);
+	});
+
+	it('an errored bimi/dane/dkim check no longer counts as a hardening signal', () => {
+		// hasBimi / hasDane / hasDkimDiscovered are finding-title probes with the same
+		// absence polarity — an errored check emitted no "No DKIM records found"
+		// finding, so DKIM read as "discovered".
+		const base: CheckResult[] = [
+			buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'ok')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC record found', 'info', 'p=reject')]),
+			buildCheckResult('mta_sts', [createFinding('mta_sts', 'MTA-STS configured', 'info', 'ok')]),
+		];
+		// mta_sts (1 signal) + an ERRORED dkim must NOT reach the 2 signals stage 4 needs.
+		const stage = computeMaturityStage([...base, erroredCheck('dkim')], 'mail_enabled');
+		expect(stage.stage).toBe(3);
+		expect(stage.label).not.toBe('Hardened');
+
+		// CONTROL: a genuinely discovered DKIM selector still reaches stage 4.
+		const control = computeMaturityStage(
+			[...base, buildCheckResult('dkim', [createFinding('dkim', 'DKIM configured', 'info', 'ok', { selectorsFound: ['s1'] })])],
+			'mail_enabled',
+		);
+		expect(control.stage).toBe(4);
+	});
+
+	it('an EMPTY check set keeps its historical stage 0 (contract preserved)', () => {
+		// `test/maturity-staging.spec.ts:93` locks this. "Nothing was attempted" is
+		// already withheld one layer up by `isGraded` in format-report; the abstention
+		// added here keys on a check that was ATTEMPTED and did not complete.
+		const stage = computeMaturityStage([]);
+		expect(stage.stage).toBe(0);
+		expect(stage.indeterminate).toBeUndefined();
 	});
 });

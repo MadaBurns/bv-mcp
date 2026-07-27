@@ -88,7 +88,10 @@ describe('discoverSubdomains', () => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 			expect(init?.headers).toMatchObject({ Authorization: 'Bearer shared-internal-key' });
 			if (url === 'https://certstream/enumerate?domain=example.com') {
-				return new Response(JSON.stringify({ error: 'upstream transient' }), { status: 502, headers: { 'Content-Type': 'application/json' } });
+				return new Response(JSON.stringify({ error: 'upstream transient' }), {
+					status: 502,
+					headers: { 'Content-Type': 'application/json' },
+				});
 			}
 			if (url === 'https://certstream/sans?domain=example.com') {
 				return new Response(
@@ -266,7 +269,10 @@ describe('discoverSubdomains', () => {
 		expect(subdomainNames).not.toContain('example.com');
 	});
 
-	it('should limit output to 100 subdomains', async () => {
+	// The structural return cap is 500 (raised from 100 in #573 — a 100-name cap
+	// silently dropped the majority of a real bank's estate). The ~100-name cap
+	// that remains is a TEXT-rendering cap, asserted in the truncation suite.
+	it('returns the full set structurally when it fits under the 500 cap', async () => {
 		// Generate 150 unique subdomains
 		const manyEntries = Array.from({ length: 150 }, (_, i) => ({
 			name_value: `sub${i}.example.com`,
@@ -277,8 +283,25 @@ describe('discoverSubdomains', () => {
 		mockCrtSh(manyEntries);
 		const result = await run();
 
-		expect(result.subdomains).toHaveLength(100);
+		expect(result.subdomains).toHaveLength(150);
 		expect(result.totalSubdomains).toBe(150);
+		expect(result.truncated).toBeFalsy();
+	});
+
+	it('should limit structured output to 500 subdomains', async () => {
+		const manyEntries = Array.from({ length: 640 }, (_, i) => ({
+			name_value: `sub${i}.example.com`,
+			issuer_name: 'CN=R3',
+			not_before: '2026-01-01',
+			not_after: '2026-04-01',
+		}));
+		mockCrtSh(manyEntries);
+		const result = await run();
+
+		expect(result.subdomains).toHaveLength(500);
+		expect(result.totalSubdomains).toBe(640);
+		expect(result.returned).toBe(500);
+		expect(result.truncated).toBe(true);
 	});
 
 	it('should sort subdomains by lastSeen descending', async () => {
@@ -796,11 +819,9 @@ describe('discover_subdomains handler — loud degrade on CT-source outage', () 
 			if (s.includes('crt.sh')) return Response.json({}, { status: 500 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		const result = await handleToolsCall(
-			{ name: 'discover_subdomains', arguments: { domain: 'example.com' } },
-			undefined,
-			{ certstream: { fetch: certstreamFetch as unknown as typeof fetch } } as never,
-		);
+		const result = await handleToolsCall({ name: 'discover_subdomains', arguments: { domain: 'example.com' } }, undefined, {
+			certstream: { fetch: certstreamFetch as unknown as typeof fetch },
+		} as never);
 		expect(result.isError).toBe(true);
 		expect((result.structuredContent as Record<string, unknown> | undefined)?.sourceUnavailable).toBe(true);
 	});
@@ -812,11 +833,7 @@ describe('discover_subdomains handler — loud degrade on CT-source outage', () 
 			if (s.includes('crt.sh')) return Response.json([], { status: 200 }); // available, genuinely empty
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		const result = await handleToolsCall(
-			{ name: 'discover_subdomains', arguments: { domain: 'example.com' } },
-			undefined,
-			undefined,
-		);
+		const result = await handleToolsCall({ name: 'discover_subdomains', arguments: { domain: 'example.com' } }, undefined, undefined);
 		expect(result.isError).toBeFalsy();
 		expect((result.structuredContent as Record<string, unknown> | undefined)?.sourceUnavailable).toBeFalsy();
 	});
