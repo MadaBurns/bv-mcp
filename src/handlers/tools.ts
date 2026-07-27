@@ -1637,7 +1637,13 @@ export async function handleToolsCall(
 						// CT source that has quietly started capping us.
 						truncated: result.truncated ?? false,
 						returned: result.returned ?? result.subdomains.length,
-						enumerationComplete: result.enumerationComplete ?? true,
+						// Renamed from `enumerationComplete`, which asserted estate-level
+						// completeness a single CT source can never support. The narrow
+						// per-source truth is unchanged; only the (misreadable) name is.
+						sourceIndexExhausted: result.sourceIndexExhausted ?? true,
+						// Degraded recall — a source was asked and failed, or was never
+						// consulted — is now visible in tail, not just in the payload.
+						coverageDegraded: result.coverage?.degraded ?? false,
 						...(result.sources ? { sources: result.sources.join(',') } : {}),
 						...(result.stale ? { cacheAgeMinutes: result.cacheAgeMinutes ?? 0 } : {}),
 					};
