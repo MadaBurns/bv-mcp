@@ -14,7 +14,8 @@ import type { CheckResult, Finding, Severity, CheckCategory } from '@blackveil/d
 import { IMPORTANCE_WEIGHTS, isGraded } from '@blackveil/dns-checks/scoring';
 import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
-import { formatScoreGrade, hasCompletedEvidence, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { formatScoreGrade, hasCompletedEvidence, isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { isDnsErrorFinding } from '../lib/dns-error-result';
 
 /** A single remediation action in a fix plan. */
 export interface FixAction {
@@ -52,6 +53,17 @@ export interface FixPlanResult {
 	assessed: boolean;
 	/** Populated only when `assessed` is false; `null` otherwise. */
 	caveat: string | null;
+	/**
+	 * Categories whose OWN check failed transiently (`checkStatus: 'error' |
+	 * 'timeout'`) and were therefore excluded from `actions` — filtering out a
+	 * transient error's synthetic "check error" finding must not silently read
+	 * as "nothing to fix" for that category (that is a fabricated clean bill of
+	 * health, not a real one). `[]` when nothing was excluded this way, INCLUDING
+	 * the whole-scan-unassessed case (`assessed: false`) — that failure mode is
+	 * already fully covered by `caveat`, so listing every category here too would
+	 * duplicate the same fact in two places with two different wordings.
+	 */
+	transientCategories: CheckCategory[];
 }
 
 /**
@@ -148,16 +160,17 @@ function findingToAction(finding: Finding): string {
 }
 
 /**
- * Generate a prioritized fix plan for a domain.
- *
- * @param domain - Validated, sanitized domain
- * @param kv - Optional KV namespace for caching
- * @param runtimeOptions - Scan runtime options
- * @returns Prioritized fix plan
+ * Evaluate a fix plan from check results (pure function).
+ * Exported for direct unit testing without needing to mock scanDomain.
+ * Modeled on `evaluateCompliance`/`evaluateCscProducts`.
  */
-export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<FixPlanResult> {
-	const scanResult = await scanDomain(domain, kv, runtimeOptions);
-
+export function evaluateFixPlan(
+	checkResults: CheckResult[],
+	domain: string,
+	score: number | null,
+	grade: string | null,
+	maturityStage: number | null,
+): FixPlanResult {
 	// `isMeasured` (`checks.length > 0`) cannot tell "19 healthy checks" apart
 	// from "19 checks that all timed out" — both are truthy. A total
 	// DoH/network outage where every attempted check carries a transient
@@ -168,9 +181,49 @@ export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeO
 	// `hasCompletedEvidence` requires at least one check to have actually
 	// COMPLETED, so an all-transient outage abstains the same way a
 	// zero-check scan does.
-	const hasEvidence = hasCompletedEvidence(scanResult.checks);
+	const hasEvidence = hasCompletedEvidence(checkResults);
+	// Even when SOME categories completed (`hasEvidence: true`), an individual
+	// category's OWN check can still have failed transiently. There are TWO
+	// distinct producers of that shape, and only one of them tags the finding:
+	// `buildDnsErrorResult` (used by tools with their own top-level DNS-error
+	// handling, e.g. check-dmarc.ts) sets BOTH `checkStatus: 'error'` AND
+	// `metadata.errorKind: 'dns_error'`. `safeCheck` — scan_domain's OWN
+	// orchestrator-level catch, `src/tools/scan-domain.ts`'s `safeCheck()`,
+	// which is what actually runs during a real production scan for any check
+	// that doesn't have its own internal DNS-error handling — sets
+	// `checkStatus: 'error' | 'timeout'` but NEVER `errorKind`. A per-finding
+	// `errorKind` filter alone therefore misses every safeCheck-produced
+	// transient: `checkStatus: 'timeout'` would render as an action
+	// ("Fix DMARC: DMARC check timed out — ...") in the SAME plan that also
+	// lists that category under `transientCategories` — self-contradictory
+	// output. Filtering on `checkStatus` at the CHECK level first (shares
+	// `isCompletedCheck` with `map_compliance`'s `completed` filter and this
+	// file's own `transientCategories` below — by import, not duplication)
+	// catches BOTH producers regardless of whether the errorKind marker was
+	// set.
+	//
+	// The `isDnsErrorFinding` filter is kept as a SECOND, independent guard —
+	// not redundant with the checkStatus filter above. A check can COMPLETE
+	// (`checkStatus` absent/'completed') and still attach an errorKind-tagged
+	// finding for a narrower reason than a full check failure. NOT via
+	// `discover-brand-domains.ts`'s `brand_discovery` category in production:
+	// `brand_discovery` is a `CheckCategory` but is absent from `scan-domain.ts`'s
+	// `CHECK_DISPATCH`/`SCAN_CATEGORIES`, so `scanDomain()` never produces one
+	// and `generateFixPlan` (which feeds `evaluateFixPlan` exclusively from
+	// `scanResult.checks`) can never see it. This function is exported and
+	// callable directly with an arbitrary `checkResults` array, though — that
+	// is the actual reason the guard earns its keep: a caller of the pure
+	// `evaluateFixPlan` entry point is not restricted to `scan_domain`'s
+	// dispatched categories, so a completed check carrying an errorKind-tagged
+	// finding from ANY category (a future scored category, a hand-built test
+	// fixture, or a direct non-scan caller) must still never become a fix
+	// action. Both filters stay in force as defence-in-depth for that entry
+	// point, not because of a reachable production path today.
 	const actionableFindings = hasEvidence
-		? scanResult.checks.flatMap((check: CheckResult) => check.findings).filter((f: Finding) => f.severity !== 'info')
+		? checkResults
+				.filter(isCompletedCheck)
+				.flatMap((check: CheckResult) => check.findings)
+				.filter((f: Finding) => f.severity !== 'info' && !isDnsErrorFinding(f))
 		: [];
 
 	const actions: FixAction[] = actionableFindings.map((finding: Finding) => {
@@ -202,24 +255,64 @@ export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeO
 	const assessed = hasEvidence;
 	const caveat = assessed
 		? null
-		: scanResult.checks.length === 0
+		: checkResults.length === 0
 			? UNASSESSED_FIX_PLAN_CAVEAT
-			: buildAllTransientFixPlanCaveat(scanResult.checks.length);
+			: buildAllTransientFixPlanCaveat(checkResults.length);
+
+	// The categories excluded from `actionableFindings` above because their OWN
+	// check never completed. Only computed when `assessed` is true — the
+	// all-transient/never-ran case is already fully represented by `caveat`,
+	// and listing every category here too would just restate the same fact in
+	// a second vocabulary.
+	const transientCategories: CheckCategory[] = assessed ? checkResults.filter((c) => !isCompletedCheck(c)).map((c) => c.category) : [];
 
 	return {
 		domain,
-		score: scanResult.score.overall,
-		grade: scanResult.score.grade,
-		// `indeterminate` (#574): a GRADED scan whose maturity ladder abstained because
-		// a load-bearing check was never measured carries a placeholder stage, exactly
-		// like a degraded builder's — so it is withheld here too, or "Maturity Stage:
-		// 0/4" renders a posture verdict nobody measured.
-		maturityStage: isGraded(scanResult.score) && scanResult.maturity.indeterminate !== true ? scanResult.maturity.stage : null,
+		score,
+		grade,
+		maturityStage,
 		totalActions: actions.length,
 		actions,
 		assessed,
 		caveat,
+		transientCategories,
 	};
+}
+
+/**
+ * Generate a prioritized fix plan for a domain.
+ *
+ * @param domain - Validated, sanitized domain
+ * @param kv - Optional KV namespace for caching
+ * @param runtimeOptions - Scan runtime options
+ * @returns Prioritized fix plan
+ */
+export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<FixPlanResult> {
+	const scanResult = await scanDomain(domain, kv, runtimeOptions);
+
+	return evaluateFixPlan(
+		scanResult.checks,
+		domain,
+		scanResult.score.overall,
+		scanResult.score.grade,
+		// `indeterminate` (#574) is the half `isGraded` cannot see: a scan can produce a
+		// real overall score AND still have the maturity ladder abstain, because a
+		// load-bearing check (TLS, or SPF/DMARC) was never measured. That stage 0 is a
+		// placeholder, not a posture measurement, so it is withheld here exactly like a
+		// degraded builder's — otherwise `plan.maturityStage` renders "0/4" (see the
+		// UNGRADED_DISPLAY branch below) as a verdict nobody measured.
+		isGraded(scanResult.score) && scanResult.maturity.indeterminate !== true ? scanResult.maturity.stage : null,
+	);
+}
+
+/**
+ * Note for categories excluded from `actions` because their own check failed
+ * transiently (see `FixPlanResult.transientCategories`). Shared by both format
+ * modes so the two surfaces cannot describe the same exclusion two ways.
+ */
+function transientCategoriesNote(categories: CheckCategory[]): string {
+	const n = categories.length;
+	return `${n} categor${n === 1 ? 'y' : 'ies'} could not be assessed (transient check failure, not a clean result): ${categories.join(', ')}.`;
 }
 
 /** Format a fix plan as a human-readable text report. */
@@ -237,7 +330,16 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 			// a somehow-unset `caveat` would render the never-ran-specific text
 			// even for an all-transient state. The only genuinely safe fallback
 			// here makes no specific claim.
-			lines.push(plan.assessed ? 'No actionable findings.' : (plan.caveat ?? 'This domain could not be assessed.'));
+			if (!plan.assessed) {
+				lines.push(plan.caveat ?? 'This domain could not be assessed.');
+			} else if (plan.transientCategories.length > 0) {
+				// Zero actions here does NOT mean a clean bill of health — some
+				// category was never actually measured. Say so instead of reading
+				// as "No actionable findings" (see the full-mode branch below).
+				lines.push(transientCategoriesNote(plan.transientCategories));
+			} else {
+				lines.push('No actionable findings.');
+			}
 			return lines.join('\n');
 		}
 		const maxShow = 5;
@@ -248,6 +350,9 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 		}
 		if (plan.actions.length > maxShow) {
 			lines.push(`... and ${plan.actions.length - maxShow} more`);
+		}
+		if (plan.transientCategories.length > 0) {
+			lines.push(transientCategoriesNote(plan.transientCategories));
 		}
 		return lines.join('\n');
 	}
@@ -262,9 +367,13 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 		// Zero actions is only good news when something was actually examined.
 		// See the compact-mode fallback above for why this does NOT fall back to
 		// `UNASSESSED_FIX_PLAN_CAVEAT` specifically.
-		lines.push(
-			plan.assessed ? 'No actionable findings. Domain security posture is strong.' : (plan.caveat ?? 'This domain could not be assessed.'),
-		);
+		if (!plan.assessed) {
+			lines.push(plan.caveat ?? 'This domain could not be assessed.');
+		} else if (plan.transientCategories.length > 0) {
+			lines.push(transientCategoriesNote(plan.transientCategories));
+		} else {
+			lines.push('No actionable findings. Domain security posture is strong.');
+		}
 		return lines.join('\n');
 	}
 
@@ -278,6 +387,10 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 			lines.push(`Dependencies: ${action.dependencies.join('; ')}`);
 		}
 		lines.push('');
+	}
+
+	if (plan.transientCategories.length > 0) {
+		lines.push(transientCategoriesNote(plan.transientCategories));
 	}
 
 	return lines.join('\n');

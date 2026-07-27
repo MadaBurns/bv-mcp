@@ -19,6 +19,7 @@
 
 import type { CheckResult, Finding } from '../../lib/scoring';
 import type { DomainProfile } from '../../lib/scoring';
+import { isCompletedCheck } from '../../lib/ungraded-display';
 
 export interface MaturityStage {
 	stage: number;
@@ -52,12 +53,15 @@ export interface MaturityStage {
  * ("we could not measure it") vs NOT APPLICABLE / ABSENT ("we measured, and the
  * control is not there").
  *
- * `CheckStatus` is exactly `'completed' | 'timeout' | 'error'`, and an ABSENT
- * status means completed (legacy shape) — so those two values are the complete
- * set of inconclusive states.
+ * The completed/not-completed predicate itself is NOT re-derived here — it is the
+ * SSOT `isCompletedCheck` from `src/lib/ungraded-display.ts` (`checkStatus`
+ * absent or `'completed'`), which is equivalent to excluding `'error'`/`'timeout'`
+ * over the `CheckStatus` union and is enforced as the single definition by
+ * `test/audits/completed-evidence-predicate-ssot.audit.test.ts`. This wrapper adds
+ * only the presence check, which that predicate deliberately does not cover.
  */
 function measured(check?: CheckResult): boolean {
-	return check != null && check.checkStatus !== 'error' && check.checkStatus !== 'timeout';
+	return check != null && isCompletedCheck(check);
 }
 
 /**
@@ -66,9 +70,12 @@ function measured(check?: CheckResult): boolean {
  * Narrower than `!measured()`: it excludes a check that is simply absent from the
  * roster. Used only where an absent entry has a long-standing contracted meaning
  * that must not change (see the mail ladder's stage-0 abstention).
+ *
+ * Same SSOT as {@link measured} — the negation is taken here rather than
+ * re-spelling the status comparison, per the completed-evidence-predicate audit.
  */
 function attemptedButInconclusive(check?: CheckResult): boolean {
-	return check != null && (check.checkStatus === 'error' || check.checkStatus === 'timeout');
+	return check != null && !isCompletedCheck(check);
 }
 
 /**

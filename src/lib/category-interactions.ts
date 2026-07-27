@@ -77,11 +77,33 @@ export const INTERACTION_RULES: InteractionRule[] = [
 		// gate below fails and neither mechanism fires.
 		id: 'impersonation_weak_dmarc',
 		conditions: [
-			// lookalikes score drops below 100 only when a calibrated medium/high
-			// lookalike is found (defensive registrations / shared-NS matches stay
-			// info-severity and don't move the score). <= 85 == "at least one
-			// medium-or-higher active impersonation domain" — the same predicate
-			// hasActiveImpersonation() uses on the label side.
+			// Task 7b (2026-07-27) — what satisfies this condition today, stated
+			// precisely, because two earlier revisions of this comment were wrong.
+			//
+			// The `lookalikes` category drops to/below 85 when the check emits a
+			// finding above `info`. Since Task 7b that happens on the
+			// THREAT-OBSERVATION axis (`metadata.findingAxis ===
+			// 'threat_observation'`): a #264-calibrated observation about a
+			// confusable domain's infrastructure (e.g. live MX on a disposable
+			// provider), plus the aggregate HIGH summary. ATTRIBUTION-axis findings
+			// (`'attribution'`) are capped at `info` for every non-`owned_by_seed`
+			// verdict and cannot move the score.
+			//
+			// CORRECTION (fix round 1, F3): the previous revision claimed that under
+			// Task 7 "every lookalikes finding was capped at info", so this rule was
+			// dead code. That was FALSE. The recon CT-corroboration finding in
+			// check-lookalikes.ts emits `'medium'` and has never been routed through
+			// the ownership gate, so on an operator deploy with the BV_RECON binding
+			// this condition was satisfiable throughout — the earlier revision
+			// before THAT one, claiming it fired whenever a calibrated medium/high
+			// lookalike was found, was the one closer to the truth. What Task 7
+			// actually broke was the DNS-derived path (per-candidate and summary
+			// findings), which is what 7b restored. Nor is it true, as that revision
+			// also claimed, that an owned-by-seed candidate "can never trigger this
+			// rule": the recon finding is scoped to the SCANNED domain and fires
+			// independently of any candidate's ownership verdict. What IS true: no
+			// finding this rule keys on makes an ownership claim about a third
+			// party's domain.
 			{ category: 'lookalikes', maxScore: 85 },
 			// Weak/absent DMARC, as left by the escalation pass (see above).
 			{ category: 'dmarc', maxScore: 60 },
