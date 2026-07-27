@@ -45,12 +45,23 @@ export const DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS = 24_000;
 const CT_SOURCE_TIMEOUT_MS = 10_000;
 
 /**
- * Per-attempt timeout for the Certspotter fallback (ms). Tighter than crt.sh's:
- * it is a plain JSON API that normally answers in well under a second, so a
- * shorter bound keeps a full failover pass comfortably inside the ~24s handler
- * budget instead of letting one slow fallback consume it.
+ * Per-ATTEMPT timeout for the Certspotter fallback (ms) — this bounds the whole
+ * paginated run, not one page: `queryDirectSources` composes ONE abort signal per
+ * source attempt and threads it through every page fetch.
+ *
+ * Sized against {@link MAX_CT_PAGES}: 8 pages at the measured ~1.5s/page is ~12s,
+ * so 8s (the pre-pagination value, set when this was a single request) would have
+ * aborted mid-run around page 5 and silently capped recall — the exact under-
+ * delivery this pagination work exists to remove. 14s fits the full 8 pages with
+ * headroom.
+ *
+ * This does NOT risk the ~24s handler budget: {@link CERTSPOTTER_PAGE_BUDGET_MS}
+ * is re-checked against the caller's real deadline before every page after the
+ * first, so a slow crt.sh attempt ahead of this one still clamps pagination — the
+ * caller's budget stays authoritative and the stop is non-fatal (pages already
+ * read are kept, `enumerationComplete: false`).
  */
-const CERTSPOTTER_TIMEOUT_MS = 8_000;
+const CERTSPOTTER_TIMEOUT_MS = 14_000;
 
 /**
  * Retry PASSES over the whole source list on a transient outcome (timeout / 5xx
@@ -120,8 +131,17 @@ const MAX_PER_NAME_ISSUES = 25;
  * Certspotter paginates at 100 issuances and ignores `&limit=` without an API
  * key, so following `Link: <…>; rel="next"` via `&after=<last id>` is the only
  * lever on recall. Measured ~1.5s/page unauthenticated; 8 pages is ~800
- * issuances, comfortably more than any realistic estate while staying inside
- * both the per-source timeout and the caller's synchronous budget.
+ * issuances, more than any realistic estate.
+ *
+ * TWO INDEPENDENT BOUNDS apply, and the page counter is NOT the binding one in
+ * practice — {@link CERTSPOTTER_TIMEOUT_MS} is a single abort signal composed
+ * ONCE per source attempt (see `queryDirectSources`), so it caps the WHOLE
+ * paginated run, not each page. It is sized to fit `MAX_CT_PAGES` at the
+ * measured per-page cost with headroom; if either constant moves, re-check that
+ * `MAX_CT_PAGES * ~1.5s` still fits inside it, or pagination will silently stop
+ * early. The per-page {@link CERTSPOTTER_PAGE_BUDGET_MS} check additionally
+ * yields to the caller's synchronous deadline. Both stop paths are non-fatal:
+ * pages already read are kept and `enumerationComplete: false` is reported.
  */
 const MAX_CT_PAGES = 8;
 
