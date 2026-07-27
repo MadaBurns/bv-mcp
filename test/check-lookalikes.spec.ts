@@ -1542,6 +1542,10 @@ describe('checkLookalikes - D4 ownership-gated severity (2026-07-26 correctness-
 		expect(bnzComFindings.length).toBeGreaterThan(0);
 		expect(bnzComFindings.some((f) => f.title.includes('likely owned by same entity'))).toBe(true);
 		expect(bnzComFindings.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(true);
+		// F3(b) (2026-07-27 fix round 2): the assertion the `:1516` comment
+		// promised but this test never actually made — pins the native
+		// same-owner finding's hardcoded 'info' severity explicitly.
+		expect(bnzComFindings.every((f) => f.severity === 'info')).toBe(true);
 		// Call site 1: an owned candidate must never trigger the RDAP enrichment
 		// probe (the old exact-hostname-overlap check would have missed the
 		// in-bailiwick relationship and enriched it anyway).
