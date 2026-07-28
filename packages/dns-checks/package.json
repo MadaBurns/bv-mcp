@@ -1,6 +1,6 @@
 {
 	"name": "@blackveil/dns-checks",
-	"version": "1.7.0",
+	"version": "1.8.0",
 	"description": "Runtime-agnostic DNS and email security checks (16 checks + scoring engine) for BlackVeil Security",
 	"license": "BUSL-1.1",
 	"type": "module",
@@ -18,6 +18,10 @@
 		"./whois": {
 			"import": "./dist/whois/index.js",
 			"types": "./dist/whois/index.d.ts"
+		},
+		"./cert": {
+			"import": "./dist/cert/index.js",
+			"types": "./dist/cert/index.d.ts"
 		}
 	},
 	"files": [

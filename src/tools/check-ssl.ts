@@ -13,6 +13,7 @@ import { checkSSL, withRobotsGate } from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { callTlsProbe, mergeTlsFinding } from '../lib/tls-probe-binding';
+import { enrichWithCertificateMetadata } from '../lib/cert-metadata-enrich';
 import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-binding';
 import { withAbortSignal } from '../lib/abort-signal';
 
@@ -40,11 +41,43 @@ export async function checkSsl(
 		 * `check_ssl` call) → byte-for-byte unchanged behaviour.
 		 */
 		signal?: AbortSignal;
+		/**
+		 * Opt IN to certificate metadata (issuer / expiry / SANs) from Certificate
+		 * Transparency. DEFAULT OFF, and deliberately so.
+		 *
+		 * Enrichment costs one extra subrequest to Certspotter's public API, whose
+		 * free tier is ~100 requests/hour/egress-IP and is SHARED across everything
+		 * this Worker does. `scan_domain` fans out 17 checks per call, so enriching
+		 * there would spend that quota at scan volume — and an exhausted quota
+		 * degrades to no metadata at all, for every caller.
+		 *
+		 * So only the DIRECT `check_ssl` tool turns this on: that is the tool whose
+		 * description promises issuer and expiry, and it is called one domain at a
+		 * time. `scan_domain`, `validate_fix`, and `simulate_attack_paths` leave it
+		 * off — none of them surfaces the field, so the request would be pure cost.
+		 *
+		 * A caching layer in front of Certspotter is what would make this safe to
+		 * turn on everywhere; there isn't one on this Worker today.
+		 */
+		certMetadata?: boolean;
 	} = {},
 ): Promise<CheckResult> {
 	const fetchFn = withRobotsGate(withAbortSignal(fetch, tlsProbeOptions.signal));
-	const result = (await checkSSL(domain, fetchFn, { timeout: HTTPS_TIMEOUT_MS })) as CheckResult;
+	const base = (await checkSSL(domain, fetchFn, { timeout: HTTPS_TIMEOUT_MS })) as CheckResult;
+	// Certificate metadata (issuer / expiry / SANs) from Certificate Transparency.
+	// NON-SCORING: attaches to `metadata`, never appends a Finding — a CT lookup
+	// failing must not move a domain's grade.
+	//
+	// Deliberately NOT robots-gated: the request goes to Certspotter's public API,
+	// not to the scanned domain, so the target's robots.txt has no authority over
+	// it. It IS abort-composed, so a scan-/per-check timeout cancels the in-flight
+	// CT subrequest rather than leaking it from the subrequest budget (R7).
+	const result = tlsProbeOptions.certMetadata
+		? await enrichWithCertificateMetadata(base, domain, withAbortSignal(fetch, tlsProbeOptions.signal))
+		: base;
 	// Operator-only TLS-version enrichment via the BV_TLS_PROBE service binding.
+	// NOTE this one DOES affect scoring (it appends a High finding), unlike the
+	// certificate-metadata enrichment above.
 	// Fail-soft: absent binding (every BSL self-host) → result returned unchanged.
 	// callTlsProbe returns null on any failure; mergeTlsFinding only ever appends a
 	// High finding when the probe actively reports legacy TLS (≤1.1), never penalizes 1.2/1.3.
