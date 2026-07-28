@@ -213,7 +213,8 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: true,
 	},
 	check_ssl: {
-		description: 'Check the SSL/TLS certificate for a domain. Shows the issuer (Certificate Authority), expiry date (when the certificate expires), supported protocol versions (TLS 1.2/1.3), and HTTPS configuration. Use to verify certificate validity and who issued it.',
+		description:
+			'Check the HTTPS/TLS posture of a domain: HTTPS reachability, HSTS policy, and HTTP-to-HTTPS redirect. Also returns certificate metadata (issuer, expiry date, days remaining, SAN count) read from public Certificate Transparency logs — this describes the most recently LOGGED certificate, which may differ from the one currently served. Negotiated TLS protocol versions and cipher suites are NOT returned. Use to verify HTTPS/HSTS configuration and certificate issuer/expiry.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',

@@ -58,7 +58,7 @@ export async function checkSSL(domain: string, fetchFn: FetchFunction, options?:
 				'ssl',
 				'HTTPS and HSTS properly configured',
 				'info',
-				`HTTPS connection succeeded and HSTS header is properly configured for ${domain}. Note: This check verifies HTTPS reachability and HSTS policy. Certificate expiry, TLS version, and cipher suite analysis require a dedicated TLS scanner.`,
+				`HTTPS connection succeeded and HSTS header is properly configured for ${domain}. Note: This check scores HTTPS reachability and HSTS policy only. Certificate issuer and expiry are available separately as non-scoring metadata from Certificate Transparency (see the cert module); negotiated TLS version and cipher suite still require a dedicated TLS scanner.`,
 			),
 		);
 	}
