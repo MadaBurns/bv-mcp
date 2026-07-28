@@ -50,6 +50,9 @@ export default defineConfig({
 			// sandboxed /bundle path). Runs only under vitest.node.config.mts, wired
 			// via the `audit:oss-safety` npm script (the "File hygiene check" CI job).
 			'test/audits/workflow-cost.audit.test.ts',
+			// Same reason: walks packages/dns-checks/src with real node:fs to prove the
+			// package imports no Node built-in. The Workers pool has no real filesystem.
+			'test/audits/dns-checks-runtime-agnostic.node.test.ts',
 			// scripts/ hosts standalone node:test scripts (e.g. dogfood-scan.test.mjs)
 			// that are run directly via `node --test`, not collected by Vitest. Vitest's
 			// default include glob (**/*.test.mjs) would otherwise sweep these into the
