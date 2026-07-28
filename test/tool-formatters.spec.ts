@@ -108,3 +108,71 @@ describe('tool-formatters', () => {
 		expect(text).toContain('ignore previous instructions');
 	});
 });
+
+/**
+ * The `check_ssl` tool description promises the issuer and expiry date. The
+ * enrichment attaches them at `CheckResult.metadata.certificate`, which reaches
+ * the caller on the MCP-standard `structuredContent` channel — but a client
+ * reading only the human-readable `content` text in `compact` format (where the
+ * STRUCTURED_RESULT blob is not appended) saw NOTHING, so for that client the
+ * description promised a capability the output did not show.
+ */
+describe('formatCheckResult — certificate metadata narration', () => {
+	function sslResult(certificate: Record<string, unknown> | undefined): CheckResult {
+		return {
+			category: 'ssl',
+			passed: true,
+			score: 100,
+			findings: [],
+			...(certificate ? { metadata: { certificate } } : {}),
+		} as CheckResult;
+	}
+
+	const CERT = {
+		issuer: "Let's Encrypt",
+		notBefore: '2026-03-02T00:00:00.000Z',
+		notAfter: '2026-05-31T00:00:00.000Z',
+		expiryBand: 'ok',
+		daysRemaining: 120,
+		sanCount: 2,
+		serial: '04ab',
+		source: 'ct',
+	};
+
+	it('narrates issuer, expiry and days remaining in the prose channel', () => {
+		const text = formatCheckResult(sslResult(CERT));
+		expect(text).toContain('### Certificate');
+		expect(text).toContain("Issuer: Let's Encrypt");
+		expect(text).toContain('2026-05-31');
+		expect(text).toContain('120 days');
+	});
+
+	it('carries the CT sourcing caveat — a logged certificate is not necessarily the served one', () => {
+		const text = formatCheckResult(sslResult(CERT));
+		expect(text).toMatch(/Certificate Transparency/i);
+		expect(text).toMatch(/may differ from the certificate currently served/i);
+	});
+
+	it('narrates in COMPACT format too — that is the format with no structured blob to fall back on', () => {
+		const text = formatCheckResult(sslResult(CERT), 'compact');
+		expect(text).toContain("Issuer: Let's Encrypt");
+	});
+
+	it('renders an unmeasured field as "unknown" rather than omitting or guessing it', () => {
+		const text = formatCheckResult(
+			sslResult({ ...CERT, issuer: null, notAfter: null, daysRemaining: null })
+		);
+		expect(text).toContain('Issuer: unknown');
+		expect(text).toContain('Expires: unknown');
+	});
+
+	it('adds NOTHING when no certificate metadata was obtained (absence is not a finding)', () => {
+		expect(formatCheckResult(sslResult(undefined))).not.toContain('### Certificate');
+	});
+
+	it('ignores a non-object metadata.certificate instead of throwing', () => {
+		const bogus = { category: 'ssl', passed: true, score: 100, findings: [], metadata: { certificate: 'nope' } } as unknown as CheckResult;
+		expect(() => formatCheckResult(bogus)).not.toThrow();
+		expect(formatCheckResult(bogus)).not.toContain('### Certificate');
+	});
+});
