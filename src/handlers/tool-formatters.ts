@@ -176,5 +176,59 @@ export function formatCheckResult(result: CheckResult, format: OutputFormat = 'f
 		}
 	}
 
+	appendCertificateSection(lines, result);
+
 	return lines.join('\n');
+}
+
+/**
+ * Narrate `CheckResult.metadata.certificate` into the human-readable channel.
+ *
+ * WHY. `check_ssl`'s description promises the issuer and expiry date. The
+ * enrichment attaches them to `metadata`, which reaches the caller on the
+ * MCP-standard `structuredContent` field — but a client that reads only the
+ * `content` text saw nothing, and in `compact` format there is no appended
+ * STRUCTURED_RESULT blob to fall back on either. The promise was kept on one
+ * channel and silently broken on the other.
+ *
+ * NON-SCORING, and it must stay that way: this renders metadata, never a
+ * `Finding`, so nothing here can move a domain's score or grade.
+ *
+ * An unmeasured field prints `unknown` rather than being omitted — a missing row
+ * reads as "we did not look", which is a different claim from "there is no
+ * expiry date". Absence of the whole block adds nothing at all: no CT record is
+ * not a finding about the certificate.
+ */
+function appendCertificateSection(lines: string[], result: CheckResult): void {
+	const cert = (result as { metadata?: { certificate?: unknown } }).metadata?.certificate;
+	if (!cert || typeof cert !== 'object') return;
+	const c = cert as Record<string, unknown>;
+
+	const str = (v: unknown): string =>
+		typeof v === 'string' && v.trim() !== '' ? sanitizeOutputText(v, 200) : 'unknown';
+	const expires =
+		typeof c.notAfter === 'string' && c.notAfter.trim() !== ''
+			? // Date-only: the time component is noise for an expiry, and CT precision
+				// does not warrant implying it.
+				sanitizeOutputText(c.notAfter.slice(0, 10), 20)
+			: 'unknown';
+	const remaining =
+		typeof c.daysRemaining === 'number' && Number.isFinite(c.daysRemaining)
+			? `${c.daysRemaining} days`
+			: 'unknown';
+
+	lines.push('');
+	lines.push('### Certificate');
+	lines.push(`- Issuer: ${str(c.issuer)}`);
+	lines.push(`- Expires: ${expires} (${remaining} remaining, band: ${str(c.expiryBand)})`);
+	if (typeof c.sanCount === 'number' && Number.isFinite(c.sanCount)) {
+		// Count only — publishing the SAN list would hand out an enumerated
+		// subdomain inventory.
+		lines.push(`- Subject alternative names: ${c.sanCount}`);
+	}
+	// Never drop this line: without it a reader takes "logged" to mean "served"
+	// and draws a wrong conclusion from a correct answer.
+	lines.push(
+		'- Source: Certificate Transparency logs — describes the most recently logged certificate, which may differ from the certificate currently served.'
+	);
 }
