@@ -116,3 +116,30 @@ export {
 	CheckResultSchema,
 	ScanScoreSchema,
 } from './schemas/scoring';
+
+// Certificate intelligence — ADDITIVE, NON-SCORING metadata (issuer / expiry /
+// key strength from Certificate Transparency). Emits no `Finding` and never
+// influences `computeProfileAwareScanScore`: consumers attach the result to
+// `CheckResult.metadata`. Also available at the `./cert` subpath.
+export type {
+	CertMetadata,
+	ExpiryBand,
+	ExpiryAssessment,
+	KeyStrengthBand,
+	DerKeyParser,
+	CertEnrichmentResult,
+	CertEnrichmentOptions,
+} from './cert';
+export {
+	normalizeCertDate,
+	mergeCertSources,
+	assessExpiry,
+	assessKeyStrength,
+	normalizeKeyType,
+	ecCurveToBits,
+	CERTSPOTTER_ISSUANCES_URL,
+	buildCertMetadataUrl,
+	parseCertMetadataFromCt,
+	parseCertDerFromCt,
+	enrichCertificateIntelligence,
+} from './cert';

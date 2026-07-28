@@ -5,6 +5,7 @@ export default defineConfig({
 		index: 'src/index.ts',
 		'scoring/index': 'src/scoring/index.ts',
 		'whois/index': 'src/whois/index.ts',
+		'cert/index': 'src/cert/index.ts',
 	},
 	format: ['esm'],
 	target: 'es2022',
