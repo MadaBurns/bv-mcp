@@ -25,30 +25,35 @@ describe('repo safety policy coverage', () => {
 
 		expect(forbiddenPaths).toEqual(
 			expect.arrayContaining([
-				// No trailing slash on directory-shaped patterns (`.dev`, `reports`,
-				// `.reports`) — a trailing "/" here mirrors the .gitignore
-				// directory-only bypass (see .gitignore's own header comment and
-				// #576/#579): `pathMatchesPattern()` in scanner-core.mjs treats the
-				// slash and no-slash forms identically for a bare directory name
-				// (`file === pattern.replace(/\/$/, '') || file.startsWith(...)`),
-				// so dropping it doesn't change scanner behavior, only keeps this
-				// policy consistent with the corrected .gitignore convention.
-				'.dev',
+				'.dev/',
 				'.dev.vars',
 				'.mcp-registry-key.pem',
 				'wrangler.production.jsonc',
-				'reports',
-				'.reports',
+				'reports/',
+				'.reports/',
 				'*.pdf',
 				'*.env',
 				'scripts/tranco-*.json',
 			]),
 		);
 
+		// Compare on the SLASH-STRIPPED form. These four files share a vocabulary but
+		// not a grammar: `.gitignore` deliberately spells directory-shaped patterns
+		// WITHOUT a trailing slash (a trailing "/" matches directories ONLY, which is
+		// how a `node_modules` SYMLINK slipped past it in #576 — see #579), while
+		// policy.json / pre-commit / repo-hygiene.yml keep the slash. A bare needle
+		// matches both spellings, so this stays a real consistency check without
+		// forcing one file's grammar onto the other three.
+		//
+		// Do NOT "fix" a failure here by rewriting policy.json to drop its slashes:
+		// scanner-core.mjs emits the pattern VERBATIM in its findings, and
+		// repo-safety-push-range-scanner.audit.test.ts asserts that exact string
+		// (`forbidden-path (reports/)`). Changing policy.json breaks that audit.
 		for (const pattern of forbiddenPaths) {
-			expect(gitignore, `.gitignore must include ${pattern}`).toContain(pattern);
-			expect(preCommit, `.githooks/pre-commit must include ${pattern}`).toContain(pattern);
-			expect(repoHygiene, `.github/workflows/repo-hygiene.yml must include ${pattern}`).toContain(pattern);
+			const needle = pattern.replace(/\/$/, '');
+			expect(gitignore, `.gitignore must include ${needle}`).toContain(needle);
+			expect(preCommit, `.githooks/pre-commit must include ${needle}`).toContain(needle);
+			expect(repoHygiene, `.github/workflows/repo-hygiene.yml must include ${needle}`).toContain(needle);
 		}
 	});
 

@@ -1,13 +1,13 @@
 {
 	"forbiddenPaths": [
-		".dev",
+		".dev/",
 		".dev.vars",
 		".dev.vars.",
 		".mcp-registry-key.pem",
 		".npmrc",
 		"wrangler.production.jsonc",
-		"reports",
-		".reports",
+		"reports/",
+		".reports/",
 		"*.pdf",
 		"*.env",
 		"*.env.*",
