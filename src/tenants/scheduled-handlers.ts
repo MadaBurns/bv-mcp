@@ -34,7 +34,7 @@ import type { ScanQueueMessage } from '../schemas/tenant-internal';
 
 /** Cloudflare Queue producer shape — same minimal type used by routes.ts. */
 type ScanQueueProducer = {
-	send(message: ScanQueueMessage, options?: { contentType?: 'json' }): Promise<void>;
+	send(message: ScanQueueMessage, options?: { contentType?: 'json' }): Promise<unknown>;
 };
 
 export type TenantScheduledEnv = {

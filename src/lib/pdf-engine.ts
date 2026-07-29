@@ -4,10 +4,10 @@
  *
  * Enterprise PDF generation service using Playwright. Test-only — runs in
  * Node via Vitest's `forks` pool (see `poolMatchGlobs` in vitest.config.mts),
- * never in the Cloudflare Worker runtime. The project tsconfig pins
- * `types: ["@cloudflare/workers-types"]` so Node's `Buffer` global isn't
- * visible; the local `declare` below scopes the type to just this file
- * rather than adding `@types/node` to the whole project.
+ * never in the Cloudflare Worker runtime. The project tsconfig uses generated
+ * Worker runtime types, so Node's `Buffer` global isn't visible; the local
+ * `declare` below scopes the type to just this file rather than adding
+ * `@types/node` to the whole project.
  */
 
 import { chromium } from 'playwright';

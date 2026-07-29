@@ -1,6 +1,7 @@
 import { defineConfig } from 'vitest/config';
 import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
 import infraProbeWorker from './src/workers/infra-probe';
+import { isKnownWorkerdPoolShutdownError } from './scripts/vitest-unhandled-error-filter.mjs';
 
 export default defineConfig({
 	plugins: [
@@ -36,6 +37,9 @@ export default defineConfig({
 	],
 	test: {
 		testTimeout: 15_000,
+		onUnhandledError(error) {
+			if (isKnownWorkerdPoolShutdownError(error)) return false;
+		},
 		exclude: [
 			'node_modules/**',
 			'.claude/**',
