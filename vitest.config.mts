@@ -53,6 +53,10 @@ export default defineConfig({
 			// Same reason: walks packages/dns-checks/src with real node:fs to prove the
 			// package imports no Node built-in. The Workers pool has no real filesystem.
 			'test/audits/dns-checks-runtime-agnostic.node.test.ts',
+			// Playwright/report specs require the Node pool and are collected by
+			// vitest.node.config.mts, not the Workers runtime.
+			'test/pdf-engine.spec.ts',
+			'test/generate-discovery-report.spec.ts',
 			// scripts/ hosts standalone node:test scripts (e.g. dogfood-scan.test.mjs)
 			// that are run directly via `node --test`, not collected by Vitest. Vitest's
 			// default include glob (**/*.test.mjs) would otherwise sweep these into the
@@ -62,29 +66,6 @@ export default defineConfig({
 			// (e.g. scripts/ci/verify-deploy.test.mjs).
 			'scripts/**',
 		],
-		poolMatchGlobs: [
-			['test/pdf-engine.spec.ts', 'forks'],
-			['test/generate-discovery-report.spec.ts', 'forks'],
-		],
-		// Pool-teardown noise from @cloudflare/vitest-pool-workers: miniflare's
-		// communication WebSocket emits `peer disconnected` events on workerd
-		// shutdown that the pool's transport bridge reports as 2 file-level
-		// unhandled errors, even though every test assertion passes (3103/3103).
-		// The errors don't carry an exit code by themselves — they only flip the
-		// suite to red when vitest's Errors count is non-zero.
-		//
-		// KNOWN TRADE-OFF (audit FIND-4, flagged for operator): this is GLOBAL —
-		// it swallows *every* unhandled error in the ~3300-test suite, so a real
-		// floating-promise rejection would no longer fail CI. It is NOT redundant
-		// with scripts/vitest-filter-workerd.mjs: that wrapper is output-only (it
-		// strips the matching raw stderr LINE from user-visible output) and does
-		// NOT affect vitest's unhandled-error count or exit code. Removing this
-		// flag and relying on the stderr filter alone WOULD re-red the full suite
-		// on the teardown noise. Vitest exposes no per-message narrow for this at
-		// config level, so tightening safely requires a pool-workers fix (or a
-		// vitest onUnhandledError filter hook) — left as operator follow-up rather
-		// than silently reintroducing a flaky-red full suite.
-		dangerouslyIgnoreUnhandledErrors: true,
 		// No coverage config: the @vitest/coverage-v8 provider can't run under the
 		// @cloudflare/vitest-pool-workers runtime (workerd lacks `node:inspector`,
 		// so instrumentation throws and reports a false 0%). Quality is gated by the
