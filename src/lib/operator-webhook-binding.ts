@@ -17,6 +17,7 @@
  * (bv-web-prod repo).
  */
 import type { ScheduledEnv } from './scheduled-env-types';
+import { logError } from './log';
 
 const OPERATOR_WEBHOOK_TIMEOUT_MS = 8_000;
 const OPERATOR_WEBHOOK_CACHE_KEY = 'operator-webhook:last-known-good';
@@ -44,8 +45,8 @@ export async function resolveAlertWebhookUrl(env: ScheduledEnv): Promise<string 
 				headers: env.BV_WEB_INTERNAL_KEY ? { Authorization: `Bearer ${env.BV_WEB_INTERNAL_KEY}` } : {},
 				signal: AbortSignal.timeout(OPERATOR_WEBHOOK_TIMEOUT_MS),
 			});
-		} catch {
-			console.warn('operator-webhook-binding: fetch failed or timed out');
+		} catch (error) {
+			logError(error instanceof Error ? error : 'operator webhook fetch failed', { category: 'operator_webhook' });
 		}
 
 		if (res?.status === 401) {

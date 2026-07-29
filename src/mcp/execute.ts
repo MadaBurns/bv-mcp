@@ -36,6 +36,7 @@ import { dispatchMcpMethod } from './dispatch';
 import { validateJsonRpcRequest } from './request';
 import { checkSessionCreateRateLimit, reviveSession } from '../lib/session';
 import type { JsonRpcRequest } from '../lib/json-rpc';
+import type { QuotaCoordinator } from '../lib/quota-coordinator';
 import type { AnalyticsClient } from '../lib/analytics';
 import { hashDomain } from '../lib/analytics';
 import { classifyError as classifyFuzzError } from '../lib/fuzzing-detector';
@@ -90,7 +91,7 @@ export interface ExecuteMcpRequestOptions {
 	existingSessionId?: string;
 	serverVersion: string;
 	rateLimitKv?: KVNamespace;
-	quotaCoordinator?: DurableObjectNamespace;
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>;
 	/**
 	 * R8 — QuotaCoordinator shard routing (flag + salt). Built from
 	 * `QUOTA_SHARDING_ENABLED` / `QUOTA_SHARD_SALT` at the index.ts seam. Omitted →

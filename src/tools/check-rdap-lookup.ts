@@ -159,14 +159,11 @@ const BOOTSTRAP_FAILURE_TTL_MS = 10 * 1000;
 /** Module-level bootstrap state (per isolate lifetime). */
 let bootstrapState: { value: Record<string, string>; fetchedAt: number } | null = null;
 let bootstrapFailure: { failedAt: number } | null = null;
-/** In-flight bootstrap fetch — concurrent RDAP calls share a single IANA request. */
-let bootstrapInFlight: Promise<Record<string, string>> | null = null;
 
 /** Reset bootstrap cache — exported for test isolation. */
 export function _resetBootstrapCache(): void {
 	bootstrapState = null;
 	bootstrapFailure = null;
-	bootstrapInFlight = null;
 }
 
 /** Timeout for all outbound RDAP fetches (ms). */
@@ -217,48 +214,35 @@ async function fetchBootstrap(): Promise<Record<string, string>> {
 	if (bootstrapFailure && now - bootstrapFailure.failedAt < BOOTSTRAP_FAILURE_TTL_MS) {
 		return {};
 	}
-	if (bootstrapInFlight) {
-		return bootstrapInFlight;
-	}
-
-	bootstrapInFlight = (async () => {
-		try {
-			const resp = await fetch(IANA_BOOTSTRAP_URL, {
-				redirect: 'manual',
-				signal: AbortSignal.timeout(RDAP_TIMEOUT_MS),
-				headers: { Accept: 'application/json' },
-			});
-			if (!resp.ok) {
-				bootstrapFailure = { failedAt: Date.now() };
-				return {};
-			}
-
-			const data = (await resp.json()) as { services?: [string[], string[]][] };
-			const map: Record<string, string> = {};
-
-			if (Array.isArray(data.services)) {
-				for (const [tlds, urls] of data.services) {
-					if (!Array.isArray(tlds) || !Array.isArray(urls) || urls.length === 0) continue;
-					const serverUrl = urls[0];
-					for (const tld of tlds) {
-						if (typeof tld === 'string' && typeof serverUrl === 'string') {
-							map[tld.toLowerCase()] = serverUrl;
-						}
-					}
-				}
-			}
-
-			bootstrapState = { value: map, fetchedAt: Date.now() };
-			bootstrapFailure = null;
-			return map;
-		} catch {
+	try {
+		const resp = await fetch(IANA_BOOTSTRAP_URL, {
+			redirect: 'manual',
+			signal: AbortSignal.timeout(RDAP_TIMEOUT_MS),
+			headers: { Accept: 'application/json' },
+		});
+		if (!resp.ok) {
 			bootstrapFailure = { failedAt: Date.now() };
 			return {};
-		} finally {
-			bootstrapInFlight = null;
 		}
-	})();
-	return bootstrapInFlight;
+
+		const data = (await resp.json()) as { services?: [string[], string[]][] };
+		const map: Record<string, string> = {};
+		if (Array.isArray(data.services)) {
+			for (const [tlds, urls] of data.services) {
+				if (!Array.isArray(tlds) || !Array.isArray(urls) || urls.length === 0) continue;
+				const serverUrl = urls[0];
+				for (const tld of tlds) {
+					if (typeof tld === 'string' && typeof serverUrl === 'string') map[tld.toLowerCase()] = serverUrl;
+				}
+			}
+		}
+		bootstrapState = { value: map, fetchedAt: Date.now() };
+		bootstrapFailure = null;
+		return map;
+	} catch {
+		bootstrapFailure = { failedAt: Date.now() };
+		return {};
+	}
 }
 
 /**

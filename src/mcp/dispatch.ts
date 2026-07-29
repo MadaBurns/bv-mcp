@@ -9,6 +9,7 @@ import { auditSessionCreated } from '../lib/audit';
 import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS } from '../lib/json-rpc';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import type { AnalyticsClient } from '../lib/analytics';
+import type { QuotaCoordinator } from '../lib/quota-coordinator';
 
 type JsonRpcPayload = ReturnType<typeof jsonRpcSuccess> | ReturnType<typeof jsonRpcError>;
 
@@ -131,7 +132,7 @@ export interface DispatchMcpMethodOptions {
 	rateHeaders: Record<string, string>;
 	serverVersion: string;
 	rateLimitKv?: KVNamespace;
-	quotaCoordinator?: DurableObjectNamespace;
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>;
 	sessionStore?: KVNamespace;
 	scanCache?: KVNamespace;
 	providerSignaturesUrl?: string;
