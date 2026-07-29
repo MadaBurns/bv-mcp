@@ -49,7 +49,7 @@ import { readBoundedText } from '../lib/request-body';
  * without dragging in the full ambient definitions.
  */
 type ScanQueueProducer = {
-	send(message: ScanQueueMessage, options?: { contentType?: 'json' }): Promise<void>;
+	send(message: ScanQueueMessage, options?: { contentType?: 'json' }): Promise<unknown>;
 };
 
 type TenantEnv = ResolverEnv & {
