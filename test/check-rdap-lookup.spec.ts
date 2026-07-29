@@ -560,19 +560,16 @@ describe('checkRdapLookup', () => {
 		});
 	});
 
-	describe('bootstrap in-flight dedup', () => {
-		it('concurrent RDAP calls share a single IANA bootstrap fetch (not N concurrent fetches)', async () => {
+	describe('bootstrap request isolation', () => {
+		it('does not share active IANA fetch promises across concurrent Worker requests', async () => {
 			let bootstrapFetchCount = 0;
-			let resolveBootstrap: (v: Response) => void = () => {};
-			const bootstrapPromise = new Promise<Response>((r) => {
-				resolveBootstrap = r;
-			});
+			const bootstrapResolvers: Array<(value: Response) => void> = [];
 
 			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 				if (url.includes('data.iana.org/rdap/dns.json')) {
 					bootstrapFetchCount++;
-					return bootstrapPromise;
+					return new Promise<Response>((resolve) => bootstrapResolvers.push(resolve));
 				}
 				return Promise.resolve(
 					new Response(JSON.stringify(makeRdapResponse()), {
@@ -594,17 +591,20 @@ describe('checkRdapLookup', () => {
 			await Promise.resolve();
 			await Promise.resolve();
 
-			expect(bootstrapFetchCount).toBe(1);
+			expect(bootstrapFetchCount).toBe(3);
 
-			resolveBootstrap(
-				new Response(JSON.stringify(makeBootstrap()), {
-					status: 200,
-					headers: { 'Content-Type': 'application/json' },
-				}),
-			);
+			for (const resolve of bootstrapResolvers) {
+				resolve(
+					new Response(JSON.stringify(makeBootstrap()), {
+						status: 200,
+						headers: { 'Content-Type': 'application/json' },
+					}),
+				);
+			}
 
 			await Promise.all([p1, p2, p3]);
-			expect(bootstrapFetchCount).toBe(1);
+			await mod.checkRdapLookup('cached.com');
+			expect(bootstrapFetchCount).toBe(3);
 		});
 	});
 

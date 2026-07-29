@@ -2,7 +2,7 @@
 	"$schema": "../../node_modules/wrangler/config-schema.json",
 	"name": "bv-whois",
 	"main": "src/index.ts",
-	"compatibility_date": "2026-04-22",
+	"compatibility_date": "2026-07-29",
 	"compatibility_flags": [
 		"global_fetch_strictly_public",
 		"nodejs_compat"

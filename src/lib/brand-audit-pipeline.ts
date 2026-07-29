@@ -22,6 +22,7 @@ import type { BrandAuditStepStore } from './brand-audit-step-store';
 import type { Tier0Result } from './brand-tier0-enterprise';
 import type { Tier1Result } from './brand-tier1-graph';
 import type { Tier2Result } from './brand-tier2-evidence';
+import { logError } from './log';
 
 /**
  * brand-audit findings emit under the existing `brand_discovery` category to
@@ -1074,7 +1075,7 @@ export async function runBrandAuditPipeline(
 			try {
 				await deps.brandAuditQueue.send({ auditId, target: seedDomain, phase: 'deep_scan' }, { contentType: 'json' });
 			} catch (err) {
-				console.warn('[csc-complement] deep_scan enqueue failed:', err);
+				logError(err instanceof Error ? err : String(err), { category: 'brand_audit', result: 'deep_scan_enqueue_failed' });
 			}
 		}
 	}

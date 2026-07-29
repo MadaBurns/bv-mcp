@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-dns",
-	"version": "3.36.0",
+	"version": "3.37.0",
 	"license": "BUSL-1.1",
 	"type": "module",
 	"bin": {
@@ -32,7 +32,9 @@
 		"check:wasm-permissions": "tsx scripts/generate-wasm-permissions.ts --check",
 		"build:wasm": "npm run generate:wasm-permissions && cd crates/bv-wasm-core && wasm-pack build --target web",
 		"check:deploy-freshness": "tsx scripts/ci/deploy-freshness-check.ts",
-		"deploy:prod": "npm run check:deploy-freshness && npm -w packages/dns-checks run build && node scripts/inject-private-config.cjs && npx wrangler deploy --minify --config wrangler.production.jsonc",
+		"check:bindings": "wrangler types && tsc --noEmit",
+		"check:bindings:prod": "wrangler types --config wrangler.production.jsonc && tsc --noEmit",
+		"deploy:prod": "npm run check:deploy-freshness && npm run check:bindings && npm -w packages/dns-checks run build && node scripts/inject-private-config.cjs && npm run check:bindings:prod && npx wrangler deploy --minify --config wrangler.production.jsonc",
 		"test": "node scripts/vitest-filter-workerd.mjs",
 		"typecheck": "tsc --noEmit",
 		"lint": "eslint .",

@@ -53,6 +53,11 @@ function cleanupExpiredEntries(now: number): void {
 			TOOL_DAILY_ENTRIES.delete(key);
 		}
 	}
+
+	const currentDayWindow = Math.floor(now / DAY_MS);
+	for (const [key, entry] of IP_DAILY_ENTRIES) {
+		if (entry.dayWindow !== currentDayWindow) IP_DAILY_ENTRIES.delete(key);
+	}
 }
 
 function getOrCreateEntry(key: string): RateLimitEntry {
@@ -164,6 +169,7 @@ const IP_DAILY_ENTRIES = new Map<string, IpDailyEntry>();
 
 export function checkIpDailyLimitInMemory(ip: string, limit: number): GlobalRateLimitResult {
 	const now = Date.now();
+	cleanupExpiredEntries(now);
 	const currentWindow = Math.floor(now / DAY_MS);
 	let entry = IP_DAILY_ENTRIES.get(ip);
 	if (!entry || entry.dayWindow !== currentWindow) {

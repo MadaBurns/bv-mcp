@@ -177,24 +177,24 @@ describe('recordAuditEvent — blob handling', () => {
 describe('recordAuditEvent — fail-soft', () => {
 	it('does not throw when actorTier is invalid (Zod rejection)', async () => {
 		const { db, calls } = makeFakeDb();
-		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
 		await expect(
 			recordAuditEvent(db, { ...minimalEvent, actorTier: 'admin' as never }),
 		).resolves.toBeUndefined();
 
 		expect(calls.length).toBe(0);
-		expect(warn).toHaveBeenCalled();
-		warn.mockRestore();
+		expect(log).toHaveBeenCalledWith(expect.stringContaining('"result":"invalid_event_dropped"'));
+		log.mockRestore();
 	});
 
 	it('does not throw when D1 insert throws', async () => {
 		const { db } = makeFakeDb({ throwOnInsert: true });
-		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
 
 		await expect(recordAuditEvent(db, minimalEvent)).resolves.toBeUndefined();
-		expect(warn).toHaveBeenCalled();
-		warn.mockRestore();
+		expect(log).toHaveBeenCalledWith(expect.stringContaining('"result":"insert_failed"'));
+		log.mockRestore();
 	});
 });
 

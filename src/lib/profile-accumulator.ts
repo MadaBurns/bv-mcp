@@ -63,7 +63,12 @@ CREATE TABLE IF NOT EXISTS trend_snapshots (
   avg_score REAL DEFAULT 0.0, scan_count INTEGER DEFAULT 0,
   failure_rates TEXT DEFAULT '{}',
   PRIMARY KEY (profile, snapshot_hour)
-);`;
+);
+CREATE TABLE IF NOT EXISTS schema_meta (
+  version INTEGER NOT NULL
+);
+INSERT INTO schema_meta (version)
+SELECT 1 WHERE NOT EXISTS (SELECT 1 FROM schema_meta);`;
 
 // ─── Drizzle row types ───────────────────────────────────────────────────
 
@@ -120,26 +125,23 @@ export const MIN_BENCHMARK_SCANS = 100;
 
 /** ProfileAccumulator Durable Object for adaptive weight telemetry and intelligence aggregation. */
 export class ProfileAccumulator extends DurableObject<Env> {
-	private initialized = false;
-	private db!: DrizzleSqliteDODatabase<typeof schema>;
+	private db: DrizzleSqliteDODatabase<typeof schema>;
 
-	private ensureSchema(): void {
-		if (this.initialized) return;
-		// Run DDL directly on SqlStorage — CREATE TABLE IF NOT EXISTS is idempotent.
-		// The Drizzle schema in src/lib/db/schema.ts is the source of truth for column types.
-		for (const stmt of SCHEMA_DDL.split(';')
-			.map((s) => s.trim())
-			.filter(Boolean)) {
-			this.ctx.storage.sql.exec(stmt + ';');
-		}
+	constructor(ctx: DurableObjectState, env: Env) {
+		super(ctx, env);
 		this.db = drizzle(this.ctx.storage, { schema });
-		this.initialized = true;
+		void ctx.blockConcurrencyWhile(async () => {
+			// The Drizzle schema remains the source of truth for column types.
+			for (const stmt of SCHEMA_DDL.split(';')
+				.map((s) => s.trim())
+				.filter(Boolean)) {
+				this.ctx.storage.sql.exec(stmt + ';');
+			}
+		});
 	}
 
 	/** Handle incoming HTTP requests. */
 	async fetch(request: Request): Promise<Response> {
-		this.ensureSchema();
-
 		const url = new URL(request.url);
 		const path = url.pathname;
 
