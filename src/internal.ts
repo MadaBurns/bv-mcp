@@ -59,6 +59,7 @@ import { parseEnvelopeKey } from './lib/kv-envelope';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { buildCodeRecordFromEntitlement } from './oauth/entitlements';
 import { resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
+import { readBoundedText } from './lib/request-body';
 import { createAuthorizationCode, getClient, putCode, bumpTokenVersion } from './oauth/storage';
 import {
 	queryTierToolUsage,
@@ -236,13 +237,14 @@ internalRoutes.post('/tools/call', async (c) => {
 	// attacker who bypasses the network guard) from forcing the Worker to
 	// materialize an arbitrarily large payload in memory before Zod rejects it.
 	// Mirrors the public /mcp limit (MAX_REQUEST_BODY_BYTES = 10 KB).
-	const raw = await c.req.text();
-	if (raw.length > MAX_REQUEST_BODY_BYTES) {
+	const bodyRead = await readBoundedText(c.req.raw, MAX_REQUEST_BODY_BYTES);
+	if (!bodyRead.ok) {
 		return c.json(
 			{ content: [{ type: 'text', text: `Request body exceeds maximum of ${MAX_REQUEST_BODY_BYTES} bytes` }], isError: true },
 			413,
 		);
 	}
+	const raw = bodyRead.text;
 
 	let body: { name: string; arguments?: Record<string, unknown> };
 	try {
@@ -488,10 +490,11 @@ const BATCH_MAX_BODY_BYTES = 262_144;
  */
 internalRoutes.post('/tools/batch', async (c) => {
 	const batchStartTime = Date.now();
-	const raw = await c.req.text();
-	if (raw.length > BATCH_MAX_BODY_BYTES) {
+	const bodyRead = await readBoundedText(c.req.raw, BATCH_MAX_BODY_BYTES);
+	if (!bodyRead.ok) {
 		return c.json({ error: `Request body exceeds maximum of ${BATCH_MAX_BODY_BYTES} bytes` }, 413);
 	}
+	const raw = bodyRead.text;
 
 	let body: { tool: string; domains: string[]; arguments?: Record<string, unknown>; concurrency?: number };
 	try {
@@ -688,8 +691,9 @@ internalRoutes.post('/trial-keys', async (c) => {
 
 	let body: { label: string; tier?: string; expiresInDays?: number; maxUses?: number };
 	try {
-		const raw = await c.req.json();
-		body = CreateTrialKeyRequestSchema.parse(raw);
+		const bodyRead = await readBoundedText(c.req.raw, MAX_REQUEST_BODY_BYTES);
+		if (!bodyRead.ok) return c.json({ error: `Request body exceeds maximum of ${MAX_REQUEST_BODY_BYTES} bytes` }, 413);
+		body = CreateTrialKeyRequestSchema.parse(JSON.parse(bodyRead.text));
 	} catch (err) {
 		if (err instanceof ZodError) {
 			return c.json({ error: `Invalid ${err.issues[0].path.join('.')}: ${err.issues[0].message}` }, 400);

@@ -4,6 +4,7 @@ import { checkControlPlaneRateLimit } from '../lib/rate-limiter';
 import { validateSession } from '../lib/session';
 import { JSON_RPC_ERRORS, jsonRpcError } from '../lib/json-rpc';
 import { sseErrorResponse } from '../lib/sse';
+import type { QuotaCoordinator } from '../lib/quota-coordinator';
 
 export async function buildControlPlaneRateLimitResponse(
 	ip: string,
@@ -12,7 +13,7 @@ export async function buildControlPlaneRateLimitResponse(
 	isAuthenticated: boolean,
 	id: string | number | null | undefined,
 	accept?: string,
-	quotaCoordinator?: DurableObjectNamespace,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<Response | undefined> {
 	// Exempt: authenticated users, tool calls (have their own rate limiter), notifications,
 	// SSE streams, and all read-only protocol methods. Protocol methods are idempotent and

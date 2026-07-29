@@ -64,10 +64,10 @@ import { buildAuthorizationServerMetadata, buildProtectedResourceMetadata, resol
 import { handleRegister } from './oauth/register';
 import { handleAuthorizeGet, handleAuthorizePost } from './oauth/authorize';
 import { handleToken } from './oauth/token';
-export { QuotaCoordinator } from './lib/quota-coordinator';
-import { SINGLETON_ROUTING } from './lib/quota-coordinator';
-export { ProfileAccumulator } from './lib/profile-accumulator';
-import { resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
+import { QuotaCoordinator, SINGLETON_ROUTING } from './lib/quota-coordinator';
+export { QuotaCoordinator };
+import { ProfileAccumulator, resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
+export { ProfileAccumulator };
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -87,11 +87,12 @@ function logAnalyticsBindingStatus(enabled: boolean): void {
 	});
 }
 
-type BvMcpEnv = {
+type BvMcpEnv = Env & {
+	[key: string]: unknown;
 	RATE_LIMIT?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
-	QUOTA_COORDINATOR?: DurableObjectNamespace;
+	QUOTA_COORDINATOR?: DurableObjectNamespace<QuotaCoordinator>;
 	/**
 	 * R8 / ADAM #2 — QuotaCoordinator sharding feature flag. DEFAULT-OFF: only the
 	 * literal string `'true'` enables shard routing of the per-IP quota path. Unset
@@ -107,7 +108,7 @@ type BvMcpEnv = {
 	 * when sharding is enabled. Treat a change like a flag flip (re-maps every counter).
 	 */
 	QUOTA_SHARD_SALT?: string;
-	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
+	PROFILE_ACCUMULATOR?: DurableObjectNamespace<ProfileAccumulator>;
 	/**
 	 * R10 — ProfileAccumulator write-sharding mode. Default-OFF: only the exact
 	 * string `'profile'` enables per-profile sharding (6 DO instances); any other
@@ -1488,7 +1489,7 @@ export function routeCron(cron: string): CronRoute {
 }
 
 export default {
-	fetch: (req: Request, env: Record<string, unknown>, ctx: ExecutionContext) => app.fetch(req, env, ctx),
+	fetch: (req: Request, env: BvMcpEnv, ctx: ExecutionContext) => app.fetch(req, env, ctx),
 	/**
 	 * Tail-consumer handler. `wrangler.jsonc` registers this Worker as its own
 	 * `tail_consumers` target, so Cloudflare delivers a batch of this Worker's
@@ -1496,10 +1497,10 @@ export default {
 	 * in-band emit path). We aggregate by colo+outcome+scriptName into the
 	 * MCP_ANALYTICS dataset. Fail-open + cheap — `handleTail` never throws.
 	 */
-	tail: (events: TraceItem[], env: Record<string, unknown>, _ctx: ExecutionContext) => {
+	tail: (events: TraceItem[], env: BvMcpEnv, _ctx: ExecutionContext) => {
 		handleTail(events, env as { MCP_ANALYTICS?: AnalyticsEngineDataset });
 	},
-	scheduled: async (event: ScheduledEvent, env: Record<string, unknown>, ctx: ExecutionContext) => {
+	scheduled: async (event: ScheduledController, env: BvMcpEnv, ctx: ExecutionContext) => {
 		// Each handler is dispatched via its own waitUntil so a failure in one
 		// (e.g. Tenant alert sweep throws) cannot mask the others' analytics outcome.
 		//
@@ -1531,7 +1532,7 @@ export default {
 	 * `bv-scanner-queue` (tenant scans) and `brand-audit-queue` (brand-audit
 	 * async path, v2.19.0+) share the same Worker entrypoint.
 	 */
-	queue: async (batch: MessageBatch<unknown>, env: Record<string, unknown>, ctx: ExecutionContext) => {
+	queue: async (batch: MessageBatch<unknown>, env: BvMcpEnv, ctx: ExecutionContext) => {
 		logEvent({
 			timestamp: new Date().toISOString(),
 			category: 'queue',
@@ -1647,4 +1648,4 @@ export default {
 			});
 		}
 	},
-};
+} satisfies ExportedHandler<BvMcpEnv>;

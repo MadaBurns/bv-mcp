@@ -274,7 +274,12 @@ async function dualFetchHeaders(
 	// Only .headers/.status/.ok/.type are ever read below — no caller of this
 	// function reads a body. Drain all of them now so an unread HEAD-probe body
 	// doesn't trip the platform's "stalled HTTP response" deadlock-prevention warning.
-	for (const r of responses) void r.body?.cancel();
+	await Promise.all(
+		responses.map(async (response) => {
+			if (!response.body || response.body.locked) return;
+			await response.body.cancel().catch(() => undefined);
+		}),
+	);
 
 	// Only treat 2xx/3xx as usable headers for analysis.
 	const usable = responses.filter((r) => r.ok || (r.status >= 300 && r.status < 400));

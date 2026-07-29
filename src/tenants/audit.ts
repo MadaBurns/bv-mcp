@@ -20,7 +20,7 @@ import type { DrizzleD1Database } from 'drizzle-orm/d1';
 import * as registrySchema from './db/schema/registry';
 import { auditEvents } from './db/schema/registry';
 import { AuditEventSchema, type AuditEvent } from '../schemas/audit';
-import { isSensitiveKey, sanitizeString } from '../lib/log';
+import { isSensitiveKey, logError, logEvent, sanitizeString } from '../lib/log';
 
 const REDACTED = '[redacted]';
 const MAX_BLOB_BYTES = 4096;
@@ -40,7 +40,13 @@ type AuditDb = DrizzleD1Database<typeof registrySchema>;
 export async function recordAuditEvent(db: AuditDb, event: AuditEvent, ctx?: ExecutionContext): Promise<void> {
 	const parsed = AuditEventSchema.safeParse(event);
 	if (!parsed.success) {
-		console.warn('[audit] invalid event — dropped', { issues: parsed.error.issues });
+		logEvent({
+			timestamp: new Date().toISOString(),
+			category: 'tenant_audit',
+			result: 'invalid_event_dropped',
+			severity: 'warn',
+			details: { issues: parsed.error.issues },
+		});
 		return;
 	}
 
@@ -51,7 +57,7 @@ export async function recordAuditEvent(db: AuditDb, event: AuditEvent, ctx?: Exe
 			await db.insert(auditEvents).values(row);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
-			console.warn('[audit] insert failed (fail-soft)', { error: message, action: row.action });
+			logError(message, { category: 'tenant_audit', result: 'insert_failed', details: { action: row.action } });
 		}
 	})();
 

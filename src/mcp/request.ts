@@ -3,6 +3,7 @@
 import { JSON_RPC_ERRORS, jsonRpcError } from '../lib/json-rpc';
 import type { JsonRpcRequest } from '../lib/json-rpc';
 import { JsonRpcRequestSchema } from '../schemas/json-rpc';
+import { readBoundedText } from '../lib/request-body';
 
 type RequestErrorStatus = 400 | 413 | 415;
 
@@ -65,39 +66,18 @@ export function validateContentType(contentType: string | undefined | null): Req
 }
 
 export async function readRequestBody(request: Request, maxBytes: number): Promise<RequestBodyReadResult> {
-	let rawBody = '';
-	const reader = request.body?.getReader();
-	if (reader) {
-		let total = 0;
-		const decoder = new TextDecoder();
-		while (true) {
-			const { value, done } = await reader.read();
-			if (done) break;
-			total += value.length;
-			if (total > maxBytes) {
-				return {
-					ok: false,
-					status: 413,
-					payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'),
-				};
-			}
-			rawBody += decoder.decode(value, { stream: true });
-		}
-		rawBody += decoder.decode(); // flush any remaining buffered bytes
-	} else {
-		rawBody = await request.text();
-		if (rawBody.length > maxBytes) {
-			return {
-				ok: false,
-				status: 413,
-				payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'),
-			};
-		}
+	const result = await readBoundedText(request, maxBytes);
+	if (!result.ok) {
+		return {
+			ok: false,
+			status: 413,
+			payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Request body too large'),
+		};
 	}
 
 	return {
 		ok: true,
-		rawBody,
+		rawBody: result.text,
 	};
 }
 

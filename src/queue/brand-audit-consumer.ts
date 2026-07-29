@@ -25,6 +25,7 @@
  * `format ∈ {markdown, both}` requests a PDF rendering. v2.19.0 only stores the
  * result_json blob.
  */
+import { logError } from '../lib/log';
 
 import { z } from 'zod';
 import { brandAuditSingle as defaultBrandAuditSingle, type BrandAuditSingleOptions } from '../tools/brand-audit-single';
@@ -780,7 +781,7 @@ export async function handleBrandAuditQueue(batch: MessageBatch<unknown>, deps: 
 					// The fast-stage payload is already persisted; brand_audit_get_report falls back to
 					// csc_complement_fast when csc_complement_full is absent. Ack and let the cron reaper
 					// re-enqueue if needed.
-					console.warn('[csc-complement] deep_scan job failed:', err);
+					logError(err instanceof Error ? err : String(err), { category: 'brand_audit', result: 'deep_scan_failed' });
 				}
 			}
 			// Ack unconditionally: malformed payload, missing internalCall, or deep-scan failure are not retryable.

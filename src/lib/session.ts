@@ -24,7 +24,7 @@ import {
 	type SessionRecord,
 	validateSessionInMemory,
 } from './session-memory';
-import { checkSessionCreateRateLimitWithCoordinator } from './quota-coordinator';
+import { checkSessionCreateRateLimitWithCoordinator, type QuotaCoordinator } from './quota-coordinator';
 import { withIpKvLock } from './rate-limiter';
 import { logError } from './log';
 import { SessionRecordSchema } from '../schemas/session';
@@ -53,7 +53,7 @@ function tombstoneKey(id: string): string {
 export async function checkSessionCreateRateLimit(
 	ip: string,
 	kv?: KVNamespace,
-	quotaCoordinator?: DurableObjectNamespace,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<SessionCreateRateResult> {
 	if (quotaCoordinator) {
 		try {

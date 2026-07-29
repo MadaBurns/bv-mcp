@@ -41,6 +41,7 @@ import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
 import type { AuditEvent } from '../schemas/audit';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { parseTenantScanSnapshot, toTenantScanSnapshot, type TenantScanSnapshot } from './scan-snapshot';
+import { readBoundedText } from '../lib/request-body';
 
 /**
  * Minimal `Queue<T>` shape — Cloudflare's runtime types pin this to the
@@ -48,7 +49,7 @@ import { parseTenantScanSnapshot, toTenantScanSnapshot, type TenantScanSnapshot 
  * without dragging in the full ambient definitions.
  */
 type ScanQueueProducer = {
-	send(message: ScanQueueMessage, options?: { contentType?: 'json' }): Promise<void>;
+	send(message: ScanQueueMessage, options?: { contentType?: 'json' }): Promise<unknown>;
 };
 
 type TenantEnv = ResolverEnv & {
@@ -434,18 +435,19 @@ function rateLimited(
 
 tenantRoutes.post('/portfolio', async (c) => {
 	try {
-		const raw = await c.req.text();
-		if (raw.length > MAX_TENANT_PORTFOLIO_BODY_BYTES) {
+		const bodyRead = await readBoundedText(c.req.raw, MAX_TENANT_PORTFOLIO_BODY_BYTES);
+		if (!bodyRead.ok) {
 			// Tenant header has not been read yet — resourceId is `<unknown>`.
 			dispatchAudit(c, {
 				action: 'portfolio.upsert',
 				resourceType: 'sub_tenant',
 				resourceId: '<unknown>',
 				outcome: 'denied',
-				blob: { reason: 'body_too_large', byteLength: raw.length, maxBytes: MAX_TENANT_PORTFOLIO_BODY_BYTES },
+				blob: { reason: 'body_too_large', byteLength: bodyRead.byteLength, maxBytes: MAX_TENANT_PORTFOLIO_BODY_BYTES },
 			});
 			return c.json({ error: `Request body exceeds maximum of ${MAX_TENANT_PORTFOLIO_BODY_BYTES} bytes` }, 413);
 		}
+		const raw = bodyRead.text;
 
 		const tenantOrErr = extractTenantHeader(c);
 		if (typeof tenantOrErr !== 'string') {
@@ -589,18 +591,19 @@ tenantRoutes.post('/portfolio', async (c) => {
 
 tenantRoutes.post('/scan', async (c) => {
 	try {
-		const raw = await c.req.text();
-		if (raw.length > MAX_INTERNAL_BATCH_BODY_BYTES) {
+		const bodyRead = await readBoundedText(c.req.raw, MAX_INTERNAL_BATCH_BODY_BYTES);
+		if (!bodyRead.ok) {
 			dispatchAudit(c, {
 				action: 'scan.start',
 				resourceType: 'cycle',
 				resourceId: '<unknown>',
 				subTenantId: safeResourceId(c.req.header('x-tenant')),
 				outcome: 'denied',
-				blob: { reason: 'body_too_large', byteLength: raw.length, maxBytes: MAX_INTERNAL_BATCH_BODY_BYTES },
+				blob: { reason: 'body_too_large', byteLength: bodyRead.byteLength, maxBytes: MAX_INTERNAL_BATCH_BODY_BYTES },
 			});
 			return c.json({ error: `Request body exceeds maximum of ${MAX_INTERNAL_BATCH_BODY_BYTES} bytes` }, 413);
 		}
+		const raw = bodyRead.text;
 
 		const tenantOrErr = extractTenantHeader(c);
 		if (typeof tenantOrErr !== 'string') {
@@ -927,17 +930,18 @@ tenantRoutes.post('/scan', async (c) => {
 
 tenantRoutes.post('/discover', async (c) => {
 	try {
-		const raw = await c.req.text();
-		if (raw.length > MAX_INTERNAL_BATCH_BODY_BYTES) {
+		const bodyRead = await readBoundedText(c.req.raw, MAX_INTERNAL_BATCH_BODY_BYTES);
+		if (!bodyRead.ok) {
 			dispatchAudit(c, {
 				action: 'discovery.start',
 				resourceType: 'sub_tenant',
 				resourceId: '<unknown>',
 				outcome: 'denied',
-				blob: { reason: 'body_too_large', byteLength: raw.length, maxBytes: MAX_INTERNAL_BATCH_BODY_BYTES },
+				blob: { reason: 'body_too_large', byteLength: bodyRead.byteLength, maxBytes: MAX_INTERNAL_BATCH_BODY_BYTES },
 			});
 			return c.json({ error: `Request body exceeds maximum of ${MAX_INTERNAL_BATCH_BODY_BYTES} bytes` }, 413);
 		}
+		const raw = bodyRead.text;
 
 		const tenantOrErr = extractTenantHeader(c);
 		if (typeof tenantOrErr !== 'string') {
