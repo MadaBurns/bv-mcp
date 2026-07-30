@@ -10,24 +10,16 @@ name: Symlink escape gate
 # (the canonical, locally-runnable copy of this check lives there as
 # tools/lint-symlink-escape.mjs — kept in lockstep by hand, not by import).
 #
-# DIVERGENCE FROM bv-cc's tools/lint-symlink-escape.mjs (added 2026-07-27,
-# bv-mcp symlink-hardening follow-up to #576/#579): this workflow gained a
-# SECOND, separate `symlink-portability` job below that bv-cc's canonical
-# copy does NOT have. It closes two gaps the escape-only rule above missed,
-# independently, on the exact incident that motivated it (a tracked
-# node_modules symlink with an absolute, machine-specific target that
-# resolved on the authoring machine but pointed at a DIFFERENT checkout's
-# installed packages):
-#   (a) the escape rule above deliberately exempts absolute targets (see its
-#       own comment) — correct for its CWE-61/relative-traversal threat
-#       model, but it lets an absolute-target symlink sail through clean;
-#   (b) the escape rule's `find ... -prune` enumeration (below) prunes
-#       anything literally NAMED node_modules — including a symlink named
-#       node_modules — before it is ever examined.
-# When reconciling these two workflows by hand: either port the
-# symlink-portability job to bv-cc's tools/lint-symlink-escape.mjs and
-# re-establish lockstep, or record there that bv-mcp intentionally carries
-# this additional rule.
+# RELATED, NOT DUPLICATED: a blanket "no tracked symlink of ANY kind"
+# rule lives in .github/workflows/repo-hygiene.yml (added by #580 after the
+# #576 tracked-node_modules-symlink incident). That rule reads the git INDEX,
+# so it is immune to BOTH of this workflow's blind spots — it has no prune
+# paths, and it does not care what the target looks like. It therefore
+# strictly subsumes any absolute-target check that could be added here, which
+# is why this workflow deliberately does NOT carry one: two overlapping
+# symlink rules in two workflows would make the hand-maintained bv-cc lockstep
+# harder to reason about for no added coverage. Keep the CWE-61 escape rule
+# here (it is the reusable, bv-cc-mirrored one) and the blanket ban there.
 on:
   workflow_call:
   push:
@@ -89,52 +81,3 @@ jobs:
             exit 1
           fi
           echo "symlink-escape: no violations."
-
-  symlink-portability:
-    name: No tracked symlinks have machine-specific targets
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      # Separate rationale from the escape job above: this is NOT a security
-      # check (no CWE-61 traversal concern here) — it's a portability check.
-      # ANY tracked symlink whose target is absolute or ~-relative is
-      # machine-specific and wrong on every clone other than the one that
-      # authored it, independent of where it happens to point. On the
-      # authoring machine it can even resolve successfully — to the WRONG
-      # thing — which is exactly what happened in #576: a committed
-      # node_modules symlink with an absolute target silently pointed one
-      # session's workspace package at a DIFFERENT checkout's installed
-      # version, corrupting that session's test results without any error.
-      - name: Scan for portability-breaking symlinks (absolute / ~ targets)
-        run: |
-          set -euo pipefail
-          VIOLATIONS=0
-
-          # Enumerate via the git TREE (git ls-tree -r HEAD), never `find`.
-          # This is the load-bearing property: `find ... -prune` (used by
-          # the escape-rule step above) prunes any path literally NAMED
-          # node_modules before it is ever examined — including a symlink
-          # named node_modules, which is exactly how the escape rule missed
-          # the #576 incident. A tree/index scan filtered by git's own mode
-          # field (120000 = symlink) has no prune step to get wrong: every
-          # tracked entry is enumerated by MODE, not by name, so a symlink
-          # can never hide behind a pruned directory name. Do NOT
-          # "optimise" this back to `find` — that would silently
-          # reintroduce the exact bug this job exists to close.
-          while IFS= read -r link; do
-            target=$(git cat-file -p "HEAD:$link")
-
-            case "$target" in
-              /*|'~'*)
-                echo "::error file=$link::SYMLINK_PORTABILITY — tracked symlink has a machine-specific target (-> $target). An absolute or ~-relative target is wrong on every clone but the one that authored it, regardless of where it points."
-                VIOLATIONS=$((VIOLATIONS+1))
-                ;;
-            esac
-          done < <(git ls-tree -r HEAD | awk '$1 == "120000" { print $4 }')
-
-          if [ "$VIOLATIONS" -gt 0 ]; then
-            echo "symlink-portability: $VIOLATIONS violation(s)."
-            exit 1
-          fi
-          echo "symlink-portability: no violations."
