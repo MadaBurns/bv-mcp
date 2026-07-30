@@ -44,9 +44,15 @@ export interface NsCoOwnedCandidate {
 	domain: string;
 	/** Lowercase nameserver hostnames shared with the seed, or (for in-bailiwick matches) the candidate's own in-bailiwick NS hosts. */
 	sharedNs: string[];
-	/** |intersection| / |seed_NS_set|, rounded to 2 decimals. 1.0 = full overlap or an in-bailiwick match. */
+	/** |intersection| / |seed_NS_set|, rounded to 2 decimals. 1.0 = full overlap or a FULL in-bailiwick match. */
 	confidence: number;
-	/** `in_bailiwick` — candidate's own NS delegated under the seed apex (D6.1). `set_overlap` — shares NS hostnames with the seed (pre-existing logic). */
+	/**
+	 * `in_bailiwick` — EVERY one of the candidate's own NS is delegated under
+	 * the seed apex (D6.1, tightened 2026-07-27 "full match only" ruling — a
+	 * partial in-bailiwick subset no longer qualifies and instead falls
+	 * through to `set_overlap`). `set_overlap` — shares NS hostnames with the
+	 * seed (pre-existing logic).
+	 */
 	matchType: 'in_bailiwick' | 'set_overlap';
 }
 
@@ -104,10 +110,7 @@ function round2(n: number): number {
  *   does not pass `validateDomain`. All other failure modes (network error,
  *   empty NS, transient candidate failures) are returned via `queryStatus`.
  */
-export async function correlateNs(
-	seedDomain: string,
-	options: NsCorrelationOptions = {},
-): Promise<NsCorrelationResult> {
+export async function correlateNs(seedDomain: string, options: NsCorrelationOptions = {}): Promise<NsCorrelationResult> {
 	const validation = validateDomain(seedDomain);
 	if (!validation.valid) {
 		throw new Error(`Domain validation failed: ${validation.error ?? 'invalid domain'}`);
@@ -146,10 +149,26 @@ export async function correlateNs(
 		// intersection alone misses this whenever the seed itself sits on
 		// different (often shared-provider) infrastructure, as bnz.co.nz's
 		// Akamai delegation does relative to its self-hosted NS variants.
-		const inBailiwick = Array.from(candidateOutcome.set)
-			.filter((ns) => isInBailiwick(ns, seedApex))
-			.sort();
-		if (inBailiwick.length > 0) {
+		//
+		// Ruling (2026-07-27, ownership-attribution followups, item 1 —
+		// "full match only"): confidence 1 / matchType 'in_bailiwick' is a
+		// near-deterministic ownership signal ONLY when EVERY nameserver in
+		// the candidate's own set is in-bailiwick. A candidate with, say, 1
+		// in-bailiwick NS and 4 external ones is NOT the same evidence as a
+		// fully-migrated domain — downstream (`brand-evidence.ts`'s
+		// `evidenceTier()`) grants matchType 'in_bailiwick' a single-signal
+		// 'strong' tier that bypasses N-of-M corroboration entirely, so a
+		// partial match must never take this branch. It falls through to the
+		// existing set_overlap ratio/count math below instead (which will
+		// correctly score/drop it based on literal overlap with the seed's own
+		// NS set — an in-bailiwick host is not automatically a member of that
+		// set). Accepted cost: a legitimate mid-migration domain with one
+		// stray external nameserver loses the auto-include bypass and must
+		// clear set_overlap's bar instead.
+		const candidateNsList = Array.from(candidateOutcome.set);
+		const inBailiwick = candidateNsList.filter((ns) => isInBailiwick(ns, seedApex)).sort();
+		const isFullInBailiwickMatch = inBailiwick.length > 0 && inBailiwick.length === candidateNsList.length;
+		if (isFullInBailiwickMatch) {
 			return {
 				candidate: { domain: candidate, sharedNs: inBailiwick, confidence: 1, matchType: 'in_bailiwick' },
 				failed: false,

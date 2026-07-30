@@ -694,9 +694,9 @@ async function checkLookalikesCore(
 		// F2 (2026-07-27 fix round 2): a RDAP registrant-org match is
 		// DELIBERATELY NOT fed into `classifyOwnership()` as an ownership
 		// signal — the org field is self-declared and unverified by most
-		// registries (the same attacker-influenceable class flagged for
-		// `soaInBailiwick`/`spfIncludesSeedApex`/`httpRedirectToSeedApex` in
-		// `ClassifyOwnershipInput`'s JSDoc), so it must never be able to
+		// registries (the same attacker-influenceable class as the
+		// candidate-side declarations described in the OWNERSHIP RULE note
+		// on `ClassifyOwnershipInput`), so it must never be able to
 		// silently produce an `owned_by_seed` verdict. Every candidate reaching
 		// this branch therefore still carries the STRUCTURAL verdict computed
 		// earlier (`third_party` here — `sameOwner` above already filtered out

@@ -59,12 +59,21 @@
  *      widen to swallow other framed titles. `checkLookalikes` has NO such
  *      carve-out — the framing sweep against it is unconditional.
  *
- *  (3) THE PRIMITIVE-LEVEL INVARIANT (task 7c). The three candidate-side
- *      signals (`soaInBailiwick`, `spfIncludesSeedApex`, `httpRedirectToSeedApex`)
- *      must never — alone or combined — produce `owned_by_seed` from
- *      `classifyOwnership()` directly. Pinned once more here (unit tests
- *      already pin it) so a future "optimisation" of those unit tests can't
- *      silently drop the property from BOTH places at once.
+ *  (3) THE PRIMITIVE-LEVEL INVARIANT (task 7c) — SUPERSEDED 2026-07-27
+ *      (ownership-attribution followups, item 2, "delete them" ruling). This
+ *      amendment used to pin, a second time, that the three candidate-side
+ *      signals (`soaInBailiwick`, `spfIncludesSeedApex`,
+ *      `httpRedirectToSeedApex`) never — alone or combined — produce
+ *      `owned_by_seed` from `classifyOwnership()` directly. Those fields were
+ *      DELETED from `ClassifyOwnershipInput` (they were accepted but never
+ *      read, and no production caller ever populated them — a pure
+ *      attacker-influenceable footgun), which makes that test
+ *      UNCONSTRUCTIBLE: there is no longer an input surface for a
+ *      candidate-side signal to reach `classifyOwnership()` at all, so the
+ *      invariant is now enforced at the TYPE level rather than by a runtime
+ *      assertion. See the `OWNERSHIP RULE` JSDoc on `ClassifyOwnershipInput`
+ *      (`src/lib/ownership-attribution.ts`) for the rule a future author
+ *      wiring a real SOA/SPF/redirect probe must re-derive.
  *
  *  (4) FIX ROUND 1 (2026-07-27, adversarial re-review). Four findings, all
  *      addressed:
@@ -641,31 +650,14 @@ describe('ownership severity gate (audit) — load-bearing safety property', () 
 		assertSeverityJustified('checkLookalikes (post-loop scan_status)', LOOKALIKES_SEED, result.findings);
 	});
 
-	it('classifyOwnership(): candidate-side signals — soaInBailiwick, spfIncludesSeedApex, httpRedirectToSeedApex — never independently or combined produce owned_by_seed (Ruling A, task 7c)', async () => {
-		const { classifyOwnership } = await import('../../src/lib/ownership-attribution');
-		const { isSharedNsHost } = await import('../../src/tenants/discovery/shared-ns-hosts');
-
-		const base = {
-			seedDomain: 'bnz.co.nz',
-			seedNs: ['ns-cloud1.googledomains.com'],
-			candidateDomain: 'evilbnz.co.nz',
-			registration: { state: 'registered' as const, ns: ['ns1.attacker-dns.com'], evidence: ['ns' as const] },
-			isSharedNsHost,
-		};
-
-		// Each signal alone.
-		expect(classifyOwnership({ ...base, soaInBailiwick: true }).verdict).not.toBe('owned_by_seed');
-		expect(classifyOwnership({ ...base, spfIncludesSeedApex: true }).verdict).not.toBe('owned_by_seed');
-		expect(classifyOwnership({ ...base, httpRedirectToSeedApex: true }).verdict).not.toBe('owned_by_seed');
-
-		// All three combined.
-		const combined = classifyOwnership({
-			...base,
-			soaInBailiwick: true,
-			spfIncludesSeedApex: true,
-			httpRedirectToSeedApex: true,
-		});
-		expect(combined.verdict).not.toBe('owned_by_seed');
-		expect(combined.verdict).toBe('third_party');
-	});
+	// The `classifyOwnership(): candidate-side signals ...` test that used to
+	// live here (pinning that `soaInBailiwick`/`spfIncludesSeedApex`/
+	// `httpRedirectToSeedApex` never — alone or combined — produce
+	// `owned_by_seed`) was removed 2026-07-27 (ownership-attribution
+	// followups, item 2): those three fields were DELETED from
+	// `ClassifyOwnershipInput`, making the test UNCONSTRUCTIBLE (there is no
+	// longer an input surface for it to exercise). See amendment (3) above
+	// and the `OWNERSHIP RULE` JSDoc on `ClassifyOwnershipInput`
+	// (`src/lib/ownership-attribution.ts`) for the rule this test used to
+	// enforce, now enforced at the type level instead.
 });

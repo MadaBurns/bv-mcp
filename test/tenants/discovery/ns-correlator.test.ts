@@ -339,4 +339,47 @@ describe('correlateNs', () => {
 		expect(result.queryStatus).toBe('partial');
 		expect(result.coOwnedDomains).toEqual([]);
 	});
+
+	// Ruling (2026-07-27, ownership-attribution followups, item 1 — "full
+	// match only"). A candidate whose own NS set is only PARTIALLY
+	// in-bailiwick (1 of 2 hosts under the seed apex, the other external) must
+	// NOT take the confidence-1/'in_bailiwick' bypass — that free strong-tier
+	// bypass is reserved for a FULL match. Previously (fix round 1, before
+	// this ruling) any non-empty in-bailiwick subset qualified; this is the
+	// missing mixed fixture the ruling calls out as absent.
+	it('a candidate with a PARTIAL in-bailiwick NS subset (1 of 2) does NOT get the confidence-1/in_bailiwick bypass — falls through to set_overlap', async () => {
+		const dnsQuery = dnsQueryFromMap({
+			'bnz.co.nz': ['ns1.bnz.co.nz.', 'ns2.bnz.co.nz.'],
+			// One NS in-bailiwick (ns1.bnz.co.nz, which also happens to be one of
+			// the seed's own NS hosts) plus four external, unrelated hosts.
+			'bnz-partial-migration.nz': [
+				'ns1.bnz.co.nz.',
+				'ns9.external-registrar.example.',
+				'ns10.external-registrar.example.',
+				'ns11.external-registrar.example.',
+				'ns12.external-registrar.example.',
+			],
+		});
+		const result = await correlateNs('bnz.co.nz', { dnsQuery, candidateDomains: ['bnz-partial-migration.nz'] });
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toHaveLength(1);
+		const candidate = result.coOwnedDomains[0];
+		// Must be graded via set_overlap's ratio math (1 shared NS host /
+		// 2-host seed set = 0.5), never the free in-bailiwick bypass.
+		expect(candidate).toMatchObject({ domain: 'bnz-partial-migration.nz', matchType: 'set_overlap', confidence: 0.5 });
+		expect(candidate.sharedNs).toEqual(['ns1.bnz.co.nz']);
+	});
+
+	it('a candidate with a PARTIAL in-bailiwick NS subset that shares NOTHING with the seed literal NS set is dropped entirely (no free bypass, no fallback overlap to grade)', async () => {
+		const dnsQuery = dnsQueryFromMap({
+			'bnz.co.nz': ['a1-97.akam.net.', 'a3-67.akam.net.'],
+			// 1 of 2 in-bailiwick, but the in-bailiwick host does not literally
+			// appear in the seed's own (Akamai) NS set, so set_overlap also
+			// finds zero shared hosts.
+			'bnz-stray.nz': ['ns1.bnz.co.nz.', 'ns9.external-registrar.example.'],
+		});
+		const result = await correlateNs('bnz.co.nz', { dnsQuery, candidateDomains: ['bnz-stray.nz'] });
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toEqual([]);
+	});
 });
