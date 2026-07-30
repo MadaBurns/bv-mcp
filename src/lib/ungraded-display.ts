@@ -4,22 +4,39 @@
  * The single vocabulary for "this scan produced no grade", and the single place
  * a `score/grade` pair is turned into display text.
  *
- * A deliberately tiny leaf module (no imports) so every formatter in `src/tools/`
- * can depend on it without an import cycle through the scan orchestrator.
+ * A deliberately tiny module whose ONLY import is the external
+ * `@blackveil/dns-checks` package, so every formatter in `src/tools/` can depend
+ * on it without an import cycle through the scan orchestrator. That property is
+ * about the `src/` import graph, and an external-package edge cannot join it:
+ * `packages/dns-checks/src` imports nothing outside relative paths, `zod`, and
+ * (in its own tests) `vitest` — it has no edge back into `src/` at all, so it
+ * cannot reach the orchestrator. The rule to preserve is therefore narrower than
+ * "no imports": no `src/`-relative import may be added here. Pinned by
+ * `test/audits/completed-evidence-cross-package-parity.audit.test.ts` (LEG 3).
  *
  * `isCompletedCheck`/`hasCompletedEvidence`/`normalizeCheckStatus` below are the
- * SSOT for "did this check/scan produce usable evidence" on the `src/` side only —
+ * SSOT for "did this check/scan produce usable evidence" on the `src/` side —
  * `test/audits/completed-evidence-predicate-ssot.audit.test.ts` bans any other
- * `src/` module from re-deriving the same check. `packages/dns-checks/src/scoring/evidence.ts`
- * (`computeScanEvidence`'s per-result completed/attempted accounting) is a
- * DELIBERATE, KNOWN twin on the other side of the package boundary — it is a
- * published SSOT vendored by another repo and frozen for this campaign, so it
- * cannot import from `src/`, and this module cannot be vendored into it
- * without inverting the dependency direction (`src/` already depends on
- * `@blackveil/dns-checks`, not the other way around). The two are kept in
- * semantic lockstep by hand, not by a shared import; a change to what
- * "completed" means must be applied to BOTH deliberately.
+ * `src/` module from re-deriving the same check, including this file itself.
+ *
+ * ACROSS the package boundary there is now ONE implementation, not a twin. This
+ * module used to re-derive the comparison independently of
+ * `packages/dns-checks/src/scoring/evidence.ts` (`computeScanEvidence`'s
+ * per-result completed/attempted accounting), justified on the grounds that no
+ * shared import was possible. That justification no longer holds: the package
+ * exports the predicate as `isCheckMeasured` on the
+ * `@blackveil/dns-checks/scoring` subpath this repo ALREADY consumes
+ * (`src/lib/adaptive-weights.ts`, `src/lib/category-interactions.ts`,
+ * `src/lib/scoring.ts`), so `isCompletedCheck` DELEGATES to it. The dependency
+ * direction is unchanged and correct — `src/` depends on the published package,
+ * never the reverse. A change to what "completed" means is now made once, in the
+ * package, and reaches this side automatically; the type union itself is
+ * likewise imported (`CheckStatus`) rather than hand-copied, so a new member
+ * cannot appear on one side of the boundary only.
  */
+
+import type { CheckStatus } from '@blackveil/dns-checks/scoring';
+import { isCheckMeasured } from '@blackveil/dns-checks/scoring';
 
 /**
  * The SINGLE rendered token for a scan that produced no grade. One constant so
@@ -68,21 +85,31 @@ export function formatScoreGrade(score: number | null | undefined, grade: string
  * checks ran and only the scoring bundle failed, so its per-check results stay
  * genuinely evaluable. This predicate keeps those two cases apart.
  *
- * Deliberately typed on the array's length alone (`readonly unknown[]`) so this
- * stays an import-free leaf module with no edge to the scan orchestrator.
+ * Deliberately typed on the array's length alone (`readonly unknown[]`) rather
+ * than on `CheckResult[]`, so this predicate adds no edge to `src/`'s scan
+ * orchestrator — the leaf property the file-level doc describes. (The file does
+ * import from the external `@blackveil/dns-checks` package; that edge cannot
+ * reach the orchestrator, see the file-level doc.)
  */
 export function isMeasured(checks: readonly unknown[]): boolean {
 	return checks.length > 0;
 }
 
 /**
- * Minimal shape this leaf module needs from a check result to answer "did
- * anything complete" — a local structural type instead of importing
- * `CheckResult`, so this file stays a zero-import leaf with no edge to the
- * scan orchestrator.
+ * Minimal shape this module needs from a check result to answer "did anything
+ * complete" — a local structural type instead of importing `CheckResult`, so
+ * this file keeps no edge into `src/`'s scan orchestrator.
+ *
+ * The status TYPE is the package's `CheckStatus`, not a hand-copied
+ * `'completed' | 'timeout' | 'error'` literal union. That copy was the second
+ * half of the same cross-boundary duplication `isCompletedCheck` had: a new
+ * union member added in the package would leave a re-spelled local union
+ * silently narrower, and the resulting `CheckResult` would fail to typecheck
+ * here — or worse, be narrowed away — while the package considered it valid.
+ * Importing the union makes such a member a COMPILE-time event on this side.
  */
 interface CheckStatusBearer {
-	readonly checkStatus?: 'completed' | 'timeout' | 'error';
+	readonly checkStatus?: CheckStatus;
 }
 
 /**
@@ -125,17 +152,22 @@ export function hasCompletedEvidence(checks: readonly CheckStatusBearer[]): bool
  * uses internally, instead of re-deriving it — see `test/audits/*evidence*`
  * for the ban on re-spelling this check.
  *
- * Deliberately an ALLOWLIST (`undefined | 'completed'` counts as completed),
- * not a denylist (`!== 'timeout' && !== 'error'`). Both forms agree today
- * because `CheckStatus` is a closed 3-member union, but they diverge the
- * moment a new member is added: a denylist silently treats an unrecognized
- * future status as "completed" (wrong — an incomplete measurement must never
- * read as confident evidence, the campaign invariant this whole module
- * exists to protect), while this allowlist correctly treats it as NOT
- * completed until a maintainer deliberately adds it here.
+ * The rule itself is NOT spelled here. This is a thin object-shape adapter over
+ * the package's `isCheckMeasured`, which owns the semantics: an ALLOWLIST
+ * (`undefined | 'completed'` counts as measured), deliberately not a denylist
+ * (`!== 'timeout' && !== 'error'`). Both forms agree while `CheckStatus` is a
+ * closed 3-member union, but they diverge the moment a new member is added — a
+ * denylist silently treats an unrecognized future status as "completed", which
+ * is the exact defect this evidence campaign exists to prevent. Because the two
+ * layers now share ONE implementation, that divergence can no longer happen
+ * BETWEEN them either; the only difference is the argument shape (a check
+ * object here, a bare status value there). Pinned by
+ * `test/audits/completed-evidence-cross-package-parity.audit.test.ts`, which
+ * asserts both behavioural parity and that this body delegates rather than
+ * re-deriving.
  */
 export function isCompletedCheck(check: CheckStatusBearer): boolean {
-	return check.checkStatus === undefined || check.checkStatus === 'completed';
+	return isCheckMeasured(check.checkStatus);
 }
 
 /**
@@ -145,11 +177,18 @@ export function isCompletedCheck(check: CheckStatusBearer): boolean {
  * `StructuredScanResult.checkStatuses` (`format-report.ts`), which is
  * customer-facing and contractually typed `Record<string, 'completed' | 'timeout' | 'error'>`
  * — it cannot carry `undefined`, so an absent `checkStatus` must be normalized
- * to a concrete member before it can go on the wire. Sharing this rule with
- * `isCompletedCheck` (rather than re-deriving `?? 'completed'` at the call
- * site) is what keeps the two in lockstep if a new `CheckStatus` member is
- * ever added.
+ * to a concrete member before it can go on the wire. Keeping this in ONE place
+ * (rather than re-deriving `?? 'completed'` at the call site) is what stops the
+ * absent-means-completed premise from being restated per-surface.
+ *
+ * This is a VALUE normalization, not the boolean predicate, so it does not
+ * delegate to `isCheckMeasured` — there is nothing in the package that maps a
+ * status to a status. It does share the premise, and the union it is typed on
+ * is the package's `CheckStatus` rather than a hand-copied literal union, so a
+ * new member added upstream surfaces here as a compile error at the call sites
+ * that pinned the old three (notably `format-report.ts`'s wire contract) rather
+ * than passing silently.
  */
-export function normalizeCheckStatus(checkStatus: 'completed' | 'timeout' | 'error' | undefined): 'completed' | 'timeout' | 'error' {
+export function normalizeCheckStatus(checkStatus: CheckStatus | undefined): CheckStatus {
 	return checkStatus ?? 'completed';
 }

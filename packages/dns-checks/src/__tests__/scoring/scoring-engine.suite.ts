@@ -420,6 +420,55 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 			});
 		});
 
+		describe('an OUT-OF-UNION checkStatus (version-skewed cache re-read) is excluded exactly like timeout/error, never silently scored via the ?? 100 full-credit fallback', () => {
+			// The `CheckStatus` union is closed to 'completed' | 'timeout' | 'error', but a
+			// `CheckResult` re-read from an untrusted source (e.g. `JSON.parse` of a cached KV entry
+			// with no Zod revalidation after a version-skewed deploy) can carry a string outside that
+			// union at runtime. A denylist predicate (`!== 'timeout' && !== 'error'`) would treat that
+			// value as measured; if the resulting result also lacks a real `score`, `generic.ts`'s
+			// `categoryScores[key] ?? 100` fallback then scores it as if it had PASSED — the exact
+			// defect this predicate closes.
+			const passingCore = (): CheckResult[] => [
+				{ ...buildCheckResult('spf', []), score: 100, passed: true },
+				{ ...buildCheckResult('dmarc', []), score: 100, passed: true },
+				{ ...buildCheckResult('dkim', []), score: 100, passed: true },
+				{ ...buildCheckResult('dnssec', []), score: 100, passed: true },
+				{ ...buildCheckResult('ssl', []), score: 100, passed: true },
+			];
+			/** A genuinely-measured, genuinely-failing protective category — the control for what a
+			 * correctly-renormalized score looks like with no help from the skewed category. */
+			const mtaStsFail = (): CheckResult => ({
+				...buildCheckResult('mta_sts', [createFinding('mta_sts', 'No MTA-STS policy', 'medium', 'missing policy')]),
+				score: 0,
+				passed: false,
+				checkStatus: 'completed',
+			});
+			/** Simulates a `CheckResult` clawed back from a stale/skewed cache entry: `checkStatus`
+			 * outside the closed union, and `score` entirely absent — the worst case, with no numeric
+			 * value to fall back on at all. Never constructible through the typed CheckResult surface. */
+			const nsSkewed = (): CheckResult =>
+				({ category: 'ns', passed: false, findings: [], checkStatus: 'pending_migration' }) as unknown as CheckResult;
+
+			it('THE FULL-CREDIT REGRESSION TEST: does not raise the overall at all — behaves exactly as if the skewed category were never submitted (transientFailures site)', () => {
+				// If the skewed category were (wrongly) treated as measured, it would enter the
+				// protective weighted sum with `categoryScores.ns ?? 100` = full credit, pulling the
+				// overall ABOVE this control value — the opposite of what "we couldn't measure it"
+				// should ever do to a score.
+				const withoutSkewed = computeScanScore([...passingCore(), mtaStsFail()]);
+				const withSkewed = computeScanScore([...passingCore(), mtaStsFail(), nsSkewed()]);
+				expect(withSkewed.overall).toBe(withoutSkewed.overall);
+			});
+
+			it('never lists the skewed category in categoryScores at all — not even as an explicit `undefined` (categoryScores population site)', () => {
+				// Object.keys still picks up a key that was assigned `undefined` (as a denylist-form
+				// population loop would do here, since `result.score` is itself absent), so this is a
+				// distinct assertion from the overall-score equality above — it pins the population
+				// loop itself, independent of whether the weighted-sum exclusion is correct.
+				const scan = computeScanScore([...passingCore(), mtaStsFail(), nsSkewed()]);
+				expect(Object.keys(scan.categoryScores).sort()).toEqual(['dkim', 'dmarc', 'dnssec', 'mta_sts', 'spf', 'ssl']);
+			});
+		});
+
 		describe('never-run categories are excluded, not scored 100', () => {
 			// scan_domain runs a FIXED roster that excludes some scored categories entirely —
 			// notably `lookalikes` and `shadow_domains` (protective weight 2 each), which are

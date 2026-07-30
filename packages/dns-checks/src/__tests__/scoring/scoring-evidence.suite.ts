@@ -19,7 +19,14 @@ import type { CheckCategory, CheckResult, CheckStatus } from '../../scoring';
 type ScoringModule = typeof import('../../scoring');
 
 export function defineScoringEvidenceSuite(s: ScoringModule): void {
-	const { computeScanEvidence, isEvidenceSufficient, buildEvidenceNote, EVIDENCE_SUFFICIENCY_THRESHOLD, DEFAULT_SCORING_CONFIG } = s;
+	const {
+		computeScanEvidence,
+		isCheckMeasured,
+		isEvidenceSufficient,
+		buildEvidenceNote,
+		EVIDENCE_SUFFICIENCY_THRESHOLD,
+		DEFAULT_SCORING_CONFIG,
+	} = s;
 
 	/** Minimal CheckResult with an explicit execution status. No findings — evidence counts execution, not content. */
 	function res(category: CheckCategory, status: CheckStatus | undefined): CheckResult {
@@ -100,6 +107,30 @@ export function defineScoringEvidenceSuite(s: ScoringModule): void {
 			expect(note).toContain('59%');
 			expect(note).not.toContain('60%,');
 			expect(note).toContain('60% evidence threshold');
+		});
+
+		it('exports isCheckMeasured as the single measured/unmeasured predicate, with ALLOWLIST (not denylist) semantics', () => {
+			expect(isCheckMeasured(undefined)).toBe(true);
+			expect(isCheckMeasured('completed')).toBe(true);
+			expect(isCheckMeasured('timeout')).toBe(false);
+			expect(isCheckMeasured('error')).toBe(false);
+			// The load-bearing case: a status OUTSIDE the closed CheckStatus union — reachable at
+			// runtime via an unvalidated JSON.parse of a cached CheckResult after a version-skewed
+			// deploy — must be UNMEASURED. A denylist form (`!== 'timeout' && !== 'error'`) would
+			// return `true` here, since the string matches neither excluded literal.
+			expect(isCheckMeasured('pending_migration')).toBe(false);
+		});
+
+		it('computeScanEvidence treats an OUT-OF-UNION checkStatus as NOT completed, exactly like timeout/error', () => {
+			// Same load-bearing case as above, exercised through computeScanEvidence directly (the
+			// module whose docstring says its whole purpose is preventing an incomplete measurement
+			// from producing a confident output).
+			const evidence = computeScanEvidence([
+				res('spf', 'completed'),
+				{ ...res('dmarc', undefined), checkStatus: 'pending_migration' as unknown as CheckStatus },
+			]);
+			expect(evidence.attempted).toBe(2);
+			expect(evidence.completed).toBe(1);
 		});
 
 		it('gives the zero-submission case its own sentence, not "Only 0 of 0 checks completed (0%)... Re-run the scan"', () => {

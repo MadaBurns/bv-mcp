@@ -18,9 +18,35 @@
  * Runtime-agnostic, Workers-safe: no Node APIs.
  */
 
-import type { CheckResult, ScanEvidence } from '../types';
+import type { CheckResult, CheckStatus, ScanEvidence } from '../types';
 
 export type { ScanEvidence };
+
+/**
+ * The single source of truth for "was this check genuinely measured?" — the predicate every
+ * other measured/unmeasured question in this package (the evidence gate, per-category
+ * inclusion in the weighted score, profile-detection's failure ratio) must share.
+ *
+ * Allowlist semantics, deliberately: `undefined` or `'completed'` means measured; anything
+ * else means NOT measured. This is the opposite shape from a denylist
+ * (`status !== 'timeout' && status !== 'error'`), and the difference is load-bearing. The
+ * `CheckStatus` union is closed to `'completed' | 'timeout' | 'error'`, but a `CheckResult`
+ * re-read from an untrusted source (e.g. `JSON.parse` of a cached KV entry with no Zod
+ * revalidation) can carry a string outside that union at runtime — a version-skewed deploy is
+ * enough. A denylist treats that unknown value as measured (it matches neither excluded
+ * literal) and lets it enter the weighted score at full weight with whatever score/finding
+ * data happens to be attached — `computeGenericScore`'s `categoryScores[key] ?? 100` will even
+ * award full credit for a garbage/missing score. The allowlist form treats anything that
+ * isn't affirmatively `'completed'` (or absent, meaning "ran normally") as unmeasured, which is
+ * the safe default for a governing invariant of "an incomplete measurement must never produce
+ * a confident output."
+ *
+ * Accepts a widened `string` input (not just `CheckStatus`) so a status read from an
+ * untrusted/unvalidated source is representable at call sites without an `as any` cast.
+ */
+export function isCheckMeasured(checkStatus: CheckStatus | string | undefined): boolean {
+	return checkStatus === undefined || checkStatus === 'completed';
+}
 
 /**
  * The single source of truth for the evidence-sufficiency cut-off: a scan must
@@ -41,7 +67,7 @@ export function computeScanEvidence(results: CheckResult[]): ScanEvidence {
 	const attempted = results.length;
 	let completed = 0;
 	for (const result of results) {
-		if (result.checkStatus === undefined || result.checkStatus === 'completed') {
+		if (isCheckMeasured(result.checkStatus)) {
 			completed += 1;
 		}
 	}
