@@ -12,6 +12,7 @@
  */
 
 import type { CheckCategory, CheckResult } from '../types';
+import { isCheckMeasured } from './evidence';
 
 export type DomainProfile = 'mail_enabled' | 'enterprise_mail' | 'non_mail' | 'web_only' | 'minimal' | 'authoritative_dns_infra';
 
@@ -245,13 +246,7 @@ export const PROFILE_EMAIL_BONUS_ELIGIBLE: Record<DomainProfile, boolean> = {
 };
 
 /** Known enterprise mail providers detected via MX record patterns. */
-const ENTERPRISE_PROVIDERS = [
-	'google workspace',
-	'microsoft 365',
-	'proofpoint',
-	'mimecast',
-	'barracuda',
-];
+const ENTERPRISE_PROVIDERS = ['google workspace', 'microsoft 365', 'proofpoint', 'mimecast', 'barracuda'];
 
 /**
  * Detect domain context from completed check results.
@@ -328,14 +323,16 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	if (caaPass) signals.push('CAA present');
 
 	// Count failed checks over MEASURED checks only. A check whose execution failed
-	// (checkStatus 'timeout'/'error') was NOT measured, and counting it as "failed" let a
-	// transient DNS/fetch failure push failureRatio past 0.5 and flip the domain to the
-	// `minimal` profile — i.e. the measurement failure selected the weight table that then
-	// graded the domain. Excluding unmeasured checks from BOTH numerator and denominator
-	// leaves genuine measured failures (what `minimal` was designed for) behaving exactly as
-	// before, so a scan in which every check completed produces an identical ratio, profile
-	// and score.
-	const measuredChecks = results.filter((r) => r.checkStatus !== 'timeout' && r.checkStatus !== 'error');
+	// (checkStatus 'timeout'/'error', or any other non-'completed'/non-absent status) was NOT
+	// measured, and counting it as "failed" let a transient DNS/fetch failure push failureRatio
+	// past 0.5 and flip the domain to the `minimal` profile — i.e. the measurement failure
+	// selected the weight table that then graded the domain. Excluding unmeasured checks from
+	// BOTH numerator and denominator leaves genuine measured failures (what `minimal` was
+	// designed for) behaving exactly as before, so a scan in which every check completed
+	// produces an identical ratio, profile and score. Uses the shared `isCheckMeasured`
+	// allowlist predicate (see evidence.ts) rather than a local denylist, so an out-of-union
+	// `checkStatus` (reachable via an unvalidated cache re-read) is excluded here too.
+	const measuredChecks = results.filter((r) => isCheckMeasured(r.checkStatus));
 	const totalChecks = measuredChecks.length;
 	const failedChecks = measuredChecks.filter((r) => !r.passed).length;
 	const failureRatio = totalChecks > 0 ? failedChecks / totalChecks : 0;
