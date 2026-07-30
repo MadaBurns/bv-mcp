@@ -9,6 +9,17 @@ name: Symlink escape gate
 # so public repos can consume it without needing read access to private bv-cc
 # (the canonical, locally-runnable copy of this check lives there as
 # tools/lint-symlink-escape.mjs — kept in lockstep by hand, not by import).
+#
+# RELATED, NOT DUPLICATED: a blanket "no tracked symlink of ANY kind"
+# rule lives in .github/workflows/repo-hygiene.yml (added by #580 after the
+# #576 tracked-node_modules-symlink incident). That rule reads the git INDEX,
+# so it is immune to BOTH of this workflow's blind spots — it has no prune
+# paths, and it does not care what the target looks like. It therefore
+# strictly subsumes any absolute-target check that could be added here, which
+# is why this workflow deliberately does NOT carry one: two overlapping
+# symlink rules in two workflows would make the hand-maintained bv-cc lockstep
+# harder to reason about for no added coverage. Keep the CWE-61 escape rule
+# here (it is the reusable, bv-cc-mirrored one) and the blanket ban there.
 on:
   workflow_call:
   push:
