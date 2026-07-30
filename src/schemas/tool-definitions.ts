@@ -213,7 +213,8 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: true,
 	},
 	check_ssl: {
-		description: 'Check the SSL/TLS certificate for a domain. Shows the issuer (Certificate Authority), expiry date (when the certificate expires), supported protocol versions (TLS 1.2/1.3), and HTTPS configuration. Use to verify certificate validity and who issued it.',
+		description:
+			'Check the HTTPS/TLS posture of a domain: HTTPS reachability, HSTS policy, and HTTP-to-HTTPS redirect. Also returns certificate metadata (issuer, expiry date, days remaining, SAN count) read from public Certificate Transparency logs — this describes the most recently LOGGED certificate, which may differ from the one currently served. Negotiated TLS protocol versions and cipher suites are NOT returned. Use to verify HTTPS/HSTS configuration and certificate issuer/expiry.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',
@@ -445,7 +446,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	discover_subdomains: {
 		description:
-			'Find subdomains of a domain using Certificate Transparency logs. Reveals shadow IT, forgotten services, and unauthorized certificate issuance.',
+			'Find subdomains of a domain using Certificate Transparency logs. Reveals shadow IT, forgotten services, and unauthorized certificate issuance. Returns a CT SAMPLE, not an asset inventory: the count is a lower bound, a host with no publicly-logged certificate never appears, and the result carries a per-source `coverage` record stating what was actually consulted.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -551,7 +552,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_subdomain_takeover: {
 		description:
-			'Sweep subdomains for dangling CNAMEs pointing to deprovisioned cloud services that could be claimed by an attacker (subdomain takeover vulnerabilities). Detects 16 provider families (AWS S3/CloudFront, Azure Front Door/CDN/Blob/App Service, GCP Cloud Storage, Heroku, GitHub Pages, Vercel, Firebase, Shopify, etc.). Use when asked if subdomains are pointing to deprovisioned cloud services. Pair with discover_subdomains for full inventory.',
+			'Sweep subdomains for dangling CNAMEs pointing to deprovisioned cloud services that could be claimed by an attacker (subdomain takeover vulnerabilities). Detects 16 provider families (AWS S3/CloudFront, Azure Front Door/CDN/Blob/App Service, GCP Cloud Storage, Heroku, GitHub Pages, Vercel, Firebase, Shopify, etc.). Use when asked if subdomains are pointing to deprovisioned cloud services. Pair with discover_subdomains to widen the candidate set — note that returns a CT sample, not a full inventory.',
 		schema: CheckSubdomainTakeoverArgs,
 		group: 'infrastructure',
 		tier: 'protective',

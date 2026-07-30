@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 import { TenantCycleAlertSchema, type TenantCycleAlert } from '../../schemas/tenant-alerts';
 import { SERVER_VERSION } from '../../lib/server-version';
+import { logError } from '../../lib/log';
 
 /**
  * Fail-soft webhook delivery for the Phase 3 tenant cycle-diff alert.
@@ -16,7 +17,7 @@ import { SERVER_VERSION } from '../../lib/server-version';
  *     (fail-open, matches existing convention).
  *   - 3-second timeout via Promise.race. Times out → `{ delivered: false }`.
  *   - Single retry on 5xx after 500 ms backoff. 4xx is terminal.
- *   - Network errors are caught, logged via console.warn, and surface as
+ *   - Network errors are caught, logged as structured events, and surface as
  *     `{ delivered: false }`.
  *   - Test seam: `opts.fetchFn` lets the webhook tests inject mocks without
  *     touching global fetch.
@@ -72,7 +73,7 @@ async function postWithTimeout(
 		const result = await Promise.race([request, timeout]);
 		return result;
 	} catch (err) {
-		console.warn('tenant_alert_dispatch_failed', err instanceof Error ? err.message : String(err));
+		logError(err instanceof Error ? err : String(err), { category: 'tenant_alert', result: 'dispatch_failed' });
 		return null;
 	} finally {
 		if (timer !== undefined) clearTimeout(timer);

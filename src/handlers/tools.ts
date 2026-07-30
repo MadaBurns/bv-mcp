@@ -424,6 +424,12 @@ export const TOOL_REGISTRY: Record<
 				tlsProbeBinding: ro?.tlsProbeBinding,
 				tlsProbeAuthToken: ro?.tlsProbeAuthToken,
 				onBindingDegradation: ro?.onBindingDegradation,
+				// The ONE call site that opts into CT certificate metadata: this is the
+				// direct `check_ssl` tool, whose description promises issuer + expiry,
+				// and it is per-domain and result-cached. The fan-out callers
+				// (scan_domain, validate_fix, simulate_attack_paths) leave it off —
+				// see the `certMetadata` doc comment in tools/check-ssl.ts.
+				certMetadata: true,
 			}),
 	},
 	check_mta_sts: { cacheKey: () => 'mta_sts', execute: (d, _args, ro) => checkMtaSts(d, buildDnsOptions(ro)) },
@@ -1637,7 +1643,13 @@ export async function handleToolsCall(
 						// CT source that has quietly started capping us.
 						truncated: result.truncated ?? false,
 						returned: result.returned ?? result.subdomains.length,
-						enumerationComplete: result.enumerationComplete ?? true,
+						// Renamed from `enumerationComplete`, which asserted estate-level
+						// completeness a single CT source can never support. The narrow
+						// per-source truth is unchanged; only the (misreadable) name is.
+						sourceIndexExhausted: result.sourceIndexExhausted ?? true,
+						// Degraded recall — a source was asked and failed, or was never
+						// consulted — is now visible in tail, not just in the payload.
+						coverageDegraded: result.coverage?.degraded ?? false,
 						...(result.sources ? { sources: result.sources.join(',') } : {}),
 						...(result.stale ? { cacheAgeMinutes: result.cacheAgeMinutes ?? 0 } : {}),
 					};

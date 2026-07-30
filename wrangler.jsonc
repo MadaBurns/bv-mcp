@@ -2,7 +2,7 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "bv-dns-security-mcp",
   "main": "src/index.ts",
-  "compatibility_date": "2026-04-22",
+  "compatibility_date": "2026-07-29",
   "compatibility_flags": [
     "global_fetch_strictly_public"
   ],
@@ -44,6 +44,10 @@
     "logs": {
       "head_sampling_rate": 1,
       "invocation_logs": false
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 0.01
     }
   },
   "triggers": {

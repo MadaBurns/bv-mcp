@@ -15,10 +15,21 @@
  *      bounded retry and a per-source `ct_source` health log, then
  *   3. last-known-good KV cache, returned marked `stale` with its age.
  * Only when all of the above are exhausted do we report `sourceUnavailable`.
+ *
+ * COMPLETENESS HONESTY (this is a SAMPLE, never an inventory):
+ * The result carries a `coverage` record whose `basis` is the literal
+ * `'ct-sample'` — there is no value meaning "complete inventory", by design.
+ * The former `enumerationComplete` boolean is GONE: its narrow per-source truth
+ * now lives on as `sourceIndexExhausted`, a name that cannot be misread. See
+ * `src/lib/ct-coverage.ts` for the measured evidence (bnz.co.nz, 2026-07-27:
+ * 165 names + `enumerationComplete: true` against 420 in crt.sh's unfiltered
+ * history, four of the missing ones resolving to live production IPs).
  */
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { cacheGet, cacheSet } from '../lib/cache';
+import type { CtCoverage, CtSourceAttempt, CtSourceOutcome } from '../lib/ct-coverage';
+import { buildCtCoverage, formatCoverageLine } from '../lib/ct-coverage';
 import { logEvent } from '../lib/log';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { disposeUnreadResponseBody, readBoundedOrNull } from '../lib/response-body';
@@ -225,7 +236,20 @@ export interface DiscoveredSubdomain {
 
 /** An issue detected during subdomain discovery. */
 export interface SubdomainIssue {
-	type: 'expired_subdomain' | 'wildcard_exposure' | 'many_issuers' | 'recent_issuance' | 'shadow_subdomain' | 'unconfirmed_zero';
+	type:
+		| 'expired_subdomain'
+		| 'wildcard_exposure'
+		| 'many_issuers'
+		| 'recent_issuance'
+		| 'shadow_subdomain'
+		| 'unconfirmed_zero'
+		/**
+		 * Always emitted on a non-empty result. Structured consumers that read
+		 * ONLY `issues[]` — the same class the `unconfirmed_zero` issue was added
+		 * for — would otherwise see a clean list of hosts with nothing telling
+		 * them it is a floor, not an inventory.
+		 */
+		| 'ct_sample_not_inventory';
 	severity: 'high' | 'medium' | 'low' | 'info';
 	detail: string;
 }
@@ -264,27 +288,49 @@ export interface SubdomainDiscoveryResult {
 	 * True when this result is NOT the whole story — either the returned
 	 * {@link subdomains} array is a strict subset of what was enumerated
 	 * (`returned < totalSubdomains`, the {@link MAX_SUBDOMAINS} cap), or the
-	 * upstream enumeration itself was incomplete ({@link enumerationComplete}
+	 * source's own index was not read to the end ({@link sourceIndexExhausted}
 	 * false). A security caller that sweeps only `subdomains` MUST branch on
 	 * this: before #573 the cap was silent and the tool read as authoritative.
+	 *
+	 * NOTE the asymmetry, and it is deliberate: `truncated: false` does NOT mean
+	 * "you have the estate". It means nothing was dropped BETWEEN the source and
+	 * you. What the source itself could never see is {@link coverage}'s job.
 	 */
 	truncated?: boolean;
 	/** How many entries the {@link subdomains} array actually carries. */
 	returned?: number;
-	/** Which CT source(s) produced this answer, e.g. `['crtsh']`, `['certspotter']`. */
+	/** Which CT source(s) contributed names, e.g. `['crtsh']`, `['certspotter']`. */
 	sources?: string[];
 	/**
-	 * True when we believe we read the source's index exhaustively: every page
+	 * True when we read the contributing source's index to the end: every page
 	 * followed, no upstream truncation flag, no entry-cap applied. False means
-	 * `totalSubdomains` is a FLOOR, not a total — the real count is higher.
+	 * `totalSubdomains` is a FLOOR even relative to that ONE source.
+	 *
+	 * REPLACES the former `enumerationComplete`. Same narrow truth, a name that
+	 * cannot be misread: exhausting one source's index is not enumerating an
+	 * estate. Measured 2026-07-27, bnz.co.nz returned `enumerationComplete: true`
+	 * on 165 names while crt.sh's unfiltered history held 420, four of the
+	 * missing ones resolving to live production IPs. See {@link coverage} and
+	 * `src/lib/ct-coverage.ts` for the full rationale.
 	 */
-	enumerationComplete?: boolean;
+	sourceIndexExhausted?: boolean;
+	/**
+	 * What was actually looked at, and what that could possibly have seen. Always
+	 * populated by every production path in this module; optional only so that
+	 * hand-built fixtures in unrelated suites still typecheck.
+	 *
+	 * Its `basis` is the literal `'ct-sample'` — a one-member union, so there is
+	 * no value a consumer can read as "complete inventory".
+	 */
+	coverage?: CtCoverage;
 }
 
 /** Provenance/completeness metadata threaded from a source into the result builders. */
 interface EnumerationMeta {
 	sources?: string[];
-	enumerationComplete?: boolean;
+	sourceIndexExhausted?: boolean;
+	/** Per-source attempt log; folded into {@link SubdomainDiscoveryResult.coverage}. */
+	attempts?: CtSourceAttempt[];
 }
 
 /**
@@ -402,7 +448,11 @@ export async function discoverSubdomains(
 	// and a bounded retry: crt.sh (rich metadata) → Certspotter (names + dates).
 	const direct = await queryDirectSources(domain, options);
 	if (direct.available) {
-		const meta: EnumerationMeta = { sources: direct.sources, enumerationComplete: direct.enumerationComplete };
+		const meta: EnumerationMeta = {
+			sources: direct.sources,
+			sourceIndexExhausted: direct.sourceIndexExhausted,
+			attempts: direct.attempts,
+		};
 		const result =
 			direct.entries.length > 0 ? buildResultFromEntries(domain, direct.entries, meta) : emptyResult(domain, false, false, meta);
 		await cacheSuccess(domain, result, options);
@@ -415,7 +465,7 @@ export async function discoverSubdomains(
 	const stale = await readLastKnownGood(domain, options);
 	if (stale) return stale;
 
-	return emptyResult(domain, true);
+	return emptyResult(domain, true, false, { attempts: direct.attempts });
 }
 
 /**
@@ -595,7 +645,11 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[],
 		});
 	}
 
-	const enumerationComplete = (meta?.enumerationComplete ?? true) && !entryCapHit;
+	const sourceIndexExhausted = (meta?.sourceIndexExhausted ?? true) && !entryCapHit;
+	const flags = enumerationFlags(allSubdomains.length, subdomains.length, meta?.sources, sourceIndexExhausted, meta?.attempts);
+	// Prepended, not appended: a caller that truncates the issue list for display
+	// must not lose the one line saying the list itself is a floor.
+	if (flags.coverage) issues.unshift(sampleCaveatIssue(flags.coverage, allSubdomains.length));
 
 	return {
 		domain,
@@ -606,33 +660,86 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[],
 		expiredCerts,
 		uniqueIssuers,
 		issues,
-		...enumerationFlags(allSubdomains.length, subdomains.length, meta?.sources, enumerationComplete),
+		...flags,
 	};
 }
 
 /**
- * Build the {@link SubdomainDiscoveryResult} truncation contract from a
- * (total, returned) pair. `truncated` is deliberately the UNION of both ways an
- * answer can be partial — the return cap bit, or the upstream enumeration being
- * incomplete — because a caller asking "is this the whole estate?" needs one
- * flag, with `enumerationComplete` available to say WHICH.
+ * Build the {@link SubdomainDiscoveryResult} completeness contract from a
+ * (total, returned) pair plus the per-source attempt log.
+ *
+ * `truncated` stays the UNION of the two ways data can be lost BETWEEN the
+ * source and the caller — the return cap, or the source's index not being read
+ * to the end. `coverage` answers the different and larger question the old
+ * `enumerationComplete` flag pretended to: what was consulted, and what could
+ * that possibly have seen. Both are always emitted; neither can be `true` in a
+ * way that means "this is the estate".
  */
 function enumerationFlags(
 	total: number,
 	returned: number,
 	sources: string[] | undefined,
-	enumerationComplete: boolean,
-): Pick<SubdomainDiscoveryResult, 'truncated' | 'returned' | 'sources' | 'enumerationComplete'> {
+	sourceIndexExhausted: boolean,
+	attempts: CtSourceAttempt[] | undefined,
+): Pick<SubdomainDiscoveryResult, 'truncated' | 'returned' | 'sources' | 'sourceIndexExhausted' | 'coverage'> {
 	return {
 		returned,
-		truncated: returned < total || !enumerationComplete,
-		enumerationComplete,
+		truncated: returned < total || !sourceIndexExhausted,
+		sourceIndexExhausted,
+		coverage: buildCtCoverage(attempts ?? attemptsFromSources(sources, sourceIndexExhausted)),
 		...(sources && sources.length > 0 ? { sources } : {}),
 	};
 }
 
-/** Per-source health outcome, emitted to the `ct_source` log for observability. */
-type CtSourceOutcome = 'ok' | 'empty' | 'http_error' | 'timeout' | 'error';
+/**
+ * Fallback attempt log for paths that know WHICH source answered but kept no
+ * per-source failure record (the certstream fast path, and cached results
+ * rebuilt from an older payload). Everything not named is reported as
+ * `notConsulted` rather than silently assumed healthy.
+ */
+function attemptsFromSources(sources: string[] | undefined, sourceIndexExhausted: boolean): CtSourceAttempt[] {
+	if (!sources || sources.length === 0) return [];
+	return sources.map((source) => ({ source, outcome: 'ok' as CtSourceOutcome, contributed: true, indexExhausted: sourceIndexExhausted }));
+}
+
+/**
+ * The always-present sample caveat on `issues[]`.
+ *
+ * `unconfirmed_zero` already covers the empty case, so this one rides on
+ * non-empty results — the shape that looked healthy and therefore did the
+ * damage. Severity `info`: it is a standing property of CT-derived evidence,
+ * not a finding about the domain.
+ */
+function sampleCaveatIssue(coverage: CtCoverage, total: number): SubdomainIssue {
+	// Kept SHORT deliberately, and BOUNDED: `formatCompact`/`formatFull` push issue
+	// details through `sanitizeOutputText(…, 200|300)`, so a detail that carried the
+	// full `coverage.caveat` prose was truncated mid-sentence — losing the clause
+	// that matters. The long form still rides on the banner and `coverage.caveat`.
+	//
+	// The lead sentence is the non-negotiable part and is built first; the source
+	// summary is appended only while it still fits under the tightest cap, so a
+	// long source list can never push the meaning off the end.
+	const lead = `${total} subdomains is a LOWER BOUND from a CT sample, not an inventory — hosts with no logged certificate never appear.`;
+	const answered = coverage.contributing.length > 0 ? coverage.contributing.join(', ') : 'no source';
+	const missing = [...coverage.unavailable, ...coverage.notConsulted];
+	const suffix = ` Answered: ${answered}${missing.length > 0 ? `; no data from ${missing.join(', ')}` : ''}.`;
+	return {
+		type: 'ct_sample_not_inventory',
+		severity: 'info',
+		detail: lead.length + suffix.length <= COMPACT_ISSUE_DETAIL_CAP ? `${lead}${suffix}` : lead,
+	};
+}
+
+/**
+ * The tightest cap any renderer applies to `SubdomainIssue.detail`
+ * (`formatCompact` → `sanitizeOutputText(detail, 200)`). Kept next to the caveat
+ * builder so the two cannot drift apart silently.
+ */
+const COMPACT_ISSUE_DETAIL_CAP = 200;
+
+// `CtSourceOutcome` (the per-source health outcome emitted to the `ct_source`
+// log) now lives in `../lib/ct-coverage` — the coverage record reports the same
+// values, so one definition serves both.
 
 /** Normalized result of one direct-source attempt. */
 interface SourceResult {
@@ -888,7 +995,7 @@ function delayWithSignal(ms: number, signal?: AbortSignal): Promise<void> {
 async function queryDirectSources(
 	domain: string,
 	options?: DiscoverSubdomainsOptions,
-): Promise<{ available: boolean; entries: CrtShEntry[]; sources?: string[]; enumerationComplete?: boolean }> {
+): Promise<{ available: boolean; entries: CrtShEntry[]; sources?: string[]; sourceIndexExhausted?: boolean; attempts: CtSourceAttempt[] }> {
 	// Per-source timeouts differ by backend: crt.sh is Postgres-backed and often
 	// slow on a cold query, while Certspotter is a fast JSON API — giving the
 	// fallback a tighter bound keeps both inside one budget.
@@ -907,6 +1014,16 @@ async function queryDirectSources(
 	// has had a chance to corroborate it or supersede it with real data.
 	let sawEmpty = false;
 
+	// Per-source attempt log for the coverage record. Last outcome per source
+	// wins across retry passes; a source never reached stays out entirely so
+	// `buildCtCoverage` reports it as `notConsulted` rather than as healthy.
+	const attemptLog = new Map<string, CtSourceAttempt>();
+	const recordAttempt = (source: string, outcome: CtSourceOutcome, contributed: boolean, indexExhausted?: boolean): void => {
+		attemptLog.set(source, { source, outcome, contributed, ...(indexExhausted === undefined ? {} : { indexExhausted }) });
+	};
+	const attempts = (): CtSourceAttempt[] =>
+		sources.filter((s) => attemptLog.has(s.name)).map((s) => attemptLog.get(s.name) as CtSourceAttempt);
+
 	for (let pass = 0; pass <= CT_SOURCE_MAX_RETRIES; pass++) {
 		// Backoff applies BETWEEN passes, not between sources — failover should be
 		// immediate, only a repeat attempt at the same source needs to back off.
@@ -918,7 +1035,7 @@ async function queryDirectSources(
 			// information — surface it rather than downgrading to a bare outage
 			// just because we ran out of budget to corroborate further.
 			if (deadlineExceeded(options) || !hasBudgetFor(options, source.timeoutMs)) {
-				return sawEmpty ? { available: true, entries: [] } : { available: false, entries: [] };
+				return sawEmpty ? { available: true, entries: [], attempts: attempts() } : { available: false, entries: [], attempts: attempts() };
 			}
 			const composed = composeAbortSignal(source.timeoutMs, options?.signal);
 			let res: SourceResult;
@@ -928,12 +1045,24 @@ async function queryDirectSources(
 				composed.cleanup();
 			}
 			logCtSource(domain, source.name, res.outcome);
-			// #573 metadata (which source answered, was its enumeration complete) rides
+			// Every attempt is recorded — including the failures. The pre-fix payload
+			// reported only the winner (`sources: ["certspotter"]`), so a caller could
+			// not tell that crt.sh had been asked and had failed, i.e. that recall on
+			// that call was degraded. That omission is now impossible.
+			recordAttempt(source.name, res.outcome, res.outcome === 'ok', res.enumerationComplete);
+			// #573 metadata (which source answered, was its index read to the end) rides
 			// on the ok path only. #575's `sawEmpty` fall-through is preserved: an
 			// `empty` outcome must NOT short-circuit, because a source that answers
 			// "nothing" is not authoritative until every source has been tried.
-			const meta = { sources: [source.name], enumerationComplete: res.enumerationComplete ?? true };
-			if (res.outcome === 'ok') return { available: true, entries: res.entries, ...meta };
+			if (res.outcome === 'ok') {
+				return {
+					available: true,
+					entries: res.entries,
+					sources: [source.name],
+					sourceIndexExhausted: res.enumerationComplete ?? true,
+					attempts: attempts(),
+				};
+			}
 			if (res.outcome === 'empty') sawEmpty = true;
 			// empty / http_error / timeout / error all fall through to try the
 			// next source instead of short-circuiting.
@@ -943,9 +1072,9 @@ async function queryDirectSources(
 		// authoritative empty from at least one source is a real (if
 		// unconfirmed) answer — report it rather than burning a retry pass
 		// chasing a source that merely failed to respond.
-		if (sawEmpty) return { available: true, entries: [] };
+		if (sawEmpty) return { available: true, entries: [], attempts: attempts() };
 	}
-	return { available: false, entries: [] };
+	return { available: false, entries: [], attempts: attempts() };
 }
 
 /** LKG cache key for a domain. */
@@ -1242,7 +1371,14 @@ function buildCertstreamResult(
 		});
 	}
 
-	const enumerationComplete = !upstream?.truncated && !upstream?.timedOut;
+	const sourceIndexExhausted = !upstream?.truncated && !upstream?.timedOut;
+	// The fast path answers from ONE aggregator and never asks crt.sh or
+	// Certspotter — `buildCtCoverage` turns that into an explicit `notConsulted`
+	// list rather than letting a single opinion read as consensus.
+	const flags = enumerationFlags(dedupedAll.length, deduped.length, ['certstream'], sourceIndexExhausted, [
+		{ source: 'certstream', outcome: dedupedAll.length === 0 ? 'empty' : 'ok', contributed: true, indexExhausted: sourceIndexExhausted },
+	]);
+	if (flags.coverage && dedupedAll.length > 0) issues.unshift(sampleCaveatIssue(flags.coverage, dedupedAll.length));
 
 	return {
 		domain,
@@ -1253,7 +1389,7 @@ function buildCertstreamResult(
 		expiredCerts: 0,
 		uniqueIssuers: [],
 		issues,
-		...enumerationFlags(dedupedAll.length, deduped.length, ['certstream'], enumerationComplete),
+		...flags,
 	};
 }
 
@@ -1273,9 +1409,9 @@ function buildCertstreamResult(
  * found.
  */
 function emptyResult(domain: string, sourceUnavailable = false, partial = false, meta?: EnumerationMeta): SubdomainDiscoveryResult {
-	// A source outage or a budget trip is by definition not an exhaustive
-	// enumeration — never let an empty error read as a complete "none found".
-	const enumerationComplete = sourceUnavailable || partial ? false : (meta?.enumerationComplete ?? true);
+	// A source outage or a budget trip is by definition not an exhaustive read —
+	// never let an empty error read as a confident "none found".
+	const sourceIndexExhausted = sourceUnavailable || partial ? false : (meta?.sourceIndexExhausted ?? true);
 	return {
 		domain,
 		totalSubdomains: 0,
@@ -1295,26 +1431,35 @@ function emptyResult(domain: string, sourceUnavailable = false, partial = false,
 		],
 		sourceUnavailable,
 		...(partial ? { partial: true } : {}),
-		...enumerationFlags(0, 0, meta?.sources, enumerationComplete),
+		...enumerationFlags(0, 0, meta?.sources, sourceIndexExhausted, meta?.attempts),
 	};
 }
 
 /** Format subdomain discovery result as human-readable text. */
 export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, format: OutputFormat = 'full'): string {
+	// Both zero-ish branches carry the per-source coverage line: "which source
+	// failed" is the first thing a caller needs in order to judge a zero.
+	const coverageLine = result.coverage ? `\n${formatCoverageLine(result.coverage)}` : '';
+
 	if (result.sourceUnavailable) {
-		return `Subdomain Discovery: ${result.domain} — Certificate Transparency source unavailable (the CT log endpoint returned an error or was unreachable); could not enumerate subdomains. This does not mean the domain has no subdomains — retry shortly.`;
+		return `Subdomain Discovery: ${result.domain} — Certificate Transparency source unavailable (the CT log endpoint returned an error or was unreachable); could not enumerate subdomains. This does not mean the domain has no subdomains — retry shortly.${coverageLine}`;
 	}
 	if (result.totalSubdomains === 0) {
 		// A STALE empty set is not a confident "none found" — say so, or the
 		// original failure mode (an unreliable answer read as authoritative)
 		// comes back through the zero branch.
 		return result.stale
-			? `${staleBanner(result)}\n\nSubdomain Discovery: ${result.domain} — the cached enumeration contains no subdomains; this is NOT a confirmed empty result.`
-			: `Subdomain Discovery: ${result.domain} — no subdomains found in Certificate Transparency logs (unconfirmed: CT logs only capture certificate issuance, so this is not a verified absence)`;
+			? `${staleBanner(result)}\n\nSubdomain Discovery: ${result.domain} — the cached enumeration contains no subdomains; this is NOT a confirmed empty result.${coverageLine}`
+			: `Subdomain Discovery: ${result.domain} — no subdomains found in Certificate Transparency logs (unconfirmed: CT logs only capture certificate issuance, so this is not a verified absence)${coverageLine}`;
 	}
 
 	const body = format === 'compact' ? formatCompact(result) : formatFull(result);
 	const banners: string[] = [];
+	// The sample caveat leads, UNCONDITIONALLY. The dangerous production shape was
+	// a clean, exhausted, single-source answer — no banner fired, and the reader
+	// took 165 names for a bank's estate. A caveat that only appears when
+	// something visibly went wrong is the same false confidence in a new place.
+	banners.push(sampleBanner(result));
 	if (result.stale) banners.push(staleBanner(result));
 	// Distinct from `stale` (served from the last-known-good cache): `partial`
 	// here means a live source answered but timed out mid-query, so the data
@@ -1324,6 +1469,21 @@ export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, forma
 	// the paths that set `partial:true` with real subdomain data.
 	if (result.partial && !result.stale) banners.push(partialBanner());
 	return banners.length > 0 ? `${banners.join('\n\n')}\n\n${body}` : body;
+}
+
+/**
+ * The standing sample caveat + per-source coverage line, prepended to EVERY
+ * rendered result.
+ *
+ * Falls back to fixed prose when `coverage` is absent (a hand-built fixture, or
+ * a payload cached before this contract existed) — the caveat is never the thing
+ * that goes missing.
+ */
+function sampleBanner(result: SubdomainDiscoveryResult): string {
+	if (!result.coverage) {
+		return `ℹ️ CT SAMPLE — NOT AN INVENTORY: ${result.totalSubdomains} is a LOWER BOUND. A host that has never had a publicly-logged certificate does not appear in Certificate Transparency at all.`;
+	}
+	return `ℹ️ CT SAMPLE — NOT AN INVENTORY: ${result.coverage.caveat}\n${formatCoverageLine(result.coverage)}`;
 }
 
 /** Staleness notice prepended when a result came from the last-known-good cache. */
@@ -1346,7 +1506,7 @@ function staleBanner(result: SubdomainDiscoveryResult): string {
 function overflowLines(result: SubdomainDiscoveryResult, shownCount: number, style: 'compact' | 'full'): string[] {
 	const lines: string[] = [];
 	const hidden = Math.max(0, result.totalSubdomains - shownCount);
-	const incomplete = result.enumerationComplete === false;
+	const incomplete = result.sourceIndexExhausted === false;
 
 	if (hidden > 0) {
 		// "at least N" — never a bare N — once the enumeration is known partial.
@@ -1356,7 +1516,9 @@ function overflowLines(result: SubdomainDiscoveryResult, shownCount: number, sty
 
 	if (incomplete) {
 		const source = result.sources && result.sources.length > 0 ? result.sources.join(', ') : 'the Certificate Transparency source';
-		const note = `⚠️ Enumeration INCOMPLETE (${source}): ${result.totalSubdomains} is a FLOOR, not a total — more subdomains exist than were retrieved. Treat this as a partial inventory.`;
+		// Escalation ON TOP of the standing sample caveat: not merely "CT can't see
+		// everything", but "we did not even finish reading the source we used".
+		const note = `⚠️ SOURCE INDEX NOT EXHAUSTED (${source}): we stopped reading this source before its index ended, so ${result.totalSubdomains} is short even of what THIS source holds.`;
 		lines.push(style === 'compact' ? ` ${note}` : `_${note}_`);
 	}
 

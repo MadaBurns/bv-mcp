@@ -18,6 +18,10 @@
 		"./whois": {
 			"import": "./dist/whois/index.js",
 			"types": "./dist/whois/index.d.ts"
+		},
+		"./cert": {
+			"import": "./dist/cert/index.js",
+			"types": "./dist/cert/index.d.ts"
 		}
 	},
 	"files": [
