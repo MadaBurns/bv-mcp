@@ -31,6 +31,7 @@ import {
 	MalformedEvaluateResponse,
 	SINGLETON_ROUTING,
 	type EvaluateCheck,
+	type QuotaCoordinator,
 	type ShardRouting,
 } from './quota-coordinator';
 import { CircuitBreaker, CircuitBreakerOpen } from './circuit-breaker';
@@ -436,7 +437,7 @@ async function checkIpDailyLimitKV(ip: string, limit: number, kv: KVNamespace): 
 export async function checkRateLimit(
 	ip: string,
 	kv?: KVNamespace,
-	quotaCoordinator?: DurableObjectNamespace,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 	routing: ShardRouting = SINGLETON_ROUTING,
 ): Promise<RateLimitResult> {
 	if (quotaCoordinator) {
@@ -469,7 +470,7 @@ export async function checkRateLimit(
 export async function checkControlPlaneRateLimit(
 	ip: string,
 	kv?: KVNamespace,
-	quotaCoordinator?: DurableObjectNamespace,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<RateLimitResult> {
 	if (quotaCoordinator) {
 		try {
@@ -502,7 +503,7 @@ export async function checkToolDailyRateLimit(
 	toolName: string,
 	limit: number,
 	kv?: KVNamespace,
-	quotaCoordinator?: DurableObjectNamespace,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 	routing: ShardRouting = SINGLETON_ROUTING,
 ): Promise<ToolDailyRateLimitResult> {
 	// Unlimited tiers (owner) pass Infinity. JSON.stringify(Infinity) === "null",
@@ -571,7 +572,7 @@ export async function checkToolDailyRateLimit(
 export async function checkGlobalDailyLimit(
 	limit: number,
 	kv?: KVNamespace,
-	quotaCoordinator?: DurableObjectNamespace,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 	degradationSink?: GlobalCostCeilingDegradationSink,
 ): Promise<GlobalRateLimitResult> {
 	// Same Infinity/JSON-encoding trap as checkToolDailyRateLimit. A self-host
@@ -653,7 +654,7 @@ export type QuotaDegradationSink = (reason: QuotaDegradationReason) => void;
 
 export interface IpScopedQuotaBatchOptions {
 	kv?: KVNamespace;
-	quotaCoordinator?: DurableObjectNamespace;
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>;
 	/** Shard routing (flag + salt). Defaults to SINGLETON_ROUTING (sharding OFF). */
 	routing?: ShardRouting;
 	/** Degradation emitter (ADAM #6) — called once when the coordinator batch is bypassed. */

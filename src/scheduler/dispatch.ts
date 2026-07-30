@@ -34,7 +34,7 @@ const DEFAULT_TICK_SECONDS = 60;
 
 /** Minimal queue producer shape (matches the tenant scanner-queue contract). */
 interface ScanQueueProducer {
-	send(message: unknown, options?: { contentType?: 'json' }): Promise<void>;
+	send(message: unknown, options?: { contentType?: 'json' }): Promise<unknown>;
 }
 
 /** Env shape the Phase 2 dispatcher consults. Every binding is OPTIONAL (absent → no-op). */
