@@ -56,6 +56,7 @@ function emptyResult(domain: string, error: string): BatchScanResultItem {
 		maturityLabel: null,
 		categoryScores: {},
 		findingCounts: { critical: 0, high: 0, medium: 0, low: 0 },
+		findings: [],
 		scoringProfile: 'mail_enabled',
 		scoringSignals: [],
 		scoringNote: null,

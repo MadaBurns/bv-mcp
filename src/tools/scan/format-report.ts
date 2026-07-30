@@ -66,6 +66,15 @@ export interface StructuredScanResult {
 	 */
 	categoryScores: Record<string, number | null>;
 	findingCounts: { critical: number; high: number; medium: number; low: number };
+	/**
+	 * The individual findings `findingCounts` above only tallies — same source
+	 * (`result.score.findings`), same order (as produced, not re-sorted), no cap on
+	 * length. Field-for-field passthrough of `Finding` (`packages/dns-checks/src/types.ts`)
+	 * minus its optional `metadata` bag, which can carry per-check internals not meant
+	 * for a general consumer. `detail` is already sanitized by `createFinding()` at
+	 * construction time, so it is passed through verbatim, not re-sanitized here.
+	 */
+	findings: Array<{ category: string; title: string; severity: 'critical' | 'high' | 'medium' | 'low' | 'info'; detail: string }>;
 	scoringProfile: string;
 	scoringSignals: string[];
 	scoringNote: string | null;
@@ -379,6 +388,12 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 			medium: result.score.findings.filter((f: Finding) => f.severity === 'medium').length,
 			low: result.score.findings.filter((f: Finding) => f.severity === 'low').length,
 		},
+		findings: result.score.findings.map((f: Finding) => ({
+			category: f.category,
+			title: f.title,
+			severity: f.severity,
+			detail: f.detail,
+		})),
 		scoringProfile: result.context?.profile ?? 'mail_enabled',
 		scoringSignals: (result.context?.signals ?? []).map((s: string) => s.replace(/[<>&"']/g, '')),
 		scoringNote: result.scoringNote ?? null,

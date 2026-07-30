@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+
+- **`scan_domain`'s `structuredContent` now carries the individual findings, not just their counts.** `findingCounts` previously told a caller "3 critical" with no way to say which three — the full `Finding[]` the counts were already filtered from sat one line above, unemitted. A new `findings` array is added alongside `findingCounts`, additive and backwards-compatible: same source (`result.score.findings`), same order (as produced, never re-sorted), no length cap, field-for-field passthrough of `category`/`title`/`severity`/`detail` (the internal `metadata` bag is deliberately excluded). `detail` is already sanitized at `createFinding()` construction time and is passed through verbatim. `scan_domain` is in `NON_CHECK_RESULT_TOOLS` and so has no `outputSchema` to update for this change.
+
 ## [3.37.0] - 2026-07-29
 
 ### Added

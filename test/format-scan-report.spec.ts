@@ -163,7 +163,7 @@ describe('format-scan-report', () => {
 					lookalikes: 100,
 				},
 				findings: [
-					{ category: 'dmarc', title: 'No rua', severity: 'medium', detail: 'No aggregate reporting' },
+					{ category: 'dmarc', title: 'No rua', severity: 'medium', detail: 'No aggregate reporting', metadata: { internal: 'do-not-leak' } },
 					{ category: 'ssl', title: 'Weak cipher', severity: 'high', detail: 'Weak cipher suite detected' },
 					{ category: 'spf', title: 'SPF ok', severity: 'info', detail: 'SPF configured' },
 					{ category: 'dnssec', title: 'DNSSEC critical', severity: 'critical', detail: 'DNSSEC broken' },
@@ -188,6 +188,20 @@ describe('format-scan-report', () => {
 		expect(structured.maturityLabel).toBe('Enforcing');
 		expect(structured.categoryScores.spf).toBe(100);
 		expect(structured.findingCounts).toEqual({ critical: 1, high: 1, medium: 1, low: 1 });
+		// `findings` is additive alongside `findingCounts`: same source data, full
+		// per-finding detail, order preserved (not re-sorted), and `findingCounts`
+		// itself is unchanged by the addition — proving this is purely additive.
+		expect(structured.findings).toHaveLength(5);
+		expect(structured.findings).toEqual([
+			{ category: 'dmarc', title: 'No rua', severity: 'medium', detail: 'No aggregate reporting' },
+			{ category: 'ssl', title: 'Weak cipher', severity: 'high', detail: 'Weak cipher suite detected' },
+			{ category: 'spf', title: 'SPF ok', severity: 'info', detail: 'SPF configured' },
+			{ category: 'dnssec', title: 'DNSSEC critical', severity: 'critical', detail: 'DNSSEC broken' },
+			{ category: 'ns', title: 'Low diversity', severity: 'low', detail: 'Single provider' },
+		]);
+		// The source finding carried a `metadata` bag (internal detail); the emitted
+		// shape must not leak it.
+		expect(structured.findings[0]).not.toHaveProperty('metadata');
 		expect(structured.timestamp).toBe('2026-03-12T00:00:00.000Z');
 		expect(structured.cached).toBe(false);
 		// New profile fields default gracefully when context is absent
