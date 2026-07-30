@@ -102,6 +102,59 @@ if [ -n "$generated" ]; then
   exit 1
 fi
 
+# ─── 1c. Symlinks — default-deny any staged symlink (mode 120000) ────
+# Reads the STAGED INDEX (git diff --cached --raw), not the working tree or
+# .gitignore, so `git add -f` cannot bypass it — `git add -f` is exactly how
+# a symlink slips past .gitignore, which is how the node_modules symlink
+# incident (#576) reached main: it resolved to a DIFFERENT checkout's
+# node_modules, so that session's tests silently validated the wrong code.
+# Allowlist starts EMPTY: there are currently zero tracked symlinks in this
+# repo (verified via `git ls-tree -r origin/main | grep '^120000'`), so this
+# costs nothing today. Add an entry only with an explicit, reviewed reason.
+SYMLINK_ALLOWLIST=(
+  # Intentionally empty — see comment above.
+)
+
+staged_symlinks=$(git diff --cached --raw --diff-filter=ACMRT | awk '$2 == "120000" { print $NF }')
+symlink_blocked=""
+
+for file in $staged_symlinks; do
+  allowed=0
+  if [ "${#SYMLINK_ALLOWLIST[@]}" -gt 0 ]; then
+    for allow in "${SYMLINK_ALLOWLIST[@]}"; do
+      if [ "$file" = "$allow" ]; then
+        allowed=1
+        break
+      fi
+    done
+  fi
+  if [ "$allowed" -eq 0 ]; then
+    symlink_blocked="$symlink_blocked\n  $file"
+  fi
+done
+
+if [ -n "$symlink_blocked" ]; then
+  echo "BLOCKED: The following staged entries are symlinks (git mode 120000):"
+  echo -e "$symlink_blocked"
+  echo ""
+  echo "Tracked symlinks are disallowed by default. A committed symlink"
+  echo "resolves to whatever happens to exist at its target path on the"
+  echo "machine/checkout that reads it — dangling on most clones, or worse,"
+  echo "silently resolving to the WRONG thing (the node_modules symlink"
+  echo "incident, #576, pointed one session's node_modules at a different"
+  echo "checkout's installed packages, corrupting that session's test"
+  echo "results without any error)."
+  echo ""
+  echo "If you symlinked node_modules to skip a slow per-worktree install,"
+  echo "use scripts/worktree-setup.sh instead — it runs the real"
+  echo "'npm ci --ignore-scripts' + dns-checks build for you."
+  echo ""
+  echo "If a tracked symlink is genuinely required, add its path to the"
+  echo "SYMLINK_ALLOWLIST array in .githooks/pre-commit with a reason."
+  echo "To bypass (reviewed false positive only): git commit --no-verify"
+  exit 1
+fi
+
 # ─── 2. Gitleaks (secrets + PII) ──────���──────────────────────────────
 if command -v gitleaks &>/dev/null; then
   gitleaks protect --staged --config .gitleaks.toml --redact=100 --no-banner 2>&1 | head -20
