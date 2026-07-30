@@ -390,7 +390,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		},
 		findings: result.score.findings.map((f: Finding) => ({
 			category: f.category,
-			title: f.title,
+			title: sanitizeOutputText(f.title),
 			severity: f.severity,
 			detail: f.detail,
 		})),
