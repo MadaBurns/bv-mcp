@@ -72,7 +72,7 @@
 		"drizzle-kit": "^0.31.10",
 		"eslint": "10.8.0",
 		"hono": "4.12.32",
-		"playwright": "^1.61.1",
+		"playwright": "^1.62.0",
 		"tsup": "8.5.1",
 		"typescript": "6.0.3",
 		"typescript-eslint": "8.65.0",
