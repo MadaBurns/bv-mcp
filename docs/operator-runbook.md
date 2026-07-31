@@ -24,8 +24,9 @@ Prerequisites:
 4. Secrets (`wrangler secret list` to see which are set): BV_API_KEY,
    OAUTH_SIGNING_SECRET, BV_WEB_INTERNAL_KEY, BV_RECON_KEY, BV_TLS_PROBE_KEY,
    BV_BROWSER_RENDERER_KEY, KV_ENVELOPE_KEY, MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
-   BV_DOH_TOKEN, CF_ANALYTICS_TOKEN. Values in the secret manager; secrets
-   survive deploys (only re-`put` when rotating).
+   BV_DOH_ENDPOINT, BV_DOH_TOKEN, CF_ANALYTICS_TOKEN. Values in the secret
+   manager; secrets survive deploys (only re-`put` when rotating).
+   `BV_DOH_ENDPOINT`/`BV_DOH_TOKEN` are optional — see §9.
 
 Deploy:
 
@@ -138,8 +139,111 @@ unset. Set up an external heartbeat:
 | `BV_API_KEY` | `npx wrangler secret put BV_API_KEY` | Update Claude Desktop MCPB extension/connector configs |
 | `OAUTH_SIGNING_SECRET` | `npx wrangler secret put OAUTH_SIGNING_SECRET` | Invalidates ALL outstanding OAuth JWTs — customers re-consent |
 | `MCP_ACCESS_LOG_IP_ENCRYPTION_KEY` | `npx wrangler secret put ...` + bump `MCP_ACCESS_LOG_IP_KEY_VERSION` | Old ciphertexts need the old key retained in the vault for forensics |
+| `BV_DOH_TOKEN` | `npx wrangler secret put BV_DOH_TOKEN` | Rotate `BLACKVEIL_DOH_TOKEN` on the bv-dns host to the SAME value. A mismatch is non-fatal — see §9 |
 
-## 9. Incident quick path
+## 9. Secondary DoH resolver (bv-dns) — optional, default-OFF
+
+### What it is
+
+`src/lib/dns-transport.ts` resolves through Cloudflare DoH as primary. When a
+primary lookup returns **no answers of the requested type**, `queryDns` calls
+`confirmWithSecondaryResolvers` to double-check the absence before a check
+reports "not present". That confirmation always queries Google DoH, and
+additionally queries a **private BlackVeil-operated DoH resolver** when — and
+only when — both of these are populated:
+
+| Env | Kind | Purpose |
+| --- | ---- | ------- |
+| `BV_DOH_ENDPOINT` | **Secret** | Full `…/dns-query` URL of the private resolver |
+| `BV_DOH_TOKEN` | **Secret** | Sent as the `X-BV-Token` request header; must equal `BLACKVEIL_DOH_TOKEN` on the resolver host |
+
+Unset `BV_DOH_ENDPOINT` → the seam is **inert**: `opts.secondaryDoh` is
+`undefined` at every call site, no request is issued, and confirmation behaves
+exactly as it does today (Google only). This is the shipped default and the
+instant kill switch.
+
+### Why the endpoint is a Secret and not a `vars` entry
+
+This repo is source-available. `.gitleaks.toml` carries an `internal-hostname`
+rule that fails CI on any commit reintroducing the resolver's hostname, which
+was deliberately scrubbed from history. Workers expose **`vars` and secrets on
+the same `env` object**, so a secret satisfies the reader
+(`c.env.BV_DOH_ENDPOINT`) identically while keeping the hostname out of the
+repo. No code, type, or `wrangler.jsonc` change is required to activate it:
+
+- `BV_DOH_ENDPOINT?: string` / `BV_DOH_TOKEN?: string` are already declared on
+  the hand-written env types in `src/index.ts`, `src/internal.ts`,
+  `src/tenants/routes.ts`, and `src/tenants/queue-consumer.ts` — not on the
+  `wrangler types`-generated ambient `Env`, so regenerating types cannot drop
+  them and no `vars` entry is needed to typecheck.
+- Nothing validates the pair. `REQUIRE_PRODUCTION_BINDINGS` checks only KV /
+  D1 / R2 / queue / DO bindings and the alert webhook; an absent secondary
+  resolver is not a degraded `/health`.
+
+The alternative — a `vars` entry in the gitignored `.dev/wrangler.deploy.jsonc`
+overlay — also keeps the hostname out of the repo, but couples activation to
+the overlay copy in the secret manager and to a redeploy. Prefer the secret.
+
+### Activate
+
+Run from repo root against the production account (`npx wrangler login` first):
+
+    npx wrangler secret put BV_DOH_ENDPOINT --config .dev/wrangler.deploy.jsonc
+    # paste the full https://<resolver-host>:<port>/dns-query URL
+
+    npx wrangler secret put BV_DOH_TOKEN --config .dev/wrangler.deploy.jsonc
+    # paste the SAME value as BLACKVEIL_DOH_TOKEN on the resolver host
+
+Secrets apply to the running Worker immediately — **no deploy needed**, and
+they survive subsequent deploys. Record both values in the operator secret
+manager under `bv-mcp/secondary-doh` before setting them.
+
+Pre-flight the resolver first (values from the secret manager, never inline in
+a commit or a shared log):
+
+    curl -s -o /dev/null -w '%{http_code} verify=%{ssl_verify_result}\n' "$BV_DOH_HEALTH_URL"
+    # expect: 200 verify=0   (strict TLS; do NOT use -k)
+
+    curl -s -H "X-BV-Token: $TOKEN" "$BV_DOH_ENDPOINT?name=example.com&type=TXT"
+    # expect: application/dns-json body. 401 ⇒ token mismatch.
+
+### Deactivate / roll back
+
+    npx wrangler secret delete BV_DOH_ENDPOINT --config .dev/wrangler.deploy.jsonc
+
+Deleting the endpoint alone is sufficient — the token is only read when the
+endpoint is set. Takes effect immediately, no deploy.
+
+### Failure semantics (why this is safe to enable)
+
+The secondary resolver **cannot change a result that the primary already
+answered**, and it cannot turn a good result into a bad one:
+
+| Condition | Behaviour |
+| --------- | --------- |
+| Primary (Cloudflare) returns typed answers | Secondary confirmation never runs. bv-dns is never contacted on the overwhelming majority of lookups. |
+| bv-dns down, DNS-unresolvable, or TCP-refused | `fetchDohOutcome` catches and returns `{ kind: 'error', reason: 'network' }`. Google's answer is used. Identical to today. |
+| bv-dns returns 401 (token mismatch), 5xx, or any non-2xx | `{ kind: 'error', reason: 'http' }`, logged at `warn` under `category: 'dns-transport'`. Google's answer is used. **A wrong token degrades to today's behaviour, it does not fail the scan.** |
+| bv-dns returns malformed JSON | `{ kind: 'error', reason: 'parse' }`. Google's answer is used. |
+| bv-dns hangs | `AbortSignal.timeout(DNS_TIMEOUT_MS)` (3 s) aborts it → `reason: 'timeout'`. Google's answer is used. |
+| bv-dns AND Google both fail | `{ kind: 'unconfirmed' }` → `queryDns` returns the **primary** response unchanged. Confirmation is best-effort; it never substitutes an empty result for a primary one. |
+
+Latency is the only real exposure, and it is bounded. The two secondaries run
+under `Promise.allSettled`, which waits for **both** to settle — so on the
+empty-answer path the confirmation costs `max(google, bv-dns)` rather than
+`google` alone. A blackholed bv-dns (packets dropped, no RST) therefore adds up
+to `DNS_TIMEOUT_MS` = **3 s** to that one lookup. That is contained by the
+per-check budget (`PER_CHECK_TIMEOUT_MS`, 8 s default, clamped 2–15 s) and the
+whole-scan budget (`SCAN_TIMEOUT_MS`, 15 s default, clamped 5–30 s), so the
+worst case is a single check timing out — not a hung scan. If the resolver is
+known-flapping, delete `BV_DOH_ENDPOINT` rather than waiting it out.
+
+Answer precedence when several resolvers reply: the first candidate holding
+answers **of the requested type** wins, evaluated bv-dns → Google. bv-dns is a
+trusted first-party resolver; treat that precedence as part of its blast
+radius when rotating or repointing the endpoint.
+
+## 10. Incident quick path
 
 1. Symptom triage: `npx wrangler tail` (live) / Workers dashboard logs.
 2. Bad deploy → §2 rollback. Data damage → §3 Time Travel.

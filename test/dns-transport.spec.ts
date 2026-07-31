@@ -550,6 +550,49 @@ describe('secondary DoH resolver (bv-dns)', () => {
 		expect(result.Answer).toBeDefined();
 		expect(result.Answer![0].data).toBe('"v=spf1 ~all"'); // Google result
 	});
+
+	// The likeliest real-world misconfiguration once the secondary is activated:
+	// BV_DOH_TOKEN drifts from BLACKVEIL_DOH_TOKEN on the resolver host, so every
+	// bv-dns call answers 401. That must degrade to exactly the pre-activation
+	// behaviour (Google's answer), never to an empty/failed result.
+	it('returns Google result when bv-dns rejects the token with 401', async () => {
+		const fetchMock = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+			if (urlStr.includes('cloudflare-dns.com')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(emptyCloudflareResponse),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('secondary-doh.test')) {
+				return Promise.resolve({
+					ok: false,
+					status: 401,
+					json: () => Promise.reject(new Error('should not be read on non-2xx')),
+				} as unknown as Response);
+			}
+			if (urlStr.includes('dns.google')) {
+				return Promise.resolve({
+					ok: true,
+					status: 200,
+					json: () => Promise.resolve(googleResponse),
+				} as unknown as Response);
+			}
+			return Promise.reject(new Error(`unexpected URL: ${urlStr}`));
+		});
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query', token: 'wrong-token' },
+		});
+
+		expect(result.Answer).toBeDefined();
+		expect(result.Answer![0].data).toBe('"v=spf1 ~all"'); // Google result, unaffected by the 401
+		expect(fetchMock).toHaveBeenCalledTimes(3);
+	});
 });
 
 describe('fetchDohOutcome', () => {
