@@ -159,11 +159,26 @@ export function createFinding(
 	// Sanitize detail with the shared structured-string sanitizer used by metadata,
 	// so both LLM-facing channels stay in lockstep.
 	const sanitized = sanitizeStructuredString(detail);
+	// F7 (OWASP LLM01): `title` is the THIRD LLM-facing channel out of this function, and until
+	// now the only unsanitized one -- despite production code interpolating fully
+	// attacker-controlled DNS data into it. `checks/check-dkim.ts` builds
+	// `Unknown DKIM key type: ${keyTypeMatch[1]}` from a `k=` capture on the scanned domain's raw
+	// DKIM TXT record, so whoever controls a domain submitted for scanning controls that
+	// substring verbatim. The title reaches an LLM through BOTH the prose report and the MCP
+	// `structuredContent` findings array; sanitizing here covers both at once, rather than at one
+	// emission site where the two channels can silently drift apart.
+	const sanitizedTitle = sanitizeStructuredString(title);
 	// F7 (OWASP LLM01): metadata reaches the LLM verbatim via the MCP
 	// `structuredContent` channel, so sanitize attacker-influenceable STRING values
 	// here at the chokepoint (control bytes, code-fence/markdown injection, over-long
 	// strings) while preserving numeric/boolean/enum fields scoring & formatters rely
 	// on. Generalizes the per-tool F7 opt-ins (`src/lib/sanitize-upstream.ts`).
 	const sanitizedMetadata = sanitizeFindingMetadata(metadata);
-	return { category, title, severity, detail: sanitized, ...(sanitizedMetadata ? { metadata: sanitizedMetadata } : {}) };
+	return {
+		category,
+		title: sanitizedTitle,
+		severity,
+		detail: sanitized,
+		...(sanitizedMetadata ? { metadata: sanitizedMetadata } : {}),
+	};
 }
