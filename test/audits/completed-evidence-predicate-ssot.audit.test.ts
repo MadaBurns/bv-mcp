@@ -26,14 +26,27 @@
  * switch/case, loose (`!=`/`==`) comparison, or a comment wedged between the
  * two halves of a split comparison) — see FORBIDDEN_SHAPES below.
  *
- * SCOPE: `src/` only. `packages/dns-checks/src/scoring/evidence.ts` carries
- * its own DELIBERATE twin (`computeScanEvidence`'s per-result
- * completed/attempted accounting) — that package is a published SSOT
- * vendored by another repo and is frozen for this campaign (see
- * `src/lib/ungraded-display.ts`'s file-level doc for the cross-package
- * pointer). This audit does not, and must not, reach into
- * `packages/dns-checks`; it exists solely to stop the `src/`-side surfaces
- * from drifting from EACH OTHER and from their own SSOT.
+ * SCOPE: `src/` only — a TEXT scan of the `src/` corpus. This audit does not,
+ * and must not, reach into `packages/dns-checks`: its glob, its anti-vacuity
+ * threshold (`paths.length > 200`), its `SSOT_PATH`/`KNOWN_DIFFERENT_PURPOSE`
+ * vocabulary and the exact-occurrence-count assertion on those exclusions are
+ * all calibrated to THIS corpus, and widening the glob would silently
+ * recalibrate every one of them. It exists solely to stop the `src/`-side
+ * surfaces from drifting from EACH OTHER and from their own SSOT.
+ *
+ * The CROSS-BOUNDARY leg is therefore a separate file, not a wider glob here:
+ * `test/audits/completed-evidence-cross-package-parity.audit.test.ts`. It is
+ * also a different KIND of check — a behavioural parity contract (call both
+ * predicates over the whole `CheckStatus` domain and compare) plus a delegation
+ * lock — because text scanning cannot prove two implementations agree. That
+ * pairing is what closes the gap this audit was structurally blind to: the
+ * package side used to carry a hand-maintained twin of the same predicate
+ * (`computeScanEvidence`'s per-result completed/attempted accounting) that
+ * nothing compared against the `src/` side. PR #578 exported it as
+ * `isCheckMeasured` on the `@blackveil/dns-checks/scoring` subpath `src/`
+ * already consumes, so `src/lib/ungraded-display.ts` now DELEGATES to it and
+ * the twin is gone — which is also why the SSOT file is no longer exempt from
+ * the shape rules (see the dedicated test below).
  *
  * This is a TEXT scanner, not a parser — it cannot catch every conceivable
  * rewrite (a fully abstracted local helper with a made-up name, a computed
@@ -376,6 +389,34 @@ describe('completed-evidence predicate SSOT (src/ only)', () => {
 		const source = STRIPPED[SSOT_PATH];
 		expect(source).toBeDefined();
 		expect(source).toMatch(/checks\.some\(isCompletedCheck\)/);
+	});
+
+	it('the SSOT file ITSELF no longer spells the comparison — isCompletedCheck delegates across the package boundary', () => {
+		// The corpus sweep below deliberately SKIPS `SSOT_PATH` (its subject is
+		// "no OTHER module"), which left the SSOT file as the one place in `src/`
+		// where the raw comparison could legally live — and therefore the one place
+		// a re-derivation could reappear with the whole audit staying green.
+		//
+		// That exemption was load-bearing while the comparison had nowhere else to
+		// go. It no longer is: PR #578 exported `isCheckMeasured` from
+		// `@blackveil/dns-checks/scoring` — a subpath `src/` already consumes
+		// (`adaptive-weights.ts`, `category-interactions.ts`, `scoring.ts`) — so
+		// `isCompletedCheck` delegates and the last hand-spelled copy in `src/` is
+		// gone. Holding the SSOT file to the same shape rules as every other `src/`
+		// module is what stops it silently growing a new one.
+		//
+		// SCOPE UNCHANGED: this is still a `src/`-only text assertion. The
+		// BEHAVIOURAL half of the cross-boundary contract (do the two predicates
+		// actually agree, and does the worker side literally call the package
+		// export) lives in `completed-evidence-cross-package-parity.audit.test.ts`
+		// — a different kind of check, deliberately not bolted onto this text
+		// scanner, whose `src/`-shaped glob, anti-vacuity threshold and
+		// KNOWN_DIFFERENT_PURPOSE counts are all calibrated to this corpus.
+		const source = STRIPPED[SSOT_PATH];
+		const matched = buildForbiddenShapes(identifierPattern(findCheckStatusAliases(source)))
+			.filter((shape) => shape.test(source))
+			.map((shape) => shape.source);
+		expect(matched, `${SSOT_PATH} must delegate to isCheckMeasured, not re-spell the completed/not-completed comparison`).toEqual([]);
 	});
 
 	it('has no OTHER src/ module re-deriving the completed/not-completed check inline (copy-paste OR rewritten, incl. renamed/aliased identifiers)', () => {
