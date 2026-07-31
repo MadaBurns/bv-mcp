@@ -106,7 +106,6 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
   resolve_spf_chain     check_nsec_             brand_audit_status
   discover_subdomains     walkability           brand_audit_get_
   map_compliance        check_dnssec_chain        report
-  map_csc_products
   prioritize_csc_leads
   simulate_attack_paths check_fast_flux         list_brand_audit_watches
   check_agent_discovery check_dnskey_strength
@@ -160,14 +159,14 @@ Self-hosted or local deployments without `BV_INFRA_PROBE` still return structure
 
 ## Quality & Reliability
 
-The server is continuously validated using a **comprehensive chaos test suite** that covers all detected MCP client types:
+The server classifies detected MCP clients by their default response format:
 
-- **Interactive clients**: `claude_code`, `cursor`, `vscode`, `claude_desktop`, `windsurf` (auto-format: `compact`)
+- **Interactive clients**: `claude_mobile`, `claude_code`, `cursor`, `vscode`, `claude_desktop`, `claude_connector`, `windsurf` (auto-format: `compact`)
 - **Non-interactive clients**: `mcp_remote`, `blackveil_dns_action`, `bv_claude_dns_proxy`, `unknown` (auto-format: `full`)
 
 The `bv_load_test` class identifies internal load/chaos/tranco-scan traffic so it stays out of real-client analytics segments.
 
-The test suite ensures session stability, authentication precedence, format negotiation, and transport-specific edge cases across Streamable HTTP and Legacy SSE. Without an API key it exercises the public/free-tier path; with a valid key exported as `BV_API_KEY`, it covers Bearer authentication, legacy self-host `?api_key=` compatibility, authenticated SSE bootstrap, and authenticated batch behavior.
+The comprehensive chaos suite validates session stability, authentication precedence, format negotiation, and transport-specific edge cases across Streamable HTTP and Legacy SSE for its supported client fixtures. Without an API key it exercises the public/free-tier path; with a valid key exported as `BV_API_KEY`, it covers Bearer authentication, legacy self-host `?api_key=` compatibility, authenticated SSE bootstrap, and authenticated batch behavior.
 
 Run the client/session chaos suite locally: `python3 scripts/chaos/chaos-test-clients.py`.
 
