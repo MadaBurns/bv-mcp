@@ -56,7 +56,7 @@ export {
 export { computeGenericScore } from './generic';
 export type { GenericScoringContext, GenericScanScore, FindingSeverityCounts, EmailBonusKeyMap, TierBreakdown } from './generic';
 
-export { EVIDENCE_SUFFICIENCY_THRESHOLD, computeScanEvidence, isEvidenceSufficient, buildEvidenceNote } from './evidence';
+export { EVIDENCE_SUFFICIENCY_THRESHOLD, computeScanEvidence, isCheckMeasured, isEvidenceSufficient, buildEvidenceNote } from './evidence';
 export type { ScanEvidence } from './evidence';
 
 export { classifyDmarc, appendDmarcCleanInfo } from './classifiers/dmarc';

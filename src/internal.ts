@@ -107,6 +107,20 @@ type InternalEnv = {
 	CF_ANALYTICS_TOKEN?: string;
 	BV_WEB_INTERNAL_KEY?: string;
 	/**
+	 * Independent internal-door credential for the BizFit mobile Worker (`claude-proxy`),
+	 * accepted on /internal/tools/* ONLY — never /analytics/* or /tenants/*.
+	 *
+	 * Exists so a lower-trust consumer is not handed `BV_WEB_INTERNAL_KEY`, which is a
+	 * BIDIRECTIONAL shared bearer with bv-web-prod (bv-web-prod → here, and here → bv-web-prod's
+	 * validate-key / get_domain_rank benchmark / M365 proxy). A separate slot means the mobile
+	 * Worker can be rotated or revoked without touching bv-web-prod, and a leak on the mobile
+	 * side does not expose bv-web-prod's credential in either direction.
+	 *
+	 * Same rationale as the BV_INTERNAL_DEV_KEY / BV_INTERNAL_DEV_KEY_2 pair in
+	 * src/lib/tier-auth.ts: add a per-consumer key without rotating the incumbent.
+	 */
+	BV_MOBILE_INTERNAL_KEY?: string;
+	/**
 	 * Opt-out flag for the defense-in-depth bearer gate on /tools/* and /analytics/*.
 	 * Default: gate is ACTIVE (bearer required). Set to 'false' to disable the bearer
 	 * requirement and rely solely on the cf-connecting-ip network guard.
@@ -182,12 +196,17 @@ internalRoutes.use('*', async (c, next) => {
  * Defense-in-depth bearer gate for /tools/*, /analytics/*, and /tenants/*.
  *
  * **Secure by default (FIND-12):** the gate is ACTIVE unless explicitly opted
- * out. Callers must present `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}`.
+ * out. Callers must present `Authorization: Bearer <one of the accepted keys>`.
  * Set `REQUIRE_INTERNAL_AUTH=false` to disable and rely solely on the
  * cf-connecting-ip network guard (e.g. during a controlled migration window).
  *
- * Fail-closed: if the gate is active but `BV_WEB_INTERNAL_KEY` is unset,
- * the route returns 503 rather than silently passing unauthenticated requests.
+ * Takes the list of env var names whose values are accepted on the routes it fronts, so a
+ * per-consumer credential can be granted to one route group without granting it everywhere.
+ * `/tools/*` accepts `BV_WEB_INTERNAL_KEY` + `BV_MOBILE_INTERNAL_KEY`; `/analytics/*` and
+ * `/tenants/*` accept only `BV_WEB_INTERNAL_KEY`.
+ *
+ * Fail-closed: if the gate is active but NONE of its accepted keys is configured (unset or
+ * empty), the route returns 503 rather than silently passing unauthenticated requests.
  *
  * Unlike trialKeysAuthGate (which always enforces because it mints credentials),
  * this gate can be disabled at the operator's explicit request via the env flag.
@@ -199,24 +218,56 @@ internalRoutes.use('*', async (c, next) => {
  * Registered BEFORE the route handlers below — Hono middleware applies only to
  * routes registered after the .use() call.
  */
-const internalLenientAuthGate: import('hono').MiddlewareHandler<{ Bindings: InternalEnv }> = async (c, next) => {
-	if (c.env.REQUIRE_INTERNAL_AUTH === 'false') {
-		// Explicitly opted out — rely on the network guard (cf-connecting-ip) alone.
+const internalLenientAuthGate = (
+	acceptedKeys: ReadonlyArray<'BV_WEB_INTERNAL_KEY' | 'BV_MOBILE_INTERNAL_KEY'>,
+): import('hono').MiddlewareHandler<{ Bindings: InternalEnv }> => {
+	return async (c, next) => {
+		if (c.env.REQUIRE_INTERNAL_AUTH === 'false') {
+			// Explicitly opted out — rely on the network guard (cf-connecting-ip) alone.
+			return next();
+		}
+		// Empty strings are dropped, not treated as credentials: `wrangler secret put` will
+		// store an empty value, and an empty expected token must never authorize anything nor
+		// count towards "a credential is configured" below.
+		const expected = acceptedKeys.map((name) => c.env[name]).filter((k): k is string => typeof k === 'string' && k.length > 0);
+		if (expected.length === 0) {
+			// Misconfig: gate is active but no key configured for this route group — fail closed.
+			return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
+		}
+		const header = c.req.header('authorization');
+		// Every candidate is evaluated (no `||` short-circuit) so the number of constant-time
+		// comparisons performed does not vary with WHICH key matched.
+		const matches = await Promise.all(expected.map((key) => isAuthorizedRequest(header, key)));
+		if (!matches.some(Boolean)) {
+			return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
+		}
 		return next();
-	}
-	const expected = c.env.BV_WEB_INTERNAL_KEY;
-	if (!expected) {
-		// Misconfig: gate is active but no key configured — fail closed.
-		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
-	}
-	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
-		return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
-	}
-	return next();
+	};
 };
-internalRoutes.use('/tools/*', internalLenientAuthGate);
-internalRoutes.use('/analytics/*', internalLenientAuthGate);
-internalRoutes.use('/tenants/*', internalLenientAuthGate);
+const webOnlyGate = internalLenientAuthGate(['BV_WEB_INTERNAL_KEY']);
+const webAndMobileGate = internalLenientAuthGate(['BV_WEB_INTERNAL_KEY', 'BV_MOBILE_INTERNAL_KEY']);
+
+/**
+ * The exact internal paths `BV_MOBILE_INTERNAL_KEY` may reach. Everything else under
+ * /internal/* stays web-key-only.
+ *
+ * Deliberately `/tools/call` and NOT all of `/tools/*`: `/tools/batch` takes `domains: string[]`
+ * plus a caller-set `concurrency`, so one request there fans out a scan across many domains. The
+ * mobile Worker's client posts to `/tools/call` and nothing else, so a leak of its key must not
+ * become a bulk-scanning capability. Full mount path — `internalRoutes` is mounted at `/internal`
+ * in src/index.ts.
+ */
+const MOBILE_ACCESSIBLE_PATHS: ReadonlySet<string> = new Set(['/internal/tools/call']);
+
+// One registration, not two: Hono runs EVERY matching middleware in registration order, so a
+// narrow `.use('/tools/call', …)` plus a broad `.use('/tools/*', …)` would run both on
+// /tools/call and the broader web-only gate would then reject a valid mobile bearer. Selecting
+// the gate per-request inside a single registration is what keeps that correct.
+internalRoutes.use('/tools/*', (c, next) =>
+	(MOBILE_ACCESSIBLE_PATHS.has(new URL(c.req.url).pathname) ? webAndMobileGate : webOnlyGate)(c, next),
+);
+internalRoutes.use('/analytics/*', webOnlyGate);
+internalRoutes.use('/tenants/*', webOnlyGate);
 
 // Tenant orchestrator routes (per tenant-Scalable-Architecture-Design.md §4.1).
 // Mounted AFTER `internalLenientAuthGate` is registered so the gate covers
