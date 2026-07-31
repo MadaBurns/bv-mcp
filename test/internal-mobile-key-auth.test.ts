@@ -102,6 +102,38 @@ describe('internal auth gate: per-consumer BV_MOBILE_INTERNAL_KEY', () => {
 		expect(res.status).toBe(401);
 	});
 
+	it('scopes the mobile key to /internal/tools/call — it must NOT unlock /internal/tools/batch', async () => {
+		// Raised in review of #594. `/tools/batch` accepts `domains: string[]` plus a caller-set
+		// `concurrency`, so it is a fan-out amplification surface: one request can drive a scan
+		// across many domains. The mobile Worker's client (`bv-mcp-client.ts`) only ever posts to
+		// `/internal/tools/call`, so the mobile credential has no business reaching batch — a leak
+		// of it must not become a bulk-scanning capability.
+		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: WEB_KEY, BV_MOBILE_INTERNAL_KEY: MOBILE_KEY } as TestEnv;
+		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${MOBILE_KEY}` },
+			body: JSON.stringify({ tool: 'check_spf', domains: ['example.com'] }),
+		});
+		const res = await send(req, customEnv);
+		expect(res.status).toBe(401);
+	});
+
+	it('still lets the web key reach /internal/tools/batch', async () => {
+		// The narrowing above must constrain the MOBILE key only — bv-web-prod's existing batch
+		// access is unchanged.
+		const { mockTxtRecords } = await import('./helpers/dns-mock');
+		mockTxtRecords(['v=spf1 -all']);
+		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: WEB_KEY, BV_MOBILE_INTERNAL_KEY: MOBILE_KEY } as TestEnv;
+		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${WEB_KEY}` },
+			body: JSON.stringify({ tool: 'check_spf', domains: ['example.com'] }),
+		});
+		const res = await send(req, customEnv);
+		expect(res.status).not.toBe(401);
+		expect(res.status).not.toBe(503);
+	});
+
 	it('scopes the mobile key to /internal/tools/* — it must NOT unlock /internal/analytics/*', async () => {
 		// Least privilege: the BizFit mobile Worker only ever calls /internal/tools/call. The
 		// shared gate also fronts /analytics/* and /tenants/*, so the mobile slot is wired into

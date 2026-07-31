@@ -244,13 +244,30 @@ const internalLenientAuthGate = (
 		return next();
 	};
 };
-// /tools/* additionally accepts the BizFit mobile Worker's own credential. /analytics/* and
-// /tenants/* deliberately do NOT — the mobile Worker calls `scan_domain` and nothing else, and
-// widening it to tenant or analytics data would defeat the point of giving it a separate key.
-// `test/internal-mobile-key-auth.test.ts` pins that scoping.
-internalRoutes.use('/tools/*', internalLenientAuthGate(['BV_WEB_INTERNAL_KEY', 'BV_MOBILE_INTERNAL_KEY']));
-internalRoutes.use('/analytics/*', internalLenientAuthGate(['BV_WEB_INTERNAL_KEY']));
-internalRoutes.use('/tenants/*', internalLenientAuthGate(['BV_WEB_INTERNAL_KEY']));
+const webOnlyGate = internalLenientAuthGate(['BV_WEB_INTERNAL_KEY']);
+const webAndMobileGate = internalLenientAuthGate(['BV_WEB_INTERNAL_KEY', 'BV_MOBILE_INTERNAL_KEY']);
+
+/**
+ * The exact internal paths `BV_MOBILE_INTERNAL_KEY` may reach. Everything else under
+ * /internal/* stays web-key-only.
+ *
+ * Deliberately `/tools/call` and NOT all of `/tools/*`: `/tools/batch` takes `domains: string[]`
+ * plus a caller-set `concurrency`, so one request there fans out a scan across many domains. The
+ * mobile Worker's client posts to `/tools/call` and nothing else, so a leak of its key must not
+ * become a bulk-scanning capability. Full mount path — `internalRoutes` is mounted at `/internal`
+ * in src/index.ts.
+ */
+const MOBILE_ACCESSIBLE_PATHS: ReadonlySet<string> = new Set(['/internal/tools/call']);
+
+// One registration, not two: Hono runs EVERY matching middleware in registration order, so a
+// narrow `.use('/tools/call', …)` plus a broad `.use('/tools/*', …)` would run both on
+// /tools/call and the broader web-only gate would then reject a valid mobile bearer. Selecting
+// the gate per-request inside a single registration is what keeps that correct.
+internalRoutes.use('/tools/*', (c, next) =>
+	(MOBILE_ACCESSIBLE_PATHS.has(new URL(c.req.url).pathname) ? webAndMobileGate : webOnlyGate)(c, next),
+);
+internalRoutes.use('/analytics/*', webOnlyGate);
+internalRoutes.use('/tenants/*', webOnlyGate);
 
 // Tenant orchestrator routes (per tenant-Scalable-Architecture-Design.md §4.1).
 // Mounted AFTER `internalLenientAuthGate` is registered so the gate covers
