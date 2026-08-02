@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, expect, it } from 'vitest';
-import { env } from 'cloudflare:test';
+import { env, runInDurableObject } from 'cloudflare:test';
 import type { ScanTelemetry } from '../src/lib/adaptive-weights';
 
 function getStub(name: string): DurableObjectStub {
@@ -563,5 +563,86 @@ describe('ProfileAccumulator — Intelligence Layer', () => {
 			// Running average of 60, 70, 80, 90 = 75
 			expect(body.snapshots[0].avgScore).toBeCloseTo(75, 0);
 		});
+	});
+});
+
+/**
+ * The `SCORING_CONFIG.baselineFailureRates` key was parsed by the scoring package
+ * and then read by NOBODY: `handleGetWeights` imported the static
+ * `BASELINE_FAILURE_RATES` map from `src/lib/adaptive-weights.ts` directly, so an
+ * operator could set the key and observe no effect anywhere. These tests lock the
+ * wiring end-to-end at the Durable Object boundary — pure-function coverage of the
+ * resolver itself lives in `test/adaptive-weights.spec.ts`.
+ *
+ * Adaptive weights never reach a reported score (`scanDomain` always reports the
+ * canonical static-weight score), so this is confined to the `scoringNote` /
+ * `adaptiveWeightDeltas` surfaces by construction.
+ */
+describe('ProfileAccumulator — SCORING_CONFIG.baselineFailureRates wiring', () => {
+	/**
+	 * Run `body` with the DO instance's `env.SCORING_CONFIG` temporarily set.
+	 * The DO receives its env at construction from the runtime, so mutating the
+	 * test worker's `env` object would not reach it — we have to reach into the
+	 * instance. Restored unconditionally so no sibling test inherits the override.
+	 */
+	async function withScoringConfig<T>(stub: DurableObjectStub, raw: string | undefined, body: () => Promise<T>): Promise<T> {
+		const restore = await runInDurableObject(stub, (instance) => {
+			const doEnv = (instance as unknown as { env: Record<string, unknown> }).env;
+			const previous = doEnv.SCORING_CONFIG;
+			doEnv.SCORING_CONFIG = raw;
+			return previous;
+		});
+		try {
+			return await body();
+		} finally {
+			await runInDurableObject(stub, (instance) => {
+				(instance as unknown as { env: Record<string, unknown> }).env.SCORING_CONFIG = restore;
+			});
+		}
+	}
+
+	it('an override reaches the /benchmark baseline echo', async () => {
+		const stub = getStub('baseline-override-benchmark');
+
+		const unset = await (await getBenchmark(stub, 'mail_enabled')).json();
+		expect(unset.baselineFailureRates.dmarc).toBe(0.4);
+
+		const overridden = await withScoringConfig(stub, JSON.stringify({ baselineFailureRates: { dmarc: 0.99 } }), async () =>
+			(await getBenchmark(stub, 'mail_enabled')).json(),
+		);
+		expect(overridden.baselineFailureRates.dmarc).toBe(0.99);
+		// Untouched categories still come from the worker-side static table.
+		expect(overridden.baselineFailureRates.spf).toBe(0.25);
+
+		// And the override does not leak once it is removed again.
+		const after = await (await getBenchmark(stub, 'mail_enabled')).json();
+		expect(after.baselineFailureRates.dmarc).toBe(0.4);
+	});
+
+	it('an override changes the adaptive weight the accumulator computes', async () => {
+		const stub = getStub('baseline-override-weights');
+
+		// Seed enough samples that the blend factor is non-trivial, with an observed
+		// failure rate well away from the default 0.40 dmarc baseline.
+		for (let i = 0; i < 50; i++) {
+			await ingest(stub, {
+				profile: 'mail_enabled',
+				provider: null,
+				categoryFindings: [{ category: 'dmarc', score: 20, passed: false }],
+				timestamp: Date.now(),
+				overallScore: 40,
+			});
+		}
+
+		const baselineWeights = await (await getWeights(stub, 'mail_enabled')).json();
+		expect(baselineWeights.sampleCount).toBeGreaterThan(0);
+		expect(typeof baselineWeights.weights.dmarc).toBe('number');
+
+		// A HIGHER baseline means the observed failure rate looks less anomalous, so the
+		// adaptive weight moves DOWN relative to the un-overridden run.
+		const overriddenWeights = await withScoringConfig(stub, JSON.stringify({ baselineFailureRates: { dmarc: 0.99 } }), async () =>
+			(await getWeights(stub, 'mail_enabled')).json(),
+		);
+		expect(overriddenWeights.weights.dmarc).toBeLessThan(baselineWeights.weights.dmarc);
 	});
 });

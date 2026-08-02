@@ -11,7 +11,9 @@
 
 import type { CheckCategory } from '@blackveil/dns-checks/scoring';
 import type { DomainProfile } from '@blackveil/dns-checks/scoring';
-import { PROFILE_WEIGHTS } from '@blackveil/dns-checks/scoring';
+import { DEFAULT_SCORING_CONFIG, PROFILE_WEIGHTS, getProfileWeights } from '@blackveil/dns-checks/scoring';
+import type { ScoringConfig } from '@blackveil/dns-checks/scoring';
+import { parseScoringConfigCached } from './scoring-config';
 
 // ─── Telemetry interfaces ──────────────────────────────────────────────
 
@@ -58,7 +60,23 @@ export const EMA_ALPHA = 2 / (EMA_SPAN + 1);
 /** Minimum |scoreDelta| before a scoring note is generated. */
 export const SCORING_NOTE_DELTA_THRESHOLD = 3;
 
-/** Expected failure rate per category across all domains (prior). */
+/**
+ * Expected failure rate per category across all domains (prior) — the WORKER-SIDE
+ * source of truth for the adaptive-weight baseline.
+ *
+ * This is the single place the worker states these numbers. `ProfileAccumulator`
+ * reads it through {@link resolveBaselineFailureRates} (never a private copy), and
+ * `test/adaptive-weights.spec.ts` asserts the SHAPE of this object rather than
+ * restating its literals — a third copy of the table is exactly what let the
+ * scoring-config key drift out of the loop unnoticed.
+ *
+ * Deliberately a SUBSET of `DEFAULT_SCORING_CONFIG.baselineFailureRates` (the
+ * package's 28-category table): only these 13 categories have a calibrated prior,
+ * and every other category falls through to `0` at the call site. Keeping the
+ * subset (rather than adopting the package's full table wholesale) is what makes
+ * {@link resolveBaselineFailureRates} exactly behaviour-neutral when no
+ * `SCORING_CONFIG` override is set.
+ */
 export const BASELINE_FAILURE_RATES: Record<string, number> = {
 	dmarc: 0.40,
 	spf: 0.25,
@@ -74,6 +92,52 @@ export const BASELINE_FAILURE_RATES: Record<string, number> = {
 	subdomain_takeover: 0.10,
 	lookalikes: 0.00,
 };
+
+/**
+ * Resolve the EFFECTIVE adaptive-weight baseline for a raw `SCORING_CONFIG` value.
+ *
+ * Before this existed, `DEFAULT_SCORING_CONFIG.baselineFailureRates` — and therefore
+ * the `SCORING_CONFIG.baselineFailureRates` override key — was **inert**: the
+ * accumulator read {@link BASELINE_FAILURE_RATES} directly, so an operator could set
+ * the key and nothing anywhere would consume it. This makes the key live while
+ * keeping the un-overridden path byte-identical to the previous behaviour:
+ *
+ * - No `SCORING_CONFIG`, unparseable config, or a config that does not move any
+ *   baseline off the package default → returns the {@link BASELINE_FAILURE_RATES}
+ *   object itself (same 13 keys, same values, same identity).
+ * - A config that DOES move a baseline → returns a copy of
+ *   {@link BASELINE_FAILURE_RATES} with only the moved categories overlaid.
+ *
+ * Only entries that DIFFER from the package default are overlaid, deliberately: the
+ * parsed config is always fully populated (`parseScoringConfig` merges onto the
+ * package's 28-category defaults), so copying it wholesale would silently introduce
+ * priors for 15 categories that today resolve to `0` — a behaviour change nobody
+ * asked for. Adaptive weights never reach a reported score (see `scanDomain`), so
+ * this is confined to `scoringNote` / `adaptiveWeightDeltas` either way.
+ */
+export function resolveBaselineFailureRates(rawScoringConfig?: string): Record<string, number> {
+	if (!rawScoringConfig) return BASELINE_FAILURE_RATES;
+
+	let configured: Record<string, number>;
+	try {
+		configured = parseScoringConfigCached(rawScoringConfig).baselineFailureRates;
+	} catch {
+		// Fail-soft: a malformed override must never disarm the adaptive baseline.
+		return BASELINE_FAILURE_RATES;
+	}
+
+	const packageDefaults = DEFAULT_SCORING_CONFIG.baselineFailureRates;
+	let overlaid: Record<string, number> | null = null;
+
+	for (const [category, rate] of Object.entries(configured)) {
+		if (typeof rate !== 'number' || !isFinite(rate) || rate < 0) continue;
+		if (rate === packageDefaults[category]) continue;
+		overlaid ??= { ...BASELINE_FAILURE_RATES };
+		overlaid[category] = rate;
+	}
+
+	return overlaid ?? BASELINE_FAILURE_RATES;
+}
 
 // ─── Weight bounds ─────────────────────────────────────────────────────
 
@@ -97,7 +161,21 @@ export function defaultBounds(staticWeight: number, isCriticalMail: boolean): We
 	};
 }
 
-/** Pre-computed bounds for every profile × category combination. */
+/**
+ * Pre-computed bounds for every profile × category combination.
+ *
+ * KNOWN LIMITATION (not fixed here): these bounds — and the accumulator's own static
+ * blend base — come from the RAW `PROFILE_WEIGHTS` table, not from
+ * `getProfileWeights(profile, config)`. With no `profileWeights` override the two are
+ * numerically identical (`DEFAULT_SCORING_CONFIG.profileWeights` is DERIVED from
+ * `PROFILE_WEIGHTS` via `deriveDefaultProfileWeights()`), so today this is inert. Under
+ * a live `profileWeights` override it is not: the adaptive blend would be anchored to
+ * the un-overridden weights. Making it config-aware means threading the effective
+ * config into the ProfileAccumulator DO and changing the adaptive weight VALUES it
+ * returns — a behaviour change, so it is recorded rather than silently made. Adaptive
+ * output never reaches a reported score, so the blast radius is `scoringNote` /
+ * `adaptiveWeightDeltas`.
+ */
 export const WEIGHT_BOUNDS: Record<DomainProfile, Record<CheckCategory, WeightBound>> = (() => {
 	const profiles = Object.keys(PROFILE_WEIGHTS) as DomainProfile[];
 	const result = {} as Record<DomainProfile, Record<CheckCategory, WeightBound>>;
@@ -164,14 +242,29 @@ export function blendWeights(staticWeight: number, adaptiveWeight: number, sampl
 /**
  * Convert a DO-returned weight map to a CheckCategory-keyed importance record.
  *
- * Falls back to the static profile weight for any category not present in the
+ * Falls back to the profile's static weight for any category not present in the
  * DO response. Returns `null` if any value is non-finite or negative.
+ *
+ * `config` MUST be the same effective `ScoringConfig` the caller uses to compute the
+ * static comparison side of `adaptiveWeightDeltas` (`scan-domain.ts` passes
+ * `runtimeOptions.scoringConfig`). Before it was threaded, this fallback read the raw
+ * `PROFILE_WEIGHTS` table while the delta's other operand came from
+ * `getProfileWeights(profile, config)` — under a live `profileWeights` override the two
+ * bases disagreed, so every category the accumulator had NO data for reported a
+ * non-zero "adaptive" delta that no adaptation produced, and the customer-visible
+ * `scoringNote` could fire off it. Omitting `config` reproduces the old raw-table
+ * behaviour and is correct only when the caller also compares against the raw table.
+ *
+ * NOTE: this closes the CALLER-side half only. The accumulator still computes its
+ * blend (and `WEIGHT_BOUNDS`) from the raw `PROFILE_WEIGHTS`, so a category the DO DID
+ * return still carries an override-skewed base. See the module note on `WEIGHT_BOUNDS`.
  */
 export function adaptiveWeightsToContext(
 	doWeights: Record<string, number>,
 	profile: DomainProfile,
+	config?: ScoringConfig,
 ): Record<CheckCategory, { importance: number }> | null {
-	const staticWeights = PROFILE_WEIGHTS[profile];
+	const staticWeights = getProfileWeights(profile, config);
 	const categories = Object.keys(staticWeights) as CheckCategory[];
 	const result = {} as Record<CheckCategory, { importance: number }>;
 

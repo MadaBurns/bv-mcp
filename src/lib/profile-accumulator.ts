@@ -20,10 +20,10 @@ import { logError } from './log';
 import {
 	EMA_ALPHA,
 	MATURITY_THRESHOLD,
-	BASELINE_FAILURE_RATES,
 	WEIGHT_BOUNDS,
 	computeAdaptiveWeight,
 	blendWeights,
+	resolveBaselineFailureRates,
 } from './adaptive-weights';
 import type { AdaptiveWeightsResponse } from './adaptive-weights';
 import { PROFILE_WEIGHTS } from '@blackveil/dns-checks/scoring';
@@ -138,6 +138,23 @@ export class ProfileAccumulator extends DurableObject<Env> {
 				this.ctx.storage.sql.exec(stmt + ';');
 			}
 		});
+	}
+
+	/**
+	 * The EFFECTIVE adaptive-weight baseline for this DO's environment.
+	 *
+	 * Single read point for the baseline table — `handleGetWeights` and
+	 * `handleBenchmark` must both come through here rather than importing the
+	 * static map, so an operator-supplied `SCORING_CONFIG.baselineFailureRates`
+	 * reaches the accumulator instead of being silently inert. Falls back to the
+	 * static `BASELINE_FAILURE_RATES` when no override is set.
+	 *
+	 * `SCORING_CONFIG` is an optional var not declared on every generated `Env`
+	 * shape, so it is read through a narrow structural type (the same pattern the
+	 * Worker entrypoints use with their own local `Env` interfaces).
+	 */
+	private effectiveBaselineFailureRates(): Record<string, number> {
+		return resolveBaselineFailureRates((this.env as { SCORING_CONFIG?: string }).SCORING_CONFIG);
 	}
 
 	/** Handle incoming HTTP requests. */
@@ -521,6 +538,8 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			}
 		}
 
+		const baselineFailureRates = this.effectiveBaselineFailureRates();
+
 		const weights: Record<string, number> = {};
 		const boundHits: string[] = [];
 		let minSampleCount = Infinity;
@@ -531,7 +550,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 			if (!staticEntry) continue;
 
 			const staticWeight = staticEntry.importance;
-			const baseline = BASELINE_FAILURE_RATES[cat] ?? 0;
+			const baseline = baselineFailureRates[cat] ?? 0;
 			const bounds = boundsMap[cat] ?? { min: 0, max: staticWeight * 2 + 3 };
 
 			const { weight: adaptiveWeight, boundHit } = computeAdaptiveWeight({
@@ -604,7 +623,7 @@ export class ProfileAccumulator extends DurableObject<Env> {
 				profile,
 				totalScans,
 				minimumRequired: MIN_BENCHMARK_SCANS,
-				baselineFailureRates: BASELINE_FAILURE_RATES,
+				baselineFailureRates: this.effectiveBaselineFailureRates(),
 			});
 		}
 
