@@ -11,21 +11,44 @@
 import type { Finding } from '../types';
 import { createFinding } from '../check-utils';
 
+/**
+ * MTA_STS_ABSENCE_IS_GRADED_NOT_ZEROING — why no MTA-STS absence path sets `missingControl: true`.
+ *
+ * A `missingControl: true` finding zeroes its whole category (`passed` false, score 0).
+ * That is the right shape for a control whose absence genuinely distinguishes domains.
+ * MTA-STS is not one: measured over a 1,000-domain corpus (2026-08-03), the `mta_sts`
+ * category had a mean score of 3.3 with **96.5% of the 687 measured domains scoring
+ * exactly 0**. A control ~nobody deploys separates nobody — it is a flat constant
+ * penalty consuming 3 of the ~80 base points on almost every domain, not a discriminator.
+ * Independent review also found no documented incident attributable to a missing MTA-STS
+ * policy, against a ~29.6% misconfiguration rate among the domains that do adopt it.
+ *
+ * So MTA-STS absence is now a GRADED finding (severity `medium`/`low`, ordinary severity
+ * penalty) rather than a category-zeroing missing control — the same treatment CAA,
+ * SVCB-HTTPS and TLS-RPT already get for exactly this reason.
+ *
+ * This applies only to ABSENCE. A DEPLOYED-BUT-BROKEN policy (bad `version:`, missing
+ * `mode:`, MX set not covered, unfetchable policy file) keeps its confident `high`/`medium`
+ * finding — those already carry no `missingControl`, and they are genuine, observable
+ * defects in a control the operator chose to run.
+ *
+ * The weight (3, protective tier) and the severities are deliberately UNCHANGED.
+ */
+
+/**
+ * Parse the `_mta-sts` TXT RRset into findings. Reports absence, duplicate records, and a
+ * missing `id=` tag; the caller supplies the domain-specific detail via
+ * {@link finalizeMissingMtaStsRecordFinding}.
+ */
 export function getMtaStsTxtFindings(records: string[]): { findings: Finding[]; hasTxtRecord: boolean } {
 	const findings: Finding[] = [];
 	const mtaStsRecords = records.filter((record) => /^v=stsv1[;\s]/i.test(record));
 
 	if (mtaStsRecords.length === 0) {
+		// NO `missingControl: true` — see MTA_STS_ABSENCE_IS_GRADED_NOT_ZEROING above.
+		// Absence is a graded `medium`, not a category-zeroing missing control.
 		return {
-			findings: [
-				createFinding(
-					'mta_sts',
-					'No MTA-STS record found',
-					'medium',
-					'',
-					{ missingControl: true },
-				),
-			],
+			findings: [createFinding('mta_sts', 'No MTA-STS record found', 'medium', '')],
 			hasTxtRecord: false,
 		};
 	}
@@ -50,6 +73,10 @@ export function getMtaStsTxtFindings(records: string[]): { findings: Finding[]; 
 	return { findings, hasTxtRecord: true };
 }
 
+/**
+ * Re-emits the placeholder "No MTA-STS record found" finding with the domain-specific
+ * detail text. Carries NO `missingControl` — see MTA_STS_ABSENCE_IS_GRADED_NOT_ZEROING.
+ */
 export function finalizeMissingMtaStsRecordFinding(findings: Finding[], domain: string): Finding[] {
 	return findings.map((finding) =>
 		finding.title === 'No MTA-STS record found'
@@ -58,7 +85,6 @@ export function finalizeMissingMtaStsRecordFinding(findings: Finding[], domain: 
 					'No MTA-STS record found',
 					'medium',
 					`No MTA-STS TXT record found at _mta-sts.${domain}. MTA-STS enforces TLS for incoming email, preventing downgrade attacks.`,
-					{ missingControl: true },
 				)
 			: finding,
 	);
