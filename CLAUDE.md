@@ -112,6 +112,10 @@ A cold non-apex scan can add up to ~20 DNS subrequests for the bounded NS walk, 
 
 - **Zod**: Centralized in `src/schemas/`. Tool `inputSchema` derived via `z.toJSONSchema()` (Zod v4). Runtime: `validateToolArgs()`. Use `.passthrough()` and `.transform().pipe()` for case-insensitive enum normalization.
 - `createFinding()` + `buildCheckResult()` from `@blackveil/dns-checks/scoring` — never construct findings manually. `createFinding()` auto-sanitizes `detail`.
+- **Before concluding a control is unimplemented, grep the whole package — never judge from one `check-*.ts` alone.** Emission is not uniform: **DMARC is the sole check that delegates its findings to a classifier** (`packages/dns-checks/src/scoring/classifiers/dmarc.ts` — the ONLY file in that directory as of 2026-08). Every other check emits inline. So the failure mode differs by check and both halves have bitten:
+  - **DMARC (delegated).** `check-dmarc.ts` parses `sp=` and emits nothing, which reads as a gap — but `classifiers/dmarc.ts` already grades `p=reject; sp=none` **high** (+ a medium `np=` finding), `p=quarantine; sp=none` medium, `p=reject; sp=quarantine` low, and downgrades high→low when DMARCbis `np=reject|quarantine` protects non-existent subdomains. "Adding" it would have double-counted the severity penalty and regressed that `np=` calibration.
+  - **DKIM (inline).** All of `t=y` test mode, RFC 8301 key length, sha1-without-sha256, and revoked `p=` were already implemented **in `check-dkim.ts` itself** — the file a reader would open first.
+  Confirm with a category-wide grep of `createFinding(`/`buildCheckResult(` call sites (e.g. every site carrying the `dkim` category) rather than trusting either file layout.
 - `validateDomain()` + `sanitizeDomain()` from `lib/sanitize.ts` for all domain inputs (after Zod) — SSRF/blocklist.
 - `mcpError()` / `mcpText()` from `handlers/tool-formatters.ts`.
 - `cacheGet/Set/SetDeferred/runWithCache` from `lib/cache.ts`. `cacheSetDeferred` wraps in `ctx.waitUntil()`.
@@ -147,6 +151,8 @@ Three-tier model (`computeScanScore`). `CATEGORY_DISPLAY_WEIGHTS` is display-onl
 **Hardening (10%)**: DANE, PTR, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene, DNSKEY Strength, Brand Discovery (~1.4 pts each, bonus-only).
 
 Override via `SCORING_CONFIG` env (JSON; `weights`, `profileWeights`, `thresholds`, `grades`, `baselineFailureRates`). Parsed via `parseScoringConfigCached()` (memoized).
+
+⚠️ **`coreWeights` is INERT on the scan path — express weight overrides as `profileWeights.<profile>`.** `buildGenericContext()` (`packages/dns-checks/src/scoring/engine.ts`) reads `config.coreWeights` **only** in the `else` branch taken when no `domainContext` is supplied — and `scan-domain.ts` always supplies one, so that branch is unreachable in production. A `SCORING_CONFIG` of `{"coreWeights":{…}}` therefore parses cleanly, validates, appears in the effective-config hash, and **changes no score**. This was live in prod undetected for months; it was proved inert both structurally and differentially (same roster, three configs, identical `overall`). Two further traps when converting an intent to `profileWeights`: (a) it is **per-profile**, so writing the same numbers into all 6 profiles is wrong — e.g. DMARC is 0 in `web_only` and DNSSEC is 20 in `authoritative_dns_infra`, and a blanket projection would clobber both; (b) any weight change re-grades every customer, so it is an operator decision, not a config edit.
 
 ### Rules
 
@@ -243,6 +249,7 @@ Pattern-based, emits `fuzzing_suspected` to the resolved alert webhook URL (see 
 - Config: `vitest.config.mts` — 15s timeout, `isolatedStorage: false`
 - TXT mocking: `mockTxtRecords()` adds quotes (pass unquoted); for backslash escaping, use `createDohResponse()` directly
 - **Known flake**: full-suite (~3300 tests) ending with `workerd ... WebSocket peer disconnected` + ~10 "failures" is pool-teardown noise, not real. Re-run named specs in isolation to confirm.
+- **Expected `npm test` exit 1 in a FRESH WORKTREE — `test/wasm-integration.test.ts` fails to LOAD, with 0 test failures.** `No such module …bv_wasm_core_bg.wasm`: `crates/bv-wasm-core/pkg/` is produced only by `npm run build:wasm` (wasm-pack), which **neither `scripts/worktree-setup.sh` nor `npm ci` runs** — CI builds it separately with a cached wasm-pack binary. Confirmed independently by two agents on unrelated branches (2026-08-03). Distinguish it from a real failure by the shape: a *suite-load* error with `N passed, 0 failed`. Run `npm run build:wasm` once per worktree for a fully green local run. Do not "fix" it by editing the spec.
 
 ### Pre-commit (`.githooks/pre-commit`)
 

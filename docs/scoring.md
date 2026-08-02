@@ -43,7 +43,9 @@ arrays are **disjoint**; read the union as the concatenation of both.
 
 ### Protective (20% of score)
 
-Active defenses against known attack vectors. Findings penalize but cannot trigger missing-control zeroing.
+Active defenses against known attack vectors.
+
+> **Correction (2026-08):** an earlier revision of this line claimed Protective findings "cannot trigger missing-control zeroing." That was wrong. Four Protective checks — **HTTP Security** (site unreachable), **MTA-STS** (no record), **MX** (no records), and **NS** (no records) — do set explicit `missingControl: true` and therefore zero their category. See [Missing-Control Rule](#missing-control-rule) for the authoritative list of all seven. What is true of the Protective tier is that a zeroed category costs at most its own weight (2–4 points) rather than the much larger Core-tier contribution.
 
 | Category | Weight |
 | --- | ---: |
