@@ -8,6 +8,7 @@ import {
 	EMA_ALPHA,
 	SCORING_NOTE_DELTA_THRESHOLD,
 	BASELINE_FAILURE_RATES,
+	resolveBaselineFailureRates,
 	WEIGHT_BOUNDS,
 	defaultBounds,
 	computeAdaptiveWeight,
@@ -16,7 +17,7 @@ import {
 	generateScoringNote,
 } from '../src/lib/adaptive-weights';
 // Type-only imports verified to exist: ScanTelemetry, AdaptiveWeightsResponse, WeightBound
-import { PROFILE_WEIGHTS } from '@blackveil/dns-checks/scoring';
+import { DEFAULT_SCORING_CONFIG, PROFILE_WEIGHTS, getProfileWeights, parseScoringConfig } from '@blackveil/dns-checks/scoring';
 import type { DomainProfile } from '@blackveil/dns-checks/scoring';
 import type { CheckCategory } from '@blackveil/dns-checks/scoring';
 
@@ -41,23 +42,142 @@ describe('adaptive-weights', () => {
 			expect(SCORING_NOTE_DELTA_THRESHOLD).toBe(3);
 		});
 
-		it('BASELINE_FAILURE_RATES has all 13 categories', () => {
-			const expected: Record<string, number> = {
-				dmarc: 0.4,
-				spf: 0.25,
-				dkim: 0.35,
-				ssl: 0.08,
-				mta_sts: 0.85,
-				dnssec: 0.8,
-				mx: 0.05,
-				caa: 0.7,
-				ns: 0.03,
-				bimi: 0.95,
-				tlsrpt: 0.9,
-				subdomain_takeover: 0.1,
-				lookalikes: 0.0,
-			};
-			expect(BASELINE_FAILURE_RATES).toEqual(expected);
+		// Deliberately asserts the SHAPE of the imported constant, never a restatement of
+		// its 13 literals. The table used to be written out a third time right here (once
+		// in `src/lib/adaptive-weights.ts`, once in the scoring package's
+		// `DEFAULT_SCORING_CONFIG.baselineFailureRates`, once here) — three copies that
+		// could drift independently, and a spec that "passed" by agreeing with a copy of
+		// itself rather than checking anything.
+		it('BASELINE_FAILURE_RATES covers exactly the 13 prior-calibrated categories', () => {
+			expect(Object.keys(BASELINE_FAILURE_RATES).sort()).toEqual(
+				[
+					'bimi',
+					'caa',
+					'dkim',
+					'dmarc',
+					'dnssec',
+					'lookalikes',
+					'mta_sts',
+					'mx',
+					'ns',
+					'spf',
+					'ssl',
+					'subdomain_takeover',
+					'tlsrpt',
+				].sort(),
+			);
+		});
+
+		it('BASELINE_FAILURE_RATES values are all valid probabilities', () => {
+			for (const [category, rate] of Object.entries(BASELINE_FAILURE_RATES)) {
+				expect(typeof rate, category).toBe('number');
+				expect(Number.isFinite(rate), category).toBe(true);
+				expect(rate, category).toBeGreaterThanOrEqual(0);
+				expect(rate, category).toBeLessThanOrEqual(1);
+			}
+		});
+
+		// The SSOT lock: the worker's table must not drift from the scoring package's
+		// `DEFAULT_SCORING_CONFIG.baselineFailureRates`, which is what a `SCORING_CONFIG`
+		// override is merged onto. If these two disagree, an operator setting the override
+		// key gets a baseline that silently differs from the one they read in the package.
+		it('BASELINE_FAILURE_RATES agrees with the scoring package defaults for every category it covers', () => {
+			for (const [category, rate] of Object.entries(BASELINE_FAILURE_RATES)) {
+				expect(DEFAULT_SCORING_CONFIG.baselineFailureRates[category], category).toBe(rate);
+			}
+		});
+	});
+
+	// ─── SCORING_CONFIG.baselineFailureRates must actually reach the accumulator ──
+
+	describe('resolveBaselineFailureRates', () => {
+		it('returns the static table (same identity) when no config is supplied', () => {
+			expect(resolveBaselineFailureRates()).toBe(BASELINE_FAILURE_RATES);
+			expect(resolveBaselineFailureRates('')).toBe(BASELINE_FAILURE_RATES);
+		});
+
+		it('returns the static table when the config supplies no baseline override', () => {
+			const resolved = resolveBaselineFailureRates(JSON.stringify({ coreWeights: { dmarc: 22 } }));
+			expect(resolved).toBe(BASELINE_FAILURE_RATES);
+		});
+
+		it('fails soft to the static table on an unparseable config', () => {
+			expect(resolveBaselineFailureRates('{not json')).toBe(BASELINE_FAILURE_RATES);
+		});
+
+		it('overlays only the categories the config actually moves', () => {
+			const resolved = resolveBaselineFailureRates(JSON.stringify({ baselineFailureRates: { dmarc: 0.9 } }));
+
+			// The overridden category is live — this is the whole point: before this
+			// function existed the key parsed fine and was then read by nobody.
+			expect(resolved.dmarc).toBe(0.9);
+			// Every other category is untouched, and the static object itself is not mutated.
+			expect(resolved.spf).toBe(BASELINE_FAILURE_RATES.spf);
+			expect(BASELINE_FAILURE_RATES.dmarc).not.toBe(0.9);
+			expect(resolved).not.toBe(BASELINE_FAILURE_RATES);
+		});
+
+		it('does not import priors for categories the worker deliberately leaves unset', () => {
+			// `http_security` has a 0.35 prior in the PACKAGE table but no worker prior:
+			// the accumulator resolves it to 0. Copying the parsed config wholesale would
+			// silently switch that on for 15 categories — a behaviour change, not a dedup.
+			const resolved = resolveBaselineFailureRates(JSON.stringify({ baselineFailureRates: { dmarc: 0.9 } }));
+			expect(resolved.http_security).toBeUndefined();
+			expect(DEFAULT_SCORING_CONFIG.baselineFailureRates.http_security).toBe(0.35);
+		});
+
+		it('defers to the package sanitizer for junk override values', () => {
+			// `parseScoringConfig`'s `mergeWeights` already clamps negatives to 0 and drops
+			// non-numeric values, so the resolver inherits exactly those semantics rather
+			// than inventing a second, divergent validation policy.
+			const resolved = resolveBaselineFailureRates(JSON.stringify({ baselineFailureRates: { dmarc: -1, spf: 'nope' } }));
+			expect(resolved.dmarc).toBe(0);
+			expect(resolved.spf).toBe(BASELINE_FAILURE_RATES.spf);
+		});
+
+		it('drops override keys the package does not recognise as categories', () => {
+			const resolved = resolveBaselineFailureRates(JSON.stringify({ baselineFailureRates: { not_a_category: 0.5 } }));
+			expect(resolved).toBe(BASELINE_FAILURE_RATES);
+		});
+	});
+
+	// ─── The adaptive delta's two operands must share a base ──────────────
+
+	describe('adaptiveWeightsToContext — static base', () => {
+		it('falls back to the CONFIG-resolved profile weight, not the raw table', () => {
+			const config = parseScoringConfig(JSON.stringify({ profileWeights: { mail_enabled: { spf: 30 } } }));
+			// Empty DO response ⇒ every category takes the fallback path.
+			const resolved = adaptiveWeightsToContext({}, 'mail_enabled', config);
+
+			expect(resolved).not.toBeNull();
+			expect(resolved!.spf.importance).toBe(30);
+			expect(PROFILE_WEIGHTS.mail_enabled.spf.importance).not.toBe(30);
+		});
+
+		it('produces zero deltas against getProfileWeights when the DO has no data (no phantom deltas)', () => {
+			// This is the exact computation `scan-domain.ts` performs. Reading the fallback
+			// from the raw `PROFILE_WEIGHTS` while the static side came from
+			// `getProfileWeights(profile, config)` made every overridden category report a
+			// non-zero "adaptive" delta that no adaptation produced — and the customer-visible
+			// `scoringNote` fires off exactly those deltas.
+			const config = parseScoringConfig(JSON.stringify({ profileWeights: { mail_enabled: { spf: 30, dmarc: 1 } } }));
+			const adaptive = adaptiveWeightsToContext({}, 'mail_enabled', config)!;
+			const staticWeights = getProfileWeights('mail_enabled', config);
+
+			for (const cat of Object.keys(staticWeights) as CheckCategory[]) {
+				expect(adaptive[cat].importance - staticWeights[cat].importance, cat).toBe(0);
+			}
+		});
+
+		it('still honours a real DO weight over the static base', () => {
+			const config = parseScoringConfig(JSON.stringify({ profileWeights: { mail_enabled: { spf: 30 } } }));
+			const resolved = adaptiveWeightsToContext({ spf: 12 }, 'mail_enabled', config)!;
+			expect(resolved.spf.importance).toBe(12);
+		});
+
+		it('omitting the config reproduces the raw-table base', () => {
+			const resolved = adaptiveWeightsToContext({}, 'mail_enabled')!;
+			expect(resolved.spf.importance).toBe(PROFILE_WEIGHTS.mail_enabled.spf.importance);
 		});
 	});
 
