@@ -255,13 +255,33 @@ const ENTERPRISE_PROVIDERS = ['google workspace', 'microsoft 365', 'proofpoint',
 export function detectDomainContext(results: CheckResult[]): DomainContext {
 	const signals: string[] = [];
 
-	const mxResult = results.find((r) => r.category === 'mx');
-	const sslResult = results.find((r) => r.category === 'ssl');
-	const caaResult = results.find((r) => r.category === 'caa');
-	const dkimResult = results.find((r) => r.category === 'dkim');
-	const mtaStsResult = results.find((r) => r.category === 'mta_sts');
-	const bimiResult = results.find((r) => r.category === 'bimi');
-	const dmarcResult = results.find((r) => r.category === 'dmarc');
+	// Profile selection may only read evidence from checks that were actually MEASURED.
+	//
+	// Every signal below is derived from `controlPresent`, and `controlPresent` is set by
+	// a check that reached a conclusion. A check with `checkStatus` 'timeout'/'error'
+	// (or any non-'completed' value from an unvalidated cache re-read) did NOT reach one,
+	// yet its `controlPresent` was still being consulted — so a MEASUREMENT FAILURE could
+	// select the weight table that then graded the domain.
+	//
+	// That is not hypothetical. It produced a fabricated ~88 on a domain that does not
+	// exist (located 2026-08-02): with no MX, an errored `ssl` or `caa` still satisfied
+	// `sslPass`/`caaPass` and selected `web_only` — the one profile that weights
+	// spf/dmarc/dkim/mx at ZERO — so the four checks that correctly detected total
+	// failure were weighted out of the score entirely.
+	//
+	// The failure-ratio signal further down already applied exactly this rule via
+	// `measuredChecks`, for exactly this reason ("the measurement failure selected the
+	// weight table that then graded the domain"). It was simply never applied to the
+	// `controlPresent` reads. One filter now governs both, so they cannot drift again.
+	const measuredChecks = results.filter((r) => isCheckMeasured(r.checkStatus));
+
+	const mxResult = measuredChecks.find((r) => r.category === 'mx');
+	const sslResult = measuredChecks.find((r) => r.category === 'ssl');
+	const caaResult = measuredChecks.find((r) => r.category === 'caa');
+	const dkimResult = measuredChecks.find((r) => r.category === 'dkim');
+	const mtaStsResult = measuredChecks.find((r) => r.category === 'mta_sts');
+	const bimiResult = measuredChecks.find((r) => r.category === 'bimi');
+	const dmarcResult = measuredChecks.find((r) => r.category === 'dmarc');
 
 	// Detect MX presence from the structured controlPresent signal (set by check-mx), not finding
 	// prose. true = real mail-routing MX; false = no MX or null MX (RFC 7505 → not a mail domain);
@@ -332,7 +352,8 @@ export function detectDomainContext(results: CheckResult[]): DomainContext {
 	// produces an identical ratio, profile and score. Uses the shared `isCheckMeasured`
 	// allowlist predicate (see evidence.ts) rather than a local denylist, so an out-of-union
 	// `checkStatus` (reachable via an unvalidated cache re-read) is excluded here too.
-	const measuredChecks = results.filter((r) => isCheckMeasured(r.checkStatus));
+	// `measuredChecks` is now computed once at the top of this function and shared with the
+	// controlPresent reads — see the note there.
 	const totalChecks = measuredChecks.length;
 	const failedChecks = measuredChecks.filter((r) => !r.passed).length;
 	const failureRatio = totalChecks > 0 ? failedChecks / totalChecks : 0;
