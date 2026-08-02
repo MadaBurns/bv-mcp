@@ -4,6 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.39.0] - 2026-08-02
+
+### Added
+
+- **`@blackveil/dns-checks` 1.9.0 — the package now owns the non-resolving guard.** A domain that does not resolve has no security posture to measure; running the check matrix against one manufactures clean passes (no bad DNSSEC to find on a dead name, no dangling CNAME, no lax DANE — those categories scored 100 for the absence of problems only a real domain could have). bv-mcp's orchestrator already guarded this (`scan-domain.ts` → `buildNonResolvingResult`, `overall: null` on apex RCODE 3), but the guard was never in the shared package, so consumers running their own orchestration got no short-circuit. `computeScanScore` now accepts an explicit `resolution` signal (the orchestrator tri-state verbatim — `true`/`false`/`'broken'` — plus package-native spellings) and, when no signal is passed, derives a floor from the check roster itself, keyed on check-ns concluding no-NS-AND-no-A via a structured metadata marker. Conservative by design: reports `unresolvable` (never claims `nxdomain` — this evidence cannot tell absent from broken), ignores an errored ns check (inconclusive is not proof of absence), and is not vetoed by positive evidence elsewhere (a DNS-level fact outranks an HTTP-level observation from a parking origin). Abstains through the existing `overall: null` / `evidenceInsufficient` channel, so consumers already handling ungraded scans need no change. `PARITY_CORPUS_VERSION` moves to 1.9.0 in lockstep. (#597)
+
+### Fixed
+
+- **A measurement failure no longer selects the scoring weight table.** Profile resolution treated an errored measurement as evidence when choosing the weight profile; an inconclusive check is now excluded from profile selection the same way it is excluded from scoring. (#597)
+
 ## [3.38.0] - 2026-07-31
 
 ### Added
