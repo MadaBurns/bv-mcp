@@ -34,7 +34,7 @@
 		"check:deploy-freshness": "tsx scripts/ci/deploy-freshness-check.ts",
 		"check:bindings": "npm run typecheck",
 		"check:bindings:prod": "wrangler types --config wrangler.production.jsonc && tsc --noEmit",
-		"deploy:prod": "npm run check:deploy-freshness && npm run check:bindings && npm -w packages/dns-checks run build && node scripts/inject-private-config.cjs && npm run check:bindings:prod && npx wrangler deploy --minify --config wrangler.production.jsonc",
+		"deploy:prod": "npm run check:deploy-freshness && npm -w packages/dns-checks run build && npm run check:bindings && node scripts/inject-private-config.cjs && npm run check:bindings:prod && npx wrangler deploy --minify --config wrangler.production.jsonc",
 		"test": "node scripts/vitest-filter-workerd.mjs",
 		"typecheck": "wrangler types && tsc --noEmit",
 		"lint": "eslint .",
