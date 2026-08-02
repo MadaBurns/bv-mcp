@@ -8,12 +8,92 @@
  * Licensed under BUSL-1.1
  */
 
-import type { CheckResult, DNSQueryFunction, Finding, ZoneContext } from '../types';
+import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
-import { type CaaRecord, parseCaaRecord, getCaaConfiguredFinding, getCaaValidationFindings, summarizeCaaTags } from './caa-analysis';
+import {
+	type CaaRecord,
+	parseCaaRecord,
+	getCaaConfiguredFinding,
+	getCaaDnssecPairingFinding,
+	getCaaTtlStalenessFinding,
+	getCaaValidationFindings,
+	summarizeCaaTags,
+} from './caa-analysis';
 
 /** Hard cap on ancestor hops during the RFC 8659 CAA climb — mirrors the zone-apex walk bound. */
 const MAX_CAA_CLIMB_DEPTH = 8;
+
+/** DNS RR type code for CAA (RFC 8659 §4.1). */
+const CAA_RECORD_TYPE = 257;
+
+/**
+ * One CAA lookup at one owner name, plus the two enforceability signals the plain
+ * `DNSQueryFunction` (`string[]`) projection discards.
+ *
+ * `minTtl` and `dnssecAuthenticated` are BOTH `undefined` unless a
+ * `rawQueryDNS` was injected — they are not inferable from record data, so a
+ * consumer that supplies only `queryDNS` gets byte-identical behaviour to before
+ * and simply does not receive the enforceability findings.
+ */
+interface CaaLookup {
+	records: CaaRecord[];
+	/** Minimum TTL across the CAA RRset (a CA may reuse the whole RRset). */
+	minTtl?: number;
+	/** DoH `AD` flag on the response that carried the CAA RRset. */
+	dnssecAuthenticated?: boolean;
+}
+
+function parseAll(data: string[]): CaaRecord[] {
+	return data.map(parseCaaRecord).filter((record): record is CaaRecord => record !== null);
+}
+
+/**
+ * Look up the CAA RRset at one owner name.
+ *
+ * When `rawQueryDNS` is available the lookup goes through it with the
+ * DNSSEC-validation flag set (`cd=0`), because the SAME single response carries
+ * the record data, its TTL and the `AD` flag together. This REPLACES the plain
+ * `queryDNS` call rather than adding to it, so the enforceability signals cost
+ * **zero additional subrequests** — which matters given the Workers per-invocation
+ * subrequest ceiling that a fan-out `scan_domain` already operates near.
+ */
+async function lookupCaa(
+	name: string,
+	queryDNS: DNSQueryFunction,
+	rawQueryDNS: RawDNSQueryFunction | undefined,
+	timeout: number,
+): Promise<CaaLookup> {
+	if (!rawQueryDNS) {
+		return { records: parseAll(await queryDNS(name, 'CAA', { timeout })) };
+	}
+	const resp = await rawQueryDNS(name, 'CAA', true, { timeout });
+	// Filter by RR type exactly as the Worker's `queryDnsRecords` projection does,
+	// so a CNAME/other record in the answer section can't be parsed as a CAA record.
+	const answers = (resp.Answer ?? []).filter((answer) => answer.type === CAA_RECORD_TYPE);
+	const ttls = answers.map((answer) => answer.TTL).filter((ttl): ttl is number => typeof ttl === 'number' && Number.isFinite(ttl));
+	return {
+		records: parseAll(answers.map((answer) => answer.data)),
+		minTtl: ttls.length > 0 ? Math.min(...ttls) : undefined,
+		// `AD !== true` is the honest reading: an answer the resolver did not
+		// authenticate is exactly the "Insecure" determination (RFC 4035 §4.3) that
+		// the BR §4.2.2 subsection 1.3 escape hatch turns on. Absent AD is treated as unsigned.
+		dnssecAuthenticated: resp.AD === true,
+	};
+}
+
+/**
+ * Build the enforceability findings for a CAA RRset found at `ownerName`.
+ * Empty when no `rawQueryDNS` was injected (nothing was measured — say nothing).
+ */
+function getCaaEnforceabilityFindings(lookup: CaaLookup, ownerName: string): Finding[] {
+	const findings: Finding[] = [];
+	const ttlFinding = getCaaTtlStalenessFinding(lookup.minTtl, ownerName);
+	if (ttlFinding) findings.push(ttlFinding);
+	if (lookup.dnssecAuthenticated !== undefined) {
+		findings.push(getCaaDnssecPairingFinding(lookup.dnssecAuthenticated, ownerName));
+	}
+	return findings;
+}
 
 /** Enumerate label → floor ancestors (inclusive of both ends), bounded by MAX_CAA_CLIMB_DEPTH. */
 function ancestorChainToFloor(label: string, floor: string): string[] {
@@ -40,15 +120,15 @@ async function climbForCaa(
 	start: string,
 	floor: string,
 	queryDNS: DNSQueryFunction,
+	rawQueryDNS: RawDNSQueryFunction | undefined,
 	timeout: number,
-): Promise<{ records: CaaRecord[]; foundAt: string | null }> {
+): Promise<CaaLookup & { foundAt: string | null }> {
 	const ancestors = ancestorChainToFloor(start, floor).slice(1);
 	for (const ancestor of ancestors) {
 		try {
-			const raw = await queryDNS(ancestor, 'CAA', { timeout });
-			const parsed = raw.map(parseCaaRecord).filter((record): record is CaaRecord => record !== null);
-			if (parsed.length > 0) {
-				return { records: parsed, foundAt: ancestor };
+			const lookup = await lookupCaa(ancestor, queryDNS, rawQueryDNS, timeout);
+			if (lookup.records.length > 0) {
+				return { ...lookup, foundAt: ancestor };
 			}
 		} catch {
 			// Fail-soft: a resolver error at this ancestor doesn't fail the whole check —
@@ -63,12 +143,18 @@ async function climbForCaa(
  * Validates that CAA records exist and are properly configured.
  *
  * Queries CAA record type and parses the raw DNS data into structured records.
+ *
+ * Pass `rawQueryDNS` to additionally assess whether the published policy is
+ * *enforceable* — the CAA RRset TTL (which sets the CA reuse window) and whether
+ * the answer was DNSSEC-authenticated. It is optional: without it the check
+ * behaves exactly as before and emits no enforceability findings.
  */
 export async function checkCAA(
 	domain: string,
 	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number; zone?: ZoneContext },
+	options?: { timeout?: number; zone?: ZoneContext; rawQueryDNS?: RawDNSQueryFunction },
 ): Promise<CheckResult> {
+	const rawQueryDNS = options?.rawQueryDNS;
 	const timeout = options?.timeout ?? 5000;
 	const findings: Finding[] = [];
 	const zone = options?.zone;
@@ -87,9 +173,9 @@ export async function checkCAA(
 		};
 	}
 
-	let rawRecords: string[];
+	let lookup: CaaLookup;
 	try {
-		rawRecords = await queryDNS(domain, 'CAA', { timeout });
+		lookup = await lookupCaa(domain, queryDNS, rawQueryDNS, timeout);
 	} catch {
 		// Transient resolver failure — we could not MEASURE the CAA posture. Mark the category
 		// INCONCLUSIVE (checkStatus) so the scoring engine renormalizes over the remaining
@@ -108,10 +194,7 @@ export async function checkCAA(
 		};
 	}
 
-	// Parse raw CAA record data into structured records
-	const caaRecords: CaaRecord[] = rawRecords
-		.map(parseCaaRecord)
-		.filter((record): record is CaaRecord => record !== null);
+	const caaRecords: CaaRecord[] = lookup.records;
 
 	if (caaRecords.length === 0) {
 		// RFC 8659: CAA is located by climbing from the FQDN toward the apex. A non-apex
@@ -120,7 +203,7 @@ export async function checkCAA(
 		// or no zone) skip this — byte-identical output. Gated strictly on isApex, NOT
 		// delegationStatus: CAA inheritance follows the DNS tree, independent of NS delegation.
 		if (zone && !zone.isApex) {
-			const climbed = await climbForCaa(zone.scannedLabel, zone.registrableDomain, queryDNS, timeout);
+			const climbed = await climbForCaa(zone.scannedLabel, zone.registrableDomain, queryDNS, rawQueryDNS, timeout);
 			if (climbed.records.length > 0 && climbed.foundAt) {
 				findings.push(
 					createFinding(
@@ -131,6 +214,9 @@ export async function checkCAA(
 					),
 				);
 				findings.push(...getCaaValidationFindings(summarizeCaaTags(climbed.records)));
+				// Enforceability is a property of the RRset that actually governs issuance —
+				// here the ANCESTOR's, so report it against `climbed.foundAt`, not `domain`.
+				findings.push(...getCaaEnforceabilityFindings(climbed, climbed.foundAt));
 				return buildCheckResult('caa', findings, true);
 			}
 			// Climb reached the registrable floor with nothing found — genuinely no CAA
@@ -156,11 +242,19 @@ export async function checkCAA(
 
 	findings.push(...getCaaValidationFindings(summarizeCaaTags(caaRecords)));
 
-	// If no issues found
+	// If no issues found. Evaluated on the TAG-validation findings only, and
+	// therefore BEFORE the enforceability findings are appended: the "properly
+	// configured" note is about tag completeness, and the enforceability signals
+	// (one of which is always emitted when measured) would otherwise suppress it
+	// permanently.
 	if (findings.length === 0) {
 		findings.push(getCaaConfiguredFinding());
 	}
 
-	// CAA records present → control present.
+	findings.push(...getCaaEnforceabilityFindings(lookup, domain));
+
+	// CAA records present → control present. Enforceability does NOT change this:
+	// `controlPresent` feeds profile detection (`caaPass`), and an unsigned zone
+	// still has a published CAA policy — the record exists, it is just strippable.
 	return buildCheckResult('caa', findings, true);
 }
