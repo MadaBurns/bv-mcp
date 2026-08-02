@@ -476,7 +476,9 @@ export const MTA_STS_PARITY_FIXTURES: MtaStsParityFixture[] = [
 	{ check: 'mta_sts', name: 'enforce mode + MX', domain: 'example.com', sts: ['v=STSv1; id=1'], tlsrpt: ['v=TLSRPTv1; rua=mailto:t@example.com'], mx: ['10 mail.example.com'], policy: 'version: STSv1\nmode: enforce\nmx: mail.example.com\nmax_age: 604800', expectedScore: 100, expectedMissingControl: false },
 	{ check: 'mta_sts', name: 'testing mode + MX', domain: 'example.com', sts: ['v=STSv1; id=1'], tlsrpt: [], mx: ['10 mail.example.com'], policy: 'version: STSv1\nmode: testing\nmx: mail.example.com\nmax_age: 604800', expectedScore: 90, expectedMissingControl: false },
 	{ check: 'mta_sts', name: 'none mode + MX (disabled)', domain: 'example.com', sts: ['v=STSv1; id=1'], tlsrpt: [], mx: ['10 mail.example.com'], policy: 'version: STSv1\nmode: none\nmx: mail.example.com\nmax_age: 604800', expectedScore: 80, expectedMissingControl: false },
-	{ check: 'mta_sts', name: 'no records, MX present (real gap)', domain: 'example.com', sts: [], tlsrpt: [], mx: ['10 mail.example.com'], policy: null, expectedScore: 0, expectedMissingControl: true },
+	// Scoring model 1.6.0: absence is a GRADED medium (−15 → 85), no longer a category-zeroing
+	// missing control. See MTA_STS_ABSENCE_IS_GRADED_NOT_ZEROING in checks/mta-sts-analysis.ts.
+	{ check: 'mta_sts', name: 'no records, MX present (real gap, graded not zeroed)', domain: 'example.com', sts: [], tlsrpt: [], mx: ['10 mail.example.com'], policy: null, expectedScore: 85, expectedMissingControl: false },
 	{ check: 'mta_sts', name: 'no records, no MX (parked, not applicable)', domain: 'example.com', sts: [], tlsrpt: [], mx: [], policy: null, expectedScore: 95, expectedMissingControl: false },
 ];
 

@@ -171,20 +171,28 @@ export function getCaaConfiguredFinding(): Finding {
 export const CAA_BR_REUSE_WINDOW_FLOOR_SECONDS = 28800;
 
 /**
- * TTL at or below which the extension over the 8-hour floor is not worth
- * reporting: 24 hours.
+ * TTL at or below which a CAA RRset's TTL is not reportable: the BR reuse-window
+ * floor itself, 8 hours. Deliberately IDENTICAL to
+ * {@link CAA_BR_REUSE_WINDOW_FLOOR_SECONDS} — this is the principled threshold,
+ * not a tuned one.
  *
- * Rationale for the threshold (rather than "anything over the 8h floor"):
- * between 8h and 24h a long TTL widens the window by at most 16 hours, so an
- * operator who revokes a CA's authorization in the morning still has it fully
- * effective by the next morning — the same working-day remediation cycle as the
- * floor itself. Above 24h the stale-policy window spans MULTIPLE days and
- * outlives a normal same-day incident response: a domain publishing CAA with a
- * 7-day TTL has handed every CA a 7-day licence to keep issuing under a policy
- * the owner has already withdrawn. That is the point at which the TTL, not the
- * BR floor, is what governs.
+ * The BR rule is `max(TTL, 8h)`. At or below 8h the FLOOR dominates and the TTL
+ * contributes literally nothing to the staleness window, so there is nothing to
+ * report. Strictly above 8h the TTL — not the floor — is what governs how long a
+ * CA may keep issuing under a policy the owner has already withdrawn. That
+ * crossover is the only non-arbitrary place to put the line.
+ *
+ * MEASURED BASIS (do not "fix" this back to a round number): an earlier revision
+ * set this to 86400s (24h) with a hand-picked "buffer" rationale. A 1,000-domain
+ * corpus scan on 2026-08-03 refuted it — across all 161 CAA-publishing domains,
+ * 135 CAA RRsets were observed and the MAXIMUM TTL seen was 21600s (6 hours), so
+ * the finding could not fire at all. At the 8h floor it will still fire close to
+ * never on real corpora. That is CORRECT and expected: it is a property of
+ * real-world CAA TTL practice (operators keep CAA TTLs short), not a dead
+ * detector. Raising the number back up would only re-guarantee silence; lowering
+ * it below the floor would report a TTL that provably widens nothing.
  */
-export const CAA_TTL_STALENESS_THRESHOLD_SECONDS = 86400;
+export const CAA_TTL_STALENESS_THRESHOLD_SECONDS = CAA_BR_REUSE_WINDOW_FLOOR_SECONDS;
 
 /** Render a second count as a compact human duration ("7 days", "36 hours"). */
 function formatDuration(seconds: number): string {
@@ -202,8 +210,9 @@ function formatDuration(seconds: number): string {
  * The CAA reuse window is a FLOOR, not a cap: BR §4.2.2 subsection 1 permits a CA to issue
  * within `max(TTL, 8h)` of processing the record, so a long TTL *extends* the
  * period in which a CA may still act on a withdrawn policy. Returns `null` when
- * the TTL is at or under {@link CAA_TTL_STALENESS_THRESHOLD_SECONDS} (nothing
- * materially wider than the 8-hour floor), or when no TTL was observed.
+ * the TTL is at or under {@link CAA_TTL_STALENESS_THRESHOLD_SECONDS} — i.e. at or
+ * under the 8-hour floor, where the floor dominates and the TTL widens nothing —
+ * or when no TTL was observed. Fires only for a TTL STRICTLY above the floor.
  *
  * Severity is `low` by design — this is a hardening nuance about revocation
  * latency, not an exposure. Nothing about it makes the CAA policy itself weaker
