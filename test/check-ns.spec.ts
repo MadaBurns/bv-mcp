@@ -21,11 +21,31 @@ function mockNsResponses(nsRecords: string[], soaData?: string, aRecords?: strin
 	globalThis.fetch = vi.fn().mockImplementation((url: string) => {
 		const typeMatch = url.match(/type=([^&]+)/);
 		const type = typeMatch ? typeMatch[1] : '';
+		const nameMatch = url.match(/[?&]name=([^&]+)/);
+		const name = nameMatch ? decodeURIComponent(nameMatch[1]).replace(/\.$/, '').toLowerCase() : '';
 		if (type === 'NS') {
 			return Promise.resolve(createDohResponse([{ name: 'example.com', type: RecordType.NS }], nsAnswers));
 		}
-		if (type === 'A') {
-			return Promise.resolve(createDohResponse([{ name: 'example.com', type: RecordType.A }], aAnswers));
+		if (type === 'A' || type === 'AAAA') {
+			// The scanned domain keeps the caller-supplied A set — that is what drives the
+			// "delegation-only zone still resolves" branch.
+			if (name === 'example.com') {
+				return Promise.resolve(createDohResponse([{ name, type: RecordType.A }], type === 'A' ? aAnswers : []));
+			}
+			// The wildcard probe's random label must stay unanswered, or every case would
+			// report wildcard DNS.
+			if (name.startsWith('_bv-probe-')) {
+				return Promise.resolve(createDohResponse([{ name, type: RecordType.A }], []));
+			}
+			// Any other name here is a delegated nameserver hostname being probed for
+			// reachability. Default them to RESOLVING — a healthy delegation, which is what
+			// every case in this file models. Lame delegation has its own spec file.
+			return Promise.resolve(
+				createDohResponse(
+					[{ name, type: RecordType.A }],
+					type === 'A' ? [{ name, type: RecordType.A, TTL: 300, data: '192.0.2.53' }] : [],
+				),
+			);
 		}
 		if (type === 'SOA') {
 			return Promise.resolve(createDohResponse([{ name: 'example.com', type: RecordType.SOA }], soaAnswers));
