@@ -85,4 +85,41 @@ describe('checkDMARC', () => {
 		const result = await checkDMARC('example.com', queryDNS);
 		expect(result.findings.some((f) => f.title === 'Third-party aggregate reporting not authorized')).toBe(true);
 	});
+
+	describe('subdomain scanned directly against an enforcing parent (sp=none asymmetry)', () => {
+		// The org domain is locked down (p=reject) but hands this child sp=none, so the
+		// effective policy for the subdomain is "none". The tree walk resolves the record at
+		// the parent, and the parent's own p= must reach the classifier for it to say so.
+		const enforcingParent = { '_dmarc.example.com': ['v=DMARC1; p=reject; sp=none; rua=mailto:dmarc@example.com'] };
+
+		it('reports the asymmetry in the detail while keeping title and severity', async () => {
+			const queryDNS = createMockDNS(enforcingParent);
+			const result = await checkDMARC('billing.example.com', queryDNS);
+			const none = result.findings.find((f) => f.title === 'DMARC policy set to none');
+			expect(none?.severity).toBe('medium');
+			expect(none?.detail).toContain('sp=none');
+			expect(none?.detail).toContain('p=reject');
+			expect(none?.detail).toContain('example.com');
+			expect(none?.detail).toContain('billing.example.com');
+		});
+
+		it('still reports the subdomain as not enforcing (controlPresent unchanged)', async () => {
+			const queryDNS = createMockDNS(enforcingParent);
+			const result = await checkDMARC('billing.example.com', queryDNS);
+			expect(result.controlPresent).toBe(false);
+		});
+
+		it('leaves the parent scan itself untouched — sp= is still the org-domain finding', async () => {
+			const queryDNS = createMockDNS(enforcingParent);
+			const result = await checkDMARC('example.com', queryDNS);
+			expect(result.findings.some((f) => f.title === 'DMARC policy set to none')).toBe(false);
+			expect(result.findings.find((f) => f.title === 'Subdomain policy weaker than parent policy')?.severity).toBe('high');
+		});
+
+		it('keeps the generic wording when the parent is itself p=none', async () => {
+			const queryDNS = createMockDNS({ '_dmarc.example.com': ['v=DMARC1; p=none; sp=none; rua=mailto:dmarc@example.com'] });
+			const result = await checkDMARC('billing.example.com', queryDNS);
+			expect(result.findings.find((f) => f.title === 'DMARC policy set to none')?.detail).toContain('only monitors');
+		});
+	});
 });

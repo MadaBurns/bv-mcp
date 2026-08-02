@@ -134,6 +134,11 @@ export async function checkDMARC(
 		aspf: tags.get('aspf'),
 		t: tags.get('t'),
 		inheritedFromParent,
+		// On an inherited scan, carry the org domain's OWN p= (and where it was found) so the
+		// classifier can name the parent-enforcing / subdomain-open asymmetry. `policy` above is
+		// already the effective (sp-resolved) value and no longer holds the parent's p=.
+		orgPolicy: inheritedFromParent ? (p ?? undefined) : undefined,
+		orgDomain: inheritedFromParent ? (walk.foundAt ?? undefined) : undefined,
 		aggregators: rua ? detectThirdPartyAggregators(ruaUris) : [],
 		invalidRuaUris: ruaUris.filter((uri) => !isValidDmarcUri(uri)),
 		invalidRufUris: rufUris.filter((uri) => !isValidDmarcUri(uri)),
