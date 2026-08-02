@@ -190,6 +190,139 @@ export function getInheritedNsFinding(zone: ZoneContext): Finding {
 	);
 }
 
+// ---------------------------------------------------------------------------
+// Lame delegation ("Sitting Ducks")
+// ---------------------------------------------------------------------------
+
+/**
+ * Hard cap on how many delegated nameservers are probed for lame delegation.
+ *
+ * A cold `scan_domain` already fans out ~20 subrequests; each probed nameserver
+ * costs one A query, plus one AAAA query ONLY when the A query came back empty
+ * (so a healthy zone costs exactly one query per nameserver). With this cap the
+ * NS check adds at most 4 subrequests in the healthy case and at most 8 in the
+ * all-broken case — bounded regardless of how many NS records a zone publishes.
+ *
+ * Four is enough evidence: the finding needs one working nameserver and one
+ * broken one to establish the partial-lame shape, and RFC 1035 §2.2 zones
+ * publish 2–4 in practice.
+ */
+export const MAX_LAME_DELEGATION_PROBES = 4;
+
+/**
+ * Per-nameserver probe outcome.
+ *
+ * - `resolves` — the nameserver hostname has an address, so queries can reach it.
+ * - `no_address` — DETERMINED to have no A/AAAA address. The parent delegates to a
+ *   host that cannot serve the zone; this is the Sitting Ducks precondition.
+ * - `unknown` — the probe itself failed (resolver timeout/network error). NOT
+ *   evidence of anything: a failure to MEASURE is never scored as a failure.
+ */
+export type NameserverProbeOutcome = 'resolves' | 'no_address' | 'unknown';
+
+/** One nameserver's probe result. */
+export interface NameserverProbeResult {
+	nameserver: string;
+	outcome: NameserverProbeOutcome;
+}
+
+/**
+ * Verdict over the probed set.
+ *
+ * - `healthy` — every determinate probe resolved.
+ * - `partial` — at least one resolved AND at least one determinately did not.
+ *   The exploitable shape: the zone still answers (so nothing looks broken to the
+ *   owner) while a delegated nameserver sits unclaimed.
+ * - `total` — at least one determinate `no_address` and NOTHING resolved. That is a
+ *   whole-zone resolution failure, not a posture deficiency, so it must route to
+ *   the inconclusive path rather than score 0.
+ * - `indeterminate` — no determinate outcome at all (every probe errored). Emits
+ *   nothing and leaves the rest of the NS result untouched.
+ */
+export type LameDelegationVerdict = 'healthy' | 'partial' | 'total' | 'indeterminate';
+
+export interface LameDelegationAssessment {
+	verdict: LameDelegationVerdict;
+	resolving: string[];
+	nonResolving: string[];
+	unknown: string[];
+}
+
+/**
+ * Classify a set of per-nameserver probe outcomes into a lame-delegation verdict.
+ *
+ * Pure — the I/O lives in `checkNS`. `unknown` outcomes are deliberately excluded
+ * from the verdict arithmetic so a flaky resolver can never manufacture a `total`
+ * (or suppress a real `partial`).
+ */
+export function assessLameDelegation(results: NameserverProbeResult[]): LameDelegationAssessment {
+	const resolving = results.filter((r) => r.outcome === 'resolves').map((r) => r.nameserver);
+	const nonResolving = results.filter((r) => r.outcome === 'no_address').map((r) => r.nameserver);
+	const unknown = results.filter((r) => r.outcome === 'unknown').map((r) => r.nameserver);
+
+	let verdict: LameDelegationVerdict;
+	if (nonResolving.length === 0) {
+		verdict = resolving.length > 0 ? 'healthy' : 'indeterminate';
+	} else if (resolving.length > 0) {
+		verdict = 'partial';
+	} else {
+		verdict = 'total';
+	}
+
+	return { verdict, resolving, nonResolving, unknown };
+}
+
+/**
+ * HIGH finding for partial lame delegation — some delegated nameservers do not
+ * answer for the zone while others still do.
+ *
+ * This is the "Sitting Ducks" hijack precondition: the zone keeps resolving via the
+ * healthy nameservers, so nothing looks broken, while an attacker who can claim the
+ * non-responsive nameserver at its DNS provider gains authoritative control of the
+ * zone without ever touching the registrar.
+ */
+export function getPartialLameDelegationFinding(domain: string, assessment: LameDelegationAssessment): Finding {
+	return createFinding(
+		'ns',
+		'Lame delegation — nameserver does not answer for the zone',
+		'high',
+		`The parent zone delegates ${domain} to ${assessment.nonResolving.join(', ')}, but ${
+			assessment.nonResolving.length === 1 ? 'that nameserver is' : 'those nameservers are'
+		} not reachable for this zone (no address resolves). ${assessment.resolving.join(', ')} still answer${
+			assessment.resolving.length === 1 ? 's' : ''
+		}, so the domain keeps resolving and the fault is invisible in normal use. This is the "Sitting Ducks" precondition: an attacker who registers the unclaimed nameserver at its DNS provider becomes authoritative for ${domain} without touching the registrar. Remove the stale delegation at the registrar, or re-provision the zone on that nameserver.`,
+		{
+			lameDelegation: 'partial',
+			nonResolvingNameservers: assessment.nonResolving,
+			resolvingNameservers: assessment.resolving,
+			...(assessment.unknown.length > 0 ? { unprobedNameservers: assessment.unknown } : {}),
+		},
+	);
+}
+
+/**
+ * Inconclusive finding for TOTAL lame delegation — no delegated nameserver resolves.
+ *
+ * Deliberately NOT a scored deficiency. When nothing in the delegation answers, the
+ * NS posture was not measured, it was merely unobservable; scoring it 0 would penalize
+ * a category we never got a reading for (the same rule `getUndelegatedInconclusiveFinding`
+ * exists for). Carries the transient shape so scoring EXCLUDES the category.
+ *
+ * Deliberately does NOT set `domainResolves: false` — that key is the package's
+ * non-resolving guard and belongs only to `getNsVisibilityFinding`, which has actually
+ * probed NS *and* A. This probe only establishes that the nameserver HOSTS have no
+ * address, which cannot distinguish a dead zone from a resolver-side outage.
+ */
+export function getTotalLameDelegationFinding(domain: string, assessment: LameDelegationAssessment): Finding {
+	return createFinding(
+		'ns',
+		'Nameserver reachability not assessed',
+		'low',
+		`None of the nameservers delegated for ${domain} (${assessment.nonResolving.join(', ')}) resolved to an address during this run. That is a resolution failure rather than a measurable nameserver posture, so this control was not assessed.`,
+		{ errorKind: 'dns_error', inconclusive: true, lameDelegation: 'total', nonResolvingNameservers: assessment.nonResolving },
+	);
+}
+
 /**
  * Inconclusive finding when the zone-apex walk could not be resolved (resolver
  * timeout/error). Carries the transient shape so scoring EXCLUDES the category
