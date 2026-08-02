@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.40.0] - 2026-08-03
+
+**Scoring model 1.4.0 → 1.5.0.** Three new detection families measure defects that were previously invisible. No weight, tier, grade band, severity penalty, missing-control rule, or profile-detection rule changed — but scores move, and a domain may move in **either** direction, because two DKIM parser fixes also remove false positives. Consumers comparing two scans should read `scoringModelVersion` before attributing a delta to the domain. (#607)
+
+### Added
+
+- **NS — lame delegation ("Sitting Ducks") detection.** A parent zone delegating to a nameserver whose hostname resolves to no address is the precondition for the Sitting Ducks hijack class: the domain keeps resolving via its healthy nameservers, so the fault is invisible in normal use, while an attacker who claims the unclaimed nameserver at its DNS provider becomes authoritative without ever touching the registrar. Partial (some nameservers still resolving) is a scored `high`; total non-resolution routes to the existing inconclusive path rather than scoring 0, since it cannot be distinguished from a resolver-side outage. Bounded at 4 probes regardless of NS count. Note the limit honestly: Workers cannot open UDP to an individual nameserver and the DoH response exposes no `AA`/`Status`, so classic lame delegation (nameserver answers, but non-authoritatively) remains unobservable — the finding text states its evidence basis. (#601)
+- **CAA — enforceability signals.** A long CAA RRset TTL widens the window in which a CA may still act on a withdrawn issuance policy: the CA/Browser Forum Baseline Requirements permit issuing within the record's TTL **or** 8 hours, whichever is *greater*, so a long TTL extends rather than caps it. Flagged above 24h. Separately, a CAA policy on an unsigned zone is strippable in transit — the DNSSEC-validation mandate in force since 2026-03-15 has an explicit "Insecure" escape hatch, and only ~7% of CAA-publishing domains sign their zone. Read from the CAA lookup's own `AD` flag, so it costs **no additional subrequests**. Both `low`/`info`. (#603)
+- **DKIM — record abuse surface.** `s=` admitting neither `email` nor `*` (verifiers are obliged to ignore such a key for mail), `h=` omitting sha256 entirely, sha1 listed alongside sha256, and multiple DKIM RRs published at one selector. (#602)
+
+### Fixed
+
+- **DKIM tag parsing dropped every tag on records with RFC-legal whitespace.** The parser required a bare `tag=`, but the RFC 6376 tag specification permits folding whitespace around the equals sign. A record written `v=DKIM1; p = MIGf…` returned `undefined` for **every** tag — and for `p=` that read as "no key material", surfacing a spurious revoked-key finding on a perfectly valid record. Affected domains will score **higher** under 1.5.0. (#602)
+- **DKIM test mode missed on multi-flag records.** `t=` is an unordered colon-separated list, so `t=s:y` did not register as test mode; the old match could also fire on free text inside the `n=` tag. (#602)
+- **DMARC subdomain scans now name the parent/child asymmetry.** Scanning a subdomain directly under a parent publishing `p=reject; sp=none` reported a generic "DMARC policy set to none", which is true but does not convey the shape of the risk — the parent is locked down while this child is wide open, which is exactly why an attacker picks it. The detail now states both. The finding title is deliberately unchanged: it is matched by exact string at two post-processing sites, and appending to it would have silently broken the non-mail downgrade and impersonation escalation for this very case. (#606)
+- **Scoring config: `coreWeights` overrides were silently inert.** `buildGenericContext` reads `config.coreWeights` only when no domain context is supplied, and the scan path always supplies one — so a `SCORING_CONFIG` of `{"coreWeights":{…}}` parsed, validated, appeared in the effective-config hash, and changed no score. `PROFILE_WEIGHTS` is now the single weight source, a structural audit fails if a duplicate table reappears, and an inert config key warns. Weight overrides must be expressed as `profileWeights.<profile>`. (#599)
+- **Reproducibility stamps now truthful at every exit.** The effective-config fingerprint is stamped on all `scanDomain` return paths including the NXDOMAIN and DNS-broken short-circuits; a cache hit replays the hash it was originally scored under; and `batchScan` threads one fingerprint per batch into error placeholders, which previously reported `default` while a scanned sibling in the same response reported the override hash. (#600)
+
+### Changed
+
+- **BIMI and TLS-RPT impact claims calibrated to the evidence.** The BIMI category fallback claimed a missing logo makes "impersonation harder to spot" — an unevidenced phishing-detection claim on a customer-facing surface. There are no controlled studies showing BIMI reduces phishing susceptibility, and the closest precedent is a peer-reviewed null result for Extended Validation certificates. BIMI is now described as a brand-presentation control, with the caveat that a verified logo renders on any DMARC-passing message including one sent from a compromised mailbox. TLS-RPT no longer claims to surface active downgrade attacks; it is framed as the operational feedback loop that keeps MTA-STS enforced rather than rolled back after an outage. **No scoring credit or severity changed for either.** (#606)
+- **`docs/scoring.md` now states the score's scope and limits.** Records that the graded controls are brand-protection and deliverability posture, enumerates what is structurally invisible to the grade (account takeover, lateral BEC from a legitimate mailbox that passes DMARC, attacker-owned lookalikes with their own valid records, free-webmail BEC, response-based attacks), and states that no published dataset correlates these controls with incident rates in either direction. No number, letter, weight, or threshold changed. (#605)
+
+### Removed
+
+- **Dead `src/tools/caa-analysis.ts`.** It was imported by exactly one thing — its own test — while production went through the package copy. The test passed while exercising unreachable code and the live implementation had no coverage of its own; the cases are ported to the package. (#604)
+
 ## [3.39.0] - 2026-08-02
 
 ### Added
