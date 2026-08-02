@@ -136,6 +136,139 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 			expect(Object.keys(PROTECTIVE_WEIGHTS)).toContain('subdomain_takeover');
 		});
 
+		describe('non-resolving domain gate', () => {
+			// A domain that does not resolve has no security posture to measure. Running the
+			// check matrix against one only manufactures "absence = clean" passes: on a dead
+			// name, dnssec/dane/subdomain_takeover/subdomailing all score 100 because there is
+			// nothing bad to find. Located 2026-08-02 behind a fabricated 88 on a domain that
+			// had been NXDOMAIN for 100 days.
+			//
+			// The guard already existed and was RIGHT — but it lived in one consumer's
+			// orchestrator (bv-mcp `scan-domain.ts` `buildNonResolvingResult`) and not in this
+			// package, so any other consumer running its own orchestration got no short-circuit
+			// at all. This moves the SEMANTICS into the shared core.
+			//
+			// Non-resolution is the trigger, NOT absence-of-mail: a domain that RESOLVES with a
+			// null MX and `v=spf1 -all` is good posture and must still score. See the
+			// discriminating case at the end.
+			function vacuousPass(category: CheckCategory, score = 100): CheckResult {
+				// How a dead domain actually scores: nothing bad found, so the check "passes"
+				// and sets no controlPresent (it observed no active control either).
+				return { ...buildCheckResult(category, [createFinding(category, `${category} OK`, 'info', 'ok')]), score, checkStatus: 'completed' };
+			}
+			function absent(category: CheckCategory): CheckResult {
+				return { ...buildCheckResult(category, [], false), score: 0, passed: false, checkStatus: 'completed' };
+			}
+
+			/** The `ns` check's own no-NS-and-no-A determination, exactly as it emits it. */
+			function nsSaysDomainDoesNotResolve(): CheckResult {
+				return buildCheckResult('ns', [
+					createFinding('ns', 'No NS records found', 'critical', 'Without NS records, the domain cannot resolve.', {
+						missingControl: true,
+						domainResolves: false,
+					}),
+				]);
+			}
+
+			// Mirrors the stored datta.ng row: 100 days NXDOMAIN, yet `ssl` carried
+			// controlPresent=1 (a parking origin answered 5xx on the HTTPS path). Positive
+			// evidence from ANOTHER check must not suppress the gate — the `ns` determination
+			// is a DNS-level fact and outranks it.
+			const deadDomain: CheckResult[] = [
+				nsSaysDomainDoesNotResolve(),
+				absent('spf'),
+				absent('dmarc'),
+				absent('dkim'),
+				absent('mx'),
+				absent('caa'),
+				{ ...buildCheckResult('ssl', [createFinding('ssl', 'ssl', 'info', 'ok')], true), score: 100, checkStatus: 'completed' },
+				vacuousPass('dnssec'),
+				vacuousPass('dane'),
+				vacuousPass('subdomain_takeover'),
+				vacuousPass('subdomailing'),
+				vacuousPass('mta_sts', 95),
+				vacuousPass('dane_https', 95),
+				vacuousPass('svcb_https', 95),
+				vacuousPass('bimi', 95),
+				vacuousPass('tlsrpt', 95),
+				vacuousPass('http_security', 85),
+			];
+
+			describe('explicit signal from the orchestrator', () => {
+				it('abstains on NXDOMAIN (`false` — the orchestrator tri-state, verbatim)', () => {
+					const score = computeScanScore(deadDomain, undefined, undefined, { resolution: false });
+					expect(score.overall).toBeNull();
+					expect(score.grade).toBeNull();
+					expect(score.evidenceInsufficient).toBe(true);
+				});
+
+				it("abstains on a broken zone (`'broken'` — the orchestrator tri-state, verbatim)", () => {
+					const score = computeScanScore(deadDomain, undefined, undefined, { resolution: 'broken' });
+					expect(score.overall).toBeNull();
+					expect(score.evidenceInsufficient).toBe(true);
+				});
+
+				it('accepts the package-native spellings too', () => {
+					expect(computeScanScore(deadDomain, undefined, undefined, { resolution: 'nxdomain' }).overall).toBeNull();
+					expect(computeScanScore(deadDomain, undefined, undefined, { resolution: 'unresolvable' }).overall).toBeNull();
+				});
+
+				it('explains the withheld grade as a measurement gap, not a security verdict', () => {
+					const score = computeScanScore(deadDomain, undefined, undefined, { resolution: false });
+					expect(score.summary).toBe(score.evidenceNote);
+					expect(score.summary).not.toMatch(/Grade: [A-F]/);
+					expect(score.summary).toMatch(/does not (resolve|exist)/i);
+					expect(score.summary).toMatch(/not a security verdict/i);
+				});
+			});
+
+			describe('derived floor — a producer that forgets still gets protection', () => {
+				it('abstains with NO explicit signal, from the roster alone', () => {
+					// The whole point of the belt-and-braces design: a guard that fires only on an
+					// explicit input is silently disabled by a consumer that forgets to pass it —
+					// re-creating the exact failure being fixed, one layer down.
+					const score = computeScanScore(deadDomain);
+					expect(score.overall).toBeNull();
+					expect(score.evidenceInsufficient).toBe(true);
+					expect(score.summary).toMatch(/does not resolve/i);
+				});
+
+				it('an EXPLICIT resolves signal outranks the derived floor', () => {
+					// The orchestrator ran an apex probe; that is better evidence than our
+					// inference. Explicit wins when present — documented contract.
+					expect(computeScanScore(deadDomain, undefined, undefined, { resolution: true }).overall).not.toBeNull();
+				});
+
+				it('does NOT fire when the ns check merely ERRORED (inconclusive is not proof)', () => {
+					const nsErrored: CheckResult = {
+						...buildCheckResult('ns', [createFinding('ns', 'Nameserver configuration not assessed', 'info', 'transient')]),
+						checkStatus: 'error',
+					};
+					const score = computeScanScore([nsErrored, ...deadDomain.slice(1)]);
+					expect(score.evidenceNote ?? '').not.toMatch(/does not (resolve|exist)/i);
+				});
+			});
+
+			it('DISCRIMINATES: an honest PARKED domain still scores normally', () => {
+				// Resolves, has nameservers, deliberately no mail (null MX + `v=spf1 -all`).
+				// GOOD posture, not a dead domain — must never be caught by this gate.
+				const parked: CheckResult[] = [
+					buildCheckResult('ns', [createFinding('ns', 'Nameservers properly configured', 'info', '2 nameservers found')], true),
+					vacuousPass('spf'),
+					vacuousPass('dmarc'),
+					vacuousPass('dkim'),
+					vacuousPass('dnssec'),
+					vacuousPass('ssl'),
+					vacuousPass('caa'),
+					buildCheckResult('mx', [createFinding('mx', 'Null MX (RFC 7505)', 'info', 'declares no mail')], false),
+				];
+				const score = computeScanScore(parked);
+				expect(score.overall).not.toBeNull();
+				expect(score.grade).not.toBeNull();
+				expect(score.evidenceInsufficient).toBeUndefined();
+			});
+		});
+
 		describe('evidence-sufficiency gate', () => {
 			function ok(category: CheckCategory): CheckResult {
 				return { ...buildCheckResult(category, [createFinding(category, `${category} OK`, 'info', 'ok')], true), checkStatus: 'completed' };
