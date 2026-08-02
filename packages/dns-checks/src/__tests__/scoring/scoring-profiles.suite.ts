@@ -102,6 +102,77 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 	}
 
 	describe('scoring-profiles', () => {
+		describe('profile selection ignores UNMEASURED checks', () => {
+			// Located 2026-08-02 as the mechanism behind a fabricated 88 on a domain that
+			// does not exist. Profile detection reads `controlPresent` to decide whether a
+			// domain is a web-only (non-mail) domain:
+			//
+			//     if (hasNoMx) { if (caaPass || sslPass) profile = 'web_only'; else 'non_mail'; }
+			//
+			// `sslPass`/`caaPass` consulted `controlPresent` WITHOUT checking `checkStatus`,
+			// so a check that errored could still supply the positive evidence that selects
+			// `web_only` — the one profile that weights spf/dmarc/dkim/mx at ZERO. The four
+			// checks that correctly detected total failure were then weighted out of the
+			// score entirely, and a dead domain graded ~88.
+			//
+			// The engine already knew better one screen down: `measuredChecks` filters BOTH
+			// 'timeout' and 'error' before computing the failure-ratio signal. Only the
+			// controlPresent reads were status-blind.
+			function unmeasured(result: CheckResult, checkStatus: 'timeout' | 'error' = 'error'): CheckResult {
+				return { ...result, checkStatus };
+			}
+
+			/** No MX, plus whatever ssl/caa evidence the caller wants to supply. */
+			function noMxWith(overrides: Partial<Record<CheckCategory, CheckResult>>): CheckResult[] {
+				return buildFullResults({
+					spf: makeResult('spf', 0),
+					dmarc: makeResult('dmarc', 0),
+					dkim: makeResult('dkim', 0),
+					mx: makeResult('mx', 0, 'No MX records found', 'info'),
+					...overrides,
+				});
+			}
+
+			it('an ERRORED ssl check cannot select the web_only profile', () => {
+				const ctx = detectDomainContext(
+					noMxWith({ ssl: unmeasured(makeResult('ssl', 100)), caa: makeResult('caa', 0) }),
+				);
+				expect(ctx.profile).not.toBe('web_only');
+			});
+
+			it('an ERRORED caa check cannot select the web_only profile either', () => {
+				// Both reads are status-blind, so fixing only `sslPass` would leave the same
+				// path open through CAA.
+				const ctx = detectDomainContext(
+					noMxWith({ ssl: makeResult('ssl', 0), caa: unmeasured(makeResult('caa', 100)) }),
+				);
+				expect(ctx.profile).not.toBe('web_only');
+			});
+
+			it('a TIMED-OUT check is treated the same as an errored one', () => {
+				const ctx = detectDomainContext(
+					noMxWith({ ssl: unmeasured(makeResult('ssl', 100), 'timeout'), caa: makeResult('caa', 0) }),
+				);
+				expect(ctx.profile).not.toBe('web_only');
+			});
+
+			it('an unmeasured MX check cannot assert "no MX" and downgrade the profile', () => {
+				// `hasNoMx` is the gate in front of both non-mail profiles. An MX lookup that
+				// FAILED must fall back to mail_enabled, never assert absence.
+				const ctx = detectDomainContext(
+					noMxWith({ mx: unmeasured(makeResult('mx', 0, 'No MX records found', 'info')), ssl: makeResult('ssl', 100) }),
+				);
+				expect(ctx.profile).toBe('mail_enabled');
+			});
+
+			it('DISCRIMINATES: a MEASURED ssl/caa pass still selects web_only', () => {
+				// Without this the suite would also pass against an implementation that simply
+				// never selects web_only. Genuine web-only domains must keep their profile.
+				const ctx = detectDomainContext(noMxWith({ ssl: makeResult('ssl', 100), caa: makeResult('caa', 100) }));
+				expect(ctx.profile).toBe('web_only');
+			});
+		});
+
 		describe('profile-aware auto scoring', () => {
 			it('auto-detects web_only context and matches explicit web_only scoring', () => {
 				const results = buildFullResults({

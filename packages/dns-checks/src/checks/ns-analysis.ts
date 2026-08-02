@@ -40,12 +40,17 @@ export function getNsVisibilityFinding(domain: string, domainResolves: boolean):
 		);
 	}
 
+	// `domainResolves: false` is the STRUCTURED marker the scoring engine's non-resolving
+	// gate keys on (see scoring/resolution.ts). This branch is the only place in the package
+	// that has actually determined non-resolution — NS returned nothing AND the A-record
+	// fallback above returned nothing — so it is the only honest place to assert it.
+	// Structured, not prose: the title is customer-facing copy and will be reworded.
 	return createFinding(
 		'ns',
 		'No NS records found',
 		'critical',
 		`No nameserver records found for ${domain}. Without NS records, the domain cannot resolve.`,
-		{ missingControl: true },
+		{ missingControl: true, domainResolves: false },
 	);
 }
 

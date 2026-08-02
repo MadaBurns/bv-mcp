@@ -30,7 +30,7 @@ export {
 	computeScanScore,
 	computeProfileAwareScanScore,
 } from './engine';
-export type { ProfileAwareScanScore, NistGrade } from './engine';
+export type { ProfileAwareScanScore, NistGrade, ScanScoreOptions } from './engine';
 
 export { DEFAULT_SCORING_CONFIG, toImportanceRecord, parseScoringConfig } from './config';
 export type { ScoringConfig } from './config';
@@ -56,6 +56,15 @@ export {
 export { computeGenericScore } from './generic';
 export type { GenericScoringContext, GenericScanScore, FindingSeverityCounts, EmailBonusKeyMap, TierBreakdown } from './generic';
 
+export type { DomainResolutionState, DomainResolutionSignal } from './resolution';
+export {
+	DOMAIN_RESOLVES_METADATA_KEY,
+	normalizeResolutionSignal,
+	deriveResolutionState,
+	resolveScanResolutionState,
+	isMeasurableDomain,
+	buildUnresolvableNote,
+} from './resolution';
 export { EVIDENCE_SUFFICIENCY_THRESHOLD, computeScanEvidence, isCheckMeasured, isEvidenceSufficient, buildEvidenceNote } from './evidence';
 export type { ScanEvidence } from './evidence';
 
