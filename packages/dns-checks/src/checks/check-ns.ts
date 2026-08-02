@@ -11,16 +11,82 @@
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import {
+	MAX_LAME_DELEGATION_PROBES,
+	assessLameDelegation,
 	getInheritedNsFinding,
 	getNameserverDiversityFinding,
 	getNsConfiguredFinding,
 	getNsVisibilityFinding,
+	getPartialLameDelegationFinding,
 	getSingleNsFinding,
 	getSoaValidationFindings,
+	getTotalLameDelegationFinding,
 	getUndelegatedInconclusiveFinding,
 	normalizeNsRecords,
 	parseSoaValues,
 } from './ns-analysis';
+import type { NameserverProbeOutcome, NameserverProbeResult } from './ns-analysis';
+
+/** DoH numeric record types used by the nameserver-reachability probe. */
+const DOH_TYPE_A = 1;
+const DOH_TYPE_AAAA = 28;
+
+/**
+ * Probe one delegated nameserver for reachability.
+ *
+ * Workers cannot open a UDP socket to an individual nameserver, so authority is
+ * established the only way a recursive-resolver vantage point allows: a delegated
+ * nameserver with NO address cannot be queried by anyone, and therefore cannot be
+ * answering authoritatively for the zone. That is exactly the delegation an attacker
+ * claims in a Sitting Ducks hijack.
+ *
+ * AAAA is consulted ONLY when A came back empty, so an IPv6-only nameserver is not a
+ * false positive while a healthy zone still costs one subrequest per nameserver.
+ * A thrown probe yields `unknown` (never `no_address`) — a failure to measure must not
+ * be reported as a failure.
+ */
+async function probeNameserverReachable(
+	nameserver: string,
+	rawQueryDNS: RawDNSQueryFunction,
+	timeout: number,
+): Promise<NameserverProbeOutcome> {
+	try {
+		const a = await rawQueryDNS(nameserver, 'A', false, { timeout });
+		if ((a.Answer ?? []).some((ans) => ans.type === DOH_TYPE_A || ans.type === DOH_TYPE_AAAA)) {
+			return 'resolves';
+		}
+	} catch {
+		return 'unknown';
+	}
+
+	try {
+		const aaaa = await rawQueryDNS(nameserver, 'AAAA', false, { timeout });
+		if ((aaaa.Answer ?? []).some((ans) => ans.type === DOH_TYPE_AAAA)) {
+			return 'resolves';
+		}
+	} catch {
+		return 'unknown';
+	}
+
+	return 'no_address';
+}
+
+/**
+ * Probe up to `MAX_LAME_DELEGATION_PROBES` delegated nameservers in parallel.
+ * Never throws — every rejection degrades to an `unknown` outcome.
+ */
+async function probeDelegatedNameservers(
+	nsRecords: string[],
+	rawQueryDNS: RawDNSQueryFunction,
+	timeout: number,
+): Promise<NameserverProbeResult[]> {
+	const targets = nsRecords.slice(0, MAX_LAME_DELEGATION_PROBES);
+	const settled = await Promise.allSettled(targets.map((ns) => probeNameserverReachable(ns, rawQueryDNS, timeout)));
+	return targets.map((nameserver, i) => {
+		const outcome = settled[i];
+		return { nameserver, outcome: outcome.status === 'fulfilled' ? outcome.value : 'unknown' };
+	});
+}
 
 /**
  * Check nameserver configuration for a domain.
@@ -114,6 +180,25 @@ export async function checkNS(
 	const diversityFinding = getNameserverDiversityFinding(nsRecords);
 	if (diversityFinding) {
 		findings.push(diversityFinding);
+	}
+
+	// Lame delegation ("Sitting Ducks") — does every delegated nameserver actually
+	// answer for this zone? Runs before the SOA/wildcard probes so the TOTAL case
+	// short-circuits without spending further subrequests.
+	if (rawQueryDNS) {
+		const assessment = assessLameDelegation(await probeDelegatedNameservers(nsRecords, rawQueryDNS, timeout));
+		if (assessment.verdict === 'total') {
+			// Nothing in the delegation answered — a resolution failure, not a posture
+			// reading. Mark the category INCONCLUSIVE so scoring EXCLUDES it (same shape as
+			// the undelegated branch above) rather than zeroing a category we never measured.
+			// The partial findings gathered so far are dropped deliberately: a category that
+			// could not be measured must not also ship scored deficiencies.
+			const result = buildCheckResult('ns', [getTotalLameDelegationFinding(domain, assessment)]);
+			return { ...result, score: 0, passed: false, checkStatus: 'error', partial: true };
+		}
+		if (assessment.verdict === 'partial') {
+			findings.push(getPartialLameDelegationFinding(domain, assessment));
+		}
 	}
 
 	// Check SOA record exists and validate parameters

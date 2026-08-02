@@ -35,6 +35,7 @@ import {
 	type ScanTelemetry,
 } from '../lib/adaptive-weights';
 import { applyInteractionPenalties, type InteractionEffect } from '../lib/category-interactions';
+import { computeScoringConfigHash } from '../lib/scoring-version';
 import { buildCheckCacheKey, buildScanCacheKey, cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryDns } from '../lib/dns';
@@ -210,6 +211,24 @@ export interface ScanDomainResult {
 	 * results rather than averaging an ungraded result into a population score.
 	 */
 	resolves?: boolean | 'broken';
+	/**
+	 * Fingerprint of the **effective** scoring config this result was produced
+	 * under — `computeScoringConfigHash(runtimeOptions.scoringConfig)`.
+	 *
+	 * Stamped by `scanDomain` on every return path (including the non-resolving /
+	 * DNS-broken short-circuits and the cached path, which carries the hash it was
+	 * originally scored with) so that `buildStructuredScanResult` can report a
+	 * TRUTHFUL `scoringConfigHash` without the caller having to thread it. Before
+	 * this existed, any caller that did not pass an enrichment — every consumer of
+	 * the exported `buildStructuredScanResult` from the npm package, and the
+	 * batch error placeholders — stamped the literal `'default'` marker even while
+	 * a live `SCORING_CONFIG` override was in force, i.e. the output claimed a
+	 * reproducibility it could not back.
+	 *
+	 * Additive-optional: `undefined` only on hand-built results (tests) and on
+	 * cache entries written before this field existed.
+	 */
+	scoringConfigHash?: string;
 }
 
 /**
@@ -463,11 +482,21 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// Versioned (cache:v<version>:...) so a deploy auto-invalidates — see buildScanCacheKey.
 	const cacheKey = isExplicit ? buildScanCacheKey(domain, explicitProfile) : buildScanCacheKey(domain);
 
+	// Fingerprint of the EFFECTIVE scoring config this scan runs under. Stamped onto
+	// every result this function returns so downstream formatting reports the config
+	// that actually produced the numbers instead of the `'default'` marker.
+	const scoringConfigHash = computeScoringConfigHash(runtimeOptions?.scoringConfig);
+
 	// Check cache first (skip when force_refresh is requested)
 	if (!runtimeOptions?.forceRefresh) {
 		const cached = await cacheGet<ScanDomainResult>(cacheKey, kv);
 		if (cached) {
-			return { ...cached, cached: true };
+			// Deliberately NOT re-stamped with the current hash: a cached result's score
+			// was computed under the config in force when it was written, so it must keep
+			// carrying THAT fingerprint. `?? scoringConfigHash` only covers cache entries
+			// written before this field existed (bounded by the 5-min TTL and the
+			// deploy-versioned cache key).
+			return { ...cached, cached: true, scoringConfigHash: cached.scoringConfigHash ?? scoringConfigHash };
 		}
 	}
 
@@ -536,7 +565,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		try {
 			const apex = await queryDns(domain, 'NS', false, scanDns);
 			if (apex.Status === 3) {
-				return buildNonResolvingResult(domain);
+				return { ...buildNonResolvingResult(domain), scoringConfigHash };
 			}
 			if (apex.Status === 2) {
 				// CD-disabled retry on a fresh cache (no cd=0/default collision).
@@ -547,11 +576,11 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 						queryCache: new Map(),
 					});
 					// Resolves only with validation off ⇒ DNSSEC-bogus; still SERVFAIL/other ⇒ unresolvable.
-					return buildDnsBrokenResult(domain, cdDisabled.Status === 0 ? 'dnssec_bogus' : 'unresolvable');
+					return { ...buildDnsBrokenResult(domain, cdDisabled.Status === 0 ? 'dnssec_bogus' : 'unresolvable'), scoringConfigHash };
 				} catch {
 					// The confirming retry itself failed transport-wise — treat the
 					// confirmed validating-SERVFAIL as a persistent unresolvable delegation.
-					return buildDnsBrokenResult(domain, 'unresolvable');
+					return { ...buildDnsBrokenResult(domain, 'unresolvable'), scoringConfigHash };
 				}
 			}
 		} catch {
@@ -801,7 +830,10 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		let adaptiveWeightDeltas: Record<string, number> | null = null;
 
 		if (adaptiveResponse && adaptiveResponse.sampleCount > 0) {
-			const adaptiveWeights = adaptiveWeightsToContext(adaptiveResponse.weights, domainContext.profile);
+			// Same effective config as the `getProfileWeights(...)` static side below — the two
+			// operands of `deltas` must share a base, else an override manufactures phantom
+			// deltas for every category the accumulator returned no data for.
+			const adaptiveWeights = adaptiveWeightsToContext(adaptiveResponse.weights, domainContext.profile, runtimeOptions?.scoringConfig);
 			if (adaptiveWeights) {
 				// Compute adaptive score (for the reported delta only)
 				const adaptiveContext: DomainContext = { ...domainContext, weights: adaptiveWeights };
@@ -936,6 +968,10 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			);
 		}
 	}
+
+	// Stamp the effective-config fingerprint BEFORE caching, so a cache hit replays the
+	// hash the result was actually scored under (see the cache-read branch above).
+	result = { ...result, scoringConfigHash };
 
 	// Cache the result (use configurable TTL if provided)
 	// Defer the write via waitUntil when available to avoid blocking the response.
