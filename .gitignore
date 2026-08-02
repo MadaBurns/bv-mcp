@@ -88,6 +88,8 @@ wrangler.production.jsonc
 !.claude/settings.json
 !.claude/hooks/
 !.claude/hooks/*.sh
+!.claude/skills/
+!.claude/skills/**
 .gemini
 
 # Workspace
