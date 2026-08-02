@@ -2,6 +2,25 @@
 
 Canonical scoring reference for `scan_domain` results. Aligned with scoring v2 three-tier model.
 
+## What this score measures — and what it does not
+
+The score rates **externally observable DNS, email-authentication, and TLS configuration** for a domain. Everything it grades is published in DNS or served over TLS, so a scan is passive and needs no access to the organization being scanned.
+
+Read the result as **brand-protection and deliverability posture**, because that is what the controls do. SPF, DKIM, and DMARC largely protect *recipients* — and your brand's reputation — from your domain being used to send mail it did not authorize. They are a third-party benefit before they are a self-protective one.
+
+**Out of scope**, and therefore invisible to any grade here:
+
+- Endpoint, identity, and application security; MFA posture; patch state
+- Account takeover, and lateral business-email compromise sent from a legitimate internal mailbox — such mail authenticates correctly and passes DMARC
+- Impersonation from an attacker-controlled *lookalike* domain, which carries its own valid SPF/DKIM/DMARC (we surface lookalikes separately; a domain's own grade cannot reflect them)
+- Mail sent from free webmail providers, which authenticates under the provider's domain
+- Response-based social engineering that carries no link or attachment
+- Anything outside email and DNS entirely
+
+**This score is not a breach-likelihood prediction.** No published dataset establishes a correlation between these DNS/email controls and incident rates, in either direction, and we do not claim one. A domain can hold an A+ here and be compromised through any of the vectors listed above.
+
+Use it for what it supports: comparing posture across domains on a consistent basis, evidencing configuration for audit and compliance, and prioritizing concrete, fixable DNS and email-authentication defects.
+
 ## Three-Tier Category Model
 
 Categories are classified into three tiers with distinct scoring mechanics.
@@ -43,7 +62,9 @@ arrays are **disjoint**; read the union as the concatenation of both.
 
 ### Protective (20% of score)
 
-Active defenses against known attack vectors. Findings penalize but cannot trigger missing-control zeroing.
+Active defenses against known attack vectors.
+
+> **Correction (2026-08):** an earlier revision of this line claimed Protective findings "cannot trigger missing-control zeroing." That was wrong. Four Protective checks — **HTTP Security** (site unreachable), **MTA-STS** (no record), **MX** (no records), and **NS** (no records) — do set explicit `missingControl: true` and therefore zero their category. See [Missing-Control Rule](#missing-control-rule) for the authoritative list of all seven. What is true of the Protective tier is that a zeroed category costs at most its own weight (2–4 points) rather than the much larger Core-tier contribution.
 
 | Category | Weight |
 | --- | ---: |

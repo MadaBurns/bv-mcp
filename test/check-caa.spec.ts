@@ -73,9 +73,12 @@ describe('checkCaa', () => {
 	it('reports info finding when all CAA tags are present', async () => {
 		mockCaaRecords(['0 issue "letsencrypt.org"', '0 issuewild "letsencrypt.org"', '0 iodef "mailto:admin@example.com"']);
 		const result = await run('example.com');
-		expect(result.findings).toHaveLength(1);
+		// Tag validation produces no deficiency findings → the "properly configured"
+		// note. The always-measured CAA×DNSSEC enforceability note rides alongside it
+		// (info, 0 penalty); assert on tag-validation severity rather than a raw count.
 		expect(result.findings[0].severity).toBe('info');
 		expect(result.findings[0].title).toContain('properly configured');
+		expect(result.findings.filter((f) => f.severity !== 'info')).toHaveLength(0);
 		expect(result.passed).toBe(true);
 	});
 
@@ -108,9 +111,9 @@ describe('checkCaa', () => {
 			'\\# 1f 00 05 69 6f 64 65 66 6d 61 69 6c 74 6f 3a 61 64 6d 69 6e 40 65 78 61 6d 70 6c 65 2e 63 6f 6d',
 		]);
 		const result = await run('example.com');
-		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');
 		expect(result.findings[0].title).toContain('properly configured');
+		expect(result.findings.filter((f) => f.severity !== 'info')).toHaveLength(0);
 	});
 
 	it('parses hex wire format with missing issuewild tag', async () => {
