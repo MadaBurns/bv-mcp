@@ -72,7 +72,7 @@ describe('checkMtaSts — non-apex', () => {
 		expect(r.passed).toBeTruthy();
 	});
 
-	it('mail.acme.com: non-apex label that ACCEPTS mail (own MX) still yields medium + missingControl', async () => {
+	it('mail.acme.com: non-apex label that ACCEPTS mail (own MX) still yields a graded medium (not zeroed)', async () => {
 		// `mail.acme.com` shares nameservers with `acme.com` (no separate NS delegation →
 		// classified `inherited`, isApex:false) BUT owns an MX record, so it is a genuine
 		// mail-receiving host. MTA-STS applicability follows the label's inbound-mail role
@@ -90,7 +90,10 @@ describe('checkMtaSts — non-apex', () => {
 		const missing = r.findings.find((f) => f.title.includes('No MTA-STS'));
 		expect(missing).toBeDefined();
 		expect(missing!.severity).toBe('medium');
-		expect(missing!.metadata?.missingControl).toBe(true);
+		// Scoring model 1.6.0: absence is GRADED, not category-zeroing. The medium severity
+		// (the applicability signal this test guards) is unchanged; only the zeroing is gone.
+		expect(missing!.metadata?.missingControl).not.toBe(true);
+		expect(r.score).toBe(85);
 		// Must NOT be suppressed to the "not applicable" info.
 		expect(r.findings.some((f) => /not applicable/i.test(f.title))).toBe(false);
 	});
@@ -102,7 +105,7 @@ describe('checkMtaSts — apex regression (unchanged)', () => {
 		return checkMtaSts(domain);
 	}
 
-	it('example.com with MX + no MTA-STS/TLS-RPT still yields medium + missingControl', async () => {
+	it('example.com with MX + no MTA-STS/TLS-RPT still yields a graded medium (not zeroed)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((url: string) => {
 			const nameMatch = url.match(/[?&]name=([^&]+)/);
 			const typeMatch = url.match(/[?&]type=([^&]+)/);
@@ -123,6 +126,9 @@ describe('checkMtaSts — apex regression (unchanged)', () => {
 		const missing = r.findings.find((f) => f.title.includes('No MTA-STS'));
 		expect(missing).toBeDefined();
 		expect(missing!.severity).toBe('medium');
-		expect(missing!.metadata?.missingControl).toBe(true);
+		// Scoring model 1.6.0: graded medium (−15 → 85), no category-zeroing missing control.
+		expect(missing!.metadata?.missingControl).not.toBe(true);
+		expect(r.score).toBe(85);
+		expect(r.passed).toBe(true);
 	});
 });
