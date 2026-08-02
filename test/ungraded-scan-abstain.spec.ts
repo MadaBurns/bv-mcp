@@ -26,17 +26,6 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-/** Every DoH query answers NOERROR-with-no-records; every other fetch is a benign 200. */
-function installEmptyDnsFetch() {
-	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
-		const url = String(input instanceof Request ? input.url : input);
-		if (/dns-query|\/resolve|dns-json|dns\.google|cloudflare-dns/.test(url)) {
-			return Promise.resolve(createDohResponse([], []));
-		}
-		return Promise.resolve(new Response('', { status: 200 }));
-	}) as unknown as typeof globalThis.fetch;
-}
-
 /**
  * NS and A queries resolve (the domain is registered and delegated); every other
  * record type answers NOERROR-with-no-records. The controls need this since the
