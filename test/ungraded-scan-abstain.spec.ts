@@ -37,6 +37,32 @@ function installEmptyDnsFetch() {
 	}) as unknown as typeof globalThis.fetch;
 }
 
+/**
+ * NS and A queries resolve (the domain is registered and delegated); every other
+ * record type answers NOERROR-with-no-records. The controls need this since the
+ * package grew its own derived non-resolving floor (keyed on check-ns concluding
+ * no-NS-AND-no-A): an all-empty DoH mock now reads as an unresolvable domain and
+ * the scan abstains, so "measured domain" fixtures must actually resolve.
+ */
+function installResolvingDnsFetch() {
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+		const url = String(input instanceof Request ? input.url : input);
+		if (/dns-query|\/resolve|dns-json|dns\.google|cloudflare-dns/.test(url)) {
+			const parsed = new URL(url);
+			const name = (parsed.searchParams.get('name') ?? 'resolving-probe.test').replace(/\.$/, '');
+			const type = (parsed.searchParams.get('type') ?? 'A').toUpperCase();
+			if (type === 'NS' || type === '2') {
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.example-dns.com.' }]));
+			}
+			if (type === 'A' || type === '1') {
+				return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.10' }]));
+			}
+			return Promise.resolve(createDohResponse([], []));
+		}
+		return Promise.resolve(new Response('', { status: 200 }));
+	}) as unknown as typeof globalThis.fetch;
+}
+
 /** Every DoH query answers NXDOMAIN, so scanDomain short-circuits to the ungraded result. */
 function installNxdomainDnsFetch(domain: string) {
 	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
@@ -470,7 +496,7 @@ describe('analyze_drift cached baseline — ungraded cached scan is rejected', (
 	});
 
 	it('still accepts a caller-supplied JSON baseline carrying a real grade letter (control)', async () => {
-		installEmptyDnsFetch();
+		installResolvingDnsFetch();
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		const baseline = JSON.stringify({ overall: 78, grade: 'B', categoryScores: {}, findings: [], summary: 'Grade: B' });
 
@@ -538,7 +564,7 @@ describe('analyze_drift CURRENT side — an unmeasured current scan cannot fabri
 	});
 
 	it('still produces a real drift report when the current scan IS measured (control)', async () => {
-		installEmptyDnsFetch();
+		installResolvingDnsFetch();
 		const { handleToolsCall } = await import('../src/handlers/tools');
 
 		const result = await handleToolsCall(
@@ -596,7 +622,7 @@ describe('scan_domain tool_call analytics — ungraded scan', () => {
 			// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		} as any;
 
-		installEmptyDnsFetch();
+		installResolvingDnsFetch();
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		await handleToolsCall({ name: 'scan_domain', arguments: { domain: 'measured-analytics-probe.com', force_refresh: true } }, undefined, {
 			analytics,
