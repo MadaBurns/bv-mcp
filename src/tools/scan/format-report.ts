@@ -244,7 +244,8 @@ export interface ScanResultEnrichment {
 	/**
 	 * Precomputed fingerprint of the effective scoring config, threaded from the
 	 * call site that holds the parsed config (`runtimeOptions.scoringConfig`). When
-	 * omitted, `buildStructuredScanResult` falls back to the `'default'` marker.
+	 * omitted, `buildStructuredScanResult` falls back to the hash `scanDomain`
+	 * stamped onto the result itself, and only then to the `'default'` marker.
 	 */
 	scoringConfigHash?: string;
 }
@@ -416,7 +417,12 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		timestamp: result.timestamp,
 		cached: result.cached,
 		scoringModelVersion: SCORING_MODEL_VERSION,
-		scoringConfigHash: enrichment?.scoringConfigHash ?? computeScoringConfigHash(),
+		// Three-step, most-specific-first: an explicitly threaded hash wins; else the
+		// hash `scanDomain` stamped onto this very result (so a caller that passes no
+		// enrichment — every npm-package consumer of this function — still reports the
+		// config the scan actually ran under); only a hand-built result with neither
+		// falls back to the `'default'` marker.
+		scoringConfigHash: enrichment?.scoringConfigHash ?? result.scoringConfigHash ?? computeScoringConfigHash(),
 		// Additive-optional: only emit `resolves` when known (omit otherwise so
 		// tolerant downstream parsers see the same shape they always have).
 		...(result.resolves !== undefined ? { resolves: result.resolves } : {}),

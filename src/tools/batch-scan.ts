@@ -45,7 +45,7 @@ const MAX_DOMAINS = 10;
  * here (the pre-3.35.0 behaviour) published a fabricated failing measurement about
  * a real named organisation into customer reports.
  */
-function emptyResult(domain: string, error: string): BatchScanResultItem {
+function emptyResult(domain: string, error: string, scoringConfigHash: string): BatchScanResultItem {
 	return {
 		domain,
 		score: null,
@@ -78,10 +78,13 @@ function emptyResult(domain: string, error: string): BatchScanResultItem {
 		evidenceNote: null,
 		timestamp: new Date().toISOString(),
 		cached: false,
-		// No scan ran for an error placeholder (invalid domain / budget exceeded),
-		// so there is no effective config to fingerprint — stamp the default marker.
+		// No scan ran for an error placeholder (invalid domain / budget exceeded), but the
+		// batch itself DID run under a scoring config — stamp that config's fingerprint,
+		// not the `'default'` marker. Stamping `'default'` while a live `SCORING_CONFIG`
+		// override was in force made the placeholder claim a reproducibility it could not
+		// back, and made an error item disagree with its own siblings in the same batch.
 		scoringModelVersion: SCORING_MODEL_VERSION,
-		scoringConfigHash: computeScoringConfigHash(),
+		scoringConfigHash,
 		error,
 	};
 }
@@ -100,6 +103,9 @@ export async function batchScan(domains: string[], options: BatchScanOptions = {
 	const concurrency = Math.max(1, Math.min(options.concurrency ?? DEFAULT_CONCURRENCY, domains.length || 1));
 	const scan = options.scanFn ?? scanDomain;
 	const deadline = Date.now() + budgetMs;
+	// One fingerprint for the whole batch — every item (scanned or placeholder) is
+	// produced under the same effective scoring config.
+	const scoringConfigHash = computeScoringConfigHash(options.runtimeOptions?.scoringConfig);
 
 	const results: BatchScanResultItem[] = new Array(domains.length);
 	const pending: Array<{ idx: number; domain: string }> = [];
@@ -109,7 +115,7 @@ export async function batchScan(domains: string[], options: BatchScanOptions = {
 		const raw = domains[i];
 		const validation = validateDomain(raw);
 		if (!validation.valid) {
-			results[i] = emptyResult(raw, validation.error ?? 'Invalid domain');
+			results[i] = emptyResult(raw, validation.error ?? 'Invalid domain', scoringConfigHash);
 			continue;
 		}
 		pending.push({ idx: i, domain: sanitizeDomain(raw) });
@@ -124,7 +130,7 @@ export async function batchScan(domains: string[], options: BatchScanOptions = {
 
 			const remaining = deadline - Date.now();
 			if (remaining <= 0) {
-				results[task.idx] = emptyResult(task.domain, 'batch_budget_exceeded');
+				results[task.idx] = emptyResult(task.domain, 'batch_budget_exceeded', scoringConfigHash);
 				continue;
 			}
 
@@ -140,12 +146,10 @@ export async function batchScan(domains: string[], options: BatchScanOptions = {
 					timeoutId = setTimeout(() => reject(new Error('batch_budget_exceeded')), remaining);
 				});
 				const scanResult = await Promise.race([scanPromise, timeoutPromise]);
-				results[task.idx] = buildStructuredScanResult(scanResult, {
-					scoringConfigHash: computeScoringConfigHash(options.runtimeOptions?.scoringConfig),
-				});
+				results[task.idx] = buildStructuredScanResult(scanResult, { scoringConfigHash });
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : 'Scan failed';
-				results[task.idx] = emptyResult(task.domain, msg);
+				results[task.idx] = emptyResult(task.domain, msg, scoringConfigHash);
 			} finally {
 				if (timeoutId !== undefined) clearTimeout(timeoutId);
 			}
