@@ -48,8 +48,22 @@
  *   `prioritize_csc_leads`) now ABSTAIN on a check that never completed — `not_assessed` /
  *   `assessed: false` — rather than grading it as a pass or fail; see the `[3.37.0]`
  *   CHANGELOG.md entry for the full per-tool breakdown.
+ * - 1.5.0 — three new detection families that penalise previously-unmeasured defects. No
+ *   weight, tier, grade band, severity penalty or profile-detection rule changed; scores move
+ *   only because real defects are now seen. (a) NS: lame delegation — a delegated nameserver
+ *   whose hostname resolves to no address cannot answer for the zone, the "Sitting Ducks"
+ *   hijack precondition. Partial (some NS resolving) is a scored `high`; total is routed to
+ *   the inconclusive path, NOT scored 0. (b) CAA: a long RRset TTL widens the CA reuse window
+ *   (the CA/Browser Forum BRs permit issuing within the TTL **or** 8 hours, whichever is
+ *   GREATER), and a CAA policy on an unsigned zone is strippable in transit — read from the
+ *   lookup's own AD flag. Both `low`/`info`. (c) DKIM: `s=` admitting neither `email` nor `*`,
+ *   `h=` omitting sha256, sha1 alongside sha256, and multiple RRs at one selector. Also two
+ *   parser fixes that REMOVE false positives — folding whitespace around `=` is RFC-legal and
+ *   previously made every tag on such a record read as absent (for `p=` that surfaced as a
+ *   spurious revoked-key finding), and `t=` is an unordered colon list so `t=s:y` missed test
+ *   mode. A domain may therefore move in EITHER direction under 1.5.0.
  */
-export const SCORING_MODEL_VERSION = '1.4.0';
+export const SCORING_MODEL_VERSION = '1.5.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
