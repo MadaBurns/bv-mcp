@@ -48,8 +48,38 @@
  *   `prioritize_csc_leads`) now ABSTAIN on a check that never completed — `not_assessed` /
  *   `assessed: false` — rather than grading it as a pass or fail; see the `[3.37.0]`
  *   CHANGELOG.md entry for the full per-tool breakdown.
+ * - 1.5.0 — three new detection families that penalise previously-unmeasured defects. No
+ *   weight, tier, grade band, severity penalty or profile-detection rule changed; scores move
+ *   only because real defects are now seen. (a) NS: lame delegation — a delegated nameserver
+ *   whose hostname resolves to no address cannot answer for the zone, the "Sitting Ducks"
+ *   hijack precondition. Partial (some NS resolving) is a scored `high`; total is routed to
+ *   the inconclusive path, NOT scored 0. (b) CAA: a long RRset TTL widens the CA reuse window
+ *   (the CA/Browser Forum BRs permit issuing within the TTL **or** 8 hours, whichever is
+ *   GREATER), and a CAA policy on an unsigned zone is strippable in transit — read from the
+ *   lookup's own AD flag. Both `low`/`info`. (c) DKIM: `s=` admitting neither `email` nor `*`,
+ *   `h=` omitting sha256, sha1 alongside sha256, and multiple RRs at one selector. Also two
+ *   parser fixes that REMOVE false positives — folding whitespace around `=` is RFC-legal and
+ *   previously made every tag on such a record read as absent (for `p=` that surfaced as a
+ *   spurious revoked-key finding), and `t=` is an unordered colon list so `t=s:y` missed test
+ *   mode. A domain may therefore move in EITHER direction under 1.5.0.
+ * - 1.6.0 — MTA-STS absence no longer zeroes its category. The `mta_sts` absence findings
+ *   ("No MTA-STS record found", "No MTA-STS or TLS-RPT records found") dropped their
+ *   `missingControl: true` metadata, so absence is now a GRADED `medium` (ordinary −15
+ *   severity penalty, category ~85) instead of a category-zeroing missing control. This
+ *   matches CAA, SVCB-HTTPS and TLS-RPT, which already decline to zero on absence. Evidence:
+ *   a 1,000-domain corpus scan (2026-08-03) measured `mta_sts` at a mean 3.3 with 96.5% of
+ *   687 measured domains at exactly 0 — a control almost nobody deploys is a flat constant
+ *   penalty, not a discriminator. This is an UPWARD re-grade for the large majority of
+ *   domains; a domain that already published MTA-STS is unaffected. A deployed-but-BROKEN
+ *   policy still keeps its confident `high`/`medium` findings — only ABSENCE changed. No
+ *   weight (MTA-STS stays 3, protective), tier, grade band, severity penalty or
+ *   profile-detection rule changed. Also recalibrated in this version: the CAA long-TTL
+ *   staleness threshold moved from an arbitrary 24h to the CA/Browser Forum 8-hour reuse-window
+ *   floor (the only non-arbitrary crossover — below it the floor dominates); the same corpus
+ *   observed a maximum CAA TTL of 6h across 135 RRsets, so this finding fires ~never either
+ *   way and no score moves because of it.
  */
-export const SCORING_MODEL_VERSION = '1.4.0';
+export const SCORING_MODEL_VERSION = '1.6.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

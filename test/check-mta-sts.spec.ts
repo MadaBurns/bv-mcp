@@ -253,3 +253,77 @@ describe('check-mta-sts copy for missing-MTA-STS finding (Defect K)', () => {
 		expect(missing!.detail).toContain('do not accept inbound email');
 	});
 });
+
+/**
+ * Scoring model 1.6.0 — MTA-STS absence is GRADED, not category-zeroing.
+ *
+ * Corpus evidence (2026-08-03, 1,000 domains): the `mta_sts` category scored a mean of 3.3
+ * with 96.5% of the 687 measured domains at exactly 0. Zeroing on absence made MTA-STS a flat
+ * constant penalty on ~3 of the ~80 base points rather than a discriminator, so the absence
+ * paths dropped `missingControl: true`. Weight (3, protective), tier and severities unchanged.
+ *
+ * The invariant these lock: ABSENCE grades; DEPLOYED-BUT-BROKEN still penalises confidently.
+ */
+describe('checkMtaSts — absence is graded, not category-zeroing (scoring model 1.6.0)', () => {
+	async function run(domain = 'example.com') {
+		const { checkMtaSts } = await import('../src/tools/check-mta-sts');
+		return checkMtaSts(domain);
+	}
+
+	it('MX present, no MTA-STS and no TLS-RPT: medium finding, score 85, passed, no missingControl', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', []),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', []),
+			mxDns: mxResponse('example.com', [{ priority: 10, exchange: 'mx1.example.com' }]),
+		});
+		const r = await run();
+		const missing = r.findings.find((f) => f.title.includes('No MTA-STS'));
+		expect(missing).toBeDefined();
+		expect(missing!.severity).toBe('medium');
+		expect(missing!.metadata?.missingControl).not.toBe(true);
+		expect(r.score).toBe(85);
+		expect(r.passed).toBe(true);
+	});
+
+	it('MX present, TLS-RPT present but no MTA-STS record: medium finding, no missingControl', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', []),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+			mxDns: mxResponse('example.com', [{ priority: 10, exchange: 'mx1.example.com' }]),
+		});
+		const r = await run();
+		const missing = r.findings.find((f) => f.title === 'No MTA-STS record found');
+		expect(missing).toBeDefined();
+		expect(missing!.severity).toBe('medium');
+		expect(r.findings.every((f) => f.metadata?.missingControl !== true)).toBe(true);
+		expect(r.passed).toBe(true);
+	});
+
+	it('no MX at all: low finding, no missingControl (unchanged non-mail path)', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', []),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', []),
+		});
+		const r = await run();
+		const missing = r.findings.find((f) => f.title.includes('No MTA-STS'));
+		expect(missing!.severity).toBe('low');
+		expect(missing!.metadata?.missingControl).not.toBe(true);
+		expect(r.score).toBe(95);
+	});
+
+	it('DEPLOYED-BUT-BROKEN policy still penalises confidently — absence relief must not leak to it', async () => {
+		// Record published, policy file missing its `version:` and `mode:` → the package's
+		// confident `high` findings. Those never carried `missingControl`, so 1.6.0 leaves them
+		// untouched and they must still drive the category below a passing score.
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
+			policyFetch: policyResponse('max_age: 604800'),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+		});
+		const r = await run();
+		expect(r.findings.some((f) => f.severity === 'high')).toBe(true);
+		expect(r.findings.some((f) => f.title.includes('No MTA-STS'))).toBe(false);
+		expect(r.score).toBeLessThan(60);
+		expect(r.passed).toBe(false);
+	});
+});
