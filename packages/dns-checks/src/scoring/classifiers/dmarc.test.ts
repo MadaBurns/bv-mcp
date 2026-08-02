@@ -85,4 +85,59 @@ describe('classifyDmarc', () => {
 		const f = classifyDmarc({ recordCount: 1, policy: 'reject', np: 'none', inheritedFromParent: true, rua: 'mailto:dmarc@example.com' });
 		expect(f.some((x) => x.title === 'Non-existent subdomains spoofable (np=none)')).toBe(false);
 	});
+
+	describe('subdomain / org-domain enforcement asymmetry', () => {
+		const asymmetric = {
+			recordCount: 1,
+			policy: 'none',
+			domain: 'billing.example.com',
+			sp: 'none',
+			inheritedFromParent: true,
+			orgPolicy: 'reject',
+			orgDomain: 'example.com',
+			rua: 'mailto:dmarc@example.com',
+		} as const;
+
+		it('names the parent-enforcing / subdomain-open asymmetry in the detail', () => {
+			const f = classifyDmarc({ ...asymmetric });
+			const none = f.find((x) => x.title === 'DMARC policy set to none');
+			expect(none).toBeDefined();
+			expect(none?.detail).toContain('sp=none');
+			expect(none?.detail).toContain('example.com');
+			expect(none?.detail).toContain('billing.example.com');
+			expect(none?.detail).toMatch(/asymmetric/i);
+		});
+
+		it('keeps the title and severity unchanged (downstream matchers + no score change)', () => {
+			const f = classifyDmarc({ ...asymmetric });
+			const none = f.find((x) => x.title === 'DMARC policy set to none');
+			expect(none?.severity).toBe('medium');
+			expect(none?.title).toBe('DMARC policy set to none');
+		});
+
+		it('emits exactly one policy finding — no second finding that would double-count the penalty', () => {
+			const f = classifyDmarc({ ...asymmetric });
+			expect(f.filter((x) => x.title === 'DMARC policy set to none')).toHaveLength(1);
+			expect(f.some((x) => x.title === 'Subdomain policy weaker than parent policy')).toBe(false);
+		});
+
+		it('keeps the generic wording when the org domain is NOT enforcing (p=none, sp=none)', () => {
+			const f = classifyDmarc({ ...asymmetric, orgPolicy: 'none' });
+			const none = f.find((x) => x.title === 'DMARC policy set to none');
+			expect(none?.detail).toContain('only monitors');
+			expect(none?.detail).not.toMatch(/asymmetric/i);
+		});
+
+		it('keeps the generic wording on an organizational-domain scan with p=none', () => {
+			const f = classifyDmarc({ recordCount: 1, policy: 'none', domain: 'example.com' });
+			const none = f.find((x) => x.title === 'DMARC policy set to none');
+			expect(none?.detail).toContain('only monitors');
+			expect(none?.detail).not.toMatch(/asymmetric/i);
+		});
+
+		it('recognises an enforcing parent at p=quarantine too', () => {
+			const f = classifyDmarc({ ...asymmetric, orgPolicy: 'quarantine' });
+			expect(f.find((x) => x.title === 'DMARC policy set to none')?.detail).toMatch(/asymmetric/i);
+		});
+	});
 });

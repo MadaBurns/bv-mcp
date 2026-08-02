@@ -37,6 +37,15 @@ export interface DmarcFacts {
 	t?: string;
 	/** True when this is a subdomain scan whose policy was inherited from an ancestor (caller-resolved tree-walk). Default false = organizational-domain scan. */
 	inheritedFromParent?: boolean;
+	/**
+	 * The organizational domain's own `p=` token, on an inherited (subdomain) scan.
+	 * Distinct from `policy`, which on such a scan is the *effective* policy (`sp` falling
+	 * back to `p`). Lets the classifier report the parent-enforcing / subdomain-open
+	 * asymmetry explicitly. `undefined` on organizational-domain scans.
+	 */
+	orgPolicy?: string;
+	/** The ancestor name the DMARC record was actually found at, on an inherited scan. `undefined` on organizational-domain scans. */
+	orgDomain?: string;
 	/** Third-party aggregators in `rua=` (resolved by the caller). Empty when none. */
 	aggregators?: string[];
 	/** Invalid `rua=` URIs (resolved by the caller). Empty when none. */
@@ -104,12 +113,24 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 			),
 		);
 	} else if (policy === 'none') {
+		// Asymmetry case: a subdomain was scanned DIRECTLY, and the organizational domain it
+		// inherits from is itself enforcing while handing this child `sp=none`. The effective
+		// policy really is "none", so the severity and title are unchanged (both are load-bearing
+		// downstream — the non-mail downgrade and the impersonation escalation match the title
+		// exactly, and maturity staging / rollout planning match it by substring). Only the
+		// DETAIL changes, and only to name the shape of the risk: the parent is locked down
+		// while this specific child is wide open, which is precisely why it gets picked.
+		const parentEnforcing = facts.inheritedFromParent === true && (facts.orgPolicy === 'quarantine' || facts.orgPolicy === 'reject');
+		const self = facts.domain ?? '<domain>';
+		const org = facts.orgDomain ?? 'the organizational domain';
 		findings.push(
 			createFinding(
 				'dmarc',
 				'DMARC policy set to none',
 				'medium',
-				`DMARC policy is "none" which only monitors but does not reject or quarantine spoofed emails. Consider upgrading to "quarantine" or "reject". (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
+				parentEnforcing
+					? `This subdomain has no DMARC enforcement: it publishes no DMARC record of its own and inherits sp=none from ${org}, whose own policy is "p=${facts.orgPolicy}". The enforcement is asymmetric — mail claiming to be from ${org} is rejected or quarantined, while mail claiming to be from ${self} is not, which is exactly why an attacker would pick the subdomain. Set sp=quarantine or sp=reject on ${org}, or publish a dedicated DMARC record at _dmarc.${self}. (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`
+					: `DMARC policy is "none" which only monitors but does not reject or quarantine spoofed emails. Consider upgrading to "quarantine" or "reject". (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
 			),
 		);
 	} else if (policy === 'quarantine') {

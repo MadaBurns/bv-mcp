@@ -844,11 +844,13 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		title: 'TLS-RPT Reporting Absent',
 		severity: 'medium',
 		explanation:
-			'A medium-severity TLS-RPT issue was detected — typically no SMTP TLS Reporting (RFC 8460) record at _smtp._tls.<domain>. Without it you receive no reports when senders fail to negotiate TLS or when MTA-STS enforcement fails.',
-		impact: 'TLS downgrade attempts and MTA-STS policy failures against inbound mail go unobserved.',
-		adverseConsequences: 'Delivery-security regressions and active downgrade attacks can persist undetected.',
+			'A medium-severity TLS-RPT issue was detected — typically no SMTP TLS Reporting (RFC 8460) record at _smtp._tls.<domain>. TLS-RPT is operational telemetry, not an enforcement control: it does not block anything, it tells you when senders failed to negotiate TLS or when your MTA-STS policy could not be applied.',
+		impact:
+			'Inbound TLS negotiation failures and MTA-STS policy failures are not reported back to you, so there is no feedback loop for operating MTA-STS or DANE.',
+		adverseConsequences:
+			'An MTA-STS or DANE rollout is run blind — breakage surfaces only as mail that silently fails to arrive, which is the usual reason enforcement gets rolled back instead of fixed. The security benefit is indirect: reports are what make it safe to keep the enforcing controls turned on.',
 		recommendation:
-			'Publish a TXT record at _smtp._tls.<domain> such as: v=TLSRPTv1; rua=mailto:tls-reports@<domain>, and monitor the reports.',
+			'Publish a TXT record at _smtp._tls.<domain> such as: v=TLSRPTv1; rua=mailto:tls-reports@<domain>, and review the reports when moving MTA-STS from testing to enforce.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc8460'],
 	},
 	TLSRPT_LOW: {
@@ -856,8 +858,9 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		severity: 'low',
 		explanation:
 			'A low-severity TLS-RPT observation — a reporting record exists but a detail (such as the reporting destination) could be improved.',
-		impact: 'Reporting visibility is present but could be more complete.',
-		adverseConsequences: 'Some delivery-security telemetry may be missed.',
+		impact: 'Reporting coverage is present but incomplete, so some TLS/MTA-STS failure telemetry may not reach you.',
+		adverseConsequences:
+			'Delivery-security regressions may take longer to notice. TLS-RPT blocks nothing on its own — its value is the operational feedback that keeps MTA-STS and DANE safely enforced.',
 		recommendation: 'Ensure the rua= destination is monitored and correctly formatted.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc8460'],
 	},
@@ -869,7 +872,8 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		explanation:
 			'A high-severity BIMI logo problem was detected — for example the SVG logo contains prohibited <script> elements. BIMI logos must be script-free SVG Tiny PS; mail clients will reject a non-conformant or unsafe logo.',
 		impact: 'The brand logo will be rejected by mail clients, and a script-bearing SVG is a content-safety concern.',
-		adverseConsequences: 'BIMI provides no brand-trust benefit, and serving an unsafe SVG could expose downstream consumers to script content.',
+		adverseConsequences:
+			'BIMI provides no brand-presentation benefit, and serving an unsafe SVG could expose downstream consumers to script content. Note that BIMI is a brand-presentation control: there is no controlled evidence that it reduces phishing susceptibility, and a verified logo renders on any message that passes DMARC for the domain — including mail sent from a compromised mailbox.',
 		recommendation:
 			'Serve a valid SVG Tiny PS logo with no <script> elements over HTTPS, and re-validate it against the BIMI logo profile.',
 		references: ['https://datatracker.ietf.org/doc/html/draft-blank-ietf-bimi', 'https://bimigroup.org/'],
@@ -880,7 +884,8 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		explanation:
 			'A medium-severity BIMI issue was detected — for example a BIMI record present but DMARC not enforcing (p=quarantine/reject is required for BIMI to display), a logo that is too large (>32 KB), a wrong Content-Type, or a missing SVG Tiny PS baseProfile.',
 		impact: 'The brand logo will not display at supporting mailbox providers despite a BIMI record being present.',
-		adverseConsequences: 'The intended brand-trust benefit of BIMI is not realized until the prerequisite (enforcing DMARC) and logo requirements are met.',
+		adverseConsequences:
+			'The intended brand-presentation benefit of BIMI is not realized until the prerequisite (enforcing DMARC) and logo requirements are met. Note that BIMI is a brand-presentation control: there is no controlled evidence that it reduces phishing susceptibility, and a verified logo renders on any message that passes DMARC for the domain — including mail sent from a compromised mailbox.',
 		recommendation:
 			'Bring DMARC to an enforcing policy (p=quarantine or p=reject), and serve a conformant SVG Tiny PS logo (<32 KB, correct Content-Type, baseProfile="tiny-ps").',
 		references: ['https://datatracker.ietf.org/doc/html/draft-blank-ietf-bimi', 'https://bimigroup.org/'],
@@ -891,7 +896,8 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		explanation:
 			'A low-severity BIMI observation — the record is largely in place but a detail (such as an optional VMC or logo metadata) could be improved.',
 		impact: 'BIMI works but is not at its most complete configuration.',
-		adverseConsequences: 'Minor reduction in display coverage across providers.',
+		adverseConsequences:
+			'Minor reduction in display coverage across providers. Note that BIMI is a brand-presentation control: there is no controlled evidence that it reduces phishing susceptibility, and a verified logo renders on any message that passes DMARC for the domain — including mail sent from a compromised mailbox. Weigh the VMC cost against that, and keep BIMI as a brand-presentation investment rather than an anti-phishing one.',
 		recommendation: 'Consider adding a VMC and ensuring the logo metadata meets each target provider requirements.',
 		references: ['https://bimigroup.org/'],
 	},
@@ -1024,12 +1030,14 @@ export const CATEGORY_FALLBACK_IMPACT: Record<string, ImpactNarrative> = {
 		adverseConsequences: 'Outbound mail is more likely to be greylisted, throttled, or rejected by strict receivers.',
 	},
 	TLSRPT: {
-		impact: 'TLS negotiation failures and MTA-STS policy failures for inbound mail are not reported, reducing delivery-security visibility.',
-		adverseConsequences: 'Downgrade attacks and policy regressions can persist undetected, delaying incident response.',
+		impact: 'TLS negotiation failures and MTA-STS policy failures for inbound mail are not reported, so there is no feedback loop for operating MTA-STS or DANE.',
+		adverseConsequences:
+			'Delivery-security regressions surface as silently undelivered mail rather than as a report. TLS-RPT is telemetry, not enforcement — it blocks nothing itself, but without it an enforcing transport policy is operated blind and tends to get rolled back after an outage.',
 	},
 	BIMI: {
-		impact: 'No verified brand logo is displayed on authenticated mail, weakening visual trust signals in the inbox.',
-		adverseConsequences: 'Reduced brand recognizability makes legitimate mail easier to overlook and impersonation harder to spot.',
+		impact: 'No verified brand logo is displayed on authenticated mail, so the domain gains no branded inbox presentation.',
+		adverseConsequences:
+			'Brand recognizability in the inbox is reduced. BIMI is a brand-presentation control: there is no controlled evidence that it reduces phishing susceptibility, and a verified logo renders on any message that passes DMARC for the domain — including mail sent from a compromised mailbox.',
 	},
 	RBL: {
 		impact: 'Mail server IPs are listed on one or more DNS blocklists, likely degrading email deliverability.',
