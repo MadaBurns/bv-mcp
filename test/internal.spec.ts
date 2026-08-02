@@ -597,6 +597,22 @@ describe('Internal service binding routes', () => {
 				if (url.startsWith('https://example.com') || url.startsWith('http://example.com')) {
 					return Promise.resolve(httpResponse('', 200));
 				}
+				// NS and A must resolve: the package's derived non-resolving floor
+				// reads all-empty DNS as an unresolvable domain and abstains, which
+				// would null the numeric score this test asserts on.
+				if (/[?&]type=NS(&|$)/.test(url)) {
+					return Promise.resolve(
+						createDohResponse(
+							[{ name: 'example.com', type: 2 }],
+							[{ name: 'example.com', type: 2, TTL: 300, data: 'ns1.example-dns.com.' }],
+						),
+					);
+				}
+				if (/[?&]type=A(&|$)/.test(url)) {
+					return Promise.resolve(
+						createDohResponse([{ name: 'example.com', type: 1 }], [{ name: 'example.com', type: 1, TTL: 300, data: '192.0.2.10' }]),
+					);
+				}
 				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 1 }], []));
 			});
 

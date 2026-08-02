@@ -22,7 +22,14 @@ function mockScanResponses(options: { hasSpf?: boolean; hasDmarc?: boolean; hasD
 		// DoH requests
 		if (u.hostname.includes('cloudflare-dns') || u.hostname.includes('dns.google')) {
 			const name = u.searchParams.get('name') ?? '';
-			const type = Number(u.searchParams.get('type') ?? '0');
+			// lib/dns builds DoH URLs with LETTER types (`type=NS`), so a bare
+			// Number() parse leaves every branch below unmatched (NaN) and the whole
+			// scan runs on the default empty answers. Map only NS/A: the package's
+			// derived non-resolving floor needs the domain to look registered and
+			// delegated, while every other record type keeps its long-standing
+			// empty-answer behaviour this spec's assertions were written against.
+			const rawType = u.searchParams.get('type') ?? '0';
+			const type = rawType === 'NS' ? 2 : rawType === 'A' ? 1 : Number(rawType);
 
 			// TXT records
 			if (type === 16) {

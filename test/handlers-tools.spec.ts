@@ -552,6 +552,15 @@ describe('formatCheckResult - via handleToolsCall', () => {
 				}
 			}
 
+			// The apex must resolve: the package's derived non-resolving floor reads
+			// no-NS-AND-no-A as an unresolvable domain and abstains, which withholds
+			// the takeover-verification section this test asserts on.
+			if (/[?&]type=NS(&|$)/.test(url)) {
+				return Promise.resolve(
+					createDohResponse([{ name: 'example.com', type: 2 }], [{ name: 'example.com', type: 2, TTL: 300, data: 'ns1.example-dns.com.' }]),
+				);
+			}
+
 			return Promise.resolve(createDohResponse([], []));
 		});
 
