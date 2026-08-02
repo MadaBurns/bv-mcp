@@ -42,22 +42,39 @@ async function run(domain = 'example.com') {
 }
 
 describe('checkCaa — CAA reuse-window (TTL) staleness', () => {
-	it('does not fire at or below the 8-hour BR floor (TTL is irrelevant there)', async () => {
+	// Threshold is the 8-hour BR reuse-window FLOOR itself (28800s), and the comparison is
+	// STRICT: at or below the floor the floor dominates and the TTL widens nothing. An earlier
+	// revision used an arbitrary 24h; a 1,000-domain corpus (2026-08-03) observed a MAXIMUM CAA
+	// TTL of 21600s (6h) across 135 RRsets, so that threshold could never fire.
+	it('does not fire below the 8-hour BR floor (TTL is irrelevant there)', async () => {
+		mockCaa(ALL_TAGS, { ttl: 21600, ad: false });
+		const r = await run();
+		expect(r.findings.some((f) => /reuse window/i.test(f.title))).toBe(false);
+	});
+
+	it('does not fire exactly AT the 8-hour floor (boundary is inclusive-safe)', async () => {
 		mockCaa(ALL_TAGS, { ttl: 28800, ad: false });
 		const r = await run();
 		expect(r.findings.some((f) => /reuse window/i.test(f.title))).toBe(false);
 	});
 
-	it('does not fire between the 8-hour floor and the 24-hour threshold', async () => {
-		mockCaa(ALL_TAGS, { ttl: 43200, ad: false });
+	it('fires low just above the 8-hour floor, where the TTL starts to govern', async () => {
+		mockCaa(ALL_TAGS, { ttl: 28801, ad: false });
 		const r = await run();
-		expect(r.findings.some((f) => /reuse window/i.test(f.title))).toBe(false);
+		const f = r.findings.find((x) => /reuse window/i.test(x.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+		// window === the TTL itself, never the floor, once the TTL is strictly greater.
+		expect(f!.metadata).toMatchObject({ caaTtlSeconds: 28801, caaReuseWindowSeconds: 28801, caaReuseWindowFloorSeconds: 28800 });
 	});
 
-	it('does not fire exactly at the 24-hour threshold (boundary is inclusive-safe)', async () => {
-		mockCaa(ALL_TAGS, { ttl: 86400, ad: false });
+	it('fires low at 12 hours (previously silent under the arbitrary 24-hour threshold)', async () => {
+		mockCaa(ALL_TAGS, { ttl: 43200, ad: false });
 		const r = await run();
-		expect(r.findings.some((f) => /reuse window/i.test(f.title))).toBe(false);
+		const f = r.findings.find((x) => /reuse window/i.test(x.title));
+		expect(f).toBeDefined();
+		expect(f!.severity).toBe('low');
+		expect(f!.detail).toMatch(/43200s \(12 hours\)/);
 	});
 
 	it('fires low above 24 hours and reports the resulting window', async () => {

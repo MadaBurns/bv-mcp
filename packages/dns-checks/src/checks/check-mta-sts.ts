@@ -202,9 +202,12 @@ export async function checkMTASTS(
 				createFinding(
 					'mta_sts',
 					'No MTA-STS or TLS-RPT records found',
+					// Graded `medium`, NOT `missingControl: true` — this is the same ABSENCE
+					// condition as the single-record path, just the both-missing summary of it.
+					// See MTA_STS_ABSENCE_IS_GRADED_NOT_ZEROING in mta-sts-analysis.ts for the
+					// corpus evidence (96.5% of measured domains scored 0 on this category).
 					'medium',
 					`${domain} accepts inbound email (MX records present) but has neither MTA-STS nor TLS-RPT configured. Sending MTAs cannot enforce TLS or report failures for mail to this domain.`,
-					{ missingControl: true },
 				),
 			);
 		} else if (nonApex) {
