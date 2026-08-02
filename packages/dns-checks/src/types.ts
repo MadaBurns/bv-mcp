@@ -18,7 +18,13 @@ export type DNSQueryFunction = (domain: string, recordType: string, options?: { 
  */
 export interface RawDNSResponse {
 	AD?: boolean;
-	Answer?: Array<{ type: number; data: string }>;
+	/**
+	 * `TTL` is optional and additive: the Worker-side DoH adapters already pass the
+	 * raw `Answer` array through verbatim (whose entries carry `TTL`), so declaring
+	 * it here surfaces a field that was previously discarded by the `DNSQueryFunction`
+	 * (`string[]`) projection. Consumers that build responses by hand may omit it.
+	 */
+	Answer?: Array<{ type: number; data: string; TTL?: number }>;
 }
 
 /**
