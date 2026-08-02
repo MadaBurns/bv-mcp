@@ -15,6 +15,8 @@ import type { ScoringConfig } from './config';
 import { DEFAULT_SCORING_CONFIG } from './config';
 import { buildEvidenceNote, computeScanEvidence, isCheckMeasured, isEvidenceSufficient, EVIDENCE_SUFFICIENCY_THRESHOLD } from './evidence';
 import { computeGenericScore } from './generic';
+import type { DomainResolutionSignal } from './resolution';
+import { buildUnresolvableNote, isMeasurableDomain, resolveScanResolutionState } from './resolution';
 import type { GenericScoringContext, FindingSeverityCounts } from './generic';
 
 interface ImportanceProfile {
@@ -315,7 +317,28 @@ function buildGenericContext(
  * When a `DomainContext` is provided, uses profile-specific weights partitioned by CATEGORY_TIERS,
  * critical gap categories, and email bonus eligibility instead of defaults.
  */
-export function computeScanScore(results: CheckResult[], context?: DomainContext, config?: ScoringConfig): ScanScore {
+/** Per-scan inputs that are neither check results nor scoring policy. */
+export interface ScanScoreOptions {
+	/**
+	 * Explicit resolution signal from the caller's own apex probe.
+	 *
+	 * Accepts bv-mcp's orchestrator tri-state verbatim (`true` / `false` / `'broken'`) as
+	 * well as the package-native spellings. When supplied it WINS over the derived floor —
+	 * an apex probe is better evidence than inference from the roster.
+	 *
+	 * OPTIONAL BY DESIGN, and the guard does not depend on it: omitting it falls back to
+	 * {@link deriveResolutionState}. A guard that fires only on an explicit input is
+	 * silently disabled by a producer that forgets to pass it.
+	 */
+	resolution?: DomainResolutionSignal;
+}
+
+export function computeScanScore(
+	results: CheckResult[],
+	context?: DomainContext,
+	config?: ScoringConfig,
+	options?: ScanScoreOptions,
+): ScanScore {
 	// Only categories that produced a conclusive result appear here. A category that was NEVER
 	// run (absent from `results`) is "not measured", NOT a perfect 100 — seeding it to 100 both
 	// showed a misleading phantom score (a never-run category read as clean) and, via the generic
@@ -372,6 +395,36 @@ export function computeScanScore(results: CheckResult[], context?: DomainContext
 			findings: [],
 			summary: evidenceNote,
 			evidence,
+			evidenceInsufficient: true,
+			evidenceNote,
+		};
+	}
+
+	// --- Non-resolving domain gate ---
+	// Runs BEFORE any scoring work, because on a domain that does not resolve the check
+	// results are not weak evidence — they are anti-evidence. A dead name has no bad DNSSEC
+	// to find, no dangling CNAME to take over, no lax DANE record, so those checks score 100
+	// for the absence of problems only a real domain could have. No weighting of those
+	// numbers is correct, because the premise that they measure something is false.
+	//
+	// Explicit signal wins; otherwise the derived floor reads it off the roster, so a
+	// producer that forgets to pass one still gets the guard. See scoring/resolution.ts.
+	//
+	// Returns EMPTY categoryScores and findings, matching the reference implementation this
+	// generalizes (bv-mcp `buildNonResolvingResult`): the per-check numbers on a dead domain
+	// are fabricated passes, and laundering them through the score object invites a consumer
+	// to publish "dnssec: 100" for a name that does not exist. The caller still holds the raw
+	// results if it wants to display them as diagnostics.
+	const resolutionState = resolveScanResolutionState(results, options?.resolution);
+	if (!isMeasurableDomain(resolutionState)) {
+		const evidenceNote = buildUnresolvableNote(resolutionState as 'nxdomain' | 'unresolvable');
+		return {
+			overall: null,
+			grade: null,
+			categoryScores: {} as Record<CheckCategory, number>,
+			findings: [],
+			summary: evidenceNote,
+			evidence: computeScanEvidence(results),
 			evidenceInsufficient: true,
 			evidenceNote,
 		};
@@ -456,7 +509,7 @@ export interface ProfileAwareScanScore {
 
 export function computeProfileAwareScanScore(
 	results: CheckResult[],
-	options: { profile?: DomainContext['profile'] | 'auto'; config?: ScoringConfig } = {},
+	options: { profile?: DomainContext['profile'] | 'auto'; config?: ScoringConfig; resolution?: DomainResolutionSignal } = {},
 ): ProfileAwareScanScore {
 	const detectedContext = detectDomainContext(results);
 	const explicitProfile = options.profile && options.profile !== 'auto' ? options.profile : null;
@@ -473,7 +526,7 @@ export function computeProfileAwareScanScore(
 			};
 
 	return {
-		score: computeScanScore(results, context, options.config),
+		score: computeScanScore(results, context, options.config, { resolution: options.resolution }),
 		context,
 		profile: context.profile,
 		detectedProfile: detectedContext.profile,
