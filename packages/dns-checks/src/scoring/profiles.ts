@@ -6,9 +6,15 @@
  * Adapts importance weights based on detected domain purpose (mail-enabled,
  * enterprise mail, non-mail, web-only, minimal infrastructure).
  *
- * Phase 1: Auto-detection runs and reports the detected profile in the
- * structured result, but `auto` uses `mail_enabled` weights (identical to
- * today). Only explicit profile selection activates different weights.
+ * `auto` DOES apply the detected profile's own weights. `computeProfileAwareScanScore`
+ * (engine.ts) calls `getProfileWeights(detectedProfile, config)` on the auto path exactly as
+ * it does for an explicit profile — the two differ only in where the profile name came from
+ * (detection vs. the caller). The former Phase-1 note here, that `auto` scored with
+ * `mail_enabled` weights and only an explicit selection activated different ones, has been
+ * stale since `587f1f81` ("align profile-aware DNS scoring policy", #334).
+ *
+ * {@link PROFILE_WEIGHTS} below is the SINGLE source of profile weight values;
+ * `DEFAULT_SCORING_CONFIG.profileWeights` derives from it rather than restating it.
  */
 
 import type { CheckCategory, CheckResult } from '../types';

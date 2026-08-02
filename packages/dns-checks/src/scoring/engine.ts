@@ -24,8 +24,19 @@ interface ImportanceProfile {
 }
 
 /**
- * Scanner-aligned importance weighting for the checks currently supported by this MCP server.
- * @deprecated Use CORE_WEIGHTS and PROTECTIVE_WEIGHTS for three-tier scoring. Retained for backward compatibility.
+ * Per-category importance used for REMEDIATION ORDERING — not for scoring.
+ *
+ * Its only consumer is `src/tools/generate-fix-plan.ts`, which ranks findings by
+ * `IMPORTANCE_WEIGHTS[finding.category].importance` to decide what to fix first. No scoring
+ * path reads it: the three-tier score weights every category from `PROFILE_WEIGHTS` (via
+ * `getProfileWeights` / `DomainContext.weights`). Editing these numbers reshuffles a fix
+ * plan; it does not move a single score.
+ *
+ * The name is misleading, and the deprecation note that used to sit here — redirecting readers
+ * to the core/protective weight constants below — was doubly wrong: this table is live, and the
+ * two it pointed at are the dead ones.
+ *
+ * Left un-renamed deliberately: it is a published npm export with an external call site.
  */
 export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	spf: { importance: 10 },
@@ -57,7 +68,21 @@ export const IMPORTANCE_WEIGHTS: Record<CheckCategory, ImportanceProfile> = {
 	dnskey_strength: { importance: 1 },
 };
 
-/** Core-tier importance weights (SPF, DMARC, DKIM, DNSSEC, SSL). Used by the three-tier scoring formula. */
+/**
+ * Core-tier importance weights (SPF, DMARC, DKIM, DNSSEC, SSL).
+ *
+ * @deprecated NOT read at runtime — by anything. The doc comment this replaces asserted that
+ * the three-tier scoring formula consumed it. That was false: the formula weights categories
+ * from `DomainContext.weights` (i.e. `PROFILE_WEIGHTS` via `getProfileWeights`), and the only
+ * config-sourced fallback (`buildGenericContext`'s `context === undefined` branch) reads
+ * `ScoringConfig.coreWeights`, never this constant. A repo-wide search finds zero readers;
+ * the sole importers are the barrel re-exports (`scoring/index.ts`, `src/lib/scoring.ts`).
+ *
+ * Retained rather than deleted ONLY because `@blackveil/dns-checks` is a published npm
+ * package and this is part of its `./scoring` export surface — removal is a breaking change
+ * for external consumers and is a major-version decision, not a cleanup. Editing these
+ * numbers has no effect on any score. Use {@link PROFILE_WEIGHTS} / `ScoringConfig.profileWeights`.
+ */
 export const CORE_WEIGHTS: Record<string, number> = {
 	dmarc: 16,
 	dkim: 10,
@@ -67,7 +92,13 @@ export const CORE_WEIGHTS: Record<string, number> = {
 	authoritative_dns_infra: 0,
 };
 
-/** Protective-tier importance weights. Used by the three-tier scoring formula. */
+/**
+ * Protective-tier importance weights.
+ *
+ * @deprecated NOT read at runtime — carried the same false scoring-formula claim, and has the
+ * same zero-reader status, as {@link CORE_WEIGHTS}; see that doc for the full rationale and for
+ * why it is kept on the published surface rather than deleted.
+ */
 export const PROTECTIVE_WEIGHTS: Record<string, number> = {
 	subdomain_takeover: 4,
 	http_security: 3,
