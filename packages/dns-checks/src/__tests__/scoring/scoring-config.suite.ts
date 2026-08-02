@@ -254,11 +254,25 @@ export function defineScoringConfigSuite(s: ScoringModule): void {
 		});
 	});
 
-	describe('config profileWeights consistency', () => {
-		it('DEFAULT_SCORING_CONFIG.profileWeights matches PROFILE_WEIGHTS for all profiles', () => {
-			for (const profile of Object.keys(PROFILE_WEIGHTS) as Array<keyof typeof PROFILE_WEIGHTS>) {
+	describe('config profileWeights derive from PROFILE_WEIGHTS', () => {
+		// The values used to be restated as 324 literals in config.ts and hand-synced with
+		// profiles.ts; `DEFAULT_SCORING_CONFIG.profileWeights` now DERIVES from PROFILE_WEIGHTS,
+		// so drift is unrepresentable. These value assertions stay anyway — they are what proves
+		// the derivation actually produces the same numbers, and they are the dual-surface
+		// (source vs. built dist) check that a stale `dist/` can't slip past. The structural
+		// "no literals may come back" half lives in scoring-profile-weights-ssot.audit.test.ts.
+
+		it('is value-identical to PROFILE_WEIGHTS in BOTH directions for every profile', () => {
+			const profiles = Object.keys(PROFILE_WEIGHTS) as Array<keyof typeof PROFILE_WEIGHTS>;
+			expect(profiles.length).toBe(6);
+
+			for (const profile of profiles) {
 				const configWeights = DEFAULT_SCORING_CONFIG.profileWeights[profile];
 				const profileWeights = PROFILE_WEIGHTS[profile];
+
+				// Same key SET — a one-directional value loop would miss an extra/absent category.
+				expect(Object.keys(configWeights).sort(), `${profile}: key sets differ`).toEqual(Object.keys(profileWeights).sort());
+
 				for (const [key, value] of Object.entries(profileWeights)) {
 					expect(
 						configWeights[key as keyof typeof configWeights],
@@ -266,6 +280,87 @@ export function defineScoringConfigSuite(s: ScoringModule): void {
 					).toBe(value.importance);
 				}
 			}
+		});
+
+		it('survives a profileWeights override without mutating the shared default table', () => {
+			// The derived tables are built once at module load, so an override that merged
+			// in-place would silently repoint every later scan's weights.
+			const before = { ...DEFAULT_SCORING_CONFIG.profileWeights.mail_enabled };
+			parseScoringConfig(JSON.stringify({ profileWeights: { mail_enabled: { dnssec: 1 } } }));
+			expect(DEFAULT_SCORING_CONFIG.profileWeights.mail_enabled).toEqual(before);
+			expect(DEFAULT_SCORING_CONFIG.profileWeights.mail_enabled.dnssec).toBe(PROFILE_WEIGHTS.mail_enabled.dnssec.importance);
+		});
+	});
+
+	describe('inert SCORING_CONFIG keys are surfaced, not silently ignored', () => {
+		// Production ran a live SCORING_CONFIG that set only `coreWeights` — a key no
+		// profile-aware scan reads — and it changed nothing, undetectably, because the parse
+		// succeeded and the returned config really did carry the new numbers. The warning
+		// exists to make that class of no-op loud. It must never throw and never change what
+		// the config resolves to (fail-open is the doctrine for config here).
+
+		/** Collect warnings without touching console, so the assertion can't race a spy. */
+		function parseCapturingWarnings(json: string): { warnings: string[]; config: ReturnType<typeof parseScoringConfig> } {
+			const warnings: string[] = [];
+			const config = parseScoringConfig(json, { onWarn: (m) => warnings.push(m) });
+			return { warnings, config };
+		}
+
+		it('warns for a coreWeights-only config, naming the key AND profileWeights', () => {
+			const { warnings, config } = parseCapturingWarnings(JSON.stringify({ coreWeights: { dnssec: 7 } }));
+
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain('coreWeights');
+			expect(warnings[0]).toContain('profileWeights');
+
+			// Advisory only — the resolved config is unchanged by the warning.
+			expect(config.coreWeights.dnssec).toBe(7);
+		});
+
+		it('does NOT warn for a profileWeights config', () => {
+			const { warnings, config } = parseCapturingWarnings(JSON.stringify({ profileWeights: { mail_enabled: { dnssec: 7 } } }));
+
+			expect(warnings).toEqual([]);
+			expect(config.profileWeights.mail_enabled.dnssec).toBe(7);
+		});
+
+		it('does NOT warn for configs built only from keys the scan path DOES read', () => {
+			for (const effective of [
+				{ tierSplit: { core: 60, protective: 30, hardening: 10 } },
+				{ thresholds: { criticalGapCeiling: 70 } },
+				{ grades: { aPlus: 95 } },
+				{ baselineFailureRates: { dmarc: 0.5 } },
+			]) {
+				const { warnings } = parseCapturingWarnings(JSON.stringify(effective));
+				expect(warnings, `unexpected warning for ${JSON.stringify(effective)}`).toEqual([]);
+			}
+		});
+
+		it('names every inert key present, not just the first', () => {
+			const { warnings } = parseCapturingWarnings(
+				JSON.stringify({
+					weights: { spf: 15 },
+					coreWeights: { dnssec: 7 },
+					protectiveWeights: { mx: 5 },
+					providerDkimConfidence: { google: 0.5 },
+				}),
+			);
+			expect(warnings).toHaveLength(1);
+			for (const key of ['weights', 'coreWeights', 'protectiveWeights', 'providerDkimConfidence']) {
+				expect(warnings[0]).toContain(key);
+			}
+		});
+
+		it('is silent on the paths that return defaults outright', () => {
+			for (const raw of [undefined, '', '   ', 'not json', '[1,2,3]']) {
+				const warnings: string[] = [];
+				parseScoringConfig(raw as string | undefined, { onWarn: (m) => warnings.push(m) });
+				expect(warnings, `unexpected warning for ${JSON.stringify(raw)}`).toEqual([]);
+			}
+		});
+
+		it('never throws when no onWarn sink is supplied', () => {
+			expect(() => parseScoringConfig(JSON.stringify({ coreWeights: { dnssec: 7 } }))).not.toThrow();
 		});
 	});
 }
