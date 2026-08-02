@@ -10,7 +10,14 @@
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
-import { analyzeKeyStrength, consolidateSelectorProbeKeyStrengthFindings, getDkimTagValue } from './dkim-analysis';
+import {
+	analyzeHashRestriction,
+	analyzeKeyStrength,
+	analyzeServiceTypes,
+	consolidateSelectorProbeKeyStrengthFindings,
+	getDkimTagValue,
+	parseDkimFlags,
+} from './dkim-analysis';
 import { COMMON_DKIM_SELECTORS } from './dkim-selectors';
 import { attributeCnameChain } from './dkim-saas-attribution';
 
@@ -90,6 +97,31 @@ export async function checkDKIM(
 			foundSelectors.push(result.selector);
 			const delegatedTo = attributeCnameChain(result.chain);
 
+			// Multiple DKIM RRs published at one selector.
+			// RFC 6376 §3.6.2 (Resource Record Types for Key Storage) leaves verifier
+			// behaviour undefined when a selector resolves to
+			// more than one key record, so which key validates a signature is not something the
+			// domain owner controls. This is NOT the long-key-split case: the resolver layer
+			// rejoins the multiple character-strings of a single TXT RR before we see it, so two
+			// surviving DKIM-shaped entries here are two distinct RRs — the shape a stale key left
+			// behind by a half-finished rotation takes, and the shape an injected rogue key would
+			// take alongside the legitimate one.
+			if (result.records.length > 1) {
+				findings.push(
+					createFinding(
+						'dkim',
+						`Multiple DKIM records at one selector: ${result.selector}`,
+						'low',
+						`DKIM selector "${result.selector}" publishes ${result.records.length} separate key records. RFC 6376 §3.6.2 leaves it undefined which one a verifier uses, so signing outcomes are not deterministic — a stale key from an incomplete rotation can validate signatures the current key would reject. Publish exactly one key record per selector and use a fresh selector name to rotate.`,
+						{
+							recordCount: result.records.length,
+							selector: result.selector,
+							...(delegatedTo ? { delegatedTo } : {}),
+						},
+					),
+				);
+			}
+
 			// Validate each DKIM record
 			for (const record of result.records) {
 				const isRevoked = /p=\s*;/i.test(record) || /p=\s*$/i.test(record);
@@ -123,8 +155,12 @@ export async function checkDKIM(
 					);
 				}
 
-				// Check for testing mode
-				if (/t=y/i.test(record)) {
+				// Check for testing mode.
+				// Tag-aware parse rather than a bare /t=y/ scan: RFC 6376 §3.6.1 makes `t=` a
+				// colon-separated flag list in ANY order, so `t=s:y` is exactly as much test
+				// mode as `t=y:s` — the old substring test saw only the latter. It also stops a
+				// `t=y` substring inside the free-text `n=` notes tag from inventing a finding.
+				if (parseDkimFlags(record).testMode) {
 					findings.push(
 						createFinding(
 							'dkim',
@@ -252,16 +288,12 @@ export async function checkDKIM(
 					}
 				}
 
-				// Check for deprecated SHA-1 hash algorithm (RFC 8301)
-				// h= tag restricts which hash algorithms are accepted for this key.
-				// If only sha1 is listed (no sha256), the key cannot verify modern DKIM signatures.
-				const hashTag = getDkimTagValue(record, 'h');
-				if (hashTag) {
-					const hashAlgs = hashTag
-						.split(':')
-						.map((h) => h.trim().toLowerCase())
-						.filter(Boolean);
-					if (hashAlgs.length > 0 && !hashAlgs.includes('sha256') && hashAlgs.includes('sha1')) {
+				// Check the h= hash-algorithm restriction (RFC 8301).
+				// h= restricts which hash algorithms this key will verify. Three unhealthy
+				// shapes, only the first of which was previously detected.
+				const hashRestriction = analyzeHashRestriction(record);
+				if (hashRestriction) {
+					if (hashRestriction.kind === 'sha1-only') {
 						findings.push(
 							createFinding(
 								'dkim',
@@ -272,7 +304,56 @@ export async function checkDKIM(
 								`DKIM selector "${result.selector}" only accepts SHA-1 signatures (h=sha1). RFC 8301 §3.1 states SHA-1 MUST NOT be used and such signatures have permanently failed evaluation. Add sha256 to the h= tag or remove the restriction.`,
 							),
 						);
+					} else if (hashRestriction.kind === 'no-sha256') {
+						findings.push(
+							createFinding(
+								'dkim',
+								`Hash restriction excludes SHA-256: ${result.selector}`,
+								'medium',
+								`DKIM selector "${result.selector}" restricts acceptable hash algorithms to "${hashRestriction.algorithms.join(':')}", which omits sha256. RFC 8301 §3.2 makes rsa-sha256 the mandatory-to-implement algorithm, so conforming signers and verifiers are turned away by this key. Add sha256 to the h= tag or drop the restriction.`,
+								{
+									hashAlgorithms: hashRestriction.algorithms,
+									selector: result.selector,
+									...(delegatedTo ? { delegatedTo } : {}),
+								},
+							),
+						);
+					} else {
+						findings.push(
+							createFinding(
+								'dkim',
+								`SHA-1 permitted alongside SHA-256: ${result.selector}`,
+								'low',
+								`DKIM selector "${result.selector}" advertises "${hashRestriction.algorithms.join(':')}", accepting SHA-1 in addition to SHA-256. Modern signatures still verify, but the key tells verifiers it will honour a hash RFC 8301 §3.1 prohibits — an avoidable downgrade surface. Remove sha1 from the h= tag.`,
+								{
+									hashAlgorithms: hashRestriction.algorithms,
+									selector: result.selector,
+									...(delegatedTo ? { delegatedTo } : {}),
+								},
+							),
+						);
 					}
+				}
+
+				// Check the s= service-type restriction (RFC 6376 §3.6.1, §6.1.2).
+				// A list that admits neither "email" nor the "*" wildcard obliges verifiers to
+				// ignore the key for mail — the record looks healthy in DNS while the selector
+				// is inert for the one service it was almost certainly published to serve.
+				const serviceTypes = analyzeServiceTypes(record);
+				if (serviceTypes && !serviceTypes.coversEmail) {
+					findings.push(
+						createFinding(
+							'dkim',
+							`Service type excludes email: ${result.selector}`,
+							'medium',
+							`DKIM selector "${result.selector}" declares s=${serviceTypes.services.join(':')}, which admits neither "email" nor the "*" wildcard. RFC 6376 §6.1.2 obliges a verifier to ignore this key when validating mail, so signatures made with it do not authenticate. Set s=email or s=* (the default).`,
+							{
+								selector: result.selector,
+								serviceTypes: serviceTypes.services,
+								...(delegatedTo ? { delegatedTo } : {}),
+							},
+						),
+					);
 				}
 			}
 		}
