@@ -4,6 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.41.0] - 2026-08-03
+
+**Scoring model 1.5.0 → 1.6.0. `@blackveil/dns-checks` 1.9.0 → 1.10.0** (package scoring behaviour changed, so `PARITY_CORPUS_VERSION` moves in lockstep and the bv-web-prod tarball needs re-vendoring).
+
+Both changes here were driven by a **1000-domain stratified measurement** of the live model rather than by argument — a Tranco-derived corpus spanning four popularity bands, 154 TLDs, and four detected profiles, scanned locally at model 1.5.0 with zero attrition.
+
+### Changed
+
+- **MTA-STS absence is now graded, not category-zeroing — most domains score HIGHER.** Across the corpus, `mta_sts` had a mean score of **3.3 with 96.5% of measured domains scoring exactly zero**. A control that virtually nobody passes is a flat penalty, not a discriminator: it separated no domains while consuming 3 of ~80 base points and zeroing its own category. Independent research found no documented incidents attributable to a missing MTA-STS policy and a ~29.6% misconfiguration rate among adopters. Absence now behaves like CAA, SVCB-HTTPS and TLS-RPT, which deliberately do not set `missingControl` for exactly this reason. **The weight (3), the severity, and the tier are unchanged** — only the zeroing behaviour. Deployed-but-broken MTA-STS is untouched: a bad `version:`, a missing or `none` `mode:`, an uncovered MX set, and an unfetchable policy all continue to emit confident graded findings, and a test now locks that boundary. Measured impact on a 150-domain resample, restricted to the 141 domains where no check's status changed between runs: mean **+1.73**, median +2, **nothing moved down**, maximum gain +4, and **14 domains (9.9%) crossed a NIST band — every one upward** (C→B 9, D→C 3, B→A 1, F→D 1). (#610)
+- **CAA long-TTL threshold corrected to the CA/Browser Forum floor.** It shipped in 3.40.0 at 24h, which was a guess with an arbitrary buffer. Direct measurement of all 161 CAA-publishing corpus domains found 135 RRsets with a **maximum TTL of 21600s (6h)** — and since the BR rule permits issuing within the record's TTL *or* 8 hours, whichever is **greater**, the 8h floor dominated every observed TTL and the finding could not fire by construction. The threshold is now the 28800s floor itself, so the finding fires only when a TTL genuinely extends the reuse window beyond it. It will still fire very rarely; that is a property of real-world CAA TTLs, not a dead detector, and the code comment records the measured basis so it is not re-tuned. (#610)
+
 ## [3.40.0] - 2026-08-03
 
 **Scoring model 1.4.0 → 1.5.0.** Three new detection families measure defects that were previously invisible. No weight, tier, grade band, severity penalty, missing-control rule, or profile-detection rule changed — but scores move, and a domain may move in **either** direction, because two DKIM parser fixes also remove false positives. Consumers comparing two scans should read `scoringModelVersion` before attributing a delta to the domain. (#607)
