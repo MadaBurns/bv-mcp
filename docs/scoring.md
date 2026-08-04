@@ -29,16 +29,20 @@ Categories are classified into three tiers with distinct scoring mechanics.
 
 Controls whose absence creates direct, exploitable risk. Missing-control rule applies (confidence-gated).
 
-| Category | Weight |
+| Category | Weight (`mail_enabled`) |
 | --- | ---: |
-| DMARC | 22 |
-| DKIM | 16 |
+| DMARC | 16 |
+| DKIM | 10 |
 | SPF | 10 |
-| DNSSEC | 7 |
-| SSL | 5 |
+| DNSSEC | 10 |
+| SSL | 8 |
 | Authoritative DNS Infrastructure | 0 |
 
-> These are production weights set via `SCORING_CONFIG` env var. Code defaults (when `SCORING_CONFIG` is absent): DMARC 16, DKIM 10, SPF 10, DNSSEC 10, SSL 8, Authoritative DNS Infrastructure 0. The authoritative DNS category is core for classification and display, but it is weighted to 0 in normal mail/web profiles so raw infrastructure evidence does not shift ordinary `scan_domain` scores unless the dedicated profile is selected.
+> **Core weights are per-profile.** The table shows the default `mail_enabled` values from `PROFILE_WEIGHTS` (`packages/dns-checks/src/scoring/profiles.ts`), which is the single source of weight values — `scan_domain` always scores through one of the six profile tables. Other profiles differ: DMARC is 20 in `enterprise_mail` and 0 in `web_only`, and DNSSEC ranges from 5 (`minimal`) to 20 (`authoritative_dns_infra`). A weight is only meaningful alongside the profile that selected it.
+>
+> **Correction (2026-08):** an earlier revision listed a different set here (DMARC 22, DKIM 16, DNSSEC 7, SSL 5) as "production weights set via `SCORING_CONFIG`". Those were a `coreWeights` override, and `coreWeights` is **not read on the `scan_domain` path**: `buildGenericContext()` consults it only in the branch taken when no domain context is supplied, and `scan_domain` always supplies one. Such an override parses, validates, and changes the effective-config hash while changing no score. Weight overrides must be expressed as `SCORING_CONFIG` → `profileWeights.<profile>`; `coreWeights`/`protectiveWeights` survive only because `ScoringConfig` is a published npm surface, and an inert key now emits a warning.
+>
+> The authoritative DNS category is core for classification and display, but it is weighted 0 in every profile except `authoritative_dns_infra` (where it is 40), so raw infrastructure evidence does not shift ordinary `scan_domain` scores unless the dedicated profile is selected.
 
 **Confidence gate**: `scoreIndicatesMissingControl()` only fires for `deterministic`/`verified` confidence findings. Heuristic "not found" results from selector probing do not zero the category.
 
@@ -80,11 +84,11 @@ Active defenses against known attack vectors.
 | Lookalikes | 2 |
 | Shadow Domains | 2 |
 
-> This table is the flat `protectiveWeights` map (sums to 23). `DANE-HTTPS` and `SVCB-HTTPS` are also protective-tier in `CATEGORY_TIERS`, but their weights are carried per-profile in `PROFILE_WEIGHTS` rather than in the flat map.
+> These are the default `mail_enabled` protective weights; they happen to match the legacy flat `protectiveWeights` map (which sums to 23 and, like `coreWeights`, is not read on the scan path). Protective weights are per-profile too. `DANE-HTTPS` (2 in `mail_enabled`) and `SVCB-HTTPS` (1) are also protective-tier in `CATEGORY_TIERS`, but their weights are carried only in `PROFILE_WEIGHTS`, which is why they are absent from the flat map.
 
 ### Hardening (10% of score)
 
-Bonus-only defense-in-depth. Each passed category adds ~1.4 points. Never subtracts from the overall score. Uses `result.passed` (not raw score) to determine pass/fail — this means checks with `missingControl: true` metadata or `scoreIndicatesMissingControl()` detection do not contribute hardening bonus even if their numeric score is >= 50.
+Bonus-only defense-in-depth. The 10-point tier is split evenly across the 10 hardening categories, so each passed category adds ~1 point (a category excluded as inconclusive drops out of the denominator, raising the value of the rest). Never subtracts from the overall score. A category counts as passed only when a result exists, `result.passed` is true, and `result.score >= 50` — so checks with `missingControl: true` metadata or `scoreIndicatesMissingControl()` detection do not contribute hardening bonus.
 
 Categories: DANE, BIMI, TLS-RPT, TXT Hygiene, MX Reputation, SRV, Zone Hygiene, Brand Discovery, Reverse DNS (PTR/FCrDNS), DNSKEY Strength.
 
@@ -116,7 +120,11 @@ Category score formula starts at `100` and deducts per finding:
 
 **DMARC `pct` Parsing**: The `pct` (percentage) parameter is parsed from DMARC records to determine the true enforcement context. If `pct < 100`, the enforcement is considered partial, which may affect how related findings (like SPF trust surface) are weighed.
 
-Source: `SEVERITY_PENALTIES` in `packages/dns-checks/src/scoring/model.ts` (re-exported via `src/lib/scoring.ts`).
+**SPF Trust-Surface Corroboration Rule**: an SPF `include:`/`redirect=` naming a known multi-tenant sending platform is reported at `info` severity (0 penalty) by default — shared sending infrastructure is common and not a misconfiguration in itself. The per-platform finding is raised to `medium`, and the "N shared platforms" summary (emitted only when more than one cataloged platform matches) to `high`, only when the domain's DMARC corroborates the exposure: enforcement short of `p=reject` at `pct=100` **and** relaxed alignment (`aspf`/`adkim` not both `s`). A missing DMARC record counts as corroborating; a failed DMARC lookup does not.
+
+Scoring model 1.7.0 added Mailjet to the platform catalog. A record whose only recognized shared sender is Mailjet previously produced no catalog match and therefore always read `info`; it now follows the same corroboration rule as the other cataloged platforms, so on a domain with weak DMARC enforcement and relaxed alignment it grades `medium` (the ordinary −15 on `spf`). Domains whose DMARC does not corroborate are unaffected. The affected population has not been measured against the scoring corpus.
+
+Source: `SEVERITY_PENALTIES` in `packages/dns-checks/src/scoring/model.ts` (re-exported via `src/lib/scoring.ts`); `analyzeTrustSurface()` and `MULTI_TENANT_PLATFORMS` in `packages/dns-checks/src/checks/spf-trust-surface.ts`.
 
 ## Missing-Control Rule
 
@@ -235,7 +243,7 @@ Scores are unchanged by the display scale — only the letter differs. bv-web-pr
 
 ### Phase 1 (Current)
 
-Auto-detection runs and is reported in the structured result (`scoringProfile`, `scoringSignals`), but `auto` mode does not pass a scoring context: it scores via the no-context path, which uses `config.coreWeights`/`config.protectiveWeights`. In an unconfigured deployment these equal the `mail_enabled` profile's core weights, so `auto` and explicit `mail_enabled` produce identical scores — but a `SCORING_CONFIG` `coreWeights` override (as in production) applies to the `auto`/no-context path **only**, not to explicit profiles (which read `config.profileWeights`). Only explicit `profile` parameter values activate profile weights and per-profile cache keys (`cache:<domain>:profile:<profile>`).
+Auto-detection runs, is reported in the structured result (`scoringProfile`, `scoringSignals`), and selects the weight table the domain is scored against: `scan_domain` always supplies a `DomainContext`, so weights come from `profileWeights` (defaults derived from `PROFILE_WEIGHTS`) on both the auto and the explicit path — never from `config.coreWeights`/`config.protectiveWeights`, which the scan path does not read at all. An explicit `profile` parameter overrides detection and adds a per-profile cache key (`cache:v<server-version>-dc<dns-checks-version>:<domain>:profile:<profile>`); the auto path uses the same key without the profile suffix.
 
 Detection priority: `non_mail`/`web_only` (no MX or Null MX) -> `mail_enabled` (MX DNS failure safe fallback) -> `enterprise_mail` (MX + provider + hardening) -> `mail_enabled` (MX, default) -> `minimal` (>50% failed override). The `authoritative_dns_infra` profile is explicit-only.
 
@@ -295,7 +303,7 @@ The scanner includes several layers of protection against transient variance:
 
 1. **DNSSEC AD flag confirmation**: When the primary resolver reports "DNSSEC validation failing", a confirmation probe is fired to Google DoH. If Google confirms AD=true, the check re-runs with the corrected flag. See `src/tools/check-dnssec.ts`.
 2. **HTTP security dual-fetch**: Two parallel HEAD requests are fired per domain, and the security headers are merged using union semantics before analysis. If a header appears in either response, it is counted as present. See `src/tools/check-http-security.ts`.
-3. **Transient zero retry**: Any check that returns `score=0` with `checkStatus='error'` (a thrown DNS or HTTPS exception caught by `safeCheck()`) is retried once with a fresh DNS cache. Up to 3 retries per scan, capped at 3 seconds of the 12 second scan budget. See `src/tools/scan-domain.ts`.
+3. **Transient zero retry**: Any check that returns `score=0` with `checkStatus='error'` (a thrown DNS or HTTPS exception caught by `safeCheck()`) is retried once with a fresh DNS cache. Up to 3 retries per scan, capped at 3 seconds of the 15-second scan budget (`SCAN_TIMEOUT_MS`, env-overridable and clamped to 5–30 s). See `src/tools/scan-domain.ts`.
 
 ### Observed stability
 
