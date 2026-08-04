@@ -10,7 +10,7 @@ import {
 	getUncoveredMxHostFindings,
 	matchesMxPattern,
 	shouldSummarizeMissingMailProtections,
-} from '../src/tools/mta-sts-analysis';
+} from '../packages/dns-checks/src/checks/mta-sts-analysis';
 import { createFinding } from '../src/lib/scoring';
 
 describe('mta-sts-analysis', () => {
@@ -58,6 +58,18 @@ describe('mta-sts-analysis', () => {
 		expect(getTlsRptRecordFindings(['v=TLSRPTv1;']).findings[0].title).toContain('missing rua');
 		expect(getTlsRptRecordFindings(['v=TLSRPTv1; rua=ftp://bad.example.com']).findings[0].severity).toBe('medium');
 		expect(getTlsRptRecordFindings(['v=TLSRPTv1; rua=mailto:tls@example.com']).findings).toHaveLength(0);
+	});
+
+	// Locks the scoring-model 1.6.0 decision at the source: absence in this category is a
+	// GRADED finding, never a category-zeroing missing control. The worker duplicate deleted
+	// alongside this change still set `missingControl: true` here, which would have zeroed
+	// `mta_sts` for any domain without TLS-RPT had it ever been wired up.
+	it('does not mark a missing TLS-RPT record as a category-zeroing missing control', () => {
+		const initial = getTlsRptRecordFindings([]).findings;
+		expect(initial[0].metadata?.missingControl).toBeUndefined();
+
+		const finalized = finalizeMissingTlsRptRecordFinding(initial, 'example.com');
+		expect(finalized[0].metadata?.missingControl).toBeUndefined();
 	});
 
 	it('summarizes fully missing mail protections only without DNS errors', () => {
