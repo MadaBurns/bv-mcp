@@ -78,8 +78,18 @@
  *   floor (the only non-arbitrary crossover — below it the floor dominates); the same corpus
  *   observed a maximum CAA TTL of 6h across 135 RRsets, so this finding fires ~never either
  *   way and no score moves because of it.
+ * - 1.7.0 — Mailjet joins the core SPF trust-surface catalog, so its trust-surface finding
+ *   now participates in the existing weak-DMARC corroboration rule instead of always reading
+ *   `info`. The worker post-processor reconstructs its DMARC context from the CORE's trust-surface
+ *   finding metadata and falls back to no-corroboration when the core recognised nothing; a
+ *   Mailjet-only SPF record previously produced no core finding, so it always took that fallback.
+ *   With Mailjet cataloged, a Mailjet include on a domain with `p=none` and relaxed alignment now
+ *   surfaces as `medium` (ordinary −15 severity penalty on `spf`) rather than `info` — the same
+ *   treatment the other 18 cataloged platforms already received. Domains with enforcing DMARC are
+ *   unaffected. No weight, tier, grade band, severity penalty, missing-control rule or
+ *   profile-detection rule changed. The affected population is unmeasured against the corpus.
  */
-export const SCORING_MODEL_VERSION = '1.6.0';
+export const SCORING_MODEL_VERSION = '1.7.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
