@@ -35,13 +35,24 @@ Runtime override path: `SCORING_CONFIG` env (JSON: `weights`, `profileWeights`, 
 
 ## Rules that bite (verify against these, don't reinvent)
 
-- **`passed` = `score >= 50 && !hasMissingControl`.** A missing control zeroes the category. Checks that emit `missingControl: true`: CAA, DNSSEC, HTTP Security, MTA-STS, MX, SVCB-HTTPS, NS, Zone Hygiene, BIMI, DANE, TLS-RPT.
+- **`passed` = `score >= 50 && !hasMissingControl`.** A missing control zeroes the category. Checks whose ABSENCE emits `missingControl: true`: **HTTP Security, MX, NS, Zone Hygiene, BIMI, DANE** — and that is the whole list. **CAA, MTA-STS, SVCB-HTTPS and TLS-RPT deliberately do NOT**: absence there is a graded finding, not a category-zeroing missing control. MTA-STS moved onto that deliberately-not list in scoring model 1.6.0 after a 1,000-domain corpus measured it at mean 3.3 with 96.5% of measured domains at exactly 0 — a control almost nobody deploys is a flat constant penalty, not a discriminator (rationale block `MTA_STS_ABSENCE_IS_GRADED_NOT_ZEROING` in `checks/mta-sts-analysis.ts`). **DNSSEC is the nuanced one**: absence is a `high` Core penalty via a fixed `penaltyOverride: 40` (category → 60), NOT a zeroing missing control, but a *broken* chain (`DNSSEC chain of trust incomplete`, `DNSSEC validation failing`) DOES set the flag. Verify with a call-site grep before trusting any list, including this one — `grep -rn 'missingControl: true'` also matches the COMMENTS that explain why a check declines to set it, which is exactly how MTA-STS ends up looking like an emitter when it isn't.
 - **Confidence gate** — `scoreIndicatesMissingControl()` fires only for `deterministic`/`verified`. A *heuristic* DKIM "not found" must NOT zero the category.
 - **Inconclusive ≠ failure.** Timeout/error checks (`checkStatus`) are **excluded** from the score (collected as `transientFailures`, score renormalized) and shown `n/a`. A category absent from `categoryScores` means "couldn't measure", not 0. Don't "fix" this by scoring it 0.
 - **Severity penalties**: C −40, H −25, M −15, L −5, Info 0.
 - **Grades**: A+ 92+, A 87–91, B+ 82–86, B 76–81, C+ 70–75, C 63–69, D+ 56–62, D 50–55, F <50.
 - **Email bonus**: SPF ≥57, DKIM not deterministically missing, DMARC present → +5/+3/+2 by DMARC score.
 - **Maturity staging** (`computeMaturityStage`, 0–4): score caps stage — F → ≤2, D/D+ → ≤3. Stage 3 doesn't require DKIM.
+
+## ⚠️ The worker keeps a DUPLICATE SPF trust-surface catalog — core edits there are not severity-neutral
+
+`packages/dns-checks/src/checks/spf-trust-surface.ts` (`MULTI_TENANT_PLATFORMS`) has a **second copy in the worker** at `src/tools/spf-trust-surface.ts`, and `augmentTrustSurface()` in `src/tools/check-spf.ts` **replaces** the core's trust-surface findings with worker-derived ones (it filters on `metadata.trustSurface === true`, so the two do NOT stack). Two consequences that have both bitten:
+
+1. **A platform recognized worker-side is NOT recognized by direct package consumers.** bv-web-prod calls the package's `checkSPF`, not the bv-mcp worker wrapper, so a worker-only catalog entry leaves it under-counting the trust surface. This was #572: Mailjet landed worker-side in #570 and sat missing from the core until 3.42.0, and the core had **no trust-surface test at all**, so nothing tripped on the drift.
+2. **Adding a platform to the CORE catalog changes SEVERITIES, not just counts.** `augmentTrustSurface` reconstructs its DMARC context from `coreTrustFindings[0]?.metadata` and falls back to no-corroboration (`info`) when the core recognized nothing. So before a platform is cataloged core-side, a record naming only that platform always took the fallback and read `info`; after, the core supplies real `dmarcCorroborated`/`dmarcPolicy` metadata and the same record grades **`medium` under `p=none` + relaxed alignment** — the ordinary −15 on `spf`. Treat any core catalog addition as a scoring change: bump `SCORING_MODEL_VERSION`, and say plainly in the CHANGELOG whether the affected population was measured against the corpus.
+
+**The same trap has a DEAD variant that will fool a grep.** `src/tools/mta-sts-analysis.ts` is a stale worker duplicate of the package's `checks/mta-sts-analysis.ts`, and it still emits `missingControl: true` on a `mta_sts`-category "TLS-RPT record missing" finding — i.e. it contradicts the model-1.6.0 decision above. It is **not live**: `src/tools/check-mta-sts.ts` imports `checkMTASTS` from `@blackveil/dns-checks`, and nothing in `src/` imports the local copy — only `test/mta-sts-analysis.spec.ts` keeps it alive. So it changes no score today, but any audit that greps `src/tools/` for scoring behaviour will read it as live. Confirm which module a check actually imports before drawing a conclusion from a duplicate filename.
+
+Emission threshold to keep in mind if you touch the counting rule: the core emits its summary only at `matchedPlatforms.length > 1`, so counting unrecognized broad senders (the worker's heuristic, deliberately NOT in the core as of 3.42.0) would move that threshold and re-grade corpus-wide — an operator call, not a config edit.
 
 ## Adaptive weights (optional layer)
 
@@ -61,6 +72,8 @@ If you changed a weight, expect golden/snapshot score assertions to move — rev
 - Changed `CATEGORY_DISPLAY_WEIGHTS` and expected the score to move → that's display-only; change `IMPORTANCE_WEIGHTS` + config.
 - Updated `weights` but not `profileWeights` in all 6 profiles → parity audit fails.
 - An inconclusive/timeout check showing as a 0 in your output → it should be `n/a` and excluded; you broke renormalization.
+- Added an ESP to the SPF trust-surface catalog and called it "just a catalog entry" → if you edited the CORE copy, you changed severities (see the duplicate-catalog section) and owe a `SCORING_MODEL_VERSION` bump; if you edited only the WORKER copy, direct package consumers like bv-web-prod still under-count.
+- Read a `missingControl` list (here or in CLAUDE.md) and acted on it without grepping the call sites → the lists drift, and the grep itself matches explanatory comments as well as real emitters.
 
 ## Provenance
 
