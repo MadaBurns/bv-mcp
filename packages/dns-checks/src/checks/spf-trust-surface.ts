@@ -46,6 +46,10 @@ const MULTI_TENANT_PLATFORMS: ReadonlyMap<string, PlatformInfo> = new Map([
 	['spf.messagelabs.com', { name: 'Symantec/Broadcom', risk: 'Shared sending infrastructure' }],
 	['_spf.atlassian.net', { name: 'Atlassian', risk: 'Any Atlassian customer can send as your domain' }],
 	['xero.com', { name: 'Xero', risk: 'Any Xero customer can send as your domain' }],
+	// #572: Mailjet — multi-tenant ESP. Registrable key so `spf.mailjet.com` and any
+	// Mailjet sub-host match via the endsWith('.'+key) rule. Mirrors the worker-layer
+	// catalog in bv-mcp `src/tools/spf-trust-surface.ts` (added in PR #570 / #566).
+	['mailjet.com', { name: 'Mailjet', risk: 'Any Mailjet customer can send as your domain' }],
 ]);
 
 /**
