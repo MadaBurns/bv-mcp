@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.42.0] - 2026-08-04
+
+**Scoring model 1.6.0 → 1.7.0. `@blackveil/dns-checks` 1.10.0 → 1.11.0** (package check behaviour changed, so `PARITY_CORPUS_VERSION` moves in lockstep and the bv-web-prod tarball needs re-vendoring).
+
+### Changed
+
+- **Mailjet is now recognised in the core SPF trust-surface catalog.** The worker layer learned Mailjet in 3.36.x (#566 / #570), but the parity-locked core catalog did not — so every DIRECT consumer of the published package under-counted the trust surface, reporting e.g. "2 shared platforms" for a three-ESP record. bv-web-prod is such a consumer: it calls the package's `checkSPF`, not the bv-mcp worker wrapper, so its scan output carried the under-count. The registrable key `mailjet.com` is now in `MULTI_TENANT_PLATFORMS`, matching `spf.mailjet.com` and any Mailjet sub-host through the existing suffix rule. (#614, closes part 1 of #572)
+
+  **This moves scores for a narrow population, and the direction is down.** The worker's trust-surface post-processor reconstructs its DMARC context from the core's own trust-surface finding metadata, falling back to no-corroboration when the core recognised nothing. A Mailjet-only SPF record previously produced no core trust-surface finding at all, so the worker always defaulted to `info`. The core now supplies real corroboration metadata, so a Mailjet include on a domain with `p=none` and relaxed alignment surfaces as `medium` (the ordinary −15 severity penalty on the `spf` category) rather than `info`. This is the existing corroboration rule finally applying to Mailjet as it already did to the other 18 cataloged platforms — Mailjet was the anomaly, not the new severity. Domains with enforcing DMARC are unaffected. The affected population is unmeasured against the corpus.
+
+  Deliberately NOT included: counting unrecognised broad shared senders toward the trust-surface total (part 2 of #572). That moves the `matchedPlatforms.length > 1` emission threshold and would re-grade corpus-wide, so it stays an explicit operator call; the core carries a documented `it.todo` rather than silently adopting either semantics.
+
+- **`hono` 4.12.32 → 4.12.34** — moderate ReDoS in the CORS middleware via `Access-Control-Request-Headers` ([GHSA-8j4g-w8fx-2239](https://github.com/advisories/GHSA-8j4g-w8fx-2239)). Minimal fix version taken rather than the available 4.13.0. (#615)
+
+### Added
+
+- Core coverage for the SPF trust-surface catalog (`packages/dns-checks/src/__tests__/checks/spf-trust-surface.test.ts`). The core had none, which is why the worker/core catalog drift went unnoticed.
+
 ## [3.41.0] - 2026-08-03
 
 **Scoring model 1.5.0 → 1.6.0. `@blackveil/dns-checks` 1.9.0 → 1.10.0** (package scoring behaviour changed, so `PARITY_CORPUS_VERSION` moves in lockstep and the bv-web-prod tarball needs re-vendoring).
