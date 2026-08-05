@@ -2,6 +2,8 @@
 
 # BLACK**V**EIL DNS
 
+[![MCP Toplist](https://mcptoplist.com/badge/com.blackveilsecurity%2Fdns.svg)](https://mcptoplist.com/server/com.blackveilsecurity%2Fdns)
+
 **Know where you stand.**
 
 Source-available DNS & email security scanner for Claude, Cursor, VS Code, and MCP clients across Streamable HTTP, stdio, and legacy HTTP+SSE.
