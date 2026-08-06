@@ -267,7 +267,7 @@ Workflows: `ci.yml` (adds a non-required parallel `fast-checks` typecheck+lint j
 
 ### Release (`publish.yml`)
 
-**Pre-bump locally before tagging** to avoid the workflow's auto-bump push being rejected by branch protection:
+**Pre-bump locally before tagging — enforced.** `version-bump` is a read-only gate: it fails the release unless all 4 version surfaces already match the tag. Why: `bv-mcp-release` skill.
 
 ```bash
 npm version <X.Y.Z> --no-git-tag-version --allow-same-version   # bumps package.json + lock; SERVER_VERSION auto-derives
@@ -276,7 +276,7 @@ git commit -am "chore: bump version to <X.Y.Z>" && git push origin main
 git tag v<X.Y.Z> && git push origin v<X.Y.Z>
 ```
 
-Pipeline: validate → version-sync (no-op if pre-bumped) → npm publish (provenance) || Cloudflare deploy → MCP Registry → GH Release. Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in `production` env — fail-fast if absent. `wrangler d1 execute --remote --file=-` does NOT accept stdin; pass a real path.
+Pipeline: validate → version-verify (read-only gate) → npm publish (provenance) || Cloudflare deploy → MCP Registry → GH Release. Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in `production` env — fail-fast if absent. `wrangler d1 execute --remote --file=-` does NOT accept stdin; pass a real path.
 
 **Workflow secret-check audit** (`test/audits/workflow-secret-check.audit.test.ts`): every `[ -z "$*_TOKEN" ]` guard must `exit 1`; no warn-and-skip. Codifies v2.10.2–v2.10.6 silent prod-stale.
 

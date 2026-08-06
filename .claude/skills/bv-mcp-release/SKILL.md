@@ -19,7 +19,7 @@ A version lives in **4 hand-edited places** (plus the auto-derived `SERVER_VERSI
 
 ## Pre-bump locally before tagging
 
-The `publish.yml` version-sync step auto-commits a bump and **pushes to `main` — which branch protection rejects** unless you've already done it. So do it first:
+Pre-bumping is **enforced, not merely advised**. `publish.yml`'s `version-bump` job is a read-only *verification gate* (PR #632): it asserts `package.json`, `package-lock.json`, `server.json` (plus `packages[0].version` if that stanza ever returns) and the `CHANGELOG.md` heading already match the tag, and fails the release with a per-surface `::error::` if any disagree. It edits and pushes nothing. So do the bump first:
 
 ```bash
 npm version <X.Y.Z> --no-git-tag-version --allow-same-version   # package.json + lock; SERVER_VERSION auto-derives
@@ -28,7 +28,20 @@ git commit -am "chore: release <X.Y.Z>" && git push origin main   # via PR — d
 git tag v<X.Y.Z> <merged-main-HEAD> && git push origin v<X.Y.Z>   # tag the squashed merge commit, not the bump-branch tip
 ```
 
-Then `publish.yml` runs: validate → version-sync (no-op, already bumped) → npm publish (provenance) ‖ Cloudflare deploy → MCP Registry → GH Release. Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in the `production` env (fail-fast if absent).
+Then `publish.yml` runs: validate → version-verify (read-only gate) → npm publish (provenance) ‖ Cloudflare deploy → MCP Registry → GH Release. Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in the `production` env (fail-fast if absent).
+
+### Why the gate replaced the auto-bump (3.40.0–3.42.0 incident)
+
+Releases **3.40.0, 3.41.0 and 3.42.0 all half-failed** and nobody noticed for weeks, because the failure was in a job everything else `needs:` — npm publish, Cloudflare deploy, registry publish **and Create GitHub Release** all reported `skipped`, so the GH Release had to be cut by hand each time.
+
+The job pushed an auto-bump commit to `main`, which protected-branch rules reject unconditionally (`GH006 … 4 of 4 required status checks are expected`) — a direct push can never satisfy required checks. The skill and CLAUDE.md both said pre-bumping made the step "a no-op". **It did not.** The step re-serialized `server.json` with `JSON.stringify(o, null, '\t')`, reindenting the committed **2-space** file to **tabs**; the no-op guard `git diff --cached --quiet` is a **byte** test, so a whitespace-only, semantically-identical rewrite took the "version changed" branch and pushed anyway. Replayed against the real v3.42.0 tag: `package.json`/`package-lock.json` clean, `server.json` 14 insertions / 14 deletions.
+
+Two transferable lessons:
+
+- **A "this becomes a no-op" claim is worth executing once.** This one was documented in two places and false in both for three releases.
+- **Never re-serialize a file to check whether it needs changing.** Compare the parsed value; write only on a real difference. Any `JSON.stringify` round-trip silently normalizes indentation, key quoting and trailing newline, which defeats every byte-level idempotency guard downstream.
+
+`test/audits/workflow-permissions.audit.test.ts` now pins this shut: `contents: write` may appear **only** in `github-release`, and a tripwire asserts `version-bump` stays read-only and never regains `git push origin HEAD:main`.
 
 ## Current publish reality (verify, don't assume)
 
@@ -67,7 +80,8 @@ Never commit `.npmrc`, registry tokens, the DNS publisher key, or generated prod
 ## Red flags
 
 - Bumping `package.json` only → CI version-sync audit fails. Hit all 4 surfaces (package.json + lock, server.json, CHANGELOG).
-- Letting `publish.yml` do the bump push → rejected by branch protection. Pre-bump locally.
+- Tagging without pre-bumping → the `version-bump` gate fails the release with a per-surface `::error::` and nothing publishes. Bump all 4 surfaces, then move the tag. (It no longer tries to fix this up for you — see the 3.40.0–3.42.0 incident above.)
+- "Reformatting" `server.json` to tabs to match Prettier → harmless now, but it is the *shape* of the bug that cost three releases. Prettier flags the file; leave it alone unless you also re-verify the release path.
 - Re-adding a `packages` stanza to `server.json` and syncing only the top-level `version` → registry/version mismatch. Sync both fields.
 - `mcp-publisher publish` BEFORE `deploy:prod` → registry advertises a version prod doesn't serve (stale-prod, public). Deploy first, publish last.
 - Hand-editing `SERVER_VERSION` → no-op at best (it auto-derives from `pkg.version`); bump `package.json` instead.
