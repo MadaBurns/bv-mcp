@@ -18,6 +18,7 @@ import {
 	damerauLevenshtein,
 	evaluateDefensiveRegistration,
 	isParkingNsHost,
+	type DefensiveReason,
 } from '../src/lib/brand-defensive-registration';
 
 describe('damerauLevenshtein', () => {
@@ -197,5 +198,93 @@ describe('evaluateDefensiveRegistration', () => {
 		});
 		// 'brandepsil' vs 'brandepsilon' — distance 2 (two insertions).
 		expect(result.defensive).toBe(true);
+	});
+});
+
+/**
+ * CALL-SITE CONTRACT FOR `check_lookalikes`.
+ *
+ * This heuristic is now consumed by `check-lookalikes.ts` (via
+ * `isBrandHeldRegistration()`), where it supplies the "defensive infrastructure
+ * shape" leg that must agree before a shared brand-protection registrar is
+ * allowed to corroborate that a confusable domain is the scanned
+ * organisation's OWN defensive registration.
+ *
+ * The module JSDoc used to record that no caller could reach the MX/redirect
+ * legs because "the candidate enrichment pipeline does not surface
+ * per-candidate MX records or HTTP redirect targets". `check_lookalikes` DOES:
+ * it probes MX and NS for every registered candidate. That makes the
+ * abstain-versus-fire distinction below load-bearing rather than theoretical,
+ * so it is pinned here at the unit layer.
+ */
+describe('evaluateDefensiveRegistration — check_lookalikes call-site contract', () => {
+	const TARGET = 'contoso.com';
+
+	it('ABSTAINS on undefined mxRecords — "we did not look" is not "there is no mail"', () => {
+		// The trap the call site guards against: passing `undefined` (or
+		// defaulting an unprobed candidate to `[]`) silently converts a missing
+		// measurement into an affirmative "parked, therefore defensive" claim.
+		const result = evaluateDefensiveRegistration({
+			candidateDomain: 'cont0so.com',
+			targetDomain: TARGET,
+			mxRecords: undefined,
+			nsHosts: ['ns1.cscdns.net'],
+		});
+		expect(result.defensive).toBe(false);
+	});
+
+	it('FIRES on an empty mxRecords array — "we looked, there is nothing"', () => {
+		const result = evaluateDefensiveRegistration({
+			candidateDomain: 'cont0so.com',
+			targetDomain: TARGET,
+			mxRecords: [],
+			nsHosts: ['ns1.cscdns.net'],
+		});
+		expect(result).toEqual({ defensive: true, reason: 'no-mx' });
+	});
+
+	it('does NOT fire for a candidate with live mail, however corporate its registrar', () => {
+		// The leg that keeps a shared brand-protection registrar from excusing
+		// working phishing infrastructure.
+		const result = evaluateDefensiveRegistration({
+			candidateDomain: 'cont0so.com',
+			targetDomain: TARGET,
+			mxRecords: ['mail.attacker.example'],
+			nsHosts: ['ns1.cscdns.net'],
+		});
+		expect(result.defensive).toBe(false);
+	});
+
+	it('does NOT fire for a label too far from the target to be a typo of it', () => {
+		// Distance gate: an unrelated domain that merely happens to sit at the
+		// same registrar must never be labelled the brand's own.
+		const result = evaluateDefensiveRegistration({
+			candidateDomain: 'totally-unrelated.com',
+			targetDomain: TARGET,
+			mxRecords: [],
+			nsHosts: ['ns1.cscdns.net'],
+		});
+		expect(result.defensive).toBe(false);
+	});
+
+	it('every reason token has customer-facing phrasing that cannot trip the missing-control score rule', async () => {
+		// `scoreIndicatesMissingControl()` matches finding TEXT; a phrase like
+		// "no MX records" inside a high-severity finding zeroes the whole
+		// category score. The reason tokens are rendered into finding prose by
+		// `DEFENSIVE_REASON_PHRASES` in check-lookalikes.ts, so every token this
+		// module can emit must have a phrase that is safe there. This test fails
+		// if a new DefensiveReason is added without a phrase.
+		const { scoreIndicatesMissingControl } = await import('@blackveil/dns-checks/scoring');
+		const reasons: DefensiveReason[] = ['redirect-to-target', 'no-mx', 'parked-ns'];
+		const { DEFENSIVE_REASON_PHRASES } = await import('../src/tools/check-lookalikes');
+		for (const reason of reasons) {
+			const phrase = DEFENSIVE_REASON_PHRASES[reason];
+			expect(phrase).toBeTruthy();
+			expect(
+				scoreIndicatesMissingControl([
+					{ category: 'lookalikes', title: 'x', severity: 'high', detail: `The domain is defensive because ${phrase}.` },
+				]),
+			).toBe(false);
+		}
 	});
 });

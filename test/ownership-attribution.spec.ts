@@ -550,3 +550,286 @@ describe('buildNonOwnedGateFinding — cross-tool wording parity (F1, 2026-07-27
 		}
 	});
 });
+
+/**
+ * DEFECT: OWNERSHIP INFERRED FROM NAMESERVER DELEGATION ALONE.
+ *
+ * `classifyOwnership()` is driven entirely by NS delegation — in-bailiwick NS,
+ * dedicated NS-set match, or a complete shared-provider match. Anything else
+ * registered with its own nameservers becomes `third_party`, and the report
+ * then tells the customer the domain "is registered to a different
+ * organisation" and offers to "report it to its registrar".
+ *
+ * A brand's OWN defensive registration routinely fails every one of those
+ * tests: brand-protection registrars park defensive names on their own
+ * infrastructure, not on the brand's production DNS. So a brand and its own
+ * defensive misspelling, both held at the same corporate registrar, get split
+ * apart — and the customer is advised to report their own domain for takedown.
+ *
+ * Two things make it worse than a wording bug:
+ *   (a) the tool never even LOOKED. `computeSameEntityCandidates()` gates the
+ *       RDAP fetch on a calibrated severity of medium-or-high, and a parked
+ *       defensive registration (web-only, aged, no mail) calibrates LOW. The
+ *       non-ownership claim is therefore asserted from an evidence set that
+ *       was deliberately not gathered;
+ *   (b) a downstream candidate generator depends on identifying brand-held
+ *       registrations, so a false `third_party` propagates.
+ *
+ * THE SIGNAL USED HERE IS THE IANA REGISTRAR ID, NOT THE REGISTRANT ORG. The
+ * registrant org is free text the registrant types (the reason Ruling A / F2
+ * bars it from `classifyOwnership()`); the IANA registrar ID is assigned by
+ * ICANN and published by the REGISTRY, so a registrant cannot set it. It still
+ * only ever corroborates — no path here can produce `owned_by_seed`.
+ */
+describe('brand-held defensive registration — NS delegation is not the only ownership evidence', () => {
+	let restoreThisTest: (() => void) | undefined;
+	afterEach(() => {
+		restoreThisTest?.();
+		restoreThisTest = undefined;
+	});
+
+	/** IANA registrar IDs: CSC Corporate Domains = 299 (corporate-only), GoDaddy = 146 (retail). */
+	const CSC_IANA_ID = '299';
+	const GODADDY_IANA_ID = '146';
+
+	function rdapDoc(opts: { ianaId: string; registrarName: string; registrationDaysAgo?: number; registrantOrg?: string }) {
+		const days = opts.registrationDaysAgo ?? 3000;
+		return {
+			events: [{ eventAction: 'registration', eventDate: new Date(Date.now() - days * 86_400_000).toISOString() }],
+			entities: [
+				{
+					objectClassName: 'entity',
+					roles: ['registrar'],
+					publicIds: [{ type: 'IANA Registrar ID', identifier: opts.ianaId }],
+					vcardArray: [
+						'vcard',
+						[
+							['version', {}, 'text', '4.0'],
+							['fn', {}, 'text', opts.registrarName],
+						],
+					],
+				},
+				// Registrant is REDACTED, as it is for most gTLD registrations
+				// post-GDPR — so the existing registrant-org correlation cannot
+				// fire and the registrar signal is doing all the work.
+				{
+					objectClassName: 'entity',
+					roles: ['registrant'],
+					vcardArray: [
+						'vcard',
+						[
+							['version', {}, 'text', '4.0'],
+							['fn', {}, 'text', opts.registrantOrg ?? 'REDACTED FOR PRIVACY'],
+						],
+					],
+				},
+			],
+		};
+	}
+
+	/**
+	 * Seed `contoso.com` + one candidate. The candidate always resolves to its
+	 * OWN nameservers, so `classifyOwnership()` returns `third_party` in every
+	 * variant below — the NS evidence is identical throughout and only the
+	 * REGISTRATION RECORD and the infrastructure shape change.
+	 */
+	async function runFixture(opts: {
+		candidate: string;
+		candidateRdap: object;
+		seedRdap: object;
+		/** Defensive shape = parked: A record, no mail. Set true to give it live mail instead. */
+		withMx?: boolean;
+	}) {
+		const { setupFetchMock, createDohResponse } = await import('./helpers/dns-mock');
+		const { restore } = setupFetchMock();
+		restoreThisTest = restore;
+		globalThis.fetch = (async (input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				const parsed = new URL(url);
+				const name = parsed.searchParams.get('name') ?? '';
+				const type = parsed.searchParams.get('type') ?? '';
+				if (name === 'contoso.com' && (type === 'NS' || type === '2')) {
+					return createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]);
+				}
+				if (name === opts.candidate) {
+					if (type === 'NS' || type === '2') {
+						return createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.cscdns.net.' }]);
+					}
+					if (type === 'A' || type === '1') {
+						return createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.10' }]);
+					}
+					if ((type === 'MX' || type === '15') && opts.withMx) {
+						return createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mail.contoso.com.' }]);
+					}
+				}
+				return createDohResponse([], []);
+			}
+			if (url.includes('rdap') && url.includes(`/domain/${opts.candidate}`)) {
+				return { ok: true, status: 200, json: () => Promise.resolve(opts.candidateRdap) } as unknown as Response;
+			}
+			if (url.includes('rdap') && url.includes('/domain/contoso.com')) {
+				return { ok: true, status: 200, json: () => Promise.resolve(opts.seedRdap) } as unknown as Response;
+			}
+			// HEAD web probe — reachable (a parked redirect page).
+			return { ok: true, status: 200, headers: new Headers(), json: () => Promise.resolve({}) } as unknown as Response;
+		}) as unknown as typeof fetch;
+
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		return checkLookalikes('contoso.com');
+	}
+
+	/** The defensive registration: parked at CSC, same corporate registrar as the seed. */
+	const DEFENSIVE = {
+		candidate: 'cont0so.com',
+		candidateRdap: rdapDoc({ ianaId: CSC_IANA_ID, registrarName: 'CSC Corporate Domains, Inc.' }),
+		seedRdap: rdapDoc({ ianaId: CSC_IANA_ID, registrarName: 'CSC Corporate Domains, Inc.' }),
+	};
+
+	function findingsFor(result: { findings: Array<{ metadata?: Record<string, unknown> }> }, domain: string) {
+		return result.findings.filter((f) => f.metadata?.lookalikeDomain === domain);
+	}
+
+	it('recognises a defensive registration held at the same brand-protection registrar as the seed', async () => {
+		const result = await runFixture(DEFENSIVE);
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution).toBeDefined();
+		// THE DEFECT: this used to read "is registered to a different organisation".
+		expect(attribution!.detail).not.toContain('is registered to a different organisation');
+		expect(attribution!.metadata?.brandHeldRegistration).toBe(true);
+		expect(attribution!.metadata?.sharedRegistrarIanaId).toBe(CSC_IANA_ID);
+	});
+
+	it('stops advising the customer to report their own domain to its registrar', async () => {
+		const result = await runFixture(DEFENSIVE);
+		const threat = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'threat_observation');
+		expect(threat).toBeDefined();
+		expect(threat!.detail).not.toContain('report it to its registrar');
+		expect(threat!.detail).not.toContain('takedown provider');
+	});
+
+	it('CONTROL — a shared RETAIL registrar is not ownership evidence and changes nothing', async () => {
+		// Millions of unrelated registrants share GoDaddy. If this fixture ever
+		// starts reading as brand-held, the predicate has stopped discriminating.
+		const result = await runFixture({
+			candidate: 'cont0so.com',
+			candidateRdap: rdapDoc({ ianaId: GODADDY_IANA_ID, registrarName: 'GoDaddy.com, LLC' }),
+			seedRdap: rdapDoc({ ianaId: GODADDY_IANA_ID, registrarName: 'GoDaddy.com, LLC' }),
+		});
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution).toBeDefined();
+		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
+		expect(attribution!.detail).toContain('is registered to a different organisation');
+	});
+
+	it('CONTROL — a DIFFERENT registrar on each side is not ownership evidence', async () => {
+		const result = await runFixture({
+			candidate: 'cont0so.com',
+			candidateRdap: rdapDoc({ ianaId: '1234', registrarName: 'Bulk Register LLC' }),
+			seedRdap: rdapDoc({ ianaId: CSC_IANA_ID, registrarName: 'CSC Corporate Domains, Inc.' }),
+		});
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
+		expect(attribution!.detail).toContain('is registered to a different organisation');
+	});
+
+	it('CONTROL — TWO DIFFERENT brand-protection registrars are not a match either', async () => {
+		// The discriminating case for the registrar-EQUALITY check specifically.
+		// The variant above cannot test it: its candidate registrar is not in the
+		// brand-protection set, so the set-membership check rejects the candidate
+		// even when the equality check is deleted. Here BOTH sides are corporate
+		// registrars, so equality is the only thing standing between this fixture
+		// and a false brand-held verdict — as a mutation run confirmed (deleting
+		// the equality line left the variant above green and only this one red).
+		const result = await runFixture({
+			candidate: 'cont0so.com',
+			candidateRdap: rdapDoc({ ianaId: CSC_IANA_ID, registrarName: 'CSC Corporate Domains, Inc.' }),
+			seedRdap: rdapDoc({ ianaId: '292', registrarName: 'MarkMonitor Inc.' }),
+		});
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
+		expect(attribution!.detail).toContain('is registered to a different organisation');
+	});
+
+	it('CONTROL — an absent registrar ID on either side is never treated as a match', async () => {
+		// `null === null` must not read as "same registrar". Pins the fail-soft
+		// direction: no registration evidence means no corroboration, never
+		// corroboration by default.
+		const noRegistrar = {
+			events: [{ eventAction: 'registration', eventDate: new Date(Date.now() - 3000 * 86_400_000).toISOString() }],
+			entities: [],
+		};
+		const result = await runFixture({
+			candidate: 'cont0so.com',
+			candidateRdap: noRegistrar,
+			seedRdap: noRegistrar,
+		});
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
+		expect(attribution!.detail).toContain('is registered to a different organisation');
+	});
+
+	it('CONTROL — a shared corporate registrar does NOT excuse live mail infrastructure', async () => {
+		// An attacker who somehow lands at the same corporate registrar still
+		// gets the full threat treatment: the registrar corroborates ownership
+		// only for a candidate whose INFRASTRUCTURE is also defensively shaped.
+		const result = await runFixture({ ...DEFENSIVE, withMx: true });
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
+		const threat = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'threat_observation');
+		expect(threat!.detail).toContain('report it to its registrar');
+	});
+
+	it('never manufactures owned_by_seed — the structural verdict stays third_party on registrar evidence alone', async () => {
+		// Ruling A: only SEED-SIDE nameserver evidence may produce owned_by_seed.
+		// A registry-published registrar ID is stronger than a registrant-typed
+		// org string but it is still not proof of common ownership.
+		const result = await runFixture(DEFENSIVE);
+		for (const finding of findingsFor(result, 'cont0so.com')) {
+			expect(finding.metadata?.ownershipVerdict).toBe('third_party');
+		}
+	});
+
+	/**
+	 * THE LOAD-BEARING BOUNDARY. This fix is allowed to change WHICH DOMAINS ARE
+	 * FOUND and what the report SAYS about them. It is not allowed to change how
+	 * a found domain SCORES — per-check scores are locked downstream against the
+	 * vendored scoring package.
+	 *
+	 * `computeCategoryScore` is a pure function of finding severities (plus an
+	 * optional `penaltyOverride`), and `buildCheckResult` additionally zeroes the
+	 * category when `scoreIndicatesMissingControl()` matches finding TEXT on a
+	 * critical/high finding — which is the one way a WORDING change could move a
+	 * score. Both are pinned here.
+	 */
+	it('BOUNDARY: rewording the brand-held case moves no score', async () => {
+		const brandHeld = await runFixture(DEFENSIVE);
+		const retail = await runFixture({
+			candidate: 'cont0so.com',
+			candidateRdap: rdapDoc({ ianaId: GODADDY_IANA_ID, registrarName: 'GoDaddy.com, LLC' }),
+			seedRdap: rdapDoc({ ianaId: GODADDY_IANA_ID, registrarName: 'GoDaddy.com, LLC' }),
+		});
+		// Same probe inputs, same severities, therefore the same category score —
+		// only the prose and the attribution metadata differ.
+		expect(brandHeld.score).toBe(retail.score);
+		expect(brandHeld.passed).toBe(retail.passed);
+		const severities = (r: typeof brandHeld) => r.findings.map((f) => f.severity).sort();
+		expect(severities(brandHeld)).toEqual(severities(retail));
+	});
+
+	it('BOUNDARY: no wording this path emits trips the missing-control text rule', async () => {
+		const { scoreIndicatesMissingControl } = await import('@blackveil/dns-checks/scoring');
+		const result = await runFixture(DEFENSIVE);
+		expect(scoreIndicatesMissingControl(result.findings)).toBe(false);
+
+		// The assertion above alone is VACUOUS: `scoreIndicatesMissingControl`
+		// only inspects critical/high findings, and this fixture calibrates
+		// `low`/`info`. Re-run it with every finding forced to `high` so the
+		// predicate is decided by the TEXT — the actual risk, since a phrase
+		// like "no MX records" inside a high-severity finding zeroes the whole
+		// category score. This is the trap the wording of the new brand-held
+		// finding and DEFENSIVE_REASON_PHRASES is written to avoid.
+		const asHigh = result.findings.map((f) => ({ ...f, severity: 'high' as const }));
+		expect(scoreIndicatesMissingControl(asHigh)).toBe(false);
+	});
+});
