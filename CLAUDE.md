@@ -267,7 +267,7 @@ Workflows: `ci.yml` (adds a non-required parallel `fast-checks` typecheck+lint j
 
 ### Release (`publish.yml`)
 
-**Pre-bump locally before tagging** to avoid the workflow's auto-bump push being rejected by branch protection:
+**Pre-bump locally before tagging — this is now enforced, not just advised.** The `version-bump` job is a read-only *verification gate*: it asserts `package.json`, `package-lock.json`, `server.json` and the `CHANGELOG.md` heading all already match the tag, and fails the release with a per-surface `::error::` if any disagree. It no longer edits or pushes anything. (It previously tried to auto-bump and push to `main`, which protected-branch rules always reject — that failed every release from 3.40.0 to 3.42.0 and skipped all downstream publish/deploy jobs. The documented "no-op if pre-bumped" escape never worked because the step re-serialized `server.json` from 2-space to tab indent, so the byte-level `git diff --cached --quiet` guard always saw a change.)
 
 ```bash
 npm version <X.Y.Z> --no-git-tag-version --allow-same-version   # bumps package.json + lock; SERVER_VERSION auto-derives
@@ -276,7 +276,7 @@ git commit -am "chore: bump version to <X.Y.Z>" && git push origin main
 git tag v<X.Y.Z> && git push origin v<X.Y.Z>
 ```
 
-Pipeline: validate → version-sync (no-op if pre-bumped) → npm publish (provenance) || Cloudflare deploy → MCP Registry → GH Release. Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in `production` env — fail-fast if absent. `wrangler d1 execute --remote --file=-` does NOT accept stdin; pass a real path.
+Pipeline: validate → version-verify (read-only gate; fails if the tree doesn't already match the tag) → npm publish (provenance) || Cloudflare deploy → MCP Registry → GH Release. Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in `production` env — fail-fast if absent. `wrangler d1 execute --remote --file=-` does NOT accept stdin; pass a real path.
 
 **Workflow secret-check audit** (`test/audits/workflow-secret-check.audit.test.ts`): every `[ -z "$*_TOKEN" ]` guard must `exit 1`; no warn-and-skip. Codifies v2.10.2–v2.10.6 silent prod-stale.
 
