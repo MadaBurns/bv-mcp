@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.43.0] - 2026-08-07
+
+**Scoring model unchanged at 1.7.0. `@blackveil/dns-checks` 1.11.0 → 1.12.0** (package check behaviour changed, so `PARITY_CORPUS_VERSION` moves in lockstep and the bv-web-prod tarball needs re-vendoring). No weight, tier, grade band, or severity penalty changed — **scores move because detection coverage improved, not because policy did.**
+
+### Added
+
+- **DKIM selector coverage for 8 providers the probe could not reach** — 16 selectors, each backed by an observed key on a named domain. A total selector miss does not merely lose a finding: it hard-floors the `dkim` category at 50, and with DKIM at importance 10 in the `mail_enabled` core pool that costs roughly 6.5 overall points — enough to move a NIST band on a domain whose email authentication is actually fine. Live DoH probing on 2026-08-06 found **fastmail.com publishes nothing at any of the 24 existing selectors** while carrying real keys at `fm1`/`fm2`/`fm3` — a complete false negative for every Fastmail-hosted domain. Added: Fastmail (`fm1`–`fm3`), Mailchimp (`k2`, `k3`), HubSpot (`hs1`, `hs2`), Klaviyo (`kl`, `kl2`), Mailgun (`mg`, `pic`), SendGrid legacy (`smtpapi`, `m1`), Zendesk (`zendesk1`, `zendesk2`), Mailjet (`mailjet`). **Scores move UPWARD only, and only for domains that were false negatives.** (#630)
+
+- **Cognitive (Mandela-effect) lookalike generation** — the existing generators emitted **motor** errors only (keyboard adjacency, omission, duplication, dot insertion, TLD swap, homoglyph), all of which model a finger slip by someone who knows the correct spelling. A Mandela-effect misspelling is a *cognitive* error — the spelling a large population believes is correct, typed deliberately — and no motor operation reaches one except by coincidence. `generateCognitiveLookalikes()` adds non-adjacent phonetic substitution, orthographically-bounded insertion (an inserted letter counts only when it completes a real English cluster — `tch` is what produces `sketchers`), and morpheme swap (`stain`→`stein`, `tunes`→`toons`), which no edit-distance mutator can propose at all. Kept as a separate function with its own cap: `generateLookalikes()` sorts alphabetically and slices at `MAX_PERMUTATIONS`, which most brands already saturate, so folding these in would have silently evicted existing motor candidates. (#629)
+
+### Fixed
+
+- **Two unreachable DKIM SaaS-attribution patterns**, both found while measuring the above. The HubSpot entry in `DKIM_SAAS_PATTERNS` could never match, because no selector in the list could produce the required CNAME chain — `dkim-selectors.ts` claimed "Klaviyo/HubSpot default to `dkim1`/`dkim2`", which they do not. The Mailgun pattern matched `mailgun.org`, but the measured DKIM CNAME target is `dkim.mailgun.net`; `mailgun.org` is the sending subdomain customers are told to create, never the delegation target, so that pattern never matched a real chain either. (#630)
+
+- **`check_lookalikes` no longer reports a brand's own defensive registration as third-party.** (#629)
+
+### Changed
+
+- **`COMMON_DKIM_SELECTORS` is now exported from the package index**, so downstream consumers can assert provider coverage instead of keeping a second copy that would drift — and drift here is scored as a real finding. `dkim-selector-coverage.test.ts` guards each provider and carries two control arms (an unlisted selector must still read as not-found; a total miss must still floor at 50) so the suite cannot pass vacuously against a list that matched everything. (#630)
+
+### Removed
+
+- **Dead `src/tools/mta-sts-analysis.ts` duplicate.** Nothing in `src/` imported it — `check-mta-sts.ts` takes `checkMTASTS` from `@blackveil/dns-checks`, and the package's own `checks/mta-sts-analysis.ts` exports the same 10 functions; only a spec kept the worker copy compiling. It was also stale in a way that mattered: its TLS-RPT helpers still attached `missingControl: true` to the `mta_sts` "TLS-RPT record missing" finding, contradicting the scoring model 1.6.0 decision that absence in this category grades rather than zeroes. No score was affected (the module was unreachable), but it read as live to any grep of `src/tools/` and produced a wrong first conclusion twice during the 3.42.0 review. (#621)
+
+### CI
+
+- **`codeql-action/init` and `/analyze` are pinned in lockstep, with a Dependabot group to keep them that way.** Dependabot keys the `github-actions` ecosystem on the full action path, so it opened one PR per sub-action; since `init` writes a version-stamped config that `analyze` refuses to read at a different version, each such PR was red on arrival (`Loaded a configuration file for version 'X', but running version 'Y'`). The split had recurred at v4.37.0, v4.37.3 and v4.37.4. (#631)
+
+- **`publish.yml`'s version-sync job is now a read-only verification gate.** It previously pushed an auto-bump commit to `main`, which protected-branch rules reject unconditionally — that failed the job on **every release from 3.40.0 through 3.42.0**, skipping npm publish, Cloudflare deploy, registry publish and Create GitHub Release, and forcing the GitHub Release to be cut by hand each time. The documented "pre-bump so it becomes a no-op" escape never worked: the step re-serialized `server.json` with `JSON.stringify(o, null, '\t')`, reindenting the committed 2-space file to tabs, and the no-op guard `git diff --cached --quiet` is a byte test. The job now asserts all four version surfaces already match the tag and writes nothing. (#632)
+
 ## [3.42.0] - 2026-08-04
 
 **Scoring model 1.6.0 → 1.7.0. `@blackveil/dns-checks` 1.10.0 → 1.11.0** (package check behaviour changed, so `PARITY_CORPUS_VERSION` moves in lockstep and the bv-web-prod tarball needs re-vendoring).
