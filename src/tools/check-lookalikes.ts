@@ -14,8 +14,9 @@ import { safeFetch } from '../lib/safe-fetch';
 import type { ReconBinding, BindingDegradationSink, ReconScanResult } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
-import { generateCombosquats, generateLookalikes } from './lookalike-analysis';
-import { FALLBACK_RDAP_SERVERS, extractRegistrantOrg, isRedactedRegistrantOrg } from './check-rdap-lookup';
+import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes } from './lookalike-analysis';
+import { FALLBACK_RDAP_SERVERS, extractRegistrantOrg, findEntityByRole, isRedactedRegistrantOrg } from './check-rdap-lookup';
+import { evaluateDefensiveRegistration, type DefensiveReason } from '../lib/brand-defensive-registration';
 import { calibrateLookalikeSeverity, isDisposableMxHost, type LookalikeSeverity, type LookalikeSignals } from './lookalike-severity';
 import {
 	buildNonOwnedGateFinding,
@@ -116,6 +117,61 @@ const WEB_PROBE_TIMEOUT_MS = 2500;
  * corrected first when the cap binds.
  */
 const SAME_ENTITY_RDAP_CAP = 10;
+
+/**
+ * IANA registrar IDs of BRAND-PROTECTION registrars — corporate registrars
+ * that do not sell to the general public. Getting a domain registered through
+ * one requires a corporate account and a contract; you cannot buy a name at
+ * CSC or MarkMonitor the way you can at a retail registrar.
+ *
+ * WHY THIS IS DIFFERENT FROM THE REGISTRANT-ORG FIELD (and therefore why it is
+ * allowed to corroborate ownership at all). Ruling A / F2 bars the registrant
+ * org from influencing attribution because it is free text the REGISTRANT
+ * types — forgeable with one form field, and collision-prone because half the
+ * internet sits behind the same privacy services. The IANA registrar ID is
+ * neither: it is assigned by ICANN and published by the REGISTRY as part of
+ * the delegation record. A registrant cannot set it, and cannot move a domain
+ * into a corporate registrar's accreditation without that registrar's consent.
+ *
+ * It is still NOT proof of common ownership — many brands share CSC — which is
+ * why {@link isBrandHeldRegistration} requires the candidate's INFRASTRUCTURE
+ * to be defensively shaped as well, and why nothing here can ever produce an
+ * `owned_by_seed` verdict (that remains seed-side NS evidence only).
+ *
+ * RETAIL REGISTRARS MUST NEVER BE ADDED. GoDaddy (146), Namecheap (1068) and
+ * friends are shared by millions of unrelated registrants, so a shared-retail-
+ * registrar match carries no identity information whatsoever. A control test
+ * pins that GoDaddy is not treated as evidence.
+ */
+const BRAND_PROTECTION_REGISTRAR_IANA_IDS: ReadonlySet<string> = new Set([
+	'299', // CSC Corporate Domains, Inc.
+	'292', // MarkMonitor Inc.
+	'470', // Com Laude (Nom-IQ Ltd)
+	'447', // SafeNames Ltd
+	'1600', // Brandsight, Inc.
+	'106', // Ascio Technologies (corporate channel)
+	'1316', // Nameshield SAS
+	'1495', // EBRAND Services
+	'151', // Gandi SAS — corporate/enterprise channel
+	'1479', // In2net / brand-protection channel
+]);
+
+/**
+ * Human phrasing for a {@link DefensiveReason} token. Internal enum values are
+ * meaningless in a customer-facing report about a named organisation — the
+ * same rule `UNKNOWN_REASON_PHRASES` exists for in `registration-state.ts`.
+ *
+ * WORDING CONSTRAINT: none of these may contain `missing`, `required`,
+ * `not found`, or the `no <...> record` shape. `scoreIndicatesMissingControl()`
+ * in the vendored scoring package matches finding TEXT, and a match on a
+ * high-severity finding ZEROES the whole category score — the one way a
+ * wording change in this file could move a number. Pinned by a boundary test.
+ */
+export const DEFENSIVE_REASON_PHRASES: Record<DefensiveReason, string> = {
+	'redirect-to-target': 'its web root redirects back to the scanned domain',
+	'parked-ns': 'its nameservers are at a domain-parking provider',
+	'no-mx': 'it carries no active mail service',
+};
 
 /**
  * Check whether an MX record represents real mail infrastructure.
@@ -343,6 +399,16 @@ function buildThreatObservationFinding(
 	ownership: OwnershipAssessment,
 	corroboratorReasons: string,
 	sharedRegistrantOrg: string | undefined,
+	/**
+	 * True when {@link isBrandHeldRegistration} corroborated that the candidate
+	 * is the scanned organisation's OWN defensive registration. Changes the
+	 * closing REMEDIATION sentence only — the observation and its calibrated
+	 * severity are emitted unchanged, per the F1 ruling that an attribution
+	 * signal may annotate the threat axis but never switch it off or discount
+	 * it. Telling a customer to report their own domain for takedown is not a
+	 * severity question; it is simply wrong advice.
+	 */
+	brandHeld = false,
 ): Finding {
 	const infraPhrase = signals.hasMX
 		? `active mail infrastructure (MX records), so it is capable of sending mail that resembles ${seedDomain}`
@@ -355,12 +421,24 @@ function buildThreatObservationFinding(
 	const registrantNote = sharedRegistrantOrg
 		? ` Its RDAP registrant-organisation string matches the one published for ${seedDomain} ("${sharedRegistrantOrg}"); that field is self-declared, unverified by the registry, and frequently a shared privacy-service placeholder, so it is recorded but does not reduce what was observed here.`
 		: '';
+	// The attribution clause and the closing remediation clause both assume the
+	// candidate is an outside party's. When the registration record corroborates
+	// that it is the scanned organisation's OWN defensive registration, both are
+	// replaced — the observation itself and its calibrated severity are
+	// untouched, so nothing here moves a score.
+	const attributionClause = brandHeld
+		? `the registry publishes the same brand-protection registrar for it as for ${seedDomain}, so it is most likely the scanned organisation's own defensive registration`
+		: `${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested`;
+	const remediationClause = brandHeld
+		? `Because this looks like your own defensive registration, treat it as portfolio hygiene rather than a threat: confirm it against your domain portfolio, and keep it parked with mail explicitly disabled so it cannot be used to send. Do NOT report it for takedown without confirming ownership first.`
+		: `Defensive options that need no access to ${candidateDomain}: monitor it, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`;
 	return createFinding(
 		'lookalikes',
 		`Impersonation-shaped ${signals.hasMX ? 'infrastructure' : 'web infrastructure'} observed: ${candidateDomain}`,
 		severity,
-		`${candidateDomain} is a confusable variant of ${seedDomain} and was observed with ${observed}. This is an infrastructure observation only: ${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested.${registrantNote} Defensive options that need no access to ${candidateDomain}: monitor it, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`,
+		`${candidateDomain} is a confusable variant of ${seedDomain} and was observed with ${observed}. This is an infrastructure observation only: ${attributionClause}.${registrantNote} ${remediationClause}`,
 		{
+			...(brandHeld ? { brandHeldRegistration: true } : {}),
 			lookalikeDomain: candidateDomain,
 			hasA: signals.hasA,
 			hasMX: signals.hasMX,
@@ -465,11 +543,24 @@ async function checkLookalikesCore(
 	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
 ): Promise<CheckResult> {
 	const findings: Finding[] = [];
-	// Typo/homoglyph permutations PLUS combosquats (brand + lure affix). The two
-	// generators are disjoint by construction — combosquats defeat the edit-distance
-	// mutators — so the union is deduped to a single candidate set that flows through
-	// the same NS-existence → probe → enrich → severity pipeline.
-	const permutations = [...new Set([...generateLookalikes(domain), ...generateCombosquats(domain)])];
+	// THREE disjoint candidate lanes, deduped into one set that flows through the
+	// same NS-existence → probe → enrich → severity pipeline:
+	//
+	//  - `generateLookalikes` — MOTOR errors (keyboard adjacency, omission,
+	//    duplication, dot insertion, TLD swap, homoglyph): a slip of the finger
+	//    by someone who knows the correct spelling.
+	//  - `generateCognitiveLookalikes` — COGNITIVE errors: the spelling a large
+	//    population believes IS correct (`sketchers`, `berenstein`), typed
+	//    deliberately and repeatedly. The motor set cannot reach these except by
+	//    coincidence, so before this lane existed they were simply never probed.
+	//  - `generateCombosquats` — brand + lure affix, which defeats edit distance
+	//    entirely.
+	//
+	// Each lane carries its OWN cap, so adding one can never evict another's
+	// candidates through a shared truncation.
+	const permutations = [
+		...new Set([...generateLookalikes(domain), ...generateCognitiveLookalikes(domain), ...generateCombosquats(domain)]),
+	];
 
 	if (permutations.length === 0) {
 		findings.push(
@@ -606,12 +697,44 @@ async function checkLookalikesCore(
 	// by `isSameEntityOrgMatch()`, which rejects privacy-proxy / redacted /
 	// generic strings on BOTH sides.
 	const sameEntityCandidates = computeSameEntityCandidates(results, ownershipByDomain, enrichment);
-	const primaryRegistrantOrg = sameEntityCandidates.length > 0 ? await probePrimaryRegistrantOrg(domain) : null;
+	// ONE RDAP fetch for the seed, reused for BOTH correlations: the registrant
+	// org (unverified, wording-only) and the registry-published registrar ID
+	// (the brand-held-registration signal). No extra network cost for the second.
+	const primaryRegistration = sameEntityCandidates.length > 0 ? await probePrimaryRegistration(domain) : EMPTY_RDAP_PROBE;
+	const primaryRegistrantOrg = primaryRegistration.registrantOrg;
 	const sameEntityMatches = new Map<string, string>();
+	/** Candidates the registration record corroborates as the seed org's own defensive registrations. */
+	const brandHeldMatches = new Map<string, { registrarIanaId: string; registrarName: string | null; reason: DefensiveReason }>();
 	for (const candidateDomain of sameEntityCandidates) {
-		const candidateOrg = enrichment.get(candidateDomain)?.registrantOrg ?? null;
+		const corroborators = enrichment.get(candidateDomain);
+		const candidateOrg = corroborators?.registrantOrg ?? null;
 		if (candidateOrg !== null && isSameEntityOrgMatch(primaryRegistrantOrg, candidateOrg)) {
 			sameEntityMatches.set(candidateDomain, candidateOrg);
+		}
+		const probe = results.find((r) => r.domain === candidateDomain);
+		// An ABSENT probe is "we never looked", which is NOT "there is no mail" —
+		// and the defensive-shape heuristic fires its `no-mx` reason on an empty
+		// array. Defaulting to `[]` here would therefore manufacture a defensive
+		// verdict out of a missing measurement, the exact
+		// unmeasured-signal-compiled-into-an-affirmative-claim trap. Skip instead.
+		// (`computeSameEntityCandidates` only ever names domains drawn from
+		// `results`, so this is unreachable today — it is a guard against a
+		// future caller widening the eligible set, not a live bug fix.)
+		if (probe === undefined) continue;
+		const brandHeld = isBrandHeldRegistration({
+			seedDomain: domain,
+			candidateDomain,
+			seedRegistrarIanaId: primaryRegistration.registrarIanaId,
+			candidateRegistrarIanaId: corroborators?.registrarIanaId ?? null,
+			candidateMxExchanges: probe.mxExchanges,
+			candidateNsHosts: Array.from(lookalikeNsMap.get(candidateDomain) ?? []),
+		});
+		if (brandHeld.brandHeld) {
+			brandHeldMatches.set(candidateDomain, {
+				registrarIanaId: brandHeld.registrarIanaId,
+				registrarName: corroborators?.registrarName ?? null,
+				reason: brandHeld.reason,
+			});
 		}
 	}
 
@@ -708,7 +831,46 @@ async function checkLookalikesCore(
 		// registrant-organisation SIGNAL, distinct from (and weaker than) the
 		// structural NS-based evidence, whose own finding is quoted verbatim.
 		const matchedOrg = sameEntityMatches.get(result.domain);
-		if (matchedOrg !== undefined) {
+		const brandHeld = brandHeldMatches.get(result.domain);
+		if (brandHeld !== undefined) {
+			// AXIS 1 — the registration record corroborates that this is the
+			// scanned organisation's OWN defensive registration. Emitted INSTEAD
+			// of the neutral D4 gate template, which would otherwise state
+			// positively that the domain "is registered to a different
+			// organisation" — a claim the nameserver evidence alone never
+			// supported and which is simply false here.
+			//
+			// SEVERITY IS `info`, EXACTLY AS `applyOwnershipGate()` WOULD HAVE
+			// CAPPED IT. This branch changes what the report SAYS, never what it
+			// SCORES: `capAttributionSeverity()` caps every non-`owned_by_seed`
+			// attribution finding at `info` regardless, so swapping the prose
+			// moves no penalty. Pinned by the boundary test in
+			// `test/ownership-attribution.spec.ts`.
+			const registrarLabel = brandHeld.registrarName
+				? `${brandHeld.registrarName} (IANA ${brandHeld.registrarIanaId})`
+				: `IANA registrar ${brandHeld.registrarIanaId}`;
+			findings.push(
+				createFinding(
+					'lookalikes',
+					`Confusable domain held at the same brand-protection registrar: ${result.domain}`,
+					'info',
+					`The domain ${result.domain} is a confusable variant of ${domain}, and the registry publishes the SAME brand-protection registrar for both (${registrarLabel}). Its infrastructure also has the shape of a defensive registration — ${DEFENSIVE_REASON_PHRASES[brandHeld.reason]}. Brand-protection registrars do not sell to the general public and the IANA registrar ID is published by the registry rather than declared by the registrant, so this corroborates that ${result.domain} is held by the scanned organisation itself; it is not proof, since one such registrar serves many brands. Nameserver evidence is separate and did not link the two: ${ownership.rationale} Confirm against your own domain portfolio before treating ${result.domain} as an outside party's.`,
+					{
+						lookalikeDomain: result.domain,
+						hasA: result.hasA,
+						hasMX: result.hasMX,
+						brandHeldRegistration: true,
+						sharedRegistrarIanaId: brandHeld.registrarIanaId,
+						defensiveReason: brandHeld.reason,
+						// Ruling A holds: registrar evidence never manufactures
+						// `owned_by_seed`. The STRUCTURAL verdict travels unchanged.
+						ownershipVerdict: ownership.verdict,
+						ownershipRationale: ownership.rationale,
+						findingAxis: 'attribution' satisfies LookalikeFindingAxis,
+					},
+				),
+			);
+		} else if (matchedOrg !== undefined) {
 			// AXIS 1 — the registrant-org observation REPLACES the neutral D4 gate
 			// template for this candidate (it is strictly more informative), but it
 			// is still an attribution statement capped at info.
@@ -780,7 +942,18 @@ async function checkLookalikesCore(
 		// F1: that string is unverified and collision-prone, so it may annotate the
 		// observation but must never switch the axis off). Only `owned_by_seed`
 		// candidates are exempt — they `continue` above.
-		findings.push(buildThreatObservationFinding(result.domain, domain, severity, signals, ownership, corroboratorReasons, matchedOrg));
+		findings.push(
+			buildThreatObservationFinding(
+				result.domain,
+				domain,
+				severity,
+				signals,
+				ownership,
+				corroboratorReasons,
+				matchedOrg,
+				brandHeld !== undefined,
+			),
+		);
 		if (result.hasMX && severity === 'high') {
 			highCount++;
 			highDomains.push(result.domain);
@@ -908,6 +1081,14 @@ interface LookalikeCorroborators {
 	 * stands; a real threat is never suppressed on missing RDAP).
 	 */
 	registrantOrg: string | null;
+	/**
+	 * Registry-published IANA registrar ID for this candidate, harvested from
+	 * the same single RDAP fetch as everything else here. Feeds
+	 * {@link isBrandHeldRegistration}; `null` fails soft to "no evidence".
+	 */
+	registrarIanaId: string | null;
+	/** Registrar display name, for report prose only. */
+	registrarName: string | null;
 }
 
 /**
@@ -960,18 +1141,40 @@ export function isSameEntityOrgMatch(primaryOrg: string | null, candidateOrg: st
  * classification loop's decision so we never fetch the primary's registrant
  * org speculatively: a candidate qualifies only when `ownershipByDomain`
  * does NOT already attribute it to the seed (`owned_by_seed` — CALL SITE 3
- * of the D4 2026-07-26 correctness-defects design's ownership gate), has
- * mail/web infra, AND its calibrated severity is medium or high (low
- * web-only matches aren't worth the RDAP cost). The result
- * is sorted high-before-medium and capped at {@link SAME_ENTITY_RDAP_CAP} so a
- * permutation explosion can't widen the RDAP fan-out unbounded.
+ * of the D4 2026-07-26 correctness-defects design's ownership gate) and has
+ * mail/web infra. The result is sorted by calibrated severity, highest first,
+ * and capped at {@link SAME_ENTITY_RDAP_CAP} so a permutation explosion can't
+ * widen the RDAP fan-out unbounded.
+ *
+ * LOW-SEVERITY CANDIDATES ARE ELIGIBLE (changed — they used to be excluded as
+ * "not worth the RDAP cost"). That exclusion was the mechanical cause of the
+ * brand's-own-defensive-registration defect: a defensive registration is
+ * PARKED, so it is web-only, aged and mail-less, and therefore calibrates
+ * exactly `low`. The tool skipped the one fetch that would have told it who
+ * held the domain, then asserted the domain "is registered to a different
+ * organisation" and offered to report it for takedown — a positive
+ * non-ownership CLAIM derived from evidence it declined to gather.
+ *
+ * Severity is a THREAT tier, so gating an ATTRIBUTION lookup on it was a
+ * category error: the cheapest candidates to dismiss as low-threat are
+ * precisely the ones most likely to be the customer's own.
+ *
+ * COST OF THE WIDENING IS ONE FETCH, MEASURED NOT ASSUMED. Candidate RDAP was
+ * never gated on severity — `enrichLookalikes()` already fetches it for every
+ * non-owned candidate with mail/web infra. The medium/high gate only decided
+ * whether the SEED's single RDAP fetch happened. So widening to `low` adds at
+ * most ONE request per scan, on scans that have a registered non-owned
+ * candidate at all. `SAME_ENTITY_RDAP_CAP` still bounds the set; severity now
+ * only decides ORDER within it, and `owned_by_seed` candidates are still
+ * excluded outright, so the shared-NS short-circuit still pays no RDAP cost.
  */
 function computeSameEntityCandidates(
 	results: LookalikeResult[],
 	ownershipByDomain: Map<string, OwnershipAssessment>,
 	enrichment: Map<string, LookalikeCorroborators>,
 ): string[] {
-	const eligible: Array<{ domain: string; severity: 'medium' | 'high' }> = [];
+	const SEVERITY_ORDER: Record<LookalikeSeverity, number> = { high: 0, medium: 1, low: 2 };
+	const eligible: Array<{ domain: string; severity: LookalikeSeverity }> = [];
 	for (const result of results) {
 		const sameOwner = ownershipByDomain.get(result.domain)?.verdict === 'owned_by_seed';
 		if (sameOwner) continue;
@@ -984,11 +1187,9 @@ function computeSameEntityCandidates(
 			mxOnDisposable: corroborators?.mxOnDisposable ?? false,
 			hasWebContent: corroborators?.hasWebContent ?? true,
 		});
-		if (severity === 'medium' || severity === 'high') {
-			eligible.push({ domain: result.domain, severity });
-		}
+		eligible.push({ domain: result.domain, severity });
 	}
-	eligible.sort((a, b) => (a.severity === b.severity ? 0 : a.severity === 'high' ? -1 : 1));
+	eligible.sort((a, b) => SEVERITY_ORDER[a.severity] - SEVERITY_ORDER[b.severity]);
 	return eligible.slice(0, SAME_ENTITY_RDAP_CAP).map((e) => e.domain);
 }
 
@@ -1015,6 +1216,8 @@ async function enrichLookalikes(candidates: LookalikeResult[]): Promise<Map<stri
 				mxOnDisposable,
 				hasWebContent,
 				registrantOrg: rdap.registrantOrg,
+				registrarIanaId: rdap.registrarIanaId,
+				registrarName: rdap.registrarName,
 			});
 		}),
 	);
@@ -1027,10 +1230,129 @@ interface RdapProbeResult {
 	registrationDays: number | null;
 	/** Normalised RDAP registrant org, or `null` on any failure / missing data. */
 	registrantOrg: string | null;
+	/**
+	 * Registry-published IANA registrar ID, or `null` on any failure / absence.
+	 * Distinct in kind from {@link registrantOrg}: assigned by ICANN, published
+	 * by the registry, and not settable by the registrant — see
+	 * {@link BRAND_PROTECTION_REGISTRAR_IANA_IDS}.
+	 */
+	registrarIanaId: string | null;
+	/** Registrar display name, for report prose only. Never compared. */
+	registrarName: string | null;
 }
 
 /** Empty probe result — used for early-outs and the catch path (fail-soft). */
-const EMPTY_RDAP_PROBE: RdapProbeResult = { registrationDays: null, registrantOrg: null };
+const EMPTY_RDAP_PROBE: RdapProbeResult = { registrationDays: null, registrantOrg: null, registrarIanaId: null, registrarName: null };
+
+/**
+ * Pull the registrar's IANA ID and display name out of a parsed RDAP domain
+ * response. Local to this file rather than imported because
+ * `check-rdap-lookup.ts` keeps its vCard/publicId readers private; only
+ * `findEntityByRole` is exported, so the traversal is reused and just the two
+ * field reads are done here.
+ *
+ * Fail-soft in every branch — a non-conforming shape yields nulls, which the
+ * brand-held predicate treats as "no evidence" (never as a match).
+ */
+function extractRegistrar(rdapData: unknown): { ianaId: string | null; name: string | null } {
+	if (typeof rdapData !== 'object' || rdapData === null) return { ianaId: null, name: null };
+	const entities = (rdapData as { entities?: unknown }).entities;
+	if (!Array.isArray(entities)) return { ianaId: null, name: null };
+	const registrar = findEntityByRole(entities as Parameters<typeof findEntityByRole>[0], 'registrar');
+	if (!registrar) return { ianaId: null, name: null };
+
+	let ianaId: string | null = null;
+	const publicIds = (registrar as { publicIds?: unknown }).publicIds;
+	if (Array.isArray(publicIds)) {
+		for (const publicId of publicIds) {
+			if (typeof publicId !== 'object' || publicId === null) continue;
+			const { type, identifier } = publicId as { type?: unknown; identifier?: unknown };
+			if (typeof type === 'string' && /^IANA Registrar ID$/i.test(type.trim()) && typeof identifier === 'string' && identifier.trim()) {
+				ianaId = identifier.trim();
+				break;
+			}
+		}
+	}
+
+	let name: string | null = null;
+	const vcardArray = (registrar as { vcardArray?: unknown }).vcardArray;
+	if (Array.isArray(vcardArray) && vcardArray[0] === 'vcard' && Array.isArray(vcardArray[1])) {
+		for (const prop of vcardArray[1] as unknown[]) {
+			if (Array.isArray(prop) && prop[0] === 'fn' && typeof prop[3] === 'string' && prop[3].trim()) {
+				name = prop[3].trim();
+				break;
+			}
+		}
+	}
+	return { ianaId, name };
+}
+
+/**
+ * THE predicate deciding whether a candidate is the scanned organisation's own
+ * DEFENSIVE REGISTRATION rather than a third party's domain.
+ *
+ * Requires BOTH, and neither alone is sufficient:
+ *
+ *  1. REGISTRATION-RECORD corroboration — the candidate and the seed share an
+ *     IANA registrar ID belonging to a brand-protection registrar
+ *     ({@link BRAND_PROTECTION_REGISTRAR_IANA_IDS}). A shared RETAIL registrar
+ *     is explicitly not evidence: millions of unrelated registrants share one.
+ *
+ *  2. DEFENSIVE INFRASTRUCTURE SHAPE — `evaluateDefensiveRegistration()`
+ *     (`src/lib/brand-defensive-registration.ts`) agrees the candidate is a
+ *     typo-close label parked with minimal infrastructure. An attacker who
+ *     somehow reached the same corporate registrar but stood up live mail
+ *     still fails this leg and gets the full threat treatment.
+ *
+ * WHAT THIS DELIBERATELY DOES NOT DO: it does not, and must not, produce an
+ * `owned_by_seed` ownership verdict. `classifyOwnership()` stays driven by
+ * seed-side nameserver evidence alone (Ruling A), and every finding about this
+ * candidate keeps carrying its structural `third_party` verdict. What changes
+ * is what the report CLAIMS and RECOMMENDS: it stops asserting the domain
+ * "is registered to a different organisation" on evidence that never
+ * addressed the question, and stops telling the customer to report their own
+ * domain for takedown.
+ *
+ * NULL-GUARD NOTE — VERIFIED BY MUTATION, NOT ASSUMED (the same disclosure
+ * `isSameEntityOrgMatch` above makes about its own both-sides gate). The
+ * `=== null` guard on the first line is currently REDUNDANT: deleting it left
+ * the entire suite green, because two `null` IDs pass the equality check and
+ * are then rejected by `BRAND_PROTECTION_REGISTRAR_IANA_IDS.has(null)` anyway.
+ * No fixture can discriminate the two implementations while membership is an
+ * exact-set test, so none is shipped pretending to.
+ *
+ * It is kept as DEFENCE IN DEPTH and becomes load-bearing the moment that
+ * membership test is relaxed — a name-based or fuzzy registrar comparison, or
+ * an "any shared registrar" mode — at which point "both sides published
+ * nothing" would read as a match and silently mark every RDAP-less candidate
+ * as brand-held. Anyone relaxing it MUST keep this guard and ship a fixture
+ * that discriminates it, which only becomes constructible then.
+ */
+export function isBrandHeldRegistration(input: {
+	seedDomain: string;
+	candidateDomain: string;
+	seedRegistrarIanaId: string | null;
+	candidateRegistrarIanaId: string | null;
+	candidateMxExchanges: readonly string[];
+	candidateNsHosts: readonly string[];
+}): { brandHeld: false } | { brandHeld: true; registrarIanaId: string; reason: DefensiveReason } {
+	const { seedRegistrarIanaId, candidateRegistrarIanaId } = input;
+	if (seedRegistrarIanaId === null || candidateRegistrarIanaId === null) return { brandHeld: false };
+	if (seedRegistrarIanaId !== candidateRegistrarIanaId) return { brandHeld: false };
+	if (!BRAND_PROTECTION_REGISTRAR_IANA_IDS.has(candidateRegistrarIanaId)) return { brandHeld: false };
+
+	const shape = evaluateDefensiveRegistration({
+		candidateDomain: input.candidateDomain,
+		targetDomain: input.seedDomain,
+		// A concrete array (never `undefined`) — we DID look, via the Phase 2
+		// probe, so an empty set means "no mail", not "unknown". The heuristic
+		// abstains on `undefined`, which would silently disable this leg.
+		mxRecords: input.candidateMxExchanges,
+		nsHosts: input.candidateNsHosts,
+	});
+	if (!shape.defensive || shape.reason === undefined) return { brandHeld: false };
+	return { brandHeld: true, registrarIanaId: candidateRegistrarIanaId, reason: shape.reason };
+}
 
 /**
  * Lightweight RDAP lookup constrained for use inside the lookalike check.
@@ -1077,18 +1399,26 @@ async function probeRdap(domain: string): Promise<RdapProbeResult> {
 				registrationDays = Math.floor((Date.now() - creationTime) / (1000 * 60 * 60 * 24));
 			}
 		}
-		return { registrationDays, registrantOrg: extractRegistrantOrg(data) };
+		const registrar = extractRegistrar(data);
+		return {
+			registrationDays,
+			registrantOrg: extractRegistrantOrg(data),
+			registrarIanaId: registrar.ianaId,
+			registrarName: registrar.name,
+		};
 	} catch {
 		return EMPTY_RDAP_PROBE;
 	}
 }
 
 /**
- * Fetch the scan domain's normalised RDAP registrant org for same-entity
- * correlation (issue #263). Reuses {@link probeRdap}; fail-soft `null`.
+ * Fetch the scan domain's own registration record — registrant org for the
+ * same-entity correlation (issue #263) AND the registry-published registrar ID
+ * for {@link isBrandHeldRegistration}. ONE fetch serves both; reuses
+ * {@link probeRdap} and fails soft to {@link EMPTY_RDAP_PROBE}.
  */
-async function probePrimaryRegistrantOrg(domain: string): Promise<string | null> {
-	return (await probeRdap(domain)).registrantOrg;
+async function probePrimaryRegistration(domain: string): Promise<RdapProbeResult> {
+	return probeRdap(domain);
 }
 
 /**
