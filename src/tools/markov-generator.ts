@@ -8,6 +8,7 @@
  */
 
 import { LABEL_REGEX, MAX_LABEL_LENGTH } from '../lib/config';
+import { generateCognitiveLookalikes } from './lookalike-analysis';
 
 /**
  * Trigram model: map of "prefix" (2 chars) to map of "next char" to frequency.
@@ -96,24 +97,28 @@ function pickNextChar(transitions: Map<string, number>): string {
 /**
  * Common brand-related affixes to provide branching points for the Markov model.
  */
-const BRAND_AFFIXES = [
-	'auth',
-	'login',
-	'verify',
-	'cloud',
-	'secure',
-	'api',
-	'dev',
-	'cdn',
-	'mail',
-	'apps',
-	'portal',
-	'support',
-	'update',
-];
+const BRAND_AFFIXES = ['auth', 'login', 'verify', 'cloud', 'secure', 'api', 'dev', 'cdn', 'mail', 'apps', 'portal', 'support', 'update'];
 
 /**
- * Generate brand-related lookalike candidates using a Markov Chain approach.
+ * Generate brand-related lookalike candidates for the brand-discovery
+ * candidate universe.
+ *
+ * TWO LANES, unioned:
+ *
+ *  1. COGNITIVE misspellings ({@link generateCognitiveLookalikes}) — the
+ *     spellings a large population believes are correct (`sketchers`,
+ *     `berenstein`). These are ADDITIVE and carry their own cap, so `count`
+ *     still governs the Markov lane exactly as before. They are added because
+ *     a Mandela spelling that only reached `check_lookalikes` would remain
+ *     invisible to `discover_brand_domains`, which builds its universe from
+ *     this function alone.
+ *
+ *  2. The trigram Markov lane — `count` brand-SOUNDING names sampled from a
+ *     model trained on the base label plus {@link BRAND_AFFIXES}. This is a
+ *     different target: plausible-but-unseen names, not known misspellings.
+ *
+ * The two are disjoint in intent and near-disjoint in output; the union is
+ * deduped and sorted.
  */
 export function generateMarkovLookalikes(domain: string, count = 20): string[] {
 	const normalized = domain.toLowerCase();
@@ -135,16 +140,23 @@ export function generateMarkovLookalikes(domain: string, count = 20): string[] {
 
 	const model = trainTrigramModel(samples);
 
-	const candidates = new Set<string>();
+	// Lane 1 — cognitive misspellings. Additive: seeded before the Markov loop
+	// but NOT counted against `count`, so the trigram lane still yields the
+	// same number of samples it did before this union existed.
+	const candidates = new Set<string>(generateCognitiveLookalikes(normalized));
+	const markovCandidates = new Set<string>();
 	let attempts = 0;
-	// We want candidates that sound like the brand but aren't just the brand.
-	while (candidates.size < count && attempts < count * 20) {
+	// Lane 2 — we want candidates that sound like the brand but aren't just the
+	// brand. Sized against `markovCandidates`, never the union, so a brand with
+	// many cognitive misspellings does not starve the trigram lane.
+	while (markovCandidates.size < count && attempts < count * 20) {
 		attempts++;
 		const generated = generateFromModel(model, Math.max(3, base.length - 3), base.length + 10);
 		if (generated && generated !== base && !BRAND_AFFIXES.includes(generated)) {
-			candidates.add(generated + tld);
+			markovCandidates.add(generated + tld);
 		}
 	}
 
+	for (const candidate of markovCandidates) candidates.add(candidate);
 	return Array.from(candidates).sort();
 }

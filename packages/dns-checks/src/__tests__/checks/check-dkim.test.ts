@@ -215,12 +215,16 @@ describe('checkDKIM', () => {
 	});
 
 	it('attributes Mailgun CNAME delegation', async () => {
+		// Target measured live on mailgun.com, 2026-08-06: mg._domainkey CNAMEs to
+		// dkim.mailgun.NET. The previous fixture used a fabricated `mailo._mailgun.org`
+		// — the label there is `_mailgun`, so it only ever matched because the pattern
+		// was an unanchored suffix. Both were corrected together.
 		const queryDNS = createCnameAwareDNS(
 			{
-				'mailo._mailgun.org': ['k=rsa; p=' + 'A'.repeat(600)],
+				'dkim.mailgun.net': ['k=rsa; p=' + 'A'.repeat(600)],
 			},
 			{
-				'mail._domainkey.example.com': 'mailo._mailgun.org',
+				'mg._domainkey.example.com': 'dkim.mailgun.net',
 			},
 		);
 		const result = await checkDKIM('example.com', queryDNS);

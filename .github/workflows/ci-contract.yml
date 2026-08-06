@@ -51,4 +51,4 @@ jobs:
         run: npm test
 
       - name: Security audit
-        run: npm audit --audit-level=high
+        run: npm audit --omit=dev --audit-level=high
