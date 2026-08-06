@@ -17,6 +17,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { checkDKIM } from '../../checks/check-dkim';
 import { COMMON_DKIM_SELECTORS } from '../../checks/dkim-selectors';
+import { attributeCnameChain } from '../../checks/dkim-saas-attribution';
 import type { DNSQueryFunction } from '../../types';
 
 const VALID_KEY = 'v=DKIM1; k=rsa; p=' + 'A'.repeat(392);
@@ -119,5 +120,15 @@ describe('DKIM SaaS attribution reachable from the default probe list', () => {
 			),
 		);
 		expect(result.findings.some((f) => f.metadata?.delegatedTo === 'SendGrid')).toBe(true);
+	});
+});
+
+describe('SaaS attribution cannot be claimed by a lookalike domain', () => {
+	it('does not attribute an attacker-registered evil-mailgun.net to Mailgun', () => {
+		expect(attributeCnameChain(['dkim.mailgun.net'])).toBe('Mailgun');
+		expect(attributeCnameChain(['mailgun.net'])).toBe('Mailgun');
+		// Attribution downgrades severity, so a bare suffix match is exploitable.
+		expect(attributeCnameChain(['evil-mailgun.net'])).toBeUndefined();
+		expect(attributeCnameChain(['notmailgun.org'])).toBeUndefined();
 	});
 });

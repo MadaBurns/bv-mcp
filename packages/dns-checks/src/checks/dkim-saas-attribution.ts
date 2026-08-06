@@ -35,7 +35,12 @@ export const DKIM_SAAS_PATTERNS: readonly DkimSaasAttribution[] = [
 	// SUBDOMAIN customers are told to create, never the DKIM CNAME target — so
 	// this never matched a real chain. Both are kept: .org costs nothing and
 	// guards against a future change of target.
-	{ provider: 'Mailgun', pattern: /mailgun\.(net|org)\.?$/i },
+	//
+	// `(^|\.)` is load-bearing. Attribution DOWNGRADES finding severity (a weak
+	// 1024-bit key drops high → medium because only the provider can rotate it),
+	// so an unanchored suffix would let an attacker-registered `evil-mailgun.net`
+	// claim provider status and soften findings about a key it fully controls.
+	{ provider: 'Mailgun', pattern: /(^|\.)mailgun\.(net|org)\.?$/i },
 	{ provider: 'Postmark', pattern: /\.mtasv\.net\.?$/i },
 	{ provider: 'Mailchimp', pattern: /\.(mcsv|mailchimpapp)\.net\.?$/i },
 	{ provider: 'Amazon SES', pattern: /\.dkim\.amazonses\.com\.?$/i },
