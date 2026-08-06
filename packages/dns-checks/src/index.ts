@@ -40,6 +40,12 @@ export { createFinding, buildCheckResult, computeCategoryScore, inferFindingConf
 // Robot policy
 export { SCANNER_USER_AGENT, RobotsDisallowedError, withRobotsGate } from './robots-gate';
 
+// DKIM selector probe list. Exported so downstream consumers can assert provider
+// coverage without re-declaring the list (a second copy would drift and, because
+// a probe miss hard-floors the dkim category at 50, drift is scored as a real
+// finding on a domain whose email auth is fine).
+export { COMMON_DKIM_SELECTORS } from './checks/dkim-selectors';
+
 // Check implementations
 export {
 	checkSPF,
