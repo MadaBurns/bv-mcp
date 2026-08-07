@@ -11,8 +11,22 @@
 import { describe, it, expect } from 'vitest';
 import type { ScanDomainResult, MaturityStage } from '../src/tools/scan-domain';
 import type { CheckCategory, CheckResult, ScanScore, DomainContext } from '../src/lib/scoring';
-import { computeScanEvidence } from '../src/lib/scoring';
+import { computeScanEvidence, PROFILE_WEIGHTS } from '../src/lib/scoring';
 import { buildStructuredScanResult } from '../src/tools/scan/format-report';
+
+/**
+ * A REAL `DomainContext`, not a cast.
+ *
+ * Every context in this file used to be `{ profile, signals: [], weights: {}, … } as
+ * DomainContext`, which TypeScript rejected (TS2352) because `weights` is a
+ * `Record<CheckCategory, ImportanceProfile>` and `{}` is not one. Eight suppressed
+ * errors in a spec whose entire subject is per-category scoring behaviour is exactly
+ * the vacuity risk the `typecheck:tests` ratchet exists to catch — a cast that wide
+ * would have hidden a genuinely wrong `profile` value too.
+ */
+function makeContext(profile: DomainContext['profile']): DomainContext {
+	return { profile, signals: [], weights: PROFILE_WEIGHTS[profile], detectedProvider: null };
+}
 
 function makeMockScanResult(overrides: Partial<ScanDomainResult> = {}): ScanDomainResult {
 	return {
@@ -28,7 +42,7 @@ function makeMockScanResult(overrides: Partial<ScanDomainResult> = {}): ScanDoma
 		} as ScanScore,
 		checks: [],
 		maturity: null as unknown as MaturityStage,
-		context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+		context: makeContext('mail_enabled'),
 		cached: false,
 		timestamp: '2026-05-28T00:00:00Z',
 		scoringNote: null,
@@ -51,7 +65,7 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 				// One CheckResult below (spf), no checkStatus set → completed.
 				evidence: { attempted: 1, completed: 1, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: makeContext('web_only'),
 			checks: [
 				{
 					category: 'spf',
@@ -77,7 +91,7 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 				// One CheckResult below (spf), no checkStatus set → completed.
 				evidence: { attempted: 1, completed: 1, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: makeContext('web_only'),
 			checks: [
 				{
 					category: 'spf',
@@ -141,7 +155,7 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 
 		for (const input of corpusInputs) {
 			const result = makeMockScanResult({
-				context: { profile: input.profile, signals: [], weights: {}, detectedProvider: null } as DomainContext,
+				context: makeContext(input.profile),
 				checks: input.checks,
 				score: {
 					overall: 85,
@@ -162,7 +176,7 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 });
 
 describe('Defect H — web_only profile suppresses mail-only categories', () => {
-	const MAIL_ONLY_CATEGORIES = ['dkim', 'mta_sts', 'bimi', 'mx'] as const;
+	const MAIL_ONLY_CATEGORIES = ['dkim', 'mta_sts', 'bimi', 'mx', 'dane'] as const;
 
 	for (const category of MAIL_ONLY_CATEGORIES) {
 		it(`marks ${category} as notApplicable under web_only profile (gov.uk pattern: ${category}:0 → null)`, () => {
@@ -178,7 +192,7 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 					// One CheckResult below, no checkStatus set → completed.
 					evidence: { attempted: 1, completed: 1, ratio: 1 },
 				} as ScanScore,
-				context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+				context: makeContext('web_only'),
 				checks: [
 					{
 						category,
@@ -194,6 +208,49 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 		});
 	}
 
+	/**
+	 * #639 — `dane` self-declared "not applicable (no inbound mail)" in its own finding
+	 * text and then took a FULL 100 for the control, while `dkim`/`mta_sts`/`bimi`/`mx`
+	 * on the same domain were correctly nulled. Awarding full marks for a control the
+	 * domain had no opportunity to fail inflates the overall score.
+	 *
+	 * The 100 shape is what makes this distinct from the cases above: those pin the
+	 * pre-fix gov.uk pattern of a numeric 0 being reported as 0. Rule 2 fires at ANY
+	 * score, so both ends need pinning — a regression that re-narrowed Rule 2 to
+	 * "only when the score is 0" would pass every case above and still ship #639.
+	 */
+	it('nulls a self-declared-inapplicable dane scoring 100 under a non-mail profile (#639)', () => {
+		const result = makeMockScanResult({
+			score: {
+				overall: 85,
+				grade: 'A',
+				categoryScores: { dane: 100 } as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'ok',
+				evidence: { attempted: 1, completed: 1, ratio: 1 },
+			} as ScanScore,
+			context: makeContext('non_mail'),
+			checks: [
+				{
+					category: 'dane',
+					passed: true,
+					score: 100,
+					findings: [
+						{
+							category: 'dane',
+							title: 'SMTP DANE not applicable (no inbound mail)',
+							severity: 'info',
+							detail: 'Domain publishes no usable MX records; TLSA at _25._tcp is therefore not applicable.',
+						},
+					],
+				},
+			] as CheckResult[],
+		});
+		const s = buildStructuredScanResult(result);
+		expect(s.notApplicableCategories).toContain('dane');
+		expect(s.categoryScores.dane).toBeNull();
+	});
+
 	it('still scores web categories normally under web_only profile (ssl, dnssec, http_security)', () => {
 		const result = makeMockScanResult({
 			score: {
@@ -205,7 +262,7 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 				// Three CheckResults below, none with checkStatus set → all completed.
 				evidence: { attempted: 3, completed: 3, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: makeContext('web_only'),
 			checks: [
 				{ category: 'ssl', passed: true, score: 90, findings: [] },
 				{ category: 'dnssec', passed: true, score: 100, findings: [] },
@@ -232,7 +289,7 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 				// Two CheckResults below, no checkStatus set → completed.
 				evidence: { attempted: 2, completed: 2, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: makeContext('mail_enabled'),
 			checks: [
 				{ category: 'dkim', passed: true, score: 75, findings: [] },
 				{ category: 'mta_sts', passed: false, score: 60, findings: [] },
