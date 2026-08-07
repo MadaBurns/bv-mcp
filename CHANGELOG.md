@@ -4,9 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [3.44.0] - 2026-08-07
 
-**Scoring model unchanged. No weight, tier, grade band, severity penalty, `missingControl` rule, or profile changed** — verified by the absence of any `createFinding(` edit under `packages/dns-checks/src/checks/`. The only weights introduced (`CONTROL_WEIGHTS`) are local to `assess_spoofability`, which is `group: 'intelligence'`, `scanIncluded: false` and carries no `tier`, so it cannot move a domain's scan grade.
+**Scoring model unchanged at 1.7.0. `@blackveil/dns-checks` 1.12.0 → 1.13.0** (package check behaviour changed, so `PARITY_CORPUS_VERSION` moves in lockstep and the bv-web-prod tarball needs re-vendoring).
+
+**No weight, tier, grade band, severity penalty, `missingControl` rule, or profile changed** — verified by the absence of any `createFinding(` edit under `packages/dns-checks/src/checks/`. The only weights introduced (`CONTROL_WEIGHTS`) are local to `assess_spoofability`, which is `group: 'intelligence'`, `scanIncluded: false` and carries no `tier`, so it cannot move a domain's scan grade.
 
 ### Fixed — scan consistency (round 2)
 
