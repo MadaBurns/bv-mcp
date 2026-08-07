@@ -149,13 +149,14 @@ describe('scan_domain per-category dispatch — initial run path', () => {
 			tlsProbeBinding: tlsBinding,
 			tlsProbeAuthToken: 'tls-token',
 			signal: expect.any(AbortSignal),
+			robotsMemo: expect.anything(),
 		});
 		expect(sslCall.length).toBe(2);
 
 		// http_security: (domain, { signal }) — R7 threads the per-check abort signal.
 		const httpCall = spies.httpSecurity.mock.calls[0];
 		expect(httpCall[0]).toBe('example.com');
-		expect(httpCall[1]).toEqual({ signal: expect.any(AbortSignal) });
+		expect(httpCall[1]).toEqual({ signal: expect.any(AbortSignal), robotsMemo: expect.anything() });
 		expect(httpCall.length).toBe(2);
 
 		// dkim: (domain, undefined, dnsOptions)
@@ -192,6 +193,7 @@ describe('scan_domain per-category dispatch — initial run path', () => {
 			tlsProbeBinding: undefined,
 			tlsProbeAuthToken: 'tls-token',
 			signal: expect.any(AbortSignal),
+			robotsMemo: expect.anything(),
 		});
 		expect(sslCall.length).toBe(2);
 	});

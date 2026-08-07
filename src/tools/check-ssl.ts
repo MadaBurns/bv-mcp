@@ -16,6 +16,7 @@ import { callTlsProbe, mergeTlsFinding } from '../lib/tls-probe-binding';
 import { enrichWithCertificateMetadata } from '../lib/cert-metadata-enrich';
 import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-binding';
 import { withAbortSignal } from '../lib/abort-signal';
+import { withRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
 
 /**
  * Check SSL/TLS configuration for a domain.
@@ -42,6 +43,18 @@ export async function checkSsl(
 		 */
 		signal?: AbortSignal;
 		/**
+		 * Optional per-scan robots.txt fetch memo (issue #641). When supplied,
+		 * `https://<domain>/robots.txt` is fetched at most once across every check
+		 * in the same scan that shares this memo (today: `ssl` + `http_security`,
+		 * which target the SAME host) instead of once per check. Absent (every
+		 * direct `check_ssl` call) → a private per-call gate, unchanged behaviour.
+		 *
+		 * Latency only: the gate still parses and applies the robots rules itself,
+		 * so a disallow still throws `RobotsDisallowedError` and still excludes the
+		 * category exactly as before.
+		 */
+		robotsMemo?: RobotsFetchMemo;
+		/**
 		 * Opt IN to certificate metadata (issuer / expiry / SANs) from Certificate
 		 * Transparency. DEFAULT OFF, and deliberately so.
 		 *
@@ -62,7 +75,10 @@ export async function checkSsl(
 		certMetadata?: boolean;
 	} = {},
 ): Promise<CheckResult> {
-	const fetchFn = withRobotsGate(withAbortSignal(fetch, tlsProbeOptions.signal));
+	// Memo sits BENEATH the gate (and beneath the abort composition) so the gate's
+	// own robots.txt fetch is what gets deduplicated, while parsing/rule selection
+	// stay per-gate. No memo → `withRobotsFetchMemo` returns the function unchanged.
+	const fetchFn = withRobotsGate(withRobotsFetchMemo(withAbortSignal(fetch, tlsProbeOptions.signal), tlsProbeOptions.robotsMemo));
 	const base = (await checkSSL(domain, fetchFn, { timeout: HTTPS_TIMEOUT_MS })) as CheckResult;
 	// Certificate metadata (issuer / expiry / SANs) from Certificate Transparency.
 	// NON-SCORING: attaches to `metadata`, never appends a Finding — a CT lookup

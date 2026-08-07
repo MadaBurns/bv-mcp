@@ -1,0 +1,18 @@
+{
+	// Typecheck-only project for the package's own test tree.
+	//
+	// The shipping `tsconfig.json` deliberately EXCLUDES `src/**/__tests__/**` — tests must
+	// never reach `dist/` or the emitted `.d.ts`. That exclusion also meant no gate ever
+	// typechecked them (see issue #645). This project restores the coverage without touching
+	// the build config: noEmit, tests only. Consumed by `npm run typecheck:tests`.
+	"extends": "./tsconfig.json",
+	"compilerOptions": {
+		"noEmit": true,
+		"declaration": false,
+		"emitDeclarationOnly": false,
+		"outDir": null,
+		"rootDir": null
+	},
+	"include": ["src/**/__tests__/**/*.ts"],
+	"exclude": []
+}
