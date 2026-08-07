@@ -81,3 +81,29 @@ jobs:
       - run: npm run build --workspace=packages/dns-checks
       - run: npm run check:bindings
       - run: npm run lint
+
+  # NON-REQUIRED. Deliberately not in branch protection's required contexts
+  # (build-and-test / Secret & PII scan / Dependency audit / File hygiene check) — promoting it
+  # is an operator decision, not this job's.
+  #
+  # Neither tsconfig that CI runs typechecks a test file (`tsconfig.json` excludes `test`,
+  # `packages/dns-checks/tsconfig.json` excludes `src/**/__tests__/**`) and Vitest's esbuild
+  # transform strips types without checking them — so spec type errors are invisible to every
+  # other gate (issue #645). This is a RATCHET against a committed per-file baseline: it fails
+  # only when a file gains errors, so new/edited specs are covered while the existing drift
+  # stays parked. See scripts/ci/typecheck-tests.mjs.
+  typecheck-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      # test/tsconfig.json resolves @blackveil/dns-checks/* through the workspace package's
+      # built dist/; without it the run reports hundreds of phantom resolution errors.
+      - run: npm run build --workspace=packages/dns-checks
+      # `typecheck:tests` runs `wrangler types` first (test/tsconfig.json includes the generated
+      # worker-configuration.d.ts) and then the ratchet against test/typecheck-baseline.json.
+      - run: npm run typecheck:tests

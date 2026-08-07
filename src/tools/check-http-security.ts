@@ -12,6 +12,7 @@
  */
 
 import { checkHTTPSecurity, withRobotsGate, SCANNER_USER_AGENT } from '@blackveil/dns-checks';
+import type { FetchFunction } from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
@@ -19,6 +20,7 @@ import { safeFetch } from '../lib/safe-fetch';
 import { composeSignal, withAbortSignal } from '../lib/abort-signal';
 import { looksLikeWaf, detectWafEvent, buildWafFinding } from '../lib/waf-detection';
 import { readBoundedText } from '../lib/response-body';
+import { withRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
 
 /** Security headers to merge (union) across dual fetches. */
 const MERGE_HEADERS = [
@@ -144,7 +146,7 @@ type RedirectResult = { response: Response; edgeSignals: Headers };
  * `edgeSignals`; the final (non-redirect) response is returned with its own
  * headers untouched so origin-vs-edge CDN attribution stays distinct.
  */
-async function fetchWithRedirects(url: string, timeoutMs: number, callerSignal?: AbortSignal): Promise<RedirectResult> {
+async function fetchWithRedirects(url: string, timeoutMs: number, gates: GatedFetchers, callerSignal?: AbortSignal): Promise<RedirectResult> {
 	const edgeSignals = new Headers();
 	// Initial fetch goes to https://<domain> where <domain> is already validated
 	// upstream. Use raw fetch to keep the cost off the validation path. Subsequent
@@ -154,7 +156,7 @@ async function fetchWithRedirects(url: string, timeoutMs: number, callerSignal?:
 	// R7: compose the per-fetch timeout with the caller's scan-/per-check-level
 	// abort signal so a scan timeout cancels the in-flight HTTPS probe instead of
 	// orphaning the subrequest. Absent caller signal → timeout-only (unchanged).
-	let response = await gatedFetch(
+	let response = await gates.gatedFetch(
 		url,
 		composeSignal(
 			{
@@ -193,7 +195,7 @@ async function fetchWithRedirects(url: string, timeoutMs: number, callerSignal?:
 		if (!nextUrl.startsWith('https://')) break;
 
 		try {
-			response = await gatedSafeFetch(
+			response = await gates.gatedSafeFetch(
 				nextUrl,
 				composeSignal(
 					{
@@ -250,12 +252,13 @@ function mergeSecurityHeaders(a: Headers, b: Headers): Headers {
 async function dualFetchHeaders(
 	domain: string,
 	timeoutMs: number,
+	gates: GatedFetchers,
 	callerSignal?: AbortSignal,
 ): Promise<{ headers: Headers; edgeSignals: Headers; ok: boolean; status: number; usable: boolean } | null> {
 	const url = `https://${domain}`;
 	const results = await Promise.allSettled([
-		fetchWithRedirects(url, timeoutMs, callerSignal),
-		fetchWithRedirects(url, timeoutMs, callerSignal),
+		fetchWithRedirects(url, timeoutMs, gates, callerSignal),
+		fetchWithRedirects(url, timeoutMs, gates, callerSignal),
 	]);
 
 	const settled = results.filter((r): r is PromiseFulfilledResult<RedirectResult> => r.status === 'fulfilled').map((r) => r.value);
@@ -315,9 +318,9 @@ export async function readWafResponseBody(response: Response): Promise<string> {
 	return readBoundedText(response.body, WAF_BODY_MAX_BYTES);
 }
 
-async function fetchBodyForWafDetection(url: string, timeoutMs: number, callerSignal?: AbortSignal): Promise<string> {
+async function fetchBodyForWafDetection(url: string, timeoutMs: number, gates: GatedFetchers, callerSignal?: AbortSignal): Promise<string> {
 	try {
-		const response = await gatedFetch(
+		const response = await gates.gatedFetch(
 			url,
 			composeSignal(
 				{
@@ -370,7 +373,40 @@ const TOTAL_BUDGET_MS = 10_000;
 const gatedFetch = withRobotsGate((url, init) => fetch(url, init), { userAgent: SCANNER_USER_AGENT });
 const gatedSafeFetch = withRobotsGate((url, init) => safeFetch(url, init), { userAgent: SCANNER_USER_AGENT });
 
-export async function checkHttpSecurity(domain: string, options: { signal?: AbortSignal } = {}): Promise<CheckResult> {
+/** The pair of robots-gated fetchers this check's call sites use. */
+interface GatedFetchers {
+	gatedFetch: FetchFunction;
+	gatedSafeFetch: FetchFunction;
+}
+
+/** The isolate-lifetime default pair — used by every direct `check_http_security` call. */
+const DEFAULT_GATES: GatedFetchers = { gatedFetch, gatedSafeFetch };
+
+/**
+ * Resolve the gated fetchers for one invocation (issue #641).
+ *
+ * No memo (direct tool call) → the module-scope pair above, whose isolate-lifetime
+ * robots.txt cache is unchanged.
+ *
+ * Memo supplied (a `scan_domain` fan-out) → a fresh gate pair whose inner fetches
+ * share the SCAN's robots.txt memo, so `https://<domain>/robots.txt` is fetched once
+ * for `ssl` + `http_security` combined instead of once each. This also collapses the
+ * two module gates' separate caches (`gatedFetch` / `gatedSafeFetch` each keep their
+ * own) onto one shared fetch. Building the gates per call is pure closure allocation;
+ * the network saving is what matters.
+ */
+function resolveGates(robotsMemo?: RobotsFetchMemo): GatedFetchers {
+	if (!robotsMemo) return DEFAULT_GATES;
+	return {
+		gatedFetch: withRobotsGate(withRobotsFetchMemo((url, init) => fetch(url, init), robotsMemo), { userAgent: SCANNER_USER_AGENT }),
+		gatedSafeFetch: withRobotsGate(withRobotsFetchMemo((url, init) => safeFetch(url, init), robotsMemo), { userAgent: SCANNER_USER_AGENT }),
+	};
+}
+
+export async function checkHttpSecurity(
+	domain: string,
+	options: { signal?: AbortSignal; robotsMemo?: RobotsFetchMemo } = {},
+): Promise<CheckResult> {
 	let budgetTimeoutId: ReturnType<typeof setTimeout> | undefined;
 	// Abort in-flight fetches when the budget is exceeded rather than merely
 	// out-racing them: a bare setTimeout race left the loser's fetch running with
@@ -384,7 +420,7 @@ export async function checkHttpSecurity(domain: string, options: { signal?: Abor
 		}, TOTAL_BUDGET_MS);
 	});
 	const innerSignal = options.signal ? AbortSignal.any([options.signal, budgetController.signal]) : budgetController.signal;
-	const innerPromise = checkHttpSecurityInner(domain, innerSignal);
+	const innerPromise = checkHttpSecurityInner(domain, resolveGates(options.robotsMemo), innerSignal);
 	// The abort above makes innerPromise reject shortly after budgetExceeded has
 	// already won the race below — attach a no-op catch so that expected,
 	// already-handled-via-the-timeout-finding rejection doesn't surface as an
@@ -409,15 +445,15 @@ export async function checkHttpSecurity(domain: string, options: { signal?: Abor
 	}
 }
 
-async function checkHttpSecurityInner(domain: string, callerSignal?: AbortSignal): Promise<CheckResult> {
-	const dualResult = await dualFetchHeaders(domain, HTTPS_TIMEOUT_MS, callerSignal);
+async function checkHttpSecurityInner(domain: string, gates: GatedFetchers, callerSignal?: AbortSignal): Promise<CheckResult> {
+	const dualResult = await dualFetchHeaders(domain, HTTPS_TIMEOUT_MS, gates, callerSignal);
 
 	// WAF/CDN event detection — runs on usable (2xx/3xx) AND Cloudflare-flagged 4xx responses,
 	// short-circuiting before header analysis so a challenge/block page is never mis-read as the site.
 	if (dualResult) {
 		const headersForWaf = dualResult.headers;
 		const body = looksLikeWaf(headersForWaf)
-			? await fetchBodyForWafDetection(`https://${domain}`, HTTPS_TIMEOUT_MS, callerSignal)
+			? await fetchBodyForWafDetection(`https://${domain}`, HTTPS_TIMEOUT_MS, gates, callerSignal)
 			: undefined;
 		const event = detectWafEvent(headersForWaf, body, dualResult.status);
 		if (event) {
@@ -474,7 +510,7 @@ async function checkHttpSecurityInner(domain: string, callerSignal?: AbortSignal
 		// invokes capturingFetch with a string URL, so this narrows a type that
 		// was already runtime-guaranteed, matching safeFetch's own internal
 		// urlOf() normalization.
-		const response = await gatedSafeFetch(input as string, composeSignal(init, callerSignal));
+		const response = await gates.gatedSafeFetch(input as string, composeSignal(init, callerSignal));
 		capturedHeaders = response.headers;
 		return response;
 	};

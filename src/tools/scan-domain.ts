@@ -66,6 +66,7 @@ import { applyScanPostProcessing } from './scan/post-processing';
 import { resolveScanTimeoutBudget } from './scan/timeouts';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
+import { createRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
 import {
 	getAdaptiveWeights,
 	publishAdaptiveWeightSummary,
@@ -125,6 +126,12 @@ function resolveProviderSignatureOptions(rt?: ScanRuntimeOptions): {
  *   • The raw-`fetch` checks (`ssl`, `http_security`) make INDEPENDENT,
  *     un-cached fetches, so they safely receive the narrower `perCheckSignal`
  *     (composed: this check's per-check timeout OR the scan-level abort).
+ *
+ * The optional 6th `robotsMemo` (issue #641) is the ONE piece of per-scan state
+ * those two raw-`fetch` checks DO share: a URL-keyed memo so the single
+ * `https://<domain>/robots.txt` both of them must fetch is fetched once, not
+ * twice. Omitted on the retry path and on every direct tool call, where each
+ * check keeps its own private gate.
  */
 type CheckRunner = (
 	domain: string,
@@ -132,6 +139,7 @@ type CheckRunner = (
 	rt?: ScanRuntimeOptions,
 	perCheckSignal?: AbortSignal,
 	zone?: ZoneContext,
+	robotsMemo?: RobotsFetchMemo,
 ) => Promise<CheckResult>;
 
 /**
@@ -151,14 +159,14 @@ const CHECK_DISPATCH: Record<string, CheckRunner> = {
 	// R7: the raw-`fetch` checks take the narrower per-check signal (4th arg) so a
 	// per-check / scan-level timeout aborts their in-flight HTTPS subrequests.
 	// undefined outside scan context (direct calls / retry path) → unchanged.
-	ssl: (d, _dns, rt, sig) => checkSsl(d, { ...resolveSslOptions(rt), signal: sig }),
+	ssl: (d, _dns, rt, sig, _zone, robots) => checkSsl(d, { ...resolveSslOptions(rt), signal: sig, robotsMemo: robots }),
 	mta_sts: (d, dns, _rt, _sig, zone) => checkMtaSts(d, dns, zone),
 	ns: (d, dns, _rt, _sig, zone) => checkNs(d, dns, zone),
 	caa: (d, dns, _rt, _sig, zone) => checkCaa(d, dns, zone),
 	bimi: (d, dns) => checkBimi(d, dns),
 	tlsrpt: (d, dns) => checkTlsrpt(d, dns),
 	subdomain_takeover: (d, dns) => checkSubdomainTakeover(d, dns),
-	http_security: (d, _dns, _rt, sig) => checkHttpSecurity(d, { signal: sig }),
+	http_security: (d, _dns, _rt, sig, _zone, robots) => checkHttpSecurity(d, { signal: sig, robotsMemo: robots }),
 	dane: (d, dns) => checkDane(d, dns),
 	mx: (d, dns, rt) => checkMx(d, resolveProviderSignatureOptions(rt), dns),
 	dane_https: (d, dns) => checkDaneHttps(d, dns),
@@ -593,6 +601,27 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// resolveZoneApex never throws (returns delegationStatus:'unknown' on resolver error).
 	const zone = isAuthoritativeInfraProfile ? undefined : await resolveZoneApex(domain, scanDns);
 
+	// Issue #641: ONE robots.txt fetch memo per scan, shared by the checks that probe
+	// the SAME host over raw HTTPS (`ssl` and `http_security` both hit
+	// `https://<domain>/robots.txt`). Before this, `check-ssl.ts` built a private
+	// `withRobotsGate` closure per call, so the two checks each paid their own
+	// blocking robots.txt fetch of up to ROBOTS_FETCH_TIMEOUT_MS (3s) inside an 8s
+	// per-check budget — a measured contributor to `ssl` timing out on 12 of 21 cold
+	// first-touch scans and silently dropping 3–4 points off the grade.
+	//
+	// Lifetime and blast radius are both bounded HERE, by construction:
+	//   • declared as a local `const` inside scanDomain(), so it dies with this scan.
+	//     There is deliberately NO module-level memo — a Worker isolate is long-lived
+	//     and `/internal/tools/batch` fans one tool across up to 500 domains in a
+	//     single invocation, so isolate-scoped state would outlive its evidence.
+	//   • keyed on the absolute robots.txt URL (see lib/robots-memo.ts), so domain A's
+	//     robots.txt can never be served for domain B — the origin IS the key.
+	//   • `mta_sts` deliberately does NOT take the memo: its robots.txt fetch targets
+	//     `mta-sts.<domain>` (a DIFFERENT host — see the package's check-mta-sts.ts
+	//     policy URL), so it shares nothing with ssl/http_security and would only
+	//     lose its module-scope isolate-lifetime cache in exchange for zero dedup.
+	const robotsMemo = createRobotsFetchMemo();
+
 	const forceRefresh = runtimeOptions?.forceRefresh;
 	const cacheTtl = runtimeOptions?.cacheTtlSeconds;
 
@@ -620,7 +649,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			domain,
 			cat,
 			() =>
-				safeCheck(cat, () => CHECK_DISPATCH[cat](domain, scanDns, runtimeOptions, perCheckSignal, zone), timeoutBudget.perCheckTimeoutMs, () =>
+				safeCheck(cat, () => CHECK_DISPATCH[cat](domain, scanDns, runtimeOptions, perCheckSignal, zone, robotsMemo), timeoutBudget.perCheckTimeoutMs, () =>
 					perCheckAbort.abort(),
 				),
 			kv,
