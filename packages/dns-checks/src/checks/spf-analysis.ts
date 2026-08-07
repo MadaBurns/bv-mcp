@@ -249,3 +249,23 @@ export function checkBroadIpRanges(spfRecord: string, metadata: Record<string, u
 
 	return findings;
 }
+
+/**
+ * Detect a no-send SPF policy: `-all`/`~all` with zero mechanisms authorizing
+ * any sender. Such a domain has declared that nothing may send mail as it.
+ *
+ * Lives here rather than in `check-spf.ts` because two checks reason about it:
+ * `check-spf` surfaces it as `metadata.noSendPolicy` (which the Worker's scan
+ * post-processing reads), and `check-bimi` uses it to avoid recommending BIMI to
+ * a domain that cannot send email. It was briefly duplicated across the two —
+ * the same drift hazard that required a tripwire for the SPF trust-surface
+ * catalog. One definition, imported twice.
+ */
+export function isNoSendPolicy(spf: string): boolean {
+	const allMatch = spf.match(/[+?~-]all/i);
+	if (!allMatch) return false;
+	const qualifier = allMatch[0][0];
+	if (qualifier !== '-' && qualifier !== '~') return false;
+	const hasAuthorizing = /\b(include:|a[:/\s]|a$|mx[:/\s]|mx$|ip4:|ip6:|redirect=|exists:)/i.test(spf);
+	return !hasAuthorizing;
+}
