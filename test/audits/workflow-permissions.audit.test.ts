@@ -9,7 +9,10 @@
 //   Expected layout:
 //     workflow-level:  permissions: { contents: read }
 //     id-token: write  -> ONLY publish-npm  (npm provenance / OIDC)
-//     contents: write  -> ONLY version-bump (push bump) + github-release (gh release create)
+//     contents: write  -> ONLY github-release (gh release create)
+//   version-bump held `contents: write` to push an auto-bump commit to `main`.
+//   That push is always rejected by protected-branch rules, so the job was
+//   converted to a read-only verification gate and the grant was dropped.
 //
 // FINDING F11 — actions must be SHA-pinned (40-hex), not tag-pinned, so a
 //   re-tagged upstream action can't silently change executed code.
@@ -156,12 +159,23 @@ describe('workflow permissions audit (F10 — least-privilege OIDC)', () => {
 		expect(withIdToken).toEqual(['publish-npm']);
 	});
 
-	it('contents: write appears ONLY in version-bump and github-release jobs', () => {
+	it('contents: write appears ONLY in the github-release job', () => {
 		const withContentsWrite = jobs
 			.filter((j) => hasWrite(j.permissions, 'contents'))
 			.map((j) => j.name)
 			.sort();
-		expect(withContentsWrite).toEqual(['github-release', 'version-bump']);
+		expect(withContentsWrite).toEqual(['github-release']);
+	});
+
+	// version-bump is a verification gate: it reads the tree and compares it to
+	// the tag. It must never regain write access — the auto-bump push it used to
+	// perform is structurally incompatible with protected `main`.
+	it('the version-bump gate is read-only (never re-acquires push capability)', () => {
+		const versionBump = jobs.find((j) => j.name === 'version-bump');
+		expect(versionBump, 'version-bump job present').toBeTruthy();
+		expect(Object.values(versionBump!.permissions ?? {}), 'version-bump must not grant write').not.toContain('write');
+		expect(Object.values(versionBump!.permissions ?? {}), 'version-bump must not grant write-all').not.toContain('write-all');
+		expect(publish, 'version-bump must not push to main').not.toContain('git push origin HEAD:main');
 	});
 
 	it('the untrusted-code job (validate) has no write permission', () => {
