@@ -691,3 +691,184 @@ describe('formatScanReport evidence coverage', () => {
 		expect(text).not.toContain('58%');
 	});
 });
+
+/**
+ * Issue #639 — `check_dane` declares "SMTP DANE not applicable (no inbound mail)" in its
+ * own finding prose and then emits an all-info CheckResult scoring a full 100. The
+ * category was absent from `MAIL_ONLY_CATEGORIES_FOR_NON_MAIL_PROFILE`, so on the very
+ * same non-mail domain where `dkim`/`mta_sts`/`bimi`/`mx` were correctly nulled, `dane`
+ * reported a perfect score for a control the domain had no opportunity to fail.
+ *
+ * REPORTING ONLY. These tests pin the wire shape; the overall score is produced upstream
+ * by `computeScanScore` and is deliberately untouched (DANE still earns its hardening
+ * point there) — excluding it from the scoring denominator re-grades every non-mail
+ * domain and is an operator decision.
+ */
+describe('DANE not-applicable reporting (#639)', () => {
+	/** The exact CheckResult `check-dane.ts` produces for a no-MX / RFC 7505 null-MX domain. */
+	const daneNotApplicableCheck = {
+		category: 'dane',
+		passed: true,
+		score: 100,
+		checkStatus: 'completed',
+		findings: [
+			{
+				category: 'dane',
+				title: 'SMTP DANE not applicable (no inbound mail)',
+				severity: 'info',
+				detail: 'example.com publishes no usable MX records, so SMTP DANE (TLSA at _25._tcp) is not applicable.',
+			},
+		],
+	} as unknown as CheckResult;
+
+	function nonMailResult(overrides: Partial<ScanDomainResult> = {}): ScanDomainResult {
+		return makeMockScanResult({
+			score: {
+				overall: 72,
+				grade: 'C+',
+				categoryScores: { dane: 100, bimi: 100, ssl: 90 } as unknown as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'ok',
+				evidence: { attempted: 3, completed: 3, ratio: 1 },
+			} as ScanScore,
+			context: { profile: 'non_mail', signals: ['No MX records'], weights: {}, detectedProvider: null } as DomainContext,
+			checks: [
+				daneNotApplicableCheck,
+				{ category: 'bimi', passed: true, score: 100, findings: [] },
+				{ category: 'ssl', passed: true, score: 90, findings: [] },
+			] as CheckResult[],
+			...overrides,
+		});
+	}
+
+	it('files dane under notApplicableCategories with a null score on a non-mail domain', () => {
+		const s = buildStructuredScanResult(nonMailResult());
+		expect(s.notApplicableCategories).toContain('dane');
+		expect(s.categoryScores.dane).toBeNull();
+		// The reconciliation invariant this file already enforces elsewhere.
+		expect(s.inconclusiveCategories).not.toContain('dane');
+	});
+
+	it('does the same under the web_only profile', () => {
+		const s = buildStructuredScanResult(
+			nonMailResult({
+				context: { profile: 'web_only', signals: ['No MX records'], weights: {}, detectedProvider: null } as DomainContext,
+			}),
+		);
+		expect(s.notApplicableCategories).toContain('dane');
+		expect(s.categoryScores.dane).toBeNull();
+	});
+
+	it('leaves the overall score, grade and applicable categories untouched (reporting-only fix)', () => {
+		const s = buildStructuredScanResult(nonMailResult());
+		expect(s.score).toBe(72);
+		expect(s.categoryScores.ssl).toBe(90);
+	});
+
+	it('keeps dane applicable on a mail-enabled domain', () => {
+		const s = buildStructuredScanResult(
+			nonMailResult({
+				context: { profile: 'mail_enabled', signals: ['MX present'], weights: {}, detectedProvider: null } as DomainContext,
+			}),
+		);
+		expect(s.notApplicableCategories).not.toContain('dane');
+		expect(s.categoryScores.dane).toBe(100);
+	});
+
+	it('does NOT touch dane_https — HTTPS DANE is not a mail-only control', () => {
+		const s = buildStructuredScanResult(
+			nonMailResult({
+				score: {
+					overall: 72,
+					grade: 'C+',
+					categoryScores: { dane: 100, dane_https: 100 } as unknown as Record<CheckCategory, number>,
+					findings: [],
+					summary: 'ok',
+					evidence: { attempted: 2, completed: 2, ratio: 1 },
+				} as ScanScore,
+				checks: [daneNotApplicableCheck, { category: 'dane_https', passed: true, score: 100, findings: [] }] as CheckResult[],
+			}),
+		);
+		expect(s.notApplicableCategories).toContain('dane');
+		expect(s.notApplicableCategories).not.toContain('dane_https');
+		expect(s.categoryScores.dane_https).toBe(100);
+	});
+
+	it('reports a timed-out dane as inconclusive, never as not applicable', () => {
+		const s = buildStructuredScanResult(
+			nonMailResult({
+				checks: [{ category: 'dane', passed: false, score: 0, findings: [], checkStatus: 'timeout' }] as CheckResult[],
+			}),
+		);
+		expect(s.inconclusiveCategories).toContain('dane');
+		expect(s.notApplicableCategories).not.toContain('dane');
+		expect(s.categoryScores.dane).toBeNull();
+	});
+
+	/**
+	 * The SERVFAIL / lame-delegation case specifically. `check-dane` now abstains
+	 * rather than reading an unresolvable zone as "no inbound mail", and the wrapper
+	 * converts that to `buildDnsErrorResult`'s shape. This pins the WIRE consequence:
+	 * a domain whose MX could not be resolved must be reported "could not measure",
+	 * never "does not apply" — the two are disjoint and mean different things, and the
+	 * whole bug was collapsing the second into the first.
+	 */
+	it('reports a SERVFAIL/lame-delegation dane as inconclusive and NEVER as not applicable', () => {
+		const daneServfail = {
+			category: 'dane',
+			passed: false,
+			score: 0,
+			checkStatus: 'error',
+			partial: true,
+			findings: [
+				{
+					category: 'dane',
+					title: 'DANE check error',
+					severity: 'high',
+					detail: 'Check failed: DNS query for MX records of broken.example returned SERVFAIL',
+					metadata: { errorKind: 'dns_error' },
+				},
+			],
+		} as unknown as CheckResult;
+
+		const s = buildStructuredScanResult(nonMailResult({ checks: [daneServfail] as CheckResult[] }));
+		expect(s.inconclusiveCategories).toContain('dane');
+		expect(s.notApplicableCategories).not.toContain('dane');
+		expect(s.categoryScores.dane).toBeNull();
+		expect(s.checkStatuses.dane).toBe('error');
+		// Disjointness is the invariant, in both directions.
+		expect(s.inconclusiveCategories.filter((c) => s.notApplicableCategories.includes(c))).toEqual([]);
+	});
+
+	it('renders an inconclusive dane as the ungraded token in text, not as N/A', () => {
+		const daneServfail = {
+			category: 'dane',
+			passed: false,
+			score: 0,
+			checkStatus: 'error',
+			partial: true,
+			findings: [],
+		} as unknown as CheckResult;
+		const output = formatScanReport(nonMailResult({ checks: [daneServfail] as CheckResult[] }), 'compact');
+		// "not applicable" is a claim about the domain; this scan made no such claim.
+		expect(output).not.toContain('∅ DANE');
+	});
+
+	it('renders DANE as N/A in the text report instead of 100/100', () => {
+		const output = formatScanReport(nonMailResult(), 'compact');
+		expect(output).toContain('∅ DANE       N/A');
+		expect(output).not.toContain('DANE       100/100');
+	});
+
+	it('text table and structuredContent agree on every N/A category (single source)', () => {
+		// The prose table used to carry its own ['spf','dmarc','dkim','mta_sts'] copy of the
+		// rule, so `bimi` printed 100/100 while structuredContent said null.
+		const result = nonMailResult();
+		const s = buildStructuredScanResult(result);
+		const output = formatScanReport(result, 'compact');
+		for (const cat of s.notApplicableCategories) {
+			expect(output, `${cat} is N/A in structuredContent but not in the text table`).toContain(`∅ ${cat.toUpperCase().padEnd(10)} N/A`);
+		}
+		expect(s.notApplicableCategories).toEqual(expect.arrayContaining(['dane', 'bimi']));
+	});
+});

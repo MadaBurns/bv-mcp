@@ -119,7 +119,9 @@ describe('buildWafFinding — canonical inconclusive WAF info-finding', () => {
 		expect(finding.metadata?.wafKind).toBe('block');
 		expect(finding.metadata?.httpStatus).toBe(403);
 		expect(finding.metadata?.inconclusive).toBe(true);
-		expect(finding.metadata?.missingControl).toBe(true);
+		// Issue #638: `inconclusive` and `missingControl` are mutually exclusive. A WAF page
+		// means the probe never reached the origin, so absence was never established.
+		expect(finding.metadata?.missingControl).toBeUndefined();
 	});
 
 	it('adds wafChallenge=provider for a challenge event', async () => {

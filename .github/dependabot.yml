@@ -20,3 +20,16 @@ updates:
     schedule:
       interval: weekly
     open-pull-requests-limit: 5
+    groups:
+      # github/codeql-action/init and .../analyze are ONE action published from one
+      # repo, and they must run at the SAME version: init writes a config file
+      # stamped with its own version, and analyze hard-fails reading it back with
+      # "Loaded a configuration file for version 'X', but running version 'Y'".
+      # Dependabot keys the github-actions ecosystem on the full action path, so
+      # without this group it opens a separate PR per sub-action — each one
+      # internally version-mismatched and therefore red on arrival. This split has
+      # recurred on every codeql-action release (v4.37.0 #499/#500,
+      # v4.37.3 #536/#538, v4.37.4 #627/#628). Grouping keeps them in lockstep.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"

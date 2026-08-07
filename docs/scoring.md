@@ -274,6 +274,8 @@ Source: `src/tools/check-authoritative-dns-infra.ts`, `src/tools/check-root-serv
 | 3 | Enforcing | DMARC policy = reject/quarantine, DNSSEC present. DKIM not required. |
 | 4 | Hardened | Stage 3 + hardening signals: BIMI, DANE, MTA-STS strict, CAA, or DKIM-discovered |
 
+The stage is then capped by the **displayed** (NIST 6-band) grade, so the letter and the maturity label on a report can never contradict each other: displayed grade `F` (score < 60) caps the stage at 2, displayed grade `D` (score 60-69) caps it at 3, and a displayed `C` or better is uncapped. A capped stage is labelled `... (score-capped)`, using the wording of the ladder that produced it — a mail domain reads `Enforcing (score-capped)` / `Monitoring (score-capped)`, a `web_only` or `non_mail` domain reads `Defensive (score-capped)` / `Transport-Hardened (score-capped)`.
+
 Source: `src/tools/scan/maturity-staging.ts`.
 
 ## Notes on `scan_domain`
