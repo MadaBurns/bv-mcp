@@ -4,6 +4,35 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.45.0] - 2026-08-08
+
+**`SCORING_MODEL_VERSION` 1.7.0 → 1.8.0. `@blackveil/dns-checks` 1.13.0 → 1.14.0** (`PARITY_CORPUS_VERSION` in lockstep). Already re-vendored and deployed to bv-web-prod, so the web scanner and the MCP grade from the same model.
+
+**Grades move UP, and not retroactively** — stored scores change only on re-scan. Every change below is a *double-count removal* or an evidence gate, not a recalibration: **no weight, tier, grade band, `SEVERITY_PENALTIES` entry, or profile-detection rule changed.**
+
+### Fixed — scoring double-counts
+
+- **The SPF trust surface was scored twice, and it erased the category's signal.** `analyzeTrustSurface` emitted an aggregate "N shared platforms" finding (`high`, −25 under corroboration) **and also** charged `medium` (−15) **per platform** for the same condition, so the penalty scaled with how many `include:`s a record had rather than with how many distinct problems the domain has. Six cataloged platforms cost −115 and clamped the `spf` category to **0 — the identical score a domain publishing no SPF record at all receives.** SPF is one of only four categories the 1,000-domain corpus found to discriminate, so the category was returning no signal for exactly the complex senders it exists to assess. Per-platform findings are now always `info` (penalty 0, but still emitted with full prose and `dmarcCorroborated`/`dmarcPolicy`/`dmarcAlignmentMode` metadata); the aggregate remains the single scored signal. Measured, **upward only**: `spf` +0 / +15 / +30 / +60 / +75 at 0 / 1 / 2 / 4 / 6 corroborated platforms. `github.com` `spf` 0 → 35, overall 67 → 70 (NIST display **D → C**). A domain publishing no SPF still scores 0. No domain can move down — the change only lowers severities, and the two `spf` category interactions are gated on `maxScore: 0`, so a higher `spf` can only stop them firing. Applied identically to both copies of the analyzer (core + worker), parity audited. (#637)
+
+- **`check_txt_hygiene` charged per record instead of per problem.** The jurisdiction and stale-integration loops emitted one scored finding **per record**, so a domain publishing six verification records for one service paid six penalties for a single governance condition — and record multiplicity was *already* charged separately by the `low` "Duplicate verification records detected" finding, so it was billed twice. Both loops now group by service and emit one finding carrying `recordCount` + `records`. Bounded at **+1 point overall**: `txt_hygiene` is a hardening category and that tier is binary (1.0 pt iff `score >= 50 && passed`). Anti-flattening preserved — four *distinct* problems still produce four penalties; only repeats of the *same* problem collapse, and the suppression is surfaced as a visible `info` notice rather than happening silently. Gov-domain `high` vs `medium`, jurisdiction labels and native `.ru`/`.cn` skips all survive. (#642)
+
+### Fixed — an evidence gate that was never running, and was ungated underneath
+
+- **The non-mail email-auth downgrade had two compounding defects.** Its predicate `hasNoMx` matched a finding title **no production code path emits**, so `adjustForNonMailDomain` — the documented "parent DMARC covers it → downgrade to `info`" rule — had **never once run** against real DNS. Underneath it, the downgrade was **ungated**: `severity: 'info'` was assigned *outside* the `apexDmarcCovers` conditional, so that boolean only selected which sentence got appended. Repairing the predicate alone would therefore have shipped a blanket amnesty — measured at **+7 to +23 points across ~28.6% of domains, crossing two to three NIST bands**.
+
+  That would have been unsound. **Absent MX means a domain cannot RECEIVE mail; it says nothing about whether it can be SPOOFED AS A SENDER**, which is precisely what SPF/DKIM/DMARC defend. Ungated, a domain that `check_mx` *concurrently* reports as spoofable would display A+. The downgrade now fires only where the parent's DMARC `sp=`/`p=` is `quarantine` or `reject` — real inherited enforcement, and what the documentation had described all along. Apex domains have no parent to inherit from and correctly never qualify. Net effect against the production baseline (where the rule never ran): **apex domains unchanged**; subdomains change only where enforcing parent coverage demonstrably exists. (#643)
+
+- **`check_dane`'s not-applicable reporting is now pinned**, including the score-**100** shape actually reported: every pre-existing case covered only the score-0 pattern, so a regression narrowing the rule to "only when the score is 0" would have passed them all and still shipped the bug. (#639, #650)
+
+### Performance
+
+- **`scan_domain` fetched `/robots.txt` once per check that wanted it.** A single per-scan memo (`src/lib/robots-memo.ts`) now shares one fetch, keyed on the resolved URL and scoped to the `scanDomain()` call — the dominant cause of `ssl`/`http_security` timeouts on cold scans. (#648)
+
+### Internal
+
+- **No spec in this repo was typechecked by any gate** — both tsconfigs excluded the test trees and Vitest's esbuild transform strips types without checking them. Adds `typecheck-tests` as a **per-file ratchet** (`test/typecheck-baseline.json`), so a new error cannot be absorbed by fixing an unrelated one, and a decrease is reported for banking. Deliberately a ratchet, not a burndown. (#645, #648)
+- `@cloudflare/vitest-pool-workers` 0.19.0 → 0.20.1. (#624)
+
 ## [3.44.0] - 2026-08-07
 
 **Scoring model unchanged at 1.7.0. `@blackveil/dns-checks` 1.12.0 → 1.13.0** (package check behaviour changed, so `PARITY_CORPUS_VERSION` moves in lockstep and the bv-web-prod tarball needs re-vendoring).
