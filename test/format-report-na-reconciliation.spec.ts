@@ -11,8 +11,22 @@
 import { describe, it, expect } from 'vitest';
 import type { ScanDomainResult, MaturityStage } from '../src/tools/scan-domain';
 import type { CheckCategory, CheckResult, ScanScore, DomainContext } from '../src/lib/scoring';
-import { computeScanEvidence } from '../src/lib/scoring';
+import { computeScanEvidence, PROFILE_WEIGHTS } from '../src/lib/scoring';
 import { buildStructuredScanResult } from '../src/tools/scan/format-report';
+
+/**
+ * A REAL `DomainContext`, not a cast.
+ *
+ * Every context in this file used to be `{ profile, signals: [], weights: {}, … } as
+ * DomainContext`, which TypeScript rejected (TS2352) because `weights` is a
+ * `Record<CheckCategory, ImportanceProfile>` and `{}` is not one. Eight suppressed
+ * errors in a spec whose entire subject is per-category scoring behaviour is exactly
+ * the vacuity risk the `typecheck:tests` ratchet exists to catch — a cast that wide
+ * would have hidden a genuinely wrong `profile` value too.
+ */
+function makeContext(profile: DomainContext['profile']): DomainContext {
+	return { profile, signals: [], weights: PROFILE_WEIGHTS[profile], detectedProvider: null };
+}
 
 function makeMockScanResult(overrides: Partial<ScanDomainResult> = {}): ScanDomainResult {
 	return {
@@ -28,7 +42,7 @@ function makeMockScanResult(overrides: Partial<ScanDomainResult> = {}): ScanDoma
 		} as ScanScore,
 		checks: [],
 		maturity: null as unknown as MaturityStage,
-		context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+		context: makeContext('mail_enabled'),
 		cached: false,
 		timestamp: '2026-05-28T00:00:00Z',
 		scoringNote: null,
@@ -51,7 +65,7 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 				// One CheckResult below (spf), no checkStatus set → completed.
 				evidence: { attempted: 1, completed: 1, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: makeContext('web_only'),
 			checks: [
 				{
 					category: 'spf',
@@ -77,7 +91,7 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 				// One CheckResult below (spf), no checkStatus set → completed.
 				evidence: { attempted: 1, completed: 1, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: makeContext('web_only'),
 			checks: [
 				{
 					category: 'spf',
@@ -141,7 +155,7 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 
 		for (const input of corpusInputs) {
 			const result = makeMockScanResult({
-				context: { profile: input.profile, signals: [], weights: {}, detectedProvider: null } as DomainContext,
+				context: makeContext(input.profile),
 				checks: input.checks,
 				score: {
 					overall: 85,
@@ -178,7 +192,7 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 					// One CheckResult below, no checkStatus set → completed.
 					evidence: { attempted: 1, completed: 1, ratio: 1 },
 				} as ScanScore,
-				context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+				context: makeContext('web_only'),
 				checks: [
 					{
 						category,
@@ -215,7 +229,7 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 				summary: 'ok',
 				evidence: { attempted: 1, completed: 1, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'non_mail', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: makeContext('non_mail'),
 			checks: [
 				{
 					category: 'dane',
@@ -248,7 +262,7 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 				// Three CheckResults below, none with checkStatus set → all completed.
 				evidence: { attempted: 3, completed: 3, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'web_only', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: makeContext('web_only'),
 			checks: [
 				{ category: 'ssl', passed: true, score: 90, findings: [] },
 				{ category: 'dnssec', passed: true, score: 100, findings: [] },
@@ -275,7 +289,7 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 				// Two CheckResults below, no checkStatus set → completed.
 				evidence: { attempted: 2, completed: 2, ratio: 1 },
 			} as ScanScore,
-			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			context: makeContext('mail_enabled'),
 			checks: [
 				{ category: 'dkim', passed: true, score: 75, findings: [] },
 				{ category: 'mta_sts', passed: false, score: 60, findings: [] },
