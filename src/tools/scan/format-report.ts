@@ -174,8 +174,22 @@ export interface StructuredScanResult {
  * profiles (no MX) they should be reported as N/A regardless of underlying score.
  * `bimi` requires DMARC enforcement to publish; `mta_sts` and `dkim` are inbound-
  * /outbound-mail features; `mx` has no meaning when there are no MX records.
+ *
+ * `dane` (issue #639) is the SMTP-only DANE category — `check-dane.ts` probes TLSA
+ * at `_25._tcp.<mx-host>` and nothing else; HTTPS DANE is the separate `dane_https`
+ * category, which is NOT mail-only and is deliberately absent from this set. On a
+ * domain with no usable MX the check says so in prose ("SMTP DANE not applicable
+ * (no inbound mail)") yet emits an all-info `CheckResult` scoring a full 100 — a
+ * perfect mark for a control the domain had no opportunity to fail, while
+ * `dkim`/`mta_sts`/`bimi`/`mx` on the same domain were correctly nulled.
+ *
+ * Listing it here is a REPORTING change only: it nulls `categoryScores.dane` and
+ * files the category under `notApplicableCategories`. The overall score is computed
+ * upstream by `computeScanScore` and is untouched — DANE still contributes its
+ * hardening-tier point there. Excluding it from the scoring denominator re-grades
+ * every non-mail domain and is an operator decision (see #639).
  */
-const MAIL_ONLY_CATEGORIES_FOR_NON_MAIL_PROFILE = new Set<string>(['dkim', 'mta_sts', 'bimi', 'mx']);
+const MAIL_ONLY_CATEGORIES_FOR_NON_MAIL_PROFILE = new Set<string>(['dkim', 'mta_sts', 'bimi', 'mx', 'dane']);
 /** Email categories that current behaviour already downgrades to info under non-mail profiles. */
 const EMAIL_CATEGORIES_HEURISTIC_NA = new Set<string>(['spf', 'dmarc', 'dkim', 'mta_sts']);
 
@@ -506,20 +520,25 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 		}
 	}
 
-	const isNonMailProfile = ['non_mail', 'web_only'].includes(result.context?.profile ?? '');
-	const naEmailCategories = new Set(['spf', 'dmarc', 'dkim', 'mta_sts']);
+	// The prose table asks the SAME applicability question as `buildStructuredScanResult`
+	// and must therefore ask it through the SAME predicate. It used to carry its own
+	// hand-rolled copy scoped to `['spf','dmarc','dkim','mta_sts']`, which had already
+	// drifted: `bimi`/`mx` were N/A with a null score in `structuredContent` while this
+	// table printed them as a clean `100/100` for the same scan. One definition now, so
+	// the two views cannot disagree again (#639).
+	const profileForNa = result.context?.profile ?? 'mail_enabled';
+	const checksByCategoryForNa = new Map<string, CheckResult>((result.checks ?? []).map((c) => [c.category, c]));
 
 	lines.push('Category Scores:');
 	lines.push('-'.repeat(30));
 	for (const [category, score] of Object.entries(result.score.categoryScores) as [string, number][]) {
-		if (isNonMailProfile && naEmailCategories.has(category)) {
-			const check = result.checks?.find((c) => c.category === category);
-			const allInfo = check && check.findings.length > 0 && check.findings.every((f: Finding) => f.severity === 'info');
-			const noFindings = !check || (check.findings.length === 0 && score === 100);
-			if (allInfo || noFindings) {
-				lines.push(`  ∅ ${category.toUpperCase().padEnd(10)} N/A (web-only, no MX records)`);
-				continue;
-			}
+		const naCheck = checksByCategoryForNa.get(category);
+		// An inconclusive check (timeout/error) is NOT "not applicable" — same precedence
+		// as the structured builder, which short-circuits those before asking.
+		const inconclusive = naCheck !== undefined && !isCompletedCheck(naCheck);
+		if (!inconclusive && isCategoryNonApplicable(naCheck, category, profileForNa, score)) {
+			lines.push(`  ∅ ${category.toUpperCase().padEnd(10)} N/A (no MX records — control does not apply)`);
+			continue;
 		}
 		const status = score >= 80 ? '✓' : score >= 50 ? '⚠' : '✗';
 		lines.push(`  ${status} ${category.toUpperCase().padEnd(10)} ${score}/100`);
