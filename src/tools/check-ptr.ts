@@ -25,19 +25,29 @@ export interface CheckPtrOptions {
 export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	try {
 		const mx = await queryMxRecords(domain, dnsOptions);
-		if (mx.length === 0) {
+
+		// An RFC 7505 null MX ("0 .") parses to an EMPTY exchange, so a null-MX domain
+		// still yields `mx.length === 1` while carrying no mail host at all. Filter those
+		// (and any empty/root exchange) out first and branch on the usable-host count, so
+		// "no MX at all" and "null MX" both land in the same not-applicable fork. Branching
+		// on `mx.length` alone let a null-MX domain fall through to the resolution loop and
+		// emit the degenerate "could not resolve A records for 0 mail server host(s)".
+		const mxHosts = mx.map((r) => r.exchange.replace(/\.$/, '').toLowerCase()).filter((h) => h.length > 0 && h !== '.');
+
+		if (mxHosts.length === 0) {
+			// Mirrors check_dane's no-inbound-mail fork: the domain does not accept email,
+			// so PTR/FCrDNS is NOT APPLICABLE — not a measurement that failed.
+			const nullMx = mx.length > 0;
 			return buildCheckResult('ptr', [
 				createFinding(
 					'ptr',
-					'PTR not applicable',
+					'PTR not applicable (no inbound mail)',
 					'info',
-					'No MX records found; reverse DNS (PTR) for mail servers is not applicable to this non-sending domain.',
-					{ controlPresent: false },
+					`${domain} publishes no usable MX records (${nullMx ? 'an RFC 7505 null MX' : 'none'}), so it does not accept inbound email. Reverse DNS (PTR / forward-confirmed reverse DNS) for mail servers is therefore not applicable.`,
+					{ applicable: false, nullMx, mailHostCount: 0 },
 				),
 			]);
 		}
-
-		const mxHosts = mx.map((r) => r.exchange.replace(/\.$/, '').toLowerCase()).filter(Boolean);
 
 		// Managed-provider credit: the provider controls PTR; treat the control as present.
 		const signatures = await loadProviderSignatures({
@@ -92,13 +102,16 @@ export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOpt
 		}
 
 		if (totalIps === 0) {
+			// Genuine resolution failure: mail hosts EXIST (mxHosts is non-empty by the
+			// guard above) but none of them resolved to an A record, so FCrDNS could not
+			// be evaluated. Distinct from the not-applicable fork above.
 			return buildCheckResult('ptr', [
 				createFinding(
 					'ptr',
 					'Mail server IPs unresolved',
 					'info',
-					`Could not resolve A records for ${mxHosts.length} mail server host(s); reverse DNS could not be evaluated.`,
-					{ controlPresent: false },
+					`Could not resolve A records for ${mxHosts.length} mail server host(s) (${mxHosts.join(', ')}); reverse DNS could not be evaluated.`,
+					{ controlPresent: false, mailHostCount: mxHosts.length },
 				),
 			]);
 		}

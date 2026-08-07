@@ -24,10 +24,21 @@ function routeDns(records: Record<string, string[]>) {
 		const type = url.searchParams.get('type') ?? '';
 		const data = records[`${type} ${name}`] ?? [];
 		const answers = data.map((d) => ({ name, type: TYPE_CODE[type] ?? 0, TTL: 300, data: d }));
-		return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({
-			Status: 0, TC: false, RD: true, RA: true, AD: false, CD: false,
-			Question: [{ name, type: TYPE_CODE[type] ?? 0 }], Answer: answers,
-		}) } as unknown as Response);
+		return Promise.resolve({
+			ok: true,
+			status: 200,
+			json: () =>
+				Promise.resolve({
+					Status: 0,
+					TC: false,
+					RD: true,
+					RA: true,
+					AD: false,
+					CD: false,
+					Question: [{ name, type: TYPE_CODE[type] ?? 0 }],
+					Answer: answers,
+				}),
+		} as unknown as Response);
 	});
 }
 
@@ -44,6 +55,54 @@ describe('checkPtr', () => {
 		expect(result.findings[0].severity).toBe('info');
 		expect(result.findings[0].title).toMatch(/not applicable/i);
 		expect(result.passed).toBe(true);
+	});
+
+	it('returns not-applicable (not a resolution failure) for an RFC 7505 null MX domain', async () => {
+		// A null MX ("0 .") parses to an EMPTY exchange, so mx.length is 1 while there is
+		// no mail host at all. Regression: the old code branched on mx.length, fell through
+		// to the resolution loop and emitted "Could not resolve A records for 0 mail server
+		// host(s)" — a degenerate claim that a lookup over zero hosts failed.
+		routeDns({ 'MX example.com': ['0 .'] });
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.findings).toHaveLength(1);
+		const [finding] = result.findings;
+		expect(finding.severity).toBe('info');
+		expect(finding.title).toBe('PTR not applicable (no inbound mail)');
+		expect(finding.detail).toMatch(/no usable MX records/i);
+		expect(finding.detail).toMatch(/RFC 7505 null MX/i);
+		expect(finding.detail).toMatch(/not applicable/i);
+		// The degenerate wording must be gone.
+		expect(finding.detail).not.toMatch(/could not resolve/i);
+		expect(finding.detail).not.toMatch(/\b0 mail server host/i);
+		expect(finding.metadata?.applicable).toBe(false);
+		expect(finding.metadata?.nullMx).toBe(true);
+		// Score is unchanged by this fix: info carries a 0 penalty.
+		expect(result.score).toBe(100);
+		expect(result.passed).toBe(true);
+	});
+
+	it('reports not-applicable (nullMx false) when the domain has no MX records at all', async () => {
+		routeDns({}); // no MX
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.findings[0].title).toBe('PTR not applicable (no inbound mail)');
+		expect(result.findings[0].detail).toMatch(/publishes no usable MX records \(none\)/i);
+		expect(result.findings[0].metadata?.nullMx).toBe(false);
+		expect(result.score).toBe(100);
+	});
+
+	it('keeps the "could not resolve" wording when mail hosts EXIST but have no A records', async () => {
+		// Real measurement failure — distinct from the not-applicable fork above.
+		routeDns({ 'MX example.com': ['10 mail.example.com.'] }); // MX present, no A answer
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toBe('Mail server IPs unresolved');
+		expect(result.findings[0].detail).toMatch(/could not resolve a records for 1 mail server host/i);
+		expect(result.findings[0].detail).toContain('mail.example.com');
+		expect(result.findings[0].metadata?.mailHostCount).toBe(1);
+		expect(result.score).toBe(100);
 	});
 
 	it('credits managed providers (Google) as controlPresent without forward-confirming', async () => {
