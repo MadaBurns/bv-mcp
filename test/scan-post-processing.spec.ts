@@ -51,7 +51,8 @@ describe('scan-post-processing helpers', () => {
 
 		const updated = await applyScanPostProcessing('no-mail.example.com', results);
 		const mtaSts = updated.find((r) => r.category === 'mta_sts');
-		// For non-mail domains, severity gets downgraded to info (not clarified)
+		// Non-mail domains take the else-branch entirely, so the mail-domain clarification
+		// never applies — independently of whether the parent-DMARC downgrade gate fires.
 		expect(mtaSts?.findings[0].detail).not.toContain('has MX records and accepts email');
 		vi.doUnmock('../src/lib/dns');
 	});
@@ -173,8 +174,9 @@ describe('scan-post-processing helpers', () => {
 	});
 
 	it('does NOT escalate for non-mail domains — missing DMARC is downgraded to info, never escalated', async () => {
+		// Parent DMARC enforces, so the non-mail downgrade is entitled to fire here.
 		vi.doMock('../src/lib/dns', () => ({
-			queryTxtRecords: vi.fn().mockResolvedValue([]),
+			queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=reject']),
 		}));
 		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
@@ -204,6 +206,140 @@ describe('scan-post-processing helpers', () => {
 		const updated = await applyScanPostProcessing('example.com', results);
 		const spf = updated.find((result) => result.category === 'spf');
 		expect(spf?.findings.some((finding) => finding.title === 'Outbound email provider inferred')).toBe(true);
+	});
+
+	/**
+	 * #643 — the non-mail downgrade must key on a STRUCTURAL signal.
+	 *
+	 * The predicate used to test for a finding titled 'No MX records found', which
+	 * no production code path emits, so `adjustForNonMailDomain` never ran against
+	 * real DNS and non-mail domains carried un-downgraded critical/high email-auth
+	 * findings. These cases use the ACTUAL `check-mx` output shapes (title AND
+	 * `controlPresent`), so a regression to title-matching fails here rather than
+	 * shipping silently — the failure mode that made the original defect permanent.
+	 */
+	describe('non-mail downgrade keys on controlPresent, not a finding title (#643)', () => {
+		// Without this, the dynamic `import()` below returns the module instance cached by
+		// an EARLIER test in this file, still bound to that test's `../src/lib/dns` mock —
+		// so every case here silently ran against whichever DMARC record happened to be
+		// mocked first, and the parent-coverage gate was never actually exercised.
+		// A per-case `vi.doMock` is only half of mock isolation; this is the other half.
+		beforeEach(() => {
+			vi.resetModules();
+		});
+
+		const EMAIL_FINDINGS = (): CheckResult[] => [
+			buildCheckResult('spf', [createFinding('spf', 'No SPF record found', 'critical', 'No SPF (v=spf1) TXT record found.')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'No DMARC record found', 'high', 'No DMARC record at _dmarc.example.com.')]),
+			buildCheckResult('dkim', [
+				createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM among tested selectors.'),
+			]),
+		];
+
+		function severities(results: CheckResult[]): string[] {
+			return ['spf', 'dmarc', 'dkim'].map((c) => results.find((r) => r.category === c)!.findings[0].severity);
+		}
+
+		it('downgrades email-auth findings on an RFC 7505 null-MX domain (controlPresent: false)', async () => {
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=reject']) }));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			// The real check-mx null-MX terminal path: this exact title, controlPresent false.
+			const results = [
+				...EMAIL_FINDINGS(),
+				buildCheckResult('mx', [createFinding('mx', 'Null MX record (RFC 7505)', 'info', 'Declares it accepts no email.')], false),
+			];
+
+			const updated = await applyScanPostProcessing('sub.example.com', results);
+			expect(severities(updated)).toEqual(['info', 'info', 'info']);
+			vi.doUnmock('../src/lib/dns');
+		});
+
+		/**
+		 * The security gate. Absent MX means the domain cannot RECEIVE mail; it says
+		 * nothing about whether the domain can be SPOOFED AS A SENDER. So the downgrade
+		 * fires ONLY where the parent's DMARC `sp=`/`p=` is `quarantine`/`reject` — real
+		 * inherited enforcement — not on MX absence alone.
+		 *
+		 * Without this gate, a no-MX domain with zero email auth is handed a clean pass
+		 * on the very controls `check_mx` simultaneously reports it as spoofable for.
+		 */
+		it('does NOT downgrade a no-MX domain whose parent DMARC does not cover it', async () => {
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: vi.fn().mockResolvedValue([]) }));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const results = [
+				...EMAIL_FINDINGS(),
+				buildCheckResult(
+					'mx',
+					[createFinding('mx', 'Correctly-configured non-mail domain', 'info', 'No MX records, SPF publishes -all.')],
+					false,
+				),
+			];
+
+			const updated = await applyScanPostProcessing('sub.example.com', results);
+			expect(severities(updated)).toEqual(['critical', 'high', 'high']);
+			vi.doUnmock('../src/lib/dns');
+		});
+
+		it('does NOT downgrade a no-MX domain whose parent DMARC is only p=none (no enforcement)', async () => {
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=none']) }));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const results = [
+				...EMAIL_FINDINGS(),
+				buildCheckResult('mx', [createFinding('mx', 'Null MX record (RFC 7505)', 'info', 'Declares it accepts no email.')], false),
+			];
+
+			const updated = await applyScanPostProcessing('sub.example.com', results);
+			expect(severities(updated)).toEqual(['critical', 'high', 'high']);
+			vi.doUnmock('../src/lib/dns');
+		});
+
+		it('does NOT downgrade an APEX no-MX domain — it has no parent to inherit enforcement from', async () => {
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=reject']) }));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const results = [
+				...EMAIL_FINDINGS(),
+				buildCheckResult('mx', [createFinding('mx', 'Null MX record (RFC 7505)', 'info', 'Declares it accepts no email.')], false),
+			];
+
+			// Apex: getParentDomain() returns null, so there is no inherited policy at all.
+			const updated = await applyScanPostProcessing('example.com', results);
+			expect(severities(updated)).toEqual(['critical', 'high', 'high']);
+			vi.doUnmock('../src/lib/dns');
+		});
+
+		it('leaves a mail-SENDING domain completely untouched (controlPresent: true)', async () => {
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=reject']) }));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			const results = [
+				...EMAIL_FINDINGS(),
+				buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 MX records configured.')], true),
+			];
+
+			const updated = await applyScanPostProcessing('sub.example.com', results);
+			expect(severities(updated)).toEqual(['critical', 'high', 'high']);
+			vi.doUnmock('../src/lib/dns');
+		});
+
+		it('does NOT downgrade when the MX lookup was INCONCLUSIVE — absence is never asserted from a failed probe', async () => {
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=reject']) }));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			// The real check-mx transient-failure path: checkStatus 'error', controlPresent undefined.
+			const mxErrored: CheckResult = {
+				...buildCheckResult('mx', [createFinding('mx', 'MX records not assessed', 'info', 'Transient DNS failure.')]),
+				checkStatus: 'error',
+			};
+			const results = [...EMAIL_FINDINGS(), mxErrored];
+
+			const updated = await applyScanPostProcessing('sub.example.com', results);
+			expect(severities(updated)).toEqual(['critical', 'high', 'high']);
+			vi.doUnmock('../src/lib/dns');
+		});
 	});
 });
 

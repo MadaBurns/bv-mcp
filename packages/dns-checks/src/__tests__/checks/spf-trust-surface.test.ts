@@ -15,6 +15,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { analyzeTrustSurface } from '../../checks/spf-trust-surface';
+import { buildCheckResult } from '../../check-utils';
 
 describe('core SPF trust-surface catalog — Mailjet (#572)', () => {
 	it('recognizes the canonical spf.mailjet.com include', () => {
@@ -127,15 +128,79 @@ describe('core SPF trust-surface corroboration prose matches the DMARC metadata'
 		expect(findings[0].detail).toMatch(/not inherently a misconfiguration/i);
 	});
 
-	it('keeps the corroborated severities unchanged (medium per-platform, high summary)', () => {
+	/**
+	 * #637 — INVERTED, not deleted.
+	 *
+	 * This case used to read "keeps the corroborated severities unchanged (medium per-platform,
+	 * high summary)" and assert 2 × `medium` + 1 × `high`. That pinned the DOUBLE-COUNT: the
+	 * aggregate "N shared platforms" finding and the per-platform findings describe the SAME
+	 * condition, so a −15 was charged per platform ON TOP of the aggregate's −25. github.com
+	 * (6 platforms) paid −90 + −25 and its valid, working SPF record scored 0 — indistinguishable
+	 * from publishing no SPF at all. A test that pins the double-count is pinning the bug, so the
+	 * assertion is inverted here and kept as the tripwire against reintroducing it.
+	 */
+	it('scores the trust surface ONCE — per-platform findings are info, only the aggregate is scored (#637)', () => {
 		const findings = analyzeTrustSurface('v=spf1 include:_spf.google.com include:sendgrid.net -all', {
 			corroboratedByWeakDmarc: true,
 			dmarcPolicy: 'quarantine',
 			dmarcAlignmentMode: 'relaxed',
 		});
 
-		expect(findings.filter((f) => f.severity === 'medium')).toHaveLength(2);
-		expect(findings.filter((f) => f.severity === 'high')).toHaveLength(1);
+		const perPlatform = findings.filter((f) => f.metadata?.platformCount === undefined);
+		const aggregate = findings.filter((f) => f.metadata?.platformCount !== undefined);
+
+		expect(perPlatform).toHaveLength(2);
+		expect(perPlatform.every((f) => f.severity === 'info')).toBe(true);
+		expect(aggregate).toHaveLength(1);
+		// The aggregate is unchanged: still the one scored signal, still escalating to `high`
+		// under corroboration and still naming the platform count.
+		expect(aggregate[0].severity).toBe('high');
+		expect(findings.filter((f) => f.severity !== 'info'), 'exactly ONE scored finding for the whole trust surface').toHaveLength(1);
+
+		// The per-platform findings stay fully detailed — same corroboration prose, same
+		// metadata — so a customer can still see which platforms are authorized and why.
+		expect(perPlatform[0].detail).toMatch(/alignment is relaxed/i);
+		expect(perPlatform[0].metadata?.dmarcCorroborated).toBe(true);
+		expect(perPlatform[0].metadata?.dmarcPolicy).toBe('quarantine');
+	});
+
+	/**
+	 * The SCORE consequence of #637, pinned as a number rather than as severity labels.
+	 *
+	 * github.com's shape: six cataloged platforms under a corroborating DMARC. Before the fix
+	 * this cost 6 × −15 (per-platform `medium`) PLUS −25 (the aggregate `high`) = −115, which
+	 * clamps the `spf` category to 0 — the same score a domain with no SPF record at all
+	 * receives. After: one −25 for the whole trust surface, so the category reads 75 and the
+	 * check can once again discriminate between a complex sender profile and a missing control.
+	 *
+	 * The category score is asserted HERE, against the package source, because the worker
+	 * wrapper (`src/tools/check-spf.ts`) never recomputes it — it passes through this package's
+	 * score unchanged.
+	 */
+	it('charges the trust surface ONE penalty regardless of platform count (#637)', () => {
+		const record = [
+			'v=spf1',
+			'include:spf.protection.outlook.com',
+			'include:mail.zendesk.com',
+			'include:_spf.salesforce.com',
+			'include:servers.mcsv.net',
+			'include:mktomail.com',
+			'include:sendgrid.net',
+			'~all',
+		].join(' ');
+		const context = { corroboratedByWeakDmarc: true, dmarcPolicy: 'quarantine', dmarcAlignmentMode: 'relaxed' };
+
+		const findings = analyzeTrustSurface(record, context);
+		expect(findings.filter((f) => f.metadata?.platformCount === undefined)).toHaveLength(6);
+		expect(findings.filter((f) => f.severity !== 'info')).toHaveLength(1);
+
+		// 100 − 25 (the single aggregate `high`), NOT 100 − 25 − 6 × 15 clamped to 0.
+		expect(buildCheckResult('spf', findings).score).toBe(75);
+
+		// And the count is what scales, not the number of penalties: two platforms cost the same
+		// as six. A per-platform penalty reappearing would break this equality immediately.
+		const twoPlatform = analyzeTrustSurface('v=spf1 include:spf.protection.outlook.com include:sendgrid.net ~all', context);
+		expect(buildCheckResult('spf', twoPlatform).score).toBe(75);
 	});
 });
 

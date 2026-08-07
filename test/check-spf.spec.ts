@@ -97,15 +97,36 @@ describe('checkSpf', () => {
 		expect(infoFinding!.metadata?.includeDomains).toContain('_spf.google.com');
 	});
 
-	it('elevates trust-surface findings when DMARC is missing', async () => {
+	/**
+	 * #637 — INVERTED, not deleted.
+	 *
+	 * This case used to assert the per-platform finding was elevated to `medium` (−15) when
+	 * DMARC is missing. That per-platform charge duplicated the aggregate "N shared platforms"
+	 * finding, and stacked linearly: github.com paid 6 × −15 on top of the aggregate's −25 and
+	 * its valid, working SPF record scored 0 — identical to publishing no SPF at all. Only the
+	 * aggregate is scored now.
+	 *
+	 * Note the single-platform shape this case exercises: the aggregate fires only at 2+
+	 * platforms, so ONE shared-platform include is now entirely unscored, and the
+	 * "SPF record configured" info finding is therefore no longer suppressed.
+	 */
+	it('does not penalise a single shared-platform include, even with DMARC missing (#637)', async () => {
 		mockTxtRecords(['v=spf1 include:_spf.google.com -all']);
 
 		const result = await run();
 		const trustFinding = result.findings.find((f) => /SPF delegates to shared platform/i.test(f.title));
 		expect(trustFinding).toBeDefined();
-		expect(trustFinding!.severity).toBe('medium');
+		expect(trustFinding!.severity).toBe('info');
+		// The corroboration signal is still detected and still recorded — only the penalty went.
 		expect(trustFinding!.metadata?.dmarcPolicy).toBe('missing');
-		expect(result.findings.find((f) => /SPF record configured/i.test(f.title))).toBeUndefined();
+		expect(trustFinding!.metadata?.dmarcCorroborated).toBe(true);
+		// Nothing scored remains for this record at all.
+		expect(result.findings.every((f) => f.severity === 'info')).toBe(true);
+		// NOTE: the resulting `spf` category SCORE is deliberately not asserted here. This is the
+		// WORKER wrapper, and `augmentTrustSurface` never recomputes the score — it passes through
+		// `core.score` from the BUILT `@blackveil/dns-checks` dist. The score consequence of #637 is
+		// therefore asserted against the package SOURCE, in
+		// packages/dns-checks/src/__tests__/checks/spf-trust-surface.test.ts.
 	});
 
 	it('handles case-insensitive SPF prefix', async () => {

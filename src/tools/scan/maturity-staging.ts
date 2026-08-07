@@ -21,6 +21,9 @@ import type { CheckResult, Finding } from '../../lib/scoring';
 import type { DomainProfile } from '../../lib/scoring';
 import { nistScoreToGrade } from '../../lib/scoring';
 import { isCompletedCheck } from '../../lib/ungraded-display';
+// Single SSOT for "this domain accepts no inbound mail" — shared with scan
+// post-processing so staging and severity-downgrading can never diverge (#643).
+import { mxDeclaresNoInboundMail } from './post-processing';
 
 export interface MaturityStage {
 	stage: number;
@@ -381,7 +384,14 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 	// Legacy fallback: when `profile` is undefined (older callers) and MX records are
 	// missing, classify under the historical "DNS-Only" branch to preserve existing
 	// behaviour and test coverage.
-	const hasNoMx = measured(mxCheck) && mxCheck!.findings.some((f: Finding) => f.title === 'No MX records found');
+	// #643 — this tested for a finding titled 'No MX records found', which no
+	// production code path emits, so the legacy no-MX branch below was unreachable
+	// on real DNS and non-mail domains were staged on the MAIL ladder. Now keyed on
+	// the same structural predicate the scoring half uses (`controlPresent` +
+	// completed measurement), so staging and post-processing cannot disagree about
+	// whether a domain handles mail. An inconclusive MX lookup still stages as
+	// mail — the predicate refuses to assert absence from a failed probe.
+	const hasNoMx = mxDeclaresNoInboundMail(mxCheck);
 	if (hasNoMx && profile === undefined) {
 		const hasDnssec = measured(dnssecCheck) && (dnssecCheck?.passed ?? false);
 		return {
