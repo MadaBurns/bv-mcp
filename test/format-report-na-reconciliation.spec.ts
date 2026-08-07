@@ -162,7 +162,7 @@ describe('Defect G — categoryScores / notApplicableCategories never overlap (s
 });
 
 describe('Defect H — web_only profile suppresses mail-only categories', () => {
-	const MAIL_ONLY_CATEGORIES = ['dkim', 'mta_sts', 'bimi', 'mx'] as const;
+	const MAIL_ONLY_CATEGORIES = ['dkim', 'mta_sts', 'bimi', 'mx', 'dane'] as const;
 
 	for (const category of MAIL_ONLY_CATEGORIES) {
 		it(`marks ${category} as notApplicable under web_only profile (gov.uk pattern: ${category}:0 → null)`, () => {
@@ -193,6 +193,49 @@ describe('Defect H — web_only profile suppresses mail-only categories', () => 
 			expect(s.categoryScores[category]).toBeNull();
 		});
 	}
+
+	/**
+	 * #639 — `dane` self-declared "not applicable (no inbound mail)" in its own finding
+	 * text and then took a FULL 100 for the control, while `dkim`/`mta_sts`/`bimi`/`mx`
+	 * on the same domain were correctly nulled. Awarding full marks for a control the
+	 * domain had no opportunity to fail inflates the overall score.
+	 *
+	 * The 100 shape is what makes this distinct from the cases above: those pin the
+	 * pre-fix gov.uk pattern of a numeric 0 being reported as 0. Rule 2 fires at ANY
+	 * score, so both ends need pinning — a regression that re-narrowed Rule 2 to
+	 * "only when the score is 0" would pass every case above and still ship #639.
+	 */
+	it('nulls a self-declared-inapplicable dane scoring 100 under a non-mail profile (#639)', () => {
+		const result = makeMockScanResult({
+			score: {
+				overall: 85,
+				grade: 'A',
+				categoryScores: { dane: 100 } as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'ok',
+				evidence: { attempted: 1, completed: 1, ratio: 1 },
+			} as ScanScore,
+			context: { profile: 'non_mail', signals: [], weights: {}, detectedProvider: null } as DomainContext,
+			checks: [
+				{
+					category: 'dane',
+					passed: true,
+					score: 100,
+					findings: [
+						{
+							category: 'dane',
+							title: 'SMTP DANE not applicable (no inbound mail)',
+							severity: 'info',
+							detail: 'Domain publishes no usable MX records; TLSA at _25._tcp is therefore not applicable.',
+						},
+					],
+				},
+			] as CheckResult[],
+		});
+		const s = buildStructuredScanResult(result);
+		expect(s.notApplicableCategories).toContain('dane');
+		expect(s.categoryScores.dane).toBeNull();
+	});
 
 	it('still scores web categories normally under web_only profile (ssl, dnssec, http_security)', () => {
 		const result = makeMockScanResult({
