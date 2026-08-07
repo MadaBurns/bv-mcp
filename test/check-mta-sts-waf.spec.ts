@@ -11,7 +11,9 @@
  * policy fetch makes the mta_sts category INCONCLUSIVE — `checkStatus: 'error'`,
  * `score: 0`, `passed: false` — so the scoring engine EXCLUDES the category rather
  * than penalising it. The WAF finding itself is an `info` finding carrying
- * `inconclusive: true` + `missingControl: true` (no `penaltyOverride`).
+ * `inconclusive: true` (no `penaltyOverride`, and — since issue #638 — deliberately
+ * NO `missingControl`: an intercepted probe never established that the control is
+ * absent, and the two flags are mutually exclusive by the model's own semantics).
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -75,7 +77,7 @@ describe('checkMtaSts — WAF-challenged policy fetch (issue #455)', () => {
 		expect(waf).toBeDefined();
 		expect(waf!.severity).toBe('info');
 		expect(waf!.metadata?.inconclusive).toBe(true);
-		expect(waf!.metadata?.missingControl).toBe(true);
+		expect(waf!.metadata?.missingControl).toBeUndefined(); // #638 — inconclusive, not absent
 		expect(waf!.metadata?.httpStatus).toBe(403);
 		// Kind-aware title — a CHALLENGE, not a block.
 		expect(waf!.title).toBe('Cloudflare WAF challenge intercepted — policy accessibility inconclusive');
@@ -102,7 +104,7 @@ describe('checkMtaSts — WAF-challenged policy fetch (issue #455)', () => {
 		expect(waf!.metadata?.wafKind).toBe('block');
 		expect(waf!.severity).toBe('info');
 		expect(waf!.metadata?.inconclusive).toBe(true);
-		expect(waf!.metadata?.missingControl).toBe(true);
+		expect(waf!.metadata?.missingControl).toBeUndefined(); // #638 — inconclusive, not absent
 		// Kind-aware title fixes the prior bug where it hardcoded "challenge" on a block.
 		expect(waf!.title).toBe('Cloudflare WAF blocked policy fetch — accessibility inconclusive');
 		expect(waf!.metadata?.penaltyOverride).toBeUndefined();

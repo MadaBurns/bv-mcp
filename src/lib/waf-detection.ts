@@ -87,7 +87,28 @@ export function detectWafEvent(headers: Headers, body: string | undefined, statu
 	return null;
 }
 
-/** Build the canonical inconclusive WAF info-finding. Callers pass the (kind-aware) title + detail. */
+/**
+ * Build the canonical inconclusive WAF info-finding. Callers pass the (kind-aware) title + detail.
+ *
+ * Carries `inconclusive: true` and deliberately NOT `missingControl: true` (issue #638). The two
+ * are mutually exclusive by the scoring model's own semantics:
+ *   - `missingControl` = "we measured, and the control is absent" → ZEROES the category
+ *     (`buildCheckResult` forces score 0 / passed false; `computeCategoryScore` zeroes the
+ *     contribution).
+ *   - `inconclusive`   = "we could not measure this at all" → the category is EXCLUDED and the
+ *     overall score renormalised over what WAS measured (`transientFailures` in
+ *     packages/dns-checks/src/scoring/engine.ts, keyed off `checkStatus`).
+ *
+ * A WAF challenge/block is unambiguously the second: the probe never reached the origin, so
+ * asserting absence would be a claim of fact derived from a failed measurement. Asserting BOTH
+ * left a latent trap — if the flag-precedence ever changed, a WAF page would zero a category as
+ * though the control were genuinely missing.
+ *
+ * The scoring exclusion is driven by the caller's `checkStatus: 'error'`, not by this metadata —
+ * same convention as `src/lib/dns-error-result.ts`. Callers therefore keep setting
+ * `score: 0, passed: false, checkStatus: 'error'` explicitly on the CheckResult so an unmeasured
+ * category is never reported as a PASS.
+ */
 export function buildWafFinding(category: string, event: WafEvent, status: number, text: { title: string; detail: string }): Finding {
 	return createFinding(category as CheckCategory, text.title, 'info', text.detail, {
 		wafEvent: event.provider,
@@ -95,6 +116,5 @@ export function buildWafFinding(category: string, event: WafEvent, status: numbe
 		...(event.kind === 'challenge' ? { wafChallenge: event.provider } : {}),
 		httpStatus: status,
 		inconclusive: true,
-		missingControl: true,
 	});
 }

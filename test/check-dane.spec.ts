@@ -41,9 +41,7 @@ describe('checkDane', () => {
 			// TLSA for MX host
 			if (url.includes('_25._tcp.mx1.example.com') && (url.includes('type=TLSA') || url.includes('type=52'))) {
 				return Promise.resolve(
-					tlsaResponse('_25._tcp.mx1.example.com', [
-						{ usage: 3, selector: 1, matchingType: 1, certData: 'aabbccddee' },
-					]),
+					tlsaResponse('_25._tcp.mx1.example.com', [{ usage: 3, selector: 1, matchingType: 1, certData: 'aabbccddee' }]),
 				);
 			}
 			return Promise.resolve(emptyResponse('example.com', 1));
@@ -72,9 +70,7 @@ describe('checkDane', () => {
 			// TLSA for MX host — DANE-EE without DNSSEC
 			if (url.includes('_25._tcp.mx1.example.com') && (url.includes('type=TLSA') || url.includes('type=52'))) {
 				return Promise.resolve(
-					tlsaResponse('_25._tcp.mx1.example.com', [
-						{ usage: 3, selector: 1, matchingType: 1, certData: 'aabbccddee' },
-					]),
+					tlsaResponse('_25._tcp.mx1.example.com', [{ usage: 3, selector: 1, matchingType: 1, certData: 'aabbccddee' }]),
 				);
 			}
 			// No HTTPS TLSA
@@ -154,7 +150,16 @@ describe('checkDane', () => {
 		expect(result.findings.length).toBeGreaterThan(0);
 	});
 
-	it('should report MX lookup failure when MX query fails', async () => {
+	/**
+	 * #639 — an unresolvable MX lookup is an INCONCLUSIVE check, not a graded one.
+	 *
+	 * This replaces an assertion on the old `low` "MX lookup failed for DANE check"
+	 * finding, which left the result at score 95 with `passed: true` and
+	 * `checkStatus: 'completed'` — a failed measurement presented as a near-perfect
+	 * one, invisible to scoring's transient-failure exclusion and to `scan_domain`'s
+	 * transient-zero retry (both key on `checkStatus === 'error'`).
+	 */
+	it('reports an unresolvable MX lookup as INCONCLUSIVE, not a scored finding', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -171,9 +176,53 @@ describe('checkDane', () => {
 
 		const result = await run();
 		expect(result.category).toBe('dane');
-		// Should have MX lookup failure finding (low); HTTPS DANE is handled by check-dane-https
-		const lowFinding = result.findings.find((f) => f.title === 'MX lookup failed for DANE check');
-		expect(lowFinding).toBeDefined();
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.errorKind === 'dns_error')).toBe(true);
+		// The old low finding must be gone — it was the fabrication.
+		expect(result.findings.some((f) => f.title === 'MX lookup failed for DANE check')).toBe(false);
+	});
+
+	/**
+	 * #639 defect 1 — a DoH SERVFAIL arrives as HTTP 200 with an empty answer set, so
+	 * nothing throws and the `string[]` projection makes it identical to a genuine
+	 * NODATA. It used to be read as "no inbound mail → SMTP DANE not applicable" and
+	 * awarded a full 100. A broken delegation is an ABSENCE OF EVIDENCE, not evidence
+	 * of absence.
+	 */
+	it('reports a SERVFAIL MX lookup as INCONCLUSIVE, never as "not applicable" at 100', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				// SERVFAIL: HTTP 200, rcode 2, no answers.
+				return Promise.resolve(createDohResponse([{ name: 'broken.example', type: 15 }], [], { status: 2 }));
+			}
+			return Promise.resolve(emptyResponse('broken.example', 1));
+		});
+
+		const result = await run('broken.example');
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.findings.some((f) => f.title === 'SMTP DANE not applicable (no inbound mail)')).toBe(false);
+	});
+
+	it('still reports a genuine NOERROR/no-MX domain as not applicable at 100', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(emptyResponse('example.com', 15));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		expect(result.checkStatus ?? 'completed').toBe('completed');
+		expect(result.score).toBe(100);
+		expect(result.findings.map((f) => f.title)).toContain('SMTP DANE not applicable (no inbound mail)');
 	});
 
 	it('should handle domain with no MX records', async () => {
@@ -213,10 +262,7 @@ describe('checkDane', () => {
 			// Null MX
 			if (url.includes('type=MX') || url.includes('type=15')) {
 				return Promise.resolve(
-					createDohResponse(
-						[{ name: 'example.com', type: 15 }],
-						[{ name: 'example.com', type: 15, TTL: 300, data: '0 .' }],
-					),
+					createDohResponse([{ name: 'example.com', type: 15 }], [{ name: 'example.com', type: 15, TTL: 300, data: '0 .' }]),
 				);
 			}
 			// No HTTPS TLSA

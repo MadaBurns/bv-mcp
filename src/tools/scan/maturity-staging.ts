@@ -19,6 +19,7 @@
 
 import type { CheckResult, Finding } from '../../lib/scoring';
 import type { DomainProfile } from '../../lib/scoring';
+import { nistScoreToGrade } from '../../lib/scoring';
 import { isCompletedCheck } from '../../lib/ungraded-display';
 
 export interface MaturityStage {
@@ -40,6 +41,51 @@ export interface MaturityStage {
 	 * implicitly.
 	 */
 	indeterminate?: true;
+}
+
+/**
+ * Which ladder a profile is graded on. Two exist (see the file header): the
+ * email-centric MAIL ladder and the WEB-ONLY ladder for domains that do not
+ * accept mail.
+ */
+export type MaturityLadder = 'mail' | 'web_only';
+
+/**
+ * Per-ladder stage labels, indexed by stage number. SSOT for the WORDS attached
+ * to a stage, read by both the ladders themselves and by
+ * {@link capMaturityStage}.
+ *
+ * The cap previously hard-coded the MAIL ladder's words ('Monitoring',
+ * 'Enforcing') no matter which ladder produced the stage, so a capped
+ * `web_only` domain was told it was "Enforcing" — an affirmative claim about
+ * DMARC enforcement on a domain that accepts no mail and was never graded on
+ * email authentication at all. That is the same defect class as recommending
+ * BIMI to a non-sending domain: a control statement that does not apply.
+ * Resolving the label through this table keeps the two ladders' vocabularies
+ * from leaking into each other.
+ */
+const MAIL_LADDER_LABELS = ['Unprotected', 'Basic', 'Monitoring', 'Enforcing', 'Hardened'] as const;
+const WEB_ONLY_LADDER_LABELS = ['Unprotected', 'Basic', 'Transport-Hardened', 'Defensive', 'Comprehensive'] as const;
+
+export const LADDER_STAGE_LABELS: Record<MaturityLadder, readonly string[]> = {
+	mail: MAIL_LADDER_LABELS,
+	web_only: WEB_ONLY_LADDER_LABELS,
+};
+
+/**
+ * THE ladder selector — the single place a profile is mapped to a ladder.
+ *
+ * `computeMaturityStage` dispatches on it and `capMaturityStage` resolves its
+ * replacement label through it, so the capped stage can never be worded by a
+ * different ladder than the uncapped stage would have been. Do not re-spell
+ * this predicate at a call site; call this.
+ *
+ * An absent profile keeps the legacy mail-enabled inference (see the file
+ * header), which is also what every pre-#640 `capMaturityStage(m, s)` call
+ * assumed — so omitting the argument is byte-identical to the old behaviour.
+ */
+export function ladderForProfile(profile?: DomainProfile): MaturityLadder {
+	return profile === 'web_only' || profile === 'non_mail' ? 'web_only' : 'mail';
 }
 
 /**
@@ -87,33 +133,62 @@ function attemptedButInconclusive(check?: CheckResult): boolean {
  * Prevents a domain from being labeled "Hardened" or "Enforcing"
  * when the actual security score indicates significant issues.
  *
- * - Score < 50 (F grade): cap at Stage 2 maximum
- * - Score < 63 (D/D+ grade): cap at Stage 3 maximum
- * - Score >= 63: no cap applied
+ * The cap is expressed in terms of the **displayed** grade band, i.e. the
+ * customer-facing NIST 6-band {@link nistScoreToGrade} — the same letter
+ * `format-report.ts` prints next to the maturity label:
+ *
+ * - Displayed grade F (score < 60): cap at Stage 2 maximum
+ * - Displayed grade D (score 60-69): cap at Stage 3 maximum
+ * - Displayed grade C or better (score >= 70): no cap applied
+ *
+ * Issue #640: this used to read the INTERNAL canonical 9-band `scoreToGrade`
+ * boundaries (F < 50 → stage 2, D/D+ < 63 → stage 3) while the report rendered
+ * the NIST band. The two scales disagree in the 50-59 and 63-69 windows, so a
+ * scan could print "grade D" and "Stage 4 — Hardened" side by side and both be
+ * individually correct (github.com: score 67 → NIST D, canonical C → uncapped
+ * stage 4). Reading the DISPLAY scale here makes the contradiction structurally
+ * impossible instead of coincidentally absent.
+ *
+ * This deliberately consults `nistScoreToGrade` rather than re-spelling its
+ * thresholds, so the cap can never drift from the band that is actually shown.
+ * The canonical 9-band scale is untouched and still governs every other
+ * consumer (`compare_baseline` ordering, `/badge`, `analyze_drift`,
+ * `map_compliance`, `generate_fix_plan`, cohort percentiles, `ScanScore.grade`).
+ *
+ * `profile` selects the LADDER whose vocabulary the capped stage is worded in,
+ * via the same {@link ladderForProfile} selector `computeMaturityStage` uses —
+ * a capped `web_only` domain reads "Transport-Hardened (score-capped)", not the
+ * mail ladder's "Monitoring". Omitting it keeps the legacy mail wording.
  *
  * Stages already at or below the cap are returned unchanged.
  */
-export function capMaturityStage(maturity: MaturityStage, score: number): MaturityStage {
+export function capMaturityStage(maturity: MaturityStage, score: number, profile?: DomainProfile): MaturityStage {
 	// A stage that was never DETERMINED cannot be score-capped — there is no
 	// measurement to lower. Returning it untouched also stops the cap branches
 	// below from dropping the `indeterminate` flag on the way out.
 	if (maturity.indeterminate) return maturity;
 
-	if (score < 50 && maturity.stage > 2) {
+	const displayGrade = nistScoreToGrade(score);
+	// Same selector as the uncapped path — NOT a second copy of the predicate.
+	const labels = LADDER_STAGE_LABELS[ladderForProfile(profile)];
+
+	if (displayGrade === 'F' && maturity.stage > 2) {
 		return {
 			stage: 2,
-			label: 'Monitoring (score-capped)',
+			// The "(score-capped)" suffix is load-bearing: it marks the stage as
+			// imposed by the score rather than earned by the controls.
+			label: `${labels[2]} (score-capped)`,
 			description: 'Controls are present but the overall security score is too low for a higher maturity rating.',
 			nextStep: 'Address critical and high-severity findings to improve the overall score before advancing maturity.',
 		};
 	}
 
-	if (score < 63 && maturity.stage > 3) {
+	if (displayGrade === 'D' && maturity.stage > 3) {
 		return {
 			stage: 3,
-			label: 'Enforcing (score-capped)',
+			label: `${labels[3]} (score-capped)`,
 			description: 'Controls are present but the overall security score is too low for the highest maturity rating.',
-			nextStep: 'Resolve remaining findings to raise the score above the D grade range and achieve full hardening.',
+			nextStep: 'Resolve remaining findings to raise the score out of the D band (60-69) and achieve full hardening.',
 		};
 	}
 
@@ -188,7 +263,7 @@ function computeWebOnlyLadder(byCategory: Map<string, CheckResult>): MaturitySta
 	if (hasSsl && hasDnssec && hasHsts && hasAntiSpoof) {
 		return {
 			stage: 4,
-			label: 'Comprehensive',
+			label: WEB_ONLY_LADDER_LABELS[4],
 			description:
 				'This web-only domain has full transport (SSL), DNS integrity (DNSSEC), browser hardening (HSTS), and an anti-spoof email policy (SPF -all / DMARC reject).',
 			nextStep: '',
@@ -201,7 +276,7 @@ function computeWebOnlyLadder(byCategory: Map<string, CheckResult>): MaturitySta
 	if (hasSsl && hasDnssec && hasAntiSpoof) {
 		return {
 			stage: 3,
-			label: 'Defensive',
+			label: WEB_ONLY_LADDER_LABELS[3],
 			description:
 				'This web-only domain has SSL, DNSSEC, and an anti-spoof email policy (SPF -all / DMARC reject). Strong defensive posture.',
 			nextStep: 'Add HSTS preload and CAA pinning to reach full hardening.',
@@ -216,7 +291,7 @@ function computeWebOnlyLadder(byCategory: Map<string, CheckResult>): MaturitySta
 	if (hasSsl && (hasDnssec || hasHsts || hasAntiSpoof)) {
 		return {
 			stage: 2,
-			label: 'Transport-Hardened',
+			label: WEB_ONLY_LADDER_LABELS[2],
 			description: hasAntiSpoof
 				? 'Transport (TLS) plus an anti-spoof email policy (SPF -all / DMARC reject). Add DNSSEC and HSTS for full hardening.'
 				: 'Transport (TLS) plus a DNS- or browser-hardening control. NOTE: without an anti-spoof email policy (SPF -all + DMARC reject) the domain name can still be impersonated in email, even though it sends no mail.',
@@ -230,7 +305,7 @@ function computeWebOnlyLadder(byCategory: Map<string, CheckResult>): MaturitySta
 	if (hasSsl) {
 		return {
 			stage: 1,
-			label: 'Basic',
+			label: WEB_ONLY_LADDER_LABELS[1],
 			description: 'TLS is configured. No additional DNS or browser hardening detected.',
 			nextStep: 'Enable DNSSEC and HSTS to layer protection above plain TLS.',
 		};
@@ -248,7 +323,8 @@ function computeWebOnlyLadder(byCategory: Map<string, CheckResult>): MaturitySta
 	//
 	// The claim must therefore be UNREACHABLE without a TLS measurement — hence a
 	// replacement, not an annotation. `capMaturityStage` cannot rescue this: it only
-	// engages below score 63/50, and the affected hosts scored 67.
+	// ever LOWERS a stage (and since #640 abstains entirely on an `indeterminate`
+	// result), so it can neither retract nor qualify a false bottom-rung claim.
 	if (!sslMeasured) {
 		return {
 			stage: 0,
@@ -271,7 +347,7 @@ function computeWebOnlyLadder(byCategory: Map<string, CheckResult>): MaturitySta
 	// no usable HTTPS; that zero is a measurement.
 	return {
 		stage: 0,
-		label: 'Unprotected',
+		label: WEB_ONLY_LADDER_LABELS[0],
 		description: 'No TLS detected on this web-only domain. Traffic is not authenticated or encrypted.',
 		nextStep: 'Configure HTTPS with a valid certificate before adding hardening layers.',
 	};
@@ -290,7 +366,9 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 
 	// Profile-aware dispatch: explicit web_only domains use the web-only ladder.
 	// Non_mail also routes through web-only — both share the "no mail service" shape.
-	if (profile === 'web_only' || profile === 'non_mail') {
+	// The predicate itself lives in `ladderForProfile` so `capMaturityStage` selects
+	// the SAME ladder when it words a capped stage (#640 follow-up).
+	if (ladderForProfile(profile) === 'web_only') {
 		return computeWebOnlyMaturity(checks);
 	}
 
@@ -370,7 +448,7 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 	if (isEnforcing && hardeningCount >= 2 && hasTransportOrIntegrityHardening) {
 		return {
 			stage: 4,
-			label: 'Hardened',
+			label: MAIL_LADDER_LABELS[4],
 			description: 'Comprehensive email and DNS security posture with defense in depth.',
 			nextStep: '',
 		};
@@ -380,7 +458,7 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 	if (isEnforcing) {
 		return {
 			stage: 3,
-			label: 'Enforcing',
+			label: MAIL_LADDER_LABELS[3],
 			description: 'Email authentication is actively enforcing — spoofed emails are blocked or quarantined.',
 			nextStep: 'Add MTA-STS, DNSSEC, and BIMI to reach full hardening.',
 		};
@@ -390,7 +468,7 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 	if (hasSpf && hasDmarc && dmarcPolicyNone && hasRua) {
 		return {
 			stage: 2,
-			label: 'Monitoring',
+			label: MAIL_LADDER_LABELS[2],
 			description: 'Email authentication is published and being monitored but not enforcing.',
 			nextStep: 'After reviewing DMARC reports, move to p=quarantine and ensure DKIM is active.',
 		};
@@ -400,7 +478,7 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 	if (hasSpf && hasDmarc) {
 		return {
 			stage: 1,
-			label: 'Basic',
+			label: MAIL_LADDER_LABELS[1],
 			description: 'Basic email records exist but are not enforcing or monitoring.',
 			nextStep: 'Add DMARC aggregate reporting (rua=) and monitor for 2-4 weeks before enforcing.',
 		};
@@ -434,7 +512,7 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 	// Stage 0 — Unprotected. Reachable only when SPF/DMARC were measured.
 	return {
 		stage: 0,
-		label: 'Unprotected',
+		label: MAIL_LADDER_LABELS[0],
 		description: 'No email authentication — any server can send email as this domain.',
 		nextStep: 'Publish SPF and DMARC records to begin protecting your domain.',
 	};

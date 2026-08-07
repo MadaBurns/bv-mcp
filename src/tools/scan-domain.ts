@@ -865,7 +865,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		const rawMaturity = computeMaturityStage(checkResults, domainContext?.profile);
 		// An ungraded scan has no score to cap the stage with — leave the raw stage alone
 		// rather than coercing `null` to 0 (which would silently cap every ungraded scan).
-		const maturity = score.overall === null ? rawMaturity : capMaturityStage(rawMaturity, score.overall);
+		const maturity = score.overall === null ? rawMaturity : capMaturityStage(rawMaturity, score.overall, domainContext?.profile);
 
 		result = {
 			domain,
@@ -942,7 +942,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			const fallbackContext = fallbackScoring.context;
 			const score = fallbackScoring.score;
 			const rawMaturity = computeMaturityStage(checkResults, fallbackContext?.profile);
-			const maturity = score.overall === null ? rawMaturity : capMaturityStage(rawMaturity, score.overall);
+			const maturity = score.overall === null ? rawMaturity : capMaturityStage(rawMaturity, score.overall, fallbackContext?.profile);
 			result = {
 				domain,
 				score,

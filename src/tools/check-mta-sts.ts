@@ -150,13 +150,17 @@ function excludeForPolicyThrow(result: CheckResult, domain: string): CheckResult
 	// plain inconclusive transient finding; `checkStatus: 'error'` below is what excludes the
 	// category, not the finding metadata. `errorKind: 'timeout'` follows the repo's transient
 	// convention (see lib/dns-error-result.ts).
+	//
+	// No `missingControl: true` (issue #638) — see the contract note on `buildWafFinding` in
+	// lib/waf-detection.ts. A stalled/aborted policy fetch measured nothing, so it must not also
+	// claim the control is absent; the `checkStatus: 'error'` below is what excludes the category.
 	const inconclusive = createFinding(
 		'mta_sts',
 		'MTA-STS policy fetch stalled — accessibility inconclusive',
 		'info',
 		`The MTA-STS policy fetch for https://mta-sts.${domain}/.well-known/mta-sts.txt did not complete (the connection was aborted or stalled), ` +
 			`consistent with a transient failure or a WAF challenge that real sending MTAs are not subject to. Policy accessibility could not be verified externally by the scanner.`,
-		{ inconclusive: true, missingControl: true, errorKind: 'timeout' },
+		{ inconclusive: true, errorKind: 'timeout' },
 	);
 	return { ...buildCheckResult('mta_sts', [...kept, inconclusive], result.controlPresent), score: 0, passed: false, checkStatus: 'error' };
 }

@@ -107,6 +107,26 @@ export async function checkHTTPSecurity(
 	// and EXCLUDES the category from scoring (renormalized) rather than zeroing it — so a flaky
 	// fetch can't make the overall score fluctuate between a real value and 0.
 	let inconclusive: 'timeout' | 'error' | undefined;
+	// Set on every branch where THE PROBE NEVER COMPLETED, so no header was ever observed:
+	// the WAF/appliance block, the 401, the residual 4xx, and the connection failure/timeout.
+	// All four used to stamp their finding with `missingControl: true` — but that flag means
+	// "we measured, and the control is ABSENT", which none of them established (issue #638).
+	// The flag was doing double duty: it was ALSO the only thing forcing the score-0 /
+	// passed-false shape, so dropping it alone would let these findings compute to a PASS
+	// (an `info` finding → 100/passed, a `medium` → 85/passed) — i.e. an unmeasured check
+	// reported as a clean one, the opposite defect. The zeroing is therefore expressed
+	// directly here, with no false claim of absence attached.
+	//
+	// The `checkStatus` set alongside is what makes the scoring engine EXCLUDE the category
+	// rather than score the 0 — see `transientFailures` in scoring/engine.ts.
+	//
+	// Deliberately NOT set on the two other `inconclusive` branches, which never carried
+	// `missingControl` and so are not part of this defect:
+	//   - the 5xx "Server error" branch — the origin WAS reached and answered (score 85);
+	//   - the robots.txt skip — a voluntary abstention, not a failed probe (score 100).
+	// Generalising "inconclusive ⇒ zero" would silently rescore both. It is scoped to the
+	// branches that made the contradictory claim.
+	let unmeasuredZero = false;
 
 	try {
 		let response = await fetchFn(`https://${domain}`, {
@@ -147,37 +167,47 @@ export async function checkHTTPSecurity(
 				void followed.body?.cancel();
 			} else {
 				inconclusive = 'error';
+				unmeasuredZero = true;
 				findings.push(
 					createFinding(
 						'http_security',
 						'HTTP check blocked by security appliance',
 						'info',
 						`The site returned HTTP ${response.status} for ${domain}. A WAF or firewall is blocking external header inspection. Security headers cannot be verified.`,
-						{ missingControl: true },
+						// No `missingControl` (issue #638) — a blocked probe measured nothing, so it must not
+						// also claim the control is absent. `inconclusive: true` is the honest marker; the
+						// score-0/passed-false shape is applied via `unmeasuredZero` at the return below.
+						{ inconclusive: true },
 					),
 				);
 			}
 		} else if (response.status === 401) {
 			inconclusive = 'error';
+			unmeasuredZero = true;
 			findings.push(
 				createFinding(
 					'http_security',
 					'HTTP check requires authentication',
 					'info',
 					`The site returned HTTP 401 for ${domain}. The endpoint requires authentication; security headers cannot be verified externally.`,
-					{ missingControl: true },
+					// No `missingControl` (issue #638) — an auth-gated endpoint refused the probe, which
+					// says nothing about whether the headers exist behind it. See `unmeasuredZero` above.
+					{ inconclusive: true },
 				),
 			);
 		} else {
 			// Other 4xx (404, 429, etc.) — blocked or rejected
 			inconclusive = 'error';
+			unmeasuredZero = true;
 			findings.push(
 				createFinding(
 					'http_security',
 					'HTTP request rejected',
 					'medium',
 					`HTTPS returned status ${response.status} for ${domain}. Cannot analyze security headers.`,
-					{ missingControl: true },
+					// No `missingControl` (issue #638) — the request was rejected before any header was
+					// observed. See `unmeasuredZero` above.
+					{ inconclusive: true },
 				),
 			);
 		}
@@ -198,6 +228,7 @@ export async function checkHTTPSecurity(
 			const e = err as { name?: string; message?: string };
 			const isTimeout = e?.name === 'TimeoutError' || /timed?\s*out|abort|timeout/i.test(e?.message ?? '');
 			inconclusive = isTimeout ? 'timeout' : 'error';
+			unmeasuredZero = true;
 			const message = isTimeout ? 'Connection timed out' : 'Connection failed';
 			findings.push(
 				createFinding(
@@ -205,12 +236,18 @@ export async function checkHTTPSecurity(
 					`HTTPS ${message.toLowerCase()}`,
 					'medium',
 					`Could not fetch https://${domain} to check security headers: ${message}.`,
-					{ missingControl: true },
+					// No `missingControl` (issue #638) — the connection never delivered a response, so
+					// nothing about the headers was established. See `unmeasuredZero` above.
+					{ inconclusive: true },
 				),
 			);
 		}
 	}
 
-	const result = buildCheckResult('http_security', findings);
+	const base = buildCheckResult('http_security', findings);
+	// Preserves the exact score-0/passed-false shape the removed `missingControl` flags used to
+	// produce on the four never-completed-probe paths, without asserting the control is absent
+	// (issue #638).
+	const result = unmeasuredZero ? { ...base, score: 0, passed: false } : base;
 	return inconclusive ? { ...result, checkStatus: inconclusive } : result;
 }
