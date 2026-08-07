@@ -135,7 +135,40 @@ export function analyzeTrustSurface(spfRecord: string, context: TrustSurfaceCont
 	const domains = extractIncludeAndRedirectDomains(spfRecord);
 	const matchedPlatforms: { name: string; includeDomain: string }[] = [];
 	const corroboratedByWeakDmarc = context.corroboratedByWeakDmarc === true;
-	const findingSeverity = corroboratedByWeakDmarc ? 'medium' : 'info';
+	/**
+	 * The per-platform findings are DELIBERATELY informational — ALWAYS, corroborated or not.
+	 *
+	 * ⚠️ DOUBLE-COUNT REGRESSION GUARD (issue #637). This previously graded each matched
+	 * platform `medium` (−15) whenever weak DMARC corroborated, AND ALSO emitted the aggregate
+	 * "SPF trust surface: N shared platforms" finding at `high` (−25) below. Both describe the
+	 * SAME condition — sending authority delegated to multi-tenant platforms — so the penalty
+	 * was charged once per platform PLUS once for the set. github.com paid 6 × −15 = −90 on top
+	 * of the −25 aggregate; the per-platform stack alone floors the category, so a valid,
+	 * working SPF record scored 0, indistinguishable from publishing no SPF at all. SPF is one
+	 * of only four categories the 1,000-domain corpus found to actually discriminate, so a
+	 * check that cannot separate "complex sender profile" from "no SPF" is broken.
+	 *
+	 * The fix keeps exactly ONE scored signal for this condition: the aggregate below, whose
+	 * severity still escalates with corroboration and whose title / `platformCount` scale with
+	 * the size of the trust surface — the real, proportionate signal. This mirrors what DKIM
+	 * already does for duplicate selector-probe key-strength findings ("Consolidated N
+	 * duplicate selector-probe key-strength finding(s) to reduce repeated penalty for identical
+	 * key profiles across selectors").
+	 *
+	 * The per-platform findings REMAIN PRESENT and fully detailed — same titles, same
+	 * `describeCorroboration()` prose, same `dmarcCorroborated` / `dmarcPolicy` /
+	 * `dmarcAlignmentMode` metadata — so a customer can still see exactly which platforms are
+	 * authorized and why each one matters. Only the repeated penalty is gone. Nothing about the
+	 * elevation/corroboration rule, any severity threshold, weight, tier, grade band or profile
+	 * changed, and `SEVERITY_PENALTIES` is untouched.
+	 *
+	 * ⚠️ DUPLICATED FILE: mirror any change here in the other copy — core
+	 * `packages/dns-checks/src/checks/spf-trust-surface.ts` and worker
+	 * `src/tools/spf-trust-surface.ts`. Direct package consumers (bv-web-prod) see only the
+	 * core copy; parity is audited by
+	 * `test/audits/spf-trust-surface-catalog-parity.audit.test.ts`.
+	 */
+	const findingSeverity = 'info' as const;
 	const summarySeverity = corroboratedByWeakDmarc ? 'high' : 'info';
 	const detailSuffix = corroboratedByWeakDmarc
 		? describeCorroboration(context)

@@ -145,61 +145,74 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 
 	// Step 3: Generate findings
 
-	// --- Geopolitical jurisdiction findings ---
+	// Counts scored findings suppressed by per-service consolidation (jurisdiction +
+	// stale integration). Reported as a single `info` notice at the end so the
+	// de-duplication is VISIBLE rather than silent — mirrors the DKIM precedent
+	// (`consolidateSelectorProbeKeyStrengthFindings` in dns-checks).
+	let consolidatedScoredFindings = 0;
+
+	// --- Geopolitical jurisdiction findings, ONE per distinct service (#642) ---
+	// Previously this loop iterated `matchedServices` per RECORD, so a domain
+	// publishing two Yandex verification records took the `medium` penalty TWICE
+	// (-30) for a SINGLE governance condition. The penalty scaled with how many
+	// copies of a record exist, not with how many distinct problems the domain has —
+	// and record duplication is ALREADY charged separately by the `low` "Duplicate
+	// verification records detected" finding below, so it was billed twice.
+	// One scored finding per distinct service; multiplicity moves to metadata.
+	// Distinct services still each accrue their own penalty (e.g. Yandex + Baidu
+	// remain two findings) — only same-service repeats collapse.
 	const govDomain = isGovernmentDomain(domain);
 	const domainTld = getEffectiveTld(domain);
 
+	const jurisdictionServices = new Map<string, { jurisdiction: string; category: VerificationCategory; records: string[] }>();
 	for (const match of matchedServices) {
-		if (match.jurisdiction === 'RU') {
-			// Don't flag on native .ru domains
-			if (domainTld === 'ru') continue;
+		if (match.jurisdiction !== 'RU' && match.jurisdiction !== 'CN') continue;
+		// Don't flag on native .ru / .cn domains
+		if (match.jurisdiction === 'RU' && domainTld === 'ru') continue;
+		if (match.jurisdiction === 'CN' && domainTld === 'cn') continue;
 
-			if (govDomain) {
-				findings.push(
-					createFinding(
-						'txt_hygiene',
-						'Russian jurisdiction service on government domain',
-						'high',
-						`${match.service} verification record found on government domain ${domain}. This service operates under Russian jurisdiction and may pose data sovereignty concerns.`,
-						{ service: match.service, jurisdiction: 'RU', category: match.category },
-					),
-				);
-			} else {
-				findings.push(
-					createFinding(
-						'txt_hygiene',
-						'Russian jurisdiction service verification detected',
-						'medium',
-						`${match.service} verification record found for ${domain}. This service operates under Russian jurisdiction. Consider whether this aligns with your organization's data governance policies.`,
-						{ service: match.service, jurisdiction: 'RU', category: match.category },
-					),
-				);
-			}
-		} else if (match.jurisdiction === 'CN') {
-			// Don't flag on native .cn domains
-			if (domainTld === 'cn') continue;
+		const existing = jurisdictionServices.get(match.service);
+		if (existing) {
+			existing.records.push(match.record);
+			consolidatedScoredFindings++;
+		} else {
+			jurisdictionServices.set(match.service, {
+				jurisdiction: match.jurisdiction,
+				category: match.category,
+				records: [match.record],
+			});
+		}
+	}
 
-			if (govDomain) {
-				findings.push(
-					createFinding(
-						'txt_hygiene',
-						'Chinese jurisdiction service on government domain',
-						'high',
-						`${match.service} verification record found on government domain ${domain}. This service operates under Chinese jurisdiction and may pose data sovereignty concerns.`,
-						{ service: match.service, jurisdiction: 'CN', category: match.category },
-					),
-				);
-			} else {
-				findings.push(
-					createFinding(
-						'txt_hygiene',
-						'Chinese jurisdiction service verification detected',
-						'medium',
-						`${match.service} verification record found for ${domain}. This service operates under Chinese jurisdiction. Consider whether this aligns with your organization's data governance policies.`,
-						{ service: match.service, jurisdiction: 'CN', category: match.category },
-					),
-				);
-			}
+	for (const [service, { jurisdiction, category, records }] of jurisdictionServices) {
+		const jurisdictionLabel = jurisdiction === 'RU' ? 'Russian' : 'Chinese';
+		const recordCount = records.length;
+		// Keep the single-record phrasing byte-identical to the pre-#642 wording; the
+		// multi-record variant states the count (individual records live in metadata).
+		const foundClause = recordCount > 1 ? `${service} verification records found` : `${service} verification record found`;
+		const countClause = recordCount > 1 ? ` (${recordCount} such records are published)` : '';
+		const metadata = { service, jurisdiction, category, recordCount, records };
+
+		if (govDomain) {
+			findings.push(
+				createFinding(
+					'txt_hygiene',
+					`${jurisdictionLabel} jurisdiction service on government domain`,
+					'high',
+					`${foundClause} on government domain ${domain}${countClause}. This service operates under ${jurisdictionLabel} jurisdiction and may pose data sovereignty concerns.`,
+					metadata,
+				),
+			);
+		} else {
+			findings.push(
+				createFinding(
+					'txt_hygiene',
+					`${jurisdictionLabel} jurisdiction service verification detected`,
+					'medium',
+					`${foundClause} for ${domain}${countClause}. This service operates under ${jurisdictionLabel} jurisdiction. Consider whether this aligns with your organization's data governance policies.`,
+					metadata,
+				),
+			);
 		}
 	}
 
@@ -294,24 +307,44 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 	}
 
 	// --- Stale integration detection (SPF cross-reference) ---
+	// ONE finding per distinct stale service (#642) — the stale verdict depends only
+	// on the service (its SPF domains vs the published includes), so N copies of the
+	// same verification record described the SAME stale integration and deducted
+	// N x 5. Multiplicity now travels in metadata; a second genuinely-stale service
+	// still emits its own finding.
 	const spfIncludes = extractSpfIncludes(rootTxtRecords);
+	const staleServices = new Map<string, { category: VerificationCategory; records: string[] }>();
 	for (const match of matchedServices) {
 		const spfDomains = SERVICE_SPF_DOMAINS[match.service];
 		if (!spfDomains) continue;
 
 		const hasSpfInclude = spfDomains.some((spfDomain) => spfIncludes.some((include) => include.includes(spfDomain.toLowerCase())));
+		if (hasSpfInclude) continue;
 
-		if (!hasSpfInclude) {
-			findings.push(
-				createFinding(
-					'txt_hygiene',
-					`Possible stale service integration: ${match.service}`,
-					'low',
-					`${match.service} verification record found but no corresponding SPF include detected. This may indicate the service is no longer actively used for email sending. Review and remove if the integration has been decommissioned.`,
-					{ service: match.service, category: match.category },
-				),
-			);
+		const existing = staleServices.get(match.service);
+		if (existing) {
+			existing.records.push(match.record);
+			consolidatedScoredFindings++;
+		} else {
+			staleServices.set(match.service, { category: match.category, records: [match.record] });
 		}
+	}
+
+	for (const [service, { category, records }] of staleServices) {
+		const recordCount = records.length;
+		const foundClause =
+			recordCount > 1
+				? `${service} verification records found (${recordCount} such records are published)`
+				: `${service} verification record found`;
+		findings.push(
+			createFinding(
+				'txt_hygiene',
+				`Possible stale service integration: ${service}`,
+				'low',
+				`${foundClause} but no corresponding SPF include detected. This may indicate the service is no longer actively used for email sending. Review and remove if the integration has been decommissioned.`,
+				{ service, category, recordCount, records },
+			),
+		);
 	}
 
 	// --- Multiple MS= records (tenant migration residue) ---
@@ -364,15 +397,40 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 		);
 	}
 
+	// --- Consolidation notice (#642) ---
+	// Emitted only when consolidation actually suppressed a scored finding, so the
+	// score change is auditable from the report itself rather than being silent.
+	// `info` => zero penalty (SEVERITY_PENALTIES.info === 0).
+	if (consolidatedScoredFindings > 0) {
+		findings.push(
+			createFinding(
+				'txt_hygiene',
+				'Duplicate TXT hygiene findings consolidated',
+				'info',
+				`Consolidated ${consolidatedScoredFindings} duplicate scored TXT hygiene finding(s) so a single condition published across several TXT records is penalised once. Every affected record is listed in the "records" metadata of its finding; repeated publication itself is graded separately by the duplicate-verification finding.`,
+				{ consolidatedFindings: consolidatedScoredFindings },
+			),
+		);
+	}
+
 	// --- Hygiene summary ---
+	// `serviceCount` is the DISTINCT-service count, not the matched-record count
+	// (#642, cosmetic half): the old wording read "5 service verification(s)
+	// detected" next to 2 service findings once the per-record info findings were
+	// collapsed. The raw record tally is retained as `verificationRecordCount`.
 	const rating = getHygieneRating(recordCount);
+	const distinctServiceCount = new Set(matchedServices.map((m) => m.service)).size;
+	const serviceClause =
+		matchedServices.length > distinctServiceCount
+			? `${distinctServiceCount} distinct service verification(s) detected across ${matchedServices.length} record(s).`
+			: `${distinctServiceCount} service verification(s) detected.`;
 	findings.push(
 		createFinding(
 			'txt_hygiene',
 			'TXT record hygiene summary',
 			'info',
-			`TXT record hygiene rating: ${rating} (${recordCount} records). ${matchedServices.length} service verification(s) detected.`,
-			{ rating, recordCount, serviceCount: matchedServices.length },
+			`TXT record hygiene rating: ${rating} (${recordCount} records). ${serviceClause}`,
+			{ rating, recordCount, serviceCount: distinctServiceCount, verificationRecordCount: matchedServices.length },
 		),
 	);
 

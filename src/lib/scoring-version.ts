@@ -88,8 +88,53 @@
  *   treatment the other 18 cataloged platforms already received. Domains with enforcing DMARC are
  *   unaffected. No weight, tier, grade band, severity penalty, missing-control rule or
  *   profile-detection rule changed. The affected population is unmeasured against the corpus.
+ * - 1.8.0 — the SPF trust surface is scored ONCE instead of twice (#637). `analyzeTrustSurface`
+ *   emitted an AGGREGATE "SPF trust surface: N shared platforms" finding (`high`, −25 under
+ *   corroboration) AND ALSO charged `medium` (−15) per platform for the SAME condition. The
+ *   per-platform findings are now always `info` (penalty 0); the aggregate is unchanged and
+ *   remains the single scored signal. This is a DOUBLE-COUNT removal, not a recalibration: no
+ *   weight, tier, grade band, severity penalty (`SEVERITY_PENALTIES` untouched),
+ *   missing-control rule, corroboration/elevation rule or profile-detection rule changed. The
+ *   per-platform findings remain present and fully detailed (same prose, same
+ *   `dmarcCorroborated`/`dmarcPolicy`/`dmarcAlignmentMode` metadata) — only the repeated
+ *   penalty is gone. Measured: the `spf` category moves UPWARD ONLY, by 0 / +15 / +30 / +60 /
+ *   +75 points at 0 / 1 / 2 / 4 / 6 corroborated shared platforms; every multi-platform domain
+ *   converges on 75 for the trust surface alone. github.com went `spf` 0 → 35 and overall
+ *   67 → 70 (NIST display grade D → C) on its real 19-category `enterprise_mail` roster. A
+ *   domain publishing NO SPF record still scores 0 — restoring the discrimination the stacked
+ *   penalty had erased, since a valid working record and no record at all both read 0 before.
+ *   No domain can move down: the change only lowers severities, and the two `spf` category
+ *   interactions (`no_spf_no_dmarc`, `no_spf_no_dkim`) are gated on `maxScore: 0`, so a higher
+ *   `spf` can only stop them firing. Applied identically to BOTH copies of the analyzer (core
+ *   `packages/dns-checks/src/checks/spf-trust-surface.ts` + worker
+ *   `src/tools/spf-trust-surface.ts`); the worker post-processor never recomputes the score, so
+ *   the score change originates entirely in the core package — direct package consumers
+ *   (bv-web-prod) re-grade identically.
+ * - 1.8.0 — `txt_hygiene` stops charging per-record for one condition (#642). The jurisdiction
+ *   and stale-integration loops emitted one finding PER RECORD, so a domain with six records
+ *   from the same service paid six penalties for a single problem. Both now group by service
+ *   and emit one finding carrying `recordCount` + `records` metadata. UPWARD ONLY, and capped
+ *   at +1 point overall: `txt_hygiene` is a hardening category, and the hardening tier is
+ *   binary (1.0 pt iff `score >= 50 && passed`), so the category can gain at most its single
+ *   point. Anti-flattening confirmed: four DISTINCT problems still produce four penalties —
+ *   only repeats of the SAME problem consolidate.
+ * - 1.8.0 — the non-mail email-auth downgrade is now GATED ON INHERITED ENFORCEMENT and runs
+ *   for the first time (#643). Two defects compounded here. (1) The predicate `hasNoMx` tested
+ *   for a finding title no production path emits, so `adjustForNonMailDomain` had never once
+ *   run against real DNS. (2) Underneath it, the downgrade was UNGATED: `severity: 'info'` was
+ *   assigned outside the `apexDmarcCovers` conditional, so that boolean only selected a prose
+ *   string while EVERY no-MX domain would have been downgraded. Repairing (1) alone would have
+ *   shipped (2): measured at +7 to +23 points across ~28.6% of domains, crossing two to three
+ *   NIST display bands, and handing a clean pass to domains `check_mx` concurrently reports as
+ *   spoofable. That is unsound — absent MX means the domain cannot RECEIVE mail and says
+ *   nothing about whether it can be SPOOFED AS A SENDER, which is what SPF/DKIM/DMARC defend.
+ *   So the downgrade now fires ONLY where the parent's DMARC `sp=`/`p=` is `quarantine` or
+ *   `reject` — real inherited enforcement, and what CLAUDE.md had documented all along. Apex
+ *   domains have no parent to inherit from and therefore never qualify. Net effect vs the
+ *   PRODUCTION baseline (where the downgrade never ran): unchanged for every apex domain, and
+ *   for subdomains changed only where enforcing parent coverage demonstrably exists.
  */
-export const SCORING_MODEL_VERSION = '1.7.0';
+export const SCORING_MODEL_VERSION = '1.8.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
