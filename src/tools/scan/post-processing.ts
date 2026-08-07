@@ -79,11 +79,16 @@ export async function applyScanPostProcessing(
 	const mxResult = results.find((result) => result.category === 'mx');
 	const hasNoMx = mxResult ? mxResult.findings.some((finding: Finding) => finding.title === 'No MX records found') : false;
 
+	// TEXT-BRANCH SELECTION ONLY — `declaresNoInboundMail` never gates a severity,
+	// a weight, or a score; it only decides which *wording* a finding gets. It is
+	// deliberately a separate predicate from `hasNoMx` above (see its doc comment).
+	const declaresNoInboundMail = hasNoMx || mxDeclaresNoInboundMail(mxResult);
+
 	if (hasNoMx) {
 		const apexCovers = await checkApexDmarcPolicy(domain);
 		results = adjustForNonMailDomain(results, apexCovers);
 		results = adjustBimiForNonMailDomain(results);
-	} else if (mxResult) {
+	} else if (mxResult && !declaresNoInboundMail) {
 		results = clarifyMtaStsForMailDomain(domain, results);
 	}
 
@@ -92,6 +97,16 @@ export async function applyScanPostProcessing(
 	const hasNoSendPolicy = spfResult?.findings.some((f: Finding) => f.metadata?.noSendPolicy === true) ?? false;
 	if (hasNoSendPolicy && !hasNoMx) {
 		results = adjustForNoSendDomain(results);
+	}
+
+	// BIMI applicability wording (TEXT ONLY — severity and score untouched).
+	// `adjustBimiForNonMailDomain` above only runs on the narrow `hasNoMx` branch,
+	// so a domain that declares "no mail" some *other* way — an RFC 7505 null MX,
+	// or an SPF `-all` no-send policy — kept the "eligible for BIMI" sales pitch.
+	// Recommending BIMI to a domain that cannot send email is a factual error, and
+	// it contradicts the same report's own null-MX / no-send findings.
+	if (!hasNoMx && (hasNoSendPolicy || declaresNoInboundMail)) {
+		results = adjustBimiForNonMailDomain(results);
 	}
 
 	// Impersonation escalation: a mail-sending domain whose DMARC is weak/absent
@@ -446,6 +461,66 @@ function isMissingRecordFinding(finding: { title: string; detail: string }): boo
 	);
 }
 
+/**
+ * MX finding titles that mean "this domain does not accept inbound email".
+ *
+ * These are the ACTUAL titles `check-mx` emits on its non-mail terminal paths
+ * (`packages/dns-checks/src/checks/check-mx.ts` + `mx-analysis.ts`). Note that
+ * `'No MX records found'` — the title `hasNoMx` in `applyScanPostProcessing`
+ * matches on — is NOT among them: no production code path emits that string, so
+ * `hasNoMx` is only ever true for synthetically-constructed results. It is
+ * retained verbatim here so a synthetic/legacy result is still recognised.
+ */
+const NO_INBOUND_MAIL_MX_TITLES: ReadonlySet<string> = new Set([
+	'Null MX record (RFC 7505)',
+	'Correctly-configured non-mail domain',
+	'Non-mail domain SPF not hard-fail',
+	'No MX and no SPF — domain spoofable',
+	'No MX records found',
+]);
+
+/**
+ * True when the `mx` check DEFINITIVELY established that the domain accepts no
+ * inbound email — either no MX records at all, or an RFC 7505 null MX.
+ *
+ * ⚠️ TEXT-BRANCH SELECTION ONLY. This exists so prose stops contradicting the
+ * scan's own findings; it must never gate a severity, weight, or score.
+ *
+ * It is deliberately NOT folded into `hasNoMx`. `hasNoMx` additionally switches
+ * on `adjustForNonMailDomain()`, which DOWNGRADES critical/high email findings to
+ * `info` — a scoring change, and scoring calibration in this repo is operator-
+ * gated. Widening `hasNoMx` would silently re-grade every null-MX domain, so the
+ * two predicates are kept separate on purpose.
+ *
+ * Primary signal is `controlPresent`, which `check-mx` sets on every terminal
+ * path: `true` only when real mail-routing MX records were observed, `false` for
+ * both the no-MX and the null-MX declarations, and left `undefined` when the MX
+ * lookup was inconclusive (`checkStatus: 'error'`). An inconclusive MX lookup
+ * therefore yields `false` here — we do not assert "no mail" from a failed probe.
+ */
+function mxDeclaresNoInboundMail(mxResult: CheckResult | undefined): boolean {
+	if (!mxResult) return false;
+	if (mxResult.controlPresent === false) return true;
+	if (mxResult.controlPresent === true) return false;
+	return mxResult.findings.some((finding: Finding) => NO_INBOUND_MAIL_MX_TITLES.has(finding.title));
+}
+
+/**
+ * Rewrite the MTA-STS "both records missing" summary to name inbound mail as the
+ * reason it matters — but ONLY for a domain that actually accepts inbound mail.
+ *
+ * The caller gates this on `!mxDeclaresNoInboundMail(mxResult)`. Without that
+ * gate a null-MX domain was told "Since this domain has MX records and accepts
+ * email…" in the very same response that reported "Null MX record (RFC 7505) —
+ * Domain explicitly declares it does not accept email". `check-mta-sts` already
+ * branches its own copy on a real MX probe (`detectInboundMail`), so for a
+ * non-mail domain the correct wording is the one the check itself produced and
+ * the right action here is to leave it alone.
+ *
+ * The gate stays permissive on an INCONCLUSIVE MX result so this keeps serving
+ * its original purpose: correcting the check's non-mail copy when the check's own
+ * MX probe failed but the scan's `mx` check found real mail routing.
+ */
 function clarifyMtaStsForMailDomain(domain: string, results: CheckResult[]): CheckResult[] {
 	return results.map((result) => {
 		if (result.category !== 'mta_sts') return result;
@@ -479,12 +554,24 @@ function adjustForNonMailDomain(results: CheckResult[], apexDmarcCovers: boolean
 	});
 }
 
+/**
+ * Replace the "eligible for BIMI" recommendation with a non-applicability note on
+ * a domain that does not send email (no MX / RFC 7505 null MX / SPF `-all`
+ * no-send policy).
+ *
+ * TEXT ONLY — severity, metadata, and therefore the category score are untouched;
+ * only the `detail` prose of the one matching finding changes. `scan_domain`
+ * already handles the category correctly (`bimi` lands in
+ * `notApplicableCategories` with a null score); this closes the prose half.
+ */
 function adjustBimiForNonMailDomain(results: CheckResult[]): CheckResult[] {
 	return results.map((result) => {
 		if (result.category !== 'bimi') return result;
 		const adjusted = result.findings.map((finding: Finding) => {
 			if (finding.title === 'No BIMI record found' && finding.detail.includes('eligible for BIMI')) {
-				const bimiDomain = finding.detail.match(/at (default\._bimi\.\S+)/)?.[1] ?? `default._bimi.unknown`;
+				// Trim the sentence-terminating dot the greedy \S+ swallows, else the
+				// rewritten detail reads "…default._bimi.example.com.. This domain…".
+				const bimiDomain = (finding.detail.match(/at (default\._bimi\.\S+)/)?.[1] ?? `default._bimi.unknown`).replace(/\.+$/, '');
 				return {
 					...finding,
 					detail: `No BIMI record found at ${bimiDomain}. This domain does not appear to send email, so BIMI is not applicable.`,
