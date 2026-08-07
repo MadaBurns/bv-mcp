@@ -28,7 +28,17 @@ describe('analyzeTrustSurface', () => {
 		expect(summary!.metadata?.platformCount).toBe(2);
 	});
 
-	it('elevates findings when weak DMARC corroborates the exposure', () => {
+	/**
+	 * #637 — INVERTED, not deleted.
+	 *
+	 * This case used to assert that corroboration elevated BOTH halves (2 × `medium`
+	 * per-platform + 1 × `high` summary), which pinned the double-count: the aggregate and the
+	 * per-platform findings describe the SAME condition, so −15 was charged per platform on top
+	 * of the aggregate's −25 and github.com's valid SPF record floored to 0. Only the aggregate
+	 * is scored now; the assertion is inverted here as the tripwire. Mirrored in the CORE copy's
+	 * spec (packages/dns-checks/src/__tests__/checks/spf-trust-surface.test.ts).
+	 */
+	it('scores the trust surface ONCE — only the summary elevates under corroboration (#637)', () => {
 		const findings = analyzeTrustSurface('v=spf1 include:_spf.google.com include:sendgrid.net -all', {
 			corroboratedByWeakDmarc: true,
 			dmarcPolicy: 'none',
@@ -36,10 +46,18 @@ describe('analyzeTrustSurface', () => {
 		});
 
 		expect(findings).toHaveLength(3);
-		expect(findings.filter((f) => f.severity === 'medium')).toHaveLength(2);
+		const perPlatform = findings.filter((f) => f.metadata?.platformCount === undefined);
+		expect(perPlatform).toHaveLength(2);
+		expect(perPlatform.every((f) => f.severity === 'info')).toBe(true);
+		// Detail + corroboration metadata are retained in full — only the penalty is gone.
+		expect(perPlatform[0].metadata?.dmarcCorroborated).toBe(true);
+		expect(perPlatform[0].detail).toMatch(/monitor-only \(p=none\) and is not enforcing/i);
+
 		const summary = findings.find((f) => f.severity === 'high');
 		expect(summary).toBeDefined();
+		expect(summary!.metadata?.platformCount).toBe(2);
 		expect(summary!.metadata?.dmarcCorroborated).toBe(true);
+		expect(findings.filter((f) => f.severity !== 'info'), 'exactly ONE scored finding for the whole trust surface').toHaveLength(1);
 	});
 
 	/**

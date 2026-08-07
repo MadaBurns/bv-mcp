@@ -28,15 +28,18 @@ describe('validateFix', () => {
 	});
 
 	it('returns partial when check passes but has medium findings', async () => {
-		// include: with the mock causes circular-include (high) + trust-surface (medium),
-		// so use a multi-domain mock that avoids the loop.
+		// include: with the single-domain mock causes a circular include (high), so use a
+		// multi-domain mock that avoids the loop. (The shared-platform trust-surface finding
+		// this record also produces is informational since #637 — a single cataloged platform
+		// emits no aggregate finding and is therefore unscored, so the verdict here is driven
+		// by the absence of the circular-include high, not by the trust surface.)
 		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
 			const u = new URL(typeof url === 'string' ? url : url.toString());
 			const name = u.searchParams.get('name') ?? '';
 			const records: Record<string, string[]> = {
 				'example.com': ['v=spf1 include:_spf.google.com -all'],
 				'_spf.google.com': ['v=spf1 ip4:172.217.0.0/19 -all'],
-				'_dmarc.example.com': [], // Missing DMARC → trust-surface elevated to medium
+				'_dmarc.example.com': [], // Missing DMARC → trust surface corroborated (info-only since #637)
 			};
 			const data = records[name] ?? [];
 			const answers = data.map((d) => ({ name, type: 16, TTL: 300, data: `"${d}"` }));

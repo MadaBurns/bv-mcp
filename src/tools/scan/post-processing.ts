@@ -7,6 +7,7 @@ import { detectProviderMatches, detectProviderMatchesBySelectors, loadProviderSi
 import { detectCloudflareFallback } from '../../lib/cdn-fallback-detection';
 import { type AsnDohResolver, detectCdnFromAsn } from '../../lib/cdn-asn-detection';
 import { parseDmarcTags } from '../check-dmarc';
+import { isCompletedCheck } from '../../lib/ungraded-display';
 
 export interface ScanRuntimeOptions {
 	providerSignaturesUrl?: string;
@@ -77,35 +78,57 @@ export async function applyScanPostProcessing(
 ): Promise<CheckResult[]> {
 	let results = checkResults;
 	const mxResult = results.find((result) => result.category === 'mx');
-	const hasNoMx = mxResult ? mxResult.findings.some((finding: Finding) => finding.title === 'No MX records found') : false;
 
-	// TEXT-BRANCH SELECTION ONLY — `declaresNoInboundMail` never gates a severity,
-	// a weight, or a score; it only decides which *wording* a finding gets. It is
-	// deliberately a separate predicate from `hasNoMx` above (see its doc comment).
-	const declaresNoInboundMail = hasNoMx || mxDeclaresNoInboundMail(mxResult);
+	// ONE non-mail predicate, keyed on a STRUCTURAL signal (#643).
+	//
+	// This used to be two predicates: a `hasNoMx` that tested for a finding titled
+	// 'No MX records found' — a string NO production code path emits — and this
+	// `mxDeclaresNoInboundMail`, added later for the wording branch only. `hasNoMx`
+	// was therefore permanently `false` against real DNS, so `adjustForNonMailDomain`
+	// (the documented "parent DMARC covers it → downgrade email-auth findings to
+	// info" rule) had never once run in production, and non-mail domains carried
+	// un-downgraded critical/high findings for controls that cannot apply to them.
+	// The two are now unified: there is exactly one answer to "does this domain
+	// accept inbound mail", and both the severity branch and the wording branch
+	// read it.
+	const declaresNoInboundMail = mxDeclaresNoInboundMail(mxResult);
 
-	if (hasNoMx) {
-		const apexCovers = await checkApexDmarcPolicy(domain);
-		results = adjustForNonMailDomain(results, apexCovers);
+	if (declaresNoInboundMail) {
+		// The downgrade is GATED on real inherited protection, not on MX absence alone.
+		//
+		// Absent MX means the domain cannot RECEIVE mail. It says nothing about whether
+		// the domain can be SPOOFED AS A SENDER — SPF/DKIM/DMARC protect outbound
+		// identity, and a null-MX domain is still a forgeable From:. Downgrading missing
+		// email-auth to `info` on MX absence alone would hand an A+ to a domain that
+		// `check_mx` simultaneously reports as spoofable.
+		//
+		// So we downgrade only where the parent's DMARC `sp=`/`p=` is actually
+		// `quarantine`/`reject` — i.e. inherited enforcement genuinely covers this name.
+		// That is what CLAUDE.md has always documented ("parent DMARC sp=/p= →
+		// downgrade"); the ungated form was an implementation drift that never ran.
+		// Apex domains have no parent to inherit from, so they correctly never qualify.
+		if (await checkApexDmarcPolicy(domain)) {
+			results = adjustForNonMailDomain(results);
+		}
 		results = adjustBimiForNonMailDomain(results);
-	} else if (mxResult && !declaresNoInboundMail) {
+	} else if (mxResult) {
 		results = clarifyMtaStsForMailDomain(domain, results);
 	}
 
 	// Detect no-send SPF policy (v=spf1 -all with no authorizing mechanisms)
 	const spfResult = results.find((result) => result.category === 'spf');
 	const hasNoSendPolicy = spfResult?.findings.some((f: Finding) => f.metadata?.noSendPolicy === true) ?? false;
-	if (hasNoSendPolicy && !hasNoMx) {
+	if (hasNoSendPolicy && !declaresNoInboundMail) {
 		results = adjustForNoSendDomain(results);
 	}
 
 	// BIMI applicability wording (TEXT ONLY — severity and score untouched).
-	// `adjustBimiForNonMailDomain` above only runs on the narrow `hasNoMx` branch,
-	// so a domain that declares "no mail" some *other* way — an RFC 7505 null MX,
-	// or an SPF `-all` no-send policy — kept the "eligible for BIMI" sales pitch.
-	// Recommending BIMI to a domain that cannot send email is a factual error, and
-	// it contradicts the same report's own null-MX / no-send findings.
-	if (!hasNoMx && (hasNoSendPolicy || declaresNoInboundMail)) {
+	// `adjustBimiForNonMailDomain` above only runs on the non-mail branch, so a
+	// domain that declares "no mail" some *other* way — an SPF `-all` no-send
+	// policy on a domain that still accepts inbound mail — kept the "eligible for
+	// BIMI" sales pitch. Recommending BIMI to a domain that cannot send email is a
+	// factual error, and it contradicts the same report's own no-send finding.
+	if (!declaresNoInboundMail && hasNoSendPolicy) {
 		results = adjustBimiForNonMailDomain(results);
 	}
 
@@ -114,7 +137,7 @@ export async function applyScanPostProcessing(
 	// justified critical case. Re-escalate the demoted DMARC finding to critical
 	// so it is distinguishable from a routine mail domain with the same gap. Only
 	// applies when the domain actually sends mail (has MX, not a no-send policy).
-	if (!hasNoMx && !hasNoSendPolicy && hasActiveImpersonation(results) && dmarcIsWeak(results)) {
+	if (!declaresNoInboundMail && !hasNoSendPolicy && hasActiveImpersonation(results) && dmarcIsWeak(results)) {
 		results = escalateDmarcForImpersonation(results);
 	}
 
@@ -462,14 +485,19 @@ function isMissingRecordFinding(finding: { title: string; detail: string }): boo
 }
 
 /**
- * MX finding titles that mean "this domain does not accept inbound email".
+ * LEGACY-ONLY fallback: MX finding titles that mean "this domain does not accept
+ * inbound email", consulted only when `controlPresent` is absent from the result.
  *
- * These are the ACTUAL titles `check-mx` emits on its non-mail terminal paths
- * (`packages/dns-checks/src/checks/check-mx.ts` + `mx-analysis.ts`). Note that
- * `'No MX records found'` — the title `hasNoMx` in `applyScanPostProcessing`
- * matches on — is NOT among them: no production code path emits that string, so
- * `hasNoMx` is only ever true for synthetically-constructed results. It is
- * retained verbatim here so a synthetic/legacy result is still recognised.
+ * The first four are the ACTUAL titles `check-mx` emits on its non-mail terminal
+ * paths (`packages/dns-checks/src/checks/check-mx.ts` + `mx-analysis.ts`) — but
+ * every one of those paths also sets `controlPresent: false`, so in production
+ * this set is never reached. `'No MX records found'` is emitted by NOTHING; it is
+ * the phantom title that made the old `hasNoMx` permanently false (#643), kept
+ * here so synthetic/older-vintage results are still recognised.
+ *
+ * Do NOT add new titles here. Cross-module finding identity by string literal has
+ * no compile-time or test-time link to its producer and fails silently forever —
+ * which is exactly how this defect survived. Key on structure (`controlPresent`).
  */
 const NO_INBOUND_MAIL_MX_TITLES: ReadonlySet<string> = new Set([
 	'Null MX record (RFC 7505)',
@@ -480,26 +508,36 @@ const NO_INBOUND_MAIL_MX_TITLES: ReadonlySet<string> = new Set([
 ]);
 
 /**
- * True when the `mx` check DEFINITIVELY established that the domain accepts no
- * inbound email — either no MX records at all, or an RFC 7505 null MX.
+ * The single answer to "did the `mx` check DEFINITIVELY establish that this domain
+ * accepts no inbound email" — either no MX records at all, or an RFC 7505 null MX.
  *
- * ⚠️ TEXT-BRANCH SELECTION ONLY. This exists so prose stops contradicting the
- * scan's own findings; it must never gate a severity, weight, or score.
+ * Gates BOTH halves of non-mail post-processing: the wording branches AND
+ * `adjustForNonMailDomain()`, which downgrades missing-record email findings to
+ * `info`. Those were split across two predicates until #643 — one structural, one
+ * matching a finding title nothing emits — so the scan's prose and its severities
+ * could disagree about whether the same domain handled mail. One predicate makes
+ * that class of divergence unrepresentable.
  *
- * It is deliberately NOT folded into `hasNoMx`. `hasNoMx` additionally switches
- * on `adjustForNonMailDomain()`, which DOWNGRADES critical/high email findings to
- * `info` — a scoring change, and scoring calibration in this repo is operator-
- * gated. Widening `hasNoMx` would silently re-grade every null-MX domain, so the
- * two predicates are kept separate on purpose.
+ * ## Absence is asserted only from a completed measurement
  *
- * Primary signal is `controlPresent`, which `check-mx` sets on every terminal
- * path: `true` only when real mail-routing MX records were observed, `false` for
- * both the no-MX and the null-MX declarations, and left `undefined` when the MX
- * lookup was inconclusive (`checkStatus: 'error'`). An inconclusive MX lookup
- * therefore yields `false` here — we do not assert "no mail" from a failed probe.
+ * Two independent guards, because "no mail" is a claim we make about the domain,
+ * not merely the absence of a signal:
+ *
+ *  1. `checkStatus` must be measured. A transient resolver failure returns
+ *     `checkStatus: 'error'` — we could not observe the mail posture, so we make no
+ *     claim about it. (This is invariant #3 in `unmeasured-check-exemption.audit`,
+ *     which has already caught this exact shape three times.)
+ *  2. `controlPresent`, which `check-mx` sets on every terminal path: `true` only
+ *     when real mail-routing MX records were observed, `false` for both the no-MX
+ *     and the null-MX declarations, `undefined` when inconclusive.
+ *
+ * A mail-sending domain (`controlPresent: true`) and an inconclusive lookup both
+ * return `false` here, so neither is ever treated as non-mail.
  */
-function mxDeclaresNoInboundMail(mxResult: CheckResult | undefined): boolean {
+export function mxDeclaresNoInboundMail(mxResult: CheckResult | undefined): boolean {
 	if (!mxResult) return false;
+	// Never assert "no inbound mail" from a probe that did not complete.
+	if (!isCompletedCheck(mxResult)) return false;
 	if (mxResult.controlPresent === false) return true;
 	if (mxResult.controlPresent === true) return false;
 	return mxResult.findings.some((finding: Finding) => NO_INBOUND_MAIL_MX_TITLES.has(finding.title));
@@ -537,15 +575,18 @@ function clarifyMtaStsForMailDomain(domain: string, results: CheckResult[]): Che
 	});
 }
 
-function adjustForNonMailDomain(results: CheckResult[], apexDmarcCovers: boolean): CheckResult[] {
+function adjustForNonMailDomain(results: CheckResult[]): CheckResult[] {
 	const emailCategories: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'mta_sts', 'subdomailing'];
 	return results.map((result) => {
 		if (!emailCategories.includes(result.category)) return result;
 		const adjusted = result.findings.map((finding: Finding) => {
 			if ((finding.severity === 'critical' || finding.severity === 'high') && isMissingRecordFinding(finding)) {
-				const reason = apexDmarcCovers
-					? 'expected — no MX records and parent domain DMARC policy covers subdomains'
-					: 'expected — domain has no MX records';
+				// Callers gate this on enforcing parent DMARC, so the covering wording is
+				// unconditional here. The old two-branch version had `severity: 'info'`
+				// OUTSIDE the conditional, so the boolean only picked prose while every
+				// no-MX domain got the downgrade — keep this single-branch to prevent a
+				// re-introduction of that split.
+				const reason = 'expected — no MX records and parent domain DMARC policy covers subdomains';
 				return { ...finding, severity: 'info' as const, detail: `${finding.detail} (${reason})` };
 			}
 			return finding;

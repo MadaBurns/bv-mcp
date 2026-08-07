@@ -111,6 +111,117 @@ describe('checkTxtHygiene', () => {
 		expect(result.passed).toBe(true);
 	});
 
+	// ── #642: scored findings are one-per-distinct-condition, not one-per-record ──
+
+	it('emits ONE medium jurisdiction finding for N copies of the same service record (#642)', async () => {
+		mockDnsResponses({
+			'example.com': ['yandex-verification:a1', 'yandex-verification:a2', 'v=spf1 -all'],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+
+		const jurisdiction = result.findings.filter((f) => /Russian jurisdiction/i.test(f.title));
+		expect(jurisdiction).toHaveLength(1);
+		expect(jurisdiction[0].severity).toBe('medium');
+		// Multiplicity moves into detail + metadata; no record is lost.
+		expect(jurisdiction[0].detail).toContain('2 such records are published');
+		expect(jurisdiction[0].metadata?.recordCount).toBe(2);
+		expect(jurisdiction[0].metadata?.records).toEqual(['yandex-verification:a1', 'yandex-verification:a2']);
+
+		// Repeated publication is still graded once, by the duplicate finding.
+		expect(result.findings.filter((f) => /Duplicate verification records/i.test(f.title))).toHaveLength(1);
+
+		// 100 − 15 (one medium) − 5 (duplicates) = 80. Pre-#642 this was 65 (−15 twice).
+		expect(result.score).toBe(80);
+	});
+
+	it('emits a visible consolidation notice (info, zero penalty) when it suppressed a scored finding (#642)', async () => {
+		mockDnsResponses({
+			'example.com': ['yandex-verification:a1', 'yandex-verification:a2', 'v=spf1 -all'],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		const notice = result.findings.find((f) => /Duplicate TXT hygiene findings consolidated/i.test(f.title));
+		expect(notice).toBeDefined();
+		expect(notice!.severity).toBe('info');
+		expect(notice!.detail).toContain('Consolidated 1 duplicate scored TXT hygiene finding(s)');
+		expect(notice!.metadata?.consolidatedFindings).toBe(1);
+	});
+
+	it('emits NO consolidation notice when nothing was consolidated (#642)', async () => {
+		mockDnsResponses({
+			'example.com': ['yandex-verification:a1', 'v=spf1 -all'],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		expect(result.findings.find((f) => /consolidated/i.test(f.title))).toBeUndefined();
+		// Single-record behaviour is unchanged: 100 − 15.
+		expect(result.score).toBe(85);
+	});
+
+	it('still penalises each DISTINCT jurisdiction service separately (#642 must not flatten real problems)', async () => {
+		mockDnsResponses({
+			'example.com': ['yandex-verification:a1', 'yandex-verification:a2', 'baidu-site-verification=b1', 'v=spf1 -all'],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		expect(result.findings.filter((f) => /Russian jurisdiction/i.test(f.title))).toHaveLength(1);
+		expect(result.findings.filter((f) => /Chinese jurisdiction/i.test(f.title))).toHaveLength(1);
+		// 100 − 15 (RU) − 15 (CN) − 5 (duplicates) = 65. Pre-#642: 50.
+		expect(result.score).toBe(65);
+	});
+
+	it('emits ONE stale-integration finding for N copies of the same service record (#642)', async () => {
+		mockDnsResponses({
+			'example.com': [
+				'sendgrid-verification=s1',
+				'sendgrid-verification=s2',
+				'sendgrid-verification=s3',
+				'v=spf1 include:_spf.google.com -all',
+			],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		const stale = result.findings.filter((f) => /Possible stale service integration/i.test(f.title));
+		expect(stale).toHaveLength(1);
+		expect(stale[0].severity).toBe('low');
+		expect(stale[0].detail).toContain('3 such records are published');
+		expect(stale[0].metadata?.recordCount).toBe(3);
+		expect(stale[0].metadata?.records).toHaveLength(3);
+		// 100 − 5 (stale, once) − 5 (duplicates) = 90. Pre-#642: 80 (−5 three times).
+		expect(result.score).toBe(90);
+	});
+
+	it('still penalises each DISTINCT stale service separately (#642)', async () => {
+		mockDnsResponses({
+			'example.com': [
+				'yandex-verification:a1',
+				'baidu-site-verification=b1',
+				'sendgrid-verification=s1',
+				'mailchimp-domain-verification=m1',
+				'v=spf1 include:_spf.google.com -all',
+			],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		expect(result.findings.filter((f) => /Possible stale service integration/i.test(f.title))).toHaveLength(2);
+		// Four distinct problems, four penalties — unchanged by #642: 100 − 15 − 15 − 5 − 5.
+		expect(result.score).toBe(60);
+		expect(result.findings.find((f) => /consolidated/i.test(f.title))).toBeUndefined();
+	});
+
+	it('summary reports the DISTINCT service count, not the matched-record count (#642 cosmetic)', async () => {
+		mockDnsResponses({
+			'example.com': ['MS=ms1', 'MS=ms2', 'MS=ms3', 'google-site-verification=g1', 'google-site-verification=g2', 'v=spf1 -all'],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+		const summary = result.findings.find((f) => f.title === 'TXT record hygiene summary')!;
+		expect(summary.detail).toContain('2 distinct service verification(s) detected across 5 record(s)');
+		expect(summary.metadata?.serviceCount).toBe(2);
+		expect(summary.metadata?.verificationRecordCount).toBe(5);
+	});
+
 	it('should flag Yandex verification on government domain as high severity', async () => {
 		mockDnsResponses({
 			'health.govt.nz': ['yandex-verification:abc123', 'v=spf1 -all'],
