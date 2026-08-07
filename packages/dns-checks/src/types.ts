@@ -19,6 +19,20 @@ export type DNSQueryFunction = (domain: string, recordType: string, options?: { 
 export interface RawDNSResponse {
 	AD?: boolean;
 	/**
+	 * DNS response code (RFC 1035 §4.1.1 RCODE) from the DoH JSON `Status` field.
+	 * Optional and additive: hand-built responses (and the AD-flag-only adapters some
+	 * consumers pass) simply omit it, and every consumer treats `undefined` as "rcode
+	 * unknown" rather than as a failure.
+	 *
+	 * It exists because the `DNSQueryFunction` (`string[]`) projection ERASES the
+	 * difference between NOERROR-with-no-answers (a measurement: this name has no such
+	 * record) and SERVFAIL/REFUSED (a measurement FAILURE: the resolver could not
+	 * answer). A DoH endpoint returns HTTP 200 for both, so neither throws, and a check
+	 * reading only the projected string array will report a broken delegation as a
+	 * confident "no record" — see the SMTP DANE conflation in issue #639.
+	 */
+	Status?: number;
+	/**
 	 * `TTL` is optional and additive: the Worker-side DoH adapters already pass the
 	 * raw `Answer` array through verbatim (whose entries carry `TTL`), so declaring
 	 * it here surfaces a field that was previously discarded by the `DNSQueryFunction`
