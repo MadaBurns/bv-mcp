@@ -96,6 +96,17 @@ paths = [
   '''crates/[^/]+/target/''',              # Rust build artifacts (gitignored locally; safety net)
   '''docs/.*\.md$''',                      # Phone-number-shaped numerics in docs (timestamps, hashes)
   '''scripts/tenants/sql/''',              # Seed SQL contains Unix timestamps that look phone-shaped
+  '''^\.github/workflows/''',              # SHA-pinned action refs: a 40-hex commit SHA contains
+                                           # phone-shaped digit runs (e.g. actions/setup-node). This is
+                                           # NOT discretionary — test/audits/workflow-permissions.audit.test.ts
+                                           # (finding F11) REQUIRES every `uses:` be pinned to a 40-hex SHA,
+                                           # so the two gates were in direct conflict: adding any new job
+                                           # tripped the required "Secret & PII scan" on a line another
+                                           # required audit mandates, with no rewording available (unlike the
+                                           # dotted-quad citation case in CLAUDE.md, where you can respell the
+                                           # text). Path-scoped on purpose — a workflow file is not a
+                                           # plausible home for leaked personal phone PII, and this does not
+                                           # weaken the rule anywhere else in the tree.
 ]
 
 [[rules]]
