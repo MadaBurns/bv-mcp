@@ -33,10 +33,7 @@ export interface TrustSurfaceContext {
 /** Known multi-tenant SaaS platforms whose shared SPF includes widen the trust surface. */
 const MULTI_TENANT_PLATFORMS: ReadonlyMap<string, PlatformInfo> = new Map([
 	['_spf.salesforce.com', { name: 'Salesforce', risk: 'Any Salesforce customer can send as your domain' }],
-	[
-		'spf.protection.outlook.com',
-		{ name: 'Microsoft 365', risk: 'Any M365 tenant can send as your domain without DKIM/DMARC enforcement' },
-	],
+	['spf.protection.outlook.com', { name: 'Microsoft 365', risk: 'Any M365 tenant can send as your domain without DKIM/DMARC enforcement' }],
 	['_spf.google.com', { name: 'Google Workspace', risk: 'Any Google Workspace customer can send as your domain' }],
 	['sendgrid.net', { name: 'SendGrid', risk: 'Any SendGrid customer can send as your domain' }],
 	['spf.mandrillapp.com', { name: 'Mailchimp/Mandrill', risk: 'Any Mailchimp customer can send as your domain' }],
@@ -103,6 +100,52 @@ function extractIncludeAndRedirectDomains(spfRecord: string): string[] {
 }
 
 /**
+ * Describe WHAT actually corroborated the exposure, derived from the DMARC context the
+ * caller supplied, so the prose matches the `dmarcPolicy` / `dmarcAlignmentMode` metadata
+ * carried on the same finding.
+ *
+ * An ENFORCING policy (`p=quarantine` or `p=reject` at `pct=100`) must NEVER be described
+ * as "weak DMARC enforcement": the same scan reports that domain as "DMARC enforcing" in
+ * its scoring signals, and `p=quarantine` is this product's own BIMI eligibility bar, so
+ * enforcement-based wording made one report contradict itself. When the policy enforces,
+ * the corroborating signal is the RELAXED ALIGNMENT (or a partial `pct=`) — say that.
+ * Enforcement wording is reserved for `p=none` and for an absent DMARC record.
+ *
+ * ⚠️ DUPLICATED FILE: this module exists twice — core
+ * `packages/dns-checks/src/checks/spf-trust-surface.ts` and worker
+ * `src/tools/spf-trust-surface.ts`. Keep this function byte-identical in both copies;
+ * a change to one alone diverges direct package consumers (bv-web-prod) from the worker.
+ */
+function describeCorroboration(context: TrustSurfaceContext): string {
+	const rawPolicy = (context.dmarcPolicy ?? '').toLowerCase().trim();
+	const basePolicy = rawPolicy.split(';')[0].trim();
+	const pct = /pct=(\d+)/.exec(rawPolicy)?.[1];
+	const enforcingPolicy = basePolicy === 'quarantine' || basePolicy === 'reject';
+	const alignmentRelaxed = context.dmarcAlignmentMode === 'relaxed';
+
+	const signals: string[] = [];
+	if (basePolicy === '' || basePolicy === 'missing') {
+		signals.push('No DMARC record is published');
+	} else if (!enforcingPolicy) {
+		signals.push(`DMARC is monitor-only (p=${basePolicy}) and is not enforcing`);
+	} else if (pct !== undefined && pct !== '100') {
+		signals.push(`DMARC enforces (p=${basePolicy}) on only ${pct}% of mail`);
+	}
+	if (alignmentRelaxed) {
+		signals.push(
+			enforcingPolicy
+				? `DMARC alignment is relaxed, which lets mail from any subdomain of your organizational domain align under p=${basePolicy}`
+				: 'DMARC alignment is relaxed',
+		);
+	}
+	if (signals.length === 0) {
+		signals.push('The current DMARC posture does not fully constrain this delegation');
+	}
+
+	return `${signals.join('; ')} — a provider misconfiguration or abuse case would therefore be more likely to pass policy checks.`;
+}
+
+/**
  * Analyze an SPF record for trust surface exposure from multi-tenant SaaS platform includes.
  * Returns findings for each shared platform detected, plus a summary finding when multiple are found.
  */
@@ -114,7 +157,7 @@ export function analyzeTrustSurface(spfRecord: string, context: TrustSurfaceCont
 	const findingSeverity = corroboratedByWeakDmarc ? 'medium' : 'info';
 	const summarySeverity = corroboratedByWeakDmarc ? 'high' : 'info';
 	const detailSuffix = corroboratedByWeakDmarc
-		? 'Weak DMARC enforcement and relaxed alignment corroborate this exposure, so a provider misconfiguration or abuse case would be more likely to pass policy checks.'
+		? describeCorroboration(context)
 		: 'This is common and not inherently a misconfiguration, but it expands the sending infrastructure you rely on. The risk becomes more material when DMARC enforcement and alignment are weak.';
 
 	for (const domain of domains) {
@@ -162,9 +205,7 @@ export function analyzeTrustSurface(spfRecord: string, context: TrustSurfaceCont
 	}
 
 	if (delegated.length > 1) {
-		const platformNames = delegated
-			.map((p) => (p.recognized ? p.name : `${p.includeDomain} (unrecognized)`))
-			.join(', ');
+		const platformNames = delegated.map((p) => (p.recognized ? p.name : `${p.includeDomain} (unrecognized)`)).join(', ');
 		findings.push(
 			createFinding(
 				'spf',

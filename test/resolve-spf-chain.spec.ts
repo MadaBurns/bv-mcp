@@ -15,10 +15,7 @@ function mockSpfRecords(records: Record<string, string | null>) {
 				if (spf === null) {
 					return createDohResponse([{ name: domain, type: 16 }], []);
 				}
-				return createDohResponse(
-					[{ name: domain, type: 16 }],
-					[{ name: domain, type: 16, TTL: 300, data: `"${spf}"` }],
-				);
+				return createDohResponse([{ name: domain, type: 16 }], [{ name: domain, type: 16, TTL: 300, data: `"${spf}"` }]);
 			}
 		}
 
@@ -66,8 +63,8 @@ describe('resolveSpfChain', () => {
 		expect(result.maxDepth).toBe(2);
 	});
 
-	it('detects over-limit when exceeding 10 lookups', async () => {
-		// Build a chain with >10 includes
+	it('reports exactly 10/10 as AT the limit, not merely approaching it', async () => {
+		// Build a chain that lands on exactly 10 lookups
 		const records: Record<string, string> = {
 			'example.com': 'v=spf1 include:a.com include:b.com include:c.com include:d.com include:e.com include:f.com -all',
 			'a.com': 'v=spf1 include:a1.com include:a2.com -all',
@@ -85,9 +82,64 @@ describe('resolveSpfChain', () => {
 		const result = await run('example.com');
 		// 6 top-level includes + 4 nested = 10. Let's verify:
 		expect(result.totalLookups).toBe(10);
-		// At exactly 10, should get approaching_limit, not over_limit
+		// 10 is still WITHIN RFC 7208's allowance, so this is not over_limit...
 		expect(result.overLimit).toBe(false);
-		expect(result.issues.some((i) => i.type === 'approaching_limit')).toBe(true);
+		// ...but it is AT the limit with zero headroom, never "approaching" it.
+		expect(result.issues.some((i) => i.type === 'approaching_limit')).toBe(false);
+		const atLimit = result.issues.find((i) => i.type === 'at_limit');
+		expect(atLimit).toBeDefined();
+		// Severity must match check_spf's "SPF lookup budget near limit" (high at >= 9),
+		// so one fact does not carry two severities across two tools.
+		expect(atLimit!.severity).toBe('high');
+		expect(atLimit!.detail).not.toMatch(/approach/i);
+		expect(atLimit!.detail).not.toMatch(/Only 0 remaining/i);
+		expect(atLimit!.detail).toMatch(/AT the 10-lookup limit/);
+
+		const { formatSpfChain } = await import('../src/tools/resolve-spf-chain');
+		expect(formatSpfChain(result, 'compact')).toContain('AT LIMIT');
+		expect(formatSpfChain(result, 'full')).toContain('AT LIMIT');
+	});
+
+	it('labels 9/10 as approaching_limit at high severity (matches check_spf >= 9)', async () => {
+		// 6 top-level includes + 3 nested = 9
+		mockSpfRecords({
+			'example.com': 'v=spf1 include:a.com include:b.com include:c.com include:d.com include:e.com include:f.com -all',
+			'a.com': 'v=spf1 include:a1.com include:a2.com -all',
+			'b.com': 'v=spf1 include:b1.com -all',
+			'c.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'd.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'e.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'f.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'a1.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'a2.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'b1.com': 'v=spf1 ip4:192.0.2.1 -all',
+		});
+		const result = await run('example.com');
+		expect(result.totalLookups).toBe(9);
+		const approaching = result.issues.find((i) => i.type === 'approaching_limit');
+		expect(approaching).toBeDefined();
+		expect(approaching!.severity).toBe('high');
+		expect(result.issues.some((i) => i.type === 'at_limit')).toBe(false);
+	});
+
+	it('labels 8/10 as approaching_limit at medium severity', async () => {
+		// 6 top-level includes + 2 nested = 8
+		mockSpfRecords({
+			'example.com': 'v=spf1 include:a.com include:b.com include:c.com include:d.com include:e.com include:f.com -all',
+			'a.com': 'v=spf1 include:a1.com include:a2.com -all',
+			'b.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'c.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'd.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'e.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'f.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'a1.com': 'v=spf1 ip4:192.0.2.1 -all',
+			'a2.com': 'v=spf1 ip4:192.0.2.1 -all',
+		});
+		const result = await run('example.com');
+		expect(result.totalLookups).toBe(8);
+		const approaching = result.issues.find((i) => i.type === 'approaching_limit');
+		expect(approaching).toBeDefined();
+		expect(approaching!.severity).toBe('medium');
 	});
 
 	it('flags critical issue when over 10 lookups', async () => {
