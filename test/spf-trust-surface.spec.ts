@@ -42,6 +42,84 @@ describe('analyzeTrustSurface', () => {
 		expect(summary!.metadata?.dmarcCorroborated).toBe(true);
 	});
 
+	/**
+	 * Wording regression: an ENFORCING DMARC policy must never be described as "weak DMARC
+	 * enforcement". The same scan_domain response lists "DMARC enforcing" in its scoring
+	 * signals for p=quarantine (it is also this product's BIMI eligibility bar), so the old
+	 * blanket suffix made one report contradict itself. Mirrored in the core copy's spec
+	 * (packages/dns-checks/src/__tests__/checks/spf-trust-surface.test.ts).
+	 */
+	describe('corroboration prose matches the DMARC metadata', () => {
+		it('does not claim weak enforcement for p=quarantine — cites relaxed alignment instead', () => {
+			const findings = analyzeTrustSurface('v=spf1 include:spf.protection.outlook.com -all', {
+				corroboratedByWeakDmarc: true,
+				dmarcPolicy: 'quarantine',
+				dmarcAlignmentMode: 'relaxed',
+			});
+
+			expect(findings).toHaveLength(1);
+			expect(findings[0].detail).not.toMatch(/weak DMARC enforcement/i);
+			expect(findings[0].detail).not.toMatch(/not enforcing/i);
+			expect(findings[0].detail).toMatch(/alignment is relaxed/i);
+			expect(findings[0].detail).toMatch(/p=quarantine/);
+		});
+
+		it('does not claim weak enforcement for p=reject', () => {
+			const findings = analyzeTrustSurface('v=spf1 include:spf.protection.outlook.com -all', {
+				corroboratedByWeakDmarc: true,
+				dmarcPolicy: 'reject',
+				dmarcAlignmentMode: 'relaxed',
+			});
+
+			expect(findings[0].detail).not.toMatch(/weak DMARC enforcement/i);
+			expect(findings[0].detail).toMatch(/alignment is relaxed/i);
+			expect(findings[0].detail).toMatch(/p=reject/);
+		});
+
+		it('does cite non-enforcement for p=none', () => {
+			const findings = analyzeTrustSurface('v=spf1 include:spf.protection.outlook.com -all', {
+				corroboratedByWeakDmarc: true,
+				dmarcPolicy: 'none',
+				dmarcAlignmentMode: 'relaxed',
+			});
+
+			expect(findings[0].detail).toMatch(/monitor-only \(p=none\) and is not enforcing/i);
+		});
+
+		it('does cite an absent DMARC record when there is none', () => {
+			const findings = analyzeTrustSurface('v=spf1 include:spf.protection.outlook.com -all', {
+				corroboratedByWeakDmarc: true,
+				dmarcPolicy: 'missing',
+				dmarcAlignmentMode: 'missing',
+			});
+
+			expect(findings[0].detail).toMatch(/No DMARC record is published/i);
+			expect(findings[0].detail).not.toMatch(/weak DMARC enforcement/i);
+		});
+
+		it('cites partial application, not weak enforcement, for an enforcing pct<100 policy', () => {
+			const findings = analyzeTrustSurface('v=spf1 include:spf.protection.outlook.com -all', {
+				corroboratedByWeakDmarc: true,
+				dmarcPolicy: 'reject; pct=50',
+				dmarcAlignmentMode: 'strict',
+			});
+
+			expect(findings[0].detail).toMatch(/enforces \(p=reject\) on only 50% of mail/i);
+			expect(findings[0].detail).not.toMatch(/weak DMARC enforcement/i);
+		});
+
+		it('leaves the uncorroborated (info) wording untouched', () => {
+			const findings = analyzeTrustSurface('v=spf1 include:spf.protection.outlook.com -all', {
+				corroboratedByWeakDmarc: false,
+				dmarcPolicy: 'reject',
+				dmarcAlignmentMode: 'strict',
+			});
+
+			expect(findings[0].severity).toBe('info');
+			expect(findings[0].detail).toMatch(/not inherently a misconfiguration/i);
+		});
+	});
+
 	it('detects platform via redirect= directive', () => {
 		const findings = analyzeTrustSurface('v=spf1 redirect=_spf.google.com');
 		expect(findings).toHaveLength(1);

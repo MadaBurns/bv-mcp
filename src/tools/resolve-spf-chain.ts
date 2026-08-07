@@ -21,7 +21,7 @@ export interface SpfNode {
 }
 
 export interface SpfIssue {
-	type: 'over_limit' | 'approaching_limit' | 'circular_include' | 'void_lookup' | 'redundant_include';
+	type: 'over_limit' | 'at_limit' | 'approaching_limit' | 'circular_include' | 'void_lookup' | 'redundant_include';
 	severity: 'critical' | 'high' | 'medium' | 'low';
 	detail: string;
 }
@@ -156,10 +156,7 @@ function computeMaxDepth(node: SpfNode, current: number = 0): number {
  * @param domain - Validated, sanitized domain
  * @param dnsOptions - DNS query options
  */
-export async function resolveSpfChain(
-	domain: string,
-	dnsOptions?: QueryDnsOptions,
-): Promise<SpfChainResult> {
+export async function resolveSpfChain(domain: string, dnsOptions?: QueryDnsOptions): Promise<SpfChainResult> {
 	const issues: SpfIssue[] = [];
 	const allSeen = new Map<string, number>();
 	const tree = await resolveNode(domain, new Set(), allSeen, 0, issues, dnsOptions);
@@ -176,10 +173,23 @@ export async function resolveSpfChain(
 			severity: 'critical',
 			detail: `SPF lookup limit exceeded: ${totalLookups}/${limit}. Emails may fail SPF validation after the 10th lookup.`,
 		});
+	} else if (totalLookups === limit) {
+		// AT the limit, not approaching it. 10/10 is still WITHIN RFC 7208 §4.6.4's allowance
+		// (hence `overLimit === false`), but there is zero headroom left, so calling it
+		// "approaching_limit" with "0 remaining" understated the state.
+		// Severity is aligned with `check_spf`'s "SPF lookup budget near limit" finding,
+		// which is `high` at >= 9 lookups (packages/dns-checks/src/checks/check-spf.ts) —
+		// the same fact must not carry two different severities across two tools.
+		issues.unshift({
+			type: 'at_limit',
+			severity: 'high',
+			detail: `SPF is AT the ${limit}-lookup limit: ${totalLookups}/${limit}. The record still validates, but there is no headroom left — adding any further sender pushes it over the limit and receivers will return PermError.`,
+		});
 	} else if (totalLookups >= 8) {
 		issues.unshift({
 			type: 'approaching_limit',
-			severity: 'medium',
+			// Match check_spf's >= 9 → high threshold; 8 stays medium.
+			severity: totalLookups >= 9 ? 'high' : 'medium',
 			detail: `SPF using ${totalLookups}/${limit} lookups. Only ${limit - totalLookups} remaining before the limit.`,
 		});
 	}
@@ -217,7 +227,13 @@ function renderTree(node: SpfNode, prefix: string, isLast: boolean, isRoot: bool
 /** Format an SPF chain result as human-readable text. */
 export function formatSpfChain(result: SpfChainResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
-	const status = result.overLimit ? 'OVER LIMIT' : result.totalLookups >= 8 ? 'WARNING' : 'OK';
+	const status = result.overLimit
+		? 'OVER LIMIT'
+		: result.totalLookups >= result.limit
+			? 'AT LIMIT'
+			: result.totalLookups >= 8
+				? 'WARNING'
+				: 'OK';
 
 	if (format === 'compact') {
 		lines.push(`SPF Chain: ${result.domain} — ${result.totalLookups}/${result.limit} lookups (${status})`);

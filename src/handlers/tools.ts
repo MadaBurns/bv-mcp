@@ -1505,9 +1505,18 @@ export async function handleToolsCall(
 				}
 				case 'assess_spoofability': {
 					const result = await assessSpoofability(validDomain, buildDnsOptions(runtimeOptions));
-					logResult = result.riskLevel;
+					// riskLevel/spoofabilityScore are null when NO control could be measured
+					// (total resolver outage). That is neither a pass nor a measured failure —
+					// log it as its own state rather than letting `null <= 30` read as a pass.
+					logResult = result.riskLevel ?? 'unmeasured';
 					logDetails = result;
-					logToolSuccess({ ...ctx(), status: result.spoofabilityScore <= 30 ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					logToolSuccess({
+						...ctx(),
+						status: result.spoofabilityScore !== null && result.spoofabilityScore <= 30 ? 'pass' : 'fail',
+						logResult,
+						logDetails,
+						severity: 'info',
+					});
 					return buildToolResult(formatSpoofability(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'check_resolver_consistency': {

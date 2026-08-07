@@ -63,6 +63,54 @@ describe('checkTxtHygiene', () => {
 		expect(summary!.detail).toContain('Clean');
 	});
 
+	it('emits ONE "Service verification detected" finding per distinct service, not one per record', async () => {
+		// Reproduces the live github.com shape: 3x MS= and 2x google-site-verification=
+		// previously produced 3 + 2 byte-identical info findings ALONGSIDE the separate
+		// "Duplicate verification records detected" finding.
+		mockDnsResponses({
+			'example.com': [
+				'MS=ms11111111',
+				'MS=ms22222222',
+				'MS=ms33333333',
+				'google-site-verification=g111',
+				'google-site-verification=g222',
+				'v=spf1 include:_spf.google.com include:spf.protection.outlook.com -all',
+			],
+			'_dmarc.example.com': ['v=DMARC1; p=reject'],
+		});
+		const result = await run();
+
+		const serviceFindings = result.findings.filter((f) => f.title.startsWith('Service verification detected'));
+		expect(serviceFindings).toHaveLength(2);
+		expect(serviceFindings.map((f) => f.title).sort()).toEqual([
+			'Service verification detected: Google Search Console',
+			'Service verification detected: Microsoft 365',
+		]);
+		// No byte-identical duplicates among them.
+		expect(new Set(serviceFindings.map((f) => `${f.title}|${f.detail}`)).size).toBe(2);
+
+		// The multiplicity is preserved in metadata/detail rather than by repeating findings.
+		const ms = serviceFindings.find((f) => f.title.includes('Microsoft 365'))!;
+		expect(ms.metadata?.recordCount).toBe(3);
+		expect(ms.detail).toContain('3 such records are published');
+		const google = serviceFindings.find((f) => f.title.includes('Google Search Console'))!;
+		expect(google.metadata?.recordCount).toBe(2);
+
+		// The separate duplicate-detection finding is retained.
+		const dupFindings = result.findings.filter((f) => /Duplicate verification records/i.test(f.title));
+		expect(dupFindings).toHaveLength(1);
+		expect(dupFindings[0].detail).toMatch(/Microsoft 365 \(3x\)/);
+		expect(dupFindings[0].detail).toMatch(/Google Search Console \(2x\)/);
+
+		// Score-neutrality: the collapsed findings are all `info` (0 penalty). The only
+		// deductions here are the two `low` findings (duplicates + MS tenant residue),
+		// exactly as before the dedup — 100 - 5 - 5.
+		expect(serviceFindings.every((f) => f.severity === 'info')).toBe(true);
+		expect(result.findings.filter((f) => f.severity === 'low')).toHaveLength(2);
+		expect(result.score).toBe(90);
+		expect(result.passed).toBe(true);
+	});
+
 	it('should flag Yandex verification on government domain as high severity', async () => {
 		mockDnsResponses({
 			'health.govt.nz': ['yandex-verification:abc123', 'v=spf1 -all'],
@@ -153,11 +201,7 @@ describe('checkTxtHygiene', () => {
 
 	it('should flag duplicate verification records as low severity (consolidated finding)', async () => {
 		mockDnsResponses({
-			'example.com': [
-				'google-site-verification=abc123',
-				'google-site-verification=def456',
-				'v=spf1 -all',
-			],
+			'example.com': ['google-site-verification=abc123', 'google-site-verification=def456', 'v=spf1 -all'],
 			'_dmarc.example.com': ['v=DMARC1; p=reject'],
 		});
 		const result = await run();
@@ -251,21 +295,15 @@ describe('checkTxtHygiene', () => {
 		expect(googleFinding).toBeDefined();
 		expect(googleFinding!.metadata?.category).toBe('search_engine');
 
-		const atlassianFinding = result.findings.find(
-			(f) => f.severity === 'info' && f.title.includes('Atlassian'),
-		);
+		const atlassianFinding = result.findings.find((f) => f.severity === 'info' && f.title.includes('Atlassian'));
 		expect(atlassianFinding).toBeDefined();
 		expect(atlassianFinding!.metadata?.category).toBe('identity_auth');
 
-		const onetrustFinding = result.findings.find(
-			(f) => f.severity === 'info' && f.title.includes('OneTrust'),
-		);
+		const onetrustFinding = result.findings.find((f) => f.severity === 'info' && f.title.includes('OneTrust'));
 		expect(onetrustFinding).toBeDefined();
 		expect(onetrustFinding!.metadata?.category).toBe('security');
 
-		const hubspotFinding = result.findings.find(
-			(f) => f.severity === 'info' && f.title.includes('HubSpot'),
-		);
+		const hubspotFinding = result.findings.find((f) => f.severity === 'info' && f.title.includes('HubSpot'));
 		expect(hubspotFinding).toBeDefined();
 		expect(hubspotFinding!.metadata?.category).toBe('marketing');
 	});
@@ -316,16 +354,11 @@ describe('checkTxtHygiene', () => {
 
 	it('should NOT flag stale integration when service has verification AND matching SPF include', async () => {
 		mockDnsResponses({
-			'example.com': [
-				'sendgrid-verification=abc123',
-				'v=spf1 include:sendgrid.net -all',
-			],
+			'example.com': ['sendgrid-verification=abc123', 'v=spf1 include:sendgrid.net -all'],
 			'_dmarc.example.com': ['v=DMARC1; p=reject'],
 		});
 		const result = await run();
-		const stale = result.findings.find(
-			(f) => /Possible stale service integration/i.test(f.title) && f.title.includes('SendGrid'),
-		);
+		const stale = result.findings.find((f) => /Possible stale service integration/i.test(f.title) && f.title.includes('SendGrid'));
 		expect(stale).toBeUndefined();
 	});
 
@@ -398,17 +431,12 @@ describe('checkTxtHygiene', () => {
 
 	it('should match verification patterns case-insensitively', async () => {
 		mockDnsResponses({
-			'example.com': [
-				'GOOGLE-SITE-VERIFICATION=abc123',
-				'v=spf1 include:_spf.google.com -all',
-			],
+			'example.com': ['GOOGLE-SITE-VERIFICATION=abc123', 'v=spf1 include:_spf.google.com -all'],
 			'_dmarc.example.com': ['v=DMARC1; p=reject'],
 		});
 		const result = await run();
 		// Should still detect Google Search Console verification
-		const googleFinding = result.findings.find(
-			(f) => f.severity === 'info' && f.title.includes('Google Search Console'),
-		);
+		const googleFinding = result.findings.find((f) => f.severity === 'info' && f.title.includes('Google Search Console'));
 		expect(googleFinding).toBeDefined();
 	});
 });

@@ -299,9 +299,7 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 		const spfDomains = SERVICE_SPF_DOMAINS[match.service];
 		if (!spfDomains) continue;
 
-		const hasSpfInclude = spfDomains.some((spfDomain) =>
-			spfIncludes.some((include) => include.includes(spfDomain.toLowerCase())),
-		);
+		const hasSpfInclude = spfDomains.some((spfDomain) => spfIncludes.some((include) => include.includes(spfDomain.toLowerCase())));
 
 		if (!hasSpfInclude) {
 			findings.push(
@@ -330,20 +328,38 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 		);
 	}
 
-	// --- Info findings for each detected platform ---
+	// --- Info findings, ONE per distinct detected platform ---
+	// A domain publishing N verification records for the same service (e.g. github.com's
+	// 3x MS= and 2x google-site-verification=) previously emitted N byte-identical findings
+	// ALONGSIDE the "Duplicate verification records detected" finding above — the duplicate
+	// count is already reported there, so repeating the per-record note is pure noise.
+	// Collapse to one finding per service and carry the record count in detail/metadata.
+	// Score-neutral by construction: these are `info` (SEVERITY_PENALTIES.info === 0).
+	const detectedServices = new Map<string, { category: VerificationCategory; recordCount: number }>();
 	for (const match of matchedServices) {
 		// Skip DMARC at root — already flagged above
 		if (match.category === 'email_auth' && match.service === 'DMARC') continue;
 		// Skip TrustedForDomainSharing — already flagged above
 		if (match.prefix === 'TrustedForDomainSharing=') continue;
 
+		const existing = detectedServices.get(match.service);
+		if (existing) {
+			existing.recordCount++;
+		} else {
+			detectedServices.set(match.service, { category: match.category, recordCount: 1 });
+		}
+	}
+
+	for (const [service, { category, recordCount }] of detectedServices) {
 		findings.push(
 			createFinding(
 				'txt_hygiene',
-				`Service verification detected: ${match.service}`,
+				`Service verification detected: ${service}`,
 				'info',
-				`${match.service} domain verification record found (${match.category} category).`,
-				{ service: match.service, category: match.category },
+				recordCount > 1
+					? `${service} domain verification record found (${category} category). ${recordCount} such records are published.`
+					: `${service} domain verification record found (${category} category).`,
+				{ service, category, recordCount },
 			),
 		);
 	}

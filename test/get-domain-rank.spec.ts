@@ -10,14 +10,16 @@ import { vi } from 'vitest';
  *   { percentile, cohort, cohortSize, asOf (nullable), representative, scaleId }
  */
 
-function makeC1Response(overrides: Partial<{
-	percentile: number;
-	cohort: string;
-	cohortSize: number;
-	asOf: string | null;
-	representative: boolean;
-	scaleId: string;
-}> = {}) {
+function makeC1Response(
+	overrides: Partial<{
+		percentile: number;
+		cohort: string;
+		cohortSize: number;
+		asOf: string | null;
+		representative: boolean;
+		scaleId: string;
+	}> = {},
+) {
 	return {
 		percentile: 65,
 		cohort: 'NZ',
@@ -92,9 +94,7 @@ describe('getDomainRank', () => {
 
 	it('returns representative result when C1 says representative=true', async () => {
 		const { getDomainRank } = await import('../src/tools/get-domain-rank');
-		const proxy = makeFakeProxy(
-			makeC1Response({ representative: true, cohort: 'global', cohortSize: 0, asOf: null }),
-		);
+		const proxy = makeFakeProxy(makeC1Response({ representative: true, cohort: 'global', cohortSize: 0, asOf: null }));
 		const result = await getDomainRank('example.com', 30, {}, proxy, { authToken: 'test-key' });
 
 		expect(result.representative).toBe(true);
@@ -112,7 +112,61 @@ describe('getDomainRank', () => {
 		expect(result.status).toBe('unavailable');
 		expect(result.representative).toBe(true);
 		// should not throw, should be a valid object
-		expect(typeof result.percentile).toBe('number');
+		expect(result).toHaveProperty('cohort');
+		// ...but it must NOT invent a rank out of a cohort it never consulted.
+		expect(result.percentile).toBeNull();
+		expect(result.evidenceInsufficient).toBe(true);
+	});
+
+	/**
+	 * The banked defect, verbatim from production for github.com:
+	 *   {"status":"representative","percentile":50,"cohortSize":0,"representative":true}
+	 *
+	 * A 50th percentile computed from ZERO peers. `representative: true` was the
+	 * only guard, and a consumer reading `percentile` alone — which is what a
+	 * "scores better than X% of peers" render does — had a fabricated statistic.
+	 */
+	it('never returns a numeric percentile for an empty cohort', async () => {
+		const { getDomainRank } = await import('../src/tools/get-domain-rank');
+		const proxy = makeFakeProxy(makeC1Response({ percentile: 50, cohort: 'global', cohortSize: 0, asOf: null, representative: true }));
+		const result = await getDomainRank('github.com', 67, {}, proxy, { authToken: 'test-key' });
+
+		expect(result.cohortSize).toBe(0);
+		expect(result.percentile).toBeNull();
+		expect(result.evidenceInsufficient).toBe(true);
+		expect(result.evidenceNote).toBeTruthy();
+		// The flag is kept — this fix removes the fabricated number, not the provenance.
+		expect(result.representative).toBe(true);
+	});
+
+	it('abstains for an empty cohort even when C1 does not set representative', async () => {
+		const { getDomainRank } = await import('../src/tools/get-domain-rank');
+		const proxy = makeFakeProxy(makeC1Response({ percentile: 50, cohortSize: 0, representative: false }));
+		const result = await getDomainRank('example.com', 55, {}, proxy, { authToken: 'test-key' });
+
+		expect(result.percentile).toBeNull();
+		expect(result.evidenceInsufficient).toBe(true);
+	});
+
+	it('abstains for a cohort too small to carry a percentile', async () => {
+		const { getDomainRank, MIN_MEANINGFUL_COHORT_SIZE } = await import('../src/tools/get-domain-rank');
+		const proxy = makeFakeProxy(makeC1Response({ percentile: 80, cohortSize: MIN_MEANINGFUL_COHORT_SIZE - 1, representative: false }));
+		const result = await getDomainRank('example.com', 55, {}, proxy, { authToken: 'test-key' });
+
+		expect(result.percentile).toBeNull();
+		expect(result.evidenceInsufficient).toBe(true);
+	});
+
+	it('reports the percentile unchanged when a real cohort backs it', async () => {
+		const { getDomainRank, MIN_MEANINGFUL_COHORT_SIZE } = await import('../src/tools/get-domain-rank');
+		const proxy = makeFakeProxy(
+			makeC1Response({ percentile: 72, cohort: 'NZ', cohortSize: MIN_MEANINGFUL_COHORT_SIZE, representative: false }),
+		);
+		const result = await getDomainRank('example.com', 55, { country: 'NZ' }, proxy, { authToken: 'test-key' });
+
+		expect(result.percentile).toBe(72);
+		expect(result.evidenceInsufficient).toBe(false);
+		expect(result.evidenceNote).toBeUndefined();
 	});
 
 	it('fail-softs when C1 is unreachable (network error)', async () => {
@@ -172,6 +226,7 @@ describe('formatDomainRank', () => {
 			asOf: '2026-06-15',
 			representative: false,
 			scaleId: 'benchmark',
+			evidenceInsufficient: false,
 		};
 		const text = formatDomainRank(result, 'full');
 		expect(text).toContain('example.com');
@@ -193,6 +248,7 @@ describe('formatDomainRank', () => {
 			asOf: '2026-06-15',
 			representative: false,
 			scaleId: 'benchmark',
+			evidenceInsufficient: false,
 		};
 		const text = formatDomainRank(result, 'compact');
 		expect(text).toContain('65%');
@@ -205,15 +261,46 @@ describe('formatDomainRank', () => {
 			status: 'unavailable' as const,
 			domain: 'example.com',
 			score: 55,
-			percentile: 50,
+			percentile: null,
 			cohort: 'global',
 			cohortSize: 0,
 			asOf: null,
 			representative: true,
 			scaleId: 'benchmark',
+			evidenceInsufficient: true,
 		};
 		const text = formatDomainRank(result, 'full');
 		expect(text).toContain('unavailable');
+	});
+
+	/**
+	 * The prose is the other half of the same result. A payload that abstains while
+	 * the text still says "better than 50% of peers" leaves the fabricated claim
+	 * exactly where a customer reads it.
+	 */
+	it('renders no percentile claim when the percentile is null', async () => {
+		const { formatDomainRank } = await import('../src/tools/get-domain-rank');
+		const result = {
+			status: 'representative' as const,
+			domain: 'github.com',
+			score: 67,
+			percentile: null,
+			cohort: 'global',
+			cohortSize: 0,
+			asOf: null,
+			representative: true,
+			scaleId: 'benchmark',
+			evidenceInsufficient: true,
+			evidenceNote: 'No benchmark cohort data was available for this domain, so no percentile was computed.',
+		};
+
+		for (const format of ['full', 'compact'] as const) {
+			const text = formatDomainRank(result, format);
+			expect(text).not.toContain('better than');
+			expect(text).not.toContain('null');
+			expect(text).toContain('not measured');
+		}
+		expect(formatDomainRank(result, 'full')).toContain('No benchmark cohort data');
 	});
 
 	it('does not throw when asOf is null', async () => {
@@ -228,6 +315,7 @@ describe('formatDomainRank', () => {
 			asOf: null,
 			representative: false,
 			scaleId: 'benchmark',
+			evidenceInsufficient: false,
 		};
 		expect(() => formatDomainRank(result, 'full')).not.toThrow();
 		expect(() => formatDomainRank(result, 'compact')).not.toThrow();

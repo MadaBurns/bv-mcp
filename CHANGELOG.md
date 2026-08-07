@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+**Scoring model unchanged. No weight, tier, grade band, severity penalty, `missingControl` rule, or profile changed** — verified by the absence of any `createFinding(` edit under `packages/dns-checks/src/checks/`. The only weights introduced (`CONTROL_WEIGHTS`) are local to `assess_spoofability`, which is `group: 'intelligence'`, `scanIncluded: false` and carries no `tier`, so it cannot move a domain's scan grade.
+
+### Fixed
+
+Six tool-output defects found by scanning live domains against production 3.43.0. Three share one root shape — **control flow keyed on human-readable prose**, which a copy edit silently breaks with no compile error and no failing test. Each fix moves the predicate onto a structural signal.
+
+- **`assess_spoofability` reported protection levels it had not measured.** Four paths, all the same class. The SPF/DMARC ladders substring-matched finding *detail* prose, and the `+all` finding's own remediation text contains `-all` — so `v=spf1 +all`, maximal spoofability, was classified as hard-fail and reported `spfProtection: 100`. `computeDkimProtection` bucketed to `score >= 80 ? 100 : 80`, reporting 80 for a check score of 45. All-revoked selectors emit only an *info* finding, so `dkimProtection` read 100 for zero usable keys while `scan_domain` had the same domain in `notApplicableCategories`. Sub-scores are now `number | null` with a `controls.{spf,dmarc,dkim}` status map; ladders read stable finding *titles*; every sub-score passes through `boundedByCheckScore()`, a structural invariant making the 45-vs-80 class impossible rather than merely fixed; the composite renormalises over measured weights only.
+
+- **`get_domain_rank` fabricated a percentile from an empty cohort.** The local fallback synthesised `percentile = round(score)` — a rank computed without consulting one peer — and the success path passed `data.percentile` through regardless of `cohortSize`, so C1's `{percentile: 50, cohortSize: 0}` shipped verbatim. `percentile` is now `number | null` with `evidenceInsufficient` always present; one helper is the sole spelling of the abstention rule, and the prose abstains too (a payload that abstains while the text still reads "better than 50% of peers" leaves the claim where the customer sees it).
+
+- **`explain_finding` returned remediation for defects the finding did not have.** Selection keyed only on `checkType + status`, so an SPF lookup-limit finding received the `SPF_HIGH` bucket's enumerated wording — "publish exactly one SPF record and tighten over-broad ranges" — for two defects it does not describe. Adds a 28-signature detail catalog; unrecognised details are de-specified rather than guessed.
+
+- **`check_ptr` treated an RFC 7505 null MX as a mail host.** A null MX (`0 .`) parses to `{exchange: ''}`, so `mx.length === 1` read as one real host and the check evaluated PTR for a domain that accepts no mail. Now filters empty exchanges and returns an explicit not-applicable result distinguishing null MX from no MX.
+
+- **`resolve_spf_chain` reported a domain at exactly 10/10 lookups as healthy.** Adds an `at_limit` issue at `high`, aligning the threshold with `check-spf.ts`, which already treated `>= 9` as high.
+
+- **Non-mail wording contradicted the scan's own findings.** BIMI was recommended to domains that declare they send no email (RFC 7505 null MX or an SPF `-all` no-send policy), and the MTA-STS summary asserted "this domain has MX records and accepts email" in the same response that reported a null MX. Both branches are now gated on `controlPresent`, a structural signal, and are **text-only** — no severity, metadata, or category score changes.
+
+### Changed
+
+- **`check_txt_hygiene` consolidates per-record info findings** into one per distinct service. Score-neutral (info carries a 0 penalty; asserted before and after).
+
+### Internal
+
+- **`isNoSendPolicy` deduplicated** into `packages/dns-checks/src/checks/spf-analysis.ts` and imported by both `check-spf` and `check-bimi`, replacing a second byte-identical copy that carried a "must stay in lockstep" comment — the same drift hazard that required a tripwire for the SPF trust-surface catalog.
+
+- **A DNS mock in `test/assess-spoofability.spec.ts` never worked.** It read `Number(searchParams.get('type'))` against `type=TXT` → `NaN`, so every record-dependent assertion in the file passed vacuously (a `p=reject` fixture was being scored as "no DMARC record"). The two other specs matching that pattern echo `type` into the DoH question only and return unconditional answers, so they are unaffected.
+
 ## [3.43.0] - 2026-08-07
 
 **Scoring model unchanged at 1.7.0. `@blackveil/dns-checks` 1.11.0 → 1.12.0** (package check behaviour changed, so `PARITY_CORPUS_VERSION` moves in lockstep and the bv-web-prod tarball needs re-vendoring). No weight, tier, grade band, or severity penalty changed — **scores move because detection coverage improved, not because policy did.**

@@ -12,9 +12,28 @@
 import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { RobotsDisallowedError } from '../robots-gate';
+import { isNoSendPolicy } from './spf-analysis';
 
 /** BIMI logo fetch timeout (ms). */
 const BIMI_FETCH_TIMEOUT_MS = 4_000;
+
+/**
+ * Best-effort probe for "this domain cannot send email".
+ *
+ * Reads the apex TXT RRset and looks for an SPF record with a no-send policy.
+ * Fail-soft in every direction: a query failure, a missing SPF record, or any
+ * SPF that authorizes a sender all return `false` (= "assume it may send"), so
+ * the pre-existing wording is what a degraded lookup falls back to.
+ */
+async function detectNoSendPolicy(domain: string, queryDNS: DNSQueryFunction, timeout: number): Promise<boolean> {
+	try {
+		const txtRecords = await queryDNS(domain, 'TXT', { timeout });
+		const spf = txtRecords.find((record) => record.toLowerCase().startsWith('v=spf1'));
+		return spf ? isNoSendPolicy(spf) : false;
+	} catch {
+		return false;
+	}
+}
 
 /** BIMI group recommendation: logos should be ≤ 32 KB. */
 const BIMI_SVG_MAX_BYTES = 32 * 1024;
@@ -188,8 +207,7 @@ export async function checkBIMI(
 	// Check DMARC enforcement status — BIMI requires p=quarantine or p=reject
 	const dmarcRecords = await queryDNS(`_dmarc.${domain}`, 'TXT', { timeout });
 	const dmarcRecord = dmarcRecords.find((r) => r.toLowerCase().startsWith('v=dmarc1'));
-	const isEnforcing =
-		dmarcRecord && (/\bp=reject\b/i.test(dmarcRecord) || /\bp=quarantine\b/i.test(dmarcRecord));
+	const isEnforcing = dmarcRecord && (/\bp=reject\b/i.test(dmarcRecord) || /\bp=quarantine\b/i.test(dmarcRecord));
 
 	if (bimiRecords.length === 0) {
 		if (!isEnforcing) {
@@ -205,13 +223,23 @@ export async function checkBIMI(
 				),
 			);
 		} else {
+			// DMARC is enforcing, which is BIMI's *prerequisite* — but it is not the
+			// whole eligibility test. BIMI logos only ever render beside mail the
+			// domain SENDS, so a domain that publishes an explicit no-send SPF policy
+			// is not "eligible for BIMI" in any useful sense, and telling it to publish
+			// a BIMI record is bad advice. Probe for that before recommending BIMI.
+			// Severity is `low` on BOTH branches — this is a wording fix, not a
+			// scoring change.
+			const cannotSend = await detectNoSendPolicy(domain, queryDNS, timeout);
 			findings.push(
 				createFinding(
 					'bimi',
 					'No BIMI record found',
 					// Advisory control — absence is not a deficiency → low, no missingControl (~95).
 					'low',
-					`No BIMI record found at ${bimiDomain}. This domain has DMARC enforcement and is eligible for BIMI. Publishing a BIMI record allows email clients like Gmail and Apple Mail to display your brand logo next to your emails.`,
+					cannotSend
+						? `No BIMI record found at ${bimiDomain}. This domain publishes an SPF policy that authorizes no senders ("-all" with no authorizing mechanisms), so it does not send email and BIMI is not applicable — BIMI logos are only displayed beside messages a domain sends. No action is needed unless this domain starts sending mail.`
+						: `No BIMI record found at ${bimiDomain}. This domain has DMARC enforcement and is eligible for BIMI. Publishing a BIMI record allows email clients like Gmail and Apple Mail to display your brand logo next to your emails.`,
 				),
 			);
 		}
@@ -307,7 +335,7 @@ export async function checkBIMI(
 	// If logo URL is valid and present, validate the SVG content
 	if (logoUrl && logoUrl.toLowerCase().startsWith('https://') && logoUrl.toLowerCase().endsWith('.svg')) {
 		if (fetchFn) {
-			findings.push(...await validateBimiSvg(logoUrl, fetchFn, BIMI_FETCH_TIMEOUT_MS));
+			findings.push(...(await validateBimiSvg(logoUrl, fetchFn, BIMI_FETCH_TIMEOUT_MS)));
 		} else {
 			findings.push(
 				createFinding(

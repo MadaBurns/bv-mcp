@@ -20,19 +20,10 @@ import {
 	countRecursiveLookups,
 	estimateTxtRrsetBytes,
 	extractSpfSignalDomains,
+	isNoSendPolicy,
 	type RecursiveState,
 } from './spf-analysis';
 import { analyzeTrustSurface } from './spf-trust-surface';
-
-/** Detect no-send SPF policy: -all or ~all with zero authorizing mechanisms */
-function isNoSendPolicy(spf: string): boolean {
-	const allMatch = spf.match(/[+?~-]all/i);
-	if (!allMatch) return false;
-	const qualifier = allMatch[0][0];
-	if (qualifier !== '-' && qualifier !== '~') return false;
-	const hasAuthorizing = /\b(include:|a[:/\s]|a$|mx[:/\s]|mx$|ip4:|ip6:|redirect=|exists:)/i.test(spf);
-	return !hasAuthorizing;
-}
 
 /**
  * Flag a TXT RRset large enough to truncate over UDP (forcing TCP fallback).
@@ -113,11 +104,7 @@ async function getTrustSurfaceDmarcContext(
  * Looks for v=spf1 TXT records and validates their configuration.
  * Recursively expands include chains to compute true DNS lookup count.
  */
-export async function checkSPF(
-	domain: string,
-	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number },
-): Promise<CheckResult> {
+export async function checkSPF(domain: string, queryDNS: DNSQueryFunction, options?: { timeout?: number }): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 	const findings: Finding[] = [];
 	const txtRecords = await queryDNS(domain, 'TXT', { timeout });
