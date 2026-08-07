@@ -121,7 +121,17 @@ describe('scanDomain post-scoring — maturity cap on an ungraded score', () => 
 		// never capped at all.
 		expect(result.score.overall).toBe(20);
 		expect(result.maturity.stage).toBe(2);
-		expect(result.maturity.label).toBe('Monitoring (score-capped)');
+
+		// #640 follow-up: this fixture serves EMPTY DNS for every query, so the domain
+		// has no MX and is profiled onto the WEB-ONLY ladder. It therefore reads
+		// "Transport-Hardened (score-capped)", not the mail ladder's "Monitoring
+		// (score-capped)" this used to assert — telling a domain with no mail service
+		// that it is "Monitoring" (i.e. running DMARC in report-only) was a claim about
+		// a control it does not have. The cap now words the stage with the same ladder
+		// that produced it.
+		expect(result.context?.profile).toBe('web_only');
+		expect(result.maturity.label).toBe('Transport-Hardened (score-capped)');
+		expect(result.maturity.label).toContain('(score-capped)');
 	});
 });
 
