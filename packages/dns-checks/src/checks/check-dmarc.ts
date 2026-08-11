@@ -93,7 +93,7 @@ export async function checkDMARC(
 	if (!walk.foundAt) {
 		// No DMARC record at all → not an active control. controlPresent:false (definitively
 		// absent; a DNS *error* throws out of the tree-walk instead, leaving controlPresent undefined).
-		return buildCheckResult('dmarc', classifyDmarc({ recordCount: 0, policy: null, domain }), false);
+		return buildCheckResult('dmarc', classifyDmarc({ recordCount: 0, policy: null, domain }), false, false);
 	}
 
 	// A record found above the queried domain is inherited via the org domain.
@@ -161,5 +161,8 @@ export async function checkDMARC(
 	// existing scan post-processing enforcement convention.
 	const dmarcEnforcing = policy === 'quarantine' || policy === 'reject';
 
-	return buildCheckResult('dmarc', findings, dmarcEnforcing);
+	// recordPresent = a DMARC record was PUBLISHED (the tree walk found one, here or at the org
+	// domain) — true even for p=none, which reads controlPresent false. This is the exact pair the
+	// CheckResult docs table calls out; do not collapse it into `dmarcEnforcing`.
+	return buildCheckResult('dmarc', findings, dmarcEnforcing, true);
 }

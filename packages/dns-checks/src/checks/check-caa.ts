@@ -159,6 +159,8 @@ export async function checkCAA(
 	const findings: Finding[] = [];
 	const zone = options?.zone;
 
+	// No CAA lookup happens on this branch at all, so `recordPresent` is left undefined
+	// ("not determined") — never false.
 	if (zone && !zone.isApex && zone.delegationStatus === 'unknown') {
 		return {
 			...buildCheckResult('caa', [
@@ -181,6 +183,7 @@ export async function checkCAA(
 		// INCONCLUSIVE (checkStatus) so the scoring engine renormalizes over the remaining
 		// categories instead of penalizing a possibly-healthy domain with a scored deficiency.
 		// (The per-ancestor climb catch above is a legitimate fail-soft and stays unchanged.)
+		// `recordPresent` likewise stays undefined: the query failed, so absence was never observed.
 		return {
 			...buildCheckResult('caa', [
 				createFinding(
@@ -217,7 +220,9 @@ export async function checkCAA(
 				// Enforceability is a property of the RRset that actually governs issuance —
 				// here the ANCESTOR's, so report it against `climbed.foundAt`, not `domain`.
 				findings.push(...getCaaEnforceabilityFindings(climbed, climbed.foundAt));
-				return buildCheckResult('caa', findings, true);
+				// A CAA RRset governing this name IS published — at the ancestor, per the RFC 8659
+				// climb. Publication is what `recordPresent` reports, so inheritance counts as true.
+				return buildCheckResult('caa', findings, true, true);
 			}
 			// Climb reached the registrable floor with nothing found — genuinely no CAA
 			// anywhere up the tree. Fall through to the existing "No CAA records" finding.
@@ -237,7 +242,7 @@ export async function checkCAA(
 			),
 		);
 		// No CAA records observed → control absent (a query failure above leaves controlPresent undefined).
-		return buildCheckResult('caa', findings, false);
+		return buildCheckResult('caa', findings, false, false);
 	}
 
 	findings.push(...getCaaValidationFindings(summarizeCaaTags(caaRecords)));
@@ -256,5 +261,5 @@ export async function checkCAA(
 	// CAA records present → control present. Enforceability does NOT change this:
 	// `controlPresent` feeds profile detection (`caaPass`), and an unsigned zone
 	// still has a published CAA policy — the record exists, it is just strippable.
-	return buildCheckResult('caa', findings, true);
+	return buildCheckResult('caa', findings, true, true);
 }

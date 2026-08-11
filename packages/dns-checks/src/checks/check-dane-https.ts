@@ -38,6 +38,8 @@ export async function checkDANEHTTPS(
 	// Step 2: Query TLSA records at _443._tcp.{domain}
 	const tlsaName = `_443._tcp.${domain}`;
 	let hasHttpsTlsa = false;
+	// Read ONLY by `recordPresent` below — a failed lookup is "not determined", not "absent".
+	let tlsaQueryFailed = false;
 
 	try {
 		const tlsaRecords = await queryDNS(tlsaName, 'TLSA', { timeout });
@@ -47,6 +49,7 @@ export async function checkDANEHTTPS(
 		}
 	} catch {
 		// TLSA query failed — report and continue
+		tlsaQueryFailed = true;
 		findings.push(
 			createFinding(
 				'dane_https',
@@ -84,5 +87,10 @@ export async function checkDANEHTTPS(
 	// Remap any finding categories to 'dane_https' (analyzeTlsaRecords produces 'dane' category)
 	const remapped = findings.map((f) => ({ ...f, category: 'dane_https' as const }));
 
-	return buildCheckResult('dane_https', remapped);
+	// `recordPresent` = a TLSA record was observed at _443._tcp. The category remap above is
+	// cosmetic (finding provenance) and does not bear on publication; a failed lookup does,
+	// so that branch stays undefined rather than claiming absence.
+	const recordPresent = tlsaQueryFailed ? undefined : hasHttpsTlsa;
+
+	return buildCheckResult('dane_https', remapped, undefined, recordPresent);
 }

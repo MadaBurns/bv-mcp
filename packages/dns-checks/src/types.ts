@@ -153,8 +153,34 @@ export interface CheckResult {
 	 * `passed` is unsafe as a presence proxy: an absent-but-not-penalized control (e.g. MTA-STS on a
 	 * non-mail domain) still yields `passed === true`. Profile detection (`detectDomainContext`) reads
 	 * this instead of `passed`/finding prose. Only the checks `detectDomainContext` consumes set it.
+	 *
+	 * ⚠️ `controlPresent === false` does NOT mean "nothing is published" — it deliberately conflates
+	 * ABSENT with INACTIVE, because its consumer only cares whether the control is doing work. A
+	 * published `p=none` DMARC record and a domain with no DMARC record at all BOTH read `false`.
+	 * If you need "was a record published", read {@link CheckResult.recordPresent} instead.
 	 */
 	controlPresent?: boolean;
+	/**
+	 * Whether the control's record/artifact was **published at all** — purely observational, and
+	 * deliberately orthogonal to {@link CheckResult.controlPresent}'s "active/enforcing" question.
+	 *
+	 * `true` = a record was observed, however weak or misconfigured (a `p=none` DMARC, a duplicated
+	 * TLS-RPT, an HTTPS/SVCB record with no ALPN). `false` = nothing was published. `undefined` =
+	 * could not be determined (the query failed) or this check does not report the signal.
+	 *
+	 * The two flags answer different questions and a consumer must not substitute one for the other:
+	 *
+	 * | state                        | recordPresent | controlPresent |
+	 * | ---------------------------- | ------------- | -------------- |
+	 * | no DMARC record              | `false`       | `false`        |
+	 * | `p=none` (published, weak)   | `true`        | `false`        |
+	 * | `p=reject`                   | `true`        | `true`         |
+	 *
+	 * Added because consumers rendering per-check UI need "is this control configured?" and were
+	 * reaching for `controlPresent`/`passed`/score-band heuristics, each of which mislabels a
+	 * published-but-weak control as unconfigured. Score-neutral: nothing in the scoring path reads it.
+	 */
+	recordPresent?: boolean;
 	/** Optional structured metadata attached to the result by the check wrapper (not the core package). */
 	metadata?: Record<string, unknown>;
 }

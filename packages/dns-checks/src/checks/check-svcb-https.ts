@@ -131,6 +131,8 @@ export async function checkSVCBHTTPS(
 				`DNS query for HTTPS records at ${domain} failed. Unable to determine SVCB/HTTPS status.`,
 			),
 		);
+		// The query itself failed, so publication was never observed either way —
+		// `recordPresent` stays undefined ("not determined"), never false.
 		return buildCheckResult('svcb_https', findings);
 	}
 
@@ -143,7 +145,7 @@ export async function checkSVCBHTTPS(
 				`No HTTPS (type 65) record found at ${domain}. HTTPS records (RFC 9460) advertise modern transport capabilities (ALPN, ECH) and enable clients to connect securely without an initial redirect round-trip. Consider publishing an HTTPS record with h2 and h3 ALPN support. Per RFC 9460 these records are an advisory performance/privacy optimization, not a required security control — absence is not a deficiency.`,
 			),
 		);
-		return buildCheckResult('svcb_https', findings);
+		return buildCheckResult('svcb_https', findings, undefined, false);
 	}
 
 	// Analyze each HTTPS record
@@ -241,5 +243,5 @@ export async function checkSVCBHTTPS(
 		}
 	}
 
-	return buildCheckResult('svcb_https', findings);
+	return buildCheckResult('svcb_https', findings, undefined, true);
 }
