@@ -4,9 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [3.46.0] - 2026-08-12
 
-**`@blackveil/dns-checks` 1.14.0 → 1.15.0** (`PARITY_CORPUS_VERSION` in lockstep). **`SCORING_MODEL_VERSION` unchanged — no score, `passed` flag, or grade moves.**
+**`@blackveil/dns-checks` 1.14.0 → 1.15.0** (`PARITY_CORPUS_VERSION` in lockstep). **`SCORING_MODEL_VERSION` unchanged — no score, `passed` flag, or grade moves.** Already re-vendored and deployed to bv-web-prod (#1964, #1975).
 
 ### Added
 
@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
   Set by the eight checks that can answer the question: `tlsrpt`, `svcb_https`, `dane`, `dane_https`, `caa`, `mta_sts`, `bimi`, `dmarc`. Left `undefined` — never `false` — when the check's own DNS query failed, so an unmeasured state is never reported as an observed absence (the same rule that stops a timed-out check being scored 0). `mx` and `ssl` are deliberately NOT instrumented: a no-MX domain publishing `v=spf1 -all` scores 100 with an `info` finding calling it the NIST SP 800-177r1 §4.4.2 recommended posture, and must never be demoted to "not configured".
 
-  **Score-neutral by construction** — `buildCheckResult` stores the flag and nothing in the scoring path reads it. `src/__tests__/checks/record-present-signal.test.ts` pins both halves: the discriminations that were previously impossible, and score literals captured from 1.14.0 for every instrumented check.
+  **Score-neutral by construction** — `buildCheckResult` stores the flag and nothing in the scoring path reads it. `src/__tests__/checks/record-present-signal.test.ts` pins both halves: the discriminations that were previously impossible, and score literals captured from 1.14.0 for every instrumented check. (#652)
 
 ## [3.45.0] - 2026-08-08
 
