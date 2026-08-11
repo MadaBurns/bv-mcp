@@ -52,6 +52,9 @@ export async function checkMTASTS(
 
 	// Check for _mta-sts TXT record
 	let hasTxtRecord = false;
+	// Read ONLY by `recordPresent` below: `hasTxtRecord` stays false on a lookup failure, which
+	// is the right conservative choice for `controlPresent` but would misreport publication.
+	let mtaStsQueryFailed = false;
 	try {
 		const txtRecords = await queryDNS(`_mta-sts.${domain}`, 'TXT', { timeout });
 		const txtAnalysis = getMtaStsTxtFindings(txtRecords);
@@ -59,6 +62,7 @@ export async function checkMTASTS(
 		findings.push(...finalizeMissingMtaStsRecordFinding(txtAnalysis.findings, domain));
 	} catch {
 		findings = [];
+		mtaStsQueryFailed = true;
 		findings.push(createFinding('mta_sts', 'MTA-STS DNS query failed', 'low', `Could not query MTA-STS TXT record for ${domain}.`));
 	}
 
@@ -235,7 +239,15 @@ export async function checkMTASTS(
 
 	// controlPresent: an MTA-STS policy record (_mta-sts TXT) was observed. TLS-RPT alone does not
 	// count as MTA-STS, and a failed lookup leaves hasTxtRecord false (conservative: not credited).
-	return buildCheckResult('mta_sts', findings, hasTxtRecord);
+	//
+	// recordPresent asks the narrower question "was an `_mta-sts` TXT record published", so it
+	// tracks that SAME RRset — never the TLS-RPT one this check also reports on, and never the
+	// policy file (an unfetchable policy is still a published record). It diverges from
+	// `hasTxtRecord` on exactly one branch: a failed `_mta-sts` lookup, where false would assert
+	// an absence nobody observed.
+	const recordPresent = mtaStsQueryFailed ? undefined : hasTxtRecord;
+
+	return buildCheckResult('mta_sts', findings, hasTxtRecord, recordPresent);
 }
 
 /**

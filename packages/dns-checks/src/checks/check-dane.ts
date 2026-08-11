@@ -101,6 +101,9 @@ export async function checkDANE(
 	const findings: Finding[] = [];
 	let hasMxTlsa = false;
 	let realMxHosts = 0;
+	// MX hosts whose _25._tcp TLSA lookup errored. Read ONLY by `recordPresent` below, to tell
+	// "we looked and found no TLSA" from "we never got a look"; never scored, never a finding.
+	let tlsaLookupFailures = 0;
 
 	// Query MX records and check TLSA for each MX host.
 	// Per RFC 7672 §3.1.3, SMTP DANE security requires DNSSEC on the MX host's zone —
@@ -140,6 +143,7 @@ export async function checkDANE(
 			}
 		} catch {
 			// Individual MX TLSA query failed — skip this host
+			tlsaLookupFailures++;
 		}
 	}
 
@@ -187,5 +191,11 @@ export async function checkDANE(
 		);
 	}
 
-	return buildCheckResult('dane', findings);
+	// `recordPresent` answers only "was a TLSA record published for this domain's SMTP
+	// endpoints". UNDEFINED where nothing was actually observed: no usable MX host means no
+	// _25._tcp name was ever queried (SMTP DANE not applicable), and an all-errored per-host
+	// sweep is a failed measurement — neither is "we looked and there was nothing".
+	const recordPresent = hasMxTlsa ? true : realMxHosts > 0 && tlsaLookupFailures < realMxHosts ? false : undefined;
+
+	return buildCheckResult('dane', findings, undefined, recordPresent);
 }

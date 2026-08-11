@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+**`@blackveil/dns-checks` 1.14.0 → 1.15.0** (`PARITY_CORPUS_VERSION` in lockstep). **`SCORING_MODEL_VERSION` unchanged — no score, `passed` flag, or grade moves.**
+
+### Added
+
+- **`CheckResult.recordPresent` — "was this control's record published at all".** Purely observational and deliberately orthogonal to `controlPresent`, which answers a different question: *is the control ACTIVE/ENFORCING*. A published `v=DMARC1; p=none` record and a domain with no DMARC record at all both read `controlPresent: false`, which is correct for its only consumer (`detectDomainContext` profile detection, which cares solely whether a control is doing work) and wrong for anything rendering per-check UI.
+
+  Nor could absence be recovered from the score, because the payload genuinely did not contain it: an **absent** TLS-RPT (score 95, one `low` finding) and a **published but duplicated** one (score 95, one `low` finding) were identical on every field a consumer could read. The downstream web scanner (bv-web-prod #1964) tried both inferences — `controlPresent === false`, then "pass-band score + a non-info finding" — and would have rendered a live `p=none` DMARC as *"Optional — not set"*, stripping its severity badge and dropping it from the needs-attention count. That is strictly worse than the green-`PASS`-on-an-unconfigured-control bug it was fixing.
+
+  Set by the eight checks that can answer the question: `tlsrpt`, `svcb_https`, `dane`, `dane_https`, `caa`, `mta_sts`, `bimi`, `dmarc`. Left `undefined` — never `false` — when the check's own DNS query failed, so an unmeasured state is never reported as an observed absence (the same rule that stops a timed-out check being scored 0). `mx` and `ssl` are deliberately NOT instrumented: a no-MX domain publishing `v=spf1 -all` scores 100 with an `info` finding calling it the NIST SP 800-177r1 §4.4.2 recommended posture, and must never be demoted to "not configured".
+
+  **Score-neutral by construction** — `buildCheckResult` stores the flag and nothing in the scoring path reads it. `src/__tests__/checks/record-present-signal.test.ts` pins both halves: the discriminations that were previously impossible, and score literals captured from 1.14.0 for every instrumented check.
+
 ## [3.45.0] - 2026-08-08
 
 **`SCORING_MODEL_VERSION` 1.7.0 → 1.8.0. `@blackveil/dns-checks` 1.13.0 → 1.14.0** (`PARITY_CORPUS_VERSION` in lockstep). Already re-vendored and deployed to bv-web-prod, so the web scanner and the MCP grade from the same model.

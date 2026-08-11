@@ -42,7 +42,7 @@ export async function checkTLSRPT(
 				`No TLS-RPT (v=TLSRPTv1) record found at ${tlsrptDomain}. TLS-RPT enables your domain to receive reports about SMTP TLS failures, complementing MTA-STS. Without it, you have no visibility into email delivery security issues.`,
 			),
 		);
-		return buildCheckResult('tlsrpt', findings);
+		return buildCheckResult('tlsrpt', findings, undefined, false);
 	}
 
 	// Check for multiple TLS-RPT records in the concatenated data
@@ -74,7 +74,9 @@ export async function checkTLSRPT(
 				`TLS-RPT record at ${tlsrptDomain} does not contain a reporting URI (rua= tag). Without a reporting destination, TLS failure reports cannot be delivered.`,
 			),
 		);
-		return buildCheckResult('tlsrpt', findings);
+		// A record IS published here — it is just missing `rua=`. `recordPresent` tracks
+		// publication, not validity, so an unusable record still reads true.
+		return buildCheckResult('tlsrpt', findings, undefined, true);
 	}
 
 	const ruaValue = ruaMatch[1];
@@ -111,5 +113,5 @@ export async function checkTLSRPT(
 		);
 	}
 
-	return buildCheckResult('tlsrpt', findings);
+	return buildCheckResult('tlsrpt', findings, undefined, true);
 }
