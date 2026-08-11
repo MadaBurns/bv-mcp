@@ -128,8 +128,18 @@ export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
  * A check fails (passed=false) if the score is below 50, if findings indicate
  * a fundamentally missing security control (e.g., no SPF/DMARC record), or if
  * any finding carries explicit `missingControl: true` metadata.
+ *
+ * `recordPresent` is purely observational ("was a record published at all") and is NEVER read by
+ * the scoring path — it exists so consumers can answer "is this control configured?" without
+ * misusing `controlPresent` (which conflates absent with inactive) or a score band. See
+ * {@link CheckResult.recordPresent}.
  */
-export function buildCheckResult(category: CheckCategory, findings: Finding[], controlPresent?: boolean): CheckResult {
+export function buildCheckResult(
+	category: CheckCategory,
+	findings: Finding[],
+	controlPresent?: boolean,
+	recordPresent?: boolean,
+): CheckResult {
 	const normalizedFindings = findings.map(withConfidenceMetadata);
 	const score = computeCategoryScore(normalizedFindings, category);
 	const hasMissingControl =
@@ -143,6 +153,7 @@ export function buildCheckResult(category: CheckCategory, findings: Finding[], c
 		// Only set when the caller provides a determination; left absent (undefined) otherwise so
 		// consumers can distinguish "definitively absent" (false) from "not determined" (undefined).
 		...(controlPresent === undefined ? {} : { controlPresent }),
+		...(recordPresent === undefined ? {} : { recordPresent }),
 	};
 }
 
