@@ -327,23 +327,23 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 
 			it('all passing with mail_enabled (default) profile', () => {
 				const score = computeScanScore(allPassing);
-				// Three-tier: core=70, protective=20, hardening=2/10*10=2.0 → base≈92 + email bonus 5 = 97
-				// (only bimi + tlsrpt have results in hardening tier out of 10 hardening categories)
-				expect(score.overall).toBe(97);
+				// Three-tier: core=70, protective=20, hardening=2/2*10=10 → base=100.
+				// Only bimi + tlsrpt are submitted; omitted hardening categories are excluded.
+				expect(score.overall).toBe(100);
 				expect(score.grade).toBe('A+');
 			});
 
 			it('all passing with enterprise_mail profile', () => {
 				const score = computeScanScore(allPassing, makeEnterpriseContext());
-				// Same hardening gap as mail_enabled → 97
-				expect(score.overall).toBe(97);
+				// The same submitted hardening roster earns the full hardening tier.
+				expect(score.overall).toBe(100);
 				expect(score.grade).toBe('A+');
 			});
 
 			it('all passing with non_mail profile', () => {
 				const score = computeScanScore(allPassing, makeNonMailContext());
-				// No email bonus for non_mail → base ≈ 92
-				expect(score.overall).toBe(92);
+				// No email bonus for non_mail, but the submitted hardening roster earns its full tier.
+				expect(score.overall).toBe(100);
 				expect(score.grade).toBe('A+');
 			});
 

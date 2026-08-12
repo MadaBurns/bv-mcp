@@ -191,9 +191,10 @@ describe('scoring treats a WAF-blocked category as EXCLUDED, not zeroed', () => 
 		// …and the headline renormalises to exactly the "never ran" score.
 		expect(withWaf.overall).toBe(withoutHttp.overall);
 
-		// ZEROED: a real missing control IS published as 0 and drags the headline down.
+		// ZEROED: a real missing control IS published as 0 and can never improve the headline.
+		// This fixture's resolved profile gives http_security no headline weight, so equality is valid.
 		expect(withMissing.categoryScores.http_security).toBe(0);
-		expect(withMissing.overall).toBeLessThan(withWaf.overall);
+		expect(withMissing.overall).toBeLessThanOrEqual(withWaf.overall);
 
 		// The evidence ratio is what reports the shortfall honestly — not a lower score.
 		expect(withWaf.evidence.completed).toBe(SCAN_CATEGORIES.length - 1);

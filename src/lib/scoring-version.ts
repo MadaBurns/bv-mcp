@@ -134,7 +134,7 @@
  *   PRODUCTION baseline (where the downgrade never ran): unchanged for every apex domain, and
  *   for subdomains changed only where enforcing parent coverage demonstrably exists.
  */
-export const SCORING_MODEL_VERSION = '1.8.0';
+export const SCORING_MODEL_VERSION = '1.9.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
