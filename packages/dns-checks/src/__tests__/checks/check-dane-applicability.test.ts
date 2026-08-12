@@ -176,7 +176,7 @@ describe('#639 blast radius — scoring moves ONLY on the failure paths', () => 
 		// answered may move. DANE still earns its hardening point here — removing that is
 		// the separate, operator-gated weighting decision.
 		const before = computeScanScore(roster(mk('dane', 100)), ctx);
-		expect(before.overall).toBe(93);
+		expect(before.overall).toBe(96);
 		expect(before.categoryScores.dane).toBe(100);
 	});
 

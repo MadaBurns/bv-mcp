@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.47.0] - 2026-08-12
+
+**`SCORING_MODEL_VERSION` 1.8.0 → 1.9.0. `@blackveil/dns-checks` 1.15.0 → 1.16.0** (`PARITY_CORPUS_VERSION` in lockstep).
+
+### Fixed — partial-roster hardening semantics
+
+- **Omitted hardening categories are no longer scored as failed controls.** A consumer that intentionally submits a partial roster now has every absent category excluded uniformly, matching the established core/protective absent-result semantics. Submitted and measured hardening failures remain in the denominator as failures; timeout/error hardening results remain inconclusive. This corrects a consumer-visible score interpretation and may raise scores on the next scan for partial-roster consumers. It does not mutate any stored score retroactively. The package-level hardening-roster symmetry contract locks absence versus a measured failure.
+
 ## [3.46.0] - 2026-08-12
 
 **`@blackveil/dns-checks` 1.14.0 → 1.15.0** (`PARITY_CORPUS_VERSION` in lockstep). **`SCORING_MODEL_VERSION` unchanged — no score, `passed` flag, or grade moves.** Already re-vendored and deployed to bv-web-prod (#1964, #1975).
