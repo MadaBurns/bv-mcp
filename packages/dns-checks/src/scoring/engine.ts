@@ -236,38 +236,22 @@ function buildGenericContext(
 		}
 	}
 
-	// A core/protective category that produced NO result at all was never measured — treat it
-	// exactly like a transient/inconclusive failure: exclude it from the weighted tier so the
-	// score renormalizes over what WAS measured, instead of letting generic.ts's `?? 100`
-	// default award full unearned credit (which masked real findings — e.g. the scan_domain
-	// roster omits lookalikes/shadow_domains, so those never-run protective categories were
-	// silently scored a perfect 100). Hardening is intentionally left alone: its denominator
-	// legitimately counts every hardening category (an unconfigured bonus is an unearned bonus,
-	// handled via hardeningPassed), so a never-run hardening category must NOT be excluded here.
+	// A category that produced no result was not submitted by this scan roster. Exclude it
+	// uniformly regardless of tier: it is neither a weighted result nor a hardening failure.
 	for (const cat of Object.keys(CATEGORY_TIERS) as CheckCategory[]) {
-		const tier = CATEGORY_TIERS[cat];
-		if ((tier === 'core' || tier === 'protective') && !resultMap.has(cat)) {
+		if (!resultMap.has(cat)) {
 			transientFailures[cat] = true;
 		}
 	}
 
 	// --- Build hardeningPassed map ---
-	// The original engine iterates ALL hardening categories from CATEGORY_TIERS (not just
-	// those with results). It uses hardeningCount = total hardening categories.
-	// A category counts as "passed" only if result exists AND result.passed is true.
-	// Categories without results don't count as passed but DO count toward the denominator.
-	//
-	// The generic engine only counts *submitted* keys in hardeningPassed toward the denominator.
-	// To match: submit ALL hardening categories, marking passed=true only for those with passing results.
+	// The generic engine derives the hardening denominator from the keys in this map. Add only
+	// submitted, measured hardening results. A measured failure therefore remains a `false` key,
+	// while omitted and inconclusive categories are excluded.
 	const hardeningPassed: Record<string, boolean> = {};
-	for (const cat of Object.keys(CATEGORY_TIERS) as CheckCategory[]) {
-		if (CATEGORY_TIERS[cat] === 'hardening') {
-			const result = resultMap.get(cat);
-			// Submit all hardening categories so denominator = total hardening count.
-			// Only mark as passed if an actual result was provided AND it passed AND
-			// the score is >= 50. This prevents degraded checks (score forced to 0
-			// but passed=true from timeout handling) from inflating hardening points.
-			hardeningPassed[cat] = !!(result && result.passed && result.score >= 50);
+	for (const result of results) {
+		if (CATEGORY_TIERS[result.category] === 'hardening' && isCheckMeasured(result.checkStatus)) {
+			hardeningPassed[result.category] = result.passed && result.score >= 50;
 		}
 	}
 
