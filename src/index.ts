@@ -53,6 +53,7 @@ import {
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
+import { computeScanEvidence } from './lib/scoring';
 import { SERVER_VERSION } from './lib/server-version';
 import { executeMcpRequest } from './mcp/execute';
 import { classifyProtocolVersionHeader } from './mcp/dispatch';
@@ -714,7 +715,11 @@ app.get('/badge/:domain', async (c) => {
 			scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
 			perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
 		});
-		return new Response(gradeBadge(result.score.grade), { status: 200, headers: svgHeaders });
+		// #638: pass the scan's coverage so a grade resting on an incomplete measurement is
+		// annotated rather than published bare. `computeScanEvidence` is the same accounting
+		// the scan report's "Checks completed: N/M" line uses, so the two surfaces cannot
+		// disagree about how much was measured.
+		return new Response(gradeBadge(result.score.grade, computeScanEvidence(result.checks)), { status: 200, headers: svgHeaders });
 	} catch {
 		return new Response(errorBadge(), { status: 500, headers: svgHeaders });
 	}
