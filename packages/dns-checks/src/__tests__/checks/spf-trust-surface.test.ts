@@ -204,23 +204,122 @@ describe('core SPF trust-surface corroboration prose matches the DMARC metadata'
 	});
 });
 
-describe('core SPF trust-surface catalog — unrecognized senders (#572 part 2, PARKED)', () => {
-	// The worker layer also counts unrecognized-but-broad shared senders toward the
-	// trust-surface total (`src/tools/spf-trust-surface.ts`, the `unrecognized shared
-	// sender` heuristic). The core deliberately does NOT — adopting it changes count
-	// semantics corpus-wide and moves the `matchedPlatforms.length > 1` emission
-	// threshold, so it is an operator call, not a config edit.
-	//
-	// TODO(operator decision): pin the CURRENT core semantics here, so that adopting
-	// part 2 later has to break a test on purpose rather than drift silently.
-	//
-	// The trade-off to encode:
-	//   - Assert the gap (e.g. one recognized + one unrecognized ESP yields exactly 1
-	//     finding and no summary) → part 2 becomes a deliberate, reviewed change, but
-	//     this file then asserts behavior we may consider a defect.
-	//   - Leave it unasserted → the core stays free to converge on the worker heuristic
-	//     without a test edit, at the cost of no tripwire on the divergence.
-	//
-	// A record that exercises the seam: 'v=spf1 include:_spf.google.com include:mail.some-esp.example -all'
-	it.todo('pins whether unrecognized shared senders count toward the trust surface');
+/**
+ * #572 part 2 — the core now COUNTS unrecognized-but-broad shared senders.
+ *
+ * Previously the core recognised only cataloged platforms and emitted the aggregate at
+ * `matchedPlatforms.length > 1`, while the worker copy (`src/tools/spf-trust-surface.ts`)
+ * ALSO counted hosts matched by the generic `spf`/`_spf` heuristic. That split meant the
+ * two copies disagreed on the ONE number that is actually scored — `platformCount`, and
+ * whether the scored aggregate is emitted at all — so a domain delegating to one cataloged
+ * ESP plus one uncataloged one was a 2-platform trust surface to the worker's output and a
+ * 1-platform, un-aggregated one to every direct consumer of the published package
+ * (bv-web-prod calls `checkSPF`, never the worker wrapper). The core adopts the heuristic
+ * here, which is a SCORING change: the threshold-crossing case below starts emitting a
+ * scored finding that the core did not emit before.
+ *
+ * These cases pin the counting semantics, not the prose: what counts, what does not, and
+ * the exact point where the aggregate begins to fire.
+ */
+describe('core SPF trust-surface — unrecognized shared senders count (#572 part 2)', () => {
+	it('emits a trust-surface finding for an uncataloged host carrying an spf label', () => {
+		const findings = analyzeTrustSurface('v=spf1 include:spf.some-unknown-esp.example -all');
+
+		expect(findings).toHaveLength(1);
+		expect(findings[0].metadata?.trustSurface).toBe(true);
+		// Named as the include host, never as a brand — the catalog is what names platforms.
+		expect(findings[0].metadata?.platform).toBe('unrecognized shared sender');
+		expect(findings[0].metadata?.recognized).toBe(false);
+		expect(findings[0].metadata?.includeDomain).toBe('spf.some-unknown-esp.example');
+		expect(findings[0].title).toContain('spf.some-unknown-esp.example');
+		// A single delegation is never the scored aggregate.
+		expect(findings[0].severity).toBe('info');
+		expect(findings.some((f) => f.metadata?.platformCount !== undefined)).toBe(false);
+	});
+
+	it('matches the `_spf` and `spfNN` label forms, and the label anywhere in the host', () => {
+		for (const host of ['_spf.some-esp.example', 'spf2.some-esp.example', 'eu._spf.some-esp.example']) {
+			const findings = analyzeTrustSurface(`v=spf1 include:${host} -all`);
+			expect(findings.map((f) => f.metadata?.includeDomain), `expected ${host} to be counted`).toEqual([host]);
+		}
+	});
+
+	it('does NOT count a first-party sending host — the heuristic must not flag self-hosted mail', () => {
+		// The whole point of keying on an `spf` label rather than "any external include":
+		// `mail.mycompany.com` is the domain's own infrastructure, not a shared platform.
+		const findings = analyzeTrustSurface('v=spf1 include:mail.mycompany.example include:relay.mycompany.example -all');
+
+		expect(findings).toEqual([]);
+	});
+
+	/**
+	 * THE THRESHOLD-CROSSING CASE, and the reason this change owes a
+	 * `SCORING_MODEL_VERSION` bump.
+	 *
+	 * One cataloged platform + one uncataloged shared sender. Before part 2 the core saw
+	 * `matchedPlatforms.length === 1` and emitted NO aggregate; now `delegated.length === 2`
+	 * and the aggregate — the single scored trust-surface signal — fires. Under a
+	 * corroborating DMARC posture that is a `high` (−25), so the `spf` category moves 100 → 75
+	 * for this domain shape. This is the population that starts being charged.
+	 */
+	it('crosses the aggregate threshold on 1 recognized + 1 unrecognized sender', () => {
+		const record = 'v=spf1 include:_spf.google.com include:spf.some-unknown-esp.example -all';
+
+		const uncorroborated = analyzeTrustSurface(record);
+		const aggregate = uncorroborated.find((f) => f.metadata?.platformCount !== undefined);
+		expect(aggregate, 'the aggregate must now fire at one cataloged + one uncataloged sender').toBeDefined();
+		expect(aggregate!.metadata?.platformCount).toBe(2);
+		expect(aggregate!.title).toContain('2 shared platforms');
+		// The uncataloged member is identified by host, with an explicit marker — a reader must
+		// not be told the trust surface contains two NAMED platforms when one is anonymous.
+		expect(aggregate!.metadata?.platforms).toBe('Google Workspace, spf.some-unknown-esp.example (unrecognized)');
+		expect(aggregate!.detail).toContain('spf.some-unknown-esp.example (unrecognized)');
+
+		// Severity/scoring consequence: info while nothing corroborates, `high` (−25) when
+		// weak DMARC does — identical treatment to two cataloged platforms.
+		expect(aggregate!.severity).toBe('info');
+		expect(buildCheckResult('spf', uncorroborated).score).toBe(100);
+
+		const corroborated = analyzeTrustSurface(record, {
+			corroboratedByWeakDmarc: true,
+			dmarcPolicy: 'none',
+			dmarcAlignmentMode: 'relaxed',
+		});
+		expect(corroborated.find((f) => f.metadata?.platformCount !== undefined)!.severity).toBe('high');
+		expect(buildCheckResult('spf', corroborated).score).toBe(75);
+	});
+
+	it('crosses the threshold on two unrecognized senders alone', () => {
+		const findings = analyzeTrustSurface('v=spf1 include:spf.esp-one.example include:_spf.esp-two.example -all', {
+			corroboratedByWeakDmarc: true,
+			dmarcPolicy: 'none',
+			dmarcAlignmentMode: 'relaxed',
+		});
+
+		const aggregate = findings.find((f) => f.metadata?.platformCount !== undefined);
+		expect(aggregate!.metadata?.platformCount).toBe(2);
+		expect(aggregate!.severity).toBe('high');
+		// Still exactly ONE scored finding for the whole surface — #637's no-double-count rule
+		// applies to unrecognized members too.
+		expect(findings.filter((f) => f.severity !== 'info')).toHaveLength(1);
+		expect(buildCheckResult('spf', findings).score).toBe(75);
+	});
+
+	it('counts a redirect= target, not just include:', () => {
+		const findings = analyzeTrustSurface('v=spf1 include:_spf.google.com redirect=spf.some-unknown-esp.example');
+
+		const aggregate = findings.find((f) => f.metadata?.platformCount !== undefined);
+		expect(aggregate!.metadata?.platformCount).toBe(2);
+	});
+
+	it('prefers the catalog over the heuristic — a cataloged spf-labelled host is still NAMED', () => {
+		// `_spf.google.com` matches the generic heuristic too. If the branch order ever
+		// inverted, every spf-labelled catalog entry would silently degrade to the anonymous
+		// sentinel while the counts stayed identical — invisible to a count-only assertion.
+		const findings = analyzeTrustSurface('v=spf1 include:_spf.google.com -all');
+
+		expect(findings).toHaveLength(1);
+		expect(findings[0].metadata?.platform).toBe('Google Workspace');
+		expect(findings[0].metadata?.recognized).toBeUndefined();
+	});
 });
