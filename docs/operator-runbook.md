@@ -392,8 +392,13 @@ Cloudflare-fronted customer, and we have no lever on their configuration.
    defect rather than a scan artefact: sending MTAs fetch that exact URL with a
    non-browser client and cannot solve an interactive challenge, so MTA-STS is
    genuinely unenforceable for those senders. Escalate it as a true finding.
-   Our inconclusive wording is deliberately careful here ("may well be
-   reachable"), and it should not be softened into an assurance.
+   ⚠️ **Our own wording currently prejudges this and is tracked as a defect
+   (#664).** Both prose paths — `src/tools/check-mta-sts.ts:109` and `:162` —
+   assert flatly that *"Real sending MTAs are not subject to the same
+   interactive challenge"*. Line 109 then hedges the conclusion ("may well be
+   reachable"), but the premise underneath it is stated as fact and we have
+   never measured it. Until #664 is resolved, do not quote that reassurance to a
+   customer; establish which case you are in first.
 4. **The durable answer is a verifiable identity, not a string.** A signature-
    based bot-authentication scheme (or a platform verified-bot listing) would
    let a customer allowlist something an impersonator cannot mint, which is the
