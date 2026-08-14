@@ -20,9 +20,18 @@
  *   - fetch throws / timeout  → { ok: false, error: 'm365_proxy_unreachable' }
  *
  * The seam under test classifies on HTTP status + reachability ONLY — it does
- * NOT inspect the JSON body, so the `representative: true` (sample-vs-live)
- * marker rides through opaquely inside `data` on the 2xx path (issue #417 part
- * 2 labels it in the tool descriptions; the proxy stays body-agnostic).
+ * NOT inspect the JSON body, so the `representative` (sample-vs-live) marker
+ * rides through opaquely inside `data` on the 2xx path (issue #417 part 2
+ * labels it in the tool descriptions; the proxy stays body-agnostic).
+ *
+ * BOTH marker values are now real on the wire: bv-web-prod's `liveGetCaPolicies()`
+ * returns `representative: false` for `get-ca-policies` when a tenant is connected
+ * and keyed, falling back to the `representative: true` seam otherwise. The other
+ * three tools are still representative-only. The pass-through cases below pin both
+ * directions, because a seam that DEFAULTED the marker either way would be a
+ * correctness bug with no test to catch it: defaulting to `true` mislabels live
+ * Entra data as a sample, and defaulting to `false` presents sample data to an
+ * LLM as live threat intel — the exact hazard #417 part 2 exists to prevent.
  *
  * Never throws — every branch resolves to a value.
  */
@@ -69,6 +78,39 @@ describe('M365 proxy envelope contract (consumer side)', () => {
 		expect(result.data).toEqual(producerBody);
 		expect((result.data as { representative?: unknown }).representative).toBe(true);
 		expect(proxy.fetch).toHaveBeenCalledOnce();
+	});
+
+	it('200 + LIVE body (representative: false) → passes through verbatim, marker preserved', async () => {
+		// bv-web-prod `liveGetCaPolicies()` shape: a real Graph read stamps
+		// `representative: false`. The seam must carry that through untouched —
+		// this is the case the contract lacked until the live path landed upstream.
+		const liveBody = {
+			representative: false,
+			policies: [{ displayName: 'Require MFA for admins', state: 'enabled' }],
+		};
+		const proxy = proxyReturning(Response.json(liveBody));
+
+		const result = await callM365Proxy(proxy, 'get-ca-policies', { ms_tenant_id: 't' });
+
+		expect(result).toEqual({ ok: true, data: liveBody });
+		if (!result.ok) throw new Error('expected ok result');
+		// `false` specifically — not dropped, not coerced to a falsy absence. A
+		// consumer must be able to read "the producer asserted this is live".
+		expect((result.data as { representative?: unknown }).representative).toBe(false);
+	});
+
+	it('does NOT synthesize a representative marker when the producer omits it', async () => {
+		// Absence must stay absence. If the seam defaulted the key, a caller could
+		// no longer distinguish "producer asserted live/sample" from "producer said
+		// nothing" — and whichever default were chosen would silently mislabel one
+		// of the two real envelopes above.
+		const proxy = proxyReturning(Response.json({ policies: [] }));
+
+		const result = await callM365Proxy(proxy, 'get-ca-policies', { ms_tenant_id: 't' });
+
+		if (!result.ok) throw new Error('expected ok result');
+		expect(result.data).toEqual({ policies: [] });
+		expect(Object.hasOwn(result.data as object, 'representative')).toBe(false);
 	});
 
 	it('204-class 2xx → still ok:true (status drives classification, not body shape)', async () => {
