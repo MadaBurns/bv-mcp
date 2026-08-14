@@ -4,6 +4,42 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.51.0] - 2026-08-14
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.17.0 — no weight, tier, grade band, severity penalty or profile rule moved. **Scores can still move**, in two specific and deliberate ways described below, because what changed is *what the scanner is willing to claim it measured*.
+
+### Fixed — checks that could not finish inside the budget their caller allows them
+
+A check whose external calls are sequential with fixed timeouts can be structurally incapable of returning before `scan_domain`'s 8s `PER_CHECK_TIMEOUT_MS`. `safeCheck` then discards the whole result — including findings the check had already produced — and the category is excluded and renormalized. 3.50.0 fixed `check_ssl`; this release finishes the sweep.
+
+- **`check_http_security`'s own budget guard was dead code under a scan.** `TOTAL_BUDGET_MS = 10s` is *larger* than the 8s per-check kill, so `safeCheck` always won the race. It remains live for direct callers, who are bounded only by the 28s `TOOL_CALL_TIMEOUT_MS` — the constant was right for one caller and wrong for the other. Lowering it would have swapped one lost category for another; each individual fetch is now bounded instead, so the check finishes and reports the headers it did read (`dualFetchHeaders` is `allSettled` and the redirect loop breaks on a throw). Where a check has its own total-budget race, that race is now armed strictly *behind* the per-fetch budget — level with it, the race wins and discards the partial result the budget just salvaged. (#674, #676)
+
+- **Two independent timeout clamps could void every fetch budget silently.** `parsePerCheckTimeout` permits up to 15s while `parseScanTimeout` permits as little as 5s, and nothing reconciled them — so a self-host could configure a single check to outlive the entire scan. `safeCheck`'s killer then becomes dead code, `fetchBudgetFor()` is sized against a timer that *cannot fire*, and the transient-zero retry pass is skipped. Reconciled once, at the sole consumer on the scan path. Defaults and every non-contradictory pair are untouched. (#674, #676)
+
+- **`check_mta_sts` and `check_subdomain_takeover` are now budgeted**, completing the set of raw-HTTP scan checks. (#674, #677)
+
+### Fixed — two budgets that would have reported an absence nobody measured
+
+Adding a budget to a check that swallows its own transport failures converts *"slow"* into *"absent"*. Both remaining checks had that shape, by different mechanisms, and both were repaired before the budget was wired.
+
+- **`check_subdomain_takeover` would have issued a clean bill of health from a probe that never completed.** `probeHttpFingerprint` swallows every transport failure by design, so a budget-cut probe collapsed into the package's clean verdict "No dangling CNAME records found" — `info`, category 100, `passed` — on the largest protective weight in the model. It now withholds that claim: a sweep that found nothing is **excluded** (`checkStatus: 'error'`, `inconclusive` + `errorKind`, never `missingControl`), while evidence that survived keeps its result and score plus a non-scoring `info` note — a dangling CNAME is DNS-derived and untouched by a cut HTTP probe.
+
+  ⚠️ **This is score-visible.** A domain whose fingerprint probe is cut previously scored 100 for `subdomain_takeover` and is now excluded and renormalized, which can move its overall score in **either** direction. This is the correct behaviour — the alternative is asserting a clean result that was never measured — but it is not invisible, and it affects only scans where the probe genuinely ran out of time. (#674, #677)
+
+- **`check_mta_sts` would have charged −15 for a policy fetch it never issued.** Its `excludeForPolicyThrow` guard recognised only `AbortError`/`TimeoutError`/`TypeError`, and the budget wrapper rejects with a plain `Error` once the deadline has passed — so the package's confident `medium` "MTA-STS policy fetch failed" would have stood and scored. The guard now reads the budget's own state rather than the error, keeping the sentinel message out of the contract.
+
+  `mta_sts` deliberately does **not** return a scored category after a cut: there, the cut leg *is* the measurement. It returns `'error'` — the retryable class, unlike `'timeout'` — so the scan's transient-zero retry re-runs it unbudgeted and recovers the category. (#674, #677)
+
+### Fixed — `check_subdomailing` serialized up to ~34 DNS round-trips
+
+Its cost is the *count* of sequential lookups, not any one slow call, so a fetch budget cannot help. The real driver is the tail: a single hung lookup costs `DNS_TIMEOUT_MS × 2` plus backoff (~6.5s) and blocks every sibling behind it, exceeding the per-check budget however fast the rest were.
+
+The include-tree walk now resolves its frontier in parallel and then **replays the original depth-first walk in memory**, so `MAX_INCLUDE_PROBES` binds on exactly the same domains. That replay is load-bearing rather than incidental: the cap is applied mid-iteration in DFS order, so a breadth-first parallelization collects a *different* 15 domains and re-scores — measured at **90 → 60** on the cap-binding parity case. Findings, severities, detail strings and scores are identical, pinned by a parity suite that is itself validated against the pre-change build. Peak in-flight lookups stay at 5, exactly what the previous batched implementation already used, so nothing is taken from the scan-wide DNS concurrency budget shared with `dmarc` and `spf`. (#674, #677)
+
+### Fixed — the per-call DNS timeout the Worker silently discarded
+
+`makeQueryDNS` returned a two-parameter function where `DNSQueryFunction` declares three, so the `{ timeout }` every package check passes was dropped at ~15 call sites. Honouring it would have been a regression, not a fix: with one retry configured, a caller's 5000ms becomes ~10.1s for a single logical query, against an 8s per-check budget — an inert parameter turned category-losing. The Worker now treats it as an **upper bound** callers may lower but never raise, and documents why it refuses. No caller passes below the 3000ms global, so behaviour is unchanged today. (#674, #677)
+
 ## [3.50.0] - 2026-08-14
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.17.0 — no weight, tier, grade band, severity penalty or profile rule moved. Scores can still change for affected domains, because what changed is whether a category gets **measured** at all.
