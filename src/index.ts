@@ -53,6 +53,8 @@ import {
 import { validateDomain, sanitizeDomain } from './lib/sanitize';
 import { scanDomain } from './tools/scan-domain';
 import { gradeBadge, errorBadge } from './lib/badge';
+import { computeScanEvidence } from './lib/scoring';
+import { displayGradeFor } from './lib/ungraded-display';
 import { SERVER_VERSION } from './lib/server-version';
 import { executeMcpRequest } from './mcp/execute';
 import { classifyProtocolVersionHeader } from './mcp/dispatch';
@@ -714,7 +716,20 @@ app.get('/badge/:domain', async (c) => {
 			scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
 			perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
 		});
-		return new Response(gradeBadge(result.score.grade), { status: 200, headers: svgHeaders });
+		// The badge shows the SAME customer-facing letter as the scan report — the NIST
+		// 6-band `displayGradeFor`, not the engine's internal 9-band `score.grade`. Reading
+		// the internal scale here meant one domain at 67 showed C on its badge and D in its
+		// report: the same "two scales, one customer" defect as #640's grade-vs-maturity
+		// contradiction. Both surfaces now consume the one chokepoint, so neither can drift.
+		//
+		// #638: pass the scan's coverage too, so a grade resting on an incomplete
+		// measurement is annotated rather than published bare. `computeScanEvidence` is the
+		// same accounting behind the report's "Checks completed: N/M" line, so the two
+		// surfaces cannot disagree about how much was measured either.
+		return new Response(gradeBadge(displayGradeFor(result.score), computeScanEvidence(result.checks)), {
+			status: 200,
+			headers: svgHeaders,
+		});
 	} catch {
 		return new Response(errorBadge(), { status: 500, headers: svgHeaders });
 	}

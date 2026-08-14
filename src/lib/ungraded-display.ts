@@ -36,7 +36,7 @@
  */
 
 import type { CheckStatus } from '@blackveil/dns-checks/scoring';
-import { isCheckMeasured } from '@blackveil/dns-checks/scoring';
+import { isCheckMeasured, nistScoreToGrade } from '@blackveil/dns-checks/scoring';
 
 /**
  * The SINGLE rendered token for a scan that produced no grade. One constant so
@@ -62,6 +62,39 @@ export const UNGRADED_DISPLAY = 'not measured';
 export function formatScoreGrade(score: number | null | undefined, grade: string | null | undefined): string {
 	if (score === null || score === undefined || grade === null || grade === undefined) return UNGRADED_DISPLAY;
 	return `${score}/100 (${grade})`;
+}
+
+/**
+ * The SINGLE customer-facing display grade — the NIST-aligned 6-band letter
+ * (`nistScoreToGrade`), recomputed from the unchanged 0–100 score.
+ *
+ * Two grade scales legitimately coexist (v3.26.0+, #461): the canonical 9-band
+ * `scoreToGrade` is the INTERNAL/SSOT scale (`compare_baseline` ordering,
+ * `analyze_drift`, `map_compliance`, `generate_fix_plan`, cohort percentiles,
+ * `ScanScore.grade`), and this 6-band scale is what a CUSTOMER is shown. The
+ * defect class to prevent is not their coexistence — it is two customer-visible
+ * surfaces reading DIFFERENT scales and disagreeing on screen about one domain.
+ *
+ * That has now happened twice. #640: the maturity cap read the 9-band while the
+ * report displayed the 6-band, so github.com at 67 printed grade D beside
+ * "Stage 4 — Hardened" (9-band C → no cap fired). And `/badge/:domain` rendered
+ * `score.grade` — the 9-band letter — so the same domain at 67 showed **C** on
+ * its badge and **D** in its report. Both are fixed by consuming THIS function
+ * rather than re-deriving a letter, so a display surface cannot drift from the
+ * band shown everywhere else.
+ *
+ * Scores are unchanged by the display scale; only the letter is.
+ *
+ * Returns `null` when the scan was never graded — callers MUST render
+ * {@link UNGRADED_DISPLAY} rather than substitute a letter. Mapping an unscored
+ * scan onto `nistScoreToGrade(0)` here would fabricate an 'F' for a domain that
+ * does not resolve, which is the exact defect the evidence gate exists to
+ * remove. The `grade === null` half of the guard is load-bearing independently
+ * of `overall`: it is the engine's own "this was not graded" signal.
+ */
+export function displayGradeFor(score: { overall: number | null; grade: string | null }): string | null {
+	if (score.overall === null || score.grade === null) return null;
+	return nistScoreToGrade(score.overall);
 }
 
 /**
