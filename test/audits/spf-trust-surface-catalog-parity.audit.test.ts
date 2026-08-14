@@ -7,12 +7,20 @@
  *   CORE   — `packages/dns-checks/src/checks/spf-trust-surface.ts`
  *   WORKER — `src/tools/spf-trust-surface.ts`
  *
- * The worker copy is a deliberate augmentation (issue #566): `check-spf.ts` runs
- * it as a post-processor that REPLACES the core-produced trust-surface findings,
- * because it carries a generic "unrecognized shared sender" heuristic the core
- * deliberately does not adopt (adopting it moves the multi-platform emission
- * threshold corpus-wide — an operator call). Two catalogs are therefore the
- * intended state for now; two catalogs that DRIFT are not.
+ * The worker copy began as a deliberate augmentation (issue #566): `check-spf.ts`
+ * runs it as a post-processor that REPLACES the core-produced trust-surface
+ * findings, because it once carried both a broader catalog and a generic
+ * "unrecognized shared sender" heuristic the core did not have. BOTH leads are now
+ * closed — the catalog in 3.42.0 (#572 part 1) and the heuristic in #572 part 2 —
+ * so the two copies are behaviourally identical and the worker copy exists only
+ * until the seam is deleted. Two catalogs remain the state of the world; two
+ * catalogs that DRIFT never were.
+ *
+ * The heuristic is now a PARITY SURFACE, not a worker-only extra: it feeds
+ * `platformCount` and the `> 1` threshold that decides whether the single SCORED
+ * aggregate finding is emitted at all, so a copy that drops it under-counts the
+ * trust surface and under-penalises. Leg 3 below covers it, because legs 1 and 2
+ * sweep CATALOG keys only and are blind to it by construction.
  *
  * WHAT WENT WRONG (issue #572). Mailjet was added to the WORKER catalog in
  * PR #570 and was missing from the CORE catalog until release 3.42.0. Callers of
@@ -314,6 +322,43 @@ describe('SPF trust-surface catalog parity (CORE ↔ WORKER, #572)', () => {
 		expect(found[0]).toContain('under-count');
 	});
 
+	it('LEG 3 — both copies count unrecognized shared senders identically (#572 part 2)', () => {
+		// The heuristic decides `platformCount` and whether the SCORED aggregate fires,
+		// so a copy that drops it silently under-penalises. Legs 1 and 2 sweep catalog
+		// keys and cannot see this: an uncataloged host has no catalog entry to compare.
+		//
+		// Asserted on the aggregate rather than on the per-member findings because the
+		// aggregate is the half that is scored — a copy could keep emitting the `info`
+		// member finding while excluding it from the count, which is exactly the state
+		// the core was in before part 2.
+		const cases = [
+			// The threshold-crossing shape: one cataloged + one uncataloged.
+			'v=spf1 include:_spf.google.com include:spf.some-unknown-esp.example -all',
+			// Uncataloged only — the aggregate must still fire.
+			'v=spf1 include:spf.esp-one.example include:_spf.esp-two.example -all',
+			// A redirect= target counts on both sides too.
+			'v=spf1 include:_spf.google.com redirect=spf.some-unknown-esp.example',
+			// First-party hosts match neither heuristic — no aggregate on either side.
+			'v=spf1 include:mail.mycompany.example include:relay.mycompany.example -all',
+		];
+
+		const countFor = (analyze: TrustSurfaceAnalyzer, record: string): unknown =>
+			analyze(record).find((f) => f.metadata?.platformCount !== undefined)?.metadata?.platformCount;
+
+		for (const record of cases) {
+			const coreCount = countFor(coreAnalyzeTrustSurface as TrustSurfaceAnalyzer, record);
+			const workerCount = countFor(workerAnalyzeTrustSurface as TrustSurfaceAnalyzer, record);
+			expect(
+				coreCount,
+				`CORE and WORKER disagree on the scored trust-surface count for '${record}' — the copy reporting the lower count under-penalises, and package consumers (bv-web-prod) read the CORE one`,
+			).toBe(workerCount);
+		}
+
+		// Anti-vacuity: the sweep above would also pass if BOTH sides emitted nothing.
+		expect(countFor(coreAnalyzeTrustSurface as TrustSurfaceAnalyzer, cases[0])).toBe(2);
+		expect(countFor(coreAnalyzeTrustSurface as TrustSurfaceAnalyzer, cases[3])).toBeUndefined();
+	});
+
 	it('NEGATIVE CONTROL — the generic "unrecognized shared sender" heuristic cannot mask a missing catalog entry', () => {
 		// The masking risk the header describes, pinned as behaviour rather than
 		// prose. `spf.some-unknown-esp.example` carries an `spf` label, so the
@@ -321,8 +366,20 @@ describe('SPF trust-surface catalog parity (CORE ↔ WORKER, #572)', () => {
 		// count as a NAMED platform, or every `spf`-labelled catalog key could be
 		// deleted from the worker with legs 1 and 2 still green.
 		const heuristicOnlyHost = 'spf.some-unknown-esp.example';
-		const emitted = workerAnalyzeTrustSurface(`v=spf1 include:${heuristicOnlyHost} -all`);
-		expect(emitted.some((f) => f.metadata?.trustSurface === true)).toBe(true);
-		expect(namedPlatformFor(workerAnalyzeTrustSurface as TrustSurfaceAnalyzer, heuristicOnlyHost)).toBeUndefined();
+		// Both copies, since #572 part 2: each must emit the finding AND withhold a brand name.
+		for (const [label, analyze] of [
+			['WORKER', workerAnalyzeTrustSurface],
+			['CORE', coreAnalyzeTrustSurface],
+		] as const) {
+			const emitted = analyze(`v=spf1 include:${heuristicOnlyHost} -all`);
+			expect(
+				emitted.some((f) => f.metadata?.trustSurface === true),
+				`${label} stopped counting heuristic-matched shared senders`,
+			).toBe(true);
+			expect(
+				namedPlatformFor(analyze as TrustSurfaceAnalyzer, heuristicOnlyHost),
+				`${label} named an uncataloged host as a platform — the heuristic would then mask catalog drift`,
+			).toBeUndefined();
+		}
 	});
 });

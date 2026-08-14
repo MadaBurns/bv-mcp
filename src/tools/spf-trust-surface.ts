@@ -7,13 +7,20 @@
  *
  * WORKER-LAYER AUGMENTATION (issue #566): this module is intentionally NOT dead code.
  * The `check_spf` tool delegates scoring/findings to the parity-locked core package
- * `@blackveil/dns-checks`, whose own trust-surface recognizer omits some ESP includes
- * (e.g. Mailjet) and counts only cataloged platforms. This worker copy carries a
- * broader catalog PLUS a generic "unrecognized shared sender" heuristic so the
- * `check_spf` OUTPUT reflects the full delegated trust surface. `check-spf.ts` runs it
- * as a post-processor that REPLACES the core-produced trust-surface findings while
- * leaving the score untouched. When the core catalog is updated + re-vendored, this
- * augmentation can be retired.
+ * `@blackveil/dns-checks`; `check-spf.ts` runs this copy as a post-processor that
+ * REPLACES the core-produced trust-surface findings while leaving the score untouched.
+ *
+ * ⚠️ AS OF #572 PART 2 THE TWO COPIES ARE BEHAVIOURALLY IDENTICAL — the worker no
+ * longer leads the core. Its catalog lead was closed in 3.42.0 (Mailjet, #572 part 1)
+ * and the generic "unrecognized shared sender" heuristic below was adopted core-side in
+ * part 2, so the core now COUNTS unrecognized senders toward the trust-surface total
+ * exactly as this file does. There is therefore no worker-only recognition left to
+ * augment: this copy survives only until the seam is deleted outright. Any edit here
+ * MUST be mirrored byte-for-byte into
+ * `packages/dns-checks/src/checks/spf-trust-surface.ts` (and vice versa) — divergence
+ * silently splits direct package consumers (bv-web-prod) from the worker, which is the
+ * #572 failure mode. Parity is audited by
+ * `test/audits/spf-trust-surface-catalog-parity.audit.test.ts`.
  */
 
 import type { Finding } from '../lib/scoring';
@@ -50,8 +57,9 @@ const MULTI_TENANT_PLATFORMS: ReadonlyMap<string, PlatformInfo> = new Map([
 	['spf.messagelabs.com', { name: 'Symantec/Broadcom', risk: 'Shared sending infrastructure' }],
 	['_spf.atlassian.net', { name: 'Atlassian', risk: 'Any Atlassian customer can send as your domain' }],
 	['xero.com', { name: 'Xero', risk: 'Any Xero customer can send as your domain' }],
-	// #566: Mailjet — multi-tenant ESP the core catalog misses. Registrable key so
-	// `spf.mailjet.com` and any Mailjet sub-host match via the endsWith('.'+key) rule.
+	// #566: Mailjet — multi-tenant ESP. Registrable key so `spf.mailjet.com` and any
+	// Mailjet sub-host match via the endsWith('.'+key) rule. Also in the CORE catalog
+	// since 3.42.0 (#572 part 1) — the two are parity-audited.
 	['mailjet.com', { name: 'Mailjet', risk: 'Any Mailjet customer can send as your domain' }],
 ]);
 
