@@ -53,12 +53,16 @@ function mockAllChecks() {
 				if (url.includes('_dmarc.')) return Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=reject']));
 				if (url.includes('_domainkey.')) return Promise.resolve(txtResponse('default._domainkey.example.com', ['v=DKIM1; k=rsa; p=MIGf']));
 				if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
-				if (url.includes('_smtp._tls.')) return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
-				if (url.includes('default._bimi.')) return Promise.resolve(txtResponse('default._bimi.example.com', ['v=BIMI1; l=https://example.com/logo.svg']));
+				if (url.includes('_smtp._tls.'))
+					return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+				if (url.includes('default._bimi.'))
+					return Promise.resolve(txtResponse('default._bimi.example.com', ['v=BIMI1; l=https://example.com/logo.svg']));
 				return Promise.resolve(txtResponse('example.com', ['v=spf1 include:_spf.google.com -all']));
 			}
-			if (url.includes('type=NS') || url.includes('type=2')) return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
-			if (url.includes('type=CAA') || url.includes('type=257')) return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
+			if (url.includes('type=NS') || url.includes('type=2'))
+				return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+			if (url.includes('type=CAA') || url.includes('type=257'))
+				return Promise.resolve(caaResponse('example.com', ['0 issue "letsencrypt.org"']));
 			if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse('example.com', true));
 			return Promise.resolve(createDohResponse([], []));
 		}
@@ -178,11 +182,16 @@ describe('scan_domain per-category dispatch — initial run path', () => {
 		expect(dkimCall[2]).toEqual(expect.objectContaining({ skipSecondaryConfirmation: true }));
 		expect(dkimCall.length).toBe(3);
 
-		// subdomain_takeover: (domain, dnsOptions)
+		// subdomain_takeover: (domain, dnsOptions, { budgetMs })
 		const stCall = spies.subdomainTakeover.mock.calls[0];
 		expect(stCall[0]).toBe('example.com');
 		expect(stCall[1]).toEqual(expect.objectContaining({ skipSecondaryConfirmation: true }));
-		expect(stCall.length).toBe(2);
+		// #674: derived from the per-check timeout, never a literal — the fingerprint
+		// probe carries a fixed 4s timeout the caller cannot lower, so a budget that
+		// stopped tracking PER_CHECK_TIMEOUT_MS would race safeCheck instead of landing
+		// before it.
+		expect(stCall[2]).toEqual({ budgetMs: fetchBudgetFor(PER_CHECK_TIMEOUT_MS) });
+		expect(stCall.length).toBe(3);
 	});
 
 	it('ssl tls binding is undefined for an INELIGIBLE tier (token still forwarded)', async () => {
@@ -288,13 +297,16 @@ describe('scan_domain per-category dispatch — retry path (runCheckRetry)', () 
 		expect(call.length).toBe(3);
 	});
 
-	it('subdomain_takeover retry: (domain, retryDns)', async () => {
+	it('subdomain_takeover retry: (domain, retryDns, { budgetMs: undefined })', async () => {
 		const { runCheckRetry, spies } = await loadRetry();
 		await runCheckRetry('subdomain_takeover', 'example.com', retryDnsBase, 5000, undefined);
 		const call = spies.subdomainTakeover.mock.calls[0];
 		expect(call[0]).toBe('example.com');
 		expect(call[1]).toEqual(expect.objectContaining({ skipSecondaryConfirmation: true }));
-		expect(call.length).toBe(2);
+		// #674: the retry path threads no budget, so the check takes its unbudgeted
+		// (byte-for-byte original) path — `createFetchBudget(undefined)` is inert.
+		expect(call[2]).toEqual({ budgetMs: undefined });
+		expect(call.length).toBe(3);
 	});
 
 	it('retry of an out-of-table category returns the synthetic error default', async () => {

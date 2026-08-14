@@ -13,7 +13,9 @@
  * INCONCLUSIVE — `checkStatus: 'error'` — so the scoring engine EXCLUDES it (neither
  * pass, fail, nor inflate). The same excluded shape is applied when the policy fetch
  * THROWS (a stall past the timeout → AbortError, or a network error), which the package
- * would otherwise surface as a confident `medium` "policy fetch failed".
+ * would otherwise surface as a confident `medium` "policy fetch failed". A policy fetch cut
+ * short by the per-check fetch budget (#674) is routed into that SAME path — see `budgetMs`
+ * on `checkMtaSts` — because it is the same claim: nothing was measured.
  *
  * ⚠️ Exclusion is the whole remedy — the prose must not go on to reassure the reader that
  * real sending MTAs can fetch the policy anyway (issue #664). We have not measured that;
@@ -21,7 +23,7 @@
  */
 
 import { checkMTASTS, withRobotsGate, RobotsDisallowedError } from '@blackveil/dns-checks';
-import type { ZoneContext } from '@blackveil/dns-checks';
+import type { FetchFunction, ZoneContext } from '@blackveil/dns-checks';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
 import { resolveZoneApex } from '../lib/zone-apex';
 import type { QueryDnsOptions } from '../lib/dns-types';
@@ -30,6 +32,7 @@ import { buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
 import { type WafEvent, looksLikeWaf, detectWafEvent, buildWafFinding } from '../lib/waf-detection';
 import { readBoundedText } from '../lib/response-body';
+import { createFetchBudget, type FetchBudget } from '../lib/fetch-budget';
 
 /**
  * Module-scope, isolate-lifetime gated fetch. Deliberately NOT per-call: this
@@ -54,6 +57,29 @@ import { readBoundedText } from '../lib/response-body';
  * the innermost fetch call dynamic.
  */
 const gatedFetch = withRobotsGate((url: string, init?: RequestInit) => fetch(url, init));
+
+/**
+ * Resolve the gated fetch for one invocation (issue #674).
+ *
+ * No budget (every direct `check_mta_sts` call, `validate_fix`, `generate_records`,
+ * `simulate_attack_paths`, and every BSL self-host) → the module-scope `gatedFetch`
+ * above, whose isolate-lifetime robots.txt cache is untouched. Byte-for-byte the
+ * expression that shipped before this change.
+ *
+ * Budgeted (a `scan_domain` fan-out) → a fresh gate whose inner fetch is metered.
+ * Budget INNERMOST, as in check-ssl/check-http-security: the gate fetches
+ * `https://mta-sts.<domain>/robots.txt` (up to ROBOTS_FETCH_TIMEOUT_MS = 3s) BEFORE it
+ * lets the policy fetch through, and that leg delegates down through the wrapped fetch
+ * — so hoisting the budget outside the gate would leave the more expensive of the two
+ * legs unmetered. The cost is a per-call gate (no cross-call robots memo) on the scan
+ * path only; there is nothing to share it with anyway, since `mta-sts.<domain>` is a
+ * different host from the one `ssl`/`http_security` probe (see the robotsMemo note in
+ * scan-domain.ts).
+ */
+function resolveGatedFetch(budget: FetchBudget, budgeted: boolean): FetchFunction {
+	if (!budgeted) return gatedFetch;
+	return withRobotsGate(budget.wrap((url: string, init?: RequestInit) => fetch(url, init)));
+}
 
 /** Titles of the package's policy-fetch findings that a WAF interception can falsely trigger. */
 const POLICY_FETCH_FALSE_POSITIVE_TITLES = new Set(['MTA-STS policy file not accessible', 'MTA-STS policy redirects']);
@@ -186,8 +212,44 @@ function excludeForPolicyThrow(result: CheckResult, domain: string): CheckResult
 /**
  * Check MTA-STS configuration for a domain.
  * Queries _mta-sts.<domain> TXT records and optionally fetches the policy file.
+ *
+ * @param options.budgetMs - total wall-clock this check's fetches may collectively
+ *   consume (issue #674). Absent (every direct call) → unchanged behaviour.
  */
-export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions, zone?: ZoneContext): Promise<CheckResult> {
+export async function checkMtaSts(
+	domain: string,
+	dnsOptions?: QueryDnsOptions,
+	zone?: ZoneContext,
+	options?: {
+		/**
+		 * Wall-clock this check's fetches may collectively spend (issue #674).
+		 *
+		 * ⚠️ The `timeout` this wrapper passes to `checkMTASTS` below does NOT bound the
+		 * policy fetch: the package hardcodes `AbortSignal.timeout(4000)` from its OWN
+		 * module-local constant there and spends `options.timeout` on the DNS queries only
+		 * (verified in packages/dns-checks/src/checks/check-mta-sts.ts). So the two external
+		 * legs — the robots.txt gate (3s) and the policy fetch (4s) — run strictly
+		 * sequentially at 7s combined, unbounded by anything this wrapper could pass, inside
+		 * `scan_domain`'s 8s per-check budget and after the TXT lookup has already spent some
+		 * of it. That made `mta_sts` the last scan check that lost DETERMINISTICALLY under a
+		 * reduced per-check timeout: `safeCheck` killed it and the whole category went.
+		 *
+		 * With a budget each fetch is bounded by what the earlier legs left, so the check
+		 * returns and REPORTS what it measured. A budget-cut policy fetch is observed exactly
+		 * like a WAF stall (see `excludeForPolicyThrow`): the category is EXCLUDED as
+		 * inconclusive, never reported as "no policy" — the measurement did not happen, so no
+		 * claim about the control may be made from it.
+		 */
+		budgetMs?: number;
+	},
+): Promise<CheckResult> {
+	// The clock starts HERE, before the zone/TXT lookups, because the deadline it
+	// enforces is "this check must land before safeCheck kills it" — an absolute one
+	// covering everything the check does, not a per-fetch allowance. DNS spends real
+	// time ahead of the fetches and is metered by its own layer, so what is left for
+	// the two HTTPS legs is exactly what this budget will hand them.
+	const budget = createFetchBudget(options?.budgetMs);
+	const gate = resolveGatedFetch(budget, options?.budgetMs !== undefined);
 	const resolvedZone = zone ?? (await resolveZoneApex(domain, dnsOptions));
 	// Observe the policy-file fetch so a WAF challenge/block can be distinguished from a
 	// genuine origin error. The wrapper only OBSERVES — it returns the original response
@@ -206,13 +268,22 @@ export async function checkMtaSts(domain: string, dnsOptions?: QueryDnsOptions, 
 		const policy = isPolicyFetch(url);
 		let response: Response;
 		try {
-			response = await gatedFetch(url, init);
+			response = await gate(url, init);
 		} catch (err) {
 			// A policy-fetch rejection (AbortError from a stalled WAF challenge, or a network
 			// TypeError) is observed as inconclusive, then RE-THROWN so the package still runs
 			// its own catch path and emits its transient finding. Only the FIRST policy throw
 			// is recorded (single-fetch contract).
-			if (policy && !policyFetchThrew && isObservableFetchThrow(err)) {
+			//
+			// The `!budget.canIssueRequest()` disjunct is what keeps a BUDGETED run honest
+			// (#674): when the budget is already spent, `wrap` rejects with a plain `Error`
+			// carrying neither the `AbortError` name nor `TypeError`, so `isObservableFetchThrow`
+			// alone would let the package's confident `medium` "policy fetch failed" stand and
+			// SCORE a penalty for a probe that was never issued. Reading the budget state instead
+			// of the error's message keeps the sentinel string out of this file's contract.
+			// With no budget `remainingMs()` is Infinity, so this disjunct is constant-false and
+			// the direct-call path is unchanged.
+			if (policy && !policyFetchThrew && (isObservableFetchThrow(err) || !budget.canIssueRequest())) {
 				policyFetchThrew = true;
 			}
 			throw err;

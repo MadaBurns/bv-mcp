@@ -146,7 +146,9 @@ type CheckRunner = (
 	 * Threaded like `robotsMemo`: optional 7th param, supplied at the single
 	 * dispatch site, omitted by `runCheckRetry` and every direct tool call.
 	 * Only checks that issue SEQUENTIAL fetches whose fixed timeouts can sum past
-	 * the per-check budget need it — today `ssl` (3+4+4 = 11s inside 8s).
+	 * the per-check budget need it — `ssl` (3+4+4 = 11s inside 8s), `http_security`,
+	 * and (#674) `mta_sts` (robots 3s + policy 4s, after two DNS lookups) plus
+	 * `subdomain_takeover` (robots 3s + fingerprint probe 4s, after two DNS lookups).
 	 */
 	fetchBudgetMs?: number,
 ) => Promise<CheckResult>;
@@ -170,12 +172,16 @@ const CHECK_DISPATCH: Record<string, CheckRunner> = {
 	// undefined outside scan context (direct calls / retry path) → unchanged.
 	ssl: (d, _dns, rt, sig, _zone, robots, budget) =>
 		checkSsl(d, { ...resolveSslOptions(rt), signal: sig, robotsMemo: robots, budgetMs: budget }),
-	mta_sts: (d, dns, _rt, _sig, zone) => checkMtaSts(d, dns, zone),
+	// #674: `mta_sts` and `subdomain_takeover` are the remaining raw-HTTP checks whose
+	// fetches carry fixed timeouts the caller cannot lower (the package hardcodes the
+	// policy-fetch and fingerprint-probe timeouts), so they take the budget for the same
+	// reason `ssl` and `http_security` do.
+	mta_sts: (d, dns, _rt, _sig, zone, _robots, budget) => checkMtaSts(d, dns, zone, { budgetMs: budget }),
 	ns: (d, dns, _rt, _sig, zone) => checkNs(d, dns, zone),
 	caa: (d, dns, _rt, _sig, zone) => checkCaa(d, dns, zone),
 	bimi: (d, dns) => checkBimi(d, dns),
 	tlsrpt: (d, dns) => checkTlsrpt(d, dns),
-	subdomain_takeover: (d, dns) => checkSubdomainTakeover(d, dns),
+	subdomain_takeover: (d, dns, _rt, _sig, _zone, _robots, budget) => checkSubdomainTakeover(d, dns, { budgetMs: budget }),
 	http_security: (d, _dns, _rt, sig, _zone, robots, budget) => checkHttpSecurity(d, { signal: sig, robotsMemo: robots, budgetMs: budget }),
 	dane: (d, dns) => checkDane(d, dns),
 	mx: (d, dns, rt) => checkMx(d, resolveProviderSignatureOptions(rt), dns),
