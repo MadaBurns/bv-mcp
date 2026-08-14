@@ -429,12 +429,24 @@ export async function checkHttpSecurity(
 	try {
 		const raced = await Promise.race([innerPromise, budgetExceeded]);
 		if (raced === 'budget_exceeded') {
+			// No `missingControl: true` (issue #638) — see the contract note on `buildWafFinding`
+			// in lib/waf-detection.ts, and the identical repair on the sibling stall path in
+			// check-mta-sts.ts. A budget timeout aborted the fetch before any header was read, so
+			// it measured NOTHING; asserting absence would be a claim of fact derived from a
+			// failed measurement. `checkStatus: 'timeout'` below is what excludes the category
+			// from scoring — the metadata never was what drove it.
+			//
+			// This was latent rather than live: the `isUnanalyzable` guard further down already
+			// short-circuits on `checkStatus === 'timeout'` before consulting `missingControl`,
+			// so no behaviour changes here. It is repaired because the flag would have zeroed the
+			// category as a genuine absence the moment that precedence shifted — the exact trap
+			// #638 identified on the WAF path.
 			const finding = createFinding(
 				'http_security',
 				'HTTP security check timed out',
 				'high',
 				`Could not complete HTTP security header analysis for ${domain} within ${TOTAL_BUDGET_MS}ms. Host was likely unreachable or extremely slow.`,
-				{ missingControl: true, confidence: 'heuristic', errorKind: 'timeout' },
+				{ inconclusive: true, confidence: 'heuristic', errorKind: 'timeout' },
 			);
 			const base = buildCheckResult('http_security', [finding]);
 			return { ...base, score: 0, passed: false, checkStatus: 'timeout' };
@@ -464,9 +476,10 @@ async function checkHttpSecurityInner(domain: string, gates: GatedFetchers, call
 				title = `${provider} WAF blocked external header inspection`;
 				detail = `https://${domain} returned an HTTP ${dualResult.status} ${provider} block page, not the site. Security headers cannot be inspected externally.`;
 			} else if (event.kind === 'edge-artifact') {
-				// An HTTP 401 to the scanner that a normal client does not see (issue #567). The
-				// request was challenged/blocked at the edge — NOT an origin auth requirement, so we
-				// deliberately avoid the misleading "requires authentication" wording.
+				// An HTTP 401 carrying edge signals rather than an origin auth requirement (issue #567),
+				// so we deliberately avoid the misleading "requires authentication" wording. The detail
+				// stays hedged ("may receive a different response"): being stopped at the edge does not
+				// establish what any other client class gets at this URL (issue #664).
 				title = `${provider} edge challenged the HTTP security probe`;
 				detail =
 					`https://${domain} returned HTTP ${dualResult.status} to the scanner while presenting ${provider} edge signals; ` +

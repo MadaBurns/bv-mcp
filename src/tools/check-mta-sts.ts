@@ -7,14 +7,17 @@
  * Post-augments the package result with WAF-challenge awareness (issue #455): when
  * the policy-file fetch is intercepted by a Cloudflare/Akamai challenge or block
  * page (commonly HTTP 403), the package emits a confident `high`
- * "policy file not accessible"/"policy redirects" finding — a false positive on a
- * policy that real MTAs can fetch. We detect the interception from the policy
+ * "policy file not accessible"/"policy redirects" finding — a claim of fact derived
+ * from a probe that never reached the origin. We detect the interception from the policy
  * response (mirroring `check-http-security.ts`) and make the whole mta_sts category
  * INCONCLUSIVE — `checkStatus: 'error'` — so the scoring engine EXCLUDES it (neither
- * pass, fail, nor inflate) rather than penalising a healthy domain. The same excluded
- * shape is applied when the policy fetch THROWS (a WAF challenge that stalls past the
- * timeout → AbortError, or a network error), which the package would otherwise surface
- * as a confident `medium` "policy fetch failed".
+ * pass, fail, nor inflate). The same excluded shape is applied when the policy fetch
+ * THROWS (a stall past the timeout → AbortError, or a network error), which the package
+ * would otherwise surface as a confident `medium` "policy fetch failed".
+ *
+ * ⚠️ Exclusion is the whole remedy — the prose must not go on to reassure the reader that
+ * real sending MTAs can fetch the policy anyway (issue #664). We have not measured that;
+ * see the note on `buildPolicyWafFinding`.
  */
 
 import { checkMTASTS, withRobotsGate, RobotsDisallowedError } from '@blackveil/dns-checks';
@@ -96,6 +99,14 @@ async function sniffBody(response: Response): Promise<string> {
  * Build the kind-aware inconclusive `info` finding for a WAF-intercepted policy fetch.
  * Provider is title-cased here; the title and detail wording branch on `event.kind`
  * (block vs challenge) — fixing the prior bug where the title hardcoded "challenge".
+ *
+ * ⚠️ The detail must NOT claim real sending MTAs are unaffected (issue #664). A sending MTA
+ * is an automated, non-browser client — structurally the same class as this scanner — so an
+ * edge rule aimed at automated clients as a class would reach it too and leave MTA-STS
+ * genuinely unenforceable. We cannot distinguish that from a User-Agent-specific rule with
+ * one intercepted fetch, so the wording states the ambiguity and names the distinguishing
+ * signal instead of picking the optimistic branch. It must not assert the pessimistic branch
+ * either — both are unmeasured. Enforced by test/check-mta-sts-waf.spec.ts.
  */
 function buildPolicyWafFinding(domain: string, event: WafEvent, status: number): Finding {
 	const provider = event.provider.charAt(0).toUpperCase() + event.provider.slice(1);
@@ -105,8 +116,9 @@ function buildPolicyWafFinding(domain: string, event: WafEvent, status: number):
 		: `${provider} WAF challenge intercepted — policy accessibility inconclusive`;
 	const interception = isBlock ? 'block' : 'challenge';
 	const detail =
-		`The MTA-STS policy fetch for https://mta-sts.${domain}/.well-known/mta-sts.txt was intercepted by a ${provider} ${interception} page (HTTP ${status}), not served by the origin. ` +
-		`Real sending MTAs are not subject to the same interactive ${interception}, so the policy may well be reachable for mail delivery; its accessibility could not be verified externally by the scanner.`;
+		`The MTA-STS policy fetch for https://mta-sts.${domain}/.well-known/mta-sts.txt was intercepted by a ${provider} ${interception} page (HTTP ${status}), not served by the origin, so policy accessibility could not be verified externally by the scanner. ` +
+		`Whether real sending MTAs reach the policy is undetermined: a sending MTA is an automated, non-browser client, so a rule that ${interception}s automated clients as a class would reach it too and leave MTA-STS unenforceable, while one keyed to this scanner's User-Agent would not. ` +
+		`Check which applies by reviewing the ${provider} rule covering mta-sts.${domain}, or by requesting the policy with a neutral non-browser User-Agent.`;
 	return buildWafFinding('mta_sts', event, status, { title, detail });
 }
 
@@ -154,12 +166,18 @@ function excludeForPolicyThrow(result: CheckResult, domain: string): CheckResult
 	// No `missingControl: true` (issue #638) — see the contract note on `buildWafFinding` in
 	// lib/waf-detection.ts. A stalled/aborted policy fetch measured nothing, so it must not also
 	// claim the control is absent; the `checkStatus: 'error'` below is what excludes the category.
+	//
+	// Nor may it claim real sending MTAs are unaffected (issue #664) — see the note on
+	// `buildPolicyWafFinding` above. A stall carries even less evidence than an intercepted
+	// Response: no provider, no kind, no status. State the ambiguity, assert neither branch.
 	const inconclusive = createFinding(
 		'mta_sts',
 		'MTA-STS policy fetch stalled — accessibility inconclusive',
 		'info',
 		`The MTA-STS policy fetch for https://mta-sts.${domain}/.well-known/mta-sts.txt did not complete (the connection was aborted or stalled), ` +
-			`consistent with a transient failure or a WAF challenge that real sending MTAs are not subject to. Policy accessibility could not be verified externally by the scanner.`,
+			`so policy accessibility could not be verified externally by the scanner. This is consistent with a transient network failure or with an edge/WAF rule, ` +
+			`and whether real sending MTAs would hit the same obstacle is undetermined: a sending MTA is an automated, non-browser client, so a rule aimed at automated clients as a class ` +
+			`would stall them too and leave MTA-STS unenforceable, while one keyed to this scanner's User-Agent would not. Retry, and review any edge rule covering mta-sts.${domain}.`,
 		{ inconclusive: true, errorKind: 'timeout' },
 	);
 	return { ...buildCheckResult('mta_sts', [...kept, inconclusive], result.controlPresent), score: 0, passed: false, checkStatus: 'error' };
