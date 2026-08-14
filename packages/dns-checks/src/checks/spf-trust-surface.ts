@@ -50,6 +50,22 @@ const MULTI_TENANT_PLATFORMS: ReadonlyMap<string, PlatformInfo> = new Map([
 ]);
 
 /**
+ * Heuristic for an UNRECOGNIZED but broad multi-tenant sending host (issue #566,
+ * adopted core-side by #572 part 2): a hostname carrying an `spf` / `_spf` / `spfNN`
+ * label is an SPF-delegation endpoint for a shared platform, even when the specific
+ * provider is not in the catalog above. First-party includes like `mail.mycompany.com`
+ * deliberately do NOT match, so they are never flagged as shared senders.
+ *
+ * ⚠️ DUPLICATED FILE: keep byte-identical with the worker copy
+ * `src/tools/spf-trust-surface.ts`.
+ */
+const GENERIC_SHARED_SENDER_RE = /(^|\.)_?spf\d*\./i;
+
+function isGenericSharedSender(domain: string): boolean {
+	return GENERIC_SHARED_SENDER_RE.test(domain.toLowerCase());
+}
+
+/**
  * Check whether a domain matches or is a subdomain of a known multi-tenant platform.
  */
 function matchPlatform(domain: string): { key: string; info: PlatformInfo } | undefined {
@@ -133,7 +149,7 @@ function describeCorroboration(context: TrustSurfaceContext): string {
 export function analyzeTrustSurface(spfRecord: string, context: TrustSurfaceContext = {}): Finding[] {
 	const findings: Finding[] = [];
 	const domains = extractIncludeAndRedirectDomains(spfRecord);
-	const matchedPlatforms: { name: string; includeDomain: string }[] = [];
+	const delegated: { name: string; includeDomain: string; recognized: boolean }[] = [];
 	const corroboratedByWeakDmarc = context.corroboratedByWeakDmarc === true;
 	/**
 	 * The per-platform findings are DELIBERATELY informational — ALWAYS, corroborated or not.
@@ -177,7 +193,7 @@ export function analyzeTrustSurface(spfRecord: string, context: TrustSurfaceCont
 	for (const domain of domains) {
 		const result = matchPlatform(domain);
 		if (result) {
-			matchedPlatforms.push({ name: result.info.name, includeDomain: domain });
+			delegated.push({ name: result.info.name, includeDomain: domain, recognized: true });
 			findings.push(
 				createFinding(
 					'spf',
@@ -194,20 +210,42 @@ export function analyzeTrustSurface(spfRecord: string, context: TrustSurfaceCont
 					},
 				),
 			);
+		} else if (isGenericSharedSender(domain)) {
+			// #566 / #572 part 2: broaden the trust surface to unrecognized-but-broad shared
+			// senders so an ESP the catalog misses still counts. Named as the include host,
+			// not a brand.
+			delegated.push({ name: 'unrecognized shared sender', includeDomain: domain, recognized: false });
+			findings.push(
+				createFinding(
+					'spf',
+					`SPF delegates to shared sending platform (unrecognized): ${domain}`,
+					findingSeverity,
+					`SPF include:${domain} delegates sending to an external multi-tenant-style platform that is not in the recognized ESP catalog. It still widens your trust surface even though the specific provider is not named. ${detailSuffix}`,
+					{
+						trustSurface: true,
+						platform: 'unrecognized shared sender',
+						includeDomain: domain,
+						recognized: false,
+						dmarcCorroborated: corroboratedByWeakDmarc,
+						...(context.dmarcPolicy ? { dmarcPolicy: context.dmarcPolicy } : {}),
+						...(context.dmarcAlignmentMode ? { dmarcAlignmentMode: context.dmarcAlignmentMode } : {}),
+					},
+				),
+			);
 		}
 	}
 
-	if (matchedPlatforms.length > 1) {
-		const platformNames = matchedPlatforms.map((p) => p.name).join(', ');
+	if (delegated.length > 1) {
+		const platformNames = delegated.map((p) => (p.recognized ? p.name : `${p.includeDomain} (unrecognized)`)).join(', ');
 		findings.push(
 			createFinding(
 				'spf',
-				`SPF trust surface: ${matchedPlatforms.length} shared platforms`,
+				`SPF trust surface: ${delegated.length} shared platforms`,
 				summarySeverity,
-				`SPF record delegates sending authority to ${matchedPlatforms.length} multi-tenant platforms (${platformNames}). Audit each include to confirm it is still needed, configure provider-specific DKIM, and keep DMARC enforcement and alignment strong across every authorized sender.`,
+				`SPF record delegates sending authority to ${delegated.length} multi-tenant platforms (${platformNames}). Audit each include to confirm it is still needed, configure provider-specific DKIM, and keep DMARC enforcement and alignment strong across every authorized sender.`,
 				{
 					trustSurface: true,
-					platformCount: matchedPlatforms.length,
+					platformCount: delegated.length,
 					platforms: platformNames,
 					dmarcCorroborated: corroboratedByWeakDmarc,
 					...(context.dmarcPolicy ? { dmarcPolicy: context.dmarcPolicy } : {}),

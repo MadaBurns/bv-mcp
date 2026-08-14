@@ -133,8 +133,43 @@
  *   domains have no parent to inherit from and therefore never qualify. Net effect vs the
  *   PRODUCTION baseline (where the downgrade never ran): unchanged for every apex domain, and
  *   for subdomains changed only where enforcing parent coverage demonstrably exists.
+ * - 1.9.0 — omitted hardening categories are no longer scored as failed controls. A consumer
+ *   submitting a PARTIAL roster now has every absent hardening category excluded uniformly,
+ *   matching the core/protective absent-result semantics; submitted-and-measured hardening
+ *   failures stay in the denominator as failures, and timeout/error results stay inconclusive.
+ *   UPWARD for partial-roster consumers, no change for a full 19-category `scan_domain` roster.
+ *   (Entry backfilled — the constant was bumped in the 3.47.0 cut without a history line.)
+ * - 1.10.0 — the CORE SPF trust surface now COUNTS unrecognized shared senders (#572 part 2).
+ *   `analyzeTrustSurface` in `packages/dns-checks` recognised only CATALOGED multi-tenant
+ *   platforms and emitted its aggregate at `matchedPlatforms.length > 1`, while the worker copy
+ *   (`src/tools/spf-trust-surface.ts`) had ALSO counted hosts matched by a generic heuristic —
+ *   any include/redirect target carrying an `spf` / `_spf` / `spfNN` label — since #566. The two
+ *   copies therefore disagreed on the ONE number that is scored: `platformCount`, and whether the
+ *   aggregate fires at all. The core adopts the worker's heuristic verbatim, closing the last
+ *   behavioural gap between them (the catalog gap closed in 3.42.0, #572 part 1).
+ *
+ *   DOWNWARD ONLY, and by exactly one severity step. The per-member findings are `info` (0
+ *   penalty) as of 1.8.0, so an unrecognized sender can only ever change the score by pushing
+ *   `delegated.length` across the aggregate's `> 1` threshold. Affected shape: a domain with
+ *   exactly ONE cataloged platform plus at least one uncataloged `spf`-labelled include (or zero
+ *   cataloged plus two or more uncataloged) — it previously produced NO aggregate and now
+ *   produces one. Magnitude when weak DMARC corroborates: the aggregate is `high`, so the `spf`
+ *   category moves 100 → 75, ≈3 points of overall score on a representative healthy 19-category
+ *   `mail_enabled` roster (measured: 97 → 94). Uncorroborated, the aggregate is `info` and the
+ *   score does not move at all — only the finding list grows. Domains already at 2+ cataloged
+ *   platforms see only a larger `platformCount` and longer prose, never a new penalty; domains
+ *   with no shared senders are untouched. First-party hosts (`mail.mycompany.com`) do NOT match
+ *   the heuristic and are never counted. Corroboration is broad — anything short of
+ *   `p=reject; pct=100` with strict alignment on both `aspf`/`adkim` — so the affected population
+ *   is essentially "the qualifying include shape", not "the qualifying DMARC posture"; it is
+ *   UNMEASURED against the 1,000-domain corpus. No weight, tier, grade band, severity penalty
+ *   (`SEVERITY_PENALTIES` untouched), missing-control rule, corroboration/elevation rule or
+ *   profile-detection rule changed. The change lands in the CORE package, so direct package
+ *   consumers (bv-web-prod calls `checkSPF`, never the worker wrapper) re-grade identically and
+ *   stop under-counting; the worker's OUTPUT is unchanged, because its post-processor already
+ *   replaced the core's trust-surface findings with exactly these.
  */
-export const SCORING_MODEL_VERSION = '1.9.0';
+export const SCORING_MODEL_VERSION = '1.10.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
