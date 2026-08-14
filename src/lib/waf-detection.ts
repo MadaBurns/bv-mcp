@@ -6,11 +6,22 @@
  * The scanner runs inside a Cloudflare Worker, and many origins (including
  * Cloudflare-fronted ones) answer an automated probe with a WAF challenge or
  * access-block page — commonly served as HTTP 403 — instead of the real
- * resource. Reading such a page as if it were the resource produces false
- * findings (e.g. "MTA-STS policy file not accessible" on a policy that every
- * browser/MTA can actually fetch). These helpers fingerprint that interception
- * so callers can mark the result inconclusive rather than emit a confident
- * failure.
+ * resource. Reading such a page as if it were the resource turns "our probe
+ * never reached the origin" into a confident claim ABOUT the origin (e.g.
+ * "MTA-STS policy file not accessible"). These helpers fingerprint that
+ * interception so callers can mark the result inconclusive rather than emit a
+ * confident failure.
+ *
+ * ⚠️ **What a detection here does and does not license (issue #664).** It
+ * establishes that THIS probe was stopped at the edge. It does NOT establish
+ * that other clients succeed: an edge rule aimed at automated clients as a
+ * class stops real sending MTAs too, since an MTA is an automated, non-browser
+ * client of the same shape as this scanner and can no more solve an interactive
+ * challenge than we can. Distinguishing "the rule targets our User-Agent" from
+ * "the rule covers automated clients generally" needs a signal one intercepted
+ * fetch does not carry. So callers may say the result is UNMEASURED; they must
+ * not go on to reassure the reader that real senders are unaffected. The
+ * remedy is exclusion from scoring, not a compensating optimistic claim.
  *
  * Extracted from `check-http-security.ts` (where this logic originated) so the
  * MTA-STS policy fetch can reuse the identical detection — issue #455.
@@ -23,10 +34,11 @@ import type { CheckCategory, Finding } from './scoring';
  * A detected WAF interception:
  * - `challenge` — an interstitial JS/interactive challenge page.
  * - `block` — a terminal access-block page.
- * - `edge-artifact` — the edge answered the automated probe with an HTTP 401 while a normal
- *   client gets a different (public) response. This is edge fingerprinting/challenge, NOT an
- *   origin auth requirement, so the "requires authentication" label would be misleading
- *   (issue #567, same class as the #455 403-challenge false positive).
+ * - `edge-artifact` — the edge answered the automated probe with an HTTP 401 that is edge
+ *   fingerprinting/challenge, NOT an origin auth requirement, so the "requires authentication"
+ *   label would be misleading (issue #567, same class as the #455 403-challenge case). What it
+ *   licenses is "we did not reach the origin" — not a claim about what other client classes get
+ *   at the same URL (issue #664).
  */
 export type WafEvent = { provider: 'cloudflare' | 'akamai'; kind: 'challenge' | 'block' | 'edge-artifact' };
 
@@ -60,8 +72,8 @@ export function looksLikeWaf(headers: Headers): boolean {
  * a genuine origin 403/404/500 behind Akamai is NOT mis-attributed to a WAF block.
  *
  * HTTP 401 special case (issue #567): a Cloudflare-fronted origin frequently answers an
- * automated probe with `401` (edge fingerprinting/challenge) while a normal client gets a
- * public `200` at the same URL. Unlike the 403 block path this carries NO block-body signature —
+ * automated probe with `401` that is edge fingerprinting/challenge rather than the origin's own
+ * auth requirement. Unlike the 403 block path this carries NO block-body signature —
  * the returned page is often the real (or a generic) page — so the 401 status ITSELF, combined
  * with a Cloudflare edge signal, is the discriminator. It is classified as `edge-artifact` so the
  * caller can label it "challenged/blocked at the edge" instead of the misleading "endpoint

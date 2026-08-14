@@ -3,9 +3,9 @@
 /**
  * Issue #455 — the MTA-STS policy fetch must not emit a confident `high`
  * "policy file not accessible" finding when the fetch was intercepted by a
- * Cloudflare/Akamai WAF challenge/block (commonly HTTP 403). Real sending MTAs
- * are not subject to the interactive challenge, so a healthy policy (the
- * blackveilsecurity.com repro) was being falsely flagged.
+ * Cloudflare/Akamai WAF challenge/block (commonly HTTP 403). The probe never
+ * reached the origin, so the absence claim is unsupported (the
+ * blackveilsecurity.com repro).
  *
  * The DECIDED treatment (aligning with check-http-security.ts): the WAF-intercepted
  * policy fetch makes the mta_sts category INCONCLUSIVE — `checkStatus: 'error'`,
@@ -14,6 +14,14 @@
  * `inconclusive: true` (no `penaltyOverride`, and — since issue #638 — deliberately
  * NO `missingControl`: an intercepted probe never established that the control is
  * absent, and the two flags are mutually exclusive by the model's own semantics).
+ *
+ * Issue #664 — the PROSE half of the same defect. The scoring shape was right, but the
+ * detail text then told the customer "real sending MTAs are not subject to the same
+ * interactive challenge, so the policy may well be reachable for mail delivery". That is
+ * unmeasured: a sending MTA is an automated, non-browser client — structurally the same
+ * class as our scanner — so a rule aimed at automated clients generally would block it
+ * too, making MTA-STS genuinely unenforceable. The final describe block below is the
+ * regression guard.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -226,5 +234,106 @@ describe('checkMtaSts — WAF-challenged policy fetch (issue #455)', () => {
 		expect(result.passed).toBe(false);
 		// An inconclusive finding documents the stall.
 		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(true);
+	});
+});
+
+/**
+ * Issue #664 — the inconclusive detail text must state the ambiguity, not resolve it.
+ *
+ * Deliberately asserts the ABSENCE of unearned claims rather than pinning exact prose:
+ * the wording is free to change, the epistemics are not. Both directions are barred —
+ * we have measured neither that real senders are unaffected nor that they are affected.
+ */
+describe('checkMtaSts — inconclusive prose must not overclaim (issue #664)', () => {
+	/** Asserts, as fact, that real sending MTAs get through — the original defect. */
+	const OPTIMISTIC_OVERCLAIM = [
+		/real sending mtas are not subject to/i,
+		/mtas? (?:are|is) (?:not affected|unaffected)/i,
+		/not subject to the same/i,
+		/may well be reachable/i,
+		/reachable for mail delivery/i,
+		/(?:so|and) (?:the )?(?:policy|mail delivery) is (?:probably |likely )?(?:fine|unaffected)/i,
+	];
+
+	/**
+	 * Asserts, as fact, the opposite branch — equally unmeasured, equally barred.
+	 *
+	 * These are deliberately substring-strict rather than hedge-aware: a phrasing like
+	 * "whether real sending MTAs are affected is undetermined" trips them even though it
+	 * is honest. That is intended — the fix is to REWORD the detail (say "would hit the
+	 * same obstacle"), not to loosen the guard, which would reopen the hole #664 closed.
+	 */
+	const PESSIMISTIC_OVERCLAIM = [
+		/real sending mtas are (?:also )?(?:blocked|challenged|affected)/i,
+		/mta-sts (?:is|will be) (?:genuinely )?unenforceable/i,
+		/senders cannot fetch/i,
+	];
+
+	function assertHonest(detail: string) {
+		for (const re of OPTIMISTIC_OVERCLAIM) expect(detail, `unearned reassurance matched ${re}`).not.toMatch(re);
+		for (const re of PESSIMISTIC_OVERCLAIM) expect(detail, `unearned alarm matched ${re}`).not.toMatch(re);
+		// It must still say the accessibility question is open…
+		expect(detail).toMatch(/could not be verified|undetermined|cannot (?:be )?determine/i);
+		// …and hand the reader the signal that separates the two cases: whether the rule
+		// targets automated clients as a class or just this scanner's User-Agent.
+		expect(detail).toMatch(/automated/i);
+		expect(detail).toMatch(/user-agent/i);
+	}
+
+	async function run(domain = 'example.com') {
+		const { checkMtaSts } = await import('../src/tools/check-mta-sts');
+		return checkMtaSts(domain);
+	}
+
+	const validTxt = (d: string) => txtResponse(`_mta-sts.${d}`, ['v=STSv1; id=20260114010000']);
+	const validTlsRpt = (d: string) => txtResponse(`_smtp._tls.${d}`, ['v=TLSRPTv1; rua=mailto:tlsrpt@example.com']);
+
+	function inconclusiveDetail(result: { findings: { metadata?: Record<string, unknown>; detail: string }[] }): string {
+		const finding = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(finding, 'expected an inconclusive finding').toBeDefined();
+		return finding!.detail;
+	}
+
+	it('challenge path: states the ambiguity instead of reassuring about real senders', async () => {
+		mockFetch({
+			mtaStsDns: validTxt('example.com'),
+			tlsrptDns: validTlsRpt('example.com'),
+			policyFetch: policyHttp(403, { 'cf-ray': '91def5678-AKL', 'cf-mitigated': 'challenge', server: 'cloudflare' }),
+		});
+
+		const result = await run();
+		assertHonest(inconclusiveDetail(result));
+		// Unchanged by #664 — this is a prose fix only.
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.find((f) => f.metadata?.inconclusive === true)!.severity).toBe('info');
+	});
+
+	it('block path: states the ambiguity instead of reassuring about real senders', async () => {
+		mockFetch({
+			mtaStsDns: validTxt('example.com'),
+			tlsrptDns: validTlsRpt('example.com'),
+			policyFetch: policyHttp(403, { 'cf-ray': '91def5678-AKL', server: 'cloudflare' }, 'Sorry, you have been blocked'),
+		});
+
+		const result = await run();
+		assertHonest(inconclusiveDetail(result));
+		expect(result.checkStatus).toBe('error');
+	});
+
+	it('stall path: states the ambiguity instead of reassuring about real senders', async () => {
+		mockFetch({
+			mtaStsDns: validTxt('example.com'),
+			tlsrptDns: validTlsRpt('example.com'),
+			policyFetch: () => {
+				const err = new Error('The operation was aborted');
+				err.name = 'AbortError';
+				return Promise.reject(err);
+			},
+		});
+
+		const result = await run();
+		assertHonest(inconclusiveDetail(result));
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.find((f) => f.metadata?.inconclusive === true)!.severity).toBe('info');
 	});
 });
