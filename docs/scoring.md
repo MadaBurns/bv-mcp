@@ -64,6 +64,24 @@ not measure it", `inconclusiveCategories`) and **not applicable** ("we measured,
 genuinely does not apply", `notApplicableCategories`). As of dns-checks 1.7.0 those two
 arrays are **disjoint**; read the union as the concatenation of both.
 
+A probe that never reached the origin is inconclusive, never a missing control: a WAF that
+blocks or challenges the MTA-STS policy fetch, and a check that exhausts its total time
+budget before reading a response, both exclude their category from the score and let the
+remaining weights renormalize, rather than zeroing it as a measured absence. The reported
+detail says only what was observed. In particular it does **not** claim that real sending
+MTAs are unaffected by an edge rule that stopped this scanner: a sending MTA is an
+automated, non-browser client of the same shape, so a rule aimed at automated clients as a
+class would stop it too. Whether a given rule targets this scanner specifically or
+automated clients generally is not observable from outside, and is left stated as open.
+
+Coverage is surfaced wherever a grade is: `scan_domain` prints a `Checks completed: N/M`
+line, and the `/badge` SVG appends `partial` to the letter — with the exact ratio in its
+hover/aria title — when a graded scan did not complete every check. A badge embedded in a
+README carries no surrounding prose to qualify it, so a bare letter there would invite a
+partial measurement to be read as a complete one. The grade and its colour are unchanged by
+partial coverage: coverage and posture are different axes, and dimming the badge would
+assert a worse result than was actually measured.
+
 ### Protective (20% of score)
 
 Active defenses against known attack vectors.
@@ -120,13 +138,19 @@ Category score formula starts at `100` and deducts per finding:
 
 **DMARC `pct` Parsing**: The `pct` (percentage) parameter is parsed from DMARC records to determine the true enforcement context. If `pct < 100`, the enforcement is considered partial, which may affect how related findings (like SPF trust surface) are weighed.
 
-**SPF Trust-Surface Corroboration Rule**: an SPF `include:`/`redirect=` naming a known multi-tenant sending platform is reported at `info` severity (0 penalty) — shared sending infrastructure is common and not a misconfiguration in itself. The **per-platform findings are always informational**; the scored signal for the whole trust surface is the single "N shared platforms" summary finding (emitted only when more than one cataloged platform matches), which is raised to `high` when the domain's DMARC corroborates the exposure: enforcement short of `p=reject` at `pct=100` **and** relaxed alignment (`aspf`/`adkim` not both `s`). A missing DMARC record counts as corroborating; a failed DMARC lookup does not.
+**SPF Trust-Surface Corroboration Rule**: an SPF `include:`/`redirect=` naming a multi-tenant sending platform is reported at `info` severity (0 penalty) — shared sending infrastructure is common and not a misconfiguration in itself. The **per-platform findings are always informational**; the scored signal for the whole trust surface is the single "N shared platforms" summary finding (emitted only when more than one shared sender matches), which is raised to `high` when the domain's DMARC corroborates the exposure: enforcement short of `p=reject` at `pct=100` **and** relaxed alignment (`aspf`/`adkim` not both `s`). A missing DMARC record counts as corroborating; a failed DMARC lookup does not.
+
+Two kinds of delegation count toward that total. A target matching the **catalog** of known multi-tenant platforms is named by brand; a target the catalog does not recognize still counts when its hostname carries an `spf` / `_spf` / `spfNN` label — a naming convention that identifies a shared SPF-delegation endpoint regardless of provider — and is named by host, marked `(unrecognized)`. First-party hosts such as `mail.example.com` do **not** match and are never counted, which is why the rule keys on the label rather than on "any external include".
+
+Scoring model 1.10.0 brought the published `@blackveil/dns-checks` package into line on that count (issue #572, part 2). The analyzer exists in two copies — the core package and a worker-side wrapper — and only the worker copy had been counting uncataloged `spf`-labelled senders. The two therefore disagreed about `platformCount` and about whether the scored summary finding fired at all, so a domain delegating to one cataloged platform plus one uncataloged sender was a two-platform trust surface to `scan_domain` and a one-platform, un-summarized one to anything calling the package directly. The core now applies the same rule.
+
+This is the one trust-surface change that can move a score **downward**, and by at most one severity step. Because the per-platform findings carry no penalty, an uncataloged sender can only matter by pushing the total across the two-delegation threshold — so the affected shape is exactly one cataloged platform plus at least one uncataloged `spf`-labelled include, or two or more uncataloged ones. Where weak DMARC also corroborates, the summary is `high`, taking the `spf` category from 100 to 75: measured at ≈3 points of overall score on a healthy 19-category `mail_enabled` roster (97 → 94). Uncorroborated, the summary is `info` and the score does not move at all. Domains already at two or more cataloged platforms gain a larger `platformCount` and longer prose but no new penalty, and domains with no shared senders are untouched. **What share of real-world domains matches the affected shape has not been measured** — it was not characterized against the 1,000-domain corpus. No weight, tier, grade band, severity penalty, missing-control rule or corroboration rule changed, and no score is recomputed retroactively: a domain re-grades on its next scan.
 
 Scoring model 1.8.0 removed a **double count** here (issue #637). The per-platform findings used to be raised to `medium` (−15 each) alongside the summary's `high` (−25) — two penalties for one condition, stacking linearly with the number of includes. A domain delegating to six platforms paid −115 and its `spf` category clamped to **0, the same score a domain with no SPF record at all receives**, so the category could not discriminate between a well-run complex sender profile and a missing control. Only the summary is scored now. The per-platform findings remain present and fully detailed — the same corroboration prose and `dmarcCorroborated` / `dmarcPolicy` / `dmarcAlignmentMode` metadata — so a report still shows exactly which platforms are authorized and why each matters. Measured impact on the `spf` category, all **upward**: 0 / +15 / +30 / +60 / +75 points at 0 / 1 / 2 / 4 / 6 corroborated shared platforms, with every multi-platform domain converging on 75 for the trust surface alone. No weight, tier, grade band, severity penalty, missing-control rule or corroboration rule changed, and a domain that publishes no SPF record still scores 0.
 
 Scoring model 1.7.0 added Mailjet to the platform catalog, so a record whose only recognized shared sender is Mailjet now counts toward the platform total instead of producing no catalog match at all. Under 1.8.0 that affects the `platformCount` on the summary finding rather than a per-platform penalty.
 
-Source: `SEVERITY_PENALTIES` in `packages/dns-checks/src/scoring/model.ts` (re-exported via `src/lib/scoring.ts`); `analyzeTrustSurface()` and `MULTI_TENANT_PLATFORMS` in `packages/dns-checks/src/checks/spf-trust-surface.ts`.
+Source: `SEVERITY_PENALTIES` in `packages/dns-checks/src/scoring/model.ts` (re-exported via `src/lib/scoring.ts`); `analyzeTrustSurface()`, `MULTI_TENANT_PLATFORMS` and `GENERIC_SHARED_SENDER_RE` in `packages/dns-checks/src/checks/spf-trust-surface.ts`. The current model version and a per-version record of what each change moved are kept in `SCORING_MODEL_VERSION` in `src/lib/scoring-version.ts`.
 
 ## Missing-Control Rule
 
@@ -213,9 +237,9 @@ Source: `scoreToGrade()` in `packages/dns-checks/src/scoring/engine.ts` (re-expo
 
 ### Two grade scales, by role (v3.26.0+)
 
-The 9-band scale above is the **internal / SSOT** scale — used by `compare_baseline` ordering, the `/badge` SVG, `analyze_drift`, `map_compliance`, `generate_fix_plan`, cohort-percentile math, golden tests, and `ScanScore.grade`.
+The 9-band scale above is the **internal / SSOT** scale — used by `compare_baseline` ordering, `analyze_drift`, `map_compliance`, `generate_fix_plan`, cohort-percentile math, golden tests, and `ScanScore.grade`.
 
-The **customer-facing display scale is a NIST-aligned 6-band** (`nistScoreToGrade()`, also in `engine.ts`), shown by `scan_domain`, `batch_scan`, and `compare_domains` ONLY — recomputed from the same 0–100 score at the `format-report.ts` `displayGradeFor` chokepoint (an ungraded scan stays `null` — there is no grade sentinel):
+The **customer-facing display scale is a NIST-aligned 6-band** (`nistScoreToGrade()`, also in `engine.ts`), shown by `scan_domain`, `batch_scan`, `compare_domains`, and the `/badge` SVG — recomputed from the same 0–100 score at the `displayGradeFor` chokepoint in `src/lib/ungraded-display.ts` (an ungraded scan stays `null` — there is no grade sentinel, since substituting a letter would publish an `F` for a domain that was never measured):
 
 - A+: `≥95`
 - A: `≥90`
@@ -225,6 +249,8 @@ The **customer-facing display scale is a NIST-aligned 6-band** (`nistScoreToGrad
 - F: `<60`
 
 Scores are unchanged by the display scale — only the letter differs. bv-web-prod displays the same NIST letter everywhere so a domain shows one grade across web + MCP.
+
+The failure mode this guards against is not the two scales coexisting; it is two **customer-visible** surfaces reading different scales and disagreeing on screen about one domain. That shipped twice, and both are fixed: the maturity-stage cap read the 9-band while the report showed the 6-band, printing grade D beside a "Hardened" label; and `/badge` rendered the internal letter, so a domain scoring 67 showed **C** on its badge and **D** in its report. Every customer-visible letter now routes through the one `displayGradeFor` chokepoint, and an audit test pins that wiring.
 
 ## Scoring Profiles
 
