@@ -464,9 +464,10 @@ async function checkHttpSecurityInner(domain: string, gates: GatedFetchers, call
 				title = `${provider} WAF blocked external header inspection`;
 				detail = `https://${domain} returned an HTTP ${dualResult.status} ${provider} block page, not the site. Security headers cannot be inspected externally.`;
 			} else if (event.kind === 'edge-artifact') {
-				// An HTTP 401 to the scanner that a normal client does not see (issue #567). The
-				// request was challenged/blocked at the edge — NOT an origin auth requirement, so we
-				// deliberately avoid the misleading "requires authentication" wording.
+				// An HTTP 401 carrying edge signals rather than an origin auth requirement (issue #567),
+				// so we deliberately avoid the misleading "requires authentication" wording. The detail
+				// stays hedged ("may receive a different response"): being stopped at the edge does not
+				// establish what any other client class gets at this URL (issue #664).
 				title = `${provider} edge challenged the HTTP security probe`;
 				detail =
 					`https://${domain} returned HTTP ${dualResult.status} to the scanner while presenting ${provider} edge signals; ` +
