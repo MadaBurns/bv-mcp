@@ -4,6 +4,33 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.49.0] - 2026-08-14
+
+**`SCORING_MODEL_VERSION` 1.9.0 → 1.10.0. `@blackveil/dns-checks` 1.16.0 → 1.17.0** (`PARITY_CORPUS_VERSION` in lockstep).
+
+⚠️ **Scores move DOWN for a specific, narrow shape — and the affected share of the population is UNMEASURED.** No weight, tier, grade band, `SEVERITY_PENALTIES` entry, corroboration rule, missing-control rule or profile-detection rule changed. What changed is a *count*: which delegations are counted toward the SPF trust surface. Scores are not mutated retroactively — they move on the next scan, and `PARITY_CORPUS_VERSION` keys the scan cache, so cached pre-change scores are not served.
+
+### Fixed — the two copies of the SPF trust-surface analyzer disagreed on the one number that is scored
+
+- **The core analyzer now counts uncataloged shared senders, matching the worker copy.** The analyzer exists twice — core `packages/dns-checks/src/checks/spf-trust-surface.ts` and worker `src/tools/spf-trust-surface.ts`. Since #566 the **worker** counted two kinds of delegation: cataloged multi-tenant platforms, and a generic heuristic for any `include:`/`redirect=` target carrying an `spf` / `_spf` / `spfNN` label — an uncataloged but plainly shared sending endpoint. The **core** counted only cataloged platforms and emitted its aggregate at `matchedPlatforms.length > 1`.
+
+  `platformCount` and that `> 1` threshold decide whether the single **scored** trust-surface finding is emitted at all, so the split was not cosmetic: a domain delegating to one cataloged ESP plus one uncataloged one was a **2-platform** trust surface in the worker's prose and a **1-platform, un-aggregated** one to every direct consumer of the published package. bv-web-prod calls `checkSPF`, never the worker wrapper, so it under-counted — the same failure shape as part 1 (Mailjet, catalog-side, 3.42.0).
+
+  The core adopts the worker's heuristic verbatim: same regex, same branch order (**catalog first**, so a cataloged `spf`-labelled host is still named and never degrades to the anonymous sentinel), same title, prose and metadata, and the same aggregate wording marking uncataloged members `<host> (unrecognized)`. The two copies are now behaviourally identical. (#572)
+
+  **Scoring impact — downward only, by exactly one severity step.** Per-member findings have been `info` (penalty 0) since 1.8.0/#637, so an unrecognized sender can only move a score by pushing the count across the aggregate's `> 1` threshold:
+
+  - **Newly charged**: domains with exactly ONE cataloged platform plus ≥1 uncataloged `spf`-labelled include, or ZERO cataloged plus ≥2 uncataloged. These emitted no aggregate before and emit one now.
+  - **Magnitude, when weak DMARC corroborates**: the aggregate is `high` (−25), so the `spf` category moves 100 → 75 ≈ **−3 points of overall score** on a representative healthy 19-category `mail_enabled` roster (measured 97 → 94).
+  - **Uncorroborated**: the aggregate is `info` — the finding list grows and no score moves.
+  - **Already at 2+ cataloged platforms**: a larger `platformCount` and longer prose, never a new penalty.
+  - **No shared senders at all**: untouched.
+  - **First-party hosts** (`mail.mycompany.example`) do NOT match the heuristic and are never counted — the rule keys on an `spf` label, not on "any external include".
+
+  Corroboration is broad (anything short of `p=reject; pct=100` with strict alignment on both `aspf`/`adkim`), so the affected population is governed by the include shape, not the DMARC posture. **It has not been measured against the 1,000-domain corpus**, and this note says so rather than implying zero.
+
+  The parity audit gains **LEG 3**, comparing the scored `platformCount` across both copies for heuristic-matched hosts. Legs 1–2 sweep catalog keys and were blind to this by construction — an uncataloged host has no catalog entry to compare — so the heuristic could have drifted between the copies indefinitely.
+
 ## [3.48.0] - 2026-08-14
 
 **`SCORING_MODEL_VERSION` unchanged (1.9.0). `@blackveil/dns-checks` unchanged (1.16.0).** No weight, tier, grade band, severity penalty or profile rule moved — **no score changes**. What changes is what we *say* about a score, and which grade scale a badge prints.
