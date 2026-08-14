@@ -4,6 +4,32 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.50.0] - 2026-08-14
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.17.0 — no weight, tier, grade band, severity penalty or profile rule moved. Scores can still change for affected domains, because what changed is whether a category gets **measured** at all.
+
+### Fixed — `check_ssl` could not finish inside the budget `scan_domain` allows it
+
+- **Every external call the check makes is now bounded by one shared deadline.** Three strictly sequential fetches with fixed timeouts — robots.txt 3s, `https://` 4s, `http://` 4s — sum to **11s inside an 8s `PER_CHECK_TIMEOUT_MS`**. On any host where the early legs ran slow, `safeCheck` killed the check and the **entire `ssl` category was lost**: 12 of 21 cold scans in the investigation, 3–4 points of movement, and different grades on a re-scan of the same healthy domain purely from cache state.
+
+  Losing the category was the expensive part — the HTTPS/HSTS posture had usually been measured successfully by then and was discarded along with the one outstanding leg. `createFetchBudget()` composes each fetch with what remains of the budget, so the last leg gets whatever the earlier ones did not spend and the check degrades by **dropping its final probe instead of losing everything**. The dropped leg emits no finding (`checkHttpRedirect` swallows a failed probe by design), so the effect is an absent `medium`, never a fabricated one.
+
+  Composed, never substituted: the per-fetch timeout still applies and whichever fires first wins, so the budget can only make a fetch *shorter*. No budget → the wrapper returns the same function reference, so every direct `check_ssl` call and every BSL self-host path is byte-for-byte unchanged. (#641, #673)
+
+- **The fetch budget alone would have fixed nothing on the deployment that runs this code.** `checkSsl` also calls bv-tls-probe through a **service binding**, which bypasses the wrapped fetch entirely, carried its own fixed 8s timeout, and was invoked without a signal — so the per-check abort could not cancel it either. Worst case 7.25s of budgeted fetches **plus** 8s of probe, inside an 8s kill, on every paid and owner scan where `BV_TLS_PROBE` is bound. The probe now runs **concurrently** with the HTTPS legs (it reads only the domain, never the fetch result) on the same deadline, so the check's worst case is the MAX of the two rather than their SUM. `mergeTlsFinding` is unchanged — a probe that answers in time scores exactly as before. (#673)
+
+  **Score impact:** domains that intermittently lost `ssl` now include it again. The category was previously *excluded and renormalized* rather than zeroed, so a returning `ssl` can move a score in either direction — up where the SSL posture is better than the domain's average, down where it is worse. Grades stop depending on cache state, which was the actual defect.
+
+### Fixed — `brand_discovery` reported an unmeasured sweep as an absent control
+
+- **`missingControl: true` asserts a measurement; two `brand_discovery` paths stamped it where nothing had been measured.** One also carried `errorKind: 'dns_error'` and a title reading "could not complete" — the same contradiction #662 removed from `check_http_security`'s budget timeout and #646 from the WAF-intercepted checks. Both now emit `inconclusive: true` + `errorKind` and return the excluded shape (`checkStatus: 'error'`, `partial: true`), so the category is excluded rather than zeroed and a transient outage self-heals out of the 5-minute cache.
+
+  The zero-candidate path was the more consequential half: it collapsed two **opposite** outcomes — discovery ran and found nothing (a clean brand estate, the *good* result) and every discovery signal failed (nothing observed either way) — into one flag, so a clean estate scored identically to one that was never looked at. `brand_discovery` is not in `scan_domain`'s roster, so no `scan_domain` score moves; what changes is the standalone brand tools' own result, which is where the wrong claim was customer-visible. A source-scanning audit now fails any metadata literal setting `missingControl` alongside `inconclusive`/`errorKind`. (#670, #672)
+
+### Documentation
+
+- Scoring, grade-scale and evidence-surface docs brought up to 3.49.0, including the `/badge` coverage annotation and the `displayGradeFor` chokepoint. (#671)
+
 ## [3.49.0] - 2026-08-14
 
 **`SCORING_MODEL_VERSION` 1.9.0 → 1.10.0. `@blackveil/dns-checks` 1.16.0 → 1.17.0** (`PARITY_CORPUS_VERSION` in lockstep).
