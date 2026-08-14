@@ -197,7 +197,7 @@ describe('brandAuditSingle', () => {
 		}
 	});
 
-	it('emits a missingControl summary when discovery surfaces zero candidates', async () => {
+	it('reports zero candidates from a FAILED discovery as unmeasured, not as a missing control (#670)', async () => {
 		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
 		const deps = makeDeps({
 			discoverBrandDomains: vi.fn().mockResolvedValue(emptyDiscoveryResult('apple.com')),
@@ -210,11 +210,62 @@ describe('brandAuditSingle', () => {
 
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
 		expect(summary).toBeDefined();
-		expect(summary?.metadata?.missingControl).toBe(true);
+		// This fixture's only signal is `status: 'failed'`, so nothing was measured —
+		// zero candidates here means "we could not look", not "there is nothing".
+		expect(summary?.metadata?.missingControl).toBeUndefined();
+		expect(summary?.metadata?.inconclusive).toBe(true);
+		expect(summary?.severity).toBe('high');
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.passed).toBe(false);
 		// RDAP shouldn't have been called for the target when there were no candidates to classify… or
 		// alternatively it MAY have been called once for the target itself (to seed registrar family);
 		// we accept either, but it must not be called more than once.
 		expect((deps.checkRdapLookup as ReturnType<typeof vi.fn>).mock.calls.length).toBeLessThanOrEqual(1);
+	});
+
+	it('treats zero candidates from a COMPLETED discovery as a clean measured result (#670)', async () => {
+		// The other half of the split. Before #670 both halves stamped
+		// `missingControl: true`, so a brand with no lookalikes and no shadow IT
+		// scored identically to one whose discovery never ran — the good outcome was
+		// punished exactly as hard as the unmeasurable one.
+		const { brandAuditSingle } = await import('../src/tools/brand-audit-single');
+		const cleanDiscovery: CheckResult = {
+			category: 'brand_discovery',
+			score: 100,
+			passed: true,
+			findings: [
+				{
+					category: 'brand_discovery',
+					title: 'Brand-domain discovery: 0 candidate(s) at confidence ≥ 0.5',
+					severity: 'info',
+					detail: 'Seed=apple.com aggregated_total=0 surfaced=0',
+					metadata: {
+						summary: true,
+						signals: ['san'],
+						signalStatus: { san: { status: 'completed' } },
+						minConfidence: 0.5,
+						totalAggregated: 0,
+						surfaced: 0,
+					},
+				},
+			],
+		};
+		const deps = makeDeps({
+			discoverBrandDomains: vi.fn().mockResolvedValue(cleanDiscovery),
+			checkRdapLookup: vi.fn(),
+		});
+		const result = await brandAuditSingle('apple.com', {}, deps);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary).toBeDefined();
+		expect(summary?.severity).toBe('info');
+		expect(summary?.metadata?.missingControl).toBeUndefined();
+		expect(summary?.metadata?.inconclusive).toBeUndefined();
+		// Measured, so the category is scored normally rather than excluded or zeroed.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.passed).toBe(true);
+		expect(result.score).toBeGreaterThanOrEqual(50);
 	});
 
 	it('rejects the call when quota is exceeded, without calling discovery', async () => {
