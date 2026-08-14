@@ -111,7 +111,12 @@ export interface BadgeEvidence {
  * posture than was measured — the mirror of the overclaim being fixed. Only the
  * confidence is annotated.
  *
- * @param grade - Canonical 9-band grade letter, or `null` when ungraded
+ * @param grade - Customer-facing NIST 6-band display letter, or `null` when ungraded.
+ *   Callers MUST pass `displayGradeFor(score)`, never `score.grade` — the latter is the
+ *   internal 9-band letter, and rendering it here made one domain advertise C on its
+ *   badge while its report said D (#663). `GRADE_COLORS` still keys every 9-band letter,
+ *   so a regression would colour correctly and stay invisible; the wiring is pinned by
+ *   `test/audits/display-grade-ssot.audit.test.ts`.
  * @param evidence - Optional scan coverage; annotates when `completed < attempted`
  * @returns SVG string
  */
