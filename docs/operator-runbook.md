@@ -243,7 +243,174 @@ answers **of the requested type** wins, evaluated bv-dns → Google. bv-dns is a
 trusted first-party resolver; treat that precedence as part of its blast
 radius when rotating or repointing the endpoint.
 
-## 10. Incident quick path
+## 10. WAF interception of our own scanner (issue #638)
+
+### Symptom
+
+A Cloudflare-fronted zone answers the scanner's probe with a challenge or block
+page instead of the resource, so the check never reaches the origin. Two checks
+carry this exposure because they are the only scan-included checks that fetch
+the scanned domain's own web server:
+
+| Check | Fetches | Finding title on interception | `checkStatus` |
+| ----- | ------- | ----------------------------- | ------------- |
+| `check_http_security` | `HEAD https://<domain>/` (×2, plus redirect follows and a GET fallback) | `Cloudflare WAF challenge intercepted` · `Cloudflare WAF blocked external header inspection` · `Cloudflare edge challenged the HTTP security probe` | `error` |
+| `check_mta_sts` | `GET https://mta-sts.<domain>/.well-known/mta-sts.txt` | `Cloudflare WAF challenge intercepted — policy accessibility inconclusive` · `Cloudflare WAF blocked policy fetch — accessibility inconclusive` · `MTA-STS policy fetch stalled — accessibility inconclusive` | `error` |
+
+All of these are `info` severity and carry `inconclusive: true` (never
+`missingControl` — see the contract note on `buildWafFinding` in
+`src/lib/waf-detection.ts`). The category is EXCLUDED from scoring rather than
+zeroed, so the reported score is honest about what it measured but the headline
+grade rests on fewer checks than it appears to. In a `scan_domain` result:
+
+    "checkStatuses": {"mta_sts": "error", "http_security": "error"},
+    "inconclusiveCategories": ["mta_sts", "http_security"],
+    "evidence": {"attempted": 19, "completed": 17, "ratio": 0.894…}
+
+Do not confuse this with the adjacent robots.txt case — `HTTP security check
+skipped (robots.txt)` means the target's own robots.txt disallows us (a
+voluntary abstention, not a block), and it is not fixed by a WAF rule.
+
+### What the scanner actually sends — and what it does not
+
+Verified in code before writing any rule:
+
+- **User-Agent is the only identifying signal we emit.**
+  `SCANNER_USER_AGENT` in `packages/dns-checks/src/robots-gate.ts` is the single
+  source of truth, stamped by `withRobotsGate` on every outbound request unless
+  the call site already set one:
+
+      BlackVeil-Security-Scanner/1.0 (+https://www.blackveilsecurity.com/bot-policy; security@blackveilsecurity.com)
+
+- **There is no custom outbound header today.** Nothing in `src/tools/` or
+  `packages/dns-checks/src/checks/` sets a proprietary request header on a scan
+  fetch. (`X-BV-Token` in §9 is *inbound* auth to our own DoH resolver, not
+  anything a scanned domain ever sees.) If a stronger signal is ever wanted, the
+  place to add it is the `withRobotsGate` chokepoint — but see the trade-off
+  below for why that only helps on zones we control.
+- **Do NOT allowlist by source IP.** The scanner runs inside a Cloudflare
+  Worker, so its subrequests egress from Cloudflare's shared address space —
+  the same space every other customer's Workers egress from. An IP allowlist
+  there is an allowlist for arbitrary third-party code, which is strictly worse
+  than the User-Agent rule it would be replacing.
+- Cloudflare may attach its own worker-provenance header to Worker-issued
+  subrequests. That is platform behaviour we neither set nor control, and it is
+  **not verified here** — if you want to use it in an expression, confirm it
+  appears on a real intercepted request in Firewall Events first, and never make
+  it the only condition.
+
+### Both hostnames need coverage
+
+`check_mta_sts` fetches a **different host** from `check_http_security` —
+`mta-sts.<domain>` versus the apex (confirmed at
+`src/tools/check-mta-sts.ts` and the memo comment in `src/tools/scan-domain.ts`,
+which declines to share the apex robots memo for exactly this reason). A rule
+scoped to the apex covers `http_security` and leaves `mta_sts` blocked.
+`check_http_security` also **follows HTTPS redirects**, so if the apex redirects
+to `www`, the redirect target needs coverage too.
+
+### The rule, and the trade-off to accept before creating it
+
+Create a **Skip** rule (skip Bot Fight Mode / the managed rulesets that fire) —
+never an "Allow all", and leave rate limiting and DDoS protection ON. Scope it
+by host **and** path **and** method, so it is not a zone-wide bypass:
+
+    (http.host in {"<apex>" "www.<apex>"}
+      and http.request.uri.path in {"/" "/robots.txt"}
+      and http.request.method in {"GET" "HEAD"}
+      and http.user_agent contains "BlackVeil-Security-Scanner")
+    or (http.host eq "mta-sts.<apex>"
+      and http.request.uri.path eq "/.well-known/mta-sts.txt"
+      and http.request.method in {"GET" "HEAD"}
+      and http.user_agent contains "BlackVeil-Security-Scanner")
+
+**State the risk plainly: that User-Agent is trivially forgeable.** It is
+published on our own public bot-policy page and it is a string constant in this
+source-available repo — anyone can send it. A rule keyed on it is, functionally,
+a WAF bypass token that we have already published. There is no signed or secret
+component to fall back on, because no custom header exists (above).
+
+What makes the narrow form defensible is the *scope*, not the credential: every
+resource it exposes is content whose entire purpose is to be world-readable
+anonymously — the site root's response headers, `/robots.txt`, and a published
+MTA-STS policy file. A forger gains nothing a normal browser is not already
+given. That reasoning collapses the moment the rule widens: a zone-wide
+"skip security rules when the User-Agent matches" rule is a self-service bypass
+for the whole site and must not be created, on our zone or anyone's. If you
+cannot express the rule with an explicit path list, do not create it — take the
+blind spot and report it instead.
+
+### Verify the fix
+
+**A `curl` probe does not verify this.** A request from an operator laptop
+differs from the Worker's in source network and TLS/HTTP fingerprint, and this
+fleet has already been burned by exactly that gap (a Worker→zone fetch being
+challenged while `curl` got a clean 200). Verify through the scanner itself,
+with the cache bypassed — the 5-minute scan cache will otherwise replay the
+pre-fix result:
+
+    SID=$(curl -si https://<worker-host>/mcp -X POST -H 'content-type: application/json' \
+      -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"waf-check","version":"0"}}}' \
+      | awk -F': ' 'tolower($1)=="mcp-session-id"{print $2}' | tr -d '\r')
+
+    curl -s https://<worker-host>/mcp -X POST -H 'content-type: application/json' \
+      -H "Mcp-Session-Id: $SID" -H 'MCP-Protocol-Version: 2025-06-18' \
+      -d '{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"scan_domain","arguments":{"domain":"<apex>","force_refresh":true,"format":"full"}}}'
+
+Pass criteria, read off `structuredContent` (or the `STRUCTURED_RESULT`
+comment):
+
+| Field | Required value |
+| ----- | -------------- |
+| `checkStatuses.http_security` | `"completed"` |
+| `checkStatuses.mta_sts` | `"completed"` |
+| `inconclusiveCategories` | contains neither category |
+| `evidence.completed` / `evidence.attempted` | equal (`ratio` = 1) |
+
+`evidence.ratio` is the single field to watch: if it is still below 1 the rule
+did not take, regardless of what the score says. Re-check it after any WAF or
+Bot Fight Mode change, since a later ruleset update can silently re-block.
+
+### Customer domains — where we cannot change the WAF
+
+This is the commercially important half. The same wall stands in front of every
+Cloudflare-fronted customer, and we have no lever on their configuration.
+
+1. **Report the shortfall; never launder it.** The scan output is already
+   honest — publish `evidence.ratio` and the `inconclusiveCategories` list
+   beside any grade. A score derived from 17 of 19 checks must never be
+   presented as a full-coverage result, in a report, a dashboard, or a sales
+   conversation.
+2. **Offer the narrow rule, never a blanket one.** Hand the customer the
+   path-scoped expression above with their own hostnames, plus the forgeability
+   caveat stated in full. A customer who declines has made a reasonable
+   security decision, and the correct response is (1), not pressure.
+3. **First establish whether the block is scanner-shaped or universal — this
+   changes the finding.** Probe the same URL from an off-Cloudflare vantage with
+   a neutral client, then with our User-Agent. If *both* are challenged, the
+   interception is not aimed at us, and for `mta-sts.<domain>` that is a real
+   defect rather than a scan artefact: sending MTAs fetch that exact URL with a
+   non-browser client and cannot solve an interactive challenge, so MTA-STS is
+   genuinely unenforceable for those senders. Escalate it as a true finding.
+   ⚠️ **Our own wording currently prejudges this and is tracked as a defect
+   (#664).** Both prose paths — `src/tools/check-mta-sts.ts:109` and `:162` —
+   assert flatly that *"Real sending MTAs are not subject to the same
+   interactive challenge"*. Line 109 then hedges the conclusion ("may well be
+   reachable"), but the premise underneath it is stated as fact and we have
+   never measured it. Until #664 is resolved, do not quote that reassurance to a
+   customer; establish which case you are in first.
+4. **The durable answer is a verifiable identity, not a string.** A signature-
+   based bot-authentication scheme (or a platform verified-bot listing) would
+   let a customer allowlist something an impersonator cannot mint, which is the
+   only version of this that is safe to recommend at scale. It needs a change at
+   the `withRobotsGate` chokepoint plus programme eligibility we have not
+   confirmed — an operator decision, not a config edit, and out of scope for
+   this runbook.
+5. **Quantify it before deciding.** The interception findings carry `wafEvent` /
+   `wafKind` metadata, so the affected share of a domain corpus is measurable
+   with a `batch_scan` rather than guessed at.
+
+## 11. Incident quick path
 
 1. Symptom triage: `npx wrangler tail` (live) / Workers dashboard logs.
 2. Bad deploy → §2 rollback. Data damage → §3 Time Travel.
