@@ -27,6 +27,8 @@ import { IN_MEMORY_CACHE } from '../src/lib/cache';
 import { buildCheckResult } from '../src/lib/scoring';
 import type { CheckCategory, CheckResult } from '../src/lib/scoring';
 import type { QueryDnsOptions } from '../src/lib/dns-types';
+import { fetchBudgetFor } from '../src/lib/fetch-budget';
+import { PER_CHECK_TIMEOUT_MS } from '../src/lib/config';
 
 const { restore } = setupFetchMock();
 
@@ -150,6 +152,10 @@ describe('scan_domain per-category dispatch — initial run path', () => {
 			tlsProbeAuthToken: 'tls-token',
 			signal: expect.any(AbortSignal),
 			robotsMemo: expect.anything(),
+			// #641: derived from the per-check timeout, never a literal — a budget that
+			// did not shrink with PER_CHECK_TIMEOUT_MS would race safeCheck instead of
+			// landing before it.
+			budgetMs: fetchBudgetFor(PER_CHECK_TIMEOUT_MS),
 		});
 		expect(sslCall.length).toBe(2);
 
@@ -194,6 +200,7 @@ describe('scan_domain per-category dispatch — initial run path', () => {
 			tlsProbeAuthToken: 'tls-token',
 			signal: expect.any(AbortSignal),
 			robotsMemo: expect.anything(),
+			budgetMs: fetchBudgetFor(PER_CHECK_TIMEOUT_MS),
 		});
 		expect(sslCall.length).toBe(2);
 	});
