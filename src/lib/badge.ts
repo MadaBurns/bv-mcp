@@ -35,7 +35,7 @@ const ERROR_COLOR = '#9f9f9f';
  * @param color - Hex color for the right side background
  * @returns SVG string
  */
-function renderBadge(label: string, value: string, color: string): string {
+function renderBadge(label: string, value: string, color: string, titleOverride?: string): string {
 	// Approximate character widths for Verdana 11px
 	const charWidth = 6.5;
 	const padding = 10;
@@ -49,9 +49,14 @@ function renderBadge(label: string, value: string, color: string): string {
 	const safeLabel = escapeXml(label);
 	const safeValue = escapeXml(value);
 	const safeColor = /^#[0-9a-f]{3,6}$/i.test(color) ? color : ERROR_COLOR;
+	// The accessible name defaults to "label: value". `titleOverride` lets a caller state
+	// something the two visible strings cannot — currently the exact evidence ratio behind a
+	// partial grade. Escaped on the same path as everything else: it reaches both the <title>
+	// and the aria-label, so an unescaped caller string would be SVG injection in two places.
+	const safeTitle = titleOverride === undefined ? `${safeLabel}: ${safeValue}` : escapeXml(titleOverride);
 
-	return `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="20" role="img" aria-label="${safeLabel}: ${safeValue}">
-  <title>${safeLabel}: ${safeValue}</title>
+	return `<svg xmlns="http://www.w3.org/2000/svg" width="${totalWidth}" height="20" role="img" aria-label="${safeTitle}">
+  <title>${safeTitle}</title>
   <linearGradient id="s" x2="0" y2="100%">
     <stop offset="0" stop-color="#bbb" stop-opacity=".1"/>
     <stop offset="1" stop-opacity=".1"/>
@@ -74,21 +79,60 @@ function renderBadge(label: string, value: string, color: string): string {
 }
 
 /**
+ * How much of the scan behind a badge actually completed. Both counts come from
+ * `computeScanEvidence` at the call site.
+ */
+export interface BadgeEvidence {
+	attempted: number;
+	completed: number;
+}
+
+/**
  * Generate an SVG grade badge.
  *
  * A `null` grade means the domain was NOT measured — the badge says so
  * explicitly rather than defaulting to a letter. Rendering `F` here would
  * publish a fabricated failing measurement on a public, embeddable image.
  *
+ * `evidence` marks the third state, between those two (issue #638). A scan can
+ * clear the 0.6 sufficiency threshold — so it IS graded — while still having
+ * failed to measure some categories: a WAF challenge, a timeout, an unreachable
+ * host. blackveilsecurity.com's own A+ rests on 17 of 19 checks, because our
+ * WAF blocks our own scanner. Publishing that as a bare "A+" on an embeddable
+ * image invites it to be read as 19-of-19, which is the specific thing #638
+ * objected to.
+ *
+ * The badge is the surface that most needs this: unlike the scan report — which
+ * has printed "Checks completed: 17/19 (89%)" since the evidence gate landed —
+ * an SVG embedded in a README carries no surrounding prose to qualify it.
+ *
+ * The grade and its COLOR are unchanged by partial evidence. Coverage and
+ * quality are different axes, and dimming an A+ to amber would assert a worse
+ * posture than was measured — the mirror of the overclaim being fixed. Only the
+ * confidence is annotated.
+ *
  * @param grade - Canonical 9-band grade letter, or `null` when ungraded
+ * @param evidence - Optional scan coverage; annotates when `completed < attempted`
  * @returns SVG string
  */
-export function gradeBadge(grade: string | null): string {
+export function gradeBadge(grade: string | null, evidence?: BadgeEvidence): string {
 	if (grade === null) {
 		return renderBadge('DNS Security', 'unknown', ERROR_COLOR);
 	}
 	const color = GRADE_COLORS[grade] ?? ERROR_COLOR;
-	return renderBadge('DNS Security', grade, color);
+
+	// `attempted > 0` guards the degenerate zero-check scan, which would otherwise
+	// render "0 of 0 checks measured" as though coverage were the story. Mirrors the
+	// same guard format-report.ts applies before its own coverage line.
+	const isPartial = evidence !== undefined && evidence.attempted > 0 && evidence.completed < evidence.attempted;
+	if (!isPartial) return renderBadge('DNS Security', grade, color);
+
+	return renderBadge(
+		'DNS Security',
+		`${grade} partial`,
+		color,
+		`DNS Security: ${grade} — ${evidence.completed} of ${evidence.attempted} checks measured`,
+	);
 }
 
 /**

@@ -2,37 +2,18 @@
 
 import type { ScanDomainResult } from '../scan-domain';
 import type { CheckResult, Finding } from '../../lib/scoring';
-import { isGraded, nistScoreToGrade, computeScanEvidence } from '../../lib/scoring';
+import { isGraded, computeScanEvidence } from '../../lib/scoring';
 import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
-import { formatScoreGrade, isCompletedCheck, isMeasured, normalizeCheckStatus, UNGRADED_DISPLAY } from '../../lib/ungraded-display';
+import { displayGradeFor, formatScoreGrade, isCompletedCheck, isMeasured, normalizeCheckStatus, UNGRADED_DISPLAY } from '../../lib/ungraded-display';
 
 // All three live in a tiny leaf module so every formatter in src/tools/ can share
 // them without importing the scan orchestrator. Re-exported here because this is
 // where consumers have always found UNGRADED_DISPLAY — new importers should take it
 // from the leaf module directly.
 export { UNGRADED_DISPLAY };
-
-/**
- * The SINGLE customer-facing display grade for the scan-output tools
- * (`scan_domain` / `batch_scan` / `compare_domains`): the NIST-aligned 6-band
- * letter, recomputed from the unchanged 0-100 score. The engine's `score.grade`
- * stays on the canonical 9-band scale for every OTHER consumer (compare_baseline
- * ordering, the badge, drift/compliance/fix-plan); only these display surfaces
- * switch.
- *
- * Returns `null` when the scan was never graded — callers must render
- * {@link UNGRADED_DISPLAY} rather than substitute a letter. An unscored scan
- * yields `null`, rendered as {@link UNGRADED_DISPLAY}; mapping it onto
- * `nistScoreToGrade(0)` here would fabricate an 'F' for a domain that does not
- * resolve — the exact defect this slice exists to remove.
- */
-function displayGradeFor(score: { overall: number | null; grade: string | null }): string | null {
-	if (score.overall === null || score.grade === null) return null;
-	return nistScoreToGrade(score.overall);
-}
 
 /** Structured scan result for machine-readable consumption (e.g., CI/CD actions). */
 export interface StructuredScanResult {

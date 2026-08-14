@@ -38,6 +38,73 @@ describe('badge', () => {
 			const svg = gradeBadge('Z');
 			expect(svg).toContain('#9f9f9f');
 		});
+
+		// ---- Partial-evidence annotation (issue #638) ----
+		//
+		// A graded scan can still have failed to measure some categories. The badge is the
+		// one published surface with no surrounding prose to qualify the letter, so it must
+		// say so itself rather than let an embedded image read as full coverage.
+		describe('partial evidence', () => {
+			it('annotates a grade resting on an incomplete scan', () => {
+				// The real blackveilsecurity.com case: our own WAF blocks our own scanner on
+				// http_security + mta_sts, so an A+ rests on 17 of 19 checks.
+				const svg = gradeBadge('A+', { attempted: 19, completed: 17 });
+
+				expect(svg).toContain('A+ partial');
+				// The exact ratio rides in the accessible name, where it costs no badge width.
+				expect(svg).toContain('17 of 19 checks measured');
+				expect(svg).toContain('<title>DNS Security: A+ — 17 of 19 checks measured</title>');
+				expect(svg).toContain('aria-label="DNS Security: A+ — 17 of 19 checks measured"');
+			});
+
+			it('keeps the grade COLOR unchanged when partial', () => {
+				// Coverage and quality are different axes. Dimming an A+ to amber would assert
+				// a worse posture than was actually measured — the mirror of the overclaim
+				// being fixed here.
+				expect(gradeBadge('A+', { attempted: 19, completed: 17 })).toContain('#4c1');
+				expect(gradeBadge('D', { attempted: 19, completed: 11 })).toContain('#fe7d37');
+			});
+
+			it('does NOT annotate a fully measured scan', () => {
+				const svg = gradeBadge('A+', { attempted: 19, completed: 19 });
+
+				expect(svg).not.toContain('partial');
+				expect(svg).not.toContain('checks measured');
+				// Falls back to the default accessible name, byte-identical to the no-evidence call.
+				expect(svg).toBe(gradeBadge('A+'));
+			});
+
+			it('does NOT annotate when evidence is omitted entirely', () => {
+				expect(gradeBadge('B')).not.toContain('partial');
+			});
+
+			it('does NOT annotate a zero-check scan as a coverage story', () => {
+				// attempted === 0 would otherwise render "0 of 0 checks measured", which reads
+				// as a coverage gap rather than the degenerate scan it actually is.
+				const svg = gradeBadge('F', { attempted: 0, completed: 0 });
+
+				expect(svg).not.toContain('partial');
+				expect(svg).toBe(gradeBadge('F'));
+			});
+
+			it('never annotates an ungraded badge (null wins over evidence)', () => {
+				// `null` already means "not measured at all" — the stronger statement. Adding
+				// "partial" on top would be incoherent.
+				const svg = gradeBadge(null, { attempted: 19, completed: 3 });
+
+				expect(svg).toContain('unknown');
+				expect(svg).not.toContain('partial');
+			});
+
+			it('escapes the override title so it cannot inject SVG', () => {
+				// The title path reaches BOTH <title> and aria-label, so an unescaped value
+				// would be injection in two places. Grade is the only caller-shaped input.
+				const svg = gradeBadge('<script>', { attempted: 19, completed: 17 });
+
+				expect(svg).not.toContain('<script>');
+				expect(svg).toContain('&lt;script&gt;');
+			});
+		});
 	});
 
 	describe('errorBadge', () => {
