@@ -448,6 +448,18 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 		// Surfaced as a timeout finding
 		const timeoutFinding = result.findings.find((f) => /timed? out|total budget|could not complete/i.test(f.title));
 		expect(timeoutFinding).toBeDefined();
+
+		// Issue #638: a budget timeout aborted the fetch before any header was read, so it
+		// measured NOTHING. It must be marked inconclusive and must NOT also assert that the
+		// control is absent — `missingControl` zeroes a category as a genuine absence, which
+		// would be a claim of fact derived from a failed measurement. Same contract as the
+		// WAF path (lib/waf-detection.ts) and the mta-sts stall path.
+		expect(timeoutFinding!.metadata?.inconclusive).toBe(true);
+		expect(timeoutFinding!.metadata?.missingControl).toBeUndefined();
+		expect(timeoutFinding!.metadata?.errorKind).toBe('timeout');
+		// The exclusion is driven by checkStatus, not by the metadata — pinned so a future
+		// refactor cannot quietly move the load-bearing signal onto the flag we just removed.
+		expect(result.checkStatus).toBe('timeout');
 	}, 15_000);
 
 	describe('Cloudflare WAF events served as 4xx (cf-403 fingerprint)', () => {
