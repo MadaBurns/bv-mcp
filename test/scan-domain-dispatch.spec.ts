@@ -162,7 +162,13 @@ describe('scan_domain per-category dispatch — initial run path', () => {
 		// http_security: (domain, { signal }) — R7 threads the per-check abort signal.
 		const httpCall = spies.httpSecurity.mock.calls[0];
 		expect(httpCall[0]).toBe('example.com');
-		expect(httpCall[1]).toEqual({ signal: expect.any(AbortSignal), robotsMemo: expect.anything() });
+		expect(httpCall[1]).toEqual({
+			signal: expect.any(AbortSignal),
+			robotsMemo: expect.anything(),
+			// #674: derived from the per-check timeout, like ssl. A literal here would
+			// pass at the 8s default and hide a budget that stopped tracking it.
+			budgetMs: fetchBudgetFor(PER_CHECK_TIMEOUT_MS),
+		});
 		expect(httpCall.length).toBe(2);
 
 		// dkim: (domain, undefined, dnsOptions)

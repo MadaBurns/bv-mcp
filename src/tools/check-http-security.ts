@@ -21,6 +21,7 @@ import { composeSignal, withAbortSignal } from '../lib/abort-signal';
 import { looksLikeWaf, detectWafEvent, buildWafFinding } from '../lib/waf-detection';
 import { readBoundedText } from '../lib/response-body';
 import { withRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
+import { createFetchBudget, type FetchBudget } from '../lib/fetch-budget';
 
 /** Security headers to merge (union) across dual fetches. */
 const MERGE_HEADERS = [
@@ -146,7 +147,12 @@ type RedirectResult = { response: Response; edgeSignals: Headers };
  * `edgeSignals`; the final (non-redirect) response is returned with its own
  * headers untouched so origin-vs-edge CDN attribution stays distinct.
  */
-async function fetchWithRedirects(url: string, timeoutMs: number, gates: GatedFetchers, callerSignal?: AbortSignal): Promise<RedirectResult> {
+async function fetchWithRedirects(
+	url: string,
+	timeoutMs: number,
+	gates: GatedFetchers,
+	callerSignal?: AbortSignal,
+): Promise<RedirectResult> {
 	const edgeSignals = new Headers();
 	// Initial fetch goes to https://<domain> where <domain> is already validated
 	// upstream. Use raw fetch to keep the cost off the validation path. Subsequent
@@ -364,6 +370,16 @@ async function fetchBodyForWafDetection(url: string, timeoutMs: number, gates: G
 const TOTAL_BUDGET_MS = 10_000;
 
 /**
+ * How far behind the per-fetch budget the total-budget race is armed (issue #674).
+ *
+ * Sized to be comfortably longer than the check's own non-fetch work but still
+ * inside the per-check kill: `fetchBudgetFor` already reserves 750ms below
+ * `PER_CHECK_TIMEOUT_MS`, so arming the race 400ms after the fetch budget still
+ * leaves ~350ms of headroom before `safeCheck` fires.
+ */
+const BUDGET_RACE_MARGIN_MS = 400;
+
+/**
  * Robots.txt-gated fetch functions for this tool's real-network call sites
  * (`fetchWithRedirects`'s initial + redirect-follow fetches, `fetchBodyForWafDetection`,
  * and `capturingFetch`'s `safeFetch` fallback). `withRobotsGate` stamps the shared
@@ -395,18 +411,77 @@ const DEFAULT_GATES: GatedFetchers = { gatedFetch, gatedSafeFetch };
  * own) onto one shared fetch. Building the gates per call is pure closure allocation;
  * the network saving is what matters.
  */
-function resolveGates(robotsMemo?: RobotsFetchMemo): GatedFetchers {
-	if (!robotsMemo) return DEFAULT_GATES;
+function resolveGates(robotsMemo: RobotsFetchMemo | undefined, budget: FetchBudget, budgeted: boolean): GatedFetchers {
+	if (!robotsMemo && !budgeted) return DEFAULT_GATES;
+	// Budget INNERMOST, as in check-ssl: the gate's own robots.txt fetch and the
+	// memo's miss-path both delegate down through it, so every leg is metered —
+	// including the one the check does not issue itself. Hoisting it outside the
+	// gate would leave the robots fetch unbudgeted, which is the specific cost that
+	// pushed the sibling check over its budget in #641.
 	return {
-		gatedFetch: withRobotsGate(withRobotsFetchMemo((url, init) => fetch(url, init), robotsMemo), { userAgent: SCANNER_USER_AGENT }),
-		gatedSafeFetch: withRobotsGate(withRobotsFetchMemo((url, init) => safeFetch(url, init), robotsMemo), { userAgent: SCANNER_USER_AGENT }),
+		gatedFetch: withRobotsGate(
+			withRobotsFetchMemo(
+				budget.wrap((url, init) => fetch(url, init)),
+				robotsMemo,
+			),
+			{
+				userAgent: SCANNER_USER_AGENT,
+			},
+		),
+		gatedSafeFetch: withRobotsGate(
+			withRobotsFetchMemo(
+				budget.wrap((url, init) => safeFetch(url, init)),
+				robotsMemo,
+			),
+			{
+				userAgent: SCANNER_USER_AGENT,
+			},
+		),
 	};
 }
 
 export async function checkHttpSecurity(
 	domain: string,
-	options: { signal?: AbortSignal; robotsMemo?: RobotsFetchMemo } = {},
+	options: {
+		signal?: AbortSignal;
+		robotsMemo?: RobotsFetchMemo;
+		/**
+		 * Wall-clock this check's fetches may collectively consume (issue #674).
+		 *
+		 * `TOTAL_BUDGET_MS` alone could never fire under `scan_domain`: at 10s it is
+		 * LARGER than the 8s `PER_CHECK_TIMEOUT_MS`, so `safeCheck` always won the race
+		 * and the guard was dead code on the one path where the check is not the only
+		 * thing running. It stays live for direct callers, who are bounded only by the
+		 * 28s `TOOL_CALL_TIMEOUT_MS` — the constant was right for one caller and wrong
+		 * for the other.
+		 *
+		 * Supplying this does two things: it clamps the total-budget race below the
+		 * per-check kill, and — the part that actually matters — it bounds each
+		 * INDIVIDUAL fetch by what remains. Merely lowering the total would swap one
+		 * lost category for another; budgeting the fetches lets the check finish and
+		 * REPORT what it measured, because `dualFetchHeaders` is `allSettled` and the
+		 * redirect loop breaks on a throw, so a budget-cut leg degrades to
+		 * "analyse what we have" rather than to nothing.
+		 *
+		 * Absent (every direct `check_http_security` call) → unchanged behaviour.
+		 */
+		budgetMs?: number;
+	} = {},
 ): Promise<CheckResult> {
+	// One clock for both mechanisms: the per-fetch budget and the total-budget race
+	// start together, so the race can never fire before the fetches it is guarding.
+	const budget = createFetchBudget(options.budgetMs);
+	// ⚠️ The race must sit strictly BEHIND the fetch budget, never level with it.
+	// Clamping it to `budgetMs` outright looks right and is wrong: both would then
+	// fire on the same tick, the race would frequently win, and the check would
+	// return its "could not complete" timeout result — throwing away the headers the
+	// graceful path had just salvaged. That converts a category we can still report
+	// into one we cannot, which is the opposite of the fix. The margin lets the
+	// fetch-level abort land first and leaves the race as what it should be: a
+	// backstop for a stall OUTSIDE the fetches (parsing, WAF analysis) that the
+	// per-fetch budget cannot see.
+	const totalBudgetMs =
+		options.budgetMs === undefined ? TOTAL_BUDGET_MS : Math.min(TOTAL_BUDGET_MS, options.budgetMs + BUDGET_RACE_MARGIN_MS);
 	let budgetTimeoutId: ReturnType<typeof setTimeout> | undefined;
 	// Abort in-flight fetches when the budget is exceeded rather than merely
 	// out-racing them: a bare setTimeout race left the loser's fetch running with
@@ -417,10 +492,14 @@ export async function checkHttpSecurity(
 		budgetTimeoutId = setTimeout(() => {
 			budgetController.abort();
 			resolve('budget_exceeded');
-		}, TOTAL_BUDGET_MS);
+		}, totalBudgetMs);
 	});
 	const innerSignal = options.signal ? AbortSignal.any([options.signal, budgetController.signal]) : budgetController.signal;
-	const innerPromise = checkHttpSecurityInner(domain, resolveGates(options.robotsMemo), innerSignal);
+	const innerPromise = checkHttpSecurityInner(
+		domain,
+		resolveGates(options.robotsMemo, budget, options.budgetMs !== undefined),
+		innerSignal,
+	);
 	// The abort above makes innerPromise reject shortly after budgetExceeded has
 	// already won the race below — attach a no-op catch so that expected,
 	// already-handled-via-the-timeout-finding rejection doesn't surface as an
@@ -445,7 +524,7 @@ export async function checkHttpSecurity(
 				'http_security',
 				'HTTP security check timed out',
 				'high',
-				`Could not complete HTTP security header analysis for ${domain} within ${TOTAL_BUDGET_MS}ms. Host was likely unreachable or extremely slow.`,
+				`Could not complete HTTP security header analysis for ${domain} within ${totalBudgetMs}ms. Host was likely unreachable or extremely slow.`,
 				{ inconclusive: true, confidence: 'heuristic', errorKind: 'timeout' },
 			);
 			const base = buildCheckResult('http_security', [finding]);
