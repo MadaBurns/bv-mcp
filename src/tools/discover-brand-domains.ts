@@ -24,7 +24,7 @@
  *   - `info` for everything else (review queue)
  *
  * DNS-failure resilience: if EVERY requested signal throws (or all return
- * empty without any successes), we surface a `missingControl: true` finding
+ * empty without any successes), we surface an INCONCLUSIVE finding (#670)
  * mirroring the `check-spf.ts` reference pattern. Partial failures are noted
  * in metadata but don't degrade the rest of the result.
  */
@@ -461,7 +461,14 @@ async function runSignal<R>(fn: () => Promise<R>): Promise<SignalOutcome<R>> {
 	}
 }
 
-function signalCouldNotComplete(status: string | undefined): boolean {
+/**
+ * True when a discovery signal did not produce an answer — it blew up, timed out,
+ * or was throttled. Exported because the brand-audit pipeline must draw the SAME
+ * line to tell "discovery ran and found nothing" (a measured result) apart from
+ * "discovery never ran" (unmeasured); two spellings of that predicate would let
+ * the two paths disagree about which one a zero-candidate audit is (#670).
+ */
+export function signalCouldNotComplete(status: string | undefined): boolean {
 	return status === 'failed' || status === 'error' || status === 'timeout' || status === 'rate_limited';
 }
 
@@ -562,7 +569,7 @@ function extractActiveLookalikeDomains(result: CheckResult): string[] {
  * Orchestrate brand-domain discovery across the four phase-4 signals.
  *
  * Programmer-error throws (invalid seed domain) propagate from the underlying
- * modules. All other failure modes are surfaced via `missingControl: true`
+ * modules. All other failure modes are surfaced as INCONCLUSIVE (#670)
  * findings or per-signal status metadata, never thrown.
  */
 export async function discoverBrandDomains(
@@ -1492,17 +1499,31 @@ export async function discoverBrandDomains(
 		}
 	}
 
-	// Did every requested signal blow up? If yes, surface a missingControl finding.
+	// Did every requested signal blow up? If yes, this run measured NOTHING.
+	//
+	// It used to say so with `missingControl: true`, which asserts the opposite —
+	// "we measured, and the control is absent" — while the finding's own title said
+	// "could not complete" and its metadata carried `errorKind: 'dns_error'` (#670).
+	// Same contradiction #662 removed from check_http_security's budget timeout.
+	//
+	// The shape below is `buildDnsErrorResult`'s, spelled out because that helper
+	// takes a caught Error and this path has structured `signalStatus` worth
+	// keeping: `checkStatus: 'error'` is what makes the scoring engine EXCLUDE the
+	// category as inconclusive instead of zeroing it as a real absence, `passed:
+	// false` because buildCheckResult would otherwise derive `true` from the
+	// single-high-finding score, and `partial: true` keeps a transient all-signals
+	// outage out of the 5-minute cache (handlers/tools.ts caches on `!r.partial`)
+	// so the next call re-measures rather than replaying the failure.
 	const allFailed = signals.length > 0 && signals.every((s) => signalCouldNotComplete(signalStatus[s]?.status));
 	if (allFailed) {
-		return buildCheckResult('brand_discovery', [
+		const unmeasured = buildCheckResult('brand_discovery', [
 			createFinding(
 				'brand_discovery',
 				'Brand-domain discovery could not complete',
 				'high',
 				`All ${signals.length} requested signal(s) failed; see signalStatus metadata for details.`,
 				{
-					missingControl: true,
+					inconclusive: true,
 					confidence: 'heuristic',
 					errorKind: 'dns_error',
 					signalStatus,
@@ -1510,6 +1531,7 @@ export async function discoverBrandDomains(
 				},
 			),
 		]);
+		return { ...unmeasured, score: 0, passed: false, checkStatus: 'error' as const, partial: true };
 	}
 
 	// Build candidate findings.

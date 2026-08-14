@@ -16,7 +16,11 @@ import {
 import { validateSprawlItem } from './sprawl-invariants';
 import { evaluateDefensiveRegistration } from './brand-defensive-registration';
 import type { BrandEvidenceObservation } from './brand-evidence';
-import { discoverBrandDomains as defaultDiscoverBrandDomains, type BrandDiscoveryProgressEvent } from '../tools/discover-brand-domains';
+import {
+	discoverBrandDomains as defaultDiscoverBrandDomains,
+	signalCouldNotComplete,
+	type BrandDiscoveryProgressEvent,
+} from '../tools/discover-brand-domains';
 import { checkRdapLookup as defaultCheckRdapLookup, type RdapCheckOptions } from '../tools/check-rdap-lookup';
 import type { BrandAuditStepStore } from './brand-audit-step-store';
 import type { Tier0Result } from './brand-tier0-enterprise';
@@ -619,7 +623,8 @@ async function lookupCandidateRegistrars(
  * Run a brand audit on a single target.
  *
  * Programmer-error throws (invalid seed domain) propagate from `discoverBrandDomains`.
- * Discovery failures surface as a `missingControl: true` summary finding with zero candidates.
+ * Discovery failures surface as an INCONCLUSIVE summary finding with zero candidates (#670);
+ * a discovery that RAN and found nothing is a measured result and is scored normally.
  */
 export async function runBrandAuditPipeline(
 	target: string,
@@ -794,15 +799,36 @@ export async function runBrandAuditPipeline(
 		const classificationStartedAtMs = now();
 		recordStep(stepTimings, 'classification', 'completed', classificationStartedAtMs, now());
 		const performance = buildPerformance();
+		// Zero candidates is TWO different outcomes and this path used to collapse
+		// them, stamping `missingControl: true` on both (#670):
+		//
+		//   - discovery ran and genuinely surfaced nothing above the confidence
+		//     floor. That is a MEASURED result, and for brand discovery it is the
+		//     GOOD one — no lookalikes, no shadow IT. Zeroing the category for it
+		//     scored a clean brand estate identically to one we never looked at.
+		//   - every discovery signal failed, so nothing was measured at all.
+		//
+		// Only the second is unmeasured, and it gets the same excluded shape as
+		// discover-brand-domains' all-failed path rather than a zeroed category.
+		// `signalCouldNotComplete` is imported rather than re-spelled so the two
+		// files cannot drift on where that line sits.
+		const zeroCandidateSignalStatus = (discoverySummary?.metadata?.signalStatus ?? {}) as Record<string, { status?: string } | undefined>;
+		const attemptedSignals = Object.keys(zeroCandidateSignalStatus);
+		const discoveryNeverRan =
+			attemptedSignals.length > 0 && attemptedSignals.every((k) => signalCouldNotComplete(zeroCandidateSignalStatus[k]?.status));
 		const result = buildCheckResult(CATEGORY, [
 			createFinding(
 				CATEGORY,
-				`Brand audit: no candidates surfaced for ${seedDomain}`,
-				'info',
-				`Discovery returned 0 candidates at confidence ≥ ${options.min_confidence ?? 0.5}. Discovery signalStatus: ${JSON.stringify(discoverySummary?.metadata?.signalStatus ?? {})}.`,
+				discoveryNeverRan
+					? `Brand audit: discovery could not complete for ${seedDomain}`
+					: `Brand audit: no candidates surfaced for ${seedDomain}`,
+				discoveryNeverRan ? 'high' : 'info',
+				discoveryNeverRan
+					? `All ${attemptedSignals.length} discovery signal(s) failed, so no candidate could be observed either way. Discovery signalStatus: ${JSON.stringify(zeroCandidateSignalStatus)}.`
+					: `Discovery returned 0 candidates at confidence ≥ ${options.min_confidence ?? 0.5}. Discovery signalStatus: ${JSON.stringify(discoverySummary?.metadata?.signalStatus ?? {})}.`,
 				{
 					summary: true,
-					missingControl: true,
+					...(discoveryNeverRan ? { inconclusive: true, errorKind: 'dns_error' } : {}),
 					target: seedDomain,
 					consolidated: 0,
 					shadowIt: 0,
@@ -829,8 +855,17 @@ export async function runBrandAuditPipeline(
 				},
 			),
 		]);
-		await stepStore?.put({ auditId, target: seedDomain, step: 'classification', status: 'completed', payload: result });
-		return result;
+		const zeroCandidateResult = discoveryNeverRan
+			? { ...result, score: 0, passed: false, checkStatus: 'error' as const, partial: true }
+			: result;
+		await stepStore?.put({
+			auditId,
+			target: seedDomain,
+			step: 'classification',
+			status: discoveryNeverRan ? 'partial' : 'completed',
+			payload: zeroCandidateResult,
+		});
+		return zeroCandidateResult;
 	}
 
 	const bucketCounts: Record<Bucket, number> = {
