@@ -158,7 +158,22 @@ Two mechanisms detect missing controls in `buildCheckResult`:
 
 1. **Confidence-gated detection** (`scoreIndicatesMissingControl()`): For findings matching missing-control text patterns (e.g., "no … record", "missing", "not found") with `critical`/`high` severity and `deterministic`/`verified` confidence. This prevents heuristic findings (e.g., DKIM selector probing) from falsely zeroing core categories.
 
-2. **Explicit metadata** (`missingControl: true`): For checks where the control is entirely absent. Used by exactly six checks: HTTP Security (site unreachable), MX (no records), NS (no records), Zone Hygiene (no NS/SOA), BIMI (no record), DANE (no TLSA). **CAA, MTA-STS, SVCB-HTTPS, and TLS-RPT deliberately do NOT** set `missingControl` — absence is a graded finding, not a category-zeroing missing control. **DNSSEC "not enabled" also does NOT** — per NIST SP 800-81r3 it's a baseline integrity control in defense-in-depth, so absence is a `high` Core penalty with a fixed `penaltyOverride: 40` (category lands at 60, not 0). DNSSEC's broken-chain / validation-failing cases (distinct from "not enabled") DO fire `missingControl: true`.
+2. **Explicit metadata** (`missingControl: true`): For checks that measured the control and found it absent, or absence-equivalent. Set by eight scored categories — and several of them on a condition that is *not* plain absence:
+
+   | Category | Fires when |
+   | --- | --- |
+   | MX | No MX **and** no SPF. An SPF publishing `-all` is the correct non-mail posture and does **not** fire. |
+   | NS | No NS records (the domain cannot resolve). |
+   | Zone Hygiene | No NS records, or no SOA record. |
+   | DANE | No TLSA for the MX SMTP port, or none for the HTTPS endpoint. |
+   | BIMI | A record that is **published but ineffective** — present, with DMARC not enforcing. Not absence. |
+   | DMARC | **Multiple** DMARC records. Per RFC 9989 receivers then apply no policy at all, so this is absence-equivalent. |
+   | DNSSEC | **Broken chain or failing validation only** — never "not enabled" (see below). |
+   | `authoritative_dns_infra` | Capability failures: missing AA flag, exposed recursion, root-hint or root-server-set mismatch, route leak/hijack signal. |
+
+   **HTTP Security is not on this list.** It set the flag until #646 and #662 removed its last path, and now sets it on none: a probe that never reached the origin (WAF block, 401, connection failure, budget timeout) emits `inconclusive: true` with an `errorKind` instead, because asserting absence from a measurement that never completed is a claim of fact the scan did not establish. **CAA, MTA-STS, SVCB-HTTPS, and TLS-RPT deliberately do NOT** set `missingControl` — absence is a graded finding, not a category-zeroing missing control.
+
+   > This list was derived from the call sites and verified on 2026-08-14. A bare `grep -rn 'missingControl: true'` **over-reports** it: the grep also matches the comments explaining why a check declines to set the flag, which is how HTTP Security and MTA-STS read as emitters when they are not. Strip comments before counting, as `test/audits/measured-vs-unmeasured-metadata.audit.test.ts` does. **DNSSEC "not enabled" also does NOT** — per NIST SP 800-81r3 it's a baseline integrity control in defense-in-depth, so absence is a `high` Core penalty with a fixed `penaltyOverride: 40` (category lands at 60, not 0). DNSSEC's broken-chain / validation-failing cases (distinct from "not enabled") DO fire `missingControl: true`.
 
    **MTA-STS joined the deliberately-not-setting list in scoring model 1.6.0** (it was previously the seventh setting check). Rationale: measured over a 1,000-domain corpus on 2026-08-03, the `mta_sts` category had a mean score of 3.3 with 96.5% of the 687 measured domains at exactly 0. A control that near-nobody passes is a constant penalty against ~3 of the ~80 base points, not a discriminator, and no documented incident is attributable to a missing MTA-STS policy. Its weight (3, Protective) and finding severities are unchanged — only the zeroing behaviour. A **deployed-but-broken** policy (bad `version:`, missing `mode:`, uncovered MX set, unfetchable policy file) still emits its confident `high`/`medium` findings, which never carried `missingControl` in the first place.
 
