@@ -247,7 +247,7 @@ describe('discoverBrandDomains', () => {
 		expect(candidates).toHaveLength(0);
 	});
 
-	it('returns missingControl when the only requested signal times out', async () => {
+	it('reports an all-signals-failed sweep as UNMEASURED, never as "control absent" (#670)', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const deps = makeDeps({
 			correlateSans: vi.fn().mockResolvedValue({
@@ -264,10 +264,24 @@ describe('discoverBrandDomains', () => {
 		expect(result.findings[0]).toMatchObject({
 			title: 'Brand-domain discovery could not complete',
 			metadata: {
-				missingControl: true,
+				inconclusive: true,
+				errorKind: 'dns_error',
 				signalStatus: { san: { status: 'timeout' } },
 			},
 		});
+		// The flag that used to be here asserted the OPPOSITE of the title: a timed-out
+		// probe never established that anything was absent. Pinned as an absence so the
+		// contradiction cannot come back.
+		expect(result.findings[0].metadata?.missingControl).toBeUndefined();
+		// `checkStatus` — not the metadata flag — is what makes scoring EXCLUDE the
+		// category as inconclusive rather than zeroing it as a measured absence, and
+		// `partial` keeps a transient outage out of the 5-minute cache. Without these
+		// three, dropping `missingControl` alone would let an unmeasured sweep compute
+		// to a passing score off its single high finding.
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.passed).toBe(false);
+		expect(result.score).toBe(0);
 	});
 
 	it('does not let a hanging SAN signal block the rest of the sweep when an abort deadline fires', async () => {
@@ -635,7 +649,7 @@ describe('discoverBrandDomains', () => {
 		});
 	});
 
-	it('returns missingControl finding when signal modules all throw (DNS-failure resilience)', async () => {
+	it('marks the result unmeasured when signal modules all throw (DNS-failure resilience, #670)', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const failing = vi.fn().mockRejectedValue(new Error('DNS error'));
 		const deps = makeDeps({
@@ -654,9 +668,12 @@ describe('discoverBrandDomains', () => {
 		});
 		const result = await discoverBrandDomains('example.com', {}, deps);
 		expect(result.category).toBe('brand_discovery');
-		const missing = result.findings.find((f) => f.metadata?.missingControl);
-		expect(missing).toBeDefined();
-		expect(missing!.severity).toBe('high');
+		const unmeasured = result.findings.find((f) => f.metadata?.inconclusive);
+		expect(unmeasured).toBeDefined();
+		expect(unmeasured!.severity).toBe('high');
+		// Every signal THREW — that is a measurement failure, not evidence of absence.
+		expect(result.findings.some((f) => f.metadata?.missingControl)).toBe(false);
+		expect(result.checkStatus).toBe('error');
 	});
 
 	it('sorts candidates descending by combined confidence', async () => {
