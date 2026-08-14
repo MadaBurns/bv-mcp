@@ -232,6 +232,22 @@ function isCategoryNonApplicable(check: CheckResult | undefined, category: strin
 	return false;
 }
 
+/**
+ * Render the prose row for a category the scan could NOT measure — the check timed out or
+ * errored, so it is excluded from the weighted score rather than zeroed.
+ *
+ * Deliberately distinct from the `∅ … N/A` row: "we measured and it does not apply" and "we
+ * could not measure it" are different states that the structured payload has always kept
+ * disjoint (`notApplicableCategories` vs `inconclusiveCategories`), and collapsing them in
+ * prose is what let a never-run web check read as a clean bill of health.
+ *
+ * Pure string formatting — reads no score and changes none.
+ */
+function formatUnmeasuredCategoryRow(category: string, check: CheckResult | undefined): string {
+	const reason = check?.checkStatus === 'timeout' ? 'check timed out' : 'check did not complete';
+	return `  ⊘ ${category.toUpperCase().padEnd(10)} n/a (not measured — ${reason})`;
+}
+
 /** Optional enrichment data for structured scan results. */
 export interface ScanResultEnrichment {
 	percentileRank?: number | null;
@@ -512,17 +528,42 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 
 	lines.push('Category Scores:');
 	lines.push('-'.repeat(30));
+	const renderedCategories = new Set<string>();
 	for (const [category, score] of Object.entries(result.score.categoryScores) as [string, number][]) {
+		renderedCategories.add(category);
 		const naCheck = checksByCategoryForNa.get(category);
 		// An inconclusive check (timeout/error) is NOT "not applicable" — same precedence
 		// as the structured builder, which short-circuits those before asking.
 		const inconclusive = naCheck !== undefined && !isCompletedCheck(naCheck);
-		if (!inconclusive && isCategoryNonApplicable(naCheck, category, profileForNa, score)) {
+		if (inconclusive) {
+			lines.push(formatUnmeasuredCategoryRow(category, naCheck));
+			continue;
+		}
+		if (isCategoryNonApplicable(naCheck, category, profileForNa, score)) {
 			lines.push(`  ∅ ${category.toUpperCase().padEnd(10)} N/A (no MX records — control does not apply)`);
 			continue;
 		}
 		const status = score >= 80 ? '✓' : score >= 50 ? '⚠' : '✗';
 		lines.push(`  ${status} ${category.toUpperCase().padEnd(10)} ${score}/100`);
+	}
+	// A check that timed out or errored is EXCLUDED from `categoryScores` by the scoring
+	// engine — correctly, since it is renormalized out rather than scored a misleading 0
+	// (see `computeScanScore`, whose own comment promises these are "shown as n/a, never a
+	// misleading 0"). But nothing rendered them, so the category simply had NO ROW here and
+	// a reader could not tell "passed the web checks" from "the web checks never ran" —
+	// which is the common case, not the exotic one: across a 2,123-domain NZ corpus
+	// `http_security` was measured on 1,579 and `ssl` on 1,741, and on Chinese domains `ssl`
+	// failed 72.5%. The summary "Checks completed: N/M" line names the COUNT; this names
+	// WHICH. `structuredContent` has always reported them via `inconclusiveCategories` plus a
+	// null `categoryScores` entry, so this closes a prose-only gap and brings the two views
+	// back into agreement (the same class of divergence as #639).
+	//
+	// Rendering only: no score, weight, severity or profile is read or written here, and the
+	// rows added are for categories the score map does not contain.
+	for (const check of result.checks ?? []) {
+		if (renderedCategories.has(check.category) || isCompletedCheck(check)) continue;
+		renderedCategories.add(check.category);
+		lines.push(formatUnmeasuredCategoryRow(check.category, check));
 	}
 	lines.push('');
 

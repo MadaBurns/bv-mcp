@@ -66,7 +66,11 @@ async function augmentWithSource(domain: string, baseResult: CheckResult, dnsOpt
 			`DNSSEC validation passes but ${domain} does not have its own DNSKEY or DS records. DNSSEC protection is inherited from the TLD registry, not configured by the domain owner.`,
 			{ dnssecSource: 'tld_inherited' },
 		);
-		return buildCheckResult('dnssec', [...baseResult.findings, inheritedFinding]);
+		// Carry the core's presence flags through verbatim. `augmentWithSource` only ever
+		// relabels findings — it re-derives no observation — so dropping them here would
+		// silently erase the dnssec adoption signal on exactly the SIGNED paths, which are
+		// the ones a consumer most needs to tell apart from the 60-scoring unsigned zone.
+		return buildCheckResult('dnssec', [...baseResult.findings, inheritedFinding], baseResult.controlPresent, baseResult.recordPresent);
 	}
 
 	// domain_configured — never tag the non-apex attribution note: that finding describes
@@ -79,7 +83,7 @@ async function augmentWithSource(domain: string, baseResult: CheckResult, dnsOpt
 				? { ...finding, metadata: { ...(finding.metadata ?? {}), dnssecSource: 'domain_configured' } }
 				: finding,
 		);
-		return buildCheckResult('dnssec', findings);
+		return buildCheckResult('dnssec', findings, baseResult.controlPresent, baseResult.recordPresent);
 	}
 
 	const configuredFinding = createFinding(
@@ -89,7 +93,7 @@ async function augmentWithSource(domain: string, baseResult: CheckResult, dnsOpt
 		`${domain} has DNSKEY and DS records — DNSSEC is explicitly configured by the domain owner.`,
 		{ dnssecSource: 'domain_configured' },
 	);
-	return buildCheckResult('dnssec', [configuredFinding]);
+	return buildCheckResult('dnssec', [configuredFinding], baseResult.controlPresent, baseResult.recordPresent);
 }
 
 /**

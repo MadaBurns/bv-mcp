@@ -85,17 +85,25 @@ export async function checkDNSSEC(
 	let dnskeyRecords: string[] = [];
 	let dsRecords: string[] = [];
 	let nsec3ParamRecords: string[] = [];
+	// Read ONLY by `recordPresent` below. The finding logic deliberately treats a failed
+	// lookup as absent (fail-soft), but "we could not look" is not "nothing is published" —
+	// so the observational flag must stay `undefined` rather than assert a false absence.
+	// Same distinction check-dane / check-mta-sts already draw for their own lookups.
+	let dnskeyQueryFailed = false;
+	let dsQueryFailed = false;
 
 	try {
 		dnskeyRecords = await queryDNS(target, 'DNSKEY', { timeout });
 	} catch {
 		// Non-critical: DNSKEY query failure — treat as absent
+		dnskeyQueryFailed = true;
 	}
 
 	try {
 		dsRecords = await queryDNS(target, 'DS', { timeout });
 	} catch {
 		// Non-critical: DS query failure — treat as absent
+		dsQueryFailed = true;
 	}
 
 	try {
@@ -212,5 +220,36 @@ export async function checkDNSSEC(
 		);
 	}
 
-	return buildCheckResult('dnssec', findings);
+	// ── Structured adoption signal ────────────────────────────────────────────────
+	// DNSSEC is the ONE scored category whose score band cannot answer "is this control
+	// present". Every other category zeroes on absence, so `score > 0` is a valid presence
+	// test — but an unsigned zone here lands at exactly 60 via the `penaltyOverride: 40`
+	// above (only a BROKEN chain sets `missingControl` and zeroes). A uniform `score > 0`
+	// sweep therefore reports ~95-100% DNSSEC adoption against a true single-digit rate;
+	// measured on a 2,123-domain NZ corpus the raw category values were
+	// {0: 44, 55: 1, 60: 1942, >60: 136} — 91% of domains sitting on that magic 60.
+	//
+	// These two flags are the repo's existing presence idiom (see `CheckResult.recordPresent`)
+	// and separate the three states a consumer actually needs, with no magic number:
+	//
+	//   | state                          | recordPresent | controlPresent |
+	//   | ------------------------------ | ------------- | -------------- |
+	//   | unsigned zone                  | false         | false          |
+	//   | published but BROKEN/bogus     | true          | false          |
+	//   | signed and validating          | true          | true           |
+	//
+	// A zone validating with no DNSKEY/DS of its own (registry/TLD-signed) reads
+	// false/true — which is exactly that state, not a contradiction.
+	//
+	// Score-neutral by construction: `buildCheckResult` only copies these onto the result,
+	// and `detectDomainContext` reads `controlPresent` for mx/ssl/caa/dkim/mta_sts/bimi/dmarc
+	// ONLY — never dnssec — so profile selection cannot move. `recordPresent` is read by
+	// nothing in the scoring path at all.
+	const anyDnssecRecordObserved = dnskeyRecords.length > 0 || dsRecords.length > 0;
+	const recordPresent = anyDnssecRecordObserved ? true : dnskeyQueryFailed || dsQueryFailed ? undefined : false;
+	// The AD flag is only an observation when a raw resolver was actually available to ask;
+	// without `rawQueryDNS` the local `adFlag` is a default-false placeholder, not a measurement.
+	const controlPresent = rawQueryDNS ? adFlag : undefined;
+
+	return buildCheckResult('dnssec', findings, controlPresent, recordPresent);
 }
