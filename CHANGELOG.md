@@ -4,6 +4,36 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.48.0] - 2026-08-14
+
+**`SCORING_MODEL_VERSION` unchanged (1.9.0). `@blackveil/dns-checks` unchanged (1.16.0).** No weight, tier, grade band, severity penalty or profile rule moved — **no score changes**. What changes is what we *say* about a score, and which grade scale a badge prints.
+
+### Fixed — claims we had not measured
+
+- **A WAF-intercepted MTA-STS policy fetch no longer reassures the customer that real senders are unaffected.** When the policy fetch is challenged, blocked, or stalls past the timeout, the result correctly reports "we could not measure this" — `checkStatus: 'error'`, `inconclusive: true`, category excluded from scoring — and then the detail text quietly picked the optimistic branch: *"Real sending MTAs are not subject to the same interactive challenge, so the policy may well be reachable for mail delivery."*
+
+  That reassurance was unearned. A sending MTA is an automated, non-browser client — structurally the same class as this scanner — and can no more solve an interactive challenge, run JS, or hold a cookie jar than we can. One intercepted fetch cannot separate *"the rule targets this scanner's User-Agent"* (real senders fine, finding is a scan artefact) from *"the rule challenges automated clients on that host as a class"* (the policy file real senders must fetch is unreachable to them, MTA-STS is genuinely unenforceable, and we just told a customer not to worry about a live deliverability problem). The second case is not exotic: a blanket bot-challenge rule over a whole zone is a common default, and `mta-sts.<domain>` is exactly the subdomain nobody carves out — its only consumer is automated.
+
+  Both detail strings now state the fetch failed and why (kind-aware: block, challenge, or stall), that we cannot tell from outside whether real senders are affected, and name the one signal that distinguishes the cases. Neither branch is asserted. The same correction is applied to the comments in the shared detector `src/lib/waf-detection.ts`, whose module JSDoc had used this exact claim as its worked example. Severity stays `info`, metadata is unchanged, scores are byte-identical. (#664)
+
+- **A `check_http_security` total-budget timeout no longer asserts the control is absent.** The 10s budget-exceeded finding carried `missingControl: true` — "measured, and the control is not there" — when what actually happened is that we ran out of time. It now carries `inconclusive: true` with `errorKind: 'timeout'`, matching the `lib/dns-error-result.ts` convention, so the category is excluded from scoring as unmeasured rather than zeroed. Latent in practice (the `isUnanalyzable` guard already short-circuits on `checkStatus === 'timeout'`), but the metadata was the residual contradiction behind the evidence-gate work. (#638)
+
+### Fixed — the badge disagreed with every other customer surface
+
+- **`/badge/:domain` now prints the customer-facing NIST 6-band grade and marks partial evidence.** The badge rendered the internal canonical 9-band letter while `scan_domain`, `batch_scan`, `compare_domains` and bv-web-prod all show the NIST 6-band one, so the same domain could advertise **C** on its README badge and **D** in its report at the same score — the identical defect class as #640 (grade D printed beside "Stage 4 — Hardened"). The badge now recomputes through the same `displayGradeFor` chokepoint, moved to `src/lib/ungraded-display.ts` so both surfaces read one function.
+
+  When a scan could not complete every check, the badge additionally reads `<grade> partial` with a hover/aria title naming the coverage (`DNS Security: B — 17 of 19 checks measured`). The scan report has printed that ratio since 3.37.0; the badge was the one published surface that showed a grade with no indication it rested on partial evidence. Ungated by the 0.6 sufficiency threshold — any shortfall is disclosed, not only an insufficient one.
+
+  Two layers guard it, because a unit test alone cannot catch a route-wiring revert: `test/badge-grade-parity.spec.ts` pins the divergent scores where the two scales disagree, and `test/audits/display-grade-ssot.audit.test.ts` source-scans the route to fail if the badge is ever re-wired to `result.score.grade`. (#638, #640)
+
+### Added — operator documentation
+
+- **Operator runbook §10: WAF interception of our own scanner.** How to recognise an interception from the result shape, why the exclusion is the whole remedy, and the allowlist path for our own Cloudflare WAF so first-party scans stop being challenged. Explicitly flags that our own MTA-STS wording prejudged this until #664, and that the old reassurance must not be quoted to a customer. (#638)
+
+### Testing
+
+- **The M365 proxy seam now pins live pass-through, not just the sample path.** Contract cases assert that a `representative: false` body passes through verbatim with the marker preserved, and — the case that actually bites — that the proxy never *synthesizes* a `representative` field when the producer omits it. Mutation-verified in both directions. This is the guard that has to be in place before live Graph reads land on the remaining three tools. (#417)
+
 ## [3.47.0] - 2026-08-12
 
 **`SCORING_MODEL_VERSION` 1.8.0 → 1.9.0. `@blackveil/dns-checks` 1.15.0 → 1.16.0** (`PARITY_CORPUS_VERSION` in lockstep).
