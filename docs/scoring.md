@@ -170,6 +170,31 @@ In the Core tier, missing controls zero the category's weighted contribution. In
 
 Source: `scoreIndicatesMissingControl()` and `buildCheckResult()` in `packages/dns-checks/src/scoring/model.ts`.
 
+### Reading category scores in bulk
+
+Two consequences for anyone computing adoption or coverage statistics from `categoryScores`
+across many domains.
+
+**DNSSEC does not zero on absence — an adoption test must use `dnssec > 60`.** Because
+"DNSSEC not enabled" is a fixed `penaltyOverride: 40` rather than a missing control, an
+unsigned zone scores exactly **60**, not 0. A `dnssec > 0` test therefore counts every
+unsigned domain as signed: measured across a 2,123-domain national corpus, the raw `dnssec`
+values were `{0: 44, 55: 1, 60: 1942, >60: 136}` — 6.4% signed and 91.5% unsigned sitting at
+exactly 60, where a `> 0` test reports 95–100% adoption. Country-level signed rates measured
+the same day ranged from 3.3% to 16.5%. Every *other* scored category zeroes on absence, so a
+uniform "score is 0" test across categories is correct everywhere except DNSSEC, and must
+special-case it.
+
+**A category absent from `categoryScores` was not measured.** It was excluded as inconclusive
+(see [Evidence sufficiency](#evidence-sufficiency)) and renormalized out of the score, so it
+belongs out of the *denominator* of a coverage rate — counting it as a failure overstates the
+failure rate. Reach varies by category and by network path: in the same corpus `http_security`
+was measured on 1,579 domains and `ssl` on 1,741, while pure-DNS categories completed on every
+domain; in another country's corpus `ssl` failed on 72.5% of domains. That skew is a property
+of reachability, not a scanner timeout — scans containing a failed check completed *faster*
+than clean ones (median 1,969 ms vs 2,250 ms), which is what an unreachable or refusing host
+looks like. A check exhausting its time budget would be slower, not faster.
+
 ## Critical Gap Ceiling
 
 Domains missing any critical foundational control are capped at a maximum overall score. The ceiling is applied after all other scoring.
