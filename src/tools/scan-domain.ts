@@ -67,6 +67,7 @@ import { resolveScanTimeoutBudget } from './scan/timeouts';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
 import { createRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
+import { fetchBudgetFor } from '../lib/fetch-budget';
 import {
 	getAdaptiveWeights,
 	publishAdaptiveWeightSummary,
@@ -140,6 +141,14 @@ type CheckRunner = (
 	perCheckSignal?: AbortSignal,
 	zone?: ZoneContext,
 	robotsMemo?: RobotsFetchMemo,
+	/**
+	 * Wall-clock a check's own fetches may collectively spend (issue #641).
+	 * Threaded like `robotsMemo`: optional 7th param, supplied at the single
+	 * dispatch site, omitted by `runCheckRetry` and every direct tool call.
+	 * Only checks that issue SEQUENTIAL fetches whose fixed timeouts can sum past
+	 * the per-check budget need it — today `ssl` (3+4+4 = 11s inside 8s).
+	 */
+	fetchBudgetMs?: number,
 ) => Promise<CheckResult>;
 
 /**
@@ -159,7 +168,8 @@ const CHECK_DISPATCH: Record<string, CheckRunner> = {
 	// R7: the raw-`fetch` checks take the narrower per-check signal (4th arg) so a
 	// per-check / scan-level timeout aborts their in-flight HTTPS subrequests.
 	// undefined outside scan context (direct calls / retry path) → unchanged.
-	ssl: (d, _dns, rt, sig, _zone, robots) => checkSsl(d, { ...resolveSslOptions(rt), signal: sig, robotsMemo: robots }),
+	ssl: (d, _dns, rt, sig, _zone, robots, budget) =>
+		checkSsl(d, { ...resolveSslOptions(rt), signal: sig, robotsMemo: robots, budgetMs: budget }),
 	mta_sts: (d, dns, _rt, _sig, zone) => checkMtaSts(d, dns, zone),
 	ns: (d, dns, _rt, _sig, zone) => checkNs(d, dns, zone),
 	caa: (d, dns, _rt, _sig, zone) => checkCaa(d, dns, zone),
@@ -625,38 +635,52 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const forceRefresh = runtimeOptions?.forceRefresh;
 	const cacheTtl = runtimeOptions?.cacheTtlSeconds;
 
-	const checkPromises: Promise<CheckResult>[] = isAuthoritativeInfraProfile ? [
-		Promise.all([
-			safeCheck(
-				'authoritative_dns_infra',
-				() => checkAuthoritativeDnsInfra(domain, { infraProbe: runtimeOptions?.infraProbe }),
-				timeoutBudget.perCheckTimeoutMs,
-			),
-			safeCheck(
-				'authoritative_dns_infra',
-				() => checkRootServerSet({ infraProbe: runtimeOptions?.infraProbe }),
-				timeoutBudget.perCheckTimeoutMs,
-			),
-		]).then(mergeAuthoritativeDnsInfraResults),
-	] : SCAN_CATEGORIES.map((cat) => {
-		// R7: per-check controller, composed with the scan-level signal. Aborting it
-		// on this check's per-check timeout cancels ONLY this check's raw fetches; the
-		// scan-level abort cascades into it. Composition (AbortSignal.any) keeps the
-		// per-check signal alive until either source fires.
-		const perCheckAbort = new AbortController();
-		const perCheckSignal = AbortSignal.any([perCheckAbort.signal, scanAbort.signal]);
-		return runCachedCheck(
-			domain,
-			cat,
-			() =>
-				safeCheck(cat, () => CHECK_DISPATCH[cat](domain, scanDns, runtimeOptions, perCheckSignal, zone, robotsMemo), timeoutBudget.perCheckTimeoutMs, () =>
-					perCheckAbort.abort(),
-				),
-			kv,
-			cacheTtl,
-			forceRefresh,
-		);
-	});
+	const checkPromises: Promise<CheckResult>[] = isAuthoritativeInfraProfile
+		? [
+				Promise.all([
+					safeCheck(
+						'authoritative_dns_infra',
+						() => checkAuthoritativeDnsInfra(domain, { infraProbe: runtimeOptions?.infraProbe }),
+						timeoutBudget.perCheckTimeoutMs,
+					),
+					safeCheck(
+						'authoritative_dns_infra',
+						() => checkRootServerSet({ infraProbe: runtimeOptions?.infraProbe }),
+						timeoutBudget.perCheckTimeoutMs,
+					),
+				]).then(mergeAuthoritativeDnsInfraResults),
+			]
+		: SCAN_CATEGORIES.map((cat) => {
+				// R7: per-check controller, composed with the scan-level signal. Aborting it
+				// on this check's per-check timeout cancels ONLY this check's raw fetches; the
+				// scan-level abort cascades into it. Composition (AbortSignal.any) keeps the
+				// per-check signal alive until either source fires.
+				const perCheckAbort = new AbortController();
+				const perCheckSignal = AbortSignal.any([perCheckAbort.signal, scanAbort.signal]);
+				return runCachedCheck(
+					domain,
+					cat,
+					() =>
+						safeCheck(
+							cat,
+							() =>
+								CHECK_DISPATCH[cat](
+									domain,
+									scanDns,
+									runtimeOptions,
+									perCheckSignal,
+									zone,
+									robotsMemo,
+									fetchBudgetFor(timeoutBudget.perCheckTimeoutMs),
+								),
+							timeoutBudget.perCheckTimeoutMs,
+							() => perCheckAbort.abort(),
+						),
+					kv,
+					cacheTtl,
+					forceRefresh,
+				);
+			});
 
 	let timedOut = false;
 	const settled = await Promise.race([
@@ -880,8 +904,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 					deltas[cat] = adaptiveWeights[cat].importance - staticWeights[cat].importance;
 				}
 
-				const scoreDelta =
-					adaptiveScore.overall !== null && staticScore.overall !== null ? adaptiveScore.overall - staticScore.overall : 0;
+				const scoreDelta = adaptiveScore.overall !== null && staticScore.overall !== null ? adaptiveScore.overall - staticScore.overall : 0;
 				scoringNote = generateScoringNote(deltas, scoreDelta, domainContext.detectedProvider);
 				adaptiveWeightDeltas = deltas;
 			}

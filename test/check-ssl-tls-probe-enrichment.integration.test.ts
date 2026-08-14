@@ -137,7 +137,11 @@ describe('checkSsl TLS probe enrichment', () => {
 	it('probe binding throws → fail-soft, no change, no throw', async () => {
 		setupCleanSslFetchMock();
 
-		const throwingBinding = { fetch: vi.fn(async () => { throw new Error('boom'); }) };
+		const throwingBinding = {
+			fetch: vi.fn(async () => {
+				throw new Error('boom');
+			}),
+		};
 
 		const { checkSsl } = await import('../src/tools/check-ssl');
 		// Must not throw.
@@ -162,5 +166,84 @@ describe('checkSsl TLS probe enrichment', () => {
 		const callInit = binding.fetch.mock.calls[0][1] as RequestInit | undefined;
 		const headers = callInit?.headers as Record<string, string> | undefined;
 		expect(headers?.['Authorization']).toBe('Bearer sekret');
+	});
+	// -------------------------------------------------------------------------
+	// #641 — the probe is on the same deadline as the fetches, and starts with them
+	// -------------------------------------------------------------------------
+
+	it('budget bounds the probe: a hanging probe aborts and the measured result still returns', async () => {
+		setupCleanSslFetchMock();
+
+		// A probe that answers only when its signal aborts — i.e. exactly the
+		// operator-path stall #641 leaves unbounded. Before the fix this leg carried
+		// its own fixed 8s timeout on top of the HTTPS legs, so `safeCheck` killed the
+		// whole ssl category at 8s and every already-measured finding went with it.
+		let probeSignal: AbortSignal | undefined;
+		const hanging = {
+			fetch: vi.fn(
+				(_url: string, init?: RequestInit) =>
+					new Promise<Response>((_resolve, reject) => {
+						probeSignal = init?.signal ?? undefined;
+						probeSignal?.addEventListener('abort', () => reject(new Error('aborted')));
+					}),
+			),
+		};
+
+		const { checkSsl } = await import('../src/tools/check-ssl');
+		const startedAt = Date.now();
+		const result = await checkSsl('example.com', { tlsProbeBinding: hanging, budgetMs: 600 });
+		const elapsed = Date.now() - startedAt;
+
+		// Bounded by the budget, nowhere near the probe's own 8s clock.
+		expect(elapsed).toBeLessThan(3_000);
+		expect(probeSignal?.aborted).toBe(true);
+
+		// Degrades by dropping the probe's finding, never by losing the category or
+		// fabricating one: the HTTPS/HSTS posture was measured and is still reported.
+		expect(result.category).toBe('ssl');
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.passed).toBe(true);
+	});
+
+	it('probe is issued CONCURRENTLY with the HTTPS legs, not after them', async () => {
+		const order: string[] = [];
+
+		globalThis.fetch = vi.fn().mockImplementation(async (input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.startsWith('https://')) {
+				order.push('https:start');
+				await new Promise((r) => setTimeout(r, 150));
+				order.push('https:end');
+				return {
+					url: 'https://example.com/',
+					ok: true,
+					status: 200,
+					headers: new Headers({ 'strict-transport-security': 'max-age=31536000' }),
+				};
+			}
+			return { ok: false, status: 301, headers: new Headers({ location: 'https://example.com/' }) };
+		});
+
+		const binding = {
+			fetch: vi.fn(async () => {
+				order.push('probe:start');
+				return new Response(JSON.stringify({ reachable: true, minVersion: 'TLS1.2' }), {
+					status: 200,
+					headers: { 'Content-Type': 'application/json' },
+				});
+			}),
+		};
+
+		const { checkSsl } = await import('../src/tools/check-ssl');
+		await checkSsl('example.com', { tlsProbeBinding: binding });
+
+		// The probe needs only the domain, never the fetch result. Sequential ordering
+		// added its cost to the fetches' for no benefit; concurrent makes the check's
+		// worst case the MAX of the two rather than their SUM. Under the old code
+		// 'probe:start' came last.
+		expect(order).toContain('probe:start');
+		expect(order.indexOf('probe:start')).toBeLessThan(order.indexOf('https:end'));
 	});
 });
