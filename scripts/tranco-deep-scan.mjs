@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveMcpEndpoint } from './lib/mcp-endpoint.mjs';
 // SPDX-License-Identifier: BUSL-1.1
 /**
  * Tranco Top-1000 Deep Scan
@@ -24,7 +25,7 @@ import path from 'path';
 // ---------------------------------------------------------------------------
 // Config
 // ---------------------------------------------------------------------------
-const EP = process.env.BV_MCP_ENDPOINT || 'https://dns-mcp.blackveilsecurity.com/mcp';
+const EP = resolveMcpEndpoint();
 const API_KEY = process.env.BV_API_KEY;
 if (!API_KEY) { console.error('Error: BV_API_KEY environment variable is required'); process.exit(1); }
 
