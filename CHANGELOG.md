@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.51.1] - 2026-08-15
+
+**Internal refactor only. No public API, tool contract, scoring, or user-facing behavior changes.**
+
+### Changed
+
+- Consolidated duplicate asynchronous brand-discovery start error construction into a shared typed helper. Existing categories, severity, summaries, metadata flags, and response shapes are preserved.
+
 ## [3.51.0] - 2026-08-14
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.17.0 — no weight, tier, grade band, severity penalty or profile rule moved. **Scores can still move**, in two specific and deliberate ways described below, because what changed is *what the scanner is willing to claim it measured*.
