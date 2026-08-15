@@ -28,6 +28,7 @@
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditFormat } from '../lib/db/brand-audit-schema';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
+import { createAsyncStartErrorResultBuilder } from './async-start-result';
 
 const CATEGORY = 'brand_discovery';
 
@@ -99,18 +100,9 @@ export interface BrandAuditBatchStartDeps {
 	now?: () => number;
 }
 
-function buildErrorResult(
-	flag: 'invalidInput' | 'batchTooLarge' | 'quotaExceeded' | 'persistenceFailure',
-	message: string,
-	extra: Record<string, unknown> = {},
-): CheckResult {
-	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, `Brand audit batch start: ${flag}`, 'high', message, {
-			[flag]: true,
-			...extra,
-		}),
-	]);
-}
+const buildErrorResult = createAsyncStartErrorResultBuilder<
+	'invalidInput' | 'batchTooLarge' | 'quotaExceeded' | 'persistenceFailure'
+>(CATEGORY, 'Brand audit batch start');
 
 function normaliseDomains(input: readonly string[]): { targets: string[]; invalidTargets: Array<{ input: string; error: string }> } {
 	const seen = new Set<string>();
