@@ -11,6 +11,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
+import characterizationFixture from './fixtures/characterization-brand-discovery.json';
 import type {
 	SanCorrelationResult,
 	NsCorrelationResult,
@@ -331,22 +332,22 @@ describe('discoverBrandDomains', () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		// Same candidate reported by SAN (0.1) AND DKIM (0.95).
 		// combined = 1 - (1-0.1) * (1-0.95) = 1 - 0.9*0.05 = 1 - 0.045 = 0.955
+		const expected = characterizationFixture.candidate;
 		const deps = makeDeps({
-			correlateSans: vi.fn().mockResolvedValue(okSan(['sister.com'])),
-			detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim(['sister.com'])),
+			correlateSans: vi.fn().mockResolvedValue(okSan([expected.domain])),
+			detectDkimKeyReuse: vi.fn().mockResolvedValue(okDkim([expected.domain])),
 		});
 		const result = await discoverBrandDomains(
-			'example.com',
-			{ signals: ['san', 'dkim_key_reuse'], candidate_domains: ['sister.com'] },
+			expected.seed,
+			{ signals: expected.signals, candidate_domains: [expected.domain] },
 			deps,
 		);
 		const candidates = result.findings.filter((f) => f.metadata?.candidate);
 		expect(candidates).toHaveLength(1);
-		expect(candidates[0].metadata?.candidate).toBe('sister.com');
-		expect(candidates[0].metadata?.combinedConfidence).toBeCloseTo(0.955, 3);
-		expect((candidates[0].metadata?.signals as string[]).sort()).toEqual(['dkim_key_reuse', 'san']);
-		// 0.955 > AUTO_INCLUDE_THRESHOLD (0.85) => severity 'low'
-		expect(candidates[0].severity).toBe('low');
+		expect(candidates[0].metadata?.candidate).toBe(expected.domain);
+		expect(candidates[0].metadata?.combinedConfidence).toBeCloseTo(expected.combinedConfidence, 3);
+		expect((candidates[0].metadata?.signals as string[]).sort()).toEqual([...expected.signals].sort());
+		expect(candidates[0].severity).toBe(expected.severity);
 	});
 
 	it('drops candidates whose corroborated confidence falls below min_confidence', async () => {
