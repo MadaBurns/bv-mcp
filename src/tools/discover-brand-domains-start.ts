@@ -30,7 +30,7 @@ import { buildCheckResult, createFinding, type CheckResult } from '../lib/scorin
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
 import { createAsyncStartErrorResultBuilder } from './async-start-result';
 
-const CATEGORY = 'brand_discovery';
+import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
 
 /**
  * ETA for a single discovery run. The sync path averages ~24s wall clock for

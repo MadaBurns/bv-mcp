@@ -9,8 +9,16 @@ import { describe, expect, it } from 'vitest';
 // This audit catches the regression at lint time before another silent rollout.
 
 const indexSource = (
+	// @ts-expect-error The Workerd Vitest types do not declare Vite's raw-source glob transform.
 	import.meta.glob('../../src/index.ts', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 )['../../src/index.ts'];
+const runtimeConfigSource = (
+	// @ts-expect-error The Workerd Vitest types do not declare Vite's raw-source glob transform.
+	import.meta.glob('../../src/worker/runtime-config.ts', { query: '?raw', import: 'default', eager: true }) as Record<
+		string,
+		string
+	>
+)['../../src/worker/runtime-config.ts'];
 
 describe('OAuth route readiness-gate audit', () => {
 	it('source loaded', () => {
@@ -66,7 +74,7 @@ describe('OAuth route readiness-gate audit', () => {
 		// 'misconfigured', either of which would silently re-enable the incident.
 		const literalsRegex = /OAuthAvailability\s*=\s*['`"]ready['`"]\s*\|\s*['`"]disabled['`"]\s*\|\s*['`"]misconfigured['`"]/;
 		expect(
-			literalsRegex.test(indexSource),
+			literalsRegex.test(runtimeConfigSource),
 			'OAuthAvailability type union must be exactly: "ready" | "disabled" | "misconfigured"',
 		).toBe(true);
 	});

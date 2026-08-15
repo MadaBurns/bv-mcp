@@ -2,13 +2,9 @@ import { SELF, env, createExecutionContext, waitOnExecutionContext } from 'cloud
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
 import { OAUTH_KV_PREFIX } from '../../src/lib/config';
+import { clearKvPrefix } from '../helpers/kv';
 
 const TEST_API_KEY = 'testkey';
-
-async function clearPrefix(prefix: string) {
-	const list = await env.SESSION_STORE.list({ prefix });
-	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
-}
 
 async function registerClient(): Promise<string> {
 	const res = await SELF.fetch('https://example.com/oauth/register', {
@@ -32,10 +28,10 @@ function buildForm(api_key: string, cid: string): URLSearchParams {
 }
 
 beforeEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 afterEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 
 describe('POST /oauth/authorize', () => {
