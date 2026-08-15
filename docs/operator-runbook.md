@@ -259,7 +259,12 @@ the scanned domain's own web server:
 
 All of these are `info` severity and carry `inconclusive: true` (never
 `missingControl` — see the contract note on `buildWafFinding` in
-`src/lib/waf-detection.ts`). The category is EXCLUDED from scoring rather than
+`src/lib/waf-detection.ts`). A challenge that *stalls* the probe instead of
+answering it lands one step further along: `check_http_security` gives up at its
+10s budget as `HTTP security check timed out` with `checkStatus: 'timeout'`
+(`errorKind: 'timeout'`, still `inconclusive`, still not `missingControl` —
+#662), so match on both statuses, not just `error`. The category is EXCLUDED
+from scoring rather than
 zeroed, so the reported score is honest about what it measured but the headline
 grade rests on fewer checks than it appears to. In a `scan_domain` result:
 
@@ -392,13 +397,13 @@ Cloudflare-fronted customer, and we have no lever on their configuration.
    defect rather than a scan artefact: sending MTAs fetch that exact URL with a
    non-browser client and cannot solve an interactive challenge, so MTA-STS is
    genuinely unenforceable for those senders. Escalate it as a true finding.
-   ⚠️ **Our own wording currently prejudges this and is tracked as a defect
-   (#664).** Both prose paths — `src/tools/check-mta-sts.ts:109` and `:162` —
-   assert flatly that *"Real sending MTAs are not subject to the same
-   interactive challenge"*. Line 109 then hedges the conclusion ("may well be
-   reachable"), but the premise underneath it is stated as fact and we have
-   never measured it. Until #664 is resolved, do not quote that reassurance to a
-   customer; establish which case you are in first.
+   Our own wording no longer prejudges this (3.48.0, #664): both MTA-STS prose
+   paths — `buildPolicyWafFinding` and `excludeForPolicyThrow` in
+   `src/tools/check-mta-sts.ts` — state that reachability for real senders is
+   undetermined, name both branches, and point at the distinguishing test. Quote
+   them as they stand. What you must not do is resolve the ambiguity for the
+   customer on the strength of one intercepted fetch, in either direction — run
+   the vantage probe above and report what it shows.
 4. **The durable answer is a verifiable identity, not a string.** A signature-
    based bot-authentication scheme (or a platform verified-bot listing) would
    let a customer allowlist something an impersonator cannot mint, which is the

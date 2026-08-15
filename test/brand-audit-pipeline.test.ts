@@ -622,7 +622,10 @@ describe('runBrandAuditPipeline — T13 BRAND_AUDIT_DISCOVERY_MODE_DEFAULT env o
 		);
 
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
-		expect(summary?.metadata?.missingControl).toBe(true);
+		// #670: a SUCCESSFUL discovery that surfaced zero candidates is a measured
+		// result, so the summary no longer claims a missing control. The tiered
+		// stamping this case exists to pin is unaffected.
+		expect(summary?.metadata?.missingControl).toBeUndefined();
 		expect(summary?.metadata?.discoveryMode).toBe('tiered');
 		expect(summary?.metadata?.tiers).toMatchObject({
 			tier0Count: 1,

@@ -17,6 +17,7 @@ import { enrichWithCertificateMetadata } from '../lib/cert-metadata-enrich';
 import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-binding';
 import { withAbortSignal } from '../lib/abort-signal';
 import { withRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
+import { createFetchBudget } from '../lib/fetch-budget';
 
 /**
  * Check SSL/TLS configuration for a domain.
@@ -73,12 +74,57 @@ export async function checkSsl(
 		 * turn on everywhere; there isn't one on this Worker today.
 		 */
 		certMetadata?: boolean;
+		/**
+		 * Total wall-clock this check's fetches may collectively consume (issue #641).
+		 *
+		 * `checkSSL` runs robots.txt (3s) → `https://` (4s) → `http://` (4s) strictly
+		 * sequentially, so its worst case is 11s — structurally unable to finish inside
+		 * `scan_domain`'s 8s per-check budget. When that happened the outer `safeCheck`
+		 * killed the check and the whole `ssl` category was lost (`null`, excluded,
+		 * −3–4 points) even though HTTPS/HSTS had already been measured; only the final
+		 * redirect leg was outstanding.
+		 *
+		 * With a budget, each fetch is bounded by what the earlier ones left, so the
+		 * check degrades by dropping its LAST probe instead of losing everything. The
+		 * dropped leg emits no finding — `checkHttpRedirect` swallows a failed probe by
+		 * design — so the effect is an absent `medium`, never a fabricated one.
+		 *
+		 * Absent (every direct `check_ssl` call) → unchanged behaviour.
+		 */
+		budgetMs?: number;
 	} = {},
 ): Promise<CheckResult> {
 	// Memo sits BENEATH the gate (and beneath the abort composition) so the gate's
 	// own robots.txt fetch is what gets deduplicated, while parsing/rule selection
 	// stay per-gate. No memo → `withRobotsFetchMemo` returns the function unchanged.
-	const fetchFn = withRobotsGate(withRobotsFetchMemo(withAbortSignal(fetch, tlsProbeOptions.signal), tlsProbeOptions.robotsMemo));
+	// Budget sits INNERMOST of the three wrappers — which is what makes it meter
+	// EVERY leg: the gate's own robots.txt fetch delegates down through it. That leg
+	// is up to 3s of the 8s budget and is exactly the cost that pushed this check
+	// over, so hoisting the budget outside `withRobotsGate` would stop metering the
+	// most expensive one. Its clock still starts at wrapper CREATION, so the budget
+	// is one absolute deadline shared by all three legs, not a per-fetch allowance.
+	const budget = createFetchBudget(tlsProbeOptions.budgetMs);
+	const fetchFn = withRobotsGate(
+		withRobotsFetchMemo(budget.wrap(withAbortSignal(fetch, tlsProbeOptions.signal)), tlsProbeOptions.robotsMemo),
+	);
+	// The TLS probe is launched HERE, alongside the HTTPS legs, not after them.
+	// It needs only the domain — it never reads the fetch result — so running it
+	// sequentially bought nothing and cost everything: its own fixed 8s timeout on
+	// top of 7.25s of budgeted fetches, inside an 8s per-check kill. Concurrent, the
+	// check's worst case is the MAX of the two rather than their SUM, and the probe
+	// still yields its scoring-relevant finding on slow domains instead of being
+	// squeezed out by whatever the fetches left. `budget.signal()` also caps it at
+	// the shared deadline, so it can no longer outlive the budget on its own 8s clock.
+	//
+	// Fail-soft is preserved end to end: `callTlsProbe` returns null on any failure,
+	// and the `.catch` is belt-and-braces so a launched-but-unawaited rejection can
+	// never surface as an unhandled rejection if `checkSSL` throws first.
+	const probePromise = tlsProbeOptions.tlsProbeBinding
+		? callTlsProbe(tlsProbeOptions.tlsProbeBinding, tlsProbeOptions.tlsProbeAuthToken, domain, {
+				telemetry: tlsProbeOptions.onBindingDegradation,
+				signal: budget.signal(tlsProbeOptions.signal),
+			}).catch(() => null)
+		: null;
 	const base = (await checkSSL(domain, fetchFn, { timeout: HTTPS_TIMEOUT_MS })) as CheckResult;
 	// Certificate metadata (issuer / expiry / SANs) from Certificate Transparency.
 	// NON-SCORING: attaches to `metadata`, never appends a Finding — a CT lookup
@@ -89,7 +135,7 @@ export async function checkSsl(
 	// it. It IS abort-composed, so a scan-/per-check timeout cancels the in-flight
 	// CT subrequest rather than leaking it from the subrequest budget (R7).
 	const result = tlsProbeOptions.certMetadata
-		? await enrichWithCertificateMetadata(base, domain, withAbortSignal(fetch, tlsProbeOptions.signal))
+		? await enrichWithCertificateMetadata(base, domain, budget.wrap(withAbortSignal(fetch, tlsProbeOptions.signal)))
 		: base;
 	// Operator-only TLS-version enrichment via the BV_TLS_PROBE service binding.
 	// NOTE this one DOES affect scoring (it appends a High finding), unlike the
@@ -97,9 +143,7 @@ export async function checkSsl(
 	// Fail-soft: absent binding (every BSL self-host) → result returned unchanged.
 	// callTlsProbe returns null on any failure; mergeTlsFinding only ever appends a
 	// High finding when the probe actively reports legacy TLS (≤1.1), never penalizes 1.2/1.3.
-	if (!tlsProbeOptions.tlsProbeBinding) return result;
-	const probe = await callTlsProbe(tlsProbeOptions.tlsProbeBinding, tlsProbeOptions.tlsProbeAuthToken, domain, {
-		telemetry: tlsProbeOptions.onBindingDegradation,
-	});
+	if (!probePromise) return result;
+	const probe = await probePromise;
 	return probe ? mergeTlsFinding(result, probe) : result;
 }

@@ -67,7 +67,7 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
 
 - **80 MCP tools with 19 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, DANE-HTTPS, subdomailing, reverse DNS (PTR/FCrDNS), and DNSKEY strength
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
-- **Trust surface analysis** — detects shared SaaS platforms (Google, M365, SendGrid) and cross-references DMARC enforcement to determine real exposure
+- **Trust surface analysis** — detects shared SaaS senders in SPF, both cataloged platforms (Google, M365, SendGrid) and uncataloged hosts identifiable by their `spf` delegation label, then cross-references DMARC enforcement to determine real exposure
 - **Guided remediation** — `generate` (artifact=`fix_plan`) produces provider-aware prioritized actions; its record artifacts (`spf_record`, `dmarc_record`, `dkim_config`, `mta_sts_policy`, `rollout_plan`) output ready-to-publish records; `validate_fix` confirms whether a fix was applied successfully
 - **Supply chain mapping** — `map_supply_chain` correlates DNS signals to build a full third-party dependency graph with trust levels and risk signals
 - **Attack path simulation** — `simulate_attack_paths` enumerates specific paths (spoofing, takeover, hijack) with severity, steps, and mitigations
@@ -185,6 +185,17 @@ SSOT guardrails are enforced by focused audit tests:
 - Scan timeout budgets are resolved from shared runtime config.
 - WASM tool permissions are generated from MCP tool annotations.
 - Public quota copy is checked against runtime quota config.
+
+### Status badge
+
+`GET /badge/<domain>` returns an embeddable SVG — the badge at the top of this README is a live scan of our own domain. It needs no authentication and is subject to the same anonymous rate limits and daily caps as a public scan.
+
+The badge shows the **same customer-facing letter** `scan_domain` reports — the NIST-aligned 6-band grade (A+ ≥95, A ≥90, B ≥80, C ≥70, D ≥60, F <60) — so a domain cannot show one grade on its badge and a different one in its report. Two further states are stated rather than papered over:
+
+- **`<grade> partial`** — the scan was graded, but did not complete every check (a WAF challenge, a timeout, an unreachable host). The hover/aria title gives the exact coverage, e.g. `17 of 19 checks measured`. The grade and its colour are unchanged: coverage and posture are different axes.
+- **`unknown`** — the domain could not be measured at all. The badge says so instead of substituting a letter, which would publish a failing grade nobody measured.
+
+See [**docs/scoring.md**](docs/scoring.md) for the grade scales and the evidence rules behind them.
 
 ---
 
