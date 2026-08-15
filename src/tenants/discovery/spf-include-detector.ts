@@ -20,8 +20,8 @@ import { safeFetch } from '../../lib/safe-fetch';
 import { getEffectiveTld, extractBrandName } from '../../lib/public-suffix';
 import { isInfrastructureProvider } from './infrastructure-providers';
 import type { DiscoveryDnsContext } from './dns-context';
+import { CLOUDFLARE_DOH_ENDPOINT } from '../../lib/dns-endpoints';
 
-const DEFAULT_DOH_URL = 'https://cloudflare-dns.com/dns-query';
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_LOOKUPS = 10; // RFC 7208 §4.6.4
 const MAX_SEED_WALK_DEPTH = 5;
@@ -209,7 +209,7 @@ export async function detectSpfInclude(seedDomain: string, options: SpfIncludeOp
 	}
 	const seedLower = seedDomain.trim().toLowerCase().replace(/\.$/, '');
 	const dohFn = options.dohFn ?? safeFetch;
-	const dohUrl = options.dohUrl ?? DEFAULT_DOH_URL;
+	const dohUrl = options.dohUrl ?? CLOUDFLARE_DOH_ENDPOINT;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const dnsContext = options.dnsContext;
 	const queryTxtRecords = dnsContext
@@ -306,7 +306,7 @@ export async function extractSeedSpfIncludes(
 	const seedLower = seedDomain.trim().toLowerCase().replace(/\.$/, '');
 	const seedApex = registrableApex(seedLower);
 	const dohFn = options.dohFn ?? safeFetch;
-	const dohUrl = options.dohUrl ?? DEFAULT_DOH_URL;
+	const dohUrl = options.dohUrl ?? CLOUDFLARE_DOH_ENDPOINT;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const dnsContext = options.dnsContext;
 	const queryTxtRecords = dnsContext

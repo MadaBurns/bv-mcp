@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveMcpEndpoint } from './lib/mcp-endpoint.mjs';
 // SPDX-License-Identifier: BUSL-1.1
 //
 // scripts/test-client-matrix.mjs
@@ -16,7 +17,7 @@ import process from 'node:process';
 import fs from 'node:fs';
 
 // --- Config ---------------------------------------------------------------
-const EP = process.env.BV_MCP_ENDPOINT || 'https://dns-mcp.blackveilsecurity.com/mcp';
+const EP = resolveMcpEndpoint();
 const API_KEY = process.env.BV_API_KEY;
 const TARGET = process.env.TARGET_DOMAIN || 'blackveilsecurity.com';
 const CONCURRENCY = parseInt(process.env.MATRIX_CONCURRENCY || '4', 10);

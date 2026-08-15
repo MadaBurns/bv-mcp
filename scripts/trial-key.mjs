@@ -1,5 +1,7 @@
 #!/usr/bin/env node
 
+import { resolveMcpEndpoint } from './lib/mcp-endpoint.mjs';
+
 /**
  * Trial API Key Management CLI
  *
@@ -33,7 +35,7 @@ const DEFAULTS = {
 	uses: 1000,
 };
 
-const MCP_URL = 'https://dns-mcp.blackveilsecurity.com/mcp';
+const MCP_URL = resolveMcpEndpoint();
 
 // ---------------------------------------------------------------------------
 // Helpers

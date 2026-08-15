@@ -1,5 +1,6 @@
 import { SELF, env } from 'cloudflare:test';
 import { afterEach, describe, expect, it } from 'vitest';
+import { clearKvPrefix } from '../helpers/kv';
 
 // Regression: some MCP clients (notably Claude Desktop connectors, especially when given a
 // pre-registered OAuth Client ID) skip authorization-server metadata discovery and request the
@@ -8,13 +9,8 @@ import { afterEach, describe, expect, it } from 'vitest';
 // `GET /authorize` → 404, surfacing as "Couldn't connect" / "Couldn't register". The root-path
 // aliases (src/index.ts) fix this by routing root paths to the same handlers as /oauth/*.
 
-async function clearPrefix(prefix: string) {
-	const list = await env.SESSION_STORE.list({ prefix });
-	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
-}
-
 afterEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 
 describe('root-path OAuth aliases', () => {

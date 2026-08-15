@@ -43,7 +43,6 @@ import {
 	FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
 	FREE_TOOL_DAILY_LIMITS,
 	MAX_REQUEST_BODY_BYTES,
-	isValidOAuthSigningSecret,
 	isContractFlagGateEnabled,
 	parseCacheTtl,
 	parseGlobalDailyLimit,
@@ -66,7 +65,7 @@ import { buildAuthorizationServerMetadata, buildProtectedResourceMetadata, resol
 import { handleRegister } from './oauth/register';
 import { handleAuthorizeGet, handleAuthorizePost } from './oauth/authorize';
 import { handleToken } from './oauth/token';
-import { QuotaCoordinator, SINGLETON_ROUTING } from './lib/quota-coordinator';
+import { QuotaCoordinator } from './lib/quota-coordinator';
 export { QuotaCoordinator };
 import { ProfileAccumulator, resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
 export { ProfileAccumulator };
@@ -342,40 +341,11 @@ const mcpPaths = ['/mcp', '/mcp/messages', '/mcp/sse'] as const;
 const authedPaths = [...mcpPaths, '/reports/*'] as const;
 
 import { buildBrandTierLookups } from './lib/brand-tier-lookups';
-
-type OAuthAvailability = 'ready' | 'disabled' | 'misconfigured';
-
-/**
- * Three-state OAuth gate. `'ready'` requires BOTH `ENABLE_OAUTH==='true'` AND a
- * valid `OAUTH_SIGNING_SECRET`. The split matters: a misconfigured deploy used
- * to expose discovery + register + authorize + consent successfully and only
- * fail at /oauth/token, after the user had committed to the consent dance and
- * the relay client (claude.ai) had no diagnostic to surface — see chaos test
- * `oauth-misconfiguration.chaos.test.ts` and the 2026-05-08 incident.
- *
- * `'misconfigured'` → 503 from every OAuth route (fail-fast at first RTT).
- * `'disabled'` → 404 (feature off, semantically distinct from "broken").
- */
-function oauthAvailability(env: Pick<BvMcpEnv, 'ENABLE_OAUTH' | 'OAUTH_SIGNING_SECRET'>): OAuthAvailability {
-	if (env.ENABLE_OAUTH !== 'true') return 'disabled';
-	if (!isValidOAuthSigningSecret(env.OAUTH_SIGNING_SECRET)) return 'misconfigured';
-	return 'ready';
-}
-
-function certstreamAuthToken(env: BvMcpEnv): string | undefined {
-	return env.BV_CERTSTREAM_ADMIN_KEY || env.BV_INTERNAL_DEV_KEY;
-}
-
-/**
- * R8 / ADAM #2+#4 — build the QuotaCoordinator shard routing from env. DEFAULT-OFF:
- * only the exact string `'true'` enables sharding; anything else (including unset)
- * yields `SINGLETON_ROUTING`, i.e. every quota check stays on the single
- * `global-quota-coordinator` instance — byte-for-byte today's behavior.
- */
-function resolveQuotaShardRouting(env: BvMcpEnv): import('./lib/quota-coordinator').ShardRouting {
-	if (env.QUOTA_SHARDING_ENABLED !== 'true') return SINGLETON_ROUTING;
-	return { enabled: true, salt: env.QUOTA_SHARD_SALT ?? '' };
-}
+import {
+	resolveCertstreamAuthToken as certstreamAuthToken,
+	resolveOAuthAvailability as oauthAvailability,
+	resolveQuotaShardRouting,
+} from './worker/runtime-config';
 
 /**
  * F2 — mint a server-generated correlation id for an inbound request. Prefers

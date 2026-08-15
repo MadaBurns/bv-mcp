@@ -35,7 +35,7 @@ import { logError } from './log';
  * for zero scoring benefit — this tool's value is the bucket classification,
  * not a score contribution. The bucket lives in `metadata.bucket`.
  */
-const CATEGORY = 'brand_discovery';
+import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from './brand-audit-category';
 
 /** Concurrency cap for parallel RDAP lookups across candidates. */
 const RDAP_CONCURRENCY = 10;

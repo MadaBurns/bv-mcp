@@ -3,17 +3,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
 import { putCode } from '../../src/oauth/storage';
 import { OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
+import { clearKvPrefix } from '../helpers/kv';
 
 const TEST_API_KEY = 'testkey';
 const TEST_SIGNING_SECRET = 'a'.repeat(32);
 
 type TestEnv = typeof env & { BV_API_KEY?: string; OAUTH_SIGNING_SECRET?: string };
 const authEnv = { ...env, BV_API_KEY: TEST_API_KEY, OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET } as TestEnv;
-
-async function clearPrefix(prefix: string) {
-	const list = await env.SESSION_STORE.list({ prefix });
-	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
-}
 
 function base64url(buf: ArrayBuffer): string {
 	const b = new Uint8Array(buf);
@@ -75,10 +71,10 @@ async function postToken(body: URLSearchParams, customEnv: TestEnv = authEnv, he
 }
 
 beforeEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 afterEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 
 describe('POST /oauth/token', () => {

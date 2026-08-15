@@ -33,7 +33,7 @@ import { runBrandAuditPipeline, type BrandAuditPipelineDeps, type BrandAuditPipe
  * for zero scoring benefit — this tool's value is the bucket classification,
  * not a score contribution. The bucket lives in `metadata.bucket`.
  */
-const CATEGORY = 'brand_discovery';
+import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
 
 export type BrandAuditSingleOptions = BrandAuditPipelineOptions;
 

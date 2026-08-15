@@ -12,11 +12,10 @@ import type { QueryDnsOptions, DnsAuthority, DohResponse } from '../lib/dns-type
 import { DNS_TIMEOUT_MS } from '../lib/config';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
+import { CLOUDFLARE_DOH_ENDPOINT } from '../lib/dns-endpoints';
 
 const CATEGORY = 'nsec_walkability' as CheckCategory;
 
-/** Cloudflare DoH JSON endpoint. Used for the DO=1 denial-of-existence probe. */
-const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 /** DNS record type codes for denial-of-existence records. */
 const NSEC_TYPE = 47;
 const NSEC3_TYPE = 50;
@@ -98,7 +97,7 @@ function classifyDenial(probeName: string, authority: DnsAuthority[] | null): { 
 async function probeDenialNsec(domain: string, dnsOptions?: QueryDnsOptions): Promise<DenialProbeResult> {
 	const probeName = `bvnsec-probe-${probeNonce()}.${domain}`;
 	const params = new URLSearchParams({ name: probeName, type: 'A', do: '1' });
-	const url = `${DOH_ENDPOINT}?${params.toString()}`;
+	const url = `${CLOUDFLARE_DOH_ENDPOINT}?${params.toString()}`;
 	try {
 		const resp = await fetch(url, {
 			method: 'GET',

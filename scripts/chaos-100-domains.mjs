@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { resolveMcpEndpoint } from './lib/mcp-endpoint.mjs';
 // SPDX-License-Identifier: BUSL-1.1
 /**
  * 100-domain chaos test against production v2.21.1 + brand-audit infra.
@@ -19,7 +20,7 @@
 import fs from 'fs';
 import path from 'path';
 
-const EP = process.env.BV_MCP_ENDPOINT || 'https://dns-mcp.blackveilsecurity.com/mcp';
+const EP = resolveMcpEndpoint();
 const KEY_FILE = '.dev.vars';
 const SCAN_CONCURRENCY = parseInt(process.env.SCAN_CONCURRENCY || '8', 10);
 const REPORTS_DIR = path.resolve('reports');

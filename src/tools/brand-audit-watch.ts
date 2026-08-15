@@ -29,7 +29,7 @@ import { buildCheckResult, createFinding, type CheckResult } from '../lib/scorin
 import { validateOutboundUrl, validateDomain, sanitizeDomain } from '../lib/sanitize';
 import type { BrandAuditWatchInterval, BrandAuditWatchRow } from '../lib/db/brand-audit-schema';
 
-const CATEGORY = 'brand_discovery';
+import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
 
 /** Hard cap on active watches per principal. */
 const MAX_WATCHES_PER_OWNER = 20;
