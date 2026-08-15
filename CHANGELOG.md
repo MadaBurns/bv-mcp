@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.51.2] - 2026-08-15
+
+**Internal maintainability and characterization release. No public API, tool contract, scoring, schema, configuration-value, or user-facing behavior changes.**
+
+### Changed
+
+- Added characterization contracts for MCP transports, scan result shapes, tool dispatch parity, brand discovery fixtures, and Worker runtime configuration.
+- Extracted private Worker runtime and MCP response helpers to reduce composition-root complexity while preserving route order and response envelopes.
+- Centralized repeated DNS endpoint, brand-audit category, OAuth test cleanup, and operational-script endpoint constants.
+- Added test-environment and coverage-strategy guidance, including the current Workerd coverage constraints.
+- Removed two stale broken maintenance scripts and the redundant `@types/marked` development dependency.
+
 ## [3.51.1] - 2026-08-15
 
 **Internal refactor only. No public API, tool contract, scoring, or user-facing behavior changes.**
