@@ -1,6 +1,7 @@
 import { SELF, env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
+import { clearKvPrefix } from '../helpers/kv';
 
 // Phase 9: prove the full OAuth 2.1 mobile connector loop works end-to-end:
 // register → authorize (POST consent) → token → /mcp Bearer. The plan's pseudocode
@@ -21,11 +22,6 @@ const customEnv = {
 	OAUTH_ISSUER: 'https://example.com',
 } as TestEnv;
 
-async function clearPrefix(prefix: string) {
-	const list = await env.SESSION_STORE.list({ prefix });
-	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
-}
-
 function base64url(buf: ArrayBuffer): string {
 	const b = new Uint8Array(buf);
 	let s = '';
@@ -42,10 +38,10 @@ async function pkcePair(): Promise<{ verifier: string; challenge: string }> {
 }
 
 beforeEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 afterEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 
 describe('OAuth end-to-end', () => {

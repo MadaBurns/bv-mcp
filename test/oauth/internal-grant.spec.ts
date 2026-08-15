@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
 import { verifyJwt } from '../../src/oauth/jwt';
 import { OAUTH_KV_PREFIX } from '../../src/lib/config';
+import { clearKvPrefix } from '../helpers/kv';
 
 const TEST_INTERNAL_KEY = 'internal-key';
 const TEST_SIGNING_SECRET = 'a'.repeat(32);
@@ -11,11 +12,6 @@ type TestEnv = typeof env & {
 	BV_WEB_INTERNAL_KEY?: string;
 	OAUTH_SIGNING_SECRET?: string;
 };
-
-async function clearPrefix(prefix: string) {
-	const list = await env.SESSION_STORE.list({ prefix });
-	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
-}
 
 function base64url(buf: ArrayBuffer): string {
 	const b = new Uint8Array(buf);
@@ -84,11 +80,11 @@ async function postGrant(body: unknown, customEnv: TestEnv, headers: HeadersInit
 }
 
 beforeEach(async () => {
-	await clearPrefix(OAUTH_KV_PREFIX);
+	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
 });
 
 afterEach(async () => {
-	await clearPrefix(OAUTH_KV_PREFIX);
+	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
 });
 
 describe('POST /internal/oauth/grants', () => {

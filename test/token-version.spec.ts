@@ -11,6 +11,7 @@
  *   D. POST /internal/oauth/revoke-subject increments the version counter.
  *   E. POST /internal/oauth/revoke-subject requires a valid bearer.
  */
+import { clearKvPrefix } from './helpers/kv';
 
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -40,11 +41,6 @@ const baseEnv: TestEnv = {
 	OAUTH_ISSUER: ISSUER,
 	BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
 };
-
-async function clearPrefix(prefix: string) {
-	const list = await env.SESSION_STORE.list({ prefix });
-	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
-}
 
 /**
  * Sign a test JWT with the given subject, version, and tier.
@@ -100,11 +96,11 @@ async function postRevokeSubject(sub: string, authHeader?: string, extraHeaders:
 }
 
 beforeEach(async () => {
-	await clearPrefix(OAUTH_KV_PREFIX);
+	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
 });
 
 afterEach(async () => {
-	await clearPrefix(OAUTH_KV_PREFIX);
+	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
 });
 
 // ---------------------------------------------------------------------------
