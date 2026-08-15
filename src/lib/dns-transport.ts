@@ -5,8 +5,8 @@ import { type DohResponse, type DohOutcome, type QueryDnsOptions, RecordType, ty
 import { DohResponseSchema } from '../schemas/dns';
 import { logError } from './log';
 import type { Semaphore } from './semaphore';
+import { CLOUDFLARE_DOH_ENDPOINT } from './dns-endpoints';
 
-const DOH_ENDPOINT = 'https://cloudflare-dns.com/dns-query';
 const GOOGLE_DOH_ENDPOINT = 'https://dns.google/resolve';
 
 function buildDohUrl(endpoint: string, domain: string, type: RecordTypeName, dnssecCheck: boolean, checkingDisabled = false): string {
@@ -136,7 +136,7 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 	const confirmWithSecondaryOnEmpty = opts?.confirmWithSecondaryOnEmpty ?? DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY;
 	const sem = opts?.dnsSemaphore;
 	const callerSignal = opts?.signal;
-	const url = buildDohUrl(DOH_ENDPOINT, domain, type, dnssecCheck, opts?.checkingDisabled);
+	const url = buildDohUrl(CLOUDFLARE_DOH_ENDPOINT, domain, type, dnssecCheck, opts?.checkingDisabled);
 
 	/** Optionally run a fetch through the semaphore when one is provided. */
 	const guardedFetch = (input: string | Request, init?: RequestInit & { cf?: Record<string, unknown> }): Promise<Response> =>

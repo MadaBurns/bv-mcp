@@ -9,10 +9,11 @@
 
 import type { DnsAnswer, DohResponse, RecordTypeName } from './dns-types';
 import { RecordType } from './dns-types';
+import { CLOUDFLARE_DOH_ENDPOINT } from './dns-endpoints';
 
 /** Public DoH resolver endpoints. */
 export const RESOLVERS = [
-	{ name: 'Cloudflare', endpoint: 'https://cloudflare-dns.com/dns-query' },
+	{ name: 'Cloudflare', endpoint: CLOUDFLARE_DOH_ENDPOINT },
 	{ name: 'Google', endpoint: 'https://dns.google/resolve' },
 	{ name: 'Quad9', endpoint: 'https://dns.quad9.net:5053/dns-query' },
 	{ name: 'OpenDNS', endpoint: 'https://doh.opendns.com/dns-query' },
