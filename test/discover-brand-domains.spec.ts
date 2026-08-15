@@ -19,7 +19,7 @@ import type {
 	DkimKeyReuseResult,
 } from '../src/tenants/discovery';
 import { createDiscoveryDnsContext, type DiscoveryDnsContext } from '../src/tenants/discovery/dns-context';
-import type { DiscoverBrandDomainsDeps } from '../src/tools/discover-brand-domains';
+import type { DiscoverBrandDomainsDeps, DiscoverSignal } from '../src/tools/discover-brand-domains';
 
 function jsonResponse(status: number, body: unknown): Response {
 	return {
@@ -339,7 +339,7 @@ describe('discoverBrandDomains', () => {
 		});
 		const result = await discoverBrandDomains(
 			expected.seed,
-			{ signals: expected.signals, candidate_domains: [expected.domain] },
+			{ signals: expected.signals as DiscoverSignal[], candidate_domains: [expected.domain] },
 			deps,
 		);
 		const candidates = result.findings.filter((f) => f.metadata?.candidate);
