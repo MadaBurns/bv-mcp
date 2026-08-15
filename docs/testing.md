@@ -34,7 +34,24 @@ Fixtures must be deterministic, redact credentials, and model normalized public
 responses rather than provider payloads. Network, production probes, and paid
 service integrations are optional operator smoke checks, never CI gates.
 
-The calibration configuration currently matches no specs. The explicit decision
-is **defer removal**: it documents the intended one-hour Node calibration lane,
-but it must not be treated as a passing quality signal until named calibration
-fixtures are restored in a separately reviewed change.
+## Environment-dependent checks
+
+The default suite must remain offline and deterministic. Its Miniflare bindings
+are declared in `vitest.config.mts`; test-specific service bindings belong in
+the individual contract test, never in shared developer environment files.
+
+Production probes, paid upstream lookups, and credentials are operator smoke
+checks rather than CI gates. Run them only from an authenticated local shell
+using ignored environment files or a secret manager; never place credentials in
+fixture data, command arguments, logs, or checked-in configuration. A probe
+must state the target, required binding or secret, expected cost, and the
+public response contract it is validating.
+
+## Calibration decision
+
+`vitest.calibration.config.mts` matches no current specs. It remains a dormant
+Node-only configuration documenting the intended one-hour calibration lane, but
+it is not a quality signal and is not run by CI. Removing it would be a separate
+repository-cleanup decision because it is an operator-facing entry point;
+restoring it requires named, deterministic calibration fixtures and an explicit
+CI policy first.
