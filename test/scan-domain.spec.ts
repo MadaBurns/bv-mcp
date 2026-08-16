@@ -539,6 +539,32 @@ describe('scanDomain integration - DMARC/DKIM/DNSSEC/CAA with mocked DoH', () =>
 		expect(auto.score.overall).toBe(explicit.score.overall);
 	});
 
+	it('treats a non-apex host with no MX as web-only without mail-auth false positives', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (!url.includes('cloudflare-dns.com')) return Promise.resolve(httpResponse('OK'));
+
+			const name = decodeURIComponent(url.match(/[?&]name=([^&]+)/)?.[1] ?? '').replace(/\.$/, '');
+			const type = url.match(/[?&]type=([^&]+)/)?.[1];
+			if ((type === 'NS' || type === '2') && name === 'example.com') {
+				return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+			}
+			// www inherits example.com's zone and has no mail records of its own.
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const result = await scanDomain('www.example.com', undefined, { forceRefresh: true });
+
+		expect(result.context.profile).toBe('web_only');
+		expect(result.context.signals).toContain('non-apex host has no MX; mail controls not applicable');
+		expect(result.checks.find((check) => check.category === 'http_security')).toBeDefined();
+		for (const category of ['spf', 'dmarc', 'dkim', 'mta_sts', 'bimi', 'tlsrpt', 'dane']) {
+			const check = findCheck(result, category);
+			expect(check?.findings.some((finding) => finding.severity === 'critical' || finding.severity === 'high')).toBe(false);
+		}
+	});
+
 	it('detects DMARC p=none policy as medium severity', async () => {
 		mockWithOverrides({
 			'_dmarc.': () => Promise.resolve(txtResponse('_dmarc.example.com', ['v=DMARC1; p=none'])),
