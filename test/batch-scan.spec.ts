@@ -194,6 +194,49 @@ describe('batchScan', () => {
 		};
 	}
 
+	it('makes compact structured batch output materially smaller while full results retain findings', async () => {
+		const { batchScan, compactBatchScanResults } = await import('../src/tools/batch-scan');
+		const detail = 'Repeated finding detail. '.repeat(100);
+		/* eslint-disable @typescript-eslint/no-explicit-any -- fake ScanFn stub, see fakeScanResult() above */
+		const verboseScan = async (domain: string): Promise<any> => ({
+			...fakeScanResult(domain),
+			// isMeasured() reads checks.length > 0 — a real scan always populates this,
+			// so the stub needs at least one entry for `measured: true` to be exercised.
+			checks: [{ category: 'dmarc', checkStatus: 'completed' }],
+			score: {
+				...fakeScanResult(domain).score,
+				findings: Array.from({ length: 12 }, (_, i) => ({
+					category: 'dmarc',
+					title: `Finding ${i}`,
+					severity: 'medium',
+					detail,
+				})),
+			},
+		});
+		/* eslint-enable @typescript-eslint/no-explicit-any */
+		const results = await batchScan(
+			Array.from({ length: 10 }, (_, i) => `compact-${i}.example.com`),
+			{ scanFn: verboseScan },
+		);
+		const compact = compactBatchScanResults(results);
+
+		expect(results[0].findings).toHaveLength(12);
+		expect(compact.results).toHaveLength(10);
+		expect(compact.results[0]).toMatchObject({
+			domain: 'compact-0.example.com',
+			score: 80,
+			grade: 'B',
+			measured: true,
+			findingCounts: { medium: 12 },
+			scoringProfile: 'mail_enabled',
+		});
+		expect(compact.results[0]).not.toHaveProperty('findings');
+		expect(compact.results[0]).not.toHaveProperty('checkStatuses');
+		expect(compact).toHaveProperty('scoringModelVersion');
+		expect(compact).toHaveProperty('scoringConfigHash');
+		expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(results).length / 10);
+	});
+
 	it('emits null score/grade for a budget-exceeded domain instead of a fabricated F', async () => {
 		const { batchScan } = await import('../src/tools/batch-scan');
 		// Each scan takes 300ms; a 10ms budget guarantees every domain is
