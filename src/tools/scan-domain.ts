@@ -62,7 +62,7 @@ import { checkSvcbHttps } from './check-svcb-https';
 import { checkSubdomailing } from './check-subdomailing';
 import { checkAuthoritativeDnsInfra } from './check-authoritative-dns-infra';
 import { checkRootServerSet } from './check-root-server-set';
-import { applyScanPostProcessing } from './scan/post-processing';
+import { applyScanPostProcessing, mxDeclaresNoInboundMail } from './scan/post-processing';
 import { resolveScanTimeoutBudget } from './scan/timeouts';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
@@ -768,7 +768,11 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 
 	let result: ScanDomainResult;
 	try {
-		checkResults = await applyScanPostProcessing(domain, checkResults, runtimeOptions);
+		const isNonApexNonMailHost = zone?.isApex === false && mxDeclaresNoInboundMail(checkResults.find((result) => result.category === 'mx'));
+		checkResults = await applyScanPostProcessing(domain, checkResults, {
+			...runtimeOptions,
+			nonApexHost: isNonApexNonMailHost,
+		});
 
 		// Re-apply score=0 and checkStatus for checks that errored or timed out.
 		// Post-processing calls buildCheckResult() which creates new objects that lose checkStatus,
@@ -783,8 +787,17 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		// Detect domain context from check results
 		let domainContext = detectDomainContext(checkResults);
 
-		// If an explicit profile was requested, override detection
-		if (isExplicit) {
+		// A non-delegated host with no MX is a web target, not a mail domain. Its
+		// host-specific TLS/HTTP/takeover checks remain deliberate scan evidence;
+		// mail controls are not scored against a label that does not receive mail.
+		if (isNonApexNonMailHost) {
+			domainContext = {
+				profile: 'web_only',
+				signals: [...domainContext.signals, 'non-apex host has no MX; mail controls not applicable'],
+				weights: getProfileWeights('web_only', runtimeOptions?.scoringConfig),
+				detectedProvider: domainContext.detectedProvider,
+			};
+		} else if (isExplicit) {
 			domainContext = {
 				profile: explicitProfile as DomainProfile,
 				signals: [...domainContext.signals, `explicit profile override: ${explicitProfile}`],
