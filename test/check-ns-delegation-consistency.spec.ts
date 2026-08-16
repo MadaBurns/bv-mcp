@@ -59,7 +59,8 @@ function delegationEvidence(): DelegationConsistencyEvidence {
 describe('checkNs delegation consistency enrichment', () => {
 	it('adds direct authoritative-AA evidence and removes the contradictory healthy summary', async () => {
 		mockCoreNsDns();
-		const probeFetch = vi.fn(async () => new Response(JSON.stringify(delegationEvidence())));
+		const probeFetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+			new Response(JSON.stringify(delegationEvidence())));
 		const { checkNs } = await import('../src/tools/check-ns');
 		const result = await checkNs(
 			'example.com',
