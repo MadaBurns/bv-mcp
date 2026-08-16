@@ -753,7 +753,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	get_ca_policies: {
 		description:
-			'Retrieve Conditional Access policies for a Microsoft Entra tenant. Requires m365Proxy service binding; returns { unprovisioned: true } when absent. A `representative: true` field in the response marks sample (non-live) data until live Graph reads land.',
+			'Retrieve Conditional Access policies for a Microsoft Entra tenant. Requires m365Proxy service binding; returns { unprovisioned: true } when absent. A `representative` field in the response marks each call: `true` for sample (non-live) data, `false` once a live Microsoft Graph read succeeded for that tenant — check it per-response rather than assuming one or the other.',
 		schema: GetCaPoliciesArgs,
 		group: 'identity_secops',
 		tier: 'protective',
