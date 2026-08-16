@@ -22,6 +22,25 @@ export interface BatchScanResultItem extends StructuredScanResult {
 /** Signature compatible with `scanDomain`. Exposed as an option for testing. */
 type ScanFn = typeof scanDomain;
 
+export interface CompactBatchScanResultItem {
+	domain: string;
+	score: number | null;
+	grade: string | null;
+	measured: boolean;
+	findingCounts: StructuredScanResult['findingCounts'];
+	categoryScores: StructuredScanResult['categoryScores'];
+	scoringProfile: string | null;
+	evidence: StructuredScanResult['evidence'];
+	error?: string;
+}
+
+/** Compact wire payload for bulk triage; use `format: "full"` for complete findings. */
+export interface CompactBatchScanResult {
+	results: CompactBatchScanResultItem[];
+	scoringModelVersion: string;
+	scoringConfigHash: string;
+}
+
 export interface BatchScanOptions {
 	force_refresh?: boolean;
 	kv?: KVNamespace;
@@ -183,6 +202,31 @@ export async function batchScan(domains: string[], options: BatchScanOptions = {
 
 	await Promise.all(Array.from({ length: concurrency }, () => worker()));
 	return results;
+}
+
+/**
+ * Reduce a batch to the fields needed to rank an estate and select domains for
+ * a full scan. Findings and per-check diagnostics are intentionally excluded:
+ * their repeated explanatory prose makes multi-domain MCP responses unusable.
+ */
+export function compactBatchScanResults(results: BatchScanResultItem[]): CompactBatchScanResult {
+	return {
+		results: results.map(({ domain, score, grade, measured, findingCounts, categoryScores, scoringProfile, evidence, error }) => ({
+			domain,
+			score,
+			grade,
+			measured,
+			findingCounts,
+			categoryScores,
+			scoringProfile,
+			evidence,
+			...(error === undefined ? {} : { error }),
+		})),
+		// These are computed once for the batch, so hoist them rather than repeating
+		// identical values in every domain result.
+		scoringModelVersion: results[0]?.scoringModelVersion ?? SCORING_MODEL_VERSION,
+		scoringConfigHash: results[0]?.scoringConfigHash ?? computeScoringConfigHash(),
+	};
 }
 
 /** Format batch scan results as a text summary. */

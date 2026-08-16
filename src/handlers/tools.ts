@@ -30,7 +30,7 @@ import { checkZoneHygiene } from '../tools/check-zone-hygiene';
 import { checkSubdomailing } from '../tools/check-subdomailing';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { computeScoringConfigHash } from '../lib/scoring-version';
-import { batchScan, formatBatchScan } from '../tools/batch-scan';
+import { batchScan, compactBatchScanResults, formatBatchScan } from '../tools/batch-scan';
 import { compareDomains, formatDomainComparison, COMPARE_DOMAINS_SYNC_BUDGET_MS } from '../tools/compare-domains';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
@@ -1357,7 +1357,11 @@ export async function handleToolsCall(
 						logDetails: { totalDomains: batchResults.length },
 						severity: 'info',
 					});
-					return buildToolResult(batchText, batchResults, effectiveFormat);
+					return buildToolResult(
+						batchText,
+						effectiveFormat === 'compact' ? compactBatchScanResults(batchResults) : batchResults,
+						effectiveFormat,
+					);
 				}
 				case 'compare_domains': {
 					const domains = validatedArgs.domains as string[];
