@@ -64,6 +64,8 @@ export interface ScanRuntimeOptions {
 	certstreamAuthToken?: string;
 	/** Bypass cache and run a fresh scan. Useful for troubleshooting after DNS changes. */
 	forceRefresh?: boolean;
+	/** Internal: scan target inherits its DNS zone rather than owning a delegation. */
+	nonApexHost?: boolean;
 	/**
 	 * Auth tier of the requesting principal. Threaded from ToolRuntimeOptions so
 	 * scan_domain can gate paid-tier enrichments (e.g. TLS probe Browser Rendering).
@@ -94,6 +96,13 @@ export async function applyScanPostProcessing(
 	const declaresNoInboundMail = mxDeclaresNoInboundMail(mxResult);
 
 	if (declaresNoInboundMail) {
+		// A non-delegated host such as www.example.com can legitimately have no MX
+		// or mail-auth records of its own. Preserve its web/TLS checks, but do not
+		// report absent host-label mail records as security failures.
+		if (runtimeOptions?.nonApexHost) {
+			results = adjustForNonApexNonMailHost(results);
+		}
+
 		// The downgrade is GATED on real inherited protection, not on MX absence alone.
 		//
 		// Absent MX means the domain cannot RECEIVE mail. It says nothing about whether
@@ -567,6 +576,24 @@ function clarifyMtaStsForMailDomain(domain: string, results: CheckResult[]): Che
 				return {
 					...finding,
 					detail: `Neither MTA-STS nor TLS-RPT records are present for ${domain}. Since this domain has MX records and accepts email, adding MTA-STS and TLS-RPT is recommended to protect inbound email in transit.`,
+				};
+			}
+			return finding;
+		});
+		return buildCheckResult(result.category, adjusted);
+	});
+}
+
+function adjustForNonApexNonMailHost(results: CheckResult[]): CheckResult[] {
+	const mailCategories: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'mta_sts', 'bimi', 'tlsrpt', 'dane', 'subdomailing'];
+	return results.map((result) => {
+		if (!mailCategories.includes(result.category)) return result;
+		const adjusted = result.findings.map((finding: Finding) => {
+			if ((finding.severity === 'critical' || finding.severity === 'high') && isMissingRecordFinding(finding)) {
+				return {
+					...finding,
+					severity: 'info' as const,
+					detail: `${finding.detail} (not applicable — this non-apex host has no MX; mail controls are evaluated at its mail domain)`,
 				};
 			}
 			return finding;
