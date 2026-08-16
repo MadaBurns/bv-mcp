@@ -29,7 +29,7 @@ export interface CompactBatchScanResultItem {
 	measured: boolean;
 	findingCounts: StructuredScanResult['findingCounts'];
 	categoryScores: StructuredScanResult['categoryScores'];
-	scoringProfile: string;
+	scoringProfile: string | null;
 	evidence: StructuredScanResult['evidence'];
 	error?: string;
 }
