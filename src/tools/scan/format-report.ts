@@ -56,7 +56,8 @@ export interface StructuredScanResult {
 	 * construction time, so it is passed through verbatim, not re-sanitized here.
 	 */
 	findings: Array<{ category: string; title: string; severity: 'critical' | 'high' | 'medium' | 'low' | 'info'; detail: string }>;
-	scoringProfile: string;
+	/** Detected scoring profile; null when the scan produced no evidence to infer one. */
+	scoringProfile: string | null;
 	scoringSignals: string[];
 	scoringNote: string | null;
 	adaptiveWeightDeltas: Record<string, number> | null;
