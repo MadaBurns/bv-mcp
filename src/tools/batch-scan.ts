@@ -76,7 +76,7 @@ function emptyResult(domain: string, error: string, scoringConfigHash: string): 
 		categoryScores: {},
 		findingCounts: { critical: 0, high: 0, medium: 0, low: 0 },
 		findings: [],
-		scoringProfile: 'mail_enabled',
+		scoringProfile: null,
 		scoringSignals: [],
 		scoringNote: null,
 		adaptiveWeightDeltas: null,
@@ -105,6 +105,31 @@ function emptyResult(domain: string, error: string, scoringConfigHash: string): 
 		scoringModelVersion: SCORING_MODEL_VERSION,
 		scoringConfigHash,
 		error,
+	};
+}
+
+/**
+ * A scan that returned without recording a check is not equivalent to an apex
+ * NXDOMAIN/broken-DNS short circuit. The latter explicitly sets `resolves`; the
+ * former is an execution failure worth retrying, even when no exception escaped.
+ */
+function markUnexpectedNoEvidence(result: BatchScanResultItem): BatchScanResultItem {
+	if (
+		result.evidence.attempted > 0 ||
+		result.score !== null ||
+		result.grade !== null ||
+		result.resolves === false ||
+		result.resolves === 'broken'
+	) {
+		return result;
+	}
+
+	return {
+		...result,
+		scoringProfile: null,
+		evidenceInsufficient: true,
+		evidenceNote: 'No checks ran for a domain whose DNS resolution was not reported as absent or broken; retry the scan.',
+		error: 'scan_produced_no_evidence',
 	};
 }
 
@@ -165,7 +190,7 @@ export async function batchScan(domains: string[], options: BatchScanOptions = {
 					timeoutId = setTimeout(() => reject(new Error('batch_budget_exceeded')), remaining);
 				});
 				const scanResult = await Promise.race([scanPromise, timeoutPromise]);
-				results[task.idx] = buildStructuredScanResult(scanResult, { scoringConfigHash });
+				results[task.idx] = markUnexpectedNoEvidence(buildStructuredScanResult(scanResult, { scoringConfigHash }));
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : 'Scan failed';
 				results[task.idx] = emptyResult(task.domain, msg, scoringConfigHash);

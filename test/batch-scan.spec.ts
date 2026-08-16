@@ -123,6 +123,45 @@ describe('batchScan', () => {
 		expect(results[0].evidenceNote).toBeNull();
 	});
 
+	it('marks a zero-check scan without an NXDOMAIN/broken-DNS signal as retryable, unlike a genuine no-DNS abstain', async () => {
+		const { batchScan } = await import('../src/tools/batch-scan');
+		// This is the batch-only failure shape from #686: scanDomain returned without
+		// an exception but also without ever starting its check matrix. It must not be
+		// indistinguishable from the explicit NXDOMAIN short-circuit below.
+		const noEvidenceScan = (async (domain: string) => ({
+			...fakeScanResult(domain),
+			score: { overall: null, grade: null, summary: 'no checks ran', categoryScores: {}, findings: [] },
+			checks: [],
+			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null },
+			// No `resolves` status: this is not a confirmed absent/broken domain.
+		})) as never;
+		const nxdomainScan = (async (domain: string) => ({
+			...fakeScanResult(domain),
+			score: { overall: null, grade: null, summary: 'NXDOMAIN', categoryScores: {}, findings: [] },
+			checks: [],
+			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null },
+			resolves: false,
+		})) as never;
+
+		const [unexpected, nxdomain] = await Promise.all([
+			batchScan(['live-no-evidence.com'], { scanFn: noEvidenceScan }),
+			batchScan(['missing-no-evidence.com'], { scanFn: nxdomainScan }),
+		]);
+
+		expect(unexpected[0]).toMatchObject({
+			evidence: { attempted: 0, completed: 0, ratio: 0 },
+			evidenceInsufficient: true,
+			scoringProfile: null,
+			error: 'scan_produced_no_evidence',
+		});
+		expect(unexpected[0].evidenceNote).toMatch(/retry/i);
+		expect(nxdomain[0]).toMatchObject({
+			resolves: false,
+			evidenceInsufficient: false,
+		});
+		expect(nxdomain[0].error).toBeUndefined();
+	});
+
 	it('should reject more than 10 domains', async () => {
 		const { batchScan } = await import('../src/tools/batch-scan');
 		const tooMany = Array.from({ length: 11 }, (_, i) => `domain${i}.com`);
