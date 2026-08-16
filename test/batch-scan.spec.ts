@@ -161,6 +161,9 @@ describe('batchScan', () => {
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const verboseScan = (async (domain: string): Promise<any> => ({
 			...fakeScanResult(domain),
+			// isMeasured() reads checks.length > 0 — a real scan always populates this,
+			// so the stub needs at least one entry for `measured: true` to be exercised.
+			checks: [{ category: 'dmarc', checkStatus: 'completed' }],
 			score: {
 				...fakeScanResult(domain).score,
 				findings: Array.from({ length: 12 }, (_, i) => ({
