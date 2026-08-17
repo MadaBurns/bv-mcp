@@ -1,5 +1,16 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { buildAlertPayload, sendAlert } from '../src/lib/alerting';
+import { buildAlertPayload, sendAlert, sendFuzzingAlert } from '../src/lib/alerting';
+import type { FuzzingAlert } from '../src/schemas/alerting';
+
+const FUZZ_PAYLOAD: FuzzingAlert = {
+	type: 'fuzzing_suspected',
+	principalKind: 'ip',
+	principalIdHash: 'i_deadbeef',
+	kind: 'unknown_tool',
+	count: 42,
+	windowSeconds: 900,
+	observedAt: '2026-08-09T00:00:00.000Z',
+};
 
 describe('buildAlertPayload', () => {
 	it('builds Slack-compatible payload', () => {
@@ -98,5 +109,127 @@ describe('sendAlert', () => {
 		globalThis.fetch = mockFetch;
 		await sendAlert('http://hooks.slack.com/test', { text: 'hello' });
 		expect(mockFetch).not.toHaveBeenCalled();
+	});
+});
+
+describe('sendAlert delivery outcome', () => {
+	let originalFetch: typeof globalThis.fetch;
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	it('reports true when the webhook accepts the alert', async () => {
+		globalThis.fetch = vi.fn(async () => new Response('ok', { status: 200 })) as typeof fetch;
+		expect(await sendAlert('https://hooks.slack.com/test', { text: 'hello' })).toBe(true);
+	});
+
+	it('reports false when the webhook rejects the alert', async () => {
+		// The exact production failure: a Cloudflare bot challenge returns 403 and the
+		// alert is dropped. Callers could not observe this because sendAlert was void.
+		globalThis.fetch = vi.fn(async () => new Response('Forbidden', { status: 403 })) as typeof fetch;
+		expect(await sendAlert('https://hooks.slack.com/test', { text: 'hello' })).toBe(false);
+	});
+
+	it('reports false when delivery throws', async () => {
+		globalThis.fetch = vi.fn(async () => {
+			throw new Error('network error');
+		}) as typeof fetch;
+		expect(await sendAlert('https://hooks.slack.com/test', { text: 'hello' })).toBe(false);
+	});
+
+	it('reports false for an unusable webhook URL', async () => {
+		globalThis.fetch = vi.fn() as typeof fetch;
+		expect(await sendAlert('', { text: 'hello' })).toBe(false);
+		expect(await sendAlert('http://hooks.slack.com/test', { text: 'hello' })).toBe(false);
+	});
+});
+
+describe('sendAlert service-binding dispatch', () => {
+	let originalFetch: typeof globalThis.fetch;
+	const INGEST_URL = 'https://www.blackveilsecurity.com/api/internal/ops/bv-mcp-alerts/abc123';
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+	});
+
+	it('delivers the bv-web ingest URL over the service binding, not the public edge', async () => {
+		// Why this exists: Worker-originated fetches to www.blackveilsecurity.com are
+		// intercepted by the zone's bot challenge and 403'd before reaching bv-web.
+		// Service bindings bypass the edge entirely.
+		const globalCalls: string[] = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			globalCalls.push(String(input));
+			return new Response('Forbidden', { status: 403 });
+		}) as typeof fetch;
+
+		const bindingCalls: string[] = [];
+		const bvWeb = {
+			fetch: vi.fn(async (input: RequestInfo | URL) => {
+				bindingCalls.push(String(input));
+				return new Response(JSON.stringify({ ok: true }), { status: 200 });
+			}),
+		};
+
+		const delivered = await sendAlert(INGEST_URL, { text: 'hello' }, { bvWeb: bvWeb as unknown as Fetcher });
+
+		expect(delivered).toBe(true);
+		expect(bindingCalls).toHaveLength(1);
+		expect(globalCalls).toHaveLength(0);
+	});
+
+	it('leaves a generic webhook on global fetch even when the binding is available', async () => {
+		// sendAlert is deliberately a generic Slack/Discord-shaped poster. Only the
+		// bv-web ingest path may be re-routed through the internal binding.
+		const globalCalls: string[] = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			globalCalls.push(String(input));
+			return new Response('ok', { status: 200 });
+		}) as typeof fetch;
+		const bvWeb = { fetch: vi.fn(async () => new Response('ok', { status: 200 })) };
+
+		await sendAlert('https://hooks.slack.com/test', { text: 'hello' }, { bvWeb: bvWeb as unknown as Fetcher });
+
+		expect(globalCalls).toHaveLength(1);
+		expect(bvWeb.fetch).not.toHaveBeenCalled();
+	});
+
+	it('routes a fuzzing alert over the binding and reports the outcome', async () => {
+		// sendFuzzingAlert previously discarded its response entirely, so a 403 here
+		// was 100% silent — worse than sendAlert, which at least logged.
+		globalThis.fetch = vi.fn(async () => new Response('Forbidden', { status: 403 })) as typeof fetch;
+		const bvWeb = { fetch: vi.fn(async () => new Response(JSON.stringify({ ok: true }), { status: 200 })) };
+
+		const delivered = await sendFuzzingAlert(INGEST_URL, FUZZ_PAYLOAD, { bvWeb: bvWeb as unknown as Fetcher });
+
+		expect(delivered).toBe(true);
+		expect(bvWeb.fetch).toHaveBeenCalledTimes(1);
+		expect(globalThis.fetch).not.toHaveBeenCalled();
+	});
+
+	it('reports false when a fuzzing alert is rejected', async () => {
+		globalThis.fetch = vi.fn(async () => new Response('Not Found', { status: 404 })) as typeof fetch;
+		expect(await sendFuzzingAlert('https://hooks.slack.com/test', FUZZ_PAYLOAD)).toBe(false);
+	});
+
+	it('falls back to global fetch for the ingest URL when no binding is bound', async () => {
+		// BSL self-hosts have no BV_WEB binding; they must keep the public-URL path.
+		const globalCalls: string[] = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			globalCalls.push(String(input));
+			return new Response('ok', { status: 200 });
+		}) as typeof fetch;
+
+		await sendAlert(INGEST_URL, { text: 'hello' });
+
+		expect(globalCalls).toEqual([INGEST_URL]);
 	});
 });

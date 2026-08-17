@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import type { DelegationConsistencyEvidence } from './delegation-types';
 import type { AuthoritativeDnsInfraEvidence, RootServerSetEvidence } from './types';
 
 export interface InfraProbeBinding {
@@ -27,6 +28,19 @@ export async function fetchAuthoritativeDnsEvidence(
 		body: JSON.stringify({ hostname: normalizeInfraHostname(domain) }),
 	});
 	return readJsonResponse<AuthoritativeDnsInfraEvidence>(response, 'authoritative dns probe');
+}
+
+export async function fetchDelegationConsistencyEvidence(
+	domain: string,
+	infraProbe: InfraProbeBinding,
+): Promise<DelegationConsistencyEvidence> {
+	const response = await infraProbe.fetch('https://infra-probe.internal/probe/delegation-consistency', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ hostname: normalizeInfraHostname(domain) }),
+		signal: AbortSignal.timeout(5000),
+	});
+	return readJsonResponse<DelegationConsistencyEvidence>(response, 'delegation consistency probe');
 }
 
 export async function fetchRootServerSetEvidence(

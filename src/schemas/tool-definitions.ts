@@ -229,7 +229,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		scanIncluded: true,
 	},
 	check_ns: {
-		description: 'Look up NS (nameserver) records for a domain. Identifies the DNS nameserver provider (Cloudflare, Route53, NS1, etc.) and shows delegation and redundancy. Use to find out which authoritative nameserver or DNS hosting service is used for a domain.',
+		description: 'Audit a domain’s nameserver delegation and redundancy. Identifies the DNS hosting provider and, when the infrastructure probe is available, directly compares parent and child NS sets, verifies authoritative AA responses, and checks required glue addresses. Use to detect stale registrar delegations, lame nameservers, and intermittent resolution risk.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'protective',

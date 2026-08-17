@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, expect, it } from 'vitest';
-import infraProbeWorker from '../src/workers/infra-probe';
+import infraProbeWorker, { handleDelegationConsistencyProbe } from '../src/workers/infra-probe';
 import { ROOT_HINTS, ROOT_SERVER_NAMES } from '../src/lib/authoritative-dns-infra/root-hints';
 
 describe('infra probe worker', () => {
@@ -51,6 +51,39 @@ describe('infra probe worker', () => {
 			errors: ['live_root_server_set_probe_not_configured'],
 		});
 		expect(typeof body.checkedAt).toBe('string');
+	});
+
+	it('returns ordinary-zone parent/child delegation evidence through the injected probe seam', async () => {
+		const response = await handleDelegationConsistencyProbe(
+			new Request('https://infra-probe.internal/probe/delegation-consistency', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ hostname: 'Example.COM.' }),
+			}),
+			{
+				recursiveQuery: async (name, type) => (name === 'com' && type === 'NS' ? ['a.gtld-servers.net'] : []),
+				directQuery: async (server) => server === 'a.gtld-servers.net'
+					? {
+						aa: false, rcode: 0, answers: [],
+						authority: [{ name: 'example.com', type: 2, data: 'ns.provider.net' }],
+						additional: [],
+					}
+					: {
+						aa: true, rcode: 0,
+						answers: [{ name: 'example.com', type: 2, data: 'ns.provider.net' }],
+						authority: [], additional: [],
+					},
+				now: () => new Date('2026-08-07T00:00:00.000Z'),
+			},
+		);
+
+		expect(response.status).toBe(200);
+		await expect(response.json()).resolves.toMatchObject({
+			hostname: 'example.com',
+			parentZone: 'com',
+			parentDelegationNs: ['ns.provider.net'],
+			childObservations: [{ nameserver: 'ns.provider.net', aaFlag: true }],
+		});
 	});
 
 	it('rejects invalid authoritative DNS probe payloads', async () => {

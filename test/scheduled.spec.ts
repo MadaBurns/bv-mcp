@@ -301,7 +301,7 @@ describe('scheduled.ts alert webhook resolution', () => {
 			resolveAlertWebhookUrl: vi.fn(async () => 'https://hooks.example.com/resolved'),
 		}));
 		const alertingModule = await import('../src/lib/alerting');
-		const sendAlertSpy = vi.spyOn(alertingModule, 'sendAlert').mockResolvedValue(undefined);
+		const sendAlertSpy = vi.spyOn(alertingModule, 'sendAlert').mockResolvedValue(true);
 
 		const { handleScheduled } = await import('../src/scheduled');
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- minimal env for this targeted test

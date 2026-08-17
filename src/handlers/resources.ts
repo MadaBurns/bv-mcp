@@ -86,7 +86,7 @@ ${TOOL_COUNT} MCP tools, including ${CHECK_TOOL_COUNT} \`check_*\` tools and \`s
 | \`check_dnssec\` | DNSSEC | AD validation, DNSKEY/DS records, algorithm strength |
 | \`check_ssl\` | SSL/TLS | HTTPS reachability, HSTS policy |
 | \`check_mta_sts\` | MTA-STS | TXT policy presence, policy retrieval |
-| \`check_ns\` | NS | Delegation resilience, provider diversity |
+| \`check_ns\` | NS | Parent/child delegation, authoritative AA, glue, provider diversity |
 | \`check_caa\` | CAA | CA authorization, issuance restrictions |
 | \`check_mx\` | MX | MX presence, routing quality, provider detection |
 | \`check_http_security\` | HTTP Security | CSP, X-Frame-Options, COOP, CORP, Permissions-Policy |
