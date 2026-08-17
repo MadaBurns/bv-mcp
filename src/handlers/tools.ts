@@ -464,7 +464,10 @@ export const TOOL_REGISTRY: Record<
 			}),
 	},
 	check_mta_sts: { cacheKey: () => 'mta_sts', execute: (d, _args, ro) => checkMtaSts(d, buildDnsOptions(ro)) },
-	check_ns: { cacheKey: () => 'ns', execute: (d, _args, ro) => checkNs(d, buildDnsOptions(ro)) },
+	check_ns: {
+		cacheKey: (_args, ro) => (ro?.infraProbe ? 'ns:delegation-probe' : 'ns'),
+		execute: (d, _args, ro) => checkNs(d, buildDnsOptions(ro), undefined, { infraProbe: ro?.infraProbe }),
+	},
 	check_caa: { cacheKey: () => 'caa', execute: (d, _args, ro) => checkCaa(d, buildDnsOptions(ro)) },
 	check_bimi: { cacheKey: () => 'bimi', execute: (d, _args, ro) => checkBimi(d, buildDnsOptions(ro)) },
 	check_tlsrpt: { cacheKey: () => 'tlsrpt', execute: (d, _args, ro) => checkTlsrpt(d, buildDnsOptions(ro)) },

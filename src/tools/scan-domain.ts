@@ -177,7 +177,7 @@ const CHECK_DISPATCH: Record<string, CheckRunner> = {
 	// policy-fetch and fingerprint-probe timeouts), so they take the budget for the same
 	// reason `ssl` and `http_security` do.
 	mta_sts: (d, dns, _rt, _sig, zone, _robots, budget) => checkMtaSts(d, dns, zone, { budgetMs: budget }),
-	ns: (d, dns, _rt, _sig, zone) => checkNs(d, dns, zone),
+	ns: (d, dns, rt, _sig, zone) => checkNs(d, dns, zone, { infraProbe: rt?.infraProbe }),
 	caa: (d, dns, _rt, _sig, zone) => checkCaa(d, dns, zone),
 	bimi: (d, dns) => checkBimi(d, dns),
 	tlsrpt: (d, dns) => checkTlsrpt(d, dns),
