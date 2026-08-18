@@ -1,6 +1,6 @@
 ---
 name: bv-mcp-scoring
-description: "Use when changing the bv-mcp / blackveil-dns scoring model — category weights, profiles, grade thresholds, the passed/missing-control rule, or the score computation in packages/dns-checks/src/scoring. Symptoms: a category scores 0 unexpectedly, a grade boundary is off, profileWeights mismatch errors, or an inconclusive check zeroing a score."
+description: "Use when changing the bv-mcp / blackveil-dns scoring model — category weights, profiles, grade thresholds, the passed/missing-control rule, or the score computation in packages/dns-checks/src/scoring. Also use when computing an adoption, coverage, or zero-rate statistic from category scores across a corpus of domains. Symptoms: a category scores 0 unexpectedly, a grade boundary is off, profileWeights mismatch errors, an inconclusive check zeroing a score, or a DNSSEC adoption rate that comes out near 100%."
 ---
 
 # bv-mcp Scoring Changes
@@ -45,6 +45,22 @@ Runtime override path: `SCORING_CONFIG` env (JSON: `weights`, `profileWeights`, 
 - **Email bonus**: SPF ≥57, DKIM not deterministically missing, DMARC present → +5/+3/+2 by DMARC score.
 - **Maturity staging** (`computeMaturityStage`, 0–4): the score cap reads the **displayed 6-band** letter — displayed F (<60) → ≤2, displayed D (60–69) → ≤3, ≥70 uncapped — not the 9-band, which is what let #640 print D beside "Stage 4". An `indeterminate` stage is never capped. Stage 3 doesn't require DKIM.
 
+## ⚠️ Measuring adoption across a corpus — DNSSEC is NOT `score > 0`
+
+Every scored category zeroes on absence **except DNSSEC**: an unsigned zone lands at exactly **60** via the fixed `penaltyOverride: 40` above, and only a *broken* chain sets `missingControl` and zeroes. The scoring behaviour is correct and documented; what gets missed is its consequence for anyone counting.
+
+> **Any DNSSEC adoption or coverage figure must test `dnssec > 60`, never `dnssec > 0`.**
+
+A `> 0` test counts every unsigned domain as signed and reports **95–100% adoption against a true 3–16%**. Measured over 2,123 NZ domains, the raw `dnssec` category values distribute `{0: 44, 55: 1, 60: 1942, >60: 136}` — 6.4% actually signed, 91.5% unsigned sitting at exactly 60; the 44 zeros are broken chains and non-resolving domains, not unsigned ones. Signed rates measured the same day: US 16.4%, IN 16.5%, UK 9.7%, NZ 8.6%, AU 5.9%, CN 3.3%. The `> 0` test returned **95.1%** on the AU corpus and **100%** on CN.
+
+This is the most-repeated analysis error against this model. Across a single multi-agent session it produced a wrong figure in **six independent analyses**; each agent had to be warned individually, and one of them then found an analysis script still contradicting the number it had just computed. It generalises: any "zero rate", "missing control rate", or "categories at 0" statistic computed uniformly across categories is wrong for DNSSEC unless DNSSEC is special-cased. Nothing here is a defect to fix in the model — the floor at 60 is the deliberate NIST-aligned treatment; the rule exists because DNSSEC is the sole exception to the pattern every other category follows, and a uniform query silently inherits the wrong one.
+
+### Category exclusion is not category failure
+
+A category **absent from `categoryScores`** was excluded as inconclusive (see "Inconclusive ≠ failure" above), so it must come out of the **denominator** of an adoption or coverage rate — never be counted as a failure. Reach is uneven, and it is the network-dependent checks that vary: across the same 2,123 NZ domains `http_security` was measured on 1,579 and `ssl` on 1,741; on Chinese domains `ssl` failed on 72.5% and `http_security` on 51.6%. Pure-DNS categories completed at 100% everywhere.
+
+That skew looks like a scanner defect and is not one. Scans containing a failed check ran **faster** than clean ones (median 1,969 ms vs 2,250 ms) — the signature of an unreachable or refusing host, which fails fast. A check losing its time budget is by definition slow, so a budget cut would move the median the other way. Read the skew as a property of the network path to those origins.
+
 ## ⚠️ The SPF trust-surface analyzer exists TWICE — core edits there are not severity-neutral
 
 `packages/dns-checks/src/checks/spf-trust-surface.ts` (catalog `MULTI_TENANT_PLATFORMS` + `analyzeTrustSurface`) has a **second copy in the worker** at `src/tools/spf-trust-surface.ts`, and `augmentTrustSurface()` in `src/tools/check-spf.ts` **replaces** the core's trust-surface findings with worker-derived ones (it filters on `metadata.trustSurface === true`, so the two do NOT stack). As of 3.49.0 the two copies are behaviourally identical and the worker copy exists only until the seam is deleted — keep the analysis logic identical in both, which is what the in-file `⚠️ DUPLICATED FILE` markers are for. Two consequences that have both bitten:
@@ -84,6 +100,8 @@ If you changed a weight, expect golden/snapshot score assertions to move — rev
 - "The per-member shared-platform findings should be scored, they're real risk" → they are, and they are still reported in full; scoring them again on top of the aggregate is a double count that floored valid SPF records to 0 (#637, model 1.8.0). Re-litigating that is an operator call with the corpus, not a code edit.
 - Read a `missingControl` list (here or in CLAUDE.md) and acted on it without grepping the call sites → the lists drift (HTTP Security left it in #646/#662, and half the survivors fire on something other than plain absence), and the grep itself matches explanatory comments as well as real emitters.
 - A check that failed to measure anything stamped `missingControl: true` "so it scores 0" → wrong claim, right shape. Use `inconclusive: true` for the claim and set the zeroing explicitly; `checkStatus` is what excludes the category (#638, #646, #662).
+- Computed a DNSSEC adoption/coverage rate with `dnssec > 0` (or a uniform cross-category "score is 0" test) → wrong by an order of magnitude; an unsigned zone is 60, not 0. Test `dnssec > 60`. This has produced a wrong published figure six times in one session.
+- Counted a category MISSING from `categoryScores` as a failure → it was excluded as inconclusive; drop it from the denominator instead, or you overstate the failure rate on exactly the network-dependent checks (`ssl`, `http_security`).
 - A customer-visible surface calling `nistScoreToGrade` or reading `score.grade` directly → route it through `displayGradeFor`, or it will disagree with the report about the same domain, as `/badge` did until #663.
 
 ## Provenance
