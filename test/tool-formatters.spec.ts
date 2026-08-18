@@ -32,6 +32,51 @@ describe('tool-formatters', () => {
 		expect(text).toContain('Adverse Consequences:');
 	});
 
+	// #695: an unmeasured lane's only finding is an `info` note, from which `buildCheckResult`
+	// derives score 100 / passed true. Rendering that as "✅ Passed / 100/100" tells the reader a
+	// capability nobody observed is healthy. These two cases pin the abstention in BOTH directions
+	// -- the second is what stops a fix from simply suppressing the verdict everywhere.
+	it('formatCheckResult abstains from a verdict when the check did not complete', () => {
+		const result: CheckResult = {
+			category: 'osint_investigation' as CheckResult['category'],
+			passed: true,
+			score: 100,
+			checkStatus: 'error',
+			findings: [
+				{
+					category: 'osint_investigation' as CheckResult['category'],
+					title: 'OSINT investigation unavailable',
+					severity: 'info',
+					detail: 'OSINT domain investigation is not provisioned in this deployment.',
+					metadata: { unprovisioned: true },
+				},
+			],
+		};
+
+		const text = formatCheckResult(result);
+		expect(text).toContain('**Status:** not measured');
+		// The affirmative claims must be ABSENT, not merely reworded.
+		expect(text).not.toContain('Passed');
+		expect(text).not.toContain('100/100');
+		// The finding itself still renders -- abstaining from the verdict must not hide the reason.
+		expect(text).toContain('OSINT investigation unavailable');
+	});
+
+	it('formatCheckResult still reports a verdict when the check completed', () => {
+		const result: CheckResult = {
+			category: 'spf',
+			passed: true,
+			score: 100,
+			checkStatus: 'completed',
+			findings: [{ category: 'spf', title: 'SPF record valid', severity: 'info', detail: 'Record ends in -all.' }],
+		};
+
+		const text = formatCheckResult(result);
+		expect(text).toContain('✅ Passed');
+		expect(text).toContain('**Score:** 100/100');
+		expect(text).not.toContain('not measured');
+	});
+
 	it('formatCheckResult renders takeover proof requirements when exploitability is not proven', () => {
 		const result: CheckResult = {
 			category: 'subdomain_takeover',
