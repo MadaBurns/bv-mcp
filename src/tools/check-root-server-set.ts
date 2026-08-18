@@ -22,18 +22,27 @@ export async function checkRootServerSet(
 					'authoritative_dns_infra',
 					'Official root hints embedded',
 					'info',
-					'The check returned the embedded official root-server names. BV_INFRA_PROBE is not provisioned, so live root glue, delegation, serial, and DNSKEY cross-checks were not run.',
-					{ evidenceMode: 'worker_only' },
+					'The check returned the embedded official root-server names. BV_INFRA_PROBE is not provisioned, so live root glue, delegation, serial, and DNSKEY cross-checks were not run. Nothing was verified against the live root zone.',
+					{ evidenceMode: 'worker_only', inconclusive: true },
 				),
 			]),
+			// Nothing was measured — see the twin branch in check-authoritative-dns-infra.ts (#696).
+			score: 0,
+			passed: false,
+			checkStatus: 'error',
 			partial: true,
 			metadata: {
 				evidenceMode: 'worker_only',
 				rootServers: ROOT_SERVER_NAMES,
 				capabilitySummary: {
-					passed: ['official_root_hints_match'],
+					// `official_root_hints_match` was reported as PASSED here. Nothing was queried:
+					// the "match" was this module's own embedded ROOT_SERVER_NAMES constant compared
+					// against itself. A capability does not pass because the checker agrees with
+					// itself — it belongs in `inconclusive`, which is what it always was (#696).
+					passed: [],
 					failed: [],
 					inconclusive: [
+						'official_root_hints_match',
 						'root_priming_ns_set',
 						'root_glue_records',
 						'root_servers_parent_child_delegation',
