@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 /** OSINT investigation tools — thin fail-soft proxies over bv-recon osint-worker workflows. */
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { markUnmeasured } from '../lib/unmeasured-result';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import {
 	callReconInvestigateStart,
@@ -22,9 +23,35 @@ export interface ReconToolOptions {
 }
 
 function unprovisioned(detail: string): CheckResult {
-	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, 'OSINT investigation unavailable', 'info', detail, { unprovisioned: true }),
-	]) as CheckResult;
+	return markUnmeasured(
+		buildCheckResult(CATEGORY, [createFinding(CATEGORY, 'OSINT investigation unavailable', 'info', detail, { unprovisioned: true })]),
+	);
+}
+
+/**
+ * A poll whose upstream call came back empty while the binding IS bound — the recon service did
+ * not answer, answered non-2xx, or returned a payload that failed schema validation, OR the id is
+ * unknown/expired. `callRecon*` collapses all of those into one `null`
+ * (`src/lib/recon-binding.ts`), so we cannot tell them apart here and must not pretend to.
+ *
+ * Kept DISTINCT from `unprovisioned()` because the two states are opposites operationally:
+ * unprovisioned is a permanent, structural fact about this deployment, while this is a transient
+ * upstream condition that may resolve on the next poll. Reporting an outage as "not provisioned in
+ * this deployment" — which is what this path did until #695 — tells an operator to go configure a
+ * binding that is already bound, and tells a caller their investigation is unavailable when it may
+ * simply not be ready yet.
+ *
+ * `partial: true` is deliberate and load-bearing here (and deliberately ABSENT on the
+ * structural-absence path): the registry cache predicate is `(r) => !r.partial`
+ * (`src/handlers/tools.ts`), so this keeps a transient upstream blip out of the cache and lets the
+ * next poll self-heal. A permanent deployment fact would gain nothing from cache suppression and
+ * would just pay the service-binding round-trip on every call.
+ */
+function upstreamUnavailable(title: string, detail: string, meta: Record<string, unknown> = {}): CheckResult {
+	return {
+		...markUnmeasured(buildCheckResult(CATEGORY, [createFinding(CATEGORY, title, 'info', detail, { upstreamUnavailable: true, ...meta })])),
+		partial: true,
+	};
 }
 
 const OSINT_OWNER_TTL_SECONDS = 24 * 60 * 60;
@@ -171,7 +198,14 @@ function shortText(s: string, max: number): string {
 export async function osintInvestigationStatus(id: string, options: ReconToolOptions = {}): Promise<CheckResult> {
 	if (await investigationOwnerMismatch(id, options)) return notOwned(id);
 	const s = await callReconInvestigationStatus(options.reconBinding, options.reconAuthToken, id, undefined, options.onBindingDegradation);
-	if (!s) return unprovisioned(`Investigation status unavailable for ${id} (unprovisioned or not found).`);
+	if (!s)
+		return options.reconBinding
+			? upstreamUnavailable(
+					'OSINT investigation status could not be retrieved',
+					`The recon service did not return a usable status for investigation ${id}, or that id is unknown or expired. This is not a statement about the investigation's findings — nothing was read.`,
+					{ investigationId: id },
+				)
+			: unprovisioned(`OSINT investigation status is not provisioned in this deployment (investigation ${id}).`);
 	const status = typeof s.status === 'string' ? s.status : 'unknown';
 	const parts = [`status=${status}`];
 	if (typeof s.completedChecks === 'number' && typeof s.totalChecks === 'number')
@@ -191,7 +225,14 @@ export async function osintInvestigationStatus(id: string, options: ReconToolOpt
 export async function osintInvestigationReport(id: string, options: ReconToolOptions = {}): Promise<CheckResult> {
 	if (await investigationOwnerMismatch(id, options)) return notOwned(id);
 	const r = await callReconInvestigationReport(options.reconBinding, options.reconAuthToken, id, undefined, options.onBindingDegradation);
-	if (!r) return unprovisioned(`Investigation report unavailable for ${id} (unprovisioned or not ready).`);
+	if (!r)
+		return options.reconBinding
+			? upstreamUnavailable(
+					'OSINT investigation report could not be retrieved',
+					`The recon service did not return a usable report for investigation ${id}. The investigation may still be running, or the id may be unknown or expired — poll osint_investigation_status. No findings were read.`,
+					{ investigationId: id },
+				)
+			: unprovisioned(`OSINT investigation reports are not provisioned in this deployment (investigation ${id}).`);
 	const total = typeof r.total === 'number' ? r.total : Array.isArray(r.findings) ? r.findings.length : 0;
 	const summary = typeof r.summary === 'string' ? r.summary.trim() : '';
 	return buildCheckResult(CATEGORY, [

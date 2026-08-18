@@ -109,6 +109,22 @@ export function withReportCitation<T extends { structuredContent?: Record<string
 	};
 }
 
+/**
+ * Render an ACCESS REFUSAL — a tier denial or an ownership mismatch. Deliberately not
+ * `formatCheckResult`: that function opens with a Status/Score verdict, and a refusal has no
+ * verdict to report. Nothing was measured; the caller was turned away.
+ *
+ * Paired with `isError: true` at the dispatch site, this makes a refusal read the way a free
+ * caller's paid-gated 403 already does, instead of a green "✅ Passed / 100/100" (#695).
+ */
+export function formatAccessRefusal(result: CheckResult): string {
+	const lines: string[] = [`## ${result.category.toUpperCase()} Check`, '**Status:** request refused', ''];
+	for (const finding of result.findings) {
+		lines.push(`- ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, 600)}`);
+	}
+	return lines.join('\n');
+}
+
 export function formatCheckResult(result: CheckResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 	lines.push(`## ${result.category.toUpperCase()} Check`);
@@ -136,7 +152,9 @@ export function formatCheckResult(result: CheckResult, format: OutputFormat = 'f
 			if (format === 'compact') {
 				const isHighPriority = finding.severity === 'critical' || finding.severity === 'high';
 				const detailLimit = isHighPriority ? 4000 : 300;
-				lines.push(`- [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, detailLimit)}`);
+				lines.push(
+					`- [${finding.severity.toUpperCase()}] ${sanitizeOutputText(finding.title, 120)} — ${sanitizeOutputText(finding.detail, detailLimit)}`,
+				);
 				continue;
 			}
 
@@ -150,8 +168,8 @@ export function formatCheckResult(result: CheckResult, format: OutputFormat = 'f
 							: finding.severity === 'high'
 								? '🔴'
 								: '🚨';
-					lines.push(`- ${icon} **[${finding.severity.toUpperCase()}]** ${sanitizeOutputText(finding.title, 120)}`);
-					lines.push(`  ${sanitizeOutputText(finding.detail)}`);
+			lines.push(`- ${icon} **[${finding.severity.toUpperCase()}]** ${sanitizeOutputText(finding.title, 120)}`);
+			lines.push(`  ${sanitizeOutputText(finding.detail)}`);
 
 			const verificationStatus =
 				finding.category === 'subdomain_takeover' && finding.metadata?.verificationStatus
@@ -162,9 +180,7 @@ export function formatCheckResult(result: CheckResult, format: OutputFormat = 'f
 			}
 
 			const proofRequired =
-				finding.category === 'subdomain_takeover' && finding.metadata?.proofRequired
-					? String(finding.metadata.proofRequired)
-					: undefined;
+				finding.category === 'subdomain_takeover' && finding.metadata?.proofRequired ? String(finding.metadata.proofRequired) : undefined;
 			if (proofRequired) {
 				lines.push(`  Proof Required: ${sanitizeOutputText(proofRequired, 120)}`);
 			}
@@ -219,18 +235,14 @@ function appendCertificateSection(lines: string[], result: CheckResult): void {
 	if (!cert || typeof cert !== 'object') return;
 	const c = cert as Record<string, unknown>;
 
-	const str = (v: unknown): string =>
-		typeof v === 'string' && v.trim() !== '' ? sanitizeOutputText(v, 200) : 'unknown';
+	const str = (v: unknown): string => (typeof v === 'string' && v.trim() !== '' ? sanitizeOutputText(v, 200) : 'unknown');
 	const expires =
 		typeof c.notAfter === 'string' && c.notAfter.trim() !== ''
 			? // Date-only: the time component is noise for an expiry, and CT precision
 				// does not warrant implying it.
 				sanitizeOutputText(c.notAfter.slice(0, 10), 20)
 			: 'unknown';
-	const remaining =
-		typeof c.daysRemaining === 'number' && Number.isFinite(c.daysRemaining)
-			? `${c.daysRemaining} days`
-			: 'unknown';
+	const remaining = typeof c.daysRemaining === 'number' && Number.isFinite(c.daysRemaining) ? `${c.daysRemaining} days` : 'unknown';
 
 	lines.push('');
 	lines.push('### Certificate');
@@ -244,6 +256,6 @@ function appendCertificateSection(lines: string[], result: CheckResult): void {
 	// Never drop this line: without it a reader takes "logged" to mean "served"
 	// and draws a wrong conclusion from a correct answer.
 	lines.push(
-		'- Source: Certificate Transparency logs — describes the most recently logged certificate, which may differ from the certificate currently served.'
+		'- Source: Certificate Transparency logs — describes the most recently logged certificate, which may differ from the certificate currently served.',
 	);
 }

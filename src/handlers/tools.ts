@@ -100,7 +100,9 @@ import {
 import { resolveToolOutputFormat } from './tool-output';
 import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
 import { readAndUpdateLastTool } from '../lib/session-memory';
-import { formatCheckResult, mcpError, buildToolResult, withReportCitation } from './tool-formatters';
+import { formatCheckResult, formatAccessRefusal, mcpError, buildToolResult, withReportCitation } from './tool-formatters';
+import { markUnmeasured, isAccessRefusal } from '../lib/unmeasured-result';
+import { isCompletedCheck } from '../lib/ungraded-display';
 import type { McpContent } from './tool-formatters';
 import { TOOLS } from '../schemas/tool-definitions';
 import type { McpTool } from '../schemas/tool-definitions';
@@ -1272,16 +1274,37 @@ export async function handleToolsCall(
 					result = tracked.data;
 					cacheStatus = tracked.cacheStatus;
 				}
+				// #695 chokepoint. `buildCheckResult` derives `passed`/`score` from finding
+				// severities, so a tool reporting that it measured NOTHING — an absent binding, a
+				// silent upstream — still returns `passed: true, score: 100`. Applied here rather
+				// than at each builder so one rule covers the osint, bucket, brand-audit and
+				// threat-feed families, and so a future unavailable-lane builder inherits it.
+				//
+				// `markUnmeasured` only stamps `checkStatus`; it never rewrites the scalars. See
+				// `src/lib/unmeasured-result.ts` for why inverting them would be worse than
+				// leaving them.
+				result = markUnmeasured(result);
+				// An authorization refusal is not a security verdict either, but it is a different
+				// class: the caller was refused, not the capability missing. Surfaced as a failed
+				// tool call, mirroring the `sourceUnavailable` branch of `discover_subdomains`
+				// below — for a security tool, "refused" and "clean" must never be
+				// indistinguishable to a machine consumer. NOT `checkStatus: 'error'`: that is the
+				// retryable class, and an agentic caller would loop on a permanent refusal.
+				const accessRefused = isAccessRefusal(result);
+				const measured = isCompletedCheck(result) && !accessRefused;
 				runtimeOptions?.resultCapture?.(result);
-				logResult = result.passed ? 'pass' : 'fail';
+				logResult = measured && result.passed ? 'pass' : 'fail';
 				logDetails = result;
 				logToolSuccess({
 					...ctx(),
-					status: result.passed ? 'pass' : 'fail',
+					status: measured && result.passed ? 'pass' : 'fail',
 					logResult,
 					logDetails,
 					cacheStatus,
 				});
+				if (accessRefused) {
+					return { ...buildToolResult(formatAccessRefusal(result), result, effectiveFormat), isError: true };
+				}
 				return buildToolResult(formatCheckResult(result, effectiveFormat), result, effectiveFormat);
 			}
 

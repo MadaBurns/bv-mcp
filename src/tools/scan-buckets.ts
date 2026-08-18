@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 /** Cloud-bucket discovery tools — thin fail-soft proxies over bv-recon's bucket-scanner. */
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { markUnmeasured, stripReservedMarkers } from '../lib/unmeasured-result';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import {
 	callReconBucketScanStart,
@@ -28,9 +29,24 @@ export interface ReconToolOptions {
 }
 
 function unprovisioned(detail: string): CheckResult {
-	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, 'Bucket scanning unavailable', 'info', detail, { unprovisioned: true }),
-	]) as CheckResult;
+	return markUnmeasured(
+		buildCheckResult(CATEGORY, [createFinding(CATEGORY, 'Bucket scanning unavailable', 'info', detail, { unprovisioned: true })]),
+	);
+}
+
+/**
+ * Upstream answered with nothing while the binding IS bound. See the twin of this helper in
+ * `src/tools/osint-investigate.ts` for the full rationale: `callRecon*` collapses absent-binding,
+ * non-2xx, schema mismatch and thrown errors into a single `null`, so a genuine outage was being
+ * reported to the caller as "not provisioned in this deployment" (#695). `partial: true` keeps the
+ * transient state out of the registry cache (`(r) => !r.partial`); the structural-absence path
+ * deliberately does NOT set it.
+ */
+function upstreamUnavailable(title: string, detail: string, meta: Record<string, unknown> = {}): CheckResult {
+	return {
+		...markUnmeasured(buildCheckResult(CATEGORY, [createFinding(CATEGORY, title, 'info', detail, { upstreamUnavailable: true, ...meta })])),
+		partial: true,
+	};
 }
 
 interface BucketScanScope {
@@ -166,7 +182,10 @@ function findingInTargetScope(finding: Record<string, unknown>, tokens: TargetSc
 
 function notOwned(id: string): CheckResult {
 	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, 'Bucket scan not available', 'info', `Bucket scan ${id} is not owned by this principal.`, { notOwned: true, scanId: id }),
+		createFinding(CATEGORY, 'Bucket scan not available', 'info', `Bucket scan ${id} is not owned by this principal.`, {
+			notOwned: true,
+			scanId: id,
+		}),
 	]) as CheckResult;
 }
 
@@ -175,7 +194,9 @@ async function rememberBucketScanScope(scanId: string | undefined, scope: Bucket
 	const target = normalizeTarget(scope.target);
 	if (!target && !scope.providers?.length && !scope.owner) return;
 	await kv
-		.put(scopeKey(scanId), JSON.stringify({ target, providers: scope.providers, owner: scope.owner }), { expirationTtl: BUCKET_SCAN_SCOPE_TTL_SECONDS })
+		.put(scopeKey(scanId), JSON.stringify({ target, providers: scope.providers, owner: scope.owner }), {
+			expirationTtl: BUCKET_SCAN_SCOPE_TTL_SECONDS,
+		})
 		.catch(() => undefined);
 }
 
@@ -262,7 +283,7 @@ export async function scanBucketsStart(
 			'info',
 			`Bucket discovery started for ${args.target} (scanId ${started.scanId}). Poll with scan_buckets_status.`,
 			{
-				...started,
+				...stripReservedMarkers(started),
 				scanId: started.scanId,
 				status: started.status ?? 'running',
 				pollWith: 'scan_buckets_status',
@@ -281,10 +302,19 @@ export async function scanBucketsStatus(args: { scanId: string }, options: Recon
 		undefined,
 		options.onBindingDegradation,
 	);
-	if (!s) return unprovisioned(`Bucket scan status is unavailable for ${args.scanId} (unprovisioned or not found).`);
+	if (!s)
+		return options.reconBinding
+			? upstreamUnavailable(
+					'Bucket scan status could not be retrieved',
+					`The recon service did not return a usable status for bucket scan ${args.scanId}, or that scan id is unknown or expired. Nothing was read about the scan's findings.`,
+					{ scanId: args.scanId },
+				)
+			: unprovisioned(`Bucket scanning is not provisioned in this deployment (scan ${args.scanId}).`);
 	return buildCheckResult(CATEGORY, [
 		createFinding(CATEGORY, `Bucket scan ${args.scanId}`, 'info', JSON.stringify(s).slice(0, 800), {
-			...s, // F7: opaque upstream payload sanitized at the createFinding chokepoint
+			// F7: opaque upstream payload sanitized at the createFinding chokepoint. Reserved
+			// unmeasured/refusal markers are stripped so upstream cannot write our control channel.
+			...stripReservedMarkers(s),
 			...(scope.target ? { targetScope: scope.target } : {}),
 			...(scope.providers?.length ? { providerScope: scope.providers } : {}),
 			summary: true,
@@ -303,7 +333,14 @@ export async function scanBucketsFindings(args: BucketScanFindingArgs, options: 
 		undefined,
 		options.onBindingDegradation,
 	);
-	if (!f) return unprovisioned('Bucket findings are unavailable (unprovisioned or no scan).');
+	if (!f)
+		return options.reconBinding
+			? upstreamUnavailable(
+					'Bucket findings could not be retrieved',
+					`The recon service did not return usable findings for bucket scan ${args.scanId}. The scan may still be running, or the scan id may be unknown or expired — poll scan_buckets_status. This is NOT a report that no exposed buckets exist.`,
+					{ scanId: args.scanId },
+				)
+			: unprovisioned('Bucket scanning is not provisioned in this deployment.');
 	const target = normalizeTarget(args.target) ?? rememberedScope.target;
 	const providers = args.providers ?? rememberedScope.providers;
 	const filtered = filterBucketPayload(f, { target, providers });
@@ -311,7 +348,8 @@ export async function scanBucketsFindings(args: BucketScanFindingArgs, options: 
 	const detailPrefix = filteredCount > 0 ? `Bucket findings filtered ${filteredCount} out-of-scope upstream candidate(s). ` : '';
 	return buildCheckResult(CATEGORY, [
 		createFinding(CATEGORY, 'Bucket findings', 'info', `${detailPrefix}${JSON.stringify(filtered).slice(0, 800)}`, {
-			...filtered, // F7: opaque upstream payload sanitized at the createFinding chokepoint
+			// F7 + reserved-marker strip — see scanBucketsStatus above.
+			...stripReservedMarkers(filtered),
 			summary: true,
 		}),
 	]) as CheckResult;

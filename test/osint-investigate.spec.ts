@@ -9,7 +9,12 @@ describe('osint investigation tools', () => {
 		const { osintInvestigateDomainStart } = await import('../src/tools/osint-investigate');
 		const r = await osintInvestigateDomainStart('example.com', {});
 		expect(r.findings.some((f) => f.metadata?.unprovisioned === true)).toBe(true);
-		expect(r.passed).toBe(true);
+		// #695: an unprovisioned lane measured nothing, so it must not report a verdict.
+		// `checkStatus` is the discriminator every consumer already gates on (the formatter's
+		// abstention, the scoring engine's exclusion, computeScanEvidence). The scalars are
+		// deliberately left alone -- zeroing them would rank "binding absent" below a measured
+		// finding on tools that emit `info` on every branch, success included.
+		expect(r.checkStatus).toBe('error');
 	});
 	it('domain start: returns investigationId when bound', async () => {
 		const { osintInvestigateDomainStart } = await import('../src/tools/osint-investigate');

@@ -29,6 +29,18 @@ export const CheckResultOutputSchema = z
 		score: z.number(),
 		passed: z.boolean(),
 		findings: z.array(z.object({}).loose()),
+		// Advertised as OPTIONAL, so every existing CheckResult still validates. They are
+		// named rather than left to `.loose()` because they are how a strict client learns
+		// that `score`/`passed` may be withheld: a check whose `checkStatus` is 'timeout' or
+		// 'error' did not complete, and its verdict must not be read as a measurement (#695).
+		// A field a client cannot see in the schema is a field it will not look for.
+		// `z.string()`, NOT `z.enum([...])`. Naming the field is the point — a strict client
+		// cannot look for what the schema never mentions. Pinning its VALUES would re-introduce
+		// the brittleness this whole module exists to avoid (see the header): a future
+		// CheckStatus member would be rejected by every already-deployed client validating
+		// against the older schema, turning an additive package change into a breaking one.
+		checkStatus: z.string().optional(),
+		partial: z.boolean().optional(),
 	})
 	.loose();
 

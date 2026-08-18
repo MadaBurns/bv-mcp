@@ -12,7 +12,13 @@ describe('checkRealtimeThreatFeed', () => {
 		const { checkRealtimeThreatFeed } = await import('../src/tools/check-realtime-threat-feed');
 		const r = await checkRealtimeThreatFeed('example.com', {});
 		expect(r.findings.some(f => f.metadata?.unprovisioned === true)).toBe(true);
-		expect(r.passed).toBe(true);
+		// #695: this is the ONE affected tool whose findings carry real severities
+		// (`hitSeverity()` maps upstream status onto critical/high/medium), so its 100 sat on
+		// the SAME scale as a measured clean result. Here zeroing is the honest correction
+		// rather than an inversion -- same shape as `buildDnsErrorResult`.
+		expect(r.checkStatus).toBe('error');
+		expect(r.score).toBe(0);
+		expect(r.passed).toBe(false);
 	});
 
 	it('surfaces a high finding when the feed reports a hit', async () => {
