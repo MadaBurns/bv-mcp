@@ -28,8 +28,9 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
+import { createAsyncStartErrorResultBuilder } from './async-start-result';
 
-const CATEGORY = 'brand_discovery';
+import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
 
 /**
  * ETA for a single discovery run. The sync path averages ~24s wall clock for
@@ -73,18 +74,10 @@ export interface DiscoverBrandDomainsStartDeps {
 	now?: () => number;
 }
 
-function buildErrorResult(
-	flag: 'invalidInput' | 'persistenceFailure' | 'enqueueFailure',
-	message: string,
-	extra: Record<string, unknown> = {},
-): CheckResult {
-	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, `Discover brand domains start: ${flag}`, 'high', message, {
-			[flag]: true,
-			...extra,
-		}),
-	]);
-}
+const buildErrorResult = createAsyncStartErrorResultBuilder<'invalidInput' | 'persistenceFailure' | 'enqueueFailure'>(
+	CATEGORY,
+	'Discover brand domains start',
+);
 
 export async function discoverBrandDomainsStart(
 	domain: string,

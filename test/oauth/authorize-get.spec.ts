@@ -1,11 +1,7 @@
 import { SELF, createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
-
-async function clearPrefix(prefix: string) {
-	const list = await env.SESSION_STORE.list({ prefix });
-	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
-}
+import { clearKvPrefix } from '../helpers/kv';
 
 async function registerClient(): Promise<string> {
 	const res = await SELF.fetch('https://example.com/oauth/register', {
@@ -17,10 +13,10 @@ async function registerClient(): Promise<string> {
 }
 
 beforeEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 afterEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 
 describe('GET /oauth/authorize', () => {

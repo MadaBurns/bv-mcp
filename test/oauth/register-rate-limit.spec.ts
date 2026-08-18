@@ -7,21 +7,17 @@
  */
 import { SELF, env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { clearKvPrefix } from '../helpers/kv';
 
 const VALID_BODY = JSON.stringify({ redirect_uris: ['https://claude.ai/cb'] });
 const HEADERS = { 'Content-Type': 'application/json' };
 
-async function clearPrefix(prefix: string) {
-	const list = await env.SESSION_STORE.list({ prefix });
-	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
-}
-
 beforeEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 
 afterEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 
 function register(ip: string) {

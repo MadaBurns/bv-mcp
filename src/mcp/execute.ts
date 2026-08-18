@@ -43,6 +43,7 @@ import { classifyError as classifyFuzzError } from '../lib/fuzzing-detector';
 import { recordEvent as recordFuzzCounter } from '../lib/fuzzing-counter';
 import { piiAllows } from '../lib/analytics-pii';
 import { buildAccessLogEvent, type AccessLogEvent } from '../lib/access-log-event';
+import { extractProtocolHeaders, readJsonRpcErrorPayload } from './response';
 
 export type ProcessedRequestResult =
 	| {
@@ -606,30 +607,6 @@ async function incrementAccessRollup(db: D1Database, event: AccessLogEvent, buck
 			event.country ?? 'unknown',
 		)
 		.run();
-}
-
-function extractHeaders(response: Response): Record<string, string> {
-	const headers: Record<string, string> = {};
-	response.headers.forEach((value, key) => {
-		const lower = key.toLowerCase();
-		if (lower === 'content-type' || lower === 'cache-control' || lower === 'content-length') return;
-		headers[key] = value;
-	});
-	return headers;
-}
-
-async function readJsonRpcPayload(response: Response): Promise<ReturnType<typeof jsonRpcError>> {
-	const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
-	if (contentType.includes('text/event-stream')) {
-		const text = await response.text();
-		const dataLine = text.split('\n').find((line) => line.startsWith('data: '));
-		if (!dataLine) {
-			return jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Internal server error');
-		}
-		return JSON.parse(dataLine.slice('data: '.length)) as ReturnType<typeof jsonRpcError>;
-	}
-
-	return (await response.json()) as ReturnType<typeof jsonRpcError>;
 }
 
 function emitRequestAnalytics(
@@ -1295,8 +1272,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			emitRequestAnalytics(options, method, 'error', true);
 			return {
 				kind: 'response',
-				payload: await readJsonRpcPayload(controlPlaneLimited),
-				headers: extractHeaders(controlPlaneLimited),
+				payload: await readJsonRpcErrorPayload(controlPlaneLimited),
+				headers: extractProtocolHeaders(controlPlaneLimited),
 				httpStatus: controlPlaneLimited.status,
 				useErrorEnvelope: true,
 				eventId,

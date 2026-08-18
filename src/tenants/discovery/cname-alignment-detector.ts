@@ -13,8 +13,8 @@ import { validateDomain } from '../../lib/sanitize';
 import { mapConcurrent } from '../../lib/map-concurrent';
 import { safeFetch } from '../../lib/safe-fetch';
 import type { DiscoveryDnsContext } from './dns-context';
+import { CLOUDFLARE_DOH_ENDPOINT } from '../../lib/dns-endpoints';
 
-const DEFAULT_DOH_URL = 'https://cloudflare-dns.com/dns-query';
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_CHAIN_LENGTH = 5;
 
@@ -153,7 +153,7 @@ export async function detectCnameAlignment(
 	}
 	const seedLower = seedDomain.trim().toLowerCase().replace(/\.$/, '');
 	const dohFn = options.dohFn ?? safeFetch;
-	const dohUrl = options.dohUrl ?? DEFAULT_DOH_URL;
+	const dohUrl = options.dohUrl ?? CLOUDFLARE_DOH_ENDPOINT;
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const dnsContext = options.dnsContext;
 	const queryCnameRecord = dnsContext

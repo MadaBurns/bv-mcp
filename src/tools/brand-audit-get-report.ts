@@ -29,7 +29,7 @@ import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
 import { BRAND_AUDIT_TARGET_DEADLINE_MS } from '../lib/brand-audit-reaper';
 import type { BrandAuditStepStore } from '../lib/brand-audit-step-store';
 
-const CATEGORY = 'brand_discovery';
+import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
 
 export interface BrandAuditGetReportArgs {
 	auditId: string;

@@ -1,6 +1,7 @@
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
+import { clearKvPrefix } from '../helpers/kv';
 
 // Chaos: the 2026-05-08 production deploy was missing OAUTH_SIGNING_SECRET while
 // ENABLE_OAUTH=true was advertised in /.well-known/oauth-authorization-server.
@@ -18,11 +19,6 @@ import worker from '../../src/index';
 
 const TEST_API_KEY = 'testkey';
 type TestEnv = typeof env & { BV_API_KEY?: string; OAUTH_SIGNING_SECRET?: string; ENABLE_OAUTH?: string };
-
-async function clearPrefix(prefix: string) {
-	const list = await env.SESSION_STORE.list({ prefix });
-	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
-}
 
 function probes() {
 	return [
@@ -78,10 +74,10 @@ function probes() {
 }
 
 beforeEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 afterEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 
 describe('OAuth misconfiguration chaos (v2.10.9 hardened)', () => {

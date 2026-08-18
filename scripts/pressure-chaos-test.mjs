@@ -1,4 +1,6 @@
 #!/usr/bin/env node
+
+import { resolveMcpEndpoint } from './lib/mcp-endpoint.mjs';
 /**
  * Comprehensive Pressure & Chaos Test Suite
  * - Broad domain range (50+ domains)
@@ -12,7 +14,7 @@
 import https from 'https';
 
 const API_KEY = process.env.BV_API_KEY || '';
-const BASE_URL = 'https://dns-mcp.blackveilsecurity.com/mcp';
+const BASE_URL = resolveMcpEndpoint();
 
 // Test domains covering various scenarios
 const TEST_DOMAINS = {

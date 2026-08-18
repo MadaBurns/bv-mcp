@@ -27,14 +27,13 @@ describe('infra probe wrangler wiring', () => {
 		expect(infraProbeConfig.compatibility_date).toBe(mainConfig.compatibility_date);
 	});
 
-	it('deploys the infra probe worker before the main MCP worker in releases', () => {
+	it('keeps its legacy Cloudflare deploy steps fenced off in CI', () => {
+		const guardIndex = publishWorkflowSource.indexOf('CI deploy is not supported');
+		const exitIndex = publishWorkflowSource.indexOf('exit 1', guardIndex);
 		const infraDeployIndex = publishWorkflowSource.indexOf('wrangler.infra-probe.jsonc');
-		const mainDeployIndex = publishWorkflowSource.indexOf('wrangler.jsonc');
 
-		expect(infraDeployIndex, 'publish.yml must deploy bv-infra-probe during releases').toBeGreaterThan(-1);
-		expect(mainDeployIndex, 'publish.yml must deploy the main MCP worker during releases').toBeGreaterThan(-1);
-		expect(infraDeployIndex, 'bv-infra-probe must deploy before the main service binding references it').toBeLessThan(
-			mainDeployIndex,
-		);
+		expect(guardIndex, 'publish.yml must declare the manual-deploy guard').toBeGreaterThan(-1);
+		expect(exitIndex, 'the manual-deploy guard must fail the CI job').toBeGreaterThan(guardIndex);
+		expect(infraDeployIndex, 'publish.yml must retain the legacy deploy sequence for auditability').toBeGreaterThan(exitIndex);
 	});
 });

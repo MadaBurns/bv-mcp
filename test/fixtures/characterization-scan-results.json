@@ -1,0 +1,25 @@
+{
+  "success": {
+    "domain": "characterization-success.example.com",
+    "score": {
+      "overall": "number",
+      "grade": "string",
+      "findings": "array"
+    },
+    "checks": "array",
+    "cached": false
+  },
+  "inconclusive": {
+    "domain": "characterization-unmeasured.example.com",
+    "score": {
+      "overall": null,
+      "grade": null
+    },
+    "findings": [],
+    "maturity": null
+  },
+  "cacheHit": {
+    "domain": "characterization-cache.example.com",
+    "cached": true
+  }
+}
