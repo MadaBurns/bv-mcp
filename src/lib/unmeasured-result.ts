@@ -13,10 +13,19 @@
  * into finding metadata, so the honesty rule is applied in ONE place rather than
  * re-derived per tool. Two distinct classes, deliberately kept apart:
  *
- * - **Unmeasured** (`unprovisioned`, `upstreamUnavailable`) — nothing was read.
- *   The deployment lacks the capability, or the upstream did not answer. These get
- *   `checkStatus: 'error'`, which is what the formatter and the scoring engine
- *   already gate on to withhold a verdict.
+ * - **Unmeasured** (`unprovisioned`, `upstreamUnavailable`, `upstreamNotFound`) —
+ *   nothing was read. The deployment lacks the capability, the upstream did not
+ *   answer, or the upstream answered definitively that the record does not exist.
+ *   These get `checkStatus: 'error'`, which is what the formatter and the scoring
+ *   engine already gate on to withhold a verdict.
+ *
+ *   All three mean "no measurement", but they are NOT interchangeable and are kept
+ *   apart for the same reason #695 existed at all: a result must not assert
+ *   something nobody observed. `upstreamNotFound` is a benign data miss — the
+ *   service was reachable and answered 404 — so reporting it as `upstreamUnavailable`
+ *   would claim an outage that did not happen, and would over-count on any operator
+ *   dashboard tallying upstream failures. It is also SILENT in binding-degradation
+ *   telemetry, whereas a genuine failure alerts.
  *
  * - **Access refusal** (`tierDenied`, `notOwned`) — the caller was refused. Also
  *   nothing measured, but the cause is authorization, not availability. These
@@ -38,8 +47,16 @@
 
 import type { CheckResult, Finding } from './scoring';
 
-/** Markers meaning "nothing was read" — availability, not authorization. */
-export const UNMEASURED_MARKERS = ['unprovisioned', 'upstreamUnavailable'] as const;
+/**
+ * Markers meaning "nothing was read" — availability, not authorization.
+ *
+ * `upstreamNotFound` is deliberately distinct from `upstreamUnavailable`: the upstream WAS
+ * available and gave a definitive negative (404). Adding a member here is automatically picked
+ * up by `stripReservedMarkers` (so an upstream cannot forge it) and by
+ * `test/audits/unmeasured-marker-scope.audit.test.ts` (so it cannot reach a scored category) —
+ * both derive their sets from this constant rather than repeating the list.
+ */
+export const UNMEASURED_MARKERS = ['unprovisioned', 'upstreamUnavailable', 'upstreamNotFound'] as const;
 
 /** Markers meaning "the caller was refused" — authorization, not availability. */
 export const ACCESS_REFUSAL_MARKERS = ['tierDenied', 'notOwned'] as const;
@@ -90,6 +107,11 @@ export function markUnmeasured(result: CheckResult): CheckResult {
  * The failure is not dramatic (the findings still render; a verdict is withheld rather than
  * fabricated), but a control channel that an upstream can write to is not a control channel.
  * Reserved keys are OURS to set, at the builders, from local knowledge.
+ *
+ * The same rule applies to key ORDER at a builder: spread caller-supplied metadata FIRST and set
+ * the reserved marker LAST, so the marker cannot be overwritten by whatever the caller passed.
+ * Today every such `meta` is locally constructed, so this is defence in depth rather than a live
+ * hole — but it makes the invariant structural instead of conventional.
  */
 export function stripReservedMarkers<T extends Record<string, unknown>>(upstream: T): T {
 	const reserved = new Set<string>([...UNMEASURED_MARKERS, ...ACCESS_REFUSAL_MARKERS]);

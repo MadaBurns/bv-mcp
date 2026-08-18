@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- Recon poll tools no longer report "the upstream did not answer" when the upstream answered perfectly well. `callRecon*` collapsed absent-binding, 404, 401/403, 5xx, schema mismatch and thrown errors into a single `null`, so the OSINT and bucket-scan tools could not tell those apart and said so in a code comment rather than in the output. They now return a discriminated `ReconOutcome`, and an unknown or expired investigation/scan id is reported as exactly that — carrying a distinct `upstreamNotFound` marker instead of `upstreamUnavailable`, because claiming an outage that did not happen is the same dishonesty #695 was about. (#695)
+- A benign recon 404 no longer emits a false operator alert. `binding-degradation.ts` already documented that the degradation kinds "deliberately exclude ... the benign recon 404", but only `check_realtime_threat_feed` honored it; every poll of an unknown, expired, or not-yet-registered id on the OSINT and bucket paths recorded `binding_5xx`, which feeds the 15-minute binding-degradation cron alert. A 404 is now silent on both paths. (#695)
+- A `2xx` response whose body is not JSON at all (an HTML error page, a truncated response) is now classified as contract drift and stays silent, instead of escaping to the transport handler and recording a `binding_unavailable` degradation — the same false-alert class as the 404. `check_realtime_threat_feed` already guarded this; the async path did not. (#695)
+- `401`/`403` from the recon service is now distinguishable from an outage. A rejected credential is an operator misconfiguration and is surfaced as such in finding metadata (`reconFailureReason`, `reconUpstreamStatus`) rather than being indistinguishable from a 5xx. (#695)
+
+### Changed
+
+- `UNMEASURED_MARKERS` gains a third member, `upstreamNotFound`. `stripReservedMarkers` and `test/audits/unmeasured-marker-scope.audit.test.ts` both derive their sets from that constant, so the new marker is automatically protected against upstream forgery and automatically barred from reaching a scored category. Unmeasured semantics are unchanged: all three markers still stamp `checkStatus: "error"` and withhold the verdict. (#695)
+- The six async recon client functions (`callReconInvestigateStart`, `callReconInvestigationStatus`, `callReconInvestigationReport`, `callReconBucketScanStart`, `callReconBucketScanStatus`, `callReconBucketFindings`) return `ReconOutcome<T>` instead of `T | null`. Internal to the Worker — not part of the published npm surface. `callReconScan` deliberately keeps `T | null`: its four call sites only ask "did I get intel?", and it already resolved the one distinction that mattered internally. (#695)
+
 ## [3.53.0] - 2026-08-19
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 — no weight, tier, grade band, severity penalty or profile rule moved. `@blackveil/dns-checks` goes **1.17.0 → 1.19.0** (with `PARITY_CORPUS_VERSION` in lockstep) because PR #680 changed core check source; the bump is additive and score-neutral. **1.18.0 is deliberately skipped** — that number is already claimed by a tarball vendored downstream whose source was never committed to this repository, so reusing it would leave two different artifacts sharing one version. Because `PARITY_CORPUS_VERSION` is folded into every scan cache key, this bump invalidates cached scans on deploy. That is intended: results cached before this release carry the old shapes that reported unmeasured lanes as clean passes. **One narrow score change is intentional:** a `profile: "authoritative_dns_infra"` scan whose infra probe measured nothing now returns an **ungraded** result instead of `100 (A+)`. No other profile is affected, and no scan that actually measured its checks changes.

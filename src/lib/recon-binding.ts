@@ -2,9 +2,15 @@
 /**
  * Fail-soft client for the operator-only bv-recon service binding.
  *
- * Every function returns null on any failure (binding absent, non-2xx,
- * malformed body, network error) so callers degrade to their pre-binding
- * behavior. Mirrors the BV_WHOIS fail-soft pattern in check-rdap-lookup.ts.
+ * Fail-soft: no function throws, so callers degrade to their pre-binding behavior.
+ * Mirrors the BV_WHOIS fail-soft pattern in check-rdap-lookup.ts.
+ *
+ * The async (investigation / bucket-scan) calls return a discriminated
+ * `ReconOutcome<T>` rather than `T | null`, so a caller can tell "not provisioned"
+ * from "no such id" from "upstream is down" — see `ReconFailureReason`. The
+ * synchronous `callReconScan` keeps `T | null`: it has four call sites that only
+ * ever ask "did I get intel?", and it already resolves the one distinction that
+ * mattered (404 => benign no-match) internally.
  */
 import { z } from 'zod';
 
@@ -152,6 +158,45 @@ export type BucketScanStart = z.infer<typeof BucketScanStartSchema>;
 const OpaqueObjectSchema = z.record(z.string(), z.unknown());
 export type ReconOpaque = Record<string, unknown>;
 
+/**
+ * Why an async recon call produced no data.
+ *
+ * These are NOT interchangeable, and collapsing them is what #695 was really about:
+ *
+ * - `unbound`      — no BV_RECON binding (BSL self-host). Structural + permanent. Expected,
+ *                    so it is SILENT: not a degradation, never alertable.
+ * - `not_found`    — upstream answered **definitively** with 404: no such investigation/scan,
+ *                    or it has expired, or the caller raced a `*_start`. Also SILENT — a data
+ *                    miss is not a binding failure. `binding-degradation.ts` already documents
+ *                    that the kind set "deliberately excludes ... the benign recon 404"; before
+ *                    this discriminant existed only `callReconScan` honored it, so every poll of
+ *                    an unknown id on THIS path emitted a false `binding_5xx` into the operator
+ *                    degradation alert.
+ * - `unauthorized` — 401/403. The binding is bound but the credential was rejected: an operator
+ *                    misconfiguration, distinct from an outage and from a data miss.
+ * - `upstream_status` — any other non-2xx. Genuine upstream failure.
+ * - `malformed`    — 2xx whose body failed schema validation. Contract drift, not an outage.
+ * - `transport`    — the fetch threw (network, timeout, abort).
+ *
+ * Everything except `unbound` and `not_found` still records a degradation, with the SAME
+ * `BindingDegradationKind` mapping as before this refactor — the discriminant is for callers;
+ * re-tuning alert routing is a separate, operator-visible decision and is deliberately not
+ * bundled in here.
+ */
+export type ReconFailureReason = 'unbound' | 'not_found' | 'unauthorized' | 'upstream_status' | 'malformed' | 'transport';
+
+/** Discriminated result of an async recon call. Replaces the former `T | null`. */
+export type ReconOutcome<T> = { ok: true; data: T } | { ok: false; reason: ReconFailureReason; status?: number };
+
+/** True when the failure is a transient upstream condition worth retrying on the next poll. */
+export function isRetryableReconFailure(reason: ReconFailureReason): boolean {
+	return reason === 'upstream_status' || reason === 'transport' || reason === 'not_found';
+}
+
+function reconFailure<T>(reason: ReconFailureReason, status?: number): ReconOutcome<T> {
+	return status === undefined ? { ok: false, reason } : { ok: false, reason, status };
+}
+
 async function reconJson(
 	binding: ReconBinding | undefined,
 	authToken: string | undefined,
@@ -160,24 +205,36 @@ async function reconJson(
 	schema: z.ZodType,
 	signal?: AbortSignal,
 	telemetry?: BindingDegradationSink,
-): Promise<unknown | null> {
+): Promise<ReconOutcome<unknown>> {
 	// Absent binding (BSL self-host) is expected, NOT a degradation — stay silent.
-	if (!binding) return null;
+	if (!binding) return reconFailure('unbound');
 	try {
 		const resp = await binding.fetch(`https://bv-recon${path}`, {
 			...init,
 			headers: { ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}), ...(init.headers ?? {}) },
 			signal: composeSignal(signal),
 		});
+		// A 404 is a DATA MISS (unknown/expired id, or a poll that raced its own start), not a
+		// binding failure. Stay SILENT, matching `callReconScan` and the contract documented on
+		// `BindingDegradationKind`.
+		if (resp.status === 404) return reconFailure('not_found', 404);
+		if (resp.status === 401 || resp.status === 403) {
+			recordReconDegradation('binding_5xx', telemetry, { route: path, status: resp.status });
+			return reconFailure('unauthorized', resp.status);
+		}
 		if (!resp.ok) {
 			recordReconDegradation('binding_5xx', telemetry, { route: path, status: resp.status });
-			return null;
+			return reconFailure('upstream_status', resp.status);
 		}
-		const parsed = schema.safeParse(await resp.json());
-		return parsed.success ? parsed.data : null;
+		// `.catch(() => null)` matches `callReconScan`: a 2xx whose body is not even JSON (an HTML
+		// error page, a truncated response) is CONTRACT DRIFT, not an outage. Without the guard the
+		// throw escapes to the outer catch and is reported as `transport` WITH a `binding_unavailable`
+		// degradation — a false operator alert, the same defect class as the 404 this refactor fixed.
+		const parsed = schema.safeParse(await resp.json().catch(() => null));
+		return parsed.success ? { ok: true, data: parsed.data } : reconFailure('malformed', resp.status);
 	} catch (err) {
 		recordReconDegradation(errorToKind(err), telemetry, { route: path, errorName: err instanceof Error ? err.name : undefined });
-		return null;
+		return reconFailure('transport');
 	}
 }
 
@@ -189,7 +246,7 @@ export function callReconInvestigateStart(
 	options?: Record<string, unknown>,
 	signal?: AbortSignal,
 	telemetry?: BindingDegradationSink,
-): Promise<InvestigationStart | null> {
+): Promise<ReconOutcome<InvestigationStart>> {
 	return reconJson(
 		binding,
 		authToken,
@@ -198,7 +255,7 @@ export function callReconInvestigateStart(
 		InvestigationStartSchema,
 		signal,
 		telemetry,
-	) as Promise<InvestigationStart | null>;
+	) as Promise<ReconOutcome<InvestigationStart>>;
 }
 
 export function callReconInvestigationStatus(
@@ -207,7 +264,7 @@ export function callReconInvestigationStatus(
 	id: string,
 	signal?: AbortSignal,
 	telemetry?: BindingDegradationSink,
-): Promise<ReconOpaque | null> {
+): Promise<ReconOutcome<ReconOpaque>> {
 	return reconJson(
 		binding,
 		authToken,
@@ -216,7 +273,7 @@ export function callReconInvestigationStatus(
 		OpaqueObjectSchema,
 		signal,
 		telemetry,
-	) as Promise<ReconOpaque | null>;
+	) as Promise<ReconOutcome<ReconOpaque>>;
 }
 
 export function callReconInvestigationReport(
@@ -225,7 +282,7 @@ export function callReconInvestigationReport(
 	id: string,
 	signal?: AbortSignal,
 	telemetry?: BindingDegradationSink,
-): Promise<ReconOpaque | null> {
+): Promise<ReconOutcome<ReconOpaque>> {
 	return reconJson(
 		binding,
 		authToken,
@@ -234,7 +291,7 @@ export function callReconInvestigationReport(
 		OpaqueObjectSchema,
 		signal,
 		telemetry,
-	) as Promise<ReconOpaque | null>;
+	) as Promise<ReconOutcome<ReconOpaque>>;
 }
 
 export function callReconBucketScanStart(
@@ -243,7 +300,7 @@ export function callReconBucketScanStart(
 	body: Record<string, unknown>,
 	signal?: AbortSignal,
 	telemetry?: BindingDegradationSink,
-): Promise<BucketScanStart | null> {
+): Promise<ReconOutcome<BucketScanStart>> {
 	return reconJson(
 		binding,
 		authToken,
@@ -252,7 +309,7 @@ export function callReconBucketScanStart(
 		BucketScanStartSchema,
 		signal,
 		telemetry,
-	) as Promise<BucketScanStart | null>;
+	) as Promise<ReconOutcome<BucketScanStart>>;
 }
 
 export function callReconBucketScanStatus(
@@ -261,7 +318,7 @@ export function callReconBucketScanStatus(
 	scanId: string,
 	signal?: AbortSignal,
 	telemetry?: BindingDegradationSink,
-): Promise<ReconOpaque | null> {
+): Promise<ReconOutcome<ReconOpaque>> {
 	return reconJson(
 		binding,
 		authToken,
@@ -270,7 +327,7 @@ export function callReconBucketScanStatus(
 		OpaqueObjectSchema,
 		signal,
 		telemetry,
-	) as Promise<ReconOpaque | null>;
+	) as Promise<ReconOutcome<ReconOpaque>>;
 }
 
 export function callReconBucketFindings(
@@ -279,15 +336,9 @@ export function callReconBucketFindings(
 	scanId: string | undefined,
 	signal?: AbortSignal,
 	telemetry?: BindingDegradationSink,
-): Promise<ReconOpaque | null> {
+): Promise<ReconOutcome<ReconOpaque>> {
 	const qs = scanId ? `?scanId=${encodeURIComponent(scanId)}` : '';
-	return reconJson(
-		binding,
-		authToken,
-		`/buckets/api/findings${qs}`,
-		{ method: 'GET' },
-		OpaqueObjectSchema,
-		signal,
-		telemetry,
-	) as Promise<ReconOpaque | null>;
+	return reconJson(binding, authToken, `/buckets/api/findings${qs}`, { method: 'GET' }, OpaqueObjectSchema, signal, telemetry) as Promise<
+		ReconOutcome<ReconOpaque>
+	>;
 }

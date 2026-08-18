@@ -154,7 +154,9 @@ describe('callReconScan degradation telemetry', () => {
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 		const binding = bindingReturning({ error: 'boom' }, 502);
 		const out = await callReconBucketScanStatus(binding, 'tok', 'scan-123', undefined, sink);
-		expect(out).toBeNull();
+		// The async calls return a discriminated ReconOutcome (not `T | null`); the
+		// degradation contract is unchanged for a genuine upstream failure.
+		expect(out).toEqual({ ok: false, reason: 'upstream_status', status: 502 });
 		expect(sink).toHaveBeenCalledWith(expect.objectContaining({ degradationType: 'binding_5xx', component: 'recon' }));
 	});
 });
