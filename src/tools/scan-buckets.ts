@@ -8,6 +8,7 @@ import {
 	callReconBucketScanStatus,
 	callReconBucketFindings,
 	type ReconBinding,
+	type ReconFailureReason,
 	type BindingDegradationSink,
 } from '../lib/recon-binding';
 import { extractBrandName, getRegistrableDomain } from '../lib/public-suffix';
@@ -35,18 +36,69 @@ function unprovisioned(detail: string): CheckResult {
 }
 
 /**
- * Upstream answered with nothing while the binding IS bound. See the twin of this helper in
- * `src/tools/osint-investigate.ts` for the full rationale: `callRecon*` collapses absent-binding,
- * non-2xx, schema mismatch and thrown errors into a single `null`, so a genuine outage was being
- * reported to the caller as "not provisioned in this deployment" (#695). `partial: true` keeps the
- * transient state out of the registry cache (`(r) => !r.partial`); the structural-absence path
- * deliberately does NOT set it.
+ * Nothing was read while the binding IS bound. Reporting that as "not provisioned in this
+ * deployment" told an operator to configure a binding that is already bound (#695).
+ *
+ * `marker` separates the two unmeasured-but-bound cases, which must not be conflated:
+ * `upstreamUnavailable` = the service failed us (credential refused, non-2xx, schema mismatch,
+ * fetch threw); `upstreamNotFound` = the service answered normally with a definitive 404 and the
+ * id simply does not exist. Both withhold the verdict; only the first claims an outage, and
+ * claiming one that did not happen is the same class of dishonesty #695 was about.
+ *
+ * `partial: true` keeps the transient state out of the registry cache (`(r) => !r.partial`), so
+ * the next poll self-heals; the structural-absence path (`unprovisioned`) deliberately does NOT
+ * set it — a permanent deployment fact gains nothing from cache suppression.
  */
-function upstreamUnavailable(title: string, detail: string, meta: Record<string, unknown> = {}): CheckResult {
+function upstreamUnmeasured(
+	marker: 'upstreamUnavailable' | 'upstreamNotFound',
+	title: string,
+	detail: string,
+	meta: Record<string, unknown> = {},
+): CheckResult {
 	return {
-		...markUnmeasured(buildCheckResult(CATEGORY, [createFinding(CATEGORY, title, 'info', detail, { upstreamUnavailable: true, ...meta })])),
+		...markUnmeasured(buildCheckResult(CATEGORY, [createFinding(CATEGORY, title, 'info', detail, { [marker]: true, ...meta })])),
 		partial: true,
 	};
+}
+
+/** Prose for each distinguishable recon-failure class. See `reconFailureResult`. */
+interface ReconFailureProse {
+	/** `unbound` — no BV_RECON binding in this deployment. Permanent, structural. */
+	unbound: string;
+	/** `not_found` — upstream answered a definitive 404. A data miss, NOT a service failure. */
+	notFound: { title: string; detail: string };
+	/** `unauthorized` | `upstream_status` | `malformed` | `transport` — the recon service failed us. */
+	unavailable: { title: string; detail: string };
+}
+
+/**
+ * Map a `ReconOutcome` failure onto the honest unmeasured result for it.
+ *
+ * `callRecon*` no longer collapses its failure modes into a single `null` — it returns a
+ * discriminated `ReconOutcome`, so this file can finally tell "this deployment has no bucket
+ * scanner" from "that scan id does not exist" from "the recon service is down", and say so.
+ * Only the first is a deployment fact (`unprovisioned`, cacheable); the other two are transient
+ * and `partial: true`, and carry DIFFERENT markers (`upstreamNotFound` vs `upstreamUnavailable`)
+ * as well as different prose — a 404 must NOT be narrated as an upstream failure, and an upstream
+ * failure must no longer hedge "…or the id is unknown".
+ *
+ * `reconFailureReason` (and `reconUpstreamStatus`) are stamped into finding metadata for operator
+ * visibility and analytics greppability. Both are LOCALLY derived — never upstream-controlled —
+ * and neither collides with the reserved marker vocabulary in `lib/unmeasured-result.ts`.
+ */
+function reconFailureResult(
+	failure: { reason: ReconFailureReason; status?: number },
+	prose: ReconFailureProse,
+	meta: Record<string, unknown> = {},
+): CheckResult {
+	if (failure.reason === 'unbound') return unprovisioned(prose.unbound);
+	const notFound = failure.reason === 'not_found';
+	const { title, detail } = notFound ? prose.notFound : prose.unavailable;
+	return upstreamUnmeasured(notFound ? 'upstreamNotFound' : 'upstreamUnavailable', title, detail, {
+		...meta,
+		reconFailureReason: failure.reason,
+		...(failure.status !== undefined ? { reconUpstreamStatus: failure.status } : {}),
+	});
 }
 
 interface BucketScanScope {
@@ -274,18 +326,30 @@ export async function scanBucketsStart(
 		undefined,
 		options.onBindingDegradation,
 	);
-	if (!started) return unprovisioned(`Bucket discovery is not provisioned in this deployment for ${args.target}.`);
-	await rememberBucketScanScope(started.scanId, { ...args, owner: options.principalId }, options.bucketScanKv);
+	if (!started.ok)
+		return reconFailureResult(started, {
+			unbound: `Bucket discovery is not provisioned in this deployment for ${args.target}.`,
+			notFound: {
+				title: 'Bucket scan was not started',
+				detail: `The recon service has no bucket-scan trigger for this request (HTTP 404), so no scan was started for ${args.target}. Nothing was scanned.`,
+			},
+			unavailable: {
+				title: 'Bucket scan could not be started',
+				detail: `The recon service did not start a bucket scan for ${args.target}. Nothing was scanned — retry, and if it persists this is a recon-service problem, not a result.`,
+			},
+		});
+	const start = started.data;
+	await rememberBucketScanScope(start.scanId, { ...args, owner: options.principalId }, options.bucketScanKv);
 	return buildCheckResult(CATEGORY, [
 		createFinding(
 			CATEGORY,
 			'Bucket scan started',
 			'info',
-			`Bucket discovery started for ${args.target} (scanId ${started.scanId}). Poll with scan_buckets_status.`,
+			`Bucket discovery started for ${args.target} (scanId ${start.scanId}). Poll with scan_buckets_status.`,
 			{
-				...stripReservedMarkers(started),
-				scanId: started.scanId,
-				status: started.status ?? 'running',
+				...stripReservedMarkers(start),
+				scanId: start.scanId,
+				status: start.status ?? 'running',
 				pollWith: 'scan_buckets_status',
 			},
 		),
@@ -302,19 +366,28 @@ export async function scanBucketsStatus(args: { scanId: string }, options: Recon
 		undefined,
 		options.onBindingDegradation,
 	);
-	if (!s)
-		return options.reconBinding
-			? upstreamUnavailable(
-					'Bucket scan status could not be retrieved',
-					`The recon service did not return a usable status for bucket scan ${args.scanId}, or that scan id is unknown or expired. Nothing was read about the scan's findings.`,
-					{ scanId: args.scanId },
-				)
-			: unprovisioned(`Bucket scanning is not provisioned in this deployment (scan ${args.scanId}).`);
+	if (!s.ok)
+		return reconFailureResult(
+			s,
+			{
+				unbound: `Bucket scanning is not provisioned in this deployment (scan ${args.scanId}).`,
+				notFound: {
+					title: 'Bucket scan status not available yet',
+					detail: `The recon service has no record of bucket scan ${args.scanId} — the scan id is unknown or has expired, or it was only just started and is not registered yet. The recon service answered normally; this is not a service failure. Nothing was read about the scan's findings.`,
+				},
+				unavailable: {
+					title: 'Bucket scan status could not be retrieved',
+					detail: `The recon service did not return a usable status for bucket scan ${args.scanId}. Nothing was read about the scan's findings.`,
+				},
+			},
+			{ scanId: args.scanId },
+		);
+	const status = s.data;
 	return buildCheckResult(CATEGORY, [
-		createFinding(CATEGORY, `Bucket scan ${args.scanId}`, 'info', JSON.stringify(s).slice(0, 800), {
+		createFinding(CATEGORY, `Bucket scan ${args.scanId}`, 'info', JSON.stringify(status).slice(0, 800), {
 			// F7: opaque upstream payload sanitized at the createFinding chokepoint. Reserved
 			// unmeasured/refusal markers are stripped so upstream cannot write our control channel.
-			...stripReservedMarkers(s),
+			...stripReservedMarkers(status),
 			...(scope.target ? { targetScope: scope.target } : {}),
 			...(scope.providers?.length ? { providerScope: scope.providers } : {}),
 			summary: true,
@@ -333,17 +406,25 @@ export async function scanBucketsFindings(args: BucketScanFindingArgs, options: 
 		undefined,
 		options.onBindingDegradation,
 	);
-	if (!f)
-		return options.reconBinding
-			? upstreamUnavailable(
-					'Bucket findings could not be retrieved',
-					`The recon service did not return usable findings for bucket scan ${args.scanId}. The scan may still be running, or the scan id may be unknown or expired — poll scan_buckets_status. This is NOT a report that no exposed buckets exist.`,
-					{ scanId: args.scanId },
-				)
-			: unprovisioned('Bucket scanning is not provisioned in this deployment.');
+	if (!f.ok)
+		return reconFailureResult(
+			f,
+			{
+				unbound: 'Bucket scanning is not provisioned in this deployment.',
+				notFound: {
+					title: 'Bucket findings not available yet',
+					detail: `The recon service has no findings recorded for bucket scan ${args.scanId} — the scan id is unknown or has expired, or results are not ready yet; poll scan_buckets_status. The recon service answered normally; this is not a service failure. This is NOT a report that no exposed buckets exist.`,
+				},
+				unavailable: {
+					title: 'Bucket findings could not be retrieved',
+					detail: `The recon service did not return usable findings for bucket scan ${args.scanId}. Nothing was read. This is NOT a report that no exposed buckets exist.`,
+				},
+			},
+			{ scanId: args.scanId },
+		);
 	const target = normalizeTarget(args.target) ?? rememberedScope.target;
 	const providers = args.providers ?? rememberedScope.providers;
-	const filtered = filterBucketPayload(f, { target, providers });
+	const filtered = filterBucketPayload(f.data, { target, providers });
 	const filteredCount = typeof filtered.filteredOutOfScopeCount === 'number' ? filtered.filteredOutOfScopeCount : 0;
 	const detailPrefix = filteredCount > 0 ? `Bucket findings filtered ${filteredCount} out-of-scope upstream candidate(s). ` : '';
 	return buildCheckResult(CATEGORY, [
