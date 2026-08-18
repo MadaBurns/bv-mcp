@@ -3,6 +3,7 @@
 import type { CheckResult } from '../lib/scoring';
 import type { OutputFormat } from './tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 import { resolveImpactNarrative } from '../tools/explain-finding';
 
 export interface McpContent {
@@ -127,8 +128,22 @@ export function formatAccessRefusal(result: CheckResult): string {
 export function formatCheckResult(result: CheckResult, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 	lines.push(`## ${result.category.toUpperCase()} Check`);
-	lines.push(`**Status:** ${result.passed ? '✅ Passed' : '❌ Failed'}`);
-	lines.push(`**Score:** ${result.score}/100`);
+	// A check that did not COMPLETE has no verdict to report. `buildCheckResult` derives
+	// `passed`/`score` from finding severities, so a lane that was never measured -- whose only
+	// finding is an `info` "unavailable" note -- renders as "✅ Passed / 100/100": an affirmative
+	// clean bill of health for something nobody observed (#695). Abstaining mirrors
+	// `displayGradeFor`'s rule for an ungraded scan, which returns null rather than letting
+	// `nistScoreToGrade(0)` fabricate an `F`. Same principle, same vocabulary
+	// (`UNGRADED_DISPLAY`), one layer down.
+	//
+	// The predicate MUST come from `isCompletedCheck`; re-deriving it here is banned by
+	// `test/audits/completed-evidence-predicate-ssot.audit.test.ts`.
+	if (isCompletedCheck(result)) {
+		lines.push(`**Status:** ${result.passed ? '✅ Passed' : '❌ Failed'}`);
+		lines.push(`**Score:** ${result.score}/100`);
+	} else {
+		lines.push(`**Status:** ${UNGRADED_DISPLAY}`);
+	}
 	lines.push('');
 
 	if (result.findings.length > 0) {
