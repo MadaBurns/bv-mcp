@@ -196,7 +196,7 @@ const EMAIL_CATEGORIES_HEURISTIC_NA = new Set<string>(['spf', 'dmarc', 'dkim', '
  * score for, so it never produces this shape); a hand-built `categoryScores`/`checks`
  * pair from an external caller could reach it.
  */
-function isCategoryNonApplicable(check: CheckResult | undefined, category: string, profile: string, score: number | undefined): boolean {
+export function isCategoryNonApplicable(check: CheckResult | undefined, category: string, profile: string, score: number | undefined): boolean {
 	const isNonMailProfile = profile === 'non_mail' || profile === 'web_only';
 	if (!isNonMailProfile) return false;
 
