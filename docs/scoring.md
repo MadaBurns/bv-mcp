@@ -158,7 +158,22 @@ Two mechanisms detect missing controls in `buildCheckResult`:
 
 1. **Confidence-gated detection** (`scoreIndicatesMissingControl()`): For findings matching missing-control text patterns (e.g., "no … record", "missing", "not found") with `critical`/`high` severity and `deterministic`/`verified` confidence. This prevents heuristic findings (e.g., DKIM selector probing) from falsely zeroing core categories.
 
-2. **Explicit metadata** (`missingControl: true`): For checks where the control is entirely absent. Used by exactly six checks: HTTP Security (site unreachable), MX (no records), NS (no records), Zone Hygiene (no NS/SOA), BIMI (no record), DANE (no TLSA). **CAA, MTA-STS, SVCB-HTTPS, and TLS-RPT deliberately do NOT** set `missingControl` — absence is a graded finding, not a category-zeroing missing control. **DNSSEC "not enabled" also does NOT** — per NIST SP 800-81r3 it's a baseline integrity control in defense-in-depth, so absence is a `high` Core penalty with a fixed `penaltyOverride: 40` (category lands at 60, not 0). DNSSEC's broken-chain / validation-failing cases (distinct from "not enabled") DO fire `missingControl: true`.
+2. **Explicit metadata** (`missingControl: true`): For checks that measured the control and found it absent, or absence-equivalent. Set by eight scored categories — and several of them on a condition that is *not* plain absence:
+
+   | Category | Fires when |
+   | --- | --- |
+   | MX | No MX **and** no SPF. An SPF publishing `-all` is the correct non-mail posture and does **not** fire. |
+   | NS | No NS records (the domain cannot resolve). |
+   | Zone Hygiene | No NS records, or no SOA record. |
+   | DANE | No TLSA for the MX SMTP port, or none for the HTTPS endpoint. |
+   | BIMI | A record that is **published but ineffective** — present, with DMARC not enforcing. Not absence. |
+   | DMARC | **Multiple** DMARC records. Per RFC 9989 receivers then apply no policy at all, so this is absence-equivalent. |
+   | DNSSEC | **Broken chain or failing validation only** — never "not enabled" (see below). |
+   | `authoritative_dns_infra` | Capability failures: missing AA flag, exposed recursion, root-hint or root-server-set mismatch, route leak/hijack signal. |
+
+   **HTTP Security is not on this list.** It set the flag until #646 and #662 removed its last path, and now sets it on none: a probe that never reached the origin (WAF block, 401, connection failure, budget timeout) emits `inconclusive: true` with an `errorKind` instead, because asserting absence from a measurement that never completed is a claim of fact the scan did not establish. **CAA, MTA-STS, SVCB-HTTPS, and TLS-RPT deliberately do NOT** set `missingControl` — absence is a graded finding, not a category-zeroing missing control.
+
+   > This list was derived from the call sites and verified on 2026-08-14. A bare `grep -rn 'missingControl: true'` **over-reports** it: the grep also matches the comments explaining why a check declines to set the flag, which is how HTTP Security and MTA-STS read as emitters when they are not. Strip comments before counting, as `test/audits/measured-vs-unmeasured-metadata.audit.test.ts` does. **DNSSEC "not enabled" also does NOT** — per NIST SP 800-81r3 it's a baseline integrity control in defense-in-depth, so absence is a `high` Core penalty with a fixed `penaltyOverride: 40` (category lands at 60, not 0). DNSSEC's broken-chain / validation-failing cases (distinct from "not enabled") DO fire `missingControl: true`.
 
    **MTA-STS joined the deliberately-not-setting list in scoring model 1.6.0** (it was previously the seventh setting check). Rationale: measured over a 1,000-domain corpus on 2026-08-03, the `mta_sts` category had a mean score of 3.3 with 96.5% of the 687 measured domains at exactly 0. A control that near-nobody passes is a constant penalty against ~3 of the ~80 base points, not a discriminator, and no documented incident is attributable to a missing MTA-STS policy. Its weight (3, Protective) and finding severities are unchanged — only the zeroing behaviour. A **deployed-but-broken** policy (bad `version:`, missing `mode:`, uncovered MX set, unfetchable policy file) still emits its confident `high`/`medium` findings, which never carried `missingControl` in the first place.
 
@@ -169,6 +184,31 @@ Two mechanisms detect missing controls in `buildCheckResult`:
 In the Core tier, missing controls zero the category's weighted contribution. In the Hardening tier, `result.passed` determines whether a category contributes bonus points — checks with either detection active do not contribute.
 
 Source: `scoreIndicatesMissingControl()` and `buildCheckResult()` in `packages/dns-checks/src/scoring/model.ts`.
+
+### Reading category scores in bulk
+
+Two consequences for anyone computing adoption or coverage statistics from `categoryScores`
+across many domains.
+
+**DNSSEC does not zero on absence — an adoption test must use `dnssec > 60`.** Because
+"DNSSEC not enabled" is a fixed `penaltyOverride: 40` rather than a missing control, an
+unsigned zone scores exactly **60**, not 0. A `dnssec > 0` test therefore counts every
+unsigned domain as signed: measured across a 2,123-domain national corpus, the raw `dnssec`
+values were `{0: 44, 55: 1, 60: 1942, >60: 136}` — 6.4% signed and 91.5% unsigned sitting at
+exactly 60, where a `> 0` test reports 95–100% adoption. Country-level signed rates measured
+the same day ranged from 3.3% to 16.5%. Every *other* scored category zeroes on absence, so a
+uniform "score is 0" test across categories is correct everywhere except DNSSEC, and must
+special-case it.
+
+**A category absent from `categoryScores` was not measured.** It was excluded as inconclusive
+(see [Evidence sufficiency](#evidence-sufficiency)) and renormalized out of the score, so it
+belongs out of the *denominator* of a coverage rate — counting it as a failure overstates the
+failure rate. Reach varies by category and by network path: in the same corpus `http_security`
+was measured on 1,579 domains and `ssl` on 1,741, while pure-DNS categories completed on every
+domain; in another country's corpus `ssl` failed on 72.5% of domains. That skew is a property
+of reachability, not a scanner timeout — scans containing a failed check completed *faster*
+than clean ones (median 1,969 ms vs 2,250 ms), which is what an unreachable or refusing host
+looks like. A check exhausting its time budget would be slower, not faster.
 
 ## Critical Gap Ceiling
 
