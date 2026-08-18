@@ -11,7 +11,8 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { formatScoreGrade, hasCompletedEvidence, isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { displayGradeFor, formatScoreGrade, hasCompletedEvidence, isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { isCategoryNonApplicable } from './scan/format-report';
 
 export type ComplianceFramework = 'nist_800_177' | 'pci_dss_4' | 'soc2' | 'cis_controls';
 
@@ -232,19 +233,55 @@ const FRAMEWORK_LABELS: Record<ComplianceFramework, string> = {
 };
 
 /**
+ * Does this completed check actually satisfy the control it is mapped to?
+ *
+ * `passed` alone is NOT the answer, and reading it as one was the defect this predicate
+ * closes. `passed` records whether the check PENALIZED the domain; a control that is
+ * absent but carries no penalty under the active profile still returns `passed: true`.
+ * Mapping that onto a compliance verdict published "NIST 800-177 §5.1 DNSSEC — PASS"
+ * for domains with no DNSSEC at all, alongside the same scan's own high-severity
+ * "DNSSEC not enabled" finding.
+ *
+ * `recordPresent` is the observational answer to "was the artifact published at all",
+ * and is documented as score-neutral precisely so a consumer like this one can read it
+ * without perturbing scoring. Only an explicit `false` counts: `undefined` means the
+ * check does not report the signal (spf, dkim, ssl, ns and http_security never set it)
+ * or that the query failed, and absence of a signal is not evidence of absence.
+ *
+ * `recordPresent === false` is NOT sufficient on its own. `check-dnssec` documents a
+ * legitimate `recordPresent: false` + `controlPresent: true` state: a zone that
+ * validates while publishing no DNSKEY/DS of its own, because its ccTLD registry signed
+ * it. That zone IS cryptographically protected, so failing it on missing records would
+ * trade the false PASS this fixes for a false FAIL. An affirmative `controlPresent`
+ * therefore wins, and only unrebutted evidence of absence disqualifies.
+ */
+function isSatisfiedControl(result: CheckResult): boolean {
+	if (!result.passed) return false;
+	return !(result.recordPresent === false && result.controlPresent !== true);
+}
+
+/**
  * Evaluate compliance control status from check results (pure function).
  * Exported for direct unit testing without needing to mock scanDomain.
+ *
+ * `notApplicableCategories` comes from the scan's own applicability pass — see
+ * `isCategoryNonApplicable` in `scan/format-report.ts`, the single source that
+ * `categoryScores` and `notApplicableCategories` both derive from. Callers that omit it
+ * get the previous behaviour for every category.
  */
 export function evaluateCompliance(
 	checkResults: CheckResult[],
 	domain: string,
 	score: number | null,
 	grade: string | null,
+	notApplicableCategories: readonly string[] = [],
 ): ComplianceReport {
 	const resultsByCategory = new Map<string, CheckResult>();
 	for (const r of checkResults) {
 		resultsByCategory.set(r.category, r);
 	}
+
+	const notApplicable = new Set(notApplicableCategories);
 
 	const frameworkMappings = new Map<ComplianceFramework, ComplianceMapping[]>();
 	for (const fw of FRAMEWORK_ORDER) {
@@ -257,11 +294,22 @@ export function evaluateCompliance(
 		let status: ComplianceStatus;
 		const relatedFindings: string[] = [];
 
-		if (matchedResults.length === 0) {
+		// A category the SCAN itself declared not-applicable carries no verdict for this
+		// control. Dropping it here (rather than letting it fall through to the presence
+		// rule below) is what stops a `web_only` domain — which legitimately publishes no
+		// MTA-STS record — from newly reading "NIST §4.4 — FAIL". The applicability
+		// decision is NOT re-derived here: `isCategoryNonApplicable` in
+		// `scan/format-report.ts` is the single source `categoryScores` and
+		// `notApplicableCategories` both come from, and its verdict is passed in.
+		const applicableResults = matchedResults.filter((r) => !notApplicable.has(r.category));
+		const notApplicableCount = matchedResults.length - applicableResults.length;
+
+		if (applicableResults.length === 0) {
 			// No check data for ANY mapped category — there is no evidence either way,
 			// so this control has no verdict. It used to be reported as `fail`, which
 			// made an unmeasured domain (NXDOMAIN / broken zone — `checks: []`) render
-			// as a complete framework-by-framework compliance failure.
+			// as a complete framework-by-framework compliance failure. The same reasoning
+			// covers a control whose every mapped category was declared inapplicable.
 			status = 'not_assessed';
 		} else {
 			// A matched result whose check never COMPLETED (checkStatus 'timeout'/'error')
@@ -270,15 +318,15 @@ export function evaluateCompliance(
 			// partition on `checkStatus` here. `isCompletedCheck` is the single SSOT
 			// spelling of "absent or 'completed' means the check ran normally" — see
 			// `test/audits/*evidence*` for the ban on re-deriving this locally.
-			const completed = matchedResults.filter(isCompletedCheck);
+			const completed = applicableResults.filter(isCompletedCheck);
 
 			if (completed.length === 0) {
 				// Every matched category was measured-AT but never measured — one slow
 				// resolver must not turn into "DMARC Policy — FAIL" on a healthy domain.
 				status = 'not_assessed';
 			} else {
-				const passingCount = completed.filter((r) => r.passed).length;
-				const failingResults = completed.filter((r) => !r.passed);
+				const passingCount = completed.filter(isSatisfiedControl).length;
+				const failingResults = completed.filter((r) => !isSatisfiedControl(r));
 
 				// Collect finding titles from failing categories — completed ones only, so a
 				// transient check's "check error"/"timed out" title never reads as a graded
@@ -301,8 +349,8 @@ export function evaluateCompliance(
 				// and `totalCategories >= completed.length` always holds — the all-transient
 				// case (denominator hitting 0) already short-circuited to `not_assessed`
 				// before this line, so no separate zero-check is needed here.
-				const transientCount = matchedResults.length - completed.length;
-				const totalCategories = control.categories.length - transientCount;
+				const transientCount = applicableResults.length - completed.length;
+				const totalCategories = control.categories.length - transientCount - notApplicableCount;
 
 				if (control.requirePass) {
 					// All mapped categories must pass (and be present)
@@ -377,7 +425,20 @@ export function evaluateCompliance(
 export async function mapCompliance(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<ComplianceReport> {
 	const scanResult = await scanDomain(domain, kv, runtimeOptions);
 
-	return evaluateCompliance(scanResult.checks, domain, scanResult.score.overall, scanResult.score.grade);
+	// Mirror the scan's own applicability pass so a category it nulled cannot be graded
+	// here. Same predicate, same profile default as `formatScanReport` — not a second
+	// opinion on applicability.
+	const profile = scanResult.context?.profile ?? 'mail_enabled';
+	const categoryScores: Record<string, number> = scanResult.score.categoryScores ?? {};
+	const notApplicableCategories = scanResult.checks
+		.filter((check) => isCompletedCheck(check) && isCategoryNonApplicable(check, check.category, profile, categoryScores[check.category]))
+		.map((check) => check.category);
+
+	// `ScanScore.grade` is the engine's canonical NINE-band letter. Every DISPLAY surface
+	// renders the six-band scale via `displayGradeFor`, so passing the raw grade through
+	// made this tool disagree with `scan_domain` on the same score (82 → "B+" here, "B"
+	// there). One band scale, one helper.
+	return evaluateCompliance(scanResult.checks, domain, scanResult.score.overall, displayGradeFor(scanResult.score), notApplicableCategories);
 }
 
 /**

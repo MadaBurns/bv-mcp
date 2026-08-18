@@ -2,7 +2,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import type { CheckResult } from '../src/lib/scoring';
 import { evaluateCompliance, formatCompliance, UNASSESSED_COMPLIANCE_CAVEAT, buildAllTransientCaveat } from '../src/tools/map-compliance';
 import type { ComplianceReport } from '../src/tools/map-compliance';
-import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse, tlsaResponse } from './helpers/dns-mock';
 
 /** Helper to build a minimal CheckResult for compliance mapping tests. */
 function makeCheckResult(category: string, passed: boolean, findings: Array<{ title: string; severity: string }> = []): CheckResult {
@@ -308,8 +308,35 @@ describe('map_compliance treats a never-completed check as not_assessed, not fai
 				}
 				if (url.includes('type=NS') || url.includes('type=2'))
 					return Promise.resolve(nsResponse(domain, [`ns1.${domain}.`, `ns2.${domain}.`]));
+				// This fixture mocks SPF, DKIM, DMARC, MTA-STS and TLS-RPT — i.e. it intends a
+				// healthy MAIL domain — but published no MX, so `detectDomainContext` classified
+				// it `web_only` and the scan declared every mail-only category NOT APPLICABLE.
+				// That made the block comment below ("every other NIST category completed and
+				// passed") false. Publishing MX restores the profile the fixture was written for.
+				if (url.includes('type=MX') || url.includes('type=15'))
+					return Promise.resolve(
+						createDohResponse([{ name: domain, type: 15 }], [{ name: domain, type: 15, TTL: 300, data: `10 mail.${domain}.` }]),
+					);
+				// Publishing MX makes NIST §4.5 (DANE for SMTP) applicable, so the healthy
+				// baseline has to actually publish TLSA to satisfy it.
+				if (url.includes('type=TLSA') || url.includes('type=52'))
+					return Promise.resolve(
+						tlsaResponse(`_25._tcp.mail.${domain}`, [{ usage: 3, selector: 1, matchingType: 1, certData: 'abc123' }]),
+					);
 				if (url.includes('type=CAA') || url.includes('type=257'))
 					return Promise.resolve(caaResponse(domain, ['0 issue "letsencrypt.org"']));
+				// A signed zone publishes DNSKEY/DS as well as setting AD. Without these the
+				// fixture claimed "healthy by default" while modelling an UNSIGNED zone
+				// (`recordPresent: false`), which only read as healthy because the mapper was
+				// grading on `passed` — the very defect under test elsewhere in this file.
+				if (url.includes('type=DNSKEY') || url.includes('type=48'))
+					return Promise.resolve(
+						createDohResponse([{ name: domain, type: 48 }], [{ name: domain, type: 48, TTL: 300, data: '257 3 13 mdsswUyr3DPW...' }]),
+					);
+				if (url.includes('type=DS') || url.includes('type=43'))
+					return Promise.resolve(
+						createDohResponse([{ name: domain, type: 43 }], [{ name: domain, type: 43, TTL: 300, data: '12345 13 2 abc123...' }]),
+					);
 				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse(domain, true));
 				return Promise.resolve(createDohResponse([], []));
 			}
@@ -707,5 +734,174 @@ describe('formatCompliance', () => {
 		const spfLine = output.split('\n').find((l) => l.includes('§4.3.1'));
 		expect(spfLine).toBeDefined();
 		expect(spfLine).not.toContain(' — ');
+	});
+});
+
+/**
+ * A control must not be reported as PASS on the strength of a check that observed no
+ * published record.
+ *
+ * `passed` answers "did this check penalize the domain", NOT "does the control exist".
+ * A check for an absent-but-unpenalized control still returns `passed: true` — that is
+ * the documented reason `recordPresent` exists (see `CheckResult.recordPresent`, which
+ * is explicitly score-neutral so that nothing in the scoring path reads it). This mapper
+ * was reading `passed`, so a domain with NO DNSSEC and NO CAA was reported as passing
+ * NIST 800-177 §5.1 and §5.2 — a published compliance claim the same scan simultaneously
+ * contradicted with a high-severity "DNSSEC not enabled" finding.
+ *
+ * Measured 2026-08-19 against three live domains: cloudflare.com (DNSSEC signed,
+ * `recordPresent: true`) correctly passed §5.1, while davidhf.com and codewithbullet.com
+ * (both `recordPresent: false`, both carrying a HIGH "DNSSEC not enabled") ALSO passed it.
+ * The control never discriminated.
+ */
+describe('map_compliance does not pass a control whose record was never published', () => {
+	/**
+	 * A check that COMPLETED, was not penalized, but published nothing.
+	 *
+	 * The flag pair is the shape MEASURED from production on 2026-08-19, not one invented
+	 * in the mapper's own vocabulary: `check_dnssec` on davidhf.com and `check_caa` on the
+	 * same domain both returned `passed: true` with `controlPresent: false` and
+	 * `recordPresent: false` alongside a high/medium "not enabled" finding.
+	 */
+	function absentButUnpenalized(category: string, title: string, severity: string): CheckResult {
+		return {
+			category,
+			passed: true,
+			score: 60,
+			controlPresent: false,
+			recordPresent: false,
+			findings: [{ category, title, severity, detail: '' }],
+		} as CheckResult;
+	}
+
+	/**
+	 * The registry-signed counter-fixture: no DNSKEY/DS of its own, but the chain
+	 * validates. `check-dnssec` documents this exact `false`/`true` pair as "protected,
+	 * not a contradiction", so it must keep passing.
+	 */
+	function absentRecordsButControlActive(category: string): CheckResult {
+		return {
+			category,
+			passed: true,
+			score: 85,
+			controlPresent: true,
+			recordPresent: false,
+			findings: [{ category, title: 'DNSSEC is registry-managed', severity: 'medium', detail: '' }],
+		} as CheckResult;
+	}
+
+	it('does not pass NIST §5.1 when the DNSSEC check observed no published record', () => {
+		const results = makeAllPassing().map((r) =>
+			r.category === 'dnssec' ? absentButUnpenalized('dnssec', 'DNSSEC not enabled', 'high') : r,
+		);
+		const report = evaluateCompliance(results, 'no-dnssec.com', 82, 'B');
+
+		const control = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§5.1');
+		expect(control).toBeDefined();
+		expect(control!.status).not.toBe('pass');
+	});
+
+	it('does not pass NIST §5.2 when the CAA check observed no published record', () => {
+		const results = makeAllPassing().map((r) => (r.category === 'caa' ? absentButUnpenalized('caa', 'No CAA records', 'medium') : r));
+		const report = evaluateCompliance(results, 'no-caa.com', 82, 'B');
+
+		const control = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§5.2');
+		expect(control).toBeDefined();
+		expect(control!.status).not.toBe('pass');
+	});
+
+	/**
+	 * The registry-signed zone must keep passing. This is the guard that stops the fix
+	 * from becoming the same defect with the opposite sign: a ccTLD-signed zone publishes
+	 * no DNSKEY/DS of its own yet is cryptographically protected, and `check-dnssec`
+	 * documents that `recordPresent: false` + `controlPresent: true` pair as exactly that
+	 * state. Failing it would report a protected zone as non-compliant.
+	 */
+	it('still passes a control whose records are absent but whose control is affirmatively active', () => {
+		const results = makeAllPassing().map((r) => (r.category === 'dnssec' ? absentRecordsButControlActive('dnssec') : r));
+		const report = evaluateCompliance(results, 'registry-signed.com', 88, 'B');
+
+		const control = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§5.1');
+		expect(control).toBeDefined();
+		expect(control!.status).toBe('pass');
+	});
+
+	/**
+	 * Over-correction guard. `recordPresent: undefined` means "this check does not report
+	 * the signal" (spf, dkim, ssl, ns, http_security never set it) or "the query failed".
+	 * Neither is evidence of absence, so behaviour must be unchanged for those.
+	 */
+	it('still passes a control whose check does not report the presence signal at all', () => {
+		const results = makeAllPassing(); // no recordPresent anywhere
+		const report = evaluateCompliance(results, 'silent-signal.com', 95, 'A');
+
+		for (const control of report.frameworks.nist_800_177.mappings) {
+			expect(control.status).toBe('pass');
+		}
+	});
+
+	/**
+	 * The second over-correction guard, and the reason this fix is not a one-line
+	 * predicate swap. On a `web_only`/`non_mail` domain the scan already declares the
+	 * mail-only categories NOT APPLICABLE and nulls their scores. Those categories also
+	 * report `recordPresent: false` (there genuinely is no MTA-STS record), so failing on
+	 * absence alone would newly report "NIST §4.4 MTA-STS — FAIL" against a domain that
+	 * accepts no mail. That trades a false PASS for a false FAIL: the same defect wearing
+	 * the opposite sign. A control the scan declared inapplicable has no verdict to give.
+	 */
+	it('reports a not-applicable category as not_assessed rather than failing it on absence', () => {
+		const results = makeAllPassing().map((r) =>
+			r.category === 'mta_sts' ? absentButUnpenalized('mta_sts', 'No MTA-STS or TLS-RPT records found', 'low') : r,
+		);
+		const report = evaluateCompliance(results, 'web-only.com', 82, 'B', ['mta_sts']);
+
+		const control = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§4.4');
+		expect(control).toBeDefined();
+		expect(control!.status).toBe('not_assessed');
+		// And it must leave the denominator, not sit in it as a silent zero.
+		expect(report.frameworks.nist_800_177.notAssessed).toBeGreaterThan(0);
+	});
+});
+
+/**
+ * `map_compliance` must render the SAME letter as every other rating surface.
+ *
+ * `ScanScore.grade` carries the engine's canonical NINE-band grade (A+/A/B+/B/C+/…);
+ * the display SSOT is `displayGradeFor`, which `format-report.ts` uses for
+ * `scan_domain`. This tool passed the raw nine-band value straight through, so the same
+ * domain at the same score rendered `B+` here and `B` in `scan_domain` — measured
+ * 2026-08-19 on codewithbullet.com (82 → "B+" vs "B") and davidhf.com (92 → "A+" vs "A",
+ * where A+ additionally means ≥95 on the display scale).
+ */
+describe('map_compliance grade uses the display band SSOT', () => {
+	const { restore } = setupFetchMock();
+	afterEach(() => restore());
+
+	it('never emits a letter outside the six-band display scale', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const domain = 'band-ssot.com';
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse(`_dmarc.${domain}`, ['v=DMARC1; p=quarantine']));
+					if (url.includes('_domainkey.')) return Promise.resolve(createDohResponse([], []));
+					return Promise.resolve(txtResponse(domain, ['v=spf1 include:_spf.google.com ~all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2')) return Promise.resolve(nsResponse(domain, [`ns1.${domain}.`]));
+				if (url.includes('type=CAA') || url.includes('type=257')) return Promise.resolve(createDohResponse([], []));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse(domain, false));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			return Promise.resolve(httpResponse('OK'));
+		});
+
+		const { mapCompliance } = await import('../src/tools/map-compliance');
+		const { nistScoreToGrade } = await import('@blackveil/dns-checks/scoring');
+		const report = await mapCompliance('band-ssot.com');
+
+		// Fixture-reachability guard: a null score would make the assertions vacuous.
+		expect(report.score).not.toBeNull();
+		expect(report.grade).toBe(nistScoreToGrade(report.score!));
+		expect(['A+', 'A', 'B', 'C', 'D', 'F']).toContain(report.grade);
 	});
 });

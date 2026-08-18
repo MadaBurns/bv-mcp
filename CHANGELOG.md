@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.19.0 — no weight, tier, grade band, severity penalty or profile rule moved, and no score changes. `recordPresent`/`controlPresent` are score-neutral by construction; only the `map_compliance` reporting surface reads them.
+
+### Fixed
+
+- `map_compliance` no longer reports a control as PASS when the control's record was never published. It graded on `CheckResult.passed`, which records whether a check PENALIZED the domain rather than whether the control exists — so an absent-but-unpenalized control still read as compliant. Measured 2026-08-19: `davidhf.com` was reported **100% passing on both NIST 800-177 and PCI DSS 4.0** while the same scan raised a high-severity "DNSSEC not enabled" and a medium "No CAA records" against it; NIST §5.1 (DNSSEC Validation) and §5.2 (CAA) returned `pass` on every domain tested, signed or not, so neither control ever discriminated. Verdicts now additionally require that the check did not observe a definitive absence.
+- A control whose mapped category the scan itself declared NOT APPLICABLE is now `not_assessed` rather than being failed on that absence. Without this, the presence rule above would newly report "NIST §4.4 MTA-STS — FAIL" against a `web_only` domain that accepts no mail — trading a false PASS for a false FAIL. Applicability is not re-derived: `isCategoryNonApplicable` (the single source `categoryScores` and `notApplicableCategories` both come from) is now exported and reused.
+- `map_compliance` renders the same grade letter as every other surface. It passed `ScanScore.grade` — the engine's canonical NINE-band letter — straight through instead of the six-band display band, so the same domain at the same score read `B+` here and `B` in `scan_domain` (measured on `codewithbullet.com` at 82, and `davidhf.com` at 92 reporting `A+`, a band that requires ≥ 95 on the display scale). It now uses `displayGradeFor`, the display SSOT.
+
+### Notes
+
+- A zone that validates while publishing no DNSKEY/DS of its own — the registry/ccTLD-signed case `check-dnssec` documents as the legitimate `recordPresent: false` + `controlPresent: true` state — still passes §5.1. An affirmative `controlPresent` rebuts absence, so a protected zone is never reported as non-compliant.
+- The `map_compliance` "healthy baseline" test fixture published no MX, DNSKEY/DS or TLSA while mocking every mail control. It only read as healthy because the mapper graded on `passed`; it now publishes the records it claims, so it exercises a genuinely compliant domain.
+
 ## [3.54.0] - 2026-08-19
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.19.0 — no weight, tier, grade band, severity penalty or profile rule moved. No score changes. The recon tools this release touches are all `scanIncluded: false`, so nothing here reaches a scored category; `test/audits/unmeasured-marker-scope.audit.test.ts` enforces that boundary.
