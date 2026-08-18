@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { probeDelegationConsistency, type DelegationProbeDependencies } from '../lib/authoritative-dns-infra/delegation-probe';
 import { ROOT_HINTS, ROOT_SERVER_NAMES } from '../lib/authoritative-dns-infra/root-hints';
 import { normalizeInfraHostname } from '../lib/authoritative-dns-infra/probe-client';
 import type {
@@ -30,7 +31,11 @@ async function readJson(request: Request): Promise<unknown> {
 }
 
 function validHostname(value: string): boolean {
-	return value.length > 0 && value.length <= 253 && !value.includes('/') && !value.includes('\\');
+	if (value.length === 0 || value.length > 253 || value.includes('/') || value.includes('\\')) return false;
+	const labels = value.split('.');
+	return labels.length >= 2 && labels.every(
+		(label) => label.length > 0 && label.length <= 63 && /^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?$/.test(label),
+	);
 }
 
 function rootHintForHostname(hostname: string) {
@@ -77,6 +82,31 @@ async function handleAuthoritativeDnsProbe(request: Request): Promise<Response> 
 	return jsonResponse(evidence);
 }
 
+export async function handleDelegationConsistencyProbe(
+	request: Request,
+	dependencies: DelegationProbeDependencies = {},
+): Promise<Response> {
+	if (request.method !== 'POST') {
+		return jsonResponse({ error: 'method_not_allowed' }, 405);
+	}
+
+	const body = await readJson(request) as AuthoritativeProbeRequest;
+	const rawHostname = typeof body.hostname === 'string' ? body.hostname : '';
+	const hostname = normalizeInfraHostname(rawHostname);
+	if (!validHostname(hostname)) {
+		return jsonResponse({ error: 'invalid_hostname' }, 400);
+	}
+
+	try {
+		return jsonResponse(await probeDelegationConsistency(hostname, dependencies));
+	} catch (error) {
+		return jsonResponse(
+			{ error: 'delegation_probe_failed', detail: error instanceof Error ? error.message : String(error) },
+			502,
+		);
+	}
+}
+
 function handleRootServerSetProbe(request: Request): Response {
 	if (request.method !== 'POST') {
 		return jsonResponse({ error: 'method_not_allowed' }, 405);
@@ -102,6 +132,9 @@ export default {
 		}
 		if (url.pathname === '/probe/authoritative-dns') {
 			return handleAuthoritativeDnsProbe(request);
+		}
+		if (url.pathname === '/probe/delegation-consistency') {
+			return handleDelegationConsistencyProbe(request);
 		}
 		if (url.pathname === '/probe/root-server-set') {
 			return handleRootServerSetProbe(request);

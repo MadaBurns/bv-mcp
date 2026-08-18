@@ -30,7 +30,7 @@ import { checkZoneHygiene } from '../tools/check-zone-hygiene';
 import { checkSubdomailing } from '../tools/check-subdomailing';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { computeScoringConfigHash } from '../lib/scoring-version';
-import { batchScan, formatBatchScan } from '../tools/batch-scan';
+import { batchScan, compactBatchScanResults, formatBatchScan } from '../tools/batch-scan';
 import { compareDomains, formatDomainComparison, COMPARE_DOMAINS_SYNC_BUDGET_MS } from '../tools/compare-domains';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
@@ -90,7 +90,6 @@ import {
 	extractDkimSelector,
 	extractExplainFindingArgs,
 	extractForceRefresh,
-	extractFormat,
 	extractIncludeProviders,
 	extractMxHosts,
 	extractRecordType,
@@ -98,7 +97,7 @@ import {
 	resolveToolAlias,
 	validateToolArgs,
 } from './tool-args';
-import type { OutputFormat } from './tool-args';
+import { resolveToolOutputFormat } from './tool-output';
 import { buildLogContext, logToolFailure, logToolSuccess } from './tool-execution';
 import { readAndUpdateLastTool } from '../lib/session-memory';
 import { formatCheckResult, mcpError, buildToolResult, withReportCitation } from './tool-formatters';
@@ -174,6 +173,38 @@ const DOMAIN_REQUIRED_TOOLS = new Set(
 export const MUTATING_DEDUP_TOOLS = new Set(
 	TOOLS.filter((tool) => tool.annotations?.readOnlyHint === false && tool.annotations?.destructiveHint === false).map((tool) => tool.name),
 );
+
+/**
+ * Tool names handled by the explicit dispatcher rather than TOOL_REGISTRY.
+ * Kept as an executable dispatch manifest so the characterization suite detects
+ * a newly declared tool that is listed but has no resolution path.
+ */
+export const DIRECT_DISPATCH_TOOLS = new Set([
+	'scan_domain',
+	'batch_scan',
+	'compare_domains',
+	'compare_baseline',
+	'generate',
+	'get_domain_rank',
+	'get_benchmark',
+	'get_provider_insights',
+	'assess_spoofability',
+	'check_resolver_consistency',
+	'explain_finding',
+	'validate_fix',
+	'map_supply_chain',
+	'analyze_drift',
+	'resolve_spf_chain',
+	'discover_subdomains',
+	'map_compliance',
+	'map_csc_products',
+	'prioritize_csc_leads',
+	'simulate_attack_paths',
+	'query_signins',
+	'query_ual',
+	'get_ca_policies',
+	'assess_coverage',
+]);
 
 export function toolRequiresDomain(name: string): boolean {
 	return DOMAIN_REQUIRED_TOOLS.has(name);
@@ -433,7 +464,10 @@ export const TOOL_REGISTRY: Record<
 			}),
 	},
 	check_mta_sts: { cacheKey: () => 'mta_sts', execute: (d, _args, ro) => checkMtaSts(d, buildDnsOptions(ro)) },
-	check_ns: { cacheKey: () => 'ns', execute: (d, _args, ro) => checkNs(d, buildDnsOptions(ro)) },
+	check_ns: {
+		cacheKey: (_args, ro) => (ro?.infraProbe ? 'ns:delegation-probe' : 'ns'),
+		execute: (d, _args, ro) => checkNs(d, buildDnsOptions(ro), undefined, { infraProbe: ro?.infraProbe }),
+	},
 	check_caa: { cacheKey: () => 'caa', execute: (d, _args, ro) => checkCaa(d, buildDnsOptions(ro)) },
 	check_bimi: { cacheKey: () => 'bimi', execute: (d, _args, ro) => checkBimi(d, buildDnsOptions(ro)) },
 	check_tlsrpt: { cacheKey: () => 'tlsrpt', execute: (d, _args, ro) => checkTlsrpt(d, buildDnsOptions(ro)) },
@@ -1060,24 +1094,6 @@ export const TOOL_REGISTRY: Record<
 	},
 };
 
-/** Known interactive LLM client types that benefit from compact output. */
-// `claude_connector` = the Anthropic-hosted remote MCP connector (Claude in the
-// browser/Desktop): an interactive LLM client, so it gets compact output like the
-// other Claude clients (the LLM re-narrates; structuredContent is returned regardless).
-const INTERACTIVE_CLIENTS = new Set(['claude_mobile', 'claude_code', 'cursor', 'vscode', 'claude_desktop', 'claude_connector', 'windsurf']);
-
-/** Determine if the client type is a known interactive LLM IDE. */
-function isInteractiveClient(clientType?: string): boolean {
-	return INTERACTIVE_CLIENTS.has(clientType ?? '');
-}
-
-/** Resolve the effective output format from explicit parameter and client type. */
-function resolveFormat(args: Record<string, unknown>, clientType?: string): OutputFormat {
-	const explicit = extractFormat(args);
-	if (explicit) return explicit;
-	return isInteractiveClient(clientType) ? 'compact' : 'full';
-}
-
 function buildToolErrorResult(message: string): McpToolResult {
 	return { content: [mcpError(message)], isError: true };
 }
@@ -1158,8 +1174,7 @@ export async function handleToolsCall(
 		// `validDomain` is guaranteed to be a string for all branches that use it
 		const validDomain: string = domain ?? '';
 
-		const effectiveFormat = resolveFormat(validatedArgs, runtimeOptions?.clientType);
-		const _interactive = isInteractiveClient(runtimeOptions?.clientType);
+		const effectiveFormat = resolveToolOutputFormat(validatedArgs, runtimeOptions?.clientType);
 
 		const executeDispatch = async (): Promise<McpToolResult> => {
 			// Defense-in-depth (P1): the identity_secops M365 tools forward to bv-web's
@@ -1345,7 +1360,11 @@ export async function handleToolsCall(
 						logDetails: { totalDomains: batchResults.length },
 						severity: 'info',
 					});
-					return buildToolResult(batchText, batchResults, effectiveFormat);
+					return buildToolResult(
+						batchText,
+						effectiveFormat === 'compact' ? compactBatchScanResults(batchResults) : batchResults,
+						effectiveFormat,
+					);
 				}
 				case 'compare_domains': {
 					const domains = validatedArgs.domains as string[];

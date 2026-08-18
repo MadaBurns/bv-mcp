@@ -4,6 +4,7 @@ import worker from '../../src/index';
 import { signJwt, newJti } from '../../src/oauth/jwt';
 import { revokeJti } from '../../src/oauth/storage';
 import { OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
+import { clearKvPrefix } from '../helpers/kv';
 
 // Phase 8: /mcp must accept a valid OAuth 2.1 JWT issued by /oauth/token in the
 // `Authorization: Bearer` header and resolve it as owner tier without re-running
@@ -23,11 +24,6 @@ const jwtEnv = {
 	OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET,
 	OAUTH_ISSUER: 'https://example.com',
 } as TestEnv;
-
-async function clearPrefix(prefix: string) {
-	const list = await env.SESSION_STORE.list({ prefix });
-	await Promise.all(list.keys.map((k) => env.SESSION_STORE.delete(k.name)));
-}
 
 async function mintOAuthJwt(opts?: {
 	secret?: string;
@@ -61,10 +57,10 @@ function mcpInitRequest(token: string): Request<unknown, IncomingRequestCfProper
 }
 
 beforeEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 afterEach(async () => {
-	await clearPrefix('oauth:');
+	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 });
 
 describe('POST /mcp Bearer JWT acceptance', () => {

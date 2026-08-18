@@ -20,7 +20,8 @@ import {
 	queryTailExceptions,
 	resolveAnalyticsDataset,
 } from './lib/analytics-queries';
-import { buildAlertPayload, buildDigestPayload, sendAlert } from './lib/alerting';
+import { buildAlertPayload, buildDigestPayload, sendAlert, sendFuzzingAlert } from './lib/alerting';
+import type { SendAlertOptions } from './lib/alerting';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { logEvent, logError } from './lib/log';
 import { scoreWindow } from './lib/fuzzing-detector';
@@ -388,6 +389,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 						},
 						threshold: `error_pct > ${errorThreshold}%`,
 					}),
+					alertOptions(env),
 				);
 			}
 
@@ -403,6 +405,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 						},
 						threshold: `p95_ms > ${p95Threshold}ms`,
 					}),
+					alertOptions(env),
 				);
 			}
 		}
@@ -423,6 +426,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 					metrics: { total_hits: rateLimitData.total_hits },
 					threshold: `rate_limit_hits > ${rateLimitThreshold}`,
 				}),
+				alertOptions(env),
 			);
 		}
 
@@ -458,6 +462,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 					metrics: { total_events: totalDegradations, breakdown: breakdown || '(none)' },
 					threshold: `binding_degradation_events >= ${bindingDegradationThreshold}`,
 				}),
+				alertOptions(env),
 			);
 		}
 
@@ -491,6 +496,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 					},
 					threshold: `queue_failures >= ${queueFailureThreshold}`,
 				}),
+				alertOptions(env),
 			);
 		}
 
@@ -510,6 +516,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 					metrics: { exception_count: tailExceptionCount },
 					threshold: `tail_exceptions >= ${tailExceptionThreshold}`,
 				}),
+				alertOptions(env),
 			);
 		}
 
@@ -547,36 +554,21 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 				metrics: { pipeline_failed: 1 },
 				threshold: 'alerting_self_check',
 			}),
+			alertOptions(env),
 		).catch(() => {});
 	}
 }
 
-/** Send a fuzzing alert as a JSON payload — separate from sendAlert which is Slack-shaped. */
-async function sendFuzzingAlert(webhookUrl: string, payload: import('./schemas/alerting').FuzzingAlert): Promise<void> {
-	if (!webhookUrl) return;
-	try {
-		const parsed = new URL(webhookUrl);
-		if (parsed.protocol !== 'https:') return;
-	} catch {
-		return;
-	}
-	try {
-		await fetch(webhookUrl, {
-			method: 'POST',
-			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify(payload),
-			redirect: 'manual',
-			// Bound the operator webhook so a stalled endpoint can't hang the 15-min
-			// cron tick (parity with sendAlert in lib/alerting.ts).
-			signal: AbortSignal.timeout(5_000),
-		});
-	} catch (err) {
-		logError(err instanceof Error ? err : String(err), {
-			severity: 'warn',
-			category: 'alerting',
-			details: { message: 'fuzz_alert_dispatch_failed' },
-		});
-	}
+/**
+ * Transport options for this cron tick's alert dispatches.
+ *
+ * Passing `BV_WEB` lets `sendAlert`/`sendFuzzingAlert` deliver bv-web's own
+ * ingest URL over the service binding instead of the public hostname, which the
+ * zone's Cloudflare bot challenge intercepts with a 403 before the request ever
+ * reaches bv-web. Undefined on BSL self-hosts, where the public-URL path is kept.
+ */
+function alertOptions(env: ScheduledEnv): SendAlertOptions {
+	return { bvWeb: env.BV_WEB };
 }
 
 /**
@@ -672,7 +664,7 @@ export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
 			const rawHash = principalId.startsWith('i_') ? principalId.slice(2) : principalId;
 			const principalIdHash = rawHash.padEnd(16, '0').slice(0, 16);
 			const payload = buildFuzzingAlertPayload(verdict, { principalKind, principalIdHash, observedAt });
-			await sendFuzzingAlert(fuzzingWebhookUrl, payload);
+			await sendFuzzingAlert(fuzzingWebhookUrl, payload, alertOptions(env));
 			alertsSent++;
 
 			// Mark suppression AFTER successful dispatch attempt. sendFuzzingAlert is
@@ -714,7 +706,7 @@ export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
 			queryTierDigest('1', resolveAnalyticsDataset(env.ANALYTICS_DATASET)),
 		);
 		const payload = buildDigestPayload(rows, 1);
-		await sendAlert(digestWebhookUrl, payload);
+		await sendAlert(digestWebhookUrl, payload, alertOptions(env));
 
 		logEvent({
 			timestamp: new Date().toISOString(),
@@ -785,6 +777,7 @@ export async function handleSpfCanary(env: ScheduledEnv): Promise<void> {
 				},
 				threshold: `spf_null_rate >= ${(threshold * 100).toFixed(0)}%`,
 			}),
+			alertOptions(env),
 		);
 	} catch (err) {
 		logError(err instanceof Error ? err : String(err), {

@@ -4,6 +4,40 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.52.0] - 2026-08-15
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.17.0 — no weight, tier, grade band, severity penalty or profile rule moved. **Scores can move on non-apex hosts** because scan profile selection changed (see below).
+
+### Fixed
+
+- `scan_domain`: non-apex hosts with no MX that inherit their zone (e.g. `www.example.com`) are now scored with the `web_only` profile instead of being penalized for absent SPF/DMARC/DKIM/MTA-STS the apex already governs. Mail-control "missing" findings on such hosts are downgraded to informational/not-applicable; TLS, HTTP security, DNS and subdomain-takeover checks are unaffected. (#688, PR #690)
+- `batch_scan`: an unexpected zero-evidence scan result (zero checks completed without an explicit NXDOMAIN/broken-DNS resolution) is now marked retryable with `error: "scan_produced_no_evidence"`, `evidenceInsufficient: true` and `scoringProfile: null`, instead of being silently graded. Explicit NXDOMAIN abstains are preserved; error placeholders no longer fabricate `mail_enabled`. (#686, PR #689)
+- `batch_scan`: `format: "compact"` now returns a genuinely compact structured payload — top-level `scoringModelVersion`/`scoringConfigHash` plus per-domain `domain`, `score`, `grade`, `measured`, `findingCounts`, `categoryScores`, `scoringProfile`, `evidence`, and optional `error` — dropping per-finding and per-check diagnostics (>90% JSON reduction on a 10-domain batch). `format: "full"` is unchanged. (#687, PR #691)
+
+### Changed
+
+- `get_ca_policies` tool description no longer implies responses are always sample data; it now describes the per-response `representative` marker. (#417, PR #692)
+
+## [3.51.2] - 2026-08-15
+
+**Internal maintainability and characterization release. No public API, tool contract, scoring, schema, configuration-value, or user-facing behavior changes.**
+
+### Changed
+
+- Added characterization contracts for MCP transports, scan result shapes, tool dispatch parity, brand discovery fixtures, and Worker runtime configuration.
+- Extracted private Worker runtime and MCP response helpers to reduce composition-root complexity while preserving route order and response envelopes.
+- Centralized repeated DNS endpoint, brand-audit category, OAuth test cleanup, and operational-script endpoint constants.
+- Added test-environment and coverage-strategy guidance, including the current Workerd coverage constraints.
+- Removed two stale broken maintenance scripts and the redundant `@types/marked` development dependency.
+
+## [3.51.1] - 2026-08-15
+
+**Internal refactor only. No public API, tool contract, scoring, or user-facing behavior changes.**
+
+### Changed
+
+- Consolidated duplicate asynchronous brand-discovery start error construction into a shared typed helper. Existing categories, severity, summaries, metadata flags, and response shapes are preserved.
+
 ## [3.51.0] - 2026-08-14
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.17.0 — no weight, tier, grade band, severity penalty or profile rule moved. **Scores can still move**, in two specific and deliberate ways described below, because what changed is *what the scanner is willing to claim it measured*.
