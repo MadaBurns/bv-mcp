@@ -30,6 +30,7 @@ import {
 	checkMTASTS,
 	checkBIMI,
 	checkDMARC,
+	checkDNSSEC,
 } from '../../index.js';
 import type { DNSQueryFunction } from '../../types.js';
 
@@ -153,6 +154,78 @@ describe('recordPresent is never inferred from an unmeasured state', () => {
 		};
 		const svcb = await checkSVCBHTTPS(D, throwing, opts);
 		expect(svcb.recordPresent).toBeUndefined();
+	});
+});
+
+/**
+ * DNSSEC is the category where a score-band heuristic fails WORST, which is why it needs the
+ * structured signal most.
+ *
+ * Every other scored category zeroes on absence, so `score > 0` is a serviceable "is this
+ * control present" test. DNSSEC is the documented exception: an unsigned zone lands on exactly
+ * 60 via `penaltyOverride: 40`, and only a BROKEN chain sets `missingControl` and zeroes. A
+ * uniform `score > 0` sweep therefore reports near-total DNSSEC adoption — measured against a
+ * 2,123-domain NZ corpus whose raw `dnssec` values were {0: 44, 55: 1, 60: 1942, >60: 136},
+ * i.e. 6.4% actually signed and 91% unsigned sitting on that 60. The trap caught every analysis
+ * in a large multi-agent session.
+ *
+ * These cases pin the three states as READABLE without knowing the magic number, and pin the
+ * scores alongside so the signal can never be mistaken for a scoring change.
+ */
+describe('DNSSEC adoption is readable without the magic 60', () => {
+	const dnssecResolver = (records: Record<string, string[]>): DNSQueryFunction => async (_name: string, type: string) =>
+		records[type] ?? [];
+
+	it('UNSIGNED zone → recordPresent false, controlPresent false (still score 60, not 0)', async () => {
+		const r = await checkDNSSEC(D, dnssecResolver({}), { rawQueryDNS: async () => ({ AD: false }) });
+		expect(r.recordPresent).toBe(false);
+		expect(r.controlPresent).toBe(false);
+		// The exact band that makes `score > 0` lie. Unchanged by this signal.
+		expect(r.score).toBe(60);
+		expect(r.passed).toBe(true);
+	});
+
+	it('BROKEN chain (DNSKEY, no DS) → recordPresent TRUE, controlPresent false — published but not working', async () => {
+		const r = await checkDNSSEC(D, dnssecResolver({ DNSKEY: ['257 3 13 base64key...'] }), {
+			rawQueryDNS: async () => ({ AD: false }),
+		});
+		expect(r.recordPresent).toBe(true);
+		expect(r.controlPresent).toBe(false);
+		// Broken IS the missing-control zero — distinct from unsigned's 60, and unchanged.
+		expect(r.score).toBe(0);
+	});
+
+	it('SIGNED and validating → recordPresent true, controlPresent true', async () => {
+		const r = await checkDNSSEC(D, dnssecResolver({ DNSKEY: ['257 3 13 base64key...'], DS: ['12345 13 2 abcdef...'] }), {
+			rawQueryDNS: async () => ({ AD: true }),
+		});
+		expect(r.recordPresent).toBe(true);
+		expect(r.controlPresent).toBe(true);
+	});
+
+	it('the three states are mutually distinguishable — which `score > 0` alone cannot do', async () => {
+		const unsigned = await checkDNSSEC(D, dnssecResolver({}), { rawQueryDNS: async () => ({ AD: false }) });
+		const signed = await checkDNSSEC(D, dnssecResolver({ DNSKEY: ['257 3 13 k'], DS: ['12345 13 2 d'] }), {
+			rawQueryDNS: async () => ({ AD: true }),
+		});
+		// The exact false reading this signal exists to prevent: both are `score > 0`.
+		expect(unsigned.score > 0 && signed.score > 0).toBe(true);
+		// But the structured flags separate them cleanly.
+		expect(unsigned.controlPresent).not.toBe(signed.controlPresent);
+	});
+
+	it('a FAILED DNSKEY/DS lookup reports undefined, never a fabricated absence', async () => {
+		const throwing: DNSQueryFunction = async (_name: string, type: string) => {
+			if (type === 'DNSKEY' || type === 'DS') throw new Error('SERVFAIL');
+			return [];
+		};
+		const r = await checkDNSSEC(D, throwing, { rawQueryDNS: async () => ({ AD: false }) });
+		expect(r.recordPresent).toBeUndefined();
+	});
+
+	it('without a raw resolver the AD flag is not an observation — controlPresent stays undefined', async () => {
+		const r = await checkDNSSEC(D, dnssecResolver({}), {});
+		expect(r.controlPresent).toBeUndefined();
 	});
 });
 

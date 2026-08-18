@@ -611,6 +611,127 @@ describe('formatScanReport compact truncation', () => {
 	});
 });
 
+/**
+ * Per-category measurement coverage in the PROSE report.
+ *
+ * The scoring engine excludes a timed-out/errored check from `categoryScores` — correctly, so
+ * it is renormalized out instead of scored a misleading 0. Its own comment promises those are
+ * "shown as n/a, never a misleading 0", but the text report iterated `categoryScores` alone, so
+ * the category got NO ROW: a reader could not tell "passed the web checks" from "the web checks
+ * never ran". That is the common case — across a 2,123-domain NZ corpus `http_security` was
+ * measured on 1,579 and `ssl` on 1,741; on Chinese domains `ssl` failed 72.5%.
+ *
+ * `structuredContent` always reported this (`inconclusiveCategories` + a null score), so these
+ * cases pin the PROSE half and keep the two views in agreement.
+ */
+describe('formatScanReport per-category measurement coverage', () => {
+	it('names an inconclusive category the score map omits, instead of silently dropping the row', () => {
+		const result = makeMockScanResult({
+			score: {
+				overall: 80,
+				grade: 'B',
+				// `ssl` is deliberately ABSENT — exactly what the engine produces for an errored check.
+				categoryScores: { spf: 100 } as unknown as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'ok',
+				evidence: { attempted: 2, completed: 1, ratio: 0.5 },
+			} as ScanScore,
+			checks: [
+				{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+				{ category: 'ssl', passed: false, score: 0, findings: [], checkStatus: 'error' },
+			] as CheckResult[],
+		});
+		const text = formatScanReport(result, 'full');
+		expect(text).toContain('SSL');
+		expect(text).toContain('not measured');
+		// It must NOT be rendered as a score of any kind — that is the overclaim being fixed.
+		expect(text).not.toContain('SSL        0/100');
+	});
+
+	it('distinguishes "not measured" from "not applicable" — different states, different rows', () => {
+		const result = makeMockScanResult({
+			// `as unknown as` (not the bare `as` the older cases in this file use) — the partial
+			// literal does not overlap `DomainContext`, and the test-typecheck ratchet counts the
+			// direct cast as a new error. Do not "tidy" this back to a single cast.
+			context: { profile: 'non_mail', signals: [], weights: {}, detectedProvider: null } as unknown as DomainContext,
+			score: {
+				overall: 80,
+				grade: 'B',
+				categoryScores: { dkim: 100 } as unknown as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'ok',
+				evidence: { attempted: 2, completed: 1, ratio: 0.5 },
+			} as ScanScore,
+			checks: [
+				{ category: 'dkim', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+				{ category: 'http_security', passed: false, score: 0, findings: [], checkStatus: 'timeout' },
+			] as CheckResult[],
+		});
+		const text = formatScanReport(result, 'full');
+		// Measured-and-inapplicable keeps its existing N/A row...
+		expect(text).toContain('control does not apply');
+		// ...while never-measured gets its own, clearly different one.
+		expect(text).toContain('not measured — check timed out');
+	});
+
+	it('reports the coverage rows in compact mode too — an interactive client is not spared the caveat', () => {
+		const result = makeMockScanResult({
+			score: {
+				overall: 80,
+				grade: 'B',
+				categoryScores: { spf: 100 } as unknown as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'ok',
+				evidence: { attempted: 2, completed: 1, ratio: 0.5 },
+			} as ScanScore,
+			checks: [
+				{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+				{ category: 'ssl', passed: false, score: 0, findings: [], checkStatus: 'error' },
+			] as CheckResult[],
+		});
+		expect(formatScanReport(result, 'compact')).toContain('not measured');
+	});
+
+	it('adds no coverage row when every check completed', () => {
+		const result = makeMockScanResult({
+			score: {
+				overall: 80,
+				grade: 'B',
+				categoryScores: { spf: 100 } as unknown as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'ok',
+				evidence: { attempted: 1, completed: 1, ratio: 1 },
+			} as ScanScore,
+			checks: [{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' }] as CheckResult[],
+		});
+		expect(formatScanReport(result, 'full')).not.toContain('not measured');
+	});
+
+	it('agrees with the structured payload: every prose "not measured" row is an inconclusiveCategory', () => {
+		const result = makeMockScanResult({
+			score: {
+				overall: 80,
+				grade: 'B',
+				categoryScores: { spf: 100 } as unknown as Record<CheckCategory, number>,
+				findings: [],
+				summary: 'ok',
+				evidence: { attempted: 3, completed: 1, ratio: 1 / 3 },
+			} as ScanScore,
+			checks: [
+				{ category: 'spf', passed: true, score: 100, findings: [], checkStatus: 'completed' },
+				{ category: 'ssl', passed: false, score: 0, findings: [], checkStatus: 'error' },
+				{ category: 'http_security', passed: false, score: 0, findings: [], checkStatus: 'timeout' },
+			] as CheckResult[],
+		});
+		const text = formatScanReport(result, 'full');
+		const structured = buildStructuredScanResult(result);
+		expect(structured.inconclusiveCategories.sort()).toEqual(['http_security', 'ssl']);
+		for (const category of structured.inconclusiveCategories) {
+			expect(text).toContain(category.toUpperCase());
+		}
+	});
+});
+
 describe('formatScanReport evidence coverage', () => {
 	it('names the coverage gap in the text report when checks did not complete', () => {
 		const result = makeMockScanResult({
