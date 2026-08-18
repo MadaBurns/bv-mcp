@@ -107,6 +107,11 @@ export function markUnmeasured(result: CheckResult): CheckResult {
  * The failure is not dramatic (the findings still render; a verdict is withheld rather than
  * fabricated), but a control channel that an upstream can write to is not a control channel.
  * Reserved keys are OURS to set, at the builders, from local knowledge.
+ *
+ * The same rule applies to key ORDER at a builder: spread caller-supplied metadata FIRST and set
+ * the reserved marker LAST, so the marker cannot be overwritten by whatever the caller passed.
+ * Today every such `meta` is locally constructed, so this is defence in depth rather than a live
+ * hole — but it makes the invariant structural instead of conventional.
  */
 export function stripReservedMarkers<T extends Record<string, unknown>>(upstream: T): T {
 	const reserved = new Set<string>([...UNMEASURED_MARKERS, ...ACCESS_REFUSAL_MARKERS]);

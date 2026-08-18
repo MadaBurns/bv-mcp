@@ -56,7 +56,7 @@ function upstreamUnmeasured(
 	meta: Record<string, unknown> = {},
 ): CheckResult {
 	return {
-		...markUnmeasured(buildCheckResult(CATEGORY, [createFinding(CATEGORY, title, 'info', detail, { [marker]: true, ...meta })])),
+		...markUnmeasured(buildCheckResult(CATEGORY, [createFinding(CATEGORY, title, 'info', detail, { ...meta, [marker]: true })])),
 		partial: true,
 	};
 }
