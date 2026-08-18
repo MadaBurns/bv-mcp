@@ -1,0 +1,15 @@
+{
+  "candidate": {
+    "seed": "example.com",
+    "domain": "sister.example",
+    "signals": ["dkim_key_reuse", "san"],
+    "combinedConfidence": 0.955,
+    "severity": "low"
+  },
+  "allSignalsFailed": {
+    "signals": ["ns"],
+    "checkStatus": "error",
+    "partial": true,
+    "errorKind": "dns_error"
+  }
+}

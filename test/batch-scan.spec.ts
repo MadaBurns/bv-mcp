@@ -123,6 +123,45 @@ describe('batchScan', () => {
 		expect(results[0].evidenceNote).toBeNull();
 	});
 
+	it('marks a zero-check scan without an NXDOMAIN/broken-DNS signal as retryable, unlike a genuine no-DNS abstain', async () => {
+		const { batchScan } = await import('../src/tools/batch-scan');
+		// This is the batch-only failure shape from #686: scanDomain returned without
+		// an exception but also without ever starting its check matrix. It must not be
+		// indistinguishable from the explicit NXDOMAIN short-circuit below.
+		const noEvidenceScan = (async (domain: string) => ({
+			...fakeScanResult(domain),
+			score: { overall: null, grade: null, summary: 'no checks ran', categoryScores: {}, findings: [] },
+			checks: [],
+			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null },
+			// No `resolves` status: this is not a confirmed absent/broken domain.
+		})) as never;
+		const nxdomainScan = (async (domain: string) => ({
+			...fakeScanResult(domain),
+			score: { overall: null, grade: null, summary: 'NXDOMAIN', categoryScores: {}, findings: [] },
+			checks: [],
+			context: { profile: 'mail_enabled', signals: [], weights: {}, detectedProvider: null },
+			resolves: false,
+		})) as never;
+
+		const [unexpected, nxdomain] = await Promise.all([
+			batchScan(['live-no-evidence.com'], { scanFn: noEvidenceScan }),
+			batchScan(['missing-no-evidence.com'], { scanFn: nxdomainScan }),
+		]);
+
+		expect(unexpected[0]).toMatchObject({
+			evidence: { attempted: 0, completed: 0, ratio: 0 },
+			evidenceInsufficient: true,
+			scoringProfile: null,
+			error: 'scan_produced_no_evidence',
+		});
+		expect(unexpected[0].evidenceNote).toMatch(/retry/i);
+		expect(nxdomain[0]).toMatchObject({
+			resolves: false,
+			evidenceInsufficient: false,
+		});
+		expect(nxdomain[0].error).toBeUndefined();
+	});
+
 	it('should reject more than 10 domains', async () => {
 		const { batchScan } = await import('../src/tools/batch-scan');
 		const tooMany = Array.from({ length: 11 }, (_, i) => `domain${i}.com`);
@@ -154,6 +193,49 @@ describe('batchScan', () => {
 			interactionEffects: [],
 		};
 	}
+
+	it('makes compact structured batch output materially smaller while full results retain findings', async () => {
+		const { batchScan, compactBatchScanResults } = await import('../src/tools/batch-scan');
+		const detail = 'Repeated finding detail. '.repeat(100);
+		/* eslint-disable @typescript-eslint/no-explicit-any -- fake ScanFn stub, see fakeScanResult() above */
+		const verboseScan = async (domain: string): Promise<any> => ({
+			...fakeScanResult(domain),
+			// isMeasured() reads checks.length > 0 — a real scan always populates this,
+			// so the stub needs at least one entry for `measured: true` to be exercised.
+			checks: [{ category: 'dmarc', checkStatus: 'completed' }],
+			score: {
+				...fakeScanResult(domain).score,
+				findings: Array.from({ length: 12 }, (_, i) => ({
+					category: 'dmarc',
+					title: `Finding ${i}`,
+					severity: 'medium',
+					detail,
+				})),
+			},
+		});
+		/* eslint-enable @typescript-eslint/no-explicit-any */
+		const results = await batchScan(
+			Array.from({ length: 10 }, (_, i) => `compact-${i}.example.com`),
+			{ scanFn: verboseScan },
+		);
+		const compact = compactBatchScanResults(results);
+
+		expect(results[0].findings).toHaveLength(12);
+		expect(compact.results).toHaveLength(10);
+		expect(compact.results[0]).toMatchObject({
+			domain: 'compact-0.example.com',
+			score: 80,
+			grade: 'B',
+			measured: true,
+			findingCounts: { medium: 12 },
+			scoringProfile: 'mail_enabled',
+		});
+		expect(compact.results[0]).not.toHaveProperty('findings');
+		expect(compact.results[0]).not.toHaveProperty('checkStatuses');
+		expect(compact).toHaveProperty('scoringModelVersion');
+		expect(compact).toHaveProperty('scoringConfigHash');
+		expect(JSON.stringify(compact).length).toBeLessThan(JSON.stringify(results).length / 10);
+	});
 
 	it('emits null score/grade for a budget-exceeded domain instead of a fabricated F', async () => {
 		const { batchScan } = await import('../src/tools/batch-scan');
