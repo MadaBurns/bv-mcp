@@ -18,8 +18,27 @@ describe('scan_buckets tools', () => {
 		const { scanBucketsStart } = await import('../src/tools/scan-buckets');
 		const r = await scanBucketsStart({ target: 'example.com' }, {});
 		expect(r.findings.some(f => f.metadata?.unprovisioned === true)).toBe(true);
-		expect(r.passed).toBe(true);
+		// #695 -- see the twin assertion in test/osint-investigate.spec.ts.
+		expect(r.checkStatus).toBe('error');
 	});
+	// The unmeasured/refusal markers are a CONTROL CHANNEL (markUnmeasured / isAccessRefusal
+	// read them to decide whether a result reports a measurement at all). Several sites spread
+	// the upstream response verbatim into finding metadata and sanitizeFindingMetadata keeps
+	// booleans, so an upstream returning `unprovisioned: true` alongside real data would flip a
+	// genuine result to "not measured". Reserved keys are ours to set, from local knowledge.
+	it('start: an upstream-supplied marker cannot forge the unmeasured control channel', async () => {
+		const { scanBucketsStart } = await import('../src/tools/scan-buckets');
+		const r = await scanBucketsStart(
+			{ target: 'example.com' },
+			{ reconBinding: binding({ scanId: 'scan_1', status: 'running', unprovisioned: true, tierDenied: true }), reconAuthToken: 'tok' },
+		);
+		// The real result stands: still a started scan, not reclassified as unmeasured/refused.
+		expect(r.findings.some(f => f.metadata?.scanId === 'scan_1')).toBe(true);
+		expect(r.checkStatus).toBeUndefined();
+		expect(r.findings.some(f => f.metadata?.unprovisioned === true)).toBe(false);
+		expect(r.findings.some(f => f.metadata?.tierDenied === true)).toBe(false);
+	});
+
 	it('start: returns scanId when started', async () => {
 		const { scanBucketsStart } = await import('../src/tools/scan-buckets');
 		const r = await scanBucketsStart({ target: 'example.com' }, { reconBinding: binding({ scanId: 'scan_1', status: 'running' }), reconAuthToken: 'tok' });
