@@ -8,15 +8,23 @@ describe('checkRootServerSet', () => {
 	it('returns embedded official root hints when the infra probe binding is absent', async () => {
 		const result = await checkRootServerSet();
 
+		// #696 — see the twin assertion in test/check-authoritative-dns-infra.spec.ts.
 		expect(result).toMatchObject({
 			category: 'authoritative_dns_infra',
-			passed: true,
+			passed: false,
+			score: 0,
+			checkStatus: 'error',
 			partial: true,
 			metadata: {
 				evidenceMode: 'worker_only',
 				rootServers: ROOT_SERVER_NAMES,
 			},
 		});
+		// The check compares its own embedded ROOT_SERVER_NAMES constant against itself, so
+		// `official_root_hints_match` cannot be reported as PASSED without a live query.
+		const summary = result.metadata?.capabilitySummary as { passed: string[]; inconclusive: string[] };
+		expect(summary.passed).toEqual([]);
+		expect(summary.inconclusive).toContain('official_root_hints_match');
 		expect(result.findings).toContainEqual(
 			expect.objectContaining({
 				title: 'Official root hints embedded',

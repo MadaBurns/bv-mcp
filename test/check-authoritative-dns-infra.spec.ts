@@ -7,9 +7,15 @@ describe('checkAuthoritativeDnsInfra', () => {
 	it('returns a partial worker-only result when the infra probe binding is absent', async () => {
 		const result = await checkAuthoritativeDnsInfra('A.Root-Servers.NET.');
 
+		// #696: an absent probe measured nothing, so no verdict is reported. `checkStatus: 'error'`
+		// is what makes the scoring engine EXCLUDE this category — under
+		// `profile: 'authoritative_dns_infra'` it is the whole scan, so the previous
+		// `passed: true` / score 100 became a published A+ for a probe that never ran.
 		expect(result).toMatchObject({
 			category: 'authoritative_dns_infra',
-			passed: true,
+			passed: false,
+			score: 0,
+			checkStatus: 'error',
 			partial: true,
 			metadata: {
 				evidenceMode: 'worker_only',
@@ -62,6 +68,43 @@ describe('checkAuthoritativeDnsInfra', () => {
 				severity: 'info',
 			}),
 		);
+	});
+
+	// #696 HALT CONDITION, pinned in code because prose did not hold it.
+	//
+	// The unmeasured shape triggers on "nothing was measured at all" (capabilitySummary.passed
+	// and .failed both empty). It must NOT trigger on `!probeEstablishedContact()`: contact is a
+	// DNS-reachability notion, while `rpki_roa_validity` and the critical
+	// `route_leak_hijack_alerts` are measured from routing/vantage evidence needing no DNS
+	// contact at all. A rewrite keying on contact would discard genuinely measured critical
+	// findings and re-grade live scans on a CORE-tier category — an operator decision owing a
+	// SCORING_MODEL_VERSION bump, not a correctness fix.
+	//
+	// This case is the tripwire: routing evidence present, DNS contact absent.
+	it('keeps measured routing/vantage findings when the probe established no DNS contact', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'a.root-servers.net',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+			// No reachability / authoritative / soaSerial / dnssec signals at all, so
+			// probeEstablishedContact() is false — yet both capabilities below ARE measured,
+			// from routing evidence that needs no DNS contact.
+			routing: { rpkiStatus: 'valid', routeLeakOrHijackSignals: [] },
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('A.Root-Servers.NET.', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		const summary = result.metadata?.capabilitySummary as { passed: string[]; failed: string[] };
+		// If the fixture stops producing a measured capability this test guards nothing — fail
+		// loudly rather than pass vacuously. (It did exactly that on the first draft.)
+		expect(
+			summary.passed.length > 0 || summary.failed.length > 0,
+			'fixture no longer measures any capability; the halt condition is unguarded',
+		).toBe(true);
+		// The measurement stands: NOT excluded, NOT zeroed, despite zero DNS contact.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.score).toBeGreaterThan(0);
 	});
 
 	it('passes healthy infra probe evidence with a capability summary', async () => {
