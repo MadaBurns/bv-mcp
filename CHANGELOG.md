@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.53.0] - 2026-08-19
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.17.0 — no weight, tier, grade band, severity penalty or profile rule moved. **One narrow score change is intentional:** a `profile: "authoritative_dns_infra"` scan whose infra probe measured nothing now returns an **ungraded** result instead of `100 (A+)`. No other profile is affected, and no scan that actually measured its checks changes.
+
+### Fixed
+
+- Tools that could not measure no longer report a clean pass. An unavailable lane's only finding is informational, from which the score is derived, so `osint_investigate_*`, `osint_investigation_*`, `scan_buckets_*` and `check_realtime_threat_feed` returned `passed: true, score: 100` when a capability was absent or an upstream did not answer. They now carry `checkStatus: "error"`, and the report prints `Status: not measured` with no score line rather than `✅ Passed / 100/100`. (#695, PRs #697, #698)
+- Authorization refusals (`tierDenied`, `notOwned`) are returned as failed tool calls rather than green security verdicts, matching the HTTP 403 a free caller already receives from a paid-gated tool. They deliberately do **not** set `checkStatus: "error"` — that is the retryable class and would loop an agentic caller on a permanent refusal. (#695, PR #698)
+- Recon poll tools distinguish "not provisioned in this deployment" from "the upstream did not answer". Previously both rendered as unprovisioned, so a live outage told operators to configure a binding that was already bound. The upstream-failure case is marked partial so it is not cached and self-heals. (#695, PR #698)
+- `scan_domain` with `profile: "authoritative_dns_infra"`: when the infra probe establishes nothing, the scan no longer publishes `Overall Score: 100 (A+)` beside `No security issues found.`. The category is excluded as inconclusive and the scan returns ungraded. `official_root_hints_match` is no longer reported as a passed capability when nothing was queried — the "match" compared the check's own embedded constant against itself. (#696, PR #699)
+
+### Added
+
+- `dnssec` check results now populate `recordPresent`/`controlPresent`, separating unsigned (`false`/`false`), published-but-broken (`true`/`false`) and signed-and-validating (`true`/`true`). DNSSEC is the one scored category whose score band cannot answer "is this control present" — an unsigned zone lands at exactly 60 — so a uniform `score > 0` sweep reports ~95–100% adoption against a true single-digit rate. Score-neutral. (PR #680)
+- Scan reports show a row for categories that were excluded as inconclusive, instead of omitting them silently, so a reader can tell "passed the web checks" from "the web checks never ran". (PR #680)
+- `checkStatus` and `partial` are named in the published `CheckResult` output schema (as strings, not an enum, so a future status member stays additive rather than breaking already-deployed clients). (PR #698)
+
+### Changed
+
+- The ten `osint_investigate_*` / `osint_investigation_*` / `scan_buckets_*` tools no longer advertise an `outputSchema`. They are `CheckResult`-shaped only because that is the tool registry's return type; every branch including success emits an informational finding, so publishing a schema pinning `score`/`passed` as required advertised a verdict these tools never compute. Response bodies are unchanged. (#695, PR #698)
+- Documented the DNSSEC adoption measurement rule (`dnssec > 60`, never `> 0`) and corrected the `missingControl` emitter list in `docs/scoring.md`, `docs/troubleshooting.md` and `CLAUDE.md`: HTTP Security sets the flag on no path, BIMI fires on a published-but-ineffective record rather than a missing one, and DMARC, DNSSEC and `authoritative_dns_infra` were missing from the list. (PR #679)
+
 ## [3.52.0] - 2026-08-15
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.17.0 — no weight, tier, grade band, severity penalty or profile rule moved. **Scores can move on non-apex hosts** because scan profile selection changed (see below).
