@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [3.54.0] - 2026-08-19
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.19.0 — no weight, tier, grade band, severity penalty or profile rule moved. No score changes. The recon tools this release touches are all `scanIncluded: false`, so nothing here reaches a scored category; `test/audits/unmeasured-marker-scope.audit.test.ts` enforces that boundary.
 
 ### Fixed
 
