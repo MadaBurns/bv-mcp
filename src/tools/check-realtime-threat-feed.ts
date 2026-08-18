@@ -64,7 +64,17 @@ export async function checkRealtimeThreatFeed(domain: string, options: RealtimeT
 				{ domain, unprovisioned: true },
 			),
 		);
-		return buildCheckResult(CATEGORY, findings) as CheckResult;
+		// Unlike the osint/bucket families, this check's findings use REAL severities
+		// (`hitSeverity()` below maps upstream threat status onto critical/high/medium), so
+		// its 100 sits on the same scale as a measured clean result — the two are
+		// indistinguishable to any consumer. Here, and only here, zeroing is the honest
+		// correction rather than an inversion. Same shape as `buildDnsErrorResult`.
+		return {
+			...(buildCheckResult(CATEGORY, findings) as CheckResult),
+			score: 0,
+			passed: false,
+			checkStatus: 'error',
+		};
 	}
 
 	if (isReconHit(scan.status)) {
