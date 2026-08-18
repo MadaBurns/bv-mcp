@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [3.53.0] - 2026-08-19
 
-**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.17.0 — no weight, tier, grade band, severity penalty or profile rule moved. **One narrow score change is intentional:** a `profile: "authoritative_dns_infra"` scan whose infra probe measured nothing now returns an **ungraded** result instead of `100 (A+)`. No other profile is affected, and no scan that actually measured its checks changes.
+**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 — no weight, tier, grade band, severity penalty or profile rule moved. `@blackveil/dns-checks` goes **1.17.0 → 1.19.0** (with `PARITY_CORPUS_VERSION` in lockstep) because PR #680 changed core check source; the bump is additive and score-neutral. **1.18.0 is deliberately skipped** — that number is already claimed by a tarball vendored downstream whose source was never committed to this repository, so reusing it would leave two different artifacts sharing one version. Because `PARITY_CORPUS_VERSION` is folded into every scan cache key, this bump invalidates cached scans on deploy. That is intended: results cached before this release carry the old shapes that reported unmeasured lanes as clean passes. **One narrow score change is intentional:** a `profile: "authoritative_dns_infra"` scan whose infra probe measured nothing now returns an **ungraded** result instead of `100 (A+)`. No other profile is affected, and no scan that actually measured its checks changes.
 
 ### Fixed
 
