@@ -546,12 +546,20 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// The webhook is configured (guard at the top of this function), so page
 		// through it. Best-effort: if the webhook is down too there is nothing
 		// left to do in-band.
+		//
+		// CARRY THE REASON. A watchdog that pages "could not run" with no cause forces
+		// the operator to reconstruct it by probing the live API by hand — measured
+		// cost of the 2026-08 outage, where a malformed-SQL 422 ran for the full
+		// retention window looking identical to an expired token. `queryAnalyticsEngine`
+		// now puts the AE rejection body in the message (analytics-engine.ts), so the
+		// distinguishing detail is already here; truncated to keep the payload one-line.
+		const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 300);
 		await sendAlert(
 			webhookUrl,
 			buildAlertPayload({
 				title: 'Alerting pipeline failure: analytics check could not run',
 				severity: 'critical',
-				metrics: { pipeline_failed: 1 },
+				metrics: { pipeline_failed: 1, reason: reason || '(no detail)' },
 				threshold: 'alerting_self_check',
 			}),
 			alertOptions(env),
