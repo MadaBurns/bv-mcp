@@ -341,12 +341,43 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	const tailExceptionThreshold = Number.isFinite(parsedTailException) ? parsedTailException : 1;
 	const lookback = env.ALERT_LOOKBACK_MINUTES ?? String(DEFAULT_LOOKBACK_MINUTES);
 
+	// EACH QUERY GETS ITS OWN try. Running all six inside a single try meant the
+	// FIRST rejection aborted the whole check, taking every later alert down with
+	// it — how one malformed-SQL 422 disabled the entire alerting pipeline for 610
+	// consecutive ticks (PR #708), including the fatal-exception alert. A broken
+	// query's blast radius must be that query alone.
+	//
+	// `lane()` never rethrows: it records the failure and returns `fallback`, so the
+	// lanes after it still run. What each failure costs is then reported ONCE at the
+	// end — degraded (some lanes) vs the total-failure watchdog (all lanes).
+	const laneFailures: Array<{ lane: string; reason: string }> = [];
+
+	async function lane<T>(name: string, fallback: T, run: () => Promise<T>): Promise<T> {
+		try {
+			return await run();
+		} catch (err) {
+			const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 200);
+			laneFailures.push({ lane: name, reason });
+			logError(err instanceof Error ? err : String(err), {
+				severity: 'error',
+				category: 'scheduled',
+				details: { message: 'Analytics alerting lane failed', lane: name },
+			});
+			return fallback;
+		}
+	}
+
+	// Every lane below is independent: it queries, evaluates its own thresholds and
+	// dispatches its own alert. A lane that throws contributes a `laneFailures` entry
+	// and nothing else.
+	// Five AE queries, five lanes. Error-rate and p95 share the `anomalies` lane
+	// because both are columns of that one query — a lane is a QUERY, not an alert.
+	const LANE_COUNT = 5;
+
 	try {
-		const anomalyRows = (await queryAnalyticsEngine(
-			env.CF_ACCOUNT_ID,
-			env.CF_ANALYTICS_TOKEN,
-			queryRecentAnomalies(lookback, dataset),
-		)) as AnomalyRow[];
+		const anomalyRows = await lane<AnomalyRow[]>('anomalies', [], async () =>
+			(await queryAnalyticsEngine(env.CF_ACCOUNT_ID!, env.CF_ANALYTICS_TOKEN!, queryRecentAnomalies(lookback, dataset))) as AnomalyRow[],
+		);
 		const anomaly = anomalyRows[0];
 
 		// Reader-blind self-check (log-only, non-paging). For a live service that
@@ -410,11 +441,9 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			}
 		}
 
-		const rateLimitRows = (await queryAnalyticsEngine(
-			env.CF_ACCOUNT_ID,
-			env.CF_ANALYTICS_TOKEN,
-			queryRateLimitSurge(lookback, dataset),
-		)) as RateLimitRow[];
+		const rateLimitRows = await lane<RateLimitRow[]>('rate_limit', [], async () =>
+			(await queryAnalyticsEngine(env.CF_ACCOUNT_ID!, env.CF_ANALYTICS_TOKEN!, queryRateLimitSurge(lookback, dataset))) as RateLimitRow[],
+		);
 		const rateLimitData = rateLimitRows[0];
 
 		if (rateLimitData && (rateLimitData.total_hits ?? 0) > rateLimitThreshold) {
@@ -435,11 +464,13 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// fail-soft bindings null out silently otherwise. Absent bindings and the
 		// benign recon 404 never reach the `degradation` dataset, so any row here
 		// is a real, present-binding failure worth surfacing.
-		const degradationRows = (await queryAnalyticsEngine(
-			env.CF_ACCOUNT_ID,
-			env.CF_ANALYTICS_TOKEN,
-			queryBindingDegradation(lookback, dataset),
-		)) as BindingDegradationRow[];
+		const degradationRows = await lane<BindingDegradationRow[]>('binding_degradation', [], async () =>
+			(await queryAnalyticsEngine(
+				env.CF_ACCOUNT_ID!,
+				env.CF_ANALYTICS_TOKEN!,
+				queryBindingDegradation(lookback, dataset),
+			)) as BindingDegradationRow[],
+		);
 		const totalDegradations = degradationRows.reduce((sum, r) => sum + (r.event_count ?? 0), 0);
 
 		if (totalDegradations >= bindingDegradationThreshold) {
@@ -471,11 +502,9 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// per run; an errored batch or any failed sub-task is otherwise invisible to
 		// `queryRecentAnomalies` (which only sees `tool_call`). Surface it here so a
 		// queue retry-storm or a cron that keeps throwing is alertable.
-		const queueFailureRows = (await queryAnalyticsEngine(
-			env.CF_ACCOUNT_ID,
-			env.CF_ANALYTICS_TOKEN,
-			queryQueueFailures(lookback, dataset),
-		)) as QueueFailureRow[];
+		const queueFailureRows = await lane<QueueFailureRow[]>('queue_failures', [], async () =>
+			(await queryAnalyticsEngine(env.CF_ACCOUNT_ID!, env.CF_ANALYTICS_TOKEN!, queryQueueFailures(lookback, dataset))) as QueueFailureRow[],
+		);
 		const totalQueueFailures = queueFailureRows.reduce((sum, r) => sum + (r.failure_count ?? 0), 0);
 		const totalErrorBatches = queueFailureRows.reduce((sum, r) => sum + (r.error_batch_count ?? 0), 0);
 
@@ -500,11 +529,9 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			);
 		}
 
-		const tailExceptionRows = (await queryAnalyticsEngine(
-			env.CF_ACCOUNT_ID,
-			env.CF_ANALYTICS_TOKEN,
-			queryTailExceptions(lookback, dataset),
-		)) as TailExceptionRow[];
+		const tailExceptionRows = await lane<TailExceptionRow[]>('tail_exceptions', [], async () =>
+			(await queryAnalyticsEngine(env.CF_ACCOUNT_ID!, env.CF_ANALYTICS_TOKEN!, queryTailExceptions(lookback, dataset))) as TailExceptionRow[],
+		);
 		const tailExceptionCount = tailExceptionRows[0]?.exception_count ?? 0;
 
 		if (tailExceptionCount >= tailExceptionThreshold) {
@@ -520,13 +547,41 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			);
 		}
 
+		// EVERY lane failed ⇒ this is a whole-pipeline outage (expired token, AE down,
+		// network), not five coincidental query bugs. Throw to the watchdog below so it
+		// keeps its single loud page rather than fragmenting into five degraded notices.
+		if (laneFailures.length >= LANE_COUNT) {
+			throw new Error(laneFailures[0].reason);
+		}
+
+		// SOME lanes failed ⇒ partial outage. The surviving alerts have already been
+		// dispatched above; say which lanes are blind and why, so a broken query is
+		// visible on its own rather than only as an absence of alerts. Non-critical:
+		// the pipeline is still working, just not completely.
+		if (laneFailures.length > 0) {
+			await sendAlert(
+				webhookUrl,
+				buildAlertPayload({
+					title: `Alerting check degraded: ${laneFailures.length} of ${LANE_COUNT} analytics queries failed`,
+					severity: 'warning',
+					metrics: {
+						failed_lanes: laneFailures.map((f) => f.lane).join(', '),
+						detail: laneFailures.map((f) => `${f.lane}: ${f.reason}`).join(' · ').slice(0, 400),
+					},
+					threshold: 'alerting_lane_partial_failure',
+				}),
+				alertOptions(env),
+			).catch(() => {});
+		}
+
 		logEvent({
 			timestamp: new Date().toISOString(),
 			category: 'scheduled',
 			result: 'ok',
-			severity: 'info',
+			severity: laneFailures.length > 0 ? 'warn' : 'info',
 			details: {
-				message: 'Analytics alerting check completed',
+				message: laneFailures.length > 0 ? 'Analytics alerting check completed with degraded lanes' : 'Analytics alerting check completed',
+				failedLanes: laneFailures.map((f) => f.lane).join(', '),
 				errorPct: anomaly?.error_pct ?? 0,
 				p95Ms: anomaly?.p95_ms ?? 0,
 				rateLimitHits: rateLimitData?.total_hits ?? 0,
