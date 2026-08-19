@@ -282,6 +282,11 @@ describe('handleScheduled', () => {
 		const webhookCall = fetchCalls.find((c) => c.url.includes('hooks.slack.com'));
 		expect(webhookCall).toBeDefined();
 		expect(webhookCall!.body).toContain('Alerting pipeline failure');
+		// The watchdog must carry the REASON. Without it the page says only "could not
+		// run", and the cause has to be recovered by probing the live API out-of-band —
+		// which is exactly what a 7-day-continuous 422 outage cost. The thrown message
+		// now carries the AE rejection body (see analytics-engine-error-detail.spec.ts).
+		expect(webhookCall!.body).toContain('Authentication error: token expired');
 	});
 });
 

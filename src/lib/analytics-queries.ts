@@ -74,8 +74,8 @@ export function queryToolPopularity(days: string, dataset?: string): string {
 	return `SELECT
   blob1 AS tool_name,
   SUM(_sample_interval) AS call_count,
-  SUM(CASE WHEN blob2 = 'pass' THEN _sample_interval ELSE 0 END) AS pass_count,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS error_count
+  SUM(if(blob2 = 'pass', _sample_interval, 0)) AS pass_count,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) AS error_count
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
@@ -99,11 +99,11 @@ export function queryErrorRate(days: string, dataset?: string): string {
 	return `SELECT
   blob1 AS tool_name,
   SUM(_sample_interval) AS total,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS errors,
-  SUM(CASE WHEN blob3 = 'error' AND blob4 = 'none' THEN _sample_interval ELSE 0 END) AS input_errors,
-  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) AS real_errors,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0 / SUM(_sample_interval) AS error_pct,
-  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) * 100.0 / SUM(_sample_interval) AS real_error_pct
+  SUM(if(blob3 = 'error', _sample_interval, 0)) AS errors,
+  SUM(if(blob3 = 'error' AND blob4 = 'none', _sample_interval, 0)) AS input_errors,
+  SUM(if(blob3 = 'error' AND blob4 != 'none', _sample_interval, 0)) AS real_errors,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) * 100.0 / SUM(_sample_interval) AS error_pct,
+  SUM(if(blob3 = 'error' AND blob4 != 'none', _sample_interval, 0)) * 100.0 / SUM(_sample_interval) AS real_error_pct
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${days}' DAY
@@ -212,9 +212,9 @@ export function queryRecentAnomalies(minutes: string, dataset?: string): string 
 	minutes = safeInterval(minutes);
 	return `SELECT
   SUM(_sample_interval) AS total_calls,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS error_count,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0
-    / GREATEST(SUM(_sample_interval), 1) AS error_pct,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) AS error_count,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) * 100.0
+    / if(SUM(_sample_interval) > 0, SUM(_sample_interval), 1) AS error_pct,
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
@@ -234,9 +234,9 @@ export function queryRecentAnomaliesByColo(minutes: string, dataset?: string): s
 	return `SELECT
   blob11 AS colo,
   SUM(_sample_interval) AS total_calls,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS error_count,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0
-    / GREATEST(SUM(_sample_interval), 1) AS error_pct,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) AS error_count,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) * 100.0
+    / if(SUM(_sample_interval) > 0, SUM(_sample_interval), 1) AS error_pct,
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
@@ -298,7 +298,9 @@ ORDER BY event_count DESC`;
  * and their ratio. A healthy fan-out keeps `skew_ratio` near 1; a hot shard (an
  * IP-range concentrating onto one DO, or a missing salt making the mapping
  * precomputable) pushes it up — the signal an operator watches after flipping the flag.
- * `GREATEST(avg(...), 1)` guards the divide when no shard traffic exists.
+ * `if(avg(...) > 1.0, avg(...), 1.0)` guards the divide when no shard traffic exists
+ * (AE has no GREATEST, and its IF() requires both branches to share a type — avg()
+ * returns Double, so the literal must be `1.0`; see analytics-queries-ae-dialect.spec.ts).
  *
  * Blob positions (quota_shard): blob1=shardIndex, blob2=country, blob3=tier.
  */
@@ -307,8 +309,8 @@ export function queryQuotaShardSkew(minutes: string, dataset?: string): string {
 	return `SELECT
   max(shard_load) AS max_shard_load,
   avg(shard_load) AS mean_shard_load,
-  max(shard_load) / GREATEST(avg(shard_load), 1) AS skew_ratio,
-  COUNT(*) AS active_shards
+  max(shard_load) / if(avg(shard_load) > 1.0, avg(shard_load), 1.0) AS skew_ratio,
+  count() AS active_shards
 FROM (
   SELECT
     blob1 AS shard,
@@ -336,7 +338,7 @@ export function queryQueueFailures(minutes: string, dataset?: string): string {
 	return `SELECT
   blob1 AS handler,
   SUM(_sample_interval) AS batch_count,
-  SUM(CASE WHEN blob2 = 'error' THEN _sample_interval ELSE 0 END) AS error_batch_count,
+  SUM(if(blob2 = 'error', _sample_interval, 0)) AS error_batch_count,
   SUM(double2 * _sample_interval) AS failure_count
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'queue_batch'
@@ -395,8 +397,8 @@ export function queryTierToolUsage(days: string, tier?: string, dataset?: string
 	return `SELECT${tier ? '' : '\n  blob7 AS tier,'}
   blob1 AS tool_name,
   SUM(_sample_interval) AS call_count,
-  SUM(CASE WHEN blob2 = 'pass' THEN _sample_interval ELSE 0 END) AS pass_count,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS error_count
+  SUM(if(blob2 = 'pass', _sample_interval, 0)) AS pass_count,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) AS error_count
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'${tierClause(tier, 'blob7')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY
@@ -430,13 +432,13 @@ export function queryTierErrorRate(days: string, tier?: string, dataset?: string
 	tier = safeTier(tier);
 	return `SELECT${tier ? '' : '\n  blob7 AS tier,'}
   SUM(_sample_interval) AS total,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS errors,
-  SUM(CASE WHEN blob3 = 'error' AND blob4 = 'none' THEN _sample_interval ELSE 0 END) AS input_errors,
-  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) AS real_errors,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0
-    / GREATEST(SUM(_sample_interval), 1) AS error_pct,
-  SUM(CASE WHEN blob3 = 'error' AND blob4 != 'none' THEN _sample_interval ELSE 0 END) * 100.0
-    / GREATEST(SUM(_sample_interval), 1) AS real_error_pct
+  SUM(if(blob3 = 'error', _sample_interval, 0)) AS errors,
+  SUM(if(blob3 = 'error' AND blob4 = 'none', _sample_interval, 0)) AS input_errors,
+  SUM(if(blob3 = 'error' AND blob4 != 'none', _sample_interval, 0)) AS real_errors,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) * 100.0
+    / if(SUM(_sample_interval) > 0, SUM(_sample_interval), 1) AS error_pct,
+  SUM(if(blob3 = 'error' AND blob4 != 'none', _sample_interval, 0)) * 100.0
+    / if(SUM(_sample_interval) > 0, SUM(_sample_interval), 1) AS real_error_pct
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'${tierClause(tier, 'blob7')}
   AND timestamp > NOW() - INTERVAL '${days}' DAY${tierGroupBy(tier, 'tier')}
@@ -560,7 +562,7 @@ export function queryKeyUsage(days: string, keyHash?: string, dataset?: string):
   SUM(_sample_interval) AS call_count,
   COUNT(DISTINCT blob1) AS unique_tools,
   COUNT(DISTINCT blob4) AS unique_domains,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS error_count,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) AS error_count,
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'${keyFilter}
@@ -577,13 +579,13 @@ export function queryTierDigest(hours: string, dataset?: string): string {
   blob7 AS tier,
   SUM(_sample_interval) AS total_calls,
   COUNT(DISTINCT blob4) AS unique_domains,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) AS error_count,
-  SUM(CASE WHEN blob3 = 'error' THEN _sample_interval ELSE 0 END) * 100.0
-    / GREATEST(SUM(_sample_interval), 1) AS error_pct,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) AS error_count,
+  SUM(if(blob3 = 'error', _sample_interval, 0)) * 100.0
+    / if(SUM(_sample_interval) > 0, SUM(_sample_interval), 1) AS error_pct,
   quantileExactWeighted(0.50)(double1, _sample_interval) AS p50_ms,
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms,
-  SUM(CASE WHEN blob8 = 'hit' THEN _sample_interval ELSE 0 END) AS cache_hits,
-  SUM(CASE WHEN blob8 = 'miss' THEN _sample_interval ELSE 0 END) AS cache_misses
+  SUM(if(blob8 = 'hit', _sample_interval, 0)) AS cache_hits,
+  SUM(if(blob8 = 'miss', _sample_interval, 0)) AS cache_misses
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${hours}' HOUR

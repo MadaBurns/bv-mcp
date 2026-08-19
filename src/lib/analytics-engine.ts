@@ -25,7 +25,20 @@ export async function queryAnalyticsEngine(accountId: string, token: string, sql
 	});
 
 	if (!response.ok) {
-		throw new Error(`Analytics Engine query failed: ${response.status}`);
+		// The AE SQL API explains a rejection ONLY in the response body — the status
+		// line is bare. Throwing the status alone made a permanently-broken alerting
+		// pipeline undiagnosable: the operator alert said "analytics check could not
+		// run" while the actual cause ("unknown function call: GREATEST") sat in a
+		// body this client had discarded. Read it, normalise the whitespace so it
+		// survives a one-line alert payload, and bound it so a pathological body
+		// can't blow up the webhook. Never let this read fail the throw.
+		let detail = '';
+		try {
+			detail = (await response.text()).replace(/\s+/g, ' ').trim().slice(0, 300);
+		} catch {
+			// body already consumed/unreadable — fall through to the bare status
+		}
+		throw new Error(`Analytics Engine query failed: ${response.status}${detail ? ` — ${detail}` : ''}`);
 	}
 
 	const result = (await response.json()) as { data?: AnalyticsRow[] };
