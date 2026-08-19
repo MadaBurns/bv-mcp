@@ -102,7 +102,10 @@ describe('analytics query builders', () => {
 		expect(sql).toContain('error_pct');
 		expect(sql).toContain('p95_ms');
 		expect(sql).toContain("INTERVAL '15' MINUTE");
-		expect(sql).toContain('GREATEST');
+		// Divide-by-zero guard. NOT GREATEST() — AE's SQL API rejects it with a 422
+		// ("unknown function call: GREATEST"), which is what had every alert dead.
+		// See analytics-queries-ae-dialect.spec.ts for the measured dialect limits.
+		expect(sql).toContain('if(SUM(_sample_interval) > 0, SUM(_sample_interval), 1)');
 	});
 
 	it('queryRecentAnomalies sanitizes minutes parameter', () => {
@@ -128,7 +131,10 @@ describe('analytics query builders', () => {
 		expect(sql).toContain('error_pct');
 		expect(sql).toContain('p95_ms');
 		expect(sql).toContain("INTERVAL '15' MINUTE");
-		expect(sql).toContain('GREATEST');
+		// Divide-by-zero guard. NOT GREATEST() — AE's SQL API rejects it with a 422
+		// ("unknown function call: GREATEST"), which is what had every alert dead.
+		// See analytics-queries-ae-dialect.spec.ts for the measured dialect limits.
+		expect(sql).toContain('if(SUM(_sample_interval) > 0, SUM(_sample_interval), 1)');
 	});
 
 	it('queryRecentAnomaliesByColo sanitizes minutes parameter', () => {
@@ -255,7 +261,10 @@ describe('per-tier analytics query builders', () => {
 		const sql = queryTierErrorRate('7');
 		expect(sql).toContain("blob3 = 'error'");
 		expect(sql).toContain('error_pct');
-		expect(sql).toContain('GREATEST');
+		// Divide-by-zero guard. NOT GREATEST() — AE's SQL API rejects it with a 422
+		// ("unknown function call: GREATEST"), which is what had every alert dead.
+		// See analytics-queries-ae-dialect.spec.ts for the measured dialect limits.
+		expect(sql).toContain('if(SUM(_sample_interval) > 0, SUM(_sample_interval), 1)');
 	});
 
 	it('queryTierErrorRate splits input-validation vs real errors', () => {
