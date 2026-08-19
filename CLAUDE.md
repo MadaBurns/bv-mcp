@@ -280,7 +280,11 @@ git commit -am "chore: bump version to <X.Y.Z>" && git push origin main
 git tag v<X.Y.Z> && git push origin v<X.Y.Z>
 ```
 
-Pipeline: validate → version-verify (read-only gate) → npm publish (provenance) || Cloudflare deploy → MCP Registry → GH Release. Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in `production` env — fail-fast if absent. `wrangler d1 execute --remote --file=-` does NOT accept stdin; pass a real path.
+⚠️ **Deploy and publish are operator-run steps, not tag-triggered ones** — see *Manual release fallback* below. Several pipeline jobs are conditionally gated, so read `publish.yml` for what is actually enabled rather than assuming a stage ran.
+
+**A green Release run does not prove a deploy or publish happened.** Verify the result directly, every time: `serverInfo.version` on the live endpoint, and a **cache-busted** registry query (the registry read API is CDN-cached and can return a stale count and a fresh row in back-to-back requests).
+
+Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in `production` env — fail-fast if absent. `wrangler d1 execute --remote --file=-` does NOT accept stdin; pass a real path.
 
 **Workflow secret-check audit** (`test/audits/workflow-secret-check.audit.test.ts`): every `[ -z "$*_TOKEN" ]` guard must `exit 1`; no warn-and-skip. Codifies v2.10.2–v2.10.6 silent prod-stale.
 
@@ -297,7 +301,11 @@ npm run deploy:prod
 mcp-publisher publish
 ```
 
-**`server.json` is currently remotes-only** — a single top-level `version` field (no `packages` stanza); sync just that field to the tag. (If an npm `packages` stanza is ever re-added, it reintroduces the two-field foot-gun — sync both then.)
+🚨 **Run these from a worktree pinned to the release commit — never from a shared or long-lived checkout.** BOTH shipping commands read the working tree: `deploy:prod` compiles it (`npm -w packages/dns-checks run build`), and `mcp-publisher publish` reads `./server.json` from **cwd**. Neither validates that the tree matches the tag, so a stale checkout ships whatever it happens to hold — and for the registry that means publishing the wrong version, silently and publicly. A fresh worktree also needs the gitignored `.dev/wrangler.deploy.jsonc` copied in (the injector fails closed without it) plus `npm ci`.
+
+**MCP Registry auth is DNS-based:** `mcp-publisher login dns --domain <domain> --private-key <hex>` — **hex**, not base64 or PEM. The public half lives in an apex TXT record `v=MCPv1; k=ed25519; p=<base64>`; changing it is a zone write, so it is operator-only. 🚨 **Never let the private key print to stdout** — it then persists in shell history, scrollback and any agent transcript, and must be discarded and rotated. Write it to a file and pass `--private-key "$(cat mcp.hex)"` so only the substitution is recorded. Keep the local `mcp-publisher` version matching CI's: a version skew moved the token store and invalidated the saved login.
+
+**`server.json` is currently remotes-only** — a single top-level `version` field (no `packages` stanza); sync just that field to the tag. (If an npm `packages` stanza is ever re-added, it reintroduces the two-field foot-gun — sync both then.) Remotes-only also means the registry's npm-existence check does not apply, so **the npm and registry publishes are independent** — do not treat them as one problem, in either direction.
 
 Approve gated deploys through GitHub's protected environment UI or an
 operator-only runbook.
