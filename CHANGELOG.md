@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [3.55.0] - 2026-08-19
+
 **No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.19.0 — no weight, tier, grade band, severity penalty or profile rule moved, and no score changes. `recordPresent`/`controlPresent` are score-neutral by construction; only the `map_compliance` reporting surface reads them.
 
 ### Fixed
