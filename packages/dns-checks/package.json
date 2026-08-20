@@ -30,6 +30,7 @@
 		"README.md"
 	],
 	"scripts": {
+		"prepack": "tsx ../../scripts/ci/dns-checks-prepack.ts",
 		"build": "tsup && tsc -p tsconfig.json --emitDeclarationOnly",
 		"test": "vitest run",
 		"typecheck": "tsc --noEmit"
