@@ -688,6 +688,36 @@ export function isAuthRequiredTool(toolName: string): boolean {
 export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>();
 
 /**
+ * Tools whose OWN documented budget exceeds {@link DEFAULT_P95_THRESHOLD}, so a
+ * latency alert must not judge them against the interactive threshold (#729).
+ *
+ * These are enumeration/multi-domain tools that are SUPPOSED to take tens of
+ * seconds. Pooling them with `scan_domain` and the `check_*` family in one p95
+ * made the alert page `critical` for behaviour working exactly as designed:
+ * measured 2026-08-18..21, these four were the ONLY tools that ever crossed
+ * 10s, `scan_domain` never crossed it once, and `discover_brand_domains`'
+ * MEDIAN (25,603 ms) alone clears the 2x critical escalation — so it could not
+ * run in a quiet window WITHOUT paging.
+ *
+ * Membership rule: a tool belongs here when its own budget/design makes >10s a
+ * normal outcome, NOT merely because it was slow once. Each entry cites why.
+ * Adding a fast tool here silently blinds the alert to a real regression in it;
+ * that is the failure direction to guard against, so keep this set small and
+ * justified. Pinned by test/p95-latency-lane.spec.ts.
+ */
+export const LONG_RUNNING_TOOLS: ReadonlySet<string> = new Set<string>([
+	'batch_scan', // explicit budgetMs, default 25_000 (see CLAUDE.md > batch_scan)
+	'compare_domains', // scans N domains in one call; cost scales with N
+	'discover_subdomains', // CT-log enumeration via BV_CERTSTREAM + fallback sweep
+	'discover_brand_domains', // brand SAN sweep over CT logs; the slowest tool measured
+]);
+
+/** Is this tool expected to run long enough that the interactive latency threshold does not apply? */
+export function isLongRunningTool(toolName: string): boolean {
+	return LONG_RUNNING_TOOLS.has(toolName);
+}
+
+/**
  * Per-tier concurrent tool execution limits (per-isolate, best-effort fairness).
  * Prevents any single authenticated user from monopolizing worker capacity.
  */
