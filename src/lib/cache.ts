@@ -3,14 +3,16 @@
 import { INFLIGHT_CLEANUP_MS } from './config';
 import { logError } from './log';
 import { SERVER_VERSION } from './server-version';
-import { PARITY_CORPUS_VERSION } from '@blackveil/dns-checks';
+import { DNS_CHECKS_PACKAGE_VERSION } from './dns-checks-version';
 
-// The scoring logic lives in `@blackveil/dns-checks`; its version (== PARITY_CORPUS_VERSION
-// by the version-lock contract) is folded into every cache key. A `dns-checks`-only deploy
+// The scoring logic lives in `@blackveil/dns-checks`; its version (read through the
+// one worker-side accessor, `lib/dns-checks-version.ts`, so the cache key and the
+// `dnsChecksPackageVersion` scan stamp can never describe different packages) is
+// folded into every cache key. A `dns-checks`-only deploy
 // (recalibrating scores) does NOT bump SERVER_VERSION, so without this a redeploy would keep
 // serving STALE pre-deploy scores until the TTL expired (observed 2026-06-01: cross-system
 // parity showed dns-mcp serving old CAA/DKIM/DANE scores after the dns-checks bump).
-const DNS_CHECKS_VERSION = PARITY_CORPUS_VERSION;
+const DNS_CHECKS_VERSION = DNS_CHECKS_PACKAGE_VERSION;
 
 /**
  * TTL cache for DNS scan results.

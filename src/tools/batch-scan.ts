@@ -10,6 +10,7 @@
 import { sanitizeDomain, validateDomain } from '../lib/sanitize';
 import { scanDomain, buildStructuredScanResult } from './scan-domain';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../lib/scoring-version';
+import { DNS_CHECKS_PACKAGE_VERSION } from '../lib/dns-checks-version';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { StructuredScanResult } from './scan/format-report';
 import type { OutputFormat } from '../handlers/tool-args';
@@ -37,7 +38,11 @@ export interface CompactBatchScanResultItem {
 /** Compact wire payload for bulk triage; use `format: "full"` for complete findings. */
 export interface CompactBatchScanResult {
 	results: CompactBatchScanResultItem[];
+	/** Scoring-POLICY semver. ⚠️ Not the npm package version — see `dnsChecksPackageVersion` (#707). */
 	scoringModelVersion: string;
+	/** `@blackveil/dns-checks` engine-package version bundled by this build (#707). */
+	dnsChecksPackageVersion: string;
+	/** Recommended reproducibility anchor to record alongside a published score. */
 	scoringConfigHash: string;
 }
 
@@ -103,6 +108,7 @@ function emptyResult(domain: string, error: string, scoringConfigHash: string): 
 		// override was in force made the placeholder claim a reproducibility it could not
 		// back, and made an error item disagree with its own siblings in the same batch.
 		scoringModelVersion: SCORING_MODEL_VERSION,
+		dnsChecksPackageVersion: DNS_CHECKS_PACKAGE_VERSION,
 		scoringConfigHash,
 		error,
 	};
@@ -225,6 +231,7 @@ export function compactBatchScanResults(results: BatchScanResultItem[]): Compact
 		// These are computed once for the batch, so hoist them rather than repeating
 		// identical values in every domain result.
 		scoringModelVersion: results[0]?.scoringModelVersion ?? SCORING_MODEL_VERSION,
+		dnsChecksPackageVersion: results[0]?.dnsChecksPackageVersion ?? DNS_CHECKS_PACKAGE_VERSION,
 		scoringConfigHash: results[0]?.scoringConfigHash ?? computeScoringConfigHash(),
 	};
 }
