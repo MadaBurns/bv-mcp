@@ -150,8 +150,14 @@ describe('workflow permissions audit (F10 — least-privilege OIDC)', () => {
 		expect(top!.__inline__, 'workflow-level permissions must not be write-all').not.toBe('write-all');
 	});
 
-	it('parsed all six publish.yml jobs', () => {
-		expect(jobNames).toEqual(['deploy-cloudflare', 'github-release', 'publish-npm', 'publish-registry', 'validate', 'version-bump']);
+	// Five, not six: `deploy-cloudflare` was removed in #718. It was an `exit 1`
+	// stub that nonetheless declared `environment: production`, so every tag
+	// parked an approval prompt on a job that could only fail. Shipping the
+	// Worker belongs to deploy-prod.yml alone — publish.yml must not regrow a
+	// deploy job, which is what makes this an exact-set assertion.
+	it('parsed all five publish.yml jobs and publish.yml owns no deploy job', () => {
+		expect(jobNames).toEqual(['github-release', 'publish-npm', 'publish-registry', 'validate', 'version-bump']);
+		expect(publish, 'publish.yml must not deploy the Worker — that is deploy-prod.yml').not.toContain('wrangler deploy');
 	});
 
 	it('id-token: write appears ONLY in the publish-npm job (OIDC must not reach untrusted-code jobs)', () => {

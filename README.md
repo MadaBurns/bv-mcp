@@ -186,6 +186,20 @@ SSOT guardrails are enforced by focused audit tests:
 - WASM tool permissions are generated from MCP tool annotations.
 - Public quota copy is checked against runtime quota config.
 
+### Version stamps in scan output
+
+Every `scan_domain` / `batch_scan` result carries three reproducibility stamps. They are **three different namespaces** — do not compare them to each other, and do not read any of them as the npm package version unless it says so:
+
+| Field | What it tracks | How often it moves |
+| --- | --- | --- |
+| `scoringModelVersion` | The scoring **policy**: category weights, profile weights, grade thresholds, severity penalties, the `passed`/missing-control rule, profile detection. | Only when a change alters scores or grades. Slowly — most releases do not touch it. |
+| `dnsChecksPackageVersion` | The `@blackveil/dns-checks` **engine package** version bundled by the running build. | Every package release — code, new detections, bug fixes. |
+| `scoringConfigHash` | Fingerprint of the **effective scoring configuration** that produced this result, including any `SCORING_CONFIG` override. | Whenever the effective config differs. |
+
+`scoringModelVersion` is **independent of** `dnsChecksPackageVersion` and is normally **lower** — for example model `1.10.0` alongside package `1.18.0`. That is not a version gap, and it does not mean a consumer's vendored copy scores differently from the hosted service: the package advanced eight minors without changing scoring policy. Reading the model version as the package version has twice triggered a false "engine version gap" investigation, which is why both are now emitted side by side.
+
+**When you publish or cite a score, record `scoringConfigHash`** — not either version number. It is the value that identifies the exact scoring configuration behind a result, so two scans carrying the same hash were graded under the same rules.
+
 ### Status badge
 
 `GET /badge/<domain>` returns an embeddable SVG — the badge at the top of this README is a live scan of our own domain. It needs no authentication and is subject to the same anonymous rate limits and daily caps as a public scan.

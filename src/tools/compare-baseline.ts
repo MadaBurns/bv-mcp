@@ -18,7 +18,7 @@ import { hasCompletedEvidence } from '../lib/ungraded-display';
 // Shared with `map_compliance` (#705) — see `lib/control-presence.ts`. The two
 // surfaces answer the same customer question ("does this domain have control X")
 // and must not drift on what "satisfied" and "applicable" mean.
-import { isSatisfiedControl, notApplicableCategoriesFor } from '../lib/control-presence';
+import { hasDisqualifyingFinding, isSatisfiedControl, notApplicableCategoriesFor } from '../lib/control-presence';
 import type { ScanDomainResult } from './scan-domain';
 
 const GRADE_ORDER = ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E', 'F'] as const;
@@ -113,6 +113,25 @@ function gradeWorseThan(actual: string, minimum: string): boolean {
 function categorySatisfied(scan: ScanDomainResult, category: CheckCategory): boolean {
 	const check = scan.checks.find((value) => value.category === category);
 	return check !== undefined && isSatisfiedControl(check);
+}
+
+/**
+ * WHY a required control is not satisfied — absent, or present-but-deficient (#726).
+ *
+ * `isSatisfiedControl` gained a severity floor: a control cannot be satisfied by a
+ * check the same scan flags at medium or worse. That is a second, structurally
+ * different reason to violate a `require_*` rule, and collapsing the two into the
+ * original wording makes the gate lie about the remediation. "the scan found no
+ * evidence it is in effect" is FLATLY false for a domain publishing a working SPF
+ * record with an over-permissive trust surface — it sends the customer hunting for a
+ * missing record they will not find, and the next thing they distrust is the gate.
+ */
+function unsatisfiedReason(scan: ScanDomainResult, category: CheckCategory, label: string): string {
+	const check = scan.checks.find((value) => value.category === category);
+	if (check !== undefined && hasDisqualifyingFinding(check)) {
+		return `${label} is required, and this scan flags it at medium severity or worse — a control the same scan reports as deficient does not satisfy the requirement`;
+	}
+	return `${label} is required but the scan found no evidence it is in effect`;
 }
 
 function dmarcEnforced(scan: ScanDomainResult): boolean {
@@ -241,7 +260,7 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 				if (!categorySatisfied(scan, requirement.category)) {
 					violations.push({
 						rule: requirement.key,
-						message: `${requirement.label} is required but the scan found no evidence it is in effect`,
+						message: unsatisfiedReason(scan, requirement.category, requirement.label),
 						expected: true,
 						actual: false,
 					});

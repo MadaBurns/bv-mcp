@@ -1,14 +1,43 @@
 name: Deploy Prod
 
+# THE single authoritative CI deploy path for the production Worker.
+#
+# Three workflows used to claim this job (issues #717 / #718):
+#   * publish.yml `deploy-cloudflare` — `exit 1` as its FIRST step, yet it
+#     declared `environment: production`, so every tagged release parked a real
+#     approval prompt that could only ever fail. Removed.
+#   * deploy-hook.yml `deploy` — the same dead `exit 1` guard, dispatch-only,
+#     last run 2026-05-27. Removed.
+#   * this file — the only one that reconstructs the private overlay, and so the
+#     only one that can ship a Worker with its bindings intact.
+# Deploying the public `wrangler.jsonc` directly is what got `auto-deploy-main.yml`
+# deleted (a Worker missing every KV/D1/R2/Analytics/service binding). Neither
+# removed job is coming back; `npm run deploy:prod` — which injects the private
+# overlay — is the only supported way to ship, here or by hand.
+#
+# ⚠️ The `v*` tag trigger was REMOVED, and that IS the fix for #717 rather than a
+# downgrade. Mechanism: `environment: production` parks a job in `waiting` until
+# a reviewer approves it, and a waiting run HOLDS its concurrency group
+# indefinitely. GitHub keeps at most ONE run queued per group, so every later tag
+# run sat `pending` with ZERO jobs created — nothing to approve, empty
+# `pending_deployments` — and was then cancelled by the next tag. Measured on
+# this repo: run 31878337311 (v3.51.1) held the `deploy-prod` group from
+# 2026-08-15 and starved v3.51.2 → v3.55.0 in an unbroken chain, each run's
+# cancellation timestamp equal to its successor's creation timestamp.
+# An unattended trigger + an approval gate + a concurrency group is that
+# starvation by construction, so the unattended trigger is the part that goes.
+#
+# `cancel-in-progress` MUST stay false — cancelling mid-`wrangler deploy` is how
+# a half-shipped Worker happens. With no unattended trigger, runs can no longer
+# pile up behind the group, so holding it is safe.
+
 on:
   workflow_dispatch:
     inputs:
       ref:
-        description: Git ref to deploy
+        description: Git ref to deploy (branch or tag)
         required: false
         default: main
-  push:
-    tags: ['v*']
 
 concurrency:
   group: deploy-prod
@@ -18,7 +47,34 @@ permissions:
   contents: read
 
 jobs:
+  # Deliberately runs OUTSIDE `environment: production`. Environment secrets are
+  # readable only by a job that declares the environment, and declaring it is
+  # exactly what parks the job on an approval prompt — so a secret check inside
+  # the deploy job can only report "misconfigured" AFTER an operator has already
+  # approved a production deployment. This job gates on a repository VARIABLE,
+  # which needs no environment, and `needs:` makes a failure here skip the deploy
+  # job outright: no job is created, so no `production` deployment is ever queued
+  # while the workflow is unprovisioned. That is the standing guarantee #717/#718
+  # ask for — no workflow left queueing a deployment it cannot complete.
+  preflight:
+    name: Arm check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Confirm the production deploy is armed
+        env:
+          ARMED: ${{ vars.DEPLOY_PROD_ENABLED }}
+        run: |
+          set -euo pipefail
+          if [ "${ARMED:-}" != "true" ]; then
+            echo "::error::deploy-prod is NOT armed, so no production deployment was queued."
+            echo "::error::Arm it by adding CLOUDFLARE_API_TOKEN, WRANGLER_DEPLOY_OVERLAY_B64 and BV_INTERNAL_DEV_KEY to the 'production' environment, THEN setting repository variable DEPLOY_PROD_ENABLED=true."
+            echo "::error::Until then the supported path is 'npm run deploy:prod' from a worktree pinned to the release commit."
+            exit 1
+          fi
+          echo "deploy-prod is armed."
+
   deploy:
+    needs: preflight
     runs-on: ubuntu-latest
     environment: production
     steps:
@@ -33,9 +89,14 @@ jobs:
           if [ -z "$OVERLAY" ]; then echo "::error::WRANGLER_DEPLOY_OVERLAY_B64 not configured"; exit 1; fi
           if [ -z "$DEV_KEY" ]; then echo "::error::BV_INTERNAL_DEV_KEY not configured"; exit 1; fi
 
+      # fetch-depth: 0 is load-bearing, not a default-tidying nit. The FIRST step
+      # of `npm run deploy:prod` is the deploy-freshness gate, which resolves
+      # `origin/main` and fails CLOSED ("an unprovable tree is treated as stale")
+      # when it cannot. A shallow checkout leaves no such ref to compare against.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.inputs.ref || github.ref }}
+          fetch-depth: 0
 
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
@@ -70,6 +131,17 @@ jobs:
         run: cargo install wasm-pack --version 0.13.1 --locked
       - run: npm run build:wasm
 
+      # The infra-probe worker ships FIRST because the main Worker's
+      # `BV_INFRA_PROBE` service binding targets it by name (`bv-infra-probe`),
+      # so it has to exist before the binding resolves. This step used to live in
+      # publish.yml's `deploy-cloudflare` job — behind that job's `exit 1`, which
+      # means it had never actually run. Its config is fully public and
+      # self-contained (no private overlay), so a plain wrangler deploy is right.
+      - name: Deploy infra probe worker
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+        run: npx wrangler deploy -c wrangler.infra-probe.jsonc
+
       - name: Deploy to Cloudflare (prod)
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -77,15 +149,22 @@ jobs:
 
       - name: Verify live deployment
         env:
-          EXPECTED_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           BV_INTERNAL_DEV_KEY: ${{ secrets.BV_INTERNAL_DEV_KEY }}
         run: |
           set -euo pipefail
-          # For a tag deploy, strip the leading 'v'; for manual dispatch, read package.json.
-          if [ -n "${EXPECTED_VERSION:-}" ]; then
-            EXPECTED_VERSION="${EXPECTED_VERSION#v}"
-          else
-            EXPECTED_VERSION="$(node -p "require('./package.json').version")"
-          fi
+          # Read the version from the CHECKED-OUT tree rather than from the ref
+          # name. `deploy:prod` uploads the working tree, so package.json is what
+          # was actually shipped; a ref name is only a label on it, and with the
+          # `ref` input able to differ from `github.ref` the two could disagree.
+          EXPECTED_VERSION="$(node -p "require('./package.json').version")"
           export EXPECTED_VERSION
           node scripts/ci/verify-deploy.mjs
+
+      # OAuth verification inherited from the removed deploy paths: /oauth/token
+      # routing plus the customer-consent redirect to bv-web. Neither probe mode
+      # needs a secret. A prod-probe.py failure means OAuth is misconfigured on
+      # the deployment that just went out.
+      - name: Verify OAuth deployment
+        run: |
+          python3 scripts/oauth/prod-probe.py --mode=smoke
+          python3 scripts/oauth/prod-probe.py --mode=redirect

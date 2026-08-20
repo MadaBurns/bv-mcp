@@ -320,7 +320,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	scan_domain: {
 		description:
-			"Run a full DNS and email security audit for a single domain. Aggregates every scan-included check in parallel (SPF, DKIM, DMARC, DNSSEC, TLS/SSL, MTA-STS, CAA, BIMI, subdomain takeover, and more) and returns an overall security score, NIST-aligned letter grade (6-band A+/A/B/C/D/F), maturity stage, and prioritized findings. Use for a comprehensive single-domain audit, to get a domain's overall security grade, or to assess email security maturity.",
+			"Run a full DNS and email security audit for a single domain. Aggregates every scan-included check in parallel (SPF, DKIM, DMARC, DNSSEC, TLS/SSL, MTA-STS, CAA, BIMI, subdomain takeover, and more) and returns an overall security score, NIST-aligned letter grade (6-band A+/A/B/C/D/F), maturity stage, and prioritized findings. Use for a comprehensive single-domain audit, to get a domain's overall security grade, or to assess email security maturity. Version stamps: 'scoringModelVersion' is the scoring POLICY semver (changes only when weights/thresholds/severities change, so it advances slowly) and is INDEPENDENT of — never comparable to — 'dnsChecksPackageVersion', the @blackveil/dns-checks npm engine-package version, which moves every release; a lower model version is expected, not a version gap. When citing a score, record 'scoringConfigHash' — it identifies the exact scoring configuration that produced the result.",
 		schema: ScanDomainArgs,
 		group: 'meta',
 		scanIncluded: false,
@@ -328,7 +328,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	batch_scan: {
 		description:
-			'Bulk-scan up to 10 domains in parallel. Runs a full security audit on each domain in the list and returns score, NIST-aligned letter grade (6-band A+/A/B/C/D/F), and finding counts per domain. Use when you want to audit multiple domains at once or do a bulk scan of several domains simultaneously — distinct from compare_domains which does a side-by-side analysis of 2–5 domains.',
+			"Bulk-scan up to 10 domains in parallel. Runs a full security audit on each domain in the list and returns score, NIST-aligned letter grade (6-band A+/A/B/C/D/F), and finding counts per domain. Use when you want to audit multiple domains at once or do a bulk scan of several domains simultaneously — distinct from compare_domains which does a side-by-side analysis of 2–5 domains. Version stamps (hoisted once per batch): 'scoringModelVersion' is the scoring POLICY semver and is INDEPENDENT of 'dnsChecksPackageVersion', the @blackveil/dns-checks npm engine-package version — the model version legitimately lags and the two must not be compared. Record 'scoringConfigHash' when citing scores.",
 		schema: BatchScanArgs,
 		group: 'meta',
 		scanIncluded: false,
