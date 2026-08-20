@@ -38,7 +38,13 @@ export { isGraded } from './scoring/engine';
 export { createFinding, buildCheckResult, computeCategoryScore, inferFindingConfidence, sanitizeDnsData } from './check-utils';
 
 // Robot policy
-export { SCANNER_USER_AGENT, RobotsDisallowedError, withRobotsGate } from './robots-gate';
+export {
+	SCANNER_USER_AGENT,
+	RobotsDisallowedError,
+	withRobotsGate,
+	describeRobotsScope,
+	robotsAbstentionMetadata,
+} from './robots-gate';
 export type { RobotsDisallowScope } from './robots-gate';
 
 // DKIM selector probe list. Exported so downstream consumers can assert provider

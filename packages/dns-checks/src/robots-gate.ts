@@ -46,6 +46,39 @@ export class RobotsDisallowedError extends Error {
 	}
 }
 
+/**
+ * The clause a finding uses to describe WHO a robots.txt block applies to.
+ * Kept here, next to the scope it renders, so the three checks that abstain on
+ * a robots block cannot drift into three different accounts of the same fact.
+ */
+export function describeRobotsScope(scope: RobotsDisallowScope): string {
+	return scope === 'named'
+		? 'disallows BlackVeil-Security-Scanner by name'
+		: 'disallows all automated crawlers';
+}
+
+/**
+ * Metadata stamped on every finding produced by a robots.txt abstention.
+ *
+ * `notAssessedReason` exists because `checkStatus` cannot express this: its
+ * union is `'completed' | 'timeout' | 'error'`, so a deliberate, polite
+ * abstention is reported with the same token as a probe that genuinely broke.
+ * Widening that union is a breaking change for downstream consumers (which
+ * compare it by equality and cast it into their own unions), so the
+ * distinction is carried additively here instead.
+ *
+ * `confidence` is pinned rather than left to `inferFindingConfidence`, whose
+ * fallback classifies a finding by keyword-scanning its own title and detail —
+ * a copy edit must never be able to silently reclassify an abstention.
+ */
+export function robotsAbstentionMetadata(scope: RobotsDisallowScope): {
+	notAssessedReason: 'robots_disallowed';
+	robotsScope: RobotsDisallowScope;
+	confidence: 'deterministic';
+} {
+	return { notAssessedReason: 'robots_disallowed', robotsScope: scope, confidence: 'deterministic' };
+}
+
 interface RobotsRule {
 	path: string;
 	allow: boolean;
