@@ -203,66 +203,25 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-  deploy-cloudflare:
-    name: Deploy to Cloudflare Workers
-    needs: version-bump
-    runs-on: ubuntu-latest
-    environment: production
-    steps:
-      # CI deploy is intentionally fenced off — see CLAUDE.md "Deployment".
-      # Production deploys are MANUAL via `npm run deploy:prod`, which injects private
-      # bindings from the gitignored `.dev/wrangler.deploy.jsonc`. Those overrides are
-      # unavailable in CI, so a CI deploy of the public config would ship a worker
-      # missing all KV/D1/R2/Analytics/service bindings. Do not remove this guard without
-      # first wiring private-config injection from an encrypted secret.
-      - name: CI deploy is not supported (use npm run deploy:prod)
-        run: |
-          echo "::error::CI deploy is disabled — deploy manually with 'npm run deploy:prod'. Private bindings live in the gitignored .dev/ overrides and are unavailable in CI."
-          exit 1
-
-      - name: Check Cloudflare token
-        env:
-          CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: |
-          if [ -z "$CF_TOKEN" ]; then
-            echo "::error::CLOUDFLARE_API_TOKEN not configured in production environment"
-            exit 1
-          fi
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: main
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-          cache: npm
-
-      - run: npm ci
-
-      - name: Build workspace package
-        run: npm -w packages/dns-checks run build
-
-      - name: Install wasm-pack
-        run: cargo install wasm-pack --version 0.13.1 --locked
-
-      - name: Build WASM
-        run: npm run build:wasm
-
-      - name: Deploy infra probe
-        run: npx wrangler deploy -c wrangler.infra-probe.jsonc
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-
-      - name: Deploy
-        run: npx wrangler deploy -c wrangler.jsonc
-        env:
-          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-
-      - name: Verify OAuth deployment
-        run: |
-          python3 scripts/oauth/prod-probe.py --mode=smoke
-          python3 scripts/oauth/prod-probe.py --mode=redirect
+  # NOTE (#718): this workflow deliberately has NO Cloudflare deploy job.
+  #
+  # It used to carry `deploy-cloudflare`, whose first step was `exit 1` "by
+  # design" — while the job still declared `environment: production`. So every
+  # tagged release parked a genuine approval prompt on a job that could only
+  # fail if approved, and two were left standing (runs 31980523639 / 32298225966,
+  # v3.52.0 and v3.55.0, both `waiting` with a pending `production` deployment).
+  # Standing approval prompts that must be ignored erode the ones that matter.
+  #
+  # The job was NOT reinstated as a real deploy: its body shipped the PUBLIC
+  # `wrangler.jsonc` straight from CI, with no private overlay injected —
+  # precisely the defect that got `auto-deploy-main.yml` deleted (a
+  # Worker missing every KV/D1/R2/Analytics/service binding). Its two useful
+  # pieces, the infra-probe deploy and the OAuth prod-probe verification, moved
+  # to `deploy-prod.yml`, where they sit behind the real overlay-reconstructing
+  # deploy instead of behind an `exit 1` that had never let them run.
+  #
+  # Releases tag and publish here; shipping the Worker is `deploy-prod.yml` (or
+  # `npm run deploy:prod` by hand). One deploy path, deliberately.
 
   github-release:
     name: Create GitHub Release

@@ -3,20 +3,19 @@ import { describe, expect, it } from 'vitest';
 const wranglerSource = (
 	import.meta.glob('../../wrangler.jsonc', { query: '?raw', import: 'default', eager: true }) as Record<string, string>
 )['../../wrangler.jsonc'];
+// Single source: deploy-prod.yml is the only workflow that ships the Worker.
+// This used to read deploy-hook.yml AND publish.yml, both of which carried the
+// OAuth probes inside a deploy job whose first step was `exit 1` — so the
+// assertion was satisfied by text in a job that could never execute, and the
+// probes had never actually verified a deployment. Both jobs were removed in
+// #717/#718; the probes moved to the path that really deploys.
 const deployWorkflowSource = (
-	import.meta.glob('../../.github/workflows/deploy-hook.yml', {
+	import.meta.glob('../../.github/workflows/deploy-prod.yml', {
 		query: '?raw',
 		import: 'default',
 		eager: true,
 	}) as Record<string, string>
-)['../../.github/workflows/deploy-hook.yml'];
-const releaseWorkflowSource = (
-	import.meta.glob('../../.github/workflows/publish.yml', {
-		query: '?raw',
-		import: 'default',
-		eager: true,
-	}) as Record<string, string>
-)['../../.github/workflows/publish.yml'];
+)['../../.github/workflows/deploy-prod.yml'];
 
 const config = JSON.parse(wranglerSource) as {
 	vars?: Record<string, string>;
@@ -52,9 +51,7 @@ describe('production OAuth configuration audit', () => {
 	});
 
 	it('deployment verification probes OAuth token health and customer-consent redirect', () => {
-		for (const workflowSource of [deployWorkflowSource, releaseWorkflowSource]) {
-			expect(workflowSource).toContain('python3 scripts/oauth/prod-probe.py --mode=smoke');
-			expect(workflowSource).toContain('python3 scripts/oauth/prod-probe.py --mode=redirect');
-		}
+		expect(deployWorkflowSource).toContain('python3 scripts/oauth/prod-probe.py --mode=smoke');
+		expect(deployWorkflowSource).toContain('python3 scripts/oauth/prod-probe.py --mode=redirect');
 	});
 });
