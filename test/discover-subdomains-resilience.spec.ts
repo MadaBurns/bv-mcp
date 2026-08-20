@@ -19,9 +19,9 @@ const { restore } = setupFetchMock();
 afterEach(() => restore());
 
 /**
- * Minimal in-memory KV mock (get/put/delete) sufficient for the LKG cache.
- * Cast to KVNamespace at the call site (codebase idiom) to avoid depending on
- * the ambient worker-types resolution in this spec file.
+ * Minimal in-memory KV mock (get/put/delete) sufficient for the subdomain cache.
+ * The module under test uses only those three methods; `list` and
+ * `getWithMetadata` are deliberately not implemented.
  */
 function makeKv() {
 	const store = new Map<string, string>();
@@ -41,6 +41,51 @@ function makeKv() {
 	};
 }
 
+/**
+ * Widen the mock to the full `KVNamespace` surface for the call sites.
+ *
+ * Done ONCE here rather than at each call site: this file previously carried 10
+ * standing TS2739 errors from passing the bare mock, tracked by the
+ * `typecheck:tests` ratchet. One documented widening in one place drops that
+ * count to zero instead of growing it with every new spec.
+ */
+function asKv(kv: ReturnType<typeof makeKv>): KVNamespace {
+	return kv as unknown as KVNamespace;
+}
+
+/**
+ * Mirror of `SUBDOMAIN_FRESH_TTL_SECONDS` in the module under test. Kept as a
+ * local literal ON PURPOSE: importing the constant would make these specs agree
+ * with the implementation by construction, so a bad TTL edit could never fail
+ * them. If this drifts, the `honours the configured fresh window` test fails —
+ * which is the intended alarm, not a nuisance.
+ */
+const FRESH_TTL_MS = 60 * 60 * 1000;
+
+/**
+ * Backdate every cached entry by `ms`, simulating the passage of time without
+ * fake timers (which fight the async fetch mocks in this suite). Operates on the
+ * raw JSON so it stays honest about the on-disk shape.
+ */
+function advanceCacheAge(kv: ReturnType<typeof makeKv>, ms: number) {
+	for (const [key, raw] of kv.store) {
+		const entry = JSON.parse(raw) as { cachedAt?: number };
+		if (typeof entry.cachedAt === 'number') {
+			entry.cachedAt -= ms;
+			kv.store.set(key, JSON.stringify(entry));
+		}
+	}
+}
+
+/** Count CT-source fetches only — the suite's mock also answers DoH lookups. */
+function ctFetchCount(mock: ReturnType<typeof vi.fn>): number {
+	return mock.mock.calls.filter((c) => {
+		const u = c[0];
+		const s = typeof u === 'string' ? u : u instanceof URL ? u.toString() : String((u as Request)?.url ?? '');
+		return s.includes('crt.sh') || s.includes('certspotter.com');
+	}).length;
+}
+
 /** A crt.sh JSON entry for one cert. */
 function crtEntry(name: string) {
 	return { name_value: name, issuer_name: "CN=R3, O=Let's Encrypt", not_before: '2026-02-01', not_after: '2026-05-01' };
@@ -48,7 +93,13 @@ function crtEntry(name: string) {
 
 /** A Certspotter issuance object (expand=dns_names,issuer). */
 function certspotterEntry(names: string[]) {
-	return { id: '1', dns_names: names, not_before: '2026-02-01', not_after: '2026-05-01', issuer: { name: "C=US, O=Let's Encrypt, CN=R11" } };
+	return {
+		id: '1',
+		dns_names: names,
+		not_before: '2026-02-01',
+		not_after: '2026-05-01',
+		issuer: { name: "C=US, O=Let's Encrypt, CN=R11" },
+	};
 }
 
 describe('discoverSubdomains — multi-source resilience', () => {
@@ -62,7 +113,8 @@ describe('discoverSubdomains — multi-source resilience', () => {
 		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
 			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
 			if (s.includes('crt.sh')) return Response.json({}, { status: 500 });
-			if (s.includes('certspotter.com')) return Response.json([certspotterEntry(['api.example.com', 'secure.example.com'])], { status: 200 });
+			if (s.includes('certspotter.com'))
+				return Response.json([certspotterEntry(['api.example.com', 'secure.example.com'])], { status: 200 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
 
@@ -127,9 +179,13 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com'), crtEntry('vpn.example.com')], { status: 200 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		const fresh = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const fresh = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 		expect(fresh.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'vpn.example.com']);
 		expect(kv.store.size).toBeGreaterThan(0);
+
+		// Age the entry out of the fresh-read window, or the second call would be
+		// served from cache and never reach the (failing) sources this test is about.
+		advanceCacheAge(kv, FRESH_TTL_MS + 60_000);
 
 		// Second call: every source fails → must serve the cached set marked stale.
 		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
@@ -137,7 +193,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh') || s.includes('certspotter.com')) return Response.json({}, { status: 503 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		const stale = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const stale = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(stale.stale).toBe(true);
 		expect(stale.sourceUnavailable).toBeFalsy();
@@ -154,7 +210,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
 
-		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(result.sourceUnavailable).toBe(true);
 		expect(result.stale).toBeFalsy();
@@ -209,14 +265,14 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com')], { status: 200 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
 			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
 			if (s.includes('crt.sh') || s.includes('certspotter.com')) return Response.json({}, { status: 503 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv, forceRefresh: true });
+		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv), forceRefresh: true });
 
 		expect(result.stale).toBe(true);
 		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
@@ -229,7 +285,9 @@ describe('discoverSubdomains — multi-source resilience', () => {
 				domain: 'example.com',
 				totalSubdomains: 1,
 				totalCertificates: 1,
-				subdomains: [{ subdomain: 'api.example.com', firstSeen: '', lastSeen: '', issuer: '', certCount: 1, isWildcard: false, isExpired: false }],
+				subdomains: [
+					{ subdomain: 'api.example.com', firstSeen: '', lastSeen: '', issuer: '', certCount: 1, isWildcard: false, isExpired: false },
+				],
 				wildcardCerts: 0,
 				expiredCerts: 0,
 				uniqueIssuers: [],
@@ -256,11 +314,16 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com')], { status: 200 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
+
+		// Past the fresh window, so the entry is an outage net rather than the
+		// answer — otherwise the fresh-read path would satisfy this call before the
+		// deadline gate is ever reached (covered separately below).
+		advanceCacheAge(kv, FRESH_TTL_MS + 60_000);
 
 		// Budget already blown (e.g. the certstream fast path consumed all of it):
 		// a KV read is still affordable, so we must return data, not an error.
-		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv, deadlineMs: Date.now() - 1 });
+		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv), deadlineMs: Date.now() - 1 });
 
 		expect(result.stale).toBe(true);
 		expect(result.partial).toBe(true);
@@ -301,7 +364,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
 
-		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(result.sourceUnavailable).toBeFalsy();
 		// An empty result is a weak fallback: re-serving "0 subdomains (stale)" is no
@@ -313,14 +376,13 @@ describe('discoverSubdomains — multi-source resilience', () => {
 		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
 		const kv = makeKv();
 
-
 		// Seed cache with a good result.
 		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
 			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
 			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com')], { status: 200 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 		const afterSeed = kv.store.get([...kv.store.keys()][0]);
 
 		// Outage: must NOT clobber the cached good set with an empty/unavailable one.
@@ -329,7 +391,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh') || s.includes('certspotter.com')) return Response.json({}, { status: 503 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(kv.store.get([...kv.store.keys()][0])).toBe(afterSeed);
 	});
@@ -360,6 +422,10 @@ describe('discover_subdomains handler — LKG cache wiring', () => {
 		expect(fresh.isError).toBeFalsy();
 		expect(kv.store.size).toBeGreaterThan(0);
 
+		// Past the fresh-read window, so this exercises the outage path and not
+		// the cache-hit path (which has its own coverage below).
+		advanceCacheAge(kv, FRESH_TTL_MS + 60_000);
+
 		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
 			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
 			if (s.includes('crt.sh') || s.includes('certspotter.com')) return Response.json({}, { status: 503 });
@@ -372,5 +438,192 @@ describe('discover_subdomains handler — LKG cache wiring', () => {
 		const payload = stale.structuredContent as Record<string, unknown> | undefined;
 		expect(payload?.stale).toBe(true);
 		expect(payload?.sourceUnavailable).toBeFalsy();
+	});
+});
+
+/**
+ * Fresh-read cache (quota conservation).
+ *
+ * The LKG cache was written on every success but READ only on total-outage or
+ * deadline-trip, so a repeat scan of the same domain always spent a live query.
+ * On CertSpotter's free "Small" tier that bucket is 10 full-domain queries/HOUR,
+ * shared account-wide with bv2-certstream — so five scans of one domain could
+ * exhaust half the estate's daily discovery budget for zero new information.
+ *
+ * These specs pin the fix: inside the fresh window a cached answer is served
+ * with ZERO upstream CT calls, and it is labelled `cached` (never `stale`, which
+ * means "every live source was unreachable" and would misreport a healthy hit
+ * as an outage).
+ */
+describe('discoverSubdomains — fresh-read cache', () => {
+	beforeEach(() => {
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+	});
+	afterEach(() => vi.restoreAllMocks());
+
+	/** Prime the cache with one successful crt.sh enumeration. */
+	async function prime(kv: ReturnType<typeof makeKv>) {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com'), crtEntry('vpn.example.com')], { status: 200 });
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
+		expect(kv.store.size).toBeGreaterThan(0);
+	}
+
+	it('serves a repeat scan from cache without spending ANY upstream CT query', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const kv = makeKv();
+		await prime(kv);
+
+		// Any CT call in this window is a quota spend the fix exists to prevent,
+		// so the sources are wired to throw rather than merely to fail.
+		const spy = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh') || s.includes('certspotter.com')) throw new Error('quota spent on a cache-hit path');
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		globalThis.fetch = spy;
+
+		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
+
+		expect(ctFetchCount(spy)).toBe(0);
+		expect(hit.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'vpn.example.com']);
+	});
+
+	it('labels a cache hit `cached` and NOT `stale`, with an age', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const kv = makeKv();
+		await prime(kv);
+
+		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
+
+		// `stale` is documented as "every live CT source was unreachable". A healthy
+		// cache hit is not an outage, and a consumer branching on `stale` to warn
+		// about degraded data must not fire here.
+		expect(hit.cached).toBe(true);
+		expect(hit.stale).toBeFalsy();
+		expect(hit.sourceUnavailable).toBeFalsy();
+		expect(typeof hit.cacheAgeMinutes).toBe('number');
+	});
+
+	it('honours the configured fresh window — an older entry goes back to the network', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const kv = makeKv();
+		await prime(kv);
+		advanceCacheAge(kv, FRESH_TTL_MS + 60_000);
+
+		const spy = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return Response.json([crtEntry('new.example.com')], { status: 200 });
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		globalThis.fetch = spy;
+
+		const refreshed = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
+
+		expect(ctFetchCount(spy)).toBeGreaterThan(0);
+		expect(refreshed.cached).toBeFalsy();
+		expect(refreshed.subdomains.map((s) => s.subdomain)).toEqual(['new.example.com']);
+	});
+
+	it('an entry just INSIDE the window is still served from cache (boundary control)', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const kv = makeKv();
+		await prime(kv);
+		advanceCacheAge(kv, FRESH_TTL_MS - 60_000);
+
+		const spy = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh') || s.includes('certspotter.com')) throw new Error('should not be reached');
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		globalThis.fetch = spy;
+
+		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
+
+		expect(ctFetchCount(spy)).toBe(0);
+		expect(hit.cached).toBe(true);
+	});
+
+	it('force_refresh bypasses the fresh cache and queries live sources', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const kv = makeKv();
+		await prime(kv);
+
+		const spy = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return Response.json([crtEntry('forced.example.com')], { status: 200 });
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		globalThis.fetch = spy;
+
+		const forced = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv), forceRefresh: true });
+
+		expect(ctFetchCount(spy)).toBeGreaterThan(0);
+		expect(forced.cached).toBeFalsy();
+		expect(forced.subdomains.map((s) => s.subdomain)).toEqual(['forced.example.com']);
+	});
+
+	it('without a cacheKv every call still queries live sources (control)', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const spy = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com')], { status: 200 });
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		globalThis.fetch = spy;
+
+		await discoverSubdomains('example.com');
+		const first = ctFetchCount(spy);
+		await discoverSubdomains('example.com');
+
+		expect(first).toBeGreaterThan(0);
+		expect(ctFetchCount(spy)).toBeGreaterThan(first);
+	});
+
+	it('a fresh cache hit answers even when the deadline has already tripped', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const kv = makeKv();
+		await prime(kv);
+
+		// A blown budget is a reason to AVOID the network, not a reason to degrade
+		// the answer: a KV read costs milliseconds. The result must be the accurate
+		// `cached`, not `stale`/`partial` — nothing is stale and nothing was skipped.
+		const spy = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh') || s.includes('certspotter.com')) throw new Error('should not be reached');
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		globalThis.fetch = spy;
+
+		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv), deadlineMs: Date.now() - 1 });
+
+		expect(ctFetchCount(spy)).toBe(0);
+		expect(hit.cached).toBe(true);
+		expect(hit.stale).toBeFalsy();
+		expect(hit.partial).toBeFalsy();
+		expect(hit.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'vpn.example.com']);
+	});
+
+	it('does not serve one domain’s cache entry for another domain', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const kv = makeKv();
+		await prime(kv);
+
+		const spy = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return Response.json([crtEntry('api.other.com')], { status: 200 });
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		globalThis.fetch = spy;
+
+		const other = await discoverSubdomains('other.com', undefined, undefined, { cacheKv: asKv(kv) });
+
+		expect(ctFetchCount(spy)).toBeGreaterThan(0);
+		expect(other.cached).toBeFalsy();
+		expect(other.subdomains.map((s) => s.subdomain)).toEqual(['api.other.com']);
 	});
 });

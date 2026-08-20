@@ -108,7 +108,7 @@
 			"test/decide-retry-enqueue.test.ts": 4,
 			"test/discover-brand-domains-corroboration.test.ts": 3,
 			"test/discover-brand-domains.spec.ts": 4,
-			"test/discover-subdomains-resilience.spec.ts": 10,
+			"test/discover-subdomains-resilience.spec.ts": 0,
 			"test/dmarc-impersonation-escalation.spec.ts": 1,
 			"test/dns-transport.spec.ts": 1,
 			"test/format-report.spec.ts": 9,

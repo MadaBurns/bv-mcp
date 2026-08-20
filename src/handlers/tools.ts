@@ -1681,8 +1681,11 @@ export async function handleToolsCall(
 						deadlineMs: Date.now() + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
 						...(forceRefresh && { forceRefresh }),
 						...(runtimeOptions?.certspotterToken && { certspotterToken: runtimeOptions.certspotterToken }),
-						// Last-known-good resilience cache: a clean enumeration is stored here
-						// and re-served (marked stale) when every live CT source is down.
+						// Subdomain cache, doing two jobs off one entry: inside the fresh
+						// window it answers the call outright (marked `cached`, no upstream
+						// query — this is what keeps us inside CertSpotter's 10/hr
+						// full-domain quota); past it, it is the last-known-good net
+						// re-served (marked `stale`) when every live CT source is down.
 						...(scanCacheKV && { cacheKv: scanCacheKV }),
 						...(runtimeOptions?.waitUntil && { waitUntil: runtimeOptions.waitUntil }),
 					});
@@ -1692,6 +1695,10 @@ export async function handleToolsCall(
 						issues: result.issues.length,
 						sourceUnavailable: result.sourceUnavailable ?? false,
 						stale: result.stale ?? false,
+						// Cache-hit rate is the metric this quota fix is judged on — without
+						// it in tail there is no way to tell a working fresh-read cache from
+						// one that silently never hits.
+						cached: result.cached ?? false,
 						// #573: an under-reported enumeration must be visible in tail, not
 						// just in the payload — a rising truncated-rate is the alarm for a
 						// CT source that has quietly started capping us.
@@ -1705,7 +1712,7 @@ export async function handleToolsCall(
 						// consulted — is now visible in tail, not just in the payload.
 						coverageDegraded: result.coverage?.degraded ?? false,
 						...(result.sources ? { sources: result.sources.join(',') } : {}),
-						...(result.stale ? { cacheAgeMinutes: result.cacheAgeMinutes ?? 0 } : {}),
+						...(result.stale || result.cached ? { cacheAgeMinutes: result.cacheAgeMinutes ?? 0 } : {}),
 					};
 					// A CT-source outage (sourceUnavailable) is NOT a clean "0 subdomains found" — for a
 					// security tool the two are dangerously indistinguishable. Surface it as a failed/
