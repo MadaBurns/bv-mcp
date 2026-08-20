@@ -15,6 +15,10 @@
 import type { OutputFormat } from '../handlers/tool-args';
 import type { CheckCategory, Finding } from '../lib/scoring';
 import { hasCompletedEvidence } from '../lib/ungraded-display';
+// Shared with `map_compliance` (#705) — see `lib/control-presence.ts`. The two
+// surfaces answer the same customer question ("does this domain have control X")
+// and must not drift on what "satisfied" and "applicable" mean.
+import { isSatisfiedControl, notApplicableCategoriesFor } from '../lib/control-presence';
 import type { ScanDomainResult } from './scan-domain';
 
 const GRADE_ORDER = ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E', 'F'] as const;
@@ -46,8 +50,25 @@ export interface BaselineResult {
 	 */
 	passed: boolean | null;
 	violations: BaselineViolation[];
-	/** Rules the caller requested that could not be evaluated (unmeasured scan). */
+	/**
+	 * Rules the caller requested that could not be evaluated — because the scan
+	 * produced no measurement, OR because the control does not apply to this domain
+	 * (see {@link BaselineResult.notApplicableRules}). One channel, because a gate
+	 * consumer's decision is the same for both: `passed` is `null`, re-run or
+	 * reconsider the policy — never read as a pass and never as a fail.
+	 */
 	inconclusiveRules: string[];
+	/**
+	 * The SUBSET of `inconclusiveRules` abstained on because the scan's own
+	 * applicability pass declared the category not applicable to this domain — a
+	 * `web_only`/`non_mail` domain legitimately publishes no MTA-STS policy.
+	 *
+	 * Reported separately ONLY so the prose can attribute the abstention honestly:
+	 * "no measurement available" is false here — the scan measured the category
+	 * perfectly well; the control simply has nothing to apply to. The verdict channel
+	 * remains `inconclusiveRules`/`passed`, which consumers should keep gating on.
+	 */
+	notApplicableRules: string[];
 	checkedRules: number;
 	scoringProfile?: string;
 	timestamp: string;
@@ -74,9 +95,24 @@ function gradeWorseThan(actual: string, minimum: string): boolean {
 	return actualIndex > minimumIndex;
 }
 
-function categoryPassed(scan: ScanDomainResult, category: CheckCategory): boolean {
+/**
+ * Is the required control actually IN EFFECT on this domain?
+ *
+ * This used to be `check?.passed ?? false`, and `passed` records whether the check
+ * PENALIZED the domain — not whether the control exists (#706). `require_dnssec`,
+ * `require_caa` and `require_mta_sts` all leave `passed: true` on absence (a graded
+ * finding, deliberately no `missingControl`, so the category still scores 60), so a
+ * customer gate `require_dnssec: true` PASSED every unsigned domain in the portfolio
+ * while the same scan raised a high-severity "DNSSEC not enabled".
+ *
+ * `isSatisfiedControl` is the SHARED predicate `map_compliance` grades on — including
+ * its registry-signed rebuttal, without which this would fail a ccTLD-signed zone that
+ * is genuinely protected. A missing `CheckResult` is unchanged: no evidence the control
+ * is in effect, so a rule requiring it is not met.
+ */
+function categorySatisfied(scan: ScanDomainResult, category: CheckCategory): boolean {
 	const check = scan.checks.find((value) => value.category === category);
-	return check?.passed ?? false;
+	return check !== undefined && isSatisfiedControl(check);
 }
 
 function dmarcEnforced(scan: ScanDomainResult): boolean {
@@ -95,6 +131,7 @@ function dmarcEnforced(scan: ScanDomainResult): boolean {
 export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline): BaselineResult {
 	const violations: BaselineViolation[] = [];
 	const inconclusiveRules: string[] = [];
+	const notApplicableRules: string[] = [];
 	let checkedRules = 0;
 
 	// An ungraded scan carries no grade/score to evaluate, so the rule is recorded as
@@ -179,16 +216,32 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 		}
 	}
 
+	// The scan's own applicability pass, consumed rather than re-derived — the same
+	// `notApplicableCategoriesFor` call `map_compliance` makes. Without it, grading the
+	// control rules on PRESENCE would newly report `require_mta_sts` as VIOLATED against
+	// a `web_only`/`non_mail` domain that accepts no mail and therefore legitimately
+	// publishes no MTA-STS policy: the #706 defect wearing the opposite sign.
+	const notApplicableCategories = new Set(notApplicableCategoriesFor(scan));
+
 	for (const requirement of CATEGORY_REQUIREMENTS) {
 		if (baseline[requirement.key]) {
 			if (!scanMeasured) {
 				inconclusiveRules.push(requirement.key);
+			} else if (notApplicableCategories.has(requirement.category)) {
+				// NOT a pass. "The rule cannot be evaluated on this domain" and "the rule
+				// passed" are different statements, and a gate keyed on `passed === true`
+				// must be able to tell them apart — silently passing an inapplicable rule
+				// is the same confident-verdict-from-no-evidence pathology as the rest of
+				// this channel. It also stays OUT of `checkedRules`, so the denominator
+				// never counts a rule nobody could answer.
+				inconclusiveRules.push(requirement.key);
+				notApplicableRules.push(requirement.key);
 			} else {
 				checkedRules++;
-				if (!categoryPassed(scan, requirement.category)) {
+				if (!categorySatisfied(scan, requirement.category)) {
 					violations.push({
 						rule: requirement.key,
-						message: `${requirement.label} is required but check did not pass`,
+						message: `${requirement.label} is required but the scan found no evidence it is in effect`,
 						expected: true,
 						actual: false,
 					});
@@ -239,6 +292,7 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 		passed: inconclusiveRules.length > 0 ? null : violations.length === 0,
 		violations,
 		inconclusiveRules,
+		notApplicableRules,
 		checkedRules,
 		scoringProfile: scan.context?.profile,
 		timestamp: new Date().toISOString(),
@@ -249,10 +303,23 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 export function formatBaselineResult(result: BaselineResult, format: OutputFormat = 'full'): string {
 	const verdict = result.passed === null ? 'INCONCLUSIVE' : result.passed ? 'PASS' : 'FAIL';
 
+	// The two abstention CAUSES get their own line. Both are "not evaluated", but
+	// "no measurement available" is FALSE for an inapplicable category — that scan
+	// measured the category fine and the control simply has nothing to apply to.
+	// Collapsing them would tell a `web_only` customer their MTA-STS was unmeasured
+	// and send them to re-run a scan that will keep returning the same thing.
+	// `notApplicableRules` is a SUBSET of `inconclusiveRules`, so it is subtracted
+	// rather than appended.
+	const notApplicable = result.notApplicableRules ?? [];
+	const unmeasuredRules = result.inconclusiveRules.filter((rule) => !notApplicable.includes(rule));
+
 	if (format === 'compact') {
 		const lines = [`Baseline: ${result.domain} — ${verdict} (${result.violations.length}/${result.checkedRules} violated)`];
-		if (result.inconclusiveRules.length > 0) {
-			lines.push(`- not evaluated (no measurement available): ${result.inconclusiveRules.join(', ')}`);
+		if (unmeasuredRules.length > 0) {
+			lines.push(`- not evaluated (no measurement available): ${unmeasuredRules.join(', ')}`);
+		}
+		if (notApplicable.length > 0) {
+			lines.push(`- not evaluated (does not apply to this domain): ${notApplicable.join(', ')}`);
 		}
 		for (const v of result.violations) {
 			lines.push(`- ${v.rule}: expected ${v.expected}, got ${v.actual}`);
@@ -266,7 +333,7 @@ export function formatBaselineResult(result: BaselineResult, format: OutputForma
 	lines.push(`**Result:** ${verdict}`);
 	lines.push(`**Rules checked:** ${result.checkedRules}`);
 	lines.push(`**Violations:** ${result.violations.length}`);
-	if (result.inconclusiveRules.length > 0) {
+	if (unmeasuredRules.length > 0) {
 		// Deliberately attributes the abstention to the MISSING MEASUREMENT, not to the
 		// customer's domain. `passed: null` fires for two causes: the domain genuinely
 		// not resolving, AND `buildUnscoredResult`, where the domain resolved and its
@@ -274,7 +341,10 @@ export function formatBaselineResult(result: BaselineResult, format: OutputForma
 		// in the second case and blames the customer for a scanner-side outage —
 		// scan_domain's own nextStep for that path says "the scoring service is
 		// degraded — check the deployment."
-		lines.push(`**Not evaluated (no measurement available for this scan):** ${result.inconclusiveRules.join(', ')}`);
+		lines.push(`**Not evaluated (no measurement available for this scan):** ${unmeasuredRules.join(', ')}`);
+	}
+	if (notApplicable.length > 0) {
+		lines.push(`**Not evaluated (does not apply to this domain):** ${notApplicable.join(', ')}`);
 	}
 	lines.push('');
 

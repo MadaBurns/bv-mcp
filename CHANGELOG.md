@@ -6,6 +6,23 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.19.0. `recordPresent`/`controlPresent` are score-neutral by construction; nothing in the scoring path reads them.
+
+### Fixed
+
+- **`compare_baseline` no longer reports PASS for a control that was never published.** It graded `require_dnssec` / `require_caa` / `require_mta_sts` on `CheckResult.passed`, which records whether a check PENALIZED the domain — not whether the control exists. All three categories deliberately decline to set `missingControl` on absence, so an absent control returned `passed: true` and the rule reported PASS. **A customer could set `require_dnssec: true` as a CI gate and have every unsigned domain in their portfolio pass it.**
+
+  Same defect class as the `map_compliance` fix in 3.55.0, on a higher-stakes surface — `compare_baseline` is the tool customers wire into an enforcement gate, and 3.55.0 fixed only the reporting surface. Measured live on `davidhf.com` 2026-08-20: the same scan, at the same moment, was reported both ways — `map_compliance` returned NIST §5.1 DNSSEC **fail** and §5.2 CAA **fail**, while `compare_baseline` with `require_dnssec` + `require_caa` returned `passed: true` with an empty `violations` array.
+
+- **An inapplicable rule is now reported as inconclusive, never as a pass.** `compare_baseline` had no applicability pass at all, so a naive presence rule would newly report a `require_mta_sts` violation against a `web_only` domain that accepts no mail — trading a false PASS for a false FAIL. Such rules now go to `inconclusiveRules` with `passed: null` and are excluded from `checkedRules`, plus a new labelled `notApplicableRules` subset so the prose can distinguish the two causes of abstention: "the scan could not measure this" and "this does not apply to this domain" are different statements, and a gate consumer must be able to tell them apart.
+
+- **A registry-signed zone is still not failed on absence.** A ccTLD/registry-signed zone that validates while publishing no DNSKEY/DS of its own reports `recordPresent: false` + `controlPresent: true`; an affirmative `controlPresent` rebuts absence, so a genuinely protected zone never becomes a violation. Mutation-tested: removing the rebuttal turns exactly that test red.
+
+### Notes
+
+- The satisfied-control and applicability predicates are now a single shared source (`src/lib/control-presence.ts`) reused by both `map_compliance` and `compare_baseline`, rather than each surface deriving its own. `isCategoryNonApplicable` is reused, not re-derived, so the two surfaces cannot drift on what "satisfied" and "applicable" mean. `map_compliance` behaviour is unchanged.
+- `require_dmarc_enforce` is unaffected and keeps its own `dmarcEnforced()` predicate; `require_spf` / `require_dkim` / `require_dmarc` were never affected, since their absence produces sub-50 scores or sets `missingControl`.
+
 ## [3.55.0] - 2026-08-19
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.19.0 — no weight, tier, grade band, severity penalty or profile rule moved, and no score changes. `recordPresent`/`controlPresent` are score-neutral by construction; only the `map_compliance` reporting surface reads them.
