@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [3.56.0] - 2026-08-21
 
 **This release DOES change scores.** One entry in this block — the lame-delegation escalation under *Changed* — moves a severity, stamps a confidence and raises a per-profile importance, and it lowers the grade of an affected domain: measured **97 (A+) → 82 (B+)**. Everything else here remains score-neutral and is proven so: the CAA-parameter and cert-validity-window additions emit nothing scored, the BIMI corrections are prose-only with the `bimi` category pinned byte-identical, and the `compare_baseline` fix touches a reporting surface the scorer does not read. `recordPresent`/`controlPresent` likewise remain score-neutral by construction; nothing in the scoring path reads them.
 
