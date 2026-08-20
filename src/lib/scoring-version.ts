@@ -185,8 +185,30 @@
  *   still routes to the inconclusive path: a zone whose nameservers all failed to resolve is a
  *   measurement failure, not a hijackable domain. No weight outside `ns`, no tier, grade band,
  *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
+ * - 1.12.0 — a domain's own NAME can no longer zero a category. `scoreIndicatesMissingControl`
+ *   matched `MISSING_CONTROL_REGEX` against a finding's title AND detail, and many findings
+ *   interpolate the scanned domain, a nameserver host, an MX host or a policy URL into that
+ *   detail — so any subject whose NAME contained `missing`/`required`/`not found` zeroed the
+ *   category, and (dnssec being critical in every profile) also tripped the 64-point
+ *   critical-gap ceiling. Measured LIVE in production: `missingkids.org` scored `dnssec` 0 and
+ *   overall 64/D where `github.com` scored 60 and 88/A on BYTE-IDENTICAL findings. The gate now
+ *   tests a subject-data-free projection (`redactSubjectData`) — URLs, emails and DNS-name-shaped
+ *   tokens redacted, plus an opt-in `metadata.subjectTerms` for values that are not structurally
+ *   recognisable. The regex and every emitted string are UNCHANGED; only the gate's input moves,
+ *   so authored prose still zeroes exactly as before (all four intended zeroers re-verified).
+ *   UPWARD only, and only for subjects whose own identifiers contained a trigger word.
+ *   Second change, same class: a deployed-but-broken MTA-STS policy no longer scores worse than
+ *   no policy at all — the `max_age`-omitted case measured 0/FAILED and is now 88/pass, giving
+ *   the ladder enforce 100 > testing 95 > MX-gap 90 > RFC-invalid 88 > unretrievable 85 =
+ *   mode:none 85 = absent 85. An UNRETRIEVABLE policy (404/5xx, redirect, oversized body) ties
+ *   absence rather than beating it: publishing a TXT record plus a CNAME to any 404 host needs
+ *   no HTTPS service, certificate or policy file, so an earlier cut of this ladder handed it +3
+ *   over deploying nothing. 88 is reserved for a policy that is genuinely served and merely
+ *   RFC-invalid — the line is retrievability, not validity.
+ *   No parity fixture expectation moved. `SEVERITY_PENALTIES`, weights, tiers, grade bands,
+ *   profile detection and the missing-control RULE are all untouched.
  */
-export const SCORING_MODEL_VERSION = '1.11.0';
+export const SCORING_MODEL_VERSION = '1.12.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
