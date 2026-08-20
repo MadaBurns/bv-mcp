@@ -30,6 +30,8 @@
  * Blob positions (session): blob1=action, blob2=country, blob3=clientType, blob4=tier
  */
 
+import { LONG_RUNNING_TOOLS } from './config';
+
 /**
  * Default Analytics Engine DATASET name (not the Worker binding name). This is the
  * prod dataset the `MCP_ANALYTICS` binding writes to; using it as the in-code default
@@ -219,6 +221,64 @@ export function queryRecentAnomalies(minutes: string, dataset?: string): string 
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'tool_call'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE`;
+}
+
+/**
+ * Sanitize a tool-name list for SQL interpolation.
+ *
+ * Tool names are `/^[a-z_]+$/` everywhere else in this codebase (the internal
+ * batch endpoint already enforces exactly that pattern), so anything else is
+ * dropped rather than escaped — an allowlist, not a quoting scheme. Returns the
+ * quoted, comma-joined form ready for an `IN (...)`, or `''` when nothing
+ * survives, which callers must treat as "no partition".
+ */
+function safeToolList(tools: readonly string[]): string {
+	return tools
+		.filter((t) => /^[a-z_]+$/.test(t))
+		.map((t) => `'${t}'`)
+		.join(', ');
+}
+
+/**
+ * Latency detection for alerting, PARTITIONED BY WORKLOAD CLASS (#729).
+ *
+ * A single p95 across every tool cannot be interpreted: `batch_scan` has a 25s
+ * budget by design while a `check_*` call is bounded at 8s, so one number is
+ * either too high to catch a real interactive regression or too low to leave the
+ * enumeration tools alone. Measured 2026-08-18..21, the pooled query paged
+ * `critical` on tools working exactly as designed and NEVER once on
+ * `scan_domain`, which is the thing the alert exists to protect.
+ *
+ * Emits one row per class so each can be judged against its own threshold and —
+ * critically — against its OWN `total_calls`, which is what lets the caller
+ * refuse to report a percentile it does not have the samples to compute.
+ *
+ * `longRunningTools` DEFAULTS to `LONG_RUNNING_TOOLS` (`lib/config.ts`, the SSOT)
+ * rather than being a required argument, so a bare `queryLatencyByWorkloadClass(m)`
+ * builds the real production SQL. That matters beyond ergonomics: the dialect audit
+ * in `analytics-queries-ae-dialect.spec.ts` calls every exported builder with one
+ * argument, so a required list would have made this the ONE builder whose SQL that
+ * audit never checked. The parameter stays overridable for tests.
+ *
+ * An empty or fully-invalid list degrades to a single `interactive` partition —
+ * fail-safe, since every tool is then judged by the STRICTER threshold — rather
+ * than emitting `IN ()`, which AE rejects.
+ */
+export function queryLatencyByWorkloadClass(minutes: string, dataset?: string, longRunningTools: readonly string[] = [...LONG_RUNNING_TOOLS]): string {
+	minutes = safeInterval(minutes);
+	const inList = safeToolList(longRunningTools);
+	const classExpr = inList ? `if(blob1 IN (${inList}), 'batch', 'interactive')` : `'interactive'`;
+	return `SELECT
+  ${classExpr} AS workload_class,
+  SUM(_sample_interval) AS total_calls,
+  quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms,
+  MAX(double1) AS max_ms
+FROM ${resolveAnalyticsDataset(dataset)}
+WHERE index1 = 'tool_call'
+  AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
+GROUP BY workload_class
+HAVING total_calls > 0
+ORDER BY p95_ms DESC`;
 }
 
 /**

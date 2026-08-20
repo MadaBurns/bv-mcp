@@ -13,6 +13,7 @@
 
 import {
 	queryRecentAnomalies,
+	queryLatencyByWorkloadClass,
 	queryRateLimitSurge,
 	queryTierDigest,
 	queryBindingDegradation,
@@ -37,6 +38,13 @@ interface AnomalyRow {
 	error_count?: number;
 	error_pct?: number;
 	p95_ms?: number;
+}
+
+interface LatencyRow {
+	workload_class?: string;
+	total_calls?: number;
+	p95_ms?: number;
+	max_ms?: number;
 }
 
 interface RateLimitRow {
@@ -76,6 +84,12 @@ export interface ScheduledEnv {
 	ALERT_P95_THRESHOLD?: string;
 	ALERT_RATE_LIMIT_THRESHOLD?: string;
 	ALERT_LOOKBACK_MINUTES?: string;
+	/** p95 ceiling for the BATCH/enumeration workload class (default 30000ms). Separate from ALERT_P95_THRESHOLD, which governs the interactive class. */
+	ALERT_BATCH_P95_THRESHOLD?: string;
+	/** Lookback for the latency lane ONLY (default 360m). Latency needs a far wider window than error-rate to collect enough samples for a percentile. */
+	ALERT_LATENCY_LOOKBACK_MINUTES?: string;
+	/** Minimum tool calls in a class before its p95 is believed (default 20). Below this, p95 degenerates toward max. */
+	ALERT_MIN_LATENCY_SAMPLES?: string;
 	ALERT_SPF_NULL_RATE_THRESHOLD?: string;
 	/** Min present-binding-degradation events in the lookback window to alert (default 1). */
 	ALERT_BINDING_DEGRADATION_THRESHOLD?: string;
@@ -213,9 +227,36 @@ async function archiveExpiringAccessLogRows(db: D1Database, archive: R2Bucket, c
 }
 
 const DEFAULT_ERROR_THRESHOLD = 5;
-const DEFAULT_P95_THRESHOLD = 10_000;
+/**
+ * Ceiling for the INTERACTIVE class. Derived from `SCAN_TIMEOUT_MS` (15s), not
+ * picked round: `scan_domain` is ~90% of interactive volume and is designed to run
+ * up to that budget, so an interactive p95 at or above it means scans are
+ * systematically hitting their timeout — an incident. The previous 10s sat BELOW
+ * that design envelope, leaving only ~10% headroom over the measured p95 of 8,952ms
+ * (7d, 6,762 calls), so ordinary upper-normal scan latency was one blip from paging.
+ */
+const DEFAULT_P95_THRESHOLD = 15_000;
 const DEFAULT_RATE_LIMIT_THRESHOLD = 50;
 const DEFAULT_LOOKBACK_MINUTES = 15;
+/**
+ * Ceiling for the BATCH/enumeration class. Above `batch_scan`'s own 25s budget so a
+ * tool finishing inside its documented budget is never an anomaly (#729).
+ */
+const DEFAULT_BATCH_P95_THRESHOLD = 30_000;
+/**
+ * The latency lane looks back MUCH further than the 15m error-rate lane. At the
+ * measured traffic (~11 tool calls/hour) a 15m window holds ~3 calls, and
+ * `quantileExactWeighted(0.95)` over 3 samples returns the MAXIMUM — the alert
+ * was reporting the slowest call in the window and calling it a percentile.
+ */
+const DEFAULT_LATENCY_LOOKBACK_MINUTES = 360;
+/**
+ * Below this many samples a p95 is not a tail estimate, so the lane abstains and
+ * says so in the log rather than paging on a number it cannot support.
+ */
+const DEFAULT_MIN_LATENCY_SAMPLES = 20;
+/** Cron cadence in minutes (the every-15-minutes trigger). Used to evaluate the latency lane once per NON-OVERLAPPING lookback window. */
+const CRON_INTERVAL_MINUTES = 15;
 /** A single present-binding failure (mis-rotated key, bv-recon 5xx) is worth surfacing. */
 const DEFAULT_BINDING_DEGRADATION_THRESHOLD = 1;
 /** A single errored async-path batch (brand-audit queue throw, cron failure) is worth surfacing. */
@@ -340,6 +381,12 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	const parsedTailException = parseFloat(env.ALERT_TAIL_EXCEPTION_THRESHOLD ?? '');
 	const tailExceptionThreshold = Number.isFinite(parsedTailException) ? parsedTailException : 1;
 	const lookback = env.ALERT_LOOKBACK_MINUTES ?? String(DEFAULT_LOOKBACK_MINUTES);
+	const parsedBatchP95 = parseFloat(env.ALERT_BATCH_P95_THRESHOLD ?? '');
+	const batchP95Threshold = Number.isFinite(parsedBatchP95) ? parsedBatchP95 : DEFAULT_BATCH_P95_THRESHOLD;
+	const parsedLatencyLookback = parseInt(env.ALERT_LATENCY_LOOKBACK_MINUTES ?? '', 10);
+	const latencyLookbackMinutes = Number.isFinite(parsedLatencyLookback) && parsedLatencyLookback > 0 ? parsedLatencyLookback : DEFAULT_LATENCY_LOOKBACK_MINUTES;
+	const parsedMinSamples = parseInt(env.ALERT_MIN_LATENCY_SAMPLES ?? '', 10);
+	const minLatencySamples = Number.isFinite(parsedMinSamples) && parsedMinSamples >= 0 ? parsedMinSamples : DEFAULT_MIN_LATENCY_SAMPLES;
 
 	// EACH QUERY GETS ITS OWN try. Running all six inside a single try meant the
 	// FIRST rejection aborted the whole check, taking every later alert down with
@@ -351,8 +398,14 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	// lanes after it still run. What each failure costs is then reported ONCE at the
 	// end — degraded (some lanes) vs the total-failure watchdog (all lanes).
 	const laneFailures: Array<{ lane: string; reason: string }> = [];
+	// COUNTED, not a constant (#729). The latency lane runs only on a window boundary,
+	// so the number of lanes attempted varies per tick — a hardcoded total would report
+	// a genuine 5-of-5 whole-pipeline outage as "5 of 6 degraded" and lose the loud
+	// page. Counting also removes the bump-me-when-you-add-a-lane drift hazard.
+	let lanesAttempted = 0;
 
 	async function lane<T>(name: string, fallback: T, run: () => Promise<T>): Promise<T> {
+		lanesAttempted += 1;
 		try {
 			return await run();
 		} catch (err) {
@@ -369,10 +422,9 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 
 	// Every lane below is independent: it queries, evaluates its own thresholds and
 	// dispatches its own alert. A lane that throws contributes a `laneFailures` entry
-	// and nothing else.
-	// Five AE queries, five lanes. Error-rate and p95 share the `anomalies` lane
-	// because both are columns of that one query — a lane is a QUERY, not an alert.
-	const LANE_COUNT = 5;
+	// and nothing else. A lane is a QUERY, not an alert: error-rate keeps the
+	// `anomalies` lane, while latency moved to its own `latency` lane (#729) because it
+	// needs a different lookback and a per-workload-class threshold.
 
 	try {
 		const anomalyRows = await lane<AnomalyRow[]>('anomalies', [], async () =>
@@ -424,20 +476,83 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 				);
 			}
 
-			if (p95Ms > p95Threshold) {
-				await sendAlert(
-					webhookUrl,
-					buildAlertPayload({
-						title: `P95 latency ${Math.round(p95Ms)}ms (last ${lookback}m)`,
-						severity: p95Ms > p95Threshold * 2 ? 'critical' : 'warning',
-						metrics: {
-							p95_ms: Math.round(p95Ms),
-							total_calls: anomaly.total_calls,
+			// p95 is NOT alerted here any more (#729). It stays in the error payload above
+			// as context, but judging it needs a wider window and a per-workload-class
+			// threshold — see the `latency` lane below.
+		}
+
+		// LATENCY LANE (#729) — deliberately NOT part of the `anomalies` lane above.
+		//
+		// It needs a different window (a percentile needs samples the 15m error-rate
+		// window does not have) and a different threshold per workload class, so it is
+		// its own query and its own lane.
+		//
+		// Evaluated only on a NON-OVERLAPPING window boundary. A 6h lookback read every
+		// 15m would re-report the same slow window up to 24 times — turning one true
+		// finding into 24 pages, which is the failure this issue is about, with the sign
+		// flipped. The trade-off is that a missed cron tick skips that window entirely;
+		// for a trend alert that is the right way to be wrong.
+		const minutesSinceEpoch = Math.floor(Date.now() / 60_000);
+		const atLatencyWindowBoundary = minutesSinceEpoch % latencyLookbackMinutes < CRON_INTERVAL_MINUTES;
+
+		if (atLatencyWindowBoundary) {
+			const latencyRows = await lane<LatencyRow[]>('latency', [], async () =>
+				(await queryAnalyticsEngine(
+					env.CF_ACCOUNT_ID!,
+					env.CF_ANALYTICS_TOKEN!,
+					queryLatencyByWorkloadClass(String(latencyLookbackMinutes), dataset),
+				)) as LatencyRow[],
+			);
+
+			for (const row of latencyRows) {
+				const workloadClass = row.workload_class === 'batch' ? 'batch' : 'interactive';
+				const calls = row.total_calls ?? 0;
+				const p95 = row.p95_ms ?? 0;
+				const classThreshold = workloadClass === 'batch' ? batchP95Threshold : p95Threshold;
+
+				// ABSTAIN rather than page on a percentile we cannot compute. At n below the
+				// floor, quantileExactWeighted(0.95) converges on the MAXIMUM, so a single
+				// long call becomes "the p95" — measured at ~3 calls per 15m window, that is
+				// exactly how a tool running inside its own budget paged `critical`.
+				// Logged (never alerted) so a permanently-quiet lane is greppable rather
+				// than indistinguishable from a healthy one.
+				if (calls < minLatencySamples) {
+					logEvent({
+						timestamp: new Date().toISOString(),
+						category: 'scheduled',
+						result: 'ok',
+						severity: 'info',
+						details: {
+							message: 'Latency lane abstained: too few samples for a p95 to be meaningful.',
+							workloadClass,
+							totalCalls: calls,
+							minSamples: minLatencySamples,
+							lookbackMinutes: latencyLookbackMinutes,
 						},
-						threshold: `p95_ms > ${p95Threshold}ms`,
-					}),
-					alertOptions(env),
-				);
+					});
+					continue;
+				}
+
+				if (p95 > classThreshold) {
+					await sendAlert(
+						webhookUrl,
+						buildAlertPayload({
+							// total_calls is in the TITLE, not just the metrics block: "p95 22612ms
+							// over 35 calls" reads very differently from "p95 22612ms", and the
+							// reader sees the title first.
+							title: `P95 latency ${Math.round(p95)}ms over ${calls} ${workloadClass} calls (last ${latencyLookbackMinutes}m)`,
+							severity: p95 > classThreshold * 2 ? 'critical' : 'warning',
+							metrics: {
+								workload_class: workloadClass,
+								p95_ms: Math.round(p95),
+								max_ms: Math.round(row.max_ms ?? 0),
+								total_calls: calls,
+							},
+							threshold: `p95_ms > ${classThreshold}ms (${workloadClass})`,
+						}),
+						alertOptions(env),
+					);
+				}
 			}
 		}
 
@@ -548,9 +663,9 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		}
 
 		// EVERY lane failed ⇒ this is a whole-pipeline outage (expired token, AE down,
-		// network), not five coincidental query bugs. Throw to the watchdog below so it
-		// keeps its single loud page rather than fragmenting into five degraded notices.
-		if (laneFailures.length >= LANE_COUNT) {
+		// network), not several coincidental query bugs. Throw to the watchdog below so
+		// it keeps its single loud page rather than fragmenting into degraded notices.
+		if (lanesAttempted > 0 && laneFailures.length >= lanesAttempted) {
 			throw new Error(laneFailures[0].reason);
 		}
 
@@ -562,7 +677,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			await sendAlert(
 				webhookUrl,
 				buildAlertPayload({
-					title: `Alerting check degraded: ${laneFailures.length} of ${LANE_COUNT} analytics queries failed`,
+					title: `Alerting check degraded: ${laneFailures.length} of ${lanesAttempted} analytics queries failed`,
 					severity: 'warning',
 					metrics: {
 						failed_lanes: laneFailures.map((f) => f.lane).join(', '),
