@@ -45,13 +45,17 @@ function probeNonce(): string {
 /**
  * Classify the authority-section denial records for a probed non-existent name.
  *
- * RFC 4470 minimally-covering NSEC (Cloudflare's default for signed zones — "NSEC
- * black lies") synthesizes an NSEC whose owner is the queried name and whose
- * next-name is `\000.<qname>` (a `\x00` label prepended to the qname), carrying a
- * minimally-covering type bitmap (`RRSIG NSEC`, often with `NXNAME`/`TYPE128`).
- * Such a zone publishes no NSEC3PARAM yet is NOT walkable. Only an NSEC whose
- * next-name is a genuinely different existing owner name indicates a walkable
- * plain-NSEC chain.
+ * RFC 4470 minimally-covering NSEC ("NSEC black lies") synthesizes an NSEC whose
+ * owner is the queried name and whose next-name is `\000.<qname>` (a `\x00` label
+ * prepended to the qname), carrying a minimally-covering type bitmap (`RRSIG NSEC`,
+ * often with `NXNAME`/`TYPE128`). Such a zone publishes no NSEC3PARAM yet is NOT
+ * walkable. Only an NSEC whose next-name is a genuinely different existing owner
+ * name indicates a walkable plain-NSEC chain.
+ *
+ * ⚠️ The technique is PROVIDER-NEUTRAL — several managed DNS providers implement
+ * it, and this check reads the record only, never the operator (#728: a zone served
+ * entirely by Route 53 was told the record was "the Cloudflare default"). Do not
+ * re-introduce a vendor name here or in any customer-visible detail below.
  */
 function classifyDenial(probeName: string, authority: DnsAuthority[] | null): { verdict: DenialVerdict; nextName?: string } {
 	if (!authority) return { verdict: 'inconclusive' };
@@ -71,7 +75,7 @@ function classifyDenial(probeName: string, authority: DnsAuthority[] | null): { 
 
 	// RFC 4470 / compact-denial signatures of a minimally-covering (black-lie) NSEC:
 	const isSynthesizedNext =
-		nn === `\\000.${qname}` || // Cloudflare's exact `\x00`-prepended next-name
+		nn === `\\000.${qname}` || // the exact `\x00`-prepended next-name RFC 4470 describes
 		nn.startsWith('\\000.') ||
 		nn.startsWith('\\x00.') ||
 		nn.startsWith('\\0.') ||
@@ -229,8 +233,8 @@ export async function checkNsecWalkability(domain: string, dnsOptions?: QueryDns
 		}
 
 		// Absence of NSEC3PARAM does NOT prove the zone is walkable. RFC 4470
-		// "minimally-covering" NSEC (a.k.a. NSEC black lies — Cloudflare's default
-		// for signed zones) publishes no NSEC3PARAM and no NSEC3, yet is NOT walkable.
+		// "minimally-covering" NSEC (a.k.a. NSEC black lies), implemented by several
+		// managed DNS providers, publishes no NSEC3PARAM and no NSEC3, yet is NOT walkable.
 		// Actively probe: query a guaranteed-nonexistent label with DO=1 and inspect
 		// the authority-section NSEC record to distinguish the two cases (#565).
 		const probe = await probeDenialNsec(domain, dnsOptions);
@@ -254,7 +258,7 @@ export async function checkNsecWalkability(domain: string, dnsOptions?: QueryDns
 					CATEGORY,
 					'Signed zone uses minimally-covering NSEC (RFC 4470) — not walkable',
 					'info',
-					`The zone for ${domain} is DNSSEC-signed and publishes no NSEC3PARAM, but a DO=1 denial-of-existence probe returned a minimally-covering NSEC record (RFC 4470 "NSEC black lies", the Cloudflare default for signed zones): the NSEC next-name is the synthesized \`\\000.<qname>\` (${probe.nextName}) rather than a real adjacent owner. This proves the zone is NOT walkable — an attacker cannot enumerate zone contents from the NSEC chain — even though no NSEC3PARAM is published.`,
+					`The zone for ${domain} is DNSSEC-signed and publishes no NSEC3PARAM, but a DO=1 denial-of-existence probe returned a minimally-covering NSEC record (RFC 4470 "NSEC black lies", implemented by several managed DNS providers): the NSEC next-name is the synthesized \`\\000.<qname>\` (${probe.nextName}) rather than a real adjacent owner. This proves the zone is NOT walkable — an attacker cannot enumerate zone contents from the NSEC chain — even though no NSEC3PARAM is published.`,
 					{ domain, walkable: false, dnssecSigned: true, nextName: probe.nextName ?? null, probe: 'nsec-next-name', minimallyCovering: true },
 				),
 			);

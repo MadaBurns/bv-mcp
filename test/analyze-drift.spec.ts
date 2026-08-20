@@ -1,6 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import type { ScanScore, Finding } from '@blackveil/dns-checks/scoring';
+import { nistScoreToGrade, scoreToGrade } from '@blackveil/dns-checks/scoring';
 import { computeDrift, classifyDrift } from '../src/tools/analyze-drift';
+import { displayGradeFor } from '../src/lib/ungraded-display';
 
 function makeFinding(category: string, title: string, severity: string): Finding {
 	return { category, title, severity, detail: 'test detail' } as Finding;
@@ -30,7 +32,9 @@ describe('analyzeDrift', () => {
 			const current = makeScanScore(80, 'B', { spf: 100, dmarc: 100 }, []);
 			const drift = computeDrift('example.com', baseline, current);
 			expect(drift.scoreDelta).toBe(20);
-			expect(drift.gradeChange).toEqual({ from: 'D+', to: 'B' });
+			// The DISPLAY (NIST 6-band) letters, derived from the scores — not the 9-band
+			// `grade` fields the fixture carries. See the #727 describe block below.
+			expect(drift.gradeChange).toEqual({ from: nistScoreToGrade(60), to: nistScoreToGrade(80) });
 			expect(drift.improvements.length).toBeGreaterThan(0);
 		});
 
@@ -140,6 +144,72 @@ describe('analyzeDrift', () => {
 			const drift = computeDrift('example.com', before, after);
 			expect(drift.scoreDelta).toBe(10);
 			expect(drift.classification).toBe('improving');
+		});
+	});
+
+	/**
+	 * #727: `analyze_drift` handed the engine's raw 9-band `ScanScore.grade` straight
+	 * to the customer while every other customer-facing surface renders the 6-band NIST
+	 * letter through `displayGradeFor`. Measured on wiz.io at 92: `scan_domain` said
+	 * `"grade":"A"`, `analyze_drift` said `"gradeChange":{"from":"A+","to":"A+"}` — same
+	 * domain, same score, same session.
+	 *
+	 * These assert the INVARIANT (the two surfaces agree, for any score) rather than a
+	 * hardcoded letter, which would just pin whatever the code currently emits.
+	 */
+	describe('grade scale — one letter per domain across surfaces (#727)', () => {
+		// Band edges of BOTH scales plus the scores where they disagree, so a fixture
+		// cannot accidentally sit only where the two scales happen to coincide.
+		const SCORES = [0, 40, 49, 50, 55, 56, 59, 60, 62, 63, 69, 70, 75, 76, 79, 80, 81, 86, 87, 89, 90, 91, 92, 94, 95, 100];
+
+		it('reports the same letter the customer-facing display chokepoint reports, for every score', () => {
+			for (const from of SCORES) {
+				for (const to of SCORES) {
+					// The fixtures carry the CANONICAL 9-band grade, exactly as the engine writes
+					// it into a stored/pasted baseline and into the live scan's ScanScore.
+					const baseline = makeScanScore(from, scoreToGrade(from), {}, []);
+					const current = makeScanScore(to, scoreToGrade(to), {}, []);
+					const drift = computeDrift('example.com', baseline, current);
+
+					// `displayGradeFor` is the SSOT `scan_domain`/`batch_scan`/`compare_domains`
+					// and `/badge` all render from — so this IS the cross-surface comparison.
+					expect(drift.gradeChange, `score pair ${from} -> ${to}`).toEqual({
+						from: displayGradeFor(baseline),
+						to: displayGradeFor(current),
+					});
+					// Independently spelled, so the assertion above cannot pass by both sides
+					// calling the same wrong function.
+					expect(drift.gradeChange, `score pair ${from} -> ${to}`).toEqual({
+						from: nistScoreToGrade(from),
+						to: nistScoreToGrade(to),
+					});
+				}
+			}
+		});
+
+		it('does not echo the internal 9-band letter where the two scales disagree', () => {
+			// The wiz.io case: 92 is A+ on the canonical scale and A on the display scale.
+			const divergent = SCORES.filter((s) => scoreToGrade(s) !== nistScoreToGrade(s));
+			expect(divergent.length, 'fixture must include scores where the scales disagree').toBeGreaterThan(0);
+
+			for (const score of divergent) {
+				const side = makeScanScore(score, scoreToGrade(score), {}, []);
+				const drift = computeDrift('example.com', side, side);
+				expect(drift.gradeChange.from, `score ${score}`).not.toBe(scoreToGrade(score));
+				expect(drift.gradeChange.from, `score ${score}`).toBe(nistScoreToGrade(score));
+			}
+		});
+
+		it('still abstains on an ungraded side rather than substituting a letter', () => {
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+			const ungraded: any = { overall: null, grade: null, categoryScores: {}, findings: [], summary: 'not measured' };
+			const graded = makeScanScore(92, scoreToGrade(92), {}, []);
+
+			// The regression to guard: routing through a display mapper that reads `overall`
+			// would map a null score onto `nistScoreToGrade(0)` and print F for a domain that
+			// does not resolve.
+			expect(computeDrift('example.com', graded, ungraded).gradeChange).toEqual({ from: nistScoreToGrade(92), to: null });
+			expect(computeDrift('example.com', ungraded, graded).gradeChange).toEqual({ from: null, to: nistScoreToGrade(92) });
 		});
 	});
 

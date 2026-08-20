@@ -285,7 +285,11 @@ describe('computeDrift / classifyDrift — ungraded side', () => {
 
 		// `null - 78` is NaN; `0 - 78` is a fabricated 78-point collapse.
 		expect(report.scoreDelta).toBeNull();
-		expect(report.gradeChange).toEqual({ from: 'B', to: null });
+		// `from` is the CUSTOMER-FACING NIST 6-band letter for the fixture's score of 78
+		// (#727), NOT the fixture's own `grade: 'B'` — that is the internal 9-band letter,
+		// which `analyze_drift` no longer echoes. The assertion under test here is `to: null`:
+		// an ungraded side still abstains rather than being mapped onto a substituted letter.
+		expect(report.gradeChange).toEqual({ from: 'C', to: null });
 	});
 
 	it('renders "not measured" in the SCORE-DELTA segment specifically, in both compact and full', async () => {
