@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
+import type { CheckResult } from '../src/lib/scoring';
 import type { ScanDomainResult } from '../src/tools/scan-domain';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse, httpResponse } from './helpers/dns-mock';
 
@@ -450,6 +451,225 @@ describe('compareBaseline: a total outage (all checks attempted, none completed)
 	});
 });
 
+/**
+ * #706: the enforcement surface repeat of #705.
+ *
+ * `categoryPassed` read `CheckResult.passed`, which records whether a check
+ * PENALIZED the domain — not whether the control exists. `require_dnssec`,
+ * `require_caa` and `require_mta_sts` all leave `passed: true` on absence (a
+ * graded finding, deliberately no `missingControl`, so the category still scores
+ * 60), which meant a customer could wire `require_dnssec: true` into a CI gate
+ * and have every unsigned domain in their portfolio PASS it — while the same
+ * scan raised a high-severity "DNSSEC not enabled" finding.
+ *
+ * The shapes below are the ones MEASURED in production on 2026-08-19 (#705:
+ * davidhf.com `check_dnssec` and `check_caa`), not shapes invented in this
+ * tool's own vocabulary.
+ */
+describe('compare_baseline does not pass a control rule whose record was never published', () => {
+	/** A check that COMPLETED, was not penalized, but observed no published record. */
+	function absentButUnpenalized(category: string, title: string, severity: string, controlPresent?: boolean): CheckResult {
+		return {
+			category,
+			passed: true,
+			score: 60,
+			controlPresent,
+			recordPresent: false,
+			findings: [{ category, title, severity, detail: '' }],
+		} as CheckResult;
+	}
+
+	/**
+	 * The registry-signed counter-fixture — `check-dnssec.ts` documents this exact
+	 * `recordPresent: false` + `controlPresent: true` pair as a ccTLD/registry-signed
+	 * zone that validates without publishing a DNSKEY/DS of its own. It IS protected.
+	 */
+	function absentRecordsButControlActive(category: string): CheckResult {
+		return {
+			category,
+			passed: true,
+			score: 85,
+			controlPresent: true,
+			recordPresent: false,
+			findings: [{ category, title: 'DNSSEC is registry-managed', severity: 'medium', detail: '' }],
+		} as CheckResult;
+	}
+
+	function scanWith(domain: string, extraChecks: CheckResult[]): ScanDomainResult {
+		return createMockScan({
+			domain,
+			checks: [{ category: 'spf', passed: true, score: 90, findings: [] }, ...extraChecks],
+		});
+	}
+
+	it('FLAGS require_dnssec on an unsigned zone (recordPresent false, no controlPresent rebuttal)', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const scan = scanWith('unsigned.example', [absentButUnpenalized('dnssec', 'DNSSEC not enabled', 'high')]);
+
+		// Non-vacuity: this is precisely the shape that used to read as a PASS.
+		const dnssec = scan.checks.find((c) => c.category === 'dnssec')!;
+		expect(dnssec.passed).toBe(true);
+		expect(dnssec.score).toBe(60);
+		expect(dnssec.recordPresent).toBe(false);
+		expect(dnssec.controlPresent).toBeUndefined();
+
+		const result = compareBaseline(scan, { require_dnssec: true });
+
+		expect(result.violations.map((v) => v.rule)).toContain('require_dnssec');
+		expect(result.passed).toBe(false);
+		expect(result.checkedRules).toBe(1);
+		expect(result.inconclusiveRules).toEqual([]);
+	});
+
+	it('FLAGS require_caa when the CAA check observed no published record', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const scan = scanWith('no-caa.example', [absentButUnpenalized('caa', 'No CAA records', 'medium', false)]);
+
+		const result = compareBaseline(scan, { require_caa: true });
+
+		expect(result.violations.map((v) => v.rule)).toContain('require_caa');
+		expect(result.passed).toBe(false);
+		expect(result.checkedRules).toBe(1);
+	});
+
+	it('FLAGS require_mta_sts when the MTA-STS check observed no published policy (mail-enabled domain)', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const scan = scanWith('no-mta-sts.example', [
+			absentButUnpenalized('mta_sts', 'No MTA-STS or TLS-RPT records found', 'low', false),
+		]);
+
+		const result = compareBaseline(scan, { require_mta_sts: true });
+
+		expect(result.violations.map((v) => v.rule)).toContain('require_mta_sts');
+		expect(result.passed).toBe(false);
+		expect(result.checkedRules).toBe(1);
+	});
+
+	/**
+	 * The load-bearing rebuttal. Without it the fix trades the false PASS for a
+	 * false FAIL on a zone that is genuinely, cryptographically protected.
+	 */
+	it('still PASSES require_dnssec for a registry-signed zone (recordPresent false + controlPresent true)', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const scan = scanWith('registry-signed.example', [absentRecordsButControlActive('dnssec')]);
+
+		const result = compareBaseline(scan, { require_dnssec: true });
+
+		expect(result.violations).toHaveLength(0);
+		expect(result.inconclusiveRules).toEqual([]);
+		expect(result.checkedRules).toBe(1);
+		expect(result.passed).toBe(true);
+	});
+
+	/** A control that IS present and satisfied must keep passing — no regression. */
+	it('still PASSES require_dnssec for a zone that publishes a validating DNSKEY/DS', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const scan = scanWith('signed.example', [
+			{ category: 'dnssec', passed: true, score: 100, controlPresent: true, recordPresent: true, findings: [] } as CheckResult,
+		]);
+
+		const result = compareBaseline(scan, { require_dnssec: true });
+
+		expect(result.violations).toHaveLength(0);
+		expect(result.passed).toBe(true);
+		expect(result.checkedRules).toBe(1);
+	});
+
+	/**
+	 * Over-correction guard. `recordPresent: undefined` means "this check does not
+	 * report the signal" (spf, dkim, ssl, ns, http_security never set it) or "the
+	 * query failed" — neither is evidence of absence.
+	 */
+	it('still PASSES require_spf when the check does not report the presence signal at all', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const scan = createMockScan({ domain: 'silent-signal.example' });
+		expect(scan.checks.every((c) => c.recordPresent === undefined)).toBe(true);
+
+		const result = compareBaseline(scan, { require_spf: true, require_dkim: true });
+
+		expect(result.violations).toHaveLength(0);
+		expect(result.passed).toBe(true);
+		expect(result.checkedRules).toBe(2);
+	});
+});
+
+/**
+ * #706, applicability leg. A `web_only`/`non_mail` domain legitimately publishes
+ * no MTA-STS policy, and the scan's own applicability pass already declares that
+ * category N/A. Grading it on presence would newly report a VIOLATION against a
+ * domain that accepts no mail — the same defect with the opposite sign.
+ *
+ * It must not silently PASS either: "the rule cannot be evaluated here" and "the
+ * rule passed" are different statements, and a gate consumer keyed on
+ * `passed === true` has to be able to tell them apart. The rule therefore lands
+ * in the existing not-evaluated channel.
+ */
+describe('compare_baseline abstains on a category the scan itself declared not applicable', () => {
+	function webOnlyScanWithNoMtaSts(): ScanDomainResult {
+		return {
+			...createMockScan({
+				domain: 'web-only.example',
+				checks: [
+					{ category: 'spf', passed: true, score: 90, findings: [] },
+					{
+						category: 'mta_sts',
+						passed: true,
+						score: 60,
+						controlPresent: false,
+						recordPresent: false,
+						findings: [{ category: 'mta_sts', title: 'No MTA-STS or TLS-RPT records found', severity: 'low', detail: '' }],
+					},
+				] as CheckResult[],
+			}),
+			context: { profile: 'web_only', signals: [] },
+		} as unknown as ScanDomainResult;
+	}
+
+	it('does not turn require_mta_sts into a violation on a web_only domain', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const result = compareBaseline(webOnlyScanWithNoMtaSts(), { require_mta_sts: true });
+
+		expect(result.violations.map((v) => v.rule)).not.toContain('require_mta_sts');
+		expect(result.notApplicableRules).toEqual(['require_mta_sts']);
+		// Out of the evaluated denominator, not sitting in it as a silent pass.
+		expect(result.checkedRules).toBe(0);
+	});
+
+	it('reports the inapplicable rule as INCONCLUSIVE, never as a PASS', async () => {
+		const { compareBaseline, formatBaselineResult } = await import('../src/tools/compare-baseline');
+		const result = compareBaseline(webOnlyScanWithNoMtaSts(), { require_mta_sts: true });
+
+		// The distinction a gate consumer depends on: `null`, never `true`.
+		expect(result.passed).toBeNull();
+		expect(result.passed).not.toBe(true);
+		expect(result.inconclusiveRules).toContain('require_mta_sts');
+
+		const full = formatBaselineResult(result, 'full');
+		expect(full).toContain('INCONCLUSIVE');
+		expect(full).not.toContain('**Result:** PASS');
+		expect(full).not.toContain('All baseline rules met.');
+		// And it must be attributed to APPLICABILITY, not to a missing measurement —
+		// this scan measured MTA-STS perfectly well; the control just does not apply.
+		expect(full).toContain('does not apply to this domain');
+		expect(full).not.toContain('**Not evaluated (no measurement available for this scan):** require_mta_sts');
+
+		const compact = formatBaselineResult(result, 'compact');
+		expect(compact).toContain('INCONCLUSIVE');
+		expect(compact).toContain('does not apply to this domain');
+	});
+
+	it('keeps grading an applicable category on the same scan (guard — no blanket abstention)', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		// `spf` is NOT in the mail-only N/A set for this fixture (it publishes a
+		// real record and passes), so the profile must not disarm every rule.
+		const result = compareBaseline(webOnlyScanWithNoMtaSts(), { require_spf: true });
+
+		expect(result.checkedRules).toBe(1);
+		expect(result.notApplicableRules).toEqual([]);
+		expect(result.passed).toBe(true);
+	});
+});
+
 describe('formatBaselineResult', () => {
 	it('compact mode uses terse violation lines without headings', async () => {
 		const { formatBaselineResult } = await import('../src/tools/compare-baseline');
@@ -461,6 +681,7 @@ describe('formatBaselineResult', () => {
 				{ rule: 'require_spf', message: 'SPF not detected', expected: 'present', actual: 'missing' },
 			],
 			inconclusiveRules: [],
+			notApplicableRules: [],
 			checkedRules: 5,
 			scoringProfile: 'mail_enabled',
 			timestamp: '2026-01-01T00:00:00Z',

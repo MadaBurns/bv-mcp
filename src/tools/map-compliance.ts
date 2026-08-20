@@ -12,7 +12,11 @@ import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { displayGradeFor, formatScoreGrade, hasCompletedEvidence, isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
-import { isCategoryNonApplicable } from './scan/format-report';
+// `isSatisfiedControl` and the applicability derivation are SHARED with
+// `compare_baseline` (#706), which had the identical defect on the enforcement
+// surface. Both live in `lib/control-presence.ts` so the reporting tool and the
+// policy gate cannot drift on what "satisfied" and "applicable" mean.
+import { isSatisfiedControl, notApplicableCategoriesFor } from '../lib/control-presence';
 
 export type ComplianceFramework = 'nist_800_177' | 'pci_dss_4' | 'soc2' | 'cis_controls';
 
@@ -233,34 +237,6 @@ const FRAMEWORK_LABELS: Record<ComplianceFramework, string> = {
 };
 
 /**
- * Does this completed check actually satisfy the control it is mapped to?
- *
- * `passed` alone is NOT the answer, and reading it as one was the defect this predicate
- * closes. `passed` records whether the check PENALIZED the domain; a control that is
- * absent but carries no penalty under the active profile still returns `passed: true`.
- * Mapping that onto a compliance verdict published "NIST 800-177 §5.1 DNSSEC — PASS"
- * for domains with no DNSSEC at all, alongside the same scan's own high-severity
- * "DNSSEC not enabled" finding.
- *
- * `recordPresent` is the observational answer to "was the artifact published at all",
- * and is documented as score-neutral precisely so a consumer like this one can read it
- * without perturbing scoring. Only an explicit `false` counts: `undefined` means the
- * check does not report the signal (spf, dkim, ssl, ns and http_security never set it)
- * or that the query failed, and absence of a signal is not evidence of absence.
- *
- * `recordPresent === false` is NOT sufficient on its own. `check-dnssec` documents a
- * legitimate `recordPresent: false` + `controlPresent: true` state: a zone that
- * validates while publishing no DNSKEY/DS of its own, because its ccTLD registry signed
- * it. That zone IS cryptographically protected, so failing it on missing records would
- * trade the false PASS this fixes for a false FAIL. An affirmative `controlPresent`
- * therefore wins, and only unrebutted evidence of absence disqualifies.
- */
-function isSatisfiedControl(result: CheckResult): boolean {
-	if (!result.passed) return false;
-	return !(result.recordPresent === false && result.controlPresent !== true);
-}
-
-/**
  * Evaluate compliance control status from check results (pure function).
  * Exported for direct unit testing without needing to mock scanDomain.
  *
@@ -427,12 +403,9 @@ export async function mapCompliance(domain: string, kv?: KVNamespace, runtimeOpt
 
 	// Mirror the scan's own applicability pass so a category it nulled cannot be graded
 	// here. Same predicate, same profile default as `formatScanReport` — not a second
-	// opinion on applicability.
-	const profile = scanResult.context?.profile ?? 'mail_enabled';
-	const categoryScores: Record<string, number> = scanResult.score.categoryScores ?? {};
-	const notApplicableCategories = scanResult.checks
-		.filter((check) => isCompletedCheck(check) && isCategoryNonApplicable(check, check.category, profile, categoryScores[check.category]))
-		.map((check) => check.category);
+	// opinion on applicability, and now literally the same function `compare_baseline`
+	// calls.
+	const notApplicableCategories = notApplicableCategoriesFor(scanResult);
 
 	// `ScanScore.grade` is the engine's canonical NINE-band letter. Every DISPLAY surface
 	// renders the six-band scale via `displayGradeFor`, so passing the raw grade through
