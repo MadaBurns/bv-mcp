@@ -10,11 +10,15 @@
  * certificate issuance.
  *
  * Source resilience (a CT outage must not read as "no subdomains"):
+ *   0. fresh KV cache hit, returned marked `cached` — no upstream call at all,
+ *      because a recent enumeration is the answer rather than a fallback and
+ *      re-querying only spends scarce provider quota, then
  *   1. bv-certstream-worker binding (fast, cached) when present, then
  *   2. direct public sources in order — crt.sh → Certspotter — each with a
  *      bounded retry and a per-source `ct_source` health log, then
  *   3. last-known-good KV cache, returned marked `stale` with its age.
  * Only when all of the above are exhausted do we report `sourceUnavailable`.
+ * Steps 0 and 3 read the SAME entry; only its age decides which job it does.
  *
  * COMPLETENESS HONESTY (this is a SAMPLE, never an inventory):
  * The result carries a `coverage` record whose `basis` is the literal
@@ -102,6 +106,29 @@ const CT_SOURCE_MAX_BODY_BYTES = 5 * 1024 * 1024;
  */
 const SUBDOMAIN_LKG_KEY_PREFIX = 'cache:subdomains-lkg:';
 const SUBDOMAIN_LKG_TTL_SECONDS = 7 * 24 * 60 * 60;
+
+/**
+ * Fresh-read window: how long a cached enumeration is served DIRECTLY, with no
+ * live CT query at all.
+ *
+ * The same KV entry backs two different jobs. Beyond this window it is only an
+ * outage net (served `stale`, above). Inside it, it is the answer — because
+ * re-querying is a pure quota spend for information that has not changed.
+ *
+ * Why this matters more than it looks: CertSpotter's free "Small" tier meters
+ * full-domain queries (`include_subdomains=true`) at **10 per HOUR per account**,
+ * and that account is shared with bv2-certstream, which already consumes ~6/hr
+ * on its 10-minute cron. Before this window existed, every repeat scan of the
+ * same domain spent one of the remaining ~4 — so a handful of re-scans could
+ * exhaust discovery for the whole estate while returning identical data.
+ *
+ * One hour is chosen against the data's own update rate, not arbitrarily: CT
+ * logs lag issuance by minutes to hours (a CA's SCT merge delay), so a shorter
+ * window mostly re-reads the same snapshot at full quota cost. `force_refresh`
+ * bypasses this entirely for a caller that needs a guaranteed-live read, and the
+ * outage fallback is unaffected.
+ */
+const SUBDOMAIN_FRESH_TTL_SECONDS = 60 * 60;
 
 /**
  * Maximum subdomains carried in the STRUCTURED result (CT logs can contain
@@ -282,7 +309,21 @@ export interface SubdomainDiscoveryResult {
 	 * judge freshness. `sourceUnavailable` stays false here (we DO have data).
 	 */
 	stale?: boolean;
-	/** Age of a `stale` result in whole minutes since it was cached. */
+	/**
+	 * True when this result was served from a cache entry that is still inside the
+	 * fresh-read window ({@link SUBDOMAIN_FRESH_TTL_SECONDS}) — no live CT source
+	 * was consulted on this call, and none needed to be.
+	 *
+	 * DISTINCT from {@link stale} on purpose. `stale` means "every live source was
+	 * unreachable and this is the best we have", i.e. a degraded answer a consumer
+	 * may want to warn about. `cached` is a healthy hit on current data. Folding
+	 * the two into one boolean would make every quota-saving hit read as an
+	 * outage — the same class of mistake as reporting an unmeasured signal as a
+	 * measured `false`. Pair with {@link cacheAgeMinutes} to judge freshness, and
+	 * note {@link coverage} describes the call that CACHED the data, not this one.
+	 */
+	cached?: boolean;
+	/** Age of a `stale` or `cached` result in whole minutes since it was cached. */
 	cacheAgeMinutes?: number;
 	/**
 	 * True when this result is NOT the whole story — either the returned
@@ -436,6 +477,15 @@ export async function discoverSubdomains(
 	// this the orchestrator forgets the fast path ran at all, and `buildCtCoverage`
 	// reports the dead binding as "not consulted on this call" (#738).
 	const certstreamAttempts: CtSourceAttempt[] = [];
+
+	// Fresh-read cache, BEFORE any upstream call — including the certstream
+	// binding. A recent enumeration is the answer, not a fallback, so re-querying
+	// spends scarce CertSpotter full-domain quota (10/hr/account, shared with
+	// bv2-certstream) for data we already hold. `force_refresh` opts out.
+	if (!options?.forceRefresh) {
+		const cached = await readFreshCache(domain, options);
+		if (cached) return cached;
+	}
 
 	// Fast path: certstream service binding (bv-certstream-worker; itself
 	// multi-source + short-cached). On a clean result, prime the LKG cache.
@@ -1126,7 +1176,7 @@ function subdomainLkgKey(domain: string): string {
 
 /** Strip transient/served-state flags so the cached copy is a clean answer. */
 function stripTransientFlags(result: SubdomainDiscoveryResult): SubdomainDiscoveryResult {
-	const { stale: _stale, cacheAgeMinutes: _age, sourceUnavailable: _unavail, partial: _partial, ...clean } = result;
+	const { stale: _stale, cached: _cached, cacheAgeMinutes: _age, sourceUnavailable: _unavail, partial: _partial, ...clean } = result;
 	return clean;
 }
 
@@ -1137,7 +1187,10 @@ function stripTransientFlags(result: SubdomainDiscoveryResult): SubdomainDiscove
  */
 async function cacheSuccess(domain: string, result: SubdomainDiscoveryResult, options?: DiscoverSubdomainsOptions): Promise<void> {
 	if (!options?.cacheKv) return;
-	if (result.sourceUnavailable || result.partial || result.stale) return;
+	// `cached` joins this list so a cache hit can never be written back over
+	// itself, which would refresh `cachedAt` without a live read and let one
+	// enumeration be served as "fresh" indefinitely.
+	if (result.sourceUnavailable || result.partial || result.stale || result.cached) return;
 	// An empty enumeration is a worthless fallback: re-serving "0 subdomains
 	// (stale)" during an outage tells the caller nothing the explicit outage
 	// error doesn't, and invites reading it as a confirmed empty.
@@ -1156,6 +1209,24 @@ async function cacheSuccess(domain: string, result: SubdomainDiscoveryResult, op
  * is no cache / KV is absent / the read fails.
  */
 async function readLastKnownGood(domain: string, options?: DiscoverSubdomainsOptions): Promise<SubdomainDiscoveryResult | null> {
+	const loaded = await loadCacheEntry(domain, options);
+	if (!loaded) return null;
+	return {
+		...stripTransientFlags(loaded.result),
+		stale: true,
+		cacheAgeMinutes: Math.floor(loaded.ageMs / 60_000),
+	};
+}
+
+/**
+ * Load and age the cache entry, or null when KV is absent / empty / unreadable.
+ * Shared by the fresh-read and last-known-good paths so they cannot disagree
+ * about the stored shape or about how age is computed.
+ */
+async function loadCacheEntry(
+	domain: string,
+	options?: DiscoverSubdomainsOptions,
+): Promise<{ result: SubdomainDiscoveryResult; ageMs: number } | null> {
 	if (!options?.cacheKv) return null;
 	let entry: SubdomainLkgEntry | undefined;
 	try {
@@ -1165,11 +1236,26 @@ async function readLastKnownGood(domain: string, options?: DiscoverSubdomainsOpt
 	}
 	if (!entry || !entry.result) return null;
 	const cachedAt = typeof entry.cachedAt === 'number' ? entry.cachedAt : Date.now();
-	const ageMs = Math.max(0, Date.now() - cachedAt);
+	return { result: entry.result, ageMs: Math.max(0, Date.now() - cachedAt) };
+}
+
+/**
+ * Read a cache entry that is still inside the fresh window, so the call can be
+ * answered without spending a live CT query. Returns null when there is no
+ * entry, KV is absent, or the entry has aged past {@link
+ * SUBDOMAIN_FRESH_TTL_SECONDS} — in which case the caller proceeds to the live
+ * sources and the entry survives as the outage net.
+ *
+ * Marked `cached`, never `stale`: this is current data, not a degraded fallback.
+ */
+async function readFreshCache(domain: string, options?: DiscoverSubdomainsOptions): Promise<SubdomainDiscoveryResult | null> {
+	const loaded = await loadCacheEntry(domain, options);
+	if (!loaded) return null;
+	if (loaded.ageMs > SUBDOMAIN_FRESH_TTL_SECONDS * 1000) return null;
 	return {
-		...stripTransientFlags(entry.result),
-		stale: true,
-		cacheAgeMinutes: Math.floor(ageMs / 60_000),
+		...stripTransientFlags(loaded.result),
+		cached: true,
+		cacheAgeMinutes: Math.floor(loaded.ageMs / 60_000),
 	};
 }
 
@@ -1625,6 +1711,7 @@ export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, forma
 	// something visibly went wrong is the same false confidence in a new place.
 	banners.push(sampleBanner(result));
 	if (result.stale) banners.push(staleBanner(result));
+	else if (result.cached) banners.push(cachedBanner(result));
 	// Distinct from `stale` (served from the last-known-good cache): `partial`
 	// here means a live source answered but timed out mid-query, so the data
 	// shown is real but the enumeration may be incomplete. Skip when `stale`
@@ -1648,6 +1735,19 @@ function sampleBanner(result: SubdomainDiscoveryResult): string {
 		return `ℹ️ CT SAMPLE — NOT AN INVENTORY: ${result.totalSubdomains} is a LOWER BOUND. A host that has never had a publicly-logged certificate does not appear in Certificate Transparency at all.`;
 	}
 	return `ℹ️ CT SAMPLE — NOT AN INVENTORY: ${result.coverage.caveat}\n${formatCoverageLine(result.coverage)}`;
+}
+
+/**
+ * Cache notice for a result served inside the fresh-read window.
+ *
+ * Deliberately NOT the staleness banner: nothing is degraded here and no source
+ * is down, so the wording must not imply an outage. What the caller does need to
+ * know is that this is a snapshot with an age, and how to force a live read.
+ */
+function cachedBanner(result: SubdomainDiscoveryResult): string {
+	const age = result.cacheAgeMinutes ?? 0;
+	const ageText = age < 1 ? 'less than a minute' : `${age} minute${age === 1 ? '' : 's'}`;
+	return `ℹ️ CACHED (${ageText} old): served from a recent Certificate Transparency enumeration rather than a new query. Pass \`force_refresh\` for a guaranteed-live read.`;
 }
 
 /** Staleness notice prepended when a result came from the last-known-good cache. */
