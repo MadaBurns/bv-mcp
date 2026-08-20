@@ -167,6 +167,8 @@ export interface ExecuteMcpRequestOptions {
 	ipEncryptionKeyVersion?: string;
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
+	/** SSLMate Cert Spotter API token for CT queries. Absent → unauthenticated. */
+	certspotterToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
 	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
 	reconBinding?: { fetch: typeof fetch };
@@ -406,7 +408,9 @@ function recordMcpAccessLog(
 		// (e.g. a 15s scan starting at 23:59:5x) would otherwise mis-bucket into the
 		// next day. `options.startTime` pins the count to the day the request began.
 		const bucketDay = unixDayBucket(options.startTime);
-		options.waitUntil?.(fireAndForget(incrementAccessRollup(options.intelligenceDb, event, bucketDay), logger, 'mcp_access_rollup_increment'));
+		options.waitUntil?.(
+			fireAndForget(incrementAccessRollup(options.intelligenceDb, event, bucketDay), logger, 'mcp_access_rollup_increment'),
+		);
 		return;
 	}
 
@@ -859,12 +863,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 	let rateHeaders: Record<string, string> = {};
 	if (!options.isAuthenticated && method === 'tools/call') {
 		const globalDailyLimit = options.globalDailyLimit ?? GLOBAL_DAILY_TOOL_LIMIT;
-		const globalResult = await checkGlobalDailyLimit(
-			globalDailyLimit,
-			options.rateLimitKv,
-			options.quotaCoordinator,
-			options.analytics,
-		);
+		const globalResult = await checkGlobalDailyLimit(globalDailyLimit, options.rateLimitKv, options.quotaCoordinator, options.analytics);
 		if (!globalResult.allowed) {
 			const globalHeaders: Record<string, string> = {};
 			if (globalResult.retryAfterMs !== undefined) {

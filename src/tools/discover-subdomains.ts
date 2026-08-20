@@ -366,6 +366,13 @@ export interface DiscoverSubdomainsOptions {
 	 * (`ctx.waitUntil`). Absent → the write is awaited inline (still best-effort).
 	 */
 	waitUntil?: (promise: Promise<unknown>) => void;
+	/**
+	 * SSLMate Cert Spotter API token, sent as `Authorization: Bearer` on the
+	 * Certspotter source. Absent → unauthenticated (functional, but on a per-IP
+	 * per-hour quota a batch sweep exhausts). Raises rate limits only; the free
+	 * tier's 15s per-query timeout is unchanged, so large estates still 504.
+	 */
+	certspotterToken?: string;
 }
 
 /** Extract CN= value from an issuer_name string (e.g. "C=US, O=Let's Encrypt, CN=R3" -> "R3"). */
@@ -859,8 +866,14 @@ function hasNextCertspotterPage(response: Response): boolean {
 
 /**
  * Fetch + parse Certspotter issuances into normalized {@link CrtShEntry}s so the
- * shared aggregation applies unchanged. Unauthenticated (rate-limited but
- * functional for occasional failover); `not_before`/`not_after` are best-effort.
+ * shared aggregation applies unchanged. `not_before`/`not_after` are best-effort.
+ *
+ * AUTHENTICATION is optional and fail-soft: with `options.certspotterToken` the
+ * request carries `Authorization: Bearer`, without it the source still works on
+ * the unauthenticated per-IP, per-hour quota. That quota is what a batch sweep
+ * exhausts (measured 2026-08-21: HTTP 429 `rate_limited`). ⚠️ A token raises rate
+ * limits ONLY — the free tier keeps a 15s per-query timeout, so a large estate
+ * still returns HTTP 504 (#735) whether authenticated or not.
  *
  * PAGINATION (issue #573): Certspotter serves 100 issuances per page and
  * **silently ignores `&limit=` without an API key**, so a single request is
@@ -877,6 +890,9 @@ function hasNextCertspotterPage(response: Response): boolean {
 async function fetchCertspotterEntries(domain: string, signal: AbortSignal, options?: DiscoverSubdomainsOptions): Promise<SourceResult> {
 	const base = `https://api.certspotter.com/v1/issuances?domain=${encodeURIComponent(domain)}&include_subdomains=true&expand=dns_names&expand=issuer`;
 	const entries: CrtShEntry[] = [];
+	// Authenticated when a token is provisioned, unauthenticated otherwise — the
+	// source must degrade, never fail, when the secret is absent.
+	const certspotterHeaders = options?.certspotterToken ? { Authorization: `Bearer ${options.certspotterToken}` } : undefined;
 	let after: string | undefined;
 	let pagesRead = 0;
 	let enumerationComplete = true;
@@ -897,7 +913,7 @@ async function fetchCertspotterEntries(domain: string, signal: AbortSignal, opti
 			}
 
 			const url = after ? `${base}&after=${encodeURIComponent(after)}` : base;
-			const response = await fetch(url, { signal, redirect: 'manual' });
+			const response = await fetch(url, { signal, redirect: 'manual', ...(certspotterHeaders && { headers: certspotterHeaders }) });
 
 			if (!response.ok) {
 				await disposeUnreadResponseBody(response);
@@ -1242,7 +1258,10 @@ async function queryCertstream(
 	}
 	if (data.names.length > 0) {
 		return {
-			result: { ...buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated, timedOut: true }), partial: true },
+			result: {
+				...buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated, timedOut: true }),
+				partial: true,
+			},
 			attempt: certstreamAttempt('ok', true),
 		};
 	}

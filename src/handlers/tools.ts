@@ -285,6 +285,8 @@ interface ToolRuntimeOptions {
 	sessionId?: string;
 	certstream?: { fetch: typeof fetch };
 	certstreamAuthToken?: string;
+	/** SSLMate Cert Spotter API token for CT queries. Absent → unauthenticated. */
+	certspotterToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
 	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
 	reconBinding?: { fetch: typeof fetch };
@@ -1678,6 +1680,7 @@ export async function handleToolsCall(
 						signal: AbortSignal.timeout(DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS),
 						deadlineMs: Date.now() + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
 						...(forceRefresh && { forceRefresh }),
+						...(runtimeOptions?.certspotterToken && { certspotterToken: runtimeOptions.certspotterToken }),
 						// Last-known-good resilience cache: a clean enumeration is stored here
 						// and re-served (marked stale) when every live CT source is down.
 						...(scanCacheKV && { cacheKv: scanCacheKV }),

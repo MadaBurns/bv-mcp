@@ -838,3 +838,69 @@ describe('discover_subdomains handler — loud degrade on CT-source outage', () 
 		expect((result.structuredContent as Record<string, unknown> | undefined)?.sourceUnavailable).toBeFalsy();
 	});
 });
+
+// Phase 1 of the CT-source plan. Certspotter was queried UNAUTHENTICATED, so the
+// per-IP, per-hour free quota was the binding constraint: measured 2026-08-21 it
+// returned HTTP 429 `rate_limited` — "For a higher rate limit, please authenticate
+// with an API key". bv-web-prod's `cloudflare/certstream` already sends the same
+// secret as a Bearer token; this brings bv-mcp's own CT path in line.
+//
+// ⚠️ Deliberately NOT asserted here because it is NOT true: that a token fixes the
+// large-estate failure. It does not. The free tier keeps a 15s per-query timeout,
+// and `meta.com` still returns HTTP 504 authenticated (measured). That is #735's
+// deterministic timeout and only a paid tier's longer timeout addresses it.
+describe('discoverSubdomains — Certspotter authentication', () => {
+	/** Capture the request init the CT sources are called with. */
+	function captureCertspotter() {
+		const calls: Array<{ url: string; auth: string | null }> = [];
+		globalThis.fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			const headers = new Headers(init?.headers ?? {});
+			calls.push({ url, auth: headers.get('authorization') });
+			// crt.sh is down (502 all day 2026-08-21), forcing the Certspotter path.
+			if (url.includes('crt.sh')) return Response.json({}, { status: 502 });
+			if (url.includes('certspotter.com')) {
+				return Response.json([{ id: '1', dns_names: ['api.example.com'], not_before: '2026-01-01', not_after: '2026-04-01' }], { status: 200 });
+			}
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		}) as unknown as typeof fetch;
+		return calls;
+	}
+
+	it('sends Authorization: Bearer on the Certspotter query when a token is configured', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const calls = captureCertspotter();
+
+		await discoverSubdomains('example.com', undefined, undefined, { certspotterToken: 'test-sslmate-key' });
+
+		const certspotter = calls.filter((c) => c.url.includes('certspotter.com'));
+		expect(certspotter.length).toBeGreaterThan(0);
+		expect(certspotter.every((c) => c.auth === 'Bearer test-sslmate-key')).toBe(true);
+	});
+
+	it('never leaks the token to a different CT source', async () => {
+		// crt.sh is a separate operator with no relationship to the SSLMate key.
+		// Broadcasting a credential to every upstream is how one source's outage
+		// becomes another source's credential disclosure.
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const calls = captureCertspotter();
+
+		await discoverSubdomains('example.com', undefined, undefined, { certspotterToken: 'test-sslmate-key' });
+
+		expect(calls.filter((c) => c.url.includes('crt.sh')).every((c) => c.auth === null)).toBe(true);
+	});
+
+	it('stays unauthenticated and functional when no token is configured', async () => {
+		// The control. A missing secret must DEGRADE recall, never break enumeration
+		// — most self-hosts will never set one.
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const calls = captureCertspotter();
+
+		const result = await discoverSubdomains('example.com');
+
+		const certspotter = calls.filter((c) => c.url.includes('certspotter.com'));
+		expect(certspotter.length).toBeGreaterThan(0);
+		expect(certspotter.every((c) => c.auth === null)).toBe(true);
+		expect(result.totalSubdomains).toBeGreaterThan(0);
+	});
+});
