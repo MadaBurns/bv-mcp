@@ -10,11 +10,12 @@
  * leave that spec fully green, because nothing in it exercises the wiring. This
  * audit covers the link the unit test structurally cannot.
  *
- * The defect it locks out has occurred twice. #640: the maturity cap read the
+ * The defect it locks out has occurred three times. #640: the maturity cap read the
  * internal 9-band while the report displayed the 6-band, so github.com at 67
  * printed grade D beside "Stage 4 — Hardened". And `/badge/:domain` rendered
  * `score.grade` — the 9-band letter — so the same domain showed C on its badge
- * and D in its report.
+ * and D in its report. And #727: `analyze_drift` reported `gradeChange` straight
+ * from `ScanScore.grade`, so wiz.io at 92 was "A" in `scan_domain` and "A+" here.
  *
  * SCOPE: a TEXT scan of specific `src/` files. It deliberately does NOT ban
  * `nistScoreToGrade` corpus-wide: `src/tools/prioritize-csc-leads.ts` computes a
@@ -35,7 +36,7 @@ interface GlobbingImportMeta {
 }
 
 const SOURCES = (import.meta as unknown as GlobbingImportMeta).glob(
-	['../../src/index.ts', '../../src/lib/ungraded-display.ts', '../../src/tools/scan/format-report.ts'],
+	['../../src/index.ts', '../../src/lib/ungraded-display.ts', '../../src/tools/scan/format-report.ts', '../../src/tools/analyze-drift.ts'],
 	{ eager: true, query: '?raw', import: 'default' },
 );
 
@@ -66,12 +67,29 @@ describe('display-grade SSOT', () => {
 		expect(index).not.toMatch(/gradeBadge\(result\.score\.grade/);
 	});
 
+	it('analyze_drift reports the display grade, not the engine letter it was handed', () => {
+		// The third occurrence of the same defect (#727): `gradeChange` was
+		// `{ from: baseline.grade, to: current.grade }` — the raw 9-band letters — so
+		// wiz.io at 92 read "A" from scan_domain and "A+ -> A+" from analyze_drift in the
+		// same session. Belongs in the AUDIT and not only in the spec for the same reason
+		// the /badge case does: a spec that calls displayGradeFor directly stays green
+		// through a route-wiring revert.
+		const drift = source('tools/analyze-drift.ts');
+
+		expect(drift).toMatch(/import \{[^}]*displayGradeFor[^}]*\} from '\.\.\/lib\/ungraded-display'/);
+		expect(drift).toMatch(/from: displayGradeFor\(baseline\), to: displayGradeFor\(current\)/);
+		// The precise regression, kept literal so the failure names the exact bad call.
+		expect(drift).not.toMatch(/from: baseline\.grade/);
+		expect(drift).not.toMatch(/to: current\.grade/);
+	});
+
 	it('only the leaf module derives a NIST letter for a scan score', () => {
 		// `nistScoreToGrade` must not be called in index.ts or format-report.ts — both must
 		// route through displayGradeFor, which owns the null-abstention guard too. A direct
 		// call would bypass that guard and can fabricate an F for an unmeasured domain.
 		expect(source('src/index.ts')).not.toMatch(/nistScoreToGrade\(/);
 		expect(source('tools/scan/format-report.ts')).not.toMatch(/nistScoreToGrade\(/);
+		expect(source('tools/analyze-drift.ts')).not.toMatch(/nistScoreToGrade\(/);
 		expect(source('lib/ungraded-display.ts')).toMatch(/nistScoreToGrade\(score\.overall\)/);
 	});
 });

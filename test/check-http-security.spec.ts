@@ -795,3 +795,97 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 		});
 	});
 });
+
+/**
+ * Issue #664 (extended to HTTP Security) — the WAF-inconclusive detail must state the
+ * ambiguity, not resolve it.
+ *
+ * The contract lives on `buildWafFinding` in src/lib/waf-detection.ts and is shared by BOTH
+ * emitters: a detection establishes only that THIS probe was stopped at the edge. It does
+ * NOT establish what any other client class gets at the same URL, because an edge rule aimed
+ * at automated clients as a class stops more than the scanner. `check_mta_sts` has carried a
+ * prose guard for this since #664 (test/check-mta-sts-waf.spec.ts); `check_http_security`
+ * emits from the same builder and had none, so the shared contract was only half pinned.
+ *
+ * Asserts the ABSENCE of unearned claims rather than exact wording: the prose is free to
+ * change, the epistemics are not. Both directions are barred — the scanner has measured
+ * neither that real browsers still receive the headers nor that they do not.
+ */
+describe('checkHttpSecurity — WAF-inconclusive prose must not overclaim (issue #664)', () => {
+	async function run(domain = 'example.com') {
+		const { checkHttpSecurity } = await import('../src/tools/check-http-security');
+		return checkHttpSecurity(domain);
+	}
+
+	function mockCfResponse(status: number, headers: Record<string, string>, body: string) {
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: status >= 200 && status < 300,
+			status,
+			headers: new Headers(headers),
+			text: async () => body,
+		} as unknown as Response);
+	}
+
+	/** Asserts, as fact, that the rule spares everyone but us — the #664 defect. */
+	const OPTIMISTIC_OVERCLAIM = [
+		/(?:real |normal )?(?:browsers?|users?|visitors?|clients?) (?:are|is|will be) (?:not affected|unaffected|fine|unimpeded)/i,
+		/does not affect (?:real|normal|other) (?:users?|browsers?|clients?|traffic|visitors?)/i,
+		/only (?:affects|blocks|applies to) (?:automated )?(?:scanners?|bots?)/i,
+		/(?:the )?(?:headers?|site) (?:are|is) (?:probably|likely) (?:present|fine|configured|served)/i,
+		/(?:so|and) the site is (?:probably |likely )?(?:secure|fine|protected)/i,
+	];
+
+	/** Asserts, as fact, the opposite branch — equally unmeasured, equally barred. */
+	const PESSIMISTIC_OVERCLAIM = [
+		/(?:real |normal )?(?:browsers?|users?|visitors?) (?:are|is) (?:also )?(?:blocked|challenged)/i,
+		/(?:the )?(?:headers? (?:are|is)|site is) (?:definitely |certainly )?(?:missing|absent|unprotected)/i,
+	];
+
+	function assertHonest(finding: { detail: string; metadata?: Record<string, unknown> }) {
+		for (const re of OPTIMISTIC_OVERCLAIM) expect(finding.detail, `unearned reassurance matched ${re}`).not.toMatch(re);
+		for (const re of PESSIMISTIC_OVERCLAIM) expect(finding.detail, `unearned alarm matched ${re}`).not.toMatch(re);
+		// It must still say the headers were NOT measured…
+		expect(finding.detail).toMatch(/inconclusive|cannot be inspected|not (?:externally )?verifiable|could not be (?:verified|determined)/i);
+		// …and carry the unmeasured marker, never the measured-absence one (issue #638).
+		expect(finding.metadata?.inconclusive).toBe(true);
+		expect(finding.metadata?.missingControl).toBeUndefined();
+	}
+
+	function wafFinding(result: { findings: { title: string; detail: string; metadata?: Record<string, unknown> }[] }) {
+		const finding = result.findings.find((f) => f.metadata?.wafEvent !== undefined);
+		expect(finding, 'expected a WAF-attributed finding').toBeDefined();
+		return finding!;
+	}
+
+	it('block path: states the headers are unverifiable instead of reassuring about real browsers', async () => {
+		mockCfResponse(
+			403,
+			{ 'cf-ray': '91abc1234-SFO', server: 'cloudflare' },
+			'<html><head><title>Attention Required! | Cloudflare</title></head><body>Sorry, you have been blocked</body></html>',
+		);
+		const finding = wafFinding(await run());
+		expect(finding.metadata?.wafKind).toBe('block');
+		assertHonest(finding);
+	});
+
+	it('challenge path: states the headers are unverifiable instead of reassuring about real browsers', async () => {
+		mockCfResponse(
+			403,
+			{ 'cf-ray': '91ghi9012-AMS', server: 'cloudflare' },
+			'<html><head><title>Just a moment...</title></head><body></body></html>',
+		);
+		const finding = wafFinding(await run());
+		expect(finding.metadata?.wafKind).toBe('challenge');
+		assertHonest(finding);
+	});
+
+	it('edge-artifact path: hedges about other client classes rather than asserting either branch', async () => {
+		mockCfResponse(401, { 'cf-ray': '91xyz4567-SYD', server: 'cloudflare' }, '<html><body>Public docs</body></html>');
+		const finding = wafFinding(await run('api-au.spotto.ai'));
+		expect(finding.metadata?.wafKind).toBe('edge-artifact');
+		assertHonest(finding);
+		// A hedge ("may receive a different response") is the honest form and must survive —
+		// the guard bars unearned CERTAINTY, not the statement that our reading is unrepresentative.
+		expect(finding.detail).toMatch(/\bmay\b/i);
+	});
+});

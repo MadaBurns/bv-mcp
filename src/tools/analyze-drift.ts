@@ -19,7 +19,7 @@ import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isGraded } from '../lib/scoring';
 // The leaf module, not the `scan/format-report` re-export: that re-export drags the
 // scan orchestrator's import graph in for one string constant.
-import { UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { displayGradeFor, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 
 /** Overall drift direction classification. */
 export type DriftClassification = 'improving' | 'stable' | 'regressing' | 'mixed' | 'inconclusive';
@@ -43,7 +43,20 @@ export interface DriftReport {
 	classification: DriftClassification;
 	/** Current score minus baseline score, or `null` when either side was never graded. */
 	scoreDelta: number | null;
-	/** Either side is `null` when that scan carried no grade. Never a fabricated letter. */
+	/**
+	 * The CUSTOMER-FACING NIST 6-band letters, from `displayGradeFor` — the same
+	 * chokepoint `scan_domain`, `batch_scan`, `compare_domains` and `/badge` use, so
+	 * one domain reads as one letter everywhere (#727: wiz.io at 92 was `"A"` from
+	 * `scan_domain` and `"A+" -> "A+"` here, same score, same session).
+	 *
+	 * Deliberately NOT accompanied by a second field carrying the engine's canonical
+	 * 9-band letters. Nothing here consumes them — `classifyDrift` reads `scoreDelta`,
+	 * not the letter — and `scoreDelta` already carries the exact movement at finer
+	 * resolution than any band. Shipping both letters in one payload would recreate
+	 * the very failure the fix removes: two grades for one domain, disagreeing.
+	 *
+	 * Either side is `null` when that scan carried no grade. Never a fabricated letter.
+	 */
 	gradeChange: { from: string | null; to: string | null };
 	/** Empty when `classification` is `'inconclusive'` — nothing real to diff. */
 	categoryDeltas: Record<string, { from: number; to: number; delta: number }>;
@@ -61,6 +74,12 @@ export interface DriftReport {
  * (A+ A B+ B C+ C D+ D F) is the superset; the NIST 6-band display scale is a
  * strict subset of it. Anything outside this set — a placeholder, an empty
  * string, an invented letter — was never a measured grade.
+ *
+ * This is INPUT validation and must keep admitting the 9-band letters: a baseline
+ * is stored/pasted data carrying `ScanScore.grade`, the internal letter. That is a
+ * separate concern from OUTPUT rendering, where `gradeChange` reports only the
+ * 6-band display letter recomputed from `overall` (#727). Narrowing this set to
+ * the 6 display letters would reject every real baseline written by the engine.
  */
 const REAL_GRADE_LETTERS: ReadonlySet<string> = new Set(['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'F']);
 
@@ -151,7 +170,11 @@ export function computeDrift(domain: string, baseline: ScanScore, current: ScanS
 	const currentGraded = isGraded(current);
 	const bothGraded = baselineGraded && currentGraded;
 	const scoreDelta = baselineGraded && currentGraded ? current.overall - baseline.overall : null;
-	const gradeChange = { from: baseline.grade, to: current.grade };
+	// The engine's `.grade` is the INTERNAL 9-band letter; every customer-visible
+	// letter routes through `displayGradeFor` (see `DriftReport.gradeChange`). It
+	// returns `null` for an ungraded scan, which `driftGradeText` renders as
+	// UNGRADED_DISPLAY — never a substituted letter.
+	const gradeChange = { from: displayGradeFor(baseline), to: displayGradeFor(current) };
 
 	// Every derived comparison below (category deltas, resolved/new/changed findings) is
 	// gated on `bothGraded`. An ungraded side has no real categoryScores/findings to diff

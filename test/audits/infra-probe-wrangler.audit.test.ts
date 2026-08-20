@@ -3,7 +3,7 @@
 import { describe, expect, it } from 'vitest';
 import mainWranglerSource from '../../wrangler.jsonc?raw';
 import infraProbeWranglerSource from '../../wrangler.infra-probe.jsonc?raw';
-import publishWorkflowSource from '../../.github/workflows/publish.yml?raw';
+import deployWorkflowSource from '../../.github/workflows/deploy-prod.yml?raw';
 
 interface WranglerConfig {
 	name?: string;
@@ -27,13 +27,32 @@ describe('infra probe wrangler wiring', () => {
 		expect(infraProbeConfig.compatibility_date).toBe(mainConfig.compatibility_date);
 	});
 
-	it('keeps its legacy Cloudflare deploy steps fenced off in CI', () => {
-		const guardIndex = publishWorkflowSource.indexOf('CI deploy is not supported');
-		const exitIndex = publishWorkflowSource.indexOf('exit 1', guardIndex);
-		const infraDeployIndex = publishWorkflowSource.indexOf('wrangler.infra-probe.jsonc');
+	// Until #717/#718 this test pinned the infra-probe deploy INSIDE publish.yml's
+	// `deploy-cloudflare` job, and asserted it sat after that job's `exit 1`
+	// guard — i.e. it pinned a step that could never run, which is why the claim
+	// "publish.yml deploys the probe worker before the main one" was false for as
+	// long as it was written down. The step now lives on the one deploy path that
+	// actually ships (deploy-prod.yml), so the ordering is a real invariant:
+	// the main Worker's BV_INFRA_PROBE service binding targets `bv-infra-probe`
+	// by name, so that Worker must exist before the binding can resolve.
+	it('deploys the infra probe worker before the main Worker on the authoritative deploy path', () => {
+		// Anchor on the `run:` step bodies, not bare command text — the file's
+		// header comment also names `npm run deploy:prod`, and matching that
+		// would compare a comment's position against a step's.
+		const infraDeployIndex = deployWorkflowSource.indexOf('run: npx wrangler deploy -c wrangler.infra-probe.jsonc');
+		const mainDeployIndex = deployWorkflowSource.indexOf('run: npm run deploy:prod');
 
-		expect(guardIndex, 'publish.yml must declare the manual-deploy guard').toBeGreaterThan(-1);
-		expect(exitIndex, 'the manual-deploy guard must fail the CI job').toBeGreaterThan(guardIndex);
-		expect(infraDeployIndex, 'publish.yml must retain the legacy deploy sequence for auditability').toBeGreaterThan(exitIndex);
+		expect(infraDeployIndex, 'deploy-prod.yml must deploy the infra probe worker').toBeGreaterThan(-1);
+		expect(mainDeployIndex, 'deploy-prod.yml must deploy the main Worker via deploy:prod').toBeGreaterThan(-1);
+		expect(infraDeployIndex, 'the infra probe must be deployed BEFORE the Worker that binds to it').toBeLessThan(mainDeployIndex);
+	});
+
+	// The removed jobs were reachable-looking dead ends: `exit 1` as step one,
+	// under `environment: production`, so each tag queued an approval that could
+	// only fail. Re-adding one is a regression, not a rollback.
+	it('keeps the fenced-off "CI deploy is not supported" stub out of the tree', () => {
+		expect(deployWorkflowSource, 'deploy-prod.yml must be a real deploy, not a fenced-off stub').not.toContain(
+			'CI deploy is not supported',
+		);
 	});
 });
