@@ -171,6 +171,38 @@ describe('withRobotsGate', () => {
 		await expect(gated('https://example.com/robots.txt')).resolves.toBeInstanceOf(Response);
 	});
 
+	it('attributes a blanket `User-agent: *` disallow to all crawlers, not to us by name', async () => {
+		const inner = vi.fn(async (url: string) => {
+			// The real crt.sh robots.txt: blocks every crawler, names nobody.
+			if (url.endsWith('/robots.txt')) return textResponse('User-agent: *\nDisallow: /\n');
+			return textResponse('should not be reached');
+		});
+		const gated = withRobotsGate(inner);
+		const err = await gated('https://crt.sh/').catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(RobotsDisallowedError);
+		expect((err as RobotsDisallowedError).scope).toBe('blanket');
+		expect((err as RobotsDisallowedError).message).not.toContain('BlackVeil-Security-Scanner');
+	});
+
+	it('attributes a disallow in a group naming our UA as a named block', async () => {
+		const inner = vi.fn(async (url: string) => {
+			if (url.endsWith('/robots.txt')) {
+				return textResponse('User-agent: BlackVeil-Security-Scanner\nDisallow: /\n');
+			}
+			return textResponse('should not be reached');
+		});
+		const gated = withRobotsGate(inner);
+		const err = await gated('https://example.com/').catch((e: unknown) => e);
+		expect(err).toBeInstanceOf(RobotsDisallowedError);
+		expect((err as RobotsDisallowedError).scope).toBe('named');
+		expect((err as RobotsDisallowedError).message).toContain('BlackVeil-Security-Scanner');
+	});
+
+	it('defaults to the non-accusatory `blanket` scope when the caller supplies none', () => {
+		// Conservative default: never claim a site singled us out without evidence it did.
+		expect(new RobotsDisallowedError('https://example.com/').scope).toBe('blanket');
+	});
+
 	it('selects the named UA group over the wildcard group', async () => {
 		const inner = vi.fn(async (url: string) => {
 			if (url.endsWith('/robots.txt')) {
