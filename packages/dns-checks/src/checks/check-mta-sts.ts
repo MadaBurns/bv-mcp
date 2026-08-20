@@ -20,7 +20,6 @@ import {
 	getTlsRptRecordFindings,
 	getUncoveredMxHostFindings,
 	shouldSummarizeMissingMailProtections,
-	MTA_STS_POLICY_UNRETRIEVABLE_PENALTY,
 } from './mta-sts-analysis';
 
 /** Default HTTPS timeout (ms) */
@@ -77,22 +76,13 @@ export async function checkMTASTS(
 				signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 			});
 
-			// The four policy-retrieval defects below are the "deployed but unfetchable"
-			// branch of MTA_STS_PARTIAL_DEPLOYMENT_BEATS_NONE (mta-sts-analysis.ts): the
-			// operator published `_mta-sts` TXT but conforming senders get no usable policy.
-			// Graded `medium` + `penaltyOverride`, never `high` — every one interpolates
-			// `policyUrl`, which embeds the SCANNED DOMAIN, so at `high` a domain merely
-			// named `missing*` / `required*` had its whole category zeroed by
-			// `MISSING_CONTROL_REGEX` matching its own name (measured 2026-08-20:
-			// example.com 75 vs missingkids.org 0 on byte-identical findings).
 			if ([301, 302, 303, 307, 308].includes(response.status)) {
 				findings.push(
 					createFinding(
 						'mta_sts',
 						'MTA-STS policy redirects',
-						'medium',
+						'high',
 						`MTA-STS policy file at ${policyUrl} returned HTTP ${response.status} redirect. The policy must be served directly at the well-known URL without redirects.`,
-						{ penaltyOverride: MTA_STS_POLICY_UNRETRIEVABLE_PENALTY },
 					),
 				);
 				// Body unread on this branch — release it so workerd doesn't cancel a stalled response.
@@ -102,9 +92,8 @@ export async function checkMTASTS(
 					createFinding(
 						'mta_sts',
 						'MTA-STS policy file not accessible',
-						'medium',
+						'high',
 						`MTA-STS policy file at ${policyUrl} returned HTTP ${response.status}. The policy file must be accessible over HTTPS.`,
-						{ penaltyOverride: MTA_STS_POLICY_UNRETRIEVABLE_PENALTY },
 					),
 				);
 				void response.body?.cancel();
@@ -116,9 +105,8 @@ export async function checkMTASTS(
 						createFinding(
 							'mta_sts',
 							'MTA-STS policy file oversized',
-							'medium',
+							'high',
 							`MTA-STS policy file at ${policyUrl} exceeds 64 KB (Content-Length: ${contentLength}). This is abnormally large for an MTA-STS policy and was not fetched.`,
-							{ penaltyOverride: MTA_STS_POLICY_UNRETRIEVABLE_PENALTY },
 						),
 					);
 					void response.body?.cancel();
@@ -129,9 +117,8 @@ export async function checkMTASTS(
 							createFinding(
 								'mta_sts',
 								'MTA-STS policy file oversized',
-								'medium',
+								'high',
 								`MTA-STS policy file at ${policyUrl} exceeds 64 KB. This is abnormally large for an MTA-STS policy and was not parsed.`,
-								{ penaltyOverride: MTA_STS_POLICY_UNRETRIEVABLE_PENALTY },
 							),
 						);
 					} else {
