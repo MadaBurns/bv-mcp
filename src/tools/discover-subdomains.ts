@@ -1435,6 +1435,46 @@ function emptyResult(domain: string, sourceUnavailable = false, partial = false,
 	};
 }
 
+/**
+ * Remediation prose for a total CT failure, split by WHY each source failed.
+ *
+ * The banner used to end "retry shortly" unconditionally. That is correct for an
+ * upstream outage and actively misleading for a timeout: Certspotter returns
+ * HTTP 504 `{"code":"timeout"}` for domains with a large certificate population
+ * ("domains with a huge number of sub-domains or certificates" — its own words)
+ * while answering smaller domains in the same window. Measured 2026-08-21:
+ * `meta.com` timed out repeatedly; `anthropic.com` returned 200 / 43 KB. So the
+ * timeout is a deterministic property of the DOMAIN under an unpaginated query,
+ * not a transient property of the SOURCE — telling the caller to retry sends
+ * them into a loop that cannot terminate, on precisely the largest estates.
+ *
+ * `notConsulted` is reported separately because it is not a failure at all: the
+ * source was never asked (typically unbound in this deployment). Folding it into
+ * "unavailable" implies three sources were tried when only two were (#735).
+ */
+function ctFailureGuidance(coverage: CtCoverage | undefined): string {
+	const perSource = coverage?.perSource ?? [];
+	const timedOut = perSource.filter((s) => s.outcome === 'timeout').map((s) => s.source);
+	const errored = perSource.filter((s) => s.outcome === 'http_error' || s.outcome === 'error').map((s) => s.source);
+	const never = coverage?.notConsulted ?? [];
+
+	const parts: string[] = [];
+	if (timedOut.length > 0) {
+		parts.push(
+			`${timedOut.join(', ')} timed out — for a domain with a large certificate population this is deterministic, not transient, so an identical retry will time out again; narrow the query or page the source.`,
+		);
+	}
+	if (errored.length > 0) {
+		parts.push(`${errored.join(', ')} returned an upstream error, which may be transient — a retry is worthwhile.`);
+	}
+	if (never.length > 0) {
+		parts.push(`${never.join(', ')} was never consulted (not configured in this deployment), so no fallback source remained.`);
+	}
+	// Only reachable if a source failed with an outcome outside the known set.
+	if (parts.length === 0) return 'Retry shortly.';
+	return parts.join(' ');
+}
+
 /** Format subdomain discovery result as human-readable text. */
 export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, format: OutputFormat = 'full'): string {
 	// Both zero-ish branches carry the per-source coverage line: "which source
@@ -1442,7 +1482,7 @@ export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, forma
 	const coverageLine = result.coverage ? `\n${formatCoverageLine(result.coverage)}` : '';
 
 	if (result.sourceUnavailable) {
-		return `Subdomain Discovery: ${result.domain} — Certificate Transparency source unavailable (the CT log endpoint returned an error or was unreachable); could not enumerate subdomains. This does not mean the domain has no subdomains — retry shortly.${coverageLine}`;
+		return `Subdomain Discovery: ${result.domain} — Certificate Transparency source unavailable; could not enumerate subdomains. This does not mean the domain has no subdomains. ${ctFailureGuidance(result.coverage)}${coverageLine}`;
 	}
 	if (result.totalSubdomains === 0) {
 		// A STALE empty set is not a confident "none found" — say so, or the
