@@ -85,13 +85,32 @@ import { createFinding } from '../check-utils';
  */
 
 /**
- * Deduction for a policy that is published but not RFC 8461-valid (bad `version:`, no
- * `mode:`, no `mx:`, no `max_age:`) or not retrievable. Conforming senders ignore such a
- * policy, so the control is non-functional — but the operator ran the DNS record and the
- * HTTPS host, which absence does not. Sized to sit just above the graded-absence baseline
- * of 85. See MTA_STS_PARTIAL_DEPLOYMENT_BEATS_NONE.
+ * Deduction for a policy that IS retrievable but is not RFC 8461-valid (bad `version:`,
+ * no `mode:`, no `mx:`, no `max_age:`). Conforming senders ignore such a policy, so the
+ * control is non-functional — but the operator is serving a real policy file at the
+ * well-known HTTPS URL under a valid certificate, which absence does not. Sized to sit
+ * just above the graded-absence baseline of 85.
+ * See MTA_STS_PARTIAL_DEPLOYMENT_BEATS_NONE.
  */
 export const MTA_STS_POLICY_DEFECT_PENALTY = 12;
+
+/**
+ * Deduction for a policy that cannot be retrieved at all — 404/5xx, a redirect away from
+ * the well-known URL, or a body over the RFC 8461 64 KB ceiling. Sized to TIE the
+ * graded-absence baseline of 85, never to beat it.
+ *
+ * ⚠️ This branch previously shared {@link MTA_STS_POLICY_DEFECT_PENALTY} and therefore
+ * scored 88 — three points ABOVE a domain that published nothing, and above one that
+ * correctly withdrew via `mode: none`. That was a free-points bug, not a judgement call:
+ * `_mta-sts.x TXT "v=STSv1; id=1"` plus a CNAME to any 404 host needs no HTTPS service,
+ * no certificate and no policy file, so the score rewarded the APPEARANCE of a control
+ * over its absence. Unlike the retrievable-but-invalid case there is no deployed artifact
+ * to credit, so the ceiling is a tie.
+ *
+ * Keep this >= the absence penalty. `mta-sts-scoring-ladder.test.ts` asserts the
+ * invariant (no unretrievable branch outscores absence), not merely the literal.
+ */
+export const MTA_STS_POLICY_UNRETRIEVABLE_PENALTY = 15;
 
 /**
  * Deduction for a VALID, enforcing policy that leaves one of the domain's own MX hosts

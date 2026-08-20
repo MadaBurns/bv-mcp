@@ -199,7 +199,12 @@
  *   UPWARD only, and only for subjects whose own identifiers contained a trigger word.
  *   Second change, same class: a deployed-but-broken MTA-STS policy no longer scores worse than
  *   no policy at all — the `max_age`-omitted case measured 0/FAILED and is now 88/pass, giving
- *   the ladder enforce 100 > testing 95 > MX-gap 90 > RFC-invalid 88 > mode:none 85 = absent 85.
+ *   the ladder enforce 100 > testing 95 > MX-gap 90 > RFC-invalid 88 > unretrievable 85 =
+ *   mode:none 85 = absent 85. An UNRETRIEVABLE policy (404/5xx, redirect, oversized body) ties
+ *   absence rather than beating it: publishing a TXT record plus a CNAME to any 404 host needs
+ *   no HTTPS service, certificate or policy file, so an earlier cut of this ladder handed it +3
+ *   over deploying nothing. 88 is reserved for a policy that is genuinely served and merely
+ *   RFC-invalid — the line is retrievability, not validity.
  *   No parity fixture expectation moved. `SEVERITY_PENALTIES`, weights, tiers, grade bands,
  *   profile detection and the missing-control RULE are all untouched.
  */

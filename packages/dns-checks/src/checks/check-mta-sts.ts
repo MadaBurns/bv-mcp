@@ -20,7 +20,7 @@ import {
 	getTlsRptRecordFindings,
 	getUncoveredMxHostFindings,
 	shouldSummarizeMissingMailProtections,
-	MTA_STS_POLICY_DEFECT_PENALTY,
+	MTA_STS_POLICY_UNRETRIEVABLE_PENALTY,
 } from './mta-sts-analysis';
 
 /** Default HTTPS timeout (ms) */
@@ -92,7 +92,7 @@ export async function checkMTASTS(
 						'MTA-STS policy redirects',
 						'medium',
 						`MTA-STS policy file at ${policyUrl} returned HTTP ${response.status} redirect. The policy must be served directly at the well-known URL without redirects.`,
-						{ penaltyOverride: MTA_STS_POLICY_DEFECT_PENALTY },
+						{ penaltyOverride: MTA_STS_POLICY_UNRETRIEVABLE_PENALTY },
 					),
 				);
 				// Body unread on this branch — release it so workerd doesn't cancel a stalled response.
@@ -104,7 +104,7 @@ export async function checkMTASTS(
 						'MTA-STS policy file not accessible',
 						'medium',
 						`MTA-STS policy file at ${policyUrl} returned HTTP ${response.status}. The policy file must be accessible over HTTPS.`,
-						{ penaltyOverride: MTA_STS_POLICY_DEFECT_PENALTY },
+						{ penaltyOverride: MTA_STS_POLICY_UNRETRIEVABLE_PENALTY },
 					),
 				);
 				void response.body?.cancel();
@@ -118,7 +118,7 @@ export async function checkMTASTS(
 							'MTA-STS policy file oversized',
 							'medium',
 							`MTA-STS policy file at ${policyUrl} exceeds 64 KB (Content-Length: ${contentLength}). This is abnormally large for an MTA-STS policy and was not fetched.`,
-							{ penaltyOverride: MTA_STS_POLICY_DEFECT_PENALTY },
+							{ penaltyOverride: MTA_STS_POLICY_UNRETRIEVABLE_PENALTY },
 						),
 					);
 					void response.body?.cancel();
@@ -131,7 +131,7 @@ export async function checkMTASTS(
 								'MTA-STS policy file oversized',
 								'medium',
 								`MTA-STS policy file at ${policyUrl} exceeds 64 KB. This is abnormally large for an MTA-STS policy and was not parsed.`,
-								{ penaltyOverride: MTA_STS_POLICY_DEFECT_PENALTY },
+								{ penaltyOverride: MTA_STS_POLICY_UNRETRIEVABLE_PENALTY },
 							),
 						);
 					} else {

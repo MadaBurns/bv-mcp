@@ -25,7 +25,7 @@ import { checkDNSSEC } from '../../checks/check-dnssec';
 import { checkSPF } from '../../checks/check-spf';
 import { getNsVisibilityFinding } from '../../checks/ns-analysis';
 import { classifyDmarc } from '../../scoring/classifiers/dmarc';
-import { buildCheckResult, computeProfileAwareScanScore, createFinding, scoreIndicatesMissingControl } from '../../scoring';
+import { buildCheckResult, computeProfileAwareScanScore, createFinding, redactSubjectData, scoreIndicatesMissingControl } from '../../scoring';
 import type { CheckCategory, CheckResult, DNSQueryFunction, RawDNSQueryFunction } from '../../types';
 
 /** Unsigned zone: no DNSKEY, no DS, AD flag clear. Identical for every domain below. */
@@ -255,6 +255,123 @@ describe('subject data interpolated into finding prose', () => {
 			expect(subject.score.overall).toBe(control.score.overall);
 			expect(subject.score.grade).toBe(control.score.grade);
 			expect(subject.score.overall).toBeGreaterThan(64);
+		});
+	});
+
+	/**
+	 * The redaction projection runs on ATTACKER-CONTROLLED, UNBOUNDED prose.
+	 *
+	 * `sanitizeDnsData` (`check-utils.ts`) explicitly "Does NOT truncate" — the 8,000-char
+	 * `MAX_META_STRING` clamp applies to metadata only — and sites such as
+	 * `check-svcb-https.ts:170` interpolate a raw DNS record value straight into `detail`.
+	 * So a scanned domain chooses the length AND the byte content of the string these
+	 * regexes walk.
+	 *
+	 * `TRAILING_PUNCT` (`/[^\p{L}\p{N}_]+$/u`) is unanchored on the left, so on a long
+	 * non-word run that is NOT at the end it backtracks from every start position: O(N²).
+	 * Measured before this guard existed, on one `redactSubjectData` call:
+	 *   8KB → 37ms · 16KB → 143ms · 32KB → 560ms · 64KB → 2,215ms
+	 * against 0.008ms for `MISSING_CONTROL_REGEX` alone on the same input — a ~260,000×
+	 * regression, on Cloudflare Worker CPU time, reachable by any domain that can publish a
+	 * DNS record. The token is far too long to be a DNS name, so the work is pure waste:
+	 * the `MAX_NAME_LENGTH` guard rejects it one line later.
+	 *
+	 * The budgets below are deliberately ~20× above the fixed cost rather than tight, so
+	 * these assert "not quadratic" rather than a specific machine's speed.
+	 */
+	/**
+	 * A declared term shorter than a trigger word can only ever DISARM.
+	 *
+	 * `subjectTerms` redaction is a global, case-insensitive substring replace over the
+	 * finding's own prose. No `MISSING_CONTROL_REGEX` trigger is shorter than 6 characters
+	 * (`missing`, `required`, `not found`, `no …record`), so a 2-3 character term cannot be
+	 * the thing being hidden — but it CAN chew a trigger word apart from the inside. A
+	 * domain publishing `p=no` declares the term `no`, which would strip the `no` from a
+	 * `not found` in the same finding's prose and silently switch off a genuine zeroing.
+	 *
+	 * Arming is not the mirror risk: redaction substitutes `-` rather than emptiness, so it
+	 * cannot splice two prose halves into a new match. The exposure is one-directional,
+	 * which is why the floor is raised rather than the mechanism redesigned.
+	 *
+	 * 4 matches the `core.length < 4` floor the host/email redactor already applies.
+	 */
+	describe('declared subject terms are too short to dismantle a trigger word', () => {
+		it('ignores a term short enough to chew a trigger word apart', () => {
+			const prose = 'Record not found for the zone.';
+			// "no" would turn "not found" into "-t found" and disarm the gate.
+			expect(redactSubjectData(prose, ['no'])).toBe(prose);
+			expect(redactSubjectData(prose, ['not'])).toBe(prose);
+		});
+
+		it('still redacts a term long enough to be real subject data', () => {
+			const projected = redactSubjectData('DMARC policy value "missingpolicy" is invalid.', ['missingpolicy']);
+			expect(projected).not.toContain('missingpolicy');
+		});
+
+		it('keeps a genuine missing-control zeroing armed when a short term is declared', () => {
+			const finding = createFinding('dmarc', 'No DMARC record found', 'high', 'No DMARC record found for the domain.', {
+				confidence: 'deterministic',
+				subjectTerms: ['no'],
+			});
+			expect(scoreIndicatesMissingControl([finding])).toBe(true);
+		});
+	});
+
+	describe('pathological attacker-controlled prose is bounded', () => {
+		/**
+		 * A long non-word run that neither STARTS nor ENDS the token — the worst case.
+		 *
+		 * The leading `AAAA` is load-bearing, not decoration. `LEADING_PUNCT` is anchored at
+		 * `^` and strips a run that starts the token, so `/'.repeat(n) + 'A'` never reaches
+		 * `TRAILING_PUNCT` at all and measures as fast — a fixture shaped that way passes
+		 * against the UNFIXED code and proves nothing. This mirrors the real reachable
+		 * carrier: an SVCB/HTTPS presentation value such as `ech="AAAA////…////A"`.
+		 */
+		const pathological = (kb: number) => `AAAA${'/'.repeat(kb * 1024)}A`;
+
+		it('leaves an over-long token untouched without paying quadratic backtracking', () => {
+			const token = pathological(64);
+			const detail = `HTTPS record at example.com uses alias mode (priority 0): ${token}. Ensure the target also has valid HTTPS records.`;
+
+			const started = performance.now();
+			const projected = redactSubjectData(detail);
+			const elapsed = performance.now() - started;
+
+			// Unchanged: 64KB is not a DNS name, so redaction must decline it...
+			expect(projected).toContain(token);
+			// ...and must decline it CHEAPLY. Pre-fix this measured ~2,215ms.
+			expect(elapsed).toBeLessThan(100);
+		});
+
+		it('scales linearly, not quadratically, with attacker-chosen length', () => {
+			const time = (kb: number) => {
+				const started = performance.now();
+				redactSubjectData(pathological(kb));
+				return performance.now() - started;
+			};
+
+			time(8); // warm up, so the first call does not absorb JIT cost
+			const small = Math.max(time(16), 0.01);
+			const large = time(64);
+
+			// Quadratic would be ~16× for a 4× input. Allow 6× for noise; pre-fix this was ~15.5×.
+			expect(large / small).toBeLessThan(6);
+		});
+
+		it('does not redact at all for a finding the severity gate already rejects', () => {
+			// `info` can never zero a category, so the gate must short-circuit BEFORE the
+			// projection runs. Pre-fix the redaction was computed eagerly and `info` findings
+			// paid the full cost.
+			const finding = createFinding('svcb_https', 'HTTPS record in alias mode', 'info', `alias mode: ${pathological(64)}.`, {
+				confidence: 'deterministic',
+			});
+
+			const started = performance.now();
+			const result = scoreIndicatesMissingControl([finding]);
+			const elapsed = performance.now() - started;
+
+			expect(result).toBe(false);
+			expect(elapsed).toBeLessThan(100);
 		});
 	});
 });
