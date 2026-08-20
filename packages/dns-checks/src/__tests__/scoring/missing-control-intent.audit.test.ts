@@ -129,6 +129,46 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 			'Genuinely absent control: recordCount === 0 on the classifier early-return path. No DMARC ' +
 			'record exists, so receivers apply no policy. Zeroing is the correct representation of absence.',
 	},
+	// The four RFC 8461 conformance findings below. Grouped because they share one reason:
+	// a policy file missing any REQUIRED directive is one a conforming sender must refuse to
+	// apply, so the control does not function even though a file was served. Measured
+	// 2026-08-20: each scores its category 0/failed at `high`; with the zeroing suppressed
+	// they score 85+/passed.
+	//
+	// Listing them is a deliberate ratification of the invariant `test/check-mta-sts.spec.ts`
+	// already pins ("DEPLOYED-BUT-BROKEN policy still penalises confidently" — score < 60,
+	// passed false), NOT a new decision. A change of heart here is a scoring-model change and
+	// belongs in that review, not in a reword: the counter-argument (a partial deployment
+	// should still beat publishing nothing, which scores 85) is real but unadjudicated.
+	//
+	// ⚠️ These zero on AUTHORED prose, so `redactSubjectData` cannot reach them — unlike the
+	// interpolated-subject-data sites, no domain name is involved. Rewording any of these
+	// titles or details to drop "missing"/"required" would SILENTLY un-zero the category;
+	// assertion B below is what catches that.
+	{
+		file: 'checks/mta-sts-analysis.ts',
+		title: 'MTA-STS policy missing or invalid version',
+		category: 'mta_sts',
+		reason: 'RFC 8461 requires `version: STSv1`; without it a conforming sender refuses the policy, so MTA-STS does not function.',
+	},
+	{
+		file: 'checks/mta-sts-analysis.ts',
+		title: 'MTA-STS policy missing mode',
+		category: 'mta_sts',
+		reason: 'No `mode:` directive means the policy is inert — nothing is enforced or even tested, despite a file being served.',
+	},
+	{
+		file: 'checks/mta-sts-analysis.ts',
+		title: 'MTA-STS policy missing MX entries',
+		category: 'mta_sts',
+		reason: 'A policy with no `mx:` pattern covers no host, so no inbound mail path is protected by it.',
+	},
+	{
+		file: 'checks/mta-sts-analysis.ts',
+		title: 'MTA-STS policy missing max_age',
+		category: 'mta_sts',
+		reason: 'RFC 8461 requires `max_age`; a policy without one cannot be cached or applied, so senders fall back to opportunistic TLS.',
+	},
 ];
 
 /**
