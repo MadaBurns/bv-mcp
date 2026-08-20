@@ -352,6 +352,22 @@ Source: `src/tools/scan/maturity-staging.ts`.
 
 Source: `src/tools/scan-domain.ts`.
 
+## Version stamps and reproducibility
+
+Every `scan_domain` / `batch_scan` result carries three stamps in three **different namespaces**. They are not comparable to one another:
+
+| Field | Tracks | Moves when |
+| --- | --- | --- |
+| `scoringModelVersion` | The scoring **policy** — weights, profile weights, grade thresholds, severity penalties, the missing-control rule, profile detection. | A change alters scores or grades. Rarely. |
+| `dnsChecksPackageVersion` | The `@blackveil/dns-checks` **engine package** bundled by the running build. | Every package release. |
+| `scoringConfigHash` | The **effective scoring configuration** that produced this result, including any `SCORING_CONFIG` override. | The effective config differs. |
+
+`scoringModelVersion` is independent of the npm package version and is normally lower — model `1.10.0` alongside package `1.18.0` is expected, not a version gap, and does not imply that a vendored copy of the package scores differently from the hosted service. Both are emitted side by side precisely so that the difference is visible without prior knowledge.
+
+**Cite `scoringConfigHash` when you publish a score.** Neither version number identifies the configuration a result was produced under; the hash does, so two results carrying the same hash were graded by the same rules.
+
+Source: `src/lib/scoring-version.ts`, `src/lib/dns-checks-version.ts`.
+
 ## Score Stability
 
 ### Per-request determinism

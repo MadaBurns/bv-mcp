@@ -7,6 +7,7 @@ import type { OutputFormat } from '../../handlers/tool-args';
 import { sanitizeOutputText } from '../../lib/output-sanitize';
 import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
+import { DNS_CHECKS_PACKAGE_VERSION } from '../../lib/dns-checks-version';
 import { displayGradeFor, formatScoreGrade, isCompletedCheck, isMeasured, normalizeCheckStatus, UNGRADED_DISPLAY } from '../../lib/ungraded-display';
 
 // All three live in a tiny leaf module so every formatter in src/tools/ can share
@@ -129,8 +130,23 @@ export interface StructuredScanResult {
 	 * Scoring-policy semver (distinct from package/server version) that produced
 	 * this result — bumped whenever weights/severities/thresholds change. Pins the
 	 * scoring model for report reproducibility. See `lib/scoring-version.ts`.
+	 *
+	 * ⚠️ NOT the `@blackveil/dns-checks` npm version — that is the sibling field
+	 * `dnsChecksPackageVersion`. The two are independent namespaces that both look
+	 * like semver and overlap numerically, which has twice been misread as an
+	 * "engine version gap" (#707).
 	 */
 	scoringModelVersion: string;
+	/**
+	 * Version of the `@blackveil/dns-checks` engine package this build bundles —
+	 * emitted alongside `scoringModelVersion` so the two namespaces can be told
+	 * apart from one response (#707). It moves on every package release (code,
+	 * detections, fixes); `scoringModelVersion` moves only when scoring POLICY
+	 * changes, so it advances far more slowly and legitimately lags. Neither is
+	 * the reproducibility anchor for a published score — `scoringConfigHash` is.
+	 * See `lib/dns-checks-version.ts`.
+	 */
+	dnsChecksPackageVersion: string;
 	/**
 	 * Deterministic fingerprint of the **effective** scoring config — a short hex
 	 * hash of the merged config object (the default config produces one stable
@@ -429,6 +445,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		timestamp: result.timestamp,
 		cached: result.cached,
 		scoringModelVersion: SCORING_MODEL_VERSION,
+		dnsChecksPackageVersion: DNS_CHECKS_PACKAGE_VERSION,
 		// Three-step, most-specific-first: an explicitly threaded hash wins; else the
 		// hash `scanDomain` stamped onto this very result (so a caller that passes no
 		// enrichment — every npm-package consumer of this function — still reports the
@@ -634,7 +651,10 @@ export function formatScanReport(result: ScanDomainResult, format: OutputFormat 
 	lines.push('');
 	lines.push(`Scan completed: ${result.timestamp}`);
 	if (format === 'full') {
-		lines.push(`Scoring model: v${SCORING_MODEL_VERSION}`);
+		// Both stamps, labelled by what they track. The prose report is where the
+		// namespace confusion of #707 started: "Scoring model: v1.10.0" alone reads
+		// like the engine package version to anyone who vendors that package.
+		lines.push(`Scoring model: v${SCORING_MODEL_VERSION} (scoring policy) | dns-checks package: v${DNS_CHECKS_PACKAGE_VERSION} (engine code)`);
 	}
 	return lines.join('\n');
 }
