@@ -14,9 +14,10 @@
 import { describe, expect, it } from 'vitest';
 
 import { checkCAA } from '../../index.js';
-import type { DNSQueryFunction } from '../../types.js';
+import type { DNSQueryFunction, ZoneContext } from '../../types.js';
 
 const D = 'x.test';
+const SUB = 'www.x.test';
 
 /** Resolver that answers only what a case explicitly publishes; apex resolves so nothing abstains. */
 function resolver(map: Record<string, string[]> = {}): DNSQueryFunction {
@@ -48,6 +49,46 @@ describe('checkCAA — RFC 8657 parameter binding', () => {
 
 	it('emits no such finding when the CAA policy carries no parameters', async () => {
 		const result = await checkCAA(D, resolver({ [`CAA:${D}`]: WITHOUT_PARAMETERS }), opts);
+		expect(result.findings.map((f) => f.title)).not.toContain('CAA restricts issuance beyond the CA (RFC 8657)');
+	});
+
+	// F2 — the INHERITED arm. RFC 8659 locates CAA by climbing the tree, so every
+	// subdomain scan reaches the parameter findings through `climbForCaa`, not the
+	// direct apex path. That wiring was previously uncovered: deleting the
+	// `getCaaParameterBindingFindings` call on the climb branch left the whole suite
+	// green, i.e. RFC 8657 binding was silently unreported for every non-apex name.
+	it('surfaces the binding finding for a subdomain that INHERITS CAA from an ancestor', async () => {
+		const zone: ZoneContext = {
+			scannedLabel: SUB,
+			registrableDomain: D,
+			isApex: false,
+			zoneApex: D,
+			apexNsRecords: ['ns1.x', 'ns2.x'],
+			delegationStatus: 'inherited',
+		};
+		// The subdomain publishes NO CAA of its own; the ancestor's RRset carries the
+		// RFC 8657 parameters, and per RFC 8659 that ancestor RRset governs issuance.
+		const result = await checkCAA(SUB, resolver({ [`CAA:${D}`]: WITH_PARAMETERS }), { ...opts, zone });
+
+		expect(result.findings.map((f) => f.title)).toContain('CAA inherited from parent zone');
+		const finding = result.findings.find((f) => f.title === 'CAA restricts issuance beyond the CA (RFC 8657)');
+		expect(finding).toBeDefined();
+		expect(finding?.severity).toBe('info');
+		expect(finding?.metadata?.caaAccountBound).toBe(true);
+		expect(finding?.metadata?.caaValidationMethods).toEqual(['dns-01']);
+	});
+
+	it('emits no binding finding when the INHERITED ancestor RRset carries no parameters', async () => {
+		const zone: ZoneContext = {
+			scannedLabel: SUB,
+			registrableDomain: D,
+			isApex: false,
+			zoneApex: D,
+			apexNsRecords: ['ns1.x', 'ns2.x'],
+			delegationStatus: 'inherited',
+		};
+		const result = await checkCAA(SUB, resolver({ [`CAA:${D}`]: WITHOUT_PARAMETERS }), { ...opts, zone });
+		expect(result.findings.map((f) => f.title)).toContain('CAA inherited from parent zone');
 		expect(result.findings.map((f) => f.title)).not.toContain('CAA restricts issuance beyond the CA (RFC 8657)');
 	});
 

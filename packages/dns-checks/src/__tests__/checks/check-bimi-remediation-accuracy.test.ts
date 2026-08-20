@@ -60,11 +60,34 @@ async function withAuthority(): Promise<CheckResult> {
 	);
 }
 
-/** Locate the authority-evidence finding without depending on its exact title. */
-function authorityDetail(result: CheckResult): string {
+/**
+ * Locate the authority-evidence finding without depending on its exact title.
+ * The locator is DELIBERATELY loose: title text is asserted separately (B5), so
+ * tightening the locator here would couple lookup to copy and hide a retitle.
+ */
+function authorityFinding(result: CheckResult) {
 	const finding = result.findings.find((f) => /authority evidence/i.test(f.title));
 	expect(finding, 'an authority-evidence finding must exist').toBeDefined();
-	return finding!.detail;
+	return finding!;
+}
+
+function authorityDetail(result: CheckResult): string {
+	return authorityFinding(result).detail;
+}
+
+function authorityTitle(result: CheckResult): string {
+	return authorityFinding(result).title;
+}
+
+/**
+ * B5 helper: a finding TITLE may name VMC, but never to the EXCLUSION of CMC.
+ * "No BIMI authority evidence (VMC)" tells a reader the missing artefact is a
+ * VMC — the same false purchasing steer B2/B3 removed from the detail prose.
+ */
+function namesVmcToTheExclusionOfCmc(title: string): boolean {
+	const namesVmc = /\bVMC\b|Verified Mark/i.test(title);
+	const namesCmc = /\bCMC\b|Common Mark/i.test(title);
+	return namesVmc && !namesCmc;
 }
 
 /**
@@ -109,6 +132,31 @@ describe('checkBIMI — authority-evidence remediation prose is accurate', () =>
 		expect(detail).not.toMatch(/Verified Mark Certificate/i);
 		expect(detail).not.toMatch(/\bVMC\b/);
 		expect(detail).toMatch(/mark certificate|authority evidence/i);
+	});
+
+	// B5 — the TITLE, not just the detail. A mutation reverting the title to
+	// "No BIMI authority evidence (VMC)" survived the entire suite (41 files /
+	// 742 tests) because every existing assertion used the loose
+	// /authority evidence/i LOCATOR and never read the title's content.
+	describe('finding titles do not name VMC to the exclusion of CMC', () => {
+		it('the a=-absent title does not present the missing artefact as a VMC', async () => {
+			const title = authorityTitle(await withoutAuthority());
+			expect(
+				namesVmcToTheExclusionOfCmc(title),
+				`title names VMC without CMC — a false purchasing steer: "${title}"`,
+			).toBe(false);
+		});
+
+		it('the a=-present title names no certificate TYPE at all (the check cannot tell)', async () => {
+			const title = authorityTitle(await withAuthority());
+			expect(title).not.toMatch(/\bVMC\b|Verified Mark|\bCMC\b|Common Mark/i);
+			expect(namesVmcToTheExclusionOfCmc(title)).toBe(false);
+		});
+
+		it('both titles remain findable by the deliberately loose locator', async () => {
+			expect(authorityTitle(await withoutAuthority())).toMatch(/authority evidence/i);
+			expect(authorityTitle(await withAuthority())).toMatch(/authority evidence/i);
+		});
 	});
 
 	// B4 — the guard that makes "prose-only" a proven claim, not a belief.

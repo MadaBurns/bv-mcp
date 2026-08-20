@@ -53,6 +53,18 @@ describe('handleResourcesRead', () => {
 		expect(contents[0].text).toContain('DKIM');
 	});
 
+	// The security-checks guide is a customer/LLM-facing capability table. Its
+	// check_bimi row said the check covers "VMC" — but the a= tag is a bare URL
+	// and a Common Mark Certificate (CMC) publishes it identically, so the row
+	// named a certificate type the check cannot determine.
+	it('check_bimi row does not claim VMC-specific coverage', () => {
+		const { contents } = handleResourcesRead({ uri: 'dns-security://guides/security-checks' });
+		const row = contents[0].text.split('\n').find((line) => line.includes('`check_bimi`'));
+		expect(row, 'a check_bimi row must exist in the security-checks guide').toBeDefined();
+		expect(row!).not.toMatch(/\bVMC\b(?!\s*or\s*CMC)/);
+		expect(row!).toMatch(/mark certificate|authority evidence|VMC or CMC/i);
+	});
+
 	it('scoring content mentions three-tier model', () => {
 		const { contents } = handleResourcesRead({ uri: 'dns-security://guides/scoring' });
 		expect(contents[0].text).toContain('Three-Tier Model');
