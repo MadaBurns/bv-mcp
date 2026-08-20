@@ -27,13 +27,80 @@ import { createFinding } from '../check-utils';
  * penalty) rather than a category-zeroing missing control — the same treatment CAA,
  * SVCB-HTTPS and TLS-RPT already get for exactly this reason.
  *
- * This applies only to ABSENCE. A DEPLOYED-BUT-BROKEN policy (bad `version:`, missing
- * `mode:`, MX set not covered, unfetchable policy file) keeps its confident `high`/`medium`
- * finding — those already carry no `missingControl`, and they are genuine, observable
- * defects in a control the operator chose to run.
- *
- * The weight (3, protective tier) and the severities are deliberately UNCHANGED.
+ * The weight (3, protective tier) is deliberately UNCHANGED.
  */
+
+/**
+ * MTA_STS_PARTIAL_DEPLOYMENT_BEATS_NONE — why every DEPLOYED-BUT-BROKEN policy finding is
+ * graded `medium` with an explicit `penaltyOverride`, and never `high`.
+ *
+ * A domain that published an MTA-STS policy and got one RFC-required field wrong has
+ * strictly better posture than one that never deployed at all. Until 2026-08-20 the scoring
+ * said the opposite, and it was MEASURED end-to-end:
+ *
+ *     no MTA-STS at all ............ 85 / passed
+ *     `mode: none` (protection OFF)  85 / passed
+ *     policy does not cover its MX . 75 / passed
+ *     policy omits `max_age` ....... **0 / FAILED**
+ *
+ * Cause: the four policy-defect findings below carry the word "missing" in their TITLE, and
+ * `MISSING_CONTROL_REGEX` (`scoring/model.ts`) matches title OR detail. At `high` severity
+ * with `deterministic` confidence that ZEROES the whole category instead of deducting. It
+ * was an accident of prose, not a decision — the MX-not-covered branch is the same class of
+ * defect at the same severity and escaped only because its wording happens to say "is not
+ * matched by any mx: entry" rather than "missing".
+ *
+ * This block previously asserted that those findings "already carry no `missingControl`".
+ * That statement was FALSE for four of them, and load-bearing: it is what let the defect
+ * survive review. It is replaced here, and the guarantee has been moved OUT of prose.
+ *
+ * The graded ladder, pinned by test:
+ *
+ *     valid enforce 100 > testing 95 > MX-coverage gap 90 > RFC-invalid policy 88
+ *                       > `mode: none` 85 = no MTA-STS at all 85
+ *
+ * `mode: none` is deliberately left TIED with silence rather than pushed below it: RFC 8461
+ * §5 designates `mode: none` as the sanctioned graceful-withdrawal path for an existing
+ * policy, so scoring it worse than absence would penalise the RFC-prescribed removal
+ * procedure.
+ *
+ * `medium` is load-bearing TWICE. It sits below the severity floor
+ * `scoreIndicatesMissingControl` requires, which also disarms the interpolation hazard:
+ * these findings interpolate the scanned domain and its MX hostnames into their text, so at
+ * `high` a domain merely NAMED `missing*` / `required*` had its category zeroed by its own
+ * name (measured 2026-08-20 — an unfetchable policy scored 75 for `example.com` and 0 for
+ * `missingkids.org`). `penaltyOverride` then restores triage granularity that the coarse
+ * severity ladder (5/15/25) cannot express, exactly as documented on
+ * `computeCategoryScore`.
+ *
+ * THE GUARANTEE IS THE TEST, NOT THIS COMMENT:
+ * `src/__tests__/checks/mta-sts-scoring-ladder.test.ts` pins the ordering, asserts
+ * `scoreIndicatesMissingControl([finding]) === false` for every finding emitted here and in
+ * `check-mta-sts.ts`, proves the score does not move with the scanned domain's name, and
+ * plants a positive control so a guard that stops finding violations cannot pass unnoticed.
+ *
+ * Known and intentional: a policy failing EVERY RFC-required field stacks these deductions
+ * and lands below the absence baseline. A published policy body that is wholly invalid is
+ * misleading rather than merely incomplete; any SINGLE defect stays strictly above it.
+ */
+
+/**
+ * Deduction for a policy that is published but not RFC 8461-valid (bad `version:`, no
+ * `mode:`, no `mx:`, no `max_age:`) or not retrievable. Conforming senders ignore such a
+ * policy, so the control is non-functional — but the operator ran the DNS record and the
+ * HTTPS host, which absence does not. Sized to sit just above the graded-absence baseline
+ * of 85. See MTA_STS_PARTIAL_DEPLOYMENT_BEATS_NONE.
+ */
+export const MTA_STS_POLICY_DEFECT_PENALTY = 12;
+
+/**
+ * Deduction for a VALID, enforcing policy that leaves one of the domain's own MX hosts
+ * outside its `mx:` coverage. Strictly less than {@link MTA_STS_POLICY_DEFECT_PENALTY}:
+ * the control is live and protecting the covered hosts, whereas an RFC-invalid policy
+ * protects nothing. The mail-delivery consequence is carried by the finding text, not by
+ * a category zeroing. See MTA_STS_PARTIAL_DEPLOYMENT_BEATS_NONE.
+ */
+export const MTA_STS_MX_COVERAGE_GAP_PENALTY = 10;
 
 /**
  * Parse the `_mta-sts` TXT RRset into findings. Reports absence, duplicate records, and a
@@ -98,8 +165,9 @@ export function getMtaStsPolicyFindings(body: string, policyUrl: string): Findin
 			createFinding(
 				'mta_sts',
 				'MTA-STS policy missing or invalid version',
-				'high',
+				'medium',
 				'The MTA-STS policy must contain "version: STSv1" as required by RFC 8461.',
+				{ penaltyOverride: MTA_STS_POLICY_DEFECT_PENALTY },
 			),
 		);
 	}
@@ -108,7 +176,9 @@ export function getMtaStsPolicyFindings(body: string, policyUrl: string): Findin
 
 	if (!modeMatch) {
 		findings.push(
-			createFinding('mta_sts', 'MTA-STS policy missing mode', 'high', 'MTA-STS policy file does not contain a valid "mode:" directive.'),
+			createFinding('mta_sts', 'MTA-STS policy missing mode', 'medium', 'MTA-STS policy file does not contain a valid "mode:" directive.', {
+				penaltyOverride: MTA_STS_POLICY_DEFECT_PENALTY,
+			}),
 		);
 	} else {
 		const mode = modeMatch[1].toLowerCase();
@@ -128,8 +198,9 @@ export function getMtaStsPolicyFindings(body: string, policyUrl: string): Findin
 			createFinding(
 				'mta_sts',
 				'MTA-STS policy missing MX entries',
-				'high',
+				'medium',
 				'MTA-STS policy file does not contain any "mx:" entries. At least one MX pattern is required.',
+				{ penaltyOverride: MTA_STS_POLICY_DEFECT_PENALTY },
 			),
 		);
 	}
@@ -140,8 +211,9 @@ export function getMtaStsPolicyFindings(body: string, policyUrl: string): Findin
 			createFinding(
 				'mta_sts',
 				'MTA-STS policy missing max_age',
-				'high',
+				'medium',
 				'The max_age directive is required by RFC 8461. Without it, the policy is technically invalid.',
+				{ penaltyOverride: MTA_STS_POLICY_DEFECT_PENALTY },
 			),
 		);
 	} else {
@@ -171,9 +243,18 @@ export function getMtaStsPolicyFindings(body: string, policyUrl: string): Findin
 		return [];
 	}
 
+	// `finding.metadata` MUST be forwarded: this re-emit carries the `penaltyOverride` that
+	// sizes the deduction (see MTA_STS_PARTIAL_DEPLOYMENT_BEATS_NONE). Dropping it silently
+	// reverted these two findings to the coarse severity default.
 	return findings.map((finding) =>
 		finding.title === 'MTA-STS policy missing mode' || finding.title === 'MTA-STS policy missing MX entries'
-			? createFinding('mta_sts', finding.title, finding.severity, finding.detail.replace('MTA-STS policy file', `MTA-STS policy file at ${policyUrl}`))
+			? createFinding(
+					'mta_sts',
+					finding.title,
+					finding.severity,
+					finding.detail.replace('MTA-STS policy file', `MTA-STS policy file at ${policyUrl}`),
+					finding.metadata,
+				)
 			: finding,
 	);
 }
@@ -199,12 +280,17 @@ export function getUncoveredMxHostFindings(mxHosts: string[], policyMxPatterns: 
 			return [];
 		}
 
+		// `medium`, not `high`: both the title and the detail interpolate `mxHost`, a
+		// hostname this scanner does not control. At `high` an MX named `mail.missing*`
+		// would zero the whole category via `MISSING_CONTROL_REGEX`. See
+		// MTA_STS_PARTIAL_DEPLOYMENT_BEATS_NONE.
 		return [
 			createFinding(
 				'mta_sts',
 				`MTA-STS policy does not cover MX host ${mxHost}`,
-				'high',
+				'medium',
 				`The MX host ${mxHost} is not matched by any mx: entry in the MTA-STS policy. Mail delivered to this MX will fail MTA-STS validation.`,
+				{ penaltyOverride: MTA_STS_MX_COVERAGE_GAP_PENALTY },
 			),
 		];
 	});

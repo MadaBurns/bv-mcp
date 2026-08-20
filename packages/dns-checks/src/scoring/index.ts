@@ -13,6 +13,8 @@ export {
 	SEVERITY_PENALTIES,
 	inferFindingConfidence,
 	scoreIndicatesMissingControl,
+	redactSubjectData,
+	SUBJECT_TERMS_METADATA_KEY,
 	computeCategoryScore,
 	buildCheckResult,
 	createFinding,

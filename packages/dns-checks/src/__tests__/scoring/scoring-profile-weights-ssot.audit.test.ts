@@ -1,5 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+/// <reference types="vite/client" />
+
 /**
  * Structural audit: the scoring weight tables must live in exactly ONE place, and the
  * constants that are NOT read at runtime must not quietly acquire readers.
