@@ -248,6 +248,74 @@ describe('discoverBrandDomains', () => {
 		expect(candidates).toHaveLength(0);
 	});
 
+	it('reports a PARTIAL sweep that lost a primary signal as UNMEASURED, not as a passing score (#734)', async () => {
+		// #670 closed the all-signals-failed case with `.every()`. A run where the
+		// primary certificate channel dies but secondary signals answer therefore
+		// fell straight through to normal scoring — and normal scoring rewards
+		// surfacing FEWER candidates, so a crippled sweep outscored a healthy one.
+		//
+		// Measured against production 2026-08-21: seed `meta.com` with `san: error`
+		// plus four degraded signals surfaced 1 of >=152 real Meta apexes (0.7%) and
+		// returned `passed: true, score: 95`, while a healthy `facebook.com` sweep
+		// that surfaced 27 returned `passed: false, score: 0`. Score moved inversely
+		// to measurement success. That is the #662/#670 false-green shape.
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			// Primary channel dies...
+			correlateSans: vi.fn().mockResolvedValue({
+				seedDomain: 'example.com',
+				coOwnedDomains: [],
+				certIds: [],
+				queryStatus: 'timeout',
+			} satisfies SanCorrelationResult),
+			// ...while secondary signals answer cleanly, so `allFailed` is false.
+			// Two corroborating signals, because a single-signal candidate is dropped
+			// by the corroboration gate and we need one to actually SURVIVE to prove
+			// the degraded path still returns what it found.
+			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'sister.example', confidence: 1 }])),
+			mineDmarcRua: vi.fn().mockResolvedValue(okRua(['sister.example'])),
+		});
+
+		const result = await discoverBrandDomains('example.com', { signals: ['san', 'ns', 'dmarc_rua'] }, deps);
+
+		// The sweep did not measure what it claims to measure, so the category must
+		// be EXCLUDED from scoring rather than scored on a partial view.
+		expect(result.checkStatus).toBe('error');
+		expect(result.passed).toBe(false);
+		// `partial` keeps a transient upstream outage out of the 5-minute cache so
+		// the next call re-measures instead of replaying a degraded sweep.
+		expect(result.partial).toBe(true);
+
+		// Whatever the surviving signals DID find is still worth returning to the
+		// caller — degrading the score must not throw away real candidates.
+		const candidates = result.findings.filter((f) => f.metadata?.candidate);
+		expect(candidates.length).toBeGreaterThan(0);
+
+		// And the degradation must be legible in the output, not inferable only by
+		// cross-reading signalStatus.
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary?.metadata?.inconclusive).toBe(true);
+		expect(summary?.metadata?.degradedPrimarySignals).toEqual(['san']);
+	});
+
+	it('scores a sweep normally when every primary signal completed (#734 control)', async () => {
+		// The discriminating half: same shape, primary signal HEALTHY. If this ever
+		// starts returning checkStatus 'error' too, the guard above has over-fired
+		// and made the category permanently unmeasurable.
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const deps = makeDeps({
+			correlateSans: vi.fn().mockResolvedValue(okSan([])),
+			correlateNs: vi.fn().mockResolvedValue(okNs([{ domain: 'sister.example', confidence: 1 }])),
+		});
+
+		const result = await discoverBrandDomains('example.com', { signals: ['san', 'ns'] }, deps);
+
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.partial).toBeFalsy();
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(summary?.metadata?.degradedPrimarySignals).toBeUndefined();
+	});
+
 	it('reports an all-signals-failed sweep as UNMEASURED, never as "control absent" (#670)', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const deps = makeDeps({

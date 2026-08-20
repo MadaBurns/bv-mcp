@@ -289,4 +289,68 @@ describe('discover_subdomains — rendered text always states the sample caveat'
 		expect(output).toContain('crtsh');
 		expect(output).toContain('certspotter');
 	});
+
+	// #735 — the total-failure banner told EVERY caller to "retry shortly".
+	//
+	// That is right for an upstream outage and wrong for a timeout. Measured
+	// 2026-08-21: certspotter returned HTTP 504 {"code":"timeout"} for meta.com
+	// ("domains with a huge number of sub-domains or certificates") while
+	// answering anthropic.com with HTTP 200 in the same window. So the timeout is
+	// a deterministic property of the domain's certificate population under an
+	// unpaginated query, not a transient blip — retrying is guaranteed to fail
+	// again, forever, on exactly the largest and most interesting estates.
+	describe('total-failure banner distinguishes transient from deterministic (#735)', () => {
+		async function renderUnavailable(perSource: Array<{ source: string; outcome: string }>, notConsulted: string[] = []) {
+			const { formatSubdomainDiscovery } = await import('../src/tools/discover-subdomains');
+			const { buildCtCoverage } = await import('../src/lib/ct-coverage');
+			const coverage = buildCtCoverage(
+				perSource.map((s) => ({ source: s.source, outcome: s.outcome as never, contributed: false })),
+			);
+			return formatSubdomainDiscovery(
+				{
+					domain: 'meta.com',
+					subdomains: [],
+					totalSubdomains: 0,
+					sourceUnavailable: true,
+					coverage: { ...coverage, notConsulted },
+				} as never,
+				'full',
+			);
+		}
+
+		it('does NOT tell the caller to retry when the source timed out', async () => {
+			const output = await renderUnavailable([{ source: 'certspotter', outcome: 'timeout' }]);
+			expect(output).not.toMatch(/retry shortly/i);
+			// and it must say WHY retrying will not help
+			expect(output).toMatch(/certspotter/);
+			expect(output).toMatch(/deterministic|too large|not transient/i);
+		});
+
+		it('still offers a retry when the failure was an upstream error', async () => {
+			const output = await renderUnavailable([{ source: 'crtsh', outcome: 'http_error' }]);
+			expect(output).toMatch(/retry/i);
+		});
+
+		it('tells a rate-limited caller to BACK OFF, never that a retry is worthwhile', async () => {
+			const output = await renderUnavailable([{ source: 'certspotter', outcome: 'rate_limited' }]);
+			expect(output).toMatch(/certspotter/);
+			expect(output).toMatch(/back off|backoff|quota/i);
+			// The dangerous wording: retrying is what EXTENDS a 429 lockout.
+			expect(output).not.toMatch(/retry is worthwhile|retry shortly/i);
+		});
+
+		it('says the deployment has no configured fallback when the last source was never consulted', async () => {
+			const output = await renderUnavailable(
+				[
+					{ source: 'crtsh', outcome: 'http_error' },
+					{ source: 'certspotter', outcome: 'timeout' },
+				],
+				['certstream'],
+			);
+			expect(output).toMatch(/certstream/);
+			expect(output).toMatch(/not configured|no configured fallback|never consulted/i);
+			// The mixed case must not silently drop the deterministic warning.
+			expect(output).toMatch(/deterministic|too large|not transient/i);
+		});
+	});
 });

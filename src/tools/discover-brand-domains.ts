@@ -472,6 +472,20 @@ export function signalCouldNotComplete(status: string | undefined): boolean {
 	return status === 'failed' || status === 'error' || status === 'timeout' || status === 'rate_limited';
 }
 
+/**
+ * Signals without which a sweep is not a brand discovery at all.
+ *
+ * Certificate SANs are the highest-yield channel by a wide margin: the other
+ * signals corroborate candidates, but SAN is what SUPPLIES most of them. A run
+ * that loses SAN does not return a smaller answer, it returns a different and
+ * much emptier question — and because the score falls out of how many findings
+ * were surfaced, an emptier question scores BETTER (#734).
+ *
+ * Kept as a named set rather than inlined so the all-failed gate (#670) and the
+ * primary-degradation gate below cannot drift apart about which signals matter.
+ */
+export const PRIMARY_DISCOVERY_SIGNALS: readonly DiscoverSignal[] = ['san', 'san_recursive'];
+
 function isGeneratedSeedSignal(signal: DiscoverSignal): boolean {
 	return signal === 'markov_gen' || signal === 'active_lookalike';
 }
@@ -1662,6 +1676,17 @@ export async function discoverBrandDomains(
 	const degradedNote =
 		degradedSignals.length > 0 ? ` degraded=[${degradedSignals.map((s) => `${s}:${signalStatus[s]?.status}`).join(', ')}]` : '';
 
+	// #734 — the subset of degraded signals that this category cannot do without.
+	// Narrower than `degradedSignals` on purpose: a degraded *corroborating* signal
+	// (ns, mx_overlap, ...) costs precision and is worth naming in the text, but a
+	// degraded PRIMARY signal costs the answer itself and must stop the run being
+	// scored. `signalCouldNotComplete` is reused rather than re-spelled so this and
+	// the all-failed gate (#670) draw exactly the same line — `budget_exceeded` and
+	// `partial` are NOT failures here, they are a smaller-but-real measurement.
+	const degradedPrimarySignals = signals.filter(
+		(s) => PRIMARY_DISCOVERY_SIGNALS.includes(s) && signalCouldNotComplete(signalStatus[s]?.status),
+	);
+
 	// Always emit a summary finding so the formatter has something to print.
 	const summary = createFinding(
 		'brand_discovery',
@@ -1683,10 +1708,34 @@ export async function discoverBrandDomains(
 				dropped: dropCounts,
 				sources: universe.stats.sources,
 			},
+			...(degradedPrimarySignals.length > 0
+				? { inconclusive: true, errorKind: 'dns_error' as const, degradedPrimarySignals }
+				: {}),
 		},
 	);
 
-	return buildCheckResult('brand_discovery', [summary, ...candidateFindings]);
+	const result = buildCheckResult('brand_discovery', [summary, ...candidateFindings]);
+
+	// #734 — a sweep that lost a PRIMARY signal did not measure what this category
+	// claims to measure, so it must be EXCLUDED from scoring rather than scored on
+	// a partial view. #670 already does this for the all-signals-failed case; the
+	// `.every()` there means a partial loss fell through to normal scoring, where
+	// the score is derived from how many candidates surfaced — so a crippled sweep
+	// outscored a healthy one. Measured 2026-08-21: `meta.com` with `san: error`
+	// surfaced 1 of >=152 real apexes and returned passed:true/score:95, while a
+	// healthy `facebook.com` sweep surfacing 27 returned passed:false/score:0.
+	//
+	// The candidate findings are deliberately RETAINED: whatever the surviving
+	// signals found is still useful to a caller, and throwing it away would trade
+	// one wrong answer for another. `checkStatus: 'error'` is what makes the
+	// scoring engine skip the category; `partial: true` keeps a transient upstream
+	// outage (crt.sh was returning 502/404 for hours when this was found) out of
+	// the 5-minute cache so the next call re-measures instead of replaying it.
+	if (degradedPrimarySignals.length > 0) {
+		return { ...result, score: 0, passed: false, checkStatus: 'error' as const, partial: true };
+	}
+
+	return result;
 }
 
 /** Format a discoverBrandDomains CheckResult as human-readable text. */

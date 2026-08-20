@@ -45,7 +45,15 @@
  */
 
 /** Per-source health outcome, shared with the tool's `ct_source` health log. */
-export type CtSourceOutcome = 'ok' | 'empty' | 'http_error' | 'timeout' | 'error';
+/**
+ * `rate_limited` is split out from `http_error` on purpose (#735). A 429 is the
+ * one upstream failure where the correct caller response is the OPPOSITE of the
+ * usual one: retrying extends the lockout and burns a quota shared with every
+ * other domain scanned next. Measured 2026-08-21 — after Certspotter 504s on a
+ * large estate it 429s the same unauthenticated caller, and the lockout outlived
+ * a 75-second wait.
+ */
+export type CtSourceOutcome = 'ok' | 'empty' | 'http_error' | 'rate_limited' | 'timeout' | 'error';
 
 /**
  * How much of CT history a source can see AT ALL, independent of whether we
