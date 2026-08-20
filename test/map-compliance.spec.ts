@@ -57,6 +57,102 @@ describe('evaluateCompliance', () => {
 		}
 	});
 
+	/**
+	 * #726 — the severity floor, asserted as the INVARIANT the issue proposes rather
+	 * than as per-control literals: **no control may be reported `pass` while the
+	 * check backing it carries a medium-or-worse finding from the same scan.**
+	 *
+	 * A literal per-control expectation is what let this survive #705 and #706: those
+	 * fixes keyed on `recordPresent`, which only 9 checks emit, so the five that never
+	 * do (spf, dkim, ssl, ns, http_security) silently kept grading on bare `passed`.
+	 */
+	it('never reports a control as pass while its backing check carries a medium-or-worse finding (#726)', () => {
+		// Measured on wiz.io, 2026-08-20: PCI DSS 4.0 came back "5/5, 100%" with 6.4.2
+		// (Web Application Firewall / CSP — `categories: ['http_security']`,
+		// `requirePass: true`) as PASS, while the SAME scan scored http_security 65 on
+		// these two findings and rated the resulting xss_injection path HIGH. A CSP
+		// permitting both inline script and dynamic code execution is substantially no
+		// XSS protection, and the tool certified it.
+		const results = makeAllPassing().map((r) =>
+			r.category === 'http_security'
+				? makeCheckResult('http_security', true, [
+						{ title: 'CSP allows unsafe-inline scripts', severity: 'medium' },
+						{ title: 'CSP allows unsafe-eval', severity: 'medium' },
+					])
+				: r,
+		);
+
+		const report = evaluateCompliance(results, 'wiz.example', 78, 'C');
+
+		const waf = report.frameworks.pci_dss_4.mappings.find((m) => m.controlId === '6.4.2');
+		expect(waf!.status).toBe('fail');
+		expect(waf!.relatedFindings).toEqual(['CSP allows unsafe-inline scripts', 'CSP allows unsafe-eval']);
+		expect(report.frameworks.pci_dss_4.percentage).not.toBe(100);
+
+	});
+
+	/**
+	 * The same invariant swept over the WHOLE mapping table, because the issue's own
+	 * point is that "a 100% framework score is exactly the output nobody re-reads" —
+	 * patching 6.4.2 alone would leave the other four unguarded checks live.
+	 *
+	 * The control→category mapping is NOT imported (it is module-private): it is
+	 * DERIVED empirically, so a control added or re-mapped later is swept automatically
+	 * instead of silently escaping a hard-coded list.
+	 */
+	it('the severity floor holds for every control in the table, not just 6.4.2 (#726)', () => {
+		const ALL = ['nist_800_177', 'pci_dss_4', 'soc2', 'cis_controls'] as const;
+		const categories = makeAllPassing().map((r) => r.category);
+		const mappingsOf = (report: ComplianceReport) => ALL.flatMap((fw) => report.frameworks[fw].mappings);
+
+		for (const category of categories) {
+			// Step 1 — derive which controls this category backs. A hard FAILURE of the
+			// category surfaces its uniquely-titled finding in every control that grades
+			// on it (`relatedFindings` is collected from the failing results).
+			const failed = evaluateCompliance(
+				makeAllPassing().map((r) => (r.category === category ? makeCheckResult(category, false, [{ title: `FAIL:${category}`, severity: 'high' }]) : r)),
+				'derive.example',
+				40,
+				'F',
+			);
+			const backedControls = mappingsOf(failed)
+				.filter((m) => m.relatedFindings.includes(`FAIL:${category}`))
+				.map((m) => m.controlId);
+			if (backedControls.length === 0) continue; // category maps to no control
+
+			// Step 2 — the same category PASSING but flagged medium by the same scan.
+			// This is the #726 shape: `passed: true`, no `recordPresent` signal for five
+			// of these checks, and a real measured defect the scan is reporting.
+			const flagged = evaluateCompliance(
+				makeAllPassing().map((r) => (r.category === category ? makeCheckResult(category, true, [{ title: `FLAG:${category}`, severity: 'medium' }]) : r)),
+				'floor.example',
+				78,
+				'C',
+			);
+			const wronglyPassing = mappingsOf(flagged)
+				.filter((m) => backedControls.includes(m.controlId) && m.status === 'pass')
+				.map((m) => `${m.controlId} (${category})`);
+			expect(wronglyPassing).toEqual([]);
+		}
+	});
+
+	it('keeps an info-DOWNGRADED finding on an inapplicable control passing (#726 false-FAIL guard)', () => {
+		// Post-processing rewrites email-auth findings to `info` for a non-mail domain
+		// under an enforcing parent DMARC (and DKIM/MTA-STS/BIMI under an SPF
+		// noSendPolicy) before this tool ever sees the CheckResult. The severity floor
+		// must read that FINAL severity — reading a pre-downgrade one would convert the
+		// false PASS #726 closes into a false FAIL on exactly the domains the downgrade
+		// exists to protect.
+		const results = makeAllPassing().map((r) =>
+			r.category === 'dkim'
+				? makeCheckResult('dkim', true, [{ title: 'No DKIM records found (expected — no MX records)', severity: 'info' }])
+				: r,
+		);
+
+		const report = evaluateCompliance(results, 'no-mail.example', 88, 'B');
+		expect(report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§4.3.2')!.status).toBe('pass');
+	});
+
 	it('should fail NIST email controls when SPF/DKIM/DMARC fail', () => {
 		const results = makeAllPassing().map((r) => {
 			if (r.category === 'spf' || r.category === 'dkim' || r.category === 'dmarc') {
@@ -296,7 +392,13 @@ describe('map_compliance treats a never-completed check as not_assessed, not fai
 				if (url.includes('type=TXT') || url.includes('type=16')) {
 					if (url.includes('_dmarc.')) {
 						if (opts.dmarc === 'missing') return Promise.resolve(createDohResponse([{ name: `_dmarc.${domain}`, type: 16 }], []));
-						return Promise.resolve(txtResponse(`_dmarc.${domain}`, ['v=DMARC1; p=reject']));
+						// `rua=` is required for the fixture to mean what its comments claim. Without
+						// it check-dmarc emits a MEDIUM "No aggregate reporting", and since #726 a
+						// control cannot be satisfied by a check the same scan flags at medium or
+						// worse — so the "dmarc completes and PASSES" leg of the F1 test below was
+						// silently no longer true. Publishing rua restores the healthy mail domain
+						// this mock was written to represent.
+						return Promise.resolve(txtResponse(`_dmarc.${domain}`, [`v=DMARC1; p=reject; rua=mailto:dmarc@${domain}`]));
 					}
 					if (url.includes('_domainkey.')) return Promise.resolve(txtResponse(`default._domainkey.${domain}`, ['v=DKIM1; k=rsa; p=MIGf']));
 					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse(`_mta-sts.${domain}`, ['v=STSv1; id=20240101']));
@@ -366,15 +468,31 @@ describe('map_compliance treats a never-completed check as not_assessed, not fai
 		expect(dmarcControl!.status).toBe('not_assessed');
 		expect(dmarcControl!.relatedFindings).toEqual([]);
 
-		// No framework summary counts a never-completed check as a failure. Every other
-		// NIST category in this fixture completed and passed, so the only effect of the
-		// transient dmarc check is to remove it from the denominator — not to zero it out
-		// as one more failure.
-		expect(nist.failing).toBe(0);
+		// No framework summary counts a never-completed check as a failure. Expressed
+		// RELATIONALLY against the same fixture with dmarc completing, rather than as
+		// `failing === 0 / passing === 7 / 100%`: those literals rested on "every other
+		// NIST category in this fixture completed and passed", which was never true —
+		// the fixture's scan flags dkim CRITICAL, spf/dnssec/dane HIGH and ssl MEDIUM
+		// while every one of those checks returns `passed: true`, and until #726 the
+		// mapper certified them anyway. The invariant under test is unchanged and now
+		// stated exactly: a transient check changes §4.3.3 to `not_assessed` and changes
+		// NOTHING else.
 		expect(nist.notAssessed).toBe(1);
 		expect(nist.assessedControls).toBe(7);
-		expect(nist.passing).toBe(7);
-		expect(nist.percentage).toBe(100);
+
+		mockFullScan('nist-dmarc-transient-baseline.com');
+		const baselineNist = (await mapCompliance('nist-dmarc-transient-baseline.com')).frameworks.nist_800_177;
+		// Guard: the baseline must actually assess §4.3.3, else the comparison is vacuous.
+		expect(baselineNist.mappings.find((m) => m.controlId === '§4.3.3')!.status).not.toBe('not_assessed');
+		for (const mapping of nist.mappings) {
+			if (mapping.controlId === '§4.3.3') continue;
+			expect([mapping.controlId, mapping.status]).toEqual([
+				mapping.controlId,
+				baselineNist.mappings.find((m) => m.controlId === mapping.controlId)!.status,
+			]);
+		}
+		// …and the transient category is removed from the denominator, not zeroed into it.
+		expect(nist.failing).toBe(baselineNist.failing - (baselineNist.mappings.find((m) => m.controlId === '§4.3.3')!.status === 'fail' ? 1 : 0));
 
 		// The serialized wire payload — both machine channels — must not pair this specific
 		// control with a fabricated "fail" verdict.
@@ -427,17 +545,25 @@ describe('map_compliance treats a never-completed check as not_assessed, not fai
 		expect(waf).toBeDefined();
 		expect(waf!.status).toBe('fail');
 
-		// Nothing here is transient, so `completed === matchedResults` exactly — this
-		// fixture's framework summary is untouched by the partition and must match the
-		// values the pre-fix code already produced for it (a mutation that broke this
-		// would be over-abstaining, not fixing the banked defect).
+		// Nothing here is transient, so `completed === matchedResults` exactly and the
+		// partition must abstain on NOTHING — that, not a snapshot of pass/fail counts,
+		// is the over-abstention guard this test exists for.
+		//
+		// The counts themselves are deliberately NO LONGER pinned. They used to read
+		// passing 3 / failing 1 / partial 1 / 60%, which since #726 is a snapshot of the
+		// defect: this very fixture's scan emits a CRITICAL dkim finding ("Weak RSA
+		// key"), HIGH spf ("Circular SPF include detected"), HIGH dnssec ("DNSSEC not
+		// enabled") and a MEDIUM ssl ("No HTTP to HTTPS redirect") while every one of
+		// those checks returns `passed: true` — so three PCI controls were certified
+		// PASS against categories the same scan was flagging at critical/high. Pinning
+		// them again would re-bank exactly what the severity floor removes.
 		expect(pci.totalControls).toBe(5);
-		expect(pci.passing).toBe(3);
-		expect(pci.failing).toBe(1);
-		expect(pci.partial).toBe(1);
 		expect(pci.notAssessed).toBe(0);
-		expect(pci.assessedControls).toBe(5);
-		expect(pci.percentage).toBe(60);
+		expect(pci.assessedControls).toBe(pci.totalControls);
+		expect(pci.passing + pci.failing + pci.partial).toBe(pci.totalControls);
+		// #726 invariant on this fixture: no PCI control may be `pass` while its backing
+		// categories are the flagged ones above.
+		expect(pci.mappings.filter((m) => m.status === 'pass')).toEqual([]);
 	}, 15_000);
 
 	/**
@@ -786,7 +912,11 @@ describe('map_compliance does not pass a control whose record was never publishe
 			score: 85,
 			controlPresent: true,
 			recordPresent: false,
-			findings: [{ category, title: 'DNSSEC is registry-managed', severity: 'medium', detail: '' }],
+			// `info`, not `medium`: since #726 a medium-or-worse finding is itself
+			// disqualifying, and grading THAT here would test the severity floor rather
+			// than the recordPresent-rebuttal clause this fixture exists for. A note that
+			// the zone's signing is registry-managed is informational anyway.
+			findings: [{ category, title: 'DNSSEC is registry-managed', severity: 'info', detail: '' }],
 		} as CheckResult;
 	}
 
@@ -905,3 +1035,4 @@ describe('map_compliance grade uses the display band SSOT', () => {
 		expect(['A+', 'A', 'B', 'C', 'D', 'F']).toContain(report.grade);
 	});
 });
+
