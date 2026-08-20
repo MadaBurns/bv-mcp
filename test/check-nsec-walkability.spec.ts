@@ -57,7 +57,7 @@ function routeByType(domain: string, opts: { signed: boolean; denial?: 'minimall
 		// DO=1 NXDOMAIN probe under the zone (type A on a synthetic non-existent label).
 		if (typeName === 'A' && dnssecOk && name !== domain) {
 			if (denial === 'minimally-covering') {
-				// Cloudflare/RFC 4470 black lie: owner = qname, next = `\000.<qname>`, minimally-covering bitmap.
+				// RFC 4470 black lie: owner = qname, next = `\000.<qname>`, minimally-covering bitmap.
 				return Promise.resolve(
 					dohWithAuthority({ name, type: 1 }, [
 						{ name: domain, type: 6, TTL: 1800, data: 'ns.example.com. dns.example.com. 1 10000 2400 604800 1800' },
@@ -144,7 +144,7 @@ describe('checkNsecWalkability', () => {
 		expect(highFinding!.metadata?.dnssecSigned).toBe(true);
 	});
 
-	it('should NOT flag walkability for an RFC 4470 minimally-covering NSEC (Cloudflare black lies): signed, no NSEC3PARAM', async () => {
+	it('should NOT flag walkability for an RFC 4470 minimally-covering NSEC (NSEC black lies): signed, no NSEC3PARAM', async () => {
 		// spotto.ai scenario (#565): DNSSEC-signed (DNSKEY/DS present), no NSEC3PARAM,
 		// but the DO=1 NXDOMAIN probe returns a minimally-covering NSEC whose next-name
 		// is the synthesized `\000.<qname>` → RFC 4470 → the zone is NOT walkable.
@@ -162,6 +162,50 @@ describe('checkNsecWalkability', () => {
 		expect(infoFinding!.detail).toMatch(/RFC 4470|minimally.covering|black lie|not walkable/i);
 		expect(infoFinding!.metadata?.walkable).toBe(false);
 		expect(infoFinding!.metadata?.dnssecSigned).toBe(true);
+	});
+
+	it('describes the minimally-covering technique WITHOUT attributing it to any single DNS vendor (#728)', async () => {
+		// RFC 4470 "NSEC black lies" is not vendor-specific. The detail used to assert the
+		// record was "the Cloudflare default for signed zones" — measured on a zone served
+		// entirely by Route 53. The finding's CONCLUSION was right; only the attribution was
+		// invented. Assert the INVARIANT (no vendor named) rather than pinning exact prose,
+		// so a reworded detail stays green but a re-added vendor name does not.
+		globalThis.fetch = routeByType('example.com', { signed: true, denial: 'minimally-covering' });
+
+		const result = await run();
+
+		const infoFinding = result.findings.find((f) => f.severity === 'info');
+		expect(infoFinding).toBeDefined();
+		// Still names the TECHNIQUE — the fix must not strip the explanation along with the claim.
+		expect(infoFinding!.detail).toMatch(/RFC 4470/i);
+
+		// Every customer-visible string on the result, not just the one detail: a vendor claim
+		// is equally wrong in a title.
+		const customerVisible = result.findings.flatMap((f) => [f.title, f.detail]).join('\n');
+		const VENDORS = [
+			'Cloudflare',
+			'Route 53',
+			'Route53',
+			'AWS',
+			'Amazon',
+			'Google',
+			'Azure',
+			'Microsoft',
+			'Akamai',
+			'NS1',
+			'GoDaddy',
+			'Verisign',
+			'DNSimple',
+			'DigitalOcean',
+			'Netlify',
+			'Vercel',
+			'Namecheap',
+			'Oracle',
+			'Fastly',
+		];
+		for (const vendor of VENDORS) {
+			expect(customerVisible, `finding prose must not attribute RFC 4470 NSEC to ${vendor}`).not.toMatch(new RegExp(vendor, 'i'));
+		}
 	});
 
 	it('should downgrade to info (NOT high) when the NSEC denial probe is inconclusive', async () => {
