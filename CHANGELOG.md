@@ -6,11 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 — no weight, tier, grade band, severity penalty or profile rule moved, and no domain's score or grade changes. `@blackveil/dns-checks` moves **1.19.0 → 1.20.0** (new exported API, no breaking change) and `PARITY_CORPUS_VERSION` moves in lockstep as the version-lock contract requires. `recordPresent`/`controlPresent` remain score-neutral by construction; nothing in the scoring path reads them.
+**This release DOES change scores.** One entry in this block — the lame-delegation escalation under *Changed* — moves a severity, stamps a confidence and raises a per-profile importance, and it lowers the grade of an affected domain: measured **97 (A+) → 82 (B+)**. Everything else here remains score-neutral and is proven so: the CAA-parameter and cert-validity-window additions emit nothing scored, the BIMI corrections are prose-only with the `bimi` category pinned byte-identical, and the `compare_baseline` fix touches a reporting surface the scorer does not read. `recordPresent`/`controlPresent` likewise remain score-neutral by construction; nothing in the scoring path reads them.
+
+⚠️ **`SCORING_MODEL_VERSION` moves `1.10.0` → `1.11.0`**, as its own doctrine requires for any change that alters scores or grades — profile weights are named in that list and this release moves one. The header of this block previously read "**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0", which was true while every entry in it was score-neutral; the lame-delegation escalation makes it false, so the header is corrected above rather than left to contradict the entry beneath it. The per-version rationale is recorded in `src/lib/scoring-version.ts` alongside the constant.
+
+⚠️ `@blackveil/dns-checks` moves **1.19.0 → 1.20.0 → 1.21.0** across this block: 1.20.0 carries the score-neutral CAA/BIMI/cert work, 1.21.0 the score-changing escalation. `PARITY_CORPUS_VERSION` moves in lockstep with each as the version-lock contract requires.
 
 ⚠️ `PARITY_CORPUS_VERSION` is folded into every scan cache key (`src/lib/cache.ts`), so this bump invalidates cached scans on deploy and the first post-deploy wave runs cold. Expected, not a regression.
 
 ⚠️ 1.20.0 is taken rather than folding into 1.19.0 because 1.19.0 is **released** (v3.53.0–v3.55.0). Adding content to it would recreate the trap #701 recorded: a version whose contents differ from the same version elsewhere.
+
+⚠️ 1.21.0 is likewise taken rather than folding into 1.20.0. 1.20.0 is already referenced as a settled, score-neutral content set; quietly making that same number score-changing is the same trap one step later. The two are kept distinct so a consumer can tell from the version alone whether a scan's scores moved.
 
 ### Added
 
@@ -27,6 +33,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
   `unknown` is a distinct member of the same string-literal union, never a boolean and never a default pass, per the repo rule that an unmeasured signal gets an explicit not-assessed member (a `boolean` would compile UNKNOWN silently into `false` — an affirmative safety claim from zero evidence). When `unknown` is returned, `days` is `null`, so no numeric comparison can read it as compliant either. The effective date is an injected parameter, mirroring `assessExpiry(notAfter, nowSeconds)`; **no wall clock is read inside the module**, so parity fixtures stay deterministic.
 
   Remains **additive and non-scoring**, inside the boundary `src/cert/index.ts` states in code: nothing here emits a `Finding` or influences `computeProfileAwareScanScore`. Reachable via the existing `@blackveil/dns-checks/cert` subpath.
+
+### Changed
+
+- **A lame delegation whose dead nameserver is actually claimable is now `critical` with a declared `verified` confidence, was `high`.** A partially lame delegation — the domain publishes NS records and some of those nameservers do not answer for the zone — is the Sitting Ducks hijack precondition. **This is the one score-changing entry in this release.**
+
+  **Severity alone would have changed nothing.** `verifiedCriticalCount` counts findings that are BOTH `critical` AND `verified`, and `inferFindingConfidence` returns `verified` only from an explicit `metadata.confidence`. An unstamped finding infers `deterministic`, so a bare `high`→`critical` bump is invisible to the scorer. The escalation is therefore severity **plus** a declared confidence — and only where claimability was actually measured.
+
+  **Claimability is measured, never assumed.** A dead nameserver is hijackable only if its registrable base domain is unregistered, so that an attacker can register it and become authoritative. Both gates are required before a query is spent: the probe outcome is `no_address` AND both A and AAAA returned RCODE 3 (NXDOMAIN), and the verdict is `partial`. SERVFAIL/REFUSED/NODATA never qualify — a resolver failure is not a measurement, and a NODATA host exists, so its base is registered by definition. Not-claimable lameness keeps `deterministic` confidence and prose that does not assert hijackability, and a thrown probe yields "not claimable", so failure to measure can never manufacture a claim. Total-lame zones are untouched and still route to the inconclusive path. Cost is one NS lookup per distinct nameserver base domain, deduped and capped at 4; healthy, total-lame and indeterminate zones cost zero extra.
+
+  **Measured score effect: 97 (A+) → 82 (B+)** on a `mail_enabled` roster with `dmarc` degraded to 75 — exactly the −15 critical penalty, with the `ns` category at **60 in both arms**. No grade ceiling is involved: the 64-point ceiling reads only `criticalCategories ∩ missingControls`, and this finding sets no missing control.
+
+  **`ns` importance moves 2 → 3 in `mail_enabled` and `enterprise_mail` only.** `web_only` and `non_mail` were already 3, `minimal` is 1 and `authoritative_dns_infra` is 15 — a flat package-wide "2→3" would have double-bumped two profiles.
+
+  **Measured prevalence: 130 domains of 94,826 scanned, 0.137%**, all currently `high`/`open`, observed 2026-08-04..2026-08-19 on the **dns-recon scan lane**. That is a lane figure and explicitly **not** a corpus-wide rate: the GSI corpus cannot answer this at all, because its D1 rows carry score and adoption bits only and corpus findings are forked to R2, never to D1.
+
+  The finding **title is deliberately unchanged** (reformatted only): downstream, `finding_code` is a slug of the title and the row id hashes `entity_id|check_category|finding_code`, so rewording it would reset `first_seen` on all 130 existing rows. Severity may move freely; the title may not.
+
+  The claimable-provider fingerprint is **deliberately not implemented**. That case has the NS host resolving normally at a self-service provider, which this probe shape cannot observe, and a vendor-name match would assert hijackability from a string rather than from evidence — the exact over-claim the claimability split exists to prevent. `claimabilityBasis: 'base_domain_unregistered'` is carried in metadata so a genuine second basis can slot in later.
 
 ### Fixed
 
@@ -54,6 +78,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 - The satisfied-control and applicability predicates are now a single shared source (`src/lib/control-presence.ts`) reused by both `map_compliance` and `compare_baseline`, rather than each surface deriving its own. `isCategoryNonApplicable` is reused, not re-derived, so the two surfaces cannot drift on what "satisfied" and "applicable" mean. `map_compliance` behaviour is unchanged.
 - `require_dmarc_enforce` is unaffected and keeps its own `dmarcEnforced()` predicate; `require_spf` / `require_dkim` / `require_dmarc` were never affected, since their absence produces sub-50 scores or sets `missingControl`.
+
+- The same `MISSING_CONTROL_REGEX` hazard recorded above was independently hit by the lame-delegation escalation on the same day, which is why it is worth stating twice. The first draft of the not-claimable prose contained the word "missing"; `scoreIndicatesMissingControl` runs that regex over a finding's title AND detail, and a `critical` + `deterministic` match ZEROES the whole `ns` category — measured 60 → 0, a larger and more wrong move than the escalation itself, and invisible in the finding's metadata. Escalating to `critical` is precisely what armed it. Both prose variants are now pinned by a test asserting `scoreIndicatesMissingControl([f]) === false`.
+
+- The new NS parity fixture's SOA timers are conventional, but were chosen to satisfy BOTH the SOA hygiene rules (`expire >= 604800`) and the repo-safety scanner, whose phone-number rule matches several otherwise-standard timer sets. Re-run `gitleaks protect --staged` if they are edited.
 
 ## [3.55.0] - 2026-08-19
 

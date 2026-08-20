@@ -42,14 +42,18 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		dkim: { importance: 10 },
 		dnssec: { importance: 10 },
 		ssl: { importance: 8 },
-		// Protective (sum=23)
+		// Protective (sum=24)
 		subdomain_takeover: { importance: 4 },
 		http_security: { importance: 3 },
 		mta_sts: { importance: 3 },
 		subdomailing: { importance: 3 },
 		mx: { importance: 2 },
 		caa: { importance: 2 },
-		ns: { importance: 2 },
+		// 2 → 3 with the lame-delegation CRITICAL escalation. A claimable stale delegation
+		// is an authoritative-control defect, which is the weight class `web_only`/`non_mail`
+		// already assign `ns` (both were ALREADY 3 and are deliberately left untouched — a
+		// flat package-wide "2→3" would have double-bumped them).
+		ns: { importance: 3 },
 		lookalikes: { importance: 2 },
 		shadow_domains: { importance: 2 },
 		dane_https: { importance: 2 },
@@ -74,14 +78,15 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		dkim: { importance: 12 },
 		dnssec: { importance: 13 },
 		ssl: { importance: 8 },
-		// Protective (sum=26)
+		// Protective (sum=27)
 		subdomain_takeover: { importance: 5 },
 		http_security: { importance: 3 },
 		mta_sts: { importance: 4 },
 		subdomailing: { importance: 4 },
 		mx: { importance: 2 },
 		caa: { importance: 2 },
-		ns: { importance: 2 },
+		// 2 → 3 with the lame-delegation CRITICAL escalation — see `mail_enabled`.
+		ns: { importance: 3 },
 		lookalikes: { importance: 2 },
 		shadow_domains: { importance: 2 },
 		dane_https: { importance: 2 },

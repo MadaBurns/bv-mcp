@@ -224,7 +224,43 @@ export type NameserverProbeOutcome = 'resolves' | 'no_address' | 'unknown';
 export interface NameserverProbeResult {
 	nameserver: string;
 	outcome: NameserverProbeOutcome;
+	/**
+	 * The nameserver HOSTNAME answered NXDOMAIN (RCODE 3) — the name provably does not
+	 * exist, as opposed to existing with no address (NODATA) or the resolver having
+	 * failed (SERVFAIL/REFUSED, which are not measurements at all).
+	 *
+	 * This is the ONLY gate on spending a claimability probe. It is not itself evidence
+	 * of claimability: `ns1.provider.example` can be NXDOMAIN while `provider.example`
+	 * is firmly registered by its owner.
+	 */
+	hostNxdomain?: boolean;
 }
+
+/**
+ * The exact phrases `inferFindingConfidence` (scoring/model.ts) demotes a finding to
+ * `heuristic` on, mirrored here so the NS check's prose can be TESTED against them.
+ *
+ * WHY THIS EXISTS. The escalation only registers because the finding carries an
+ * explicit `metadata.confidence` — and an explicit stamp outranks the prose sniff, so
+ * the claimable branch cannot be disarmed by a copy edit. The NOT-shown-claimable
+ * branch is the one that matters: it is deliberately `deterministic`, and a future copy
+ * edit that reached for a softening word ("this could indicate…", "a potential
+ * hijack…") would silently reclassify it as `heuristic`. Same score either way, but a
+ * reviewer reading `heuristic` would draw the wrong conclusion about what was measured.
+ *
+ * Mirrored, not imported, on purpose: this is a MIRROR under test, and `scoring/model.ts`
+ * owns the runtime list. If the two drift, the audit that consumes this constant is the
+ * thing that must be re-read — not silently re-pointed at the source it is checking.
+ */
+export const CONFIDENCE_DEMOTING_PHRASES = [
+	'common selectors',
+	'among tested selectors',
+	'inferred',
+	'manual review',
+	'possible',
+	'potential',
+	'could indicate',
+] as const;
 
 /**
  * Verdict over the probed set.
@@ -273,31 +309,105 @@ export function assessLameDelegation(results: NameserverProbeResult[]): LameDele
 }
 
 /**
- * HIGH finding for partial lame delegation — some delegated nameservers do not
+ * CRITICAL finding for partial lame delegation — some delegated nameservers do not
  * answer for the zone while others still do.
  *
  * This is the "Sitting Ducks" hijack precondition: the zone keeps resolving via the
  * healthy nameservers, so nothing looks broken, while an attacker who can claim the
  * non-responsive nameserver at its DNS provider gains authoritative control of the
  * zone without ever touching the registrar.
+ *
+ * TWO BRANCHES, AND THE SPLIT IS THE POINT.
+ * The severity is `critical` either way — a delegation that does not answer is a
+ * first-class defect. What differs is the ATTESTATION, and therefore the score.
+ *
+ * - `claimable` non-empty — the dead nameserver's registrable base domain was probed
+ *   and answered NXDOMAIN. It is unregistered; anyone can register it and serve the
+ *   zone. That is the hijack precondition PROVEN, so the finding is stamped
+ *   `confidence: 'verified'`, which is what makes the engine's verified-critical
+ *   count (and its −15 overall penalty) fire.
+ *
+ * - `claimable` empty — the delegation is lame, but nothing showed the dead nameserver
+ *   can be taken over: SERVFAIL is a resolver failure rather than a measurement, and a
+ *   registered base domain belongs to somebody already. The finding stays
+ *   `deterministic`, moves no overall score, and — critically — its prose does NOT
+ *   assert hijackability. Publishing the Sitting Ducks sentence here would be an
+ *   over-claim on a customer-visible surface backed by evidence we do not have.
+ *
+ * Deliberately does NOT set `missingControl`. The domain HAS nameservers; some are
+ * dead. `missingControl` is also the ONLY route into the 64 critical-gap ceiling, which
+ * is a separate product decision and explicitly out of scope for this escalation.
  */
-export function getPartialLameDelegationFinding(domain: string, assessment: LameDelegationAssessment): Finding {
-	return createFinding(
-		'ns',
-		'Lame delegation — nameserver does not answer for the zone',
-		'high',
-		`The parent zone delegates ${domain} to ${assessment.nonResolving.join(', ')}, but ${
-			assessment.nonResolving.length === 1 ? 'that nameserver is' : 'those nameservers are'
-		} not reachable for this zone (no address resolves). ${assessment.resolving.join(', ')} still answer${
-			assessment.resolving.length === 1 ? 's' : ''
-		}, so the domain keeps resolving and the fault is invisible in normal use. This is the "Sitting Ducks" precondition: an attacker who registers the unclaimed nameserver at its DNS provider becomes authoritative for ${domain} without touching the registrar. Remove the stale delegation at the registrar, or re-provision the zone on that nameserver.`,
-		{
-			lameDelegation: 'partial',
-			nonResolvingNameservers: assessment.nonResolving,
-			resolvingNameservers: assessment.resolving,
-			...(assessment.unknown.length > 0 ? { unprobedNameservers: assessment.unknown } : {}),
-		},
-	);
+export function getPartialLameDelegationFinding(
+	domain: string,
+	assessment: LameDelegationAssessment,
+	claimable: string[] = [],
+): Finding {
+	const plural = assessment.nonResolving.length === 1 ? 'that nameserver is' : 'those nameservers are';
+	const answers = assessment.resolving.length === 1 ? 's' : '';
+	const shared =
+		`The parent zone delegates ${domain} to ${assessment.nonResolving.join(', ')}, but ${plural} not reachable for this zone ` +
+		`(no address resolves). ${assessment.resolving.join(', ')} still answer${answers}, so the domain keeps resolving and the ` +
+		`fault is invisible in normal use.`;
+
+	const shown = claimable.length > 0;
+	const detail = shown
+		? `${shared} This is the "Sitting Ducks" precondition, and it is confirmed here: ${claimable.join(', ')} ` +
+			`${claimable.length === 1 ? 'sits' : 'sit'} under a base domain that is not registered, so an attacker who registers it ` +
+			`becomes authoritative for ${domain} without touching the registrar. Remove the stale delegation at the registrar, or ` +
+			`re-provision the zone on that nameserver.`
+		: // Prose constraint, not style: `scoreIndicatesMissingControl` runs MISSING_CONTROL_REGEX
+			// (/no .{1,64} record|missing|required|not found/i) over BOTH title and detail, and a
+			// `critical`+`deterministic` match ZEROES the whole ns category — a far bigger score
+			// move than the escalation itself, from a single adjective. An earlier draft of this
+			// sentence said "rather than a missing name" and silently dropped ns from 60 to 0.
+			`${shared} This run did not establish that the stale delegation can be taken over — the base domain behind it is ` +
+			`registered, or the reachability failure was a resolver error rather than an absent name — so no hijack claim is ` +
+			`made here. Remove the stale delegation at the registrar, or re-provision the zone on that nameserver.`;
+
+	return createFinding('ns', 'Lame delegation — nameserver does not answer for the zone', 'critical', detail, {
+		lameDelegation: 'partial',
+		// DECLARED, never inferred. `verifiedCriticalCount` reads this and nothing else;
+		// an unstamped critical finding is worth exactly zero points.
+		confidence: shown ? 'verified' : 'deterministic',
+		nonResolvingNameservers: assessment.nonResolving,
+		resolvingNameservers: assessment.resolving,
+		...(shown ? { claimableNameservers: claimable, claimabilityBasis: 'base_domain_unregistered' } : {}),
+		...(assessment.unknown.length > 0 ? { unprobedNameservers: assessment.unknown } : {}),
+	});
+}
+
+/**
+ * Best-effort registrable base domain for a NAMESERVER hostname — the last two labels.
+ *
+ * Deliberately the same naive heuristic `getNameserverDiversityFinding` already uses,
+ * and deliberately NOT PSL-accurate: `zone.registrableDomain` is supplied by the caller
+ * for the SCANNED domain only, and nameserver hosts live under arbitrary suffixes this
+ * package has no PSL for.
+ *
+ * The inaccuracy is one-directional and therefore safe HERE. Under a multi-label
+ * suffix, `ns1.example.co.uk` yields `co.uk`, which is registered and answers NOERROR —
+ * so the claimability probe reports NOT claimable and the finding stays unattested. The
+ * heuristic can suppress a real claim; it cannot manufacture one against a registered
+ * suffix. Returns `null` for anything with fewer than two labels, which cannot be a
+ * registrable name.
+ */
+export function nameserverBaseDomain(nameserver: string): string | null {
+	const labels = nameserver.replace(/\.$/, '').toLowerCase().split('.').filter(Boolean);
+	if (labels.length < 2) return null;
+	return labels.slice(-2).join('.');
+}
+
+/**
+ * The nameservers worth spending a claimability probe on: determinately address-less
+ * AND provably non-existent as a NAME (NXDOMAIN).
+ *
+ * Everything else is excluded on purpose. A NODATA host exists, so its base domain is
+ * registered by definition. A SERVFAIL/`unknown` host was not measured at all. Neither
+ * can support a hijack claim, and neither should cost a subrequest.
+ */
+export function claimabilityProbeTargets(results: NameserverProbeResult[]): string[] {
+	return results.filter((r) => r.outcome === 'no_address' && r.hostNxdomain === true).map((r) => r.nameserver);
 }
 
 /**
