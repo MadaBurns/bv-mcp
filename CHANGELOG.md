@@ -6,6 +6,36 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 — no weight, tier, grade band, severity penalty or profile rule moved, and no domain's score or grade changes. `@blackveil/dns-checks` moves **1.19.0 → 1.20.0** (new exported API, no breaking change) and `PARITY_CORPUS_VERSION` moves in lockstep as the version-lock contract requires.
+
+⚠️ `PARITY_CORPUS_VERSION` is folded into every scan cache key (`src/lib/cache.ts`), so this bump invalidates cached scans on deploy and the first post-deploy wave runs cold. Expected, not a regression.
+
+⚠️ 1.20.0 is taken rather than folding into 1.19.0 because 1.19.0 is **released** (v3.53.0–v3.55.0). Adding content to it would recreate the trap #701 recorded: a version whose contents differ from the same version elsewhere.
+
+### Added
+
+- **CAA records are now parsed for their RFC 8657 parameters** — `accounturi` (pins issuance to one ACME account) and `validationmethods` (restricts which ACME challenge types a CA may use) — plus the RFC 9495 `issuemail` tag, which was not tracked at all. These are the controls that stop an attacker who can pass domain validation from obtaining a certificate anyway, and they are the strongest CAA hardening available today. New exports `parseCaaParameters` / `CaaParameters`; `summarizeCaaTags` gains `hasIssuemail`.
+
+  **Score-neutral and reporting-only, deliberately.** A domain publishing these parameters gains an `info` finding (penalty 0); a domain publishing none gains nothing. Absence is NOT a defect — penalising it would fail the great majority of domains that publish CAA at all. A test asserts the `caa` category score is byte-identical with and without parameters present, and a mutation check (flipping the finding `info`→`low`) proves that assertion discriminates rather than passing tautologically.
+
+  This **partially** reverses a dated deliberate exclusion in `caa-analysis.ts`, which held that RFC 8657 pinning should not be evaluated until CA processing becomes mandatory on **2027-03-15**. That date has not arrived, and the exclusion's reasoning is respected: nothing here is scored, which is what the note actually deferred. What changed is that publishing these bindings is the action a domain owner must take *before* the deadline for the binding to be honoured when it starts being enforced — a scanner silent until then reports the gap only once it is too late to have closed it in advance. The note is rewritten in place to record the reversal and its scope.
+
+- **`assessValidityWindow` in the cert module** — computes a certificate's validity window in days from `notBefore`/`notAfter` and bands it against the CA/Browser Forum SC-081 maximum lifetime, in force since **2026-03-15**: `exemplary` (≤47d) · `automated` (≤100d) · `compliant` (≤200d) · `legacy` (>200d issued *before* the cap took force — legitimate, not flagged) · `anomaly` (>200d issued *under* the cap) · `invalid` (`notAfter ≤ notBefore`) · `unknown` (a date was missing).
+
+  The `legacy`/`anomaly` split is the whole point: without it the assessment merely flags every older certificate. A mutation check confirms it — replacing the discriminator with a naive "flag everything >200d" turns the before-the-cap case red while the after-the-cap case stays green.
+
+  `unknown` is a distinct member of the same string-literal union, never a boolean and never a default pass, per the repo rule that an unmeasured signal gets an explicit not-assessed member (a `boolean` would compile UNKNOWN silently into `false` — an affirmative safety claim from zero evidence). When `unknown` is returned, `days` is `null`, so no numeric comparison can read it as compliant either. The effective date is an injected parameter, mirroring `assessExpiry(notAfter, nowSeconds)`; **no wall clock is read inside the module**, so parity fixtures stay deterministic.
+
+  Remains **additive and non-scoring**, inside the boundary `src/cert/index.ts` states in code: nothing here emits a `Finding` or influences `computeProfileAwareScanScore`. Reachable via the existing `@blackveil/dns-checks/cert` subpath.
+
+### Fixed
+
+- **BIMI remediation advice no longer names a vendor that left the market, and no longer states a requirement that is false.** The guidance said "A Verified Mark Certificate (VMC) is required by Gmail and Apple Mail" and "Obtain a VMC from DigiCert or Entrust." Both halves were wrong: Gmail has displayed BIMI logos backed by the lower-cost **Common Mark Certificate** since 2024-09-24, and **Entrust stopped issuing VMCs on 2025-05-12**, its public-certificate business going to Sectigo. Customers were being told to buy a more expensive certificate than they need, from a company that no longer sells it. The replacement states both truths — Gmail accepts a VMC or a CMC; **Apple Mail accepts a VMC only** (still true, and kept).
+
+- **A present `a=` tag is no longer reported as a VMC specifically.** A CMC publishes `a=` identically to a VMC and the check branches on presence alone, so the certificate type is not determinable from the URL without fetching it — which this check has no budget to do. The finding now describes neutral "mark certificate authority evidence" and says so explicitly.
+
+  **Prose only, with zero score movement, proven not assumed:** the `bimi` category scores 95 with `a=` absent and 100 with `a=` present, identical before and after, with `passed` / `controlPresent` / `recordPresent` and severity pinned identical on both sides.
+
 ## [3.55.0] - 2026-08-19
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.19.0 — no weight, tier, grade band, severity penalty or profile rule moved, and no score changes. `recordPresent`/`controlPresent` are score-neutral by construction; only the `map_compliance` reporting surface reads them.

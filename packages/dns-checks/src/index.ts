@@ -76,6 +76,12 @@ export {
 } from './checks';
 export type { CaaRecord, TlsaRecord } from './checks';
 
+// RFC 8657 CAA parameter parsing (`accounturi` / `validationmethods`). Sourced
+// directly from the analysis module rather than the `./checks` barrel, which
+// re-exports only the record-level `parseCaaRecord`.
+export { parseCaaParameters } from './checks/caa-analysis';
+export type { CaaParameters } from './checks/caa-analysis';
+
 // Scoring classifiers
 export { classifyDmarc, appendDmarcCleanInfo } from './scoring/classifiers/dmarc';
 export type { DmarcFacts } from './scoring/classifiers/dmarc';
