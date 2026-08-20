@@ -12,11 +12,23 @@ import {
 	parseCertMetadataFromCt,
 	parseCertDerFromCt,
 	enrichCertificateIntelligence,
+	assessValidityWindow,
+	SC081_MAX_LIFETIME_DAYS,
+	SC081_EFFECTIVE_SECONDS,
 	type CertMetadata,
 	type DerKeyParser,
+	type ValidityWindowBand,
 } from '../cert';
 
 const NOW = 1_780_000_000; // epoch seconds
+
+const DAY = 86400;
+/** 2026-03-15T00:00:00Z — the date the CA/Browser Forum SC-081 200-day maximum took force. */
+const SC081 = 1_773_532_800;
+/** A `notBefore` comfortably before SC-081 took force (2026-01-01T00:00:00Z). */
+const BEFORE_SC081 = 1_767_225_600;
+/** A `notBefore` comfortably after SC-081 took force (2026-05-01T00:00:00Z). */
+const AFTER_SC081 = 1_777_593_600;
 
 function issuance(over: Record<string, unknown> = {}) {
 	return {
@@ -293,5 +305,123 @@ describe('enrichCertificateIntelligence', () => {
 			},
 		});
 		expect(broken.meta?.issuer).toBe("Let's Encrypt"); // falls back to CT
+	});
+});
+
+describe('assessValidityWindow', () => {
+	// D1 — the validity window itself, which nothing in this package computed before.
+	it('computes the window length in days from notBefore/notAfter', () => {
+		expect(assessValidityWindow({ notBefore: AFTER_SC081, notAfter: AFTER_SC081 + 47 * DAY }).days).toBe(47);
+		expect(assessValidityWindow({ notBefore: AFTER_SC081, notAfter: AFTER_SC081 + 90 * DAY }).days).toBe(90);
+	});
+
+	// D2 — the CA/Browser Forum SC-081 automation-readiness bands.
+	it('bands a post-SC-081 certificate by its window length', () => {
+		const band = (days: number) => assessValidityWindow({ notBefore: AFTER_SC081, notAfter: AFTER_SC081 + days * DAY }).band;
+		expect(band(30)).toBe('exemplary');
+		expect(band(47)).toBe('exemplary');
+		expect(band(48)).toBe('automated');
+		expect(band(100)).toBe('automated');
+		expect(band(101)).toBe('compliant');
+		expect(band(200)).toBe('compliant');
+		expect(band(201)).toBe('anomaly');
+	});
+
+	it('pins the SC-081 constants it bands against', () => {
+		// The maximum has been IN FORCE since 2026-03-15 — this is a past date, not upcoming.
+		expect(SC081_MAX_LIFETIME_DAYS).toBe(200);
+		expect(SC081_EFFECTIVE_SECONDS).toBe(SC081);
+		expect(new Date(SC081_EFFECTIVE_SECONDS * 1000).toISOString()).toBe('2026-03-15T00:00:00.000Z');
+	});
+
+	// D3 — the discriminating test. Without this the assessment flags every older
+	// certificate and is worthless: a 398-day window issued under the OLD rules was
+	// legitimately issued and is still valid.
+	it('does NOT flag a 398-day window issued BEFORE SC-081 took force', () => {
+		const legacy = assessValidityWindow({ notBefore: BEFORE_SC081, notAfter: BEFORE_SC081 + 398 * DAY });
+		expect(legacy.days).toBe(398);
+		expect(legacy.band).toBe('legacy');
+		expect(legacy.band).not.toBe('anomaly');
+	});
+
+	it('DOES flag the same 398-day window issued AFTER SC-081 took force', () => {
+		const anomalous = assessValidityWindow({ notBefore: AFTER_SC081, notAfter: AFTER_SC081 + 398 * DAY });
+		expect(anomalous.days).toBe(398);
+		expect(anomalous.band).toBe('anomaly');
+	});
+
+	it('treats the effective date itself as in force (issued ON 2026-03-15 is bound by it)', () => {
+		expect(assessValidityWindow({ notBefore: SC081, notAfter: SC081 + 398 * DAY }).band).toBe('anomaly');
+		expect(assessValidityWindow({ notBefore: SC081 - 1, notAfter: SC081 - 1 + 398 * DAY }).band).toBe('legacy');
+	});
+
+	// D4 — unknown is not compliant.
+	it('returns an explicit `unknown` band, never a default pass, when a date is missing', () => {
+		// A null date means we did not MEASURE the window. Banding it as compliant would
+		// be an affirmative safety claim from zero evidence.
+		expect(assessValidityWindow({ notBefore: null, notAfter: AFTER_SC081 + 47 * DAY })).toEqual({
+			band: 'unknown',
+			days: null,
+		});
+		expect(assessValidityWindow({ notBefore: AFTER_SC081, notAfter: null })).toEqual({ band: 'unknown', days: null });
+		expect(assessValidityWindow({ notBefore: null, notAfter: null })).toEqual({ band: 'unknown', days: null });
+	});
+
+	it('carries no boolean anywhere in the result, so UNKNOWN cannot compile into `false`', () => {
+		const results = [
+			assessValidityWindow({ notBefore: null, notAfter: null }),
+			assessValidityWindow({ notBefore: AFTER_SC081, notAfter: AFTER_SC081 + 47 * DAY }),
+			assessValidityWindow({ notBefore: AFTER_SC081, notAfter: AFTER_SC081 + 398 * DAY }),
+		];
+		for (const r of results) {
+			for (const value of Object.values(r)) {
+				expect(typeof value).not.toBe('boolean');
+			}
+		}
+	});
+
+	it('keeps `unknown` outside every band a consumer could read as a pass', () => {
+		const passBands: ValidityWindowBand[] = ['exemplary', 'automated', 'compliant', 'legacy'];
+		const unknown = assessValidityWindow({ notBefore: null, notAfter: null }).band;
+		expect(passBands).not.toContain(unknown);
+	});
+
+	// Degenerate input — explicit, never a silent negative day count.
+	it('bands a non-positive window `invalid` rather than returning negative days', () => {
+		expect(assessValidityWindow({ notBefore: AFTER_SC081, notAfter: AFTER_SC081 - 10 * DAY }).band).toBe('invalid');
+		expect(assessValidityWindow({ notBefore: AFTER_SC081, notAfter: AFTER_SC081 }).band).toBe('invalid');
+		expect(assessValidityWindow({ notBefore: AFTER_SC081, notAfter: AFTER_SC081 - 10 * DAY }).days).not.toBeLessThan(0);
+	});
+
+	// D5 — no wall-clock branch. The comparison is a certificate PROPERTY against a
+	// FIXED standards date, both passed in; parity fixtures must stay deterministic.
+	it('never reads the wall clock', () => {
+		const nowSpy = vi.spyOn(Date, 'now');
+		assessValidityWindow({ notBefore: AFTER_SC081, notAfter: AFTER_SC081 + 398 * DAY });
+		assessValidityWindow({ notBefore: null, notAfter: null });
+		expect(nowSpy).not.toHaveBeenCalled();
+		nowSpy.mockRestore();
+	});
+
+	it('is deterministic — the same inputs give the same output under any system time', () => {
+		const input = { notBefore: BEFORE_SC081, notAfter: BEFORE_SC081 + 398 * DAY };
+		vi.useFakeTimers();
+		try {
+			vi.setSystemTime(new Date('2020-01-01T00:00:00Z'));
+			const early = assessValidityWindow(input);
+			vi.setSystemTime(new Date('2099-12-31T00:00:00Z'));
+			const late = assessValidityWindow(input);
+			expect(early).toEqual(late);
+			expect(early).toEqual({ band: 'legacy', days: 398 });
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('accepts an injected effective date, following the `nowSeconds` parameter convention', () => {
+		// Same certificate, judged against a different standards date — no hidden clock.
+		const cert = { notBefore: BEFORE_SC081, notAfter: BEFORE_SC081 + 398 * DAY };
+		expect(assessValidityWindow(cert, SC081).band).toBe('legacy');
+		expect(assessValidityWindow(cert, BEFORE_SC081 - DAY).band).toBe('anomaly');
 	});
 });

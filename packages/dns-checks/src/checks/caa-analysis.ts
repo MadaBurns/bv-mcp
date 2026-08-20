@@ -71,10 +71,12 @@ export function summarizeCaaTags(caaRecords: CaaRecord[]): {
 	hasIssue: boolean;
 	hasIssuewild: boolean;
 	hasIodef: boolean;
+	hasIssuemail: boolean;
 } {
 	let hasIssue = false;
 	let hasIssuewild = false;
 	let hasIodef = false;
+	let hasIssuemail = false;
 
 	for (const record of caaRecords) {
 		if (record.tag === 'issue') {
@@ -86,9 +88,149 @@ export function summarizeCaaTags(caaRecords: CaaRecord[]): {
 		if (record.tag === 'iodef') {
 			hasIodef = true;
 		}
+		if (record.tag === 'issuemail') {
+			hasIssuemail = true;
+		}
 	}
 
-	return { hasIssue, hasIssuewild, hasIodef };
+	return { hasIssue, hasIssuewild, hasIodef, hasIssuemail };
+}
+
+/**
+ * RFC 8657 parameters carried inside an `issue` / `issuewild` CAA value.
+ *
+ * The value grammar (RFC 8659 §4.2) is `issuer-domain-name *(";" parameter)`, so
+ * the parameters are a suffix of the SAME value string, not separate records.
+ */
+export interface CaaParameters {
+	/**
+	 * The issuer domain name preceding the parameter list, lowercased. Empty string
+	 * for the explicit no-issuance form — see {@link CaaParameters.noIssuance}.
+	 */
+	issuerDomain: string;
+	/**
+	 * True for the RFC 8659 §4.2 explicit no-issuance form (`issue ";"`), where the
+	 * issuer-domain-name is absent and NO CA is authorized. This is the opposite of
+	 * a parameterless grant, so it must never be read as "any CA may issue": the
+	 * empty `issuerDomain` alone does not distinguish the two.
+	 */
+	noIssuance: boolean;
+	/** RFC 8657 §3 `accounturi` — pins issuance to one ACME account. */
+	accounturi?: string;
+	/**
+	 * RFC 8657 §4 `validationmethods` — the ACME challenge types the CA may use.
+	 * Always a list: the grammar is comma-separated and a single method is a
+	 * one-element list, never a bare string.
+	 */
+	validationmethods?: string[];
+}
+
+/** Strip one layer of surrounding double quotes from a parameter value. */
+function unquote(value: string): string {
+	if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+		return value.slice(1, -1);
+	}
+	return value;
+}
+
+/**
+ * Parse the RFC 8657 parameters out of an `issue` / `issuewild` CAA value.
+ *
+ * Parameter tags are matched case-INSENSITIVELY (`AccountURI` === `accounturi`):
+ * RFC 8659 §4.2 defines the property tag as case-insensitive and CAs in practice
+ * accept mixed case here, so a case-sensitive parse would silently report a real
+ * account pin as absent.
+ *
+ * @param value - The raw CAA record value (the `value` field of a {@link CaaRecord}).
+ */
+export function parseCaaParameters(value: string): CaaParameters {
+	const segments = value.split(';');
+	const issuerDomain = (segments[0] ?? '').trim().toLowerCase();
+	// RFC 8659 §4.2: a value whose issuer-domain-name is absent forbids ALL issuance.
+	// Distinguished from an empty/absent value, which is not a no-issuance directive.
+	const noIssuance = issuerDomain === '' && segments.length > 1;
+
+	const params: CaaParameters = { issuerDomain, noIssuance };
+
+	for (const segment of segments.slice(1)) {
+		const eq = segment.indexOf('=');
+		if (eq === -1) continue;
+		const key = segment.slice(0, eq).trim().toLowerCase();
+		const raw = unquote(segment.slice(eq + 1).trim());
+		if (key === 'accounturi') {
+			params.accounturi = raw;
+		} else if (key === 'validationmethods') {
+			params.validationmethods = raw
+				.split(',')
+				.map((method) => method.trim())
+				.filter((method) => method.length > 0);
+		}
+	}
+
+	return params;
+}
+
+/**
+ * RFC 8657 account / validation-method binding finding.
+ *
+ * `accounturi` pins issuance to a single ACME account and `validationmethods`
+ * restricts which challenge types a CA may accept — together they narrow a CAA
+ * grant from "this CA may issue" to "this CA may issue, for this account, via
+ * these methods". That closes the residual hole in a plain CAA grant: an attacker
+ * who can pass ANY validation at an authorized CA can otherwise still obtain a
+ * certificate.
+ *
+ * ALWAYS `info`, and ALWAYS ABSENT when no parameters are published. These are
+ * BONUS signals, not a baseline: the overwhelming majority of CAA-publishing
+ * domains carry no RFC 8657 parameters, so emitting a scored finding for their
+ * absence would penalize essentially every domain that did the right thing by
+ * publishing CAA at all. Absence is not a defect — say nothing.
+ *
+ * @param caaRecords - The parsed CAA RRset governing the name.
+ */
+export function getCaaParameterBindingFindings(caaRecords: CaaRecord[]): Finding[] {
+	const accountUris: string[] = [];
+	const validationMethods: string[] = [];
+	const issuers: string[] = [];
+
+	for (const record of caaRecords) {
+		if (record.tag !== 'issue' && record.tag !== 'issuewild') continue;
+		const params = parseCaaParameters(record.value);
+		if (params.accounturi === undefined && params.validationmethods === undefined) continue;
+		if (params.accounturi !== undefined) accountUris.push(params.accounturi);
+		for (const method of params.validationmethods ?? []) {
+			if (!validationMethods.includes(method)) validationMethods.push(method);
+		}
+		if (params.issuerDomain !== '' && !issuers.includes(params.issuerDomain)) issuers.push(params.issuerDomain);
+	}
+
+	if (accountUris.length === 0 && validationMethods.length === 0) return [];
+
+	const clauses: string[] = [];
+	if (accountUris.length > 0) {
+		clauses.push(
+			`issuance is pinned to ${accountUris.length === 1 ? 'a specific ACME account' : `${accountUris.length} specific ACME accounts`}`,
+		);
+	}
+	if (validationMethods.length > 0) {
+		clauses.push(
+			`the permitted validation method${validationMethods.length === 1 ? ' is' : 's are'} restricted to ${validationMethods.join(', ')}`,
+		);
+	}
+
+	return [
+		createFinding(
+			'caa',
+			'CAA restricts issuance beyond the CA (RFC 8657)',
+			'info',
+			`The CAA policy${issuers.length > 0 ? ` for ${issuers.join(', ')}` : ''} carries RFC 8657 parameters: ${clauses.join(', and ')}. This narrows the grant beyond "this CA may issue" — an attacker who could otherwise pass a different validation method, or use a different account at the same authorized CA, is excluded. Note that CAs are only required to honour these parameters from 2027-03-15; confirm support with your CA until then.`,
+			{
+				caaAccountBound: accountUris.length > 0,
+				caaValidationMethodBound: validationMethods.length > 0,
+				...(validationMethods.length > 0 ? { caaValidationMethods: validationMethods } : {}),
+			},
+		),
+	];
 }
 
 export function getCaaValidationFindings(tagSummary: { hasIssue: boolean; hasIssuewild: boolean; hasIodef: boolean }): Finding[] {
@@ -151,12 +293,31 @@ export function getCaaConfiguredFinding(): Finding {
 // as a leaked public IP. The spaced form keeps the reference precise without
 // widening either scanner's allowlist to accommodate a false positive.
 //
-// FUTURE (dated): RFC 8657 `accounturi=` / `validationmethods=` pinning is
-// deliberately NOT evaluated here. CAs are only required to "SHOULD" process
-// those parameters until 2027-03-15, Let's Encrypt is the only CA with confirmed
-// support, and RFC 8657 itself instructs domain owners not to assume the
-// restrictions are effective absent a CA statement. Revisit after 2027-03-15,
-// when the requirement becomes MUST and scoring it would reflect reality.
+// RFC 8657 `accounturi=` / `validationmethods=` pinning IS evaluated here, as of
+// 2026-08-20 — see `getCaaParameterBindingFindings`. This REVERSES the earlier
+// dated exclusion, which read:
+//
+//   > FUTURE (dated): RFC 8657 `accounturi=` / `validationmethods=` pinning is
+//   > deliberately NOT evaluated here. CAs are only required to "SHOULD" process
+//   > those parameters until 2027-03-15, Let's Encrypt is the only CA with
+//   > confirmed support, and RFC 8657 itself instructs domain owners not to
+//   > assume the restrictions are effective absent a CA statement. Revisit after
+//   > 2027-03-15, when the requirement becomes MUST and scoring it would reflect
+//   > reality.
+//
+// What changed: CA processing of these parameters becomes MANDATORY on
+// 2027-03-15. Publishing them is the action domain owners must take BEFORE that
+// date for the binding to be in force when it starts being honoured, so a scanner
+// that stays silent until the deadline reports the gap only once it is too late to
+// have closed it in advance.
+//
+// The original reasoning is nonetheless still respected, and constrains HOW this
+// is reported: because CA support is not yet universal, the parameters are
+// surfaced as an `info` observation with penalty 0 and their ABSENCE emits nothing
+// at all. Nothing here is scored. That keeps faith with RFC 8657's instruction not
+// to assume the restrictions are effective absent a CA statement — we report what
+// is published, and do not credit or penalize it. Revisit the SCORING question
+// (not the parsing question) after 2027-03-15.
 
 /**
  * The floor of the CAA reuse window in CA/B Forum TLS BR v2.2.8, §4.2.2 subsection 1:
