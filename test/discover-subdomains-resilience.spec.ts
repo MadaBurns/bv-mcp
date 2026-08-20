@@ -168,7 +168,6 @@ describe('discoverSubdomains — multi-source resilience', () => {
 		// the caller a retry is worthwhile — which extends the lockout and poisons
 		// the shared quota for every OTHER domain scanned next.
 		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
-		const kv = makeKv();
 		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
 			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
 			if (s.includes('crt.sh') || s.includes('certspotter.com')) {
@@ -177,7 +176,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
 
-		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const result = await discoverSubdomains('example.com');
 
 		expect(result.sourceUnavailable).toBe(true);
 		const outcomes = (result.coverage?.perSource ?? []).map((s) => s.outcome);
@@ -189,14 +188,13 @@ describe('discoverSubdomains — multi-source resilience', () => {
 		// Discriminating half: 503 must NOT be swept into the new bucket, or the
 		// retry guidance disappears for the one case where retrying is correct.
 		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
-		const kv = makeKv();
 		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
 			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
 			if (s.includes('crt.sh') || s.includes('certspotter.com')) return Response.json({}, { status: 503 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
 
-		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const result = await discoverSubdomains('example.com');
 		const outcomes = (result.coverage?.perSource ?? []).map((s) => s.outcome);
 		expect(outcomes).toContain('http_error');
 		expect(outcomes).not.toContain('rate_limited');
