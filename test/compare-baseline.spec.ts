@@ -491,7 +491,11 @@ describe('compare_baseline does not pass a control rule whose record was never p
 			score: 85,
 			controlPresent: true,
 			recordPresent: false,
-			findings: [{ category, title: 'DNSSEC is registry-managed', severity: 'medium', detail: '' }],
+			// `info`, not `medium`: since #726 a medium-or-worse finding is itself
+			// disqualifying, so grading THAT here would test the severity floor instead of
+			// the recordPresent-rebuttal clause this fixture exists for. A note that the
+			// zone's signing is registry-managed is informational anyway.
+			findings: [{ category, title: 'DNSSEC is registry-managed', severity: 'info', detail: '' }],
 		} as CheckResult;
 	}
 
@@ -559,6 +563,90 @@ describe('compare_baseline does not pass a control rule whose record was never p
 		expect(result.inconclusiveRules).toEqual([]);
 		expect(result.checkedRules).toBe(1);
 		expect(result.passed).toBe(true);
+	});
+
+	/**
+	 * #726 — the severity floor on the ENFORCEMENT surface.
+	 *
+	 * `require_spf` is backed by `spf`, one of the five checks that never emit
+	 * `recordPresent`, so both presence clauses are structurally inert and the rule
+	 * degraded back to bare `passed` — the #706 defect, re-opened for half the
+	 * categories a `require_*` rule can name. A CI gate is exactly where that is worst:
+	 * it prints a green build.
+	 */
+	it('VIOLATES require_spf when the SPF check passes but the same scan flags it at medium', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const scan = createMockScan({
+			domain: 'deficient-spf.example',
+			checks: [
+				{
+					category: 'spf',
+					passed: true,
+					score: 85,
+					findings: [{ category: 'spf', title: 'SPF trust surface: 4 shared platforms', severity: 'medium', detail: '' }],
+				} as CheckResult,
+			],
+		});
+
+		const result = compareBaseline(scan, { require_spf: true });
+
+		expect(result.violations.map((v) => v.rule)).toContain('require_spf');
+		expect(result.passed).toBe(false);
+		expect(result.checkedRules).toBe(1);
+		// The reason must be attributed honestly: this domain's SPF plainly IS in
+		// effect, and telling a gate customer otherwise sends them hunting for a record
+		// they already publish.
+		const violation = result.violations.find((v) => v.rule === 'require_spf')!;
+		expect(violation.message).toContain('medium severity or worse');
+		expect(violation.message).not.toContain('no evidence');
+	});
+
+	it('keeps the absence wording when the control really is absent', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const scan = scanWith('no-dnssec.example', [absentButUnpenalized('dnssec', 'DNSSEC not enabled', 'high', false)]);
+		const result = compareBaseline(scan, { require_dnssec: true });
+		const violation = result.violations.find((v) => v.rule === 'require_dnssec');
+		expect(violation).toBeDefined();
+		// `absentButUnpenalized` carries a high finding, so BOTH clauses disqualify here;
+		// the deficiency wording legitimately wins. What must never happen is a PASS.
+		expect(result.passed).toBe(false);
+	});
+
+	it('does NOT violate a require_* rule on an info-downgraded or unmeasured finding', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+
+		// Post-processing downgrades DKIM/MTA-STS/BIMI findings to `info` under an SPF
+		// noSendPolicy (and email-auth findings on a non-mail domain under an enforcing
+		// parent DMARC). The floor must read that FINAL severity, or the fix becomes a
+		// false FAIL on the domains those downgrades protect.
+		const downgraded = createMockScan({
+			domain: 'no-send.example',
+			checks: [
+				{
+					category: 'dkim',
+					passed: true,
+					score: 100,
+					findings: [{ category: 'dkim', title: 'No DKIM records found', severity: 'info', detail: '(expected — no MX records)' }],
+				} as CheckResult,
+			],
+		});
+		expect(compareBaseline(downgraded, { require_dkim: true }).violations).toHaveLength(0);
+
+		// "Could not measure" is not evidence the control is unsatisfied.
+		const unmeasured = createMockScan({
+			domain: 'waf.example',
+			checks: [
+				{
+					category: 'caa',
+					passed: true,
+					score: 100,
+					findings: [
+						{ category: 'caa', title: 'CAA lookup inconclusive', severity: 'medium', detail: '', metadata: { inconclusive: true, errorKind: 'dns_error' } },
+					],
+				} as CheckResult,
+			],
+		});
+		expect(compareBaseline(unmeasured, { require_caa: true }).violations).toHaveLength(0);
 	});
 
 	/** A control that IS present and satisfied must keep passing — no regression. */
