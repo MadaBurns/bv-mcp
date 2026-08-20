@@ -344,18 +344,30 @@ describe('subject data interpolated into finding prose', () => {
 		});
 
 		it('scales linearly, not quadratically, with attacker-chosen length', () => {
+			// Timed over REPEATS, not a single call. Once linear, one pass is far below timer
+			// resolution, and a ratio of two sub-millisecond samples is dominated by clock
+			// granularity rather than by the algorithm: CI measured 16KB at the old 0.01ms
+			// floor against a 1ms 64KB sample and reported a 100× "regression" on code that
+			// is provably linear. Summing repeats lifts both samples above the noise so the
+			// ratio means what it claims.
+			const REPEATS = 20;
 			const time = (kb: number) => {
+				const input = pathological(kb);
 				const started = performance.now();
-				redactSubjectData(pathological(kb));
+				for (let i = 0; i < REPEATS; i += 1) redactSubjectData(input);
 				return performance.now() - started;
 			};
 
-			time(8); // warm up, so the first call does not absorb JIT cost
-			const small = Math.max(time(16), 0.01);
+			time(8); // warm up, so the first timed batch does not absorb JIT cost
+			// Floor at 1ms — a full millisecond IS the resolution guarantee, unlike 0.01ms.
+			// Flooring can only shrink the measured ratio, so it cannot mask a regression:
+			// quadratic growth puts the 16KB batch in the seconds, nowhere near the floor.
+			const small = Math.max(time(16), 1);
 			const large = time(64);
 
-			// Quadratic would be ~16× for a 4× input. Allow 6× for noise; pre-fix this was ~15.5×.
-			expect(large / small).toBeLessThan(6);
+			// A 4× input costs ~4× when linear and ~16× when quadratic. 8 sits between the
+			// two with margin on both sides; pre-fix this measured ~15.5×.
+			expect(large / small).toBeLessThan(8);
 		});
 
 		it('does not redact at all for a finding the severity gate already rejects', () => {
