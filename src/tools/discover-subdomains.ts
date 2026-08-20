@@ -426,11 +426,17 @@ export async function discoverSubdomains(
 ): Promise<SubdomainDiscoveryResult> {
 	// Fast path: certstream service binding (bv-certstream-worker; itself
 	// multi-source + short-cached). On a clean result, prime the LKG cache.
+	// Attempts made by the fast path before it gave up. Threaded into every
+	// downstream path so a certstream FAILURE is reported as a failure — without
+	// this the orchestrator forgets the fast path ran at all, and `buildCtCoverage`
+	// reports the dead binding as "not consulted on this call" (#738).
+	const certstreamAttempts: CtSourceAttempt[] = [];
 	if (certstream) {
-		const result = await queryCertstream(domain, certstream, certstreamAuthToken, options);
-		if (result) {
-			await cacheSuccess(domain, result, options);
-			return result;
+		const fastPath = await queryCertstream(domain, certstream, certstreamAuthToken, options);
+		if (fastPath.attempt) certstreamAttempts.push(fastPath.attempt);
+		if (fastPath.result) {
+			await cacheSuccess(domain, fastPath.result, options);
+			return fastPath.result;
 		}
 		// Fall through to the direct public sources if the binding failed.
 	}
@@ -441,7 +447,10 @@ export async function discoverSubdomains(
 	// milliseconds, unlike the 10s fetch we no longer have budget for.
 	if (deadlineExceeded(options)) {
 		const staleOnDeadline = await readLastKnownGood(domain, options);
-		return staleOnDeadline ? { ...staleOnDeadline, partial: true } : emptyResult(domain, true, true);
+		// A stale result keeps the coverage of the call that CACHED it — that record
+		// describes its own provenance and would be a lie about this call. Staleness
+		// is signalled by `stale`/`partial` instead.
+		return staleOnDeadline ? { ...staleOnDeadline, partial: true } : emptyResult(domain, true, true, { attempts: certstreamAttempts });
 	}
 
 	// Direct public CT sources, tried in order with per-source health logging
@@ -451,7 +460,8 @@ export async function discoverSubdomains(
 		const meta: EnumerationMeta = {
 			sources: direct.sources,
 			sourceIndexExhausted: direct.sourceIndexExhausted,
-			attempts: direct.attempts,
+			// Attempt order: the fast path ran first.
+			attempts: [...certstreamAttempts, ...direct.attempts],
 		};
 		const result =
 			direct.entries.length > 0 ? buildResultFromEntries(domain, direct.entries, meta) : emptyResult(domain, false, false, meta);
@@ -465,7 +475,7 @@ export async function discoverSubdomains(
 	const stale = await readLastKnownGood(domain, options);
 	if (stale) return stale;
 
-	return emptyResult(domain, true, false, { attempts: direct.attempts });
+	return emptyResult(domain, true, false, { attempts: [...certstreamAttempts, ...direct.attempts] });
 }
 
 /**
@@ -1169,9 +1179,11 @@ async function queryCertstream(
 	certstream: { fetch: typeof fetch },
 	certstreamAuthToken?: string,
 	options?: DiscoverSubdomainsOptions,
-): Promise<SubdomainDiscoveryResult | null> {
+): Promise<CertstreamFastPath> {
 	if (deadlineExceeded(options)) {
-		return emptyResult(domain, true, true);
+		// Budget gone before a single request was issued, so the source genuinely was
+		// NOT consulted. No attempt is recorded and `notConsulted` stays truthful.
+		return { result: emptyResult(domain, true, true) };
 	}
 
 	const enumerate = await queryCertstreamEndpoint<CertstreamEnumerateResponse>(
@@ -1181,48 +1193,104 @@ async function queryCertstream(
 		certstreamAuthToken,
 		options,
 	);
-	const enumerateOk = Boolean(enumerate) && !enumerate?.error && Array.isArray(enumerate?.subdomains);
-	if (enumerateOk && enumerate) {
-		if (!enumerate.timedOut) {
-			return buildCertstreamResult(domain, enumerate.subdomains, enumerate.certificateCount);
+	const enumerateOk = Boolean(enumerate.data) && !enumerate.data?.error && Array.isArray(enumerate.data?.subdomains);
+	// A 200 carrying an `error` body or the wrong shape is not a healthy answer;
+	// only the transport succeeded.
+	let outcome: CtSourceOutcome = enumerate.outcome === 'ok' && !enumerateOk ? 'error' : enumerate.outcome;
+
+	if (enumerateOk && enumerate.data) {
+		const data = enumerate.data;
+		if (!data.timedOut) {
+			return { result: buildCertstreamResult(domain, data.subdomains, data.certificateCount), attempt: certstreamAttempt('ok', true) };
 		}
 		// #575's partial semantics, now also carrying #573's upstream metadata so the
 		// timed-out enumeration is reported incomplete rather than merely `partial`.
-		if (enumerate.subdomains.length > 0) {
+		if (data.subdomains.length > 0) {
 			return {
-				...buildCertstreamResult(domain, enumerate.subdomains, enumerate.certificateCount, { timedOut: true }),
-				partial: true,
+				result: { ...buildCertstreamResult(domain, data.subdomains, data.certificateCount, { timedOut: true }), partial: true },
+				attempt: certstreamAttempt('ok', true),
 			};
 		}
 		// timedOut:true with an empty list — fall through to /sans below rather
-		// than accepting an incomplete measurement as a confident zero.
+		// than accepting an incomplete measurement as a confident zero. The source
+		// DID answer, so the recorded outcome is a timeout, never "never asked".
+		outcome = 'timeout';
 	}
 
 	// Deadline gate: if we already burned the budget on /enumerate, skip /sans
-	// and let the orchestrator decide whether to fall through to crt.sh.
+	// and let the orchestrator decide whether to fall through to crt.sh. One
+	// request HAS been issued by now, so the attempt is recorded either way.
 	if (deadlineExceeded(options)) {
-		return emptyResult(domain, true, true);
+		return { result: emptyResult(domain, true, true), attempt: certstreamAttempt(outcome, false) };
 	}
 
 	const sans = await queryCertstreamEndpoint<CertstreamSansResponse>('sans', domain, certstream, certstreamAuthToken, options);
 	// `/sans` reports its own upstream truncation — read it (declared and silently
 	// discarded before #573) so an incomplete SAN sweep is never served as a
 	// complete enumeration. Layered over #575's timed-out control flow.
-	const sansOk = Boolean(sans) && !sans?.error && Array.isArray(sans?.names);
-	if (!sansOk || !sans) return null;
-	if (!sans.timedOut) {
-		return buildCertstreamResult(domain, sans.names, sans.certificateCount, { truncated: sans.truncated });
-	}
-	if (sans.names.length > 0) {
+	const sansOk = Boolean(sans.data) && !sans.data?.error && Array.isArray(sans.data?.names);
+	outcome = worstCertstreamOutcome(outcome, sans.outcome === 'ok' && !sansOk ? 'error' : sans.outcome);
+
+	if (!sansOk || !sans.data) return { result: null, attempt: certstreamAttempt(outcome, false) };
+	const data = sans.data;
+	if (!data.timedOut) {
 		return {
-			...buildCertstreamResult(domain, sans.names, sans.certificateCount, { truncated: sans.truncated, timedOut: true }),
-			partial: true,
+			result: buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated }),
+			attempt: certstreamAttempt('ok', true),
 		};
 	}
-	// timedOut:true with an empty list — return null so the orchestrator falls
+	if (data.names.length > 0) {
+		return {
+			result: { ...buildCertstreamResult(domain, data.names, data.certificateCount, { truncated: data.truncated, timedOut: true }), partial: true },
+			attempt: certstreamAttempt('ok', true),
+		};
+	}
+	// timedOut:true with an empty list — no result so the orchestrator falls
 	// through to the direct public sources (crt.sh → Certspotter) instead of
 	// treating this as a confident zero.
-	return null;
+	return { result: null, attempt: certstreamAttempt('timeout', false) };
+}
+
+/** One certstream endpoint call: the parsed body (when healthy) and why, if not. */
+interface CertstreamEndpointOutcome<T> {
+	data: T | null;
+	outcome: CtSourceOutcome;
+}
+
+/**
+ * The certstream fast path's answer AND its coverage attempt (#738).
+ *
+ * `attempt` is present whenever at least one request was ISSUED — including
+ * every failure. It is absent only when the deadline tripped before any request
+ * went out, which is the one case where "not consulted" is literally true.
+ *
+ * This pairing is the fix: `queryCertstream` used to return a bare `null` on
+ * failure, so `buildCtCoverage` — which derives `notConsulted` as "known sources
+ * minus ATTEMPTED" — could not distinguish a source that failed from one never
+ * asked, and reported a hard outage as a benign "not consulted on this call".
+ */
+interface CertstreamFastPath {
+	result: SubdomainDiscoveryResult | null;
+	attempt?: CtSourceAttempt;
+}
+
+function certstreamAttempt(outcome: CtSourceOutcome, contributed: boolean): CtSourceAttempt {
+	return { source: 'certstream', outcome, contributed };
+}
+
+/**
+ * Most-actionable-wins when `/enumerate` and `/sans` fail differently.
+ *
+ * Ordered by what the caller must DO, not by severity: a 429 is the one outcome
+ * whose correct response is the opposite of the usual one (back off — retrying
+ * extends a lockout on a quota shared with the next domain), so it must never be
+ * masked by a subsequent generic error. Timeout ranks next because it is
+ * deterministic per-domain (#735) and tells the caller not to retry identically.
+ */
+const CERTSTREAM_OUTCOME_PRECEDENCE: readonly CtSourceOutcome[] = ['rate_limited', 'timeout', 'http_error', 'error', 'empty', 'ok'];
+
+function worstCertstreamOutcome(a: CtSourceOutcome, b: CtSourceOutcome): CtSourceOutcome {
+	return CERTSTREAM_OUTCOME_PRECEDENCE.indexOf(a) <= CERTSTREAM_OUTCOME_PRECEDENCE.indexOf(b) ? a : b;
 }
 
 async function queryCertstreamEndpoint<T>(
@@ -1231,7 +1299,7 @@ async function queryCertstreamEndpoint<T>(
 	certstream: { fetch: typeof fetch },
 	certstreamAuthToken?: string,
 	options?: DiscoverSubdomainsOptions,
-): Promise<T | null> {
+): Promise<CertstreamEndpointOutcome<T>> {
 	const composed = composeAbortSignal(CT_SOURCE_TIMEOUT_MS, options?.signal);
 
 	try {
@@ -1242,11 +1310,14 @@ async function queryCertstreamEndpoint<T>(
 		});
 		if (!response.ok) {
 			await disposeUnreadResponseBody(response);
-			return null;
+			return { data: null, outcome: httpFailureOutcome(response.status) };
 		}
-		return (await response.json()) as T;
+		return { data: (await response.json()) as T, outcome: 'ok' };
 	} catch {
-		return null;
+		// An abort is the inner CT timeout or the caller's deadline; either way the
+		// source did not answer in time, which is a materially different remediation
+		// from an upstream error (see `ctFailureGuidance`).
+		return { data: null, outcome: composed.signal.aborted ? 'timeout' : 'error' };
 	} finally {
 		composed.cleanup();
 	}
