@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.59.0] - 2026-08-21
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` and `@blackveil/dns-checks` are unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded.
+
+### Fixed
+
+- **`discover_subdomains` no longer reports a Certificate Transparency source that was queried and FAILED as one that was never consulted.** The certstream fast path returned a bare `null` on any non-OK response or throw without recording an attempt, and coverage derives `notConsulted` as "known sources minus attempted" — so a hard source outage was indistinguishable from a source that was never asked, and the payload read `Not consulted on this call: certstream`. That inverts the guarantee the coverage record exists to provide, and it reads as a benign configuration note: an operator concludes the source is unconfigured when it is configured and broken. Failures are now recorded with their real outcome (`rate_limited` / `timeout` / `http_error` / `error`), and `notConsulted` again means only what it says. When `/enumerate` and `/sans` fail differently the more actionable outcome wins, so a 429 is never masked by a later generic error. (#738)
+
+### Added
+
+- **Optional `CERTSPOTTER_TOKEN` — the Certspotter CT source can now authenticate.** It was queried unauthenticated, on a per-IP, per-hour free quota that a batch sweep exhausts (`HTTP 429 rate_limited`). Set the secret to raise that ceiling. **Optional and fail-soft:** absent → unauthenticated and fully functional, so no existing deployment changes behaviour and no self-host is required to obtain a key. The token is sent only to Certspotter, never to another CT source.
+  ⚠️ **This raises rate limits ONLY — not the per-query timeout.** SSLMate's free tier still cuts a query at 15 seconds, so enumerating a very large estate continues to return `HTTP 504 {"code":"timeout"}` whether authenticated or not. That limit is a property of the tier, not of this client, and only a paid tier's longer timeout changes it.
+
 ## [3.58.0] - 2026-08-21
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` and `@blackveil/dns-checks` are unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded.
