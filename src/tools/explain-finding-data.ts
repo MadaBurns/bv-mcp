@@ -998,11 +998,12 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		title: 'BIMI Refinement',
 		severity: 'low',
 		explanation:
-			'A low-severity BIMI observation — the record is largely in place but a detail (such as an optional VMC or logo metadata) could be improved.',
+			'A low-severity BIMI observation — the record is largely in place but a detail (such as an optional mark certificate or logo metadata) could be improved.',
 		impact: 'BIMI works but is not at its most complete configuration.',
 		adverseConsequences:
-			'Minor reduction in display coverage across providers. Note that BIMI is a brand-presentation control: there is no controlled evidence that it reduces phishing susceptibility, and a verified logo renders on any message that passes DMARC for the domain — including mail sent from a compromised mailbox. Weigh the VMC cost against that, and keep BIMI as a brand-presentation investment rather than an anti-phishing one.',
-		recommendation: 'Consider adding a VMC and ensuring the logo metadata meets each target provider requirements.',
+			'Minor reduction in display coverage across providers. Note that BIMI is a brand-presentation control: there is no controlled evidence that it reduces phishing susceptibility, and a verified logo renders on any message that passes DMARC for the domain — including mail sent from a compromised mailbox. Weigh the mark-certificate cost against that, and keep BIMI as a brand-presentation investment rather than an anti-phishing one.',
+		recommendation:
+			'Consider adding a mark certificate, and ensure the logo metadata meets each target provider requirements. Gmail displays BIMI logos backed by either a Verified Mark Certificate (VMC) or the lower-cost Common Mark Certificate (CMC); Apple Mail accepts a VMC only, so pick the certificate type from the providers you need to cover. Check current issuers (DigiCert, for example) before purchasing, as the market changes.',
 		references: ['https://bimigroup.org/'],
 	},
 	BRAND_DISCOVERY_INFO: {

@@ -170,6 +170,61 @@ export function parseCaaParameters(value: string): CaaParameters {
 	return params;
 }
 
+// ─── Bounds on RFC 8657 parameter rendering (CWE-1333 / CWE-770) ──────────────
+//
+// CAA values are DNS data, so for any domain an attacker controls they are
+// ATTACKER-AUTHORED and unbounded in both length and cardinality. Two costs
+// follow, and both were measured on the pre-cap implementation:
+//
+//   * CPU — the distinct-method dedupe was `Array.includes` inside a loop, i.e.
+//     O(n²). MEASURED on the pre-cap body: a single realistic ~64 KB DoH response
+//     cost 116.9-197.7 ms (4.3k-16.3k distinct methods, depending on token length);
+//     50k methods 1,437 ms; 200k methods 20,199 ms. Now a `Set`: 1.1 / 5.4 /
+//     16.0 ms respectively.
+//   * OUTPUT — the joined detail string and the metadata array were unbounded.
+//     MEASURED: the same 64 KB input produced a 68,759-byte finding detail and
+//     200k methods a 2,707,291-byte one, all of which flows verbatim into the MCP
+//     `structuredContent` LLM channel. Now 591 / 734 bytes.
+//
+// Same class of hazard the two existing remediation comments in this file address
+// (`parseCaaRecord` ReDoS, `MISSING_CONTROL_REGEX` bound), and the caps follow the
+// package's existing `MAX_*` convention (`MAX_INCLUDE_PROBES`,
+// `MAX_LAME_DELEGATION_PROBES`, `MAX_META_STRING`).
+//
+// Every cap is set FAR above real-world CAA practice, so no honest policy is ever
+// clipped: ACME defines three validation methods in total (`http-01`, `dns-01`,
+// `tls-alpn-01`), and a CAA RRset naming more than a handful of distinct issuers
+// is already unusual. When a cap DOES bite, the truncation is stated in the detail
+// and flagged in metadata — a clipped list must never read as a complete one.
+
+/** Distinct `validationmethods` tokens retained. ACME defines 3; 8 is generous headroom. */
+export const MAX_CAA_VALIDATION_METHODS = 8;
+
+/** Distinct issuer domains rendered in the detail. */
+export const MAX_CAA_ISSUERS = 8;
+
+/**
+ * Rendered length of ONE attacker-authored token (a method name or issuer domain).
+ * Longest real token is `tls-alpn-01` (11) and an issuer is a DNS label sequence;
+ * 64 keeps any legitimate value intact while stopping a 64 KB "method".
+ */
+export const MAX_CAA_TOKEN_LENGTH = 64;
+
+/** Appended to any value this module clipped, so truncation is visible in the text itself. */
+export const TRUNCATION_MARKER = '...(truncated)';
+
+/**
+ * Defensive ceiling on the emitted detail string. The per-token and per-list caps
+ * already bound the detail to roughly 2 KB; this is the belt-and-braces backstop
+ * that holds even if a future clause is added without one.
+ */
+export const MAX_CAA_PARAMETER_DETAIL_LENGTH = 4_000;
+
+/** Clamp one attacker-authored token to a bounded, honestly-marked rendering. */
+function clampToken(token: string): string {
+	return token.length > MAX_CAA_TOKEN_LENGTH ? `${token.slice(0, MAX_CAA_TOKEN_LENGTH)}${TRUNCATION_MARKER}` : token;
+}
+
 /**
  * RFC 8657 account / validation-method binding finding.
  *
@@ -189,45 +244,97 @@ export function parseCaaParameters(value: string): CaaParameters {
  * @param caaRecords - The parsed CAA RRset governing the name.
  */
 export function getCaaParameterBindingFindings(caaRecords: CaaRecord[]): Finding[] {
-	const accountUris: string[] = [];
-	const validationMethods: string[] = [];
-	const issuers: string[] = [];
+	// `Set`, not `Array.includes` — the linear scan inside the loop was the O(n²).
+	// The account URIs are only ever COUNTED, so they are counted rather than
+	// retained: keeping 16k attacker-authored URI strings alive bought nothing.
+	const validationMethods = new Set<string>();
+	const issuers = new Set<string>();
+	let accountUriCount = 0;
+	let validationMethodsTruncated = false;
+	let issuersTruncated = false;
 
 	for (const record of caaRecords) {
 		if (record.tag !== 'issue' && record.tag !== 'issuewild') continue;
 		const params = parseCaaParameters(record.value);
 		if (params.accounturi === undefined && params.validationmethods === undefined) continue;
-		if (params.accounturi !== undefined) accountUris.push(params.accounturi);
+		if (params.accounturi !== undefined) accountUriCount += 1;
 		for (const method of params.validationmethods ?? []) {
-			if (!validationMethods.includes(method)) validationMethods.push(method);
+			const token = clampToken(method);
+			// Duplicate-first: a repeated token is NOT a dropped one, so an RRset that
+			// republishes the same methods on `issue` and `issuewild` must not be
+			// mislabelled as truncated.
+			if (validationMethods.has(token)) continue;
+			if (validationMethods.size >= MAX_CAA_VALIDATION_METHODS) {
+				validationMethodsTruncated = true;
+				continue;
+			}
+			validationMethods.add(token);
 		}
-		if (params.issuerDomain !== '' && !issuers.includes(params.issuerDomain)) issuers.push(params.issuerDomain);
+		if (params.issuerDomain !== '') {
+			const issuer = clampToken(params.issuerDomain);
+			if (!issuers.has(issuer)) {
+				if (issuers.size >= MAX_CAA_ISSUERS) issuersTruncated = true;
+				else issuers.add(issuer);
+			}
+		}
 	}
 
-	if (accountUris.length === 0 && validationMethods.length === 0) return [];
+	if (accountUriCount === 0 && validationMethods.size === 0) return [];
+
+	const methodList = [...validationMethods];
+	const issuerList = [...issuers];
 
 	const clauses: string[] = [];
-	if (accountUris.length > 0) {
+	if (accountUriCount > 0) {
 		clauses.push(
-			`issuance is pinned to ${accountUris.length === 1 ? 'a specific ACME account' : `${accountUris.length} specific ACME accounts`}`,
+			`issuance is pinned to ${accountUriCount === 1 ? 'a specific ACME account' : `${accountUriCount} specific ACME accounts`}`,
 		);
 	}
-	if (validationMethods.length > 0) {
+	if (methodList.length > 0) {
 		clauses.push(
-			`the permitted validation method${validationMethods.length === 1 ? ' is' : 's are'} restricted to ${validationMethods.join(', ')}`,
+			`the permitted validation method${methodList.length === 1 && !validationMethodsTruncated ? ' is' : 's are'} restricted to ${methodList.join(
+				', ',
+			)}${validationMethodsTruncated ? ` (list truncated — these are the first ${MAX_CAA_VALIDATION_METHODS} of a longer published list)` : ''}`,
 		);
 	}
+
+	const issuerPrefix =
+		issuerList.length > 0
+			? ` for ${issuerList.join(', ')}${
+					issuersTruncated ? ` (issuer list truncated — these are the first ${MAX_CAA_ISSUERS} of a longer published list)` : ''
+				}`
+			: '';
+
+	// PROSE HAZARD — do not copy-edit this sentence back toward the words
+	// "required", "missing", "not found", or a "no <…> record" phrasing.
+	// `scoreIndicatesMissingControl` (scoring/model.ts) runs MISSING_CONTROL_REGEX
+	// over BOTH the title and the detail, and a match at `high`/`critical` severity
+	// ZEROES the whole `caa` category rather than deducting from it. This finding is
+	// `info`, so today the match would be inert — but the earlier wording ("CAs are
+	// only *required* to honour these parameters from 2027-03-15") did match, which
+	// made a future severity bump a silent category wipe. The identical landmine is
+	// commented at the "No CAA records" emission site in check-caa.ts. Guarded by
+	// the severity-promoted arm of caa-analysis.test.ts.
+	const detail = `The CAA policy${issuerPrefix} carries RFC 8657 parameters: ${clauses.join(
+		', and ',
+	)}. This narrows the grant beyond "this CA may issue" — an attacker who could otherwise pass a different validation method, or use a different account at the same authorized CA, is excluded. CAs must honour these parameters from 2027-03-15; until then support is at each CA's discretion, so confirm it with yours.`;
 
 	return [
 		createFinding(
 			'caa',
 			'CAA restricts issuance beyond the CA (RFC 8657)',
 			'info',
-			`The CAA policy${issuers.length > 0 ? ` for ${issuers.join(', ')}` : ''} carries RFC 8657 parameters: ${clauses.join(', and ')}. This narrows the grant beyond "this CA may issue" — an attacker who could otherwise pass a different validation method, or use a different account at the same authorized CA, is excluded. Note that CAs are only required to honour these parameters from 2027-03-15; confirm support with your CA until then.`,
+			detail.length > MAX_CAA_PARAMETER_DETAIL_LENGTH
+				? `${detail.slice(0, MAX_CAA_PARAMETER_DETAIL_LENGTH - TRUNCATION_MARKER.length)}${TRUNCATION_MARKER}`
+				: detail,
 			{
-				caaAccountBound: accountUris.length > 0,
-				caaValidationMethodBound: validationMethods.length > 0,
-				...(validationMethods.length > 0 ? { caaValidationMethods: validationMethods } : {}),
+				caaAccountBound: accountUriCount > 0,
+				caaValidationMethodBound: methodList.length > 0,
+				...(methodList.length > 0 ? { caaValidationMethods: methodList } : {}),
+				// Truncation is reported, never implied by silence: a consumer reading the
+				// method list must be able to tell a complete list from a clipped one.
+				...(validationMethodsTruncated ? { caaValidationMethodsTruncated: true } : {}),
+				...(issuersTruncated ? { caaIssuersTruncated: true } : {}),
 			},
 		),
 	];

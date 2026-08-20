@@ -263,6 +263,9 @@ export async function checkCAA(
 	// Appended alongside the enforceability findings, and for the same reason: this is
 	// a BONUS signal about how tightly the grant is bound, not a tag-completeness
 	// signal, so it must not suppress the "properly configured" note evaluated above.
+	// Its prose is deliberately kept clear of the MISSING_CONTROL_REGEX vocabulary for
+	// the same reason the "No CAA records" severity is pinned to medium below — see the
+	// PROSE HAZARD note in caa-analysis.ts.
 	findings.push(...getCaaParameterBindingFindings(caaRecords));
 
 	findings.push(...getCaaEnforceabilityFindings(lookup, domain));
