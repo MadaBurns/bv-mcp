@@ -107,13 +107,127 @@ export function computeCategoryScore(findings: Finding[], category?: CheckCatego
 const MISSING_CONTROL_REGEX = /(no\s+[^\r\n]{1,64}\srecord|missing|required|not\s+found)/i;
 
 /**
+ * Metadata key a call site can use to DECLARE substrings of its own prose that are
+ * subject data rather than authored assertion (see {@link redactSubjectData}). Use it
+ * whenever a `high`/`critical` finding interpolates a value that is not structurally
+ * recognisable as a host/URL/email — a raw record token, a DKIM selector, an upstream
+ * error string. Values are matched case-insensitively as plain substrings.
+ */
+export const SUBJECT_TERMS_METADATA_KEY = 'subjectTerms';
+
+/**
+ * Redaction placeholder. Deliberately a NON-whitespace, non-letter character: replacing
+ * a token with the empty string could splice two halves of the prose together and
+ * MANUFACTURE a match ("not <host> found" → "not  found"). `-` blocks that join while
+ * still satisfying the `no\s+…\srecord` gap, so authored prose keeps matching exactly
+ * as it did before.
+ */
+const REDACTED = '-';
+
+/** A URL — wholly runtime-derived (policy URLs, BIMI logo URLs). Leading punctuation already trimmed. */
+const URL_TOKEN = /^(?:https?|ftp):\/\//i;
+
+/**
+ * A contact address echoed from a record (SOA RNAME, DMARC `rua=` / `ruf=`) — local part,
+ * an at-sign, then a dotted host. Written in prose rather than as a literal example: the
+ * repo-safety scanner's `real-email-address` rule matches an address-shaped literal even in
+ * a comment, and blocking a commit over a doc example is not worth the illustration.
+ */
+const EMAIL_TOKEN = /^[^\s@]{1,64}@[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*\.[a-z]{2,63}$/i;
+
+/**
+ * A DNS name: two or more labels, the last alphabetic (a TLD). Leading `_` is allowed so
+ * `_dmarc.example.com` / `_mta-sts.example.com` are recognised. Anchored and label-bounded
+ * — every quantifier is capped and the `.` separators make the label partition unique, so
+ * there is no ambiguity for a backtracking engine to explore (CWE-1333, same care as
+ * MISSING_CONTROL_REGEX above).
+ */
+const HOST_TOKEN = /^_?[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?(?:\.[a-z0-9_](?:[a-z0-9_-]{0,61}[a-z0-9_])?)*\.[a-z]{2,63}$/i;
+
+/** Longest DNS name (RFC 1035 §2.3.4) — anything longer is prose, not a name. */
+const MAX_NAME_LENGTH = 255;
+
+const LEADING_PUNCT = /^[^\p{L}\p{N}_]+/u;
+const TRAILING_PUNCT = /[^\p{L}\p{N}_]+$/u;
+
+function escapeForRegex(value: string): string {
+	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Project a finding's prose onto the text its AUTHOR wrote, with the scan SUBJECT's own
+ * data removed.
+ *
+ * Why this exists: `MISSING_CONTROL_REGEX` is an inference about what the check author
+ * asserted ("this control is absent"). ~28 `high`/`critical` emission sites interpolate
+ * runtime values into that same prose — the scanned domain, its nameserver and MX
+ * hostnames, the policy URLs derived from it, tokens echoed out of its own records. Those
+ * values are DATA ABOUT the subject, never an assertion about a control, so they must be
+ * unable to arm (or disarm) the gate.
+ *
+ * Measured in production 2026-08-20: `github.com` and `missingkids.org` produced
+ * byte-identical unsigned-zone DNSSEC findings and scored 60/passed vs 0/failed, purely
+ * because `${target}` supplied the substring "missing" to a sentence whose static text
+ * (`check-dnssec.ts:139-142`) deliberately avoided every trigger word. Since `dnssec` is a
+ * critical category in every profile, that also tripped the 64 critical-gap ceiling and
+ * published a D grade for the National Center for Missing & Exploited Children.
+ *
+ * The projection is used ONLY for the missing-control decision. Nothing customer-visible
+ * changes: titles, details and metadata are emitted verbatim.
+ *
+ * Redacted: declared {@link SUBJECT_TERMS_METADATA_KEY} substrings, URLs, email
+ * addresses, and DNS-name-shaped tokens. NOT redacted: bare single-label runtime values
+ * (a DKIM selector, an SPF mechanism keyword, an upstream error phrase) — those are
+ * indistinguishable from prose and must be declared via `subjectTerms` instead.
+ */
+export function redactSubjectData(text: string, subjectTerms?: readonly string[]): string {
+	let working = text;
+
+	if (subjectTerms) {
+		for (const term of subjectTerms) {
+			if (typeof term !== 'string') continue;
+			const trimmed = term.trim();
+			// Single characters are too short to be distinguishable from prose.
+			if (trimmed.length < 2) continue;
+			working = working.replace(new RegExp(escapeForRegex(trimmed), 'gi'), REDACTED);
+		}
+	}
+
+	return working
+		.split(/(\s+)/)
+		.map((token) => {
+			if (token.length === 0 || /^\s+$/.test(token)) return token;
+			const lead = LEADING_PUNCT.exec(token)?.[0] ?? '';
+			const rest = token.slice(lead.length);
+			if (URL_TOKEN.test(rest)) return `${lead}${REDACTED}`;
+			const trail = TRAILING_PUNCT.exec(rest)?.[0] ?? '';
+			const core = rest.slice(0, rest.length - trail.length);
+			if (core.length < 4 || core.length > MAX_NAME_LENGTH) return token;
+			if (EMAIL_TOKEN.test(core) || HOST_TOKEN.test(core)) return `${lead}${REDACTED}${trail}`;
+			return token;
+		})
+		.join('');
+}
+
+function declaredSubjectTerms(finding: Finding): readonly string[] | undefined {
+	const declared = finding.metadata?.[SUBJECT_TERMS_METADATA_KEY];
+	if (!Array.isArray(declared)) return undefined;
+	return declared.filter((v): v is string => typeof v === 'string');
+}
+
+/**
  * Determine whether findings for a category indicate a fundamentally missing control.
  * Requires both a missing-control text pattern AND deterministic/verified confidence
  * to avoid false zeroing from heuristic checks (e.g., DKIM selector probing).
+ *
+ * The pattern is tested against a SUBJECT-DATA-FREE projection of the prose — see
+ * {@link redactSubjectData}. The regex and its semantics for authored prose are unchanged.
  */
 export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
 	return findings.some((f) => {
-		const isMissingPattern = MISSING_CONTROL_REGEX.test(f.detail) || MISSING_CONTROL_REGEX.test(f.title);
+		const terms = declaredSubjectTerms(f);
+		const isMissingPattern =
+			MISSING_CONTROL_REGEX.test(redactSubjectData(f.detail, terms)) || MISSING_CONTROL_REGEX.test(redactSubjectData(f.title, terms));
 		const confidence = (f.metadata?.confidence as string) ?? inferFindingConfidence(f);
 		return (
 			isMissingPattern &&
