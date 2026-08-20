@@ -797,6 +797,21 @@ function logCtSource(domain: string, source: string, outcome: CtSourceOutcome): 
 	}
 }
 
+/**
+ * Classify a non-OK HTTP response from a CT source (#735).
+ *
+ * 429 is separated from the generic `http_error` because it inverts the correct
+ * caller response. Every other upstream failure is worth retrying; a 429 means
+ * the unauthenticated quota is already spent, and retrying extends the lockout
+ * on a quota SHARED with whatever domain is scanned next. Measured 2026-08-21:
+ * once Certspotter 504s on a large estate it 429s the same caller, and the
+ * lockout survived a 75-second wait — so an eager retry loop converts one slow
+ * domain into a sweep-wide outage.
+ */
+function httpFailureOutcome(status: number): CtSourceOutcome {
+	return status === 429 ? 'rate_limited' : 'http_error';
+}
+
 /** Fetch + parse crt.sh into normalized entries. Bounded body, no throw. */
 async function fetchCrtShEntries(domain: string, signal: AbortSignal): Promise<SourceResult> {
 	try {
@@ -806,7 +821,7 @@ async function fetchCrtShEntries(domain: string, signal: AbortSignal): Promise<S
 		});
 		if (!response.ok) {
 			await disposeUnreadResponseBody(response);
-			return { outcome: 'http_error', entries: [] };
+			return { outcome: httpFailureOutcome(response.status), entries: [] };
 		}
 		const declaredLength = Number(response.headers.get('content-length'));
 		if (Number.isFinite(declaredLength) && declaredLength > CT_SOURCE_MAX_BODY_BYTES) {
@@ -875,7 +890,7 @@ async function fetchCertspotterEntries(domain: string, signal: AbortSignal, opti
 
 			if (!response.ok) {
 				await disposeUnreadResponseBody(response);
-				if (pagesRead === 0) return { outcome: 'http_error', entries: [] };
+				if (pagesRead === 0) return { outcome: httpFailureOutcome(response.status), entries: [] };
 				stopIncomplete();
 				break;
 			}
@@ -1435,6 +1450,52 @@ function emptyResult(domain: string, sourceUnavailable = false, partial = false,
 	};
 }
 
+/**
+ * Remediation prose for a total CT failure, split by WHY each source failed.
+ *
+ * The banner used to end "retry shortly" unconditionally. That is correct for an
+ * upstream outage and actively misleading for a timeout: Certspotter returns
+ * HTTP 504 `{"code":"timeout"}` for domains with a large certificate population
+ * ("domains with a huge number of sub-domains or certificates" — its own words)
+ * while answering smaller domains in the same window. Measured 2026-08-21:
+ * `meta.com` timed out repeatedly; `anthropic.com` returned 200 / 43 KB. So the
+ * timeout is a deterministic property of the DOMAIN under an unpaginated query,
+ * not a transient property of the SOURCE — telling the caller to retry sends
+ * them into a loop that cannot terminate, on precisely the largest estates.
+ *
+ * `notConsulted` is reported separately because it is not a failure at all: the
+ * source was never asked (typically unbound in this deployment). Folding it into
+ * "unavailable" implies three sources were tried when only two were (#735).
+ */
+function ctFailureGuidance(coverage: CtCoverage | undefined): string {
+	const perSource = coverage?.perSource ?? [];
+	const timedOut = perSource.filter((s) => s.outcome === 'timeout').map((s) => s.source);
+	const limited = perSource.filter((s) => s.outcome === 'rate_limited').map((s) => s.source);
+	const errored = perSource.filter((s) => s.outcome === 'http_error' || s.outcome === 'error').map((s) => s.source);
+	const never = coverage?.notConsulted ?? [];
+
+	const parts: string[] = [];
+	if (timedOut.length > 0) {
+		parts.push(
+			`${timedOut.join(', ')} timed out — this is deterministic for this domain, not transient, so an identical retry will time out again. Page size is NOT the lever: limit=10, limit=100 and after=0 were measured returning the same HTTP 504.`,
+		);
+	}
+	if (limited.length > 0) {
+		parts.push(
+			`${limited.join(', ')} rate-limited this caller (HTTP 429) — the unauthenticated quota is spent. Back off; retrying extends the lockout and the quota is shared with the next domain scanned.`,
+		);
+	}
+	if (errored.length > 0) {
+		parts.push(`${errored.join(', ')} returned an upstream error, which may be transient — a retry is worthwhile.`);
+	}
+	if (never.length > 0) {
+		parts.push(`${never.join(', ')} was never consulted (not configured in this deployment), so no fallback source remained.`);
+	}
+	// Only reachable if a source failed with an outcome outside the known set.
+	if (parts.length === 0) return 'Retry shortly.';
+	return parts.join(' ');
+}
+
 /** Format subdomain discovery result as human-readable text. */
 export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, format: OutputFormat = 'full'): string {
 	// Both zero-ish branches carry the per-source coverage line: "which source
@@ -1442,7 +1503,7 @@ export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, forma
 	const coverageLine = result.coverage ? `\n${formatCoverageLine(result.coverage)}` : '';
 
 	if (result.sourceUnavailable) {
-		return `Subdomain Discovery: ${result.domain} — Certificate Transparency source unavailable (the CT log endpoint returned an error or was unreachable); could not enumerate subdomains. This does not mean the domain has no subdomains — retry shortly.${coverageLine}`;
+		return `Subdomain Discovery: ${result.domain} — Certificate Transparency source unavailable; could not enumerate subdomains. This does not mean the domain has no subdomains. ${ctFailureGuidance(result.coverage)}${coverageLine}`;
 	}
 	if (result.totalSubdomains === 0) {
 		// A STALE empty set is not a confident "none found" — say so, or the
