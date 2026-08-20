@@ -161,6 +161,47 @@ describe('discoverSubdomains — multi-source resilience', () => {
 		expect(result.subdomains).toEqual([]);
 	});
 
+	it('records HTTP 429 as rate_limited, not as a generic http_error (#735)', async () => {
+		// Measured 2026-08-21: after certspotter 504s on a large estate it starts
+		// returning 429 to the SAME unauthenticated caller, and the lockout outlived
+		// a 75-second wait. Collapsing that into `http_error` makes the banner tell
+		// the caller a retry is worthwhile — which extends the lockout and poisons
+		// the shared quota for every OTHER domain scanned next.
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const kv = makeKv();
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh') || s.includes('certspotter.com')) {
+				return Response.json({ code: 'rate_limited' }, { status: 429 });
+			}
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+
+		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+
+		expect(result.sourceUnavailable).toBe(true);
+		const outcomes = (result.coverage?.perSource ?? []).map((s) => s.outcome);
+		expect(outcomes).toContain('rate_limited');
+		expect(outcomes).not.toContain('http_error');
+	});
+
+	it('still records a non-429 upstream failure as http_error (#735 control)', async () => {
+		// Discriminating half: 503 must NOT be swept into the new bucket, or the
+		// retry guidance disappears for the one case where retrying is correct.
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const kv = makeKv();
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh') || s.includes('certspotter.com')) return Response.json({}, { status: 503 });
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+
+		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const outcomes = (result.coverage?.perSource ?? []).map((s) => s.outcome);
+		expect(outcomes).toContain('http_error');
+		expect(outcomes).not.toContain('rate_limited');
+	});
+
 	it('still serves stale on total failure even when force_refresh is set', async () => {
 		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
 		const kv = makeKv();

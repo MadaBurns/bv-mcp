@@ -331,6 +331,14 @@ describe('discover_subdomains — rendered text always states the sample caveat'
 			expect(output).toMatch(/retry/i);
 		});
 
+		it('tells a rate-limited caller to BACK OFF, never that a retry is worthwhile', async () => {
+			const output = await renderUnavailable([{ source: 'certspotter', outcome: 'rate_limited' }]);
+			expect(output).toMatch(/certspotter/);
+			expect(output).toMatch(/back off|backoff|quota/i);
+			// The dangerous wording: retrying is what EXTENDS a 429 lockout.
+			expect(output).not.toMatch(/retry is worthwhile|retry shortly/i);
+		});
+
 		it('says the deployment has no configured fallback when the last source was never consulted', async () => {
 			const output = await renderUnavailable(
 				[
