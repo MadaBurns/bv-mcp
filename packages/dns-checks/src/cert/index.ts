@@ -20,6 +20,9 @@ export { normalizeCertDate, mergeCertSources } from './cert-metadata';
 export type { ExpiryBand, ExpiryAssessment } from './expiry';
 export { assessExpiry } from './expiry';
 
+export type { ValidityWindowBand, ValidityWindowAssessment } from './validity-window';
+export { assessValidityWindow, SC081_MAX_LIFETIME_DAYS, SC081_EFFECTIVE_SECONDS } from './validity-window';
+
 export type { KeyStrengthBand } from './key-strength';
 export { assessKeyStrength, normalizeKeyType, ecCurveToBits } from './key-strength';
 
