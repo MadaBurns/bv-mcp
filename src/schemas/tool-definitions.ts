@@ -250,7 +250,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_bimi: {
 		description:
-			'Check the BIMI brand-logo record at default._bimi.<domain>. Validates the logo URL (l=) and VMC certificate evidence (a=), and verifies the DMARC enforcement prerequisite (p=quarantine/reject) that mail clients require before displaying a BIMI logo. Returns findings for a missing/malformed record or unmet prerequisites. Use to assess brand-indicator readiness in inboxes.',
+			'Check the BIMI brand-logo record at default._bimi.<domain>. Validates the logo URL (l=) and the presence of mark-certificate authority evidence (a=) — the a= tag is a bare URL, so the certificate type (VMC or CMC) is not determined — and verifies the DMARC enforcement prerequisite (p=quarantine/reject) that mail clients require before displaying a BIMI logo. Returns findings for a missing/malformed record or unmet prerequisites. Use to assess brand-indicator readiness in inboxes.',
 		schema: BaseDomainArgs,
 		group: 'brand_threats',
 		tier: 'hardening',

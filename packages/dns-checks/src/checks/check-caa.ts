@@ -15,6 +15,7 @@ import {
 	parseCaaRecord,
 	getCaaConfiguredFinding,
 	getCaaDnssecPairingFinding,
+	getCaaParameterBindingFindings,
 	getCaaTtlStalenessFinding,
 	getCaaValidationFindings,
 	summarizeCaaTags,
@@ -217,6 +218,9 @@ export async function checkCAA(
 					),
 				);
 				findings.push(...getCaaValidationFindings(summarizeCaaTags(climbed.records)));
+				// RFC 8657 binding is a property of the RRset that governs issuance — here the
+				// ANCESTOR's, for the same reason enforceability is reported against it below.
+				findings.push(...getCaaParameterBindingFindings(climbed.records));
 				// Enforceability is a property of the RRset that actually governs issuance —
 				// here the ANCESTOR's, so report it against `climbed.foundAt`, not `domain`.
 				findings.push(...getCaaEnforceabilityFindings(climbed, climbed.foundAt));
@@ -255,6 +259,14 @@ export async function checkCAA(
 	if (findings.length === 0) {
 		findings.push(getCaaConfiguredFinding());
 	}
+
+	// Appended alongside the enforceability findings, and for the same reason: this is
+	// a BONUS signal about how tightly the grant is bound, not a tag-completeness
+	// signal, so it must not suppress the "properly configured" note evaluated above.
+	// Its prose is deliberately kept clear of the MISSING_CONTROL_REGEX vocabulary for
+	// the same reason the "No CAA records" severity is pinned to medium below — see the
+	// PROSE HAZARD note in caa-analysis.ts.
+	findings.push(...getCaaParameterBindingFindings(caaRecords));
 
 	findings.push(...getCaaEnforceabilityFindings(lookup, domain));
 

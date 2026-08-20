@@ -108,7 +108,7 @@ ${TOOL_COUNT} MCP tools, including ${CHECK_TOOL_COUNT} \`check_*\` tools and \`s
 | \`check_fast_flux\` | Fast Flux | Multi-round A/AAAA rotation and TTL analysis |
 | \`check_authoritative_dns_infra\` | Authoritative DNS Infrastructure | Raw DNS, authoritative behavior, routing, RPKI, and vantage evidence |
 | \`check_root_server_set\` | Authoritative DNS Infrastructure | Root hints, root priming, glue, delegation, DNSKEY, and SOA serial evidence |
-| \`check_bimi\` | BIMI | Record presence, logo URL, VMC |
+| \`check_bimi\` | BIMI | Record presence, logo URL, mark-certificate authority evidence (VMC or CMC) |
 | \`check_tlsrpt\` | TLS-RPT | Record presence, reporting URI |
 | \`check_lookalikes\` | Lookalikes | Typosquat detection, DNS + MX probing |
 | _(internal)_ | Subdomain Takeover | Dangling CNAMEs to unresolved services (via \`scan_domain\` only) |
