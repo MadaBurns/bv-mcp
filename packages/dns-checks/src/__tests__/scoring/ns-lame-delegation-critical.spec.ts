@@ -33,7 +33,11 @@ import {
 	inferFindingConfidence,
 } from '../../scoring';
 import { assessLameDelegation, getPartialLameDelegationFinding } from '../../checks/ns-analysis';
-import type { CheckCategory, CheckResult, DomainContext, Finding } from '../../types';
+import type { CheckCategory, CheckResult, Finding } from '../../types';
+// `DomainContext` is a SCORING type, exported from `scoring/profiles` via the scoring barrel —
+// not from `types`. Importing it from the wrong module left it unresolved, which silently
+// turned `mailContext()`'s return annotation into an unchecked one.
+import type { DomainContext } from '../../scoring';
 
 /** The engine's own predicate, restated so the test measures the MECHANISM, not a threshold. */
 function verifiedCriticalCount(findings: Finding[]): number {
