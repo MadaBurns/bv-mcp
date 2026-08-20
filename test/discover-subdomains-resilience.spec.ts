@@ -19,9 +19,9 @@ const { restore } = setupFetchMock();
 afterEach(() => restore());
 
 /**
- * Minimal in-memory KV mock (get/put/delete) sufficient for the LKG cache.
- * Cast to KVNamespace at the call site (codebase idiom) to avoid depending on
- * the ambient worker-types resolution in this spec file.
+ * Minimal in-memory KV mock (get/put/delete) sufficient for the subdomain cache.
+ * The module under test uses only those three methods; `list` and
+ * `getWithMetadata` are deliberately not implemented.
  */
 function makeKv() {
 	const store = new Map<string, string>();
@@ -39,6 +39,18 @@ function makeKv() {
 			store.delete(key);
 		},
 	};
+}
+
+/**
+ * Widen the mock to the full `KVNamespace` surface for the call sites.
+ *
+ * Done ONCE here rather than at each call site: this file previously carried 10
+ * standing TS2739 errors from passing the bare mock, tracked by the
+ * `typecheck:tests` ratchet. One documented widening in one place drops that
+ * count to zero instead of growing it with every new spec.
+ */
+function asKv(kv: ReturnType<typeof makeKv>): KVNamespace {
+	return kv as unknown as KVNamespace;
 }
 
 /**
@@ -167,7 +179,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com'), crtEntry('vpn.example.com')], { status: 200 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		const fresh = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const fresh = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 		expect(fresh.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'vpn.example.com']);
 		expect(kv.store.size).toBeGreaterThan(0);
 
@@ -181,7 +193,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh') || s.includes('certspotter.com')) return Response.json({}, { status: 503 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		const stale = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const stale = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(stale.stale).toBe(true);
 		expect(stale.sourceUnavailable).toBeFalsy();
@@ -198,7 +210,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
 
-		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(result.sourceUnavailable).toBe(true);
 		expect(result.stale).toBeFalsy();
@@ -253,14 +265,14 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com')], { status: 200 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
 			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
 			if (s.includes('crt.sh') || s.includes('certspotter.com')) return Response.json({}, { status: 503 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv, forceRefresh: true });
+		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv), forceRefresh: true });
 
 		expect(result.stale).toBe(true);
 		expect(result.subdomains.map((s) => s.subdomain)).toEqual(['api.example.com']);
@@ -302,7 +314,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com')], { status: 200 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		// Past the fresh window, so the entry is an outage net rather than the
 		// answer — otherwise the fresh-read path would satisfy this call before the
@@ -311,7 +323,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 
 		// Budget already blown (e.g. the certstream fast path consumed all of it):
 		// a KV read is still affordable, so we must return data, not an error.
-		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv, deadlineMs: Date.now() - 1 });
+		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv), deadlineMs: Date.now() - 1 });
 
 		expect(result.stale).toBe(true);
 		expect(result.partial).toBe(true);
@@ -352,7 +364,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
 
-		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const result = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(result.sourceUnavailable).toBeFalsy();
 		// An empty result is a weak fallback: re-serving "0 subdomains (stale)" is no
@@ -370,7 +382,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com')], { status: 200 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 		const afterSeed = kv.store.get([...kv.store.keys()][0]);
 
 		// Outage: must NOT clobber the cached good set with an empty/unavailable one.
@@ -379,7 +391,7 @@ describe('discoverSubdomains — multi-source resilience', () => {
 			if (s.includes('crt.sh') || s.includes('certspotter.com')) return Response.json({}, { status: 503 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(kv.store.get([...kv.store.keys()][0])).toBe(afterSeed);
 	});
@@ -457,7 +469,7 @@ describe('discoverSubdomains — fresh-read cache', () => {
 			if (s.includes('crt.sh')) return Response.json([crtEntry('api.example.com'), crtEntry('vpn.example.com')], { status: 200 });
 			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
 		});
-		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 		expect(kv.store.size).toBeGreaterThan(0);
 	}
 
@@ -475,7 +487,7 @@ describe('discoverSubdomains — fresh-read cache', () => {
 		});
 		globalThis.fetch = spy;
 
-		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(ctFetchCount(spy)).toBe(0);
 		expect(hit.subdomains.map((s) => s.subdomain).sort()).toEqual(['api.example.com', 'vpn.example.com']);
@@ -486,7 +498,7 @@ describe('discoverSubdomains — fresh-read cache', () => {
 		const kv = makeKv();
 		await prime(kv);
 
-		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		// `stale` is documented as "every live CT source was unreachable". A healthy
 		// cache hit is not an outage, and a consumer branching on `stale` to warn
@@ -510,7 +522,7 @@ describe('discoverSubdomains — fresh-read cache', () => {
 		});
 		globalThis.fetch = spy;
 
-		const refreshed = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const refreshed = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(ctFetchCount(spy)).toBeGreaterThan(0);
 		expect(refreshed.cached).toBeFalsy();
@@ -530,7 +542,7 @@ describe('discoverSubdomains — fresh-read cache', () => {
 		});
 		globalThis.fetch = spy;
 
-		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv });
+		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(ctFetchCount(spy)).toBe(0);
 		expect(hit.cached).toBe(true);
@@ -548,7 +560,7 @@ describe('discoverSubdomains — fresh-read cache', () => {
 		});
 		globalThis.fetch = spy;
 
-		const forced = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv, forceRefresh: true });
+		const forced = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv), forceRefresh: true });
 
 		expect(ctFetchCount(spy)).toBeGreaterThan(0);
 		expect(forced.cached).toBeFalsy();
@@ -587,7 +599,7 @@ describe('discoverSubdomains — fresh-read cache', () => {
 		});
 		globalThis.fetch = spy;
 
-		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: kv, deadlineMs: Date.now() - 1 });
+		const hit = await discoverSubdomains('example.com', undefined, undefined, { cacheKv: asKv(kv), deadlineMs: Date.now() - 1 });
 
 		expect(ctFetchCount(spy)).toBe(0);
 		expect(hit.cached).toBe(true);
@@ -608,7 +620,7 @@ describe('discoverSubdomains — fresh-read cache', () => {
 		});
 		globalThis.fetch = spy;
 
-		const other = await discoverSubdomains('other.com', undefined, undefined, { cacheKv: kv });
+		const other = await discoverSubdomains('other.com', undefined, undefined, { cacheKv: asKv(kv) });
 
 		expect(ctFetchCount(spy)).toBeGreaterThan(0);
 		expect(other.cached).toBeFalsy();
