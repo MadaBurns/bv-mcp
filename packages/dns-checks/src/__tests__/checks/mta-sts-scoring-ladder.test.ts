@@ -315,16 +315,50 @@ describe('MTA-STS scoring is independent of the scanned domain NAME', () => {
 // Deployed-but-unfetchable policy: the fifth branch the false comment named.
 // ---------------------------------------------------------------------------
 
-describe('MTA-STS deployed-but-unfetchable policy is graded, not zeroed', () => {
-	it('policy file 404 is a graded deduction above the no-policy baseline', async () => {
-		expect(await measure({ policy: null })).toEqual({ score: 88, passed: true, zeroed: false });
+/**
+ * An UNRETRIEVABLE policy TIES absence — it must never beat it.
+ *
+ * The first version of this ladder put every policy defect at 88 against a graded-absence
+ * baseline of 85, on the reasoning that "the operator ran the DNS record and the HTTPS
+ * host, which absence does not". That is false for this branch: publishing
+ * `_mta-sts.victim TXT "v=STSv1; id=1"` and pointing `mta-sts.victim` at ANY host that
+ * 404s requires no HTTPS service, no certificate and no policy file, yet banked **+3 over
+ * a domain that deployed nothing** and +3 over one that correctly disabled via
+ * `mode: none`. Two DNS records bought the points.
+ *
+ * Retrievable-but-invalid keeps 88: serving a policy file at the well-known HTTPS URL
+ * with a valid certificate is a real partial deployment, and the operator gets credit for
+ * the part that exists. The line is RETRIEVABILITY, not RFC validity.
+ *
+ * These assert the INVARIANT (never above absence), not just the literal — asserting only
+ * the number is how the 88 got frozen in the first place.
+ */
+describe('MTA-STS deployed-but-unfetchable policy ties absence and never beats it', () => {
+	const ABSENT_BASELINE = 85;
+
+	it('policy file 404 ties the no-policy baseline', async () => {
+		const result = await measure({ policy: null });
+		expect(result).toEqual({ score: ABSENT_BASELINE, passed: true, zeroed: false });
+		expect(result.score).toBeLessThanOrEqual(ABSENT_BASELINE);
 	});
 
-	it('policy file redirect is a graded deduction above the no-policy baseline', async () => {
-		expect(await measure({ redirect: true })).toEqual({ score: 88, passed: true, zeroed: false });
+	it('policy file redirect ties the no-policy baseline', async () => {
+		const result = await measure({ redirect: true });
+		expect(result).toEqual({ score: ABSENT_BASELINE, passed: true, zeroed: false });
+		expect(result.score).toBeLessThanOrEqual(ABSENT_BASELINE);
 	});
 
-	it('policy file oversized is a graded deduction above the no-policy baseline', async () => {
-		expect(await measure({ oversized: true })).toEqual({ score: 88, passed: true, zeroed: false });
+	it('policy file oversized ties the no-policy baseline', async () => {
+		const result = await measure({ oversized: true });
+		expect(result).toEqual({ score: ABSENT_BASELINE, passed: true, zeroed: false });
+		expect(result.score).toBeLessThanOrEqual(ABSENT_BASELINE);
+	});
+
+	it('no unretrievable-policy branch outscores publishing nothing', async () => {
+		const absent = await measure({ sts: [], policy: null });
+		const branches = await Promise.all([measure({ policy: null }), measure({ redirect: true }), measure({ oversized: true })]);
+		for (const branch of branches) {
+			expect(branch.score).toBeLessThanOrEqual(absent.score);
+		}
 	});
 });

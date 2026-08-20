@@ -148,7 +148,40 @@ const HOST_TOKEN = /^_?[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?(?:\.[a-z0-9_](?:[a-
 const MAX_NAME_LENGTH = 255;
 
 const LEADING_PUNCT = /^[^\p{L}\p{N}_]+/u;
-const TRAILING_PUNCT = /[^\p{L}\p{N}_]+$/u;
+
+/** Single word character. Used for a LINEAR trailing-run scan — see below. */
+const WORD_CHAR = /[\p{L}\p{N}_]/u;
+
+/**
+ * Length of the token's trailing non-word run.
+ *
+ * Semantically identical to `/[^\p{L}\p{N}_]+$/u`, but linear instead of quadratic.
+ * That regex is unanchored on the LEFT, so on a long non-word run that does not reach the
+ * end of the string the engine retries from every start position and backtracks the whole
+ * run each time: O(N²). This matters because the string is attacker-controlled and
+ * UNBOUNDED — `sanitizeDnsData` explicitly does not truncate `detail`, and checks such as
+ * `check-svcb-https.ts` interpolate a raw DNS record value into it, so a scanned domain
+ * picks both the length and the bytes. Measured on `AAAA` + N×`/` + `A`, one call:
+ * 8KB→37ms, 16KB→143ms, 32KB→560ms, 64KB→2,215ms of Worker CPU.
+ *
+ * Scanning backwards costs O(trailing run) with no backtracking. Surrogate pairs are
+ * stepped as single code points so astral letters still terminate the run, matching the
+ * `u`-flag regex this replaces.
+ */
+function trailingPunctuationLength(value: string): number {
+	let end = value.length;
+	while (end > 0) {
+		let start = end - 1;
+		const unit = value.charCodeAt(start);
+		if (unit >= 0xdc00 && unit <= 0xdfff && end >= 2) {
+			const high = value.charCodeAt(end - 2);
+			if (high >= 0xd800 && high <= 0xdbff) start = end - 2;
+		}
+		if (WORD_CHAR.test(value.slice(start, end))) break;
+		end = start;
+	}
+	return value.length - end;
+}
 
 function escapeForRegex(value: string): string {
 	return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -187,8 +220,15 @@ export function redactSubjectData(text: string, subjectTerms?: readonly string[]
 		for (const term of subjectTerms) {
 			if (typeof term !== 'string') continue;
 			const trimmed = term.trim();
-			// Single characters are too short to be distinguishable from prose.
-			if (trimmed.length < 2) continue;
+			// Too short to be subject data worth hiding, long enough to dismantle a trigger
+			// word from the inside. No MISSING_CONTROL_REGEX trigger is shorter than 6
+			// characters, so a 2-3 character term cannot be the thing being concealed — but
+			// `p=no` would strip the `no` out of a `not found` in the same finding's prose and
+			// silently DISARM a genuine zeroing (measured: "Record not found" → "Record -t
+			// found", gate true → false). The risk is one-directional: `-` substitution means
+			// redaction can never splice a new match into existence, only destroy one. 4 matches
+			// the `core.length < 4` floor applied to host/email tokens below.
+			if (trimmed.length < 4) continue;
 			working = working.replace(new RegExp(escapeForRegex(trimmed), 'gi'), REDACTED);
 		}
 	}
@@ -200,8 +240,9 @@ export function redactSubjectData(text: string, subjectTerms?: readonly string[]
 			const lead = LEADING_PUNCT.exec(token)?.[0] ?? '';
 			const rest = token.slice(lead.length);
 			if (URL_TOKEN.test(rest)) return `${lead}${REDACTED}`;
-			const trail = TRAILING_PUNCT.exec(rest)?.[0] ?? '';
-			const core = rest.slice(0, rest.length - trail.length);
+			const trailLength = trailingPunctuationLength(rest);
+			const trail = rest.slice(rest.length - trailLength);
+			const core = rest.slice(0, rest.length - trailLength);
 			if (core.length < 4 || core.length > MAX_NAME_LENGTH) return token;
 			if (EMAIL_TOKEN.test(core) || HOST_TOKEN.test(core)) return `${lead}${REDACTED}${trail}`;
 			return token;
@@ -225,15 +266,16 @@ function declaredSubjectTerms(finding: Finding): readonly string[] | undefined {
  */
 export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
 	return findings.some((f) => {
-		const terms = declaredSubjectTerms(f);
-		const isMissingPattern =
-			MISSING_CONTROL_REGEX.test(redactSubjectData(f.detail, terms)) || MISSING_CONTROL_REGEX.test(redactSubjectData(f.title, terms));
+		// Order matters for COST, not just clarity. The two cheap structural gates run
+		// first so the projection — which walks attacker-controlled, unbounded prose — is
+		// only ever computed for a finding that could actually zero a category. Evaluating
+		// it eagerly made an `info` finding pay the full redaction cost.
+		if (f.severity !== 'critical' && f.severity !== 'high') return false;
 		const confidence = (f.metadata?.confidence as string) ?? inferFindingConfidence(f);
-		return (
-			isMissingPattern &&
-			(f.severity === 'critical' || f.severity === 'high') &&
-			(confidence === 'deterministic' || confidence === 'verified')
-		);
+		if (confidence !== 'deterministic' && confidence !== 'verified') return false;
+
+		const terms = declaredSubjectTerms(f);
+		return MISSING_CONTROL_REGEX.test(redactSubjectData(f.detail, terms)) || MISSING_CONTROL_REGEX.test(redactSubjectData(f.title, terms));
 	});
 }
 
