@@ -13,6 +13,7 @@ import { buildCheckResult, createFinding } from '../check-utils';
 import {
 	MAX_LAME_DELEGATION_PROBES,
 	assessLameDelegation,
+	claimabilityProbeTargets,
 	getInheritedNsFinding,
 	getNameserverDiversityFinding,
 	getNsConfiguredFinding,
@@ -22,6 +23,7 @@ import {
 	getSoaValidationFindings,
 	getTotalLameDelegationFinding,
 	getUndelegatedInconclusiveFinding,
+	nameserverBaseDomain,
 	normalizeNsRecords,
 	parseSoaValues,
 } from './ns-analysis';
@@ -30,6 +32,14 @@ import type { NameserverProbeOutcome, NameserverProbeResult } from './ns-analysi
 /** DoH numeric record types used by the nameserver-reachability probe. */
 const DOH_TYPE_A = 1;
 const DOH_TYPE_AAAA = 28;
+
+/**
+ * RFC 1035 §4.1.1 RCODE 3 — the name provably does not exist.
+ *
+ * NXDOMAIN is a MEASUREMENT; SERVFAIL (2) and REFUSED (5) are measurement FAILURES and
+ * must never reach the claimability path. Same distinction `check-dane.ts` draws.
+ */
+const RCODE_NXDOMAIN = 3;
 
 /**
  * Probe one delegated nameserver for reachability.
@@ -49,26 +59,84 @@ async function probeNameserverReachable(
 	nameserver: string,
 	rawQueryDNS: RawDNSQueryFunction,
 	timeout: number,
-): Promise<NameserverProbeOutcome> {
+): Promise<{ outcome: NameserverProbeOutcome; hostNxdomain: boolean }> {
+	let hostNxdomain = false;
+
 	try {
 		const a = await rawQueryDNS(nameserver, 'A', false, { timeout });
 		if ((a.Answer ?? []).some((ans) => ans.type === DOH_TYPE_A || ans.type === DOH_TYPE_AAAA)) {
-			return 'resolves';
+			return { outcome: 'resolves', hostNxdomain: false };
 		}
+		hostNxdomain = a.Status === RCODE_NXDOMAIN;
 	} catch {
-		return 'unknown';
+		return { outcome: 'unknown', hostNxdomain: false };
 	}
 
 	try {
 		const aaaa = await rawQueryDNS(nameserver, 'AAAA', false, { timeout });
 		if ((aaaa.Answer ?? []).some((ans) => ans.type === DOH_TYPE_AAAA)) {
-			return 'resolves';
+			return { outcome: 'resolves', hostNxdomain: false };
 		}
+		// BOTH families must agree the name does not exist. An adapter that omits `Status`
+		// leaves this false, which is the conservative direction: no rcode, no claim.
+		hostNxdomain = hostNxdomain && aaaa.Status === RCODE_NXDOMAIN;
 	} catch {
-		return 'unknown';
+		return { outcome: 'unknown', hostNxdomain: false };
 	}
 
-	return 'no_address';
+	return { outcome: 'no_address', hostNxdomain };
+}
+
+/**
+ * Establish whether a dead nameserver is CLAIMABLE — the difference between a lame
+ * delegation and a demonstrated Sitting Ducks hijack precondition.
+ *
+ * The test is direct: is the nameserver's registrable base domain itself unregistered?
+ * An NXDOMAIN answer on its NS RRset means nobody owns the name, so an attacker can
+ * register it, point it at their own infrastructure, and become authoritative for the
+ * victim zone. That is the one claimability shape a recursive-resolver vantage point can
+ * PROVE, and proving it is the precondition for stamping the finding `verified`.
+ *
+ * NOT IMPLEMENTED, DELIBERATELY: the second claimability shape — a nameserver hostname
+ * that resolves normally at a self-service DNS provider which will let any account add
+ * the unconfigured zone. That variant is invisible to this probe (the host HAS an
+ * address, so it never reaches `no_address` at all), and a provider-name fingerprint
+ * would be asserting hijackability from a vendor string rather than from evidence. The
+ * metadata carries `claimabilityBasis` so a future, actually-measured basis can be added
+ * without reshaping the finding.
+ *
+ * Query budget: bounded by `MAX_LAME_DELEGATION_PROBES` distinct base domains, spent
+ * ONLY on the `partial` verdict and ONLY for nameserver hosts that answered NXDOMAIN. A
+ * healthy zone, a total-lame zone, and an indeterminate zone all cost zero extra. A
+ * thrown probe yields "not claimable" — a failure to measure never manufactures a claim.
+ */
+async function resolveClaimableNameservers(
+	targets: string[],
+	rawQueryDNS: RawDNSQueryFunction,
+	timeout: number,
+): Promise<string[]> {
+	const byBase = new Map<string, string[]>();
+	for (const nameserver of targets) {
+		const base = nameserverBaseDomain(nameserver);
+		if (base === null) continue;
+		const group = byBase.get(base);
+		if (group) group.push(nameserver);
+		else if (byBase.size < MAX_LAME_DELEGATION_PROBES) byBase.set(base, [nameserver]);
+	}
+
+	const bases = [...byBase.keys()];
+	const settled = await Promise.allSettled(bases.map((base) => rawQueryDNS(base, 'NS', false, { timeout })));
+
+	const claimable: string[] = [];
+	bases.forEach((base, i) => {
+		const outcome = settled[i];
+		if (outcome.status !== 'fulfilled') return;
+		if (outcome.value.Status !== RCODE_NXDOMAIN) return;
+		claimable.push(...(byBase.get(base) ?? []));
+	});
+
+	// Preserve the delegation's own ordering so the finding prose is stable across runs.
+	return targets.filter((ns) => claimable.includes(ns));
 }
 
 /**
@@ -83,8 +151,9 @@ async function probeDelegatedNameservers(
 	const targets = nsRecords.slice(0, MAX_LAME_DELEGATION_PROBES);
 	const settled = await Promise.allSettled(targets.map((ns) => probeNameserverReachable(ns, rawQueryDNS, timeout)));
 	return targets.map((nameserver, i) => {
-		const outcome = settled[i];
-		return { nameserver, outcome: outcome.status === 'fulfilled' ? outcome.value : 'unknown' };
+		const probe = settled[i];
+		if (probe.status !== 'fulfilled') return { nameserver, outcome: 'unknown', hostNxdomain: false };
+		return { nameserver, outcome: probe.value.outcome, hostNxdomain: probe.value.hostNxdomain };
 	});
 }
 
@@ -186,7 +255,8 @@ export async function checkNS(
 	// answer for this zone? Runs before the SOA/wildcard probes so the TOTAL case
 	// short-circuits without spending further subrequests.
 	if (rawQueryDNS) {
-		const assessment = assessLameDelegation(await probeDelegatedNameservers(nsRecords, rawQueryDNS, timeout));
+		const probes = await probeDelegatedNameservers(nsRecords, rawQueryDNS, timeout);
+		const assessment = assessLameDelegation(probes);
 		if (assessment.verdict === 'total') {
 			// Nothing in the delegation answered — a resolution failure, not a posture
 			// reading. Mark the category INCONCLUSIVE so scoring EXCLUDES it (same shape as
@@ -197,7 +267,11 @@ export async function checkNS(
 			return { ...result, score: 0, passed: false, checkStatus: 'error', partial: true };
 		}
 		if (assessment.verdict === 'partial') {
-			findings.push(getPartialLameDelegationFinding(domain, assessment));
+			// Claimability is established ONLY here — inside the one verdict whose finding
+			// makes a hijack claim, and only for hosts that answered NXDOMAIN. See
+			// `resolveClaimableNameservers` for the budget and for what "verified" attests.
+			const claimable = await resolveClaimableNameservers(claimabilityProbeTargets(probes), rawQueryDNS, timeout);
+			findings.push(getPartialLameDelegationFinding(domain, assessment, claimable));
 		}
 	}
 

@@ -38,7 +38,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.20.0';
+export const PARITY_CORPUS_VERSION = '1.21.0';
 
 /**
  * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
@@ -218,6 +218,59 @@ export interface MtaStsParityFixture {
 	policy: string | null;
 	expectedScore: number;
 	expectedMissingControl: boolean;
+}
+
+/**
+ * One DoH answer record, in the shape `RawDNSResponse.Answer` carries it.
+ * `type` is the numeric RR type (1=A, 2=NS, 6=SOA, 28=AAAA).
+ */
+export interface ParityDohAnswer {
+	type: number;
+	data: string;
+}
+
+/** A single DoH response: RFC 1035 §4.1.1 RCODE plus the answer set. */
+export interface ParityDohResponse {
+	status: number;
+	answers?: ParityDohAnswer[];
+}
+
+/**
+ * NS parity fixture — lame delegation ("Sitting Ducks") and its claimability gate.
+ *
+ * WHY THIS CHECK EARNS A CORPUS ENTRY. The partial-lame finding is `critical`, and a
+ * `critical` finding only moves the OVERALL score when it also carries
+ * `confidence: 'verified'` — which this package stamps only when it has PROVEN the dead
+ * nameserver is claimable (its registrable base domain answers NXDOMAIN). That makes the
+ * severity and the confidence two independently-driftable dials on a customer-visible
+ * grade, and a drift on either is silent: the finding still renders, still reads
+ * `critical`, and simply stops costing points. The pair of partial fixtures below
+ * (claimable vs not-shown-claimable) is the alarm for exactly that.
+ *
+ * NOT a population estimate. Green parity over these synthetic fixtures says the two
+ * scanners agree on the same inputs; it says NOTHING about how many real domains are
+ * affected or by how much.
+ */
+export interface NsParityFixture {
+	check: 'ns';
+	name: string;
+	domain: string;
+	/** NS RRset published for `domain` (returned by the string-projection resolver). */
+	ns: string[];
+	/**
+	 * DoH responses keyed `name` → record type. Anything unlisted answers NOERROR with no
+	 * answers — the honest default for "this name exists but has no such record", which is
+	 * precisely the case that must NOT read as claimable.
+	 */
+	doh: Record<string, Partial<Record<'A' | 'AAAA' | 'NS' | 'SOA', ParityDohResponse>>>;
+	expectedScore: number;
+	expectedMissingControl: boolean;
+	/**
+	 * Confidence stamped on the lame-delegation finding, or `null` when the fixture emits
+	 * no lame-delegation finding at all. `verified` is an ATTESTATION of claimability, not
+	 * of lameness — a fixture that shows only lameness must never expect it.
+	 */
+	expectedLameConfidence: 'deterministic' | 'verified' | null;
 }
 
 export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
@@ -705,5 +758,84 @@ export const MX_PARITY_FIXTURES: MxParityFixture[] = [
 		hostA: { 'mail1.example.com': ['10.0.0.1'] },
 		expectedScore: 95,
 		expectedMissingControl: false,
+	},
+];
+
+/** RCODEs used by the NS corpus. NXDOMAIN is a measurement; SERVFAIL is a measurement FAILURE. */
+const RCODE_NOERROR = 0;
+const RCODE_SERVFAIL = 2;
+const RCODE_NXDOMAIN = 3;
+
+/**
+ * A well-formed SOA so the fixtures isolate delegation health from SOA hygiene findings.
+ *
+ * Timer values are conventional but chosen so the digit run does not read as a phone number
+ * to the repo-safety scanner — several equally conventional SOA timer sets do, and keeping
+ * the fixture out of that shape is preferable to widening the scanner's allowlist. If you
+ * edit these numbers, re-run `gitleaks protect --staged` before committing.
+ */
+const HEALTHY_SOA: ParityDohResponse = {
+	status: RCODE_NOERROR,
+	answers: [{ type: 6, data: 'ns1.alpha.example. hostmaster.alpha.example. 1 7200 1800 604800 600' }],
+};
+
+const ADDRESSED: ParityDohResponse = { status: RCODE_NOERROR, answers: [{ type: 1, data: '192.0.2.1' }] };
+const REGISTERED_ZONE: ParityDohResponse = { status: RCODE_NOERROR, answers: [{ type: 2, data: 'ns1.registrar.example.' }] };
+const NXDOMAIN: ParityDohResponse = { status: RCODE_NXDOMAIN, answers: [] };
+const SERVFAIL: ParityDohResponse = { status: RCODE_SERVFAIL, answers: [] };
+
+export const NS_PARITY_FIXTURES: NsParityFixture[] = [
+	{
+		check: 'ns',
+		name: 'two reachable nameservers, distinct providers (healthy)',
+		domain: 'example.com',
+		ns: ['ns1.alpha.example', 'ns2.beta.example'],
+		doh: {
+			'example.com': { SOA: HEALTHY_SOA },
+			'ns1.alpha.example': { A: ADDRESSED },
+			'ns2.beta.example': { A: ADDRESSED },
+		},
+		expectedScore: 100,
+		expectedMissingControl: false,
+		expectedLameConfidence: null,
+	},
+	{
+		// The escalation's whole point. −40 (critical) → 60, AND the finding is stamped
+		// `verified`, which is what lets the engine's −15 overall penalty fire downstream.
+		check: 'ns',
+		name: 'partial lame delegation, dead NS base domain UNREGISTERED (claimable → verified)',
+		domain: 'example.com',
+		ns: ['ns1.alpha.example', 'ns2.abandoned.example'],
+		doh: {
+			'example.com': { SOA: HEALTHY_SOA },
+			'ns1.alpha.example': { A: ADDRESSED },
+			'ns2.abandoned.example': { A: NXDOMAIN, AAAA: NXDOMAIN },
+			// The claimability probe: nobody owns the base domain, so anyone can register it
+			// and serve the victim zone. This is the ONLY branch that earns `verified`.
+			'abandoned.example': { NS: NXDOMAIN },
+		},
+		expectedScore: 60,
+		expectedMissingControl: false,
+		expectedLameConfidence: 'verified',
+	},
+	{
+		// Same lameness, same `critical`, same category score — and deliberately NOT
+		// `verified`. SERVFAIL is the resolver failing, not proof the name is unregistered,
+		// and the base domain is owned. Stamping this `verified` would publish a hijack
+		// claim from evidence that does not exist. The pair is the drift alarm: if these two
+		// fixtures ever agree on confidence, the claimability gate has been removed.
+		check: 'ns',
+		name: 'partial lame delegation, dead NS base domain REGISTERED (not shown claimable → deterministic)',
+		domain: 'example.com',
+		ns: ['ns1.alpha.example', 'ns2.provider.example'],
+		doh: {
+			'example.com': { SOA: HEALTHY_SOA },
+			'ns1.alpha.example': { A: ADDRESSED },
+			'ns2.provider.example': { A: SERVFAIL, AAAA: SERVFAIL },
+			'provider.example': { NS: REGISTERED_ZONE },
+		},
+		expectedScore: 60,
+		expectedMissingControl: false,
+		expectedLameConfidence: 'deterministic',
 	},
 ];
