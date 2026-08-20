@@ -86,7 +86,7 @@ async function run(domain = DOMAIN) {
 }
 
 describe('checkNs — lame delegation (Sitting Ducks)', () => {
-	it('emits a HIGH finding when SOME delegated nameservers do not answer for the zone', async () => {
+	it('emits a CRITICAL finding when SOME delegated nameservers do not answer for the zone', async () => {
 		mockDelegation({
 			nsRecords: ['ns1.provider-a.com.', 'ns2.provider-b.net.'],
 			reachable: ['ns1.provider-a.com'],
@@ -95,7 +95,7 @@ describe('checkNs — lame delegation (Sitting Ducks)', () => {
 
 		const f = r.findings.find((finding) => finding.title.match(/lame delegation/i));
 		expect(f).toBeDefined();
-		expect(f!.severity).toBe('high');
+		expect(f!.severity).toBe('critical');
 		expect(f!.detail).toContain('ns2.provider-b.net');
 		expect(f!.metadata?.lameDelegation).toBe('partial');
 		expect(f!.metadata?.nonResolvingNameservers).toEqual(['ns2.provider-b.net']);
@@ -112,9 +112,10 @@ describe('checkNs — lame delegation (Sitting Ducks)', () => {
 		// The zone still answers, so the category WAS measured: it must be graded, not excluded.
 		expect(r.checkStatus).not.toBe('error');
 		expect(r.partial).not.toBe(true);
-		// The `high` carries a real deduction (−25) rather than passing silently. It does NOT
-		// zero the category — deliberately no `missingControl`, so the NS weight is unchanged.
-		expect(r.score).toBe(75);
+		// The `critical` carries a real deduction (−40) rather than passing silently. It does
+		// NOT zero the category — deliberately no `missingControl`, so the NS weight is
+		// unchanged, and the finding's prose is guarded against MISSING_CONTROL_REGEX.
+		expect(r.score).toBe(60);
 	});
 
 	it('routes the ALL-fail case to the inconclusive path instead of scoring it 0', async () => {

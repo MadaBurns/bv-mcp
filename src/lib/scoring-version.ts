@@ -168,8 +168,25 @@
  *   consumers (bv-web-prod calls `checkSPF`, never the worker wrapper) re-grade identically and
  *   stop under-counting; the worker's OUTPUT is unchanged, because its post-processor already
  *   replaced the core's trust-surface findings with exactly these.
+ * - 1.11.0 — a CLAIMABLE lame delegation is now `critical` with a DECLARED `verified`
+ *   confidence, and `ns` importance moves 2 → 3 in `mail_enabled` and `enterprise_mail` only
+ *   (`non_mail`/`web_only` were already 3; `minimal` 1 and `authoritative_dns_infra` 15 are
+ *   untouched — a flat "2→3" would have double-bumped two profiles). Severity ALONE would have
+ *   moved nothing: `verifiedCriticalCount` counts findings that are both `critical` AND
+ *   `verified`, and confidence is only `verified` when explicitly declared, so the stamp is
+ *   what makes the escalation register. DOWNWARD, and only for domains where claimability was
+ *   MEASURED — the dead nameserver's registrable base domain must answer NXDOMAIN, so an
+ *   attacker can register it and become authoritative; SERVFAIL/REFUSED/NODATA never qualify.
+ *   Measured on a `mail_enabled` roster with dmarc degraded to 75: **97 (A+) → 82 (B+)**,
+ *   exactly the −15 `criticalOverallPenalty`, with the `ns` category at 60 in BOTH arms. No
+ *   grade ceiling is involved: the finding sets no missing control and
+ *   `PROFILE_CRITICAL_CATEGORIES` is untouched. Prevalence 130 of 94,826 domains scanned on
+ *   the dns-recon lane (0.137%) — a LANE figure, not corpus-wide. Total-lame is unchanged and
+ *   still routes to the inconclusive path: a zone whose nameservers all failed to resolve is a
+ *   measurement failure, not a hijackable domain. No weight outside `ns`, no tier, grade band,
+ *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.10.0';
+export const SCORING_MODEL_VERSION = '1.11.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

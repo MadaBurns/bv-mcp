@@ -507,12 +507,19 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				expect(coreSum).toBe(54);
 			});
 
-			it('mail_enabled protective weights sum to 20', () => {
+			it('mail_enabled protective weights sum to 21', () => {
+				// 20 → 21 with the lame-delegation CRITICAL escalation, which took `ns` from 2 to 3
+				// in the two mail profiles (`web_only`/`non_mail` were ALREADY 3 and are unchanged).
+				// The sum is a review convention, not a functional constraint: the protective tier
+				// is normalized by its own max (`protectiveEarned / protectiveMax` in
+				// scoring/generic.ts), so only the RELATIVE weights move a score. Rebalancing some
+				// other control down by 1 to hold the total at 20 would have been a second,
+				// undeclared product decision.
 				const p = PROFILE_WEIGHTS.mail_enabled;
 				const protSum = (
 					['subdomain_takeover', 'http_security', 'mta_sts', 'mx', 'caa', 'ns', 'lookalikes', 'shadow_domains'] as const
 				).reduce((sum, k) => sum + p[k].importance, 0);
-				expect(protSum).toBe(20);
+				expect(protSum).toBe(21);
 			});
 
 			it('mail_enabled hardening weights are all 0', () => {
