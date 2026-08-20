@@ -35,7 +35,13 @@ Require branches to be up to date before merge, block force pushes, block branch
 
 The required checks must include gitleaks, the repo safety scanner, OSS fixture safety, npm publish surface audit, and BUSL positioning audit. Do not make workflow edits that remove these gates without replacing them with an equivalent required check.
 
-The paid `MadaBurns/blackveil-dns-action` workflow is intentionally disabled as `.github/workflows/dns-security.yml.disabled`. Do not re-enable it for push, pull request, or scheduled CI/CD unless an operator explicitly accepts the billing surface.
+## CI cost posture
+
+No workflow may introduce a billing surface — a self-hosted runner, a paid marketplace action, or any paid GitHub feature — without explicit operator approval of that specific surface. If the cost of a feature is unclear, leave it disabled rather than enabling it to find out.
+
+This is machine-enforced, not just documented: `test/audits/workflow-cost.audit.test.ts` (via `scripts/ci/check-workflow-cost.mjs`, part of `npm run audit:oss-safety`) fails CI on any self-hosted runner or paid marketplace action. Rationale and the full posture live in `docs/ci-cost-posture.md`.
+
+The paid `MadaBurns/blackveil-dns-action` was removed and **replaced** by `.github/workflows/dns-security.yml`, which runs a $0 dogfood scan of blackveilsecurity.com using this repo's own built scanner (`scripts/ci/dogfood-scan.mjs`, minimum grade B, advisory — not a required check). Do not reintroduce the paid action; extend the dogfood scan instead.
 
 ## Exposure Cleanup
 
