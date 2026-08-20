@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.58.0] - 2026-08-21
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` and `@blackveil/dns-checks` are unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded.
+
+⚠️ **`brand_discovery` can now report as UNMEASURED where it previously reported a passing score.** This is the intended correction, not a regression: a sweep that lost its primary certificate signal is excluded from scoring instead of scored on a partial view. A caller enforcing a minimum grade in CI may newly see `brand_discovery` excluded during an upstream Certificate Transparency outage — previously such a sweep silently returned a high score.
+
+### Fixed
+
+- **`brand_discovery` scored a PARTIAL signal failure as a pass (#734).** #670's unmeasured gate keyed on `signals.every(...)`, so it fired only when EVERY signal failed. A run that lost the primary certificate channel while secondary signals answered fell through to normal scoring — where the score derives from how many candidates surfaced, so a crippled sweep outscored a healthy one. Measured against production 2026-08-21: seed `meta.com` with `san: error` plus four degraded signals surfaced **1 of at least 152** real Meta apexes (0.7%) and returned `passed: true, score: 95`, while a healthy `facebook.com` sweep surfacing 27 returned `passed: false, score: 0` — the score moved inversely to measurement success. Ground truth for the 152 was established independently of the tool, via in-bailiwick NS delegation to Meta's own nameservers. Adds `PRIMARY_DISCOVERY_SIGNALS` (`san`, `san_recursive`) and excludes the category from scoring when any of them could not complete. Candidate findings are deliberately **retained** — what the surviving signals found is still useful, and discarding it would trade one wrong answer for another. Same false-green family as #662/#670/#638.
+
+- **The total-CT-failure banner told every caller to "retry shortly" (#735).** Correct for an upstream outage, misleading for a timeout. The banner now splits its guidance by per-source outcome, and reports `notConsulted` separately — a source that was never asked is not a source that failed, and folding the two together implied three sources were tried when only two were.
+
+- **HTTP 429 from a CT source was indistinguishable from any other upstream error (#735).** 429 was handled nowhere and fell into the generic `!response.ok` → `http_error` branch, so the tool would advise a retry — which extends the lockout on a quota **shared with the next domain scanned**, turning one slow domain into a sweep-wide outage. Measured: after Certspotter 504s on a large estate it 429s the same unauthenticated caller, and the lockout outlived a 75-second wait. Adds `rate_limited` as a distinct `CtSourceOutcome` with back-off guidance; a control test keeps 503 on the retry path.
+
+  Not fixed, because measurement ruled it out: pagination. It already exists (#573/#577) and does not apply — the failure is on page 1, which has no cursor, and `limit=10`, `limit=100` and `after=0` were each measured returning the same HTTP 504. Nor is it a simple size threshold: `facebook.com`, a larger estate, answers in 1.45s. A narrowing fallback (dropping `include_subdomains`) does make `meta.com` answer, and is deliberately not shipped — it yields two unique names whose only subdomain is the wildcard. The residual is an upstream capability limit, not a defect here.
+
 ## [3.57.0] - 2026-08-21
 
 **No scoring-model change.** This release touches operator alerting only — no check, finding, weight or grade moves. `SCORING_MODEL_VERSION` and `@blackveil/dns-checks` are unchanged, so cached scans are NOT invalidated and no domain is re-graded.
