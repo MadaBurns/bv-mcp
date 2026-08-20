@@ -101,6 +101,17 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 				'Missing DMARC policy',
 				'critical',
 				`DMARC record is missing the required "p=" tag. Without a policy, DMARC provides no protection.`,
+				// Declared, not accidental. A record with no `p=` is a control that cannot be
+				// evaluated by any receiver, so zeroing is correct — the same treatment the
+				// no-record case (`:67`) and the multiple-record case (`:82`) already get.
+				//
+				// Today this flag is BEHAVIOURALLY INERT: `engine.ts` builds `missingControls`
+				// from `scoreIndicatesMissingControl` alone and never reads `metadata`, and this
+				// detail happens to contain both "missing" and "required", so the prose already
+				// zeroes it. That accident is exactly the problem — reword the sentence and the
+				// zeroing silently disappears. Declaring the intent here makes it survive a copy
+				// edit and makes it legible if the engine ever starts reading the flag.
+				{ missingControl: true },
 			),
 		);
 	} else if (!validPolicies.has(policy)) {
@@ -110,6 +121,13 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 				'Invalid DMARC policy value',
 				'high',
 				`DMARC policy value "${policy}" is invalid. Allowed values are none, quarantine, or reject.`,
+				// `policy` is a raw token echoed from the scanned domain's OWN TXT record, so the
+				// domain owner chooses this substring. Declared as subject data so it cannot arm
+				// `scoreIndicatesMissingControl`: measured 2026-08-20, `p=missing` and `p=required`
+				// dropped dmarc 50 → 0 while `p=bogus` stayed at 50. A single-label token is not
+				// structurally distinguishable from prose, so the redactor cannot infer it — it has
+				// to be declared here. See SUBJECT_TERMS_METADATA_KEY in scoring/model.ts.
+				{ subjectTerms: [policy] },
 			),
 		);
 	} else if (policy === 'none') {
