@@ -184,7 +184,7 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 /**
  * Check BIMI records for a domain.
  * Validates the presence and configuration of BIMI TXT records,
- * including logo URL format and VMC authority evidence.
+ * including logo URL format and mark-certificate authority evidence.
  */
 export async function checkBIMI(
 	domain: string,
@@ -308,7 +308,15 @@ export async function checkBIMI(
 		}
 	}
 
-	// Extract a= tag (VMC/authority evidence URL)
+	// Extract a= tag (mark-certificate / authority evidence URL).
+	//
+	// The a= tag carries a URL and nothing else. A Common Mark Certificate (CMC)
+	// publishes it identically to a Verified Mark Certificate (VMC), and telling
+	// the two apart would mean fetching and parsing the certificate — a live PKI
+	// fetch this DNS check has no budget for. So this branch reports PRESENCE
+	// only and must not name the certificate type. Wording-only: severities,
+	// finding count and controlPresent/recordPresent are unchanged on both
+	// branches, so no score moves (check-bimi-remediation-accuracy.test.ts).
 	const authMatch = bimi.match(/\ba=([^\s;]+)/i);
 	const authUrl = authMatch?.[1];
 
@@ -316,9 +324,9 @@ export async function checkBIMI(
 		findings.push(
 			createFinding(
 				'bimi',
-				'No BIMI authority evidence (VMC)',
+				'No BIMI authority evidence (VMC or CMC)',
 				'low',
-				`BIMI record at ${bimiDomain} does not include an authority evidence URL (a= tag). A Verified Mark Certificate (VMC) is required by Gmail and Apple Mail to display your brand logo. Without a VMC, BIMI logos will not appear in most major email clients. Obtain a VMC from DigiCert or Entrust.`,
+				`BIMI record at ${bimiDomain} does not include an authority evidence URL (a= tag). Gmail displays BIMI logos backed by either a Verified Mark Certificate (VMC) or the lower-cost Common Mark Certificate (CMC); Apple Mail accepts a VMC only. Without a mark certificate, BIMI logos will not appear in most major email clients. Both certificate types are issued by CAs such as DigiCert; check current issuers before purchasing, as the market changes.`,
 			),
 		);
 	} else {
@@ -327,7 +335,7 @@ export async function checkBIMI(
 				'bimi',
 				'BIMI authority evidence present',
 				'info',
-				`BIMI record includes a Verified Mark Certificate (VMC) reference: ${authUrl}`,
+				`BIMI record includes a mark certificate reference (a= authority evidence): ${authUrl}. The certificate type is not determined from the URL alone.`,
 			),
 		);
 	}
