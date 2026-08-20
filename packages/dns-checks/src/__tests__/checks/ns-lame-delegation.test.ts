@@ -77,11 +77,18 @@ describe('assessLameDelegation', () => {
 });
 
 describe('lame-delegation findings', () => {
-	it('the partial finding is HIGH and names both sides of the split', () => {
+	it('the partial finding is CRITICAL and names both sides of the split', () => {
+		// Was `high` until the Sitting Ducks escalation. Severity is `critical` for BOTH
+		// claimability branches — what the claimability probe changes is the CONFIDENCE
+		// stamp, and therefore whether the engine's verified-critical penalty fires. The
+		// two-argument call here is the not-shown-claimable branch (`claimable` defaults to
+		// `[]`), which is the conservative default for any caller that cannot probe.
+		// Full escalation coverage: `check-ns-lame-delegation-escalation.test.ts`.
 		const a = assessLameDelegation(probes(['ns1.a.com', 'resolves'], ['ns2.b.net', 'no_address']));
 		const f = getPartialLameDelegationFinding('example.com', a);
 		expect(f.category).toBe('ns');
-		expect(f.severity).toBe('high');
+		expect(f.severity).toBe('critical');
+		expect(f.metadata?.confidence).toBe('deterministic');
 		expect(f.detail).toContain('ns2.b.net');
 		expect(f.detail).toContain('ns1.a.com');
 		expect(f.metadata?.lameDelegation).toBe('partial');

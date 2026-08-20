@@ -24,6 +24,7 @@ import {
 	checkDKIM,
 	checkBIMI,
 	checkMTASTS,
+	checkNS,
 } from '../checks';
 import { scoreIndicatesMissingControl } from '../scoring';
 import pkg from '../../package.json';
@@ -40,6 +41,7 @@ import {
 	DKIM_PARITY_FIXTURES,
 	BIMI_PARITY_FIXTURES,
 	MTA_STS_PARITY_FIXTURES,
+	NS_PARITY_FIXTURES,
 	PARITY_CORPUS_VERSION,
 } from '../parity-fixtures';
 
@@ -224,6 +226,34 @@ describe('BIMI parity corpus — bv-mcp full checkBIMI', () => {
 			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
 				score: fx.expectedScore,
 				missing: fx.expectedMissingControl,
+			});
+		});
+	}
+});
+
+describe('NS parity corpus — bv-mcp full checkNS', () => {
+	for (const fx of NS_PARITY_FIXTURES) {
+		it(`scores "${fx.name}" → ${fx.expectedScore} (lame confidence=${fx.expectedLameConfidence})`, async () => {
+			const queryDNS = (async (name: string, type: string) => (type === 'NS' && name === fx.domain ? fx.ns : [])) as never;
+			// The raw resolver is what the reachability AND claimability probes read. Unlisted
+			// (name, type) pairs answer NOERROR/empty — "exists, no such record" — which must
+			// never be mistaken for "unregistered".
+			const rawQueryDNS = (async (name: string, type: string) => {
+				const hit = fx.doh[name]?.[type as 'A' | 'AAAA' | 'NS' | 'SOA'];
+				return hit ? { Status: hit.status, Answer: hit.answers ?? [] } : { Status: 0, Answer: [] };
+			}) as never;
+
+			const result = await checkNS(fx.domain, queryDNS, { rawQueryDNS });
+			const lame = result.findings.find((f) => f.metadata?.lameDelegation === 'partial');
+
+			expect({
+				score: result.score,
+				missing: missingControl(result.findings),
+				confidence: (lame?.metadata?.confidence as string | undefined) ?? null,
+			}).toEqual({
+				score: fx.expectedScore,
+				missing: fx.expectedMissingControl,
+				confidence: fx.expectedLameConfidence,
 			});
 		});
 	}
