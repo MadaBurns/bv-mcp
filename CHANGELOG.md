@@ -6,9 +6,39 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
-**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 and `@blackveil/dns-checks` stays 1.19.0. `recordPresent`/`controlPresent` are score-neutral by construction; nothing in the scoring path reads them.
+**No scoring-model change.** `SCORING_MODEL_VERSION` stays 1.10.0 — no weight, tier, grade band, severity penalty or profile rule moved, and no domain's score or grade changes. `@blackveil/dns-checks` moves **1.19.0 → 1.20.0** (new exported API, no breaking change) and `PARITY_CORPUS_VERSION` moves in lockstep as the version-lock contract requires. `recordPresent`/`controlPresent` remain score-neutral by construction; nothing in the scoring path reads them.
+
+⚠️ `PARITY_CORPUS_VERSION` is folded into every scan cache key (`src/lib/cache.ts`), so this bump invalidates cached scans on deploy and the first post-deploy wave runs cold. Expected, not a regression.
+
+⚠️ 1.20.0 is taken rather than folding into 1.19.0 because 1.19.0 is **released** (v3.53.0–v3.55.0). Adding content to it would recreate the trap #701 recorded: a version whose contents differ from the same version elsewhere.
+
+### Added
+
+- **CAA records are now parsed for their RFC 8657 parameters** — `accounturi` (pins issuance to one ACME account) and `validationmethods` (restricts which ACME challenge types a CA may use) — plus the RFC 9495 `issuemail` tag, which was not tracked at all. These are the controls that stop an attacker who can pass domain validation from obtaining a certificate anyway, and they are the strongest CAA hardening available today. New exports `parseCaaParameters` / `CaaParameters`; `summarizeCaaTags` gains `hasIssuemail`.
+
+  **Score-neutral and reporting-only, deliberately.** A domain publishing these parameters gains an `info` finding (penalty 0); a domain publishing none gains nothing. Absence is NOT a defect — penalising it would fail the great majority of domains that publish CAA at all. A test asserts the `caa` category score is byte-identical with and without parameters present, and a mutation check (flipping the finding `info`→`low`) proves that assertion discriminates rather than passing tautologically.
+
+  This **partially** reverses a dated deliberate exclusion in `caa-analysis.ts`, which held that RFC 8657 pinning should not be evaluated until CA processing becomes mandatory on **2027-03-15**. That date has not arrived, and the exclusion's reasoning is respected: nothing here is scored, which is what the note actually deferred. What changed is that publishing these bindings is the action a domain owner must take *before* the deadline for the binding to be honoured when it starts being enforced — a scanner silent until then reports the gap only once it is too late to have closed it in advance. The note is rewritten in place to record the reversal and its scope.
+
+- **`assessValidityWindow` in the cert module** — computes a certificate's validity window in days from `notBefore`/`notAfter` and bands it against the CA/Browser Forum SC-081 maximum lifetime, in force since **2026-03-15**: `exemplary` (≤47d) · `automated` (≤100d) · `compliant` (≤200d) · `legacy` (>200d issued *before* the cap took force — legitimate, not flagged) · `anomaly` (>200d issued *under* the cap) · `invalid` (`notAfter ≤ notBefore`) · `unknown` (a date was missing).
+
+  The `legacy`/`anomaly` split is the whole point: without it the assessment merely flags every older certificate. A mutation check confirms it — replacing the discriminator with a naive "flag everything >200d" turns the before-the-cap case red while the after-the-cap case stays green.
+
+  `unknown` is a distinct member of the same string-literal union, never a boolean and never a default pass, per the repo rule that an unmeasured signal gets an explicit not-assessed member (a `boolean` would compile UNKNOWN silently into `false` — an affirmative safety claim from zero evidence). When `unknown` is returned, `days` is `null`, so no numeric comparison can read it as compliant either. The effective date is an injected parameter, mirroring `assessExpiry(notAfter, nowSeconds)`; **no wall clock is read inside the module**, so parity fixtures stay deterministic.
+
+  Remains **additive and non-scoring**, inside the boundary `src/cert/index.ts` states in code: nothing here emits a `Finding` or influences `computeProfileAwareScanScore`. Reachable via the existing `@blackveil/dns-checks/cert` subpath.
 
 ### Fixed
+
+- **BIMI remediation advice no longer names a vendor that left the market, and no longer states a requirement that is false.** The guidance said "A Verified Mark Certificate (VMC) is required by Gmail and Apple Mail" and "Obtain a VMC from DigiCert or Entrust." Both halves were wrong: Gmail has displayed BIMI logos backed by the lower-cost **Common Mark Certificate** since 2024-09-24, and **Entrust stopped issuing VMCs on 2025-05-12**, its public-certificate business going to Sectigo. Customers were being told to buy a more expensive certificate than they need, from a company that no longer sells it. The replacement states both truths — Gmail accepts a VMC or a CMC; **Apple Mail accepts a VMC only** (still true, and kept).
+
+- **A present `a=` tag is no longer reported as a VMC specifically.** A CMC publishes `a=` identically to a VMC and the check branches on presence alone, so the certificate type is not determinable from the URL without fetching it — which this check has no budget to do. The finding now describes neutral "mark certificate authority evidence" and says so explicitly.
+
+  **Prose only, with zero score movement, proven not assumed:** the `bimi` category scores 95 with `a=` absent and 100 with `a=` present, identical before and after, with `passed` / `controlPresent` / `recordPresent` and severity pinned identical on both sides.
+
+- **The same false purchasing advice is corrected on the three other surfaces that carried it**, since fixing only the check would have left the product's actual customer-facing voice wrong: the `explain_finding` remediation text (the primary place a customer is told what to buy), the `check_bimi` tool description shown to every LLM client, and the security-checks guide resource. Each had an existing copy-assertion test pattern in the repo, so each got a real failing test first rather than an untested edit.
+
+- **CAA parameter parsing is bounded against hostile input.** CAA values arrive from DNS and are attacker-controlled for any domain an attacker owns, and the parameter collector deduplicated with a linear scan inside a loop while emitting an unbounded detail string into the MCP `structuredContent` channel. Measured at the realistic single-DoH-response ceiling (~64 KB): **116.85 ms and a 68,759-byte finding detail, now 1.09 ms and 591 bytes**; the pathological 200k-method case went from 20,199 ms / 2.7 MB to 15.96 ms / 734 bytes. Set-based dedupe plus explicit caps on retained methods, issuers, per-token length and total detail length, following the `MAX_*`-with-measured-basis convention already used in this package. Dedupe runs BEFORE the cap, so a policy repeating the same method on `issue` and `issuewild` is never mislabelled as truncated, and truncation is signalled in both the prose and the metadata rather than silently dropping data.
 
 - **`compare_baseline` no longer reports PASS for a control that was never published.** It graded `require_dnssec` / `require_caa` / `require_mta_sts` on `CheckResult.passed`, which records whether a check PENALIZED the domain — not whether the control exists. All three categories deliberately decline to set `missingControl` on absence, so an absent control returned `passed: true` and the rule reported PASS. **A customer could set `require_dnssec: true` as a CI gate and have every unsigned domain in their portfolio pass it.**
 
@@ -19,6 +49,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - **A registry-signed zone is still not failed on absence.** A ccTLD/registry-signed zone that validates while publishing no DNSKEY/DS of its own reports `recordPresent: false` + `controlPresent: true`; an affirmative `controlPresent` rebuts absence, so a genuinely protected zone never becomes a violation. Mutation-tested: removing the rebuttal turns exactly that test red.
 
 ### Notes
+
+- The CAA parameter finding's detail was reworded to avoid `MISSING_CONTROL_REGEX`. That regex is matched against a finding's title AND detail, and a match at qualifying severity ZEROES the whole category instead of deducting — so incidental wording (`missing`, `required`, `not found`) in an unrelated finding is a latent scoring hazard armed by any future severity bump. The finding is `info` today, so nothing was live, but the same hazard was independently hit in a second workstream on the same day. A regression test now runs the real `scoreIndicatesMissingControl` over a severity-promoted copy of the finding, so a copy edit cannot silently re-arm it, and the emission site carries an explanatory comment matching the one already present at the "No CAA records" site.
 
 - The satisfied-control and applicability predicates are now a single shared source (`src/lib/control-presence.ts`) reused by both `map_compliance` and `compare_baseline`, rather than each surface deriving its own. `isCategoryNonApplicable` is reused, not re-derived, so the two surfaces cannot drift on what "satisfied" and "applicable" mean. `map_compliance` behaviour is unchanged.
 - `require_dmarc_enforce` is unaffected and keeps its own `dmarcEnforced()` predicate; `require_spf` / `require_dkim` / `require_dmarc` were never affected, since their absence produces sub-50 scores or sets `missingControl`.

@@ -327,6 +327,51 @@ describe('explainFinding', () => {
 		expect(result.title).toBe('BIMI Not Effective');
 	});
 
+	// BIMI_LOW is the `explain_finding` REMEDIATION surface — the primary place a
+	// customer is told what to buy. It carried the same false purchasing advice
+	// that was fixed in check-bimi.ts: "Consider adding a VMC".
+	// Facts: Gmail has displayed logos backed by a VMC *or* the cheaper Common
+	// Mark Certificate (CMC) since 2024-09-24; Apple Mail still accepts a VMC
+	// only; Entrust exited VMC issuance 2025-05-12 (business sold to Sectigo).
+	describe('BIMI_LOW purchasing advice is accurate', () => {
+		async function bimiLow() {
+			const { explainFinding } = await getModule();
+			return explainFinding('BIMI', 'low', 'BIMI record present but no a= tag');
+		}
+
+		it('returns BIMI_LOW for a BIMI low finding', async () => {
+			const result = await bimiLow();
+			expect(result.title).toBe('BIMI Refinement');
+			expect(result.severity).toBe('low');
+		});
+
+		it('does not recommend a VMC as the only option (a CMC works at Gmail)', async () => {
+			const { recommendation } = await bimiLow();
+			expect(recommendation).not.toMatch(/adding a VMC\b/i);
+			expect(recommendation).toMatch(/Common Mark Certificate|\bCMC\b/);
+		});
+
+		it('KEEPS the still-true statement that Apple Mail requires a VMC', async () => {
+			const { recommendation } = await bimiLow();
+			expect(recommendation).toMatch(/Apple Mail[^.]*VMC/i);
+		});
+
+		it('does not send customers to Entrust, which exited VMC issuance 2025-05-12', async () => {
+			const { explanation, impact, adverseConsequences, recommendation } = await bimiLow();
+			for (const prose of [explanation, impact, adverseConsequences, recommendation]) {
+				expect(prose ?? '').not.toMatch(/Entrust/i);
+			}
+		});
+
+		it('does not present the optional artefact as specifically a VMC', async () => {
+			const { explanation, adverseConsequences } = await bimiLow();
+			// "an optional VMC" / "the VMC cost" name the pricier of the two
+			// certificate types as if it were the only one.
+			expect(explanation).not.toMatch(/optional VMC\b/i);
+			expect(adverseConsequences ?? '').not.toMatch(/\bVMC cost\b/i);
+		});
+	});
+
 	it('explains authoritative DNS infra critical findings', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('AUTHORITATIVE_DNS_INFRA', 'critical', 'Route leak or hijack signal observed');
