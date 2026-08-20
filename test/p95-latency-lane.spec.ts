@@ -258,9 +258,13 @@ describe('p95 latency lane — SQL construction', () => {
 
 	it('degrades to an all-interactive classification rather than emitting an empty IN ()', async () => {
 		const { queryLatencyByWorkloadClass } = await import('../src/lib/analytics-queries');
-		const sql = queryLatencyByWorkloadClass('360', []);
+		const sql = queryLatencyByWorkloadClass('360', undefined, []);
 
 		expect(sql).not.toContain('IN ()');
 		expect(sql).toContain('workload_class');
+		// Fail-SAFE, not fail-open: with nothing classified as batch, every tool is
+		// judged by the stricter interactive ceiling.
+		expect(sql).toContain(`'interactive'`);
+		expect(sql).not.toContain(`'batch'`);
 	});
 });
