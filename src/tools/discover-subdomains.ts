@@ -424,13 +424,14 @@ export async function discoverSubdomains(
 	certstreamAuthToken?: string,
 	options?: DiscoverSubdomainsOptions,
 ): Promise<SubdomainDiscoveryResult> {
-	// Fast path: certstream service binding (bv-certstream-worker; itself
-	// multi-source + short-cached). On a clean result, prime the LKG cache.
 	// Attempts made by the fast path before it gave up. Threaded into every
 	// downstream path so a certstream FAILURE is reported as a failure — without
 	// this the orchestrator forgets the fast path ran at all, and `buildCtCoverage`
 	// reports the dead binding as "not consulted on this call" (#738).
 	const certstreamAttempts: CtSourceAttempt[] = [];
+
+	// Fast path: certstream service binding (bv-certstream-worker; itself
+	// multi-source + short-cached). On a clean result, prime the LKG cache.
 	if (certstream) {
 		const fastPath = await queryCertstream(domain, certstream, certstreamAuthToken, options);
 		if (fastPath.attempt) certstreamAttempts.push(fastPath.attempt);
@@ -1286,11 +1287,23 @@ function certstreamAttempt(outcome: CtSourceOutcome, contributed: boolean): CtSo
  * extends a lockout on a quota shared with the next domain), so it must never be
  * masked by a subsequent generic error. Timeout ranks next because it is
  * deterministic per-domain (#735) and tells the caller not to retry identically.
+ *
+ * Deliberately a `Record` over the union and NOT an array + `indexOf`: `indexOf`
+ * returns -1 for a member missing from the list, which compares as the MOST
+ * actionable rank, so adding a seventh `CtSourceOutcome` would silently make it
+ * beat a real 429. As a `Record` the same omission is a compile error.
  */
-const CERTSTREAM_OUTCOME_PRECEDENCE: readonly CtSourceOutcome[] = ['rate_limited', 'timeout', 'http_error', 'error', 'empty', 'ok'];
+const CERTSTREAM_OUTCOME_PRECEDENCE: Record<CtSourceOutcome, number> = {
+	rate_limited: 0,
+	timeout: 1,
+	http_error: 2,
+	error: 3,
+	empty: 4,
+	ok: 5,
+};
 
 function worstCertstreamOutcome(a: CtSourceOutcome, b: CtSourceOutcome): CtSourceOutcome {
-	return CERTSTREAM_OUTCOME_PRECEDENCE.indexOf(a) <= CERTSTREAM_OUTCOME_PRECEDENCE.indexOf(b) ? a : b;
+	return CERTSTREAM_OUTCOME_PRECEDENCE[a] <= CERTSTREAM_OUTCOME_PRECEDENCE[b] ? a : b;
 }
 
 async function queryCertstreamEndpoint<T>(

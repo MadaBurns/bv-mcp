@@ -208,6 +208,33 @@ describe('discover_subdomains — per-source coverage record', () => {
 			});
 		}
 
+		it('keeps the 429 when /enumerate is rate-limited and /sans then fails generically', async () => {
+			// The fast path is a two-endpoint ladder, so the two calls can fail
+			// differently. A 429 must survive: it is the one outcome whose correct
+			// response is the OPPOSITE of the usual one — back off, because retrying
+			// extends a lockout on a quota shared with the next domain scanned (#735).
+			// Letting the later 500 win would tell the caller "retry, may be transient".
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const certstreamFetch = vi.fn(async (input: RequestInfo | URL) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+				return url.includes('/enumerate')
+					? Response.json({ error: 'rate limited' }, { status: 429 })
+					: Response.json({ error: 'boom' }, { status: 500 });
+			});
+			globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+				const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+				if (s.includes('crt.sh')) return Response.json({}, { status: 502 });
+				if (s.includes('certspotter.com')) return Response.json([issuance(1, ['api.example.com'])], { status: 200 });
+				return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+			});
+
+			const result = await discoverSubdomains('example.com', { fetch: certstreamFetch as unknown as typeof fetch });
+
+			// Both endpoints were exercised — otherwise this passes vacuously.
+			expect(certstreamFetch).toHaveBeenCalledTimes(2);
+			expect(result.coverage?.perSource.find((s) => s.source === 'certstream')?.outcome).toBe('rate_limited');
+		});
+
 		it('still reports certstream as notConsulted when the binding is genuinely absent', async () => {
 			// The control. Unbinding restored a TRUE statement, and the fix must not
 			// destroy it — otherwise "not consulted" becomes unreachable and the field
