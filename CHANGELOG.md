@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.63.0] - 2026-08-21
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded. `@blackveil/dns-checks` stays at **1.23.0** (untouched this release).
+
+### Changed
+
+- **The four `identity_secops` tools are withdrawn from the public catalog** (#764). `query_signins`, `query_ual`, `get_ca_policies` and `assess_coverage` join `INTERNAL_ONLY_TOOLS`: they no longer appear in `tools/list`, and a public `tools/call` returns the same unknown-tool result a typo produces. The advertised public tool count drops **80 → 76** (README, `server.json`, `smithery.yaml`, `docs/github-settings.md`, the VS Code extension); every audit formula is `TOOL_DEFS.length − INTERNAL_ONLY_TOOLS.size`, so the count tripwires updated themselves. They remain registered in `TOOL_DEFS` **deliberately** — the auth gate, the Layer-2 no-principal reject and the M365 seam contracts are all derived from the registry, so deleting the entries would delete those tripwires with them; re-listing is the exact inverse of this diff.
+- ⚠️ **The internal-only gate shadows the `AUTH_REQUIRED_TOOLS` 401 path.** It short-circuits in `handleToolsCall` *before* tier branching, so an unauthenticated public caller now receives the unknown-tool result rather than a `401`. The auth gate itself is intact and still pinned — it simply can no longer be exercised through the public path. The resulting property is strictly stronger: the M365 proxy is unreachable from the public surface at **any** privilege level (asserted with a proxy actually bound, so "never reached" is measured rather than vacuous), and every tier receives a **byte-identical** response, so an unprivileged caller cannot infer that the tools exist. A new invariant pins `AUTH_REQUIRED_TOOLS ⊆ INTERNAL_ONLY_TOOLS`, so a tool can never be re-listed without its auth gate coming back with it. The Layer-2 registry tests (no-principal reject, `keyHash` forwarding) are untouched and still pass.
+
 ## [3.62.0] - 2026-08-21
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded. `@blackveil/dns-checks` stays at **1.23.0** (untouched this release).
