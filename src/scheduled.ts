@@ -7,8 +7,14 @@
  * Slack/Discord webhook alerts when thresholds are breached.
  *
  * Required env vars: CF_ACCOUNT_ID, CF_ANALYTICS_TOKEN, ALERT_WEBHOOK_URL
- * Optional env vars: ALERT_ERROR_THRESHOLD (default 5%), ALERT_P95_THRESHOLD (default 10000ms),
- *   ALERT_RATE_LIMIT_THRESHOLD (default 50 hits), ALERT_LOOKBACK_MINUTES (default 15)
+ * Optional env vars: ALERT_ERROR_THRESHOLD (default 5%), ALERT_MIN_ERROR_SAMPLES (default 20),
+ *   ALERT_P95_THRESHOLD (default 15000ms), ALERT_RATE_LIMIT_THRESHOLD (default 50 hits),
+ *   ALERT_LOOKBACK_MINUTES (default 15)
+ *
+ * Every RATE-based lane here pairs its threshold with a minimum-sample floor and
+ * abstains below it. A percentage over a handful of events is not a measurement, and
+ * a threshold cannot tell a real 100% from a single stray call. Absolute-count lanes
+ * (tail exceptions, binding degradation, queue failures) carry the low-volume case.
  */
 
 import {
@@ -36,7 +42,12 @@ import { resolveAlertWebhookUrl } from './lib/operator-webhook-binding';
 interface AnomalyRow {
 	total_calls?: number;
 	error_count?: number;
+	/** Pre-dispatch arg-validation rejections (blob4='none') — no tool ran. */
+	input_error_count?: number;
+	/** Errors from tools that actually EXECUTED (blob4!='none') — the honest signal. */
+	real_error_count?: number;
 	error_pct?: number;
+	real_error_pct?: number;
 	p95_ms?: number;
 }
 
@@ -90,6 +101,8 @@ export interface ScheduledEnv {
 	ALERT_LATENCY_LOOKBACK_MINUTES?: string;
 	/** Minimum tool calls in a class before its p95 is believed (default 20). Below this, p95 degenerates toward max. */
 	ALERT_MIN_LATENCY_SAMPLES?: string;
+	/** Minimum tool calls in the error-rate window before an error PERCENTAGE is believed (default 20). Below this the lane abstains — see DEFAULT_MIN_ERROR_SAMPLES. */
+	ALERT_MIN_ERROR_SAMPLES?: string;
 	ALERT_SPF_NULL_RATE_THRESHOLD?: string;
 	/** Min present-binding-degradation events in the lookback window to alert (default 1). */
 	ALERT_BINDING_DEGRADATION_THRESHOLD?: string;
@@ -255,6 +268,19 @@ const DEFAULT_LATENCY_LOOKBACK_MINUTES = 360;
  * says so in the log rather than paging on a number it cannot support.
  */
 const DEFAULT_MIN_LATENCY_SAMPLES = 20;
+/**
+ * Minimum tool calls in the error-rate window before a PERCENTAGE computed over it
+ * is believed. Not picked round — it is derived from the threshold it guards: at the
+ * default 5% ceiling, 20 is the smallest denominator at which ONE error cannot trip
+ * the alert (1/20 = 5.0%, which is not > 5%). Any smaller window is one stray call
+ * away from paging, which is exactly what happened: `error_count: 1 total_calls: 1`
+ * → 100% → `critical`, because 100 > 5 x 2.
+ *
+ * The same floor already guards the latency lane ({@link DEFAULT_MIN_LATENCY_SAMPLES})
+ * and the per-tool error query (`HAVING total > 10` in `queryErrorRate`). The alerting
+ * error lane was the one rate estimator with no denominator guard at all.
+ */
+const DEFAULT_MIN_ERROR_SAMPLES = 20;
 /** Cron cadence in minutes (the every-15-minutes trigger). Used to evaluate the latency lane once per NON-OVERLAPPING lookback window. */
 const CRON_INTERVAL_MINUTES = 15;
 /** A single present-binding failure (mis-rotated key, bv-recon 5xx) is worth surfacing. */
@@ -387,6 +413,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	const latencyLookbackMinutes = Number.isFinite(parsedLatencyLookback) && parsedLatencyLookback > 0 ? parsedLatencyLookback : DEFAULT_LATENCY_LOOKBACK_MINUTES;
 	const parsedMinSamples = parseInt(env.ALERT_MIN_LATENCY_SAMPLES ?? '', 10);
 	const minLatencySamples = Number.isFinite(parsedMinSamples) && parsedMinSamples >= 0 ? parsedMinSamples : DEFAULT_MIN_LATENCY_SAMPLES;
+	const parsedMinErrorSamples = parseInt(env.ALERT_MIN_ERROR_SAMPLES ?? '', 10);
+	const minErrorSamples = Number.isFinite(parsedMinErrorSamples) && parsedMinErrorSamples >= 0 ? parsedMinErrorSamples : DEFAULT_MIN_ERROR_SAMPLES;
 
 	// EACH QUERY GETS ITS OWN try. Running all six inside a single try meant the
 	// FIRST rejection aborted the whole check, taking every later alert down with
@@ -454,23 +482,73 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		}
 
 		if (anomaly && anomaly.total_calls && anomaly.total_calls > 0) {
-			const errorPct = anomaly.error_pct ?? 0;
+			const totalCalls = anomaly.total_calls;
 			const p95Ms = anomaly.p95_ms ?? 0;
 
-			if (errorPct > errorThreshold) {
+			// JUDGE THE REAL ERROR RATE, NOT THE CONFLATED ONE.
+			//
+			// `error_pct` counts pre-dispatch arg-validation rejections (blob4='none') as
+			// service errors. Those are a fuzzer or a probe sending a bad/absent domain to a
+			// public endpoint — no tool ran, so nothing about the service was measured. The
+			// split already existed in `queryErrorRate` for the per-tool report (where it
+			// moved check_mx from ~16% to ~0%); the lane that actually PAGES was still
+			// reading the conflated number.
+			//
+			// `real_error_pct` is absent on a reader pinned to an older query shape, so fall
+			// back to the conflated value rather than silently reporting 0% — a fallback that
+			// over-reports is safe here; one that under-reports would hide an outage.
+			const errorPct = anomaly.real_error_pct ?? anomaly.error_pct ?? 0;
+			const realErrorCount = anomaly.real_error_count ?? anomaly.error_count ?? 0;
+
+			// ABSTAIN rather than page on a rate we cannot compute. A percentage over a
+			// handful of calls is not a rate — at the measured traffic (~11 tool calls/hour)
+			// a 15m window holds ~3 calls, so ONE stray error is 33%, and one call that is
+			// also the only call is 100%. Both paged `critical` against a 5% threshold.
+			//
+			// This deliberately makes the lane quiet on a low-traffic deploy, and that is the
+			// correct trade: at n < 20 a "100% error rate" is genuinely indistinguishable
+			// from one bad probe, so there is no threshold that separates them. A real
+			// low-volume incident is not left uncovered — the tail-exception, binding-
+			// degradation and queue-failure lanes all alert on ABSOLUTE counts (threshold 1)
+			// and so do not depend on rate inference at all. That division of labour is what
+			// makes the floor safe: rate detectors abstain, count detectors cover.
+			//
+			// Logged (never alerted) so a permanently-quiet lane is greppable rather than
+			// indistinguishable from a healthy one — same posture as the latency lane.
+			if (totalCalls < minErrorSamples) {
+				logEvent({
+					timestamp: new Date().toISOString(),
+					category: 'scheduled',
+					result: 'ok',
+					severity: 'info',
+					details: {
+						message: 'Error-rate lane abstained: too few calls for an error percentage to be meaningful.',
+						totalCalls,
+						realErrorCount,
+						minSamples: minErrorSamples,
+						lookbackMinutes: Number(lookback),
+					},
+				});
+			} else if (errorPct > errorThreshold) {
 				const severity = errorPct > errorThreshold * 2 ? 'critical' : 'warning';
 				await sendAlert(
 					webhookUrl,
 					buildAlertPayload({
-						title: `Error rate ${errorPct.toFixed(1)}% (last ${lookback}m)`,
+						// total_calls is in the TITLE, not just the metrics block: "5 of 11 calls"
+						// reads very differently from "45.5%", and the reader sees the title first.
+						// Same lesson as the latency lane (#729).
+						title: `Error rate ${errorPct.toFixed(1)}% — ${realErrorCount} of ${totalCalls} calls (last ${lookback}m)`,
 						severity,
 						metrics: {
-							error_pct: errorPct.toFixed(1) + '%',
-							error_count: anomaly.error_count,
-							total_calls: anomaly.total_calls,
+							real_error_pct: errorPct.toFixed(1) + '%',
+							real_error_count: realErrorCount,
+							// Reported so the reader can see how much of the raw error count was
+							// fuzz/probe noise that the alert deliberately did NOT judge.
+							input_error_count: anomaly.input_error_count ?? 0,
+							total_calls: totalCalls,
 							p95_ms: Math.round(p95Ms),
 						},
-						threshold: `error_pct > ${errorThreshold}%`,
+						threshold: `real_error_pct > ${errorThreshold}% over >= ${minErrorSamples} calls`,
 					}),
 					alertOptions(env),
 				);

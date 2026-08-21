@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged and `@blackveil/dns-checks` stays at **1.23.0** — no check, weight, threshold or grade band moves, and no domain is re-graded. This is operator alerting only; no scan output changes.
+
+### Fixed
+
+- **The error-rate alert no longer pages `critical` on a single probe call.** The `anomalies` lane computed a percentage over whatever the 15m window happened to hold, guarded only by `total_calls > 0`. At the measured traffic (~11 tool calls/hour) that window holds ~3 calls, so one error is 33% and a lone call is 100% — both past `errorThreshold * 2`, hence `critical`. Live off the alert board: `Error rate 100.0% / error_count: 1 / total_calls: 1`, `50.0% over 2`, `45.5% over 11`. The lane now abstains below `ALERT_MIN_ERROR_SAMPLES` (default **20**, derived rather than round: at the 5% ceiling it is the smallest denominator at which one error cannot trip the alert, since 1/20 = 5.0% is not > 5%) and logs the abstention at `info` so a permanently-quiet lane stays greppable. This is the same floor the latency lane gained in #729 and that `queryErrorRate` already carried as `HAVING total > 10`; the alerting error lane was the one rate estimator with no denominator guard at all.
+- **The alert judges real errors instead of counting fuzz traffic as an outage.** `error_pct` conflates pre-dispatch arg-validation rejections (`blob4='none'` — the request never reached a tool) with errors from tools that actually executed. `queryErrorRate` split those apart precisely because that floor of probe traffic inflated low-volume tools (`check_mx` read ~16% but was ~0% real failures) — but the query that PAGES kept reading the conflated column. `queryRecentAnomalies` now emits `input_error_count` / `real_error_count` / `real_error_pct`, and the lane thresholds on `real_error_pct`. The `p95_ms: 0` on both 100% alerts is the fingerprint of exactly this: no tool work ran. A row without the split falls back to the conflated value rather than reading 0%, so an older reader over-reports rather than hiding an outage.
+- **The alert title now carries its own denominator** — `Error rate 45.5% — 5 of 11 calls` rather than `Error rate 45.5%`. The reader sees the title first, and every alert on the reported board omitted the sample size from it. The suppressed `input_error_count` is reported in the metrics block so an operator comparing against a raw Analytics Engine query can reconcile the two numbers.
+
+### Notes
+
+- Abstaining deliberately makes the lane quiet on a low-traffic deploy. That is the correct trade rather than a coverage gap: below the floor a "100% error rate" is genuinely indistinguishable from one bad probe, so no threshold separates them. Low-volume incidents stay covered by the lanes that alert on **absolute counts** (tail exceptions, binding degradation, queue failures — all threshold 1), which do not depend on rate inference. Rate detectors abstain; count detectors cover.
+
 ## [3.63.0] - 2026-08-21
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded. `@blackveil/dns-checks` stays at **1.23.0** (untouched this release).
