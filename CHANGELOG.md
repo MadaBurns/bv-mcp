@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.61.1] - 2026-08-21
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded. `@blackveil/dns-checks` stays at **1.23.0** (untouched this release). No tool behaviour, argument or response shape changes: this release alters tool *description* text only.
+
+### Changed
+
+- **The three sample-only M365 `identity_secops` tools now lead with their disclosure** (#417). `query_signins`, `query_ual` and `assess_coverage` have no live Microsoft Graph path — they return representative sample data flagged `representative: true` in the response. Their descriptions did carry that caveat, but only after a sentence of binding boilerplate, so a client listing tools saw the capability first and the caveat last. Each now opens with `SAMPLE DATA ONLY — …must NOT be used to investigate a real incident…`, which is what a caller sees *before* choosing the tool rather than a flag in a payload they may never surface. `get_ca_policies` is deliberately excluded: it has a live Entra path, so labelling it sample-only would be the same untruth inverted. Both directions are pinned by contract tests.
+
 ## [3.61.0] - 2026-08-21
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded. `@blackveil/dns-checks` stays at **1.23.0** (untouched this release).
