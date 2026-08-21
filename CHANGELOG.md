@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.61.0] - 2026-08-21
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded. `@blackveil/dns-checks` stays at **1.23.0** (untouched this release).
+
+### Added
+
+- **`X-API-Key` header authentication** (#747). An API key may now be supplied as `X-API-Key: <key>` in addition to `Authorization: Bearer <key>` and the deprecated `?api_key=` query parameter. Precedence is **Bearer → `X-API-Key` → `?api_key=`**; when a Bearer token is present the header is ignored outright rather than re-validated. The header is deliberately **not** governed by `REJECT_QUERY_API_KEY`, which exists to stop keys leaking into request logs via the query string — a header does not have that exposure. Keys resolve through the same `resolveTier()` path, so `keyHash`-derived quota and concurrency are unchanged. `X-API-Key` was added to the CORS `allowHeaders` list.
+
+### Fixed
+
+- **The Certspotter failover in `discover_subdomains` could never run** (#738). `queryDirectSources()` refuses to *start* a source it cannot finish (`hasBudgetFor()` is all-or-nothing), and crt.sh's hardcoded `CT_SOURCE_TIMEOUT_MS = 10_000` left exactly `24_000 − 10_000 = 14_000`ms — precisely `CERTSPOTTER_TIMEOUT_MS`. Any non-zero elapsed time therefore put the budget below the threshold and the fallback was skipped on every real call, reporting `certspotter: not-consulted`. `CT_SOURCE_TIMEOUT_MS` is now **derived** as `DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS − CERTSPOTTER_TIMEOUT_MS − CT_FAILOVER_HEADROOM_MS` (= 8_000), with the new exported `CT_FAILOVER_HEADROOM_MS = 2_000` reserving room for the handover. The sync budget and the Certspotter timeout are unchanged.
+- **Discovery timeout guidance misattributed its measurements** (#738). The prose named a scan-level knob for a source bound by `CT_SOURCE_TIMEOUT_MS`, and said "not configured in this deployment" of a source that had merely been skipped for budget. crt.sh and Certspotter now each carry the knob that actually binds them, "not configured" is said only of `certstream`, an unconsulted Certspotter is reported as the budget outcome it is, and `was`/`were` agreement is fixed.
+
 ## [3.60.0] - 2026-08-21
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded. `@blackveil/dns-checks` goes to **1.23.0** for new exports only (additive; no existing export changes shape).
