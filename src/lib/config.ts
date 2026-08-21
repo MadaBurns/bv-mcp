@@ -444,7 +444,26 @@ export function isGatedPaidOnlyTool(toolName: string): boolean {
  * Members carry NO FREE_TOOL_DAILY_LIMITS entry (they are not public-callable);
  * the tool-quota-coverage audit exempts them.
  */
-export const INTERNAL_ONLY_TOOLS: ReadonlySet<string> = new Set<string>(['map_csc_products']);
+export const INTERNAL_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
+	'map_csc_products',
+
+	// ── identity_secops (M365 client-tenant reads) ────────────────────────────
+	// Withdrawn from the public catalog alongside the 3.62.0 fail-closed kill
+	// switch (isM365TenantReadEnabled). With tenant reads disabled these tools
+	// can ONLY ever answer `{ ok: false, unprovisioned: true }`, so advertising
+	// them in tools/list invited callers to a capability that no longer exists.
+	//
+	// They stay registered in TOOL_DEFS deliberately: the auth gate
+	// (AUTH_REQUIRED_TOOLS), the registry Layer-2 no-principal hard reject and
+	// the M365 seam contracts are all DERIVED from the registry, so deleting the
+	// entries would delete those tripwires with them. Re-listing is the exact
+	// inverse of this edit — drop the four names here and set
+	// M365_TENANT_READS_ENABLED = "true".
+	'query_signins',
+	'query_ual',
+	'get_ca_policies',
+	'assess_coverage',
+]);
 
 /** True when a tool is internal-only (hidden from + rejected on the public /mcp surface). */
 export function isInternalOnlyTool(toolName: string): boolean {
