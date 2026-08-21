@@ -44,8 +44,9 @@ export {
 	withRobotsGate,
 	describeRobotsScope,
 	robotsAbstentionMetadata,
+	createRobotsGroupCache,
 } from './robots-gate';
-export type { RobotsDisallowScope } from './robots-gate';
+export type { RobotsDisallowScope, RobotsResolution, RobotsResolutionRecord, RobotsGroupCache } from './robots-gate';
 
 // DKIM selector probe list. Exported so downstream consumers can assert provider
 // coverage without re-declaring the list (a second copy would drift and, because

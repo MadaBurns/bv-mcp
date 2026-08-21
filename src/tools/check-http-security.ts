@@ -11,8 +11,9 @@
  * passed to the package's analysis layer.
  */
 
-import { checkHTTPSecurity, withRobotsGate, SCANNER_USER_AGENT } from '@blackveil/dns-checks';
+import { checkHTTPSecurity, withRobotsGate, SCANNER_USER_AGENT, createRobotsGroupCache } from '@blackveil/dns-checks';
 import type { FetchFunction } from '@blackveil/dns-checks';
+import { createRobotsProvenance, type RobotsProvenance } from '../lib/robots-provenance';
 import type { CheckResult } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
@@ -380,14 +381,17 @@ const TOTAL_BUDGET_MS = 10_000;
 const BUDGET_RACE_MARGIN_MS = 400;
 
 /**
- * Robots.txt-gated fetch functions for this tool's real-network call sites
- * (`fetchWithRedirects`'s initial + redirect-follow fetches, `fetchBodyForWafDetection`,
- * and `capturingFetch`'s `safeFetch` fallback). `withRobotsGate` stamps the shared
- * scanner UA automatically when the caller hasn't set one, so inline
- * `headers: { 'User-Agent': ... }` objects at each call site are no longer needed.
+ * Isolate-lifetime robots.txt decision caches, one per gate role (issue #745).
+ *
+ * Provenance is reported through a construction-time callback, so a gate must be
+ * built per invocation to attribute its decisions to the right call. These caches
+ * keep the memoization the module-scope gates used to provide: the gate object is
+ * new each call, the robots.txt decisions it reads are not. One cache per role
+ * because the two roles fetch through different functions (`fetch` vs `safeFetch`,
+ * the latter SSRF-validating), and sharing would let one role's blocked fetch
+ * decide the other's policy.
  */
-const gatedFetch = withRobotsGate((url, init) => fetch(url, init), { userAgent: SCANNER_USER_AGENT });
-const gatedSafeFetch = withRobotsGate((url, init) => safeFetch(url, init), { userAgent: SCANNER_USER_AGENT });
+const DEFAULT_GROUP_CACHES = { plain: createRobotsGroupCache(), safe: createRobotsGroupCache() };
 
 /** The pair of robots-gated fetchers this check's call sites use. */
 interface GatedFetchers {
@@ -395,14 +399,14 @@ interface GatedFetchers {
 	gatedSafeFetch: FetchFunction;
 }
 
-/** The isolate-lifetime default pair — used by every direct `check_http_security` call. */
-const DEFAULT_GATES: GatedFetchers = { gatedFetch, gatedSafeFetch };
-
 /**
  * Resolve the gated fetchers for one invocation (issue #641).
  *
- * No memo (direct tool call) → the module-scope pair above, whose isolate-lifetime
- * robots.txt cache is unchanged.
+ * Every gated fetch these produce reports its robots.txt decision to `provenance`
+ * (issue #745) — the gate objects are per invocation for exactly that reason.
+ *
+ * No memo (direct tool call) → a pair over the isolate-lifetime decision caches
+ * above, so robots.txt is still resolved at most once per host per isolate.
  *
  * Memo supplied (a `scan_domain` fan-out) → a fresh gate pair whose inner fetches
  * share the SCAN's robots.txt memo, so `https://<domain>/robots.txt` is fetched once
@@ -411,8 +415,28 @@ const DEFAULT_GATES: GatedFetchers = { gatedFetch, gatedSafeFetch };
  * own) onto one shared fetch. Building the gates per call is pure closure allocation;
  * the network saving is what matters.
  */
-function resolveGates(robotsMemo: RobotsFetchMemo | undefined, budget: FetchBudget, budgeted: boolean): GatedFetchers {
-	if (!robotsMemo && !budgeted) return DEFAULT_GATES;
+function resolveGates(
+	robotsMemo: RobotsFetchMemo | undefined,
+	budget: FetchBudget,
+	budgeted: boolean,
+	provenance: RobotsProvenance,
+): GatedFetchers {
+	if (!robotsMemo && !budgeted) {
+		// Same fetch functions and same (now explicitly shared) decision caches as
+		// the module pair — only the observation callback is per invocation.
+		return {
+			gatedFetch: withRobotsGate((url, init) => fetch(url, init), {
+				userAgent: SCANNER_USER_AGENT,
+				groupCache: DEFAULT_GROUP_CACHES.plain,
+				onRobotsResolution: provenance.onResolution,
+			}),
+			gatedSafeFetch: withRobotsGate((url, init) => safeFetch(url, init), {
+				userAgent: SCANNER_USER_AGENT,
+				groupCache: DEFAULT_GROUP_CACHES.safe,
+				onRobotsResolution: provenance.onResolution,
+			}),
+		};
+	}
 	// Budget INNERMOST, as in check-ssl: the gate's own robots.txt fetch and the
 	// memo's miss-path both delegate down through it, so every leg is metered —
 	// including the one the check does not issue itself. Hoisting it outside the
@@ -426,6 +450,7 @@ function resolveGates(robotsMemo: RobotsFetchMemo | undefined, budget: FetchBudg
 			),
 			{
 				userAgent: SCANNER_USER_AGENT,
+				onRobotsResolution: provenance.onResolution,
 			},
 		),
 		gatedSafeFetch: withRobotsGate(
@@ -435,6 +460,7 @@ function resolveGates(robotsMemo: RobotsFetchMemo | undefined, budget: FetchBudg
 			),
 			{
 				userAgent: SCANNER_USER_AGENT,
+				onRobotsResolution: provenance.onResolution,
 			},
 		),
 	};
@@ -495,9 +521,13 @@ export async function checkHttpSecurity(
 		}, totalBudgetMs);
 	});
 	const innerSignal = options.signal ? AbortSignal.any([options.signal, budgetController.signal]) : budgetController.signal;
+	// Records which branch of the robots gate decided this invocation (issue #745),
+	// including the fail-open ones. Observation only: it emits no finding and the
+	// stamp lands on `metadata`, which nothing in the scoring path reads.
+	const provenance = createRobotsProvenance(domain);
 	const innerPromise = checkHttpSecurityInner(
 		domain,
-		resolveGates(options.robotsMemo, budget, options.budgetMs !== undefined),
+		resolveGates(options.robotsMemo, budget, options.budgetMs !== undefined, provenance),
 		innerSignal,
 	);
 	// The abort above makes innerPromise reject shortly after budgetExceeded has
@@ -528,9 +558,9 @@ export async function checkHttpSecurity(
 				{ inconclusive: true, confidence: 'heuristic', errorKind: 'timeout' },
 			);
 			const base = buildCheckResult('http_security', [finding]);
-			return { ...base, score: 0, passed: false, checkStatus: 'timeout' };
+			return provenance.stamp({ ...base, score: 0, passed: false, checkStatus: 'timeout' });
 		}
-		return raced;
+		return provenance.stamp(raced);
 	} finally {
 		if (budgetTimeoutId !== undefined) clearTimeout(budgetTimeoutId);
 	}
