@@ -199,6 +199,10 @@ regexes = [
 regexTarget = "line"
 regexes = [
   '''threat-model-\d{8}-\d{6}''',
+  # GitHub Actions run IDs cited in code comments as provenance for a fix are
+  # digit runs that look phone-shaped (e.g. the publish.yml v2.10.9 run cited in
+  # vitest.config.mts). Line-scoped to the "run #<id>" citation form only.
+  '''run #\d{9,12}''',
 ]
 paths = [
   '''\.gitleaks\.toml$''',           # This config file itself
