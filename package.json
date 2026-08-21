@@ -71,7 +71,7 @@
 		"zod": "4.4.3"
 	},
 	"devDependencies": {
-		"@cloudflare/vitest-pool-workers": "^0.21.0",
+		"@cloudflare/vitest-pool-workers": "^0.21.3",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.10",
 		"eslint": "10.8.1",
