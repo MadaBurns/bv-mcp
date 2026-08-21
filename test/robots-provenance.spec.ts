@@ -53,7 +53,11 @@ describe('createRobotsProvenance', () => {
 	it('preserves metadata a caller already attached', () => {
 		const provenance = createRobotsProvenance('example.com');
 		provenance.onResolution({ host: 'example.com', path: '/', resolution: 'allowed', failOpen: false, status: 200 });
-		const stamped = provenance.stamp({ ...bareResult(), metadata: { certificate: { issuer: 'X' } } });
+		// Annotated: `stamp` is generic in its argument, so an inline literal would
+		// narrow `metadata` to exactly `{ certificate: ... }` and the returned type
+		// would not admit `robotsResolution`.
+		const withMetadata: CheckResult = { ...bareResult(), metadata: { certificate: { issuer: 'X' } } };
+		const stamped = provenance.stamp(withMetadata);
 		expect(stamped.metadata?.certificate).toEqual({ issuer: 'X' });
 		expect(stamped.metadata?.robotsResolution).toMatchObject({ resolution: 'allowed' });
 	});
