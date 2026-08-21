@@ -27,7 +27,13 @@ import { cors } from 'hono/cors';
 // only when a real call site consumes an exported function. Operator note: safe
 // to keep unwired; do not delete the crate.
 
-import { checkControlPlaneRateLimit, checkDistinctDomainDailyLimit, checkGlobalDailyLimit, checkRateLimit, checkToolDailyRateLimit } from './lib/rate-limiter';
+import {
+	checkControlPlaneRateLimit,
+	checkDistinctDomainDailyLimit,
+	checkGlobalDailyLimit,
+	checkRateLimit,
+	checkToolDailyRateLimit,
+} from './lib/rate-limiter';
 import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody, validateContentType } from './mcp/request';
@@ -342,6 +348,7 @@ const authedPaths = [...mcpPaths, '/reports/*'] as const;
 
 import { buildBrandTierLookups } from './lib/brand-tier-lookups';
 import {
+	resolveCertspotterToken as certspotterToken,
 	resolveCertstreamAuthToken as certstreamAuthToken,
 	resolveOAuthAvailability as oauthAvailability,
 	resolveQuotaShardRouting,
@@ -602,7 +609,9 @@ app.get('/health', async (c) => {
 	// Overall status degrades only on an actual probe error; an 'absent' binding
 	// (BSL self-host) is not a failure of a provisioned dependency.
 	const requireProductionBindings = envFlagEnabled(e.REQUIRE_PRODUCTION_BINDINGS);
-	const degraded = Object.values(bindings).some((status) => status === 'error') || (requireProductionBindings && Object.values(bindings).some((status) => status === 'absent'));
+	const degraded =
+		Object.values(bindings).some((status) => status === 'error') ||
+		(requireProductionBindings && Object.values(bindings).some((status) => status === 'absent'));
 
 	return c.json(
 		{
@@ -641,7 +650,11 @@ app.get('/badge/:domain', async (c) => {
 	// executeMcpRequest — not just the per-IP + per-tool caps. Without these, an
 	// unauthenticated IP could scan up to 25 DISTINCT domains/day here (vs the
 	// intended 12) and those scans would escape the global daily cap entirely.
-	const globalResult = await checkGlobalDailyLimit(parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT), c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
+	const globalResult = await checkGlobalDailyLimit(
+		parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
+		c.env.RATE_LIMIT,
+		c.env.QUOTA_COORDINATOR,
+	);
 	if (!globalResult.allowed) {
 		return badgeRateLimitResponse(svgHeaders, globalResult.retryAfterMs);
 	}
@@ -776,11 +789,7 @@ app.post('/mcp', async (c) => {
 			details: { protocolVersionHeader: headersLc['mcp-protocol-version'], method: singleMethod ?? 'batch' },
 			ipHash,
 		});
-		return sseErrorResponse(
-			jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Unsupported MCP-Protocol-Version header'),
-			400,
-			accept,
-		);
+		return sseErrorResponse(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Unsupported MCP-Protocol-Version header'), 400, accept);
 	}
 
 	if (parsedRequest.isBatch) {
@@ -824,7 +833,7 @@ app.post('/mcp', async (c) => {
 					quotaCoordinator: c.env.QUOTA_COORDINATOR,
 					quotaShardRouting: resolveQuotaShardRouting(c.env),
 					globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
-			contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
+					contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
 					sessionStore: c.env.SESSION_STORE,
 					scanCache: c.env.SCAN_CACHE,
 					providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -845,6 +854,7 @@ app.post('/mcp', async (c) => {
 					secondaryDohToken: c.env.BV_DOH_TOKEN,
 					certstream: c.env.BV_CERTSTREAM,
 					certstreamAuthToken: certstreamAuthToken(c.env),
+					certspotterToken: certspotterToken(c.env),
 					whoisBinding: c.env.BV_WHOIS,
 					reconBinding: c.env.BV_RECON,
 					reconAuthToken: c.env.BV_RECON_KEY,
@@ -948,6 +958,7 @@ app.post('/mcp', async (c) => {
 		secondaryDohToken: c.env.BV_DOH_TOKEN,
 		certstream: c.env.BV_CERTSTREAM,
 		certstreamAuthToken: certstreamAuthToken(c.env),
+		certspotterToken: certspotterToken(c.env),
 		whoisBinding: c.env.BV_WHOIS,
 		reconBinding: c.env.BV_RECON,
 		reconAuthToken: c.env.BV_RECON_KEY,
@@ -1114,7 +1125,7 @@ app.post('/mcp/messages', async (c) => {
 				quotaCoordinator: c.env.QUOTA_COORDINATOR,
 				quotaShardRouting: resolveQuotaShardRouting(c.env),
 				globalDailyLimit: parseGlobalDailyLimit(c.env.GLOBAL_DAILY_TOOL_LIMIT),
-			contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
+				contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
 				sessionStore: c.env.SESSION_STORE,
 				scanCache: c.env.SCAN_CACHE,
 				providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
@@ -1135,6 +1146,7 @@ app.post('/mcp/messages', async (c) => {
 				secondaryDohToken: c.env.BV_DOH_TOKEN,
 				certstream: c.env.BV_CERTSTREAM,
 				certstreamAuthToken: certstreamAuthToken(c.env),
+				certspotterToken: certspotterToken(c.env),
 				whoisBinding: c.env.BV_WHOIS,
 				reconBinding: c.env.BV_RECON,
 				reconAuthToken: c.env.BV_RECON_KEY,

@@ -4,7 +4,66 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [3.59.0] - 2026-08-21
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` and `@blackveil/dns-checks` are unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded.
+
+### Fixed
+
+- **`discover_subdomains` no longer reports a Certificate Transparency source that was queried and FAILED as one that was never consulted.** The certstream fast path returned a bare `null` on any non-OK response or throw without recording an attempt, and coverage derives `notConsulted` as "known sources minus attempted" — so a hard source outage was indistinguishable from a source that was never asked, and the payload read `Not consulted on this call: certstream`. That inverts the guarantee the coverage record exists to provide, and it reads as a benign configuration note: an operator concludes the source is unconfigured when it is configured and broken. Failures are now recorded with their real outcome (`rate_limited` / `timeout` / `http_error` / `error`), and `notConsulted` again means only what it says. When `/enumerate` and `/sans` fail differently the more actionable outcome wins, so a 429 is never masked by a later generic error. (#738)
+
+### Added
+
+- **Optional `CERTSPOTTER_TOKEN` — the Certspotter CT source can now authenticate.** It was queried unauthenticated, on a per-IP, per-hour free quota that a batch sweep exhausts (`HTTP 429 rate_limited`). Set the secret to raise that ceiling. **Optional and fail-soft:** absent → unauthenticated and fully functional, so no existing deployment changes behaviour and no self-host is required to obtain a key. The token is sent only to Certspotter, never to another CT source.
+  ⚠️ **This raises rate limits ONLY — not the per-query timeout.** SSLMate's free tier still cuts a query at 15 seconds, so enumerating a very large estate continues to return `HTTP 504 {"code":"timeout"}` whether authenticated or not. That limit is a property of the tier, not of this client, and only a paid tier's longer timeout changes it.
+
+## [3.58.0] - 2026-08-21
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` and `@blackveil/dns-checks` are unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded.
+
+⚠️ **`brand_discovery` can now report as UNMEASURED where it previously reported a passing score.** This is the intended correction, not a regression: a sweep that lost its primary certificate signal is excluded from scoring instead of scored on a partial view. A caller enforcing a minimum grade in CI may newly see `brand_discovery` excluded during an upstream Certificate Transparency outage — previously such a sweep silently returned a high score.
+
+### Fixed
+
+- **`brand_discovery` scored a PARTIAL signal failure as a pass (#734).** #670's unmeasured gate keyed on `signals.every(...)`, so it fired only when EVERY signal failed. A run that lost the primary certificate channel while secondary signals answered fell through to normal scoring — where the score derives from how many candidates surfaced, so a crippled sweep outscored a healthy one. Measured against production 2026-08-21: seed `meta.com` with `san: error` plus four degraded signals surfaced **1 of at least 152** real Meta apexes (0.7%) and returned `passed: true, score: 95`, while a healthy `facebook.com` sweep surfacing 27 returned `passed: false, score: 0` — the score moved inversely to measurement success. Ground truth for the 152 was established independently of the tool, via in-bailiwick NS delegation to Meta's own nameservers. Adds `PRIMARY_DISCOVERY_SIGNALS` (`san`, `san_recursive`) and excludes the category from scoring when any of them could not complete. Candidate findings are deliberately **retained** — what the surviving signals found is still useful, and discarding it would trade one wrong answer for another. Same false-green family as #662/#670/#638.
+
+- **The total-CT-failure banner told every caller to "retry shortly" (#735).** Correct for an upstream outage, misleading for a timeout. The banner now splits its guidance by per-source outcome, and reports `notConsulted` separately — a source that was never asked is not a source that failed, and folding the two together implied three sources were tried when only two were.
+
+- **HTTP 429 from a CT source was indistinguishable from any other upstream error (#735).** 429 was handled nowhere and fell into the generic `!response.ok` → `http_error` branch, so the tool would advise a retry — which extends the lockout on a quota **shared with the next domain scanned**, turning one slow domain into a sweep-wide outage. Measured: after Certspotter 504s on a large estate it 429s the same unauthenticated caller, and the lockout outlived a 75-second wait. Adds `rate_limited` as a distinct `CtSourceOutcome` with back-off guidance; a control test keeps 503 on the retry path.
+
+  Not fixed, because measurement ruled it out: pagination. It already exists (#573/#577) and does not apply — the failure is on page 1, which has no cursor, and `limit=10`, `limit=100` and `after=0` were each measured returning the same HTTP 504. Nor is it a simple size threshold: `facebook.com`, a larger estate, answers in 1.45s. A narrowing fallback (dropping `include_subdomains`) does make `meta.com` answer, and is deliberately not shipped — it yields two unique names whose only subdomain is the wildcard. The residual is an upstream capability limit, not a defect here.
+
+## [3.57.0] - 2026-08-21
+
+**No scoring-model change.** This release touches operator alerting only — no check, finding, weight or grade moves. `SCORING_MODEL_VERSION` and `@blackveil/dns-checks` are unchanged, so cached scans are NOT invalidated and no domain is re-graded.
+
+### Fixed
+
+- **The `P95 latency` cron alert paged `critical` for behaviour working exactly as designed** (#729). A live example: `P95 latency 22612ms (last 15m)`, `total_calls: 35`, severity **critical** — nothing was wrong. Three independent defects compounded, so fixing any one alone would have left it firing.
+
+  1. **No volume floor.** The only guard was `total_calls > 0`. At the measured rate (~11 tool calls/hour) a 15m window holds ~3 calls, and `quantileExactWeighted(0.95)` over a handful of samples converges on the **maximum** — the alert was reporting the slowest single call in the window and labelling it a percentile.
+  2. **No workload class.** Enumeration tools were pooled with `scan_domain` against one 10s ceiling. Measured over 7 days against the live dataset, **exactly four** tools have a p95 above 10s: `discover_brand_domains` (25,715ms), `batch_scan` (25,000ms — its own documented `budgetMs` is 25s), `compare_domains` (22,612ms, the tool behind the reported page) and `discover_subdomains` (11,711ms). `discover_brand_domains` could not run without paging **critical**, because 25,715 > 10,000 × 2.
+  3. **Threshold below the design envelope.** `scan_domain` is ~90% of interactive volume (6,124 of 6,762 calls) and is built to run to a 15s `SCAN_TIMEOUT_MS`; its measured p95 is 9,059ms, ~10% under the old 10s ceiling, so ordinary upper-normal scan latency was one blip from paging.
+
+  Latency now leaves the 15m `anomalies` lane for its own lane with its own 6h window and per-class ceilings — interactive 15s (= `SCAN_TIMEOUT_MS`, so the ceiling derives from the dominant tool's own budget rather than a round number), batch 30s. `p95_ms` remains on the error-rate payload as context: removing the alert must not remove the datum.
+
+  Verified against live Analytics Engine with the new query rather than reasoned about: over 7 days batch p95 = 25,000 and interactive p95 = 8,952, both under their new ceilings; over the last 6h, interactive p95 = 3,579 across 28 calls. The lane goes quiet without going dead.
+
+  The lane evaluates only on a **non-overlapping window boundary**. A 6h lookback read every 15m would re-report the same slow window up to 24 times — one true finding becoming 24 pages, this same failure with the sign flipped. The trade-off is explicit: a missed cron tick skips that window entirely, which for a trend alert is the right way to be wrong.
+
+  Below `ALERT_MIN_LATENCY_SAMPLES` the lane **abstains and logs** rather than paging on a percentile it cannot support — logged, so a permanently-quiet lane stays greppable instead of indistinguishable from a healthy one. An unrecognised workload class inherits the **stricter** ceiling, so an unmapped tool can never quietly buy itself a 30s allowance.
+
+- **A whole-pipeline alerting outage could be downgraded to a warning.** The `LANE_COUNT = 5` constant is replaced by a counter of lanes actually attempted. Because the new latency lane runs only on a window boundary, a hardcoded total would have reported a genuine 5-of-5 outage as "5 of 6 degraded" and lost the single loud page. Counting also removes the bump-me-when-you-add-a-lane drift hazard the constant carried.
+
+### Changed
+
+- `ALERT_P95_THRESHOLD` moves `10000` → `15000` in `wrangler.jsonc`, and three knobs are added: `ALERT_BATCH_P95_THRESHOLD` (30000), `ALERT_LATENCY_LOOKBACK_MINUTES` (360) and `ALERT_MIN_LATENCY_SAMPLES` (20). These are public vars, not secrets — they ship with the deploy and need no environment provisioning.
+
+- `queryLatencyByWorkloadClass` **defaults** its tool list from `LONG_RUNNING_TOOLS` rather than requiring it. Not ergonomics: `analytics-queries-ae-dialect.spec.ts` calls every exported builder with a single argument, so a required parameter would have made this the one builder whose SQL that audit never dialect-checked.
+
+- A `CLAUDE.md` count that was **already stale before this release** is corrected: the webhook resolver was documented as wired into "all 4 alert-dispatch sites" while `scheduled.ts` holds 10. De-numeralized rather than re-numbered, since that count has now demonstrably drifted once.
+
+## [3.56.0] - 2026-08-21
 
 **This release DOES change scores.** One entry in this block — the lame-delegation escalation under *Changed* — moves a severity, stamps a confidence and raises a per-profile importance, and it lowers the grade of an affected domain: measured **97 (A+) → 82 (B+)**. Everything else here remains score-neutral and is proven so: the CAA-parameter and cert-validity-window additions emit nothing scored, the BIMI corrections are prose-only with the `bimi` category pinned byte-identical, and the `compare_baseline` fix touches a reporting surface the scorer does not read. `recordPresent`/`controlPresent` likewise remain score-neutral by construction; nothing in the scoring path reads them.
 

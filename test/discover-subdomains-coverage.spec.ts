@@ -154,6 +154,106 @@ describe('discover_subdomains — per-source coverage record', () => {
 		expect(result.coverage?.notConsulted).toContain('certspotter');
 	});
 
+	// #738 item 4. Measured in production 2026-08-21: `BV_CERTSTREAM` was bound to a
+	// worker that 404s every CT route, so the fast path was entered and failed on
+	// EVERY call — 13/13 requests, confirmed by Cloudflare observability — while the
+	// payload said "Not consulted on this call: certstream".
+	//
+	// `queryCertstreamEndpoint` returned `null` on `!response.ok` without recording an
+	// attempt, and `buildCtCoverage` derives `notConsulted` as "known sources minus
+	// ATTEMPTED", so a source that failed was indistinguishable from one never asked.
+	// That inverts the meaning this module exists to protect (`ct-coverage.ts`: "sources
+	// that were never consulted are named explicitly, so a fast-path single-source answer
+	// cannot masquerade as a multi-source consensus"), and it hides a hard outage as a
+	// benign configuration note — the operator sees "not consulted" and concludes the
+	// binding is absent, when it is present and broken.
+	describe('a certstream fast path that FAILED is never reported as never-asked', () => {
+		// Every distinct way the fast path can fail. The bug was NOT specific to 404 —
+		// it swallowed the whole `!response.ok` branch plus every throw — so the lock is
+		// the INVARIANT across failure modes, not one literal status.
+		const failureModes: Array<{ label: string; respond: () => Promise<Response>; outcome: string }> = [
+			{ label: '404 (wrong worker deployed at that name)', respond: async () => Response.json({ error: 'Not found' }, { status: 404 }), outcome: 'http_error' },
+			{ label: '500 (upstream fault)', respond: async () => Response.json({ error: 'boom' }, { status: 500 }), outcome: 'http_error' },
+			{ label: '429 (quota spent)', respond: async () => Response.json({ error: 'rate limited' }, { status: 429 }), outcome: 'rate_limited' },
+		];
+
+		for (const mode of failureModes) {
+			it(`records certstream as attempted-and-failed on ${mode.label}`, async () => {
+				const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+				const certstreamFetch = vi.fn(mode.respond);
+				globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+					const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+					if (s.includes('crt.sh')) return Response.json({}, { status: 502 });
+					if (s.includes('certspotter.com')) return Response.json([issuance(1, ['api.example.com'])], { status: 200 });
+					return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+				});
+
+				const result = await discoverSubdomains('example.com', { fetch: certstreamFetch as unknown as typeof fetch });
+
+				// The binding WAS exercised — assert the premise, so this test cannot pass
+				// by the fast path silently never running.
+				expect(certstreamFetch).toHaveBeenCalled();
+
+				// The defect, stated directly.
+				expect(result.coverage?.notConsulted).not.toContain('certstream');
+
+				const certstream = result.coverage?.perSource.find((s) => s.source === 'certstream');
+				expect(certstream).toBeDefined();
+				expect(certstream?.outcome).toBe(mode.outcome);
+				expect(certstream?.contributed).toBe(false);
+				expect(result.coverage?.unavailable).toContain('certstream');
+
+				// The prose a human actually reads must not call it never-asked either.
+				expect(result.coverage?.caveat).not.toMatch(/Not consulted on this call:[^.]*certstream/);
+			});
+		}
+
+		it('keeps the 429 when /enumerate is rate-limited and /sans then fails generically', async () => {
+			// The fast path is a two-endpoint ladder, so the two calls can fail
+			// differently. A 429 must survive: it is the one outcome whose correct
+			// response is the OPPOSITE of the usual one — back off, because retrying
+			// extends a lockout on a quota shared with the next domain scanned (#735).
+			// Letting the later 500 win would tell the caller "retry, may be transient".
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			const certstreamFetch = vi.fn(async (input: RequestInfo | URL) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+				return url.includes('/enumerate')
+					? Response.json({ error: 'rate limited' }, { status: 429 })
+					: Response.json({ error: 'boom' }, { status: 500 });
+			});
+			globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+				const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+				if (s.includes('crt.sh')) return Response.json({}, { status: 502 });
+				if (s.includes('certspotter.com')) return Response.json([issuance(1, ['api.example.com'])], { status: 200 });
+				return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+			});
+
+			const result = await discoverSubdomains('example.com', { fetch: certstreamFetch as unknown as typeof fetch });
+
+			// Both endpoints were exercised — otherwise this passes vacuously.
+			expect(certstreamFetch).toHaveBeenCalledTimes(2);
+			expect(result.coverage?.perSource.find((s) => s.source === 'certstream')?.outcome).toBe('rate_limited');
+		});
+
+		it('still reports certstream as notConsulted when the binding is genuinely absent', async () => {
+			// The control. Unbinding restored a TRUE statement, and the fix must not
+			// destroy it — otherwise "not consulted" becomes unreachable and the field
+			// stops discriminating at all.
+			const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+			globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+				const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+				if (s.includes('crt.sh')) return Response.json({}, { status: 502 });
+				if (s.includes('certspotter.com')) return Response.json([issuance(1, ['api.example.com'])], { status: 200 });
+				return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+			});
+
+			const result = await discoverSubdomains('example.com');
+
+			expect(result.coverage?.notConsulted).toContain('certstream');
+			expect(result.coverage?.perSource.find((s) => s.source === 'certstream')).toBeUndefined();
+		});
+	});
+
 	it('labels each source with the slice of CT history it can even see', async () => {
 		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
 		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
@@ -288,5 +388,69 @@ describe('discover_subdomains — rendered text always states the sample caveat'
 		const output = await renderLiveRun('full');
 		expect(output).toContain('crtsh');
 		expect(output).toContain('certspotter');
+	});
+
+	// #735 — the total-failure banner told EVERY caller to "retry shortly".
+	//
+	// That is right for an upstream outage and wrong for a timeout. Measured
+	// 2026-08-21: certspotter returned HTTP 504 {"code":"timeout"} for meta.com
+	// ("domains with a huge number of sub-domains or certificates") while
+	// answering anthropic.com with HTTP 200 in the same window. So the timeout is
+	// a deterministic property of the domain's certificate population under an
+	// unpaginated query, not a transient blip — retrying is guaranteed to fail
+	// again, forever, on exactly the largest and most interesting estates.
+	describe('total-failure banner distinguishes transient from deterministic (#735)', () => {
+		async function renderUnavailable(perSource: Array<{ source: string; outcome: string }>, notConsulted: string[] = []) {
+			const { formatSubdomainDiscovery } = await import('../src/tools/discover-subdomains');
+			const { buildCtCoverage } = await import('../src/lib/ct-coverage');
+			const coverage = buildCtCoverage(
+				perSource.map((s) => ({ source: s.source, outcome: s.outcome as never, contributed: false })),
+			);
+			return formatSubdomainDiscovery(
+				{
+					domain: 'meta.com',
+					subdomains: [],
+					totalSubdomains: 0,
+					sourceUnavailable: true,
+					coverage: { ...coverage, notConsulted },
+				} as never,
+				'full',
+			);
+		}
+
+		it('does NOT tell the caller to retry when the source timed out', async () => {
+			const output = await renderUnavailable([{ source: 'certspotter', outcome: 'timeout' }]);
+			expect(output).not.toMatch(/retry shortly/i);
+			// and it must say WHY retrying will not help
+			expect(output).toMatch(/certspotter/);
+			expect(output).toMatch(/deterministic|too large|not transient/i);
+		});
+
+		it('still offers a retry when the failure was an upstream error', async () => {
+			const output = await renderUnavailable([{ source: 'crtsh', outcome: 'http_error' }]);
+			expect(output).toMatch(/retry/i);
+		});
+
+		it('tells a rate-limited caller to BACK OFF, never that a retry is worthwhile', async () => {
+			const output = await renderUnavailable([{ source: 'certspotter', outcome: 'rate_limited' }]);
+			expect(output).toMatch(/certspotter/);
+			expect(output).toMatch(/back off|backoff|quota/i);
+			// The dangerous wording: retrying is what EXTENDS a 429 lockout.
+			expect(output).not.toMatch(/retry is worthwhile|retry shortly/i);
+		});
+
+		it('says the deployment has no configured fallback when the last source was never consulted', async () => {
+			const output = await renderUnavailable(
+				[
+					{ source: 'crtsh', outcome: 'http_error' },
+					{ source: 'certspotter', outcome: 'timeout' },
+				],
+				['certstream'],
+			);
+			expect(output).toMatch(/certstream/);
+			expect(output).toMatch(/not configured|no configured fallback|never consulted/i);
+			// The mixed case must not silently drop the deterministic warning.
+			expect(output).toMatch(/deterministic|too large|not transient/i);
+		});
 	});
 });
