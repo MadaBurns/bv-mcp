@@ -4,6 +4,9 @@ const DEFAULT_POLICY = {
 	forbiddenPaths: [],
 	sourceExtensions: ['.cjs', '.js', '.json', '.jsonc', '.md', '.mjs', '.py', '.sh', '.sql', '.toml', '.ts', '.tsx', '.yaml', '.yml'],
 	allowedEmailDomains: ['example.com', 'example.test', 'example.invalid', 'blackveilsecurity.com'],
+	// GitHub's own squash-merge trailers. Callers that scan without policy.json
+	// (scanCommitMessage in a commit-msg hook) must allow these too.
+	allowedEmailAddresses: ['support@github.com', 'noreply@github.com'],
 	allowedDomainSuffixes: ['example.com', 'example.net', 'example.org', 'example.test', 'example.invalid', 'localhost', 'blackveilsecurity.com'],
 	allowedInternalHostnames: [],
 	forbiddenClientDomains: [],
@@ -63,6 +66,7 @@ export function normalizePolicy(policy = {}) {
 		forbiddenPaths: policy.forbiddenPaths ?? DEFAULT_POLICY.forbiddenPaths,
 		sourceExtensions: policy.sourceExtensions ?? DEFAULT_POLICY.sourceExtensions,
 		allowedEmailDomains: policy.allowedEmailDomains ?? DEFAULT_POLICY.allowedEmailDomains,
+		allowedEmailAddresses: policy.allowedEmailAddresses ?? DEFAULT_POLICY.allowedEmailAddresses,
 		allowedDomainSuffixes: policy.allowedDomainSuffixes ?? DEFAULT_POLICY.allowedDomainSuffixes,
 		allowedInternalHostnames: policy.allowedInternalHostnames ?? DEFAULT_POLICY.allowedInternalHostnames,
 		forbiddenClientDomains: policy.forbiddenClientDomains ?? DEFAULT_POLICY.forbiddenClientDomains,
@@ -122,7 +126,16 @@ export function isAllowedIPv4(value) {
 
 export function isAllowedEmail(value, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
-	const domain = value.split('@').pop()?.toLowerCase() ?? '';
+	const address = value.toLowerCase();
+	// Exact-address allowlist. Deliberately narrower than a domain entry: GitHub's
+	// generated squash trailers carry `support@github.com` and `*@users.noreply.github.com`,
+	// and allowlisting those two DOMAINS would also silence a genuine github.com
+	// address pasted into source. Server-side merges bypass local hooks, so these
+	// trailers only ever reach the scanner via a push range that merged main —
+	// blocking there fails a developer's push for history they did not author.
+	if (normalized.allowedEmailAddresses.includes(address)) return true;
+	const domain = address.split('@').pop() ?? '';
+	if (domain === 'users.noreply.github.com') return true;
 	return normalized.allowedEmailDomains.includes(domain) || normalized.allowedEmailDomains.some((allowed) => domain.endsWith(`.${allowed}`));
 }
 

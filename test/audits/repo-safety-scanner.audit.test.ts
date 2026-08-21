@@ -39,6 +39,26 @@ describe('repo safety scanner helper', () => {
 		expect(scanTextForSensitiveSurface('docs/fixture.md', 'contact@example.com is the RFC placeholder contact')).toEqual([]);
 	});
 
+	// GitHub writes these trailers into every squash merge it performs server-side,
+	// which bypasses local hooks — so they only reach the scanner via a push range
+	// that merged main, failing a push for history the developer did not author.
+	it('allows GitHub-generated squash-merge trailer addresses', () => {
+		const trailers = [
+			'Signed-off-by: dependabot[bot] <support@github.com>',
+			'Co-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>',
+			'Co-authored-by: Blackveil <83378247+MadaBurns@users.noreply.github.com>',
+		].join('\n');
+
+		expect(scanCommitMessage(trailers).filter((finding) => finding.ruleId === 'real-email')).toEqual([]);
+	});
+
+	// The allowlist is exact-address/noreply-only, NOT the github.com domain — a real
+	// github.com address in source must still be caught.
+	it('still flags a non-trailer github.com address', () => {
+		const findings = scanTextForSensitiveSurface('src/example.ts', 'const owner = "security@github.com";');
+		expect(findings.map((finding) => finding.ruleId)).toContain('real-email');
+	});
+
 	it('flags real email addresses and customer/tenant markers', () => {
 		const findings = scanTextForSensitiveSurface('docs/private.md', 'Customer Acme Corp uses admin@customer.invalid for tenant-pilot-1.');
 		expect(findings.map((finding) => finding.ruleId)).toEqual(expect.arrayContaining(['real-email', 'customer-marker', 'tenant-marker']));

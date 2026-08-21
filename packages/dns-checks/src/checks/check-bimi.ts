@@ -11,7 +11,7 @@
 
 import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
-import { RobotsDisallowedError } from '../robots-gate';
+import { RobotsDisallowedError, describeRobotsScope, robotsAbstentionMetadata } from '../robots-gate';
 import { isNoSendPolicy } from './spf-analysis';
 
 /** BIMI logo fetch timeout (ms). */
@@ -162,7 +162,8 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 					'bimi',
 					'BIMI logo not independently validated (robots.txt)',
 					'info',
-					`${logoUrl} could not be fetched: the domain's robots.txt disallows BlackVeil-Security-Scanner. The BIMI record itself is still validated from DNS; only the logo file's own contents were not checked.`,
+					`${logoUrl} could not be fetched: the domain's robots.txt ${describeRobotsScope(err.scope)}. The BIMI record itself is still validated from DNS; only the logo file's own contents were not checked.`,
+					robotsAbstentionMetadata(err.scope),
 				),
 			);
 			return findings;

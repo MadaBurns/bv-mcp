@@ -7,7 +7,9 @@ import {
 	withRobotsGate,
 	parseRobotsGroups,
 	isPathDisallowed,
+	createRobotsGroupCache,
 } from '../robots-gate';
+import type { RobotsResolutionRecord } from '../robots-gate';
 
 function textResponse(body: string, ok = true): Response {
 	return new Response(body, { status: ok ? 200 : 404 });
@@ -201,6 +203,147 @@ describe('withRobotsGate', () => {
 	it('defaults to the non-accusatory `blanket` scope when the caller supplies none', () => {
 		// Conservative default: never claim a site singled us out without evidence it did.
 		expect(new RobotsDisallowedError('https://example.com/').scope).toBe('blanket');
+	});
+
+	describe('resolution provenance (issue #745)', () => {
+		/** Run one gated request against a robots.txt the caller describes, capturing every reported record. */
+		async function gatedWithRecords(
+			robots: () => Promise<Response>,
+			url = 'https://example.com/',
+		): Promise<{ records: RobotsResolutionRecord[]; error: unknown }> {
+			const records: RobotsResolutionRecord[] = [];
+			const inner = async (target: string) => (target.endsWith('/robots.txt') ? robots() : textResponse('ok'));
+			const gated = withRobotsGate(inner, { onRobotsResolution: (r) => records.push(r) });
+			const error = await gated(url).then(
+				() => undefined,
+				(e: unknown) => e,
+			);
+			return { records, error };
+		}
+
+		it('records `allowed` with the matched scope when robots.txt permits the path', async () => {
+			const { records, error } = await gatedWithRecords(async () => textResponse('User-agent: *\nDisallow: /private\n'));
+			expect(error).toBeUndefined();
+			expect(records).toEqual([
+				{ host: 'example.com', path: '/', resolution: 'allowed', failOpen: false, status: 200, scope: 'blanket' },
+			]);
+		});
+
+		it('records `allowed` with no scope when no group in robots.txt applies to us', async () => {
+			const { records } = await gatedWithRecords(async () => textResponse('User-agent: Googlebot\nDisallow: /\n'));
+			expect(records[0]).toMatchObject({ resolution: 'allowed', failOpen: false });
+			expect(records[0]!.scope).toBeUndefined();
+		});
+
+		it('records `disallowed` on the branch that aborts the request', async () => {
+			const { records, error } = await gatedWithRecords(async () => textResponse('User-agent: *\nDisallow: /\n'));
+			expect(error).toBeInstanceOf(RobotsDisallowedError);
+			expect(records[0]).toEqual({
+				host: 'example.com',
+				path: '/',
+				resolution: 'disallowed',
+				failOpen: false,
+				status: 200,
+				scope: 'blanket',
+			});
+		});
+
+		it('records `no_policy` — not a fail-open guess — for a 404 robots.txt', async () => {
+			// A 404 is a MEASUREMENT: this origin published no policy, and will say so
+			// again tomorrow. It must not be conflated with "we could not find out".
+			const { records } = await gatedWithRecords(async () => new Response('', { status: 404 }));
+			expect(records[0]).toEqual({ host: 'example.com', path: '/', resolution: 'no_policy', failOpen: false, status: 404 });
+		});
+
+		it('records `unreachable` + failOpen for the crt.sh 502 case, and still proceeds', async () => {
+			const { records, error } = await gatedWithRecords(async () => new Response('', { status: 502 }), 'https://crt.sh/');
+			// Policy UNCHANGED: an unreadable robots.txt still does not block the scan.
+			expect(error).toBeUndefined();
+			expect(records[0]).toEqual({ host: 'crt.sh', path: '/', resolution: 'unreachable', failOpen: true, status: 502 });
+		});
+
+		it('records `unreachable` + the error name when the robots.txt fetch throws', async () => {
+			const { records, error } = await gatedWithRecords(async () => {
+				throw new TypeError('network error');
+			});
+			expect(error).toBeUndefined();
+			expect(records[0]).toEqual({
+				host: 'example.com',
+				path: '/',
+				resolution: 'unreachable',
+				failOpen: true,
+				errorName: 'TypeError',
+			});
+		});
+
+		it('distinguishes a timeout from an unreachable origin', async () => {
+			const { records, error } = await gatedWithRecords(async () => {
+				const err = new Error('The operation was aborted due to timeout');
+				err.name = 'TimeoutError';
+				throw err;
+			});
+			expect(error).toBeUndefined();
+			expect(records[0]).toEqual({
+				host: 'example.com',
+				path: '/',
+				resolution: 'timeout',
+				failOpen: true,
+				errorName: 'TimeoutError',
+			});
+		});
+
+		it('reports every gated request, including ones served from the per-host memo', async () => {
+			// The record describes the DECISION applied to a request, not the network
+			// fetch — otherwise only the first request of a check would be explainable.
+			const records: RobotsResolutionRecord[] = [];
+			const inner = async (url: string) =>
+				url.endsWith('/robots.txt') ? textResponse('User-agent: *\nDisallow: /private\n') : textResponse('ok');
+			const gated = withRobotsGate(inner, { onRobotsResolution: (r) => records.push(r) });
+			await gated('https://example.com/a');
+			await gated('https://example.com/b');
+			expect(records.map((r) => r.path)).toEqual(['/a', '/b']);
+			expect(records.every((r) => r.resolution === 'allowed')).toBe(true);
+		});
+
+		it('never reports the gate\'s own /robots.txt fetch', async () => {
+			const records: RobotsResolutionRecord[] = [];
+			const gated = withRobotsGate(async () => textResponse('User-agent: *\nDisallow: /private\n'), {
+				onRobotsResolution: (r) => records.push(r),
+			});
+			await gated('https://example.com/robots.txt');
+			expect(records).toEqual([]);
+		});
+
+		it('swallows a throwing callback — instrumentation can never break a scan', async () => {
+			const gated = withRobotsGate(async () => textResponse('ok'), {
+				onRobotsResolution: () => {
+					throw new Error('observer blew up');
+				},
+			});
+			await expect(gated('https://example.com/')).resolves.toBeInstanceOf(Response);
+		});
+
+		it('shares robots.txt decisions across gates through a caller-owned cache', async () => {
+			// What makes per-invocation provenance affordable: a fresh gate per call
+			// (needed for attribution) without re-fetching robots.txt per call.
+			const robotsFetches = vi.fn();
+			const inner = async (url: string) => {
+				if (url.endsWith('/robots.txt')) {
+					robotsFetches();
+					return textResponse('User-agent: *\nDisallow: /private\n');
+				}
+				return textResponse('ok');
+			};
+			const groupCache = createRobotsGroupCache();
+			const first: RobotsResolutionRecord[] = [];
+			const second: RobotsResolutionRecord[] = [];
+			await withRobotsGate(inner, { groupCache, onRobotsResolution: (r) => first.push(r) })('https://example.com/a');
+			await withRobotsGate(inner, { groupCache, onRobotsResolution: (r) => second.push(r) })('https://example.com/b');
+			expect(robotsFetches).toHaveBeenCalledTimes(1);
+			expect(first).toHaveLength(1);
+			expect(second).toHaveLength(1);
+			expect(second[0]!.resolution).toBe('allowed');
+		});
 	});
 
 	it('selects the named UA group over the wildcard group', async () => {
