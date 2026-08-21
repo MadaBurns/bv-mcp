@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.62.0] - 2026-08-21
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded. `@blackveil/dns-checks` stays at **1.23.0** (untouched this release).
+
+### Changed
+
+- **Client-tenant reads are now disabled by default (fail-closed).** The four `identity_secops` tools (`query_signins`, `query_ual`, `get_ca_policies`, `assess_coverage`) are the only tools that reach into a customer's Microsoft 365 / Entra tenant. They now require the Worker var `M365_TENANT_READS_ENABLED = "true"`; absent it, `m365ProxyBindings()` returns `{}` and neither the `BV_WEB` proxy nor `BV_WEB_INTERNAL_KEY` is wired into runtime options at any of the three call sites (`/mcp`, `/internal/tools/*`, service binding). Every path therefore returns the already-documented `{ unprovisioned: true }` degradation — **no new response shape and no new error class**. The withdrawal is by *not wiring*, not by a refusal branch, so a tenant read is unreachable rather than merely refused, and the binding and its bearer can never be half-wired (a bearer without a proxy would hand a trusted credential to a disabled path). bv-mcp holds no tenant credential of its own — no `M365_TOKEN_KEY`, no refresh tokens — it only proxies, so this closes the entire tenant-auth surface from this repo. The bv-recon and brand-tier bindings authenticate to **our own** infrastructure, not a customer tenant, and are deliberately untouched. Existing auth-gate and seam tests (89 across 6 files) are unchanged and still pass: the capability is removed without weakening a control. Marked `feat!` for the behaviour change; released as a **minor** because no tool is removed from `TOOL_DEFS`, no schema or wire shape changes, and the resulting response is a path the contract already documented. (#762)
+
+### Fixed
+
+- **Sample-only M365 tool descriptions now lead with the disclosure.** `query_signins`, `query_ual` and `assess_coverage` mentioned `representative: true` only after the binding boilerplate, so a client choosing a tool saw the capability first and the caveat last. Each now opens with `SAMPLE DATA ONLY — … must NOT be used to investigate a real incident`. `get_ca_policies` deliberately does **not** carry that prefix — it has a live Graph path and a blanket sample-only label would be the same untruth inverted; a contract test pins both directions. (#417, #760)
+
 ## [3.61.0] - 2026-08-21
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded. `@blackveil/dns-checks` stays at **1.23.0** (untouched this release).
