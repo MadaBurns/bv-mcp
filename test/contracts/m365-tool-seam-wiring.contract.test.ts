@@ -128,6 +128,38 @@ describe('M365 seam — the contracted tool set is derived from the registry', (
 	});
 });
 
+/**
+ * Tools with NO live Graph read path in bv-web-prod's `m365-handler.server.ts`.
+ * Verified 2026-08-21: its dispatch gates the live branch on `tool === 'get-ca-policies'`
+ * alone, so these three reach the representative seam on EVERY call.
+ */
+const SAMPLE_ONLY_TOOLS = ['query_signins', 'query_ual', 'assess_coverage'] as const;
+
+describe('M365 seam — sample-only tools disclose it in the description, not just the response', () => {
+	// `representative: true` in the payload is only read AFTER a call is made, and
+	// only by a client that looks. The description is what an LLM weighs when
+	// DECIDING to call — so for a tool that can only ever answer with sample data,
+	// the disclosure has to lead there too. Dropping it is a truthfulness
+	// regression that no payload assertion above can see.
+	for (const name of SAMPLE_ONLY_TOOLS) {
+		it(`${name} leads its description with the sample-data disclosure`, () => {
+			const def = TOOLS.find((t) => t.name === name);
+			expect(def).toBeDefined();
+			expect(def!.description.startsWith('SAMPLE DATA ONLY')).toBe(true);
+			expect(def!.description).toContain('representative: true');
+		});
+	}
+
+	it('get_ca_policies does NOT carry the blanket disclosure — it has a live path', () => {
+		// The inverse guard: `get_ca_policies` CAN return live Entra data once a
+		// tenant is connected and keyed, so labelling it sample-only would be the
+		// same class of lie in the other direction.
+		const def = TOOLS.find((t) => t.name === 'get_ca_policies');
+		expect(def!.description.startsWith('SAMPLE DATA ONLY')).toBe(false);
+		expect(def!.description).toContain('`false` once a live Microsoft Graph read succeeded');
+	});
+});
+
 // ───────────────────────────────────────────────────────────────────────────────
 // OUTBOUND: what bv-mcp promises to send bv-web-prod, driven through the registry.
 // ───────────────────────────────────────────────────────────────────────────────

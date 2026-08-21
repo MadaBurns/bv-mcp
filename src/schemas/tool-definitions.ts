@@ -756,7 +756,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	query_signins: {
 		description:
-			'Query Microsoft Entra sign-in logs for a tenant. Optionally filter by user principal name, failure status, or lookback window. Requires m365Proxy service binding; returns { unprovisioned: true } when absent. A `representative: true` field in the response marks sample (non-live) data until live Graph reads land.',
+			'SAMPLE DATA ONLY — this tool has no live Microsoft Graph read path yet, so every response is illustrative and must NOT be used to investigate a real incident or answer a question about actual tenant activity; the `representative: true` field marks it on each response. Query Microsoft Entra sign-in logs for a tenant. Optionally filter by user principal name, failure status, or lookback window. Requires m365Proxy service binding; returns { unprovisioned: true } when absent.',
 		schema: QuerySigninsArgs,
 		group: 'identity_secops',
 		tier: 'protective',
@@ -764,7 +764,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	query_ual: {
 		description:
-			'Query the Microsoft 365 Unified Audit Log for a tenant. Optionally filter by operation type, user, or lookback window. Requires m365Proxy service binding; returns { unprovisioned: true } when absent. A `representative: true` field in the response marks sample (non-live) data until live Graph reads land.',
+			'SAMPLE DATA ONLY — this tool has no live read path and may never gain one (Microsoft Graph exposes no direct Unified Audit Log equivalent; see issue #759), so every response is illustrative and must NOT be used to investigate a real incident; the `representative: true` field marks it on each response. Query the Microsoft 365 Unified Audit Log for a tenant. Optionally filter by operation type, user, or lookback window. Requires m365Proxy service binding; returns { unprovisioned: true } when absent.',
 		schema: QueryUalArgs,
 		group: 'identity_secops',
 		tier: 'protective',
@@ -780,7 +780,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	assess_coverage: {
 		description:
-			'Assess Conditional Access coverage gaps for a Microsoft Entra tenant — identifies users and apps not protected by any enforced policy. Requires m365Proxy service binding; returns { unprovisioned: true } when absent. A `representative: true` field in the response marks sample (non-live) data until live Graph reads land.',
+			'SAMPLE DATA ONLY — this tool has no live Microsoft Graph read path yet, so the gaps it reports are illustrative and must NOT be treated as a real assessment of a tenant\'s Conditional Access posture; the `representative: true` field marks it on each response. Assess Conditional Access coverage gaps for a Microsoft Entra tenant — identifies users and apps not protected by any enforced policy. Requires m365Proxy service binding; returns { unprovisioned: true } when absent.',
 		schema: AssessCoverageArgs,
 		group: 'identity_secops',
 		tier: 'protective',
