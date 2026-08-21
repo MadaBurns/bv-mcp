@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.60.0] - 2026-08-21
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded. `@blackveil/dns-checks` goes to **1.23.0** for new exports only (additive; no existing export changes shape).
+
+### Fixed
+
+- **The robots gate now records which branch decided a scan.** `withRobotsGate` fails open when `robots.txt` is unreachable or times out, so a scan of the same domain could be scored from a real policy read or from a guess with nothing in the result to tell them apart — reproducibility silently depended on the target's uptime during a 3s window. An opt-in `onRobotsResolution` callback now reports every branch (`allowed` / `disallowed` / `no_policy` / `unreachable` / `timeout`) plus `failOpen`, and `check_ssl` and `check_http_security` stamp it at `CheckResult.metadata.robotsResolution`. **The fail-open policy itself is unchanged** and no finding is added, removed or reweighted — this is metadata only, so no score can move. `CheckStatus` is deliberately NOT widened: two bv-web-prod consumers switch exhaustively over that union. (#745)
+- **A scan abstention is now self-describing instead of prose-only**, so a downstream consumer can tell "we were asked not to scan" from "we scanned and found nothing" without parsing English. (#743)
+- **A blanket `User-agent: *` block is no longer reported as naming our scanner.** The attribution said the target had specifically disallowed us when it had simply disallowed everyone. (#742)
+- **Rate limits: a new tool can no longer inherit the partner-tier daily limit silently.** `TOOL_DEFS` entries without an explicit per-tool limit fell through to the flat partner default with nothing recording that as a decision. An explicit `INTENTIONALLY_PARTNER_FLAT_TOOLS` set plus audit assertions now force the choice to be made and written down. **No limit value changed** — this is a guard, not a re-tuning. (#746)
+- **`npm test` no longer depends on a masked Node-compat injection.** Nine audit suites that shell out with Node built-ins were being collected into the Workers pool, which only worked because `@cloudflare/vitest-pool-workers` < 0.21.2 injected `nodejs_compat_v2` unconditionally; 0.21.2+ resolves Node compat from `wrangler.jsonc` and correctly refused them. Vitest now runs two projects (`workers` + `node`) off a shared file list. No audit was weakened, skipped or deleted, and `src/` is untouched. (#711, #752)
+- **Local pushes are no longer blocked by GitHub's own squash-merge trailers.** GitHub writes bot sign-off and co-author trailers into every squash merge it performs server-side, where local hooks never run; those messages then reached the push-range scanner the first time a branch merged `main` and failed the push under the `real-email` rule for history the developer did not author. The allowlist is exact-address plus GitHub's noreply co-author domain — **not** the `github.com` domain, so a genuine address in source is still flagged.
+
+### Changed
+
+- **npm and MCP Registry publishing are no longer gated off.** Both jobs carried `if: false` since an `NPM_TOKEN` rotation and reported `skipped`, which is GREEN — so npm rotted undetected: `blackveil-dns` sat at **2.13.0** and `@blackveil/dns-checks` at **1.3.12** against a repo at 3.59.0 / 1.22.0. Both now fail loudly on a missing or non-authenticating token, skip a version already published (re-run safe), and verify against `registry.npmjs.org` afterwards. ⚠️ **A tagged release will fail its npm job until a live `NPM_TOKEN` with publish rights to both packages is set in the `production` environment** — intended: loud beats silent. (#719)
+
 ## [3.59.0] - 2026-08-21
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` and `@blackveil/dns-checks` are unchanged — no check, weight, threshold or grade band moves, and no domain is re-graded.

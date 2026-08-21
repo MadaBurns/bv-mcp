@@ -55,9 +55,9 @@ Two transferable lessons:
 
 **Rule: deploy to prod first, then publish the registry. Never the reverse.**
 
-- Correct order: merge bump → tag (→ `publish.yml` cuts the GH Release; its Cloudflare deploy ends `cancelled`, registry `skipped`) → **`npm run deploy:prod`** → verify `serverInfo.version` + scoring footer on prod → **only then `mcp-publisher publish`** → verify `?version=latest` shows `isLatest=true`.
+- Correct order (**changed by #719** — see the warning below): merge bump → **`npm run deploy:prod`** → verify `serverInfo.version` + scoring footer on prod → **only then tag**. `publish.yml` cuts the GH Release and now also publishes to the registry, so the tag must come after the deploy.
 - Registry **behind** prod (published 3.8.0 while prod serves 3.9.0) is **benign** — it just means "not yet bumped," and is the safe state to pause in if the deploy is deferred. Registry **ahead** of prod is the foot-gun.
-- The tag pipeline itself is ordering-safe: per the job table it does the GH Release but **skips** the registry, so tagging advertises nothing to the registry. Only the manual `mcp-publisher` step does — keep it last.
+- ⚠️ **The tag pipeline is NO LONGER ordering-safe.** It used to be — `publish-registry` carried `if: false`, so tagging advertised nothing and the manual `mcp-publisher` step was the only publisher. #719 re-enabled that job, and `publish.yml` deliberately has **no** Cloudflare deploy job (#718), so a tag pushed before `npm run deploy:prod` now advertises the new version to the registry while prod still serves the old one — the same stale-prod class as the v2.10.2–v2.10.6 incidents. **Deploy prod before tagging.** The manual `mcp-publisher publish` remains the fallback when the job cannot run.
 - "Formalize the release" (version surfaces + tag + GH Release) and "deploy + publish" are separable. Deploy and registry publish are outward-facing — confirm before each unless told to run the whole sequence.
 
 Publish steps (key never echoed): `mcp-publisher validate` → `login dns --domain blackveilsecurity.com --private-key "$KEY"` (read `$KEY` from `.dev.vars`, ed25519) → `publish` → `logout`. Verify: `?search=com.blackveilsecurity/dns&version=latest` → expect `version=X.Y.Z status=active isLatest=true` (search endpoint sometimes returns an empty body — retry a few times).
