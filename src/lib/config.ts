@@ -688,6 +688,103 @@ export function isAuthRequiredTool(toolName: string): boolean {
 export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>();
 
 /**
+ * Tools where the FLAT partner-tier limit (TIER_DAILY_LIMITS.partner) is the
+ * deliberate answer, i.e. they intentionally carry no
+ * TIER_TOOL_DAILY_LIMITS.partner override (#746).
+ *
+ * Background: `TIER_TOOL_DAILY_LIMITS[tier]?.[tool] ?? TIER_DAILY_LIMITS[tier]`
+ * (src/mcp/execute.ts) makes ABSENCE indistinguishable from an intentional flat
+ * limit, so 45 of 81 tools inherited 100k/day with no record of anyone choosing
+ * it — and the set grew with every new tool. This set forces the decision to be
+ * explicit: the tool-quota-coverage audit fails when a TOOL_DEFS entry appears
+ * in NEITHER the partner override block NOR here (and when it appears in both).
+ *
+ * Membership rule: a tool belongs here when 100k/day of it is genuinely
+ * acceptable — cheap DoH-only checks, local computation, and status/report
+ * pollers (whose cost was already paid by the throttled *_start that created
+ * the job). A tool that fans out to an EXTERNAL METERED service does NOT belong
+ * here on cost grounds; several such tools are listed below only because
+ * lowering a live paid-tier limit is an operator/product decision, not a code
+ * cleanup — those carry a NEEDS-PRODUCT-DECISION comment and must not be
+ * silently retuned.
+ */
+export const INTENTIONALLY_PARTNER_FLAT_TOOLS: ReadonlySet<string> = new Set<string>([
+	// ── Cheap DoH-only checks. Same cost class as the 500k check_* siblings; the
+	// 100k flat is lower, so it is safe, and RAISING to 500k for parity is a
+	// product call (see NEEDS PRODUCT DECISION, #746).
+	'check_dane_https',
+	'check_svcb_https',
+	'check_nsec_walkability',
+	'check_dnssec_chain',
+	'check_agent_discovery',
+	'check_dnskey_strength',
+	'check_subdomain_takeover',
+	'check_authoritative_dns_infra',
+	'check_root_server_set',
+	'check_resolver_consistency',
+	'resolve_spf_chain',
+
+	// ── Local computation / no external fan-out beyond DoH already counted.
+	'generate',
+	'get_domain_rank',
+	'get_benchmark',
+	'get_provider_insights',
+	'assess_spoofability',
+	'analyze_drift',
+	'validate_fix',
+	'map_compliance',
+	'prioritize_csc_leads',
+	'simulate_attack_paths',
+	'map_csc_products', // INTERNAL_ONLY_TOOLS — not public-callable; flat limit is moot but recorded
+
+	// ── Multi-domain orchestrators. Bounded by their own budget/concurrency
+	// (batch_scan: budgetMs 25s, concurrency 3), so the daily count is not the
+	// binding constraint.
+	'batch_scan',
+	'compare_domains',
+
+	// ── Async pollers. The expensive work is metered at the *_start tool; the
+	// poll is a KV/D1 read, so a flat 100k is correct and must NOT be lowered to
+	// match its start sibling (that would strand in-flight jobs).
+	'discover_brand_domains_status',
+	'discover_brand_domains_findings',
+	'scan_buckets_status',
+	'scan_buckets_findings',
+	'osint_investigation_status',
+	'osint_investigation_report',
+
+	// ── Externally metered via BV_RECON / third-party feeds. 100k is very likely
+	// too permissive versus the deliberately-throttled 50k siblings
+	// (check_mx_reputation, check_lookalikes, check_shadow_domains,
+	// discover_brand_domains). Listed here to record the CURRENT effective value,
+	// NOT to endorse it — lowering a live partner-tier limit is user-visible and
+	// needs an operator decision (#746 "NEEDS PRODUCT DECISION").
+	'check_dbl',
+	'check_rbl',
+	'cymru_asn',
+	'rdap_lookup',
+	'check_fast_flux',
+	'discover_subdomains',
+	'map_supply_chain',
+	'check_realtime_threat_feed',
+	'discover_brand_domains_start',
+	'scan_buckets_start',
+	'osint_investigate_domain_start',
+	'osint_investigate_infrastructure_start',
+	'osint_investigate_supply_chain_start',
+	'osint_investigate_username_start',
+	'osint_investigate_email_start',
+]);
+
+/**
+ * Keys in TIER_TOOL_DAILY_LIMITS that are NOT TOOL_DEFS names and are therefore
+ * exempt from the "must be a real tool" audit. `scan` is the accepted alias for
+ * `scan_domain` in tools/call; normalizeToolName() runs BEFORE the limit lookup
+ * in some paths and after in others, so the alias needs its own entry.
+ */
+export const RATE_LIMIT_ALIAS_KEYS: ReadonlySet<string> = new Set<string>(['scan']);
+
+/**
  * Tools whose OWN documented budget exceeds {@link DEFAULT_P95_THRESHOLD}, so a
  * latency alert must not judge them against the interactive threshold (#729).
  *
