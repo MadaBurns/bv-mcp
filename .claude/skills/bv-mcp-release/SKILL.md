@@ -45,7 +45,7 @@ Two transferable lessons:
 
 ## Current publish reality (verify, don't assume)
 
-- **npm publish is gated** (`NPM_TOKEN` not configured) — the hosted npm step won't run. The 3.3.x line is **not on npm**.
+- **npm publish and registry publish are NO LONGER gated** (#719 removed the `if: false` both carried since an `NPM_TOKEN` rotation). While gated, the jobs reported `skipped` — which is GREEN — so npm rotted for ~46 minor versions: `blackveil-dns` sat at **2.13.0** and `@blackveil/dns-checks` at **1.3.12** against a repo at 3.59.0 / 1.22.0. Both jobs now fail loudly on a missing or non-authenticating `NPM_TOKEN`, skip a version already on the registry (re-run safe), and verify against `registry.npmjs.org` after publishing. ⚠️ **The next tagged release will fail its npm job unless a live `NPM_TOKEN` with publish rights to BOTH packages is in the `production` environment** — that is intended: loud beats silent.
 - **MCP Registry IS publishable locally** via `mcp-publisher publish` with `MCP_PUBLISHER_KEY` (in `.dev.vars`) + DNS-TXT auth for `com.blackveilsecurity/*`. Registry liveness-checks npm versions, so the server entry is **remotes-only**.
 - Verify what's live: query the registry with `?version=latest`.
 

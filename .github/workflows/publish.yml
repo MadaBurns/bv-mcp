@@ -159,22 +159,34 @@ jobs:
     permissions:
       contents: read
       id-token: write
-    # Gated off while the production `NPM_TOKEN` is being rotated. The hosted
-    # token returned 404 on `npm publish` for v2.24.0 (npm reports 404 for
-    # auth-shaped misses). Re-enable by deleting this `if:` line once a fresh
-    # token with publish rights to both `blackveil-dns` and
-    # `@blackveil/dns-checks` is in the production env. Releases are running
-    # via the manual fallback in the meantime.
-    if: false
+    # This job was gated off with `if: false` during an `NPM_TOKEN` rotation and
+    # stayed off for ~46 minor versions (#719). The rot was invisible because a
+    # skipped job is GREEN: the release workflow reported success while npm went
+    # stale. Every failure mode below is therefore made LOUD — a missing or
+    # invalid token fails the job before any build work, and nothing here
+    # warn-and-skips. Do not reintroduce a silent gate; if npm publishing must be
+    # paused, delete the job or fail it explicitly with a reason.
     steps:
-      - name: Check npm token
+      # Fails BEFORE checkout/build so a missing secret costs seconds, not a
+      # full release build, and the error is the first thing in the log.
+      - name: Preflight — NPM_TOKEN is present
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           if [ -z "$NPM_TOKEN" ]; then
-            echo "::error::NPM_TOKEN not configured in production environment"
+            echo "::error title=NPM_TOKEN missing::NPM_TOKEN is not set in the 'production' environment. Create an npm automation token with publish rights to BOTH 'blackveil-dns' and '@blackveil/dns-checks', then: gh secret set NPM_TOKEN --env production"
             exit 1
           fi
+          # Automation tokens are opaque, but a value carrying whitespace or a
+          # quote is a paste accident that would otherwise surface as an
+          # inscrutable 404 at publish time (npm answers 404 for auth misses).
+          case "$NPM_TOKEN" in
+            *[[:space:]]* | *\"* | *\'*)
+              echo "::error title=NPM_TOKEN malformed::NPM_TOKEN contains whitespace or quote characters — re-set it without surrounding quotes or a trailing newline."
+              exit 1
+              ;;
+          esac
+          echo "NPM_TOKEN is present (${#NPM_TOKEN} chars)."
 
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -186,6 +198,20 @@ jobs:
           cache: npm
           registry-url: 'https://registry.npmjs.org'
 
+      # Presence is not validity. A rotated-away token authenticates as nobody
+      # and npm reports the resulting publish miss as a 404, which reads like a
+      # package-name problem rather than an auth problem. Prove the token
+      # resolves to a user here, where the error message can say so.
+      - name: Preflight — NPM_TOKEN authenticates
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          if ! WHO=$(npm whoami --registry=https://registry.npmjs.org/ 2>&1); then
+            echo "::error title=NPM_TOKEN invalid::npm whoami failed — the token is expired, revoked, or lacks read access. Response: ${WHO}"
+            exit 1
+          fi
+          echo "Authenticated to npm as: ${WHO}"
+
       - run: npm ci
 
       - name: Build workspace package
@@ -193,15 +219,61 @@ jobs:
 
       - run: npm run build
 
-      - name: Publish
-        run: npm publish --provenance --access public
+      # Idempotent by design: a release can half-publish (root succeeds, the
+      # workspace package fails) and the retry must not die on
+      # `EPUBLISHCONFLICT` for the half that already landed. An ALREADY-PRESENT
+      # version is logged and skipped; any other publish failure still fails the
+      # job. This never overwrites a published version — npm forbids that.
+      - name: Publish blackveil-dns
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.version-bump.outputs.version }}
+        run: |
+          if npm view "blackveil-dns@${VERSION}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+            echo "::notice title=blackveil-dns already published::blackveil-dns@${VERSION} is already on the registry — skipping publish (re-run safe)."
+          else
+            npm publish --provenance --access public
+          fi
 
       - name: Publish @blackveil/dns-checks
-        run: npm -w packages/dns-checks publish --provenance --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: |
+          # The workspace package versions independently of the root release
+          # tag, so read its own manifest rather than reusing $VERSION.
+          PKG_VERSION=$(node -p "require('./packages/dns-checks/package.json').version")
+          if npm view "@blackveil/dns-checks@${PKG_VERSION}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+            echo "::notice title=@blackveil/dns-checks already published::@blackveil/dns-checks@${PKG_VERSION} is already on the registry — skipping publish (re-run safe)."
+          else
+            npm -w packages/dns-checks publish --provenance --access public
+          fi
+
+      - name: Verify published versions
+        env:
+          VERSION: ${{ needs.version-bump.outputs.version }}
+        run: |
+          # Assert against the REGISTRY, not against a green step (#719
+          # acceptance criterion). npm's read path is CDN-cached, so allow a
+          # short settle before failing.
+          PKG_VERSION=$(node -p "require('./packages/dns-checks/package.json').version")
+          fail=0
+          for spec in "blackveil-dns@${VERSION}" "@blackveil/dns-checks@${PKG_VERSION}"; do
+            ok=0
+            for _ in 1 2 3 4 5 6; do
+              if npm view "$spec" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
+                ok=1
+                break
+              fi
+              sleep 10
+            done
+            if [ "$ok" -eq 1 ]; then
+              echo "Verified on registry: $spec"
+            else
+              echo "::error title=Publish not visible::${spec} is not resolvable on registry.npmjs.org after publish."
+              fail=1
+            fi
+          done
+          [ "$fail" -eq 0 ]
 
   # NOTE (#718): this workflow deliberately has NO Cloudflare deploy job.
   #
@@ -249,11 +321,14 @@ jobs:
     needs: [validate, version-bump]
     runs-on: ubuntu-latest
     environment: production
-    # Gated off in lockstep with publish-npm. The MCP Registry validates that
-    # the npm package version exists before publishing, so this job cascades to
-    # `NPM package 'blackveil-dns' not found (status: 404)` whenever npm is
-    # stale. Re-enable together with publish-npm once `NPM_TOKEN` is rotated.
-    if: false
+    # Was gated off in lockstep with publish-npm (#719) and re-enabled with it.
+    #
+    # It does NOT depend on publish-npm: `server.json` is remotes-only, so the
+    # registry's npm-existence check ("NPM package 'blackveil-dns' not found
+    # (status: 404)") does not apply to this listing. The two publishes are
+    # independent and a failure in one must not silently withhold the other.
+    # ⚠️ If an npm `packages` stanza is ever re-added to server.json, that check
+    # returns and this job must then `needs: publish-npm`.
     steps:
       - name: Check publisher key
         env:
