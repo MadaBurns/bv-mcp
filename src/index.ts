@@ -425,7 +425,7 @@ for (const path of authedPaths) {
 				return result === 'allowed' ? origin : '';
 			},
 			allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-			allowHeaders: ['Content-Type', 'Accept', 'Mcp-Session-Id', 'MCP-Protocol-Version', 'Last-Event-ID', 'Authorization'],
+			allowHeaders: ['Content-Type', 'Accept', 'Mcp-Session-Id', 'MCP-Protocol-Version', 'Last-Event-ID', 'Authorization', 'X-API-Key'],
 			exposeHeaders: ['Mcp-Session-Id'],
 		}),
 	);
@@ -443,8 +443,20 @@ for (const path of authedPaths) {
 	app.use(path, async (c, next) => {
 		const authHeader = c.req.header('authorization');
 		const bearerToken = authHeader?.startsWith('Bearer ') ? authHeader.slice(7).trim() : null;
-		const queryToken = c.env.REJECT_QUERY_API_KEY === 'true' ? null : bearerToken ? null : (c.req.query('api_key') ?? null);
-		const token = bearerToken ?? queryToken;
+		// #747: `X-API-Key` is a first-class alternative for clients that cannot set
+		// `Authorization` (some IDE/webview and proxy configs). Precedence is
+		// Bearer → X-API-Key → `?api_key=`: when BOTH a Bearer token and an
+		// `X-API-Key` header are present with DIFFERENT values, the Bearer token
+		// wins and the header is ignored entirely (no second validation attempt),
+		// matching the MCP spec's `Authorization`-first auth story. The header path
+		// feeds the SAME `resolveTier(token, …)` call as Bearer, so it derives an
+		// identical `keyHash` — per-key quota and concurrency stay correct.
+		// The header is NOT covered by `REJECT_QUERY_API_KEY`: that kill-switch
+		// exists because query strings leak into access logs, which headers do not.
+		const apiKeyHeaderToken = bearerToken ? null : (c.req.header('x-api-key')?.trim() || null);
+		const queryToken =
+			c.env.REJECT_QUERY_API_KEY === 'true' ? null : bearerToken || apiKeyHeaderToken ? null : (c.req.query('api_key') ?? null);
+		const token = bearerToken ?? apiKeyHeaderToken ?? queryToken;
 		const apiKeyInQuery = queryToken !== null;
 
 		const resolvedClientIp = resolveClientIpFromRequestHeaders(c.req.raw.headers);

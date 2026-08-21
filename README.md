@@ -271,6 +271,7 @@ BlackVeil's hosted production at `dns-mcp.blackveilsecurity.com` flips its runti
 The free tier requires no authentication. Authenticated requests bypass per-IP rate limits and follow your tier's daily quota. Hosted production supports:
 
 - **Header**: `Authorization: Bearer <KEY>`
+- **Header (alternative)**: `X-API-Key: <KEY>` — for clients that cannot set `Authorization`. If both are sent, `Authorization: Bearer` wins.
 - **OAuth 2.1**: optional authorization-code flow with PKCE, enabled only when operators set `ENABLE_OAUTH=true`; owner-key consent is separately gated by `ENABLE_OWNER_OAUTH=true`.
 
 The `?api_key=<KEY>` fallback is legacy/self-host compatibility only. BlackVeil hosted production sets `REJECT_QUERY_API_KEY=true`; clients that cannot send headers should use OAuth or an `mcp-remote` header bridge.
