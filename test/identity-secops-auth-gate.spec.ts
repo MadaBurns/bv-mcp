@@ -5,10 +5,14 @@
  * query_ual, get_ca_policies, assess_coverage) must NOT be reachable by an
  * unauthenticated public /mcp caller.
  *
- * Layer 1 (primary): executeMcpRequest rejects an unauthenticated tools/call
- *   for any AUTH_REQUIRED_TOOLS member BEFORE dispatch (HTTP 401, UNAUTHORIZED
- *   code, allowlisted "Invalid" message prefix), never forwarding to the bv-web
- *   M365 proxy with the trusted internal bearer.
+ * Layer 1 (primary): executeMcpRequest never forwards a PUBLIC tools/call for
+ *   an AUTH_REQUIRED_TOOLS member to the bv-web M365 proxy. Since 3.63.0 these
+ *   tools are also in INTERNAL_ONLY_TOOLS (withdrawn from the catalog alongside
+ *   the fail-closed tenant-read kill switch), and that gate short-circuits
+ *   BEFORE tier branching — so the rejection is now the unknown-tool result for
+ *   every caller, rather than the 401 the auth gate would have produced.
+ *   The 401 gate is shadowed, not removed: it is what protects these tools if
+ *   they are ever re-listed, and the SSOT block below keeps it pinned.
  *
  * Layer 2 (defense-in-depth): the registry execute path hard-rejects when there
  *   is no real principal (no keyHash), so even an internal/bypass caller cannot
@@ -95,7 +99,8 @@ describe('AUTH_REQUIRED_TOOLS SSOT', () => {
 
 describe('executeMcpRequest — identity_secops auth gate', () => {
 	for (const tool of IDENTITY_SECOPS_TOOLS) {
-		it(`rejects an unauthenticated tools/call for ${tool} BEFORE dispatch (HTTP 401)`, async () => {
+		it(`withholds ${tool} from an unauthenticated public caller and never dispatches`, async () => {
+			let proxyInvoked = false;
 			const { executeMcpRequest } = await import('../src/mcp/execute');
 			const result = await executeMcpRequest(
 				baseOptions({
@@ -106,84 +111,103 @@ describe('executeMcpRequest — identity_secops auth gate', () => {
 						params: { name: tool, arguments: { ms_tenant_id: 'tenant-abc' } },
 					} as JsonRpcRequest,
 					isAuthenticated: false,
+					// Bind a proxy so "never reached" is a MEASURED fact, not an
+					// artifact of there being nothing to reach.
+					m365Proxy: {
+						fetch: async () => {
+							proxyInvoked = true;
+							return new Response('{}', { status: 200 });
+						},
+					},
+					m365ProxyAuthToken: 'internal-bearer',
 				}),
 			);
 
 			expect(result.kind).toBe('response');
 			if (result.kind !== 'response') throw new Error('expected response');
-			expect(result.httpStatus).toBe(401);
-			const payload = result.payload as { error: { code: number; message: string } };
-			expect(payload.error.code).toBe(-32001);
-			// Allowlisted prefix per sanitizeErrorMessage.
-			expect(payload.error.message).toMatch(/^Invalid/);
-			expect(result.useErrorEnvelope).toBe(true);
+			// The P1 security property is unchanged and is what this pins: an
+			// unauthenticated caller NEVER reaches bv-web's M365 proxy.
+			expect(proxyInvoked).toBe(false);
+			// Since 3.63.0 the rejection arrives EARLIER than the 401 auth gate —
+			// INTERNAL_ONLY_TOOLS short-circuits first (execute.ts, before tier
+			// branching), returning the unknown-tool result. Blocked sooner, and
+			// without the 401's implicit "this tool exists" disclosure.
+			expect(JSON.stringify(result.payload)).toContain('Unknown tool');
 		});
 	}
 
-	it('does NOT reject an authenticated developer-tier caller for query_signins', async () => {
+	// No existence leak: every tier gets the SAME answer. Previously the tiers
+	// were distinguishable (401 unauthenticated / 403 "Upgrade required" free /
+	// dispatch for developer), which told an unprivileged caller the tool exists.
+	// Withdrawn from the catalog, they are indistinguishable from a typo.
+	it('answers identically for unauthenticated, free and developer callers (no existence leak)', async () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
-		const result = await executeMcpRequest(
-			baseOptions({
-				body: {
-					jsonrpc: '2.0',
-					id: 201,
-					method: 'tools/call',
-					params: { name: 'query_signins', arguments: { ms_tenant_id: 'tenant-abc' } },
-				} as JsonRpcRequest,
-				isAuthenticated: true,
-				tierAuthResult: { authenticated: true, tier: 'developer', keyHash: 'k_dev' },
-				authTier: 'developer',
-			}),
-		);
 
-		expect(result.kind).toBe('response');
-		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).not.toBe(401);
-		const payload = result.payload as { error?: { code: number } } | undefined;
-		expect(payload?.error?.code).not.toBe(-32001);
-		expect(result.headers['x-quota-limit']).toBe('100');
+		async function callAs(overrides: Partial<ExecuteMcpRequestOptions>): Promise<string> {
+			const result = await executeMcpRequest(
+				baseOptions({
+					body: {
+						jsonrpc: '2.0',
+						id: 201,
+						method: 'tools/call',
+						params: { name: 'query_signins', arguments: { ms_tenant_id: 'tenant-abc' } },
+					} as JsonRpcRequest,
+					...overrides,
+				}),
+			);
+			if (result.kind !== 'response') throw new Error('expected response');
+			return JSON.stringify(result.payload);
+		}
+
+		const anonymous = await callAs({ isAuthenticated: false });
+		const free = await callAs({
+			isAuthenticated: true,
+			tierAuthResult: { authenticated: true, tier: 'free', keyHash: 'k_free' },
+			authTier: 'free',
+		});
+		const developer = await callAs({
+			isAuthenticated: true,
+			tierAuthResult: { authenticated: true, tier: 'developer', keyHash: 'k_dev' },
+			authTier: 'developer',
+		});
+
+		expect(anonymous).toContain('Unknown tool');
+		expect(free).toBe(anonymous);
+		expect(developer).toBe(anonymous);
 	});
 
-	it('rejects an authenticated free-tier identity-secops caller with upgrade required', async () => {
-		const { executeMcpRequest } = await import('../src/mcp/execute');
-		const result = await executeMcpRequest(
-			baseOptions({
-				body: {
-					jsonrpc: '2.0',
-					id: 202,
-					method: 'tools/call',
-					params: { name: 'query_signins', arguments: { ms_tenant_id: 'tenant-abc' } },
-				} as JsonRpcRequest,
-				isAuthenticated: true,
-				tierAuthResult: { authenticated: true, tier: 'free', keyHash: 'k_free' },
-				authTier: 'free',
-			}),
-		);
-
-		expect(result.kind).toBe('response');
-		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(403);
-		const payload = result.payload as { error?: { code: number; message: string } } | undefined;
-		expect(payload?.error?.code).toBe(-32003);
-		expect(payload?.error?.message).toContain('Upgrade required');
+	// The 401 auth gate is now SHADOWED for these tools (internal-only rejects
+	// first), so it can no longer be exercised through the public path. It is
+	// deliberately NOT deleted: re-listing the tools restores it. This invariant
+	// is the tripwire for that future — a tool may leave INTERNAL_ONLY_TOOLS only
+	// while it is still auth-required, so it can never become publicly reachable
+	// AND unauthenticated in one edit.
+	it('every auth-required tool is currently withheld from the public catalog', async () => {
+		const { INTERNAL_ONLY_TOOLS } = await import('../src/lib/config');
+		for (const tool of AUTH_REQUIRED_TOOLS) {
+			expect(INTERNAL_ONLY_TOOLS.has(tool), `${tool} is auth-required but publicly listed`).toBe(true);
+		}
 	});
 });
 
 // ---------------------------------------------------------------------------
-// Layer 1 (regression): authenticated public caller must REACH the tool.
+// Layer 1: the PUBLIC path reaches nothing, at any privilege level.
 //
-// This is the end-to-end integration test the prior coverage missed: it goes
-// through executeMcpRequest (NOT handleToolsCall directly) and does NOT mock
-// dispatch, so it exercises the real execute → dispatch → handleToolsCall
-// keyHash wiring. With an authenticated principal (top-level options.keyHash
-// set) and m365Proxy bound, the Layer-2 guard
-// (`isAuthRequiredTool && m365Proxy && !keyHash`) MUST NOT fire — the missing
-// `keyHash: options.keyHash` forward in execute.ts's dispatch option objects
-// regressed this (live in prod), rejecting EVERY authenticated caller.
+// This was previously the inverse assertion — that an authenticated caller
+// REACHED the proxy — guarding a prod regression where execute.ts failed to
+// forward `keyHash` into dispatch and so rejected every authenticated caller.
+// Since 3.63.0 the tools are withdrawn from the public catalog, so the public
+// path must reach the proxy for NOBODY. The keyHash-forwarding regression stays
+// covered one layer down, by the Layer-2 handleToolsCall test below
+// ("forwards to the proxy when a real keyHash IS present"), which is also the
+// path that comes back to life if the tools are ever re-listed.
+//
+// Kept end-to-end and UNMOCKED (real dispatch): a mocked dispatch could hide a
+// public path that still reaches the registry.
 // ---------------------------------------------------------------------------
 
-describe('executeMcpRequest — authenticated identity_secops caller reaches the tool (regression)', () => {
-	it('does NOT return the m365_proxy_unauthenticated rejection for an authenticated query_signins call (real dispatch)', async () => {
+describe('executeMcpRequest — the public path reaches no identity_secops tool', () => {
+	it('does not invoke the M365 proxy for a fully authenticated developer-tier query_signins call (real dispatch)', async () => {
 		const { vi } = await import('vitest');
 		// CRITICAL: do not let the line-103 test's dispatch mock leak in — a mocked
 		// dispatch would return success regardless of the keyHash bug, masking RED.
@@ -232,12 +256,11 @@ describe('executeMcpRequest — authenticated identity_secops caller reaches the
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		// The tool/proxy must have been reached — the guard must NOT have rejected.
-		const serialized = JSON.stringify(result.payload);
-		expect(serialized).not.toContain('m365_proxy_unauthenticated');
-		// Stronger assertion: the proxy fetch was actually invoked, proving keyHash
-		// reached the registry and the call flowed all the way through.
-		expect(proxyInvoked).toBe(true);
+		// Everything that would have let this call through is present — a real
+		// principal (keyHash), a bound proxy, an internal bearer, a paid tier —
+		// so a green here is the catalog withdrawal doing the work, nothing else.
+		expect(proxyInvoked).toBe(false);
+		expect(JSON.stringify(result.payload)).toContain('Unknown tool');
 
 		vi.doUnmock('../src/lib/rate-limiter');
 		vi.resetModules();
