@@ -74,13 +74,16 @@ describe('tool registry vs public surface', () => {
 		expect(TOOLS.length).toBe(81);
 	});
 
-	it('handleToolsList hides map_csc_products and returns the public count (80)', () => {
+	it('handleToolsList hides every internal-only tool and returns the public count (76)', () => {
 		const { tools } = handleToolsList();
 		const names = tools.map((t) => t.name);
 		expect(names).not.toContain('map_csc_products');
+		// Withdrawn from the catalog in 3.63.0 alongside the tenant-read kill switch.
+		expect(names).not.toContain('query_signins');
 		expect(names).toContain('scan_domain');
 		expect(tools.length).toBe(PUBLIC_TOOL_COUNT);
-		expect(tools.length).toBe(80);
+		// Literal tripwire: 81 registered − 5 internal-only.
+		expect(tools.length).toBe(76);
 	});
 });
 
