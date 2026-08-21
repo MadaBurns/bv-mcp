@@ -15,10 +15,33 @@ export const SCANNER_USER_AGENT =
 
 const ROBOTS_FETCH_TIMEOUT_MS = 3_000;
 
+/**
+ * Which robots.txt group produced the disallow.
+ * - `blanket` — a `User-agent: *` group. The site blocks EVERY crawler and has
+ *   said nothing about us specifically. This is the overwhelmingly common case.
+ * - `named`  — a group whose `User-agent` list contains our own product token,
+ *   i.e. the operator deliberately singled this scanner out.
+ *
+ * The distinction is user-visible: attributing a blanket block to us by name
+ * misrepresents an ordinary site-wide no-crawl policy as a targeted one.
+ */
+export type RobotsDisallowScope = 'blanket' | 'named';
+
 /** Thrown by a `withRobotsGate`-wrapped fetch when the target's robots.txt disallows our UA for the requested path. */
 export class RobotsDisallowedError extends Error {
-	constructor(public readonly url: string) {
-		super(`robots.txt disallows BlackVeil-Security-Scanner for ${url}`);
+	constructor(
+		public readonly url: string,
+		/**
+		 * Defaults to `blanket`, the non-accusatory reading: absent positive
+		 * evidence that a site named this scanner, never claim that it did.
+		 */
+		public readonly scope: RobotsDisallowScope = 'blanket'
+	) {
+		super(
+			scope === 'named'
+				? `robots.txt names and disallows BlackVeil-Security-Scanner for ${url}`
+				: `robots.txt disallows all crawlers (User-agent: *) for ${url}`
+		);
 		this.name = 'RobotsDisallowedError';
 	}
 }
@@ -70,11 +93,18 @@ export function parseRobotsGroups(text: string): RobotsGroup[] {
 	return groups;
 }
 
+/** A selected group plus how it was selected — see {@link RobotsDisallowScope}. */
+interface SelectedGroup {
+	group: RobotsGroup;
+	scope: RobotsDisallowScope;
+}
+
 /** Most-specific group for `userAgentToken` (an exact agent-token match beats the `*` fallback). Null = no group applies. */
-function selectGroup(groups: RobotsGroup[], userAgentToken: string): RobotsGroup | null {
+function selectGroup(groups: RobotsGroup[], userAgentToken: string): SelectedGroup | null {
 	const named = groups.find((g) => g.agents.includes(userAgentToken));
-	if (named) return named;
-	return groups.find((g) => g.agents.includes('*')) ?? null;
+	if (named) return { group: named, scope: 'named' };
+	const wildcard = groups.find((g) => g.agents.includes('*'));
+	return wildcard ? { group: wildcard, scope: 'blanket' } : null;
 }
 
 /** Convert a robots.txt path pattern (`*` wildcard, trailing `$` end-anchor) into a prefix-matching RegExp. */
@@ -129,9 +159,9 @@ export function withRobotsGate(
 	const userAgent = opts.userAgent ?? SCANNER_USER_AGENT;
 	const productToken = userAgent.split('/')[0]!.toLowerCase();
 	const timeoutMs = opts.timeoutMs ?? ROBOTS_FETCH_TIMEOUT_MS;
-	const groupCache = new Map<string, Promise<RobotsGroup | null>>();
+	const groupCache = new Map<string, Promise<SelectedGroup | null>>();
 
-	async function resolveGroup(host: string): Promise<RobotsGroup | null> {
+	async function resolveGroup(host: string): Promise<SelectedGroup | null> {
 		let pending = groupCache.get(host);
 		if (!pending) {
 			pending = (async () => {
@@ -162,9 +192,9 @@ export function withRobotsGate(
 		const nextInit: RequestInit = { ...init, headers };
 
 		if (parsed.pathname !== '/robots.txt') {
-			const group = await resolveGroup(parsed.hostname);
-			if (isPathDisallowed(group, parsed.pathname)) {
-				throw new RobotsDisallowedError(url);
+			const selected = await resolveGroup(parsed.hostname);
+			if (selected && isPathDisallowed(selected.group, parsed.pathname)) {
+				throw new RobotsDisallowedError(url, selected.scope);
 			}
 		}
 
