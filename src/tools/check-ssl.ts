@@ -18,6 +18,7 @@ import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-b
 import { withAbortSignal } from '../lib/abort-signal';
 import { withRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
 import { createFetchBudget } from '../lib/fetch-budget';
+import { createRobotsProvenance } from '../lib/robots-provenance';
 
 /**
  * Check SSL/TLS configuration for a domain.
@@ -104,8 +105,13 @@ export async function checkSsl(
 	// most expensive one. Its clock still starts at wrapper CREATION, so the budget
 	// is one absolute deadline shared by all three legs, not a per-fetch allowance.
 	const budget = createFetchBudget(tlsProbeOptions.budgetMs);
+	// Records which branch of the robots gate decided this invocation (issue #745) —
+	// including the fail-open one, so a scored `ssl` category carries positive
+	// evidence of WHY it was scored. Observation only: no finding, no score effect.
+	const provenance = createRobotsProvenance(domain);
 	const fetchFn = withRobotsGate(
 		withRobotsFetchMemo(budget.wrap(withAbortSignal(fetch, tlsProbeOptions.signal)), tlsProbeOptions.robotsMemo),
+		{ onRobotsResolution: provenance.onResolution },
 	);
 	// The TLS probe is launched HERE, alongside the HTTPS legs, not after them.
 	// It needs only the domain — it never reads the fetch result — so running it
@@ -143,7 +149,7 @@ export async function checkSsl(
 	// Fail-soft: absent binding (every BSL self-host) → result returned unchanged.
 	// callTlsProbe returns null on any failure; mergeTlsFinding only ever appends a
 	// High finding when the probe actively reports legacy TLS (≤1.1), never penalizes 1.2/1.3.
-	if (!probePromise) return result;
+	if (!probePromise) return provenance.stamp(result);
 	const probe = await probePromise;
-	return probe ? mergeTlsFinding(result, probe) : result;
+	return provenance.stamp(probe ? mergeTlsFinding(result, probe) : result);
 }

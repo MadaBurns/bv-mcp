@@ -24,4 +24,33 @@ describe('checkBIMI — robots.txt disallow', () => {
 		expect(logoFinding!.severity).toBe('info');
 		expect(result.findings.some((f) => f.title === 'BIMI logo fetch failed')).toBe(false);
 	});
+
+	it('does not accuse a site of naming us when its robots.txt blocks every crawler', async () => {
+		const fetchFn = async (url: string) => {
+			throw new RobotsDisallowedError(url, 'blanket');
+		};
+		const result = await checkBIMI('example.com', queryDNS, { fetchFn });
+		const logoFinding = result.findings.find((f) => f.title.includes('robots.txt'))!;
+		expect(logoFinding.detail).not.toContain('BlackVeil-Security-Scanner');
+		expect(logoFinding.detail).toContain('all automated crawlers');
+	});
+
+	it('says so plainly when a site does name us', async () => {
+		const fetchFn = async (url: string) => {
+			throw new RobotsDisallowedError(url, 'named');
+		};
+		const result = await checkBIMI('example.com', queryDNS, { fetchFn });
+		const logoFinding = result.findings.find((f) => f.title.includes('robots.txt'))!;
+		expect(logoFinding.detail).toContain('BlackVeil-Security-Scanner');
+	});
+
+	it('records the abstention machine-readably rather than only in prose', async () => {
+		const fetchFn = async (url: string) => {
+			throw new RobotsDisallowedError(url, 'blanket');
+		};
+		const result = await checkBIMI('example.com', queryDNS, { fetchFn });
+		const logoFinding = result.findings.find((f) => f.title.includes('robots.txt'))!;
+		expect(logoFinding.metadata?.notAssessedReason).toBe('robots_disallowed');
+		expect(logoFinding.metadata?.robotsScope).toBe('blanket');
+	});
 });

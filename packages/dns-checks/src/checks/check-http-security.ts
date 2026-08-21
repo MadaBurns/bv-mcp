@@ -5,7 +5,12 @@
 import type { CheckResult, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { analyzeSecurityHeaders } from './http-security-analysis';
-import { SCANNER_USER_AGENT, RobotsDisallowedError } from '../robots-gate';
+import {
+	SCANNER_USER_AGENT,
+	RobotsDisallowedError,
+	describeRobotsScope,
+	robotsAbstentionMetadata,
+} from '../robots-gate';
 
 /** Default HTTPS timeout (ms) */
 const HTTPS_TIMEOUT_MS = 4_000;
@@ -219,7 +224,8 @@ export async function checkHTTPSecurity(
 					'http_security',
 					'HTTP security check skipped (robots.txt)',
 					'info',
-					`${domain}'s robots.txt disallows BlackVeil-Security-Scanner, so HTTP security headers could not be independently verified. Not scored — see https://www.blackveilsecurity.com/bot-policy.`,
+					`${domain}'s robots.txt ${describeRobotsScope(err.scope)}, so HTTP security headers could not be independently verified. Not scored — see https://www.blackveilsecurity.com/bot-policy.`,
+					robotsAbstentionMetadata(err.scope),
 				),
 			);
 		} else {

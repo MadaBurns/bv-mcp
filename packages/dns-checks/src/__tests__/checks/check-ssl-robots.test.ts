@@ -17,6 +17,39 @@ describe('checkSSL — robots.txt disallow', () => {
 		expect(result.controlPresent).toBeUndefined();
 	});
 
+	it('does not accuse a site of naming us when its robots.txt blocks every crawler', async () => {
+		const fetchFn = async (url: string) => {
+			throw new RobotsDisallowedError(url, 'blanket');
+		};
+		const result = await checkSSL('crt.sh', fetchFn);
+		const detail = result.findings[0]!.detail;
+		expect(detail).not.toContain('BlackVeil-Security-Scanner');
+		expect(detail).toContain('all automated crawlers');
+	});
+
+	it('says so plainly when a site does name us', async () => {
+		const fetchFn = async (url: string) => {
+			throw new RobotsDisallowedError(url, 'named');
+		};
+		const result = await checkSSL('example.com', fetchFn);
+		expect(result.findings[0]!.detail).toContain('BlackVeil-Security-Scanner');
+	});
+
+	it('records the abstention machine-readably rather than only in prose', async () => {
+		const fetchFn = async (url: string) => {
+			throw new RobotsDisallowedError(url, 'blanket');
+		};
+		const result = await checkSSL('crt.sh', fetchFn);
+		const meta = result.findings[0]!.metadata ?? {};
+		// A consumer must be able to tell "we chose not to look" from "the probe broke"
+		// without string-matching the detail copy.
+		expect(meta.notAssessedReason).toBe('robots_disallowed');
+		expect(meta.robotsScope).toBe('blanket');
+		// Pinned explicitly so `inferFindingConfidence`'s prose keyword scan can never
+		// reclassify this finding as a side effect of a copy edit.
+		expect(meta.confidence).toBe('deterministic');
+	});
+
 	it('does not call the HTTP-redirect check when the HTTPS fetch was robots-disallowed', async () => {
 		let redirectFetchCalled = false;
 		const fetchFn = async (url: string) => {

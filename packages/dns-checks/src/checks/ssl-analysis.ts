@@ -10,6 +10,8 @@
 
 import type { Finding } from '../types';
 import { createFinding } from '../check-utils';
+import type { RobotsDisallowScope } from '../robots-gate';
+import { describeRobotsScope, robotsAbstentionMetadata } from '../robots-gate';
 
 export function getHttpsFindings(domain: string, responseUrl: string | undefined, hstsHeader: string | null): Finding[] {
 	const findings: Finding[] = [];
@@ -89,12 +91,13 @@ export function getHttpsErrorFinding(domain: string, message: string): Finding {
  * scanner — distinct from `getHttpsErrorFinding`, which implies a real
  * connectivity/certificate problem. This is never a security weakness.
  */
-export function getRobotsDisallowedFinding(domain: string): Finding {
+export function getRobotsDisallowedFinding(domain: string, scope: RobotsDisallowScope = 'blanket'): Finding {
 	return createFinding(
 		'ssl',
 		'HTTPS check skipped (robots.txt)',
 		'info',
-		`${domain}'s robots.txt disallows BlackVeil-Security-Scanner, so HTTPS/HSTS could not be independently verified. Not scored — see https://www.blackveilsecurity.com/bot-policy.`,
+		`${domain}'s robots.txt ${describeRobotsScope(scope)}, so HTTPS/HSTS could not be independently verified. Not scored — see https://www.blackveilsecurity.com/bot-policy.`,
+		robotsAbstentionMetadata(scope),
 	);
 }
 

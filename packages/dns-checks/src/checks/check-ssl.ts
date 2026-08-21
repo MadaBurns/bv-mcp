@@ -121,7 +121,7 @@ async function checkHttps(
 	} catch (err) {
 		if (err instanceof RobotsDisallowedError) {
 			return {
-				findings: [getRobotsDisallowedFinding(domain)],
+				findings: [getRobotsDisallowedFinding(domain, err.scope)],
 				reachable: undefined,
 				robotsDisallowed: true,
 			};

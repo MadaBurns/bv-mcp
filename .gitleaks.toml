@@ -32,6 +32,7 @@ regexes = [
   '''@(internal-company|thirdparty|yourdomain)\.com''',       # Test/placeholder domains
   '''mailto:[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]''', # mailto: in DMARC/TLSRPT test records
   '''support@smithery\.ai''',                                  # Smithery's public business contact
+  '''support@github\.com''',                                   # GitHub's bot sign-off trailer, named in repo-safety allowlists
   '''oldmail@retail\.com''',                                   # Fictional narrative example in older docs/MARKETING-BROCHURE.md commits
 ]
 

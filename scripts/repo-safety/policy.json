@@ -39,6 +39,7 @@
 		".yml"
 	],
 	"allowedEmailDomains": ["example.com", "example.test", "example.invalid", "blackveilsecurity.com", "anthropic.com"],
+	"allowedEmailAddresses": ["support@github.com", "noreply@github.com"],
 	"allowedDomainSuffixes": [
 		"example.com",
 		"example.net",
