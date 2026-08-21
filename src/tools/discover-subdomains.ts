@@ -56,9 +56,6 @@ import { disposeUnreadResponseBody, readBoundedOrNull } from '../lib/response-bo
  */
 export const DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS = 24_000;
 
-/** Per-attempt timeout for a direct public CT source request (ms). */
-const CT_SOURCE_TIMEOUT_MS = 10_000;
-
 /**
  * Per-ATTEMPT timeout for the Certspotter fallback (ms) — this bounds the whole
  * paginated run, not one page: `queryDirectSources` composes ONE abort signal per
@@ -76,7 +73,43 @@ const CT_SOURCE_TIMEOUT_MS = 10_000;
  * caller's budget stays authoritative and the stop is non-fatal (pages already
  * read are kept, `enumerationComplete: false`).
  */
-const CERTSPOTTER_TIMEOUT_MS = 14_000;
+export const CERTSPOTTER_TIMEOUT_MS = 14_000;
+
+/**
+ * Slack left over after crt.sh and a FULL Certspotter attempt have both been
+ * budgeted for, covering the work that is not a CT fetch: the fresh-cache read,
+ * the certstream fast-path check, JSON parsing of a multi-MB crt.sh body, and
+ * the ~500ms retry backoff.
+ *
+ * Without it the two per-source timeouts sum to exactly the handler budget, and
+ * `hasBudgetFor(CERTSPOTTER_TIMEOUT_MS)` — an all-or-nothing gate — is then false
+ * for ANY non-zero elapsed time, which is every real call.
+ */
+export const CT_FAILOVER_HEADROOM_MS = 2_000;
+
+/**
+ * Per-attempt timeout for the crt.sh CT source (ms).
+ *
+ * ⚠️ DERIVED, not chosen: it is whatever the handler budget has left once a full
+ * Certspotter attempt and {@link CT_FAILOVER_HEADROOM_MS} are reserved. This is
+ * the fix for #738 item 3. It was a hardcoded 10_000, which made the Certspotter
+ * fallback STRUCTURALLY UNREACHABLE whenever crt.sh consumed its whole timeout:
+ * `queryDirectSources` refuses to start a source it cannot finish
+ * (`hasBudgetFor(options, source.timeoutMs)`), and 24_000 − 10_000 = 14_000 is
+ * exactly `CERTSPOTTER_TIMEOUT_MS`, so the gate failed on every real call.
+ * Measured live on v3.58.0: `crtsh=timeout, certspotter=not-consulted` for both
+ * `meta.com` and `anthropic.com` — while Certspotter answered `anthropic.com`
+ * directly in HTTP 200 / 43 KB. The multi-source failover built in #573 was inert
+ * in exactly the scenario it exists for.
+ *
+ * The trade is deliberate: a cold crt.sh query that would have landed between 8s
+ * and 10s is now abandoned in favour of actually asking the second source. Nothing
+ * here is scored — `discover_subdomains` is not a `scan_domain` category and emits
+ * no `CheckResult`/findings — so this moves recall, never a grade.
+ *
+ * Pinned by `test/discover-subdomains-failover-budget.spec.ts`.
+ */
+export const CT_SOURCE_TIMEOUT_MS = DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS - CERTSPOTTER_TIMEOUT_MS - CT_FAILOVER_HEADROOM_MS;
 
 /**
  * Retry PASSES over the whole source list on a transient outcome (timeout / 5xx
@@ -1656,6 +1689,11 @@ function emptyResult(domain: string, sourceUnavailable = false, partial = false,
  * source was never asked (typically unbound in this deployment). Folding it into
  * "unavailable" implies three sources were tried when only two were (#735).
  */
+/** Subject-verb agreement for a source list ("certstream was" / "a, b were"). */
+function wasWere(sources: readonly string[]): string {
+	return sources.length === 1 ? 'was' : 'were';
+}
+
 function ctFailureGuidance(coverage: CtCoverage | undefined): string {
 	const perSource = coverage?.perSource ?? [];
 	const timedOut = perSource.filter((s) => s.outcome === 'timeout').map((s) => s.source);
@@ -1665,9 +1703,26 @@ function ctFailureGuidance(coverage: CtCoverage | undefined): string {
 
 	const parts: string[] = [];
 	if (timedOut.length > 0) {
-		parts.push(
-			`${timedOut.join(', ')} timed out — this is deterministic for this domain, not transient, so an identical retry will time out again. Page size is NOT the lever: limit=10, limit=100 and after=0 were measured returning the same HTTP 504.`,
-		);
+		// The pagination measurement is CERTSPOTTER'S (#738 item 1). crt.sh does not
+		// take `limit=`/`after=` in that form and its 504 was never measured, so
+		// printing that clause for a crtsh timeout states a falsehood — which, while
+		// crt.sh was the source timing out, was every call. Each source now gets the
+		// claim that was actually measured for it, and the crt.sh clause names the
+		// knob that really binds it: this tool's own per-source CT budget, not the
+		// whole-scan SCAN_TIMEOUT_MS (which does not apply — `discover_subdomains` is
+		// not a `scan_domain` category).
+		const upstreamCapped = timedOut.filter((s) => s === 'certspotter');
+		const budgetCapped = timedOut.filter((s) => s !== 'certspotter');
+		if (upstreamCapped.length > 0) {
+			parts.push(
+				`${upstreamCapped.join(', ')} timed out upstream — this is deterministic for this domain, not transient, so an identical retry will time out again. Page size is NOT the lever: limit=10, limit=100 and after=0 were measured returning the same HTTP 504.`,
+			);
+		}
+		if (budgetCapped.length > 0) {
+			parts.push(
+				`${budgetCapped.join(', ')} did not answer inside this tool's ${CT_SOURCE_TIMEOUT_MS / 1000}s per-source CT budget (CT_SOURCE_TIMEOUT_MS — the knob that bounds this source; SCAN_TIMEOUT_MS does not apply here). Why it was slow was not measured, so a retry may or may not help.`,
+			);
+		}
 	}
 	if (limited.length > 0) {
 		parts.push(
@@ -1678,7 +1733,19 @@ function ctFailureGuidance(coverage: CtCoverage | undefined): string {
 		parts.push(`${errored.join(', ')} returned an upstream error, which may be transient — a retry is worthwhile.`);
 	}
 	if (never.length > 0) {
-		parts.push(`${never.join(', ')} was never consulted (not configured in this deployment), so no fallback source remained.`);
+		// Two different reasons wear the same label (#738 item 2). `certstream` is the
+		// only source gated on a binding, so "not configured in this deployment" is a
+		// TRUE statement about it and a false one about a public API that needs no
+		// configuration at all — telling an operator to go configure Certspotter sends
+		// them after something that does not exist.
+		const unbound = never.filter((s) => s === 'certstream');
+		const unspent = never.filter((s) => s !== 'certstream');
+		if (unbound.length > 0) parts.push(`${unbound.join(', ')} ${wasWere(unbound)} never consulted: not configured in this deployment.`);
+		if (unspent.length > 0) {
+			parts.push(
+				`${unspent.join(', ')} ${wasWere(unspent)} never consulted: no budget remained after the earlier source(s), so no fallback source was reached. This is a budget outcome, not a configuration one — ${unspent.join(', ')} needs no binding.`,
+			);
+		}
 	}
 	// Only reachable if a source failed with an outcome outside the known set.
 	if (parts.length === 0) return 'Retry shortly.';
