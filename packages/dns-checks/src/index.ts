@@ -39,6 +39,7 @@ export { createFinding, buildCheckResult, computeCategoryScore, inferFindingConf
 
 // Robot policy
 export { SCANNER_USER_AGENT, RobotsDisallowedError, withRobotsGate } from './robots-gate';
+export type { RobotsDisallowScope } from './robots-gate';
 
 // DKIM selector probe list. Exported so downstream consumers can assert provider
 // coverage without re-declaring the list (a second copy would drift and, because
