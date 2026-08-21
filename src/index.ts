@@ -50,6 +50,7 @@ import {
 	FREE_TOOL_DAILY_LIMITS,
 	MAX_REQUEST_BODY_BYTES,
 	isContractFlagGateEnabled,
+	m365ProxyBindings,
 	parseCacheTtl,
 	parseGlobalDailyLimit,
 	parsePerCheckTimeout,
@@ -142,6 +143,13 @@ type BvMcpEnv = Env & {
 	OWNER_ALLOW_IPS?: string;
 	BV_WEB?: Fetcher;
 	BV_WEB_INTERNAL_KEY?: string;
+	/**
+	 * Enables M365 client-tenant reads (`identity_secops` tools). Fail-closed:
+	 * only the exact string `'true'` wires the `BV_WEB` M365 proxy + its bearer.
+	 * Unset ⇒ those tools degrade to `unprovisioned` and no customer tenant is
+	 * ever authenticated into. See `isM365TenantReadEnabled` in lib/config.ts.
+	 */
+	M365_TENANT_READS_ENABLED?: string;
 	ALLOWED_ORIGINS?: string;
 	PROVIDER_SIGNATURES_URL?: string;
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
@@ -872,8 +880,7 @@ app.post('/mcp', async (c) => {
 					reconAuthToken: c.env.BV_RECON_KEY,
 					tlsProbeBinding: c.env.BV_TLS_PROBE,
 					tlsProbeAuthToken: c.env.BV_TLS_PROBE_KEY,
-					m365Proxy: c.env.BV_WEB,
-					m365ProxyAuthToken: c.env.BV_WEB_INTERNAL_KEY,
+					...m365ProxyBindings(c.env),
 					bvWebBenchmark: c.env.BV_WEB,
 					bvWebBenchmarkAuthToken: c.env.BV_WEB_INTERNAL_KEY,
 					infraProbe: c.env.BV_INFRA_PROBE,
@@ -976,8 +983,7 @@ app.post('/mcp', async (c) => {
 		reconAuthToken: c.env.BV_RECON_KEY,
 		tlsProbeBinding: c.env.BV_TLS_PROBE,
 		tlsProbeAuthToken: c.env.BV_TLS_PROBE_KEY,
-		m365Proxy: c.env.BV_WEB,
-		m365ProxyAuthToken: c.env.BV_WEB_INTERNAL_KEY,
+		...m365ProxyBindings(c.env),
 		bvWebBenchmark: c.env.BV_WEB,
 		bvWebBenchmarkAuthToken: c.env.BV_WEB_INTERNAL_KEY,
 		infraProbe: c.env.BV_INFRA_PROBE,
@@ -1164,8 +1170,7 @@ app.post('/mcp/messages', async (c) => {
 				reconAuthToken: c.env.BV_RECON_KEY,
 				tlsProbeBinding: c.env.BV_TLS_PROBE,
 				tlsProbeAuthToken: c.env.BV_TLS_PROBE_KEY,
-				m365Proxy: c.env.BV_WEB,
-				m365ProxyAuthToken: c.env.BV_WEB_INTERNAL_KEY,
+				...m365ProxyBindings(c.env),
 				bvWebBenchmark: c.env.BV_WEB,
 				bvWebBenchmarkAuthToken: c.env.BV_WEB_INTERNAL_KEY,
 				infraProbe: c.env.BV_INFRA_PROBE,

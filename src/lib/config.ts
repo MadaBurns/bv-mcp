@@ -684,6 +684,47 @@ export function isAuthRequiredTool(toolName: string): boolean {
 	return AUTH_REQUIRED_TOOLS.has(toolName);
 }
 
+/**
+ * Kill switch for M365 CLIENT-TENANT reads (the `identity_secops` tools).
+ *
+ * These are the ONLY tools whose data path requires authenticating into a
+ * CUSTOMER's Microsoft 365 / Entra tenant. bv-mcp itself holds no tenant
+ * credential — it forwards over the `BV_WEB` service binding carrying the
+ * trusted internal bearer, and bv-web-prod exchanges an owner-consented,
+ * encrypted OAuth token for a Microsoft Graph read.
+ *
+ * DEFAULT: DISABLED (fail-closed). Absent/any-other value ⇒ no tenant read is
+ * possible on ANY path (public `/mcp`, `/internal/tools/*`, service binding),
+ * because the binding and its bearer are never wired into the runtime options.
+ * Only the exact string `'true'` re-enables it.
+ *
+ * Degradation is the EXISTING, documented fail-soft: `callM365Proxy` receives
+ * no proxy and returns `{ ok: false, unprovisioned: true }`, exactly as on a
+ * BSL self-host where `BV_WEB` is unbound. No new response shape, no new error
+ * class, and every auth/quota gate around these tools stays in force — this
+ * removes the capability, it does not weaken a control.
+ *
+ * Re-enable with `M365_TENANT_READS_ENABLED = "true"` as a Worker var.
+ */
+export function isM365TenantReadEnabled(env: { M365_TENANT_READS_ENABLED?: string }): boolean {
+	return env.M365_TENANT_READS_ENABLED === 'true';
+}
+
+/**
+ * Runtime-option fragment wiring the M365 proxy, or `{}` when tenant reads are
+ * disabled. Spread at every call site so the binding and the internal bearer
+ * are dropped together — wiring one without the other is the dangerous state.
+ */
+export function m365ProxyBindings(env: { BV_WEB?: Fetcher; BV_WEB_INTERNAL_KEY?: string; M365_TENANT_READS_ENABLED?: string }): {
+	m365Proxy?: Fetcher;
+	m365ProxyAuthToken?: string;
+} {
+	if (!isM365TenantReadEnabled(env)) {
+		return {};
+	}
+	return { m365Proxy: env.BV_WEB, m365ProxyAuthToken: env.BV_WEB_INTERNAL_KEY };
+}
+
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
 export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>();
 
