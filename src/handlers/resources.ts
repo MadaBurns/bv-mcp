@@ -10,6 +10,7 @@
  */
 
 import { TOOLS } from '../schemas/tool-definitions';
+import { INTERNAL_ONLY_TOOLS } from '../lib/config';
 
 /** MCP Resource descriptor */
 interface McpResource {
@@ -67,14 +68,19 @@ const RESOURCES: McpResource[] = [
 	},
 ];
 
-const TOOL_COUNT = TOOLS.length;
-const CHECK_TOOL_COUNT = TOOLS.filter((tool) => tool.name.startsWith('check_')).length;
+// PUBLIC counts, not registry counts. Internal-only tools are hidden from
+// `tools/list`, so counting them here advertised 81 tools over a surface that
+// serves 76 — a number the client cannot reconcile against what it can call.
+const PUBLIC_TOOLS = TOOLS.filter((tool) => !INTERNAL_ONLY_TOOLS.has(tool.name));
+const TOOL_COUNT = PUBLIC_TOOLS.length;
+const CHECK_TOOL_COUNT = PUBLIC_TOOLS.filter((tool) => tool.name.startsWith('check_')).length;
+const SCAN_CATEGORY_COUNT = TOOLS.filter((tool) => tool.scanIncluded).length;
 
 /** Resource content keyed by URI */
 const RESOURCE_CONTENT: Record<string, string> = {
 	'dns-security://guides/security-checks': `# DNS Security Checks
 
-${TOOL_COUNT} MCP tools, including ${CHECK_TOOL_COUNT} \`check_*\` tools and \`scan_domain\` across 18 scan categories.
+${TOOL_COUNT} MCP tools, including ${CHECK_TOOL_COUNT} \`check_*\` tools and \`scan_domain\` across ${SCAN_CATEGORY_COUNT} scan categories.
 
 ## Tool -> Category Mapping
 
@@ -115,7 +121,7 @@ ${TOOL_COUNT} MCP tools, including ${CHECK_TOOL_COUNT} \`check_*\` tools and \`s
 
 ## Composite Tools
 
-- **\`scan_domain\`** - 18 scan categories in parallel, returns score + grade + prioritized findings
+- **\`scan_domain\`** - ${SCAN_CATEGORY_COUNT} scan categories in parallel, returns score + grade + prioritized findings
 - **Brand audit tools** - \`discover_brand_domains\`, \`brand_audit_single\`, \`brand_audit_batch_start\`, \`brand_audit_status\`, \`brand_audit_get_report\`, \`list_brand_audit_watches\`, \`register_brand_audit_watch\`, \`delete_brand_audit_watch\`
 - **\`explain_finding\`** - plain-language context + remediation for any finding
 - **\`compare_baseline\`** - pass/fail/inconclusive against minimum security standards (\`passed\` is \`null\` when the scan produced no measurement to evaluate)

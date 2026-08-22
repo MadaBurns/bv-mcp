@@ -45,6 +45,10 @@ npm test                                 # full suite (~3300 tests, Workers pool
 npx vitest run test/check-spf.spec.ts    # single spec — fast feedback loop
 ```
 
+## Expected `npm test` exit 1 in a FRESH WORKTREE — not a real failure
+
+`test/wasm-integration.test.ts` fails to **LOAD** with `No such module …bv_wasm_core_bg.wasm`, and the run reports **0 test failures**. `crates/bv-wasm-core/pkg/` is produced only by `npm run build:wasm` (wasm-pack), which **neither `scripts/worktree-setup.sh` nor `npm ci` runs** — CI builds it separately with a cached wasm-pack binary. Distinguish it from a real failure by that shape: a *suite-load* error alongside `N passed, 0 failed`. Run `npm run build:wasm` once per worktree for a fully green local run. Confirmed independently by two agents on unrelated branches (2026-08-03). **Do not "fix" it by editing the spec.**
+
 ## Known full-suite flake — don't chase it
 
 A full run ending with `workerd ... WebSocket peer disconnected` plus ~10 "failures" is **pool-teardown noise, not real**. To confirm a failure is genuine, **re-run the named spec(s) in isolation** — if they pass alone, it was teardown noise.

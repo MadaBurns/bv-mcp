@@ -1,0 +1,168 @@
+name: Registry Drift Check
+
+# Advisory only — NOT a required check, NOT in branch protection. Follows the
+# dns-security.yml convention of a $0, informational workflow.
+#
+# Detects drift between the live production serverInfo.version and the MCP
+# Registry's `?version=latest` listing. DETECTION ONLY: this workflow must
+# NEVER publish anything — no mcp-publisher, no `npm run publish:registry`,
+# no write call to the registry of any kind. It only reads two public
+# endpoints and opens/updates/closes a GitHub issue.
+#
+# Context (2026-08-23): the drift is not simply "someone forgot the manual
+# step". publish.yml's `Publish to MCP Registry` / `Publish to npm` jobs sit
+# behind the `production` environment's reviewer-approval gate — the v3.63.0
+# run has been PARKED in `waiting` for two days, and the v3.60.0-v3.62.0 runs
+# all completed with `failure`. The issue body below tells the reader to
+# check for a parked/failed publish.yml run before falling back to the
+# manual `npm run publish:registry` path from a worktree pinned to the tag.
+#
+# No `uses:` actions anywhere in this file — curl/jq/gh are preinstalled on
+# ubuntu-latest and there is nothing to check out, so both the F11 SHA-pin
+# audit (test/audits/workflow-permissions.audit.test.ts) and the gitleaks
+# phone-number-in-a-SHA trap are structurally inapplicable.
+
+on:
+  schedule:
+    - cron: "0 */12 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: registry-drift-check
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  check-drift:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Fetch live serverInfo.version
+        id: live
+        run: |
+          RESPONSE=$(curl -sS -X POST https://dns-mcp.blackveilsecurity.com/mcp \
+            -H "Content-Type: application/json" \
+            -H "Accept: application/json" \
+            -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"registry-drift-check","version":"1.0.0"}}}')
+          VERSION=$(echo "$RESPONSE" | jq -r '.result.serverInfo.version // empty')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not extract live serverInfo.version. Response: $RESPONSE"
+            exit 1
+          fi
+          echo "Live serverInfo.version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Fetch MCP Registry version
+        id: registry
+        run: |
+          CACHEBUST=$(date +%s)
+          RESPONSE=$(curl -sS "https://registry.modelcontextprotocol.io/v0/servers?search=com.blackveilsecurity/dns&version=latest&_cb=${CACHEBUST}")
+          VERSION=$(echo "$RESPONSE" | jq -r '.servers[0].server.version // empty')
+          if [ -z "$VERSION" ]; then
+            echo "::error::Could not extract registry version. Response: $RESPONSE"
+            exit 1
+          fi
+          echo "Registry version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Compare versions and act
+        env:
+          GH_TOKEN: ${{ github.token }}
+          LIVE_VERSION: ${{ steps.live.outputs.version }}
+          REGISTRY_VERSION: ${{ steps.registry.outputs.version }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -eu
+          echo "live=${LIVE_VERSION} registry=${REGISTRY_VERSION}"
+
+          HIGHEST=$(printf '%s\n%s\n' "$LIVE_VERSION" "$REGISTRY_VERSION" | sort -V | tail -n1)
+
+          EXISTING_ISSUE=$(gh issue list --repo "$REPO" --label registry-drift --state open --json number --jq '.[0].number // empty')
+
+          RUN_URL="${GITHUB_SERVER_URL}/${REPO}/actions/runs/${GITHUB_RUN_ID}"
+
+          if [ "$LIVE_VERSION" = "$REGISTRY_VERSION" ]; then
+            echo "Registry matches live (${LIVE_VERSION}) - no drift."
+            if [ -n "$EXISTING_ISSUE" ]; then
+              gh issue comment "$EXISTING_ISSUE" --repo "$REPO" --body "Resolved: registry now matches live (\`${LIVE_VERSION}\`). Closing."
+              gh issue close "$EXISTING_ISSUE" --repo "$REPO"
+            fi
+            exit 0
+          fi
+
+          if [ "$HIGHEST" = "$REGISTRY_VERSION" ]; then
+            # Registry AHEAD of live. Structurally should not happen (the
+            # registry only ever advances via publishing an already-deployed
+            # version) - unsafe direction, no grace period, fail immediately.
+            # Built via printf -v (not a heredoc): a heredoc body written at
+            # column 0 would be LESS indented than this `run: |` block scalar
+            # and would terminate it early - YAML has no concept of a bash
+            # heredoc, it just sees under-indented lines.
+            printf -v BODY '%s\n' \
+              "### MCP Registry is AHEAD of live production - unsafe direction" \
+              "" \
+              "- Live \`serverInfo.version\` (dns-mcp.blackveilsecurity.com): \`${LIVE_VERSION}\`" \
+              "- Registry \`?version=latest\` (registry.modelcontextprotocol.io): \`${REGISTRY_VERSION}\`" \
+              "" \
+              "This should not be possible under normal operation and needs immediate" \
+              "operator investigation. Do **not** try to \"fix\" this by publishing again" \
+              "until you understand how the registry got ahead of the deployed worker." \
+              "" \
+              "This workflow never publishes anything itself - detection only." \
+              "" \
+              "_Workflow: \`registry-drift-check.yml\`, run: ${RUN_URL}_"
+            if [ -n "$EXISTING_ISSUE" ]; then
+              gh issue comment "$EXISTING_ISSUE" --repo "$REPO" --body "$BODY"
+              gh issue edit "$EXISTING_ISSUE" --repo "$REPO" --add-label priority-high
+            else
+              gh issue create --repo "$REPO" \
+                --title "Registry drift: registry AHEAD of live (${REGISTRY_VERSION} > ${LIVE_VERSION})" \
+                --label registry-drift --label priority-high \
+                --body "$BODY"
+            fi
+            echo "::error::Registry version (${REGISTRY_VERSION}) is ahead of live (${LIVE_VERSION}) - failing immediately."
+            exit 1
+          fi
+
+          # Registry BEHIND live.
+          printf -v BODY '%s\n' \
+            "### MCP Registry is behind live production" \
+            "" \
+            "- Live \`serverInfo.version\` (dns-mcp.blackveilsecurity.com): \`${LIVE_VERSION}\`" \
+            "- Registry \`?version=latest\` (registry.modelcontextprotocol.io): \`${REGISTRY_VERSION}\`" \
+            "" \
+            "**Before republishing by hand, check whether \`publish.yml\` already ran for" \
+            "\`v${LIVE_VERSION}\` and is PARKED or FAILED:**" \
+            "" \
+            "1. \`gh run list --workflow=publish.yml --repo ${REPO}\` - look for a run" \
+            "   against tag \`v${LIVE_VERSION}\`." \
+            "2. If it is **waiting** on the \`production\` environment reviewer gate" \
+            "   (the \`Publish to MCP Registry\` / \`Publish to npm\` jobs), approve it" \
+            "   there - that is the normal path." \
+            "3. If it already **failed**, read the job logs before doing anything by" \
+            "   hand." \
+            "4. Only if no publish.yml run exists for this tag, or a manual path is" \
+            "   genuinely needed, ship from a fresh worktree pinned to the" \
+            "   \`v${LIVE_VERSION}\` tag: \`npm run publish:registry\` (see CLAUDE.md," \
+            "   \"Manual release fallback\")." \
+            "" \
+            "This workflow never publishes anything itself - detection only." \
+            "" \
+            "_Workflow: \`registry-drift-check.yml\`, run: ${RUN_URL}_"
+          if [ -n "$EXISTING_ISSUE" ]; then
+            gh issue comment "$EXISTING_ISSUE" --repo "$REPO" --body "$BODY"
+            gh issue edit "$EXISTING_ISSUE" --repo "$REPO" --add-label priority-high
+            echo "::error::Registry drift (behind live) has survived a full cycle - failing."
+            exit 1
+          else
+            gh issue create --repo "$REPO" \
+              --title "Registry drift: registry behind live (${REGISTRY_VERSION} < ${LIVE_VERSION})" \
+              --label registry-drift \
+              --body "$BODY"
+            echo "First sighting of registry-behind-live drift - tracking issue opened, exiting green (normal in the deploy-to-publish window)."
+            exit 0
+          fi

@@ -62,6 +62,10 @@ Two transferable lessons:
 
 Publish steps (key never echoed): `mcp-publisher validate` → `login dns --domain blackveilsecurity.com --private-key "$KEY"` (read `$KEY` from `.dev.vars`, ed25519) → `publish` → `logout`. Verify: `?search=com.blackveilsecurity/dns&version=latest` → expect `version=X.Y.Z status=active isLatest=true` (search endpoint sometimes returns an empty body — retry a few times).
 
+🚨 **Run BOTH shipping commands from a worktree pinned to the release commit — never from a shared or long-lived checkout.** They read the WORKING TREE, not the tag: `deploy:prod` compiles it, and `mcp-publisher publish` reads `./server.json` from **cwd**. Neither validates that the tree matches the tag, so a stale checkout ships whatever it happens to hold — and for the registry that means publishing the wrong version, silently and publicly. A fresh worktree also needs the gitignored `.dev/wrangler.deploy.jsonc` copied in (the injector fails closed without it) plus `npm ci`.
+
+🚨 **Never let the ed25519 private key reach stdout.** `--private-key` takes **hex** (not base64, not PEM). If it is echoed it persists in shell history, terminal scrollback and any agent transcript, and must then be discarded and rotated — the public half lives in an apex TXT record, so rotating it is an operator-only zone write. Write the key to a file and pass `--private-key "$(cat mcp.hex)"` so only the substitution is recorded. Keep the local `mcp-publisher` version matching CI's: a version skew moves the token store and invalidates the saved login.
+
 ## Manual / local release fallback (hosted secrets unavailable)
 
 ```bash
