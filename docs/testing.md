@@ -11,9 +11,24 @@ Miniflare environment.
 npm test
 npx vitest run --config vitest.node.config.mts
 npm run typecheck && npm run lint && npm run build
+npm run typecheck:tests
 npm run validate:internal-deps
 npm run audit:repo-safety
 ```
+
+`npm run typecheck:tests` is the only gate that typechecks the test trees —
+`tsconfig.json` excludes `test`, and Vitest's esbuild transform strips types
+without checking them, so specs are otherwise unchecked. It is a **ratchet, not
+a burndown**: it compares per-file error counts against
+`test/typecheck-baseline.json` and fails only on an increase. A decrease passes
+and is reported — bank it with `npm run typecheck:tests -- --update`.
+
+Per-file matters. A file's baseline is its allowance, so a file carrying banked
+errors can absorb a real new one silently. That is why `test/raw-modules.d.ts`
+declares Vite's `?raw` import suffix rather than letting those TS2307s sit in
+the baseline: audits read prose and config as strings via `?raw` (the Workers
+pool has no filesystem), and banking them was inflating ~40 files' allowances.
+Prefer fixing an error class over raising a baseline.
 
 The Node suite is deliberately limited to filesystem, process, PDF, and report
 code that cannot run in Workerd. It is not evidence of Worker runtime
