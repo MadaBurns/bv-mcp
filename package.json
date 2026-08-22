@@ -27,6 +27,7 @@
 		"packages/*"
 	],
 	"scripts": {
+		"version": "node scripts/bump-version.mjs",
 		"build": "npm -w packages/dns-checks run build && tsup",
 		"generate:wasm-permissions": "tsx scripts/generate-wasm-permissions.ts",
 		"check:wasm-permissions": "tsx scripts/generate-wasm-permissions.ts --check",
