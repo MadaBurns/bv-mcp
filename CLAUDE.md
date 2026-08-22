@@ -155,18 +155,14 @@ Override via `SCORING_CONFIG` env (JSON; `weights`, `profileWeights`, `threshold
 
 ### Rules
 
-- **Email bonus**: SPF ≥57, DKIM not deterministically missing, DMARC present → +5/+3/+2 by DMARC score.
-- **SPF trust-surface — scored ONCE (1.8.0, #637)**: the **per-platform** "delegates to shared platform: X" findings are **always `info`** (penalty 0, but present and fully detailed). The single scored signal is the **aggregate** "SPF trust surface: N shared platforms" finding (emitted at 2+ delegations), elevated to `high` only when weak DMARC/relaxed alignment corroborates. Before 1.8.0 both halves were charged — −15 per platform PLUS the aggregate's −25 — so github.com's valid, working SPF record clamped to **0, identical to publishing no SPF at all**; SPF is one of only four categories the 1000-domain corpus found to discriminate, so that had to go. Do not reintroduce a per-platform penalty. ⚠️ The ESP catalog + analyzer are **duplicated** — core `packages/dns-checks/src/checks/spf-trust-surface.ts` + worker copy `src/tools/spf-trust-surface.ts`; `augmentTrustSurface()` (`check-spf.ts`) **replaces** the core's trust-surface findings (never the score) and rebuilds its DMARC context from the CORE finding's metadata. Edit BOTH copies identically; parity is audited by `test/audits/spf-trust-surface-catalog-parity.audit.test.ts` (legs 1–2 sweep catalog keys; **LEG 3** compares the scored `platformCount`, the only leg that can see the uncataloged heuristic). ⚠️ **The scored count (`delegated`) is NOT catalog-only** — since 1.10.0 (#667, #572 part 2) the CORE also counts uncataloged shared senders via `GENERIC_SHARED_SENDER_RE` (an `spf`/`_spf`/`spfNN` label; first-party `mail.mycompany.example` deliberately does not match, which is why the rule keys on the label and not on "any external include"), matching the worker; the catalog is tested **FIRST**, so a cataloged `spf`-labelled host is still NAMED instead of degrading to the anonymous `unrecognized shared sender` sentinel — reverse that branch order and the counts stay identical while every name silently vanishes. Either half moving `platformCount` across the `> 1` threshold is a scoring change owing a `SCORING_MODEL_VERSION` bump (Mailjet catalog entry 1.7.0/#572; the heuristic 1.10.0/#667). A worker-only change leaves direct package consumers (bv-web-prod) under-counting. Depth: `bv-mcp-scoring` skill.
-- **SPF `~all`**: downgraded to `info` when DMARC `p=quarantine|reject` (RFC 7489 §10.1). `pct=` parsed.
-- **SPF lookup budget**: `redirect=` counts toward the RFC 7208 §4.6.4 10-lookup limit alongside include/a/mx/ptr/exists (`analyzeSpfLookupBudget`, `packages/dns-checks`) — the redirect term's own lookup plus the recursed target's mechanisms, no double-count (3.15.1).
-- **Confidence gate**: `scoreIndicatesMissingControl()` fires only for `deterministic`/`verified`. Heuristic DKIM "not found" doesn't zero category.
-- **Provider-informed DKIM**: provider detected + probing empty → HIGH → MEDIUM.
+Full rule set, the incident evidence behind each, and the corpus measurements: **`bv-mcp-scoring` skill**. Four traps are restated here because they bite during ordinary tasks that never mention "scoring":
+
+- ⚠️ **Measuring DNSSEC across a corpus: test `dnssec > 60`, NEVER `> 0`.** An unsigned zone sits at exactly **60** (absence is a fixed `penaltyOverride: 40`, not a zeroing), so a `> 0` sweep reports ~95–100% adoption against a true single-digit rate. This caught six agents in one session. Read `recordPresent`/`controlPresent` instead.
+- ⚠️ **`missingControl` = "we MEASURED and the control is absent"; `inconclusive` + `errorKind` = "the probe never reached the origin".** Never set both on one finding. A fetch blocked by a WAF or cut by a budget licenses only "unmeasured" — recording it as absence zeroes a category nobody measured.
+- ⚠️ **`SCORING_CONFIG.coreWeights` is INERT on the scan path** — it parses, validates, enters the config hash, and changes no score (live in prod undetected for months). Express overrides as `profileWeights.<profile>`, which is per-profile. Any weight change re-grades every customer: an operator decision, not a config edit.
+- ⚠️ **`passed` = `score >= 50 && !hasMissingControl`** — it means "this check did not penalize the domain", NOT "the control exists". Three surfaces have read it as a verdict and published a claim the same scan contradicts.
+- **Grades — TWO scales by role.** Canonical 9-band `scoreToGrade` internally; customer-facing 6-band NIST `nistScoreToGrade`. Every customer-visible letter routes through the one chokepoint `displayGradeFor` (`src/lib/ungraded-display.ts`), which returns `null` for an ungraded scan so callers render `UNGRADED_DISPLAY` rather than fabricating an `F`.
 - **Severity penalties**: C −40, H −25, M −15, L −5, Info 0.
-- **`passed`**: `score >= 50 && !hasMissingControl`. Missing control → score zeroed. Checks whose **absence** emits `missingControl: true`: MX, NS, Zone Hygiene, BIMI, DANE (plus DMARC's multi-record case and the `authoritative_dns_infra` capability failures). `brand_discovery` was removed from this list in #670 — both its emitters were the contradiction below. CAA, **MTA-STS**, SVCB-HTTPS, TLS-RPT deliberately do NOT (absence is a graded finding; MTA-STS joined that list in scoring model 1.6.0 after a 1,000-domain corpus measured it at mean 3.3 with 96.5% of measured domains at 0 — a flat penalty, not a discriminator). ⚠️ **`missingControl` means "we MEASURED and the control is absent"; a probe that never reached the origin emits `inconclusive: true` + `errorKind` instead** — WAF interception, a stalled policy fetch, `check_http_security`'s total-budget timeout (#662 was the last holdout, so HTTP Security now sets the flag on **no** path). The mistake is latent, not loud: `checkStatus` is what excludes the category, so a wrong flag sits harmless until that precedence shifts and then zeroes the category as a real absence. An intercepted fetch also licenses only "unmeasured" — never let the detail prose go on to reassure that real senders/browsers are unaffected, since an edge rule aimed at automated clients as a class stops a sending MTA too (#664; the contract lives on `buildWafFinding` in `src/lib/waf-detection.ts`). **DNSSEC is the nuanced one**: absence is a `high` Core penalty via a fixed `penaltyOverride: 40` (category → 60, decoupling the −40 from the `high` label), NOT zeroing — but a **broken** chain (`chain of trust incomplete`, `validation failing`) DOES set the flag. ⚠️ **Consequence for ANALYSIS: `score > 0` is a sound "is this control present" test for every category EXCEPT this one.** An unsigned zone sits at exactly **60**, so a uniform `score > 0` sweep reports ~95–100% DNSSEC adoption against a true single-digit rate — measured on a 2,123-domain NZ corpus, raw `dnssec` values were `{0: 44, 55: 1, 60: 1942, >60: 136}`, i.e. 6.4% signed and 91% unsigned-at-60. The trap caught six agents individually in one session, one of them writing a script that contradicted the figure it had just computed. Read the structured flags on the `dnssec` `CheckResult` instead — `recordPresent`/`controlPresent` = `false`/`false` unsigned, `true`/`false` published-but-broken, `true`/`true` signed-and-validating (a registry/TLD-signed zone reads `false`/`true`). Pinned by `packages/dns-checks/src/__tests__/checks/record-present-signal.test.ts`. `structuredContent.dnssecSource` answers a NARROWER question (`domain_configured` vs `tld_inherited`, `null` for everything else) and is `scan_domain`-only, so it cannot separate unsigned from broken. Verify at the call sites before trusting any list: `grep -rn 'missingControl: true'` also matches the COMMENTS explaining why a check declines to set it (`test/audits/measured-vs-unmeasured-metadata.audit.test.ts` strips comments before scanning for exactly that reason, and fails any metadata literal setting `missingControl` alongside `inconclusive`/`errorKind` — the contradiction has shipped four times). Rationale + evidence: `bv-mcp-scoring` skill.
-- ⚠️ **Measuring DNSSEC adoption across a corpus: test `dnssec > 60`, NEVER `> 0`** — the actionable form of the bullet above. A `> 0` test counts every unsigned domain as signed and reports 95–100% adoption against a true 3–16% (measured per-country the same day: US 16.4%, IN 16.5%, UK 9.7%, NZ 8.6%, AU 5.9%, CN 3.3%; a `> 0` test returned 95.1% on AU and 100% on CN). The same trap applies to any "zero rate" / "missing control rate" computed uniformly across categories: DNSSEC is the one category that must be special-cased. Separately, a category **absent** from `categoryScores` was excluded as inconclusive (not measured), so drop it from the DENOMINATOR of a coverage rate rather than counting it as a failure. Per-country rates, the six-analyses incident, and the coverage-skew evidence: `bv-mcp-scoring` skill.
-- **Grades — TWO scales, by role (v3.26.0+, #461).** The **canonical 9-band** `scoreToGrade` (A+ 92+, A 87–91, B+ 82–86, B 76–81, C+ 70–75, C 63–69, D+ 56–62, D 50–55, F <50) is the internal/SSOT scale — used by `compare_baseline` ordering, `analyze_drift`, `map_compliance`, `generate_fix_plan`, the cohort-percentile math, golden tests, and `ScanScore.grade`. The **customer-facing display scale is the NIST-aligned 6-band** `nistScoreToGrade` (A+≥95, A≥90, B≥80, C≥70, D≥60, F<60), shown by `scan_domain`/`batch_scan`/`compare_domains` **and the `/badge` SVG**. Both live in `@blackveil/dns-checks` (the 6-band is additive, 1.4.0+); bv-web-prod displays the SAME NIST letter everywhere so a domain shows one grade across web + MCP. `PARITY_CORPUS_VERSION` must move in lockstep with the package version (version-lock contract). Scores are unchanged by the display scale — only the letter.
-  - ⚠️ **Every customer-visible letter routes through ONE chokepoint: `displayGradeFor` in `src/lib/ungraded-display.ts`** (moved there from `format-report.ts`, which now imports it). It returns `null` for an ungraded scan — callers render `UNGRADED_DISPLAY`, never a substituted letter, since `nistScoreToGrade(0)` would fabricate an `F` for a domain that does not resolve. The failure mode is NOT the two scales coexisting; it is two customer-visible surfaces reading DIFFERENT scales and disagreeing on screen about one domain. That shipped twice: the maturity cap (#640 — see **Maturity staging** above) and `/badge` (rendered `score.grade`, so a domain at 67 showed **C** on its badge and **D** in its report; #663). Enforced by `test/audits/display-grade-ssot.audit.test.ts` — a unit test cannot catch a route-wiring revert. `src/tools/prioritize-csc-leads.ts` is a legitimate second `nistScoreToGrade` caller (its own weighted lead score, not a scan score), which is why the audit is file-scoped rather than corpus-wide.
-  - `/badge` also annotates coverage — `<grade> partial` when `completed < attempted` (exact ratio in the SVG `<title>`/aria-label, where it costs no badge width), since an SVG in a README carries none of the prose that qualifies the letter in a report. The letter and its **COLOR** are deliberately unchanged: coverage and quality are different axes, and dimming a measured A+ to amber would assert a worse posture than was measured — the mirror of the overclaim being fixed.
 
 ### Profiles
 
@@ -219,39 +215,16 @@ Pattern-based, emits `fuzzing_suspected` to the resolved alert webhook URL (see 
 
 ## Adding a New Tool
 
-**First decide: scored or standalone?** A **scored** check gets a `CheckCategory` and MUST be `scanIncluded: true` + wired into `scan_domain` (else it sits in the scoring denominator at 0 and lowers every domain's score — the three-tier engine counts ALL `CATEGORY_TIERS` members). A **standalone/intelligence** tool (e.g. `check_dnssec_chain`) uses an out-of-union category label, `group: 'intelligence'`, no `tier`, `scanIncluded: false`, and skips all scoring steps. Never ship "scored + `scanIncluded: false`". See the `bv-mcp-add-tool` skill for the full annotated checklist.
+**First decide: scored or standalone?** A **scored** check gets a `CheckCategory` and MUST be `scanIncluded: true` + wired into `scan_domain` — otherwise it sits in the scoring denominator at 0 and lowers every domain's score. A **standalone/intelligence** tool uses an out-of-union category label, `group: 'intelligence'`, no `tier`, and `scanIncluded: false`. **Never ship "scored + `scanIncluded: false`".**
 
-1. `src/tools/check-<name>.ts` → async fn returning `CheckResult`
-2. **Scored only:** add the member to `CheckCategory`, `CATEGORY_TIERS`, and `CATEGORY_DISPLAY_WEIGHTS` in `packages/dns-checks/src/types.ts` (NOT `model.ts` — that only re-exports)
-3. **Scored only:** `IMPORTANCE_WEIGHTS` in `packages/dns-checks/src/scoring/engine.ts`
-4. **Scored only:** `DEFAULT_SCORING_CONFIG` weights, profileWeights (**all 6**, incl. `authoritative_dns_infra`), baselineFailureRates in `config.ts`
-5. **Scored only:** all 6 `PROFILE_WEIGHTS` in `packages/dns-checks/src/scoring/profiles.ts`
-6. **Scored only — rebuild the package:** `npm -w packages/dns-checks run build` (Worker code + tests import the built `dist/`, not `src/`; skip this and the new category won't resolve)
-7. Zod schema to `schemas/tool-args.ts` + `TOOL_SCHEMA_MAP`
-8. Tool entry in `TOOL_DEFS` in `schemas/tool-definitions.ts` (`scanIncluded: true` auto-appends the scan_domain suffix)
-9. `TOOL_REGISTRY` in `handlers/tools.ts` (import + cacheKey + execute)
-10. `FREE_TOOL_DAILY_LIMITS` in `config.ts` (or `INTENTIONALLY_UNLIMITED_TOOLS` — `tool-quota-coverage` audit requires exactly one)
-11. Explanation templates in `explain-finding-data.ts` (optional — no audit enforces it)
-12. **If scored + in scan:** wire `scan-domain.ts` at 3 hardcoded places (`ALL_CHECK_CATEGORIES`, the `checkPromises`/`runCachedCheck` array, the `runCheckRetry()` switch) + the static import
-13. `test/check-<name>.spec.ts` using `dns-mock` helper
-14. Update README tools table
-15. **No `domain` arg** (uses `domains[]`, `auditId`, etc.): handled via the schema's `domain` field / `toolRequiresDomain()`; covered by `test/audits/domain-required-ssot.audit.test.ts` — else every call returns "Missing required parameter: domain"
-16. **New `ToolRuntimeOptions` field** for a binding: extend `BvMcpEnv` AND populate at all 3 construction sites in `src/index.ts` — else `ro.<field>` is undefined and the tool returns `{ unprovisioned: true }`
-17. **Count surfaces (single tripwire)** — the tool count is hardcoded in exactly ONE place: bump `EXPECTED_TOOL_COUNT` in `test/audits/tool-count-ssot.audit.test.ts`. Every other count **derives** from `TOOLS`/`TOOL_DEFS` (the specs assert against `TOOLS.length`, not literals) — do NOT re-introduce a magic `toHaveLength(N)`. Two membership tripwires remain: (a) if `scanIncluded`, add the tool to `EXPECTED_SCAN_DOMAIN_TOOLS` in `tool-schemas.spec.ts` (exact-set guard on the scoring-critical scan set); (b) a non-CheckResult (custom-shape) tool goes in `NON_CHECK_RESULT_TOOLS` in `src/schemas/tool-definitions.ts` (the exported SSOT set that drives `outputSchema` population — no separate count to bump)
-18. **Audits that fail in CI** — `tool-count-ssot` (the count tripwire, item 17); `server-json-tool-count` (server.json "N MCP tools" vs `PUBLIC_TOOL_COUNT` = `TOOLS.length − INTERNAL_ONLY_TOOLS.size` = 80); `readme-tool-surface` (README + `docs/github-settings.md` + `extensions/vscode/{README.md,package.json}` prose must match the derived `PUBLIC_TOOL_COUNT`, incl. the `check_*` count — update the prose strings); `npm run generate:wasm-permissions` (generated Rust perms); `test/chaos/varied-domain-all-tools.chaos.test.ts` (case list = registry)
-19. **Scored only** — bump the `CATEGORY_TIERS` length + per-tier counts and the score snapshots. All four scoring spec families (`model`, `profiles`, `config`, `engine`) now keep their assertions + expected values **once** in a shared `packages/dns-checks/src/__tests__/scoring/scoring-<name>.suite.ts`; the eight `scoring-<name>.spec.ts` (one per name in `packages/dns-checks/src/__tests__/scoring/` + one in `test/`) are 9-line thin wrappers that inject the SOURCE vs the BUILT `@blackveil/dns-checks/scoring` module — **edit the `.suite.ts`, not the wrappers**. If scanned, also bump the scan-category count in `test/scan-domain.spec.ts`
+The full annotated checklist — every SSOT surface, the `EXPECTED_TOOL_COUNT` tripwire, and the audits that fail in CI: **`bv-mcp-add-tool` skill**.
 
 ## Testing
 
-- DNS mocked via `test/helpers/dns-mock.ts`: `setupFetchMock`, `mockTxtRecords`, `createDohResponse`, `mockFetchResponse`, `mockFetchError`
-- Each spec: `restore()` in `afterEach`
-- **Dynamic imports required** inside test fns for mock isolation: `const { checkSpf } = await import('../src/tools/check-spf')`
-- Clear scan cache between cases: both `cache:<domain>:check:<name>` and `cache:<domain>`
-- `tsconfig.json` `types` must be under `compilerOptions`
-- Config: `vitest.config.mts` — 15s timeout, `isolatedStorage: false`
-- TXT mocking: `mockTxtRecords()` adds quotes (pass unquoted); for backslash escaping, use `createDohResponse()` directly
-- **Known flake**: full-suite (~3300 tests) ending with `workerd ... WebSocket peer disconnected` + ~10 "failures" is pool-teardown noise, not real. Re-run named specs in isolation to confirm.
-- **Expected `npm test` exit 1 in a FRESH WORKTREE — `test/wasm-integration.test.ts` fails to LOAD, with 0 test failures.** `No such module …bv_wasm_core_bg.wasm`: `crates/bv-wasm-core/pkg/` is produced only by `npm run build:wasm` (wasm-pack), which **neither `scripts/worktree-setup.sh` nor `npm ci` runs** — CI builds it separately with a cached wasm-pack binary. Confirmed independently by two agents on unrelated branches (2026-08-03). Distinguish it from a real failure by the shape: a _suite-load_ error with `N passed, 0 failed`. Run `npm run build:wasm` once per worktree for a fully green local run. Do not "fix" it by editing the spec.
+Patterns, DNS mocking, mock isolation, cache clearing between cases, the known flakes, and the Analytics-Engine string-assertion trap: **`bv-mcp-testing` skill**.
+
+- Tests run **inside the Workers runtime** (`@cloudflare/vitest-pool-workers`). `.spec.ts` here means Vitest, NOT Playwright.
+- **Dynamic imports are required** inside test fns for mock isolation: `const { checkSpf } = await import('../src/tools/check-spf')`.
 
 ### Pre-commit (`.githooks/pre-commit`)
 
@@ -273,50 +246,15 @@ Workflows: `ci.yml` (adds **two** non-required parallel jobs plus a cached wasm-
 
 ### Release (`publish.yml`)
 
-**Pre-bump locally before tagging — enforced.** `version-bump` is a read-only gate: it fails the release unless all 4 version surfaces already match the tag. Why: `bv-mcp-release` skill.
+**Pre-bump locally before tagging — enforced.** `version-bump` is a read-only gate: it fails the release unless all 4 version surfaces already match the tag. `npm version <X.Y.Z>` runs the `version` lifecycle hook, which syncs `server.json` and the `CHANGELOG.md` heading and stages them into the release commit; then push the commit and the tag.
 
-```bash
-npm version <X.Y.Z> --no-git-tag-version --allow-same-version   # bumps package.json + lock; SERVER_VERSION auto-derives
-# Update CHANGELOG.md ([X.Y.Z] heading) + server.json (top-level version — remotes-only, single field)
-git commit -am "chore: bump version to <X.Y.Z>" && git push origin main
-git tag v<X.Y.Z> && git push origin v<X.Y.Z>
-```
+⚠️ **Deploy and publish are operator-run steps, not tag-triggered ones — and a green Release run does not prove either happened.** Verify `serverInfo.version` on the live endpoint and query the registry with a cache-buster, every time.
 
-⚠️ **Deploy and publish are operator-run steps, not tag-triggered ones** — see _Manual release fallback_ below. Several pipeline jobs are conditionally gated, so read `publish.yml` for what is actually enabled rather than assuming a stage ran.
+🚨 **Run both shipping commands from a worktree pinned to the release commit** — `deploy:prod` compiles the working tree and `mcp-publisher` reads `./server.json` from cwd; neither checks the tree against the tag, so a stale checkout publishes the wrong version publicly.
 
-**A green Release run does not prove a deploy or publish happened.** Verify the result directly, every time: `serverInfo.version` on the live endpoint, and a **cache-busted** registry query (the registry read API is CDN-cached and can return a stale count and a fresh row in back-to-back requests).
+🚨 **Never let the ed25519 registry key reach stdout** — it then persists in shell history, scrollback and agent transcripts, and must be rotated, which is an operator-only zone write. Pass `--private-key "$(cat mcp.hex)"` (hex, not base64 or PEM).
 
-Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in `production` env — fail-fast if absent. `wrangler d1 execute --remote --file=-` does NOT accept stdin; pass a real path.
-
-**Workflow secret-check audit** (`test/audits/workflow-secret-check.audit.test.ts`): every `[ -z "$*_TOKEN" ]` guard must `exit 1`; no warn-and-skip. Codifies v2.10.2–v2.10.6 silent prod-stale.
-
-### Manual release fallback
-
-When hosted release secrets are unavailable, ship locally with credentials from
-the operator's secret manager. Do not commit `.npmrc`, registry tokens, DNS
-publisher keys, or generated production config.
-
-```bash
-npm -w packages/dns-checks run build && npm run build
-npm publish --access public
-npm run deploy:prod
-npm run publish:registry   # release-integrity gate, then mcp-publisher publish
-```
-
-🚨 **Run these from a worktree pinned to the release commit — never from a shared or long-lived checkout.** BOTH shipping commands read the working tree: `deploy:prod` compiles it (`npm -w packages/dns-checks run build`), and `mcp-publisher publish` reads `./server.json` from **cwd**. Neither validates that the tree matches the tag, so a stale checkout ships whatever it happens to hold — and for the registry that means publishing the wrong version, silently and publicly. A fresh worktree also needs the gitignored `.dev/wrangler.deploy.jsonc` copied in (the injector fails closed without it) plus `npm ci`.
-
-**MCP Registry auth is DNS-based:** `mcp-publisher login dns --domain <domain> --private-key <hex>` — **hex**, not base64 or PEM. The public half lives in an apex TXT record `v=MCPv1; k=ed25519; p=<base64>`; changing it is a zone write, so it is operator-only. 🚨 **Never let the private key print to stdout** — it then persists in shell history, scrollback and any agent transcript, and must be discarded and rotated. Write it to a file and pass `--private-key "$(cat mcp.hex)"` so only the substitution is recorded. Keep the local `mcp-publisher` version matching CI's: a version skew moved the token store and invalidated the saved login.
-
-**`server.json` is currently remotes-only** — a single top-level `version` field (no `packages` stanza); sync just that field to the tag. (If an npm `packages` stanza is ever re-added, it reintroduces the two-field foot-gun — sync both then.) Remotes-only also means the registry's npm-existence check does not apply, so **the npm and registry publishes are independent** — do not treat them as one problem, in either direction.
-
-Approve gated deploys through GitHub's protected environment UI or an
-operator-only runbook.
-
-### MCP Registry DNS auth
-
-Namespace `com.blackveilsecurity/*` is gated by the MCP Registry DNS TXT
-record. Keep the private publisher key in an approved secret manager and local
-ignored env only; never commit it or paste it into workflow logs.
+Full release flow, the manual fallback, and MCP Registry DNS auth: **`bv-mcp-release` skill**.
 
 ## Service Binding Integration
 
