@@ -180,7 +180,7 @@ The stability harness negotiates MCP protocol `2025-06-18`, accepts JSON and Str
 
 SSOT guardrails are enforced by focused audit tests:
 
-- Tool counts and public resource copy are derived from the `TOOLS` registry.
+- Tool counts and public resource copy are **generated** from the `TOOLS` registry, not hand-written — `npm run generate:tool-surface` rewrites every advertised count, and `npm run check:tool-surface` fails CI if any drifts. Counts advertised to clients use the **public** surface (`TOOLS` minus internal-only tools), so the number in the docs, the badge, the VS Code listing and the `resources/read` copy is the number `tools/list` actually returns.
 - Domain-required validation is derived from each tool input schema.
 - Scan timeout budgets are resolved from shared runtime config.
 - WASM tool permissions are generated from MCP tool annotations.
