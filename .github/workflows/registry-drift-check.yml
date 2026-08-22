@@ -69,6 +69,21 @@ jobs:
           echo "Registry version: $VERSION"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
+      # `gh issue create --label X` FAILS if X does not already exist — it does
+      # not create labels implicitly, and the failure is fatal (the issue is not
+      # created at all). Creating them here keeps the workflow self-sufficient in
+      # a fresh fork or self-host rather than depending on repo state someone set
+      # up by hand. `--force` makes it idempotent: create if absent, update if not.
+      - name: Ensure drift labels exist
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          gh label create registry-drift --repo "$REPO" --force \
+            --color D93F0B --description "MCP Registry listing has drifted from live prod"
+          gh label create priority-high --repo "$REPO" --force \
+            --color B60205 --description "Escalated: needs attention now"
+
       - name: Compare versions and act
         env:
           GH_TOKEN: ${{ github.token }}
