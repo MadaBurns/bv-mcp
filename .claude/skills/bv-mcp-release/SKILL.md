@@ -28,7 +28,7 @@ git commit -am "chore: release <X.Y.Z>" && git push origin main   # via PR — d
 git tag v<X.Y.Z> <merged-main-HEAD> && git push origin v<X.Y.Z>   # tag the squashed merge commit, not the bump-branch tip
 ```
 
-Then `publish.yml` runs: validate → version-verify (read-only gate) → npm publish (provenance) ‖ Cloudflare deploy → MCP Registry → GH Release. Requires `NPM_TOKEN`, `CLOUDFLARE_API_TOKEN`, `MCP_REGISTRY_TOKEN` in the `production` env (fail-fast if absent).
+Then `publish.yml` runs: validate → version-verify (read-only gate) → GH Release. **That is the whole pipeline** (2026-08-23): the `publish-npm` and `publish-registry` jobs were deleted — across 5 tagged releases neither ever published once (3.60–3.62 failed on missing `production`-environment secrets; 3.63/3.64 parked forever in `waiting` on the environment reviewer, who is the same solo operator doing the tagging — a self-approval deadlock). The remaining jobs need only `GITHUB_TOKEN`, so a tag now completes unattended. npm and registry publishing are **manual, operator-run steps** (below); `registry-drift-check.yml` (12-hourly) is the net that catches a forgotten registry publish.
 
 ### Why the gate replaced the auto-bump (3.40.0–3.42.0 incident)
 
@@ -45,9 +45,9 @@ Two transferable lessons:
 
 ## Current publish reality (verify, don't assume)
 
-- **npm publish and registry publish are NO LONGER gated** (#719 removed the `if: false` both carried since an `NPM_TOKEN` rotation). While gated, the jobs reported `skipped` — which is GREEN — so npm rotted for ~46 minor versions: `blackveil-dns` sat at **2.13.0** and `@blackveil/dns-checks` at **1.3.12** against a repo at 3.59.0 / 1.22.0. Both jobs now fail loudly on a missing or non-authenticating `NPM_TOKEN`, skip a version already on the registry (re-run safe), and verify against `registry.npmjs.org` after publishing. ⚠️ **The next tagged release will fail its npm job unless a live `NPM_TOKEN` with publish rights to BOTH packages is in the `production` environment** — that is intended: loud beats silent.
-- **MCP Registry IS publishable locally** via `mcp-publisher publish` with `MCP_PUBLISHER_KEY` (in `.dev.vars`) + DNS-TXT auth for `com.blackveilsecurity/*`. Registry liveness-checks npm versions, so the server entry is **remotes-only**.
-- Verify what's live: query the registry with `?version=latest`.
+- **`publish.yml` carries NO publish jobs (removed 2026-08-23).** History for context: the jobs sat behind `if: false` for ~46 minor versions (skipped = GREEN, npm rotted at `blackveil-dns` 2.13.0 / `@blackveil/dns-checks` 1.3.12); #719 re-enabled them fail-loud, but they then never once succeeded — 3.60–3.62 failed, 3.63/3.64 parked on the `production` environment reviewer. The jobs were deleted rather than re-armed (tombstone comment in the workflow explains; re-arming requires a second reviewer so approval isn't a self-deadlock). npm publish remains gated off deliberately (#719 posture: no live `NPM_TOKEN`).
+- **MCP Registry is published manually** via `mcp-publisher publish` with `MCP_PUBLISHER_KEY` (in `.dev.vars`) + DNS-TXT auth for `com.blackveilsecurity/*` — this IS the authoritative path, not a fallback. The server entry is **remotes-only**.
+- Verify what's live: query the registry with `?version=latest` (CDN-cached — cache-bust, and check `?version=X.Y.Z` before trusting `latest`). `registry-drift-check.yml` compares live prod vs registry every 12h and opens a `registry-drift` issue on drift.
 
 ## Registry publish must FOLLOW the prod deploy (ordering)
 
@@ -55,9 +55,9 @@ Two transferable lessons:
 
 **Rule: deploy to prod first, then publish the registry. Never the reverse.**
 
-- Correct order (**changed by #719** — see the warning below): merge bump → **`npm run deploy:prod`** → verify `serverInfo.version` + scoring footer on prod → **only then tag**. `publish.yml` cuts the GH Release and now also publishes to the registry, so the tag must come after the deploy.
+- Correct order: merge bump → tag (safe any time — the tag pipeline only cuts the GH Release) → **`npm run deploy:prod`** from a worktree pinned to the tag → verify `serverInfo.version` + scoring footer on prod → **only then `npm run publish:registry`**. The registry publish is the outward liveness claim, so it is always the LAST step.
 - Registry **behind** prod (published 3.8.0 while prod serves 3.9.0) is **benign** — it just means "not yet bumped," and is the safe state to pause in if the deploy is deferred. Registry **ahead** of prod is the foot-gun.
-- ⚠️ **The tag pipeline is NO LONGER ordering-safe.** It used to be — `publish-registry` carried `if: false`, so tagging advertised nothing and the manual `mcp-publisher` step was the only publisher. #719 re-enabled that job, and `publish.yml` deliberately has **no** Cloudflare deploy job (#718), so a tag pushed before `npm run deploy:prod` now advertises the new version to the registry while prod still serves the old one — the same stale-prod class as the v2.10.2–v2.10.6 incidents. **Deploy prod before tagging.** The manual `mcp-publisher publish` remains the fallback when the job cannot run.
+- **The tag pipeline is ordering-safe again (2026-08-23)** — with `publish-registry` deleted, tagging advertises nothing; the manual `mcp-publisher` step is the only publisher, and the ordering rule is enforced by the operator running deploy before publish. (Between #719 and 2026-08-23 the job existed armed, making a pre-deploy tag a stale-prod hazard — that window is closed.)
 - "Formalize the release" (version surfaces + tag + GH Release) and "deploy + publish" are separable. Deploy and registry publish are outward-facing — confirm before each unless told to run the whole sequence.
 
 Publish steps (key never echoed): `mcp-publisher validate` → `login dns --domain blackveilsecurity.com --private-key "$KEY"` (read `$KEY` from `.dev.vars`, ed25519) → `publish` → `logout`. Verify: `?search=com.blackveilsecurity/dns&version=latest` → expect `version=X.Y.Z status=active isLatest=true` (search endpoint sometimes returns an empty body — retry a few times).
@@ -66,7 +66,7 @@ Publish steps (key never echoed): `mcp-publisher validate` → `login dns --doma
 
 🚨 **Never let the ed25519 private key reach stdout.** `--private-key` takes **hex** (not base64, not PEM). If it is echoed it persists in shell history, terminal scrollback and any agent transcript, and must then be discarded and rotated — the public half lives in an apex TXT record, so rotating it is an operator-only zone write. Write the key to a file and pass `--private-key "$(cat mcp.hex)"` so only the substitution is recorded. Keep the local `mcp-publisher` version matching CI's: a version skew moves the token store and invalidates the saved login.
 
-## Manual / local release fallback (hosted secrets unavailable)
+## Manual / local shipping steps (the authoritative path — CI publishes nothing)
 
 ```bash
 npm -w packages/dns-checks run build && npm run build

@@ -155,14 +155,22 @@ describe('workflow permissions audit (F10 — least-privilege OIDC)', () => {
 	// parked an approval prompt on a job that could only fail. Shipping the
 	// Worker belongs to deploy-prod.yml alone — publish.yml must not regrow a
 	// deploy job, which is what makes this an exact-set assertion.
-	it('parsed all five publish.yml jobs and publish.yml owns no deploy job', () => {
-		expect(jobNames).toEqual(['github-release', 'publish-npm', 'publish-registry', 'validate', 'version-bump']);
+	it('parsed all three publish.yml jobs and publish.yml owns no deploy or publish job', () => {
+		// publish-npm and publish-registry were REMOVED 2026-08-23: neither ever
+		// published successfully (3.60-3.62 failed; 3.63/3.64 parked forever on the
+		// `environment: production` reviewer a solo maintainer cannot satisfy). The
+		// authoritative publish path is the manual, gate-protected
+		// `npm run publish:registry` from a tag-pinned worktree, monitored by
+		// registry-drift-check.yml. Re-adding a publish job here must bring its
+		// per-job OIDC/environment gating back with it — update this exact-set
+		// assertion deliberately, not reflexively.
+		expect(jobNames).toEqual(['github-release', 'validate', 'version-bump']);
 		expect(publish, 'publish.yml must not deploy the Worker — that is deploy-prod.yml').not.toContain('wrangler deploy');
 	});
 
-	it('id-token: write appears ONLY in the publish-npm job (OIDC must not reach untrusted-code jobs)', () => {
+	it('id-token: write appears in NO job (OIDC left with the removed publish-npm job)', () => {
 		const withIdToken = jobs.filter((j) => hasWrite(j.permissions, 'id-token')).map((j) => j.name);
-		expect(withIdToken).toEqual(['publish-npm']);
+		expect(withIdToken).toEqual([]);
 	});
 
 	it('contents: write appears ONLY in the github-release job', () => {

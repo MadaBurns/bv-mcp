@@ -148,153 +148,20 @@ jobs:
             echo "CHANGELOG_EOF"
           } >> "$GITHUB_OUTPUT"
 
-  publish-npm:
-    name: Publish to npm
-    needs: version-bump
-    runs-on: ubuntu-latest
-    environment: production
-    # `id-token: write` mints the OIDC token for `npm publish --provenance`.
-    # A job-level `permissions:` block REPLACES the default (un-listed scopes
-    # become `none`), so `contents: read` must be restated for checkout.
-    permissions:
-      contents: read
-      id-token: write
-    # This job was gated off with `if: false` during an `NPM_TOKEN` rotation and
-    # stayed off for ~46 minor versions (#719). The rot was invisible because a
-    # skipped job is GREEN: the release workflow reported success while npm went
-    # stale. Every failure mode below is therefore made LOUD — a missing or
-    # invalid token fails the job before any build work, and nothing here
-    # warn-and-skips. Do not reintroduce a silent gate; if npm publishing must be
-    # paused, delete the job or fail it explicitly with a reason.
-    steps:
-      # Fails BEFORE checkout/build so a missing secret costs seconds, not a
-      # full release build, and the error is the first thing in the log.
-      - name: Preflight — NPM_TOKEN is present
-        env:
-          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if [ -z "$NPM_TOKEN" ]; then
-            echo "::error title=NPM_TOKEN missing::NPM_TOKEN is not set in the 'production' environment. Create an npm automation token with publish rights to BOTH 'blackveil-dns' and '@blackveil/dns-checks', then: gh secret set NPM_TOKEN --env production"
-            exit 1
-          fi
-          # Automation tokens are opaque, but a value carrying whitespace or a
-          # quote is a paste accident that would otherwise surface as an
-          # inscrutable 404 at publish time (npm answers 404 for auth misses).
-          case "$NPM_TOKEN" in
-            *[[:space:]]* | *\"* | *\'*)
-              echo "::error title=NPM_TOKEN malformed::NPM_TOKEN contains whitespace or quote characters — re-set it without surrounding quotes or a trailing newline."
-              exit 1
-              ;;
-          esac
-          echo "NPM_TOKEN is present (${#NPM_TOKEN} chars)."
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: main
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-          cache: npm
-          registry-url: 'https://registry.npmjs.org'
-
-      # Presence is not validity. A rotated-away token authenticates as nobody
-      # and npm reports the resulting publish miss as a 404, which reads like a
-      # package-name problem rather than an auth problem. Prove the token
-      # resolves to a user here, where the error message can say so.
-      - name: Preflight — NPM_TOKEN authenticates
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          if ! WHO=$(npm whoami --registry=https://registry.npmjs.org/ 2>&1); then
-            echo "::error title=NPM_TOKEN invalid::npm whoami failed — the token is expired, revoked, or lacks read access. Response: ${WHO}"
-            exit 1
-          fi
-          echo "Authenticated to npm as: ${WHO}"
-
-      - run: npm ci
-
-      - name: Build workspace package
-        run: npm -w packages/dns-checks run build
-
-      - run: npm run build
-
-      # Idempotent by design: a release can half-publish (root succeeds, the
-      # workspace package fails) and the retry must not die on
-      # `EPUBLISHCONFLICT` for the half that already landed. An ALREADY-PRESENT
-      # version is logged and skipped; any other publish failure still fails the
-      # job. This never overwrites a published version — npm forbids that.
-      - name: Publish blackveil-dns
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          VERSION: ${{ needs.version-bump.outputs.version }}
-        run: |
-          if npm view "blackveil-dns@${VERSION}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
-            echo "::notice title=blackveil-dns already published::blackveil-dns@${VERSION} is already on the registry — skipping publish (re-run safe)."
-          else
-            npm publish --provenance --access public
-          fi
-
-      - name: Publish @blackveil/dns-checks
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: |
-          # The workspace package versions independently of the root release
-          # tag, so read its own manifest rather than reusing $VERSION.
-          PKG_VERSION=$(node -p "require('./packages/dns-checks/package.json').version")
-          if npm view "@blackveil/dns-checks@${PKG_VERSION}" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
-            echo "::notice title=@blackveil/dns-checks already published::@blackveil/dns-checks@${PKG_VERSION} is already on the registry — skipping publish (re-run safe)."
-          else
-            npm -w packages/dns-checks publish --provenance --access public
-          fi
-
-      - name: Verify published versions
-        env:
-          VERSION: ${{ needs.version-bump.outputs.version }}
-        run: |
-          # Assert against the REGISTRY, not against a green step (#719
-          # acceptance criterion). npm's read path is CDN-cached, so allow a
-          # short settle before failing.
-          PKG_VERSION=$(node -p "require('./packages/dns-checks/package.json').version")
-          fail=0
-          for spec in "blackveil-dns@${VERSION}" "@blackveil/dns-checks@${PKG_VERSION}"; do
-            ok=0
-            for _ in 1 2 3 4 5 6; do
-              if npm view "$spec" version --registry=https://registry.npmjs.org/ >/dev/null 2>&1; then
-                ok=1
-                break
-              fi
-              sleep 10
-            done
-            if [ "$ok" -eq 1 ]; then
-              echo "Verified on registry: $spec"
-            else
-              echo "::error title=Publish not visible::${spec} is not resolvable on registry.npmjs.org after publish."
-              fail=1
-            fi
-          done
-          [ "$fail" -eq 0 ]
-
-  # NOTE (#718): this workflow deliberately has NO Cloudflare deploy job.
-  #
-  # It used to carry `deploy-cloudflare`, whose first step was `exit 1` "by
-  # design" — while the job still declared `environment: production`. So every
-  # tagged release parked a genuine approval prompt on a job that could only
-  # fail if approved, and two were left standing (runs 31980523639 / 32298225966,
-  # v3.52.0 and v3.55.0, both `waiting` with a pending `production` deployment).
-  # Standing approval prompts that must be ignored erode the ones that matter.
-  #
-  # The job was NOT reinstated as a real deploy: its body shipped the PUBLIC
-  # `wrangler.jsonc` straight from CI, with no private overlay injected —
-  # precisely the defect that got `auto-deploy-main.yml` deleted (a
-  # Worker missing every KV/D1/R2/Analytics/service binding). Its two useful
-  # pieces, the infra-probe deploy and the OAuth prod-probe verification, moved
-  # to `deploy-prod.yml`, where they sit behind the real overlay-reconstructing
-  # deploy instead of behind an `exit 1` that had never let them run.
-  #
-  # Releases tag and publish here; shipping the Worker is `deploy-prod.yml` (or
-  # `npm run deploy:prod` by hand). One deploy path, deliberately.
-
+  # The npm and MCP-Registry publish jobs were REMOVED 2026-08-23 (they lived
+  # here for the record: publish-npm at the old L151, publish-registry at L319).
+  # Neither ever published successfully — 3.60.0-3.62.0 runs FAILED and
+  # 3.63.0/3.64.0 runs PARKED on the `environment: production` reviewer (a
+  # solo-maintainer repo cannot approve its own environment gate), holding the
+  # concurrency group each time. The AUTHORITATIVE publish path is the manual
+  # one: from a worktree pinned to the release tag, `npm run publish:registry`
+  # (gate: check:release-integrity:publish — refuses a dirty/untagged tree,
+  # with NO override for publish). Drift is monitored by
+  # registry-drift-check.yml every 12h, which opens/escalates an issue if the
+  # registry falls behind live prod. npm publishing stays gated off (#719).
+  # If a CI publish path is ever re-armed, re-add the job WITH the
+  # environment gate only once a second reviewer exists — see the
+  # bv-mcp-release skill.
   github-release:
     name: Create GitHub Release
     needs: version-bump
@@ -316,60 +183,3 @@ jobs:
             --notes "$CHANGELOG_BODY" \
             --verify-tag
 
-  publish-registry:
-    name: Publish to MCP Registry
-    needs: [validate, version-bump]
-    runs-on: ubuntu-latest
-    environment: production
-    # Was gated off in lockstep with publish-npm (#719) and re-enabled with it.
-    #
-    # It does NOT depend on publish-npm: `server.json` is remotes-only, so the
-    # registry's npm-existence check ("NPM package 'blackveil-dns' not found
-    # (status: 404)") does not apply to this listing. The two publishes are
-    # independent and a failure in one must not silently withhold the other.
-    # ⚠️ If an npm `packages` stanza is ever re-added to server.json, that check
-    # returns and this job must then `needs: publish-npm`.
-    steps:
-      - name: Check publisher key
-        env:
-          MCP_PUBLISHER_KEY: ${{ secrets.MCP_PUBLISHER_KEY }}
-        run: |
-          if [ -z "$MCP_PUBLISHER_KEY" ]; then
-            echo "::error::MCP_PUBLISHER_KEY not configured in production environment"
-            exit 1
-          fi
-
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: main
-
-      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
-        with:
-          node-version: '22'
-          cache: npm
-
-      # DNS-based login + publish (com.blackveilsecurity/* namespace requires
-      # ed25519 ownership proof at the apex blackveilsecurity.com TXT — see
-      # CLAUDE.md "MCP Registry DNS auth"). The previous design used a
-      # long-lived JWT in MCP_REGISTRY_TOKEN, which expired silently and went
-      # unnoticed because publish.yml warn-and-skipped on missing secrets.
-      # `mcp-publisher` is a Go binary distributed via GitHub releases at
-      # modelcontextprotocol/registry — NOT an npm package. `npx mcp-publisher`
-      # 404s. Pin to a known-good version; bump deliberately.
-      - name: Install mcp-publisher
-        env:
-          MCP_PUBLISHER_VERSION: '1.7.8'
-          MCP_PUBLISHER_SHA256: '48230dbec85bd88a0d42977ef533cddda23235f0db4331b9263ce53b432cb75c'
-        run: |
-          curl -fsSL "https://github.com/modelcontextprotocol/registry/releases/download/v${MCP_PUBLISHER_VERSION}/mcp-publisher_linux_amd64.tar.gz" -o mcp-publisher.tar.gz
-          echo "${MCP_PUBLISHER_SHA256}  mcp-publisher.tar.gz" | sha256sum -c -
-          sudo tar -xzf mcp-publisher.tar.gz -C /usr/local/bin mcp-publisher
-          rm mcp-publisher.tar.gz
-          mcp-publisher --version
-
-      - name: Login + publish to registry
-        env:
-          MCP_PUBLISHER_KEY: ${{ secrets.MCP_PUBLISHER_KEY }}
-        run: |
-          mcp-publisher login dns --domain blackveilsecurity.com --private-key "$MCP_PUBLISHER_KEY"
-          mcp-publisher publish
