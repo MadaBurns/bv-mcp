@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [3.64.0] - 2026-08-23
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged and `@blackveil/dns-checks` stays at **1.23.0** — no check, weight, threshold or grade band moves, and no domain is re-graded. This is operator alerting only; no scan output changes.
 
@@ -17,6 +17,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ### Notes
 
 - Abstaining deliberately makes the lane quiet on a low-traffic deploy. That is the correct trade rather than a coverage gap: below the floor a "100% error rate" is genuinely indistinguishable from one bad probe, so no threshold separates them. Low-volume incidents stay covered by the lanes that alert on **absolute counts** (tail exceptions, binding degradation, queue failures — all threshold 1), which do not depend on rate inference. Rate detectors abstain; count detectors cover.
+
+### Changed
+
+- **Advertised tool counts are generated, not hand-written** (#767). `npm run generate:tool-surface` derives `PUBLIC_TOOL_COUNT` from `TOOL_DEFS − INTERNAL_ONLY_TOOLS` and rewrites all 13 count tokens across README, `docs/github-settings.md`, the VS Code extension, `server.json` and `smithery.yaml`; `npm run check:tool-surface` fails CI on drift, and each token is now pinned individually (the old `.toContain` assertions were satisfied by any one occurrence while the others rotted). `EXPECTED_TOOL_COUNT` stays manual by design — it is the human-acknowledgement gate.
+- **`npm version <X.Y.Z>` now syncs every release surface** (#767). A `version` lifecycle hook rewrites `server.json` (targeted regex — never a JSON round-trip, which broke the 3.40.0–3.42.0 release gates) and the `CHANGELOG.md` heading, staging both into the release commit.
+- **Registry drift is detected instead of discovered** (#767, #768). A 12-hourly workflow compares live `serverInfo.version` against the MCP Registry: registry-behind opens a tracking issue and escalates only if it survives a full cycle; registry-ahead (the unsafe direction) fails immediately. Detection only — it never publishes. Proven end-to-end in production: opened issue #769 on real drift, closed it after the 3.63.0 registry publish.
+
+### Fixed
+
+- **`resources/read` no longer advertises tools the public surface does not serve** (#767). `src/handlers/resources.ts` derived its counts from `TOOLS.length` (81) rather than the public surface (76), so the served resource text disagreed with `tools/list`. It now filters `INTERNAL_ONLY_TOOLS` like every other public surface, and the two hardcoded "18 scan categories" strings derive from `scanIncluded`.
 
 ## [3.63.0] - 2026-08-21
 
