@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.65.0] - 2026-08-24
+
+**Scoring-model change.** `SCORING_MODEL_VERSION` 1.12.0 → **1.13.0** and `@blackveil/dns-checks` 1.23.0 → **1.24.0** (`PARITY_CORPUS_VERSION` in lockstep, #777). One new detection re-grades an **unmeasured** population downward; everything else is measurement-integrity hardening that moves no score any production scan produces. Full rationale: the 1.13.0 history entry in `src/lib/scoring-version.ts`.
+
+### Changed
+
+- **DMARC `pct=`/`ri=` tokens parse strictly per RFC 7489 §6.3 ABNF** (#775). `parseInt` prefix-parsing accepted `pct=100%` / `pct=100abc` as a valid 100 and `ri=86400x` as a valid 86400 — no finding, though §6.6.3 has receivers discard syntactically invalid records. Malformed tokens now draw the EXISTING `medium` invalid-value finding (−15). Downward only, one medium per malformed tag; affected population unmeasured (plausibly small, not claimed zero). `pct=050` stays ABNF-valid.
+
+### Fixed
+
+- **The critical-gap ceiling can no longer be armed by an unmeasured check** (#775). `buildGenericContext` populated `missingControls` from ALL results — the only sibling map without the `isCheckMeasured` gate — and the 64-point ceiling never consulted `transientFailures`, so an errored check whose synthetic finding text matched `MISSING_CONTROL_REGEX` would cap a scan for a category the same scan excluded as inconclusive. Latent only by accident of today's error strings (`buildDnsErrorResult` passes upstream DNS error text through verbatim). Fixed at the population site + a transient-wins guard at the ceiling for direct `computeGenericScore` callers; pinned with a measured-check control case.
+- **`scoreIndicatesMissingControl` takes confidence through the validated declared-then-infer read** (#775). An out-of-union declared `confidence` (unvalidated cache re-read) previously disarmed zeroing silently via a bare cast; garbage now behaves like no declaration.
+- **The DMARC no-record finding declares `missingControl: true`** like its multiple-record and missing-`p=` siblings (#775). Behaviour-neutral — the prose already zeroed (pinned by the missing-control-intent audit); the flag makes the intent survive a reword.
+- **`SCORING_CONFIG` silent-inert gaps now warn** (#775, advisory only — the resolved config never changes): typo'd profile names or category keys inside `profileWeights`/`baselineFailureRates` are named instead of merging into nothing; fractional `tierSplit`s no longer fail IEEE 754 strict equality (epsilon) and rejections say so; misordered `grades` thresholds fall back to defaults with a warning instead of first-match-wins band scrambling.
+
+### Docs
+
+- **CLAUDE.md trimmed 66KB → 30KB** (#776): operational depth (binding notes, CI/deploy history, analytics layouts, the subrequest-ceiling incident) moved verbatim to the new `bv-mcp-operations` skill; every incident-earned gotcha kept inline or pointed.
+- `generic.ts` provider-modifier docs corrected (clamped ±2, never applied to the score); hardening-tier all-transient asymmetry documented as a deliberate open operator item; rotted `(sum=N)` checksums dropped from `PROFILE_WEIGHTS`.
+
+### Cross-repo
+
+- bv-web-prod re-vendored `@blackveil/dns-checks` 1.22.0 → 1.24.0 (bv-web-prod #2348) with all four version locks moved and parity/vendor contracts + preflight green.
+
 ## [3.64.0] - 2026-08-23
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged and `@blackveil/dns-checks` stays at **1.23.0** — no check, weight, threshold or grade band moves, and no domain is re-graded. This is operator alerting only; no scan output changes.
