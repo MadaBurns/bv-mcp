@@ -1735,6 +1735,151 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 		});
 	}
 
+	/**
+	 * #779 — the summary finding's TITLE named a strictly wider predicate than
+	 * its COUNT applied. It said "N lookalike domains with mail capability
+	 * detected" while N counted only mail-infra PLUS a #264 corroborator.
+	 *
+	 * Measured on real estates before the fix: openclaw.ai's rollup said 2 while
+	 * six candidates in the SAME response carried `hasMX: true`; openclaw.org
+	 * said 1 against 3. A consumer reading only the summary — which is what a
+	 * summary is for — got a three-fold undercount, and it propagated into a
+	 * client-facing report.
+	 */
+	describe('#779 summary finding: title matches the predicate it counts', () => {
+		it('does not claim "mail capability" for the corroborated-staging subset', async () => {
+			mockPrePhishingFixture();
+			const result = await run('testco.com');
+			const summary = result.findings.find((f) => f.metadata?.lookalikeDomainCount !== undefined);
+			expect(summary).toBeDefined();
+			expect(
+				summary!.title,
+				'the title must not name a wider set than the count applies',
+			).not.toMatch(/mail capability/i);
+			expect(summary!.title).toMatch(/pre-phishing staging signals/i);
+		});
+
+		it('exposes the wider mail-capable count alongside, so nobody re-derives it', async () => {
+			mockPrePhishingFixture();
+			const result = await run('testco.com');
+			const summary = result.findings.find((f) => f.metadata?.lookalikeDomainCount !== undefined);
+			// Both numbers present. Forcing consumers to re-derive the wider figure
+			// from per-domain findings is what nobody did, and why the undercount
+			// went unnoticed.
+			expect(summary!.metadata?.mailCapableCount).toBeDefined();
+			expect(summary!.metadata?.mailCapableDomains).toContain('twstco.com');
+			expect(summary!.metadata?.mailCapableCount as number).toBeGreaterThanOrEqual(
+				summary!.metadata?.lookalikeDomainCount as number,
+			);
+		});
+
+		it('a null-MX candidate is not counted as mail-capable', async () => {
+			// RFC 7505 `0 .` is the explicit way a domain DECLINES mail. A naive
+			// MX-record count reads it as capability — the opposite of its meaning.
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const { name, type } = parseDohQuery(input);
+				if (name === 'testco.com' && (type === 'NS' || type === '2')) {
+					return Promise.resolve(
+						createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]),
+					);
+				}
+				if (name === 'twstco.com') {
+					if (type === 'NS' || type === '2') {
+						return Promise.resolve(
+							createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]),
+						);
+					}
+					if (type === 'MX' || type === '15') {
+						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '0 .' }]));
+					}
+				}
+				return Promise.resolve(createDohResponse([], []));
+			});
+			const result = await run('testco.com');
+			for (const f of result.findings) {
+				expect(f.metadata?.mailCapableDomains ?? []).not.toContain('twstco.com');
+			}
+		});
+	});
+
+	/**
+	 * #781 — repeat `force_refresh` runs returned different candidate SETS with
+	 * nothing in the response saying so, while every finding claimed
+	 * `confidence: "deterministic"`. Measured on openclaw.ai: 12, then 10, then
+	 * 13 candidates minutes apart, three names appearing only in the third run.
+	 *
+	 * Cause: a REJECTED NS lookup in `filterByNsExistence` was treated as
+	 * "unregistered" and dropped. That phase gates everything downstream, so one
+	 * timed-out query removed a registered domain from the results entirely.
+	 */
+	describe('#781 enumeration coverage is reported, not silently dropped', () => {
+		it('reports complete coverage when every lookup resolves', async () => {
+			mockPrePhishingFixture();
+			const result = await run('testco.com');
+			const withEnum = result.findings.find((f) => f.metadata?.enumeration !== undefined);
+			expect(withEnum).toBeDefined();
+			const e = withEnum!.metadata!.enumeration as { complete: boolean; unresolvedCount: number };
+			expect(e.complete).toBe(true);
+			expect(e.unresolvedCount).toBe(0);
+			// No partial-coverage warning when nothing was dropped.
+			expect(result.findings.some((f) => /enumeration was incomplete/i.test(f.title))).toBe(false);
+		});
+
+		it('emits a partial-coverage finding, and stops claiming deterministic, when a lookup fails', async () => {
+			// A rejected NS query is UNKNOWN, not "unregistered".
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const { name, type } = parseDohQuery(input);
+				if (name === 'testco.com' && (type === 'NS' || type === '2')) {
+					return Promise.resolve(
+						createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]),
+					);
+				}
+				if (name === 'twstco.com') {
+					if (type === 'NS' || type === '2') {
+						return Promise.resolve(
+							createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]),
+						);
+					}
+					if (type === 'MX' || type === '15') {
+						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+					}
+				}
+				// Every other permutation's lookup FAILS rather than answering empty.
+				return Promise.reject(new Error('DNS timeout'));
+			});
+
+			const result = await run('testco.com');
+			const warning = result.findings.find((f) => /enumeration was incomplete/i.test(f.title));
+			expect(warning, 'a consumer reading only findings must still learn the set is a sample').toBeDefined();
+			expect(warning!.severity).toBe('info');
+			expect(warning!.detail).toMatch(/observed examples, not a complete inventory/i);
+
+			const e = warning!.metadata!.enumeration as { complete: boolean; unresolvedCount: number };
+			expect(e.complete).toBe(false);
+			expect(e.unresolvedCount).toBeGreaterThan(0);
+
+			// Set-level claims must not still say "deterministic" about a set that
+			// was not exhaustively enumerated.
+			for (const f of result.findings) {
+				if (f.metadata?.enumeration && (f.metadata.enumeration as { complete: boolean }).complete === false) {
+					expect(f.metadata.confidence).not.toBe('deterministic');
+				}
+			}
+		});
+
+		it('per-domain findings stay deterministic — only the SET is uncertain', async () => {
+			mockPrePhishingFixture();
+			const result = await run('testco.com');
+			const perDomain = result.findings.filter((f) => f.metadata?.lookalikeDomain !== undefined);
+			expect(perDomain.length).toBeGreaterThan(0);
+			for (const f of perDomain) {
+				// Each row is a real measurement of a real domain; incomplete
+				// enumeration says nothing about the rows that DID resolve.
+				expect(f.metadata?.confidence).toBe('deterministic');
+			}
+		});
+	});
+
 	it('6(a) emits BOTH axes for a live third-party typosquat: attribution capped at info, threat at the calibrated HIGH', async () => {
 		mockPrePhishingFixture();
 		const result = await run('testco.com');
@@ -1768,10 +1913,15 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 		expect(result.score).toBeLessThanOrEqual(75);
 	});
 
-	it('un-deadens the summary path: the previously-unreachable HIGH "mail capability" summary finding fires again', async () => {
+	it('un-deadens the summary path: the previously-unreachable HIGH staging summary finding fires again', async () => {
 		mockPrePhishingFixture();
 		const result = await run('testco.com');
-		const summary = result.findings.find((f) => /lookalike domains? with mail capability detected/i.test(f.title));
+		// Retitled by #779: it used to say "with mail capability detected", a
+		// strictly WIDER predicate than the mail-infra-PLUS-corroborator matrix it
+		// actually counts. The count is unchanged; only the claim is now honest.
+		const summary = result.findings.find((f) =>
+			/lookalike domains? showing pre-phishing staging signals/i.test(f.title),
+		);
 		expect(summary).toBeDefined();
 		expect(summary!.severity).toBe('high');
 		expect(summary!.metadata?.findingAxis).toBe('threat_observation');
@@ -2089,7 +2239,7 @@ describe('checkLookalikes - Task 7b fix round 1 (RDAP org gating + scan_status a
 
 		// The aggregate summary specifically: it names the counted candidates and
 		// declares their (non-owned) verdict rather than leaving both blank.
-		const summary = result.findings.find((f) => /with mail capability detected/i.test(f.title));
+		const summary = result.findings.find((f) => /showing pre-phishing staging signals/i.test(f.title));
 		expect(summary).toBeDefined();
 		expect(summary!.metadata?.lookalikeDomains).toEqual(['twstco.com']);
 		expect(summary!.metadata?.ownershipVerdict).toBe('third_party');

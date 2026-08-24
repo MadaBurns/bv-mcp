@@ -268,7 +268,9 @@ async function detectWildcardParents(parentDomains: string[]): Promise<Set<strin
  * Returns only domains that have NS records (i.e., are registered),
  * along with their normalized NS record data for ownership comparison.
  */
-async function filterByNsExistence(domains: string[]): Promise<{ registered: string[]; nsMap: Map<string, Set<string>> }> {
+async function filterByNsExistence(
+	domains: string[],
+): Promise<{ registered: string[]; nsMap: Map<string, Set<string>>; unresolved: number }> {
 	const nsMap = new Map<string, Set<string>>();
 	const results = await Promise.allSettled(
 		domains.map(async (domain) => {
@@ -282,7 +284,15 @@ async function filterByNsExistence(domains: string[]): Promise<{ registered: str
 	const registered = results
 		.filter((r): r is PromiseFulfilledResult<{ domain: string; hasNs: boolean }> => r.status === 'fulfilled' && r.value.hasNs)
 		.map((r) => r.value.domain);
-	return { registered, nsMap };
+	// A REJECTED NS lookup is not "unregistered" — it is UNKNOWN, and dropping it
+	// silently is the primary source of run-to-run variance (#781). This phase
+	// gates everything downstream, so a timed-out NS query makes a registered
+	// domain vanish from the result set entirely, with nothing in the response
+	// distinguishing that from a deregistration. Measured on openclaw.ai: three
+	// `force_refresh` runs minutes apart returned 12, 10 and 13 candidates, with
+	// three names appearing only in the third.
+	const unresolved = results.filter((r) => r.status === 'rejected').length;
+	return { registered, nsMap, unresolved };
 }
 
 /**
@@ -616,7 +626,7 @@ async function checkLookalikesCore(
 		queryPrimaryNs(domain),
 		queryPrimaryMx(domain),
 	]);
-	const { registered: registeredPerms, nsMap: lookalikeNsMap } = nsResult;
+	const { registered: registeredPerms, nsMap: lookalikeNsMap, unresolved: nsUnresolved } = nsResult;
 
 	if (registeredPerms.length === 0) {
 		findings.push(
@@ -666,6 +676,23 @@ async function checkLookalikesCore(
 			results.push(result.value);
 		}
 	}
+	// Second silent-drop site (#781): a candidate already KNOWN registered, whose
+	// infrastructure probe failed, disappears here.
+	const probeUnresolved = probeResults.filter((r) => r.status === 'rejected').length;
+	/**
+	 * Enumeration coverage for this run.
+	 *
+	 * `complete: false` means the candidate set is a SAMPLE, not a census — so a
+	 * consumer diffing consecutive runs must not read a shrinking set as a
+	 * deregistration, and a report must not present the list as exhaustive.
+	 */
+	const enumeration = {
+		permutationsGenerated: permutations.length,
+		permutationsProbed: permsToProbe.length,
+		candidatesResolved: results.length,
+		unresolvedCount: nsUnresolved + probeUnresolved,
+		complete: nsUnresolved + probeUnresolved === 0,
+	};
 
 	// Enrichment (Defect L / issue #264): for each non-defensively-registered
 	// lookalike with mail or web infrastructure, gather corroborating signals
@@ -753,6 +780,23 @@ async function checkLookalikesCore(
 	const highDomains: string[] = [];
 	/** Their ownership verdicts — always non-owned, since owned candidates never reach the counter. */
 	const highVerdicts = new Set<OwnershipVerdict>();
+	/**
+	 * EVERY non-owned candidate with a working mail host — a strictly WIDER set
+	 * than `highDomains`, which additionally requires a #264 corroborator.
+	 *
+	 * Tracked separately because the summary finding used to be TITLED for this
+	 * set ("N lookalike domains with mail capability detected") while being
+	 * COUNTED from the narrower one (#779). Measured on openclaw.ai the title
+	 * said 2 while six candidates in the SAME response carried `hasMX: true`;
+	 * on openclaw.org it said 1 against 3. A three-fold undercount, in the one
+	 * finding a consumer is most likely to read without expanding the per-domain
+	 * detail — and it propagated into a client-facing report.
+	 *
+	 * A domain with working mail AND a live website is not the safer case: the
+	 * site lends the mail credibility. Excluding it from a count labelled "mail
+	 * capability" was the wrong direction to be wrong in.
+	 */
+	const mailCapableDomains: string[] = [];
 	for (const result of results) {
 		const ownership: OwnershipAssessment = ownershipByDomain.get(result.domain) ?? {
 			verdict: 'unattributed',
@@ -954,6 +998,10 @@ async function checkLookalikesCore(
 				brandHeld !== undefined,
 			),
 		);
+		// `hasMX` is already false for an RFC 7505 null MX (`0 .`), which is the
+		// explicit way a domain declines mail — so this counts real mail hosts,
+		// not merely "an MX record exists".
+		if (result.hasMX) mailCapableDomains.push(result.domain);
 		if (result.hasMX && severity === 'high') {
 			highCount++;
 			highDomains.push(result.domain);
@@ -968,17 +1016,74 @@ async function checkLookalikesCore(
 		findings.push(
 			createFinding(
 				'lookalikes',
-				`${highCount} lookalike domain${highCount > 1 ? 's' : ''} with mail capability detected`,
+				// TITLE NAMES THE PREDICATE IT COUNTS (#779). It used to say "with
+				// mail capability", which is a strictly wider set than the
+				// mail-infra-PLUS-corroborator matrix this count applies — so the
+				// headline under-reported threefold against its own per-domain
+				// evidence. The staging subset is the right thing to lead with; it
+				// just has to be named as the subset it is, with the wider
+				// mail-capable figure alongside rather than implied.
+				`${highCount} lookalike domain${highCount > 1 ? 's' : ''} showing pre-phishing staging signals`,
 				'high',
-				`${highCount} lookalike domain${highCount > 1 ? 's' : ''} of ${domain} ${highCount > 1 ? 'have' : 'has'} active mail infrastructure with corroborating signals consistent with pre-phishing staging. ${highCount > 1 ? 'None of them appear' : 'It does not appear'} to belong to the scanned organisation, and no action on ${highCount > 1 ? 'them' : 'it'} is requested here. Defensive options: monitor ${highCount > 1 ? 'them' : 'it'}, and enforce DMARC p=reject on ${domain} itself so receivers reject mail spoofing that name.`,
+				`${highCount} lookalike domain${highCount > 1 ? 's' : ''} of ${domain} ${highCount > 1 ? 'have' : 'has'} active mail infrastructure with corroborating signals consistent with pre-phishing staging.${
+					mailCapableDomains.length > highCount
+						? ` A further ${mailCapableDomains.length - highCount} confusable domain${mailCapableDomains.length - highCount > 1 ? 's' : ''} also ${mailCapableDomains.length - highCount > 1 ? 'have' : 'has'} a working mail host without those additional signals — ${mailCapableDomains.length} can send mail in total.`
+						: ''
+				} ${highCount > 1 ? 'None of them appear' : 'It does not appear'} to belong to the scanned organisation, and no action on ${highCount > 1 ? 'them' : 'it'} is requested here. Defensive options: monitor ${highCount > 1 ? 'them' : 'it'}, and enforce DMARC p=reject on ${domain} itself so receivers reject mail spoofing that name.`,
 				{
 					lookalikeDomainCount: highCount,
 					lookalikeDomains: highDomains,
+					// BOTH numbers, so a consumer never has to re-derive either from
+					// the per-domain findings — which is what the old shape forced,
+					// and what nobody did.
+					mailCapableCount: mailCapableDomains.length,
+					mailCapableDomains,
+					enumeration,
+					// Set-level claim, so its confidence tracks ENUMERATION coverage,
+					// not per-domain measurement quality (#781). Each row remains
+					// deterministic about its own domain; what is uncertain when a
+					// lookup was dropped is whether the SET is complete — and this
+					// finding is the one making a claim about the set.
+					confidence: enumeration.complete ? 'deterministic' : 'heuristic',
 					// Present whenever the counted set shares one verdict (the realistic
 					// case — a non-owned registered candidate is always `third_party`).
 					// Omitted rather than fabricated for a mixed set; either way it can
 					// never be `owned_by_seed`, since owned candidates never reach here.
 					...(highVerdicts.size === 1 ? { ownershipVerdict: [...highVerdicts][0] } : {}),
+					findingAxis: 'threat_observation' satisfies LookalikeFindingAxis,
+				},
+			),
+		);
+	} else if (mailCapableDomains.length > 0) {
+		// The other half of #779. When mail-capable candidates exist but none
+		// carries a #264 corroborator, the old code emitted NO summary at all —
+		// so an estate with several confusable domains that can send mail
+		// produced an aggregate view saying nothing, and a consumer reading only
+		// summaries concluded there was no mail-capable lookalike exposure.
+		//
+		// MEDIUM, not high: mail capability alone is a real observation but not
+		// evidence of staging, and the severity has to stay honest about which
+		// of the two it is.
+		const n = mailCapableDomains.length;
+		findings.push(
+			createFinding(
+				'lookalikes',
+				`${n} lookalike domain${n > 1 ? 's' : ''} with a working mail host`,
+				'medium',
+				`${n} confusable domain${n > 1 ? 's' : ''} of ${domain} ${n > 1 ? 'have' : 'has'} a working mail host, so ${n > 1 ? 'they are' : 'it is'} capable of sending mail that resembles ${domain}. No additional corroborating signal of pre-phishing staging was observed, and ${n > 1 ? 'none appears' : 'it does not appear'} to belong to the scanned organisation — this is an infrastructure observation, not an allegation. Enforcing DMARC p=reject on ${domain} is what makes receivers reject mail forging that name.`,
+				{
+					mailCapableCount: n,
+					mailCapableDomains,
+					enumeration,
+					confidence: enumeration.complete ? 'deterministic' : 'heuristic',
+					// Names what it observed — invariant 4, asserted by
+					// `assertAxisInvariants`: every threat_observation must identify
+					// its subject. Omitting this made the first draft of this finding
+					// anonymous, and the existing suite caught it.
+					lookalikeDomains: mailCapableDomains,
+					// Deliberately no `lookalikeDomainCount`: nothing reached the
+					// staging threshold, and reusing that key would let a consumer
+					// read this as the staging count.
 					findingAxis: 'threat_observation' satisfies LookalikeFindingAxis,
 				},
 			),
@@ -992,8 +1097,34 @@ async function checkLookalikesCore(
 				'lookalikes',
 				'No active lookalike domains detected',
 				'info',
-				`Checked ${permutations.length} domain permutations of ${domain}. No active registrations with DNS or mail infrastructure detected.`,
-				{ findingAxis: 'scan_status' satisfies LookalikeFindingAxis },
+				`Checked ${permutations.length} domain permutations of ${domain}. No active registrations with DNS or mail infrastructure detected.${
+					enumeration.complete
+						? ''
+						: ` ⚠️ ${enumeration.unresolvedCount} lookup${enumeration.unresolvedCount > 1 ? 's' : ''} did not resolve, so this is not a conclusive "none".`
+				}`,
+				{ findingAxis: 'scan_status' satisfies LookalikeFindingAxis, enumeration },
+			),
+		);
+	}
+
+	// PARTIAL COVERAGE (#781). Emitted as its own finding, not only as metadata,
+	// because a consumer reading findings — which is most of them — otherwise
+	// has no way to learn the candidate set is a SAMPLE. Without it, repeat runs
+	// returning different sets look like real-world change: monitoring built on
+	// diffing consecutive runs raises false "new lookalike registered" alerts for
+	// names merely missed last time, and misses real ones enumerated before.
+	if (!enumeration.complete) {
+		findings.push(
+			createFinding(
+				'lookalikes',
+				'Lookalike enumeration was incomplete — treat this list as a sample',
+				'info',
+				`${enumeration.unresolvedCount} of ${enumeration.permutationsProbed} candidate lookup${enumeration.permutationsProbed > 1 ? 's' : ''} for ${domain} did not resolve (DNS timeout or rate limiting), so those permutations could be neither confirmed nor ruled out. The ${enumeration.candidatesResolved} domain${enumeration.candidatesResolved === 1 ? '' : 's'} reported here are observed examples, not a complete inventory — do not read a smaller set on a later run as a domain having been deregistered, and re-run before relying on the count.`,
+				{
+					findingAxis: 'scan_status' satisfies LookalikeFindingAxis,
+					enumeration,
+					confidence: 'heuristic',
+				},
 			),
 		);
 	}

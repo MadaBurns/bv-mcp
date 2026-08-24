@@ -1034,3 +1034,87 @@ describe('formatAttackPaths', () => {
 		expect(fullOutput).toContain('Overall Risk: LOW');
 	});
 });
+
+/**
+ * #782 — two paths were emitted whose stated PREREQUISITES the scan's own check
+ * results contradicted, in the same run, on openclaw.org:
+ *
+ *   cert_misissuance  "No CAA records restrict certificate issuance"
+ *                     …on a zone publishing THREE issue tags (check_caa: 90)
+ *   clickjacking      "X-Frame-Options header missing"
+ *                     …on a host sending XFO: SAMEORIGIN, which
+ *                     check_http_security correctly did NOT flag
+ *
+ * False positives of the worst kind: checkable ones. Attack-path prose is the
+ * part of a report that gets quoted, and a reader who verifies one failed
+ * prerequisite reasonably distrusts everything else in the document. Both had
+ * to be excluded by hand from a client deliverable.
+ */
+describe('#782 a path never states a prerequisite the findings contradict', () => {
+	async function paths(findings: unknown[]) {
+		const { evaluateAttackPathsFromFindings } = await import('../src/tools/simulate-attack-paths');
+		return evaluateAttackPathsFromFindings(findings as never);
+	}
+
+	it('does not claim CAA is absent when only the optional sub-tags are', async () => {
+		// The exact shape check_caa emits for a zone WITH CAA: `issue` tags
+		// present, optional `issuewild`/`iodef` absent. Both titles contain the
+		// substring "no caa", which is what the old predicate matched on.
+		const result = await paths([
+			{ category: 'caa', title: 'No CAA issuewild tag', severity: 'low', detail: 'No issuewild tag present.' },
+			{ category: 'caa', title: 'No CAA iodef tag', severity: 'low', detail: 'No iodef tag present.' },
+		]);
+		expect(
+			result.find((p) => p.id === 'cert_misissuance'),
+			'a zone publishing issue tags must not yield a "no CAA" path',
+		).toBeUndefined();
+	});
+
+	it('still fires when CAA really is absent', async () => {
+		// The control must not have been disabled by the fix.
+		const result = await paths([
+			{ category: 'caa', title: 'No CAA records found', severity: 'medium', detail: 'No CAA RRset published.' },
+		]);
+		const path = result.find((p) => p.id === 'cert_misissuance');
+		expect(path, 'the genuine no-CAA case must still be reported').toBeDefined();
+		expect(path!.prerequisites).toContain('No CAA records restrict certificate issuance');
+	});
+
+	it('names only the framing control that is actually missing', async () => {
+		// XFO present, CSP absent — only the CSP arm of the OR fires.
+		const result = await paths([
+			{
+				category: 'http_security',
+				title: 'No Content-Security-Policy header',
+				severity: 'medium',
+				detail: 'CSP is not set.',
+			},
+		]);
+		const path = result.find((p) => p.id === 'clickjacking');
+		expect(path).toBeDefined();
+		expect(
+			path!.prerequisites,
+			'the host sends X-Frame-Options; claiming it is missing is checkably false',
+		).not.toContain('X-Frame-Options header missing');
+		expect(path!.prerequisites).toContain('No CSP frame-ancestors directive');
+	});
+
+	it('names both when both are missing', async () => {
+		const result = await paths([
+			{ category: 'http_security', title: 'X-Frame-Options header missing', severity: 'medium', detail: 'Not set.' },
+			{ category: 'http_security', title: 'No Content-Security-Policy header', severity: 'medium', detail: 'Not set.' },
+		]);
+		const path = result.find((p) => p.id === 'clickjacking');
+		expect(path!.prerequisites).toEqual(['X-Frame-Options header missing', 'No CSP frame-ancestors directive']);
+	});
+
+	it('never emits a path with an empty prerequisite list', async () => {
+		// A path that fired but can name nothing it depends on is unreviewable.
+		const result = await paths([
+			{ category: 'http_security', title: 'X-Frame-Options header missing', severity: 'medium', detail: 'Not set.' },
+		]);
+		for (const p of result) {
+			expect(p.prerequisites.length, `${p.id} emitted no prerequisites`).toBeGreaterThan(0);
+		}
+	});
+});

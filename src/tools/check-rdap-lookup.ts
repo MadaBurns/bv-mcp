@@ -122,7 +122,16 @@ export const FALLBACK_RDAP_SERVERS: Record<string, string> = {
 	tools: 'https://rdap.identitydigital.services/rdap/',
 	// Identity Digital ccTLDs / TLD operators
 	io: 'https://rdap.identitydigital.services/rdap/',
-	ai: 'https://rdap.nic.ai/',
+	// ⚠️ `.ai` is Identity Digital, NOT `rdap.nic.ai` (#780). That host has NO A
+	// RECORD — it does not resolve and never answered. Because `probeRdap`
+	// fail-softs to `EMPTY_RDAP_PROBE`, every `.ai` lookup silently produced
+	// `registrationDays: null` while `.org`/`.com` populated correctly, so the
+	// "recently registered" signal — the highest-value thing lookalike triage
+	// surfaces — was dead for the whole TLD with no error raised anywhere.
+	// Verified against IANA's authoritative bootstrap (data.iana.org/rdap/dns.json
+	// maps ai → identitydigital) and by live probe: openclaw.ai returns 200 with
+	// a registration event. Do NOT "restore" rdap.nic.ai.
+	ai: 'https://rdap.identitydigital.services/rdap/',
 	sh: 'https://rdap.identitydigital.services/rdap/',
 	// auDA
 	au: 'https://rdap.cctld.au/rdap/',

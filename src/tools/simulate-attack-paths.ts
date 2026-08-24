@@ -159,11 +159,39 @@ function isDaneMissing(findings: Finding[]): boolean {
 	});
 }
 
-/** Check if CAA records are missing. */
+/**
+ * Findings that exist ONLY on a zone which already publishes CAA.
+ *
+ * `issuewild` and `iodef` are OPTIONAL sub-tags of an EXISTING CAA RRset — a
+ * zone with three `issue` tags and no `iodef` is a zone WITH CAA, and the
+ * finding says exactly that. Their titles ("No CAA iodef tag") nonetheless
+ * contain the substring "no caa", which is what the old predicate matched.
+ */
+const CAA_SUBTAG_FINDING = /\b(issuewild|iodef|issuemail)\b/;
+
+/**
+ * Does the zone publish NO CAA records at all?
+ *
+ * ⚠️ #782 — this used to substring-match `"no caa"` against any non-info `caa`
+ * finding, so *"No CAA issuewild tag"* and *"No CAA iodef tag"* both matched.
+ * Measured on openclaw.org: the zone publishes THREE `issue` tags
+ * (sectigo.com, letsencrypt.org, pki.goog), `check_caa` scored it 90 and
+ * reported only the two optional sub-tags as absent — while the simulator, in
+ * the SAME run, emitted a `cert_misissuance` path whose stated prerequisite was
+ * "No CAA records restrict certificate issuance".
+ *
+ * That is a report contradicting itself: a CAA section listing three issuers,
+ * and an attack-path section asserting there are none. A path whose
+ * prerequisite is checkably false is worse than no path — a competent reader
+ * checks it, and then distrusts everything else in the document.
+ *
+ * A title naming a sub-tag is therefore EXCLUDING evidence: it proves the RRset
+ * exists rather than that it is absent.
+ */
 function isCaaMissing(findings: Finding[]): boolean {
-	return hasFindings(findings, (f) => {
-		if (f.category !== 'caa') return false;
-		if (f.severity === 'info') return false;
+	const caaFindings = findings.filter((f) => f.category === 'caa' && f.severity !== 'info');
+	if (caaFindings.some((f) => CAA_SUBTAG_FINDING.test(f.title.toLowerCase()))) return false;
+	return caaFindings.some((f) => {
 		const t = f.title.toLowerCase();
 		return t.includes('no caa') || t.includes('missing') || t.includes('not configured');
 	});
@@ -181,22 +209,41 @@ function isCspWeakOrMissing(findings: Finding[]): boolean {
 }
 
 /** Check if X-Frame-Options is missing and CSP frame-ancestors is missing. */
-function isClickjackingVulnerable(findings: Finding[]): boolean {
+/**
+ * Which framing control is actually absent.
+ *
+ * ⚠️ #782 — the condition is an OR (`XFO missing` OR `CSP missing`) but the
+ * path's `prerequisites` asserted BOTH unconditionally. Measured on
+ * openclaw.org: `www` sends `X-Frame-Options: SAMEORIGIN` and publishes no CSP,
+ * so only the CSP arm matched — and the emitted path still stated
+ * "X-Frame-Options header missing", which `check_http_security` in the same run
+ * correctly did not report, because the header is present.
+ *
+ * Returning WHICH arm fired lets the path state only what it observed. A path
+ * that names a control the reader can see is present is a checkable falsehood,
+ * and it discredits the paths that are correct.
+ */
+function clickjackingGaps(findings: Finding[]): { frameOptions: boolean; csp: boolean } {
 	const httpFindings = findings.filter((f) => f.category === 'http_security' && f.severity !== 'info');
-	if (httpFindings.length === 0) return false;
+	if (httpFindings.length === 0) return { frameOptions: false, csp: false };
 
-	const hasFrameOptionsMissing = httpFindings.some((f) => {
+	const frameOptions = httpFindings.some((f) => {
 		const t = f.title.toLowerCase();
 		return t.includes('x-frame-options') || t.includes('frame-options');
 	});
 
-	// Also check if CSP is missing entirely (no frame-ancestors possible without CSP)
-	const hasCspMissing = httpFindings.some((f) => {
+	// CSP missing entirely — no frame-ancestors is possible without a CSP.
+	const csp = httpFindings.some((f) => {
 		const t = f.title.toLowerCase();
 		return t.includes('no content-security-policy') || t.includes('missing csp');
 	});
 
-	return hasFrameOptionsMissing || hasCspMissing;
+	return { frameOptions, csp };
+}
+
+function isClickjackingVulnerable(findings: Finding[]): boolean {
+	const gaps = clickjackingGaps(findings);
+	return gaps.frameOptions || gaps.csp;
 }
 
 /** Check if DKIM key is weak (< 2048 bits). */
@@ -241,7 +288,15 @@ interface AttackPathDefinition {
 	severity: 'critical' | 'high' | 'medium' | 'low';
 	feasibility: 'trivial' | 'moderate' | 'difficult';
 	condition: (findings: Finding[]) => boolean;
-	prerequisites: string[];
+	/**
+	 * The conditions the path depends on.
+	 *
+	 * A FUNCTION when the path's condition is a disjunction, so the emitted list
+	 * names only the arm that actually fired (#782). A static array asserts every
+	 * listed prerequisite holds — which is false for an OR, and produced a path
+	 * claiming "X-Frame-Options header missing" about a host that sends it.
+	 */
+	prerequisites: string[] | ((findings: Finding[]) => string[]);
 	steps: string[];
 	impact: string;
 	mitigations: string[];
@@ -364,7 +419,14 @@ const ATTACK_PATH_DEFINITIONS: AttackPathDefinition[] = [
 		severity: 'medium',
 		feasibility: 'moderate',
 		condition: (findings) => isClickjackingVulnerable(findings),
-		prerequisites: ['X-Frame-Options header missing', 'No CSP frame-ancestors directive'],
+		// Derived, not asserted — see `clickjackingGaps` (#782).
+		prerequisites: (findings) => {
+			const gaps = clickjackingGaps(findings);
+			const out: string[] = [];
+			if (gaps.frameOptions) out.push('X-Frame-Options header missing');
+			if (gaps.csp) out.push('No CSP frame-ancestors directive');
+			return out;
+		},
 		steps: [
 			'Embed target page in hidden iframe on attacker site',
 			'Overlay transparent page over decoy UI',
@@ -493,7 +555,8 @@ export function evaluateAttackPathsFromFindings(findings: Finding[]): AttackPath
 				name: def.name,
 				severity: def.severity,
 				feasibility: def.feasibility,
-				prerequisites: def.prerequisites,
+				prerequisites:
+					typeof def.prerequisites === 'function' ? def.prerequisites(findings) : def.prerequisites,
 				steps: def.steps,
 				impact: def.impact,
 				mitigations: def.mitigations,
