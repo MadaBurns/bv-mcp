@@ -201,6 +201,48 @@ describe('computeGenericScore', () => {
 			expect(result.overall).toBeGreaterThan(64);
 			expect(result.criticalGaps).toHaveLength(0);
 		});
+
+		it('does not apply ceiling to a key that is simultaneously a transient failure — unmeasured wins over missing', () => {
+			// A direct computeGenericScore caller can hand-build a context where the same key is
+			// marked both transient and missing. That is a contradiction (a check that was never
+			// measured cannot prove absence), and the ceiling must not fire from it. The engine
+			// wrapper never produces the combination — its missingControls population is
+			// measurement-gated — so this pins the generic engine's own defense-in-depth guard.
+			const ctx = buildContext({
+				categoryScores: {
+					dmarc: 100,
+					dkim: 100,
+					dnssec: 100,
+					ssl: 100,
+					http_security: 100,
+				},
+				tierMap: {
+					spf: 'core',
+					dmarc: 'core',
+					dkim: 'core',
+					dnssec: 'core',
+					ssl: 'core',
+					http_security: 'protective',
+				},
+				weights: {
+					spf: 10,
+					dmarc: 16,
+					dkim: 10,
+					dnssec: 8,
+					ssl: 8,
+					http_security: 3,
+				},
+				criticalCategories: ['spf', 'dmarc', 'dkim', 'ssl'],
+				emailBonusEligible: false,
+				missingControls: { spf: true },
+				transientFailures: { spf: true },
+				hardeningPassed: {},
+			});
+
+			const result = computeGenericScore(ctx);
+			expect(result.overall).toBeGreaterThan(64);
+			expect(result.criticalGaps).toHaveLength(0);
+		});
 	});
 
 	describe('custom emailBonusKeys', () => {

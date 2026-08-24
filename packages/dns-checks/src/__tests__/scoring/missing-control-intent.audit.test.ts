@@ -127,7 +127,10 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 		category: 'dmarc',
 		reason:
 			'Genuinely absent control: recordCount === 0 on the classifier early-return path. No DMARC ' +
-			'record exists, so receivers apply no policy. Zeroing is the correct representation of absence.',
+			'record exists, so receivers apply no policy. Zeroing is the correct representation of absence. ' +
+			'Since scoring model 1.13.0 the finding also DECLARES `missingControl: true` (like its ' +
+			'multiple-record and missing-p= siblings), so the zeroing survives a reword of the prose ' +
+			'this assertion pins.',
 	},
 	// The four RFC 8461 conformance findings below. Grouped because they share one reason:
 	// a policy file missing any REQUIRED directive is one a conforming sender must refuse to

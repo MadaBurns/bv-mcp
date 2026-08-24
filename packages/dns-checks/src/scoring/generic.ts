@@ -11,10 +11,12 @@
  * - **Core** (default 70 pts): Weighted accumulation. `missingControls[key]=true` zeros the contribution.
  * - **Protective** (default 20 pts): Weighted accumulation. No missing control zeroing.
  * - **Hardening** (default 10 pts): Binary pass/fail from `hardeningPassed` map. Only submitted keys count.
- * - **Email bonus**: +5/+3/+2 based on DMARC quality (configurable keys).
- * - **Provider modifier**: Average of providerConfidence values, centered at 0.5, scaled to -5..+5.
- * - **Critical penalty**: -15 if findingSeverityCounts.critical > 0.
- * - **Critical gap ceiling**: If any criticalCategories key has missingControls=true, cap at 64.
+ * - **Email bonus**: default +5/+3/+2 based on DMARC quality (configurable keys).
+ * - **Provider modifier**: Average of providerConfidence values, centered at 0.5, clamped to -2..+2.
+ *   Computed and returned for analytics only — NEVER applied to the overall score.
+ * - **Critical penalty**: -criticalOverallPenalty (default 15) if findingSeverityCounts.critical > 0.
+ * - **Critical gap ceiling**: If any non-transient criticalCategories key has missingControls=true,
+ *   cap at criticalGapCeiling (default 64).
  */
 
 import type { CategoryTier } from '../types';
@@ -70,7 +72,7 @@ export interface GenericScoringContext {
 	/** Override default email bonus keys (spf/dkim/dmarc) with custom category key names. */
 	emailBonusKeys?: EmailBonusKeyMap;
 
-	/** Category key → provider confidence (0–1). Averaged, centered at 0.5, scaled to -5..+5. */
+	/** Category key → provider confidence (0–1). Averaged, centered at 0.5, clamped to -2..+2; reported only, never applied to the score. */
 	providerConfidence?: Record<string, number>;
 
 	/** Severity counts for summary generation and critical penalty. */
@@ -101,13 +103,13 @@ export interface GenericScanScore {
 	/** Points earned per tier. */
 	tierBreakdown: TierBreakdown;
 
-	/** Email bonus points added (0, 2, 3, or 5). */
+	/** Email bonus points added (default thresholds: 0, 2, 3, or 5). */
 	emailBonus: number;
 
 	/** Category keys that triggered the critical gap ceiling. */
 	criticalGaps: string[];
 
-	/** Provider confidence modifier applied (-5 to +5). */
+	/** Provider confidence modifier (-2 to +2). Reported for analytics; NOT applied to the overall score. */
 	providerModifier: number;
 
 	/** Critical penalty applied (0 or criticalOverallPenalty from config). */
@@ -202,6 +204,15 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 
 	// --- Hardening tier (binary pass/fail) ---
 	// Only keys present in hardeningPassed count — absent hardening categories are ignored.
+	//
+	// Known asymmetry, deliberate for now: PARTIAL hardening transients renormalize within
+	// the tier (the denominator shrinks to the measured keys), but a WHOLLY-unmeasured tier
+	// forfeits its tierSplit.hardening points rather than redistributing them to core/
+	// protective — a scan whose every hardening check failed transiently tops out at
+	// 100 - tierSplit.hardening + email bonus. Redistributing would move scores on every
+	// partially-degraded scan, which is a scoring-policy change (SCORING_MODEL_VERSION bump
+	// + operator sign-off), not a consistency cleanup. Flagged as an open operator-decision
+	// item; do not "fix" it in passing.
 	const submittedHardeningKeys = hardeningKeys.filter((key) => key in input.hardeningPassed);
 	const passedCount = submittedHardeningKeys.filter((key) => input.hardeningPassed[key]).length;
 	const hardeningPoints = submittedHardeningKeys.length > 0
@@ -253,7 +264,11 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 	// --- Critical gap ceiling ---
 	const criticalGaps: string[] = [];
 	for (const key of input.criticalCategories) {
-		if (input.missingControls[key]) {
+		// A key marked both transient and missing is a contradiction — an unmeasured check
+		// cannot prove absence — and unmeasured wins. The engine wrapper never produces the
+		// combination (its missingControls population is measurement-gated); this guard is
+		// defense-in-depth for direct computeGenericScore callers building their own maps.
+		if (input.missingControls[key] && !transient[key]) {
 			criticalGaps.push(key);
 		}
 	}

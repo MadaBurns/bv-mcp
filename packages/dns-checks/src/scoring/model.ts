@@ -271,7 +271,12 @@ export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
 		// only ever computed for a finding that could actually zero a category. Evaluating
 		// it eagerly made an `info` finding pay the full redaction cost.
 		if (f.severity !== 'critical' && f.severity !== 'high') return false;
-		const confidence = (f.metadata?.confidence as string) ?? inferFindingConfidence(f);
+		// inferFindingConfidence already performs the validated declared-then-infer read
+		// (isExplicitConfidence, else inference). Re-reading metadata.confidence here with a
+		// bare cast let an out-of-union declared value — garbage from an unvalidated cache
+		// re-read, or a non-string — silently disarm zeroing instead of falling through to
+		// inference like an undeclared finding does.
+		const confidence = inferFindingConfidence(f);
 		if (confidence !== 'deterministic' && confidence !== 'verified') return false;
 
 		const terms = declaredSubjectTerms(f);
