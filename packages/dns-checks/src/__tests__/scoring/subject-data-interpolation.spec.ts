@@ -128,10 +128,14 @@ describe('subject data interpolated into finding prose', () => {
 			expect(result.passed).toBe(false);
 		});
 
-		it('classifiers/dmarc.ts:67 "No DMARC record found" still zeroes dmarc', () => {
+		it('classifiers/dmarc.ts "No DMARC record found" still zeroes dmarc', () => {
 			const findings = classifyDmarc({ recordCount: 0, policy: null, domain: 'example.com' });
 			expect(findings[0]?.title).toBe('No DMARC record found');
-			expect(findings[0]?.metadata?.missingControl).toBeUndefined(); // zeroes by PROSE
+			// Since scoring model 1.13.0 the site ALSO declares the flag (like its
+			// multiple-record and missing-p= siblings). The load-bearing assertion is the
+			// next line: the PROSE route must stay live independently of the flag, because
+			// it is the prose, not the flag, that reaches engine.ts's critical-gap ceiling.
+			expect(findings[0]?.metadata?.missingControl).toBe(true);
 			expect(scoreIndicatesMissingControl(findings)).toBe(true);
 			const result = buildCheckResult('dmarc', findings);
 			expect(result.score).toBe(0);

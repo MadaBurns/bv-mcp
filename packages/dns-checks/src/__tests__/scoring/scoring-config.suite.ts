@@ -363,4 +363,76 @@ export function defineScoringConfigSuite(s: ScoringModule): void {
 			expect(() => parseScoringConfig(JSON.stringify({ coreWeights: { dnssec: 7 } }))).not.toThrow();
 		});
 	});
+
+	describe('unrecognized SCORING_CONFIG key paths are surfaced, not silently ignored', () => {
+		// Same defect class as the inert-key warning above, one level down: a typo'd profile
+		// name or category key inside profileWeights — the key operators are TOLD to use —
+		// merged into nothing, silently. Advisory only: the resolved config never changes.
+
+		/** Collect warnings without touching console, so the assertion can't race a spy. */
+		function parseCapturingWarnings(json: string): { warnings: string[]; config: ReturnType<typeof parseScoringConfig> } {
+			const warnings: string[] = [];
+			const config = parseScoringConfig(json, { onWarn: (m) => warnings.push(m) });
+			return { warnings, config };
+		}
+
+		it('warns on a typo’d profile name and resolves identically to defaults', () => {
+			const { warnings, config } = parseCapturingWarnings(JSON.stringify({ profileWeights: { 'mail-enabled': { dnssec: 1 } } }));
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain('profileWeights.mail-enabled');
+			expect(config.profileWeights).toEqual(DEFAULT_SCORING_CONFIG.profileWeights);
+		});
+
+		it('warns on a typo’d category key while still applying valid siblings in the same profile', () => {
+			const { warnings, config } = parseCapturingWarnings(JSON.stringify({ profileWeights: { mail_enabled: { dnsSec: 1, dmarc: 20 } } }));
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain('profileWeights.mail_enabled.dnsSec');
+			expect(config.profileWeights.mail_enabled.dmarc).toBe(20);
+			expect(config.profileWeights.mail_enabled.dnssec).toBe(DEFAULT_SCORING_CONFIG.profileWeights.mail_enabled.dnssec);
+		});
+
+		it('warns on an unknown baselineFailureRates key', () => {
+			const { warnings } = parseCapturingWarnings(JSON.stringify({ baselineFailureRates: { dmark: 0.5 } }));
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain('baselineFailureRates.dmark');
+		});
+
+		it('accepts a fractional tierSplit that strict float equality used to discard', () => {
+			// 66.6 + 23.3 + 10.1 === 99.99999999999999 in IEEE 754 — the former `=== 100`
+			// silently threw the operator's split away.
+			const { warnings, config } = parseCapturingWarnings(JSON.stringify({ tierSplit: { core: 66.6, protective: 23.3, hardening: 10.1 } }));
+			expect(warnings).toEqual([]);
+			expect(config.tierSplit).toEqual({ core: 66.6, protective: 23.3, hardening: 10.1 });
+		});
+
+		it('still rejects a tierSplit not summing to 100 — but now says so', () => {
+			const { warnings, config } = parseCapturingWarnings(JSON.stringify({ tierSplit: { core: 80, protective: 20, hardening: 10 } }));
+			expect(config.tierSplit).toEqual(DEFAULT_SCORING_CONFIG.tierSplit);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain('tierSplit');
+		});
+
+		it('rejects misordered grade thresholds to defaults with a warning; valid partial overrides stay accepted silently', () => {
+			// {d: 93} merged over defaults violates descending order — under first-match-wins
+			// scoreToGrade it was silently unreachable (every score >= 93 already matched a
+			// higher band), i.e. the config could never mean what its author intended.
+			const bad = parseCapturingWarnings(JSON.stringify({ grades: { d: 93 } }));
+			expect(bad.config.grades).toEqual(DEFAULT_SCORING_CONFIG.grades);
+			expect(bad.warnings).toHaveLength(1);
+			expect(bad.warnings[0]).toContain('grades');
+
+			const good = parseCapturingWarnings(JSON.stringify({ grades: { aPlus: 95 } }));
+			expect(good.warnings).toEqual([]);
+			expect(good.config.grades.aPlus).toBe(95);
+		});
+
+		it('a typo inside an already-inert key does not double-warn — the wholesale inert warning covers it', () => {
+			// `weights.unknown_check` is dropped by the same mergeWeights guard, but `weights`
+			// is wholesale-inert and already warned about; a second per-key warning would be noise.
+			const { warnings } = parseCapturingWarnings(JSON.stringify({ weights: { unknown_check: 99 } }));
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain('weights');
+			expect(warnings[0]).not.toContain('unknown_check');
+		});
+	});
 }

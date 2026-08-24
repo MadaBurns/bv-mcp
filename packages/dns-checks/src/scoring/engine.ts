@@ -210,11 +210,19 @@ function buildGenericContext(
 	// be marked missing — the original engine's critical gap ceiling check
 	// requires an actual result (`result && scoreIndicatesMissingControl(...)`),
 	// and absent categories default to 100 with no zeroing.
+	//
+	// Only a MEASURED check may assert absence. An errored/timed-out check's synthetic
+	// findings must never arm the critical-gap ceiling: a failed measurement cannot prove
+	// a control is missing (#638's rule, applied to this map like its siblings below).
+	// Without the gate, an error message that happens to contain "not found"/"no … record"
+	// — `buildDnsErrorResult` passes upstream DnsQueryError text through verbatim under its
+	// "DNS query" prefix — would cap a scan at the ceiling for a category the same scan
+	// excluded as inconclusive.
 	const missingControls: Record<string, boolean> = {};
 	const resultMap = new Map<CheckCategory, CheckResult>();
 	for (const result of results) {
 		resultMap.set(result.category, result);
-		if (scoreIndicatesMissingControl(result.findings)) {
+		if (isCheckMeasured(result.checkStatus) && scoreIndicatesMissingControl(result.findings)) {
 			missingControls[result.category] = true;
 		}
 	}

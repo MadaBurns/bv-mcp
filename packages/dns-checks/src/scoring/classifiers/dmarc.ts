@@ -69,6 +69,11 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 				'No DMARC record found',
 				'high',
 				`No DMARC record found at _dmarc.${facts.domain ?? '<domain>'}. Without DMARC, receivers cannot verify email authentication and spoofing is easier. (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
+				// Declared, not accidental — same intent as the multiple-record and missing-p=
+				// siblings below. Behaviour-neutral today: the static prose already zeroes via
+				// scoreIndicatesMissingControl (pinned by missing-control-intent.audit.test.ts
+				// assertion B); the flag makes the zeroing survive a reword of this sentence.
+				{ missingControl: true },
 			),
 		);
 		return findings;
@@ -269,8 +274,13 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 	// Check percentage (pct= tag)
 	const pct = facts.pct;
 	if (pct) {
-		const pctValue = Number.parseInt(pct, 10);
-		if (!Number.isFinite(pctValue) || Number.isNaN(pctValue) || pctValue < 0 || pctValue > 100) {
+		// RFC 7489 §6.3: pct is 1*3DIGIT. parseInt's prefix-parsing accepted "100%" /
+		// "50abc" as valid; §6.6.3 has receivers discard syntactically invalid records, so
+		// a malformed token is flagged, not charitably parsed. Leading zeros ("050") remain
+		// ABNF-valid. (SCORING_MODEL_VERSION 1.13.0 — new detection on trailing-garbage
+		// tokens; affected population unmeasured.)
+		const pctValue = /^\d{1,3}$/.test(pct) ? Number.parseInt(pct, 10) : NaN;
+		if (!Number.isFinite(pctValue) || pctValue > 100) {
 			findings.push(
 				createFinding(
 					'dmarc',
@@ -295,8 +305,10 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 	// Value must be a positive integer (> 0). Default is 86400 (24 hours).
 	const ri = facts.ri;
 	if (ri !== undefined) {
-		const riValue = parseInt(ri, 10);
-		if (isNaN(riValue) || !Number.isFinite(riValue) || riValue <= 0) {
+		// RFC 7489 §6.3: ri is 1*DIGIT — same strict-parse rationale as pct above
+		// ("86400x" prefix-parsed to a valid 86400 and drew no finding).
+		const riValue = /^\d+$/.test(ri) ? Number.parseInt(ri, 10) : NaN;
+		if (!Number.isFinite(riValue) || riValue <= 0) {
 			findings.push(
 				createFinding(
 					'dmarc',

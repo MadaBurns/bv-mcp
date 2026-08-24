@@ -207,8 +207,33 @@
  *   RFC-invalid — the line is retrievability, not validity.
  *   No parity fixture expectation moved. `SEVERITY_PENALTIES`, weights, tiers, grade bands,
  *   profile detection and the missing-control RULE are all untouched.
+ * - 1.13.0 — DMARC `pct=`/`ri=` tokens are now parsed STRICTLY per RFC 7489 §6.3 ABNF
+ *   (`pct` is 1*3DIGIT, `ri` is 1*DIGIT), plus two measurement-integrity guards that move no
+ *   score any production scan produces. (a) The strict parse is a NEW DETECTION on
+ *   trailing-garbage tokens: `parseInt`'s prefix-parsing accepted `pct=100%` / `pct=100abc`
+ *   as a valid 100 (no finding) and `ri=86400x` as a valid 86400 (no finding); both now draw
+ *   the EXISTING `medium` invalid-value finding at its existing −15 penalty — RFC 7489
+ *   §6.6.3 has receivers discard syntactically invalid records, so a malformed tag can mean
+ *   no DMARC at all at strict receivers, and scoring the token as valid asserted something
+ *   the RFC contradicts. Tokens like `pct=50abc` merely swap which medium finding fires
+ *   (partial-coverage → invalid; same penalty); `pct=050` stays ABNF-valid. DOWNWARD only,
+ *   by one medium (−15) per malformed tag, and ONLY for records carrying a malformed
+ *   `pct=`/`ri=` token; the affected population is UNMEASURED against the corpus — plausibly
+ *   small but not written up as zero. No parity fixture carries such a token. (b) The
+ *   critical-gap ceiling can no longer be armed by an UNMEASURED check: `buildGenericContext`
+ *   now gates its `missingControls` population on `isCheckMeasured` like every sibling map,
+ *   and `computeGenericScore` ignores a gap key that is simultaneously transient. Latent —
+ *   no current transient finding text matches `MISSING_CONTROL_REGEX` — but the latency was
+ *   an accident of today's error strings (`buildDnsErrorResult` passes upstream DNS error
+ *   text through verbatim), guaranteed by nothing. (c) `scoreIndicatesMissingControl` now
+ *   takes its confidence through `inferFindingConfidence`'s validated declared-then-infer
+ *   read: an out-of-union declared `confidence` (unvalidated cache re-read) previously
+ *   disarmed zeroing silently; it now falls through to inference like an undeclared finding.
+ *   Also declared (`missingControl: true`) on the DMARC no-record finding — behaviour-neutral,
+ *   the prose already zeroed; the flag makes the intent survive a reword. `SEVERITY_PENALTIES`,
+ *   weights, tiers, grade bands and profile detection are all untouched.
  */
-export const SCORING_MODEL_VERSION = '1.12.0';
+export const SCORING_MODEL_VERSION = '1.13.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
