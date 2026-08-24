@@ -30,10 +30,33 @@ export interface TrendSummary {
 	snapshots: TrendSnapshot[];
 }
 
+/**
+ * Why a benchmark read came back `unavailable`.
+ *
+ * A bare `unavailable` is unactionable (#783): a caller's three sensible
+ * responses — retry, fall back, or record a permanent limitation — cannot be
+ * chosen between without knowing which happened. Measured 2026-08-24: the
+ * `mail_enabled` profile returned `unavailable` while `enterprise_mail`
+ * succeeded in the same window, which reads as "this profile has no cohort".
+ * It was a 500ms timeout on the BUSIEST profile (1.47M scans vs 46k); the
+ * identical call succeeded minutes later. Recorded in a client document as a
+ * permanent scope limitation before it was caught.
+ *
+ * - `not_configured` — the DO binding is absent. Permanent for this deployment.
+ * - `timeout` — the shard did not answer inside the budget. Retryable, and the
+ *   likeliest reason on a large profile.
+ * - `upstream_error` — the shard answered non-2xx. Retryable.
+ */
+export type BenchmarkUnavailableReason = 'not_configured' | 'timeout' | 'upstream_error';
+
 /** Benchmark response from the DO. */
 export interface BenchmarkResult {
 	status: 'ok' | 'insufficient_data' | 'unavailable';
 	profile: string;
+	/** Set only when `status === 'unavailable'`. See {@link BenchmarkUnavailableReason}. */
+	reason?: BenchmarkUnavailableReason;
+	/** Set only when `status === 'unavailable'`. `false` means do not re-probe. */
+	retryable?: boolean;
 	totalScans?: number;
 	minimumRequired?: number;
 	meanScore?: number;
@@ -51,6 +74,10 @@ export interface ProviderInsightsResult {
 	status: 'ok' | 'no_data' | 'unavailable';
 	provider: string;
 	profile: string;
+	/** Set only when `status === 'unavailable'`. See {@link BenchmarkUnavailableReason}. */
+	reason?: BenchmarkUnavailableReason;
+	/** Set only when `status === 'unavailable'`. `false` means do not re-probe. */
+	retryable?: boolean;
 	totalScans?: number;
 	emaOverallScore?: number;
 	topFailingCategories?: string[];
@@ -84,7 +111,7 @@ export async function getBenchmark(
 	shardMode: AccumulatorShardMode = 'global',
 ): Promise<BenchmarkResult> {
 	if (!accumulator) {
-		return { status: 'unavailable', profile };
+		return { status: 'unavailable', profile, reason: 'not_configured', retryable: false };
 	}
 
 	try {
@@ -93,13 +120,26 @@ export async function getBenchmark(
 		const url = new URL('https://do/benchmark');
 		url.searchParams.set('profile', profile);
 
-		const response = await Promise.race([
-			stub.fetch(url.toString(), { method: 'GET' }),
-			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS)),
-		]);
+		// ONE retry on timeout (#783). The measured failure was the busiest
+		// profile missing a 500ms budget while a smaller sibling answered — a
+		// blip, not a capability gap, but indistinguishable from one at the call
+		// site. Retrying only the timeout path keeps the worst case at two
+		// budgets and leaves a genuine upstream error to surface immediately.
+		let response: Response | undefined;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			try {
+				response = await Promise.race([
+					stub.fetch(url.toString(), { method: 'GET' }),
+					new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS)),
+				]);
+				break;
+			} catch {
+				if (attempt === 1) return { status: 'unavailable', profile, reason: 'timeout', retryable: true };
+			}
+		}
 
-		if (!response.ok) {
-			return { status: 'unavailable', profile };
+		if (!response || !response.ok) {
+			return { status: 'unavailable', profile, reason: 'upstream_error', retryable: true };
 		}
 
 		const benchmarkData = (await response.json()) as BenchmarkResult;
@@ -135,7 +175,9 @@ export async function getBenchmark(
 
 		return benchmarkData;
 	} catch {
-		return { status: 'unavailable', profile };
+		// Shard resolution / JSON parse failed rather than the fetch — retryable,
+		// but not a timeout, so it is reported as an upstream problem.
+		return { status: 'unavailable', profile, reason: 'upstream_error', retryable: true };
 	}
 }
 
@@ -159,7 +201,7 @@ export async function getProviderInsights(
 	shardMode: AccumulatorShardMode = 'global',
 ): Promise<ProviderInsightsResult> {
 	if (!accumulator) {
-		return { status: 'unavailable', provider, profile };
+		return { status: 'unavailable', provider, profile, reason: 'not_configured', retryable: false };
 	}
 
 	try {
@@ -169,18 +211,29 @@ export async function getProviderInsights(
 		url.searchParams.set('provider', provider);
 		url.searchParams.set('profile', profile);
 
-		const response = await Promise.race([
-			stub.fetch(url.toString(), { method: 'GET' }),
-			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS)),
-		]);
+		// Same one-retry-on-timeout as `getBenchmark` — this reads the same DO
+		// under the same budget, so it has the same blip-vs-gap ambiguity (#783).
+		let response: Response | undefined;
+		for (let attempt = 0; attempt < 2; attempt++) {
+			try {
+				response = await Promise.race([
+					stub.fetch(url.toString(), { method: 'GET' }),
+					new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS)),
+				]);
+				break;
+			} catch {
+				if (attempt === 1) return { status: 'unavailable', provider, profile, reason: 'timeout', retryable: true };
+			}
+		}
 
-		if (!response.ok) {
-			return { status: 'unavailable', provider, profile };
+		if (!response || !response.ok) {
+			return { status: 'unavailable', provider, profile, reason: 'upstream_error', retryable: true };
 		}
 
 		return (await response.json()) as ProviderInsightsResult;
 	} catch {
-		return { status: 'unavailable', provider, profile };
+		// Shard resolution / JSON parse failed rather than the fetch.
+		return { status: 'unavailable', provider, profile, reason: 'upstream_error', retryable: true };
 	}
 }
 

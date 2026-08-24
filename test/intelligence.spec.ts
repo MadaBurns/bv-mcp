@@ -22,6 +22,45 @@ describe('getBenchmark', () => {
 		expect(result.profile).toBe('mail_enabled');
 	});
 
+	/**
+	 * #783 — a bare `unavailable` left a caller no way to choose between retry,
+	 * fall back, and record-a-permanent-limitation. Measured: `mail_enabled`
+	 * (1.47M scans) missed the 500ms budget while `enterprise_mail` (46k)
+	 * answered in the same window, which reads as "this profile has no cohort".
+	 * It was a blip — the identical call succeeded minutes later — but it had
+	 * already been written into a client document as a permanent limitation.
+	 */
+	describe('unavailable carries an actionable reason (#783)', () => {
+		it('an absent binding is NOT retryable — it is permanent for this deployment', async () => {
+			const result = await getBenchmark(undefined);
+			expect(result.reason).toBe('not_configured');
+			expect(result.retryable).toBe(false);
+		});
+
+		it('every unavailable result names a reason and a retry verdict', async () => {
+			// The invariant that makes the status actionable at all: no bare
+			// `unavailable` may escape this module.
+			const result = await getBenchmark(undefined);
+			expect(result.reason).toBeDefined();
+			expect(typeof result.retryable).toBe('boolean');
+		});
+
+		it('provider insights answers the same contract', async () => {
+			const result = await getProviderInsights(undefined, 'google');
+			expect(result.status).toBe('unavailable');
+			expect(result.reason).toBe('not_configured');
+			expect(result.retryable).toBe(false);
+		});
+
+		it('a successful read carries no reason — the fields are unavailable-only', async () => {
+			const result = await getBenchmark(env.PROFILE_ACCUMULATOR, 'non_mail');
+			if (result.status !== 'unavailable') {
+				expect(result.reason).toBeUndefined();
+				expect(result.retryable).toBeUndefined();
+			}
+		});
+	});
+
 	it('returns insufficient_data with few scans', async () => {
 		// non_mail profile has no data — should be insufficient
 		const result = await getBenchmark(env.PROFILE_ACCUMULATOR, 'non_mail');
