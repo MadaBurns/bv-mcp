@@ -251,12 +251,17 @@ export function toImportanceRecord<K extends string>(
 function mergeWeights(
 	defaults: Record<string, number>,
 	overrides: Record<string, unknown> | undefined,
+	onIgnoredKey?: (key: string) => void,
 ): Record<string, number> {
 	if (!overrides || typeof overrides !== 'object') return { ...defaults };
 	const result = { ...defaults };
 	for (const [key, value] of Object.entries(overrides)) {
 		if (key in defaults && typeof value === 'number' && Number.isFinite(value)) {
 			result[key] = Math.max(0, value);
+		} else if (!(key in defaults)) {
+			// Unknown key: the "parses cleanly, changes nothing" failure mode named on
+			// NO_OP_SCORING_CONFIG_KEYS. Surface it — advisory only, never a rejection.
+			onIgnoredKey?.(key);
 		}
 	}
 	return result;
@@ -358,6 +363,14 @@ export function parseScoringConfig(raw: string | undefined, options?: ParseScori
 	// influence the parse result in any way.
 	warnOnInertConfigKeys(parsed, options?.onWarn);
 
+	// Collect silently-ignored key paths across the merges that have no other warning
+	// covering them: profileWeights — the key operators are TOLD to use — plus
+	// baselineFailureRates, tierSplit and grades rejections. weights/coreWeights/
+	// protectiveWeights are wholesale-inert and already warned about above, and
+	// providerDkimConfidence legitimately accepts arbitrary provider keys. One warning
+	// at the end lists everything; the resolved config is never changed by it.
+	const ignoredKeyPaths: string[] = [];
+
 	// Merge weights
 	const rawWeightsObj = parsed.weights as Record<string, unknown> | undefined;
 	const weights = mergeWeights(DEFAULT_SCORING_CONFIG.weights, rawWeightsObj) as Record<CheckCategory, number>;
@@ -366,13 +379,18 @@ export function parseScoringConfig(raw: string | undefined, options?: ParseScori
 	const profileWeights = { ...DEFAULT_SCORING_CONFIG.profileWeights } as Record<DomainProfile, Record<CheckCategory, number>>;
 	const rawProfileWeights = parsed.profileWeights as Record<string, Record<string, unknown>> | undefined;
 	if (rawProfileWeights && typeof rawProfileWeights === 'object') {
-		for (const profile of Object.keys(DEFAULT_SCORING_CONFIG.profileWeights) as DomainProfile[]) {
-			if (profile in rawProfileWeights) {
-				profileWeights[profile] = mergeWeights(DEFAULT_SCORING_CONFIG.profileWeights[profile], rawProfileWeights[profile]) as Record<
-					CheckCategory,
-					number
-				>;
+		// Iterate the OVERRIDE's keys, not the defaults': iterating defaults made a typo'd
+		// profile name ("mail-enabled") vanish without a trace — the exact silent-inert
+		// failure mode the coreWeights production incident taught this file to name.
+		for (const profile of Object.keys(rawProfileWeights)) {
+			if (!(profile in DEFAULT_SCORING_CONFIG.profileWeights)) {
+				ignoredKeyPaths.push(`profileWeights.${profile}`);
+				continue;
 			}
+			const p = profile as DomainProfile;
+			profileWeights[p] = mergeWeights(DEFAULT_SCORING_CONFIG.profileWeights[p], rawProfileWeights[profile], (key) =>
+				ignoredKeyPaths.push(`profileWeights.${profile}.${key}`),
+			) as Record<CheckCategory, number>;
 		}
 	}
 
@@ -383,11 +401,14 @@ export function parseScoringConfig(raw: string | undefined, options?: ParseScori
 		const c = rawTierSplit.core;
 		const p = rawTierSplit.protective;
 		const h = rawTierSplit.hardening;
-		if (typeof c === 'number' && typeof p === 'number' && typeof h === 'number' && Number.isFinite(c + p + h)) {
-			if (c + p + h === 100) {
-				tierSplit = { core: c, protective: p, hardening: h };
-			}
-			// Sum != 100 → fall back to default (validation rejection)
+		const numeric = typeof c === 'number' && typeof p === 'number' && typeof h === 'number' && Number.isFinite(c + p + h);
+		// Tolerance, not policy: a one-decimal split (66.6/23.3/10.1) sums to
+		// 99.99999999999999 in IEEE 754, and the former strict === silently discarded it.
+		if (numeric && Math.abs(c + p + h - 100) < 1e-9) {
+			tierSplit = { core: c, protective: p, hardening: h };
+		} else {
+			// Sum != 100 or non-numeric → fall back to default (validation rejection), but say so.
+			ignoredKeyPaths.push(`tierSplit (must be three finite numbers summing to 100; got ${JSON.stringify(rawTierSplit)})`);
 		}
 	}
 
@@ -478,13 +499,34 @@ export function parseScoringConfig(raw: string | undefined, options?: ParseScori
 				grades[key] = rawGrades[key] as number;
 			}
 		}
+		// scoreToGrade is first-match-wins descending, so misordered thresholds either
+		// shadow every band below the misplaced one or make a band unreachable — the
+		// config can never mean what its author intended. Same validate-or-default
+		// treatment as tierSplit above. Checked on the MERGED result (a partial override
+		// like {d: 93} only violates order against the defaults it merged into). >= via
+		// `<` negation, so equal adjacent cutoffs — odd but well-defined — stay accepted.
+		const order = [grades.aPlus, grades.a, grades.bPlus, grades.b, grades.cPlus, grades.c, grades.dPlus, grades.d];
+		if (order.some((v, i) => i > 0 && order[i - 1] < v)) {
+			ignoredKeyPaths.push(`grades (thresholds must descend aPlus >= a >= ... >= d; got ${JSON.stringify(rawGrades)})`);
+			Object.assign(grades, DEFAULT_SCORING_CONFIG.grades);
+		}
 	}
 
 	// Merge baseline failure rates
 	const baselineFailureRates = mergeWeights(
 		DEFAULT_SCORING_CONFIG.baselineFailureRates,
 		parsed.baselineFailureRates as Record<string, unknown> | undefined,
+		(key) => ignoredKeyPaths.push(`baselineFailureRates.${key}`),
 	);
+
+	if (ignoredKeyPaths.length > 0) {
+		const emit = options?.onWarn ?? (typeof console !== 'undefined' ? console.warn.bind(console) : undefined);
+		emit?.(
+			`[dns-checks] SCORING_CONFIG contains unrecognized or invalid key path${ignoredKeyPaths.length > 1 ? 's' : ''} ` +
+				`(ignored, defaults kept): ${ignoredKeyPaths.join(', ')}. Valid profiles: mail_enabled, enterprise_mail, ` +
+				`non_mail, web_only, minimal, authoritative_dns_infra; category keys must match CheckCategory exactly.`,
+		);
+	}
 
 	return {
 		weights,

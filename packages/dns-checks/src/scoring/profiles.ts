@@ -33,16 +33,24 @@ interface ImportanceProfile {
 	importance: number;
 }
 
-/** Per-profile importance weights. */
+/**
+ * Per-profile importance weights.
+ *
+ * The tier section comments deliberately carry NO sum annotations: the engine normalizes
+ * each tier by its ACTUAL weight sum, so the absolute total is not an invariant — and the
+ * hand-maintained `(sum=N)` checksums that used to sit here had rotted in 4 of 6 profiles
+ * (all stale by exactly the later-added dane_https+svcb_https weights) with no test
+ * guarding them. A checksum that is usually wrong misleads the reviewer it exists to help.
+ */
 export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, ImportanceProfile>> = {
 	mail_enabled: {
-		// Core (sum=54)
+		// Core
 		spf: { importance: 10 },
 		dmarc: { importance: 16 },
 		dkim: { importance: 10 },
 		dnssec: { importance: 10 },
 		ssl: { importance: 8 },
-		// Protective (sum=24)
+		// Protective
 		subdomain_takeover: { importance: 4 },
 		http_security: { importance: 3 },
 		mta_sts: { importance: 3 },
@@ -72,13 +80,13 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		dnskey_strength: { importance: 0 },
 	},
 	enterprise_mail: {
-		// Core (sum=63)
+		// Core
 		spf: { importance: 10 },
 		dmarc: { importance: 20 },
 		dkim: { importance: 12 },
 		dnssec: { importance: 13 },
 		ssl: { importance: 8 },
-		// Protective (sum=27)
+		// Protective
 		subdomain_takeover: { importance: 5 },
 		http_security: { importance: 3 },
 		mta_sts: { importance: 4 },
@@ -105,13 +113,13 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		dnskey_strength: { importance: 0 },
 	},
 	non_mail: {
-		// Core (sum=29)
+		// Core
 		spf: { importance: 2 },
 		dmarc: { importance: 3 },
 		dkim: { importance: 2 },
 		dnssec: { importance: 12 },
 		ssl: { importance: 10 },
-		// Protective (sum=25)
+		// Protective
 		subdomain_takeover: { importance: 6 },
 		http_security: { importance: 6 },
 		mta_sts: { importance: 1 },
@@ -137,13 +145,13 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		dnskey_strength: { importance: 0 },
 	},
 	web_only: {
-		// Core (sum=28)
+		// Core
 		spf: { importance: 0 },
 		dmarc: { importance: 0 },
 		dkim: { importance: 0 },
 		dnssec: { importance: 14 },
 		ssl: { importance: 14 },
-		// Protective (sum=24)
+		// Protective
 		subdomain_takeover: { importance: 6 },
 		http_security: { importance: 8 },
 		mta_sts: { importance: 0 },
@@ -169,13 +177,13 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		dnskey_strength: { importance: 0 },
 	},
 	minimal: {
-		// Core (sum=15)
+		// Core
 		spf: { importance: 1 },
 		dmarc: { importance: 1 },
 		dkim: { importance: 1 },
 		dnssec: { importance: 5 },
 		ssl: { importance: 7 },
-		// Protective (sum=11)
+		// Protective
 		subdomain_takeover: { importance: 2 },
 		http_security: { importance: 2 },
 		mta_sts: { importance: 1 },

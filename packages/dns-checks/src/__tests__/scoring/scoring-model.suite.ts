@@ -18,7 +18,7 @@ import { describe, expect, it } from 'vitest';
 type ScoringModule = typeof import('../../scoring');
 
 export function defineScoringModelSuite(s: ScoringModule): void {
-	const { buildCheckResult, CATEGORY_TIERS, computeCategoryScore, createFinding, inferFindingConfidence } = s;
+	const { buildCheckResult, CATEGORY_TIERS, computeCategoryScore, createFinding, inferFindingConfidence, scoreIndicatesMissingControl } = s;
 
 	describe('scoring-model', () => {
 		it('normalizes confidence metadata when building check results', () => {
@@ -52,6 +52,25 @@ export function defineScoringModelSuite(s: ScoringModule): void {
 		it('falls back to the severity penalty when penaltyOverride is non-numeric', () => {
 			const finding = createFinding('dmarc', 'Missing DMARC', 'high', 'No record found', { penaltyOverride: 'oops' });
 			expect(computeCategoryScore([finding], 'dmarc')).toBe(75);
+		});
+
+		it('out-of-union declared confidence falls through to inference — does not disarm zeroing', () => {
+			// Raw finding objects on purpose: they model the unvalidated cache-re-read path.
+			// createFinding/buildCheckResult would re-stamp a valid confidence and mask the
+			// divergence this pins — scoreIndicatesMissingControl must take its confidence
+			// through inferFindingConfidence's validated declared-then-infer read, so garbage
+			// behaves like NO declaration (falls to text inference), not like 'heuristic'.
+			const raw = {
+				category: 'spf',
+				title: 'No SPF record found',
+				severity: 'high',
+				detail: 'No SPF record found for the domain.',
+			} as const;
+			const withMeta = (metadata: Record<string, unknown>) => [{ ...raw, metadata }] as unknown as Parameters<typeof scoreIndicatesMissingControl>[0];
+			expect(scoreIndicatesMissingControl(withMeta({ confidence: 'certainly-not-a-confidence' }))).toBe(true);
+			expect(scoreIndicatesMissingControl(withMeta({ confidence: 42 }))).toBe(true);
+			// Valid declared 'heuristic' must still disarm — the confidence gate itself is untouched.
+			expect(scoreIndicatesMissingControl(withMeta({ confidence: 'heuristic' }))).toBe(false);
 		});
 	});
 

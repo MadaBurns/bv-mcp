@@ -11,6 +11,7 @@
  * here once, so the trees can't drift apart. NOT a `.spec.ts`/`.test.ts`, so
  * neither vitest run collects it directly.
  */
+// bv-oversize-ok: single shared suite by design — assertions must live once and run against both import surfaces
 
 import { describe, expect, it } from 'vitest';
 import type { CheckCategory, CheckResult } from '../../scoring';
@@ -550,6 +551,46 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				};
 				// Genuinely measured 0 (no transient status) must still drag the score down.
 				expect(computeScanScore([...passingCore(), httpBad]).overall).toBeLessThan(baseline.overall);
+			});
+
+			it('an UNMEASURED check whose finding text matches the missing-control pattern must NOT arm the critical-gap ceiling', () => {
+				// An errored check's synthetic finding can carry upstream error text —
+				// buildDnsErrorResult passes DnsQueryError messages through verbatim under its
+				// "DNS query" prefix — so nothing guarantees it avoids "not found"/"no … record".
+				// A failed measurement cannot prove a control is missing: the category is already
+				// excluded as inconclusive, and the SAME result must not simultaneously cap the
+				// scan at criticalGapCeiling. dmarc is a critical category in the default set.
+				const coreWithoutDmarc = passingCore().filter((r) => r.category !== 'dmarc');
+				const baseline = computeScanScore(coreWithoutDmarc);
+				const erroredDmarc: CheckResult = {
+					...buildCheckResult('dmarc', [
+						createFinding('dmarc', 'No DMARC record found', 'high', 'Check failed: DNS query returned record not found'),
+					]),
+					score: 0,
+					passed: false,
+					checkStatus: 'error',
+				};
+				const withErrored = computeScanScore([...coreWithoutDmarc, erroredDmarc]);
+				// Excluded & renormalized — identical to never submitting the category, and in
+				// particular NOT clamped to the 64-point ceiling.
+				expect(withErrored.overall).toBe(baseline.overall);
+				expect(withErrored.overall).toBeGreaterThan(DEFAULT_SCORING_CONFIG.thresholds.criticalGapCeiling);
+				expect(withErrored.categoryScores.dmarc).toBeUndefined();
+			});
+
+			it('CONTROL: the same missing-control finding on a MEASURED check still arms the ceiling', () => {
+				// Keeps the test above honest — proves the crafted finding genuinely trips
+				// scoreIndicatesMissingControl when the check completed, so the errored-case pass
+				// cannot mean "the finding never armed anything in the first place".
+				const coreWithoutDmarc = passingCore().filter((r) => r.category !== 'dmarc');
+				const measuredMissingDmarc: CheckResult = {
+					...buildCheckResult('dmarc', [
+						createFinding('dmarc', 'No DMARC record found', 'high', 'Check failed: DNS query returned record not found'),
+					]),
+					checkStatus: 'completed',
+				};
+				const withMeasured = computeScanScore([...coreWithoutDmarc, measuredMissingDmarc]);
+				expect(withMeasured.overall).toBeLessThanOrEqual(DEFAULT_SCORING_CONFIG.thresholds.criticalGapCeiling);
 			});
 		});
 

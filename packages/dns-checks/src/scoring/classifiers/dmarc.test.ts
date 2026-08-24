@@ -10,6 +10,8 @@ describe('classifyDmarc', () => {
 		expect(f).toHaveLength(1);
 		expect(f[0].title).toBe('No DMARC record found');
 		expect(f[0].severity).toBe('high');
+		// Declared, not just prose-matched — the zeroing must survive a reword of the sentence.
+		expect(f[0].metadata?.missingControl).toBe(true);
 	});
 
 	it('scores p=none as a medium finding (NIST v3.5.0)', () => {
@@ -60,6 +62,44 @@ describe('classifyDmarc', () => {
 	it('flags pct<100 as medium', () => {
 		const f = classifyDmarc({ recordCount: 1, policy: 'reject', sp: 'reject', pct: '50', rua: 'mailto:dmarc@example.com', adkim: 's', aspf: 's' });
 		expect(f.find((x) => x.title === 'DMARC not applied to all emails')?.severity).toBe('medium');
+	});
+
+	describe('strict pct=/ri= token parsing (RFC 7489 §6.3 ABNF — scoring model 1.13.0)', () => {
+		const strictBase = { recordCount: 1, policy: 'reject', sp: 'reject', rua: 'mailto:dmarc@example.com', adkim: 's', aspf: 's' } as const;
+
+		it('flags pct with trailing garbage as invalid, not charitably prefix-parsed (pct=100%)', () => {
+			// parseInt('100%') is 100 — previously VALID with no finding at all.
+			const f = classifyDmarc({ ...strictBase, pct: '100%' });
+			expect(f.find((x) => x.title === 'Invalid DMARC percentage value')?.severity).toBe('medium');
+			expect(f.some((x) => x.title === 'DMARC not applied to all emails')).toBe(false);
+		});
+
+		it('pct=50abc is invalid, NOT the partial-coverage finding parseInt used to produce', () => {
+			const f = classifyDmarc({ ...strictBase, pct: '50abc' });
+			expect(f.find((x) => x.title === 'Invalid DMARC percentage value')?.severity).toBe('medium');
+			expect(f.some((x) => x.title === 'DMARC not applied to all emails')).toBe(false);
+		});
+
+		it('pct=050 stays ABNF-valid (1*3DIGIT permits leading zeros) → partial-coverage finding', () => {
+			const f = classifyDmarc({ ...strictBase, pct: '050' });
+			expect(f.find((x) => x.title === 'DMARC not applied to all emails')?.severity).toBe('medium');
+			expect(f.some((x) => x.title === 'Invalid DMARC percentage value')).toBe(false);
+		});
+
+		it('pct=150 stays invalid (in-ABNF digits, out-of-range value)', () => {
+			const f = classifyDmarc({ ...strictBase, pct: '150' });
+			expect(f.find((x) => x.title === 'Invalid DMARC percentage value')?.severity).toBe('medium');
+		});
+
+		it('flags ri with trailing garbage as invalid (ri=86400x was previously a valid 86400, no finding)', () => {
+			const f = classifyDmarc({ ...strictBase, ri: '86400x' });
+			expect(f.find((x) => x.title === 'Invalid DMARC reporting interval')?.severity).toBe('medium');
+		});
+
+		it('a clean ri=86400 still draws no ri finding', () => {
+			const f = classifyDmarc({ ...strictBase, ri: '86400' });
+			expect(f.some((x) => x.title === 'Invalid DMARC reporting interval')).toBe(false);
+		});
 	});
 
 	it('appendDmarcCleanInfo adds the info note only when no significant finding exists', () => {
