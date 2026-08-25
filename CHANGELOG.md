@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.66.0] - 2026-08-26
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged and `@blackveil/dns-checks` stays at **1.24.0** — no check, weight, threshold or grade band moves, and no domain is re-graded. `simulate_attack_paths` output does change: one path drops in severity, another starts firing where it never did.
+
+### Fixed
+
+- **`subdomain_takeover` no longer promotes a medium finding to a critical path** (#787). `severity` was hardcoded `critical` while `hasSubdomainTakeoverRisk` accepts `medium|high|critical`, and `overallRisk` is simply the most severe feasible path — so a single MEDIUM finding rendered the whole domain critical. Measured across 16 large AI providers: `openai.com`'s `[medium] Dangling CNAME operational drift` produced the only `critical` verdict in the entire run. A new `severityFrom` hook derives the emitted severity from the strongest supporting finding.
+- **`subdomain_takeover` no longer asserts the target is "unclaimed"** (#787). That claims attacker-registrability. The measured CloudFront target returns NOERROR/NODATA on two independent public resolvers — genuinely dangling — but CloudFront distribution IDs are assigned by AWS and cannot be chosen, so it is not claimable. The scanner already encoded that distinction in the severity it assigned. Prerequisites are now derived from the observed evidence, with a non-empty fallback so no path is ever unreviewable.
+- **`email_spoof_subdomain` fires again — it had fired for 0 of 16 domains** (#788). The condition was `!d.includes('sp=') && d.includes('p=none')`, but `check_dmarc`'s detail for a *missing* subdomain policy reads *"No subdomain policy (sp=) specified. Subdomains inherit the "none" policy…"* — `sp=` is present as a substring **precisely because the tag is absent**, so the clause could never match. It only ever fired by accident, via the unrelated `np=none` finding, which is what kept the #564 regression green. The discriminator is now the policy subdomains actually **inherit** (`reject` is fine, `none` is not), since both cases emit identical prose. `sp=quarantine` under `p=reject` deliberately does not match — weaker than parent, still enforcing.
+
+### Known
+
+- **Production may lag this fix.** #786 tracks the deployed worker predating the #782 fix; those CAA/XFO false positives persist in prod until a deploy lands.
+- **#789 (open, unfixed):** `check_dmarc` emits no subdomain finding at all for `p=none` + `sp=none` — the most permissive DMARC possible — so #788's predicate has no evidence to match on such domains. The fix lands in the vendored scoring SSOT and would move grades, so it is filed for adjudication rather than patched here.
+
 ## [3.65.0] - 2026-08-24
 
 **Scoring-model change.** `SCORING_MODEL_VERSION` 1.12.0 → **1.13.0** and `@blackveil/dns-checks` 1.23.0 → **1.24.0** (`PARITY_CORPUS_VERSION` in lockstep, #777). One new detection re-grades an **unmeasured** population downward; everything else is measurement-integrity hardening that moves no score any production scan produces. Full rationale: the 1.13.0 history entry in `src/lib/scoring-version.ts`.
