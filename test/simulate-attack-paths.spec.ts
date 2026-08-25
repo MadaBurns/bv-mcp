@@ -1118,3 +1118,176 @@ describe('#782 a path never states a prerequisite the findings contradict', () =
 		}
 	});
 });
+
+/**
+ * #787 — `subdomain_takeover` asserted a hardcoded CRITICAL severity and an
+ * "unclaimed resource" prerequisite regardless of what the evidence said.
+ *
+ * Measured 2026-08-26 on openai.com during a 16-domain AI-provider sweep.
+ * `check_subdomain_takeover` emitted exactly two findings:
+ *
+ *   [high]   Subdomain possible takeover signal Azure CDN
+ *   [medium] Dangling CNAME operational drift : blog.openai.com
+ *                                              → d2b532lzynlqb7.cloudfront.net
+ *
+ * The simulator turned that into a CRITICAL path whose prerequisite read
+ * "Dangling CNAME pointing to unclaimed resource", which drove the whole
+ * domain's `overallRisk` to **critical** — the only critical verdict in the
+ * entire sweep.
+ *
+ * Two separate over-claims:
+ *
+ *  1. SEVERITY. `hasSubdomainTakeoverRisk` accepts medium|high|critical, but
+ *     the path is hardcoded `severity: 'critical'`. A MEDIUM "operational
+ *     drift" finding is therefore promoted two full levels, and because
+ *     `overallRisk` is just the most severe path, one medium finding renders
+ *     the domain critical.
+ *
+ *  2. PREREQUISITE. "unclaimed resource" asserts the target is REGISTRABLE by
+ *     an attacker. Verified against DNS: `d2b532lzynlqb7.cloudfront.net`
+ *     returns NOERROR/NODATA (a deleted distribution) on two independent
+ *     public resolvers — genuinely dangling. But CloudFront distribution IDs are
+ *     assigned by AWS and cannot be chosen, so the resource is NOT claimable.
+ *     The scanner knew this: it rated that finding MEDIUM and titled it
+ *     "operational drift", not "takeover".
+ *
+ * Same family as #782 — a path stating more than its own evidence supports.
+ */
+describe('#787 subdomain_takeover severity and prerequisites follow the evidence', () => {
+	async function paths(findings: unknown[]) {
+		const { evaluateAttackPathsFromFindings } = await import('../src/tools/simulate-attack-paths');
+		return evaluateAttackPathsFromFindings(findings as never);
+	}
+
+	const DRIFT_ONLY = [
+		{
+			category: 'subdomain_takeover',
+			title: 'Dangling CNAME operational drift : blog.openai.com → d2b532lzynlqb7.cloudfront.net',
+			severity: 'medium',
+			detail: 'CNAME target does not resolve.',
+		},
+	];
+
+	const REAL_OPENAI = [
+		{
+			category: 'subdomain_takeover',
+			title: 'Subdomain possible takeover signal Azure CDN',
+			severity: 'high',
+			detail: 'Azure CDN endpoint signature observed.',
+		},
+		...DRIFT_ONLY,
+	];
+
+	it('does not promote a medium operational-drift finding to a critical path', async () => {
+		const path = (await paths(DRIFT_ONLY)).find((p) => p.id === 'subdomain_takeover');
+		expect(path, 'the path should still be reported').toBeDefined();
+		expect(path!.severity, 'a medium finding must not render the domain critical').toBe('medium');
+	});
+
+	it('does not claim the resource is unclaimed when only drift was observed', async () => {
+		const path = (await paths(DRIFT_ONLY)).find((p) => p.id === 'subdomain_takeover');
+		expect(
+			path!.prerequisites,
+			'"unclaimed" asserts attacker-registrability, which a drift finding does not establish',
+		).not.toContain('Dangling CNAME pointing to unclaimed resource');
+		expect(path!.prerequisites.length).toBeGreaterThan(0);
+	});
+
+	it('caps the real openai.com evidence set at high, not critical', async () => {
+		const path = (await paths(REAL_OPENAI)).find((p) => p.id === 'subdomain_takeover');
+		expect(path!.severity, 'strongest underlying finding was high').toBe('high');
+	});
+
+	it('still reports critical when the evidence itself is critical', async () => {
+		// Control: the fix must not disarm a genuine critical takeover.
+		const path = (
+			await paths([
+				{
+					category: 'subdomain_takeover',
+					title: 'Subdomain takeover confirmed',
+					severity: 'critical',
+					detail: 'Target bucket is unregistered and claimable.',
+				},
+			])
+		).find((p) => p.id === 'subdomain_takeover');
+		expect(path!.severity).toBe('critical');
+	});
+});
+
+/**
+ * #788 — `email_spoof_subdomain` is a DEAD path: it fired for 0 of 16 domains,
+ * including the two whose org policy is `p=none`.
+ *
+ * Mirror image of #782. That bug matched prose that meant the opposite; this
+ * one FAILS to match for the same reason. `isDmarcSubdomainWeak`'s third clause
+ * is `!d.includes('sp=') && d.includes('p=none')`, and check_dmarc's detail for
+ * a MISSING subdomain policy reads:
+ *
+ *   "No subdomain policy (sp=) specified. Subdomains inherit the "none" policy,
+ *    which provides no protection against spoofing."
+ *
+ * `sp=` occurs as a substring precisely BECAUSE the tag is absent, so
+ * `!d.includes('sp=')` is false and the clause can never fire. The literal
+ * `p=none` is not in the detail either — the policy is named as `"none"`.
+ *
+ * Measured 2026-08-26 on moonshot.ai (DMARC p=none, spoofability 59): the
+ * scanner said subdomains have "no protection against spoofing" and the
+ * simulator reported no subdomain-spoofing path at all. A missing HIGH finding
+ * on the most spoofable domain in the sweep.
+ *
+ * The discriminator is the INHERITED POLICY, not the presence of the sp= tag:
+ * inheriting "reject" is fine, inheriting "none" is not.
+ */
+describe('#788 email_spoof_subdomain fires on an inherited none policy', () => {
+	async function paths(findings: unknown[]) {
+		const { evaluateAttackPathsFromFindings } = await import('../src/tools/simulate-attack-paths');
+		return evaluateAttackPathsFromFindings(findings as never);
+	}
+
+	it('fires when subdomains inherit a none policy (real moonshot.ai finding)', async () => {
+		const result = await paths([
+			{
+				category: 'dmarc',
+				title: 'Subdomains inherit p=none policy',
+				severity: 'info',
+				detail:
+					'No subdomain policy (sp=) specified. Subdomains inherit the "none" policy, which provides no protection against spoofing.',
+			},
+		]);
+		expect(
+			result.find((p) => p.id === 'email_spoof_subdomain'),
+			'subdomains inheriting p=none are spoofable',
+		).toBeDefined();
+	});
+
+	it('does NOT fire when subdomains inherit an enforcing policy (real openai.com finding)', async () => {
+		// Control: the same "No subdomain policy (sp=)" prose, but inheriting reject.
+		const result = await paths([
+			{
+				category: 'dmarc',
+				title: 'No subdomain policy',
+				severity: 'low',
+				detail:
+					'No subdomain policy (sp=) specified. Subdomains inherit the main policy ("reject"), but explicitly setting sp= is recommended.',
+			},
+		]);
+		expect(
+			result.find((p) => p.id === 'email_spoof_subdomain'),
+			'inheriting reject is not a subdomain weakness',
+		).toBeUndefined();
+	});
+
+	it('still fires on an explicit sp=none', async () => {
+		const result = await paths([
+			{ category: 'dmarc', title: 'Subdomain policy is none', severity: 'medium', detail: 'Record sets sp=none.' },
+		]);
+		expect(result.find((p) => p.id === 'email_spoof_subdomain')).toBeDefined();
+	});
+
+	it('still fires when DMARC is absent entirely', async () => {
+		const result = await paths([
+			{ category: 'dmarc', title: 'No DMARC record', severity: 'high', detail: 'No DMARC record published.' },
+		]);
+		expect(result.find((p) => p.id === 'email_spoof_subdomain')).toBeDefined();
+	});
+});
