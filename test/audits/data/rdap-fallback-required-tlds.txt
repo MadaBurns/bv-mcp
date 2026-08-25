@@ -44,10 +44,25 @@ au
 # Traficom
 fi
 
-# .CO Internet
-co
+# .CO Internet — REMOVED 2026-08-25. A coverage REDUCTION, recorded rather than
+# quietly dropped.
+#
+# The entry that satisfied this line was `https://rdap.nic.co/`, a host with NO
+# A record (#780's shape). The coverage this list asserted therefore did not
+# exist: the audit was green while every `.co` lookup silently produced
+# `registrationDays: null`.
+#
+# There is nothing to point at. IANA's bootstrap does not publish `co` at all,
+# and rdap.org, centralnic, verisign, godaddy and identitydigital were each
+# probed live on 2026-08-25 — none serve it. Requiring an entry can only be
+# satisfied by a URL that does not answer, which is worse than absence: the same
+# null result, plus a DNS failure and the probe timeout to reach it.
+#
+# RESTORE this line the moment a `.co` RDAP server exists — with a live probe
+# showing a registration event, not merely a 200.
 
-# ME Registry
+# ME Registry — Identity Digital. `rdap.nic.me` also had no A record; corrected
+# 2026-08-25 (google.me returns 200 with registration 2008-06-13).
 me
 
 # Identity Digital ccTLD
