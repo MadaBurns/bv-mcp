@@ -25,8 +25,19 @@
  * (data.iana.org/rdap/dns.json), which is the authoritative mapping this table
  * duplicates. That belongs in a scheduled/live check, not a unit test — a unit
  * test that fetches it would make the suite depend on someone else's uptime and
- * would fail closed on a network blip. Until that exists, a dead entry for any
- * OTHER TLD would still degrade silently, exactly as `.ai` did.
+ * would fail closed on a network blip.
+ *
+ * ✅ THAT CHECK NOW EXISTS and is deliberately NOT wired into `npm test`:
+ *
+ *     npm run audit:rdap-fallback      # scripts/audits/rdap-fallback-reconcile.ts
+ *
+ * It fetches the live bootstrap and reports (a) entries whose target disagrees
+ * with IANA, (b) entries whose host does not resolve — the #780 shape — and
+ * (c) TLDs IANA covers that the table lacks. It exits 2 ("INCONCLUSIVE") rather
+ * than green whenever the fetch or a DNS status cannot be established, so a
+ * network blip can never read as an all-clear. Run it before adding or editing
+ * an entry in `FALLBACK_RDAP_SERVERS`; the assertions below stay structural on
+ * purpose and still cannot catch a dead host.
  */
 import { describe, it, expect } from 'vitest';
 import { FALLBACK_RDAP_SERVERS } from '../src/tools/check-rdap-lookup';
@@ -38,6 +49,35 @@ describe('FALLBACK_RDAP_SERVERS', () => {
 		// .io and .sh. `rdap.nic.ai` has no A record.
 		expect(FALLBACK_RDAP_SERVERS.ai).toBe('https://rdap.identitydigital.services/rdap/');
 		expect(FALLBACK_RDAP_SERVERS.ai).not.toMatch(/nic\.ai/);
+	});
+
+	it('pins the four entries the IANA reconciliation caught, and keeps .co absent', () => {
+		// Found 2026-08-25 by `npm run audit:rdap-fallback`. Every one was the #780
+		// failure — a silent `registrationDays: null` across a whole TLD — and each
+		// replacement below was confirmed by a LIVE probe returning a registration
+		// event, not merely by matching IANA.
+		//
+		// `.tech`/`.online` are the nastier variant: the old host resolved and
+		// answered, it just 404s every domain in those TLDs. No DNS error, nothing
+		// to notice — only a reconciliation against IANA finds that shape.
+		expect(FALLBACK_RDAP_SERVERS.xyz).toBe('https://rdap.centralnic.com/xyz/');
+		expect(FALLBACK_RDAP_SERVERS.tech).toBe('https://rdap.radix.host/rdap/');
+		expect(FALLBACK_RDAP_SERVERS.online).toBe('https://rdap.radix.host/rdap/');
+		expect(FALLBACK_RDAP_SERVERS.me).toBe('https://rdap.identitydigital.services/rdap/');
+
+		// None of the known-dead hosts may reappear anywhere in the table. Matched
+		// on the full HOST, not a substring: a bare /nic\.co/ also matches the
+		// legitimate `rdap.centralnic.com`, which is exactly the false positive
+		// this assertion tripped on first.
+		const hosts = Object.values(FALLBACK_RDAP_SERVERS).map((u) => new URL(u).hostname);
+		for (const dead of ['rdap.nic.xyz', 'rdap.nic.co', 'rdap.nic.me', 'rdap.nic.ai']) {
+			expect(hosts).not.toContain(dead);
+		}
+
+		// `.co` is deliberately ABSENT: no operator serves public RDAP for it and
+		// IANA does not publish it, so any entry would be a guess that fails slower
+		// than no entry at all.
+		expect(FALLBACK_RDAP_SERVERS.co).toBeUndefined();
 	});
 
 	it('routes .ai to the same operator as its sibling Identity Digital ccTLDs', () => {

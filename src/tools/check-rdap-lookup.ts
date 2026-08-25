@@ -9,6 +9,7 @@
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import { safeFetch } from '../lib/safe-fetch';
+import { FALLBACK_RDAP_SERVERS, IANA_BOOTSTRAP_URL } from './rdap-fallback-servers';
 
 const CATEGORY = 'rdap' as CheckCategory;
 
@@ -84,80 +85,19 @@ export function deriveLockPosture(eppStatus: readonly string[]): LockPosture {
  */
 export const RDAP_LOOKUP_SYNC_BUDGET_MS = 24_000;
 
-/** RDAP bootstrap URL (IANA). */
-const IANA_BOOTSTRAP_URL = 'https://data.iana.org/rdap/dns.json';
-
 /**
- * Hardcoded RDAP server fallbacks for common TLDs. Used when the IANA bootstrap
- * fetch is unavailable (cold start, network blip). Snapshot from IANA's
- * canonical bootstrap; rarely changes — the audit test in Phase 6 of the
- * registrar-coverage TDD plan pins the coverage list. URLs that change at the
- * registry level get corrected when IANA bootstrap comes back online.
+ * The fallback table and the IANA bootstrap URL now live in the LEAF module
+ * `./rdap-fallback-servers` — it imports nothing, so the out-of-band
+ * reconciliation script (`scripts/audits/rdap-fallback-reconcile.ts`) can read
+ * the SAME object under plain Node/tsx instead of re-declaring it, which is the
+ * one thing that would make the reconciliation worthless. This file's import
+ * chain (scoring → sanitize → punycode) is workerd-shaped and will not load
+ * there.
+ *
+ * Re-exported so every existing import site — including
+ * `test/rdap-fallback-server-map.spec.ts` — is unchanged.
  */
-export const FALLBACK_RDAP_SERVERS: Record<string, string> = {
-	// Verisign-operated
-	com: 'https://rdap.verisign.com/com/v1/',
-	net: 'https://rdap.verisign.com/net/v1/',
-	// Public Interest Registry
-	org: 'https://rdap.publicinterestregistry.org/rdap/',
-	// Identity Digital (formerly Afilias / Donuts)
-	info: 'https://rdap.identitydigital.services/rdap/',
-	biz: 'https://rdap.nic.biz/',
-	us: 'https://rdap.identitydigital.services/rdap/',
-	tech: 'https://rdap.identitydigital.services/rdap/',
-	online: 'https://rdap.identitydigital.services/rdap/',
-	email: 'https://rdap.identitydigital.services/rdap/',
-	global: 'https://rdap.identitydigital.services/rdap/',
-	group: 'https://rdap.identitydigital.services/rdap/',
-	life: 'https://rdap.identitydigital.services/rdap/',
-	live: 'https://rdap.identitydigital.services/rdap/',
-	media: 'https://rdap.identitydigital.services/rdap/',
-	news: 'https://rdap.identitydigital.services/rdap/',
-	services: 'https://rdap.identitydigital.services/rdap/',
-	software: 'https://rdap.identitydigital.services/rdap/',
-	solutions: 'https://rdap.identitydigital.services/rdap/',
-	support: 'https://rdap.identitydigital.services/rdap/',
-	systems: 'https://rdap.identitydigital.services/rdap/',
-	technology: 'https://rdap.identitydigital.services/rdap/',
-	tools: 'https://rdap.identitydigital.services/rdap/',
-	// Identity Digital ccTLDs / TLD operators
-	io: 'https://rdap.identitydigital.services/rdap/',
-	// ⚠️ `.ai` is Identity Digital, NOT `rdap.nic.ai` (#780). That host has NO A
-	// RECORD — it does not resolve and never answered. Because `probeRdap`
-	// fail-softs to `EMPTY_RDAP_PROBE`, every `.ai` lookup silently produced
-	// `registrationDays: null` while `.org`/`.com` populated correctly, so the
-	// "recently registered" signal — the highest-value thing lookalike triage
-	// surfaces — was dead for the whole TLD with no error raised anywhere.
-	// Verified against IANA's authoritative bootstrap (data.iana.org/rdap/dns.json
-	// maps ai → identitydigital) and by live probe: openclaw.ai returns 200 with
-	// a registration event. Do NOT "restore" rdap.nic.ai.
-	ai: 'https://rdap.identitydigital.services/rdap/',
-	sh: 'https://rdap.identitydigital.services/rdap/',
-	// auDA
-	au: 'https://rdap.cctld.au/rdap/',
-	// Traficom
-	fi: 'https://rdap.fi/rdap/rdap/',
-	// .CO Internet
-	co: 'https://rdap.nic.co/',
-	// ME Registry
-	me: 'https://rdap.nic.me/',
-	// Google Registry — pubapi is the canonical RDAP endpoint; www.registry.google returns 404.
-	app: 'https://pubapi.registry.google/rdap/',
-	dev: 'https://pubapi.registry.google/rdap/',
-	// XYZ.COM LLC
-	xyz: 'https://rdap.nic.xyz/',
-	// ccTLDs reachable via IANA bootstrap — hardcoded here as failsafe for when
-	// the bootstrap fetch is negative-cached (transient data.iana.org outage).
-	ca: 'https://rdap.ca.fury.ca/rdap/',
-	cz: 'https://rdap.nic.cz/',
-	fr: 'https://rdap.nic.fr/',
-	in: 'https://rdap.nixiregistry.in/rdap/',
-	nl: 'https://rdap.sidn.nl/',
-	no: 'https://rdap.norid.no/',
-	pl: 'https://rdap.dns.pl/',
-	sg: 'https://rdap.sgnic.sg/rdap/',
-	uk: 'https://rdap.nominet.uk/uk/',
-};
+export { FALLBACK_RDAP_SERVERS };
 
 /** TTL for a successful IANA bootstrap fetch (6h). */
 const BOOTSTRAP_TTL_MS = 6 * 60 * 60 * 1000;

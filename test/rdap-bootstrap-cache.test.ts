@@ -132,7 +132,12 @@ describe('RDAP bootstrap cache', () => {
 		// Use the exported constant directly so the audit test in Phase 6 can pin
 		// the snapshot. Phase 4 just asserts the minimum-viable coverage.
 		const fallback = mod.FALLBACK_RDAP_SERVERS;
-		for (const tld of ['com', 'net', 'org', 'info', 'io', 'biz', 'co', 'me', 'app', 'dev']) {
+		// `co` was dropped 2026-08-25: its entry was the non-resolving
+		// `rdap.nic.co`, no operator serves public RDAP for it, and IANA does not
+		// publish it — so asserting coverage here could only ever be satisfied by a
+		// URL that does not answer. Reason recorded in
+		// test/audits/data/rdap-fallback-required-tlds.txt.
+		for (const tld of ['com', 'net', 'org', 'info', 'io', 'biz', 'me', 'app', 'dev']) {
 			expect(fallback[tld], `expected fallback RDAP server for .${tld}`).toMatch(/^https:\/\//);
 		}
 	});
