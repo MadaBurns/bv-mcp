@@ -105,28 +105,133 @@ function isDmarcWeakOrMissing(findings: Finding[]): boolean {
 	});
 }
 
-/** Check if DMARC has no subdomain policy (sp=) or sp=none. */
+/**
+ * Check if DMARC leaves subdomains unprotected.
+ *
+ * ⚠️ #788 — the mirror image of #782. That bug matched prose meaning the
+ * opposite; this one FAILED to match for the same reason. The old third clause
+ * was `!d.includes('sp=') && d.includes('p=none')`, and check_dmarc's detail for
+ * a MISSING subdomain policy reads:
+ *
+ *   "No subdomain policy (sp=) specified. Subdomains inherit the "none" policy,
+ *    which provides no protection against spoofing."
+ *
+ * `sp=` appears as a substring precisely BECAUSE the tag is absent, so
+ * `!d.includes('sp=')` was always false and the clause could never fire. The
+ * literal `p=none` is not in the detail either — the policy is named as
+ * `"none"`. Measured 2026-08-26: `email_spoof_subdomain` fired for 0 of 16
+ * domains, including moonshot.ai, whose own finding says subdomains have "no
+ * protection against spoofing".
+ *
+ * THE DISCRIMINATOR IS THE INHERITED POLICY, not whether an `sp=` tag exists.
+ * Inheriting `reject` is fine; inheriting `none` is not. Both cases emit the
+ * same "No subdomain policy (sp=)" prose, so keying on the tag cannot separate
+ * them — only the named policy can.
+ *
+ * Deliberately conservative: a domain with `p=none` but NO subdomain finding at
+ * all (huggingface.co on the same sweep) does not fire here. That evidence state
+ * is indistinguishable from `p=none` + an explicit strong `sp=`, and inventing a
+ * finding from an absence is the failure mode this family of fixes exists to
+ * stop. If that gap matters it belongs in check_dmarc, which owns the evidence.
+ */
+const SUBDOMAIN_POLICY_IS_NONE: RegExp[] = [
+	// Explicit tags. Word-anchored so `aspf=`/`adkim=` cannot match.
+	/\bsp=none\b/,
+	/\bnp=none\b/,
+	// `p=quarantine|reject` + `sp=none` (existing subdomains).
+	/subdomain polic\w*\s+is set to "none"/,
+	// `p=none` + no `sp=` — subdomains inherit the org policy, which is none.
+	/subdomains inherit p=none/,
+	/subdomains inherit the "none"/,
+];
+
 function isDmarcSubdomainWeak(findings: Finding[]): boolean {
 	return hasFindings(findings, (f) => {
 		if (f.category !== 'dmarc') return false;
-		const d = f.detail.toLowerCase();
-		const t = f.title.toLowerCase();
-		// Missing DMARC entirely means no subdomain policy either
-		if (t.includes('no dmarc') || t.includes('missing')) return true;
-		// Explicit sp=none
-		if (d.includes('sp=none')) return true;
-		// No sp= tag and p=none
-		if (!d.includes('sp=') && d.includes('p=none')) return true;
-		return false;
+		const haystack = `${f.title} ${f.detail}`.toLowerCase();
+		// Missing DMARC entirely means no subdomain policy either.
+		if (f.title.toLowerCase().includes('no dmarc') || f.title.toLowerCase().includes('missing')) {
+			return true;
+		}
+		// Otherwise the path fires only where the policy that APPLIES TO SUBDOMAINS
+		// is literally `none`. `sp=quarantine` under `p=reject` is weaker than the
+		// parent but still enforcing, so it is deliberately NOT a match here.
+		return SUBDOMAIN_POLICY_IS_NONE.some((re) => re.test(haystack));
 	});
+}
+
+/**
+ * The `subdomain_takeover` findings that actually support a takeover path.
+ *
+ * ⚠️ #787 — everything below exists because this set is NOT homogeneous.
+ * `check_subdomain_takeover` emits two quite different things under one
+ * category, and the path used to treat them identically:
+ *
+ *   [high]   Subdomain possible takeover signal <provider>   ← claimable service
+ *   [medium] Dangling CNAME operational drift : a → b        ← just doesn't resolve
+ *
+ * Measured on openai.com (2026-08-26): `blog.openai.com` CNAMEs to
+ * `d2b532lzynlqb7.cloudfront.net`, which returns NOERROR/NODATA on two
+ * independent public resolvers (Cloudflare and Google) — a deleted
+ * distribution, genuinely dangling. But a CloudFront distribution ID is
+ * assigned by AWS and cannot be chosen by an attacker, so that name is NOT
+ * re-registrable. The scanner encodes exactly that distinction in the severity
+ * it assigns; the simulator threw it away.
+ */
+function subdomainTakeoverEvidence(findings: Finding[]): Finding[] {
+	return findings.filter(
+		(f) =>
+			f.category === 'subdomain_takeover' &&
+			(f.severity === 'critical' || f.severity === 'high' || f.severity === 'medium'),
+	);
 }
 
 /** Check if subdomain takeover findings exist with severity >= medium. */
 function hasSubdomainTakeoverRisk(findings: Finding[]): boolean {
-	return hasFindings(
-		findings,
-		(f) => f.category === 'subdomain_takeover' && (f.severity === 'critical' || f.severity === 'high' || f.severity === 'medium'),
-	);
+	return subdomainTakeoverEvidence(findings).length > 0;
+}
+
+/**
+ * Severity of the takeover path = severity of its STRONGEST supporting finding.
+ *
+ * ⚠️ #787 — this was hardcoded `critical`. Because `overallRisk` is simply the
+ * most severe feasible path, a single MEDIUM operational-drift finding rendered
+ * the entire domain **critical**. On the 16-domain AI-provider sweep that
+ * produced the only `critical` verdict in the whole run, on a dangling CNAME
+ * nobody can claim. A severity a reader can check and disagree with discredits
+ * the paths that are correct.
+ */
+function subdomainTakeoverSeverity(findings: Finding[]): 'critical' | 'high' | 'medium' {
+	const evidence = subdomainTakeoverEvidence(findings);
+	if (evidence.some((f) => f.severity === 'critical')) return 'critical';
+	if (evidence.some((f) => f.severity === 'high')) return 'high';
+	return 'medium';
+}
+
+/**
+ * Prerequisites naming what was OBSERVED, never what would be convenient.
+ *
+ * ⚠️ #787 — the static list said "Dangling CNAME pointing to unclaimed
+ * resource". "Unclaimed" is an assertion of attacker-registrability, and a
+ * drift finding establishes only that the target stopped resolving. Those are
+ * different claims with different remediation urgency, and only one of them is
+ * supported by a NODATA answer.
+ */
+function subdomainTakeoverPrerequisites(findings: Finding[]): string[] {
+	const evidence = subdomainTakeoverEvidence(findings);
+	const out: string[] = [];
+	if (evidence.some((f) => f.title.toLowerCase().includes('takeover'))) {
+		out.push('Subdomain CNAME resolves to a service with a known takeover signature');
+	}
+	if (evidence.some((f) => /dangling|drift/.test(f.title.toLowerCase()))) {
+		out.push('Dangling CNAME to a resource that no longer resolves (attacker registrability not established)');
+	}
+	// Never emit a path that can name nothing it rests on — an unreviewable
+	// finding is the failure mode this whole family of fixes exists to stop.
+	if (out.length === 0 && evidence.length > 0) {
+		out.push('Subdomain takeover signal reported by check_subdomain_takeover');
+	}
+	return out;
 }
 
 /** Check if DNSSEC is not enabled. */
@@ -286,6 +391,15 @@ interface AttackPathDefinition {
 	id: string;
 	name: string;
 	severity: 'critical' | 'high' | 'medium' | 'low';
+	/**
+	 * Derives the emitted severity from the evidence, overriding `severity`.
+	 *
+	 * Present only where one `condition` accepts findings of DIFFERENT severities
+	 * (#787). A static `severity` then reports the worst case for every match,
+	 * and since `overallRisk` is the most severe feasible path, that promotes the
+	 * whole domain on the strength of the weakest qualifying finding.
+	 */
+	severityFrom?: (findings: Finding[]) => 'critical' | 'high' | 'medium' | 'low';
 	feasibility: 'trivial' | 'moderate' | 'difficult';
 	condition: (findings: Finding[]) => boolean;
 	/**
@@ -341,10 +455,13 @@ const ATTACK_PATH_DEFINITIONS: AttackPathDefinition[] = [
 	{
 		id: 'subdomain_takeover',
 		name: 'Subdomain Takeover via Dangling CNAME',
+		// Ceiling only — the emitted value is derived (#787).
 		severity: 'critical',
+		severityFrom: (findings) => subdomainTakeoverSeverity(findings),
 		feasibility: 'moderate',
 		condition: (findings) => hasSubdomainTakeoverRisk(findings),
-		prerequisites: ['Dangling CNAME pointing to unclaimed resource'],
+		// Derived, not asserted — see `subdomainTakeoverPrerequisites` (#787).
+		prerequisites: (findings) => subdomainTakeoverPrerequisites(findings),
 		steps: [
 			'Identify dangling CNAME record pointing to deprovisioned cloud resource',
 			'Register the unclaimed resource on the cloud provider',
@@ -553,7 +670,7 @@ export function evaluateAttackPathsFromFindings(findings: Finding[]): AttackPath
 			feasiblePaths.push({
 				id: def.id,
 				name: def.name,
-				severity: def.severity,
+				severity: def.severityFrom ? def.severityFrom(findings) : def.severity,
 				feasibility: def.feasibility,
 				prerequisites:
 					typeof def.prerequisites === 'function' ? def.prerequisites(findings) : def.prerequisites,
