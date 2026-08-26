@@ -34,9 +34,9 @@ describe('classifyControlProbe — only an UNREBUTTED, MEASURED absence licenses
 		expect(classifyControlProbe({ category: 'caa', recordPresent: false }).state).toBe('absent');
 	});
 
-	it('an affirmative controlPresent REBUTS the absence (the registry-signed case)', () => {
-		// check-dnssec documents recordPresent:false + controlPresent:true for a zone its
-		// ccTLD registry signed. Reading absence there would fail a protected domain.
+	it('an affirmative controlPresent REBUTS absence for split-signal or legacy results', () => {
+		// Current DNSSEC results require AD + DNSKEY + DS, but the generic verifier also
+		// accepts persisted/external results with independent affirmative evidence.
 		expect(classifyControlProbe({ recordPresent: false, controlPresent: true }).state).toBe('present');
 	});
 

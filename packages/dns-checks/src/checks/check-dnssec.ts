@@ -127,7 +127,7 @@ export async function checkDNSSEC(
 	}
 
 	// Consolidated finding logic
-	if (!adFlag && dnskeyRecords.length === 0 && dsRecords.length === 0) {
+	if (dnskeyRecords.length === 0 && dsRecords.length === 0) {
 		// Fully absent — HIGH severity, but the SCORE penalty is decoupled to −40 via
 		// `penaltyOverride`. NIST SP 800-81r3 (Mar 2026) makes DNSSEC a baseline
 		// deployment goal and RFC 9364 (BCP 237) states origin-authentication via DNSSEC
@@ -158,6 +158,19 @@ export async function checkDNSSEC(
 				'DNSSEC chain of trust incomplete',
 				'high',
 				`DNSKEY records are published for ${target} but no DS records exist in the parent zone. The chain of trust is broken — DNSSEC validation will fail.`,
+				{ missingControl: true },
+			),
+		);
+	} else if (dnskeyRecords.length === 0 && dsRecords.length > 0) {
+		// Parent DS published but the child DNSKEY is absent — also a broken chain.
+		// A validating resolver cannot match the delegation to a zone key, regardless
+		// of a transient/cached AD observation, so this must never become a clean pass.
+		findings.push(
+			createFinding(
+				'dnssec',
+				'DNSSEC chain of trust incomplete',
+				'high',
+				`DS records are published for ${target} in the parent zone but no DNSKEY records are available from the child zone. The chain of trust is broken — DNSSEC validation will fail.`,
 				{ missingControl: true },
 			),
 		);
@@ -238,8 +251,9 @@ export async function checkDNSSEC(
 	//   | published but BROKEN/bogus     | true          | false          |
 	//   | signed and validating          | true          | true           |
 	//
-	// A zone validating with no DNSKEY/DS of its own (registry/TLD-signed) reads
-	// false/true — which is exactly that state, not a contradiction.
+	// The AD flag alone never makes an unsigned zone's control present. A secure
+	// delegation requires both the child DNSKEY and parent DS; this also prevents a
+	// resolver's transient AD=true response from becoming an affirmative safety claim.
 	//
 	// Score-neutral by construction: `buildCheckResult` only copies these onto the result,
 	// and `detectDomainContext` reads `controlPresent` for mx/ssl/caa/dkim/mta_sts/bimi/dmarc
@@ -249,7 +263,7 @@ export async function checkDNSSEC(
 	const recordPresent = anyDnssecRecordObserved ? true : dnskeyQueryFailed || dsQueryFailed ? undefined : false;
 	// The AD flag is only an observation when a raw resolver was actually available to ask;
 	// without `rawQueryDNS` the local `adFlag` is a default-false placeholder, not a measurement.
-	const controlPresent = rawQueryDNS ? adFlag : undefined;
+	const controlPresent = rawQueryDNS ? adFlag && dnskeyRecords.length > 0 && dsRecords.length > 0 : undefined;
 
 	return buildCheckResult('dnssec', findings, controlPresent, recordPresent);
 }

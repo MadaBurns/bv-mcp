@@ -38,7 +38,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.24.0';
+export const PARITY_CORPUS_VERSION = '1.25.0';
 
 /**
  * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
@@ -594,6 +594,17 @@ export const DNSSEC_PARITY_FIXTURES: DnssecParityFixture[] = [
 	},
 	{
 		check: 'dnssec',
+		name: 'AD flag without DNSKEY/DS remains unsigned',
+		domain: 'example.com',
+		ad: true,
+		dnskey: [],
+		ds: [],
+		nsec3param: [],
+		expectedScore: 60,
+		expectedMissingControl: false,
+	},
+	{
+		check: 'dnssec',
 		name: 'valid + DNSSEC (ECDSA P-256)',
 		domain: 'example.com',
 		ad: true,
@@ -621,6 +632,17 @@ export const DNSSEC_PARITY_FIXTURES: DnssecParityFixture[] = [
 		ad: false,
 		dnskey: ['257 3 13 AwEAAabc'],
 		ds: [],
+		nsec3param: [],
+		expectedScore: 0,
+		expectedMissingControl: true,
+	},
+	{
+		check: 'dnssec',
+		name: 'broken chain (DS, no DNSKEY, AD on — BOGUS)',
+		domain: 'example.com',
+		ad: true,
+		dnskey: [],
+		ds: ['12345 13 2 abc123'],
 		nsec3param: [],
 		expectedScore: 0,
 		expectedMissingControl: true,

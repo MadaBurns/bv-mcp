@@ -70,7 +70,7 @@ export interface StructuredScanResult {
 	interactionEffects: Array<{ ruleId: string; penalty: number; narrative: string }>;
 	/** Execution status per check category. 'completed' = ran normally, 'timeout' = per-check timeout, 'error' = threw. */
 	checkStatuses: Record<string, 'completed' | 'timeout' | 'error'>;
-	/** DNSSEC configuration source. 'domain_configured' = domain has own DNSKEY/DS; 'tld_inherited' = inherited from TLD registry. null = not yet available. */
+	/** DNSSEC configuration source. `tld_inherited` is retained only for backward-compatible parsing of older scan records; current checks require DNSKEY+DS and emit `domain_configured`. */
 	dnssecSource: 'domain_configured' | 'tld_inherited' | null;
 	/** CDN provider detected from HTTP response headers. null when no CDN detected or check did not run. */
 	cdnProvider: string | null;

@@ -217,6 +217,15 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 					`DMARC subdomain policy value "${sp}" is invalid. Allowed values are none, quarantine, or reject.`,
 				),
 			);
+		} else if (policy === 'none' && sp === 'none') {
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Subdomain policy set to none',
+					'info',
+					'DMARC subdomain policy is set to "none" (sp=none), so subdomains have no enforcement against spoofing. Set sp=quarantine or sp=reject to enforce DMARC on subdomains.',
+				),
+			);
 		} else if (policy === 'reject' && sp === 'none') {
 			findings.push(
 				createFinding(
