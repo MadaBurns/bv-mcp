@@ -118,56 +118,33 @@ describe('querySignins', () => {
 // ---------------------------------------------------------------------------
 
 describe('queryUal', () => {
-	it('returns { ok: true, data } when proxy responds 200', async () => {
-		const data = { auditRecords: [{ operation: 'MailItemsAccessed' }] };
-		const result = await queryUal({ ms_tenant_id: 'tenant-abc' }, mockProxy(data));
-		expect(result.ok).toBe(true);
-		if (result.ok) {
-			expect(result.data).toEqual(data);
-		}
-	});
-
-	it('returns { ok: false, unprovisioned: true } when proxy is undefined (fail-soft)', async () => {
+	it('returns the compatibility tombstone with no proxy binding', async () => {
 		const result = await queryUal({ ms_tenant_id: 'tenant-abc' });
-		expect(result.ok).toBe(false);
-		if (!result.ok && 'unprovisioned' in result) {
-			expect(result.unprovisioned).toBe(true);
-			expect(result.tool).toBe('query-ual');
-		} else {
-			throw new Error('expected unprovisioned shape');
-		}
+		expect(result).toEqual({ ok: false, error: 'query_ual_deprecated' });
 	});
 
-	it('passes optional filters in args', async () => {
-		let capturedBody = '';
-		const capturingProxyLegacy: { fetch: typeof fetch } = {
-			fetch: async (input, init) => {
-				capturedBody = init?.body as string;
-				return new Response(JSON.stringify({}), { status: 200 });
+	it('never calls the proxy, even when a binding and legacy filters are supplied', async () => {
+		let calls = 0;
+		const proxy: { fetch: typeof fetch } = {
+			fetch: async () => {
+				calls++;
+				return Response.json({ auditRecords: [{ operation: 'MailItemsAccessed' }] });
 			},
 		};
-		await queryUal(
-			{ ms_tenant_id: 'tenant-abc', operation: 'MailItemsAccessed', user_principal_name: 'bob@corp.com', since_hours: 6 },
-			capturingProxyLegacy,
+
+		const result = await queryUal(
+			{
+				ms_tenant_id: 'tenant-abc',
+				operation: 'MailItemsAccessed',
+				user_principal_name: 'bob@corp.com',
+				since_hours: 6,
+			},
+			proxy,
+			{ authToken: 'ual-token', keyHash: 'hash-ual' },
 		);
-		const parsed = JSON.parse(capturedBody);
-		expect(parsed.operation).toBe('MailItemsAccessed');
-		expect(parsed.user_principal_name).toBe('bob@corp.com');
-		expect(parsed.since_hours).toBe(6);
-	});
 
-	it('threads keyHash into request body when provided', async () => {
-		const proxy = capturingProxy();
-		await queryUal({ ms_tenant_id: 'tenant-abc' }, proxy, { keyHash: 'hash-ual' });
-		const { body } = proxy.getLastRequest();
-		expect((body as Record<string, unknown>).keyHash).toBe('hash-ual');
-	});
-
-	it('sets Authorization: Bearer header when authToken is provided', async () => {
-		const proxy = capturingProxy();
-		await queryUal({ ms_tenant_id: 'tenant-abc' }, proxy, { authToken: 'ual-token' });
-		const { headers } = proxy.getLastRequest();
-		expect(headers['Authorization']).toBe('Bearer ual-token');
+		expect(result).toEqual({ ok: false, error: 'query_ual_deprecated' });
+		expect(calls).toBe(0);
 	});
 });
 

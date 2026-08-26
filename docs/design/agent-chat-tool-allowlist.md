@@ -8,8 +8,9 @@
 bv-web-prod is adding a customer-facing AI chat agent that calls bv-mcp tools as its
 execution backend, over the existing `/internal/tools/*` service-binding path. Today that
 path is reached with `BV_WEB_INTERNAL_KEY`, which grants **ungated access to all tools** —
-including `query_signins` / `query_ual` (M365 identity telemetry), `osint_*`, and
-`scan_buckets_*`. An LLM is choosing the tool name and arguments on the other side.
+including `query_signins` (M365 identity telemetry), the deprecated `query_ual`
+compatibility tombstone, `osint_*`, and `scan_buckets_*`. An LLM is choosing the
+tool name and arguments on the other side.
 
 The bv-web gateway enforces a 13-tool read-only allowlist in-process, but that is a single
 in-process check one typo/routing-bug away from putting LLM-controlled arguments on

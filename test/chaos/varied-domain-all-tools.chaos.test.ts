@@ -441,6 +441,11 @@ describe('chaos: varied-domain all-tools scanning', () => {
 			const result = await handleToolsCall(toolCase, undefined, runtimeOptions);
 			results.set(toolCase.name, result);
 			const text = result.content.map((entry) => ('text' in entry ? entry.text : '')).join('\n');
+			if (toolCase.name === 'query_ual') {
+				expect(result.isError).toBe(true);
+				expect(result.structuredContent).toEqual({ ok: false, error: 'query_ual_deprecated' });
+				continue;
+			}
 			if (result.isError || result.content.length === 0 || text.length === 0) {
 				failures.push({
 					name: toolCase.name,

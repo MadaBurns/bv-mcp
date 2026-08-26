@@ -122,10 +122,10 @@ describe('partner-tier rate-limit decision coverage audit (#746)', () => {
 });
 
 describe('legacy identity-secops quota expectations', () => {
-	// These four proxy Microsoft Graph reads through bv-web and are auth-required
-	// (unauthenticated callers get 401 before dispatch), so their cost bound is
-	// the explicit per-principal cap — they must never fall back to the flat
-	// 100k partner limit.
+	// Three tools proxy Microsoft Graph reads through bv-web; deprecated query_ual
+	// retains the same legacy auth/quota tripwires until removal. All four must
+	// keep explicit per-principal caps rather than inherit the flat 100k partner
+	// limit.
 	it('identity-secops tools keep explicit paid-tier caps (never flat-inherited)', () => {
 		for (const tool of IDENTITY_SECOPS_TOOLS) {
 			expect(TIER_TOOL_DAILY_LIMITS.partner?.[tool], `${tool}: explicit partner cap`).toBe(2_000);
