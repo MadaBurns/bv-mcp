@@ -51,7 +51,7 @@ describe('buildStructuredScanResult', () => {
 		expect(s.checkStatuses.spf).toBe('completed');
 	});
 
-	it('derives dnssecSource from finding metadata', () => {
+	it('preserves the legacy tld_inherited source value from older finding metadata', () => {
 		const result = makeMockScanResult({
 			checks: [
 				{

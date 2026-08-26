@@ -24,11 +24,13 @@
  * rides through opaquely inside `data` on the 2xx path (issue #417 part 2
  * labels it in the tool descriptions; the proxy stays body-agnostic).
  *
- * BOTH marker values are now real on the wire: bv-web-prod's `liveGetCaPolicies()`
- * returns `representative: false` for `get-ca-policies` when a tenant is connected
- * and keyed, falling back to the `representative: true` seam otherwise. The other
- * three tools are still representative-only. The pass-through cases below pin both
- * directions, because a seam that DEFAULTED the marker either way would be a
+ * BOTH marker values are now real on the wire: bv-web-prod can return
+ * `representative: false` for `query-signins`, `get-ca-policies`, and
+ * `assess-coverage` when a tenant is connected and the upstream Graph read succeeds,
+ * falling back to the `representative: true` seam otherwise. `query-ual` remains
+ * representative-only until its Purview Audit Search integration lands. The
+ * pass-through cases below pin both directions, because a seam that DEFAULTED the
+ * marker either way would be a
  * correctness bug with no test to catch it: defaulting to `true` mislabels live
  * Entra data as a sample, and defaulting to `false` presents sample data to an
  * LLM as live threat intel — the exact hazard #417 part 2 exists to prevent.

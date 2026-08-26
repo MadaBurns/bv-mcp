@@ -26,13 +26,12 @@ import { isCategoryNonApplicable } from '../tools/scan/format-report';
  * http_security never set it) or that the query failed, and absence of a signal is
  * not evidence of absence.
  *
- * `recordPresent === false` is NOT sufficient on its own. `check-dnssec` documents
- * a legitimate `recordPresent: false` + `controlPresent: true` state: a zone that
- * validates while publishing no DNSKEY/DS of its own, because its ccTLD registry
- * signed it. That zone IS cryptographically protected, so failing it on missing
- * records would trade a false PASS for a false FAIL. An affirmative
- * `controlPresent` therefore REBUTS the absence, and only unrebutted evidence of
- * absence disqualifies.
+ * `recordPresent === false` is NOT sufficient on its own for every current or
+ * external producer. A check may have independent affirmative evidence that a
+ * control is active even when its record-presence probe reports false, and legacy
+ * persisted results may carry that split signal. An explicit `controlPresent: true`
+ * therefore REBUTS the absence. The current DNSSEC check itself no longer emits
+ * that pair: after #793 it requires AD + DNSKEY + DS before asserting presence.
  */
 export function isUnrebuttedAbsence(result: CheckResult): boolean {
 	return result.recordPresent === false && result.controlPresent !== true;

@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.67.0] - 2026-08-26
+
+**Scoring-model change.** `SCORING_MODEL_VERSION` 1.13.0 → **1.14.0** and `@blackveil/dns-checks` 1.24.0 → **1.25.0** (`PARITY_CORPUS_VERSION` in lockstep). DNSSEC and DKIM results can move downward for the affected evidence shapes; the DMARC evidence correction is score-neutral. Full rationale is recorded in `src/lib/scoring-version.ts`.
+
+### Fixed
+
+- **DNSSEC no longer treats a resolver's AD flag as proof that an unsigned or broken zone validates** (#793). `AD=true` with neither DNSKEY nor DS now returns the canonical unsigned score of 60 instead of a 100-point "cryptographically verified" pass. A parent DS without a child DNSKEY is now an explicit broken chain with score 0. `controlPresent` requires AD + DNSKEY + DS, and source attribution reuses that canonical evidence rather than issuing a second, potentially inconsistent DNS read.
+- **The bounded DKIM probe list now includes the measured `resend` selector** (#774). A weak key published there can no longer hide behind another sender's healthy key; detected legacy RSA receives the existing high-severity finding and penalty. Synthetic multi-sender coverage pins the aggregate result.
+- **Explicit `p=none; sp=none` DMARC policies now emit subdomain evidence** (#789). The new informational finding is deliberately score-neutral relative to inherited `p=none`, but restores the evidence consumed by `simulate_attack_paths` so the most permissive subdomain posture is no longer silent.
+
+### Changed
+
+- **M365 tool descriptions now match the implemented seams** (#417, #759). `query_signins`, `get_ca_policies`, and `assess_coverage` are labelled live-capable but not production-verified and retain per-response `representative` semantics. `query_ual` remains sample-only while naming Microsoft Graph's Purview Audit Search API as the supported future live source; that asynchronous integration is not implemented yet.
+- **Registry-drift remediation now points to the actual operator-run publish path** (#792). The tag workflow validates and creates the GitHub Release only; it does not publish to the MCP Registry. Drift issues now direct operators to `npm run publish:registry` from the exact release tag and require cache-busted verification.
+
+### Known
+
+- npm publication remains intentionally blocked pending replacement credentials (#719).
+- Real-tenant production verification of the M365 live paths remains outstanding (#417), and `query_ual` still needs its asynchronous Purview integration (#759).
+
 ## [3.66.0] - 2026-08-26
 
 **No scoring-model change.** `SCORING_MODEL_VERSION` is unchanged and `@blackveil/dns-checks` stays at **1.24.0** — no check, weight, threshold or grade band moves, and no domain is re-graded. `simulate_attack_paths` output does change: one path drops in severity, another starts firing where it never did.

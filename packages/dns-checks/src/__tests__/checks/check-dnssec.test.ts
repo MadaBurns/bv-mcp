@@ -32,6 +32,19 @@ describe('checkDNSSEC', () => {
 		expect(absent?.metadata?.missingControl).toBeUndefined();
 	});
 
+	it('does not accept AD=true without DNSKEY and DS as a validated zone', async () => {
+		const queryDNS = createMockDNS({});
+		const rawQueryDNS: RawDNSQueryFunction = vi.fn(async () => ({ AD: true }));
+
+		const result = await checkDNSSEC('example.com', queryDNS, { rawQueryDNS });
+
+		expect(result.findings.some((f) => f.title === 'DNSSEC not enabled')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'DNSSEC enabled and validated')).toBe(false);
+		expect(result.score).toBe(60);
+		expect(result.recordPresent).toBe(false);
+		expect(result.controlPresent).toBe(false);
+	});
+
 	it('reports chain of trust incomplete when DNSKEY present but no DS', async () => {
 		// Return DNSKEY from first call, empty from second (DS)
 		const mockDNS: DNSQueryFunction = vi.fn(async (_domain: string, type: string) => {
@@ -41,6 +54,30 @@ describe('checkDNSSEC', () => {
 		const rawQueryDNS: RawDNSQueryFunction = vi.fn(async () => ({ AD: false }));
 		const result = await checkDNSSEC('example.com', mockDNS, { rawQueryDNS });
 		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete')).toBe(true);
+	});
+
+	it('reports a broken chain when AD=true and a parent DS exists without a child DNSKEY', async () => {
+		const mockDNS: DNSQueryFunction = vi.fn(async (_domain: string, type: string) => {
+			if (type === 'DS') return ['12345 13 2 abcdef...'];
+			return [];
+		});
+		const rawQueryDNS: RawDNSQueryFunction = vi.fn(async () => ({ AD: true }));
+
+		const result = await checkDNSSEC('example.com', mockDNS, { rawQueryDNS });
+
+		expect(result.findings).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					title: 'DNSSEC chain of trust incomplete',
+					severity: 'high',
+					metadata: expect.objectContaining({ missingControl: true }),
+				}),
+			]),
+		);
+		expect(result.findings.some((f) => f.title === 'DNSSEC enabled and validated')).toBe(false);
+		expect(result.score).toBe(0);
+		expect(result.recordPresent).toBe(true);
+		expect(result.controlPresent).toBe(false);
 	});
 
 	it('reports DNSSEC enabled and validated when all checks pass', async () => {

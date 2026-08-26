@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import securityWorkflow from '../../.github/workflows/security.yml?raw';
 import hygieneWorkflow from '../../.github/workflows/repo-hygiene.yml?raw';
+import registryDriftWorkflow from '../../.github/workflows/registry-drift-check.yml?raw';
 import packageJsonText from '../../package.json?raw';
 
 const packageJson = JSON.parse(packageJsonText) as { scripts?: Record<string, string> };
@@ -74,5 +75,13 @@ describe('workflow safety gates', () => {
 		for (const [path, body] of activeWorkflows) {
 			expect(body, `${path} must not pipe curl/wget output into a shell`).not.toMatch(/\b(?:curl|wget)\b[^\n|]{0,200}\|\s*(?:env\s+)?(?:bash|sh|zsh)\b/);
 		}
+	});
+
+	it('registry drift issues direct operators to the current manual publish path', () => {
+		expect(registryDriftWorkflow).toContain('Publishing is operator-run.');
+		expect(registryDriftWorkflow).toContain('npm run publish:registry');
+		expect(registryDriftWorkflow).toContain('worktree pinned to that exact tag');
+		expect(registryDriftWorkflow).not.toContain('Publish to MCP Registry');
+		expect(registryDriftWorkflow).not.toContain('approve it');
 	});
 });

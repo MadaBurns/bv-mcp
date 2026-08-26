@@ -101,7 +101,25 @@ function mockSecureDomain() {
 				);
 			}
 
-			// DNSSEC: AD=true
+			// DNSSEC: AD=true plus a complete child/parent chain. AD alone is not
+			// evidence that the zone is signed (#793).
+			if (url.includes('type=DNSKEY') || url.includes('type=48')) {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name: 'example.com', type: 48 }],
+						[{ name: 'example.com', type: 48, TTL: 300, data: '257 3 13 AwEAAabc' }],
+					),
+				);
+			}
+			if (url.includes('type=DS') || url.includes('type=43')) {
+				return Promise.resolve(
+					createDohResponse(
+						[{ name: 'example.com', type: 43 }],
+						[{ name: 'example.com', type: 43, TTL: 300, data: '12345 13 2 abc123' }],
+					),
+				);
+			}
+
 			if (url.includes('type=A') || url.includes('type=1')) {
 				return Promise.resolve(dnssecResponse('example.com', true));
 			}

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 import { describe, expect, it } from 'vitest';
 import { appendDmarcCleanInfo, classifyDmarc } from './dmarc';
+import { computeCategoryScore } from '../model';
 
 const base = { recordCount: 1 } as const;
 
@@ -52,6 +53,18 @@ describe('classifyDmarc', () => {
 	it('flags weak subdomain policy as high when np is absent (DMARCbis)', () => {
 		const f = classifyDmarc({ recordCount: 1, policy: 'reject', sp: 'none', rua: 'mailto:dmarc@example.com' });
 		expect(f.find((x) => x.title === 'Subdomain policy weaker than parent policy')?.severity).toBe('high');
+	});
+
+	it('reports explicit p=none + sp=none without penalising the same posture twice', () => {
+		const explicit = classifyDmarc({ ...base, policy: 'none', sp: 'none' });
+		const inherited = classifyDmarc({ ...base, policy: 'none' });
+		const finding = explicit.find((x) => x.title === 'Subdomain policy set to none');
+
+		expect(finding).toBeDefined();
+		expect(finding?.severity).toBe('info');
+		expect(finding?.detail).toContain('sp=none');
+		expect(explicit.filter((x) => x.title === 'DMARC policy set to none')).toHaveLength(1);
+		expect(computeCategoryScore(explicit, 'dmarc')).toBe(computeCategoryScore(inherited, 'dmarc'));
 	});
 
 	it('flags invalid policy value as high', () => {
