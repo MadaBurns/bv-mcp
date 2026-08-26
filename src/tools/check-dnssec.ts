@@ -7,7 +7,7 @@
 
 import { checkDNSSEC } from '@blackveil/dns-checks';
 import type { ZoneContext } from '@blackveil/dns-checks';
-import { queryDns, queryDnsRecords, DnsQueryError } from '../lib/dns';
+import { queryDns, DnsQueryError } from '../lib/dns';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
 import { resolveZoneApex } from '../lib/zone-apex';
 import type { QueryDnsOptions } from '../lib/dns-types';
@@ -45,35 +45,18 @@ async function confirmAdWithGoogle(domain: string, timeoutMs = AD_CONFIRM_TIMEOU
 }
 
 /**
- * Augment a DNSSEC check result with dnssecSource metadata.
- * Queries DNSKEY/DS records to determine whether DNSSEC is domain-configured or TLD-inherited.
+ * Augment a validated DNSSEC result with source metadata.
+ *
+ * The shared check's structured presence flags are the source of truth: after #793,
+ * `controlPresent: true` requires AD + DNSKEY + DS. Re-querying those records here
+ * duplicated network work and could mislabel a transient/partial second observation as
+ * TLD-inherited, so source attribution is derived from the completed check instead.
  */
-async function augmentWithSource(domain: string, baseResult: CheckResult, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
-	const [dnskeyResult, dsResult] = await Promise.allSettled([
-		queryDnsRecords(domain, 'DNSKEY', dnsOptions),
-		queryDnsRecords(domain, 'DS', dnsOptions),
-	]);
 
-	const hasDnskey = dnskeyResult.status === 'fulfilled' && dnskeyResult.value.length > 0;
-	const hasDs = dsResult.status === 'fulfilled' && dsResult.value.length > 0;
-	const dnssecSource = hasDnskey && hasDs ? 'domain_configured' : 'tld_inherited';
+function augmentWithSource(domain: string, baseResult: CheckResult): CheckResult {
+	if (baseResult.controlPresent !== true || baseResult.recordPresent !== true) return baseResult;
 
-	if (dnssecSource === 'tld_inherited') {
-		const inheritedFinding = createFinding(
-			'dnssec',
-			'DNSSEC inherited from TLD',
-			'info',
-			`DNSSEC validation passes but ${domain} does not have its own DNSKEY or DS records. DNSSEC protection is inherited from the TLD registry, not configured by the domain owner.`,
-			{ dnssecSource: 'tld_inherited' },
-		);
-		// Carry the core's presence flags through verbatim. `augmentWithSource` only ever
-		// relabels findings — it re-derives no observation — so dropping them here would
-		// silently erase the dnssec adoption signal on exactly the SIGNED paths, which are
-		// the ones a consumer most needs to tell apart from the 60-scoring unsigned zone.
-		return buildCheckResult('dnssec', [...baseResult.findings, inheritedFinding], baseResult.controlPresent, baseResult.recordPresent);
-	}
-
-	// domain_configured — never tag the non-apex attribution note: that finding describes
+	// Never tag the non-apex attribution note: that finding describes
 	// the scanned label's inheritance relationship, while this metadata describes the
 	// evaluated zone apex. Tag the first actual DNSSEC verdict/audit finding instead.
 	const sourceCarrierIndex = baseResult.findings.findIndex((finding) => finding.title !== 'DNSSEC posture inherited from zone apex');
@@ -100,7 +83,7 @@ async function augmentWithSource(domain: string, baseResult: CheckResult, dnsOpt
  * Check DNSSEC configuration for a domain.
  * Verifies the AD (Authenticated Data) flag, checks for DNSKEY/DS records,
  * and audits algorithm and digest type security.
- * Augments results with dnssecSource metadata: 'domain_configured' or 'tld_inherited'.
+ * Augments validated results with `dnssecSource: 'domain_configured'` metadata.
  *
  * When the primary resolver reports AD=false but DNSKEY+DS records exist ("validation failing"),
  * fires a confirmation probe to Google DoH. If Google says AD=true (edge flap), re-runs the
@@ -167,13 +150,13 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions, 
 					},
 				},
 			) as CheckResult;
-			return augmentWithSource(dnssecTarget, correctedResult, dnsOptions);
+			return augmentWithSource(dnssecTarget, correctedResult);
 		}
 		// Google also says AD=false (or failed) — keep the original finding
 		return baseResult;
 	}
 
-	return augmentWithSource(dnssecTarget, baseResult, dnsOptions);
+	return augmentWithSource(dnssecTarget, baseResult);
 	} catch (err) {
 		if (err instanceof DnsQueryError) {
 			const message = err.message;

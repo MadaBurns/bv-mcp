@@ -21,7 +21,7 @@ describe('isUnrebuttedAbsence', () => {
 		expect(isUnrebuttedAbsence(check({ recordPresent: false, controlPresent: false }))).toBe(true);
 		// absence observed, control flag not reported at all (e.g. no raw resolver)
 		expect(isUnrebuttedAbsence(check({ recordPresent: false }))).toBe(true);
-		// registry/ccTLD-signed zone: no DNSKEY/DS of its own, but the chain validates
+		// Explicit independent control evidence rebuts the record-presence signal.
 		expect(isUnrebuttedAbsence(check({ recordPresent: false, controlPresent: true }))).toBe(false);
 		// published but weak/broken — a record exists, so this is not an absence
 		expect(isUnrebuttedAbsence(check({ recordPresent: true, controlPresent: false }))).toBe(false);
@@ -35,7 +35,7 @@ describe('isSatisfiedControl', () => {
 	it('requires the check to have both not penalized AND not observed an unrebutted absence', () => {
 		// The #705/#706 defect shape: unpenalized (score 60, passed true) but nothing published.
 		expect(isSatisfiedControl(check({ passed: true, score: 60, recordPresent: false, controlPresent: false }))).toBe(false);
-		// Registry-signed: absent records, affirmative control.
+		// Split-signal/legacy result: absent records, affirmative control evidence.
 		expect(isSatisfiedControl(check({ passed: true, score: 85, recordPresent: false, controlPresent: true }))).toBe(true);
 		// Present and satisfied.
 		expect(isSatisfiedControl(check({ passed: true, recordPresent: true, controlPresent: true }))).toBe(true);
@@ -134,7 +134,7 @@ describe('isSatisfiedControl — severity floor (#726)', () => {
 	it('the floor is additive — the #705/#706 presence clauses are unchanged', () => {
 		// Unrebutted absence with NO findings at all still fails (the original defect).
 		expect(isSatisfiedControl(check({ passed: true, score: 60, recordPresent: false, controlPresent: false }))).toBe(false);
-		// Registry-signed zone with only advisory findings still passes.
+		// An affirmative split signal with only advisory findings still passes.
 		expect(
 			isSatisfiedControl(check({ passed: true, score: 85, recordPresent: false, controlPresent: true, findings: [finding('low')] } as Partial<CheckResult>)),
 		).toBe(true);

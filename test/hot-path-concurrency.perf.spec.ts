@@ -180,13 +180,11 @@ describe('scan_domain hot-path concurrency guard (C-perf)', () => {
 		// queries like NS/A/TXT appearing in many checks, the deduped count is ~20–30.
 		// This assertion catches a catastrophic cache regression (e.g. 200+ fetches).
 		expect(countWithCache).toBeGreaterThan(0);
-		// Sanity upper bound: a correctly deduplicated scan should not exceed
-		// 120 DoH fetches. Current baseline is ~87 for a 19-check scan. This ceiling
-		// is set at ~1.4× the baseline — loose enough to absorb a new check being added,
-		// tight enough to catch a catastrophic cache-bypass regression (e.g. 500+ fetches
-		// if the queryCache is removed and every check fans out independently).
-		// If this assertion triggers after adding a check, bump proportionally.
-		expect(countWithCache).toBeLessThan(120);
+		// Sanity upper bound: the current selector/check catalogue produces 121 DoH
+		// fetches with the shared cache after adding the measured Resend selector.
+		// Keep a small allowance for catalogue growth while still catching a
+		// catastrophic cache-bypass/query regression.
+		expect(countWithCache).toBeLessThan(125);
 	});
 });
 

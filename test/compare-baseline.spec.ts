@@ -480,9 +480,9 @@ describe('compare_baseline does not pass a control rule whose record was never p
 	}
 
 	/**
-	 * The registry-signed counter-fixture — `check-dnssec.ts` documents this exact
-	 * `recordPresent: false` + `controlPresent: true` pair as a ccTLD/registry-signed
-	 * zone that validates without publishing a DNSKEY/DS of its own. It IS protected.
+	 * Counter-fixture for a split-signal or legacy producer that independently
+	 * affirms the control despite a negative record-presence observation. Current
+	 * DNSSEC results do not emit this pair after #793.
 	 */
 	function absentRecordsButControlActive(category: string): CheckResult {
 		return {
@@ -550,12 +550,12 @@ describe('compare_baseline does not pass a control rule whose record was never p
 	});
 
 	/**
-	 * The load-bearing rebuttal. Without it the fix trades the false PASS for a
-	 * false FAIL on a zone that is genuinely, cryptographically protected.
+	 * The load-bearing generic rebuttal for persisted or external CheckResult values
+	 * carrying independent affirmative control evidence.
 	 */
-	it('still PASSES require_dnssec for a registry-signed zone (recordPresent false + controlPresent true)', async () => {
+	it('still PASSES a split-signal result with recordPresent false + controlPresent true', async () => {
 		const { compareBaseline } = await import('../src/tools/compare-baseline');
-		const scan = scanWith('registry-signed.example', [absentRecordsButControlActive('dnssec')]);
+		const scan = scanWith('affirmed-control.example', [absentRecordsButControlActive('dnssec')]);
 
 		const result = compareBaseline(scan, { require_dnssec: true });
 

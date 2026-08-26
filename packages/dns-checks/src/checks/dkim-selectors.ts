@@ -72,6 +72,8 @@ export const COMMON_DKIM_SELECTORS: readonly string[] = [
 	'scph0322',
 	// Postmark
 	'pm',
+	// Resend (provider-published direct TXT, no v= tag)
+	'resend',
 	// --- Added 2026-08-06, each confirmed by a live DoH probe (evidence domain
 	// in parentheses). Regression-guarded by dkim-selector-coverage.test.ts. ---
 	// Fastmail (fastmail.com published NOTHING at any pre-existing selector —

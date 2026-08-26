@@ -3,8 +3,8 @@
 /**
  * Provider coverage guard for the DKIM selector probe list.
  *
- * Every selector asserted here was confirmed by a live Cloudflare DoH probe on
- * 2026-08-06 against a real domain (named per case). The list is a heuristic —
+ * Every selector asserted here was confirmed by a live Cloudflare DoH probe
+ * against a real evidence domain (named per case). The list is a heuristic —
  * a miss hard-floors the dkim category at 50 — so each provider gets a
  * regression test proving the default probe path finds a key published ONLY at
  * that provider's selector.
@@ -23,6 +23,8 @@ import type { DNSQueryFunction } from '../../types';
 const VALID_KEY = 'v=DKIM1; k=rsa; p=' + 'A'.repeat(392);
 /** SendGrid-family records omit v=DKIM1 by design (RFC 6376 §3.6.1 tolerates it). */
 const NO_VERSION_KEY = 'k=rsa; t=s; p=' + 'A'.repeat(392);
+/** Synthetic Resend-shaped direct-TXT 1024-bit RSA key without a v= tag. */
+const RESEND_LEGACY_KEY = 'p=MI' + 'GfMA0GCSqGSIb3DQEBAQUAA4GNADCB' + 'A'.repeat(184);
 
 function dnsFor(txt: Record<string, string[]>, cname: Record<string, string> = {}): DNSQueryFunction {
 	function resolveTxt(name: string, depth = 0): string[] {
@@ -36,7 +38,7 @@ function dnsFor(txt: Record<string, string[]>, cname: Record<string, string> = {
 	});
 }
 
-/** Each row verified by a live Cloudflare DoH probe on 2026-08-06. */
+/** Original rows verified 2026-08-06; Resend reverified 2026-08-26. */
 const MEASURED_COVERAGE = [
 	{ provider: 'Fastmail', selector: 'fm1', record: VALID_KEY, evidence: 'fastmail.com' },
 	{ provider: 'Fastmail', selector: 'fm2', record: VALID_KEY, evidence: 'fastmail.com' },
@@ -54,6 +56,7 @@ const MEASURED_COVERAGE = [
 	{ provider: 'Zendesk', selector: 'zendesk1', record: VALID_KEY, evidence: 'mailchimp.com' },
 	{ provider: 'Zendesk', selector: 'zendesk2', record: VALID_KEY, evidence: 'mailchimp.com' },
 	{ provider: 'Mailjet', selector: 'mailjet', record: NO_VERSION_KEY, evidence: 'mailgun.com' },
+	{ provider: 'Resend', selector: 'resend', record: RESEND_LEGACY_KEY, evidence: 'resend.com' },
 ];
 
 describe('DKIM selector coverage (default probe list)', () => {
@@ -84,6 +87,26 @@ describe('DKIM selector coverage (default probe list)', () => {
 	it('CONTROL: a total miss still hard-floors the category at 50', async () => {
 		const result = await checkDKIM('example.com', dnsFor({}));
 		expect(result.score).toBe(50);
+	});
+
+	it('surfaces a weak Resend key alongside a healthy listed sender', async () => {
+		const result = await checkDKIM(
+			'example.com',
+			dnsFor({
+				's1._domainkey.example.com': [VALID_KEY],
+				'resend._domainkey.example.com': [RESEND_LEGACY_KEY],
+			}),
+		);
+
+		expect(result.findings).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					severity: 'high',
+					title: 'Legacy RSA key: resend',
+				}),
+			]),
+		);
+		expect(result.score).toBe(60);
 	});
 });
 

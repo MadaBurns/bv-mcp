@@ -901,9 +901,10 @@ describe('map_compliance does not pass a control whose record was never publishe
 	}
 
 	/**
-	 * The registry-signed counter-fixture: no DNSKEY/DS of its own, but the chain
-	 * validates. `check-dnssec` documents this exact `false`/`true` pair as "protected,
-	 * not a contradiction", so it must keep passing.
+	 * Counter-fixture for a split-signal or legacy producer that independently
+	 * affirms the control even though its record-presence probe reported false.
+	 * Current DNSSEC results no longer emit this pair (#793), but the shared mapper
+	 * remains intentionally tolerant of persisted/external CheckResult values.
 	 */
 	function absentRecordsButControlActive(category: string): CheckResult {
 		return {
@@ -941,15 +942,13 @@ describe('map_compliance does not pass a control whose record was never publishe
 	});
 
 	/**
-	 * The registry-signed zone must keep passing. This is the guard that stops the fix
-	 * from becoming the same defect with the opposite sign: a ccTLD-signed zone publishes
-	 * no DNSKEY/DS of its own yet is cryptographically protected, and `check-dnssec`
-	 * documents that `recordPresent: false` + `controlPresent: true` pair as exactly that
-	 * state. Failing it would report a protected zone as non-compliant.
+	 * An explicit affirmative signal must keep passing. This guards the generic
+	 * CheckResult contract for external or persisted producers that have independent
+	 * control evidence despite a negative record-presence observation.
 	 */
-	it('still passes a control whose records are absent but whose control is affirmatively active', () => {
+	it('still passes a split-signal result whose control is affirmatively active', () => {
 		const results = makeAllPassing().map((r) => (r.category === 'dnssec' ? absentRecordsButControlActive('dnssec') : r));
-		const report = evaluateCompliance(results, 'registry-signed.com', 88, 'B');
+		const report = evaluateCompliance(results, 'affirmed-control.example', 88, 'B');
 
 		const control = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§5.1');
 		expect(control).toBeDefined();
@@ -1035,4 +1034,3 @@ describe('map_compliance grade uses the display band SSOT', () => {
 		expect(['A+', 'A', 'B', 'C', 'D', 'F']).toContain(report.grade);
 	});
 });
-

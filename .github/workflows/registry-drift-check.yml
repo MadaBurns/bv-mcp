@@ -9,12 +9,9 @@ name: Registry Drift Check
 # no write call to the registry of any kind. It only reads two public
 # endpoints and opens/updates/closes a GitHub issue.
 #
-# Context (2026-08-23): the drift is not simply "someone forgot the manual
-# step". publish.yml's `Publish to MCP Registry` / `Publish to npm` jobs sit
-# behind the `production` environment's reviewer-approval gate — the v3.63.0
-# run has been PARKED in `waiting` for two days, and the v3.60.0-v3.62.0 runs
-# all completed with `failure`. The issue body below tells the reader to
-# check for a parked/failed publish.yml run before falling back to the
+# Context (2026-08-26): publish.yml validates a release tag and creates the
+# GitHub Release, but it no longer contains publish jobs. Publishing is an
+# operator-run step. The issue body below points directly to the authoritative
 # manual `npm run publish:registry` path from a worktree pinned to the tag.
 #
 # No `uses:` actions anywhere in this file — curl/jq/gh are preinstalled on
@@ -150,20 +147,15 @@ jobs:
             "- Live \`serverInfo.version\` (dns-mcp.blackveilsecurity.com): \`${LIVE_VERSION}\`" \
             "- Registry \`?version=latest\` (registry.modelcontextprotocol.io): \`${REGISTRY_VERSION}\`" \
             "" \
-            "**Before republishing by hand, check whether \`publish.yml\` already ran for" \
-            "\`v${LIVE_VERSION}\` and is PARKED or FAILED:**" \
+            "Publishing is operator-run. \`publish.yml\` validates the tag and creates" \
+            "the GitHub Release only; it does not publish to the MCP Registry." \
             "" \
-            "1. \`gh run list --workflow=publish.yml --repo ${REPO}\` - look for a run" \
-            "   against tag \`v${LIVE_VERSION}\`." \
-            "2. If it is **waiting** on the \`production\` environment reviewer gate" \
-            "   (the \`Publish to MCP Registry\` / \`Publish to npm\` jobs), approve it" \
-            "   there - that is the normal path." \
-            "3. If it already **failed**, read the job logs before doing anything by" \
-            "   hand." \
-            "4. Only if no publish.yml run exists for this tag, or a manual path is" \
-            "   genuinely needed, ship from a fresh worktree pinned to the" \
-            "   \`v${LIVE_VERSION}\` tag: \`npm run publish:registry\` (see CLAUDE.md," \
-            "   \"Manual release fallback\")." \
+            "1. Confirm the \`v${LIVE_VERSION}\` tag identifies the deployed release." \
+            "2. From a fresh worktree pinned to that exact tag, follow CLAUDE.md" \
+            "   (\"Release\") and run \`npm run publish:registry\`. The integrity gate" \
+            "   deliberately refuses a dirty or untagged checkout." \
+            "3. Query the Registry with a cache-buster and verify it reports" \
+            "   \`${LIVE_VERSION}\` before closing this issue." \
             "" \
             "This workflow never publishes anything itself - detection only." \
             "" \

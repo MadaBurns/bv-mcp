@@ -106,9 +106,10 @@ function gradeWorseThan(actual: string, minimum: string): boolean {
  * while the same scan raised a high-severity "DNSSEC not enabled".
  *
  * `isSatisfiedControl` is the SHARED predicate `map_compliance` grades on — including
- * its registry-signed rebuttal, without which this would fail a ccTLD-signed zone that
- * is genuinely protected. A missing `CheckResult` is unchanged: no evidence the control
- * is in effect, so a rule requiring it is not met.
+ * its generic affirmative-control rebuttal for split-signal or legacy results. The
+ * current DNSSEC check requires AD + DNSKEY + DS and does not emit a false/true pair.
+ * A missing `CheckResult` is unchanged: no evidence the control is in effect, so a
+ * rule requiring it is not met.
  */
 function categorySatisfied(scan: ScanDomainResult, category: CheckCategory): boolean {
 	const check = scan.checks.find((value) => value.category === category);

@@ -232,8 +232,20 @@
  *   Also declared (`missingControl: true`) on the DMARC no-record finding — behaviour-neutral,
  *   the prose already zeroed; the flag makes the intent survive a reword. `SEVERITY_PENALTIES`,
  *   weights, tiers, grade bands and profile detection are all untouched.
+ * - 1.14.0 — two previously-unmeasured email/DNS defects now affect category scores using
+ *   existing penalties. (a) DNSSEC can no longer treat a resolver's AD flag as proof that an
+ *   unsigned zone is protected: a validated pass now requires both a child DNSKEY and a parent
+ *   DS. The affected shape (AD=true with neither record) moves DOWN from 100 to the canonical
+ *   unsigned-zone score of 60 and no longer emits an affirmative cryptographic-verification
+ *   claim. (b) The measured `resend` DKIM selector joins the bounded default probe list, so a
+ *   weak key that was previously hidden behind another sender's healthy key now receives the
+ *   existing legacy-RSA finding and penalty. Affected domains can move DOWN from a clean pass;
+ *   no severity, weight, tier, grade band, missing-control rule or profile-detection rule
+ *   changed. The DMARC `p=none; sp=none` correction shipped in the same package is explicitly
+ *   score-neutral (its new finding is `info`) but restores the evidence consumed by attack-path
+ *   analysis. Affected population for all three shapes is unmeasured against the corpus.
  */
-export const SCORING_MODEL_VERSION = '1.13.0';
+export const SCORING_MODEL_VERSION = '1.14.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
