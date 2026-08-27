@@ -21,7 +21,7 @@ const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
 const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 
 type TestEnv = typeof env & {
-	BV_WEB_INTERNAL_KEY?: string;
+	BV_MCP_TENANT_KEY?: string;
 	REQUIRE_INTERNAL_AUTH?: string;
 	TENANT_REGISTRY_DB?: D1Database;
 	[k: string]: unknown;
@@ -65,7 +65,7 @@ function buildEnv() {
 	const tenant = makeMockD1();
 	const customEnv = {
 		...env,
-		BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+		BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 		REQUIRE_INTERNAL_AUTH: 'true',
 		TENANT_REGISTRY_DB: registry.db,
 		[TEST_TENANT_BINDING]: tenant.db,
@@ -79,6 +79,7 @@ function makeReq(body: unknown): Request {
 		headers: {
 			Authorization: `Bearer ${TEST_INTERNAL_KEY}`,
 			'X-Tenant': TEST_TENANT_ID,
+			'X-Tenant-Scope': TEST_TENANT_ID,
 			'Content-Type': 'application/json',
 		},
 		body: JSON.stringify(body),
@@ -140,7 +141,7 @@ describe('FINDING #8: /discover domain validation', () => {
 		});
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 			[TEST_TENANT_BINDING]: tenant.db,

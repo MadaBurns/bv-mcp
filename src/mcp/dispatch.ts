@@ -9,7 +9,7 @@ import { auditSessionCreated } from '../lib/audit';
 import { jsonRpcError, jsonRpcSuccess, JSON_RPC_ERRORS } from '../lib/json-rpc';
 import { SERVER_INSTRUCTIONS } from './server-instructions';
 import type { AnalyticsClient } from '../lib/analytics';
-import type { QuotaCoordinator } from '../lib/quota-coordinator';
+import type { QuotaCoordinator, ShardRouting } from '../lib/quota-coordinator';
 
 type JsonRpcPayload = ReturnType<typeof jsonRpcSuccess> | ReturnType<typeof jsonRpcError>;
 
@@ -109,17 +109,22 @@ export function clientSupportsStructuredContent(protocolVersionHeader: string | 
  * emission — emission stays format-driven; whether a given client *needs* it is decided here at the
  * dispatch boundary where the client/protocol signals live.
  */
-export function stripRedundantStructuredComment<
-	T extends { content?: Array<{ type: string; text: string }>; structuredContent?: unknown },
->(result: T, ctx: { clientType?: string; protocolVersionHeader?: string | null }): T {
+export function stripRedundantStructuredComment<T extends { content?: Array<{ type: string; text: string }>; structuredContent?: unknown }>(
+	result: T,
+	ctx: { clientType?: string; protocolVersionHeader?: string | null },
+): T {
 	if (!result || typeof result !== 'object' || result.structuredContent === undefined) return result;
 	if (ctx.clientType && STRUCTURED_COMMENT_LEGACY_CLIENTS.has(ctx.clientType)) return result;
 	// A client is comment-redundant if it negotiated >= 2025-06-18 OR is a verified positive-drop client.
-	const redundant = clientSupportsStructuredContent(ctx.protocolVersionHeader) || (ctx.clientType ? STRUCTURED_COMMENT_DROP_CLIENTS.has(ctx.clientType) : false);
+	const redundant =
+		clientSupportsStructuredContent(ctx.protocolVersionHeader) ||
+		(ctx.clientType ? STRUCTURED_COMMENT_DROP_CLIENTS.has(ctx.clientType) : false);
 	if (!redundant) return result;
 	const content = result.content;
 	if (!Array.isArray(content)) return result;
-	const filtered = content.filter((c) => !(c?.type === 'text' && typeof c.text === 'string' && c.text.trimStart().startsWith('<!-- STRUCTURED_RESULT')));
+	const filtered = content.filter(
+		(c) => !(c?.type === 'text' && typeof c.text === 'string' && c.text.trimStart().startsWith('<!-- STRUCTURED_RESULT')),
+	);
 	return filtered.length === content.length ? result : { ...result, content: filtered };
 }
 
@@ -133,6 +138,9 @@ export interface DispatchMcpMethodOptions {
 	serverVersion: string;
 	rateLimitKv?: KVNamespace;
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>;
+	quotaShardRouting?: ShardRouting;
+	/** Stable per-key principal for authenticated session creation; falls back to ip. */
+	sessionRateLimitPrincipal?: string;
 	sessionStore?: KVNamespace;
 	scanCache?: KVNamespace;
 	providerSignaturesUrl?: string;
@@ -158,7 +166,12 @@ export interface DispatchMcpMethodOptions {
 	/** Raw `MCP-Protocol-Version` request header — used to drop the redundant STRUCTURED_RESULT comment for structuredContent-capable clients. */
 	protocolVersionHeader?: string;
 	authTier?: string;
+	/** Full authenticated security principal for authorization/ownership. */
 	keyHash?: string;
+	/** Analytics-only 16-hex pseudonym. */
+	analyticsKeyHash?: string;
+	/** Discriminated downstream M365 identity derived from verified auth. */
+	m365Identity?: import('../tools/m365/proxy').M365PrincipalIdentity;
 	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter tool_call analytics grouping. Threaded to handleToolsCall. */
 	colo?: string;
 	/** Geo enrichment (request.cf) for the tool_call AE geo blobs. Threaded to handleToolsCall. */
@@ -185,7 +198,7 @@ export interface DispatchMcpMethodOptions {
 	tlsProbeAuthToken?: string;
 	/** Service binding to bv-web's internal M365 proxy surface. Fail-soft; absent when bv-web is not provisioned. */
 	m365Proxy?: { fetch: typeof fetch };
-	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to bv-web's internal M365 endpoints. */
+	/** Dedicated bearer (BV_MCP_M365_KEY) forwarded to bv-web's internal M365 endpoints. */
 	m365ProxyAuthToken?: string;
 	/** Service binding to bv-web (BV_WEB) used by get_domain_rank to call the C1 benchmark endpoint. Fail-soft; absent on BSL self-hosts. */
 	bvWebBenchmark?: { fetch: typeof fetch };
@@ -227,9 +240,14 @@ export type DispatchMcpMethodResult =
 export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Promise<DispatchMcpMethodResult> {
 	switch (options.method) {
 		case 'initialize': {
-				const createSessionOnInitialize = options.createSessionOnInitialize !== false;
-				if (createSessionOnInitialize && !options.isAuthenticated) {
-				const sessionCreateGate = await checkSessionCreateRateLimit(options.ip, options.rateLimitKv, options.quotaCoordinator);
+			const createSessionOnInitialize = options.createSessionOnInitialize !== false;
+			if (createSessionOnInitialize) {
+				const sessionCreateGate = await checkSessionCreateRateLimit(
+					options.sessionRateLimitPrincipal ?? options.ip,
+					options.rateLimitKv,
+					options.quotaCoordinator,
+					options.quotaShardRouting,
+				);
 				if (!sessionCreateGate.allowed) {
 					const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
 					return {
@@ -244,30 +262,32 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				}
 			}
 
-				// Do NOT delete the old session on re-initialize — mcp-remote
-				// reconnects the notification stream periodically, and deleting
-				// the old session creates a race where in-flight tools/call
-				// requests with the old session ID get a 404. Old sessions
-				// expire naturally via TTL (2 hours) and are cleaned up by
-				// periodic in-memory pruning + KV expirationTtl.
-				const sessionId = createSessionOnInitialize ? await createSession(options.sessionStore, options.analytics, options.waitUntil) : options.existingSessionId;
-				if (createSessionOnInitialize && sessionId) {
-					auditSessionCreated(options.ip, sessionId);
-					// The client's DECLARED identity from the initialize handshake —
-					// the attribution key for the unknown-UA connector surge. Read
-					// defensively (client-controlled, optional per MCP spec) and used
-					// for analytics only, never auth/tier.
-					const clientInfo = options.params?.clientInfo as { name?: unknown } | undefined;
-					const declaredClient = typeof clientInfo?.name === 'string' ? clientInfo.name : undefined;
-					options.analytics?.emitSessionEvent({
-						action: 'created',
-						country: options.country,
-						clientType: options.clientType as import('../lib/client-detection').McpClientType,
-						authTier: options.authTier,
-						keyHash: options.keyHash,
-						declaredClient,
-					});
-				}
+			// Do NOT delete the old session on re-initialize — mcp-remote
+			// reconnects the notification stream periodically, and deleting
+			// the old session creates a race where in-flight tools/call
+			// requests with the old session ID get a 404. Old sessions
+			// expire naturally via TTL (2 hours) and are cleaned up by
+			// periodic in-memory pruning + KV expirationTtl.
+			const sessionId = createSessionOnInitialize
+				? await createSession(options.sessionStore, options.analytics, options.waitUntil)
+				: options.existingSessionId;
+			if (createSessionOnInitialize && sessionId) {
+				auditSessionCreated(options.ip, sessionId);
+				// The client's DECLARED identity from the initialize handshake —
+				// the attribution key for the unknown-UA connector surge. Read
+				// defensively (client-controlled, optional per MCP spec) and used
+				// for analytics only, never auth/tier.
+				const clientInfo = options.params?.clientInfo as { name?: unknown } | undefined;
+				const declaredClient = typeof clientInfo?.name === 'string' ? clientInfo.name : undefined;
+				options.analytics?.emitSessionEvent({
+					action: 'created',
+					country: options.country,
+					clientType: options.clientType as import('../lib/client-detection').McpClientType,
+					authTier: options.authTier,
+					keyHash: options.analyticsKeyHash,
+					declaredClient,
+				});
+			}
 
 			return {
 				kind: 'success',
@@ -327,6 +347,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				clientType: options.clientType,
 				authTier: options.authTier,
 				keyHash: options.keyHash,
+				analyticsKeyHash: options.analyticsKeyHash,
 				colo: options.colo,
 				region: options.region,
 				city: options.city,
@@ -341,6 +362,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				tlsProbeAuthToken: options.tlsProbeAuthToken,
 				m365Proxy: options.m365Proxy,
 				m365ProxyAuthToken: options.m365ProxyAuthToken,
+				m365Identity: options.m365Identity,
 				bvWebBenchmark: options.bvWebBenchmark,
 				bvWebBenchmarkAuthToken: options.bvWebBenchmarkAuthToken,
 				infraProbe: options.infraProbe,
@@ -352,6 +374,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				discoveryModeDefault: options.discoveryModeDefault,
 				principalId: options.principalId,
 				rateLimitKv: options.rateLimitKv,
+				quotaCoordinator: options.quotaCoordinator,
 				tier0Lookup: options.tier0Lookup,
 				tier1Lookup: options.tier1Lookup,
 				tier2Lookup: options.tier2Lookup,
@@ -371,7 +394,10 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				logCategory: 'tools',
 				logTool: toolParams.name,
 				// result shape varies by tool — narrowing via 'in' guard before access
-			logResult: typeof finalResult === 'object' && finalResult && 'status' in finalResult ? String((finalResult as { status: unknown }).status) : undefined,
+				logResult:
+					typeof finalResult === 'object' && finalResult && 'status' in finalResult
+						? String((finalResult as { status: unknown }).status)
+						: undefined,
 				logDetails: finalResult,
 			};
 		}

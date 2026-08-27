@@ -16,6 +16,31 @@ import type { LookupDeps } from './lookup';
 
 const MAX_BODY_BYTES = 1024;
 
+async function readBoundedBody(request: Request): Promise<{ ok: true; text: string } | { ok: false }> {
+	const reader = request.body?.getReader();
+	if (!reader) return { ok: true, text: '' };
+	const decoder = new TextDecoder();
+	let total = 0;
+	let text = '';
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			if (!value) continue;
+			total += value.byteLength;
+			if (total > MAX_BODY_BYTES) {
+				await reader.cancel().catch(() => undefined);
+				return { ok: false };
+			}
+			text += decoder.decode(value, { stream: true });
+		}
+		text += decoder.decode();
+		return { ok: true, text };
+	} finally {
+		reader.releaseLock();
+	}
+}
+
 const LookupRequestSchema = z.object({
 	domain: z.string().min(3).max(253),
 });
@@ -44,12 +69,11 @@ export function buildApp(deps: LookupDeps): Hono {
 		// is absent (chunked transfer encoding can otherwise bypass the header check).
 		let bodyText: string;
 		try {
-			bodyText = await c.req.text();
+			const body = await readBoundedBody(c.req.raw);
+			if (!body.ok) return c.json({ error: 'Request body too large' }, 413);
+			bodyText = body.text;
 		} catch {
 			return c.json({ error: 'Invalid request body' }, 400);
-		}
-		if (bodyText.length > MAX_BODY_BYTES) {
-			return c.json({ error: 'Request body too large' }, 413);
 		}
 
 		let raw: unknown;

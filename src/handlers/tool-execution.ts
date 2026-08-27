@@ -12,6 +12,14 @@ import type { McpClientType } from '../lib/client-detection';
 type ToolSuccessStatus = 'pass' | 'fail' | 'inconclusive';
 type ToolFailureSeverity = 'warn' | 'error';
 
+function summarizeToolArgs(args: Record<string, unknown>): { argumentCount: number; argumentKeys: string[] } {
+	const argumentKeys = Object.keys(args)
+		.filter((key) => /^[A-Za-z0-9_-]{1,64}$/.test(key))
+		.sort()
+		.slice(0, 32);
+	return { argumentCount: Object.keys(args).length, argumentKeys };
+}
+
 interface ToolExecutionBase {
 	toolName: string;
 	durationMs: number;
@@ -50,7 +58,7 @@ export function buildLogContext(
 		country?: string;
 		clientType?: string;
 		authTier?: string;
-		keyHash?: string;
+		analyticsKeyHash?: string;
 		colo?: string;
 		region?: string;
 		city?: string;
@@ -66,7 +74,7 @@ export function buildLogContext(
 		country: runtimeOptions?.country,
 		clientType: runtimeOptions?.clientType as McpClientType,
 		authTier: runtimeOptions?.authTier,
-		keyHash: runtimeOptions?.keyHash,
+		keyHash: runtimeOptions?.analyticsKeyHash,
 		colo: runtimeOptions?.colo,
 		region: runtimeOptions?.region,
 		city: runtimeOptions?.city,
@@ -142,7 +150,7 @@ export function logToolFailure(
 	logError(options.error instanceof Error ? options.error : String(options.error), {
 		tool: options.toolName,
 		domain: options.domain,
-		details: options.args,
+		details: summarizeToolArgs(options.args),
 		severity: options.severity ?? 'error',
 	});
 }

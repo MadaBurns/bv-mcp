@@ -28,7 +28,7 @@ const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
 
 type TestEnv = typeof env & {
-	BV_WEB_INTERNAL_KEY?: string;
+	BV_MCP_TENANT_KEY?: string;
 	REQUIRE_INTERNAL_AUTH?: string;
 	TENANT_REGISTRY_DB?: D1Database;
 	[k: string]: unknown;
@@ -100,7 +100,7 @@ function buildEnvWithTenant() {
 	const tenant = makeMockD1();
 	const customEnv = {
 		...env,
-		BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+		BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 		REQUIRE_INTERNAL_AUTH: 'true',
 		TENANT_REGISTRY_DB: registry.db,
 		[TEST_TENANT_BINDING]: tenant.db,
@@ -109,6 +109,12 @@ function buildEnvWithTenant() {
 }
 
 async function sendRequest(req: Request, customEnv: TestEnv): Promise<Response> {
+	const tenant = req.headers.get('x-tenant');
+	if (tenant && !req.headers.has('x-tenant-scope')) {
+		const headers = new Headers(req.headers);
+		headers.set('X-Tenant-Scope', tenant);
+		req = new Request(req, { headers });
+	}
 	const ctx = createExecutionContext();
 	const res = await worker.fetch(req, customEnv, ctx);
 	await waitOnExecutionContext(ctx);
@@ -198,7 +204,7 @@ describe('POST /internal/tenants/portfolio', () => {
 		const registry = makeMockD1({ [REGISTRY_LOOKUP_SQL]: [] });
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 		} as TestEnv;
@@ -322,7 +328,7 @@ describe('POST /internal/tenants/scan', () => {
 		const registry = makeMockD1({ [REGISTRY_LOOKUP_SQL]: [] });
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 		} as TestEnv;
@@ -357,7 +363,7 @@ describe('POST /internal/tenants/scan', () => {
 		});
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 			[TEST_TENANT_BINDING]: tenant.db,
@@ -377,7 +383,7 @@ describe('POST /internal/tenants/scan', () => {
 		});
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 			[TEST_TENANT_BINDING]: tenant.db,
@@ -422,7 +428,7 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 		});
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 			[TEST_TENANT_BINDING]: tenant.db,
@@ -459,7 +465,7 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 		});
 		return {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 			[TEST_TENANT_BINDING]: tenant.db,
@@ -554,7 +560,7 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 		});
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 			[TEST_TENANT_BINDING]: tenant.db,
@@ -599,7 +605,7 @@ describe('GET /internal/tenants/report/:cycle_id', () => {
 		const registry = makeMockD1({ [REGISTRY_LOOKUP_SQL]: [] });
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 		} as TestEnv;
@@ -662,7 +668,7 @@ describe('Phase 6: audit on denied paths', () => {
 		const registry = makeMockD1({ [REGISTRY_LOOKUP_SQL]: [] });
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 		} as TestEnv;
@@ -713,7 +719,7 @@ describe('Phase 6: audit on denied paths', () => {
 		});
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 			[TEST_TENANT_BINDING]: tenant.db,

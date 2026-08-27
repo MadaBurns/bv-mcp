@@ -1,6 +1,7 @@
 import { SELF, env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
+import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
 import { putCode } from '../../src/oauth/storage';
 import { OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
 import { clearKvPrefix } from '../helpers/kv';
@@ -72,9 +73,11 @@ async function postToken(body: URLSearchParams, customEnv: TestEnv = authEnv, he
 
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 afterEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 
 describe('POST /oauth/token', () => {
@@ -137,15 +140,15 @@ describe('POST /oauth/token', () => {
 		expect(claims.stripeSubscriptionId).toBeUndefined();
 	});
 
-	it('clamps the JWT TTL to entitlementExpiresAt when it is sooner than the 90-day default', async () => {
-		// FIND (A01 token-persistence): a paid entitlement that expires in ~1 hour must mint a
-		// JWT whose lifetime is clamped to that window, not the flat 90-day default — otherwise a
-		// lapsed subscription keeps resolving to the paid tier for up to 90 days.
+	it('clamps the JWT TTL to entitlementExpiresAt when it is sooner than the short default', async () => {
+		// FIND (A01 token-persistence): a paid entitlement that expires in ~10 minutes must mint a
+		// JWT whose lifetime is clamped to that window, not the flat default — otherwise a
+		// lapsed subscription remains paid beyond its entitlement boundary.
 		const { verifier, challenge } = await pkcePair();
 		const cid = await registerClient();
 		const code = 'paid-code-soon-expiry';
 		const now = Math.floor(Date.now() / 1000);
-		const oneHour = 3600;
+		const entitlementWindow = 10 * 60;
 		await putCode(env.SESSION_STORE, code, {
 			client_id: cid,
 			redirect_uri: 'https://claude.ai/cb',
@@ -157,7 +160,7 @@ describe('POST /oauth/token', () => {
 			stripeCustomerId: 'cus_soon',
 			stripeSubscriptionId: 'sub_soon',
 			subscriptionStatus: 'active',
-			entitlementExpiresAt: now + oneHour,
+			entitlementExpiresAt: now + entitlementWindow,
 		});
 		const res = await postToken(
 			new URLSearchParams({
@@ -174,14 +177,14 @@ describe('POST /oauth/token', () => {
 		const claims = JSON.parse(atob(payload.replace(/-/g, '+').replace(/_/g, '/'))) as { iat: number; exp: number };
 		// Lifetime asserted relative to the token's own iat — no wall-clock dependency.
 		const lifetime = claims.exp - claims.iat;
-		expect(lifetime).toBeLessThanOrEqual(oneHour);
-		expect(lifetime).toBeGreaterThan(oneHour - 60); // ~1h, not 90 days
+		expect(lifetime).toBeLessThanOrEqual(entitlementWindow);
+		expect(lifetime).toBeGreaterThan(entitlementWindow - 60);
 		expect(lifetime).toBeLessThan(OAUTH_JWT_TTL_SECONDS);
 		expect(tok.expires_in).toBe(lifetime);
 	});
 
-	it('preserves the 90-day TTL when entitlementExpiresAt is far in the future', async () => {
-		// A long-lived entitlement must still cap at the 90-day default (Math.min picks 90 days).
+	it('preserves the short access-token TTL when entitlementExpiresAt is far in the future', async () => {
+		// A long-lived entitlement must still cap at the access-token default.
 		const { verifier, challenge } = await pkcePair();
 		const cid = await registerClient();
 		const code = 'paid-code-far-expiry';
@@ -216,7 +219,7 @@ describe('POST /oauth/token', () => {
 		expect(tok.expires_in).toBe(OAUTH_JWT_TTL_SECONDS);
 	});
 
-	it('preserves the 90-day TTL when entitlementExpiresAt is absent', async () => {
+	it('preserves the short access-token TTL when entitlementExpiresAt is absent', async () => {
 		const { verifier, challenge } = await pkcePair();
 		const cid = await registerClient();
 		const code = await getAuthCode(cid, challenge);
@@ -447,6 +450,22 @@ describe('POST /oauth/token', () => {
 		const payload = (await limited.json()) as Record<string, unknown>;
 		expect(payload.error).toBe('invalid_request');
 		expect(payload.error_description).toBe('Too many token requests');
+	});
+
+	it('admits exactly 30 token requests from a concurrent same-IP burst', async () => {
+		const body = new URLSearchParams({
+			grant_type: 'authorization_code',
+			code: 'never-issued-concurrent',
+			client_id: 'no-such-client',
+			redirect_uri: 'https://claude.ai/cb',
+			code_verifier: 'v'.repeat(43),
+		});
+		const responses = await Promise.all(
+			Array.from({ length: 50 }, () => postToken(body, authEnv, { 'cf-connecting-ip': '203.0.113.78' })),
+		);
+		const statuses = responses.map((response) => response.status);
+		expect(statuses.filter((status) => status === 400)).toHaveLength(30);
+		expect(statuses.filter((status) => status === 429)).toHaveLength(20);
 	});
 
 	it('ignores x-forwarded-for and rate-limits the shared "unknown" bucket when cf-connecting-ip is absent', async () => {

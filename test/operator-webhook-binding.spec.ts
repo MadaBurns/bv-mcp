@@ -66,6 +66,107 @@ describe('resolveAlertWebhookUrl', () => {
 		expect(result).toBe('https://hooks.example.com/cached');
 	});
 
+	it.each([
+		['malformed', () => new Response('{not-json', { status: 200 })],
+		['oversized', () => new Response(JSON.stringify({ webhookUrl: 'x'.repeat(20 * 1024) }), { status: 200 })],
+		[
+			'unreadable',
+			() =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull() {
+							throw new Error('stream read failed');
+						},
+					}),
+					{ status: 200 },
+				),
+		],
+	] as const)('treats an %s 2xx body as ambiguous and uses KV last-known-good', async (_case, responseFactory) => {
+		const { resolveAlertWebhookUrl } = await import('../src/lib/operator-webhook-binding');
+		const get = vi.fn(async () => 'https://hooks.example.com/cached');
+		const put = vi.fn(async () => {});
+		const env: TestEnv = {
+			BV_WEB: { fetch: vi.fn(async () => responseFactory()) },
+			BV_WEB_INTERNAL_KEY: 'test-key',
+			SCAN_CACHE: { get, put },
+			ALERT_WEBHOOK_URL: 'https://hooks.example.com/static',
+		};
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused partial ScheduledEnv fixture
+		await expect(resolveAlertWebhookUrl(env as any)).resolves.toBe('https://hooks.example.com/cached');
+		expect(get).toHaveBeenCalledWith('operator-webhook:last-known-good');
+		expect(put).not.toHaveBeenCalled();
+	});
+
+	it.each(['', '   ', '\t\n'])('rejects a blank dynamic URL and uses KV last-known-good (%j)', async (webhookUrl) => {
+		const { resolveAlertWebhookUrl } = await import('../src/lib/operator-webhook-binding');
+		const get = vi.fn(async () => 'https://hooks.example.com/cached');
+		const put = vi.fn(async () => {});
+		const env: TestEnv = {
+			BV_WEB: { fetch: mockFetch(200, { webhookUrl }) },
+			BV_WEB_INTERNAL_KEY: 'test-key',
+			SCAN_CACHE: { get, put },
+			ALERT_WEBHOOK_URL: 'https://hooks.example.com/static',
+		};
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused partial ScheduledEnv fixture
+		await expect(resolveAlertWebhookUrl(env as any)).resolves.toBe('https://hooks.example.com/cached');
+		expect(get).toHaveBeenCalledWith('operator-webhook:last-known-good');
+		expect(put).not.toHaveBeenCalled();
+	});
+
+	it('ignores a whitespace-only cached URL and uses the static fallback', async () => {
+		const { resolveAlertWebhookUrl } = await import('../src/lib/operator-webhook-binding');
+		const env: TestEnv = {
+			BV_WEB: { fetch: mockFetch(503) },
+			SCAN_CACHE: { get: vi.fn(async () => '  \t '), put: vi.fn(async () => {}) },
+			ALERT_WEBHOOK_URL: 'https://hooks.example.com/static',
+		};
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused partial ScheduledEnv fixture
+		await expect(resolveAlertWebhookUrl(env as any)).resolves.toBe('https://hooks.example.com/static');
+	});
+
+	it('returns undefined rather than a whitespace-only static URL', async () => {
+		const { resolveAlertWebhookUrl } = await import('../src/lib/operator-webhook-binding');
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused partial ScheduledEnv fixture
+		await expect(resolveAlertWebhookUrl({ ALERT_WEBHOOK_URL: ' \n ' } as any)).resolves.toBeUndefined();
+	});
+
+	it('returns a fresh dynamic URL even when its best-effort cache write fails', async () => {
+		const { resolveAlertWebhookUrl } = await import('../src/lib/operator-webhook-binding');
+		const env: TestEnv = {
+			BV_WEB: { fetch: mockFetch(200, { webhookUrl: 'https://hooks.example.com/dynamic' }) },
+			SCAN_CACHE: {
+				get: vi.fn(async () => null),
+				put: vi.fn(async () => {
+					throw new Error('KV unavailable');
+				}),
+			},
+			ALERT_WEBHOOK_URL: 'https://hooks.example.com/static',
+		};
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused partial ScheduledEnv fixture
+		await expect(resolveAlertWebhookUrl(env as any)).resolves.toBe('https://hooks.example.com/dynamic');
+	});
+
+	it('uses the static fallback when the optional LKG cache read fails', async () => {
+		const { resolveAlertWebhookUrl } = await import('../src/lib/operator-webhook-binding');
+		const env: TestEnv = {
+			BV_WEB: { fetch: mockFetch(503) },
+			SCAN_CACHE: {
+				get: vi.fn(async () => {
+					throw new Error('KV unavailable');
+				}),
+				put: vi.fn(async () => {}),
+			},
+			ALERT_WEBHOOK_URL: 'https://hooks.example.com/static',
+		};
+
+		// eslint-disable-next-line @typescript-eslint/no-explicit-any -- focused partial ScheduledEnv fixture
+		await expect(resolveAlertWebhookUrl(env as any)).resolves.toBe('https://hooks.example.com/static');
+	});
+
 	it('dynamic ambiguous failure with EMPTY cache falls to static var', async () => {
 		const { resolveAlertWebhookUrl } = await import('../src/lib/operator-webhook-binding');
 		const env: TestEnv = {

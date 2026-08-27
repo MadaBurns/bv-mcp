@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { Tier } from '../schemas/primitives';
+import { isStrongDistinctSecurityCapability, type McpSecurityCriticalSecretKey } from './security-capabilities';
+import type { TlsProbeBinding } from './tls-probe-binding';
 
 /**
  * Centralized configuration for domain normalization and validation.
@@ -688,10 +690,10 @@ export const FREE_DISTINCT_DOMAIN_DAILY_LIMIT = 12;
  * UNAUTHENTICATED caller must never reach any member — the public `/mcp` gate
  * in src/mcp/execute.ts rejects an unauthenticated tools/call with HTTP 401 BEFORE dispatch
  * (see isAuthRequiredTool), and the registry execute path (handlers/tools.ts)
- * additionally hard-rejects when no real principal (keyHash) is present. Free
- * and agent API-key tiers are pinned to 0 in TIER_TOOL_DAILY_LIMITS and the
- * paid tiers have explicit per-principal caps to bound Microsoft Graph cost.
- * Single source of truth for both gates.
+ * additionally hard-rejects when no verified, discriminated M365 identity is
+ * present. Free and agent API-key tiers are pinned to 0 in
+ * TIER_TOOL_DAILY_LIMITS and the paid tiers have explicit per-principal caps to
+ * bound Microsoft Graph cost. Single source of truth for both gates.
  */
 export const AUTH_REQUIRED_TOOLS: ReadonlySet<string> = new Set<string>([
 	'query_signins',
@@ -710,8 +712,8 @@ export function isAuthRequiredTool(toolName: string): boolean {
  *
  * These three are the ONLY tools whose data path requires authenticating into a
  * CUSTOMER's Microsoft 365 / Entra tenant. bv-mcp itself holds no tenant
- * credential — it forwards over the `BV_WEB` service binding carrying the
- * trusted internal bearer, and bv-web-prod exchanges an owner-consented,
+ * credential — it forwards over the `BV_WEB` service binding carrying a
+ * dedicated least-privilege M365 bearer, and bv-web-prod exchanges an owner-consented,
  * encrypted OAuth token for a Microsoft Graph read.
  *
  * DEFAULT: DISABLED (fail-closed). Absent/any-other value ⇒ no tenant read is
@@ -737,14 +739,31 @@ export function isM365TenantReadEnabled(env: { M365_TENANT_READS_ENABLED?: strin
  * disabled. Spread at every call site so the binding and the internal bearer
  * are dropped together — wiring one without the other is the dangerous state.
  */
-export function m365ProxyBindings(env: { BV_WEB?: Fetcher; BV_WEB_INTERNAL_KEY?: string; M365_TENANT_READS_ENABLED?: string }): {
+export function m365ProxyBindings(
+	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>> & {
+		BV_WEB?: Fetcher;
+		BV_MCP_M365_KEY?: string;
+		M365_TENANT_READS_ENABLED?: string;
+	},
+): {
 	m365Proxy?: Fetcher;
 	m365ProxyAuthToken?: string;
 } {
-	if (!isM365TenantReadEnabled(env)) {
+	if (!isM365TenantReadEnabled(env) || !env.BV_WEB || !isStrongDistinctSecurityCapability(env, 'BV_MCP_M365_KEY')) {
 		return {};
 	}
-	return { m365Proxy: env.BV_WEB, m365ProxyAuthToken: env.BV_WEB_INTERNAL_KEY };
+	return { m365Proxy: env.BV_WEB, m365ProxyAuthToken: env.BV_MCP_M365_KEY }; // gitleaks:allow -- runtime binding, not a literal.
+}
+
+/** Wire the external TLS probe only with a strong, globally distinct bearer. */
+export function tlsProbeBindings(
+	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>> & {
+		BV_TLS_PROBE?: TlsProbeBinding;
+		BV_TLS_PROBE_KEY?: string;
+	},
+): { tlsProbeBinding?: TlsProbeBinding; tlsProbeAuthToken?: string } {
+	if (!env.BV_TLS_PROBE || !isStrongDistinctSecurityCapability(env, 'BV_TLS_PROBE_KEY')) return {};
+	return { tlsProbeBinding: env.BV_TLS_PROBE, tlsProbeAuthToken: env.BV_TLS_PROBE_KEY };
 }
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
@@ -984,7 +1003,9 @@ export function parsePerCheckTimeout(envValue?: string): number {
 // ─── OAuth 2.1 (Phase 0 — shared constants) ─────────────────────────────────
 export const OAUTH_CODE_TTL_SECONDS = 60; // KV minimum TTL is 60s; auth codes are short-lived
 export const OAUTH_CLIENT_TTL_SECONDS = 60 * 60 * 24 * 365; // 1 year, refreshed on use
-export const OAUTH_JWT_TTL_SECONDS = 60 * 60 * 24 * 90; // 90 days
+// Access tokens are bearer credentials: keep the replay window short. The
+// server does not issue refresh tokens, so clients re-run PKCE after expiry.
+export const OAUTH_JWT_TTL_SECONDS = 60 * 60; // 1 hour
 export const OAUTH_JWT_CLOCK_SKEW_SECONDS = 30;
 export const OAUTH_CONSENT_RATE_LIMIT = 5;
 export const OAUTH_CONSENT_RATE_WINDOW_SECONDS = 60 * 15;
@@ -1000,14 +1021,39 @@ export const OAUTH_GRANT_TYPES_SUPPORTED = ['authorization_code'] as const;
 export const OAUTH_RESPONSE_TYPES_SUPPORTED = ['code'] as const;
 export const OAUTH_TOKEN_AUTH_METHODS_SUPPORTED = ['none'] as const;
 export const OAUTH_CODE_CHALLENGE_METHODS_SUPPORTED = ['S256'] as const;
-export const OAUTH_REDIRECT_URI_ALLOWLIST: RegExp[] = [
-	/^https:\/\/claude\.ai(\/.*)?$/,
-	// claude.ai → claude.com migration: connectors now register https://claude.com/api/mcp/auth_callback
-	/^https:\/\/claude\.com(\/.*)?$/,
-	/^https:\/\/[^/]+\.anthropic\.com(\/.*)?$/,
-	/^http:\/\/localhost(:\d+)?(\/.*)?$/,
-	/^http:\/\/127\.0\.0\.1(:\d+)?(\/.*)?$/,
-];
+/**
+ * Parse and validate an OAuth redirect URI by URL components, never by matching
+ * the raw string. A raw-text hostname regex can be confused by query/fragment
+ * delimiters (for example `https://evil.example?.anthropic.com/cb`).
+ *
+ * Hosted callbacks are HTTPS-only on the exact Claude origins or a genuine
+ * Anthropic subdomain, with no non-default port. Native clients retain the
+ * OAuth loopback exception on localhost/127.0.0.1 with an optional port.
+ * Fragments and userinfo are forbidden for every redirect URI.
+ */
+export function isAllowedOAuthRedirectUri(raw: string): boolean {
+	let uri: URL;
+	try {
+		uri = new URL(raw);
+	} catch {
+		return false;
+	}
+
+	if (uri.username || uri.password || uri.hash) return false;
+
+	if (uri.protocol === 'https:') {
+		if (uri.port) return false;
+		const hostname = uri.hostname.toLowerCase();
+		return hostname === 'claude.ai' || hostname === 'claude.com' || (hostname !== 'anthropic.com' && hostname.endsWith('.anthropic.com'));
+	}
+
+	if (uri.protocol === 'http:') {
+		const hostname = uri.hostname.toLowerCase();
+		return hostname === 'localhost' || hostname === '127.0.0.1';
+	}
+
+	return false;
+}
 export const OAUTH_KV_PREFIX = 'oauth:' as const;
 
 /**

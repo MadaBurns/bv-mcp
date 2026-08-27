@@ -1463,6 +1463,8 @@ describe('scanDomain — transient zero retry', () => {
  * probe binding even when it is physically present in runtimeOptions.
  */
 describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
+	const TLS_PROBE_AUTH_TOKEN = 'tls-probe-tier-gate-key-32-bytes-minimum';
+
 	/** Minimal DNS mock: all checks healthy, no specific assertions on DNS queries. */
 	function mockAllDns() {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
@@ -1500,7 +1502,11 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 		const tlsProbeBinding = { fetch: probeFetch };
 
 		const { scanDomain } = await import('../src/tools/scan-domain');
-		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'free' });
+		await scanDomain('probe-gate.com', undefined, {
+			tlsProbeBinding,
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
+			authTier: 'free',
+		});
 
 		expect(probeFetch).not.toHaveBeenCalled();
 	});
@@ -1511,7 +1517,11 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 		const tlsProbeBinding = { fetch: probeFetch };
 
 		const { scanDomain } = await import('../src/tools/scan-domain');
-		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'agent' });
+		await scanDomain('probe-gate.com', undefined, {
+			tlsProbeBinding,
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
+			authTier: 'agent',
+		});
 
 		expect(probeFetch).not.toHaveBeenCalled();
 	});
@@ -1522,7 +1532,7 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 		const tlsProbeBinding = { fetch: probeFetch };
 
 		const { scanDomain } = await import('../src/tools/scan-domain');
-		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding });
+		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN });
 
 		expect(probeFetch).not.toHaveBeenCalled();
 	});
@@ -1533,7 +1543,11 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 		const tlsProbeBinding = { fetch: probeFetch };
 
 		const { scanDomain } = await import('../src/tools/scan-domain');
-		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'developer' });
+		await scanDomain('probe-gate.com', undefined, {
+			tlsProbeBinding,
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
+			authTier: 'developer',
+		});
 
 		expect(probeFetch).toHaveBeenCalled();
 	});
@@ -1544,7 +1558,11 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 		const tlsProbeBinding = { fetch: probeFetch };
 
 		const { scanDomain } = await import('../src/tools/scan-domain');
-		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'enterprise' });
+		await scanDomain('probe-gate.com', undefined, {
+			tlsProbeBinding,
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
+			authTier: 'enterprise',
+		});
 
 		expect(probeFetch).toHaveBeenCalled();
 	});
@@ -1555,7 +1573,11 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 		const tlsProbeBinding = { fetch: probeFetch };
 
 		const { scanDomain } = await import('../src/tools/scan-domain');
-		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'partner' });
+		await scanDomain('probe-gate.com', undefined, {
+			tlsProbeBinding,
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
+			authTier: 'partner',
+		});
 
 		expect(probeFetch).toHaveBeenCalled();
 	});
@@ -1566,7 +1588,11 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 		const tlsProbeBinding = { fetch: probeFetch };
 
 		const { scanDomain } = await import('../src/tools/scan-domain');
-		await scanDomain('probe-gate.com', undefined, { tlsProbeBinding, authTier: 'owner' });
+		await scanDomain('probe-gate.com', undefined, {
+			tlsProbeBinding,
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
+			authTier: 'owner',
+		});
 
 		expect(probeFetch).toHaveBeenCalled();
 	});

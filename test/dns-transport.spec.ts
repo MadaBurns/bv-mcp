@@ -65,6 +65,23 @@ describe('dns transport helpers', () => {
 		const callArgs = fetchMock.mock.calls[0];
 		expect(callArgs[1]).toHaveProperty('cf');
 		expect(callArgs[1].cf).toEqual({ cacheTtl: 300, cacheEverything: true });
+		expect(callArgs[1].redirect).toBe('manual');
+	});
+
+	it('rejects and cancels an oversized DoH response', async () => {
+		const cancelled = vi.fn();
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(new ReadableStream<Uint8Array>({ cancel: cancelled }), {
+				status: 200,
+				headers: { 'content-length': String(512 * 1024 + 1) },
+			}),
+		);
+		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+
+		await expect(
+			queryDns('example.com', 'A', false, { retries: 0, confirmWithSecondaryOnEmpty: false }),
+		).rejects.toMatchObject({ message: 'Invalid DoH response format' });
+		expect(cancelled).toHaveBeenCalledOnce();
 	});
 
 	it('adds delay between retry attempts (jitter)', async () => {
@@ -656,6 +673,22 @@ describe('fetchDohOutcome', () => {
 		const outcome = await fetchDohOutcome('https://cloudflare-dns.com/dns-query?name=example.com&type=TXT', 3000);
 		expect(outcome.kind).toBe('error');
 		if (outcome.kind === 'error') expect(outcome.reason).toBe('http');
+	});
+
+	it('never logs a configured secondary resolver URL or its secret path', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValue(new Response(null, { status: 502 })) as unknown as typeof fetch;
+		const { fetchDohOutcome } = await import('../src/lib/dns-transport');
+		const secretUrl = 'https://secret-resolver.example/private/token-path?name=example.com&type=TXT';
+
+		await fetchDohOutcome(secretUrl, 3000);
+
+		const emitted = logSpy.mock.calls.flat().join(' ');
+		expect(emitted).toContain('configured_secondary');
+		expect(emitted).not.toContain('secret-resolver.example');
+		expect(emitted).not.toContain('private/token-path');
 	});
 
 	it('returns error with reason=parse on schema-invalid body', async () => {

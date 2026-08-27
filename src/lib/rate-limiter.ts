@@ -24,6 +24,7 @@ import {
 	type RateLimitScope,
 } from './rate-limiter-memory';
 import {
+	checkDistinctDomainDailyLimitWithCoordinator,
 	checkGlobalDailyLimitWithCoordinator,
 	checkScopedRateLimitWithCoordinator,
 	checkToolDailyRateLimitWithCoordinator,
@@ -171,60 +172,60 @@ async function checkScopedRateLimitKV(
 	kv: KVNamespace,
 ): Promise<RateLimitResult> {
 	return withIpKvLock(ip, async () => {
-	const now = Date.now();
-	const minuteWindow = Math.floor(now / MINUTE_MS);
-	const hourWindow = Math.floor(now / HOUR_MS);
+		const now = Date.now();
+		const minuteWindow = Math.floor(now / MINUTE_MS);
+		const hourWindow = Math.floor(now / HOUR_MS);
 
-	const minuteKey = scope === 'tools' ? `rl:min:${ip}:${minuteWindow}` : `rl:ctl:min:${ip}:${minuteWindow}`;
-	const hourKey = scope === 'tools' ? `rl:hr:${ip}:${hourWindow}` : `rl:ctl:hr:${ip}:${hourWindow}`;
+		const minuteKey = scope === 'tools' ? `rl:min:${ip}:${minuteWindow}` : `rl:ctl:min:${ip}:${minuteWindow}`;
+		const hourKey = scope === 'tools' ? `rl:hr:${ip}:${hourWindow}` : `rl:ctl:hr:${ip}:${hourWindow}`;
 
-	// Read both counters in parallel
-	const [minuteVal, hourVal] = await Promise.all([kv.get(minuteKey), kv.get(hourKey)]);
+		// Read both counters in parallel
+		const [minuteVal, hourVal] = await Promise.all([kv.get(minuteKey), kv.get(hourKey)]);
 
-	const minuteCount = parseKvCounter(minuteVal);
-	const hourCount = parseKvCounter(hourVal);
+		const minuteCount = parseKvCounter(minuteVal);
+		const hourCount = parseKvCounter(hourVal);
 
-	// Check minute limit
-	if (minuteCount >= minuteLimit) {
-		const windowEnd = (minuteWindow + 1) * MINUTE_MS;
+		// Check minute limit
+		if (minuteCount >= minuteLimit) {
+			const windowEnd = (minuteWindow + 1) * MINUTE_MS;
+			return {
+				allowed: false,
+				retryAfterMs: Math.max(windowEnd - now, 0),
+				minuteRemaining: 0,
+				hourRemaining: Math.max(hourLimit - hourCount, 0),
+			};
+		}
+
+		// Check hour limit
+		if (hourCount >= hourLimit) {
+			const windowEnd = (hourWindow + 1) * HOUR_MS;
+			return {
+				allowed: false,
+				retryAfterMs: Math.max(windowEnd - now, 0),
+				minuteRemaining: Math.max(minuteLimit - minuteCount, 0),
+				hourRemaining: 0,
+			};
+		}
+
+		// Allowed — increment both counters (write in parallel)
+		// Use remaining window time as TTL so keys expire when their window ends,
+		// clamped to KV's 60s minimum expirationTtl (values below 60 are rejected
+		// by Cloudflare KV, which would fail the put and lose the count). Keys are
+		// window-numbered, so lingering up to 59s past window end is inert.
+		const newMinute = minuteCount + 1;
+		const newHour = hourCount + 1;
+		const minuteTtl = Math.max(KV_MIN_EXPIRATION_TTL_SECONDS, Math.ceil(((minuteWindow + 1) * MINUTE_MS - now) / 1000));
+		const hourTtl = Math.max(KV_MIN_EXPIRATION_TTL_SECONDS, Math.ceil(((hourWindow + 1) * HOUR_MS - now) / 1000));
+		await Promise.all([
+			kv.put(minuteKey, String(newMinute), { expirationTtl: minuteTtl }),
+			kv.put(hourKey, String(newHour), { expirationTtl: hourTtl }),
+		]);
+
 		return {
-			allowed: false,
-			retryAfterMs: Math.max(windowEnd - now, 0),
-			minuteRemaining: 0,
-			hourRemaining: Math.max(hourLimit - hourCount, 0),
+			allowed: true,
+			minuteRemaining: minuteLimit - newMinute,
+			hourRemaining: hourLimit - newHour,
 		};
-	}
-
-	// Check hour limit
-	if (hourCount >= hourLimit) {
-		const windowEnd = (hourWindow + 1) * HOUR_MS;
-		return {
-			allowed: false,
-			retryAfterMs: Math.max(windowEnd - now, 0),
-			minuteRemaining: Math.max(minuteLimit - minuteCount, 0),
-			hourRemaining: 0,
-		};
-	}
-
-	// Allowed — increment both counters (write in parallel)
-	// Use remaining window time as TTL so keys expire when their window ends,
-	// clamped to KV's 60s minimum expirationTtl (values below 60 are rejected
-	// by Cloudflare KV, which would fail the put and lose the count). Keys are
-	// window-numbered, so lingering up to 59s past window end is inert.
-	const newMinute = minuteCount + 1;
-	const newHour = hourCount + 1;
-	const minuteTtl = Math.max(KV_MIN_EXPIRATION_TTL_SECONDS, Math.ceil(((minuteWindow + 1) * MINUTE_MS - now) / 1000));
-	const hourTtl = Math.max(KV_MIN_EXPIRATION_TTL_SECONDS, Math.ceil(((hourWindow + 1) * HOUR_MS - now) / 1000));
-	await Promise.all([
-		kv.put(minuteKey, String(newMinute), { expirationTtl: minuteTtl }),
-		kv.put(hourKey, String(newHour), { expirationTtl: hourTtl }),
-	]);
-
-	return {
-		allowed: true,
-		minuteRemaining: minuteLimit - newMinute,
-		hourRemaining: hourLimit - newHour,
-	};
 	});
 }
 
@@ -285,7 +286,11 @@ async function withIpKvAdvisoryLock<T>(ip: string, kv: KVNamespace, work: () => 
 	try {
 		return await work();
 	} finally {
-		try { await kv.delete(advisoryKey); } catch { /* best-effort */ }
+		try {
+			await kv.delete(advisoryKey);
+		} catch {
+			/* best-effort */
+		}
 	}
 }
 
@@ -442,8 +447,8 @@ export async function checkRateLimit(
 ): Promise<RateLimitResult> {
 	if (quotaCoordinator) {
 		try {
-			const coordinated = await quotaCoordinatorBreaker.call(
-				() => checkScopedRateLimitWithCoordinator(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, quotaCoordinator, routing),
+			const coordinated = await quotaCoordinatorBreaker.call(() =>
+				checkScopedRateLimitWithCoordinator(ip, 'tools', MINUTE_LIMIT, HOUR_LIMIT, quotaCoordinator, routing),
 			);
 			if (coordinated) return coordinated;
 		} catch (err) {
@@ -452,15 +457,15 @@ export async function checkRateLimit(
 			}
 		}
 	}
-       if (kv) {
-	       try {
-		       return await checkRateLimitKV(ip, kv);
-	       } catch {
-		       // KV error — log warning and fall back to in-memory
-		       logError('[rate-limiter] KV error, falling back to in-memory');
-	       }
-       }
-       return checkRateLimitInMemory(ip);
+	if (kv) {
+		try {
+			return await checkRateLimitKV(ip, kv);
+		} catch {
+			// KV error — log warning and fall back to in-memory
+			logError('[rate-limiter] KV error, falling back to in-memory');
+		}
+	}
+	return checkRateLimitInMemory(ip);
 }
 
 /**
@@ -471,11 +476,19 @@ export async function checkControlPlaneRateLimit(
 	ip: string,
 	kv?: KVNamespace,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+	routing: ShardRouting = SINGLETON_ROUTING,
 ): Promise<RateLimitResult> {
 	if (quotaCoordinator) {
 		try {
-			const coordinated = await quotaCoordinatorBreaker.call(
-				() => checkScopedRateLimitWithCoordinator(ip, 'control', CONTROL_PLANE_MINUTE_LIMIT, CONTROL_PLANE_HOUR_LIMIT, quotaCoordinator),
+			const coordinated = await quotaCoordinatorBreaker.call(() =>
+				checkScopedRateLimitWithCoordinator(
+					ip,
+					'control',
+					CONTROL_PLANE_MINUTE_LIMIT,
+					CONTROL_PLANE_HOUR_LIMIT,
+					quotaCoordinator,
+					routing,
+				),
 			);
 			if (coordinated) return coordinated;
 		} catch (err) {
@@ -517,8 +530,8 @@ export async function checkToolDailyRateLimit(
 	}
 	if (quotaCoordinator) {
 		try {
-			const coordinated = await quotaCoordinatorBreaker.call(
-				() => checkToolDailyRateLimitWithCoordinator(principalId, toolName, limit, quotaCoordinator, routing),
+			const coordinated = await quotaCoordinatorBreaker.call(() =>
+				checkToolDailyRateLimitWithCoordinator(principalId, toolName, limit, quotaCoordinator, routing),
 			);
 			if (coordinated) return coordinated;
 		} catch (err) {
@@ -583,9 +596,7 @@ export async function checkGlobalDailyLimit(
 	}
 	if (quotaCoordinator) {
 		try {
-			const coordinated = await quotaCoordinatorBreaker.call(
-				() => checkGlobalDailyLimitWithCoordinator(limit, quotaCoordinator),
-			);
+			const coordinated = await quotaCoordinatorBreaker.call(() => checkGlobalDailyLimitWithCoordinator(limit, quotaCoordinator));
 			if (coordinated) return coordinated;
 		} catch (err) {
 			if (!(err instanceof CircuitBreakerOpen)) {
@@ -821,24 +832,41 @@ export async function resetAllRateLimitsKv(kv: KVNamespace): Promise<void> {
 }
 
 /**
- * Best-effort per-IP daily cap on the number of DISTINCT domains scanned.
- * Uses two KV keys per (principal, day): a per-domain marker and a counter.
- * A repeat domain consumes no new budget. Fail-open: any KV error or absent KV
- * returns allowed. Not a hard lock — IP rotation defeats it by design.
+ * Per-principal daily cap on the number of DISTINCT domains scanned.
  *
- * KV eventual-consistency and partial-write drift are accepted as best-effort.
- * The counter is written BEFORE the marker so a partial failure (counter
- * written, marker not) leaves no marker — the domain is re-counted next time
- * (a harmless over-count) rather than slipping through free (an under-count).
+ * When QuotaCoordinator is bound, its Durable Object transaction is the
+ * authoritative cross-isolate gate. A configured coordinator that errors or
+ * returns no verdict fails CLOSED: falling back after an ambiguous RPC could
+ * both bypass the cap and double-count a transaction that already committed.
+ *
+ * A deployment without the binding (for example, a minimal self-host) retains
+ * the legacy best-effort KV path. A repeat domain consumes no new budget. IP
+ * rotation remains outside this application-layer speed bump's threat model.
  */
 export async function checkDistinctDomainDailyLimit(
 	principalId: string,
 	domainFingerprint: string,
 	limit: number,
 	kv?: KVNamespace,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+	routing: ShardRouting = SINGLETON_ROUTING,
 ): Promise<ToolDailyRateLimitResult> {
 	if (!Number.isFinite(limit)) {
 		return { allowed: true, remaining: limit, limit };
+	}
+	if (quotaCoordinator) {
+		try {
+			const coordinated = await quotaCoordinatorBreaker.call(() =>
+				checkDistinctDomainDailyLimitWithCoordinator(principalId, domainFingerprint, limit, quotaCoordinator, routing),
+			);
+			if (coordinated) return coordinated;
+			logError('[rate-limiter] distinct-domain coordinator returned no verdict, failing closed');
+		} catch (err) {
+			if (!(err instanceof CircuitBreakerOpen)) {
+				logError('[rate-limiter] distinct-domain coordinator error, failing closed');
+			}
+		}
+		return { allowed: false, retryAfterMs: 60_000, remaining: 0, limit };
 	}
 	if (!kv) {
 		return { allowed: true, remaining: limit, limit };

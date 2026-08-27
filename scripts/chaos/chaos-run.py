@@ -15,13 +15,33 @@ import ssl
 import sys
 import time
 import random
+import urllib.parse
 import urllib.request
 import urllib.error
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 import certifi
 
-BASE_URL = os.environ.get("BV_MCP_ENDPOINT", "https://dns-mcp.blackveilsecurity.com/mcp")
+
+def validate_operator_endpoint(value):
+    """Require a credential-free HTTPS URL before urllib sees operator input."""
+    parsed = urllib.parse.urlsplit(value)
+    if parsed.scheme.lower() != "https":
+        raise ValueError("BV_MCP_ENDPOINT must use https://")
+    if not parsed.hostname:
+        raise ValueError("BV_MCP_ENDPOINT must include a hostname")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("BV_MCP_ENDPOINT must not contain embedded credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("BV_MCP_ENDPOINT must not contain a query or fragment")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError("BV_MCP_ENDPOINT contains an invalid port") from exc
+    return value
+
+
+BASE_URL = validate_operator_endpoint(os.environ.get("BV_MCP_ENDPOINT", "https://dns-mcp.blackveilsecurity.com/mcp"))
 SSL_CTX = ssl.create_default_context(cafile=certifi.where())
 API_KEY = os.environ.get("BV_API_KEY", "")
 
@@ -54,6 +74,15 @@ results = defaultdict(int)  # pass / fail / rate_limited / error / server_error
 latencies = []
 
 
+def open_operator_request(req, timeout):
+    """Open only requests whose final urllib URL still matches the endpoint policy."""
+    validate_operator_endpoint(req.full_url)
+    # The URL is validated immediately above; Semgrep cannot follow the Request object's full_url.
+    return urllib.request.urlopen(  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        req, timeout=timeout, context=SSL_CTX
+    )
+
+
 def post(payload, session_id=None, timeout=30):
     """HTTP POST to MCP endpoint. Returns (status, headers, body_dict_or_str)."""
     data = json.dumps(payload).encode()
@@ -66,7 +95,7 @@ def post(payload, session_id=None, timeout=30):
         req.add_header("Mcp-Session-Id", session_id)
     t0 = time.monotonic()
     try:
-        with urllib.request.urlopen(req, timeout=timeout, context=SSL_CTX) as resp:
+        with open_operator_request(req, timeout=timeout) as resp:
             elapsed = time.monotonic() - t0
             body = json.loads(resp.read().decode())
             latencies.append(elapsed)
@@ -250,7 +279,7 @@ def phase_tombstone():
     req.add_header("User-Agent", "curl/8.4.0")
     req.add_header("Mcp-Session-Id", sid)
     try:
-        with urllib.request.urlopen(req, timeout=10, context=SSL_CTX) as resp:
+        with open_operator_request(req, timeout=10) as resp:
             delete_status = resp.status
     except urllib.error.HTTPError as e:
         delete_status = e.code

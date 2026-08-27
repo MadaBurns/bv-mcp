@@ -13,7 +13,7 @@ const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
 
 type TestEnv = typeof env & {
-	BV_WEB_INTERNAL_KEY?: string;
+	BV_MCP_TENANT_KEY?: string;
 	REQUIRE_INTERNAL_AUTH?: string;
 	TENANT_REGISTRY_DB?: D1Database;
 	[k: string]: unknown;
@@ -60,7 +60,7 @@ describe('Phase 6 Fingerprint Pre-flight Integration', () => {
 
 	it('should skip full scan when fingerprint matches and last scan is recent', async () => {
 		const e = env as TestEnv;
-		e.BV_WEB_INTERNAL_KEY = TEST_INTERNAL_KEY;
+		e.BV_MCP_TENANT_KEY = TEST_INTERNAL_KEY;
 		e.REQUIRE_INTERNAL_AUTH = 'true';
 
 		const lastScanResult = { score: 95, findings: [] };
@@ -90,6 +90,7 @@ describe('Phase 6 Fingerprint Pre-flight Integration', () => {
 			headers: {
 				'Authorization': `Bearer ${TEST_INTERNAL_KEY}`,
 				'X-Tenant': TEST_TENANT_ID,
+				'X-Tenant-Scope': TEST_TENANT_ID,
 				'Content-Type': 'application/json',
 			},
 			body: JSON.stringify({ domains: ['test.com'] }),
@@ -114,7 +115,7 @@ describe('Phase 6 Fingerprint Pre-flight Integration', () => {
 
 	it('should perform full scan when force_refresh is true', async () => {
 		const e = env as TestEnv;
-		e.BV_WEB_INTERNAL_KEY = TEST_INTERNAL_KEY;
+		e.BV_MCP_TENANT_KEY = TEST_INTERNAL_KEY;
 		e.REQUIRE_INTERNAL_AUTH = 'true';
 
 		const registry = makeMockD1({
@@ -132,6 +133,7 @@ describe('Phase 6 Fingerprint Pre-flight Integration', () => {
 			headers: {
 				'Authorization': `Bearer ${TEST_INTERNAL_KEY}`,
 				'X-Tenant': TEST_TENANT_ID,
+				'X-Tenant-Scope': TEST_TENANT_ID,
 				'Content-Type': 'application/json',
 			},
 			body: JSON.stringify({ domains: ['test.com'], force_refresh: true }),

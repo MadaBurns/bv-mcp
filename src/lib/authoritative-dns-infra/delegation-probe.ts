@@ -93,8 +93,8 @@ async function observeParent(
 			glueIpv6: glueRecords(response, RecordType.AAAA, delegated),
 			rcode: response.rcode,
 		};
-	} catch (error) {
-		return { nameserver, error: error instanceof Error ? error.message : String(error) };
+	} catch {
+		return { nameserver, error: 'parent_query_failed' };
 	}
 }
 
@@ -107,8 +107,8 @@ async function observeChild(nameserver: string, hostname: string, query: DirectD
 			publishedNs: records(response, RecordType.NS, hostname),
 			rcode: response.rcode,
 		};
-	} catch (error) {
-		return { nameserver, error: error instanceof Error ? error.message : String(error) };
+	} catch {
+		return { nameserver, error: 'child_query_failed' };
 	}
 }
 
@@ -160,8 +160,8 @@ export async function probeDelegationConsistency(
 	let parentNameservers: string[] = [];
 	try {
 		parentNameservers = uniqueSorted(await recursiveQuery(parentZone, 'NS'));
-	} catch (error) {
-		errors.push(`parent_ns_lookup_failed:${error instanceof Error ? error.message : String(error)}`);
+	} catch {
+		errors.push('parent_ns_lookup_failed');
 	}
 
 	const parentObservations = await Promise.all(

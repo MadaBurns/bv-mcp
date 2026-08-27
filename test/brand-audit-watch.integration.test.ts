@@ -24,7 +24,9 @@ interface D1Call {
 	binds: unknown[];
 }
 
-function makeMockD1(opts: { existing?: Record<string, unknown>[]; throwOnRun?: boolean; existingCount?: number } = {}) {
+function makeMockD1(
+	opts: { existing?: Record<string, unknown>[]; throwOnRun?: boolean; existingCount?: number; insertChanges?: number } = {},
+) {
 	const calls: D1Call[] = [];
 	const db = {
 		prepare(sql: string) {
@@ -47,7 +49,9 @@ function makeMockD1(opts: { existing?: Record<string, unknown>[]; throwOnRun?: b
 				async run() {
 					calls.push({ sql, binds });
 					if (opts.throwOnRun) throw new Error('d1_run_failed');
-					return { success: true, meta: { changes: 1 } };
+					const changes =
+						opts.insertChanges ?? (sql.includes('INSERT INTO brand_audit_watches') && (opts.existingCount ?? 0) >= 20 ? 0 : 1);
+					return { success: true, meta: { changes } };
 				},
 				async all() {
 					calls.push({ sql, binds });
@@ -58,6 +62,70 @@ function makeMockD1(opts: { existing?: Record<string, unknown>[]; throwOnRun?: b
 		},
 	} as unknown as D1Database;
 	return { db, calls };
+}
+
+interface StoredWatch {
+	id: string;
+	ownerId: string;
+	domain: string;
+	active: number;
+}
+
+/**
+ * Stateful D1 model that deliberately yields between query execution steps.
+ * A split SELECT-then-INSERT implementation lets every concurrent caller read
+ * the same stale count; an INSERT...SELECT guard checks and writes as one step.
+ */
+function makeConcurrentWatchD1() {
+	const calls: D1Call[] = [];
+	const rows: StoredWatch[] = [];
+	const db = {
+		prepare(sql: string) {
+			let binds: unknown[] = [];
+			const stmt = {
+				bind(...args: unknown[]) {
+					binds = args;
+					return stmt;
+				},
+				async first() {
+					calls.push({ sql, binds });
+					if (sql.trimStart().startsWith('SELECT COUNT(*)')) {
+						const ownerId = String(binds[0]);
+						const count = rows.filter((row) => row.ownerId === ownerId && row.active === 1).length;
+						await Promise.resolve();
+						return { count };
+					}
+					return null;
+				},
+				async run() {
+					calls.push({ sql, binds });
+					await Promise.resolve();
+					if (!sql.includes('INSERT INTO brand_audit_watches')) {
+						return { success: true, meta: { changes: 1 } };
+					}
+
+					const [id, ownerId, domain, , , active, , guardOwnerId, limit] = binds;
+					const hasAtomicCapGuard = sql.includes('SELECT COUNT(*)') && sql.includes(') < ?');
+					if (hasAtomicCapGuard) {
+						const activeCount = rows.filter((row) => row.ownerId === guardOwnerId && row.active === 1).length;
+						if (activeCount >= Number(limit)) {
+							return { success: true, meta: { changes: 0 } };
+						}
+					}
+
+					if (rows.some((row) => row.id === id)) throw new Error('UNIQUE constraint failed: brand_audit_watches.id');
+					rows.push({ id: String(id), ownerId: String(ownerId), domain: String(domain), active: Number(active) });
+					return { success: true, meta: { changes: 1 } };
+				},
+				async all() {
+					calls.push({ sql, binds });
+					return { results: [], success: true, meta: {} };
+				},
+			};
+			return stmt;
+		},
+	} as unknown as D1Database;
+	return { db, calls, rows };
 }
 
 function makeDeps(over: Partial<BrandAuditWatchDeps> = {}): BrandAuditWatchDeps {
@@ -120,13 +188,63 @@ describe('register_brand_audit_watch', () => {
 		expect(insert?.binds).toContain(null);
 	});
 
-	it('refuses to register when the principal already has 20 watches (cap)', async () => {
+	it('uses D1 meta.changes=0 to report the cap without a preflight COUNT', async () => {
 		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
-		const { db } = makeMockD1({ existingCount: 20 });
+		const { db, calls } = makeMockD1({ existingCount: 20 });
 		const deps = makeDeps({ db });
 		const result = await registerBrandAuditWatch({ domain: 'apple.com', interval: 'daily' }, 'owner-1', deps);
 		const error = result.findings.find((f) => f.metadata?.watchLimitExceeded === true);
 		expect(error).toBeDefined();
+		expect(result.findings.find((f) => f.metadata?.summary === true)).toBeUndefined();
+
+		const insert = calls.find((c) => c.sql.includes('INSERT INTO brand_audit_watches'));
+		expect(insert?.sql).toContain('SELECT COUNT(*)');
+		expect(insert?.sql).toContain('WHERE owner_id = ? AND active = 1');
+		expect(insert?.binds.slice(-2)).toEqual(['owner-1', 20]);
+		expect(calls.some((c) => c.sql.trimStart().startsWith('SELECT COUNT(*)'))).toBe(false);
+	});
+
+	it('keeps thrown D1 insert failures on the persistenceFailure path', async () => {
+		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { db } = makeMockD1({ throwOnRun: true });
+		const result = await registerBrandAuditWatch({ domain: 'apple.com', interval: 'daily' }, 'owner-1', makeDeps({ db }));
+		expect(result.findings.find((f) => f.metadata?.persistenceFailure === true)).toBeDefined();
+		expect(result.findings.find((f) => f.metadata?.summary === true)).toBeUndefined();
+	});
+
+	it('admits at most 20 distinct concurrent registrations for each principal', async () => {
+		const { registerBrandAuditWatch } = await import('../src/tools/brand-audit-watch');
+		const { db, calls, rows } = makeConcurrentWatchD1();
+		let nextId = 0;
+		const deps = makeDeps({
+			db,
+			generateId: () => `watch-concurrent-${nextId++}`,
+		});
+
+		const registerMany = (ownerId: string) =>
+			Promise.all(
+				Array.from({ length: 48 }, (_, index) =>
+					registerBrandAuditWatch({ domain: `brand-${index}.${ownerId}.example.com`, interval: 'daily' }, ownerId, deps),
+				),
+			);
+		const [ownerAResults, ownerBResults] = await Promise.all([registerMany('owner-a'), registerMany('owner-b')]);
+
+		for (const [ownerId, results] of [
+			['owner-a', ownerAResults],
+			['owner-b', ownerBResults],
+		] as const) {
+			const ownerRows = rows.filter((row) => row.ownerId === ownerId);
+			expect(ownerRows).toHaveLength(20);
+			expect(new Set(ownerRows.map((row) => row.id)).size).toBe(20);
+			expect(new Set(ownerRows.map((row) => row.domain)).size).toBe(20);
+			expect(results.filter((result) => result.findings.some((f) => f.metadata?.summary === true))).toHaveLength(20);
+			expect(results.filter((result) => result.findings.some((f) => f.metadata?.watchLimitExceeded === true))).toHaveLength(28);
+		}
+
+		const inserts = calls.filter((call) => call.sql.includes('INSERT INTO brand_audit_watches'));
+		expect(inserts).toHaveLength(96);
+		expect(inserts.every((call) => call.sql.includes('SELECT COUNT(*)'))).toBe(true);
+		expect(calls.some((call) => call.sql.trimStart().startsWith('SELECT COUNT(*)'))).toBe(false);
 	});
 
 	it('rejects a blocklisted / SSRF-class watched domain at register time (no INSERT)', async () => {
@@ -150,6 +268,7 @@ describe('register_brand_audit_watch', () => {
 describe('list_brand_audit_watches', () => {
 	it("returns the caller's active watches", async () => {
 		const { listBrandAuditWatches } = await import('../src/tools/brand-audit-watch');
+		const callbackToken = 'abcdefghijklmnopqrstuvwxyzABCDEF';
 		const rows = [
 			{
 				id: 'w-1',
@@ -167,7 +286,7 @@ describe('list_brand_audit_watches', () => {
 				owner_id: 'owner-1',
 				domain: 'brand-zeta.example.com',
 				interval: 'monthly',
-				webhook_url: 'https://hooks.example.com/a',
+				webhook_url: `https://www.blackveilsecurity.com/api/webhooks/brand-drift?t=${callbackToken}`,
 				last_run_at: 2,
 				last_classification_hash: 'a'.repeat(64),
 				active: 1,
@@ -179,7 +298,16 @@ describe('list_brand_audit_watches', () => {
 
 		const result = await listBrandAuditWatches('owner-1', deps);
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
-		expect(summary?.metadata?.watches as unknown[]).toHaveLength(2);
+		const watches = summary?.metadata?.watches as Array<Record<string, unknown>>;
+		expect(watches).toHaveLength(2);
+		const expectedDigest = Array.from(
+			new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(callbackToken))),
+			(byte) => byte.toString(16).padStart(2, '0'),
+		).join('');
+		expect(watches[0]?.webhookTokenFingerprint).toBeNull();
+		expect(watches[1]?.webhookTokenFingerprint).toBe(expectedDigest);
+		expect(JSON.stringify(watches)).not.toContain(callbackToken);
+		expect(JSON.stringify(watches)).not.toContain('webhook_url');
 	});
 });
 

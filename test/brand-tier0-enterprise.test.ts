@@ -151,4 +151,30 @@ describe('tier0EnterpriseLookup', () => {
 		expect(url).toContain(encodeURIComponent('foo bar/baz'));
 		expect(url).not.toContain('foo bar/baz');
 	});
+
+	it('uses manual redirects and times out a body that stalls after headers', async () => {
+		const { tier0EnterpriseLookup } = await import('../src/lib/brand-tier0-enterprise');
+		let requestSignal: AbortSignal | undefined;
+		const mockBinding = {
+			fetch: vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+				requestSignal = init?.signal ?? undefined;
+				let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+				const body = new ReadableStream<Uint8Array>({
+					start(controller) {
+						bodyController = controller;
+					},
+				});
+				requestSignal?.addEventListener('abort', () => bodyController?.error(requestSignal?.reason), { once: true });
+				return new Response(body, { status: 200 });
+			}),
+		} as unknown as Fetcher;
+
+		const result = await tier0EnterpriseLookup('example.com', mockBinding, ENV_WITH_KEY, 5);
+
+		expect(result.status).toBe('degraded');
+		expect(requestSignal?.aborted).toBe(true);
+		expect(vi.mocked(mockBinding.fetch).mock.calls[0]?.[1]).toEqual(
+			expect.objectContaining({ redirect: 'manual' }),
+		);
+	});
 });

@@ -9,7 +9,9 @@
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import { safeFetch } from '../lib/safe-fetch';
+import { disposeUnreadResponseBody, readBoundedOrNull, readJsonResponseCapped } from '../lib/response-body';
 import { FALLBACK_RDAP_SERVERS, IANA_BOOTSTRAP_URL } from './rdap-fallback-servers';
+import { MAX_RESPONSE_BYTES as WHOIS_RESPONSE_MAX_BYTES } from '@blackveil/dns-checks/whois';
 
 const CATEGORY = 'rdap' as CheckCategory;
 
@@ -121,6 +123,8 @@ const RDAP_RETRYABLE_HTTP_STATUSES = new Set([429, 503, 504]);
 const RDAP_RETRY_MAX_ATTEMPTS = 2;
 const RDAP_RETRY_DEFAULT_DELAY_MS = 750;
 const RDAP_RETRY_MAX_DELAY_MS = 2_000;
+const RDAP_BOOTSTRAP_MAX_BODY_BYTES = 2 * 1024 * 1024;
+const RDAP_RESPONSE_MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 interface RdapEvent {
 	eventAction: string;
@@ -170,11 +174,16 @@ async function fetchBootstrap(): Promise<Record<string, string>> {
 			headers: { Accept: 'application/json' },
 		});
 		if (!resp.ok) {
+			await disposeUnreadResponseBody(resp);
 			bootstrapFailure = { failedAt: Date.now() };
 			return {};
 		}
 
-		const data = (await resp.json()) as { services?: [string[], string[]][] };
+		const data = await readJsonResponseCapped<{ services?: [string[], string[]][] }>(resp, RDAP_BOOTSTRAP_MAX_BODY_BYTES);
+		if (data === null) {
+			bootstrapFailure = { failedAt: Date.now() };
+			return {};
+		}
 		const map: Record<string, string> = {};
 		if (Array.isArray(data.services)) {
 			for (const [tlds, urls] of data.services) {
@@ -480,6 +489,7 @@ async function fetchRdapResponse(rdapUrl: string, callerSignal?: AbortSignal, de
 			return resp;
 		}
 		lastResponse = resp;
+		await disposeUnreadResponseBody(resp);
 		// Clamp the `Retry-After` sleep against the remaining sync budget so a
 		// server-controlled header can't blow past the tool-call cap. If the
 		// budget is already exhausted, skip the sleep AND the next attempt —
@@ -605,8 +615,12 @@ async function fetchWhoisRegistrar(
 			body: JSON.stringify({ domain }),
 			signal: composeFetchSignal(signal, remainingBudgetMs),
 		});
-		if (!resp.ok) return { registrar: null, source: 'error' };
-		const body = await resp.text();
+		if (!resp.ok) {
+			await disposeUnreadResponseBody(resp);
+			return { registrar: null, source: 'error' };
+		}
+		const body = await readBoundedOrNull(resp.body, WHOIS_RESPONSE_MAX_BYTES);
+		if (body === null) return { registrar: null, source: 'error' };
 		const structured = parseStructuredWhoisPayload(body);
 		if (structured) return structured;
 		// Non-JSON body (a shim that streams raw port-43 text): parse it with the
@@ -788,6 +802,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		const resp = await fetchRdapResponse(rdapUrl, callerSignal, deadlineMs);
 
 		if (!resp.ok) {
+			await disposeUnreadResponseBody(resp);
 			// e.g. .co registries return HTTP 530. Fetch WHOIS first so we present
 			// the WHOIS-sourced registration details rather than asserting the data
 			// is unavailable when it isn't.
@@ -811,7 +826,9 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 			return buildCheckResult(CATEGORY, findings) as CheckResult;
 		}
 
-		rdapData = (await resp.json()) as RdapDomainResponse;
+		const parsedRdap = await readJsonResponseCapped<RdapDomainResponse>(resp, RDAP_RESPONSE_MAX_BODY_BYTES);
+		if (parsedRdap === null) throw new Error('RDAP response was malformed or exceeded the response limit');
+		rdapData = parsedRdap;
 	} catch (err) {
 		const message = err instanceof Error ? err.message : 'Unknown error';
 		// Caller-abort during fetch surfaces as a distinct reason so the retry

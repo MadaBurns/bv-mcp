@@ -41,6 +41,39 @@ class FakeOpener:
         return self.response
 
 
+class ProdProbeUrlValidationTest(unittest.TestCase):
+    def test_accepts_credential_free_https_urls(self):
+        module = load_script()
+        self.assertEqual(
+            module.validate_https_url("https://mcp.example:8443/oauth/token"),
+            "https://mcp.example:8443/oauth/token",
+        )
+
+    def test_rejects_non_https_missing_hosts_and_embedded_credentials(self):
+        module = load_script()
+        for unsafe_url in (
+            "file:///etc/passwd",
+            "http://mcp.example/oauth/token",
+            "https:///oauth/token",
+            "https://operator:secret@example.com/oauth/token",
+        ):
+            with self.subTest(url=unsafe_url):
+                with self.assertRaises(ValueError):
+                    module.validate_https_url(unsafe_url)
+
+    def test_http_helper_rejects_file_urls_before_opening_them(self):
+        module = load_script()
+        with mock.patch.object(module.urllib.request, "urlopen") as urlopen:
+            with self.assertRaisesRegex(ValueError, "must use https"):
+                module.get_json("file:///etc/passwd")
+        urlopen.assert_not_called()
+
+    def test_base_url_rejects_query_credentials(self):
+        module = load_script()
+        with self.assertRaisesRegex(ValueError, "query or fragment"):
+            module.validate_base_url("https://mcp.example/?access_token=secret")
+
+
 class ProdProbeRedirectTest(unittest.TestCase):
     def run_redirect(self, authorize_response):
         module = load_script()

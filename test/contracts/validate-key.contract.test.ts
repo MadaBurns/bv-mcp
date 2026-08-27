@@ -9,12 +9,10 @@
  * THE load-bearing pre-cutover fixture mandated by
  * docs/superpowers/specs/2026-06-06-bv-mcp-contract-guardrail.md §6 #1.
  *
- * It pins that the producer's FOUR distinct answers drive FOUR distinct
- * behaviors, and — the life-or-death-for-revenue point (spec line 36,
- * "These two MUST stay distinct") — that `200 {tier:null}` behavior is the
- * OPPOSITE of `5xx` behavior under an IDENTICAL precondition (an LKG entry
- * present). A null is a definitive revoke (LKG ignored); a 5xx is "I don't
- * know" (LKG consulted, paying customer re-authenticated).
+ * It pins that a confirmed tier authorizes, a confirmed null is negatively
+ * cached, and every unavailable or malformed response fails closed. A stale
+ * positive entry must never keep a revoked bearer authenticated during an
+ * entitlement-service outage.
  *
  * Distinct from oauth-tier.contract.test.ts: that guards step-0
  * CustomerOAuthTierSchema; this guards step-3 service-binding resolution.
@@ -36,8 +34,8 @@ async function keyHashOf(token: string): Promise<string> {
 }
 
 describe('validate-key wire contract (resolveTier step 3)', () => {
-	// ─── Behavior 1: 200 {tier:<t>} → authenticate + cache 5min + LKG 24h ──────
-	it('200 {tier} → authenticates, writes tier:{hash} (300s) AND tier:lkg:{hash} (86400s)', async () => {
+	// ─── Behavior 1: 200 {tier:<t>} → authenticate + cache for 5 minutes ────────
+	it('200 {tier} → authenticates and writes only tier:{hash} for 300 seconds', async () => {
 		const { resolveTier } = await import('../../src/lib/tier-auth');
 
 		const kv = {
@@ -66,8 +64,9 @@ describe('validate-key wire contract (resolveTier step 3)', () => {
 			JSON.stringify({ tier: 'developer', revokedAt: null }),
 			{ expirationTtl: 300 },
 		);
-		// Long-lived last-known-good entry (24 h) — the outage fail-safe.
-		expect(kv.put).toHaveBeenCalledWith(`tier:lkg:${result.keyHash}`, 'developer', { expirationTtl: 86400 });
+		expect(
+			vi.mocked(kv.put).mock.calls.some(([key]) => String(key).startsWith('tier:lkg:')),
+		).toBe(false);
 	});
 
 	// ─── Behavior 2: 200 {tier:null} → negative-cache, LKG NEITHER read NOR written
@@ -109,14 +108,12 @@ describe('validate-key wire contract (resolveTier step 3)', () => {
 		expect(negCall![2]).toEqual({ expirationTtl: 300 });
 
 		// …and the LKG key was NEITHER read NOR written.
-		expect(vi.mocked(kv.get).mock.calls.some((c) => c[0] === `tier:lkg:${keyHash}`)).toBe(false);
+		expect(vi.mocked(kv.get).mock.calls.some((c) => String(c[0]) === `tier:lkg:${keyHash}`)).toBe(false);
 		expect(putCalls.some((c) => String(c[0]).startsWith('tier:lkg:'))).toBe(false);
 	});
 
-	// ─── Behavior 3a: 5xx → AMBIGUOUS → read LKG, re-authenticate (don't downgrade)
-	// Same precondition as Behavior 2 (LKG present) → OPPOSITE outcome. This pair
-	// IS the contract (spec line 36).
-	it('5xx → reads present LKG and re-authenticates the paying customer (no downgrade)', async () => {
+	// ─── Behavior 3a: 5xx → fail closed ─────────────────────────────────────────
+	it('5xx → ignores a stale positive entry and denies authentication', async () => {
 		const { resolveTier } = await import('../../src/lib/tier-auth');
 
 		const keyHash = await keyHashOf('ambiguous-5xx-key');
@@ -139,15 +136,12 @@ describe('validate-key wire contract (resolveTier step 3)', () => {
 			'https://example.com/mcp',
 		);
 
-		// Re-authenticated from LKG — the opposite of the null case above.
-		expect(result.authenticated).toBe(true);
-		expect(result.tier).toBe('enterprise');
-		expect(result.keyHash).toBe(keyHash);
-		expect(vi.mocked(kv.get).mock.calls.some((c) => c[0] === `tier:lkg:${keyHash}`)).toBe(true);
+		expect(result.authenticated).toBe(false);
+		expect(vi.mocked(kv.get).mock.calls.some((c) => String(c[0]) === `tier:lkg:${keyHash}`)).toBe(false);
 	});
 
-	// ─── Behavior 3b: fetch throws → AMBIGUOUS → same LKG path as 5xx ──────────
-	it('fetch throws (network/binding failure) → reads present LKG and re-authenticates', async () => {
+	// ─── Behavior 3b: fetch throws → fail closed ────────────────────────────────
+	it('fetch throws → ignores a stale positive entry and denies authentication', async () => {
 		const { resolveTier } = await import('../../src/lib/tier-auth');
 
 		const keyHash = await keyHashOf('ambiguous-throw-key');
@@ -170,9 +164,8 @@ describe('validate-key wire contract (resolveTier step 3)', () => {
 			'https://example.com/mcp',
 		);
 
-		expect(result.authenticated).toBe(true);
-		expect(result.tier).toBe('developer');
-		expect(result.keyHash).toBe(keyHash);
+		expect(result.authenticated).toBe(false);
+		expect(vi.mocked(kv.get).mock.calls.some((c) => String(c[0]) === `tier:lkg:${keyHash}`)).toBe(false);
 	});
 
 	// ─── Behavior 4: 4xx → DEFINITIVE REJECT → no LKG, fall through to static key
@@ -239,7 +232,13 @@ describe('validate-key wire contract (resolveTier step 3)', () => {
 
 		expect(result.authenticated).toBe(false);
 		expect(bvWeb.fetch).toHaveBeenCalledOnce();
-		// Not a definitive answer → must NOT negative-cache.
-		expect(kv.put).not.toHaveBeenCalled();
+		// Not a definitive answer → must NOT write any auth-result cache. The
+		// pre-auth abuse gate is expected to persist its independent minute/hour
+		// counters under rl:ctl:*, so assert on the security-relevant key family
+		// instead of banning every KV write.
+		const authCacheWrites = vi
+			.mocked(kv.put)
+			.mock.calls.filter(([key]) => String(key).startsWith('tier:'));
+		expect(authCacheWrites).toEqual([]);
 	});
 });

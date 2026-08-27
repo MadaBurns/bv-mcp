@@ -34,7 +34,8 @@ Committed Worker vars in `wrangler.jsonc`:
 
 Production Worker secrets:
 - `OAUTH_SIGNING_SECRET` is required for OAuth token signing and route readiness.
-- `BV_WEB_INTERNAL_KEY` is required for trusted bv-web to bv-mcp internal calls.
+- `BV_MCP_OAUTH_MINT_KEY` is required on bv-mcp and bv-web-prod for grant/trial issuance. `BV_MCP_OAUTH_REVOKE_KEY` is a separate revocation-only value shared only by bv-mcp and bv2-ops. Generate at least 256 random bits for each and never reuse either value or `BV_WEB_INTERNAL_KEY`.
+- `BV_WEB_INTERNAL_KEY` remains the credential for the general bv-web to bv-mcp tool door.
 - `BV_API_KEY` is optional and only needed for legacy owner/admin probes such as `--mode=e2e`; it is not required for customer OAuth redirect verification.
 
 The production deploy workflow runs both `--mode=smoke` and `--mode=redirect` after `/health` so a missing customer consent URL fails deploy verification instead of surfacing as `503 OAuth customer login is not configured` to users.

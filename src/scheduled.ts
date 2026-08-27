@@ -410,11 +410,13 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	const parsedBatchP95 = parseFloat(env.ALERT_BATCH_P95_THRESHOLD ?? '');
 	const batchP95Threshold = Number.isFinite(parsedBatchP95) ? parsedBatchP95 : DEFAULT_BATCH_P95_THRESHOLD;
 	const parsedLatencyLookback = parseInt(env.ALERT_LATENCY_LOOKBACK_MINUTES ?? '', 10);
-	const latencyLookbackMinutes = Number.isFinite(parsedLatencyLookback) && parsedLatencyLookback > 0 ? parsedLatencyLookback : DEFAULT_LATENCY_LOOKBACK_MINUTES;
+	const latencyLookbackMinutes =
+		Number.isFinite(parsedLatencyLookback) && parsedLatencyLookback > 0 ? parsedLatencyLookback : DEFAULT_LATENCY_LOOKBACK_MINUTES;
 	const parsedMinSamples = parseInt(env.ALERT_MIN_LATENCY_SAMPLES ?? '', 10);
 	const minLatencySamples = Number.isFinite(parsedMinSamples) && parsedMinSamples >= 0 ? parsedMinSamples : DEFAULT_MIN_LATENCY_SAMPLES;
 	const parsedMinErrorSamples = parseInt(env.ALERT_MIN_ERROR_SAMPLES ?? '', 10);
-	const minErrorSamples = Number.isFinite(parsedMinErrorSamples) && parsedMinErrorSamples >= 0 ? parsedMinErrorSamples : DEFAULT_MIN_ERROR_SAMPLES;
+	const minErrorSamples =
+		Number.isFinite(parsedMinErrorSamples) && parsedMinErrorSamples >= 0 ? parsedMinErrorSamples : DEFAULT_MIN_ERROR_SAMPLES;
 
 	// EACH QUERY GETS ITS OWN try. Running all six inside a single try meant the
 	// FIRST rejection aborted the whole check, taking every later alert down with
@@ -455,8 +457,11 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	// needs a different lookback and a per-workload-class threshold.
 
 	try {
-		const anomalyRows = await lane<AnomalyRow[]>('anomalies', [], async () =>
-			(await queryAnalyticsEngine(env.CF_ACCOUNT_ID!, env.CF_ANALYTICS_TOKEN!, queryRecentAnomalies(lookback, dataset))) as AnomalyRow[],
+		const anomalyRows = await lane<AnomalyRow[]>(
+			'anomalies',
+			[],
+			async () =>
+				(await queryAnalyticsEngine(env.CF_ACCOUNT_ID!, env.CF_ANALYTICS_TOKEN!, queryRecentAnomalies(lookback, dataset))) as AnomalyRow[],
 		);
 		const anomaly = anomalyRows[0];
 
@@ -474,7 +479,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 				result: 'ok',
 				severity: 'warn',
 				details: {
-					message: 'Analytics reader saw 0 tool_call rows over the lookback window — if this service is receiving traffic, the AE reader may be querying the wrong/empty dataset (check ANALYTICS_DATASET vs the MCP_ANALYTICS binding dataset).',
+					message:
+						'Analytics reader saw 0 tool_call rows over the lookback window — if this service is receiving traffic, the AE reader may be querying the wrong/empty dataset (check ANALYTICS_DATASET vs the MCP_ANALYTICS binding dataset).',
 					dataset,
 					lookbackMinutes: lookback,
 				},
@@ -574,12 +580,15 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		const atLatencyWindowBoundary = minutesSinceEpoch % latencyLookbackMinutes < CRON_INTERVAL_MINUTES;
 
 		if (atLatencyWindowBoundary) {
-			const latencyRows = await lane<LatencyRow[]>('latency', [], async () =>
-				(await queryAnalyticsEngine(
-					env.CF_ACCOUNT_ID!,
-					env.CF_ANALYTICS_TOKEN!,
-					queryLatencyByWorkloadClass(String(latencyLookbackMinutes), dataset),
-				)) as LatencyRow[],
+			const latencyRows = await lane<LatencyRow[]>(
+				'latency',
+				[],
+				async () =>
+					(await queryAnalyticsEngine(
+						env.CF_ACCOUNT_ID!,
+						env.CF_ANALYTICS_TOKEN!,
+						queryLatencyByWorkloadClass(String(latencyLookbackMinutes), dataset),
+					)) as LatencyRow[],
 			);
 
 			for (const row of latencyRows) {
@@ -634,8 +643,11 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			}
 		}
 
-		const rateLimitRows = await lane<RateLimitRow[]>('rate_limit', [], async () =>
-			(await queryAnalyticsEngine(env.CF_ACCOUNT_ID!, env.CF_ANALYTICS_TOKEN!, queryRateLimitSurge(lookback, dataset))) as RateLimitRow[],
+		const rateLimitRows = await lane<RateLimitRow[]>(
+			'rate_limit',
+			[],
+			async () =>
+				(await queryAnalyticsEngine(env.CF_ACCOUNT_ID!, env.CF_ANALYTICS_TOKEN!, queryRateLimitSurge(lookback, dataset))) as RateLimitRow[],
 		);
 		const rateLimitData = rateLimitRows[0];
 
@@ -657,12 +669,15 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// fail-soft bindings null out silently otherwise. Absent bindings and the
 		// benign recon 404 never reach the `degradation` dataset, so any row here
 		// is a real, present-binding failure worth surfacing.
-		const degradationRows = await lane<BindingDegradationRow[]>('binding_degradation', [], async () =>
-			(await queryAnalyticsEngine(
-				env.CF_ACCOUNT_ID!,
-				env.CF_ANALYTICS_TOKEN!,
-				queryBindingDegradation(lookback, dataset),
-			)) as BindingDegradationRow[],
+		const degradationRows = await lane<BindingDegradationRow[]>(
+			'binding_degradation',
+			[],
+			async () =>
+				(await queryAnalyticsEngine(
+					env.CF_ACCOUNT_ID!,
+					env.CF_ANALYTICS_TOKEN!,
+					queryBindingDegradation(lookback, dataset),
+				)) as BindingDegradationRow[],
 		);
 		const totalDegradations = degradationRows.reduce((sum, r) => sum + (r.event_count ?? 0), 0);
 
@@ -677,7 +692,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			// present so a cost-ceiling outage doesn't read as a binding failure.
 			const hasCostCeiling = degradationRows.some((r) => r.degradation_type === 'cost_ceiling_degraded');
 			const hasBinding = degradationRows.some((r) => r.degradation_type !== 'cost_ceiling_degraded');
-			const subject = hasCostCeiling && hasBinding ? 'Degradation' : hasCostCeiling ? 'Global cost-ceiling degraded' : 'Service-binding degradation';
+			const subject =
+				hasCostCeiling && hasBinding ? 'Degradation' : hasCostCeiling ? 'Global cost-ceiling degraded' : 'Service-binding degradation';
 			await sendAlert(
 				webhookUrl,
 				buildAlertPayload({
@@ -695,8 +711,15 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// per run; an errored batch or any failed sub-task is otherwise invisible to
 		// `queryRecentAnomalies` (which only sees `tool_call`). Surface it here so a
 		// queue retry-storm or a cron that keeps throwing is alertable.
-		const queueFailureRows = await lane<QueueFailureRow[]>('queue_failures', [], async () =>
-			(await queryAnalyticsEngine(env.CF_ACCOUNT_ID!, env.CF_ANALYTICS_TOKEN!, queryQueueFailures(lookback, dataset))) as QueueFailureRow[],
+		const queueFailureRows = await lane<QueueFailureRow[]>(
+			'queue_failures',
+			[],
+			async () =>
+				(await queryAnalyticsEngine(
+					env.CF_ACCOUNT_ID!,
+					env.CF_ANALYTICS_TOKEN!,
+					queryQueueFailures(lookback, dataset),
+				)) as QueueFailureRow[],
 		);
 		const totalQueueFailures = queueFailureRows.reduce((sum, r) => sum + (r.failure_count ?? 0), 0);
 		const totalErrorBatches = queueFailureRows.reduce((sum, r) => sum + (r.error_batch_count ?? 0), 0);
@@ -722,8 +745,15 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 			);
 		}
 
-		const tailExceptionRows = await lane<TailExceptionRow[]>('tail_exceptions', [], async () =>
-			(await queryAnalyticsEngine(env.CF_ACCOUNT_ID!, env.CF_ANALYTICS_TOKEN!, queryTailExceptions(lookback, dataset))) as TailExceptionRow[],
+		const tailExceptionRows = await lane<TailExceptionRow[]>(
+			'tail_exceptions',
+			[],
+			async () =>
+				(await queryAnalyticsEngine(
+					env.CF_ACCOUNT_ID!,
+					env.CF_ANALYTICS_TOKEN!,
+					queryTailExceptions(lookback, dataset),
+				)) as TailExceptionRow[],
 		);
 		const tailExceptionCount = tailExceptionRows[0]?.exception_count ?? 0;
 
@@ -759,7 +789,10 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 					severity: 'warning',
 					metrics: {
 						failed_lanes: laneFailures.map((f) => f.lane).join(', '),
-						detail: laneFailures.map((f) => `${f.lane}: ${f.reason}`).join(' · ').slice(0, 400),
+						detail: laneFailures
+							.map((f) => `${f.lane}: ${f.reason}`)
+							.join(' · ')
+							.slice(0, 400),
 					},
 					threshold: 'alerting_lane_partial_failure',
 				}),
@@ -1078,6 +1111,21 @@ interface BrandAuditWatchEnv {
 	BRAND_AUDIT_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 }
 
+interface PersistedWatchAuditRow {
+	owner_id: string;
+	total_targets: number;
+	format: string;
+	target: string;
+}
+
+async function deterministicWatchAuditId(row: DueWatchRow): Promise<string> {
+	const anchor = row.last_run_at === null ? 'initial' : String(row.last_run_at);
+	const material = `${row.id}\0${row.owner_id}\0${row.domain}\0${anchor}`;
+	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(material)));
+	const hex = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+	return `watch_${hex.slice(0, 58)}`;
+}
+
 /**
  * Enumerate active brand-audit watches whose `last_run_at` is older than their
  * interval (or null), enqueue a fresh `brand_audit_batch_start` for each, and
@@ -1089,17 +1137,27 @@ interface BrandAuditWatchEnv {
  * enqueue side; the diff-and-webhook delivery side is the next slice on the
  * Phase-4 work-list.
  */
-export async function handleBrandAuditWatches(env: Record<string, unknown>, _ctx: ExecutionContext): Promise<void> {
-	const e = env as BrandAuditWatchEnv;
-	if (!e.BRAND_AUDIT_DB || !e.BRAND_AUDIT_QUEUE) return;
+export async function handleBrandAuditWatches(env: BrandAuditWatchEnv, _ctx: ExecutionContext): Promise<void> {
+	if (!env.BRAND_AUDIT_DB || !env.BRAND_AUDIT_QUEUE) return;
 	const now = Date.now();
 
 	let rows: DueWatchRow[] = [];
 	try {
-		const result = await e.BRAND_AUDIT_DB.prepare(
-			'SELECT id, owner_id, domain, interval, webhook_url, last_run_at, last_classification_hash FROM brand_audit_watches WHERE active = 1 ORDER BY last_run_at ASC NULLS FIRST LIMIT ?',
+		const result = await env.BRAND_AUDIT_DB.prepare(
+			`SELECT id, owner_id, domain, interval, webhook_url, last_run_at, last_classification_hash
+			 FROM brand_audit_watches
+			 WHERE active = 1
+			   AND interval IN ('daily', 'weekly', 'monthly')
+			   AND (
+			     last_run_at IS NULL
+			     OR (interval = 'daily' AND last_run_at <= ?)
+			     OR (interval = 'weekly' AND last_run_at <= ?)
+			     OR (interval = 'monthly' AND last_run_at <= ?)
+			   )
+			 ORDER BY last_run_at ASC NULLS FIRST, id ASC
+			 LIMIT ?`,
 		)
-			.bind(MAX_WATCHES_PER_TICK)
+			.bind(now - INTERVAL_MS.daily, now - INTERVAL_MS.weekly, now - INTERVAL_MS.monthly, MAX_WATCHES_PER_TICK)
 			.all<DueWatchRow>();
 		rows = result.results ?? [];
 	} catch (err) {
@@ -1112,18 +1170,52 @@ export async function handleBrandAuditWatches(env: Record<string, unknown>, _ctx
 	}
 
 	for (const row of rows) {
-		const interval = INTERVAL_MS[row.interval];
-		if (row.last_run_at !== null && now - row.last_run_at < interval) {
-			continue;
-		}
+		// SQL excludes corrupt intervals before LIMIT so they cannot consume the
+		// fair-share page. Keep this runtime guard for defensive fake/adaptor rows.
+		if (!Object.prototype.hasOwnProperty.call(INTERVAL_MS, row.interval)) continue;
 		try {
-			const auditId = crypto.randomUUID();
-			// One-target batch — every watch is single-domain.
-			await e.BRAND_AUDIT_QUEUE.send(
+			const auditId = await deterministicWatchAuditId(row);
+			// D1 batch is transactional: the queue producer must never observe an
+			// audit message before both the parent and its exact target precondition
+			// exist. INSERT OR IGNORE makes an enqueue/update retry use the same rows.
+			await env.BRAND_AUDIT_DB.batch([
+				env.BRAND_AUDIT_DB.prepare(
+					'INSERT OR IGNORE INTO brand_audits (id, owner_id, status, total_targets, completed_targets, format, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+				).bind(auditId, row.owner_id, 'queued', 1, 0, 'json', now, now),
+				env.BRAND_AUDIT_DB.prepare(
+					'INSERT OR IGNORE INTO brand_audit_targets (audit_id, target, status, created_at) VALUES (?, ?, ?, ?)',
+				).bind(auditId, row.domain, 'queued', now),
+			]);
+
+			const persisted = (await env.BRAND_AUDIT_DB.prepare(
+				`SELECT a.owner_id, a.total_targets, a.format, t.target
+				 FROM brand_audits a
+				 JOIN brand_audit_targets t ON t.audit_id = a.id
+				 WHERE a.id = ? AND t.target = ?
+				 LIMIT 1`,
+			)
+				.bind(auditId, row.domain)
+				.first()) as PersistedWatchAuditRow | null;
+			if (
+				!persisted ||
+				persisted.owner_id !== row.owner_id ||
+				persisted.total_targets !== 1 ||
+				persisted.format !== 'json' ||
+				persisted.target !== row.domain
+			) {
+				throw new Error('brand-audit watch persistence precondition mismatch');
+			}
+
+			// One-target batch — every watch is single-domain. A successful enqueue
+			// followed by a failed CAS is safe: the next tick reuses this audit ID and
+			// the consumer's target claim makes the duplicate delivery idempotent.
+			await env.BRAND_AUDIT_QUEUE.send(
 				{ auditId, target: row.domain, format: 'json', watchId: row.id, ownerId: row.owner_id },
 				{ contentType: 'json' },
 			);
-			await e.BRAND_AUDIT_DB.prepare('UPDATE brand_audit_watches SET last_run_at = ? WHERE id = ?').bind(now, row.id).run();
+			await env.BRAND_AUDIT_DB.prepare('UPDATE brand_audit_watches SET last_run_at = ? WHERE id = ? AND active = 1 AND last_run_at IS ?')
+				.bind(now, row.id, row.last_run_at)
+				.run();
 		} catch (err) {
 			logError(err instanceof Error ? err : String(err), {
 				severity: 'warn',

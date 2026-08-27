@@ -2,13 +2,12 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	vi.useRealTimers();
 });
 
 describe('legacy SSE stream management', () => {
 	it('adds a createdAt timestamp to new stream records', async () => {
-		const { openLegacySseStream, resetLegacySseState, getLegacyStreamRecord } = await import(
-			'../src/lib/legacy-sse'
-		);
+		const { openLegacySseStream, resetLegacySseState, getLegacyStreamRecord } = await import('../src/lib/legacy-sse');
 		try {
 			const before = Date.now();
 			openLegacySseStream('session-ts', '/mcp/messages?sessionId=session-ts');
@@ -21,43 +20,31 @@ describe('legacy SSE stream management', () => {
 		}
 	});
 
-	it('enforces size cap by evicting oldest entries when at capacity', async () => {
-		const {
-			openLegacySseStream,
-			resetLegacySseState,
-			getLegacyStreamCount,
-			getLegacyStreamRecord,
-			MAX_LEGACY_STREAMS,
-		} = await import('../src/lib/legacy-sse');
+	it('rejects new admission at the global cap without evicting active clients', async () => {
+		const { openLegacySseStream, resetLegacySseState, getLegacyStreamCount, getLegacyStreamRecord, MAX_LEGACY_STREAMS } =
+			await import('../src/lib/legacy-sse');
 		try {
-			const nowSpy = vi.spyOn(Date, 'now');
-
 			// Fill to capacity with active entries
 			for (let i = 0; i < MAX_LEGACY_STREAMS; i++) {
-				nowSpy.mockReturnValue(1_000_000 + i * 1000);
 				const sid = `entry-${i}`;
-				openLegacySseStream(sid, `/mcp/messages?sessionId=${sid}`);
+				openLegacySseStream(sid, `/mcp/messages?sessionId=${sid}`, `principal-${i}`);
 			}
 
 			expect(getLegacyStreamCount()).toBe(MAX_LEGACY_STREAMS);
 
-			// Adding a new entry should evict the oldest (entry-0)
-			nowSpy.mockReturnValue(1_000_000 + MAX_LEGACY_STREAMS * 1000);
-			openLegacySseStream('new-entry', '/mcp/messages?sessionId=new-entry');
+			const denied = openLegacySseStream('new-entry', '/mcp/messages?sessionId=new-entry', 'new-principal');
 
-			expect(getLegacyStreamCount()).toBeLessThanOrEqual(MAX_LEGACY_STREAMS);
-			expect(getLegacyStreamRecord('new-entry')).toBeDefined();
-			expect(getLegacyStreamRecord('new-entry')!.controller).toBeDefined();
-			// entry-0 was created earliest and should have been evicted
-			expect(getLegacyStreamRecord('entry-0')).toBeUndefined();
-			// entry-1 should still be present
+			expect(denied.status).toBe(503);
+			expect(getLegacyStreamCount()).toBe(MAX_LEGACY_STREAMS);
+			expect(getLegacyStreamRecord('new-entry')).toBeUndefined();
+			expect(getLegacyStreamRecord('entry-0')).toBeDefined();
 			expect(getLegacyStreamRecord('entry-1')).toBeDefined();
 		} finally {
 			resetLegacySseState();
 		}
 	});
 
-	it('evicts zombie entries before active entries when at capacity', async () => {
+	it('prunes zombie entries before evaluating admission', async () => {
 		const {
 			openLegacySseStream,
 			resetLegacySseState,
@@ -85,10 +72,11 @@ describe('legacy SSE stream management', () => {
 			expect(getLegacyStreamCount()).toBe(MAX_LEGACY_STREAMS);
 
 			// Adding a new entry should evict a zombie, not the active entry
-			nowSpy.mockReturnValue(2_000_000);
-			openLegacySseStream('new-entry', '/mcp/messages?sessionId=new-entry');
+			nowSpy.mockReturnValue(1_100_000);
+			const admitted = openLegacySseStream('new-entry', '/mcp/messages?sessionId=new-entry');
 
-			expect(getLegacyStreamCount()).toBeLessThanOrEqual(MAX_LEGACY_STREAMS);
+			expect(admitted.status).toBe(200);
+			expect(getLegacyStreamCount()).toBe(2);
 			// Active entry should be preserved
 			expect(getLegacyStreamRecord('active-keep')).toBeDefined();
 			expect(getLegacyStreamRecord('active-keep')!.controller).toBeDefined();
@@ -99,9 +87,43 @@ describe('legacy SSE stream management', () => {
 		}
 	});
 
-	it('closeLegacyStream with deleteRecord=false cleans up zombie entries', async () => {
-		const { openLegacySseStream, closeLegacyStream, resetLegacySseState, getLegacyStreamRecord } =
+	it('caps one principal without evicting its existing streams', async () => {
+		const { openLegacySseStream, resetLegacySseState, getLegacyStreamCount, getLegacyStreamRecord, MAX_LEGACY_STREAMS_PER_PRINCIPAL } =
 			await import('../src/lib/legacy-sse');
+		try {
+			for (let i = 0; i < MAX_LEGACY_STREAMS_PER_PRINCIPAL; i++) {
+				expect(openLegacySseStream(`same-${i}`, `/mcp/messages?sessionId=same-${i}`, 'key:stable').status).toBe(200);
+			}
+
+			const denied = openLegacySseStream('same-denied', '/mcp/messages?sessionId=same-denied', 'key:stable');
+			expect(denied.status).toBe(429);
+			expect(denied.headers.get('retry-after')).toBe('60');
+			expect(getLegacyStreamCount()).toBe(MAX_LEGACY_STREAMS_PER_PRINCIPAL);
+			expect(getLegacyStreamRecord('same-0')).toBeDefined();
+			expect(getLegacyStreamRecord('same-denied')).toBeUndefined();
+		} finally {
+			resetLegacySseState();
+		}
+	});
+
+	it('closes and removes a stream at the finite lifetime bound', async () => {
+		vi.useFakeTimers();
+		const { openLegacySseStream, resetLegacySseState, getLegacyStreamRecord, MAX_LEGACY_STREAM_LIFETIME_MS } =
+			await import('../src/lib/legacy-sse');
+		try {
+			const response = openLegacySseStream('ttl-session', '/mcp/messages?sessionId=ttl-session', 'key:ttl');
+			expect(response.status).toBe(200);
+			expect(getLegacyStreamRecord('ttl-session')).toBeDefined();
+
+			await vi.advanceTimersByTimeAsync(MAX_LEGACY_STREAM_LIFETIME_MS);
+			expect(getLegacyStreamRecord('ttl-session')).toBeUndefined();
+		} finally {
+			resetLegacySseState();
+		}
+	});
+
+	it('closeLegacyStream with deleteRecord=false cleans up zombie entries', async () => {
+		const { openLegacySseStream, closeLegacyStream, resetLegacySseState, getLegacyStreamRecord } = await import('../src/lib/legacy-sse');
 		try {
 			// Create a stream, then close it without deleting the record
 			openLegacySseStream('zombie-test', '/mcp/messages?sessionId=zombie-test');
@@ -115,13 +137,8 @@ describe('legacy SSE stream management', () => {
 	});
 
 	it('closeLegacyStream with deleteRecord=false keeps entries with queued events', async () => {
-		const {
-			openLegacySseStream,
-			enqueueLegacyMessage,
-			closeLegacyStream,
-			resetLegacySseState,
-			getLegacyStreamRecord,
-		} = await import('../src/lib/legacy-sse');
+		const { openLegacySseStream, enqueueLegacyMessage, closeLegacyStream, resetLegacySseState, getLegacyStreamRecord } =
+			await import('../src/lib/legacy-sse');
 		try {
 			// Create a stream and enqueue a message before the controller is set
 			// We need to simulate a pre-controller state: create record, add queue item, then close

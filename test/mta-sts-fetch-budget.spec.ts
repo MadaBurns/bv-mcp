@@ -127,7 +127,7 @@ function mockNetwork(domain: string, policyMode: 'stall' | 'stall-then-ok', coun
 		}
 		if (url.includes(`mta-sts.${domain}`) && url.includes('.well-known')) {
 			counts.policy += 1;
-			if (policyMode === 'stall-then-ok' && counts.policy > 1) return Promise.resolve(httpResponse(HEALTHY_POLICY));
+			if (policyMode === 'stall-then-ok' && counts.policy > 1) return Promise.resolve(new Response(HEALTHY_POLICY));
 			return hangUntilAborted(init);
 		}
 		if (url.endsWith('/robots.txt')) return Promise.resolve(httpResponse('User-agent: *\nDisallow:\n'));

@@ -188,7 +188,7 @@ async function fetchWithRedirects(
 		// Only .headers/.status were ever read on this hop and `response` is about
 		// to be overwritten by the next hop's fetch — drain its body so it doesn't
 		// trip the platform's "stalled HTTP response" deadlock-prevention warning.
-		void response.body?.cancel();
+		void response.body?.cancel().catch(() => undefined);
 
 		const location = response.headers.get('location');
 		if (!location) break;
@@ -381,17 +381,16 @@ const TOTAL_BUDGET_MS = 10_000;
 const BUDGET_RACE_MARGIN_MS = 400;
 
 /**
- * Isolate-lifetime robots.txt decision caches, one per gate role (issue #745).
+ * Isolate-lifetime robots.txt decision cache shared by both gate roles (issue #745).
  *
  * Provenance is reported through a construction-time callback, so a gate must be
- * built per invocation to attribute its decisions to the right call. These caches
+ * built per invocation to attribute its decisions to the right call. This cache
  * keep the memoization the module-scope gates used to provide: the gate object is
- * new each call, the robots.txt decisions it reads are not. One cache per role
- * because the two roles fetch through different functions (`fetch` vs `safeFetch`,
- * the latter SSRF-validating), and sharing would let one role's blocked fetch
- * decide the other's policy.
+ * new each call, the robots.txt decisions it reads are not. Namespaced keys keep
+ * `fetch` and SSRF-validating `safeFetch` outcomes semantically isolated, while
+ * one cache makes their count and 4 MiB retained-byte ceiling truly aggregate.
  */
-const DEFAULT_GROUP_CACHES = { plain: createRobotsGroupCache(), safe: createRobotsGroupCache() };
+const DEFAULT_GROUP_CACHE = createRobotsGroupCache();
 
 /** The pair of robots-gated fetchers this check's call sites use. */
 interface GatedFetchers {
@@ -405,15 +404,15 @@ interface GatedFetchers {
  * Every gated fetch these produce reports its robots.txt decision to `provenance`
  * (issue #745) — the gate objects are per invocation for exactly that reason.
  *
- * No memo (direct tool call) → a pair over the isolate-lifetime decision caches
+ * No memo (direct tool call) → a pair over the isolate-lifetime decision cache
  * above, so robots.txt is still resolved at most once per host per isolate.
  *
  * Memo supplied (a `scan_domain` fan-out) → a fresh gate pair whose inner fetches
  * share the SCAN's robots.txt memo, so `https://<domain>/robots.txt` is fetched once
  * for `ssl` + `http_security` combined instead of once each. This also collapses the
- * two module gates' separate caches (`gatedFetch` / `gatedSafeFetch` each keep their
- * own) onto one shared fetch. Building the gates per call is pure closure allocation;
- * the network saving is what matters.
+ * two transport roles onto one shared fetch. Building the gates per call is pure
+ * closure allocation; the network saving is what matters. Both roles share one
+ * per-invocation byte budget while namespaced entries preserve their decisions.
  */
 function resolveGates(
 	robotsMemo: RobotsFetchMemo | undefined,
@@ -422,21 +421,24 @@ function resolveGates(
 	provenance: RobotsProvenance,
 ): GatedFetchers {
 	if (!robotsMemo && !budgeted) {
-		// Same fetch functions and same (now explicitly shared) decision caches as
-		// the module pair — only the observation callback is per invocation.
+		// Same fetch functions and aggregate decision-cache budget as the module pair;
+		// namespaces prevent one transport role's failure from deciding the other.
 		return {
 			gatedFetch: withRobotsGate((url, init) => fetch(url, init), {
 				userAgent: SCANNER_USER_AGENT,
-				groupCache: DEFAULT_GROUP_CACHES.plain,
+				groupCache: DEFAULT_GROUP_CACHE,
+				cacheNamespace: 'plain',
 				onRobotsResolution: provenance.onResolution,
 			}),
 			gatedSafeFetch: withRobotsGate((url, init) => safeFetch(url, init), {
 				userAgent: SCANNER_USER_AGENT,
-				groupCache: DEFAULT_GROUP_CACHES.safe,
+				groupCache: DEFAULT_GROUP_CACHE,
+				cacheNamespace: 'safe',
 				onRobotsResolution: provenance.onResolution,
 			}),
 		};
 	}
+	const invocationGroupCache = createRobotsGroupCache();
 	// Budget INNERMOST, as in check-ssl: the gate's own robots.txt fetch and the
 	// memo's miss-path both delegate down through it, so every leg is metered —
 	// including the one the check does not issue itself. Hoisting it outside the
@@ -450,6 +452,8 @@ function resolveGates(
 			),
 			{
 				userAgent: SCANNER_USER_AGENT,
+				groupCache: invocationGroupCache,
+				cacheNamespace: 'plain',
 				onRobotsResolution: provenance.onResolution,
 			},
 		),
@@ -460,6 +464,8 @@ function resolveGates(
 			),
 			{
 				userAgent: SCANNER_USER_AGENT,
+				groupCache: invocationGroupCache,
+				cacheNamespace: 'safe',
 				onRobotsResolution: provenance.onResolution,
 			},
 		),

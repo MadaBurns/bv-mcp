@@ -131,7 +131,7 @@ function buildEnv(rowsBySql: Record<string, unknown[]> = {}) {
 	const tenant = makeMockD1(rowsBySql);
 	const customEnv = {
 		...env,
-		BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+		BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 		REQUIRE_INTERNAL_AUTH: 'true',
 		TENANT_REGISTRY_DB: registry.db,
 		[TEST_TENANT_BINDING]: tenant.db,
@@ -194,6 +194,7 @@ describe('tenant scan persistence (real handleToolsCall)', () => {
 				'Content-Type': 'application/json',
 				Authorization: `Bearer ${TEST_INTERNAL_KEY}`,
 				'X-Tenant': TEST_TENANT_ID,
+				'X-Tenant-Scope': TEST_TENANT_ID,
 			},
 			body: JSON.stringify({ domains: [TEST_DOMAIN] }),
 		});
@@ -245,7 +246,11 @@ describe('tenant scan persistence (real handleToolsCall)', () => {
 
 		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tenants/report/cycle_persist_q', {
 			method: 'GET',
-			headers: { Authorization: `Bearer ${TEST_INTERNAL_KEY}`, 'X-Tenant': TEST_TENANT_ID },
+			headers: {
+				Authorization: `Bearer ${TEST_INTERNAL_KEY}`,
+				'X-Tenant': TEST_TENANT_ID,
+				'X-Tenant-Scope': TEST_TENANT_ID,
+			},
 		});
 		const ctx = createExecutionContext();
 		const res = await worker.fetch(req, customEnv, ctx);

@@ -66,6 +66,31 @@ describe('mcp-dispatch', () => {
 		expect(result.payload.error.code).toBe(-32029);
 	});
 
+	it('rate limits authenticated initialize requests too', async () => {
+		const checkSessionCreateRateLimit = vi.fn().mockResolvedValue({ allowed: false, retryAfterMs: 2_000 });
+		const createSession = vi.fn();
+		vi.doMock('../src/lib/session', () => ({ checkSessionCreateRateLimit, createSession }));
+		vi.doMock('../src/lib/audit', () => ({ auditSessionCreated: vi.fn() }));
+
+		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
+		const result = await dispatchMcpMethod({
+			id: 3,
+			method: 'initialize',
+			params: {},
+			ip: '203.0.113.13',
+			isAuthenticated: true,
+			rateHeaders: {},
+			serverVersion: '1.0.0',
+		});
+
+		expect(result.kind).toBe('early-error');
+		if (result.kind !== 'early-error') throw new Error('expected early-error result');
+		expect(result.status).toBe(429);
+		expect(result.headers['retry-after']).toBe('2');
+		expect(checkSessionCreateRateLimit).toHaveBeenCalledOnce();
+		expect(createSession).not.toHaveBeenCalled();
+	});
+
 	it('dispatches prompts/list and returns prompts array', async () => {
 		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
 		const result = await dispatchMcpMethod({

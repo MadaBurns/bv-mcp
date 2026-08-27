@@ -44,7 +44,7 @@ describe('isM365TenantReadEnabled — fail-closed', () => {
 
 describe('m365ProxyBindings — the capability is withdrawn by not wiring it', () => {
 	it('wires NEITHER the proxy nor the internal bearer when disabled', () => {
-		const wired = m365ProxyBindings({ BV_WEB: FAKE_BINDING, BV_WEB_INTERNAL_KEY: 'internal-secret' });
+		const wired = m365ProxyBindings({ BV_WEB: FAKE_BINDING, BV_MCP_M365_KEY: 'm'.repeat(32) });
 		expect(wired.m365Proxy).toBeUndefined();
 		expect(wired.m365ProxyAuthToken).toBeUndefined();
 	});
@@ -54,22 +54,42 @@ describe('m365ProxyBindings — the capability is withdrawn by not wiring it', (
 		// forwarding the token would hand a trusted secret to a disabled path.
 		const wired = m365ProxyBindings({
 			BV_WEB: FAKE_BINDING,
-			BV_WEB_INTERNAL_KEY: 'internal-secret',
+			BV_MCP_M365_KEY: 'm'.repeat(32),
 			M365_TENANT_READS_ENABLED: 'false',
 		});
-		expect(Object.values(wired)).not.toContain('internal-secret');
+		expect(Object.values(wired)).not.toContain('m'.repeat(32));
 		expect(Object.keys(wired)).toHaveLength(0);
 	});
 
 	it('wires BOTH the proxy and the bearer when explicitly enabled', () => {
 		const wired = m365ProxyBindings({
 			BV_WEB: FAKE_BINDING,
-			BV_WEB_INTERNAL_KEY: 'internal-secret',
+			BV_MCP_M365_KEY: 'm'.repeat(32),
 			M365_TENANT_READS_ENABLED: 'true',
 		});
 		expect(wired.m365Proxy).toBe(FAKE_BINDING);
-		expect(wired.m365ProxyAuthToken).toBe('internal-secret');
+		expect(wired.m365ProxyAuthToken).toBe('m'.repeat(32));
 	});
+
+	it('stays unwired when enabled but the dedicated M365 capability is absent or weak', () => {
+		expect(m365ProxyBindings({ BV_WEB: FAKE_BINDING, M365_TENANT_READS_ENABLED: 'true' })).toEqual({});
+		expect(m365ProxyBindings({ BV_WEB: FAKE_BINDING, BV_MCP_M365_KEY: 'too-short', M365_TENANT_READS_ENABLED: 'true' })).toEqual({});
+	});
+
+	it.each(['BV_API_KEY', 'OAUTH_SIGNING_SECRET', 'KV_ENVELOPE_KEY'] as const)(
+		'stays unwired when the M365 capability aliases %s',
+		(peerKey) => {
+			const shared = 'm365-peer-alias-capability-32-bytes-minimum';
+			expect(
+				m365ProxyBindings({
+					BV_WEB: FAKE_BINDING,
+					BV_MCP_M365_KEY: shared,
+					[peerKey]: shared,
+					M365_TENANT_READS_ENABLED: 'true',
+				}),
+			).toEqual({});
+		},
+	);
 
 	it('stays unwired when enabled on a self-host that has no BV_WEB binding', () => {
 		const wired = m365ProxyBindings({ M365_TENANT_READS_ENABLED: 'true' });

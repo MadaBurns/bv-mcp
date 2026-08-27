@@ -5,12 +5,13 @@ import { verifyJwt } from '../../src/oauth/jwt';
 import { OAUTH_KV_PREFIX } from '../../src/lib/config';
 import { clearKvPrefix } from '../helpers/kv';
 
-const TEST_INTERNAL_KEY = 'internal-key';
+const TEST_INTERNAL_KEY = 'mint-capability-test-key-32-bytes-minimum';
 const TEST_SIGNING_SECRET = 'a'.repeat(32);
 
 type TestEnv = typeof env & {
-	BV_WEB_INTERNAL_KEY?: string;
+	BV_MCP_OAUTH_MINT_KEY?: string;
 	OAUTH_SIGNING_SECRET?: string;
+	OAUTH_ISSUER?: string;
 };
 
 function base64url(buf: ArrayBuffer): string {
@@ -89,7 +90,12 @@ afterEach(async () => {
 
 describe('POST /internal/oauth/grants', () => {
 	it('creates a one-time developer authorization code and redirects through token exchange', async () => {
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY, OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET } as TestEnv;
+		const customEnv = {
+			...env,
+			BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY,
+			OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET,
+			OAUTH_ISSUER: 'https://example.com',
+		} as TestEnv;
 		const { verifier, challenge } = await pkcePair();
 		const clientId = await registerClient(customEnv);
 
@@ -102,6 +108,7 @@ describe('POST /internal/oauth/grants', () => {
 		const redirectTo = new URL(grant.redirectTo);
 		expect(redirectTo.origin + redirectTo.pathname).toBe('https://claude.ai/cb');
 		expect(redirectTo.searchParams.get('state')).toBe('stateval');
+		expect(redirectTo.searchParams.get('iss')).toBe('https://example.com');
 		const code = redirectTo.searchParams.get('code');
 		expect(code).toMatch(/^[A-Za-z0-9_-]{16,}$/);
 
@@ -133,22 +140,42 @@ describe('POST /internal/oauth/grants', () => {
 		expect(claims?.tier).toBe('developer');
 	});
 
+	it('fails closed before minting a paid grant when the canonical issuer is absent', async () => {
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY } as TestEnv;
+		const { challenge } = await pkcePair();
+		const clientId = await registerClient(customEnv);
+		const response = await postGrant(makeGrantBody(clientId, challenge), customEnv);
+
+		expect(response.status).toBe(503);
+		expect(await response.json()).toEqual({ error: 'oauth_issuer_not_configured' });
+	});
+
 	it('rejects public internet requests before reading the grant body', async () => {
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY } as TestEnv;
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY } as TestEnv;
 		const response = await postGrant({}, customEnv, { 'cf-connecting-ip': '198.51.100.10' });
 		expect(response.status).toBe(404);
 	});
 
-	it('requires the bv-web internal bearer secret', async () => {
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY } as TestEnv;
+	it('requires the dedicated OAuth grant bearer secret', async () => {
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY } as TestEnv;
 		const { challenge } = await pkcePair();
 		const clientId = await registerClient(customEnv);
 		const response = await postGrant(makeGrantBody(clientId, challenge), customEnv, { Authorization: 'Bearer wrong' });
 		expect(response.status).toBe(401);
 	});
 
+	it('does not accept the shared BV_WEB_INTERNAL_KEY capability', async () => {
+		const customEnv = {
+			...env,
+			BV_MCP_OAUTH_MINT_KEY: undefined,
+			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+		} as TestEnv & { BV_WEB_INTERNAL_KEY?: string };
+		const response = await postGrant({}, customEnv);
+		expect(response.status).toBe(503);
+	});
+
 	it('rejects redirect URI mismatch without creating a code', async () => {
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY } as TestEnv;
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY } as TestEnv;
 		const { challenge } = await pkcePair();
 		const clientId = await registerClient(customEnv);
 		const response = await postGrant(makeGrantBody(clientId, challenge, { redirectUri: 'https://evil.example/cb' }), customEnv);
@@ -158,7 +185,7 @@ describe('POST /internal/oauth/grants', () => {
 	});
 
 	it('rejects owner-tier entitlement escalation', async () => {
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY } as TestEnv;
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY } as TestEnv;
 		const { challenge } = await pkcePair();
 		const clientId = await registerClient(customEnv);
 		const response = await postGrant(
@@ -178,7 +205,12 @@ describe('POST /internal/oauth/grants', () => {
 	});
 
 	it('mints a code from an entitlement with no Stripe IDs (comp)', async () => {
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY, OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET } as TestEnv;
+		const customEnv = {
+			...env,
+			BV_MCP_OAUTH_MINT_KEY: TEST_INTERNAL_KEY,
+			OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET,
+			OAUTH_ISSUER: 'https://example.com',
+		} as TestEnv;
 		const { challenge } = await pkcePair();
 		const clientId = await registerClient(customEnv);
 

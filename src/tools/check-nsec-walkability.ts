@@ -13,12 +13,14 @@ import { DNS_TIMEOUT_MS } from '../lib/config';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import { CLOUDFLARE_DOH_ENDPOINT } from '../lib/dns-endpoints';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../lib/response-body';
 
 const CATEGORY = 'nsec_walkability' as CheckCategory;
 
 /** DNS record type codes for denial-of-existence records. */
 const NSEC_TYPE = 47;
 const NSEC3_TYPE = 50;
+const DOH_MAX_BODY_BYTES = 512 * 1024;
 
 /**
  * Verdict of the DO=1 NXDOMAIN denial-of-existence probe.
@@ -106,10 +108,15 @@ async function probeDenialNsec(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		const resp = await fetch(url, {
 			method: 'GET',
 			headers: { Accept: 'application/dns-json' },
+			redirect: 'manual',
 			signal: AbortSignal.timeout(dnsOptions?.timeoutMs ?? DNS_TIMEOUT_MS),
 		});
-		if (!resp.ok) return { probeName, verdict: 'inconclusive' };
-		const data = (await resp.json()) as DohResponse;
+		if (!resp.ok) {
+			await disposeUnreadResponseBody(resp);
+			return { probeName, verdict: 'inconclusive' };
+		}
+		const data = await readJsonResponseCapped<DohResponse>(resp, DOH_MAX_BODY_BYTES);
+		if (!data) return { probeName, verdict: 'inconclusive' };
 		const { verdict, nextName } = classifyDenial(probeName, data.Authority ?? []);
 		return { probeName, verdict, nextName };
 	} catch {
@@ -259,7 +266,14 @@ export async function checkNsecWalkability(domain: string, dnsOptions?: QueryDns
 					'Signed zone uses minimally-covering NSEC (RFC 4470) — not walkable',
 					'info',
 					`The zone for ${domain} is DNSSEC-signed and publishes no NSEC3PARAM, but a DO=1 denial-of-existence probe returned a minimally-covering NSEC record (RFC 4470 "NSEC black lies", implemented by several managed DNS providers): the NSEC next-name is the synthesized \`\\000.<qname>\` (${probe.nextName}) rather than a real adjacent owner. This proves the zone is NOT walkable — an attacker cannot enumerate zone contents from the NSEC chain — even though no NSEC3PARAM is published.`,
-					{ domain, walkable: false, dnssecSigned: true, nextName: probe.nextName ?? null, probe: 'nsec-next-name', minimallyCovering: true },
+					{
+						domain,
+						walkable: false,
+						dnssecSigned: true,
+						nextName: probe.nextName ?? null,
+						probe: 'nsec-next-name',
+						minimallyCovering: true,
+					},
 				),
 			);
 			return buildCheckResult(CATEGORY, findings) as CheckResult;
@@ -298,13 +312,10 @@ export async function checkNsecWalkability(domain: string, dnsOptions?: QueryDns
 
 	if (!params) {
 		findings.push(
-			createFinding(
-				CATEGORY,
-				'Unparseable NSEC3PARAM',
-				'info',
-				`NSEC3PARAM record for ${domain} could not be parsed: ${nsec3Records[0]}`,
-				{ domain, raw: nsec3Records[0] },
-			),
+			createFinding(CATEGORY, 'Unparseable NSEC3PARAM', 'info', `NSEC3PARAM record for ${domain} could not be parsed: ${nsec3Records[0]}`, {
+				domain,
+				raw: nsec3Records[0],
+			}),
 		);
 		return buildCheckResult(CATEGORY, findings) as CheckResult;
 	}

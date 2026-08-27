@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: BUSL-1.1
 import { z } from 'zod';
 import { CodeRecordSchema, PaidOAuthEntitlementResponseSchema, type CodeRecord, type PaidOAuthEntitlementResponse } from '../schemas/oauth';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../lib/response-body';
+import { isAllowedOAuthRedirectUri } from '../lib/config';
+
+const OAUTH_ENTITLEMENT_MAX_BODY_BYTES = 64 * 1024;
+export const OAUTH_ENTITLEMENT_TIMEOUT_MS = 5_000;
 
 export const PaidOAuthEntitlementRequestSchema = z.object({
 	clientId: z.string().min(1).max(200),
@@ -21,35 +26,53 @@ export interface PaidOAuthEntitlementEnv {
 export async function fetchPaidOAuthEntitlement(
 	env: PaidOAuthEntitlementEnv,
 	request: PaidOAuthEntitlementRequest,
+	timeoutMs = OAUTH_ENTITLEMENT_TIMEOUT_MS,
 ): Promise<PaidOAuthEntitlementResponse | null> {
 	const parsedRequest = PaidOAuthEntitlementRequestSchema.parse(request);
 	if (!env.BV_WEB || !env.BV_WEB_INTERNAL_KEY) {
 		throw new Error('BV_WEB OAuth entitlement binding is not configured');
 	}
 
-	const response = await env.BV_WEB.fetch(
-		new Request('https://internal/api/internal/mcp/oauth/authorize', {
-			method: 'POST',
-			headers: {
-				'Content-Type': 'application/json',
-				'Authorization': `Bearer ${env.BV_WEB_INTERNAL_KEY}`,
-			},
-			body: JSON.stringify(parsedRequest),
-		}),
+	const controller = new AbortController();
+	const timeoutId = setTimeout(
+		() => controller.abort(new DOMException('OAuth entitlement lookup timed out', 'TimeoutError')),
+		timeoutMs,
 	);
+	try {
+		const response = await env.BV_WEB.fetch(
+			new Request('https://internal/api/internal/mcp/oauth/authorize', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Authorization': `Bearer ${env.BV_WEB_INTERNAL_KEY}`,
+				},
+				body: JSON.stringify(parsedRequest),
+				signal: controller.signal,
+				redirect: 'manual',
+			}),
+		);
 
-	if (response.status === 401 || response.status === 403 || response.status === 404) {
-		return null;
-	}
-	if (!response.ok) {
-		throw new Error(`OAuth entitlement lookup failed with status ${response.status}`);
-	}
+		if (response.status === 401 || response.status === 403 || response.status === 404) {
+			await disposeUnreadResponseBody(response);
+			return null;
+		}
+		if (!response.ok) {
+			await disposeUnreadResponseBody(response);
+			throw new Error(`OAuth entitlement lookup failed with status ${response.status}`);
+		}
 
-	const entitlement = PaidOAuthEntitlementResponseSchema.safeParse(await response.json());
-	if (!entitlement.success) {
-		throw new Error('Invalid OAuth entitlement response');
+		const rawEntitlement = await readJsonResponseCapped(response, OAUTH_ENTITLEMENT_MAX_BODY_BYTES);
+		if (controller.signal.aborted) {
+			throw controller.signal.reason ?? new DOMException('OAuth entitlement lookup timed out', 'TimeoutError');
+		}
+		const entitlement = PaidOAuthEntitlementResponseSchema.safeParse(rawEntitlement);
+		if (!entitlement.success) {
+			throw new Error('Invalid OAuth entitlement response');
+		}
+		return entitlement.data;
+	} finally {
+		clearTimeout(timeoutId);
 	}
-	return entitlement.data;
 }
 
 /** Convert a validated bv-web entitlement into a one-time OAuth code record. */
@@ -60,6 +83,9 @@ export function buildCodeRecordFromEntitlement(params: {
 	scope?: string;
 	entitlement: PaidOAuthEntitlementResponse;
 }): CodeRecord {
+	if (!isAllowedOAuthRedirectUri(params.redirectUri)) {
+		throw new Error('OAuth redirect URI is not allowed');
+	}
 	return CodeRecordSchema.parse({
 		client_id: params.clientId,
 		redirect_uri: params.redirectUri,
@@ -68,6 +94,7 @@ export function buildCodeRecordFromEntitlement(params: {
 		...(params.scope ? { scope: params.scope } : {}),
 		subject: params.entitlement.subject,
 		tier: params.entitlement.tier,
+		entitlementGeneration: params.entitlement.entitlementGeneration,
 		...(params.entitlement.emailHash ? { emailHash: params.entitlement.emailHash } : {}),
 		...(params.entitlement.stripeCustomerId ? { stripeCustomerId: params.entitlement.stripeCustomerId } : {}),
 		...(params.entitlement.stripeSubscriptionId ? { stripeSubscriptionId: params.entitlement.stripeSubscriptionId } : {}),

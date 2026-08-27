@@ -277,6 +277,30 @@ describe('enrichCertificateIntelligence', () => {
 		expect(out.available).toBe(false);
 	});
 
+	it('refuses a streamed CT body over the cap when Content-Length is missing', async () => {
+		const cancelled = vi.fn();
+		let pull = 0;
+		const fetchFn = vi.fn(
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							if (pull++ === 0) controller.enqueue(new Uint8Array(5 * 1024 * 1024));
+							else if (pull === 2) controller.enqueue(new Uint8Array([1]));
+							else if (pull === 3) controller.enqueue(new Uint8Array([2]));
+							else controller.close();
+						},
+						cancel: cancelled,
+					}),
+					{ status: 200 },
+				),
+		);
+
+		const out = await enrichCertificateIntelligence({ domain: 'example.com', nowSeconds: NOW, fetchFn });
+		expect(out.available).toBe(false);
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
+
 	it('lets a live probe override CT, and tolerates one that throws', async () => {
 		const fetchFn = vi.fn(async () => okResponse([issuance()]));
 		const live = await enrichCertificateIntelligence({

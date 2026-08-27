@@ -9,6 +9,7 @@ describe('paid OAuth entitlement service binding', () => {
 					new Response(
 						JSON.stringify({
 							subject: 'user_123',
+							entitlementGeneration: 1,
 							emailHash: 'a'.repeat(64),
 							tier: 'developer',
 							stripeCustomerId: 'cus_123',
@@ -37,12 +38,45 @@ describe('paid OAuth entitlement service binding', () => {
 		const req = vi.mocked(fetcher.fetch).mock.calls[0][0] as Request;
 		expect(req.url).toBe('https://internal/api/internal/mcp/oauth/authorize');
 		expect(req.headers.get('authorization')).toBe('Bearer internal-key');
+		expect(req.redirect).toBe('manual');
+		expect(req.signal).toBeInstanceOf(AbortSignal);
 		expect(await req.json()).toEqual({
 			clientId: 'client_123',
 			redirectUri: 'https://claude.ai/cb',
 			codeChallenge: 'x'.repeat(43),
 			scope: 'mcp',
 		});
+	});
+
+	it('keeps its timeout active while a response body is stalled', async () => {
+		const { fetchPaidOAuthEntitlement } = await import('../../src/oauth/entitlements');
+		let requestSignal: AbortSignal | undefined;
+		const fetcher = {
+			fetch: vi.fn(async (request: Request) => {
+				requestSignal = request.signal;
+				let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+				const body = new ReadableStream<Uint8Array>({
+					start(controller) {
+						bodyController = controller;
+					},
+				});
+				request.signal.addEventListener('abort', () => bodyController?.error(request.signal.reason), { once: true });
+				return new Response(body, { status: 200 });
+			}),
+		} as unknown as Fetcher;
+
+		await expect(
+			fetchPaidOAuthEntitlement(
+				{ BV_WEB: fetcher, BV_WEB_INTERNAL_KEY: 'internal-key' },
+				{
+					clientId: 'client_123',
+					redirectUri: 'https://claude.ai/cb',
+					codeChallenge: 'x'.repeat(43),
+				},
+				5,
+			),
+		).rejects.toMatchObject({ name: 'TimeoutError' });
+		expect(requestSignal?.aborted).toBe(true);
 	});
 
 	it('rejects invalid or escalated bv-web entitlement responses', async () => {
@@ -86,6 +120,7 @@ describe('paid OAuth entitlement service binding', () => {
 			scope: 'mcp',
 			entitlement: {
 				subject: 'user_123',
+				entitlementGeneration: 1,
 				emailHash: 'a'.repeat(64),
 				tier: 'developer',
 				stripeCustomerId: 'cus_123',
@@ -116,6 +151,7 @@ describe('paid OAuth entitlement service binding', () => {
 			codeChallenge: 'a'.repeat(43),
 			entitlement: {
 				subject: 'tenant_abc',
+				entitlementGeneration: 1,
 				tier: 'developer',
 				subscriptionStatus: 'active',
 				scopes: ['mcp'],

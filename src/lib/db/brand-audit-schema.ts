@@ -74,10 +74,7 @@ export const brandAuditTargets = sqliteTable(
 		created_at: integer('created_at').notNull(),
 		completed_at: integer('completed_at'),
 	},
-	(t) => [
-		primaryKey({ columns: [t.audit_id, t.target] }),
-		index('idx_brand_audit_targets_status_created_at').on(t.status, t.created_at),
-	],
+	(t) => [primaryKey({ columns: [t.audit_id, t.target] }), index('idx_brand_audit_targets_status_created_at').on(t.status, t.created_at)],
 );
 
 export const brandAuditSteps = sqliteTable(
@@ -117,8 +114,10 @@ export type BrandAuditWatchInterval = 'daily' | 'weekly' | 'monthly';
  * AND at delivery time — see lib/safe-fetch.ts).
  *
  * `last_classification_hash` is a SHA-256 of the sorted (target, bucket)
- * tuples. Any change in candidate set, bucket assignment, or registrar
- * ownership of the seed counts as drift.
+ * tuples. `last_classification_result_json` is its exact diff baseline, while
+ * `pending_webhook_json` is a durable at-least-once outbox envelope. Any change
+ * in candidate set, bucket assignment, or registrar ownership of the seed
+ * counts as drift.
  */
 export const brandAuditWatches = sqliteTable(
 	'brand_audit_watches',
@@ -133,11 +132,18 @@ export const brandAuditWatches = sqliteTable(
 		last_run_at: integer('last_run_at'),
 		/** SHA-256 hex of the sorted candidate list from the most recent completed run. */
 		last_classification_hash: text('last_classification_hash'),
+		/** Full result whose digest equals last_classification_hash; exact diff baseline. */
+		last_classification_result_json: text('last_classification_result_json'),
+		/** Durable outbox envelope ({ payload, currentResult }); cleared only after a 2xx CAS. */
+		pending_webhook_json: text('pending_webhook_json'),
 		/** 1=active, 0=paused. Deletion is via the watch tool, not soft-delete here. */
 		active: integer('active', { mode: 'boolean' }).notNull().default(true),
 		created_at: integer('created_at').notNull(),
 	},
-	(t) => [index('idx_brand_audit_watches_owner').on(t.owner_id, t.created_at), index('idx_brand_audit_watches_due').on(t.active, t.last_run_at)],
+	(t) => [
+		index('idx_brand_audit_watches_owner').on(t.owner_id, t.created_at),
+		index('idx_brand_audit_watches_due').on(t.active, t.last_run_at),
+	],
 );
 
 export type BrandAuditWatchRow = typeof brandAuditWatches.$inferSelect;

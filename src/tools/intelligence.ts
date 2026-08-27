@@ -11,6 +11,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { resolveAccumulatorShardName, type AccumulatorShardMode } from '../lib/profile-accumulator';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../lib/response-body';
 
 /** Trend snapshot from the DO. */
 export interface TrendSnapshot {
@@ -88,6 +89,31 @@ export interface ProviderInsightsResult {
 
 /** Timeout for DO queries (ms). */
 const INTELLIGENCE_FETCH_TIMEOUT_MS = 500;
+const INTELLIGENCE_MAX_BODY_BYTES = 512 * 1024;
+
+type IntelligenceFetchResult<T> = { kind: 'ok'; data: T } | { kind: 'timeout' | 'upstream_error' };
+
+/** Bound both headers and body for a DO read and dispose every unused body. */
+async function fetchIntelligenceJson<T>(stub: DurableObjectStub, url: string): Promise<IntelligenceFetchResult<T>> {
+	const controller = new AbortController();
+	const timeoutId = setTimeout(
+		() => controller.abort(new DOMException('Intelligence read timed out', 'TimeoutError')),
+		INTELLIGENCE_FETCH_TIMEOUT_MS,
+	);
+	try {
+		const response = await stub.fetch(url, { method: 'GET', signal: controller.signal });
+		if (!response.ok) {
+			await disposeUnreadResponseBody(response);
+			return { kind: 'upstream_error' };
+		}
+		const data = await readJsonResponseCapped<T>(response, INTELLIGENCE_MAX_BODY_BYTES);
+		return data === null ? { kind: 'upstream_error' } : { kind: 'ok', data };
+	} catch {
+		return { kind: controller.signal.aborted ? 'timeout' : 'upstream_error' };
+	} finally {
+		clearTimeout(timeoutId);
+	}
+}
 
 /**
  * Fetch benchmark data from the ProfileAccumulator DO.
@@ -125,24 +151,22 @@ export async function getBenchmark(
 		// blip, not a capability gap, but indistinguishable from one at the call
 		// site. Retrying only the timeout path keeps the worst case at two
 		// budgets and leaves a genuine upstream error to surface immediately.
-		let response: Response | undefined;
+		let benchmarkData: BenchmarkResult | undefined;
 		for (let attempt = 0; attempt < 2; attempt++) {
-			try {
-				response = await Promise.race([
-					stub.fetch(url.toString(), { method: 'GET' }),
-					new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS)),
-				]);
+			const result = await fetchIntelligenceJson<BenchmarkResult>(stub, url.toString());
+			if (result.kind === 'ok') {
+				benchmarkData = result.data;
 				break;
-			} catch {
-				if (attempt === 1) return { status: 'unavailable', profile, reason: 'timeout', retryable: true };
 			}
+			if (result.kind === 'upstream_error') {
+				return { status: 'unavailable', profile, reason: 'upstream_error', retryable: true };
+			}
+			if (attempt === 1) return { status: 'unavailable', profile, reason: 'timeout', retryable: true };
 		}
 
-		if (!response || !response.ok) {
+		if (!benchmarkData) {
 			return { status: 'unavailable', profile, reason: 'upstream_error', retryable: true };
 		}
-
-		const benchmarkData = (await response.json()) as BenchmarkResult;
 
 		// If benchmark data is available, also fetch trend data (best-effort)
 		if (benchmarkData.status === 'ok') {
@@ -151,13 +175,13 @@ export async function getBenchmark(
 				trendUrl.searchParams.set('profile', profile);
 				trendUrl.searchParams.set('hours', '168'); // 7 days
 
-				const trendResponse = await Promise.race([
-					stub.fetch(trendUrl.toString(), { method: 'GET' }),
-					new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS)),
-				]);
+				const trendResponse = await fetchIntelligenceJson<{ status: string; snapshots?: TrendSnapshot[] } & TrendSummary>(
+					stub,
+					trendUrl.toString(),
+				);
 
-				if (trendResponse.ok) {
-					const trendData = (await trendResponse.json()) as { status: string; snapshots?: TrendSnapshot[] } & TrendSummary;
+				if (trendResponse.kind === 'ok') {
+					const trendData = trendResponse.data;
 					if (trendData.status === 'ok' && trendData.snapshots) {
 						benchmarkData.trends = {
 							hours: trendData.hours,
@@ -213,24 +237,24 @@ export async function getProviderInsights(
 
 		// Same one-retry-on-timeout as `getBenchmark` — this reads the same DO
 		// under the same budget, so it has the same blip-vs-gap ambiguity (#783).
-		let response: Response | undefined;
+		let providerData: ProviderInsightsResult | undefined;
 		for (let attempt = 0; attempt < 2; attempt++) {
-			try {
-				response = await Promise.race([
-					stub.fetch(url.toString(), { method: 'GET' }),
-					new Promise<never>((_, reject) => setTimeout(() => reject(new Error('timeout')), INTELLIGENCE_FETCH_TIMEOUT_MS)),
-				]);
+			const result = await fetchIntelligenceJson<ProviderInsightsResult>(stub, url.toString());
+			if (result.kind === 'ok') {
+				providerData = result.data;
 				break;
-			} catch {
-				if (attempt === 1) return { status: 'unavailable', provider, profile, reason: 'timeout', retryable: true };
 			}
+			if (result.kind === 'upstream_error') {
+				return { status: 'unavailable', provider, profile, reason: 'upstream_error', retryable: true };
+			}
+			if (attempt === 1) return { status: 'unavailable', provider, profile, reason: 'timeout', retryable: true };
 		}
 
-		if (!response || !response.ok) {
+		if (!providerData) {
 			return { status: 'unavailable', provider, profile, reason: 'upstream_error', retryable: true };
 		}
 
-		return (await response.json()) as ProviderInsightsResult;
+		return providerData;
 	} catch {
 		// Shard resolution / JSON parse failed rather than the fetch.
 		return { status: 'unavailable', provider, profile, reason: 'upstream_error', retryable: true };

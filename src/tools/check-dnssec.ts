@@ -13,11 +13,13 @@ import { resolveZoneApex } from '../lib/zone-apex';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult } from '../lib/scoring';
+import { readJsonResponseCapped } from '../lib/response-body';
 
 export { parseDnskeyAlgorithm, parseDsRecord } from '@blackveil/dns-checks';
 
 const GOOGLE_DOH_ENDPOINT = 'https://dns.google/resolve';
 const AD_CONFIRM_TIMEOUT_MS = 3000;
+const DOH_MAX_BODY_BYTES = 512 * 1024;
 
 /**
  * Confirm the AD (Authenticated Data) flag via Google DoH.
@@ -34,11 +36,11 @@ async function confirmAdWithGoogle(domain: string, timeoutMs = AD_CONFIRM_TIMEOU
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 		if (!resp.ok) {
-			void resp.body?.cancel();
+			void resp.body?.cancel().catch(() => undefined);
 			return false;
 		}
-		const data = (await resp.json()) as { AD?: boolean };
-		return data.AD === true;
+		const data = await readJsonResponseCapped<{ AD?: boolean }>(resp, DOH_MAX_BODY_BYTES);
+		return data?.AD === true;
 	} catch {
 		return false;
 	}
@@ -62,9 +64,7 @@ function augmentWithSource(domain: string, baseResult: CheckResult): CheckResult
 	const sourceCarrierIndex = baseResult.findings.findIndex((finding) => finding.title !== 'DNSSEC posture inherited from zone apex');
 	if (sourceCarrierIndex >= 0) {
 		const findings = baseResult.findings.map((finding, index) =>
-			index === sourceCarrierIndex
-				? { ...finding, metadata: { ...(finding.metadata ?? {}), dnssecSource: 'domain_configured' } }
-				: finding,
+			index === sourceCarrierIndex ? { ...finding, metadata: { ...(finding.metadata ?? {}), dnssecSource: 'domain_configured' } } : finding,
 		);
 		return buildCheckResult('dnssec', findings, baseResult.controlPresent, baseResult.recordPresent);
 	}
@@ -99,76 +99,65 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions, 
 	const dnssecTarget =
 		resolvedZone && !resolvedZone.isApex && resolvedZone.delegationStatus === 'inherited' ? resolvedZone.zoneApex : domain;
 	try {
-	const baseResult = await checkDNSSEC(
-		domain,
-		makeQueryDNS(dnsOptions),
-		{
+		const baseResult = (await checkDNSSEC(domain, makeQueryDNS(dnsOptions), {
 			timeout: dnsOptions?.timeoutMs ?? 5000,
 			zone: resolvedZone,
 			rawQueryDNS: async (d, type, dnssecFlag) => {
 				const resp = await queryDns(d, type as Parameters<typeof queryDns>[1], dnssecFlag ?? false, dnsOptions);
 				return { AD: resp.AD, Answer: resp.Answer };
 			},
-		},
-	) as CheckResult;
+		})) as CheckResult;
 
-	// checkDNSSEC marks a transient transport failure as inconclusive (checkStatus:'error' + an
-	// info "DNSSEC not assessed" finding) rather than throwing — propagate that so a transient DNS
-	// failure is excluded from scoring, not misread as "no DNSSEC deployed".
-	if (baseResult.checkStatus === 'error') {
-		return baseResult;
-	}
+		// checkDNSSEC marks a transient transport failure as inconclusive (checkStatus:'error' + an
+		// info "DNSSEC not assessed" finding) rather than throwing — propagate that so a transient DNS
+		// failure is excluded from scoring, not misread as "no DNSSEC deployed".
+		if (baseResult.checkStatus === 'error') {
+			return baseResult;
+		}
 
-	// Skip augmentation when DNSSEC is definitively absent, failed, or misconfigured at the domain level.
-	// 'DNSSEC chain of trust incomplete' means the domain has DNSKEY but no DS — it is domain-operator-configured
-	// (just broken), not TLD-inherited.
-	// (A transient transport failure already returned above via checkStatus:'error'.)
-	const dnssecAbsent =
-		baseResult.findings.some((f) => f.title === 'DNSSEC not enabled') ||
-		baseResult.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete');
-	if (dnssecAbsent) {
-		return baseResult;
-	}
+		// Skip augmentation when DNSSEC is definitively absent, failed, or misconfigured at the domain level.
+		// 'DNSSEC chain of trust incomplete' means the domain has DNSKEY but no DS — it is domain-operator-configured
+		// (just broken), not TLD-inherited.
+		// (A transient transport failure already returned above via checkStatus:'error'.)
+		const dnssecAbsent =
+			baseResult.findings.some((f) => f.title === 'DNSSEC not enabled') ||
+			baseResult.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete');
+		if (dnssecAbsent) {
+			return baseResult;
+		}
 
-	// AD flag confirmation probe: when the primary resolver reports "DNSSEC validation failing"
-	// (AD=false but DNSKEY+DS exist), confirm with Google DoH before trusting the verdict.
-	// The AD flag flaps across Cloudflare edge nodes — Google provides a stable second opinion.
-	const validationFailing = baseResult.findings.some((f) => f.title === 'DNSSEC validation failing');
-	if (validationFailing) {
-		const googleConfirmsAd = await confirmAdWithGoogle(dnssecTarget, dnsOptions?.timeoutMs ?? AD_CONFIRM_TIMEOUT_MS);
-		if (googleConfirmsAd) {
-			// Google says AD=true — re-run with corrected flag to get the right findings
-			const correctedResult = await checkDNSSEC(
-				domain,
-				makeQueryDNS(dnsOptions),
-				{
+		// AD flag confirmation probe: when the primary resolver reports "DNSSEC validation failing"
+		// (AD=false but DNSKEY+DS exist), confirm with Google DoH before trusting the verdict.
+		// The AD flag flaps across Cloudflare edge nodes — Google provides a stable second opinion.
+		const validationFailing = baseResult.findings.some((f) => f.title === 'DNSSEC validation failing');
+		if (validationFailing) {
+			const googleConfirmsAd = await confirmAdWithGoogle(dnssecTarget, dnsOptions?.timeoutMs ?? AD_CONFIRM_TIMEOUT_MS);
+			if (googleConfirmsAd) {
+				// Google says AD=true — re-run with corrected flag to get the right findings
+				const correctedResult = (await checkDNSSEC(domain, makeQueryDNS(dnsOptions), {
 					timeout: dnsOptions?.timeoutMs ?? 5000,
 					zone: resolvedZone,
 					rawQueryDNS: async (d, type, dnssecFlag) => {
 						const resp = await queryDns(d, type as Parameters<typeof queryDns>[1], dnssecFlag ?? false, dnsOptions);
 						return { AD: true, Answer: resp.Answer };
 					},
-				},
-			) as CheckResult;
-			return augmentWithSource(dnssecTarget, correctedResult);
+				})) as CheckResult;
+				return augmentWithSource(dnssecTarget, correctedResult);
+			}
+			// Google also says AD=false (or failed) — keep the original finding
+			return baseResult;
 		}
-		// Google also says AD=false (or failed) — keep the original finding
-		return baseResult;
-	}
 
-	return augmentWithSource(dnssecTarget, baseResult);
+		return augmentWithSource(dnssecTarget, baseResult);
 	} catch (err) {
 		if (err instanceof DnsQueryError) {
 			const message = err.message;
 			return {
 				...buildCheckResult('dnssec', [
-					createFinding(
-						'dnssec',
-						'DNSSEC check could not complete',
-						'info',
-						`DNS query failed (${message}). DNSSEC posture unknown.`,
-						{ dnsError: message, checkStatus: 'error' },
-					),
+					createFinding('dnssec', 'DNSSEC check could not complete', 'info', `DNS query failed (${message}). DNSSEC posture unknown.`, {
+						dnsError: message,
+						checkStatus: 'error',
+					}),
 				]),
 				checkStatus: 'error' as const,
 			};

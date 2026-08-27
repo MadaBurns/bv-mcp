@@ -41,7 +41,6 @@ export type TenantScheduledEnv = {
 	TENANT_REGISTRY_DB?: D1Database;
 	BV_SCANNER_QUEUE?: ScanQueueProducer;
 	ALERT_WEBHOOK_URL?: string;
-	[k: string]: unknown;
 };
 
 /** Default watch interval (hours) when a domain row has it NULL. Matches the schema default. */

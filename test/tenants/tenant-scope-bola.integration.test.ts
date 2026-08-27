@@ -1,18 +1,16 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * FINDING #5 (P2, BOLA): a single shared BV_WEB_INTERNAL_KEY authenticates all
+ * FINDING #5 (P2, BOLA): a dedicated BV_MCP_TENANT_KEY authenticates
  * /internal/tenants/* calls, and the X-Tenant header alone selects the tenant —
  * nothing binds the caller's credential to an authorized tenant scope.
  *
- * The fix is ADDITIVE / OPT-IN so the live single-key bv-web flow is unchanged:
- *   - When NO scoping signal is configured, behaviour is exactly as before.
- *   - When a scoping signal IS present (TENANT_KEY_SCOPE env map keyed by
- *     sha256(bearer), OR an X-Tenant-Scope header), the resolved tenant MUST be
- *     within the caller's allowed scope or the route returns 403.
+ * The fix is fail-closed: every call needs either a credential-bound
+ * TENANT_KEY_SCOPE entry or a matching X-Tenant-Scope assertion. Malformed,
+ * truncated, missing, and absent-key mappings deny access.
  *
- * These tests assert all three contracts (a) cross-tenant 403, (b) in-scope 200,
- * (c) no-scope-configured = no regression.
+ * These tests assert cross-tenant denial, in-scope access, missing-scope denial,
+ * and mandatory bearer enforcement even when the legacy opt-out is set.
  */
 
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
@@ -30,7 +28,16 @@ const BINDING_B = 'TENANT_DB_TENANT_2';
 const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 
 type TestEnv = typeof env & {
+	BV_MCP_TENANT_KEY?: string;
+	BV_MCP_BRAND_WEBHOOK_KEY?: string;
 	BV_WEB_INTERNAL_KEY?: string;
+	BV_MOBILE_INTERNAL_KEY?: string;
+	BV_MCP_OAUTH_MINT_KEY?: string;
+	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	BV_MCP_TOOL_DELEGATION_KEY?: string;
+	BV_MCP_WATCH_CLEANUP_KEY?: string;
+	BV_MCP_M365_KEY?: string;
+	OAUTH_SIGNING_SECRET?: string;
 	REQUIRE_INTERNAL_AUTH?: string;
 	TENANT_KEY_SCOPE?: string;
 	TENANT_REGISTRY_DB?: D1Database;
@@ -80,7 +87,7 @@ function buildEnv(extra: Partial<TestEnv> = {}): TestEnv {
 	const tenantB = makeMockD1();
 	return {
 		...env,
-		BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+		BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 		REQUIRE_INTERNAL_AUTH: 'true',
 		TENANT_REGISTRY_DB: registry.db,
 		[BINDING_A]: tenantA.db,
@@ -112,7 +119,37 @@ async function send(req: Request, customEnv: TestEnv): Promise<Response> {
 beforeEach(() => resetTenantResolverCache());
 afterEach(() => resetTenantResolverCache());
 
-describe('FINDING #5: opt-in tenant-scope assertion (BOLA)', () => {
+describe('FINDING #5: fail-closed tenant-scope assertion (BOLA)', () => {
+	it('rejects a tenant bearer shorter than the 32-byte capability floor', async () => {
+		const customEnv = buildEnv({ BV_MCP_TENANT_KEY: 'too-short' });
+		const res = await send(portfolioReq(TENANT_A, { 'X-Tenant-Scope': TENANT_A }), customEnv);
+		expect(res.status).toBe(503);
+	});
+
+	it.each([
+		'BV_WEB_INTERNAL_KEY',
+		'BV_MOBILE_INTERNAL_KEY',
+		'BV_MCP_OAUTH_MINT_KEY',
+		'BV_MCP_OAUTH_REVOKE_KEY',
+		'BV_MCP_TOOL_DELEGATION_KEY',
+		'BV_MCP_WATCH_CLEANUP_KEY',
+		'BV_MCP_M365_KEY',
+		'BV_MCP_BRAND_WEBHOOK_KEY',
+		'OAUTH_SIGNING_SECRET',
+	] as const)('rejects a tenant bearer that aliases %s', async (peerKey) => {
+		const customEnv = buildEnv({ [peerKey]: TEST_INTERNAL_KEY });
+		const res = await send(portfolioReq(TENANT_A, { 'X-Tenant-Scope': TENANT_A }), customEnv);
+		expect(res.status).toBe(503);
+	});
+
+	it('requires the dedicated bearer even when REQUIRE_INTERNAL_AUTH=false', async () => {
+		const customEnv = buildEnv({ REQUIRE_INTERNAL_AUTH: 'false' });
+		const req = portfolioReq(TENANT_A, { 'X-Tenant-Scope': TENANT_A });
+		req.headers.delete('Authorization');
+		const res = await send(req, customEnv);
+		expect(res.status).toBe(401);
+	});
+
 	it('(a) env TENANT_KEY_SCOPE: a key scoped to tenant A is 403 when requesting tenant B', async () => {
 		const customEnv = buildEnv({ TENANT_KEY_SCOPE: JSON.stringify({ [TEST_KEY_HASH]: [TENANT_A] }) });
 		const res = await send(portfolioReq(TENANT_B), customEnv);
@@ -131,16 +168,16 @@ describe('FINDING #5: opt-in tenant-scope assertion (BOLA)', () => {
 		expect(res.status).toBe(403);
 	});
 
-	it('(b2) X-Tenant-Scope header: requesting a tenant inside the header scope succeeds', async () => {
+	it('(b2) explicitly global orchestrator key: X-Tenant-Scope may select an in-header tenant', async () => {
 		const customEnv = buildEnv();
 		const res = await send(portfolioReq(TENANT_A, { 'X-Tenant-Scope': `${TENANT_A},${TENANT_B}` }), customEnv);
 		expect(res.status).toBe(200);
 	});
 
-	it('(c) NO scope configured: current single-key behaviour is preserved (no regression)', async () => {
+	it('(c) no scope signal is configured: access is denied', async () => {
 		const customEnv = buildEnv();
 		const res = await send(portfolioReq(TENANT_B), customEnv);
-		expect(res.status).toBe(200);
+		expect(res.status).toBe(403);
 	});
 
 	it('an attacker-supplied X-Tenant-Scope header cannot widen the credential-bound env cap', async () => {
@@ -152,26 +189,22 @@ describe('FINDING #5: opt-in tenant-scope assertion (BOLA)', () => {
 		expect(res.status).toBe(403);
 	});
 
-	it('(#6) TENANT_KEY_SCOPE keyed on the 16-char keyHash prefix also engages (no silent fail-open)', async () => {
-		// An operator who copies the analytics keyHash (sliced to 16 chars in
-		// index.ts) into TENANT_KEY_SCOPE must NOT get a silent fail-open. The
-		// 16-char prefix of the full sha256(bearer) is accepted as a tolerant match.
+	it('rejects a truncated 16-char analytics hash as an authorization key', async () => {
 		const sixteen = TEST_KEY_HASH.slice(0, 16);
 		const customEnv = buildEnv({ TENANT_KEY_SCOPE: JSON.stringify({ [sixteen]: [TENANT_A] }) });
-		// scoped to A → requesting B is denied (proves the cap engaged via the 16-char key)
-		const resDeny = await send(portfolioReq(TENANT_B), customEnv);
-		expect(resDeny.status).toBe(403);
-		// and the matching tenant succeeds
-		const resAllow = await send(portfolioReq(TENANT_A), customEnv);
-		expect(resAllow.status).toBe(200);
+		const res = await send(portfolioReq(TENANT_A), customEnv);
+		expect(res.status).toBe(403);
 	});
 
-	it('a key absent from the TENANT_KEY_SCOPE map is unrestricted (map only constrains listed keys)', async () => {
-		// The single shared prod key may not appear in a partial scope map; absence
-		// must NOT lock it out (backward-compat) — only keys present in the map are
-		// constrained to their listed tenants.
-		const customEnv = buildEnv({ TENANT_KEY_SCOPE: JSON.stringify({ 'some-other-key-hash': [TENANT_A] }) });
+	it('denies a bearer absent from the TENANT_KEY_SCOPE map', async () => {
+		const customEnv = buildEnv({ TENANT_KEY_SCOPE: JSON.stringify({ ['f'.repeat(64)]: [TENANT_A] }) });
 		const res = await send(portfolioReq(TENANT_B), customEnv);
-		expect(res.status).toBe(200);
+		expect(res.status).toBe(403);
+	});
+
+	it('denies malformed TENANT_KEY_SCOPE instead of failing open', async () => {
+		const customEnv = buildEnv({ TENANT_KEY_SCOPE: '{not-json' });
+		const res = await send(portfolioReq(TENANT_A, { 'X-Tenant-Scope': TENANT_A }), customEnv);
+		expect(res.status).toBe(403);
 	});
 });

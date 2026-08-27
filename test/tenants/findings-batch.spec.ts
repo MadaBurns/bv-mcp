@@ -210,7 +210,7 @@ describe('routes POST /internal/tenants/scan — findings batching (T3)', () => 
 		const tenant = makeMockD1();
 		const customEnv = {
 			...env,
-			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
 			REQUIRE_INTERNAL_AUTH: 'true',
 			TENANT_REGISTRY_DB: registry.db,
 			[TEST_TENANT_BINDING]: tenant.db,
@@ -233,6 +233,7 @@ describe('routes POST /internal/tenants/scan — findings batching (T3)', () => 
 				'Content-Type': 'application/json',
 				Authorization: `Bearer ${TEST_INTERNAL_KEY}`,
 				'X-Tenant': TEST_TENANT_ID,
+				'X-Tenant-Scope': TEST_TENANT_ID,
 			},
 			body: JSON.stringify({ domains: ['example.com'] }),
 		});

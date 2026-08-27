@@ -86,31 +86,35 @@ export async function registerBrandAuditWatch(
 		}
 	}
 
-	// Per-principal cap.
-	const countRow = (await deps.db
-		.prepare('SELECT COUNT(*) as count FROM brand_audit_watches WHERE owner_id = ? AND active = 1')
-		.bind(ownerId)
-		.first()) as { count: number } | null;
-	const current = countRow?.count ?? 0;
-	if (current >= MAX_WATCHES_PER_OWNER) {
-		return errorResult(
-			'watchLimitExceeded',
-			`Per-principal cap of ${MAX_WATCHES_PER_OWNER} active watches reached. Delete an existing watch before registering another.`,
-			{ current, limit: MAX_WATCHES_PER_OWNER },
-		);
-	}
-
 	const watchId = (deps.generateId ?? defaultGenerateId)();
 	const now = (deps.now ?? Date.now)();
 	const domain = sanitizeDomain(args.domain);
 
 	try {
-		await deps.db
+		// Keep the cap check and mutation in one SQLite statement. D1 serializes
+		// statements for a database, so concurrent registrations cannot all pass a
+		// stale preflight COUNT before inserting. A successful no-op is reported as
+		// meta.changes=0 and means the principal was at the cap when this statement ran.
+		const insertResult = await deps.db
 			.prepare(
-				'INSERT INTO brand_audit_watches (id, owner_id, domain, interval, webhook_url, active, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)',
+				`INSERT INTO brand_audit_watches (id, owner_id, domain, interval, webhook_url, active, created_at)
+				 SELECT ?, ?, ?, ?, ?, ?, ?
+				 WHERE (
+				   SELECT COUNT(*)
+				   FROM brand_audit_watches
+				   WHERE owner_id = ? AND active = 1
+				 ) < ?`,
 			)
-			.bind(watchId, ownerId, domain, args.interval, args.webhook_url ?? null, 1, now)
+			.bind(watchId, ownerId, domain, args.interval, args.webhook_url ?? null, 1, now, ownerId, MAX_WATCHES_PER_OWNER)
 			.run();
+
+		if (insertResult.meta.changes === 0) {
+			return errorResult(
+				'watchLimitExceeded',
+				`Per-principal cap of ${MAX_WATCHES_PER_OWNER} active watches reached. Delete an existing watch before registering another.`,
+				{ current: MAX_WATCHES_PER_OWNER, limit: MAX_WATCHES_PER_OWNER },
+			);
+		}
 	} catch (err) {
 		return errorResult('persistenceFailure', `Failed to register watch: ${err instanceof Error ? err.message : String(err)}`);
 	}
@@ -133,6 +137,25 @@ export async function registerBrandAuditWatch(
 	]);
 }
 
+/**
+ * One-way correlation for bv-web's high-entropy callback credential. This lets
+ * entitlement cleanup identify a registration whose success response was lost
+ * without returning the webhook URL or its bearer token from the list tool.
+ */
+async function webhookTokenFingerprint(webhookUrl: string | null): Promise<string | null> {
+	if (!webhookUrl) return null;
+	try {
+		const token = new URL(webhookUrl).searchParams.get('t');
+		// Only fingerprint high-entropy URL-safe tokens; do not make low-entropy
+		// customer query values available to offline guessing through this field.
+		if (!token || !/^[A-Za-z0-9_-]{20,128}$/.test(token)) return null;
+		const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token)));
+		return Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+	} catch {
+		return null;
+	}
+}
+
 /** List the caller's recurring brand-audit watches. */
 export async function listBrandAuditWatches(ownerId: string, deps: BrandAuditWatchDeps): Promise<CheckResult> {
 	const rows = await deps.db
@@ -141,16 +164,19 @@ export async function listBrandAuditWatches(ownerId: string, deps: BrandAuditWat
 		)
 		.bind(ownerId)
 		.all<BrandAuditWatchRow>();
-	const watches = (rows.results ?? []).map((r) => ({
-		watchId: r.id,
-		domain: r.domain,
-		interval: r.interval,
-		hasWebhook: r.webhook_url !== null,
-		lastRunAt: r.last_run_at,
-		lastClassificationHash: r.last_classification_hash,
-		active: Boolean(r.active),
-		createdAt: r.created_at,
-	}));
+	const watches = await Promise.all(
+		(rows.results ?? []).map(async (r) => ({
+			watchId: r.id,
+			domain: r.domain,
+			interval: r.interval,
+			hasWebhook: r.webhook_url !== null,
+			webhookTokenFingerprint: await webhookTokenFingerprint(r.webhook_url),
+			lastRunAt: r.last_run_at,
+			lastClassificationHash: r.last_classification_hash,
+			active: Boolean(r.active),
+			createdAt: r.created_at,
+		})),
+	);
 
 	return buildCheckResult(CATEGORY, [
 		createFinding(CATEGORY, `Brand audit watches: ${watches.length}`, 'info', `${watches.length} watch(es) for principal.`, {

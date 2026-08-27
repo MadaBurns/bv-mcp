@@ -20,7 +20,10 @@ function nsec3paramResponse(domain: string, records: string[]) {
 }
 
 /** Build a DoH JSON response carrying an AUTHORITY section (denial-of-existence RRs). */
-function dohWithAuthority(question: { name: string; type: number }, authority: Array<{ name: string; type: number; TTL: number; data: string }>) {
+function dohWithAuthority(
+	question: { name: string; type: number },
+	authority: Array<{ name: string; type: number; TTL: number; data: string }>,
+) {
 	const json = {
 		Status: 0, // NXNAME / compact-denial replies are NOERROR, not NXDOMAIN (3)
 		TC: false,
@@ -115,6 +118,16 @@ describe('checkNsecWalkability', () => {
 		expect(paramFinding!.metadata?.algorithm).toBe('SHA-1');
 		expect(paramFinding!.metadata?.iterations).toBe(10);
 		expect(paramFinding!.metadata?.salt).toBe('AABBCCDD');
+	});
+
+	it('does not follow DoH redirects', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(nsec3paramResponse('example.com', ['1 0 10 AABBCCDD']));
+
+		await run();
+
+		for (const [, init] of vi.mocked(globalThis.fetch).mock.calls) {
+			expect(init?.redirect).toBe('manual');
+		}
 	});
 
 	it('should flag 0 iterations with no salt as medium severity', async () => {

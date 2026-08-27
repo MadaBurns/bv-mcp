@@ -8,9 +8,10 @@
  * Each tenant gets its own KV-backed bucket; tier-keyed quotas determine the
  * cap.
  *
- * Atomicity is best-effort — KV `get + put` is racey. The threat model accepts
- * a small over-shoot (one cycle's-worth of extra messages at peak burst) in
- * exchange for not requiring a Durable Object on the hot path.
+ * Portfolio/report atomicity is best-effort because KV `get + put` is racey.
+ * Scan dispatches use the strong coordinator in production; this unit suite
+ * also locks their weighted fallback arithmetic, while coordinator concurrency
+ * is covered in strong-state-coordinator.spec.ts.
  */
 
 import { describe, it, expect, beforeEach } from 'vitest';
@@ -53,6 +54,21 @@ describe('checkAndRecord (per-tenant rate limiter)', () => {
 		expect(r.allowed).toBe(true);
 		expect(r.remaining).toBe(PER_TENANT_QUOTAS.default.portfolioPerMin - 1);
 		expect(r.resetAt).toBeGreaterThan(Date.now());
+	});
+
+	it('charges a weighted scan reservation by dispatched domain count', async () => {
+		const r = await checkAndRecord(kv, 'tenant-weighted', 'scans:day', 'default', 3);
+		expect(r.allowed).toBe(true);
+		expect(r.remaining).toBe(PER_TENANT_QUOTAS.default.scansPerDay - 3);
+		expect(Array.from(kv._store.values())).toEqual(['3']);
+	});
+
+	it('denies a weighted reservation atomically when the whole amount does not fit', async () => {
+		const quota = PER_TENANT_QUOTAS.default.scansPerDay;
+		await checkAndRecord(kv, 'tenant-weighted-deny', 'scans:day', 'default', quota - 2);
+		const denied = await checkAndRecord(kv, 'tenant-weighted-deny', 'scans:day', 'default', 3);
+		expect(denied.allowed).toBe(false);
+		expect(Array.from(kv._store.values())).toEqual([String(quota - 2)]);
 	});
 
 	it('returns allowed:false when the bucket is at quota', async () => {

@@ -16,6 +16,7 @@ import { z } from 'zod';
 
 import { logEvent } from './log';
 import type { BindingDegradationKind, BindingDegradationSink } from './binding-degradation';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 
 // Re-export the shared telemetry types so existing importers of these symbols
 // from `recon-binding` keep working; the canonical definition lives in
@@ -64,6 +65,7 @@ function recordReconDegradation(
 }
 
 const RECON_TIMEOUT_MS = 8_000;
+const RECON_MAX_BODY_BYTES = 5 * 1024 * 1024;
 
 export type ReconScanType = 'MALICIOUS_ASN' | 'CT_LOOKALIKE' | 'ATTACKER_INFRASTRUCTURE' | 'REALTIME_THREAT_FEED';
 
@@ -120,14 +122,16 @@ export async function callReconScan(
 		// (The route 404 is fixed + regression-tested in bv-recon, so a 404 here is a
 		// data miss, not a misroute.) Stays SILENT — not a degradation.
 		if (resp.status === 404) {
+			await disposeUnreadResponseBody(resp);
 			return { status: 'info', details: 'No threat-intelligence match for this target.' };
 		}
 		// Other non-2xx (5xx / auth) are a present-binding failure: record + null.
 		if (!resp.ok) {
+			await disposeUnreadResponseBody(resp);
 			recordReconDegradation('binding_5xx', telemetry, { route: '/osint/check', status: resp.status, domain: target.domain });
 			return null;
 		}
-		const parsed = ReconScanResponseSchema.safeParse(await resp.json().catch(() => null));
+		const parsed = ReconScanResponseSchema.safeParse(await readJsonResponseCapped(resp, RECON_MAX_BODY_BYTES));
 		return parsed.success ? parsed.data : null;
 	} catch (err) {
 		recordReconDegradation(errorToKind(err), telemetry, {
@@ -217,12 +221,17 @@ async function reconJson(
 		// A 404 is a DATA MISS (unknown/expired id, or a poll that raced its own start), not a
 		// binding failure. Stay SILENT, matching `callReconScan` and the contract documented on
 		// `BindingDegradationKind`.
-		if (resp.status === 404) return reconFailure('not_found', 404);
+		if (resp.status === 404) {
+			await disposeUnreadResponseBody(resp);
+			return reconFailure('not_found', 404);
+		}
 		if (resp.status === 401 || resp.status === 403) {
+			await disposeUnreadResponseBody(resp);
 			recordReconDegradation('binding_5xx', telemetry, { route: path, status: resp.status });
 			return reconFailure('unauthorized', resp.status);
 		}
 		if (!resp.ok) {
+			await disposeUnreadResponseBody(resp);
 			recordReconDegradation('binding_5xx', telemetry, { route: path, status: resp.status });
 			return reconFailure('upstream_status', resp.status);
 		}
@@ -230,7 +239,7 @@ async function reconJson(
 		// error page, a truncated response) is CONTRACT DRIFT, not an outage. Without the guard the
 		// throw escapes to the outer catch and is reported as `transport` WITH a `binding_unavailable`
 		// degradation — a false operator alert, the same defect class as the 404 this refactor fixed.
-		const parsed = schema.safeParse(await resp.json().catch(() => null));
+		const parsed = schema.safeParse(await readJsonResponseCapped(resp, RECON_MAX_BODY_BYTES));
 		return parsed.success ? { ok: true, data: parsed.data } : reconFailure('malformed', resp.status);
 	} catch (err) {
 		recordReconDegradation(errorToKind(err), telemetry, { route: path, errorName: err instanceof Error ? err.name : undefined });

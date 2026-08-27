@@ -12,6 +12,7 @@
 import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { RobotsDisallowedError, describeRobotsScope, robotsAbstentionMetadata } from '../robots-gate';
+import { readResponseTextCapped } from '../response-body';
 import { isNoSendPolicy } from './spf-analysis';
 
 /** BIMI logo fetch timeout (ms). */
@@ -62,7 +63,7 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 				),
 			);
 			// Consume the unread body so workerd doesn't cancel a "stalled HTTP response".
-			void response.body?.cancel();
+			void response.body?.cancel().catch(() => undefined);
 			return findings;
 		}
 
@@ -75,7 +76,7 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 					`BIMI logo URL "${logoUrl}" returned HTTP ${response.status}. The logo must be publicly accessible over HTTPS.`,
 				),
 			);
-			void response.body?.cancel();
+			void response.body?.cancel().catch(() => undefined);
 			return findings;
 		}
 
@@ -92,30 +93,14 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 			);
 		}
 
-		// Check Content-Length before fetching body
-		const contentLength = parseInt(response.headers.get('content-length') ?? '0', 10);
-		if (contentLength > BIMI_SVG_MAX_BYTES) {
+		const body = await readResponseTextCapped(response, BIMI_SVG_MAX_BYTES);
+		if (body === null) {
 			findings.push(
 				createFinding(
 					'bimi',
 					'BIMI logo exceeds 32 KB',
 					'low',
-					`BIMI logo is ${Math.round(contentLength / 1024)} KB. The BIMI specification recommends logos be under 32 KB for reliable display in email clients.`,
-				),
-			);
-			void response.body?.cancel();
-			return findings;
-		}
-
-		const body = await response.text();
-
-		if (body.length > BIMI_SVG_MAX_BYTES) {
-			findings.push(
-				createFinding(
-					'bimi',
-					'BIMI logo exceeds 32 KB',
-					'low',
-					`BIMI logo is ${Math.round(body.length / 1024)} KB. The BIMI specification recommends logos be under 32 KB for reliable display in email clients.`,
+					'BIMI logo exceeds 32 KB. The BIMI specification recommends logos be under 32 KB for reliable display in email clients.',
 				),
 			);
 			return findings;

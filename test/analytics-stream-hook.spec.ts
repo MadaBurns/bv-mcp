@@ -45,4 +45,16 @@ describe('streamScanResult (analytics-stream hook, #418)', () => {
 
 		await expect(streamScanResult(env, PAYLOAD)).resolves.toBeUndefined();
 	});
+
+	it('cancels the unread ingest response body', async () => {
+		const cancelled = vi.fn();
+		const fetchMock = vi.fn().mockResolvedValue(
+			new Response(new ReadableStream<Uint8Array>({ cancel: cancelled }), { status: 202 }),
+		);
+		const env = { BV_WEB: { fetch: fetchMock }, BV_WEB_INTERNAL_KEY: 'internal-key' };
+
+		await streamScanResult(env, PAYLOAD);
+
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
 });

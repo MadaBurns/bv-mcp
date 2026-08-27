@@ -60,8 +60,30 @@ describe('probeDelegationConsistency', () => {
 			recursiveQuery: async (name, type) => (name === 'com' && type === 'NS' ? ['a.gtld-servers.net'] : []),
 			directQuery: async () => { throw new Error('socket blocked'); },
 		});
-		expect(evidence.parentObservations[0]).toMatchObject({ nameserver: 'a.gtld-servers.net', error: 'socket blocked' });
+		expect(evidence.parentObservations[0]).toMatchObject({ nameserver: 'a.gtld-servers.net', error: 'parent_query_failed' });
 		expect(evidence.parentDelegationNs).toEqual([]);
 		expect(evidence.childObservations).toEqual([]);
+	});
+
+	it('does not expose recursive resolver exception details in evidence', async () => {
+		const evidence = await probeDelegationConsistency('example.com', {
+			recursiveQuery: async () => { throw new Error('secret resolver endpoint and stack'); },
+		});
+		expect(evidence.errors).toEqual(['parent_ns_lookup_failed', 'parent_nameservers_unavailable']);
+		expect(JSON.stringify(evidence)).not.toContain('secret resolver endpoint and stack');
+	});
+
+	it('does not expose child nameserver exception details in evidence', async () => {
+		const evidence = await probeDelegationConsistency('example.com', {
+			recursiveQuery: async (name, type) => (name === 'com' && type === 'NS' ? ['a.gtld-servers.net'] : []),
+			directQuery: async (server) => {
+				if (server === 'a.gtld-servers.net') {
+					return response({ authority: [{ name: 'example.com', type: RecordType.NS, data: 'ns1.example.com' }] });
+				}
+				throw new Error('secret child transport endpoint and stack');
+			},
+		});
+		expect(evidence.childObservations).toEqual([{ nameserver: 'ns1.example.com', error: 'child_query_failed' }]);
+		expect(JSON.stringify(evidence)).not.toContain('secret child transport endpoint and stack');
 	});
 });

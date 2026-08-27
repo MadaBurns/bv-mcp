@@ -40,6 +40,10 @@ import {
 	shouldTriggerLiveFallback,
 	type FreshnessResponse,
 } from './brand-fingerprint-freshness';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
+
+const TIER1_GRAPH_MAX_BODY_BYTES = 1024 * 1024;
+const TIER1_GRAPH_TIMEOUT_MS = 5_000;
 
 /** Single aggregated observation per co-occurring candidate domain. */
 export interface Tier1Observation {
@@ -213,13 +217,18 @@ export async function tier1GraphLookup(
 	domain: string,
 	binding: Fetcher,
 	env: Tier1Env,
+	timeoutMs = TIER1_GRAPH_TIMEOUT_MS,
 ): Promise<Tier1Result> {
 	// Invariant 1: no auth key → never construct an Authorization header.
 	if (!env.BV_WEB_INTERNAL_KEY) {
 		return degraded();
 	}
 
-	let response: Response;
+	const controller = new AbortController();
+	const timeoutId = setTimeout(
+		() => controller.abort(new DOMException('Tier 1 graph lookup timed out', 'TimeoutError')),
+		timeoutMs,
+	);
 	try {
 		const req = new Request(buildUrl(domain), {
 			method: 'GET',
@@ -228,36 +237,37 @@ export async function tier1GraphLookup(
 				'X-Contract-Version': CONTRACT_VERSION,
 				Accept: 'application/json',
 			},
+			signal: controller.signal,
+			redirect: 'manual',
 		});
-		response = await binding.fetch(req);
+		const response = await binding.fetch(req);
+
+		if (!response.ok) {
+			await disposeUnreadResponseBody(response);
+			return degraded();
+		}
+
+		const rawBody = await readJsonResponseCapped<unknown>(response, TIER1_GRAPH_MAX_BODY_BYTES);
+		if (rawBody === null) return degraded();
+
+		const parsed = DomainRelatedResponseSchema.safeParse(rawBody);
+		if (!parsed.success) {
+			return degraded();
+		}
+
+		const data: DomainRelatedResponse = parsed.data;
+		const observations = flattenSharedSignals(data.sharedSignals);
+		const triggerTier3Fallback = shouldTriggerLiveFallback(data.freshness);
+
+		return {
+			observations,
+			status: 'ok',
+			triggerTier3Fallback,
+			freshness: data.freshness,
+		};
 	} catch {
 		return degraded();
+	} finally {
+		clearTimeout(timeoutId);
 	}
-
-	if (!response.ok) {
-		return degraded();
-	}
-
-	let rawBody: unknown;
-	try {
-		rawBody = await response.json();
-	} catch {
-		return degraded();
-	}
-
-	const parsed = DomainRelatedResponseSchema.safeParse(rawBody);
-	if (!parsed.success) {
-		return degraded();
-	}
-
-	const data: DomainRelatedResponse = parsed.data;
-	const observations = flattenSharedSignals(data.sharedSignals);
-	const triggerTier3Fallback = shouldTriggerLiveFallback(data.freshness);
-
-	return {
-		observations,
-		status: 'ok',
-		triggerTier3Fallback,
-		freshness: data.freshness,
-	};
 }

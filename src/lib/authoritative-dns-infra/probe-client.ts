@@ -2,6 +2,10 @@
 
 import type { DelegationConsistencyEvidence } from './delegation-types';
 import type { AuthoritativeDnsInfraEvidence, RootServerSetEvidence } from './types';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../response-body';
+
+const INFRA_PROBE_TIMEOUT_MS = 5_000;
+const INFRA_PROBE_MAX_BODY_BYTES = 256 * 1024;
 
 export interface InfraProbeBinding {
 	fetch: typeof fetch;
@@ -13,19 +17,20 @@ export function normalizeInfraHostname(domain: string): string {
 
 async function readJsonResponse<T>(response: Response, probeName: string): Promise<T> {
 	if (!response.ok) {
+		await disposeUnreadResponseBody(response);
 		throw new Error(`Invalid infra probe response: ${probeName} returned HTTP ${response.status}`);
 	}
-	return response.json() as Promise<T>;
+	const body = await readJsonResponseCapped<T>(response, INFRA_PROBE_MAX_BODY_BYTES);
+	if (body === null) throw new Error(`Invalid infra probe response: ${probeName} returned malformed or oversized JSON`);
+	return body;
 }
 
-export async function fetchAuthoritativeDnsEvidence(
-	domain: string,
-	infraProbe: InfraProbeBinding,
-): Promise<AuthoritativeDnsInfraEvidence> {
+export async function fetchAuthoritativeDnsEvidence(domain: string, infraProbe: InfraProbeBinding): Promise<AuthoritativeDnsInfraEvidence> {
 	const response = await infraProbe.fetch('https://infra-probe.internal/probe/authoritative-dns', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ hostname: normalizeInfraHostname(domain) }),
+		signal: AbortSignal.timeout(INFRA_PROBE_TIMEOUT_MS),
 	});
 	return readJsonResponse<AuthoritativeDnsInfraEvidence>(response, 'authoritative dns probe');
 }
@@ -38,18 +43,17 @@ export async function fetchDelegationConsistencyEvidence(
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({ hostname: normalizeInfraHostname(domain) }),
-		signal: AbortSignal.timeout(5000),
+		signal: AbortSignal.timeout(INFRA_PROBE_TIMEOUT_MS),
 	});
 	return readJsonResponse<DelegationConsistencyEvidence>(response, 'delegation consistency probe');
 }
 
-export async function fetchRootServerSetEvidence(
-	infraProbe: InfraProbeBinding,
-): Promise<RootServerSetEvidence> {
+export async function fetchRootServerSetEvidence(infraProbe: InfraProbeBinding): Promise<RootServerSetEvidence> {
 	const response = await infraProbe.fetch('https://infra-probe.internal/probe/root-server-set', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify({}),
+		signal: AbortSignal.timeout(INFRA_PROBE_TIMEOUT_MS),
 	});
 	return readJsonResponse<RootServerSetEvidence>(response, 'root server set probe');
 }

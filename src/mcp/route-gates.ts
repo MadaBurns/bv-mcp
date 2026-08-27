@@ -4,7 +4,7 @@ import { checkControlPlaneRateLimit } from '../lib/rate-limiter';
 import { validateSession } from '../lib/session';
 import { JSON_RPC_ERRORS, jsonRpcError } from '../lib/json-rpc';
 import { sseErrorResponse } from '../lib/sse';
-import type { QuotaCoordinator } from '../lib/quota-coordinator';
+import { SINGLETON_ROUTING, type QuotaCoordinator, type ShardRouting } from '../lib/quota-coordinator';
 
 export async function buildControlPlaneRateLimitResponse(
 	ip: string,
@@ -14,27 +14,19 @@ export async function buildControlPlaneRateLimitResponse(
 	id: string | number | null | undefined,
 	accept?: string,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+	routing: ShardRouting = SINGLETON_ROUTING,
 ): Promise<Response | undefined> {
-	// Exempt: authenticated users, tool calls (have their own rate limiter), notifications,
-	// SSE streams, and all read-only protocol methods. Protocol methods are idempotent and
-	// rate-limiting them causes mcp-remote reconnection storms to snowball — each reconnect
-	// burns 4 requests (initialize + tools/list + resources/list + prompts/list), hitting
-	// the 60/min control plane limit after ~15 cycles and creating a permanent dead connection.
-	if (
-		isAuthenticated ||
-		method === 'tools/call' ||
-		method.startsWith('notifications/') ||
-		method === 'sse/stream' ||
-		method === 'initialize' ||
-		method === 'tools/list' ||
-		method === 'resources/list' ||
-		method === 'prompts/list' ||
-		method === 'prompts/get' ||
-		method === 'ping'
-	)
-		return undefined;
+	// Authenticated callers retain compatibility for ordinary protocol messages,
+	// tools/call has its own stronger quota stack, and initialize has an independent
+	// session-create limiter. SSE connections are the exception: every open stream
+	// retains Worker/runtime state, so authenticated reconnect floods must be metered
+	// too. Every other anonymous control-plane message is also metered, including
+	// catalog calls and notifications: idempotence does not make response bytes,
+	// dispatch work, or analytics writes free.
+	const isSseConnection = method === 'sse/stream' || method === 'sse/connect';
+	if ((isAuthenticated && !isSseConnection) || method === 'tools/call' || method === 'initialize') return undefined;
 
-	const rateResult = await checkControlPlaneRateLimit(ip, kv, quotaCoordinator);
+	const rateResult = await checkControlPlaneRateLimit(ip, kv, quotaCoordinator, routing);
 	if (rateResult.allowed) return undefined;
 
 	const headers: Record<string, string> = {
@@ -46,11 +38,7 @@ export async function buildControlPlaneRateLimitResponse(
 	}
 
 	return sseErrorResponse(
-		jsonRpcError(
-			id,
-			JSON_RPC_ERRORS.RATE_LIMITED,
-			`Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`,
-		),
+		jsonRpcError(id, JSON_RPC_ERRORS.RATE_LIMITED, `Rate limit exceeded. Retry after ${Math.ceil((rateResult.retryAfterMs ?? 0) / 1000)}s`),
 		429,
 		accept,
 		headers,
@@ -82,7 +70,11 @@ export async function validateSessionRequest(
 	if (!(await validateSession(sessionId, sessionStore))) {
 		return {
 			status: 404,
-			payload: jsonRpcError(id, JSON_RPC_ERRORS.INVALID_REQUEST, 'Not Found: session expired or terminated. Send a new initialize request to start a fresh session.'),
+			payload: jsonRpcError(
+				id,
+				JSON_RPC_ERRORS.INVALID_REQUEST,
+				'Not Found: session expired or terminated. Send a new initialize request to start a fresh session.',
+			),
 		};
 	}
 	return undefined;
@@ -101,7 +93,11 @@ export async function resolveSseSession(options: {
 	if (!options.sessionId) {
 		return {
 			response: Response.json(
-				jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Bad Request: missing session. Send an initialize request first to create a session.'),
+				jsonRpcError(
+					null,
+					JSON_RPC_ERRORS.INVALID_REQUEST,
+					'Bad Request: missing session. Send an initialize request first to create a session.',
+				),
 				{ status: 400 },
 			),
 		};
@@ -110,7 +106,11 @@ export async function resolveSseSession(options: {
 	if (!(await validateSession(options.sessionId, options.sessionStore))) {
 		return {
 			response: Response.json(
-				jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Not Found: session expired or terminated. Send a new initialize request to start a fresh session.'),
+				jsonRpcError(
+					null,
+					JSON_RPC_ERRORS.INVALID_REQUEST,
+					'Not Found: session expired or terminated. Send a new initialize request to start a fresh session.',
+				),
 				{ status: 404 },
 			),
 		};

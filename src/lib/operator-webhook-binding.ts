@@ -18,10 +18,18 @@
  */
 import type { ScheduledEnv } from './scheduled-env-types';
 import { logError } from './log';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 
 const OPERATOR_WEBHOOK_TIMEOUT_MS = 8_000;
 const OPERATOR_WEBHOOK_CACHE_KEY = 'operator-webhook:last-known-good';
 const OPERATOR_WEBHOOK_URL = 'https://bv-web-internal/api/internal/ops/operator-alert-webhook';
+const OPERATOR_WEBHOOK_MAX_BODY_BYTES = 16 * 1024;
+
+function usableWebhookUrl(value: unknown): string | undefined {
+	if (typeof value !== 'string') return undefined;
+	const normalized = value.trim();
+	return normalized.length > 0 ? normalized : undefined;
+}
 
 /**
  * Resolves the operator alert webhook URL for this cron tick. The fetch is
@@ -50,24 +58,43 @@ export async function resolveAlertWebhookUrl(env: ScheduledEnv): Promise<string 
 		}
 
 		if (res?.status === 401) {
+			await disposeUnreadResponseBody(res);
 			// Definitive client error — skip the cache entirely, straight to static var.
-			return env.ALERT_WEBHOOK_URL || undefined;
+			return usableWebhookUrl(env.ALERT_WEBHOOK_URL);
 		}
 
 		if (res?.ok) {
-			const body = (await res.json()) as { webhookUrl: string | null };
-			if (body.webhookUrl) {
-				await env.SCAN_CACHE?.put(OPERATOR_WEBHOOK_CACHE_KEY, body.webhookUrl, { expirationTtl: 86_400 });
-				return body.webhookUrl;
+			const body = await readJsonResponseCapped<{ webhookUrl?: unknown }>(res, OPERATOR_WEBHOOK_MAX_BODY_BYTES);
+			const dynamicUrl = body ? usableWebhookUrl(body.webhookUrl) : undefined;
+			if (dynamicUrl) {
+				try {
+					await env.SCAN_CACHE?.put(OPERATOR_WEBHOOK_CACHE_KEY, dynamicUrl, { expirationTtl: 86_400 });
+				} catch (error) {
+					// Cache health must never suppress a freshly resolved alert target.
+					logError(error instanceof Error ? error : 'operator webhook cache write failed', { category: 'operator_webhook' });
+				}
+				return dynamicUrl;
 			}
-			// Confirmed-empty: do NOT cache, fall through to static var.
-			return env.ALERT_WEBHOOK_URL || undefined;
+			if (body && body.webhookUrl === null) {
+				// Only an explicit schema-valid null is confirmed-empty. Do not let
+				// malformed, oversized, unreadable, or blank 2xx responses suppress a
+				// last-known-good alert destination.
+				return usableWebhookUrl(env.ALERT_WEBHOOK_URL);
+			}
+			// Ambiguous 2xx: consult last-known-good below.
+		} else if (res) {
+			await disposeUnreadResponseBody(res);
 		}
 
-		// Ambiguous (5xx, timeout, or network throw) — consult last-known-good.
-		const cached = await env.SCAN_CACHE?.get(OPERATOR_WEBHOOK_CACHE_KEY);
-		if (cached) return cached;
+		// Ambiguous (invalid 2xx, 5xx, timeout, or network throw) — consult LKG.
+		try {
+			const cached = usableWebhookUrl(await env.SCAN_CACHE?.get(OPERATOR_WEBHOOK_CACHE_KEY));
+			if (cached) return cached;
+		} catch (error) {
+			// Fall through to static configuration when the optional LKG store is down.
+			logError(error instanceof Error ? error : 'operator webhook cache read failed', { category: 'operator_webhook' });
+		}
 	}
 
-	return env.ALERT_WEBHOOK_URL || undefined;
+	return usableWebhookUrl(env.ALERT_WEBHOOK_URL);
 }

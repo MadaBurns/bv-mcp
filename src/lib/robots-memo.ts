@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { ROBOTS_MAX_BODY_BYTES } from '@blackveil/dns-checks';
+import { readBoundedOrNull } from './response-body';
+
 /**
  * Per-scan robots.txt fetch memo (issue #641, recommendation 1).
  *
@@ -107,7 +110,8 @@ function drain(response: Response): void {
  *
  * Mirrors the gate's own consumption exactly: a non-OK response has its body
  * cancelled and carries no text (the gate returns `null` without reading it), an
- * OK response is read in full, and any throw becomes a failure snapshot. A status
+ * OK response is read only up to the shared robots.txt byte cap, and any throw
+ * becomes a failure snapshot. A status
  * outside 200–599 cannot be reconstructed by the `Response` constructor, so it is
  * recorded as a failure — which the gate turns into the same `null` (fail-open)
  * that a non-OK status would have produced.
@@ -123,7 +127,15 @@ async function snapshotRobotsFetch(run: () => Promise<Response>): Promise<Robots
 			drain(response);
 			return { ok: true, status: response.status, body: '' };
 		}
-		return { ok: true, status: response.status, body: await response.text() };
+		const body = response.body ? await readBoundedOrNull(response.body, ROBOTS_MAX_BODY_BYTES) : '';
+		if (body === null) {
+			return {
+				ok: false,
+				name: 'RobotsBodyReadError',
+				message: 'robots.txt body exceeded the byte limit or could not be read',
+			};
+		}
+		return { ok: true, status: response.status, body };
 	} catch (err) {
 		return {
 			ok: false,

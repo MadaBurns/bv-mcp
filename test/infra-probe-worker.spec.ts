@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import infraProbeWorker, { handleDelegationConsistencyProbe } from '../src/workers/infra-probe';
 import { ROOT_HINTS, ROOT_SERVER_NAMES } from '../src/lib/authoritative-dns-infra/root-hints';
 
@@ -86,6 +86,29 @@ describe('infra probe worker', () => {
 		});
 	});
 
+	it('returns a fixed delegation failure without exposing exception details', async () => {
+		const consoleError = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+		try {
+			const response = await handleDelegationConsistencyProbe(
+				new Request('https://infra-probe.internal/probe/delegation-consistency', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ hostname: 'example.com' }),
+				}),
+				{
+					recursiveQuery: async () => [],
+					now: () => { throw new Error('secret resolver endpoint and stack'); },
+				},
+			);
+
+			expect(response.status).toBe(502);
+			await expect(response.json()).resolves.toEqual({ error: 'delegation_probe_failed' });
+			expect(consoleError).toHaveBeenCalledWith('Delegation consistency probe failed');
+		} finally {
+			consoleError.mockRestore();
+		}
+	});
+
 	it('rejects invalid authoritative DNS probe payloads', async () => {
 		const response = await infraProbeWorker.fetch(new Request('https://infra-probe.internal/probe/authoritative-dns', {
 			method: 'POST',
@@ -96,5 +119,16 @@ describe('infra probe worker', () => {
 		expect(response.status).toBe(400);
 		const body = await response.json() as { error?: string };
 		expect(body.error).toBe('invalid_hostname');
+	});
+
+	it('rejects an oversized chunked probe body before JSON parsing', async () => {
+		const response = await infraProbeWorker.fetch(new Request('https://infra-probe.internal/probe/authoritative-dns', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ hostname: 'a'.repeat(2000) }),
+		}));
+
+		expect(response.status).toBe(413);
+		await expect(response.json()).resolves.toEqual({ error: 'request_body_too_large' });
 	});
 });

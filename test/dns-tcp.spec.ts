@@ -1,7 +1,13 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, expect, it } from 'vitest';
-import { buildDirectDnsQuery, parseDirectDnsResponse } from '../src/lib/authoritative-dns-infra/dns-tcp';
+import {
+	buildDirectDnsQuery,
+	isGloballyRoutableIp,
+	parseDirectDnsResponse,
+	readFramedResponse,
+	resolvePublicNameserverAddresses,
+} from '../src/lib/authoritative-dns-infra/dns-tcp';
 
 function concat(...parts: Uint8Array[]): Uint8Array {
 	const output = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
@@ -52,5 +58,93 @@ describe('direct DNS-over-TCP wire codec', () => {
 		expect(parsed.aa).toBe(true);
 		expect(parsed.rcode).toBe(0);
 		expect(parsed.answers).toEqual([{ name: 'example.com', type: 2, data: 'ns1.example.com' }]);
+	});
+});
+
+describe('direct DNS raw-socket destination policy', () => {
+	it('allows ordinary public unicast IPs and rejects private or reserved ranges', () => {
+		expect(isGloballyRoutableIp('1.1.1.1')).toBe(true);
+		expect(isGloballyRoutableIp('2606:4700:4700::1111')).toBe(true);
+		for (const blocked of [
+			'0.0.0.0',
+			'10.0.0.1',
+			'100.64.0.1',
+			'127.0.0.1',
+			'169.254.169.254',
+			'172.16.0.1',
+			'192.168.1.1',
+			'198.18.0.1',
+			'192.0.2.1',
+			'224.0.0.1',
+			'::1',
+			'::ffff:127.0.0.1',
+			'fc00::1',
+			'fe80::1',
+			'2001:db8::1',
+		]) {
+			expect(isGloballyRoutableIp(blocked), blocked).toBe(false);
+		}
+	});
+
+	it('returns canonical public literals that can be pinned into connect()', async () => {
+		const resolver = async (_hostname: string, type: 'A' | 'AAAA') =>
+			type === 'A' ? ['1.1.1.1'] : ['2606:4700:4700::1111'];
+
+		await expect(resolvePublicNameserverAddresses('ns1.example.net.', resolver)).resolves.toEqual([
+			'1.1.1.1',
+			'2606:4700:4700:0:0:0:0:1111',
+		]);
+	});
+
+	it('fails closed when one DNS family returns a private address', async () => {
+		const resolver = async (_hostname: string, type: 'A' | 'AAAA') =>
+			type === 'A' ? ['1.1.1.1', '169.254.169.254'] : ['2606:4700:4700::1111'];
+
+		await expect(resolvePublicNameserverAddresses('ns1.example.net', resolver)).rejects.toThrow('non-public');
+	});
+
+	it('rejects private literals without invoking DNS resolution', async () => {
+		let calls = 0;
+		const resolver = async () => {
+			calls += 1;
+			return ['1.1.1.1'];
+		};
+
+		await expect(resolvePublicNameserverAddresses('127.0.0.1', resolver)).rejects.toThrow('not globally routable');
+		expect(calls).toBe(0);
+	});
+});
+
+describe('direct DNS TCP frame memory bounds', () => {
+	function framedStream(chunks: Uint8Array[], onCancel: () => void): ReadableStream<Uint8Array> {
+		return new ReadableStream<Uint8Array>({
+			start(controller) {
+				for (const chunk of chunks) controller.enqueue(chunk);
+			},
+			cancel() {
+				onCancel();
+			},
+		});
+	}
+
+	it('rejects and cancels a first socket chunk larger than the DNS frame ceiling', async () => {
+		let cancelled = false;
+		const stream = framedStream([new Uint8Array(65_538)], () => {
+			cancelled = true;
+		});
+
+		await expect(readFramedResponse(stream)).rejects.toThrow(/maximum frame size/);
+		expect(cancelled).toBe(true);
+	});
+
+	it('rejects and cancels oversized trailing data before copying it', async () => {
+		let cancelled = false;
+		const partialFrame = concat(uint16(4), new Uint8Array([0xaa]));
+		const stream = framedStream([partialFrame, new Uint8Array(65_535)], () => {
+			cancelled = true;
+		});
+
+		await expect(readFramedResponse(stream)).rejects.toThrow(/maximum frame size|trailing frame data/);
+		expect(cancelled).toBe(true);
 	});
 });

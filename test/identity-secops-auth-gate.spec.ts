@@ -234,6 +234,7 @@ describe('executeMcpRequest — the public path reaches no identity_secops tool'
 		};
 
 		const { executeMcpRequest } = await import('../src/mcp/execute');
+		const credentialHash = 'd'.repeat(64);
 		const result = await executeMcpRequest(
 			baseOptions({
 				body: {
@@ -243,12 +244,10 @@ describe('executeMcpRequest — the public path reaches no identity_secops tool'
 					params: { name: 'query_signins', arguments: { ms_tenant_id: 'tenant-abc' } },
 				} as JsonRpcRequest,
 				isAuthenticated: true,
-				tierAuthResult: { authenticated: true, tier: 'developer', keyHash: 'k_dev_full' },
+				tierAuthResult: { authenticated: true, tier: 'developer', keyHash: credentialHash },
 				authTier: 'developer',
-				// Top-level keyHash is caller-populated (index.ts); executeMcpRequest
-				// does NOT derive it from tierAuthResult — it must be forwarded into
-				// dispatch's options so the Layer-2 guard sees a real principal.
-				keyHash: 'k_dev_full',
+				keyHash: credentialHash,
+				m365Identity: { kind: 'api_key', credentialHash },
 				m365Proxy,
 				m365ProxyAuthToken: 'internal-bearer',
 			}),
@@ -257,7 +256,7 @@ describe('executeMcpRequest — the public path reaches no identity_secops tool'
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
 		// Everything that would have let this call through is present — a real
-		// principal (keyHash), a bound proxy, an internal bearer, a paid tier —
+		// verified principal identity, a bound proxy, an internal bearer, a paid tier —
 		// so a green here is the catalog withdrawal doing the work, nothing else.
 		expect(proxyInvoked).toBe(false);
 		expect(JSON.stringify(result.payload)).toContain('Unknown tool');
@@ -286,7 +285,7 @@ describe('handleToolsCall — identity_secops no-principal hard reject', () => {
 	}
 
 	for (const tool of IDENTITY_SECOPS_TOOLS) {
-		it(`${tool}: returns an error and never calls the proxy fetch when keyHash is absent`, async () => {
+		it(`${tool}: returns an error and never calls the proxy fetch when verified identity is absent`, async () => {
 			const { handleToolsCall } = await import('../src/handlers/tools');
 			const { proxy, called } = spyProxy();
 
@@ -296,7 +295,7 @@ describe('handleToolsCall — identity_secops no-principal hard reject', () => {
 				{
 					m365Proxy: proxy,
 					m365ProxyAuthToken: 'internal-bearer',
-					// keyHash intentionally omitted — no real principal.
+					// m365Identity intentionally omitted — no verified principal contract.
 				},
 			);
 
@@ -307,17 +306,19 @@ describe('handleToolsCall — identity_secops no-principal hard reject', () => {
 		});
 	}
 
-	it('query_signins: forwards to the proxy when a real keyHash IS present', async () => {
+	it('query_signins: forwards to the proxy when a verified API-key identity is present', async () => {
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		const { proxy, called } = spyProxy();
 
+		const credentialHash = 'a'.repeat(64);
 		const result = await handleToolsCall(
 			{ name: 'query_signins', arguments: { ms_tenant_id: 'tenant-abc' } },
 			undefined,
 			{
 				m365Proxy: proxy,
 				m365ProxyAuthToken: 'internal-bearer',
-				keyHash: 'k_real',
+				keyHash: credentialHash,
+				m365Identity: { kind: 'api_key', credentialHash },
 			},
 		);
 

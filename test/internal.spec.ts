@@ -382,7 +382,7 @@ describe('Internal service binding routes', () => {
 
 	describe('agent-chat caller allowlist (/internal/tools/batch)', () => {
 		it('rejects a non-allowlisted batch tool for the agent-chat caller', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+			const request = new Request('http://example.com/internal/tools/batch', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'X-BV-Caller': 'agent-chat' },
 				body: JSON.stringify({ tool: 'discover_subdomains', domains: ['example.com'] }),
@@ -469,6 +469,22 @@ describe('Internal service binding routes', () => {
 			expect(response.status).toBe(400);
 			const body = (await response.json()) as { error: string };
 			expect(body.error).toContain('500');
+		});
+
+		it('rejects mutating tools before any batch fan-out occurs', async () => {
+			const queueSend = vi.fn(async () => {});
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/batch', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ domains: ['example.com', 'example.org'], tool: 'discover_brand_domains_start' }),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, { ...testEnv, BRAND_AUDIT_QUEUE: { send: queueSend } }, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(403);
+			expect(await response.json()).toEqual({ error: 'batch_tool_not_allowed' });
+			expect(queueSend).not.toHaveBeenCalled();
 		});
 
 		it('scans multiple domains and returns results with summary', async () => {

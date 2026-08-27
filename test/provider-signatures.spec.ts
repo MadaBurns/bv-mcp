@@ -59,10 +59,7 @@ describe('provider-signatures', () => {
 		const rawPayload = JSON.stringify(payload);
 		const expectedSha256 = await sha256Hex(rawPayload);
 
-		globalThis.fetch = vi.fn().mockResolvedValue({
-			ok: true,
-			text: async () => rawPayload,
-		} as unknown as Response);
+		globalThis.fetch = vi.fn().mockResolvedValue(new Response(rawPayload, { headers: { 'content-type': 'application/json' } }));
 
 		const first = await loadProviderSignatures({ sourceUrl, expectedSha256 });
 		const second = await loadProviderSignatures({ sourceUrl, expectedSha256 });

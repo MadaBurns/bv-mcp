@@ -1,7 +1,10 @@
+// @ts-expect-error cloudflare:test exports are injected by the Workers Vitest pool at runtime.
 import { SELF, env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
 import { OAUTH_KV_PREFIX } from '../../src/lib/config';
+import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
+import { MAX_CONSENT_BODY_BYTES } from '../../src/oauth/authorize';
 import { clearKvPrefix } from '../helpers/kv';
 
 const TEST_API_KEY = 'testkey';
@@ -29,9 +32,11 @@ function buildForm(api_key: string, cid: string): URLSearchParams {
 
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 afterEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 
 describe('POST /oauth/authorize', () => {
@@ -39,7 +44,7 @@ describe('POST /oauth/authorize', () => {
 		const cid = await registerClient();
 		const form = buildForm(TEST_API_KEY, cid);
 		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-		const request = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/authorize', {
+		const request = new Request('https://example.com/oauth/authorize', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
 			body: form.toString(),
@@ -53,6 +58,7 @@ describe('POST /oauth/authorize', () => {
 		expect(loc.origin + loc.pathname).toBe('https://claude.ai/cb');
 		expect(loc.searchParams.get('code')).toMatch(/^[A-Za-z0-9_-]{16,}$/);
 		expect(loc.searchParams.get('state')).toBe('stateval');
+		expect(loc.searchParams.get('iss')).toBe('https://example.com');
 	});
 
 	it('wrong key → 302 redirect with error=access_denied + state', async () => {
@@ -73,6 +79,7 @@ describe('POST /oauth/authorize', () => {
 		expect(loc.origin + loc.pathname).toBe('https://claude.ai/cb');
 		expect(loc.searchParams.get('error')).toBe('access_denied');
 		expect(loc.searchParams.get('state')).toBe('stateval');
+		expect(loc.searchParams.get('iss')).toBe('https://example.com');
 	});
 
 	it('rate-limits consent POST after 5 wrong attempts', async () => {
@@ -95,6 +102,24 @@ describe('POST /oauth/authorize', () => {
 		expect(res.status).toBe(429);
 	});
 
+	it('admits exactly 5 consent attempts from a concurrent same-IP burst', async () => {
+		const cid = await registerClient();
+		const form = buildForm('wrongkey', cid);
+		const responses = await Promise.all(
+			Array.from({ length: 12 }, () =>
+				SELF.fetch('https://example.com/oauth/authorize', {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'CF-Connecting-IP': '198.51.100.77' },
+					body: form.toString(),
+					redirect: 'manual',
+				}),
+			),
+		);
+		const statuses = responses.map((response) => response.status);
+		expect(statuses.filter((status) => status === 302)).toHaveLength(5);
+		expect(statuses.filter((status) => status === 429)).toHaveLength(7);
+	});
+
 	it('rejects non-form content-type with 415', async () => {
 		const cid = await registerClient();
 		const form = buildForm('wrongkey', cid);
@@ -105,6 +130,35 @@ describe('POST /oauth/authorize', () => {
 			redirect: 'manual',
 		});
 		expect(res.status).toBe(415);
+	});
+
+	it('rejects and cancels a chunked form at cap plus one without Content-Length', async () => {
+		const cancelled = vi.fn();
+		let pull = 0;
+		const request = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/authorize', {
+			method: 'POST',
+			headers: {
+				'Content-Type': 'application/x-www-form-urlencoded',
+				'CF-Connecting-IP': '198.51.100.92',
+			},
+			body: new ReadableStream<Uint8Array>({
+				pull(controller) {
+					if (pull++ === 0) controller.enqueue(new Uint8Array(MAX_CONSENT_BODY_BYTES));
+					else if (pull === 2) controller.enqueue(new Uint8Array([1]));
+					else if (pull === 3) controller.enqueue(new Uint8Array([2]));
+					else controller.close();
+				},
+				cancel: cancelled,
+			}),
+			redirect: 'manual',
+		});
+		expect(request.headers.get('content-length')).toBeNull();
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, env, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(res.status).toBe(413);
+		expect(cancelled).toHaveBeenCalledOnce();
 	});
 
 	it('rejects invalid _q query with 400', async () => {

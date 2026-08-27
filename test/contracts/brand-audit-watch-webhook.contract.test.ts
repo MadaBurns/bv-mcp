@@ -20,10 +20,13 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import {
+	BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX,
+	BRAND_AUDIT_WATCH_WEBHOOK_MAX_BODY_BYTES,
 	BrandAuditWatchWebhookPayloadSchema,
 	type BrandAuditWatchWebhookPayload,
 } from '../../src/schemas/brand-audit-watch-webhook';
 import type { BrandAuditConsumerDeps } from '../../src/queue/brand-audit-consumer';
+import type { CheckResult } from '../../src/lib/scoring';
 
 const validPayload: BrandAuditWatchWebhookPayload = {
 	schemaVersion: 1,
@@ -86,6 +89,22 @@ describe('BrandAuditWatchWebhookPayloadSchema contract', () => {
 		});
 		expect(partial.success).toBe(false);
 	});
+
+	it('accepts exactly 200 changes, rejects 201, and remains below the bounded body contract', () => {
+		const entries = Array.from({ length: BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX }, (_, index) => ({
+			domain: `candidate-${index}.example`,
+			bucket: 'impersonation' as const,
+		}));
+		const maxPayload = { ...validPayload, changes: { added: entries, removed: [], modified: [] } };
+		expect(BrandAuditWatchWebhookPayloadSchema.safeParse(maxPayload).success).toBe(true);
+		expect(new TextEncoder().encode(JSON.stringify(maxPayload)).byteLength).toBeLessThanOrEqual(BRAND_AUDIT_WATCH_WEBHOOK_MAX_BODY_BYTES);
+		expect(
+			BrandAuditWatchWebhookPayloadSchema.safeParse({
+				...validPayload,
+				changes: { added: [...entries, entries[0]], removed: [], modified: [] },
+			}).success,
+		).toBe(false);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -109,6 +128,8 @@ function makeEmitterD1(opts: {
 		interval: string;
 		webhook_url: string | null;
 		last_classification_hash: string | null;
+		last_classification_result_json?: string | null;
+		pending_webhook_json?: string | null;
 	};
 	priorResult?: { result_json: string } | null;
 }): D1Database {
@@ -116,7 +137,10 @@ function makeEmitterD1(opts: {
 		prepare(sql: string) {
 			let binds: unknown[] = [];
 			const stmt = {
-				bind(...args: unknown[]) { binds = args; return stmt; },
+				bind(...args: unknown[]) {
+					binds = args;
+					return stmt;
+				},
 				async first() {
 					if (sql.includes('SELECT status, completed_at FROM brand_audit_targets')) return opts.target;
 					if (sql.includes('SELECT completed_targets, total_targets FROM brand_audits')) return opts.auditAfter;
@@ -125,8 +149,15 @@ function makeEmitterD1(opts: {
 					void binds;
 					return null;
 				},
-				async run() { return { success: true, meta: { changes: 1 } }; },
-				async all() { return { results: [], success: true, meta: {} }; },
+				async run() {
+					return { success: true, meta: { changes: 1 } };
+				},
+				async all() {
+					if (sql.includes('SELECT t.result_json FROM brand_audit_targets')) {
+						return { results: opts.priorResult ? [opts.priorResult] : [], success: true, meta: {} };
+					}
+					return { results: [], success: true, meta: {} };
+				},
 			};
 			return stmt;
 		},
@@ -134,7 +165,7 @@ function makeEmitterD1(opts: {
 	return db;
 }
 
-function makeBrandAuditResult(domains: Array<{ domain: string; bucket: string }>) {
+function makeBrandAuditResult(domains: Array<{ domain: string; bucket: string }>): CheckResult {
 	return {
 		category: 'brand_discovery' as const,
 		passed: true,
@@ -144,7 +175,14 @@ function makeBrandAuditResult(domains: Array<{ domain: string; bucket: string }>
 			title: `Candidate: ${d.domain}`,
 			severity: 'info' as const,
 			detail: '',
-			metadata: { candidate: d.domain, bucket: d.bucket, signals: ['ns'], combinedConfidence: 0.9, registrar: 'X', registrarSource: 'rdap' },
+			metadata: {
+				candidate: d.domain,
+				bucket: d.bucket,
+				signals: ['ns'],
+				combinedConfidence: 0.9,
+				registrar: 'X',
+				registrarSource: 'rdap',
+			},
 		})),
 	};
 }
@@ -154,14 +192,15 @@ describe('emitter round-trip: processBrandAuditMessage → BrandAuditWatchWebhoo
 		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
 
 		const currentResult = makeBrandAuditResult([
-			{ domain: 'apple-new.com', bucket: 'consolidated' },
+			{ domain: 'apple-new.com', bucket: 'impersonationSurface' },
 			{ domain: 'apple-shift.com', bucket: 'impersonation' },
 		]);
 		const priorResult = makeBrandAuditResult([
 			{ domain: 'apple-old.com', bucket: 'shadowIt' },
 			{ domain: 'apple-shift.com', bucket: 'consolidated' },
 		]);
-		const priorHash = 'a'.repeat(64); // arbitrary non-matching sentinel
+		const { computeClassificationHash } = await import('../../src/lib/brand-audit-classification-diff');
+		const priorHash = await computeClassificationHash(priorResult);
 
 		const db = makeEmitterD1({
 			target: { status: 'queued', completed_at: null },
@@ -206,6 +245,7 @@ describe('emitter round-trip: processBrandAuditMessage → BrandAuditWatchWebhoo
 			expect(parsed.data.currentHash).toHaveLength(64);
 			// changes are populated
 			expect(parsed.data.changes.added.map((e) => e.domain)).toContain('apple-new.com');
+			expect(parsed.data.changes.added.find((e) => e.domain === 'apple-new.com')?.bucket).toBe('impersonationSurface');
 			expect(parsed.data.changes.removed.map((e) => e.domain)).toContain('apple-old.com');
 			expect(parsed.data.changes.modified.map((e) => e.domain)).toContain('apple-shift.com');
 		}
@@ -247,7 +287,9 @@ describe('emitter round-trip: processBrandAuditMessage → BrandAuditWatchWebhoo
 
 		// THE LOCK: first-ever delivery must also be a valid C3 payload.
 		const parsed = BrandAuditWatchWebhookPayloadSchema.safeParse(payload);
-		expect(parsed.success, `first-ever emitter produced a non-C3 payload: ${JSON.stringify((parsed as { error?: unknown }).error)}`).toBe(true);
+		expect(parsed.success, `first-ever emitter produced a non-C3 payload: ${JSON.stringify((parsed as { error?: unknown }).error)}`).toBe(
+			true,
+		);
 
 		if (parsed.success) {
 			expect(parsed.data.previousHash).toBeNull(); // C3: null on first-ever delivery

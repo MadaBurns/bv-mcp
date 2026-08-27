@@ -7,14 +7,19 @@
  * orchestrator injects a fetcher mock — no real network is touched.
  */
 
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
 	parseAppleAasa,
 	parseAssetLinks,
 	detectAppLinks,
+	APP_LINKS_MAX_BODY_BYTES,
 	type AppLinksFetchFn,
 } from '../../../src/tenants/discovery/app-links-detector';
 import { StrictDiscoverySignalResultSchema } from '../../../src/schemas/discovery-signal-result';
+
+afterEach(() => {
+	vi.unstubAllGlobals();
+});
 
 describe('parseAppleAasa', () => {
 	it('extracts appIDs from applinks.details', () => {
@@ -179,5 +184,37 @@ describe('detectAppLinks (orchestrator)', () => {
 		const result = await detectAppLinks('example.com', { fetcher });
 		expect(result.queryStatus).toBe('failed');
 		expect(result.failedSources).toEqual(['apple_app_site_association', 'android_asset_links']);
+	});
+
+	it('cancels an oversized chunked well-known document when Content-Length is missing', async () => {
+		const cancelled = vi.fn();
+		let pull = 0;
+		const oversized = new Response(
+			new ReadableStream<Uint8Array>({
+				pull(controller) {
+					if (pull++ === 0) controller.enqueue(new Uint8Array(APP_LINKS_MAX_BODY_BYTES));
+					else if (pull === 2) controller.enqueue(new Uint8Array([1]));
+					else if (pull === 3) controller.enqueue(new Uint8Array([2]));
+					else controller.close();
+				},
+				cancel: cancelled,
+			}),
+			{ status: 200 },
+		);
+		Object.defineProperty(oversized, 'json', {
+			value: () => Promise.reject(new Error('unbounded Response.json() must not be used')),
+		});
+		vi.stubGlobal(
+			'fetch',
+			vi.fn(async (url: string | URL | Request) =>
+				String(url).endsWith('apple-app-site-association') ? oversized : new Response(null, { status: 404 }),
+			),
+		);
+
+		const result = await detectAppLinks('example.com');
+
+		expect(result.queryStatus).toBe('partial');
+		expect(result.failedSources).toEqual(['apple_app_site_association']);
+		expect(cancelled).toHaveBeenCalledOnce();
 	});
 });

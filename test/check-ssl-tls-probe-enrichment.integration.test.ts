@@ -4,6 +4,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
+const TLS_PROBE_AUTH_TOKEN = 'tls-probe-integration-key-32-bytes-minimum';
 
 afterEach(() => {
 	restore();
@@ -82,7 +83,7 @@ describe('checkSsl TLS probe enrichment', () => {
 		const binding = probeBinding({ reachable: true, minVersion: 'TLS1.1', maxVersion: 'TLS1.2' });
 
 		const { checkSsl } = await import('../src/tools/check-ssl');
-		const result = await checkSsl('example.com', { tlsProbeBinding: binding });
+		const result = await checkSsl('example.com', { tlsProbeBinding: binding, tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN });
 
 		// A High finding with tlsProbeEnriched metadata must be present.
 		const highFinding = result.findings.find((f) => f.metadata?.tlsProbeEnriched === true);
@@ -109,7 +110,8 @@ describe('checkSsl TLS probe enrichment', () => {
 		const binding = probeBinding({ reachable: true, minVersion: 'TLS1.2', maxVersion: 'TLS1.3' });
 
 		const { checkSsl } = await import('../src/tools/check-ssl');
-		const result = await checkSsl('example.com', { tlsProbeBinding: binding });
+		const result = await checkSsl('example.com', { tlsProbeBinding: binding, tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN });
+		expect(binding.fetch).toHaveBeenCalledOnce();
 
 		// No high finding added.
 		const highFinding = result.findings.find((f) => f.metadata?.tlsProbeEnriched === true);
@@ -126,7 +128,8 @@ describe('checkSsl TLS probe enrichment', () => {
 		const binding = probeBinding({ reachable: false, error: 'connect timeout' });
 
 		const { checkSsl } = await import('../src/tools/check-ssl');
-		const result = await checkSsl('example.com', { tlsProbeBinding: binding });
+		const result = await checkSsl('example.com', { tlsProbeBinding: binding, tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN });
+		expect(binding.fetch).toHaveBeenCalledOnce();
 
 		const highFinding = result.findings.find((f) => f.metadata?.tlsProbeEnriched === true);
 		expect(highFinding).toBeUndefined();
@@ -145,7 +148,11 @@ describe('checkSsl TLS probe enrichment', () => {
 
 		const { checkSsl } = await import('../src/tools/check-ssl');
 		// Must not throw.
-		const result = await checkSsl('example.com', { tlsProbeBinding: throwingBinding });
+		const result = await checkSsl('example.com', {
+			tlsProbeBinding: throwingBinding,
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
+		});
+		expect(throwingBinding.fetch).toHaveBeenCalledOnce();
 
 		const highFinding = result.findings.find((f) => f.metadata?.tlsProbeEnriched === true);
 		expect(highFinding).toBeUndefined();
@@ -160,12 +167,12 @@ describe('checkSsl TLS probe enrichment', () => {
 		const binding = probeBinding({ reachable: true, minVersion: 'TLS1.2', maxVersion: 'TLS1.3' });
 
 		const { checkSsl } = await import('../src/tools/check-ssl');
-		await checkSsl('example.com', { tlsProbeBinding: binding, tlsProbeAuthToken: 'sekret' });
+		await checkSsl('example.com', { tlsProbeBinding: binding, tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN });
 
 		expect(binding.fetch).toHaveBeenCalledOnce();
 		const callInit = binding.fetch.mock.calls[0][1] as RequestInit | undefined;
 		const headers = callInit?.headers as Record<string, string> | undefined;
-		expect(headers?.['Authorization']).toBe('Bearer sekret');
+		expect(headers?.['Authorization']).toBe(`Bearer ${TLS_PROBE_AUTH_TOKEN}`);
 	});
 	// -------------------------------------------------------------------------
 	// #641 — the probe is on the same deadline as the fetches, and starts with them
@@ -191,7 +198,11 @@ describe('checkSsl TLS probe enrichment', () => {
 
 		const { checkSsl } = await import('../src/tools/check-ssl');
 		const startedAt = Date.now();
-		const result = await checkSsl('example.com', { tlsProbeBinding: hanging, budgetMs: 600 });
+		const result = await checkSsl('example.com', {
+			tlsProbeBinding: hanging,
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
+			budgetMs: 600,
+		});
 		const elapsed = Date.now() - startedAt;
 
 		// Bounded by the budget, nowhere near the probe's own 8s clock.
@@ -237,7 +248,7 @@ describe('checkSsl TLS probe enrichment', () => {
 		};
 
 		const { checkSsl } = await import('../src/tools/check-ssl');
-		await checkSsl('example.com', { tlsProbeBinding: binding });
+		await checkSsl('example.com', { tlsProbeBinding: binding, tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN });
 
 		// The probe needs only the domain, never the fetch result. Sequential ordering
 		// added its cost to the fetches' for no benefit; concurrent makes the check's

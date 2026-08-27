@@ -1,6 +1,7 @@
 import { SELF, createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../../src/index';
+import { putClient } from '../../src/oauth/storage';
 import { clearKvPrefix } from '../helpers/kv';
 
 async function registerClient(): Promise<string> {
@@ -121,6 +122,28 @@ describe('GET /oauth/authorize', () => {
 		url.searchParams.set('code_challenge_method', 'S256');
 		const res = await SELF.fetch(url.toString());
 		expect(res.status).toBe(400);
+	});
+
+	it('rejects a legacy stored client whose raw redirect text disguises an attacker hostname', async () => {
+		const clientId = 'legacy-parser-confusion-client';
+		const maliciousRedirect = 'https://evil.example?.anthropic.com/cb';
+		await putClient(env.SESSION_STORE as unknown as KVNamespace, {
+			client_id: clientId,
+			client_id_issued_at: Math.floor(Date.now() / 1000),
+			redirect_uris: [maliciousRedirect],
+		});
+		const url = new URL('https://example.com/oauth/authorize');
+		url.searchParams.set('client_id', clientId);
+		url.searchParams.set('redirect_uri', maliciousRedirect);
+		url.searchParams.set('response_type', 'code');
+		url.searchParams.set('state', 's');
+		url.searchParams.set('code_challenge', 'x'.repeat(43));
+		url.searchParams.set('code_challenge_method', 'S256');
+
+		const res = await SELF.fetch(url.toString(), { redirect: 'manual' });
+
+		expect(res.status).toBe(400);
+		expect(res.headers.get('location')).toBeNull();
 	});
 
 	it('rejects missing code_challenge', async () => {

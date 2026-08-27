@@ -16,8 +16,7 @@ describe('mcp-route-gates', () => {
 		}));
 
 		const { buildControlPlaneRateLimitResponse } = await import('../src/mcp/route-gates');
-		// Use a non-exempt method — all standard protocol methods (initialize, tools/list, etc.) are exempt
-		const response = await buildControlPlaneRateLimitResponse('203.0.113.9', undefined, 'unknown/method', false, 7);
+		const response = await buildControlPlaneRateLimitResponse('203.0.113.9', undefined, 'tools/list', false, 7);
 
 		expect(response).toBeInstanceOf(Response);
 		expect(response?.status).toBe(429);
@@ -28,6 +27,40 @@ describe('mcp-route-gates', () => {
 		expect(body.error.message).toContain('Retry after 2s');
 	});
 
+	it('meters anonymous protocol traffic and every SSE connection while ordinary authenticated traffic remains exempt', async () => {
+		const checkControlPlaneRateLimit = vi.fn().mockResolvedValue({
+			allowed: true,
+			minuteRemaining: 59,
+			hourRemaining: 599,
+		});
+		vi.doMock('../src/lib/rate-limiter', () => ({ checkControlPlaneRateLimit }));
+
+		const { buildControlPlaneRateLimitResponse } = await import('../src/mcp/route-gates');
+		for (const method of [
+			'tools/list',
+			'resources/list',
+			'prompts/list',
+			'prompts/get',
+			'ping',
+			'notifications/initialized',
+			'sse/stream',
+			'sse/connect',
+		]) {
+			expect(await buildControlPlaneRateLimitResponse('203.0.113.10', undefined, method, false, 1)).toBeUndefined();
+		}
+		expect(checkControlPlaneRateLimit).toHaveBeenCalledTimes(8);
+
+		expect(await buildControlPlaneRateLimitResponse('203.0.113.10', undefined, 'tools/list', true, 2)).toBeUndefined();
+		expect(await buildControlPlaneRateLimitResponse('203.0.113.10', undefined, 'initialize', false, 3)).toBeUndefined();
+		expect(await buildControlPlaneRateLimitResponse('key:abc123', undefined, 'sse/stream', true, null)).toBeUndefined();
+		expect(await buildControlPlaneRateLimitResponse('key:abc123', undefined, 'sse/connect', true, null)).toBeUndefined();
+		expect(checkControlPlaneRateLimit).toHaveBeenCalledTimes(10);
+		expect(checkControlPlaneRateLimit).toHaveBeenLastCalledWith('key:abc123', undefined, undefined, {
+			enabled: false,
+			salt: '',
+		});
+	});
+
 	it('returns 404 with JSON-RPC error for invalid session headers', async () => {
 		vi.doMock('../src/lib/session', () => ({
 			checkSessionCreateRateLimit: vi.fn(),
@@ -36,7 +69,12 @@ describe('mcp-route-gates', () => {
 		}));
 
 		const { validateSessionRequest } = await import('../src/mcp/route-gates');
-		const result = await validateSessionRequest('bad-session', undefined, 3, 'Bad Request: missing session. Send an initialize request first to create a session.');
+		const result = await validateSessionRequest(
+			'bad-session',
+			undefined,
+			3,
+			'Bad Request: missing session. Send an initialize request first to create a session.',
+		);
 
 		expect(result).toBeTruthy();
 		expect(result?.status).toBe(404);
@@ -46,7 +84,12 @@ describe('mcp-route-gates', () => {
 
 	it('returns 400 for missing session header', async () => {
 		const { validateSessionRequest } = await import('../src/mcp/route-gates');
-		const result = await validateSessionRequest(undefined, undefined, 3, 'Bad Request: missing session. Send an initialize request first to create a session.');
+		const result = await validateSessionRequest(
+			undefined,
+			undefined,
+			3,
+			'Bad Request: missing session. Send an initialize request first to create a session.',
+		);
 
 		expect(result).toBeTruthy();
 		expect(result?.status).toBe(400);

@@ -36,9 +36,11 @@
  */
 
 import { resolveTenantRoutingMode } from '../lib/scaling-flags';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../lib/response-body';
 import { createExecBackedHandle, D1ByIdClient } from './d1-rest-client';
 
 const CACHE_TTL_MS = 5 * 60 * 1000;
+const TENANT_DISPATCH_MAX_BODY_BYTES = 8 * 1024 * 1024;
 const TENANT_BINDING_PREFIX = 'TENANT_DB_';
 const REGISTRY_LOOKUP_SQL = 'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 /**
@@ -187,7 +189,6 @@ export interface ResolverEnv {
 	CF_D1_API_TOKEN?: string;
 	/** Phase 4 — env-level default routing mode (`'dispatch'` opts in; else convention). */
 	TENANT_ROUTING_MODE?: string;
-	[k: string]: unknown;
 }
 
 /**
@@ -248,8 +249,14 @@ function makeDispatchHandle(ns: DispatchNamespace, workerName: string): TenantDb
 				signal: AbortSignal.timeout(10_000),
 			}),
 		);
-		if (!res.ok) throw new Error(`tenant_db_dispatch_failed:${res.status}`);
-		return (await res.json()) as D1Result;
+		if (!res.ok) {
+			const status = res.status;
+			await disposeUnreadResponseBody(res);
+			throw new Error(`tenant_db_dispatch_failed:${status}`);
+		}
+		const body = await readJsonResponseCapped<D1Result>(res, TENANT_DISPATCH_MAX_BODY_BYTES);
+		if (body === null) throw new Error('tenant_db_dispatch_failed:invalid_response');
+		return body;
 	};
 	return createExecBackedHandle(exec, 'dispatch');
 }
@@ -280,7 +287,7 @@ function buildTenantDb(env: ResolverEnv, row: { d1_db_id: string; routing_mode: 
 
 	const suffix = tenantIdToBindingSuffix(subTenantId);
 	const dbBinding = `${TENANT_BINDING_PREFIX}${suffix}`;
-	const d1 = (env as Record<string, unknown>)[dbBinding] as D1Database | undefined;
+	const d1 = Reflect.get(env, dbBinding) as D1Database | undefined;
 	if (!d1) {
 		throw new Error(`Tenant not found: ${subTenantId}`);
 	}
@@ -386,7 +393,8 @@ async function loadResolvedTenant(env: ResolverEnv, subTenantId: string): Promis
 		// rather than letting the throw be swallowed as "tenant not found". Any
 		// other read error propagates (transient — stays retryable upstream).
 		if (!isMissingRoutingModeColumn(err)) throw err;
-		const fallback = await env.TENANT_REGISTRY_DB!.prepare(REGISTRY_LOOKUP_FALLBACK_SQL)
+		const fallback = await env
+			.TENANT_REGISTRY_DB!.prepare(REGISTRY_LOOKUP_FALLBACK_SQL)
 			.bind(subTenantId)
 			.first<Omit<RegistryRow, 'routing_mode'>>();
 		row = fallback ? { ...fallback, routing_mode: null } : null;

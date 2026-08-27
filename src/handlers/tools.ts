@@ -3,7 +3,7 @@
 import type { CheckResult } from '../lib/scoring';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
 import { buildCheckCacheKey, buildScanCacheKey, runWithCacheTracked } from '../lib/cache';
-import { withRequestDedup } from '../lib/request-dedup';
+import { withRequestDedup, withStrongRequestIdempotency } from '../lib/request-dedup';
 import { isAuthRequiredTool, isInternalOnlyTool } from '../lib/config';
 import { sanitizeErrorMessage } from '../lib/json-rpc';
 import { checkSpf } from '../tools/check-spf';
@@ -106,6 +106,7 @@ import { isCompletedCheck } from '../lib/ungraded-display';
 import type { McpContent } from './tool-formatters';
 import { QUERY_UAL_LIFECYCLE, TOOL_STATUS_META_KEY, TOOLS } from '../schemas/tool-definitions';
 import type { McpTool } from '../schemas/tool-definitions';
+import type { QuotaCoordinator } from '../lib/quota-coordinator';
 
 /** MCP tools/call result */
 interface McpToolResult {
@@ -163,6 +164,21 @@ export function handleToolsList(): { tools: WireTool[] } {
 
 const DOMAIN_REQUIRED_TOOLS = new Set(
 	TOOLS.filter((tool) => Array.isArray(tool.inputSchema.required) && tool.inputSchema.required.includes('domain')).map((tool) => tool.name),
+);
+
+/**
+ * Internal `/tools/batch` is a fan-out read door, never a generic mutation
+ * executor. Derive its allowlist from the tool-definition SSOT so a newly added
+ * write/destructive tool is denied by default until it is deliberately exposed
+ * through a separately idempotent, quota-aware contract.
+ */
+export const INTERNAL_BATCH_SAFE_TOOLS = new Set(
+	TOOLS.filter(
+		(tool) =>
+			tool.annotations?.readOnlyHint === true &&
+			Array.isArray(tool.inputSchema.required) &&
+			tool.inputSchema.required.includes('domain'),
+	).map((tool) => tool.name),
 );
 
 /**
@@ -270,7 +286,10 @@ interface ToolRuntimeOptions {
 	country?: string;
 	clientType?: string;
 	authTier?: string;
+	/** Full authenticated security principal; never emit directly to analytics. */
 	keyHash?: string;
+	/** 16-hex analytics-only pseudonym derived at the request boundary. */
+	analyticsKeyHash?: string;
 	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter tool_call analytics grouping. */
 	colo?: string;
 	/** Geo enrichment (request.cf) for the tool_call AE geo blobs. */
@@ -297,8 +316,10 @@ interface ToolRuntimeOptions {
 	tlsProbeAuthToken?: string;
 	/** Service binding to bv-web's internal M365 proxy surface. Fail-soft; absent when bv-web is not provisioned. */
 	m365Proxy?: { fetch: typeof fetch };
-	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to bv-web's internal M365 endpoints. */
+	/** Dedicated bearer (BV_MCP_M365_KEY) forwarded to bv-web's internal M365 endpoints. */
 	m365ProxyAuthToken?: string;
+	/** Verified identity contract forwarded to the internal M365 resolver. */
+	m365Identity?: import('../tools/m365/proxy').M365PrincipalIdentity;
 	/**
 	 * Service binding to bv-web (BV_WEB) used by get_domain_rank to call C1.
 	 * Reuses the same BV_WEB binding as m365Proxy — a separate field so callers
@@ -317,6 +338,12 @@ interface ToolRuntimeOptions {
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	/** RATE_LIMIT KV — also used by enforceBrandAuditQuota for the per-tier monthly window. */
 	rateLimitKv?: KVNamespace;
+	/** Strong, atomic state for paid monthly brand-audit budgets. Missing binding fails closed. */
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>;
+	/** Validated caller-supplied key for durable replay protection on internal mutations. */
+	idempotencyKey?: string;
+	/** Authenticated internal principal bound into the idempotency claim. */
+	idempotencyPrincipal?: string;
 	/** principalId of the calling user — required for enforceBrandAuditQuota. Key hash for auth, IP hash for unauth. */
 	principalId?: string;
 	/** R2 bucket binding for brand-audit PDF reports. v2.20.0+; written by the PDF queue consumer, served via the /reports/ download route. */
@@ -382,13 +409,14 @@ function buildDnsOptions(runtimeOptions?: ToolRuntimeOptions): QueryDnsOptions |
 function buildMonthlyEnforceQuota(
 	ro?: ToolRuntimeOptions,
 ): ((count: number) => Promise<{ allowed: boolean; remaining?: number; limit?: number; retryAfterMs?: number }>) | undefined {
-	if (!ro?.rateLimitKv || !ro.principalId || !ro.authTier) return undefined;
+	if (!ro?.principalId || !ro.authTier) return undefined;
 	const tier = ro.authTier as import('../lib/config').McpApiKeyTier;
 	const kv = ro.rateLimitKv;
+	const quotaCoordinator = ro.quotaCoordinator;
 	const principalId = ro.principalId;
 	return async (count: number) => {
 		const { enforceBrandAuditQuota } = await import('../lib/brand-audit-quota');
-		return enforceBrandAuditQuota({ kv, principalId, tier, count });
+		return enforceBrandAuditQuota({ kv, quotaCoordinator, principalId, tier, count });
 	};
 }
 
@@ -1184,13 +1212,13 @@ export async function handleToolsCall(
 		const executeDispatch = async (): Promise<McpToolResult> => {
 			// Defense-in-depth (P1): the identity_secops M365 tools forward to bv-web's
 			// internal proxy carrying the trusted internal bearer. If the dangerous
-			// forward is actually possible (m365Proxy bound) but there is no real
-			// principal (no keyHash), never forward keyHash:undefined alongside that
-			// bearer — hard-reject here even if an upstream gate were bypassed. Gated on
+			// forward is actually possible (m365Proxy bound) but there is no verified,
+			// discriminated principal identity, never forward an untrusted or absent
+			// identity alongside that bearer — hard-reject even if an upstream gate were bypassed. Gated on
 			// m365Proxy presence so the `/internal/*` path (which wires neither m365Proxy
-			// nor keyHash) keeps its fail-soft `unprovisioned` behavior unchanged. The
+			// nor identity) keeps its fail-soft `unprovisioned` behavior unchanged. The
 			// public /mcp gate (execute.ts) is the primary control; this is the backstop.
-			if (isAuthRequiredTool(name) && runtimeOptions?.m365Proxy && !runtimeOptions?.keyHash) {
+			if (isAuthRequiredTool(name) && runtimeOptions?.m365Proxy && !runtimeOptions?.m365Identity) {
 				logToolFailure({ ...ctx(), error: 'm365_proxy_unauthenticated', args });
 				return buildToolErrorResult('Invalid request: m365_proxy_unauthenticated (authentication required).');
 			}
@@ -1784,7 +1812,7 @@ export async function handleToolsCall(
 							since_hours: validatedArgs.since_hours as number | undefined,
 						},
 						runtimeOptions?.m365Proxy,
-						{ authToken: runtimeOptions?.m365ProxyAuthToken, keyHash: runtimeOptions?.keyHash },
+						{ authToken: runtimeOptions?.m365ProxyAuthToken, identity: runtimeOptions?.m365Identity },
 					);
 					logResult = result.ok ? 'ok' : 'error';
 					logDetails = summarizeM365LogResult(result);
@@ -1801,7 +1829,7 @@ export async function handleToolsCall(
 							since_hours: validatedArgs.since_hours as number | undefined,
 						},
 						runtimeOptions?.m365Proxy,
-						{ authToken: runtimeOptions?.m365ProxyAuthToken, keyHash: runtimeOptions?.keyHash },
+						{ authToken: runtimeOptions?.m365ProxyAuthToken, identity: runtimeOptions?.m365Identity },
 					);
 					logResult = result.ok ? 'ok' : 'error';
 					logDetails = summarizeM365LogResult(result);
@@ -1816,7 +1844,7 @@ export async function handleToolsCall(
 				case 'get_ca_policies': {
 					const result = await getCaPolicies({ ms_tenant_id: String(validatedArgs.ms_tenant_id) }, runtimeOptions?.m365Proxy, {
 						authToken: runtimeOptions?.m365ProxyAuthToken,
-						keyHash: runtimeOptions?.keyHash,
+						identity: runtimeOptions?.m365Identity,
 					});
 					logResult = result.ok ? 'ok' : 'error';
 					logDetails = summarizeM365LogResult(result);
@@ -1827,7 +1855,7 @@ export async function handleToolsCall(
 				case 'assess_coverage': {
 					const result = await assessCoverage({ ms_tenant_id: String(validatedArgs.ms_tenant_id) }, runtimeOptions?.m365Proxy, {
 						authToken: runtimeOptions?.m365ProxyAuthToken,
-						keyHash: runtimeOptions?.keyHash,
+						identity: runtimeOptions?.m365Identity,
 					});
 					logResult = result.ok ? 'ok' : 'error';
 					logDetails = summarizeM365LogResult(result);
@@ -1841,31 +1869,45 @@ export async function handleToolsCall(
 			}
 		};
 
-		// Mutating *_start/register tools: collapse a client network-retry that
-		// re-sends identical args onto the prior successful result, so it doesn't
-		// create a duplicate watch/scan/investigation (#363 item 3). Skipped without
-		// an authenticated principal or KV — see withRequestDedup. The dedup wrapper
-		// sits INSIDE the timeout race so a replay is still bounded.
+		// Mutating *_start/register tools: internal callers with an explicit,
+		// validated Idempotency-Key use strong DO state, so concurrent retries cannot
+		// both execute and an ambiguous HTTP timeout can replay the stored result.
+		// Public clients without a key retain the legacy short KV compatibility
+		// window. Both wrappers sit inside the timeout race; the strong execution is
+		// also attached to waitUntil so it can persist its result after that timeout.
 		const dedupKv = runtimeOptions?.rateLimitKv;
-		const dispatch =
-			MUTATING_DEDUP_TOOLS.has(name) && dedupKv
-				? () =>
-						withRequestDedup(
-							{
-								toolName: name,
-								// keyHash ONLY — it is set solely for AUTHENTICATED callers.
-								// principalId = keyHash ?? ipHash (execute.ts), so using it
-								// would make an unauth caller's ipHash a truthy principal and
-								// defeat withRequestDedup's skip, letting two NAT'd unauth
-								// callers share a fingerprint → cross-principal op-ID replay.
-								principal: runtimeOptions?.keyHash,
-								args: validatedArgs as Record<string, unknown>,
-								kv: dedupKv,
-								waitUntil: runtimeOptions?.waitUntil,
-							},
-							executeDispatch,
-						)
-				: executeDispatch;
+		let dispatch = executeDispatch;
+		if (MUTATING_DEDUP_TOOLS.has(name) && runtimeOptions?.idempotencyKey && runtimeOptions.idempotencyPrincipal) {
+			dispatch = () =>
+				withStrongRequestIdempotency(
+					{
+						toolName: name,
+						principal: runtimeOptions.idempotencyPrincipal as string,
+						idempotencyKey: runtimeOptions.idempotencyKey as string,
+						args: validatedArgs as Record<string, unknown>,
+						coordinator: runtimeOptions.quotaCoordinator,
+						waitUntil: runtimeOptions.waitUntil,
+					},
+					executeDispatch,
+				);
+		} else if (MUTATING_DEDUP_TOOLS.has(name) && dedupKv) {
+			dispatch = () =>
+				withRequestDedup(
+					{
+						toolName: name,
+						// keyHash ONLY — it is set solely for AUTHENTICATED callers.
+						// principalId = keyHash ?? ipHash (execute.ts), so using it
+						// would make an unauth caller's ipHash a truthy principal and
+						// defeat withRequestDedup's skip, letting two NAT'd unauth
+						// callers share a fingerprint → cross-principal op-ID replay.
+						principal: runtimeOptions?.keyHash,
+						args: validatedArgs as Record<string, unknown>,
+						kv: dedupKv,
+						waitUntil: runtimeOptions?.waitUntil,
+					},
+					executeDispatch,
+				);
+		}
 
 		const dispatched = await Promise.race([
 			dispatch(),

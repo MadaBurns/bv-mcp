@@ -46,7 +46,7 @@ const REDACTED = '[redacted]';
 const MAX_LOG_STRING_LENGTH = 256;
 const MAX_ERROR_STRING_LENGTH = 1024;
 export const SENSITIVE_KEY_PATTERN =
-	/(^ip$|cf-connecting-ip|authorization|mcp-session-id|session|token|api[-_]?key|secret|password|cookie|rawbody|^query$|^email$|e[-_]?mail|user[-_]?principal[-_]?name|userPrincipalName|ms[-_]?tenant[-_]?id|tenantId)/i;
+	/(^ip$|cf-connecting-ip|authorization|mcp-session-id|session|token|api[-_]?key|secret|password|cookie|rawbody|^query$|^email$|e[-_]?mail|user[-_]?principal[-_]?name|userPrincipalName|ms[-_]?tenant[-_]?id|tenantId|webhook[-_]?(?:url|uri)|callback[-_]?(?:url|uri)|redirect[-_]?(?:url|uri))/i;
 
 export function isSensitiveKey(key: string): boolean {
 	return !/^has[A-Z]/.test(key) && SENSITIVE_KEY_PATTERN.test(key);
@@ -104,6 +104,15 @@ export function sanitizeHeadersForLog(headers: Headers | Record<string, string>)
 		sanitized[key] = isSensitiveKey(key) ? REDACTED : sanitizeString(value);
 	}
 	return sanitized;
+}
+
+/** Keep routing context while ensuring query credentials and fragments never reach logs. */
+export function sanitizeRequestUrlForLog(input: string): string {
+	try {
+		return sanitizeString(new URL(input, 'https://log.invalid').pathname || '/');
+	} catch {
+		return sanitizeString(input.split(/[?#]/, 1)[0] || '/');
+	}
 }
 
 /**

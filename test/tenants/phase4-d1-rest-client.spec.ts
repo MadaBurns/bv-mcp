@@ -42,6 +42,7 @@ describe('Phase 4 — D1ByIdClient REST transport', () => {
 		expect(res.results).toEqual([{ id: 'a' }, { id: 'b' }]);
 		expect(captured.url).toBe('https://api.cloudflare.com/client/v4/accounts/acct-123/d1/database/db-uuid/query');
 		expect(captured.init?.method).toBe('POST');
+		expect(captured.init?.redirect).toBe('error');
 		expect((captured.init?.headers as Record<string, string>).authorization).toBe('Bearer tok-xyz');
 		expect((captured.init?.headers as Record<string, string>)['content-type']).toBe('application/json');
 		expect(JSON.parse(captured.init?.body as string)).toEqual({ sql: 'SELECT id FROM t WHERE k = ?', params: ['v1'] });

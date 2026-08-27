@@ -10,6 +10,8 @@
  *      the subject version above 1.
  *   D. POST /internal/oauth/revoke-subject increments the version counter.
  *   E. POST /internal/oauth/revoke-subject requires a valid bearer.
+ *   F. Entitlement-generation floors reject only grants older than a transition,
+ *      including after a delayed/replayed outbox delivery.
  */
 import { clearKvPrefix } from './helpers/kv';
 
@@ -18,10 +20,11 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import worker from '../src/index';
 import { signJwt, newJti } from '../src/oauth/jwt';
 import { OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX } from '../src/lib/config';
+import { resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
 
 const TEST_SIGNING_SECRET = 'a'.repeat(32);
 const TEST_API_KEY = 'testkey';
-const TEST_INTERNAL_KEY = 'internal-key-for-revoke-test';
+const TEST_INTERNAL_KEY = 'revoke-capability-test-key-32-bytes-minimum';
 
 // Issuer/audience must match what resolveTier computes: resolveIssuer(url) + '/mcp'
 const ISSUER = 'https://example.com';
@@ -31,7 +34,7 @@ type TestEnv = typeof env & {
 	BV_API_KEY?: string;
 	OAUTH_SIGNING_SECRET?: string;
 	OAUTH_ISSUER?: string;
-	BV_WEB_INTERNAL_KEY?: string;
+	BV_MCP_OAUTH_REVOKE_KEY?: string;
 };
 
 const baseEnv: TestEnv = {
@@ -39,7 +42,7 @@ const baseEnv: TestEnv = {
 	BV_API_KEY: TEST_API_KEY,
 	OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET,
 	OAUTH_ISSUER: ISSUER,
-	BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+	BV_MCP_OAUTH_REVOKE_KEY: TEST_INTERNAL_KEY,
 };
 
 /**
@@ -50,13 +53,15 @@ async function mintJwt(opts: {
 	sub?: string;
 	tier?: 'owner' | 'developer' | 'enterprise';
 	ver?: number;
+	entitlementGeneration?: number;
 	jti?: string;
 }): Promise<string> {
 	const sub = opts.sub ?? 'user_test';
 	const tier = opts.tier ?? 'developer';
 	const jti = opts.jti ?? newJti();
-	const payload: { sub: string; jti: string; tier: string; ver?: number } = { sub, jti, tier };
+	const payload: { sub: string; jti: string; tier: string; ver?: number; entitlementGeneration?: number } = { sub, jti, tier };
 	if (opts.ver !== undefined) payload.ver = opts.ver;
+	if (opts.entitlementGeneration !== undefined) payload.entitlementGeneration = opts.entitlementGeneration;
 	return signJwt(payload, {
 		secret: TEST_SIGNING_SECRET,
 		ttlSeconds: OAUTH_JWT_TTL_SECONDS,
@@ -77,7 +82,12 @@ function mcpInitRequest(token: string): Request<unknown, IncomingRequestCfProper
 	});
 }
 
-async function postRevokeSubject(sub: string, authHeader?: string, extraHeaders: HeadersInit = {}): Promise<Response> {
+async function postRevokeSubject(
+	sub: string,
+	authHeader?: string,
+	extraHeaders: HeadersInit = {},
+	minEntitlementGeneration?: number,
+): Promise<Response> {
 	const headers: HeadersInit = {
 		'Content-Type': 'application/json',
 		Authorization: authHeader ?? `Bearer ${TEST_INTERNAL_KEY}`,
@@ -87,7 +97,7 @@ async function postRevokeSubject(sub: string, authHeader?: string, extraHeaders:
 	const req = new Request<unknown, IncomingRequestCfProperties>('https://example.com/internal/oauth/revoke-subject', {
 		method: 'POST',
 		headers,
-		body: JSON.stringify({ sub }),
+		body: JSON.stringify({ sub, ...(minEntitlementGeneration === undefined ? {} : { minEntitlementGeneration }) }),
 	});
 	const ctx = createExecutionContext();
 	const res = await worker.fetch(req, baseEnv, ctx);
@@ -97,10 +107,12 @@ async function postRevokeSubject(sub: string, authHeader?: string, extraHeaders:
 
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 
 afterEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, OAUTH_KV_PREFIX);
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 
 // ---------------------------------------------------------------------------
@@ -204,6 +216,67 @@ describe('POST /internal/oauth/revoke-subject', () => {
 		expect(res.status).toBe(200);
 		const body = (await res.json()) as { ok: boolean; version: number };
 		expect(body.version).toBe(4);
+	});
+
+	it('D: replays one version bump for repeated Idempotency-Key requests', async () => {
+		const headers = { 'Idempotency-Key': 'oauth-revoke:stable-outbox-id' };
+		const first = await postRevokeSubject('user_revoke_idempotent', undefined, headers);
+		const second = await postRevokeSubject('user_revoke_idempotent', undefined, headers);
+
+		expect(first.status).toBe(200);
+		expect(second.status).toBe(200);
+		expect(await first.json()).toEqual({ ok: true, version: 2 });
+		expect(await second.json()).toEqual({ ok: true, version: 2 });
+	});
+
+	it('D: scopes one Idempotency-Key independently to each subject shard', async () => {
+		const headers = { 'Idempotency-Key': 'oauth-revoke:conflicting-outbox-id' };
+		const first = await postRevokeSubject('user_revoke_first', undefined, headers);
+		const second = await postRevokeSubject('user_revoke_second', undefined, headers);
+		expect(await first.json()).toEqual({ ok: true, version: 2 });
+		expect(await second.json()).toEqual({ ok: true, version: 2 });
+	});
+
+	it('F: raises the entitlement floor monotonically and ignores delayed lower generations', async () => {
+		const sub = 'user_generation_monotonic';
+		const raised = await postRevokeSubject(sub, undefined, { 'Idempotency-Key': 'transition:g3' }, 3);
+		const delayed = await postRevokeSubject(sub, undefined, { 'Idempotency-Key': 'transition:g2' }, 2);
+
+		expect(raised.status).toBe(200);
+		expect(delayed.status).toBe(200);
+		expect(await raised.json()).toEqual({ ok: true, minEntitlementGeneration: 3 });
+		expect(await delayed.json()).toEqual({ ok: true, minEntitlementGeneration: 3 });
+		expect(await env.SESSION_STORE.get(`${OAUTH_KV_PREFIX}entitlement-generation:${sub}`)).toBe('3');
+	});
+
+	it('F: rejects pre-transition grants but preserves grants minted at the current generation', async () => {
+		const sub = 'user_generation_cutoff';
+		const oldToken = await mintJwt({ sub, tier: 'developer', ver: 1, entitlementGeneration: 1 });
+		const currentToken = await mintJwt({ sub, tier: 'developer', ver: 1, entitlementGeneration: 2 });
+
+		expect((await postRevokeSubject(sub, undefined, {}, 2)).status).toBe(200);
+
+		const oldCtx = createExecutionContext();
+		const oldResponse = await worker.fetch(mcpInitRequest(oldToken), baseEnv, oldCtx);
+		await waitOnExecutionContext(oldCtx);
+		expect(oldResponse.status).toBe(401);
+
+		const currentCtx = createExecutionContext();
+		const currentResponse = await worker.fetch(mcpInitRequest(currentToken), baseEnv, currentCtx);
+		await waitOnExecutionContext(currentCtx);
+		expect(currentResponse.status).not.toBe(401);
+
+		// Replaying the delayed transition must not revoke the later authorization.
+		expect((await postRevokeSubject(sub, undefined, {}, 2)).status).toBe(200);
+		const replayCtx = createExecutionContext();
+		const replayResponse = await worker.fetch(mcpInitRequest(currentToken), baseEnv, replayCtx);
+		await waitOnExecutionContext(replayCtx);
+		expect(replayResponse.status).not.toBe(401);
+	});
+
+	it('F: rejects malformed entitlement generations', async () => {
+		const response = await postRevokeSubject('user_generation_invalid', undefined, {}, 1.5);
+		expect(response.status).toBe(400);
 	});
 
 	// ---------------------------------------------------------------------------

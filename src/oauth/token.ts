@@ -2,12 +2,21 @@
 import type { Context } from 'hono';
 import type { AppEnv } from '../index';
 import { TokenRequestSchema } from '../schemas/oauth';
-import { consumeCode, getTokenVersion } from './storage';
+import { consumeCode, getTokenVersion, StrongStateUnavailableError } from './storage';
 import { signJwt, newJti, constantTimeEqual } from './jwt';
-import { OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX, OAUTH_SIGNING_SECRET_MIN_BYTES } from '../lib/config';
+import {
+	isAllowedOAuthRedirectUri,
+	MAX_REQUEST_BODY_BYTES,
+	OAUTH_JWT_TTL_SECONDS,
+	OAUTH_KV_PREFIX,
+	OAUTH_SIGNING_SECRET_MIN_BYTES,
+} from '../lib/config';
 import { resolveIssuerStrict } from './discovery';
 import { resolveClientIpFromRequestHeaders } from '../lib/client-ip';
 import { parseEnvelopeKey } from '../lib/kv-envelope';
+import { readBoundedText } from '../lib/request-body';
+import { consumeOAuthRateLimit, type OAuthRateLimitResult } from './rate-limit';
+import type { QuotaCoordinator } from '../lib/quota-coordinator';
 
 // Fixed-window per-IP rate limit on /oauth/token. Token exchange happens once per OAuth
 // flow for legitimate clients — 30/min is generous for humans and tight for attackers
@@ -15,39 +24,21 @@ import { parseEnvelopeKey } from '../lib/kv-envelope';
 const TOKEN_RATE_LIMIT = 30;
 const TOKEN_RATE_WINDOW_SECONDS = 60;
 
-/**
- * Increment and check the per-IP token-endpoint rate limiter. Returns true if over the limit.
- *
- * Mirrors `consentRateExceeded` in authorize.ts: FIXED window keyed on `expiresAt`, pinned
- * by the first write and preserved across subsequent increments so a stream of attempts
- * cannot extend a lockout indefinitely (which is what naive `expirationTtl`-refresh would do).
- */
-async function tokenRateExceeded(kv: KVNamespace, ip: string): Promise<boolean> {
-	const key = `${OAUTH_KV_PREFIX}token-rl:${ip}`;
-	const nowMs = Date.now();
-	const raw = await kv.get(key);
-
-	let count = 0;
-	let expiresAt = nowMs + TOKEN_RATE_WINDOW_SECONDS * 1000;
-	if (raw) {
-		try {
-			const parsed = JSON.parse(raw) as { count?: unknown; expiresAt?: unknown };
-			if (typeof parsed.expiresAt === 'number' && parsed.expiresAt > nowMs) {
-				count = typeof parsed.count === 'number' ? parsed.count : 0;
-				expiresAt = parsed.expiresAt;
-			}
-		} catch {
-			// Malformed — start a fresh window.
-		}
-	}
-
-	if (count >= TOKEN_RATE_LIMIT) return true;
-
-	const next = { count: count + 1, expiresAt };
-	// CF KV minimum TTL is 60s; `expiresAt` is authoritative for window correctness.
-	const ttl = Math.max(60, Math.ceil((expiresAt - nowMs) / 1000));
-	await kv.put(key, JSON.stringify(next), { expirationTtl: ttl });
-	return false;
+/** Atomically consume one token-endpoint request when the coordinator is bound. */
+async function tokenRateLimit(
+	kv: KVNamespace,
+	ip: string,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<OAuthRateLimitResult> {
+	return consumeOAuthRateLimit({
+		kv,
+		quotaCoordinator,
+		coordinationScope: 'token',
+		kvKey: `${OAUTH_KV_PREFIX}token-rl:${ip}`,
+		principal: ip,
+		limit: TOKEN_RATE_LIMIT,
+		windowSeconds: TOKEN_RATE_WINDOW_SECONDS,
+	});
 }
 
 /** Decode a base64url string. Returns null on any non-base64url input rather than throwing. */
@@ -104,9 +95,16 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 	const kvEnvelopeKey = parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined;
 
 	// Rate limit runs FIRST — before content-type / grant-type / Zod — so an attacker
-	// flooding the endpoint with invalid payloads still hits the cheap KV gate.
+	// flooding the endpoint with invalid payloads still hits the cheap quota gate.
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
-	if (await tokenRateExceeded(kv, ip)) {
+	const tokenRate = await tokenRateLimit(kv, ip, env.QUOTA_COORDINATOR);
+	if (tokenRate.unavailable) {
+		return c.json({ error: 'temporarily_unavailable', error_description: 'Token rate-limit state is unavailable' }, 503, {
+			'Cache-Control': 'no-store',
+			'Retry-After': String(tokenRate.retryAfterSeconds),
+		});
+	}
+	if (tokenRate.exceeded) {
 		return c.json({ error: 'invalid_request', error_description: 'Too many token requests' }, 429);
 	}
 
@@ -114,15 +112,19 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 	if (!ct.toLowerCase().includes('application/x-www-form-urlencoded')) {
 		return c.json({ error: 'invalid_request', error_description: 'Content-Type must be application/x-www-form-urlencoded' }, 415);
 	}
-	let params: FormData;
+	const bodyRead = await readBoundedText(c.req.raw, MAX_REQUEST_BODY_BYTES);
+	if (!bodyRead.ok) {
+		return c.json({ error: 'invalid_request', error_description: 'Request body exceeds the configured limit' }, 413);
+	}
+	let params: URLSearchParams;
 	try {
-		params = await c.req.formData();
+		params = new URLSearchParams(bodyRead.text);
 	} catch {
 		return c.json({ error: 'invalid_request', error_description: 'Request body failed validation' }, 400);
 	}
 	const body: Record<string, string> = {};
-	params.forEach((v, k) => {
-		if (typeof v === 'string') body[k] = v;
+	params.forEach((value, key) => {
+		body[key] = value;
 	});
 
 	// grant_type check runs BEFORE Zod so a wrong value surfaces the spec-correct
@@ -139,7 +141,17 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 		return c.json({ error: 'invalid_request', error_description: 'Request body failed validation' }, 400);
 	}
 
-	const codeRec = await consumeCode(kv, parsed.code, kvEnvelopeKey);
+	let codeRec;
+	try {
+		codeRec = await consumeCode(kv, parsed.code, kvEnvelopeKey, env.QUOTA_COORDINATOR);
+	} catch (error) {
+		if (error instanceof StrongStateUnavailableError) {
+			return c.json({ error: 'temporarily_unavailable', error_description: 'Authorization state is unavailable' }, 503, {
+				'Cache-Control': 'no-store',
+			});
+		}
+		throw error;
+	}
 	if (!codeRec) {
 		return c.json({ error: 'invalid_grant', error_description: 'Code unknown, expired, or already used' }, 400);
 	}
@@ -148,6 +160,11 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 	}
 	if (codeRec.redirect_uri !== parsed.redirect_uri) {
 		return c.json({ error: 'invalid_grant', error_description: 'redirect_uri mismatch' }, 400);
+	}
+	// Revalidate at redemption so a legacy client/code minted before a redirect
+	// policy hardening cannot be used to exchange an attacker-owned callback.
+	if (!isAllowedOAuthRedirectUri(codeRec.redirect_uri)) {
+		return c.json({ error: 'invalid_grant', error_description: 'redirect_uri not allowed' }, 400);
 	}
 	if (!(await verifyPkce(parsed.code_verifier, codeRec.code_challenge))) {
 		return c.json({ error: 'invalid_grant', error_description: 'PKCE verification failed' }, 400);
@@ -178,7 +195,7 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 	// persists `entitlementExpiresAt` (epoch SECONDS — same units as the JWT iat/exp and
 	// `issued_at`) on the code record when a Stripe subscription gates the grant. Without this
 	// clamp a lapsed subscription would keep resolving to the paid tier for up to the flat
-	// 90-day default if bv-web never calls /internal/oauth/revoke-subject. If the entitlement
+	// short default if bv-web never calls /internal/oauth/revoke-subject. If the entitlement
 	// has already passed, reject the exchange rather than mint an already-expired token.
 	let ttlSeconds = OAUTH_JWT_TTL_SECONDS;
 	if (codeRec.entitlementExpiresAt !== undefined) {
@@ -191,10 +208,27 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 	}
 
 	// Read the current token-version for this subject so the minted JWT can be
-	// invalidated before its 90-day natural expiry (FIND-13).
-	const ver = await getTokenVersion(kv, subject);
+	// invalidated before its natural expiry (FIND-13).
+	let ver: number;
+	try {
+		ver = await getTokenVersion(kv, subject, env.QUOTA_COORDINATOR);
+	} catch (error) {
+		if (error instanceof StrongStateUnavailableError) {
+			return c.json({ error: 'temporarily_unavailable', error_description: 'Authorization state is unavailable' }, 503, {
+				'Cache-Control': 'no-store',
+			});
+		}
+		throw error;
+	}
 	const token = await signJwt(
-		{ sub: subject, jti: newJti(), tier, client_id: parsed.client_id, ver },
+		{
+			sub: subject,
+			jti: newJti(),
+			tier,
+			client_id: parsed.client_id,
+			ver,
+			entitlementGeneration: codeRec.entitlementGeneration ?? 1,
+		},
 		{ secret, ttlSeconds, issuer, audience: `${issuer}/mcp` },
 	);
 

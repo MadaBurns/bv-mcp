@@ -6,14 +6,22 @@ interface LegacyStreamRecord {
 	controller?: ReadableStreamDefaultController<Uint8Array>;
 	queue: string[];
 	heartbeat?: number;
+	lifetime?: number;
 	createdAt: number;
+	principal: string;
 }
 
 const LEGACY_STREAMS = new Map<string, LegacyStreamRecord>();
 const HEARTBEAT_INTERVAL_MS = 5_000;
 
-/** Maximum number of concurrent legacy SSE stream records before eviction kicks in. */
+/** Hard isolate-wide admission cap. New streams are rejected; active clients are never evicted. */
 export const MAX_LEGACY_STREAMS = 500;
+
+/** Bound one caller's concurrent isolate-local footprint even across rate-limit windows. */
+export const MAX_LEGACY_STREAMS_PER_PRINCIPAL = 30;
+
+/** Legacy streams cannot retain a heartbeat/controller indefinitely. */
+export const MAX_LEGACY_STREAM_LIFETIME_MS = 5 * 60_000;
 
 /** Maximum pre-controller queue depth per stream to prevent memory exhaustion. */
 const MAX_LEGACY_QUEUE_DEPTH = 100;
@@ -27,61 +35,30 @@ function isZombie(record: LegacyStreamRecord): boolean {
 	return !record.controller && record.queue.length === 0;
 }
 
-/**
- * Evict entries when the map exceeds MAX_LEGACY_STREAMS.
- * Strategy: remove zombie entries (no controller, empty queue) first,
- * then evict the oldest by createdAt if still over capacity.
- */
-function evictIfNeeded(): void {
-	if (LEGACY_STREAMS.size < MAX_LEGACY_STREAMS) return;
-
-	// Phase 1: remove zombie entries
+/** Remove dead/expired records before admission; never evict a live peer for a newcomer. */
+function pruneLegacyStreams(now = Date.now()): void {
 	for (const [id, record] of LEGACY_STREAMS.entries()) {
-		if (isZombie(record)) {
-			LEGACY_STREAMS.delete(id);
-			if (LEGACY_STREAMS.size < MAX_LEGACY_STREAMS) return;
-		}
-	}
-
-	// Phase 2: evict oldest by createdAt
-	while (LEGACY_STREAMS.size >= MAX_LEGACY_STREAMS) {
-		let oldestId: string | undefined;
-		let oldestTime = Number.POSITIVE_INFINITY;
-		for (const [id, record] of LEGACY_STREAMS.entries()) {
-			if (record.createdAt < oldestTime) {
-				oldestTime = record.createdAt;
-				oldestId = id;
-			}
-		}
-		if (oldestId) {
-			// Close the stream before evicting to clean up heartbeat interval
-			const evictedRecord = LEGACY_STREAMS.get(oldestId);
-			if (evictedRecord) {
-				if (evictedRecord.heartbeat !== undefined) {
-					clearInterval(evictedRecord.heartbeat);
-				}
-				if (evictedRecord.controller) {
-					try {
-						evictedRecord.controller.close();
-					} catch {
-						// ignore closed stream errors
-					}
-				}
-			}
-			LEGACY_STREAMS.delete(oldestId);
-		} else {
-			break;
+		if (isZombie(record) || now - record.createdAt >= MAX_LEGACY_STREAM_LIFETIME_MS) {
+			closeLegacyStream(id);
 		}
 	}
 }
 
-function getOrCreateRecord(sessionId: string): LegacyStreamRecord {
+function countPrincipalStreams(principal: string): number {
+	let count = 0;
+	for (const record of LEGACY_STREAMS.values()) {
+		if (record.principal === principal) count += 1;
+	}
+	return count;
+}
+
+function getOrCreateRecord(sessionId: string, principal: string): LegacyStreamRecord | undefined {
 	const existing = LEGACY_STREAMS.get(sessionId);
 	if (existing) return existing;
-	// Evict before adding so the new entry isn't considered a zombie
-	// (its controller isn't set until the ReadableStream start() callback fires)
-	evictIfNeeded();
-	const created: LegacyStreamRecord = { queue: [], createdAt: Date.now() };
+	pruneLegacyStreams();
+	if (LEGACY_STREAMS.size >= MAX_LEGACY_STREAMS) return undefined;
+	if (countPrincipalStreams(principal) >= MAX_LEGACY_STREAMS_PER_PRINCIPAL) return undefined;
+	const created: LegacyStreamRecord = { queue: [], createdAt: Date.now(), principal };
 	LEGACY_STREAMS.set(sessionId, created);
 	return created;
 }
@@ -104,13 +81,28 @@ export function getLegacyStreamRecord(sessionId: string): LegacyStreamRecord | u
 }
 
 /** Inject a stream record directly (test helper — bypasses normal creation flow). */
-export function setLegacyStreamRecordForTest(sessionId: string, record: Omit<LegacyStreamRecord, 'heartbeat'>): void {
-	LEGACY_STREAMS.set(sessionId, { ...record, heartbeat: undefined });
+export function setLegacyStreamRecordForTest(
+	sessionId: string,
+	record: Omit<LegacyStreamRecord, 'heartbeat' | 'lifetime' | 'principal'> & { principal?: string },
+): void {
+	LEGACY_STREAMS.set(sessionId, {
+		...record,
+		heartbeat: undefined,
+		lifetime: undefined,
+		principal: record.principal ?? `test:${sessionId}`,
+	});
 }
 
-export function openLegacySseStream(sessionId: string, endpointUrl: string): Response {
+export function openLegacySseStream(sessionId: string, endpointUrl: string, principal = `session:${sessionId}`): Response {
 	const encoder = new TextEncoder();
-	const record = getOrCreateRecord(sessionId);
+	const record = getOrCreateRecord(sessionId, principal);
+	if (!record) {
+		const principalAtCapacity = countPrincipalStreams(principal) >= MAX_LEGACY_STREAMS_PER_PRINCIPAL;
+		return new Response(principalAtCapacity ? 'Too many concurrent legacy SSE streams' : 'Legacy SSE capacity unavailable', {
+			status: principalAtCapacity ? 429 : 503,
+			headers: { 'retry-after': principalAtCapacity ? '60' : '5' },
+		});
+	}
 
 	const stream = new ReadableStream<Uint8Array>({
 		start(controller) {
@@ -127,6 +119,9 @@ export function openLegacySseStream(sessionId: string, endpointUrl: string): Res
 					closeLegacyStream(sessionId);
 				}
 			}, HEARTBEAT_INTERVAL_MS) as unknown as number;
+			record.lifetime = setTimeout(() => {
+				closeLegacyStream(sessionId);
+			}, MAX_LEGACY_STREAM_LIFETIME_MS) as unknown as number;
 		},
 		cancel() {
 			closeLegacyStream(sessionId, false);
@@ -163,6 +158,9 @@ export function closeLegacyStream(sessionId: string, deleteRecord = true): void 
 
 	if (record.heartbeat !== undefined) {
 		clearInterval(record.heartbeat);
+	}
+	if (record.lifetime !== undefined) {
+		clearTimeout(record.lifetime);
 	}
 	if (record.controller) {
 		try {

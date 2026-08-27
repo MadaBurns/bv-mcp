@@ -4,21 +4,31 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
     open-pull-requests-limit: 10
     groups:
       cloudflare:
         patterns:
-          - "@cloudflare/*"
-          - "wrangler"
+          - '@cloudflare/*'
+          - 'wrangler'
       vitest:
         patterns:
-          - "vitest"
-          - "@vitest/*"
+          - 'vitest'
+          - '@vitest/*'
 
   - package-ecosystem: github-actions
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7
+      semver-major-days: 30
+      semver-minor-days: 7
+      semver-patch-days: 3
     open-pull-requests-limit: 5
     groups:
       # github/codeql-action/init and .../analyze are ONE action published from one
@@ -32,4 +42,4 @@ updates:
       # v4.37.3 #536/#538, v4.37.4 #627/#628). Grouping keeps them in lockstep.
       codeql-action:
         patterns:
-          - "github/codeql-action*"
+          - 'github/codeql-action*'

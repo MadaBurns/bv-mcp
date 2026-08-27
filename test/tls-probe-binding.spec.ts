@@ -1,5 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { tlsProbeBindings } from '../src/lib/config';
+
+const STRONG_TLS_KEY = 'tls-probe-test-key-32-bytes-minimum';
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -9,9 +12,37 @@ async function fresh() {
 
 function bindingReturning(body: unknown, status = 200) {
 	return {
-		fetch: vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })),
+		fetch: vi.fn(
+			async (_input: RequestInfo | URL, _init?: RequestInit) =>
+				new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }),
+		),
 	};
 }
+
+describe('tlsProbeBindings', () => {
+	it('wires only a strong distinct external-probe capability', () => {
+		const binding = bindingReturning({ reachable: true });
+		expect(tlsProbeBindings({ BV_TLS_PROBE: binding, BV_TLS_PROBE_KEY: STRONG_TLS_KEY })).toEqual({
+			tlsProbeBinding: binding,
+			tlsProbeAuthToken: STRONG_TLS_KEY,
+		});
+		expect(tlsProbeBindings({ BV_TLS_PROBE: binding, BV_TLS_PROBE_KEY: 'short' })).toEqual({});
+	});
+
+	it.each(['BV_API_KEY', 'OAUTH_SIGNING_SECRET', 'KV_ENVELOPE_KEY'] as const)(
+		'refuses TLS probe wiring when its bearer aliases %s',
+		(peerKey) => {
+			const binding = bindingReturning({ reachable: true });
+			expect(
+				tlsProbeBindings({
+					BV_TLS_PROBE: binding,
+					BV_TLS_PROBE_KEY: STRONG_TLS_KEY,
+					[peerKey]: STRONG_TLS_KEY,
+				}),
+			).toEqual({});
+		},
+	);
+});
 
 // ---------------------------------------------------------------------------
 // callTlsProbe
@@ -19,31 +50,39 @@ function bindingReturning(body: unknown, status = 200) {
 describe('callTlsProbe', () => {
 	it('returns null when the binding is undefined (fail-soft)', async () => {
 		const { callTlsProbe } = await fresh();
-		const out = await callTlsProbe(undefined, 'tok', 'example.com');
+		const out = await callTlsProbe(undefined, STRONG_TLS_KEY, 'example.com');
 		expect(out).toBeNull();
 	});
 
 	it('forwards host + port=443 in query and a Bearer token header', async () => {
 		const { callTlsProbe } = await fresh();
 		const binding = bindingReturning({ reachable: true, minVersion: 'TLS1.2', maxVersion: 'TLS1.3' });
-		await callTlsProbe(binding, 'secret-tok', 'example.com');
+		await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com');
 		const [url, init] = binding.fetch.mock.calls[0];
 		expect(String(url)).toContain('host=example.com');
 		expect(String(url)).toContain('port=443');
-		expect((init as RequestInit).headers).toMatchObject({ Authorization: 'Bearer secret-tok' });
+		expect((init as RequestInit).headers).toMatchObject({ Authorization: `Bearer ${STRONG_TLS_KEY}` });
+	});
+
+	it('refuses a missing or short outbound key without contacting the probe', async () => {
+		const { callTlsProbe } = await fresh();
+		const binding = bindingReturning({ reachable: true, minVersion: 'TLS1.2' });
+		expect(await callTlsProbe(binding, undefined, 'example.com')).toBeNull();
+		expect(await callTlsProbe(binding, 'too-short', 'example.com')).toBeNull();
+		expect(binding.fetch).not.toHaveBeenCalled();
 	});
 
 	it('returns null on a non-ok response (503)', async () => {
 		const { callTlsProbe } = await fresh();
 		const binding = bindingReturning({ error: 'server error' }, 503);
-		const out = await callTlsProbe(binding, 'tok', 'example.com');
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com');
 		expect(out).toBeNull();
 	});
 
 	it('returns null on 404 (NOT benign, unlike recon)', async () => {
 		const { callTlsProbe } = await fresh();
 		const binding = bindingReturning({ error: 'not found' }, 404);
-		const out = await callTlsProbe(binding, 'tok', 'example.com');
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com');
 		expect(out).toBeNull();
 	});
 
@@ -52,14 +91,14 @@ describe('callTlsProbe', () => {
 		const binding = {
 			fetch: vi.fn(async () => new Response(JSON.stringify([1, 2, 3]), { status: 200, headers: { 'Content-Type': 'application/json' } })),
 		};
-		const out = await callTlsProbe(binding, 'tok', 'example.com');
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com');
 		expect(out).toBeNull();
 	});
 
 	it('returns a parsed result for a valid body', async () => {
 		const { callTlsProbe } = await fresh();
 		const binding = bindingReturning({ reachable: true, minVersion: 'TLS1.2', maxVersion: 'TLS1.3' });
-		const out = await callTlsProbe(binding, 'tok', 'example.com');
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com');
 		expect(out).not.toBeNull();
 		expect(out?.minVersion).toBe('TLS1.2');
 	});
@@ -71,7 +110,7 @@ describe('callTlsProbe', () => {
 				throw new Error('network failure');
 			}),
 		};
-		const out = await callTlsProbe(binding, 'tok', 'example.com');
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com');
 		expect(out).toBeNull();
 	});
 });
@@ -85,7 +124,7 @@ describe('callTlsProbe degradation telemetry', () => {
 		const sink = vi.fn();
 		const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
 		const binding = bindingReturning({ error: 'server error' }, 503);
-		const out = await callTlsProbe(binding, 'tok', 'example.com', { telemetry: sink });
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com', { telemetry: sink });
 		expect(out).toBeNull();
 		expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_5xx', component: 'tls_probe', domain: 'example.com' });
 		const logged = warn.mock.calls.map((c) => String(c[0])).join('\n');
@@ -98,7 +137,7 @@ describe('callTlsProbe degradation telemetry', () => {
 		const sink = vi.fn();
 		vi.spyOn(console, 'log').mockImplementation(() => {});
 		const binding = bindingReturning({ error: 'not found' }, 404);
-		const out = await callTlsProbe(binding, 'tok', 'example.com', { telemetry: sink });
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com', { telemetry: sink });
 		expect(out).toBeNull();
 		expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_5xx', component: 'tls_probe', domain: 'example.com' });
 	});
@@ -107,7 +146,7 @@ describe('callTlsProbe degradation telemetry', () => {
 		const { callTlsProbe } = await fresh();
 		const sink = vi.fn();
 		const warn = vi.spyOn(console, 'log').mockImplementation(() => {});
-		const out = await callTlsProbe(undefined, 'tok', 'example.com', { telemetry: sink });
+		const out = await callTlsProbe(undefined, STRONG_TLS_KEY, 'example.com', { telemetry: sink });
 		expect(out).toBeNull();
 		expect(sink).not.toHaveBeenCalled();
 		expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('binding_degradation');
@@ -124,7 +163,7 @@ describe('callTlsProbe degradation telemetry', () => {
 				throw e;
 			}),
 		};
-		const out = await callTlsProbe(binding, 'tok', 'example.com', { telemetry: sink });
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com', { telemetry: sink });
 		expect(out).toBeNull();
 		expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_timeout', component: 'tls_probe', domain: 'example.com' });
 	});
@@ -138,7 +177,7 @@ describe('callTlsProbe degradation telemetry', () => {
 				throw new Error('network failure');
 			}),
 		};
-		const out = await callTlsProbe(binding, 'tok', 'example.com', { telemetry: sink });
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com', { telemetry: sink });
 		expect(out).toBeNull();
 		expect(sink).toHaveBeenCalledWith({ degradationType: 'binding_unavailable', component: 'tls_probe', domain: 'example.com' });
 	});
@@ -150,7 +189,7 @@ describe('callTlsProbe degradation telemetry', () => {
 			throw new Error('sink boom');
 		});
 		const binding = bindingReturning({ error: 'x' }, 500);
-		const out = await callTlsProbe(binding, 'tok', 'example.com', { telemetry: sink });
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com', { telemetry: sink });
 		expect(out).toBeNull();
 	});
 });

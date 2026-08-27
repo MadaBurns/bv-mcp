@@ -34,7 +34,6 @@ import { shardIndexForKey, isQuotaShardSaltMissing } from '../lib/quota-coordina
 import { acceptsSSE } from '../lib/sse';
 import { dispatchMcpMethod } from './dispatch';
 import { validateJsonRpcRequest } from './request';
-import { checkSessionCreateRateLimit, reviveSession } from '../lib/session';
 import type { JsonRpcRequest } from '../lib/json-rpc';
 import type { QuotaCoordinator } from '../lib/quota-coordinator';
 import type { AnalyticsClient } from '../lib/analytics';
@@ -143,8 +142,12 @@ export interface ExecuteMcpRequestOptions {
 	protocolVersionHeader?: string;
 	authTier?: string;
 	sessionHash?: string;
-	/** Truncated key hash for analytics (first 16 chars of SHA-256). */
+	/** Full 256-bit authenticated principal hash for authorization, ownership, and abuse controls. */
 	keyHash?: string;
+	/** Truncated principal hash for analytics only (first 16 chars of SHA-256). */
+	analyticsKeyHash?: string;
+	/** Verified, discriminated identity for the internal M365 resolver. */
+	m365Identity?: import('../tools/m365/proxy').M365PrincipalIdentity;
 	/** FNV-1a hash of cf-connecting-ip (`i_` prefix) for per-IP analytics filtering. */
 	ipHash?: string;
 	/** Cloudflare edge colo (`request.cf.colo`) for per-datacenter analytics grouping. Appended as the trailing blob on mcp_request/tool_call events. */
@@ -180,7 +183,7 @@ export interface ExecuteMcpRequestOptions {
 	tlsProbeAuthToken?: string;
 	/** Service binding to bv-web's internal M365 proxy surface. Fail-soft; absent when bv-web is not provisioned. */
 	m365Proxy?: { fetch: typeof fetch };
-	/** Bearer token (BV_WEB_INTERNAL_KEY) forwarded to bv-web's internal M365 endpoints. */
+	/** Dedicated bearer (BV_MCP_M365_KEY) forwarded to bv-web's internal M365 endpoints. */
 	m365ProxyAuthToken?: string;
 	/** Service binding to bv-web (BV_WEB) used by get_domain_rank to call the C1 benchmark endpoint. Fail-soft; absent on BSL self-hosts. */
 	bvWebBenchmark?: { fetch: typeof fetch };
@@ -381,7 +384,7 @@ function recordMcpAccessLog(
 			longitude: options.longitude ?? null,
 			asn: options.asn ?? null,
 			asOrg: options.asOrg ?? null,
-			keyHash: options.keyHash ?? null,
+			keyHash: options.analyticsKeyHash ?? null,
 			clientType: options.clientType ?? null,
 			colo: options.colo ?? null,
 			sessionHash: options.sessionHash ?? null,
@@ -633,7 +636,7 @@ function emitRequestAnalytics(
 		clientType: options.clientType as import('../lib/client-detection').McpClientType,
 		authTier: options.authTier,
 		sessionHash: options.sessionHash,
-		keyHash: options.keyHash,
+		keyHash: options.analyticsKeyHash,
 		ipHash: options.ipHash,
 		colo: options.colo,
 	});
@@ -1146,6 +1149,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 				hashDomain(ddcDomain),
 				FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
 				options.rateLimitKv,
+				options.quotaCoordinator,
+				options.quotaShardRouting,
 			);
 			if (!ddcResult.allowed) {
 				const ddcHeaders: Record<string, string> = {};
@@ -1266,6 +1271,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			id,
 			options.accept,
 			options.quotaCoordinator,
+			options.quotaShardRouting,
 		);
 		if (controlPlaneLimited) {
 			emitRequestAnalytics(options, method, 'error', true);
@@ -1279,8 +1285,6 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			};
 		}
 	}
-
-	let sessionRevived = false;
 
 	// Authenticated users can call read-only protocol methods without a session (e.g. Smithery
 	// proxy-style clients that discover tools via ?api_key= before establishing a session).
@@ -1298,53 +1302,19 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			options.sessionErrorMessage ?? 'Bad Request: missing session. Send an initialize request first to create a session.',
 		);
 		if (sessionError) {
-			const canRecoverExpiredSession = sessionError.status === 404 && typeof options.sessionId === 'string' && options.sessionId.length > 0;
-
-			if (canRecoverExpiredSession) {
-				let recoveryAllowed = true;
-				if (!options.isAuthenticated) {
-					const createGate = await checkSessionCreateRateLimit(options.ip, options.rateLimitKv, options.quotaCoordinator);
-					recoveryAllowed = createGate.allowed;
-				}
-
-				if (recoveryAllowed) {
-					sessionRevived = await reviveSession(options.sessionId!, options.sessionStore);
-					if (sessionRevived) {
-						options.analytics?.emitSessionEvent({
-							action: 'revived',
-							method,
-							country: options.country,
-							clientType: options.clientType as import('../lib/client-detection').McpClientType,
-							authTier: options.authTier,
-							keyHash: options.keyHash,
-						});
-						logEvent({
-							timestamp: new Date().toISOString(),
-							correlationId: options.correlationId,
-							category: 'session',
-							result: 'recovered',
-							ipHash: options.ipHash,
-							details: { method, clientType: options.clientType },
-						});
-					}
-				}
-			}
-
-			if (sessionRevived) {
-				// Continue request execution with the revived session to prevent stale-session
-				// loops in clients (e.g. mcp-remote) that do not learn new session IDs from
-				// response headers and cannot auto-reinitialize after a 404.
-			} else {
-				emitRequestAnalytics(options, method, 'error', true);
-				return {
-					kind: 'response',
-					payload: sessionError.payload,
-					headers: {},
-					httpStatus: sessionError.status,
-					useErrorEnvelope: true,
-					eventId,
-				};
-			}
+			// An unrecognized or expired caller-supplied ID is never recreated. A random
+			// 256-bit value proves possession, not that this server issued it; reviving it
+			// would let authenticated callers turn arbitrary IDs into durable KV writes.
+			// MCP clients must initialize again and accept the newly assigned session ID.
+			emitRequestAnalytics(options, method, 'error', true);
+			return {
+				kind: 'response',
+				payload: sessionError.payload,
+				headers: {},
+				httpStatus: sessionError.status,
+				useErrorEnvelope: true,
+				eventId,
+			};
 		}
 	}
 
@@ -1415,6 +1385,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			serverVersion: options.serverVersion,
 			rateLimitKv: options.rateLimitKv,
 			quotaCoordinator: options.quotaCoordinator,
+			quotaShardRouting: options.quotaShardRouting,
+			sessionRateLimitPrincipal:
+				options.tierAuthResult?.authenticated && options.tierAuthResult.keyHash
+					? `key:${options.tierAuthResult.keyHash.slice(0, 40)}`
+					: options.ip,
 			sessionStore: options.sessionStore,
 			sessionId: options.sessionId,
 			scanCache: options.scanCache,
@@ -1452,13 +1427,14 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			tlsProbeAuthToken: options.tlsProbeAuthToken,
 			m365Proxy: options.m365Proxy,
 			m365ProxyAuthToken: options.m365ProxyAuthToken,
+			m365Identity: options.m365Identity,
 			bvWebBenchmark: options.bvWebBenchmark,
 			bvWebBenchmarkAuthToken: options.bvWebBenchmarkAuthToken,
-			// keyHash MUST be forwarded: handleToolsCall's Layer-2 guard
-			// (isAuthRequiredTool && m365Proxy && !keyHash) rejects every
-			// authenticated identity_secops caller without it, and bv-web's
-			// M365 proxy needs the principal hash. Set only for authed callers.
+			// keyHash remains the security principal for ownership/idempotency. The
+			// separately verified m365Identity is the only identity contract accepted
+			// by the tenant-read proxy.
 			keyHash: options.keyHash,
+			analyticsKeyHash: options.analyticsKeyHash,
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
@@ -1529,6 +1505,11 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			serverVersion: options.serverVersion,
 			rateLimitKv: options.rateLimitKv,
 			quotaCoordinator: options.quotaCoordinator,
+			quotaShardRouting: options.quotaShardRouting,
+			sessionRateLimitPrincipal:
+				options.tierAuthResult?.authenticated && options.tierAuthResult.keyHash
+					? `key:${options.tierAuthResult.keyHash.slice(0, 40)}`
+					: options.ip,
 			sessionStore: options.sessionStore,
 			sessionId: options.sessionId,
 			scanCache: options.scanCache,
@@ -1566,13 +1547,14 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			tlsProbeAuthToken: options.tlsProbeAuthToken,
 			m365Proxy: options.m365Proxy,
 			m365ProxyAuthToken: options.m365ProxyAuthToken,
+			m365Identity: options.m365Identity,
 			bvWebBenchmark: options.bvWebBenchmark,
 			bvWebBenchmarkAuthToken: options.bvWebBenchmarkAuthToken,
-			// keyHash MUST be forwarded: handleToolsCall's Layer-2 guard
-			// (isAuthRequiredTool && m365Proxy && !keyHash) rejects every
-			// authenticated identity_secops caller without it, and bv-web's
-			// M365 proxy needs the principal hash. Set only for authed callers.
+			// keyHash remains the security principal for ownership/idempotency. The
+			// separately verified m365Identity is the only identity contract accepted
+			// by the tenant-read proxy.
 			keyHash: options.keyHash,
+			analyticsKeyHash: options.analyticsKeyHash,
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,

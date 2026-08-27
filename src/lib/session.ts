@@ -24,7 +24,12 @@ import {
 	type SessionRecord,
 	validateSessionInMemory,
 } from './session-memory';
-import { checkSessionCreateRateLimitWithCoordinator, type QuotaCoordinator } from './quota-coordinator';
+import {
+	checkSessionCreateRateLimitWithCoordinator,
+	SINGLETON_ROUTING,
+	type QuotaCoordinator,
+	type ShardRouting,
+} from './quota-coordinator';
 import { withIpKvLock } from './rate-limiter';
 import { logError } from './log';
 import { SessionRecordSchema } from '../schemas/session';
@@ -54,6 +59,7 @@ export async function checkSessionCreateRateLimit(
 	ip: string,
 	kv?: KVNamespace,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+	routing: ShardRouting = SINGLETON_ROUTING,
 ): Promise<SessionCreateRateResult> {
 	if (quotaCoordinator) {
 		try {
@@ -62,6 +68,7 @@ export async function checkSessionCreateRateLimit(
 				SESSION_CREATE_LIMIT_PER_MINUTE,
 				SESSION_CREATE_WINDOW_MS,
 				quotaCoordinator,
+				routing,
 			);
 			if (coordinated) return coordinated;
 		} catch {
@@ -173,47 +180,6 @@ export async function createSession(
 	return id;
 }
 
-/**
- * Revive an expired session by re-creating its record with the same ID.
- *
- * Unlike `createSession()` which generates a new ID, this preserves the
- * existing session ID so clients that cannot learn a new ID (e.g. mcp-remote)
- * can continue using their cached session ID after expiry recovery.
- *
- * Security: relies on session IDs being 256-bit cryptographic random values
- * (validated via `isValidSessionIdFormat`), making brute-force infeasible.
- * The session-create rate limit (30/min) also applies to revival attempts.
- */
-export async function reviveSession(id: string, kv?: KVNamespace): Promise<boolean> {
-	if (!isValidSessionIdFormat(id)) return false;
-	// Don't revive explicitly-terminated sessions (DELETE /mcp) — only idle-expired ones.
-	// Check in-memory tombstone first (same-isolate fast path), then KV (cross-isolate).
-	if (isSessionTombstoned(id)) return false;
-	if (kv) {
-		try {
-			const kvTombstone = await kv.get(tombstoneKey(id));
-			if (kvTombstone !== null) return false;
-		} catch {
-			// KV unavailable — fall through; in-memory tombstone is still checked above
-		}
-	}
-
-	const now = Date.now();
-	const record: SessionRecord = { createdAt: now, lastAccessedAt: now };
-
-	createSessionInMemory(id);
-
-	if (kv) {
-		try {
-			await createSessionKVRecord(id, kv, record);
-		} catch {
-			logError('[session] KV revive failed, in-memory fallback active', { category: 'session' });
-		}
-	}
-
-	return true;
-}
-
 /** Check whether a session ID exists in the active sessions store */
 export async function validateSession(id: string, kv?: KVNamespace): Promise<boolean> {
 	// Reject malformed session IDs before any storage lookup
@@ -221,7 +187,7 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 
 	// Check for explicit tombstone (session was deleted) — prevents revival after DELETE
 	if (isSessionTombstoned(id)) return false;
-	if (kv && await isSessionTombstonedInKV(id, kv)) return false;
+	if (kv && (await isSessionTombstonedInKV(id, kv))) return false;
 
 	// Check in-memory first (same-isolate fast path, avoids KV replication lag)
 	const inMemoryRecord = ACTIVE_SESSIONS.get(id);

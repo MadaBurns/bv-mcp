@@ -35,7 +35,7 @@ describe('FIND-15 — trial-key expiry re-check on tier-cache hit', () => {
 		expect(kv.delete).toHaveBeenCalledWith(expect.stringMatching(/^tier:[a-f0-9]{64}$/));
 	});
 
-	it('authenticates when cached trialExpiresAt is in the future', async () => {
+	it('does not authorize from a still-fresh trial cache entry', async () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
 
 		// KV stub: trial expiry is 60 seconds from now
@@ -49,9 +49,8 @@ describe('FIND-15 — trial-key expiry re-check on tier-cache hit', () => {
 
 		const result = await resolveTier('TOKEN', { RATE_LIMIT: kv } as unknown as Parameters<typeof resolveTier>[1], '203.0.113.1', 'https://t/mcp');
 
-		expect(result.authenticated).toBe(true);
-		expect(result.tier).toBe('developer');
-		// No eviction for a still-valid entry
-		expect(kv.delete).not.toHaveBeenCalled();
+		expect(result.authenticated).toBe(false);
+		// Positive trial cache entries are evicted so maxUses is checked atomically.
+		expect(kv.delete).toHaveBeenCalledWith(expect.stringMatching(/^tier:[a-f0-9]{64}$/));
 	});
 });

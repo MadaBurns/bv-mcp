@@ -315,11 +315,9 @@ describe('logToolFailure', () => {
 		const logs = getConsoleLogs(consoleSpy);
 		const errorLog = logs.find((l) => l.severity === 'error') as { details?: Record<string, unknown> } | undefined;
 		expect(errorLog).toBeDefined();
-		expect(errorLog!.details).toMatchObject({
-			ms_tenant_id: '[redacted]',
-			user_principal_name: '[redacted]',
-			query: '[redacted]',
-			since_hours: 24,
+		expect(errorLog!.details).toEqual({
+			argumentCount: 4,
+			argumentKeys: ['ms_tenant_id', 'query', 'since_hours', 'user_principal_name'],
 		});
 		expect(JSON.stringify(errorLog)).not.toContain('admin@example.com');
 		expect(JSON.stringify(errorLog)).not.toContain('00000000-1111-2222-3333-444444444444');
@@ -427,7 +425,7 @@ describe('logToolFailure', () => {
 		expect(call.cacheStatus).toBe('n/a');
 	});
 
-	it('passes args as details in logError context', async () => {
+	it('logs only argument names and count, never argument values', async () => {
 		const { logToolFailure } = await import('../src/handlers/tool-execution');
 
 		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -443,9 +441,8 @@ describe('logToolFailure', () => {
 		const logs = getConsoleLogs(consoleSpy);
 		const errorLog = logs.find((l) => l.severity === 'error');
 		expect(errorLog).toBeDefined();
-		// details should contain the args (domain key redacted by sanitizer, but selector visible)
 		const details = errorLog!.details as Record<string, unknown>;
-		expect(details).toBeDefined();
-		expect(details.selector).toBe('google');
+		expect(details).toEqual({ argumentCount: 2, argumentKeys: ['domain', 'selector'] });
+		expect(JSON.stringify(errorLog)).not.toContain('google');
 	});
 });

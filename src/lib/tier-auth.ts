@@ -11,14 +11,19 @@
  */
 
 import type { McpApiKeyTier } from './config';
-import { OAUTH_JWT_CLOCK_SKEW_SECONDS, parseOwnerAllowIps, TRIAL_KEY_CACHE_TTL } from './config';
+import { OAUTH_JWT_CLOCK_SKEW_SECONDS, OAUTH_JWT_TTL_SECONDS, parseOwnerAllowIps, TRIAL_KEY_CACHE_TTL } from './config';
 import { TierCacheEntrySchema, ValidateKeyResponseSchema } from '../schemas/auth';
 import { resolveTrialKey } from './trial-keys';
 import { parseEnvelopeKey } from './kv-envelope';
 import { verifyJwt } from '../oauth/jwt';
 import { resolveIssuerStrict } from '../oauth/discovery';
-import { isRevoked, getTokenVersion } from '../oauth/storage';
+import { getMinimumEntitlementGeneration, isRevoked, getTokenVersion } from '../oauth/storage';
 import { z } from 'zod';
+import type { QuotaCoordinator } from './quota-coordinator';
+import { checkControlPlaneRateLimit } from './rate-limiter';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
+import { deriveCanonicalOAuthPrincipal } from './auth-principal';
+import type { OAuthPrincipalKind } from './auth-principal';
 
 /**
  * JWT-issuable tiers. The `/oauth/token` minting paths can only produce these
@@ -31,7 +36,21 @@ const JwtIssuableTierSchema = z.enum(['owner', 'developer', 'enterprise']);
 export interface TierAuthResult {
 	authenticated: boolean;
 	tier?: McpApiKeyTier;
+	/** Stable 256-bit security principal used for quota, ownership, and downstream authorization. */
 	keyHash?: string;
+	/** Previous 16-hex owner id for bounded, authenticated durable-row reconciliation. */
+	legacyOwnerId?: string;
+	/** Current raw-token alias plus one same-principal historical JWT proof. */
+	legacyOwnerIds?: readonly string[];
+	/** Full raw credential digest for API-key-backed downstream identity lookup; never set for OAuth JWTs. */
+	credentialHash?: string;
+	/** Verified OAuth tenant subject; absent for opaque/static credentials. */
+	oauthTenantId?: string;
+	/** Domain-separated OAuth namespace; proves keyHash came from a verified OAuth subject. */
+	oauthPrincipalKind?: OAuthPrincipalKind;
+	/** An uncached remote entitlement lookup was denied by the pre-auth abuse gate. */
+	rateLimited?: boolean;
+	retryAfterMs?: number;
 	/**
 	 * Per-contract enumeration entitlement (D2 contract-flag gate). Set only from a
 	 * JWT `contractFlag` claim; absent/false everywhere until bv-web-prod emits it.
@@ -41,6 +60,53 @@ export interface TierAuthResult {
 }
 
 const TIER_KV_CACHE_TTL = 300; // 5 minutes
+
+/** Remote entitlement validation is tiny JSON; anything larger is invalid. */
+export const BV_WEB_VALIDATE_KEY_MAX_BODY_BYTES = 16 * 1024;
+/** Keep an unavailable entitlement service from pinning public Worker requests. */
+export const BV_WEB_VALIDATE_KEY_TIMEOUT_MS = 5_000;
+/** Uses the existing 60/minute, 600/hour control-plane thresholds on a distinct key. */
+export const AUTH_RESOLUTION_MINUTE_LIMIT = 60;
+const AUTH_RESOLUTION_RATE_KEY_PREFIX = 'auth-resolution:';
+
+/** @internal Exported for focused timeout regression tests. */
+export async function fetchBvWebValidateKey(
+	fetcher: Fetcher,
+	internalKey: string,
+	keyHash: string,
+	timeoutMs = BV_WEB_VALIDATE_KEY_TIMEOUT_MS,
+): Promise<{ kind: 'ok'; data: unknown } | { kind: 'http'; status: number }> {
+	const controller = new AbortController();
+	const timeoutId = setTimeout(() => controller.abort(new DOMException('BV_WEB validate-key timed out', 'TimeoutError')), timeoutMs);
+	try {
+		const response = await fetcher.fetch(
+			new Request('https://internal/api/internal/mcp/validate-key', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					Authorization: `Bearer ${internalKey}`,
+				},
+				body: JSON.stringify({ keyHash }),
+				signal: controller.signal,
+			}),
+		);
+		if (!response.ok) {
+			const status = response.status;
+			await disposeUnreadResponseBody(response);
+			return { kind: 'http', status };
+		}
+		const data = await readJsonResponseCapped<unknown>(response, BV_WEB_VALIDATE_KEY_MAX_BODY_BYTES);
+		// The bounded reader intentionally converts stream failures to null. Preserve
+		// timeout semantics here so a headers-then-stalled body is still denied rather
+		// than being mistaken for a valid entitlement response.
+		if (controller.signal.aborted) {
+			throw controller.signal.reason ?? new DOMException('BV_WEB validate-key timed out', 'TimeoutError');
+		}
+		return { kind: 'ok', data };
+	} finally {
+		clearTimeout(timeoutId);
+	}
+}
 
 /** SHA-256 digest as raw bytes (for constant-time comparison and hex derivation). */
 async function hashTokenRaw(token: string): Promise<Uint8Array> {
@@ -101,6 +167,7 @@ export async function resolveTier(
 		OAUTH_SIGNING_SECRET?: string;
 		OAUTH_ISSUER?: string;
 		SESSION_STORE?: KVNamespace;
+		QUOTA_COORDINATOR?: DurableObjectNamespace<QuotaCoordinator>;
 		KV_ENVELOPE_KEY?: string;
 	},
 	clientIp: string | undefined,
@@ -115,7 +182,7 @@ export async function resolveTier(
 	//
 	// OWNER_ALLOW_IPS is re-checked here for owner-tier claims (M1 fix). Previously the gate
 	// was only enforced once at /oauth/authorize consent; that meant anyone briefly on an
-	// allowlisted IP could mint a 90-day JWT usable from any subsequent IP. We now mirror the
+	// allowlisted IP could mint a bearer JWT usable from any subsequent IP. We now mirror the
 	// BV_API_KEY path: when OWNER_ALLOW_IPS is configured and the requesting clientIp isn't in
 	// it, downgrade to 'partner' tier. Empty/unset allowlist preserves backward compat for
 	// self-hosted/dev installations that don't IP-gate their owner.
@@ -132,35 +199,57 @@ export async function resolveTier(
 				issuer,
 				audience: `${issuer}/mcp`,
 				clockSkewSeconds: OAUTH_JWT_CLOCK_SKEW_SECONDS,
+				maxLifetimeSeconds: OAUTH_JWT_TTL_SECONDS,
 			});
 			const tierResult = JwtIssuableTierSchema.safeParse(claims.tier);
 			if (typeof claims.sub === 'string' && tierResult.success) {
-				if (await isRevoked(env.SESSION_STORE, claims.jti)) {
+				if (await isRevoked(env.SESSION_STORE, claims.jti, env.QUOTA_COORDINATOR)) {
 					return { authenticated: false };
 				}
 				// Token-version check (FIND-13): reject tokens whose `ver` claim is
 				// less than the current per-subject counter. Absent `ver` defaults to
 				// 1 (backward compat for JWTs minted before this feature was deployed).
-				const storedVer = await getTokenVersion(env.SESSION_STORE, claims.sub);
+				const storedVer = await getTokenVersion(env.SESSION_STORE, claims.sub, env.QUOTA_COORDINATOR);
 				const tokenVer = typeof claims.ver === 'number' ? claims.ver : 1;
 				if (tokenVer < storedVer) {
 					return { authenticated: false };
 				}
+				// A monotonic entitlement generation makes delayed revocation delivery safe:
+				// an old event can raise the floor for old tokens without invalidating a token
+				// minted after the plan transition. Pre-claim JWTs remain generation 1.
+				const minimumEntitlementGeneration = await getMinimumEntitlementGeneration(env.SESSION_STORE, claims.sub, env.QUOTA_COORDINATOR);
+				const tokenEntitlementGeneration = typeof claims.entitlementGeneration === 'number' ? claims.entitlementGeneration : 1;
+				if (tokenEntitlementGeneration < minimumEntitlementGeneration) {
+					return { authenticated: false };
+				}
 				const resolvedTier = applyOwnerIpGate(tierResult.data, env.OWNER_ALLOW_IPS, clientIp);
-				// Derive a stable per-credential keyHash (same hex(SHA-256(rawToken)) the
-				// static/cache/trial paths return) so quota + concurrency principal selection
-				// (`tierAuthResult.keyHash ?? options.ip` in mcp/execute.ts) keys on the JWT,
-				// not the client IP. Without it, a JWT reused across IPs multiplies the daily
-				// quota and NAT users behind one IP share a single quota bucket.
-				const jwtKeyHash = Array.from(await hashTokenRaw(token))
+				// OAuth access tokens rotate, but the authenticated security principal must
+				// not. Key quotas, concurrency limits, audit ownership, and downstream M365
+				// authorization to a domain-separated hash of the verified issuer + subject.
+				// Including the raw token or jti here would let one subscriber multiply every
+				// limit merely by minting another access token and would orphan resources at
+				// each hourly renewal. Static/cache/trial credentials remain keyed by their
+				// credential digest below because those credentials have no signed subject.
+				const principalKind = tierResult.data === 'owner' ? 'owner' : 'tenant';
+				const jwtKeyHash = await deriveCanonicalOAuthPrincipal(issuer, claims.sub, principalKind);
+				const legacyOwnerId = Array.from(await hashTokenRaw(token))
 					.map((b) => b.toString(16).padStart(2, '0'))
-					.join('');
+					.join('')
+					.slice(0, 16);
 				// D2 contract-flag entitlement — carried as a boolean JWT claim by
 				// bv-web-prod once the developer-claim carve-out lands. Absent today →
 				// undefined (falsy); the gate stays inert until both the claim and
 				// ENFORCE_CONTRACT_FLAG_GATE are in place.
 				const contractFlag = claims.contractFlag === true;
-				return { authenticated: true, tier: resolvedTier, keyHash: jwtKeyHash, contractFlag };
+				return {
+					authenticated: true,
+					tier: resolvedTier,
+					keyHash: jwtKeyHash,
+					legacyOwnerId,
+					oauthPrincipalKind: principalKind,
+					...(principalKind === 'tenant' ? { oauthTenantId: claims.sub } : {}),
+					contractFlag,
+				};
 			}
 			// JWT verified but payload is not a recognized MCP tier — fall through so static key
 			// path still has a chance for legacy operators with unusual three-segment keys.
@@ -183,12 +272,9 @@ export async function resolveTier(
 	// Two independent slots (BV_INTERNAL_DEV_KEY + BV_INTERNAL_DEV_KEY_2) allow
 	// adding a per-machine key without rotating the shared one out from under
 	// other consumers. Both resolve to owner tier and remain OWNER_ALLOW_IPS-gated.
-	if (
-		(await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY)) ||
-		(await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY_2))
-	) {
+	if ((await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY)) || (await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY_2))) {
 		const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
-		return { authenticated: true, tier: resolvedTier, keyHash };
+		return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
 	}
 
 	// 1. Try KV cache
@@ -202,15 +288,15 @@ export async function resolveTier(
 					await env.RATE_LIMIT.delete(`tier:${keyHash}`);
 				} else {
 					if (cacheResult.data.revokedAt) return { authenticated: false };
-					// FIND-15: re-check trial-key expiry on cache hit. If the entry carries
-					// a trialExpiresAt timestamp and it has passed, evict the stale entry so
-					// the next request falls through to a fresh trial lookup / bv-web resolve.
-					if (cacheResult.data.trialExpiresAt !== undefined && cacheResult.data.trialExpiresAt < Date.now()) {
+					// Trial cache entries may accelerate discovery but may never authorize:
+					// every successful trial request must atomically consume one use.
+					if (cacheResult.data.trialExpiresAt !== undefined) {
 						await env.RATE_LIMIT.delete(`tier:${keyHash}`);
-						return { authenticated: false };
+						if (cacheResult.data.trialExpiresAt < Date.now()) return { authenticated: false };
+					} else {
+						const resolvedTier = applyOwnerIpGate(cacheResult.data.tier, env.OWNER_ALLOW_IPS, clientIp);
+						return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
 					}
-					const resolvedTier = applyOwnerIpGate(cacheResult.data.tier, env.OWNER_ALLOW_IPS, clientIp);
-					return { authenticated: true, tier: resolvedTier, keyHash };
 				}
 			}
 		} catch {
@@ -221,117 +307,79 @@ export async function resolveTier(
 	// 2. Try trial key lookup
 	if (env.RATE_LIMIT) {
 		try {
-			const trialResult = await resolveTrialKey(env.RATE_LIMIT, keyHash, parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined);
+			const trialResult = await resolveTrialKey(
+				env.RATE_LIMIT,
+				keyHash,
+				parseEnvelopeKey(env.KV_ENVELOPE_KEY) ?? undefined,
+				env.QUOTA_COORDINATOR,
+			);
 			if (trialResult) {
 				if (!trialResult.authenticated) {
 					// Expired or exhausted — cache as revoked to avoid repeated lookups
-					await env.RATE_LIMIT.put(
-						`tier:${keyHash}`,
-						JSON.stringify({ tier: 'free', revokedAt: Date.now() }),
-						{ expirationTtl: TRIAL_KEY_CACHE_TTL },
-					);
+					await env.RATE_LIMIT.put(`tier:${keyHash}`, JSON.stringify({ tier: 'free', revokedAt: Date.now() }), {
+						expirationTtl: TRIAL_KEY_CACHE_TTL,
+					});
 					return { authenticated: false };
 				}
-				// Valid trial key — cache with shorter TTL for faster expiry/exhaustion detection.
-				// Include trialExpiresAt so the cache-hit branch (FIND-15) can re-check expiry
-				// without a full trial lookup on every request within the cache window.
-				await env.RATE_LIMIT.put(
-					`tier:${keyHash}`,
-					JSON.stringify({ tier: trialResult.tier, revokedAt: null, trialExpiresAt: trialResult.trialInfo.expiresAt }),
-					{ expirationTtl: TRIAL_KEY_CACHE_TTL },
-				);
+				// Deliberately do not positive-cache trials: a cache hit would bypass
+				// atomic maxUses consumption. Negative entries remain short-lived.
 				const resolvedTier = applyOwnerIpGate(trialResult.tier, env.OWNER_ALLOW_IPS, clientIp);
-				return { authenticated: true, tier: resolvedTier, keyHash };
+				return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
 			}
 		} catch {
 			// Trial lookup failed, fall through
 		}
 	}
 
-	// 3. Try service binding to bv-web
+	// 3. Try service binding to bv-web. Only uncached, non-trial credentials reach
+	// this point. Give those resolutions a dedicated IP bucket before making the
+	// service call so unique invalid bearer tokens cannot amplify into unbounded
+	// BV_WEB requests. Prefixing the principal keeps this separate from ordinary
+	// MCP control-plane quotas while reusing their distributed KV/DO machinery.
+	let authResolutionRateLimited = false;
+	let authResolutionRetryAfterMs: number | undefined;
 	if (env.BV_WEB && env.BV_WEB_INTERNAL_KEY) {
-		let bvWebThrew = false;
-		let bvWebIsServerError = false;
+		const resolutionRate = await checkControlPlaneRateLimit(
+			`${AUTH_RESOLUTION_RATE_KEY_PREFIX}${clientIp ?? 'unknown'}`,
+			env.RATE_LIMIT,
+			env.QUOTA_COORDINATOR,
+		);
+		authResolutionRateLimited = !resolutionRate.allowed;
+		authResolutionRetryAfterMs = resolutionRate.retryAfterMs;
+	}
 
+	if (env.BV_WEB && env.BV_WEB_INTERNAL_KEY && !authResolutionRateLimited) {
 		try {
-			const response = await env.BV_WEB.fetch(
-				new Request('https://internal/api/internal/mcp/validate-key', {
-					method: 'POST',
-					headers: {
-						'Content-Type': 'application/json',
-						'Authorization': `Bearer ${env.BV_WEB_INTERNAL_KEY}`,
-					},
-					body: JSON.stringify({ keyHash }),
-				}),
-			);
+			const validationResponse = await fetchBvWebValidateKey(env.BV_WEB, env.BV_WEB_INTERNAL_KEY, keyHash);
 
-			if (response.ok) {
-				const rawData = await response.json();
-				const keyResult = ValidateKeyResponseSchema.safeParse(rawData);
+			if (validationResponse.kind === 'ok') {
+				const keyResult = ValidateKeyResponseSchema.safeParse(validationResponse.data);
 				if (keyResult.success) {
 					const data = keyResult.data;
 					if (data.tier !== null) {
 						// Cache the valid tier result (short-lived, 5 min)
 						if (env.RATE_LIMIT) {
-							await env.RATE_LIMIT.put(
-								`tier:${keyHash}`,
-								JSON.stringify({ tier: data.tier, revokedAt: null }),
-								{ expirationTtl: TIER_KV_CACHE_TTL },
-							);
-							// Write long-lived last-known-good entry (24h, best-effort).
-							// Used as a fail-safe if bv-web is unreachable or returns 5xx on
-							// a future request — avoids downgrading paying customers during
-							// transient outages. Apply only to confirmed-valid tiers, never
-							// to null/revoked responses (those must still downgrade correctly).
-							try {
-								await env.RATE_LIMIT.put(`tier:lkg:${keyHash}`, data.tier, { expirationTtl: 86400 });
-							} catch {
-								// Best-effort — a KV write failure must not break auth
-							}
+							await env.RATE_LIMIT.put(`tier:${keyHash}`, JSON.stringify({ tier: data.tier, revokedAt: null }), {
+								expirationTtl: TIER_KV_CACHE_TTL,
+							});
 						}
 						const resolvedTier = applyOwnerIpGate(data.tier, env.OWNER_ALLOW_IPS, clientIp);
-						return { authenticated: true, tier: resolvedTier, keyHash };
+						return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
 					}
 					// Null tier = definitive revocation or unknown key — cache negative result
 					// to avoid repeated service binding calls within the TTL window.
-					// LKG is NOT consulted or updated here: this is a definitive "no entitlement"
-					// signal from bv-web, not an ambiguous failure.
+					// This is a definitive "no entitlement" signal from bv-web.
 					if (env.RATE_LIMIT) {
-						await env.RATE_LIMIT.put(
-							`tier:${keyHash}`,
-							JSON.stringify({ tier: 'free', revokedAt: Date.now() }),
-							{ expirationTtl: TIER_KV_CACHE_TTL },
-						);
+						await env.RATE_LIMIT.put(`tier:${keyHash}`, JSON.stringify({ tier: 'free', revokedAt: Date.now() }), {
+							expirationTtl: TIER_KV_CACHE_TTL,
+						});
 					}
 				}
-			} else if (response.status >= 500) {
-				// 5xx response: bv-web is up but returning server errors — treat as ambiguous.
-				// NOTE: fetch() resolves (not throws) on HTTP errors, so this branch handles
-				// the primary outage scenario. 4xx responses are definitive client errors and
-				// fall through without LKG (no entitlement signal is explicit, not ambiguous).
-				bvWebIsServerError = true;
 			}
-			// 4xx: fall through to BV_API_KEY without LKG — definitive rejection
 		} catch {
-			// Network error / connection failure / service binding throw — ambiguous.
-			bvWebThrew = true;
-		}
-
-		// LKG fallback: only for ambiguous failures (thrown or 5xx), NOT for definitive
-		// rejections (null tier, 4xx). Preserves revocation correctness.
-		if ((bvWebThrew || bvWebIsServerError) && env.RATE_LIMIT) {
-			try {
-				const lkg = await env.RATE_LIMIT.get(`tier:lkg:${keyHash}`);
-				if (lkg) {
-					const lkgResult = ValidateKeyResponseSchema.shape.tier.safeParse(lkg);
-					if (lkgResult.success && lkgResult.data !== null) {
-						const resolvedTier = applyOwnerIpGate(lkgResult.data, env.OWNER_ALLOW_IPS, clientIp);
-						return { authenticated: true, tier: resolvedTier, keyHash };
-					}
-				}
-			} catch {
-				// LKG read failed — fall through to BV_API_KEY as before
-			}
+			// Entitlement validation is an authorization boundary. Network failures,
+			// timeouts, malformed bodies, and 5xx responses all fail closed. Serving a
+			// stale positive result here would let a revoked bearer survive an outage.
 		}
 	}
 
@@ -352,9 +400,11 @@ export async function resolveTier(
 			// only, owner is unrestricted (backward compat for self-hosted/dev where
 			// there's no IP filtering).
 			const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
-			return { authenticated: true, tier: resolvedTier, keyHash };
+			return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
 		}
 	}
 
-	return { authenticated: false };
+	return authResolutionRateLimited
+		? { authenticated: false, rateLimited: true, retryAfterMs: authResolutionRetryAfterMs }
+		: { authenticated: false };
 }

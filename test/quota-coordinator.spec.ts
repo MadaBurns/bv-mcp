@@ -57,6 +57,28 @@ describe('quota-coordinator payload validation', () => {
 		expect(result.valid).toBe(true);
 	});
 
+	it('accepts a valid distinct-domain-daily payload', () => {
+		const result = validateQuotaPayload({
+			kind: 'distinct-domain-daily',
+			principalId: '203.0.113.1',
+			domainFingerprint: 'd_12ab34cd',
+			limit: 12,
+		});
+		expect(result.valid).toBe(true);
+	});
+
+	it('rejects an empty, control-bearing, or oversized domain fingerprint', () => {
+		for (const domainFingerprint of ['', 'd_bad\nkey', 'x'.repeat(129)]) {
+			const result = validateQuotaPayload({
+				kind: 'distinct-domain-daily',
+				principalId: '203.0.113.1',
+				domainFingerprint,
+				limit: 12,
+			});
+			expect(result.valid).toBe(false);
+		}
+	});
+
 	it('accepts a valid global-daily payload', () => {
 		const result = validateQuotaPayload({ kind: 'global-daily', limit: 10000 });
 		expect(result.valid).toBe(true);
@@ -65,6 +87,29 @@ describe('quota-coordinator payload validation', () => {
 	it('accepts a valid session-create payload', () => {
 		const result = validateQuotaPayload({ kind: 'session-create', ip: '192.0.2.1', limit: 30, windowMs: 60000 });
 		expect(result.valid).toBe(true);
+	});
+
+	it('accepts only bounded OAuth DCR write-budget payloads with hashed sources', () => {
+		expect(
+			validateQuotaPayload({
+				kind: 'oauth-dcr-write',
+				sourceFingerprint: 'a'.repeat(64),
+				sourceDailyLimit: 20,
+				globalHourlyLimit: 60,
+				globalDailyLimit: 250,
+			}).valid,
+		).toBe(true);
+		for (const sourceFingerprint of ['198.51.100.1', 'A'.repeat(64), 'a'.repeat(63)]) {
+			expect(
+				validateQuotaPayload({
+					kind: 'oauth-dcr-write',
+					sourceFingerprint,
+					sourceDailyLimit: 20,
+					globalHourlyLimit: 60,
+					globalDailyLimit: 250,
+				}).valid,
+			).toBe(false);
+		}
 	});
 
 	it('accepts a valid reset payload', () => {
