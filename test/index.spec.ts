@@ -1828,6 +1828,9 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('meters established-session ping traffic without charging the tool budget', async () => {
+			// Keep all 65 requests in one fixed-window bucket. On slower CI runners,
+			// this loop can otherwise cross a wall-clock minute and reset the count.
+			vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 0, 1, 12, 31, 30));
 			const sessionId = await initSession();
 
 			// The first 60 protocol messages fit the dedicated control-plane minute
