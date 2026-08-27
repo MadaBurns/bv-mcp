@@ -6,9 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [3.68.0] - 2026-08-27
 
-**No scoring-model change.** `SCORING_MODEL_VERSION` remains **1.14.0** and
-`@blackveil/dns-checks` remains **1.25.0** — no check, weight, threshold, grade
-band, or domain score changes in this release.
+**No scoring-policy change.** `SCORING_MODEL_VERSION` remains **1.14.0** — no
+weight, threshold, severity penalty, profile-selection rule, or grade band
+moves. `@blackveil/dns-checks` moves **1.25.0 → 1.26.0**, with
+`PARITY_CORPUS_VERSION` in lockstep, because the core package's network and
+response-boundary behavior changed. This intentionally cold-starts scan caches.
+Results at oversized, slow, redirecting, or robots-gated network edges can now
+become explicitly inconclusive instead of consuming an unbounded response; no
+new scoring rule is introduced.
 
 ### Security
 
