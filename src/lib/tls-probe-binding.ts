@@ -12,6 +12,7 @@ import type { CheckResult, Finding } from './scoring';
 import { buildCheckResult, createFinding } from './scoring';
 import { logEvent } from './log';
 import type { BindingDegradationKind, BindingDegradationSink } from './binding-degradation';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 
 // Re-export the shared telemetry types so existing importers of these symbols
 // from `tls-probe-binding` keep working; the canonical definition lives in
@@ -61,6 +62,7 @@ function recordTlsProbeDegradation(
 
 const TLS_PROBE_TIMEOUT_MS = 8_000;
 const DEFAULT_PROBE_PORT = 443;
+const TLS_PROBE_MAX_BODY_BYTES = 256 * 1024;
 
 /** Defensive shape of a bv-tls-probe /probe response. All fields optional/lenient
  *  so unknown extras never fail validation. */
@@ -117,10 +119,11 @@ export async function callTlsProbe(
 		});
 		// Any non-ok (incl. 404 — unlike recon, NOT benign here) is a present-binding failure.
 		if (!resp.ok) {
+			await disposeUnreadResponseBody(resp);
 			recordTlsProbeDegradation('binding_5xx', opts?.telemetry, { status: resp.status, host });
 			return null;
 		}
-		const parsed = TlsProbeResponseSchema.safeParse(await resp.json().catch(() => null));
+		const parsed = TlsProbeResponseSchema.safeParse(await readJsonResponseCapped(resp, TLS_PROBE_MAX_BODY_BYTES));
 		return parsed.success ? parsed.data : null;
 	} catch (err) {
 		recordTlsProbeDegradation(errorToKind(err), opts?.telemetry, { host, errorName: err instanceof Error ? err.name : undefined });

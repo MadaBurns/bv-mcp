@@ -36,6 +36,7 @@ import { logError } from './log';
  * not a score contribution. The bucket lives in `metadata.bucket`.
  */
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from './brand-audit-category';
+import { BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX } from './brand-audit-contract-limits';
 
 /** Concurrency cap for parallel RDAP lookups across candidates. */
 const RDAP_CONCURRENCY = 10;
@@ -48,7 +49,7 @@ const RDAP_CONCURRENCY = 10;
  * Known Constraints) with 5× headroom; over that, the consumer ack()s with
  * `truncated: true` rather than spending Workers CPU + outbound budget.
  */
-const MAX_CANDIDATES_PER_AUDIT = 200;
+const MAX_CANDIDATES_PER_AUDIT = BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX;
 
 const BUCKET_SEVERITY: Record<Bucket, Severity> = {
 	consolidated: 'info',

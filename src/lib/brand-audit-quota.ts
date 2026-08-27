@@ -8,11 +8,13 @@
  * operation, not a single DNS check — fairness lives at the tier-month layer,
  * not the IP-day layer.
  *
- * Counter storage: `RATE_LIMIT` KV namespace with `brand_audit:<principalId>:<month>`
- * key prefix; window aligned to UTC calendar month.
+ * Authoritative counter storage: QuotaCoordinator Durable Object, routed by
+ * principal + UTC month. RATE_LIMIT KV receives only a best-effort mirror for
+ * operator visibility; it is never used to authorize work.
  */
 
 import type { McpApiKeyTier } from './config';
+import { reserveBudgetWithCoordinator, type QuotaCoordinator } from './quota-coordinator';
 
 /** Monthly per-tier brand-audit target budgets. */
 export const BRAND_AUDIT_QUOTAS: Record<McpApiKeyTier, number> = {
@@ -54,7 +56,8 @@ export interface BrandAuditQuotaKv {
 }
 
 export interface EnforceBrandAuditQuotaArgs {
-	kv: BrandAuditQuotaKv;
+	kv?: BrandAuditQuotaKv;
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>;
 	principalId: string;
 	tier: McpApiKeyTier;
 	count: number;
@@ -65,9 +68,8 @@ export interface EnforceBrandAuditQuotaArgs {
 /**
  * Enforce + consume monthly brand-audit quota.
  *
- * Best-effort: KV errors fail-open (allowed=true, remaining=limit). Aligns with
- * the project's `lib/rate-limiter.ts` cache-availability stance — the rate limit
- * is a courtesy guard, not a security boundary.
+ * This is a paid-usage/cost boundary and therefore fails closed when strong
+ * state is unavailable. KV is a non-authoritative observability mirror only.
  */
 export async function enforceBrandAuditQuota(args: EnforceBrandAuditQuotaArgs): Promise<BrandAuditQuotaCheck> {
 	const { kv, principalId, tier, count } = args;
@@ -83,29 +85,45 @@ export async function enforceBrandAuditQuota(args: EnforceBrandAuditQuotaArgs): 
 	const now = args.now ?? Date.now();
 	const window = monthStart(now);
 	const key = `brand_audit:${principalId}:${window}`;
+	if (!Number.isSafeInteger(count) || count < 1) {
+		return { allowed: false, remaining: 0, limit };
+	}
 
-	let current = 0;
+	if (!kv) return { allowed: false, remaining: 0, limit, retryAfterMs: 60_000 };
+	let initialUsed: number;
 	try {
 		const raw = await kv.get(key);
-		current = raw ? Number.parseInt(raw, 10) || 0 : 0;
+		const parsed = raw === null ? 0 : Number.parseInt(raw, 10);
+		if (!Number.isSafeInteger(parsed) || parsed < 0 || parsed > limit) {
+			return { allowed: false, remaining: 0, limit, retryAfterMs: 60_000 };
+		}
+		initialUsed = parsed;
 	} catch {
-		return { allowed: true, remaining: limit, limit };
+		return { allowed: false, remaining: 0, limit, retryAfterMs: 60_000 };
 	}
 
-	if (current + count > limit) {
-		return { allowed: false, remaining: Math.max(0, limit - current), limit, retryAfterMs: nextMonthStart(now) - now };
+	let reservation;
+	try {
+		reservation = await reserveBudgetWithCoordinator(key, count, limit, nextMonthStart(now), args.quotaCoordinator, initialUsed);
+	} catch {
+		return { allowed: false, remaining: 0, limit, retryAfterMs: 60_000 };
+	}
+	if (!reservation) {
+		return { allowed: false, remaining: 0, limit, retryAfterMs: 60_000 };
+	}
+	if (!reservation.allowed) {
+		return { allowed: false, remaining: reservation.remaining, limit, retryAfterMs: nextMonthStart(now) - now };
 	}
 
-	const next = current + count;
 	try {
 		// Clamped to KV's 60s minimum expirationTtl — in the final minute of a
 		// month the remaining-window value drops below 60, which KV rejects.
 		// The key is month-windowed, so lingering ≤59s into the next month is inert.
 		const ttlSeconds = Math.max(60, Math.ceil((nextMonthStart(now) - now) / 1000));
-		await kv.put(key, String(next), { expirationTtl: ttlSeconds });
+		await kv?.put(key, String(reservation.used), { expirationTtl: ttlSeconds });
 	} catch {
-		// KV write failure ≠ refusal; counter will simply be less precise this window.
+		// Non-authoritative mirror only; the DO reservation has already committed.
 	}
 
-	return { allowed: true, remaining: limit - next, limit };
+	return { allowed: true, remaining: reservation.remaining, limit };
 }

@@ -270,20 +270,7 @@ describe('MTA-STS parity corpus — bv-mcp full checkMTASTS', () => {
 			}) as never;
 			// fetchFn serves the policy file body (or a 404 when policy === null).
 			const fetchFn = (async () =>
-				fx.policy === null
-					? {
-							ok: false,
-							status: 404,
-							headers: { get: () => null },
-							body: { cancel: async () => {} },
-							text: async () => '',
-						}
-					: {
-							ok: true,
-							status: 200,
-							headers: { get: () => String(fx.policy!.length) },
-							text: async () => fx.policy!,
-						}) as never;
+				fx.policy === null ? new Response(null, { status: 404 }) : new Response(fx.policy, { status: 200 })) as never;
 			const result = await checkMTASTS(fx.domain, queryDNS, { fetchFn });
 			expect({ score: result.score, missing: missingControl(result.findings) }).toEqual({
 				score: fx.expectedScore,

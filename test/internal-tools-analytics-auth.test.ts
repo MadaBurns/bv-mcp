@@ -12,9 +12,10 @@ import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:
 import { describe, expect, it } from 'vitest';
 import worker from '../src';
 
-const TEST_INTERNAL_KEY = 'tools-analytics-internal-key';
+const TEST_INTERNAL_KEY = 'tools-analytics-internal-key-32-bytes';
+const TEST_OAUTH_MINT_KEY = 'oauth-mint-internal-key-32-bytes-minimum';
 
-type TestEnv = typeof env & { BV_WEB_INTERNAL_KEY?: string; REQUIRE_INTERNAL_AUTH?: string };
+type TestEnv = typeof env & { BV_WEB_INTERNAL_KEY?: string; BV_MCP_OAUTH_MINT_KEY?: string; REQUIRE_INTERNAL_AUTH?: string };
 
 async function send(req: Request, customEnv: TestEnv): Promise<Response> {
 	const ctx = createExecutionContext();
@@ -98,12 +99,16 @@ describe('internal tools+analytics auth gate', () => {
 	});
 
 	it('does NOT gate /internal/oauth/grants behind the new gate (existing route preserves its own check)', async () => {
-		// /oauth/grants already has its own BV_WEB_INTERNAL_KEY gate — confirming the new
+		// /oauth/grants already has its own dedicated OAuth grant-key gate — confirming the new
 		// middleware doesn't double-block or change its existing 401/400 contract.
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY } as TestEnv;
+		const customEnv = {
+			...env,
+			BV_WEB_INTERNAL_KEY: TEST_INTERNAL_KEY,
+			BV_MCP_OAUTH_MINT_KEY: TEST_OAUTH_MINT_KEY,
+		} as TestEnv;
 		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/grants', {
 			method: 'POST',
-			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_INTERNAL_KEY}` },
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${TEST_OAUTH_MINT_KEY}` },
 			body: JSON.stringify({}),
 		});
 		const res = await send(req, customEnv);

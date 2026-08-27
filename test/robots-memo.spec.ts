@@ -25,6 +25,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock } from './helpers/dns-mock';
+import { ROBOTS_MAX_BODY_BYTES } from '@blackveil/dns-checks';
 
 const { restore } = setupFetchMock();
 afterEach(() => restore());
@@ -177,6 +178,34 @@ describe('withRobotsFetchMemo', () => {
 		expect(inner).toHaveBeenCalledTimes(1);
 		expect(await first.text()).toBe(ALLOW_ALL);
 		expect(await second.text()).toBe(ALLOW_ALL);
+	});
+
+	it('cancels and fail-opens a chunked body over the byte cap without Content-Length', async () => {
+		const { withRobotsFetchMemo, createRobotsFetchMemo } = await import('../src/lib/robots-memo');
+		const cancelled = vi.fn();
+		let pull = 0;
+		const response = new Response(
+			new ReadableStream<Uint8Array>({
+				pull(controller) {
+					if (pull++ === 0) controller.enqueue(new Uint8Array(ROBOTS_MAX_BODY_BYTES));
+					else if (pull === 2) controller.enqueue(new Uint8Array([1]));
+					else if (pull === 3) controller.enqueue(new Uint8Array([2]));
+					else controller.close();
+				},
+				cancel: cancelled,
+			}),
+			{ status: 200 },
+		);
+		Object.defineProperty(response, 'text', {
+			value: () => Promise.reject(new Error('unbounded Response.text() must not be used')),
+		});
+		const inner = vi.fn(async (_input: RequestInfo | URL) => response);
+		const memoized = withRobotsFetchMemo(inner, createRobotsFetchMemo());
+
+		await expect(memoized('https://oversized.example/robots.txt')).rejects.toThrow(/byte limit/);
+		await expect(memoized('https://oversized.example/robots.txt')).rejects.toThrow(/byte limit/);
+		expect(inner).toHaveBeenCalledOnce();
+		expect(cancelled).toHaveBeenCalledOnce();
 	});
 });
 

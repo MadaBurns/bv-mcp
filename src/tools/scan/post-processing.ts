@@ -8,6 +8,7 @@ import { detectCloudflareFallback } from '../../lib/cdn-fallback-detection';
 import { type AsnDohResolver, detectCdnFromAsn } from '../../lib/cdn-asn-detection';
 import { parseDmarcTags } from '../check-dmarc';
 import { isCompletedCheck } from '../../lib/ungraded-display';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../../lib/response-body';
 
 export interface ScanRuntimeOptions {
 	providerSignaturesUrl?: string;
@@ -192,26 +193,34 @@ export async function applyScanPostProcessing(
  * cap the caller side here at 5s so the heuristic doesn't drag scan latency.
  */
 const CERT_META_LOOKUP_TIMEOUT_MS = 5_000;
+const CERT_META_MAX_BODY_BYTES = 64 * 1024;
 
-async function fetchCertIssuerFromCertstream(
+/** @internal Exported for focused timeout/body regressions. */
+export async function fetchCertIssuerFromCertstream(
 	domain: string,
 	certstream: { fetch: typeof fetch },
 	authToken?: string,
+	timeoutMs = CERT_META_LOOKUP_TIMEOUT_MS,
 ): Promise<string | null> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), timeoutMs);
 	try {
-		const controller = new AbortController();
-		const timer = setTimeout(() => controller.abort(), CERT_META_LOOKUP_TIMEOUT_MS);
 		const response = await certstream.fetch(`https://certstream/cert-meta?domain=${encodeURIComponent(domain)}`, {
 			...(authToken ? { headers: { Authorization: `Bearer ${authToken}` } } : {}),
 			signal: controller.signal,
 		});
-		clearTimeout(timer);
-		if (!response.ok) return null;
-		const data = (await response.json()) as { issuer?: string | null; error?: string };
+		if (!response.ok) {
+			await disposeUnreadResponseBody(response);
+			return null;
+		}
+		const data = await readJsonResponseCapped<{ issuer?: string | null; error?: string }>(response, CERT_META_MAX_BODY_BYTES);
+		if (!data) return null;
 		if (data.error || !data.issuer) return null;
 		return data.issuer;
 	} catch {
 		return null;
+	} finally {
+		clearTimeout(timer);
 	}
 }
 

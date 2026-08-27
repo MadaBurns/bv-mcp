@@ -27,11 +27,13 @@
 
 import { safeFetch } from './safe-fetch';
 import { evaluateDefensiveRegistration, type DefensiveReason } from './brand-defensive-registration';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 
 const MAX_ENRICH_CANDIDATES = 50;
 const DEFAULT_BUDGET_MS = 8_000;
 const PER_CANDIDATE_TIMEOUT_MS = 3_000;
 const DOH_ENDPOINT = 'https://dns.google/resolve';
+const DOH_MAX_BODY_BYTES = 512 * 1024;
 
 export interface EnrichInputCandidate {
 	domain: string;
@@ -70,9 +72,14 @@ async function fetchMx(domain: string, signal: AbortSignal): Promise<string[] | 
 		const res = await fetch(`${DOH_ENDPOINT}?name=${encodeURIComponent(domain)}&type=MX`, {
 			signal,
 			headers: { Accept: 'application/dns-json' },
+			redirect: 'manual',
 		});
-		if (!res.ok) return null;
-		const body = (await res.json()) as { Answer?: Array<{ data: string }> };
+		if (!res.ok) {
+			await disposeUnreadResponseBody(res);
+			return null;
+		}
+		const body = await readJsonResponseCapped<{ Answer?: Array<{ data: string }> }>(res, DOH_MAX_BODY_BYTES);
+		if (!body) return null;
 		if (!body.Answer) return [];
 		// MX data format: "<priority> <hostname>" — extract hostname only, strip trailing dot.
 		return body.Answer.map((a) => a.data.split(/\s+/).slice(-1)[0]!.replace(/\.$/, ''));
@@ -99,8 +106,10 @@ async function fetchHttpRedirect(domain: string, signal: AbortSignal): Promise<s
 			redirect: 'manual',
 			signal,
 		});
+		const location = res.status >= 300 && res.status < 400 ? res.headers.get('Location') : null;
+		await disposeUnreadResponseBody(res);
 		if (res.status >= 300 && res.status < 400) {
-			return res.headers.get('Location');
+			return location;
 		}
 		return null;
 	} catch {

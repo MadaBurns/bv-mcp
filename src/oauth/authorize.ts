@@ -4,9 +4,21 @@ import type { AppEnv } from '../index';
 import { AuthorizeQuerySchema } from '../schemas/oauth';
 import { createAuthorizationCode, getClient, putCode } from './storage';
 import { isAuthorizedRequest } from '../lib/auth';
-import { OAUTH_CONSENT_RATE_LIMIT, OAUTH_CONSENT_RATE_WINDOW_SECONDS, OAUTH_KV_PREFIX, parseOwnerAllowIps } from '../lib/config';
+import {
+	isAllowedOAuthRedirectUri,
+	OAUTH_CONSENT_RATE_LIMIT,
+	OAUTH_CONSENT_RATE_WINDOW_SECONDS,
+	OAUTH_KV_PREFIX,
+	parseOwnerAllowIps,
+} from '../lib/config';
 import { resolveClientIpFromRequestHeaders } from '../lib/client-ip';
 import { parseEnvelopeKey } from '../lib/kv-envelope';
+import { readBoundedText } from '../lib/request-body';
+import { consumeOAuthRateLimit, type OAuthRateLimitResult } from './rate-limit';
+import type { QuotaCoordinator } from '../lib/quota-coordinator';
+import { resolveIssuerStrict } from './discovery';
+
+export const MAX_CONSENT_BODY_BYTES = 16 * 1024;
 
 function escapeHtml(s: string): string {
 	return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
@@ -118,7 +130,7 @@ export async function handleAuthorizeGet(c: Context<AppEnv>): Promise<Response> 
 	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	const client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
 	if (!client) return new Response('Unknown client_id', { status: 400 });
-	if (!client.redirect_uris.includes(parsed.redirect_uri)) {
+	if (!isAllowedOAuthRedirectUri(parsed.redirect_uri) || !client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
 	}
 	if (!ownerOAuthEnabled(c.env)) {
@@ -136,58 +148,35 @@ export async function handleAuthorizeGet(c: Context<AppEnv>): Promise<Response> 
 	});
 }
 
-/**
- * Increment and check the per-IP consent-POST rate limiter. Returns true if over the limit.
- *
- * Implements a FIXED window: once the first attempt lands, `expiresAt` is pinned for
- * `OAUTH_CONSENT_RATE_WINDOW_SECONDS` and preserved across subsequent increments. The
- * naive approach of `kv.put(..., { expirationTtl })` on every write would refresh the TTL
- * and allow an attacker (or any stream of attempts) to extend a lockout indefinitely.
- *
- * The stored value is `{ count, expiresAt }` JSON; `expiresAt` is authoritative for window
- * math, and `expirationTtl` on the KV write is only a cleanup mechanism.
- */
-async function consentRateExceeded(kv: KVNamespace, ip: string): Promise<boolean> {
-	const key = `${OAUTH_KV_PREFIX}consent-rl:${ip}`;
-	const nowMs = Date.now();
-	const raw = await kv.get(key);
-
-	let count = 0;
-	let expiresAt = nowMs + OAUTH_CONSENT_RATE_WINDOW_SECONDS * 1000;
-	if (raw) {
-		try {
-			const parsed = JSON.parse(raw) as { count?: unknown; expiresAt?: unknown };
-			if (typeof parsed.expiresAt === 'number' && parsed.expiresAt > nowMs) {
-				// Window still active — preserve expiresAt, keep accumulated count.
-				count = typeof parsed.count === 'number' ? parsed.count : 0;
-				expiresAt = parsed.expiresAt;
-			}
-			// Otherwise: expired or malformed → start a fresh window (count=0, new expiresAt).
-		} catch {
-			// Malformed (e.g., legacy numeric value) — start a fresh window.
-		}
-	}
-
-	if (count >= OAUTH_CONSENT_RATE_LIMIT) return true;
-
-	const next = { count: count + 1, expiresAt };
-	// `expirationTtl` is bounded by CF KV's 60s minimum and used only for cleanup; the
-	// stored `expiresAt` is authoritative for window correctness.
-	const ttl = Math.max(60, Math.ceil((expiresAt - nowMs) / 1000));
-	await kv.put(key, JSON.stringify(next), { expirationTtl: ttl });
-	return false;
+/** Atomically consume one owner-consent attempt when the coordinator is bound. */
+async function consentRateLimit(
+	kv: KVNamespace,
+	ip: string,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<OAuthRateLimitResult> {
+	return consumeOAuthRateLimit({
+		kv,
+		quotaCoordinator,
+		coordinationScope: 'consent',
+		kvKey: `${OAUTH_KV_PREFIX}consent-rl:${ip}`,
+		principal: ip,
+		limit: OAUTH_CONSENT_RATE_LIMIT,
+		windowSeconds: OAUTH_CONSENT_RATE_WINDOW_SECONDS,
+	});
 }
 
 /** Redirect back to the client's registered redirect_uri with an OAuth error + state. */
-function redirectWithError(redirectUri: string, error: string, state: string | undefined): Response {
+function redirectWithError(redirectUri: string, error: string, state: string | undefined, issuer: string): Response {
 	const u = new URL(redirectUri);
 	u.searchParams.set('error', error);
 	if (state) u.searchParams.set('state', state);
+	u.searchParams.set('iss', issuer);
 	return Response.redirect(u.toString(), 302);
 }
 
 /**
- * Handles consent form submission for `POST /oauth/authorize`. Enforces a per-IP rate limit,
+ * Handles consent form submission for `POST /oauth/authorize`. Enforces a per-IP rate limit
+ * and a bounded 16 KB form body,
  * re-validates the original query via `AuthorizeQuerySchema` (from the hidden `_q` field),
  * verifies the client and registered redirect_uri, then checks the submitted owner API key
  * in constant time against `BV_API_KEY`. On success issues a single-use authorization code
@@ -200,7 +189,14 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 
-	if (await consentRateExceeded(kv, ip)) {
+	const consentRate = await consentRateLimit(kv, ip, c.env.QUOTA_COORDINATOR);
+	if (consentRate.unavailable) {
+		return new Response('Authorization rate-limit state unavailable', {
+			status: 503,
+			headers: { 'Cache-Control': 'no-store', 'Retry-After': String(consentRate.retryAfterSeconds) },
+		});
+	}
+	if (consentRate.exceeded) {
 		return new Response('Too many attempts. Try again later.', { status: 429 });
 	}
 
@@ -209,14 +205,13 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 		return new Response('Unsupported content type', { status: 415 });
 	}
 
-	let form: FormData;
-	try {
-		form = await c.req.formData();
-	} catch {
-		return new Response('Invalid form body', { status: 400 });
+	const bodyRead = await readBoundedText(c.req.raw, MAX_CONSENT_BODY_BYTES);
+	if (!bodyRead.ok) {
+		return new Response('Form body too large', { status: 413 });
 	}
-	const apiKey = typeof form.get('api_key') === 'string' ? (form.get('api_key') as string) : '';
-	const qString = typeof form.get('_q') === 'string' ? (form.get('_q') as string) : '';
+	const form = new URLSearchParams(bodyRead.text);
+	const apiKey = form.get('api_key') ?? '';
+	const qString = form.get('_q') ?? '';
 
 	const qParams = new URLSearchParams(qString);
 	const q: Record<string, string> = {};
@@ -233,11 +228,17 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 
 	const client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
 	if (!client) return new Response('Unknown client_id', { status: 400 });
-	if (!client.redirect_uris.includes(parsed.redirect_uri)) {
+	if (!isAllowedOAuthRedirectUri(parsed.redirect_uri) || !client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
 	}
+	let issuer: string;
+	try {
+		issuer = resolveIssuerStrict(c.req.url, c.env.OAUTH_ISSUER);
+	} catch {
+		return new Response('Invalid issuer', { status: 400 });
+	}
 	if (!ownerOAuthEnabled(c.env)) {
-		return redirectWithError(parsed.redirect_uri, 'temporarily_unavailable', parsed.state);
+		return redirectWithError(parsed.redirect_uri, 'temporarily_unavailable', parsed.state, issuer);
 	}
 
 	// OWNER_ALLOW_IPS gate — enforced at the OAuth consent step before BV_API_KEY verification.
@@ -248,13 +249,13 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 	// self-hosted / dev default of no IP gating.
 	const allowed = parseOwnerAllowIps(c.env.OWNER_ALLOW_IPS);
 	if (allowed.length > 0 && !allowed.includes(ip)) {
-		return redirectWithError(parsed.redirect_uri, 'access_denied', parsed.state);
+		return redirectWithError(parsed.redirect_uri, 'access_denied', parsed.state, issuer);
 	}
 
 	const expected = c.env.BV_API_KEY ?? '';
 	const ok = await isAuthorizedRequest(`Bearer ${apiKey}`, expected);
 	if (!ok) {
-		return redirectWithError(parsed.redirect_uri, 'access_denied', parsed.state);
+		return redirectWithError(parsed.redirect_uri, 'access_denied', parsed.state, issuer);
 	}
 
 	const code = createAuthorizationCode();
@@ -274,5 +275,6 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 	const success = new URL(parsed.redirect_uri);
 	success.searchParams.set('code', code);
 	if (parsed.state) success.searchParams.set('state', parsed.state);
+	success.searchParams.set('iss', issuer);
 	return Response.redirect(success.toString(), 302);
 }

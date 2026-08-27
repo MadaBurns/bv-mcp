@@ -21,8 +21,10 @@ import { getEffectiveTld, extractBrandName } from '../../lib/public-suffix';
 import { isInfrastructureProvider } from './infrastructure-providers';
 import type { DiscoveryDnsContext } from './dns-context';
 import { CLOUDFLARE_DOH_ENDPOINT } from '../../lib/dns-endpoints';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../../lib/response-body';
 
 const DEFAULT_TIMEOUT_MS = 5_000;
+const MAX_DOH_BODY_BYTES = 256 * 1024;
 const MAX_LOOKUPS = 10; // RFC 7208 §4.6.4
 const MAX_SEED_WALK_DEPTH = 5;
 const TOTAL_BUDGET_MS = 8_000;
@@ -77,10 +79,14 @@ async function queryTxt(name: string, dohFn: typeof fetch, dohUrl: string, timeo
 		const resp = await dohFn(url, {
 			headers: { Accept: 'application/dns-json' },
 			signal: controller.signal,
+			redirect: 'manual',
 		});
-		clearTimeout(timeoutId);
-		if (!resp.ok) return [];
-		const json = (await resp.json()) as DohResponse;
+		if (!resp.ok) {
+			await disposeUnreadResponseBody(resp);
+			return [];
+		}
+		const json = await readJsonResponseCapped<DohResponse>(resp, MAX_DOH_BODY_BYTES);
+		if (!json) return [];
 		if (json.Status !== 0 || !json.Answer) return [];
 		// TXT data comes as quoted, possibly multi-string ("a" "b") → concatenate.
 		return json.Answer.map((a) =>
@@ -89,8 +95,9 @@ async function queryTxt(name: string, dohFn: typeof fetch, dohUrl: string, timeo
 				.trim(),
 		);
 	} catch {
-		clearTimeout(timeoutId);
 		return [];
+	} finally {
+		clearTimeout(timeoutId);
 	}
 }
 

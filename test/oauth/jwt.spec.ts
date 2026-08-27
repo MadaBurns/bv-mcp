@@ -49,6 +49,61 @@ describe('oauth/jwt', () => {
 		).rejects.toThrow(/malformed/i);
 	});
 
+	it('rejects a correctly signed legacy token whose minted lifetime exceeds the verifier maximum', async () => {
+		const { signJwt, verifyJwt } = await import('../../src/oauth/jwt');
+		const token = await signJwt(
+			{ sub: 'tenant-1', jti: 'legacy-90-day' },
+			{ secret: SECRET, ttlSeconds: 90 * 24 * 60 * 60, issuer: 'https://x', audience: 'https://y', now: NOW },
+		);
+
+		await expect(
+			verifyJwt(token, {
+				secret: SECRET,
+				issuer: 'https://x',
+				audience: 'https://y',
+				now: NOW,
+				maxLifetimeSeconds: 60 * 60,
+			}),
+		).rejects.toThrow('token lifetime exceeds maximum');
+	});
+
+	it('accepts a token exactly at the configured maximum lifetime', async () => {
+		const { signJwt, verifyJwt } = await import('../../src/oauth/jwt');
+		const token = await signJwt(
+			{ sub: 'tenant-1', jti: 'one-hour' },
+			{ secret: SECRET, ttlSeconds: 60 * 60, issuer: 'https://x', audience: 'https://y', now: NOW },
+		);
+
+		await expect(
+			verifyJwt(token, {
+				secret: SECRET,
+				issuer: 'https://x',
+				audience: 'https://y',
+				now: NOW,
+				maxLifetimeSeconds: 60 * 60,
+			}),
+		).resolves.toMatchObject({ sub: 'tenant-1', iat: NOW, exp: NOW + 60 * 60 });
+	});
+
+	it('rejects a token issued beyond the allowed clock skew', async () => {
+		const { signJwt, verifyJwt } = await import('../../src/oauth/jwt');
+		const token = await signJwt(
+			{ sub: 'tenant-1', jti: 'future-token' },
+			{ secret: SECRET, ttlSeconds: 60 * 60, issuer: 'https://x', audience: 'https://y', now: NOW + 31 },
+		);
+
+		await expect(
+			verifyJwt(token, {
+				secret: SECRET,
+				issuer: 'https://x',
+				audience: 'https://y',
+				now: NOW,
+				clockSkewSeconds: 30,
+				maxLifetimeSeconds: 60 * 60,
+			}),
+		).rejects.toThrow('token issued in the future');
+	});
+
 	it('signJwt ignores attempts to override iss/aud via payload', async () => {
 		const { signJwt, verifyJwt } = await import('../../src/oauth/jwt');
 		const token = await signJwt(

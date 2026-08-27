@@ -65,6 +65,7 @@ describe('Tenant Discovery Route Integration', () => {
 			headers: {
 				'Authorization': `Bearer ${TEST_INTERNAL_KEY}`,
 				'X-Tenant': TEST_TENANT_ID,
+				'X-Tenant-Scope': TEST_TENANT_ID,
 				'Content-Type': 'application/json',
 			},
 			body: JSON.stringify({ signals: ['invalid-signal'] }),
@@ -108,6 +109,7 @@ describe('Tenant Discovery Route Integration', () => {
 			headers: {
 				'Authorization': `Bearer ${TEST_INTERNAL_KEY}`,
 				'X-Tenant': TEST_TENANT_ID,
+				'X-Tenant-Scope': TEST_TENANT_ID,
 				'Content-Type': 'application/json',
 			},
 			body: JSON.stringify({ seed_domains: ['seed.com'], auto_import: true }),

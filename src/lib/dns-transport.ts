@@ -6,8 +6,21 @@ import { DohResponseSchema } from '../schemas/dns';
 import { logError } from './log';
 import type { Semaphore } from './semaphore';
 import { CLOUDFLARE_DOH_ENDPOINT } from './dns-endpoints';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 
 const GOOGLE_DOH_ENDPOINT = 'https://dns.google/resolve';
+const DOH_RESPONSE_MAX_BODY_BYTES = 512 * 1024;
+
+function resolverLabel(url: string): 'cloudflare' | 'google' | 'configured_secondary' {
+	try {
+		const origin = new URL(url).origin;
+		if (origin === new URL(CLOUDFLARE_DOH_ENDPOINT).origin) return 'cloudflare';
+		if (origin === new URL(GOOGLE_DOH_ENDPOINT).origin) return 'google';
+	} catch {
+		// Invalid URLs are classified without reflecting their contents into logs.
+	}
+	return 'configured_secondary';
+}
 
 function buildDohUrl(endpoint: string, domain: string, type: RecordTypeName, dnssecCheck: boolean, checkingDisabled = false): string {
 	const params = new URLSearchParams({
@@ -50,24 +63,27 @@ export async function fetchDohOutcome(
 				method: 'GET',
 				headers,
 				signal: AbortSignal.timeout(timeoutMs),
+				redirect: 'manual',
 				...(opts?.useEdgeCache ? { cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true } } : {}),
 			});
 		const response = opts?.semaphore ? await opts.semaphore.run(doFetch) : await doFetch();
 		if (!response.ok) {
+			const status = response.status;
+			await disposeUnreadResponseBody(response);
 			logError('DNS fetch non-2xx', {
 				severity: 'warn',
 				category: 'dns-transport',
-				details: { url: url.replace(/name=[^&]+/, 'name=<domain>'), status: response.status },
+				details: { resolver: resolverLabel(url), status },
 			});
 			return { kind: 'error', reason: 'http' };
 		}
-		const data = await response.json();
+		const data = await readJsonResponseCapped<unknown>(response, DOH_RESPONSE_MAX_BODY_BYTES);
 		const parsed = DohResponseSchema.safeParse(data);
 		if (!parsed.success) {
 			logError('DNS parse failure', {
 				severity: 'warn',
 				category: 'dns-transport',
-				details: { url: url.replace(/name=[^&]+/, 'name=<domain>') },
+				details: { resolver: resolverLabel(url) },
 			});
 			return { kind: 'error', reason: 'parse' };
 		}
@@ -77,7 +93,7 @@ export async function fetchDohOutcome(
 		logError(isTimeout ? 'DNS fetch timeout' : 'DNS fetch failed', {
 			severity: 'warn',
 			category: 'dns-transport',
-			details: { url: url.replace(/name=[^&]+/, 'name=<domain>'), errorType: isTimeout ? 'timeout' : 'network' },
+			details: { resolver: resolverLabel(url), errorType: isTimeout ? 'timeout' : 'network' },
 		});
 		return { kind: 'error', reason: isTimeout ? 'timeout' : 'network' };
 	}
@@ -163,6 +179,7 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 				method: 'GET',
 				headers: { Accept: 'application/dns-json' },
 				signal: fetchSignal,
+				redirect: 'manual',
 				cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true },
 			});
 		} catch (err) {
@@ -186,14 +203,22 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		}
 
 		if (!response.ok) {
-			if (attempt < retries && response.status >= 500) {
+			const status = response.status;
+			await disposeUnreadResponseBody(response);
+			if (attempt < retries && status >= 500) {
 				await retryDelay(attempt);
 				continue;
 			}
-			throw new DnsQueryError(`DoH returned HTTP ${response.status}`, domain, type, response.status);
+			throw new DnsQueryError(`DoH returned HTTP ${status}`, domain, type, status);
 		}
 
-		const raw = await response.json();
+		const raw = await readJsonResponseCapped<unknown>(response, DOH_RESPONSE_MAX_BODY_BYTES);
+		if (callerSignal?.aborted) {
+			throw new DnsQueryError(`DNS query aborted by caller`, domain, type);
+		}
+		if (fetchSignal.aborted) {
+			throw new DnsQueryError(`DNS query timed out after ${timeoutMs}ms`, domain, type);
+		}
 		const validated = DohResponseSchema.safeParse(raw);
 		if (!validated.success) {
 			throw new DnsQueryError('Invalid DoH response format', domain, type);

@@ -1,18 +1,13 @@
 {
-  "name": "bv-mcp Cloudflare Worker DevContainer",
-  "build": {
-    "dockerfile": "Dockerfile"
-  },
-  "postCreateCommand": "npm install",
-  "forwardPorts": [8787],
-  "features": {},
-  "settings": {
-    "terminal.integrated.defaultProfile.linux": "zsh"
-  },
-  "extensions": [
-    "esbenp.prettier-vscode",
-    "dbaeumer.vscode-eslint",
-    "cloudflare.cloudflare-vscode",
-    "ms-vscode.vscode-typescript-next"
-  ]
+	"name": "bv-mcp Cloudflare Worker DevContainer",
+	"build": {
+		"dockerfile": "Dockerfile"
+	},
+	"postCreateCommand": "npm ci",
+	"forwardPorts": [8787],
+	"features": {},
+	"settings": {
+		"terminal.integrated.defaultProfile.linux": "zsh"
+	},
+	"extensions": ["esbenp.prettier-vscode", "dbaeumer.vscode-eslint", "cloudflare.cloudflare-vscode", "ms-vscode.vscode-typescript-next"]
 }

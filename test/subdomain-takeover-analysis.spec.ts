@@ -31,6 +31,32 @@ describe('subdomain-takeover-analysis', () => {
 		await expect(probeHttpFingerprint('app.example.com', 'old-app.herokuapp.com', fetchFn)).resolves.toBe('Heroku');
 	});
 
+	it('does not match a fingerprint from a truncated oversized body', async () => {
+		const cancelled = vi.fn();
+		let pull = 0;
+		const fetchFn = vi.fn(
+			async () =>
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							if (pull++ === 0) {
+								const prefix = new TextEncoder().encode('No such app');
+								const chunk = new Uint8Array(65_536);
+								chunk.set(prefix);
+								controller.enqueue(chunk);
+							} else if (pull === 2) controller.enqueue(new Uint8Array([1]));
+							else if (pull === 3) controller.enqueue(new Uint8Array([2]));
+							else controller.close();
+						},
+						cancel: cancelled,
+					}),
+				),
+		);
+
+		await expect(probeHttpFingerprint('app.example.com', 'old-app.herokuapp.com', fetchFn)).resolves.toBeNull();
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
+
 	it('returns null when the CNAME does not match any known takeover service', async () => {
 		const fetchFn = vi.fn();
 		await expect(probeHttpFingerprint('app.example.com', 'lb.example.com', fetchFn)).resolves.toBeNull();

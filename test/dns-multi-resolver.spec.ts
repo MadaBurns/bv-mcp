@@ -27,22 +27,16 @@ function mockSplitResolvers() {
 		const type = Number(u.searchParams.get('type') ?? '1');
 
 		if (isCloudflare || isGoogle) {
-			return Promise.resolve(createDohResponse([{ name, type }], [
-				{ name, type: 1, TTL: 300, data: '192.0.2.1' },
-			]));
+			return Promise.resolve(createDohResponse([{ name, type }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
 		}
 		// Other resolvers return different IP
-		return Promise.resolve(createDohResponse([{ name, type }], [
-			{ name, type: 1, TTL: 300, data: '5.6.7.8' },
-		]));
+		return Promise.resolve(createDohResponse([{ name, type }], [{ name, type: 1, TTL: 300, data: '5.6.7.8' }]));
 	});
 }
 
 describe('queryMultiResolver', () => {
 	it('returns CONSISTENT when all resolvers agree', async () => {
-		mockConsistentResolvers([
-			{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' },
-		]);
+		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' }]);
 
 		const result = await queryMultiResolver('example.com', 'A');
 		expect(result.recordType).toBe('A');
@@ -76,16 +70,48 @@ describe('queryMultiResolver', () => {
 		expect(['INCOMPLETE', 'CONSISTENT']).toContain(result.status);
 	});
 
+	it('caps and cancels oversized resolver response bodies', async () => {
+		const cancelled = vi.fn();
+		globalThis.fetch = vi.fn().mockImplementation(() => {
+			let pull = 0;
+			return Promise.resolve(
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							if (pull++ === 0) controller.enqueue(new Uint8Array(512 * 1024));
+							else controller.enqueue(new Uint8Array([1]));
+						},
+						cancel: cancelled,
+					}),
+					{ status: 200, headers: { 'Content-Type': 'application/dns-json' } },
+				),
+			);
+		});
+
+		const result = await queryMultiResolver('example.com', 'A');
+
+		expect(result.status).toBe('INCOMPLETE');
+		expect(cancelled).toHaveBeenCalledTimes(RESOLVERS.length);
+	});
+
 	it('returns per-resolver answers', async () => {
-		mockConsistentResolvers([
-			{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' },
-		]);
+		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' }]);
 
 		const result = await queryMultiResolver('example.com', 'A');
 		for (const ra of result.resolverAnswers) {
 			expect(ra).toHaveProperty('resolver');
 			expect(ra).toHaveProperty('status');
 			expect(ra).toHaveProperty('answers');
+		}
+	});
+
+	it('does not follow resolver redirects', async () => {
+		mockConsistentResolvers([]);
+
+		await queryMultiResolver('example.com', 'A');
+
+		for (const [, init] of vi.mocked(globalThis.fetch).mock.calls) {
+			expect(init?.redirect).toBe('manual');
 		}
 	});
 });

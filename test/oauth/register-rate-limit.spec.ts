@@ -7,6 +7,7 @@
  */
 import { SELF, env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
 import { clearKvPrefix } from '../helpers/kv';
 
 const VALID_BODY = JSON.stringify({ redirect_uris: ['https://claude.ai/cb'] });
@@ -14,13 +15,15 @@ const HEADERS = { 'Content-Type': 'application/json' };
 
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 
 afterEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 
-function register(ip: string) {
+function register(ip: string): Promise<Response> {
 	return SELF.fetch('https://example.com/oauth/register', {
 		method: 'POST',
 		headers: { ...HEADERS, 'cf-connecting-ip': ip },
@@ -67,5 +70,12 @@ describe('POST /oauth/register — per-IP rate limit', () => {
 		// A completely different IP must still succeed.
 		const res = await register(allowedIp);
 		expect(res.status).toBe(201);
+	});
+
+	it('admits exactly 10 registrations from a concurrent same-IP burst', async () => {
+		const responses = await Promise.all(Array.from({ length: 25 }, () => register('203.0.113.77')));
+		const statuses = responses.map((response) => response.status);
+		expect(statuses.filter((status) => status === 201)).toHaveLength(10);
+		expect(statuses.filter((status) => status === 429)).toHaveLength(15);
 	});
 });

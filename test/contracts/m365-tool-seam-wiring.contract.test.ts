@@ -55,7 +55,8 @@ const IDENTITY_SECOPS_TOOLS = [...Object.keys(ACTIVE_TOOL_PATH_SEGMENTS), 'query
 const M365_BASE_PATH = '/api/internal/mcp/m365';
 
 /** A real principal — the Layer-2 registry guard hard-rejects without one. */
-const KEY_HASH = 'k_contract_principal';
+const KEY_HASH = 'a'.repeat(64);
+const M365_IDENTITY = { kind: 'api_key' as const, credentialHash: KEY_HASH };
 const INTERNAL_BEARER = 'bv-web-internal-key-value';
 
 interface CapturedRequest {
@@ -171,6 +172,7 @@ describe('M365 seam — outbound request contract (through handleToolsCall)', ()
 				m365Proxy: proxy,
 				m365ProxyAuthToken: INTERNAL_BEARER,
 				keyHash: KEY_HASH,
+				m365Identity: M365_IDENTITY,
 			});
 
 			expect(calls).toHaveLength(1);
@@ -182,13 +184,13 @@ describe('M365 seam — outbound request contract (through handleToolsCall)', ()
 			expect(call.headers['Content-Type']).toBe('application/json');
 
 			// THE UNCOVERED WIRE: the registry must thread `m365ProxyAuthToken`
-			// (= BV_WEB_INTERNAL_KEY) into the bearer. Dropping it at the dispatch
+			// (= BV_MCP_M365_KEY) into the bearer. Dropping it at the dispatch
 			// arm is invisible to every other test in the repo and 401s in prod.
 			expect(call.headers['Authorization']).toBe(`Bearer ${INTERNAL_BEARER}`);
 
-			// keyHash rides in the BODY (not a header) — bv-web-prod attributes the
-			// call to a principal from there.
-			expect(call.body.keyHash).toBe(KEY_HASH);
+			// The discriminated identity rides in the body; security ownership and
+			// downstream credential lookup are not overloaded onto one hash field.
+			expect(call.body.identity).toEqual(M365_IDENTITY);
 			expect(call.body.ms_tenant_id).toBe('tenant-abc');
 		});
 	}
@@ -201,6 +203,7 @@ describe('M365 seam — outbound request contract (through handleToolsCall)', ()
 			m365Proxy: proxy,
 			m365ProxyAuthToken: INTERNAL_BEARER,
 			keyHash: KEY_HASH,
+			m365Identity: M365_IDENTITY,
 		});
 
 		expect(calls).toHaveLength(0);
@@ -259,7 +262,7 @@ describe('M365 seam — outbound request contract (through handleToolsCall)', ()
 				arguments: { ms_tenant_id: 'tenant-abc', user_principal_name: 'alice@example.com', failures_only: true, since_hours: 6 },
 			},
 			undefined,
-			{ m365Proxy: proxy, m365ProxyAuthToken: INTERNAL_BEARER, keyHash: KEY_HASH },
+			{ m365Proxy: proxy, m365ProxyAuthToken: INTERNAL_BEARER, keyHash: KEY_HASH, m365Identity: M365_IDENTITY },
 		);
 
 		expect(calls[0]!.body).toMatchObject({
@@ -267,7 +270,7 @@ describe('M365 seam — outbound request contract (through handleToolsCall)', ()
 			user_principal_name: 'alice@example.com',
 			failures_only: true,
 			since_hours: 6,
-			keyHash: KEY_HASH,
+			identity: M365_IDENTITY,
 		});
 	});
 });
@@ -286,6 +289,7 @@ describe('M365 seam — the representative sample/live marker reaches the caller
 			m365Proxy: proxy,
 			m365ProxyAuthToken: INTERNAL_BEARER,
 			keyHash: KEY_HASH,
+			m365Identity: M365_IDENTITY,
 		});
 
 		expect(result.isError).toBeFalsy();
@@ -314,6 +318,7 @@ describe('M365 seam — the representative sample/live marker reaches the caller
 			m365Proxy: proxy,
 			m365ProxyAuthToken: INTERNAL_BEARER,
 			keyHash: KEY_HASH,
+			m365Identity: M365_IDENTITY,
 		});
 
 		const data = result.structuredContent?.data as Record<string, unknown>;
@@ -332,6 +337,7 @@ describe('M365 seam — the representative sample/live marker reaches the caller
 			m365Proxy: proxy,
 			m365ProxyAuthToken: INTERNAL_BEARER,
 			keyHash: KEY_HASH,
+			m365Identity: M365_IDENTITY,
 		});
 
 		expect(Object.hasOwn(result.structuredContent?.data as object, 'representative')).toBe(false);
@@ -339,7 +345,7 @@ describe('M365 seam — the representative sample/live marker reaches the caller
 });
 
 describe('M365 seam — producer failure classification reaches the caller', () => {
-	// bv-web-prod's documented internal-gate answers: 503 when BV_WEB_INTERNAL_KEY
+	// bv-web-prod's documented internal-gate answers: 503 when BV_MCP_M365_KEY
 	// is unset upstream, 401 on a missing/wrong bearer, 404 if the route moves.
 	for (const status of [401, 403, 404, 500, 503]) {
 		it(`HTTP ${status} → the caller sees ok:false + m365_proxy_${status} (never a fabricated success)`, async () => {
@@ -350,6 +356,7 @@ describe('M365 seam — producer failure classification reaches the caller', () 
 				m365Proxy: proxy,
 				m365ProxyAuthToken: INTERNAL_BEARER,
 				keyHash: KEY_HASH,
+				m365Identity: M365_IDENTITY,
 			});
 
 			expect(result.structuredContent).toMatchObject({ ok: false, error: `m365_proxy_${status}` });
@@ -369,6 +376,7 @@ describe('M365 seam — producer failure classification reaches the caller', () 
 			m365Proxy: proxy,
 			m365ProxyAuthToken: INTERNAL_BEARER,
 			keyHash: KEY_HASH,
+			m365Identity: M365_IDENTITY,
 		});
 
 		expect(result.structuredContent).toMatchObject({ ok: false, error: 'm365_proxy_unreachable' });

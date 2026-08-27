@@ -2,6 +2,8 @@
 	"$schema": "../../node_modules/wrangler/config-schema.json",
 	"name": "bv-whois",
 	"main": "src/index.ts",
+	"workers_dev": false,
+	"preview_urls": false,
 	"compatibility_date": "2026-07-29",
 	"compatibility_flags": [
 		"global_fetch_strictly_public",

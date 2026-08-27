@@ -41,6 +41,7 @@ export default defineConfig({
 							bindings: {
 								ENABLE_OAUTH: 'true',
 								ENABLE_OWNER_OAUTH: 'true',
+								BV_MCP_TENANT_KEY: 'tenant-orchestrator-internal-key',
 								// v2.10.9 route gate requires `OAUTH_SIGNING_SECRET >= 32 bytes` for OAuth
 								// routes to serve (otherwise 503 service_unavailable). Tests that override
 								// env (chaos/e2e/token specs) explicitly unset it. Without this binding,

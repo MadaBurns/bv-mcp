@@ -3,6 +3,7 @@
 import { probeDelegationConsistency, type DelegationProbeDependencies } from '../lib/authoritative-dns-infra/delegation-probe';
 import { ROOT_HINTS, ROOT_SERVER_NAMES } from '../lib/authoritative-dns-infra/root-hints';
 import { normalizeInfraHostname } from '../lib/authoritative-dns-infra/probe-client';
+import { readBoundedText } from '../lib/request-body';
 import type {
 	AuthoritativeDnsInfraEvidence,
 	RootServerSetEvidence,
@@ -11,6 +12,8 @@ import type {
 interface AuthoritativeProbeRequest {
 	hostname?: unknown;
 }
+
+const MAX_PROBE_BODY_BYTES = 1024;
 
 function jsonResponse(body: unknown, status = 200): Response {
 	return new Response(JSON.stringify(body), {
@@ -22,11 +25,13 @@ function jsonResponse(body: unknown, status = 200): Response {
 	});
 }
 
-async function readJson(request: Request): Promise<unknown> {
+async function readJson(request: Request): Promise<{ ok: true; value: unknown } | { ok: false; status: 400 | 413 }> {
+	const body = await readBoundedText(request, MAX_PROBE_BODY_BYTES);
+	if (!body.ok) return { ok: false, status: 413 };
 	try {
-		return await request.json();
+		return { ok: true, value: JSON.parse(body.text) as unknown };
 	} catch {
-		return {};
+		return { ok: false, status: 400 };
 	}
 }
 
@@ -47,7 +52,9 @@ async function handleAuthoritativeDnsProbe(request: Request): Promise<Response> 
 		return jsonResponse({ error: 'method_not_allowed' }, 405);
 	}
 
-	const body = await readJson(request) as AuthoritativeProbeRequest;
+	const parsed = await readJson(request);
+	if (!parsed.ok) return jsonResponse({ error: parsed.status === 413 ? 'request_body_too_large' : 'invalid_json' }, parsed.status);
+	const body = parsed.value as AuthoritativeProbeRequest;
 	const rawHostname = typeof body.hostname === 'string' ? body.hostname : '';
 	const hostname = normalizeInfraHostname(rawHostname);
 	if (!validHostname(hostname)) {
@@ -90,7 +97,9 @@ export async function handleDelegationConsistencyProbe(
 		return jsonResponse({ error: 'method_not_allowed' }, 405);
 	}
 
-	const body = await readJson(request) as AuthoritativeProbeRequest;
+	const parsed = await readJson(request);
+	if (!parsed.ok) return jsonResponse({ error: parsed.status === 413 ? 'request_body_too_large' : 'invalid_json' }, parsed.status);
+	const body = parsed.value as AuthoritativeProbeRequest;
 	const rawHostname = typeof body.hostname === 'string' ? body.hostname : '';
 	const hostname = normalizeInfraHostname(rawHostname);
 	if (!validHostname(hostname)) {

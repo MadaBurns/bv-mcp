@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
+// @ts-expect-error cloudflare:test exports are injected by the Workers Vitest pool at runtime.
+import { env } from 'cloudflare:test';
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -103,7 +105,7 @@ describe('trial-keys', () => {
 			const kv = createMockKv(store);
 
 			const { hash } = await createTrialKey(kv, { label: 'Test' });
-			const result = await resolveTrialKey(kv, hash);
+			const result = await resolveTrialKey(kv, hash, undefined, env.QUOTA_COORDINATOR);
 
 			expect(result).not.toBeNull();
 			expect(result!.authenticated).toBe(true);
@@ -122,9 +124,9 @@ describe('trial-keys', () => {
 			const { hash } = await createTrialKey(kv, { label: 'Test', maxUses: 5 });
 
 			// Call 3 times
-			await resolveTrialKey(kv, hash);
-			await resolveTrialKey(kv, hash);
-			const third = await resolveTrialKey(kv, hash);
+			await resolveTrialKey(kv, hash, undefined, env.QUOTA_COORDINATOR);
+			await resolveTrialKey(kv, hash, undefined, env.QUOTA_COORDINATOR);
+			const third = await resolveTrialKey(kv, hash, undefined, env.QUOTA_COORDINATOR);
 
 			expect(third).not.toBeNull();
 			expect(third!.authenticated).toBe(true);
@@ -140,15 +142,28 @@ describe('trial-keys', () => {
 
 			const { hash } = await createTrialKey(kv, { label: 'Test', maxUses: 2 });
 
-			await resolveTrialKey(kv, hash); // use 1
-			await resolveTrialKey(kv, hash); // use 2
-			const third = await resolveTrialKey(kv, hash); // exhausted
+			await resolveTrialKey(kv, hash, undefined, env.QUOTA_COORDINATOR); // use 1
+			await resolveTrialKey(kv, hash, undefined, env.QUOTA_COORDINATOR); // use 2
+			const third = await resolveTrialKey(kv, hash, undefined, env.QUOTA_COORDINATOR); // exhausted
 
 			expect(third).not.toBeNull();
 			expect(third!.authenticated).toBe(false);
 			if (!third!.authenticated) {
 				expect(third!.reason).toBe('exhausted');
 			}
+		});
+
+		it('enforces maxUses atomically under concurrent resolution', async () => {
+			const { createTrialKey, resolveTrialKey } = await import('../src/lib/trial-keys');
+			const store = new Map<string, { value: string; expiration?: number }>();
+			const kv = createMockKv(store);
+			const { hash } = await createTrialKey(kv, { label: 'Concurrent', maxUses: 5 });
+
+			const results = await Promise.all(
+				Array.from({ length: 20 }, () => resolveTrialKey(kv, hash, undefined, env.QUOTA_COORDINATOR)),
+			);
+			expect(results.filter((result) => result?.authenticated)).toHaveLength(5);
+			expect(results.filter((result) => result && !result.authenticated && result.reason === 'exhausted')).toHaveLength(15);
 		});
 
 		it('returns expired when time limit passed', async () => {
@@ -167,7 +182,7 @@ describe('trial-keys', () => {
 			};
 			store.set('trial:abc123', { value: JSON.stringify(expiredRecord) });
 
-			const result = await resolveTrialKey(kv, 'abc123');
+			const result = await resolveTrialKey(kv, 'abc123', undefined, env.QUOTA_COORDINATOR);
 			expect(result).not.toBeNull();
 			expect(result!.authenticated).toBe(false);
 			if (!result!.authenticated) {
@@ -179,7 +194,7 @@ describe('trial-keys', () => {
 			const { resolveTrialKey } = await import('../src/lib/trial-keys');
 			const kv = createMockKv();
 
-			const result = await resolveTrialKey(kv, 'nonexistent');
+			const result = await resolveTrialKey(kv, 'nonexistent', undefined, env.QUOTA_COORDINATOR);
 			expect(result).toBeNull();
 		});
 
@@ -189,7 +204,7 @@ describe('trial-keys', () => {
 			const kv = createMockKv(store);
 
 			store.set('trial:badhash', { value: 'not-json' });
-			const result = await resolveTrialKey(kv, 'badhash');
+			const result = await resolveTrialKey(kv, 'badhash', undefined, env.QUOTA_COORDINATOR);
 			expect(result).toBeNull();
 		});
 
@@ -202,7 +217,7 @@ describe('trial-keys', () => {
 				list: vi.fn(),
 			} as unknown as KVNamespace;
 
-			const result = await resolveTrialKey(kv, 'somehash');
+			const result = await resolveTrialKey(kv, 'somehash', undefined, env.QUOTA_COORDINATOR);
 			expect(result).toBeNull();
 		});
 	});
@@ -245,20 +260,65 @@ describe('trial-keys', () => {
 			const kv = createMockKv(store);
 
 			const { hash } = await createTrialKey(kv, { label: 'Revoke Test' });
-			const revoked = await revokeTrialKey(kv, hash);
+			const revoked = await revokeTrialKey(kv, hash, env.QUOTA_COORDINATOR);
 
 			expect(revoked).toBe(true);
 
 			// Should no longer resolve
-			const result = await resolveTrialKey(kv, hash);
+			const result = await resolveTrialKey(kv, hash, undefined, env.QUOTA_COORDINATOR);
 			expect(result).toBeNull();
+		});
+
+		it('keeps a revoked key denied when a stale KV replica serves and rewrites its old record', async () => {
+			const { createTrialKey, revokeTrialKey, resolveTrialKey } = await import('../src/lib/trial-keys');
+			const store = new Map<string, { value: string; expiration?: number }>();
+			const kv = createMockKv(store);
+
+			const { hash } = await createTrialKey(kv, { label: 'Stale Replica Test' });
+			const staleRecord = store.get(`trial:${hash}`);
+			expect(staleRecord).toBeDefined();
+
+			await revokeTrialKey(kv, hash, env.QUOTA_COORDINATOR);
+			store.set(`trial:${hash}`, staleRecord!);
+
+			const result = await resolveTrialKey(kv, hash, undefined, env.QUOTA_COORDINATOR);
+			expect(result).toEqual({ authenticated: false, reason: 'revoked' });
+			expect(store.get(`trial:${hash}`)).toEqual(staleRecord);
+		});
+
+		it('commits the strong deny when the revocation-side KV replica reports the key missing', async () => {
+			const { createTrialKey, revokeTrialKey, resolveTrialKey } = await import('../src/lib/trial-keys');
+			const staleReplicaStore = new Map<string, { value: string; expiration?: number }>();
+			const staleReplica = createMockKv(staleReplicaStore);
+			const { hash } = await createTrialKey(staleReplica, { label: 'Revocation Read Miss' });
+
+			// Model eventual consistency: the revocation colo has not observed the
+			// create, while another replica can still serve the live record.
+			const revocationReplica = createMockKv();
+			await expect(revokeTrialKey(revocationReplica, hash, env.QUOTA_COORDINATOR)).resolves.toBe(false);
+			expect(revocationReplica.delete).toHaveBeenCalledWith(`trial:${hash}`);
+
+			await expect(resolveTrialKey(staleReplica, hash, undefined, env.QUOTA_COORDINATOR)).resolves.toEqual({
+				authenticated: false,
+				reason: 'revoked',
+			});
+		});
+
+		it('fails closed without deleting KV when strong revocation state is unavailable', async () => {
+			const { createTrialKey, revokeTrialKey } = await import('../src/lib/trial-keys');
+			const store = new Map<string, { value: string; expiration?: number }>();
+			const kv = createMockKv(store);
+			const { hash } = await createTrialKey(kv, { label: 'Unavailable Revocation Test' });
+
+			await expect(revokeTrialKey(kv, hash)).rejects.toThrow('revocation state is unavailable');
+			expect(store.has(`trial:${hash}`)).toBe(true);
 		});
 
 		it('returns false for nonexistent key', async () => {
 			const { revokeTrialKey } = await import('../src/lib/trial-keys');
 			const kv = createMockKv();
 
-			const revoked = await revokeTrialKey(kv, 'nonexistent');
+			const revoked = await revokeTrialKey(kv, 'nonexistent', env.QUOTA_COORDINATOR);
 			expect(revoked).toBe(false);
 		});
 	});
@@ -306,13 +366,13 @@ describe('trial-keys', () => {
 			const { rawKey, hash } = await createTrialKey(kv, { label: 'Cascade Test' });
 
 			// resolveTier should find the trial key (step 2) after cache miss (step 1)
-			const result = await resolveTier(rawKey, { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
+			const result = await resolveTier(rawKey, { RATE_LIMIT: kv, QUOTA_COORDINATOR: env.QUOTA_COORDINATOR }, undefined, 'https://example.com/mcp');
 			expect(result.authenticated).toBe(true);
 			expect(result.tier).toBe('developer');
 			expect(result.keyHash).toBe(hash);
 		});
 
-		it('caches trial key result with short TTL', async () => {
+		it('does not positive-cache a trial authorization', async () => {
 			const { resolveTier } = await import('../src/lib/tier-auth');
 			const store = new Map<string, { value: string; expiration?: number }>();
 			const kv = createMockKv(store);
@@ -320,12 +380,11 @@ describe('trial-keys', () => {
 			const { createTrialKey } = await import('../src/lib/trial-keys');
 			const { rawKey, hash } = await createTrialKey(kv, { label: 'Cache TTL Test' });
 
-			await resolveTier(rawKey, { RATE_LIMIT: kv }, undefined, 'https://example.com/mcp');
+			await resolveTier(rawKey, { RATE_LIMIT: kv, QUOTA_COORDINATOR: env.QUOTA_COORDINATOR }, undefined, 'https://example.com/mcp');
 
-			// Should have cached the tier result
+			// Every request must consume one atomic use; a tier cache hit would bypass it.
 			const cached = store.get(`tier:${hash}`);
-			expect(cached).toBeDefined();
-			expect(cached!.expiration).toBe(60); // TRIAL_KEY_CACHE_TTL
+			expect(cached).toBeUndefined();
 		});
 
 		it('returns unauthenticated for expired trial key', async () => {

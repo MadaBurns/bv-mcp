@@ -8,10 +8,14 @@
  * selected nameserver, not a recursive resolver projection.
  */
 
+import { queryDns } from '../dns-transport';
+import { RecordType, type RecordTypeName } from '../dns-types';
+
 const DNS_PORT = 53;
 const DNS_HEADER_BYTES = 12;
 const DNS_CLASS_IN = 1;
 const MAX_DNS_MESSAGE_BYTES = 65_535;
+const MAX_NAMESERVER_ADDRESSES = 16;
 
 export interface DirectDnsRecord {
 	name: string;
@@ -33,6 +37,149 @@ export type DirectDnsQuery = (
 	type: number,
 	timeoutMs?: number,
 ) => Promise<DirectDnsResponse>;
+
+export type NameserverAddressResolver = (
+	nameserver: string,
+	type: Extract<RecordTypeName, 'A' | 'AAAA'>,
+	timeoutMs: number,
+) => Promise<string[]>;
+
+function parseIpv4(address: string): number[] | null {
+	const parts = address.split('.');
+	if (parts.length !== 4) return null;
+	const octets: number[] = [];
+	for (const part of parts) {
+		if (!/^(?:0|[1-9]\d{0,2})$/.test(part)) return null;
+		const value = Number(part);
+		if (!Number.isSafeInteger(value) || value > 255) return null;
+		octets.push(value);
+	}
+	return octets;
+}
+
+function parseIpv6(address: string): number[] | null {
+	if (!address.includes(':') || address.includes('%')) return null;
+	const halves = address.toLowerCase().split('::');
+	if (halves.length > 2) return null;
+
+	const parseHalf = (half: string): number[] | null => {
+		if (!half) return [];
+		const tokens = half.split(':');
+		const groups: number[] = [];
+		for (let index = 0; index < tokens.length; index += 1) {
+			const token = tokens[index];
+			if (token.includes('.')) {
+				if (index !== tokens.length - 1) return null;
+				const ipv4 = parseIpv4(token);
+				if (!ipv4) return null;
+				groups.push((ipv4[0] << 8) | ipv4[1], (ipv4[2] << 8) | ipv4[3]);
+				continue;
+			}
+			if (!/^[0-9a-f]{1,4}$/.test(token)) return null;
+			groups.push(Number.parseInt(token, 16));
+		}
+		return groups;
+	};
+
+	const left = parseHalf(halves[0]);
+	const right = parseHalf(halves[1] ?? '');
+	if (!left || !right) return null;
+	if (halves.length === 1) return left.length === 8 ? left : null;
+	if (left.length + right.length >= 8) return null; // `::` must compress at least one group.
+	return [...left, ...Array(8 - left.length - right.length).fill(0), ...right];
+}
+
+/** Conservative global-unicast allowlist for raw socket destinations. */
+export function isGloballyRoutableIp(address: string): boolean {
+	const ipv4 = parseIpv4(address);
+	if (ipv4) {
+		const [a, b, c] = ipv4;
+		if (a === 0 || a === 10 || a === 127) return false;
+		if (a === 100 && b >= 64 && b <= 127) return false; // shared address space
+		if (a === 169 && b === 254) return false;
+		if (a === 172 && b >= 16 && b <= 31) return false;
+		if (a === 192 && b === 0 && c === 0) return false;
+		if (a === 192 && b === 0 && c === 2) return false;
+		if (a === 192 && b === 88 && c === 99) return false;
+		if (a === 192 && b === 168) return false;
+		if (a === 198 && (b === 18 || b === 19)) return false;
+		if (a === 198 && b === 51 && c === 100) return false;
+		if (a === 203 && b === 0 && c === 113) return false;
+		if (a >= 224) return false; // multicast, reserved, limited broadcast
+		return true;
+	}
+
+	const ipv6 = parseIpv6(address);
+	if (!ipv6) return false;
+	const [first, second] = ipv6;
+	// Current global unicast allocation is 2000::/3. Staying inside that prefix
+	// is intentionally conservative for a DNS server that must be public.
+	if (first < 0x2000 || first > 0x3fff) return false;
+	if (first === 0x2001 && second <= 0x01ff) return false; // IETF special-purpose space
+	if (first === 0x2001 && second === 0x0db8) return false; // documentation
+	if (first === 0x2002 || first === 0x3ffe) return false; // deprecated 6to4 / 6bone
+	return true;
+}
+
+function canonicalIp(address: string): string | null {
+	const ipv4 = parseIpv4(address);
+	if (ipv4) return ipv4.join('.');
+	const ipv6 = parseIpv6(address);
+	return ipv6 ? ipv6.map((group) => group.toString(16)).join(':') : null;
+}
+
+async function defaultNameserverAddressResolver(
+	nameserver: string,
+	type: Extract<RecordTypeName, 'A' | 'AAAA'>,
+	timeoutMs: number,
+): Promise<string[]> {
+	const response = await queryDns(nameserver, type, false, {
+		timeoutMs,
+		retries: 0,
+		confirmWithSecondaryOnEmpty: false,
+	});
+	return (response.Answer ?? [])
+		.filter((answer) => answer.type === RecordType[type])
+		.map((answer) => answer.data.replace(/\.$/, '').toLowerCase());
+}
+
+/** Resolve once through trusted DoH, reject mixed/private answers, then return IP literals for socket pinning. */
+export async function resolvePublicNameserverAddresses(
+	nameserver: string,
+	resolver: NameserverAddressResolver = defaultNameserverAddressResolver,
+	timeoutMs = 2_500,
+): Promise<string[]> {
+	const normalized = nameserver.trim().replace(/\.$/, '').toLowerCase();
+	const literal = canonicalIp(normalized);
+	if (literal) {
+		if (!isGloballyRoutableIp(literal)) throw new Error('Nameserver address is not globally routable');
+		return [literal];
+	}
+	if (normalized.includes(':') || /^\d+(?:\.\d+){1,3}$/.test(normalized)) {
+		throw new Error('Invalid nameserver address');
+	}
+	if (
+		normalized.length > 253 ||
+		!normalized.includes('.') ||
+		normalized.split('.').some((label) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(label))
+	) {
+		throw new Error('Invalid nameserver hostname');
+	}
+
+	const settled = await Promise.allSettled([
+		resolver(normalized, 'A', timeoutMs),
+		resolver(normalized, 'AAAA', timeoutMs),
+	]);
+	const rawAddresses = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []));
+	if (rawAddresses.length === 0 || rawAddresses.length > MAX_NAMESERVER_ADDRESSES) {
+		throw new Error('Nameserver has no bounded public address set');
+	}
+	const addresses = [...new Set(rawAddresses.map((address) => canonicalIp(address)))];
+	if (addresses.some((address) => address === null || !isGloballyRoutableIp(address))) {
+		throw new Error('Nameserver resolution included a non-public address');
+	}
+	return (addresses as string[]).sort();
+}
 
 function encodeName(name: string): Uint8Array {
 	const normalized = name.replace(/\.$/, '').toLowerCase();
@@ -185,25 +332,43 @@ function frameQuery(message: Uint8Array): Uint8Array {
 	return framed;
 }
 
-async function readFramedResponse(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+export async function readFramedResponse(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
 	const reader = stream.getReader();
-	let buffered = new Uint8Array(0);
+	const maxFrameBytes = MAX_DNS_MESSAGE_BYTES + 2;
+	// One fixed, protocol-sized buffer avoids attacker-controlled realloc/copy
+	// amplification as socket chunks arrive. Never copy a byte until both the
+	// per-chunk and cumulative bounds have been checked.
+	const buffered = new Uint8Array(maxFrameBytes);
+	let bufferedLength = 0;
 	let expectedLength: number | undefined;
+	const rejectFrame = async (message: string): Promise<never> => {
+		await reader.cancel(message).catch(() => undefined);
+		throw new Error(message);
+	};
 	try {
 		while (true) {
 			const { value, done } = await reader.read();
 			if (done) throw new Error('DNS TCP connection closed before a full response');
 			if (!value?.length) continue;
-			const next = new Uint8Array(buffered.length + value.length);
-			next.set(buffered);
-			next.set(value, buffered.length);
-			buffered = next;
-
-			if (expectedLength === undefined && buffered.length >= 2) {
-				expectedLength = new DataView(buffered.buffer, buffered.byteOffset, buffered.byteLength).getUint16(0);
-				if (expectedLength === 0 || expectedLength > MAX_DNS_MESSAGE_BYTES) throw new Error('Invalid DNS TCP frame length');
+			if (value.length > maxFrameBytes - bufferedLength) {
+				return rejectFrame('DNS TCP response exceeded the maximum frame size');
 			}
-			if (expectedLength !== undefined && buffered.length >= expectedLength + 2) {
+			if (expectedLength !== undefined && value.length > expectedLength + 2 - bufferedLength) {
+				return rejectFrame('DNS TCP response contained trailing frame data');
+			}
+			buffered.set(value, bufferedLength);
+			bufferedLength += value.length;
+
+			if (expectedLength === undefined && bufferedLength >= 2) {
+				expectedLength = new DataView(buffered.buffer, 0, 2).getUint16(0);
+				if (expectedLength === 0 || expectedLength > MAX_DNS_MESSAGE_BYTES) {
+					return rejectFrame('Invalid DNS TCP frame length');
+				}
+				if (bufferedLength > expectedLength + 2) {
+					return rejectFrame('DNS TCP response contained trailing frame data');
+				}
+			}
+			if (expectedLength !== undefined && bufferedLength === expectedLength + 2) {
 				return buffered.slice(2, expectedLength + 2);
 			}
 		}
@@ -227,12 +392,18 @@ async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise
 }
 
 export const directDnsQuery: DirectDnsQuery = async (nameserver, name, type, timeoutMs = 2500) => {
+	const startedAt = Date.now();
+	const pinnedAddresses = await withTimeout(resolvePublicNameserverAddresses(nameserver, defaultNameserverAddressResolver, timeoutMs), timeoutMs);
+	const pinnedAddress = pinnedAddresses[0];
+	const remainingMs = Math.max(1, timeoutMs - (Date.now() - startedAt));
 	// Keep the runtime-only module behind the execution seam so Node-side tooling
 	// can import and test the wire codec without trying to resolve cloudflare: URLs.
 	const { connect } = await import('cloudflare:sockets');
 	const id = crypto.getRandomValues(new Uint16Array(1))[0];
 	const query = buildDirectDnsQuery(name, type, id);
-	const socket = connect({ hostname: nameserver, port: DNS_PORT }, { secureTransport: 'off', allowHalfOpen: true });
+	// Connect to the validated IP literal, never the attacker-controlled hostname.
+	// This removes the second DNS lookup where a rebinding target could change.
+	const socket = connect({ hostname: pinnedAddress, port: DNS_PORT }, { secureTransport: 'off', allowHalfOpen: true });
 	void socket.closed.catch(() => undefined);
 
 	try {
@@ -247,7 +418,7 @@ export const directDnsQuery: DirectDnsQuery = async (nameserver, name, type, tim
 				}
 				return readFramedResponse(socket.readable);
 			})(),
-			timeoutMs,
+			remainingMs,
 		);
 		return parseDirectDnsResponse(response, id);
 	} finally {

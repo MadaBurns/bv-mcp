@@ -21,6 +21,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../lib/response-body';
 
 /** C1 response shape per contracts-frozen.md. */
 export interface C1BenchmarkResponse {
@@ -80,6 +81,7 @@ export interface DomainRankResult {
 
 const BENCHMARK_BASE_URL = 'https://bv-web-internal/api/internal/mcp/benchmark';
 const TIMEOUT_MS = 8_000;
+const BENCHMARK_MAX_BODY_BYTES = 64 * 1024;
 
 /**
  * Smallest cohort a percentile may be quoted from.
@@ -164,58 +166,51 @@ export async function getDomainRank(
 		if (args.country) body.country = args.country;
 		if (args.sector) body.sector = args.sector;
 
-		const fetchPromise = bvWeb.fetch(BENCHMARK_BASE_URL, {
-			method: 'POST',
-			headers,
-			body: JSON.stringify(body),
-		});
-		let response: Response;
+		const controller = new AbortController();
+		const timeoutId = setTimeout(() => controller.abort(new DOMException('C1 benchmark timed out', 'TimeoutError')), TIMEOUT_MS);
 		try {
-			response = await Promise.race([
-				fetchPromise,
-				new Promise<never>((_, reject) => setTimeout(() => reject(new Error('C1 timeout')), TIMEOUT_MS)),
-			]);
-		} catch (err) {
-			// Timeout won the race: fetchPromise's eventual Response would otherwise
-			// go undrained, which is what the platform's "stalled HTTP response ...
-			// canceled to prevent deadlock" warning flags. Harmless no-op if
-			// fetchPromise itself was what rejected (nothing to drain).
-			fetchPromise.then((r) => void r.body?.cancel()).catch(() => undefined);
-			throw err;
+			const response = await bvWeb.fetch(BENCHMARK_BASE_URL, {
+				method: 'POST',
+				headers,
+				body: JSON.stringify(body),
+				signal: controller.signal,
+			});
+
+			if (!response.ok) {
+				await disposeUnreadResponseBody(response);
+				return representativeFallback(domain, score);
+			}
+
+			const data = await readJsonResponseCapped<C1BenchmarkResponse>(response, BENCHMARK_MAX_BODY_BYTES);
+			if (!data) return representativeFallback(domain, score);
+
+			const status = data.representative ? 'representative' : 'ok';
+			const cohortSize = Number.isFinite(data.cohortSize) ? Math.max(0, Math.trunc(data.cohortSize)) : 0;
+
+			// A percentile is reportable only when it was actually computed against a
+			// cohort. C1 returns a number in every case — including `representative: true`
+			// with `cohortSize: 0`, which is the shape production served for github.com
+			// (`"percentile": 50, "cohortSize": 0`). Passing that number through, even
+			// flagged, is a fabricated statistic the moment a consumer reads the field
+			// on its own.
+			const abstention = percentileAbstentionReason(data.representative, cohortSize, data.percentile);
+
+			return {
+				status,
+				domain,
+				score,
+				percentile: abstention === null ? data.percentile : null,
+				cohort: data.cohort,
+				cohortSize,
+				asOf: data.asOf ?? null, // explicit null-guard per C1 contract note
+				representative: data.representative,
+				scaleId: data.scaleId,
+				evidenceInsufficient: abstention !== null,
+				...(abstention === null ? {} : { evidenceNote: abstention }),
+			};
+		} finally {
+			clearTimeout(timeoutId);
 		}
-
-		if (!response.ok) {
-			// Consume body to avoid leaking the connection.
-			await response.text().catch(() => undefined);
-			return representativeFallback(domain, score);
-		}
-
-		const data = (await response.json()) as C1BenchmarkResponse;
-
-		const status = data.representative ? 'representative' : 'ok';
-		const cohortSize = Number.isFinite(data.cohortSize) ? Math.max(0, Math.trunc(data.cohortSize)) : 0;
-
-		// A percentile is reportable only when it was actually computed against a
-		// cohort. C1 returns a number in every case — including `representative: true`
-		// with `cohortSize: 0`, which is the shape production served for github.com
-		// (`"percentile": 50, "cohortSize": 0`). Passing that number through, even
-		// flagged, is a fabricated statistic the moment a consumer reads the field
-		// on its own.
-		const abstention = percentileAbstentionReason(data.representative, cohortSize, data.percentile);
-
-		return {
-			status,
-			domain,
-			score,
-			percentile: abstention === null ? data.percentile : null,
-			cohort: data.cohort,
-			cohortSize,
-			asOf: data.asOf ?? null, // explicit null-guard per C1 contract note
-			representative: data.representative,
-			scaleId: data.scaleId,
-			evidenceInsufficient: abstention !== null,
-			...(abstention === null ? {} : { evidenceNote: abstention }),
-		};
 	} catch {
 		// Network error, timeout, JSON parse failure — all fail-soft.
 		return representativeFallback(domain, score);

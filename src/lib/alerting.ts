@@ -10,6 +10,7 @@
 
 import { logError } from './log';
 import type { FuzzingAlert } from '../schemas/alerting';
+import { disposeUnreadResponseBody } from './response-body';
 
 /** Bounded timeout for webhook alert delivery so a stalled endpoint can't hang the cron. */
 const ALERT_WEBHOOK_TIMEOUT_MS = 5000;
@@ -140,15 +141,19 @@ async function postWebhookJson(
 			signal: AbortSignal.timeout(ALERT_WEBHOOK_TIMEOUT_MS),
 		};
 		const response = binding ? await binding.fetch(webhookUrl, init) : await fetch(webhookUrl, init);
-		if (!response.ok) {
-			logError(`Alert webhook returned HTTP ${response.status}`, {
-				severity: 'warn',
-				category: 'alerting',
-				details: { transport },
-			});
-			return false;
+		try {
+			if (!response.ok) {
+				logError(`Alert webhook returned HTTP ${response.status}`, {
+					severity: 'warn',
+					category: 'alerting',
+					details: { transport },
+				});
+				return false;
+			}
+			return true;
+		} finally {
+			await disposeUnreadResponseBody(response);
 		}
-		return true;
 	} catch (err) {
 		logError(err instanceof Error ? err : String(err), {
 			severity: 'warn',

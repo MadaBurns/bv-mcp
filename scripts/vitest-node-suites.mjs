@@ -17,6 +17,7 @@
  * `node` project in vitest.config.ts). Governance gates — they must always run.
  */
 export const NODE_POOL_AUDIT_TESTS = [
+	'test/audits/brand-audit-schema-preflight.node.test.ts',
 	'test/audits/brand-report-qa-script.node.test.ts',
 	'test/audits/brand-report-quality-audit-script.node.test.ts',
 	'test/audits/dependency-license.audit.test.ts',

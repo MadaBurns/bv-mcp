@@ -24,6 +24,12 @@
  */
 
 import { z } from 'zod';
+import {
+	BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX,
+	BRAND_AUDIT_WATCH_WEBHOOK_MAX_BODY_BYTES,
+} from '../lib/brand-audit-contract-limits';
+
+export { BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX, BRAND_AUDIT_WATCH_WEBHOOK_MAX_BODY_BYTES };
 
 export const BrandAuditBucketSchema = z.enum(['consolidated', 'shadowIt', 'indeterminate', 'impersonation']);
 
@@ -51,9 +57,9 @@ export const BrandAuditWatchWebhookPayloadSchema = z.object({
 	/** SHA-256 hex of the current classification. */
 	currentHash: z.string().regex(/^[a-f0-9]{64}$/),
 	changes: z.object({
-		added: z.array(BrandAuditWatchDiffEntrySchema),
-		removed: z.array(BrandAuditWatchDiffEntrySchema),
-		modified: z.array(BrandAuditWatchDiffEntrySchema),
+		added: z.array(BrandAuditWatchDiffEntrySchema).max(BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX),
+		removed: z.array(BrandAuditWatchDiffEntrySchema).max(BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX),
+		modified: z.array(BrandAuditWatchDiffEntrySchema).max(BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX),
 	}),
 });
 

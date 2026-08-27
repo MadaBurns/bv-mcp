@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 /** Build a ReadableStream that emits the given Uint8Array chunks. */
-function streamFrom(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
+function streamFrom(chunks: Uint8Array[], onCancel?: () => void): ReadableStream<Uint8Array> {
 	let i = 0;
 	return new ReadableStream<Uint8Array>({
 		pull(controller) {
@@ -12,6 +12,9 @@ function streamFrom(chunks: Uint8Array[]): ReadableStream<Uint8Array> {
 			} else {
 				controller.close();
 			}
+		},
+		cancel() {
+			onCancel?.();
 		},
 	});
 }
@@ -95,6 +98,17 @@ describe('readBoundedOrNull', () => {
 		expect(result).toBeNull();
 	});
 
+	it('cancels the unread remainder at cap plus one', async () => {
+		const { readBoundedOrNull } = await import('../src/lib/response-body');
+		const cancelled = vi.fn();
+		const result = await readBoundedOrNull(
+			streamFrom([new TextEncoder().encode('12345'), new TextEncoder().encode('6'), new TextEncoder().encode('unread')], cancelled),
+			5,
+		);
+		expect(result).toBeNull();
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
+
 	it('returns the decoded body when under the cap', async () => {
 		const { readBoundedOrNull } = await import('../src/lib/response-body');
 		const result = await readBoundedOrNull(streamFrom([new TextEncoder().encode('hello')]), 1024);
@@ -109,6 +123,29 @@ describe('readBoundedOrNull', () => {
 	it('returns null (never throws) when the reader rejects', async () => {
 		const { readBoundedOrNull } = await import('../src/lib/response-body');
 		await expect(readBoundedOrNull(rejectingStream(), 1024)).resolves.toBeNull();
+	});
+});
+
+describe('readJsonResponseCapped', () => {
+	it('parses JSON below the cap', async () => {
+		const { readJsonResponseCapped } = await import('../src/lib/response-body');
+		await expect(readJsonResponseCapped<{ ok: boolean }>(Response.json({ ok: true }), 1024)).resolves.toEqual({ ok: true });
+	});
+
+	it('rejects and cancels JSON that exceeds the streamed byte cap', async () => {
+		const { readJsonResponseCapped } = await import('../src/lib/response-body');
+		const cancelled = vi.fn();
+		const response = new Response(
+			streamFrom([new TextEncoder().encode('{"x":"1234'), new TextEncoder().encode('5"}'), new TextEncoder().encode('unread')], cancelled),
+			{ headers: { 'content-type': 'application/json', 'content-length': '2', 'content-encoding': 'gzip' } },
+		);
+		await expect(readJsonResponseCapped(response, 10)).resolves.toBeNull();
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
+
+	it('rejects malformed JSON', async () => {
+		const { readJsonResponseCapped } = await import('../src/lib/response-body');
+		await expect(readJsonResponseCapped(new Response('{nope'), 1024)).resolves.toBeNull();
 	});
 });
 

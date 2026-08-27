@@ -23,6 +23,7 @@
  */
 
 import type { FetchFunction } from '../types';
+import { readResponseTextCapped } from '../response-body';
 import { buildCertMetadataUrl, parseCertMetadataFromCt, parseCertDerFromCt } from './ct-source';
 import { mergeCertSources, type CertMetadata } from './cert-metadata';
 import { assessExpiry, type ExpiryAssessment } from './expiry';
@@ -68,21 +69,6 @@ export interface CertEnrichmentOptions {
 	probeLive?: (host: string) => Promise<CertMetadata | null>;
 }
 
-/**
- * Read a response body with a hard byte ceiling, cancelling the stream once exceeded.
- * Returns null rather than a truncated document — a half-read JSON body would parse
- * to garbage or throw, and either way is not evidence.
- */
-async function readBodyCapped(response: Response, maxBytes: number): Promise<string | null> {
-	const declared = parseInt(response.headers?.get('content-length') ?? '0', 10);
-	if (Number.isFinite(declared) && declared > maxBytes) {
-		void response.body?.cancel();
-		return null;
-	}
-	const body = await response.text();
-	return body.length > maxBytes ? null : body;
-}
-
 export async function enrichCertificateIntelligence(options: CertEnrichmentOptions): Promise<CertEnrichmentResult> {
 	const { domain, nowSeconds, fetchFn, derKeyParser, probeLive } = options;
 
@@ -90,7 +76,7 @@ export async function enrichCertificateIntelligence(options: CertEnrichmentOptio
 	try {
 		const res = await fetchFn(buildCertMetadataUrl(domain), { headers: { accept: 'application/json' } });
 		if (res.ok) {
-			const body = await readBodyCapped(res, CT_FEED_MAX_BODY_BYTES);
+			const body = await readResponseTextCapped(res, CT_FEED_MAX_BODY_BYTES);
 			if (body != null) {
 				ct = parseCertMetadataFromCt(body, domain);
 				// Key strength comes from the SAME issuance the metadata came from —

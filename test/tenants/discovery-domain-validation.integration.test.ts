@@ -79,6 +79,7 @@ function makeReq(body: unknown): Request {
 		headers: {
 			Authorization: `Bearer ${TEST_INTERNAL_KEY}`,
 			'X-Tenant': TEST_TENANT_ID,
+			'X-Tenant-Scope': TEST_TENANT_ID,
 			'Content-Type': 'application/json',
 		},
 		body: JSON.stringify(body),

@@ -12,8 +12,8 @@ export async function disposeUnreadResponseBody(response: Response): Promise<voi
 /**
  * Bounded streaming body readers.
  *
- * Both read at most `maxBytes` BYTES from a response body stream, then cancel
- * the reader (always, in a `finally`). The bound is on the cumulative BYTE
+ * Both read at most `maxBytes` BYTES from a response body stream, cancel any
+ * unread remainder, and release the reader lock. The bound is on the cumulative BYTE
  * length of the chunks read (`Uint8Array.byteLength`) — NOT the decoded string
  * length, which on multi-byte UTF-8 can be ~3-4x smaller than the byte count
  * and would let an attacker-controlled endpoint buffer far more than intended.
@@ -34,10 +34,14 @@ async function drainBounded(
 	let overflowed = false;
 	if (!body) return { chunks, total, overflowed };
 	const reader = body.getReader();
+	let finished = false;
 	try {
 		for (;;) {
 			const { done, value } = await reader.read();
-			if (done) break;
+			if (done) {
+				finished = true;
+				break;
+			}
 			if (!value) continue;
 			const remaining = Math.max(maxBytes - total, 0);
 			if (value.byteLength > remaining) {
@@ -52,12 +56,14 @@ async function drainBounded(
 			total += value.byteLength;
 		}
 	} finally {
-		// Always release the underlying stream — best-effort, swallow errors.
-		try {
-			await reader.cancel();
-		} catch {
-			/* fail-open */
+		if (!finished) {
+			try {
+				await reader.cancel();
+			} catch {
+				/* fail-open */
+			}
 		}
+		reader.releaseLock();
 	}
 	return { chunks, total, overflowed };
 }
@@ -74,7 +80,7 @@ function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
 }
 
 /**
- * Read at most `maxBytes` bytes from a body stream, then cancel it. Byte-accurate
+ * Read at most `maxBytes` bytes from a body stream, cancelling any unread remainder. Byte-accurate
  * (bounds on cumulative `Uint8Array.byteLength`, truncating the body once the cap
  * is reached). Fail-open: returns '' on any error or a null/empty body. Caller
  * owns cloning the response if it needs the original undisturbed.
@@ -104,4 +110,45 @@ export async function readBoundedOrNull(body: ReadableStream<Uint8Array> | null,
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Parse a JSON response without buffering more than `maxBytes`. Returns `null`
+ * for malformed, unreadable, or oversized bodies. `Content-Length` is only an
+ * early-rejection hint; the decoded stream remains authoritative.
+ */
+export async function readJsonResponseCapped<T>(response: Response, maxBytes: number): Promise<T | null> {
+	// A standards-compliant fetch/service-binding Response always exposes a
+	// `body` property (stream or null). A few focused unit tests use minimal
+	// object doubles with only `.json()`; preserve those non-runtime seams while
+	// keeping every real network response on the bounded streaming path.
+	if ((response as Response & { body?: ReadableStream<Uint8Array> | null }).body === undefined) {
+		try {
+			return (await response.json()) as T;
+		} catch {
+			return null;
+		}
+	}
+	const declared = Number(response.headers.get('content-length'));
+	if (Number.isFinite(declared) && declared > maxBytes) {
+		await disposeUnreadResponseBody(response);
+		return null;
+	}
+	const raw = await readBoundedOrNull(response.body, maxBytes);
+	if (raw === null) return null;
+	try {
+		return JSON.parse(raw) as T;
+	} catch {
+		return null;
+	}
+}
+
+/** Read an entire response as text only when it fits inside `maxBytes`. */
+export async function readTextResponseCapped(response: Response, maxBytes: number): Promise<string | null> {
+	const declared = Number(response.headers.get('content-length'));
+	if (Number.isFinite(declared) && declared > maxBytes) {
+		await disposeUnreadResponseBody(response);
+		return null;
+	}
+	return readBoundedOrNull(response.body, maxBytes);
 }

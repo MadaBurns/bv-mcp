@@ -34,7 +34,7 @@ import {
 	checkRateLimit,
 	checkToolDailyRateLimit,
 } from './lib/rate-limiter';
-import { logEvent, logError, sanitizeHeadersForLog } from './lib/log';
+import { logEvent, logError, sanitizeHeadersForLog, sanitizeRequestUrlForLog } from './lib/log';
 import { jsonRpcError, JSON_RPC_ERRORS } from './lib/json-rpc';
 import { normalizeHeaders, parseJsonRpcRequest, readRequestBody, validateContentType } from './mcp/request';
 import { createSession, deleteSession, validateSession, checkSessionCreateRateLimit } from './lib/session';
@@ -76,8 +76,43 @@ import { QuotaCoordinator } from './lib/quota-coordinator';
 export { QuotaCoordinator };
 import { ProfileAccumulator, resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
 export { ProfileAccumulator };
+import { reconcileLegacyBrandAuditOwner } from './lib/brand-audit-owner-reconciliation';
 
 const TEXT_ENCODER = new TextEncoder();
+const MAX_JSON_RPC_BATCH_SIZE = 20;
+const MAX_UNAUTHENTICATED_JSON_RPC_BATCH_SIZE = 4;
+
+const OWNER_SCOPED_BRAND_TOOLS = new Set([
+	'discover_brand_domains_start',
+	'discover_brand_domains_status',
+	'discover_brand_domains_findings',
+	'brand_audit_batch_start',
+	'brand_audit_status',
+	'brand_audit_get_report',
+	'list_brand_audit_watches',
+	'register_brand_audit_watch',
+	'delete_brand_audit_watch',
+]);
+
+function includesOwnerScopedBrandOperation(entries: unknown[]): boolean {
+	return entries.some((entry) => {
+		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) return false;
+		const request = entry as { method?: unknown; params?: unknown };
+		if (request.method !== 'tools/call' || !request.params || typeof request.params !== 'object' || Array.isArray(request.params))
+			return false;
+		const name = (request.params as { name?: unknown }).name;
+		return typeof name === 'string' && OWNER_SCOPED_BRAND_TOOLS.has(name);
+	});
+}
+
+async function reconcileBrandOwnerForRequest(
+	entries: unknown[],
+	tierAuthResult: TierAuthResult,
+	db: D1Database | undefined,
+): Promise<void> {
+	if (!db || !tierAuthResult.authenticated || !tierAuthResult.keyHash || !includesOwnerScopedBrandOperation(entries)) return;
+	await reconcileLegacyBrandAuditOwner(db, tierAuthResult.legacyOwnerId, tierAuthResult.keyHash);
+}
 
 let hasLoggedAnalyticsBindingStatus = false;
 
@@ -143,6 +178,19 @@ type BvMcpEnv = Env & {
 	OWNER_ALLOW_IPS?: string;
 	BV_WEB?: Fetcher;
 	BV_WEB_INTERNAL_KEY?: string;
+	/** Dedicated least-privilege capability accepted only by bv-web's M365 MCP proxy. */
+	BV_MCP_M365_KEY?: string;
+	/** Dedicated inbound capability for OAuth/trial grant issuance and subject revocation. */
+	BV_MCP_OAUTH_MINT_KEY?: string;
+	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	BV_MCP_TOOL_DELEGATION_KEY?: string;
+	BV_MCP_WATCH_CLEANUP_KEY?: string;
+	/** Dedicated outbound capability for the exact bv-web Brand Drift receiver. */
+	BV_MCP_BRAND_WEBHOOK_KEY?: string;
+	/** Dedicated inbound capability for /internal/tenants/* orchestration. */
+	BV_MCP_TENANT_KEY?: string;
+	/** Least-privilege mobile capability accepted only for scan_domain on /internal/tools/call. */
+	BV_MOBILE_INTERNAL_KEY?: string;
 	/**
 	 * Enables M365 client-tenant reads (`identity_secops` tools). Fail-closed:
 	 * only the exact string `'true'` wires the `BV_WEB` M365 proxy + its bearer.
@@ -340,7 +388,7 @@ type BvMcpEnv = Env & {
 };
 
 import type { TierAuthResult } from './lib/tier-auth';
-import { resolveTier } from './lib/tier-auth';
+import { AUTH_RESOLUTION_MINUTE_LIMIT, resolveTier } from './lib/tier-auth';
 
 /** Shared Hono app env (bindings + per-request variables). Exported so route handlers in `oauth/` can type `Context<AppEnv>` instead of casting `c.env`. */
 export type AppEnv = {
@@ -374,6 +422,23 @@ export function makeCorrelationId(headers: Headers): string {
 	const cfRay = headers.get('cf-ray');
 	if (cfRay && /^[a-zA-Z0-9-]{1,64}$/.test(cfRay)) return cfRay;
 	return crypto.randomUUID();
+}
+
+export function resolveM365PrincipalIdentity(
+	tierAuthResult: TierAuthResult,
+): import('./tools/m365/proxy').M365PrincipalIdentity | undefined {
+	if (!tierAuthResult.authenticated) return undefined;
+	if (tierAuthResult.oauthTenantId && tierAuthResult.keyHash) {
+		return {
+			kind: 'oauth_tenant',
+			tenantId: tierAuthResult.oauthTenantId,
+			principalId: tierAuthResult.keyHash,
+		};
+	}
+	if (tierAuthResult.credentialHash) {
+		return { kind: 'api_key', credentialHash: tierAuthResult.credentialHash };
+	}
+	return undefined;
 }
 
 function oauthDisabledResponse(): Response {
@@ -461,7 +526,7 @@ for (const path of authedPaths) {
 		// identical `keyHash` — per-key quota and concurrency stay correct.
 		// The header is NOT covered by `REJECT_QUERY_API_KEY`: that kill-switch
 		// exists because query strings leak into access logs, which headers do not.
-		const apiKeyHeaderToken = bearerToken ? null : (c.req.header('x-api-key')?.trim() || null);
+		const apiKeyHeaderToken = bearerToken ? null : c.req.header('x-api-key')?.trim() || null;
 		const queryToken =
 			c.env.REJECT_QUERY_API_KEY === 'true' ? null : bearerToken || apiKeyHeaderToken ? null : (c.req.query('api_key') ?? null);
 		const token = bearerToken ?? apiKeyHeaderToken ?? queryToken;
@@ -473,6 +538,26 @@ for (const path of authedPaths) {
 		c.set('tierAuthResult', tierResult);
 		c.set('isAuthenticated', tierResult.authenticated);
 		c.set('apiKeyInQuery', apiKeyInQuery);
+
+		if (tierResult.rateLimited) {
+			const retryAfterSeconds = Math.max(1, Math.ceil((tierResult.retryAfterMs ?? 0) / 1000));
+			const response = Response.json(
+				jsonRpcError(null, JSON_RPC_ERRORS.RATE_LIMITED, `Authentication rate limit exceeded. Retry after ${retryAfterSeconds}s`),
+				{
+					status: 429,
+					headers: {
+						'retry-after': String(retryAfterSeconds),
+						'x-ratelimit-limit': String(AUTH_RESOLUTION_MINUTE_LIMIT),
+						'x-ratelimit-remaining': '0',
+					},
+				},
+			);
+			if (apiKeyInQuery) {
+				response.headers.set('Deprecation', 'true');
+				response.headers.set('Sunset', 'Tue, 01 Dec 2026 00:00:00 GMT');
+			}
+			return response;
+		}
 
 		// If token was provided but not recognized, or if auth is required and not authenticated, reject
 		if ((token && !tierResult.authenticated) || (c.env.REQUIRE_AUTH === 'true' && !tierResult.authenticated)) {
@@ -525,7 +610,7 @@ app.use('*', async (c, next) => {
 			severity: 'error',
 			details: {
 				method: c.req.method,
-				url: c.req.url,
+				url: sanitizeRequestUrlForLog(c.req.url),
 				headers: sanitizeHeadersForLog(c.req.raw.headers),
 			},
 		});
@@ -703,8 +788,16 @@ app.get('/badge/:domain', async (c) => {
 
 	// Distinct-domain/day cap (tighter than the per-tool 25/day) — mirrors the
 	// executeMcpRequest speed-bump so /badge can't be used to enumerate a wider
-	// distinct-domain set than /mcp. Keyed on the per-IP principal; fail-open.
-	const distinctResult = await checkDistinctDomainDailyLimit(ip, hashDomain(domain), FREE_DISTINCT_DOMAIN_DAILY_LIMIT, c.env.RATE_LIMIT);
+	// distinct-domain set than /mcp. Keyed on the per-IP principal; coordinator
+	// ambiguity fails closed so a committed transaction is never replayed in KV.
+	const distinctResult = await checkDistinctDomainDailyLimit(
+		ip,
+		hashDomain(domain),
+		FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
+		c.env.RATE_LIMIT,
+		c.env.QUOTA_COORDINATOR,
+		resolveQuotaShardRouting(c.env),
+	);
 	if (!distinctResult.allowed) {
 		return badgeRateLimitResponse(svgHeaders, distinctResult.retryAfterMs);
 	}
@@ -760,7 +853,9 @@ app.post('/mcp', async (c) => {
 	const country = (cfProps?.country as string) ?? headersLc['cf-ipcountry'] ?? 'unknown';
 	const clientType = detectMcpClient(headersLc['user-agent']);
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
-	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
+	const keyHash = tierAuthResult.keyHash;
+	const analyticsKeyHash = keyHash?.slice(0, 16);
+	const m365Identity = resolveM365PrincipalIdentity(tierAuthResult);
 	const sessionHash = headersLc['mcp-session-id'] ? hashForAnalytics(headersLc['mcp-session-id']) : 'none';
 	const ipHash = ip !== 'unknown' ? hashIpForAnalytics(ip) : undefined;
 	// Edge colo (`cf.colo`, e.g. AKL/SYD) — appended as the trailing analytics blob so
@@ -795,6 +890,20 @@ app.post('/mcp', async (c) => {
 	}
 
 	const parsedBodies = parsedRequest.isBatch ? (parsedRequest.body as unknown[]) : [parsedRequest.body as JsonRpcRequest];
+	try {
+		await reconcileBrandOwnerForRequest(parsedBodies, tierAuthResult, c.env.BRAND_AUDIT_DB);
+	} catch (error) {
+		logError(error instanceof Error ? error : 'Brand owner reconciliation failed', {
+			severity: 'error',
+			correlationId,
+			category: 'brand_audit_owner_reconciliation',
+		});
+		return sseErrorResponse(
+			jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Service unavailable: ownership reconciliation failed'),
+			503,
+			accept,
+		);
+	}
 
 	// MCP Streamable HTTP requires a 400 for an unsupported protocol-version header.
 	// An absent header remains compatible with older clients and initialize is exempt
@@ -814,8 +923,9 @@ app.post('/mcp', async (c) => {
 
 	if (parsedRequest.isBatch) {
 		const batch = parsedBodies;
-		if (batch.length > 20) {
-			return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Batch size exceeds maximum of 20 requests'), 400);
+		const maxBatchSize = isAuthenticated ? MAX_JSON_RPC_BATCH_SIZE : MAX_UNAUTHENTICATED_JSON_RPC_BATCH_SIZE;
+		if (batch.length > maxBatchSize) {
+			return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, `Batch size exceeds maximum of ${maxBatchSize} requests`), 400);
 		}
 
 		const results = await Promise.all(
@@ -897,6 +1007,8 @@ app.post('/mcp', async (c) => {
 					protocolVersionHeader: headersLc['mcp-protocol-version'],
 					authTier,
 					keyHash,
+					analyticsKeyHash,
+					m365Identity,
 					sessionHash,
 					ipHash,
 					colo,
@@ -1000,6 +1112,8 @@ app.post('/mcp', async (c) => {
 		protocolVersionHeader: headersLc['mcp-protocol-version'],
 		authTier,
 		keyHash,
+		analyticsKeyHash,
+		m365Identity,
 		sessionHash,
 		ipHash,
 		colo,
@@ -1068,7 +1182,9 @@ app.post('/mcp/messages', async (c) => {
 	const country = (cfProps?.country as string) ?? headersLc['cf-ipcountry'] ?? 'unknown';
 	const clientType = detectMcpClient(headersLc['user-agent']);
 	const authTier = tierAuthResult.authenticated ? (tierAuthResult.tier ?? 'free') : 'anon';
-	const keyHash = tierAuthResult.keyHash ? tierAuthResult.keyHash.slice(0, 16) : undefined;
+	const keyHash = tierAuthResult.keyHash;
+	const analyticsKeyHash = keyHash?.slice(0, 16);
+	const m365Identity = resolveM365PrincipalIdentity(tierAuthResult);
 	const sessionHash = sessionId ? hashForAnalytics(sessionId) : 'none';
 	const ipHash = ip !== 'unknown' ? hashIpForAnalytics(ip) : undefined;
 	const region = (cfProps?.region as string | undefined) ?? undefined;
@@ -1110,6 +1226,22 @@ app.post('/mcp/messages', async (c) => {
 	}
 
 	const parsedBodies = parsedRequest.isBatch ? (parsedRequest.body as unknown[]) : [parsedRequest.body as JsonRpcRequest];
+	try {
+		await reconcileBrandOwnerForRequest(parsedBodies, tierAuthResult, c.env.BRAND_AUDIT_DB);
+	} catch (error) {
+		logError(error instanceof Error ? error : 'Brand owner reconciliation failed', {
+			severity: 'error',
+			correlationId,
+			category: 'brand_audit_owner_reconciliation',
+		});
+		return Response.json(jsonRpcError(null, JSON_RPC_ERRORS.INTERNAL_ERROR, 'Service unavailable: ownership reconciliation failed'), {
+			status: 503,
+		});
+	}
+	const maxLegacyBatchSize = isAuthenticated ? MAX_JSON_RPC_BATCH_SIZE : MAX_UNAUTHENTICATED_JSON_RPC_BATCH_SIZE;
+	if (parsedRequest.isBatch && parsedBodies.length > maxLegacyBatchSize) {
+		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, `Batch size exceeds maximum of ${maxLegacyBatchSize} requests`), 400);
+	}
 	const results = await Promise.all(
 		parsedBodies.map(async (entry) => {
 			if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
@@ -1186,6 +1318,8 @@ app.post('/mcp/messages', async (c) => {
 				clientType,
 				authTier,
 				keyHash,
+				analyticsKeyHash,
+				m365Identity,
 				sessionHash,
 				ipHash,
 				region,
@@ -1222,21 +1356,25 @@ app.get('/mcp', async (c) => {
 	const sessionId = c.req.header('mcp-session-id');
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 	const isAuthenticated = c.get('isAuthenticated');
+	const tierAuthResult = c.get('tierAuthResult');
+	// Coordinator principal fields are capped at 50 characters. The first 160 bits
+	// of the SHA-256 credential fingerprint remain collision-resistant while keeping
+	// the typed key safely below that bound.
+	const connectionPrincipal = tierAuthResult.authenticated && tierAuthResult.keyHash ? `key:${tierAuthResult.keyHash.slice(0, 40)}` : ip;
 
-	// SSE notification stream uses control plane rate limiting but is counted
-	// separately from other control plane methods. mcp-remote reconnects
-	// aggressively on disconnection — using the shared control plane budget
-	// (60/min) caused Claude Desktop to lose connectivity after the first tool
-	// call. The SSE handler still counts against the shared budget to prevent
-	// connection flood abuse, but authenticated clients bypass it entirely.
+	// SSE notification streams consume Worker/runtime state, so both anonymous and
+	// authenticated reconnects are metered. Authenticated callers use the stable
+	// credential hash rather than a spoofable/rotatable address, preserving normal
+	// shared-NAT usage while preventing one key from opening unbounded streams.
 	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
-		ip,
+		connectionPrincipal,
 		c.env.RATE_LIMIT,
 		'sse/stream',
 		isAuthenticated,
 		null,
 		undefined,
 		c.env.QUOTA_COORDINATOR,
+		resolveQuotaShardRouting(c.env),
 	);
 	if (controlPlaneLimited) {
 		return controlPlaneLimited;
@@ -1273,35 +1411,45 @@ app.get('/mcp/sse', async (c) => {
 
 	const ip = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 	const isAuthenticated = c.get('isAuthenticated');
+	const tierAuthResult = c.get('tierAuthResult');
+	const connectionPrincipal = tierAuthResult.authenticated && tierAuthResult.keyHash ? `key:${tierAuthResult.keyHash.slice(0, 40)}` : ip;
 	const controlPlaneLimited = await buildControlPlaneRateLimitResponse(
-		ip,
+		connectionPrincipal,
 		c.env.RATE_LIMIT,
 		'sse/connect',
 		isAuthenticated,
 		null,
 		undefined,
 		c.env.QUOTA_COORDINATOR,
+		resolveQuotaShardRouting(c.env),
 	);
 	if (controlPlaneLimited) {
 		return controlPlaneLimited;
 	}
 
-	if (!isAuthenticated) {
-		const sessionCreateGate = await checkSessionCreateRateLimit(ip, c.env.RATE_LIMIT, c.env.QUOTA_COORDINATOR);
-		if (!sessionCreateGate.allowed) {
-			const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
-			return new Response('Rate limit exceeded', {
-				status: 429,
-				headers: { 'retry-after': String(retryAfterSeconds) },
-			});
-		}
+	const sessionCreateGate = await checkSessionCreateRateLimit(
+		connectionPrincipal,
+		c.env.RATE_LIMIT,
+		c.env.QUOTA_COORDINATOR,
+		resolveQuotaShardRouting(c.env),
+	);
+	if (!sessionCreateGate.allowed) {
+		const retryAfterSeconds = Math.ceil((sessionCreateGate.retryAfterMs ?? 0) / 1000);
+		return new Response('Rate limit exceeded', {
+			status: 429,
+			headers: { 'retry-after': String(retryAfterSeconds) },
+		});
 	}
 
-	const legacySessionId = await createSession(c.env.SESSION_STORE, createAnalyticsClient(c.env.MCP_ANALYTICS), (p) =>
-		c.executionCtx.waitUntil(p),
-	);
+	// Await the legacy session write so rejected admission can be tombstoned
+	// without racing a deferred KV create that might resurrect it.
+	const legacySessionId = await createSession(c.env.SESSION_STORE, createAnalyticsClient(c.env.MCP_ANALYTICS));
 	const endpointUrl = new URL(`/mcp/messages?sessionId=${encodeURIComponent(legacySessionId)}`, c.req.url).toString();
-	return openLegacySseStream(legacySessionId, endpointUrl);
+	const legacyStream = openLegacySseStream(legacySessionId, endpointUrl, connectionPrincipal);
+	if (legacyStream.status !== 200) {
+		await deleteSession(legacySessionId, c.env.SESSION_STORE);
+	}
+	return legacyStream;
 });
 
 app.delete('/mcp', async (c) => {
@@ -1315,6 +1463,7 @@ app.delete('/mcp', async (c) => {
 		null,
 		undefined,
 		c.env.QUOTA_COORDINATOR,
+		resolveQuotaShardRouting(c.env),
 	);
 	if (controlPlaneLimited) {
 		return controlPlaneLimited;
@@ -1353,7 +1502,7 @@ app.delete('/mcp', async (c) => {
 // 404 (ID-enumeration defense, mirroring brand_audit_get_report).
 app.get('/reports/:auditId/:target', async (c) => {
 	const tierResult = c.get('tierAuthResult');
-	const keyHash = tierResult?.authenticated && tierResult.keyHash ? tierResult.keyHash.slice(0, 16) : undefined;
+	const keyHash = tierResult?.authenticated ? tierResult.keyHash : undefined;
 	if (!keyHash) {
 		return unauthorizedResponse();
 	}
@@ -1375,6 +1524,11 @@ app.get('/reports/:auditId/:target', async (c) => {
 	const bucket = c.env.BRAND_REPORTS;
 	if (!db || !bucket) {
 		return new Response('Not found', { status: 404 });
+	}
+	try {
+		await reconcileLegacyBrandAuditOwner(db, tierResult.legacyOwnerId, keyHash);
+	} catch {
+		return new Response('Service unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });
 	}
 	const { handleReportDownload } = await import('./handlers/report-download');
 	return handleReportDownload(c.req.param('auditId'), c.req.param('target'), keyHash, { db, bucket });
@@ -1428,7 +1582,12 @@ import { handleTail } from './tail';
 import { handleScheduled, handleDailyDigest, handleFuzzingScan, handleBrandAuditWatches } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
 import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-consumer';
-import { handleBrandAuditQueue, type BrandAuditConsumerDeps } from './queue/brand-audit-consumer';
+import {
+	brandWebhookCapabilityCollision,
+	brandWebhookPeerSecretsFromEnv,
+	handleBrandAuditQueue,
+	type BrandAuditConsumerDeps,
+} from './queue/brand-audit-consumer';
 import { handleBrandAuditPdfQueue, type BrandAuditPdfConsumerDeps } from './queue/brand-audit-pdf-consumer';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan, type TenantScheduledEnv } from './tenants/scheduled-handlers';
 // Phase 2 scheduler core (ships DARK). The handlers no-op unless
@@ -1503,7 +1662,22 @@ export function routeCron(cron: string): CronRoute {
 }
 
 export default {
-	fetch: (req: Request, env: BvMcpEnv, ctx: ExecutionContext) => app.fetch(req, env, ctx),
+	fetch: (req: Request, env: BvMcpEnv, ctx: ExecutionContext) => {
+		const collision = brandWebhookCapabilityCollision(env);
+		if (collision) {
+			// Fail before tier resolution, OAuth JWT verification, or any internal
+			// route can treat the outbound webhook capability as another authority.
+			// The peer name is intentionally omitted from the public response.
+			return new Response(JSON.stringify({ error: 'Service authentication configuration invalid' }), {
+				status: 503,
+				headers: {
+					'Cache-Control': 'no-store',
+					'Content-Type': 'application/json; charset=utf-8',
+				},
+			});
+		}
+		return app.fetch(req, env, ctx);
+	},
 	/**
 	 * Tail-consumer handler. `wrangler.jsonc` registers this Worker as its own
 	 * `tail_consumers` target, so Cloudflare delivers a batch of this Worker's
@@ -1615,6 +1789,9 @@ export default {
 					db,
 					pdfQueue,
 					brandAuditQueue,
+					brandWebhookBinding: e.BV_WEB as Fetcher | undefined,
+					brandWebhookAuthToken: typeof e.BV_MCP_BRAND_WEBHOOK_KEY === 'string' ? e.BV_MCP_BRAND_WEBHOOK_KEY : undefined,
+					brandWebhookPeerAuthTokens: brandWebhookPeerSecretsFromEnv(e as BvMcpEnv),
 					discoveryModeDefault,
 					whoisBinding: e.BV_WHOIS as Fetcher | undefined,
 					certstream: e.BV_CERTSTREAM as Fetcher | undefined,

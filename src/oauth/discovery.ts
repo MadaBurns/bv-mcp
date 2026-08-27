@@ -50,6 +50,7 @@ export function buildAuthorizationServerMetadata(issuer: string): Record<string,
 		grant_types_supported: [...OAUTH_GRANT_TYPES_SUPPORTED],
 		token_endpoint_auth_methods_supported: [...OAUTH_TOKEN_AUTH_METHODS_SUPPORTED],
 		code_challenge_methods_supported: [...OAUTH_CODE_CHALLENGE_METHODS_SUPPORTED],
+		authorization_response_iss_parameter_supported: true,
 		service_documentation: 'https://github.com/MadaBurns/bv-mcp',
 	};
 }

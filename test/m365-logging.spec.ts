@@ -35,7 +35,13 @@ describe('M365 tool logging', () => {
 		await handleToolsCall(
 			{ name: 'query_signins', arguments: { ms_tenant_id: 'tenant-abc', user_principal_name: 'admin@example.com' } },
 			undefined,
-			{ m365Proxy, m365ProxyAuthToken: 'internal-token', keyHash: 'key_abc', authTier: 'developer' },
+			{
+				m365Proxy,
+				m365ProxyAuthToken: 'internal-token',
+				keyHash: 'a'.repeat(64),
+				m365Identity: { kind: 'api_key', credentialHash: 'a'.repeat(64) },
+				authTier: 'developer',
+			},
 		);
 
 		const logs = getConsoleLogs(consoleSpy);

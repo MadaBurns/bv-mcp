@@ -9,6 +9,7 @@ is the machine-checkable SSOT; this doc is the human-readable companion.
 
 Downstream consumers (customer webhook receivers, **bv-web-prod G1 alert
 receiver**) parse this payload. Any wire-format change requires:
+
 1. A `schemaVersion` bump in `BrandAuditWatchWebhookPayloadSchema`.
 2. A coordinator review of the frozen C3 contract (`contracts-frozen.md §C3`).
 3. A G1-side update to the receiver in bv-web-prod.
@@ -39,32 +40,58 @@ check for arming a watch lives in bv-web-prod (G1), at the call site — not in
   `changes.added` is populated with the entire current candidate set.
 - For logging-only watches (no `webhook_url`), drift is detected and the new
   hash is persisted, but no HTTP delivery is made.
-- Delivery is **best-effort**: a 4xx/5xx response or a network error does NOT
-  mark the audit as failed; customers can re-derive state via
-  `brand_audit_get_report`.
+- Delivery failure does NOT mark the audit as failed. The exact notification is
+  kept in the watch outbox for the next tick, and customers can independently
+  re-derive state via `brand_audit_get_report`.
+- Delivery is **at least once**, not exactly once. The classification hash
+  advances only after a 2xx response. Before the POST, the consumer stores an
+  exact `{ payload, currentResult }` envelope in `pending_webhook_json` using a
+  compare-and-swap against the prior hash. A timeout/non-2xx leaves that outbox
+  entry intact; the next watch run replays the original stored payload instead
+  of recomputing against a newer completed audit. The 2xx
+  CAS atomically advances the hash, stores the matching full-result baseline,
+  and clears the outbox. If that recovery tick already contains a newer
+  classification, the consumer immediately stages and delivers the next diff
+  from the recovered baseline in the same invocation; ordered alerts never wait
+  for another daily/weekly/monthly interval. A crash between the 2xx and CAS can produce a duplicate.
+  Receivers must deduplicate with `watchId + auditId + currentHash`.
+- A stale concurrent delivery can still reach a receiver, but its CAS cannot
+  overwrite a newer stored classification. Receivers should treat `detectedAt`
+  and `currentHash` as ordering/idempotency inputs rather than arrival order.
 
 ---
 
 ## Payload — frozen C3 shape (schemaVersion 1)
 
-POST to `webhook_url`. `Content-Type: application/json`. HTTPS-only
-(`safeFetch`, SSRF-validated). No extra auth headers — auth is in the URL token.
+POST to `webhook_url`. `Content-Type: application/json`. HTTPS-only. Customer
+URLs use `safeFetch` (SSRF-validated) and receive no internal authentication
+header; their auth remains the URL token. The exact BlackVeil receiver
+(`https://www.blackveilsecurity.com/api/webhooks/brand-drift`) is a special
+first-party path: delivery uses the private `BV_WEB` service binding and a
+dedicated `BV_MCP_BRAND_WEBHOOK_KEY` bearer. The bearer is never attached to
+any other origin/path, and redirects are never followed.
+
+Each of `changes.added`, `changes.removed`, and `changes.modified` is bounded
+at 200 rows, matching the producer pipeline's maximum candidate set. The UTF-8
+encoded request body is bounded at 256 KiB on both producer and first-party
+receiver. The producer validates both limits before staging the durable outbox,
+so an undeliverable oversized event cannot permanently block later alerts.
 
 ```ts
 {
-  schemaVersion: 1;            // Literal — bump on any wire change
-  watchId: string;             // ID of the brand_audit_watches row
-  auditId: string;             // ID of the brand_audits row that triggered this
-  target: string;              // Watched domain (e.g. "apple.com")
-  interval: 'daily' | 'weekly' | 'monthly';  // Watch cadence
-  detectedAt: number;          // Epoch ms (worker clock at delivery time)
-  previousHash: string | null; // SHA-256 hex of prior classification; null on first-ever delivery
-  currentHash: string;         // SHA-256 hex of current classification
-  changes: {
-    added:    Array<{ domain: string; bucket: Bucket }>;
-    removed:  Array<{ domain: string; bucket: Bucket }>;
-    modified: Array<{ domain: string; bucket: Bucket; previousBucket?: Bucket }>;
-  };
+	schemaVersion: 1; // Literal — bump on any wire change
+	watchId: string; // ID of the brand_audit_watches row
+	auditId: string; // ID of the brand_audits row that triggered this
+	target: string; // Watched domain (e.g. "apple.com")
+	interval: 'daily' | 'weekly' | 'monthly'; // Watch cadence
+	detectedAt: number; // Epoch ms (worker clock at delivery time)
+	previousHash: string | null; // SHA-256 hex of prior classification; null on first-ever delivery
+	currentHash: string; // SHA-256 hex of current classification
+	changes: {
+		added: Array<{ domain: string; bucket: Bucket }>;
+		removed: Array<{ domain: string; bucket: Bucket }>;
+		modified: Array<{ domain: string; bucket: Bucket; previousBucket?: Bucket }>;
+	}
 }
 
 // Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation'
@@ -72,19 +99,19 @@ POST to `webhook_url`. `Content-Type: application/json`. HTTPS-only
 
 ### Field semantics
 
-| Field | Notes |
-|---|---|
-| `schemaVersion` | Always `1`. Receivers MUST check and reject unknown versions. |
-| `watchId` | Treat as **untrusted** for security decisions — bv-web G1 looks up the watch by URL token, not by this field. |
-| `auditId` | Use with `brand_audit_get_report` to fetch the full report. |
-| `target` | The domain as stored at registration time (lowercased, no trailing dot). |
-| `interval` | The cadence the customer registered with. |
-| `detectedAt` | Worker clock at the point `deliverWatchWebhookIfShifted` ran. |
-| `previousHash` | `null` on first-ever delivery (watch just registered). Receivers MUST handle null. |
-| `currentHash` | 64-char lowercase hex SHA-256. Stable for the same candidate+bucket set regardless of result order. |
-| `changes.added` | Candidates present in current run but not in previous classification. On first delivery, equals the full current candidate set. |
-| `changes.removed` | Candidates present in previous classification but absent now. Empty on first delivery. |
-| `changes.modified` | Candidates whose `bucket` changed. `previousBucket` is always set for modified entries. Empty on first delivery. |
+| Field              | Notes                                                                                                                           |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------- |
+| `schemaVersion`    | Always `1`. Receivers MUST check and reject unknown versions.                                                                   |
+| `watchId`          | Treat as **untrusted** for security decisions — bv-web G1 looks up the watch by URL token, not by this field.                   |
+| `auditId`          | Use with `brand_audit_get_report` to fetch the full report.                                                                     |
+| `target`           | The domain as stored at registration time (lowercased, no trailing dot).                                                        |
+| `interval`         | The cadence the customer registered with.                                                                                       |
+| `detectedAt`       | Worker clock at the point `deliverWatchWebhookIfShifted` ran.                                                                   |
+| `previousHash`     | `null` on first-ever delivery (watch just registered). Receivers MUST handle null.                                              |
+| `currentHash`      | 64-char lowercase hex SHA-256. Stable for the same candidate+bucket set regardless of result order.                             |
+| `changes.added`    | Candidates present in current run but not in previous classification. On first delivery, equals the full current candidate set. |
+| `changes.removed`  | Candidates present in previous classification but absent now. Empty on first delivery.                                          |
+| `changes.modified` | Candidates whose `bucket` changed. `previousBucket` is always set for modified entries. Empty on first delivery.                |
 
 ---
 
@@ -115,13 +142,15 @@ identical candidate+bucket sets always produce the same hash.
 5. **Tolerate empty `changes` arrays** — an audit could theoretically detect
    hash drift while all three change arrays are empty (hash function collision or
    future bucket rename); don't hard-fail on that.
+6. **Accept the documented bounds** — up to 200 entries in each change array
+   and up to 256 KiB of encoded JSON. Reject anything larger.
 
 ---
 
 ## Test coverage
 
-| Test file | What it locks |
-|---|---|
-| `test/contracts/brand-audit-watch-webhook.contract.test.ts` | Schema accepts/rejects correct shape; **emitter round-trip**: real `processBrandAuditMessage` produces a `BrandAuditWatchWebhookPayloadSchema`-valid payload for both drift and first-ever delivery |
-| `test/audits/brand-audit-watch-webhook.audit.test.ts` | Every documented top-level field exists; `schemaVersion` is literal 1 |
-| `test/chaos/brand-audit-webhook-delivery.chaos.test.ts` | Failure modes: webhook 500, hash-before-delivery ordering, no-url watch, cross-owner spoof, no-drift suppression, first-ever `added` population |
+| Test file                                                   | What it locks                                                                                                                                                                                       |
+| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test/contracts/brand-audit-watch-webhook.contract.test.ts` | Schema accepts/rejects correct shape and the exact 200/201 boundary; **emitter round-trip**: real `processBrandAuditMessage` produces a `BrandAuditWatchWebhookPayloadSchema`-valid payload for both drift and first-ever delivery |
+| `test/audits/brand-audit-watch-webhook.audit.test.ts`       | Every documented top-level field exists; `schemaVersion` is literal 1                                                                                                                               |
+| `test/chaos/brand-audit-webhook-delivery.chaos.test.ts`     | Failure modes: durable failed→unchanged and failed-H1→current-H2 ordered replay, 200-row pending recovery, stale-parent exact-hash recovery, concurrent stale CAS, no-url watch, cross-owner spoof, no-drift suppression, first-ever `added` population |

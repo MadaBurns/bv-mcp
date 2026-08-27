@@ -83,6 +83,7 @@ describe('Multi-Tenant Hammer — Orchestrator Stress Test', () => {
 				headers: {
 					'Authorization': `Bearer ${TEST_INTERNAL_KEY}`,
 					'X-Tenant': id,
+					'X-Tenant-Scope': id,
 					'Content-Type': 'application/json',
 				},
 				body: JSON.stringify({ domains: [`${id}-1.com`, `${id}-2.com`] }),
@@ -92,6 +93,7 @@ describe('Multi-Tenant Hammer — Orchestrator Stress Test', () => {
 				headers: {
 					'Authorization': `Bearer ${TEST_INTERNAL_KEY}`,
 					'X-Tenant': id,
+					'X-Tenant-Scope': id,
 					'Content-Type': 'application/json',
 				},
 				body: JSON.stringify({ domains: [`${id}-scan.com`], force_refresh: true }),

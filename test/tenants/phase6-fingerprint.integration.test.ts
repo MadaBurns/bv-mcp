@@ -90,6 +90,7 @@ describe('Phase 6 Fingerprint Pre-flight Integration', () => {
 			headers: {
 				'Authorization': `Bearer ${TEST_INTERNAL_KEY}`,
 				'X-Tenant': TEST_TENANT_ID,
+				'X-Tenant-Scope': TEST_TENANT_ID,
 				'Content-Type': 'application/json',
 			},
 			body: JSON.stringify({ domains: ['test.com'] }),
@@ -132,6 +133,7 @@ describe('Phase 6 Fingerprint Pre-flight Integration', () => {
 			headers: {
 				'Authorization': `Bearer ${TEST_INTERNAL_KEY}`,
 				'X-Tenant': TEST_TENANT_ID,
+				'X-Tenant-Scope': TEST_TENANT_ID,
 				'Content-Type': 'application/json',
 			},
 			body: JSON.stringify({ domains: ['test.com'], force_refresh: true }),

@@ -22,7 +22,10 @@ Prerequisites:
    re-derived from the Cloudflare dashboard if the secret-manager copy is stale
    (stale KV IDs → wrangler 422 on deploy).
 4. Secrets (`wrangler secret list` to see which are set): BV_API_KEY,
-   OAUTH_SIGNING_SECRET, BV_WEB_INTERNAL_KEY, BV_RECON_KEY, BV_TLS_PROBE_KEY,
+   OAUTH_SIGNING_SECRET, BV_WEB_INTERNAL_KEY, BV_MCP_OAUTH_MINT_KEY,
+   BV_MCP_OAUTH_REVOKE_KEY, BV_MCP_TENANT_KEY, BV_MCP_TOOL_DELEGATION_KEY,
+   BV_MCP_WATCH_CLEANUP_KEY,
+   BV_MCP_M365_KEY, BV_MCP_BRAND_WEBHOOK_KEY, BV_RECON_KEY, BV_TLS_PROBE_KEY,
    BV_BROWSER_RENDERER_KEY, KV_ENVELOPE_KEY, MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
    BV_DOH_ENDPOINT, BV_DOH_TOKEN, CF_ANALYTICS_TOKEN. Values in the secret
    manager; secrets survive deploys (only re-`put` when rotating).
@@ -133,13 +136,25 @@ unset. Set up an external heartbeat:
 
 ## 8. Secret rotation quick reference
 
-| Secret | Rotate with | Coordinate |
-| ------ | ----------- | ---------- |
-| `BV_WEB_INTERNAL_KEY` | `npx wrangler secret put BV_WEB_INTERNAL_KEY` | Set the SAME value in bv-web-prod first (it is the caller); brief 401 window is expected |
-| `BV_API_KEY` | `npx wrangler secret put BV_API_KEY` | Update Claude Desktop MCPB extension/connector configs |
-| `OAUTH_SIGNING_SECRET` | `npx wrangler secret put OAUTH_SIGNING_SECRET` | Invalidates ALL outstanding OAuth JWTs — customers re-consent |
-| `MCP_ACCESS_LOG_IP_ENCRYPTION_KEY` | `npx wrangler secret put ...` + bump `MCP_ACCESS_LOG_IP_KEY_VERSION` | Old ciphertexts need the old key retained in the vault for forensics |
-| `BV_DOH_TOKEN` | `npx wrangler secret put BV_DOH_TOKEN` | Rotate `BLACKVEIL_DOH_TOKEN` on the bv-dns host to the SAME value. A mismatch is non-fatal — see §9 |
+| Secret                             | Rotate with                                                          | Coordinate                                                                                                                        |
+| ---------------------------------- | -------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `BV_WEB_INTERNAL_KEY`              | `npx wrangler secret put BV_WEB_INTERNAL_KEY`                        | Set the SAME value in bv-web-prod first (it is the caller); brief 401 window is expected                                          |
+| `BV_MCP_OAUTH_MINT_KEY`            | `npx wrangler secret put BV_MCP_OAUTH_MINT_KEY`                      | Same strong value on bv-mcp + bv-web-prod only; grants/trial issuance; never provision to ops                                     |
+| `BV_MCP_OAUTH_REVOKE_KEY`          | `npx wrangler secret put BV_MCP_OAUTH_REVOKE_KEY`                    | Same distinct strong value on bv-mcp + bv2-ops only; revocation cannot mint                                                       |
+| `BV_MCP_TENANT_KEY`                | `npx wrangler secret put BV_MCP_TENANT_KEY`                          | Strong distinct 32+ byte key set only on the all-tenant orchestrator; prefer a fail-closed `TENANT_KEY_SCOPE` mapping. Without one, the key is intentionally global and every call must assert a narrowed `X-Tenant-Scope` |
+| `BV_MCP_TOOL_DELEGATION_KEY`       | `npx wrangler secret put BV_MCP_TOOL_DELEGATION_KEY`                 | Same distinct strong value on bv-mcp + bv-web-prod only; Brand Watch register/list/delete with tenant context                     |
+| `BV_MCP_WATCH_CLEANUP_KEY`         | `npx wrangler secret put BV_MCP_WATCH_CLEANUP_KEY`                   | Separate value on bv-mcp + bv2-ops only; Brand Watch list/delete cleanup, never registration                                      |
+| `BV_MCP_M365_KEY`                  | `npx wrangler secret put BV_MCP_M365_KEY`                            | Set the same dedicated value only on bv-mcp and bv-web-prod; never reuse the fleet-wide `BV_WEB_INTERNAL_KEY`                     |
+| `BV_MCP_BRAND_WEBHOOK_KEY`         | `npx wrangler secret put BV_MCP_BRAND_WEBHOOK_KEY`                   | Same distinct strong value on bv-mcp + bv-web-prod only; carried only over `BV_WEB` to the exact first-party Brand Drift receiver |
+| `BV_API_KEY`                       | `npx wrangler secret put BV_API_KEY`                                 | Update Claude Desktop MCPB extension/connector configs                                                                            |
+| `OAUTH_SIGNING_SECRET`             | `npx wrangler secret put OAUTH_SIGNING_SECRET`                       | Invalidates ALL outstanding OAuth JWTs — customers re-consent                                                                     |
+| `MCP_ACCESS_LOG_IP_ENCRYPTION_KEY` | `npx wrangler secret put ...` + bump `MCP_ACCESS_LOG_IP_KEY_VERSION` | Old ciphertexts need the old key retained in the vault for forensics                                                              |
+| `BV_DOH_TOKEN`                     | `npx wrangler secret put BV_DOH_TOKEN`                               | Rotate `BLACKVEIL_DOH_TOKEN` on the bv-dns host to the SAME value. A mismatch is non-fatal — see §9                               |
+
+Trial-key revocation requires `QUOTA_COORDINATOR`: the revoke route writes an
+authoritative deny marker before deleting the eventually consistent KV record.
+If strong state is unavailable it returns 503 and leaves the KV record intact;
+do not treat that response as a completed revocation.
 
 ## 9. Secondary DoH resolver (bv-dns) — optional, default-OFF
 
@@ -152,10 +167,10 @@ reports "not present". That confirmation always queries Google DoH, and
 additionally queries a **private BlackVeil-operated DoH resolver** when — and
 only when — both of these are populated:
 
-| Env | Kind | Purpose |
-| --- | ---- | ------- |
-| `BV_DOH_ENDPOINT` | **Secret** | Full `…/dns-query` URL of the private resolver |
-| `BV_DOH_TOKEN` | **Secret** | Sent as the `X-BV-Token` request header; must equal `BLACKVEIL_DOH_TOKEN` on the resolver host |
+| Env               | Kind       | Purpose                                                                                        |
+| ----------------- | ---------- | ---------------------------------------------------------------------------------------------- |
+| `BV_DOH_ENDPOINT` | **Secret** | Full `…/dns-query` URL of the private resolver                                                 |
+| `BV_DOH_TOKEN`    | **Secret** | Sent as the `X-BV-Token` request header; must equal `BLACKVEIL_DOH_TOKEN` on the resolver host |
 
 Unset `BV_DOH_ENDPOINT` → the seam is **inert**: `opts.secondaryDoh` is
 `undefined` at every call site, no request is issued, and confirmation behaves
@@ -219,14 +234,14 @@ endpoint is set. Takes effect immediately, no deploy.
 The secondary resolver **cannot change a result that the primary already
 answered**, and it cannot turn a good result into a bad one:
 
-| Condition | Behaviour |
-| --------- | --------- |
-| Primary (Cloudflare) returns typed answers | Secondary confirmation never runs. bv-dns is never contacted on the overwhelming majority of lookups. |
-| bv-dns down, DNS-unresolvable, or TCP-refused | `fetchDohOutcome` catches and returns `{ kind: 'error', reason: 'network' }`. Google's answer is used. Identical to today. |
+| Condition                                                | Behaviour                                                                                                                                                                                     |
+| -------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Primary (Cloudflare) returns typed answers               | Secondary confirmation never runs. bv-dns is never contacted on the overwhelming majority of lookups.                                                                                         |
+| bv-dns down, DNS-unresolvable, or TCP-refused            | `fetchDohOutcome` catches and returns `{ kind: 'error', reason: 'network' }`. Google's answer is used. Identical to today.                                                                    |
 | bv-dns returns 401 (token mismatch), 5xx, or any non-2xx | `{ kind: 'error', reason: 'http' }`, logged at `warn` under `category: 'dns-transport'`. Google's answer is used. **A wrong token degrades to today's behaviour, it does not fail the scan.** |
-| bv-dns returns malformed JSON | `{ kind: 'error', reason: 'parse' }`. Google's answer is used. |
-| bv-dns hangs | `AbortSignal.timeout(DNS_TIMEOUT_MS)` (3 s) aborts it → `reason: 'timeout'`. Google's answer is used. |
-| bv-dns AND Google both fail | `{ kind: 'unconfirmed' }` → `queryDns` returns the **primary** response unchanged. Confirmation is best-effort; it never substitutes an empty result for a primary one. |
+| bv-dns returns malformed JSON                            | `{ kind: 'error', reason: 'parse' }`. Google's answer is used.                                                                                                                                |
+| bv-dns hangs                                             | `AbortSignal.timeout(DNS_TIMEOUT_MS)` (3 s) aborts it → `reason: 'timeout'`. Google's answer is used.                                                                                         |
+| bv-dns AND Google both fail                              | `{ kind: 'unconfirmed' }` → `queryDns` returns the **primary** response unchanged. Confirmation is best-effort; it never substitutes an empty result for a primary one.                       |
 
 Latency is the only real exposure, and it is bounded. The two secondaries run
 under `Promise.allSettled`, which waits for **both** to settle — so on the
@@ -252,14 +267,14 @@ page instead of the resource, so the check never reaches the origin. Two checks
 carry this exposure because they are the only scan-included checks that fetch
 the scanned domain's own web server:
 
-| Check | Fetches | Finding title on interception | `checkStatus` |
-| ----- | ------- | ----------------------------- | ------------- |
-| `check_http_security` | `HEAD https://<domain>/` (×2, plus redirect follows and a GET fallback) | `Cloudflare WAF challenge intercepted` · `Cloudflare WAF blocked external header inspection` · `Cloudflare edge challenged the HTTP security probe` | `error` |
-| `check_mta_sts` | `GET https://mta-sts.<domain>/.well-known/mta-sts.txt` | `Cloudflare WAF challenge intercepted — policy accessibility inconclusive` · `Cloudflare WAF blocked policy fetch — accessibility inconclusive` · `MTA-STS policy fetch stalled — accessibility inconclusive` | `error` |
+| Check                 | Fetches                                                                 | Finding title on interception                                                                                                                                                                                 | `checkStatus` |
+| --------------------- | ----------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| `check_http_security` | `HEAD https://<domain>/` (×2, plus redirect follows and a GET fallback) | `Cloudflare WAF challenge intercepted` · `Cloudflare WAF blocked external header inspection` · `Cloudflare edge challenged the HTTP security probe`                                                           | `error`       |
+| `check_mta_sts`       | `GET https://mta-sts.<domain>/.well-known/mta-sts.txt`                  | `Cloudflare WAF challenge intercepted — policy accessibility inconclusive` · `Cloudflare WAF blocked policy fetch — accessibility inconclusive` · `MTA-STS policy fetch stalled — accessibility inconclusive` | `error`       |
 
 All of these are `info` severity and carry `inconclusive: true` (never
 `missingControl` — see the contract note on `buildWafFinding` in
-`src/lib/waf-detection.ts`). A challenge that *stalls* the probe instead of
+`src/lib/waf-detection.ts`). A challenge that _stalls_ the probe instead of
 answering it lands one step further along: `check_http_security` gives up at its
 10s budget as `HTTP security check timed out` with `checkStatus: 'timeout'`
 (`errorKind: 'timeout'`, still `inconclusive`, still not `missingControl` —
@@ -289,7 +304,7 @@ Verified in code before writing any rule:
 
 - **There is no custom outbound header today.** Nothing in `src/tools/` or
   `packages/dns-checks/src/checks/` sets a proprietary request header on a scan
-  fetch. (`X-BV-Token` in §9 is *inbound* auth to our own DoH resolver, not
+  fetch. (`X-BV-Token` in §9 is _inbound_ auth to our own DoH resolver, not
   anything a scanned domain ever sees.) If a stronger signal is ever wanted, the
   place to add it is the `withRobotsGate` chokepoint — but see the trade-off
   below for why that only helps on zones we control.
@@ -335,7 +350,7 @@ source-available repo — anyone can send it. A rule keyed on it is, functionall
 a WAF bypass token that we have already published. There is no signed or secret
 component to fall back on, because no custom header exists (above).
 
-What makes the narrow form defensible is the *scope*, not the credential: every
+What makes the narrow form defensible is the _scope_, not the credential: every
 resource it exposes is content whose entire purpose is to be world-readable
 anonymously — the site root's response headers, `/robots.txt`, and a published
 MTA-STS policy file. A forger gains nothing a normal browser is not already
@@ -365,12 +380,12 @@ pre-fix result:
 Pass criteria, read off `structuredContent` (or the `STRUCTURED_RESULT`
 comment):
 
-| Field | Required value |
-| ----- | -------------- |
-| `checkStatuses.http_security` | `"completed"` |
-| `checkStatuses.mta_sts` | `"completed"` |
-| `inconclusiveCategories` | contains neither category |
-| `evidence.completed` / `evidence.attempted` | equal (`ratio` = 1) |
+| Field                                       | Required value            |
+| ------------------------------------------- | ------------------------- |
+| `checkStatuses.http_security`               | `"completed"`             |
+| `checkStatuses.mta_sts`                     | `"completed"`             |
+| `inconclusiveCategories`                    | contains neither category |
+| `evidence.completed` / `evidence.attempted` | equal (`ratio` = 1)       |
 
 `evidence.ratio` is the single field to watch: if it is still below 1 the rule
 did not take, regardless of what the score says. Re-check it after any WAF or
@@ -392,7 +407,7 @@ Cloudflare-fronted customer, and we have no lever on their configuration.
    security decision, and the correct response is (1), not pressure.
 3. **First establish whether the block is scanner-shaped or universal — this
    changes the finding.** Probe the same URL from an off-Cloudflare vantage with
-   a neutral client, then with our User-Agent. If *both* are challenged, the
+   a neutral client, then with our User-Agent. If _both_ are challenged, the
    interception is not aimed at us, and for `mta-sts.<domain>` that is a real
    defect rather than a scan artefact: sending MTAs fetch that exact URL with a
    non-browser client and cannot solve an interactive challenge, so MTA-STS is

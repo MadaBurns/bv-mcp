@@ -20,6 +20,7 @@
  * non-2xx — is swallowed so a queue message is never redelivered over telemetry.
  */
 import { logError } from '../log';
+import { disposeUnreadResponseBody } from '../response-body';
 interface AnalyticsHookEnv {
 	BV_WEB?: { fetch: (input: RequestInfo, init?: RequestInit) => Promise<Response> };
 	/** Shared bearer for bv-web-prod's internal routes. Absent on OSS/self-host. */
@@ -34,7 +35,7 @@ export async function streamScanResult(env: AnalyticsHookEnv, payload: unknown):
 		return;
 	}
 	try {
-		await env.BV_WEB.fetch(
+		const response = await env.BV_WEB.fetch(
 			new Request('https://internal/api/internal/mcp/ingest-scan', {
 				method: 'POST',
 				headers: {
@@ -48,6 +49,7 @@ export async function streamScanResult(env: AnalyticsHookEnv, payload: unknown):
 				signal: AbortSignal.timeout(5_000),
 			}),
 		);
+		await disposeUnreadResponseBody(response);
 	} catch (e) {
 		logError(e instanceof Error ? e : String(e), { category: 'analytics_stream' });
 	}

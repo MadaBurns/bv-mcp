@@ -109,6 +109,12 @@ function buildEnvWithTenant() {
 }
 
 async function sendRequest(req: Request, customEnv: TestEnv): Promise<Response> {
+	const tenant = req.headers.get('x-tenant');
+	if (tenant && !req.headers.has('x-tenant-scope')) {
+		const headers = new Headers(req.headers);
+		headers.set('X-Tenant-Scope', tenant);
+		req = new Request(req, { headers });
+	}
 	const ctx = createExecutionContext();
 	const res = await worker.fetch(req, customEnv, ctx);
 	await waitOnExecutionContext(ctx);

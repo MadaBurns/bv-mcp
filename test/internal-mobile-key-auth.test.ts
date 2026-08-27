@@ -39,13 +39,14 @@ async function send(req: Request, customEnv: TestEnv): Promise<Response> {
 }
 
 /** POST /internal/tools/call — the exact route the BizFit mobile Worker calls. */
-function callRequest(bearer?: string): Request {
+function callRequest(bearer?: string, tool = 'scan_domain', extraHeaders: Record<string, string> = {}): Request {
 	const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 	if (bearer !== undefined) headers.Authorization = `Bearer ${bearer}`;
+	Object.assign(headers, extraHeaders);
 	return new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
 		method: 'POST',
 		headers,
-		body: JSON.stringify({ name: 'check_spf', arguments: { domain: 'example.com' } }),
+		body: JSON.stringify({ name: tool, arguments: {} }),
 	});
 }
 
@@ -66,6 +67,34 @@ describe('internal auth gate: per-consumer BV_MOBILE_INTERNAL_KEY', () => {
 	it('still accepts a valid BV_WEB_INTERNAL_KEY bearer when both slots are configured', async () => {
 		// Regression guard: adding the mobile slot must not displace the web key.
 		await expectPassesGate({ ...env, BV_WEB_INTERNAL_KEY: WEB_KEY, BV_MOBILE_INTERNAL_KEY: MOBILE_KEY } as TestEnv, WEB_KEY);
+	});
+
+	it('restricts the mobile principal to scan_domain even without X-BV-Caller', async () => {
+		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: WEB_KEY, BV_MOBILE_INTERNAL_KEY: MOBILE_KEY } as TestEnv;
+		const res = await send(callRequest(MOBILE_KEY, 'check_spf'), customEnv);
+		expect(res.status).toBe(403);
+		expect(await res.json()).toMatchObject({ error: 'mobile_tool_not_allowed' });
+	});
+
+	it('a caller-controlled agent header cannot widen the mobile capability', async () => {
+		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: WEB_KEY, BV_MOBILE_INTERNAL_KEY: MOBILE_KEY } as TestEnv;
+		const res = await send(callRequest(MOBILE_KEY, 'batch_scan', { 'X-BV-Caller': 'agent-chat' }), customEnv);
+		expect(res.status).toBe(403);
+		expect(await res.json()).toMatchObject({ error: 'mobile_tool_not_allowed' });
+	});
+
+	it('chooses mobile least privilege if web and mobile secrets are accidentally equal', async () => {
+		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: MOBILE_KEY, BV_MOBILE_INTERNAL_KEY: MOBILE_KEY } as TestEnv;
+		const res = await send(callRequest(MOBILE_KEY, 'check_spf'), customEnv);
+		expect(res.status).toBe(403);
+	});
+
+	it('keeps the web principal able to call non-mobile tools', async () => {
+		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: WEB_KEY, BV_MOBILE_INTERNAL_KEY: MOBILE_KEY } as TestEnv;
+		const res = await send(callRequest(WEB_KEY, 'check_spf'), customEnv);
+		expect(res.status).not.toBe(401);
+		expect(res.status).not.toBe(403);
+		expect(res.status).not.toBe(503);
 	});
 
 	it('rejects a bearer matching neither slot → 401', async () => {

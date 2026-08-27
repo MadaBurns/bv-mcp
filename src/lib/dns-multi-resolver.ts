@@ -10,6 +10,7 @@
 import type { DnsAnswer, DohResponse, RecordTypeName } from './dns-types';
 import { RecordType } from './dns-types';
 import { CLOUDFLARE_DOH_ENDPOINT } from './dns-endpoints';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 
 /** Public DoH resolver endpoints. */
 export const RESOLVERS = [
@@ -24,6 +25,7 @@ const RESOLVER_TIMEOUT_MS = 3_000;
 
 /** Overall multi-resolver query timeout (ms). */
 const MULTI_RESOLVER_TIMEOUT_MS = 5_000;
+const DOH_MAX_BODY_BYTES = 512 * 1024;
 
 /** Result from a single resolver query. */
 export interface ResolverAnswer {
@@ -51,12 +53,7 @@ function buildUrl(endpoint: string, domain: string, type: RecordTypeName): strin
 }
 
 /** Fetch a DoH response from a single resolver with timeout. */
-async function fetchResolver(
-	resolverName: string,
-	endpoint: string,
-	domain: string,
-	type: RecordTypeName,
-): Promise<ResolverAnswer> {
+async function fetchResolver(resolverName: string, endpoint: string, domain: string, type: RecordTypeName): Promise<ResolverAnswer> {
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), RESOLVER_TIMEOUT_MS);
 
@@ -65,14 +62,16 @@ async function fetchResolver(
 		const response = await fetch(url, {
 			method: 'GET',
 			headers: { Accept: 'application/dns-json' },
+			redirect: 'manual',
 			signal: controller.signal,
 		});
 
 		if (!response.ok) {
+			await disposeUnreadResponseBody(response);
 			return { resolver: resolverName, status: 'error', answers: [] };
 		}
 
-		const data = await response.json() as DohResponse;
+		const data = await readJsonResponseCapped<DohResponse>(response, DOH_MAX_BODY_BYTES);
 		if (typeof data?.Status !== 'number') {
 			return { resolver: resolverName, status: 'error', answers: [] };
 		}
@@ -116,7 +115,10 @@ function classifyConsistency(resolverAnswers: ResolverAnswer[], type: RecordType
 			return { status: 'CONSISTENT', detail: `No ${type} records found — all ${okAnswers.length} resolvers agree.` };
 		}
 		if (failedCount > 0) {
-			return { status: 'CONSISTENT', detail: `${okAnswers.length} of ${resolverAnswers.length} resolvers returned identical ${type} records (${failedCount} unreachable).` };
+			return {
+				status: 'CONSISTENT',
+				detail: `${okAnswers.length} of ${resolverAnswers.length} resolvers returned identical ${type} records (${failedCount} unreachable).`,
+			};
 		}
 		return { status: 'CONSISTENT', detail: `All ${okAnswers.length} resolvers returned identical ${type} records.` };
 	}
@@ -165,13 +167,8 @@ function classifyConsistency(resolverAnswers: ResolverAnswer[], type: RecordType
  * @param type - DNS record type
  * @returns Consistency result with per-resolver answers
  */
-export async function queryMultiResolver(
-	domain: string,
-	type: RecordTypeName,
-): Promise<ConsistencyResult> {
-	const queries = RESOLVERS.map((r) =>
-		fetchResolver(r.name, r.endpoint, domain, type),
-	);
+export async function queryMultiResolver(domain: string, type: RecordTypeName): Promise<ConsistencyResult> {
+	const queries = RESOLVERS.map((r) => fetchResolver(r.name, r.endpoint, domain, type));
 
 	const resolverAnswers = await Promise.race([
 		Promise.all(queries),
@@ -183,9 +180,7 @@ export async function queryMultiResolver(
 						queries.map((q) =>
 							Promise.race([
 								q,
-								new Promise<ResolverAnswer>((r) =>
-									setTimeout(() => r({ resolver: 'unknown', status: 'timeout', answers: [] }), 0),
-								),
+								new Promise<ResolverAnswer>((r) => setTimeout(() => r({ resolver: 'unknown', status: 'timeout', answers: [] }), 0)),
 							]),
 						),
 					),
@@ -211,9 +206,7 @@ export async function checkMultiResolverConsistency(
 	types: RecordTypeName[] = ['A', 'AAAA', 'MX', 'TXT', 'NS'],
 ): Promise<ConsistencyResult[]> {
 	// Run all record type queries in parallel
-	const results = await Promise.all(
-		types.map((type) => queryMultiResolver(domain, type)),
-	);
+	const results = await Promise.all(types.map((type) => queryMultiResolver(domain, type)));
 
 	return results;
 }

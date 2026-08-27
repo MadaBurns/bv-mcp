@@ -97,4 +97,15 @@ describe('infra probe worker', () => {
 		const body = await response.json() as { error?: string };
 		expect(body.error).toBe('invalid_hostname');
 	});
+
+	it('rejects an oversized chunked probe body before JSON parsing', async () => {
+		const response = await infraProbeWorker.fetch(new Request('https://infra-probe.internal/probe/authoritative-dns', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ hostname: 'a'.repeat(2000) }),
+		}));
+
+		expect(response.status).toBe(413);
+		await expect(response.json()).resolves.toEqual({ error: 'request_body_too_large' });
+	});
 });

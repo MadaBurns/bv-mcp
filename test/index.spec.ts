@@ -1,13 +1,36 @@
 import { env, createExecutionContext, waitOnExecutionContext, SELF } from 'cloudflare:test';
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
-import worker from '../src';
-import { resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
+import worker, { resolveM365PrincipalIdentity } from '../src';
+import { checkDistinctDomainDailyLimitWithCoordinator, resetQuotaCoordinatorState } from '../src/lib/quota-coordinator';
 import { resetAllRateLimits, resetAllRateLimitsKv } from '../src/lib/rate-limiter';
-import { resetLegacySseState } from '../src/lib/legacy-sse';
+import { getLegacyStreamCount, resetLegacySseState } from '../src/lib/legacy-sse';
 import { resetSessions } from '../src/lib/session';
 import { ACTIVE_SESSIONS } from '../src/lib/session-memory';
 
 const TEST_API_KEY = 'test-api-key';
+
+describe('M365 principal identity contract', () => {
+	it('keeps raw-credential lookup separate from canonical OAuth tenant identity', () => {
+		expect(
+			resolveM365PrincipalIdentity({
+				authenticated: true,
+				tier: 'developer',
+				keyHash: 'a'.repeat(64),
+				credentialHash: 'b'.repeat(64),
+			}),
+		).toEqual({ kind: 'api_key', credentialHash: 'b'.repeat(64) });
+		expect(
+			resolveM365PrincipalIdentity({
+				authenticated: true,
+				tier: 'enterprise',
+				keyHash: 'c'.repeat(64),
+				oauthTenantId: 'tenant_123',
+			}),
+		).toEqual({ kind: 'oauth_tenant', tenantId: 'tenant_123', principalId: 'c'.repeat(64) });
+		expect(resolveM365PrincipalIdentity({ authenticated: true, tier: 'owner', keyHash: 'd'.repeat(64) })).toBeUndefined();
+		expect(resolveM365PrincipalIdentity({ authenticated: false })).toBeUndefined();
+	});
+});
 
 function parseSseMessage<T>(body: string): T {
 	const dataLine = body.split('\n').find((line) => line.startsWith('data: '));
@@ -108,6 +131,7 @@ describe('DNS Security MCP Server', () => {
 
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.useRealTimers();
 	});
 
 	describe('POST /mcp - Content-Type validation', () => {
@@ -232,6 +256,40 @@ describe('DNS Security MCP Server', () => {
 			expect(body.error.code).toBe(-32001);
 		});
 
+		it('bounds unique uncached bearer validation attempts per client IP', async () => {
+			const bvWeb = {
+				fetch: vi.fn().mockResolvedValue(Response.json({ tier: null })),
+			} as unknown as Fetcher;
+			const authEnv = {
+				...env,
+				RATE_LIMIT: undefined,
+				QUOTA_COORDINATOR: undefined,
+				BV_WEB: bvWeb,
+				BV_WEB_INTERNAL_KEY: 'internal-key',
+			} as unknown as Parameters<typeof worker.fetch>[1];
+			let response: Response | undefined;
+
+			for (let i = 0; i <= 60; i++) {
+				const request = new Request('http://example.com/mcp', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'cf-connecting-ip': '203.0.113.247',
+						Authorization: `Bearer unique-invalid-token-${i}`,
+					},
+					body: JSON.stringify({ jsonrpc: '2.0', id: i, method: 'initialize', params: {} }),
+				}) as unknown as Parameters<typeof worker.fetch>[0];
+				const ctx = createExecutionContext();
+				response = await worker.fetch(request, authEnv, ctx);
+				await waitOnExecutionContext(ctx);
+			}
+
+			expect(bvWeb.fetch).toHaveBeenCalledTimes(60);
+			expect(response?.status).toBe(429);
+			expect(response?.headers.get('x-ratelimit-limit')).toBe('60');
+			expect(response?.headers.get('retry-after')).toBeTruthy();
+		});
+
 		it('accepts valid bearer token when auth is required', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
 			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
@@ -280,6 +338,49 @@ describe('DNS Security MCP Server', () => {
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(200);
 			expect(response.headers.get('mcp-session-id')).toBeTruthy();
+		});
+	});
+
+	describe('GET /reports - owner principal integrity', () => {
+		it('uses the full 256-bit authenticated principal for the owner lookup', async () => {
+			let boundValues: unknown[] = [];
+			const brandAuditDb = {
+				prepare: vi.fn((sql: string) => ({
+					bind: (...values: unknown[]) => {
+						if (sql.startsWith('SELECT t.pdf_r2_key')) boundValues = values;
+						return { first: async () => null };
+					},
+				})),
+				batch: vi.fn(async () => [
+					{ success: true, results: [], meta: { changes: 0 } },
+					{ success: true, results: [], meta: { changes: 0 } },
+				]),
+			} as unknown as D1Database;
+			const authEnv = {
+				...env,
+				BV_API_KEY: TEST_API_KEY,
+				BV_WEB: undefined,
+				BV_WEB_INTERNAL_KEY: undefined,
+				RATE_LIMIT: undefined,
+				QUOTA_COORDINATOR: undefined,
+				BRAND_AUDIT_DB: brandAuditDb,
+				BRAND_REPORTS: {} as R2Bucket,
+			} as unknown as Env;
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/reports/audit-1/example.com.pdf', {
+				headers: { Authorization: `Bearer ${TEST_API_KEY}` },
+			});
+			const ctx = createExecutionContext();
+
+			const response = await worker.fetch(request, authEnv, ctx);
+			await waitOnExecutionContext(ctx);
+
+			const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(TEST_API_KEY)));
+			const fullPrincipal = Array.from(digest)
+				.map((byte) => byte.toString(16).padStart(2, '0'))
+				.join('');
+			expect(response.status).toBe(404);
+			expect(fullPrincipal).toHaveLength(64);
+			expect(boundValues).toEqual(['audit-1', 'example.com', fullPrincipal]);
 		});
 	});
 
@@ -378,7 +479,15 @@ describe('DNS Security MCP Server', () => {
 			};
 			expect(response.status).toBe(503);
 			expect(body.status).toBe('degraded');
-			for (const key of ['tenantRegistryDb', 'scannerQueue', 'brandAuditDb', 'brandReports', 'brandAuditQueue', 'brandAuditPdfQueue', 'alertWebhook']) {
+			for (const key of [
+				'tenantRegistryDb',
+				'scannerQueue',
+				'brandAuditDb',
+				'brandReports',
+				'brandAuditQueue',
+				'brandAuditPdfQueue',
+				'alertWebhook',
+			]) {
 				expect(body.bindings[key]).toBe('absent');
 			}
 		});
@@ -719,6 +828,28 @@ describe('DNS Security MCP Server', () => {
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
 			expect(response.status).toBe(202);
+		});
+
+		it('rejects an anonymous batch above four messages before catalog fan-out', async () => {
+			const sessionId = await initSession();
+			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'Mcp-Session-Id': sessionId,
+					'cf-connecting-ip': '203.0.113.104',
+				},
+				body: JSON.stringify(
+					Array.from({ length: 5 }, (_, index) => ({ jsonrpc: '2.0', id: index + 1, method: 'tools/list', params: {} })),
+				),
+			});
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(request, env, ctx);
+			await waitOnExecutionContext(ctx);
+
+			expect(response.status).toBe(400);
+			const body = (await response.json()) as { error: { message: string } };
+			expect(body.error.message).toContain('Batch size exceeds maximum of 4 requests');
 		});
 
 		it('returns an SSE event for batch responses when the client accepts event-stream', async () => {
@@ -1223,8 +1354,78 @@ describe('DNS Security MCP Server', () => {
 			expect(endpoint).toContain('/mcp/messages?sessionId=');
 		});
 
+		it('rate-limits authenticated legacy SSE creation and caps concurrent streams per credential', async () => {
+			vi.useFakeTimers();
+			vi.setSystemTime(new Date('2026-08-27T00:00:00Z'));
+			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
+			const openResponses: Response[] = [];
+			for (let index = 0; index < 30; index++) {
+				const ctx = createExecutionContext();
+				const response = await worker.fetch(
+					new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+						method: 'GET',
+						headers: {
+							Accept: 'text/event-stream',
+							Authorization: `Bearer ${TEST_API_KEY}`,
+							'CF-Connecting-IP': `198.51.100.${index + 1}`,
+						},
+					}),
+					authEnv,
+					ctx,
+				);
+				await waitOnExecutionContext(ctx);
+				expect(response.status).toBe(200);
+				openResponses.push(response);
+			}
+
+			const blockedCtx = createExecutionContext();
+			const blocked = await worker.fetch(
+				new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+					method: 'GET',
+					headers: {
+						Accept: 'text/event-stream',
+						Authorization: `Bearer ${TEST_API_KEY}`,
+						'CF-Connecting-IP': '203.0.113.250',
+					},
+				}),
+				authEnv,
+				blockedCtx,
+			);
+			await waitOnExecutionContext(blockedCtx);
+
+			expect(blocked.status).toBe(429);
+			expect(blocked.headers.get('retry-after')).toBeTruthy();
+			expect(ACTIVE_SESSIONS.size).toBe(30);
+			expect(getLegacyStreamCount()).toBe(30);
+
+			// Once the minute creation window rolls, a new request reaches the
+			// concurrent-stream admission gate. It is rejected without replacing an
+			// active peer, and its just-created session is tombstoned again.
+			await vi.advanceTimersByTimeAsync(61_000);
+			const concurrentCtx = createExecutionContext();
+			const concurrentBlocked = await worker.fetch(
+				new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+					method: 'GET',
+					headers: {
+						Accept: 'text/event-stream',
+						Authorization: `Bearer ${TEST_API_KEY}`,
+						'CF-Connecting-IP': '192.0.2.250',
+					},
+				}),
+				authEnv,
+				concurrentCtx,
+			);
+			await waitOnExecutionContext(concurrentCtx);
+			expect(concurrentBlocked.status).toBe(429);
+			expect(await concurrentBlocked.text()).toContain('Too many concurrent');
+			expect(ACTIVE_SESSIONS.size).toBe(30);
+			expect(getLegacyStreamCount()).toBe(30);
+
+			await Promise.all(openResponses.map((response) => response.body?.cancel()));
+		});
+
 		it('delivers initialize responses over the legacy SSE stream', async () => {
-			const openRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+			const openRequest = new Request('http://example.com/mcp/sse', {
 				method: 'GET',
 				headers: {
 					Accept: 'text/event-stream',
@@ -1268,6 +1469,39 @@ describe('DNS Security MCP Server', () => {
 			const deleteResponse = await worker.fetch(deleteRequest, env, deleteCtx);
 			await waitOnExecutionContext(deleteCtx);
 			expect(deleteResponse.status).toBe(204);
+		});
+
+		it('rejects an anonymous legacy batch containing five requests before dispatch', async () => {
+			const openRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+				method: 'GET',
+				headers: { Accept: 'text/event-stream' },
+			});
+			const openCtx = createExecutionContext();
+			const streamResponse = await worker.fetch(openRequest, env, openCtx);
+			await waitOnExecutionContext(openCtx);
+			const endpoint = parseSseEvent(await readSseChunk(streamResponse), 'endpoint');
+			const batch = Array.from({ length: 5 }, (_, index) => ({
+				jsonrpc: '2.0',
+				id: index + 1,
+				method: 'tools/list',
+				params: {},
+			}));
+
+			const postCtx = createExecutionContext();
+			const response = await worker.fetch(
+				new Request(endpoint, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify(batch),
+				}),
+				env,
+				postCtx,
+			);
+			await waitOnExecutionContext(postCtx);
+
+			expect(response.status).toBe(400);
+			expect(await response.text()).toContain('Batch size exceeds maximum of 4 requests');
+			await streamResponse.body?.cancel();
 		});
 	});
 
@@ -1493,17 +1727,17 @@ describe('DNS Security MCP Server', () => {
 			// unauthenticated but previously only enforced per-IP + per-tool caps,
 			// letting one IP scan up to 25 DISTINCT domains/day here (vs the 12
 			// intended by executeMcpRequest). It must now mirror the tighter
-			// distinct-domain cap. Seed the per-IP distinct-domain COUNTER to the
-			// limit so a FRESH distinct domain trips the cap without running 12 real
-			// scans; the check runs BEFORE scanDomain, so no fan-out occurs.
+			// distinct-domain cap. Seed the authoritative coordinator to the limit so
+			// a FRESH distinct domain trips the cap without running 12 real scans; the
+			// check runs BEFORE scanDomain, so no fan-out occurs.
 			vi.useFakeTimers();
 			vi.setSystemTime(new Date('2026-03-08T00:00:00Z'));
 			try {
 				const ip = '203.0.113.44';
-				const DAY_MS = 86_400_000;
-				const dayWindow = Math.floor(Date.now() / DAY_MS);
 				// FREE_DISTINCT_DOMAIN_DAILY_LIMIT is 12.
-				await env.RATE_LIMIT.put(`rl:day:ddc:count:${ip}:${dayWindow}`, '12', { expirationTtl: 86_400 });
+				for (let index = 0; index < 12; index += 1) {
+					expect((await checkDistinctDomainDailyLimitWithCoordinator(ip, `seed-${index}`, 12, env.QUOTA_COORDINATOR))?.allowed).toBe(true);
+				}
 
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/badge/example.com', {
 					headers: { 'cf-connecting-ip': ip },
@@ -1593,11 +1827,11 @@ describe('DNS Security MCP Server', () => {
 			}
 		});
 
-		it('does not rate-limit protocol methods (initialize, ping, tools/list, etc.)', async () => {
+		it('meters established-session ping traffic without charging the tool budget', async () => {
 			const sessionId = await initSession();
 
-			// Send 65 ping requests — all should succeed since protocol methods are exempt
-			// from control plane rate limiting to prevent mcp-remote reconnection storms
+			// The first 60 protocol messages fit the dedicated control-plane minute
+			// budget; the rest are denied instead of amplifying responses indefinitely.
 			for (let i = 0; i < 65; i++) {
 				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 					method: 'POST',
@@ -1611,12 +1845,35 @@ describe('DNS Security MCP Server', () => {
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(request, env, ctx);
 				await waitOnExecutionContext(ctx);
-				expect(response.status).toBe(200);
+				expect(response.status).toBe(i < 60 ? 200 : 429);
 			}
+
+			// tools/call has an independent quota stack and remains available.
+			const toolCtx = createExecutionContext();
+			const toolResponse = await worker.fetch(
+				new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					method: 'POST',
+					headers: {
+						'Content-Type': 'application/json',
+						'Mcp-Session-Id': sessionId,
+						'cf-connecting-ip': '203.0.113.55',
+					},
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: 600,
+						method: 'tools/call',
+						params: { name: 'explain_finding', arguments: { checkType: 'SPF', status: 'fail' } },
+					}),
+				}),
+				env,
+				toolCtx,
+			);
+			await waitOnExecutionContext(toolCtx);
+			expect(toolResponse.status).toBe(200);
 		});
 	});
 
-	describe('Session recovery', () => {
+	describe('Session lifecycle', () => {
 		/** Helper: terminate a session via DELETE so subsequent requests see it as expired */
 		async function terminateSession(sessionId: string): Promise<void> {
 			const delReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
@@ -1650,9 +1907,10 @@ describe('DNS Security MCP Server', () => {
 			expect(response.status).toBe(404);
 		});
 
-		it('auto-recovers expired sessions for tools/call by reviving the same session ID', async () => {
+		it('rehydrates an active server-issued KV session after an isolate cache miss', async () => {
 			const sessionId = await initSession();
-			// Simulate idle expiry (not DELETE) — remove from memory without tombstone
+			// Simulate a different isolate: remove only the local cache entry while the
+			// authoritative, unexpired server-issued record remains in SESSION_STORE.
 			ACTIVE_SESSIONS.delete(sessionId);
 
 			const toolRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
@@ -1676,8 +1934,8 @@ describe('DNS Security MCP Server', () => {
 			await waitOnExecutionContext(toolCtx);
 
 			expect(toolResponse.status).toBe(200);
-			// No new session ID header — the original session ID is revived in-place
-			// so clients (e.g. mcp-remote) that ignore response headers keep working
+			// No new session ID header — this is the same still-active session,
+			// rehydrated from its durable server-issued record.
 			const recoveredSessionId = toolResponse.headers.get('mcp-session-id');
 			expect(recoveredSessionId).toBeNull();
 
@@ -1688,7 +1946,7 @@ describe('DNS Security MCP Server', () => {
 			expect(toolBody.error).toBeUndefined();
 			expect(Array.isArray(toolBody.result?.content)).toBe(true);
 
-			// Follow-up request with the SAME original session ID succeeds
+			// Follow-up request with the same active session ID succeeds.
 			const followupRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
 				method: 'POST',
 				headers: {

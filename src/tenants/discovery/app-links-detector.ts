@@ -19,6 +19,7 @@
  */
 
 import { z } from 'zod';
+import { disposeUnreadResponseBody, readBoundedOrNull } from '../../lib/response-body';
 
 export type AppLinkSource = 'apple_app_site_association' | 'android_asset_links';
 
@@ -160,6 +161,7 @@ const ASSETLINKS_PATH = '/.well-known/assetlinks.json';
  * time out fast. 404 is the common case for non-app brands; a 5s ceiling on
  * the others preserves budget for the rest of the audit. */
 const APP_LINKS_FETCH_TIMEOUT_MS = 5000;
+export const APP_LINKS_MAX_BODY_BYTES = 256 * 1024;
 
 async function defaultFetcher(url: string): Promise<{ status: number; body: unknown } | null> {
 	const controller = new AbortController();
@@ -170,9 +172,15 @@ async function defaultFetcher(url: string): Promise<{ status: number; body: unkn
 			headers: { accept: 'application/json' },
 			signal: controller.signal,
 		});
+		if (!res.ok) {
+			await disposeUnreadResponseBody(res);
+			return { status: res.status, body: null };
+		}
+		const text = res.body ? await readBoundedOrNull(res.body, APP_LINKS_MAX_BODY_BYTES) : '';
+		if (text === null) return null;
 		let body: unknown = null;
 		try {
-			body = await res.json();
+			body = JSON.parse(text);
 		} catch {
 			body = null;
 		}

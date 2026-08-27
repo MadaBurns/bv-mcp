@@ -145,7 +145,7 @@ Three-tier model (`computeScanScore`): **Core 70%** (DMARC 16, DKIM 10, SPF 10, 
 - **Body**: 10 KB on `/mcp`. **IP source**: `cf-connecting-ip` only (never `x-forwarded-for`). **Origin**: MCP-compliant rejection of unauthorized browser `Origin`; `ALLOWED_ORIGINS` configurable.
 - **Sessions**: idle TTL 2h sliding, KV + in-memory dual-write. Missing → 400; expired → 404. Creation 30/min per IP. IDs exactly 64 lowercase hex. `DELETE /mcp` accepts `Mcp-Session-Id` header only. `SESSION_CREATE_BY_IP` LRU-capped 5000; `LEGACY_STREAMS` capped 500.
 - **Paid OAuth tiers** (bv-web plan → tier claim → limits): free/starter → none (50 scans/day, 3 concurrent); pro/business/MCP Developer → `developer` (500/day, 10); enterprise/MCP Enterprise → `enterprise` (10,000/day, 25). Resolution in `src/oauth/entitlements.ts` via the bv-web binding; static `BV_API_KEY` → `owner` (IP-gated). `agent` (200/day, 5) reachable only via bv-web `validate-key`.
-- **Internal routes**: `/internal/*` guarded by `cf-connecting-ip` presence (`isPublicInternetRequest()`); public → 404. Bearer gates: credential-minting routes (`/internal/trial-keys/*`, `/internal/oauth/grants`) are STRICT (503 if `BV_WEB_INTERNAL_KEY` unset; 401 on missing/wrong). `/internal/tools|analytics|tenants/*` use `internalLenientAuthGate` — despite the name **secure-by-default** (ACTIVE unless `REQUIRE_INTERNAL_AUTH=false`). `/internal/analytics/forensics` is STRICT-gated (decrypts client IP + PTR; writes a self-audit row to `mcp_access_log_audit` in `INTELLIGENCE_DB`); operator-only.
+- **Internal routes**: `/internal/*` is guarded by `cf-connecting-ip` presence (`isPublicInternetRequest()`); public → 404. Capabilities are distinct: `BV_WEB_INTERNAL_KEY` for general web tools/analytics, `BV_MOBILE_INTERNAL_KEY` for scan-only mobile calls, `BV_MCP_TENANT_KEY` for tenant orchestration, `BV_MCP_TOOL_DELEGATION_KEY` for web Brand Watch register/list/delete, `BV_MCP_WATCH_CLEANUP_KEY` for ops-only list/delete, `BV_MCP_OAUTH_MINT_KEY` for grants/trial issuance, and `BV_MCP_OAUTH_REVOKE_KEY` for subject revocation. High-trust capabilities require at least 32 UTF-8 bytes and fail closed on secret reuse. Missing route credentials fail 503; wrong credentials fail 401. The legacy `REQUIRE_INTERNAL_AUTH=false` escape hatch applies only to general tools/analytics; tenant delegation/orchestration, OAuth/trial administration, and forensics/erasure always enforce their dedicated bearer. `X-Tenant` + `X-Auth-Tier` are accepted only with one of the two narrow tenant capabilities; the fleet web key is rejected. Mutating calls support durable `Idempotency-Key` replay protection.
 - **Fuzzing detection**: pattern-based (`unknown_tool`, `unknown_method`, `zod_arg`, `auth_fail`), 15-min cron → resolved alert webhook. Files: `lib/fuzzing-detector.ts`, `lib/fuzzing-counter.ts`, `schemas/alerting.ts`, `handleFuzzingScan` in `scheduled.ts`. Thresholds `FUZZ_THRESHOLDS` in `lib/config.ts` (audit-enforced).
 
 ## Adding a New Tool
@@ -180,7 +180,7 @@ Pre-bump locally before tagging (the `version-bump` job is a read-only gate). �
 
 ## Service Binding Integration
 
-`/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`. `/internal/tools/batch` runs one tool across many domains (max 500, concurrency 1–50, 256 KB body). `?format=structured` returns the tool's **payload** under `result` per domain — raw `CheckResult` for `check_*` tools, `structuredContent` for `NON_CHECK_RESULT_TOOLS`. Cross-door parity asserted in `test/internal.spec.ts`.
+`/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`. `/internal/tools/batch` runs one **read-only, domain-required** tool across many domains (max 500, concurrency 1–50, 256 KB body); mutating/destructive tools fail closed and must use the idempotent single-call contract. `?format=structured` returns the tool's **payload** under `result` per domain — raw `CheckResult` for `check_*` tools, `structuredContent` for `NON_CHECK_RESULT_TOOLS`. Cross-door parity asserted in `test/internal.spec.ts`.
 
 | Layer                                                             | Public `/mcp` | Internal `/internal/*` |
 | ----------------------------------------------------------------- | :-----------: | :--------------------: |
@@ -199,38 +199,45 @@ Free-tier paid-gating (403) and the distinct-domain cap are public-`/mcp`-only �
 
 Per-binding narratives (activation, failure semantics, incident history): **`bv-mcp-operations` skill** → "Binding notes".
 
-| Binding | Type | Purpose |
-| --- | --- | --- |
-| `BV_API_KEY` | Secret | Static bearer auth → `owner` tier |
-| `ENABLE_OAUTH` / `ENABLE_OWNER_OAUTH` | var | OAuth routes / owner consent page (operator only) |
-| `OWNER_ALLOW_IPS` | var | IPs allowed for `owner`; mismatch → `partner` |
-| `OAUTH_SIGNING_SECRET` | Secret | HS256 ≥32 bytes; required when `ENABLE_OAUTH=true` (503 until set) |
-| `OAUTH_ISSUER` | var | Optional override; falls back to Host (set in prod vs Host spoofing) |
-| `ALLOWED_ORIGINS` | var | Allowed Origins (CSV) |
-| `RATE_LIMIT` / `SCAN_CACHE` / `SESSION_STORE` | KV | Required in prod |
-| `QUOTA_COORDINATOR` / `PROFILE_ACCUMULATOR` | DO | Distributed rate limiting / adaptive weights (optional) |
-| `MCP_ANALYTICS` | Analytics Engine | Telemetry (fail-open) |
-| `MCP_ANALYTICS_QUEUE` | Queue | **Operator only.** Batched `mcp_access_log` writes (PTR + encrypt). Absent → inline fallback |
-| `ANALYTICS_PII_LEVEL` / `ANALYTICS_RETENTION_DAYS` | var | Access-log PII depth (`coarse` default) / retention days (90, clamp 1–365) |
-| `PROVIDER_SIGNATURES_URL` | var | Provider signatures source |
-| `BV_DOH_ENDPOINT` / `BV_DOH_TOKEN` | Secret | Optional secondary DoH. ⚠️ Both Secrets, never `vars` |
-| `CERTSPOTTER_TOKEN` | Secret | Cert Spotter CT auth. Fail-soft; raises rate limits ONLY (15s timeout stays — #735) |
-| `BV_CERTSTREAM` | Service | CT logs: `/enumerate` + `/sans`; crt.sh fallback w/ jittered backoff |
-| `BV_WHOIS` | Service | WHOIS/43 shim; optional, RDAP-only fallback |
-| `BV_INFRA_GRAPH` / `BV_INTEL_GATEWAY` / `BV_ENTERPRISE` | Service | **Operator only.** Tier-1/2/0 `discovery_mode='tiered'` lookups; absent → classic sweep |
-| `BV_RECON` / `BV_RECON_KEY` | Service / Secret | **Operator only.** bv-recon behind the recon tools; fail-soft → `unprovisioned` |
-| `BV_TLS_PROBE` / `BV_TLS_PROBE_KEY` | Service / Secret | **Operator only.** Legacy-TLS detection for `check_ssl`; fail-soft |
-| `BV_WEB` | Service | **Operator only.** OAuth consent proxy + M365 `m365Proxy`. ⚠️ IS declared in public `wrangler.jsonc` (audit-enforced) |
-| `BV_WEB_INTERNAL_KEY` | Secret | Bearer for `BV_WEB` internal calls, M365 proxy auth, AND `resolveAlertWebhookUrl` |
-| `BV_INFRA_PROBE` | Service | authoritative_dns_infra probe. ⚠️ NOT overlay-only; `deploy:prod` does NOT deploy it |
-| `INTELLIGENCE_DB` | D1 | `mcp_access_log` store. Absent → access-log no-op |
-| `BRAND_AUDIT_DB` / `BRAND_AUDIT_QUEUE` / `BRAND_AUDIT_PDF_QUEUE` / `BRAND_REPORTS` | D1/Queue/R2 | Async brand-audit state, job queues, PDF storage. Queues absent → `*_start` → `unprovisioned` |
-| `BV_BROWSER_RENDERER` / `BV_BROWSER_RENDERER_KEY` | Service / Secret | **Operator only.** Brand-report PDF rendering |
-| `KV_ENVELOPE_KEY` | Secret | AES-256 KV envelope encryption (FIND-17 — OAuth codes, trial keys) |
-| `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT` | var | **Operator only.** `"tiered"` flips the runtime default; unset → schema default `'classic'` |
-| `SCORING_CONFIG` | var | JSON scoring overrides |
-| `CF_ACCOUNT_ID` / `CF_ANALYTICS_TOKEN` | var / Secret | Alerting query auth |
-| `ALERT_WEBHOOK_URL` + `ALERT_*` | var | Cron alerts. ⚠️ Latency has its OWN lane/window; `ALERT_WEBHOOK_URL` is the static fallback only |
+| Binding                                                                            | Type             | Purpose                                                                                                                                     |
+| ---------------------------------------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BV_API_KEY`                                                                       | Secret           | Static bearer auth → `owner` tier                                                                                                           |
+| `ENABLE_OAUTH` / `ENABLE_OWNER_OAUTH`                                              | var              | OAuth routes / owner consent page (operator only)                                                                                           |
+| `OWNER_ALLOW_IPS`                                                                  | var              | IPs allowed for `owner`; mismatch → `partner`                                                                                               |
+| `OAUTH_SIGNING_SECRET`                                                             | Secret           | HS256 ≥32 bytes; required when `ENABLE_OAUTH=true` (503 until set)                                                                          |
+| `OAUTH_ISSUER`                                                                     | var              | Optional override; falls back to Host (set in prod vs Host spoofing)                                                                        |
+| `ALLOWED_ORIGINS`                                                                  | var              | Allowed Origins (CSV)                                                                                                                       |
+| `RATE_LIMIT` / `SCAN_CACHE` / `SESSION_STORE`                                      | KV               | Required in prod                                                                                                                            |
+| `QUOTA_COORDINATOR` / `PROFILE_ACCUMULATOR`                                        | DO               | Distributed rate limiting / adaptive weights (optional)                                                                                     |
+| `MCP_ANALYTICS`                                                                    | Analytics Engine | Telemetry (fail-open)                                                                                                                       |
+| `MCP_ANALYTICS_QUEUE`                                                              | Queue            | **Operator only.** Batched `mcp_access_log` writes (PTR + encrypt). Absent → inline fallback                                                |
+| `ANALYTICS_PII_LEVEL` / `ANALYTICS_RETENTION_DAYS`                                 | var              | Access-log PII depth (`coarse` default) / retention days (90, clamp 1–365)                                                                  |
+| `PROVIDER_SIGNATURES_URL`                                                          | var              | Provider signatures source                                                                                                                  |
+| `BV_DOH_ENDPOINT` / `BV_DOH_TOKEN`                                                 | Secret           | Optional secondary DoH. ⚠️ Both Secrets, never `vars`                                                                                       |
+| `CERTSPOTTER_TOKEN`                                                                | Secret           | Cert Spotter CT auth. Fail-soft; raises rate limits ONLY (15s timeout stays — #735)                                                         |
+| `BV_CERTSTREAM`                                                                    | Service          | CT logs: `/enumerate` + `/sans`; crt.sh fallback w/ jittered backoff                                                                        |
+| `BV_WHOIS`                                                                         | Service          | WHOIS/43 shim; optional, RDAP-only fallback                                                                                                 |
+| `BV_INFRA_GRAPH` / `BV_INTEL_GATEWAY` / `BV_ENTERPRISE`                            | Service          | **Operator only.** Tier-1/2/0 `discovery_mode='tiered'` lookups; absent → classic sweep                                                     |
+| `BV_RECON` / `BV_RECON_KEY`                                                        | Service / Secret | **Operator only.** bv-recon behind the recon tools; fail-soft → `unprovisioned`                                                             |
+| `BV_TLS_PROBE` / `BV_TLS_PROBE_KEY`                                                | Service / Secret | **Operator only.** Legacy-TLS detection for `check_ssl`; fail-soft                                                                          |
+| `BV_WEB`                                                                           | Service          | **Operator only.** OAuth consent proxy + M365 `m365Proxy`. ⚠️ IS declared in public `wrangler.jsonc` (audit-enforced)                       |
+| `BV_WEB_INTERNAL_KEY`                                                              | Secret           | Bearer for general `BV_WEB` internal calls and `resolveAlertWebhookUrl`; never use for M365 tenant reads                                    |
+| `BV_MCP_M365_KEY`                                                                  | Secret           | Dedicated least-privilege bearer for bv-mcp → bv-web M365 tenant reads only                                                                 |
+| `BV_MCP_OAUTH_MINT_KEY`                                                            | Secret           | Web-only capability for OAuth grants and trial-key administration; never provision to ops or reuse another capability                       |
+| `BV_MCP_OAUTH_REVOKE_KEY`                                                          | Secret           | Revocation-only capability for `/internal/oauth/revoke-subject`; cannot mint grants or trial keys                                           |
+| `BV_MCP_TOOL_DELEGATION_KEY`                                                       | Secret           | Tenant-scoped Brand Watch register/list/delete capability; no batch/report/status/other-tool access                                         |
+| `BV_MCP_WATCH_CLEANUP_KEY`                                                         | Secret           | Ops-only Brand Watch list/delete capability; cannot register or invoke any other tool                                                       |
+| `BV_MCP_BRAND_WEBHOOK_KEY`                                                         | Secret           | Dedicated bv-mcp→bv-web capability for the exact first-party Brand Drift receiver; sent only over `BV_WEB`, never to customer webhook hosts |
+| `BV_MCP_TENANT_KEY`                                                                | Secret           | Dedicated bearer for `/internal/tenants/*`; scope it with `TENANT_KEY_SCOPE` or `X-Tenant-Scope`                                            |
+| `BV_INFRA_PROBE`                                                                   | Service          | authoritative_dns_infra probe. ⚠️ NOT overlay-only; `deploy:prod` does NOT deploy it                                                        |
+| `INTELLIGENCE_DB`                                                                  | D1               | `mcp_access_log` store. Absent → access-log no-op                                                                                           |
+| `BRAND_AUDIT_DB` / `BRAND_AUDIT_QUEUE` / `BRAND_AUDIT_PDF_QUEUE` / `BRAND_REPORTS` | D1/Queue/R2      | Async brand-audit state, job queues, PDF storage. Queues absent → `*_start` → `unprovisioned`                                               |
+| `BV_BROWSER_RENDERER` / `BV_BROWSER_RENDERER_KEY`                                  | Service / Secret | **Operator only.** Brand-report PDF rendering                                                                                               |
+| `KV_ENVELOPE_KEY`                                                                  | Secret           | AES-256 KV envelope encryption (FIND-17 — OAuth codes, trial keys)                                                                          |
+| `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT`                                               | var              | **Operator only.** `"tiered"` flips the runtime default; unset → schema default `'classic'`                                                 |
+| `SCORING_CONFIG`                                                                   | var              | JSON scoring overrides                                                                                                                      |
+| `CF_ACCOUNT_ID` / `CF_ANALYTICS_TOKEN`                                             | var / Secret     | Alerting query auth                                                                                                                         |
+| `ALERT_WEBHOOK_URL` + `ALERT_*`                                                    | var              | Cron alerts. ⚠️ Latency has its OWN lane/window; `ALERT_WEBHOOK_URL` is the static fallback only                                            |
 
 ## Analytics
 

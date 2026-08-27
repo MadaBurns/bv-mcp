@@ -5,7 +5,7 @@
  *
  * Mounted by `src/internal.ts` under `/internal/tenants/*`. All three routes share:
  *   - the existing `/internal` network guard (public client-IP header absence)
- *   - the existing `internalLenientAuthGate` (REQUIRE_INTERNAL_AUTH=true → bearer)
+ *   - a mandatory dedicated `BV_MCP_TENANT_KEY` bearer gate
  *   - the `X-Tenant` header → `resolveTenant()` lookup against the shared
  *     registry D1 (`TENANT_REGISTRY_DB` binding)
  *
@@ -42,6 +42,7 @@ import type { AuditEvent } from '../schemas/audit';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { parseTenantScanSnapshot, toTenantScanSnapshot, type TenantScanSnapshot } from './scan-snapshot';
 import { readBoundedText } from '../lib/request-body';
+import type { QuotaCoordinator } from '../lib/quota-coordinator';
 
 /**
  * Minimal `Queue<T>` shape — Cloudflare's runtime types pin this to the
@@ -56,6 +57,8 @@ type TenantEnv = ResolverEnv & {
 	SCAN_CACHE?: KVNamespace;
 	/** Per-tenant rate limiter state — same KV as the public per-IP limiter. */
 	RATE_LIMIT?: KVNamespace;
+	/** Strong state for atomic weighted scan-dispatch reservations. */
+	QUOTA_COORDINATOR?: DurableObjectNamespace<QuotaCoordinator>;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
 	/** R10 - ProfileAccumulator write-sharding mode (default-off). See BvMcpEnv in index.ts. */
 	PROFILE_ACCUMULATOR_SHARDING?: string;
@@ -73,12 +76,10 @@ type TenantEnv = ResolverEnv & {
 	BV_DOH_TOKEN?: string;
 	BV_SCANNER_QUEUE?: ScanQueueProducer;
 	/**
-	 * FINDING #5 (BOLA): OPT-IN per-credential tenant-scope map. JSON object
+	 * Optional credential-bound tenant-scope map. JSON object
 	 * mapping `hex(SHA-256(bearer))` → array of sub-tenant ids that credential may
-	 * target. When set, a bearer that appears as a key in the map is restricted to
-	 * its listed tenants (403 otherwise). A bearer ABSENT from the map is
-	 * unconstrained — this preserves the live single shared-key bv-web flow, which
-	 * is expected NOT to appear in the map. Unset entirely → scoping disabled.
+	 * target. When absent, a matching `X-Tenant-Scope` assertion is mandatory.
+	 * Malformed, non-canonical, or absent bearer entries deny all tenant access.
 	 */
 	TENANT_KEY_SCOPE?: string;
 };
@@ -131,24 +132,21 @@ function extractTenantHeader(c: { req: { header(name: string): string | undefine
 /**
  * TRUST INVARIANT (FINDING #5 / BOLA):
  *
- * `/internal/tenants/*` is authenticated by the single shared
- * `BV_WEB_INTERNAL_KEY`; the `X-Tenant` header selects the tenant. By itself
- * that lets ANY key holder target ANY active tenant, so the trust boundary is
- * "bv-web is the only caller and it forwards the correct tenant". `assertTenantScope`
- * lets an operator tighten that boundary WITHOUT breaking the live single-key
- * flow:
+ * `/internal/tenants/*` is authenticated with the dedicated
+ * `BV_MCP_TENANT_KEY`; the `X-Tenant` header selects the tenant. The bearer is
+ * then bound to an explicit tenant allowlist by `TENANT_KEY_SCOPE`.
  *
  *   1. `X-Tenant-Scope` request header — a comma/space-separated allowlist of
  *      sub-tenant ids bv-web vouches the caller may touch (forwarded per request).
  *   2. `TENANT_KEY_SCOPE` env — a JSON map of `hex(SHA-256(bearer))` → allowed
  *      sub-tenant ids, binding a specific credential to specific tenants.
  *
- * Enforcement is OPT-IN and additive:
- *   - No `X-Tenant-Scope` header AND no `TENANT_KEY_SCOPE` entry for this bearer
- *     → no constraint (today's behaviour, prod single-key flow unchanged).
- *   - A signal present → the resolved tenant MUST be in the union of allowed ids,
- *     else the caller is denied (403). Enabling this requires bv-web to send the
- *     scope signal; per-tenant keys are NOT mandatory.
+ * Enforcement is fail-closed: without a map, `X-Tenant-Scope` must authorize
+ * the requested tenant. That mode intentionally treats the dedicated strong,
+ * unique bearer as an all-tenant orchestrator authority and the per-request
+ * header as its asserted narrow scope; provision that key only to the trusted
+ * orchestrator. With a map, a canonical full credential hash and a matching
+ * tenant entry are mandatory; the header may only narrow that scope.
  */
 const SHA256_HEX_RE = /^[0-9a-f]{64}$/;
 
@@ -187,20 +185,11 @@ function parseScopeHeader(raw: string | undefined): Set<string> | null {
  *
  * REQUIRED KEY FORMAT (FINDING #6): each JSON key is the bearer's credential hash.
  * The canonical form is the FULL 64-lowercase-hex `hex(SHA-256(bearer))` — the
- * same value `keyHash` carries before `src/index.ts` slices it to 16 chars for
- * analytics. To avoid a SILENT fail-open for an operator who copies that sliced
- * 16-char analytics value instead, this also accepts the **16-char lowercase-hex
- * prefix** of the full hash as a tolerant match. Precedence: an exact full-hash
- * entry wins; only if absent do we fall back to the 16-char-prefix entry.
+ * same value `keyHash` carries before analytics truncation. Only the canonical
+ * full hash is accepted; prefixes are ambiguous authorization identifiers.
  *
  * Example (full, canonical):
  *   { "d98e0aceefca229728fdbdd7fa479f224a7a31cb53bde4f083c1a181015e79b2": ["tenant-1"] }
- * Example (tolerated 16-char prefix form):
- *   { "d98e0aceefca2297": ["tenant-1"] }
- *
- * 16 hex = 64 bits of entropy, so an accidental prefix collision between two
- * distinct credentials is astronomically improbable; the prefix tolerance does
- * not meaningfully broaden the cap.
  */
 function scopeForKeyHash(rawEnv: string | undefined, keyHash: string): Set<string> | null {
 	if (!rawEnv) return null;
@@ -208,33 +197,25 @@ function scopeForKeyHash(rawEnv: string | undefined, keyHash: string): Set<strin
 	try {
 		parsed = JSON.parse(rawEnv);
 	} catch {
-		// Malformed env config: fail-open to "no env constraint" rather than bricking
-		// the route (the never-break-prod mandate). This is a deliberate trade-off —
-		// a typo'd TENANT_KEY_SCOPE disables only the env-map cap, it does not grant
-		// access beyond today's baseline (which has no scope cap at all). Any
-		// `X-Tenant-Scope` header still applies.
+		// Authorization configuration is a security boundary: malformed means deny.
 		return null;
 	}
 	if (typeof parsed !== 'object' || parsed === null) return null;
 	const map = parsed as Record<string, unknown>;
-	// Full 64-hex match wins; tolerantly fall back to the 16-char-prefix form so an
-	// operator using the sliced analytics keyHash doesn't get a silent fail-open.
-	const entry = map[keyHash] ?? map[keyHash.slice(0, 16)];
-	if (!Array.isArray(entry)) return null; // bearer not listed (in either form) → unconstrained by env
-	const ids = entry.filter((v): v is string => typeof v === 'string');
+	if (Object.keys(map).some((key) => !SHA256_HEX_RE.test(key))) return null;
+	const entry = map[keyHash];
+	if (!Array.isArray(entry)) return null;
+	if (entry.some((value) => typeof value !== 'string' || !TENANT_ID_REGEX.test(value))) return null;
+	const ids = entry as string[];
 	return new Set(ids);
 }
 
 /**
- * Assert the caller is entitled to the resolved sub-tenant. Returns `true` when
- * allowed (including when no scoping signal is configured — opt-in) and `false`
- * when a configured scope explicitly excludes the requested tenant.
+ * Assert the caller is entitled to the resolved sub-tenant. Missing or invalid
+ * scope configuration denies access.
  *
  * `TENANT_KEY_SCOPE` keys are `hex(SHA-256(bearer))`: the full 64-lowercase-hex
- * digest (canonical) OR its 16-char lowercase-hex prefix (tolerated — see
- * `scopeForKeyHash` for the exact format + example). Both forms match the same
- * credential, so an operator copying the sliced analytics keyHash is safe rather
- * than silently fail-open.
+ * digest (canonical). Truncated analytics hashes are never authorization keys.
  */
 async function assertTenantScope(
 	c: { req: { header(name: string): string | undefined }; env: { TENANT_KEY_SCOPE?: string } },
@@ -244,18 +225,13 @@ async function assertTenantScope(
 
 	let envScope: Set<string> | null = null;
 	const rawEnv = c.env.TENANT_KEY_SCOPE;
-	if (rawEnv) {
-		const bearer = (c.req.header('authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
-		if (bearer) {
-			const keyHash = await sha256Hex(bearer);
-			if (SHA256_HEX_RE.test(keyHash)) {
-				envScope = scopeForKeyHash(rawEnv, keyHash);
-			}
-		}
-	}
-
-	// No signal at all → opt-in disabled, preserve current behaviour.
-	if (!headerScope && !envScope) return true;
+	if (!rawEnv) return headerScope?.has(subTenantId) === true;
+	const bearer = (c.req.header('authorization') ?? '').replace(/^Bearer\s+/i, '').trim();
+	if (!bearer) return false;
+	const keyHash = await sha256Hex(bearer);
+	if (!SHA256_HEX_RE.test(keyHash)) return false;
+	envScope = scopeForKeyHash(rawEnv, keyHash);
+	if (!envScope) return false;
 
 	// INTERSECTION, not union: every signal that is present must independently
 	// allow the tenant. The `TENANT_KEY_SCOPE` env map is bound to sha256(bearer)
@@ -270,10 +246,9 @@ async function assertTenantScope(
 
 /**
  * FINDING #8: single choke-point for the per-route BOLA scope gate. Runs the
- * opt-in `assertTenantScope` check and, on denial, dispatches the standard
+ * fail-closed `assertTenantScope` check and, on denial, dispatches the standard
  * `tenant_scope_denied` audit event and returns the 403 response. Returns `null`
- * when the caller is in scope (or no scope is configured — opt-in inert), so the
- * caller continues normally.
+ * when the caller is in scope, so the caller continues normally.
  *
  * Factored out of the four routes (/portfolio, /scan, /discover, /report) so a
  * new tenant route can't silently forget the scope check — the
@@ -395,13 +370,14 @@ function safeResourceId(raw: string | undefined): string {
  * defaults to `'default'` until bv-web wires up the override path.
  */
 async function maybeRateLimit(
-	c: { env: { RATE_LIMIT?: KVNamespace } },
+	c: { env: { RATE_LIMIT?: KVNamespace; QUOTA_COORDINATOR?: DurableObjectNamespace<QuotaCoordinator> } },
 	subTenantId: string,
 	bucket: RateLimitBucket,
 	tier: string,
-): Promise<{ allowed: boolean; remaining: number; resetAt: number }> {
+	amount = 1,
+): Promise<{ allowed: boolean; remaining: number; resetAt: number; unavailable?: boolean }> {
 	const kv = c.env.RATE_LIMIT;
-	if (!kv) {
+	if (!kv && !(bucket === 'scans:day' && c.env.QUOTA_COORDINATOR)) {
 		// Limiter is opt-in via the binding — keep behavior identical to pre-Phase-6
 		// when unbound (e.g. local `wrangler dev`).
 		const safeTier = (tier as keyof typeof PER_TENANT_QUOTAS) in PER_TENANT_QUOTAS ? (tier as keyof typeof PER_TENANT_QUOTAS) : 'default';
@@ -413,7 +389,7 @@ async function maybeRateLimit(
 		return { allowed: true, remaining, resetAt: fakeReset };
 	}
 	const safeTier = (tier as keyof typeof PER_TENANT_QUOTAS) in PER_TENANT_QUOTAS ? (tier as keyof typeof PER_TENANT_QUOTAS) : 'default';
-	return checkAndRecord(kv, subTenantId, bucket, safeTier);
+	return checkAndRecord(kv, subTenantId, bucket, safeTier, amount, c.env.QUOTA_COORDINATOR);
 }
 
 /** Build the 429 response with `Retry-After` set to seconds-until-reset. */
@@ -665,20 +641,6 @@ tenantRoutes.post('/scan', async (c) => {
 		// Phase 4: backend-agnostic handle from the resolver (see /portfolio note).
 		const tenantDb = tenant.db;
 
-		// Per-tenant rate limit. `scans:day` because /scan is the heavy workload.
-		const rl = await maybeRateLimit(c, tenant.subTenantId, 'scans:day', tenant.tier);
-		if (!rl.allowed) {
-			dispatchAudit(c, {
-				action: 'scan.start',
-				resourceType: 'cycle',
-				resourceId: '<unknown>',
-				subTenantId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'rate_limit_exceeded', bucket: 'scans:day', tier: tenant.tier },
-			});
-			return rateLimited(c, rl.resetAt);
-		}
-
 		// Resolve target domains:
 		//   1. domain_ids → portfolio-enrolled IDs only (DB-verified; rejects unenrolled)
 		//   2. domains    → explicit ad-hoc scan list (validateDomain still runs; does
@@ -723,6 +685,64 @@ tenantRoutes.post('/scan', async (c) => {
 		if (s) validated.push(s);
 	}
 
+	if (body.mode === 'sync' && validated.length > MAX_DEFAULT_SYNC_SCAN_DOMAINS) {
+		dispatchAudit(c, {
+			action: 'scan.start',
+			resourceType: 'cycle',
+			resourceId: safeResourceId(body.cycle_id),
+			subTenantId: safeResourceId(tenantOrErr),
+			outcome: 'denied',
+			blob: { reason: 'sync_scan_too_large', validatedDomains: validated.length },
+		});
+		return c.json(
+			{ error: `Invalid mode: sync scans are limited to ${MAX_DEFAULT_SYNC_SCAN_DOMAINS} domains; use queue mode` },
+			400,
+		);
+	}
+
+	const shouldQueue = body.mode === 'queue' || validated.length > MAX_DEFAULT_SYNC_SCAN_DOMAINS;
+	const scannerQueue = c.env.BV_SCANNER_QUEUE;
+	if (shouldQueue && !scannerQueue) {
+		dispatchAudit(c, {
+			action: 'scan.start',
+			resourceType: 'cycle',
+			resourceId: safeResourceId(body.cycle_id),
+			subTenantId: safeResourceId(tenantOrErr),
+			outcome: 'denied',
+			blob: { reason: 'queue_binding_missing', requestedMode: body.mode ?? 'auto' },
+		});
+		return c.json({ error: 'Invalid mode: queue dispatch is required for this scan size but is not configured on this deployment' }, 400);
+	}
+
+	// Charge one unit per validated domain, not one unit per HTTP request. With
+	// QUOTA_COORDINATOR this is an atomic all-or-nothing reservation committed
+	// before the first queue message or inline scan can start.
+	if (validated.length > 0) {
+		const rl = await maybeRateLimit(c, tenant.subTenantId, 'scans:day', tenant.tier, validated.length);
+		if (rl.unavailable) {
+			dispatchAudit(c, {
+				action: 'scan.start',
+				resourceType: 'cycle',
+				resourceId: safeResourceId(body.cycle_id),
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'rate_limit_state_unavailable', bucket: 'scans:day', requested: validated.length },
+			});
+			return c.json({ error: 'Scan quota state is unavailable; no scans were dispatched' }, 503, { 'Retry-After': '30' });
+		}
+		if (!rl.allowed) {
+			dispatchAudit(c, {
+				action: 'scan.start',
+				resourceType: 'cycle',
+				resourceId: safeResourceId(body.cycle_id),
+				subTenantId: safeResourceId(tenantOrErr),
+				outcome: 'denied',
+				blob: { reason: 'rate_limit_exceeded', bucket: 'scans:day', tier: tenant.tier, requested: validated.length },
+			});
+			return rateLimited(c, rl.resetAt);
+		}
+	}
+
 	const cycleId = body.cycle_id ?? newCycleId();
 	const concurrency = body.concurrency ?? DEFAULT_SCAN_CONCURRENCY;
 	const startedAt = Date.now();
@@ -731,23 +751,11 @@ tenantRoutes.post('/scan', async (c) => {
 	// Validation has already run above, so the producer never burns queue
 	// space on bad input. The consumer (handleScanQueue) is responsible for
 	// running the actual scan + persisting rows.
-	const shouldQueue = body.mode === 'queue' || (body.mode === undefined && validated.length > MAX_DEFAULT_SYNC_SCAN_DOMAINS);
 	if (shouldQueue) {
-		if (!c.env.BV_SCANNER_QUEUE) {
-			dispatchAudit(c, {
-				action: 'scan.start',
-				resourceType: 'cycle',
-				resourceId: cycleId,
-				subTenantId: safeResourceId(tenantOrErr),
-				outcome: 'denied',
-				blob: { reason: 'queue_binding_missing', requestedMode: body.mode ?? 'auto' },
-			});
-			return c.json({ error: 'Invalid mode: queue dispatch is required for this scan size but is not configured on this deployment' }, 400);
-		}
 		let queued = 0;
 		for (const domain of validated) {
 			try {
-				await c.env.BV_SCANNER_QUEUE.send(
+				await scannerQueue!.send(
 					{
 						cycle_id: cycleId,
 						sub_tenant_id: tenant.subTenantId,

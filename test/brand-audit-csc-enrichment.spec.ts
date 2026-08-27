@@ -41,6 +41,26 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 		expect(forrd.defensiveReason).toBe('redirect-to-target');
 	});
 
+	it('does not follow DoH redirects', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('dns.google')) {
+				return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ Answer: [] }) });
+			}
+			return Promise.resolve({ ok: true, status: 200, headers: new Headers() });
+		});
+
+		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-csc-enrichment');
+		await enrichCandidatesForDefensiveDetection({
+			target: 'ford.com',
+			candidates: [{ domain: 'forrd.com', combinedConfidence: 0.9 }],
+			budgetMs: 5_000,
+		});
+
+		const dohCall = vi.mocked(globalThis.fetch).mock.calls.find(([input]) => String(input).includes('dns.google'));
+		expect(dohCall?.[1]?.redirect).toBe('manual');
+	});
+
 	it('returns enrichmentStatus=partial when some fetches fail', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;

@@ -187,6 +187,31 @@ describe('getDomainRank', () => {
 		expect(result.representative).toBe(true);
 	});
 
+	it('caps and cancels an oversized C1 response body', async () => {
+		const { getDomainRank } = await import('../src/tools/get-domain-rank');
+		const cancelled = vi.fn();
+		let pull = 0;
+		const proxy = {
+			fetch: vi.fn().mockResolvedValue(
+				new Response(
+					new ReadableStream<Uint8Array>({
+						pull(controller) {
+							if (pull++ === 0) controller.enqueue(new Uint8Array(64 * 1024));
+							else controller.enqueue(new Uint8Array([1]));
+						},
+						cancel: cancelled,
+					}),
+					{ status: 200, headers: { 'Content-Type': 'application/json' } },
+				),
+			),
+		};
+
+		const result = await getDomainRank('example.com', 55, {}, proxy, { authToken: 'test-key' });
+
+		expect(result.status).toBe('unavailable');
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
+
 	it('forwards country and sector args to C1 body', async () => {
 		const { getDomainRank } = await import('../src/tools/get-domain-rank');
 		const proxy = makeFakeProxy(makeC1Response({ cohort: 'AU' }));

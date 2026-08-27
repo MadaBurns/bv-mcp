@@ -87,7 +87,35 @@ function makeMockD1(rowsBySql: Record<string, unknown[]> = {}) {
 	return { db, calls };
 }
 
-function buildEnvWithQueue() {
+function makeRateLimitKv(): KVNamespace & { _store: Map<string, string> } {
+	const store = new Map<string, string>();
+	return {
+		_store: store,
+		async get(key: string) {
+			return store.get(key) ?? null;
+		},
+		async put(key: string, value: string) {
+			store.set(key, value);
+		},
+		async delete(key: string) {
+			store.delete(key);
+		},
+		async list() {
+			return { keys: [], list_complete: true, cacheStatus: null } as unknown as KVNamespaceListResult<unknown, string>;
+		},
+		async getWithMetadata() {
+			return { value: null, metadata: null };
+		},
+	} as unknown as KVNamespace & { _store: Map<string, string> };
+}
+
+function dailyScanQuotaKey(): string {
+	const now = new Date();
+	const day = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, '0')}-${String(now.getUTCDate()).padStart(2, '0')}`;
+	return `tenant-rl:${TEST_TENANT_ID}:scans:day:${day}`;
+}
+
+function buildEnvWithQueue(rateLimit?: KVNamespace) {
 	const registry = makeMockD1({
 		[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'fake-d1-uuid', active: 1 }],
 	});
@@ -100,6 +128,10 @@ function buildEnvWithQueue() {
 		TENANT_REGISTRY_DB: registry.db,
 		[TEST_TENANT_BINDING]: tenant.db,
 		BV_SCANNER_QUEUE: { send: queueSend },
+		RATE_LIMIT: rateLimit,
+		// This suite isolates endpoint accounting with its in-memory KV mirror.
+		// Atomic weighted coordinator semantics have a dedicated DO regression.
+		QUOTA_COORDINATOR: undefined,
 	} as TestEnv;
 	return { customEnv, queueSend, tenantCalls: tenant.calls };
 }
@@ -118,6 +150,7 @@ function makeReq(body: unknown): Request {
 			'Content-Type': 'application/json',
 			Authorization: `Bearer ${TEST_INTERNAL_KEY}`,
 			'X-Tenant': TEST_TENANT_ID,
+			'X-Tenant-Scope': TEST_TENANT_ID,
 		},
 		body: JSON.stringify(body),
 	});
@@ -209,6 +242,36 @@ describe('POST /internal/tenants/scan (mode=queue producer)', () => {
 		expect(body.queued).toBe(51);
 		expect(body).not.toHaveProperty('completed');
 		expect(queueSend).toHaveBeenCalledTimes(51);
+	});
+
+	it('rejects an explicit sync request above the inline safety ceiling', async () => {
+		const { customEnv, queueSend } = buildEnvWithQueue();
+		const domains = Array.from({ length: 51 }, (_, i) => `sync-${i}.example.com`);
+		const res = await sendRequest(makeReq({ mode: 'sync', domains }), customEnv);
+		expect(res.status).toBe(400);
+		expect(queueSend).not.toHaveBeenCalled();
+		const body = (await res.json()) as { error: string };
+		expect(body.error).toContain('sync scans are limited to 50 domains');
+	});
+
+	it('charges scan quota by validated domain dispatches, not HTTP requests', async () => {
+		const kv = makeRateLimitKv();
+		const { customEnv, queueSend } = buildEnvWithQueue(kv);
+		const res = await sendRequest(makeReq({ mode: 'queue', domains: ['one.example.com', 'two.example.com', 'three.example.com'] }), customEnv);
+		expect(res.status).toBe(202);
+		expect(queueSend).toHaveBeenCalledTimes(3);
+		expect(kv._store.get(dailyScanQuotaKey())).toBe('3');
+	});
+
+	it('rejects the whole scan before dispatch when its weighted quota does not fit', async () => {
+		const { PER_TENANT_QUOTAS } = await import('../../src/tenants/per-tenant-rate-limit');
+		const kv = makeRateLimitKv();
+		kv._store.set(dailyScanQuotaKey(), String(PER_TENANT_QUOTAS.default.scansPerDay - 2));
+		const { customEnv, queueSend } = buildEnvWithQueue(kv);
+		const res = await sendRequest(makeReq({ mode: 'queue', domains: ['one.example.com', 'two.example.com', 'three.example.com'] }), customEnv);
+		expect(res.status).toBe(429);
+		expect(queueSend).not.toHaveBeenCalled();
+		expect(kv._store.get(dailyScanQuotaKey())).toBe(String(PER_TENANT_QUOTAS.default.scansPerDay - 2));
 	});
 
 	it('returns 400 when mode=queue but BV_SCANNER_QUEUE binding is absent', async () => {

@@ -57,6 +57,28 @@ describe('quota-coordinator payload validation', () => {
 		expect(result.valid).toBe(true);
 	});
 
+	it('accepts a valid distinct-domain-daily payload', () => {
+		const result = validateQuotaPayload({
+			kind: 'distinct-domain-daily',
+			principalId: '203.0.113.1',
+			domainFingerprint: 'd_12ab34cd',
+			limit: 12,
+		});
+		expect(result.valid).toBe(true);
+	});
+
+	it('rejects an empty, control-bearing, or oversized domain fingerprint', () => {
+		for (const domainFingerprint of ['', 'd_bad\nkey', 'x'.repeat(129)]) {
+			const result = validateQuotaPayload({
+				kind: 'distinct-domain-daily',
+				principalId: '203.0.113.1',
+				domainFingerprint,
+				limit: 12,
+			});
+			expect(result.valid).toBe(false);
+		}
+	});
+
 	it('accepts a valid global-daily payload', () => {
 		const result = validateQuotaPayload({ kind: 'global-daily', limit: 10000 });
 		expect(result.valid).toBe(true);

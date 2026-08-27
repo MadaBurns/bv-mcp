@@ -17,6 +17,8 @@ export interface JwtVerifyOptions {
 	issuer: string;
 	audience: string;
 	clockSkewSeconds?: number;
+	/** Reject even correctly signed tokens minted with a longer lifetime. */
+	maxLifetimeSeconds?: number;
 	now?: number;
 }
 
@@ -30,6 +32,8 @@ export interface JwtClaims {
 	tier?: string;
 	/** Token-version claim (FIND-13). Absent on old tokens — treated as 1 by verifiers. */
 	ver?: number;
+	/** Billing entitlement generation authorized by bv-web; absent legacy tokens are generation 1. */
+	entitlementGeneration?: number;
 	[k: string]: unknown;
 }
 
@@ -125,14 +129,30 @@ export async function verifyJwt(token: string, opts: JwtVerifyOptions): Promise<
 	// otherwise produce never-expiring tokens (`undefined <= n - skew` is `false`). Same goes
 	// for the string claims — comparing `undefined !== 'something'` is `true`, so missing iss
 	// or aud already fails closed, but explicit typeof checks make the contract obvious.
-	if (typeof claims.exp !== 'number' || !Number.isFinite(claims.exp)) throw new Error('malformed token payload');
+	if (!Number.isSafeInteger(claims.exp) || claims.exp < 1) throw new Error('malformed token payload');
+	if (!Number.isSafeInteger(claims.iat) || claims.iat < 1) throw new Error('malformed token payload');
 	if (typeof claims.iss !== 'string') throw new Error('malformed token payload');
 	if (typeof claims.aud !== 'string') throw new Error('malformed token payload');
 	if (typeof claims.sub !== 'string') throw new Error('malformed token payload');
 	if (typeof claims.jti !== 'string') throw new Error('malformed token payload');
+	if (
+		claims.entitlementGeneration !== undefined &&
+		(!Number.isSafeInteger(claims.entitlementGeneration) || claims.entitlementGeneration < 1)
+	) {
+		throw new Error('malformed token payload');
+	}
 
 	const now = opts.now ?? Math.floor(Date.now() / 1000);
 	const skew = opts.clockSkewSeconds ?? 30;
+	if (!Number.isSafeInteger(now) || !Number.isSafeInteger(skew) || skew < 0) throw new Error('invalid verifier clock');
+	if (claims.iat > now + skew) throw new Error('token issued in the future');
+	if (claims.exp <= claims.iat) throw new Error('invalid token lifetime');
+	if (
+		opts.maxLifetimeSeconds !== undefined &&
+		(!Number.isSafeInteger(opts.maxLifetimeSeconds) || opts.maxLifetimeSeconds < 1 || claims.exp - claims.iat > opts.maxLifetimeSeconds)
+	) {
+		throw new Error('token lifetime exceeds maximum');
+	}
 	if (claims.exp <= now - skew) throw new Error('token expired');
 	if (claims.iss !== opts.issuer) throw new Error('invalid issuer');
 	if (claims.aud !== opts.audience) throw new Error('invalid audience');

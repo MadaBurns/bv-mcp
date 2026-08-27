@@ -1,17 +1,18 @@
 # bv-mcp DevContainer for Cloudflare Workers
-FROM mcr.microsoft.com/devcontainers/typescript-node:latest
+FROM mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm
 
-# Install Wrangler CLI globally
-RUN npm install -g wrangler@latest
-
-# Install Vitest and Cloudflare pool workers for testing
-RUN npm install -g vitest @cloudflare/vitest-pool-workers
+# Keep the image surface small and deterministic. Project tooling is installed
+# from package-lock.json by the devcontainer post-create command.
+USER root
+RUN apt-get update \
+	&& apt-get install -y --no-install-recommends git curl \
+	&& rm -rf /var/lib/apt/lists/*
 
 # Set working directory
 WORKDIR /workspace
 
-# Install additional tools (optional)
-RUN apt-get update && apt-get install -y git curl
+# Development commands do not need root privileges.
+USER node
 
 # Default shell
 CMD ["zsh"]
