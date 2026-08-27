@@ -96,9 +96,7 @@ describe('BrandAuditWatchWebhookPayloadSchema contract', () => {
 		}));
 		const maxPayload = { ...validPayload, changes: { added: entries, removed: [], modified: [] } };
 		expect(BrandAuditWatchWebhookPayloadSchema.safeParse(maxPayload).success).toBe(true);
-		expect(new TextEncoder().encode(JSON.stringify(maxPayload)).byteLength).toBeLessThanOrEqual(
-			BRAND_AUDIT_WATCH_WEBHOOK_MAX_BODY_BYTES,
-		);
+		expect(new TextEncoder().encode(JSON.stringify(maxPayload)).byteLength).toBeLessThanOrEqual(BRAND_AUDIT_WATCH_WEBHOOK_MAX_BODY_BYTES);
 		expect(
 			BrandAuditWatchWebhookPayloadSchema.safeParse({
 				...validPayload,
@@ -193,7 +191,7 @@ describe('emitter round-trip: processBrandAuditMessage → BrandAuditWatchWebhoo
 		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
 
 		const currentResult = makeBrandAuditResult([
-			{ domain: 'apple-new.com', bucket: 'consolidated' },
+			{ domain: 'apple-new.com', bucket: 'impersonationSurface' },
 			{ domain: 'apple-shift.com', bucket: 'impersonation' },
 		]);
 		const priorResult = makeBrandAuditResult([
@@ -246,6 +244,7 @@ describe('emitter round-trip: processBrandAuditMessage → BrandAuditWatchWebhoo
 			expect(parsed.data.currentHash).toHaveLength(64);
 			// changes are populated
 			expect(parsed.data.changes.added.map((e) => e.domain)).toContain('apple-new.com');
+			expect(parsed.data.changes.added.find((e) => e.domain === 'apple-new.com')?.bucket).toBe('impersonationSurface');
 			expect(parsed.data.changes.removed.map((e) => e.domain)).toContain('apple-old.com');
 			expect(parsed.data.changes.modified.map((e) => e.domain)).toContain('apple-shift.com');
 		}

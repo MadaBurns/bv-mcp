@@ -94,7 +94,7 @@ so an undeliverable oversized event cannot permanently block later alerts.
 	}
 }
 
-// Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation'
+// Bucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation' | 'impersonationSurface'
 ```
 
 ### Field semantics
@@ -149,8 +149,8 @@ identical candidate+bucket sets always produce the same hash.
 
 ## Test coverage
 
-| Test file                                                   | What it locks                                                                                                                                                                                       |
-| ----------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `test/contracts/brand-audit-watch-webhook.contract.test.ts` | Schema accepts/rejects correct shape and the exact 200/201 boundary; **emitter round-trip**: real `processBrandAuditMessage` produces a `BrandAuditWatchWebhookPayloadSchema`-valid payload for both drift and first-ever delivery |
-| `test/audits/brand-audit-watch-webhook.audit.test.ts`       | Every documented top-level field exists; `schemaVersion` is literal 1                                                                                                                               |
+| Test file                                                   | What it locks                                                                                                                                                                                                                                           |
+| ----------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `test/contracts/brand-audit-watch-webhook.contract.test.ts` | Schema accepts/rejects correct shape and the exact 200/201 boundary; **emitter round-trip**: real `processBrandAuditMessage` produces a `BrandAuditWatchWebhookPayloadSchema`-valid payload for both drift and first-ever delivery                      |
+| `test/audits/brand-audit-watch-webhook.audit.test.ts`       | Every documented top-level field exists; `schemaVersion` is literal 1                                                                                                                                                                                   |
 | `test/chaos/brand-audit-webhook-delivery.chaos.test.ts`     | Failure modes: durable failed→unchanged and failed-H1→current-H2 ordered replay, 200-row pending recovery, stale-parent exact-hash recovery, concurrent stale CAS, no-url watch, cross-owner spoof, no-drift suppression, first-ever `added` population |

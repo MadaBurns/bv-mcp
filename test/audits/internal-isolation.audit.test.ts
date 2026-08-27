@@ -18,6 +18,7 @@ type TestEnv = typeof env & {
 	BV_MCP_OAUTH_MINT_KEY?: string;
 	BV_MCP_OAUTH_REVOKE_KEY?: string;
 	BV_MCP_BRAND_WEBHOOK_KEY?: string;
+	OAUTH_SIGNING_SECRET?: string;
 	REQUIRE_INTERNAL_AUTH?: string;
 };
 
@@ -174,6 +175,24 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 				} as TestEnv)
 			).status,
 		).toBe(503);
+	});
+
+	it('fails closed if the revoke capability aliases the OAuth signing secret', async () => {
+		const shared = 'oauth-revoke-signing-alias-key-32-bytes-minimum';
+		const customEnv = {
+			...env,
+			BV_MCP_OAUTH_REVOKE_KEY: shared,
+			OAUTH_SIGNING_SECRET: shared,
+		} as TestEnv;
+		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/revoke-subject', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
+			body: JSON.stringify({ sub: 'victim' }),
+		});
+		const response = await send(req, customEnv);
+		expect(response.status).toBe(503);
+		expect(await response.json()).toEqual({ error: 'Service authentication configuration invalid' });
+		expect(response.headers.get('cache-control')).toBe('no-store');
 	});
 
 	it('returns 503 for POST /internal/oauth/revoke-subject with no BV_MCP_OAUTH_REVOKE_KEY', async () => {

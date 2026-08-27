@@ -89,6 +89,29 @@ describe('quota-coordinator payload validation', () => {
 		expect(result.valid).toBe(true);
 	});
 
+	it('accepts only bounded OAuth DCR write-budget payloads with hashed sources', () => {
+		expect(
+			validateQuotaPayload({
+				kind: 'oauth-dcr-write',
+				sourceFingerprint: 'a'.repeat(64),
+				sourceDailyLimit: 20,
+				globalHourlyLimit: 60,
+				globalDailyLimit: 250,
+			}).valid,
+		).toBe(true);
+		for (const sourceFingerprint of ['198.51.100.1', 'A'.repeat(64), 'a'.repeat(63)]) {
+			expect(
+				validateQuotaPayload({
+					kind: 'oauth-dcr-write',
+					sourceFingerprint,
+					sourceDailyLimit: 20,
+					globalHourlyLimit: 60,
+					globalDailyLimit: 250,
+				}).valid,
+			).toBe(false);
+		}
+	});
+
 	it('accepts a valid reset payload', () => {
 		const result = validateQuotaPayload({ kind: 'reset' });
 		expect(result.valid).toBe(true);

@@ -73,10 +73,23 @@ describe('m365ProxyBindings — the capability is withdrawn by not wiring it', (
 
 	it('stays unwired when enabled but the dedicated M365 capability is absent or weak', () => {
 		expect(m365ProxyBindings({ BV_WEB: FAKE_BINDING, M365_TENANT_READS_ENABLED: 'true' })).toEqual({});
-		expect(
-			m365ProxyBindings({ BV_WEB: FAKE_BINDING, BV_MCP_M365_KEY: 'too-short', M365_TENANT_READS_ENABLED: 'true' }),
-		).toEqual({});
+		expect(m365ProxyBindings({ BV_WEB: FAKE_BINDING, BV_MCP_M365_KEY: 'too-short', M365_TENANT_READS_ENABLED: 'true' })).toEqual({});
 	});
+
+	it.each(['BV_API_KEY', 'OAUTH_SIGNING_SECRET', 'KV_ENVELOPE_KEY'] as const)(
+		'stays unwired when the M365 capability aliases %s',
+		(peerKey) => {
+			const shared = 'm365-peer-alias-capability-32-bytes-minimum';
+			expect(
+				m365ProxyBindings({
+					BV_WEB: FAKE_BINDING,
+					BV_MCP_M365_KEY: shared,
+					[peerKey]: shared,
+					M365_TENANT_READS_ENABLED: 'true',
+				}),
+			).toEqual({});
+		},
+	);
 
 	it('stays unwired when enabled on a self-host that has no BV_WEB binding', () => {
 		const wired = m365ProxyBindings({ M365_TENANT_READS_ENABLED: 'true' });

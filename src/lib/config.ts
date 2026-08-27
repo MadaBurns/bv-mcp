@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { Tier } from '../schemas/primitives';
+import { isStrongDistinctSecurityCapability, type McpSecurityCriticalSecretKey } from './security-capabilities';
 
 /**
  * Centralized configuration for domain normalization and validation.
@@ -737,14 +738,28 @@ export function isM365TenantReadEnabled(env: { M365_TENANT_READS_ENABLED?: strin
  * disabled. Spread at every call site so the binding and the internal bearer
  * are dropped together — wiring one without the other is the dangerous state.
  */
-export function m365ProxyBindings(env: { BV_WEB?: Fetcher; BV_MCP_M365_KEY?: string; M365_TENANT_READS_ENABLED?: string }): {
+export function m365ProxyBindings(
+	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>> & {
+		BV_WEB?: Fetcher;
+		BV_MCP_M365_KEY?: string;
+		M365_TENANT_READS_ENABLED?: string;
+	},
+): {
 	m365Proxy?: Fetcher;
 	m365ProxyAuthToken?: string;
 } {
-	if (!isM365TenantReadEnabled(env) || !env.BV_WEB || !env.BV_MCP_M365_KEY || env.BV_MCP_M365_KEY.length < 32) {
+	if (!isM365TenantReadEnabled(env) || !env.BV_WEB || !isStrongDistinctSecurityCapability(env, 'BV_MCP_M365_KEY')) {
 		return {};
 	}
 	return { m365Proxy: env.BV_WEB, m365ProxyAuthToken: env.BV_MCP_M365_KEY }; // gitleaks:allow -- runtime binding, not a literal.
+}
+
+/** Wire the external TLS probe only with a strong, globally distinct bearer. */
+export function tlsProbeBindings(
+	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>> & { BV_TLS_PROBE?: Fetcher; BV_TLS_PROBE_KEY?: string },
+): { tlsProbeBinding?: Fetcher; tlsProbeAuthToken?: string } {
+	if (!env.BV_TLS_PROBE || !isStrongDistinctSecurityCapability(env, 'BV_TLS_PROBE_KEY')) return {};
+	return { tlsProbeBinding: env.BV_TLS_PROBE, tlsProbeAuthToken: env.BV_TLS_PROBE_KEY };
 }
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
@@ -1025,11 +1040,7 @@ export function isAllowedOAuthRedirectUri(raw: string): boolean {
 	if (uri.protocol === 'https:') {
 		if (uri.port) return false;
 		const hostname = uri.hostname.toLowerCase();
-		return (
-			hostname === 'claude.ai' ||
-			hostname === 'claude.com' ||
-			(hostname !== 'anthropic.com' && hostname.endsWith('.anthropic.com'))
-		);
+		return hostname === 'claude.ai' || hostname === 'claude.com' || (hostname !== 'anthropic.com' && hostname.endsWith('.anthropic.com'));
 	}
 
 	if (uri.protocol === 'http:') {

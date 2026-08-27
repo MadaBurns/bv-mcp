@@ -73,7 +73,7 @@ import type { QuotaCoordinator } from './lib/quota-coordinator';
 import { computeStrongIdempotencyKeys, STRONG_IDEMPOTENCY_TTL_SECONDS } from './lib/request-dedup';
 import { deriveCanonicalTenantPrincipal } from './lib/auth-principal';
 import { adoptAnonymousBrandAuditWatchInternal, reconcileLegacyBrandAuditOwner } from './lib/brand-audit-owner-reconciliation';
-import { securityCapabilityCollision } from './lib/security-capabilities';
+import { isStrongDistinctSecurityCapability, type McpSecurityCriticalSecretKey } from './lib/security-capabilities';
 import {
 	queryTierToolUsage,
 	queryTierLatency,
@@ -89,7 +89,7 @@ import {
 	resolveAnalyticsDataset,
 } from './lib/analytics-queries';
 
-type InternalEnv = {
+type InternalEnv = Partial<Record<McpSecurityCriticalSecretKey, string | undefined>> & {
 	SESSION_STORE?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
 	RATE_LIMIT?: KVNamespace;
@@ -230,18 +230,9 @@ const TENANT_DELEGATED_TOOLS: ReadonlySet<string> = new Set([
 
 const WATCH_CLEANUP_TOOLS: ReadonlySet<string> = new Set(['list_brand_audit_watches', 'delete_brand_audit_watch']);
 
-const MIN_INTERNAL_CAPABILITY_BYTES = 32;
-
-function isStrongInternalCapability(value: string | undefined): value is string {
-	return typeof value === 'string' && new TextEncoder().encode(value).byteLength >= MIN_INTERNAL_CAPABILITY_BYTES;
-}
-
-function collidesWithAny(value: string, peers: ReadonlyArray<string | undefined>): boolean {
-	return peers.some((peer) => typeof peer === 'string' && peer.length > 0 && peer === value);
-}
-
-function dedicatedCapabilityIsSafe(value: string | undefined, peers: ReadonlyArray<string | undefined>): value is string {
-	return isStrongInternalCapability(value) && !collidesWithAny(value, peers);
+function dedicatedCapability(env: InternalEnv, key: McpSecurityCriticalSecretKey): string | null {
+	const value = env[key];
+	return typeof value === 'string' && isStrongDistinctSecurityCapability(env, key) ? value : null;
 }
 
 async function reconcileTrustedTenantBrandOwner(input: {
@@ -417,46 +408,17 @@ const internalLenientAuthGate = (
 			.filter(
 				(entry): entry is { name: (typeof acceptedKeys)[number]; key: string } => typeof entry.key === 'string' && entry.key.length > 0,
 			);
-		if (
-			typeof c.env.BV_MCP_BRAND_WEBHOOK_KEY === 'string' &&
-			c.env.BV_MCP_BRAND_WEBHOOK_KEY.length > 0 &&
-			expected.some((entry) => entry.key === c.env.BV_MCP_BRAND_WEBHOOK_KEY)
-		) {
-			return c.json({ error: 'internal_auth_secret_misconfigured' }, 503, { 'Cache-Control': 'no-store' });
-		}
 		// Tenant delegation is higher trust than the fleet/mobile/tool credentials.
 		// Weak or reused configuration is a deployment error, never an auth match:
 		// otherwise a holder of the colliding lower-trust secret inherits tenant
 		// assertion authority merely by adding headers.
 		if (acceptedKeys.includes('BV_MCP_TOOL_DELEGATION_KEY') && c.env.BV_MCP_TOOL_DELEGATION_KEY !== undefined) {
-			if (
-				!dedicatedCapabilityIsSafe(c.env.BV_MCP_TOOL_DELEGATION_KEY, [
-					c.env.BV_WEB_INTERNAL_KEY,
-					c.env.BV_MOBILE_INTERNAL_KEY,
-					c.env.BV_MCP_TENANT_KEY,
-					c.env.BV_MCP_OAUTH_MINT_KEY,
-					c.env.BV_MCP_OAUTH_REVOKE_KEY,
-					c.env.BV_MCP_M365_KEY,
-					c.env.BV_MCP_WATCH_CLEANUP_KEY,
-					c.env.BV_MCP_BRAND_WEBHOOK_KEY,
-				])
-			) {
+			if (!dedicatedCapability(c.env, 'BV_MCP_TOOL_DELEGATION_KEY')) {
 				return c.json({ error: 'internal_auth_secret_misconfigured' }, 503, { 'Cache-Control': 'no-store' });
 			}
 		}
 		if (acceptedKeys.includes('BV_MCP_WATCH_CLEANUP_KEY') && c.env.BV_MCP_WATCH_CLEANUP_KEY !== undefined) {
-			if (
-				!dedicatedCapabilityIsSafe(c.env.BV_MCP_WATCH_CLEANUP_KEY, [
-					c.env.BV_WEB_INTERNAL_KEY,
-					c.env.BV_MOBILE_INTERNAL_KEY,
-					c.env.BV_MCP_TENANT_KEY,
-					c.env.BV_MCP_TOOL_DELEGATION_KEY,
-					c.env.BV_MCP_OAUTH_MINT_KEY,
-					c.env.BV_MCP_OAUTH_REVOKE_KEY,
-					c.env.BV_MCP_M365_KEY,
-					c.env.BV_MCP_BRAND_WEBHOOK_KEY,
-				])
-			) {
+			if (!dedicatedCapability(c.env, 'BV_MCP_WATCH_CLEANUP_KEY')) {
 				return c.json({ error: 'internal_auth_secret_misconfigured' }, 503, { 'Cache-Control': 'no-store' });
 			}
 		}
@@ -500,8 +462,8 @@ const webMobileAndTenantToolGate = internalLenientAuthGate([
  * cannot be disabled by the legacy tools/analytics migration escape hatch.
  */
 const tenantOnlyGate: import('hono').MiddlewareHandler<InternalAppEnv> = async (c, next) => {
-	const expected = c.env.BV_MCP_TENANT_KEY;
-	if (!isStrongInternalCapability(expected) || securityCapabilityCollision(c.env, 'BV_MCP_TENANT_KEY')) {
+	const expected = dedicatedCapability(c.env, 'BV_MCP_TENANT_KEY');
+	if (!expected) {
 		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
 	}
 	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
@@ -728,19 +690,8 @@ internalRoutes.post('/tools/call', async (c) => {
  * one-time authorization code bound to the original client, redirect URI, and PKCE challenge.
  */
 internalRoutes.post('/oauth/grants', async (c) => {
-	const expected = c.env.BV_MCP_OAUTH_MINT_KEY;
-	if (
-		!dedicatedCapabilityIsSafe(expected, [
-			c.env.BV_MCP_OAUTH_REVOKE_KEY,
-			c.env.BV_WEB_INTERNAL_KEY,
-			c.env.BV_MCP_TOOL_DELEGATION_KEY,
-			c.env.BV_MCP_WATCH_CLEANUP_KEY,
-			c.env.BV_MCP_TENANT_KEY,
-			c.env.BV_MOBILE_INTERNAL_KEY,
-			c.env.BV_MCP_M365_KEY,
-			c.env.BV_MCP_BRAND_WEBHOOK_KEY,
-		])
-	) {
+	const expected = dedicatedCapability(c.env, 'BV_MCP_OAUTH_MINT_KEY');
+	if (!expected) {
 		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
 	}
 
@@ -828,19 +779,8 @@ internalRoutes.post('/oauth/grants', async (c) => {
  *             or { "ok": true, "version": number } for legacy requests
  */
 internalRoutes.post('/oauth/revoke-subject', async (c) => {
-	const expected = c.env.BV_MCP_OAUTH_REVOKE_KEY;
-	if (
-		!dedicatedCapabilityIsSafe(expected, [
-			c.env.BV_MCP_OAUTH_MINT_KEY,
-			c.env.BV_WEB_INTERNAL_KEY,
-			c.env.BV_MCP_TOOL_DELEGATION_KEY,
-			c.env.BV_MCP_WATCH_CLEANUP_KEY,
-			c.env.BV_MCP_TENANT_KEY,
-			c.env.BV_MOBILE_INTERNAL_KEY,
-			c.env.BV_MCP_M365_KEY,
-			c.env.BV_MCP_BRAND_WEBHOOK_KEY,
-		])
-	) {
+	const expected = dedicatedCapability(c.env, 'BV_MCP_OAUTH_REVOKE_KEY');
+	if (!expected) {
 		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
 	}
 	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
@@ -1156,19 +1096,8 @@ internalRoutes.post('/tools/batch', async (c) => {
  * 401 on missing/bad bearer.
  */
 const trialKeysAuthGate: import('hono').MiddlewareHandler<InternalAppEnv> = async (c, next) => {
-	const expected = c.env.BV_MCP_OAUTH_MINT_KEY;
-	if (
-		!dedicatedCapabilityIsSafe(expected, [
-			c.env.BV_MCP_OAUTH_REVOKE_KEY,
-			c.env.BV_WEB_INTERNAL_KEY,
-			c.env.BV_MCP_TOOL_DELEGATION_KEY,
-			c.env.BV_MCP_WATCH_CLEANUP_KEY,
-			c.env.BV_MCP_TENANT_KEY,
-			c.env.BV_MOBILE_INTERNAL_KEY,
-			c.env.BV_MCP_M365_KEY,
-			c.env.BV_MCP_BRAND_WEBHOOK_KEY,
-		])
-	) {
+	const expected = dedicatedCapability(c.env, 'BV_MCP_OAUTH_MINT_KEY');
+	if (!expected) {
 		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
 	}
 	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {

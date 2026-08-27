@@ -33,6 +33,9 @@ export const MCP_SECURITY_CRITICAL_SECRET_KEYS = [
 
 export type McpSecurityCriticalSecretKey = (typeof MCP_SECURITY_CRITICAL_SECRET_KEYS)[number];
 
+/** Cross-worker/internal capabilities are generated with at least 256 bits. */
+export const MIN_SECURITY_CAPABILITY_BYTES = 32;
+
 /** Return only a peer's name; secret values must never enter logs or errors. */
 export function securityCapabilityCollision(
 	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>>,
@@ -44,6 +47,48 @@ export function securityCapabilityCollision(
 		if (peerKey === capabilityKey) continue;
 		const peer = env[peerKey];
 		if (typeof peer === 'string' && peer.length > 0 && peer === value) return peerKey;
+	}
+	return null;
+}
+
+/** Require a strong, non-aliased dedicated capability from the shared SSOT. */
+export function isStrongDistinctSecurityCapability(
+	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>>,
+	capabilityKey: McpSecurityCriticalSecretKey,
+): boolean {
+	const candidate = env[capabilityKey];
+	return (
+		typeof candidate === 'string' &&
+		new TextEncoder().encode(candidate).byteLength >= MIN_SECURITY_CAPABILITY_BYTES &&
+		securityCapabilityCollision(env, capabilityKey) === null
+	);
+}
+
+export interface McpSecurityConfigurationCollision {
+	left: McpSecurityCriticalSecretKey;
+	right: McpSecurityCriticalSecretKey;
+}
+
+/**
+ * Detect any global security-secret alias before public auth/tier/JWT handling.
+ * A route-local rejection cannot contain an escalation once the holder of one
+ * capability already knows the value of an owner, signing, encryption, or
+ * other internal authority.
+ */
+export function securityConfigurationCollision(
+	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>>,
+): McpSecurityConfigurationCollision | null {
+	for (let leftIndex = 0; leftIndex < MCP_SECURITY_CRITICAL_SECRET_KEYS.length; leftIndex += 1) {
+		const left = MCP_SECURITY_CRITICAL_SECRET_KEYS[leftIndex];
+		const leftValue = env[left];
+		if (typeof leftValue !== 'string' || leftValue.length === 0) continue;
+		for (let rightIndex = leftIndex + 1; rightIndex < MCP_SECURITY_CRITICAL_SECRET_KEYS.length; rightIndex += 1) {
+			const right = MCP_SECURITY_CRITICAL_SECRET_KEYS[rightIndex];
+			const rightValue = env[right];
+			if (typeof rightValue === 'string' && rightValue.length > 0 && rightValue === leftValue) {
+				return { left, right };
+			}
+		}
 	}
 	return null;
 }

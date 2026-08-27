@@ -63,6 +63,7 @@ function recordTlsProbeDegradation(
 const TLS_PROBE_TIMEOUT_MS = 8_000;
 const DEFAULT_PROBE_PORT = 443;
 const TLS_PROBE_MAX_BODY_BYTES = 256 * 1024;
+const MIN_TLS_PROBE_CAPABILITY_BYTES = 32;
 
 /** Defensive shape of a bv-tls-probe /probe response. All fields optional/lenient
  *  so unknown extras never fail validation. */
@@ -110,11 +111,14 @@ export async function callTlsProbe(
 ): Promise<TlsProbeResult | null> {
 	// Absent binding (BSL self-host) is expected, NOT a degradation — stay silent.
 	if (!binding) return null;
+	// A present external service must never receive an absent/weak credential.
+	// Full peer-collision checks happen at the env wiring boundary.
+	if (typeof authToken !== 'string' || new TextEncoder().encode(authToken).byteLength < MIN_TLS_PROBE_CAPABILITY_BYTES) return null;
 	try {
 		const qs = new URLSearchParams({ host, port: String(opts?.port ?? DEFAULT_PROBE_PORT) });
 		const resp = await binding.fetch(`https://bv-tls-probe/probe?${qs.toString()}`, {
 			method: 'GET',
-			headers: authToken ? { Authorization: `Bearer ${authToken}` } : {},
+			headers: { Authorization: `Bearer ${authToken}` },
 			signal: composeSignal(opts?.signal),
 		});
 		// Any non-ok (incl. 404 — unlike recon, NOT benign here) is a present-binding failure.

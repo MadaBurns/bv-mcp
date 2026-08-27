@@ -8,6 +8,7 @@ import {
 	bumpVersionIdempotentlyWithCoordinator,
 	bumpVersionWithCoordinator,
 	claimOnceWithCoordinator,
+	checkOAuthDcrBudgetWithCoordinator,
 	completeIdempotentRequestWithCoordinator,
 	getVersionWithCoordinator,
 	hasMarkerWithCoordinator,
@@ -23,6 +24,43 @@ afterEach(async () => {
 });
 
 describe('QuotaCoordinator strong-state operations', () => {
+	it('atomically enforces the OAuth DCR per-source daily write ceiling', async () => {
+		const source = 'a'.repeat(64);
+		const limits = { sourceDailyLimit: 2, globalHourlyLimit: 10, globalDailyLimit: 10 };
+		expect(await checkOAuthDcrBudgetWithCoordinator(source, limits, env.QUOTA_COORDINATOR)).toEqual({ allowed: true });
+		expect(await checkOAuthDcrBudgetWithCoordinator(source, limits, env.QUOTA_COORDINATOR)).toEqual({ allowed: true });
+		expect(await checkOAuthDcrBudgetWithCoordinator(source, limits, env.QUOTA_COORDINATOR)).toMatchObject({
+			allowed: false,
+			retryAfterMs: expect.any(Number),
+		});
+		// A different source remains usable until the global ceiling is reached.
+		expect(await checkOAuthDcrBudgetWithCoordinator('b'.repeat(64), limits, env.QUOTA_COORDINATOR)).toEqual({ allowed: true });
+	});
+
+	it('caps distributed source rotation at one atomic global OAuth DCR hourly budget', async () => {
+		const limits = { sourceDailyLimit: 10, globalHourlyLimit: 5, globalDailyLimit: 20 };
+		const results = await Promise.all(
+			Array.from({ length: 20 }, (_, index) =>
+				checkOAuthDcrBudgetWithCoordinator(index.toString(16).padStart(64, '0'), limits, env.QUOTA_COORDINATOR),
+			),
+		);
+		expect(results.filter((result) => result?.allowed)).toHaveLength(5);
+		expect(results.filter((result) => result && !result.allowed)).toHaveLength(15);
+	});
+
+	it('fails closed at the OAuth DCR global daily ceiling even when the hourly allowance is larger', async () => {
+		const limits = { sourceDailyLimit: 10, globalHourlyLimit: 20, globalDailyLimit: 3 };
+		for (let index = 0; index < 3; index += 1) {
+			expect(
+				(await checkOAuthDcrBudgetWithCoordinator((index + 100).toString(16).padStart(64, '0'), limits, env.QUOTA_COORDINATOR))?.allowed,
+			).toBe(true);
+		}
+		expect(await checkOAuthDcrBudgetWithCoordinator('f'.repeat(64), limits, env.QUOTA_COORDINATOR)).toMatchObject({
+			allowed: false,
+			retryAfterMs: expect.any(Number),
+		});
+	});
+
 	it('atomically enforces a budget under concurrent reservations', async () => {
 		const expiresAt = Date.now() + 60_000;
 		const results = await Promise.all(
@@ -71,27 +109,13 @@ describe('QuotaCoordinator strong-state operations', () => {
 		const expiresAt = Date.now() + 60_000;
 		const calls = await Promise.all(
 			Array.from({ length: 20 }, () =>
-				bumpVersionIdempotentlyWithCoordinator(
-					subjectKey,
-					idempotencyKey,
-					requestHash,
-					1,
-					expiresAt,
-					env.QUOTA_COORDINATOR,
-				),
+				bumpVersionIdempotentlyWithCoordinator(subjectKey, idempotencyKey, requestHash, 1, expiresAt, env.QUOTA_COORDINATOR),
 			),
 		);
 		expect(calls).toEqual(Array.from({ length: 20 }, () => ({ state: 'complete', value: 2 })));
 		expect((await getVersionWithCoordinator(subjectKey, 1, env.QUOTA_COORDINATOR))?.value).toBe(2);
 		expect(
-			await bumpVersionIdempotentlyWithCoordinator(
-				subjectKey,
-				idempotencyKey,
-				'e'.repeat(64),
-				1,
-				expiresAt,
-				env.QUOTA_COORDINATOR,
-			),
+			await bumpVersionIdempotentlyWithCoordinator(subjectKey, idempotencyKey, 'e'.repeat(64), 1, expiresAt, env.QUOTA_COORDINATOR),
 		).toEqual({ state: 'conflict' });
 		expect((await getVersionWithCoordinator(subjectKey, 1, env.QUOTA_COORDINATOR))?.value).toBe(2);
 	});
@@ -111,24 +135,10 @@ describe('QuotaCoordinator strong-state operations', () => {
 		const expiresAt = Date.now() + 60_000;
 		const idempotencyKey = 'request-idempotency:same-outbox-key';
 		expect(
-			await bumpVersionIdempotentlyWithCoordinator(
-				subjectA,
-				idempotencyKey,
-				'f'.repeat(64),
-				1,
-				expiresAt,
-				env.QUOTA_COORDINATOR,
-			),
+			await bumpVersionIdempotentlyWithCoordinator(subjectA, idempotencyKey, 'f'.repeat(64), 1, expiresAt, env.QUOTA_COORDINATOR),
 		).toEqual({ state: 'complete', value: 2 });
 		expect(
-			await bumpVersionIdempotentlyWithCoordinator(
-				subjectB,
-				idempotencyKey,
-				'a'.repeat(64),
-				1,
-				expiresAt,
-				env.QUOTA_COORDINATOR,
-			),
+			await bumpVersionIdempotentlyWithCoordinator(subjectB, idempotencyKey, 'a'.repeat(64), 1, expiresAt, env.QUOTA_COORDINATOR),
 		).toEqual({ state: 'complete', value: 2 });
 	});
 
@@ -161,12 +171,12 @@ describe('QuotaCoordinator strong-state operations', () => {
 	it('rejects reuse of one idempotency key for a different request hash', async () => {
 		const coordinationKey = 'request-idempotency:conflict';
 		const expiresAt = Date.now() + 60_000;
-		expect(
-			await beginIdempotentRequestWithCoordinator(coordinationKey, 'b'.repeat(64), expiresAt, env.QUOTA_COORDINATOR),
-		).toEqual({ state: 'started' });
-		expect(
-			await beginIdempotentRequestWithCoordinator(coordinationKey, 'c'.repeat(64), expiresAt, env.QUOTA_COORDINATOR),
-		).toEqual({ state: 'conflict' });
+		expect(await beginIdempotentRequestWithCoordinator(coordinationKey, 'b'.repeat(64), expiresAt, env.QUOTA_COORDINATOR)).toEqual({
+			state: 'started',
+		});
+		expect(await beginIdempotentRequestWithCoordinator(coordinationKey, 'c'.repeat(64), expiresAt, env.QUOTA_COORDINATOR)).toEqual({
+			state: 'conflict',
+		});
 	});
 
 	it('uses frozen security shards independent of quota routing', () => {

@@ -121,6 +121,22 @@ Both `npm run deploy:prod` and `scripts/deploy-private.mjs` run
 read-only and fails closed when the binding, query, or either column is absent;
 it never applies the migration for the operator.
 
+### Cross-repository rollout order
+
+The Brand Drift authentication transition is producer-first:
+
+1. Provision the same strong, distinct `BV_MCP_BRAND_WEBHOOK_KEY` on
+   `bv-dns-security-mcp` and `bv-web-prod`.
+2. Apply the outbox migration above and pass the read-only schema preflight.
+3. Deploy and verify this new MCP producer.
+4. Only then deploy the bearer-requiring `bv-web-prod` receiver.
+
+Do not deploy the web receiver before the new MCP producer. The old producer
+sends no dedicated bearer, so the new receiver returns 401; the old producer
+can nevertheless stamp its classification hash and permanently suppress that
+notification. The new producer's durable outbox closes that loss window, but
+it must be live first.
+
 ## Verification
 
 After deployment:

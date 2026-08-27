@@ -51,6 +51,7 @@ import {
 	MAX_REQUEST_BODY_BYTES,
 	isContractFlagGateEnabled,
 	m365ProxyBindings,
+	tlsProbeBindings,
 	parseCacheTtl,
 	parseGlobalDailyLimit,
 	parsePerCheckTimeout,
@@ -988,8 +989,7 @@ app.post('/mcp', async (c) => {
 					whoisBinding: c.env.BV_WHOIS,
 					reconBinding: c.env.BV_RECON,
 					reconAuthToken: c.env.BV_RECON_KEY,
-					tlsProbeBinding: c.env.BV_TLS_PROBE,
-					tlsProbeAuthToken: c.env.BV_TLS_PROBE_KEY,
+					...tlsProbeBindings(c.env),
 					...m365ProxyBindings(c.env),
 					bvWebBenchmark: c.env.BV_WEB,
 					bvWebBenchmarkAuthToken: c.env.BV_WEB_INTERNAL_KEY,
@@ -1093,8 +1093,7 @@ app.post('/mcp', async (c) => {
 		whoisBinding: c.env.BV_WHOIS,
 		reconBinding: c.env.BV_RECON,
 		reconAuthToken: c.env.BV_RECON_KEY,
-		tlsProbeBinding: c.env.BV_TLS_PROBE,
-		tlsProbeAuthToken: c.env.BV_TLS_PROBE_KEY,
+		...tlsProbeBindings(c.env),
 		...m365ProxyBindings(c.env),
 		bvWebBenchmark: c.env.BV_WEB,
 		bvWebBenchmarkAuthToken: c.env.BV_WEB_INTERNAL_KEY,
@@ -1300,8 +1299,7 @@ app.post('/mcp/messages', async (c) => {
 				whoisBinding: c.env.BV_WHOIS,
 				reconBinding: c.env.BV_RECON,
 				reconAuthToken: c.env.BV_RECON_KEY,
-				tlsProbeBinding: c.env.BV_TLS_PROBE,
-				tlsProbeAuthToken: c.env.BV_TLS_PROBE_KEY,
+				...tlsProbeBindings(c.env),
 				...m365ProxyBindings(c.env),
 				bvWebBenchmark: c.env.BV_WEB,
 				bvWebBenchmarkAuthToken: c.env.BV_WEB_INTERNAL_KEY,
@@ -1582,12 +1580,8 @@ import { handleTail } from './tail';
 import { handleScheduled, handleDailyDigest, handleFuzzingScan, handleBrandAuditWatches } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
 import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-consumer';
-import {
-	brandWebhookCapabilityCollision,
-	brandWebhookPeerSecretsFromEnv,
-	handleBrandAuditQueue,
-	type BrandAuditConsumerDeps,
-} from './queue/brand-audit-consumer';
+import { brandWebhookPeerSecretsFromEnv, handleBrandAuditQueue, type BrandAuditConsumerDeps } from './queue/brand-audit-consumer';
+import { securityConfigurationCollision } from './lib/security-capabilities';
 import { handleBrandAuditPdfQueue, type BrandAuditPdfConsumerDeps } from './queue/brand-audit-pdf-consumer';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan, type TenantScheduledEnv } from './tenants/scheduled-handlers';
 // Phase 2 scheduler core (ships DARK). The handlers no-op unless
@@ -1663,10 +1657,10 @@ export function routeCron(cron: string): CronRoute {
 
 export default {
 	fetch: (req: Request, env: BvMcpEnv, ctx: ExecutionContext) => {
-		const collision = brandWebhookCapabilityCollision(env);
+		const collision = securityConfigurationCollision(env);
 		if (collision) {
 			// Fail before tier resolution, OAuth JWT verification, or any internal
-			// route can treat the outbound webhook capability as another authority.
+			// route can treat one aliased security capability as another authority.
 			// The peer name is intentionally omitted from the public response.
 			return new Response(JSON.stringify({ error: 'Service authentication configuration invalid' }), {
 				status: 503,
@@ -1689,6 +1683,16 @@ export default {
 		handleTail(events, env as { MCP_ANALYTICS?: AnalyticsEngineDataset });
 	},
 	scheduled: async (event: ScheduledController, env: BvMcpEnv, ctx: ExecutionContext) => {
+		if (securityConfigurationCollision(env)) {
+			// Scheduled handlers can transmit API credentials (for example the
+			// Analytics Engine bearer). Stop before routing or waitUntil so an alias
+			// with a signing/internal key is never disclosed by cron egress.
+			logError('Scheduled security capability configuration invalid', {
+				category: 'scheduled',
+				severity: 'error',
+			});
+			return;
+		}
 		// Each handler is dispatched via its own waitUntil so a failure in one
 		// (e.g. Tenant alert sweep throws) cannot mask the others' analytics outcome.
 		//
@@ -1721,6 +1725,17 @@ export default {
 	 * async path, v2.19.0+) share the same Worker entrypoint.
 	 */
 	queue: async (batch: MessageBatch<unknown>, env: BvMcpEnv, ctx: ExecutionContext) => {
+		if (securityConfigurationCollision(env)) {
+			// Queue jobs can also make authenticated cross-worker/API calls. Preserve
+			// messages for a corrected deployment, with a bounded delay to avoid a
+			// hot retry loop, and do no processing/analytics egress under the alias.
+			batch.retryAll({ delaySeconds: 300 });
+			logError('Queue security capability configuration invalid', {
+				category: 'queue',
+				severity: 'error',
+			});
+			return;
+		}
 		logEvent({
 			timestamp: new Date().toISOString(),
 			category: 'queue',

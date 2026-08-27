@@ -24,14 +24,11 @@
  */
 
 import { z } from 'zod';
-import {
-	BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX,
-	BRAND_AUDIT_WATCH_WEBHOOK_MAX_BODY_BYTES,
-} from '../lib/brand-audit-contract-limits';
+import { BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX, BRAND_AUDIT_WATCH_WEBHOOK_MAX_BODY_BYTES } from '../lib/brand-audit-contract-limits';
 
 export { BRAND_AUDIT_WATCH_CHANGE_ROWS_MAX, BRAND_AUDIT_WATCH_WEBHOOK_MAX_BODY_BYTES };
 
-export const BrandAuditBucketSchema = z.enum(['consolidated', 'shadowIt', 'indeterminate', 'impersonation']);
+export const BrandAuditBucketSchema = z.enum(['consolidated', 'shadowIt', 'indeterminate', 'impersonation', 'impersonationSurface']);
 
 export const BrandAuditWatchDiffEntrySchema = z.object({
 	domain: z.string().min(1).max(253),
@@ -53,7 +50,10 @@ export const BrandAuditWatchWebhookPayloadSchema = z.object({
 	/** Epoch ms when the diff was detected (worker clock). */
 	detectedAt: z.number().int().nonnegative(),
 	/** SHA-256 hex of the previous classification — null on first-ever delivery. */
-	previousHash: z.string().regex(/^[a-f0-9]{64}$/).nullable(),
+	previousHash: z
+		.string()
+		.regex(/^[a-f0-9]{64}$/)
+		.nullable(),
 	/** SHA-256 hex of the current classification. */
 	currentHash: z.string().regex(/^[a-f0-9]{64}$/),
 	changes: z.object({

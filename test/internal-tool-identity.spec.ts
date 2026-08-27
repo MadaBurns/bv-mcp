@@ -16,6 +16,7 @@ type TestEnv = typeof env & {
 	BV_MCP_WATCH_CLEANUP_KEY?: string;
 	BV_MOBILE_INTERNAL_KEY?: string;
 	BV_MCP_BRAND_WEBHOOK_KEY?: string;
+	BV_API_KEY?: string;
 	BRAND_AUDIT_DB?: D1Database;
 	OAUTH_ISSUER?: string;
 };
@@ -131,7 +132,24 @@ describe('internal tool-door tenant identity', () => {
 
 		const response = await send({ Authorization: `Bearer ${shared}`, 'X-Tenant': 'victim_tenant', 'X-Auth-Tier': 'enterprise' }, customEnv);
 		expect(response.status).toBe(503);
-		expect(await response.json()).toEqual({ error: 'internal_auth_secret_misconfigured' });
+		expect(await response.json()).toEqual({ error: 'Service authentication configuration invalid' });
+		expect(response.headers.get('cache-control')).toBe('no-store');
+	});
+
+	it('fails closed when tool delegation aliases the owner API credential', async () => {
+		const shared = 'owner-tool-alias-capability-32-bytes-minimum';
+		const customEnv = {
+			...env,
+			BV_WEB_INTERNAL_KEY: WEB_KEY,
+			BV_MCP_TOOL_DELEGATION_KEY: shared,
+			BV_API_KEY: shared,
+			OAUTH_ISSUER: 'https://example.com',
+		} as TestEnv;
+
+		const response = await send({ Authorization: `Bearer ${shared}`, 'X-Tenant': 'victim_tenant', 'X-Auth-Tier': 'enterprise' }, customEnv);
+		expect(response.status).toBe(503);
+		expect(await response.json()).toEqual({ error: 'Service authentication configuration invalid' });
+		expect(response.headers.get('cache-control')).toBe('no-store');
 	});
 
 	it.each(['BV_WEB_INTERNAL_KEY', 'BV_MOBILE_INTERNAL_KEY', 'BV_MCP_TOOL_DELEGATION_KEY', 'BV_MCP_WATCH_CLEANUP_KEY'] as const)(
@@ -151,7 +169,8 @@ describe('internal tool-door tenant identity', () => {
 				arguments: { domain: 'example.com' },
 			});
 			expect(response.status).toBe(503);
-			expect(await response.json()).toEqual({ error: 'internal_auth_secret_misconfigured' });
+			expect(await response.json()).toEqual({ error: 'Service authentication configuration invalid' });
+			expect(response.headers.get('cache-control')).toBe('no-store');
 		},
 	);
 

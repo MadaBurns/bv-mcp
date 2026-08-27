@@ -188,6 +188,18 @@ export interface BudgetReservationResult {
 	used: number;
 }
 
+/** Atomic admission result for one validated OAuth DCR persistent write. */
+export interface OAuthDcrBudgetResult {
+	allowed: boolean;
+	retryAfterMs?: number;
+}
+
+export interface OAuthDcrBudgetLimits {
+	sourceDailyLimit: number;
+	globalHourlyLimit: number;
+	globalDailyLimit: number;
+}
+
 export interface ClaimOnceResult {
 	claimed: boolean;
 }
@@ -276,6 +288,11 @@ export type QuotaCoordinatorRequest =
 			limit: number;
 			windowMs: number;
 	  }
+	| ({
+			kind: 'oauth-dcr-write';
+			/** SHA-256 of the caller source address; raw addresses never enter global state. */
+			sourceFingerprint: string;
+	  } & OAuthDcrBudgetLimits)
 	| {
 			kind: 'reserve-budget';
 			coordinationKey: string;
@@ -361,6 +378,7 @@ export type QuotaCoordinatorResponse =
 	| GlobalRateLimitResult
 	| SessionCreateRateResult
 	| BudgetReservationResult
+	| OAuthDcrBudgetResult
 	| ClaimOnceResult
 	| MarkerResult
 	| VersionResult
@@ -411,6 +429,7 @@ function routingNameForPayload(payload: QuotaCoordinatorRequest, routing: ShardR
 		case 'evaluate':
 			return shardNameForKey(payload.shardKey, routing.salt);
 		case 'global-daily':
+		case 'oauth-dcr-write':
 		case 'reset':
 		default:
 			return COORDINATOR_NAME;
@@ -547,6 +566,24 @@ export async function checkSessionCreateRateLimitWithCoordinator(
 		},
 		routing,
 	);
+}
+
+/**
+ * Atomically reserve one validated Dynamic Client Registration write across
+ * the per-source daily and fleet-wide hourly/daily ceilings. This is pinned to
+ * the singleton: distributing the global counters would make the cost ceiling
+ * approximate. `undefined` means the strong coordinator is not provisioned.
+ */
+export async function checkOAuthDcrBudgetWithCoordinator(
+	sourceFingerprint: string,
+	limits: OAuthDcrBudgetLimits,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<OAuthDcrBudgetResult | undefined> {
+	return callCoordinator<OAuthDcrBudgetResult>(namespace, {
+		kind: 'oauth-dcr-write',
+		sourceFingerprint,
+		...limits,
+	});
 }
 
 /** Atomically reserve units from a bounded, expiring budget. Undefined means no binding. */
@@ -895,6 +932,18 @@ function sessionCreateKey(ip: string, windowMs: number, now: number): string {
 	return `${KEY_PREFIX}session:create:${ip}:${Math.floor(now / windowMs)}`;
 }
 
+function oauthDcrSourceDailyKey(sourceFingerprint: string, now: number): string {
+	return `${KEY_PREFIX}oauth:dcr:source:day:${sourceFingerprint}:${Math.floor(now / 86_400_000)}`;
+}
+
+function oauthDcrGlobalHourlyKey(now: number): string {
+	return `${KEY_PREFIX}oauth:dcr:global:hr:${Math.floor(now / 3_600_000)}`;
+}
+
+function oauthDcrGlobalDailyKey(now: number): string {
+	return `${KEY_PREFIX}oauth:dcr:global:day:${Math.floor(now / 86_400_000)}`;
+}
+
 function coordinatedCounterKey(kind: 'budget' | 'claim' | 'marker', coordinationKey: string): string {
 	return `${KEY_PREFIX}strong:${kind}:${coordinationKey}`;
 }
@@ -916,6 +965,7 @@ const VALID_KINDS = new Set<string>([
 	'distinct-domain-daily',
 	'global-daily',
 	'session-create',
+	'oauth-dcr-write',
 	'reserve-budget',
 	'claim-once',
 	'marker-set',
@@ -956,6 +1006,9 @@ function validateQuotaFields(obj: Record<string, unknown>): string | undefined {
 	) {
 		return 'Invalid domainFingerprint: must be a non-empty printable string <= 128 chars';
 	}
+	if ('sourceFingerprint' in obj && (typeof obj.sourceFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(obj.sourceFingerprint))) {
+		return 'Invalid sourceFingerprint: must be a lowercase SHA-256 hex digest';
+	}
 	if (
 		'coordinationKey' in obj &&
 		(typeof obj.coordinationKey !== 'string' ||
@@ -974,7 +1027,19 @@ function validateQuotaFields(obj: Record<string, unknown>): string | undefined {
 	) {
 		return 'Invalid idempotencyCoordinationKey: must be a non-empty printable string <= 256 chars';
 	}
-	for (const numField of ['minuteLimit', 'hourLimit', 'limit', 'windowMs', 'amount', 'defaultValue', 'initialUsed', 'value'] as const) {
+	for (const numField of [
+		'minuteLimit',
+		'hourLimit',
+		'limit',
+		'windowMs',
+		'amount',
+		'defaultValue',
+		'initialUsed',
+		'value',
+		'sourceDailyLimit',
+		'globalHourlyLimit',
+		'globalDailyLimit',
+	] as const) {
 		if (numField in obj) {
 			const val = obj[numField];
 			if (typeof val !== 'number' || !Number.isSafeInteger(val) || val < 0) {
@@ -1046,6 +1111,7 @@ export function validateQuotaPayload(raw: unknown): { valid: true; payload: Quot
 		'distinct-domain-daily': ['principalId', 'domainFingerprint', 'limit'],
 		'global-daily': ['limit'],
 		'session-create': ['ip', 'limit', 'windowMs'],
+		'oauth-dcr-write': ['sourceFingerprint', 'sourceDailyLimit', 'globalHourlyLimit', 'globalDailyLimit'],
 		'reserve-budget': ['coordinationKey', 'amount', 'limit', 'expiresAt'],
 		'claim-once': ['coordinationKey', 'expiresAt'],
 		'marker-set': ['coordinationKey', 'expiresAt'],
@@ -1086,6 +1152,12 @@ export function validateQuotaPayload(raw: unknown): { valid: true; payload: Quot
 	}
 	if (kind === 'session-create' && (obj.windowMs as number) < 1) {
 		return { valid: false, error: 'Invalid windowMs: must be at least 1' };
+	}
+	if (
+		kind === 'oauth-dcr-write' &&
+		((obj.sourceDailyLimit as number) < 1 || (obj.globalHourlyLimit as number) < 1 || (obj.globalDailyLimit as number) < 1)
+	) {
+		return { valid: false, error: 'Invalid OAuth DCR limits: all limits must be at least 1' };
 	}
 
 	return { valid: true, payload: raw as QuotaCoordinatorRequest };
@@ -1345,6 +1417,43 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		return result;
 	}
 
+	private async handleOAuthDcrWrite(payload: Extract<QuotaCoordinatorRequest, { kind: 'oauth-dcr-write' }>): Promise<OAuthDcrBudgetResult> {
+		const now = Date.now();
+		const sourceKey = oauthDcrSourceDailyKey(payload.sourceFingerprint, now);
+		const globalHourKey = oauthDcrGlobalHourlyKey(now);
+		const globalDayKey = oauthDcrGlobalDailyKey(now);
+
+		const result = await this.ctx.storage.transaction(async (txn: DurableObjectTransaction) => {
+			const [sourceRecord, globalHourRecord, globalDayRecord] = await Promise.all([
+				this.getCounter(txn, sourceKey, now),
+				this.getCounter(txn, globalHourKey, now),
+				this.getCounter(txn, globalDayKey, now),
+			]);
+			const sourceCount = sourceRecord?.count ?? 0;
+			const globalHourCount = globalHourRecord?.count ?? 0;
+			const globalDayCount = globalDayRecord?.count ?? 0;
+
+			// Reject without mutating any bucket. The all-or-none transaction prevents
+			// a denied global request from burning an unrelated source's allowance.
+			if (sourceCount >= payload.sourceDailyLimit || globalDayCount >= payload.globalDailyLimit) {
+				return { allowed: false, retryAfterMs: Math.max(dayWindowEnd(now) - now, 0) };
+			}
+			if (globalHourCount >= payload.globalHourlyLimit) {
+				return { allowed: false, retryAfterMs: Math.max(hourWindowEnd(now) - now, 0) };
+			}
+
+			await txn.put({
+				[sourceKey]: { count: sourceCount + 1, expiresAt: dayWindowEnd(now) },
+				[globalHourKey]: { count: globalHourCount + 1, expiresAt: hourWindowEnd(now) },
+				[globalDayKey]: { count: globalDayCount + 1, expiresAt: dayWindowEnd(now) },
+			});
+			return { allowed: true };
+		});
+
+		await this.ensureCleanupAlarm();
+		return result;
+	}
+
 	private async handleReserveBudget(
 		payload: Extract<QuotaCoordinatorRequest, { kind: 'reserve-budget' }>,
 	): Promise<BudgetReservationResult> {
@@ -1557,6 +1666,8 @@ export class QuotaCoordinator extends DurableObject<Env> {
 				return this.handleGlobalDailyLimit(validPayload);
 			case 'session-create':
 				return this.handleSessionCreate(validPayload);
+			case 'oauth-dcr-write':
+				return this.handleOAuthDcrWrite(validPayload);
 			case 'reserve-budget':
 				return this.handleReserveBudget(validPayload);
 			case 'claim-once':

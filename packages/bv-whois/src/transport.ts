@@ -67,7 +67,7 @@ function validateHost(hostname: string): void {
 	// Reject all-numeric forms (octal/numeric IPv4 bypass — e.g. "0177.0.0.1" passes
 	// the IPv4 dotted check above because labels are 4 digits, but routes to 127.0.0.1).
 	const labels = lower.split('.');
-	if (labels.every(label => /^[0-9]+$/.test(label))) {
+	if (labels.every((label) => /^[0-9]+$/.test(label))) {
 		throw new Error(`Invalid hostname: ${hostname} (all-numeric labels not allowed)`);
 	}
 }
@@ -86,71 +86,160 @@ export async function whoisQuery(
 
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const factory = options.socketFactory ?? defaultSocketFactory;
+	const timeoutError = () => new Error(`WHOIS timeout after ${timeoutMs}ms`);
 
-	const socket = await factory.connect({ hostname: server, port: WHOIS_PORT });
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let stopRequested = false;
+	let completed = false;
+	let socket: SocketLike | undefined;
+	let writer: WritableStreamDefaultWriter<Uint8Array> | undefined;
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
+	let writerAbort: Promise<void> | undefined;
+	let readerCancel: Promise<void> | undefined;
 
-	// Wait for the TCP handshake to complete before writing. cloudflare:sockets'
-	// `connect()` returns a Socket immediately but the connection isn't actually
-	// open yet.
-	if (socket.opened) {
-		await socket.opened;
-	}
+	const closeSocket = (target: SocketLike): void => {
+		try {
+			void target.close().catch(() => undefined);
+		} catch {
+			// Cleanup is best-effort; preserve the original transport failure.
+		}
+	};
+	const abortWriter = (reason: unknown): void => {
+		if (!writer || writerAbort) return;
+		try {
+			writerAbort = writer.abort(reason).catch(() => undefined);
+		} catch {
+			writerAbort = Promise.resolve();
+		}
+	};
+	const cancelReader = (reason: unknown): void => {
+		if (!reader || readerCancel) return;
+		try {
+			readerCancel = reader.cancel(reason).catch(() => undefined);
+		} catch {
+			readerCancel = Promise.resolve();
+		}
+	};
+	const releaseWriter = (): void => {
+		if (!writer) return;
+		const activeWriter = writer;
+		const release = () => {
+			try {
+				activeWriter.releaseLock();
+			} catch {
+				// A pending write keeps the lock until abort settles.
+			}
+		};
+		release();
+		if (writerAbort) void writerAbort.finally(release);
+		writer = undefined;
+	};
+	const releaseReader = (): void => {
+		if (!reader) return;
+		const activeReader = reader;
+		const release = () => {
+			try {
+				activeReader.releaseLock();
+			} catch {
+				// A pending read keeps the lock until cancellation settles.
+			}
+		};
+		release();
+		if (readerCancel) void readerCancel.finally(release);
+		reader = undefined;
+	};
 
-	// Write the query AND complete the write before starting to read.
-	// `cloudflare:sockets` has no half-close: calling `writer.close()` closes
-	// the entire socket. We must NOT call it — the WHOIS server signals
-	// end-of-response by closing its side, which gives us EOF on read.
-	// 100-domain chaos run with the previous async-write-fire-and-forget pattern
-	// produced 98/98 zero-byte reads because the read loop started before the
-	// write flushed and the socket closure raced the data.
-	const writer = socket.writable.getWriter();
-	await writer.write(new TextEncoder().encode(`${query}\r\n`));
-	writer.releaseLock();
+	const timeoutPromise = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => {
+			stopRequested = true;
+			reject(timeoutError());
+		}, timeoutMs);
+	});
 
-	const reader = socket.readable.getReader();
-	const decoder = new TextDecoder();
-	const chunks: string[] = [];
-	let totalBytes = 0;
+	const operation = (async (): Promise<string> => {
+		const connected = await factory.connect({ hostname: server, port: WHOIS_PORT });
+		if (stopRequested) {
+			closeSocket(connected);
+			throw timeoutError();
+		}
+		socket = connected;
 
-	const deadline = Date.now() + timeoutMs;
+		// `connect()` may return before the TCP handshake. The one outer deadline
+		// covers this wait as well as socket creation, write, and every read.
+		if (socket.opened) await socket.opened;
+		if (stopRequested) throw timeoutError();
 
-	try {
-		while (true) {
-			const remaining = deadline - Date.now();
-			if (remaining <= 0) {
-				throw new Error(`WHOIS timeout after ${timeoutMs}ms`);
+		// Write the query AND complete the write before starting to read.
+		// `cloudflare:sockets` has no half-close: writer.close() would close the
+		// whole socket, so release the lock after a successful flush instead.
+		writer = socket.writable.getWriter();
+		let writeCompleted = false;
+		try {
+			await writer.write(new TextEncoder().encode(`${query}\r\n`));
+			writeCompleted = true;
+		} finally {
+			if (writeCompleted) releaseWriter();
+		}
+		if (stopRequested) throw timeoutError();
+
+		reader = socket.readable.getReader();
+		// Fixed-size byte accumulation prevents attacker-controlled reallocations
+		// and ensures an oversized chunk is bounded before any copy or decode.
+		const response = new Uint8Array(MAX_RESPONSE_BYTES);
+		let responseBytes = 0;
+
+		while (responseBytes < MAX_RESPONSE_BYTES) {
+			const result = await reader.read();
+			if (stopRequested) throw timeoutError();
+			if (result.done) break;
+			if (!result.value?.byteLength) continue;
+
+			const remaining = MAX_RESPONSE_BYTES - responseBytes;
+			if (result.value.byteLength > remaining) {
+				cancelReader('response too large');
+				throw new Error(`WHOIS response exceeded ${MAX_RESPONSE_BYTES} bytes`);
 			}
 
-			const readPromise = reader.read();
-			const timeoutPromise = new Promise<never>((_, reject) =>
-				setTimeout(() => reject(new Error(`WHOIS timeout after ${timeoutMs}ms`)), remaining),
-			);
-
-			const result = await Promise.race([readPromise, timeoutPromise]);
-			if (result.done) break;
-
-			chunks.push(decoder.decode(result.value, { stream: true }));
-			totalBytes += result.value.byteLength;
-
-			if (totalBytes >= MAX_RESPONSE_BYTES) {
-				try { await reader.cancel('response too large'); } catch { /* ignore */ }
+			response.set(result.value, responseBytes);
+			responseBytes += result.value.byteLength;
+			if (responseBytes === MAX_RESPONSE_BYTES) {
+				cancelReader('response limit reached');
 				break;
 			}
 		}
-		chunks.push(decoder.decode());
-	} finally {
-		try { reader.releaseLock(); } catch { /* ignore */ }
-		try { await socket.close(); } catch { /* ignore */ }
-	}
 
-	const full = chunks.join('');
-	return full.length > MAX_RESPONSE_BYTES ? full.slice(0, MAX_RESPONSE_BYTES) : full;
+		// Decode only the bounded byte buffer. TextDecoder safely replaces an
+		// incomplete final UTF-8 sequence if the byte limit splits a code point.
+		return new TextDecoder().decode(response.subarray(0, responseBytes));
+	})();
+
+	try {
+		const result = await Promise.race([operation, timeoutPromise]);
+		completed = true;
+		return result;
+	} catch (error) {
+		abortWriter(error);
+		cancelReader(error);
+		throw error;
+	} finally {
+		stopRequested = true;
+		if (timer !== undefined) clearTimeout(timer);
+		if (!completed) {
+			abortWriter(timeoutError());
+			cancelReader(timeoutError());
+		}
+		releaseWriter();
+		releaseReader();
+		if (socket) closeSocket(socket);
+	}
 }
 
 /** Default factory uses `cloudflare:sockets`. Lazy-loaded so tests don't need it. */
 const defaultSocketFactory: SocketFactory = {
 	async connect(opts) {
-		const { connect } = (await import('cloudflare:sockets')) as { connect: (o: { hostname: string; port: number; secureTransport?: string }) => SocketLike };
+		const { connect } = (await import('cloudflare:sockets')) as {
+			connect: (o: { hostname: string; port: number; secureTransport?: string }) => SocketLike;
+		};
 		return connect({ ...opts, secureTransport: 'off' });
 	},
 };
