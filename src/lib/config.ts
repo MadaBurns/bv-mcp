@@ -417,7 +417,7 @@ export const GATED_PAID_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
 	'register_brand_audit_watch',
 	'delete_brand_audit_watch',
 	'list_brand_audit_watches',
-	// sensitive/costly Microsoft Graph-backed tools
+	// Registered identity_secops tools (three Graph-backed + deprecated tombstone)
 	'query_signins',
 	'query_ual',
 	'get_ca_policies',
@@ -447,11 +447,12 @@ export function isGatedPaidOnlyTool(toolName: string): boolean {
 export const INTERNAL_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
 	'map_csc_products',
 
-	// ── identity_secops (M365 client-tenant reads) ────────────────────────────
+	// ── identity_secops (M365 client-tenant surface) ──────────────────────────
 	// Withdrawn from the public catalog alongside the 3.62.0 fail-closed kill
-	// switch (isM365TenantReadEnabled). With tenant reads disabled these tools
-	// can ONLY ever answer `{ ok: false, unprovisioned: true }`, so advertising
-	// them in tools/list invited callers to a capability that no longer exists.
+	// switch (isM365TenantReadEnabled). With tenant reads disabled the three active
+	// tools answer `{ ok: false, unprovisioned: true }`; deprecated `query_ual`
+	// returns its tombstone error independently. Advertising any of them in
+	// tools/list would expose a capability that is not publicly available.
 	//
 	// They stay registered in TOOL_DEFS deliberately: the auth gate
 	// (AUTH_REQUIRED_TOOLS), the registry Layer-2 no-principal hard reject and
@@ -681,10 +682,11 @@ export function contractFlagBlocks(args: { gateEnabled: boolean; tier: string; t
 export const FREE_DISTINCT_DOMAIN_DAILY_LIMIT = 12;
 
 /**
- * identity_secops M365 read tools. These forward to bv-web's internal M365 proxy
- * carrying the trusted internal bearer, so an UNAUTHENTICATED caller must never
- * reach them — the public `/mcp` gate in src/mcp/execute.ts rejects an
- * unauthenticated tools/call for any member with HTTP 401 BEFORE dispatch
+ * Registered identity_secops tools. Three forward to bv-web's internal M365
+ * proxy carrying the trusted internal bearer; deprecated `query_ual` remains in
+ * the same fail-closed gate as a compatibility/security tripwire. An
+ * UNAUTHENTICATED caller must never reach any member — the public `/mcp` gate
+ * in src/mcp/execute.ts rejects an unauthenticated tools/call with HTTP 401 BEFORE dispatch
  * (see isAuthRequiredTool), and the registry execute path (handlers/tools.ts)
  * additionally hard-rejects when no real principal (keyHash) is present. Free
  * and agent API-key tiers are pinned to 0 in TIER_TOOL_DAILY_LIMITS and the
@@ -704,9 +706,9 @@ export function isAuthRequiredTool(toolName: string): boolean {
 }
 
 /**
- * Kill switch for M365 CLIENT-TENANT reads (the `identity_secops` tools).
+ * Kill switch for the three active M365 CLIENT-TENANT read tools.
  *
- * These are the ONLY tools whose data path requires authenticating into a
+ * These three are the ONLY tools whose data path requires authenticating into a
  * CUSTOMER's Microsoft 365 / Entra tenant. bv-mcp itself holds no tenant
  * credential — it forwards over the `BV_WEB` service binding carrying the
  * trusted internal bearer, and bv-web-prod exchanges an owner-consented,
@@ -721,7 +723,8 @@ export function isAuthRequiredTool(toolName: string): boolean {
  * no proxy and returns `{ ok: false, unprovisioned: true }`, exactly as on a
  * BSL self-host where `BV_WEB` is unbound. No new response shape, no new error
  * class, and every auth/quota gate around these tools stays in force — this
- * removes the capability, it does not weaken a control.
+ * removes the capability, it does not weaken a control. Deprecated `query_ual`
+ * is an independent local tombstone and never receives these bindings.
  *
  * Re-enable with `M365_TENANT_READS_ENABLED = "true"` as a Worker var.
  */

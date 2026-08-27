@@ -131,9 +131,9 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
   + osint_investigation_status   — poll status of any running OSINT investigation
   + osint_investigation_report   — retrieve report for a completed OSINT investigation
 
-  Operator-deploy only (proxied via the `BV_WEB` service binding, wired as the `m365Proxy` runtime option; Microsoft 365 / Entra identity security ops — degrade to unprovisioned without it):
+  Internal-only compatibility surface (withdrawn from public `tools/list`; the three active Microsoft 365 / Entra tools proxy through `BV_WEB` and degrade to unprovisioned without it):
   + query_signins                — query Microsoft Entra sign-in logs for a tenant
-  + query_ual                    — query the Microsoft 365 Unified Audit Log for a tenant
+  + query_ual                    — DEPRECATED tombstone; valid, authorized calls return query_ual_deprecated with no tenant-data access
   + get_ca_policies              — retrieve Conditional Access policies for an Entra tenant
   + assess_coverage              — assess Conditional Access coverage gaps for an Entra tenant
 ```

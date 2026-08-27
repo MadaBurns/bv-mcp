@@ -6,12 +6,12 @@
  * `callM365Proxy` — the helper in isolation. That leaves both ENDS of the real
  * request path unpinned, and both are where a silent cross-repo break lands:
  *
- *   (a) the OUTBOUND end — `handleToolsCall`'s four `identity_secops` dispatch
- *       arms (`src/handlers/tools.ts`) are what actually supply the proxy binding
- *       and the `m365ProxyAuthToken` bearer. Every existing Authorization-header
- *       assertion calls `querySignins`/`queryUal`/… DIRECTLY with an explicit
- *       `authToken`, so it cannot see the registry dropping that argument. Drop
- *       `authToken: runtimeOptions?.m365ProxyAuthToken` at any of those four call
+ *   (a) the OUTBOUND end — `handleToolsCall`'s three active `identity_secops`
+ *       dispatch arms (`src/handlers/tools.ts`) are what actually supply the proxy binding
+ *       and the `m365ProxyAuthToken` bearer. Existing Authorization-header
+ *       assertions call the three active tool functions DIRECTLY with an explicit
+ *       `authToken`, so they cannot see the registry dropping that argument. Drop
+ *       `authToken: runtimeOptions?.m365ProxyAuthToken` at any of those three call
  *       sites and every production call goes out UNAUTHENTICATED — bv-web-prod's
  *       bearer gate answers 401, bv-mcp classifies `m365_proxy_401`, and the whole
  *       existing suite stays green. Same for the URL: the path segments are what
@@ -25,7 +25,7 @@
  *       sample-vs-live marker that #417 part 2 labels in the tool descriptions is
  *       only honest if it actually reaches the client, in BOTH channels (the text
  *       `content` an LLM reads and the MCP-standard `structuredContent` a program
- *       reads). These four tools are in `NON_CHECK_RESULT_TOOLS`, so they publish
+ *       reads). All four registered tools are in `NON_CHECK_RESULT_TOOLS`, so they publish
  *       no `outputSchema` — nothing else constrains their response shape at all.
  *
  * Everything below drives the REAL registry (`handleToolsCall`) against a mocked
@@ -39,13 +39,13 @@
 import { describe, expect, it } from 'vitest';
 import { NON_CHECK_RESULT_TOOLS, TOOLS } from '../../src/schemas/tool-definitions';
 
-/** MCP tool name → the bv-web-prod `:tool` path segment bv-mcp must request. */
-const TOOL_PATH_SEGMENTS: Record<string, string> = {
+/** Active MCP tool name → the bv-web-prod `:tool` path segment bv-mcp must request. */
+const ACTIVE_TOOL_PATH_SEGMENTS: Record<string, string> = {
 	query_signins: 'query-signins',
-	query_ual: 'query-ual',
 	get_ca_policies: 'get-ca-policies',
 	assess_coverage: 'assess-coverage',
 };
+const IDENTITY_SECOPS_TOOLS = [...Object.keys(ACTIVE_TOOL_PATH_SEGMENTS), 'query_ual'];
 
 /**
  * The base path bv-web-prod registers the route under. Over a service binding the
@@ -112,7 +112,7 @@ describe('M365 seam — the contracted tool set is derived from the registry', (
 			.map((t) => t.name)
 			.sort();
 
-		expect(registryTools).toEqual(Object.keys(TOOL_PATH_SEGMENTS).sort());
+		expect(registryTools).toEqual([...IDENTITY_SECOPS_TOOLS].sort());
 	});
 
 	it('every identity_secops tool is a NON_CHECK_RESULT_TOOL (custom envelope, no outputSchema)', () => {
@@ -120,7 +120,7 @@ describe('M365 seam — the contracted tool set is derived from the registry', (
 		// no `outputSchema`, the response shape is constrained by NOTHING except
 		// these tests. Were one to be moved out of the set, its envelope would be
 		// re-shaped to CheckResult and the `representative` marker would vanish.
-		for (const name of Object.keys(TOOL_PATH_SEGMENTS)) {
+		for (const name of IDENTITY_SECOPS_TOOLS) {
 			expect(NON_CHECK_RESULT_TOOLS.has(name)).toBe(true);
 			const def = TOOLS.find((t) => t.name === name);
 			expect(def?.outputSchema).toBeUndefined();
@@ -128,31 +128,9 @@ describe('M365 seam — the contracted tool set is derived from the registry', (
 	});
 });
 
-/**
- * `query_ual` is the remaining tool with no implemented live path. The
- * `query_signins` and `assess_coverage` paths landed upstream on 2026-08-25,
- * joining `get_ca_policies`, but all three still await provisioned-tenant
- * production verification and therefore disclose that state per response.
- */
-const SAMPLE_ONLY_TOOLS = ['query_ual'] as const;
 const LIVE_CAPABLE_UNVERIFIED_TOOLS = ['query_signins', 'get_ca_policies', 'assess_coverage'] as const;
 
-describe('M365 seam — tool descriptions disclose sample/live provenance before use', () => {
-	// `representative: true` in the payload is only read AFTER a call is made, and
-	// only by a client that looks. The description is what an LLM weighs when
-	// DECIDING to call — so for a tool that can only ever answer with sample data,
-	// the disclosure has to lead there too. Dropping it is a truthfulness
-	// regression that no payload assertion above can see.
-	for (const name of SAMPLE_ONLY_TOOLS) {
-		it(`${name} leads its description with the sample-data disclosure`, () => {
-			const def = TOOLS.find((t) => t.name === name);
-			expect(def).toBeDefined();
-			expect(def!.description.startsWith('SAMPLE DATA ONLY')).toBe(true);
-			expect(def!.description).toContain('representative: true');
-		});
-	}
-
-
+describe('M365 seam — tool descriptions disclose lifecycle and sample/live provenance before use', () => {
 	for (const name of LIVE_CAPABLE_UNVERIFIED_TOOLS) {
 		it(`${name} discloses the unverified live path and preserves per-response sample/live semantics`, () => {
 			const def = TOOLS.find((t) => t.name === name);
@@ -163,11 +141,19 @@ describe('M365 seam — tool descriptions disclose sample/live provenance before
 		});
 	}
 
-	it('query_ual names the supported Graph audit source without weakening its sample-only disclosure', () => {
+	it('query_ual is an explicit compatibility tombstone, not an advertised future integration', () => {
 		const def = TOOLS.find((t) => t.name === 'query_ual');
-		expect(def!.description.startsWith('SAMPLE DATA ONLY')).toBe(true);
-		expect(def!.description).toContain('Purview Audit Search API');
-		expect(def!.description).not.toContain('no direct Unified Audit Log equivalent');
+		expect(def).toBeDefined();
+		expect(def!.description.startsWith('DEPRECATED')).toBe(true);
+		expect(def!.description).toContain('query_ual_deprecated');
+		expect(def!.description).toContain('never calls the M365 proxy');
+		expect(def!.description).not.toContain('integration is not yet implemented');
+		expect(def!.annotations?.title).toContain('Deprecated');
+		expect(def!.lifecycle).toEqual({
+			status: 'deprecated',
+			reason: 'sample_only_no_live_path',
+			replacement: null,
+		});
 	});
 });
 
@@ -176,7 +162,7 @@ describe('M365 seam — tool descriptions disclose sample/live provenance before
 // ───────────────────────────────────────────────────────────────────────────────
 
 describe('M365 seam — outbound request contract (through handleToolsCall)', () => {
-	for (const [toolName, segment] of Object.entries(TOOL_PATH_SEGMENTS)) {
+	for (const [toolName, segment] of Object.entries(ACTIVE_TOOL_PATH_SEGMENTS)) {
 		it(`${toolName} → POST ${M365_BASE_PATH}/${segment} with the internal bearer`, async () => {
 			const { handleToolsCall } = await import('../../src/handlers/tools');
 			const { proxy, calls } = capturingProxy(() => Response.json({ representative: true }));
@@ -206,6 +192,62 @@ describe('M365 seam — outbound request contract (through handleToolsCall)', ()
 			expect(call.body.ms_tenant_id).toBe('tenant-abc');
 		});
 	}
+
+	it('query_ual is a deprecated tombstone that never calls the M365 proxy', async () => {
+		const { handleToolsCall } = await import('../../src/handlers/tools');
+		const { proxy, calls } = capturingProxy(() => Response.json({ representative: true }));
+
+		const result = await handleToolsCall({ name: 'query_ual', arguments: { ms_tenant_id: 'tenant-abc' } }, undefined, {
+			m365Proxy: proxy,
+			m365ProxyAuthToken: INTERNAL_BEARER,
+			keyHash: KEY_HASH,
+		});
+
+		expect(calls).toHaveLength(0);
+		expect(result.isError).toBe(true);
+		expect(result.structuredContent).toEqual({ ok: false, error: 'query_ual_deprecated' });
+		expect(parseTextChannel(result)).toEqual({ ok: false, error: 'query_ual_deprecated' });
+		expect(result._meta).toEqual({
+			'com.blackveilsecurity/tool-status': {
+				status: 'deprecated',
+				reason: 'sample_only_no_live_path',
+				replacement: null,
+			},
+		});
+	});
+
+	it('query_ual retains legacy argument validation before the tombstone', async () => {
+		const { handleToolsCall } = await import('../../src/handlers/tools');
+		const { proxy, calls } = capturingProxy(() => Response.json({ representative: true }));
+
+		const result = await handleToolsCall({ name: 'query_ual', arguments: {} }, undefined, {
+			m365Proxy: proxy,
+			m365ProxyAuthToken: INTERNAL_BEARER,
+			keyHash: KEY_HASH,
+		});
+
+		expect(calls).toHaveLength(0);
+		expect(result).toEqual({
+			content: [{ type: 'text', text: 'Error: Missing required parameter: ms_tenant_id' }],
+			isError: true,
+		});
+	});
+
+	it('query_ual retains the identity auth backstop before the tombstone', async () => {
+		const { handleToolsCall } = await import('../../src/handlers/tools');
+		const { proxy, calls } = capturingProxy(() => Response.json({ representative: true }));
+
+		const result = await handleToolsCall({ name: 'query_ual', arguments: { ms_tenant_id: 'tenant-abc' } }, undefined, {
+			m365Proxy: proxy,
+			m365ProxyAuthToken: INTERNAL_BEARER,
+		});
+
+		expect(calls).toHaveLength(0);
+		expect(result).toEqual({
+			content: [{ type: 'text', text: 'Error: Invalid request: m365_proxy_unauthenticated (authentication required).' }],
+			isError: true,
+		});
+	});
 
 	it('forwards the optional query_signins filters bv-web-prod reads off the body', async () => {
 		const { handleToolsCall } = await import('../../src/handlers/tools');
@@ -304,7 +346,7 @@ describe('M365 seam — producer failure classification reaches the caller', () 
 			const { handleToolsCall } = await import('../../src/handlers/tools');
 			const { proxy } = capturingProxy(() => new Response('upstream error', { status }));
 
-			const result = await handleToolsCall({ name: 'query_ual', arguments: { ms_tenant_id: 'tenant-abc' } }, undefined, {
+			const result = await handleToolsCall({ name: 'query_signins', arguments: { ms_tenant_id: 'tenant-abc' } }, undefined, {
 				m365Proxy: proxy,
 				m365ProxyAuthToken: INTERNAL_BEARER,
 				keyHash: KEY_HASH,
@@ -334,7 +376,7 @@ describe('M365 seam — producer failure classification reaches the caller', () 
 });
 
 describe('M365 seam — BSL self-host degradation (no BV_WEB binding)', () => {
-	for (const [toolName, segment] of Object.entries(TOOL_PATH_SEGMENTS)) {
+	for (const [toolName, segment] of Object.entries(ACTIVE_TOOL_PATH_SEGMENTS)) {
 		it(`${toolName}: no binding → ok:false + unprovisioned:true + tool:"${segment}", and never throws`, async () => {
 			// A BSL self-host has no `BV_WEB`, so `m365Proxy` is undefined at all three
 			// index.ts construction sites. The fail-soft wrapper must produce a plain

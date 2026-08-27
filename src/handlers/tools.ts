@@ -104,7 +104,7 @@ import { formatCheckResult, formatAccessRefusal, mcpError, buildToolResult, with
 import { markUnmeasured, isAccessRefusal } from '../lib/unmeasured-result';
 import { isCompletedCheck } from '../lib/ungraded-display';
 import type { McpContent } from './tool-formatters';
-import { TOOLS } from '../schemas/tool-definitions';
+import { QUERY_UAL_LIFECYCLE, TOOL_STATUS_META_KEY, TOOLS } from '../schemas/tool-definitions';
 import type { McpTool } from '../schemas/tool-definitions';
 
 /** MCP tools/call result */
@@ -112,6 +112,7 @@ interface McpToolResult {
 	content: McpContent[];
 	structuredContent?: Record<string, unknown>;
 	isError?: boolean;
+	_meta?: Record<string, unknown>;
 }
 
 /**
@@ -1806,7 +1807,11 @@ export async function handleToolsCall(
 					logDetails = summarizeM365LogResult(result);
 					logToolSuccess({ ...ctx(), status: result.ok ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
 					const text = JSON.stringify(result, null, effectiveFormat === 'compact' ? 0 : 2);
-					return buildToolResult(text, result, effectiveFormat);
+					return {
+						...buildToolResult(text, result, effectiveFormat),
+						isError: true,
+						_meta: { [TOOL_STATUS_META_KEY]: QUERY_UAL_LIFECYCLE },
+					};
 				}
 				case 'get_ca_policies': {
 					const result = await getCaPolicies({ ms_tenant_id: String(validatedArgs.ms_tenant_id) }, runtimeOptions?.m365Proxy, {

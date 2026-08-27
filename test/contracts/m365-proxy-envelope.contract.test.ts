@@ -3,9 +3,10 @@
  * Contract: bv-web-prod → bv-mcp M365 proxy WIRE surface (consumer side).
  *
  * Endpoint: POST /api/internal/mcp/m365/<tool> over the `m365Proxy` (BV_WEB) service
- * binding, called by `callM365Proxy` in src/tools/m365/proxy.ts. The four
- * identity_secops tools (query_signins, query_ual, get_ca_policies,
- * assess_coverage) all funnel through this one helper.
+ * binding, called by `callM365Proxy` in src/tools/m365/proxy.ts. The three active
+ * identity_secops tools (query_signins, get_ca_policies, assess_coverage) funnel
+ * through this helper. Deprecated `query_ual` is a local compatibility tombstone
+ * and never reaches this seam.
  *
  * This is the CONSUMER-side complement to bv-web-prod's own
  * `m365.contract.test.ts` (the producer side, from #403). It pins how bv-mcp
@@ -27,10 +28,9 @@
  * BOTH marker values are now real on the wire: bv-web-prod can return
  * `representative: false` for `query-signins`, `get-ca-policies`, and
  * `assess-coverage` when a tenant is connected and the upstream Graph read succeeds,
- * falling back to the `representative: true` seam otherwise. `query-ual` remains
- * representative-only until its Purview Audit Search integration lands. The
- * pass-through cases below pin both directions, because a seam that DEFAULTED the
- * marker either way would be a
+ * falling back to the `representative: true` seam otherwise. The pass-through
+ * cases below pin both directions, because a seam that DEFAULTED the marker either
+ * way would be a
  * correctness bug with no test to catch it: defaulting to `true` mislabels live
  * Entra data as a sample, and defaulting to `false` presents sample data to an
  * LLM as live threat intel — the exact hazard #417 part 2 exists to prevent.
@@ -137,7 +137,7 @@ describe('M365 proxy envelope contract (consumer side)', () => {
 	it('non-2xx error string interpolates the exact upstream status code', async () => {
 		for (const status of [401, 403, 500, 503]) {
 			const proxy = proxyReturning(new Response('err', { status }));
-			const result = await callM365Proxy(proxy, 'query-ual', { ms_tenant_id: 't' });
+			const result = await callM365Proxy(proxy, 'query-signins', { ms_tenant_id: 't' });
 			expect(result).toEqual({ ok: false, error: `m365_proxy_${status}` });
 		}
 	});
