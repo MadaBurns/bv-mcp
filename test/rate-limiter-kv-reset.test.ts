@@ -5,9 +5,8 @@
 // where vitest's import phase consumes ~123s, the 60s minute-window TTL
 // hadn't expired by the time the next test ran — earlier tests' counters
 // bled forward and broke `tools/call notifications consume exactly one
-// rate-limit unit per request` (line 1219) and `auto-recovers expired
-// sessions for tools/call by reviving the same session ID` (line 1484) in
-// `test/index.spec.ts`.
+// rate-limit unit per request` and the cross-isolate session hydration tests
+// in `test/index.spec.ts`.
 
 import { env } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';

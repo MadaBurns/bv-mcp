@@ -17,8 +17,10 @@ import { mapConcurrent } from '../../lib/map-concurrent';
 import { safeFetch } from '../../lib/safe-fetch';
 import type { DiscoveryDnsContext } from './dns-context';
 import { CLOUDFLARE_DOH_ENDPOINT } from '../../lib/dns-endpoints';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../../lib/response-body';
 
 const DEFAULT_TIMEOUT_MS = 5_000;
+const MAX_DOH_BODY_BYTES = 256 * 1024;
 
 /** Multi-tenant mail SaaS providers — overlap on these is provider-level, not ownership. */
 const SHARED_MAIL_SAAS = [
@@ -67,10 +69,14 @@ async function queryMx(name: string, dohFn: typeof fetch, dohUrl: string, timeou
 		const resp = await dohFn(url, {
 			headers: { Accept: 'application/dns-json' },
 			signal: controller.signal,
+			redirect: 'manual',
 		});
-		clearTimeout(timeoutId);
-		if (!resp.ok) return [];
-		const json = (await resp.json()) as DohResponse;
+		if (!resp.ok) {
+			await disposeUnreadResponseBody(resp);
+			return [];
+		}
+		const json = await readJsonResponseCapped<DohResponse>(resp, MAX_DOH_BODY_BYTES);
+		if (!json) return [];
 		if (json.Status !== 0 || !json.Answer) return [];
 		// MX rdata is "<priority> <hostname>"; extract just the host.
 		return json.Answer
@@ -79,8 +85,9 @@ async function queryMx(name: string, dohFn: typeof fetch, dohUrl: string, timeou
 			.filter((h) => h.length > 0)
 			.sort();
 	} catch {
-		clearTimeout(timeoutId);
 		return [];
+	} finally {
+		clearTimeout(timeoutId);
 	}
 }
 

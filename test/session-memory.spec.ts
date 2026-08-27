@@ -2,8 +2,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
 	ACTIVE_SESSIONS,
+	SESSION_TOMBSTONES,
 	SESSION_CREATE_BY_IP,
 	MAX_SESSION_CREATE_IPS,
+	MAX_SESSION_TOMBSTONES,
 	checkSessionCreateRateLimitInMemory,
 	createSessionInMemory,
 	deleteSessionInMemory,
@@ -48,6 +50,16 @@ describe('session-memory', () => {
 		createSessionInMemory('session-1');
 		expect(deleteSessionInMemory('session-1')).toBe(true);
 		expect(ACTIVE_SESSIONS.has('session-1')).toBe(false);
+	});
+
+	it('bounds tombstones and evicts the oldest deleted session ids', () => {
+		for (let i = 0; i < MAX_SESSION_TOMBSTONES + 25; i++) {
+			deleteSessionInMemory(`session-${i}`);
+		}
+
+		expect(SESSION_TOMBSTONES.size).toBe(MAX_SESSION_TOMBSTONES);
+		expect(SESSION_TOMBSTONES.has('session-0')).toBe(false);
+		expect(SESSION_TOMBSTONES.has(`session-${MAX_SESSION_TOMBSTONES + 24}`)).toBe(true);
 	});
 
 	it('limits repeated in-memory session creation attempts per IP window', () => {

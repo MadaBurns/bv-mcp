@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import packageJsonSource from '../../package.json?raw';
+import deployPrivateSource from '../../scripts/deploy-private.mjs?raw';
 import injectScriptSource from '../../scripts/inject-private-config.cjs?raw';
 
 interface PackageJson {
@@ -31,6 +32,21 @@ describe('deploy:prod pipeline integrity', () => {
 		expect(buildIndex, 'deploy:prod must contain the dns-checks build step').toBeGreaterThan(-1);
 		expect(deployIndex, 'deploy:prod must contain a wrangler deploy step').toBeGreaterThan(-1);
 		expect(buildIndex, 'the dns-checks build must run before wrangler deploy').toBeLessThan(deployIndex);
+	});
+
+	it('refuses production deployment until the remote Brand Audit schema preflight passes', () => {
+		const preflightIndex = deployScript.indexOf('brand-audit-schema-preflight.mjs');
+		const deployIndex = deployScript.indexOf('wrangler deploy');
+		expect(preflightIndex).toBeGreaterThan(-1);
+		expect(preflightIndex).toBeLessThan(deployIndex);
+	});
+
+	it('also gates the private deploy helper before its Wrangler deploy call', () => {
+		const preflightIndex = deployPrivateSource.indexOf('brand-audit-schema-preflight.mjs');
+		const deployIndex = deployPrivateSource.indexOf("[wranglerCliPath, 'deploy'");
+		expect(preflightIndex).toBeGreaterThan(-1);
+		expect(deployIndex).toBeGreaterThan(-1);
+		expect(preflightIndex).toBeLessThan(deployIndex);
 	});
 });
 

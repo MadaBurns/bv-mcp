@@ -245,6 +245,30 @@ describe('tier1GraphLookup', () => {
 			const callArg = fetchSpy.mock.calls[0]?.[0] as Request;
 			expect(callArg.url).toContain('/domain/foo%20bar.example%2Fx/related');
 		});
+
+		it('uses manual redirects and times out a body that stalls after headers', async () => {
+			let requestSignal: AbortSignal | undefined;
+			const binding = {
+				fetch: vi.fn(async (request: Request) => {
+					requestSignal = request.signal;
+					let bodyController: ReadableStreamDefaultController<Uint8Array> | undefined;
+					const body = new ReadableStream<Uint8Array>({
+						start(controller) {
+							bodyController = controller;
+						},
+					});
+					request.signal.addEventListener('abort', () => bodyController?.error(request.signal.reason), { once: true });
+					return new Response(body, { status: 200 });
+				}),
+			} as unknown as Fetcher;
+
+			const result = await tier1GraphLookup('example.com', binding, baseEnv, 5);
+
+			expect(result.status).toBe('degraded');
+			expect(requestSignal?.aborted).toBe(true);
+			const request = vi.mocked(binding.fetch).mock.calls[0]?.[0] as Request;
+			expect(request.redirect).toBe('manual');
+		});
 	});
 
 	describe('specificity input boundary handling', () => {

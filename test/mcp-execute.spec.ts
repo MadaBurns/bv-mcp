@@ -112,7 +112,6 @@ describe('executeMcpRequest — batch initialize restriction', () => {
 		vi.doMock('../src/lib/session', () => ({
 			checkSessionCreateRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
 			createSession: vi.fn().mockResolvedValue('aabbcc'),
-			reviveSession: vi.fn().mockResolvedValue(false),
 		}));
 		vi.doMock('../src/lib/audit', () => ({
 			auditSessionCreated: vi.fn(),
@@ -160,7 +159,12 @@ describe('executeMcpRequest — global daily rate limit', () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
-				body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'check_spf', arguments: { domain: 'example.com' } } } as JsonRpcRequest,
+				body: {
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'tools/call',
+					params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				} as JsonRpcRequest,
 				isAuthenticated: false,
 			}),
 		);
@@ -191,7 +195,12 @@ describe('executeMcpRequest — global daily rate limit', () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
-				body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'check_spf', arguments: { domain: 'example.com' } } } as JsonRpcRequest,
+				body: {
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'tools/call',
+					params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				} as JsonRpcRequest,
 				isAuthenticated: false,
 			}),
 		);
@@ -228,7 +237,12 @@ describe('executeMcpRequest — global daily rate limit', () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
-				body: { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'check_spf', arguments: { domain: 'example.com' } } } as JsonRpcRequest,
+				body: {
+					jsonrpc: '2.0',
+					id: 1,
+					method: 'tools/call',
+					params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				} as JsonRpcRequest,
 				isAuthenticated: true,
 				tierAuthResult: { authenticated: true, tier: 'developer', keyHash: 'abc123' },
 			}),
@@ -263,7 +277,12 @@ describe('executeMcpRequest — per-IP rate limiting', () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
-				body: { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'check_spf', arguments: { domain: 'example.com' } } } as JsonRpcRequest,
+				body: {
+					jsonrpc: '2.0',
+					id: 2,
+					method: 'tools/call',
+					params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				} as JsonRpcRequest,
 				isAuthenticated: false,
 			}),
 		);
@@ -307,7 +326,12 @@ describe('executeMcpRequest — per-IP rate limiting', () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
-				body: { jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'check_spf', arguments: { domain: 'example.com' } } } as JsonRpcRequest,
+				body: {
+					jsonrpc: '2.0',
+					id: 3,
+					method: 'tools/call',
+					params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				} as JsonRpcRequest,
 				isAuthenticated: false,
 			}),
 		);
@@ -544,13 +568,7 @@ describe('executeMcpRequest — authenticated tier daily limits', () => {
 		);
 
 		// First arg to checkToolDailyRateLimit should be keyHash, not IP
-		expect(checkToolSpy).toHaveBeenCalledWith(
-			'myhashxyz',
-			'scan_domain',
-			expect.any(Number),
-			undefined,
-			undefined,
-		);
+		expect(checkToolSpy).toHaveBeenCalledWith('myhashxyz', 'scan_domain', expect.any(Number), undefined, undefined);
 	});
 });
 
@@ -582,13 +600,11 @@ describe('executeMcpRequest — session validation', () => {
 		vi.doMock('../src/lib/session', () => ({
 			checkSessionCreateRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
 			createSession: vi.fn(),
-			// reviveSession returns false — session ID is malformed or tombstoned
-			reviveSession: vi.fn().mockResolvedValue(false),
 			validateSession: vi.fn().mockResolvedValue(false),
 		}));
 
 		const { executeMcpRequest } = await import('../src/mcp/execute');
-		// Use a valid-format 64-hex-char session ID so revive is attempted but fails
+		// A valid shape does not prove the server issued this ID.
 		const fakeSessionId = 'a'.repeat(64);
 		const result = await executeMcpRequest(
 			baseOptions({
@@ -608,7 +624,6 @@ describe('executeMcpRequest — session validation', () => {
 		vi.doMock('../src/lib/session', () => ({
 			checkSessionCreateRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
 			createSession: vi.fn().mockResolvedValue('newsession'),
-			reviveSession: vi.fn().mockResolvedValue(false),
 		}));
 		vi.doMock('../src/lib/audit', () => ({
 			auditSessionCreated: vi.fn(),
@@ -652,64 +667,28 @@ describe('executeMcpRequest — session validation', () => {
 });
 
 // ---------------------------------------------------------------------------
-// Session revival (expired session recovery)
+// Unknown or expired session rejection
 // ---------------------------------------------------------------------------
 
-describe('executeMcpRequest — session revival', () => {
-	it('continues request after successfully reviving an expired session', async () => {
+describe('executeMcpRequest — unknown session rejection', () => {
+	it('never recreates a caller-supplied valid-shaped session ID', async () => {
 		vi.doMock('../src/lib/session', () => ({
-			checkSessionCreateRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
 			createSession: vi.fn(),
-			reviveSession: vi.fn().mockResolvedValue(true),
 			validateSession: vi.fn().mockResolvedValue(false),
-		}));
-		vi.doMock('../src/mcp/dispatch', () => ({
-			dispatchMcpMethod: vi.fn().mockResolvedValue({
-				kind: 'success',
-				payload: { jsonrpc: '2.0', id: 11, result: { tools: [] } },
-				headers: {},
-				newSessionId: undefined,
-				logTool: 'tools/list',
-				logCategory: 'list',
-				logResult: 'ok',
-				logDetails: {},
-			}),
 		}));
 
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const validSessionId = 'b'.repeat(64);
 		const result = await executeMcpRequest(
 			baseOptions({
-				body: { jsonrpc: '2.0', id: 11, method: 'tools/list', params: {} } as JsonRpcRequest,
+				body: {
+					jsonrpc: '2.0',
+					method: 'notifications/cancelled',
+					params: { requestId: 11 },
+				} as unknown as JsonRpcRequest,
 				validateSession: true,
 				sessionId: validSessionId,
-				isAuthenticated: false,
-			}),
-		);
-
-		// Should continue and succeed (not return 404)
-		expect(result.kind).toBe('response');
-		if (result.kind !== 'response') throw new Error('expected response');
-		expect(result.httpStatus).toBe(200);
-		const payload = result.payload as { result?: unknown; error?: unknown };
-		expect(payload.error).toBeUndefined();
-	});
-
-	it('returns 404 when revival fails (tombstoned or malformed session)', async () => {
-		vi.doMock('../src/lib/session', () => ({
-			checkSessionCreateRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
-			createSession: vi.fn(),
-			reviveSession: vi.fn().mockResolvedValue(false),
-			validateSession: vi.fn().mockResolvedValue(false),
-		}));
-
-		const { executeMcpRequest } = await import('../src/mcp/execute');
-		const validSessionId = 'c'.repeat(64);
-		const result = await executeMcpRequest(
-			baseOptions({
-				body: { jsonrpc: '2.0', id: 12, method: 'tools/list', params: {} } as JsonRpcRequest,
-				validateSession: true,
-				sessionId: validSessionId,
+				isAuthenticated: true,
 			}),
 		);
 
@@ -718,22 +697,16 @@ describe('executeMcpRequest — session revival', () => {
 		expect(result.httpStatus).toBe(404);
 	});
 
-	it('still returns 404 for malformed session IDs (< 64 hex chars)', async () => {
-		// reviveSession returns false for malformed IDs (isValidSessionIdFormat rejects them).
-		const reviveSpy = vi.fn().mockResolvedValue(false);
-
+	it('returns 404 for a malformed session without attempting recovery', async () => {
 		vi.doMock('../src/lib/session', () => ({
-			checkSessionCreateRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
 			createSession: vi.fn(),
-			reviveSession: reviveSpy,
 			validateSession: vi.fn().mockResolvedValue(false),
 		}));
 
 		const { executeMcpRequest } = await import('../src/mcp/execute');
-		// Malformed — too short, won't pass isValidSessionIdFormat
 		const result = await executeMcpRequest(
 			baseOptions({
-				body: { jsonrpc: '2.0', id: 13, method: 'tools/list', params: {} } as JsonRpcRequest,
+				body: { jsonrpc: '2.0', id: 12, method: 'tools/list', params: {} } as JsonRpcRequest,
 				validateSession: true,
 				sessionId: 'tooshort',
 			}),
@@ -741,13 +714,7 @@ describe('executeMcpRequest — session revival', () => {
 
 		expect(result.kind).toBe('response');
 		if (result.kind !== 'response') throw new Error('expected response');
-		// Should fail with 404 — session not found / invalid
 		expect(result.httpStatus).toBe(404);
-		// reviveSession is called but returns false because isValidSessionIdFormat rejects 'tooshort'
-		if (reviveSpy.mock.calls.length > 0) {
-			// If called, it should have returned false (no actual revival)
-			expect(reviveSpy).toHaveReturnedWith(Promise.resolve(false));
-		}
 	});
 });
 
@@ -800,7 +767,12 @@ describe('executeMcpRequest — notification handling', () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
-				body: { jsonrpc: '2.0', id: null, method: 'tools/call', params: { name: 'check_spf', arguments: { domain: 'example.com' } } } as JsonRpcRequest,
+				body: {
+					jsonrpc: '2.0',
+					id: null,
+					method: 'tools/call',
+					params: { name: 'check_spf', arguments: { domain: 'example.com' } },
+				} as JsonRpcRequest,
 				validateSession: false,
 			}),
 		);
@@ -814,7 +786,6 @@ describe('executeMcpRequest — notification handling', () => {
 		vi.doMock('../src/lib/session', () => ({
 			checkSessionCreateRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
 			createSession: vi.fn().mockResolvedValue('sess123'),
-			reviveSession: vi.fn().mockResolvedValue(false),
 		}));
 		vi.doMock('../src/lib/audit', () => ({
 			auditSessionCreated: vi.fn(),
@@ -1271,9 +1242,7 @@ describe('executeMcpRequest — analytics', () => {
 		);
 
 		expect(emitRateLimitEventSpy).toHaveBeenCalledOnce();
-		expect(emitRateLimitEventSpy).toHaveBeenCalledWith(
-			expect.objectContaining({ limitType: 'daily_global' }),
-		);
+		expect(emitRateLimitEventSpy).toHaveBeenCalledWith(expect.objectContaining({ limitType: 'daily_global' }));
 	});
 });
 

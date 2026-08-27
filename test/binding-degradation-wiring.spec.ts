@@ -133,7 +133,7 @@ describe('R1 binding-degradation sink wiring (tls-probe path via handleToolsCall
 			undefined,
 			{
 				tlsProbeBinding: tlsProbeStatus(502),
-				tlsProbeAuthToken: 'tok',
+				tlsProbeAuthToken: 'tls-probe-degradation-key-32-bytes-minimum',
 				analytics: client,
 				onBindingDegradation: sinkFromAnalytics(client),
 			},

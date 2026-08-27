@@ -41,6 +41,10 @@ export default defineConfig({
 							bindings: {
 								ENABLE_OAUTH: 'true',
 								ENABLE_OWNER_OAUTH: 'true',
+								// Deliberately distinct from the BV_WEB_INTERNAL_KEY fixtures used by the
+								// tenant integration suites; the global capability-collision gate must see
+								// the same separation production requires.
+								BV_MCP_TENANT_KEY: 'tenant-orchestrator-capability-key-2',
 								// v2.10.9 route gate requires `OAUTH_SIGNING_SECRET >= 32 bytes` for OAuth
 								// routes to serve (otherwise 503 service_unavailable). Tests that override
 								// env (chaos/e2e/token specs) explicitly unset it. Without this binding,

@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import { resetAllRateLimits } from '../src/lib/rate-limiter';
 
 afterEach(() => {
+	resetAllRateLimits();
+	vi.useRealTimers();
 	vi.restoreAllMocks();
 });
 
@@ -212,7 +215,8 @@ describe('tier-auth KV cache validation', () => {
 
 		expect(result.authenticated).toBe(false);
 		expect(bvWeb.fetch).toHaveBeenCalledOnce();
-		const putArgs = vi.mocked(kv.put).mock.calls[0];
+		const putArgs = vi.mocked(kv.put).mock.calls.find(([key]) => /^tier:[a-f0-9]{64}$/.test(String(key)))!;
+		expect(putArgs).toBeDefined();
 		expect(putArgs[0]).toMatch(/^tier:[a-f0-9]{64}$/);
 		expect(JSON.parse(String(putArgs[1]))).toEqual({ tier: 'free', revokedAt: expect.any(Number) });
 		expect(putArgs[2]).toEqual({ expirationTtl: 300 });
@@ -350,14 +354,99 @@ describe('tier-auth KV cache validation', () => {
 
 		expect(result.authenticated).toBe(false);
 		expect(bvWeb.fetch).toHaveBeenCalledOnce();
-		expect(kv.put).not.toHaveBeenCalled();
+		expect(vi.mocked(kv.put).mock.calls.some(([key]) => /^tier:[a-f0-9]{64}$/.test(String(key)))).toBe(false);
+	});
+
+	it('caps and cancels an oversized bv-web validation response', async () => {
+		const { BV_WEB_VALIDATE_KEY_MAX_BODY_BYTES, resolveTier } = await import('../src/lib/tier-auth');
+		const cancelled = vi.fn();
+		const body = new ReadableStream<Uint8Array>({
+			start(controller) {
+				controller.enqueue(new Uint8Array(BV_WEB_VALIDATE_KEY_MAX_BODY_BYTES + 1));
+			},
+			cancel: cancelled,
+		});
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(new Response(body, { status: 200 })),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'oversized-service-bound-key',
+			{ BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			'203.0.113.91',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(false);
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
+
+	it('cancels an unread non-2xx bv-web validation response body', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const cancelled = vi.fn();
+		const bvWeb = {
+			fetch: vi.fn().mockResolvedValue(
+				new Response(new ReadableStream<Uint8Array>({ cancel: cancelled }), { status: 400 }),
+			),
+		} as unknown as Fetcher;
+
+		const result = await resolveTier(
+			'rejected-service-bound-key',
+			{ BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' },
+			'203.0.113.92',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(false);
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
+
+	it('aborts a stalled bv-web validation request at its timeout', async () => {
+		const { fetchBvWebValidateKey } = await import('../src/lib/tier-auth');
+		let requestSignal: AbortSignal | undefined;
+		const bvWeb = {
+			fetch: vi.fn().mockImplementation((request: Request) => {
+				requestSignal = request.signal;
+				return new Promise<Response>((_resolve, reject) => {
+					request.signal.addEventListener('abort', () => reject(request.signal.reason), { once: true });
+				});
+			}),
+		} as unknown as Fetcher;
+
+		await expect(fetchBvWebValidateKey(bvWeb, 'internal-key', 'a'.repeat(64), 5)).rejects.toMatchObject({
+			name: 'TimeoutError',
+		});
+		expect(requestSignal?.aborted).toBe(true);
+	});
+
+	it('keeps the bv-web timeout active after headers while the response body stalls', async () => {
+		const { fetchBvWebValidateKey } = await import('../src/lib/tier-auth');
+		let requestSignal: AbortSignal | undefined;
+		const bvWeb = {
+			fetch: vi.fn().mockImplementation((request: Request) => {
+				requestSignal = request.signal;
+				let bodyController: ReadableStreamDefaultController<Uint8Array>;
+				const body = new ReadableStream<Uint8Array>({
+					start(controller) {
+						bodyController = controller;
+					},
+				});
+				request.signal.addEventListener('abort', () => bodyController.error(request.signal.reason), { once: true });
+				return Promise.resolve(new Response(body, { status: 200 }));
+			}),
+		} as unknown as Fetcher;
+
+		await expect(fetchBvWebValidateKey(bvWeb, 'internal-key', 'b'.repeat(64), 5)).rejects.toMatchObject({
+			name: 'TimeoutError',
+		});
+		expect(requestSignal?.aborted).toBe(true);
 	});
 });
 
-describe('tier-auth LKG (last-known-good) fallback', () => {
-	// ─── LKG WRITE on success ──────────────────────────────────────────────────
+describe('tier-auth fail-closed entitlement validation', () => {
+	// ─── Successful validation only writes the bounded positive cache ───────────
 
-	it('writes tier:lkg:{keyHash} with expirationTtl 86400 on successful bv-web resolution', async () => {
+	it('does not write a long-lived positive entitlement cache after successful validation', async () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
 
 		const kv = {
@@ -379,12 +468,10 @@ describe('tier-auth LKG (last-known-good) fallback', () => {
 		expect(result.authenticated).toBe(true);
 		expect(result.tier).toBe('enterprise');
 
-		// Must write the short-lived cache entry AND the long-lived LKG entry
+		// A revoked bearer must not remain usable through a long-lived stale entry.
 		const putCalls = vi.mocked(kv.put).mock.calls;
 		const lkgCall = putCalls.find((c) => c[0] === `tier:lkg:${result.keyHash}`);
-		expect(lkgCall).toBeDefined();
-		expect(lkgCall![1]).toBe('enterprise');
-		expect(lkgCall![2]).toEqual({ expirationTtl: 86400 });
+		expect(lkgCall).toBeUndefined();
 	});
 
 	it('does not write LKG for null tier (definitive revocation) from bv-web', async () => {
@@ -411,9 +498,9 @@ describe('tier-auth LKG (last-known-good) fallback', () => {
 		expect(lkgCall).toBeUndefined();
 	});
 
-	// ─── LKG READ when bv-web throws (network/connection failure) ─────────────
+	// ─── Network failures fail closed ──────────────────────────────────────────
 
-	it('returns LKG tier when bv-web throws (network error) and LKG entry exists', async () => {
+	it('does not authorize from an LKG entry when bv-web throws', async () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
 
 		const keyHash = await (async () => {
@@ -443,9 +530,8 @@ describe('tier-auth LKG (last-known-good) fallback', () => {
 			'https://example.com/mcp',
 		);
 
-		expect(result.authenticated).toBe(true);
-		expect(result.tier).toBe('developer');
-		expect(result.keyHash).toBe(keyHash);
+		expect(result.authenticated).toBe(false);
+		expect(vi.mocked(kv.get).mock.calls.some(([key]) => String(key) === `tier:lkg:${keyHash}`)).toBe(false);
 	});
 
 	it('falls through to BV_API_KEY when bv-web throws and no LKG entry exists', async () => {
@@ -471,12 +557,9 @@ describe('tier-auth LKG (last-known-good) fallback', () => {
 		expect(result.authenticated).toBe(false);
 	});
 
-	// ─── LKG READ when bv-web returns a 5xx (server error / outage) ──────────
-	// NOTE: fetch() resolves on HTTP errors — 5xx does NOT throw, it returns a
-	// Response with response.ok === false. A catch-only implementation misses this
-	// case. Both ambiguous-failure branches must consult LKG.
+	// ─── Server failures fail closed ────────────────────────────────────────────
 
-	it('returns LKG tier when bv-web returns 503 and LKG entry exists', async () => {
+	it('does not authorize from an LKG entry when bv-web returns 503', async () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
 
 		const keyHash = await (async () => {
@@ -505,9 +588,8 @@ describe('tier-auth LKG (last-known-good) fallback', () => {
 			'https://example.com/mcp',
 		);
 
-		expect(result.authenticated).toBe(true);
-		expect(result.tier).toBe('enterprise');
-		expect(result.keyHash).toBe(keyHash);
+		expect(result.authenticated).toBe(false);
+		expect(vi.mocked(kv.get).mock.calls.some(([key]) => String(key) === `tier:lkg:${keyHash}`)).toBe(false);
 	});
 
 	it('falls through to unauthenticated when bv-web returns 503 and no LKG entry exists', async () => {
@@ -567,9 +649,9 @@ describe('tier-auth LKG (last-known-good) fallback', () => {
 		expect(result.authenticated).toBe(false);
 	});
 
-	// ─── OWNER_ALLOW_IPS gate applied to LKG tier ─────────────────────────────
+	// ─── Stale owner results never authorize ────────────────────────────────────
 
-	it('applies OWNER_ALLOW_IPS gate to the tier returned from LKG on bv-web throw', async () => {
+	it('does not authorize a stale owner LKG entry when bv-web throws', async () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
 
 		const keyHash = await (async () => {
@@ -603,8 +685,8 @@ describe('tier-auth LKG (last-known-good) fallback', () => {
 			'https://example.com/mcp',
 		);
 
-		expect(result.authenticated).toBe(true);
-		expect(result.tier).toBe('partner'); // downgraded from owner
+		expect(result.authenticated).toBe(false);
+		expect(vi.mocked(kv.get).mock.calls.some(([key]) => String(key) === `tier:lkg:${keyHash}`)).toBe(false);
 	});
 
 	// ─── Definitive "no entitlement" — LKG must NOT be consulted ─────────────

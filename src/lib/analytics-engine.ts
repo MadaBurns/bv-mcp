@@ -7,9 +7,14 @@
  * to query the Cloudflare Analytics Engine SQL API.
  */
 
+import { readJsonResponseCapped, readTextResponseCapped } from './response-body';
+
 export interface AnalyticsRow {
 	[key: string]: string | number | undefined;
 }
+
+const ANALYTICS_ERROR_BODY_MAX_BYTES = 4 * 1024;
+const ANALYTICS_RESULT_MAX_BODY_BYTES = 2 * 1024 * 1024;
 
 /**
  * Execute a SQL query against the Cloudflare Analytics Engine SQL API.
@@ -34,13 +39,17 @@ export async function queryAnalyticsEngine(accountId: string, token: string, sql
 		// can't blow up the webhook. Never let this read fail the throw.
 		let detail = '';
 		try {
-			detail = (await response.text()).replace(/\s+/g, ' ').trim().slice(0, 300);
+			detail = ((await readTextResponseCapped(response, ANALYTICS_ERROR_BODY_MAX_BYTES)) ?? '')
+				.replace(/\s+/g, ' ')
+				.trim()
+				.slice(0, 300);
 		} catch {
 			// body already consumed/unreadable — fall through to the bare status
 		}
 		throw new Error(`Analytics Engine query failed: ${response.status}${detail ? ` — ${detail}` : ''}`);
 	}
 
-	const result = (await response.json()) as { data?: AnalyticsRow[] };
+	const result = await readJsonResponseCapped<{ data?: AnalyticsRow[] }>(response, ANALYTICS_RESULT_MAX_BODY_BYTES);
+	if (result === null) throw new Error('Analytics Engine query returned an invalid or oversized response');
 	return result.data ?? [];
 }

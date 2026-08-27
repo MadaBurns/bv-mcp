@@ -76,10 +76,13 @@ import {
 } from '../lib/profile-accumulator';
 import { capMaturityStage, computeMaturityStage } from './scan/maturity-staging';
 import type { MaturityStage } from './scan/maturity-staging';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../lib/response-body';
 export { formatScanReport, buildStructuredScanResult } from './scan/format-report';
 export type { StructuredScanResult, ScanResultEnrichment } from './scan/format-report';
 export type { MaturityStage } from './scan/maturity-staging';
 export type { ScanRuntimeOptions } from './scan/post-processing';
+
+const ADAPTIVE_WEIGHTS_MAX_BODY_BYTES = 128 * 1024;
 
 /**
  * TLS probe (Browser Rendering) is a paid-tier enrichment — skip it for
@@ -1084,19 +1087,29 @@ async function fetchAdaptiveWeights(
 		url.searchParams.set('profile', profile);
 		if (provider) url.searchParams.set('provider', provider);
 
-		const response = await Promise.race([
-			stub.fetch(new Request(url.toString())),
-			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('adaptive weight fetch timeout')), ADAPTIVE_FETCH_TIMEOUT_MS)),
-		]);
+		const controller = new AbortController();
+		const timeoutId = setTimeout(
+			() => controller.abort(new DOMException('Adaptive weight fetch timed out', 'TimeoutError')),
+			ADAPTIVE_FETCH_TIMEOUT_MS,
+		);
+		let response: Response;
+		try {
+			response = await stub.fetch(new Request(url.toString(), { signal: controller.signal }));
+			if (!response.ok) {
+				await disposeUnreadResponseBody(response);
+				return null;
+			}
 
-		if (!response.ok) return null;
-
-		const data = (await response.json()) as AdaptiveWeightsResponse;
-		if (adaptiveWeightCache.size >= ADAPTIVE_CACHE_MAX_ENTRIES) {
-			evictAdaptiveWeightCache();
+			const data = await readJsonResponseCapped<AdaptiveWeightsResponse>(response, ADAPTIVE_WEIGHTS_MAX_BODY_BYTES);
+			if (!data) return null;
+			if (adaptiveWeightCache.size >= ADAPTIVE_CACHE_MAX_ENTRIES) {
+				evictAdaptiveWeightCache();
+			}
+			adaptiveWeightCache.set(cacheKey, { weights: data, expires: now + ADAPTIVE_CACHE_TTL_MS });
+			return data;
+		} finally {
+			clearTimeout(timeoutId);
 		}
-		adaptiveWeightCache.set(cacheKey, { weights: data, expires: now + ADAPTIVE_CACHE_TTL_MS });
-		return data;
 	} catch {
 		return null;
 	}

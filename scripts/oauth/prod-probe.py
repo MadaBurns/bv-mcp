@@ -33,13 +33,49 @@ from typing import Optional
 from urllib.error import HTTPError
 
 
-BASE = os.getenv("BV_MCP_BASE", "https://dns-mcp.blackveilsecurity.com")
+def validate_https_url(url: str, label: str = "URL") -> str:
+    """Require a credential-free HTTPS URL before passing it to urllib."""
+    if not isinstance(url, str) or not url:
+        raise ValueError(f"{label} must be a non-empty URL")
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.scheme.lower() != "https":
+        raise ValueError(f"{label} must use https://")
+    if not parsed.hostname:
+        raise ValueError(f"{label} must include a hostname")
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError(f"{label} must not contain embedded credentials")
+    try:
+        parsed.port
+    except ValueError as exc:
+        raise ValueError(f"{label} contains an invalid port") from exc
+    return url
+
+
+def validate_base_url(url: str) -> str:
+    """Validate the operator-supplied origin before appending probe paths."""
+    url = validate_https_url(url, "BV_MCP_BASE")
+    parsed = urllib.parse.urlsplit(url)
+    if parsed.query or parsed.fragment:
+        raise ValueError("BV_MCP_BASE must not contain a query or fragment")
+    return url.rstrip("/")
+
+
+BASE = validate_base_url(os.getenv("BV_MCP_BASE", "https://dns-mcp.blackveilsecurity.com"))
 TIMEOUT = 10
 USER_AGENT = "bv-mcp-oauth-probe/1.0"
 CUSTOMER_CONSENT_URL = "https://www.blackveilsecurity.com/oauth/mcp/consent"
 PROBE_REDIRECT_URI = "https://claude.ai/cb"
 PROBE_SCOPE = "mcp"
 PROBE_STATE = "state123"
+
+
+def open_https_request(req):
+    """Open only requests whose final urllib URL still satisfies the HTTPS policy."""
+    validate_https_url(req.full_url, "request URL")
+    # The URL is validated immediately above; Semgrep cannot follow the Request object's full_url.
+    return urllib.request.urlopen(  # nosemgrep: python.lang.security.audit.dynamic-urllib-use-detected.dynamic-urllib-use-detected
+        req, timeout=TIMEOUT
+    )
 
 
 def base64url(data: bytes) -> str:
@@ -62,6 +98,7 @@ def smoke_mode() -> int:
     Fail on 5xx, unexpected 2xx, or 4xx that isn't invalid_grant.
     """
     try:
+        base = validate_base_url(BASE)
         data = urllib.parse.urlencode({
             "grant_type": "authorization_code",
             "code": "junk",
@@ -70,7 +107,7 @@ def smoke_mode() -> int:
             "code_verifier": "junkjunkjunkjunkjunkjunkjunkjunkjunkjunkjunkjunk",
         }).encode("utf-8")
         req = urllib.request.Request(
-            f"{BASE}/oauth/token",
+            f"{base}/oauth/token",
             data=data,
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
@@ -79,7 +116,7 @@ def smoke_mode() -> int:
             method="POST",
         )
         try:
-            resp = urllib.request.urlopen(req, timeout=TIMEOUT)
+            resp = open_https_request(req)
             status = resp.status
             # Unexpected 2xx
             print(
@@ -123,13 +160,14 @@ def smoke_mode() -> int:
 
 def get_json(url: str) -> tuple[int, Optional[dict]]:
     """GET JSON; return (status_code, parsed_json or None)."""
+    url = validate_https_url(url, "request URL")
     req = urllib.request.Request(
         url,
         headers={"User-Agent": USER_AGENT},
         method="GET",
     )
     try:
-        resp = urllib.request.urlopen(req, timeout=TIMEOUT)
+        resp = open_https_request(req)
         body = resp.read().decode("utf-8")
         return resp.status, json.loads(body)
     except HTTPError as e:
@@ -142,6 +180,7 @@ def get_json(url: str) -> tuple[int, Optional[dict]]:
 
 def post_json(url: str, obj: dict) -> tuple[int, Optional[dict]]:
     """POST JSON; return (status_code, parsed_json or None)."""
+    url = validate_https_url(url, "request URL")
     data = json.dumps(obj).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -150,7 +189,7 @@ def post_json(url: str, obj: dict) -> tuple[int, Optional[dict]]:
         method="POST",
     )
     try:
-        resp = urllib.request.urlopen(req, timeout=TIMEOUT)
+        resp = open_https_request(req)
         body = resp.read().decode("utf-8")
         return resp.status, json.loads(body)
     except HTTPError as e:
@@ -170,6 +209,7 @@ class NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 
 def get_no_redirect(url: str) -> tuple[int, str, Optional[str]]:
     """GET without following redirects; return (status, body_text, Location)."""
+    url = validate_https_url(url, "request URL")
     req = urllib.request.Request(
         url,
         headers={"User-Agent": USER_AGENT},
@@ -187,6 +227,7 @@ def get_no_redirect(url: str) -> tuple[int, str, Optional[str]]:
 
 def post_form(url: str, data: dict) -> tuple[int, Optional[dict], Optional[str]]:
     """POST form data; return (status_code, parsed_json or None, Location header or None)."""
+    url = validate_https_url(url, "request URL")
     encoded = urllib.parse.urlencode(data).encode("utf-8")
     req = urllib.request.Request(
         url,
@@ -195,7 +236,7 @@ def post_form(url: str, data: dict) -> tuple[int, Optional[dict], Optional[str]]
         method="POST",
     )
     try:
-        resp = urllib.request.urlopen(req, timeout=TIMEOUT)
+        resp = open_https_request(req)
         body = resp.read().decode("utf-8")
         try:
             parsed = json.loads(body)
@@ -218,7 +259,8 @@ def redirect_mode() -> int:
     the OAuth request parameters preserved. Does not require BV_API_KEY.
     """
     try:
-        status, metadata = get_json(f"{BASE}/.well-known/oauth-authorization-server")
+        base = validate_base_url(BASE)
+        status, metadata = get_json(f"{base}/.well-known/oauth-authorization-server")
         if status != 200 or not metadata:
             print(
                 f"FAIL: discovery returned {status}, expected 200 JSON",
@@ -331,9 +373,10 @@ def e2e_mode() -> int:
         return 1
 
     try:
+        base = validate_base_url(BASE)
         # Step 1: register
         status, reg_data = post_json(
-            f"{BASE}/oauth/register",
+            f"{base}/oauth/register",
             {
                 "redirect_uris": ["https://claude.ai/cb"],
                 "client_name": "bv-mcp-probe",
@@ -369,7 +412,7 @@ def e2e_mode() -> int:
         query_string = urllib.parse.urlencode(auth_params)
 
         status, _, location = post_form(
-            f"{BASE}/oauth/authorize",
+            f"{base}/oauth/authorize",
             {"api_key": api_key, "_q": query_string},
         )
         if status != 302:
@@ -392,7 +435,7 @@ def e2e_mode() -> int:
 
         # Step 4: token exchange
         status, token_data = post_form(
-            f"{BASE}/oauth/token",
+            f"{base}/oauth/token",
             {
                 "grant_type": "authorization_code",
                 "code": code,
@@ -425,7 +468,7 @@ def e2e_mode() -> int:
             "method": "tools/list",
         }).encode("utf-8")
         req = urllib.request.Request(
-            f"{BASE}/mcp",
+            f"{base}/mcp",
             data=mcp_data,
             headers={
                 "Authorization": f"Bearer {access_token}",
@@ -435,7 +478,7 @@ def e2e_mode() -> int:
             method="POST",
         )
         try:
-            resp = urllib.request.urlopen(req, timeout=TIMEOUT)
+            resp = open_https_request(req)
             body = resp.read().decode("utf-8")
             mcp_result = json.loads(body)
         except HTTPError as e:

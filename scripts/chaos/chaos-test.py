@@ -9,6 +9,7 @@ import json
 import sys
 import re
 import os
+import tempfile
 
 BASE = "https://dns-mcp.blackveilsecurity.com"
 API_KEY = os.getenv("BV_API_KEY")
@@ -75,8 +76,8 @@ def curl_json(method, path, body=None, headers=None, extra_args=None, include_he
 def curl_with_response_headers(method, path, body=None, headers=None):
     """Run curl and return (status_code, body, response_headers_dict)."""
     # Use a temp file for response headers to avoid interleaving issues with HTTP/2
-    import tempfile, os
-    header_file = tempfile.mktemp(suffix=".headers")
+    header_fd, header_file = tempfile.mkstemp(suffix=".headers")
+    os.close(header_fd)
     cmd = ["curl", "-s", "-D", header_file, "-w", "\n__STATUS__%{http_code}"]
     if method != "GET":
         cmd += ["-X", method]
@@ -106,25 +107,17 @@ def curl_with_response_headers(method, path, body=None, headers=None):
                         resp_headers[k.strip().lower()] = v.strip()
         except FileNotFoundError:
             pass
-        finally:
-            try:
-                os.unlink(header_file)
-            except OSError:
-                pass
 
         return status_code, body_text, resp_headers
     except subprocess.TimeoutExpired:
-        try:
-            os.unlink(header_file)
-        except OSError:
-            pass
         return 0, "TIMEOUT", {}
     except Exception as e:
+        return 0, str(e), {}
+    finally:
         try:
             os.unlink(header_file)
         except OSError:
             pass
-        return 0, str(e), {}
 
 
 def mcp_headers(session_id=None, content_type="application/json"):
@@ -796,8 +789,8 @@ def test_nosend_dkim():
         body=jsonrpc("tools/call", {"name": "scan_domain", "arguments": {"domain": "brand-auditdbs.com"}}, 20),
         headers=mcp_headers(session_id),
     )
-    brand-auditdbs_dkim = extract_dkim_score(body)
-    if brand-auditdbs_dkim is None:
+    brand_auditdbs_dkim = extract_dkim_score(body)
+    if brand_auditdbs_dkim is None:
         # Debug: show what we got back
         try:
             data = json.loads(body)
@@ -815,8 +808,8 @@ def test_nosend_dkim():
         except Exception as e:
             record("9a. brand-auditdbs.com DKIM score = 100", False, f"parse error: {e}, body[:300]={body[:300]}")
     else:
-        record("9a. brand-auditdbs.com DKIM score = 100", brand-auditdbs_dkim == 100,
-               f"got DKIM score={brand-auditdbs_dkim}")
+        record("9a. brand-auditdbs.com DKIM score = 100", brand_auditdbs_dkim == 100,
+               f"got DKIM score={brand_auditdbs_dkim}")
 
     # Scan google.com (should NOT have DKIM=100, since DKIM probing is heuristic)
     status, body, _ = curl_json(

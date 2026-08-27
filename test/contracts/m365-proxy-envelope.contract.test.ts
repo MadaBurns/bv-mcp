@@ -159,12 +159,13 @@ describe('M365 proxy envelope contract (consumer side)', () => {
 		expect(result).toEqual({ ok: false, error: 'm365_proxy_unreachable' });
 	});
 
-	// ─── Wire request shape: keyHash is folded into the POST body, bearer header ─
-	it('threads keyHash into the request body and authToken into the Authorization header', async () => {
+	// ─── Wire request shape: discriminated identity in the POST body, bearer header ─
+	it('threads identity into the request body and authToken into the Authorization header', async () => {
 		const fetchMock = vi.fn().mockResolvedValue(Response.json({ representative: true }));
 		const proxy = { fetch: fetchMock as unknown as typeof fetch };
+		const identity = { kind: 'oauth_tenant' as const, tenantId: 'tenant-123', principalId: 'a'.repeat(64) };
 
-		await callM365Proxy(proxy, 'query-signins', { ms_tenant_id: 'tenant-123' }, { authToken: 'tok', keyHash: 'abc123' });
+		await callM365Proxy(proxy, 'query-signins', { ms_tenant_id: 'tenant-123' }, { authToken: 'tok', identity });
 
 		expect(fetchMock).toHaveBeenCalledOnce();
 		const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit];
@@ -172,8 +173,7 @@ describe('M365 proxy envelope contract (consumer side)', () => {
 		expect(init.method).toBe('POST');
 		expect((init.headers as Record<string, string>)['Authorization']).toBe('Bearer tok');
 		expect((init.headers as Record<string, string>)['Content-Type']).toBe('application/json');
-		// keyHash is merged into the body alongside the caller args.
-		expect(JSON.parse(init.body as string)).toEqual({ ms_tenant_id: 'tenant-123', keyHash: 'abc123' });
+		expect(JSON.parse(init.body as string)).toEqual({ ms_tenant_id: 'tenant-123', identity });
 	});
 
 	it('omits the Authorization header when no authToken is supplied', async () => {
@@ -184,7 +184,7 @@ describe('M365 proxy envelope contract (consumer side)', () => {
 
 		const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
 		expect((init.headers as Record<string, string>)['Authorization']).toBeUndefined();
-		// keyHash absent → body carries an explicit undefined (dropped by JSON.stringify).
+		// identity absent → body carries an explicit undefined (dropped by JSON.stringify).
 		expect(JSON.parse(init.body as string)).toEqual({ ms_tenant_id: 't' });
 	});
 });

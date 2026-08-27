@@ -1,10 +1,14 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { DurableObject } from 'cloudflare:workers';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
+import { readBoundedText } from './request-body';
 
 const COORDINATOR_NAME = 'global-quota-coordinator';
 const CLEANUP_ALARM_INTERVAL_MS = 15 * 60 * 1000;
 const KEY_PREFIX = 'quota:';
+const COORDINATOR_HTTP_MAX_BODY_BYTES = 64 * 1024;
+const COORDINATOR_REQUEST_MAX_BODY_BYTES = 16 * 1024;
 
 /**
  * R8 (PROPOSAL): shard the per-IP/per-principal counters off the global singleton.
@@ -15,10 +19,10 @@ const KEY_PREFIX = 'quota:';
  * so only the ROUTING NAME was global — concentrating all load on a single DO.
  *
  * This routes the per-IP/per-principal kinds (`scoped-rate`, `tool-daily`,
- * `session-create`, and the batched `evaluate`) to `getByName('${SHARD_PREFIX}${n}')`
+ * `distinct-domain-daily`, `session-create`, and the batched `evaluate`) to `getByName('${SHARD_PREFIX}${n}')`
  * where `n = fnv1a(shardKey) % QUOTA_SHARD_COUNT`. The shard key is the counter's
  * OWN scoping field (the IP for scoped-rate/session-create, the principalId for
- * tool-daily). That invariant — shard key === counter scope — is what keeps counts
+ * tool-daily/distinct-domain-daily). That invariant — shard key === counter scope — is what keeps counts
  * EXACTLY identical to the single-instance behavior: a given principal's counter
  * always lands on the same shard, so it is never split or double-counted.
  *
@@ -38,6 +42,17 @@ const KEY_PREFIX = 'quota:';
  */
 const QUOTA_SHARD_COUNT = 16;
 const SHARD_PREFIX = 'quota-shard-';
+
+/**
+ * Strong-consistency state (OAuth one-time claims/revocation/versioning and
+ * paid/trial budgets) must never follow the operator-controlled quota shard
+ * flag or salt. Changing either intentionally remaps ephemeral rate counters;
+ * remapping authorization state would re-enable consumed codes or revoked
+ * tokens. Keep this count/prefix frozen and migrate explicitly if it ever
+ * changes.
+ */
+const SECURITY_STATE_SHARD_COUNT = 32;
+const SECURITY_STATE_SHARD_PREFIX = 'security-state-shard-';
 
 /**
  * ADAM non-negotiable #4: the shard key is NOT the raw attacker-known IP. We salt
@@ -68,16 +83,17 @@ const SHARD_PREFIX = 'quota-shard-';
 export interface ShardRouting {
 	/**
 	 * Feature flag (ADAM non-negotiable #2). When `false` (the default — unset
-	 * `QUOTA_SHARDING_ENABLED`), EVERY payload routes to the singleton
-	 * `COORDINATOR_NAME`, i.e. byte-for-byte the pre-shard behavior. Sharding is
-	 * only active when an operator flips this ON at a chosen low-traffic window.
+	 * `QUOTA_SHARDING_ENABLED`), every rate/quota payload routes to the singleton
+	 * `COORDINATOR_NAME`, i.e. byte-for-byte the pre-shard behavior. Security
+	 * state uses its separate frozen routing regardless of this flag. Quota
+	 * sharding is only active when an operator flips this ON at a chosen window.
 	 */
 	enabled: boolean;
 	/** Deploy-time salt mixed into the shard-key hash input. */
 	salt: string;
 }
 
-/** Routing config that keeps every payload on the singleton (today's behavior). */
+/** Routing config that keeps ephemeral quota payloads on the singleton. */
 export const SINGLETON_ROUTING: ShardRouting = { enabled: false, salt: '' };
 
 /**
@@ -116,11 +132,26 @@ export function shardNameForKey(key: string, salt = ''): string {
 	return `${SHARD_PREFIX}${shardIndexForKey(key, salt)}`;
 }
 
+/** Stable routing for security state; deliberately independent of quota flags. */
+export function securityStateShardNameForKey(key: string): string {
+	return `${SECURITY_STATE_SHARD_PREFIX}${fnv1a(key) % SECURITY_STATE_SHARD_COUNT}`;
+}
+
 type ScopedQuotaScope = 'tools' | 'control';
 
 interface CounterRecord {
 	count: number;
 	expiresAt: number;
+}
+
+interface VersionRecord {
+	value: number;
+}
+
+interface IdempotencyRecord extends CounterRecord {
+	requestHash: string;
+	status: 'in_progress' | 'complete';
+	result?: string;
 }
 
 interface RateLimitResult {
@@ -149,6 +180,50 @@ interface SessionCreateRateResult {
 	retryAfterMs?: number;
 	remaining: number;
 }
+
+export interface BudgetReservationResult {
+	allowed: boolean;
+	remaining: number;
+	limit: number;
+	used: number;
+}
+
+/** Atomic admission result for one validated OAuth DCR persistent write. */
+export interface OAuthDcrBudgetResult {
+	allowed: boolean;
+	retryAfterMs?: number;
+}
+
+export interface OAuthDcrBudgetLimits {
+	sourceDailyLimit: number;
+	globalHourlyLimit: number;
+	globalDailyLimit: number;
+}
+
+export interface ClaimOnceResult {
+	claimed: boolean;
+}
+
+export interface MarkerResult {
+	present: boolean;
+}
+
+export interface VersionResult {
+	value: number;
+}
+
+export type IdempotencyBeginResult =
+	| { state: 'started' }
+	| { state: 'in_progress' }
+	| { state: 'complete'; result: string }
+	| { state: 'conflict' };
+
+export interface IdempotencyCompleteResult {
+	completed: boolean;
+}
+
+/** Atomic subject-version mutation plus replay result. Idempotency is scoped to the subject shard. */
+export type IdempotentVersionBumpResult = { state: 'complete'; value: number } | { state: 'conflict' };
 
 /**
  * A single per-IP/per-principal sub-check inside a batched `evaluate` round trip.
@@ -198,6 +273,12 @@ export type QuotaCoordinatorRequest =
 			limit: number;
 	  }
 	| {
+			kind: 'distinct-domain-daily';
+			principalId: string;
+			domainFingerprint: string;
+			limit: number;
+	  }
+	| {
 			kind: 'global-daily';
 			limit: number;
 	  }
@@ -206,6 +287,71 @@ export type QuotaCoordinatorRequest =
 			ip: string;
 			limit: number;
 			windowMs: number;
+	  }
+	| ({
+			kind: 'oauth-dcr-write';
+			/** SHA-256 of the caller source address; raw addresses never enter global state. */
+			sourceFingerprint: string;
+	  } & OAuthDcrBudgetLimits)
+	| {
+			kind: 'reserve-budget';
+			coordinationKey: string;
+			amount: number;
+			limit: number;
+			expiresAt: number;
+			initialUsed?: number;
+	  }
+	| {
+			kind: 'claim-once';
+			coordinationKey: string;
+			expiresAt: number;
+	  }
+	| {
+			kind: 'marker-set';
+			coordinationKey: string;
+			expiresAt: number;
+	  }
+	| {
+			kind: 'marker-has';
+			coordinationKey: string;
+	  }
+	| {
+			kind: 'version-get';
+			coordinationKey: string;
+			defaultValue: number;
+	  }
+	| {
+			kind: 'version-bump';
+			coordinationKey: string;
+			defaultValue: number;
+	  }
+	| {
+			kind: 'version-set-max';
+			coordinationKey: string;
+			defaultValue: number;
+			value: number;
+	  }
+	| {
+			kind: 'version-bump-idempotent';
+			/** Subject-derived key; also fixes the security-state shard used by the transaction. */
+			coordinationKey: string;
+			/** Caller-key hash used only for replay state inside that subject shard. */
+			idempotencyCoordinationKey: string;
+			requestHash: string;
+			defaultValue: number;
+			expiresAt: number;
+	  }
+	| {
+			kind: 'idempotency-begin';
+			coordinationKey: string;
+			requestHash: string;
+			expiresAt: number;
+	  }
+	| {
+			kind: 'idempotency-complete';
+			coordinationKey: string;
+			requestHash: string;
+			result: string;
 	  }
 	| {
 			/**
@@ -231,12 +377,21 @@ export type QuotaCoordinatorResponse =
 	| ToolDailyRateLimitResult
 	| GlobalRateLimitResult
 	| SessionCreateRateResult
+	| BudgetReservationResult
+	| OAuthDcrBudgetResult
+	| ClaimOnceResult
+	| MarkerResult
+	| VersionResult
+	| IdempotentVersionBumpResult
+	| IdempotencyBeginResult
+	| IdempotencyCompleteResult
 	| EvaluateResponse
 	| undefined;
 
 /**
- * Routing name for a payload. Per-IP/per-principal counters fan across shards by
- * their OWN scoping field; the global counter + reset stay on the singleton.
+ * Routing name for a payload. Security state always uses frozen security shards;
+ * per-IP/per-principal quota counters fan across quota shards only when enabled;
+ * the global counter + reset stay on the singleton.
  *
  * `reset` deliberately targets the singleton here: tests + the admin reset path
  * call it once, and the per-shard state is best-effort/TTL'd (the cleanup alarm
@@ -245,19 +400,36 @@ export type QuotaCoordinatorResponse =
  * `resetQuotaCoordinatorState`'s shard sweep — see below.)
  */
 function routingNameForPayload(payload: QuotaCoordinatorRequest, routing: ShardRouting): string {
-	// Flag-OFF (ADAM #2): every payload stays on the singleton — byte-for-byte the
-	// pre-shard behavior. global-daily + reset ALWAYS stay on the singleton even when
-	// sharding is on (ADAM #5: the cost ceiling is never sharded/sampled/approximated).
+	// Authorization/idempotency state always uses the frozen security sharding
+	// scheme. It must not follow the independently controlled quota flag/salt.
+	switch (payload.kind) {
+		case 'reserve-budget':
+		case 'claim-once':
+		case 'marker-set':
+		case 'marker-has':
+		case 'version-get':
+		case 'version-bump':
+		case 'version-set-max':
+		case 'version-bump-idempotent':
+		case 'idempotency-begin':
+		case 'idempotency-complete':
+			return securityStateShardNameForKey(payload.coordinationKey);
+	}
+	// Flag-OFF (ADAM #2): every quota payload stays on the singleton — byte-for-byte
+	// the pre-shard behavior. global-daily + reset ALWAYS stay on the singleton even
+	// when quota sharding is on (ADAM #5: the cost ceiling is never approximated).
 	if (!routing.enabled) return COORDINATOR_NAME;
 	switch (payload.kind) {
 		case 'scoped-rate':
 		case 'session-create':
 			return shardNameForKey(payload.ip, routing.salt);
 		case 'tool-daily':
+		case 'distinct-domain-daily':
 			return shardNameForKey(payload.principalId, routing.salt);
 		case 'evaluate':
 			return shardNameForKey(payload.shardKey, routing.salt);
 		case 'global-daily':
+		case 'oauth-dcr-write':
 		case 'reset':
 		default:
 			return COORDINATOR_NAME;
@@ -291,9 +463,15 @@ async function callCoordinator<T>(
 		headers: { 'content-type': 'application/json' },
 		body: JSON.stringify(payload),
 	});
-	if (!response.ok) throw new Error(`Quota coordinator returned HTTP ${response.status}`);
+	if (!response.ok) {
+		const status = response.status;
+		await disposeUnreadResponseBody(response);
+		throw new Error(`Quota coordinator returned HTTP ${status}`);
+	}
 	if (payload.kind === 'reset') return undefined;
-	return (await response.json()) as T;
+	const body = await readJsonResponseCapped<T>(response, COORDINATOR_HTTP_MAX_BODY_BYTES);
+	if (body === null) throw new Error('Quota coordinator returned invalid or oversized JSON');
+	return body;
 }
 
 export async function checkScopedRateLimitWithCoordinator(
@@ -336,6 +514,29 @@ export async function checkToolDailyRateLimitWithCoordinator(
 	);
 }
 
+/**
+ * Atomically count a distinct domain once per principal/day. Undefined means
+ * the coordinator binding was absent and no state was mutated.
+ */
+export async function checkDistinctDomainDailyLimitWithCoordinator(
+	principalId: string,
+	domainFingerprint: string,
+	limit: number,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+	routing: ShardRouting = SINGLETON_ROUTING,
+): Promise<ToolDailyRateLimitResult | undefined> {
+	return callCoordinator<ToolDailyRateLimitResult>(
+		namespace,
+		{
+			kind: 'distinct-domain-daily',
+			principalId,
+			domainFingerprint,
+			limit,
+		},
+		routing,
+	);
+}
+
 export async function checkGlobalDailyLimitWithCoordinator(
 	limit: number,
 	namespace?: DurableObjectNamespace<QuotaCoordinator>,
@@ -365,6 +566,154 @@ export async function checkSessionCreateRateLimitWithCoordinator(
 		},
 		routing,
 	);
+}
+
+/**
+ * Atomically reserve one validated Dynamic Client Registration write across
+ * the per-source daily and fleet-wide hourly/daily ceilings. This is pinned to
+ * the singleton: distributing the global counters would make the cost ceiling
+ * approximate. `undefined` means the strong coordinator is not provisioned.
+ */
+export async function checkOAuthDcrBudgetWithCoordinator(
+	sourceFingerprint: string,
+	limits: OAuthDcrBudgetLimits,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<OAuthDcrBudgetResult | undefined> {
+	return callCoordinator<OAuthDcrBudgetResult>(namespace, {
+		kind: 'oauth-dcr-write',
+		sourceFingerprint,
+		...limits,
+	});
+}
+
+/** Atomically reserve units from a bounded, expiring budget. Undefined means no binding. */
+export async function reserveBudgetWithCoordinator(
+	coordinationKey: string,
+	amount: number,
+	limit: number,
+	expiresAt: number,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+	initialUsed = 0,
+): Promise<BudgetReservationResult | undefined> {
+	return callCoordinator<BudgetReservationResult>(namespace, {
+		kind: 'reserve-budget',
+		coordinationKey,
+		amount,
+		limit,
+		expiresAt,
+		initialUsed,
+	});
+}
+
+/** Atomically claim an expiring key once. Undefined means no binding. */
+export async function claimOnceWithCoordinator(
+	coordinationKey: string,
+	expiresAt: number,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<ClaimOnceResult | undefined> {
+	return callCoordinator<ClaimOnceResult>(namespace, { kind: 'claim-once', coordinationKey, expiresAt });
+}
+
+/** Persist an expiring deny marker in strong state. Undefined means no binding. */
+export async function setMarkerWithCoordinator(
+	coordinationKey: string,
+	expiresAt: number,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<MarkerResult | undefined> {
+	return callCoordinator<MarkerResult>(namespace, { kind: 'marker-set', coordinationKey, expiresAt });
+}
+
+/** Read an expiring deny marker from strong state. Undefined means no binding. */
+export async function hasMarkerWithCoordinator(
+	coordinationKey: string,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<MarkerResult | undefined> {
+	return callCoordinator<MarkerResult>(namespace, { kind: 'marker-has', coordinationKey });
+}
+
+/** Read a persistent monotonic version from strong state. Undefined means no binding. */
+export async function getVersionWithCoordinator(
+	coordinationKey: string,
+	defaultValue: number,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<VersionResult | undefined> {
+	return callCoordinator<VersionResult>(namespace, { kind: 'version-get', coordinationKey, defaultValue });
+}
+
+/** Atomically bump a persistent monotonic version. Undefined means no binding. */
+export async function bumpVersionWithCoordinator(
+	coordinationKey: string,
+	defaultValue: number,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<VersionResult | undefined> {
+	return callCoordinator<VersionResult>(namespace, { kind: 'version-bump', coordinationKey, defaultValue });
+}
+
+/** Atomically raise a persistent monotonic value; retries with the same/lower value are no-ops. */
+export async function setMaxVersionWithCoordinator(
+	coordinationKey: string,
+	defaultValue: number,
+	value: number,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<VersionResult | undefined> {
+	return callCoordinator<VersionResult>(namespace, { kind: 'version-set-max', coordinationKey, defaultValue, value });
+}
+
+/**
+ * Atomically bump a subject version and persist its replay value in one
+ * transaction. Routing is derived from the subject `coordinationKey`, so a lost
+ * response cannot strand a separate idempotency claim ahead of the mutation.
+ */
+export async function bumpVersionIdempotentlyWithCoordinator(
+	coordinationKey: string,
+	idempotencyCoordinationKey: string,
+	requestHash: string,
+	defaultValue: number,
+	expiresAt: number,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<IdempotentVersionBumpResult | undefined> {
+	return callCoordinator<IdempotentVersionBumpResult>(namespace, {
+		kind: 'version-bump-idempotent',
+		coordinationKey,
+		idempotencyCoordinationKey,
+		requestHash,
+		defaultValue,
+		expiresAt,
+	});
+}
+
+/**
+ * Atomically reserve an idempotency key for one canonical request. The result is
+ * held in the same frozen security-state shard as the claim, so concurrent
+ * retries cannot both begin execution. Undefined means the binding is absent.
+ */
+export async function beginIdempotentRequestWithCoordinator(
+	coordinationKey: string,
+	requestHash: string,
+	expiresAt: number,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<IdempotencyBeginResult | undefined> {
+	return callCoordinator<IdempotencyBeginResult>(namespace, {
+		kind: 'idempotency-begin',
+		coordinationKey,
+		requestHash,
+		expiresAt,
+	});
+}
+
+/** Persist the terminal response for a previously reserved idempotency key. */
+export async function completeIdempotentRequestWithCoordinator(
+	coordinationKey: string,
+	requestHash: string,
+	result: string,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<IdempotencyCompleteResult | undefined> {
+	return callCoordinator<IdempotencyCompleteResult>(namespace, {
+		kind: 'idempotency-complete',
+		coordinationKey,
+		requestHash,
+		result,
+	});
 }
 
 /**
@@ -470,7 +819,8 @@ export async function resetQuotaCoordinatorShards(namespace?: DurableObjectNames
 	const shardResets: Promise<unknown>[] = [];
 	for (let i = 0; i < QUOTA_SHARD_COUNT; i++) {
 		const stub = namespace.getByName(`${SHARD_PREFIX}${i}`);
-		const rpcDispatch = (stub as unknown as { dispatch?: (request: QuotaCoordinatorRequest) => Promise<QuotaCoordinatorResponse> }).dispatch;
+		const rpcDispatch = (stub as unknown as { dispatch?: (request: QuotaCoordinatorRequest) => Promise<QuotaCoordinatorResponse> })
+			.dispatch;
 		shardResets.push(
 			(typeof rpcDispatch === 'function'
 				? stub.dispatch({ kind: 'reset' })
@@ -483,6 +833,28 @@ export async function resetQuotaCoordinatorShards(namespace?: DurableObjectNames
 		);
 	}
 	await Promise.all(shardResets);
+}
+
+/** Test/full-wipe helper for the frozen strong-state shards. Never use for a quota rotation. */
+async function resetSecurityStateShards(namespace?: DurableObjectNamespace<QuotaCoordinator>): Promise<void> {
+	if (!namespace) return;
+	const resets: Promise<unknown>[] = [];
+	for (let i = 0; i < SECURITY_STATE_SHARD_COUNT; i++) {
+		const stub = namespace.getByName(`${SECURITY_STATE_SHARD_PREFIX}${i}`);
+		const rpcDispatch = (stub as unknown as { dispatch?: (request: QuotaCoordinatorRequest) => Promise<QuotaCoordinatorResponse> })
+			.dispatch;
+		resets.push(
+			(typeof rpcDispatch === 'function'
+				? stub.dispatch({ kind: 'reset' })
+				: stub.fetch('https://quota.internal/', {
+						method: 'POST',
+						headers: { 'content-type': 'application/json' },
+						body: JSON.stringify({ kind: 'reset' }),
+					})
+			).catch(() => undefined),
+		);
+	}
+	await Promise.all(resets);
 }
 
 /**
@@ -500,13 +872,20 @@ export async function resetQuotaCoordinatorShards(namespace?: DurableObjectNames
 export async function resetQuotaCoordinatorState(namespace?: DurableObjectNamespace<QuotaCoordinator>): Promise<void> {
 	// Reset the singleton (global-daily + its per-IP counters) first, then sweep shards.
 	await callCoordinator(namespace, { kind: 'reset' });
-	await resetQuotaCoordinatorShards(namespace);
+	await Promise.all([resetQuotaCoordinatorShards(namespace), resetSecurityStateShards(namespace)]);
 }
 
 function normalizeRecord(record: unknown, now: number): CounterRecord | undefined {
 	if (!record || typeof record !== 'object') return undefined;
 	const candidate = record as Partial<CounterRecord>; // typeof record === 'object' checked above; fields validated below
-	if (typeof candidate.count !== 'number' || typeof candidate.expiresAt !== 'number') return undefined;
+	if (
+		typeof candidate.count !== 'number' ||
+		!Number.isSafeInteger(candidate.count) ||
+		candidate.count < 0 ||
+		typeof candidate.expiresAt !== 'number' ||
+		!Number.isSafeInteger(candidate.expiresAt)
+	)
+		return undefined;
 	if (candidate.expiresAt <= now) return undefined;
 	return { count: candidate.count, expiresAt: candidate.expiresAt };
 }
@@ -537,6 +916,14 @@ function toolDailyKey(principalId: string, toolName: string, now: number): strin
 	return `${KEY_PREFIX}tool:day:${toolName.trim().toLowerCase()}:${principalId}:${Math.floor(now / 86_400_000)}`;
 }
 
+function distinctDomainDailyCountKey(principalId: string, now: number): string {
+	return `${KEY_PREFIX}domain:day:count:${principalId}:${Math.floor(now / 86_400_000)}`;
+}
+
+function distinctDomainDailyMarkerKey(principalId: string, domainFingerprint: string, now: number): string {
+	return `${KEY_PREFIX}domain:day:mark:${principalId}:${Math.floor(now / 86_400_000)}:${domainFingerprint}`;
+}
+
 function globalDailyKey(now: number): string {
 	return `${KEY_PREFIX}global:day:${Math.floor(now / 86_400_000)}`;
 }
@@ -545,7 +932,53 @@ function sessionCreateKey(ip: string, windowMs: number, now: number): string {
 	return `${KEY_PREFIX}session:create:${ip}:${Math.floor(now / windowMs)}`;
 }
 
-const VALID_KINDS = new Set<string>(['scoped-rate', 'tool-daily', 'global-daily', 'session-create', 'evaluate', 'reset']);
+function oauthDcrSourceDailyKey(sourceFingerprint: string, now: number): string {
+	return `${KEY_PREFIX}oauth:dcr:source:day:${sourceFingerprint}:${Math.floor(now / 86_400_000)}`;
+}
+
+function oauthDcrGlobalHourlyKey(now: number): string {
+	return `${KEY_PREFIX}oauth:dcr:global:hr:${Math.floor(now / 3_600_000)}`;
+}
+
+function oauthDcrGlobalDailyKey(now: number): string {
+	return `${KEY_PREFIX}oauth:dcr:global:day:${Math.floor(now / 86_400_000)}`;
+}
+
+function coordinatedCounterKey(kind: 'budget' | 'claim' | 'marker', coordinationKey: string): string {
+	return `${KEY_PREFIX}strong:${kind}:${coordinationKey}`;
+}
+
+function coordinatedVersionKey(coordinationKey: string): string {
+	return `strong:version:${coordinationKey}`;
+}
+
+function coordinatedIdempotencyKey(coordinationKey: string): string {
+	return `${KEY_PREFIX}strong:idempotency:${coordinationKey}`;
+}
+
+/** Keep well below the Durable Object per-value ceiling and bound RPC memory. */
+const MAX_IDEMPOTENCY_RESULT_BYTES = 64 * 1024;
+
+const VALID_KINDS = new Set<string>([
+	'scoped-rate',
+	'tool-daily',
+	'distinct-domain-daily',
+	'global-daily',
+	'session-create',
+	'oauth-dcr-write',
+	'reserve-budget',
+	'claim-once',
+	'marker-set',
+	'marker-has',
+	'version-get',
+	'version-bump',
+	'version-set-max',
+	'version-bump-idempotent',
+	'idempotency-begin',
+	'idempotency-complete',
+	'evaluate',
+	'reset',
+]);
 
 /** Max sub-checks in one evaluate batch — bounds DO work; the request path only ever sends ≤4. */
 const MAX_EVALUATE_CHECKS = 8;
@@ -564,21 +997,73 @@ function validateQuotaFields(obj: Record<string, unknown>): string | undefined {
 	if ('toolName' in obj && (typeof obj.toolName !== 'string' || obj.toolName.length > 100)) {
 		return 'Invalid toolName: must be string <= 100 chars';
 	}
-	for (const numField of ['minuteLimit', 'hourLimit', 'limit', 'windowMs'] as const) {
+	if (
+		'domainFingerprint' in obj &&
+		(typeof obj.domainFingerprint !== 'string' ||
+			obj.domainFingerprint.length === 0 ||
+			obj.domainFingerprint.length > 128 ||
+			/[\u0000-\u001f\u007f]/.test(obj.domainFingerprint))
+	) {
+		return 'Invalid domainFingerprint: must be a non-empty printable string <= 128 chars';
+	}
+	if ('sourceFingerprint' in obj && (typeof obj.sourceFingerprint !== 'string' || !/^[a-f0-9]{64}$/.test(obj.sourceFingerprint))) {
+		return 'Invalid sourceFingerprint: must be a lowercase SHA-256 hex digest';
+	}
+	if (
+		'coordinationKey' in obj &&
+		(typeof obj.coordinationKey !== 'string' ||
+			obj.coordinationKey.length === 0 ||
+			obj.coordinationKey.length > 256 ||
+			/[\u0000-\u001f\u007f]/.test(obj.coordinationKey))
+	) {
+		return 'Invalid coordinationKey: must be a non-empty printable string <= 256 chars';
+	}
+	if (
+		'idempotencyCoordinationKey' in obj &&
+		(typeof obj.idempotencyCoordinationKey !== 'string' ||
+			obj.idempotencyCoordinationKey.length === 0 ||
+			obj.idempotencyCoordinationKey.length > 256 ||
+			/[\u0000-\u001f\u007f]/.test(obj.idempotencyCoordinationKey))
+	) {
+		return 'Invalid idempotencyCoordinationKey: must be a non-empty printable string <= 256 chars';
+	}
+	for (const numField of [
+		'minuteLimit',
+		'hourLimit',
+		'limit',
+		'windowMs',
+		'amount',
+		'defaultValue',
+		'initialUsed',
+		'value',
+		'sourceDailyLimit',
+		'globalHourlyLimit',
+		'globalDailyLimit',
+	] as const) {
 		if (numField in obj) {
 			const val = obj[numField];
-			if (typeof val !== 'number' || !Number.isFinite(val) || val < 0) {
-				return `Invalid ${numField}: must be a non-negative finite number`;
+			if (typeof val !== 'number' || !Number.isSafeInteger(val) || val < 0) {
+				return `Invalid ${numField}: must be a non-negative safe integer`;
 			}
 		}
+	}
+	if ('expiresAt' in obj && (typeof obj.expiresAt !== 'number' || !Number.isSafeInteger(obj.expiresAt) || obj.expiresAt <= 0)) {
+		return 'Invalid expiresAt: must be a positive safe integer';
+	}
+	if ('requestHash' in obj && (typeof obj.requestHash !== 'string' || !/^[a-f0-9]{64}$/.test(obj.requestHash))) {
+		return 'Invalid requestHash: must be a lowercase SHA-256 hex digest';
+	}
+	if (
+		'result' in obj &&
+		(typeof obj.result !== 'string' || new TextEncoder().encode(obj.result).byteLength > MAX_IDEMPOTENCY_RESULT_BYTES)
+	) {
+		return `Invalid result: must be a UTF-8 string <= ${MAX_IDEMPOTENCY_RESULT_BYTES} bytes`;
 	}
 	return undefined;
 }
 
 /** Validate a raw JSON payload against the QuotaCoordinatorRequest discriminated union */
-export function validateQuotaPayload(
-	raw: unknown,
-): { valid: true; payload: QuotaCoordinatorRequest } | { valid: false; error: string } {
+export function validateQuotaPayload(raw: unknown): { valid: true; payload: QuotaCoordinatorRequest } | { valid: false; error: string } {
 	if (!raw || typeof raw !== 'object' || !('kind' in raw)) {
 		return { valid: false, error: 'Invalid payload: missing kind' };
 	}
@@ -589,6 +1074,7 @@ export function validateQuotaPayload(
 	}
 
 	const obj = raw as Record<string, unknown>;
+	const requireFields = (...fields: string[]): string | undefined => fields.find((field) => !(field in obj));
 
 	if (kind === 'evaluate') {
 		if (typeof obj.shardKey !== 'string' || obj.shardKey.length === 0 || obj.shardKey.length > 100) {
@@ -607,14 +1093,72 @@ export function validateQuotaPayload(
 			if (checkObj.kind !== 'scoped-rate' && checkObj.kind !== 'tool-daily') {
 				return { valid: false, error: 'Invalid evaluate check: kind must be scoped-rate or tool-daily' };
 			}
+			const required = checkObj.kind === 'scoped-rate' ? ['scope', 'ip', 'minuteLimit', 'hourLimit'] : ['principalId', 'toolName', 'limit'];
+			const missing = required.find((field) => !(field in checkObj));
+			if (missing) return { valid: false, error: `Invalid evaluate check: missing ${missing}` };
 			const fieldErr = validateQuotaFields(checkObj);
 			if (fieldErr) return { valid: false, error: fieldErr };
+			if (checkObj.kind === 'scoped-rate' && checkObj.scope !== 'tools' && checkObj.scope !== 'control') {
+				return { valid: false, error: 'Invalid scope' };
+			}
 		}
 		return { valid: true, payload: raw as QuotaCoordinatorRequest };
 	}
 
+	const requiredByKind: Partial<Record<QuotaCoordinatorRequest['kind'], string[]>> = {
+		'scoped-rate': ['scope', 'ip', 'minuteLimit', 'hourLimit'],
+		'tool-daily': ['principalId', 'toolName', 'limit'],
+		'distinct-domain-daily': ['principalId', 'domainFingerprint', 'limit'],
+		'global-daily': ['limit'],
+		'session-create': ['ip', 'limit', 'windowMs'],
+		'oauth-dcr-write': ['sourceFingerprint', 'sourceDailyLimit', 'globalHourlyLimit', 'globalDailyLimit'],
+		'reserve-budget': ['coordinationKey', 'amount', 'limit', 'expiresAt'],
+		'claim-once': ['coordinationKey', 'expiresAt'],
+		'marker-set': ['coordinationKey', 'expiresAt'],
+		'marker-has': ['coordinationKey'],
+		'version-get': ['coordinationKey', 'defaultValue'],
+		'version-bump': ['coordinationKey', 'defaultValue'],
+		'version-set-max': ['coordinationKey', 'defaultValue', 'value'],
+		'version-bump-idempotent': ['coordinationKey', 'idempotencyCoordinationKey', 'requestHash', 'defaultValue', 'expiresAt'],
+		'idempotency-begin': ['coordinationKey', 'requestHash', 'expiresAt'],
+		'idempotency-complete': ['coordinationKey', 'requestHash', 'result'],
+	};
+	const missing = requireFields(...(requiredByKind[kind as QuotaCoordinatorRequest['kind']] ?? []));
+	if (missing) return { valid: false, error: `Invalid ${kind}: missing ${missing}` };
+
 	const fieldErr = validateQuotaFields(obj);
 	if (fieldErr) return { valid: false, error: fieldErr };
+	if (kind === 'scoped-rate' && obj.scope !== 'tools' && obj.scope !== 'control') {
+		return { valid: false, error: 'Invalid scope' };
+	}
+	if (kind === 'reserve-budget' && (obj.amount as number) < 1) {
+		return { valid: false, error: 'Invalid amount: must be at least 1' };
+	}
+	if (
+		kind === 'reserve-budget' &&
+		(obj.initialUsed as number | undefined) !== undefined &&
+		(obj.initialUsed as number) > (obj.limit as number)
+	) {
+		return { valid: false, error: 'Invalid initialUsed: cannot exceed limit' };
+	}
+	if (
+		(kind === 'version-get' || kind === 'version-bump' || kind === 'version-set-max' || kind === 'version-bump-idempotent') &&
+		(obj.defaultValue as number) < 1
+	) {
+		return { valid: false, error: 'Invalid defaultValue: must be at least 1' };
+	}
+	if (kind === 'version-set-max' && (obj.value as number) < 1) {
+		return { valid: false, error: 'Invalid value: must be at least 1' };
+	}
+	if (kind === 'session-create' && (obj.windowMs as number) < 1) {
+		return { valid: false, error: 'Invalid windowMs: must be at least 1' };
+	}
+	if (
+		kind === 'oauth-dcr-write' &&
+		((obj.sourceDailyLimit as number) < 1 || (obj.globalHourlyLimit as number) < 1 || (obj.globalDailyLimit as number) < 1)
+	) {
+		return { valid: false, error: 'Invalid OAuth DCR limits: all limits must be at least 1' };
+	}
 
 	return { valid: true, payload: raw as QuotaCoordinatorRequest };
 }
@@ -647,10 +1191,7 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		const minuteKey = scopedMinuteKey(check.scope, check.ip, now);
 		const hourKey = scopedHourKey(check.scope, check.ip, now);
 
-		const [minuteRecord, hourRecord] = await Promise.all([
-			this.getCounter(txn, minuteKey, now),
-			this.getCounter(txn, hourKey, now),
-		]);
+		const [minuteRecord, hourRecord] = await Promise.all([this.getCounter(txn, minuteKey, now), this.getCounter(txn, hourKey, now)]);
 		const minuteCount = minuteRecord?.count ?? 0;
 		const hourCount = hourRecord?.count ?? 0;
 
@@ -731,6 +1272,55 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		return result;
 	}
 
+	private async handleDistinctDomainDailyLimit(
+		payload: Extract<QuotaCoordinatorRequest, { kind: 'distinct-domain-daily' }>,
+	): Promise<ToolDailyRateLimitResult> {
+		const now = Date.now();
+		const expiresAt = dayWindowEnd(now);
+		const countKey = distinctDomainDailyCountKey(payload.principalId, now);
+		const markerKey = distinctDomainDailyMarkerKey(payload.principalId, payload.domainFingerprint, now);
+
+		const result = await this.ctx.storage.transaction(async (txn: DurableObjectTransaction) => {
+			const [marker, countRecord] = await Promise.all([this.getCounter(txn, markerKey, now), this.getCounter(txn, countKey, now)]);
+			const currentCount = countRecord?.count ?? 0;
+
+			// Re-scanning an already-seen domain is always allowed and never consumes
+			// another slot, including when the principal is already at its cap.
+			if (marker) {
+				return {
+					allowed: true,
+					remaining: Math.max(payload.limit - currentCount, 0),
+					limit: payload.limit,
+				};
+			}
+
+			if (currentCount >= payload.limit) {
+				return {
+					allowed: false,
+					retryAfterMs: Math.max(expiresAt - now, 0),
+					remaining: 0,
+					limit: payload.limit,
+				};
+			}
+
+			const nextCount = currentCount + 1;
+			// Count and marker commit in the same Durable Object transaction, so
+			// concurrent first-seen domains cannot lose updates or split the write.
+			await txn.put({
+				[countKey]: { count: nextCount, expiresAt },
+				[markerKey]: { count: 1, expiresAt },
+			});
+			return {
+				allowed: true,
+				remaining: Math.max(payload.limit - nextCount, 0),
+				limit: payload.limit,
+			};
+		});
+
+		await this.ensureCleanupAlarm();
+		return result;
+	}
+
 	/**
 	 * R8: run a batch of per-IP/per-principal sub-checks in ONE transaction,
 	 * short-circuiting on the FIRST denial. This replicates the serial single-
@@ -762,7 +1352,9 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		return { results };
 	}
 
-	private async handleGlobalDailyLimit(payload: Extract<QuotaCoordinatorRequest, { kind: 'global-daily' }>): Promise<GlobalRateLimitResult> {
+	private async handleGlobalDailyLimit(
+		payload: Extract<QuotaCoordinatorRequest, { kind: 'global-daily' }>,
+	): Promise<GlobalRateLimitResult> {
 		const now = Date.now();
 		const key = globalDailyKey(now);
 
@@ -793,7 +1385,9 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		return result;
 	}
 
-	private async handleSessionCreate(payload: Extract<QuotaCoordinatorRequest, { kind: 'session-create' }>): Promise<SessionCreateRateResult> {
+	private async handleSessionCreate(
+		payload: Extract<QuotaCoordinatorRequest, { kind: 'session-create' }>,
+	): Promise<SessionCreateRateResult> {
 		const now = Date.now();
 		const key = sessionCreateKey(payload.ip, payload.windowMs, now);
 		const windowEnd = (Math.floor(now / payload.windowMs) + 1) * payload.windowMs;
@@ -823,19 +1417,279 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		return result;
 	}
 
+	private async handleOAuthDcrWrite(payload: Extract<QuotaCoordinatorRequest, { kind: 'oauth-dcr-write' }>): Promise<OAuthDcrBudgetResult> {
+		const now = Date.now();
+		const sourceKey = oauthDcrSourceDailyKey(payload.sourceFingerprint, now);
+		const globalHourKey = oauthDcrGlobalHourlyKey(now);
+		const globalDayKey = oauthDcrGlobalDailyKey(now);
+
+		const result = await this.ctx.storage.transaction(async (txn: DurableObjectTransaction) => {
+			const [sourceRecord, globalHourRecord, globalDayRecord] = await Promise.all([
+				this.getCounter(txn, sourceKey, now),
+				this.getCounter(txn, globalHourKey, now),
+				this.getCounter(txn, globalDayKey, now),
+			]);
+			const sourceCount = sourceRecord?.count ?? 0;
+			const globalHourCount = globalHourRecord?.count ?? 0;
+			const globalDayCount = globalDayRecord?.count ?? 0;
+
+			// Reject without mutating any bucket. The all-or-none transaction prevents
+			// a denied global request from burning an unrelated source's allowance.
+			if (sourceCount >= payload.sourceDailyLimit || globalDayCount >= payload.globalDailyLimit) {
+				return { allowed: false, retryAfterMs: Math.max(dayWindowEnd(now) - now, 0) };
+			}
+			if (globalHourCount >= payload.globalHourlyLimit) {
+				return { allowed: false, retryAfterMs: Math.max(hourWindowEnd(now) - now, 0) };
+			}
+
+			await txn.put({
+				[sourceKey]: { count: sourceCount + 1, expiresAt: dayWindowEnd(now) },
+				[globalHourKey]: { count: globalHourCount + 1, expiresAt: hourWindowEnd(now) },
+				[globalDayKey]: { count: globalDayCount + 1, expiresAt: dayWindowEnd(now) },
+			});
+			return { allowed: true };
+		});
+
+		await this.ensureCleanupAlarm();
+		return result;
+	}
+
+	private async handleReserveBudget(
+		payload: Extract<QuotaCoordinatorRequest, { kind: 'reserve-budget' }>,
+	): Promise<BudgetReservationResult> {
+		const now = Date.now();
+		if (payload.expiresAt <= now) {
+			return { allowed: false, remaining: 0, limit: payload.limit, used: 0 };
+		}
+		const key = coordinatedCounterKey('budget', payload.coordinationKey);
+		const result = await this.ctx.storage.transaction(async (txn: DurableObjectTransaction) => {
+			const record = await this.getCounter(txn, key, now);
+			const used = record?.count ?? payload.initialUsed ?? 0;
+			if (payload.amount > payload.limit - used) {
+				return { allowed: false, remaining: Math.max(payload.limit - used, 0), limit: payload.limit, used };
+			}
+			const next = used + payload.amount;
+			await txn.put(key, { count: next, expiresAt: payload.expiresAt });
+			return { allowed: true, remaining: payload.limit - next, limit: payload.limit, used: next };
+		});
+		await this.ensureCleanupAlarm();
+		return result;
+	}
+
+	private async handleClaimOnce(payload: Extract<QuotaCoordinatorRequest, { kind: 'claim-once' }>): Promise<ClaimOnceResult> {
+		const now = Date.now();
+		if (payload.expiresAt <= now) return { claimed: false };
+		const key = coordinatedCounterKey('claim', payload.coordinationKey);
+		const result = await this.ctx.storage.transaction(async (txn: DurableObjectTransaction) => {
+			if (await this.getCounter(txn, key, now)) return { claimed: false };
+			await txn.put(key, { count: 1, expiresAt: payload.expiresAt });
+			return { claimed: true };
+		});
+		await this.ensureCleanupAlarm();
+		return result;
+	}
+
+	private async handleMarkerSet(payload: Extract<QuotaCoordinatorRequest, { kind: 'marker-set' }>): Promise<MarkerResult> {
+		const now = Date.now();
+		if (payload.expiresAt <= now) return { present: false };
+		await this.ctx.storage.put(coordinatedCounterKey('marker', payload.coordinationKey), {
+			count: 1,
+			expiresAt: payload.expiresAt,
+		});
+		await this.ensureCleanupAlarm();
+		return { present: true };
+	}
+
+	private async handleMarkerHas(payload: Extract<QuotaCoordinatorRequest, { kind: 'marker-has' }>): Promise<MarkerResult> {
+		const now = Date.now();
+		const key = coordinatedCounterKey('marker', payload.coordinationKey);
+		const present = await this.ctx.storage.transaction(async (txn: DurableObjectTransaction) =>
+			Boolean(await this.getCounter(txn, key, now)),
+		);
+		return { present };
+	}
+
+	private async handleVersionGet(payload: Extract<QuotaCoordinatorRequest, { kind: 'version-get' }>): Promise<VersionResult> {
+		const key = coordinatedVersionKey(payload.coordinationKey);
+		return this.ctx.storage.transaction(async (txn: DurableObjectTransaction) => {
+			const record = await txn.get<VersionRecord>(key);
+			const value = record?.value;
+			if (Number.isSafeInteger(value) && (value as number) >= 1) return { value: value as number };
+			await txn.put(key, { value: payload.defaultValue });
+			return { value: payload.defaultValue };
+		});
+	}
+
+	private async handleVersionBump(payload: Extract<QuotaCoordinatorRequest, { kind: 'version-bump' }>): Promise<VersionResult> {
+		const key = coordinatedVersionKey(payload.coordinationKey);
+		return this.ctx.storage.transaction(async (txn: DurableObjectTransaction) => {
+			const record = await txn.get<VersionRecord>(key);
+			const current =
+				Number.isSafeInteger(record?.value) && (record?.value as number) >= 1 ? (record?.value as number) : payload.defaultValue;
+			if (current >= Number.MAX_SAFE_INTEGER) throw new Error('Version counter exhausted');
+			const value = current + 1;
+			await txn.put(key, { value });
+			return { value };
+		});
+	}
+
+	private async handleVersionSetMax(payload: Extract<QuotaCoordinatorRequest, { kind: 'version-set-max' }>): Promise<VersionResult> {
+		const key = coordinatedVersionKey(payload.coordinationKey);
+		return this.ctx.storage.transaction(async (txn: DurableObjectTransaction) => {
+			const record = await txn.get<VersionRecord>(key);
+			const current =
+				Number.isSafeInteger(record?.value) && (record?.value as number) >= 1 ? (record?.value as number) : payload.defaultValue;
+			const value = Math.max(current, payload.value);
+			if (value !== current || record === undefined) await txn.put(key, { value });
+			return { value };
+		});
+	}
+
+	private async handleIdempotentVersionBump(
+		payload: Extract<QuotaCoordinatorRequest, { kind: 'version-bump-idempotent' }>,
+	): Promise<IdempotentVersionBumpResult> {
+		const now = Date.now();
+		if (payload.expiresAt <= now) return { state: 'conflict' };
+		const versionKey = coordinatedVersionKey(payload.coordinationKey);
+		// Namespace the replay key by subject as well as caller key. Multiple
+		// subjects intentionally share each of the 32 security shards; omitting the
+		// subject here would make the same raw Idempotency-Key collide across them.
+		const replayKey = coordinatedIdempotencyKey(`${payload.coordinationKey}:${payload.idempotencyCoordinationKey}`);
+		const result = await this.ctx.storage.transaction(async (txn: DurableObjectTransaction): Promise<IdempotentVersionBumpResult> => {
+			const rawReplay = await txn.get<IdempotencyRecord>(replayKey);
+			const replay = this.normalizeIdempotencyRecord(rawReplay, now);
+			if (replay) {
+				if (replay.requestHash !== payload.requestHash || replay.status !== 'complete') return { state: 'conflict' };
+				try {
+					const parsed = JSON.parse(replay.result as string) as { value?: unknown };
+					if (Number.isSafeInteger(parsed.value) && (parsed.value as number) >= 1) {
+						return { state: 'complete', value: parsed.value as number };
+					}
+				} catch {
+					// Corrupt replay state cannot safely authorize another mutation.
+				}
+				return { state: 'conflict' };
+			}
+			if (rawReplay !== undefined) await txn.delete(replayKey);
+
+			const version = await txn.get<VersionRecord>(versionKey);
+			const current =
+				Number.isSafeInteger(version?.value) && (version?.value as number) >= 1 ? (version?.value as number) : payload.defaultValue;
+			if (current >= Number.MAX_SAFE_INTEGER) throw new Error('Version counter exhausted');
+			const value = current + 1;
+			await txn.put(versionKey, { value });
+			await txn.put(replayKey, {
+				count: 1,
+				expiresAt: payload.expiresAt,
+				requestHash: payload.requestHash,
+				status: 'complete',
+				result: JSON.stringify({ value }),
+			} satisfies IdempotencyRecord);
+			return { state: 'complete', value };
+		});
+		await this.ensureCleanupAlarm();
+		return result;
+	}
+
+	private normalizeIdempotencyRecord(record: unknown, now: number): IdempotencyRecord | undefined {
+		const counter = normalizeRecord(record, now);
+		if (!counter || !record || typeof record !== 'object') return undefined;
+		const candidate = record as Partial<IdempotencyRecord>;
+		if (typeof candidate.requestHash !== 'string' || !/^[a-f0-9]{64}$/.test(candidate.requestHash)) return undefined;
+		if (candidate.status !== 'in_progress' && candidate.status !== 'complete') return undefined;
+		if (candidate.status === 'complete' && typeof candidate.result !== 'string') return undefined;
+		if (typeof candidate.result === 'string' && new TextEncoder().encode(candidate.result).byteLength > MAX_IDEMPOTENCY_RESULT_BYTES) {
+			return undefined;
+		}
+		return {
+			...counter,
+			requestHash: candidate.requestHash,
+			status: candidate.status,
+			...(candidate.result !== undefined ? { result: candidate.result } : {}),
+		};
+	}
+
+	private async handleIdempotencyBegin(
+		payload: Extract<QuotaCoordinatorRequest, { kind: 'idempotency-begin' }>,
+	): Promise<IdempotencyBeginResult> {
+		const now = Date.now();
+		if (payload.expiresAt <= now) return { state: 'conflict' };
+		const key = coordinatedIdempotencyKey(payload.coordinationKey);
+		const result = await this.ctx.storage.transaction(async (txn: DurableObjectTransaction): Promise<IdempotencyBeginResult> => {
+			const raw = await txn.get<IdempotencyRecord>(key);
+			const existing = this.normalizeIdempotencyRecord(raw, now);
+			if (!existing) {
+				if (raw !== undefined) await txn.delete(key);
+				await txn.put(key, {
+					count: 1,
+					expiresAt: payload.expiresAt,
+					requestHash: payload.requestHash,
+					status: 'in_progress',
+				} satisfies IdempotencyRecord);
+				return { state: 'started' };
+			}
+			if (existing.requestHash !== payload.requestHash) return { state: 'conflict' };
+			if (existing.status === 'complete') return { state: 'complete', result: existing.result as string };
+			return { state: 'in_progress' };
+		});
+		await this.ensureCleanupAlarm();
+		return result;
+	}
+
+	private async handleIdempotencyComplete(
+		payload: Extract<QuotaCoordinatorRequest, { kind: 'idempotency-complete' }>,
+	): Promise<IdempotencyCompleteResult> {
+		const now = Date.now();
+		const key = coordinatedIdempotencyKey(payload.coordinationKey);
+		return this.ctx.storage.transaction(async (txn: DurableObjectTransaction): Promise<IdempotencyCompleteResult> => {
+			const existing = this.normalizeIdempotencyRecord(await txn.get<IdempotencyRecord>(key), now);
+			if (!existing || existing.requestHash !== payload.requestHash) return { completed: false };
+			if (existing.status === 'complete') return { completed: existing.result === payload.result };
+			await txn.put(key, { ...existing, status: 'complete', result: payload.result } satisfies IdempotencyRecord);
+			return { completed: true };
+		});
+	}
+
 	/** Type-safe RPC entrypoint used by Worker callers. */
 	async dispatch(payload: QuotaCoordinatorRequest): Promise<QuotaCoordinatorResponse> {
-		switch (payload.kind) {
+		const validation = validateQuotaPayload(payload);
+		if (!validation.valid) throw new TypeError(validation.error);
+		const validPayload = validation.payload;
+		switch (validPayload.kind) {
 			case 'scoped-rate':
-				return this.handleScopedRateLimit(payload);
+				return this.handleScopedRateLimit(validPayload);
 			case 'tool-daily':
-				return this.handleToolDailyRateLimit(payload);
+				return this.handleToolDailyRateLimit(validPayload);
+			case 'distinct-domain-daily':
+				return this.handleDistinctDomainDailyLimit(validPayload);
 			case 'global-daily':
-				return this.handleGlobalDailyLimit(payload);
+				return this.handleGlobalDailyLimit(validPayload);
 			case 'session-create':
-				return this.handleSessionCreate(payload);
+				return this.handleSessionCreate(validPayload);
+			case 'oauth-dcr-write':
+				return this.handleOAuthDcrWrite(validPayload);
+			case 'reserve-budget':
+				return this.handleReserveBudget(validPayload);
+			case 'claim-once':
+				return this.handleClaimOnce(validPayload);
+			case 'marker-set':
+				return this.handleMarkerSet(validPayload);
+			case 'marker-has':
+				return this.handleMarkerHas(validPayload);
+			case 'version-get':
+				return this.handleVersionGet(validPayload);
+			case 'version-bump':
+				return this.handleVersionBump(validPayload);
+			case 'version-set-max':
+				return this.handleVersionSetMax(validPayload);
+			case 'version-bump-idempotent':
+				return this.handleIdempotentVersionBump(validPayload);
+			case 'idempotency-begin':
+				return this.handleIdempotencyBegin(validPayload);
+			case 'idempotency-complete':
+				return this.handleIdempotencyComplete(validPayload);
 			case 'evaluate':
-				return this.handleEvaluate(payload);
+				return this.handleEvaluate(validPayload);
 			case 'reset':
 				await this.ctx.storage.deleteAll();
 				await this.ctx.storage.deleteAlarm();
@@ -848,7 +1702,14 @@ export class QuotaCoordinator extends DurableObject<Env> {
 			return new Response('Method Not Allowed', { status: 405 });
 		}
 
-		const raw: unknown = await request.json();
+		const body = await readBoundedText(request, COORDINATOR_REQUEST_MAX_BODY_BYTES);
+		if (!body.ok) return new Response('Payload Too Large', { status: 413 });
+		let raw: unknown;
+		try {
+			raw = JSON.parse(body.text);
+		} catch {
+			return new Response('Invalid JSON', { status: 400 });
+		}
 		const validation = validateQuotaPayload(raw);
 		if (!validation.valid) {
 			return new Response(validation.error, { status: 400 });

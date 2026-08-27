@@ -8,7 +8,7 @@
  * Coverage:
  *   (a) proxy present + 200 response → { ok: true, data: ... }
  *   (b) proxy absent (undefined)     → { ok: false, unprovisioned: true, tool: <path> }
- *   (c) keyHash threads into request body when provided
+ *   (c) discriminated identity threads into the request body when provided
  *   (d) Authorization: Bearer header set when authToken provided
  *   (e) No Authorization header when authToken omitted
  */
@@ -18,6 +18,8 @@ import { querySignins } from '../../src/tools/m365/query-signins';
 import { queryUal } from '../../src/tools/m365/query-ual';
 import { getCaPolicies } from '../../src/tools/m365/get-ca-policies';
 import { assessCoverage } from '../../src/tools/m365/assess-coverage';
+
+const API_IDENTITY = { kind: 'api_key' as const, credentialHash: 'a'.repeat(64) };
 
 /** Build a fake m365Proxy that returns a fixed JSON body with status 200. */
 function mockProxy(responseBody: unknown): { fetch: typeof fetch } {
@@ -91,11 +93,11 @@ describe('querySignins', () => {
 		await expect(querySignins({ ms_tenant_id: 'x' })).resolves.toBeDefined();
 	});
 
-	it('threads keyHash into request body when provided', async () => {
+	it('threads the API-key identity into the request body when provided', async () => {
 		const proxy = capturingProxy();
-		await querySignins({ ms_tenant_id: 'tenant-abc' }, proxy, { keyHash: 'hash-xyz' });
+		await querySignins({ ms_tenant_id: 'tenant-abc' }, proxy, { identity: API_IDENTITY });
 		const { body } = proxy.getLastRequest();
-		expect((body as Record<string, unknown>).keyHash).toBe('hash-xyz');
+		expect((body as Record<string, unknown>).identity).toEqual(API_IDENTITY);
 	});
 
 	it('sets Authorization: Bearer header when authToken is provided', async () => {
@@ -107,7 +109,7 @@ describe('querySignins', () => {
 
 	it('does not set Authorization header when authToken is omitted', async () => {
 		const proxy = capturingProxy();
-		await querySignins({ ms_tenant_id: 'tenant-abc' }, proxy, { keyHash: 'hash-only' });
+		await querySignins({ ms_tenant_id: 'tenant-abc' }, proxy, { identity: API_IDENTITY });
 		const { headers } = proxy.getLastRequest();
 		expect(headers['Authorization']).toBeUndefined();
 	});
@@ -140,7 +142,7 @@ describe('queryUal', () => {
 				since_hours: 6,
 			},
 			proxy,
-			{ authToken: 'ual-token', keyHash: 'hash-ual' },
+			{ authToken: 'ual-token', identity: API_IDENTITY },
 		);
 
 		expect(result).toEqual({ ok: false, error: 'query_ual_deprecated' });
@@ -173,11 +175,11 @@ describe('getCaPolicies', () => {
 		}
 	});
 
-	it('threads keyHash into request body when provided', async () => {
+	it('threads the identity into the request body when provided', async () => {
 		const proxy = capturingProxy();
-		await getCaPolicies({ ms_tenant_id: 'tenant-abc' }, proxy, { keyHash: 'hash-ca' });
+		await getCaPolicies({ ms_tenant_id: 'tenant-abc' }, proxy, { identity: API_IDENTITY });
 		const { body } = proxy.getLastRequest();
-		expect((body as Record<string, unknown>).keyHash).toBe('hash-ca');
+		expect((body as Record<string, unknown>).identity).toEqual(API_IDENTITY);
 	});
 
 	it('sets Authorization: Bearer header when authToken is provided', async () => {
@@ -228,11 +230,11 @@ describe('assessCoverage', () => {
 		}
 	});
 
-	it('threads keyHash into request body when provided', async () => {
+	it('threads the identity into the request body when provided', async () => {
 		const proxy = capturingProxy();
-		await assessCoverage({ ms_tenant_id: 'tenant-abc' }, proxy, { keyHash: 'hash-cov' });
+		await assessCoverage({ ms_tenant_id: 'tenant-abc' }, proxy, { identity: API_IDENTITY });
 		const { body } = proxy.getLastRequest();
-		expect((body as Record<string, unknown>).keyHash).toBe('hash-cov');
+		expect((body as Record<string, unknown>).identity).toEqual(API_IDENTITY);
 	});
 
 	it('sets Authorization: Bearer header when authToken is provided', async () => {

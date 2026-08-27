@@ -23,6 +23,7 @@ export const PaidOAuthEntitlementResponseSchema = z.object({
 	subject: SafeOAuthIdentifierSchema,
 	emailHash: EmailHashSchema.optional(),
 	tier: CustomerOAuthTierSchema,
+	entitlementGeneration: z.number().int().positive().default(1),
 	stripeCustomerId: StripeIdSchema.optional(),
 	stripeSubscriptionId: StripeIdSchema.optional(),
 	subscriptionStatus: ActiveStripeSubscriptionStatusSchema,
@@ -101,6 +102,7 @@ export const CodeRecordSchema = z
 		scope: z.string().optional(),
 		subject: SafeOAuthIdentifierSchema.optional(),
 		tier: CustomerOAuthTierSchema.optional(),
+		entitlementGeneration: z.number().int().positive().default(1),
 		emailHash: EmailHashSchema.optional(),
 		stripeCustomerId: StripeIdSchema.optional(),
 		stripeSubscriptionId: StripeIdSchema.optional(),
@@ -117,4 +119,5 @@ export const CodeRecordSchema = z
 			});
 		}
 	});
+export type CodeRecordInput = z.input<typeof CodeRecordSchema>;
 export type CodeRecord = z.infer<typeof CodeRecordSchema>;

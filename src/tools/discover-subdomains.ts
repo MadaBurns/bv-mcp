@@ -36,7 +36,7 @@ import type { CtCoverage, CtSourceAttempt, CtSourceOutcome } from '../lib/ct-cov
 import { buildCtCoverage, formatCoverageLine } from '../lib/ct-coverage';
 import { logEvent } from '../lib/log';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { disposeUnreadResponseBody, readBoundedOrNull } from '../lib/response-body';
+import { disposeUnreadResponseBody, readBoundedOrNull, readJsonResponseCapped } from '../lib/response-body';
 
 /**
  * Synchronous handler budget for `discover_subdomains` (ms).
@@ -1463,7 +1463,8 @@ async function queryCertstreamEndpoint<T>(
 			await disposeUnreadResponseBody(response);
 			return { data: null, outcome: httpFailureOutcome(response.status) };
 		}
-		return { data: (await response.json()) as T, outcome: 'ok' };
+		const data = await readJsonResponseCapped<T>(response, CT_SOURCE_MAX_BODY_BYTES);
+		return data === null ? { data: null, outcome: 'error' } : { data, outcome: 'ok' };
 	} catch {
 		// An abort is the inner CT timeout or the caller's deadline; either way the
 		// source did not answer in time, which is a materially different remediation

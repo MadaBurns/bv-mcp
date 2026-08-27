@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { M365ProxyResult } from './types';
+import type { M365ProxyOptions } from './proxy';
 
 /**
  * @deprecated Retained as a compatibility tombstone. The tool has no supported
@@ -9,7 +10,7 @@ import type { M365ProxyResult } from './types';
 export function queryUal(
 	_args: { ms_tenant_id: string; operation?: string; user_principal_name?: string; since_hours?: number },
 	_proxy?: { fetch: typeof fetch },
-	_opts?: { authToken?: string; keyHash?: string },
+	_opts?: M365ProxyOptions,
 ): Promise<M365ProxyResult> {
 	return Promise.resolve({ ok: false, error: 'query_ual_deprecated' });
 }

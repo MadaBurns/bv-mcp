@@ -1,12 +1,70 @@
 // SPDX-License-Identifier: BUSL-1.1
-import type { ClientRecord, CodeRecord } from '../schemas/oauth';
+import type { ClientRecord, CodeRecord, CodeRecordInput } from '../schemas/oauth';
 import { ClientRecordSchema, CodeRecordSchema } from '../schemas/oauth';
 import { OAUTH_CLIENT_TTL_SECONDS, OAUTH_CODE_TTL_SECONDS, OAUTH_JWT_TTL_SECONDS, OAUTH_KV_PREFIX } from '../lib/config';
 import { sealKv, openKv, isSealed } from '../lib/kv-envelope';
+import {
+	bumpVersionIdempotentlyWithCoordinator,
+	bumpVersionWithCoordinator,
+	claimOnceWithCoordinator,
+	getVersionWithCoordinator,
+	hasMarkerWithCoordinator,
+	setMarkerWithCoordinator,
+	setMaxVersionWithCoordinator,
+	type QuotaCoordinator,
+} from '../lib/quota-coordinator';
 
 const clientKey = (id: string) => `${OAUTH_KV_PREFIX}client:${id}`;
 const codeKey = (code: string) => `${OAUTH_KV_PREFIX}code:${code}`;
 const revokedKey = (jti: string) => `${OAUTH_KV_PREFIX}revoked:${jti}`;
+
+function isExactRecord(value: unknown, keys: readonly string[]): value is Record<string, unknown> {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+	const actualKeys = Object.keys(value);
+	return actualKeys.length === keys.length && keys.every((key) => actualKeys.includes(key));
+}
+
+function isClaimOnceResult(value: unknown): value is { claimed: boolean } {
+	return isExactRecord(value, ['claimed']) && typeof value.claimed === 'boolean';
+}
+
+function isMarkerResult(value: unknown): value is { present: boolean } {
+	return isExactRecord(value, ['present']) && typeof value.present === 'boolean';
+}
+
+function isVersionResult(value: unknown): value is { value: number } {
+	if (!isExactRecord(value, ['value'])) return false;
+	const candidate = value.value;
+	return typeof candidate === 'number' && Number.isSafeInteger(candidate) && candidate >= 1;
+}
+
+function isIdempotentVersionBumpResult(
+	value: unknown,
+): value is { state: 'complete'; value: number } | { state: 'conflict' } {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+	const record = value as Record<string, unknown>;
+	const state = record.state;
+	if (state === 'conflict') return isExactRecord(value, ['state']);
+	return state === 'complete' && isExactRecord(value, ['state', 'value']) && isVersionResult({ value: record.value });
+}
+
+export class StrongStateUnavailableError extends Error {
+	constructor(operation: string) {
+		super(`Strong authorization state unavailable during ${operation}`);
+		this.name = 'StrongStateUnavailableError';
+	}
+}
+
+async function coordinationKey(
+	kind: 'code' | 'jti' | 'subject' | 'subject-entitlement-generation',
+	value: string,
+): Promise<string> {
+	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value)));
+	const hex = Array.from(digest)
+		.map((byte) => byte.toString(16).padStart(2, '0'))
+		.join('');
+	return `oauth:${kind}:${hex}`;
+}
 
 /** Generate a URL-safe opaque authorization code (~32 bytes of entropy, base64url). */
 export function createAuthorizationCode(): string {
@@ -49,26 +107,31 @@ export async function getClient(kv: KVNamespace, id: string, kvEnvelopeKey?: Uin
 }
 
 /** Store a one-time authorization code with a 60s TTL (KV minimum). */
-export async function putCode(kv: KVNamespace, code: string, rec: CodeRecord, kvEnvelopeKey?: Uint8Array): Promise<void> {
+export async function putCode(kv: KVNamespace, code: string, rec: CodeRecordInput, kvEnvelopeKey?: Uint8Array): Promise<void> {
 	const plaintext = JSON.stringify(rec);
 	const value = kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext;
 	await kv.put(codeKey(code), value, { expirationTtl: OAUTH_CODE_TTL_SECONDS });
 }
 
 /**
- * Single-use authorization code retrieval. Reads, deletes, then parses — a
- * parse failure still invalidates the code since delete already ran. KV is
- * eventually consistent, so two concurrent requests with the same code could
- * both read before either delete propagates; v1 accepts this because PKCE
- * verification (Phase 7) provides a second binding factor.
+ * Single-use authorization code retrieval. The KV payload is validated first,
+ * then a strongly consistent Durable Object claim is acquired before the code
+ * is returned. A malformed payload is deleted, and concurrent exchanges can
+ * never both claim the same code even though the KV mirror is eventually
+ * consistent.
  */
-export async function consumeCode(kv: KVNamespace, code: string, kvEnvelopeKey?: Uint8Array): Promise<CodeRecord | null> {
+export async function consumeCode(
+	kv: KVNamespace,
+	code: string,
+	kvEnvelopeKey?: Uint8Array,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<CodeRecord | null> {
 	const raw = await kv.get(codeKey(code));
 	if (!raw) return null;
-	await kv.delete(codeKey(code));
+	let record: CodeRecord;
 	try {
 		// Migration read-fallback: try decrypt first if key present and value looks sealed;
-		// fall back to legacy plaintext parse. Delete already ran — we parse best-effort.
+		// fall back to legacy plaintext parse. A malformed record is invalidated below.
 		let jsonStr: string;
 		if (kvEnvelopeKey && isSealed(raw)) {
 			try {
@@ -80,55 +143,192 @@ export async function consumeCode(kv: KVNamespace, code: string, kvEnvelopeKey?:
 		} else {
 			jsonStr = raw;
 		}
-		return CodeRecordSchema.parse(JSON.parse(jsonStr));
+		record = CodeRecordSchema.parse(JSON.parse(jsonStr));
 	} catch {
+		await kv.delete(codeKey(code));
 		return null;
 	}
+
+	let claim;
+	try {
+		const expiresAt = record.issued_at * 1000 + OAUTH_CODE_TTL_SECONDS * 1000;
+		claim = await claimOnceWithCoordinator(await coordinationKey('code', code), expiresAt, quotaCoordinator);
+	} catch {
+		throw new StrongStateUnavailableError('authorization-code consumption');
+	}
+	if (!isClaimOnceResult(claim)) throw new StrongStateUnavailableError('authorization-code consumption');
+	if (!claim.claimed) return null;
+	await kv.delete(codeKey(code));
+	return record;
 }
 
 /** Add a JWT id to the revocation denylist. TTL is clamped to >= 60s (KV minimum). */
-export async function revokeJti(kv: KVNamespace, jti: string, ttlSeconds: number): Promise<void> {
-	await kv.put(revokedKey(jti), '1', { expirationTtl: Math.max(60, ttlSeconds) });
+export async function revokeJti(
+	kv: KVNamespace,
+	jti: string,
+	ttlSeconds: number,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<void> {
+	const ttl = Math.max(60, ttlSeconds);
+	let marker;
+	try {
+		marker = await setMarkerWithCoordinator(await coordinationKey('jti', jti), Date.now() + ttl * 1000, quotaCoordinator);
+	} catch {
+		throw new StrongStateUnavailableError('token revocation');
+	}
+	if (!isMarkerResult(marker) || !marker.present) throw new StrongStateUnavailableError('token revocation');
+	try {
+		await kv.put(revokedKey(jti), '1', { expirationTtl: ttl });
+	} catch {
+		// Strong marker is authoritative; KV is a migration/visibility mirror.
+	}
 }
 
 /** Return true if the given JWT id is on the revocation denylist. */
-export async function isRevoked(kv: KVNamespace, jti: string): Promise<boolean> {
-	return (await kv.get(revokedKey(jti))) !== null;
+export async function isRevoked(
+	kv: KVNamespace,
+	jti: string,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<boolean> {
+	let marker;
+	const key = await coordinationKey('jti', jti);
+	try {
+		marker = await hasMarkerWithCoordinator(key, quotaCoordinator);
+	} catch {
+		throw new StrongStateUnavailableError('token revocation check');
+	}
+	if (!isMarkerResult(marker)) throw new StrongStateUnavailableError('token revocation check');
+	if (marker.present) return true;
+
+	// Migration fallback for deny entries created before strong state shipped.
+	let legacyRevoked: boolean;
+	try {
+		legacyRevoked = (await kv.get(revokedKey(jti))) !== null;
+	} catch {
+		throw new StrongStateUnavailableError('token revocation check');
+	}
+	if (!legacyRevoked) return false;
+	const migrated = await setMarkerWithCoordinator(key, Date.now() + OAUTH_JWT_TTL_SECONDS * 1000, quotaCoordinator);
+	if (!isMarkerResult(migrated) || !migrated.present) throw new StrongStateUnavailableError('token revocation migration');
+	return true;
 }
 
 // ---------------------------------------------------------------------------
 // Token-version helpers (FIND-13)
 //
-// A per-subject counter stored in KV at `oauth:tokenver:{sub}`. Minted JWTs
-// carry a `ver` claim equal to the current counter. On verification, a token
-// whose `ver` is less than the current stored version is rejected — this lets
+// A per-subject counter stored authoritatively in a strongly consistent
+// Durable Object, with `oauth:tokenver:{sub}` retained as a migration seed and
+// observability mirror. Minted JWTs carry a `ver` claim equal to the current
+// counter. On verification, a token whose `ver` is less than the current
+// stored version is rejected — this lets
 // bv-web invalidate all in-flight JWTs for a subject (e.g. on plan downgrade)
-// by bumping the counter, without waiting 90 days for JWTs to expire.
+// by bumping the counter, without waiting for JWTs to expire.
 //
 // Default-1 semantics: when the key is absent the version is treated as 1.
 // Existing tokens (no `ver` claim) also default to 1. A first revoke writes 2,
 // which rejects all ver=1 (and no-ver) tokens while new mints get ver=2.
 //
-// TTL: OAUTH_JWT_TTL_SECONDS + 1 day buffer. If the KV key were ever evicted
-// while live JWTs still exist, the check would default back to 1 and silently
-// re-accept revoked tokens. The TTL is refreshed on every bump.
+// The strong version record is persistent. Its KV migration/visibility mirror
+// uses OAUTH_JWT_TTL_SECONDS + a 1 day buffer; expiry or eventual consistency in
+// that mirror cannot roll the authoritative version backwards.
 // ---------------------------------------------------------------------------
 
-/** KV key for the token-version counter for a subject. */
+/** KV migration/mirror key for the token-version counter for a subject. */
 const tokenVersionKey = (sub: string) => `${OAUTH_KV_PREFIX}tokenver:${sub}`;
 
-/** Minimum TTL we keep the counter alive for. 90-day JWT lifetime + 1 day buffer. */
+/** Minimum TTL we keep the counter alive for. Access-token lifetime + 1 day buffer. */
 const TOKEN_VERSION_TTL_SECONDS = OAUTH_JWT_TTL_SECONDS + 86_400;
 
+/** KV migration/visibility mirror for the minimum valid entitlement generation. */
+const entitlementGenerationKey = (sub: string) => `${OAUTH_KV_PREFIX}entitlement-generation:${sub}`;
+
 /**
- * Read the current token-version for a subject. Returns 1 when the key is
- * absent or unparseable (matches the default `ver` value for old tokens).
+ * Read the minimum entitlement generation accepted for a subject. Generation 1
+ * is the compatibility floor for credentials minted before generation claims
+ * shipped; the strongly consistent coordinator is authoritative.
  */
-export async function getTokenVersion(kv: KVNamespace, sub: string): Promise<number> {
+export async function getMinimumEntitlementGeneration(
+	kv: KVNamespace,
+	sub: string,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<number> {
+	const raw = await kv.get(entitlementGenerationKey(sub));
+	const parsed = Number(raw);
+	const legacyValue = Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
+	let result;
+	try {
+		result = await getVersionWithCoordinator(
+			await coordinationKey('subject-entitlement-generation', sub),
+			legacyValue,
+			quotaCoordinator,
+		);
+	} catch {
+		throw new StrongStateUnavailableError('entitlement-generation read');
+	}
+	if (!isVersionResult(result)) throw new StrongStateUnavailableError('entitlement-generation read');
+	return result.value;
+}
+
+/**
+ * Monotonically raise a subject's minimum valid entitlement generation. This is
+ * naturally idempotent: delayed and repeated outbox deliveries of generation N
+ * can never revoke a credential authorized later under generation N or greater.
+ */
+export async function raiseMinimumEntitlementGeneration(
+	kv: KVNamespace,
+	sub: string,
+	minGeneration: number,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<number> {
+	if (!Number.isSafeInteger(minGeneration) || minGeneration < 1) {
+		throw new StrongStateUnavailableError('entitlement-generation update');
+	}
+	const raw = await kv.get(entitlementGenerationKey(sub));
+	const parsed = Number(raw);
+	const legacyValue = Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
+	let result;
+	try {
+		result = await setMaxVersionWithCoordinator(
+			await coordinationKey('subject-entitlement-generation', sub),
+			legacyValue,
+			minGeneration,
+			quotaCoordinator,
+		);
+	} catch {
+		throw new StrongStateUnavailableError('entitlement-generation update');
+	}
+	if (!isVersionResult(result)) throw new StrongStateUnavailableError('entitlement-generation update');
+	try {
+		await kv.put(entitlementGenerationKey(sub), String(result.value), {
+			expirationTtl: TOKEN_VERSION_TTL_SECONDS,
+		});
+	} catch {
+		// Strong state is authoritative; KV is only a migration/visibility mirror.
+	}
+	return result.value;
+}
+
+/**
+ * Read the current strongly consistent token-version for a subject. A valid
+ * legacy KV value seeds the record on first access; otherwise it starts at 1,
+ * matching the default `ver` value for old tokens.
+ */
+export async function getTokenVersion(
+	kv: KVNamespace,
+	sub: string,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<number> {
 	const raw = await kv.get(tokenVersionKey(sub));
-	if (!raw) return 1;
 	const n = Number(raw);
-	return Number.isFinite(n) && n >= 1 ? n : 1;
+	const legacyValue = Number.isSafeInteger(n) && n >= 1 ? n : 1;
+	let result;
+	try {
+		result = await getVersionWithCoordinator(await coordinationKey('subject', sub), legacyValue, quotaCoordinator);
+	} catch {
+		throw new StrongStateUnavailableError('token-version read');
+	}
+	if (!isVersionResult(result)) throw new StrongStateUnavailableError('token-version read');
+	return result.value;
 }
 
 /**
@@ -136,9 +336,65 @@ export async function getTokenVersion(kv: KVNamespace, sub: string): Promise<num
  * After this call, all JWTs carrying the previous version (or no `ver` claim
  * at all, which defaults to 1) will be rejected by `resolveTier`.
  */
-export async function bumpTokenVersion(kv: KVNamespace, sub: string): Promise<number> {
-	const current = await getTokenVersion(kv, sub);
-	const next = current + 1;
-	await kv.put(tokenVersionKey(sub), String(next), { expirationTtl: TOKEN_VERSION_TTL_SECONDS });
-	return next;
+export async function bumpTokenVersion(
+	kv: KVNamespace,
+	sub: string,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<number> {
+	const raw = await kv.get(tokenVersionKey(sub));
+	const parsed = Number(raw);
+	const legacyValue = Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
+	let result;
+	try {
+		result = await bumpVersionWithCoordinator(await coordinationKey('subject', sub), legacyValue, quotaCoordinator);
+	} catch {
+		throw new StrongStateUnavailableError('token-version bump');
+	}
+	if (!isVersionResult(result)) throw new StrongStateUnavailableError('token-version bump');
+	try {
+		await kv.put(tokenVersionKey(sub), String(result.value), { expirationTtl: TOKEN_VERSION_TTL_SECONDS });
+	} catch {
+		// Strong version is authoritative; KV is a migration/visibility mirror.
+	}
+	return result.value;
+}
+
+/**
+ * Atomically bump a subject version and persist the response associated with a
+ * caller idempotency key in the same subject-shard transaction. A transport
+ * failure can therefore be retried without either double-bumping or stranding a
+ * pre-mutation claim.
+ */
+export async function bumpTokenVersionIdempotently(
+	kv: KVNamespace,
+	sub: string,
+	idempotencyCoordinationKey: string,
+	requestHash: string,
+	expiresAt: number,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<{ state: 'complete'; value: number } | { state: 'conflict' }> {
+	const raw = await kv.get(tokenVersionKey(sub));
+	const parsed = Number(raw);
+	const legacyValue = Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
+	let result;
+	try {
+		result = await bumpVersionIdempotentlyWithCoordinator(
+			await coordinationKey('subject', sub),
+			idempotencyCoordinationKey,
+			requestHash,
+			legacyValue,
+			expiresAt,
+			quotaCoordinator,
+		);
+	} catch {
+		throw new StrongStateUnavailableError('idempotent token-version bump');
+	}
+	if (!isIdempotentVersionBumpResult(result)) throw new StrongStateUnavailableError('idempotent token-version bump');
+	if (result.state === 'conflict') return result;
+	try {
+		await kv.put(tokenVersionKey(sub), String(result.value), { expirationTtl: TOKEN_VERSION_TTL_SECONDS });
+	} catch {
+		// Strong version + replay record committed atomically; KV is only a mirror.
+	}
+	return result;
 }

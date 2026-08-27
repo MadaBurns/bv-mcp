@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { auditSessionCreated } from '../src/lib/audit';
-import { logEvent, sanitizeHeadersForLog, sanitizeLogValue } from '../src/lib/log';
+import { logEvent, sanitizeHeadersForLog, sanitizeLogValue, sanitizeRequestUrlForLog } from '../src/lib/log';
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -37,6 +37,30 @@ describe('log redaction', () => {
 				ok: 'visible',
 			},
 		});
+	});
+
+	it('redacts webhook and OAuth callback URLs from nested details', () => {
+		const sanitized = sanitizeLogValue({
+			webhook_url: 'https://hooks.example/path?token=secret',
+			redirect_uri: 'https://client.example/callback?code=secret',
+			callbackUrl: 'https://client.example/callback?state=secret',
+		});
+
+		expect(sanitized).toEqual({
+			webhook_url: '[redacted]',
+			redirect_uri: '[redacted]',
+			callbackUrl: '[redacted]',
+		});
+	});
+
+	it('keeps only the path when logging a request URL', () => {
+		const sanitized = sanitizeRequestUrlForLog(
+			'https://mcp.example/mcp/messages?sessionId=session-secret&api_key=key-secret#fragment-secret',
+		);
+
+		expect(sanitized).toBe('/mcp/messages');
+		expect(sanitized).not.toContain('session-secret');
+		expect(sanitized).not.toContain('key-secret');
 	});
 
 	it('redacts PII-capable tool fields from nested log details', () => {

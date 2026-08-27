@@ -5,6 +5,7 @@ import { signJwt, newJti } from '../../src/oauth/jwt';
 import { revokeJti } from '../../src/oauth/storage';
 import { OAUTH_JWT_TTL_SECONDS } from '../../src/lib/config';
 import { clearKvPrefix } from '../helpers/kv';
+import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
 
 // Phase 8: /mcp must accept a valid OAuth 2.1 JWT issued by /oauth/token in the
 // `Authorization: Bearer` header and resolve it as owner tier without re-running
@@ -58,6 +59,7 @@ function mcpInitRequest(token: string): Request<unknown, IncomingRequestCfProper
 
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
+	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
 afterEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
@@ -82,7 +84,7 @@ describe('POST /mcp Bearer JWT acceptance', () => {
 
 	it('JWT with revoked jti → 401', async () => {
 		const { token, jti } = await mintOwnerJwt();
-		await revokeJti(env.SESSION_STORE, jti, 60);
+		await revokeJti(env.SESSION_STORE, jti, 60, env.QUOTA_COORDINATOR);
 		const ctx = createExecutionContext();
 		const res = await worker.fetch(mcpInitRequest(token), jwtEnv, ctx);
 		await waitOnExecutionContext(ctx);

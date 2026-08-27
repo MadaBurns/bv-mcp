@@ -17,8 +17,20 @@ import { TRIAL_DEFAULT_EXPIRES_DAYS, TRIAL_DEFAULT_MAX_USES, TRIAL_DEFAULT_TIER 
 import { TrialKeyRecordSchema } from '../schemas/auth';
 import type { TrialKeyRecord } from '../schemas/auth';
 import { sealKv, openKv, isSealed } from './kv-envelope';
+import {
+	hasMarkerWithCoordinator,
+	reserveBudgetWithCoordinator,
+	setMarkerWithCoordinator,
+	type QuotaCoordinator,
+} from './quota-coordinator';
 
 const TRIAL_KEY_TIERS: ReadonlySet<McpApiKeyTier> = new Set(['free', 'agent', 'developer', 'enterprise', 'partner']);
+/** Longer than the maximum trial lifetime; token hashes are never reused. */
+const TRIAL_REVOCATION_TTL_MS = 366 * 24 * 60 * 60 * 1000;
+
+function trialRevocationMarkerKey(tokenHash: string): string {
+	return `trial-revoked:${tokenHash}`;
+}
 
 // ---------------------------------------------------------------------------
 // Hashing (mirrors tier-auth.ts pattern)
@@ -118,7 +130,7 @@ export interface TrialResolution {
 
 export interface TrialExpired {
 	authenticated: false;
-	reason: 'expired' | 'exhausted';
+	reason: 'expired' | 'exhausted' | 'revoked' | 'unavailable';
 }
 
 /**
@@ -131,6 +143,7 @@ export async function resolveTrialKey(
 	kv: KVNamespace,
 	tokenHash: string,
 	kvEnvelopeKey?: Uint8Array,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<TrialResolution | TrialExpired | null> {
 	let raw: string | null;
 	try {
@@ -167,13 +180,45 @@ export async function resolveTrialKey(
 		return { authenticated: false, reason: 'expired' };
 	}
 
-	// Check usage limit
-	if (record.currentUses >= record.maxUses) {
-		return { authenticated: false, reason: 'exhausted' };
+	// KV deletion is eventually consistent. A strong deny marker prevents a
+	// stale replica from authorizing and then rewriting a revoked trial record.
+	try {
+		const revocation = await hasMarkerWithCoordinator(trialRevocationMarkerKey(tokenHash), quotaCoordinator);
+		if (!revocation || typeof revocation.present !== 'boolean') return { authenticated: false, reason: 'unavailable' };
+		if (revocation.present) return { authenticated: false, reason: 'revoked' };
+	} catch {
+		return { authenticated: false, reason: 'unavailable' };
 	}
 
-	// Increment usage — read-modify-write (acceptable for trial-volume traffic)
-	record.currentUses += 1;
+	// Trial usage is an entitlement boundary: atomically reserve one lifetime use
+	// in the coordinator, seeding from the legacy KV counter on first access.
+	let reservation;
+	try {
+		reservation = await reserveBudgetWithCoordinator(
+			`trial:${tokenHash}`,
+			1,
+			record.maxUses,
+			record.expiresAt,
+			quotaCoordinator,
+			record.currentUses,
+		);
+	} catch {
+		return { authenticated: false, reason: 'unavailable' };
+	}
+	if (
+		!reservation ||
+		typeof reservation.allowed !== 'boolean' ||
+		reservation.limit !== record.maxUses ||
+		!Number.isSafeInteger(reservation.used) ||
+		reservation.used < 0 ||
+		reservation.used > record.maxUses
+	) {
+		return { authenticated: false, reason: 'unavailable' };
+	}
+	if (!reservation.allowed) return { authenticated: false, reason: 'exhausted' };
+	if (reservation.used < 1) return { authenticated: false, reason: 'unavailable' };
+
+	record.currentUses = reservation.used;
 	const remainingTtlMs = record.expiresAt - Date.now();
 	const remainingTtlSeconds = Math.max(Math.ceil(remainingTtlMs / 1000) + 3600, 60);
 	try {
@@ -183,7 +228,7 @@ export async function resolveTrialKey(
 			expirationTtl: remainingTtlSeconds,
 		});
 	} catch {
-		// Non-fatal: usage counter may lag slightly on KV failure
+		// Non-authoritative mirror only; the atomic reservation has committed.
 	}
 
 	return {
@@ -225,12 +270,29 @@ export async function getTrialKeyStatus(kv: KVNamespace, hash: string, kvEnvelop
 	}
 }
 
-/** Revoke a trial key by deleting it from KV. Returns true if the key existed. */
-export async function revokeTrialKey(kv: KVNamespace, hash: string): Promise<boolean> {
+/**
+ * Revoke a trial key. Strong state is committed before the eventually
+ * consistent KV mirror is deleted, so stale replicas cannot resurrect it.
+ */
+export async function revokeTrialKey(
+	kv: KVNamespace,
+	hash: string,
+	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<boolean> {
+	const marker = await setMarkerWithCoordinator(
+		trialRevocationMarkerKey(hash),
+		Date.now() + TRIAL_REVOCATION_TTL_MS,
+		quotaCoordinator,
+	);
+	if (marker?.present !== true) {
+		throw new Error('Trial revocation state is unavailable');
+	}
+	// KV reads are eventually consistent, so absence here cannot cancel the
+	// revocation intent. Commit the authoritative deny marker first: another
+	// replica may still hold (and otherwise authorize) the trial record.
 	const existing = await kv.get(`trial:${hash}`);
-	if (!existing) return false;
 	await kv.delete(`trial:${hash}`);
-	return true;
+	return existing !== null;
 }
 
 /** List trial keys (KV list with `trial:` prefix). Returns hashes and records. */

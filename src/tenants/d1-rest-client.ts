@@ -23,9 +23,11 @@
  */
 
 import type { TenantDbBackend, TenantDbExecFn, TenantDbHandle, TenantPreparedStatement } from './tenant-resolver';
+import { readJsonResponseCapped } from '../lib/response-body';
 
 /** Cloudflare D1 REST `/query` API base. */
 const CF_API_BASE = 'https://api.cloudflare.com/client/v4';
+const D1_REST_MAX_BODY_BYTES = 8 * 1024 * 1024;
 
 /** Shape of the D1 REST `/query` success body (only the fields we read). */
 interface D1RestQueryResponse {
@@ -93,13 +95,18 @@ export class D1ByIdClient implements TenantDbHandle {
 		const runner: TenantDbExecFn = async (sql, params) => {
 			const res = await fetchImpl(url, {
 				method: 'POST',
+				// A Cloudflare API credential must never follow a redirect to another
+				// origin. The endpoint is fixed and successful requests do not redirect.
+				redirect: 'error',
 				headers: { authorization: `Bearer ${apiToken}`, 'content-type': 'application/json' },
 				body: JSON.stringify({ sql, params }),
 				signal: AbortSignal.timeout(10_000),
 			});
 			let body: D1RestQueryResponse;
 			try {
-				body = (await res.json()) as D1RestQueryResponse;
+				const parsed = await readJsonResponseCapped<D1RestQueryResponse>(res, D1_REST_MAX_BODY_BYTES);
+				if (parsed === null) throw new Error('invalid_response');
+				body = parsed;
 			} catch {
 				throw new Error(`tenant_db_rest_failed:${res.status}`);
 			}

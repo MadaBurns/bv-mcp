@@ -19,7 +19,7 @@
  */
 
 import { JSONParser } from '@streamparser/json-whatwg';
-import { disposeUnreadResponseBody } from '../../lib/response-body';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../../lib/response-body';
 import { safeFetch } from '../../lib/safe-fetch';
 import { validateDomain } from '../../lib/sanitize';
 
@@ -39,6 +39,9 @@ const SATURATION_THRESHOLD = 100;
  * Hard safety cap on the raw stream bytes to prevent runaway resource usage.
  */
 const MAX_STREAM_BYTES = 25 * 1024 * 1024;
+
+/** Maximum service-binding `/sans` payload retained before direct-source fallback. */
+const MAX_CERTSTREAM_BODY_BYTES = 5 * 1024 * 1024;
 
 /**
  * Default retries on transient failures (error / rate_limited / timeout).
@@ -192,19 +195,18 @@ async function attemptCertstreamSans(
 		clearTimeout(timeoutId);
 		return null;
 	}
-	clearTimeout(timeoutId);
 
 	if (!response.ok) {
 		await disposeUnreadResponseBody(response);
+		clearTimeout(timeoutId);
 		return null;
 	}
 
-	let data: CertstreamSansResponse;
-	try {
-		data = (await response.json()) as CertstreamSansResponse;
-	} catch {
-		return null;
-	}
+	const parsed = await readJsonResponseCapped<CertstreamSansResponse>(response, MAX_CERTSTREAM_BODY_BYTES).finally(() =>
+		clearTimeout(timeoutId),
+	);
+	if (parsed === null) return null;
+	const data = parsed;
 	if (data.error || !Array.isArray(data.names)) return null;
 
 	// Apply the same sibling filter as the direct crt.sh path: drop the seed,
@@ -261,13 +263,23 @@ async function attemptCorrelation(
 		if (err instanceof Error && err.name === 'AbortError') return emptyResult(seedLower, 'timeout');
 		return emptyResult(seedLower, 'error');
 	}
-	clearTimeout(timeoutId);
 
-	if (response.status === 429) return emptyResult(seedLower, 'rate_limited');
-	if (!response.ok) return emptyResult(seedLower, 'error');
+	if (response.status === 429) {
+		await disposeUnreadResponseBody(response);
+		clearTimeout(timeoutId);
+		return emptyResult(seedLower, 'rate_limited');
+	}
+	if (!response.ok) {
+		await disposeUnreadResponseBody(response);
+		clearTimeout(timeoutId);
+		return emptyResult(seedLower, 'error');
+	}
 
 	const body = response.body;
-	if (!body) return emptyResult(seedLower, 'ok');
+	if (!body) {
+		clearTimeout(timeoutId);
+		return emptyResult(seedLower, 'ok');
+	}
 
 	const siblings = new Set<string>();
 	const certIds: number[] = [];
@@ -326,6 +338,8 @@ async function attemptCorrelation(
 			}
 		}
 	} catch (err) {
+		clearTimeout(timeoutId);
+		if (controller.signal.aborted || callerSignal?.aborted) return emptyResult(seedLower, 'timeout');
 		if (err instanceof Error && err.message === 'Stream size limit exceeded') {
 			return {
 				seedDomain: seedLower,
@@ -337,6 +351,7 @@ async function attemptCorrelation(
 		return emptyResult(seedLower, 'error');
 	}
 
+	clearTimeout(timeoutId);
 	return {
 		seedDomain: seedLower,
 		coOwnedDomains: Array.from(siblings).sort(),

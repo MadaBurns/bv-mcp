@@ -14,6 +14,7 @@ describe('oauth discovery endpoints', () => {
 		expect(meta.code_challenge_methods_supported).toEqual(['S256']);
 		expect(meta.response_types_supported).toContain('code');
 		expect(meta.grant_types_supported).toContain('authorization_code');
+		expect(meta.authorization_response_iss_parameter_supported).toBe(true);
 	});
 
 	it('GET /.well-known/oauth-protected-resource returns RFC 9728 metadata', async () => {

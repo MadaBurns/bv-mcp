@@ -38,6 +38,10 @@ import {
 	TenantDomainsLookupResponseSchema,
 	type TenantDomainsLookupResponse,
 } from '../schemas/cross-worker-tenant-domains';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
+
+const TIER0_MAX_BODY_BYTES = 64 * 1024;
+const TIER0_TIMEOUT_MS = 5_000;
 
 /**
  * Status of the Tier 0 lookup attempt, mirroring the per-tier status convention
@@ -49,8 +53,8 @@ import {
  *                  proceed without Tier 0 data; do NOT abort discovery.
  *   - `partial`  — reserved for multi-record fan-out modes; not used by the
  *                  single-seed lookup, kept on the union for future symmetry.
- *   - `timeout`  — reserved (no explicit timeout is wired here; the binding
- *                  inherits the caller's request budget).
+ *   - `timeout`  — reserved for callers that later choose to distinguish the
+ *                  bounded service-binding timeout from other degradation.
  *   - `skipped`  — reserved (caller decided to skip Tier 0 entirely).
  */
 export type Tier0LookupStatus = 'ok' | 'degraded' | 'partial' | 'timeout' | 'skipped';
@@ -111,25 +115,34 @@ export async function tier0EnterpriseLookup(
 	domain: string,
 	binding: Fetcher,
 	env: Tier0EnterpriseEnv,
+	timeoutMs = TIER0_TIMEOUT_MS,
 ): Promise<Tier0Result> {
 	if (!env.BV_WEB_INTERNAL_KEY) {
 		return { ...DEGRADED_EMPTY };
 	}
 
 	let parsed: TenantDomainsLookupResponse;
+	const controller = new AbortController();
+	const timeoutId = setTimeout(
+		() => controller.abort(new DOMException('Tier 0 enterprise lookup timed out', 'TimeoutError')),
+		timeoutMs,
+	);
 	try {
 		const url = `${BV_ENTERPRISE_HOST}/internal/tenant-domains/${encodeURIComponent(domain)}`;
 		const response = await binding.fetch(url, {
 			headers: {
 				'Authorization': `Bearer ${env.BV_WEB_INTERNAL_KEY}`,
 			},
+			signal: controller.signal,
+			redirect: 'manual',
 		});
 
 		if (response.status < 200 || response.status >= 300) {
+			await disposeUnreadResponseBody(response);
 			return { ...DEGRADED_EMPTY };
 		}
 
-		const body: unknown = await response.json();
+		const body = await readJsonResponseCapped<unknown>(response, TIER0_MAX_BODY_BYTES);
 		const result = TenantDomainsLookupResponseSchema.safeParse(body);
 		if (!result.success) {
 			return { ...DEGRADED_EMPTY };
@@ -139,6 +152,8 @@ export async function tier0EnterpriseLookup(
 		// Binding threw, JSON parse failed, network error, etc.
 		// Fail-soft: discovery must never abort on a Tier 0 hiccup.
 		return { ...DEGRADED_EMPTY };
+	} finally {
+		clearTimeout(timeoutId);
 	}
 
 	// Opt-out: privacy boundary. Surface the flag, drop any observations.

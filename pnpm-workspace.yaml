@@ -1,2 +1,12 @@
 packages:
   - 'packages/*'
+
+# Hold new releases for seven days so registry abuse reports and removals can land.
+minimumReleaseAge: 10080
+# Reject a package version whose provenance is weaker than an earlier release.
+trustPolicy: no-downgrade
+# tsup 8.5.1 pins this known pre-provenance chokidar release; keep the exception exact.
+trustPolicyExclude:
+  - 'chokidar@4.0.3'
+# Transitive dependencies must resolve from a registry/workspace, not arbitrary URLs.
+blockExoticSubdeps: true

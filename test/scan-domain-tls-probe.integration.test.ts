@@ -22,6 +22,7 @@ import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse
 import { IN_MEMORY_CACHE } from '../src/lib/cache';
 
 const { restore } = setupFetchMock();
+const TLS_PROBE_AUTH_TOKEN = 'tls-probe-scan-integration-key-32-bytes';
 
 beforeEach(() => IN_MEMORY_CACHE.clear());
 afterEach(() => restore());
@@ -105,6 +106,7 @@ describe('scan_domain TLS-probe scoring coherence', () => {
 		mockCleanScan();
 		const weak = await sslScoreFor('tlsweak.com', {
 			tlsProbeBinding: probeBinding({ reachable: true, minVersion: 'TLS1.1', maxVersion: 'TLS1.2' }),
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
 			// Probe is a paid-tier enrichment — must supply an eligible authTier for the gate to pass.
 			authTier: 'enterprise',
 		});
@@ -118,11 +120,14 @@ describe('scan_domain TLS-probe scoring coherence', () => {
 		mockCleanScan();
 		const baseline = await sslScoreFor('tlsbase2.com');
 		mockCleanScan();
+		const modernProbe = probeBinding({ reachable: true, minVersion: 'TLS1.2', maxVersion: 'TLS1.3' });
 		const modern = await sslScoreFor('tlsmodern.com', {
-			tlsProbeBinding: probeBinding({ reachable: true, minVersion: 'TLS1.2', maxVersion: 'TLS1.3' }),
+			tlsProbeBinding: modernProbe,
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
 			// Probe is a paid-tier enrichment — must supply an eligible authTier for the gate to pass.
 			authTier: 'enterprise',
 		});
+		expect(modernProbe.fetch).toHaveBeenCalledOnce();
 		expect(modern.categoryScore).toBe(baseline.categoryScore);
 		expect(modern.sslCheck!.findings.some((f) => f.metadata?.tlsProbeEnriched === true)).toBe(false);
 	});
@@ -131,11 +136,14 @@ describe('scan_domain TLS-probe scoring coherence', () => {
 		mockCleanScan();
 		const baseline = await sslScoreFor('tlsbase3.com');
 		mockCleanScan();
+		const downProbe = probeBinding({ reachable: false, error: 'connect timeout' });
 		const down = await sslScoreFor('tlsdown.com', {
-			tlsProbeBinding: probeBinding({ reachable: false, error: 'connect timeout' }),
+			tlsProbeBinding: downProbe,
+			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
 			// Probe is a paid-tier enrichment — must supply an eligible authTier for the gate to pass.
 			authTier: 'enterprise',
 		});
+		expect(downProbe.fetch).toHaveBeenCalledOnce();
 		expect(down.categoryScore).toBe(baseline.categoryScore);
 		expect(down.sslCheck!.findings.some((f) => f.metadata?.tlsProbeEnriched === true)).toBe(false);
 	});

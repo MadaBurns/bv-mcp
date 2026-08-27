@@ -14,7 +14,13 @@ import { isPublicInternetRequest } from '../../src/internal';
 // ---------------------------------------------------------------------------
 // Helper: send a request through the worker and return the response.
 // ---------------------------------------------------------------------------
-type TestEnv = typeof env & { BV_WEB_INTERNAL_KEY?: string; REQUIRE_INTERNAL_AUTH?: string };
+type TestEnv = typeof env & {
+	BV_MCP_OAUTH_MINT_KEY?: string;
+	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	BV_MCP_BRAND_WEBHOOK_KEY?: string;
+	OAUTH_SIGNING_SECRET?: string;
+	REQUIRE_INTERNAL_AUTH?: string;
+};
 
 async function send(req: Request, customEnv: TestEnv): Promise<Response> {
 	const ctx = createExecutionContext();
@@ -31,7 +37,7 @@ describe('FIND-16: /internal/* network guard — public internet requests return
 		// cf-connecting-ip is set by Cloudflare on every public-internet request.
 		// Its presence triggers the network guard in internalRoutes middleware,
 		// returning 404 to make the /internal/* path invisible.
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+		const req = new Request('http://example.com/internal/tools/call', {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
@@ -44,7 +50,7 @@ describe('FIND-16: /internal/* network guard — public internet requests return
 	});
 
 	it('returns 404 for GET /internal/trial-keys when cf-connecting-ip is present', async () => {
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/trial-keys', {
+		const req = new Request('http://example.com/internal/trial-keys', {
 			method: 'GET',
 			headers: { 'cf-connecting-ip': '203.0.113.5' },
 		});
@@ -53,7 +59,7 @@ describe('FIND-16: /internal/* network guard — public internet requests return
 	});
 
 	it('returns 404 for POST /internal/oauth/grants when cf-connecting-ip is present', async () => {
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/grants', {
+		const req = new Request('http://example.com/internal/oauth/grants', {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
@@ -68,14 +74,14 @@ describe('FIND-16: /internal/* network guard — public internet requests return
 
 // ---------------------------------------------------------------------------
 // FIND-16 — fail-closed gate: credential-minting endpoints return 503 when
-// BV_WEB_INTERNAL_KEY is not configured (defense against mis-deployment).
+// the route-specific mint/revoke capability is not configured.
 // ---------------------------------------------------------------------------
-describe('FIND-16: /internal/oauth/grants fail-closed when BV_WEB_INTERNAL_KEY unset', () => {
-	it('returns 503 for POST /internal/oauth/grants with no BV_WEB_INTERNAL_KEY', async () => {
+describe('FIND-16: OAuth administration routes fail closed when their capability is unset', () => {
+	it('returns 503 for POST /internal/oauth/grants with no BV_MCP_OAUTH_MINT_KEY', async () => {
 		// No cf-connecting-ip → clears the network guard (simulates service-binding call).
-		// No BV_WEB_INTERNAL_KEY → the strict credential-minting gate fails closed with 503.
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: undefined } as TestEnv;
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/grants', {
+		// No grant key → the strict credential-minting gate fails closed with 503.
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: undefined } as TestEnv;
+		const req = new Request('http://example.com/internal/oauth/grants', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({}),
@@ -84,9 +90,114 @@ describe('FIND-16: /internal/oauth/grants fail-closed when BV_WEB_INTERNAL_KEY u
 		expect(res.status).toBe(503);
 	});
 
-	it('returns 503 for POST /internal/oauth/revoke-subject with no BV_WEB_INTERNAL_KEY', async () => {
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: undefined } as TestEnv;
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/revoke-subject', {
+	it('a revoke-only capability cannot call the authorization-code mint route', async () => {
+		const revokeKey = 'revoke-only-capability-test-key-32-bytes';
+		const customEnv = {
+			...env,
+			BV_MCP_OAUTH_MINT_KEY: undefined,
+			BV_MCP_OAUTH_REVOKE_KEY: revokeKey,
+		} as TestEnv;
+		const req = new Request('http://example.com/internal/oauth/grants', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${revokeKey}` },
+			body: JSON.stringify({}),
+		});
+		expect((await send(req, customEnv)).status).toBe(503);
+	});
+
+	it('a mint-only capability cannot call the subject-revocation route', async () => {
+		const mintKey = 'mint-only-capability-test-key-32-bytes-min';
+		const customEnv = {
+			...env,
+			BV_MCP_OAUTH_MINT_KEY: mintKey,
+			BV_MCP_OAUTH_REVOKE_KEY: undefined,
+		} as TestEnv;
+		const req = new Request('http://example.com/internal/oauth/revoke-subject', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${mintKey}` },
+			body: JSON.stringify({ sub: 'victim' }),
+		});
+		expect((await send(req, customEnv)).status).toBe(503);
+	});
+
+	it('fails closed if mint and revoke capabilities are configured to the same value', async () => {
+		const shared = 'oauth-shared-capability-test-key-32-bytes';
+		const customEnv = {
+			...env,
+			BV_MCP_OAUTH_MINT_KEY: shared,
+			BV_MCP_OAUTH_REVOKE_KEY: shared,
+		} as TestEnv;
+		const grant = new Request('http://example.com/internal/oauth/grants', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
+			body: JSON.stringify({}),
+		});
+		const revoke = new Request('http://example.com/internal/oauth/revoke-subject', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
+			body: JSON.stringify({ sub: 'victim' }),
+		});
+		expect((await send(grant, customEnv)).status).toBe(503);
+		expect((await send(revoke, customEnv)).status).toBe(503);
+	});
+
+	it('fails closed if either OAuth capability aliases the Brand Drift sender key', async () => {
+		const shared = 'brand-webhook-oauth-alias-key-32-bytes-minimum';
+		const distinct = 'distinct-oauth-capability-key-32-bytes-minimum';
+		const grant = new Request('http://example.com/internal/oauth/grants', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
+			body: JSON.stringify({}),
+		});
+		const revoke = new Request('http://example.com/internal/oauth/revoke-subject', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
+			body: JSON.stringify({ sub: 'victim' }),
+		});
+
+		expect(
+			(
+				await send(grant, {
+					...env,
+					BV_MCP_OAUTH_MINT_KEY: shared,
+					BV_MCP_OAUTH_REVOKE_KEY: distinct,
+					BV_MCP_BRAND_WEBHOOK_KEY: shared,
+				} as TestEnv)
+			).status,
+		).toBe(503);
+		expect(
+			(
+				await send(revoke, {
+					...env,
+					BV_MCP_OAUTH_MINT_KEY: distinct,
+					BV_MCP_OAUTH_REVOKE_KEY: shared,
+					BV_MCP_BRAND_WEBHOOK_KEY: shared,
+				} as TestEnv)
+			).status,
+		).toBe(503);
+	});
+
+	it('fails closed if the revoke capability aliases the OAuth signing secret', async () => {
+		const shared = 'oauth-revoke-signing-alias-key-32-bytes-minimum';
+		const customEnv = {
+			...env,
+			BV_MCP_OAUTH_REVOKE_KEY: shared,
+			OAUTH_SIGNING_SECRET: shared,
+		} as TestEnv;
+		const req = new Request('http://example.com/internal/oauth/revoke-subject', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
+			body: JSON.stringify({ sub: 'victim' }),
+		});
+		const response = await send(req, customEnv);
+		expect(response.status).toBe(503);
+		expect(await response.json()).toEqual({ error: 'Service authentication configuration invalid' });
+		expect(response.headers.get('cache-control')).toBe('no-store');
+	});
+
+	it('returns 503 for POST /internal/oauth/revoke-subject with no BV_MCP_OAUTH_REVOKE_KEY', async () => {
+		const customEnv = { ...env, BV_MCP_OAUTH_REVOKE_KEY: undefined } as TestEnv;
+		const req = new Request('http://example.com/internal/oauth/revoke-subject', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ sub: 'user-123' }),
@@ -95,11 +206,11 @@ describe('FIND-16: /internal/oauth/grants fail-closed when BV_WEB_INTERNAL_KEY u
 		expect(res.status).toBe(503);
 	});
 
-	it('returns 503 for POST /internal/trial-keys with no BV_WEB_INTERNAL_KEY', async () => {
+	it('returns 503 for POST /internal/trial-keys with no BV_MCP_OAUTH_MINT_KEY', async () => {
 		// /internal/trial-keys also mints credentials — trialKeysAuthGate applies the same
 		// fail-closed pattern as /oauth/grants.
-		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: undefined } as TestEnv;
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/trial-keys', {
+		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: undefined } as TestEnv;
+		const req = new Request('http://example.com/internal/trial-keys', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ label: 'test-key' }),

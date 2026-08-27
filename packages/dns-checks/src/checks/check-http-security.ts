@@ -59,7 +59,7 @@ async function followRedirects(
 		try {
 			// Release the body of the response we're about to abandon (e.g. a GET
 			// fallback that itself redirects) so workerd doesn't cancel a stalled stream.
-			void response.body?.cancel();
+			void response.body?.cancel().catch(() => undefined);
 			response = await fetchFn(nextUrl, {
 				method: 'HEAD',
 				redirect: 'manual',
@@ -169,7 +169,7 @@ export async function checkHTTPSecurity(
 				// GET fallback returns a real body we never read (followRedirects only
 				// cancels it when it redirects); release it so workerd doesn't cancel a
 				// stalled stream.
-				void followed.body?.cancel();
+				void followed.body?.cancel().catch(() => undefined);
 			} else {
 				inconclusive = 'error';
 				unmeasuredZero = true;

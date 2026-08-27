@@ -29,6 +29,9 @@ import type { AdaptiveWeightsResponse } from './adaptive-weights';
 import { PROFILE_WEIGHTS } from '@blackveil/dns-checks/scoring';
 import * as schema from './db/schema';
 import { profileStats, providerStats, scoreHistogram, providerCohortSummary, trendSnapshots } from './db/schema';
+import { readBoundedText } from './request-body';
+
+const PROFILE_INGEST_MAX_BODY_BYTES = 256 * 1024;
 
 // ─── DDL schema strings (idempotent CREATE TABLE IF NOT EXISTS) ──────────
 // Kept here for schema initialisation on first DO activation.
@@ -189,7 +192,9 @@ export class ProfileAccumulator extends DurableObject<Env> {
 	private async handleIngest(request: Request): Promise<Response> {
 		let raw: unknown;
 		try {
-			raw = await request.json();
+			const body = await readBoundedText(request, PROFILE_INGEST_MAX_BODY_BYTES);
+			if (!body.ok) return new Response('Payload Too Large', { status: 413 });
+			raw = JSON.parse(body.text);
 		} catch {
 			return new Response('Invalid JSON', { status: 400 });
 		}

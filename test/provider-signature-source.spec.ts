@@ -4,6 +4,7 @@ import {
 	buildResult,
 	fetchProviderPayload,
 	isValidSignaturePayload,
+	MAX_PROVIDER_SIGNATURE_BODY_BYTES,
 	normalizeAllowedHosts,
 	validateRuntimeSourceUrl,
 } from '../src/lib/provider-signature-source';
@@ -72,15 +73,36 @@ describe('provider-signature-source', () => {
 	it('fetches and verifies a pinned runtime payload', async () => {
 		const payload = JSON.stringify({ version: 'runtime-test', inbound: [], outbound: [] });
 		const expectedSha256 = await sha256Hex(payload);
-		globalThis.fetch = vi.fn().mockResolvedValue({
-			ok: true,
-			text: async () => payload,
-		} as unknown as Response);
+		globalThis.fetch = vi.fn().mockResolvedValue(new Response(payload, { headers: { 'content-type': 'application/json' } }));
 
 		await expect(fetchProviderPayload('https://example.com/signatures.json', 1000, 0, expectedSha256)).resolves.toEqual({
 			version: 'runtime-test',
 			inbound: [],
 			outbound: [],
 		});
+	});
+
+	it('rejects an oversized streamed payload even when Content-Length understates the decoded body', async () => {
+		const cancelled = vi.fn();
+		let pull = 0;
+		const body = new ReadableStream<Uint8Array>({
+			pull(controller) {
+				pull += 1;
+				if (pull === 1) controller.enqueue(new Uint8Array(MAX_PROVIDER_SIGNATURE_BODY_BYTES));
+				else if (pull === 2) controller.enqueue(new Uint8Array([0x7b]));
+				else controller.enqueue(new Uint8Array([0x7d]));
+			},
+			cancel: cancelled,
+		});
+		globalThis.fetch = vi.fn().mockResolvedValue(
+			new Response(body, {
+				headers: { 'content-encoding': 'gzip', 'content-length': '32' },
+			}),
+		);
+
+		await expect(fetchProviderPayload('https://example.com/signatures.json', 1000, 0, '00'.repeat(32))).rejects.toThrow(
+			'exceeds',
+		);
+		expect(cancelled).toHaveBeenCalledOnce();
 	});
 });

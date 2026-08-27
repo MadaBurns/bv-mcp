@@ -240,15 +240,22 @@ Cutover procedure:
 `QUOTA_SHARD_COUNT` is a **frozen constant** for the life of a deployment. Changing
 it (or the salt) re-maps every caller's shard and strands its in-flight counter —
 that is the SAME windowed-relaxation event as the initial flip, not a hot edit.
-Schedule it the same way and run `resetQuotaCoordinatorState()` to sweep stranded
-shard counters if needed.
+Schedule it the same way and run `resetQuotaCoordinatorShards()` to sweep stranded
+quota counters without deleting global spend limits or authorization state.
 
 ## Security Notes
 
+- `/internal/tenants/scan` charges the daily quota per validated domain before
+  dispatch. With `QUOTA_COORDINATOR` bound the weighted reservation is atomic;
+  coordinator failure rejects the scan before queue or inline work. Explicit
+  synchronous scans are capped at 50 domains — larger sets must use the queue.
 - Do not commit real tenant IDs, target lists, queue names, database IDs, bearer
   tokens, webhook URLs, or production-only binding values.
 - Keep generated production config ignored.
 - Use synthetic domains under reserved namespaces such as `example.test` for
   tests, fixtures, and docs.
-- Internal route examples should use placeholders and require
-  `BV_WEB_INTERNAL_KEY` from the environment.
+- Tenant-route examples should use placeholders and require the dedicated
+  strong, unique 32+ byte `BV_MCP_TENANT_KEY` plus a credential-bound
+  `TENANT_KEY_SCOPE`. If the map is absent, that key is intentionally an
+  all-tenant orchestrator authority and every request must carry a narrowed
+  `X-Tenant-Scope`; never provision it to a tenant or customer-facing worker.

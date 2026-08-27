@@ -495,6 +495,21 @@ When enabled, the server implements RFC 6749 authorization-code grant with PKCE 
 3. `POST /oauth/token` with `grant_type=authorization_code`, `code`, `redirect_uri`, `client_id`, `code_verifier` → receive `access_token` (JWT).
 4. Call `/mcp` with `Authorization: Bearer <access_token>`.
 
+#### Recovering legacy Brand Audit ownership after OAuth rotation
+
+Brand Audit rows created before stable OAuth principals shipped were keyed to a
+short hash of the raw access token. If a retained older token owns one of those
+rows, send the current valid token in `Authorization` and the historical token
+in `X-BV-Legacy-Owner-Token: Bearer <historical_access_token>` on one
+owner-scoped Brand Audit request. The server accepts the historical token only
+as migration evidence: it verifies the old signature, issuer, audience,
+subject, and owner/tenant namespace against the already-authenticated current
+principal, then atomically moves that exact legacy owner hash. The expired token
+cannot authenticate by itself. Repeat once per retained historical token, then
+remove the migration header. Perform this recovery before rotating
+`OAUTH_SIGNING_SECRET`, because tokens signed by a retired key cannot prove an
+owner alias after that key is removed.
+
 **Constraints:**
 
 - PKCE is mandatory. `plain` is rejected at the schema layer — only `S256`.

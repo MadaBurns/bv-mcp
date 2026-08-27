@@ -33,7 +33,7 @@ import { Hono } from 'hono';
 import { ZodError } from 'zod';
 import { logError } from './lib/log';
 import { tenantRoutes } from './tenants/routes';
-import { handleToolsCall } from './handlers/tools';
+import { handleToolsCall, INTERNAL_BATCH_SAFE_TOOLS } from './handlers/tools';
 import { isAuthorizedRequest } from './lib/auth';
 import { createAnalyticsClient } from './lib/analytics';
 import { parseScoringConfigCached } from './lib/scoring-config';
@@ -58,9 +58,22 @@ import { createTrialKey, getTrialKeyStatus, revokeTrialKey, listTrialKeys } from
 import { parseEnvelopeKey } from './lib/kv-envelope';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { buildCodeRecordFromEntitlement } from './oauth/entitlements';
+import { resolveIssuer } from './oauth/discovery';
 import { resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
 import { readBoundedText } from './lib/request-body';
-import { createAuthorizationCode, getClient, putCode, bumpTokenVersion } from './oauth/storage';
+import {
+	createAuthorizationCode,
+	getClient,
+	putCode,
+	bumpTokenVersion,
+	bumpTokenVersionIdempotently,
+	raiseMinimumEntitlementGeneration,
+} from './oauth/storage';
+import type { QuotaCoordinator } from './lib/quota-coordinator';
+import { computeStrongIdempotencyKeys, STRONG_IDEMPOTENCY_TTL_SECONDS } from './lib/request-dedup';
+import { deriveCanonicalTenantPrincipal } from './lib/auth-principal';
+import { adoptAnonymousBrandAuditWatchInternal, reconcileLegacyBrandAuditOwner } from './lib/brand-audit-owner-reconciliation';
+import { isStrongDistinctSecurityCapability, type McpSecurityCriticalSecretKey } from './lib/security-capabilities';
 import {
 	queryTierToolUsage,
 	queryTierLatency,
@@ -76,10 +89,11 @@ import {
 	resolveAnalyticsDataset,
 } from './lib/analytics-queries';
 
-type InternalEnv = {
+type InternalEnv = Partial<Record<McpSecurityCriticalSecretKey, string | undefined>> & {
 	SESSION_STORE?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
 	RATE_LIMIT?: KVNamespace;
+	QUOTA_COORDINATOR?: DurableObjectNamespace<QuotaCoordinator>;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
 	/** R10 - ProfileAccumulator write-sharding mode (default-off). See BvMcpEnv in index.ts. */
 	PROFILE_ACCUMULATOR_SHARDING?: string;
@@ -106,6 +120,26 @@ type InternalEnv = {
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
 	BV_WEB_INTERNAL_KEY?: string;
+	/** Web-only capability for OAuth authorization-code and trial-key issuance. */
+	BV_MCP_OAUTH_MINT_KEY?: string;
+	/** Revocation-only capability for entitlement/token invalidation; cannot mint. */
+	BV_MCP_OAUTH_REVOKE_KEY?: string;
+	/** Canonical public OAuth issuer; required by the paid internal grant handoff. */
+	OAUTH_ISSUER?: string;
+	/** Dedicated credential for tenant orchestration; never accepted by tool or OAuth routes. */
+	BV_MCP_TENANT_KEY?: string;
+	/**
+	 * Dedicated bv-web/ops capability for tenant-scoped tool delegation. This is
+	 * the only bearer allowed to accompany X-Tenant + X-Auth-Tier on /tools/*.
+	 * Never fall back to the fleet-wide BV_WEB_INTERNAL_KEY.
+	 */
+	BV_MCP_TOOL_DELEGATION_KEY?: string;
+	/** Ops-only capability for tenant-scoped Brand Watch list/delete cleanup. */
+	BV_MCP_WATCH_CLEANUP_KEY?: string;
+	/** Dedicated M365 read capability; referenced here only to reject secret reuse. */
+	BV_MCP_M365_KEY?: string;
+	/** Outbound Brand Drift capability; comparison-only on inbound internal doors. */
+	BV_MCP_BRAND_WEBHOOK_KEY?: string;
 	/**
 	 * Independent internal-door credential for the BizFit mobile Worker (`claude-proxy`),
 	 * accepted on /internal/tools/* ONLY — never /analytics/* or /tenants/*.
@@ -163,7 +197,141 @@ type InternalEnv = {
 	ANALYTICS_PII_LEVEL?: string;
 };
 
-export const internalRoutes = new Hono<{ Bindings: InternalEnv }>();
+type InternalPrincipal = 'web' | 'mobile' | 'tenant' | 'tenant-tool' | 'watch-cleanup' | 'network';
+type InternalAppEnv = { Bindings: InternalEnv; Variables: { internalPrincipal: InternalPrincipal } };
+
+/** Printable, non-whitespace HTTP token bounded before it reaches strong state. */
+function parseIdempotencyKey(value: string | undefined): string | undefined | null {
+	if (value === undefined) return undefined;
+	if (!/^[\x21-\x7e]{8,200}$/.test(value)) return null;
+	return value;
+}
+
+type ToolDoorIdentity = { principalId: string; authTier: 'free' | 'developer' | 'enterprise' | 'owner' };
+
+const INTERNAL_OWNER_SCOPED_BRAND_TOOLS = new Set([
+	'discover_brand_domains_start',
+	'discover_brand_domains_status',
+	'discover_brand_domains_findings',
+	'brand_audit_batch_start',
+	'brand_audit_status',
+	'brand_audit_get_report',
+	'list_brand_audit_watches',
+	'register_brand_audit_watch',
+	'delete_brand_audit_watch',
+]);
+
+/** Exact least-privilege surface reachable with tenant delegation. */
+const TENANT_DELEGATED_TOOLS: ReadonlySet<string> = new Set([
+	'register_brand_audit_watch',
+	'list_brand_audit_watches',
+	'delete_brand_audit_watch',
+]);
+
+const WATCH_CLEANUP_TOOLS: ReadonlySet<string> = new Set(['list_brand_audit_watches', 'delete_brand_audit_watch']);
+
+function dedicatedCapability(env: InternalEnv, key: McpSecurityCriticalSecretKey): string | null {
+	const value = env[key];
+	return typeof value === 'string' && isStrongDistinctSecurityCapability(env, key) ? value : null;
+}
+
+async function reconcileTrustedTenantBrandOwner(input: {
+	db: D1Database | undefined;
+	internalPrincipal: InternalPrincipal;
+	tenantHeader: string | undefined;
+	canonicalOwnerId: string;
+	toolName: string;
+	args: Record<string, unknown> | undefined;
+}): Promise<{ ok: true } | { ok: false; status: 400 | 409 | 503; error: string }> {
+	if (
+		!input.db ||
+		(input.internalPrincipal !== 'tenant-tool' && input.internalPrincipal !== 'watch-cleanup') ||
+		!input.tenantHeader ||
+		!INTERNAL_OWNER_SCOPED_BRAND_TOOLS.has(input.toolName)
+	) {
+		return { ok: true };
+	}
+
+	try {
+		await reconcileLegacyBrandAuditOwner(input.db, `tenant:${input.tenantHeader}`, input.canonicalOwnerId);
+		if (input.toolName !== 'list_brand_audit_watches' && input.toolName !== 'delete_brand_audit_watch') {
+			return { ok: true };
+		}
+
+		const fingerprint = input.args?.legacyWebhookTokenFingerprint;
+		if (fingerprint === undefined) return { ok: true };
+		if (typeof fingerprint !== 'string') return { ok: false, status: 400, error: 'invalid_legacy_watch_proof' };
+		const watchId = input.toolName === 'delete_brand_audit_watch' ? input.args?.watchId : undefined;
+		if (watchId !== undefined && typeof watchId !== 'string') {
+			return { ok: false, status: 400, error: 'invalid_legacy_watch_id' };
+		}
+		const adoption = await adoptAnonymousBrandAuditWatchInternal(input.db, {
+			canonicalOwnerId: input.canonicalOwnerId,
+			webhookTokenFingerprint: fingerprint,
+			...(typeof watchId === 'string' ? { watchId } : {}),
+		});
+		if (adoption.status === 'ambiguous') {
+			return { ok: false, status: 409, error: 'legacy_watch_ambiguous' };
+		}
+		return { ok: true };
+	} catch (error) {
+		logError(error instanceof Error ? error : 'Brand owner reconciliation failed', {
+			category: 'brand_audit_owner_reconciliation',
+			severity: 'error',
+		});
+		return { ok: false, status: 503, error: 'brand_owner_reconciliation_unavailable' };
+	}
+}
+
+/**
+ * Resolve the storage/quota owner for a direct tool call. Tenant identity is a
+ * trusted delegation assertion accepted only after a dedicated narrow tenant
+ * capability has authenticated. bv-web derives both headers from its session
+ * and subscription store; ops may use its separate list/delete-only cleanup
+ * capability. Other callers receive server-owned principals rather than the
+ * cross-caller `anonymous` bucket.
+ */
+async function resolveToolDoorIdentity(
+	principal: InternalPrincipal,
+	tenantHeader: string | undefined,
+	tierHeader: string | undefined,
+	callerHeader: string | undefined,
+	oauthIssuer: string | undefined,
+): Promise<{ ok: true; identity: ToolDoorIdentity } | { ok: false; status: 400 | 403 | 503; error: string }> {
+	const hasTenantContext = tenantHeader !== undefined || tierHeader !== undefined;
+	if (principal === 'tenant-tool' || principal === 'watch-cleanup') {
+		if (!tenantHeader || !tierHeader) return { ok: false, status: 400, error: 'incomplete_tenant_context' };
+		if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(tenantHeader)) {
+			return { ok: false, status: 400, error: 'invalid_tenant_context' };
+		}
+		if (tierHeader !== 'developer' && tierHeader !== 'enterprise') {
+			return { ok: false, status: 400, error: 'invalid_auth_tier' };
+		}
+		if (!oauthIssuer) return { ok: false, status: 503, error: 'oauth_issuer_not_configured' };
+		try {
+			return {
+				ok: true,
+				identity: {
+					principalId: await deriveCanonicalTenantPrincipal(oauthIssuer, tenantHeader),
+					authTier: tierHeader,
+				},
+			};
+		} catch {
+			return { ok: false, status: 503, error: 'oauth_issuer_invalid' };
+		}
+	}
+	if (hasTenantContext) {
+		return { ok: false, status: 403, error: 'tenant_context_not_allowed' };
+	}
+
+	if (principal === 'web') {
+		const caller = callerHeader && /^[a-z0-9][a-z0-9_-]{0,63}$/.test(callerHeader) ? callerHeader : 'default';
+		return { ok: true, identity: { principalId: `system:web:${caller}`, authTier: 'owner' } };
+	}
+	return { ok: true, identity: { principalId: `system:${principal}`, authTier: 'free' } };
+}
+
+export const internalRoutes = new Hono<InternalAppEnv>();
 
 /**
  * Pure decision used by the guard middleware. Cloudflare sets `cf-connecting-ip`
@@ -202,8 +370,11 @@ internalRoutes.use('*', async (c, next) => {
  *
  * Takes the list of env var names whose values are accepted on the routes it fronts, so a
  * per-consumer credential can be granted to one route group without granting it everywhere.
- * `/tools/*` accepts `BV_WEB_INTERNAL_KEY` + `BV_MOBILE_INTERNAL_KEY`; `/analytics/*` and
- * `/tenants/*` accept only `BV_WEB_INTERNAL_KEY`.
+ * `/tools/*` accepts general web/mobile credentials plus the separate web
+ * delegation and ops cleanup capabilities; only those two narrow principals
+ * may send tenant context, and each has an exact tool allowlist.
+ * `/analytics/*` accepts only `BV_WEB_INTERNAL_KEY`; `/tenants/*` accepts only
+ * `BV_MCP_TENANT_KEY`.
  *
  * Fail-closed: if the gate is active but NONE of its accepted keys is configured (unset or
  * empty), the route returns 503 rather than silently passing unauthenticated requests.
@@ -211,25 +382,46 @@ internalRoutes.use('*', async (c, next) => {
  * Unlike trialKeysAuthGate (which always enforces because it mints credentials),
  * this gate can be disabled at the operator's explicit request via the env flag.
  *
- * NOTE (cross-repo): bv-web's service client must send
- * `Authorization: Bearer ${BV_WEB_INTERNAL_KEY}` on all calls to
- * /internal/tools/*, /internal/analytics/*, and /internal/tenants/*.
+ * NOTE (cross-repo): callers must send the credential dedicated to their route
+ * family. The general web bearer is deliberately not accepted by tenant or
+ * OAuth/trial administration routes.
  *
  * Registered BEFORE the route handlers below — Hono middleware applies only to
  * routes registered after the .use() call.
  */
 const internalLenientAuthGate = (
-	acceptedKeys: ReadonlyArray<'BV_WEB_INTERNAL_KEY' | 'BV_MOBILE_INTERNAL_KEY'>,
-): import('hono').MiddlewareHandler<{ Bindings: InternalEnv }> => {
+	acceptedKeys: ReadonlyArray<
+		'BV_WEB_INTERNAL_KEY' | 'BV_MOBILE_INTERNAL_KEY' | 'BV_MCP_TENANT_KEY' | 'BV_MCP_TOOL_DELEGATION_KEY' | 'BV_MCP_WATCH_CLEANUP_KEY'
+	>,
+): import('hono').MiddlewareHandler<InternalAppEnv> => {
 	return async (c, next) => {
 		if (c.env.REQUIRE_INTERNAL_AUTH === 'false') {
 			// Explicitly opted out — rely on the network guard (cf-connecting-ip) alone.
+			c.set('internalPrincipal', 'network');
 			return next();
 		}
 		// Empty strings are dropped, not treated as credentials: `wrangler secret put` will
 		// store an empty value, and an empty expected token must never authorize anything nor
 		// count towards "a credential is configured" below.
-		const expected = acceptedKeys.map((name) => c.env[name]).filter((k): k is string => typeof k === 'string' && k.length > 0);
+		const expected = acceptedKeys
+			.map((name) => ({ name, key: c.env[name] }))
+			.filter(
+				(entry): entry is { name: (typeof acceptedKeys)[number]; key: string } => typeof entry.key === 'string' && entry.key.length > 0,
+			);
+		// Tenant delegation is higher trust than the fleet/mobile/tool credentials.
+		// Weak or reused configuration is a deployment error, never an auth match:
+		// otherwise a holder of the colliding lower-trust secret inherits tenant
+		// assertion authority merely by adding headers.
+		if (acceptedKeys.includes('BV_MCP_TOOL_DELEGATION_KEY') && c.env.BV_MCP_TOOL_DELEGATION_KEY !== undefined) {
+			if (!dedicatedCapability(c.env, 'BV_MCP_TOOL_DELEGATION_KEY')) {
+				return c.json({ error: 'internal_auth_secret_misconfigured' }, 503, { 'Cache-Control': 'no-store' });
+			}
+		}
+		if (acceptedKeys.includes('BV_MCP_WATCH_CLEANUP_KEY') && c.env.BV_MCP_WATCH_CLEANUP_KEY !== undefined) {
+			if (!dedicatedCapability(c.env, 'BV_MCP_WATCH_CLEANUP_KEY')) {
+				return c.json({ error: 'internal_auth_secret_misconfigured' }, 503, { 'Cache-Control': 'no-store' });
+			}
+		}
 		if (expected.length === 0) {
 			// Misconfig: gate is active but no key configured for this route group — fail closed.
 			return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
@@ -237,15 +429,49 @@ const internalLenientAuthGate = (
 		const header = c.req.header('authorization');
 		// Every candidate is evaluated (no `||` short-circuit) so the number of constant-time
 		// comparisons performed does not vary with WHICH key matched.
-		const matches = await Promise.all(expected.map((key) => isAuthorizedRequest(header, key)));
+		const matches = await Promise.all(expected.map((entry) => isAuthorizedRequest(header, entry.key)));
 		if (!matches.some(Boolean)) {
 			return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
 		}
+		// Retain the authenticated principal for authorization. Dedicated tenant
+		// delegation collisions have already failed closed above.
+		const matchedNames = expected.filter((_entry, index) => matches[index]).map((entry) => entry.name);
+		const principal: InternalPrincipal = matchedNames.includes('BV_MOBILE_INTERNAL_KEY')
+			? 'mobile'
+			: matchedNames.includes('BV_MCP_TENANT_KEY')
+				? 'tenant'
+				: matchedNames.includes('BV_MCP_TOOL_DELEGATION_KEY')
+					? 'tenant-tool'
+					: matchedNames.includes('BV_MCP_WATCH_CLEANUP_KEY')
+						? 'watch-cleanup'
+						: 'web';
+		c.set('internalPrincipal', principal);
 		return next();
 	};
 };
 const webOnlyGate = internalLenientAuthGate(['BV_WEB_INTERNAL_KEY']);
-const webAndMobileGate = internalLenientAuthGate(['BV_WEB_INTERNAL_KEY', 'BV_MOBILE_INTERNAL_KEY']);
+const webAndTenantToolGate = internalLenientAuthGate(['BV_MCP_TOOL_DELEGATION_KEY', 'BV_MCP_WATCH_CLEANUP_KEY', 'BV_WEB_INTERNAL_KEY']);
+const webMobileAndTenantToolGate = internalLenientAuthGate([
+	'BV_MOBILE_INTERNAL_KEY',
+	'BV_MCP_TOOL_DELEGATION_KEY',
+	'BV_MCP_WATCH_CLEANUP_KEY',
+	'BV_WEB_INTERNAL_KEY',
+]);
+/**
+ * Tenant orchestration is an authorization boundary, so its dedicated bearer
+ * cannot be disabled by the legacy tools/analytics migration escape hatch.
+ */
+const tenantOnlyGate: import('hono').MiddlewareHandler<InternalAppEnv> = async (c, next) => {
+	const expected = dedicatedCapability(c.env, 'BV_MCP_TENANT_KEY');
+	if (!expected) {
+		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
+	}
+	if (!(await isAuthorizedRequest(c.req.header('authorization'), expected))) {
+		return c.json({ error: 'unauthorized' }, 401, { 'Cache-Control': 'no-store' });
+	}
+	c.set('internalPrincipal', 'tenant');
+	return next();
+};
 
 /**
  * The exact internal paths `BV_MOBILE_INTERNAL_KEY` may reach. Everything else under
@@ -264,14 +490,14 @@ const MOBILE_ACCESSIBLE_PATHS: ReadonlySet<string> = new Set(['/internal/tools/c
 // /tools/call and the broader web-only gate would then reject a valid mobile bearer. Selecting
 // the gate per-request inside a single registration is what keeps that correct.
 internalRoutes.use('/tools/*', (c, next) =>
-	(MOBILE_ACCESSIBLE_PATHS.has(new URL(c.req.url).pathname) ? webAndMobileGate : webOnlyGate)(c, next),
+	(MOBILE_ACCESSIBLE_PATHS.has(new URL(c.req.url).pathname) ? webMobileAndTenantToolGate : webAndTenantToolGate)(c, next),
 );
 internalRoutes.use('/analytics/*', webOnlyGate);
-internalRoutes.use('/tenants/*', webOnlyGate);
+internalRoutes.use('/tenants/*', tenantOnlyGate);
 
 // Tenant orchestrator routes (per tenant-Scalable-Architecture-Design.md §4.1).
-// Mounted AFTER `internalLenientAuthGate` is registered so the gate covers
-// `/tenants/*` for callers that opted in via REQUIRE_INTERNAL_AUTH=true.
+// Mounted after the mandatory dedicated-bearer gate above. Unlike the legacy
+// tools/analytics gate, tenant authorization ignores REQUIRE_INTERNAL_AUTH.
 internalRoutes.route('/tenants', tenantRoutes);
 
 /**
@@ -284,6 +510,10 @@ internalRoutes.route('/tenants', tenantRoutes);
  */
 internalRoutes.post('/tools/call', async (c) => {
 	const startTime = Date.now();
+	const idempotencyKey = parseIdempotencyKey(c.req.header('idempotency-key'));
+	if (idempotencyKey === null) {
+		return c.json({ error: 'invalid_idempotency_key' }, 400, { 'Cache-Control': 'no-store' });
+	}
 	// Body-size guard before JSON parse: prevents a service-binding caller (or an
 	// attacker who bypasses the network guard) from forcing the Worker to
 	// materialize an arbitrarily large payload in memory before Zod rejects it.
@@ -309,12 +539,45 @@ internalRoutes.post('/tools/call', async (c) => {
 		}
 		return c.json({ content: [{ type: 'text', text: 'Missing required field: name' }], isError: true }, 400);
 	}
+	const normalizedToolName = normalizeToolName(body.name);
+	if (c.get('internalPrincipal') === 'tenant-tool' && !TENANT_DELEGATED_TOOLS.has(normalizedToolName)) {
+		return c.json({ error: 'tenant_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
+	}
+	if (c.get('internalPrincipal') === 'watch-cleanup' && !WATCH_CLEANUP_TOOLS.has(normalizedToolName)) {
+		return c.json({ error: 'watch_cleanup_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
+	}
+
+	const identity = await resolveToolDoorIdentity(
+		c.get('internalPrincipal'),
+		c.req.header('x-tenant'),
+		c.req.header('x-auth-tier'),
+		c.req.header(AGENT_CALLER_HEADER),
+		c.env.OAUTH_ISSUER,
+	);
+	if (!identity.ok) return c.json({ error: identity.error }, identity.status, { 'Cache-Control': 'no-store' });
+	const brandOwnerReconciliation = await reconcileTrustedTenantBrandOwner({
+		db: c.env.BRAND_AUDIT_DB,
+		internalPrincipal: c.get('internalPrincipal'),
+		tenantHeader: c.req.header('x-tenant'),
+		canonicalOwnerId: identity.identity.principalId,
+		toolName: normalizedToolName,
+		args: body.arguments,
+	});
+	if (!brandOwnerReconciliation.ok) {
+		return c.json({ error: brandOwnerReconciliation.error }, brandOwnerReconciliation.status, { 'Cache-Control': 'no-store' });
+	}
+
+	// The mobile credential is a scan-only capability. Authorization is derived
+	// from the matched bearer, never from the caller-controlled X-BV-Caller header.
+	if (c.get('internalPrincipal') === 'mobile' && normalizedToolName !== 'scan_domain') {
+		return c.json({ error: 'mobile_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
+	}
 
 	// Agent-chat caller: enforce the read-only allowlist (defense-in-depth; bv-web
 	// also gates, but this is the boundary-side guard). Normalize the alias first
 	// (scan → scan_domain) so a legitimate aliased call isn't wrongly rejected.
 	// See docs/design/agent-chat-tool-allowlist.md.
-	if (isAgentCaller(c.req.header(AGENT_CALLER_HEADER)) && !isAgentAllowedTool(normalizeToolName(body.name))) {
+	if (isAgentCaller(c.req.header(AGENT_CALLER_HEADER)) && !isAgentAllowedTool(normalizedToolName)) {
 		return c.json({ error: 'agent_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
 	}
 
@@ -356,6 +619,16 @@ internalRoutes.post('/tools/call', async (c) => {
 		// stores nothing. Bound to the same worker as the public path.
 		brandAuditDb: c.env.BRAND_AUDIT_DB,
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
+		rateLimitKv: c.env.RATE_LIMIT,
+		quotaCoordinator: c.env.QUOTA_COORDINATOR,
+		principalId: identity.identity.principalId,
+		authTier: identity.identity.authTier,
+		...(idempotencyKey
+			? {
+					idempotencyKey,
+					idempotencyPrincipal: identity.identity.principalId,
+				}
+			: {}),
 		// Tier 0/1/2 lookup closures — internal callers (load tests, bv-web
 		// service binding, ops scripts) get the same tiered discovery path as
 		// public `/mcp`. Closures stay `undefined` on BSL self-hosts where
@@ -417,7 +690,7 @@ internalRoutes.post('/tools/call', async (c) => {
  * one-time authorization code bound to the original client, redirect URI, and PKCE challenge.
  */
 internalRoutes.post('/oauth/grants', async (c) => {
-	const expected = c.env.BV_WEB_INTERNAL_KEY;
+	const expected = dedicatedCapability(c.env, 'BV_MCP_OAUTH_MINT_KEY');
 	if (!expected) {
 		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
 	}
@@ -432,7 +705,9 @@ internalRoutes.post('/oauth/grants', async (c) => {
 
 	let body;
 	try {
-		body = InternalOAuthGrantRequestSchema.parse(await c.req.json());
+		const bodyRead = await readBoundedText(c.req.raw, MAX_REQUEST_BODY_BYTES);
+		if (!bodyRead.ok) return c.json({ error: 'request_too_large' }, 413, { 'Cache-Control': 'no-store' });
+		body = InternalOAuthGrantRequestSchema.parse(JSON.parse(bodyRead.text));
 	} catch {
 		return c.json({ error: 'invalid_grant_request' }, 400, { 'Cache-Control': 'no-store' });
 	}
@@ -444,6 +719,22 @@ internalRoutes.post('/oauth/grants', async (c) => {
 	}
 	if (!client.redirect_uris.includes(body.redirectUri)) {
 		return c.json({ error: 'redirect_uri_not_registered' }, 400, { 'Cache-Control': 'no-store' });
+	}
+	// Service-binding requests use a synthetic `https://internal` URL, so the
+	// public issuer cannot safely be derived from the request Host. Require the
+	// operator-pinned issuer before minting a code or an RFC 9207 response.
+	if (!c.env.OAUTH_ISSUER) {
+		return c.json({ error: 'oauth_issuer_not_configured' }, 503, { 'Cache-Control': 'no-store' });
+	}
+	let issuer: string;
+	try {
+		issuer = resolveIssuer(c.req.url, c.env.OAUTH_ISSUER);
+		const parsedIssuer = new URL(issuer);
+		if (parsedIssuer.protocol !== 'https:' || parsedIssuer.username || parsedIssuer.password || parsedIssuer.search || parsedIssuer.hash) {
+			throw new Error('invalid issuer');
+		}
+	} catch {
+		return c.json({ error: 'oauth_issuer_invalid' }, 503, { 'Cache-Control': 'no-store' });
 	}
 
 	const code = createAuthorizationCode();
@@ -463,6 +754,7 @@ internalRoutes.post('/oauth/grants', async (c) => {
 	const redirectTo = new URL(body.redirectUri);
 	redirectTo.searchParams.set('code', code);
 	redirectTo.searchParams.set('state', body.state);
+	redirectTo.searchParams.set('iss', issuer);
 	return c.json({ redirectTo: redirectTo.toString(), expiresIn: OAUTH_CODE_TTL_SECONDS }, 200, {
 		'Cache-Control': 'no-store',
 		Pragma: 'no-cache',
@@ -472,19 +764,22 @@ internalRoutes.post('/oauth/grants', async (c) => {
 /**
  * POST /internal/oauth/revoke-subject
  *
- * Bumps the token-version counter for a subject, invalidating all in-flight
- * JWTs minted before this call. bv-web calls this endpoint on plan downgrade
- * so that the new, lower tier takes effect immediately rather than waiting
- * for the 90-day JWT expiry (FIND-13).
+ * Raises the subject's minimum entitlement generation, invalidating JWTs
+ * minted for an older subscription state while preserving grants minted after
+ * a later re-authorization. Legacy callers without a generation retain the
+ * token-version bump behaviour.
  *
- * Secured behind the same strict bearer gate as /oauth/grants — 503 when
- * BV_WEB_INTERNAL_KEY is unset, 401 on missing/wrong bearer.
+ * Secured behind its own revocation-only bearer — 503 when
+ * BV_MCP_OAUTH_REVOKE_KEY is unset, 401 on missing/wrong bearer. The mint key
+ * is deliberately not accepted here, and this key is never accepted by grant
+ * or trial-key issuance routes.
  *
- * Request body: { "sub": string }
- * Response body: { "ok": true, "version": number }
+ * Request body: { "sub": string, "minEntitlementGeneration"?: number }
+ * Response body: { "ok": true, "minEntitlementGeneration": number }
+ *             or { "ok": true, "version": number } for legacy requests
  */
 internalRoutes.post('/oauth/revoke-subject', async (c) => {
-	const expected = c.env.BV_WEB_INTERNAL_KEY;
+	const expected = dedicatedCapability(c.env, 'BV_MCP_OAUTH_REVOKE_KEY');
 	if (!expected) {
 		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
 	}
@@ -494,24 +789,78 @@ internalRoutes.post('/oauth/revoke-subject', async (c) => {
 	if (!c.env.SESSION_STORE) {
 		return c.json({ error: 'session_store_not_configured' }, 500, { 'Cache-Control': 'no-store' });
 	}
+	const idempotencyKey = parseIdempotencyKey(c.req.header('idempotency-key'));
+	if (idempotencyKey === null) {
+		return c.json({ error: 'invalid_idempotency_key' }, 400, { 'Cache-Control': 'no-store' });
+	}
 
-	let body: { sub: string };
+	let body: { sub: string; minEntitlementGeneration?: number };
 	try {
-		const raw = await c.req.json<unknown>();
+		const bodyRead = await readBoundedText(c.req.raw, MAX_REQUEST_BODY_BYTES);
+		if (!bodyRead.ok) return c.json({ error: 'request_too_large' }, 413, { 'Cache-Control': 'no-store' });
+		const raw: unknown = JSON.parse(bodyRead.text);
 		if (typeof raw !== 'object' || raw === null || typeof (raw as Record<string, unknown>).sub !== 'string') {
 			throw new Error('invalid');
 		}
-		body = raw as { sub: string };
+		const minEntitlementGeneration = (raw as Record<string, unknown>).minEntitlementGeneration;
+		if (
+			minEntitlementGeneration !== undefined &&
+			(!Number.isSafeInteger(minEntitlementGeneration) || (minEntitlementGeneration as number) < 1)
+		) {
+			throw new Error('invalid');
+		}
+		body = raw as { sub: string; minEntitlementGeneration?: number };
 	} catch {
-		return c.json({ error: 'Invalid request body: sub must be a string' }, 400, { 'Cache-Control': 'no-store' });
+		return c.json(
+			{ error: 'Invalid request body: sub must be a string and minEntitlementGeneration must be a positive safe integer when provided' },
+			400,
+			{ 'Cache-Control': 'no-store' },
+		);
 	}
 
 	const sub = (body.sub as string).trim();
 	if (!sub) {
 		return c.json({ error: 'Invalid request body: sub must be a non-empty string' }, 400, { 'Cache-Control': 'no-store' });
 	}
+	if (body.minEntitlementGeneration !== undefined) {
+		try {
+			const minEntitlementGeneration = await raiseMinimumEntitlementGeneration(
+				c.env.SESSION_STORE,
+				sub,
+				body.minEntitlementGeneration,
+				c.env.QUOTA_COORDINATOR,
+			);
+			return c.json({ ok: true, minEntitlementGeneration }, 200, { 'Cache-Control': 'no-store' });
+		} catch {
+			return c.json({ error: 'authorization_state_unavailable' }, 503, { 'Cache-Control': 'no-store' });
+		}
+	}
 
-	const version = await bumpTokenVersion(c.env.SESSION_STORE, sub);
+	let version: number;
+	try {
+		if (idempotencyKey) {
+			if (!c.env.QUOTA_COORDINATOR) {
+				return c.json({ error: 'idempotency_state_unavailable' }, 503, { 'Cache-Control': 'no-store' });
+			}
+			const idempotency = await computeStrongIdempotencyKeys('oauth_revoke_subject', 'internal:oauth-grant', idempotencyKey, { sub });
+			const result = await bumpTokenVersionIdempotently(
+				c.env.SESSION_STORE,
+				sub,
+				idempotency.coordinationKey,
+				idempotency.requestHash,
+				Date.now() + STRONG_IDEMPOTENCY_TTL_SECONDS * 1000,
+				c.env.QUOTA_COORDINATOR,
+			);
+			if (result.state === 'conflict') {
+				return c.json({ error: 'idempotency_key_conflict' }, 409, { 'Cache-Control': 'no-store' });
+			}
+			version = result.value;
+		} else {
+			version = await bumpTokenVersion(c.env.SESSION_STORE, sub, c.env.QUOTA_COORDINATOR);
+		}
+	} catch {
+		return c.json({ error: 'authorization_state_unavailable' }, 503, { 'Cache-Control': 'no-store' });
+	}
 	return c.json({ ok: true, version }, 200, { 'Cache-Control': 'no-store' });
 });
 
@@ -557,9 +906,37 @@ internalRoutes.post('/tools/batch', async (c) => {
 		}
 		return c.json({ error: 'Invalid request body' }, 400);
 	}
+	if (c.get('internalPrincipal') === 'tenant-tool' || c.get('internalPrincipal') === 'watch-cleanup') {
+		return c.json({ error: 'tenant_batch_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
+	}
+
+	const identity = await resolveToolDoorIdentity(
+		c.get('internalPrincipal'),
+		c.req.header('x-tenant'),
+		c.req.header('x-auth-tier'),
+		c.req.header(AGENT_CALLER_HEADER),
+		c.env.OAUTH_ISSUER,
+	);
+	if (!identity.ok) return c.json({ error: identity.error }, identity.status, { 'Cache-Control': 'no-store' });
+	const brandOwnerReconciliation = await reconcileTrustedTenantBrandOwner({
+		db: c.env.BRAND_AUDIT_DB,
+		internalPrincipal: c.get('internalPrincipal'),
+		tenantHeader: c.req.header('x-tenant'),
+		canonicalOwnerId: identity.identity.principalId,
+		toolName: normalizeToolName(body.tool),
+		args: body.arguments,
+	});
+	if (!brandOwnerReconciliation.ok) {
+		return c.json({ error: brandOwnerReconciliation.error }, brandOwnerReconciliation.status, { 'Cache-Control': 'no-store' });
+	}
+
+	const normalizedToolName = normalizeToolName(body.tool);
+	if (!INTERNAL_BATCH_SAFE_TOOLS.has(normalizedToolName)) {
+		return c.json({ error: 'batch_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
+	}
 
 	// Agent-chat caller: same read-only allowlist as /tools/call (normalize alias first).
-	if (isAgentCaller(c.req.header(AGENT_CALLER_HEADER)) && !isAgentAllowedTool(normalizeToolName(body.tool))) {
+	if (isAgentCaller(c.req.header(AGENT_CALLER_HEADER)) && !isAgentAllowedTool(normalizedToolName)) {
 		return c.json({ error: 'agent_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
 	}
 
@@ -633,6 +1010,10 @@ internalRoutes.post('/tools/batch', async (c) => {
 						// so a batched brand tool can also reach the D1 store + queue.
 						brandAuditDb: c.env.BRAND_AUDIT_DB,
 						brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
+						rateLimitKv: c.env.RATE_LIMIT,
+						quotaCoordinator: c.env.QUOTA_COORDINATOR,
+						principalId: identity.identity.principalId,
+						authTier: identity.identity.authTier,
 						// Tier 0/1/2 lookup closures — batch invocations of brand tools
 						// from internal callers must also exercise tiered mode when the
 						// bindings are provisioned.
@@ -711,11 +1092,11 @@ internalRoutes.post('/tools/batch', async (c) => {
 /**
  * Auth gate for /trial-keys (collection) and /trial-keys/* (item) — these routes
  * mint API credentials, so the network guard is not enough on its own. Mirrors
- * the /oauth/grants pattern: 503 if BV_WEB_INTERNAL_KEY is unset (mis-deploy),
+ * the /oauth/grants pattern: 503 if BV_MCP_OAUTH_MINT_KEY is unset (mis-deploy),
  * 401 on missing/bad bearer.
  */
-const trialKeysAuthGate: import('hono').MiddlewareHandler<{ Bindings: InternalEnv }> = async (c, next) => {
-	const expected = c.env.BV_WEB_INTERNAL_KEY;
+const trialKeysAuthGate: import('hono').MiddlewareHandler<InternalAppEnv> = async (c, next) => {
+	const expected = dedicatedCapability(c.env, 'BV_MCP_OAUTH_MINT_KEY');
 	if (!expected) {
 		return c.json({ error: 'internal_auth_not_configured' }, 503, { 'Cache-Control': 'no-store' });
 	}
@@ -820,8 +1201,12 @@ internalRoutes.delete('/trial-keys/:hash', async (c) => {
 		return c.json({ error: 'Invalid hash format' }, 400);
 	}
 
-	const deleted = await revokeTrialKey(c.env.RATE_LIMIT, hash);
-	return c.json({ deleted });
+	try {
+		const deleted = await revokeTrialKey(c.env.RATE_LIMIT, hash, c.env.QUOTA_COORDINATOR);
+		return c.json({ deleted });
+	} catch {
+		return c.json({ error: 'trial_revocation_state_unavailable' }, 503, { 'Cache-Control': 'no-store', 'Retry-After': '30' });
+	}
 });
 
 /**

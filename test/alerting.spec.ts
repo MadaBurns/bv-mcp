@@ -128,6 +128,15 @@ describe('sendAlert delivery outcome', () => {
 		expect(await sendAlert('https://hooks.slack.com/test', { text: 'hello' })).toBe(true);
 	});
 
+	it('cancels an unread webhook response body after recording the delivery status', async () => {
+		const cancelled = vi.fn();
+		globalThis.fetch = vi.fn(async () =>
+			new Response(new ReadableStream<Uint8Array>({ cancel: cancelled }), { status: 202 })) as typeof fetch;
+
+		expect(await sendAlert('https://hooks.slack.com/test', { text: 'hello' })).toBe(true);
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
+
 	it('reports false when the webhook rejects the alert', async () => {
 		// The exact production failure: a Cloudflare bot challenge returns 403 and the
 		// alert is dropped. Callers could not observe this because sendAlert was void.

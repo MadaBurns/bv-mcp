@@ -13,11 +13,7 @@ function txtResponse(domain: string, records: string[]) {
 }
 
 function policyResponse(body: string, status = 200) {
-	return {
-		ok: status >= 200 && status < 300,
-		status,
-		text: () => Promise.resolve(body),
-	} as unknown as Response;
+	return new Response(body, { status });
 }
 
 function mxResponse(domain: string, records: Array<{ priority: number; exchange: string }>) {
@@ -145,6 +141,32 @@ describe('checkMtaSts', () => {
 		const f = r.findings.find((f) => f.title.includes('not accessible'));
 		expect(f).toBeDefined();
 		expect(f!.severity).toBe('high');
+	});
+
+	it('rejects a chunked policy at cap plus one and cancels the stream', async () => {
+		const cancelled = vi.fn();
+		let pull = 0;
+		const policyFetch = new Response(
+			new ReadableStream<Uint8Array>({
+				pull(controller) {
+					if (pull++ === 0) controller.enqueue(new Uint8Array(65_536));
+					else if (pull === 2) controller.enqueue(new Uint8Array([1]));
+					else if (pull === 3) controller.enqueue(new Uint8Array([2]));
+					else controller.close();
+				},
+				cancel: cancelled,
+			}),
+			{ status: 200 },
+		);
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
+			policyFetch,
+			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
+		});
+
+		const result = await run();
+		expect(result.findings.some((finding) => finding.title === 'MTA-STS policy file oversized')).toBe(true);
+		expect(cancelled).toHaveBeenCalledOnce();
 	});
 
 	it('returns high finding when policy is missing mode directive', async () => {

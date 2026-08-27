@@ -25,6 +25,7 @@ import { describe, it, expect, vi, afterEach } from 'vitest';
 // the mock must be registered before the dynamic import of '../src' below.
 vi.mock('../src/queue/brand-audit-consumer', () => ({
 	handleBrandAuditQueue: vi.fn(),
+	brandWebhookPeerSecretsFromEnv: vi.fn(() => []),
 	// Re-export the symbols index.ts imports as types/values; only the function
 	// is used at runtime by the dispatch.
 }));

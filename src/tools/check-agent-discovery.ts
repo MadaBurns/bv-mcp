@@ -177,7 +177,7 @@ async function verifyCapIntegrity(rec: ParsedSvcb, findings: Finding[]): Promise
 	try {
 		const resp = await safeFetch(capUri, { redirect: 'manual', signal: controller.signal });
 		if (!resp.ok) {
-			void resp.body?.cancel();
+			void resp.body?.cancel().catch(() => undefined);
 			findings.push(
 				createFinding(
 					CATEGORY,

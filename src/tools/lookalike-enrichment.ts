@@ -21,6 +21,7 @@
  */
 
 import { safeFetch } from '../lib/safe-fetch';
+import { readJsonResponseCapped } from '../lib/response-body';
 import { extractRegistrantOrg, findEntityByRole } from './check-rdap-lookup';
 import { FALLBACK_RDAP_SERVERS } from './rdap-fallback-servers';
 import { isDisposableMxHost } from './lookalike-severity';
@@ -29,6 +30,7 @@ import type { LookalikeResult } from './lookalike-dns';
 /** Budgets for the Defect L enrichment probes. Both are intentionally tight so 12 candidates × (RDAP + HEAD) stays under LOOKALIKE_TIMEOUT_MS. */
 const RDAP_PROBE_TIMEOUT_MS = 2500;
 const WEB_PROBE_TIMEOUT_MS = 2500;
+const RDAP_PROBE_MAX_BODY_BYTES = 512 * 1024;
 
 export interface LookalikeCorroborators {
 	registrationDays: number | null;
@@ -184,10 +186,14 @@ async function probeRdap(domain: string): Promise<RdapProbeResult> {
 			headers: { Accept: 'application/rdap+json, application/json' },
 		});
 		if (!resp.ok) {
-			void resp.body?.cancel();
+			void resp.body?.cancel().catch(() => undefined);
 			return EMPTY_RDAP_PROBE;
 		}
-		const data = (await resp.json()) as { events?: Array<{ eventAction?: string; eventDate?: string }> };
+		const data = await readJsonResponseCapped<{ events?: Array<{ eventAction?: string; eventDate?: string }> }>(
+			resp,
+			RDAP_PROBE_MAX_BODY_BYTES,
+		);
+		if (data === null) return EMPTY_RDAP_PROBE;
 		const registration = Array.isArray(data.events) ? data.events.find((e) => e.eventAction === 'registration') : undefined;
 		let registrationDays: number | null = null;
 		if (registration?.eventDate) {

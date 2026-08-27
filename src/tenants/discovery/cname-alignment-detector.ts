@@ -14,9 +14,11 @@ import { mapConcurrent } from '../../lib/map-concurrent';
 import { safeFetch } from '../../lib/safe-fetch';
 import type { DiscoveryDnsContext } from './dns-context';
 import { CLOUDFLARE_DOH_ENDPOINT } from '../../lib/dns-endpoints';
+import { disposeUnreadResponseBody, readJsonResponseCapped } from '../../lib/response-body';
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const MAX_CHAIN_LENGTH = 5;
+const MAX_DOH_BODY_BYTES = 256 * 1024;
 
 /** Known CDN edge suffixes — a CNAME to `<seed>.<suffix>` is a strong tenant signal. */
 const EDGE_SUFFIXES = [
@@ -64,17 +66,22 @@ async function queryCname(name: string, dohFn: typeof fetch, dohUrl: string, tim
 		const resp = await dohFn(url, {
 			headers: { Accept: 'application/dns-json' },
 			signal: controller.signal,
+			redirect: 'manual',
 		});
-		clearTimeout(timeoutId);
-		if (!resp.ok) return null;
-		const json = (await resp.json()) as DohResponse;
+		if (!resp.ok) {
+			await disposeUnreadResponseBody(resp);
+			return null;
+		}
+		const json = await readJsonResponseCapped<DohResponse>(resp, MAX_DOH_BODY_BYTES);
+		if (!json) return null;
 		if (json.Status !== 0 || !json.Answer || json.Answer.length === 0) return null;
 		const cname = json.Answer[0]?.data;
 		if (!cname) return null;
 		return cname.toLowerCase().replace(/\.$/, '');
 	} catch {
-		clearTimeout(timeoutId);
 		return null;
+	} finally {
+		clearTimeout(timeoutId);
 	}
 }
 

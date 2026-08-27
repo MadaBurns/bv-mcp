@@ -113,6 +113,37 @@ describe('detectMxOverlap', () => {
 		expect(result.coOwnedDomains).toHaveLength(0);
 	});
 
+	it('keeps the timeout active while a response body stalls after headers', async () => {
+		let requestSignal: AbortSignal | null | undefined;
+		const dohFn = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			requestSignal = init?.signal;
+			let bodyController: ReadableStreamDefaultController<Uint8Array>;
+			const body = new ReadableStream<Uint8Array>({ start: (controller) => (bodyController = controller) });
+			init?.signal?.addEventListener('abort', () => bodyController.error(init.signal?.reason), { once: true });
+			return new Response(body, { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const result = await detectMxOverlap('example.com', {
+			candidateDomains: ['example.net'],
+			dohFn,
+			timeoutMs: 5,
+		});
+
+		expect(result.coOwnedDomains).toEqual([]);
+		expect(requestSignal?.aborted).toBe(true);
+	});
+
+	it('cancels an unread non-2xx DoH response body', async () => {
+		const cancelled = vi.fn();
+		const dohFn = vi.fn().mockResolvedValue(
+			new Response(new ReadableStream<Uint8Array>({ cancel: cancelled }), { status: 502 }),
+		) as unknown as typeof fetch;
+
+		await detectMxOverlap('example.com', { candidateDomains: ['example.net'], dohFn });
+
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
+
 	it('rejects invalid seed', async () => {
 		await expect(detectMxOverlap('not a domain', { candidateDomains: [] })).rejects.toThrow(/^Domain validation failed:/);
 	});

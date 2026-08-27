@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { validateOutboundUrl } from './sanitize';
+import { disposeUnreadResponseBody, readBoundedOrNull } from './response-body';
 
 export interface ProviderSignature {
 	name: string;
@@ -34,6 +35,7 @@ export interface LoadProviderSignaturesOptions {
 export const DEFAULT_TIMEOUT_MS = 2500;
 export const DEFAULT_RETRIES = 1;
 export const RUNTIME_SIGNATURE_CACHE_TTL_MS = 5 * 60 * 1000;
+export const MAX_PROVIDER_SIGNATURE_BODY_BYTES = 1_048_576;
 
 export const BUILT_IN_SIGNATURES: ProviderSignaturePayload = {
 	version: 'built-in-2026-03-04',
@@ -156,21 +158,25 @@ export async function fetchProviderPayload(
 				redirect: 'manual',
 			});
 			if (response.status >= 300 && response.status < 400) {
+				await disposeUnreadResponseBody(response);
 				return null;
 			}
 			if (!response.ok) {
+				await disposeUnreadResponseBody(response);
 				if (attempt < retries && response.status >= 500) continue;
 				throw new Error(`Provider signature source returned HTTP ${response.status}`);
 			}
 
-			const MAX_BODY_BYTES = 1_048_576; // 1 MB — provider signature JSON from pinned source
-			const contentLength = parseInt(response.headers?.get('content-length') ?? '0', 10);
-			if (contentLength > MAX_BODY_BYTES) {
-				throw new Error(`Provider signature source exceeds ${MAX_BODY_BYTES} bytes (Content-Length: ${contentLength})`);
+			const contentLength = Number(response.headers.get('content-length'));
+			if (Number.isFinite(contentLength) && contentLength > MAX_PROVIDER_SIGNATURE_BODY_BYTES) {
+				await disposeUnreadResponseBody(response);
+				throw new Error(
+					`Provider signature source exceeds ${MAX_PROVIDER_SIGNATURE_BODY_BYTES} bytes (Content-Length: ${contentLength})`,
+				);
 			}
-			const rawPayload = await response.text();
-			if (rawPayload.length > MAX_BODY_BYTES) {
-				throw new Error(`Provider signature source exceeds ${MAX_BODY_BYTES} bytes`);
+			const rawPayload = await readBoundedOrNull(response.body, MAX_PROVIDER_SIGNATURE_BODY_BYTES);
+			if (rawPayload === null) {
+				throw new Error(`Provider signature source exceeds ${MAX_PROVIDER_SIGNATURE_BODY_BYTES} bytes or could not be read`);
 			}
 			if (!expectedSha256) {
 				throw new Error('Provider signature source requires a pinned SHA-256 digest');

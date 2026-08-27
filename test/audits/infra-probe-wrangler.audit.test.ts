@@ -3,16 +3,20 @@
 import { describe, expect, it } from 'vitest';
 import mainWranglerSource from '../../wrangler.jsonc?raw';
 import infraProbeWranglerSource from '../../wrangler.infra-probe.jsonc?raw';
+import whoisWranglerSource from '../../packages/bv-whois/wrangler.jsonc?raw';
 import deployWorkflowSource from '../../.github/workflows/deploy-prod.yml?raw';
 
 interface WranglerConfig {
 	name?: string;
 	compatibility_date?: string;
+	workers_dev?: boolean;
+	preview_urls?: boolean;
 	services?: Array<{ binding?: string; service?: string }>;
 }
 
 const mainConfig = JSON.parse(mainWranglerSource) as WranglerConfig;
 const infraProbeConfig = JSON.parse(infraProbeWranglerSource) as WranglerConfig;
+const whoisConfig = JSON.parse(whoisWranglerSource) as WranglerConfig;
 
 describe('infra probe wrangler wiring', () => {
 	it('binds the main MCP worker to the infra probe worker', () => {
@@ -25,6 +29,13 @@ describe('infra probe wrangler wiring', () => {
 
 	it('keeps the infra probe worker on the same compatibility date as the MCP worker', () => {
 		expect(infraProbeConfig.compatibility_date).toBe(mainConfig.compatibility_date);
+	});
+
+	it('keeps service-binding-only sidecars off public workers.dev and preview routes', () => {
+		for (const config of [infraProbeConfig, whoisConfig]) {
+			expect(config.workers_dev, `${config.name} must not expose a workers.dev route`).toBe(false);
+			expect(config.preview_urls, `${config.name} must not expose preview URLs`).toBe(false);
+		}
 	});
 
 	// Until #717/#718 this test pinned the infra-probe deploy INSIDE publish.yml's

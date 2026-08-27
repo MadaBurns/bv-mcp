@@ -105,10 +105,29 @@ describe('correlateSans', () => {
 	});
 
 	it('returns rate_limited status on 429 without throwing', async () => {
-		const fetchFn = vi.fn().mockResolvedValue(new Response('rate', { status: 429 })) as unknown as typeof fetch;
+		const response = new Response('rate', { status: 429 });
+		const cancel = vi.spyOn(response.body!, 'cancel');
+		const fetchFn = vi.fn().mockResolvedValue(response) as unknown as typeof fetch;
 		const result = await correlateSans('foo.com', { fetchFn, maxRetries: 0 });
 		expect(result.queryStatus).toBe('rate_limited');
 		expect(result.coOwnedDomains).toEqual([]);
+		expect(cancel).toHaveBeenCalledOnce();
+	});
+
+	it('keeps the direct crt.sh timeout active while the body stalls after headers', async () => {
+		let requestSignal: AbortSignal | null | undefined;
+		const fetchFn = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			requestSignal = init?.signal;
+			let bodyController: ReadableStreamDefaultController<Uint8Array>;
+			const body = new ReadableStream<Uint8Array>({ start: (controller) => (bodyController = controller) });
+			init?.signal?.addEventListener('abort', () => bodyController.error(init.signal?.reason), { once: true });
+			return new Response(body, { status: 200 });
+		}) as unknown as typeof fetch;
+
+		const result = await correlateSans('foo.com', { fetchFn, maxRetries: 0, timeoutMs: 5 });
+
+		expect(result.queryStatus).toBe('timeout');
+		expect(requestSignal?.aborted).toBe(true);
 	});
 
 	it('returns timeout status when fetch throws an AbortError', async () => {
@@ -241,6 +260,28 @@ describe('correlateSans', () => {
 		expect(result.coOwnedDomains).toEqual(['fallback-sibling.com']);
 		expect(csFetch).toHaveBeenCalledTimes(1);
 		expect(directFetch).toHaveBeenCalledTimes(1);
+	});
+
+	it('keeps the certstream timeout active while the /sans body stalls after headers', async () => {
+		let requestSignal: AbortSignal | null | undefined;
+		const csFetch = vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
+			requestSignal = init?.signal;
+			let bodyController: ReadableStreamDefaultController<Uint8Array>;
+			const body = new ReadableStream<Uint8Array>({ start: (controller) => (bodyController = controller) });
+			init?.signal?.addEventListener('abort', () => bodyController.error(init.signal?.reason), { once: true });
+			return new Response(body, { status: 200 });
+		}) as unknown as typeof fetch;
+		const directFetch = mockFetchOk([{ id: 7, name_value: 'foo.com\nfallback-sibling.com' }]);
+
+		const result = await correlateSans('foo.com', {
+			certstream: { fetch: csFetch },
+			fetchFn: directFetch,
+			maxRetries: 0,
+			timeoutMs: 5,
+		});
+
+		expect(result.coOwnedDomains).toEqual(['fallback-sibling.com']);
+		expect(requestSignal?.aborted).toBe(true);
 	});
 
 	it('cancels unread certstream /sans body before falling back to direct crt.sh', async () => {

@@ -26,6 +26,8 @@ export const ACTIVE_SESSIONS = new Map<string, SessionRecord>();
  *  Keyed by session ID → deletion timestamp. Short-lived (10 min TTL). */
 export const SESSION_TOMBSTONES = new Map<string, number>();
 const TOMBSTONE_TTL_MS = 10 * 60 * 1000;
+/** Hard cap prevents random valid-shape DELETE ids from growing isolate memory forever. */
+export const MAX_SESSION_TOMBSTONES = 2000;
 
 /** Session idle TTL (2 hours) — extended from 30min to accommodate Claude Desktop
  *  users who go idle between queries. mcp-remote does not auto-reinitialize on
@@ -56,6 +58,9 @@ function maybeCleanupSessions(now: number): void {
 		if (isExpired(session.lastAccessedAt, now)) {
 			ACTIVE_SESSIONS.delete(id);
 		}
+	}
+	for (const [id, deletedAt] of SESSION_TOMBSTONES) {
+		if (now - deletedAt > TOMBSTONE_TTL_MS) SESSION_TOMBSTONES.delete(id);
 	}
 }
 
@@ -160,7 +165,13 @@ export function validateSessionInMemory(id: string): boolean {
 export function deleteSessionInMemory(id: string): boolean {
 	const existed = ACTIVE_SESSIONS.delete(id);
 	// Always set the tombstone to prevent revival of this ID on this isolate
+	SESSION_TOMBSTONES.delete(id); // refresh insertion order for bounded oldest-first eviction
 	SESSION_TOMBSTONES.set(id, Date.now());
+	while (SESSION_TOMBSTONES.size > MAX_SESSION_TOMBSTONES) {
+		const oldest = SESSION_TOMBSTONES.keys().next().value;
+		if (oldest === undefined) break;
+		SESSION_TOMBSTONES.delete(oldest);
+	}
 	return existed;
 }
 
