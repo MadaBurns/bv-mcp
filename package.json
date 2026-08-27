@@ -79,7 +79,7 @@
 		"@cloudflare/vitest-pool-workers": "^0.22.0",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.10",
-		"eslint": "10.8.1",
+		"eslint": "10.9.0",
 		"hono": "4.13.3",
 		"playwright": "^1.62.1",
 		"tsup": "8.5.1",
