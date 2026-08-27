@@ -83,10 +83,11 @@ describe('internal auth gate: per-consumer BV_MOBILE_INTERNAL_KEY', () => {
 		expect(await res.json()).toMatchObject({ error: 'mobile_tool_not_allowed' });
 	});
 
-	it('chooses mobile least privilege if web and mobile secrets are accidentally equal', async () => {
+	it('fails closed before dispatch if web and mobile secrets are accidentally equal', async () => {
 		const customEnv = { ...env, BV_WEB_INTERNAL_KEY: MOBILE_KEY, BV_MOBILE_INTERNAL_KEY: MOBILE_KEY } as TestEnv;
 		const res = await send(callRequest(MOBILE_KEY, 'check_spf'), customEnv);
-		expect(res.status).toBe(403);
+		expect(res.status).toBe(503);
+		expect(await res.json()).toEqual({ error: 'Service authentication configuration invalid' });
 	});
 
 	it('keeps the web principal able to call non-mobile tools', async () => {
