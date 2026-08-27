@@ -100,8 +100,9 @@ export async function handleDelegationConsistencyProbe(
 	try {
 		return jsonResponse(await probeDelegationConsistency(hostname, dependencies));
 	} catch (error) {
+		console.error('Delegation consistency probe failed', error);
 		return jsonResponse(
-			{ error: 'delegation_probe_failed', detail: error instanceof Error ? error.message : String(error) },
+			{ error: 'delegation_probe_failed' },
 			502,
 		);
 	}
