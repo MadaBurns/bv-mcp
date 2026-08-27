@@ -21,17 +21,16 @@ import type { M365ProxyResult } from './types';
 // ISSUE #403 (repoint): this `/api/internal/mcp/m365/*` path is now served by
 // `bv-web-prod` (`app/routes/api/internal/mcp/m365.ts`, registered as
 // `api/internal/mcp/m365/:tool`), mirroring the validate-key internal-route
-// pattern + `BV_WEB_INTERNAL_KEY` bearer auth. The four `<path>` segments map to
-// the four identity_secops tools: `query-signins`, `query-ual`,
-// `get-ca-policies`, `assess-coverage`.
+// pattern + `BV_WEB_INTERNAL_KEY` bearer auth. The three active `<path>` segments
+// map to `query-signins`, `get-ca-policies`, and `assess-coverage`. Deprecated
+// `query_ual` is retained as a local compatibility tombstone and never calls
+// this helper.
 //
-// HONESTY: bv-web-prod's live M365 posture (Graph fetch / compliance scan) is
-// operator-gated behind its unbound `M365_DB` + Graph token, so today the route
-// returns a clearly-labelled `representative: true` seam (NOT fabricated live
-// data) until that downstream slice is provisioned. bv-mcp passes the response
-// through opaquely as `{ ok: true, data }`. A non-2xx (e.g. 503 when the
-// internal key is unset, 401 on a bad bearer) surfaces as `m365_proxy_<status>`
-// and the tool stays fail-soft — the proxy never throws (see callM365Proxy).
+// HONESTY: the three active paths may return either live or representative
+// fallback data depending on tenant provisioning. bv-mcp passes that producer
+// envelope through opaquely as `{ ok: true, data }`. A non-2xx (e.g. 503 when
+// the internal key is unset, 401 on a bad bearer) surfaces as
+// `m365_proxy_<status>` and the tool stays fail-soft — this helper never throws.
 const M365_BASE_URL = 'https://bv-web-internal/api/internal/mcp/m365';
 const TIMEOUT_MS = 10_000;
 

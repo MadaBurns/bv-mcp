@@ -629,7 +629,7 @@ export const QuerySigninsArgs = z
 	})
 	.passthrough();
 
-/** query_ual */
+/** query_ual — deprecated compatibility input schema, retained until removal. */
 export const QueryUalArgs = z
 	.object({
 		ms_tenant_id: z.string().min(1).max(200).describe('Microsoft Entra tenant ID (GUID or domain).'),

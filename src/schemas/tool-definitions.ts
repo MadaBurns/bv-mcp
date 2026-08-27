@@ -59,6 +59,22 @@ export type ToolGroup =
 	| 'identity_secops';
 export type ToolTier = 'core' | 'protective' | 'hardening';
 
+export interface ToolLifecycleStatus {
+	status: 'deprecated';
+	reason: string;
+	/** Canonical MCP replacement tool name, or null when no in-server replacement exists. */
+	replacement: string | null;
+}
+
+/** Vendor-namespaced MCP `_meta` key for tool lifecycle signals. */
+export const TOOL_STATUS_META_KEY = 'com.blackveilsecurity/tool-status' as const;
+
+export const QUERY_UAL_LIFECYCLE = {
+	status: 'deprecated',
+	reason: 'sample_only_no_live_path',
+	replacement: null,
+} as const satisfies ToolLifecycleStatus;
+
 export interface McpTool {
 	name: string;
 	description: string;
@@ -96,6 +112,8 @@ export interface McpTool {
 	 * that actually reaches the model) — see src/mcp/server-instructions.ts.
 	 */
 	recommended?: boolean;
+	/** Lifecycle state for compatibility-retained tools. Omitted for active tools. */
+	lifecycle?: ToolLifecycleStatus;
 }
 
 interface ToolDef {
@@ -117,6 +135,8 @@ interface ToolDef {
 	idempotent?: boolean;
 	/** Curated starter-set member (see McpTool.recommended). Mirror SERVER_INSTRUCTIONS. */
 	recommended?: boolean;
+	/** Compatibility lifecycle state; drives title and vendor `_meta` signaling. */
+	lifecycle?: ToolLifecycleStatus;
 }
 
 /** DNS/security acronyms that should be uppercased in human-readable tool titles. */
@@ -764,11 +784,12 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	query_ual: {
 		description:
-			'SAMPLE DATA ONLY — this tool has no live read path yet, so every response is illustrative and must NOT be used to investigate a real incident; the `representative: true` field marks it on each response. Microsoft Graph now exposes the Purview Audit Search API as the intended live source, but integration is not yet implemented (see issue #759). Query the Microsoft 365 Unified Audit Log for a tenant. Optionally filter by operation type, user, or lookback window. Requires m365Proxy service binding; returns { unprovisioned: true } when absent.',
+			"DEPRECATED — retained only as an internal compatibility tombstone. It never returns audit records and never calls the M365 proxy; authorized calls with valid legacy arguments fail with { ok: false, error: 'query_ual_deprecated' }. Existing validation and authentication gates still run first. No replacement is available in this MCP server. Use Microsoft Purview Audit Search directly for real Microsoft 365 audit data.",
 		schema: QueryUalArgs,
 		group: 'identity_secops',
 		tier: 'protective',
 		scanIncluded: false,
+		lifecycle: QUERY_UAL_LIFECYCLE,
 	},
 	get_ca_policies: {
 		description:
@@ -860,7 +881,7 @@ export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => (
 	inputSchema: toInputSchema(def.schema),
 	...(NON_CHECK_RESULT_TOOLS.has(name) ? {} : { outputSchema: CHECK_RESULT_OUTPUT_SCHEMA }),
 	annotations: {
-		title: toolNameToTitle(name),
+		title: def.lifecycle?.status === 'deprecated' ? `Deprecated: ${toolNameToTitle(name)}` : toolNameToTitle(name),
 		readOnlyHint: !def.mutating,
 		destructiveHint: Boolean(def.destructive),
 		// `!mutating` is the default, but a destructive-but-idempotent op (e.g. a
@@ -872,6 +893,7 @@ export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => (
 	...(def.tier !== undefined && { tier: def.tier }),
 	scanIncluded: def.scanIncluded,
 	...(def.recommended && { recommended: true as const }),
+	...(def.lifecycle !== undefined && { lifecycle: def.lifecycle }),
 }));
 
 export { TOOL_SCHEMA_MAP };

@@ -3,11 +3,12 @@
 /**
  * M365 client-tenant read kill switch.
  *
- * The four `identity_secops` tools are the only surface whose data path
+ * The three active `identity_secops` tools are the only surface whose data path
  * requires authenticating into a CUSTOMER's Microsoft 365 / Entra tenant.
  * bv-mcp holds no tenant credential itself: it forwards over the `BV_WEB`
  * service binding carrying the trusted internal bearer, and bv-web-prod
- * exchanges an owner-consented OAuth token for a Graph read.
+ * exchanges an owner-consented OAuth token for a Graph read. Deprecated
+ * `query_ual` is a local tombstone and never reaches this binding.
  *
  * The capability is withdrawn by never WIRING that binding, so no tenant read
  * is possible on any path (public `/mcp`, `/internal/tools/*`, service

@@ -248,10 +248,6 @@ const CORPUS: Array<{ ask: string; label: string }> = [
 	{ ask: 'show me recent failed sign-in attempts in Microsoft Entra', label: 'query_signins' },
 	{ ask: 'query the Entra sign-in logs for suspicious logins', label: 'query_signins' },
 
-	// identity_secops — query_ual
-	{ ask: 'show me Microsoft 365 audit log entries for file deletions', label: 'query_ual' },
-	{ ask: 'query the unified audit log for suspicious admin operations', label: 'query_ual' },
-
 	// identity_secops — get_ca_policies
 	{ ask: 'list the Conditional Access policies in our Azure AD tenant', label: 'get_ca_policies' },
 	{ ask: 'retrieve Entra Conditional Access policy definitions', label: 'get_ca_policies' },
@@ -352,7 +348,7 @@ function cosine(a: Map<string, number>, b: Map<string, number>): number {
 
 // ─── Build index at module load (once) ──────────────────────────────────────
 
-const toolTexts: Array<{ name: string; tokens: string[] }> = TOOLS.map((t) => ({
+const toolTexts: Array<{ name: string; tokens: string[] }> = TOOLS.filter((t) => t.lifecycle?.status !== 'deprecated').map((t) => ({
 	name: t.name,
 	// Weight name tokens 3× so exact-name matches dominate
 	tokens: filterStops([
@@ -411,6 +407,13 @@ describe('A1 — tool-pick eval harness (baseline)', () => {
 		for (const { label } of CORPUS) {
 			expect(toolNames.has(label), `label '${label}' is not a known tool`).toBe(true);
 		}
+	});
+
+	it('deprecated tools are neither selection candidates nor positive corpus labels', () => {
+		const deprecated = new Set(TOOLS.filter((tool) => tool.lifecycle?.status === 'deprecated').map((tool) => tool.name));
+		expect(deprecated).toEqual(new Set(['query_ual']));
+		expect(toolTexts.filter((tool) => deprecated.has(tool.name))).toEqual([]);
+		expect(CORPUS.filter(({ label }) => deprecated.has(label))).toEqual([]);
 	});
 
 	it('corpus is large enough for a meaningful signal (>=100 items)', () => {
