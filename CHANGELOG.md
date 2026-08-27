@@ -4,6 +4,49 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.68.0] - 2026-08-27
+
+**No scoring-model change.** `SCORING_MODEL_VERSION` remains **1.14.0** and
+`@blackveil/dns-checks` remains **1.25.0** — no check, weight, threshold, grade
+band, or domain score changes in this release.
+
+### Security
+
+- **Authenticated session identity is now authoritative across every internal
+  trust boundary** (#803). OAuth mint/revoke, tool delegation, Brand Watch
+  cleanup and webhook delivery, tenant operations, M365, TLS, recon, grade
+  probes, and internal web calls use distinct capabilities and fail closed on
+  missing, ambiguous, or mismatched caller identity.
+- **OAuth and quota state transitions are atomic and bounded** (#803).
+  Registration and token flows enforce exact redirect parsing, PKCE, issuer,
+  lifetime, generation, and revocation contracts; trial, anonymous, tenant, and
+  reservation limits are principal-scoped and cannot be bypassed by concurrent
+  requests.
+- **Untrusted network input is bounded before allocation and decode** (#803).
+  HTTP redirects and bodies, DNS and raw TCP exchanges, SSE streams, cache
+  cardinality, ancillary destinations, and WHOIS connect/open/write/read phases
+  now have explicit budgets, sanitized failure categories, and safe unread-body
+  disposal.
+- **Brand Watch delivery is replay-safe** (#803). Parent, target, and outbox
+  state is committed transactionally; retry identifiers are deterministic; and
+  failed deliveries remain persisted for controlled replay instead of being
+  silently lost.
+
+### Changed
+
+- `query_ual` remains a deprecated, local compatibility tombstone: it still
+  applies validation and authorization gates, returns `query_ual_deprecated`,
+  and never proxies to M365. The three active M365 tools use the dedicated M365
+  bearer and discriminated principal identity (#803).
+
+### Operations
+
+- Full rollout requires the documented distinct caller/validator secrets and
+  `scripts/brand-audit/sql/0001_watch_webhook_outbox.sql` before the MCP
+  producer is published. Deploy WHOIS and infrastructure-probe satellites
+  first, and keep M365 tenant reads disabled until both sides of the capability
+  pair are verified (#803).
+
 ## [3.67.0] - 2026-08-26
 
 **Scoring-model change.** `SCORING_MODEL_VERSION` 1.13.0 → **1.14.0** and `@blackveil/dns-checks` 1.24.0 → **1.25.0** (`PARITY_CORPUS_VERSION` in lockstep). DNSSEC and DKIM results can move downward for the affected evidence shapes; the DMARC evidence correction is score-neutral. Full rationale is recorded in `src/lib/scoring-version.ts`.
