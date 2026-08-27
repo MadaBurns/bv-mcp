@@ -67,7 +67,7 @@
 	},
 	"dependencies": {
 		"@blackveil/dns-checks": "^1.0.4",
-		"@streamparser/json-whatwg": "^0.0.25",
+		"@streamparser/json-whatwg": "^0.0.26",
 		"drizzle-orm": "0.45.2",
 		"marked": "^18.0.9",
 		"pdf-lib": "^1.17.1",
