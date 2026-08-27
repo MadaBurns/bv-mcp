@@ -26,6 +26,7 @@ import {
 	type BrandAuditWatchWebhookPayload,
 } from '../../src/schemas/brand-audit-watch-webhook';
 import type { BrandAuditConsumerDeps } from '../../src/queue/brand-audit-consumer';
+import type { CheckResult } from '../../src/lib/scoring';
 
 const validPayload: BrandAuditWatchWebhookPayload = {
 	schemaVersion: 1,
@@ -164,7 +165,7 @@ function makeEmitterD1(opts: {
 	return db;
 }
 
-function makeBrandAuditResult(domains: Array<{ domain: string; bucket: string }>) {
+function makeBrandAuditResult(domains: Array<{ domain: string; bucket: string }>): CheckResult {
 	return {
 		category: 'brand_discovery' as const,
 		passed: true,

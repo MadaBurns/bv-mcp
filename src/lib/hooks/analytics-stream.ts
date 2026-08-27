@@ -25,7 +25,6 @@ interface AnalyticsHookEnv {
 	BV_WEB?: { fetch: (input: RequestInfo, init?: RequestInit) => Promise<Response> };
 	/** Shared bearer for bv-web-prod's internal routes. Absent on OSS/self-host. */
 	BV_WEB_INTERNAL_KEY?: string;
-	[key: string]: unknown;
 }
 
 export async function streamScanResult(env: AnalyticsHookEnv, payload: unknown): Promise<void> {

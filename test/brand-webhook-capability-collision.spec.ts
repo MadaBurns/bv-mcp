@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { createExecutionContext } from 'cloudflare:test';
 import { describe, expect, it } from 'vitest';
 
 import worker from '../src/index';
 import { brandWebhookCapabilityCollision } from '../src/queue/brand-audit-consumer';
 
 const BRAND_KEY = 'b'.repeat(48);
+
+function executionContext(): ExecutionContext {
+	return {
+		waitUntil() {},
+		passThroughOnException() {},
+	} as unknown as ExecutionContext;
+}
 
 function mcpRequest(): Request {
 	return new Request('https://mcp.example.test/mcp', {
@@ -28,7 +34,7 @@ describe('Brand Drift capability separation at the public fetch boundary', () =>
 				[peerKey]: BRAND_KEY,
 			} as unknown as Parameters<typeof worker.fetch>[1];
 
-			const response = await worker.fetch(mcpRequest(), targetEnv, createExecutionContext());
+			const response = await worker.fetch(mcpRequest(), targetEnv, executionContext());
 
 			expect(response.status).toBe(503);
 			expect(response.headers.get('cache-control')).toBe('no-store');

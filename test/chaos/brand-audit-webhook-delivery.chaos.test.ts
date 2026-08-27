@@ -18,6 +18,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import type { BrandAuditConsumerDeps } from '../../src/queue/brand-audit-consumer';
 import { computeClassificationHash } from '../../src/lib/brand-audit-classification-diff';
+import type { CheckResult } from '../../src/lib/scoring';
 
 interface D1Call {
 	sql: string;
@@ -135,9 +136,10 @@ function makeMockD1(opts: MockDbOpts = {}) {
 	};
 }
 
-function makeBrandAuditResult(domains: Array<{ domain: string; bucket: string }>) {
+function makeBrandAuditResult(domains: Array<{ domain: string; bucket: string }>): CheckResult {
 	return {
 		category: 'brand_discovery',
+		passed: true,
 		score: 100,
 		findings: domains.map((d) => ({
 			category: 'brand_discovery',

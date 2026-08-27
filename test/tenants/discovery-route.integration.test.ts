@@ -10,7 +10,7 @@ const TEST_TENANT_ID = 'tenant-1';
 const TEST_TENANT_BINDING = 'TENANT_DB_TENANT_1';
 
 type TestEnv = typeof env & {
-	BV_WEB_INTERNAL_KEY?: string;
+	BV_MCP_TENANT_KEY?: string;
 	REQUIRE_INTERNAL_AUTH?: string;
 	TENANT_REGISTRY_DB?: D1Database;
 	[k: string]: unknown;
@@ -57,7 +57,7 @@ describe('Tenant Discovery Route Integration', () => {
 
 	it('should return 400 for invalid request body', async () => {
 		const e = env as TestEnv;
-		e.BV_WEB_INTERNAL_KEY = TEST_INTERNAL_KEY;
+		e.BV_MCP_TENANT_KEY = TEST_INTERNAL_KEY;
 		e.REQUIRE_INTERNAL_AUTH = 'true';
 
 		const req = new Request('https://api.blackveil.local/internal/tenants/discover', {
@@ -82,7 +82,7 @@ describe('Tenant Discovery Route Integration', () => {
 
 	it('should successfully run discovery and return candidates', async () => {
 		const e = env as TestEnv;
-		e.BV_WEB_INTERNAL_KEY = TEST_INTERNAL_KEY;
+		e.BV_MCP_TENANT_KEY = TEST_INTERNAL_KEY;
 		e.REQUIRE_INTERNAL_AUTH = 'true';
 
 		const registry = makeMockD1({

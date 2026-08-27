@@ -186,7 +186,7 @@ async function probeRdap(domain: string): Promise<RdapProbeResult> {
 			headers: { Accept: 'application/rdap+json, application/json' },
 		});
 		if (!resp.ok) {
-			void resp.body?.cancel();
+			void resp.body?.cancel().catch(() => undefined);
 			return EMPTY_RDAP_PROBE;
 		}
 		const data = await readJsonResponseCapped<{ events?: Array<{ eventAction?: string; eventDate?: string }> }>(

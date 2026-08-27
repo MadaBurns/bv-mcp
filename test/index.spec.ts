@@ -64,7 +64,7 @@ async function readSseChunk(response: Response): Promise<string> {
 
 /** Helper: initialize a session and return the Mcp-Session-Id */
 async function initSession(options?: { authToken?: string; targetEnv?: Env }): Promise<string> {
-	const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+	const request = new Request('http://example.com/mcp', {
 		method: 'POST',
 		headers: {
 			'Content-Type': 'application/json',
@@ -86,7 +86,7 @@ describe('DNS Security MCP Server', () => {
 			const bigString = 'a'.repeat(10 * 1024);
 			const payload = JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { big: bigString } });
 			expect(Buffer.byteLength(payload)).toBeGreaterThan(10 * 1024);
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: payload,
@@ -102,7 +102,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('MCP CORS preflight', () => {
 		it('allows standard Streamable HTTP protocol and resumability headers', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'OPTIONS',
 				headers: {
 					Origin: 'http://example.com',
@@ -136,7 +136,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('POST /mcp - Content-Type validation', () => {
 		it('accepts application/json', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -148,7 +148,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('accepts application/json with charset parameter', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json; charset=utf-8' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -160,7 +160,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('accepts missing Content-Type for client compatibility', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
 			});
@@ -173,7 +173,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('rejects text/plain with 415', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'text/plain' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -187,7 +187,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('rejects multipart/form-data with 415', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'multipart/form-data' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -199,7 +199,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('rejects application/xml with 415', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/xml' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -213,7 +213,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('POST /mcp - optional bearer auth', () => {
 		it('runs unauthenticated when BV_API_KEY is unset/empty', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -226,7 +226,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('allows missing bearer token through as unauthenticated when auth is configured', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -240,7 +240,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('returns 401 JSON-RPC error when auth token is invalid', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -298,7 +298,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('rejects unrecognized api_key query param', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp?api_key=wrong-key', {
+			const request = new Request('http://example.com/mcp?api_key=wrong-key', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -311,7 +311,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('accepts valid api_key query param as bearer equivalent', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-			const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com/mcp?api_key=${TEST_API_KEY}`, {
+			const request = new Request(`http://example.com/mcp?api_key=${TEST_API_KEY}`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -325,7 +325,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('Authorization header takes precedence over api_key query param', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp?api_key=wrong-key', {
+			const request = new Request('http://example.com/mcp?api_key=wrong-key', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -366,7 +366,7 @@ describe('DNS Security MCP Server', () => {
 				BRAND_AUDIT_DB: brandAuditDb,
 				BRAND_REPORTS: {} as R2Bucket,
 			} as unknown as Env;
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/reports/audit-1/example.com.pdf', {
+			const request = new Request('http://example.com/reports/audit-1/example.com.pdf', {
 				headers: { Authorization: `Bearer ${TEST_API_KEY}` },
 			});
 			const ctx = createExecutionContext();
@@ -386,7 +386,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('GET /health', () => {
 		it('returns status ok (unit style)', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health');
+			const request = new Request('http://example.com/health');
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
@@ -407,7 +407,7 @@ describe('DNS Security MCP Server', () => {
 		// F5 — owner-gated deep readiness mode. The cheap default path stays
 		// untouched (no auth, no binding I/O); ?deep=1 requires an owner credential.
 		it('cheap default path does NOT include a bindings block', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health');
+			const request = new Request('http://example.com/health');
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
@@ -419,7 +419,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('deep mode without an owner credential is 403', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health?deep=1');
+			const request = new Request('http://example.com/health?deep=1');
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, authEnv, ctx);
 			await waitOnExecutionContext(ctx);
@@ -430,7 +430,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('deep mode with a wrong bearer is 403', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health?deep=1', {
+			const request = new Request('http://example.com/health?deep=1', {
 				headers: { Authorization: 'Bearer wrong-token' },
 			});
 			const ctx = createExecutionContext();
@@ -441,7 +441,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('deep mode with an owner credential returns per-binding status', async () => {
 			const authEnv = { ...env, BV_API_KEY: TEST_API_KEY } as Env;
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health?deep=1', {
+			const request = new Request('http://example.com/health?deep=1', {
 				headers: { Authorization: `Bearer ${TEST_API_KEY}` },
 			});
 			const ctx = createExecutionContext();
@@ -467,7 +467,7 @@ describe('DNS Security MCP Server', () => {
 				BV_API_KEY: TEST_API_KEY,
 				REQUIRE_PRODUCTION_BINDINGS: 'true',
 			} as Env & Record<string, unknown>;
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/health?deep=1', {
+			const request = new Request('http://example.com/health?deep=1', {
 				headers: { Authorization: `Bearer ${TEST_API_KEY}` },
 			});
 			const ctx = createExecutionContext();
@@ -495,7 +495,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('POST /mcp - initialize', () => {
 		it('returns server info, capabilities, and Mcp-Session-Id header', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
@@ -529,7 +529,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('echoes the client-requested protocolVersion when supported', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-03-26' } }),
@@ -550,7 +550,7 @@ describe('DNS Security MCP Server', () => {
 			vi.spyOn(Date, 'now').mockReturnValue(Date.UTC(2026, 0, 1, 12, 30, 30));
 			let lastResponse: Response | undefined;
 			for (let i = 0; i < 31; i++) {
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				const request = new Request('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -572,7 +572,7 @@ describe('DNS Security MCP Server', () => {
 	describe('POST /mcp - tools/list', () => {
 		it('returns all tools', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
@@ -601,7 +601,7 @@ describe('DNS Security MCP Server', () => {
 	describe('POST /mcp - resources/list', () => {
 		it('returns resource list', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 3, method: 'resources/list', params: {} }),
@@ -617,7 +617,7 @@ describe('DNS Security MCP Server', () => {
 	describe('POST /mcp - resources/read', () => {
 		it('returns resource content for valid URI', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
@@ -641,7 +641,7 @@ describe('DNS Security MCP Server', () => {
 	describe('POST /mcp - ping', () => {
 		it('returns empty result for ping method', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 21, method: 'ping', params: {} }),
@@ -660,7 +660,7 @@ describe('DNS Security MCP Server', () => {
 	describe('POST /mcp - notifications', () => {
 		it('returns 202 for notifications/initialized (no id)', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized' }),
@@ -673,7 +673,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('returns 202 for other notifications (no id)', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/some_event' }),
@@ -686,7 +686,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('returns 202 for notification with null id', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', id: null, method: 'notifications/initialized' }),
@@ -700,7 +700,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('POST /mcp - JSON-RPC id validation', () => {
 		it('rejects non-string/number/null id (object)', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: { invalid: true }, method: 'initialize', params: {} }),
@@ -715,7 +715,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('rejects boolean id', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: true, method: 'initialize', params: {} }),
@@ -732,7 +732,7 @@ describe('DNS Security MCP Server', () => {
 	describe('POST /mcp - invalid requests', () => {
 		it('rejects invalid JSON', async () => {
 			const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: '{"secret":"should-not-appear',
@@ -749,7 +749,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('rejects invalid JSON-RPC', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ method: 'test' }),
@@ -764,7 +764,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('returns method not found for unknown methods', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 4, method: 'unknown/method', params: {} }),
@@ -777,7 +777,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('rejects non-initialize requests without session ID', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 10, method: 'tools/list', params: {} }),
@@ -794,7 +794,7 @@ describe('DNS Security MCP Server', () => {
 	describe('POST /mcp - batch requests', () => {
 		it('returns a JSON array for mixed request and notification batches', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify([
@@ -816,7 +816,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('returns 202 for notification-only batches', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify([
@@ -832,7 +832,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('rejects an anonymous batch above four messages before catalog fan-out', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -854,7 +854,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('returns an SSE event for batch responses when the client accepts event-stream', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -876,7 +876,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('returns an error payload when initialize is batched with other messages', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify([
@@ -900,7 +900,7 @@ describe('DNS Security MCP Server', () => {
 	describe('POST /mcp - tools/call domain validation', () => {
 		it('accepts scan alias and runs scan_domain', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
@@ -921,7 +921,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('rejects localhost domains', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
@@ -941,7 +941,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('rejects .local domains', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
@@ -960,7 +960,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('rejects short-form loopback literals', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
@@ -981,7 +981,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('rejects octal loopback literals', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
@@ -1002,7 +1002,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('rejects public IPv4 literals', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
@@ -1023,7 +1023,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('rejects alternate numeric forms of public IPv4 literals', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
@@ -1047,7 +1047,7 @@ describe('DNS Security MCP Server', () => {
 			const domain254 = ['a'.repeat(63), 'b'.repeat(63), 'c'.repeat(63), 'd'.repeat(62)].join('.');
 			expect(domain254.length).toBe(254);
 
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
@@ -1070,7 +1070,7 @@ describe('DNS Security MCP Server', () => {
 	describe('POST /mcp - explain_finding', () => {
 		it('returns explanation for known finding', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({
@@ -1091,7 +1091,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('Streamable HTTP transport - SSE', () => {
 		it('POST with Accept: text/event-stream returns SSE', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1113,7 +1113,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('GET /mcp returns SSE stream with valid session', async () => {
 			const sessionId = await initSession();
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
 					Accept: 'text/event-stream',
@@ -1128,7 +1128,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('GET /mcp rejects invalid session ID', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
 					Accept: 'text/event-stream',
@@ -1146,7 +1146,7 @@ describe('DNS Security MCP Server', () => {
 		it('GET /mcp returns 405 (per MCP spec) when Accept cannot satisfy text/event-stream', async () => {
 			// MCP 2025-06-18 Streamable HTTP: a GET to the MCP endpoint returns an SSE stream or
 			// 405 Method Not Allowed — 405, not 406, is the status clients handle as "use POST".
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
 					Accept: 'application/json',
@@ -1163,7 +1163,7 @@ describe('DNS Security MCP Server', () => {
 			// RFC 9110 content negotiation: `Accept: */*` DOES accept text/event-stream, so it must
 			// not be rejected at the SSE-accept gate. It should fall through to the normal session
 			// check (400 missing session), NOT 405/406.
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
 					Accept: '*/*',
@@ -1178,7 +1178,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('GET /mcp requires an existing session header', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
 					Accept: 'text/event-stream',
@@ -1195,7 +1195,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('Claude Desktop compatibility', () => {
 		it('supports the Claude Desktop remote connector lifecycle over Streamable HTTP', async () => {
-			const initializeRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const initializeRequest = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1231,7 +1231,7 @@ describe('DNS Security MCP Server', () => {
 			expect(initializeBody.result.protocolVersion).toBe('2025-03-26');
 			expect(initializeBody.result.serverInfo.name).toBe('Blackveil DNS');
 
-			const initializedNotification = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const initializedNotification = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1246,7 +1246,7 @@ describe('DNS Security MCP Server', () => {
 			await waitOnExecutionContext(initializedCtx);
 			expect(initializedResponse.status).toBe(202);
 
-			const toolsListRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const toolsListRequest = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1268,7 +1268,7 @@ describe('DNS Security MCP Server', () => {
 			expect(toolsListBody.result.tools.some((tool) => tool.name === 'scan_domain')).toBe(true);
 			expect(toolsListBody.result.tools.some((tool) => tool.name === 'explain_finding')).toBe(true);
 
-			const notificationsRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const notificationsRequest = new Request('http://example.com/mcp', {
 				method: 'GET',
 				headers: {
 					Accept: 'text/event-stream',
@@ -1286,7 +1286,7 @@ describe('DNS Security MCP Server', () => {
 		it('streams Claude Desktop style tools/call responses over SSE', async () => {
 			const sessionId = await initSession();
 
-			const initializedNotification = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const initializedNotification = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1301,7 +1301,7 @@ describe('DNS Security MCP Server', () => {
 			await waitOnExecutionContext(initializedCtx);
 			expect(initializedResponse.status).toBe(202);
 
-			const toolCallRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const toolCallRequest = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1335,7 +1335,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('Legacy HTTP+SSE transport', () => {
 		it('opens a legacy SSE stream on /mcp/sse and emits the endpoint event', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+			const request = new Request('http://example.com/mcp/sse', {
 				method: 'GET',
 				headers: {
 					Accept: 'text/event-stream',
@@ -1362,7 +1362,7 @@ describe('DNS Security MCP Server', () => {
 			for (let index = 0; index < 30; index++) {
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(
-					new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+					new Request('http://example.com/mcp/sse', {
 						method: 'GET',
 						headers: {
 							Accept: 'text/event-stream',
@@ -1380,7 +1380,7 @@ describe('DNS Security MCP Server', () => {
 
 			const blockedCtx = createExecutionContext();
 			const blocked = await worker.fetch(
-				new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+				new Request('http://example.com/mcp/sse', {
 					method: 'GET',
 					headers: {
 						Accept: 'text/event-stream',
@@ -1404,7 +1404,7 @@ describe('DNS Security MCP Server', () => {
 			await vi.advanceTimersByTimeAsync(61_000);
 			const concurrentCtx = createExecutionContext();
 			const concurrentBlocked = await worker.fetch(
-				new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+				new Request('http://example.com/mcp/sse', {
 					method: 'GET',
 					headers: {
 						Accept: 'text/event-stream',
@@ -1440,7 +1440,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = streamResponse.headers.get('mcp-session-id');
 			expect(sessionId).toBeTruthy();
 
-			const initializeRequest = new Request<unknown, IncomingRequestCfProperties>(endpoint, {
+			const initializeRequest = new Request(endpoint, {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1461,7 +1461,7 @@ describe('DNS Security MCP Server', () => {
 			expect(payload.result.protocolVersion).toBe('2025-06-18');
 			expect(payload.result.serverInfo.name).toBe('Blackveil DNS');
 
-			const deleteRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const deleteRequest = new Request('http://example.com/mcp', {
 				method: 'DELETE',
 				headers: { 'Mcp-Session-Id': sessionId! },
 			});
@@ -1472,7 +1472,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('rejects an anonymous legacy batch containing five requests before dispatch', async () => {
-			const openRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+			const openRequest = new Request('http://example.com/mcp/sse', {
 				method: 'GET',
 				headers: { Accept: 'text/event-stream' },
 			});
@@ -1508,7 +1508,7 @@ describe('DNS Security MCP Server', () => {
 	describe('Streamable HTTP transport - DELETE session', () => {
 		it('DELETE /mcp terminates session', async () => {
 			const sessionId = await initSession();
-			const delReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const delReq = new Request('http://example.com/mcp', {
 				method: 'DELETE',
 				headers: { 'Mcp-Session-Id': sessionId },
 			});
@@ -1517,7 +1517,7 @@ describe('DNS Security MCP Server', () => {
 			await waitOnExecutionContext(ctx1);
 			expect(delRes.status).toBe(204);
 
-			const postReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const postReq = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json', 'Mcp-Session-Id': sessionId },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
@@ -1529,7 +1529,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('DELETE /mcp rejects invalid session', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'DELETE',
 				headers: { 'Mcp-Session-Id': 'nonexistent' },
 			});
@@ -1546,7 +1546,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
 			// Send 15 tools/call requests with valid auth — all should succeed
 			for (let i = 0; i < 15; i++) {
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				const request = new Request('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -1572,7 +1572,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession();
 			let rateLimited = false;
 			for (let i = 0; i < 51; i++) {
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				const request = new Request('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -1601,7 +1601,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession();
 
 			for (let i = 0; i < 50; i++) {
-				const notificationRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				const notificationRequest = new Request('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -1619,7 +1619,7 @@ describe('DNS Security MCP Server', () => {
 				expect(response.status).toBe(202);
 			}
 
-			const blockedRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const blockedRequest = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1645,7 +1645,7 @@ describe('DNS Security MCP Server', () => {
 				const sessionId = await initSession();
 
 				for (let i = 0; i < 25; i++) {
-					const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+					const request = new Request('http://example.com/mcp', {
 						method: 'POST',
 						headers: {
 							'Content-Type': 'application/json',
@@ -1666,7 +1666,7 @@ describe('DNS Security MCP Server', () => {
 					vi.advanceTimersByTime(61_000);
 				}
 
-				const blockedRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				const blockedRequest = new Request('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -1702,7 +1702,7 @@ describe('DNS Security MCP Server', () => {
 			// request lands in the shared 'unknown' bucket — so 25 hits exhaust the
 			// daily cap and a 26th from a different spoofed XFF still 429s.
 			for (let i = 0; i < 25; i++) {
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/badge/example.invalid', {
+				const request = new Request('http://example.com/badge/example.invalid', {
 					headers: { 'x-forwarded-for': '198.51.100.20' },
 				});
 				const ctx = createExecutionContext();
@@ -1713,7 +1713,7 @@ describe('DNS Security MCP Server', () => {
 
 			// Rotating XFF must NOT mint a fresh bucket — all 'unknown' IPs share one,
 			// so the 26th request 429s regardless of the spoofed forwarding header.
-			const differentIpRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/badge/example.invalid', {
+			const differentIpRequest = new Request('http://example.com/badge/example.invalid', {
 				headers: { 'x-forwarded-for': '203.0.113.30' },
 			});
 			const differentIpCtx = createExecutionContext();
@@ -1739,7 +1739,7 @@ describe('DNS Security MCP Server', () => {
 					expect((await checkDistinctDomainDailyLimitWithCoordinator(ip, `seed-${index}`, 12, env.QUOTA_COORDINATOR))?.allowed).toBe(true);
 				}
 
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/badge/example.com', {
+				const request = new Request('http://example.com/badge/example.com', {
 					headers: { 'cf-connecting-ip': ip },
 				});
 				const ctx = createExecutionContext();
@@ -1758,7 +1758,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession({ authToken: TEST_API_KEY, targetEnv: authEnv });
 
 			for (let i = 0; i < 6; i++) {
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				const request = new Request('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -1786,7 +1786,7 @@ describe('DNS Security MCP Server', () => {
 			// Exhaust the rate limit with tools/call requests first
 			const sessionId = await initSession();
 			for (let i = 0; i < 51; i++) {
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				const request = new Request('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -1815,7 +1815,7 @@ describe('DNS Security MCP Server', () => {
 			for (const { method, params } of protocolMethods) {
 				const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 				if (method !== 'initialize') headers['Mcp-Session-Id'] = sessionId;
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				const request = new Request('http://example.com/mcp', {
 					method: 'POST',
 					headers,
 					body: JSON.stringify({ jsonrpc: '2.0', id: 50, method, params }),
@@ -1833,7 +1833,7 @@ describe('DNS Security MCP Server', () => {
 			// The first 60 protocol messages fit the dedicated control-plane minute
 			// budget; the rest are denied instead of amplifying responses indefinitely.
 			for (let i = 0; i < 65; i++) {
-				const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				const request = new Request('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -1851,7 +1851,7 @@ describe('DNS Security MCP Server', () => {
 			// tools/call has an independent quota stack and remains available.
 			const toolCtx = createExecutionContext();
 			const toolResponse = await worker.fetch(
-				new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+				new Request('http://example.com/mcp', {
 					method: 'POST',
 					headers: {
 						'Content-Type': 'application/json',
@@ -1876,7 +1876,7 @@ describe('DNS Security MCP Server', () => {
 	describe('Session lifecycle', () => {
 		/** Helper: terminate a session via DELETE so subsequent requests see it as expired */
 		async function terminateSession(sessionId: string): Promise<void> {
-			const delReq = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const delReq = new Request('http://example.com/mcp', {
 				method: 'DELETE',
 				headers: { 'Mcp-Session-Id': sessionId },
 			});
@@ -1890,7 +1890,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession();
 			await terminateSession(sessionId);
 
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1913,7 +1913,7 @@ describe('DNS Security MCP Server', () => {
 			// authoritative, unexpired server-issued record remains in SESSION_STORE.
 			ACTIVE_SESSIONS.delete(sessionId);
 
-			const toolRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const toolRequest = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1947,7 +1947,7 @@ describe('DNS Security MCP Server', () => {
 			expect(Array.isArray(toolBody.result?.content)).toBe(true);
 
 			// Follow-up request with the same active session ID succeeds.
-			const followupRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const followupRequest = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1963,7 +1963,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('rejects notifications/initialized without the assigned session ID', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -1981,7 +1981,7 @@ describe('DNS Security MCP Server', () => {
 			const sessionId = await initSession();
 			await terminateSession(sessionId);
 
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const request = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -2004,7 +2004,7 @@ describe('DNS Security MCP Server', () => {
 			await terminateSession(sessionId);
 
 			// Step 3: tools/list with terminated session → 404
-			const expiredRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const expiredRequest = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -2019,7 +2019,7 @@ describe('DNS Security MCP Server', () => {
 			expect(expiredResponse.status).toBe(404);
 
 			// Step 4: Re-initialize with fresh session
-			const reInitRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const reInitRequest = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -2036,7 +2036,7 @@ describe('DNS Security MCP Server', () => {
 			expect(newSessionId).not.toBe(sessionId);
 
 			// Step 5: notifications/initialized with new session → 202
-			const notifRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const notifRequest = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -2050,7 +2050,7 @@ describe('DNS Security MCP Server', () => {
 			expect(notifResponse.status).toBe(202);
 
 			// Step 6: tools/list with new session → 200
-			const toolsRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+			const toolsRequest = new Request('http://example.com/mcp', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
@@ -2067,7 +2067,7 @@ describe('DNS Security MCP Server', () => {
 
 		it('returns HTTP 404 for legacy SSE POST with terminated session', async () => {
 			// Open legacy SSE stream
-			const openRequest = new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp/sse', {
+			const openRequest = new Request('http://example.com/mcp/sse', {
 				method: 'GET',
 				headers: { Accept: 'text/event-stream' },
 			});
@@ -2083,7 +2083,7 @@ describe('DNS Security MCP Server', () => {
 			await terminateSession(sessionId!);
 
 			// POST to legacy endpoint with terminated session → must get HTTP 404 directly
-			const request = new Request<unknown, IncomingRequestCfProperties>(endpoint, {
+			const request = new Request(endpoint, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/list', params: {} }),
@@ -2101,7 +2101,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('404 fallback', () => {
 		it('returns 404 for unknown routes', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/unknown');
+			const request = new Request('http://example.com/unknown');
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
@@ -2111,7 +2111,7 @@ describe('DNS Security MCP Server', () => {
 
 	describe('OAuth well-known endpoints', () => {
 		it('returns 404 for OAuth discovery when OAuth is disabled', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/.well-known/oauth-authorization-server');
+			const request = new Request('http://example.com/.well-known/oauth-authorization-server');
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, { ...env, ENABLE_OAUTH: 'false' }, ctx);
 			await waitOnExecutionContext(ctx);
@@ -2119,7 +2119,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('returns RFC 8414 metadata for /.well-known/oauth-authorization-server', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/.well-known/oauth-authorization-server');
+			const request = new Request('http://example.com/.well-known/oauth-authorization-server');
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
@@ -2133,7 +2133,7 @@ describe('DNS Security MCP Server', () => {
 		});
 
 		it('returns RFC 9728 metadata for /.well-known/oauth-protected-resource', async () => {
-			const request = new Request<unknown, IncomingRequestCfProperties>('http://example.com/.well-known/oauth-protected-resource');
+			const request = new Request('http://example.com/.well-known/oauth-protected-resource');
 			const ctx = createExecutionContext();
 			const response = await worker.fetch(request, env, ctx);
 			await waitOnExecutionContext(ctx);
@@ -2149,7 +2149,7 @@ describe('DNS Security MCP Server', () => {
 			// resource URL, e.g. /.well-known/oauth-protected-resource/mcp. Both the
 			// bare and path-suffixed variants must serve the same metadata document.
 			for (const path of ['/.well-known/oauth-authorization-server/mcp', '/.well-known/oauth-protected-resource/mcp']) {
-				const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com${path}`);
+				const request = new Request(`http://example.com${path}`);
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(request, env, ctx);
 				await waitOnExecutionContext(ctx);
@@ -2165,7 +2165,7 @@ describe('DNS Security MCP Server', () => {
 				'/.well-known/oauth-protected-resource',
 				'/.well-known/oauth-protected-resource/mcp',
 			]) {
-				const request = new Request<unknown, IncomingRequestCfProperties>(`http://example.com${path}`);
+				const request = new Request(`http://example.com${path}`);
 				const ctx = createExecutionContext();
 				const response = await worker.fetch(request, env, ctx);
 				await waitOnExecutionContext(ctx);

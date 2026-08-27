@@ -37,7 +37,7 @@ describe('FIND-16: /internal/* network guard — public internet requests return
 		// cf-connecting-ip is set by Cloudflare on every public-internet request.
 		// Its presence triggers the network guard in internalRoutes middleware,
 		// returning 404 to make the /internal/* path invisible.
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/tools/call', {
+		const req = new Request('http://example.com/internal/tools/call', {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
@@ -50,7 +50,7 @@ describe('FIND-16: /internal/* network guard — public internet requests return
 	});
 
 	it('returns 404 for GET /internal/trial-keys when cf-connecting-ip is present', async () => {
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/trial-keys', {
+		const req = new Request('http://example.com/internal/trial-keys', {
 			method: 'GET',
 			headers: { 'cf-connecting-ip': '203.0.113.5' },
 		});
@@ -59,7 +59,7 @@ describe('FIND-16: /internal/* network guard — public internet requests return
 	});
 
 	it('returns 404 for POST /internal/oauth/grants when cf-connecting-ip is present', async () => {
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/grants', {
+		const req = new Request('http://example.com/internal/oauth/grants', {
 			method: 'POST',
 			headers: {
 				'Content-Type': 'application/json',
@@ -81,7 +81,7 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 		// No cf-connecting-ip → clears the network guard (simulates service-binding call).
 		// No grant key → the strict credential-minting gate fails closed with 503.
 		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: undefined } as TestEnv;
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/grants', {
+		const req = new Request('http://example.com/internal/oauth/grants', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({}),
@@ -97,7 +97,7 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 			BV_MCP_OAUTH_MINT_KEY: undefined,
 			BV_MCP_OAUTH_REVOKE_KEY: revokeKey,
 		} as TestEnv;
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/grants', {
+		const req = new Request('http://example.com/internal/oauth/grants', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${revokeKey}` },
 			body: JSON.stringify({}),
@@ -112,7 +112,7 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 			BV_MCP_OAUTH_MINT_KEY: mintKey,
 			BV_MCP_OAUTH_REVOKE_KEY: undefined,
 		} as TestEnv;
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/revoke-subject', {
+		const req = new Request('http://example.com/internal/oauth/revoke-subject', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${mintKey}` },
 			body: JSON.stringify({ sub: 'victim' }),
@@ -127,12 +127,12 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 			BV_MCP_OAUTH_MINT_KEY: shared,
 			BV_MCP_OAUTH_REVOKE_KEY: shared,
 		} as TestEnv;
-		const grant = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/grants', {
+		const grant = new Request('http://example.com/internal/oauth/grants', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
 			body: JSON.stringify({}),
 		});
-		const revoke = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/revoke-subject', {
+		const revoke = new Request('http://example.com/internal/oauth/revoke-subject', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
 			body: JSON.stringify({ sub: 'victim' }),
@@ -144,12 +144,12 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 	it('fails closed if either OAuth capability aliases the Brand Drift sender key', async () => {
 		const shared = 'brand-webhook-oauth-alias-key-32-bytes-minimum';
 		const distinct = 'distinct-oauth-capability-key-32-bytes-minimum';
-		const grant = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/grants', {
+		const grant = new Request('http://example.com/internal/oauth/grants', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
 			body: JSON.stringify({}),
 		});
-		const revoke = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/revoke-subject', {
+		const revoke = new Request('http://example.com/internal/oauth/revoke-subject', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
 			body: JSON.stringify({ sub: 'victim' }),
@@ -184,7 +184,7 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 			BV_MCP_OAUTH_REVOKE_KEY: shared,
 			OAUTH_SIGNING_SECRET: shared,
 		} as TestEnv;
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/revoke-subject', {
+		const req = new Request('http://example.com/internal/oauth/revoke-subject', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${shared}` },
 			body: JSON.stringify({ sub: 'victim' }),
@@ -197,7 +197,7 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 
 	it('returns 503 for POST /internal/oauth/revoke-subject with no BV_MCP_OAUTH_REVOKE_KEY', async () => {
 		const customEnv = { ...env, BV_MCP_OAUTH_REVOKE_KEY: undefined } as TestEnv;
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/oauth/revoke-subject', {
+		const req = new Request('http://example.com/internal/oauth/revoke-subject', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ sub: 'user-123' }),
@@ -210,7 +210,7 @@ describe('FIND-16: OAuth administration routes fail closed when their capability
 		// /internal/trial-keys also mints credentials — trialKeysAuthGate applies the same
 		// fail-closed pattern as /oauth/grants.
 		const customEnv = { ...env, BV_MCP_OAUTH_MINT_KEY: undefined } as TestEnv;
-		const req = new Request<unknown, IncomingRequestCfProperties>('http://example.com/internal/trial-keys', {
+		const req = new Request('http://example.com/internal/trial-keys', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
 			body: JSON.stringify({ label: 'test-key' }),

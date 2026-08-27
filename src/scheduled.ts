@@ -1137,14 +1137,13 @@ async function deterministicWatchAuditId(row: DueWatchRow): Promise<string> {
  * enqueue side; the diff-and-webhook delivery side is the next slice on the
  * Phase-4 work-list.
  */
-export async function handleBrandAuditWatches(env: Record<string, unknown>, _ctx: ExecutionContext): Promise<void> {
-	const e = env as BrandAuditWatchEnv;
-	if (!e.BRAND_AUDIT_DB || !e.BRAND_AUDIT_QUEUE) return;
+export async function handleBrandAuditWatches(env: BrandAuditWatchEnv, _ctx: ExecutionContext): Promise<void> {
+	if (!env.BRAND_AUDIT_DB || !env.BRAND_AUDIT_QUEUE) return;
 	const now = Date.now();
 
 	let rows: DueWatchRow[] = [];
 	try {
-		const result = await e.BRAND_AUDIT_DB.prepare(
+		const result = await env.BRAND_AUDIT_DB.prepare(
 			`SELECT id, owner_id, domain, interval, webhook_url, last_run_at, last_classification_hash
 			 FROM brand_audit_watches
 			 WHERE active = 1
@@ -1179,16 +1178,16 @@ export async function handleBrandAuditWatches(env: Record<string, unknown>, _ctx
 			// D1 batch is transactional: the queue producer must never observe an
 			// audit message before both the parent and its exact target precondition
 			// exist. INSERT OR IGNORE makes an enqueue/update retry use the same rows.
-			await e.BRAND_AUDIT_DB.batch([
-				e.BRAND_AUDIT_DB.prepare(
+			await env.BRAND_AUDIT_DB.batch([
+				env.BRAND_AUDIT_DB.prepare(
 					'INSERT OR IGNORE INTO brand_audits (id, owner_id, status, total_targets, completed_targets, format, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
 				).bind(auditId, row.owner_id, 'queued', 1, 0, 'json', now, now),
-				e.BRAND_AUDIT_DB.prepare(
+				env.BRAND_AUDIT_DB.prepare(
 					'INSERT OR IGNORE INTO brand_audit_targets (audit_id, target, status, created_at) VALUES (?, ?, ?, ?)',
 				).bind(auditId, row.domain, 'queued', now),
 			]);
 
-			const persisted = (await e.BRAND_AUDIT_DB.prepare(
+			const persisted = (await env.BRAND_AUDIT_DB.prepare(
 				`SELECT a.owner_id, a.total_targets, a.format, t.target
 				 FROM brand_audits a
 				 JOIN brand_audit_targets t ON t.audit_id = a.id
@@ -1210,11 +1209,11 @@ export async function handleBrandAuditWatches(env: Record<string, unknown>, _ctx
 			// One-target batch — every watch is single-domain. A successful enqueue
 			// followed by a failed CAS is safe: the next tick reuses this audit ID and
 			// the consumer's target claim makes the duplicate delivery idempotent.
-			await e.BRAND_AUDIT_QUEUE.send(
+			await env.BRAND_AUDIT_QUEUE.send(
 				{ auditId, target: row.domain, format: 'json', watchId: row.id, ownerId: row.owner_id },
 				{ contentType: 'json' },
 			);
-			await e.BRAND_AUDIT_DB.prepare('UPDATE brand_audit_watches SET last_run_at = ? WHERE id = ? AND active = 1 AND last_run_at IS ?')
+			await env.BRAND_AUDIT_DB.prepare('UPDATE brand_audit_watches SET last_run_at = ? WHERE id = ? AND active = 1 AND last_run_at IS ?')
 				.bind(now, row.id, row.last_run_at)
 				.run();
 		} catch (err) {

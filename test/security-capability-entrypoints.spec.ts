@@ -1,15 +1,21 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { createExecutionContext } from 'cloudflare:test';
 import { describe, expect, it, vi } from 'vitest';
 
 import worker from '../src';
 
 const SHARED = 'scheduled-signing-token-alias-32-bytes-minimum';
 
+function executionContext(): ExecutionContext {
+	return {
+		waitUntil: vi.fn(),
+		passThroughOnException: vi.fn(),
+	} as unknown as ExecutionContext;
+}
+
 describe('security capability separation across Worker entrypoints', () => {
 	it('stops scheduled routing before any handler can transmit an aliased credential', async () => {
-		const ctx = createExecutionContext();
+		const ctx = executionContext();
 		const waitUntil = vi.spyOn(ctx, 'waitUntil');
 		const env = {
 			CF_ANALYTICS_TOKEN: SHARED,
@@ -44,7 +50,7 @@ describe('security capability separation across Worker entrypoints', () => {
 			MCP_ANALYTICS: { writeDataPoint: analyticsWrite },
 		} as unknown as Parameters<NonNullable<typeof worker.queue>>[1];
 
-		await worker.queue!(batch, env, createExecutionContext());
+		await worker.queue!(batch, env, executionContext());
 
 		expect(retryAll).toHaveBeenCalledWith({ delaySeconds: 300 });
 		expect(ackAll).not.toHaveBeenCalled();

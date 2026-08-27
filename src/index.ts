@@ -77,7 +77,8 @@ import { QuotaCoordinator } from './lib/quota-coordinator';
 export { QuotaCoordinator };
 import { ProfileAccumulator, resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
 export { ProfileAccumulator };
-import { reconcileLegacyBrandAuditOwner } from './lib/brand-audit-owner-reconciliation';
+import { reconcileLegacyBrandAuditOwners } from './lib/brand-audit-owner-reconciliation';
+import { LEGACY_BRAND_OWNER_PROOF_HEADER, resolveLegacyBrandOwnerProof } from './lib/brand-audit-legacy-owner-proof';
 
 const TEXT_ENCODER = new TextEncoder();
 const MAX_JSON_RPC_BATCH_SIZE = 20;
@@ -112,7 +113,9 @@ async function reconcileBrandOwnerForRequest(
 	db: D1Database | undefined,
 ): Promise<void> {
 	if (!db || !tierAuthResult.authenticated || !tierAuthResult.keyHash || !includesOwnerScopedBrandOperation(entries)) return;
-	await reconcileLegacyBrandAuditOwner(db, tierAuthResult.legacyOwnerId, tierAuthResult.keyHash);
+	const legacyOwnerIds =
+		tierAuthResult.legacyOwnerIds ?? (tierAuthResult.legacyOwnerId === undefined ? [] : [tierAuthResult.legacyOwnerId]);
+	await reconcileLegacyBrandAuditOwners(db, legacyOwnerIds, tierAuthResult.keyHash);
 }
 
 let hasLoggedAnalyticsBindingStatus = false;
@@ -132,7 +135,6 @@ function logAnalyticsBindingStatus(enabled: boolean): void {
 }
 
 type BvMcpEnv = Env & {
-	[key: string]: unknown;
 	RATE_LIMIT?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
@@ -200,6 +202,7 @@ type BvMcpEnv = Env & {
 	 */
 	M365_TENANT_READS_ENABLED?: string;
 	ALLOWED_ORIGINS?: string;
+	REQUIRE_PRODUCTION_BINDINGS?: string;
 	PROVIDER_SIGNATURES_URL?: string;
 	PROVIDER_SIGNATURES_ALLOWED_HOSTS?: string;
 	PROVIDER_SIGNATURES_SHA256?: string;
@@ -223,6 +226,9 @@ type BvMcpEnv = Env & {
 	BV_INTERNAL_DEV_KEY?: string;
 	/** Second independent static internal-dev key (owner tier, OWNER_ALLOW_IPS-gated). Lets a per-machine key be added without rotating BV_INTERNAL_DEV_KEY. */
 	BV_INTERNAL_DEV_KEY_2?: string;
+	TENANT_REGISTRY_DB?: D1Database;
+	BV_SCANNER_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<unknown> };
+	ALERT_WEBHOOK_URL?: string;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
 	MCP_ANALYTICS_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
@@ -499,7 +505,16 @@ for (const path of authedPaths) {
 				return result === 'allowed' ? origin : '';
 			},
 			allowMethods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
-			allowHeaders: ['Content-Type', 'Accept', 'Mcp-Session-Id', 'MCP-Protocol-Version', 'Last-Event-ID', 'Authorization', 'X-API-Key'],
+			allowHeaders: [
+				'Content-Type',
+				'Accept',
+				'Mcp-Session-Id',
+				'MCP-Protocol-Version',
+				'Last-Event-ID',
+				'Authorization',
+				'X-API-Key',
+				'X-BV-Legacy-Owner-Token',
+			],
 			exposeHeaders: ['Mcp-Session-Id'],
 		}),
 	);
@@ -535,7 +550,7 @@ for (const path of authedPaths) {
 
 		const resolvedClientIp = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 		const clientIp = resolvedClientIp === 'unknown' ? undefined : resolvedClientIp;
-		const tierResult = await resolveTier(token, c.env, clientIp, c.req.url);
+		let tierResult = await resolveTier(token, c.env, clientIp, c.req.url);
 		c.set('tierAuthResult', tierResult);
 		c.set('isAuthenticated', tierResult.authenticated);
 		c.set('apiKeyInQuery', apiKeyInQuery);
@@ -573,6 +588,21 @@ for (const path of authedPaths) {
 				response.headers.set('Link', '<https://github.com/MadaBurns/bv-mcp#authentication>; rel="deprecation"; type="text/html"');
 			}
 			return response;
+		}
+
+		const legacyOwnerProof = await resolveLegacyBrandOwnerProof(
+			c.req.header(LEGACY_BRAND_OWNER_PROOF_HEADER),
+			tierResult,
+			c.env,
+			c.req.url,
+		);
+		if (legacyOwnerProof.status === 'invalid') {
+			return c.json({ error: 'invalid_legacy_brand_owner_proof' }, 400, { 'Cache-Control': 'no-store' });
+		}
+		if (legacyOwnerProof.status === 'valid') {
+			const legacyOwnerIds = [tierResult.legacyOwnerId, legacyOwnerProof.legacyOwnerId].filter((id): id is string => id !== undefined);
+			tierResult = { ...tierResult, legacyOwnerIds };
+			c.set('tierAuthResult', tierResult);
 		}
 
 		return next();
@@ -700,7 +730,7 @@ app.get('/health', async (c) => {
 		probeQuotaCoordinator(c.env.QUOTA_COORDINATOR),
 	]);
 
-	const e = c.env as Record<string, unknown>;
+	const e = c.env;
 	const bindings = {
 		scanCache,
 		quotaCoordinator,
@@ -1524,7 +1554,8 @@ app.get('/reports/:auditId/:target', async (c) => {
 		return new Response('Not found', { status: 404 });
 	}
 	try {
-		await reconcileLegacyBrandAuditOwner(db, tierResult.legacyOwnerId, keyHash);
+		const legacyOwnerIds = tierResult.legacyOwnerIds ?? (tierResult.legacyOwnerId === undefined ? [] : [tierResult.legacyOwnerId]);
+		await reconcileLegacyBrandAuditOwners(db, legacyOwnerIds, keyHash);
 	} catch {
 		return new Response('Service unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });
 	}
@@ -1583,7 +1614,7 @@ import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-cons
 import { brandWebhookPeerSecretsFromEnv, handleBrandAuditQueue, type BrandAuditConsumerDeps } from './queue/brand-audit-consumer';
 import { securityConfigurationCollision } from './lib/security-capabilities';
 import { handleBrandAuditPdfQueue, type BrandAuditPdfConsumerDeps } from './queue/brand-audit-pdf-consumer';
-import { handleTenantCycleAlerts, handleTenantWeeklyRescan, type TenantScheduledEnv } from './tenants/scheduled-handlers';
+import { handleTenantCycleAlerts, handleTenantWeeklyRescan } from './tenants/scheduled-handlers';
 // Phase 2 scheduler core (ships DARK). The handlers no-op unless
 // `SCAN_DISPATCH_ENABLED === 'true'` AND `SCAN_SCHEDULE_DB` is bound; the cron
 // strings below are deliberately NOT added to `wrangler.jsonc`, so they never
@@ -1704,7 +1735,7 @@ export default {
 			ctx.waitUntil(handleDailyDigest(env as ScheduledEnv));
 		} else if (route === 'weekly-tenant-rescan') {
 			// Weekly Tenant rescan dispatch — Sunday 02:00 UTC.
-			ctx.waitUntil(handleTenantWeeklyRescan(env as TenantScheduledEnv, ctx));
+			ctx.waitUntil(handleTenantWeeklyRescan(env, ctx));
 		} else if (route === 'scan-dispatch') {
 			// Phase 2 scheduler (DARK) — claim-and-advance dispatch. No-ops unless
 			// SCAN_DISPATCH_ENABLED === 'true' AND SCAN_SCHEDULE_DB is bound.
@@ -1715,7 +1746,7 @@ export default {
 		} else {
 			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
 			ctx.waitUntil(handleFuzzingScan(env as ScheduledEnv));
-			ctx.waitUntil(handleTenantCycleAlerts(env as TenantScheduledEnv, ctx));
+			ctx.waitUntil(handleTenantCycleAlerts(env, ctx));
 			ctx.waitUntil(handleBrandAuditWatches(env, ctx));
 		}
 	},
@@ -1754,35 +1785,34 @@ export default {
 		let queueOutcome: 'ok' | 'error' = 'ok';
 		try {
 			if (batch.queue === 'brand-audit-queue') {
-				const e = env as Record<string, unknown>;
-				const db = e.BRAND_AUDIT_DB as D1Database | undefined;
+				const db = env.BRAND_AUDIT_DB;
 				if (!db) {
 					// Binding missing — ack every message to avoid hot-looping. Operator
 					// must provision per docs/provisioning/brand-audit-bindings.md.
 					for (const m of batch.messages) m.ack();
 					return;
 				}
-				const pdfQueue = e.BRAND_AUDIT_PDF_QUEUE as BrandAuditConsumerDeps['pdfQueue'] | undefined;
+				const pdfQueue = env.BRAND_AUDIT_PDF_QUEUE as BrandAuditConsumerDeps['pdfQueue'] | undefined;
 				// Phase 2b: thread the BRAND_AUDIT_QUEUE binding back into the consumer
 				// so the retry-enqueue path can fire. Same binding the producer uses;
 				// the consumer enqueues a `retry_attempt: 1` message back onto itself
 				// when a completed audit has registrar lookup_failed candidates.
-				const brandAuditQueue = e.BRAND_AUDIT_QUEUE as BrandAuditConsumerDeps['brandAuditQueue'] | undefined;
+				const brandAuditQueue = env.BRAND_AUDIT_QUEUE as BrandAuditConsumerDeps['brandAuditQueue'] | undefined;
 				// T13 — thread the BlackVeil-production discovery_mode override
 				// into the consumer so queued audits run in tiered mode by default
 				// when the operator sets `BRAND_AUDIT_DISCOVERY_MODE_DEFAULT=tiered`
 				// in the private overlay. Undefined on BSL self-hosts.
 				const discoveryModeDefault =
-					typeof e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT === 'string' ? (e.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT as string) : undefined;
+					typeof env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT === 'string' ? env.BRAND_AUDIT_DISCOVERY_MODE_DEFAULT : undefined;
 				// Build tier-lookup closures from the queue Worker invocation's env.
 				// Cloudflare Workers re-bind env per invocation; the request-path
 				// closures constructed in `executeMcpRequest` never reach here.
-				const tierLookups = buildBrandTierLookups(e as BvMcpEnv);
+				const tierLookups = buildBrandTierLookups(env);
 				// Build internalCall closure for the CSC deep-scan job. Wraps
 				// handleToolsCall so the job can invoke scan_domain / discover_subdomains
 				// without HTTP framing. Dynamic import keeps the queue cold-start path
 				// unaffected; the import is cached after the first deep-scan message.
-				const queueEnv = e as BvMcpEnv;
+				const queueEnv = env;
 				const internalCall = async (tool: string, args: { domain: string }): Promise<unknown> => {
 					const { handleToolsCall } = await import('./handlers/tools');
 					return handleToolsCall({ name: tool, arguments: args as Record<string, unknown> }, queueEnv.SCAN_CACHE, {
@@ -1804,13 +1834,13 @@ export default {
 					db,
 					pdfQueue,
 					brandAuditQueue,
-					brandWebhookBinding: e.BV_WEB as Fetcher | undefined,
-					brandWebhookAuthToken: typeof e.BV_MCP_BRAND_WEBHOOK_KEY === 'string' ? e.BV_MCP_BRAND_WEBHOOK_KEY : undefined,
-					brandWebhookPeerAuthTokens: brandWebhookPeerSecretsFromEnv(e as BvMcpEnv),
+					brandWebhookBinding: env.BV_WEB,
+					brandWebhookAuthToken: env.BV_MCP_BRAND_WEBHOOK_KEY,
+					brandWebhookPeerAuthTokens: brandWebhookPeerSecretsFromEnv(env),
 					discoveryModeDefault,
-					whoisBinding: e.BV_WHOIS as Fetcher | undefined,
-					certstream: e.BV_CERTSTREAM as Fetcher | undefined,
-					certstreamAuthToken: certstreamAuthToken(e as BvMcpEnv),
+					whoisBinding: env.BV_WHOIS,
+					certstream: env.BV_CERTSTREAM,
+					certstreamAuthToken: certstreamAuthToken(env),
 					internalCall,
 					...tierLookups,
 				};
@@ -1818,9 +1848,8 @@ export default {
 				return;
 			}
 			if (batch.queue === 'brand-audit-pdf-queue') {
-				const e = env as Record<string, unknown>;
-				const db = e.BRAND_AUDIT_DB as D1Database | undefined;
-				const bucket = e.BRAND_REPORTS as R2Bucket | undefined;
+				const db = env.BRAND_AUDIT_DB;
+				const bucket = env.BRAND_REPORTS;
 				if (!db || !bucket) {
 					// Required bindings missing — ack to avoid hot-looping.
 					for (const m of batch.messages) m.ack();

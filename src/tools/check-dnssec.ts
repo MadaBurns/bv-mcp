@@ -36,7 +36,7 @@ async function confirmAdWithGoogle(domain: string, timeoutMs = AD_CONFIRM_TIMEOU
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 		if (!resp.ok) {
-			void resp.body?.cancel();
+			void resp.body?.cancel().catch(() => undefined);
 			return false;
 		}
 		const data = await readJsonResponseCapped<{ AD?: boolean }>(resp, DOH_MAX_BODY_BYTES);

@@ -590,7 +590,7 @@ export function withRobotsGate(fetchFn: FetchFunction, opts: WithRobotsGateOptio
 						redirect: 'manual',
 					});
 					if (!res.ok) {
-						void res.body?.cancel();
+						void res.body?.cancel().catch(() => undefined);
 						// A 404/410 is a MEASUREMENT ("no policy published"); any other
 						// error status leaves the policy unknown. Both proceed — only the
 						// record distinguishes them.

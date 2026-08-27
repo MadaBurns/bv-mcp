@@ -26,6 +26,8 @@ export interface BrandAuditOwnerReconciliation {
 	attempted: boolean;
 }
 
+const MAX_LEGACY_OWNER_IDS_PER_RECONCILIATION = 2;
+
 /**
  * Atomically move brand-audit rows from one legacy credential owner to a
  * canonical authenticated principal.
@@ -47,26 +49,51 @@ export async function reconcileLegacyBrandAuditOwner(
 	legacyOwnerId: string | null | undefined,
 	canonicalOwnerId: string,
 ): Promise<BrandAuditOwnerReconciliation> {
+	return reconcileLegacyBrandAuditOwners(
+		db,
+		legacyOwnerId === null || legacyOwnerId === undefined ? [] : [legacyOwnerId],
+		canonicalOwnerId,
+	);
+}
+
+/**
+ * Atomically reconcile the current raw-token owner alias plus at most one
+ * cryptographically proven historical alias. Multiple historical tokens are
+ * recovered by repeating the request with one proof at a time; the small fixed
+ * bound prevents an authenticated caller from amplifying D1 batch work.
+ */
+export async function reconcileLegacyBrandAuditOwners(
+	db: D1Database,
+	legacyOwnerIds: readonly string[],
+	canonicalOwnerId: string,
+): Promise<BrandAuditOwnerReconciliation> {
 	if (!CANONICAL_OWNER_ID.test(canonicalOwnerId)) {
 		throw new TypeError('Invalid canonical brand-audit owner ID');
 	}
 
-	if (legacyOwnerId === null || legacyOwnerId === undefined) return { attempted: false };
-	if (legacyOwnerId === canonicalOwnerId) return { attempted: false };
+	if (legacyOwnerIds.length > MAX_LEGACY_OWNER_IDS_PER_RECONCILIATION) {
+		throw new TypeError('Too many legacy brand-audit owner IDs');
+	}
+	const uniqueLegacyOwnerIds = [...new Set(legacyOwnerIds)].filter((ownerId) => ownerId !== canonicalOwnerId);
+	if (uniqueLegacyOwnerIds.length === 0) return { attempted: false };
 
-	if (!LEGACY_OWNER_ID.test(legacyOwnerId) && !LEGACY_TENANT_OWNER_ID.test(legacyOwnerId)) {
-		throw new TypeError('Invalid legacy brand-audit owner ID');
+	for (const legacyOwnerId of uniqueLegacyOwnerIds) {
+		if (!LEGACY_OWNER_ID.test(legacyOwnerId) && !LEGACY_TENANT_OWNER_ID.test(legacyOwnerId)) {
+			throw new TypeError('Invalid legacy brand-audit owner ID');
+		}
 	}
 
-	const results = await db.batch([
-		db.prepare('UPDATE brand_audits SET owner_id = ? WHERE owner_id = ?').bind(canonicalOwnerId, legacyOwnerId),
-		db.prepare('UPDATE brand_audit_watches SET owner_id = ? WHERE owner_id = ?').bind(canonicalOwnerId, legacyOwnerId),
-	]);
+	const results = await db.batch(
+		uniqueLegacyOwnerIds.flatMap((legacyOwnerId) => [
+			db.prepare('UPDATE brand_audits SET owner_id = ? WHERE owner_id = ?').bind(canonicalOwnerId, legacyOwnerId),
+			db.prepare('UPDATE brand_audit_watches SET owner_id = ? WHERE owner_id = ?').bind(canonicalOwnerId, legacyOwnerId),
+		]),
+	);
 
 	// D1 normally rejects the entire batch on statement failure. Retain an
 	// explicit result check so a malformed adapter cannot turn a partial failure
 	// into an authorised owner-scoped continuation.
-	if (results.length !== 2 || results.some((result) => result.success !== true)) {
+	if (results.length !== uniqueLegacyOwnerIds.length * 2 || results.some((result) => result.success !== true)) {
 		throw new Error('Brand-audit owner reconciliation failed');
 	}
 

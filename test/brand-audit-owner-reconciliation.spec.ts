@@ -4,6 +4,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { adoptAnonymousBrandAuditWatchInternal, reconcileLegacyBrandAuditOwner } from '../src/lib/brand-audit-owner-reconciliation';
 import { computeClassificationHash } from '../src/lib/brand-audit-classification-diff';
+import type { CheckResult } from '../src/lib/scoring';
 
 interface CapturedStatement {
 	sql: string;
@@ -282,22 +283,13 @@ describe('adoptAnonymousBrandAuditWatchInternal', () => {
 		expect(calls[0].sql).toContain("owner_id = 'anonymous'");
 		expect(calls[1]).toEqual({
 			sql: "UPDATE brand_audit_watches SET owner_id = ?, last_classification_result_json = ? WHERE id = ? AND owner_id = 'anonymous' AND active = 1 AND webhook_url = ? AND domain = ? AND last_classification_hash IS ? AND last_classification_result_json IS ? AND pending_webhook_json IS ?",
-			values: [
-				CANONICAL_OWNER,
-				null,
-				'watch-1',
-				`https://hooks.example.test/brand?t=${CALLBACK_TOKEN}`,
-				'example.com',
-				null,
-				null,
-				null,
-			],
+			values: [CANONICAL_OWNER, null, 'watch-1', `https://hooks.example.test/brand?t=${CALLBACK_TOKEN}`, 'example.com', null, null, null],
 		});
 	});
 
 	it('persists the exact anonymous baseline for the first post-adoption drift even when the parent audit is stale', async () => {
 		const fingerprint = await tokenFingerprint(CALLBACK_TOKEN);
-		const baseline = {
+		const baseline: CheckResult = {
 			category: 'brand_discovery',
 			passed: true,
 			score: 100,

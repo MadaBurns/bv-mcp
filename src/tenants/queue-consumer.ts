@@ -104,6 +104,8 @@ async function persistFindings(tenantDb: TenantDbHandle, scanId: string, domain:
 
 export type ScanQueueConsumerEnv = ResolverEnv & {
 	SCAN_CACHE?: KVNamespace;
+	BV_WEB?: Fetcher;
+	BV_WEB_INTERNAL_KEY?: string;
 	PROFILE_ACCUMULATOR?: DurableObjectNamespace;
 	/** R10 - ProfileAccumulator write-sharding mode (default-off). See BvMcpEnv in index.ts. */
 	PROFILE_ACCUMULATOR_SHARDING?: string;
@@ -138,7 +140,7 @@ async function incrementCompletedTotalIfTracked(
 	env: ScanQueueConsumerEnv,
 	cycleId: string,
 ): Promise<void> {
-	const registry = (env as Record<string, unknown>).TENANT_REGISTRY_DB as D1Database | undefined;
+	const registry = env.TENANT_REGISTRY_DB;
 	if (!registry) return;
 	try {
 		await registry.prepare(INCREMENT_COMPLETED_SQL).bind(cycleId).run();

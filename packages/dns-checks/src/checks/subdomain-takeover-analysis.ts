@@ -319,7 +319,7 @@ export async function probeHttpFingerprint(fqdn: string, cname: string, fetchFn:
 		// Skip fingerprint matching on redirects — redirecting services are not deprovisioned.
 		// Release the unread body so workerd doesn't cancel a stalled response.
 		if (response.status >= 300 && response.status < 400) {
-			void response.body?.cancel();
+			void response.body?.cancel().catch(() => undefined);
 			return null;
 		}
 

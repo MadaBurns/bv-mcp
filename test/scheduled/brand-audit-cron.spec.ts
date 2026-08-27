@@ -13,6 +13,21 @@ interface AuditRow {
 	format: string;
 }
 
+function makeExecutionContext(): ExecutionContext {
+	return {
+		waitUntil(promise: Promise<unknown>) {
+			void promise;
+		},
+		passThroughOnException() {},
+		exports: {} as ExecutionContext['exports'],
+		props: undefined,
+		tracing: {} as ExecutionContext['tracing'],
+		abort(reason?: unknown) {
+			void reason;
+		},
+	};
+}
+
 function makeMockD1(opts: { watches?: Record<string, unknown>[]; throwOnAll?: boolean } = {}) {
 	const calls: D1Call[] = [];
 	const audits = new Map<string, AuditRow>();
@@ -100,11 +115,11 @@ describe('handleBrandAuditWatches', () => {
 	it('no-ops when the database or queue binding is missing', async () => {
 		const { handleBrandAuditWatches } = await import('../../src/scheduled');
 		const queueSend = vi.fn();
-		await handleBrandAuditWatches({ BRAND_AUDIT_QUEUE: { send: queueSend } }, { waitUntil: () => {} } as ExecutionContext);
+		await handleBrandAuditWatches({ BRAND_AUDIT_QUEUE: { send: queueSend } }, makeExecutionContext());
 		expect(queueSend).not.toHaveBeenCalled();
 
 		const { db } = makeMockD1();
-		await handleBrandAuditWatches({ BRAND_AUDIT_DB: db }, { waitUntil: () => {} } as ExecutionContext);
+		await handleBrandAuditWatches({ BRAND_AUDIT_DB: db }, makeExecutionContext());
 	});
 
 	it('persists an exact parent+target precondition before enqueue, then CAS-advances last_run_at', async () => {
@@ -114,9 +129,7 @@ describe('handleBrandAuditWatches', () => {
 		});
 		const queueSend = vi.fn().mockResolvedValue(undefined);
 
-		await handleBrandAuditWatches({ BRAND_AUDIT_DB: db, BRAND_AUDIT_QUEUE: { send: queueSend } }, {
-			waitUntil: () => {},
-		} as ExecutionContext);
+		await handleBrandAuditWatches({ BRAND_AUDIT_DB: db, BRAND_AUDIT_QUEUE: { send: queueSend } }, makeExecutionContext());
 
 		expect(queueSend).toHaveBeenCalledTimes(2);
 		for (const call of queueSend.mock.calls) {
@@ -145,9 +158,7 @@ describe('handleBrandAuditWatches', () => {
 		const { db, calls } = makeMockD1({ watches: [...notDueMonthly, dueDaily] });
 		const queueSend = vi.fn().mockResolvedValue(undefined);
 
-		await handleBrandAuditWatches({ BRAND_AUDIT_DB: db, BRAND_AUDIT_QUEUE: { send: queueSend } }, {
-			waitUntil: () => {},
-		} as ExecutionContext);
+		await handleBrandAuditWatches({ BRAND_AUDIT_DB: db, BRAND_AUDIT_QUEUE: { send: queueSend } }, makeExecutionContext());
 
 		expect(queueSend).toHaveBeenCalledOnce();
 		expect(queueSend.mock.calls[0][0]).toEqual(expect.objectContaining({ target: 'daily.example.com', watchId: 'daily-due' }));
@@ -164,9 +175,9 @@ describe('handleBrandAuditWatches', () => {
 		const queueSend = vi.fn().mockRejectedValueOnce(new Error('queue unavailable')).mockResolvedValueOnce(undefined);
 		const env = { BRAND_AUDIT_DB: db, BRAND_AUDIT_QUEUE: { send: queueSend } };
 
-		await handleBrandAuditWatches(env, { waitUntil: () => {} } as ExecutionContext);
+		await handleBrandAuditWatches(env, makeExecutionContext());
 		expect(calls.filter((call) => call.sql.includes('UPDATE brand_audit_watches'))).toHaveLength(0);
-		await handleBrandAuditWatches(env, { waitUntil: () => {} } as ExecutionContext);
+		await handleBrandAuditWatches(env, makeExecutionContext());
 
 		expect(queueSend).toHaveBeenCalledTimes(2);
 		expect((queueSend.mock.calls[0][0] as { auditId: string }).auditId).toBe((queueSend.mock.calls[1][0] as { auditId: string }).auditId);
@@ -177,16 +188,12 @@ describe('handleBrandAuditWatches', () => {
 		const { handleBrandAuditWatches } = await import('../../src/scheduled');
 		const invalid = makeMockD1({ watches: [watch({ interval: 'hourly' })] });
 		const invalidQueue = vi.fn();
-		await handleBrandAuditWatches({ BRAND_AUDIT_DB: invalid.db, BRAND_AUDIT_QUEUE: { send: invalidQueue } }, {
-			waitUntil: () => {},
-		} as ExecutionContext);
+		await handleBrandAuditWatches({ BRAND_AUDIT_DB: invalid.db, BRAND_AUDIT_QUEUE: { send: invalidQueue } }, makeExecutionContext());
 		expect(invalidQueue).not.toHaveBeenCalled();
 
 		const broken = makeMockD1({ throwOnAll: true });
 		const brokenQueue = vi.fn();
-		await handleBrandAuditWatches({ BRAND_AUDIT_DB: broken.db, BRAND_AUDIT_QUEUE: { send: brokenQueue } }, {
-			waitUntil: () => {},
-		} as ExecutionContext);
+		await handleBrandAuditWatches({ BRAND_AUDIT_DB: broken.db, BRAND_AUDIT_QUEUE: { send: brokenQueue } }, makeExecutionContext());
 		expect(brokenQueue).not.toHaveBeenCalled();
 	});
 });

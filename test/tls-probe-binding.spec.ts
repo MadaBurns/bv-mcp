@@ -12,7 +12,10 @@ async function fresh() {
 
 function bindingReturning(body: unknown, status = 200) {
 	return {
-		fetch: vi.fn(async () => new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })),
+		fetch: vi.fn(
+			async (_input: RequestInfo | URL, _init?: RequestInit) =>
+				new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } }),
+		),
 	};
 }
 

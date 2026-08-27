@@ -87,7 +87,7 @@ export async function checkMTASTS(
 					),
 				);
 				// Body unread on this branch — release it so workerd doesn't cancel a stalled response.
-				void response.body?.cancel();
+				void response.body?.cancel().catch(() => undefined);
 			} else if (!response.ok) {
 				findings.push(
 					createFinding(
@@ -97,7 +97,7 @@ export async function checkMTASTS(
 						`MTA-STS policy file at ${policyUrl} returned HTTP ${response.status}. The policy file must be accessible over HTTPS.`,
 					),
 				);
-				void response.body?.cancel();
+				void response.body?.cancel().catch(() => undefined);
 			} else {
 				const MAX_BODY_BYTES = 65_536; // 64 KB — RFC 8461 max for MTA-STS
 				const body = await readResponseTextCapped(response, MAX_BODY_BYTES);

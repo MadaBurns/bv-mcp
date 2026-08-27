@@ -189,7 +189,6 @@ export interface ResolverEnv {
 	CF_D1_API_TOKEN?: string;
 	/** Phase 4 — env-level default routing mode (`'dispatch'` opts in; else convention). */
 	TENANT_ROUTING_MODE?: string;
-	[k: string]: unknown;
 }
 
 /**
@@ -288,7 +287,7 @@ function buildTenantDb(env: ResolverEnv, row: { d1_db_id: string; routing_mode: 
 
 	const suffix = tenantIdToBindingSuffix(subTenantId);
 	const dbBinding = `${TENANT_BINDING_PREFIX}${suffix}`;
-	const d1 = (env as Record<string, unknown>)[dbBinding] as D1Database | undefined;
+	const d1 = Reflect.get(env, dbBinding) as D1Database | undefined;
 	if (!d1) {
 		throw new Error(`Tenant not found: ${subTenantId}`);
 	}

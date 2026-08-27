@@ -22,6 +22,17 @@ export interface JwtVerifyOptions {
 	now?: number;
 }
 
+/**
+ * Historical-token verification is deliberately separate from ordinary bearer
+ * authentication. It may ignore expiry only so a caller who is already
+ * authenticated as the same canonical OAuth principal can prove a legacy
+ * Brand Audit owner hash. Callers MUST NOT use this result to grant access.
+ */
+export interface JwtOwnershipProofOptions extends JwtVerifyOptions {
+	/** Upper bound for the retired access-token lifetime accepted as migration evidence. */
+	maxLifetimeSeconds: number;
+}
+
 export interface JwtClaims {
 	iss: string;
 	aud: string;
@@ -89,7 +100,7 @@ export async function signJwt(payload: Partial<JwtClaims> & { sub: string; jti: 
 	return `${unsigned}.${base64UrlEncode(sig)}`;
 }
 
-export async function verifyJwt(token: string, opts: JwtVerifyOptions): Promise<JwtClaims> {
+async function verifyJwtWithPolicy(token: string, opts: JwtVerifyOptions, allowExpired: boolean): Promise<JwtClaims> {
 	const parts = token.split('.');
 	if (parts.length !== 3) throw new Error('malformed token');
 	const [h, p, s] = parts;
@@ -153,10 +164,24 @@ export async function verifyJwt(token: string, opts: JwtVerifyOptions): Promise<
 	) {
 		throw new Error('token lifetime exceeds maximum');
 	}
-	if (claims.exp <= now - skew) throw new Error('token expired');
+	if (!allowExpired && claims.exp <= now - skew) throw new Error('token expired');
 	if (claims.iss !== opts.issuer) throw new Error('invalid issuer');
 	if (claims.aud !== opts.audience) throw new Error('invalid audience');
 	return claims;
+}
+
+export function verifyJwt(token: string, opts: JwtVerifyOptions): Promise<JwtClaims> {
+	return verifyJwtWithPolicy(token, opts, false);
+}
+
+/**
+ * Verify a historical OAuth JWT solely as cryptographic ownership evidence.
+ * Expiry is ignored, but signature, algorithm, issuer, audience, claim types,
+ * issue time, and the caller-supplied historical lifetime ceiling remain
+ * enforced. The returned claims are not an authentication result.
+ */
+export function verifyJwtOwnershipProof(token: string, opts: JwtOwnershipProofOptions): Promise<JwtClaims> {
+	return verifyJwtWithPolicy(token, opts, true);
 }
 
 export function newJti(): string {

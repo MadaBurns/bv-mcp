@@ -63,7 +63,7 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 				),
 			);
 			// Consume the unread body so workerd doesn't cancel a "stalled HTTP response".
-			void response.body?.cancel();
+			void response.body?.cancel().catch(() => undefined);
 			return findings;
 		}
 
@@ -76,7 +76,7 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 					`BIMI logo URL "${logoUrl}" returned HTTP ${response.status}. The logo must be publicly accessible over HTTPS.`,
 				),
 			);
-			void response.body?.cancel();
+			void response.body?.cancel().catch(() => undefined);
 			return findings;
 		}
 

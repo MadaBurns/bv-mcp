@@ -188,7 +188,7 @@ async function fetchWithRedirects(
 		// Only .headers/.status were ever read on this hop and `response` is about
 		// to be overwritten by the next hop's fetch — drain its body so it doesn't
 		// trip the platform's "stalled HTTP response" deadlock-prevention warning.
-		void response.body?.cancel();
+		void response.body?.cancel().catch(() => undefined);
 
 		const location = response.headers.get('location');
 		if (!location) break;

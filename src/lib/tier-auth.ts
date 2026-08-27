@@ -23,6 +23,7 @@ import type { QuotaCoordinator } from './quota-coordinator';
 import { checkControlPlaneRateLimit } from './rate-limiter';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 import { deriveCanonicalOAuthPrincipal } from './auth-principal';
+import type { OAuthPrincipalKind } from './auth-principal';
 
 /**
  * JWT-issuable tiers. The `/oauth/token` minting paths can only produce these
@@ -39,10 +40,14 @@ export interface TierAuthResult {
 	keyHash?: string;
 	/** Previous 16-hex owner id for bounded, authenticated durable-row reconciliation. */
 	legacyOwnerId?: string;
+	/** Current raw-token alias plus one same-principal historical JWT proof. */
+	legacyOwnerIds?: readonly string[];
 	/** Full raw credential digest for API-key-backed downstream identity lookup; never set for OAuth JWTs. */
 	credentialHash?: string;
 	/** Verified OAuth tenant subject; absent for opaque/static credentials. */
 	oauthTenantId?: string;
+	/** Domain-separated OAuth namespace; proves keyHash came from a verified OAuth subject. */
+	oauthPrincipalKind?: OAuthPrincipalKind;
 	/** An uncached remote entitlement lookup was denied by the pre-auth abuse gate. */
 	rateLimited?: boolean;
 	retryAfterMs?: number;
@@ -72,17 +77,14 @@ export async function fetchBvWebValidateKey(
 	timeoutMs = BV_WEB_VALIDATE_KEY_TIMEOUT_MS,
 ): Promise<{ kind: 'ok'; data: unknown } | { kind: 'http'; status: number }> {
 	const controller = new AbortController();
-	const timeoutId = setTimeout(
-		() => controller.abort(new DOMException('BV_WEB validate-key timed out', 'TimeoutError')),
-		timeoutMs,
-	);
+	const timeoutId = setTimeout(() => controller.abort(new DOMException('BV_WEB validate-key timed out', 'TimeoutError')), timeoutMs);
 	try {
 		const response = await fetcher.fetch(
 			new Request('https://internal/api/internal/mcp/validate-key', {
 				method: 'POST',
 				headers: {
 					'Content-Type': 'application/json',
-					'Authorization': `Bearer ${internalKey}`,
+					Authorization: `Bearer ${internalKey}`,
 				},
 				body: JSON.stringify({ keyHash }),
 				signal: controller.signal,
@@ -215,11 +217,7 @@ export async function resolveTier(
 				// A monotonic entitlement generation makes delayed revocation delivery safe:
 				// an old event can raise the floor for old tokens without invalidating a token
 				// minted after the plan transition. Pre-claim JWTs remain generation 1.
-				const minimumEntitlementGeneration = await getMinimumEntitlementGeneration(
-					env.SESSION_STORE,
-					claims.sub,
-					env.QUOTA_COORDINATOR,
-				);
+				const minimumEntitlementGeneration = await getMinimumEntitlementGeneration(env.SESSION_STORE, claims.sub, env.QUOTA_COORDINATOR);
 				const tokenEntitlementGeneration = typeof claims.entitlementGeneration === 'number' ? claims.entitlementGeneration : 1;
 				if (tokenEntitlementGeneration < minimumEntitlementGeneration) {
 					return { authenticated: false };
@@ -248,6 +246,7 @@ export async function resolveTier(
 					tier: resolvedTier,
 					keyHash: jwtKeyHash,
 					legacyOwnerId,
+					oauthPrincipalKind: principalKind,
 					...(principalKind === 'tenant' ? { oauthTenantId: claims.sub } : {}),
 					contractFlag,
 				};
@@ -273,10 +272,7 @@ export async function resolveTier(
 	// Two independent slots (BV_INTERNAL_DEV_KEY + BV_INTERNAL_DEV_KEY_2) allow
 	// adding a per-machine key without rotating the shared one out from under
 	// other consumers. Both resolve to owner tier and remain OWNER_ALLOW_IPS-gated.
-	if (
-		(await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY)) ||
-		(await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY_2))
-	) {
+	if ((await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY)) || (await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY_2))) {
 		const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
 		return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
 	}
@@ -320,11 +316,9 @@ export async function resolveTier(
 			if (trialResult) {
 				if (!trialResult.authenticated) {
 					// Expired or exhausted — cache as revoked to avoid repeated lookups
-					await env.RATE_LIMIT.put(
-						`tier:${keyHash}`,
-						JSON.stringify({ tier: 'free', revokedAt: Date.now() }),
-						{ expirationTtl: TRIAL_KEY_CACHE_TTL },
-					);
+					await env.RATE_LIMIT.put(`tier:${keyHash}`, JSON.stringify({ tier: 'free', revokedAt: Date.now() }), {
+						expirationTtl: TRIAL_KEY_CACHE_TTL,
+					});
 					return { authenticated: false };
 				}
 				// Deliberately do not positive-cache trials: a cache hit would bypass
@@ -365,11 +359,9 @@ export async function resolveTier(
 					if (data.tier !== null) {
 						// Cache the valid tier result (short-lived, 5 min)
 						if (env.RATE_LIMIT) {
-							await env.RATE_LIMIT.put(
-								`tier:${keyHash}`,
-								JSON.stringify({ tier: data.tier, revokedAt: null }),
-								{ expirationTtl: TIER_KV_CACHE_TTL },
-							);
+							await env.RATE_LIMIT.put(`tier:${keyHash}`, JSON.stringify({ tier: data.tier, revokedAt: null }), {
+								expirationTtl: TIER_KV_CACHE_TTL,
+							});
 						}
 						const resolvedTier = applyOwnerIpGate(data.tier, env.OWNER_ALLOW_IPS, clientIp);
 						return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
@@ -378,11 +370,9 @@ export async function resolveTier(
 					// to avoid repeated service binding calls within the TTL window.
 					// This is a definitive "no entitlement" signal from bv-web.
 					if (env.RATE_LIMIT) {
-						await env.RATE_LIMIT.put(
-							`tier:${keyHash}`,
-							JSON.stringify({ tier: 'free', revokedAt: Date.now() }),
-							{ expirationTtl: TIER_KV_CACHE_TTL },
-						);
+						await env.RATE_LIMIT.put(`tier:${keyHash}`, JSON.stringify({ tier: 'free', revokedAt: Date.now() }), {
+							expirationTtl: TIER_KV_CACHE_TTL,
+						});
 					}
 				}
 			}

@@ -2,6 +2,7 @@
 
 import type { Tier } from '../schemas/primitives';
 import { isStrongDistinctSecurityCapability, type McpSecurityCriticalSecretKey } from './security-capabilities';
+import type { TlsProbeBinding } from './tls-probe-binding';
 
 /**
  * Centralized configuration for domain normalization and validation.
@@ -756,8 +757,11 @@ export function m365ProxyBindings(
 
 /** Wire the external TLS probe only with a strong, globally distinct bearer. */
 export function tlsProbeBindings(
-	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>> & { BV_TLS_PROBE?: Fetcher; BV_TLS_PROBE_KEY?: string },
-): { tlsProbeBinding?: Fetcher; tlsProbeAuthToken?: string } {
+	env: Partial<Record<McpSecurityCriticalSecretKey, unknown>> & {
+		BV_TLS_PROBE?: TlsProbeBinding;
+		BV_TLS_PROBE_KEY?: string;
+	},
+): { tlsProbeBinding?: TlsProbeBinding; tlsProbeAuthToken?: string } {
 	if (!env.BV_TLS_PROBE || !isStrongDistinctSecurityCapability(env, 'BV_TLS_PROBE_KEY')) return {};
 	return { tlsProbeBinding: env.BV_TLS_PROBE, tlsProbeAuthToken: env.BV_TLS_PROBE_KEY };
 }

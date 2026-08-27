@@ -93,7 +93,7 @@ export async function enrichCertificateIntelligence(options: CertEnrichmentOptio
 				}
 			}
 		} else {
-			void res.body?.cancel();
+			void res.body?.cancel().catch(() => undefined);
 		}
 	} catch {
 		ct = null; // degrade-soft

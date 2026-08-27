@@ -14,7 +14,7 @@ const CONFIG = JSON.stringify({
 
 describe('brand-audit remote schema preflight', () => {
 	it('uses the exact BRAND_AUDIT_DB deployment binding and a read-only remote query', () => {
-		const spawnSync = vi.fn(() => ({
+		const spawnSync = vi.fn((_command: string, _args: string[]) => ({
 			status: 0,
 			stdout: JSON.stringify([
 				{
@@ -43,9 +43,7 @@ describe('brand-audit remote schema preflight', () => {
 
 	it('fails closed when either required column is absent', () => {
 		expect(() =>
-			assertRequiredBrandAuditColumns(
-				JSON.stringify([{ success: true, results: [{ name: 'last_classification_result_json' }] }]),
-			),
+			assertRequiredBrandAuditColumns(JSON.stringify([{ success: true, results: [{ name: 'last_classification_result_json' }] }])),
 		).toThrow(/pending_webhook_json/);
 	});
 
