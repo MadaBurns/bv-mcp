@@ -33,20 +33,19 @@ function emptyResponse(name: string) {
 }
 
 /**
- * The 7 RBL zones used by check_rbl. Spamhaus ZEN is intentionally excluded —
+ * The 6 RBL zones used by check_rbl. Spamhaus ZEN is intentionally excluded —
  * bv-mcp has no reliable ZEN query path, so it is never queried or counted.
  * `zen.spamhaus.org` is kept in this fixture list ONLY so the mock can assert
  * it is never queried.
+ *
+ * SORBS (dnsbl.sorbs.net) was removed in #814 — the whole sorbs.net domain
+ * NXDOMAINs (SORBS shut down mid-2024), so a "not listed" verdict there is
+ * unfalsifiable, not a measurement.
  */
-const RBL_ZONES = [
-	'bl.spamcop.net',
-	'dnsbl-1.uceprotect.net',
-	'dnsbl-2.uceprotect.net',
-	'bl.mailspike.net',
-	'b.barracudacentral.org',
-	'psbl.surriel.com',
-	'dnsbl.sorbs.net',
-];
+const RBL_ZONES = ['bl.spamcop.net', 'dnsbl-1.uceprotect.net', 'dnsbl-2.uceprotect.net', 'bl.mailspike.net', 'b.barracudacentral.org', 'psbl.surriel.com'];
+
+/** Dead zone — must NEVER appear in a query. Tracked separately from RBL_ZONES (#814). */
+const SORBS_ZONE = 'dnsbl.sorbs.net';
 
 /** ZEN zone — must NEVER appear in a query. Tracked separately from RBL_ZONES. */
 const ZEN_ZONE = 'zen.spamhaus.org';
@@ -135,7 +134,7 @@ describe('checkRbl', () => {
 		return checkRbl(domain, dnsOptions);
 	}
 
-	it('NEVER queries Spamhaus ZEN — it is dropped unconditionally (neither queried nor counted)', async () => {
+	it('NEVER queries Spamhaus ZEN or SORBS — both are dropped unconditionally (neither queried nor counted)', async () => {
 		const queriedZones = new Set<string>();
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -152,6 +151,11 @@ describe('checkRbl', () => {
 				queriedZones.add(ZEN_ZONE);
 				return Promise.resolve(aResponse(name, ['127.0.0.2']));
 			}
+			if (name.endsWith(`.${SORBS_ZONE}`)) {
+				// SORBS must NEVER be queried (#814) — record it so the assertion below fails if it is.
+				queriedZones.add(SORBS_ZONE);
+				return Promise.resolve(emptyResponse(name));
+			}
 			for (const zone of RBL_ZONES) {
 				if (name.endsWith(`.${zone}`)) {
 					queriedZones.add(zone);
@@ -161,17 +165,21 @@ describe('checkRbl', () => {
 			return Promise.resolve(emptyResponse('unknown'));
 		});
 
-		const result = await run(); // ZEN is dropped regardless of dnsOptions
+		const result = await run(); // ZEN and SORBS are dropped regardless of dnsOptions
 		// ZEN never queried.
 		expect(queriedZones.has(ZEN_ZONE)).toBe(false);
+		// SORBS never queried (#814 — dead zone, NXDOMAINs cross-resolver since mid-2024).
+		expect(queriedZones.has(SORBS_ZONE)).toBe(false);
 		// No ZEN/Spamhaus verdict emitted (no high listing, no quota finding).
 		expect(result.findings.some((f) => /spamhaus/i.test(f.title) || /spamhaus/i.test(f.detail))).toBe(false);
 		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
-		// Clean message counts only the 7 active (non-ZEN) zones.
+		// Clean message counts only the 6 active (non-ZEN, non-SORBS) zones.
 		const cleanFinding = result.findings.find((f) => /clean|not listed/i.test(f.title));
 		expect(cleanFinding).toBeDefined();
-		expect(cleanFinding!.detail).toContain('7 RBLs');
+		expect(cleanFinding!.detail).toContain('6 RBLs');
 		expect((cleanFinding!.metadata?.zones as string[]) ?? []).not.toContain(ZEN_ZONE);
+		expect((cleanFinding!.metadata?.zones as string[]) ?? []).not.toContain(SORBS_ZONE);
+		expect((cleanFinding!.metadata?.zones as string[]) ?? []).toEqual(RBL_ZONES);
 	});
 
 	it('NEVER queries Spamhaus ZEN even when a secondary-resolver token is supplied', async () => {
@@ -273,7 +281,7 @@ describe('checkRbl', () => {
 			rblAnswers: {
 				'1.113.0.203.bl.spamcop.net': ['127.0.0.2'],
 			},
-			dnsErrors: new Set(['dnsbl.sorbs.net']),
+			dnsErrors: new Set(['psbl.surriel.com']),
 		});
 
 		const result = await run();
