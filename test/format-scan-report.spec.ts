@@ -91,7 +91,7 @@ describe('format-scan-report', () => {
 		expect(report).toContain('Overall Score: 72/100 (C)');
 		expect(report).toContain('Grade: C');
 		expect(report).toContain('Takeover Verification: potential');
-		expect(report).toContain('Proof Required: authorized proof of control');
+		expect(report).toContain('Proof Required: authorized_proof_of_control'); // #807: sanitizer now preserves underscores in the token
 		expect(report).toContain('Confidence: heuristic');
 		expect(report).toContain('Results served from cache');
 	});
