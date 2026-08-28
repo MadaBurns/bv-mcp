@@ -2,7 +2,7 @@
 
 /**
  * Real-time Blocklist (RBL) check tool.
- * Resolves MX IPs for a domain and checks against 7 DNS-based blocklists.
+ * Resolves MX IPs for a domain and checks against 6 DNS-based blocklists.
  *
  * Spamhaus ZEN is intentionally NOT in the provider set. bv-mcp queries via
  * shared public resolvers, where ZEN returns rate-limit/refused codes
@@ -10,6 +10,13 @@
  * reliable ZEN query path (its secondary-resolver token only drives
  * empty-result confirmation, it does not reroute the ZEN lookup). ZEN is
  * therefore dropped unconditionally: neither queried nor counted.
+ *
+ * SORBS is also excluded — the entire sorbs.net domain NXDOMAINs (SORBS shut
+ * down mid-2024, confirmed cross-resolver). A dead zone NXDOMAINs every
+ * query, so "not listed" is indistinguishable from "the list is gone" and
+ * cannot support a deterministic clean verdict (#814). Do not re-add it
+ * without a liveness sentinel (e.g. querying its 127.0.0.2 test point) to
+ * confirm the zone actually answers.
  */
 
 import { queryDnsRecords, queryMxRecords } from '../lib/dns';
@@ -30,7 +37,10 @@ const RBL_ZONES: RblZone[] = [
 	{ name: 'Mailspike', zone: 'bl.mailspike.net' },
 	{ name: 'Barracuda', zone: 'b.barracudacentral.org' },
 	{ name: 'PSBL', zone: 'psbl.surriel.com' },
-	{ name: 'SORBS', zone: 'dnsbl.sorbs.net' },
+	// SORBS (dnsbl.sorbs.net) removed: SORBS shut down mid-2024 and the whole
+	// sorbs.net domain NXDOMAINs cross-resolver, so "not listed" there is
+	// unfalsifiable, not a measurement (#814). See module header — do not
+	// re-add without a liveness sentinel.
 ];
 
 const CATEGORY = 'rbl' as CheckCategory;
@@ -43,10 +53,10 @@ function isMailspikePositive(ip: string): boolean {
 }
 
 /**
- * Check MX server IPs against 7 DNS-based Real-time Blocklists.
+ * Check MX server IPs against 6 DNS-based Real-time Blocklists.
  * Falls back to domain A records if no MX records exist.
  *
- * Spamhaus ZEN is excluded from the provider set — see the module header.
+ * Spamhaus ZEN and SORBS are excluded from the provider set — see the module header.
  */
 export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	const findings: ReturnType<typeof createFinding>[] = [];
