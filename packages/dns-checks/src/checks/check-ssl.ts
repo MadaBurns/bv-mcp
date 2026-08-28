@@ -107,6 +107,26 @@ async function checkHttps(
 					`https://${domain} returned status ${response.status}; the HTTPS endpoint could not be reached to assess HSTS/redirect posture, so this control was not assessed.`,
 				),
 			);
+		} else if (response.status === 204 || response.status === 205) {
+			// Issue #806 follow-up: a no-content 2xx satisfies neither the redirect nor the error
+			// branch, so before this guard its (by definition empty) header set flowed into
+			// getHttpsFindings() and produced a confident scored "No HSTS header" finding from a
+			// response that delivered no page — the exact defect family #819 fixed on the http://
+			// leg (getHttpRedirectFindings) and in the sibling check-http-security. Route it to
+			// the same inconclusive/'error' lane as the unassessable-origin branch above so the
+			// category is EXCLUDED from scoring and the transient-zero retry can fire. Never
+			// `missingControl`: a 204 measured nothing (issue #638 law) — `inconclusive` +
+			// `errorKind` are the honest unmeasured markers.
+			inconclusive = 'error';
+			findings.push(
+				createFinding(
+					'ssl',
+					'HTTPS response carried no content',
+					'info',
+					`https://${domain} answered the scanner with HTTP ${response.status} (no content). No page was delivered, so HSTS/redirect posture could not be verified — the response may be an egress anomaly or challenge rather than the site.`,
+					{ inconclusive: true, confidence: 'heuristic', errorKind: 'no_content' },
+				),
+			);
 		} else {
 			const isRedirect = response.status >= 300 && response.status < 400;
 			const location = isRedirect ? response.headers.get('location') : null;
