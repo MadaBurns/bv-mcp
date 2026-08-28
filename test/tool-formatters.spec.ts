@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { formatCheckResult, mcpError, mcpText } from '../src/handlers/tool-formatters';
-import type { CheckResult } from '../src/lib/scoring';
+import type { CheckCategory, CheckResult } from '../src/lib/scoring';
 
 describe('tool-formatters', () => {
 	it('mcpError and mcpText return MCP text content', () => {
@@ -98,14 +98,19 @@ describe('tool-formatters', () => {
 		});
 
 		it('passed with a MEASURED medium finding cannot print a plain Passed verdict', () => {
+			// `dnssec_chain` is deliberately out-of-union (an intelligence-tool category, not a
+			// scored CheckCategory) -- the same convention check-dnssec-chain.ts itself uses
+			// (`const CATEGORY = 'dnssec_chain' as CheckCategory`), kept here because #810's
+			// concrete harm report is specifically an unsigned zone rendering via this category.
+			const category = 'dnssec_chain' as CheckCategory;
 			const result: CheckResult = {
-				category: 'dnssec_chain',
+				category,
 				passed: true,
 				score: 60,
 				checkStatus: 'completed',
 				findings: [
 					{
-						category: 'dnssec_chain',
+						category,
 						title: 'DNSSEC not enabled',
 						severity: 'medium',
 						detail: 'No DS record found at the parent zone.',

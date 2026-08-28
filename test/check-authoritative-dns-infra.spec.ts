@@ -31,7 +31,7 @@ describe('checkAuthoritativeDnsInfra', () => {
 	});
 
 	it('posts the normalized hostname to the infra probe binding', async () => {
-		const fetch = vi.fn(async () => new Response(JSON.stringify({
+		const fetch = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) => new Response(JSON.stringify({
 			hostname: 'a.root-servers.net',
 			checkedAt: '2026-05-21T00:00:00.000Z',
 			reachability: {
