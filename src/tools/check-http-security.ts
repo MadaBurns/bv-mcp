@@ -307,7 +307,17 @@ async function dualFetchHeaders(
 	}
 
 	const merged = mergeSecurityHeaders(usable[0].headers, usable[1].headers);
-	const primary = usable[0].ok ? usable[0] : usable[1].ok ? usable[1] : usable[0];
+	// Issue #806 follow-up: `ok` alone let an anomalous no-content 204/205 (which satisfies
+	// `response.ok`) win primary over a real 200 whenever it settled into usable[0] — the
+	// synthetic Response then carried status 204 with the MERGED real headers, and the
+	// package's no-content guard discarded a genuine measurement (order-dependent flap).
+	// Prefer a usable probe that actually delivered content; only when EVERY usable probe
+	// is no-content does the old preference apply (and the package guard then rightly
+	// routes it to the unmeasured lane).
+	const isNoContent = (r: Response) => r.status === 204 || r.status === 205;
+	const contentful = usable.filter((r) => !isNoContent(r));
+	const pool = contentful.length > 0 ? contentful : usable;
+	const primary = pool.find((r) => r.ok) ?? pool[0];
 	return { headers: merged, edgeSignals, ok: primary.ok, status: primary.status, usable: true };
 }
 

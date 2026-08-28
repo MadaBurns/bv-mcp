@@ -39,6 +39,11 @@ function expectUnmeasuredNoContent(result: Awaited<ReturnType<typeof checkHTTPSe
 	expect(result.score).toBe(0);
 	expect(result.passed).toBe(false);
 	expect(result.checkStatus).toBe('error');
+	// A no-content answer is a TRANSIENT anomaly (an egress blip, not an origin-persistent
+	// state): `partial: true` keeps it out of the 5-min per-check cache — matching the
+	// buildDnsErrorResult convention — so it self-heals on the next probe instead of a
+	// one-off 204 pinning the category excluded for every caller for 5 minutes.
+	expect(result.partial).toBe(true);
 }
 
 describe('checkHTTPSecurity — a no-content 2xx is unmeasured, not a missing-header slate (issue #806)', () => {
@@ -70,6 +75,16 @@ describe('checkHTTPSecurity — a no-content 2xx is unmeasured, not a missing-he
 			return new Response(null, { status: 405 });
 		};
 		expectUnmeasuredNoContent(await checkHTTPSecurity('example.com', fetchFn));
+	});
+
+	it('a WAF/appliance block (403 on HEAD and GET) is UNCHANGED — cached deliberately, no `partial`', async () => {
+		// The pre-existing blocked-probe branches describe origin-PERSISTENT states (a WAF
+		// isn't going away in 5 minutes) and deliberately remain cacheable; `partial` is
+		// scoped to the transient no-content anomaly only.
+		const fetchFn: FetchFunction = async () => new Response(null, { status: 403 });
+		const result = await checkHTTPSecurity('example.com', fetchFn);
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBeUndefined();
 	});
 
 	it('a real headerless 200 is UNCHANGED — still analyzed as a measured page', async () => {

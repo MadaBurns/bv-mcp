@@ -215,4 +215,40 @@ describe('checkSsl', () => {
 		const finding = result.findings.find((f) => f.title === 'No HTTP to HTTPS redirect');
 		expect(finding).toBeUndefined();
 	});
+
+	it.each([[204], [205]])(
+		'should NOT emit an HSTS finding when the https:// probe returns a no-content %d (issue #806 follow-up)',
+		async (status) => {
+			// A terminal 204/205 on the https:// leg satisfies neither the redirect nor the
+			// error branch, so before the guard its EMPTY header set flowed into
+			// getHttpsFindings() and produced a confident scored "No HSTS header" medium
+			// finding from a response that delivered no page. Same family as the http:// leg
+			// fixed in #819: withhold the verdict, exclude the category.
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.startsWith('https://')) {
+					// Anomalous no-content answer on the https:// probe (robots.txt included —
+					// an empty robots answer fails open, matching this file's other mocks).
+					return Promise.resolve({
+						url: 'https://example.com/',
+						ok: true,
+						status,
+						headers: new Headers(),
+					});
+				}
+				return Promise.resolve({
+					ok: false,
+					status: 301,
+					headers: new Headers({ location: 'https://example.com/' }),
+				});
+			});
+			const result = await run();
+			expect(result.findings.find((f) => f.title === 'No HSTS header')).toBeUndefined();
+			expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+			const marker = result.findings.find((f) => f.metadata?.inconclusive === true);
+			expect(marker).toBeDefined();
+			expect(marker!.metadata?.errorKind).toBe('no_content');
+			expect(result.checkStatus).toBe('error');
+		},
+	);
 });
