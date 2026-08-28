@@ -152,6 +152,44 @@ describe('checkDnssecChain', () => {
 		expect(infoFinding!.detail).toMatch(/no DS|unsigned|not signed/i);
 	});
 
+	it('unsigned domain scores 60 with a real high finding (#810) — not an accidental 100 pass', async () => {
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
+			// example.com has no DS and no DNSKEY → unsigned
+			'example.com:DS': emptyDsResponse('example.com'),
+			'example.com:DNSKEY': emptyDnskeyResponse('example.com'),
+			'example.com:A': adResponse('example.com', false),
+		});
+
+		const result = await run();
+
+		// Mirrors check_dnssec's "DNSSEC not enabled" finding
+		// (packages/dns-checks/src/checks/check-dnssec.ts:143-151): a `high`-labelled
+		// finding whose penalty is decoupled to -40 via `penaltyOverride`, so the
+		// category lands at 60 rather than an accidental 100 (#810) or a zeroed 0.
+		const highFinding = result.findings.find((f) => f.severity === 'high');
+		expect(highFinding).toBeDefined();
+		expect(highFinding!.metadata?.penaltyOverride).toBe(40);
+
+		// Must NOT be flagged as a missing control — that would force the returned
+		// score to 0 (buildCheckResult: `score: hasMissingControl ? 0 : score`)
+		// instead of the intended 60, per the CLAUDE.md scoring trap for this exact
+		// finding class ("missingControl = we MEASURED and the control is absent").
+		expect(highFinding!.metadata?.missingControl).toBeUndefined();
+
+		// Aligned with scan_domain's dnssec category for the same unsigned-domain
+		// shape (packages/dns-checks/src/__tests__/checks/check-dnssec.test.ts:29-32):
+		// score 60, and — since 60 >= 50 and no finding sets missingControl — `passed`
+		// is true under this repo's documented `passed = score>=50 && !hasMissingControl`
+		// formula ("did not penalize", NOT "control exists"; see CLAUDE.md's `passed`-as-
+		// verdict trap). Forcing `passed: false` here would require missingControl,
+		// which would also zero the score to 0 — contradicting the 60 this fix targets.
+		expect(result.score).toBe(60);
+		expect(result.passed).toBe(true);
+	});
+
 	it('broken linkage (DS exists but no DNSKEY) produces high severity', async () => {
 		mockDnsFetch({
 			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
