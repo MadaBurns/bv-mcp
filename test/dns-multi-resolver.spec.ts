@@ -34,6 +34,24 @@ function mockSplitResolvers() {
 	});
 }
 
+/**
+ * Mock resolvers with per-resolver TXT `data` payloads, keyed by whether the
+ * request URL identifies as Cloudflare or Google. Lets a fixture send the
+ * SAME logical TXT value dressed in two different DoH presentation styles.
+ */
+function mockPerResolverTxt(cloudflareData: string[], googleData: string[]) {
+	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+		const urlStr = typeof url === 'string' ? url : url.toString();
+		const isCloudflare = urlStr.includes('cloudflare');
+		const u = new URL(urlStr);
+		const name = u.searchParams.get('name') ?? 'example.com';
+		const type = Number(u.searchParams.get('type') ?? '16');
+		const data = isCloudflare ? cloudflareData : googleData;
+		const answers = data.map((d) => ({ name, type: 16, TTL: 300, data: d }));
+		return Promise.resolve(createDohResponse([{ name, type }], answers));
+	});
+}
+
 describe('queryMultiResolver', () => {
 	it('returns CONSISTENT when all resolvers agree', async () => {
 		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' }]);
@@ -113,6 +131,43 @@ describe('queryMultiResolver', () => {
 		for (const [, init] of vi.mocked(globalThis.fetch).mock.calls) {
 			expect(init?.redirect).toBe('manual');
 		}
+	});
+
+	// #811: Cloudflare's DoH JSON wraps TXT strings in RFC 1035 presentation
+	// quotes; Google's does not. The two must normalize to the same logical
+	// value so identical TXT records don't get misreported as SPLIT_HORIZON.
+	describe('TXT quote normalization (#811)', () => {
+		it('treats a quote-wrapped Cloudflare TXT value as CONSISTENT with Google’s bare value', async () => {
+			mockPerResolverTxt(['"MS=ms70274184"'], ['MS=ms70274184']);
+
+			const result = await queryMultiResolver('example.com', 'TXT');
+
+			expect(result.status).toBe('CONSISTENT');
+			expect(result.detail).toContain('identical');
+			// The displayed evidence must match what was actually compared.
+			for (const ra of result.resolverAnswers) {
+				if (ra.status === 'ok') {
+					expect(ra.answers).toEqual(['ms=ms70274184']);
+				}
+			}
+		});
+
+		it('still reports SPLIT_HORIZON when the underlying TXT values genuinely differ', async () => {
+			mockPerResolverTxt(['"MS=ms70274184"'], ['MS=some-other-value']);
+
+			const result = await queryMultiResolver('example.com', 'TXT');
+
+			expect(result.status).toBe('SPLIT_HORIZON');
+		});
+
+		it('joins a multi-string TXT record’s quoted segments before comparing', async () => {
+			// Cloudflare-style: two adjacent quoted segments of one logical record.
+			mockPerResolverTxt(['"part1" "part2"'], ['part1part2']);
+
+			const result = await queryMultiResolver('example.com', 'TXT');
+
+			expect(result.status).toBe('CONSISTENT');
+		});
 	});
 });
 

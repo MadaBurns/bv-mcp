@@ -52,6 +52,28 @@ function buildUrl(endpoint: string, domain: string, type: RecordTypeName): strin
 	return `${endpoint}?${params.toString()}`;
 }
 
+/**
+ * Normalize a single DoH answer's `data` field for cross-resolver comparison.
+ *
+ * TXT answers arrive in RFC 1035 presentation format, but DoH providers
+ * disagree on whether the JSON encodes that quoting literally: Cloudflare's
+ * DoH wraps each TXT character-string in `"..."` and joins a multi-string
+ * record's segments with a `" "` separator (e.g. `"part1" "part2"`), while
+ * Google's DoH returns the bare, unquoted value. Left unnormalized, comparing
+ * Cloudflare's `"\"MS=ms123\""` against Google's `"MS=ms123"` never matches
+ * for ANY domain that has TXT records, so the consistency check structurally
+ * reports SPLIT_HORIZON across virtually the whole internet (#811). Collapse
+ * both representations to the same bare logical string before comparing.
+ * Non-TXT types are unaffected.
+ */
+function normalizeAnswerData(data: string, type: RecordTypeName): string {
+	const stripped = data.replace(/\.$/, '');
+	if (type !== 'TXT') return stripped.toLowerCase();
+	const joined = stripped.replace(/"\s+"/g, ''); // collapse multi-string segment separators
+	const unquoted = joined.replace(/^"|"$/g, ''); // strip the remaining outer quote pair, if present
+	return unquoted.toLowerCase();
+}
+
 /** Fetch a DoH response from a single resolver with timeout. */
 async function fetchResolver(resolverName: string, endpoint: string, domain: string, type: RecordTypeName): Promise<ResolverAnswer> {
 	const controller = new AbortController();
@@ -79,7 +101,7 @@ async function fetchResolver(resolverName: string, endpoint: string, domain: str
 		const typeCode = RecordType[type];
 		const answers = (data.Answer ?? [])
 			.filter((a: DnsAnswer) => a.type === typeCode)
-			.map((a: DnsAnswer) => a.data.replace(/\.$/, '').toLowerCase())
+			.map((a: DnsAnswer) => normalizeAnswerData(a.data, type))
 			.sort();
 
 		const ttl = data.Answer?.[0]?.TTL;
