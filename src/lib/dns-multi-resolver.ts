@@ -65,13 +65,66 @@ function buildUrl(endpoint: string, domain: string, type: RecordTypeName): strin
  * reports SPLIT_HORIZON across virtually the whole internet (#811). Collapse
  * both representations to the same bare logical string before comparing.
  * Non-TXT types are unaffected.
+ *
+ * LIMITATION (deliberate, reviewed under #811): this is textual normalization
+ * for the two observed DoH conventions, NOT an RFC 1035 presentation-format
+ * unescaper — a full parser is out of scope here. A TXT value that itself
+ * contains a literal `"` is presented with a backslash escape (`\"`); this
+ * function strips the outer quote pair but does not unescape interior
+ * `\"` sequences, so an escaped-quote payload can still compare unequal
+ * across resolvers (safe direction: a spurious SPLIT_HORIZON, never a false
+ * collapse of genuinely different values into CONSISTENT — see
+ * `dns-multi-resolver.spec.ts`'s "escaped-quote" case).
+ *
+ * The outer-pair strip below is additionally guarded to only fire when BOTH
+ * the first and last characters are unescaped `"` and the interior has no
+ * unescaped `"`, which prevents asymmetric or interior-quoted values from
+ * being mis-stripped. That guard does NOT close every gap: if one resolver's
+ * raw answer is byte-for-byte identical to `"<the other resolver's wrapped
+ * value>"` (i.e. a bare resolver's real content happens to itself look like
+ * a quoted string), the two raw inputs are indistinguishable by any
+ * per-answer textual heuristic and will still normalize to the same value
+ * (pinned, not fixed, by the "contrived collision" test) — resolving that
+ * would require passing resolver identity into this function to apply
+ * per-resolver stripping rules, deliberately not done here.
  */
 function normalizeAnswerData(data: string, type: RecordTypeName): string {
 	const stripped = data.replace(/\.$/, '');
 	if (type !== 'TXT') return stripped.toLowerCase();
 	const joined = stripped.replace(/"\s+"/g, ''); // collapse multi-string segment separators
-	const unquoted = joined.replace(/^"|"$/g, ''); // strip the remaining outer quote pair, if present
-	return unquoted.toLowerCase();
+	return stripOuterQuotePairIfUnambiguous(joined).toLowerCase();
+}
+
+/** True if the character at index `i` in `s` is preceded by an odd number of
+ * consecutive backslashes (i.e. is a `\"`-escaped quote, not a literal one). */
+function isEscapedAt(s: string, i: number): boolean {
+	let backslashes = 0;
+	let j = i - 1;
+	while (j >= 0 && s[j] === '\\') {
+		backslashes++;
+		j--;
+	}
+	return backslashes % 2 === 1;
+}
+
+/**
+ * Strip a matching outer `"..."` pair only when it is unambiguous: both the
+ * first and last characters are unescaped quotes, and no unescaped quote
+ * remains in the interior. Otherwise returns `s` unchanged. See the
+ * LIMITATION note on {@link normalizeAnswerData} for what this does and does
+ * not protect against.
+ */
+function stripOuterQuotePairIfUnambiguous(s: string): string {
+	if (s.length < 2 || s[0] !== '"' || s[s.length - 1] !== '"' || isEscapedAt(s, s.length - 1)) {
+		return s;
+	}
+	const interior = s.slice(1, -1);
+	for (let i = 0; i < interior.length; i++) {
+		if (interior[i] === '"' && !isEscapedAt(interior, i)) {
+			return s;
+		}
+	}
+	return interior;
 }
 
 /** Fetch a DoH response from a single resolver with timeout. */

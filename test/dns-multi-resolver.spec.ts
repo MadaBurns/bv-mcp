@@ -137,7 +137,7 @@ describe('queryMultiResolver', () => {
 	// quotes; Google's does not. The two must normalize to the same logical
 	// value so identical TXT records don't get misreported as SPLIT_HORIZON.
 	describe('TXT quote normalization (#811)', () => {
-		it('treats a quote-wrapped Cloudflare TXT value as CONSISTENT with Google’s bare value', async () => {
+		it("treats a quote-wrapped Cloudflare TXT value as CONSISTENT with Google's bare value", async () => {
 			mockPerResolverTxt(['"MS=ms70274184"'], ['MS=ms70274184']);
 
 			const result = await queryMultiResolver('example.com', 'TXT');
@@ -160,12 +160,49 @@ describe('queryMultiResolver', () => {
 			expect(result.status).toBe('SPLIT_HORIZON');
 		});
 
-		it('joins a multi-string TXT record’s quoted segments before comparing', async () => {
+		it("joins a multi-string TXT record's quoted segments before comparing", async () => {
 			// Cloudflare-style: two adjacent quoted segments of one logical record.
 			mockPerResolverTxt(['"part1" "part2"'], ['part1part2']);
 
 			const result = await queryMultiResolver('example.com', 'TXT');
 
+			expect(result.status).toBe('CONSISTENT');
+		});
+
+		// Follow-up review finding on #811: normalizeAnswerData() does textual
+		// quote-stripping, not RFC 1035 unescaping, so a TXT value containing a
+		// literal/escaped quote is only partially handled. Pin the SAFE direction
+		// here: Cloudflare's escaped-quote form and Google's bare form must never
+		// collapse to CONSISTENT when their content differs after only an outer
+		// unwrap (a spurious SPLIT_HORIZON is acceptable; a false CONSISTENT is not).
+		it('reports SPLIT_HORIZON (never a false CONSISTENT) for a TXT value containing an escaped quote', async () => {
+			// Real content: he said "hi" — Cloudflare wraps + backslash-escapes the
+			// interior quotes; Google returns the bare value with real quote chars.
+			mockPerResolverTxt(['"he said \\"hi\\""'], ['he said "hi"']);
+
+			const result = await queryMultiResolver('example.com', 'TXT');
+
+			expect(result.status).toBe('SPLIT_HORIZON');
+		});
+
+		// Contrived dangerous-direction case flagged in review: a resolver's bare
+		// (unwrapped) TXT content can itself be byte-for-byte identical to what
+		// wrapping produces for a DIFFERENT real value on another resolver — e.g.
+		// Cloudflare's real value `foo` is wrapped to the raw string `"foo"`, and
+		// Google's real value happens to BE the 5-byte string `"foo"` (quotes as
+		// literal content). The two raw DoH answers are then byte-identical, so
+		// no per-answer textual heuristic (including the outer-quote-pair guard
+		// added here) can tell them apart — this is pinned as a known, inherent
+		// limitation (see the LIMITATION note on normalizeAnswerData), NOT
+		// silently treated as fixed. Resolving it would require passing resolver
+		// identity into the normalizer, which is deliberately out of scope.
+		it("KNOWN LIMITATION: cannot distinguish a bare value that collides byte-for-byte with another resolver's wrapped value", async () => {
+			mockPerResolverTxt(['"foo"'], ['"foo"']);
+
+			const result = await queryMultiResolver('example.com', 'TXT');
+
+			// Pinning current (inherent, documented) behavior — not asserting this
+			// is correct or desirable, only that it is understood and unchanged.
 			expect(result.status).toBe('CONSISTENT');
 		});
 	});
