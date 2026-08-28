@@ -261,6 +261,31 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		);
 	}
 
+	// Unsigned target zone (high severity, decoupled penalty). Mirrors check_dnssec's
+	// "DNSSEC not enabled" finding (packages/dns-checks/src/checks/check-dnssec.ts:130-151):
+	// the target has neither a DS in its parent nor a DNSKEY of its own, so the chain of
+	// trust terminates at the target and DNSSEC provides no origin authentication for it.
+	// The severity LABEL is `high` (per the same NIST SP 800-81r3 / RFC 9364 rationale as
+	// check_dnssec — DNSSEC is one of several integrity controls, not a sole baseline), but
+	// the SCORE penalty is decoupled to -40 via `penaltyOverride` (100-40=60) rather than the
+	// raw high-severity default, keeping this tool's unsigned verdict numerically aligned
+	// with scan_domain's dnssec category for the same domain (#810). We deliberately do NOT
+	// set `missingControl: true` (that would zero the score to 0 via buildCheckResult's
+	// `score: hasMissingControl ? 0 : score`) and the detail text avoids "no … record",
+	// "missing", "required", and "not found" so `scoreIndicatesMissingControl`
+	// (packages/dns-checks/src/scoring/model.ts:267-285) cannot auto-zero the finding.
+	if (reachedTarget && !targetSigned) {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'DNSSEC chain terminates unsigned',
+				'high',
+				`DNSSEC is not configured for ${domain}: the chain-of-trust walk found neither a DS at the parent zone nor a DNSKEY published by ${domain} itself, so the chain terminates here. Without DNSSEC, DNS responses for ${domain} are not cryptographically verified, leaving SPF, DMARC, and DKIM vulnerable to DNS-level manipulation.`,
+				{ zone: domain, linkage: 'no_ds', penaltyOverride: 40 },
+			),
+		);
+	}
+
 	// Weak algorithm finding (medium severity)
 	if (weakAlgsFound.length > 0) {
 		const uniqueWeak = [...new Set(weakAlgsFound)];
