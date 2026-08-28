@@ -221,6 +221,10 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	// Determine chain completeness
 	const lastZone = zoneResults[zoneResults.length - 1];
 	const reachedTarget = lastZone?.zone === domain;
+	// The walk loop only ever exits early via the unsigned-zone `break` (no DS AND
+	// no DNSKEY at a non-root zone), so `stoppedEarly` means exactly "the chain of
+	// trust terminated unsigned at an ANCESTOR of the target".
+	const stoppedEarly = !reachedTarget;
 	// Chain is complete only if we reached the target AND it's not broken AND the target zone is actually signed
 	const targetSigned = reachedTarget && (lastZone.dsRecords.length > 0 || lastZone.dnskeyRecords.length > 0);
 	// The root trust anchor must have been retrieved for the chain to be "complete".
@@ -261,7 +265,14 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		);
 	}
 
-	// Unsigned target zone (high severity, decoupled penalty). Mirrors check_dnssec's
+	// Unsigned chain termination (high severity, decoupled penalty). Fires when the
+	// walk reached the target and found it unsigned, OR when the walk stopped early
+	// at an unsigned ANCESTOR zone (`stoppedEarly`) — the chain of trust is broken at
+	// that ancestor, and any DNSSEC material published below it (an island of trust)
+	// is unreachable from the root anchor, so validating resolvers treat the target
+	// as insecure either way. Before this guard covered `stoppedEarly`, a subdomain
+	// under an unsigned parent scored an accidental 100/passed while check_dnssec
+	// scored the same domain 60 (#820 review follow-up). Mirrors check_dnssec's
 	// "DNSSEC not enabled" finding (packages/dns-checks/src/checks/check-dnssec.ts:130-151):
 	// the target has neither a DS in its parent nor a DNSKEY of its own, so the chain of
 	// trust terminates at the target and DNSSEC provides no origin authentication for it.
@@ -274,15 +285,19 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	// `score: hasMissingControl ? 0 : score`) and the detail text avoids "no … record",
 	// "missing", "required", and "not found" so `scoreIndicatesMissingControl`
 	// (packages/dns-checks/src/scoring/model.ts:267-285) cannot auto-zero the finding.
-	if (reachedTarget && !targetSigned) {
+	if (!targetSigned || stoppedEarly) {
+		// The zone where the chain of trust terminated unsigned: the target itself
+		// when the walk got there, otherwise the unsigned ancestor it stopped at.
+		const terminalZone = stoppedEarly ? (lastZone?.zone ?? domain) : domain;
+		const detail = stoppedEarly
+			? `DNSSEC is not configured for ${terminalZone}: the chain-of-trust walk found neither a DS at its parent zone nor a DNSKEY published by ${terminalZone} itself, so the chain of trust terminates at ${terminalZone} before reaching ${domain}. Any DNSSEC material published below ${terminalZone} is an unreachable island of trust. Without an intact chain, DNS responses for ${domain} are not cryptographically verified, leaving SPF, DMARC, and DKIM vulnerable to DNS-level manipulation.`
+			: `DNSSEC is not configured for ${domain}: the chain-of-trust walk found neither a DS at the parent zone nor a DNSKEY published by ${domain} itself, so the chain terminates here. Without DNSSEC, DNS responses for ${domain} are not cryptographically verified, leaving SPF, DMARC, and DKIM vulnerable to DNS-level manipulation.`;
 		findings.push(
-			createFinding(
-				CATEGORY,
-				'DNSSEC chain terminates unsigned',
-				'high',
-				`DNSSEC is not configured for ${domain}: the chain-of-trust walk found neither a DS at the parent zone nor a DNSKEY published by ${domain} itself, so the chain terminates here. Without DNSSEC, DNS responses for ${domain} are not cryptographically verified, leaving SPF, DMARC, and DKIM vulnerable to DNS-level manipulation.`,
-				{ zone: domain, linkage: 'no_ds', penaltyOverride: 40 },
-			),
+			createFinding(CATEGORY, 'DNSSEC chain terminates unsigned', 'high', detail, {
+				zone: terminalZone,
+				linkage: 'no_ds',
+				penaltyOverride: 40,
+			}),
 		);
 	}
 
@@ -312,7 +327,6 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		dsDigestTypes: [...new Set(z.dsRecords.map((ds) => DIGEST_TYPES[ds.digestType] ?? `Unknown(${ds.digestType})`))],
 	}));
 
-	const stoppedEarly = !reachedTarget;
 	let summaryStatus: string;
 	if (stoppedEarly) {
 		summaryStatus = `stopped at ${lastZone?.zone ?? '.'} — zone has no DS and no DNSKEY (not signed)`;
