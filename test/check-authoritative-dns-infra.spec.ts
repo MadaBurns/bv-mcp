@@ -250,6 +250,41 @@ describe('checkAuthoritativeDnsInfra', () => {
 		]));
 	});
 
+	// #812 (split from #786): every capability inconclusive must NOT emit the
+	// "checks passed" finding — that prose directly contradicted the sibling
+	// structured fields (`passed: false`, `score: 0`, `checkStatus: 'error'`,
+	// capabilitySummary all-inconclusive) on this exact fixture shape.
+	it('does not claim a pass when every capability is inconclusive (#812)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'trademe.co.nz',
+			checkedAt: '2026-05-29T00:00:00.000Z',
+			reachability: { udp53Reachable: false, tcp53Reachable: false },
+			// No authoritative/soa/dnssec/routing/vantage evidence at all — nothing
+			// the probe returned resolves to a conclusive pass or fail.
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('trademe.co.nz', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		// Sibling structured fields already report "nothing measured" honestly.
+		expect(result).toMatchObject({ passed: false, score: 0, checkStatus: 'error', partial: true });
+		const summary = result.metadata?.capabilitySummary as { passed: string[]; failed: string[] };
+		expect(summary.passed).toEqual([]);
+		expect(summary.failed).toEqual([]);
+
+		const titles = result.findings.map((f) => f.title);
+		expect(titles).not.toContain('Authoritative DNS infrastructure checks passed');
+
+		const inconclusiveFinding = result.findings.find(
+			(f) => f.title === 'Authoritative DNS infrastructure checks inconclusive',
+		);
+		expect(inconclusiveFinding).toBeDefined();
+		expect(inconclusiveFinding!.severity).toBe('info');
+		expect(inconclusiveFinding!.detail).not.toMatch(/passed|satisfied/i);
+		expect(inconclusiveFinding!.metadata?.inconclusive).toBe(true);
+	});
+
 	it('degrades gracefully (does not throw) when the infra probe returns HTTP 503', async () => {
 		const fetch = vi.fn(async () => new Response('upstream unavailable', { status: 503 }));
 
