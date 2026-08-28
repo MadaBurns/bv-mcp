@@ -77,6 +77,61 @@ describe('tool-formatters', () => {
 		expect(text).not.toContain('not measured');
 	});
 
+	// #809: `passed` alone means "did not penalize", not "the control exists" -- the same
+	// defect #705/#706/#725 fixed on map_compliance/compare_baseline/the deploy verifier, but
+	// missed here, the broadest surface (every check_* tool's rendered Status line). Routing
+	// through `isSatisfiedControl` (src/lib/control-presence.ts) closes it: a `passed: true`
+	// result that carries a MEASURED medium-or-worse finding (the severity floor) can no longer
+	// print a plain "✅ Passed" that reads as a control verdict nobody actually confirmed.
+	describe('formatCheckResult — passed-as-verdict (#809)', () => {
+		it('passed with only info findings still renders the plain Passed verdict', () => {
+			const result: CheckResult = {
+				category: 'spf',
+				passed: true,
+				score: 100,
+				checkStatus: 'completed',
+				findings: [{ category: 'spf', title: 'SPF record valid', severity: 'info', detail: 'Record ends in -all.' }],
+			};
+
+			const text = formatCheckResult(result);
+			expect(text).toContain('**Status:** ✅ Passed');
+		});
+
+		it('passed with a MEASURED medium finding cannot print a plain Passed verdict', () => {
+			const result: CheckResult = {
+				category: 'dnssec_chain',
+				passed: true,
+				score: 60,
+				checkStatus: 'completed',
+				findings: [
+					{
+						category: 'dnssec_chain',
+						title: 'DNSSEC not enabled',
+						severity: 'medium',
+						detail: 'No DS record found at the parent zone.',
+					},
+				],
+			};
+
+			const text = formatCheckResult(result);
+			expect(text).not.toContain('**Status:** ✅ Passed');
+			expect(text).toContain('**Status:** 🟡 Passed with findings');
+		});
+
+		it('!passed still renders Failed regardless of finding severity', () => {
+			const result: CheckResult = {
+				category: 'spf',
+				passed: false,
+				score: 20,
+				checkStatus: 'completed',
+				findings: [{ category: 'spf', title: 'Unsafe SPF policy', severity: 'high', detail: 'SPF record contains +all.' }],
+			};
+
+			const text = formatCheckResult(result);
+			expect(text).toContain('**Status:** ❌ Failed');
+		});
+	});
+
 	it('formatCheckResult renders takeover proof requirements when exploitability is not proven', () => {
 		const result: CheckResult = {
 			category: 'subdomain_takeover',
