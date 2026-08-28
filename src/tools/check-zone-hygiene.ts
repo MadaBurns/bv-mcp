@@ -92,7 +92,8 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 								'zone_hygiene',
 								'SOA expire value is short',
 								'low',
-								`The SOA expire value (${soa.expire}s) is less than 1 week (604800s). If the primary NS becomes unreachable, secondaries will stop serving the zone sooner than recommended.`,
+								// #807: keep this wording consistent with the ns-analysis SOA-expire templates (no bare `<`).
+								`SOA expire value is ${soa.expire}s, below the recommended 604800s (1 week). If the primary NS becomes unreachable, secondaries will stop serving the zone sooner than recommended.`,
 								{ expire: soa.expire },
 							),
 						);
