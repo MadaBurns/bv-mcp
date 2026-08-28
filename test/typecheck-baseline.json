@@ -2,7 +2,7 @@
 	"$comment": "Ratchet baseline for `npm run typecheck:tests` (issue #645). Per-file tsc error counts for the test trees, which no other gate typechecks. An INCREASE fails CI; a decrease is reported and should be banked by re-running with `-- --update`. Regenerate deliberately — never to silence a new error.",
 	"generatedBy": "scripts/ci/typecheck-tests.mjs --update",
 	"typescript": "6.0.3",
-	"total": 742,
+	"total": 739,
 	"projects": {
 		"test/tsconfig.json": {
 			"packages/dns-checks/src/__tests__/scoring/scoring-engine.suite.ts": 4,
@@ -61,7 +61,6 @@
 			"test/chaos/planner-recall-under-signal-failure.chaos.test.ts": 1,
 			"test/chaos/tenant-cron.chaos.test.ts": 2,
 			"test/chaos/tenant-queue.chaos.test.ts": 2,
-			"test/check-authoritative-dns-infra.spec.ts": 3,
 			"test/check-root-server-set.spec.ts": 3,
 			"test/check-shadow-domains.spec.ts": 11,
 			"test/check-ssl-tls-probe-enrichment.integration.test.ts": 3,
