@@ -190,6 +190,47 @@ describe('checkDnssecChain', () => {
 		expect(result.passed).toBe(true);
 	});
 
+	it('unsigned ANCESTOR zone (walk stops before target) scores 60, not an accidental 100 pass', async () => {
+		// www.example.com where example.com is unsigned (com signed): the walk breaks
+		// at example.com before ever reaching the target, so the #820 guard
+		// (`reachedTarget && !targetSigned`) never fired and the tool returned
+		// score 100 / passed true while check_dnssec scored the same domain 60.
+		// The chain of trust is broken at the unsigned ancestor — even a DNSKEY
+		// published below it would be an unreachable island of trust.
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
+			// example.com (ANCESTOR of the target) has no DS and no DNSKEY → unsigned
+			'example.com:DS': emptyDsResponse('example.com'),
+			'example.com:DNSKEY': emptyDnskeyResponse('example.com'),
+			'www.example.com:A': adResponse('www.example.com', false),
+		});
+
+		const result = await run('www.example.com');
+
+		// Same finding shape as the reached-target case (#820): high severity with a
+		// decoupled -40 penalty, and NO missingControl (which would zero the score).
+		const highFinding = result.findings.find((f) => f.severity === 'high');
+		expect(highFinding).toBeDefined();
+		expect(highFinding!.metadata?.penaltyOverride).toBe(40);
+		expect(highFinding!.metadata?.missingControl).toBeUndefined();
+
+		// The finding is keyed to the zone where the chain terminated unsigned.
+		expect(highFinding!.metadata?.zone).toBe('example.com');
+		expect(highFinding!.detail).toContain('example.com');
+
+		// Aligned with check_dnssec's 60 for the same shape; passed=true under the
+		// documented `passed = score>=50 && !hasMissingControl` formula.
+		expect(result.score).toBe(60);
+		expect(result.passed).toBe(true);
+
+		// Summary must not claim a complete chain.
+		const summary = result.findings.find((f) => f.severity === 'info' && f.metadata?.chainComplete !== undefined);
+		expect(summary).toBeDefined();
+		expect(summary!.metadata!.chainComplete).toBe(false);
+	});
+
 	it('broken linkage (DS exists but no DNSKEY) produces high severity', async () => {
 		mockDnsFetch({
 			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
