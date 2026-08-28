@@ -3,7 +3,16 @@
 import { sanitizeStructuredString } from '@blackveil/dns-checks/scoring';
 import { sanitizeInput } from './sanitize';
 
-const MARKDOWN_SYNTAX = /[`*_#[\]()>|<]/g;
+/**
+ * Markdown / HTML injection characters (F7/LLM01 guards: code fences, emphasis,
+ * headings, link brackets, tables, HTML tags). MUST mirror `MARKDOWN_UNSAFE` in
+ * `packages/dns-checks/src/scoring/metadata-sanitize.ts` — parity is pinned by
+ * `test/output-sanitize.spec.ts`. `_` and `()` are deliberately NOT stripped
+ * (#807): they appear in legitimate DNS labels (`_dmarc`, `_25._tcp`) and prose
+ * ("(1024 bits)"), a bare underscore/paren is not markdown in GFM's common
+ * cases, and the `[`/`]` stripping already defeats markdown links.
+ */
+const MARKDOWN_SYNTAX = /[`*#[\]>|<]/g;
 
 /**
  * Sanitize DNS-sourced data before it enters finding detail strings.

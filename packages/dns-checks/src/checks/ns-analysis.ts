@@ -152,7 +152,8 @@ export function getSoaValidationFindings(soaValues: ParsedSoaValues): Finding[] 
 				'ns',
 				'SOA expire too short',
 				'medium',
-				`SOA expire value is ${soaValues.expire}s (< 604800s / 1 week). If secondary nameservers cannot reach the primary for this duration, they will stop serving the zone.`,
+				// #807: no bare `<` — the createFinding() sanitizer strips it and garbles the prose.
+				`SOA expire value is ${soaValues.expire}s, below the recommended 604800s (1 week). If secondary nameservers cannot reach the primary for this duration, they will stop serving the zone.`,
 			),
 		);
 	}

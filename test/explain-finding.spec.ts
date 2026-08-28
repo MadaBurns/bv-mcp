@@ -439,7 +439,7 @@ describe('explainFinding', () => {
 
 	it('falls back to default for NS medium severity (no NS_MEDIUM entry)', async () => {
 		const { explainFinding } = await getModule();
-		const result = explainFinding('NS', 'medium', 'SOA expire value is 1800s (< 604800s / 1 week)');
+		const result = explainFinding('NS', 'medium', 'SOA expire value is 1800s, below the recommended 604800s (1 week)');
 		expect(result.title).toBe('Security Check Complete');
 	});
 

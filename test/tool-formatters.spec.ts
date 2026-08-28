@@ -99,7 +99,7 @@ describe('tool-formatters', () => {
 
 		const text = formatCheckResult(result);
 		expect(text).toContain('Takeover Verification: potential');
-		expect(text).toContain('Proof Required: authorized proof of control');
+		expect(text).toContain('Proof Required: authorized_proof_of_control'); // #807: sanitizer now preserves underscores in the token
 		expect(text).toContain('Confidence: heuristic');
 	});
 
