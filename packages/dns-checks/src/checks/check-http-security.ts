@@ -19,6 +19,36 @@ const HTTPS_TIMEOUT_MS = 4_000;
 const MAX_REDIRECT_HOPS = 3;
 
 /**
+ * No-content 2xx statuses (issue #806). A terminal 204/205 satisfies `response.ok`
+ * but by definition delivered no page, so its (typically empty) header set must never
+ * be analyzed as the site's — doing so manufactured the entire confident
+ * missing-header slate from a response that measured nothing (observed live on
+ * google.com via an egress anomaly: the real answer is a 301/200 chain carrying
+ * `x-frame-options`, yet the scan reported "No X-Frame-Options"). WAF detection
+ * cannot rescue this case — it requires status >= 400 or a body signature — so the
+ * guard routes it to the same unmeasured shape as the WAF-blocked/never-completed
+ * probe branches below.
+ */
+const NO_CONTENT_STATUSES = new Set([204, 205]);
+
+/**
+ * The one honest finding for a no-content terminal response (issue #806).
+ * No `missingControl` — that flag asserts "we measured and the control is absent",
+ * and a 204 measured nothing (issue #638 law). `inconclusive` + `errorKind` are the
+ * honest unmeasured markers; the score-0/passed-false shape is applied by the caller
+ * via `unmeasuredZero`, exactly like the blocked-probe branches.
+ */
+function noContentFinding(domain: string, status: number): Finding {
+	return createFinding(
+		'http_security',
+		'HTTP response carried no content',
+		'info',
+		`https://${domain} answered the scanner with HTTP ${status} (no content). No page was delivered, so security headers could not be verified — the response may be an egress anomaly or challenge rather than the site.`,
+		{ inconclusive: true, confidence: 'heuristic', errorKind: 'no_content' },
+	);
+}
+
+/**
  * Follow redirects manually to get the final response with security headers.
  * Redirect responses (e.g., nist.gov → www.nist.gov) typically lack security
  * headers, causing false negatives if we analyze the 301 instead of the 200.
@@ -144,7 +174,16 @@ export async function checkHTTPSecurity(
 		// Follow redirects to get the final destination's headers
 		response = await followRedirects(response, fetchFn, timeoutMs);
 
-		if (response.ok) {
+		if (NO_CONTENT_STATUSES.has(response.status)) {
+			// Issue #806 — the terminal response is accepted here, so the no-content guard
+			// runs BEFORE any header-read branch (it also structurally shields the still-3xx
+			// branch below, where a 204/205 can never appear). `checkStatus: 'error'` makes
+			// the scoring engine EXCLUDE the category (transient-failure renormalization)
+			// rather than score the 0 — so the transient-zero retry can fire.
+			inconclusive = 'error';
+			unmeasuredZero = true;
+			findings.push(noContentFinding(domain, response.status));
+		} else if (response.ok) {
 			// 200-299: analyze headers normally
 			findings.push(...analyzeSecurityHeaders(response.headers));
 		} else if (response.status === 0 || response.status >= 500) {
@@ -165,7 +204,15 @@ export async function checkHTTPSecurity(
 			const getResponse = await tryGetFallback(`https://${domain}`, fetchFn, timeoutMs);
 			if (getResponse && (getResponse.ok || (getResponse.status >= 300 && getResponse.status < 400))) {
 				const followed = await followRedirects(getResponse, fetchFn, timeoutMs);
-				findings.push(...analyzeSecurityHeaders(followed.headers));
+				if (NO_CONTENT_STATUSES.has(followed.status)) {
+					// Issue #806 — the GET fallback's terminal response is accepted here, so the
+					// same no-content guard applies before analysis.
+					inconclusive = 'error';
+					unmeasuredZero = true;
+					findings.push(noContentFinding(domain, followed.status));
+				} else {
+					findings.push(...analyzeSecurityHeaders(followed.headers));
+				}
 				// GET fallback returns a real body we never read (followRedirects only
 				// cancels it when it redirects); release it so workerd doesn't cancel a
 				// stalled stream.

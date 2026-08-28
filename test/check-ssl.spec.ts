@@ -189,4 +189,30 @@ describe('checkSsl', () => {
 		expect(finding).toBeDefined();
 		expect(finding!.severity).toBe('medium');
 	});
+
+	it('should NOT emit a redirect finding when the plain-HTTP probe returns a no-content 204 (issue #806)', async () => {
+		// A 204 carried no page and measured nothing about redirect posture (observed live:
+		// google.com's real http:// answer is a 301, yet a scan emitted "status 204").
+		// The sub-probe is skipped, matching the silent-skip posture for a failed HTTP probe.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.startsWith('https://')) {
+				return Promise.resolve({
+					url: 'https://example.com/',
+					ok: true,
+					status: 200,
+					headers: new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
+				});
+			}
+			// Anomalous no-content answer on the http:// probe
+			return Promise.resolve({
+				ok: true,
+				status: 204,
+				headers: new Headers(),
+			});
+		});
+		const result = await run();
+		const finding = result.findings.find((f) => f.title === 'No HTTP to HTTPS redirect');
+		expect(finding).toBeUndefined();
+	});
 });
