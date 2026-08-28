@@ -394,15 +394,38 @@ export function analyzeAuthoritativeDnsInfraEvidence(
 	);
 
 	if (findings.length === 0) {
-		findings.push(
-			createFinding(
-				CATEGORY,
-				'Authoritative DNS infrastructure checks passed',
-				'info',
-				`Infra probe evidence for ${evidence.hostname} satisfied all conclusive capability checks.`,
-				{ evidenceMode: 'infra_probe' },
-			),
-		);
+		// `findings.length === 0` only means no FAILURE finding was emitted — every
+		// `pushCapabilityResult(..., false, ...)` call above pushes one, so a failure
+		// would already show up here. It says nothing about whether anything was
+		// actually CONCLUSIVE: with every capability inconclusive (`passed` and
+		// `failed` both empty), this branch is reached with zero evidence either way.
+		// Asserting a pass there is a vacuous truth ("satisfied all zero checks") that
+		// directly contradicted the sibling structured fields the caller derives from
+		// this same `capabilitySummary` (`checkStatus: 'error'`, `passed: false`,
+		// `score: 0` — see `checkAuthoritativeDnsInfra`'s `measuredNothing`) (#812,
+		// split from #786). Gate the affirmative finding on at least one CONCLUSIVE
+		// (passed) capability, and tell the truth otherwise.
+		if (capabilitySummary.passed.length > 0) {
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'Authoritative DNS infrastructure checks passed',
+					'info',
+					`Infra probe evidence for ${evidence.hostname} satisfied all conclusive capability checks.`,
+					{ evidenceMode: 'infra_probe' },
+				),
+			);
+		} else {
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'Authoritative DNS infrastructure checks inconclusive',
+					'info',
+					`Infra probe evidence for ${evidence.hostname} did not yield any conclusive capability checks; nothing was verified.`,
+					{ evidenceMode: 'infra_probe', inconclusive: true },
+				),
+			);
+		}
 	}
 
 	return { findings, capabilitySummary };
