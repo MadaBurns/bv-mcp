@@ -3,7 +3,7 @@
 /**
  * SRV Service Discovery Audit tool.
  * Probes common SRV prefixes to map a domain's DNS-visible service footprint.
- * Flags insecure protocol advertisements (plain-text IMAP/POP3 without encrypted variants).
+ * Flags insecure protocol advertisements (plain-text IMAP/POP3/LDAP without encrypted variants).
  *
  * Workers-compatible: uses fetch API only (DNS-over-HTTPS).
  */
@@ -17,8 +17,8 @@ import type { SrvProbeResult } from './srv-analysis';
 /**
  * Audit SRV service discovery records for a domain.
  *
- * Probes ~16 common SRV prefixes (email, calendar, messaging, web) in parallel
- * and analyzes discovered services for security concerns.
+ * Probes 19 common SRV prefixes (email, calendar, messaging, directory, web) in parallel
+ * and analyzes discovered services for security concerns. See {@link SRV_PREFIXES} for the exact list.
  *
  * @param domain - The domain to check (must already be validated and sanitized)
  * @param dnsOptions - Optional DNS query options (e.g., scan-context optimizations)

@@ -5,13 +5,26 @@ import { analyzeSrvResults, SRV_PREFIXES } from '../src/tools/srv-analysis';
 import type { SrvProbeResult } from '../src/tools/srv-analysis';
 
 describe('analyzeSrvResults', () => {
-	it('should return info finding when no services found', () => {
+	it('should return info finding when no services found, scoped to the probed prefix count', () => {
 		const results: SrvProbeResult[] = SRV_PREFIXES.map((prefix) => ({ prefix, records: [] }));
 		const findings = analyzeSrvResults(results);
 
 		expect(findings).toHaveLength(1);
 		expect(findings[0].severity).toBe('info');
 		expect(findings[0].title).toBe('No SRV service records found');
+		expect(findings[0].detail).toBe(
+			`No SRV records were found across the ${SRV_PREFIXES.length} common service prefixes probed. This does not rule out a service record under a prefix outside the probed set.`,
+		);
+	});
+
+	it('should scope the negative finding to the actual evidence set when fewer results were analyzed than the full probe list', () => {
+		// Simulates checkSrv passing only the SUCCESSFUL probes (some failed and were excluded upstream) —
+		// the "no records found" claim must be honest about what was actually measured, not the full list size.
+		const partial: SrvProbeResult[] = SRV_PREFIXES.slice(0, 5).map((prefix) => ({ prefix, records: [] }));
+		const findings = analyzeSrvResults(partial);
+
+		expect(findings).toHaveLength(1);
+		expect(findings[0].detail).toContain('across the 5 common service prefixes probed');
 	});
 
 	it('should return info finding for a single discovered service', () => {
@@ -58,6 +71,46 @@ describe('analyzeSrvResults', () => {
 
 		const medium = findings.filter((f) => f.severity === 'medium');
 		expect(medium).toHaveLength(0);
+	});
+
+	it('should flag plain-text LDAP without LDAPS as medium', () => {
+		const results: SrvProbeResult[] = [
+			{ prefix: '_ldap._tcp', records: [{ priority: 5, weight: 0, port: 389, target: 'ldap.example.com' }] },
+		];
+		const findings = analyzeSrvResults(results);
+
+		const medium = findings.filter((f) => f.severity === 'medium');
+		expect(medium).toHaveLength(1);
+		expect(medium[0].title).toContain('Plain-text LDAP');
+		expect(medium[0].detail).toContain('_ldap._tcp');
+		expect(medium[0].detail).toContain('_ldaps._tcp');
+	});
+
+	it('should NOT flag LDAP when LDAPS is also present', () => {
+		const results: SrvProbeResult[] = [
+			{ prefix: '_ldap._tcp', records: [{ priority: 5, weight: 0, port: 389, target: 'ldap.example.com' }] },
+			{ prefix: '_ldaps._tcp', records: [{ priority: 5, weight: 0, port: 636, target: 'ldap.example.com' }] },
+		];
+		const findings = analyzeSrvResults(results);
+
+		const medium = findings.filter((f) => f.severity === 'medium');
+		expect(medium).toHaveLength(0);
+	});
+
+	it('should report _sipfederationtls._tcp as a discovered service and include it in the SIP/XMPP finding', () => {
+		const results: SrvProbeResult[] = [
+			{ prefix: '_sipfederationtls._tcp', records: [{ priority: 100, weight: 1, port: 5061, target: 'sipfed.online.lync.com' }] },
+		];
+		const findings = analyzeSrvResults(results);
+
+		const discovered = findings.find((f) => f.title === 'SRV service discovered: _sipfederationtls._tcp');
+		expect(discovered).toBeDefined();
+		expect(discovered!.metadata?.port).toBe(5061);
+		expect(discovered!.metadata?.target).toBe('sipfed.online.lync.com');
+
+		const comm = findings.find((f) => f.title === 'SIP/XMPP services publicly advertised');
+		expect(comm).toBeDefined();
+		expect(comm!.detail).toContain('_sipfederationtls._tcp');
 	});
 
 	it('should NOT flag POP3 when POP3S is also present', () => {
