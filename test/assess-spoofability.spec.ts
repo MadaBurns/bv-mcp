@@ -36,10 +36,18 @@ function mockEmailAuth(options: {
 	dkim?: boolean;
 	/** Publish REVOKED DKIM keys (empty p=) on every probed selector — the non-sending posture. */
 	dkimRevoked?: boolean;
+	/**
+	 * Publish a REVOKED key (empty p=) on EXACTLY this one selector; every other
+	 * probed selector gets an empty answer. This is google.com's real shape (#808):
+	 * one discoverable selector, revoked — unlike `dkimRevoked`, which answers on
+	 * all 46 probed selectors and so only ever exercises the plural
+	 * "DKIM keys revoked (non-sending)" consolidation branch.
+	 */
+	dkimRevokedSelector?: string;
 	/** Emit no MX records (a domain that receives no mail). */
 	noMx?: boolean;
 }) {
-	const { spf, dmarc, dkim = false, dkimRevoked = false, noMx = false } = options;
+	const { spf, dmarc, dkim = false, dkimRevoked = false, dkimRevokedSelector, noMx = false } = options;
 
 	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
 		const u = new URL(typeof url === 'string' ? url : url.toString());
@@ -63,7 +71,11 @@ function mockEmailAuth(options: {
 			}
 			if (name.includes('_domainkey')) {
 				const records: Array<{ name: string; type: number; TTL: number; data: string }> = [];
-				if (dkimRevoked) {
+				if (dkimRevokedSelector) {
+					if (name === `${dkimRevokedSelector}._domainkey.example.com`) {
+						records.push({ name, type: 16, TTL: 300, data: '"v=DKIM1; k=rsa; p="' });
+					}
+				} else if (dkimRevoked) {
 					records.push({ name, type: 16, TTL: 300, data: '"v=DKIM1; k=rsa; p="' });
 				} else if (dkim) {
 					records.push({ name, type: 16, TTL: 300, data: '"v=DKIM1; k=rsa; p=MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEA"' });
@@ -218,6 +230,59 @@ describe('assessSpoofability', () => {
 				expect(text).not.toContain('null');
 				expect(text).toContain('not applicable');
 			}
+		});
+	});
+
+	/**
+	 * Issue #808: google.com's real shape — exactly ONE discoverable selector
+	 * (`20230601`), revoked (empty p=). `check_dkim` emits the SINGULAR
+	 * `Revoked DKIM key: <selector>` medium finding (the `foundSelectors.length > 1`
+	 * consolidation never fires, so no plural `DKIM keys revoked` info finding
+	 * exists), scores 85 and reports `controlPresent: false`. `assessDkim`'s
+	 * not_applicable gate matched only the PLURAL title, so this shape fell through
+	 * to the hardcoded `{ score: 0, status: 'measured' }` — DKIM 85 in scan_domain
+	 * vs 0 in assess_spoofability for the same domain on the same DNS, plus a
+	 * fabricated "Missing DKIM weakens DMARC alignment" composite bump.
+	 *
+	 * The pre-existing `dkimRevoked` mock answers revoked on EVERY `_domainkey`
+	 * query, so all 46 probed selectors "resolve" and only the plural branch was
+	 * ever exercised — which is why this went untested.
+	 */
+	describe('exactly one revoked selector (google.com shape, #808)', () => {
+		async function runSingleRevoked() {
+			mockEmailAuth({
+				spf: 'v=spf1 include:_spf.google.com ~all',
+				dmarc: 'v=DMARC1; p=reject; rua=mailto:d@example.com',
+				dkimRevokedSelector: '20230601',
+			});
+			const { assessSpoofability } = await import('../src/tools/assess-spoofability');
+			return assessSpoofability('example.com');
+		}
+
+		it('reproduces the check-side shape: singular revoked finding, no plural/absence finding, controlPresent false', async () => {
+			mockEmailAuth({
+				spf: 'v=spf1 include:_spf.google.com ~all',
+				dmarc: 'v=DMARC1; p=reject; rua=mailto:d@example.com',
+				dkimRevokedSelector: '20230601',
+			});
+			const { checkDkim } = await import('../src/tools/check-dkim');
+			const dkim = await checkDkim('example.com');
+			expect(dkim.controlPresent).toBe(false);
+			expect(dkim.findings.some((f) => f.title.startsWith('Revoked DKIM key:'))).toBe(true);
+			expect(dkim.findings.some((f) => f.title.startsWith('DKIM keys revoked'))).toBe(false);
+			expect(dkim.findings.some((f) => f.title.startsWith('No DKIM records found'))).toBe(false);
+		});
+
+		it('abstains on DKIM (not_applicable) instead of scoring a measured 0', async () => {
+			const result = await runSingleRevoked();
+			expect(result.controls.dkim.status).toBe('not_applicable');
+			expect(result.dkimProtection).toBeNull();
+			expect(result.controls.dkim.reason).toBeTruthy();
+		});
+
+		it('does not claim missing DKIM weakens DMARC alignment for a revoked-only domain', async () => {
+			const result = await runSingleRevoked();
+			expect(result.interactionEffects.some((e) => e.includes('Missing DKIM'))).toBe(false);
 		});
 	});
 
