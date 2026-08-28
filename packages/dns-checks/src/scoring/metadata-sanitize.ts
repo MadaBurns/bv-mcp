@@ -65,9 +65,10 @@ const CONTROL_BYTES = /[\x00-\x08\x0B\x0C\x0E-\x1F\x7F-\x9F]/g;
 const UNICODE_STEALTH = /[\u061C\u200B-\u200F\u202A-\u202E\u2060-\u206F\uFEFF]/g;
 
 /**
- * Markdown / HTML injection characters. Mirrors `DNS_DATA_UNSAFE` in
+ * Markdown / HTML injection characters. Mirrors `MARKDOWN_SYNTAX` in
  * `src/lib/output-sanitize.ts` (backtick code fences, headings, list/quote/table
- * markers, link brackets, angle brackets). `_` and `()` are deliberately left
+ * markers, link brackets, angle brackets) — parity pinned by
+ * `test/output-sanitize.spec.ts` (#807). `_` and `()` are deliberately left
  * intact — they appear in legitimate DNS labels (`_dmarc`) and prose.
  */
 const MARKDOWN_UNSAFE = /[`*#[\]>|<]/g;

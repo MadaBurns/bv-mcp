@@ -4,6 +4,7 @@ import type { CheckResult } from '../lib/scoring';
 import type { OutputFormat } from './tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { isSatisfiedControl } from '../lib/control-presence';
 import { resolveImpactNarrative } from '../tools/explain-finding';
 
 export interface McpContent {
@@ -139,7 +140,23 @@ export function formatCheckResult(result: CheckResult, format: OutputFormat = 'f
 	// The predicate MUST come from `isCompletedCheck`; re-deriving it here is banned by
 	// `test/audits/completed-evidence-predicate-ssot.audit.test.ts`.
 	if (isCompletedCheck(result)) {
-		lines.push(`**Status:** ${result.passed ? '✅ Passed' : '❌ Failed'}`);
+		// #809: `result.passed` means "did not penalize", not "the control exists" -- the same
+		// defect #705/#706/#725 closed on map_compliance/compare_baseline/the deploy verifier by
+		// routing through `isSatisfiedControl` (src/lib/control-presence.ts). This is the fourth
+		// and broadest surface: EVERY check_* tool's rendered Status line, via the generic
+		// dispatch in handlers/tools.ts. `!passed` still means Failed unambiguously. `passed` that
+		// also satisfies `isSatisfiedControl` (no unrebutted absence, no measured medium+ finding)
+		// keeps the plain "✅ Passed". `passed` that does NOT satisfy it -- a measured medium+
+		// finding survived under a profile that didn't penalize enough to flip `passed`, or an
+		// unrebutted absence -- gets a status that cannot be read as a control verdict: it is
+		// still "did not penalize" (not a fabricated Failed), but it must not say bare "Passed"
+		// either. Deliberately 🟡, NOT ⚠️/🔶/🔴/🚨/ℹ️ -- those are the per-finding severity icons
+		// rendered below, and `format: "compact"` is asserted (test/handlers-tools.spec.ts) to
+		// carry NONE of them in the Status line; reusing one here would make a compact-mode
+		// caller's "no severity icons" check see one that isn't describing a finding. The score
+		// line and structured/JSON channel are untouched -- this is display-only.
+		const statusLabel = result.passed ? (isSatisfiedControl(result) ? '✅ Passed' : '🟡 Passed with findings') : '❌ Failed';
+		lines.push(`**Status:** ${statusLabel}`);
 		lines.push(`**Score:** ${result.score}/100`);
 	} else {
 		lines.push(`**Status:** ${UNGRADED_DISPLAY}`);
