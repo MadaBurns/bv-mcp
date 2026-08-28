@@ -206,6 +206,10 @@ describe('checkZoneHygiene', () => {
 		expect(shortExpire).toBeDefined();
 		expect(shortExpire!.severity).toBe('low');
 		expect(shortExpire!.metadata?.expire).toBe(86400);
+		// #807: template must not use a bare `<` — createFinding()'s markdown
+		// sanitizer strips it and garbles the prose.
+		expect(shortExpire!.detail).toContain('SOA expire value is 86400s, below the recommended 604800s (1 week).');
+		expect(shortExpire!.detail).not.toContain('<');
 	});
 
 	it('should handle missing SOA record', async () => {

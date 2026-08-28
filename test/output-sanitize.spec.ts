@@ -319,18 +319,26 @@ describe('sanitizeOutputText', () => {
 		expect(sanitizeOutputText('a|b')).not.toContain('|');
 	});
 
-	it('replaces underscore with space (MARKDOWN_SYNTAX includes underscore)', async () => {
+	it('preserves underscores (#807 — DNS labels like _25._tcp, _dmarc are legitimate prose)', async () => {
 		const { sanitizeOutputText } = await import('../src/lib/output-sanitize');
-		// sanitizeOutputText uses MARKDOWN_SYNTAX which includes `_`
-		// This is intentional: it is stricter than sanitizeDnsData for display output
-		expect(sanitizeOutputText('_italic_')).not.toContain('_');
+		// #807: MARKDOWN_SYNTAX used to include `_`, mangling DNS labels in finding
+		// prose (`_25._tcp` → `25. tcp`). It now matches the dns-checks
+		// MARKDOWN_UNSAFE class, which deliberately preserves `_` — a bare
+		// underscore is not emphasis in GFM's common cases, and `[`/`]` stripping
+		// already defeats markdown links.
+		expect(sanitizeOutputText('_25._tcp')).toBe('_25._tcp');
+		expect(sanitizeOutputText('_443._tcp')).toBe('_443._tcp');
+		expect(sanitizeOutputText('default._bimi')).toBe('default._bimi');
+		expect(sanitizeOutputText('_dmarc.example.com')).toBe('_dmarc.example.com');
 	});
 
-	it('replaces parentheses with space (MARKDOWN_SYNTAX includes parentheses)', async () => {
+	it('preserves parentheses (#807 — natural-language detail like "(1024 bits)")', async () => {
 		const { sanitizeOutputText } = await import('../src/lib/output-sanitize');
-		// sanitizeOutputText uses MARKDOWN_SYNTAX which includes `(` and `)`
-		expect(sanitizeOutputText('func(arg)')).not.toContain('(');
-		expect(sanitizeOutputText('func(arg)')).not.toContain(')');
+		// #807: MARKDOWN_SYNTAX used to include `(` and `)`, space-padding prose
+		// punctuation ("(1024 bits)." → "1024 bits ."). A bare paren is not a
+		// markdown link once `[`/`]` are stripped.
+		expect(sanitizeOutputText('weak DKIM key (1024 bits).')).toBe('weak DKIM key (1024 bits).');
+		expect(sanitizeOutputText('func(arg)')).toBe('func(arg)');
 	});
 
 	// --- Truncation ---
@@ -420,18 +428,18 @@ describe('sanitizeOutputText', () => {
 // ---------------------------------------------------------------------------
 
 describe('sanitizeDnsData vs sanitizeOutputText — differing contracts', () => {
-	it('sanitizeDnsData preserves underscores; sanitizeOutputText does not', async () => {
+	it('both preserve underscores (#807 — classes realigned on `_`)', async () => {
 		const { sanitizeDnsData, sanitizeOutputText } = await import('../src/lib/output-sanitize');
 		const input = '_dmarc.example.com';
 		expect(sanitizeDnsData(input)).toContain('_');
-		expect(sanitizeOutputText(input)).not.toContain('_');
+		expect(sanitizeOutputText(input)).toContain('_');
 	});
 
-	it('sanitizeDnsData preserves parentheses; sanitizeOutputText does not', async () => {
+	it('both preserve parentheses (#807 — classes realigned on `()`)', async () => {
 		const { sanitizeDnsData, sanitizeOutputText } = await import('../src/lib/output-sanitize');
 		const input = 'see RFC (7208)';
 		expect(sanitizeDnsData(input)).toContain('(');
-		expect(sanitizeOutputText(input)).not.toContain('(');
+		expect(sanitizeOutputText(input)).toContain('(');
 	});
 
 	it('sanitizeDnsData does not truncate; sanitizeOutputText truncates at 240 by default', async () => {
@@ -448,5 +456,95 @@ describe('sanitizeDnsData vs sanitizeOutputText — differing contracts', () => 
 		// sanitizeOutputText still loses ESC during sanitizeInput().
 		expect(sanitizeDnsData(ansi)).not.toContain('\x1b');
 		expect(sanitizeOutputText(ansi)).not.toContain('\x1b');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #807 drift guard: worker MARKDOWN_SYNTAX vs dns-checks MARKDOWN_UNSAFE
+// ---------------------------------------------------------------------------
+//
+// The two stacked injection guards — `createFinding()`'s auto-sanitize
+// (MARKDOWN_UNSAFE, packages/dns-checks/src/scoring/metadata-sanitize.ts) and
+// the MCP prose serializer (MARKDOWN_SYNTAX, src/lib/output-sanitize.ts) —
+// silently diverged: the worker class grew `_`, `(`, `)` and mangled
+// legitimate DNS labels (`_25._tcp` → `25. tcp`) and prose punctuation.
+// This suite pins the two character classes to identical strip/preserve
+// behaviour, per character, so they cannot drift apart again.
+
+describe('#807 sanitizer character-class parity (worker ↔ dns-checks)', () => {
+	// F7/LLM01 injection characters — BOTH layers must strip every one of these
+	// (code fences, emphasis, headings, links, tables, HTML tags).
+	const MUST_STRIP = ['`', '*', '#', '[', ']', '>', '|', '<'] as const;
+	// Legitimate DNS-label / prose characters — BOTH layers must preserve these
+	// (`_dmarc`, `_25._tcp`, parenthesized prose like "(1024 bits)").
+	const MUST_PRESERVE = ['_', '(', ')'] as const;
+
+	it('both layers strip every markdown/HTML injection character', async () => {
+		const { sanitizeOutputText } = await import('../src/lib/output-sanitize');
+		const { sanitizeStructuredString } = await import('@blackveil/dns-checks/scoring');
+		for (const ch of MUST_STRIP) {
+			const probe = `a${ch}b`;
+			expect(sanitizeStructuredString(probe), `dns-checks must strip ${JSON.stringify(ch)}`).not.toContain(ch);
+			expect(sanitizeOutputText(probe), `worker must strip ${JSON.stringify(ch)}`).not.toContain(ch);
+		}
+	});
+
+	it('both layers preserve underscore and parentheses', async () => {
+		const { sanitizeOutputText } = await import('../src/lib/output-sanitize');
+		const { sanitizeStructuredString } = await import('@blackveil/dns-checks/scoring');
+		for (const ch of MUST_PRESERVE) {
+			const probe = `a${ch}b`;
+			expect(sanitizeStructuredString(probe), `dns-checks must preserve ${JSON.stringify(ch)}`).toContain(ch);
+			expect(sanitizeOutputText(probe), `worker must preserve ${JSON.stringify(ch)}`).toContain(ch);
+		}
+	});
+
+	it('the layers agree on every printable ASCII punctuation character', async () => {
+		const { sanitizeOutputText } = await import('../src/lib/output-sanitize');
+		const { sanitizeStructuredString } = await import('@blackveil/dns-checks/scoring');
+		// Full printable-ASCII punctuation sweep: any future edit that widens or
+		// narrows ONE class without the other fails here, naming the character.
+		for (let code = 0x21; code <= 0x7e; code++) {
+			const ch = String.fromCharCode(code);
+			if (/[a-zA-Z0-9]/.test(ch)) continue;
+			const probe = `a${ch}b`;
+			const pkgKeeps = sanitizeStructuredString(probe).includes(ch);
+			const workerKeeps = sanitizeOutputText(probe).includes(ch);
+			expect(workerKeeps, `classes drifted on ${JSON.stringify(ch)} (dns-checks keeps: ${pkgKeeps})`).toBe(pkgKeeps);
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// #807 SOA-expire template survives both sanitizer layers intact
+// ---------------------------------------------------------------------------
+//
+// The old template "SOA expire value is 1800s (< 604800s / 1 week)." was
+// garbled in sequence: createFinding() stripped the bare `<`, then the prose
+// serializer stripped `()`, yielding "1800s 604800s / 1 week ." with orphaned
+// punctuation. The reworded template must round-trip both layers byte-for-byte.
+
+describe('#807 SOA-expire finding prose round-trips both sanitizer layers', () => {
+	it('worker + package ns-analysis template is unchanged by both layers', async () => {
+		const { sanitizeOutputText } = await import('../src/lib/output-sanitize');
+		const { sanitizeStructuredString } = await import('@blackveil/dns-checks/scoring');
+		const detail =
+			'SOA expire value is 1800s, below the recommended 604800s (1 week). If secondary nameservers cannot reach the primary for this duration, they will stop serving the zone.';
+		const afterLayer1 = sanitizeStructuredString(detail);
+		expect(afterLayer1).toBe(detail);
+		const afterLayer2 = sanitizeOutputText(afterLayer1, 500);
+		expect(afterLayer2).toBe(detail);
+		// No orphaned punctuation from stripped characters
+		expect(afterLayer2).not.toMatch(/\s[.,]/);
+	});
+
+	it('zone-hygiene template is unchanged by both layers', async () => {
+		const { sanitizeOutputText } = await import('../src/lib/output-sanitize');
+		const { sanitizeStructuredString } = await import('@blackveil/dns-checks/scoring');
+		const detail =
+			'SOA expire value is 86400s, below the recommended 604800s (1 week). If the primary NS becomes unreachable, secondaries will stop serving the zone sooner than recommended.';
+		const afterBoth = sanitizeOutputText(sanitizeStructuredString(detail), 500);
+		expect(afterBoth).toBe(detail);
+		expect(afterBoth).not.toMatch(/\s[.,]/);
 	});
 });

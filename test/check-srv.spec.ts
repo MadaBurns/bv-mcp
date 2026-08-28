@@ -2,6 +2,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, srvResponse } from './helpers/dns-mock';
+import { SRV_PREFIXES } from '../src/tools/srv-analysis';
 
 const { restore } = setupFetchMock();
 
@@ -32,7 +33,11 @@ describe('checkSrv', () => {
 		const result = await run();
 		expect(result.category).toBe('srv');
 		expect(result.passed).toBe(true);
-		expect(result.findings.some((f) => f.title === 'No SRV service records found')).toBe(true);
+		const negative = result.findings.find((f) => f.title === 'No SRV service records found');
+		expect(negative).toBeDefined();
+		// The negative claim must be scoped to the evidence basis (the N probed prefixes), not
+		// asserted as a domain-wide absence — a record could still exist under an unprobed prefix.
+		expect(negative!.detail).toContain(`across the ${SRV_PREFIXES.length} common service prefixes probed`);
 	});
 
 	it('should return info findings when SRV records are discovered', async () => {
@@ -76,6 +81,52 @@ describe('checkSrv', () => {
 		const medium = result.findings.filter((f) => f.severity === 'medium');
 		expect(medium.length).toBeGreaterThanOrEqual(1);
 		expect(medium.some((f) => f.title.includes('Plain-text IMAP'))).toBe(true);
+	});
+
+	it('should discover _ldap._tcp and flag plain-text LDAP without LDAPS', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			// Return LDAP plain-text but no LDAPS (google.com shape from issue #813)
+			if (url.includes('_ldap._tcp') && !url.includes('_ldaps') && (url.includes('type=SRV') || url.includes('type=33'))) {
+				return Promise.resolve(srvResponse('_ldap._tcp.example.com', [{ priority: 5, weight: 0, port: 389, target: 'ldap.example.com' }]));
+			}
+			if (url.includes('type=SRV') || url.includes('type=33')) {
+				const nameMatch = url.match(/name=([^&]+)/);
+				const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+				return Promise.resolve(emptyResponse(name, 33));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		expect(result.category).toBe('srv');
+		const discovered = result.findings.filter((f) => f.title.startsWith('SRV service discovered'));
+		expect(discovered.some((f) => f.title.includes('_ldap._tcp'))).toBe(true);
+		const medium = result.findings.filter((f) => f.severity === 'medium');
+		expect(medium.some((f) => f.title.includes('Plain-text LDAP'))).toBe(true);
+	});
+
+	it('should discover _sipfederationtls._tcp (M365/Teams federation artifact)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			// blackveilsecurity.com shape from issue #813: sipfed.online.lync.com
+			if (url.includes('_sipfederationtls._tcp') && (url.includes('type=SRV') || url.includes('type=33'))) {
+				return Promise.resolve(
+					srvResponse('_sipfederationtls._tcp.example.com', [{ priority: 100, weight: 1, port: 5061, target: 'sipfed.online.lync.com' }]),
+				);
+			}
+			if (url.includes('type=SRV') || url.includes('type=33')) {
+				const nameMatch = url.match(/name=([^&]+)/);
+				const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+				return Promise.resolve(emptyResponse(name, 33));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		expect(result.category).toBe('srv');
+		const discovered = result.findings.filter((f) => f.title.startsWith('SRV service discovered'));
+		expect(discovered.some((f) => f.title.includes('_sipfederationtls._tcp'))).toBe(true);
 	});
 
 	it('should flag autodiscover exposure', async () => {

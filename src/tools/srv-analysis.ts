@@ -5,7 +5,7 @@ import { createFinding } from '../lib/scoring';
 
 /**
  * Common SRV service prefixes to probe during a domain service discovery audit.
- * Covers email, autodiscovery, calendar, messaging, and web/infra services.
+ * Covers email, autodiscovery, calendar, messaging, directory, and web/infra services.
  */
 export const SRV_PREFIXES = [
 	// Email
@@ -23,8 +23,12 @@ export const SRV_PREFIXES = [
 	// Communication
 	'_sip._tcp', // SIP
 	'_sip._udp', // SIP UDP
+	'_sipfederationtls._tcp', // SIP federation TLS (Microsoft Teams/Skype for Business federation, port 5061)
 	'_xmpp-client._tcp', // XMPP client
 	'_xmpp-server._tcp', // XMPP server
+	// Directory
+	'_ldap._tcp', // LDAP plain (389)
+	'_ldaps._tcp', // LDAP TLS (636)
 	// Web/Infra
 	'_http._tcp', // HTTP
 	'_https._tcp', // HTTPS
@@ -40,6 +44,7 @@ export interface SrvProbeResult {
 const INSECURE_PAIRS: Array<{ plain: string; encrypted: string; protocol: string }> = [
 	{ plain: '_imap._tcp', encrypted: '_imaps._tcp', protocol: 'IMAP' },
 	{ plain: '_pop3._tcp', encrypted: '_pop3s._tcp', protocol: 'POP3' },
+	{ plain: '_ldap._tcp', encrypted: '_ldaps._tcp', protocol: 'LDAP' },
 ];
 
 /**
@@ -56,7 +61,14 @@ export function analyzeSrvResults(results: SrvProbeResult[]): Finding[] {
 	const discovered = results.filter((r) => r.records.length > 0);
 
 	if (discovered.length === 0) {
-		findings.push(createFinding('srv', 'No SRV service records found', 'info', 'No SRV service discovery records were found for this domain.'));
+		findings.push(
+			createFinding(
+				'srv',
+				'No SRV service records found',
+				'info',
+				`No SRV records were found across the ${results.length} common service prefixes probed. This does not rule out a service record under a prefix outside the probed set.`,
+			),
+		);
 		return findings;
 	}
 
@@ -97,7 +109,7 @@ export function analyzeSrvResults(results: SrvProbeResult[]): Finding[] {
 	}
 
 	// SIP/XMPP services
-	const commPrefixes = ['_sip._tcp', '_sip._udp', '_xmpp-client._tcp', '_xmpp-server._tcp'];
+	const commPrefixes = ['_sip._tcp', '_sip._udp', '_sipfederationtls._tcp', '_xmpp-client._tcp', '_xmpp-server._tcp'];
 	const activeComm = commPrefixes.filter((p) => discoveredPrefixes.has(p));
 	if (activeComm.length > 0) {
 		findings.push(

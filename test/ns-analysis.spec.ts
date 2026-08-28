@@ -41,6 +41,11 @@ describe('ns-analysis', () => {
 			'SOA expire too short',
 			'SOA negative cache TTL too long',
 		]);
+		// #807: template must not use a bare `<` — createFinding()'s markdown
+		// sanitizer strips it and garbles the prose ("300s ( 604800s / 1 week)").
+		const expire = findings.find((finding) => finding.title === 'SOA expire too short');
+		expect(expire!.detail).toContain('SOA expire value is 300s, below the recommended 604800s (1 week).');
+		expect(expire!.detail).not.toContain('<');
 	});
 
 	it('returns null for malformed SOA strings', () => {
