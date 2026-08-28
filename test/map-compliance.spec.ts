@@ -65,14 +65,22 @@ describe('evaluateCompliance', () => {
 	 * A literal per-control expectation is what let this survive #705 and #706: those
 	 * fixes keyed on `recordPresent`, which only 9 checks emit, so the five that never
 	 * do (spf, dkim, ssl, ns, http_security) silently kept grading on bare `passed`.
+	 *
+	 * #815 refined the VERDICT (not the floor): a check that `passed` and is
+	 * disqualified only by MEDIUM measured findings is now `partial` — implemented
+	 * but flagged — rather than `fail`. The #726 regression shape stays
+	 * non-certifying either way: `partial` is never `pass`, never counted as
+	 * passing, and never inflates a compliance percentage.
 	 */
-	it('never reports a control as pass while its backing check carries a medium-or-worse finding (#726)', () => {
+	it('reports the wiz.io CSP shape as partial — NEVER pass (#726), no longer a bare fail (#815)', () => {
 		// Measured on wiz.io, 2026-08-20: PCI DSS 4.0 came back "5/5, 100%" with 6.4.2
 		// (Web Application Firewall / CSP — `categories: ['http_security']`,
 		// `requirePass: true`) as PASS, while the SAME scan scored http_security 65 on
 		// these two findings and rated the resulting xss_injection path HIGH. A CSP
 		// permitting both inline script and dynamic code execution is substantially no
-		// XSS protection, and the tool certified it.
+		// XSS protection, and the tool certified it. #726 closed that with the severity
+		// floor; #815 re-words the floor's verdict for a passing-but-flagged check as
+		// `partial` — still not a certification.
 		const results = makeAllPassing().map((r) =>
 			r.category === 'http_security'
 				? makeCheckResult('http_security', true, [
@@ -85,10 +93,13 @@ describe('evaluateCompliance', () => {
 		const report = evaluateCompliance(results, 'wiz.example', 78, 'C');
 
 		const waf = report.frameworks.pci_dss_4.mappings.find((m) => m.controlId === '6.4.2');
-		expect(waf!.status).toBe('fail');
+		// The #726 invariant, stated positively: NEVER 'pass'.
+		expect(waf!.status).not.toBe('pass');
+		expect(waf!.status).toBe('partial');
 		expect(waf!.relatedFindings).toEqual(['CSP allows unsafe-inline scripts', 'CSP allows unsafe-eval']);
+		// A partial must never inflate the compliance percentage as if it were a pass.
 		expect(report.frameworks.pci_dss_4.percentage).not.toBe(100);
-
+		expect(report.frameworks.pci_dss_4.passing).not.toBe(report.frameworks.pci_dss_4.totalControls);
 	});
 
 	/**
@@ -344,6 +355,148 @@ describe('evaluateCompliance', () => {
 		// instead would report 13% — a compliance number driven by how much was
 		// never looked at. This assertion is what separates the two denominators.
 		expect(nist.percentage).toBe(100);
+	});
+});
+
+/**
+ * #815 — the severity floor's verdict, calibrated. The floor (#726) is category-scoped:
+ * any measured medium-or-worse finding in a category disqualifies the control it backs,
+ * even when the finding says nothing about the control's own requirement. Validated
+ * live on google.com (3.67.0, 2026-08-28): NIST §4.3.1 "SPF Authentication" published
+ * `status: "fail"` on "TXT RRset exceeds UDP limit" — a transport-hygiene finding —
+ * while the same window's `check_spf` returned `passed: true, score 85` on a valid
+ * record under DMARC p=reject. "google.com fails SPF Authentication" is not a
+ * defensible compliance statement.
+ *
+ * Option 1 from the issue (operator-ruled): the floor itself is untouched — a flagged
+ * control still cannot certify — but its verdict for a check that `passed` and is
+ * disqualified ONLY by medium measured findings is `partial` (implemented but flagged),
+ * not `fail`. `fail` remains reserved for `!passed`, measured high/critical findings,
+ * and unrebutted record absence.
+ */
+describe('evaluateCompliance — medium-only flags on a passing check are partial, never fail (#815)', () => {
+	it('the google.com headline shape: check passed (85) with one medium hygiene finding → partial, never fail', () => {
+		const results = makeAllPassing().map((r) =>
+			r.category === 'spf' ? makeCheckResult('spf', true, [{ title: 'TXT RRset exceeds UDP limit', severity: 'medium' }]) : r,
+		);
+
+		const report = evaluateCompliance(results, 'google.com', 85, 'B');
+		const spf = report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§4.3.1');
+		expect(spf).toBeDefined();
+		expect(spf!.status).not.toBe('fail');
+		expect(spf!.status).toBe('partial');
+		// relatedFindings carried exactly as before — the flag is still surfaced.
+		expect(spf!.relatedFindings).toEqual(['TXT RRset exceeds UDP limit']);
+	});
+
+	it('a measured HIGH finding on a passing check is still fail — #815 narrows, it does not soften', () => {
+		const results = makeAllPassing().map((r) =>
+			r.category === 'spf' ? makeCheckResult('spf', true, [{ title: 'SPF record permits arbitrary senders (+all)', severity: 'high' }]) : r,
+		);
+		const report = evaluateCompliance(results, 'openspf-bad.com', 60, 'D');
+		expect(report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§4.3.1')!.status).toBe('fail');
+	});
+
+	it('a check that did NOT pass is still fail, whatever the finding severities', () => {
+		const results = makeAllPassing().map((r) =>
+			r.category === 'spf' ? makeCheckResult('spf', false, [{ title: 'SPF lookup limit exceeded', severity: 'medium' }]) : r,
+		);
+		const report = evaluateCompliance(results, 'failing-spf.com', 45, 'F');
+		expect(report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§4.3.1')!.status).toBe('fail');
+	});
+
+	it('the #705 shape — unsigned zone, high "DNSSEC not enabled" — is still fail, not partial', () => {
+		// passed: true (unpenalized under the profile) + recordPresent: false is the
+		// exact defect shape #705 closed: the control is ABSENT, not implemented-but-
+		// flagged, so `partial` would be a regression of that fix.
+		const results = makeAllPassing().map((r) =>
+			r.category === 'dnssec'
+				? ({
+						category: 'dnssec',
+						passed: true,
+						score: 60,
+						recordPresent: false,
+						controlPresent: false,
+						findings: [{ category: 'dnssec', title: 'DNSSEC not enabled', severity: 'high', detail: '' }],
+					} as CheckResult)
+				: r,
+		);
+		const report = evaluateCompliance(results, 'unsigned-zone.com', 82, 'B');
+		expect(report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§5.1')!.status).toBe('fail');
+	});
+
+	it('an unrebutted record ABSENCE with only medium findings is still fail — absence is not "implemented but flagged"', () => {
+		const results = makeAllPassing().map((r) =>
+			r.category === 'caa'
+				? ({
+						category: 'caa',
+						passed: true,
+						score: 60,
+						recordPresent: false,
+						controlPresent: false,
+						findings: [{ category: 'caa', title: 'No CAA records', severity: 'medium', detail: '' }],
+					} as CheckResult)
+				: r,
+		);
+		const report = evaluateCompliance(results, 'no-caa.com', 82, 'B');
+		expect(report.frameworks.nist_800_177.mappings.find((m) => m.controlId === '§5.2')!.status).toBe('fail');
+	});
+
+	it('a multi-category control whose every category is implemented-but-flagged is partial, not fail', () => {
+		// SOC 2 CC7.1 maps [tlsrpt, dmarc], requirePass: false. Both categories passed
+		// with a medium flag each: nothing here is a failed requirement, but nothing
+		// certifies either.
+		const results = makeAllPassing().map((r) => {
+			if (r.category === 'tlsrpt') return makeCheckResult('tlsrpt', true, [{ title: 'TLS-RPT rua endpoint unreachable', severity: 'medium' }]);
+			if (r.category === 'dmarc') return makeCheckResult('dmarc', true, [{ title: 'No aggregate reporting (rua) configured', severity: 'medium' }]);
+			return r;
+		});
+		const report = evaluateCompliance(results, 'flagged-both.com', 75, 'C');
+		const cc71 = report.frameworks.soc2.mappings.find((m) => m.controlId === 'CC7.1');
+		expect(cc71!.status).toBe('partial');
+	});
+
+	it('a multi-category control with one genuinely failing category is fail when requirePass, regardless of flags elsewhere', () => {
+		// NIST controls are all requirePass single-category; the coherent multi-category
+		// rule (any failing → fail; none failing but some flagged → partial; all
+		// satisfied → pass) is pinned here via the requirePass:false ladder instead:
+		// CC7.1 [tlsrpt, dmarc] with dmarc genuinely failing and tlsrpt flagged must not
+		// come out 'pass', and the failing evidence must be surfaced.
+		const results = makeAllPassing().map((r) => {
+			if (r.category === 'tlsrpt') return makeCheckResult('tlsrpt', true, [{ title: 'TLS-RPT rua endpoint unreachable', severity: 'medium' }]);
+			if (r.category === 'dmarc') return makeCheckResult('dmarc', false, [{ title: 'No DMARC record found', severity: 'high' }]);
+			return r;
+		});
+		const report = evaluateCompliance(results, 'mixed-flag-fail.com', 55, 'D');
+		const cc71 = report.frameworks.soc2.mappings.find((m) => m.controlId === 'CC7.1');
+		expect(cc71!.status).toBe('partial'); // requirePass: false — some implementation evidence exists
+		expect(cc71!.status).not.toBe('pass');
+		expect(cc71!.relatedFindings).toContain('No DMARC record found');
+		expect(cc71!.relatedFindings).toContain('TLS-RPT rua endpoint unreachable');
+	});
+
+	it('summary counts a partial honestly: not passing, not failing, never in the percentage numerator', () => {
+		// NIST 800-177: spf partial (medium-flagged, passing check), mta_sts genuine
+		// fail, remaining six controls pass.
+		const results = makeAllPassing().map((r) => {
+			if (r.category === 'spf') return makeCheckResult('spf', true, [{ title: 'TXT RRset exceeds UDP limit', severity: 'medium' }]);
+			if (r.category === 'mta_sts') return makeCheckResult('mta_sts', false, [{ title: 'Missing MTA-STS', severity: 'medium' }]);
+			return r;
+		});
+
+		const report = evaluateCompliance(results, 'summary-partial.com', 78, 'C');
+		const nist = report.frameworks.nist_800_177;
+
+		expect(nist.totalControls).toBe(8);
+		expect(nist.passing).toBe(6);
+		expect(nist.failing).toBe(1);
+		expect(nist.partial).toBe(1);
+		expect(nist.notAssessed).toBe(0);
+		expect(nist.assessedControls).toBe(8);
+		expect(nist.passing + nist.failing + nist.partial).toBe(nist.assessedControls);
+		// percentage = passing / assessed — the partial is in the denominator but never
+		// the numerator, so it can only lower the number, never inflate it.
+		expect(nist.percentage).toBe(75); // Math.round(6/8 * 100)
 	});
 });
 
@@ -849,6 +1002,33 @@ describe('formatCompliance', () => {
 		// The per-control column must not read as a failure verdict either.
 		expect(text).not.toMatch(/\bFAIL\b/);
 		expect(text.toLowerCase()).toContain('not assessed');
+	});
+
+	it('renders a partial verdict as implemented-but-flagged — non-certifying, distinct from both pass and fail (#815)', () => {
+		// The google.com headline shape: SPF passed with one medium hygiene finding.
+		const results = makeAllPassing().map((r) =>
+			r.category === 'spf' ? makeCheckResult('spf', true, [{ title: 'TXT RRset exceeds UDP limit', severity: 'medium' }]) : r,
+		);
+		const report = evaluateCompliance(results, 'google.com', 85, 'B');
+		const output = formatCompliance(report, 'full');
+
+		const spfLine = output.split('\n').find((l) => l.includes('§4.3.1'));
+		expect(spfLine).toBeDefined();
+		expect(spfLine).toContain('PARTIAL');
+		// Non-certifying wording: the control is implemented, the scan flagged it, and
+		// the line must read as neither a certification nor a failed requirement.
+		expect(spfLine).toContain('implemented but flagged');
+		expect(spfLine).toContain('not certified');
+		expect(spfLine).not.toMatch(/\bFAIL\b/);
+		expect(spfLine).not.toMatch(/\bPASS\b(?!IVE)/);
+		// The flag itself is still surfaced as a sub-item.
+		expect(output).toContain('TXT RRset exceeds UDP limit');
+
+		// Compact keeps the distinct '~' glyph and carries the finding.
+		const compact = formatCompliance(report, 'compact');
+		const compactSpfLine = compact.split('\n').find((l) => l.includes('§4.3.1'));
+		expect(compactSpfLine).toContain('~');
+		expect(compactSpfLine).toContain('TXT RRset exceeds UDP limit');
 	});
 
 	it('should not show related findings for passing controls in compact format', () => {
