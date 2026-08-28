@@ -123,4 +123,54 @@ describe('checkRootServerSet', () => {
 			'Root zone serials differ across roots',
 		]));
 	});
+
+	// Sibling of #812 / PR #824 (analyze.ts). `analyzeRootServerSetEvidence`
+	// (analyze-root-server-set.ts) had the identical unconditional
+	// `if (findings.length === 0) push "checks passed"` shape: `findings.length
+	// === 0` proves no FAILURE finding fired, not that anything was
+	// CONCLUSIVE — with every capability inconclusive it is reached on zero
+	// evidence either way. The gate now requires `capabilitySummary.passed.length
+	// > 0`, mirroring #824 exactly.
+	//
+	// Unlike analyze.ts's capabilities, this file's `official_root_hints_match`
+	// is a synchronous comparison against the REQUIRED `evidence.rootHints`
+	// field (`rootHintsMatchOfficial`) and always resolves to a definite
+	// boolean — it can never be `undefined`/inconclusive. That means
+	// `findings.length === 0` structurally implies `official_root_hints_match`
+	// resolved `true` (a genuine conclusive pass), so the true "every capability
+	// inconclusive" vacuous state #812/#824 hit is not reachable through this
+	// analyzer's public evidence contract today (verified empirically). This
+	// test instead locks in the reachable boundary the new gate must not
+	// regress: root hints conclusively matching, with every other cross-root
+	// check inconclusive, must still report a genuine pass — not the new
+	// "inconclusive" branch.
+	it('still reports a genuine pass when root hints are the only conclusive capability (#812 sibling)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: '.',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+			rootHints: ROOT_HINTS,
+			// No observedRootServers/glueMatchesHints/parentChildDelegationMatches/
+			// serialsByRoot/dnskeyDigestsByRoot at all — every cross-root check
+			// besides the root-hints comparison is inconclusive.
+		})));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		const summary = result.metadata?.capabilitySummary as { passed: string[]; failed: string[]; inconclusive: string[] };
+		expect(summary.passed).toEqual(['official_root_hints_match']);
+		expect(summary.failed).toEqual([]);
+		expect(summary.inconclusive).toEqual(expect.arrayContaining([
+			'root_priming_ns_set',
+			'root_glue_records',
+			'root_servers_parent_child_delegation',
+			'root_server_ns_soa_dnskey_cross_compare',
+			'stale_root_zone_serial_detection',
+		]));
+
+		const titles = result.findings.map((finding) => finding.title);
+		expect(titles).toContain('Root server set checks passed');
+		expect(titles).not.toContain('Root server set checks inconclusive');
+	});
 });
