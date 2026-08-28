@@ -102,6 +102,17 @@ export function getRobotsDisallowedFinding(domain: string, scope: RobotsDisallow
 }
 
 export function getHttpRedirectFindings(domain: string, status: number, location: string | null): Finding[] {
+	// Issue #806: a no-content 2xx (204/205) on the plain-HTTP probe delivered no page
+	// and measured nothing about redirect posture (observed live: google.com's real
+	// http:// answer is a 301, yet an egress anomaly produced "No HTTP to HTTPS
+	// redirect (status 204)"). Skip the sub-probe as unmeasured — matching
+	// checkHttpRedirect's silent-skip posture for a failed HTTP probe — instead of
+	// letting the catch-all below emit a scored claim. Real statuses (200, 4xx,
+	// 3xx→http) keep their behavior.
+	if (status === 204 || status === 205) {
+		return [];
+	}
+
 	if (status >= 300 && status < 400 && location?.startsWith('https://')) {
 		return [];
 	}
