@@ -916,5 +916,53 @@ describe('checkHttpSecurity — a no-content 2xx is unmeasured, not a missing-he
 		expect(result.score).toBe(0);
 		expect(result.passed).toBe(false);
 		expect(result.checkStatus).toBe('error');
+		// Transient anomaly — `partial: true` keeps it out of the 5-min per-check cache
+		// (scan-domain's runWithCache predicate is `(r) => !r.partial`), matching the
+		// buildDnsErrorResult convention. Issue #806 follow-up.
+		expect(result.partial).toBe(true);
+	});
+
+	it.each([
+		['204 first, 200 second', [204, 200]],
+		['200 first, 204 second', [200, 204]],
+	])('mixed dual-fetch (%s): the real 200 is analyzed normally, never discarded as no-content', async (_label, statuses) => {
+		// The dual-fetch fires two parallel probes. When one edge answers with an anomalous
+		// 204 and the other with the real 200, `primary = usable[0].ok ? ...` made the
+		// outcome ORDER-DEPENDENT: a 204 settling into usable[0] stamped the synthetic
+		// Response with status 204 (while carrying the MERGED real headers), and the #819
+		// no-content guard then discarded a genuine measurement. A real 200 with headers
+		// must beat a 204 regardless of settle order.
+		const fullHeaders = {
+			'content-security-policy': "default-src 'self'; script-src 'self'; frame-ancestors 'none'",
+			'x-frame-options': 'DENY',
+			'x-content-type-options': 'nosniff',
+			'permissions-policy': 'camera=(), microphone=()',
+			'referrer-policy': 'strict-origin-when-cross-origin',
+			'cross-origin-resource-policy': 'same-origin',
+			'cross-origin-opener-policy': 'same-origin',
+			'cross-origin-embedder-policy': 'require-corp',
+		};
+		let probeCalls = 0;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('/robots.txt')) {
+				// Fail-open robots answer so the probes below are the only counted fetches.
+				return Promise.resolve({ ok: false, status: 404, type: 'basic', headers: new Headers() });
+			}
+			const status = statuses[Math.min(probeCalls, statuses.length - 1)];
+			probeCalls++;
+			return Promise.resolve({
+				ok: true,
+				status,
+				type: 'basic',
+				headers: new Headers(status === 200 ? fullHeaders : {}),
+			});
+		});
+		const result = await run();
+		// Analyzed from the real 200 — never routed to the no-content exclusion lane.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings.some((f) => f.metadata?.errorKind === 'no_content')).toBe(false);
+		expect(result.passed).toBe(true);
+		expect(result.findings.some((f) => f.title === 'HTTP security headers well configured')).toBe(true);
 	});
 });

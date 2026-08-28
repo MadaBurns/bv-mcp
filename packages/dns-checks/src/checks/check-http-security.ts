@@ -162,6 +162,14 @@ export async function checkHTTPSecurity(
 	// Generalising "inconclusive ⇒ zero" would silently rescore both. It is scoped to the
 	// branches that made the contradictory claim.
 	let unmeasuredZero = false;
+	// Set ONLY on the two no-content (204/205) branches (issue #806 follow-up). A no-content
+	// answer is a TRANSIENT anomaly — an egress blip or challenge, not an origin-persistent
+	// state — so the result carries `partial: true` to stay OUT of the 5-min per-check cache
+	// (scan-domain's runWithCache predicate is `(r) => !r.partial`), matching the
+	// buildDnsErrorResult convention for transient states. Deliberately NOT set on the
+	// WAF-block/401/other-4xx branches: those describe origin-persistent states and cache
+	// deliberately.
+	let transientNoContent = false;
 
 	try {
 		let response = await fetchFn(`https://${domain}`, {
@@ -182,6 +190,7 @@ export async function checkHTTPSecurity(
 			// rather than score the 0 — so the transient-zero retry can fire.
 			inconclusive = 'error';
 			unmeasuredZero = true;
+			transientNoContent = true;
 			findings.push(noContentFinding(domain, response.status));
 		} else if (response.ok) {
 			// 200-299: analyze headers normally
@@ -209,6 +218,7 @@ export async function checkHTTPSecurity(
 					// same no-content guard applies before analysis.
 					inconclusive = 'error';
 					unmeasuredZero = true;
+					transientNoContent = true;
 					findings.push(noContentFinding(domain, followed.status));
 				} else {
 					findings.push(...analyzeSecurityHeaders(followed.headers));
@@ -301,6 +311,9 @@ export async function checkHTTPSecurity(
 	// Preserves the exact score-0/passed-false shape the removed `missingControl` flags used to
 	// produce on the four never-completed-probe paths, without asserting the control is absent
 	// (issue #638).
-	const result = unmeasuredZero ? { ...base, score: 0, passed: false } : base;
+	const zeroed = unmeasuredZero ? { ...base, score: 0, passed: false } : base;
+	// `partial: true` (transient no-content only) keeps the anomaly out of the 5-min cache —
+	// see the `transientNoContent` note above.
+	const result = transientNoContent ? { ...zeroed, partial: true } : zeroed;
 	return inconclusive ? { ...result, checkStatus: inconclusive } : result;
 }
