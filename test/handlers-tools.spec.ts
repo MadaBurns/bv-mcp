@@ -503,10 +503,17 @@ describe('formatCheckResult - via handleToolsCall', () => {
 		return handleToolsCall({ name, arguments: args });
 	}
 
-	it('passing check result contains "Passed" and score', async () => {
+	// #809: this fixture's mock TXT helper answers the `_spf.google.com` include lookup with
+	// the SAME record as the domain being checked, which the circular-include detector reads as
+	// a genuine self-reference -- a MEASURED high-severity finding. `score` (75) still clears the
+	// `passed` threshold, but `passed: true` alongside an unrebutted high finding is exactly the
+	// case `isSatisfiedControl` exists to catch, so the Status line can no longer say plain
+	// "Passed" for it -- that was the class of defect #809 fixed. Was `toContain('\u2705 Passed')`.
+	it('passing check result with a disqualifying finding gets the qualified verdict, not a plain "Passed"', async () => {
 		mockTxtRecords(['v=spf1 include:_spf.google.com -all']);
 		const result = await call('check_spf', { domain: 'example.com' });
-		expect(result.content[0].text).toContain('\u2705 Passed');
+		expect(result.content[0].text).toContain('\ud83d\udfe1 Passed with findings');
+		expect(result.content[0].text).not.toContain('\u2705 Passed');
 		expect(result.content[0].text).toContain('/100');
 	});
 

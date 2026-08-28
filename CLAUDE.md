@@ -130,7 +130,7 @@ Three-tier model (`computeScanScore`): **Core 70%** (DMARC 16, DKIM 10, SPF 10, 
 - ⚠️ **Measuring DNSSEC across a corpus: test `dnssec > 60`, NEVER `> 0`.** An unsigned zone sits at exactly 60 (fixed `penaltyOverride: 40`, not a zeroing) — `> 0` reports ~95–100% adoption against a true single-digit rate. Read `recordPresent`/`controlPresent` instead.
 - ⚠️ **`missingControl` = "we MEASURED and the control is absent"; `inconclusive` + `errorKind` = "the probe never reached the origin".** Never both on one finding — recording a blocked/cut probe as absence zeroes a category nobody measured.
 - ⚠️ **`SCORING_CONFIG.coreWeights` is INERT on the scan path** (parses, validates, changes no score — was live in prod undetected for months). Express overrides as `profileWeights.<profile>` (per-profile!). Any weight change re-grades every customer: an operator decision.
-- ⚠️ **`passed` = `score >= 50 && !hasMissingControl`** — "did not penalize", NOT "control exists". Three surfaces have misread it as a verdict.
+- ⚠️ **`passed` = `score >= 50 && !hasMissingControl`** — "did not penalize", NOT "control exists". Four surfaces have misread it as a verdict (map_compliance #705, compare_baseline #706, the deploy verifier #725, formatCheckResult's Status line #809).
 - **Grades — TWO scales by role**: canonical 9-band `scoreToGrade` internal; customer-facing 6-band NIST via the ONE chokepoint `displayGradeFor` (`src/lib/ungraded-display.ts`), which returns `null` for ungraded scans (never fabricate an F).
 - **Severity penalties**: C −40, H −25, M −15, L −5, Info 0.
 - **Adaptive weights**: EMA per profile+provider via `ProfileAccumulator` DO, blended past `MATURITY_THRESHOLD = 200`; falls back to static.
