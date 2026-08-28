@@ -234,10 +234,28 @@ function assessDkim(result: CheckResult, noSendPolicy: boolean): ControlAssessme
 
 	const activeKey = result.controlPresent === true;
 
-	// `DKIM keys revoked (non-sending)` — every discovered selector publishes an
-	// empty `p=`, the documented posture of a domain that deliberately does not
-	// send. This is the shape that reported 100.
-	if (!activeKey && hasFindingTitled(result, 'DKIM keys revoked')) {
+	// Selectors were DISCOVERED but none carries a usable key — every published
+	// selector is revoked (empty `p=`), the documented posture of a domain that
+	// deliberately does not sign. Two check-side shapes express it (#808):
+	//
+	// - `DKIM keys revoked (non-sending)` — the check's plural consolidation,
+	//   which only fires for >1 discovered selector. This is the shape that
+	//   originally reported 100.
+	// - a singular `Revoked DKIM key: <selector>` with NO absence finding —
+	//   exactly one discovered selector, revoked (google.com's real shape). This
+	//   shape used to fall through to the hardcoded measured 0 below, scoring the
+	//   same posture 0 that scan_domain scored 85.
+	//
+	// Title-matching here is interim: the structural fact ("selectors found, none
+	// valid") is not exported on CheckResult — `controlPresent: false` conflates
+	// "no selector found" with "found but revoked". Exporting it is deferred with
+	// the check-side `> 1` consolidation cliff (an operator-gated scoring change).
+	// The absence-finding guard keeps a mixed hypothetical (a revoked selector
+	// recorded alongside a probe-miss absence claim) out of this branch.
+	const revokedOnly =
+		hasFindingTitled(result, 'DKIM keys revoked') ||
+		(hasFindingTitled(result, 'Revoked DKIM key') && !hasFindingTitled(result, 'No DKIM records found'));
+	if (!activeKey && revokedOnly) {
 		return {
 			score: null,
 			status: 'not_applicable',
