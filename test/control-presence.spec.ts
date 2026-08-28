@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { CheckResult } from '../src/lib/scoring';
-import { isSatisfiedControl, isUnrebuttedAbsence, notApplicableCategoriesFor } from '../src/lib/control-presence';
+import { classifyControlSatisfaction, isSatisfiedControl, isUnrebuttedAbsence, notApplicableCategoriesFor } from '../src/lib/control-presence';
 
 /**
  * The truth table of the SHARED control-presence predicate.
@@ -138,6 +138,95 @@ describe('isSatisfiedControl — severity floor (#726)', () => {
 		expect(
 			isSatisfiedControl(check({ passed: true, score: 85, recordPresent: false, controlPresent: true, findings: [finding('low')] } as Partial<CheckResult>)),
 		).toBe(true);
+	});
+});
+
+/**
+ * #815 — the finer-grained companion to `isSatisfiedControl`. The binary predicate is
+ * consumed by `compare_baseline` (#706) and the deploy verifier (#725) and its
+ * semantics are UNTOUCHED; `classifyControlSatisfaction` splits the non-satisfied
+ * side so `map_compliance` can report "passed but disqualified by medium-only
+ * findings" (deficient → partial) separately from "!passed / high / critical /
+ * absent" (unsatisfied → fail).
+ */
+describe('classifyControlSatisfaction (#815)', () => {
+	it('agrees with isSatisfiedControl on the satisfied side — the two can never drift', () => {
+		const shapes: CheckResult[] = [
+			check({}),
+			check({ passed: false }),
+			check({ passed: true, score: 60, recordPresent: false, controlPresent: false }),
+			check({ passed: true, score: 85, recordPresent: false, controlPresent: true }),
+			check({ category: 'http_security', passed: true, findings: [finding('medium')] } as Partial<CheckResult>),
+			check({ category: 'http_security', passed: true, findings: [finding('high')] } as Partial<CheckResult>),
+			check({ category: 'http_security', passed: true, findings: [finding('low')] } as Partial<CheckResult>),
+			check({ category: 'http_security', passed: true, findings: [finding('medium', { inconclusive: true })] } as Partial<CheckResult>),
+		];
+		for (const shape of shapes) {
+			expect(classifyControlSatisfaction(shape) === 'satisfied').toBe(isSatisfiedControl(shape));
+		}
+	});
+
+	it('classifies passed-with-medium-only measured findings as deficient — implemented but flagged', () => {
+		// The google.com headline shape (#815): SPF passed at 85 with a medium
+		// transport-hygiene finding.
+		const flagged = check({
+			category: 'spf',
+			passed: true,
+			score: 85,
+			findings: [{ category: 'spf', title: 'TXT RRset exceeds UDP limit', severity: 'medium', detail: '' }],
+		} as Partial<CheckResult>);
+		expect(classifyControlSatisfaction(flagged)).toBe('deficient');
+
+		// The wiz.io #726 regression shape stays disqualified — deficient, never satisfied.
+		const csp = check({
+			category: 'http_security',
+			passed: true,
+			score: 65,
+			findings: [
+				{ category: 'http_security', title: 'CSP allows unsafe-inline scripts', severity: 'medium', detail: '' },
+				{ category: 'http_security', title: 'CSP allows unsafe-eval', severity: 'medium', detail: '' },
+			],
+		} as Partial<CheckResult>);
+		expect(classifyControlSatisfaction(csp)).toBe('deficient');
+	});
+
+	it('keeps unsatisfied for !passed, measured high/critical, and unrebutted absence', () => {
+		expect(classifyControlSatisfaction(check({ passed: false }))).toBe('unsatisfied');
+		expect(
+			classifyControlSatisfaction(check({ category: 'http_security', passed: true, findings: [finding('high')] } as Partial<CheckResult>)),
+		).toBe('unsatisfied');
+		expect(
+			classifyControlSatisfaction(check({ category: 'http_security', passed: true, findings: [finding('critical')] } as Partial<CheckResult>)),
+		).toBe('unsatisfied');
+		// The #705 shape: unpenalized but nothing published. Absence is not
+		// "implemented but flagged" — a medium finding beside it changes nothing.
+		expect(
+			classifyControlSatisfaction(
+				check({ passed: true, score: 60, recordPresent: false, controlPresent: false, findings: [finding('medium')] } as Partial<CheckResult>),
+			),
+		).toBe('unsatisfied');
+		// A measured high beside a medium: the high dominates.
+		expect(
+			classifyControlSatisfaction(
+				check({ category: 'ns', passed: true, findings: [finding('medium'), finding('high')] } as Partial<CheckResult>),
+			),
+		).toBe('unsatisfied');
+	});
+
+	it('ignores UNMEASURED high/critical findings when splitting deficient from unsatisfied', () => {
+		// An unmeasured high (probe never reached the origin) beside a measured medium:
+		// only the medium is evidence, so this is deficient, not unsatisfied.
+		expect(
+			classifyControlSatisfaction(
+				check({ category: 'ns', passed: true, findings: [finding('high', { errorKind: 'dns_error' }), finding('medium')] } as Partial<CheckResult>),
+			),
+		).toBe('deficient');
+	});
+
+	it('classifies clean and advisory-only results as satisfied', () => {
+		expect(classifyControlSatisfaction(check({}))).toBe('satisfied');
+		expect(classifyControlSatisfaction(check({ category: 'ssl', passed: true, findings: [finding('low')] } as Partial<CheckResult>))).toBe('satisfied');
+		expect(classifyControlSatisfaction(check({ category: 'ssl', passed: true, findings: [finding('info')] } as Partial<CheckResult>))).toBe('satisfied');
 	});
 });
 

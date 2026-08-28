@@ -12,16 +12,28 @@ import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { displayGradeFor, formatScoreGrade, hasCompletedEvidence, isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
-// `isSatisfiedControl` and the applicability derivation are SHARED with
+// The satisfaction classifier and the applicability derivation are SHARED with
 // `compare_baseline` (#706), which had the identical defect on the enforcement
 // surface. Both live in `lib/control-presence.ts` so the reporting tool and the
 // policy gate cannot drift on what "satisfied" and "applicable" mean.
-import { isSatisfiedControl, notApplicableCategoriesFor } from '../lib/control-presence';
+// `classifyControlSatisfaction` (#815) is the three-way refinement of
+// `isSatisfiedControl` — same satisfied set, but the non-satisfied side is split
+// into `deficient` (passed, medium-only flags → `partial`) and `unsatisfied`
+// (!passed / high / critical / absence → `fail`).
+import { classifyControlSatisfaction, notApplicableCategoriesFor } from '../lib/control-presence';
 
 export type ComplianceFramework = 'nist_800_177' | 'pci_dss_4' | 'soc2' | 'cis_controls';
 
 /**
  * A control's verdict.
+ *
+ * `partial` (#815) is non-certifying but NOT a failed requirement. It covers a control
+ * whose backing check `passed` but carries medium measured findings (implemented but
+ * flagged — the google.com "TXT RRset exceeds UDP limit" beside a passing SPF shape),
+ * and a multi-category control with mixed evidence. `fail` is reserved for a
+ * requirement FOUND UNMET: `!passed`, a measured high/critical finding, or an
+ * unrebutted record absence. A `partial` never counts as passing and never inflates a
+ * compliance percentage.
  *
  * `not_assessed` is NOT a soft failure — it is the absence of a verdict. A control is
  * `not_assessed` when its mapped categories produced NO check data at all, OR when they
@@ -301,13 +313,25 @@ export function evaluateCompliance(
 				// resolver must not turn into "DMARC Policy — FAIL" on a healthy domain.
 				status = 'not_assessed';
 			} else {
-				const passingCount = completed.filter(isSatisfiedControl).length;
-				const failingResults = completed.filter((r) => !isSatisfiedControl(r));
+				// #815: three-way per-category verdict. `satisfied` is EXACTLY the set
+				// `isSatisfiedControl` accepts (asserted in test/control-presence.spec.ts),
+				// so `compare_baseline`/the deploy verifier and this tool still agree on
+				// what certifies. The refinement is on the non-satisfied side: a check that
+				// `passed` and is disqualified only by MEDIUM measured findings is
+				// `deficient` — the control is implemented but flagged — and must not be
+				// published as a failed requirement ("google.com fails SPF Authentication"
+				// on a TXT-size hygiene finding was the live symptom).
+				const verdicts = completed.map((r) => ({ result: r, satisfaction: classifyControlSatisfaction(r) }));
+				const satisfiedCount = verdicts.filter((v) => v.satisfaction === 'satisfied').length;
+				const deficientCount = verdicts.filter((v) => v.satisfaction === 'deficient').length;
+				const completedUnsatisfiedCount = verdicts.filter((v) => v.satisfaction === 'unsatisfied').length;
 
-				// Collect finding titles from failing categories — completed ones only, so a
-				// transient check's "check error"/"timed out" title never reads as a graded
-				// compliance finding.
-				for (const r of failingResults) {
+				// Collect finding titles from every non-certifying category — completed ones
+				// only, so a transient check's "check error"/"timed out" title never reads as
+				// a graded compliance finding. Deficient categories carry their flags too:
+				// `partial` still surfaces WHY it is not a pass.
+				for (const { result: r, satisfaction } of verdicts) {
+					if (satisfaction === 'satisfied') continue;
 					for (const f of r.findings) {
 						if (f.severity !== 'info') {
 							relatedFindings.push(f.title);
@@ -327,15 +351,30 @@ export function evaluateCompliance(
 				// before this line, so no separate zero-check is needed here.
 				const transientCount = applicableResults.length - completed.length;
 				const totalCategories = control.categories.length - transientCount - notApplicableCount;
+				// A mapped category with NO CheckResult at all (sparse evidence) still counts
+				// as not-passing — pre-existing, intentional. It is UNSATISFIED, not
+				// deficient: nothing measured it as implemented.
+				const missingCount = totalCategories - completed.length;
+				const unsatisfiedCount = completedUnsatisfiedCount + missingCount;
 
 				if (control.requirePass) {
-					// All mapped categories must pass (and be present)
-					status = passingCount === totalCategories ? 'pass' : 'fail';
-				} else {
-					// Partial pass allowed — missing categories count as not passing
-					if (passingCount === totalCategories) {
+					// All mapped categories must certify (and be present). #815 coherence
+					// rule: any category failing → fail; none failing but some deficient →
+					// partial (implemented but flagged, non-certifying); all satisfied → pass.
+					if (unsatisfiedCount > 0) {
+						status = 'fail';
+					} else if (deficientCount > 0) {
+						status = 'partial';
+					} else {
 						status = 'pass';
-					} else if (passingCount > 0) {
+					}
+				} else {
+					// Partial pass allowed — missing categories count as not passing. A
+					// deficient category is implementation EVIDENCE (the check passed), so it
+					// keeps the control out of `fail`, but it can never complete a `pass`.
+					if (satisfiedCount === totalCategories) {
+						status = 'pass';
+					} else if (satisfiedCount > 0 || deficientCount > 0) {
 						status = 'partial';
 					} else {
 						status = 'fail';
@@ -435,7 +474,13 @@ const STATUS_ICON_FULL: Record<ComplianceStatus, string> = {
 
 const STATUS_LABEL: Record<ComplianceStatus, string> = {
 	pass: 'PASS',
-	partial: 'PARTIAL',
+	// #815: `partial` must read as non-certifying and clearly distinct from BOTH
+	// pass and fail. It covers two shapes — a control whose backing check passed
+	// but was flagged (medium measured findings, the google.com SPF shape), and a
+	// multi-category control with mixed evidence — and in neither may the label
+	// read as a certification. The wiz.io CSP shape (#726) lands here now, and
+	// "not certified" is what keeps that fix closed.
+	partial: 'PARTIAL — implemented but flagged (not certified)',
 	fail: 'FAIL',
 	not_assessed: 'NOT ASSESSED',
 };

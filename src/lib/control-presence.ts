@@ -134,6 +134,57 @@ export function isSatisfiedControl(result: CheckResult): boolean {
 }
 
 /**
+ * The severities that mark a control's requirement as FOUND UNMET — the subset of
+ * {@link DISQUALIFYING_SEVERITIES} that keeps a hard `fail` verdict under #815.
+ * `medium` is deliberately absent: a check that `passed` and is flagged only at
+ * medium is deficient (implemented but flagged), not failed.
+ */
+const FAILING_SEVERITIES: ReadonlySet<Severity> = new Set<Severity>(['critical', 'high']);
+
+/**
+ * The three-way split of a completed check's control verdict (#815).
+ *
+ * - `'satisfied'` — the control certifies. EXACTLY the set `isSatisfiedControl`
+ *   accepts; the two can never drift because this classifier delegates to the same
+ *   clauses (pinned by `test/control-presence.spec.ts`).
+ * - `'deficient'` — the check `passed` and is disqualified ONLY by medium measured
+ *   findings: the control is implemented but flagged. Non-certifying, but not a
+ *   failed requirement.
+ * - `'unsatisfied'` — the requirement was found unmet: the check did not pass, a
+ *   measured high/critical finding exists, or the record is an unrebutted absence.
+ */
+export type ControlSatisfaction = 'satisfied' | 'deficient' | 'unsatisfied';
+
+/**
+ * Classify a completed check's control verdict on the three-way #815 scale.
+ *
+ * **Why a NEW export instead of changing `isSatisfiedControl`:** the binary
+ * predicate is consumed by `compare_baseline` (#706 — the policy gate customers
+ * wire into CI) and the deploy verifier (#725), both of which need exactly the
+ * boolean "does this certify". Their semantics must not move. `map_compliance`
+ * (#815) additionally needs the NON-satisfied side split, because the #726
+ * severity floor is category-scoped: a medium transport-hygiene finding sharing a
+ * category with an implemented control (google.com's "TXT RRset exceeds UDP
+ * limit" beside a passing SPF, validated live 2026-08-28) was flipping that
+ * control to a hard `fail` — the inverse error shape of #726's false PASS. The
+ * floor itself is untouched: `'deficient'` is still never `'satisfied'`, so the
+ * wiz.io CSP shape (#726 — http_security `passed` with two medium CSP findings)
+ * still cannot certify; it is reported `partial`, not `pass`.
+ *
+ * Ordering is load-bearing in one place only: unrebutted ABSENCE outranks the
+ * deficient band. An absent record with a medium "not configured" finding is not
+ * "implemented but flagged" — nothing is implemented — so it stays `'unsatisfied'`
+ * (the #705 shape must never soften to `partial`).
+ */
+export function classifyControlSatisfaction(result: CheckResult): ControlSatisfaction {
+	if (!result.passed) return 'unsatisfied';
+	if (isUnrebuttedAbsence(result)) return 'unsatisfied';
+	if (result.findings.some((finding) => FAILING_SEVERITIES.has(finding.severity) && isMeasuredFinding(finding))) return 'unsatisfied';
+	if (hasDisqualifyingFinding(result)) return 'deficient';
+	return 'satisfied';
+}
+
+/**
  * The scan-shaped input `notApplicableCategoriesFor` reads. Deliberately
  * structural and permissive rather than `ScanDomainResult`: hand-built results
  * (tests, external library consumers) reach these tools too, and a missing
