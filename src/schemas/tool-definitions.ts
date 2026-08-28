@@ -393,7 +393,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_srv: {
 		description:
-			"Map a domain's DNS-visible service footprint by probing ~16 common SRV record prefixes (email, calendar, messaging, web, directory) in parallel. Returns discovered services and flags insecure service advertisements — e.g. plaintext IMAP/POP3 without an encrypted variant. Use when asked to map DNS-visible services or flag insecure service advertisements.",
+			"Map a domain's DNS-visible service footprint by probing 19 common SRV record prefixes (email, calendar, messaging, directory, web) in parallel. Returns discovered services and flags insecure service advertisements — e.g. plaintext IMAP/POP3/LDAP without an encrypted variant. A domain with no matches among the probed prefixes is not proof the domain has no services at all. Use when asked to map DNS-visible services or flag insecure service advertisements.",
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
@@ -527,7 +527,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_rbl: {
 		description:
-			'Check MX server IP reputation against 7 DNS-based Real-time Blocklists (SpamCop, UCEProtect, Mailspike, Barracuda, PSBL, SORBS). Resolves MX hosts to IPs first.',
+			'Check MX server IP reputation against 6 DNS-based Real-time Blocklists (SpamCop, UCEProtect, Mailspike, Barracuda, PSBL). Resolves MX hosts to IPs first.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,

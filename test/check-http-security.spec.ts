@@ -889,3 +889,32 @@ describe('checkHttpSecurity — WAF-inconclusive prose must not overclaim (issue
 		expect(finding.detail).toMatch(/\bmay\b/i);
 	});
 });
+
+describe('checkHttpSecurity — a no-content 2xx is unmeasured, not a missing-header slate (issue #806)', () => {
+	async function run(domain = 'example.com') {
+		const { checkHttpSecurity } = await import('../src/tools/check-http-security');
+		return checkHttpSecurity(domain);
+	}
+
+	it.each([[204], [205]])('terminal %d: no missing-header findings, inconclusive/excluded shape', async (status) => {
+		// A 204/205 satisfies `response.ok` but carries no page; before the guard it flowed
+		// into analyzeSecurityHeaders() and produced the full confident missing-header slate
+		// (observed live on google.com — issue #806). WAF detection cannot rescue it:
+		// detectWafEvent requires status >= 400 or a body signature.
+		globalThis.fetch = vi.fn().mockResolvedValue({
+			ok: true,
+			status,
+			type: 'basic',
+			headers: new Headers(),
+		});
+		const result = await run();
+		expect(result.findings.some((f) => f.title.startsWith('No '))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		const marker = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(marker).toBeDefined();
+		expect(marker!.metadata?.errorKind).toBe('no_content');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.checkStatus).toBe('error');
+	});
+});
