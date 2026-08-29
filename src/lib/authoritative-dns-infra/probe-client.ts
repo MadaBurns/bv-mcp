@@ -45,7 +45,48 @@ export async function fetchDelegationConsistencyEvidence(
 		body: JSON.stringify({ hostname: normalizeInfraHostname(domain) }),
 		signal: AbortSignal.timeout(INFRA_PROBE_TIMEOUT_MS),
 	});
-	return readJsonResponse<DelegationConsistencyEvidence>(response, 'delegation consistency probe');
+	const evidence = await readJsonResponse<DelegationConsistencyEvidence>(response, 'delegation consistency probe');
+	// `analyzeDelegationConsistency` dereferences these arrays (and each glue entry's
+	// parentIpv4/parentIpv6) unconditionally over this unchecked cast. Its sole caller,
+	// checkNs, currently survives a malformed body only because its try happens to wrap
+	// the analysis too — validate at the boundary so that fail-soft degrade is structural,
+	// not an accident of try-scope (#828/#837 sibling). Empty arrays are legitimate
+	// measurements here (e.g. `glue: []` = no in-bailiwick nameservers) and must pass.
+	if (!isUsableDelegationEvidence(evidence)) {
+		throw new Error('Invalid infra probe response: delegation consistency probe returned malformed evidence');
+	}
+	return evidence;
+}
+
+function isNamedEntry(entry: unknown): entry is Record<string, unknown> {
+	return typeof entry === 'object' && entry !== null && typeof (entry as Record<string, unknown>).nameserver === 'string';
+}
+
+function isStringArray(value: unknown): boolean {
+	return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+// Optional in the typed contract means ABSENT, not "any type": the analyzer's `?? []`
+// defaults only handle undefined, so a present-but-wrong-typed value (null, a bare
+// string) would still reach canonical()'s .map / addressesDiffer()'s .length.
+function isOptionalStringArray(value: unknown): boolean {
+	return value === undefined || isStringArray(value);
+}
+
+function isUsableDelegationEvidence(evidence: DelegationConsistencyEvidence): boolean {
+	return isStringArray(evidence.parentNameservers)
+		&& isStringArray(evidence.parentDelegationNs)
+		&& Array.isArray(evidence.parentObservations)
+		&& evidence.parentObservations.every((entry) => isNamedEntry(entry) && isOptionalStringArray(entry.delegationNs))
+		&& Array.isArray(evidence.childObservations)
+		&& evidence.childObservations.every((entry) => isNamedEntry(entry) && isOptionalStringArray(entry.publishedNs))
+		&& Array.isArray(evidence.glue)
+		&& evidence.glue.every((entry) =>
+			isNamedEntry(entry)
+			&& isStringArray(entry.parentIpv4)
+			&& isStringArray(entry.parentIpv6)
+			&& isOptionalStringArray(entry.currentIpv4)
+			&& isOptionalStringArray(entry.currentIpv6));
 }
 
 export async function fetchRootServerSetEvidence(infraProbe: InfraProbeBinding): Promise<RootServerSetEvidence> {
