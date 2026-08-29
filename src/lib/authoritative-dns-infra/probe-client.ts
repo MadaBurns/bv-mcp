@@ -45,7 +45,40 @@ export async function fetchDelegationConsistencyEvidence(
 		body: JSON.stringify({ hostname: normalizeInfraHostname(domain) }),
 		signal: AbortSignal.timeout(INFRA_PROBE_TIMEOUT_MS),
 	});
-	return readJsonResponse<DelegationConsistencyEvidence>(response, 'delegation consistency probe');
+	const evidence = await readJsonResponse<DelegationConsistencyEvidence>(response, 'delegation consistency probe');
+	// `analyzeDelegationConsistency` dereferences these arrays (and each glue entry's
+	// parentIpv4/parentIpv6) unconditionally over this unchecked cast. Its sole caller,
+	// checkNs, currently survives a malformed body only because its try happens to wrap
+	// the analysis too — validate at the boundary so that fail-soft degrade is structural,
+	// not an accident of try-scope (#828/#837 sibling). Empty arrays are legitimate
+	// measurements here (e.g. `glue: []` = no in-bailiwick nameservers) and must pass.
+	if (!isUsableDelegationEvidence(evidence)) {
+		throw new Error('Invalid infra probe response: delegation consistency probe returned malformed evidence');
+	}
+	return evidence;
+}
+
+function isNamedObservationArray(value: unknown): boolean {
+	return Array.isArray(value)
+		&& value.every((entry) =>
+			typeof entry === 'object'
+			&& entry !== null
+			&& typeof (entry as Record<string, unknown>).nameserver === 'string');
+}
+
+function isStringArray(value: unknown): boolean {
+	return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
+}
+
+function isUsableDelegationEvidence(evidence: DelegationConsistencyEvidence): boolean {
+	return isStringArray(evidence.parentNameservers)
+		&& isStringArray(evidence.parentDelegationNs)
+		&& isNamedObservationArray(evidence.parentObservations)
+		&& isNamedObservationArray(evidence.childObservations)
+		&& isNamedObservationArray(evidence.glue)
+		&& evidence.glue.every((entry) =>
+			isStringArray((entry as unknown as Record<string, unknown>).parentIpv4)
+			&& isStringArray((entry as unknown as Record<string, unknown>).parentIpv6));
 }
 
 export async function fetchRootServerSetEvidence(infraProbe: InfraProbeBinding): Promise<RootServerSetEvidence> {
