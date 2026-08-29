@@ -124,6 +124,48 @@ describe('checkRootServerSet', () => {
 		]));
 	});
 
+	// #828 — the probe body is an unchecked generic cast (`readJsonResponse<T>`), and
+	// `rootHintsMatchOfficial` dereferences `evidence.rootHints.length` unconditionally.
+	// A 200 response omitting `rootHints` used to throw an uncaught TypeError out of
+	// `checkRootServerSet` (the try/catch only covers the fetch). The shape is now
+	// validated at the fetchRootServerSetEvidence boundary so a malformed body degrades
+	// through the same probe-unavailable inconclusive path as a 5xx.
+	it('degrades gracefully when a 200 probe response omits rootHints (#828)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: '.',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+		})));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.metadata?.evidenceMode).toBe('probe_unavailable');
+		expect(result.findings).toContainEqual(
+			expect.objectContaining({
+				title: 'Root server set probe unavailable',
+				severity: 'info',
+			}),
+		);
+	});
+
+	it('degrades gracefully when rootHints contains non-object entries (#828)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: '.',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+			rootHints: [null, 'a.root-servers.net'],
+		})));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.metadata?.evidenceMode).toBe('probe_unavailable');
+	});
+
 	// Sibling of #812 / PR #824 (analyze.ts). `analyzeRootServerSetEvidence`
 	// (analyze-root-server-set.ts) had the identical unconditional
 	// `if (findings.length === 0) push "checks passed"` shape: `findings.length

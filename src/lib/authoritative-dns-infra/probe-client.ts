@@ -55,5 +55,16 @@ export async function fetchRootServerSetEvidence(infraProbe: InfraProbeBinding):
 		body: JSON.stringify({}),
 		signal: AbortSignal.timeout(INFRA_PROBE_TIMEOUT_MS),
 	});
-	return readJsonResponse<RootServerSetEvidence>(response, 'root server set probe');
+	const evidence = await readJsonResponse<RootServerSetEvidence>(response, 'root server set probe');
+	// `rootHints` is the one field `analyzeRootServerSetEvidence` dereferences without a
+	// guard (every other evidence field is optional-chained), and `readJsonResponse` is an
+	// unchecked cast — so a malformed 200 body must be rejected HERE, where the caller's
+	// existing try/catch degrades it to the probe-unavailable inconclusive path (#828).
+	if (
+		!Array.isArray(evidence.rootHints)
+		|| evidence.rootHints.some((hint) => typeof hint !== 'object' || hint === null)
+	) {
+		throw new Error('Invalid infra probe response: root server set probe returned no usable rootHints');
+	}
+	return evidence;
 }
