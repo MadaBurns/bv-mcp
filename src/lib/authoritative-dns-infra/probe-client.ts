@@ -60,11 +60,25 @@ export async function fetchRootServerSetEvidence(infraProbe: InfraProbeBinding):
 	// guard (every other evidence field is optional-chained), and `readJsonResponse` is an
 	// unchecked cast — so a malformed 200 body must be rejected HERE, where the caller's
 	// existing try/catch degrades it to the probe-unavailable inconclusive path (#828).
-	if (
-		!Array.isArray(evidence.rootHints)
-		|| evidence.rootHints.some((hint) => typeof hint !== 'object' || hint === null)
-	) {
+	// The guard enforces the full typed contract (RootHintEntryEvidence: four required
+	// strings) and non-emptiness: a body that merely fails this shape must never reach
+	// `rootHintsMatchOfficial`, where it would score as a measured critical mismatch —
+	// a scored claim manufactured from an unmeasured probe defect. A genuinely tampered
+	// hint set is shape-valid with DIFFERENT values and still scores as a real failure.
+	if (!isUsableRootHintArray(evidence.rootHints)) {
 		throw new Error('Invalid infra probe response: root server set probe returned no usable rootHints');
 	}
 	return evidence;
+}
+
+function isUsableRootHintArray(rootHints: unknown): boolean {
+	return Array.isArray(rootHints)
+		&& rootHints.length > 0
+		&& rootHints.every((hint) =>
+			typeof hint === 'object'
+			&& hint !== null
+			&& typeof (hint as Record<string, unknown>).name === 'string'
+			&& typeof (hint as Record<string, unknown>).ipv4 === 'string'
+			&& typeof (hint as Record<string, unknown>).ipv6 === 'string'
+			&& typeof (hint as Record<string, unknown>).operator === 'string');
 }
