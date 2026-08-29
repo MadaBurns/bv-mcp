@@ -58,27 +58,35 @@ export async function fetchDelegationConsistencyEvidence(
 	return evidence;
 }
 
-function isNamedObservationArray(value: unknown): boolean {
-	return Array.isArray(value)
-		&& value.every((entry) =>
-			typeof entry === 'object'
-			&& entry !== null
-			&& typeof (entry as Record<string, unknown>).nameserver === 'string');
+function isNamedEntry(entry: unknown): entry is Record<string, unknown> {
+	return typeof entry === 'object' && entry !== null && typeof (entry as Record<string, unknown>).nameserver === 'string';
 }
 
 function isStringArray(value: unknown): boolean {
 	return Array.isArray(value) && value.every((entry) => typeof entry === 'string');
 }
 
+// Optional in the typed contract means ABSENT, not "any type": the analyzer's `?? []`
+// defaults only handle undefined, so a present-but-wrong-typed value (null, a bare
+// string) would still reach canonical()'s .map / addressesDiffer()'s .length.
+function isOptionalStringArray(value: unknown): boolean {
+	return value === undefined || isStringArray(value);
+}
+
 function isUsableDelegationEvidence(evidence: DelegationConsistencyEvidence): boolean {
 	return isStringArray(evidence.parentNameservers)
 		&& isStringArray(evidence.parentDelegationNs)
-		&& isNamedObservationArray(evidence.parentObservations)
-		&& isNamedObservationArray(evidence.childObservations)
-		&& isNamedObservationArray(evidence.glue)
+		&& Array.isArray(evidence.parentObservations)
+		&& evidence.parentObservations.every((entry) => isNamedEntry(entry) && isOptionalStringArray(entry.delegationNs))
+		&& Array.isArray(evidence.childObservations)
+		&& evidence.childObservations.every((entry) => isNamedEntry(entry) && isOptionalStringArray(entry.publishedNs))
+		&& Array.isArray(evidence.glue)
 		&& evidence.glue.every((entry) =>
-			isStringArray((entry as unknown as Record<string, unknown>).parentIpv4)
-			&& isStringArray((entry as unknown as Record<string, unknown>).parentIpv6));
+			isNamedEntry(entry)
+			&& isStringArray(entry.parentIpv4)
+			&& isStringArray(entry.parentIpv6)
+			&& isOptionalStringArray(entry.currentIpv4)
+			&& isOptionalStringArray(entry.currentIpv6));
 }
 
 export async function fetchRootServerSetEvidence(infraProbe: InfraProbeBinding): Promise<RootServerSetEvidence> {

@@ -166,6 +166,68 @@ describe('fetchDelegationConsistencyEvidence shape guard (#828/#837 sibling)', (
 		).rejects.toThrow(/^Invalid infra probe response/);
 	});
 
+	// Optional fields that are PRESENT but wrong-typed still reach unguarded dereferences
+	// in the analyzer (canonical()'s .map on delegationNs/publishedNs, addressesDiffer()'s
+	// .length on currentIpv4/currentIpv6 — `?? []` only handles undefined, not null or a
+	// string). The guard must reject present-but-malformed optional fields too.
+	it('rejects a parent observation whose delegationNs is present but not an array', async () => {
+		const { fetchDelegationConsistencyEvidence } = await import('../src/lib/authoritative-dns-infra/probe-client');
+		await expect(
+			fetchDelegationConsistencyEvidence(
+				'example.com',
+				probeReturning({
+					...delegationEvidence(),
+					parentObservations: [{ nameserver: 'a.gtld-servers.net', delegationNs: 'ns1.provider-a.com', rcode: 0 }],
+				}),
+			),
+		).rejects.toThrow(/^Invalid infra probe response/);
+	});
+
+	it('rejects a child observation whose publishedNs is present but not an array', async () => {
+		const { fetchDelegationConsistencyEvidence } = await import('../src/lib/authoritative-dns-infra/probe-client');
+		await expect(
+			fetchDelegationConsistencyEvidence(
+				'example.com',
+				probeReturning({
+					...delegationEvidence(),
+					childObservations: [{ nameserver: 'ns1.provider-a.com', aaFlag: true, publishedNs: 'ns1.provider-a.com', rcode: 0 }],
+				}),
+			),
+		).rejects.toThrow(/^Invalid infra probe response/);
+	});
+
+	it('rejects a glue entry whose currentIpv4 is null', async () => {
+		const { fetchDelegationConsistencyEvidence } = await import('../src/lib/authoritative-dns-infra/probe-client');
+		await expect(
+			fetchDelegationConsistencyEvidence(
+				'example.com',
+				probeReturning({
+					...delegationEvidence(),
+					glue: [{ nameserver: 'ns1.example.com', parentIpv4: ['192.0.2.53'], parentIpv6: [], currentIpv4: null }],
+				}),
+			),
+		).rejects.toThrow(/^Invalid infra probe response/);
+	});
+
+	it('accepts a populated, well-formed glue entry with optional fields present', async () => {
+		const { fetchDelegationConsistencyEvidence } = await import('../src/lib/authoritative-dns-infra/probe-client');
+		await expect(
+			fetchDelegationConsistencyEvidence(
+				'example.com',
+				probeReturning({
+					...delegationEvidence(),
+					glue: [{
+						nameserver: 'ns1.example.com',
+						parentIpv4: ['192.0.2.53'],
+						parentIpv6: ['2001:db8::53'],
+						currentIpv4: ['192.0.2.53'],
+						currentIpv6: ['2001:db8::53'],
+					}],
+				}),
+			),
+		).resolves.toMatchObject({ hostname: 'example.com' });
+	});
+
 	// Unlike the root-server-set probe (whose domain fixes a non-empty 13-entry answer),
 	// empty observation arrays here are legitimate measurements — e.g. `glue: []` simply
 	// means no in-bailiwick nameservers were observed. The guard must not reject them.
