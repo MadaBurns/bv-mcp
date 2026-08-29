@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.69.1] - 2026-08-29
+
+Patch release folding in two post-3.69.0 follow-up fixes so the deploy ships from a tagged commit (3.69.0 was tagged but never deployed; this supersedes it).
+
+### Fixed
+
+- **http_security + ssl: no-content guard gaps closed** — the 204/205 guard from #806/#819 now also covers the https leg, the mixed dual-fetch shape (one leg a real page, the other a 204), and no longer lets a transient no-content result enter the cache. (PR #835)
+- **check_dnssec_chain: a chain broken at an unsigned ANCESTOR zone is now flagged** — the #810/#820 fix covered only the target zone itself; an early-stopped walk over an unsigned intermediate could still present the accidental-pass shape. (PR #833)
+
 ## [3.69.0] - 2026-08-28
 
 Correctness release: twelve fixes from the 2026-08-28 full-tool scanner validation sweep (issues #806–#815, #828 filed from the same campaign). Every fix shipped as its own reviewed PR.
