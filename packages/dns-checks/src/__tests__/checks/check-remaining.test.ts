@@ -73,11 +73,7 @@ describe('checkCAA', () => {
 
 	it('returns info for properly configured CAA', async () => {
 		const queryDNS = createMockDNS({
-			'example.com': [
-				'0 issue "letsencrypt.org"',
-				'0 issuewild "letsencrypt.org"',
-				'0 iodef "mailto:security@example.com"',
-			],
+			'example.com': ['0 issue "letsencrypt.org"', '0 issuewild "letsencrypt.org"', '0 iodef "mailto:security@example.com"'],
 		});
 		const result = await checkCAA('example.com', queryDNS);
 		expect(result.findings.some((f) => f.title === 'CAA properly configured')).toBe(true);
@@ -162,7 +158,9 @@ describe('checkNS', () => {
 		// A thrown NS query is a transient resolver failure — we could not MEASURE the posture, so
 		// the category is excluded from scoring (checkStatus 'error') with an info-only finding,
 		// rather than penalizing a possibly-healthy domain with a critical "NS query failed".
-		const queryDNS: DNSQueryFunction = vi.fn(async () => { throw new Error('fail'); });
+		const queryDNS: DNSQueryFunction = vi.fn(async () => {
+			throw new Error('fail');
+		});
 		const result = await checkNS('example.com', queryDNS);
 		expect(result.checkStatus).toBe('error');
 		expect(result.findings[0].severity).toBe('info');
@@ -227,7 +225,7 @@ describe('checkSSL', () => {
 			// HTTP redirect to HTTPS
 			return new Response('', {
 				status: 301,
-				headers: { 'location': 'https://example.com/' },
+				headers: { location: 'https://example.com/' },
 			});
 		});
 		const result = await checkSSL('example.com', fetchFn);
@@ -235,9 +233,26 @@ describe('checkSSL', () => {
 	});
 
 	it('reports connection failure', async () => {
-		const fetchFn: FetchFunction = vi.fn(async () => { throw new Error('Connection failed'); });
+		const fetchFn: FetchFunction = vi.fn(async () => {
+			throw new Error('Connection failed');
+		});
 		const result = await checkSSL('example.com', fetchFn);
 		expect(result.findings.some((f) => f.title === 'HTTPS connection failed')).toBe(true);
+	});
+
+	it('reports missing HSTS when HTTPS redirects to another HTTPS URL', async () => {
+		const fetchFn: FetchFunction = vi.fn(async (url: string) => {
+			if (url === 'https://example.com') {
+				return new Response('', { status: 307, headers: { location: 'https://www.example.com/' } });
+			}
+			return new Response('', { status: 200, headers: { 'strict-transport-security': 'max-age=31536000; includeSubDomains' } });
+		});
+
+		const result = await checkSSL('example.com', fetchFn);
+
+		expect(result.findings.some((f) => f.title === 'No HSTS header')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'HTTPS and HSTS properly configured')).toBe(false);
+		expect(result.score).toBeLessThan(100);
 	});
 });
 
@@ -249,19 +264,22 @@ describe('checkHTTPSecurity', () => {
 	});
 
 	it('reports all headers configured', async () => {
-		const fetchFn: FetchFunction = vi.fn(async () => new Response('', {
-			status: 200,
-			headers: {
-				'content-security-policy': "default-src 'self'",
-				'x-frame-options': 'DENY',
-				'x-content-type-options': 'nosniff',
-				'permissions-policy': 'geolocation=()',
-				'referrer-policy': 'strict-origin-when-cross-origin',
-				'cross-origin-resource-policy': 'same-origin',
-				'cross-origin-opener-policy': 'same-origin',
-				'cross-origin-embedder-policy': 'require-corp',
-			},
-		}));
+		const fetchFn: FetchFunction = vi.fn(
+			async () =>
+				new Response('', {
+					status: 200,
+					headers: {
+						'content-security-policy': "default-src 'self'",
+						'x-frame-options': 'DENY',
+						'x-content-type-options': 'nosniff',
+						'permissions-policy': 'geolocation=()',
+						'referrer-policy': 'strict-origin-when-cross-origin',
+						'cross-origin-resource-policy': 'same-origin',
+						'cross-origin-opener-policy': 'same-origin',
+						'cross-origin-embedder-policy': 'require-corp',
+					},
+				}),
+		);
 		const result = await checkHTTPSecurity('example.com', fetchFn);
 		expect(result.findings.some((f) => f.title === 'HTTP security headers well configured')).toBe(true);
 	});

@@ -133,10 +133,8 @@ async function checkHttps(
 			const isDowngrade = location?.startsWith('http://') ?? false;
 			const isHttpsRedirect = isRedirect && !isDowngrade;
 
-			if (!isHttpsRedirect) {
-				const redirectTarget = isDowngrade ? (location ?? undefined) : undefined;
-				findings.push(...getHttpsFindings(domain, redirectTarget, response.headers.get('strict-transport-security')));
-			}
+			const redirectTarget = isDowngrade ? (location ?? undefined) : undefined;
+			findings.push(...getHttpsFindings(domain, redirectTarget, response.headers.get('strict-transport-security')));
 		}
 	} catch (err) {
 		if (err instanceof RobotsDisallowedError) {
