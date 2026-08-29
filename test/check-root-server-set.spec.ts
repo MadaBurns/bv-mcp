@@ -124,6 +124,111 @@ describe('checkRootServerSet', () => {
 		]));
 	});
 
+	// #828 — the probe body is an unchecked generic cast (`readJsonResponse<T>`), and
+	// `rootHintsMatchOfficial` dereferences `evidence.rootHints.length` unconditionally.
+	// A 200 response omitting `rootHints` used to throw an uncaught TypeError out of
+	// `checkRootServerSet` (the try/catch only covers the fetch). The shape is now
+	// validated at the fetchRootServerSetEvidence boundary so a malformed body degrades
+	// through the same probe-unavailable inconclusive path as a 5xx.
+	it('degrades gracefully when a 200 probe response omits rootHints (#828)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: '.',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+		})));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.metadata?.evidenceMode).toBe('probe_unavailable');
+		expect(result.findings).toContainEqual(
+			expect.objectContaining({
+				title: 'Root server set probe unavailable',
+				severity: 'info',
+			}),
+		);
+	});
+
+	it('degrades gracefully when rootHints contains non-object entries (#828)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: '.',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+			rootHints: [null, 'a.root-servers.net'],
+		})));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.metadata?.evidenceMode).toBe('probe_unavailable');
+	});
+
+	// The subtler half of #828: shapes that pass a naive "is an array of objects" check but
+	// would flow into `rootHintsMatchOfficial` and score as a MEASURED critical mismatch
+	// ("Root hints do not match official constants", missingControl) — a scored claim
+	// manufactured from a probe defect. They must degrade to inconclusive instead.
+	it('degrades gracefully when rootHints is an empty array (#828)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: '.',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+			rootHints: [],
+		})));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.metadata?.evidenceMode).toBe('probe_unavailable');
+		expect(result.findings.map((finding) => finding.title)).not.toContain(
+			'Root hints do not match official constants',
+		);
+	});
+
+	it('degrades gracefully when rootHints entries are missing required fields (#828)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: '.',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+			// 13 well-typed objects, none carrying the ipv4/ipv6/operator strings the
+			// analyzer compares — schema-invalid per RootHintEntryEvidence.
+			rootHints: ROOT_SERVER_NAMES.map((name) => ({ name })),
+		})));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.metadata?.evidenceMode).toBe('probe_unavailable');
+		expect(result.findings.map((finding) => finding.title)).not.toContain(
+			'Root hints do not match official constants',
+		);
+	});
+
+	// Non-regression for the guard: a shape-VALID hint set with wrong values is a genuine
+	// measurement and must still score as a critical mismatch, not be routed to inconclusive.
+	it('still scores a shape-valid but mismatched root hint set as a real failure (#828)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: '.',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+			rootHints: ROOT_HINTS.map((hint) => ({ ...hint, ipv4: '192.0.2.1' })),
+		})));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.metadata?.evidenceMode).toBe('infra_probe');
+		expect(result.findings.map((finding) => finding.title)).toContain(
+			'Root hints do not match official constants',
+		);
+	});
+
 	// Sibling of #812 / PR #824 (analyze.ts). `analyzeRootServerSetEvidence`
 	// (analyze-root-server-set.ts) had the identical unconditional
 	// `if (findings.length === 0) push "checks passed"` shape: `findings.length
