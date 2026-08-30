@@ -240,8 +240,30 @@ describe('checkSSL', () => {
 		expect(result.findings.some((f) => f.title === 'HTTPS connection failed')).toBe(true);
 	});
 
-	it('reports missing HSTS when HTTPS redirects to another HTTPS URL', async () => {
+	it('reports missing HSTS when an HTTPS redirect chain ends without HSTS anywhere (#839)', async () => {
 		const fetchFn: FetchFunction = vi.fn(async (url: string) => {
+			if (url.startsWith('http://')) {
+				return new Response('', { status: 301, headers: { location: 'https://example.com/' } });
+			}
+			if (url === 'https://example.com') {
+				return new Response('', { status: 307, headers: { location: 'https://www.example.com/' } });
+			}
+			// Final destination: reachable but no HSTS on the terminal 200 either.
+			return new Response('', { status: 200 });
+		});
+
+		const result = await checkSSL('example.com', fetchFn);
+
+		expect(result.findings.some((f) => f.title === 'No HSTS header')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'HTTPS and HSTS properly configured')).toBe(false);
+		expect(result.score).toBeLessThan(100);
+	});
+
+	it('passes when the HTTPS redirect target sets HSTS on the final response', async () => {
+		const fetchFn: FetchFunction = vi.fn(async (url: string) => {
+			if (url.startsWith('http://')) {
+				return new Response('', { status: 301, headers: { location: 'https://example.com/' } });
+			}
 			if (url === 'https://example.com') {
 				return new Response('', { status: 307, headers: { location: 'https://www.example.com/' } });
 			}
@@ -250,9 +272,61 @@ describe('checkSSL', () => {
 
 		const result = await checkSSL('example.com', fetchFn);
 
-		expect(result.findings.some((f) => f.title === 'No HSTS header')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'No HSTS header')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'HTTPS and HSTS properly configured')).toBe(true);
+		expect(result.checkStatus).toBeUndefined();
+	});
+
+	it('uses HSTS from the redirect response itself without following the chain', async () => {
+		const httpsCalls: string[] = [];
+		const fetchFn: FetchFunction = vi.fn(async (url: string) => {
+			if (url.startsWith('http://')) {
+				return new Response('', { status: 301, headers: { location: 'https://example.com/' } });
+			}
+			httpsCalls.push(url);
+			return new Response('', {
+				status: 307,
+				headers: { location: 'https://www.example.com/', 'strict-transport-security': 'max-age=31536000; includeSubDomains' },
+			});
+		});
+
+		const result = await checkSSL('example.com', fetchFn);
+
+		expect(result.findings.some((f) => f.title === 'No HSTS header')).toBe(false);
+		// The redirect hop carried HSTS (the hstspreload.org-preferred deployment) — no follow-up fetch.
+		expect(httpsCalls).toEqual(['https://example.com']);
+	});
+
+	it('excludes the category when the HTTPS redirect chain cannot be resolved', async () => {
+		const fetchFn: FetchFunction = vi.fn(async (url: string) => {
+			if (url.startsWith('http://')) {
+				return new Response('', { status: 301, headers: { location: 'https://example.com/' } });
+			}
+			// Every HTTPS response redirects to itself: the chain never terminates.
+			return new Response('', { status: 307, headers: { location: 'https://www.example.com/' } });
+		});
+
+		const result = await checkSSL('example.com', fetchFn);
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.some((f) => f.title === 'No HSTS header')).toBe(false);
 		expect(result.findings.some((f) => f.title === 'HTTPS and HSTS properly configured')).toBe(false);
-		expect(result.score).toBeLessThan(100);
+	});
+
+	it('reports a downgrade when the HTTPS redirect chain lands on HTTP', async () => {
+		const fetchFn: FetchFunction = vi.fn(async (url: string) => {
+			if (url.startsWith('http://')) {
+				return new Response('', { status: 301, headers: { location: 'https://example.com/' } });
+			}
+			if (url === 'https://example.com') {
+				return new Response('', { status: 307, headers: { location: 'https://www.example.com/' } });
+			}
+			return new Response('', { status: 302, headers: { location: 'http://www.example.com/' } });
+		});
+
+		const result = await checkSSL('example.com', fetchFn);
+
+		expect(result.findings.some((f) => f.title === 'HTTPS redirects to HTTP')).toBe(true);
 	});
 });
 
