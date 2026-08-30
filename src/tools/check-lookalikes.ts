@@ -56,6 +56,7 @@ import {
 	buildBrandHeldFinding,
 	buildOwnedBySeedFinding,
 	buildRawAttributionFinding,
+	buildRegisteredDarkFinding,
 	buildSharedRegistrantOrgFinding,
 	buildThreatObservationFinding,
 	describeCorroborators,
@@ -66,6 +67,7 @@ import {
 	buildNoActiveInfrastructureFinding,
 	buildNoPermutationsFinding,
 	buildNoRegisteredCandidatesFinding,
+	buildOwnershipUnmeasuredFinding,
 	buildReconCandidateFinding,
 	buildReconScanStatusFinding,
 	buildStagingSummaryFinding,
@@ -190,12 +192,18 @@ async function checkLookalikesCore(
 	// Also query the primary domain's NS + MX for ownership comparison: NS for
 	// the ownership verdict itself, MX for the D4 MX-overlap corroboration
 	// signal consulted by `attributionConfidence()` (wording only).
-	const [nsResult, primaryNs, primaryMx] = await Promise.all([
+	const [nsResult, primaryNsProbe, primaryMx] = await Promise.all([
 		filterByNsExistence(permsToProbe),
 		queryPrimaryNs(domain),
 		queryPrimaryMx(domain),
 	]);
 	const { registered: registeredPerms, nsMap: lookalikeNsMap, unresolved: nsUnresolved } = nsResult;
+	const primaryNs = primaryNsProbe.ns;
+	// #832 — the seed's own NS lookup failed, so the ownership comparison has
+	// nothing to compare against this run. Every set-comparison verdict below
+	// becomes `unmeasured` (never the CONTRARY `third_party`), and
+	// impersonation-shaped findings are withheld for unmeasured candidates.
+	const seedNsUnmeasured = !primaryNsProbe.resolved;
 
 	if (registeredPerms.length === 0) {
 		findings.push(buildNoRegisteredCandidatesFinding(domain, permutations.length));
@@ -225,6 +233,7 @@ async function checkLookalikesCore(
 				candidateDomain: perm,
 				registration: { state: 'registered', ns: candidateNs, evidence: candidateNs.length > 0 ? ['ns'] : ['a'] },
 				isSharedNsHost,
+				seedNsUnresolved: seedNsUnmeasured,
 			}),
 		);
 	}
@@ -240,6 +249,19 @@ async function checkLookalikesCore(
 	// Second silent-drop site (#781): a candidate already KNOWN registered, whose
 	// infrastructure probe failed, disappears here.
 	const probeUnresolved = probeResults.filter((r) => r.status === 'rejected').length;
+	// Third silent-drop site (#831): a registered candidate whose A/MX lookups
+	// REJECTED carries no positive signal and no measured absence — it cannot be
+	// classified as active, and it must not be reported as registered-but-dark
+	// either (the absence was unfetched). It is counted as unresolved so the
+	// run reports itself incomplete instead of erasing the candidate.
+	//
+	// ⚠️ ANY degraded probe counts, not only the both-legs-empty case (review
+	// follow-up): a candidate whose A resolved while its MX rejected is half
+	// measured — its mail capability was never observed — so a run containing one
+	// is a SAMPLE, not a census. Gating on `!hasA && !hasMX` let those runs report
+	// `complete: true`, which is precisely the "partial run looks conclusive"
+	// shape this enumeration contract exists to prevent.
+	const infraUnknownCount = results.filter((r) => r.probeDegraded).length;
 	/**
 	 * Enumeration coverage for this run.
 	 *
@@ -251,8 +273,8 @@ async function checkLookalikesCore(
 		permutationsGenerated: permutations.length,
 		permutationsProbed: permsToProbe.length,
 		candidatesResolved: results.length,
-		unresolvedCount: nsUnresolved + probeUnresolved,
-		complete: nsUnresolved + probeUnresolved === 0,
+		unresolvedCount: nsUnresolved + probeUnresolved + infraUnknownCount,
+		complete: nsUnresolved + probeUnresolved + infraUnknownCount === 0,
 	};
 
 	// Enrichment (Defect L / issue #264): for each non-defensively-registered
@@ -379,7 +401,19 @@ async function checkLookalikesCore(
 			continue;
 		}
 
-		if (!result.hasMX && !result.hasA) continue;
+		if (!result.hasMX && !result.hasA) {
+			// #831 — registered but dark: NS resolved, and the A/MX probe MEASURED
+			// no infrastructure. "Held and dark" and "unregistered" are opposite
+			// custody facts, so the candidate is surfaced (info, attribution axis,
+			// never impersonation-scored) instead of dropped silently. A DEGRADED
+			// probe is the one exception: the absence was unfetched, not measured
+			// (#832's law), so the candidate is left to the enumeration
+			// incompleteness accounting above rather than recorded as dark.
+			if (!result.probeDegraded) {
+				findings.push(buildRegisteredDarkFinding(result, domain, ownership));
+			}
+			continue;
+		}
 
 		const corroborators = enrichment.get(result.domain) ?? {
 			registrationDays: null,
@@ -423,12 +457,23 @@ async function checkLookalikesCore(
 			findings.push(applyOwnershipGate(rawFinding, ownership, brand, mxOverlapsPrimary));
 		}
 
+		// #832 — an UNMEASURED ownership verdict withholds the impersonation-
+		// shaped finding (and its counters) for this candidate in this run: the
+		// comparison that would justify "does not appear to belong to the
+		// scanned organisation" never completed, and near-complete runs have
+		// proven the same candidate `owned_by_seed` (jcpenny.com, full 8/8 NS
+		// match). The attribution finding above still names the candidate with
+		// its unmeasured verdict, and the run-level scan_status notice below
+		// explains the withholding, so the non-answer is visible — not a record.
+		if (ownership.verdict === 'unmeasured') continue;
+
 		// AXIS 2 — the observed threat, at the severity the #264 matrix computed
 		// and Task 7 used to discard. Emitted for EVERY non-owned candidate,
 		// including one whose RDAP registrant org matched the seed's (fix round 1,
 		// F1: that string is unverified and collision-prone, so it may annotate the
 		// observation but must never switch the axis off). Only `owned_by_seed`
-		// candidates are exempt — they `continue` above.
+		// candidates (which `continue` above) and `unmeasured` candidates (#832)
+		// are exempt.
 		findings.push(
 			buildThreatObservationFinding(
 				result.domain,
@@ -461,6 +506,19 @@ async function checkLookalikesCore(
 	// If no active lookalikes found
 	if (findings.length === 0) {
 		findings.push(buildNoActiveInfrastructureFinding(domain, permutations.length, enumeration));
+	}
+
+	// #832 — run-level honesty notice: attribution was declined this run, and a
+	// consumer reading findings must be able to tell that from a concluded
+	// third-party verdict.
+	if (seedNsUnmeasured) {
+		// Count the verdicts that actually came out `unmeasured`, NOT the batch size
+		// (review follow-up): classifyOwnership() deliberately preserves
+		// `owned_by_seed` for an in-bailiwick candidate NS even when the seed lookup
+		// failed, so in a mixed batch `registeredPerms.length` overstates — the
+		// notice would claim candidates were unattributed that this run did attribute.
+		const unmeasuredCandidateCount = [...ownershipByDomain.values()].filter((a) => a.verdict === 'unmeasured').length;
+		findings.push(buildOwnershipUnmeasuredFinding(domain, unmeasuredCandidateCount));
 	}
 
 	if (!enumeration.complete) {
@@ -499,15 +557,25 @@ async function checkLookalikesCore(
 				// (never `owned_by_seed` — an externally-sourced, unverified match
 				// is never sufficient to claim the candidate is the customer's own).
 				const reconOwnership: OwnershipAssessment = ownershipByDomain.get(matchedDomain) ?? {
-					verdict: 'unattributed',
+					// #832: when the seed's NS lookup failed, an externally-named
+					// candidate is exactly as uncomparable as the locally-generated
+					// ones — the run's attribution lane is down, so it inherits the
+					// unmeasured verdict rather than a definitive-sounding default.
+					verdict: seedNsUnmeasured ? 'unmeasured' : 'unattributed',
 					strength: 'none',
 					signals: [],
-					rationale: `No ownership signal is available for ${matchedDomain}.`,
+					rationale: seedNsUnmeasured
+						? `Ownership of ${matchedDomain} was not assessed in this run: the nameserver lookup for ${domain} did not resolve, so no comparison was possible.`
+						: `No ownership signal is available for ${matchedDomain}.`,
 				};
 				// Task 7b requirement 5: a candidate already known to be the
 				// customer's own domain gets no threat_observation finding — this
 				// enrichment is additive-only and adds nothing new for one.
-				if (reconOwnership.verdict !== 'owned_by_seed') {
+				// #832: an `unmeasured` candidate gets none either — the recon
+				// corroboration is a per-candidate impersonation-shaped claim, and
+				// the run's degraded comparison cannot rule out that the candidate
+				// is the customer's own (the scan_status notice covers the run).
+				if (reconOwnership.verdict !== 'owned_by_seed' && reconOwnership.verdict !== 'unmeasured') {
 					findings.push(buildReconCandidateFinding(matchedDomain, detail, reconOwnership));
 				}
 			} else {
@@ -516,5 +584,16 @@ async function checkLookalikesCore(
 		}
 	}
 
-	return buildCheckResult('lookalikes', findings);
+	const result = buildCheckResult('lookalikes', findings);
+	// A degraded ownership comparison is TRANSIENT (throttled/timed-out seed NS
+	// lookup), but `check_lookalikes` is cached for an hour and the dispatcher
+	// skips cache writes only for `partial` results (review follow-up). Without
+	// this, the withheld verdicts and suppressed threat observations from one
+	// throttled run would be served for the full TTL after DNS recovered — the
+	// non-answer outliving the condition that caused it. Same contract the
+	// timeout path in checkLookalikes() already honours.
+	if (seedNsUnmeasured) {
+		result.partial = true;
+	}
+	return result;
 }

@@ -495,7 +495,14 @@ async function runLookalikesPostLoopScanStatusFixture() {
 		if (!q) return Promise.resolve(empty());
 		const { name, type } = q;
 		if (name === LOOKALIKES_SEED && (type === 'NS' || type === '2')) return Promise.resolve(nsRecords(LOOKALIKES_SEED, SEED_AKAMAI_NS));
-		if (name === 'tstco.com' && (type === 'NS' || type === '2')) return Promise.resolve(nsRecords(name, ['ns1.registrar.com.']));
+		if (name === 'tstco.com') {
+			if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.registrar.com.']));
+			// #831: a MEASURED no-A/no-MX candidate now emits its own
+			// registered-but-dark finding, so the post-loop notice is only
+			// reachable when the detail probe was CUT (absence unfetched, not
+			// measured) — the one case that still yields no per-candidate finding.
+			if (type === 'A' || type === '1' || type === 'MX' || type === '15') return Promise.reject(new Error('DNS timeout'));
+		}
 		return Promise.resolve(empty());
 	});
 	const { checkLookalikes } = await import('../../src/tools/check-lookalikes');
