@@ -434,4 +434,87 @@ describe('checkDnssecChain', () => {
 		expect(zoneNames).toContain('example.com');
 		expect(zoneNames).toContain('sub.example.com');
 	});
+
+	it('a genuinely broken chain scores BELOW an island of trust, not above it (#851)', async () => {
+		// Ordering defect: the two termination findings were given `penaltyOverride: 40`
+		// (→ 60) to align with check_dnssec's unsigned posture, but the older
+		// `Broken DNSSEC chain` finding kept the default `high` −25 → 75. That ranked a
+		// chain validating resolvers SERVFAIL on ABOVE an unanchored-but-working zone.
+		// Intended ordering: bogus < island = unsigned < validating.
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
+			// Parent publishes a DS, child publishes NO DNSKEY → genuinely bogus.
+			'example.com:DS': dsResponse('example.com', ['54321 8 2 DDEEFF00']),
+			'example.com:DNSKEY': emptyDnskeyResponse('example.com'),
+			'example.com:A': adResponse('example.com', false),
+		});
+
+		const result = await run();
+		const broken = result.findings.find((f) => f.title.startsWith('Broken DNSSEC chain'));
+		expect(broken).toBeDefined();
+		expect(broken!.severity).toBe('high');
+		// Decoupled penalty, same convention as the termination findings.
+		expect(broken!.metadata?.penaltyOverride).toBe(55);
+		// Must NOT set missingControl — that zeroes the category, and this tool
+		// deliberately keeps its scoring decoupled from check_dnssec's (see #851).
+		expect(broken!.metadata?.missingControl).toBeUndefined();
+		// 100 − 55 = 45, strictly below the island/unsigned 60 asserted above.
+		expect(result.score).toBe(45);
+		expect(result.score).toBeLessThan(60);
+		// A chain resolvers SERVFAIL on is not a pass.
+		expect(result.passed).toBe(false);
+	});
+
+	it('a structurally complete chain with a MEASURED AD=false is not a silent 100 (#851)', async () => {
+		// Vacuous pass: `chainComplete` is computed from structure alone and never
+		// consulted `adFlag`, so a chain whose validation is actually failing reported
+		// chainComplete + score 100 with no finding at all — the same shape as #839.
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
+			'example.com:DS': dsResponse('example.com', ['54321 8 2 DDEEFF00']),
+			'example.com:DNSKEY': dnskeyResponse('example.com', ['257 3 8 AwEAAexample...']),
+			// The AD probe SUCCEEDS and reports false — a measurement, not a placeholder.
+			'example.com:A': adResponse('example.com', false),
+		});
+
+		const result = await run();
+		const failing = result.findings.find((f) => f.title === 'DNSSEC validation failing');
+		expect(failing).toBeDefined();
+		expect(failing!.severity).toBe('high');
+		expect(failing!.metadata?.penaltyOverride).toBe(55);
+		expect(failing!.metadata?.missingControl).toBeUndefined();
+		expect(result.score).toBe(45);
+		expect(result.passed).toBe(false);
+	});
+
+	it('does not report validation failing when the AD probe itself failed (#638 law)', async () => {
+		// `adFlag` initialises to `false` and the AD query is wrapped in a bare
+		// `catch {}`, so an unmeasured probe is INDISTINGUISHABLE from a measured
+		// AD=false unless the failure is tracked separately. Scoring the placeholder
+		// would record a probe that never completed as a validation failure.
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
+			'example.com:DS': dsResponse('example.com', ['54321 8 2 DDEEFF00']),
+			'example.com:DNSKEY': dnskeyResponse('example.com', ['257 3 8 AwEAAexample...']),
+			'example.com:A': 'REJECT',
+		});
+
+		const result = await run();
+		expect(result.findings.some((f) => f.title === 'DNSSEC validation failing')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		// The unmeasured probe is reported, not scored, and keeps the run out of cache.
+		const unmeasured = result.findings.find((f) => f.title === 'DNSSEC validation not assessable');
+		expect(unmeasured).toBeDefined();
+		expect(unmeasured!.severity).toBe('info');
+		expect(unmeasured!.metadata?.inconclusive).toBe(true);
+		expect(unmeasured!.metadata?.errorKind).toBe('dns_error');
+		expect(unmeasured!.metadata?.missingControl).toBeUndefined();
+		expect(result.partial).toBe(true);
+	});
 });

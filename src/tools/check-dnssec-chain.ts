@@ -223,13 +223,18 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		}
 	}
 
-	// Check AD flag on target domain
+	// Check AD flag on target domain.
+	// ⚠️ `adFlag` initialises to `false`, so on a thrown probe the placeholder is
+	// INDISTINGUISHABLE from a measured AD=false. `adQueryFailed` is what separates
+	// "the resolver told us validation is failing" from "we never asked successfully";
+	// scoring the placeholder would record an unissued probe as a deficiency (#638).
 	let adFlag = false;
+	let adQueryFailed = false;
 	try {
 		const adResp = await queryDns(domain, 'A', true, dnsOptions);
 		adFlag = adResp.AD === true;
 	} catch {
-		// AD check failed — leave as false
+		adQueryFailed = true;
 	}
 
 	// Determine chain completeness
@@ -277,7 +282,15 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 					`Broken DNSSEC chain at ${bz.zone}`,
 					'high',
 					`DNSSEC chain is broken at ${bz.zone}: ${reason}. Resolvers that validate DNSSEC will return SERVFAIL for this zone.`,
-					{ zone: bz.zone, linkage: bz.linkage },
+					// `penaltyOverride: 55` (→ 45), NOT the default high −25 (→ 75) this
+					// finding carried until #851. The two termination findings were given a
+					// decoupled −40 (→ 60) to match check_dnssec's unsigned posture, but this
+					// one kept the raw severity penalty — which ranked a chain that SERVFAILs
+					// ABOVE an unanchored-but-resolvable zone. Intended ordering is
+					// bogus (45) < island = unsigned (60) < validating (100). No
+					// `missingControl`: DNSSEC material here is measured and present, it is
+					// the linkage that fails, and a zero would collapse the ordering again.
+					{ zone: bz.zone, linkage: bz.linkage, penaltyOverride: 55 },
 				),
 			);
 		}
@@ -372,6 +385,48 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		);
 	}
 
+	// AD-flag verdict — only meaningful once the structure says the chain SHOULD
+	// validate. Until #851 this was never scored at all: `chainComplete` is computed
+	// from linkage alone and never consulted `adFlag`, so a chain the resolver was
+	// actively failing to validate reported chainComplete with no finding and scored
+	// 100. That is the vacuous-pass shape of #839 — a clean verdict for a property
+	// the tool had measured and then discarded.
+	if (chainComplete) {
+		if (adQueryFailed) {
+			// The probe never completed, so there is no verdict to give. Report the
+			// non-answer (`inconclusive` + `errorKind`, never `missingControl` — #638)
+			// and mark the run partial below so it is not cached as settled.
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'DNSSEC validation not assessable',
+					'info',
+					`The AD-flag probe for ${domain} did not complete, so whether a validating resolver actually authenticates the chain could not be observed. The chain links structurally from the root anchor; its validation outcome is unverified for this run. Re-run to assess it.`,
+					{ inconclusive: true, confidence: 'heuristic', errorKind: 'dns_error' },
+				),
+			);
+		} else if (!adFlag) {
+			// Measured: the chain links structurally, but the resolver did not set AD.
+			// Same convention as the other scored findings here — severity LABEL `high`,
+			// penalty decoupled via `penaltyOverride` so the ordering holds, and NO
+			// `missingControl` (the material is present and measured; it is the
+			// validation that fails). Detail avoids "missing" / "required" / "not found"
+			// / "no … record" so `scoreIndicatesMissingControl` cannot auto-zero it.
+			// `confidence: 'heuristic'` is honest: this tool reports structure and
+			// linkage and does not verify RRSIGs, so AD is the only validation signal
+			// it has, and AD also depends on the resolver performing validation.
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'DNSSEC validation failing',
+					'high',
+					`The chain of trust for ${domain} links structurally from the root anchor, but the resolver did not set the AD (Authenticated Data) flag when answering for it. A validating resolver that cannot authenticate a signed zone returns SERVFAIL rather than the answer, so this chain is likely bogus in practice despite linking on paper — commonly a stale DS after a key rollover, or an expired RRSIG. Verify the DS digest at the parent still matches the current KSK and that the zone's signatures are current.`,
+					{ penaltyOverride: 55, confidence: 'heuristic', adFlag: false },
+				),
+			);
+		}
+	}
+
 	// Weak algorithm finding (medium severity)
 	if (weakAlgsFound.length > 0) {
 		const uniqueWeak = [...new Set(weakAlgsFound)];
@@ -429,7 +484,10 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	// Same reasoning for a DS probe that never completed (review follow-up): the run
 	// measured less than it appears to have, so it must not be served from cache as a
 	// settled answer for the TTL.
-	if (zoneResults.find((z) => z.zone === '.')?.linkage === 'unverified' || dsUnmeasuredZone) {
+	// Same reasoning again for a failed AD probe on an otherwise complete chain
+	// (#851): the run did not establish the validation outcome, so it must not be
+	// served from cache as though it had.
+	if (zoneResults.find((z) => z.zone === '.')?.linkage === 'unverified' || dsUnmeasuredZone || (chainComplete && adQueryFailed)) {
 		result.partial = true;
 	}
 	return result;
