@@ -223,13 +223,23 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		}
 	}
 
-	// Check AD flag on target domain
+	// Check AD flag on target domain.
+	// ⚠️ `adFlag` initialises to `false`, so on a thrown probe the placeholder is
+	// INDISTINGUISHABLE from a measured AD=false. `adQueryFailed` is what separates
+	// "the resolver told us validation is failing" from "we never asked successfully";
+	// scoring the placeholder would record an unissued probe as a deficiency (#638).
 	let adFlag = false;
+	let adQueryFailed = false;
+	// `AD` is `z.boolean().optional()` on a passthrough schema, so a response that
+	// simply OMITS the field parses fine and yields `false`. Absent is not the same
+	// observation as `false`; only an explicitly present boolean counts as measured.
+	let adObserved = false;
 	try {
 		const adResp = await queryDns(domain, 'A', true, dnsOptions);
+		adObserved = typeof adResp.AD === 'boolean';
 		adFlag = adResp.AD === true;
 	} catch {
-		// AD check failed — leave as false
+		adQueryFailed = true;
 	}
 
 	// Determine chain completeness
@@ -266,23 +276,6 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 
 	// --- Findings ---
 
-	// Broken chain finding (high severity)
-	if (chainBroken) {
-		const brokenZones = zoneResults.filter((z) => z.linkage === 'no_dnskey' || z.linkage === 'broken');
-		for (const bz of brokenZones) {
-			const reason = bz.linkage === 'no_dnskey' ? 'DS record exists but no DNSKEY found' : 'DS and DNSKEY algorithm mismatch';
-			findings.push(
-				createFinding(
-					CATEGORY,
-					`Broken DNSSEC chain at ${bz.zone}`,
-					'high',
-					`DNSSEC chain is broken at ${bz.zone}: ${reason}. Resolvers that validate DNSSEC will return SERVFAIL for this zone.`,
-					{ zone: bz.zone, linkage: bz.linkage },
-				),
-			);
-		}
-	}
-
 	// Root trust-anchor retrieval failure (informational — NOT a chain break).
 	// The root zone is always signed, so an empty DNSKEY result means a transient
 	// resolver/cache failure rather than an actually-broken chain.
@@ -318,7 +311,50 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	// `score: hasMissingControl ? 0 : score`) and the detail text avoids "no … record",
 	// "missing", "required", and "not found" so `scoreIndicatesMissingControl`
 	// (packages/dns-checks/src/scoring/model.ts:267-285) cannot auto-zero the finding.
-	if (!targetSigned || stoppedEarly) {
+	//
+	// ⚠️ These states are ONE else-if chain on purpose (#851 review). The chain of
+	// trust terminates or breaks at exactly one place, so exactly one of these
+	// penalties may ever apply. Emitting them independently made the deductions
+	// ADDITIVE, and nothing caps this category (`CATEGORY_PENALTY_CAPS` covers only
+	// `subdomain_takeover`): a zone with a DS but no DNSKEY, scanned at a subdomain,
+	// fired BOTH the broken (−55) and unsigned-termination (−40) findings for 95 →
+	// score 5, and two broken zones summed to 110 → score 0. Both outcomes rank a
+	// bogus chain BELOW the floor this ordering exists to establish, which is the
+	// very defect being fixed. Additional broken zones are reported in metadata.
+	if (chainBroken) {
+		const brokenZones = zoneResults.filter((z) => z.linkage === 'no_dnskey' || z.linkage === 'broken');
+		// The SHALLOWEST break is the causal one — everything below it is downstream
+		// consequence, not an independent deficiency worth its own penalty.
+		const bz = brokenZones[0]!;
+		const reason = bz.linkage === 'no_dnskey' ? 'DS record exists but no DNSKEY found' : 'DS and DNSKEY algorithm mismatch';
+		// `penaltyOverride: 55` (→ 45), NOT the default high −25 (→ 75) this finding
+		// carried until #851. The termination findings were given a decoupled −40 (→ 60)
+		// to match check_dnssec's unsigned posture, but this one kept the raw severity
+		// penalty — ranking a chain that SERVFAILs ABOVE an unanchored-but-resolvable
+		// zone. Intended ordering: bogus (45) < island = unsigned (60) < validating (100).
+		// No `missingControl`: the DNSSEC material here is measured and present, it is the
+		// linkage that fails, and a zero would collapse the ordering again.
+		// ⚠️ Keep `reason` clear of "no … record" / "not found" / "missing" / "required":
+		// this finding is `deterministic`, so MISSING_CONTROL_REGEX (scoring/model.ts)
+		// would auto-zero it. "DS record exists but no DNSKEY found" passes only because
+		// the "record" precedes the "no" — it is one word from a silent zeroing.
+		// ⚠️ check_dnssec scores this same shape 0 (missingControl). That 45-vs-0
+		// divergence is deliberate and tracked on #851 alongside the island one.
+		findings.push(
+			createFinding(
+				CATEGORY,
+				`Broken DNSSEC chain at ${bz.zone}`,
+				'high',
+				`DNSSEC chain is broken at ${bz.zone}: ${reason}. Resolvers that validate DNSSEC will return SERVFAIL for this zone.`,
+				{
+					zone: bz.zone,
+					linkage: bz.linkage,
+					penaltyOverride: 55,
+					...(brokenZones.length > 1 ? { additionalBrokenZones: brokenZones.slice(1).map((z) => z.zone) } : {}),
+				},
+			),
+		);
+	} else if (!targetSigned || stoppedEarly) {
 		// The zone where the chain of trust terminated unsigned: the target itself
 		// when the walk got there, otherwise the unsigned ancestor it stopped at.
 		const terminalZone = stoppedEarly ? (lastZone?.zone ?? domain) : domain;
@@ -372,6 +408,37 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		);
 	}
 
+	// AD-flag disclosure. `chainComplete` is computed from linkage alone and never
+	// consulted `adFlag`, so before #851 the flag was measured and then discarded —
+	// the summary carried it, nothing else did. Surfacing it closes that gap.
+	//
+	// ⚠️⚠️ It is surfaced at `info` with NO penalty, deliberately. An earlier cut of
+	// this scored a measured `AD=false` on a complete chain as a −55 "validation
+	// failing" verdict. That is WRONG, and was caught by measurement, not argument:
+	// Cloudflare DoH (prod's primary resolver) returns `AD:false` for correctly-signed
+	// zones depending on which POP answers and what that POP has cached — sampled
+	// live, `verisign.com` returned false on two of three consecutive queries while
+	// Google returned true throughout, and Cloudflare itself returned `AD:true` for
+	// other record types of the SAME name in the same minute. Roughly one in five
+	// sampled signed domains hit it. AD also reflects whether the RESOLVER validated,
+	// not solely whether the zone is sound, and `dns-transport` may transparently swap
+	// in a secondary resolver on an empty answer. A penalty built on that signal
+	// penalises healthy zones at random — exactly the "confident finding a probe does
+	// not support" class this sweep exists to remove. Reporting it without scoring it
+	// is what the evidence supports. A sound bogus verdict needs RRSIG verification,
+	// which this tool does not do; tracked on #851.
+	if (chainComplete && adObserved && !adFlag) {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'DNSSEC chain links, but the resolver did not flag it authenticated',
+				'info',
+				`The chain of trust for ${domain} links structurally from the root anchor, but the resolver did not set the AD (Authenticated Data) flag on its answer. This is reported, not scored: the AD flag also depends on which resolver and cache answered, and validating resolvers routinely return it unset for sound zones. Treat it as a prompt to verify signature freshness and that the DS digest at the parent still matches the current KSK — not as evidence the zone is bogus. This tool reports structure and linkage and does not verify RRSIGs.`,
+				{ confidence: 'heuristic', adFlag: false },
+			),
+		);
+	}
+
 	// Weak algorithm finding (medium severity)
 	if (weakAlgsFound.length > 0) {
 		const uniqueWeak = [...new Set(weakAlgsFound)];
@@ -410,12 +477,17 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	} else {
 		summaryStatus = 'chain broken';
 	}
-	const summaryDetail = `DNSSEC chain walk for ${domain}: ${summaryStatus}. Zones walked: ${zoneResults.map((z) => z.zone).join(' → ')}. AD flag: ${adFlag}. Limitation: no cryptographic RRSIG verification; reports structure and linkage only.`;
+	// Report the AD flag as UNMEASURED when it was, rather than printing the `false`
+	// placeholder as though it were an observation (#851 review): the summary was
+	// stating `AD flag: false` in the very run the check declares unassessable, which
+	// hands an LLM a fabricated measurement.
+	const adSummary = adQueryFailed || !adObserved ? 'not measured' : String(adFlag);
+	const summaryDetail = `DNSSEC chain walk for ${domain}: ${summaryStatus}. Zones walked: ${zoneResults.map((z) => z.zone).join(' → ')}. AD flag: ${adSummary}. Limitation: no cryptographic RRSIG verification; reports structure and linkage only.`;
 
 	findings.push(
 		createFinding(CATEGORY, 'DNSSEC chain summary', 'info', summaryDetail, {
 			chainComplete,
-			adFlag,
+			adFlag: adQueryFailed || !adObserved ? null : adFlag,
 			zonesWalked: zoneResults.length,
 			zones: zonesSummary,
 		}),
@@ -429,7 +501,10 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	// Same reasoning for a DS probe that never completed (review follow-up): the run
 	// measured less than it appears to have, so it must not be served from cache as a
 	// settled answer for the TTL.
-	if (zoneResults.find((z) => z.zone === '.')?.linkage === 'unverified' || dsUnmeasuredZone) {
+	// Same reasoning again for a failed AD probe on an otherwise complete chain
+	// (#851): the run did not establish the validation outcome, so it must not be
+	// served from cache as though it had.
+	if (zoneResults.find((z) => z.zone === '.')?.linkage === 'unverified' || dsUnmeasuredZone || (chainComplete && adQueryFailed)) {
 		result.partial = true;
 	}
 	return result;
