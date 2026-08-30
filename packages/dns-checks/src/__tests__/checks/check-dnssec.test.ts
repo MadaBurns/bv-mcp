@@ -73,10 +73,16 @@ describe('checkDNSSEC', () => {
 
 		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete')).toBe(false);
 		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
-		expect(result.score).not.toBe(0);
-		// Excluded from scoring so the transient-zero retry can fire, rather than
-		// scoring a category nobody measured.
+		// The repo's standard unmeasured contract: checkStatus 'error' EXCLUDES the
+		// category from scoring, and `score: 0` + `checkStatus: 'error'` is exactly what
+		// scan_domain's shouldRetry predicate requires to re-run the leg. `partial` keeps
+		// the transient non-answer out of the 5-minute cache.
 		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.partial).toBe(true);
+		// One leg was never read, so "is the control doing work" is undetermined —
+		// `false` would be a definitive not-working observation.
+		expect(result.controlPresent).toBeUndefined();
 		const unmeasured = result.findings.find((f) => f.metadata?.inconclusive === true);
 		expect(unmeasured).toBeDefined();
 		expect(unmeasured!.metadata?.errorKind).toBe('dns_error');
@@ -93,8 +99,13 @@ describe('checkDNSSEC', () => {
 		const result = await checkDNSSEC('example.com', mockDNS, { rawQueryDNS });
 
 		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
-		expect(result.score).not.toBe(0);
 		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.partial).toBe(true);
+		expect(result.controlPresent).toBeUndefined();
+		// Must NOT also print a confident affirmative for a chain whose DNSKEY was
+		// never observed — the unmeasured return runs BEFORE the findings-empty fallback.
+		expect(result.findings.some((f) => f.title === 'DNSSEC enabled and validated')).toBe(false);
 	});
 
 	it('reports a broken chain when AD=true and a parent DS exists without a child DNSKEY', async () => {

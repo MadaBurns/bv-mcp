@@ -229,6 +229,47 @@ export async function checkDNSSEC(
 		findings.push(...auditNsec3Params(target, nsec3ParamRecords));
 	}
 
+	// ⚠️ Ordered BEFORE the affirmative fallback below, deliberately. A failed DS/DNSKEY
+	// probe alongside published DNSSEC material leaves the chain genuinely unknown: the
+	// broken-chain branches above withheld their verdict, so this run has nothing honest
+	// left to score. Returning here also stops the `findings.length === 0` fallback from
+	// appending "DNSSEC enabled and validated" — which it otherwise would for the
+	// DNSKEY-failed/DS-present shape, printing a confident affirmative for a chain whose
+	// child key was never observed.
+	//
+	// Shape matches the repo's standard unmeasured contract (`buildDnsErrorResult`):
+	// `checkStatus: 'error'` EXCLUDES the category from scoring; `score: 0` is what
+	// scan_domain's `shouldRetry` (`checkStatus === 'error' && score === 0`) requires to
+	// re-run the leg; `partial: true` is what `runCachedCheck`'s `!r.partial` predicate
+	// requires to keep a transient non-answer out of the 5-minute cache. Never
+	// `missingControl` — the probe did not complete (#638 law).
+	const chainUnmeasured =
+		(dsQueryFailed && dnskeyRecords.length > 0 && dsRecords.length === 0) ||
+		(dnskeyQueryFailed && dsRecords.length > 0 && dnskeyRecords.length === 0);
+	if (chainUnmeasured) {
+		const unmeasuredLeg = dsQueryFailed ? 'DS' : 'DNSKEY';
+		findings.push(
+			createFinding(
+				'dnssec',
+				'DNSSEC chain of trust not assessable',
+				'info',
+				`The ${unmeasuredLeg} lookup for ${target} did not complete, so the delegation linking the parent zone to the child's DNSSEC material could not be observed. The chain of trust is unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.`,
+				{ inconclusive: true, confidence: 'heuristic', errorKind: 'dns_error' },
+			),
+		);
+		return {
+			// `recordPresent` stays TRUE (material really was observed on the leg that
+			// answered), but `controlPresent` must be `undefined`, not `false`: `false` is
+			// a definitive "not doing work" observation, and one leg of this chain was
+			// never read. `undefined` is the contract's "could not be determined".
+			...buildCheckResult('dnssec', findings, undefined, true),
+			checkStatus: 'error',
+			score: 0,
+			passed: false,
+			partial: true,
+		};
+	}
+
 	// If DNSSEC is valid and no issues found (only info findings at most)
 	// Note: with a non-apex inherited target, the prepended INFO finding above
 	// means `findings.length === 0` never holds here, so this branch only ever
@@ -275,29 +316,6 @@ export async function checkDNSSEC(
 	// The AD flag is only an observation when a raw resolver was actually available to ask;
 	// without `rawQueryDNS` the local `adFlag` is a default-false placeholder, not a measurement.
 	const controlPresent = rawQueryDNS ? adFlag && dnskeyRecords.length > 0 && dsRecords.length > 0 : undefined;
-
-	// A failed DS/DNSKEY probe next to published DNSSEC material leaves the chain
-	// genuinely unknown: the branches above deliberately withheld their verdict, so
-	// there is nothing honest left to score. Report the non-answer and EXCLUDE the
-	// category (`checkStatus: 'error'`) rather than letting the remaining findings
-	// imply a settled posture — this is also what lets scan_domain's transient-zero
-	// retry fire and keeps the result out of the 5-minute cache.
-	const chainUnmeasured =
-		(dsQueryFailed && dnskeyRecords.length > 0 && dsRecords.length === 0) ||
-		(dnskeyQueryFailed && dsRecords.length > 0 && dnskeyRecords.length === 0);
-	if (chainUnmeasured) {
-		const unmeasuredLeg = dsQueryFailed ? 'DS' : 'DNSKEY';
-		findings.push(
-			createFinding(
-				'dnssec',
-				'DNSSEC chain of trust not assessable',
-				'info',
-				`The ${unmeasuredLeg} lookup for ${target} did not complete, so the delegation linking the parent zone to the child's DNSSEC material could not be observed. The chain of trust is unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.`,
-				{ inconclusive: true, confidence: 'heuristic', errorKind: 'dns_error' },
-			),
-		);
-		return { ...buildCheckResult('dnssec', findings, controlPresent, recordPresent), checkStatus: 'error' };
-	}
 
 	return buildCheckResult('dnssec', findings, controlPresent, recordPresent);
 }
