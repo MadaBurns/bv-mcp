@@ -111,10 +111,13 @@ describe('Cluster 3 canary regression — DMARC scoring', () => {
 		expect(result.score).toBeGreaterThanOrEqual(85);
 	});
 
-	it('cross-domain ordering: gov.uk DMARC > stripe.com DMARC (regression — was 70 < 85)', async () => {
+	it('cross-domain ordering: gov.uk DMARC ≥ stripe.com DMARC (regression — was 70 < 85)', async () => {
 		const govuk = await checkDMARC('gov.uk', dmarcMock('gov.uk', GOV_UK_DMARC));
 		const stripe = await checkDMARC('stripe.com', dmarcMock('stripe.com', STRIPE_DMARC));
-		expect(govuk.score).toBeGreaterThan(stripe.score);
+		// ≥, not >: since #842 (model 1.15.0) relaxed aspf is advisory info, so the two
+		// records legitimately tie at 90. The regression this canary guards is gov.uk
+		// falling BELOW stripe (the 2026-05-28 70 < 85 defect), which ≥ still catches.
+		expect(govuk.score).toBeGreaterThanOrEqual(stripe.score);
 	});
 
 	it('np=reject downgrades subdomain-weaker finding from HIGH to LOW (mechanism that drives gov.uk floor)', async () => {

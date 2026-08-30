@@ -194,9 +194,11 @@ describe('subject data interpolated into finding prose', () => {
 			const missing = buildCheckResult('dmarc', classifyDmarc({ recordCount: 1, policy: 'missing', domain: 'example.com' }));
 			const required = buildCheckResult('dmarc', classifyDmarc({ recordCount: 1, policy: 'required', domain: 'example.com' }));
 
-			expect(bogus.score).toBe(50);
-			expect(missing.score).toBe(50);
-			expect(required.score).toBe(50);
+			// 55 as of model 1.15.0 (#842: relaxed aspf is advisory info, no longer −5);
+			// what this test pins is the EQUALITY across trigger-named policy tokens.
+			expect(bogus.score).toBe(55);
+			expect(missing.score).toBe(55);
+			expect(required.score).toBe(55);
 			expect(scoreIndicatesMissingControl(missing.findings)).toBe(false);
 			expect(scoreIndicatesMissingControl(required.findings)).toBe(false);
 		});
