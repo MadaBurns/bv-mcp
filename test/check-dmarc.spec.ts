@@ -99,11 +99,13 @@ describe('checkDmarc', () => {
 	it('should return info finding for p=reject with rua and sp', async () => {
 		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:dmarc@example.com; ruf=mailto:forensic@example.com']);
 		const result = await run();
-		// Now includes alignment warnings (low severity) since adkim/aspf default to relaxed
+		// Now includes alignment notes since adkim/aspf default to relaxed (aspf is
+		// advisory info as of #842), so match the clean-config finding by title rather
+		// than taking whichever info finding happens to come first.
 		expect(result.findings.length).toBeGreaterThanOrEqual(1);
-		const infoFinding = result.findings.find((f) => f.severity === 'info');
+		const infoFinding = result.findings.find((f) => /DMARC properly configured/i.test(f.title));
 		expect(infoFinding).toBeDefined();
-		expect(infoFinding!.title).toMatch(/DMARC properly configured/i);
+		expect(infoFinding!.severity).toBe('info');
 	});
 
 	it('returns low finding for missing sp= when p=reject', async () => {
@@ -295,20 +297,24 @@ describe('checkDmarc', () => {
 		expect(f!.severity).toBe('medium');
 	});
 
-	it('warns about relaxed SPF alignment (aspf=r)', async () => {
+	it('notes relaxed SPF alignment (aspf=r) as advisory info stating the strict-alignment precondition (#842)', async () => {
 		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com; aspf=r']);
 		const r = await run();
 		const f = r.findings.find((f) => /Relaxed SPF alignment/i.test(f.title));
 		expect(f).toBeDefined();
-		expect(f!.severity).toBe('low');
+		// #842: advisory only — aspf=s guarantees SPF-alignment failure on ESP-relayed
+		// mail (subdomain return-paths), so a bare "consider strict" is wrong advice.
+		expect(f!.severity).toBe('info');
+		expect(f!.detail).toMatch(/return-path/i);
+		expect(f!.detail).not.toContain('Consider aspf=s (strict) for stronger authentication');
 	});
 
-	it('warns about relaxed SPF alignment (aspf unset)', async () => {
+	it('notes relaxed SPF alignment (aspf unset) as advisory info (#842)', async () => {
 		mockTxtRecords(['v=DMARC1; p=reject; sp=reject; rua=mailto:d@example.com']);
 		const r = await run();
 		const f = r.findings.find((f) => /Relaxed SPF alignment/i.test(f.title));
 		expect(f).toBeDefined();
-		expect(f!.severity).toBe('low');
+		expect(f!.severity).toBe('info');
 	});
 
 	it('does not warn when SPF alignment is strict (aspf=s)', async () => {

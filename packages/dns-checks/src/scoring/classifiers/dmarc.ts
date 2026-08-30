@@ -463,12 +463,23 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 			),
 		);
 	} else if (!aspf || aspf === 'r') {
+		// #842: this must stay ADVISORY (info, penalty 0) and must never revert to a bare
+		// "consider aspf=s". The classifier receives only record-derived facts — no SPF
+		// chain or sending-source inputs — so whether strict alignment is ACHIEVABLE
+		// cannot be determined here. For any ESP-relayed domain (Resend, SendGrid,
+		// Mailchimp, Postmark, SES with a custom MAIL FROM) the return-path sits on a
+		// subdomain, so aspf=s fails SPF alignment on 100% of that traffic and deletes
+		// one of DMARC's two authentication legs. Measured on our own production domain
+		// (2026-08-30, 1,045 aggregate-report records): every ESP-sent message failed
+		// SPF alignment under aspf=s, and 21 legitimate messages were rejected outright
+		// on the occasions DKIM also failed. Title is load-bearing — assess-spoofability
+		// matches 'Relaxed SPF alignment' by prefix.
 		findings.push(
 			createFinding(
 				'dmarc',
 				'Relaxed SPF alignment',
-				'low',
-				`SPF alignment mode is relaxed (aspf=r or unset). Consider aspf=s (strict) for stronger authentication.`,
+				'info',
+				`SPF alignment mode is relaxed (aspf=r or unset). Strict alignment (aspf=s) only strengthens DMARC when every authorized sender's return-path (envelope-from) domain exactly matches the From domain — untrue for most ESP-relayed mail (e.g. Resend, SendGrid, Mailchimp, SES with a custom MAIL FROM), where the return-path sits on a subdomain: wherever the From domain differs from it (typically the apex), aspf=s fails SPF alignment for that traffic and leaves DKIM as the only authentication leg. Mail whose From address stays on that same subdomain still aligns under aspf=s. Set aspf=s only after DMARC aggregate reports confirm every sender's return-path domain exactly matches the From domain; otherwise aspf=r is the correct setting.`,
 			),
 		);
 	}
