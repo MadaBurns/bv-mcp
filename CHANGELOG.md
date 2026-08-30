@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.70.0] - 2026-08-30
+
+Evidence-fidelity release: every fix here stops a check from stating something it never measured. Supersedes 3.68.0/3.69.0/3.69.1, which were tagged but never deployed — prod last served 3.67.0.
+
+### Fixed
+
+- **check_ssl no longer reports "HTTPS and HSTS properly configured" for an apex it never measured.** An HTTPS→HTTPS redirect skipped HSTS analysis entirely, and the resulting empty finding set printed as a clean pass. HSTS on the redirect hop is now analyzed directly; when the hop carries none, the chain is followed (up to 3 hops, one shared deadline) and the terminal response is scored — the deployment shape the March 2026 guard existed to protect. An unresolvable or no-content chain terminal routes to the inconclusive lane rather than a scored absence. Cross-host hops go through `safeFetch` (attacker-controlled `Location:` targets). (#839, PR #843, building on a community fix from @mikemikimike in PR #840)
+- **check_dnssec_chain no longer scores an island of trust 100.** A target publishing a DNSKEY with no DS at its parent reported `chainComplete: true` — despite the chain from the root anchor terminating at the parent, which validating resolvers treat as insecure. It now reports `chainComplete: false` with a high finding and `penaltyOverride: 40` (category → 60), matching check_dnssec's posture for unanchored DNSSEC. A DS lookup that merely timed out is excluded from that verdict and reported as unmeasured instead. (#834, PR #844)
+- **check_dane_https no longer calls a TLSA pin "Valid" without checking it.** The check verifies syntax, never the pinned data against the served certificate, so a stale DANE-EE pin read as a verified pass. The finding now says the record is present and well-formed, states plainly that no certificate comparison was made, and carries `certificateMatchVerified: false`. Real pin verification needs a served-leaf/SPKI source the Worker does not have; tracked on #841. (PR #845)
+- **check_dmarc no longer recommends `aspf=s` unconditionally.** Strict SPF alignment only strengthens DMARC when every sender's return-path domain matches the From domain — untrue for most ESP-relayed mail, where following the advice deletes one of two authentication legs. Measured on our own domain: every ESP-sent message failed SPF alignment under `aspf=s`, and 21 legitimate messages were rejected outright when DKIM also failed. The finding is now advisory (`info`) and states the precondition. ⚠️ **Scoring model 1.15.0** — upward-only, +5 on `dmarc` for `aspf=r`/unset. (#842, PR #846)
+- **check_lookalikes no longer publishes a contrary ownership attribution under throttling.** A run with 63 of 94 lookups unresolved reported a brand's own defensive registration as `third_party` with "no ownership signal links it" — signals that were unfetched, not absent. A degraded comparison now yields `unmeasured` and withholds the impersonation-shaped finding, and the run is marked partial so the non-answer is not cached. (#832, PR #847)
+- **check_lookalikes now surfaces registered-but-dark candidates.** A confusable resolving NS with no A/MX was dropped silently, rendering "held and dark" identically to "unregistered". Such candidates now emit an informational finding with the ownership lane applied, never scored as impersonation-capable. (#831, PR #847)
+- **check_root_server_set and authoritative_dns_infra validate probe responses before analysis.** A malformed or unexpected probe payload could reach the analyzer and be read as evidence. (PRs #837, #838)
+
 ## [3.69.1] - 2026-08-29
 
 Patch release folding in two post-3.69.0 follow-up fixes so the deploy ships from a tagged commit (3.69.0 was tagged but never deployed; this supersedes it).
