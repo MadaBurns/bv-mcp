@@ -263,17 +263,20 @@ export async function generateDmarcRecord(
 	// Build DMARC record.
 	//
 	// Alignment is RELAXED, not strict (#842). This tool emits a paste-ready record
-	// while knowing nothing about who sends for the domain, and strict alignment only
-	// holds when EVERY authorized sender's return-path (aspf) and DKIM d= (adkim)
-	// exactly match the From domain. That is untrue for most ESP-relayed mail — Resend,
-	// SendGrid, Mailchimp, SES with a custom MAIL FROM all put the return-path, and
-	// often the DKIM d=, on a subdomain — so handing over `aspf=s` deletes one of
-	// DMARC's two authentication legs for that traffic. Measured on our own production
-	// domain: every ESP-sent message failed SPF alignment under `aspf=s`, and 21
-	// legitimate messages were rejected outright on the occasions DKIM also failed.
+	// while knowing nothing about who sends for the domain.
+	//
+	// ⚠️ Precise mechanics, because the loose version of this claim is wrong: DMARC
+	// passes when EITHER SPF or DKIM passes AND aligns, and strict mode narrows each
+	// mechanism's comparison independently. So `aspf=s` does not by itself break a
+	// sender whose DKIM d= is aligned. What it does is DELETE ONE LEG: an ESP that
+	// bounces from a subdomain (Resend, SendGrid, Mailchimp, SES with a custom MAIL
+	// FROM) loses SPF alignment entirely, leaving DKIM as the sole authenticator with
+	// no margin. That is exactly the failure measured on our own production domain —
+	// every ESP-sent message failed SPF alignment under `aspf=s`, and on the 21
+	// occasions DKIM also failed, those legitimate messages were rejected outright.
 	// Relaxed is the RFC 7489 default and still requires an organizational-domain
-	// match; strict is a hardening step to adopt AFTER aggregate reports confirm the
-	// sender topology supports it — which is exactly what check_dmarc now advises.
+	// match; strict is a hardening step to adopt AFTER aggregate reports confirm which
+	// senders still align — which is exactly what check_dmarc now advises.
 	const tags: string[] = [
 		`v=DMARC1`,
 		`p=${effectivePolicy}`,
@@ -290,8 +293,9 @@ export async function generateDmarcRecord(
 
 	warnings.push(
 		'Alignment is relaxed (adkim=r, aspf=r) — the RFC 7489 default, and the safe choice when the sending topology is unknown. ' +
-			'Strict alignment (adkim=s, aspf=s) requires every authorized sender to use a return-path and DKIM d= domain that exactly match the From domain, ' +
-			'which most ESP-relayed mail does not: adopt it only after aggregate reports confirm every sender qualifies.',
+			'Strict alignment (adkim=s, aspf=s) narrows each mechanism to an exact domain match independently; DMARC still passes if either SPF or DKIM passes and aligns, ' +
+			'so the cost is lost redundancy rather than outright failure: a sender whose return-path sits on a subdomain (most ESP-relayed mail) loses its SPF leg, ' +
+			'and a later DKIM hiccup then becomes a rejection instead of a survivable one. Adopt it only after aggregate reports confirm which senders still align.',
 	);
 
 	if (effectivePolicy === 'none') {
