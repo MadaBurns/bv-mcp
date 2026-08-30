@@ -170,11 +170,28 @@ describe('generateDmarcRecord', () => {
 		expect(record.value).toContain('mailto:dmarc-reports@example.com');
 	});
 
-	it('includes strict alignment (adkim=s, aspf=s)', async () => {
+	it('generates relaxed alignment, never strict, for an unknown sending topology (#842)', async () => {
+		// A generated record is paste-ready, and this tool knows nothing about who
+		// sends for the domain. Strict alignment only holds when every authorized
+		// sender's return-path (aspf) and DKIM d= (adkim) exactly match the From
+		// domain — untrue for most ESP-relayed mail, where handing over `aspf=s`
+		// deletes one of DMARC's two authentication legs. Measured on our own
+		// domain (#842): 21 legitimate messages rejected outright. Relaxed is the
+		// RFC 7489 default and still requires an organizational-domain match.
 		mockTxtRecords(['v=DMARC1; p=none']);
 		const record = await run();
-		expect(record.value).toContain('adkim=s');
-		expect(record.value).toContain('aspf=s');
+		expect(record.value).not.toContain('aspf=s');
+		expect(record.value).not.toContain('adkim=s');
+		expect(record.value).toContain('aspf=r');
+		expect(record.value).toContain('adkim=r');
+	});
+
+	it('warns that strict alignment is an opt-in hardening to verify first (#842)', async () => {
+		mockTxtRecords(['v=DMARC1; p=none']);
+		const record = await run();
+		const warnings = (record.warnings ?? []).join(' ');
+		expect(warnings).toMatch(/strict alignment/i);
+		expect(warnings).toMatch(/aggregate report/i);
 	});
 
 	it('warns when policy is none', async () => {
