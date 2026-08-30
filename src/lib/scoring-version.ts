@@ -277,8 +277,20 @@
  *   (`check_dnssec_chain`'s parallel ordering fix in #852 is NOT reflected here: it is a
  *   standalone tool whose category is outside the `CheckCategory` union, so it contributes
  *   nothing to a scan score.)
+ * - 1.17.0 — structured `metadata.missingControl: true` and legacy deterministic prose now
+ *   feed one canonical missing-control predicate at every scoring layer. Before this change,
+ *   both paths zeroed the category in `buildCheckResult`, but `buildGenericContext` populated
+ *   the whole-scan `missingControls` map from prose inference alone. On an otherwise identical
+ *   measured DMARC roster, structured intent therefore produced 71/C+ while equivalent prose
+ *   armed the critical-gap ceiling and produced 64/C. The structured declaration now also
+ *   drives the critical-gap ceiling and email-bonus guards; timeout/error checks remain gated
+ *   by `isCheckMeasured` and cannot assert absence. DOWNWARD only for measured critical
+ *   categories whose finding declares `missingControl: true` without also matching the legacy
+ *   prose regex; findings that already matched prose and all inconclusive results are unchanged.
+ *   Affected population is UNMEASURED. No weight, tier, grade band, severity penalty,
+ *   profile-detection rule or check roster changed.
  */
-export const SCORING_MODEL_VERSION = '1.16.0';
+export const SCORING_MODEL_VERSION = '1.17.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
