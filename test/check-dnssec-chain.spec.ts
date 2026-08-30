@@ -231,6 +231,54 @@ describe('checkDnssecChain', () => {
 		expect(summary!.metadata!.chainComplete).toBe(false);
 	});
 
+	it('island-of-trust target (DNSKEY published, DS absent at parent) is not chainComplete and scores 60 (#834)', async () => {
+		// example.com publishes a DNSKEY but its parent (com) holds no DS for it: the
+		// chain of trust from the root anchor terminates at com, the target's DNSKEY
+		// is unreachable, and validating resolvers treat the zone as insecure. Before
+		// the fix: `targetSigned` accepted the DNSKEY alone, linkage 'no_ds' set
+		// neither chainBroken nor the walk break, and the tool reported
+		// chainComplete: true / score 100 with no high finding.
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
+			// example.com: DS empty at the parent, DNSKEY populated → island of trust
+			'example.com:DS': emptyDsResponse('example.com'),
+			'example.com:DNSKEY': dnskeyResponse('example.com', ['257 3 8 AwEAAexample...']),
+			'example.com:A': adResponse('example.com', false),
+		});
+
+		const result = await run();
+
+		// The summary must NOT claim a complete chain — there is no DS linking the
+		// parent to the target's DNSKEY.
+		const summary = result.findings.find((f) => f.severity === 'info' && f.metadata?.chainComplete !== undefined);
+		expect(summary).toBeDefined();
+		expect(summary!.metadata!.chainComplete).toBe(false);
+
+		// Same finding convention as #810/#820: high severity, decoupled -40 penalty
+		// (category → 60), and NO missingControl — a published-but-unanchored DNSKEY
+		// is MEASURED DNSSEC material, not an absent control; missingControl would
+		// zero the score via buildCheckResult's `score: hasMissingControl ? 0 : score`.
+		const highFinding = result.findings.find((f) => f.severity === 'high');
+		expect(highFinding).toBeDefined();
+		expect(highFinding!.metadata?.penaltyOverride).toBe(40);
+		expect(highFinding!.metadata?.missingControl).toBeUndefined();
+		expect(highFinding!.metadata?.zone).toBe('example.com');
+
+		// The wording states the mechanism: DNSKEY published, DS absent at the parent,
+		// validating resolvers treat the zone as insecure.
+		expect(`${highFinding!.title} ${highFinding!.detail}`).toMatch(/island of trust/i);
+		expect(highFinding!.detail).toMatch(/DNSKEY/);
+		expect(highFinding!.detail).toMatch(/DS/);
+		expect(highFinding!.detail).toMatch(/insecure/i);
+
+		// Score 60 / passed true, per the documented `passed = score>=50 && !hasMissingControl`
+		// formula ("did not penalize", NOT "control exists").
+		expect(result.score).toBe(60);
+		expect(result.passed).toBe(true);
+	});
+
 	it('broken linkage (DS exists but no DNSKEY) produces high severity', async () => {
 		mockDnsFetch({
 			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),

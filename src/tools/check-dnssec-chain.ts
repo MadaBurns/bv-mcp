@@ -229,7 +229,16 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	const targetSigned = reachedTarget && (lastZone.dsRecords.length > 0 || lastZone.dnskeyRecords.length > 0);
 	// The root trust anchor must have been retrieved for the chain to be "complete".
 	const rootVerified = zoneResults.find((z) => z.zone === '.')?.linkage === 'linked';
-	const chainComplete = reachedTarget && !chainBroken && targetSigned && rootVerified;
+	// Island of trust (#834): a non-root zone that publishes a DNSKEY while its parent
+	// holds no DS for it. `targetSigned` accepts a DNSKEY alone and linkage 'no_ds'
+	// sets neither `chainBroken` nor the walk's unsigned break, so before this guard
+	// the shape sailed through to chainComplete: true / score 100 — despite the chain
+	// of trust from the root anchor terminating at the parent: the published DNSKEY is
+	// unreachable and validating resolvers treat the zone as insecure. The FIRST such
+	// zone is where trust terminates (any DS/DNSKEY material below it is equally
+	// unreachable from the root anchor).
+	const islandZone = zoneResults.find((z) => z.zone !== '.' && z.linkage === 'no_ds' && z.dnskeyRecords.length > 0);
+	const chainComplete = reachedTarget && !chainBroken && targetSigned && islandZone === undefined && rootVerified;
 
 	// --- Findings ---
 
@@ -299,6 +308,29 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 				penaltyOverride: 40,
 			}),
 		);
+	} else if (islandZone) {
+		// Island of trust (#834). Same finding convention as the unsigned-termination
+		// guard above (#810/#820): severity LABEL `high`, SCORE penalty decoupled to -40
+		// via `penaltyOverride` (100-40=60), aligned with check_dnssec's posture for
+		// unanchored DNSSEC. We deliberately do NOT set `missingControl: true` — a
+		// published-but-unanchored DNSKEY is MEASURED DNSSEC material, not an absent
+		// control, and missingControl would zero the score to 0 via buildCheckResult's
+		// `score: hasMissingControl ? 0 : score`. (check_dnssec currently scores this
+		// same shape 0 with missingControl — reconciling the two surfaces to a single
+		// number is a deliberate operator scoring decision, out of scope here.) The
+		// detail text avoids "no … record", "missing", "required", and "not found" so
+		// `scoreIndicatesMissingControl` (packages/dns-checks/src/scoring/model.ts)
+		// cannot auto-zero the finding. `else if`: the chain of trust terminates at
+		// exactly one place, so at most one -40 termination finding ever fires.
+		findings.push(
+			createFinding(
+				CATEGORY,
+				`DNSSEC island of trust at ${islandZone.zone}`,
+				'high',
+				`${islandZone.zone} publishes a DNSKEY, but its parent zone holds no DS digest linking to it, so the chain of trust from the root anchor terminates at the parent. The published DNSKEY is unreachable from the trust anchor and validating resolvers treat ${islandZone.zone} as insecure — DNSSEC provides no origin authentication for ${domain}. Publish a DS for the zone's KSK at the parent (via the registrar) to anchor the chain.`,
+				{ zone: islandZone.zone, linkage: 'no_ds', penaltyOverride: 40 },
+			),
+		);
 	}
 
 	// Weak algorithm finding (medium severity)
@@ -332,6 +364,8 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		summaryStatus = `stopped at ${lastZone?.zone ?? '.'} — zone has no DS and no DNSKEY (not signed)`;
 	} else if (!targetSigned) {
 		summaryStatus = `${domain} has no DS and no DNSKEY — domain is not signed`;
+	} else if (islandZone) {
+		summaryStatus = `island of trust — ${islandZone.zone} publishes a DNSKEY but its parent holds no DS, so validating resolvers treat the zone as insecure`;
 	} else if (chainComplete) {
 		summaryStatus = 'complete chain from root to target';
 	} else {
