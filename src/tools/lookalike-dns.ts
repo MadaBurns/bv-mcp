@@ -36,6 +36,23 @@ export const PHASE1_DNS_OPTS: QueryDnsOptions = {
 	skipSecondaryConfirmation: true,
 };
 
+/**
+ * Resilient DNS options for the SEED domain's own NS/MX lookups (#850).
+ *
+ * The blast radius is what separates these from `PHASE1_DNS_OPTS`, not the
+ * record type. A dropped CANDIDATE probe costs one disposable permutation out
+ * of ~66. A dropped SEED NS probe voids EVERY ownership verdict in the run —
+ * all candidates degrade to `unmeasured` and impersonation-shaped findings are
+ * withheld wholesale — so the lean no-retry preset was being applied to the one
+ * query that could least afford to lose. Two extra queries with retries; they
+ * gate the interpretive value of all the others.
+ */
+export const SEED_DNS_OPTS: QueryDnsOptions = {
+	timeoutMs: 5000,
+	retries: 2,
+	skipSecondaryConfirmation: true,
+};
+
 export interface LookalikeResult {
 	domain: string;
 	hasA: boolean;
@@ -204,7 +221,7 @@ export interface PrimaryNsResult {
  */
 export async function queryPrimaryNs(domain: string): Promise<PrimaryNsResult> {
 	try {
-		const ns = await queryDnsRecords(domain, 'NS', PHASE1_DNS_OPTS);
+		const ns = await queryDnsRecords(domain, 'NS', SEED_DNS_OPTS);
 		return { ns: normalizeNsSet(ns), resolved: true };
 	} catch {
 		return { ns: new Set<string>(), resolved: false };
@@ -219,7 +236,7 @@ export async function queryPrimaryNs(domain: string): Promise<PrimaryNsResult> {
  */
 export async function queryPrimaryMx(domain: string): Promise<Set<string>> {
 	try {
-		const mx = await queryMxRecords(domain, PHASE1_DNS_OPTS);
+		const mx = await queryMxRecords(domain, SEED_DNS_OPTS);
 		return new Set(mx.map((r) => r.exchange.toLowerCase().replace(/\.$/, '')));
 	} catch {
 		return new Set<string>();

@@ -2328,4 +2328,59 @@ describe('isSameEntityOrgMatch - fix round 2 residual (direct semantic pin)', ()
 			expect(isSameEntityOrgMatch(org, org)).toBe(!isRedactedRegistrantOrg(org));
 		}
 	});
+
+	// #850 — the seed NS lookup gates EVERY ownership verdict: when it fails,
+	// all candidates degrade to `unmeasured` and impersonation-shaped findings
+	// are withheld wholesale. It was issued with PHASE1_DNS_OPTS (retries: 0,
+	// timeoutMs: 2000) inside the SAME Promise.all as the 66-permutation
+	// fan-out, so it competed with its own burst for resolver budget and had
+	// no retry to survive losing. Measured against the live resolver on
+	// 2026-08-31: meta.com reported `seedNsUnresolved: true` on 2/2 idle runs
+	// while a standalone DoH NS query for meta.com returned 4 answers.
+	// The seed must survive ONE transient failure; the fan-out may not need to.
+	it('retries the seed NS lookup so one transient failure does not void every ownership verdict (#850)', async () => {
+		let seedNsAttempts = 0;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			const isNs = type === 'NS' || type === '2';
+
+			// The scanned domain's own NS query: fail once, then succeed.
+			if (name === 'test.com' && isNs) {
+				seedNsAttempts += 1;
+				if (seedNsAttempts === 1) return Promise.reject(new Error('transient resolver throttle'));
+				return Promise.resolve(
+					createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.seedowner.com.' }]),
+				);
+			}
+
+			// One registered candidate sharing the seed's nameservers — it can
+			// only be attributed if the seed NS resolved.
+			if (name === 'tset.com') {
+				if (isNs) {
+					return Promise.resolve(
+						createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.seedowner.com.' }]),
+					);
+				}
+				if (type === 'A' || type === '1') {
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
+				}
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		const result = await checkLookalikes('test.com');
+
+		// The seed was retried rather than abandoned on first failure.
+		expect(seedNsAttempts).toBeGreaterThan(1);
+
+		// No wholesale "attribution unmeasured this run" summary finding.
+		const seedFailure = result.findings.find((f) => f.metadata?.seedNsUnresolved === true);
+		expect(seedFailure).toBeUndefined();
+
+		// And no candidate was degraded to `unmeasured` by a seed failure.
+		const unmeasured = result.findings.filter((f) => f.metadata?.ownershipVerdict === 'unmeasured');
+		expect(unmeasured).toHaveLength(0);
+	});
+
 });

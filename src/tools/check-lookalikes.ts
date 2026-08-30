@@ -188,15 +188,19 @@ async function checkLookalikesCore(
 
 	const permsToProbe = [...nonDotInsertionPerms, ...filteredDotInsertionPerms];
 
+	// Phase 0 (#850): resolve the SEED's own NS + MX BEFORE the permutation
+	// fan-out, not alongside it. These two queries used to share a Promise.all
+	// with `filterByNsExistence`, which dispatches ~66 probes in adaptive
+	// batches — so the one lookup that gates every ownership verdict competed
+	// with its own burst for resolver budget, and (on PHASE1_DNS_OPTS) had no
+	// retry to survive losing. Measured 2026-08-31: meta.com reported
+	// `seedNsUnresolved: true` on 2/2 idle runs while a standalone DoH NS query
+	// for it returned 4 answers. Sequencing costs one round trip on a check
+	// that already takes seconds; a voided attribution costs the whole result.
+	const [primaryNsProbe, primaryMx] = await Promise.all([queryPrimaryNs(domain), queryPrimaryMx(domain)]);
+
 	// Phase 1: Fast NS existence check — filter out unregistered domains.
-	// Also query the primary domain's NS + MX for ownership comparison: NS for
-	// the ownership verdict itself, MX for the D4 MX-overlap corroboration
-	// signal consulted by `attributionConfidence()` (wording only).
-	const [nsResult, primaryNsProbe, primaryMx] = await Promise.all([
-		filterByNsExistence(permsToProbe),
-		queryPrimaryNs(domain),
-		queryPrimaryMx(domain),
-	]);
+	const nsResult = await filterByNsExistence(permsToProbe);
 	const { registered: registeredPerms, nsMap: lookalikeNsMap, unresolved: nsUnresolved } = nsResult;
 	const primaryNs = primaryNsProbe.ns;
 	// #832 — the seed's own NS lookup failed, so the ownership comparison has
