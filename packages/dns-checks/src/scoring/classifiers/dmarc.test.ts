@@ -177,6 +177,18 @@ describe('classifyDmarc', () => {
 			expect(finding.detail).toMatch(/ESP|subdomain/i);
 		});
 
+		it('conditions the failure claim on the From domain differing — never categorical over subdomain return-paths', () => {
+			// PR #846 review: a subdomain return-path does not itself break strict
+			// alignment — it PASSES when the RFC 5322 From domain is that same subdomain.
+			// The classifier has no From/sender evidence, so the detail must state the
+			// differing-From condition rather than assert unconditional failure.
+			const f = classifyDmarc({ ...rejectBase, aspf: 'r' });
+			const finding = f.find((x) => x.title === 'Relaxed SPF alignment')!;
+			expect(finding.detail).not.toMatch(/all such traffic/i);
+			expect(finding.detail).toMatch(/From address (stays|is) on this domain|From domain differs/i);
+			expect(finding.detail).toMatch(/still aligns/i);
+		});
+
 		it('strict aspf=s still emits no relaxed-alignment finding', () => {
 			const f = classifyDmarc({ ...rejectBase, aspf: 's' });
 			expect(f.some((x) => x.title === 'Relaxed SPF alignment')).toBe(false);

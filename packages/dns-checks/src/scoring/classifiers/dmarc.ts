@@ -479,7 +479,7 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 				'dmarc',
 				'Relaxed SPF alignment',
 				'info',
-				`SPF alignment mode is relaxed (aspf=r or unset). Strict alignment (aspf=s) only strengthens DMARC when every authorized sender's return-path (envelope-from) domain exactly matches the From domain — untrue for most ESP-relayed mail (e.g. Resend, SendGrid, Mailchimp, SES with a custom MAIL FROM), where the return-path sits on a subdomain and aspf=s would fail SPF alignment on all such traffic, leaving DKIM as the only authentication leg. Set aspf=s only after DMARC aggregate reports confirm every sender's return-path domain exactly matches the From domain; otherwise aspf=r is the correct setting.`,
+				`SPF alignment mode is relaxed (aspf=r or unset). Strict alignment (aspf=s) only strengthens DMARC when every authorized sender's return-path (envelope-from) domain exactly matches the From domain — untrue for most ESP-relayed mail (e.g. Resend, SendGrid, Mailchimp, SES with a custom MAIL FROM), where the return-path sits on a subdomain: wherever the From domain differs from it (typically the apex), aspf=s fails SPF alignment for that traffic and leaves DKIM as the only authentication leg. Mail whose From address stays on that same subdomain still aligns under aspf=s. Set aspf=s only after DMARC aggregate reports confirm every sender's return-path domain exactly matches the From domain; otherwise aspf=r is the correct setting.`,
 			),
 		);
 	}
