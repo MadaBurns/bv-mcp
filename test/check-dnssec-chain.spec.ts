@@ -49,14 +49,17 @@ function adResponse(domain: string, ad: boolean) {
 /**
  * Create a fetch mock that routes by URL query params (name + type).
  * `routeMap` keys are "name:type" (e.g. "com:DS", "example.com:DNSKEY", "example.com:A").
+ * A `'REJECT'` value makes every fetch for that route reject (simulating a
+ * timeout / transport failure — queryDnsRecords then throws DnsQueryError).
  */
-function mockDnsFetch(routeMap: Record<string, Response>) {
+function mockDnsFetch(routeMap: Record<string, Response | 'REJECT'>) {
 	globalThis.fetch = vi.fn().mockImplementation((url: string | URL | Request) => {
 		const u = new URL(typeof url === 'string' ? url : url instanceof Request ? url.url : url.toString());
 		const name = u.searchParams.get('name') ?? '';
 		const type = u.searchParams.get('type') ?? '';
 		const key = `${name}:${type}`;
 		const resp = routeMap[key];
+		if (resp === 'REJECT') return Promise.reject(new Error('network timeout'));
 		if (resp) return Promise.resolve(resp);
 		// Default: empty response
 		return Promise.resolve(createDohResponse([{ name, type: 1 }], []));
@@ -229,6 +232,90 @@ describe('checkDnssecChain', () => {
 		const summary = result.findings.find((f) => f.severity === 'info' && f.metadata?.chainComplete !== undefined);
 		expect(summary).toBeDefined();
 		expect(summary!.metadata!.chainComplete).toBe(false);
+	});
+
+	it('island-of-trust target (DNSKEY published, DS absent at parent) is not chainComplete and scores 60 (#834)', async () => {
+		// example.com publishes a DNSKEY but its parent (com) holds no DS for it: the
+		// chain of trust from the root anchor terminates at com, the target's DNSKEY
+		// is unreachable, and validating resolvers treat the zone as insecure. Before
+		// the fix: `targetSigned` accepted the DNSKEY alone, linkage 'no_ds' set
+		// neither chainBroken nor the walk break, and the tool reported
+		// chainComplete: true / score 100 with no high finding.
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
+			// example.com: DS empty at the parent, DNSKEY populated → island of trust
+			'example.com:DS': emptyDsResponse('example.com'),
+			'example.com:DNSKEY': dnskeyResponse('example.com', ['257 3 8 AwEAAexample...']),
+			'example.com:A': adResponse('example.com', false),
+		});
+
+		const result = await run();
+
+		// The summary must NOT claim a complete chain — there is no DS linking the
+		// parent to the target's DNSKEY.
+		const summary = result.findings.find((f) => f.severity === 'info' && f.metadata?.chainComplete !== undefined);
+		expect(summary).toBeDefined();
+		expect(summary!.metadata!.chainComplete).toBe(false);
+
+		// Same finding convention as #810/#820: high severity, decoupled -40 penalty
+		// (category → 60), and NO missingControl — a published-but-unanchored DNSKEY
+		// is MEASURED DNSSEC material, not an absent control; missingControl would
+		// zero the score via buildCheckResult's `score: hasMissingControl ? 0 : score`.
+		const highFinding = result.findings.find((f) => f.severity === 'high');
+		expect(highFinding).toBeDefined();
+		expect(highFinding!.metadata?.penaltyOverride).toBe(40);
+		expect(highFinding!.metadata?.missingControl).toBeUndefined();
+		expect(highFinding!.metadata?.zone).toBe('example.com');
+
+		// The wording states the mechanism: DNSKEY published, DS absent at the parent,
+		// validating resolvers treat the zone as insecure.
+		expect(`${highFinding!.title} ${highFinding!.detail}`).toMatch(/island of trust/i);
+		expect(highFinding!.detail).toMatch(/DNSKEY/);
+		expect(highFinding!.detail).toMatch(/DS/);
+		expect(highFinding!.detail).toMatch(/insecure/i);
+
+		// Score 60 / passed true, per the documented `passed = score>=50 && !hasMissingControl`
+		// formula ("did not penalize", NOT "control exists").
+		expect(result.score).toBe(60);
+		expect(result.passed).toBe(true);
+	});
+
+	it('does not report an island of trust when the DS lookup itself failed (#834 review)', async () => {
+		// A timed-out / SERVFAIL DS query is caught and left as an empty record set,
+		// which makes determineLinkage() return 'no_ds' — structurally identical to a
+		// measured-absent DS. Emitting the scored island finding from that shape would
+		// record a delegation NOBODY MEASURED as a confident deficiency (the #638 law:
+		// `inconclusive` + `errorKind`, never a scored absence).
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
+			// The DS probe never completed; the DNSKEY probe did.
+			'example.com:DS': 'REJECT',
+			'example.com:DNSKEY': dnskeyResponse('example.com', ['257 3 8 AwEAAexample...']),
+			'example.com:A': adResponse('example.com', false),
+		});
+
+		const result = await run();
+
+		// No scored island finding from an unmeasured delegation.
+		const highFinding = result.findings.find((f) => f.severity === 'high');
+		expect(highFinding).toBeUndefined();
+		expect(result.score).not.toBe(60);
+
+		// Nor may the unmeasured DS be laundered into a clean complete chain.
+		const summary = result.findings.find((f) => f.severity === 'info' && f.metadata?.chainComplete !== undefined);
+		expect(summary!.metadata!.chainComplete).toBe(false);
+
+		// Honest unmeasured marker + kept out of the dispatch cache, matching the
+		// transient root-DNSKEY precedent in this tool.
+		const inconclusive = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(inconclusive).toBeDefined();
+		expect(inconclusive!.metadata?.errorKind).toBe('dns_error');
+		expect(inconclusive!.metadata?.missingControl).toBeUndefined();
+		expect(result.partial).toBe(true);
 	});
 
 	it('broken linkage (DS exists but no DNSKEY) produces high severity', async () => {
