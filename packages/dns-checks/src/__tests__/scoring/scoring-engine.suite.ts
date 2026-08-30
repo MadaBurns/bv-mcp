@@ -592,6 +592,47 @@ export function defineScoringEngineSuite(s: ScoringModule): void {
 				const withMeasured = computeScanScore([...coreWithoutDmarc, measuredMissingDmarc]);
 				expect(withMeasured.overall).toBeLessThanOrEqual(DEFAULT_SCORING_CONFIG.thresholds.criticalGapCeiling);
 			});
+
+			it('structured missingControl metadata is equivalent to legacy prose for the critical-gap ceiling', () => {
+				const coreWithoutDmarc = passingCore().filter((r) => r.category !== 'dmarc');
+				const structured = buildCheckResult('dmarc', [
+					createFinding('dmarc', 'DMARC policy unavailable', 'high', 'The policy cannot protect this domain.', {
+						confidence: 'deterministic',
+						missingControl: true,
+					}),
+				]);
+				const legacyProse = buildCheckResult('dmarc', [
+					createFinding('dmarc', 'Missing DMARC policy', 'high', 'The required DMARC record is missing.', {
+						confidence: 'deterministic',
+					}),
+				]);
+
+				expect(structured.score).toBe(0);
+				expect(legacyProse.score).toBe(0);
+				const structuredScore = computeScanScore([...coreWithoutDmarc, structured]);
+				const proseScore = computeScanScore([...coreWithoutDmarc, legacyProse]);
+				expect(structuredScore.overall).toBe(DEFAULT_SCORING_CONFIG.thresholds.criticalGapCeiling);
+				expect(structuredScore.overall).toBe(proseScore.overall);
+			});
+
+			it('structured missingControl metadata on an UNMEASURED check cannot arm the ceiling', () => {
+				const coreWithoutDmarc = passingCore().filter((r) => r.category !== 'dmarc');
+				const baseline = computeScanScore(coreWithoutDmarc);
+				const erroredDmarc: CheckResult = {
+					...buildCheckResult('dmarc', [
+						createFinding('dmarc', 'DMARC unavailable', 'high', 'The probe did not complete.', {
+							confidence: 'deterministic',
+							missingControl: true,
+						}),
+					]),
+					checkStatus: 'error',
+				};
+
+				const withErrored = computeScanScore([...coreWithoutDmarc, erroredDmarc]);
+				expect(withErrored.overall).toBe(baseline.overall);
+				expect(withErrored.overall).toBeGreaterThan(DEFAULT_SCORING_CONFIG.thresholds.criticalGapCeiling);
+				expect(withErrored.categoryScores.dmarc).toBeUndefined();
+			});
 		});
 
 		describe('an OUT-OF-UNION checkStatus (version-skewed cache re-read) is excluded exactly like timeout/error, never silently scored via the ?? 100 full-credit fallback', () => {

@@ -110,12 +110,9 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 				// evaluated by any receiver, so zeroing is correct — the same treatment the
 				// no-record case (`:67`) and the multiple-record case (`:82`) already get.
 				//
-				// Today this flag is BEHAVIOURALLY INERT: `engine.ts` builds `missingControls`
-				// from `scoreIndicatesMissingControl` alone and never reads `metadata`, and this
-				// detail happens to contain both "missing" and "required", so the prose already
-				// zeroes it. That accident is exactly the problem — reword the sentence and the
-				// zeroing silently disappears. Declaring the intent here makes it survive a copy
-				// edit and makes it legible if the engine ever starts reading the flag.
+				// Structured intent is consumed by the same canonical predicate as the legacy
+				// prose inference, so a copy edit cannot change either category zeroing or the
+				// critical-gap ceiling.
 				{ missingControl: true },
 			),
 		);
