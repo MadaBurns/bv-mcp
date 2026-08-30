@@ -35,14 +35,7 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 	for (const record of records) {
 		const parsed = parseTlsaRecord(record);
 		if (!parsed) {
-			findings.push(
-				createFinding(
-					'dane',
-					'Malformed TLSA record',
-					'medium',
-					`Could not parse TLSA record for ${name}: ${record}`,
-				),
-			);
+			findings.push(createFinding('dane', 'Malformed TLSA record', 'medium', `Could not parse TLSA record for ${name}: ${record}`));
 			continue;
 		}
 
@@ -120,14 +113,21 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 		validRecordCount++;
 	}
 
-	// Emit a single consolidated info finding for all valid TLSA records
+	// Emit a single consolidated info finding for all well-formed TLSA records.
+	// HONESTY (#841): mirrors packages/dns-checks/src/checks/dane-analysis.ts —
+	// "well-formed" is a SYNTAX verdict only; the pinned data is never compared to
+	// the certificate the host serves, and the wording + metadata must say so.
 	if (validRecordCount > 0) {
 		const detail =
 			validRecordCount === 1
-				? `Valid TLSA record configured for ${name}.`
-				: `${validRecordCount} DANE TLSA records configured for ${name}.`;
+				? `TLSA record present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin — which breaks DANE-validating clients — is not detected here. Confirm the pin matches the live certificate after every certificate rotation.`
+				: `${validRecordCount} DANE TLSA records present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin — which breaks DANE-validating clients — is not detected here. Confirm each pin matches the live certificate after every certificate rotation.`;
 		findings.push(
-			createFinding('dane', `DANE TLSA configured for ${name}`, 'info', detail, { name, validRecordCount }),
+			createFinding('dane', `DANE TLSA configured for ${name}`, 'info', detail, {
+				name,
+				validRecordCount,
+				certificateMatchVerified: false,
+			}),
 		);
 	}
 
