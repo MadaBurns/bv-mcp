@@ -56,6 +56,58 @@ describe('checkDNSSEC', () => {
 		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete')).toBe(true);
 	});
 
+	it('does not declare a broken chain when the DS lookup itself failed', async () => {
+		// A DS probe that THROWS leaves dsRecords empty — structurally identical to a
+		// measured "parent holds no DS". Concluding a broken chain from it records an
+		// unmeasured delegation as a confident deficiency, and because `dnssec` is a
+		// critical category in every profile, the resulting missingControl zero caps
+		// the WHOLE domain at 64. A genuinely signed zone must not be graded D by a
+		// transient DNS timeout (#638 law: inconclusive + errorKind, never absence).
+		const mockDNS: DNSQueryFunction = vi.fn(async (_domain: string, type: string) => {
+			if (type === 'DNSKEY') return ['257 3 13 base64key...'];
+			if (type === 'DS') throw new Error('DNS query timeout');
+			return [];
+		});
+		const rawQueryDNS: RawDNSQueryFunction = vi.fn(async () => ({ AD: false }));
+		const result = await checkDNSSEC('example.com', mockDNS, { rawQueryDNS });
+
+		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		// The repo's standard unmeasured contract: checkStatus 'error' EXCLUDES the
+		// category from scoring, and `score: 0` + `checkStatus: 'error'` is exactly what
+		// scan_domain's shouldRetry predicate requires to re-run the leg. `partial` keeps
+		// the transient non-answer out of the 5-minute cache.
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.partial).toBe(true);
+		// One leg was never read, so "is the control doing work" is undetermined —
+		// `false` would be a definitive not-working observation.
+		expect(result.controlPresent).toBeUndefined();
+		const unmeasured = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(unmeasured).toBeDefined();
+		expect(unmeasured!.metadata?.errorKind).toBe('dns_error');
+	});
+
+	it('does not declare a broken chain when the DNSKEY lookup itself failed', async () => {
+		// Mirror image: DS resolves, the child DNSKEY probe throws. Same law.
+		const mockDNS: DNSQueryFunction = vi.fn(async (_domain: string, type: string) => {
+			if (type === 'DS') return ['12345 13 2 abcdef...'];
+			if (type === 'DNSKEY') throw new Error('DNS query timeout');
+			return [];
+		});
+		const rawQueryDNS: RawDNSQueryFunction = vi.fn(async () => ({ AD: true }));
+		const result = await checkDNSSEC('example.com', mockDNS, { rawQueryDNS });
+
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.partial).toBe(true);
+		expect(result.controlPresent).toBeUndefined();
+		// Must NOT also print a confident affirmative for a chain whose DNSKEY was
+		// never observed — the unmeasured return runs BEFORE the findings-empty fallback.
+		expect(result.findings.some((f) => f.title === 'DNSSEC enabled and validated')).toBe(false);
+	});
+
 	it('reports a broken chain when AD=true and a parent DS exists without a child DNSKEY', async () => {
 		const mockDNS: DNSQueryFunction = vi.fn(async (_domain: string, type: string) => {
 			if (type === 'DS') return ['12345 13 2 abcdef...'];
