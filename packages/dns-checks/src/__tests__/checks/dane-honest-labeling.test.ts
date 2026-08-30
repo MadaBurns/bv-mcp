@@ -42,6 +42,20 @@ describe('analyzeTlsaRecords — honest labeling of unverified pins (#841)', () 
 		expect(info!.metadata?.certificateMatchVerified).toBe(false);
 	});
 
+	it('does not overstate stale-pin impact — rejection is conditional on DNSSEC + no matching association (PR #845 review)', () => {
+		// This SAME detail string is emitted for unsigned zones (where RFC 7671
+		// clients treat the RRset as unusable and fall back — nothing breaks) and
+		// for multi-record rollover RRsets (one stale association among a matching
+		// set breaks nothing). The prose must not claim unconditional breakage.
+		for (const hasDnssec of [true, false]) {
+			const findings = analyzeTlsaRecords([`3 1 1 ${SHA256_HASH}`], '_443._tcp.example.com', hasDnssec);
+			const info = findings.find((f) => f.severity === 'info');
+			expect(info).toBeDefined();
+			expect(info!.detail).not.toMatch(/which breaks DANE-validating clients/i);
+			expect(info!.detail).toMatch(/DNSSEC-authenticated/);
+		}
+	});
+
 	it('does not claim verification for multiple well-formed records either', () => {
 		const findings = analyzeTlsaRecords([`3 1 1 ${SHA256_HASH}`, `2 0 1 ${SHA256_HASH}`], '_443._tcp.example.com', true);
 		const info = findings.find((f) => f.severity === 'info');

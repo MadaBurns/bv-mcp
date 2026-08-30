@@ -161,8 +161,8 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 	if (validRecordCount > 0) {
 		const detail =
 			validRecordCount === 1
-				? `TLSA record present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin — which breaks DANE-validating clients — is not detected here. Confirm the pin matches the live certificate after every certificate rotation.`
-				: `${validRecordCount} DANE TLSA records present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin — which breaks DANE-validating clients — is not detected here. Confirm each pin matches the live certificate after every certificate rotation.`;
+				? `TLSA record present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.`
+				: `${validRecordCount} DANE TLSA records present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.`;
 		findings.push(
 			createFinding('dane', `DANE TLSA configured for ${name}`, 'info', detail, {
 				name,
