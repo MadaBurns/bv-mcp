@@ -222,3 +222,95 @@ describe('checkLookalikes - registered-but-dark candidates (#831)', () => {
 		expect(dark!.severity).toBe('info');
 	});
 });
+
+describe('checkLookalikes - review follow-ups on the degraded-run contract (#847)', () => {
+	/**
+	 * A candidate whose A lookup RESOLVES while its MX lookup REJECTS is
+	 * `probeDegraded`, but only half-measured: its mail capability was never
+	 * observed. The enumeration contract ("complete: false means this set is a
+	 * SAMPLE") must reflect that, or a partial run reads as a census.
+	 */
+	it('counts a half-degraded detail probe as unresolved, so the run is not reported complete', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'test.com' && isNs(type)) return Promise.resolve(nsResponse(name, ['ns1.test.com.']));
+			if (name === 'tst.com') {
+				if (isNs(type)) return Promise.resolve(nsResponse(name, ['ns1.other.com.']));
+				if (isA(type)) return Promise.resolve(aResponse(name));
+				// Mail capability never measured.
+				if (isMx(type)) return Promise.reject(new Error('DNS timeout'));
+			}
+			return Promise.resolve(empty());
+		});
+
+		const result = await run('test.com');
+
+		const withEnum = result.findings.find((f) => f.metadata?.enumeration !== undefined);
+		expect(withEnum).toBeDefined();
+		const enumeration = withEnum!.metadata!.enumeration as { complete: boolean; unresolvedCount: number };
+		expect(enumeration.complete).toBe(false);
+		expect(enumeration.unresolvedCount).toBeGreaterThan(0);
+	});
+
+	/**
+	 * `classifyOwnership()` deliberately preserves `owned_by_seed` for an
+	 * in-bailiwick candidate NS even when the seed NS lookup failed, so in a
+	 * mixed batch NOT every registered candidate is unmeasured. The status
+	 * finding must count the actual unmeasured verdicts, not the batch size.
+	 */
+	it('reports the true unmeasured count in a mixed batch, not every registered candidate', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'test.com' && isNs(type)) return Promise.reject(new Error('DNS timeout'));
+			// In-bailiwick candidate: its NS sits under the seed domain, so ownership
+			// is concluded from the candidate's own evidence despite the seed failure.
+			if (name === 'tes.com') {
+				if (isNs(type)) return Promise.resolve(nsResponse(name, ['ns1.test.com.']));
+				if (isA(type)) return Promise.resolve(aResponse(name));
+				if (isMx(type)) return Promise.resolve(mxResponse(name));
+			}
+			// Unrelated third-party NS: genuinely unmeasurable without the seed set.
+			if (name === 'tst.com') {
+				if (isNs(type)) return Promise.resolve(nsResponse(name, ['ns1.elsewhere.net.']));
+				if (isA(type)) return Promise.resolve(aResponse(name));
+				if (isMx(type)) return Promise.resolve(mxResponse(name));
+			}
+			return Promise.resolve(empty());
+		});
+
+		const result = await run('test.com');
+
+		const notice = result.findings.find((f) => f.metadata?.unmeasuredCandidateCount !== undefined);
+		expect(notice).toBeDefined();
+		const claimed = notice!.metadata!.unmeasuredCandidateCount as number;
+		const actualUnmeasured = result.findings.filter(
+			(f) => f.metadata?.findingAxis === 'attribution' && f.metadata?.ownershipVerdict === 'unmeasured',
+		).length;
+		// The owned_by_seed candidate must not be counted as unmeasured.
+		expect(result.findings.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(true);
+		expect(claimed).toBe(actualUnmeasured);
+	});
+
+	/**
+	 * The degraded outcome is TRANSIENT. `check_lookalikes` is cached for an hour
+	 * and the dispatcher skips cache writes only for `partial` results, so an
+	 * unmeasured run must be marked partial — otherwise withheld verdicts are
+	 * served for the full TTL after DNS recovers. Same contract the timeout path
+	 * already honours.
+	 */
+	it('marks a degraded run partial so the non-answer is not cached for the TTL', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'test.com' && isNs(type)) return Promise.reject(new Error('DNS timeout'));
+			if (name === 'tst.com') {
+				if (isNs(type)) return Promise.resolve(nsResponse(name, ['ns1.elsewhere.net.']));
+				if (isA(type)) return Promise.resolve(aResponse(name));
+				if (isMx(type)) return Promise.resolve(mxResponse(name));
+			}
+			return Promise.resolve(empty());
+		});
+
+		const result = await run('test.com');
+		expect(result.partial).toBe(true);
+	});
+});

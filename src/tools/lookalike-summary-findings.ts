@@ -110,7 +110,9 @@ export function buildOwnershipUnmeasuredFinding(seedDomain: string, candidateCou
 		'lookalikes',
 		'Ownership attribution unmeasured this run — treat verdicts as pending',
 		'info',
-		`The nameserver lookup for ${seedDomain} itself did not resolve in this run (DNS timeout or rate limiting), so registered candidates could not be compared against the organisation's own nameservers. ${candidateCount} candidate${candidateCount === 1 ? '' : 's'} ${candidateCount === 1 ? 'is' : 'are'} reported with an 'unmeasured' ownership verdict instead of a definitive attribution — a definitive third-party claim requires the same complete comparison an owned verdict does. Impersonation-shaped observations are withheld for unmeasured candidates; re-run to attribute.`,
+		candidateCount === 0
+			? `The nameserver lookup for ${seedDomain} itself did not resolve in this run (DNS timeout or rate limiting), so registered candidates could not be compared against the organisation's own nameservers. No candidate needed that comparison here — each was attributed from its own evidence (nameservers within ${seedDomain} itself) — but a candidate relying on the comparison would have been reported 'unmeasured' rather than attributed. Re-run for a complete picture.`
+			: `The nameserver lookup for ${seedDomain} itself did not resolve in this run (DNS timeout or rate limiting), so registered candidates could not be compared against the organisation's own nameservers. ${candidateCount} candidate${candidateCount === 1 ? '' : 's'} ${candidateCount === 1 ? 'is' : 'are'} reported with an 'unmeasured' ownership verdict instead of a definitive attribution — a definitive third-party claim requires the same complete comparison an owned verdict does. Impersonation-shaped observations are withheld for unmeasured candidates; re-run to attribute.`,
 		{
 			findingAxis: 'scan_status' satisfies LookalikeFindingAxis,
 			seedNsUnresolved: true,

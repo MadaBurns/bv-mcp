@@ -254,7 +254,14 @@ async function checkLookalikesCore(
 	// classified as active, and it must not be reported as registered-but-dark
 	// either (the absence was unfetched). It is counted as unresolved so the
 	// run reports itself incomplete instead of erasing the candidate.
-	const infraUnknownCount = results.filter((r) => r.probeDegraded && !r.hasA && !r.hasMX).length;
+	//
+	// ⚠️ ANY degraded probe counts, not only the both-legs-empty case (review
+	// follow-up): a candidate whose A resolved while its MX rejected is half
+	// measured — its mail capability was never observed — so a run containing one
+	// is a SAMPLE, not a census. Gating on `!hasA && !hasMX` let those runs report
+	// `complete: true`, which is precisely the "partial run looks conclusive"
+	// shape this enumeration contract exists to prevent.
+	const infraUnknownCount = results.filter((r) => r.probeDegraded).length;
 	/**
 	 * Enumeration coverage for this run.
 	 *
@@ -505,7 +512,13 @@ async function checkLookalikesCore(
 	// consumer reading findings must be able to tell that from a concluded
 	// third-party verdict.
 	if (seedNsUnmeasured) {
-		findings.push(buildOwnershipUnmeasuredFinding(domain, registeredPerms.length));
+		// Count the verdicts that actually came out `unmeasured`, NOT the batch size
+		// (review follow-up): classifyOwnership() deliberately preserves
+		// `owned_by_seed` for an in-bailiwick candidate NS even when the seed lookup
+		// failed, so in a mixed batch `registeredPerms.length` overstates — the
+		// notice would claim candidates were unattributed that this run did attribute.
+		const unmeasuredCandidateCount = [...ownershipByDomain.values()].filter((a) => a.verdict === 'unmeasured').length;
+		findings.push(buildOwnershipUnmeasuredFinding(domain, unmeasuredCandidateCount));
 	}
 
 	if (!enumeration.complete) {
@@ -571,5 +584,16 @@ async function checkLookalikesCore(
 		}
 	}
 
-	return buildCheckResult('lookalikes', findings);
+	const result = buildCheckResult('lookalikes', findings);
+	// A degraded ownership comparison is TRANSIENT (throttled/timed-out seed NS
+	// lookup), but `check_lookalikes` is cached for an hour and the dispatcher
+	// skips cache writes only for `partial` results (review follow-up). Without
+	// this, the withheld verdicts and suppressed threat observations from one
+	// throttled run would be served for the full TTL after DNS recovered — the
+	// non-answer outliving the condition that caused it. Same contract the
+	// timeout path in checkLookalikes() already honours.
+	if (seedNsUnmeasured) {
+		result.partial = true;
+	}
+	return result;
 }
