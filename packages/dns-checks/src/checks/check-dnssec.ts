@@ -149,9 +149,20 @@ export async function checkDNSSEC(
 				{ penaltyOverride: 40 },
 			),
 		);
-	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0) {
+	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0 && !dsQueryFailed) {
 		// DNSKEY published but no DS in parent zone — broken chain. BOGUS to any
 		// validating resolver (worse than unsigned): explicit missingControl → score 0.
+		//
+		// ⚠️ The `!dsQueryFailed` gate is LOAD-BEARING. A DS probe that THREW leaves
+		// `dsRecords` empty, which is structurally indistinguishable here from a
+		// measured "the parent holds no DS" — and this branch's missingControl zeroes
+		// the category. Because `dnssec` is a critical category in every profile, that
+		// zero also caps the ENTIRE domain at `criticalGapCeiling` (64 → grade D). So
+		// without this gate a single transient DS timeout re-grades a correctly signed
+		// domain to D off a delegation nobody observed. Unmeasured probes route to the
+		// inconclusive lane below instead (#638 law: `inconclusive` + `errorKind` for a
+		// probe that never completed, `missingControl` only for a MEASURED absence).
+		// The sibling check_dnssec_chain gained the same gate in #844's review.
 		findings.push(
 			createFinding(
 				'dnssec',
@@ -161,7 +172,7 @@ export async function checkDNSSEC(
 				{ missingControl: true },
 			),
 		);
-	} else if (dnskeyRecords.length === 0 && dsRecords.length > 0) {
+	} else if (dnskeyRecords.length === 0 && dsRecords.length > 0 && !dnskeyQueryFailed) {
 		// Parent DS published but the child DNSKEY is absent — also a broken chain.
 		// A validating resolver cannot match the delegation to a zone key, regardless
 		// of a transient/cached AD observation, so this must never become a clean pass.
@@ -264,6 +275,29 @@ export async function checkDNSSEC(
 	// The AD flag is only an observation when a raw resolver was actually available to ask;
 	// without `rawQueryDNS` the local `adFlag` is a default-false placeholder, not a measurement.
 	const controlPresent = rawQueryDNS ? adFlag && dnskeyRecords.length > 0 && dsRecords.length > 0 : undefined;
+
+	// A failed DS/DNSKEY probe next to published DNSSEC material leaves the chain
+	// genuinely unknown: the branches above deliberately withheld their verdict, so
+	// there is nothing honest left to score. Report the non-answer and EXCLUDE the
+	// category (`checkStatus: 'error'`) rather than letting the remaining findings
+	// imply a settled posture — this is also what lets scan_domain's transient-zero
+	// retry fire and keeps the result out of the 5-minute cache.
+	const chainUnmeasured =
+		(dsQueryFailed && dnskeyRecords.length > 0 && dsRecords.length === 0) ||
+		(dnskeyQueryFailed && dsRecords.length > 0 && dnskeyRecords.length === 0);
+	if (chainUnmeasured) {
+		const unmeasuredLeg = dsQueryFailed ? 'DS' : 'DNSKEY';
+		findings.push(
+			createFinding(
+				'dnssec',
+				'DNSSEC chain of trust not assessable',
+				'info',
+				`The ${unmeasuredLeg} lookup for ${target} did not complete, so the delegation linking the parent zone to the child's DNSSEC material could not be observed. The chain of trust is unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.`,
+				{ inconclusive: true, confidence: 'heuristic', errorKind: 'dns_error' },
+			),
+		);
+		return { ...buildCheckResult('dnssec', findings, controlPresent, recordPresent), checkStatus: 'error' };
+	}
 
 	return buildCheckResult('dnssec', findings, controlPresent, recordPresent);
 }
