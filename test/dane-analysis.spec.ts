@@ -125,6 +125,16 @@ describe('analyzeTlsaRecords', () => {
 		expect(mediumFinding).toBeDefined();
 	});
 
+	it('should not claim "Valid" for a pin it never verified against the served certificate (#841)', () => {
+		const findings = analyzeTlsaRecords(['3 1 1 aabbccdd'], '_25._tcp.mx.example.com', true);
+		const infoFinding = findings.find((f) => f.severity === 'info');
+		expect(infoFinding).toBeDefined();
+		expect(infoFinding!.title).toContain('DANE TLSA configured');
+		expect(infoFinding!.detail).not.toMatch(/valid tlsa/i);
+		expect(infoFinding!.detail).toMatch(/does not verify/i);
+		expect(infoFinding!.metadata?.certificateMatchVerified).toBe(false);
+	});
+
 	it('should handle hex wire format TLSA records', () => {
 		// Hex wire format: usage=3 selector=1 matchingType=1 + cert data
 		const records = ['\\# 35 03 01 01 aa bb cc dd'];

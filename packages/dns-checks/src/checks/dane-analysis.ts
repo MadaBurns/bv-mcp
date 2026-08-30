@@ -72,14 +72,7 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 	for (const record of records) {
 		const parsed = parseTlsaRecord(record);
 		if (!parsed) {
-			findings.push(
-				createFinding(
-					'dane',
-					'Malformed TLSA record',
-					'medium',
-					`Could not parse TLSA record for ${name}: ${record}`,
-				),
-			);
+			findings.push(createFinding('dane', 'Malformed TLSA record', 'medium', `Could not parse TLSA record for ${name}: ${record}`));
 			continue;
 		}
 
@@ -157,14 +150,25 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 		validRecordCount++;
 	}
 
-	// Emit a single consolidated info finding for all valid TLSA records
+	// Emit a single consolidated info finding for all well-formed TLSA records.
+	// HONESTY (#841): "well-formed" is a SYNTAX verdict only. This analyzer never
+	// fetches the certificate the host serves, so it cannot know whether the pinned
+	// data still matches — a stale DANE-EE pin (which breaks every DANE-validating
+	// client) parses identically to a correct one. The wording and the
+	// `certificateMatchVerified: false` marker must keep saying so until a live
+	// leaf/SPKI source exists (fetch() exposes no peer certificate on workerd, and
+	// CT tells you what a CA published, not what a server serves).
 	if (validRecordCount > 0) {
 		const detail =
 			validRecordCount === 1
-				? `Valid TLSA record configured for ${name}.`
-				: `${validRecordCount} DANE TLSA records configured for ${name}.`;
+				? `TLSA record present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.`
+				: `${validRecordCount} DANE TLSA records present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.`;
 		findings.push(
-			createFinding('dane', `DANE TLSA configured for ${name}`, 'info', detail, { name, validRecordCount }),
+			createFinding('dane', `DANE TLSA configured for ${name}`, 'info', detail, {
+				name,
+				validRecordCount,
+				certificateMatchVerified: false,
+			}),
 		);
 	}
 
