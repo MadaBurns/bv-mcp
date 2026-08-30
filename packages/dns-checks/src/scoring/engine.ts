@@ -6,7 +6,7 @@ import {
 	type CheckResult,
 	type Finding,
 	inferFindingConfidence,
-	scoreIndicatesMissingControl,
+	findingsIndicateMissingControl,
 	type ScanScore,
 } from './model';
 import type { DomainContext } from './profiles';
@@ -206,9 +206,9 @@ function buildGenericContext(
 
 	// --- Build missingControls map ---
 	// Only mark a category as missing when an actual result exists and
-	// scoreIndicatesMissingControl returns true. Absent categories must NOT
+	// findingsIndicateMissingControl returns true. Absent categories must NOT
 	// be marked missing — the original engine's critical gap ceiling check
-	// requires an actual result (`result && scoreIndicatesMissingControl(...)`),
+	// requires an actual result (`result && findingsIndicateMissingControl(...)`),
 	// and absent categories default to 100 with no zeroing.
 	//
 	// Only a MEASURED check may assert absence. An errored/timed-out check's synthetic
@@ -222,7 +222,7 @@ function buildGenericContext(
 	const resultMap = new Map<CheckCategory, CheckResult>();
 	for (const result of results) {
 		resultMap.set(result.category, result);
-		if (isCheckMeasured(result.checkStatus) && scoreIndicatesMissingControl(result.findings)) {
+		if (isCheckMeasured(result.checkStatus) && findingsIndicateMissingControl(result.findings)) {
 			missingControls[result.category] = true;
 		}
 	}
@@ -331,9 +331,9 @@ function buildGenericContext(
  *
  * Three tiers:
  * - **Core** (default 70 points): Weighted accumulation of foundational categories (SPF, DMARC, DKIM, DNSSEC, SSL).
- *   `scoreIndicatesMissingControl()` can zero a category's contribution when confidence is deterministic/verified.
+ *   `findingsIndicateMissingControl()` can zero a category's contribution from structured intent or deterministic/verified prose.
  * - **Protective** (default 20 points): Weighted accumulation of active defense categories.
- *   No `scoreIndicatesMissingControl()` override.
+ *   No `findingsIndicateMissingControl()` override.
  * - **Hardening** (default 10 points): Binary pass/fail — each category with score >= 50 contributes
  *   `tierSplit.hardening / hardeningCount` points. Never subtracts.
  *

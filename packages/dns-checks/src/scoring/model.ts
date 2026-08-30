@@ -285,6 +285,21 @@ export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
 }
 
 /**
+ * Canonical missing-control decision for a set of findings.
+ *
+ * A check author may declare the state structurally with
+ * `metadata.missingControl: true`; legacy checks may still express it through
+ * deterministic/verified prose interpreted by {@link scoreIndicatesMissingControl}.
+ * Every scoring layer must use this predicate so category zeroing, the email
+ * bonus and the critical-gap ceiling cannot disagree about the same evidence.
+ * Measurement status is intentionally not accepted here: callers operating on
+ * whole check results must gate this predicate with `isCheckMeasured`.
+ */
+export function findingsIndicateMissingControl(findings: Finding[]): boolean {
+	return scoreIndicatesMissingControl(findings) || findings.some((f) => f.metadata?.missingControl === true);
+}
+
+/**
  * Build a CheckResult from a category and its findings.
  * A check fails (passed=false) if the score is below 50, if findings indicate
  * a fundamentally missing security control (e.g., no SPF/DMARC record), or if
@@ -303,8 +318,7 @@ export function buildCheckResult(
 ): CheckResult {
 	const normalizedFindings = findings.map(withConfidenceMetadata);
 	const score = computeCategoryScore(normalizedFindings, category);
-	const hasMissingControl =
-		scoreIndicatesMissingControl(normalizedFindings) || normalizedFindings.some((f) => f.metadata?.missingControl === true);
+	const hasMissingControl = findingsIndicateMissingControl(normalizedFindings);
 	const passed = score >= 50 && !hasMissingControl;
 	return {
 		category,
