@@ -95,6 +95,32 @@ export function buildNoActiveInfrastructureFinding(
 }
 
 /**
+ * `scan_status` — the OWNERSHIP COMPARISON was degraded this run (#832): the
+ * seed's own NS lookup did not resolve, so every registered candidate carries
+ * an `unmeasured` ownership verdict and no impersonation-shaped finding was
+ * emitted. Surfaced as its own finding (not only per-candidate metadata) for
+ * the same reason as {@link buildIncompleteEnumerationFinding}: a consumer
+ * reading findings must be able to tell "attribution declined because the
+ * instrument was throttled" from "attribution concluded third-party" —
+ * otherwise a diff of consecutive runs sees the world flip
+ * (owned → third-party → owned) when only the run's completeness changed.
+ */
+export function buildOwnershipUnmeasuredFinding(seedDomain: string, candidateCount: number): Finding {
+	return createFinding(
+		'lookalikes',
+		'Ownership attribution unmeasured this run — treat verdicts as pending',
+		'info',
+		`The nameserver lookup for ${seedDomain} itself did not resolve in this run (DNS timeout or rate limiting), so registered candidates could not be compared against the organisation's own nameservers. ${candidateCount} candidate${candidateCount === 1 ? '' : 's'} ${candidateCount === 1 ? 'is' : 'are'} reported with an 'unmeasured' ownership verdict instead of a definitive attribution — a definitive third-party claim requires the same complete comparison an owned verdict does. Impersonation-shaped observations are withheld for unmeasured candidates; re-run to attribute.`,
+		{
+			findingAxis: 'scan_status' satisfies LookalikeFindingAxis,
+			seedNsUnresolved: true,
+			unmeasuredCandidateCount: candidateCount,
+			confidence: 'heuristic',
+		},
+	);
+}
+
+/**
  * AXIS 2 — summary finding for high-severity lookalikes. Only fires when at
  * least one NON-OWNED candidate reached HIGH under the issue #264 matrix
  * (mail-infra + corroborator). Owned candidates never reach here.
