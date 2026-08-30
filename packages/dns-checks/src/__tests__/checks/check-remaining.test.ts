@@ -313,6 +313,26 @@ describe('checkSSL', () => {
 		expect(result.findings.some((f) => f.title === 'HTTPS and HSTS properly configured')).toBe(false);
 	});
 
+	it('excludes the category when the HTTPS redirect chain terminates in a no-content response', async () => {
+		const fetchFn: FetchFunction = vi.fn(async (url: string) => {
+			if (url.startsWith('http://')) {
+				return new Response('', { status: 301, headers: { location: 'https://example.com/' } });
+			}
+			if (url === 'https://example.com') {
+				return new Response('', { status: 307, headers: { location: 'https://www.example.com/' } });
+			}
+			// Terminal 204: no page was delivered — same #806/#819 shape as the initial-response
+			// no-content branch, reached via a redirect instead.
+			return new Response(null, { status: 204 });
+		});
+
+		const result = await checkSSL('example.com', fetchFn);
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.some((f) => f.title === 'No HSTS header')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'HTTPS and HSTS properly configured')).toBe(false);
+	});
+
 	it('reports a downgrade when the HTTPS redirect chain lands on HTTP', async () => {
 		const fetchFn: FetchFunction = vi.fn(async (url: string) => {
 			if (url.startsWith('http://')) {

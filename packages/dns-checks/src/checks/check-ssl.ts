@@ -149,11 +149,20 @@ async function checkHttps(
 				findings.push(...getHttpsFindings(domain, redirectTarget, hstsHeader));
 			} else {
 				const followed = await followHttpsRedirectChain(response, fetchFn, timeoutMs);
+				// Terminal statuses that measure nothing: origin-unreachable / server error, and the
+				// #806/#819 no-content pair — the same classes the initial-response branches above
+				// route to the inconclusive lane, reached via a redirect instead of directly.
+				const terminalUnassessable =
+					followed.kind === 'final' &&
+					(followed.response.status === 0 ||
+						followed.response.status >= 500 ||
+						followed.response.status === 204 ||
+						followed.response.status === 205);
 				if (followed.kind === 'downgrade') {
 					// The chain left HTTPS mid-flight — same critical downgrade the first-hop
 					// `isDowngrade` branch scores, just discovered a hop later.
 					findings.push(...getHttpsFindings(domain, followed.target, null));
-				} else if (followed.kind === 'final' && followed.response.status !== 0 && followed.response.status < 500) {
+				} else if (followed.kind === 'final' && !terminalUnassessable) {
 					findings.push(...getHttpsFindings(domain, undefined, followed.response.headers.get('strict-transport-security')));
 				} else {
 					// Chain cut (fetch failure / hop cap / unassessable terminal status): HSTS was
@@ -215,6 +224,11 @@ type RedirectChainResult =
  * Embedders that pass raw `fetch` are responsible for their own SSRF protection.
  */
 async function followHttpsRedirectChain(response: Response, fetchFn: FetchFunction, timeoutMs: number): Promise<RedirectChainResult> {
+	// ONE deadline for the whole chain, not a fresh timeout per hop: per-hop timeouts stack
+	// (3 hops × timeoutMs on top of the initial and HTTP legs), which on unbudgeted direct
+	// calls can push the check past the tool-level race. A chain that cannot resolve within
+	// one leg's allowance reports `unresolved` — the inconclusive lane — rather than stalling.
+	const chainSignal = AbortSignal.timeout(timeoutMs);
 	let current = response;
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
 		const isRedirect = current.status >= 300 && current.status < 400;
@@ -238,7 +252,7 @@ async function followHttpsRedirectChain(response: Response, fetchFn: FetchFuncti
 			current = await fetchFn(nextUrl, {
 				method: 'HEAD',
 				redirect: 'manual',
-				signal: AbortSignal.timeout(timeoutMs),
+				signal: chainSignal,
 			});
 		} catch (err) {
 			// Includes SSRF/robots rejection from a gated fetchFn — the chain is unmeasurable,
