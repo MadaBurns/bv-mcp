@@ -139,6 +139,62 @@ describe('classifyDmarc', () => {
 		expect(f.some((x) => x.title === 'Non-existent subdomains spoofable (np=none)')).toBe(false);
 	});
 
+	describe('aspf recommendation (#842 — strict SPF alignment must not be advised unconditionally)', () => {
+		// The classifier receives only record-derived facts (no SPF chain / sending-source
+		// inputs), so achievability of strict alignment CANNOT be determined here. The
+		// finding must therefore be advisory (info, penalty 0) and must state the
+		// precondition instead of a bare "consider strict": measured in production (#842),
+		// aspf=s on an ESP-relayed domain failed SPF alignment on 100% of that traffic and
+		// 21 legitimate messages were rejected outright when DKIM also hiccuped.
+		const rejectBase = { recordCount: 1, policy: 'reject', sp: 'reject', rua: 'mailto:dmarc@example.com', adkim: 's' } as const;
+
+		it('relaxed aspf (aspf=r) is advisory info, not a scored deficiency', () => {
+			const f = classifyDmarc({ ...rejectBase, aspf: 'r' });
+			const finding = f.find((x) => x.title === 'Relaxed SPF alignment');
+			expect(finding).toBeDefined();
+			expect(finding!.severity).toBe('info');
+		});
+
+		it('unset aspf gets the same advisory info finding', () => {
+			const f = classifyDmarc({ ...rejectBase });
+			expect(f.find((x) => x.title === 'Relaxed SPF alignment')?.severity).toBe('info');
+		});
+
+		it('states the strict-alignment precondition instead of a bare "consider strict"', () => {
+			const f = classifyDmarc({ ...rejectBase, aspf: 'r' });
+			const finding = f.find((x) => x.title === 'Relaxed SPF alignment')!;
+			// The precondition: strict SPF alignment needs the return-path (envelope-from)
+			// domain to exactly match the From domain — untrue for most ESP-relayed mail.
+			expect(finding.detail).toMatch(/return-path/i);
+			expect(finding.detail).toMatch(/exactly match/i);
+			expect(finding.detail).toMatch(/aspf=s/);
+			expect(finding.detail).not.toContain('Consider aspf=s (strict) for stronger authentication');
+		});
+
+		it('names the ESP-relayed breakage aspf=s would cause', () => {
+			const f = classifyDmarc({ ...rejectBase, aspf: 'r' });
+			const finding = f.find((x) => x.title === 'Relaxed SPF alignment')!;
+			expect(finding.detail).toMatch(/ESP|subdomain/i);
+		});
+
+		it('conditions the failure claim on the From domain differing — never categorical over subdomain return-paths', () => {
+			// PR #846 review: a subdomain return-path does not itself break strict
+			// alignment — it PASSES when the RFC 5322 From domain is that same subdomain.
+			// The classifier has no From/sender evidence, so the detail must state the
+			// differing-From condition rather than assert unconditional failure.
+			const f = classifyDmarc({ ...rejectBase, aspf: 'r' });
+			const finding = f.find((x) => x.title === 'Relaxed SPF alignment')!;
+			expect(finding.detail).not.toMatch(/all such traffic/i);
+			expect(finding.detail).toMatch(/From address (stays|is) on this domain|From domain differs/i);
+			expect(finding.detail).toMatch(/still aligns/i);
+		});
+
+		it('strict aspf=s still emits no relaxed-alignment finding', () => {
+			const f = classifyDmarc({ ...rejectBase, aspf: 's' });
+			expect(f.some((x) => x.title === 'Relaxed SPF alignment')).toBe(false);
+		});
+	});
+
 	describe('subdomain / org-domain enforcement asymmetry', () => {
 		const asymmetric = {
 			recordCount: 1,

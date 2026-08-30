@@ -244,8 +244,25 @@
  *   changed. The DMARC `p=none; sp=none` correction shipped in the same package is explicitly
  *   score-neutral (its new finding is `info`) but restores the evidence consumed by attack-path
  *   analysis. Affected population for all three shapes is unmeasured against the corpus.
+ * - 1.15.0 — relaxed SPF alignment (`aspf=r`/unset) is a severity reclassification `low` →
+ *   `info` (#842): the "Relaxed SPF alignment" DMARC finding no longer carries the −5 low
+ *   penalty, and its detail now states the precondition for strict alignment instead of a
+ *   bare "consider aspf=s". Rationale, measured not theoretical: the classifier receives
+ *   only record-derived facts, so whether strict alignment is ACHIEVABLE cannot be
+ *   determined — and for any ESP-relayed domain (Resend, SendGrid, Mailchimp, Postmark,
+ *   SES with a custom MAIL FROM) the return-path sits on a subdomain, so `aspf=s`
+ *   guarantees SPF-alignment failure on 100% of that traffic and converts a two-legged
+ *   DMARC posture into a one-legged one. Following the old advice on our own production
+ *   domain rejected 21 legitimate messages outright (1,045 aggregate-report records,
+ *   2026-08-30) whenever DKIM also failed. UPWARD only, +5 on the `dmarc` category for
+ *   every domain with `aspf=r`/unset (the common case); `aspf=s` domains and the strict
+ *   fixture are unchanged, and `adkim` (whose strict mode does not depend on the
+ *   return-path) keeps its existing low. Five DMARC parity fixtures moved up by exactly 5.
+ *   The finding title is unchanged (assess_spoofability matches it by prefix). No weight,
+ *   tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or
+ *   profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.14.0';
+export const SCORING_MODEL_VERSION = '1.15.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
