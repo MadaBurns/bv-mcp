@@ -784,11 +784,11 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		impact: 'Alignment is looser or reporting is less complete than the strictest posture.',
 		adverseConsequences: 'Borderline spoofing techniques may pass alignment and some diagnostic detail is unavailable.',
 		recommendation:
-			'Consider strict alignment (adkim=s, aspf=s), set an explicit sp=, and add a ruf= address if forensic reporting is desired and privacy-permissible.',
+			'Set an explicit sp=, and add a ruf= address if forensic reporting is desired and privacy-permissible. Strict alignment (adkim=s, aspf=s) is a hardening step, not a default: it narrows each mechanism to an exact domain match independently. DMARC still passes while either SPF or DKIM passes and aligns, so the cost is lost redundancy — a sender whose return-path or DKIM d= sits on a subdomain (most ESP-relayed mail) loses that leg, leaving no margin if the other one fails. Adopt it only after aggregate reports confirm which senders still align; otherwise relaxed alignment is the correct setting.',
 		genericExplanation:
 			'A low-severity DMARC refinement was reported. The finding detail supplied with this request is the authoritative description of what was observed — it does not match a refinement this library recognises, so no specific cause is asserted here.',
 		genericRecommendation:
-			'Apply the refinement named in the finding detail. General DMARC guidance: prefer strict alignment (adkim=s, aspf=s), set an explicit sp=, and keep reporting addresses current.',
+			'Apply the refinement named in the finding detail. General DMARC guidance: set an explicit sp= and keep reporting addresses current. Treat strict alignment (adkim=s, aspf=s) as a verified hardening rather than a default — it narrows each mechanism to an exact domain match, so a sender whose return-path or DKIM d= sits on a subdomain (most ESP-relayed mail) loses that authentication leg and relies solely on the other.',
 		references: ['https://datatracker.ietf.org/doc/html/rfc7489'],
 	},
 

@@ -170,11 +170,42 @@ describe('generateDmarcRecord', () => {
 		expect(record.value).toContain('mailto:dmarc-reports@example.com');
 	});
 
-	it('includes strict alignment (adkim=s, aspf=s)', async () => {
+	it('generates relaxed alignment, never strict, for an unknown sending topology (#842)', async () => {
+		// A generated record is paste-ready, and this tool knows nothing about who
+		// sends for the domain. Strict alignment narrows each mechanism to an exact
+		// domain match, so a sender whose return-path sits on a subdomain — most
+		// ESP-relayed mail — loses its SPF leg entirely and rests on DKIM alone.
+		// Measured on our own domain (#842): every ESP-sent message failed SPF
+		// alignment under `aspf=s`, and 21 legitimate messages were rejected on the
+		// occasions DKIM also failed. Relaxed is the RFC 7489 default and still
+		// requires an organizational-domain match.
 		mockTxtRecords(['v=DMARC1; p=none']);
 		const record = await run();
-		expect(record.value).toContain('adkim=s');
-		expect(record.value).toContain('aspf=s');
+		expect(record.value).not.toContain('aspf=s');
+		expect(record.value).not.toContain('adkim=s');
+		expect(record.value).toContain('aspf=r');
+		expect(record.value).toContain('adkim=r');
+	});
+
+	it('warns that strict alignment is an opt-in hardening to verify first (#842)', async () => {
+		mockTxtRecords(['v=DMARC1; p=none']);
+		const record = await run();
+		const warnings = (record.warnings ?? []).join(' ');
+		expect(warnings).toMatch(/strict alignment/i);
+		expect(warnings).toMatch(/aggregate report/i);
+	});
+
+	it('states the strict-alignment cost as lost redundancy, not a conjunctive requirement', async () => {
+		// DMARC passes when EITHER SPF or DKIM passes and aligns; strict mode narrows
+		// each mechanism's comparison independently. Saying strict "requires" both the
+		// return-path AND the DKIM d= to match overstates it — a sender with an aligned
+		// DKIM still passes under aspf=s. The real cost is the lost leg, which is what
+		// #842 measured: SPF alignment gone, then a DKIM hiccup becomes a rejection.
+		mockTxtRecords(['v=DMARC1; p=none']);
+		const record = await run();
+		const warnings = (record.warnings ?? []).join(' ');
+		expect(warnings).toMatch(/either SPF or DKIM/i);
+		expect(warnings).not.toMatch(/requires every authorized sender/i);
 	});
 
 	it('warns when policy is none', async () => {
