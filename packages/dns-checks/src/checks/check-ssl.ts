@@ -131,11 +131,55 @@ async function checkHttps(
 			const isRedirect = response.status >= 300 && response.status < 400;
 			const location = isRedirect ? response.headers.get('location') : null;
 			const isDowngrade = location?.startsWith('http://') ?? false;
-			const isHttpsRedirect = isRedirect && !isDowngrade;
+			const isHttpsRedirect = isRedirect && !isDowngrade && location !== null;
 
-			if (!isHttpsRedirect) {
-				const redirectTarget = isDowngrade ? (location ?? undefined) : undefined;
-				findings.push(...getHttpsFindings(domain, redirectTarget, response.headers.get('strict-transport-security')));
+			const redirectTarget = isDowngrade ? (location ?? undefined) : undefined;
+			const hstsHeader = response.headers.get('strict-transport-security');
+
+			// HTTPS→HTTPS redirects: HSTS on the redirect hop itself is complete evidence (it is
+			// where hstspreload.org requires the header), so analyze it directly. When the hop
+			// lacks HSTS, the header may still live on the terminal response only — a common CDN /
+			// bare-domain→www layout — so follow the chain and score the final page instead of the
+			// hop. History: an unconditional read here was reverted once already (642cbb3c,
+			// 2026-03) because the hop-only read penalized correctly-configured sites, and the
+			// replacement guard silently skipped measurement, which #839 showed reads as a false
+			// "properly configured" pass. Follow-or-abstain is the resolution of that pair: an
+			// unresolvable chain routes to the inconclusive lane below, never to a scored absence.
+			if (!isHttpsRedirect || hstsHeader !== null) {
+				findings.push(...getHttpsFindings(domain, redirectTarget, hstsHeader));
+			} else {
+				const followed = await followHttpsRedirectChain(response, fetchFn, timeoutMs);
+				// Terminal statuses that measure nothing: origin-unreachable / server error, and the
+				// #806/#819 no-content pair — the same classes the initial-response branches above
+				// route to the inconclusive lane, reached via a redirect instead of directly.
+				const terminalUnassessable =
+					followed.kind === 'final' &&
+					(followed.response.status === 0 ||
+						followed.response.status >= 500 ||
+						followed.response.status === 204 ||
+						followed.response.status === 205);
+				if (followed.kind === 'downgrade') {
+					// The chain left HTTPS mid-flight — same critical downgrade the first-hop
+					// `isDowngrade` branch scores, just discovered a hop later.
+					findings.push(...getHttpsFindings(domain, followed.target, null));
+				} else if (followed.kind === 'final' && !terminalUnassessable) {
+					findings.push(...getHttpsFindings(domain, undefined, followed.response.headers.get('strict-transport-security')));
+				} else {
+					// Chain cut (fetch failure / hop cap / unassessable terminal status): HSTS was
+					// never measured, so exclude the category (#638 law — a cut probe must not be
+					// recorded as absence) instead of scoring "No HSTS header" from a hop nobody
+					// would ever land on, or letting the empty finding set read as a clean pass.
+					inconclusive = followed.kind === 'unresolved' && followed.reason === 'timeout' ? 'timeout' : 'error';
+					findings.push(
+						createFinding(
+							'ssl',
+							'HTTPS redirect chain not assessable',
+							'info',
+							`https://${domain} redirects to another HTTPS URL, and the redirect chain could not be followed to a final response, so HSTS posture could not be verified.`,
+							{ inconclusive: true, confidence: 'heuristic', errorKind: 'redirect_chain_unresolved' },
+						),
+					);
+				}
 			}
 		}
 	} catch (err) {
@@ -157,6 +201,68 @@ async function checkHttps(
 	}
 
 	return { findings, reachable, robotsDisallowed: false, inconclusive };
+}
+
+/** Maximum HTTPS→HTTPS hops to follow when hunting the terminal response's HSTS header. */
+const MAX_REDIRECT_HOPS = 3;
+
+type RedirectChainResult =
+	| { kind: 'final'; response: Response }
+	| { kind: 'downgrade'; target: string }
+	| { kind: 'unresolved'; reason: 'timeout' | 'error' };
+
+/**
+ * Follow an HTTPS→HTTPS redirect chain to its terminal response so HSTS can be read from the
+ * page users actually land on. Mirrors `followRedirects` in check-http-security, with one
+ * deliberate divergence: where that check analyzes whatever headers it holds when a chain
+ * breaks, this one reports `unresolved` so the caller can route to the inconclusive lane —
+ * check-ssl's HSTS verdict is scored, and a broken chain measured nothing.
+ *
+ * SSRF note (same contract as check-http-security's follower): each hop's target hostname is
+ * attacker-controlled (`Location:` header). Callers must pass a `fetchFn` that validates the
+ * destination before issuing the request — the bv-mcp Worker passes a safeFetch-based wrapper.
+ * Embedders that pass raw `fetch` are responsible for their own SSRF protection.
+ */
+async function followHttpsRedirectChain(response: Response, fetchFn: FetchFunction, timeoutMs: number): Promise<RedirectChainResult> {
+	// ONE deadline for the whole chain, not a fresh timeout per hop: per-hop timeouts stack
+	// (3 hops × timeoutMs on top of the initial and HTTP legs), which on unbudgeted direct
+	// calls can push the check past the tool-level race. A chain that cannot resolve within
+	// one leg's allowance reports `unresolved` — the inconclusive lane — rather than stalling.
+	const chainSignal = AbortSignal.timeout(timeoutMs);
+	let current = response;
+	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
+		const isRedirect = current.status >= 300 && current.status < 400;
+		const location = isRedirect ? current.headers.get('location') : null;
+		// A non-redirect (or a 3xx with no Location, which delivers its own headers) terminates
+		// the chain: analyzable.
+		if (!location) return { kind: 'final', response: current };
+
+		let nextUrl: string;
+		try {
+			nextUrl = new URL(location, current.url || undefined).href;
+		} catch {
+			return { kind: 'unresolved', reason: 'error' };
+		}
+		if (nextUrl.startsWith('http://')) return { kind: 'downgrade', target: nextUrl };
+		if (!nextUrl.startsWith('https://')) return { kind: 'unresolved', reason: 'error' };
+
+		try {
+			// Release the abandoned hop's body so workerd doesn't cancel a stalled stream.
+			void current.body?.cancel().catch(() => undefined);
+			current = await fetchFn(nextUrl, {
+				method: 'HEAD',
+				redirect: 'manual',
+				signal: chainSignal,
+			});
+		} catch (err) {
+			// Includes SSRF/robots rejection from a gated fetchFn — the chain is unmeasurable,
+			// which the caller must NOT score as a header absence.
+			const timedOut = err instanceof Error && (err.message.includes('timeout') || err.message.includes('abort'));
+			return { kind: 'unresolved', reason: timedOut ? 'timeout' : 'error' };
+		}
+	}
+	const stillRedirecting = current.status >= 300 && current.status < 400 && current.headers.get('location') !== null;
+	return stillRedirecting ? { kind: 'unresolved', reason: 'error' } : { kind: 'final', response: current };
 }
 
 /** Check if HTTP redirects to HTTPS */
