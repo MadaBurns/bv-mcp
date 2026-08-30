@@ -16,6 +16,7 @@ import { callTlsProbe, mergeTlsFinding } from '../lib/tls-probe-binding';
 import { enrichWithCertificateMetadata } from '../lib/cert-metadata-enrich';
 import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-binding';
 import { withAbortSignal } from '../lib/abort-signal';
+import { safeFetch } from '../lib/safe-fetch';
 import { withRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
 import { createFetchBudget } from '../lib/fetch-budget';
 import { createRobotsProvenance } from '../lib/robots-provenance';
@@ -109,8 +110,25 @@ export async function checkSsl(
 	// including the fail-open one, so a scored `ssl` category carries positive
 	// evidence of WHY it was scored. Observation only: no finding, no score effect.
 	const provenance = createRobotsProvenance(domain);
+	// checkSSL follows HTTPS→HTTPS redirect chains to read HSTS off the terminal response
+	// (#839), and each hop's target comes from an attacker-controlled `Location:` header, so
+	// cross-host fetches route through safeFetch — the same H3 contract check-http-security's
+	// follower documents. First-party fetches (any URL on the already-validated scanned host:
+	// the https leg, the plain-HTTP redirect probe, their robots.txt) stay on raw fetch per the
+	// already-validated-hostname rule — safeFetch would also reject the http:// probe (it is
+	// https-only) and re-judge the input domain against the SSRF blocklist mid-check.
+	const sslProbeFetch: typeof fetch = (input, init) => {
+		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+		let firstParty = false;
+		try {
+			firstParty = new URL(url).hostname === domain;
+		} catch {
+			// Malformed URL: fall through to safeFetch, which rejects it with fetch semantics.
+		}
+		return firstParty ? fetch(input, init) : safeFetch(input, init);
+	};
 	const fetchFn = withRobotsGate(
-		withRobotsFetchMemo(budget.wrap(withAbortSignal(fetch, tlsProbeOptions.signal)), tlsProbeOptions.robotsMemo),
+		withRobotsFetchMemo(budget.wrap(withAbortSignal(sslProbeFetch, tlsProbeOptions.signal)), tlsProbeOptions.robotsMemo),
 		{ onRobotsResolution: provenance.onResolution },
 	);
 	// The TLS probe is launched HERE, alongside the HTTPS legs, not after them.
