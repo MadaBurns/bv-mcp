@@ -56,6 +56,7 @@ import {
 	buildBrandHeldFinding,
 	buildOwnedBySeedFinding,
 	buildRawAttributionFinding,
+	buildRegisteredDarkFinding,
 	buildSharedRegistrantOrgFinding,
 	buildThreatObservationFinding,
 	describeCorroborators,
@@ -248,6 +249,12 @@ async function checkLookalikesCore(
 	// Second silent-drop site (#781): a candidate already KNOWN registered, whose
 	// infrastructure probe failed, disappears here.
 	const probeUnresolved = probeResults.filter((r) => r.status === 'rejected').length;
+	// Third silent-drop site (#831): a registered candidate whose A/MX lookups
+	// REJECTED carries no positive signal and no measured absence — it cannot be
+	// classified as active, and it must not be reported as registered-but-dark
+	// either (the absence was unfetched). It is counted as unresolved so the
+	// run reports itself incomplete instead of erasing the candidate.
+	const infraUnknownCount = results.filter((r) => r.probeDegraded && !r.hasA && !r.hasMX).length;
 	/**
 	 * Enumeration coverage for this run.
 	 *
@@ -259,8 +266,8 @@ async function checkLookalikesCore(
 		permutationsGenerated: permutations.length,
 		permutationsProbed: permsToProbe.length,
 		candidatesResolved: results.length,
-		unresolvedCount: nsUnresolved + probeUnresolved,
-		complete: nsUnresolved + probeUnresolved === 0,
+		unresolvedCount: nsUnresolved + probeUnresolved + infraUnknownCount,
+		complete: nsUnresolved + probeUnresolved + infraUnknownCount === 0,
 	};
 
 	// Enrichment (Defect L / issue #264): for each non-defensively-registered
@@ -387,7 +394,19 @@ async function checkLookalikesCore(
 			continue;
 		}
 
-		if (!result.hasMX && !result.hasA) continue;
+		if (!result.hasMX && !result.hasA) {
+			// #831 — registered but dark: NS resolved, and the A/MX probe MEASURED
+			// no infrastructure. "Held and dark" and "unregistered" are opposite
+			// custody facts, so the candidate is surfaced (info, attribution axis,
+			// never impersonation-scored) instead of dropped silently. A DEGRADED
+			// probe is the one exception: the absence was unfetched, not measured
+			// (#832's law), so the candidate is left to the enumeration
+			// incompleteness accounting above rather than recorded as dark.
+			if (!result.probeDegraded) {
+				findings.push(buildRegisteredDarkFinding(result, domain, ownership));
+			}
+			continue;
+		}
 
 		const corroborators = enrichment.get(result.domain) ?? {
 			registrationDays: null,

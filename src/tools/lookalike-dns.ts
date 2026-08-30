@@ -42,6 +42,14 @@ export interface LookalikeResult {
 	hasMX: boolean;
 	/** MX exchange hosts (lowercased, trailing-dot-stripped) — empty when no real MX. */
 	mxExchanges: string[];
+	/**
+	 * True when the A or MX lookup for this candidate REJECTED (timeout /
+	 * throttling), so the corresponding `false` above is UNFETCHED, not
+	 * measured (#831/#832). A candidate with no positive signal and a degraded
+	 * probe must never be reported as "registered but dark" — that would
+	 * compile a non-answer into a custody record.
+	 */
+	probeDegraded: boolean;
 }
 
 /**
@@ -94,6 +102,7 @@ async function probeLookalike(domain: string): Promise<LookalikeResult> {
 		hasA: aRecords.status === 'fulfilled' && aRecords.value.length > 0,
 		hasMX: realMxRecords.length > 0,
 		mxExchanges,
+		probeDegraded: aRecords.status === 'rejected' || mxRecords.status === 'rejected',
 	};
 }
 

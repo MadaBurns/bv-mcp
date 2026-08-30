@@ -115,6 +115,43 @@ export function buildOwnedBySeedFinding(result: LookalikeResult, seedDomain: str
 }
 
 /**
+ * AXIS 1 — a REGISTERED-BUT-DARK candidate (#831): NS resolved, but the A/MX
+ * probe measured no web and no mail infrastructure. Before this finding
+ * existed, the capability gate dropped such candidates silently, so "held and
+ * dark" (e.g. a defensive Azure-DNS registration like febreeze.com) rendered
+ * identically to "unregistered" — opposite custody facts, same silence.
+ *
+ * Always `info` and never a threat observation: a domain with no
+ * infrastructure is not impersonation-capable, so it must not move a score.
+ * The ownership-attribution lane applies exactly as for active candidates —
+ * the verdict (including `unmeasured` under a degraded comparison, #832)
+ * travels in metadata and the rationale is quoted. Callers must NOT route a
+ * candidate here when `probeDegraded` is set: an absence that was never
+ * fetched is unknown, not dark.
+ *
+ * WORDING CONSTRAINT (same as `DEFENSIVE_REASON_PHRASES` above): no
+ * `missing` / `required` / `not found` / `no <...> record` shapes —
+ * `scoreIndicatesMissingControl()` matches finding TEXT.
+ */
+export function buildRegisteredDarkFinding(result: LookalikeResult, seedDomain: string, ownership: OwnershipAssessment): Finding {
+	return createFinding(
+		'lookalikes',
+		`Registered, no active infrastructure: ${result.domain}`,
+		'info',
+		`The domain ${result.domain} is a confusable variant of ${seedDomain} and is registered (its nameservers resolve), but it carries neither web nor mail infrastructure — it is held and dark. Ownership evidence: ${ownership.rationale} A held-and-dark confusable can be a defensive registration by the brand or a third party's parked asset; it is reported for awareness and is not treated as impersonation-capable while it stays dark.`,
+		{
+			lookalikeDomain: result.domain,
+			hasA: false,
+			hasMX: false,
+			registeredDark: true,
+			ownershipVerdict: ownership.verdict,
+			ownershipRationale: ownership.rationale,
+			findingAxis: 'attribution' satisfies LookalikeFindingAxis,
+		},
+	);
+}
+
+/**
  * AXIS 1 — the registration record corroborates that this is the scanned
  * organisation's OWN defensive registration. Emitted INSTEAD of the neutral D4
  * gate template, which would otherwise state positively that the domain "is

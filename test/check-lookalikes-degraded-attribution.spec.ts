@@ -134,3 +134,91 @@ describe('checkLookalikes - degraded ownership comparison (#832)', () => {
 		expect(tst.some((f) => f.metadata?.findingAxis === 'threat_observation')).toBe(true);
 	});
 });
+
+describe('checkLookalikes - registered-but-dark candidates (#831)', () => {
+	it('emits an info finding for an NS-resolved candidate with no A and no MX instead of dropping it silently', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'test.com' && isNs(type)) {
+				return Promise.resolve(nsResponse(name, ['ns1.cloudflare.com.', 'ns2.cloudflare.com.']));
+			}
+			if (name === 'tst.com' && isNs(type)) {
+				// Registered on Azure DNS, deliberately dark: A and MX both resolve
+				// EMPTY (NOERROR, no answers) — the febreeze.com shape.
+				return Promise.resolve(nsResponse(name, ['ns1-05.azure-dns.com.', 'ns2-05.azure-dns.net.', 'ns3-05.azure-dns.org.']));
+			}
+			return Promise.resolve(empty());
+		});
+		const result = await run('test.com');
+
+		const dark = result.findings.find((f) => f.title === 'Registered, no active infrastructure: tst.com');
+		expect(dark).toBeDefined();
+		expect(dark!.severity).toBe('info');
+		expect(dark!.metadata?.findingAxis).toBe('attribution');
+		expect(dark!.metadata?.lookalikeDomain).toBe('tst.com');
+		// Ownership-attribution lane applies the same as for active candidates.
+		expect(dark!.metadata?.ownershipVerdict).toBe('third_party');
+		// Not scored as impersonation-capable: no threat observation, nothing above info.
+		expect(result.findings.some((f) => f.metadata?.findingAxis === 'threat_observation')).toBe(false);
+		expect(result.findings.every((f) => f.severity === 'info')).toBe(true);
+	});
+
+	it('applies owned_by_seed attribution to an NS-only candidate sharing the seed nameserver set (defensive registration)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if ((name === 'test.com' || name === 'tst.com') && isNs(type)) {
+				// Identical dedicated 2/2 NS set → owned_by_seed under classifyOwnership.
+				return Promise.resolve(nsResponse(name, ['ns1.cloudflare.com.', 'ns2.cloudflare.com.']));
+			}
+			return Promise.resolve(empty());
+		});
+		const result = await run('test.com');
+
+		const owned = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'tst.com');
+		expect(owned.length).toBeGreaterThan(0);
+		expect(owned.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(true);
+		expect(owned.every((f) => f.severity === 'info')).toBe(true);
+	});
+
+	it('does NOT report registered-but-dark when the A/MX probe itself was degraded (absence unfetched, not measured)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'test.com' && isNs(type)) {
+				return Promise.resolve(nsResponse(name, ['ns1.cloudflare.com.', 'ns2.cloudflare.com.']));
+			}
+			if (name === 'tst.com') {
+				if (isNs(type)) return Promise.resolve(nsResponse(name, ['ns1-05.azure-dns.com.']));
+				// The detail probe is throttled: A and MX lookups both REJECT.
+				if (isA(type) || isMx(type)) return Promise.reject(new Error('DNS timeout'));
+			}
+			return Promise.resolve(empty());
+		});
+		const result = await run('test.com');
+
+		// No dark claim from an absence never measured…
+		expect(result.findings.some((f) => /Registered, no active infrastructure/.test(f.title))).toBe(false);
+		// …but the candidate does not vanish silently either: the run reports
+		// itself incomplete.
+		const incomplete = result.findings.find((f) => /enumeration was incomplete/i.test(f.title));
+		expect(incomplete).toBeDefined();
+	});
+
+	it('a dark candidate under a degraded seed NS lookup carries the unmeasured verdict (interplay with #832)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'test.com' && isNs(type)) {
+				return Promise.reject(new Error('DNS timeout'));
+			}
+			if (name === 'tst.com' && isNs(type)) {
+				return Promise.resolve(nsResponse(name, ['ns1-05.azure-dns.com.']));
+			}
+			return Promise.resolve(empty());
+		});
+		const result = await run('test.com');
+
+		const dark = result.findings.find((f) => f.title === 'Registered, no active infrastructure: tst.com');
+		expect(dark).toBeDefined();
+		expect(dark!.metadata?.ownershipVerdict).toBe('unmeasured');
+		expect(dark!.severity).toBe('info');
+	});
+});
