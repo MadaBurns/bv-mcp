@@ -42,6 +42,14 @@ export interface LookalikeResult {
 	hasMX: boolean;
 	/** MX exchange hosts (lowercased, trailing-dot-stripped) — empty when no real MX. */
 	mxExchanges: string[];
+	/**
+	 * True when the A or MX lookup for this candidate REJECTED (timeout /
+	 * throttling), so the corresponding `false` above is UNFETCHED, not
+	 * measured (#831/#832). A candidate with no positive signal and a degraded
+	 * probe must never be reported as "registered but dark" — that would
+	 * compile a non-answer into a custody record.
+	 */
+	probeDegraded: boolean;
 }
 
 /**
@@ -94,6 +102,7 @@ async function probeLookalike(domain: string): Promise<LookalikeResult> {
 		hasA: aRecords.status === 'fulfilled' && aRecords.value.length > 0,
 		hasMX: realMxRecords.length > 0,
 		mxExchanges,
+		probeDegraded: aRecords.status === 'rejected' || mxRecords.status === 'rejected',
 	};
 }
 
@@ -174,16 +183,31 @@ function normalizeNsSet(nsRecords: string[]): Set<string> {
 	return new Set(nsRecords.map((ns) => ns.replace(/\.$/, '').toLowerCase()));
 }
 
+/** Result of the seed-side NS probe: the answer set plus whether the lookup actually resolved. */
+export interface PrimaryNsResult {
+	ns: Set<string>;
+	/**
+	 * False when the NS query REJECTED (timeout / throttling). The distinction
+	 * is load-bearing (#832): an empty set from a FAILED lookup means the
+	 * ownership comparison has nothing to compare against — every downstream
+	 * verdict must be `unmeasured`, never `third_party`. An empty set from a
+	 * resolved lookup is a real measurement.
+	 */
+	resolved: boolean;
+}
+
 /**
  * Query NS records for the primary domain to use for ownership comparison.
- * Returns an empty set if the query fails.
+ * Fail-soft on the SET (empty), but the failure itself is surfaced via
+ * `resolved: false` so the attribution layer can decline to attribute (#832)
+ * rather than reading "unfetched" as "distinct infrastructure".
  */
-export async function queryPrimaryNs(domain: string): Promise<Set<string>> {
+export async function queryPrimaryNs(domain: string): Promise<PrimaryNsResult> {
 	try {
 		const ns = await queryDnsRecords(domain, 'NS', PHASE1_DNS_OPTS);
-		return normalizeNsSet(ns);
+		return { ns: normalizeNsSet(ns), resolved: true };
 	} catch {
-		return new Set<string>();
+		return { ns: new Set<string>(), resolved: false };
 	}
 }
 

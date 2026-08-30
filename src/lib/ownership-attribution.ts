@@ -79,8 +79,18 @@ import { createFinding } from '@blackveil/dns-checks/scoring';
 import { getRegistrableDomain } from './public-suffix';
 import { UNKNOWN_REASON_PHRASES, type RegistrationState } from './registration-state';
 
-/** Final attribution verdict. */
-export type OwnershipVerdict = 'owned_by_seed' | 'third_party' | 'unattributed';
+/**
+ * Final attribution verdict.
+ *
+ * `unmeasured` (#832) means the lookups feeding the ownership comparison were
+ * DEGRADED — the seed's own NS set could not be fetched — so no comparison was
+ * possible. It is NOT a claim about the candidate: a throttled run must never
+ * publish the OPPOSITE attribution (`third_party`, "no ownership signal links
+ * it…") for signals that were unfetched rather than absent. A definitive
+ * `third_party` requires the same completeness bar `owned_by_seed` already
+ * implies (the full-set comparison).
+ */
+export type OwnershipVerdict = 'owned_by_seed' | 'third_party' | 'unattributed' | 'unmeasured';
 
 /**
  * `classifyOwnership()` only ever returns `'strong'`, `'medium'`, or
@@ -119,6 +129,17 @@ export interface ClassifyOwnershipInput {
 	 * never imports from `src/tenants/discovery/` (see file header).
 	 */
 	isSharedNsHost: (nsHost: string) => boolean;
+	/**
+	 * True when the SEED's own NS lookup REJECTED (timeout / throttling), so
+	 * `seedNs` is empty because it was UNFETCHED, not because the seed has no
+	 * nameservers (#832). With this set, no set-comparison verdict is
+	 * reachable: candidates that would otherwise fall through to the
+	 * `third_party` arm come back `unmeasured` instead. The in-bailiwick arm
+	 * still fires — it needs only the seed APEX, not the seed's NS answer, and
+	 * a positive `owned_by_seed` from resolved candidate-side delegation
+	 * evidence stays safe to publish.
+	 */
+	seedNsUnresolved?: boolean;
 	/**
 	 * OWNERSHIP RULE — SEED-SIDE CONTROL ONLY (Ruling A, 2026-07-27 task-7c;
 	 * fields DELETED 2026-07-27 ownership-attribution followups item 2 — see
@@ -254,6 +275,22 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 		};
 	}
 
+	// #832 — degraded comparison inputs. The seed's NS lookup did not resolve,
+	// so every arm below would be comparing against an UNFETCHED set: the
+	// ns_set_match / shared-provider arms cannot fire (seedNs is empty), and
+	// the third_party arm would publish "no ownership signal links it" about
+	// signals nobody fetched — the exact non-answer-becomes-record defect this
+	// verdict exists to prevent. Only the in-bailiwick arm above (which needs
+	// the seed APEX, not its NS answer) may still produce a verdict.
+	if (input.seedNsUnresolved) {
+		return {
+			verdict: 'unmeasured',
+			strength: 'none',
+			signals: [],
+			rationale: `Ownership of ${candidateDomain} was not assessed in this run: the nameserver lookup for ${seedApex} did not resolve, so ${candidateDomain}'s nameservers could not be compared against it. This is a measurement gap, not evidence of third-party registration — re-run to attribute.`,
+		};
+	}
+
 	// Ruling A (2026-07-27, task-7c): candidate-side declarations (SOA RNAME,
 	// SPF include, HTTP redirect target — see the OWNERSHIP RULE note on
 	// `ClassifyOwnershipInput`) are never consulted here, and no such inputs
@@ -348,9 +385,9 @@ export function attributionConfidence(verdict: OwnershipVerdict, brandLabel: str
  * severity alone (`'unbounded'`) or clamp it (`'info'`). The finding itself
  * is ALWAYS emitted by the caller; only its severity and wording change.
  *
- * Per the load-bearing safety property (controller amendment 2), `third_party`
- * and `unattributed` are capped identically — only `owned_by_seed` is ever
- * exempt.
+ * Per the load-bearing safety property (controller amendment 2), `third_party`,
+ * `unattributed` and `unmeasured` are capped identically — only `owned_by_seed`
+ * is ever exempt.
  */
 export function capAttributionSeverity(verdict: OwnershipVerdict): Severity | 'unbounded' {
 	return verdict === 'owned_by_seed' ? 'unbounded' : 'info';
@@ -436,14 +473,22 @@ export function buildNonOwnedGateFinding(
 	const relation =
 		ownership.verdict === 'third_party'
 			? 'is registered to a different organisation'
-			: 'could not be attributed to the scanned organisation';
+			: ownership.verdict === 'unmeasured'
+				? 'could not be compared against the scanned organisation in this run — the lookups feeding the ownership comparison did not complete'
+				: 'could not be attributed to the scanned organisation';
 	const hedge =
 		confidence === 'uncorroborated'
 			? ` The shared label is under ${MIN_ATTRIBUTION_LABEL_LENGTH} characters and nothing else corroborates a link, so the name similarity alone means little.`
 			: '';
+	// #832: an `unmeasured` verdict must not be TITLED "Unrelated domain" — that
+	// is the very third-party claim the degraded comparison failed to earn.
+	const title =
+		ownership.verdict === 'unmeasured'
+			? `Confusable label, ownership unmeasured this run: ${domain}`
+			: `Unrelated domain, confusable label: ${domain}`;
 	return createFinding(
 		options.category,
-		`Unrelated domain, confusable label: ${domain}`,
+		title,
 		ceiling,
 		`${domain} shares the "${brand}" label with the scanned domain but ${relation}. ${ownership.rationale} Its ${options.postureNoun} is reported for awareness only: no action by the scanned organisation is implied, and this finding asserts no control over ${domain}.${hedge}`,
 		metadata,
