@@ -261,8 +261,24 @@
  *   The finding title is unchanged (assess_spoofability matches it by prefix). No weight,
  *   tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or
  *   profile-detection rule changed.
+ * - 1.16.0 — a missing-control rule correction on `dnssec` (#850). A DS or DNSKEY lookup
+ *   that THREW, next to published DNSSEC material on the other leg, was recorded as a
+ *   MEASURED broken chain: `missingControl: true` zeroed the category, and because `dnssec`
+ *   is critical in all six profiles the `criticalGapCeiling` then capped the WHOLE domain at
+ *   64 — grade D for a genuinely signed zone, caused by a transient resolver failure. The
+ *   unmeasured shape now returns the repo's standard non-answer contract instead
+ *   (`checkStatus: 'error'` + `score: 0` + `partial`), so the category is EXCLUDED from the
+ *   scan score and renormalized rather than scored 0, and the transient-zero retry can fire.
+ *   `controlPresent` moves from `false` to `undefined` on that path — "could not be
+ *   determined", not a definitive "not working" — which also removes it as a
+ *   profile-detection input for those runs. Scores move UPWARD and only for scans that hit
+ *   the failed-probe path; a scan in which both legs answered is bit-for-bit unchanged. No
+ *   weight, tier, grade band, `SEVERITY_PENALTIES` entry or severity label changed.
+ *   (`check_dnssec_chain`'s parallel ordering fix in #852 is NOT reflected here: it is a
+ *   standalone tool whose category is outside the `CheckCategory` union, so it contributes
+ *   nothing to a scan score.)
  */
-export const SCORING_MODEL_VERSION = '1.15.0';
+export const SCORING_MODEL_VERSION = '1.16.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
