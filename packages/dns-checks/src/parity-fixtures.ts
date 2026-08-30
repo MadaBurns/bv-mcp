@@ -1,4 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
+// bv-oversize-ok: single-file cross-repo parity corpus by design — bv-web consumes it
+// as one module; splitting it would fragment the shared contract surface.
 /**
  * Shared cross-repo scoring parity corpus.
  *
@@ -284,10 +286,12 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 	},
 	{
 		check: 'dmarc',
+		// Scores here reflect model 1.15.0 (#842): relaxed aspf is advisory info (0),
+		// no longer a scored low (−5) — fixtures without aspf=s moved UP by 5.
 		name: 'p=none + rua',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=none; rua=mailto:d@example.com'] },
-		expectedScore: 70,
+		expectedScore: 75,
 		expectedMissingControl: false,
 	},
 	{
@@ -295,7 +299,7 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 		name: 'p=quarantine + rua',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=quarantine; rua=mailto:d@example.com'] },
-		expectedScore: 80,
+		expectedScore: 85,
 		expectedMissingControl: false,
 	},
 	{
@@ -315,7 +319,7 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 		name: 't=y test mode (1.3.0 superset)',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=reject; t=y; rua=mailto:d@example.com'] },
-		expectedScore: 65,
+		expectedScore: 70,
 		expectedMissingControl: false,
 	},
 	{
@@ -323,7 +327,7 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 		name: 'np=none spoofable (1.3.0 superset)',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=reject; np=none; rua=mailto:d@example.com'] },
-		expectedScore: 65,
+		expectedScore: 70,
 		expectedMissingControl: false,
 	},
 	{
@@ -348,7 +352,7 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 			'_dmarc.blog.example.com': [],
 			'_dmarc.example.com': ['v=DMARC1; p=reject; sp=quarantine'],
 		},
-		expectedScore: 70,
+		expectedScore: 75,
 		expectedMissingControl: false,
 		treeWalkOnly: true,
 	},

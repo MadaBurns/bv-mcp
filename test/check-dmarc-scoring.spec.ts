@@ -78,7 +78,11 @@ describe('Defect J — DMARC scoring credits modern best practices', () => {
 				'v=DMARC1; p=reject; pct=100; fo=1; rua=mailto:dmarc@stripe.com; ruf=mailto:ruf@stripe.com',
 			),
 		);
-		expect(govuk.score).toBeGreaterThan(stripe.score);
+		// ≥, not >: since #842 (model 1.15.0) relaxed aspf is advisory info, so stripe's
+		// only aspf penalty is gone and the two records legitimately tie at 90 (gov.uk's
+		// sp=none/no-ruf lows offset stripe's adkim/no-sp lows). The regression this
+		// guards is gov.uk falling BELOW stripe (was 70 < 85), which ≥ still catches.
+		expect(govuk.score).toBeGreaterThanOrEqual(stripe.score);
 	});
 
 	it('np=reject downgrades "Subdomain policy weaker than parent" from HIGH to LOW (DMARCbis covers non-existent subdomains)', async () => {
