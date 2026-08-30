@@ -467,35 +467,87 @@ describe('checkDnssecChain', () => {
 		expect(result.passed).toBe(false);
 	});
 
-	it('a structurally complete chain with a MEASURED AD=false is not a silent 100 (#851)', async () => {
-		// Vacuous pass: `chainComplete` is computed from structure alone and never
-		// consulted `adFlag`, so a chain whose validation is actually failing reported
-		// chainComplete + score 100 with no finding at all — the same shape as #839.
+	it('a broken chain scanned at a subdomain still scores 45 — penalties do not stack (#851 review)', async () => {
+		// Regression: the broken-chain and unsigned-termination findings were emitted
+		// independently, so this shape fired BOTH (-55 and -40 = 95) for a score of 5 —
+		// far below the 45 floor the ordering fix exists to establish, and below the
+		// island 60 it is meant to sit just under. Nothing caps this category.
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
+			// example.com: DS at the parent, no DNSKEY → broken. The walk does NOT stop
+			// (that needs BOTH record sets empty), so it continues to the subdomain...
+			'example.com:DS': dsResponse('example.com', ['54321 8 2 DDEEFF00']),
+			'example.com:DNSKEY': emptyDnskeyResponse('example.com'),
+			// ...where both are empty, making `targetSigned` false as well.
+			'www.example.com:DS': emptyDsResponse('www.example.com'),
+			'www.example.com:DNSKEY': emptyDnskeyResponse('www.example.com'),
+			'www.example.com:A': adResponse('www.example.com', false),
+		});
+
+		const result = await run('www.example.com');
+		expect(result.findings.some((f) => f.title.startsWith('Broken DNSSEC chain'))).toBe(true);
+		// Exactly one break/termination verdict — they are mutually exclusive.
+		expect(result.findings.some((f) => f.title === 'DNSSEC chain terminates unsigned')).toBe(false);
+		expect(result.score).toBe(45);
+	});
+
+	it('two broken zones score 45, not 0 — only the shallowest break is penalised (#851 review)', async () => {
+		// Two -55 penalties summed to 110 → score 0, which collapses the very ordering
+		// the fix establishes (bogus must sit at 45, above nothing-measured).
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			// com: DS present, no DNSKEY → broken (shallowest)
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': emptyDnskeyResponse('com'),
+			// example.com: DS present, no DNSKEY → broken as well
+			'example.com:DS': dsResponse('example.com', ['54321 8 2 DDEEFF00']),
+			'example.com:DNSKEY': emptyDnskeyResponse('example.com'),
+			'example.com:A': adResponse('example.com', false),
+		});
+
+		const result = await run();
+		const broken = result.findings.filter((f) => f.title.startsWith('Broken DNSSEC chain'));
+		expect(broken).toHaveLength(1);
+		expect(broken[0]!.title).toBe('Broken DNSSEC chain at com');
+		// The deeper break is reported, just not separately penalised.
+		expect(broken[0]!.metadata?.additionalBrokenZones).toEqual(['example.com']);
+		expect(result.score).toBe(45);
+	});
+
+	it('a measured AD=false on a complete chain is disclosed but NOT scored (#851 review)', async () => {
+		// ⚠️ This asserts a DELIBERATE non-penalty. Cloudflare DoH returns AD:false for
+		// correctly-signed zones depending on the answering POP and its cache (measured:
+		// verisign.com false on 2 of 3 consecutive queries while Google returned true
+		// throughout). Scoring it penalises healthy zones at random. The flag is
+		// reported so it is not silently discarded, and scored at 0 because that is
+		// what the signal supports.
 		mockDnsFetch({
 			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
 			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
 			'com:DNSKEY': dnskeyResponse('com', ['257 3 8 AwEAAcom...']),
 			'example.com:DS': dsResponse('example.com', ['54321 8 2 DDEEFF00']),
 			'example.com:DNSKEY': dnskeyResponse('example.com', ['257 3 8 AwEAAexample...']),
-			// The AD probe SUCCEEDS and reports false — a measurement, not a placeholder.
 			'example.com:A': adResponse('example.com', false),
 		});
 
 		const result = await run();
-		const failing = result.findings.find((f) => f.title === 'DNSSEC validation failing');
-		expect(failing).toBeDefined();
-		expect(failing!.severity).toBe('high');
-		expect(failing!.metadata?.penaltyOverride).toBe(55);
-		expect(failing!.metadata?.missingControl).toBeUndefined();
-		expect(result.score).toBe(45);
-		expect(result.passed).toBe(false);
+		const disclosure = result.findings.find((f) => f.title.startsWith('DNSSEC chain links, but the resolver'));
+		expect(disclosure).toBeDefined();
+		expect(disclosure!.severity).toBe('info');
+		expect(disclosure!.metadata?.penaltyOverride).toBeUndefined();
+		expect(disclosure!.metadata?.missingControl).toBeUndefined();
+		// Explicitly NOT a bogus accusation.
+		expect(disclosure!.detail).toMatch(/not as evidence the zone is bogus/i);
+		// Structure really is complete, and an info finding carries no penalty.
+		expect(result.score).toBe(100);
 	});
 
-	it('does not report validation failing when the AD probe itself failed (#638 law)', async () => {
-		// `adFlag` initialises to `false` and the AD query is wrapped in a bare
-		// `catch {}`, so an unmeasured probe is INDISTINGUISHABLE from a measured
-		// AD=false unless the failure is tracked separately. Scoring the placeholder
-		// would record a probe that never completed as a validation failure.
+	it('does not read the AD placeholder as a measurement when the probe failed (#638 law)', async () => {
+		// `adFlag` initialises to `false` inside a bare `catch {}`, so an unmeasured
+		// probe was indistinguishable from a measured AD=false — and the summary printed
+		// `AD flag: false` in the very run the check could not assess it.
 		mockDnsFetch({
 			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
 			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
@@ -506,15 +558,16 @@ describe('checkDnssecChain', () => {
 		});
 
 		const result = await run();
-		expect(result.findings.some((f) => f.title === 'DNSSEC validation failing')).toBe(false);
+		// No verdict — scored or disclosed — off a probe that never completed.
+		expect(result.findings.some((f) => f.title.startsWith('DNSSEC chain links, but the resolver'))).toBe(false);
 		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
-		// The unmeasured probe is reported, not scored, and keeps the run out of cache.
-		const unmeasured = result.findings.find((f) => f.title === 'DNSSEC validation not assessable');
-		expect(unmeasured).toBeDefined();
-		expect(unmeasured!.severity).toBe('info');
-		expect(unmeasured!.metadata?.inconclusive).toBe(true);
-		expect(unmeasured!.metadata?.errorKind).toBe('dns_error');
-		expect(unmeasured!.metadata?.missingControl).toBeUndefined();
+		const summary = result.findings.find((f) => f.metadata?.chainComplete !== undefined);
+		expect(summary).toBeDefined();
+		// Reported as unmeasured, not as an observed `false`.
+		expect(summary!.metadata!.adFlag).toBeNull();
+		expect(summary!.detail).toMatch(/AD flag: not measured/);
+		expect(summary!.detail).not.toMatch(/AD flag: false/);
+		// The run measured less than it appears to have, so it must not be cached.
 		expect(result.partial).toBe(true);
 	});
 });
