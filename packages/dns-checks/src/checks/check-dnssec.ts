@@ -149,9 +149,20 @@ export async function checkDNSSEC(
 				{ penaltyOverride: 40 },
 			),
 		);
-	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0) {
+	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0 && !dsQueryFailed) {
 		// DNSKEY published but no DS in parent zone — broken chain. BOGUS to any
 		// validating resolver (worse than unsigned): explicit missingControl → score 0.
+		//
+		// ⚠️ The `!dsQueryFailed` gate is LOAD-BEARING. A DS probe that THREW leaves
+		// `dsRecords` empty, which is structurally indistinguishable here from a
+		// measured "the parent holds no DS" — and this branch's missingControl zeroes
+		// the category. Because `dnssec` is a critical category in every profile, that
+		// zero also caps the ENTIRE domain at `criticalGapCeiling` (64 → grade D). So
+		// without this gate a single transient DS timeout re-grades a correctly signed
+		// domain to D off a delegation nobody observed. Unmeasured probes route to the
+		// inconclusive lane below instead (#638 law: `inconclusive` + `errorKind` for a
+		// probe that never completed, `missingControl` only for a MEASURED absence).
+		// The sibling check_dnssec_chain gained the same gate in #844's review.
 		findings.push(
 			createFinding(
 				'dnssec',
@@ -161,7 +172,7 @@ export async function checkDNSSEC(
 				{ missingControl: true },
 			),
 		);
-	} else if (dnskeyRecords.length === 0 && dsRecords.length > 0) {
+	} else if (dnskeyRecords.length === 0 && dsRecords.length > 0 && !dnskeyQueryFailed) {
 		// Parent DS published but the child DNSKEY is absent — also a broken chain.
 		// A validating resolver cannot match the delegation to a zone key, regardless
 		// of a transient/cached AD observation, so this must never become a clean pass.
@@ -216,6 +227,47 @@ export async function checkDNSSEC(
 	}
 	if (nsec3ParamRecords.length > 0) {
 		findings.push(...auditNsec3Params(target, nsec3ParamRecords));
+	}
+
+	// ⚠️ Ordered BEFORE the affirmative fallback below, deliberately. A failed DS/DNSKEY
+	// probe alongside published DNSSEC material leaves the chain genuinely unknown: the
+	// broken-chain branches above withheld their verdict, so this run has nothing honest
+	// left to score. Returning here also stops the `findings.length === 0` fallback from
+	// appending "DNSSEC enabled and validated" — which it otherwise would for the
+	// DNSKEY-failed/DS-present shape, printing a confident affirmative for a chain whose
+	// child key was never observed.
+	//
+	// Shape matches the repo's standard unmeasured contract (`buildDnsErrorResult`):
+	// `checkStatus: 'error'` EXCLUDES the category from scoring; `score: 0` is what
+	// scan_domain's `shouldRetry` (`checkStatus === 'error' && score === 0`) requires to
+	// re-run the leg; `partial: true` is what `runCachedCheck`'s `!r.partial` predicate
+	// requires to keep a transient non-answer out of the 5-minute cache. Never
+	// `missingControl` — the probe did not complete (#638 law).
+	const chainUnmeasured =
+		(dsQueryFailed && dnskeyRecords.length > 0 && dsRecords.length === 0) ||
+		(dnskeyQueryFailed && dsRecords.length > 0 && dnskeyRecords.length === 0);
+	if (chainUnmeasured) {
+		const unmeasuredLeg = dsQueryFailed ? 'DS' : 'DNSKEY';
+		findings.push(
+			createFinding(
+				'dnssec',
+				'DNSSEC chain of trust not assessable',
+				'info',
+				`The ${unmeasuredLeg} lookup for ${target} did not complete, so the delegation linking the parent zone to the child's DNSSEC material could not be observed. The chain of trust is unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.`,
+				{ inconclusive: true, confidence: 'heuristic', errorKind: 'dns_error' },
+			),
+		);
+		return {
+			// `recordPresent` stays TRUE (material really was observed on the leg that
+			// answered), but `controlPresent` must be `undefined`, not `false`: `false` is
+			// a definitive "not doing work" observation, and one leg of this chain was
+			// never read. `undefined` is the contract's "could not be determined".
+			...buildCheckResult('dnssec', findings, undefined, true),
+			checkStatus: 'error',
+			score: 0,
+			passed: false,
+			partial: true,
+		};
 	}
 
 	// If DNSSEC is valid and no issues found (only info findings at most)
