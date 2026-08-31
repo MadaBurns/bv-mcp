@@ -259,6 +259,56 @@ describe('batchScan', () => {
 		}
 	});
 
+	// Tail-drop regression: a batch that silently dropped its budget-exceeded tail
+	// (e.g. a 10-domain estate scan that only measured 7) exposed NO top-level signal
+	// that it was incomplete, so a caller that did not inspect every row's `measured`
+	// flag treated the dropped domains as unscored/zero. The batch now carries an
+	// explicit `incomplete`/`unscanned` summary in addition to the per-row placeholders.
+	it('exposes a batch-level incomplete flag and unscanned list when the budget drops the tail', async () => {
+		const { batchScan, compactBatchScanResults, formatBatchScan } = await import('../src/tools/batch-scan');
+		// Each scan takes 300ms; a 10ms budget guarantees every domain is
+		// budget-exceeded before its worker slot opens, so the whole tail is dropped.
+		const slowScan = (async (domain: string) => {
+			await new Promise((resolve) => setTimeout(resolve, 300));
+			return fakeScanResult(domain);
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		}) as any;
+		const inputs = ['nec.co.nz', 'ird.govt.nz', 'nzta.govt.nz'];
+		const results = await batchScan(inputs, { kv: env.SCAN_CACHE, budgetMs: 10, concurrency: 1, scanFn: slowScan });
+
+		// Per-row contract is unchanged: budget-dropped rows still carry measured:false + error.
+		const dropped = results.filter((r) => r.error === 'batch_budget_exceeded');
+		expect(dropped.length).toBeGreaterThan(0);
+		for (const r of dropped) expect(r.measured).toBe(false);
+
+		// NEW batch-level signal on the compact wire payload.
+		const compact = compactBatchScanResults(results);
+		expect(compact.incomplete).toBe(true);
+		expect(compact.unscanned).toEqual(expect.arrayContaining(dropped.map((r) => r.domain)));
+		expect(compact.unscanned).toHaveLength(dropped.length);
+
+		// NEW unmissable banner in the text summary (both compact and full formats).
+		const text = formatBatchScan(results, 'compact');
+		expect(text).toContain('INCOMPLETE');
+		for (const r of dropped) expect(text).toContain(r.domain);
+	});
+
+	it('reports a complete batch as not incomplete with an empty unscanned list', async () => {
+		const { batchScan, compactBatchScanResults, formatBatchScan } = await import('../src/tools/batch-scan');
+		const fastScan = (async (domain: string) => ({
+			...fakeScanResult(domain),
+			// isMeasured() reads checks.length > 0 — populate one so measured: true.
+			checks: [{ category: 'dmarc', checkStatus: 'completed' }],
+			// eslint-disable-next-line @typescript-eslint/no-explicit-any
+		})) as any;
+		const results = await batchScan(['a.com', 'b.com'], { kv: env.SCAN_CACHE, scanFn: fastScan });
+
+		const compact = compactBatchScanResults(results);
+		expect(compact.incomplete).toBe(false);
+		expect(compact.unscanned).toEqual([]);
+		expect(formatBatchScan(results, 'compact')).not.toContain('INCOMPLETE');
+	});
+
 	it('formatBatchScan renders "not measured" for an invalid domain', async () => {
 		const { batchScan, formatBatchScan } = await import('../src/tools/batch-scan');
 		const results = await batchScan(['not--valid--domain!@#'], { kv: env.SCAN_CACHE });
