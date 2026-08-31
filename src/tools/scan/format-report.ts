@@ -305,7 +305,7 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		// so only a genuinely validated/configured zone (no deficiency finding) defaults
 		// to `domain_configured`.
 		const dnssecDeficient = dnssecCheck.findings.some(
-			(f) => f.title === 'DNSSEC not enabled' || f.title === 'DNSSEC chain of trust incomplete' || f.title === 'DNSSEC validation failing',
+			(f) => f.title === 'DNSSEC not enabled' || f.title === 'DNSSEC island of trust' || f.title === 'DNSSEC chain of trust incomplete' || f.title === 'DNSSEC validation failing',
 		);
 		if (dnssecSource === null && dnssecCheck.passed && !dnssecDeficient && isCompletedCheck(dnssecCheck)) {
 			dnssecSource = 'domain_configured';

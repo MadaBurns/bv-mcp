@@ -117,9 +117,9 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 		title: 'DNSSEC chain of trust incomplete',
 		category: 'dnssec',
 		reason:
-			'DNSKEY published but no DS in the parent zone — BOGUS to any validating resolver, i.e. worse ' +
-			'than unsigned. Carries an explicit `{ missingControl: true }` and the comment above it states ' +
-			'"explicit missingControl -> score 0". Declared intent, verified in source.',
+			'A parent DS is published while the child DNSKEY is unavailable, so validating resolvers cannot ' +
+			'authenticate the zone. This genuinely bogus branch retains explicit `{ missingControl: true }`; ' +
+			'the DNSKEY-without-parent-DS island now has a distinct graded title.',
 	},
 	{
 		file: 'scoring/classifiers/dmarc.ts',

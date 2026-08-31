@@ -27,6 +27,7 @@ export const NODE_POOL_AUDIT_TESTS = [
 	'test/audits/private-config-injection.node.test.ts',
 	'test/audits/repo-safety-push-range-scanner.audit.test.ts',
 	'test/audits/score-stability-chaos-script.node.test.ts',
+	'test/audits/scoring-version-gate.node.test.ts',
 	'test/audits/security-capability-inventory.node.test.ts',
 	'test/audits/vitest-workerd-stderr-filter.node.test.ts',
 ];
