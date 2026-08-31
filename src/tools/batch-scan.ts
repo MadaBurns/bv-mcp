@@ -38,6 +38,19 @@ export interface CompactBatchScanResultItem {
 /** Compact wire payload for bulk triage; use `format: "full"` for complete findings. */
 export interface CompactBatchScanResult {
 	results: CompactBatchScanResultItem[];
+	/**
+	 * TRUE when one or more domains hit the batch wall-clock budget and were never
+	 * scanned — their rows carry `measured: false, error: 'batch_budget_exceeded'`.
+	 * An unmissable BATCH-LEVEL flag so a caller that does not inspect every row's
+	 * `measured` flag cannot silently treat the budget-dropped tail as unscored/zero.
+	 */
+	incomplete: boolean;
+	/**
+	 * Domains that hit the batch budget and were NOT scanned, in input order. These
+	 * are recoverable: re-run them in a smaller follow-up batch. Empty (`[]`) when the
+	 * whole batch completed. Distinct from invalid-input errors, which are not listed here.
+	 */
+	unscanned: string[];
 	/** Scoring-POLICY semver. ⚠️ Not the npm package version — see `dnsChecksPackageVersion` (#707). */
 	scoringModelVersion: string;
 	/** `@blackveil/dns-checks` engine-package version bundled by this build (#707). */
@@ -211,11 +224,25 @@ export async function batchScan(domains: string[], options: BatchScanOptions = {
 }
 
 /**
+ * Domains that hit the batch wall-clock budget and were never scanned. Both the
+ * pre-scan deadline check and the per-scan timeout stamp `error: 'batch_budget_exceeded'`,
+ * so this single predicate captures the whole budget-dropped tail — and ONLY that tail,
+ * not invalid-input or scan-threw placeholders, which are a different failure class.
+ */
+export function budgetExceededDomains(results: BatchScanResultItem[]): string[] {
+	return results.filter((r) => r.error === 'batch_budget_exceeded').map((r) => r.domain);
+}
+
+/**
  * Reduce a batch to the fields needed to rank an estate and select domains for
  * a full scan. Findings and per-check diagnostics are intentionally excluded:
  * their repeated explanatory prose makes multi-domain MCP responses unusable.
  */
 export function compactBatchScanResults(results: BatchScanResultItem[]): CompactBatchScanResult {
+	// Batch-level incompleteness signal: surfaces the budget-dropped tail at the top
+	// of the payload so a caller cannot silently treat those domains as unscored/zero
+	// by skipping the per-row `measured` flag.
+	const unscanned = budgetExceededDomains(results);
 	return {
 		results: results.map(({ domain, score, grade, measured, findingCounts, categoryScores, scoringProfile, evidence, error }) => ({
 			domain,
@@ -228,6 +255,8 @@ export function compactBatchScanResults(results: BatchScanResultItem[]): Compact
 			evidence,
 			...(error === undefined ? {} : { error }),
 		})),
+		incomplete: unscanned.length > 0,
+		unscanned,
 		// These are computed once for the batch, so hoist them rather than repeating
 		// identical values in every domain result.
 		scoringModelVersion: results[0]?.scoringModelVersion ?? SCORING_MODEL_VERSION,
@@ -280,5 +309,15 @@ export function formatBatchScan(results: BatchScanResultItem[], format: OutputFo
 
 	lines.push('');
 	lines.push(`Scanned ${results.filter((r) => r.measured && r.score !== null).length}/${results.length} domain(s) successfully`);
+
+	// Batch-level incompleteness banner: the per-row `not measured: batch_budget_exceeded`
+	// lines above are easy to miss in a 10-row list, so name the dropped tail explicitly.
+	const unscanned = budgetExceededDomains(results);
+	if (unscanned.length > 0) {
+		lines.push('');
+		lines.push(`⚠ INCOMPLETE: ${unscanned.length} domain(s) hit the batch time budget and were NOT scanned:`);
+		lines.push(`   ${unscanned.join(', ')}`);
+		lines.push('   These are recoverable — re-run them in a smaller follow-up batch.');
+	}
 	return lines.join('\n');
 }
