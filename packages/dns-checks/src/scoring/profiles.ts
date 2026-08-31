@@ -29,7 +29,7 @@ export interface DomainContext {
 	detectedProvider: string | null;
 }
 
-interface ImportanceProfile {
+export interface ImportanceProfile {
 	importance: number;
 }
 
