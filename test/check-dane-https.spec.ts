@@ -18,7 +18,7 @@ describe('checkDaneHttps', () => {
 		return checkDaneHttps(domain);
 	}
 
-	it('should return info finding when HTTPS TLSA record is present with DNSSEC', async () => {
+	it('should return an unverified-pin finding when HTTPS TLSA is present with DNSSEC', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -40,9 +40,10 @@ describe('checkDaneHttps', () => {
 		const result = await run();
 		expect(result.category).toBe('dane_https');
 		expect(result.passed).toBe(true);
-		const infoFindings = result.findings.filter((f) => f.severity === 'info');
-		expect(infoFindings.length).toBeGreaterThanOrEqual(1);
-		expect(infoFindings[0].title).toContain('DANE TLSA configured');
+		const unverified = result.findings.find((f) => f.title.includes('DANE TLSA configured'));
+		expect(unverified).toBeDefined();
+		expect(unverified?.severity).toBe('low');
+		expect(result.score).toBe(95);
 	});
 
 	it('should return high finding when TLSA present but no DNSSEC', async () => {

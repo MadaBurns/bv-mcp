@@ -50,9 +50,11 @@ describe('checkDane', () => {
 		const result = await run();
 		expect(result.category).toBe('dane');
 		expect(result.passed).toBe(true);
-		// Should have info findings for MX TLSA (HTTPS DANE is handled by check-dane-https)
-		const infoFindings = result.findings.filter((f) => f.severity === 'info');
-		expect(infoFindings.length).toBeGreaterThanOrEqual(1);
+		// The pin is present but has not been compared with the served certificate.
+		const unverified = result.findings.find((f) => f.title.includes('DANE TLSA configured'));
+		expect(unverified).toBeDefined();
+		expect(unverified?.severity).toBe('low');
+		expect(result.score).toBe(95);
 	});
 
 	it('should return high finding when DANE exists but no DNSSEC', async () => {

@@ -40,7 +40,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.28.0';
+export const PARITY_CORPUS_VERSION = '1.29.0';
 
 /**
  * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
@@ -372,20 +372,20 @@ export const DANE_HTTPS_PARITY_FIXTURES: DaneHttpsParityFixture[] = [
 	},
 	{
 		check: 'dane_https',
-		name: 'valid DANE-EE (3 1 1) + DNSSEC',
+		name: 'well-formed but unverified DANE-EE (3 1 1) + DNSSEC',
 		domain: 'example.com',
 		tlsa: [`3 1 1 ${SHA256_HASH}`],
 		ad: true,
-		expectedScore: 100,
+		expectedScore: 95,
 		expectedMissingControl: false,
 	},
 	{
 		check: 'dane_https',
-		name: 'valid DANE-EE (3 1 1) without DNSSEC',
+		name: 'well-formed but unverified DANE-EE (3 1 1) without DNSSEC',
 		domain: 'example.com',
 		tlsa: [`3 1 1 ${SHA256_HASH}`],
 		ad: false,
-		expectedScore: 75,
+		expectedScore: 70,
 		expectedMissingControl: false,
 	},
 	{
@@ -399,11 +399,11 @@ export const DANE_HTTPS_PARITY_FIXTURES: DaneHttpsParityFixture[] = [
 	},
 	{
 		check: 'dane_https',
-		name: 'PKIX-EE (1 1 1) without DNSSEC',
+		name: 'unverified PKIX-EE (1 1 1) without DNSSEC',
 		domain: 'example.com',
 		tlsa: [`1 1 1 ${SHA256_HASH}`],
 		ad: false,
-		expectedScore: 100,
+		expectedScore: 95,
 		expectedMissingControl: false,
 	},
 ];
@@ -444,23 +444,23 @@ export const DANE_EMAIL_PARITY_FIXTURES: DaneEmailParityFixture[] = [
 	},
 	{
 		check: 'dane',
-		name: 'valid DANE-EE (3 1 1) + DNSSEC on MX',
+		name: 'well-formed but unverified DANE-EE (3 1 1) + DNSSEC on MX',
 		domain: 'example.com',
 		mx: ['10 mail.example.com'],
 		tlsaByHost: { 'mail.example.com': [`3 1 1 ${SHA256_HASH}`] },
 		adByHost: { 'mail.example.com': true },
-		expectedScore: 100,
+		expectedScore: 95,
 		expectedMissingControl: false,
 	},
 	{
-		// DANE-EE without DNSSEC on the MX zone → spoofable → high (−25) → 75.
+		// DANE-EE without DNSSEC is spoofable (−25) and the certificate match is unverified (−5).
 		check: 'dane',
 		name: 'DANE-EE without DNSSEC on MX',
 		domain: 'example.com',
 		mx: ['10 mail.example.com'],
 		tlsaByHost: { 'mail.example.com': [`3 1 1 ${SHA256_HASH}`] },
 		adByHost: { 'mail.example.com': false },
-		expectedScore: 75,
+		expectedScore: 70,
 		expectedMissingControl: false,
 	},
 	{
@@ -631,14 +631,14 @@ export const DNSSEC_PARITY_FIXTURES: DnssecParityFixture[] = [
 	},
 	{
 		check: 'dnssec',
-		name: 'broken chain (DNSKEY, no DS — BOGUS)',
+		name: 'island of trust (DNSKEY, no parent DS — INSECURE)',
 		domain: 'example.com',
 		ad: false,
 		dnskey: ['257 3 13 AwEAAabc'],
 		ds: [],
 		nsec3param: [],
-		expectedScore: 0,
-		expectedMissingControl: true,
+		expectedScore: 60,
+		expectedMissingControl: false,
 	},
 	{
 		check: 'dnssec',

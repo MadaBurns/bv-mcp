@@ -37,7 +37,7 @@ export const PHASE1_DNS_OPTS: QueryDnsOptions = {
 };
 
 /**
- * Resilient DNS options for the SEED domain's own NS/MX lookups (#850).
+ * Resilient DNS options for the SEED domain's own NS/MX lookups (#853).
  *
  * The blast radius is what separates these from `PHASE1_DNS_OPTS`, not the
  * record type. A dropped CANDIDATE probe costs one disposable permutation out

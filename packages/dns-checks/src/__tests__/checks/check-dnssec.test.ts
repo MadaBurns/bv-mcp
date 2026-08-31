@@ -45,7 +45,7 @@ describe('checkDNSSEC', () => {
 		expect(result.controlPresent).toBe(false);
 	});
 
-	it('reports chain of trust incomplete when DNSKEY present but no DS', async () => {
+	it('reports an insecure island of trust when DNSKEY is present without a parent DS', async () => {
 		// Return DNSKEY from first call, empty from second (DS)
 		const mockDNS: DNSQueryFunction = vi.fn(async (_domain: string, type: string) => {
 			if (type === 'DNSKEY') return ['257 3 13 base64key...'];
@@ -53,7 +53,9 @@ describe('checkDNSSEC', () => {
 		});
 		const rawQueryDNS: RawDNSQueryFunction = vi.fn(async () => ({ AD: false }));
 		const result = await checkDNSSEC('example.com', mockDNS, { rawQueryDNS });
-		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'DNSSEC island of trust')).toBe(true);
+		expect(result.score).toBe(60);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
 	});
 
 	it('does not declare a broken chain when the DS lookup itself failed', async () => {
@@ -71,7 +73,7 @@ describe('checkDNSSEC', () => {
 		const rawQueryDNS: RawDNSQueryFunction = vi.fn(async () => ({ AD: false }));
 		const result = await checkDNSSEC('example.com', mockDNS, { rawQueryDNS });
 
-		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'DNSSEC island of trust')).toBe(false);
 		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
 		// The repo's standard unmeasured contract: checkStatus 'error' EXCLUDES the
 		// category from scoring, and `score: 0` + `checkStatus: 'error'` is exactly what

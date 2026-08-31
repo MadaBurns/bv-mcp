@@ -112,20 +112,18 @@ describe('subject data interpolated into finding prose', () => {
 			expect(result.passed).toBe(false);
 		});
 
-		it('check-dnssec.ts:156 "DNSSEC chain of trust incomplete" still zeroes dnssec', async () => {
+		it('check-dnssec.ts island-of-trust detail stays clear of missing-control inference', async () => {
 			const queryDNS = vi.fn(async (_d: string, type: string) =>
 				type === 'DNSKEY' ? ['257 3 13 base64key...'] : [],
 			) as unknown as DNSQueryFunction;
 			const rawQueryDNS = vi.fn(async () => ({ AD: false })) as unknown as RawDNSQueryFunction;
 			const result = await checkDNSSEC('example.com', queryDNS, { rawQueryDNS });
-			const finding = result.findings.find((f) => f.title === 'DNSSEC chain of trust incomplete');
+			const finding = result.findings.find((f) => f.title === 'DNSSEC island of trust');
 			expect(finding).toBeDefined();
-			// The prose route must remain live here even though the site ALSO carries the
-			// explicit flag — it is the prose, not the flag, that reaches engine.ts's
-			// critical-gap ceiling (engine.ts:213-219 does not read metadata.missingControl).
-			expect(scoreIndicatesMissingControl([finding!])).toBe(true);
-			expect(result.score).toBe(0);
-			expect(result.passed).toBe(false);
+			expect(finding?.metadata?.missingControl).toBeUndefined();
+			expect(scoreIndicatesMissingControl([finding!])).toBe(false);
+			expect(result.score).toBe(60);
+			expect(result.passed).toBe(true);
 		});
 
 		it('classifiers/dmarc.ts "No DMARC record found" still zeroes dmarc', () => {
@@ -158,7 +156,7 @@ describe('subject data interpolated into finding prose', () => {
 
 			const chain = await checkDNSSEC(
 				'missingkids.org',
-				vi.fn(async (_d: string, type: string) => (type === 'DNSKEY' ? ['257 3 13 base64key...'] : [])) as unknown as DNSQueryFunction,
+				vi.fn(async (_d: string, type: string) => (type === 'DS' ? ['12345 13 2 abc123'] : [])) as unknown as DNSQueryFunction,
 				{ rawQueryDNS: vi.fn(async () => ({ AD: false })) as unknown as RawDNSQueryFunction },
 			);
 			expect(chain.score).toBe(0);

@@ -289,8 +289,14 @@
  *   prose regex; findings that already matched prose and all inconclusive results are unchanged.
  *   Affected population is UNMEASURED. No weight, tier, grade band, severity penalty,
  *   profile-detection rule or check roster changed.
+ * - 1.18.0 — corrected two affirmative-safety inversions. A DNSKEY without a parent DS
+ *   is an RFC 4033 insecure delegation, not a bogus chain: it now scores 60 like an
+ *   unsigned zone and no longer arms the critical-gap grade-D ceiling. Well-formed TLSA
+ *   records whose certificate association has not been compared against the served
+ *   certificate now receive a low deduction instead of an unsupported perfect score.
+ *   UPWARD for DNSSEC islands; DOWNWARD for domains publishing unverified TLSA records.
  */
-export const SCORING_MODEL_VERSION = '1.17.0';
+export const SCORING_MODEL_VERSION = '1.18.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
