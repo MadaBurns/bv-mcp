@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.73.0] - 2026-08-31
+
+Small release shipping the immutable scoring behavior contract and an honesty fix for budget-truncated batches. No scoring changes — `SCORING_MODEL_VERSION` stays 1.18.0.
+
+### Added
+
+- **The scoring behavior contract is now published as code.** `@blackveil/dns-checks` (1.30.0) exports `SCORING_CONTRACT` — an immutable, canonically-serializable snapshot of profile semantics and comparison classes — with CI gates (`scoring-contract-change-check`, pack-integrity) that fail any change to scoring behavior that does not advance the contract release. Runtime scan behavior is unchanged. (PR #862)
+- **`batch_scan` now surfaces its budget-dropped tail at batch level.** A batch that exhausts its wall-clock budget previously stamped dropped rows `error: 'batch_budget_exceeded'` per row only, so callers that skipped per-row `measured` inspection silently treated those domains as unscored. The compact payload now carries `incomplete: boolean` plus `unscanned: string[]` (input order, recoverable via a smaller follow-up batch), derived by the `budgetExceededDomains()` predicate — budget class only, never invalid-input or scan-threw placeholders. (PR #868)
+
 ## [3.72.0] - 2026-08-31
 
 Correctness release for DNSSEC and DANE scoring, plus deterministic OAuth rate-limit coverage and an advisory scoring-version governance gate.
