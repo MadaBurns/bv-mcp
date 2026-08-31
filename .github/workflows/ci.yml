@@ -47,6 +47,8 @@ jobs:
 
       - run: npm ci
       - run: npm run check:scoring-contract-change
+        env:
+          SCORING_CONTRACT_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
       - run: npm run build --workspace=packages/dns-checks
 
       - name: Cache Rust
