@@ -77,7 +77,7 @@ export interface PackIntegrityVerdict {
 const OVERRIDE_ENV = 'BV_ALLOW_UNCOMMITTED_PACK';
 
 /** Current shape of `dist/BUILD_INFO.json`. Bump when fields change meaning. */
-export const BUILD_INFO_SCHEMA = 1;
+export const BUILD_INFO_SCHEMA = 2;
 
 export interface BuildInfo {
 	schema: number;
@@ -86,6 +86,8 @@ export interface BuildInfo {
 	/** Full 40-hex commit these bytes were packed from, or null under an override. */
 	commit: string | null;
 	provenance: Provenance;
+	/** SHA-256 of dist/SCORING_CONTRACT.json. */
+	scoringContractSha256: string;
 }
 
 /**
@@ -102,13 +104,20 @@ export interface BuildInfo {
  * tarball produced under duress still says so, in the tarball, forever — which
  * is precisely what 1.18.0 could not do.
  */
-export function buildBuildInfo(input: { name: string; version: string; commit: string | null; provenance: Provenance }): BuildInfo {
+export function buildBuildInfo(input: {
+	name: string;
+	version: string;
+	commit: string | null;
+	provenance: Provenance;
+	scoringContractSha256: string;
+}): BuildInfo {
 	return {
 		schema: BUILD_INFO_SCHEMA,
 		name: input.name,
 		version: input.version,
 		commit: input.provenance === 'committed' ? input.commit : null,
 		provenance: input.provenance,
+		scoringContractSha256: input.scoringContractSha256,
 	};
 }
 

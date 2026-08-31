@@ -1,0 +1,69 @@
+name: Release dns-checks contract
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Exact dns-checks package version to release
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: dns-checks-v${{ inputs.version }}
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build --workspace=packages/dns-checks
+
+      - name: Verify exact tagged version
+        env:
+          EXPECTED_VERSION: ${{ inputs.version }}
+        run: |
+          ACTUAL_VERSION="$(node -p "require('./packages/dns-checks/package.json').version")"
+          test "$ACTUAL_VERSION" = "$EXPECTED_VERSION"
+          test "$(git describe --tags --exact-match HEAD)" = "dns-checks-v$EXPECTED_VERSION"
+
+      - name: Pack immutable artifact and checksum
+        id: pack
+        run: |
+          TARBALL="$(npm pack --workspace=packages/dns-checks --json | jq -r '.[0].filename')"
+          SHA256="$(sha256sum "$TARBALL" | cut -d ' ' -f 1)"
+          printf '%s  %s\n' "$SHA256" "$TARBALL" > "$TARBALL.sha256"
+          printf 'tarball=%s\nsha256=%s\n' "$TARBALL" "$SHA256" >> "$GITHUB_OUTPUT"
+
+      - name: Create immutable release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ inputs.version }}
+          TARBALL: ${{ steps.pack.outputs.tarball }}
+        run: >-
+          gh release create "dns-checks-v$VERSION" "$TARBALL" "$TARBALL.sha256"
+          --verify-tag --title "@blackveil/dns-checks $VERSION"
+          --notes "Immutable scoring artifact. Consumers must verify the attached SHA-256 before installation."
+
+      - name: Request bv-web-prod promotion PR
+        env:
+          GH_TOKEN: ${{ secrets.BV_WEB_PROD_REPO_TOKEN }}
+          VERSION: ${{ inputs.version }}
+          SHA256: ${{ steps.pack.outputs.sha256 }}
+          SOURCE_COMMIT: ${{ github.sha }}
+        run: |
+          test -n "$GH_TOKEN"
+          gh api repos/MadaBurns/bv-web-prod/dispatches --method POST \
+            -f event_type=dns-checks-released \
+            -f "client_payload[version]=$VERSION" \
+            -f "client_payload[sha256]=$SHA256" \
+            -f "client_payload[source_commit]=$SOURCE_COMMIT" \
+            -f "client_payload[release_tag]=dns-checks-v$VERSION"

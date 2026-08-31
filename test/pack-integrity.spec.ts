@@ -140,31 +140,32 @@ describe('assessPackIntegrity — the override self-incriminates rather than hid
 
 describe('buildBuildInfo — the provenance stamp', () => {
 	it('records the source commit for a committed pack', () => {
-		const info = buildBuildInfo({ name: '@blackveil/dns-checks', version: VERSION, commit: COMMIT, provenance: 'committed' });
+		const info = buildBuildInfo({ name: '@blackveil/dns-checks', version: VERSION, commit: COMMIT, provenance: 'committed', scoringContractSha256: 'a'.repeat(64) });
 		expect(info).toEqual({
 			schema: BUILD_INFO_SCHEMA,
 			name: '@blackveil/dns-checks',
 			version: VERSION,
 			commit: COMMIT,
 			provenance: 'committed',
+			scoringContractSha256: 'a'.repeat(64),
 		});
 	});
 
 	it('refuses to record a commit for an overridden pack even if one is passed', () => {
 		// Defence in depth: a caller that forwards HEAD regardless must not be able
 		// to make an unverified tarball claim a reviewable source commit.
-		const info = buildBuildInfo({ name: '@blackveil/dns-checks', version: VERSION, commit: COMMIT, provenance: 'uncommitted-override' });
+		const info = buildBuildInfo({ name: '@blackveil/dns-checks', version: VERSION, commit: COMMIT, provenance: 'uncommitted-override', scoringContractSha256: 'a'.repeat(64) });
 		expect(info.commit).toBeNull();
 		expect(info.provenance).toBe('uncommitted-override');
 	});
 
 	it('is DETERMINISTIC — no timestamps, so re-packing a commit reproduces the sha256 pin', () => {
-		const args = { name: '@blackveil/dns-checks', version: VERSION, commit: COMMIT, provenance: 'committed' as const };
+		const args = { name: '@blackveil/dns-checks', version: VERSION, commit: COMMIT, provenance: 'committed' as const, scoringContractSha256: 'a'.repeat(64) };
 		expect(JSON.stringify(buildBuildInfo(args))).toBe(JSON.stringify(buildBuildInfo(args)));
 	});
 
 	it('carries a schema number so consumers can detect a shape change', () => {
-		const info = buildBuildInfo({ name: 'x', version: '1.0.0', commit: COMMIT, provenance: 'committed' });
+		const info = buildBuildInfo({ name: 'x', version: '1.0.0', commit: COMMIT, provenance: 'committed', scoringContractSha256: 'a'.repeat(64) });
 		expect(info.schema).toBe(BUILD_INFO_SCHEMA);
 		expect(typeof info.schema).toBe('number');
 	});
