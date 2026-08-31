@@ -2,12 +2,7 @@
 
 import { PARITY_CORPUS_VERSION } from '../parity-fixtures';
 import { NIST_GRADE_THRESHOLDS } from './engine';
-import {
-	PROFILE_CRITICAL_CATEGORIES,
-	PROFILE_EMAIL_BONUS_ELIGIBLE,
-	PROFILE_WEIGHTS,
-	type DomainProfile,
-} from './profiles';
+import { PROFILE_CRITICAL_CATEGORIES, PROFILE_EMAIL_BONUS_ELIGIBLE, PROFILE_WEIGHTS, type DomainProfile } from './profiles';
 
 export const SCORING_CONTRACT_SCHEMA_VERSION = 1;
 
@@ -20,44 +15,66 @@ export interface ScoringProfileSemantics {
 	selectionReason: string;
 }
 
-export const PROFILE_SEMANTICS: Readonly<Record<DomainProfile, ScoringProfileSemantics>> = Object.freeze({
-	mail_enabled: {
-		comparisonClass: 'ordinary-domain',
-		emailPostureIncluded: true,
-		autoSelectable: true,
-		selectionReason: 'mail-routing-detected',
-	},
-	enterprise_mail: {
-		comparisonClass: 'ordinary-domain',
-		emailPostureIncluded: true,
-		autoSelectable: true,
-		selectionReason: 'enterprise-mail-and-enforcing-dmarc-detected',
-	},
-	non_mail: {
-		comparisonClass: 'ordinary-domain',
-		emailPostureIncluded: true,
-		autoSelectable: true,
-		selectionReason: 'no-receiving-mail-or-web-presence-detected',
-	},
-	web_only: {
-		comparisonClass: 'ordinary-domain',
-		emailPostureIncluded: false,
-		autoSelectable: true,
-		selectionReason: 'web-presence-without-receiving-mail-detected',
-	},
-	minimal: {
-		comparisonClass: 'limited-footprint',
-		emailPostureIncluded: true,
-		autoSelectable: true,
-		selectionReason: 'more-than-half-of-measured-checks-failed',
-	},
-	authoritative_dns_infra: {
-		comparisonClass: 'specialist-dns',
-		emailPostureIncluded: false,
-		autoSelectable: false,
-		selectionReason: 'explicit-specialist-profile-only',
-	},
-});
+const PROFILE_SEMANTIC_ENTRIES: ReadonlyArray<readonly [DomainProfile, ScoringProfileSemantics]> = [
+	[
+		'mail_enabled',
+		{
+			comparisonClass: 'ordinary-domain',
+			emailPostureIncluded: true,
+			autoSelectable: true,
+			selectionReason: 'mail-routing-detected',
+		},
+	],
+	[
+		'enterprise_mail',
+		{
+			comparisonClass: 'ordinary-domain',
+			emailPostureIncluded: true,
+			autoSelectable: true,
+			selectionReason: 'enterprise-mail-and-enforcing-dmarc-detected',
+		},
+	],
+	[
+		'non_mail',
+		{
+			comparisonClass: 'ordinary-domain',
+			emailPostureIncluded: true,
+			autoSelectable: true,
+			selectionReason: 'no-receiving-mail-or-web-presence-detected',
+		},
+	],
+	[
+		'web_only',
+		{
+			comparisonClass: 'ordinary-domain',
+			emailPostureIncluded: false,
+			autoSelectable: true,
+			selectionReason: 'web-presence-without-receiving-mail-detected',
+		},
+	],
+	[
+		'minimal',
+		{
+			comparisonClass: 'limited-footprint',
+			emailPostureIncluded: true,
+			autoSelectable: true,
+			selectionReason: 'more-than-half-of-measured-checks-failed',
+		},
+	],
+	[
+		'authoritative_dns_infra',
+		{
+			comparisonClass: 'specialist-dns',
+			emailPostureIncluded: false,
+			autoSelectable: false,
+			selectionReason: 'explicit-specialist-profile-only',
+		},
+	],
+];
+
+export const PROFILE_SEMANTICS = Object.freeze(Object.fromEntries(PROFILE_SEMANTIC_ENTRIES)) as Readonly<
+	Record<DomainProfile, ScoringProfileSemantics>
+>;
 
 /**
  * Machine-readable scoring behavior contract. Object keys are normalized by
@@ -75,9 +92,9 @@ export const SCORING_CONTRACT = Object.freeze({
 				criticalCategories: PROFILE_CRITICAL_CATEGORIES[profile],
 				emailBonusEligible: PROFILE_EMAIL_BONUS_ELIGIBLE[profile],
 				semantics: PROFILE_SEMANTICS[profile],
-				},
-			]),
-		),
+			},
+		]),
+	),
 });
 
 function normalize(value: unknown): unknown {
