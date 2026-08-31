@@ -17,9 +17,9 @@ function versionFromJson(text: string): string | null {
 	}
 }
 
-const baseRef = process.env.GITHUB_BASE_REF
-	? `origin/${process.env.GITHUB_BASE_REF}`
-	: process.env.SCORING_CONTRACT_BASE_REF;
+const baseRef =
+	process.env.SCORING_CONTRACT_BASE_REF ??
+	(process.env.GITHUB_BASE_REF ? `origin/${process.env.GITHUB_BASE_REF}` : undefined);
 
 if (!baseRef) {
 	console.log('scoring-contract change gate: no base ref supplied; source contract self-tests remain active.');
