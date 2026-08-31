@@ -188,7 +188,7 @@ async function checkLookalikesCore(
 
 	const permsToProbe = [...nonDotInsertionPerms, ...filteredDotInsertionPerms];
 
-	// Phase 0 (#850): resolve the SEED's own NS + MX BEFORE the permutation
+	// Phase 0 (#853): resolve the SEED's own NS + MX BEFORE the permutation
 	// fan-out, not alongside it. These two queries used to share a Promise.all
 	// with `filterByNsExistence`, which dispatches ~66 probes in adaptive
 	// batches — so the one lookup that gates every ownership verdict competed

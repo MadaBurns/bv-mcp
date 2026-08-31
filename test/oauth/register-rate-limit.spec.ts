@@ -13,6 +13,12 @@ import { clearKvPrefix } from '../helpers/kv';
 const VALID_BODY = JSON.stringify({ redirect_uris: ['https://claude.ai/cb'] });
 const HEADERS = { 'Content-Type': 'application/json' };
 
+function uniqueRateLimitIp(): string {
+	const words = new Uint16Array(4);
+	crypto.getRandomValues(words);
+	return `2001:db8:0:0:${Array.from(words, (word) => word.toString(16)).join(':')}`;
+}
+
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
@@ -33,7 +39,7 @@ function register(ip: string): Promise<Response> {
 
 describe('POST /oauth/register — per-IP rate limit', () => {
 	it('allows 10 registrations from the same IP then blocks the 11th with 429', async () => {
-		const ip = '203.0.113.1';
+		const ip = uniqueRateLimitIp();
 
 		// Drive 10 successful requests.
 		for (let i = 0; i < 10; i++) {
@@ -57,8 +63,8 @@ describe('POST /oauth/register — per-IP rate limit', () => {
 	});
 
 	it('allows a different IP to register after the first IP is blocked', async () => {
-		const blockedIp = '203.0.113.2';
-		const allowedIp = '198.51.100.9';
+		const blockedIp = uniqueRateLimitIp();
+		const allowedIp = uniqueRateLimitIp();
 
 		// Exhaust the limit for blockedIp.
 		for (let i = 0; i < 10; i++) {
@@ -73,7 +79,8 @@ describe('POST /oauth/register — per-IP rate limit', () => {
 	});
 
 	it('admits exactly 10 registrations from a concurrent same-IP burst', async () => {
-		const responses = await Promise.all(Array.from({ length: 25 }, () => register('203.0.113.77')));
+		const ip = uniqueRateLimitIp();
+		const responses = await Promise.all(Array.from({ length: 25 }, () => register(ip)));
 		const statuses = responses.map((response) => response.status);
 		expect(statuses.filter((status) => status === 201)).toHaveLength(10);
 		expect(statuses.filter((status) => status === 429)).toHaveLength(15);

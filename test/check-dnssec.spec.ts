@@ -102,11 +102,13 @@ describe('DNSSEC finding consolidation', () => {
 		expect(result.score).toBe(60);
 	});
 
-	it('emits HIGH when DNSKEY present but DS missing', async () => {
+	it('emits a graded HIGH island finding when DNSKEY is present without a parent DS', async () => {
 		// AD=false, DNSKEY present, no DS
 		mockDnssecResponses(false, true, false);
 		const result = await run();
-		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete' && f.severity === 'high')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'DNSSEC island of trust' && f.severity === 'high')).toBe(true);
+		expect(result.score).toBe(60);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
 	});
 
 	it('does NOT add tld_inherited finding when chain-of-trust is incomplete', async () => {

@@ -12,6 +12,12 @@ const TEST_SIGNING_SECRET = 'a'.repeat(32);
 type TestEnv = typeof env & { BV_API_KEY?: string; OAUTH_SIGNING_SECRET?: string };
 const authEnv = { ...env, BV_API_KEY: TEST_API_KEY, OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET } as TestEnv;
 
+function uniqueRateLimitIp(): string {
+	const words = new Uint16Array(4);
+	crypto.getRandomValues(words);
+	return `2001:db8:0:0:${Array.from(words, (word) => word.toString(16)).join(':')}`;
+}
+
 function base64url(buf: ArrayBuffer): string {
 	const b = new Uint8Array(buf);
 	let s = '';
@@ -420,7 +426,7 @@ describe('POST /oauth/token', () => {
 		// with a bogus code so each one short-circuits at invalid_grant (cheap path) — the rate
 		// limiter check runs BEFORE content-type / grant-type / Zod parsing, so the status
 		// progression is deterministic regardless of downstream validation.
-		const ip = '203.0.113.42';
+		const ip = uniqueRateLimitIp();
 		const body = new URLSearchParams({
 			grant_type: 'authorization_code',
 			code: 'never-issued',
@@ -460,9 +466,8 @@ describe('POST /oauth/token', () => {
 			redirect_uri: 'https://claude.ai/cb',
 			code_verifier: 'v'.repeat(43),
 		});
-		const responses = await Promise.all(
-			Array.from({ length: 50 }, () => postToken(body, authEnv, { 'cf-connecting-ip': '203.0.113.78' })),
-		);
+		const ip = uniqueRateLimitIp();
+		const responses = await Promise.all(Array.from({ length: 50 }, () => postToken(body, authEnv, { 'cf-connecting-ip': ip })));
 		const statuses = responses.map((response) => response.status);
 		expect(statuses.filter((status) => status === 400)).toHaveLength(30);
 		expect(statuses.filter((status) => status === 429)).toHaveLength(20);

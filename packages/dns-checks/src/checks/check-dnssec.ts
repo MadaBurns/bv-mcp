@@ -150,8 +150,12 @@ export async function checkDNSSEC(
 			),
 		);
 	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0 && !dsQueryFailed) {
-		// DNSKEY published but no DS in parent zone — broken chain. BOGUS to any
-		// validating resolver (worse than unsigned): explicit missingControl → score 0.
+		// DNSKEY published without a parent DS is an island of trust. Validating
+		// resolvers classify the delegation as INSECURE, not BOGUS: the zone gets no
+		// origin authentication, but answers do not fail validation solely because the
+		// parent has not anchored the child. Grade it like an unsigned zone (60) and do
+		// not assert missingControl, which would zero this critical category and cap the
+		// entire domain at grade D.
 		//
 		// ⚠️ The `!dsQueryFailed` gate is LOAD-BEARING. A DS probe that THREW leaves
 		// `dsRecords` empty, which is structurally indistinguishable here from a
@@ -166,10 +170,10 @@ export async function checkDNSSEC(
 		findings.push(
 			createFinding(
 				'dnssec',
-				'DNSSEC chain of trust incomplete',
+				'DNSSEC island of trust',
 				'high',
-				`DNSKEY records are published for ${target} but no DS records exist in the parent zone. The chain of trust is broken — DNSSEC validation will fail.`,
-				{ missingControl: true },
+				`DNSKEY records are published for ${target}, but the parent zone does not publish a DS linkage. Validating resolvers therefore treat the delegation as insecure: answers remain available, but DNSSEC provides no origin authentication until the registrar publishes the DS.`,
+				{ penaltyOverride: 40 },
 			),
 		);
 	} else if (dnskeyRecords.length === 0 && dsRecords.length > 0 && !dnskeyQueryFailed) {

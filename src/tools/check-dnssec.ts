@@ -116,12 +116,12 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions, 
 		}
 
 		// Skip augmentation when DNSSEC is definitively absent, failed, or misconfigured at the domain level.
-		// 'DNSSEC chain of trust incomplete' means the domain has DNSKEY but no DS — it is domain-operator-configured
-		// (just broken), not TLD-inherited.
+		// 'DNSSEC island of trust' means the domain has DNSKEY but no parent DS — it is
+		// domain-operator-configured but not anchored, rather than TLD-inherited.
 		// (A transient transport failure already returned above via checkStatus:'error'.)
 		const dnssecAbsent =
 			baseResult.findings.some((f) => f.title === 'DNSSEC not enabled') ||
-			baseResult.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete');
+			baseResult.findings.some((f) => f.title === 'DNSSEC island of trust');
 		if (dnssecAbsent) {
 			return baseResult;
 		}

@@ -20,6 +20,19 @@ permissions:
   contents: read
 
 jobs:
+  scoring-version-advisory:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - name: Review scoring-model version decision
+        env:
+          PR_LABELS_JSON: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: node scripts/ci/check-scoring-version.mjs ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
+
   build-and-test:
     runs-on: ubuntu-latest
     steps:

@@ -2329,7 +2329,7 @@ describe('isSameEntityOrgMatch - fix round 2 residual (direct semantic pin)', ()
 		}
 	});
 
-	// #850 — the seed NS lookup gates EVERY ownership verdict: when it fails,
+	// #853 — the seed NS lookup gates EVERY ownership verdict: when it fails,
 	// all candidates degrade to `unmeasured` and impersonation-shaped findings
 	// are withheld wholesale. It was issued with PHASE1_DNS_OPTS (retries: 0,
 	// timeoutMs: 2000) inside the SAME Promise.all as the 66-permutation
@@ -2338,7 +2338,7 @@ describe('isSameEntityOrgMatch - fix round 2 residual (direct semantic pin)', ()
 	// 2026-08-31: meta.com reported `seedNsUnresolved: true` on 2/2 idle runs
 	// while a standalone DoH NS query for meta.com returned 4 answers.
 	// The seed must survive ONE transient failure; the fan-out may not need to.
-	it('retries the seed NS lookup so one transient failure does not void every ownership verdict (#850)', async () => {
+	it('retries the seed NS lookup so one transient failure does not void every ownership verdict (#853)', async () => {
 		let seedNsAttempts = 0;
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
@@ -2355,7 +2355,7 @@ describe('isSameEntityOrgMatch - fix round 2 residual (direct semantic pin)', ()
 
 			// One registered candidate sharing the seed's nameservers — it can
 			// only be attributed if the seed NS resolved.
-			if (name === 'tset.com') {
+			if (name === 'tes.com') {
 				if (isNs) {
 					return Promise.resolve(
 						createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.seedowner.com.' }]),
@@ -2381,6 +2381,9 @@ describe('isSameEntityOrgMatch - fix round 2 residual (direct semantic pin)', ()
 		// And no candidate was degraded to `unmeasured` by a seed failure.
 		const unmeasured = result.findings.filter((f) => f.metadata?.ownershipVerdict === 'unmeasured');
 		expect(unmeasured).toHaveLength(0);
+		const attributedCandidate = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tes.com');
+		expect(attributedCandidate).toBeDefined();
+		expect(attributedCandidate?.metadata?.ownershipVerdict).not.toBe('unmeasured');
 	});
 
 });

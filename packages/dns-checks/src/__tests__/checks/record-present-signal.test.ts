@@ -185,14 +185,14 @@ describe('DNSSEC adoption is readable without the magic 60', () => {
 		expect(r.passed).toBe(true);
 	});
 
-	it('BROKEN chain (DNSKEY, no DS) → recordPresent TRUE, controlPresent false — published but not working', async () => {
+	it('island of trust (DNSKEY, no parent DS) → recordPresent true, controlPresent false', async () => {
 		const r = await checkDNSSEC(D, dnssecResolver({ DNSKEY: ['257 3 13 base64key...'] }), {
 			rawQueryDNS: async () => ({ AD: false }),
 		});
 		expect(r.recordPresent).toBe(true);
 		expect(r.controlPresent).toBe(false);
-		// Broken IS the missing-control zero — distinct from unsigned's 60, and unchanged.
-		expect(r.score).toBe(0);
+		// The delegation is insecure rather than bogus, so it is graded like unsigned.
+		expect(r.score).toBe(60);
 	});
 
 	it('SIGNED and validating → recordPresent true, controlPresent true', async () => {
