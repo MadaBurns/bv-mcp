@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.72.0] - 2026-08-31
+
+Correctness release for DNSSEC and DANE scoring, plus deterministic OAuth rate-limit coverage and an advisory scoring-version governance gate.
+
+### Fixed
+
+- **DNSSEC islands of trust are no longer misclassified as bogus chains.** A child publishing DNSKEY records without a parent DS is insecure rather than bogus under RFC 4033 semantics: answers remain available but are not authenticated. `check_dnssec` now scores this posture 60, aligned with an unsigned delegation, instead of zeroing the critical category and capping the whole domain at grade D. (#851, PR #860)
+- **Syntactically valid but certificate-unverified TLSA records no longer earn a perfect DANE score.** Until the check receives the live served certificate or SPKI, it now records `certificateMatchVerified: false` with a low deduction and explicit operator guidance. (#841, PR #860)
+- **OAuth rate-limit tests no longer share fixed cross-file client buckets.** Each test generates a unique RFC documentation-range IPv6 address with Web Crypto while preserving same-test concurrency semantics, eliminating order-dependent full-suite failures. (#857, PR #860)
+- **The lookalike seed-NS retry regression test now exercises a candidate the generator can actually produce** and cites the correct originating issue, preventing a vacuous assertion. (#858, PR #860)
+
+### Changed
+
+- **Scoring model 1.18.0.** DNSSEC-island results move upward from the erroneous critical zero to 60; domains publishing unverified TLSA records move downward from an unsupported 100 to 95.
+- **`@blackveil/dns-checks` 1.29.0** with `PARITY_CORPUS_VERSION` advanced in lockstep so cached results cannot preserve the prior scoring shapes.
+- Added an advisory CI gate that warns when scoring-sensitive files change without either a scoring-model version update or an explicit `no-scoring-change` decision. (#856, PR #860)
+
 ## [3.71.0] - 2026-08-30
 
 Continues the evidence-fidelity line of 3.70.0, from the other direction: 3.70.0 stopped checks stating what they never measured, and this release stops a *failed measurement* being scored as a finding. Three of the four fixes are cases where a transient DNS failure was recorded as a confident deficiency.
