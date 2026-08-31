@@ -30,9 +30,11 @@
 
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { assessPackIntegrity, buildBuildInfo } from '../pack-integrity';
+import { canonicalScoringContractJson } from '../../packages/dns-checks/src/scoring/contract';
 
 /**
  * Resolve the repo root from this file's own location rather than from cwd.
@@ -96,11 +98,14 @@ function main(): void {
 
 	if (verdict.code === 'override') console.error(`\n${verdict.message}\n`);
 
+	const contractJson = canonicalScoringContractJson();
+	const scoringContractSha256 = createHash('sha256').update(contractJson).digest('hex');
 	const buildInfo = buildBuildInfo({
 		name: pkgName,
 		version: workingVersion ?? '0.0.0',
 		commit: verdict.commit,
 		provenance: verdict.provenance,
+		scoringContractSha256,
 	});
 
 	const distDir = join(PKG_DIR, 'dist');
@@ -109,8 +114,12 @@ function main(): void {
 	// same commit reproduces byte-identical output and the downstream sha256 pin
 	// stays meaningful.
 	writeFileSync(join(distDir, 'BUILD_INFO.json'), `${JSON.stringify(buildInfo, null, 2)}\n`, 'utf8');
+	writeFileSync(join(distDir, 'SCORING_CONTRACT.json'), contractJson, 'utf8');
 
-	console.log(`${verdict.message}\nStamped dist/BUILD_INFO.json (provenance=${buildInfo.provenance}).`);
+	console.log(
+		`${verdict.message}\nStamped dist/BUILD_INFO.json and dist/SCORING_CONTRACT.json ` +
+			`(contract sha256=${scoringContractSha256}).`,
+	);
 }
 
 main();

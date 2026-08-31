@@ -37,6 +37,7 @@
 		"check:deploy-freshness": "tsx scripts/ci/deploy-freshness-check.ts",
 		"check:release-integrity": "tsx scripts/ci/release-integrity-check.ts --mode deploy",
 		"check:release-integrity:publish": "tsx scripts/ci/release-integrity-check.ts --mode publish",
+		"check:scoring-contract-change": "tsx scripts/ci/scoring-contract-change-check.ts",
 		"prepack": "npm run check:release-integrity:publish",
 		"publish:registry": "npm run check:release-integrity:publish && mcp-publisher publish",
 		"check:bindings": "npm run typecheck",

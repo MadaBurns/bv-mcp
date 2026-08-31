@@ -45,7 +45,15 @@ export {
 	detectDomainContext,
 	getProfileWeights,
 } from './profiles';
-export type { DomainProfile, DomainContext } from './profiles';
+export type { DomainProfile, DomainContext, ImportanceProfile } from './profiles';
+
+export {
+	SCORING_CONTRACT,
+	SCORING_CONTRACT_SCHEMA_VERSION,
+	PROFILE_SEMANTICS,
+	canonicalScoringContractJson,
+} from './contract';
+export type { ProfileComparisonClass, ScoringProfileSemantics } from './contract';
 
 export {
 	sanitizeFindingMetadata,
