@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.73.1] - 2026-09-01
+
+Performance and resilience hardening for synchronous and asynchronous scan orchestration. No scoring changes — `SCORING_MODEL_VERSION` stays 1.18.0.
+
+### Added
+
+- Added owner-scoped `batch_scan_start`, `batch_scan_status`, and `batch_scan_findings` tools backed by a bounded Cloudflare Queue consumer, deterministic idempotency, execution leases, seven-day results, retries, and a dead-letter queue. (PR #870)
+- Added machine-queryable timeout, rate-limit, cancellation, batch-budget, and partial-work Analytics Engine outcomes with scheduled alerting. (PR #870)
+
+### Changed
+
+- Propagated cancellation through scan orchestration and capped shared outbound DNS concurrency at five connections per invocation. (PR #870)
+- Persisted shared CertSpotter cooldown state and honored upstream `Retry-After` guidance across requests to prevent repeated 429s. (PR #870)
+
 ## [3.73.0] - 2026-08-31
 
 Small release shipping the immutable scoring behavior contract and an honesty fix for budget-truncated batches. No scoring changes — `SCORING_MODEL_VERSION` stays 1.18.0.
