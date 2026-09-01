@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.73.3] - 2026-09-01
+
+Documentation and production release completing the guarded capacity-test rollout. No scoring changes — `SCORING_MODEL_VERSION` stays 1.18.0.
+
+### Added
+
+- Added the production capacity measurement procedure, operator runbook, dated test report, and Cloudflare DDoS activation record. (PR #874)
+
+### Changed
+
+- Clarified that Cloudflare mitigation, generator exhaustion, dropped iterations, and source-path failures invalidate a service-ceiling result. (PR #874)
+
 ## [3.73.2] - 2026-09-01
 
 Operational release adding a guarded production-capacity harness. No scoring changes — `SCORING_MODEL_VERSION` stays 1.18.0.
