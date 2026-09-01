@@ -43,6 +43,8 @@
 		"check:bindings": "npm run typecheck",
 		"check:bindings:prod": "wrangler types --config wrangler.production.jsonc && tsc --noEmit",
 		"deploy:prod": "npm run check:deploy-freshness && npm run check:release-integrity && npm -w packages/dns-checks run build && npm run check:bindings && node scripts/inject-private-config.cjs && node scripts/brand-audit-schema-preflight.mjs --config wrangler.production.jsonc && npm run check:bindings:prod && npx wrangler deploy --minify --config wrangler.production.jsonc",
+		"deploy:infra-probe": "npx wrangler deploy --config wrangler.infra-probe.jsonc",
+		"dev:multi": "npx wrangler dev --config wrangler.jsonc --config wrangler.infra-probe.jsonc",
 		"test": "node scripts/vitest-filter-workerd.mjs",
 		"typecheck": "wrangler types && tsc --noEmit",
 		"typecheck:tests": "wrangler types && node scripts/ci/typecheck-tests.mjs",
