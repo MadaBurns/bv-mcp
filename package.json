@@ -59,6 +59,8 @@
 		"report:quality-audit": "node scripts/audits/brand-report-quality-audit.mjs",
 		"report:promote": "node scripts/promote-brand-report.mjs",
 		"benchmark:brand-planner": "node scripts/brand-audit-planner-benchmark.mjs",
+		"load:global-ceiling": "k6 run scripts/load/global-ceiling.k6.js",
+		"load:global-ceiling:run": "node scripts/load/run-global-ceiling.mjs",
 		"drizzle:generate:registry": "drizzle-kit generate --config=src/tenants/db/drizzle.registry.config.ts",
 		"drizzle:generate:tenant": "drizzle-kit generate --config=src/tenants/db/drizzle.tenant.config.ts",
 		"drizzle:generate": "npm run drizzle:generate:registry && npm run drizzle:generate:tenant",

@@ -227,6 +227,10 @@ type BvMcpEnv = Env & {
 	BV_INTERNAL_DEV_KEY?: string;
 	/** Second independent static internal-dev key (owner tier, OWNER_ALLOW_IPS-gated). Lets a per-machine key be added without rotating BV_INTERNAL_DEV_KEY. */
 	BV_INTERNAL_DEV_KEY_2?: string;
+	/** Temporary production load-test credential. Owner tier only from BV_LOAD_TEST_ALLOW_IPS; otherwise fails closed. */
+	BV_LOAD_TEST_KEY?: string;
+	/** Comma-separated Cloudflare-observed source IPs permitted to use BV_LOAD_TEST_KEY. Empty or absent fails closed. */
+	BV_LOAD_TEST_ALLOW_IPS?: string;
 	TENANT_REGISTRY_DB?: D1Database;
 	BV_SCANNER_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<unknown> };
 	ALERT_WEBHOOK_URL?: string;

@@ -160,6 +160,8 @@ export async function resolveTier(
 		BV_API_KEY?: string;
 		BV_INTERNAL_DEV_KEY?: string;
 		BV_INTERNAL_DEV_KEY_2?: string;
+		BV_LOAD_TEST_KEY?: string;
+		BV_LOAD_TEST_ALLOW_IPS?: string;
 		OWNER_ALLOW_IPS?: string;
 		RATE_LIMIT?: KVNamespace;
 		BV_WEB?: Fetcher;
@@ -263,6 +265,19 @@ export async function resolveTier(
 	const keyHash = Array.from(tokenRaw)
 		.map((b) => b.toString(16).padStart(2, '0'))
 		.join('');
+
+	// Dedicated, temporary production load-test credential. It is intentionally
+	// separate from the two operator/dev keys and fails closed unless an explicit
+	// source-IP allowlist is configured and the Cloudflare-observed client IP is
+	// present. This prevents a leaked test key from degrading into another
+	// authenticated tier or reaching the normal key-resolution fallbacks.
+	if (await matchesStaticDevKey(tokenRaw, env.BV_LOAD_TEST_KEY)) {
+		const allowedIps = parseOwnerAllowIps(env.BV_LOAD_TEST_ALLOW_IPS);
+		if (allowedIps.length === 0 || !clientIp || !allowedIps.includes(clientIp)) {
+			return { authenticated: false };
+		}
+		return { authenticated: true, tier: 'owner', keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
+	}
 
 	// 0. Static internal-dev key short-circuit. The dev keys are hardcoded
 	// "us only" secrets (load tests, ops scripts); they must not be subject to
