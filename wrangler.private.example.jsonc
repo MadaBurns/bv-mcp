@@ -20,9 +20,11 @@
 	"vars": {
 		// Set BV_API_KEY with `npx wrangler secret put BV_API_KEY`.
 		"PROVIDER_SIGNATURES_URL": "",
-		// The injector refuses to generate a production config without these four.
-		// OAUTH_ISSUER must match the origin the Worker is served from, or issued tokens
-		// are rejected; the other three are fail-closed production gates.
+		// The injector refuses to generate a production config without these four, and it
+		// PINS OAUTH_ISSUER to the value below. A fork serving the Worker from a different
+		// hostname must change REQUIRED_PRODUCTION_VARS in scripts/inject-private-config.cjs
+		// to match its own origin — issued tokens are rejected as cross-issuer otherwise.
+		// The other three are fail-closed production gates; keep them as-is.
 		"OAUTH_ISSUER": "https://dns-mcp.blackveilsecurity.com",
 		"REJECT_QUERY_API_KEY": "true",
 		"REQUIRE_PRODUCTION_BINDINGS": "true",
