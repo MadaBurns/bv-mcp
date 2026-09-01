@@ -856,3 +856,61 @@ describe('tier-auth second internal dev key (BV_INTERNAL_DEV_KEY_2)', () => {
 		expect(result.authenticated).toBe(false);
 	});
 });
+
+describe('tier-auth dedicated production load-test key', () => {
+	it('resolves to owner only from an explicitly allowlisted source IP', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			'load-test-key-secret',
+			{
+				BV_LOAD_TEST_KEY: 'load-test-key-secret',
+				BV_LOAD_TEST_ALLOW_IPS: '192.0.2.10, 198.51.100.20',
+			},
+			'198.51.100.20',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('owner');
+		expect(result.credentialHash).toMatch(/^[a-f0-9]{64}$/);
+	});
+
+	it.each([
+		['a non-allowlisted IP', '203.0.113.30', '192.0.2.10'],
+		['a missing client IP', undefined, '192.0.2.10'],
+		['an empty allowlist', '192.0.2.10', ''],
+		['a missing allowlist', '192.0.2.10', undefined],
+	])('fails closed for %s', async (_label, clientIp, allowIps) => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			'load-test-key-secret',
+			{
+				BV_LOAD_TEST_KEY: 'load-test-key-secret',
+				BV_LOAD_TEST_ALLOW_IPS: allowIps,
+				BV_API_KEY: 'load-test-key-secret',
+			},
+			clientIp,
+			'https://example.com/mcp',
+		);
+
+		expect(result).toEqual({ authenticated: false });
+	});
+
+	it('does not disturb permanent dev-key resolution', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			'permanent-dev-key',
+			{
+				BV_LOAD_TEST_KEY: 'load-test-key-secret',
+				BV_LOAD_TEST_ALLOW_IPS: '192.0.2.10',
+				BV_INTERNAL_DEV_KEY: 'permanent-dev-key',
+				OWNER_ALLOW_IPS: '192.0.2.10',
+			},
+			'192.0.2.10',
+			'https://example.com/mcp',
+		);
+
+		expect(result.authenticated).toBe(true);
+		expect(result.tier).toBe('owner');
+	});
+});
