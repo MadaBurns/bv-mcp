@@ -194,6 +194,8 @@ export interface ExecuteMcpRequestOptions {
 	brandAuditDb?: D1Database;
 	/** Cloudflare Queue producer for brand-audit batch path. v2.21.2+. */
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	asyncBatchQueue?: import('../tools/batch-scan-async').AsyncBatchQueueProducer;
+	asyncBatchKv?: KVNamespace;
 	/** R2 bucket binding for brand-audit PDF reports. v2.21.2+. */
 	brandReportsR2?: R2Bucket;
 	/**
@@ -1438,6 +1440,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
+			asyncBatchQueue: options.asyncBatchQueue,
+			asyncBatchKv: options.asyncBatchKv,
 			brandReportsR2: options.brandReportsR2,
 			publicOrigin: options.publicOrigin,
 			browserRenderer: options.browserRenderer,
@@ -1558,6 +1562,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 			infraProbe: options.infraProbe,
 			brandAuditDb: options.brandAuditDb,
 			brandAuditQueue: options.brandAuditQueue,
+			asyncBatchQueue: options.asyncBatchQueue,
+			asyncBatchKv: options.asyncBatchKv,
 			brandReportsR2: options.brandReportsR2,
 			publicOrigin: options.publicOrigin,
 			browserRenderer: options.browserRenderer,

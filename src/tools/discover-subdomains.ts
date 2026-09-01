@@ -141,6 +141,17 @@ const SUBDOMAIN_LKG_KEY_PREFIX = 'cache:subdomains-lkg:';
 const SUBDOMAIN_LKG_TTL_SECONDS = 7 * 24 * 60 * 60;
 
 /**
+ * Shared Certspotter cooldown. The unauthenticated quota is shared across every
+ * domain scanned by this Worker, so a 429 is source state rather than a property
+ * of the current domain. Persisting the deadline in the existing resilience KV
+ * prevents the next request from extending the same lockout. Retry-After remains
+ * authoritative; the fallback covers providers that omit it.
+ */
+const CT_SOURCE_COOLDOWN_KEY_PREFIX = 'cooldown:ct-source:';
+const CT_SOURCE_DEFAULT_COOLDOWN_SECONDS = 5 * 60;
+const CT_SOURCE_MAX_COOLDOWN_SECONDS = 60 * 60;
+
+/**
  * Fresh-read window: how long a cached enumeration is served DIRECTLY, with no
  * live CT query at all.
  *
@@ -846,12 +857,51 @@ const COMPACT_ISSUE_DETAIL_CAP = 200;
 interface SourceResult {
 	outcome: CtSourceOutcome;
 	entries: CrtShEntry[];
+	/** Retry delay advertised by an upstream 429, clamped before persistence. */
+	retryAfterSeconds?: number;
 	/**
 	 * False when the source's index was NOT read exhaustively (pagination cut
 	 * short by {@link MAX_CT_PAGES}, the budget, or a mid-pagination failure).
 	 * Defaults to true for single-shot sources.
 	 */
 	enumerationComplete?: boolean;
+}
+
+interface CtSourceCooldown {
+	until: number;
+}
+
+function ctSourceCooldownKey(source: string): string {
+	return `${CT_SOURCE_COOLDOWN_KEY_PREFIX}${source}`;
+}
+
+function parseRetryAfterSeconds(value: string | null): number | undefined {
+	if (!value) return undefined;
+	const numeric = Number(value);
+	if (Number.isFinite(numeric) && numeric > 0) return Math.ceil(numeric);
+	const at = Date.parse(value);
+	if (!Number.isFinite(at)) return undefined;
+	return Math.max(1, Math.ceil((at - Date.now()) / 1000));
+}
+
+async function sourceCooldownActive(source: string, options?: DiscoverSubdomainsOptions): Promise<boolean> {
+	if (!options?.cacheKv || source !== 'certspotter') return false;
+	try {
+		const marker = await cacheGet<CtSourceCooldown>(ctSourceCooldownKey(source), options.cacheKv);
+		return typeof marker?.until === 'number' && marker.until > Date.now();
+	} catch {
+		return false;
+	}
+}
+
+async function rememberSourceCooldown(source: string, retryAfterSeconds: number | undefined, options?: DiscoverSubdomainsOptions): Promise<void> {
+	if (!options?.cacheKv || source !== 'certspotter') return;
+	const ttl = Math.max(1, Math.min(retryAfterSeconds ?? CT_SOURCE_DEFAULT_COOLDOWN_SECONDS, CT_SOURCE_MAX_COOLDOWN_SECONDS));
+	const write = cacheSet(ctSourceCooldownKey(source), { until: Date.now() + ttl * 1000 }, options.cacheKv, ttl).catch(() => {
+		/* best-effort resilience state; a failed write must not break discovery */
+	});
+	if (options.waitUntil) options.waitUntil(write);
+	else await write;
 }
 
 /**
@@ -999,8 +1049,9 @@ async function fetchCertspotterEntries(domain: string, signal: AbortSignal, opti
 			const response = await fetch(url, { signal, redirect: 'manual', ...(certspotterHeaders && { headers: certspotterHeaders }) });
 
 			if (!response.ok) {
+				const retryAfterSeconds = response.status === 429 ? parseRetryAfterSeconds(response.headers.get('retry-after')) : undefined;
 				await disposeUnreadResponseBody(response);
-				if (pagesRead === 0) return { outcome: httpFailureOutcome(response.status), entries: [] };
+				if (pagesRead === 0) return { outcome: httpFailureOutcome(response.status), entries: [], retryAfterSeconds };
 				stopIncomplete();
 				break;
 			}
@@ -1162,6 +1213,11 @@ async function queryDirectSources(
 			if (deadlineExceeded(options) || !hasBudgetFor(options, source.timeoutMs)) {
 				return sawEmpty ? { available: true, entries: [], attempts: attempts() } : { available: false, entries: [], attempts: attempts() };
 			}
+			if (await sourceCooldownActive(source.name, options)) {
+				logCtSource(domain, source.name, 'rate_limited');
+				recordAttempt(source.name, 'rate_limited', false);
+				continue;
+			}
 			const composed = composeAbortSignal(source.timeoutMs, options?.signal);
 			let res: SourceResult;
 			try {
@@ -1170,6 +1226,7 @@ async function queryDirectSources(
 				composed.cleanup();
 			}
 			logCtSource(domain, source.name, res.outcome);
+			if (res.outcome === 'rate_limited') await rememberSourceCooldown(source.name, res.retryAfterSeconds, options);
 			// Every attempt is recorded — including the failures. The pre-fix payload
 			// reported only the winner (`sources: ["certspotter"]`), so a caller could
 			// not tell that crt.sh had been asked and had failed, i.e. that recall on

@@ -207,6 +207,8 @@ export interface DispatchMcpMethodOptions {
 	infraProbe?: { fetch: typeof fetch };
 	brandAuditDb?: D1Database;
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	asyncBatchQueue?: import('../tools/batch-scan-async').AsyncBatchQueueProducer;
+	asyncBatchKv?: KVNamespace;
 	brandReportsR2?: R2Bucket;
 	/** Public origin of the inbound request — brand_audit_get_report builds the /reports/ PDF download URL from it. */
 	publicOrigin?: string;
@@ -368,6 +370,8 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 				infraProbe: options.infraProbe,
 				brandAuditDb: options.brandAuditDb,
 				brandAuditQueue: options.brandAuditQueue,
+				asyncBatchQueue: options.asyncBatchQueue,
+				asyncBatchKv: options.asyncBatchKv,
 				brandReportsR2: options.brandReportsR2,
 				publicOrigin: options.publicOrigin,
 				browserRenderer: options.browserRenderer,

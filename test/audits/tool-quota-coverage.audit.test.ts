@@ -62,7 +62,7 @@ describe('tool-quota-coverage audit', () => {
 
 // #746 — partner-tier decision coverage. `TIER_TOOL_DAILY_LIMITS[tier]?.[tool]
 // ?? TIER_DAILY_LIMITS[tier]` (src/mcp/execute.ts) makes ABSENCE
-// indistinguishable from an intentional flat-limit decision, so 45 of 81 tools
+// indistinguishable from an intentional flat-limit decision, so 48 of 84 tools
 // silently inherited 100k/day. Every TOOL_DEFS entry must now record the
 // decision in exactly one place.
 describe('partner-tier rate-limit decision coverage audit (#746)', () => {

@@ -46,6 +46,10 @@ export interface ScanRuntimeOptions {
 	 * does NOT change scan results. Threaded into `scanDns.dnsSemaphore`.
 	 */
 	dnsConcurrency?: number;
+	/** Invocation-scoped semaphore shared by nested scans (for example batch_scan). */
+	dnsSemaphore?: import('../../lib/semaphore').Semaphore;
+	/** Parent request/job cancellation. Aborts the scan and suppresses cache writes. */
+	signal?: AbortSignal;
 	/** Custom secondary DoH resolver config (bv-dns). Threaded to scanDns but only active when skipSecondaryConfirmation is false. */
 	secondaryDoh?: import('../../lib/dns-types').SecondaryDohConfig;
 	/** Optional service binding for raw DNS, routing, and vantage-point probes. */

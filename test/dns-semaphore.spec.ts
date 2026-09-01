@@ -4,6 +4,23 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Semaphore, SemaphoreTimeoutError } from '../src/lib/semaphore';
 
 describe('Semaphore', () => {
+	it('removes an aborted waiter without starting its work', async () => {
+		const sem = new Semaphore(1);
+		const release = await sem.acquire();
+		const controller = new AbortController();
+		let started = false;
+		const queued = sem.run(async () => {
+			started = true;
+		}, controller.signal);
+		expect(sem.waiting).toBe(1);
+
+		controller.abort();
+		await expect(queued).rejects.toMatchObject({ name: 'AbortError' });
+		expect(started).toBe(false);
+		expect(sem.waiting).toBe(0);
+		release();
+		await sem.drain();
+	});
 	beforeEach(() => {
 		vi.restoreAllMocks();
 	});

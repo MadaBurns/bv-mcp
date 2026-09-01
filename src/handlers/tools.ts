@@ -31,6 +31,7 @@ import { checkSubdomailing } from '../tools/check-subdomailing';
 import { scanDomain, formatScanReport, buildStructuredScanResult } from '../tools/scan-domain';
 import { computeScoringConfigHash } from '../lib/scoring-version';
 import { batchScan, compactBatchScanResults, formatBatchScan } from '../tools/batch-scan';
+import { getAsyncBatchJob, startAsyncBatchScan, type AsyncBatchQueueProducer } from '../tools/batch-scan-async';
 import { compareDomains, formatDomainComparison, COMPARE_DOMAINS_SYNC_BUDGET_MS } from '../tools/compare-domains';
 import { explainFinding, formatExplanation } from '../tools/explain-finding';
 import { compareBaseline, formatBaselineResult } from '../tools/compare-baseline';
@@ -175,9 +176,7 @@ const DOMAIN_REQUIRED_TOOLS = new Set(
 export const INTERNAL_BATCH_SAFE_TOOLS = new Set(
 	TOOLS.filter(
 		(tool) =>
-			tool.annotations?.readOnlyHint === true &&
-			Array.isArray(tool.inputSchema.required) &&
-			tool.inputSchema.required.includes('domain'),
+			tool.annotations?.readOnlyHint === true && Array.isArray(tool.inputSchema.required) && tool.inputSchema.required.includes('domain'),
 	).map((tool) => tool.name),
 );
 
@@ -336,6 +335,9 @@ interface ToolRuntimeOptions {
 	brandAuditDb?: D1Database;
 	/** Cloudflare Queue producer for the brand-audit batch path. Undefined if unprovisioned. */
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	/** Queue and KV durability bindings for asynchronous batch scans. */
+	asyncBatchQueue?: AsyncBatchQueueProducer;
+	asyncBatchKv?: KVNamespace;
 	/** RATE_LIMIT KV — also used by enforceBrandAuditQuota for the per-tier monthly window. */
 	rateLimitKv?: KVNamespace;
 	/** Strong, atomic state for paid monthly brand-audit budgets. Missing binding fails closed. */
@@ -1377,6 +1379,9 @@ export async function handleToolsCall(
 						logDetails,
 						severity: 'info',
 						cacheStatus,
+						outcomeReason: result.checks.some((check) => check.checkStatus === 'timeout') ? 'scan_timeout' : 'completed',
+						unitsAttempted: result.checks.length,
+						unitsCompleted: result.checks.filter((check) => !check.checkStatus || check.checkStatus === 'completed').length,
 					});
 					const structured = buildStructuredScanResult(result, {
 						scoringConfigHash: computeScoringConfigHash(runtimeOptions?.scoringConfig),
@@ -1403,6 +1408,8 @@ export async function handleToolsCall(
 						},
 					});
 					const batchText = formatBatchScan(batchResults, effectiveFormat);
+					const completedDomains = batchResults.filter((result) => result.error !== 'batch_budget_exceeded').length;
+					const budgetExceeded = completedDomains < batchResults.length;
 					logToolSuccess({
 						...ctx(),
 						status: 'pass',
@@ -1413,12 +1420,58 @@ export async function handleToolsCall(
 						logResult: `${batchResults.filter((r) => r.measured && r.score !== null).length}/${batchResults.length} domains`,
 						logDetails: { totalDomains: batchResults.length },
 						severity: 'info',
+						outcomeReason: budgetExceeded ? 'batch_budget_exceeded' : 'completed',
+						unitsAttempted: batchResults.length,
+						unitsCompleted: completedDomains,
 					});
 					return buildToolResult(
 						batchText,
 						effectiveFormat === 'compact' ? compactBatchScanResults(batchResults) : batchResults,
 						effectiveFormat,
 					);
+				}
+				case 'batch_scan_start': {
+					const principalId = runtimeOptions?.principalId;
+					const kv = runtimeOptions?.asyncBatchKv;
+					const queue = runtimeOptions?.asyncBatchQueue;
+					if (!principalId || !kv || !queue) return buildToolErrorResult('Async batch scanning is not provisioned');
+					const job = await startAsyncBatchScan(
+						{
+							domains: validatedArgs.domains as string[],
+							forceRefresh: extractForceRefresh(validatedArgs),
+							idempotencyKey: String(validatedArgs.idempotency_key),
+						},
+						principalId,
+						{ kv, queue, scoringConfig: runtimeOptions.scoringConfig },
+					);
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: job.status, logDetails: job, severity: 'info' });
+					return buildToolResult(JSON.stringify(job, null, 2), job, effectiveFormat);
+				}
+				case 'batch_scan_status':
+				case 'batch_scan_findings': {
+					const principalId = runtimeOptions?.principalId;
+					const kv = runtimeOptions?.asyncBatchKv;
+					if (!principalId || !kv) return buildToolErrorResult('Async batch scanning is not provisioned');
+					const job = await getAsyncBatchJob(String(validatedArgs.job_id), principalId, kv);
+					if (!job) return buildToolErrorResult('Batch scan job not found');
+					const payload =
+						name === 'batch_scan_findings'
+							? {
+									jobId: job.jobId,
+									status: job.status,
+									expiresAt: job.expiresAt,
+									result: job.status === 'completed' ? job.result : undefined,
+								}
+							: {
+									jobId: job.jobId,
+									status: job.status,
+									createdAt: job.createdAt,
+									updatedAt: job.updatedAt,
+									expiresAt: job.expiresAt,
+									error: job.error,
+								};
+					logToolSuccess({ ...ctx(), status: 'pass', logResult: job.status, logDetails: payload, severity: 'info' });
+					return buildToolResult(JSON.stringify(payload, null, 2), payload, effectiveFormat);
 				}
 				case 'compare_domains': {
 					const domains = validatedArgs.domains as string[];
@@ -1749,13 +1802,40 @@ export async function handleToolsCall(
 					// "genuinely no subdomains". The formatted text already explains the outage + suggests
 					// a retry; the structured payload carries sourceUnavailable:true for programmatic checks.
 					if (result.sourceUnavailable) {
-						logToolSuccess({ ...ctx(), status: 'fail', logResult: 'CT source unavailable', logDetails, severity: 'warn' });
+						const sourceOutcomes = result.coverage?.perSource.map((source) => source.outcome) ?? [];
+						logToolSuccess({
+							...ctx(),
+							status: 'fail',
+							logResult: 'CT source unavailable',
+							logDetails,
+							severity: 'warn',
+							outcomeReason: sourceOutcomes.includes('rate_limited')
+								? 'upstream_rate_limited'
+								: sourceOutcomes.includes('timeout')
+									? 'upstream_timeout'
+									: 'internal_error',
+							unitsAttempted: result.coverage?.perSource.length,
+							unitsCompleted: result.coverage?.contributing.length,
+						});
 						return { ...buildToolResult(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat), isError: true };
 					}
 					// A stale (last-known-good) result carries real data, so it is NOT an error —
 					// but log it warn-level so a live-source outage is still visible in tail.
 					if (result.stale) {
-						logToolSuccess({ ...ctx(), status: 'pass', logResult: `${logResult} (stale)`, logDetails, severity: 'warn' });
+						logToolSuccess({
+							...ctx(),
+							status: 'pass',
+							logResult: `${logResult} (stale)`,
+							logDetails,
+							severity: 'warn',
+							outcomeReason: result.coverage?.perSource.some((source) => source.outcome === 'rate_limited')
+								? 'upstream_rate_limited'
+								: result.coverage?.perSource.some((source) => source.outcome === 'timeout')
+									? 'upstream_timeout'
+									: 'completed',
+							unitsAttempted: result.coverage?.perSource.length,
+							unitsCompleted: result.coverage?.contributing.length,
+						});
 						return buildToolResult(formatSubdomainDiscovery(result, effectiveFormat), result, effectiveFormat);
 					}
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });

@@ -309,6 +309,9 @@ function makeToolCases(): ToolCase[] {
 		{ name: 'check_subdomailing', arguments: domainArgs() },
 		{ name: 'scan_domain', arguments: { domain: nextDomain(), profile: 'auto', force_refresh: true, format: 'full' } },
 		{ name: 'batch_scan', arguments: { domains: baseDomains.slice(0, 4), force_refresh: true, format: 'compact' } },
+		{ name: 'batch_scan_start', arguments: { domains: baseDomains.slice(0, 2), idempotency_key: 'chaos-batch-1' } },
+		{ name: 'batch_scan_status', arguments: { job_id: `bs_${'0'.repeat(40)}` } },
+		{ name: 'batch_scan_findings', arguments: { job_id: `bs_${'0'.repeat(40)}` } },
 		{ name: 'compare_domains', arguments: { domains: baseDomains.slice(1, 4), format: 'compact' } },
 		{
 			name: 'compare_baseline',
@@ -427,12 +430,22 @@ describe('chaos: varied-domain all-tools scanning', () => {
 	});
 
 	it('runs every registered tool through handleToolsCall without dispatcher errors', async () => {
+		const asyncBatchValues = new Map<string, string>();
+		const asyncBatchKv = {
+			get: vi.fn(async (key: string, type?: string) => {
+				const value = asyncBatchValues.get(key) ?? null;
+				return type === 'json' && value ? JSON.parse(value) : value;
+			}),
+			put: vi.fn(async (key: string, value: string) => asyncBatchValues.set(key, value)),
+		} as unknown as KVNamespace;
 		const runtimeOptions = {
 			certstream: makeCertstreamBinding(),
 			whoisBinding: makeWhoisBinding(),
 			authTier: 'owner',
 			principalId: 'chaos-owner',
 			clientType: 'chaos_suite',
+			asyncBatchKv,
+			asyncBatchQueue: { send: vi.fn(async () => undefined) },
 		};
 		const failures: Array<{ name: string; message: string }> = [];
 		const results = new Map<string, ToolResult>();
@@ -444,6 +457,10 @@ describe('chaos: varied-domain all-tools scanning', () => {
 			if (toolCase.name === 'query_ual') {
 				expect(result.isError).toBe(true);
 				expect(result.structuredContent).toEqual({ ok: false, error: 'query_ual_deprecated' });
+				continue;
+			}
+			if ((toolCase.name === 'batch_scan_status' || toolCase.name === 'batch_scan_findings') && result.isError) {
+				expect(text).toContain('Batch scan job not found');
 				continue;
 			}
 			if (result.isError || result.content.length === 0 || text.length === 0) {

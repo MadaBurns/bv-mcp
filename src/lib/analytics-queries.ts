@@ -24,8 +24,10 @@
  *   Double positions: double1=durationMs, double2=abs(jsonRpcErrorCode) (0 when no error).
  * Blob positions (tool_call): blob1=toolName, blob2=status, blob3=isError,
  *   blob4=hashedDomain, blob5=country, blob6=clientType, blob7=tier, blob8=cacheStatus,
- *   blob9=keyHash, blob10=ipHash, blob11=colo (edge datacenter, append-only).
- * Double positions (tool_call): double1=durationMs, double2=score
+ *   blob9=keyHash, blob10=ipHash, blob11=colo, blob12=priorTool,
+ *   blob13=region, blob14=city, blob15=asn, blob16=outcomeReason (append-only).
+ * Double positions (tool_call): double1=durationMs, double2=score,
+ *   double3=unitsAttempted, double4=unitsCompleted (append-only).
  * Blob positions (rate_limit): blob1=limitType, blob2=toolName, blob3=country, blob4=tier
  * Blob positions (session): blob1=action, blob2=country, blob3=clientType, blob4=tier
  */
@@ -335,6 +337,24 @@ export function queryRateLimitSurge(minutes: string, dataset?: string): string {
 FROM ${resolveAnalyticsDataset(dataset)}
 WHERE index1 = 'rate_limit'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE`;
+}
+
+/** Terminal tool outcomes and incomplete-work counters, grouped by fixed reason. */
+export function queryToolOutcomeReasons(minutes: string, dataset?: string): string {
+	minutes = safeInterval(minutes);
+	return `SELECT
+  blob16 AS outcome_reason,
+  SUM(_sample_interval) AS total_calls,
+  SUM(double3 * _sample_interval) AS units_attempted,
+  SUM(double4 * _sample_interval) AS units_completed
+FROM ${resolveAnalyticsDataset(dataset)}
+WHERE index1 = 'tool_call'
+  AND blob16 != ''
+  AND blob16 != 'completed'
+  AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
+GROUP BY outcome_reason
+HAVING total_calls > 0
+ORDER BY total_calls DESC`;
 }
 
 /**

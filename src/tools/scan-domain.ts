@@ -502,6 +502,7 @@ export async function runCheckRetry(
  * @returns Full scan result with score, individual check results, and metadata
  */
 export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOptions?: ScanRuntimeOptions): Promise<ScanDomainResult> {
+	if (runtimeOptions?.signal?.aborted) throw runtimeOptions.signal.reason ?? new Error('scan_aborted');
 	const scanStartTime = Date.now();
 	const timeoutBudget = resolveScanTimeoutBudget(runtimeOptions);
 	const explicitProfile = runtimeOptions?.profile;
@@ -517,6 +518,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// Check cache first (skip when force_refresh is requested)
 	if (!runtimeOptions?.forceRefresh) {
 		const cached = await cacheGet<ScanDomainResult>(cacheKey, kv);
+		if (runtimeOptions?.signal?.aborted) throw runtimeOptions.signal.reason ?? new Error('scan_aborted');
 		if (cached) {
 			// Deliberately NOT re-stamped with the current hash: a cached result's score
 			// was computed under the config in force when it was written, so it must keep
@@ -541,7 +543,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// SCAN_DNS_CONCURRENCY) else the static default; clamped to [1, 50].
 	const dnsConcurrency =
 		runtimeOptions?.dnsConcurrency !== undefined ? parseScanDnsConcurrency(String(runtimeOptions.dnsConcurrency)) : SCAN_DNS_CONCURRENCY;
-	const dnsSemaphore = new Semaphore(dnsConcurrency);
+	const dnsSemaphore = runtimeOptions?.dnsSemaphore ?? new Semaphore(dnsConcurrency);
 
 	// R7 — abort (not just abandon) in-flight subrequests on timeout. The
 	// scan-level controller is aborted by the scan-timeout snapshot below; each
@@ -552,6 +554,8 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// raw-`fetch` ssl/http checks. The apex-state probe below shares `scanDns`
 	// (and thus the scan signal) but runs BEFORE any timeout can fire.
 	const scanAbort = new AbortController();
+	const parentSignal = runtimeOptions?.signal;
+	const scanSignal = parentSignal ? AbortSignal.any([scanAbort.signal, parentSignal]) : scanAbort.signal;
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
 	// still use secondary confirmation when called directly by users.
@@ -560,7 +564,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		queryCache: new Map(),
 		secondaryDoh: runtimeOptions?.secondaryDoh,
 		dnsSemaphore,
-		signal: scanAbort.signal,
+		signal: scanSignal,
 	};
 
 	// Apex-state short-circuit: probe the apex NS before fanning out, to separate
@@ -665,7 +669,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				// scan-level abort cascades into it. Composition (AbortSignal.any) keeps the
 				// per-check signal alive until either source fires.
 				const perCheckAbort = new AbortController();
-				const perCheckSignal = AbortSignal.any([perCheckAbort.signal, scanAbort.signal]);
+				const perCheckSignal = AbortSignal.any([perCheckAbort.signal, scanSignal]);
 				return runCachedCheck(
 					domain,
 					cat,
@@ -692,10 +696,11 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			});
 
 	let timedOut = false;
+	let scanTimeoutId: ReturnType<typeof setTimeout> | undefined;
 	const settled = await Promise.race([
 		Promise.allSettled(checkPromises),
 		new Promise<PromiseSettledResult<CheckResult>[]>((resolve) =>
-			setTimeout(() => {
+			(scanTimeoutId = setTimeout(() => {
 				timedOut = true;
 				// R7: abort the scan-level controller so EVERY still-in-flight subrequest
 				// (DoH via scanDns.signal + the raw HTTPS fetches via each composed
@@ -708,9 +713,15 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 						checkPromises.map((p) => Promise.race([p, new Promise<never>((_, reject) => reject(new Error('__check_pending__')))])),
 					),
 				);
-			}, timeoutBudget.scanTimeoutMs),
+			}, timeoutBudget.scanTimeoutMs)),
 		),
 	]);
+	if (scanTimeoutId !== undefined) clearTimeout(scanTimeoutId);
+	if (parentSignal?.aborted) {
+		scanAbort.abort(parentSignal.reason);
+		await Promise.allSettled(checkPromises);
+		throw parentSignal.reason ?? new Error('scan_aborted');
+	}
 
 	let checkResults = settled.filter((r): r is PromiseFulfilledResult<CheckResult> => r.status === 'fulfilled').map((r) => r.value);
 
@@ -1049,6 +1060,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 
 	// Cache the result (use configurable TTL if provided)
 	// Defer the write via waitUntil when available to avoid blocking the response.
+	if (parentSignal?.aborted) throw parentSignal.reason ?? new Error('scan_aborted');
 	const cachePromise = cacheSet(cacheKey, result, kv, runtimeOptions?.cacheTtlSeconds);
 	if (runtimeOptions?.waitUntil) {
 		runtimeOptions.waitUntil(cachePromise);
