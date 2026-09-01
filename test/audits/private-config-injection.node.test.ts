@@ -150,6 +150,34 @@ describe('private Wrangler config injection', () => {
 			expect(injected.secrets?.required, `${optional} is fail-soft and must not gate the deploy`).not.toContain(optional);
 		}
 	});
+
+	// wrangler.private.example.jsonc is the template operators copy to .dev/, and
+	// scripts/deploy-private.mjs deploys the result. It previously carried its own
+	// `durable_objects` copy that had gone stale, so a fresh overlay was missing
+	// PROFILE_ACCUMULATOR entirely. Inject the real template against the real public
+	// config so that class of drift fails here instead of in production.
+	it('injects the shipped example overlay into a complete production config', () => {
+		const cwd = mkdtempSync(join(tmpdir(), 'bv-mcp-inject-'));
+		mkdirSync(join(cwd, 'scripts'));
+		mkdirSync(join(cwd, '.dev'));
+		copyFileSync(join(process.cwd(), 'scripts/inject-private-config.cjs'), join(cwd, 'scripts/inject-private-config.cjs'));
+		copyFileSync(join(process.cwd(), 'wrangler.jsonc'), join(cwd, 'wrangler.jsonc'));
+		copyFileSync(join(process.cwd(), 'wrangler.private.example.jsonc'), join(cwd, '.dev/wrangler.deploy.jsonc'));
+
+		execFileSync(process.execPath, ['scripts/inject-private-config.cjs'], { cwd, stdio: 'pipe' });
+		const injected = JSON.parse(readFileSync(join(cwd, 'wrangler.production.jsonc'), 'utf8')) as {
+			durable_objects?: { bindings?: Array<{ name?: string }> };
+			migrations?: Array<{ tag?: string }>;
+			triggers?: { crons?: string[] };
+		};
+
+		expect(
+			injected.durable_objects?.bindings?.map((binding) => binding.name),
+			'the example overlay must not shadow the public Durable Object bindings',
+		).toEqual(['QUOTA_COORDINATOR', 'PROFILE_ACCUMULATOR']);
+		expect(injected.migrations?.map((migration) => migration.tag)).toEqual(['v1', 'v2', 'v3']);
+		expect(injected.triggers?.crons, 'cron triggers come from the public config, not the overlay').toHaveLength(3);
+	});
 });
 
 function setupInjectFixture(publicExtras: Record<string, unknown> = {}): string {

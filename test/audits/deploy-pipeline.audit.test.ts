@@ -49,6 +49,23 @@ describe('deploy:prod pipeline integrity', () => {
 		expect(preflightIndex).toBeLessThan(deployIndex);
 	});
 
+	// The private overlay is a partial overlay, not a standalone config. Deploying it
+	// directly drops the public base (routes, cron triggers, limits, tail consumers) AND
+	// every fail-closed gate in the injector, which is how this door once deployed without
+	// PROFILE_ACCUMULATOR. It must deploy the injected config instead.
+	it('routes the private deploy helper through the config injector', () => {
+		const injectIndex = deployPrivateSource.indexOf('scripts/inject-private-config.cjs');
+		const deployIndex = deployPrivateSource.indexOf("[wranglerCliPath, 'deploy'");
+		expect(injectIndex, 'deploy-private.mjs must run the injector').toBeGreaterThan(-1);
+		expect(injectIndex, 'the injector must run before wrangler deploy').toBeLessThan(deployIndex);
+	});
+
+	it('never hands the raw private overlay to wrangler deploy', () => {
+		const deployCall = deployPrivateSource.slice(deployPrivateSource.indexOf("[wranglerCliPath, 'deploy'"));
+		expect(deployCall, 'the deploy call must use the generated production config').toContain('generatedConfigPath');
+		expect(deployCall, 'deploying the overlay directly bypasses every injector gate').not.toContain('privateConfigPath');
+	});
+
 	// The staged path exists so a version can be smoke-tested before it takes traffic. It
 	// is only safe if it carries the SAME gates — a staged path that skipped the dns-checks
 	// rebuild or the schema preflight would upload a version those gates never vetted.
