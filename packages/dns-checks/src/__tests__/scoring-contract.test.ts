@@ -11,7 +11,8 @@ describe('machine-readable scoring contract', () => {
 
 	it('defines comparison and selection semantics for every profile', () => {
 		expect(Object.keys(SCORING_CONTRACT.profiles).sort()).toEqual(Object.keys(PROFILE_SEMANTICS).sort());
-		expect(PROFILE_SEMANTICS.web_only.emailPostureIncluded).toBe(false);
+		// true since model 1.20.0 — web_only weights the non-sender lockdown.
+		expect(PROFILE_SEMANTICS.web_only.emailPostureIncluded).toBe(true);
 		expect(PROFILE_SEMANTICS.minimal.comparisonClass).toBe('limited-footprint');
 		expect(PROFILE_SEMANTICS.authoritative_dns_infra.autoSelectable).toBe(false);
 	});

@@ -315,8 +315,28 @@
  *   is unchanged (impersonation escalation, dmarcIsWeak, spoofability posture and
  *   rollout planning all match on it). No weight, tier, grade band,
  *   `SEVERITY_PENALTIES` entry or profile-detection rule changed.
+ * - 1.20.0 — `web_only` weights the NON-SENDER LOCKDOWN (Option B of the 2026-09-01
+ *   research spec, operator ratified 2026-09-02). `web_only` identity weights move
+ *   from 0 to the values `non_mail` has always carried — spf 0→2, dmarc 0→3,
+ *   mx 0→1 (dkim stays 0: a non-sender cannot earn sender DKIM marks; the NZ SGE
+ *   blank-key wildcard variant was examined and not adopted). The per-check rubric
+ *   already scored the lockdown correctly (check-mx: no-MX+no-SPF → spoofable,
+ *   missingControl, 0; no-MX+`v=spf1 -all` → "Correctly-configured non-mail
+ *   domain" per NIST SP 800-177r1 §4.4.2; RFC 7505 null MX recognized; dmarc:
+ *   reject/quarantine/none graded) — zero weight simply multiplied it away, so a
+ *   fully spoofable unconfigured domain and a locked-down one scored identically.
+ *   Weights-only, NO ceiling: spf/dmarc stay OUT of
+ *   `PROFILE_CRITICAL_CATEGORIES.web_only`. MEASURED population (same 2,000-domain
+ *   GSI corpus sample, 3-record DoH probe 2026-09-02, n=1,926 measured): 59.6% of
+ *   the corpus has no MX; of that cohort 93.1% publishes NONE of the lockdown
+ *   records (0.4% has the full triple), so a p=none-style hard cap would re-grade
+ *   ~55% of the index in one release — the weights bound the movement to ≤11.3
+ *   points instead (spf+dmarc = 5/33 of the 70-pt core tier + mx = 1/28 of
+ *   protective; measured live anchor fundhaus.app 82/B → ≈76/NIST C). DOWNWARD for
+ *   un-locked-down no-MX domains, UPWARD-neutral (unchanged 100) for locked-down
+ *   ones; `non_mail` and every mail profile are bit-for-bit unchanged.
  */
-export const SCORING_MODEL_VERSION = '1.19.0';
+export const SCORING_MODEL_VERSION = '1.20.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
