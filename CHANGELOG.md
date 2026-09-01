@@ -4,6 +4,19 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.73.2] - 2026-09-01
+
+Operational release adding a guarded production-capacity harness. No scoring changes — `SCORING_MODEL_VERSION` stays 1.18.0.
+
+### Added
+
+- Added a temporary, IP-restricted load-test credential that fails closed and receives owner-equivalent quota without exposing permanent operator keys. (PR #872)
+- Added local k6 edge, MCP protocol, DNS, scan, and realistic mixed-workload lanes with SSE and JSON-RPC semantic validation, independent health probes, automatic stop conditions, and sanitized evidence output. (PR #872)
+
+### Changed
+
+- Ceiling stages now reject dropped generator iterations and record latency tails, response sizes, schema failures, quota responses, and WAF responses so client saturation cannot be misreported as server capacity. (PR #872)
+
 ## [3.73.1] - 2026-09-01
 
 Performance and resilience hardening for synchronous and asynchronous scan orchestration. No scoring changes — `SCORING_MODEL_VERSION` stays 1.18.0.
