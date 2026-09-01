@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { logEvent, logError } from '../lib/log';
-import type { AnalyticsClient } from '../lib/analytics';
+import type { AnalyticsClient, ToolOutcomeReason } from '../lib/analytics';
 import type { McpClientType } from '../lib/client-detection';
 
 /**
@@ -43,6 +43,23 @@ interface ToolExecutionBase {
 	 * before dispatch; 'none' on first call, 'unknown' when continuity is absent.
 	 */
 	priorTool?: string;
+	/** Privacy-safe terminal classification and bounded work counters for AE. */
+	outcomeReason?: ToolOutcomeReason;
+	unitsAttempted?: number;
+	unitsCompleted?: number;
+}
+
+/** Collapse error details to a fixed, privacy-safe analytics vocabulary. */
+function classifyToolFailure(error: unknown, domain?: string): ToolOutcomeReason {
+	const err = error instanceof Error ? error : undefined;
+	const text = `${err?.name ?? ''} ${err?.message ?? String(error)}`.toLowerCase();
+	if (!domain && /(invalid|required|validation|argument|schema|parse)/.test(text)) return 'input_error';
+	if (/batch[_ -]?budget|budget[_ -]?exceeded/.test(text)) return 'batch_budget_exceeded';
+	if (/scan[_ -]?timeout|scan deadline|scan timed out/.test(text)) return 'scan_timeout';
+	if (/429|rate[_ -]?limit|too many requests/.test(text)) return 'upstream_rate_limited';
+	if (/client.*abort|disconnect|request.*abort/.test(text)) return 'client_aborted';
+	if (err?.name === 'AbortError' || /timed? ?out|timeout|deadline/.test(text)) return 'upstream_timeout';
+	return !domain ? 'input_error' : 'internal_error';
 }
 
 /**
@@ -108,6 +125,9 @@ export function logToolSuccess(
 		city: options.city,
 		asn: options.asn,
 		priorTool: options.priorTool,
+		outcomeReason: options.outcomeReason ?? 'completed',
+		unitsAttempted: options.unitsAttempted,
+		unitsCompleted: options.unitsCompleted,
 	});
 
 	logEvent({
@@ -145,6 +165,7 @@ export function logToolFailure(
 		city: options.city,
 		asn: options.asn,
 		priorTool: options.priorTool,
+		outcomeReason: classifyToolFailure(options.error, options.domain),
 	});
 
 	logError(options.error instanceof Error ? options.error : String(options.error), {

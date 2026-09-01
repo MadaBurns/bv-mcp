@@ -156,7 +156,7 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 
 	/** Optionally run a fetch through the semaphore when one is provided. */
 	const guardedFetch = (input: string | Request, init?: RequestInit & { cf?: Record<string, unknown> }): Promise<Response> =>
-		sem ? sem.run(() => fetch(input, init)) : fetch(input, init);
+		sem ? sem.run(() => fetch(input, init), callerSignal) : fetch(input, init);
 
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		// Caller-abort short-circuits before each attempt — don't bother

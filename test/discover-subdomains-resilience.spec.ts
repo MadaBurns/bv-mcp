@@ -240,6 +240,29 @@ describe('discoverSubdomains — multi-source resilience', () => {
 		expect(outcomes).not.toContain('http_error');
 	});
 
+	it('shares a Certspotter Retry-After cooldown across domains instead of extending the lockout', async () => {
+		const { discoverSubdomains } = await import('../src/tools/discover-subdomains');
+		const kv = makeKv();
+		let certspotterCalls = 0;
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return Response.json({}, { status: 503 });
+			if (s.includes('certspotter.com')) {
+				certspotterCalls++;
+				return Response.json({ code: 'rate_limited' }, { status: 429, headers: { 'Retry-After': '600' } });
+			}
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+
+		const first = await discoverSubdomains('first.example.com', undefined, undefined, { cacheKv: asKv(kv) });
+		expect(first.coverage?.perSource.some((s) => s.source === 'certspotter' && s.outcome === 'rate_limited')).toBe(true);
+		expect(certspotterCalls).toBe(1);
+
+		const second = await discoverSubdomains('second.example.com', undefined, undefined, { cacheKv: asKv(kv) });
+		expect(second.coverage?.perSource.some((s) => s.source === 'certspotter' && s.outcome === 'rate_limited')).toBe(true);
+		expect(certspotterCalls).toBe(1);
+	});
+
 	it('still records a non-429 upstream failure as http_error (#735 control)', async () => {
 		// Discriminating half: 503 must NOT be swept into the new bucket, or the
 		// retry guidance disappears for the one case where retrying is correct.

@@ -5,6 +5,8 @@ import {
 	BaseDomainArgs,
 	ScanDomainArgs,
 	BatchScanArgs,
+	BatchScanStartArgs,
+	BatchScanJobArgs,
 	CompareDomainsArgs,
 	CheckDkimArgs,
 	CheckResolverConsistencyArgs,
@@ -350,6 +352,25 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		description:
 			"Bulk-scan up to 10 domains in parallel. Runs a full security audit on each domain in the list and returns score, NIST-aligned letter grade (6-band A+/A/B/C/D/F), and finding counts per domain. Use when you want to audit multiple domains at once or do a bulk scan of several domains simultaneously — distinct from compare_domains which does a side-by-side analysis of 2–5 domains. Version stamps (hoisted once per batch): 'scoringModelVersion' is the scoring POLICY semver and is INDEPENDENT of 'dnsChecksPackageVersion', the @blackveil/dns-checks npm engine-package version — the model version legitimately lags and the two must not be compared. Record 'scoringConfigHash' when citing scores.",
 		schema: BatchScanArgs,
+		group: 'meta',
+		scanIncluded: false,
+	},
+	batch_scan_start: {
+		description:
+			'Start a durable asynchronous scan of 1–10 domains. Returns a stable job ID; replaying the same idempotency key with the same principal, normalized inputs, and scoring versions returns the same job.',
+		schema: BatchScanStartArgs,
+		group: 'meta',
+		scanIncluded: false,
+	},
+	batch_scan_status: {
+		description: 'Read the owner-scoped status of an asynchronous batch scan.',
+		schema: BatchScanJobArgs,
+		group: 'meta',
+		scanIncluded: false,
+	},
+	batch_scan_findings: {
+		description: 'Fetch owner-scoped findings for a completed asynchronous batch scan.',
+		schema: BatchScanJobArgs,
 		group: 'meta',
 		scanIncluded: false,
 	},
@@ -827,6 +848,9 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'scan_domain',
 	'batch_scan',
+	'batch_scan_start',
+	'batch_scan_status',
+	'batch_scan_findings',
 	'compare_domains',
 	'compare_baseline',
 	'generate',
