@@ -50,6 +50,17 @@ export interface AnalyticsContext {
 	asn?: number;
 }
 
+/** Privacy-safe terminal reason for a tool call. Append-only on tool_call blob16. */
+export type ToolOutcomeReason =
+	| 'completed'
+	| 'input_error'
+	| 'upstream_timeout'
+	| 'scan_timeout'
+	| 'batch_budget_exceeded'
+	| 'upstream_rate_limited'
+	| 'client_aborted'
+	| 'internal_error';
+
 export interface AnalyticsClient {
 	enabled: boolean;
 	emitRequestEvent(
@@ -80,6 +91,11 @@ export interface AnalyticsClient {
 			 * unavailable (cross-isolate, no session, etc.). Best-effort; never blocks.
 			 */
 			priorTool?: string;
+			/** Machine-queryable terminal reason; never contains user input or upstream text. */
+			outcomeReason?: ToolOutcomeReason;
+			/** Optional bounded work-unit counters (double3/double4, append-only). */
+			unitsAttempted?: number;
+			unitsCompleted?: number;
 		} & AnalyticsContext,
 	): void;
 	emitRateLimitEvent(
@@ -297,8 +313,15 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					normalizeIndex(event.region ?? 'unknown'),
 					normalizeIndex(event.city ?? 'unknown'),
 					event.asn != null ? String(event.asn) : 'unknown',
+					// blob16 — bounded terminal reason (append-only; no raw error text/PII).
+					event.outcomeReason ?? (event.isError ? 'internal_error' : 'completed'),
 				],
-				doubles: [sanitizeNumber(event.durationMs), sanitizeNumber(event.score ?? 0)],
+				doubles: [
+					sanitizeNumber(event.durationMs),
+					sanitizeNumber(event.score ?? 0),
+					sanitizeNumber(event.unitsAttempted ?? 0),
+					sanitizeNumber(event.unitsCompleted ?? 0),
+				],
 			});
 		},
 		emitRateLimitEvent: (event) => {

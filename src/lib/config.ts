@@ -247,6 +247,9 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		osint_investigate_email_start: 0,
 		check_realtime_threat_feed: 0,
 		batch_scan: 0,
+		batch_scan_start: 0,
+		batch_scan_status: 0,
+		batch_scan_findings: 0,
 		compare_domains: 0,
 		discover_brand_domains: 0,
 		discover_brand_domains_start: 0,
@@ -278,6 +281,9 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		osint_investigate_email_start: 0,
 		check_realtime_threat_feed: 0,
 		batch_scan: 0,
+		batch_scan_start: 0,
+		batch_scan_status: 0,
+		batch_scan_findings: 0,
 		compare_domains: 0,
 		discover_brand_domains: 0,
 		discover_brand_domains_start: 0,
@@ -298,6 +304,9 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	scan_domain: 25,
 	scan: 25,
 	batch_scan: 0,
+	batch_scan_start: 0,
+	batch_scan_status: 0,
+	batch_scan_findings: 0,
 	compare_domains: 0,
 	check_spf: 25,
 	check_dmarc: 25,
@@ -409,6 +418,9 @@ export const GATED_PAID_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
 	'check_realtime_threat_feed',
 	// multi-domain tools (any multi-domain tool is paid)
 	'batch_scan',
+	'batch_scan_start',
+	'batch_scan_status',
+	'batch_scan_findings',
 	'compare_domains',
 	'prioritize_csc_leads',
 	// already paid-only; folded in for a consistent upgrade message
@@ -824,6 +836,9 @@ export const INTENTIONALLY_PARTNER_FLAT_TOOLS: ReadonlySet<string> = new Set<str
 	// binding constraint.
 	'batch_scan',
 	'compare_domains',
+	'batch_scan_start',
+	'batch_scan_status',
+	'batch_scan_findings',
 
 	// ── Async pollers. The expensive work is metered at the *_start tool; the
 	// poll is a KV/D1 read, so a flat 100k is correct and must NOT be lowered to

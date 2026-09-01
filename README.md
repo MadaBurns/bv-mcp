@@ -7,7 +7,7 @@
 Source-available DNS & email security scanner for Claude, Cursor, VS Code, and MCP clients across Streamable HTTP, stdio, and legacy HTTP+SSE.
 
 [![GitHub stars](https://img.shields.io/github/stars/MadaBurns/bv-mcp?style=flat&logo=github)](https://github.com/MadaBurns/bv-mcp/stargazers)
-[![MCP tools](https://img.shields.io/badge/MCP%20tools-76-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
+[![MCP tools](https://img.shields.io/badge/MCP%20tools-79-brightgreen)](https://github.com/MadaBurns/bv-mcp/actions)
 [![BUSL-1.1 License](https://img.shields.io/badge/License-BUSL--1.1-blue.svg)](LICENSE)
 [![MCP](https://img.shields.io/badge/MCP-2025--06--18-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
@@ -23,7 +23,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 
 **Claude Desktop** (one-click install):
 
-Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 76-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
+Download the [Blackveil DNS extension](https://github.com/MadaBurns/bv-claude-dns/releases/latest/download/bv-claude-dns.mcpb) and open it — the current 79-tool surface is available instantly. [Verify your download](https://blackveilsecurity.com/extensions/claude-dns#install).
 
 **Claude Code** (one command):
 
@@ -65,7 +65,7 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
 
 ## What you get
 
-- **76 MCP tools with 19 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, DANE-HTTPS, subdomailing, reverse DNS (PTR/FCrDNS), and DNSKEY strength
+- **79 MCP tools with 19 scoring categories** — SPF, DMARC, DKIM, DNSSEC, SSL/TLS, MTA-STS, NS, CAA, MX, BIMI, TLS-RPT, subdomain takeover, HTTP security headers, DANE, SVCB/HTTPS, DANE-HTTPS, subdomailing, reverse DNS (PTR/FCrDNS), and DNSKEY strength
 - **Maturity staging** — Stage 0-4 classification (Unprotected to Hardened) with score-based capping to prevent inflated labels
 - **Trust surface analysis** — detects shared SaaS senders in SPF, both cataloged platforms (Google, M365, SendGrid) and uncataloged hosts identifiable by their `spf` delegation label, then cross-references DMARC enforcement to determine real exposure
 - **Guided remediation** — `generate` (artifact=`fix_plan`) produces provider-aware prioritized actions; its record artifacts (`spf_record`, `dmarc_record`, `dkim_config`, `mta_sts_policy`, `rollout_plan`) output ready-to-publish records; `validate_fix` confirms whether a fix was applied successfully
@@ -81,7 +81,7 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
 ## Tools
 
 ```
-  76 MCP tools · 7 prompts · 6 resources
+  79 MCP tools · 7 prompts · 6 resources
 
   Email Auth             Infrastructure          Brand & Threats       Meta
  ─────────────          ──────────────          ───────────────       ───────────────

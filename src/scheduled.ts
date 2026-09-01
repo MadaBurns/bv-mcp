@@ -25,6 +25,7 @@ import {
 	queryBindingDegradation,
 	queryQueueFailures,
 	queryTailExceptions,
+	queryToolOutcomeReasons,
 	resolveAnalyticsDataset,
 } from './lib/analytics-queries';
 import { buildAlertPayload, buildDigestPayload, sendAlert, sendFuzzingAlert } from './lib/alerting';
@@ -79,6 +80,13 @@ interface TailExceptionRow {
 	exception_count?: number;
 }
 
+interface ToolOutcomeRow {
+	outcome_reason?: string;
+	total_calls?: number;
+	units_attempted?: number;
+	units_completed?: number;
+}
+
 export interface ScheduledEnv {
 	CF_ACCOUNT_ID?: string;
 	CF_ANALYTICS_TOKEN?: string;
@@ -110,6 +118,8 @@ export interface ScheduledEnv {
 	ALERT_QUEUE_FAILURE_THRESHOLD?: string;
 	/** Min fatal Worker exceptions exported by the tail consumer in the lookback window to alert (default 1). */
 	ALERT_TAIL_EXCEPTION_THRESHOLD?: string;
+	/** Minimum non-completed outcomes before alerting (default 3). */
+	ALERT_TOOL_OUTCOME_THRESHOLD?: string;
 	RATE_LIMIT?: KVNamespace;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
@@ -406,6 +416,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	const queueFailureThreshold = Number.isFinite(parsedQueueFailure) ? parsedQueueFailure : DEFAULT_QUEUE_FAILURE_THRESHOLD;
 	const parsedTailException = parseFloat(env.ALERT_TAIL_EXCEPTION_THRESHOLD ?? '');
 	const tailExceptionThreshold = Number.isFinite(parsedTailException) ? parsedTailException : 1;
+	const parsedToolOutcome = parseFloat(env.ALERT_TOOL_OUTCOME_THRESHOLD ?? '');
+	const toolOutcomeThreshold = Number.isFinite(parsedToolOutcome) ? parsedToolOutcome : 3;
 	const lookback = env.ALERT_LOOKBACK_MINUTES ?? String(DEFAULT_LOOKBACK_MINUTES);
 	const parsedBatchP95 = parseFloat(env.ALERT_BATCH_P95_THRESHOLD ?? '');
 	const batchP95Threshold = Number.isFinite(parsedBatchP95) ? parsedBatchP95 : DEFAULT_BATCH_P95_THRESHOLD;
@@ -659,6 +671,42 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 					severity: (rateLimitData.total_hits ?? 0) > rateLimitThreshold * 3 ? 'critical' : 'warning',
 					metrics: { total_hits: rateLimitData.total_hits },
 					threshold: `rate_limit_hits > ${rateLimitThreshold}`,
+				}),
+				alertOptions(env),
+			);
+		}
+
+		const toolOutcomeRows = await lane<ToolOutcomeRow[]>(
+			'tool_outcomes',
+			[],
+			async () =>
+				(await queryAnalyticsEngine(
+					env.CF_ACCOUNT_ID!,
+					env.CF_ANALYTICS_TOKEN!,
+					queryToolOutcomeReasons(lookback, dataset),
+				)) as ToolOutcomeRow[],
+		);
+		// Allowlist the fixed producer vocabulary. This also makes mixed-version rollout
+		// safe: old/unknown blob16 values cannot accidentally page this lane.
+		const actionableReasons = new Set([
+			'upstream_timeout',
+			'scan_timeout',
+			'batch_budget_exceeded',
+			'upstream_rate_limited',
+			'client_aborted',
+			'internal_error',
+		]);
+		const actionableOutcomes = toolOutcomeRows.filter((row) => row.outcome_reason && actionableReasons.has(row.outcome_reason));
+		const outcomeCount = actionableOutcomes.reduce((sum, row) => sum + (row.total_calls ?? 0), 0);
+		if (outcomeCount >= toolOutcomeThreshold) {
+			const breakdown = actionableOutcomes.map((row) => `${row.outcome_reason ?? 'unknown'}=${row.total_calls ?? 0}`).join(' · ');
+			await sendAlert(
+				webhookUrl,
+				buildAlertPayload({
+					title: `Tool timeouts/aborts: ${outcomeCount} event(s) (last ${lookback}m)`,
+					severity: outcomeCount > toolOutcomeThreshold * 5 ? 'critical' : 'warning',
+					metrics: { outcome_count: outcomeCount, breakdown: breakdown || '(none)' },
+					threshold: `non_input_tool_outcomes >= ${toolOutcomeThreshold}`,
 				}),
 				alertOptions(env),
 			);

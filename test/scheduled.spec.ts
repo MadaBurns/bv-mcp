@@ -102,6 +102,37 @@ describe('handleScheduled', () => {
 		expect(webhookCall!.body).toContain('binding');
 	});
 
+	it('alerts on recognized timeout outcomes only after the configured sample floor', async () => {
+		const fetchCalls: Array<{ url: string; body: string }> = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			const body = init?.body as string;
+			fetchCalls.push({ url, body });
+			if (url.includes('analytics_engine/sql')) {
+				if (body.includes('blob16 AS outcome_reason')) {
+					return new Response(JSON.stringify({ data: [{ outcome_reason: 'upstream_timeout', total_calls: 3 }] }));
+				}
+				if (body.includes("index1 = 'tool_call'")) {
+					return new Response(JSON.stringify({ data: [{ total_calls: 100, error_count: 0, error_pct: 0, p95_ms: 500 }] }));
+				}
+				return new Response(JSON.stringify({ data: [] }));
+			}
+			return new Response('ok');
+		}) as typeof fetch;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			CF_ACCOUNT_ID: 'test-account',
+			CF_ANALYTICS_TOKEN: 'test-token',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+			ALERT_TOOL_OUTCOME_THRESHOLD: '3',
+		});
+
+		const webhookCall = fetchCalls.find((call) => call.url.includes('hooks.slack.com'));
+		expect(webhookCall?.body).toContain('Tool timeouts/aborts: 3');
+		expect(webhookCall?.body).toContain('upstream_timeout=3');
+	});
+
 	it('sends an async-path failure alert when queue_batch failures cross the threshold', async () => {
 		const fetchCalls: Array<{ url: string; body: string }> = [];
 		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {

@@ -26,6 +26,14 @@ interface Waiter {
 	resolve: (release: () => void) => void;
 	reject: (err: Error) => void;
 	timer?: ReturnType<typeof setTimeout>;
+	signal?: AbortSignal;
+	onAbort?: () => void;
+}
+
+function abortError(): Error {
+	const error = new Error('Semaphore acquisition aborted');
+	error.name = 'AbortError';
+	return error;
 }
 
 export class Semaphore {
@@ -48,20 +56,31 @@ export class Semaphore {
 	}
 
 	/** Acquire a semaphore slot. Returns a release function. */
-	acquire(): Promise<() => void> {
+	acquire(signal?: AbortSignal): Promise<() => void> {
+		if (signal?.aborted) return Promise.reject(abortError());
 		if (this._active < this.maxConcurrent) {
 			this._active++;
 			return Promise.resolve(() => this.release());
 		}
 
 		return new Promise<() => void>((resolve, reject) => {
-			const waiter: Waiter = { resolve, reject };
+			const waiter: Waiter = { resolve, reject, signal };
+			waiter.onAbort = () => {
+				const idx = this._queue.indexOf(waiter);
+				if (idx !== -1) {
+					this._queue.splice(idx, 1);
+					if (waiter.timer !== undefined) clearTimeout(waiter.timer);
+					reject(abortError());
+				}
+			};
+			signal?.addEventListener('abort', waiter.onAbort, { once: true });
 
 			if (this.maxWaitMs !== undefined) {
 				waiter.timer = setTimeout(() => {
 					const idx = this._queue.indexOf(waiter);
 					if (idx !== -1) {
 						this._queue.splice(idx, 1);
+						if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener('abort', waiter.onAbort);
 						reject(new SemaphoreTimeoutError(this.maxWaitMs!));
 					}
 				}, this.maxWaitMs);
@@ -72,8 +91,8 @@ export class Semaphore {
 	}
 
 	/** Run an async function within a semaphore-controlled slot. */
-	async run<T>(fn: () => Promise<T>): Promise<T> {
-		const release = await this.acquire();
+	async run<T>(fn: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+		const release = await this.acquire(signal);
 		try {
 			return await fn();
 		} finally {
@@ -92,6 +111,7 @@ export class Semaphore {
 		if (this._queue.length > 0) {
 			const next = this._queue.shift()!;
 			if (next.timer !== undefined) clearTimeout(next.timer);
+			if (next.signal && next.onAbort) next.signal.removeEventListener('abort', next.onAbort);
 			// Don't decrement — we're handing the slot to the next waiter
 			next.resolve(() => this.release());
 		} else {

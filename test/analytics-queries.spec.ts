@@ -24,6 +24,7 @@ import {
 	queryBindingDegradation,
 	queryQueueFailures,
 	queryTailExceptions,
+	queryToolOutcomeReasons,
 } from '../src/lib/analytics-queries';
 
 describe('analytics query builders', () => {
@@ -153,6 +154,16 @@ describe('analytics query builders', () => {
 	it('queryRateLimitSurge sanitizes minutes parameter', () => {
 		const sql = queryRateLimitSurge('abc');
 		expect(sql).toContain("INTERVAL '1' MINUTE");
+	});
+
+	it('queryToolOutcomeReasons groups fixed terminal reasons with completion counters', () => {
+		const sql = queryToolOutcomeReasons('15');
+		expect(sql).toContain('blob16 AS outcome_reason');
+		expect(sql).toContain('double3 * _sample_interval');
+		expect(sql).toContain('double4 * _sample_interval');
+		expect(sql).toContain("blob16 != 'completed'");
+		expect(sql).toContain('GROUP BY outcome_reason');
+		expect(sql).toContain("INTERVAL '15' MINUTE");
 	});
 
 	it('queryBindingDegradation counts present-binding degradation events, excluding kv_fallback', () => {

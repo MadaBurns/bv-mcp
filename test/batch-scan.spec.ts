@@ -443,9 +443,15 @@ describe('batchScan', () => {
 		const { batchScan } = await import('../src/tools/batch-scan');
 
 		// First domain hangs 5s; others finish in 50ms.
-		const scanFn = vi.fn().mockImplementation(async (domain: string) => {
+		const scanFn = vi.fn().mockImplementation(async (domain: string, _kv: KVNamespace | undefined, opts: { signal?: AbortSignal }) => {
 			const delay = domain.startsWith('slow.') ? 5000 : 50;
-			await new Promise((r) => setTimeout(r, delay));
+			await new Promise<void>((resolve, reject) => {
+				const timer = setTimeout(resolve, delay);
+				opts.signal?.addEventListener('abort', () => {
+					clearTimeout(timer);
+					reject(opts.signal?.reason);
+				}, { once: true });
+			});
 			return fakeScanResult(domain);
 		});
 
@@ -487,5 +493,50 @@ describe('batchScan', () => {
 		// before the deadline passes. Implementations should not keep calling
 		// scanFn after the deadline.
 		expect(callCount).toBeLessThan(5);
+	});
+
+	it('aborts and settles every losing scan before returning at the batch deadline', async () => {
+		const { batchScan } = await import('../src/tools/batch-scan');
+		let active = 0;
+		let aborted = 0;
+		const scanFn = vi.fn().mockImplementation((domain: string, _kv: KVNamespace | undefined, opts: { signal?: AbortSignal }) => {
+			active++;
+			return new Promise((resolve, reject) => {
+				opts.signal?.addEventListener('abort', () => {
+					active--;
+					aborted++;
+					reject(opts.signal?.reason);
+				}, { once: true });
+			});
+		});
+
+		const results = await batchScan(['a.com', 'b.com', 'c.com'], { budgetMs: 20, concurrency: 3, scanFn });
+
+		expect(aborted).toBe(3);
+		expect(active).toBe(0);
+		expect(results.every((result) => result.error === 'batch_budget_exceeded' && !result.measured)).toBe(true);
+	});
+
+	it('shares one five-slot DNS semaphore across every scan in a batch', async () => {
+		const { batchScan } = await import('../src/tools/batch-scan');
+		const semaphores: unknown[] = [];
+		const scanFn = vi.fn().mockImplementation(async (domain: string, _kv: KVNamespace | undefined, opts: { dnsSemaphore?: unknown }) => {
+			semaphores.push(opts.dnsSemaphore);
+			return fakeScanResult(domain);
+		});
+
+		await batchScan(['a.com', 'b.com', 'c.com'], { concurrency: 3, scanFn });
+
+		expect(new Set(semaphores).size).toBe(1);
+		const semaphore = semaphores[0] as { run<T>(fn: () => Promise<T>): Promise<T> };
+		let active = 0;
+		let peak = 0;
+		await Promise.all(Array.from({ length: 12 }, () => semaphore.run(async () => {
+			active++;
+			peak = Math.max(peak, active);
+			await new Promise((resolve) => setTimeout(resolve, 5));
+			active--;
+		})));
+		expect(peak).toBe(5);
 	});
 });
