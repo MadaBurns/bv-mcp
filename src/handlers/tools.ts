@@ -200,6 +200,9 @@ export const MUTATING_DEDUP_TOOLS = new Set(
 export const DIRECT_DISPATCH_TOOLS = new Set([
 	'scan_domain',
 	'batch_scan',
+	'batch_scan_start',
+	'batch_scan_status',
+	'batch_scan_findings',
 	'compare_domains',
 	'compare_baseline',
 	'generate',

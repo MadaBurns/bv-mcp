@@ -361,6 +361,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		schema: BatchScanStartArgs,
 		group: 'meta',
 		scanIncluded: false,
+		mutating: true,
 	},
 	batch_scan_status: {
 		description: 'Read the owner-scoped status of an asynchronous batch scan.',
