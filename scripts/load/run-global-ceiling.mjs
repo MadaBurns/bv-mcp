@@ -59,11 +59,36 @@ async function runStage(rate) {
 		requests: metric(summary, 'http_reqs', 'count'),
 		failureRate: metric(summary, 'http_req_failed', 'rate'),
 		semanticFailureRate: metric(summary, 'semantic_failures', 'rate'),
+		schemaFailures: metric(summary, 'schema_failures', 'count') || 0,
+		droppedIterations: metric(summary, 'dropped_iterations', 'count') || 0,
 		p95LightMs: metric(summary, 'lightweight_latency', 'p(95)'),
+		p99LightMs: metric(summary, 'lightweight_latency', 'p(99)'),
+		maxLightMs: metric(summary, 'lightweight_latency', 'max'),
 		p95HeavyMs: metric(summary, 'heavy_latency', 'p(95)'),
+		p99HeavyMs: metric(summary, 'heavy_latency', 'p(99)'),
+		maxHeavyMs: metric(summary, 'heavy_latency', 'max'),
+		responseBytesP50: metric(summary, 'response_bytes', 'med'),
+		responseBytesP95: metric(summary, 'response_bytes', 'p(95)'),
+		responseBytesMax: metric(summary, 'response_bytes', 'max'),
+		quotaResponses: metric(summary, 'quota_responses', 'count') || 0,
+		wafResponses: metric(summary, 'waf_responses', 'count') || 0,
 		probeAbort: consecutiveProbeFailures >= 2,
 	};
-	record.stable = exitCode === 0 && !record.probeAbort;
+	const latencyStable =
+		lane === 'heavy'
+			? (record.p95HeavyMs ?? Number.POSITIVE_INFINITY) <= 10_000
+			: lane === 'mixed'
+				? (record.p95LightMs ?? Number.POSITIVE_INFINITY) <= 500 && (record.p95HeavyMs ?? Number.POSITIVE_INFINITY) <= 10_000
+				: (record.p95LightMs ?? Number.POSITIVE_INFINITY) <= 500;
+	const semanticStable = lane === 'edge' || (record.semanticFailureRate ?? 1) <= 0.001;
+	record.stable =
+		exitCode === 0 &&
+		!record.probeAbort &&
+		record.droppedIterations === 0 &&
+		record.schemaFailures === 0 &&
+		(record.failureRate ?? 1) <= 0.001 &&
+		semanticStable &&
+		latencyStable;
 	records.push(record);
 	console.log(JSON.stringify(record));
 	return record;
