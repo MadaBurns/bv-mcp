@@ -21,6 +21,7 @@ if (rate < 1 || rate > 3200) throw new Error('BV_LOAD_RATE must be between 1 and
 
 export const options = {
 	discardResponseBodies: false,
+	summaryTrendStats: ['avg', 'min', 'med', 'p(90)', 'p(95)', 'p(99)', 'max', 'count'],
 	scenarios: {
 		ceiling: {
 			executor: 'constant-arrival-rate',
