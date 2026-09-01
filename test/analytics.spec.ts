@@ -121,14 +121,15 @@ describe('createAnalyticsClient', () => {
 		const point = ds.writeDataPoint.mock.calls[0][0];
 		expect(point.indexes).toEqual(['tool_call']);
 		// blob12 (index 11) = priorTool, appended trailing (C2). Existing positions unchanged.
-		expect(point.blobs).toHaveLength(15);
+		expect(point.blobs).toHaveLength(16);
 		expect(point.blobs[4]).toBe('NZ');
 		expect(point.blobs[8]).toBe('none');
 		// colo absent in ctx → defaults to 'unknown' (fail-open); still at blob11 (index 10).
 		expect(point.blobs[10]).toBe('unknown');
 		// priorTool absent → defaults to 'unknown'.
 		expect(point.blobs[11]).toBe('unknown');
-		expect(point.doubles).toEqual([3200, 85]);
+		expect(point.blobs[15]).toBe('completed');
+		expect(point.doubles).toEqual([3200, 85, 0, 0]);
 	});
 
 	it('emitToolEvent appends colo as blob11 and priorTool as blob12 without shifting existing positions', () => {
@@ -148,7 +149,7 @@ describe('createAnalyticsClient', () => {
 			priorTool: 'check_spf',
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0];
-		expect(point.blobs).toHaveLength(15);
+		expect(point.blobs).toHaveLength(16);
 		// Existing position-indexed fields stay put.
 		expect(point.blobs[0]).toBe('scan_domain');
 		expect(point.blobs[4]).toBe('NZ');
@@ -156,6 +157,25 @@ describe('createAnalyticsClient', () => {
 		expect(point.blobs[10]).toBe('SYD');        // blob11 colo unmoved
 		// New trailing dimension (C2).
 		expect(point.blobs[11]).toBe('check_spf');  // blob12 priorTool
+	});
+
+	it('emitToolEvent appends a privacy-safe outcome and completion counters', () => {
+		const ds = mockDataset();
+		const client = createAnalyticsClient(ds);
+		client.emitToolEvent({
+			toolName: 'batch_scan',
+			status: 'error',
+			durationMs: 25_000,
+			isError: true,
+			outcomeReason: 'batch_budget_exceeded',
+			unitsAttempted: 5,
+			unitsCompleted: 3,
+			...ctx,
+		});
+		const point = ds.writeDataPoint.mock.calls[0][0];
+		expect(point.blobs[15]).toBe('batch_budget_exceeded');
+		expect(point.doubles).toEqual([25_000, 0, 5, 3]);
+		expect(point.blobs.join(' ')).not.toContain('example.com');
 	});
 
 	it('emitRateLimitEvent writes rate_limit index', () => {

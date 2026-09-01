@@ -63,6 +63,7 @@ import { gradeBadge, errorBadge } from './lib/badge';
 import { computeScanEvidence } from './lib/scoring';
 import { displayGradeFor } from './lib/ungraded-display';
 import { SERVER_VERSION } from './lib/server-version';
+import { processAsyncBatchMessage } from './tools/batch-scan-async';
 import { executeMcpRequest } from './mcp/execute';
 import { classifyProtocolVersionHeader } from './mcp/dispatch';
 import { parseScoringConfigCached } from './lib/scoring-config';
@@ -257,6 +258,9 @@ type BvMcpEnv = Env & {
 	/** FIND-17: Base64-encoded 32-byte AES-256 key for app-layer KV envelope encryption of trial keys and OAuth codes. */
 	KV_ENVELOPE_KEY?: string;
 	BRAND_AUDIT_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
+	ASYNC_BATCH_QUEUE?: {
+		send(message: import('./tools/batch-scan-async').AsyncBatchQueueMessage, options?: { contentType?: 'json' }): Promise<void>;
+	};
 	BRAND_AUDIT_PDF_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	BRAND_REPORTS?: R2Bucket;
 	BV_BROWSER_RENDERER?: Fetcher;
@@ -1026,6 +1030,8 @@ app.post('/mcp', async (c) => {
 					infraProbe: c.env.BV_INFRA_PROBE,
 					brandAuditDb: c.env.BRAND_AUDIT_DB,
 					brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
+					asyncBatchQueue: c.env.ASYNC_BATCH_QUEUE,
+					asyncBatchKv: c.env.SCAN_CACHE,
 					brandReportsR2: c.env.BRAND_REPORTS,
 					publicOrigin: new URL(c.req.url).origin,
 					browserRenderer: c.env.BV_BROWSER_RENDERER,
@@ -1130,6 +1136,8 @@ app.post('/mcp', async (c) => {
 		infraProbe: c.env.BV_INFRA_PROBE,
 		brandAuditDb: c.env.BRAND_AUDIT_DB,
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
+		asyncBatchQueue: c.env.ASYNC_BATCH_QUEUE,
+		asyncBatchKv: c.env.SCAN_CACHE,
 		brandReportsR2: c.env.BRAND_REPORTS,
 		publicOrigin: new URL(c.req.url).origin,
 		browserRenderer: c.env.BV_BROWSER_RENDERER,
@@ -1336,6 +1344,8 @@ app.post('/mcp/messages', async (c) => {
 				infraProbe: c.env.BV_INFRA_PROBE,
 				brandAuditDb: c.env.BRAND_AUDIT_DB,
 				brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,
+				asyncBatchQueue: c.env.ASYNC_BATCH_QUEUE,
+				asyncBatchKv: c.env.SCAN_CACHE,
 				brandReportsR2: c.env.BRAND_REPORTS,
 				publicOrigin: new URL(c.req.url).origin,
 				browserRenderer: c.env.BV_BROWSER_RENDERER,
@@ -1784,6 +1794,31 @@ export default {
 		const queueStartedAt = Date.now();
 		let queueOutcome: 'ok' | 'error' = 'ok';
 		try {
+			if (batch.queue === 'async-batch-scan-queue') {
+				if (!env.SCAN_CACHE) {
+					batch.retryAll({ delaySeconds: 300 });
+					return;
+				}
+				for (const message of batch.messages) {
+					const verdict = await processAsyncBatchMessage(message.body, {
+						kv: env.SCAN_CACHE,
+						runtimeOptions: {
+							providerSignaturesUrl: env.PROVIDER_SIGNATURES_URL,
+							providerSignaturesSha256: env.PROVIDER_SIGNATURES_SHA256,
+							scoringConfig: parseScoringConfigCached(env.SCORING_CONFIG),
+							scanTimeoutMs: parseScanTimeout(env.SCAN_TIMEOUT_MS),
+							perCheckTimeoutMs: parsePerCheckTimeout(env.PER_CHECK_TIMEOUT_MS),
+							secondaryDoh: env.BV_DOH_ENDPOINT ? { endpoint: env.BV_DOH_ENDPOINT, token: env.BV_DOH_TOKEN } : undefined,
+							infraProbe: env.BV_INFRA_PROBE,
+							profileAccumulator: env.PROFILE_ACCUMULATOR,
+							profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(env.PROFILE_ACCUMULATOR_SHARDING),
+						},
+					});
+					if (verdict === 'retry') message.retry();
+					else message.ack();
+				}
+				return;
+			}
 			if (batch.queue === 'brand-audit-queue') {
 				const db = env.BRAND_AUDIT_DB;
 				if (!db) {

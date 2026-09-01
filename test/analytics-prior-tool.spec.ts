@@ -38,7 +38,7 @@ describe('emitToolEvent blob12 priorTool', () => {
 			priorTool: 'scan_domain',
 		});
 		const point = ds.writeDataPoint.mock.calls[0][0] as { blobs: string[]; doubles: number[] };
-		expect(point.blobs).toHaveLength(15);
+		expect(point.blobs).toHaveLength(16);
 		expect(point.blobs[11]).toBe('scan_domain');
 	});
 
@@ -117,8 +117,8 @@ describe('emitToolEvent blob12 priorTool', () => {
 		expect(point.blobs[9]).toBe('i_deadbeef');    // blob10 ipHash
 		expect(point.blobs[10]).toBe('AKL');          // blob11 colo
 		expect(point.blobs[11]).toBe('check_spf');    // blob12 priorTool (NEW)
-		// doubles unchanged
-		expect(point.doubles).toHaveLength(2);
+		// Append-only work-unit counters occupy double3/double4.
+		expect(point.doubles).toHaveLength(4);
 		expect(point.doubles[0]).toBe(200);
 		expect(point.doubles[1]).toBe(90);
 	});

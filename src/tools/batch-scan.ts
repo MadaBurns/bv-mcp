@@ -15,6 +15,7 @@ import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { StructuredScanResult } from './scan/format-report';
 import type { OutputFormat } from '../handlers/tool-args';
 import { formatScoreGrade } from '../lib/ungraded-display';
+import { Semaphore } from '../lib/semaphore';
 
 export interface BatchScanResultItem extends StructuredScanResult {
 	error?: string;
@@ -73,6 +74,7 @@ export interface BatchScanOptions {
 
 const DEFAULT_BUDGET_MS = 25_000;
 const DEFAULT_CONCURRENCY = 3;
+const BATCH_DNS_CONCURRENCY = 5;
 const MAX_DOMAINS = 10;
 
 /**
@@ -166,6 +168,7 @@ export async function batchScan(domains: string[], options: BatchScanOptions = {
 	const concurrency = Math.max(1, Math.min(options.concurrency ?? DEFAULT_CONCURRENCY, domains.length || 1));
 	const scan = options.scanFn ?? scanDomain;
 	const deadline = Date.now() + budgetMs;
+	const dnsSemaphore = options.runtimeOptions?.dnsSemaphore ?? new Semaphore(BATCH_DNS_CONCURRENCY);
 	// One fingerprint for the whole batch — every item (scanned or placeholder) is
 	// produced under the same effective scoring config.
 	const scoringConfigHash = computeScoringConfigHash(options.runtimeOptions?.scoringConfig);
@@ -197,18 +200,33 @@ export async function batchScan(domains: string[], options: BatchScanOptions = {
 				continue;
 			}
 
+			const scanAbort = new AbortController();
+			const parentSignal = options.runtimeOptions?.signal;
+			const signal = parentSignal ? AbortSignal.any([scanAbort.signal, parentSignal]) : scanAbort.signal;
 			const runtimeOpts: ScanRuntimeOptions = {
 				...options.runtimeOptions,
 				forceRefresh: options.force_refresh,
+				dnsSemaphore,
+				signal,
 			};
 
 			let timeoutId: ReturnType<typeof setTimeout> | undefined;
 			try {
 				const scanPromise = scan(task.domain, options.kv, runtimeOpts);
 				const timeoutPromise = new Promise<never>((_, reject) => {
-					timeoutId = setTimeout(() => reject(new Error('batch_budget_exceeded')), remaining);
+					timeoutId = setTimeout(() => {
+						const error = new Error('batch_budget_exceeded');
+						scanAbort.abort(error);
+						reject(error);
+					}, remaining);
 				});
-				const scanResult = await Promise.race([scanPromise, timeoutPromise]);
+				let scanResult;
+				try {
+					scanResult = await Promise.race([scanPromise, timeoutPromise]);
+				} catch (error) {
+					if (scanAbort.signal.aborted) await scanPromise.catch(() => undefined);
+					throw error;
+				}
 				results[task.idx] = markUnexpectedNoEvidence(buildStructuredScanResult(scanResult, { scoringConfigHash }));
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : 'Scan failed';

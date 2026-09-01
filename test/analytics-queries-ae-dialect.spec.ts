@@ -133,6 +133,7 @@ describe('AE SQL dialect contract', () => {
 			builders.queryBindingDegradation('15'),
 			builders.queryQueueFailures('15'),
 			builders.queryTailExceptions('15'),
+			builders.queryToolOutcomeReasons('15'),
 			builders.queryTierDigest('24'),
 		];
 		for (const sql of alerting) {

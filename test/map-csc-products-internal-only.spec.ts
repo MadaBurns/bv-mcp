@@ -5,8 +5,8 @@
 // internally by prioritize_csc_leads), but is hidden from and rejected on the
 // PUBLIC /mcp surface. These tests pin all four halves of that contract:
 //   1. isInternalOnlyTool / INTERNAL_ONLY_TOOLS membership.
-//   2. handleToolsList (public) hides it → 80 tools; scan_domain still present.
-//   3. TOOLS registry still contains it (length 81) — internal callability.
+//   2. handleToolsList (public) hides internal tools → 79 tools; scan_domain still present.
+//   3. TOOLS registry still contains it (length 84) — internal callability.
 //   4. Public executeMcpRequest tools/call → unknown-tool result (NOT 403, NOT
 //      executed), for both an unauthenticated and an authenticated owner caller.
 //   5. handleToolsCall (the internal-path entrypoint) still executes it.
@@ -69,12 +69,12 @@ describe('INTERNAL_ONLY_TOOLS membership', () => {
 });
 
 describe('tool registry vs public surface', () => {
-	it('TOOLS still includes map_csc_products (internal callability preserved) — length 81', () => {
+	it('TOOLS still includes map_csc_products (internal callability preserved) — length 84', () => {
 		expect(TOOLS.some((t) => t.name === 'map_csc_products')).toBe(true);
-		expect(TOOLS.length).toBe(81);
+		expect(TOOLS.length).toBe(84);
 	});
 
-	it('handleToolsList hides every internal-only tool and returns the public count (76)', () => {
+	it('handleToolsList hides every internal-only tool and returns the public count (79)', () => {
 		const { tools } = handleToolsList();
 		const names = tools.map((t) => t.name);
 		expect(names).not.toContain('map_csc_products');
@@ -82,8 +82,8 @@ describe('tool registry vs public surface', () => {
 		expect(names).not.toContain('query_signins');
 		expect(names).toContain('scan_domain');
 		expect(tools.length).toBe(PUBLIC_TOOL_COUNT);
-		// Literal tripwire: 81 registered − 5 internal-only.
-		expect(tools.length).toBe(76);
+		// Literal tripwire: 84 registered − 5 internal-only.
+		expect(tools.length).toBe(79);
 	});
 });
 

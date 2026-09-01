@@ -42,6 +42,20 @@ export const BatchScanArgs = z
 	})
 	.passthrough();
 
+export const BatchScanStartArgs = BatchScanArgs.extend({
+	idempotency_key: z.string().min(8).max(128).describe('Caller-stable replay key for this exact batch request.'),
+});
+
+export const BatchScanJobArgs = z
+	.object({
+		job_id: z
+			.string()
+			.regex(/^bs_[a-f0-9]{40}$/)
+			.describe('Job ID returned by batch_scan_start.'),
+		format: FormatSchema.optional(),
+	})
+	.passthrough();
+
 /** compare_domains */
 export const CompareDomainsArgs = z
 	.object({
@@ -133,7 +147,12 @@ export const GetDomainRankArgs = z
 			.length(2)
 			.optional()
 			.describe('ISO 3166-1 alpha-2 country code to use the country cohort (e.g., "NZ"). Omit for global cohort.'),
-		sector: z.string().min(1).max(100).optional().describe('Sector label (e.g., "finance"). Forwarded to the cohort endpoint; sector filtering is planned for a future release.'),
+		sector: z
+			.string()
+			.min(1)
+			.max(100)
+			.optional()
+			.describe('Sector label (e.g., "finance"). Forwarded to the cohort endpoint; sector filtering is planned for a future release.'),
 		format: FormatSchema.optional().describe('Output verbosity. Auto-detected if omitted.'),
 	})
 	.passthrough();
@@ -240,14 +259,7 @@ export const AnalyzeDriftArgs = z
  * generate_* tools). `artifact` selects which record/plan to produce; all
  * per-artifact params are optional and apply only to the relevant artifact.
  */
-export const GenerateArtifactSchema = z.enum([
-	'fix_plan',
-	'spf_record',
-	'dmarc_record',
-	'dkim_config',
-	'mta_sts_policy',
-	'rollout_plan',
-]);
+export const GenerateArtifactSchema = z.enum(['fix_plan', 'spf_record', 'dmarc_record', 'dkim_config', 'mta_sts_policy', 'rollout_plan']);
 
 /**
  * mailto-safe email pattern for the DMARC `rua_email` arg.
@@ -395,7 +407,7 @@ const BrandCandidateDomainsArg = z
 export const DiscoverBrandDomainsArgs = z
 	.object({
 		domain: DomainSchema.describe(
-			'The exact seed domain to expand, scanned verbatim (e.g., example.com). Do NOT normalize, resolve, or substitute a brand\'s canonical/main domain — pass the literal domain the user named (e.g. pass `clau.de`, not `anthropic.com`). Use `brand_aliases` for related brand labels.',
+			"The exact seed domain to expand, scanned verbatim (e.g., example.com). Do NOT normalize, resolve, or substitute a brand's canonical/main domain — pass the literal domain the user named (e.g. pass `clau.de`, not `anthropic.com`). Use `brand_aliases` for related brand labels.",
 		),
 		signals: z
 			.array(DiscoverSignalSchema)
@@ -683,6 +695,9 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_subdomailing: BaseDomainArgs,
 	scan_domain: ScanDomainArgs,
 	batch_scan: BatchScanArgs,
+	batch_scan_start: BatchScanStartArgs,
+	batch_scan_status: BatchScanJobArgs,
+	batch_scan_findings: BatchScanJobArgs,
 	compare_domains: CompareDomainsArgs,
 	compare_baseline: CompareBaselineArgs,
 	generate: GenerateArgs,
