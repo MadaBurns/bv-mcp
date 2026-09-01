@@ -295,8 +295,28 @@
  *   records whose certificate association has not been compared against the served
  *   certificate now receive a low deduction instead of an unsupported perfect score.
  *   UPWARD for DNSSEC islands; DOWNWARD for domains publishing unverified TLSA records.
+ * - 1.19.0 — DMARC `p=none` is a missing ENFORCEMENT control. The `DMARC policy set to
+ *   none` finding moves `medium` → `high` and declares `missingControl: true`, zeroing
+ *   the dmarc category (was ~75–85) and arming the critical-gap ceiling (64, NIST
+ *   display D) in the profiles where dmarc is critical — `mail_enabled` /
+ *   `enterprise_mail` only; non-mail profiles gain no ceiling. Rationale: a receiver
+ *   applying p=none takes no action on failing mail (RFC 9989 §5.1.4 "Monitoring
+ *   Mode"), so for enforcement it is equivalent to publishing nothing — BitSight
+ *   grades the two identically, and no surveyed grader treats p=none as protective.
+ *   NZ SGE mandates p=reject on all email-enabled domains by October 2026. Operator
+ *   ratified 2026-09-01 (bv-web-prod research spec
+ *   docs/superpowers/specs/2026-09-01-dmarc-pnone-and-nonmail-grading-research.md).
+ *   MEASURED population (2,000-domain random sample of the bv-web GSI corpus,
+ *   direct DoH probe, n=1,953 measured): 12.7% of domains publish p=none (vs 75.7%
+ *   no record, 11.7% enforcing); of the p=none cohort, 50.0% scored >64 before this
+ *   change (mean 65.1) and would now cap, 32.7% drop a NIST display letter
+ *   (C/B/A → D). DOWNWARD only, and only for p=none domains; absent/enforcing
+ *   postures and every other category are bit-for-bit unchanged. The finding TITLE
+ *   is unchanged (impersonation escalation, dmarcIsWeak, spoofability posture and
+ *   rollout planning all match on it). No weight, tier, grade band,
+ *   `SEVERITY_PENALTIES` entry or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.18.0';
+export const SCORING_MODEL_VERSION = '1.19.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

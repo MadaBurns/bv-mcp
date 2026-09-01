@@ -15,9 +15,13 @@ describe('classifyDmarc', () => {
 		expect(f[0].metadata?.missingControl).toBe(true);
 	});
 
-	it('scores p=none as a medium finding (NIST v3.5.0)', () => {
+	it('scores p=none as a high, category-zeroing finding (scoring model 1.19.0)', () => {
 		const f = classifyDmarc({ ...base, policy: 'none' });
-		expect(f.find((x) => x.title === 'DMARC policy set to none')?.severity).toBe('medium');
+		const none = f.find((x) => x.title === 'DMARC policy set to none');
+		expect(none?.severity).toBe('high');
+		// Declared, not just prose-matched — enforcement-equivalence with the absent-record
+		// case (BitSight-style) must survive a reword of the sentence.
+		expect(none?.metadata?.missingControl).toBe(true);
 	});
 
 	it('flags p=quarantine as low', () => {
@@ -217,10 +221,10 @@ describe('classifyDmarc', () => {
 			expect(none?.detail).toMatch(/asymmetric/i);
 		});
 
-		it('keeps the title and severity unchanged (downstream matchers + no score change)', () => {
+		it('keeps the title unchanged for downstream matchers; severity is high since 1.19.0', () => {
 			const f = classifyDmarc({ ...asymmetric });
 			const none = f.find((x) => x.title === 'DMARC policy set to none');
-			expect(none?.severity).toBe('medium');
+			expect(none?.severity).toBe('high');
 			expect(none?.title).toBe('DMARC policy set to none');
 		});
 
@@ -233,14 +237,14 @@ describe('classifyDmarc', () => {
 		it('keeps the generic wording when the org domain is NOT enforcing (p=none, sp=none)', () => {
 			const f = classifyDmarc({ ...asymmetric, orgPolicy: 'none' });
 			const none = f.find((x) => x.title === 'DMARC policy set to none');
-			expect(none?.detail).toContain('only monitors');
+			expect(none?.detail).toContain('take no action');
 			expect(none?.detail).not.toMatch(/asymmetric/i);
 		});
 
 		it('keeps the generic wording on an organizational-domain scan with p=none', () => {
 			const f = classifyDmarc({ recordCount: 1, policy: 'none', domain: 'example.com' });
 			const none = f.find((x) => x.title === 'DMARC policy set to none');
-			expect(none?.detail).toContain('only monitors');
+			expect(none?.detail).toContain('take no action');
 			expect(none?.detail).not.toMatch(/asymmetric/i);
 		});
 

@@ -40,7 +40,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.30.0';
+export const PARITY_CORPUS_VERSION = '1.31.0';
 
 /**
  * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
@@ -286,13 +286,14 @@ export const DMARC_PARITY_FIXTURES: DmarcParityFixture[] = [
 	},
 	{
 		check: 'dmarc',
-		// Scores here reflect model 1.15.0 (#842): relaxed aspf is advisory info (0),
-		// no longer a scored low (−5) — fixtures without aspf=s moved UP by 5.
+		// Model 1.19.0: p=none is a missing ENFORCEMENT control (BitSight equivalence with
+		// the no-record fixture above) — was 75/false under 1.15.0. The zeroing is declared
+		// via `metadata.missingControl`, not prose, so it survives a copy reword.
 		name: 'p=none + rua',
 		query: '_dmarc.example.com',
 		records: { '_dmarc.example.com': ['v=DMARC1; p=none; rua=mailto:d@example.com'] },
-		expectedScore: 75,
-		expectedMissingControl: false,
+		expectedScore: 0,
+		expectedMissingControl: true,
 	},
 	{
 		check: 'dmarc',

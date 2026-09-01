@@ -57,12 +57,13 @@ describe('checkDmarc', () => {
 		expect(finding!.severity).toBe('critical');
 	});
 
-	it('should return medium finding for p=none (monitoring-only, not a hard fail)', async () => {
+	it('should return a high, category-zeroing finding for p=none (scoring model 1.19.0)', async () => {
 		mockTxtRecords(['v=DMARC1; p=none; rua=mailto:dmarc@example.com']);
 		const result = await run();
 		const finding = result.findings.find((f) => /policy set to none/i.test(f.title));
 		expect(finding).toBeDefined();
-		expect(finding!.severity).toBe('medium');
+		expect(finding!.severity).toBe('high');
+		expect(finding!.metadata?.missingControl).toBe(true);
 	});
 
 	it('should return low finding for p=quarantine', async () => {

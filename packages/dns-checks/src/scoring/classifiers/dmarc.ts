@@ -133,13 +133,26 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 			),
 		);
 	} else if (policy === 'none') {
+		// Scoring model 1.19.0: p=none is a missing ENFORCEMENT control. A receiver applying
+		// p=none takes no action on failing mail (RFC 9989 §5.1.4, "Monitoring Mode"), so for
+		// enforcement the posture is equivalent to publishing nothing — BitSight grades the two
+		// identically, dimension-scoped. Declared structurally (`missingControl: true`) like the
+		// no-record / multiple-record / missing-p= siblings above: zeroes the category and arms
+		// the critical-gap ceiling in the profiles where dmarc is critical (mail_enabled /
+		// enterprise_mail ONLY — non-mail profiles gain no ceiling from this; that boundary is
+		// a separate unratified decision, see bv-web-prod
+		// docs/superpowers/specs/2026-09-01-dmarc-pnone-and-nonmail-grading-research.md).
+		//
+		// The TITLE stays unchanged — it is load-bearing downstream (the impersonation
+		// escalation and `dmarcIsWeak` in scan post-processing match it exactly; maturity
+		// staging / rollout planning match it by substring; `assess_spoofability` derives
+		// posture from it).
+		//
 		// Asymmetry case: a subdomain was scanned DIRECTLY, and the organizational domain it
 		// inherits from is itself enforcing while handing this child `sp=none`. The effective
-		// policy really is "none", so the severity and title are unchanged (both are load-bearing
-		// downstream — the non-mail downgrade and the impersonation escalation match the title
-		// exactly, and maturity staging / rollout planning match it by substring). Only the
-		// DETAIL changes, and only to name the shape of the risk: the parent is locked down
-		// while this specific child is wide open, which is precisely why it gets picked.
+		// policy really is "none"; only the DETAIL differs, to name the shape of the risk —
+		// the parent is locked down while this specific child is wide open, which is precisely
+		// why it gets picked.
 		const parentEnforcing = facts.inheritedFromParent === true && (facts.orgPolicy === 'quarantine' || facts.orgPolicy === 'reject');
 		const self = facts.domain ?? '<domain>';
 		const org = facts.orgDomain ?? 'the organizational domain';
@@ -147,10 +160,11 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 			createFinding(
 				'dmarc',
 				'DMARC policy set to none',
-				'medium',
+				'high',
 				parentEnforcing
 					? `This subdomain has no DMARC enforcement: it publishes no DMARC record of its own and inherits sp=none from ${org}, whose own policy is "p=${facts.orgPolicy}". The enforcement is asymmetric — mail claiming to be from ${org} is rejected or quarantined, while mail claiming to be from ${self} is not, which is exactly why an attacker would pick the subdomain. Set sp=quarantine or sp=reject on ${org}, or publish a dedicated DMARC record at _dmarc.${self}. (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`
-					: `DMARC policy is "none" which only monitors but does not reject or quarantine spoofed emails. Consider upgrading to "quarantine" or "reject". (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
+					: `DMARC policy is "none": receivers monitor but take no action on messages that fail authentication, so spoofed email is delivered exactly as if no DMARC record existed. Monitoring is a rollout stage, not a protection — upgrade to "quarantine" or "reject" once aggregate reports confirm legitimate mail aligns. (Escalated to critical by scan_domain when active lookalike/impersonation domains are detected.)`,
+				{ missingControl: true },
 			),
 		);
 	} else if (policy === 'quarantine') {
