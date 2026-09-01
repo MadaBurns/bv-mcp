@@ -6,7 +6,7 @@ Capacity testing is an operator-controlled production change. It must not start 
 
 ## Documents
 
-- [Measurement plan](./global-ceiling-plan.md) — ceilings, SLOs, stages, workload mix, and evidence requirements.
+- [Measurement procedure](./global-ceiling-procedure.md) — ceilings, SLOs, stages, workload mix, and evidence requirements.
 - [Operator runbook](./global-ceiling-runbook.md) — preparation, execution, stop conditions, recovery, and cleanup.
 - [2026-09-01 report](./2026-09-01-global-ceiling-report.md) — observed results and their limits.
 - [2026-09-01 incident note](./2026-09-01-cloudflare-ddos-activation.md) — DDoS activation, response, and corrective actions.
