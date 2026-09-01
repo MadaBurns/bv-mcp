@@ -1,21 +1,14 @@
+// Template for .dev/wrangler.deploy.jsonc — the PRIVATE OVERLAY, not a standalone config.
+//
+// scripts/inject-private-config.cjs merges this file onto the public wrangler.jsonc and
+// writes wrangler.production.jsonc, which is what actually deploys. Only the keys below
+// are merged: kv_namespaces, d1_databases, r2_buckets, analytics_engine_datasets,
+// services, queues, vars. Everything else — name, main, compatibility_date,
+// durable_objects, migrations, observability, limits, triggers, tail_consumers — is owned
+// by wrangler.jsonc and is deliberately NOT repeated here. A copy kept here only goes
+// stale: an earlier version of this template pinned an older `durable_objects` block and
+// would have deployed without PROFILE_ACCUMULATOR.
 {
-	"name": "bv-dns-security-mcp",
-	"main": "../src/index.ts",
-	"compatibility_date": "2026-03-01",
-	"compatibility_flags": [
-		"global_fetch_strictly_public"
-	],
-	"durable_objects": {
-		"bindings": [
-			{ "name": "QUOTA_COORDINATOR", "class_name": "QuotaCoordinator" }
-		]
-	},
-	"migrations": [
-		{ "tag": "v1", "new_sqlite_classes": ["QuotaCoordinator"] }
-	],
-	"observability": {
-		"enabled": true
-	},
 	"kv_namespaces": [
 		{ "binding": "RATE_LIMIT", "id": "YOUR_RATE_LIMIT_KV_NAMESPACE_ID" },
 		{ "binding": "SCAN_CACHE", "id": "YOUR_SCAN_CACHE_KV_NAMESPACE_ID" },
@@ -26,6 +19,15 @@
 	],
 	"vars": {
 		// Set BV_API_KEY with `npx wrangler secret put BV_API_KEY`.
-		"PROVIDER_SIGNATURES_URL": ""
+		"PROVIDER_SIGNATURES_URL": "",
+		// The injector refuses to generate a production config without these four, and it
+		// PINS OAUTH_ISSUER to the value below. A fork serving the Worker from a different
+		// hostname must change REQUIRED_PRODUCTION_VARS in scripts/inject-private-config.cjs
+		// to match its own origin — issued tokens are rejected as cross-issuer otherwise.
+		// The other three are fail-closed production gates; keep them as-is.
+		"OAUTH_ISSUER": "https://dns-mcp.blackveilsecurity.com",
+		"REJECT_QUERY_API_KEY": "true",
+		"REQUIRE_PRODUCTION_BINDINGS": "true",
+		"ALERT_WEBHOOK_URL": "https://replace-me.invalid/your-alert-webhook"
 	}
 }

@@ -48,6 +48,56 @@ describe('deploy:prod pipeline integrity', () => {
 		expect(deployIndex).toBeGreaterThan(-1);
 		expect(preflightIndex).toBeLessThan(deployIndex);
 	});
+
+	// The private overlay is a partial overlay, not a standalone config. Deploying it
+	// directly drops the public base (routes, cron triggers, limits, tail consumers) AND
+	// every fail-closed gate in the injector, which is how this door once deployed without
+	// PROFILE_ACCUMULATOR. It must deploy the injected config instead.
+	it('routes the private deploy helper through the config injector', () => {
+		const injectIndex = deployPrivateSource.indexOf('scripts/inject-private-config.cjs');
+		const deployIndex = deployPrivateSource.indexOf("[wranglerCliPath, 'deploy'");
+		expect(injectIndex, 'deploy-private.mjs must run the injector').toBeGreaterThan(-1);
+		expect(injectIndex, 'the injector must run before wrangler deploy').toBeLessThan(deployIndex);
+	});
+
+	it('never hands the raw private overlay to wrangler deploy', () => {
+		const deployCall = deployPrivateSource.slice(deployPrivateSource.indexOf("[wranglerCliPath, 'deploy'"));
+		expect(deployCall, 'the deploy call must use the generated production config').toContain('generatedConfigPath');
+		expect(deployCall, 'deploying the overlay directly bypasses every injector gate').not.toContain('privateConfigPath');
+	});
+
+	// The staged path exists so a version can be smoke-tested before it takes traffic. It
+	// is only safe if it carries the SAME gates — a staged path that skipped the dns-checks
+	// rebuild or the schema preflight would upload a version those gates never vetted.
+	describe('staged rollout path', () => {
+		const stagedScript = pkg.scripts?.['deploy:prod:staged'] ?? '';
+
+		it('runs every gate deploy:prod runs', () => {
+			expect(stagedScript, 'package.json must define a deploy:prod:staged script').not.toBe('');
+			for (const gate of [
+				'npm run check:deploy-freshness',
+				'npm run check:release-integrity',
+				'npm -w packages/dns-checks run build',
+				'node scripts/inject-private-config.cjs',
+				'brand-audit-schema-preflight.mjs',
+				'npm run check:bindings:prod',
+			]) {
+				expect(stagedScript, `deploy:prod:staged must run the ${gate} gate`).toContain(gate);
+			}
+		});
+
+		it('uploads a version instead of routing traffic to it', () => {
+			expect(stagedScript, 'the staged path must upload a version, not deploy one').toContain('wrangler versions upload');
+			expect(stagedScript, 'the staged path must not send traffic to the new version').not.toContain('wrangler deploy');
+		});
+
+		it('exposes the promote and trigger steps a version upload does not perform', () => {
+			// `versions upload` deliberately leaves triggers alone, so cron/route changes need
+			// an explicit `triggers deploy` — otherwise a staged rollout silently drops them.
+			expect(pkg.scripts?.['deploy:prod:promote'] ?? '').toContain('wrangler versions deploy');
+			expect(pkg.scripts?.['deploy:prod:triggers'] ?? '').toContain('wrangler triggers deploy');
+		});
+	});
 });
 
 describe('inject-private-config fail-closed on missing overlay', () => {
