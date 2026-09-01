@@ -243,7 +243,13 @@ describe('recordPresent is score-neutral', () => {
 			resolver({ [`TXT:_dmarc.${D}`]: ['v=DMARC1; p=none; rua=mailto:a@x.test; adkim=s; aspf=s'] }),
 			opts,
 		);
-		expect(pnone.score).toBe(80);
-		expect(pnone.passed).toBe(true);
+		// Was 80/passed under the 1.14.0 capture; scoring model 1.19.0 declares p=none a
+		// missing enforcement control (score 0, failed). The score moved with the MODEL, not
+		// with the recordPresent field — which is still what this test proves: the pair below
+		// shows the observational field reporting "published" on a zeroed category.
+		expect(pnone.score).toBe(0);
+		expect(pnone.passed).toBe(false);
+		expect(pnone.recordPresent).toBe(true);
+		expect(pnone.controlPresent).toBe(false);
 	});
 });
