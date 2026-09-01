@@ -48,6 +48,39 @@ describe('deploy:prod pipeline integrity', () => {
 		expect(deployIndex).toBeGreaterThan(-1);
 		expect(preflightIndex).toBeLessThan(deployIndex);
 	});
+
+	// The staged path exists so a version can be smoke-tested before it takes traffic. It
+	// is only safe if it carries the SAME gates — a staged path that skipped the dns-checks
+	// rebuild or the schema preflight would upload a version those gates never vetted.
+	describe('staged rollout path', () => {
+		const stagedScript = pkg.scripts?.['deploy:prod:staged'] ?? '';
+
+		it('runs every gate deploy:prod runs', () => {
+			expect(stagedScript, 'package.json must define a deploy:prod:staged script').not.toBe('');
+			for (const gate of [
+				'npm run check:deploy-freshness',
+				'npm run check:release-integrity',
+				'npm -w packages/dns-checks run build',
+				'node scripts/inject-private-config.cjs',
+				'brand-audit-schema-preflight.mjs',
+				'npm run check:bindings:prod',
+			]) {
+				expect(stagedScript, `deploy:prod:staged must run the ${gate} gate`).toContain(gate);
+			}
+		});
+
+		it('uploads a version instead of routing traffic to it', () => {
+			expect(stagedScript, 'the staged path must upload a version, not deploy one').toContain('wrangler versions upload');
+			expect(stagedScript, 'the staged path must not send traffic to the new version').not.toContain('wrangler deploy');
+		});
+
+		it('exposes the promote and trigger steps a version upload does not perform', () => {
+			// `versions upload` deliberately leaves triggers alone, so cron/route changes need
+			// an explicit `triggers deploy` — otherwise a staged rollout silently drops them.
+			expect(pkg.scripts?.['deploy:prod:promote'] ?? '').toContain('wrangler versions deploy');
+			expect(pkg.scripts?.['deploy:prod:triggers'] ?? '').toContain('wrangler triggers deploy');
+		});
+	});
 });
 
 describe('inject-private-config fail-closed on missing overlay', () => {

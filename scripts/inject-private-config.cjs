@@ -133,6 +133,34 @@ function validateOverlayKeys(publicConfig, privateConfig) {
     }
 }
 
+/**
+ * Secrets whose absence breaks or silently degrades production, verified present on the
+ * live Worker. Emitted as `secrets.required` into the generated production config, so
+ * `wrangler deploy` refuses to ship without them instead of failing open at runtime.
+ *
+ * Deliberately NOT declared in the public wrangler.jsonc: `secrets.required` also makes
+ * `wrangler dev` load only the listed keys from .dev.vars and stops `wrangler types`
+ * inferring from it. Scoping the declaration to the generated production config keeps the
+ * deploy gate without changing local development or the OSS self-host surface.
+ *
+ * Fail-soft capabilities are intentionally absent — check_ssl, the recon tools, Cert
+ * Spotter and the PDF renderer are all designed to degrade when their key is unset, so
+ * requiring them would block deploys over a supported configuration:
+ *   BV_RECON_KEY, BV_TLS_PROBE_KEY, CERTSPOTTER_TOKEN, BV_BROWSER_RENDERER_KEY,
+ *   BV_CERTSTREAM_ADMIN_KEY, BV_MOBILE_INTERNAL_KEY, BV_INTERNAL_DEV_KEY(_2).
+ *
+ * Entries are added only once the secret is provisioned on the Worker: declaring a name
+ * before it exists turns the gate into a deploy outage. KV_ENVELOPE_KEY belongs here
+ * whenever OAuth is enabled (FIND-17) — add it as part of provisioning it, not before.
+ */
+const PRODUCTION_REQUIRED_SECRETS = [
+    'BV_API_KEY',
+    'OAUTH_SIGNING_SECRET',
+    'BV_WEB_INTERNAL_KEY',
+    'MCP_ACCESS_LOG_IP_ENCRYPTION_KEY',
+    'CF_ANALYTICS_TOKEN',
+];
+
 const REQUIRED_PRODUCTION_VARS = {
     OAUTH_ISSUER: 'https://dns-mcp.blackveilsecurity.com',
     REJECT_QUERY_API_KEY: 'true',
@@ -197,6 +225,8 @@ function inject() {
     if (privateConfig.r2_buckets) {
         publicConfig.r2_buckets = privateConfig.r2_buckets;
     }
+    publicConfig.secrets = { required: [...PRODUCTION_REQUIRED_SECRETS] };
+
     validateProductionSecurityConfig(publicConfig);
     
     fs.writeFileSync('wrangler.production.jsonc', JSON.stringify(publicConfig, null, 2));

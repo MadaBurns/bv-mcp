@@ -128,6 +128,28 @@ describe('private Wrangler config injection', () => {
 
 		expect(injected.compatibility_date).toBe('2026-07-29');
 	});
+
+	it('declares required secrets so wrangler refuses to deploy without them', () => {
+		const cwd = setupInjectFixture();
+		writePrivateOverlay(cwd, { vars: productionVars() });
+
+		execFileSync(process.execPath, ['scripts/inject-private-config.cjs'], { cwd, stdio: 'pipe' });
+		const injected = JSON.parse(readFileSync(join(cwd, 'wrangler.production.jsonc'), 'utf8')) as {
+			secrets?: { required?: string[] };
+		};
+
+		expect(injected.secrets?.required, 'the generated production config must declare its required secrets').toContain(
+			'BV_API_KEY',
+		);
+		expect(injected.secrets?.required).toContain('OAUTH_SIGNING_SECRET');
+
+		// Fail-soft capabilities must stay out: check_ssl, the recon tools and Cert Spotter
+		// are all designed to degrade when unset, so requiring them would block a deploy
+		// over a supported configuration.
+		for (const optional of ['BV_RECON_KEY', 'BV_TLS_PROBE_KEY', 'CERTSPOTTER_TOKEN']) {
+			expect(injected.secrets?.required, `${optional} is fail-soft and must not gate the deploy`).not.toContain(optional);
+		}
+	});
 });
 
 function setupInjectFixture(publicExtras: Record<string, unknown> = {}): string {
