@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 
 const privateConfigPath = '.dev/wrangler.deploy.jsonc';
+const generatedConfigPath = 'wrangler.production.jsonc';
 
 if (!existsSync(privateConfigPath)) {
 	console.error(`Missing ${privateConfigPath}.`);
@@ -14,17 +15,30 @@ if (!existsSync(privateConfigPath)) {
 
 const require = createRequire(import.meta.url);
 const wranglerCliPath = require.resolve('wrangler');
-const preflightResult = spawnSync(
-	process.execPath,
-	['scripts/brand-audit-schema-preflight.mjs', '--config', privateConfigPath],
-	{ stdio: 'inherit' },
-);
-if (preflightResult.error || preflightResult.status !== 0) {
-	if (preflightResult.error) console.error(preflightResult.error.message);
-	process.exit(preflightResult.status ?? 1);
+
+/** Run one deploy step, streaming its output and aborting the deploy on any non-zero exit. */
+function runStep(argv, description) {
+	const step = spawnSync(process.execPath, argv, { stdio: 'inherit' });
+	if (step.error) {
+		console.error(`${description} failed: ${step.error.message}`);
+		process.exit(1);
+	}
+	if (step.status !== 0) {
+		process.exit(step.status ?? 1);
+	}
 }
 
-const result = spawnSync(process.execPath, [wranglerCliPath, 'deploy', '--config', privateConfigPath, ...process.argv.slice(2)], {
+// The overlay is an OVERLAY, not a standalone config. Deploying it directly skips the
+// public wrangler.jsonc base — routes, cron triggers, limits, tail consumers — and every
+// fail-closed gate in inject-private-config.cjs: the production security vars, the
+// unknown-overlay-key guard, and the required-secrets declaration. Deploying the overlay
+// as-is once meant shipping without PROFILE_ACCUMULATOR, because the example overlay
+// carried its own stale `durable_objects` copy. Always deploy the injected config.
+runStep(['scripts/inject-private-config.cjs'], 'Private config injection');
+
+runStep(['scripts/brand-audit-schema-preflight.mjs', '--config', generatedConfigPath], 'Brand Audit schema preflight');
+
+const result = spawnSync(process.execPath, [wranglerCliPath, 'deploy', '--config', generatedConfigPath, ...process.argv.slice(2)], {
 	stdio: 'inherit',
 });
 
