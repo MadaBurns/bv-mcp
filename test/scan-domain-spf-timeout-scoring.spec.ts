@@ -83,19 +83,25 @@ async function scanWithSpfFailure(mode: 'missingControl' | 'throws') {
 describe('Finding 1 — a transient check failure scores the same however it surfaces', () => {
 	// SCORING-EQUIVALENCE GUARD (one axis only — see caveat below).
 	//
-	// A transient DNS failure surfaced as a heuristic `missingControl` finding must not
-	// score worse than the same failure surfaced as a `checkStatus`/throw transient.
-	// Verified empirically: both land on the identical overall score because the
-	// `confidence: 'heuristic'` finding never enters the engine's `missingControls` set
-	// (no critical-gap ceiling), so its zeroed category contribution nets out to the
-	// same headline number as transient exclusion.
+	// A transient DNS failure surfaced as a heuristic `missingControl` finding must never
+	// arm the critical-gap ceiling, and its two surfacing shapes must keep their traced
+	// per-check asymmetry (zeroed-and-counted vs excluded-and-renormalised).
 	//
-	// CAVEAT: score-equivalent is NOT behaviour-equivalent. The two shapes differ in
-	// scan_domain's transient-zero RETRY: shouldRetry() keys off `checkStatus === 'error'`,
-	// so only the throw/checkStatus shape is retried — a `missingControl` shape is not.
-	// This is why buildDnsErrorResult (the Finding-1 fix) uses `checkStatus`, NOT
-	// `missingControl`. The two corpora are not interchangeable; do not collapse them.
-	it('overall score is identical whether spf fails via internal-catch or via throw', async () => {
+	// HISTORY: until scoring model 1.20.0 this test asserted the two shapes produce an
+	// IDENTICAL overall score. That equality was an ARTIFACT, not an invariant: the
+	// fixture domain mocks no MX, so it detects as `web_only`, and `web_only` weighted
+	// spf at 0 — a zero-weight category contributes nothing whether counted or excluded.
+	// In every profile with a non-zero spf weight the two shapes have ALWAYS diverged
+	// (zeroed drags the weighted mean; excluded renormalises it away), so the equality
+	// claim never described mail profiles at all. Model 1.20.0 gave `web_only` spf
+	// weight 2 (non-sender lockdown), ending the accidental equality here too. The
+	// production check is unaffected: real check-spf uses buildDnsErrorResult (the
+	// `checkStatus` shape) precisely so transients are excluded AND retried.
+	//
+	// CAVEAT (unchanged): score posture is NOT behaviour posture. shouldRetry() keys
+	// off `checkStatus === 'error'`, so only the throw/checkStatus shape is retried —
+	// a `missingControl` shape is not. Do not collapse the two shapes.
+	it('keeps the traced shape asymmetry, bounds the divergence to the spf weight share, and arms no ceiling', async () => {
 		const viaMissingControl = await scanWithSpfFailure('missingControl');
 		const viaThrow = await scanWithSpfFailure('throws');
 
@@ -108,7 +114,21 @@ describe('Finding 1 — a transient check failure scores the same however it sur
 		expect(viaMissingControl.score.categoryScores.spf).toBe(0); // present-and-zeroed
 		expect(viaThrow.score.categoryScores.spf).toBeUndefined(); // excluded/n-a
 
-		// ...yet the headline score is the SAME. No regression from the wrapper catch.
-		expect(viaMissingControl.score.overall).toBe(viaThrow.score.overall);
+		// Narrow `overall: number | null` FIRST — an un-narrowed comparison is vacuous
+		// against the UNGRADED case (`null >= null` and `null - null <= 6` are both true).
+		const mcOverall = viaMissingControl.score.overall;
+		const throwOverall = viaThrow.score.overall;
+		if (mcOverall === null || throwOverall === null) {
+			throw new Error('fixture scans must be graded — got a null overall');
+		}
+
+		// The heuristic finding must not arm the critical-gap ceiling on either path.
+		expect(mcOverall).toBeGreaterThan(64);
+		expect(throwOverall).toBeGreaterThan(64);
+
+		// The zeroed shape may only trail the excluded shape by spf's small weight
+		// share in this profile (web_only spf=2 → a few points), never by a cliff.
+		expect(throwOverall).toBeGreaterThanOrEqual(mcOverall);
+		expect(throwOverall - mcOverall).toBeLessThanOrEqual(6);
 	});
 });

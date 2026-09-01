@@ -47,7 +47,10 @@ const PROFILE_SEMANTIC_ENTRIES: ReadonlyArray<readonly [DomainProfile, ScoringPr
 		'web_only',
 		{
 			comparisonClass: 'ordinary-domain',
-			emailPostureIncluded: false,
+			// true since scoring model 1.20.0: web_only weights the non-sender
+			// lockdown (spf 2 / dmarc 3 / mx 1), so email posture IS part of the
+			// score — matching non_mail, which carries the same identity weights.
+			emailPostureIncluded: true,
 			autoSelectable: true,
 			selectionReason: 'web-presence-without-receiving-mail-detected',
 		},
