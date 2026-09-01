@@ -145,7 +145,7 @@ describe('mail profiles: p=none arms the critical-gap ceiling', () => {
 });
 
 describe('non-mail profiles: the ceiling does NOT leak (Option B is a separate decision)', () => {
-	it('web_only (dmarc weight 0, not critical) stays uncapped on an otherwise-clean roster', () => {
+	it('web_only (dmarc weighted 3 since model 1.20.0, still not critical) stays uncapped on an otherwise-clean roster', () => {
 		const score = computeScanScore(rosterWithDmarc(pNoneResult()), contextFor('web_only'));
 		expect(score.overall).toBeGreaterThan(64);
 	});

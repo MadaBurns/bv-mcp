@@ -535,11 +535,12 @@ export function defineScoringProfilesSuite(s: ScoringModule): void {
 				expect(coreSum).toBe(63);
 			});
 
-			it('web_only zeroes email auth core weights', () => {
+			it('web_only carries the non-sender lockdown identity weights (model 1.20.0: spf 2 / dmarc 3 / dkim 0)', () => {
 				const p = PROFILE_WEIGHTS.web_only;
-				expect(p.spf.importance).toBe(0);
-				expect(p.dmarc.importance).toBe(0);
+				expect(p.spf.importance).toBe(2);
+				expect(p.dmarc.importance).toBe(3);
 				expect(p.dkim.importance).toBe(0);
+				expect(p.mx.importance).toBe(1);
 				expect(p.ssl.importance).toBeGreaterThan(0);
 			});
 
