@@ -92,11 +92,11 @@ describe('checkDMARC', () => {
 		// the parent, and the parent's own p= must reach the classifier for it to say so.
 		const enforcingParent = { '_dmarc.example.com': ['v=DMARC1; p=reject; sp=none; rua=mailto:dmarc@example.com'] };
 
-		it('reports the asymmetry in the detail while keeping title and severity', async () => {
+		it('reports the asymmetry in the detail while keeping the title (severity high since 1.19.0)', async () => {
 			const queryDNS = createMockDNS(enforcingParent);
 			const result = await checkDMARC('billing.example.com', queryDNS);
 			const none = result.findings.find((f) => f.title === 'DMARC policy set to none');
-			expect(none?.severity).toBe('medium');
+			expect(none?.severity).toBe('high');
 			expect(none?.detail).toContain('sp=none');
 			expect(none?.detail).toContain('p=reject');
 			expect(none?.detail).toContain('example.com');
@@ -119,7 +119,7 @@ describe('checkDMARC', () => {
 		it('keeps the generic wording when the parent is itself p=none', async () => {
 			const queryDNS = createMockDNS({ '_dmarc.example.com': ['v=DMARC1; p=none; sp=none; rua=mailto:dmarc@example.com'] });
 			const result = await checkDMARC('billing.example.com', queryDNS);
-			expect(result.findings.find((f) => f.title === 'DMARC policy set to none')?.detail).toContain('only monitors');
+			expect(result.findings.find((f) => f.title === 'DMARC policy set to none')?.detail).toContain('take no action');
 		});
 	});
 });
