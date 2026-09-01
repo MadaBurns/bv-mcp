@@ -2,15 +2,16 @@
 //
 // #363 item 3 — wiring guard: handleToolsCall routes the mutating *_start/register
 // tools through the request-dedup window (keyed off runtimeOptions.rateLimitKv +
-// principal), and the dedup set is EXACTLY the 8 mutating non-destructive tools.
+// principal), and the dedup set is EXACTLY the mutating non-destructive tools.
 
 import { describe, it, expect, vi } from 'vitest';
 import { handleToolsCall, MUTATING_DEDUP_TOOLS } from '../src/handlers/tools';
 
 describe('mutating-dedup tool set (SSOT)', () => {
-	it('is exactly the 9 mutating, non-destructive start/register tools', () => {
+	it('is exactly the 10 mutating, non-destructive start/register tools', () => {
 		expect([...MUTATING_DEDUP_TOOLS].sort()).toEqual(
 			[
+				'batch_scan_start',
 				'brand_audit_batch_start',
 				'discover_brand_domains_start',
 				'osint_investigate_domain_start',
