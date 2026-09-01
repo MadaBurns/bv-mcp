@@ -6,6 +6,8 @@ operations (tenant D1 restore drills, erasure, quota sharding) live in
 repo root. Nothing here contains real IDs or hostnames — actual values live in the
 operator secret manager.
 
+Production load and capacity testing has a separate [capacity-testing runbook](./load-testing/README.md). If a test activates Cloudflare mitigation, it measures a mitigation or source-path boundary rather than the application ceiling.
+
 ## 1. Deploying (any operator, not just the primary)
 
 Prerequisites:
