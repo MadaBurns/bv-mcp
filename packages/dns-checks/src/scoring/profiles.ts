@@ -146,8 +146,18 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 	},
 	web_only: {
 		// Core
-		spf: { importance: 0 },
-		dmarc: { importance: 0 },
+		// spf/dmarc were 0 until scoring model 1.20.0 (Option B, ratified 2026-09-02):
+		// zero weight meant a fully spoofable unconfigured non-sender and a locked-down
+		// one (v=spf1 -all + p=reject + RFC 7505 null MX) scored IDENTICALLY — the
+		// per-check rubric already distinguished them, multiplied by nothing. These are
+		// the same small identity weights `non_mail` has always carried. dkim stays 0
+		// on purpose: a non-sender cannot earn sender DKIM marks (the SGE blank-key
+		// wildcard variant was examined and not adopted). spf/dmarc must stay OUT of
+		// PROFILE_CRITICAL_CATEGORIES.web_only — movement is weights-only, no ceiling
+		// (93.1% of the no-MX corpus cohort lacks every lockdown record; a hard cap
+		// would re-grade half the index in one release).
+		spf: { importance: 2 },
+		dmarc: { importance: 3 },
 		dkim: { importance: 0 },
 		dnssec: { importance: 14 },
 		ssl: { importance: 14 },
@@ -156,7 +166,7 @@ export const PROFILE_WEIGHTS: Record<DomainProfile, Record<CheckCategory, Import
 		http_security: { importance: 8 },
 		mta_sts: { importance: 0 },
 		subdomailing: { importance: 0 },
-		mx: { importance: 0 },
+		mx: { importance: 1 },
 		caa: { importance: 3 },
 		ns: { importance: 3 },
 		lookalikes: { importance: 2 },
