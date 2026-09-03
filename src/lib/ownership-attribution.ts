@@ -205,10 +205,17 @@ export interface OwnershipEvidence {
  *    exists (measured absence).
  *  - `no_seed_receiver` — the candidate's DMARC reports go nowhere inside the
  *    seed apex (or it has no DMARC record).
- *  - `unresolved` — a lookup on the path REJECTED; nothing was measured.
+ *  - `candidate_unresolved` — the CANDIDATE-zone lookup (`_dmarc.<candidate>`)
+ *    rejected. That zone is 100% attacker-controlled, so a failure there is a
+ *    DECLINE, never a measurement gap: a squatter who blackholes its own
+ *    `_dmarc` must not do better than one that publishes nothing (PR #897
+ *    re-review, High). Falls through to the seed-side NS outcome with the
+ *    threat observation retained.
+ *  - `unresolved` — a SEED-zone lookup (the grant or its canary) REJECTED;
+ *    nothing was measured on the only side that carries weight.
  */
 export interface DmarcReportAuthorisation {
-	status: 'authorised' | 'wildcard' | 'not_authorised' | 'no_seed_receiver' | 'unresolved';
+	status: 'authorised' | 'wildcard' | 'not_authorised' | 'no_seed_receiver' | 'candidate_unresolved' | 'unresolved';
 	/** Report mailboxes (domain part) the candidate's DMARC record names inside the seed apex. */
 	seedReceivers: string[];
 	/** The receiver whose authorisation record matched (`authorised` / `wildcard` only). */
@@ -251,8 +258,10 @@ export interface ClassifyOwnershipInput {
 	/**
 	 * #864 — the SEED-SIDE half: result of the DMARC external-report
 	 * authorisation probe. `undefined` = not probed. The verdict rests on
-	 * `status === 'authorised'` alone; `'unresolved'` with the MX pre-filter
-	 * met yields `unmeasured` (#832's law), every other status falls through
+	 * `status === 'authorised'` alone; `'unresolved'` (a SEED-zone lookup
+	 * rejected) with the MX pre-filter met yields `unmeasured` (#832's law);
+	 * every other status — including `'candidate_unresolved'`, the
+	 * attacker-controlled `_dmarc.<candidate>` lookup failing — falls through
 	 * to the seed-side NS outcome.
 	 */
 	dmarcReportAuthorisation?: DmarcReportAuthorisation;
@@ -530,6 +539,45 @@ export function parseDmarcReportReceivers(dmarcRecord: string): string[] {
 }
 
 /**
+ * Registrable apexes of DMARC report-PROCESSING services — organisations that
+ * publish the RFC 7489 §7.1 `<domain>._report._dmarc.<receiver>` grant for
+ * EVERY customer domain as a matter of business, so a grant under one of
+ * these apexes says "customer", never "same owner". When the SEED apex is one
+ * of these, step 5b declines (evidence-only) — the same defence
+ * `SHARED_NS_APEXES` / `isSharedNsHost` gives the NS arms. Consulted for the
+ * seed apex only, so an entry here can only ever WITHHOLD an attribution.
+ * Add conservatively; a missing processor merely leaves the provider-class
+ * residual documented in the file header.
+ */
+export const DMARC_REPORT_PROCESSOR_APEXES: ReadonlySet<string> = new Set([
+	'agari.com',
+	'valimail.com',
+	'dmarcian.com',
+	'ondmarc.com',
+	'redsift.com',
+	'proofpoint.com',
+	'dmarcanalyzer.com',
+	'mimecast.com',
+	'easydmarc.com',
+	'powerdmarc.com',
+	'dmarcly.com',
+	'sendmarc.com',
+	'fraudmarc.com',
+	'uriports.com',
+	'mailhardener.com',
+	'postmarkapp.com',
+	'mxtoolbox.com',
+	'dmarcdigests.com',
+]);
+
+/** True when `apex` (already a registrable domain) is a known DMARC report-processing service — see {@link DMARC_REPORT_PROCESSOR_APEXES}. */
+export function isDmarcReportProcessorApex(apex: string): boolean {
+	const host = normHost(apex);
+	if (!host) return false;
+	return DMARC_REPORT_PROCESSOR_APEXES.has(getRegistrableDomain(host) ?? host);
+}
+
+/**
  * Step 5b of `classifyOwnership()` — the #864 seed-authorised convergence
  * arm. Returns `null` when the arm has nothing to say (pre-filter unmet,
  * inputs absent, or no seed-published grant), an `owned_by_seed` assessment
@@ -546,10 +594,17 @@ function assessSeedAuthorisedConvergence(
 	if (!mxRoutedIntoSeed(input.candidateMx, seedApex)) return null;
 	const auth = input.dmarcReportAuthorisation;
 	if (auth === undefined) return null;
+	// A seed that is itself a DMARC report PROCESSOR publishes the §7.1 grant
+	// for every customer, so the grant carries no ownership information there
+	// (mirrors `isSharedNsHost` for the NS arms). Evidence-only: decline.
+	if (isDmarcReportProcessorApex(seedApex)) return null;
 
 	const mx = (input.candidateMx ?? []).map(normHost).filter(Boolean);
 	const mxEvidence: OwnershipEvidence[] = mx.map((value) => ({ record: 'MX' as const, value, inSeedBailiwick: true }));
 
+	// ONLY a SEED-zone lookup failure is a measurement gap. `candidate_unresolved`
+	// (the attacker-controlled `_dmarc.<candidate>` lookup rejected) falls
+	// through below with every other non-grant status — see the status docs.
 	if (auth.status === 'unresolved') {
 		return {
 			verdict: 'unmeasured',

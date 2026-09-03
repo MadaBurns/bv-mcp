@@ -167,6 +167,8 @@ describe('classifyOwnership — seed-authorised convergence (#864, live amazon.c
 			undefined,
 			{ status: 'no_seed_receiver', seedReceivers: [] },
 			{ status: 'not_authorised', seedReceivers: [AMAZON_RECEIVER] },
+			// The attacker-controlled `_dmarc.<candidate>` lookup failing is a DECLINE, not a gap (re-review High).
+			{ status: 'candidate_unresolved', seedReceivers: [] },
 		];
 		for (const auth of nonGrants) {
 			const result = classifyOwnership({
@@ -181,6 +183,29 @@ describe('classifyOwnership — seed-authorised convergence (#864, live amazon.c
 			expect(result.verdict, `status=${auth?.status ?? 'undefined'}`).toBe('third_party');
 			expect(result.evidence).toBeUndefined();
 		}
+	});
+
+	it('NEGATIVE — a seed that is itself a DMARC report PROCESSOR cannot attribute its customers (denylist, mirrors isSharedNsHost)', async () => {
+		const { classifyOwnership, isDmarcReportProcessorApex } = await loadAttribution();
+		expect(isDmarcReportProcessorApex('agari.com')).toBe(true);
+		expect(isDmarcReportProcessorApex('rua.agari.com')).toBe(true);
+		expect(isDmarcReportProcessorApex('amazon.com')).toBe(false);
+		const result = classifyOwnership({
+			seedDomain: 'agari.com',
+			seedNs: ['ns1.agari-dns.example', 'ns2.agari-dns.example'],
+			candidateDomain: 'agarii.com',
+			registration: registered(['ns1.agarii.com']),
+			isSharedNsHost,
+			candidateMx: ['mx.agari.com'],
+			dmarcReportAuthorisation: {
+				status: 'authorised',
+				seedReceivers: ['rua.agari.com'],
+				receiverDomain: 'rua.agari.com',
+				authorisationRecord: 'agarii.com._report._dmarc.rua.agari.com',
+			},
+		});
+		expect(result.verdict).toBe('third_party');
+		expect(result.evidence).toBeUndefined();
 	});
 
 	it('NEGATIVE — a WILDCARD grant is evidence-only: the seed authorised reports about anyone, not this candidate', async () => {
@@ -494,6 +519,22 @@ describe('checkLookalikes — amazon.com → amazon.com.au (#864 regression fixt
 		const result = await runCheck('amazon.com');
 		threatRetained(result.findings, 'amazom.com');
 		expect(dmarcQueries).toEqual(['_dmarc.amazom.com']);
+	});
+
+	it('NEGATIVE (re-review High) — copied seed MX + the CANDIDATE `_dmarc` lookup rejects → third_party, threat retained, NOT partial: a blackholed attacker zone earns nothing', async () => {
+		const { dmarcQueries } = installMock({
+			'amazon.com': AMAZON_SEED_ZONE,
+			'amaz0n.com': forgedSquatterZone('amaz0n.com'),
+			'_dmarc.amaz0n.com': { TXT: 'reject' },
+		});
+		const result = await runCheck('amazon.com');
+		threatRetained(result.findings, 'amaz0n.com');
+		expect(result.findings.some((f) => f.metadata?.lookalikeDomain === 'amaz0n.com' && f.metadata?.ownershipVerdict === 'unmeasured')).toBe(
+			false,
+		);
+		expect(result.partial).not.toBe(true);
+		// Declined at stage 1 — no seed-zone lookup was even attempted.
+		expect(dmarcQueries).toEqual(['_dmarc.amaz0n.com']);
 	});
 
 	it('#832 law end-to-end — the seed-side grant lookup rejects for amazon.com.au → unmeasured, impersonation finding withheld, result marked partial', async () => {
