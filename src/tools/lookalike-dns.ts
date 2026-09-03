@@ -257,11 +257,15 @@ export const MAX_SEED_REPORT_RECEIVERS = 2;
  *     per-domain grant from a wildcard (`*._report._dmarc.<receiver>`), which
  *     authorises reports about ANY domain and is therefore evidence-only.
  *
- * Uses the lean Phase-1 preset: these are disposable candidate probes, not
- * seed-side queries — a rejected lookup costs an `unmeasured` verdict for that
- * candidate this run (#832's law), never a wrong one. NXDOMAIN / empty answers
- * are MEASURED absences (the DoH layer never throws on an rcode); only a
- * timeout / abort / transport failure is `unresolved`.
+ * Uses the lean Phase-1 preset. Failure semantics are ASYMMETRIC by design
+ * (PR #897 re-review, High): stage 1 queries the CANDIDATE's zone, which the
+ * attacker controls end to end — a squatter who copies the seed MX and then
+ * blackholes its own `_dmarc` must not be rewarded with an `unmeasured` that
+ * withholds its threat finding, so that failure is `candidate_unresolved`, a
+ * DECLINE. Only stages 2–3 (the grant and its canary, both in the SEED's
+ * zone) may yield `unresolved` → `unmeasured` (#832's law). NXDOMAIN / empty
+ * answers are MEASURED absences (the DoH layer never throws on an rcode);
+ * only a timeout / abort / transport failure is a rejection.
  */
 export async function probeDmarcReportAuthorisation(candidate: string, seedDomain: string): Promise<DmarcReportAuthorisation> {
 	const normalisedSeed = seedDomain.trim().toLowerCase().replace(/\.$/, '');
@@ -271,7 +275,8 @@ export async function probeDmarcReportAuthorisation(candidate: string, seedDomai
 	try {
 		dmarcRecords = await queryTxtRecords(`_dmarc.${candidate}`, PHASE1_DNS_OPTS);
 	} catch {
-		return { status: 'unresolved', seedReceivers: [] };
+		// Attacker-controlled zone failed to answer: decline, never a measurement gap.
+		return { status: 'candidate_unresolved', seedReceivers: [] };
 	}
 	const dmarc = dmarcRecords.find((r) => /^\s*v=DMARC1\b/i.test(r));
 	if (!dmarc) return { status: 'no_seed_receiver', seedReceivers: [] };
