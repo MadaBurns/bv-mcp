@@ -456,6 +456,26 @@ export function hashForAnalytics(value: string): string {
 export function hashIpForAnalytics(ip: string): string {
 	return fnv1aHash(ip, 'i_');
 }
+/** Inputs for {@link hashNetworkLocalityForAnalytics} — the `request.cf` fields a no-header row already stores in plaintext. */
+export interface NetworkLocalityInput {
+	asn?: number | null;
+	colo?: string | null;
+	country?: string | null;
+}
+
+/**
+ * FNV-1a hash of `asn|colo|country` — `n_` prefix so it can never be mistaken
+ * for an `i_` IP hash. Fallback attribution key for public-path access-log rows
+ * whose request carried NO `cf-connecting-ip` but did carry `request.cf` (#876).
+ * Deliberately built ONLY from fields the row already stores in plaintext at the
+ * `coarse` PII level, so it adds no dimension the row lacks. Coarse by design:
+ * every caller in one ASN behind one colo shares a key. Not a trust source —
+ * the IP-source rule (cf-connecting-ip only) is unchanged; this is attribution.
+ */
+export function hashNetworkLocalityForAnalytics(input: NetworkLocalityInput): string {
+	const asn = typeof input.asn === 'number' && Number.isFinite(input.asn) ? String(input.asn) : '-';
+	return fnv1aHash(`${asn}|${input.colo || '-'}|${input.country || '-'}`, 'n_');
+}
 
 /** Shared FNV-1a hash with configurable prefix. */
 function fnv1aHash(value: string, prefix: string): string {
