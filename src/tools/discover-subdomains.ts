@@ -408,6 +408,101 @@ export interface SubdomainDiscoveryResult {
 	 * no value a consumer can read as "complete inventory".
 	 */
 	coverage?: CtCoverage;
+	/**
+	 * Whether {@link totalSubdomains} is what this tool can normally see, or a
+	 * FLOOR from a run whose recall was cut (#866).
+	 *
+	 *  - `'sample'` — every source consulted on this call answered and was read
+	 *    to the end of its index. Still a CT sample (see {@link coverage}), never
+	 *    an inventory — but it is the tool's normal reach.
+	 *  - `'floor'`  — recall on THIS call fell below that: a source was asked and
+	 *    failed, a contributing index was not read to the end, the budget
+	 *    tripped, or the data is a stale re-serve. `totalSubdomains` is then a
+	 *    floor even of what this tool normally sees, and
+	 *    {@link minSubdomainsObserved} is present.
+	 *
+	 * Deliberately NOT derived from `coverage.degraded`, which is true on every
+	 * run (the direct ladder is crt.sh → Certspotter-as-fallback, so a healthy
+	 * crt.sh answer always leaves Certspotter `notConsulted`) and therefore
+	 * cannot discriminate. Measured 2026-08-31 (anthropic.com): crt.sh
+	 * `http_error`, Certspotter the only contributor with its recent-window index
+	 * exhausted — and `totalSubdomains: 107` shipped shaped exactly like a
+	 * complete count, the caveat living only in `coverage.caveat` and an `info`
+	 * issue.
+	 *
+	 * Optional only so hand-built fixtures typecheck; every production path sets
+	 * it, and the formatter derives it when absent.
+	 */
+	countBasis?: SubdomainCountBasis;
+	/**
+	 * Present ONLY when {@link countBasis} is `'floor'` — its PRESENCE is the
+	 * shape signal a consumer keys on. Numerically equal to
+	 * {@link totalSubdomains}, which is kept so no existing reader breaks.
+	 */
+	minSubdomainsObserved?: number;
+	/**
+	 * {@link totalSubdomains} minus {@link wildcardCerts}: names that can resolve
+	 * to a host. A wildcard (`*.example.com`) is a PATTERN — a certificate
+	 * observation, not a subdomain — and a prior sweep measured wildcards plus
+	 * dead-but-certificated hosts inflating CT counts ~1.6× over live estate.
+	 */
+	concreteSubdomains?: number;
+}
+
+/** See {@link SubdomainDiscoveryResult.countBasis}. */
+export type SubdomainCountBasis = 'sample' | 'floor';
+
+/** The members {@link countBasisFor} reads. */
+type CountBasisInputs = Pick<SubdomainDiscoveryResult, 'coverage' | 'sourceIndexExhausted' | 'partial' | 'stale' | 'sourceUnavailable'>;
+
+/** A per-source outcome meaning the source was asked and did NOT answer. */
+function sourceFailed(outcome: CtSourceOutcome): boolean {
+	return outcome !== 'ok' && outcome !== 'empty';
+}
+
+/**
+ * Decide whether a result's count is the tool's normal reach or a floor. Pure;
+ * exported so a renderer of an older payload (no `countBasis`) can derive it.
+ *
+ * `empty` is NOT a failure: a source that answered "nothing" was read, so its
+ * silence does not cut recall the way an `http_error`/`timeout`/`rate_limited`
+ * does.
+ */
+export function countBasisFor(r: CountBasisInputs): SubdomainCountBasis {
+	if (r.partial || r.stale || r.sourceUnavailable) return 'floor';
+	if (r.sourceIndexExhausted === false) return 'floor';
+	if (r.coverage?.perSource.some((s) => sourceFailed(s.outcome))) return 'floor';
+	return 'sample';
+}
+
+/** The count-contract members (#866) for a result being built. */
+function countContract(
+	total: number,
+	wildcardCerts: number,
+	basis: SubdomainCountBasis,
+): { countBasis: SubdomainCountBasis; concreteSubdomains: number; minSubdomainsObserved?: number } {
+	return {
+		countBasis: basis,
+		concreteSubdomains: Math.max(0, total - wildcardCerts),
+		...(basis === 'floor' ? { minSubdomainsObserved: total } : {}),
+	};
+}
+
+/**
+ * Re-derive the count contract on a finished result. Used by the cache
+ * re-serve paths, where the stored contract described the CACHING call: a
+ * healthy enumeration re-served `stale` is a floor NOW, and an entry written
+ * before this contract existed has no contract at all. Also lifts the stored
+ * sample caveat to `low` when the re-serve is a floor.
+ */
+function withCountContract(result: SubdomainDiscoveryResult): SubdomainDiscoveryResult {
+	const { minSubdomainsObserved: _min, ...rest } = result;
+	const basis = countBasisFor(result);
+	const issues =
+		basis === 'floor'
+			? rest.issues.map((i) => (i.type === 'ct_sample_not_inventory' && i.severity === 'info' ? { ...i, severity: 'low' as const } : i))
+			: rest.issues;
+	return { ...rest, issues, ...countContract(result.totalSubdomains, result.wildcardCerts, basis) };
 }
 
 /** Provenance/completeness metadata threaded from a source into the result builders. */
@@ -759,9 +854,10 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[],
 
 	const sourceIndexExhausted = (meta?.sourceIndexExhausted ?? true) && !entryCapHit;
 	const flags = enumerationFlags(allSubdomains.length, subdomains.length, meta?.sources, sourceIndexExhausted, meta?.attempts);
+	const count = countContract(allSubdomains.length, wildcardCerts, countBasisFor(flags));
 	// Prepended, not appended: a caller that truncates the issue list for display
 	// must not lose the one line saying the list itself is a floor.
-	if (flags.coverage) issues.unshift(sampleCaveatIssue(flags.coverage, allSubdomains.length));
+	if (flags.coverage) issues.unshift(sampleCaveatIssue(flags.coverage, allSubdomains.length, wildcardCerts, count.countBasis));
 
 	return {
 		domain,
@@ -773,6 +869,7 @@ export function buildResultFromEntries(domain: string, rawEntries: CrtShEntry[],
 		uniqueIssuers,
 		issues,
 		...flags,
+		...count,
 	};
 }
 
@@ -819,10 +916,12 @@ function attemptsFromSources(sources: string[] | undefined, sourceIndexExhausted
  *
  * `unconfirmed_zero` already covers the empty case, so this one rides on
  * non-empty results — the shape that looked healthy and therefore did the
- * damage. Severity `info`: it is a standing property of CT-derived evidence,
- * not a finding about the domain.
+ * damage. Severity `info` on a healthy run: it is a standing property of
+ * CT-derived evidence, not a finding about the domain. Severity `low` under a
+ * `'floor'` basis (#866): a count derived from one exhausted index after the
+ * other source failed is a scan-QUALITY finding, and it names why.
  */
-function sampleCaveatIssue(coverage: CtCoverage, total: number): SubdomainIssue {
+function sampleCaveatIssue(coverage: CtCoverage, total: number, wildcardCerts: number, basis: SubdomainCountBasis): SubdomainIssue {
 	// Kept SHORT deliberately, and BOUNDED: `formatCompact`/`formatFull` push issue
 	// details through `sanitizeOutputText(…, 200|300)`, so a detail that carried the
 	// full `coverage.caveat` prose was truncated mid-sentence — losing the clause
@@ -831,8 +930,18 @@ function sampleCaveatIssue(coverage: CtCoverage, total: number): SubdomainIssue 
 	// The lead sentence is the non-negotiable part and is built first; the source
 	// summary is appended only while it still fits under the tightest cap, so a
 	// long source list can never push the meaning off the end.
-	const lead = `${total} subdomains is a LOWER BOUND from a CT sample, not an inventory — hosts with no logged certificate never appear.`;
 	const answered = coverage.contributing.length > 0 ? coverage.contributing.join(', ') : 'no source';
+	if (basis === 'floor') {
+		const failed = coverage.perSource.filter((s) => sourceFailed(s.outcome)).map((s) => s.source);
+		const lead = `At least ${total} subdomains observed (${concreteWildcardSplit(total, wildcardCerts)}) — a FLOOR, not a count: recall was cut on this call.`;
+		const why = failed.length > 0 ? ` Failed: ${failed.join(', ')}; answered: ${answered}.` : ` Answered: ${answered}; index not read to the end.`;
+		return {
+			type: 'ct_sample_not_inventory',
+			severity: 'low',
+			detail: lead.length + why.length <= COMPACT_ISSUE_DETAIL_CAP ? `${lead}${why}` : lead,
+		};
+	}
+	const lead = `${total} subdomains is a LOWER BOUND from a CT sample, not an inventory — hosts with no logged certificate never appear.`;
 	const missing = [...coverage.unavailable, ...coverage.notConsulted];
 	const suffix = ` Answered: ${answered}${missing.length > 0 ? `; no data from ${missing.join(', ')}` : ''}.`;
 	return {
@@ -840,6 +949,12 @@ function sampleCaveatIssue(coverage: CtCoverage, total: number): SubdomainIssue 
 		severity: 'info',
 		detail: lead.length + suffix.length <= COMPACT_ISSUE_DETAIL_CAP ? `${lead}${suffix}` : lead,
 	};
+}
+
+/** `"97 concrete, 10 wildcard patterns"` — the split every headline carries (#866). */
+function concreteWildcardSplit(total: number, wildcardCerts: number): string {
+	const concrete = Math.max(0, total - wildcardCerts);
+	return `${concrete} concrete, ${wildcardCerts} wildcard pattern${wildcardCerts === 1 ? '' : 's'}`;
 }
 
 /**
@@ -1301,11 +1416,13 @@ async function cacheSuccess(domain: string, result: SubdomainDiscoveryResult, op
 async function readLastKnownGood(domain: string, options?: DiscoverSubdomainsOptions): Promise<SubdomainDiscoveryResult | null> {
 	const loaded = await loadCacheEntry(domain, options);
 	if (!loaded) return null;
-	return {
+	// Re-derived, not re-served: the stored contract described the caching call,
+	// and a stale re-serve is a floor NOW whatever that call was (#866).
+	return withCountContract({
 		...stripTransientFlags(loaded.result),
 		stale: true,
 		cacheAgeMinutes: Math.floor(loaded.ageMs / 60_000),
-	};
+	});
 }
 
 /**
@@ -1342,11 +1459,13 @@ async function readFreshCache(domain: string, options?: DiscoverSubdomainsOption
 	const loaded = await loadCacheEntry(domain, options);
 	if (!loaded) return null;
 	if (loaded.ageMs > SUBDOMAIN_FRESH_TTL_SECONDS * 1000) return null;
-	return {
+	// `withCountContract` also backfills entries written before the contract
+	// existed (the LKG TTL is 7 days), so a fresh hit is never shape-less.
+	return withCountContract({
 		...stripTransientFlags(loaded.result),
 		cached: true,
 		cacheAgeMinutes: Math.floor(loaded.ageMs / 60_000),
-	};
+	});
 }
 
 /**
@@ -1673,7 +1792,12 @@ function buildCertstreamResult(
 	const flags = enumerationFlags(dedupedAll.length, deduped.length, ['certstream'], sourceIndexExhausted, [
 		{ source: 'certstream', outcome: dedupedAll.length === 0 ? 'empty' : 'ok', contributed: true, indexExhausted: sourceIndexExhausted },
 	]);
-	if (flags.coverage && dedupedAll.length > 0) issues.unshift(sampleCaveatIssue(flags.coverage, dedupedAll.length));
+	// A timed-out / truncated upstream read is `sourceIndexExhausted: false`, so
+	// the floor is decided here even though `partial: true` is spread on later.
+	const count = countContract(dedupedAll.length, wildcardCerts, countBasisFor(flags));
+	if (flags.coverage && dedupedAll.length > 0) {
+		issues.unshift(sampleCaveatIssue(flags.coverage, dedupedAll.length, wildcardCerts, count.countBasis));
+	}
 
 	return {
 		domain,
@@ -1685,6 +1809,7 @@ function buildCertstreamResult(
 		uniqueIssuers: [],
 		issues,
 		...flags,
+		...count,
 	};
 }
 
@@ -1707,6 +1832,7 @@ function emptyResult(domain: string, sourceUnavailable = false, partial = false,
 	// A source outage or a budget trip is by definition not an exhaustive read —
 	// never let an empty error read as a confident "none found".
 	const sourceIndexExhausted = sourceUnavailable || partial ? false : (meta?.sourceIndexExhausted ?? true);
+	const flags = enumerationFlags(0, 0, meta?.sources, sourceIndexExhausted, meta?.attempts);
 	return {
 		domain,
 		totalSubdomains: 0,
@@ -1726,7 +1852,10 @@ function emptyResult(domain: string, sourceUnavailable = false, partial = false,
 		],
 		sourceUnavailable,
 		...(partial ? { partial: true } : {}),
-		...enumerationFlags(0, 0, meta?.sources, sourceIndexExhausted, meta?.attempts),
+		...flags,
+		// A zero from an outage or a budget trip is a floor of zero, not a sample
+		// of zero — the shape must say so as loudly as the `unconfirmed_zero` issue.
+		...countContract(0, 0, countBasisFor({ ...flags, partial, sourceUnavailable })),
 	};
 }
 
@@ -1919,10 +2048,32 @@ function partialBanner(): string {
 	return `⚠️ PARTIAL RESULT: the Certificate Transparency source timed out before finishing this enumeration — the subdomains below are real, but there may be more that were not found in time.`;
 }
 
+/**
+ * The headline count, honest about wildcards and about a floor (#866).
+ *
+ * Derives the basis for payloads that predate the contract (hand-built
+ * fixtures, cache entries written before it) so an old payload can never
+ * render as a bare count by omission.
+ */
+function headlineCount(result: SubdomainDiscoveryResult): string {
+	const split = concreteWildcardSplit(result.totalSubdomains, result.wildcardCerts);
+	const basis = result.countBasis ?? countBasisFor(result);
+	return basis === 'floor'
+		? `at least ${result.totalSubdomains} subdomains observed (${split})`
+		: `${result.totalSubdomains} subdomains (${split})`;
+}
+
+/** Appended to a floor headline so the qualifier sits ON the number, not three fields away. */
+function floorSuffix(result: SubdomainDiscoveryResult): string {
+	return (result.countBasis ?? countBasisFor(result)) === 'floor' ? ' — FLOOR from an incomplete read, not a count' : '';
+}
+
 /** Compact format: concise one-line-per-subdomain output. */
 function formatCompact(result: SubdomainDiscoveryResult): string {
 	const lines: string[] = [];
-	lines.push(`Subdomain Discovery: ${result.domain} — ${result.totalSubdomains} subdomains (${result.totalCertificates} certificates)`);
+	lines.push(
+		`Subdomain Discovery: ${result.domain} — ${headlineCount(result)} (${result.totalCertificates} certificates)${floorSuffix(result)}`,
+	);
 	if (result.uniqueIssuers.length > 0) {
 		lines.push(`Issuers: ${result.uniqueIssuers.map((i) => sanitizeOutputText(i, 60)).join(', ')}`);
 	}
@@ -1959,7 +2110,7 @@ function formatCompact(result: SubdomainDiscoveryResult): string {
 function formatFull(result: SubdomainDiscoveryResult): string {
 	const lines: string[] = [];
 	lines.push(`# Subdomain Discovery: ${result.domain}`);
-	lines.push(`Total: ${result.totalSubdomains} subdomains across ${result.totalCertificates} certificates`);
+	lines.push(`Total: ${headlineCount(result)} across ${result.totalCertificates} certificates${floorSuffix(result)}`);
 	lines.push(`Issuers: ${result.uniqueIssuers.map((i) => sanitizeOutputText(i, 60)).join(', ')}`);
 	lines.push(`Wildcards: ${result.wildcardCerts} | Expired: ${result.expiredCerts}`);
 	lines.push('');
