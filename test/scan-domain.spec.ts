@@ -1395,14 +1395,15 @@ describe('scanDomain — transient zero retry', () => {
 		// means 2 fetches per query) and on EVERY `_smtp._tls` lookup. Each subsequent
 		// spf/dmarc/bimi fetch succeeds, so the retry pass can recover them.
 		//
-		// `_smtp._tls` is queried by TWO checks — tlsrpt AND mta_sts — and since #889
-		// (dns-checks 1.33.0) mta_sts no longer swallows a rejected lookup as a scored `low`:
-		// it returns the retryable `checkStatus: 'error'` + score 0 shape like everyone else.
-		// Failing that name permanently makes both of them deterministic candidates. That is
-		// 5 qualifying retries in checkResults order — spf, dmarc, mta_sts, bimi, tlsrpt — and
-		// the cap is MAX_RETRIES_PER_SCAN=3: spf and dmarc recover, mta_sts is retried but
-		// fails again, and bimi is NEVER retried (its lookup counter proves it), which is the
-		// cap doing its job. (DKIM is excluded because it swallows DNS errors internally.)
+		// `_smtp._tls` is queried by TWO checks — tlsrpt AND mta_sts. Since #889 (dns-checks
+		// 1.33.0) mta_sts no longer swallows a rejected lookup as a scored `low`; but a TLS-RPT
+		// sub-probe failure abstains the WHOLE category only when MTA-STS itself measured
+		// nothing definite. Here the policy fixture parses to graded findings, so mta_sts stays
+		// MEASURED (no checkStatus) with an unscored `info` TLS-RPT abstention and is NOT a
+		// retry candidate. Failing the name permanently keeps that deterministic. That leaves
+		// 4 qualifying retries in checkResults order — spf, dmarc, bimi, tlsrpt — against
+		// MAX_RETRIES_PER_SCAN=3: spf, dmarc and bimi recover; tlsrpt stays errored, which is
+		// the cap doing its job. (DKIM is excluded because it swallows DNS errors internally.)
 		const counters: Record<string, number> = { spf: 0, dmarc: 0, tlsrpt: 0, bimi: 0 };
 		function shouldThrow(key: string, limit = 2): boolean {
 			counters[key]++;
@@ -1454,19 +1455,20 @@ describe('scanDomain — transient zero retry', () => {
 		const byCategory = (cat: string) => result.checks.find((c) => c.category === cat)!;
 		const recovered = (cat: string) => byCategory(cat).checkStatus !== 'error' && byCategory(cat).score > 0;
 
-		// Retry slots 1 and 2 (by checkResults order): recovered.
+		// Retry slots 1–3 (by checkResults order): recovered. bimi's counter proves it was
+		// actually retried (more than the 2 fetches of its first, failing DNS attempt).
 		expect(recovered('spf')).toBe(true);
 		expect(recovered('dmarc')).toBe(true);
-		// Retry slot 3: mta_sts was retried (retryable class, #889) but its `_smtp._tls` lookup
-		// fails permanently, so it stays NOT ASSESSED — never a scored TLS-RPT finding.
-		expect(byCategory('mta_sts').checkStatus).toBe('error');
+		expect(recovered('bimi')).toBe(true);
+		expect(counters.bimi).toBeGreaterThan(2);
+		// Beyond the cap: tlsrpt stays errored.
+		expect(recovered('tlsrpt')).toBe(false);
+		// mta_sts: measured (definite policy findings), TLS-RPT sub-probe carried as an unscored
+		// info abstention — never the pre-#889 scored `low`, never a whole-category blank.
+		expect(byCategory('mta_sts').checkStatus).toBeUndefined();
 		expect(byCategory('mta_sts').findings.some((f) => f.metadata?.notAssessedReason === 'dns_query_failed')).toBe(true);
 		expect(byCategory('mta_sts').findings.some((f) => f.title === 'TLS-RPT DNS query failed')).toBe(false);
-		// Beyond the cap: bimi and tlsrpt stay errored, and bimi's lookup counter proves it was
-		// never retried — exactly the 2 fetches of its first (failing) DNS attempt.
-		expect(recovered('bimi')).toBe(false);
-		expect(counters.bimi).toBe(2);
-		expect(recovered('tlsrpt')).toBe(false);
+		expect(byCategory('mta_sts').findings.some((f) => f.title === 'TLS-RPT record missing')).toBe(false);
 	});
 });
 

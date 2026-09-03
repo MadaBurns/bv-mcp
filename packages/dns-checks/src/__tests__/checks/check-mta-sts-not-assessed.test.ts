@@ -246,3 +246,69 @@ describe('checkMTASTS — a DEFINITE negative answer is still evidence (#889 bou
 		expect(r.findings.some((f) => /not covered|uncovered/i.test(f.title))).toBe(false);
 	});
 });
+
+describe('checkMTASTS — a TLS-RPT sub-probe failure must not blank a DEFINITE MTA-STS measurement (#889 review)', () => {
+	const policy404: FetchFunction = async () => new Response('Not Found', { status: 404 });
+
+	it('404 policy + _smtp._tls throws → category MEASURED, the high is retained and scores, TLS-RPT rides along as an unscored info', async () => {
+		const r = await checkMTASTS('example.com', healthyDNS({ '_smtp._tls.example.com': new Error('SERVFAIL') }), { fetchFn: policy404 });
+
+		expect(r.checkStatus).toBeUndefined();
+		expect(r.partial).toBeUndefined();
+		expect(r.findings.some((f) => f.title === 'MTA-STS policy file not accessible' && f.severity === 'high')).toBe(true);
+		// The high (−25) scores; the TLS-RPT abstention costs nothing (was −5 pre-PR, would have
+		// been a whole-category blank after the first cut of this PR).
+		expect(r.score).toBe(75);
+		expect(r.passed).toBe(true);
+
+		const tls = r.findings.find((f) => f.metadata?.notAssessedReason === 'dns_query_failed');
+		expect(tls?.severity).toBe('info');
+		expect(tls?.metadata?.inconclusive).toBe(true);
+		// Never recorded as a measured absence.
+		expect(r.findings.some((f) => f.title === 'TLS-RPT record missing')).toBe(false);
+		expect(r.controlPresent).toBe(true);
+		expect(r.recordPresent).toBe(true);
+	});
+
+	it('missing _mta-sts record (definite absence) + _smtp._tls throws → measured, graded absence retained', async () => {
+		const r = await checkMTASTS(
+			'example.com',
+			healthyDNS({ '_mta-sts.example.com': [], '_smtp._tls.example.com': new Error('SERVFAIL') }),
+			{
+				fetchFn: okPolicy,
+			},
+		);
+		expect(r.checkStatus).toBeUndefined();
+		expect(r.findings.some((f) => f.title === 'No MTA-STS record found' && f.severity === 'medium')).toBe(true);
+		expect(r.score).toBe(85);
+		expect(r.recordPresent).toBe(false);
+		// The both-missing summary needs a MEASURED TLS-RPT absence; a failed lookup is not one.
+		expect(r.findings.some((f) => f.title === 'No MTA-STS or TLS-RPT records found')).toBe(false);
+	});
+
+	it('record present + policy fetch throws + TLS-RPT ok → whole-check abstention (unchanged)', async () => {
+		const r = await checkMTASTS('example.com', healthyDNS(), { fetchFn: throwing(new Error('ECONNRESET')) });
+		expect(r.checkStatus).toBe('error');
+		expect(r.score).toBe(0);
+		expect(r.partial).toBe(true);
+	});
+
+	it('record present + healthy policy (no graded finding) + _smtp._tls throws → whole-check abstention (nothing definite to keep)', async () => {
+		const r = await checkMTASTS('example.com', healthyDNS({ '_smtp._tls.example.com': new Error('SERVFAIL') }), { fetchFn: okPolicy });
+		expect(r.checkStatus).toBe('error');
+		expect(r.score).toBe(0);
+		expect(r.findings.some((f) => f.title === 'MTA-STS properly configured')).toBe(false);
+	});
+
+	it('both the policy fetch and _smtp._tls throw → abstention carrying both reasons', async () => {
+		const r = await checkMTASTS('example.com', healthyDNS({ '_smtp._tls.example.com': named('TimeoutError') }), {
+			fetchFn: throwing(new Error('ECONNRESET')),
+		});
+		expect(r.checkStatus).toBe('error');
+		expect(r.score).toBe(0);
+		expect(r.partial).toBe(true);
+		const reasons = r.findings.filter((f) => f.metadata?.inconclusive === true).map((f) => f.metadata?.notAssessedReason);
+		expect(reasons).toEqual(expect.arrayContaining(['policy_fetch_failed', 'dns_query_failed']));
+		expect(hasScoredDeficiency(r.findings)).toBe(false);
+	});
+});
