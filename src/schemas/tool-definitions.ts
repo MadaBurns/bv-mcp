@@ -507,7 +507,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	discover_subdomains: {
 		description:
-			'Find subdomains of a domain using Certificate Transparency logs. Reveals shadow IT, forgotten services, and unauthorized certificate issuance. Returns a CT SAMPLE, not an asset inventory: the count is a lower bound, a host with no publicly-logged certificate never appears, and the result carries a per-source `coverage` record stating what was actually consulted.',
+			'Find subdomains of a domain using Certificate Transparency logs. Reveals shadow IT, forgotten services, and unauthorized certificate issuance. Returns a CT SAMPLE, not an asset inventory: the count is a lower bound, a host with no publicly-logged certificate never appears, and the result carries a per-source `coverage` record stating what was actually consulted. `countBasis` says whether `totalSubdomains` is the tool’s normal reach (`sample`) or a `floor` from a run whose recall was cut (then `minSubdomainsObserved` is present); `concreteSubdomains` excludes wildcard patterns.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
