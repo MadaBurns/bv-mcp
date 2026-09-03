@@ -35,7 +35,7 @@ import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult } from '../lib/scoring';
 import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes } from './lookalike-analysis';
 import { calibrateLookalikeSeverity, type LookalikeSignals } from './lookalike-severity';
-import { classifyOwnership, type OwnershipAssessment } from '../lib/ownership-attribution';
+import { attributionConfidence, classifyOwnership, type OwnershipAssessment } from '../lib/ownership-attribution';
 import { isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
 import { extractBrandName } from '../lib/public-suffix';
 import {
@@ -85,13 +85,31 @@ import {
 // consumer (or test) has to know where a symbol now lives. This list is the
 // tool's external contract; it is byte-identical to the pre-split one.
 // ---------------------------------------------------------------------------
-export { INITIAL_BATCH_SIZE, MIN_BATCH_SIZE, BACKOFF_DELAY_MS, FAILURE_THRESHOLD, WILDCARD_CANARY_LABEL, PHASE1_DNS_OPTS } from './lookalike-dns';
+export {
+	INITIAL_BATCH_SIZE,
+	MIN_BATCH_SIZE,
+	BACKOFF_DELAY_MS,
+	FAILURE_THRESHOLD,
+	WILDCARD_CANARY_LABEL,
+	PHASE1_DNS_OPTS,
+} from './lookalike-dns';
 export { probeHasWebContent } from './lookalike-enrichment';
 export { isBrandHeldRegistration, isSameEntityOrgMatch } from './lookalike-attribution';
 export { DEFENSIVE_REASON_PHRASES, type LookalikeFindingAxis } from './lookalike-findings';
 
 /** Maximum wall-clock time for the entire lookalike check (ms). */
 const LOOKALIKE_TIMEOUT_MS = 20_000;
+
+/**
+ * Wall-clock the enrichment phase must leave for what follows it (the seed's
+ * own RDAP fetch, the recon call, assembly) so a large candidate set — the
+ * #867 shape — cannot run the check into the outer timeout, which discards
+ * EVERY finding, not just the unenriched ones. Enrichment is bounded to the
+ * platform's six connection slots (`lookalike-enrichment.ts`), so its duration
+ * scales with candidate count; the deadline is what turns the tail of a large
+ * set into explicit `not_attempted` ages instead of a timed-out check.
+ */
+const ENRICHMENT_RESERVE_MS = 4_000;
 
 /**
  * Extract a specific candidate domain bv-recon's CT_LOOKALIKE hit names, if
@@ -137,6 +155,7 @@ async function checkLookalikesCore(
 	domain: string,
 	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
 ): Promise<CheckResult> {
+	const startedAt = Date.now();
 	const findings: Finding[] = [];
 	// THREE disjoint candidate lanes, deduped into one set that flows through the
 	// same NS-existence → probe → enrich → severity pipeline:
@@ -316,7 +335,8 @@ async function checkLookalikesCore(
 		const sameOwner = ownershipByDomain.get(r.domain)?.verdict === 'owned_by_seed';
 		return !sameOwner && (r.hasMX || r.hasA);
 	});
-	const enrichment = await enrichLookalikes(candidatesToEnrich);
+	const enrichmentDeadlineMs = startedAt + LOOKALIKE_TIMEOUT_MS - ENRICHMENT_RESERVE_MS;
+	const enrichment = await enrichLookalikes(candidatesToEnrich, { deadlineMs: enrichmentDeadlineMs });
 
 	// Same-entity correlation (issue #263): a flagged lookalike that shares the
 	// scan domain's RDAP registrant org is almost certainly the org's own
@@ -339,7 +359,10 @@ async function checkLookalikesCore(
 	// ONE RDAP fetch for the seed, reused for BOTH correlations: the registrant
 	// org (unverified, wording-only) and the registry-published registrar ID
 	// (the brand-held-registration signal). No extra network cost for the second.
-	const primaryRegistration = sameEntityCandidates.length > 0 ? await probePrimaryRegistration(domain) : EMPTY_RDAP_PROBE;
+	const primaryRegistration =
+		sameEntityCandidates.length > 0
+			? await probePrimaryRegistration(domain, { deadlineMs: enrichmentDeadlineMs + ENRICHMENT_RESERVE_MS / 2 })
+			: EMPTY_RDAP_PROBE;
 	const primaryRegistrantOrg = primaryRegistration.registrantOrg;
 	const sameEntityMatches = new Map<string, string>();
 	/** Candidates the registration record corroborates as the seed org's own defensive registrations. */
@@ -442,6 +465,7 @@ async function checkLookalikesCore(
 
 		const corroborators = enrichment.get(result.domain) ?? {
 			registrationDays: null,
+			registrationLookup: 'not_attempted' as const,
 			mxOnDisposable: false,
 			hasWebContent: true,
 			registrantOrg: null,
@@ -450,6 +474,7 @@ async function checkLookalikesCore(
 			hasA: result.hasA,
 			hasMX: result.hasMX,
 			registrationDays: corroborators.registrationDays,
+			registrationLookup: corroborators.registrationLookup,
 			mxOnDisposable: corroborators.mxOnDisposable,
 			hasWebContent: corroborators.hasWebContent,
 		};
@@ -466,6 +491,10 @@ async function checkLookalikesCore(
 		// low-noise, not worth the fetch).
 		const matchedOrg = sameEntityMatches.get(result.domain);
 		const brandHeld = brandHeldMatches.get(result.domain);
+		// The D4 MX-overlap corroboration signal feeds `attributionConfidence()`
+		// for BOTH the per-domain attribution wording below and the rollup member
+		// (#863) — computed once so the two can never disagree.
+		const mxOverlapsPrimary = result.mxExchanges.some((ex) => primaryMx.has(ex));
 		if (brandHeld !== undefined) {
 			findings.push(buildBrandHeldFinding(result, domain, ownership, brandHeld));
 		} else if (matchedOrg !== undefined) {
@@ -473,8 +502,7 @@ async function checkLookalikesCore(
 		} else {
 			// AXIS 1 — the ownership verdict caps the ATTRIBUTION finding's
 			// severity. `attributionConfidence()` (fed the MX-overlap
-			// corroboration signal below) governs WORDING/CONFIDENCE only.
-			const mxOverlapsPrimary = result.mxExchanges.some((ex) => primaryMx.has(ex));
+			// corroboration signal above) governs WORDING/CONFIDENCE only.
 			const rawFinding = buildRawAttributionFinding(result, domain, severity, signals, corroboratorReasons);
 
 			// Attribution pushed FIRST so a consumer scanning for the ownership
@@ -520,12 +548,16 @@ async function checkLookalikesCore(
 			severity,
 			ownershipVerdict: ownership.verdict,
 			registrationDays: signals.registrationDays,
+			// #863 — the row's own hedge travels with it; the rollup excludes and
+			// caps on `uncorroborated` so it never out-claims the rows.
+			attributionConfidence: attributionConfidence(ownership.verdict, brand, mxOverlapsPrimary),
 		});
 	}
 
-	// #865 — the rollup decides for itself whether coverage permits a count;
-	// a throttled run gets a not-assessed notice instead of an integer.
-	const rollup = buildThreatRollupFinding({ seedDomain: domain, members: rollupMembers, enumeration });
+	// #865 / #863 — the rollup decides for itself whether coverage and the
+	// seed label permit a count; otherwise a not-assessed notice, never an
+	// integer.
+	const rollup = buildThreatRollupFinding({ seedDomain: domain, seedLabel: brand, members: rollupMembers, enumeration });
 	if (rollup.finding) findings.push(rollup.finding);
 
 	// If no active lookalikes found
@@ -618,11 +650,14 @@ async function checkLookalikesCore(
 	// non-answer outliving the condition that caused it. Same contract the
 	// timeout path in checkLookalikes() already honours.
 	//
-	// #865 — the same law for a rollup ABSTENTION: enumeration throttling is
-	// transient too, and a cached "not assessed" would outlive the throttling.
+	// #865 — the same law for a THROTTLED rollup abstention: enumeration
+	// throttling is transient too, and a cached "not assessed" would outlive
+	// it. The #863 abstentions are structural (the seed's own label) and are
+	// deliberately NOT partial — every run of that seed abstains, so caching
+	// the abstention is correct.
 	// #864 — and for a candidate whose SEED-side authorisation probe rejected:
-	// the same transient shape.
-	if (seedNsUnmeasured || rollup.abstained || seedAuthorisation.unmeasured.length > 0) {
+	// the same transient shape as a throttled abstention.
+	if (seedNsUnmeasured || rollup.notAssessedReason === 'enumeration_throttled' || seedAuthorisation.unmeasured.length > 0) {
 		result.partial = true;
 	}
 	return result;
