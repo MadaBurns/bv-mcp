@@ -154,9 +154,9 @@ describe('createAnalyticsClient', () => {
 		expect(point.blobs[0]).toBe('scan_domain');
 		expect(point.blobs[4]).toBe('NZ');
 		expect(point.blobs[9]).toBe('i_cafef00d'); // blob10 ipHash unmoved
-		expect(point.blobs[10]).toBe('SYD');        // blob11 colo unmoved
+		expect(point.blobs[10]).toBe('SYD'); // blob11 colo unmoved
 		// New trailing dimension (C2).
-		expect(point.blobs[11]).toBe('check_spf');  // blob12 priorTool
+		expect(point.blobs[11]).toBe('check_spf'); // blob12 priorTool
 	});
 
 	it('emitToolEvent appends a privacy-safe outcome and completion counters', () => {
@@ -369,5 +369,27 @@ describe('createAnalyticsClient', () => {
 		expect(() =>
 			client.emitQueueBatchEvent({ handler: 'brand-audit-queue', outcome: 'ok', durationMs: 1, messageCount: 1, failureCount: 0 }),
 		).not.toThrow();
+	});
+});
+
+describe('hashNetworkLocalityForAnalytics (#876)', () => {
+	it('produces an n_-prefixed FNV-1a key that can never be mistaken for an IP hash', async () => {
+		const { hashNetworkLocalityForAnalytics, hashIpForAnalytics } = await import('../src/lib/analytics');
+		const key = hashNetworkLocalityForAnalytics({ asn: 13335, colo: 'AKL', country: 'NZ' });
+		expect(key).toMatch(/^n_[0-9a-f]{1,8}$/);
+		expect(key).toBe(hashNetworkLocalityForAnalytics({ asn: 13335, colo: 'akl', country: 'nz' })); // case-normalized
+		expect(key).not.toBe(hashNetworkLocalityForAnalytics({ asn: 13335, colo: 'SYD', country: 'AU' }));
+		// Same digest input under the i_ prefix is a different namespace.
+		expect(hashIpForAnalytics('13335|akl|nz')).not.toBe(key);
+	});
+
+	it('tolerates missing fields deterministically', async () => {
+		const { hashNetworkLocalityForAnalytics } = await import('../src/lib/analytics');
+		expect(hashNetworkLocalityForAnalytics({ asn: undefined, colo: undefined, country: 'US' })).toBe(
+			hashNetworkLocalityForAnalytics({ asn: null, colo: null, country: 'US' }),
+		);
+		expect(hashNetworkLocalityForAnalytics({ asn: undefined, colo: 'IAD', country: 'US' })).not.toBe(
+			hashNetworkLocalityForAnalytics({ asn: undefined, colo: undefined, country: 'US' }),
+		);
 	});
 });
