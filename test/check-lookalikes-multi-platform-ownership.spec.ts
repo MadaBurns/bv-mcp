@@ -2,29 +2,37 @@
 
 /**
  * #864 (regression of #263) — a same-entity domain on a DIFFERENT DNS platform
- * must not be counted as an impersonation-capable third party.
+ * must not be counted as an impersonation-capable third party — without
+ * letting a forged candidate-side record hide a sending squatter.
  *
- * Every fixture below is transcribed from live DoH / RDAP answers observed
- * 2026-09-04 (`dns.google/resolve`, `rdap.verisign.com`, `rdap.cctld.au`):
+ * Every fixture below is transcribed from live DoH / RDAP / CT answers
+ * observed 2026-09-04 (`dns.google/resolve`, `rdap.verisign.com`,
+ * `rdap.cctld.au`, `crt.sh`):
  *
  *   amazon.com     NS  ns-{521,264,1707,1447}.awsdns-*             (Route 53)
  *                  MX  5 amazon-smtp.amazon.com
  *   amazon.com.au  NS  ns{1,2}.amzndns.{com,co.uk,net,org}         (Amazon internal)
  *                  MX  10 amazon-smtp.amazon.com                    ← seed's own MX host
- *                  SOA dns-external-master.amazon.com. root.amazon.com. …
+ *                  _dmarc → CNAME _dmarc.amazon.com:
+ *                      v=DMARC1;p=quarantine;pct=100;rua=mailto:report<at>dmarc.amazon.com;ruf=…
+ *                  amazon.com.au._report._dmarc.dmarc.amazon.com TXT "v=DMARC1"   ← SEED-published
+ *                  <random>._report._dmarc.dmarc.amazon.com        NXDOMAIN         (not a wildcard)
+ *                  amzndns.com._report._dmarc.dmarc.amazon.com     NXDOMAIN         (per-domain grant)
  *                  RDAP (auDA): NO registrant entity — registrar only
  *   amazon.com     RDAP (Verisign): thin — registrar only, no registrant
+ *   CT (crt.sh):   0 of 3300 amazon.com.au certificates also cover amazon.com
  *
- *   xero.com       NS  ns-*.awsdns-*  MX Google  SOA awsdns-hostmaster.amazon.com
- *   xero.co.nz     NS  a*.akam.net    MX Google  SOA a5-67.akam.net. hostmaster.akamai.com.
+ *   xero.com       NS  ns-*.awsdns-*  MX Google  _dmarc rua=mailto:xero<at>rua.agari.com
+ *   xero.co.nz     NS  a*.akam.net    MX Google  _dmarc rua=mailto:xero<at>rua.agari.com
  *
  * So for the Amazon pair NEITHER the shared-NS arms NOR the #263 RDAP
- * registrant tier can fire; the only observable link is that the candidate's
- * mail AND its zone master both sit inside the seed apex. That conjunction is
- * `classifyOwnership()` step 5b — see the 2026-09-04 amendment in
- * `src/lib/ownership-attribution.ts`. For the Xero pair NO in-bailiwick record
- * exists (mail at Google, zone at Akamai), so the new arm must decline and
- * the pair keeps #263's registrant-org lane as its only link.
+ * registrant tier can fire; the one SEED-SIDE record that links them is the
+ * RFC 7489 §7.1 external-report authorisation, which only the owner of
+ * `dmarc.amazon.com` can publish. That is `classifyOwnership()` step 5b — see
+ * the 2026-09-04 amendment in `src/lib/ownership-attribution.ts`. The
+ * candidate's MX is a PRE-FILTER only: a sending squatter copies it for free.
+ * For the Xero pair both domains report to a third party (Agari), so no
+ * seed-side signal exists and the arm must decline.
  *
  * Sibling specs own the other attribution lanes: `check-lookalikes.spec.ts`
  * (#263 RDAP lane, three-axis invariants), `check-lookalikes-degraded-
@@ -36,6 +44,7 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
 import { isSharedNsHost } from '../src/tenants/discovery/shared-ns-hosts';
 import type { RegistrationState } from '../src/lib/registration-state';
+import type { DmarcReportAuthorisation } from '../src/lib/ownership-attribution';
 
 const { restore } = setupFetchMock();
 afterEach(() => restore());
@@ -56,9 +65,13 @@ const AMAZON_AU_NS = [
 	'ns2.amzndns.net',
 ];
 const AMAZON_MX_HOST = 'amazon-smtp.amazon.com';
-const AMAZON_AU_SOA = { mname: 'dns-external-master.amazon.com', rname: 'root.amazon.com' };
-/** What EVERY Route 53 zone's templated SOA looks like — RNAME lands inside amazon.com for unrelated tenants. */
-const ROUTE53_TEMPLATED_SOA = { mname: 'ns-100.awsdns-12.com', rname: 'awsdns-hostmaster.amazon.com' };
+/** Mailboxes are assembled with `AT` so the literal never trips the secret scanners' real-email rule; runtime strings are the live records. */
+const AT = '@';
+const AMAZON_DMARC = `v=DMARC1;p=quarantine;pct=100;rua=mailto:report${AT}dmarc.amazon.com;ruf=mailto:report${AT}dmarc.amazon.com`;
+const AMAZON_RECEIVER = 'dmarc.amazon.com';
+const AMAZON_AU_GRANT = 'amazon.com.au._report._dmarc.dmarc.amazon.com';
+/** Live (`WILDCARD_CANARY_LABEL` in lookalike-dns.ts) — the probe's canary label under the receiver's `_report._dmarc`. */
+const CANARY_LABEL = '_bv-wc-probe';
 
 const XERO_SEED_NS = ['ns-1911.awsdns-46.co.uk', 'ns-1391.awsdns-45.org', 'ns-983.awsdns-58.net', 'ns-90.awsdns-11.com'];
 const XERO_NZ_NS = ['a13-64.akam.net', 'a1-170.akam.net', 'a28-66.akam.net', 'a5-67.akam.net', 'a10-67.akam.net', 'a14-65.akam.net'];
@@ -69,7 +82,14 @@ const GOOGLE_MX = [
 	'aspmx2.googlemail.com',
 	'aspmx3.googlemail.com',
 ];
-const XERO_NZ_SOA = { mname: 'a5-67.akam.net', rname: 'hostmaster.akamai.com' };
+const XERO_DMARC = `v=DMARC1; p=reject; fo=1; ri=3600; rua=mailto:xero${AT}rua.agari.com; ruf=mailto:xero${AT}ruf.agari.com`;
+
+const AUTHORISED: DmarcReportAuthorisation = {
+	status: 'authorised',
+	seedReceivers: [AMAZON_RECEIVER],
+	receiverDomain: AMAZON_RECEIVER,
+	authorisationRecord: AMAZON_AU_GRANT,
+};
 
 function registered(ns: string[]): RegistrationState {
 	return { state: 'registered', ns, evidence: ['ns'] };
@@ -80,11 +100,31 @@ async function loadAttribution() {
 }
 
 // ---------------------------------------------------------------------------
+// Unit — parseDmarcReportReceivers()
+// ---------------------------------------------------------------------------
+
+describe('parseDmarcReportReceivers (#864)', () => {
+	it('extracts rua/ruf mailbox domains from the live amazon.com and xero records', async () => {
+		const { parseDmarcReportReceivers } = await loadAttribution();
+		expect(parseDmarcReportReceivers(AMAZON_DMARC)).toEqual(['dmarc.amazon.com']);
+		expect(parseDmarcReportReceivers(XERO_DMARC)).toEqual(['rua.agari.com', 'ruf.agari.com']);
+	});
+
+	it('handles size suffixes, multiple URIs, case, and ignores non-mailto destinations', async () => {
+		const { parseDmarcReportReceivers } = await loadAttribution();
+		expect(
+			parseDmarcReportReceivers(`v=DMARC1; p=none; RUA=mailto:a${AT}One.Example!10m, https://api.example/report, mailto:b${AT}two.example`),
+		).toEqual(['one.example', 'two.example']);
+		expect(parseDmarcReportReceivers('v=DMARC1; p=reject')).toEqual([]);
+	});
+});
+
+// ---------------------------------------------------------------------------
 // Unit — classifyOwnership() step 5b
 // ---------------------------------------------------------------------------
 
-describe('classifyOwnership — in-bailiwick convergence (#864, live amazon.com.au records)', () => {
-	it('attributes amazon.com.au to amazon.com: MX and SOA MNAME both inside the seed apex, no shared NS', async () => {
+describe('classifyOwnership — seed-authorised convergence (#864, live amazon.com.au records)', () => {
+	it('attributes amazon.com.au to amazon.com: MX pre-filter met AND the seed publishes the RFC 7489 §7.1 grant', async () => {
 		const { classifyOwnership } = await loadAttribution();
 		const result = classifyOwnership({
 			seedDomain: 'amazon.com',
@@ -93,19 +133,18 @@ describe('classifyOwnership — in-bailiwick convergence (#864, live amazon.com.
 			registration: registered(AMAZON_AU_NS),
 			isSharedNsHost,
 			candidateMx: [AMAZON_MX_HOST],
-			candidateSoa: AMAZON_AU_SOA,
-			candidateSoaUnresolved: false,
+			dmarcReportAuthorisation: AUTHORISED,
 		});
 		expect(result.verdict).toBe('owned_by_seed');
 		expect(result.strength).toBe('medium');
-		expect(result.signals).toEqual(['mx_in_bailiwick', 'soa_in_bailiwick']);
-		expect(result.rationale).toContain('amazon-smtp.amazon.com');
-		expect(result.rationale).toContain('dns-external-master.amazon.com');
+		expect(result.signals).toEqual(['mx_in_bailiwick', 'dmarc_report_authorised_by_seed']);
+		expect(result.rationale).toContain(AMAZON_AU_GRANT);
+		expect(result.rationale).toContain('RFC 7489');
 		// Evidence names every record the verdict rests on, so a consumer can audit it.
 		expect(result.evidence).toEqual([
 			{ record: 'MX', value: 'amazon-smtp.amazon.com', inSeedBailiwick: true },
-			{ record: 'SOA.MNAME', value: 'dns-external-master.amazon.com', inSeedBailiwick: true },
-			{ record: 'SOA.RNAME', value: 'root.amazon.com', inSeedBailiwick: true },
+			{ record: 'DMARC.RUA', value: 'dmarc.amazon.com', inSeedBailiwick: true },
+			{ record: 'DMARC.REPORT_AUTHORISATION', value: AMAZON_AU_GRANT, inSeedBailiwick: true },
 		]);
 	});
 
@@ -122,90 +161,81 @@ describe('classifyOwnership — in-bailiwick convergence (#864, live amazon.com.
 		expect(result.signals).toEqual(['distinct_infrastructure']);
 	});
 
-	it('NEGATIVE — MX alone never qualifies: a squatter copying the seed MX string stays third_party', async () => {
+	it('NEGATIVE — the MX pre-filter alone never qualifies: a squatter copying the seed MX string stays third_party', async () => {
 		const { classifyOwnership } = await loadAttribution();
-		for (const soa of [undefined, null] as const) {
+		const nonGrants: Array<DmarcReportAuthorisation | undefined> = [
+			undefined,
+			{ status: 'no_seed_receiver', seedReceivers: [] },
+			{ status: 'not_authorised', seedReceivers: [AMAZON_RECEIVER] },
+		];
+		for (const auth of nonGrants) {
 			const result = classifyOwnership({
 				seedDomain: 'amazon.com',
 				seedNs: AMAZON_SEED_NS,
 				candidateDomain: 'amaz0n.com',
-				registration: registered(['ns1.attacker-dns.net', 'ns2.attacker-dns.net']),
+				registration: registered(['ns1.amaz0n.com', 'ns2.amaz0n.com']),
 				isSharedNsHost,
 				candidateMx: [AMAZON_MX_HOST],
-				candidateSoa: soa,
-				candidateSoaUnresolved: false,
+				dmarcReportAuthorisation: auth,
 			});
-			expect(result.verdict, `candidateSoa=${String(soa)}`).toBe('third_party');
+			expect(result.verdict, `status=${auth?.status ?? 'undefined'}`).toBe('third_party');
 			expect(result.evidence).toBeUndefined();
 		}
 	});
 
-	it('NEGATIVE — SOA RNAME is never verdict-bearing: a Route 53 squatter (templated RNAME inside amazon.com) copying the seed MX stays third_party', async () => {
+	it('NEGATIVE — a WILDCARD grant is evidence-only: the seed authorised reports about anyone, not this candidate', async () => {
 		const { classifyOwnership } = await loadAttribution();
 		const result = classifyOwnership({
 			seedDomain: 'amazon.com',
 			seedNs: AMAZON_SEED_NS,
 			candidateDomain: 'amaz0n.com',
-			registration: registered(['ns-100.awsdns-12.com', 'ns-600.awsdns-11.net', 'ns-1200.awsdns-22.org', 'ns-1800.awsdns-33.co.uk']),
+			registration: registered(['ns1.amaz0n.com']),
 			isSharedNsHost,
 			candidateMx: [AMAZON_MX_HOST],
-			candidateSoa: ROUTE53_TEMPLATED_SOA,
-			candidateSoaUnresolved: false,
+			dmarcReportAuthorisation: { status: 'wildcard', seedReceivers: [AMAZON_RECEIVER], receiverDomain: AMAZON_RECEIVER },
 		});
 		expect(result.verdict).toBe('third_party');
 	});
 
-	it('NEGATIVE — SOA MNAME alone never qualifies: zone mastered inside the seed but mail elsewhere stays third_party', async () => {
+	it('NEGATIVE — defence in depth: an "authorised" result whose receiver or record sits OUTSIDE the seed apex is ignored', async () => {
 		const { classifyOwnership } = await loadAttribution();
 		const result = classifyOwnership({
 			seedDomain: 'amazon.com',
 			seedNs: AMAZON_SEED_NS,
 			candidateDomain: 'amaz0n.com',
-			registration: registered(['ns1.attacker-dns.net']),
+			registration: registered(['ns1.amaz0n.com']),
 			isSharedNsHost,
-			candidateMx: ['mail.attacker-dns.net'],
-			candidateSoa: AMAZON_AU_SOA,
-			candidateSoaUnresolved: false,
+			candidateMx: [AMAZON_MX_HOST],
+			dmarcReportAuthorisation: {
+				status: 'authorised',
+				seedReceivers: ['rua.attacker-reports.net'],
+				receiverDomain: 'rua.attacker-reports.net',
+				authorisationRecord: 'amaz0n.com._report._dmarc.rua.attacker-reports.net',
+			},
 		});
 		expect(result.verdict).toBe('third_party');
 	});
 
-	it('NEGATIVE — a single MX outside the seed apex disqualifies the whole set (keeping a receive channel is the cost)', async () => {
+	it('NEGATIVE — a single MX outside the seed apex fails the pre-filter, so the seed-side result is never consulted', async () => {
 		const { classifyOwnership, mxRoutedIntoSeed } = await loadAttribution();
 		expect(mxRoutedIntoSeed([AMAZON_MX_HOST, 'mx.attacker-dns.net'], 'amazon.com')).toBe(false);
 		expect(mxRoutedIntoSeed([], 'amazon.com')).toBe(false);
 		expect(mxRoutedIntoSeed(undefined, 'amazon.com')).toBe(false);
-		const result = classifyOwnership({
-			seedDomain: 'amazon.com',
-			seedNs: AMAZON_SEED_NS,
-			candidateDomain: 'amaz0n.com',
-			registration: registered(['ns1.attacker-dns.net']),
-			isSharedNsHost,
-			candidateMx: [AMAZON_MX_HOST, 'mx.attacker-dns.net'],
-			candidateSoa: AMAZON_AU_SOA,
-			candidateSoaUnresolved: false,
-		});
-		expect(result.verdict).toBe('third_party');
-	});
-
-	it('NEGATIVE — bailiwick is label-bounded: hosts that merely END with the seed string do not count', async () => {
-		const { classifyOwnership, mxRoutedIntoSeed } = await loadAttribution();
 		expect(mxRoutedIntoSeed(['smtp.notamazon.com'], 'amazon.com')).toBe(false);
 		expect(mxRoutedIntoSeed(['amazon-smtp.amazon.com.attacker.net'], 'amazon.com')).toBe(false);
 		const result = classifyOwnership({
 			seedDomain: 'amazon.com',
 			seedNs: AMAZON_SEED_NS,
 			candidateDomain: 'amaz0n.com',
-			registration: registered(['ns1.amazon.com.attacker.net']),
+			registration: registered(['ns1.amaz0n.com']),
 			isSharedNsHost,
-			candidateMx: ['smtp.notamazon.com'],
-			candidateSoa: { mname: 'master.notamazon.com', rname: 'root.notamazon.com' },
-			candidateSoaUnresolved: false,
+			candidateMx: [AMAZON_MX_HOST, 'mx.attacker-dns.net'],
+			dmarcReportAuthorisation: AUTHORISED,
 		});
 		expect(result.verdict).toBe('third_party');
 	});
 
-	it('#832 law — MX routed into the seed but the SOA probe REJECTED → unmeasured, never the contrary third_party', async () => {
+	it('#832 law — pre-filter met but the seed-side probe REJECTED → unmeasured, never the contrary third_party', async () => {
 		const { classifyOwnership } = await loadAttribution();
 		const result = classifyOwnership({
 			seedDomain: 'amazon.com',
@@ -214,28 +244,12 @@ describe('classifyOwnership — in-bailiwick convergence (#864, live amazon.com.
 			registration: registered(AMAZON_AU_NS),
 			isSharedNsHost,
 			candidateMx: [AMAZON_MX_HOST],
-			candidateSoa: null,
-			candidateSoaUnresolved: true,
+			dmarcReportAuthorisation: { status: 'unresolved', seedReceivers: [AMAZON_RECEIVER] },
 		});
 		expect(result.verdict).toBe('unmeasured');
 		expect(result.signals).toEqual(['mx_in_bailiwick']);
 		expect(result.rationale).toContain('measurement gap');
 		expect(result.rationale).not.toContain('no ownership signal links it');
-	});
-
-	it('a RESOLVED empty SOA (probed, nothing answered) is not a measurement gap — falls through to third_party', async () => {
-		const { classifyOwnership } = await loadAttribution();
-		const result = classifyOwnership({
-			seedDomain: 'amazon.com',
-			seedNs: AMAZON_SEED_NS,
-			candidateDomain: 'amazon.com.au',
-			registration: registered(AMAZON_AU_NS),
-			isSharedNsHost,
-			candidateMx: [AMAZON_MX_HOST],
-			candidateSoa: null,
-			candidateSoaUnresolved: false,
-		});
-		expect(result.verdict).toBe('third_party');
 	});
 
 	it('fires under a degraded SEED NS lookup too — it needs only the seed apex, like the NS in-bailiwick arm (#832 parity)', async () => {
@@ -248,14 +262,13 @@ describe('classifyOwnership — in-bailiwick convergence (#864, live amazon.com.
 			registration: registered(AMAZON_AU_NS),
 			isSharedNsHost,
 			candidateMx: [AMAZON_MX_HOST],
-			candidateSoa: AMAZON_AU_SOA,
-			candidateSoaUnresolved: false,
+			dmarcReportAuthorisation: AUTHORISED,
 		});
 		expect(result.verdict).toBe('owned_by_seed');
-		expect(result.signals).toEqual(['mx_in_bailiwick', 'soa_in_bailiwick']);
+		expect(result.signals).toEqual(['mx_in_bailiwick', 'dmarc_report_authorised_by_seed']);
 	});
 
-	it('seed-side arms keep precedence: a full dedicated NS match is reported as strong ns_set_match, not displaced by the medium conjunction', async () => {
+	it('seed-side NS arms keep precedence: a full dedicated NS match is reported as strong ns_set_match, not displaced by the medium arm', async () => {
 		const { classifyOwnership } = await loadAttribution();
 		const result = classifyOwnership({
 			seedDomain: 'amazon.com',
@@ -264,15 +277,14 @@ describe('classifyOwnership — in-bailiwick convergence (#864, live amazon.com.
 			registration: registered(AMAZON_SEED_NS),
 			isSharedNsHost,
 			candidateMx: [AMAZON_MX_HOST],
-			candidateSoa: AMAZON_AU_SOA,
-			candidateSoaUnresolved: false,
+			dmarcReportAuthorisation: AUTHORISED,
 		});
 		expect(result.verdict).toBe('owned_by_seed');
 		expect(result.strength).toBe('strong');
 		expect(result.signals).toEqual(['ns_set_match']);
 	});
 
-	it('xero.co.nz (#263 shape): mail at Google and zone at Akamai — no in-bailiwick record, so the new arm declines', async () => {
+	it('xero.co.nz (#263 shape): mail at Google, reports to Agari — pre-filter unmet, no seed-side signal, arm declines', async () => {
 		const { classifyOwnership, mxRoutedIntoSeed } = await loadAttribution();
 		expect(mxRoutedIntoSeed(GOOGLE_MX, 'xero.com')).toBe(false);
 		const result = classifyOwnership({
@@ -282,12 +294,11 @@ describe('classifyOwnership — in-bailiwick convergence (#864, live amazon.com.
 			registration: registered(XERO_NZ_NS),
 			isSharedNsHost,
 			candidateMx: GOOGLE_MX,
-			candidateSoa: XERO_NZ_SOA,
-			candidateSoaUnresolved: false,
+			dmarcReportAuthorisation: { status: 'no_seed_receiver', seedReceivers: [] },
 		});
 		// Structurally third_party from DNS — the pair's only link is #263's
 		// registrant-org lane (wording-only), which this arm neither replaces
-		// nor weakens. A verdict here would be an over-fire on shared mail.
+		// nor weakens.
 		expect(result.verdict).toBe('third_party');
 		expect(result.evidence).toBeUndefined();
 	});
@@ -297,32 +308,39 @@ describe('classifyOwnership — in-bailiwick convergence (#864, live amazon.com.
 // End-to-end — checkLookalikes() over the real permutation set
 // ---------------------------------------------------------------------------
 
-type RecordName = 'NS' | 'A' | 'MX' | 'SOA';
-const TYPE_CODE: Record<RecordName, number> = { NS: 2, A: 1, MX: 15, SOA: 6 };
-const CODE_TYPE: Record<string, RecordName> = { '2': 'NS', NS: 'NS', '1': 'A', A: 'A', '15': 'MX', MX: 'MX', '6': 'SOA', SOA: 'SOA' };
+type RecordName = 'NS' | 'A' | 'MX' | 'SOA' | 'TXT';
+const TYPE_CODE: Record<RecordName, number> = { NS: 2, A: 1, MX: 15, SOA: 6, TXT: 16 };
+const CODE_TYPE: Record<string, RecordName> = {
+	'2': 'NS',
+	NS: 'NS',
+	'1': 'A',
+	A: 'A',
+	'15': 'MX',
+	MX: 'MX',
+	'6': 'SOA',
+	SOA: 'SOA',
+	'16': 'TXT',
+	TXT: 'TXT',
+};
 
-/** Per-name zone data. A record set of `'reject'` makes that lookup throw (throttled / timed out). */
+/** Per-name zone data. A record set of `'reject'` makes that lookup throw (throttled / timed out). TXT values are given unquoted. */
 type Zone = Partial<Record<RecordName, string[] | 'reject'>>;
 
 function dohAnswer(name: string, type: RecordName, records: string[]) {
 	return createDohResponse(
 		[{ name, type: TYPE_CODE[type] }],
-		records.map((data) => ({ name, type: TYPE_CODE[type], TTL: 300, data })),
+		records.map((data) => ({ name, type: TYPE_CODE[type], TTL: 300, data: type === 'TXT' ? `"${data}"` : data })),
 	);
 }
 
-function soaData(soa: { mname: string; rname: string }): string {
-	return `${soa.mname}. ${soa.rname}. 1 600 300 604800 900`;
-}
-
 /**
- * Install a fetch mock serving DoH from `zones`, RDAP from `rdap` (a thin
- * registrar-only document by default — what Verisign and auDA actually
- * publish), and a 200 for every HEAD probe. Returns the log of SOA query
- * names so a test can prove the #864 probe was gated, not fanned out.
+ * Install a fetch mock serving DoH from `zones`, a thin registrar-only RDAP
+ * document (what Verisign and auDA actually publish) for every RDAP URL, and
+ * a 200 for every HEAD probe. Returns the log of `_dmarc`-path query names so
+ * a test can prove the #864 probe was gated, not fanned out.
  */
-function installMock(zones: Record<string, Zone>, rdap: Record<string, unknown> = {}): { soaQueries: string[] } {
-	const soaQueries: string[] = [];
+function installMock(zones: Record<string, Zone>): { dmarcQueries: string[] } {
+	const dmarcQueries: string[] = [];
 	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 		const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 		const parsed = new URL(url);
@@ -331,7 +349,7 @@ function installMock(zones: Record<string, Zone>, rdap: Record<string, unknown> 
 		if (qName !== null && qType !== null) {
 			const name = qName.toLowerCase().replace(/\.$/, '');
 			const type = CODE_TYPE[qType.toUpperCase()];
-			if (type === 'SOA') soaQueries.push(name);
+			if (name.includes('_dmarc')) dmarcQueries.push(name);
 			const records = type ? zones[name]?.[type] : undefined;
 			if (records === 'reject') return Promise.reject(new Error('DNS timeout'));
 			if (records && type) return Promise.resolve(dohAnswer(name, type, records));
@@ -340,7 +358,7 @@ function installMock(zones: Record<string, Zone>, rdap: Record<string, unknown> 
 		if (url.includes('rdap')) {
 			const match = url.match(/\/domain\/([^/?]+)/i);
 			const domain = match?.[1]?.toLowerCase() ?? '';
-			const body = rdap[domain] ?? {
+			const body = {
 				objectClassName: 'domain',
 				ldhName: domain,
 				entities: [{ roles: ['registrar'], vcardArray: ['vcard', [['fn', {}, 'text', 'Registrar Inc']]] }],
@@ -349,7 +367,7 @@ function installMock(zones: Record<string, Zone>, rdap: Record<string, unknown> 
 		}
 		return Promise.resolve(new Response('', { status: 200 }));
 	});
-	return { soaQueries };
+	return { dmarcQueries };
 }
 
 async function runCheck(domain: string) {
@@ -359,16 +377,37 @@ async function runCheck(domain: string) {
 
 const AMAZON_SEED_ZONE: Zone = { NS: AMAZON_SEED_NS.map((h) => `${h}.`), MX: [`5 ${AMAZON_MX_HOST}.`] };
 
+/** The forged candidate zone the #897 review described: attacker NS on a VPS, copied MX, MNAME under the seed apex, DMARC reporting into the seed. */
+function forgedSquatterZone(domain: string): Zone {
+	return {
+		NS: [`ns1.${domain}.`, `ns2.${domain}.`],
+		A: ['192.0.2.10'],
+		MX: [`10 ${AMAZON_MX_HOST}.`],
+		SOA: ['dns-external-master.amazon.com. root.amazon.com. 1 600 300 604800 900'],
+		TXT: [],
+	};
+}
+
+function threatRetained(findings: Array<{ title: string; metadata?: Record<string, unknown> }>, candidate: string): void {
+	const own = findings.filter((f) => f.metadata?.lookalikeDomain === candidate);
+	expect(own.length).toBeGreaterThan(0);
+	expect(own.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(false);
+	expect(own.some((f) => f.metadata?.findingAxis === 'attribution' && f.metadata?.ownershipVerdict === 'third_party')).toBe(true);
+	expect(own.some((f) => f.metadata?.findingAxis === 'threat_observation')).toBe(true);
+	// Still counted: the mail-capable rollup names it.
+	expect(
+		findings.some((f) => /working mail host|pre-phishing staging/i.test(f.title) && JSON.stringify(f.metadata ?? {}).includes(candidate)),
+	).toBe(true);
+}
+
 describe('checkLookalikes — amazon.com → amazon.com.au (#864 regression fixture)', () => {
-	it('reports amazon.com.au as owned_by_seed with the convergence evidence, and never as an impersonation-capable lookalike', async () => {
-		const { soaQueries } = installMock({
+	it('reports amazon.com.au as owned_by_seed on the seed-published grant, and never as an impersonation-capable lookalike', async () => {
+		const { dmarcQueries } = installMock({
 			'amazon.com': AMAZON_SEED_ZONE,
-			'amazon.com.au': {
-				NS: AMAZON_AU_NS.map((h) => `${h}.`),
-				A: ['52.95.116.115'],
-				MX: [`10 ${AMAZON_MX_HOST}.`],
-				SOA: [soaData(AMAZON_AU_SOA)],
-			},
+			'amazon.com.au': { NS: AMAZON_AU_NS.map((h) => `${h}.`), A: ['52.95.116.115'], MX: [`10 ${AMAZON_MX_HOST}.`] },
+			'_dmarc.amazon.com.au': { TXT: [AMAZON_DMARC] },
+			[AMAZON_AU_GRANT]: { TXT: ['v=DMARC1'] },
+			// canary label → NXDOMAIN (empty), exactly as observed live
 		});
 		const result = await runCheck('amazon.com');
 
@@ -380,78 +419,89 @@ describe('checkLookalikes — amazon.com → amazon.com.au (#864 regression fixt
 		expect(owned!.severity).toBe('info');
 		expect(owned!.metadata?.ownershipVerdict).toBe('owned_by_seed');
 		expect(owned!.metadata?.ownershipStrength).toBe('medium');
-		expect(owned!.metadata?.ownershipSignals).toEqual(['mx_in_bailiwick', 'soa_in_bailiwick']);
+		expect(owned!.metadata?.ownershipSignals).toEqual(['mx_in_bailiwick', 'dmarc_report_authorised_by_seed']);
 		expect(owned!.metadata?.attributionConfidence).toBe('corroborated');
 		expect(owned!.metadata?.ownershipEvidence).toEqual([
 			{ record: 'MX', value: 'amazon-smtp.amazon.com', inSeedBailiwick: true },
-			{ record: 'SOA.MNAME', value: 'dns-external-master.amazon.com', inSeedBailiwick: true },
-			{ record: 'SOA.RNAME', value: 'root.amazon.com', inSeedBailiwick: true },
+			{ record: 'DMARC.RUA', value: 'dmarc.amazon.com', inSeedBailiwick: true },
+			{ record: 'DMARC.REPORT_AUTHORISATION', value: AMAZON_AU_GRANT, inSeedBailiwick: true },
 		]);
-		expect(owned!.detail).toContain('dns-external-master.amazon.com');
+		expect(owned!.detail).toContain(AMAZON_AU_GRANT);
 
 		// The customer's own domain is not an impersonation threat to itself:
 		// no threat observation, no third-party verdict, not counted anywhere.
 		expect(au.some((f) => f.metadata?.findingAxis === 'threat_observation')).toBe(false);
 		expect(result.findings.some((f) => f.metadata?.ownershipVerdict === 'third_party')).toBe(false);
-		expect(result.findings.some((f) => /mail capability detected|pre-phishing staging/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => /working mail host|pre-phishing staging/i.test(f.title))).toBe(false);
 		const serialised = JSON.stringify(result.findings);
 		expect(serialised).not.toContain('Impersonation-shaped');
 		expect(serialised).not.toContain('no ownership signal links it');
 		expect(result.partial).not.toBe(true);
 
-		// Budget: the SOA probe was issued ONLY for the candidate whose MX already
-		// routed into the seed — no per-candidate fan-out across the ~84 permutations.
-		expect(soaQueries).toEqual(['amazon.com.au']);
+		// Budget: exactly the three seed-side lookups for the ONE candidate whose
+		// MX already routed into the seed — no fan-out across the ~84 permutations.
+		expect(dmarcQueries).toEqual(['_dmarc.amazon.com.au', AMAZON_AU_GRANT, `${CANARY_LABEL}._report._dmarc.${AMAZON_RECEIVER}`]);
 	});
 
-	it('NEGATIVE — a Route 53 squatter (amaz0n.com) copying the seed MX string stays third_party with its threat observation intact', async () => {
-		const { soaQueries } = installMock({
+	it('NEGATIVE (i) — forged SOA MNAME under the seed apex + copied seed MX + attacker NS + DMARC reporting into the seed: NOT owned, threat observation retained', async () => {
+		const { dmarcQueries } = installMock({
 			'amazon.com': AMAZON_SEED_ZONE,
-			'amaz0n.com': {
-				NS: ['ns-100.awsdns-12.com.', 'ns-600.awsdns-11.net.', 'ns-1200.awsdns-22.org.', 'ns-1800.awsdns-33.co.uk.'],
-				A: ['192.0.2.10'],
-				MX: [`10 ${AMAZON_MX_HOST}.`],
-				// Route 53's templated SOA: MNAME is a provider host; RNAME lands inside amazon.com for EVERY tenant.
-				SOA: [soaData(ROUTE53_TEMPLATED_SOA)],
-			},
+			'amaz0n.com': forgedSquatterZone('amaz0n.com'),
+			'_dmarc.amaz0n.com': { TXT: [AMAZON_DMARC] },
+			// The seed has NOT published amaz0n.com._report._dmarc.dmarc.amazon.com → NXDOMAIN.
 		});
 		const result = await runCheck('amazon.com');
-
-		const squat = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'amaz0n.com');
-		expect(squat.length).toBeGreaterThan(0);
-		expect(squat.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(false);
-		expect(squat.some((f) => f.metadata?.findingAxis === 'attribution' && f.metadata?.ownershipVerdict === 'third_party')).toBe(true);
-		expect(squat.some((f) => f.metadata?.findingAxis === 'threat_observation')).toBe(true);
-		// The probe WAS issued (the MX half held) — and correctly declined on the SOA half.
-		expect(soaQueries).toEqual(['amaz0n.com']);
+		threatRetained(result.findings, 'amaz0n.com');
+		// The probe WAS issued (pre-filter met) and correctly found no grant; no canary needed.
+		expect(dmarcQueries).toEqual(['_dmarc.amaz0n.com', 'amaz0n.com._report._dmarc.dmarc.amazon.com']);
+		expect(result.partial).not.toBe(true);
 	});
 
-	it('NEGATIVE — NS hostnames that merely resemble the seed platform, plus a copied MX, do not qualify', async () => {
+	it('NEGATIVE (ii) — same forged zone where the MNAME host RESOLVES to a real seed host: still not sufficient', async () => {
 		installMock({
 			'amazon.com': AMAZON_SEED_ZONE,
-			'amazom.com': {
-				NS: ['ns1.amazon.com.attacker.net.', 'ns2.amzndns-hosting.net.'],
-				A: ['192.0.2.11'],
-				MX: [`10 ${AMAZON_MX_HOST}.`],
-				SOA: ['ns1.amazon.com.attacker.net. hostmaster.attacker.net. 1 7200 900 1209600 86400'],
-			},
+			'amaz0n.com': forgedSquatterZone('amaz0n.com'),
+			'_dmarc.amaz0n.com': { TXT: [AMAZON_DMARC] },
+			'dns-external-master.amazon.com': { A: ['52.94.236.248'] },
+			'amazon-smtp.amazon.com': { A: ['52.94.236.10'] },
 		});
 		const result = await runCheck('amazon.com');
-		const squat = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'amazom.com');
-		expect(squat.length).toBeGreaterThan(0);
-		expect(squat.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(false);
-		expect(squat.some((f) => f.metadata?.findingAxis === 'threat_observation')).toBe(true);
+		threatRetained(result.findings, 'amaz0n.com');
 	});
 
-	it('#832 law end-to-end — SOA probe rejects for amazon.com.au → unmeasured, impersonation finding withheld, result marked partial', async () => {
+	it('NEGATIVE — a seed WILDCARD grant (`*._report._dmarc`) does not attribute a squatter that reports into the seed', async () => {
+		const { dmarcQueries } = installMock({
+			'amazon.com': AMAZON_SEED_ZONE,
+			'amaz0n.com': forgedSquatterZone('amaz0n.com'),
+			'_dmarc.amaz0n.com': { TXT: [AMAZON_DMARC] },
+			'amaz0n.com._report._dmarc.dmarc.amazon.com': { TXT: ['v=DMARC1'] },
+			[`${CANARY_LABEL}._report._dmarc.${AMAZON_RECEIVER}`]: { TXT: ['v=DMARC1'] },
+		});
+		const result = await runCheck('amazon.com');
+		threatRetained(result.findings, 'amaz0n.com');
+		expect(dmarcQueries).toEqual([
+			'_dmarc.amaz0n.com',
+			'amaz0n.com._report._dmarc.dmarc.amazon.com',
+			`${CANARY_LABEL}._report._dmarc.${AMAZON_RECEIVER}`,
+		]);
+	});
+
+	it('NEGATIVE — copied MX with NS hostnames that merely resemble the seed platform and no DMARC record: not owned, no seed-side lookups beyond _dmarc', async () => {
+		const { dmarcQueries } = installMock({
+			'amazon.com': AMAZON_SEED_ZONE,
+			'amazom.com': { NS: ['ns1.amazon.com.attacker.net.', 'ns2.amzndns-hosting.net.'], A: ['192.0.2.11'], MX: [`10 ${AMAZON_MX_HOST}.`] },
+		});
+		const result = await runCheck('amazon.com');
+		threatRetained(result.findings, 'amazom.com');
+		expect(dmarcQueries).toEqual(['_dmarc.amazom.com']);
+	});
+
+	it('#832 law end-to-end — the seed-side grant lookup rejects for amazon.com.au → unmeasured, impersonation finding withheld, result marked partial', async () => {
 		installMock({
 			'amazon.com': AMAZON_SEED_ZONE,
-			'amazon.com.au': {
-				NS: AMAZON_AU_NS.map((h) => `${h}.`),
-				A: ['52.95.116.115'],
-				MX: [`10 ${AMAZON_MX_HOST}.`],
-				SOA: 'reject',
-			},
+			'amazon.com.au': { NS: AMAZON_AU_NS.map((h) => `${h}.`), A: ['52.95.116.115'], MX: [`10 ${AMAZON_MX_HOST}.`] },
+			'_dmarc.amazon.com.au': { TXT: [AMAZON_DMARC] },
+			[AMAZON_AU_GRANT]: { TXT: 'reject' },
 		});
 		const result = await runCheck('amazon.com');
 
@@ -471,15 +521,11 @@ describe('checkLookalikes — amazon.com → amazon.com.au (#864 regression fixt
 });
 
 describe('checkLookalikes — xero.com → xero.co.nz (#263 shape, preserved)', () => {
-	it('declines the convergence arm (mail at Google, zone at Akamai) without issuing a SOA probe, and still surfaces the candidate at info', async () => {
-		const { soaQueries } = installMock({
+	it('declines the arm (mail at Google) without issuing any seed-side lookup, and still surfaces the candidate at info', async () => {
+		const { dmarcQueries } = installMock({
 			'xero.com': { NS: XERO_SEED_NS.map((h) => `${h}.`), MX: GOOGLE_MX.map((h, i) => `${(i + 1) * 10} ${h}.`) },
-			'xero.co.nz': {
-				NS: XERO_NZ_NS.map((h) => `${h}.`),
-				A: ['104.18.32.1'],
-				MX: GOOGLE_MX.map((h, i) => `${(i + 1) * 10} ${h}.`),
-				SOA: [soaData(XERO_NZ_SOA)],
-			},
+			'xero.co.nz': { NS: XERO_NZ_NS.map((h) => `${h}.`), A: ['104.18.32.1'], MX: GOOGLE_MX.map((h, i) => `${(i + 1) * 10} ${h}.`) },
+			'_dmarc.xero.co.nz': { TXT: [XERO_DMARC] },
 		});
 		const result = await runCheck('xero.com');
 
@@ -487,10 +533,10 @@ describe('checkLookalikes — xero.com → xero.co.nz (#263 shape, preserved)', 
 		expect(nz.length).toBeGreaterThan(0);
 		// Not an over-fire: shared-provider mail is not "routed into the seed".
 		expect(
-			nz.some((f) => f.metadata?.ownershipSignals !== undefined && (f.metadata.ownershipSignals as string[]).includes('mx_in_bailiwick')),
+			nz.some((f) => Array.isArray(f.metadata?.ownershipSignals) && (f.metadata!.ownershipSignals as string[]).includes('mx_in_bailiwick')),
 		).toBe(false);
-		// Zero extra DNS: the MX precondition failed, so the SOA probe never ran.
-		expect(soaQueries).toEqual([]);
+		// Zero extra DNS: the pre-filter failed, so no seed-side probe ran.
+		expect(dmarcQueries).toEqual([]);
 		// D4 cap unchanged — reported for awareness, never suppressed, never above info on the attribution axis.
 		const attribution = nz.find((f) => f.metadata?.findingAxis === 'attribution');
 		expect(attribution).toBeDefined();

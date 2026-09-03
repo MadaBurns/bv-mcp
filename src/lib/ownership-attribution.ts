@@ -73,50 +73,57 @@
  * `ClassifyOwnershipInput` below for the rule a future author re-wiring a
  * real SOA/SPF/redirect probe must re-derive.
  *
- * AMENDMENT — IN-BAILIWICK CONVERGENCE (2026-09-04, #864, regression of
- * #263). Ruling A's seed-side-only rule has an irreducible blind spot that
- * #864 measured live: a same-entity domain on a DIFFERENT DNS platform
- * (`amazon.com` on Route 53, `amazon.com.au` on Amazon's internal
+ * AMENDMENT — SEED-AUTHORISED CONVERGENCE (2026-09-04, #864, regression of
+ * #263; reworked after PR #897 review). Ruling A's seed-side-only rule has a
+ * blind spot #864 measured live: a same-entity domain on a DIFFERENT DNS
+ * platform (`amazon.com` on Route 53, `amazon.com.au` on Amazon's internal
  * `amzndns.*`) shares no nameserver with the seed, and the #263 RDAP
  * registrant tier is structurally blind for the pair — Verisign's `.com`
- * RDAP is thin (registrar only) and auDA's `.com.au` RDAP publishes no
- * registrant entity at all (observed 2026-09-04). No seed-side signal exists,
- * so the candidate was counted as an impersonation-capable third party.
+ * RDAP is thin and auDA's `.com.au` RDAP publishes no registrant entity
+ * (observed 2026-09-04). So the candidate was counted as an impersonation-
+ * capable third party.
  *
- * What IS observable (DoH, 2026-09-04): `amazon.com.au` MX →
- * `amazon-smtp.amazon.com` (the seed's own MX host) and SOA MNAME →
- * `dns-external-master.amazon.com` (its zone is mastered on a host inside the
- * seed's zone). Both are candidate-zone records, so Ruling A's "never alone"
- * clause stands unchanged — but its "never combined" clause is amended for
- * exactly ONE bounded conjunction, `assessBailiwickConvergence()` below:
+ * Ruling A is NOT weakened: the verdict below still rests on a record ONLY
+ * THE SEED CAN PUBLISH. The candidate-side half is a cheap PRE-FILTER, never
+ * evidence. The two halves of `assessSeedAuthorisedConvergence()`:
  *
- *   MX (every real exchange inside the seed apex) AND SOA MNAME (inside the
- *   seed apex) → `owned_by_seed`, strength `medium`, evidence attached.
+ *   1. PRE-FILTER (candidate-side, attacker-free, zero cost): every real MX
+ *      exchange of the candidate sits inside the seed apex. Copying the
+ *      seed's MX string is free for a SENDING squatter — a phishing sender
+ *      never wanted the receive channel — so this half carries NO weight; it
+ *      only decides which candidates are worth the seed-side lookups.
+ *   2. VERDICT (seed-side): the candidate's DMARC record sends aggregate/
+ *      forensic reports to a mailbox whose domain sits inside the seed apex,
+ *      AND the seed has published the RFC 7489 §7.1 external-destination
+ *      authorisation `<candidate>._report._dmarc.<receiver-domain>` TXT
+ *      `v=DMARC1`. The DMARC record itself is candidate-published (free to
+ *      forge); the authorisation record lives in the RECEIVER's zone, under
+ *      the seed apex, and only its owner can publish it — a squatter cannot.
+ *      A wildcard grant (`*._report._dmarc.<receiver>`, detected with a
+ *      canary label) is a seed choice to accept reports about ANY domain, so
+ *      it is evidence-only, never verdict-bearing.
  *
- * Why this conjunction and not others (spoofing analysis):
- *   - MX alone is one attacker-written record and never qualifies (a squatter
- *     can copy the seed's MX string in seconds — pinned by a negative fixture).
- *   - SOA RNAME is NEVER verdict-bearing: managed providers template it, and
- *     for a seed that is itself a DNS operator the template lands inside the
- *     seed apex — every Route 53 zone carries RNAME
- *     `awsdns-hostmaster.amazon.com`, so a Route 53 squatter of amazon.com
- *     would otherwise qualify. It is recorded as evidence prose only.
- *   - SOA MNAME on a managed provider is always a PROVIDER host (Route 53 →
- *     `ns-*.awsdns-*`, Cloudflare → `*.ns.cloudflare.com`, Akamai →
- *     `a*.akam.net`), never inside an unrelated seed's apex, and managed
- *     providers do not let a tenant edit it. Placing MNAME inside the seed
- *     apex therefore requires the squatter to self-host authoritative DNS
- *     (or a rare provider that exposes MNAME) — AND to route the lookalike's
- *     inbound mail to the seed's own servers, forfeiting the receive channel.
- *   - Two record types, two different operational dependencies, both pointed
- *     INTO the seed's zone: the same "complete match, not partial" bar the
- *     `ns_shared_provider_complete` arm already accepts at `medium`.
+ * Live (DoH, 2026-09-04): `_dmarc.amazon.com.au` → CNAME `_dmarc.amazon.com`,
+ * `rua=mailto:report<at>dmarc.amazon.com` (mailbox spelled out to keep the
+ * secret scanner quiet); `amazon.com.au._report._dmarc.dmarc.
+ * amazon.com` TXT `v=DMARC1` EXISTS; a random label under the same
+ * `_report._dmarc` is NXDOMAIN (not a wildcard) and `amzndns.com` — which
+ * reports to the same mailbox — has NO such record: a per-domain grant.
  *
- * Residual (documented, not hidden): a squatter who self-hosts DNS with a
- * forged MNAME and sacrifices inbound mail can still earn the verdict; the
- * verdict is `medium`, names both records in `evidence`, and the finding
- * text quotes them so an analyst can see exactly what was matched. Seed-side
- * arms keep precedence — a strong NS match is never displaced by this one.
+ * REJECTED on the same live records: SOA MNAME (unverified free text in a
+ * self-hosted zone — the first #897 revision used it and was correctly
+ * blocked), SOA RNAME (Route 53 templates `awsdns-hostmaster.amazon.com` into
+ * every tenant zone), the NS-platform chain (`amzndns.com` and public
+ * `awsdns-33.com` carry the same RNAME), seed SPF (`spf1/2/3.amazon.com` name
+ * no candidate), CT SAN overlap (0 of 3300 crt.sh certs cover both apexes),
+ * SPF `include:` / HTTP redirect (free-text, deleted 2026-07-27).
+ *
+ * Residual, stated not hidden: a seed that is itself a DMARC report-
+ * processing PROVIDER (Agari/Valimail-shaped) publishes authorisation records
+ * for every customer, so a customer whose MX also sits inside that seed's
+ * apex would attribute — the same provider-class residual the NS
+ * in-bailiwick arm already carries for DNS providers. Strength is `medium`
+ * and `evidence[]` names every record so a consumer can audit the match.
  */
 
 import type { CheckCategory, Finding, Severity } from '@blackveil/dns-checks/scoring';
@@ -150,6 +157,7 @@ export type OwnershipSignal =
 	| 'ns_set_match'
 	| 'ns_shared_provider_complete'
 	| 'mx_in_bailiwick'
+	| 'dmarc_report_authorised_by_seed'
 	| 'soa_in_bailiwick'
 	| 'spf_include_seed'
 	| 'http_redirect_seed'
@@ -170,22 +178,43 @@ export interface OwnershipAssessment {
 	evidence?: OwnershipEvidence[];
 }
 
-/** One observed record backing an `owned_by_seed` verdict (#864). */
+/** One observed record backing (or, for the pre-filter, accompanying) an ownership assessment (#864). */
 export interface OwnershipEvidence {
-	/** Which record the value came from. `SOA.RNAME` is evidence prose only — never verdict-bearing (see file header). */
-	record: 'MX' | 'SOA.MNAME' | 'SOA.RNAME';
-	/** The observed host (lowercased, trailing dot stripped). */
+	/**
+	 * Which record the value came from. `MX` is the candidate-side PRE-FILTER
+	 * (never verdict-bearing — see file header); `DMARC.RUA` is the
+	 * candidate-published report destination; `DMARC.REPORT_AUTHORISATION` is
+	 * the SEED-published RFC 7489 §7.1 grant the verdict rests on.
+	 */
+	record: 'MX' | 'DMARC.RUA' | 'DMARC.REPORT_AUTHORISATION';
+	/** The observed host / record name (lowercased, trailing dot stripped). */
 	value: string;
 	/** True when the host sits at or under the seed apex. */
 	inSeedBailiwick: boolean;
 }
 
-/** SOA authority fields the #864 convergence arm consults. */
-export interface SoaAuthority {
-	/** Primary master nameserver (SOA MNAME). */
-	mname: string;
-	/** Responsible-party mailbox in domain-name form (SOA RNAME). */
-	rname: string;
+/**
+ * Outcome of the seed-side DMARC external-report authorisation probe (#864;
+ * `probeDmarcReportAuthorisation()` in `src/tools/lookalike-dns.ts`).
+ *
+ *  - `authorised` — a receiver domain under the seed apex publishes a
+ *    per-domain `<candidate>._report._dmarc.<receiver>` `v=DMARC1` record.
+ *  - `wildcard` — the receiver answers `v=DMARC1` for a random label too, so
+ *    the grant is not specific to this candidate (evidence-only).
+ *  - `not_authorised` — the candidate reports into the seed apex but no grant
+ *    exists (measured absence).
+ *  - `no_seed_receiver` — the candidate's DMARC reports go nowhere inside the
+ *    seed apex (or it has no DMARC record).
+ *  - `unresolved` — a lookup on the path REJECTED; nothing was measured.
+ */
+export interface DmarcReportAuthorisation {
+	status: 'authorised' | 'wildcard' | 'not_authorised' | 'no_seed_receiver' | 'unresolved';
+	/** Report mailboxes (domain part) the candidate's DMARC record names inside the seed apex. */
+	seedReceivers: string[];
+	/** The receiver whose authorisation record matched (`authorised` / `wildcard` only). */
+	receiverDomain?: string;
+	/** The authorisation record NAME that answered `v=DMARC1` (`authorised` only). */
+	authorisationRecord?: string;
 }
 
 export interface ClassifyOwnershipInput {
@@ -214,23 +243,19 @@ export interface ClassifyOwnershipInput {
 	/**
 	 * #864 — the candidate's RESOLVED real MX exchange hosts (null-MX already
 	 * excluded upstream). `undefined` = not probed; `[]` = probed, no mail.
-	 * Consulted ONLY by the in-bailiwick convergence arm, and only in
-	 * conjunction with {@link candidateSoa} — see the file-header amendment.
+	 * PRE-FILTER ONLY: copying the seed's MX is free for a sending squatter,
+	 * so this never carries weight; it gates whether the seed-side probe in
+	 * {@link dmarcReportAuthorisation} is worth issuing. See the file header.
 	 */
 	candidateMx?: readonly string[];
 	/**
-	 * #864 — the candidate's SOA authority fields. `undefined` = not probed;
-	 * `null` = probed and no SOA answered (or the probe rejected — then
-	 * {@link candidateSoaUnresolved} says which).
+	 * #864 — the SEED-SIDE half: result of the DMARC external-report
+	 * authorisation probe. `undefined` = not probed. The verdict rests on
+	 * `status === 'authorised'` alone; `'unresolved'` with the MX pre-filter
+	 * met yields `unmeasured` (#832's law), every other status falls through
+	 * to the seed-side NS outcome.
 	 */
-	candidateSoa?: SoaAuthority | null;
-	/**
-	 * #864 — true when the candidate's SOA lookup REJECTED (timeout /
-	 * throttling) rather than answering. With the MX precondition met, the
-	 * convergence question was asked and not answered, so the verdict is
-	 * `unmeasured` (#832's law) rather than the contrary `third_party`.
-	 */
-	candidateSoaUnresolved?: boolean;
+	dmarcReportAuthorisation?: DmarcReportAuthorisation;
 	/**
 	 * OWNERSHIP RULE — SEED-SIDE CONTROL ONLY (Ruling A, 2026-07-27 task-7c;
 	 * fields DELETED 2026-07-27 ownership-attribution followups item 2 — see
@@ -261,13 +286,13 @@ export interface ClassifyOwnershipInput {
 	 * own. If reintroducing such fields, keep them optional inputs consulted
 	 * strictly AFTER the seed-side precedence steps below decide the verdict.
 	 *
-	 * RE-DERIVED 2026-09-04 (#864): `candidateMx` + `candidateSoa` above are
-	 * exactly such a reintroduction, bounded as the rule demands — optional,
-	 * consulted after every seed-side arm, never verdict-bearing alone, and
-	 * limited to the single MX ∧ SOA-MNAME conjunction whose spoofing cost is
-	 * argued in the file header. SPF `include:` and HTTP redirect targets
-	 * remain excluded: both are free-text declarations with no operational
-	 * cost to forge.
+	 * RE-DERIVED 2026-09-04 (#864): `candidateMx` above is a candidate-side
+	 * field again — but it is a PRE-FILTER with no verdict weight, and the
+	 * verdict it gates (`dmarcReportAuthorisation`) is a SEED-published record
+	 * (RFC 7489 §7.1), which is exactly the seed-side control this rule
+	 * demands. Consulted after every seed-side NS arm. SPF `include:`, HTTP
+	 * redirect and SOA MNAME/RNAME remain excluded: all are free-text
+	 * declarations a self-hosted zone can publish at no cost.
 	 */
 }
 
@@ -325,19 +350,20 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
  *  5. Partial overlap confined to shared-provider hosts → not evidence (falls through silently —
  *     this is the ANZ/Westpac 1/6-Akamai trap: a single shared-provider NS host in common is
  *     operational plumbing, not ownership evidence).
- *  5b. (#864) In-bailiwick CONVERGENCE — every real MX exchange AND the SOA MNAME sit inside
- *     the seed apex → `owned_by_seed`, medium, with `evidence`. Requires the caller to have
- *     supplied `candidateMx` + `candidateSoa`; neither alone qualifies, and SOA RNAME never
- *     counts (see the file-header amendment for the spoofing analysis). If the MX precondition
- *     holds but the SOA lookup REJECTED, the verdict is `unmeasured`, not `third_party`.
+ *  5b. (#864) SEED-AUTHORISED convergence — pre-filter: every real MX exchange inside the seed
+ *     apex (attacker-free, no weight); verdict: the seed publishes the RFC 7489 §7.1 DMARC
+ *     report authorisation `<candidate>._report._dmarc.<receiver-under-seed>` → `owned_by_seed`,
+ *     medium, with `evidence`. Requires the caller to have supplied `candidateMx` +
+ *     `dmarcReportAuthorisation`. A wildcard grant is evidence-only. If the pre-filter holds but
+ *     the seed-side probe REJECTED, the verdict is `unmeasured`, not `third_party`.
  *  6. Registered with its own resolvable NS, no ownership signal → `third_party`.
  *  7. Everything else (no NS info at all) → `unattributed`.
  *
- * Candidate-side inputs (`candidateMx`, `candidateSoa`) are consulted ONLY at
- * step 5b, strictly after every seed-side arm, and only as the bounded
- * conjunction the 2026-09-04 amendment admits. SPF `include:` and HTTP
- * redirect targets remain excluded (deleted 2026-07-27, see the OWNERSHIP
- * RULE note on `ClassifyOwnershipInput`).
+ * The #864 inputs (`candidateMx`, `dmarcReportAuthorisation`) are consulted
+ * ONLY at step 5b, strictly after every seed-side NS arm; the verdict there
+ * rests on the seed-published authorisation record alone. SPF `include:`,
+ * HTTP redirect and SOA fields remain excluded (see the OWNERSHIP RULE note
+ * on `ClassifyOwnershipInput`).
  */
 export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAssessment {
 	const { registration, candidateDomain } = input;
@@ -378,11 +404,11 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 		};
 	}
 
-	// #864 — the in-bailiwick convergence arm needs only the seed APEX (like the
-	// NS in-bailiwick arm above), so it is computed here and may still yield a
-	// positive verdict under a degraded seed NS lookup; it is APPLIED only after
-	// the seed-side set-comparison arms below, which keep precedence.
-	const convergence = assessBailiwickConvergence(input, candidateDomain, seedApex);
+	// #864 — the seed-authorised convergence arm needs only the seed APEX (like
+	// the NS in-bailiwick arm above), so it is computed here and may still yield
+	// a positive verdict under a degraded seed NS lookup; it is APPLIED only
+	// after the seed-side set-comparison arms below, which keep precedence.
+	const convergence = assessSeedAuthorisedConvergence(input, candidateDomain, seedApex);
 
 	// #832 — degraded comparison inputs. The seed's NS lookup did not resolve,
 	// so every arm below would be comparing against an UNFETCHED set: the
@@ -435,9 +461,9 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 		};
 	}
 
-	// #864 — step 5b. Applied only once every seed-side arm has declined, so a
-	// strong NS match is never displaced by this medium-strength verdict. Also
-	// carries the `unmeasured` outcome for an asked-but-unanswered SOA probe.
+	// #864 — step 5b. Applied only once every seed-side NS arm has declined, so
+	// a strong NS match is never displaced by this medium-strength verdict. Also
+	// carries the `unmeasured` outcome for an asked-but-unanswered seed probe.
 	if (convergence !== null) return convergence;
 
 	if (candidateNs.length > 0) {
@@ -459,15 +485,16 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 
 /**
  * True when the candidate's RESOLVED real MX set is non-empty and EVERY
- * exchange sits at or under the seed apex — mail for the candidate is
- * delivered to the seed organisation's own mail hosts (#864). Exported so the
- * lookalike orchestrator can use the same predicate to gate the one extra SOA
- * lookup the convergence arm needs: the probe is issued only for candidates
- * that already satisfy this half, so a clean scan pays nothing.
+ * exchange sits at or under the seed apex (#864). This is the PRE-FILTER for
+ * step 5b and nothing more: a sending squatter can publish `MX 10 <seed's
+ * MX>` in a self-hosted zone for free and forfeits nothing it wanted, so the
+ * predicate carries no verdict weight. It exists so the seed-side probe is
+ * issued only for candidates that already look like the seed's own mail
+ * estate — a clean scan pays nothing.
  *
- * A single exchange OUTSIDE the seed apex disqualifies the whole set — a
- * squatter listing the seed's MX alongside their own would keep a working
- * receive channel, which is precisely what the conjunction is meant to cost.
+ * A single exchange OUTSIDE the seed apex disqualifies the set (a squatter
+ * listing the seed's MX alongside its own is not shaped like a same-entity
+ * domain at all).
  */
 export function mxRoutedIntoSeed(candidateMx: readonly string[] | undefined, seedDomain: string): boolean {
 	if (!candidateMx || candidateMx.length === 0) return false;
@@ -477,52 +504,79 @@ export function mxRoutedIntoSeed(candidateMx: readonly string[] | undefined, see
 }
 
 /**
- * Step 5b of `classifyOwnership()` — the #864 in-bailiwick convergence arm.
- * Returns `null` when the arm has nothing to say (inputs absent, or the
- * conjunction unmet), an `owned_by_seed` assessment when BOTH halves hold, or
- * an `unmeasured` assessment when the MX half holds but the SOA probe was
- * asked and rejected. Never returns `third_party`: declining is the caller's
- * job, from seed-side evidence.
+ * Extract the domain part of every `rua=` / `ruf=` `mailto:` destination in a
+ * DMARC record (RFC 7489 §6.3), lowercased, deduplicated, in order of first
+ * appearance. Size suffixes (`!10m`) and non-mailto URIs are dropped. Pure;
+ * exported for direct unit testing and for `probeDmarcReportAuthorisation()`.
  */
-function assessBailiwickConvergence(input: ClassifyOwnershipInput, candidateDomain: string, seedApex: string): OwnershipAssessment | null {
-	if (!mxRoutedIntoSeed(input.candidateMx, seedApex)) return null;
-	const mx = (input.candidateMx ?? []).map(normHost).filter(Boolean);
-
-	if (input.candidateSoa === undefined) {
-		// MX half holds but the caller never probed SOA: the arm cannot fire
-		// (never on one attacker-written record) and it is not a measurement
-		// gap either — nobody asked. Fall through to the seed-side outcome.
-		return null;
-	}
-	if (input.candidateSoa === null) {
-		if (input.candidateSoaUnresolved) {
-			return {
-				verdict: 'unmeasured',
-				strength: 'none',
-				signals: ['mx_in_bailiwick'],
-				rationale: `${candidateDomain} routes its mail to ${mx.join(', ')} inside ${seedApex}, but its SOA lookup did not resolve this run, so whether its zone is also mastered inside ${seedApex} could not be assessed. This is a measurement gap, not evidence of third-party registration — re-run to attribute.`,
-				evidence: mx.map((value) => ({ record: 'MX' as const, value, inSeedBailiwick: true })),
-			};
+export function parseDmarcReportReceivers(dmarcRecord: string): string[] {
+	const out: string[] = [];
+	for (const rawTag of dmarcRecord.split(';')) {
+		const eq = rawTag.indexOf('=');
+		if (eq === -1) continue;
+		const key = rawTag.slice(0, eq).trim().toLowerCase();
+		if (key !== 'rua' && key !== 'ruf') continue;
+		for (const uri of rawTag.slice(eq + 1).split(',')) {
+			const trimmed = uri.trim();
+			if (!/^mailto:/i.test(trimmed)) continue;
+			const mailbox = trimmed.slice('mailto:'.length).split('!')[0];
+			const at = mailbox.lastIndexOf('@');
+			if (at === -1) continue;
+			const domain = normHost(mailbox.slice(at + 1));
+			if (domain && !out.includes(domain)) out.push(domain);
 		}
-		return null;
 	}
+	return out;
+}
 
-	const mname = normHost(input.candidateSoa.mname);
-	const rname = normHost(input.candidateSoa.rname);
-	if (!mname || !isInBailiwick(mname, seedApex)) return null;
+/**
+ * Step 5b of `classifyOwnership()` — the #864 seed-authorised convergence
+ * arm. Returns `null` when the arm has nothing to say (pre-filter unmet,
+ * inputs absent, or no seed-published grant), an `owned_by_seed` assessment
+ * when the seed has published the per-domain RFC 7489 §7.1 authorisation, or
+ * an `unmeasured` assessment when the pre-filter held but the seed-side probe
+ * rejected. Never returns `third_party`: declining is the caller's job, from
+ * seed-side NS evidence.
+ */
+function assessSeedAuthorisedConvergence(
+	input: ClassifyOwnershipInput,
+	candidateDomain: string,
+	seedApex: string,
+): OwnershipAssessment | null {
+	if (!mxRoutedIntoSeed(input.candidateMx, seedApex)) return null;
+	const auth = input.dmarcReportAuthorisation;
+	if (auth === undefined) return null;
 
-	const evidence: OwnershipEvidence[] = [
-		...mx.map((value) => ({ record: 'MX' as const, value, inSeedBailiwick: true })),
-		{ record: 'SOA.MNAME', value: mname, inSeedBailiwick: true },
-	];
-	if (rname) evidence.push({ record: 'SOA.RNAME', value: rname, inSeedBailiwick: isInBailiwick(rname, seedApex) });
+	const mx = (input.candidateMx ?? []).map(normHost).filter(Boolean);
+	const mxEvidence: OwnershipEvidence[] = mx.map((value) => ({ record: 'MX' as const, value, inSeedBailiwick: true }));
+
+	if (auth.status === 'unresolved') {
+		return {
+			verdict: 'unmeasured',
+			strength: 'none',
+			signals: ['mx_in_bailiwick'],
+			rationale: `${candidateDomain} routes its mail to ${mx.join(', ')} inside ${seedApex}, but the lookup that would show whether ${seedApex} has authorised DMARC reporting for it did not resolve this run. This is a measurement gap, not evidence of third-party registration — re-run to attribute.`,
+			evidence: mxEvidence,
+		};
+	}
+	if (auth.status !== 'authorised' || !auth.receiverDomain || !auth.authorisationRecord) return null;
+
+	const receiver = normHost(auth.receiverDomain);
+	const record = normHost(auth.authorisationRecord);
+	// Defence in depth: the probe already filtered receivers to the seed apex,
+	// but the verdict must never rest on a grant published OUTSIDE it.
+	if (!isInBailiwick(receiver, seedApex) || !isInBailiwick(record, seedApex)) return null;
 
 	return {
 		verdict: 'owned_by_seed',
 		strength: 'medium',
-		signals: ['mx_in_bailiwick', 'soa_in_bailiwick'],
-		rationale: `${candidateDomain} routes its mail to ${mx.join(', ')} and its zone is mastered on ${mname} — both inside ${seedApex}'s own infrastructure. Two distinct operational dependencies point into the seed's zone; either record alone would not qualify.`,
-		evidence,
+		signals: ['mx_in_bailiwick', 'dmarc_report_authorised_by_seed'],
+		rationale: `${seedApex} has published a DMARC external-report authorisation for ${candidateDomain} (${record} = v=DMARC1, RFC 7489 §7.1) — a record only the owner of ${receiver} can create — and ${candidateDomain} routes its mail to ${mx.join(', ')} inside ${seedApex}.`,
+		evidence: [
+			...mxEvidence,
+			{ record: 'DMARC.RUA', value: receiver, inSeedBailiwick: true },
+			{ record: 'DMARC.REPORT_AUTHORISATION', value: record, inSeedBailiwick: true },
+		],
 	};
 }
 

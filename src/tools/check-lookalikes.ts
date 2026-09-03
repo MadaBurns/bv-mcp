@@ -44,7 +44,7 @@ import {
 	getParentDomain,
 	labelCount,
 	probeWithAdaptiveBatching,
-	queryCandidateSoa,
+	probeDmarcReportAuthorisation,
 	queryPrimaryMx,
 	queryPrimaryNs,
 	type LookalikeResult,
@@ -54,7 +54,7 @@ import {
 	computeSameEntityCandidates,
 	isBrandHeldRegistration,
 	isSameEntityOrgMatch,
-	refineOwnershipByBailiwickConvergence,
+	refineOwnershipBySeedAuthorisation,
 } from './lookalike-attribution';
 import type { DefensiveReason } from '../lib/brand-defensive-registration';
 import {
@@ -290,10 +290,12 @@ async function checkLookalikesCore(
 	// #864 — second attribution pass. The NS-only pass above cannot see a
 	// same-entity domain on a DIFFERENT DNS platform (amazon.com.au on amzndns.*
 	// vs amazon.com on Route 53 — #263's failure mode). For the few candidates
-	// whose real MX already routes into the seed apex, one bounded SOA probe
-	// lets `classifyOwnership()` step 5b decide the in-bailiwick conjunction.
-	// Runs BEFORE enrichment so a newly-owned candidate skips it like any other.
-	const bailiwick = await refineOwnershipByBailiwickConvergence({
+	// whose real MX already routes into the seed apex (a pre-filter with no
+	// verdict weight), a bounded SEED-side probe — the RFC 7489 §7.1 DMARC
+	// report authorisation only the seed can publish — lets `classifyOwnership()`
+	// step 5b decide. Runs BEFORE enrichment so a newly-owned candidate skips it
+	// like any other.
+	const seedAuthorisation = await refineOwnershipBySeedAuthorisation({
 		seedDomain: domain,
 		seedNs: primaryNsList,
 		seedNsUnresolved: seedNsUnmeasured,
@@ -301,7 +303,7 @@ async function checkLookalikesCore(
 		nsByDomain: lookalikeNsMap,
 		ownershipByDomain,
 		isSharedNsHost,
-		querySoa: queryCandidateSoa,
+		probeAuthorisation: probeDmarcReportAuthorisation,
 	});
 
 	// Enrichment (Defect L / issue #264): for each non-defensively-registered
@@ -619,8 +621,8 @@ async function checkLookalikesCore(
 	// throttled run would be served for the full TTL after DNS recovered — the
 	// non-answer outliving the condition that caused it. Same contract the
 	// timeout path in checkLookalikes() already honours. #864: a candidate whose
-	// SOA probe rejected mid-conjunction is the same transient shape.
-	if (seedNsUnmeasured || bailiwick.unmeasured.length > 0) {
+	// seed-side authorisation probe rejected is the same transient shape.
+	if (seedNsUnmeasured || seedAuthorisation.unmeasured.length > 0) {
 		result.partial = true;
 	}
 	return result;
