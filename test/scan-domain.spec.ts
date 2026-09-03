@@ -1391,16 +1391,22 @@ describe('scanDomain — transient zero retry', () => {
 	});
 
 	it('fires retries for multiple simultaneously failing checks up to the cap', async () => {
-		// Throw on SPF, DMARC, TLSRPT, and BIMI TXT lookups on the first 2 fetches
-		// (DNS_RETRIES=1 means 2 fetches per query). Each subsequent fetch succeeds, so the
-		// retry pass can recover them. That's 4 qualifying retries; cap is MAX_RETRIES_PER_SCAN=3.
-		// The first 3 (by checkResults order: spf, dmarc, bimi) retry successfully; tlsrpt
-		// remains errored. (MTA-STS and DKIM are excluded because they swallow DNS errors
-		// internally and never propagate to safeCheck.)
+		// Throw on the SPF, DMARC and BIMI TXT lookups on the first 2 fetches (DNS_RETRIES=1
+		// means 2 fetches per query) and on EVERY `_smtp._tls` lookup. Each subsequent
+		// spf/dmarc/bimi fetch succeeds, so the retry pass can recover them.
+		//
+		// `_smtp._tls` is queried by TWO checks — tlsrpt AND mta_sts — and since #889
+		// (dns-checks 1.33.0) mta_sts no longer swallows a rejected lookup as a scored `low`:
+		// it returns the retryable `checkStatus: 'error'` + score 0 shape like everyone else.
+		// Failing that name permanently makes both of them deterministic candidates. That is
+		// 5 qualifying retries in checkResults order — spf, dmarc, mta_sts, bimi, tlsrpt — and
+		// the cap is MAX_RETRIES_PER_SCAN=3: spf and dmarc recover, mta_sts is retried but
+		// fails again, and bimi is NEVER retried (its lookup counter proves it), which is the
+		// cap doing its job. (DKIM is excluded because it swallows DNS errors internally.)
 		const counters: Record<string, number> = { spf: 0, dmarc: 0, tlsrpt: 0, bimi: 0 };
-		function shouldThrow(key: string): boolean {
+		function shouldThrow(key: string, limit = 2): boolean {
 			counters[key]++;
-			return counters[key] <= 2;
+			return counters[key] <= limit;
 		}
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -1415,7 +1421,7 @@ describe('scanDomain — transient zero retry', () => {
 						return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
 					}
 					if (url.includes('_smtp._tls.')) {
-						if (shouldThrow('tlsrpt')) return Promise.reject(new Error('DNS query failed'));
+						if (shouldThrow('tlsrpt', Number.POSITIVE_INFINITY)) return Promise.reject(new Error('DNS query failed'));
 						return Promise.resolve(txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']));
 					}
 					if (url.includes('default._bimi.')) {
@@ -1445,13 +1451,22 @@ describe('scanDomain — transient zero retry', () => {
 
 		const result = await run();
 
-		// Count how many of the 4 originally-failing checks ended up with a non-error result.
-		// With MAX_RETRIES_PER_SCAN=3, exactly 3 should have recovered via retry; the 4th stays errored.
-		const targets = ['spf', 'dmarc', 'tlsrpt', 'bimi'] as const;
-		const recovered = targets
-			.map((cat) => result.checks.find((c) => c.category === cat))
-			.filter((c) => c && c.checkStatus !== 'error' && c.score > 0);
-		expect(recovered.length).toBe(3);
+		const byCategory = (cat: string) => result.checks.find((c) => c.category === cat)!;
+		const recovered = (cat: string) => byCategory(cat).checkStatus !== 'error' && byCategory(cat).score > 0;
+
+		// Retry slots 1 and 2 (by checkResults order): recovered.
+		expect(recovered('spf')).toBe(true);
+		expect(recovered('dmarc')).toBe(true);
+		// Retry slot 3: mta_sts was retried (retryable class, #889) but its `_smtp._tls` lookup
+		// fails permanently, so it stays NOT ASSESSED — never a scored TLS-RPT finding.
+		expect(byCategory('mta_sts').checkStatus).toBe('error');
+		expect(byCategory('mta_sts').findings.some((f) => f.metadata?.notAssessedReason === 'dns_query_failed')).toBe(true);
+		expect(byCategory('mta_sts').findings.some((f) => f.title === 'TLS-RPT DNS query failed')).toBe(false);
+		// Beyond the cap: bimi and tlsrpt stay errored, and bimi's lookup counter proves it was
+		// never retried — exactly the 2 fetches of its first (failing) DNS attempt.
+		expect(recovered('bimi')).toBe(false);
+		expect(counters.bimi).toBe(2);
+		expect(recovered('tlsrpt')).toBe(false);
 	});
 });
 

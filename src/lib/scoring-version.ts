@@ -335,8 +335,30 @@
  *   protective; measured live anchor fundhaus.app 82/B → ≈76/NIST C). DOWNWARD for
  *   un-locked-down no-MX domains, UPWARD-neutral (unchanged 100) for locked-down
  *   ones; `non_mail` and every mail profile are bit-for-bit unchanged.
+ * - 1.21.0 — the SCANNER'S OWN I/O failure inside `checkMTASTS` no longer scores the
+ *   domain (issue #889, dns-checks 1.33.0). Three catch paths used to convert a thrown
+ *   policy fetch (ECONNRESET, TLS/egress failure, the package's own 4s
+ *   `AbortSignal.timeout`, a `RobotsDisallowedError` from the gate, a resolver failure
+ *   for `mta-sts.<domain>`) or a rejecting `_smtp._tls` / `_mta-sts` TXT lookup into a
+ *   SCORED finding with no `checkStatus` — `medium` "policy fetch failed" (category 85)
+ *   and `low` "DNS query failed" (category 95) — folded into the profile score as a
+ *   measured deficiency, byte-for-byte indistinguishable from a domain that lacks the
+ *   control. They now return the not-assessed shape the rest of the model already uses
+ *   (`checkMX`, `buildDnsErrorResult`): `checkStatus: 'timeout'` (AbortError /
+ *   TimeoutError) or `'error'`, `score: 0`, `passed: false`, `partial: true`, and an
+ *   `info` finding carrying `inconclusive: true` + `notAssessedReason`
+ *   (`policy_fetch_failed` | `dns_query_failed` | the existing `robots_disallowed`
+ *   vocabulary), so the category is EXCLUDED and renormalised (shown n/a) and the
+ *   scan-path transient-zero retry can fire. A DEFINITE answer is unchanged: a non-ok
+ *   HTTP status on the policy URL keeps its `high`, an empty TXT answer keeps its graded
+ *   absence finding, and the MX-coverage sub-check keeps its silent abstention.
+ *   Direction: UPWARD only, and only for scans whose MTA-STS probe failed on OUR side
+ *   (the −15 / −5 category penalty that was never evidence disappears); every measured
+ *   scan is bit-for-bit unchanged. No weight, tier, grade band, `SEVERITY_PENALTIES`
+ *   entry or profile-detection rule changed. Population UNMEASURED against the corpus
+ *   (a scanner-side transient by definition has no stable prevalence).
  */
-export const SCORING_MODEL_VERSION = '1.20.0';
+export const SCORING_MODEL_VERSION = '1.21.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

@@ -193,27 +193,65 @@ describe('checkMtaSts', () => {
 		expect(f!.severity).toBe('high');
 	});
 
-	it('returns low finding on DNS query failure', async () => {
+	it('a rejected _mta-sts DNS lookup is NOT ASSESSED (checkStatus error), not a scored low finding (#889)', async () => {
 		mockMultiFetch({
 			dnsError: new Error('DNS timeout'),
 			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
 		});
 		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('DNS query failed'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('low');
+		// Pre-#889: a `low` "MTA-STS DNS query failed" with no checkStatus → category 95, scored.
+		expect(r.findings.some((f) => f.title.includes('DNS query failed'))).toBe(false);
+		expect(r.checkStatus).toBe('error');
+		expect(r.score).toBe(0);
+		expect(r.passed).toBe(false);
+		expect(r.partial).toBe(true);
+		const f = r.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(f?.severity).toBe('info');
+		expect(f?.metadata?.notAssessedReason).toBe('dns_query_failed');
+		// Unknown, never a fabricated absence.
+		expect(r.recordPresent).toBeUndefined();
+		expect(r.controlPresent).toBeUndefined();
 	});
 
-	it('returns medium finding on policy fetch network error', async () => {
+	it('a policy fetch network error is NOT ASSESSED (checkStatus error, retryable), not a scored medium finding (#889)', async () => {
 		mockMultiFetch({
 			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
-			policyError: new Error('Network error'),
+			policyError: Object.assign(new TypeError('Network error'), { name: 'TypeError' }),
 			tlsrptDns: txtResponse('_smtp._tls.example.com', ['v=TLSRPTv1; rua=mailto:tls@example.com']),
 		});
 		const r = await run();
-		const f = r.findings.find((f) => f.title.includes('fetch failed'));
-		expect(f).toBeDefined();
-		expect(f!.severity).toBe('medium');
+		// Pre-#889: a `medium` "MTA-STS policy fetch failed" with no checkStatus → category 85, scored.
+		expect(r.findings.some((f) => f.title.includes('fetch failed'))).toBe(false);
+		expect(r.findings.some((f) => f.severity === 'medium' || f.severity === 'high')).toBe(false);
+		expect(r.checkStatus).toBe('error');
+		expect(r.score).toBe(0);
+		expect(r.partial).toBe(true);
+		expect(r.findings.find((f) => f.metadata?.inconclusive === true)?.severity).toBe('info');
+		// The _mta-sts record WAS observed — still credited.
+		expect(r.controlPresent).toBe(true);
+		expect(r.recordPresent).toBe(true);
+	});
+
+	it('a rejected _smtp._tls DNS lookup is NOT ASSESSED, never recorded as a measured TLS-RPT absence (#889)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+				if (url.includes('_smtp._tls.')) return Promise.reject(new Error('SERVFAIL'));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known')) {
+				return Promise.resolve(policyResponse('version: STSv1\nmode: enforce\nmx: *.example.com\nmax_age: 86400'));
+			}
+			return Promise.resolve(policyResponse('', 404));
+		});
+		const r = await run();
+		expect(r.findings.some((f) => f.title === 'TLS-RPT DNS query failed')).toBe(false);
+		expect(r.findings.some((f) => f.title === 'TLS-RPT record missing')).toBe(false);
+		expect(r.checkStatus).toBe('error');
+		expect(r.score).toBe(0);
+		expect(r.partial).toBe(true);
+		expect(r.findings.find((f) => f.metadata?.inconclusive === true)?.metadata?.notAssessedReason).toBe('dns_query_failed');
 	});
 
 	it('returns low finding when no TLSRPT record exists', async () => {
