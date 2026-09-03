@@ -35,7 +35,7 @@ import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult } from '../lib/scoring';
 import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes } from './lookalike-analysis';
 import { calibrateLookalikeSeverity, type LookalikeSignals } from './lookalike-severity';
-import { classifyOwnership, type OwnershipAssessment } from '../lib/ownership-attribution';
+import { attributionConfidence, classifyOwnership, type OwnershipAssessment } from '../lib/ownership-attribution';
 import { isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
 import { extractBrandName } from '../lib/public-suffix';
 import {
@@ -466,6 +466,10 @@ async function checkLookalikesCore(
 		// low-noise, not worth the fetch).
 		const matchedOrg = sameEntityMatches.get(result.domain);
 		const brandHeld = brandHeldMatches.get(result.domain);
+		// The D4 MX-overlap corroboration signal feeds `attributionConfidence()`
+		// for BOTH the per-domain attribution wording below and the rollup member
+		// (#863) — computed once so the two can never disagree.
+		const mxOverlapsPrimary = result.mxExchanges.some((ex) => primaryMx.has(ex));
 		if (brandHeld !== undefined) {
 			findings.push(buildBrandHeldFinding(result, domain, ownership, brandHeld));
 		} else if (matchedOrg !== undefined) {
@@ -473,8 +477,7 @@ async function checkLookalikesCore(
 		} else {
 			// AXIS 1 — the ownership verdict caps the ATTRIBUTION finding's
 			// severity. `attributionConfidence()` (fed the MX-overlap
-			// corroboration signal below) governs WORDING/CONFIDENCE only.
-			const mxOverlapsPrimary = result.mxExchanges.some((ex) => primaryMx.has(ex));
+			// corroboration signal above) governs WORDING/CONFIDENCE only.
 			const rawFinding = buildRawAttributionFinding(result, domain, severity, signals, corroboratorReasons);
 
 			// Attribution pushed FIRST so a consumer scanning for the ownership
@@ -520,12 +523,16 @@ async function checkLookalikesCore(
 			severity,
 			ownershipVerdict: ownership.verdict,
 			registrationDays: signals.registrationDays,
+			// #863 — the row's own hedge travels with it; the rollup excludes and
+			// caps on `uncorroborated` so it never out-claims the rows.
+			attributionConfidence: attributionConfidence(ownership.verdict, brand, mxOverlapsPrimary),
 		});
 	}
 
-	// #865 — the rollup decides for itself whether coverage permits a count;
-	// a throttled run gets a not-assessed notice instead of an integer.
-	const rollup = buildThreatRollupFinding({ seedDomain: domain, members: rollupMembers, enumeration });
+	// #865 / #863 — the rollup decides for itself whether coverage and the
+	// seed label permit a count; otherwise a not-assessed notice, never an
+	// integer.
+	const rollup = buildThreatRollupFinding({ seedDomain: domain, seedLabel: brand, members: rollupMembers, enumeration });
 	if (rollup.finding) findings.push(rollup.finding);
 
 	// If no active lookalikes found
@@ -618,9 +625,12 @@ async function checkLookalikesCore(
 	// non-answer outliving the condition that caused it. Same contract the
 	// timeout path in checkLookalikes() already honours.
 	//
-	// #865 — the same law for a rollup ABSTENTION: enumeration throttling is
-	// transient too, and a cached "not assessed" would outlive the throttling.
-	if (seedNsUnmeasured || rollup.abstained) {
+	// #865 — the same law for a THROTTLED rollup abstention: enumeration
+	// throttling is transient too, and a cached "not assessed" would outlive
+	// it. The #863 abstentions are structural (the seed's own label) and are
+	// deliberately NOT partial — every run of that seed abstains, so caching
+	// the abstention is correct.
+	if (seedNsUnmeasured || rollup.notAssessedReason === 'enumeration_throttled') {
 		result.partial = true;
 	}
 	return result;
