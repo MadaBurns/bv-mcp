@@ -280,6 +280,21 @@ describe('discover_subdomains — other recall-cut paths are floors too', () => 
 		expect(stale.countBasis).toBe('floor');
 		expect(stale.minSubdomainsObserved).toBe(3);
 		expect(stale.concreteSubdomains).toBe(2);
+
+		// The caveat must be REWRITTEN, not merely re-tagged: a `[LOW]` issue that
+		// still carries the healthy sample wording is the #866 shape on a new path.
+		const caveat = stale.issues.find((i) => i.type === 'ct_sample_not_inventory');
+		expect(caveat?.severity).toBe('low');
+		expect(caveat?.detail).toMatch(/floor/i);
+		expect(caveat?.detail).toMatch(/recall was cut/i);
+		expect(caveat?.detail).toMatch(/stale/i);
+		expect(caveat?.detail).not.toMatch(/is a LOWER BOUND from a CT sample/);
+		expect(caveat!.detail.length).toBeLessThanOrEqual(200);
+		expect(stale.issues[0].type).toBe('ct_sample_not_inventory');
+		// The stale caveat also renders, in both formats.
+		const { formatSubdomainDiscovery } = await import('../src/tools/discover-subdomains');
+		expect(formatSubdomainDiscovery(stale, 'compact')).toContain(caveat!.detail);
+		expect(formatSubdomainDiscovery(stale, 'full')).toMatch(/\[LOW\]/);
 	});
 });
 
