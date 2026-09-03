@@ -217,6 +217,30 @@ describe('buildThreatRollupFinding - never exceeds the confidence of what it agg
 		expect(finding!.metadata?.mailCapableDomains).toBeUndefined();
 	});
 
+	/**
+	 * Review finding on #863: the exclusion/cap path above is UNREACHABLE from
+	 * `checkLookalikesCore` today, because the rollup's label gate and the
+	 * classifier's corroboration bar are the same constant on the same string.
+	 * Pin that coupling from the CLASSIFIER side too: at exactly the threshold
+	 * length, with no other corroboration, the verdict is `'corroborated'`. If
+	 * someone splits the two thresholds this goes red and points at the rollup
+	 * path that would silently become live.
+	 */
+	it('classifier-side pin: a label of exactly MIN_ATTRIBUTION_LABEL_LENGTH chars is corroborated with no other signal', async () => {
+		const { attributionConfidence, MIN_ATTRIBUTION_LABEL_LENGTH } = await import('../src/lib/ownership-attribution');
+		const { MIN_ROLLUP_SEED_LABEL_LENGTH } = await import('../src/tools/lookalike-summary-findings');
+		const atThreshold = 'a'.repeat(MIN_ATTRIBUTION_LABEL_LENGTH);
+		const belowThreshold = 'a'.repeat(MIN_ATTRIBUTION_LABEL_LENGTH - 1);
+		for (const verdict of ['third_party', 'unattributed', 'unmeasured'] as const) {
+			expect(attributionConfidence(verdict, atThreshold, false)).toBe('corroborated');
+			expect(attributionConfidence(verdict, belowThreshold, false)).toBe('uncorroborated');
+		}
+		// Therefore every member of a seed that passes the rollup's label gate is
+		// corroborated: the gate and the classifier bar are the same number.
+		expect(atThreshold.length >= MIN_ROLLUP_SEED_LABEL_LENGTH).toBe(true);
+		expect(belowThreshold.length < MIN_ROLLUP_SEED_LABEL_LENGTH).toBe(true);
+	});
+
 	it('the short-label gate runs before member filtering and before the coverage gate', async () => {
 		const { buildThreatRollupFinding, MIN_ROLLUP_SEED_LABEL_LENGTH } = await import('../src/tools/lookalike-summary-findings');
 		const { MIN_ATTRIBUTION_LABEL_LENGTH } = await import('../src/lib/ownership-attribution');

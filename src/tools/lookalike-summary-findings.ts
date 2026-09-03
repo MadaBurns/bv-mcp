@@ -102,6 +102,21 @@ export interface ThreatRollupMember {
 	 * with the seed) excludes the member from every rollup list and count and
 	 * caps the rollup's severity (#863): the aggregate may never be more
 	 * confident than its rows.
+	 *
+	 * ⚠️ REACHABILITY: with the current classifier this value is
+	 * `'uncorroborated'` ONLY when the seed label is shorter than
+	 * `MIN_ATTRIBUTION_LABEL_LENGTH` — the same string and the same constant
+	 * `buildThreatRollupFinding` gates on FIRST (as `MIN_ROLLUP_SEED_LABEL_LENGTH`,
+	 * a re-export). So for any member that reaches the exclusion/cap path the
+	 * value is always `'corroborated'`, and `uncorroboratedExcludedCount` is
+	 * always 0 on real scan data. The field and the path are defence-in-depth
+	 * for the invariant "the rollup never exceeds the confidence of its
+	 * members", exercised only by builder-level unit tests that hand-build
+	 * members. The coupling is pinned from BOTH sides:
+	 * `test/check-lookalikes-short-label-rollup.spec.ts` asserts
+	 * `MIN_ROLLUP_SEED_LABEL_LENGTH === MIN_ATTRIBUTION_LABEL_LENGTH` and that
+	 * `attributionConfidence()` is `'corroborated'` at exactly the threshold —
+	 * whoever separates the two thresholds trips a red test pointing here.
 	 */
 	attributionConfidence: AttributionConfidence;
 }
@@ -275,6 +290,18 @@ export function buildThreatRollupFinding(input: {
 	if (isRollupCoverageDegraded(enumeration)) {
 		return { finding: buildRollupNotAssessedFinding(seedDomain, enumeration), notAssessedReason: 'enumeration_throttled' };
 	}
+	// ⚠️ UNREACHABLE ON REAL SCAN DATA with the current classifier (#863
+	// review): every member here belongs to a seed that passed the label gate
+	// above, and `attributionConfidence()` returns `'corroborated'`
+	// unconditionally at `brandLabel.length >= MIN_ATTRIBUTION_LABEL_LENGTH` —
+	// the same string, the same constant. `counted` therefore always equals
+	// `mailCapable` and `uncorroboratedExcludedCount` is always 0 from
+	// `checkLookalikesCore`. Kept as defence-in-depth for the invariant "the
+	// rollup never exceeds the confidence of its members", so that a future
+	// classifier producing `'uncorroborated'` for another cause (or a split of
+	// the two thresholds) is caught here rather than re-opening #863. The
+	// coupling is pinned on both sides by the short-label spec: constant
+	// equality, and `'corroborated'` at exactly the threshold length.
 	const counted = mailCapable.filter((m) => m.attributionConfidence !== 'uncorroborated');
 	const uncorroboratedExcludedCount = mailCapable.length - counted.length;
 	if (counted.length === 0) {
