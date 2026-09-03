@@ -17,9 +17,10 @@
  * re-export.
  */
 
-import { queryDnsRecords, queryMxRecords } from '../lib/dns';
+import { queryDnsRecords, queryMxRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import type { SoaAuthority } from '../lib/ownership-attribution';
+import { isInBailiwick, parseDmarcReportReceivers, type DmarcReportAuthorisation } from '../lib/ownership-attribution';
+import { getRegistrableDomain } from '../lib/public-suffix';
 
 /** Default and minimum batch sizes for adaptive batching */
 export const INITIAL_BATCH_SIZE = 10;
@@ -230,49 +231,83 @@ export async function queryPrimaryNs(domain: string): Promise<PrimaryNsResult> {
 }
 
 /**
- * #864 — bounded pool for the per-candidate SOA probe behind the in-bailiwick
- * convergence arm (`classifyOwnership()` step 5b). The probe is gated to
- * candidates whose MX already routes into the seed apex, so the eligible set
- * is tiny on any real scan; the pool is a ceiling, not a throughput target.
- * Sized well under the adaptive-batching A/MX probe's INITIAL_BATCH_SIZE so
- * it can never out-fan the pass it follows.
+ * #864 — bounded pool for the per-candidate seed-side authorisation probe
+ * behind `classifyOwnership()` step 5b. The probe is gated to candidates whose
+ * MX already routes into the seed apex, so the eligible set is tiny on any
+ * real scan; the pool is a ceiling, not a throughput target. Sized well under
+ * the adaptive-batching A/MX probe's INITIAL_BATCH_SIZE so it can never
+ * out-fan the pass it follows.
  */
-export const BAILIWICK_SOA_CONCURRENCY = 3;
+export const SEED_AUTHORISATION_CONCURRENCY = 3;
 
-/** Result of the #864 candidate SOA probe: the parsed authority fields plus whether the lookup actually resolved. */
-export interface CandidateSoaResult {
-	/** `null` when no SOA answered OR the lookup rejected — `resolved` tells the two apart. */
-	soa: SoaAuthority | null;
-	/**
-	 * False when the SOA query REJECTED (timeout / throttling). Load-bearing
-	 * for the same reason as `PrimaryNsResult.resolved` (#832): an absent SOA
-	 * from a FAILED lookup is unfetched, not measured, and the attribution
-	 * layer must say `unmeasured` rather than the contrary `third_party`.
-	 */
-	resolved: boolean;
-}
+/** Cap on distinct in-seed report receivers checked per candidate (each costs one authorisation lookup + one canary). */
+export const MAX_SEED_REPORT_RECEIVERS = 2;
 
 /**
- * Query the candidate's SOA record (#864) and return its MNAME / RNAME,
- * lowercased with trailing dots stripped. Uses the lean Phase-1 preset: this
- * is one disposable candidate probe, not a seed-side query — losing it costs
- * an `unmeasured` verdict for that candidate this run, never a wrong one.
+ * #864 — seed-side probe: does the seed publish the RFC 7489 §7.1 external-
+ * destination authorisation for this candidate's DMARC reports?
+ *
+ *  1. `_dmarc.<candidate>` TXT (candidate-published, free to forge — this only
+ *     tells us WHERE to look on the seed side).
+ *  2. For each `rua`/`ruf` mailbox domain inside the seed apex (at most
+ *     {@link MAX_SEED_REPORT_RECEIVERS}): `<candidate>._report._dmarc.<receiver>`
+ *     TXT must carry `v=DMARC1`. That record lives in the RECEIVER's zone —
+ *     under the seed apex — and only its owner can publish it.
+ *  3. A canary label under the same `_report._dmarc` distinguishes a
+ *     per-domain grant from a wildcard (`*._report._dmarc.<receiver>`), which
+ *     authorises reports about ANY domain and is therefore evidence-only.
+ *
+ * Uses the lean Phase-1 preset: these are disposable candidate probes, not
+ * seed-side queries — a rejected lookup costs an `unmeasured` verdict for that
+ * candidate this run (#832's law), never a wrong one. NXDOMAIN / empty answers
+ * are MEASURED absences (the DoH layer never throws on an rcode); only a
+ * timeout / abort / transport failure is `unresolved`.
  */
-export async function queryCandidateSoa(domain: string): Promise<CandidateSoaResult> {
+export async function probeDmarcReportAuthorisation(candidate: string, seedDomain: string): Promise<DmarcReportAuthorisation> {
+	const normalisedSeed = seedDomain.trim().toLowerCase().replace(/\.$/, '');
+	const seedApex = getRegistrableDomain(normalisedSeed) ?? normalisedSeed;
+
+	let dmarcRecords: string[];
 	try {
-		const records = await queryDnsRecords(domain, 'SOA', PHASE1_DNS_OPTS);
-		const first = records[0];
-		if (!first) return { soa: null, resolved: true };
-		// Presentation format: "<mname> <rname> <serial> <refresh> <retry> <expire> <minimum>".
-		const [mname, rname] = first.trim().split(/\s+/);
-		if (!mname || !rname) return { soa: null, resolved: true };
-		return {
-			soa: { mname: mname.toLowerCase().replace(/\.$/, ''), rname: rname.toLowerCase().replace(/\.$/, '') },
-			resolved: true,
-		};
+		dmarcRecords = await queryTxtRecords(`_dmarc.${candidate}`, PHASE1_DNS_OPTS);
 	} catch {
-		return { soa: null, resolved: false };
+		return { status: 'unresolved', seedReceivers: [] };
 	}
+	const dmarc = dmarcRecords.find((r) => /^\s*v=DMARC1\b/i.test(r));
+	if (!dmarc) return { status: 'no_seed_receiver', seedReceivers: [] };
+
+	const seedReceivers = parseDmarcReportReceivers(dmarc)
+		.filter((receiver) => isInBailiwick(receiver, seedApex))
+		.slice(0, MAX_SEED_REPORT_RECEIVERS);
+	if (seedReceivers.length === 0) return { status: 'no_seed_receiver', seedReceivers };
+
+	let sawWildcard: string | undefined;
+	for (const receiver of seedReceivers) {
+		const authorisationRecord = `${candidate}._report._dmarc.${receiver}`;
+		let grant: string[];
+		try {
+			grant = await queryTxtRecords(authorisationRecord, PHASE1_DNS_OPTS);
+		} catch {
+			return { status: 'unresolved', seedReceivers };
+		}
+		if (!grant.some((r) => /^\s*v=DMARC1\b/i.test(r))) continue;
+
+		// A grant answered — is it specific to this candidate, or a wildcard?
+		let canary: string[];
+		try {
+			canary = await queryTxtRecords(`${WILDCARD_CANARY_LABEL}._report._dmarc.${receiver}`, PHASE1_DNS_OPTS);
+		} catch {
+			// Cannot tell per-domain from wildcard: nothing was measured.
+			return { status: 'unresolved', seedReceivers };
+		}
+		if (canary.some((r) => /^\s*v=DMARC1\b/i.test(r))) {
+			sawWildcard = receiver;
+			continue;
+		}
+		return { status: 'authorised', seedReceivers, receiverDomain: receiver, authorisationRecord };
+	}
+	if (sawWildcard !== undefined) return { status: 'wildcard', seedReceivers, receiverDomain: sawWildcard };
+	return { status: 'not_authorised', seedReceivers };
 }
 
 /**
