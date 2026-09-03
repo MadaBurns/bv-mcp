@@ -208,12 +208,12 @@ describe('checkMtaSts — WAF-challenged policy fetch (issue #455)', () => {
 		expect(result.checkStatus).not.toBe('error');
 	});
 
-	it('makes the category inconclusive when the policy fetch THROWS (AbortError / WAF stall) — excludes the package medium', async () => {
-		// Empirical: when the policy fetch rejects, the package emits a `medium`
-		// "MTA-STS policy fetch failed" finding with NO checkStatus/partial flag — so
-		// scoring would otherwise penalise it. The wrapper catches the throw for the
-		// policy fetch, re-throws (so the package still runs its catch path), then
-		// converts the result to the excluded/inconclusive shape.
+	it('makes the category inconclusive when the policy fetch THROWS (AbortError / WAF stall) — retryable error class', async () => {
+		// Since dns-checks 1.33.0 (#889) the package itself returns the not-assessed shape
+		// for a thrown policy fetch (`checkStatus: 'timeout'` for an AbortError). The
+		// wrapper observes the throw, re-throws (so the package runs its catch path), then
+		// swaps in its WAF-aware prose and pins `checkStatus: 'error'` — the class
+		// scan_domain's transient-zero retry fires on (`'timeout'` is never retried).
 		mockFetch({
 			mtaStsDns: validTxt('example.com'),
 			tlsrptDns: validTlsRpt('example.com'),
@@ -228,12 +228,18 @@ describe('checkMtaSts — WAF-challenged policy fetch (issue #455)', () => {
 
 		// No medium "fetch failed" left dragging the score down…
 		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
-		// …category excluded as inconclusive.
+		expect(result.findings.some((f) => f.severity === 'medium')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'MTA-STS policy fetch failed')).toBe(false);
+		// …category excluded as inconclusive, in the RETRYABLE class, and kept out of the cache.
 		expect(result.checkStatus).toBe('error');
 		expect(result.score).toBe(0);
 		expect(result.passed).toBe(false);
-		// An inconclusive finding documents the stall.
-		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(true);
+		expect(result.partial).toBe(true);
+		// Exactly ONE inconclusive finding documents the stall — the wrapper's WAF-aware note
+		// REPLACES the package's generic not-assessed finding rather than stacking on it.
+		expect(result.findings.filter((f) => f.metadata?.inconclusive === true)).toHaveLength(1);
+		// The observed _mta-sts record is still credited.
+		expect(result.controlPresent).toBe(true);
 	});
 });
 

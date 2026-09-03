@@ -8,9 +8,10 @@
  * Licensed under BUSL-1.1
  */
 
-import type { CheckResult, DNSQueryFunction, FetchFunction, Finding, ZoneContext } from '../types';
+import type { CheckResult, CheckStatus, DNSQueryFunction, FetchFunction, Finding, ZoneContext } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { readResponseTextCapped } from '../response-body';
+import { RobotsDisallowedError, describeRobotsScope, robotsAbstentionMetadata } from '../robots-gate';
 import { isNullMxRecord, parseMxRecords } from './mx-analysis';
 import {
 	finalizeMissingMtaStsRecordFinding,
@@ -27,6 +28,21 @@ import {
 const HTTPS_TIMEOUT_MS = 4_000;
 
 /**
+ * Why an `mta_sts` result was NOT assessed (issue #889), carried additively in the
+ * not-assessed finding's `metadata.notAssessedReason`. `checkStatus` alone cannot say
+ * this — its union is deliberately `'completed' | 'timeout' | 'error'` (#743) — so the
+ * reason travels here, the same way `robotsAbstentionMetadata` already does for the
+ * robots case in `ssl` / `http_security` / `bimi`.
+ *
+ * - `robots_disallowed`   — the `mta-sts.<domain>` host's robots.txt disallowed the policy fetch.
+ * - `policy_fetch_failed` — the policy fetch THREW (transport error, TLS/egress failure, the
+ *                            package's own `AbortSignal.timeout`, a resolver failure for the
+ *                            `mta-sts.` host) before any HTTP response was received.
+ * - `dns_query_failed`    — the `_mta-sts` or `_smtp._tls` TXT lookup rejected.
+ */
+export type MtaStsNotAssessedReason = 'robots_disallowed' | 'policy_fetch_failed' | 'dns_query_failed';
+
+/**
  * Parse MX records from raw DNS response strings.
  * MX data format: "priority exchange"
  */
@@ -39,8 +55,62 @@ function parseMxFromRaw(answers: string[]): Array<{ exchange: string }> {
 }
 
 /**
+ * Classify a thrown fetch / resolver call by the ONLY signal that distinguishes a stall from
+ * a refusal: the error's `name`. `AbortSignal.timeout` rejects with a DOMException named
+ * `TimeoutError` (workerd, Node ≥ 17.3) or `AbortError` (older runtimes / composed signals);
+ * everything else — ECONNRESET, TLS failure, SERVFAIL, an egress refusal — is `'error'`.
+ * `'error'` is also the class `scan_domain`'s transient-zero retry fires on.
+ */
+function classifyTransportFailure(err: unknown): CheckStatus {
+	const name = (err as { name?: unknown } | null)?.name;
+	return name === 'AbortError' || name === 'TimeoutError' ? 'timeout' : 'error';
+}
+
+/**
+ * The not-assessed shape (issue #889): `checkStatus` is what EXCLUDES the category from the
+ * profile score (renormalised, shown n/a — never zeroed, never penalised); `score: 0` +
+ * `passed: false` because an unmeasured check did not pass; `partial: true` keeps the
+ * transient outcome OUT of the result cache so the next call re-measures.
+ *
+ * `controlPresent` / `recordPresent` are passed through ONLY when the `_mta-sts` record was
+ * actually observed (`true`); a lookup that never answered leaves them `undefined` (unknown).
+ * They are never `false` on this path — that would assert an absence nobody measured.
+ */
+function buildNotAssessedResult(findings: Finding[], status: CheckStatus, txtRecordObserved: boolean): CheckResult {
+	const observed = txtRecordObserved ? true : undefined;
+	return {
+		...buildCheckResult('mta_sts', findings, observed, observed),
+		score: 0,
+		passed: false,
+		checkStatus: status,
+		partial: true,
+	};
+}
+
+/** The `info` finding documenting a rejected `_mta-sts` / `_smtp._tls` TXT lookup. */
+function buildDnsNotAssessedFinding(label: string, name: string, status: CheckStatus): Finding {
+	return createFinding(
+		'mta_sts',
+		`${label} not assessed (DNS lookup ${status === 'timeout' ? 'timed out' : 'failed'})`,
+		'info',
+		`The scanner's TXT lookup for ${name} did not complete, so ${label} could not be assessed on this run. ` +
+			`This is not evidence about the domain — an empty answer would have been graded as a missing record. Retry to re-measure.`,
+		// `errorKind: 'dns_error'` is the marker `isDnsErrorFinding` consumers filter on (no
+		// remediation, no compliance verdict, nothing to sell against an unmeasured category).
+		// Never `missingControl` alongside it (issue #638).
+		{ inconclusive: true, errorKind: 'dns_error', notAssessedReason: 'dns_query_failed' satisfies MtaStsNotAssessedReason },
+	);
+}
+
+/**
  * Check MTA-STS configuration for a domain.
  * Queries _mta-sts.<domain> TXT records and optionally fetches the policy file.
+ *
+ * Abstention doctrine (issue #889): only a DEFINITE answer from the domain is evidence —
+ * a non-ok HTTP status on the policy URL, or an empty TXT answer. A failure of the
+ * scanner's OWN I/O (a thrown fetch, a rejecting resolver, a robots.txt disallow) is
+ * returned as NOT ASSESSED via `checkStatus` + an `info` finding, never as a scored
+ * deficiency against the domain. See {@link MtaStsNotAssessedReason}.
  */
 export async function checkMTASTS(
 	domain: string,
@@ -53,24 +123,27 @@ export async function checkMTASTS(
 
 	// Check for _mta-sts TXT record
 	let hasTxtRecord = false;
-	// Read ONLY by `recordPresent` below: `hasTxtRecord` stays false on a lookup failure, which
-	// is the right conservative choice for `controlPresent` but would misreport publication.
-	let mtaStsQueryFailed = false;
 	try {
 		const txtRecords = await queryDNS(`_mta-sts.${domain}`, 'TXT', { timeout });
 		const txtAnalysis = getMtaStsTxtFindings(txtRecords);
 		hasTxtRecord = txtAnalysis.hasTxtRecord;
 		findings.push(...finalizeMissingMtaStsRecordFinding(txtAnalysis.findings, domain));
-	} catch {
-		findings = [];
-		mtaStsQueryFailed = true;
-		findings.push(createFinding('mta_sts', 'MTA-STS DNS query failed', 'low', `Could not query MTA-STS TXT record for ${domain}.`));
+	} catch (err) {
+		// The lookup that everything else hangs off never answered: nothing about MTA-STS was
+		// measured. Abstain outright (mirrors `checkMX`) — was a scored `low` "DNS query failed".
+		const status = classifyTransportFailure(err);
+		return buildNotAssessedResult([buildDnsNotAssessedFinding('MTA-STS', `_mta-sts.${domain}`, status)], status, false);
 	}
+
+	// A scanner-side failure observed below. The measured findings gathered so far are KEPT
+	// for display; the abstention decides the result shape at the end.
+	let notAssessedStatus: CheckStatus | null = null;
+	const notAssessedFindings: Finding[] = [];
 
 	// Try to fetch the MTA-STS policy file (only if fetch function provided)
 	if (hasTxtRecord && fetchFn) {
+		const policyUrl = `https://mta-sts.${domain}/.well-known/mta-sts.txt`;
 		try {
-			const policyUrl = `https://mta-sts.${domain}/.well-known/mta-sts.txt`;
 			const response = await fetchFn(policyUrl, {
 				method: 'GET',
 				redirect: 'manual',
@@ -89,6 +162,9 @@ export async function checkMTASTS(
 				// Body unread on this branch — release it so workerd doesn't cancel a stalled response.
 				void response.body?.cancel().catch(() => undefined);
 			} else if (!response.ok) {
+				// A DEFINITE HTTP answer (404/403/5xx) from the policy host IS evidence and stays
+				// scored. (A WAF challenge page is the one known exception — the bv-mcp wrapper
+				// fingerprints the response and excludes it; see issue #455.)
 				findings.push(
 					createFinding(
 						'mta_sts',
@@ -127,25 +203,57 @@ export async function checkMTASTS(
 								),
 							);
 						} catch {
-							// MX query failed; skip coverage cross-check.
+							// MX query failed; skip coverage cross-check. A sub-signal of an otherwise
+							// measured policy — silent abstention, neither scored nor excluding.
 						}
 					}
 				}
 			}
-		} catch {
-			findings.push(
-				createFinding(
-					'mta_sts',
-					'MTA-STS policy fetch failed',
-					'medium',
-					`Could not fetch MTA-STS policy file from https://mta-sts.${domain}/.well-known/mta-sts.txt`,
-				),
-			);
+		} catch (err) {
+			// Everything the fetch can THROW lands here: the scanner's own `AbortSignal.timeout`
+			// firing, a TLS/egress failure, a `RobotsDisallowedError` from a gate wrapped around
+			// `fetchFn`, a resolver failure for `mta-sts.<domain>`. None of these is an
+			// observation about the domain (issue #889) — was a scored `medium` "policy fetch
+			// failed" (category 85) indistinguishable from a domain that lacks the control.
+			if (err instanceof RobotsDisallowedError) {
+				notAssessedStatus = 'error';
+				notAssessedFindings.push(
+					createFinding(
+						'mta_sts',
+						'MTA-STS policy not independently verified (robots.txt)',
+						'info',
+						`${policyUrl} could not be fetched: the mta-sts.${domain} host's robots.txt ${describeRobotsScope(err.scope)}. ` +
+							`The _mta-sts DNS record itself was observed; only the policy file's own contents were not checked. Not scored — see https://www.blackveilsecurity.com/bot-policy.`,
+						{ ...robotsAbstentionMetadata(err.scope), inconclusive: true },
+					),
+				);
+			} else {
+				const status = classifyTransportFailure(err);
+				notAssessedStatus = status;
+				notAssessedFindings.push(
+					createFinding(
+						'mta_sts',
+						`MTA-STS policy not assessed (${status === 'timeout' ? 'scanner timeout' : 'transport error'})`,
+						'info',
+						`The scanner's fetch of ${policyUrl} did not complete (${status === 'timeout' ? 'the request timed out' : 'a transport error occurred'} before any HTTP response was received), ` +
+							`so policy accessibility could not be verified on this run. This is not evidence about ${domain}: the _mta-sts DNS record was observed, and a definite HTTP answer would have been graded. Retry to re-measure.`,
+						// No `missingControl` (issue #638): a fetch that never delivered a response
+						// established nothing about the policy. `checkStatus` below excludes the category.
+						{
+							inconclusive: true,
+							errorKind: status === 'timeout' ? 'timeout' : 'transport_error',
+							notAssessedReason: 'policy_fetch_failed' satisfies MtaStsNotAssessedReason,
+						},
+					),
+				);
+			}
 		}
 	}
 
 	// Check for TLSRPT record
 	let hasTlsRptRecord = false;
+	// True ONLY when the lookup ANSWERED (an empty answer is a measured absence). A rejected
+	// lookup must not read as "we looked" — that was the #889 `tlsRptChecked = true` defect.
 	let tlsRptChecked = false;
 	try {
 		const tlsrptRecords = await queryDNS(`_smtp._tls.${domain}`, 'TXT', { timeout });
@@ -153,9 +261,15 @@ export async function checkMTASTS(
 		const tlsRptAnalysis = getTlsRptRecordFindings(tlsrptRecords);
 		hasTlsRptRecord = tlsRptAnalysis.hasTlsRptRecord;
 		findings.push(...finalizeMissingTlsRptRecordFinding(tlsRptAnalysis.findings, domain));
-	} catch {
-		tlsRptChecked = true;
-		findings.push(createFinding('mta_sts', 'TLS-RPT DNS query failed', 'low', `Could not query TLS-RPT TXT record for ${domain}.`));
+	} catch (err) {
+		// Was a scored `low` "TLS-RPT DNS query failed" (category 95) recorded as measured.
+		const status = classifyTransportFailure(err);
+		notAssessedStatus ??= status;
+		notAssessedFindings.push(buildDnsNotAssessedFinding('TLS-RPT', `_smtp._tls.${domain}`, status));
+	}
+
+	if (notAssessedStatus) {
+		return buildNotAssessedResult([...findings, ...notAssessedFindings], notAssessedStatus, hasTxtRecord);
 	}
 
 	// If no issues found
@@ -226,16 +340,14 @@ export async function checkMTASTS(
 	}
 
 	// controlPresent: an MTA-STS policy record (_mta-sts TXT) was observed. TLS-RPT alone does not
-	// count as MTA-STS, and a failed lookup leaves hasTxtRecord false (conservative: not credited).
+	// count as MTA-STS.
 	//
 	// recordPresent asks the narrower question "was an `_mta-sts` TXT record published", so it
 	// tracks that SAME RRset — never the TLS-RPT one this check also reports on, and never the
-	// policy file (an unfetchable policy is still a published record). It diverges from
-	// `hasTxtRecord` on exactly one branch: a failed `_mta-sts` lookup, where false would assert
-	// an absence nobody observed.
-	const recordPresent = mtaStsQueryFailed ? undefined : hasTxtRecord;
-
-	return buildCheckResult('mta_sts', findings, hasTxtRecord, recordPresent);
+	// policy file (an unfetchable policy is still a published record). On this (measured) path
+	// the lookup answered, so `false` is a genuine observed absence; a lookup that never
+	// answered returned early above with both flags `undefined`.
+	return buildCheckResult('mta_sts', findings, hasTxtRecord, hasTxtRecord);
 }
 
 /**
