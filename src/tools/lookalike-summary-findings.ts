@@ -17,7 +17,12 @@
 
 import type { Finding } from '../lib/scoring';
 import { createFinding } from '../lib/scoring';
-import type { OwnershipAssessment, OwnershipVerdict } from '../lib/ownership-attribution';
+import {
+	MIN_ATTRIBUTION_LABEL_LENGTH,
+	type AttributionConfidence,
+	type OwnershipAssessment,
+	type OwnershipVerdict,
+} from '../lib/ownership-attribution';
 import type { LookalikeFindingAxis } from './lookalike-findings';
 import type { LookalikeSeverity } from './lookalike-severity';
 
@@ -57,6 +62,19 @@ export interface LookalikeEnumeration {
  */
 export const ROLLUP_ABSTAIN_UNRESOLVED_RATIO = 0.5;
 
+/**
+ * Minimum seed-label length below which the threat rollup ABSTAINS (#863).
+ *
+ * THE SAME CONSTANT the per-domain attribution hedge already cites ("The
+ * shared label is under 5 characters and nothing else corroborates a link") —
+ * re-exported, not redeclared, so the aggregate can never disagree with the
+ * rows it aggregates about where "too short" begins. At 1 character (x.ai)
+ * every single-letter domain is one edit away; at 4 (meta.com) the confusable
+ * set is still most of the short-name namespace. Edit distance is not
+ * low-precision there — it is undefined.
+ */
+export const MIN_ROLLUP_SEED_LABEL_LENGTH = MIN_ATTRIBUTION_LABEL_LENGTH;
+
 /** True when the run's enumeration coverage is too degraded to publish a rollup count (see {@link ROLLUP_ABSTAIN_UNRESOLVED_RATIO}). */
 export function isRollupCoverageDegraded(enumeration: LookalikeEnumeration): boolean {
 	if (enumeration.permutationsProbed <= 0) return false;
@@ -78,6 +96,29 @@ export interface ThreatRollupMember {
 	ownershipVerdict: OwnershipVerdict;
 	/** `null` when the RDAP age probe failed or returned nothing — "unknown", never "not recent" for reporting purposes. */
 	registrationDays: number | null;
+	/**
+	 * The per-domain WORDING confidence from `attributionConfidence()` — the
+	 * hedge the row carries. `uncorroborated` (short seed label, no MX overlap
+	 * with the seed) excludes the member from every rollup list and count and
+	 * caps the rollup's severity (#863): the aggregate may never be more
+	 * confident than its rows.
+	 *
+	 * ⚠️ REACHABILITY: with the current classifier this value is
+	 * `'uncorroborated'` ONLY when the seed label is shorter than
+	 * `MIN_ATTRIBUTION_LABEL_LENGTH` — the same string and the same constant
+	 * `buildThreatRollupFinding` gates on FIRST (as `MIN_ROLLUP_SEED_LABEL_LENGTH`,
+	 * a re-export). So for any member that reaches the exclusion/cap path the
+	 * value is always `'corroborated'`, and `uncorroboratedExcludedCount` is
+	 * always 0 on real scan data. The field and the path are defence-in-depth
+	 * for the invariant "the rollup never exceeds the confidence of its
+	 * members", exercised only by builder-level unit tests that hand-build
+	 * members. The coupling is pinned from BOTH sides:
+	 * `test/check-lookalikes-short-label-rollup.spec.ts` asserts
+	 * `MIN_ROLLUP_SEED_LABEL_LENGTH === MIN_ATTRIBUTION_LABEL_LENGTH` and that
+	 * `attributionConfidence()` is `'corroborated'` at exactly the threshold —
+	 * whoever separates the two thresholds trips a red test pointing here.
+	 */
+	attributionConfidence: AttributionConfidence;
 }
 
 /**
@@ -198,36 +239,145 @@ export function buildOwnershipUnmeasuredFinding(seedDomain: string, candidateCou
 }
 
 /**
- * THE threat-rollup decision point (#865). Exactly one of three outcomes:
+ * Why the threat rollup declined to publish a count. `null` on the finding
+ * builders' result means a rollup WAS published (or there was nothing to roll
+ * up). Only `enumeration_throttled` is transient — the orchestrator marks the
+ * run `partial` for that one alone; the other two are structural properties
+ * of the seed / the members and would recur on every run.
+ */
+export type RollupNotAssessedReason = 'enumeration_throttled' | 'seed_label_too_short' | 'members_uncorroborated';
+
+/**
+ * THE threat-rollup decision point (#865, #863). Exactly one outcome:
  *
  *  - no mail-capable member → `finding: null` (nothing to roll up — the
  *    per-domain findings stand alone, as before);
+ *  - seed label shorter than {@link MIN_ROLLUP_SEED_LABEL_LENGTH} →
+ *    {@link buildRollupShortLabelFinding}, reason `seed_label_too_short`
+ *    (#863: at that length every same-length label is one edit away, so the
+ *    aggregate cannot tell a typosquat from an independent registration;
+ *    checked FIRST because it is a property of the seed, not of this run);
  *  - enumeration coverage degraded past {@link ROLLUP_ABSTAIN_UNRESOLVED_RATIO}
- *    → the not-assessed `scan_status` notice from
- *    {@link buildRollupNotAssessedFinding}, `abstained: true`, so the caller
- *    marks the run `partial` and the abstention is not cached for the TTL;
- *  - otherwise → the staging rollup when any member reached HIGH with mail,
- *    else the mail-capable rollup — each worded as a FLOOR when the run is
- *    incomplete, and each carrying the enumeration stats flat in its metadata.
+ *    → {@link buildRollupNotAssessedFinding}, reason `enumeration_throttled`
+ *    (#865), so the caller marks the run `partial`;
+ *  - every mail-capable member `uncorroborated` →
+ *    {@link buildRollupUncorroboratedFinding}, reason `members_uncorroborated`
+ *    (unreachable today for a seed that passed the label gate — kept so the
+ *    rollup can never exceed the confidence of what it aggregates if the
+ *    per-domain classifier ever produces the value for another cause);
+ *  - otherwise → the staging rollup when any COUNTED member reached HIGH with
+ *    mail, else the mail-capable rollup — `uncorroborated` members excluded
+ *    from both lists and counts, and their presence capping the staging
+ *    rollup below `high`; each worded as a FLOOR when the run is incomplete,
+ *    and each carrying the enumeration stats flat in its metadata.
  *
- * The order matters: abstention is decided BEFORE either rollup is built, so
- * a throttled run can never reach the count-carrying builders at all.
+ * The gates run BEFORE either count-carrying builder is reached, so an
+ * abstaining run can never produce an integer.
  */
-export function buildThreatRollupFinding(input: { seedDomain: string; members: ThreatRollupMember[]; enumeration: LookalikeEnumeration }): {
-	finding: Finding | null;
-	abstained: boolean;
-} {
-	const { seedDomain, members, enumeration } = input;
+export function buildThreatRollupFinding(input: {
+	seedDomain: string;
+	/** The seed's second-level label (`extractBrandName`), the string the edit-distance permutations were built from. */
+	seedLabel: string;
+	members: ThreatRollupMember[];
+	enumeration: LookalikeEnumeration;
+}): { finding: Finding | null; notAssessedReason: RollupNotAssessedReason | null } {
+	const { seedDomain, seedLabel, members, enumeration } = input;
 	const mailCapable = members.filter((m) => m.hasMX);
-	if (mailCapable.length === 0) return { finding: null, abstained: false };
+	if (mailCapable.length === 0) return { finding: null, notAssessedReason: null };
+	if (seedLabel.length < MIN_ROLLUP_SEED_LABEL_LENGTH) {
+		return { finding: buildRollupShortLabelFinding(seedDomain, seedLabel), notAssessedReason: 'seed_label_too_short' };
+	}
 	if (isRollupCoverageDegraded(enumeration)) {
-		return { finding: buildRollupNotAssessedFinding(seedDomain, enumeration), abstained: true };
+		return { finding: buildRollupNotAssessedFinding(seedDomain, enumeration), notAssessedReason: 'enumeration_throttled' };
 	}
-	const staging = mailCapable.filter((m) => m.severity === 'high');
+	// ⚠️ UNREACHABLE ON REAL SCAN DATA with the current classifier (#863
+	// review): every member here belongs to a seed that passed the label gate
+	// above, and `attributionConfidence()` returns `'corroborated'`
+	// unconditionally at `brandLabel.length >= MIN_ATTRIBUTION_LABEL_LENGTH` —
+	// the same string, the same constant. `counted` therefore always equals
+	// `mailCapable` and `uncorroboratedExcludedCount` is always 0 from
+	// `checkLookalikesCore`. Kept as defence-in-depth for the invariant "the
+	// rollup never exceeds the confidence of its members", so that a future
+	// classifier producing `'uncorroborated'` for another cause (or a split of
+	// the two thresholds) is caught here rather than re-opening #863. The
+	// coupling is pinned on both sides by the short-label spec: constant
+	// equality, and `'corroborated'` at exactly the threshold length.
+	const counted = mailCapable.filter((m) => m.attributionConfidence !== 'uncorroborated');
+	const uncorroboratedExcludedCount = mailCapable.length - counted.length;
+	if (counted.length === 0) {
+		return { finding: buildRollupUncorroboratedFinding(seedDomain, seedLabel), notAssessedReason: 'members_uncorroborated' };
+	}
+	const staging = counted.filter((m) => m.severity === 'high');
 	if (staging.length > 0) {
-		return { finding: buildStagingSummaryFinding({ seedDomain, staging, mailCapable, enumeration }), abstained: false };
+		return {
+			finding: buildStagingSummaryFinding({
+				seedDomain,
+				seedLabel,
+				staging,
+				mailCapable: counted,
+				uncorroboratedExcludedCount,
+				enumeration,
+			}),
+			notAssessedReason: null,
+		};
 	}
-	return { finding: buildMailCapableSummaryFinding({ seedDomain, mailCapable, enumeration }), abstained: false };
+	return {
+		finding: buildMailCapableSummaryFinding({ seedDomain, seedLabel, mailCapable: counted, uncorroboratedExcludedCount, enumeration }),
+		notAssessedReason: null,
+	};
+}
+
+/**
+ * `scan_status` — the threat rollup was NOT ASSESSED because the seed's label
+ * is too short for edit distance to mean anything at the aggregate level
+ * (#863). Measured on `x.ai`: the per-domain findings hedged ("under 5
+ * characters and nothing else corroborates a link"), the rollup dropped the
+ * hedge and named Zhipu AI and Character.AI as pre-phishing staging. Carries
+ * NO count and NO domain list. Structural, not transient — no
+ * `inconclusive`/`errorKind`, and the caller must NOT mark the run partial:
+ * every run of this seed abstains, and caching that is correct.
+ */
+export function buildRollupShortLabelFinding(seedDomain: string, seedLabel: string): Finding {
+	return createFinding(
+		'lookalikes',
+		'Lookalike threat rollup not assessed — seed label too short to attribute confusables',
+		'info',
+		`The label "${seedLabel}" of ${seedDomain} is under ${MIN_ROLLUP_SEED_LABEL_LENGTH} characters, so every same-length label in the TLD is one edit away and permutation analysis cannot separate a typosquat from an independent registration — the confusable set is the whole short-name namespace. No aggregate count of mail-capable or staging-flagged lookalikes is published for this seed, because such a count would name unrelated organisations as attack preparation. Each resolved candidate is reported individually below with an attribution hedge; treat those as observations about real domains, not as a list of impersonators.`,
+		{
+			findingAxis: 'scan_status' satisfies LookalikeFindingAxis,
+			notAssessedReason: 'seed_label_too_short' satisfies RollupNotAssessedReason,
+			seedLabel,
+			seedLabelLength: seedLabel.length,
+			minLabelLength: MIN_ROLLUP_SEED_LABEL_LENGTH,
+			confidence: 'heuristic',
+		},
+	);
+}
+
+/**
+ * `scan_status` — every mail-capable member was `uncorroborated`, so there is
+ * nothing the rollup may count at any confidence (#863, invariant: the
+ * aggregate never exceeds the confidence of what it aggregates). Structural,
+ * like {@link buildRollupShortLabelFinding}.
+ */
+export function buildRollupUncorroboratedFinding(seedDomain: string, seedLabel: string): Finding {
+	return createFinding(
+		'lookalikes',
+		'Lookalike threat rollup not assessed — no candidate attributable beyond a bare label match',
+		'info',
+		`Every mail-capable confusable candidate of ${seedDomain} matches it only on the "${seedLabel}" label, with nothing else corroborating a link. Name similarity alone does not support an aggregate claim of pre-phishing staging, so no count is published. Each candidate is reported individually below with an attribution hedge.`,
+		{
+			findingAxis: 'scan_status' satisfies LookalikeFindingAxis,
+			notAssessedReason: 'members_uncorroborated' satisfies RollupNotAssessedReason,
+			seedLabel,
+			confidence: 'heuristic',
+		},
+	);
+}
+
+/** Prose fragment for members left out of a rollup because their only link to the seed is a short-label match. Unpunctuated. */
+function uncorroboratedExcludedSentence(excluded: number, seedDomain: string): string {
+	return `${excluded} further mail-capable confusable domain${excluded === 1 ? ' was' : 's were'} excluded from this rollup: ${excluded === 1 ? 'its' : 'their'} only link to ${seedDomain} is a label match under ${MIN_ROLLUP_SEED_LABEL_LENGTH} characters with nothing else corroborating it, so ${excluded === 1 ? 'it is' : 'they are'} reported individually with a hedge and not counted here`;
 }
 
 /**
@@ -269,13 +419,20 @@ export function buildRollupNotAssessedFinding(seedDomain: string, enumeration: L
  */
 export function buildStagingSummaryFinding(input: {
 	seedDomain: string;
-	/** Members that reached HIGH with a working mail host — the counted set. */
+	seedLabel: string;
+	/** COUNTED members that reached HIGH with a working mail host (`uncorroborated` already excluded). */
 	staging: ThreatRollupMember[];
-	/** Every member with a working mail host — the wider set, a superset of `staging`. */
+	/** Every COUNTED member with a working mail host — the wider set, a superset of `staging`. */
 	mailCapable: ThreatRollupMember[];
+	/** Mail-capable members left out because their only link to the seed is a short-label match (#863). */
+	uncorroboratedExcludedCount: number;
 	enumeration: LookalikeEnumeration;
 }): Finding {
-	const { seedDomain: domain, staging, mailCapable, enumeration } = input;
+	const { seedDomain: domain, staging, mailCapable, uncorroboratedExcludedCount, enumeration } = input;
+	// #863 — an excluded member is still evidence that the counted set sits in
+	// a namespace where label matches mean little, so the aggregate is capped
+	// below `high` whenever one was excluded.
+	const capped = uncorroboratedExcludedCount > 0;
 	const highCount = staging.length;
 	const highDomains = staging.map((m) => m.domain);
 	const highVerdicts = new Set(staging.map((m) => m.ownershipVerdict));
@@ -295,12 +452,12 @@ export function buildStagingSummaryFinding(input: {
 		// just has to be named as the subset it is, with the wider
 		// mail-capable figure alongside rather than implied.
 		`${lead} lookalike domain${highCount > 1 ? 's' : ''} showing pre-phishing staging signals`,
-		'high',
+		capped ? 'medium' : 'high',
 		`${lead} lookalike domain${highCount > 1 ? 's' : ''} of ${domain} ${highCount > 1 ? 'have' : 'has'} active mail infrastructure with corroborating signals consistent with pre-phishing staging.${
 			mailCapableDomains.length > highCount
 				? ` A further ${mailCapableDomains.length - highCount} confusable domain${mailCapableDomains.length - highCount > 1 ? 's' : ''} also ${mailCapableDomains.length - highCount > 1 ? 'have' : 'has'} a working mail host without those additional signals — ${floor ? 'at least ' : ''}${mailCapableDomains.length} can send mail in total.`
 				: ''
-		}${floor ? floorClause(enumeration) : ''}${ageUnknownCount > 0 ? ` ${ageUnknownSentence(ageUnknownCount, mailCapableDomains.length)}.` : ''} ${highCount > 1 ? 'None of them appear' : 'It does not appear'} to belong to the scanned organisation, and no action on ${highCount > 1 ? 'them' : 'it'} is requested here. Defensive options: monitor ${highCount > 1 ? 'them' : 'it'}, and enforce DMARC p=reject on ${domain} itself so receivers reject mail spoofing that name.`,
+		}${floor ? floorClause(enumeration) : ''}${ageUnknownCount > 0 ? ` ${ageUnknownSentence(ageUnknownCount, mailCapableDomains.length)}.` : ''}${capped ? ` ${uncorroboratedExcludedSentence(uncorroboratedExcludedCount, domain)}.` : ''} ${highCount > 1 ? 'None of them appear' : 'It does not appear'} to belong to the scanned organisation, and no action on ${highCount > 1 ? 'them' : 'it'} is requested here. Defensive options: monitor ${highCount > 1 ? 'them' : 'it'}, and enforce DMARC p=reject on ${domain} itself so receivers reject mail spoofing that name.`,
 		{
 			lookalikeDomainCount: highCount,
 			lookalikeDomains: highDomains,
@@ -311,6 +468,9 @@ export function buildStagingSummaryFinding(input: {
 			mailCapableDomains,
 			// #865 — the counts above are lower bounds when the run is a sample.
 			countIsFloor: floor,
+			// #863 — members the lists above deliberately omit, and the cap they impose.
+			uncorroboratedExcludedCount,
+			...(capped ? { severityCappedBy: 'attribution_confidence' } : {}),
 			// How many of the mail-capable set carry no registration age. They
 			// are COUNTED (the mail host is a real observation); this says that
 			// "no recent-registration corroborator" was unmeasured for them.
@@ -347,10 +507,14 @@ export function buildStagingSummaryFinding(input: {
  */
 export function buildMailCapableSummaryFinding(input: {
 	seedDomain: string;
+	seedLabel: string;
+	/** COUNTED members with a working mail host (`uncorroborated` already excluded). */
 	mailCapable: ThreatRollupMember[];
+	/** Mail-capable members left out because their only link to the seed is a short-label match (#863). */
+	uncorroboratedExcludedCount: number;
 	enumeration: LookalikeEnumeration;
 }): Finding {
-	const { seedDomain: domain, mailCapable, enumeration } = input;
+	const { seedDomain: domain, mailCapable, uncorroboratedExcludedCount, enumeration } = input;
 	const mailCapableDomains = mailCapable.map((m) => m.domain);
 	const ageUnknownCount = mailCapable.filter((m) => m.registrationDays === null).length;
 	const n = mailCapableDomains.length;
@@ -360,11 +524,12 @@ export function buildMailCapableSummaryFinding(input: {
 		'lookalikes',
 		`${lead} lookalike domain${n > 1 ? 's' : ''} with a working mail host`,
 		'medium',
-		`${lead} confusable domain${n > 1 ? 's' : ''} of ${domain} ${n > 1 ? 'have' : 'has'} a working mail host, so ${n > 1 ? 'they are' : 'it is'} capable of sending mail that resembles ${domain}.${floor ? floorClause(enumeration) : ''} No additional corroborating signal of pre-phishing staging was observed${ageUnknownCount > 0 ? ` — though ${ageUnknownSentence(ageUnknownCount, n)}` : ''}, and ${n > 1 ? 'none appears' : 'it does not appear'} to belong to the scanned organisation — this is an infrastructure observation, not an allegation. Enforcing DMARC p=reject on ${domain} is what makes receivers reject mail forging that name.`,
+		`${lead} confusable domain${n > 1 ? 's' : ''} of ${domain} ${n > 1 ? 'have' : 'has'} a working mail host, so ${n > 1 ? 'they are' : 'it is'} capable of sending mail that resembles ${domain}.${floor ? floorClause(enumeration) : ''} No additional corroborating signal of pre-phishing staging was observed${ageUnknownCount > 0 ? ` — though ${ageUnknownSentence(ageUnknownCount, n)}` : ''}, and ${n > 1 ? 'none appears' : 'it does not appear'} to belong to the scanned organisation — this is an infrastructure observation, not an allegation.${uncorroboratedExcludedCount > 0 ? ` ${uncorroboratedExcludedSentence(uncorroboratedExcludedCount, domain)}.` : ''} Enforcing DMARC p=reject on ${domain} is what makes receivers reject mail forging that name.`,
 		{
 			mailCapableCount: n,
 			mailCapableDomains,
 			countIsFloor: floor,
+			uncorroboratedExcludedCount,
 			ageUnknownCount,
 			enumeration,
 			...flatEnumerationStats(enumeration),
