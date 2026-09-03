@@ -1774,9 +1774,13 @@ export async function handleToolsCall(
 						...(scanCacheKV && { cacheKv: scanCacheKV }),
 						...(runtimeOptions?.waitUntil && { waitUntil: runtimeOptions.waitUntil }),
 					});
-					logResult = `${result.totalSubdomains} subdomains`;
+					logResult = `${result.countBasis === 'floor' ? '>=' : ''}${result.totalSubdomains} subdomains`;
 					logDetails = {
 						totalSubdomains: result.totalSubdomains,
+						// #866: a floor must read as a floor in tail too — a rising floor
+						// rate is the alarm for a CT source that has started failing.
+						countBasis: result.countBasis ?? 'sample',
+						concreteSubdomains: result.concreteSubdomains ?? result.totalSubdomains - result.wildcardCerts,
 						issues: result.issues.length,
 						sourceUnavailable: result.sourceUnavailable ?? false,
 						stale: result.stale ?? false,

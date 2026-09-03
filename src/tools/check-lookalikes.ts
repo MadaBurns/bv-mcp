@@ -35,7 +35,7 @@ import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult } from '../lib/scoring';
 import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes } from './lookalike-analysis';
 import { calibrateLookalikeSeverity, type LookalikeSignals } from './lookalike-severity';
-import { classifyOwnership, type OwnershipAssessment, type OwnershipVerdict } from '../lib/ownership-attribution';
+import { classifyOwnership, type OwnershipAssessment } from '../lib/ownership-attribution';
 import { isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
 import { extractBrandName } from '../lib/public-suffix';
 import {
@@ -69,15 +69,15 @@ import {
 } from './lookalike-findings';
 import {
 	buildIncompleteEnumerationFinding,
-	buildMailCapableSummaryFinding,
 	buildNoActiveInfrastructureFinding,
 	buildNoPermutationsFinding,
 	buildNoRegisteredCandidatesFinding,
 	buildOwnershipUnmeasuredFinding,
 	buildReconCandidateFinding,
 	buildReconScanStatusFinding,
-	buildStagingSummaryFinding,
+	buildThreatRollupFinding,
 	buildTimeoutFinding,
+	type ThreatRollupMember,
 } from './lookalike-summary-findings';
 
 // ---------------------------------------------------------------------------
@@ -384,31 +384,27 @@ async function checkLookalikesCore(
 	// #264-calibrated OBSERVED-threat severity rides a separate finding that
 	// asserts nothing about ownership.
 	//
-	// `highCount` is reachable again as of Task 7b: it counts threat-OBSERVATION
-	// highs, which the ownership cap no longer touches. Under Task 7 it could
-	// never increment and the summary finding below was dead code.
-	let highCount = 0;
-	/** The counted candidates, so the aggregate summary can name what it counted (invariant 4). */
-	const highDomains: string[] = [];
-	/** Their ownership verdicts — always non-owned, since owned candidates never reach the counter. */
-	const highVerdicts = new Set<OwnershipVerdict>();
-	/**
-	 * EVERY non-owned candidate with a working mail host — a strictly WIDER set
-	 * than `highDomains`, which additionally requires a #264 corroborator.
-	 *
-	 * Tracked separately because the summary finding used to be TITLED for this
-	 * set ("N lookalike domains with mail capability detected") while being
-	 * COUNTED from the narrower one (#779). Measured on openclaw.ai the title
-	 * said 2 while six candidates in the SAME response carried `hasMX: true`;
-	 * on openclaw.org it said 1 against 3. A three-fold undercount, in the one
-	 * finding a consumer is most likely to read without expanding the per-domain
-	 * detail — and it propagated into a client-facing report.
-	 *
-	 * A domain with working mail AND a live website is not the safer case: the
-	 * site lends the mail credibility. Excluding it from a count labelled "mail
-	 * capability" was the wrong direction to be wrong in.
-	 */
-	const mailCapableDomains: string[] = [];
+	// The staging count is reachable again as of Task 7b: it counts
+	// threat-OBSERVATION highs, which the ownership cap no longer touches. Under
+	// Task 7 it could never increment and the summary finding below was dead code.
+	//
+	// EVERY non-owned, measured candidate that received a threat observation is
+	// a rollup member; `buildThreatRollupFinding` derives BOTH counted sets from
+	// the one list — the mail-capable set, and its HIGH subset. They used to be
+	// collected separately, and the summary finding was TITLED for the wider set
+	// ("N lookalike domains with mail capability detected") while COUNTED from
+	// the narrower one (#779). Measured on openclaw.ai the title said 2 while six
+	// candidates in the SAME response carried `hasMX: true`; on openclaw.org it
+	// said 1 against 3. A three-fold undercount, in the one finding a consumer
+	// is most likely to read without expanding the per-domain detail — and it
+	// propagated into a client-facing report. A domain with working mail AND a
+	// live website is not the safer case: the site lends the mail credibility.
+	//
+	// Each member carries its own `registrationDays` so the rollup can say how
+	// many of the domains it counts were never age-checked (#865) — counted
+	// still, because the mail host is a real observation; hedged, because the
+	// "recent registration" corroborator was unmeasured for them.
+	const rollupMembers: ThreatRollupMember[] = [];
 	for (const result of results) {
 		const ownership: OwnershipAssessment = ownershipByDomain.get(result.domain) ?? {
 			verdict: 'unattributed',
@@ -516,21 +512,21 @@ async function checkLookalikesCore(
 			),
 		);
 		// `hasMX` is already false for an RFC 7505 null MX (`0 .`), which is the
-		// explicit way a domain declines mail — so this counts real mail hosts,
-		// not merely "an MX record exists".
-		if (result.hasMX) mailCapableDomains.push(result.domain);
-		if (result.hasMX && severity === 'high') {
-			highCount++;
-			highDomains.push(result.domain);
-			highVerdicts.add(ownership.verdict);
-		}
+		// explicit way a domain declines mail — so the rollup counts real mail
+		// hosts, not merely "an MX record exists".
+		rollupMembers.push({
+			domain: result.domain,
+			hasMX: result.hasMX,
+			severity,
+			ownershipVerdict: ownership.verdict,
+			registrationDays: signals.registrationDays,
+		});
 	}
 
-	if (highCount > 0) {
-		findings.push(buildStagingSummaryFinding({ seedDomain: domain, highCount, highDomains, highVerdicts, mailCapableDomains, enumeration }));
-	} else if (mailCapableDomains.length > 0) {
-		findings.push(buildMailCapableSummaryFinding({ seedDomain: domain, mailCapableDomains, enumeration }));
-	}
+	// #865 — the rollup decides for itself whether coverage permits a count;
+	// a throttled run gets a not-assessed notice instead of an integer.
+	const rollup = buildThreatRollupFinding({ seedDomain: domain, members: rollupMembers, enumeration });
+	if (rollup.finding) findings.push(rollup.finding);
 
 	// If no active lookalikes found
 	if (findings.length === 0) {
@@ -620,9 +616,13 @@ async function checkLookalikesCore(
 	// this, the withheld verdicts and suppressed threat observations from one
 	// throttled run would be served for the full TTL after DNS recovered — the
 	// non-answer outliving the condition that caused it. Same contract the
-	// timeout path in checkLookalikes() already honours. #864: a candidate whose
-	// seed-side authorisation probe rejected is the same transient shape.
-	if (seedNsUnmeasured || seedAuthorisation.unmeasured.length > 0) {
+	// timeout path in checkLookalikes() already honours.
+	//
+	// #865 — the same law for a rollup ABSTENTION: enumeration throttling is
+	// transient too, and a cached "not assessed" would outlive the throttling.
+	// #864 — and for a candidate whose SEED-side authorisation probe rejected:
+	// the same transient shape.
+	if (seedNsUnmeasured || rollup.abstained || seedAuthorisation.unmeasured.length > 0) {
 		result.partial = true;
 	}
 	return result;
