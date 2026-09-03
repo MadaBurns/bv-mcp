@@ -85,8 +85,21 @@ describe('checkMtaSts — robots.txt disallow on the policy fetch', () => {
 		expect(result.checkStatus).toBe('error');
 		expect(result.score).toBe(0);
 		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
 		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(true);
 		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+		expect(result.findings.some((f) => f.severity === 'medium')).toBe(false);
+
+		// Since dns-checks 1.33.0 (#889) the package labels the abstention itself with the
+		// shared robots vocabulary (same as ssl / http_security / bimi), and the wrapper must
+		// pass it through VERBATIM — not reword a deliberate, polite abstention as a "stall".
+		const abstention = result.findings.find((f) => f.metadata?.notAssessedReason === 'robots_disallowed');
+		expect(abstention, 'the package robots abstention must survive the wrapper').toBeDefined();
+		expect(abstention!.severity).toBe('info');
+		expect(abstention!.metadata?.robotsScope).toBe('blanket');
+		expect(abstention!.metadata?.confidence).toBe('deterministic');
+		expect(abstention!.detail).toContain('robots.txt');
+		expect(result.findings.some((f) => f.title.includes('stalled'))).toBe(false);
 	});
 
 	it('does NOT exclude the category when robots.txt allows the policy fetch (control: unaffected happy path)', async () => {
