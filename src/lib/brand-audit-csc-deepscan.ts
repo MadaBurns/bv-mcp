@@ -65,6 +65,12 @@ interface DiscoverSubdomainsStructured {
 	partial?: boolean;
 	/** Certificate Transparency source could not be queried at all. */
 	sourceUnavailable?: boolean;
+	/**
+	 * `'floor'` = recall was cut on that call (a source failed, an index was not
+	 * read to the end, or the data is a stale re-serve) — `totalSubdomains` is a
+	 * floor, not a count (#866). Absent on older producers → treated as a sample.
+	 */
+	countBasis?: 'sample' | 'floor';
 }
 
 /** A `CheckResult` finding as it appears in `check_subdomain_takeover`'s `structuredContent`. */
@@ -287,7 +293,9 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 					.slice(0, SAMPLE_SUBDOMAIN_CAP)
 					.map((s) => s.subdomain ?? '')
 					.filter(Boolean),
-				partial: Boolean(r.discover.partial || r.discover.sourceUnavailable),
+				// A floor is an incomplete inventory by definition (#866) — publish it as
+				// partial rather than as a confident `total`.
+				partial: Boolean(r.discover.partial || r.discover.sourceUnavailable || r.discover.countBasis === 'floor'),
 			};
 		}
 	}
