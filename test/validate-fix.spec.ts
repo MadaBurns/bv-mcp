@@ -72,3 +72,68 @@ describe('validateFix', () => {
 		expect(result.liveRecord).toBeTruthy();
 	});
 });
+
+/**
+ * Issue #889 review — `validateFix` must not read a not-completed check's `passed: false`
+ * / `score: 0` as a `not_fixed` verdict. `passed` means "did not penalize", never a verdict
+ * (the #705/#706/#725/#809 class), and a scanner-side transient now returns exactly that
+ * shape with `checkStatus` set. The absence of a verdict is its own value.
+ */
+describe('validateFix — a check that did not complete is NOT ASSESSED, not not_fixed (#889)', () => {
+	async function run(domain: string, check: string) {
+		const { validateFix } = await import('../src/tools/validate-fix');
+		return validateFix(domain, check);
+	}
+
+	function txt(name: string, records: string[]) {
+		return createDohResponse(
+			[{ name, type: 16 }],
+			records.map((d) => ({ name, type: 16, TTL: 300, data: `"${d}"` })),
+		);
+	}
+
+	it('mta_sts with a policy fetch that throws → not_assessed, no remaining findings, hint says retry', async () => {
+		// Distinct domain: check-mta-sts.ts memoizes robots.txt per hostname for the isolate.
+		const domain = 'validate-not-assessed.example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes(`_mta-sts.${domain}`)) return Promise.resolve(txt(`_mta-sts.${domain}`, ['v=STSv1; id=20240101']));
+				if (url.includes(`_smtp._tls.${domain}`))
+					return Promise.resolve(txt(`_smtp._tls.${domain}`, ['v=TLSRPTv1; rua=mailto:tls@example.com']));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.endsWith('/robots.txt')) return Promise.resolve(new Response(null, { status: 404 }));
+			if (url.includes('.well-known/mta-sts.txt')) return Promise.reject(new TypeError('Network connection lost'));
+			return Promise.resolve(new Response(null, { status: 404 }));
+		});
+
+		const result = await run(domain, 'mta_sts');
+
+		// Pre-fix: `passed: false` → 'not_fixed' for a control nobody measured.
+		expect(result.verdict).toBe('not_assessed');
+		expect(result.remainingFindings).toHaveLength(0);
+		expect(result.resolvedFindings).toHaveLength(0);
+		expect(result.liveRecord).toBeNull();
+		expect(result.expectedMatch).toBeNull();
+		expect(result.hint).toMatch(/NOT ASSESSED/);
+		expect(result.hint).toMatch(/retry/i);
+	});
+
+	it('formats the not_assessed verdict in both output formats', async () => {
+		const { formatValidateFix } = await import('../src/tools/validate-fix');
+		const base = {
+			domain: 'example.com',
+			check: 'mta_sts',
+			verdict: 'not_assessed' as const,
+			liveRecord: null,
+			expectedMatch: null,
+			resolvedFindings: [],
+			remainingFindings: [],
+			newFindings: [],
+			hint: 'NOT ASSESSED: the live re-check did not complete. Retry to re-measure.',
+		};
+		expect(formatValidateFix(base, 'compact')).toContain('NOT ASSESSED');
+		expect(formatValidateFix(base, 'full')).toContain('Verdict: NOT ASSESSED');
+	});
+});

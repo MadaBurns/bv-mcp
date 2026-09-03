@@ -4,7 +4,10 @@
  * Validate Fix tool.
  * Re-checks a specific DNS control after a user applies a fix.
  * Runs the single check function (always live, no cache), evaluates the result,
- * and returns a verdict: fixed, partial, or not_fixed.
+ * and returns a verdict: fixed, partial, not_fixed — or not_assessed when the check
+ * itself did not complete (`checkStatus` 'error' | 'timeout'), because `passed` is
+ * "did not penalize", NOT a verdict, and a transient scanner-side failure returns
+ * `passed: false, score: 0` (issue #889; the `passed`-as-verdict class of #705/#706/#725/#809).
  */
 
 import type { OutputFormat } from '../handlers/tool-args';
@@ -23,6 +26,7 @@ import { checkBimi } from './check-bimi';
 import { checkTlsrpt } from './check-tlsrpt';
 import { checkHttpSecurity } from './check-http-security';
 import { checkDane } from './check-dane';
+import { isCompletedCheck } from '../lib/ungraded-display';
 
 /** Map of check names to their check functions. */
 const CHECK_FUNCTIONS: Record<string, (domain: string, dnsOptions?: QueryDnsOptions) => Promise<CheckResult>> = {
@@ -40,8 +44,14 @@ const CHECK_FUNCTIONS: Record<string, (domain: string, dnsOptions?: QueryDnsOpti
 	dane: (d, o) => checkDane(d, o),
 };
 
-/** Verdict types for a validation check. */
-export type ValidateFixVerdict = 'fixed' | 'partial' | 'not_fixed';
+/**
+ * Verdict types for a validation check.
+ *
+ * `not_assessed` is NOT a soft `not_fixed` — it is the ABSENCE of a verdict (same vocabulary
+ * as map_compliance's `ComplianceStatus`): the live re-check never completed, so nothing
+ * about the fix was observed. The caller should retry, not remediate.
+ */
+export type ValidateFixVerdict = 'fixed' | 'partial' | 'not_fixed' | 'not_assessed';
 
 /** Result of validating a fix. */
 export interface ValidateFixResult {
@@ -109,6 +119,27 @@ export async function validateFix(
 	}
 
 	const result = await checkFn(domain, dnsOptions);
+
+	// The check did not COMPLETE (transient DNS/fetch failure, robots abstention, WAF stall →
+	// `checkStatus` 'error' | 'timeout'). Its `passed: false` / `score: 0` describe the
+	// abstention, not the fix, so reading them as a verdict would report a live-but-
+	// unmeasured control as `not_fixed`. Short-circuit to the absence-of-verdict value.
+	if (!isCompletedCheck(result)) {
+		const abstention = result.findings.find((f: Finding) => f.metadata?.inconclusive === true) ?? result.findings[0];
+		return {
+			domain,
+			check,
+			verdict: 'not_assessed',
+			liveRecord: null,
+			expectedMatch: null,
+			resolvedFindings: [],
+			remainingFindings: [],
+			newFindings: [],
+			hint: abstention
+				? `NOT ASSESSED: ${sanitizeOutputText(abstention.title, 200)} — ${sanitizeOutputText(abstention.detail, 300)} Retry to re-measure.`
+				: 'NOT ASSESSED: the live re-check did not complete. Retry to re-measure.',
+		};
+	}
 
 	// Classify findings by severity
 	const blockingFindings = result.findings.filter((f: Finding) => BLOCKING_SEVERITIES.has(f.severity));

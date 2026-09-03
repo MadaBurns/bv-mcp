@@ -87,6 +87,15 @@ function buildNotAssessedResult(findings: Finding[], status: CheckStatus, txtRec
 	};
 }
 
+/**
+ * True when the findings gathered so far contain a DEFINITE MTA-STS measurement: a graded
+ * (non-`info`) finding that is not itself an abstention. Reads the `inconclusive` marker,
+ * never a title, so a copy edit cannot reclassify evidence.
+ */
+function hasDefiniteMtaStsMeasurement(findings: Finding[]): boolean {
+	return findings.some((f) => f.severity !== 'info' && f.metadata?.inconclusive !== true);
+}
+
 /** The `info` finding documenting a rejected `_mta-sts` / `_smtp._tls` TXT lookup. */
 function buildDnsNotAssessedFinding(label: string, name: string, status: CheckStatus): Finding {
 	return createFinding(
@@ -264,8 +273,20 @@ export async function checkMTASTS(
 	} catch (err) {
 		// Was a scored `low` "TLS-RPT DNS query failed" (category 95) recorded as measured.
 		const status = classifyTransportFailure(err);
-		notAssessedStatus ??= status;
-		notAssessedFindings.push(buildDnsNotAssessedFinding('TLS-RPT', `_smtp._tls.${domain}`, status));
+		const tlsRptNotAssessed = buildDnsNotAssessedFinding('TLS-RPT', `_smtp._tls.${domain}`, status);
+		if (notAssessedStatus === null && hasDefiniteMtaStsMeasurement(findings)) {
+			// TLS-RPT is a SUB-PROBE of this category. When MTA-STS itself already produced a
+			// definite measurement (a policy 404, a missing/duplicated record, a broken policy),
+			// a resolver hiccup on the sibling name must not blank that evidence: keep the
+			// result MEASURED, carry the sub-probe failure as an unscored `info` abstention
+			// (`tlsRptChecked` stays false — nothing was looked at), and let the graded
+			// findings score as they would have. Only when nothing definite was measured does
+			// the whole-check abstention below apply.
+			findings.push(tlsRptNotAssessed);
+		} else {
+			notAssessedStatus ??= status;
+			notAssessedFindings.push(tlsRptNotAssessed);
+		}
 	}
 
 	if (notAssessedStatus) {

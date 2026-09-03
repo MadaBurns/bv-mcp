@@ -352,11 +352,17 @@
  *   scan-path transient-zero retry can fire. A DEFINITE answer is unchanged: a non-ok
  *   HTTP status on the policy URL keeps its `high`, an empty TXT answer keeps its graded
  *   absence finding, and the MX-coverage sub-check keeps its silent abstention.
- *   Direction: UPWARD only, and only for scans whose MTA-STS probe failed on OUR side
- *   (the −15 / −5 category penalty that was never evidence disappears); every measured
- *   scan is bit-for-bit unchanged. No weight, tier, grade band, `SEVERITY_PENALTIES`
- *   entry or profile-detection rule changed. Population UNMEASURED against the corpus
- *   (a scanner-side transient by definition has no stable prevalence).
+ *   A TLS-RPT lookup failure beside a DEFINITE MTA-STS measurement (a policy 404, a
+ *   missing record) does NOT abstain the category: the measured findings score as
+ *   before and the sub-probe failure rides along as an unscored `info` (was −5).
+ *   Direction: NOT one-way. The category is EXCLUDED and the profile weights are
+ *   renormalised over the remaining measured categories, so the overall score moves
+ *   toward the mean of those categories — UP when that mean exceeds the 85 / 95 the
+ *   failed probe used to contribute, DOWN when it is below. Only scans that hit the
+ *   failed-probe path are affected; every measured scan is bit-for-bit unchanged. No
+ *   weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule
+ *   changed. Population UNMEASURED against the corpus (a scanner-side transient by
+ *   definition has no stable prevalence).
  */
 export const SCORING_MODEL_VERSION = '1.21.0';
 
