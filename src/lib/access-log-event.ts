@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { piiAllows, type AnalyticsPiiLevel } from './analytics-pii';
+import { hashNetworkLocalityForAnalytics, type NetworkLocalityInput } from './analytics';
 
 /**
  * One captured access-log record. Used both as the queue message payload and
@@ -54,5 +55,45 @@ export function buildAccessLogEvent(raw: AccessLogEventInput, level: AnalyticsPi
 		userAgent: piiAllows(level, 'user_agent') ? raw.userAgent : null,
 		ptrHostname: null,
 		piiLevel: level,
+	};
+}
+
+/**
+ * `ip_masked` marker for a public-path row whose request carried no
+ * `cf-connecting-ip` but did carry `request.cf` (#876). Distinguishes "the edge
+ * never gave us a client IP" from a hashing failure or the internal door's
+ * deliberate `'unknown'` sentinel.
+ */
+export const NO_CF_HEADER_MARKER = 'no-cf-header';
+
+/** Inputs for {@link resolveAccessLogAttribution}. */
+export interface AccessLogAttributionInput extends NetworkLocalityInput {
+	/** Already-computed `i_` hash of cf-connecting-ip, or the internal door's explicit `'unknown'`; undefined = header absent. */
+	ipHash?: string;
+	/** `maskIp(ip)` output — passed through unchanged when the header was present. */
+	ipMasked: string;
+}
+
+/**
+ * Attribution for one access-log row (#876). Precedence:
+ *   1. an explicit `ipHash` (real `i_` hash, or the internal door's `'unknown'`) wins untouched;
+ *   2. header absent but any `request.cf` locality field usable → `n_` network-locality
+ *      key + `ip_masked = 'no-cf-header'`, so the rows stop collapsing into one "user";
+ *   3. nothing usable (off-CF, tests) → the historical bare `'unknown'` sentinel.
+ * The IP-source rule (cf-connecting-ip only; never x-forwarded-for) is NOT touched — this
+ * never feeds rate limiting, dedup, or tier gating, only the analytics attribution key.
+ */
+export function resolveAccessLogAttribution(input: AccessLogAttributionInput): { ipHash: string; ipMasked: string } {
+	if (input.ipHash !== undefined) return { ipHash: input.ipHash, ipMasked: input.ipMasked };
+	const usable = (v: string | null | undefined) => typeof v === 'string' && v.length > 0 && v !== 'unknown';
+	const cfPresent = (typeof input.asn === 'number' && Number.isFinite(input.asn)) || usable(input.colo) || usable(input.country);
+	if (!cfPresent) return { ipHash: 'unknown', ipMasked: input.ipMasked };
+	return {
+		ipHash: hashNetworkLocalityForAnalytics({
+			asn: input.asn,
+			colo: usable(input.colo) ? input.colo : null,
+			country: usable(input.country) ? input.country : null,
+		}),
+		ipMasked: NO_CF_HEADER_MARKER,
 	};
 }

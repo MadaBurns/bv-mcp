@@ -41,7 +41,7 @@ import { hashDomain } from '../lib/analytics';
 import { classifyError as classifyFuzzError } from '../lib/fuzzing-detector';
 import { recordEvent as recordFuzzCounter } from '../lib/fuzzing-counter';
 import { piiAllows } from '../lib/analytics-pii';
-import { buildAccessLogEvent, type AccessLogEvent } from '../lib/access-log-event';
+import { buildAccessLogEvent, resolveAccessLogAttribution, type AccessLogEvent } from '../lib/access-log-event';
 import { extractProtocolHeaders, readJsonRpcErrorPayload } from './response';
 
 export type ProcessedRequestResult =
@@ -371,11 +371,21 @@ function recordMcpAccessLog(
 	if (!options.intelligenceDb && !options.analyticsQueue) return;
 	const logger = getLogger();
 	const level = options.analyticsPiiLevel ?? 'coarse';
+	// #876 — header present → real `i_` hash; header absent but request.cf present →
+	// `n_` network-locality key + ip_masked='no-cf-header'; neither → bare 'unknown'.
+	// The internal door passes ipHash='unknown' explicitly and is untouched.
+	const attribution = resolveAccessLogAttribution({
+		ipHash: options.ipHash,
+		ipMasked: maskIp(options.ip),
+		asn: options.asn,
+		colo: options.colo,
+		country: options.country,
+	});
 	const event = buildAccessLogEvent(
 		{
 			ip: options.ip,
-			ipHash: options.ipHash ?? 'unknown',
-			ipMasked: maskIp(options.ip),
+			ipHash: attribution.ipHash,
+			ipMasked: attribution.ipMasked,
 			toolName: input.toolName,
 			domain: input.domain,
 			source: options.source ?? 'public',
