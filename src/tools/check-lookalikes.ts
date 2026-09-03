@@ -79,13 +79,31 @@ import {
 // consumer (or test) has to know where a symbol now lives. This list is the
 // tool's external contract; it is byte-identical to the pre-split one.
 // ---------------------------------------------------------------------------
-export { INITIAL_BATCH_SIZE, MIN_BATCH_SIZE, BACKOFF_DELAY_MS, FAILURE_THRESHOLD, WILDCARD_CANARY_LABEL, PHASE1_DNS_OPTS } from './lookalike-dns';
+export {
+	INITIAL_BATCH_SIZE,
+	MIN_BATCH_SIZE,
+	BACKOFF_DELAY_MS,
+	FAILURE_THRESHOLD,
+	WILDCARD_CANARY_LABEL,
+	PHASE1_DNS_OPTS,
+} from './lookalike-dns';
 export { probeHasWebContent } from './lookalike-enrichment';
 export { isBrandHeldRegistration, isSameEntityOrgMatch } from './lookalike-attribution';
 export { DEFENSIVE_REASON_PHRASES, type LookalikeFindingAxis } from './lookalike-findings';
 
 /** Maximum wall-clock time for the entire lookalike check (ms). */
 const LOOKALIKE_TIMEOUT_MS = 20_000;
+
+/**
+ * Wall-clock the enrichment phase must leave for what follows it (the seed's
+ * own RDAP fetch, the recon call, assembly) so a large candidate set — the
+ * #867 shape — cannot run the check into the outer timeout, which discards
+ * EVERY finding, not just the unenriched ones. Enrichment is bounded to the
+ * platform's six connection slots (`lookalike-enrichment.ts`), so its duration
+ * scales with candidate count; the deadline is what turns the tail of a large
+ * set into explicit `not_attempted` ages instead of a timed-out check.
+ */
+const ENRICHMENT_RESERVE_MS = 4_000;
 
 /**
  * Extract a specific candidate domain bv-recon's CT_LOOKALIKE hit names, if
@@ -131,6 +149,7 @@ async function checkLookalikesCore(
 	domain: string,
 	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
 ): Promise<CheckResult> {
+	const startedAt = Date.now();
 	const findings: Finding[] = [];
 	// THREE disjoint candidate lanes, deduped into one set that flows through the
 	// same NS-existence → probe → enrich → severity pipeline:
@@ -291,7 +310,8 @@ async function checkLookalikesCore(
 		const sameOwner = ownershipByDomain.get(r.domain)?.verdict === 'owned_by_seed';
 		return !sameOwner && (r.hasMX || r.hasA);
 	});
-	const enrichment = await enrichLookalikes(candidatesToEnrich);
+	const enrichmentDeadlineMs = startedAt + LOOKALIKE_TIMEOUT_MS - ENRICHMENT_RESERVE_MS;
+	const enrichment = await enrichLookalikes(candidatesToEnrich, { deadlineMs: enrichmentDeadlineMs });
 
 	// Same-entity correlation (issue #263): a flagged lookalike that shares the
 	// scan domain's RDAP registrant org is almost certainly the org's own
@@ -314,7 +334,10 @@ async function checkLookalikesCore(
 	// ONE RDAP fetch for the seed, reused for BOTH correlations: the registrant
 	// org (unverified, wording-only) and the registry-published registrar ID
 	// (the brand-held-registration signal). No extra network cost for the second.
-	const primaryRegistration = sameEntityCandidates.length > 0 ? await probePrimaryRegistration(domain) : EMPTY_RDAP_PROBE;
+	const primaryRegistration =
+		sameEntityCandidates.length > 0
+			? await probePrimaryRegistration(domain, { deadlineMs: enrichmentDeadlineMs + ENRICHMENT_RESERVE_MS / 2 })
+			: EMPTY_RDAP_PROBE;
 	const primaryRegistrantOrg = primaryRegistration.registrantOrg;
 	const sameEntityMatches = new Map<string, string>();
 	/** Candidates the registration record corroborates as the seed org's own defensive registrations. */
@@ -417,6 +440,7 @@ async function checkLookalikesCore(
 
 		const corroborators = enrichment.get(result.domain) ?? {
 			registrationDays: null,
+			registrationLookup: 'not_attempted' as const,
 			mxOnDisposable: false,
 			hasWebContent: true,
 			registrantOrg: null,
@@ -425,6 +449,7 @@ async function checkLookalikesCore(
 			hasA: result.hasA,
 			hasMX: result.hasMX,
 			registrationDays: corroborators.registrationDays,
+			registrationLookup: corroborators.registrationLookup,
 			mxOnDisposable: corroborators.mxOnDisposable,
 			hasWebContent: corroborators.hasWebContent,
 		};
