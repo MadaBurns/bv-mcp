@@ -4,6 +4,28 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.74.0] - 2026-09-03
+
+Correctness release closing the open issue backlog: abstention-doctrine fixes across MTA-STS, subdomain discovery and lookalike analysis, plus attribution of header-less public traffic. **Scoring changes — `SCORING_MODEL_VERSION` 1.18.0 → 1.21.0** (1.19.0 and 1.20.0 were merged after 3.73.3 and ship here for the first time; both operator-ratified). `@blackveil/dns-checks` 1.32.0 → 1.33.0 — bv-web-prod re-vendor required.
+
+### Scoring
+
+- **DMARC `p=none` is a missing enforcement control (model 1.19.0).** The finding moves `medium` → `high` with `missingControl: true`, zeroing the dmarc category and arming the critical-gap ceiling in the mail profiles only. Downward only for p=none domains. (PR #877)
+- **`web_only` weights the non-sender lockdown (model 1.20.0).** spf 0→2, dmarc 0→3, mx 0→1 so a fully spoofable unconfigured no-MX domain and a locked-down one no longer score identically. Weights only, no ceiling. (PR #878)
+- **MTA-STS no longer scores the scanner's own failures (model 1.21.0).** A policy fetch that timed out, was robots-disallowed or hit an egress error, and a TLS-RPT/`_mta-sts` lookup that threw, were scored as `medium`/`low` deficiencies (category 85/95). They now return the standard not-assessed shape (`checkStatus: 'error'|'timeout'`, `partial: true`, an `info` finding with `notAssessedReason`), so the category is excluded and renormalized and the transient-zero retry can fire. A confidently measured MTA-STS finding is never discarded by a sibling probe failure. Definite answers (HTTP non-2xx, empty TXT) are unchanged. `validate_fix` now abstains instead of reporting `not_fixed` on an unmeasured check. (PR #898, closes #889)
+
+### Fixed
+
+- **`check_lookalikes` registration ages were null for most `.com` candidates.** The enrichment fan-out issued every RDAP and HEAD probe at once with pre-armed 2.5 s timers; Cloudflare Workers hold six simultaneous connections, so everything behind the first slot-fill aborted unsent and fail-softed to null — also manufacturing `hasWebContent: false` (a HIGH corroborator) for hosts never probed. Probes now run in bounded pools (RDAP 4, HEAD 2), mail-capable candidates first, under an enrichment deadline, and unknown ages carry `ageUnknown: true` + `registrationLookup` reason instead of a bare null. (PR #894, closes #867)
+- **Throttled `check_lookalikes` runs no longer publish hard counts at `high`.** At ≥ 50 % unresolved permutations the threat rollup abstains (`notAssessedReason: 'enumeration_throttled'`, `partial: true`); any incomplete run words counts as a floor ("At least N") and carries the enumeration stats and `ageUnknownCount` in the rollup metadata. (PR #892, closes #865)
+- **Short seed labels no longer drive the lookalike rollup.** For a seed label under 5 characters (`x.ai`, `meta.com`) every same-length domain is one edit away, so the rollup abstains (`seed_label_too_short`) instead of naming independent registrations as pre-phishing staging; members at `attributionConfidence: 'uncorroborated'` are excluded and cap the rollup severity. (PR #895, closes #863)
+- **`discover_subdomains` presents a degraded count as a floor.** When a consulted CT source failed, a contributing index was not read to the end, or the result is stale, the payload carries `countBasis: 'floor'`, `minSubdomainsObserved` and `concreteSubdomains` (wildcards split out), the caveat is `low` and names the failed source, and headlines read "at least N". (PR #893, closes #866)
+- **Public access-log rows without `cf-connecting-ip` are attributable.** Such rows collapsed into one `ip_hash='unknown'`; they now carry an `n_`-prefixed locality key (asn+colo+country) and `ip_masked='no-cf-header'`. Investigation showed the header is absent for nearly all custom-domain traffic — tracked as #896. (PR #891, closes #876)
+
+### Documentation
+
+- Wrote the `@blackveil/dns-checks` package/parity-corpus lockstep rule into the `bv-mcp-release` skill, naming the CI gates that enforce it and the gap between them. (PR #890, closes #855)
+
 ## [3.73.3] - 2026-09-01
 
 Documentation and production release completing the guarded capacity-test rollout. No scoring changes — `SCORING_MODEL_VERSION` stays 1.18.0.
