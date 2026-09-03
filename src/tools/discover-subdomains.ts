@@ -498,11 +498,27 @@ function countContract(
 function withCountContract(result: SubdomainDiscoveryResult): SubdomainDiscoveryResult {
 	const { minSubdomainsObserved: _min, ...rest } = result;
 	const basis = countBasisFor(result);
-	const issues =
-		basis === 'floor'
-			? rest.issues.map((i) => (i.type === 'ct_sample_not_inventory' && i.severity === 'info' ? { ...i, severity: 'low' as const } : i))
-			: rest.issues;
+	const issues = basis === 'floor' ? refloorCaveat(rest, basis) : rest.issues;
 	return { ...rest, issues, ...countContract(result.totalSubdomains, result.wildcardCerts, basis) };
+}
+
+/**
+ * Regenerate the standing caveat for a result that has BECOME a floor after it
+ * was built (the stale re-serve). Only flipping `severity` would re-serve the
+ * healthy sample wording under a `[LOW]` tag — the #866 shape (degraded count,
+ * healthy prose) reintroduced on a different path. The text is rebuilt from the
+ * stored coverage and names staleness as the reason when that is what forced
+ * the floor; without a coverage record (a pre-contract entry) the caveat is
+ * rebuilt with a synthetic one so the wording is still honest.
+ */
+function refloorCaveat(result: Omit<SubdomainDiscoveryResult, 'minSubdomainsObserved'>, basis: SubdomainCountBasis): SubdomainIssue[] {
+	if (result.totalSubdomains === 0) return result.issues;
+	const coverage = result.coverage ?? buildCtCoverage(attemptsFromSources(result.sources, result.sourceIndexExhausted ?? true));
+	// Short on purpose: it must fit beside the lead under the 200-char compact cap.
+	const why = result.stale ? ' Served STALE from cache: no live CT source answered this call.' : undefined;
+	const caveat = sampleCaveatIssue(coverage, result.totalSubdomains, result.wildcardCerts, basis, why);
+	const others = result.issues.filter((i) => i.type !== 'ct_sample_not_inventory');
+	return [caveat, ...others];
 }
 
 /** Provenance/completeness metadata threaded from a source into the result builders. */
@@ -921,7 +937,14 @@ function attemptsFromSources(sources: string[] | undefined, sourceIndexExhausted
  * `'floor'` basis (#866): a count derived from one exhausted index after the
  * other source failed is a scan-QUALITY finding, and it names why.
  */
-function sampleCaveatIssue(coverage: CtCoverage, total: number, wildcardCerts: number, basis: SubdomainCountBasis): SubdomainIssue {
+function sampleCaveatIssue(
+	coverage: CtCoverage,
+	total: number,
+	wildcardCerts: number,
+	basis: SubdomainCountBasis,
+	/** Overrides the derived "why" clause under a floor — e.g. a stale re-serve, where no source on THIS call failed. */
+	whyOverride?: string,
+): SubdomainIssue {
 	// Kept SHORT deliberately, and BOUNDED: `formatCompact`/`formatFull` push issue
 	// details through `sanitizeOutputText(…, 200|300)`, so a detail that carried the
 	// full `coverage.caveat` prose was truncated mid-sentence — losing the clause
@@ -934,7 +957,8 @@ function sampleCaveatIssue(coverage: CtCoverage, total: number, wildcardCerts: n
 	if (basis === 'floor') {
 		const failed = coverage.perSource.filter((s) => sourceFailed(s.outcome)).map((s) => s.source);
 		const lead = `At least ${total} subdomains observed (${concreteWildcardSplit(total, wildcardCerts)}) — a FLOOR, not a count: recall was cut on this call.`;
-		const why = failed.length > 0 ? ` Failed: ${failed.join(', ')}; answered: ${answered}.` : ` Answered: ${answered}; index not read to the end.`;
+		const why =
+			whyOverride ?? (failed.length > 0 ? ` Failed: ${failed.join(', ')}; answered: ${answered}.` : ` Answered: ${answered}; index not read to the end.`);
 		return {
 			type: 'ct_sample_not_inventory',
 			severity: 'low',
