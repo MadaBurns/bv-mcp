@@ -19,6 +19,7 @@
 
 import { queryDnsRecords, queryMxRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
+import type { SoaAuthority } from '../lib/ownership-attribution';
 
 /** Default and minimum batch sizes for adaptive batching */
 export const INITIAL_BATCH_SIZE = 10;
@@ -225,6 +226,52 @@ export async function queryPrimaryNs(domain: string): Promise<PrimaryNsResult> {
 		return { ns: normalizeNsSet(ns), resolved: true };
 	} catch {
 		return { ns: new Set<string>(), resolved: false };
+	}
+}
+
+/**
+ * #864 — bounded pool for the per-candidate SOA probe behind the in-bailiwick
+ * convergence arm (`classifyOwnership()` step 5b). The probe is gated to
+ * candidates whose MX already routes into the seed apex, so the eligible set
+ * is tiny on any real scan; the pool is a ceiling, not a throughput target.
+ * Sized well under the adaptive-batching A/MX probe's INITIAL_BATCH_SIZE so
+ * it can never out-fan the pass it follows.
+ */
+export const BAILIWICK_SOA_CONCURRENCY = 3;
+
+/** Result of the #864 candidate SOA probe: the parsed authority fields plus whether the lookup actually resolved. */
+export interface CandidateSoaResult {
+	/** `null` when no SOA answered OR the lookup rejected — `resolved` tells the two apart. */
+	soa: SoaAuthority | null;
+	/**
+	 * False when the SOA query REJECTED (timeout / throttling). Load-bearing
+	 * for the same reason as `PrimaryNsResult.resolved` (#832): an absent SOA
+	 * from a FAILED lookup is unfetched, not measured, and the attribution
+	 * layer must say `unmeasured` rather than the contrary `third_party`.
+	 */
+	resolved: boolean;
+}
+
+/**
+ * Query the candidate's SOA record (#864) and return its MNAME / RNAME,
+ * lowercased with trailing dots stripped. Uses the lean Phase-1 preset: this
+ * is one disposable candidate probe, not a seed-side query — losing it costs
+ * an `unmeasured` verdict for that candidate this run, never a wrong one.
+ */
+export async function queryCandidateSoa(domain: string): Promise<CandidateSoaResult> {
+	try {
+		const records = await queryDnsRecords(domain, 'SOA', PHASE1_DNS_OPTS);
+		const first = records[0];
+		if (!first) return { soa: null, resolved: true };
+		// Presentation format: "<mname> <rname> <serial> <refresh> <retry> <expire> <minimum>".
+		const [mname, rname] = first.trim().split(/\s+/);
+		if (!mname || !rname) return { soa: null, resolved: true };
+		return {
+			soa: { mname: mname.toLowerCase().replace(/\.$/, ''), rname: rname.toLowerCase().replace(/\.$/, '') },
+			resolved: true,
+		};
+	} catch {
+		return { soa: null, resolved: false };
 	}
 }
 

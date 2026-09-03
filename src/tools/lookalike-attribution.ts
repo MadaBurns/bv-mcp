@@ -8,14 +8,19 @@
  * Extracted VERBATIM from `check-lookalikes.ts` (pure split, no behaviour
  * change). These are AXIS 1 (attribution) inputs only: nothing here may move a
  * threat severity, and — Ruling A — nothing here may produce an `owned_by_seed`
- * ownership verdict, which stays driven by seed-side nameserver evidence in
- * `classifyOwnership()` alone.
+ * ownership verdict of its own. The ONE exception is
+ * {@link refineOwnershipByBailiwickConvergence} (#864), which produces no
+ * verdict itself either: it gathers the candidate-side MX + SOA inputs and
+ * hands them to `classifyOwnership()`, whose step 5b is the single place the
+ * bounded in-bailiwick conjunction is decided (see the amendment in
+ * `src/lib/ownership-attribution.ts`'s file header).
  */
 
 import { evaluateDefensiveRegistration, type DefensiveReason } from '../lib/brand-defensive-registration';
-import type { OwnershipAssessment } from '../lib/ownership-attribution';
+import { mapConcurrent } from '../lib/map-concurrent';
+import { classifyOwnership, mxRoutedIntoSeed, type OwnershipAssessment } from '../lib/ownership-attribution';
 import { isRedactedRegistrantOrg } from './check-rdap-lookup';
-import type { LookalikeResult } from './lookalike-dns';
+import { BAILIWICK_SOA_CONCURRENCY, type CandidateSoaResult, type LookalikeResult } from './lookalike-dns';
 import type { LookalikeCorroborators } from './lookalike-enrichment';
 import { calibrateLookalikeSeverity, type LookalikeSeverity } from './lookalike-severity';
 
@@ -237,4 +242,99 @@ export function isBrandHeldRegistration(input: {
 	});
 	if (!shape.defensive || shape.reason === undefined) return { brandHeld: false };
 	return { brandHeld: true, registrarIanaId: candidateRegistrarIanaId, reason: shape.reason };
+}
+
+/**
+ * Defensive ceiling on how many candidates the #864 convergence pass will
+ * probe for SOA in one run. The MX precondition (every exchange inside the
+ * seed apex) already makes the eligible set tiny on any real scan — a seed's
+ * genuine regional domains, not its squatters — so this cap exists only so a
+ * pathological candidate set can never widen the extra DNS fan-out unbounded.
+ */
+export const BAILIWICK_REFINEMENT_CAP = 10;
+
+export interface BailiwickRefinementInput {
+	seedDomain: string;
+	/** The seed's own resolved NS hostnames (empty when unresolved). */
+	seedNs: readonly string[];
+	/** #832 — true when the seed's NS lookup rejected. */
+	seedNsUnresolved: boolean;
+	/** Phase-2 probe results (carry the resolved real MX exchanges). */
+	results: readonly LookalikeResult[];
+	/** Phase-1 NS answer sets, keyed by candidate. */
+	nsByDomain: ReadonlyMap<string, ReadonlySet<string>>;
+	/** The run's ownership map — updated IN PLACE for every probed candidate. */
+	ownershipByDomain: Map<string, OwnershipAssessment>;
+	isSharedNsHost: (nsHost: string) => boolean;
+	/** Injected SOA probe (`queryCandidateSoa` in production; a stub in tests). */
+	querySoa: (domain: string) => Promise<CandidateSoaResult>;
+}
+
+export interface BailiwickRefinementOutcome {
+	/** Candidates whose MX routed into the seed apex and were therefore SOA-probed. */
+	probed: string[];
+	/** Subset that came back `owned_by_seed` via step 5b. */
+	owned: string[];
+	/**
+	 * Subset whose SOA probe REJECTED, leaving the convergence question asked
+	 * but unanswered → `unmeasured` (#832's law). The orchestrator marks the
+	 * run `partial` when this is non-empty so the withheld verdict is not
+	 * cached for the full TTL after DNS recovers.
+	 */
+	unmeasured: string[];
+}
+
+/**
+ * #864 — second attribution pass, run AFTER the Phase-2 A/MX probe and BEFORE
+ * enrichment. The first pass (`classifyOwnership()` on NS evidence alone) is
+ * blind to a same-entity domain on a different DNS platform; this pass gives
+ * step 5b the two candidate-side records it needs, for the few candidates
+ * that already satisfy the cheap half of the conjunction (MX routed into the
+ * seed apex — {@link mxRoutedIntoSeed}, read from records Phase 2 already
+ * fetched). Only THOSE candidates pay the one extra SOA lookup, through a
+ * bounded pool, so a scan with no such candidate issues zero extra queries.
+ *
+ * Candidates already `owned_by_seed` from seed-side evidence are skipped —
+ * a strong verdict is never re-derived as a medium one — and every other
+ * verdict is recomputed by `classifyOwnership()` itself, so the precedence
+ * table stays the single decision surface (this function decides nothing).
+ */
+export async function refineOwnershipByBailiwickConvergence(input: BailiwickRefinementInput): Promise<BailiwickRefinementOutcome> {
+	const outcome: BailiwickRefinementOutcome = { probed: [], owned: [], unmeasured: [] };
+	const eligible = input.results
+		.filter((result) => {
+			if (input.ownershipByDomain.get(result.domain)?.verdict === 'owned_by_seed') return false;
+			if (!result.hasMX) return false;
+			return mxRoutedIntoSeed(result.mxExchanges, input.seedDomain);
+		})
+		.slice(0, BAILIWICK_REFINEMENT_CAP);
+	if (eligible.length === 0) return outcome;
+
+	const soaResults = await mapConcurrent(eligible, BAILIWICK_SOA_CONCURRENCY, (result) => input.querySoa(result.domain));
+
+	eligible.forEach((result, index) => {
+		const soa = soaResults[index];
+		const candidateNs = Array.from(input.nsByDomain.get(result.domain) ?? []);
+		const assessment = classifyOwnership({
+			seedDomain: input.seedDomain,
+			seedNs: [...input.seedNs],
+			candidateDomain: result.domain,
+			registration: { state: 'registered', ns: candidateNs, evidence: candidateNs.length > 0 ? ['ns'] : ['a'] },
+			isSharedNsHost: input.isSharedNsHost,
+			seedNsUnresolved: input.seedNsUnresolved,
+			candidateMx: result.mxExchanges,
+			candidateSoa: soa.soa,
+			candidateSoaUnresolved: !soa.resolved,
+		});
+		input.ownershipByDomain.set(result.domain, assessment);
+		outcome.probed.push(result.domain);
+		if (assessment.verdict === 'owned_by_seed') {
+			outcome.owned.push(result.domain);
+		} else if (assessment.verdict === 'unmeasured' && assessment.signals.includes('mx_in_bailiwick')) {
+			// Signal-tagged so a seed-NS-caused `unmeasured` (already accounted for
+			// by the #832 run-level notice) is not double-counted here.
+			outcome.unmeasured.push(result.domain);
+		}
+	});
+	return outcome;
 }

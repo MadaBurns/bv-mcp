@@ -72,6 +72,51 @@
  * left present-but-unused — see the `OWNERSHIP RULE` note on
  * `ClassifyOwnershipInput` below for the rule a future author re-wiring a
  * real SOA/SPF/redirect probe must re-derive.
+ *
+ * AMENDMENT — IN-BAILIWICK CONVERGENCE (2026-09-04, #864, regression of
+ * #263). Ruling A's seed-side-only rule has an irreducible blind spot that
+ * #864 measured live: a same-entity domain on a DIFFERENT DNS platform
+ * (`amazon.com` on Route 53, `amazon.com.au` on Amazon's internal
+ * `amzndns.*`) shares no nameserver with the seed, and the #263 RDAP
+ * registrant tier is structurally blind for the pair — Verisign's `.com`
+ * RDAP is thin (registrar only) and auDA's `.com.au` RDAP publishes no
+ * registrant entity at all (observed 2026-09-04). No seed-side signal exists,
+ * so the candidate was counted as an impersonation-capable third party.
+ *
+ * What IS observable (DoH, 2026-09-04): `amazon.com.au` MX →
+ * `amazon-smtp.amazon.com` (the seed's own MX host) and SOA MNAME →
+ * `dns-external-master.amazon.com` (its zone is mastered on a host inside the
+ * seed's zone). Both are candidate-zone records, so Ruling A's "never alone"
+ * clause stands unchanged — but its "never combined" clause is amended for
+ * exactly ONE bounded conjunction, `assessBailiwickConvergence()` below:
+ *
+ *   MX (every real exchange inside the seed apex) AND SOA MNAME (inside the
+ *   seed apex) → `owned_by_seed`, strength `medium`, evidence attached.
+ *
+ * Why this conjunction and not others (spoofing analysis):
+ *   - MX alone is one attacker-written record and never qualifies (a squatter
+ *     can copy the seed's MX string in seconds — pinned by a negative fixture).
+ *   - SOA RNAME is NEVER verdict-bearing: managed providers template it, and
+ *     for a seed that is itself a DNS operator the template lands inside the
+ *     seed apex — every Route 53 zone carries RNAME
+ *     `awsdns-hostmaster.amazon.com`, so a Route 53 squatter of amazon.com
+ *     would otherwise qualify. It is recorded as evidence prose only.
+ *   - SOA MNAME on a managed provider is always a PROVIDER host (Route 53 →
+ *     `ns-*.awsdns-*`, Cloudflare → `*.ns.cloudflare.com`, Akamai →
+ *     `a*.akam.net`), never inside an unrelated seed's apex, and managed
+ *     providers do not let a tenant edit it. Placing MNAME inside the seed
+ *     apex therefore requires the squatter to self-host authoritative DNS
+ *     (or a rare provider that exposes MNAME) — AND to route the lookalike's
+ *     inbound mail to the seed's own servers, forfeiting the receive channel.
+ *   - Two record types, two different operational dependencies, both pointed
+ *     INTO the seed's zone: the same "complete match, not partial" bar the
+ *     `ns_shared_provider_complete` arm already accepts at `medium`.
+ *
+ * Residual (documented, not hidden): a squatter who self-hosts DNS with a
+ * forged MNAME and sacrifices inbound mail can still earn the verdict; the
+ * verdict is `medium`, names both records in `evidence`, and the finding
+ * text quotes them so an analyst can see exactly what was matched. Seed-side
+ * arms keep precedence — a strong NS match is never displaced by this one.
  */
 
 import type { CheckCategory, Finding, Severity } from '@blackveil/dns-checks/scoring';
@@ -104,6 +149,7 @@ export type OwnershipSignal =
 	| 'ns_in_bailiwick'
 	| 'ns_set_match'
 	| 'ns_shared_provider_complete'
+	| 'mx_in_bailiwick'
 	| 'soa_in_bailiwick'
 	| 'spf_include_seed'
 	| 'http_redirect_seed'
@@ -115,6 +161,31 @@ export interface OwnershipAssessment {
 	signals: OwnershipSignal[];
 	/** Human-readable, safe to surface in a report — never implies ownership beyond `verdict`. */
 	rationale: string;
+	/**
+	 * The observed records a verdict rests on, when it rests on candidate-zone
+	 * records (#864 in-bailiwick convergence). Absent for the seed-side NS arms,
+	 * whose `rationale` already names the matched hosts. Surfaced verbatim in
+	 * finding metadata so a consumer can audit what was matched.
+	 */
+	evidence?: OwnershipEvidence[];
+}
+
+/** One observed record backing an `owned_by_seed` verdict (#864). */
+export interface OwnershipEvidence {
+	/** Which record the value came from. `SOA.RNAME` is evidence prose only — never verdict-bearing (see file header). */
+	record: 'MX' | 'SOA.MNAME' | 'SOA.RNAME';
+	/** The observed host (lowercased, trailing dot stripped). */
+	value: string;
+	/** True when the host sits at or under the seed apex. */
+	inSeedBailiwick: boolean;
+}
+
+/** SOA authority fields the #864 convergence arm consults. */
+export interface SoaAuthority {
+	/** Primary master nameserver (SOA MNAME). */
+	mname: string;
+	/** Responsible-party mailbox in domain-name form (SOA RNAME). */
+	rname: string;
 }
 
 export interface ClassifyOwnershipInput {
@@ -140,6 +211,26 @@ export interface ClassifyOwnershipInput {
 	 * evidence stays safe to publish.
 	 */
 	seedNsUnresolved?: boolean;
+	/**
+	 * #864 — the candidate's RESOLVED real MX exchange hosts (null-MX already
+	 * excluded upstream). `undefined` = not probed; `[]` = probed, no mail.
+	 * Consulted ONLY by the in-bailiwick convergence arm, and only in
+	 * conjunction with {@link candidateSoa} — see the file-header amendment.
+	 */
+	candidateMx?: readonly string[];
+	/**
+	 * #864 — the candidate's SOA authority fields. `undefined` = not probed;
+	 * `null` = probed and no SOA answered (or the probe rejected — then
+	 * {@link candidateSoaUnresolved} says which).
+	 */
+	candidateSoa?: SoaAuthority | null;
+	/**
+	 * #864 — true when the candidate's SOA lookup REJECTED (timeout /
+	 * throttling) rather than answering. With the MX precondition met, the
+	 * convergence question was asked and not answered, so the verdict is
+	 * `unmeasured` (#832's law) rather than the contrary `third_party`.
+	 */
+	candidateSoaUnresolved?: boolean;
 	/**
 	 * OWNERSHIP RULE — SEED-SIDE CONTROL ONLY (Ruling A, 2026-07-27 task-7c;
 	 * fields DELETED 2026-07-27 ownership-attribution followups item 2 — see
@@ -169,6 +260,14 @@ export interface ClassifyOwnershipInput {
 	 * candidate-side signal, be capable of producing `owned_by_seed` on its
 	 * own. If reintroducing such fields, keep them optional inputs consulted
 	 * strictly AFTER the seed-side precedence steps below decide the verdict.
+	 *
+	 * RE-DERIVED 2026-09-04 (#864): `candidateMx` + `candidateSoa` above are
+	 * exactly such a reintroduction, bounded as the rule demands — optional,
+	 * consulted after every seed-side arm, never verdict-bearing alone, and
+	 * limited to the single MX ∧ SOA-MNAME conjunction whose spoofing cost is
+	 * argued in the file header. SPF `include:` and HTTP redirect targets
+	 * remain excluded: both are free-text declarations with no operational
+	 * cost to forge.
 	 */
 }
 
@@ -226,15 +325,19 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
  *  5. Partial overlap confined to shared-provider hosts → not evidence (falls through silently —
  *     this is the ANZ/Westpac 1/6-Akamai trap: a single shared-provider NS host in common is
  *     operational plumbing, not ownership evidence).
+ *  5b. (#864) In-bailiwick CONVERGENCE — every real MX exchange AND the SOA MNAME sit inside
+ *     the seed apex → `owned_by_seed`, medium, with `evidence`. Requires the caller to have
+ *     supplied `candidateMx` + `candidateSoa`; neither alone qualifies, and SOA RNAME never
+ *     counts (see the file-header amendment for the spoofing analysis). If the MX precondition
+ *     holds but the SOA lookup REJECTED, the verdict is `unmeasured`, not `third_party`.
  *  6. Registered with its own resolvable NS, no ownership signal → `third_party`.
  *  7. Everything else (no NS info at all) → `unattributed`.
  *
- * `ClassifyOwnershipInput` accepts NO candidate-side corroboration inputs
- * (Ruling A, 2026-07-27 task-7c; the three candidate-side fields that used to
- * exist here — SOA RNAME, SPF `include:` target, HTTP redirect target — were
- * deleted 2026-07-27, see the OWNERSHIP RULE note on `ClassifyOwnershipInput`):
- * this precedence table is driven entirely by seed-side signals and can never
- * be swayed by a candidate-side declaration.
+ * Candidate-side inputs (`candidateMx`, `candidateSoa`) are consulted ONLY at
+ * step 5b, strictly after every seed-side arm, and only as the bounded
+ * conjunction the 2026-09-04 amendment admits. SPF `include:` and HTTP
+ * redirect targets remain excluded (deleted 2026-07-27, see the OWNERSHIP
+ * RULE note on `ClassifyOwnershipInput`).
  */
 export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAssessment {
 	const { registration, candidateDomain } = input;
@@ -275,6 +378,12 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 		};
 	}
 
+	// #864 — the in-bailiwick convergence arm needs only the seed APEX (like the
+	// NS in-bailiwick arm above), so it is computed here and may still yield a
+	// positive verdict under a degraded seed NS lookup; it is APPLIED only after
+	// the seed-side set-comparison arms below, which keep precedence.
+	const convergence = assessBailiwickConvergence(input, candidateDomain, seedApex);
+
 	// #832 — degraded comparison inputs. The seed's NS lookup did not resolve,
 	// so every arm below would be comparing against an UNFETCHED set: the
 	// ns_set_match / shared-provider arms cannot fire (seedNs is empty), and
@@ -283,6 +392,7 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 	// verdict exists to prevent. Only the in-bailiwick arm above (which needs
 	// the seed APEX, not its NS answer) may still produce a verdict.
 	if (input.seedNsUnresolved) {
+		if (convergence?.verdict === 'owned_by_seed') return convergence;
 		return {
 			verdict: 'unmeasured',
 			strength: 'none',
@@ -325,6 +435,11 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 		};
 	}
 
+	// #864 — step 5b. Applied only once every seed-side arm has declined, so a
+	// strong NS match is never displaced by this medium-strength verdict. Also
+	// carries the `unmeasured` outcome for an asked-but-unanswered SOA probe.
+	if (convergence !== null) return convergence;
+
 	if (candidateNs.length > 0) {
 		return {
 			verdict: 'third_party',
@@ -339,6 +454,75 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 		strength: 'none',
 		signals: [],
 		rationale: `No ownership or third-party signal could be established for ${candidateDomain}.`,
+	};
+}
+
+/**
+ * True when the candidate's RESOLVED real MX set is non-empty and EVERY
+ * exchange sits at or under the seed apex — mail for the candidate is
+ * delivered to the seed organisation's own mail hosts (#864). Exported so the
+ * lookalike orchestrator can use the same predicate to gate the one extra SOA
+ * lookup the convergence arm needs: the probe is issued only for candidates
+ * that already satisfy this half, so a clean scan pays nothing.
+ *
+ * A single exchange OUTSIDE the seed apex disqualifies the whole set — a
+ * squatter listing the seed's MX alongside their own would keep a working
+ * receive channel, which is precisely what the conjunction is meant to cost.
+ */
+export function mxRoutedIntoSeed(candidateMx: readonly string[] | undefined, seedDomain: string): boolean {
+	if (!candidateMx || candidateMx.length === 0) return false;
+	const normalisedSeed = normHost(seedDomain);
+	const seedApex = getRegistrableDomain(normalisedSeed) ?? normalisedSeed;
+	return candidateMx.every((mx) => isInBailiwick(mx, seedApex));
+}
+
+/**
+ * Step 5b of `classifyOwnership()` — the #864 in-bailiwick convergence arm.
+ * Returns `null` when the arm has nothing to say (inputs absent, or the
+ * conjunction unmet), an `owned_by_seed` assessment when BOTH halves hold, or
+ * an `unmeasured` assessment when the MX half holds but the SOA probe was
+ * asked and rejected. Never returns `third_party`: declining is the caller's
+ * job, from seed-side evidence.
+ */
+function assessBailiwickConvergence(input: ClassifyOwnershipInput, candidateDomain: string, seedApex: string): OwnershipAssessment | null {
+	if (!mxRoutedIntoSeed(input.candidateMx, seedApex)) return null;
+	const mx = (input.candidateMx ?? []).map(normHost).filter(Boolean);
+
+	if (input.candidateSoa === undefined) {
+		// MX half holds but the caller never probed SOA: the arm cannot fire
+		// (never on one attacker-written record) and it is not a measurement
+		// gap either — nobody asked. Fall through to the seed-side outcome.
+		return null;
+	}
+	if (input.candidateSoa === null) {
+		if (input.candidateSoaUnresolved) {
+			return {
+				verdict: 'unmeasured',
+				strength: 'none',
+				signals: ['mx_in_bailiwick'],
+				rationale: `${candidateDomain} routes its mail to ${mx.join(', ')} inside ${seedApex}, but its SOA lookup did not resolve this run, so whether its zone is also mastered inside ${seedApex} could not be assessed. This is a measurement gap, not evidence of third-party registration — re-run to attribute.`,
+				evidence: mx.map((value) => ({ record: 'MX' as const, value, inSeedBailiwick: true })),
+			};
+		}
+		return null;
+	}
+
+	const mname = normHost(input.candidateSoa.mname);
+	const rname = normHost(input.candidateSoa.rname);
+	if (!mname || !isInBailiwick(mname, seedApex)) return null;
+
+	const evidence: OwnershipEvidence[] = [
+		...mx.map((value) => ({ record: 'MX' as const, value, inSeedBailiwick: true })),
+		{ record: 'SOA.MNAME', value: mname, inSeedBailiwick: true },
+	];
+	if (rname) evidence.push({ record: 'SOA.RNAME', value: rname, inSeedBailiwick: isInBailiwick(rname, seedApex) });
+
+	return {
+		verdict: 'owned_by_seed',
+		strength: 'medium',
+		signals: ['mx_in_bailiwick', 'soa_in_bailiwick'],
+		rationale: `${candidateDomain} routes its mail to ${mx.join(', ')} and its zone is mastered on ${mname} — both inside ${seedApex}'s own infrastructure. Two distinct operational dependencies point into the seed's zone; either record alone would not qualify.`,
+		evidence,
 	};
 }
 

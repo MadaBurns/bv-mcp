@@ -53,7 +53,12 @@
  */
 
 import type { DefensiveReason } from '../lib/brand-defensive-registration';
-import { buildNonOwnedGateFinding, capAttributionSeverity, type OwnershipAssessment } from '../lib/ownership-attribution';
+import {
+	attributionConfidence,
+	buildNonOwnedGateFinding,
+	capAttributionSeverity,
+	type OwnershipAssessment,
+} from '../lib/ownership-attribution';
 import type { Finding } from '../lib/scoring';
 import { createFinding } from '../lib/scoring';
 import type { LookalikeResult } from './lookalike-dns';
@@ -109,6 +114,13 @@ export function buildOwnedBySeedFinding(result: LookalikeResult, seedDomain: str
 			hasA: result.hasA,
 			hasMX: result.hasMX,
 			ownershipVerdict: ownership.verdict,
+			// #864 — name the signal and its strength so a consumer can tell a
+			// strong seed-side NS match from the medium in-bailiwick conjunction,
+			// and audit the exact records the latter rested on.
+			ownershipStrength: ownership.strength,
+			ownershipSignals: ownership.signals,
+			attributionConfidence: attributionConfidence(ownership.verdict, '', true),
+			...(ownership.evidence ? { ownershipEvidence: ownership.evidence } : {}),
 			findingAxis: 'attribution' satisfies LookalikeFindingAxis,
 		},
 	);
