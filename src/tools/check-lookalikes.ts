@@ -44,12 +44,18 @@ import {
 	getParentDomain,
 	labelCount,
 	probeWithAdaptiveBatching,
+	probeDmarcReportAuthorisation,
 	queryPrimaryMx,
 	queryPrimaryNs,
 	type LookalikeResult,
 } from './lookalike-dns';
 import { EMPTY_RDAP_PROBE, enrichLookalikes, probePrimaryRegistration } from './lookalike-enrichment';
-import { computeSameEntityCandidates, isBrandHeldRegistration, isSameEntityOrgMatch } from './lookalike-attribution';
+import {
+	computeSameEntityCandidates,
+	isBrandHeldRegistration,
+	isSameEntityOrgMatch,
+	refineOwnershipBySeedAuthorisation,
+} from './lookalike-attribution';
 import type { DefensiveReason } from '../lib/brand-defensive-registration';
 import {
 	applyOwnershipGate,
@@ -299,6 +305,25 @@ async function checkLookalikesCore(
 		unresolvedCount: nsUnresolved + probeUnresolved + infraUnknownCount,
 		complete: nsUnresolved + probeUnresolved + infraUnknownCount === 0,
 	};
+
+	// #864 — second attribution pass. The NS-only pass above cannot see a
+	// same-entity domain on a DIFFERENT DNS platform (amazon.com.au on amzndns.*
+	// vs amazon.com on Route 53 — #263's failure mode). For the few candidates
+	// whose real MX already routes into the seed apex (a pre-filter with no
+	// verdict weight), a bounded SEED-side probe — the RFC 7489 §7.1 DMARC
+	// report authorisation only the seed can publish — lets `classifyOwnership()`
+	// step 5b decide. Runs BEFORE enrichment so a newly-owned candidate skips it
+	// like any other.
+	const seedAuthorisation = await refineOwnershipBySeedAuthorisation({
+		seedDomain: domain,
+		seedNs: primaryNsList,
+		seedNsUnresolved: seedNsUnmeasured,
+		results,
+		nsByDomain: lookalikeNsMap,
+		ownershipByDomain,
+		isSharedNsHost,
+		probeAuthorisation: probeDmarcReportAuthorisation,
+	});
 
 	// Enrichment (Defect L / issue #264): for each non-defensively-registered
 	// lookalike with mail or web infrastructure, gather corroborating signals
@@ -630,7 +655,9 @@ async function checkLookalikesCore(
 	// it. The #863 abstentions are structural (the seed's own label) and are
 	// deliberately NOT partial — every run of that seed abstains, so caching
 	// the abstention is correct.
-	if (seedNsUnmeasured || rollup.notAssessedReason === 'enumeration_throttled') {
+	// #864 — and for a candidate whose SEED-side authorisation probe rejected:
+	// the same transient shape as a throttled abstention.
+	if (seedNsUnmeasured || rollup.notAssessedReason === 'enumeration_throttled' || seedAuthorisation.unmeasured.length > 0) {
 		result.partial = true;
 	}
 	return result;
