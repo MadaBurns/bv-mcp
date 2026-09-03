@@ -63,6 +63,7 @@ import type { Finding } from '../lib/scoring';
 import { createFinding } from '../lib/scoring';
 import type { LookalikeResult } from './lookalike-dns';
 import type { LookalikeSeverity, LookalikeSignals } from './lookalike-severity';
+import type { RegistrationLookupOutcome } from './lookalike-enrichment';
 
 export type LookalikeFindingAxis = 'attribution' | 'threat_observation' | 'scan_status';
 
@@ -82,6 +83,22 @@ export const DEFENSIVE_REASON_PHRASES: Record<DefensiveReason, string> = {
 	'parked-ns': 'its nameservers are at a domain-parking provider',
 	'no-mx': 'it carries no active mail service',
 };
+
+/**
+ * The explicit unknown-age marker that travels beside `registrationDays` on
+ * every per-candidate finding (#867). A bare `registrationDays: null` was read
+ * downstream as "nothing notable" / "not excluded by the age filter"; these two
+ * fields let a consumer tell "we could not measure" from "we measured nothing
+ * notable". `ageUnknown` is `true` iff the age is `null`; `registrationLookup`
+ * says why (`ok` iff the age is a number). A signals bag built without the
+ * outcome (see `computeSameEntityCandidates`) is one where no lookup ran.
+ */
+export function registrationAgeMetadata(signals: LookalikeSignals): { ageUnknown: boolean; registrationLookup: RegistrationLookupOutcome } {
+	return {
+		ageUnknown: signals.registrationDays === null,
+		registrationLookup: signals.registrationLookup ?? 'not_attempted',
+	};
+}
 
 /**
  * Build a short human-readable list of corroborating signals for the finding
@@ -274,6 +291,7 @@ export function buildRawAttributionFinding(
 					hasA: result.hasA,
 					hasMX: result.hasMX,
 					registrationDays: signals.registrationDays,
+					...registrationAgeMetadata(signals),
 					mxOnDisposable: signals.mxOnDisposable,
 					hasWebContent: signals.hasWebContent,
 					findingAxis: 'attribution' satisfies LookalikeFindingAxis,
@@ -289,6 +307,7 @@ export function buildRawAttributionFinding(
 					hasA: result.hasA,
 					hasMX: result.hasMX,
 					registrationDays: signals.registrationDays,
+					...registrationAgeMetadata(signals),
 					mxOnDisposable: signals.mxOnDisposable,
 					hasWebContent: signals.hasWebContent,
 					findingAxis: 'attribution' satisfies LookalikeFindingAxis,
@@ -418,6 +437,7 @@ export function buildThreatObservationFinding(
 			hasA: signals.hasA,
 			hasMX: signals.hasMX,
 			registrationDays: signals.registrationDays,
+			...registrationAgeMetadata(signals),
 			mxOnDisposable: signals.mxOnDisposable,
 			hasWebContent: signals.hasWebContent,
 			findingAxis: 'threat_observation' satisfies LookalikeFindingAxis,
