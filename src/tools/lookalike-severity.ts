@@ -21,6 +21,7 @@
  */
 
 import type { Severity } from '../lib/scoring';
+import type { RegistrationLookupOutcome } from './lookalike-enrichment';
 
 /** Severity assigned to lookalikes that should not surface as a finding at all. */
 export type LookalikeSeverity = Extract<Severity, 'low' | 'medium' | 'high'>;
@@ -58,6 +59,13 @@ export interface LookalikeSignals {
 	 * fallback map. Per design: null is "unknown" and never elevates severity.
 	 */
 	registrationDays: number | null;
+	/**
+	 * Why {@link registrationDays} is or is not populated (#867). Optional so
+	 * callers that only need the calibration matrix can omit it; the finding
+	 * builders default an absent value to `not_attempted`. Never read by the
+	 * calibrator — an unknown age is "not recent" whatever the reason.
+	 */
+	registrationLookup?: RegistrationLookupOutcome;
 	/** MX exchange host suffix matches one of {@link DISPOSABLE_MX_PROVIDERS}. */
 	mxOnDisposable: boolean;
 	/**
