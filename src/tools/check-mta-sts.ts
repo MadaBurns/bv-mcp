@@ -11,11 +11,19 @@
  * from a probe that never reached the origin. We detect the interception from the policy
  * response (mirroring `check-http-security.ts`) and make the whole mta_sts category
  * INCONCLUSIVE — `checkStatus: 'error'` — so the scoring engine EXCLUDES it (neither
- * pass, fail, nor inflate). The same excluded shape is applied when the policy fetch
- * THROWS (a stall past the timeout → AbortError, or a network error), which the package
- * would otherwise surface as a confident `medium` "policy fetch failed". A policy fetch cut
- * short by the per-check fetch budget (#674) is routed into that SAME path — see `budgetMs`
- * on `checkMtaSts` — because it is the same claim: nothing was measured.
+ * pass, fail, nor inflate).
+ *
+ * A policy fetch that THROWS (a stall past the timeout → AbortError, a network error, a
+ * robots.txt disallow, a budget cut per #674) is handled by the PACKAGE since dns-checks
+ * 1.33.0 (issue #889): `checkMTASTS` itself returns the not-assessed shape (`checkStatus`
+ * `'timeout' | 'error'`, score 0, `partial: true`, an `info` finding carrying
+ * `notAssessedReason`) instead of the confident `medium` "policy fetch failed" it used to
+ * score. This wrapper no longer has to strip a scored finding; what it still owns on that
+ * path is (a) the WAF-aware prose of the inconclusive finding (#664) and (b) pinning the
+ * status to `'error'` — the package classifies a stall as `'timeout'`, which is faithful
+ * for direct package consumers but is NOT the class `scan_domain`'s transient-zero retry
+ * fires on (`shouldRetry` deliberately excludes `'timeout'`, the safeCheck-killed shape).
+ * See `excludeForPolicyThrow`.
  *
  * ⚠️ Exclusion is the whole remedy — the prose must not go on to reassure the reader that
  * real sending MTAs can fetch the policy anyway (issue #664). We have not measured that;
@@ -85,12 +93,13 @@ function resolveGatedFetch(budget: FetchBudget, budgeted: boolean): FetchFunctio
 const POLICY_FETCH_FALSE_POSITIVE_TITLES = new Set(['MTA-STS policy file not accessible', 'MTA-STS policy redirects']);
 
 /**
- * The package's transient finding (emitted from its own catch path) when the policy
- * fetch THROWS. Empirically a `medium` finding with NO `checkStatus`/`partial` flag,
- * so scoring would penalise it — we exclude the category when this is present together
- * with an observed policy-fetch throw. (Title confirmed against the built package.)
+ * The package's not-assessed finding for a THROWN policy fetch (dns-checks ≥ 1.33.0, issue
+ * #889) is identified by this `metadata.notAssessedReason` token — never by title, so a
+ * copy edit in the package cannot silently re-enable a scored finding here. A robots.txt
+ * abstention carries `'robots_disallowed'` instead and is left exactly as the package
+ * labelled it (same vocabulary as ssl / http_security / bimi).
  */
-const POLICY_FETCH_THROW_TITLE = 'MTA-STS policy fetch failed';
+const POLICY_FETCH_NOT_ASSESSED_REASON = 'policy_fetch_failed';
 
 /** True when this fetch is the MTA-STS policy-file fetch (the only thing fetchFn is used for). */
 function isPolicyFetch(url: string): boolean {
@@ -170,19 +179,33 @@ function excludeForWaf(result: CheckResult, domain: string, event: WafEvent, sta
 }
 
 /**
- * The policy fetch THREW (WAF stall → AbortError, or a network error) and the package
- * surfaced its transient `medium` "policy fetch failed" finding. Drop that finding,
- * add an inconclusive WAF-style `info` note, and EXCLUDE the category — same shape as
- * a Response-based WAF event. Conservative: only invoked when we actually observed a
- * policy-fetch throw, so a genuine deterministic "not accessible" (a real 404 Response)
- * is untouched and keeps the package's `high`.
+ * The policy fetch THREW (WAF stall → AbortError, a network error, or a budget cut) and the
+ * package returned its not-assessed shape (issue #889). Swap the package's generic
+ * not-assessed finding for the WAF-aware inconclusive `info` note, and pin the category to
+ * the EXCLUDED-and-RETRYABLE shape — `checkStatus: 'error'`, same as a Response-based WAF
+ * event. Conservative: only invoked when we actually observed a policy-fetch throw, so a
+ * genuine deterministic "not accessible" (a real 404 Response) is untouched and keeps the
+ * package's `high`.
+ *
+ * A robots.txt disallow is returned verbatim: the package labels it with the shared
+ * `robotsAbstentionMetadata` vocabulary (`notAssessedReason: 'robots_disallowed'`) and
+ * already uses `checkStatus: 'error'`; rewording it as a "stall" would misattribute a
+ * deliberate, polite abstention to a network fault.
+ *
+ * Why `'error'` and not the package's `'timeout'`: `scan_domain`'s `shouldRetry` fires on
+ * `checkStatus === 'error' && score === 0` ONLY — `'timeout'` is the safeCheck-killed shape
+ * and is deliberately never retried. A transient stall must get its second, unbudgeted
+ * attempt (test/mta-sts-fetch-budget.spec.ts drives that recovery), so the Worker path
+ * normalises to the retryable class. Direct package consumers keep the faithful `'timeout'`.
  */
-function excludeForPolicyThrow(result: CheckResult, domain: string): CheckResult {
-	const hasTransient = result.findings.some((f: Finding) => f.title === POLICY_FETCH_THROW_TITLE);
-	// The package emitted something other than its transient throw finding — don't touch it.
-	if (!hasTransient) return result;
+function excludeForPolicyThrow(result: CheckResult, domain: string, err: unknown): CheckResult {
+	if (err instanceof RobotsDisallowedError) return result;
 
-	const kept = result.findings.filter((f: Finding) => f.title !== POLICY_FETCH_THROW_TITLE);
+	const isPackageNotAssessed = (f: Finding) => f.metadata?.notAssessedReason === POLICY_FETCH_NOT_ASSESSED_REASON;
+	// The package emitted something other than its not-assessed shape — don't touch it.
+	if (!result.checkStatus && !result.findings.some(isPackageNotAssessed)) return result;
+
+	const kept = result.findings.filter((f: Finding) => !isPackageNotAssessed(f));
 	// Unlike a Response-based WAF event, a throw carries NO provider evidence — do NOT
 	// fabricate a `wafEvent` provider in the metadata (it would mislead analytics). Build a
 	// plain inconclusive transient finding; `checkStatus: 'error'` below is what excludes the
@@ -206,7 +229,15 @@ function excludeForPolicyThrow(result: CheckResult, domain: string): CheckResult
 			`would stall them too and leave MTA-STS unenforceable, while one keyed to this scanner's User-Agent would not. Retry, and review any edge rule covering mta-sts.${domain}.`,
 		{ inconclusive: true, errorKind: 'timeout' },
 	);
-	return { ...buildCheckResult('mta_sts', [...kept, inconclusive], result.controlPresent), score: 0, passed: false, checkStatus: 'error' };
+	// `partial: true` mirrors the package: a transient outcome must not be cached for the
+	// 5-min TTL on the direct registry path (handlers/tools.ts caches only `!r.partial`).
+	return {
+		...buildCheckResult('mta_sts', [...kept, inconclusive], result.controlPresent, result.recordPresent),
+		score: 0,
+		passed: false,
+		checkStatus: 'error',
+		partial: true,
+	};
 }
 
 /**
@@ -263,6 +294,7 @@ export async function checkMtaSts(
 	let policyWafEvent: WafEvent | null = null;
 	let policyWafStatus = 0;
 	let policyFetchThrew = false;
+	let policyFetchError: unknown = null;
 
 	const observingFetch = async (url: string, init?: RequestInit): Promise<Response> => {
 		const policy = isPolicyFetch(url);
@@ -272,19 +304,20 @@ export async function checkMtaSts(
 		} catch (err) {
 			// A policy-fetch rejection (AbortError from a stalled WAF challenge, or a network
 			// TypeError) is observed as inconclusive, then RE-THROWN so the package still runs
-			// its own catch path and emits its transient finding. Only the FIRST policy throw
-			// is recorded (single-fetch contract).
+			// its own catch path and returns its not-assessed shape (#889). Only the FIRST
+			// policy throw is recorded (single-fetch contract).
 			//
 			// The `!budget.canIssueRequest()` disjunct is what keeps a BUDGETED run honest
 			// (#674): when the budget is already spent, `wrap` rejects with a plain `Error`
 			// carrying neither the `AbortError` name nor `TypeError`, so `isObservableFetchThrow`
-			// alone would let the package's confident `medium` "policy fetch failed" stand and
-			// SCORE a penalty for a probe that was never issued. Reading the budget state instead
+			// alone would leave the wrapper's WAF-aware prose unapplied (the package still abstains,
+			// #889) for a probe that was never issued — pre-#889 it let a confident `medium` SCORE. Reading the budget state instead
 			// of the error's message keeps the sentinel string out of this file's contract.
 			// With no budget `remainingMs()` is Infinity, so this disjunct is constant-false and
 			// the direct-call path is unchanged.
 			if (policy && !policyFetchThrew && (isObservableFetchThrow(err) || !budget.canIssueRequest())) {
 				policyFetchThrew = true;
+				policyFetchError = err;
 			}
 			throw err;
 		}
@@ -323,7 +356,7 @@ export async function checkMtaSts(
 	})) as CheckResult;
 
 	if (policyWafEvent) return excludeForWaf(result, domain, policyWafEvent, policyWafStatus);
-	if (policyFetchThrew) return excludeForPolicyThrow(result, domain);
+	if (policyFetchThrew) return excludeForPolicyThrow(result, domain, policyFetchError);
 	return result;
 }
 
