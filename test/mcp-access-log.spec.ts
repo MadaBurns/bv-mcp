@@ -505,7 +505,13 @@ describe('recordMcpAccessLog routing', () => {
 			},
 		};
 		// @ts-expect-error — exercising the internal helper via the exported recorder
-		mod.__recordMcpAccessLogForTest(options, { toolName: 'check_spf', domain: 'example.com', rateLimited: false, method: 'tools/call', status: 'pass' });
+		mod.__recordMcpAccessLogForTest(options, {
+			toolName: 'check_spf',
+			domain: 'example.com',
+			rateLimited: false,
+			method: 'tools/call',
+			status: 'pass',
+		});
 		await new Promise((r) => setTimeout(r, 0));
 		expect(prepare).not.toHaveBeenCalled();
 		expect(sent).toHaveLength(1);
@@ -534,7 +540,13 @@ describe('recordMcpAccessLog routing', () => {
 			},
 		};
 		// @ts-expect-error — internal helper
-		mod.__recordMcpAccessLogForTest(options, { toolName: 'check_spf', domain: 'example.com', rateLimited: true, method: 'tools/call', status: 'unknown' });
+		mod.__recordMcpAccessLogForTest(options, {
+			toolName: 'check_spf',
+			domain: 'example.com',
+			rateLimited: true,
+			method: 'tools/call',
+			status: 'unknown',
+		});
 		await new Promise((r) => setTimeout(r, 0));
 		expect(prepare).toHaveBeenCalledTimes(1);
 		expect(String(prepare.mock.calls[0][0])).toContain('INSERT INTO mcp_access_log');
@@ -587,5 +599,159 @@ describe('recordInternalAccessLog', () => {
 			'pass',
 			'internal', // source
 		);
+	});
+});
+
+// #876 — public-path rows whose request carried no `cf-connecting-ip` used to
+// collapse into the bare `'unknown'` sentinel even when `request.cf` geo was
+// present, making every such caller one "user" in count(DISTINCT ip_hash) and
+// indistinguishable from a hashing failure. The recorder now derives a
+// network-locality fallback key (`n_<hex>` over asn|colo|country — all three
+// already stored in plaintext at the coarse PII level, so no new leakage) and
+// marks `ip_masked = 'no-cf-header'`. The IP-source rule (cf-connecting-ip
+// ONLY) is untouched: this is attribution of the no-header case, not a new
+// trust source.
+describe('recordMcpAccessLog attribution without cf-connecting-ip (#876)', () => {
+	function baseOptions(overrides: Record<string, unknown>) {
+		const run = vi.fn(async () => ({ success: true }));
+		const bind = vi.fn(() => ({ run }));
+		const prepare = vi.fn(() => ({ bind }));
+		const promises: Promise<unknown>[] = [];
+		const options = {
+			intelligenceDb: { prepare } as unknown as D1Database,
+			analyticsPiiLevel: 'coarse' as const,
+			responseTransport: 'sse',
+			startTime: Date.now(),
+			waitUntil: (p: Promise<unknown>) => promises.push(p),
+			...overrides,
+		};
+		return { options, bind, drain: () => Promise.all(promises) };
+	}
+
+	it('keeps the real IP hash and masked octets when cf-connecting-ip is present', async () => {
+		const mod = await import('../src/mcp/execute');
+		const { options, bind, drain } = baseOptions({ ip: '192.0.2.9', ipHash: 'i_real', country: 'NZ', colo: 'AKL', asn: 13335 });
+		// @ts-expect-error — internal helper
+		mod.__recordMcpAccessLogForTest(options, {
+			toolName: 'check_spf',
+			domain: 'example.com',
+			rateLimited: false,
+			method: 'tools/call',
+			status: 'pass',
+		});
+		await drain();
+		const row = bind.mock.calls[0] as unknown[];
+		expect(row[0]).toBe('i_real');
+		expect(row[1]).toBe('192.0.2.xxx');
+	});
+
+	it('records a network-locality fallback key + no-cf-header marker when the header is absent but request.cf is present', async () => {
+		const mod = await import('../src/mcp/execute');
+		const { hashNetworkLocalityForAnalytics } = await import('../src/lib/analytics');
+		const { NO_CF_HEADER_MARKER } = await import('../src/lib/access-log-event');
+		const { options, bind, drain } = baseOptions({ ip: 'unknown', ipHash: undefined, country: 'US', colo: 'IAD', asn: 396982 });
+		// @ts-expect-error — internal helper
+		mod.__recordMcpAccessLogForTest(options, {
+			toolName: 'scan_domain',
+			domain: 'example.com',
+			rateLimited: false,
+			method: 'tools/call',
+			status: 'pass',
+		});
+		await drain();
+		const row = bind.mock.calls[0] as unknown[];
+		expect(row[0]).toBe(hashNetworkLocalityForAnalytics({ asn: 396982, colo: 'IAD', country: 'US' }));
+		expect(row[0]).toMatch(/^n_[0-9a-f]{1,8}$/);
+		expect(row[0]).not.toBe('unknown');
+		expect(row[1]).toBe(NO_CF_HEADER_MARKER);
+		expect(row[1]).toBe('no-cf-header');
+		// Plaintext geo columns are unchanged — the key adds no dimension the row lacks.
+		expect(row[4]).toBe('US'); // country
+		expect(row[14]).toBe(396982); // asn
+		expect(row[19]).toBe('IAD'); // colo
+	});
+
+	it('gives two no-header callers in different network localities different keys', async () => {
+		const mod = await import('../src/mcp/execute');
+		const a = baseOptions({ ip: 'unknown', ipHash: undefined, country: 'NZ', colo: 'AKL', asn: 136557 });
+		const b = baseOptions({ ip: 'unknown', ipHash: undefined, country: 'IE', colo: 'DUB', asn: 6830 });
+		// @ts-expect-error — internal helper
+		mod.__recordMcpAccessLogForTest(a.options, {
+			toolName: 'check_spf',
+			domain: 'example.com',
+			rateLimited: false,
+			method: 'tools/call',
+			status: 'pass',
+		});
+		// @ts-expect-error — internal helper
+		mod.__recordMcpAccessLogForTest(b.options, {
+			toolName: 'check_spf',
+			domain: 'example.com',
+			rateLimited: false,
+			method: 'tools/call',
+			status: 'pass',
+		});
+		await Promise.all([a.drain(), b.drain()]);
+		const keyA = (a.bind.mock.calls[0] as unknown[])[0];
+		const keyB = (b.bind.mock.calls[0] as unknown[])[0];
+		expect(keyA).not.toBe(keyB);
+	});
+
+	it('falls back to the bare unknown sentinel when neither the header nor request.cf is present', async () => {
+		const mod = await import('../src/mcp/execute');
+		// Off-CF shape as index.ts produces it: country/colo default to 'unknown', asn undefined.
+		const { options, bind, drain } = baseOptions({ ip: 'unknown', ipHash: undefined, country: 'unknown', colo: 'unknown', asn: undefined });
+		// @ts-expect-error — internal helper
+		mod.__recordMcpAccessLogForTest(options, {
+			toolName: 'check_spf',
+			domain: 'example.com',
+			rateLimited: false,
+			method: 'tools/call',
+			status: 'pass',
+		});
+		await drain();
+		const row = bind.mock.calls[0] as unknown[];
+		expect(row[0]).toBe('unknown');
+		expect(row[1]).toBe('unknown');
+	});
+
+	it('leaves the internal door sentinel untouched (explicit ipHash wins over any cf fields)', async () => {
+		const { resolveAccessLogAttribution } = await import('../src/lib/access-log-event');
+		// recordInternalAccessLog passes ipHash: 'unknown' explicitly and no cf fields;
+		// even if cf fields were ever threaded through, an explicit ipHash must win.
+		expect(resolveAccessLogAttribution({ ipHash: 'unknown', ipMasked: 'unknown', asn: 13335, colo: 'AKL', country: 'NZ' })).toEqual({
+			ipHash: 'unknown',
+			ipMasked: 'unknown',
+		});
+	});
+
+	it('routes the same attribution through the queue path', async () => {
+		const mod = await import('../src/mcp/execute');
+		const sent: unknown[] = [];
+		const { options, drain } = baseOptions({
+			ip: 'unknown',
+			ipHash: undefined,
+			country: 'DE',
+			colo: 'FRA',
+			asn: 47583,
+			analyticsQueue: {
+				send: async (m: unknown) => {
+					sent.push(m);
+				},
+			},
+		});
+		// @ts-expect-error — internal helper
+		mod.__recordMcpAccessLogForTest(options, {
+			toolName: 'check_spf',
+			domain: 'example.com',
+			rateLimited: false,
+			method: 'tools/call',
+			status: 'pass',
+		});
+		await drain();
+		const ev = sent[0] as { ip: string; ipHash: string; ipMasked: string };
+		expect(ev.ipHash).toMatch(/^n_/);
+		expect(ev.ipMasked).toBe('no-cf-header');
+		expect(ev.ip).toBe('unknown'); // consumer PTR/encrypt short-circuit unchanged
 	});
 });

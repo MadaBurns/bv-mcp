@@ -17,13 +17,26 @@ A version lives in **4 hand-edited places** (plus the auto-derived `SERVER_VERSI
 
 ⚠️ **`server.json` is currently remotes-only** — it has a single top-level `version` and a `remotes` array, **no `packages` stanza**. CLAUDE.md's "TWO version fields (top-level + `packages[0].version`)" warning applies **only if** an npm `packages` stanza is re-added. The npm `packages` block was removed because the MCP Registry liveness-checks npm versions and the 3.3.x line isn't published to npm. **If you re-add a `packages` stanza, you re-introduce the two-field foot-gun — sync both.**
 
+## `@blackveil/dns-checks` version moves in LOCKSTEP with scoring behaviour (#855)
+
+The package version is a **coordination signal, not a registry fact** (npm publish is gated off — #719): bv-web-prod vendors the package as a tarball pinned by that version (`vendor/blackveil-dns-checks-X.Y.Z.tgz`), so a version that no longer identifies the code defeats the pin. Between #794 and 3.71.0 the package sat at 1.27.0 across THREE `SCORING_MODEL_VERSION` bumps, two of which moved scores — "re-vendor 1.27.0" meant different grades on different days.
+
+**Standing rule (settled 2026-08-31, #855 / #856 / #862):**
+
+1. Any PR that changes scoring behaviour in the package — `packages/dns-checks/src/scoring/`, `parity-fixtures.ts`, `types.ts` — MUST bump `packages/dns-checks/package.json` **and** `PARITY_CORPUS_VERSION` (`packages/dns-checks/src/parity-fixtures.ts`) to the same new minor **in that PR**. `parity-corpus.contract.test.ts` asserts the two are equal; `npm run check:scoring-contract-change` (runs inside the required `build-and-test` job, base = the PR base SHA) BLOCKS a PR that touches those paths with the package version unchanged.
+2. Any PR that touches `packages/dns-checks/src/checks/`, `src/scoring/` or `src/lib/scoring-*.ts` without touching `src/lib/scoring-version.ts` gets the advisory `Review scoring-model version decision` warning (`scripts/ci/check-scoring-version.mjs`). Either bump `SCORING_MODEL_VERSION` with a history entry, or declare the change score-neutral with the `no-scoring-change` label / `[no-scoring-change]` in the PR body. ⚠️ `check-*.ts` changes are NOT caught by rule 1's blocking gate — a check fix that moves scores (e.g. an abstention-vs-penalty correction) still needs the package + corpus bump; do it by hand.
+3. The package and corpus versions are bumped PER behaviour change, not per release — so they may advance several times between server releases. The release commit does not bump them (it owns only the 4 server-version surfaces above).
+4. After the server release that carries the new package version deploys, bv-web-prod must re-vendor: verify the tarball **contents and `exports`**, never the filename (fleet-architecture / [[bv-web-bv-mcp-coupling]]). Lockstep is closed only when bv-web-prod `package.json` pins the new version.
+
+Re-verify: `git log --oneline -5 -- packages/dns-checks/package.json` should show one bump per scoring-affecting PR; `grep -n PARITY_CORPUS_VERSION packages/dns-checks/src/parity-fixtures.ts` must equal `packages/dns-checks/package.json`'s version.
+
 ## Pre-bump locally before tagging
 
 Pre-bumping is **enforced, not merely advised**. `publish.yml`'s `version-bump` job is a read-only *verification gate* (PR #632): it asserts `package.json`, `package-lock.json`, `server.json` (plus `packages[0].version` if that stanza ever returns) and the `CHANGELOG.md` heading already match the tag, and fails the release with a per-surface `::error::` if any disagree. It edits and pushes nothing. So do the bump first:
 
 ```bash
 npm version <X.Y.Z> --no-git-tag-version --allow-same-version   # package.json + lock; SERVER_VERSION auto-derives
-# Update CHANGELOG.md ([X.Y.Z] heading) + server.json top-level version by hand
+# server.json top-level version + a CHANGELOG.md [X.Y.Z] stub are auto-synced by the `version` lifecycle hook (scripts/bump-version.mjs) and STAGED — fill the CHANGELOG stub in by hand; `git diff` won't show server.json because it is already staged
 git commit -am "chore: release <X.Y.Z>" && git push origin main   # via PR — direct push to main is blocked
 git tag v<X.Y.Z> <merged-main-HEAD> && git push origin v<X.Y.Z>   # tag the squashed merge commit, not the bump-branch tip
 ```
