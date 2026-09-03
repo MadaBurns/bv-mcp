@@ -11,7 +11,8 @@
 // `AbortSignal.timeout(2500)` AT CALL TIME. A Worker invocation may hold at most
 // SIX connections simultaneously waiting for response headers
 // (developers.cloudflare.com/workers/platform/limits/#simultaneous-open-connections);
-// the rest queue. A 25-candidate seed dispatches ~48 fetches; the 2.5s timers of
+// the rest queue. The 'REPRODUCTION' case below runs the pre-fix fan-out shape
+// against an emulated six-slot runtime and shows the tail nulling. A 25-candidate seed dispatches ~48 fetches; the 2.5s timers of
 // the ~42 queued ones run while they WAIT for a slot, so they abort before the
 // request is ever sent and fail-soft to `registrationDays: null` (and, for the
 // HEAD probe, to `hasWebContent: false` — a manufactured HIGH corroborator).
@@ -134,66 +135,158 @@ describe('enrichLookalikes — bounded fan-out (#867)', () => {
 		}
 	});
 
-	it('REPRODUCTION: an emulated six-slot connection queue starves the unbounded fan-out but not the bounded one', async () => {
-		// Emulate the Workers runtime: at most six fetches are "connected" at a
-		// time; the rest wait in a FIFO queue with their AbortSignal already
-		// ticking, exactly as the real queue behaves.
+	/**
+	 * Emulate the Workers runtime: at most `SLOTS` fetches are "connected" at a
+	 * time; the rest wait in a FIFO queue with their AbortSignal already ticking,
+	 * exactly as the real queue behaves. `HOLD_MS` is how long a connected fetch
+	 * occupies its slot. With 50 fetches through 6 slots, a fetch dispatched at
+	 * position p waits ≈ floor(p / 6) × HOLD_MS; at 600ms the fifth round onward
+	 * (p ≥ 30) waits > 2500ms — past the REAL `RDAP_PROBE_TIMEOUT_MS` — so a
+	 * pre-armed timer fires while its fetch is still queued. `peakWaiting` is
+	 * the deterministic tell: it is > 0 iff something ever queued.
+	 */
+	function buildSixSlotRuntime(holdMs: number) {
 		const SLOTS = 6;
-		const HOLD_MS = 400;
 		let active = 0;
 		const waiting: Array<() => void> = [];
+		/**
+		 * `queuedThenAborted` counts fetches that had to WAIT for a slot and were
+		 * then torn down by their own timer before completing a hold — i.e. the
+		 * request's budget was spent in the queue, not at the server. (Every
+		 * signal here is created within the same millisecond, so at T+2500 the
+		 * in-hold fetches abort, each release hands its slot to a waiter whose own
+		 * timer fires a microtask later, and the whole tail collapses in one
+		 * grant-then-abort cascade — which is why the count is taken on the
+		 * rejection, not on the `abort` event.)
+		 */
+		const stats = { peakWaiting: 0, queuedThenAborted: 0 };
 		const releaseSlot = () => {
 			active--;
-			const next = waiting.shift();
-			if (next) next();
+			// Drain until one waiter actually takes the slot (an already-aborted
+			// waiter is rejected by `grant` without occupying it).
+			while (active < SLOTS && waiting.length > 0) {
+				const before = active;
+				waiting.shift()!();
+				if (active > before) break;
+			}
 		};
-		globalThis.fetch = vi.fn().mockImplementation(async (input: FetchInput, init?: RequestInit) => {
+		const fetchImpl = async (input: FetchInput, init?: RequestInit): Promise<Response> => {
 			const url = new URL(urlOf(input));
 			const signal = init?.signal;
+			let wasQueued = false;
 			// Waiting for a slot is abortable — a queued fetch whose timer fires
 			// rejects without ever being sent (and leaves the queue).
 			await new Promise<void>((resolve, reject) => {
+				const abortReason = () => signal?.reason ?? new DOMException('aborted', 'AbortError');
 				const grant = () => {
-					active++;
 					signal?.removeEventListener('abort', onAbort);
+					// The runtime hands the slot to a fetch whose timer already fired:
+					// it is torn down without being sent. Counted here as well as in
+					// the listener because workerd does not reliably dispatch the
+					// `abort` event to a listener registered on a signal that is
+					// merely parked in a queue (observed 2026-09-04); the flag is
+					// authoritative either way.
+					if (signal?.aborted) {
+						stats.queuedThenAborted++;
+						reject(abortReason());
+						return;
+					}
+					active++;
 					resolve();
 				};
 				const onAbort = () => {
 					const idx = waiting.indexOf(grant);
-					if (idx >= 0) waiting.splice(idx, 1);
-					reject(signal?.reason ?? new DOMException('aborted', 'AbortError'));
+					if (idx >= 0) {
+						waiting.splice(idx, 1);
+						stats.queuedThenAborted++;
+					}
+					reject(abortReason());
 				};
 				if (signal?.aborted) return onAbort();
 				signal?.addEventListener('abort', onAbort, { once: true });
-				if (active < SLOTS) grant();
-				else waiting.push(grant);
+				if (active < SLOTS) {
+					grant();
+				} else {
+					wasQueued = true;
+					waiting.push(grant);
+					stats.peakWaiting = Math.max(stats.peakWaiting, waiting.length);
+				}
 			});
 			try {
 				return await delayHonouringSignal(
-					HOLD_MS,
+					holdMs,
 					() => (url.pathname.includes('/domain/') ? jsonResponse(rdapBody(400)) : new Response(null, { status: 200 })),
 					signal,
 				);
+			} catch (err) {
+				// Granted in the cascade described above, then killed by a timer
+				// that was armed while it sat in the queue.
+				if (wasQueued) stats.queuedThenAborted++;
+				throw err;
 			} finally {
 				releaseSlot();
 			}
-		});
+		};
+		return { fetchImpl, stats };
+	}
 
-		// 30 RDAP + 20 HEAD = 50 fetches through 6 slots × 400ms ≈ 3.6s of queue,
-		// longer than the 2.5s per-probe timer. Unbounded (the #867 code): every
-		// fetch is dispatched at t=0 with its timer already running, so the last
-		// ~2 slot-rounds abort while still queued — measured 15 of 30 candidates
-		// null under the pre-fix code with this exact emulation. Bounded: a fetch
-		// is dispatched only when a pool worker is free, so its timer starts when
-		// it can actually be sent, and no candidate is starved.
-		const candidates = Array.from({ length: 30 }, (_, i) => candidate(`starve${i}.com`, { hasA: i < 20, hasMX: true }));
+	const QUEUE_HOLD_MS = 600;
+	const queueCandidates = () => Array.from({ length: 30 }, (_, i) => candidate(`starve${i}.com`, { hasA: i < 20, hasMX: true }));
+
+	it('REPRODUCTION (pre-fix shape): the old per-candidate fan-out queues behind six slots and its pre-armed timers null the tail', async () => {
+		const { fetchImpl, stats } = buildSixSlotRuntime(QUEUE_HOLD_MS);
+		globalThis.fetch = vi.fn().mockImplementation(fetchImpl);
+		const { probePrimaryRegistration, probeHasWebContent } = await loadEnrichment();
+
+		// EXACTLY the #867 code path: `Promise.allSettled(candidates.map(...))`
+		// dispatching RDAP + HEAD for every candidate at once, each probe arming
+		// its own 2500ms timer at call time. `probePrimaryRegistration` IS the
+		// per-candidate `probeRdap` (same function, no deadline), and
+		// `probeHasWebContent` is the same HEAD probe the old loop called.
+		const candidates = queueCandidates();
+		const results = new Map<string, { registrationDays: number | null; lookup: string; hasWebContent: boolean }>();
+		await Promise.allSettled(
+			candidates.map(async (c) => {
+				const [rdap, hasWebContent] = await Promise.all([
+					probePrimaryRegistration(c.domain),
+					c.hasA ? probeHasWebContent(c.domain) : Promise.resolve(true),
+				]);
+				results.set(c.domain, { registrationDays: rdap.registrationDays, lookup: rdap.lookup, hasWebContent });
+			}),
+		);
+
+		// Something queued — the branch the bounded path must never reach.
+		expect(stats.peakWaiting).toBeGreaterThan(0);
+		expect(stats.queuedThenAborted).toBeGreaterThanOrEqual(10);
+		// The tail aborted IN THE QUEUE: null age, recorded as a timeout, with no
+		// server ever answering slowly. Positions ≥ 30 of 50 → ≥ 10 RDAP probes.
+		const starved = candidates.filter((c) => results.get(c.domain)?.registrationDays === null);
+		expect(starved.length).toBeGreaterThanOrEqual(10);
+		for (const c of starved) expect(results.get(c.domain)?.lookup, c.domain).toBe('timeout');
+		// And the same starvation manufactured the "no reachable web content"
+		// HIGH corroborator for HEAD probes that were never sent.
+		expect(candidates.some((c) => results.get(c.domain)?.hasWebContent === false)).toBe(true);
+	});
+
+	it('bounded fan-out never queues behind the six slots, so no timer runs while waiting and every candidate is populated', async () => {
+		const { fetchImpl, stats } = buildSixSlotRuntime(QUEUE_HOLD_MS);
+		globalThis.fetch = vi.fn().mockImplementation(fetchImpl);
+
+		const candidates = queueCandidates();
 		const { enrichLookalikes } = await loadEnrichment();
-		const enrichment = await enrichLookalikes(candidates, { deadlineMs: Date.now() + 8_000 });
+		const enrichment = await enrichLookalikes(candidates, { deadlineMs: Date.now() + 10_000 });
+
+		// The load-bearing guard against a pool-width regression: with
+		// RDAP_PROBE_CONCURRENCY + WEB_PROBE_CONCURRENCY ≤ 6 nothing can ever
+		// wait for a slot. Any widening past six turns this red deterministically
+		// — the timer-based assertions below would only catch a LARGE overshoot,
+		// because a queued fetch must wait ≥ 5 rounds to outlive 2500ms.
+		expect(stats.peakWaiting).toBe(0);
+		expect(stats.queuedThenAborted).toBe(0);
 
 		const populated = candidates.filter((c) => enrichment.get(c.domain)?.registrationDays === 400).length;
 		expect(populated).toBe(30);
-		// The HEAD probes that were NOT starved must not have been recorded as
-		// "no reachable web content" — that was the manufactured HIGH corroborator.
+		for (const c of candidates) expect(enrichment.get(c.domain)?.registrationLookup, c.domain).toBe('ok');
 		const noContent = candidates.filter((c) => enrichment.get(c.domain)?.hasWebContent === false).length;
 		expect(noContent).toBe(0);
 	});
