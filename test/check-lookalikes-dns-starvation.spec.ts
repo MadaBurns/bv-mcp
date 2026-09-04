@@ -340,6 +340,41 @@ describe('probeWithAdaptiveBatching — bounded to the Workers connection cap', 
 		}
 	});
 
+	it('an empty-answer candidate whose SECONDARY confirmation hangs is cut at deadlineMs (not deadlineMs + DNS_TIMEOUT_MS), counted `deadline`, and the phase returns within budget', async () => {
+		// The PR #903 review case: typosquats holding NS only answer EMPTY for
+		// A/MX, which triggers the secondary-resolver confirmation — a fetch the
+		// caller's deadline used to have no reach into.
+		let secondaryCalls = 0;
+		globalThis.fetch = vi.fn().mockImplementation((input: FetchInput, init?: RequestInit) => {
+			const url = new URL(urlOf(input));
+			if (url.hostname === 'dns.google') {
+				secondaryCalls++;
+				return delayHonouringSignal(60_000, () => createDohResponse([], []), init?.signal);
+			}
+			const { name } = dohQuery(input);
+			return Promise.resolve(createDohResponse([{ name, type: 1 }], []));
+		});
+		const { probeWithAdaptiveBatching } = await loadDns();
+		const BUDGET_MS = 400;
+		const started = Date.now();
+		const results = await probeWithAdaptiveBatching(['nsonly.com'], { deadlineMs: started + BUDGET_MS });
+		const elapsed = Date.now() - started;
+
+		expect(secondaryCalls).toBeGreaterThan(0);
+		// Within budget (plus scheduling slack) — nowhere near the 3s the secondary's own timer would allow.
+		expect(elapsed).toBeLessThan(BUDGET_MS + 300);
+		expect(results).toHaveLength(1);
+		const r = results[0];
+		expect(r.status).toBe('fulfilled');
+		if (r.status === 'fulfilled') {
+			expect(r.value.probeDegraded).toBe(true);
+			expect(r.value.probeDegradedReason).toBe('deadline');
+			// An aborted confirmation is not a measured absence.
+			expect(r.value.hasA).toBe(false);
+			expect(r.value.hasMX).toBe(false);
+		}
+	});
+
 	it('a candidate whose A or MX query hung is degraded with reason `timeout`; a transport failure with `failed`', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: FetchInput, init?: RequestInit) => {
 			const { name, type } = dohQuery(input);
