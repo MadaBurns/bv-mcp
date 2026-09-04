@@ -5,6 +5,8 @@ import { z } from 'zod';
 export const DEFAULT_MCP_ENDPOINT = 'https://dns-mcp.blackveilsecurity.com/mcp';
 const REQUESTED_PROTOCOL_VERSION = '2025-06-18';
 const SUPPORTED_PROTOCOL_VERSIONS = new Set(['2025-06-18', '2025-03-26']);
+export const MCP_RESPONSE_BODY_MAX_BYTES = 2 * 1024 * 1024;
+export const MCP_SSE_EVENT_MAX_BYTES = 512 * 1024;
 
 const ServerInfoSchema = z.object({ name: z.string().min(1), version: z.string().min(1) }).passthrough();
 const InitializeResultSchema = z.object({ protocolVersion: z.string().min(1), serverInfo: ServerInfoSchema }).passthrough();
@@ -106,6 +108,72 @@ function drainCompleteSseEvents(buffer: string): { events: string[]; remainder: 
 	}
 }
 
+async function cancelReader(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<void> {
+	try {
+		await reader.cancel();
+	} catch {
+		// Cancellation is best-effort; preserve the response or protocol error that led here.
+	} finally {
+		try {
+			reader.releaseLock();
+		} catch {
+			// A hostile or already-detached stream must not mask the request outcome.
+		}
+	}
+}
+
+async function discardResponseBody(response: Response): Promise<void> {
+	if (!response.body) return;
+	let reader: ReadableStreamDefaultReader<Uint8Array>;
+	try {
+		reader = response.body.getReader();
+	} catch {
+		return;
+	}
+	await cancelReader(reader);
+}
+
+async function readResponseTextCapped(response: Response): Promise<string> {
+	const contentLength = Number(response.headers.get('content-length'));
+	if (Number.isFinite(contentLength) && contentLength > MCP_RESPONSE_BODY_MAX_BYTES) {
+		await discardResponseBody(response);
+		throw new McpClientError('MCP response exceeded the response body limit', 'protocol', response.status);
+	}
+	if (!response.body) return '';
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let bytesRead = 0;
+	let text = '';
+	let complete = false;
+	try {
+		for (;;) {
+			const chunk = await reader.read();
+			if (chunk.value) {
+				bytesRead += chunk.value.byteLength;
+				if (bytesRead > MCP_RESPONSE_BODY_MAX_BYTES) {
+					throw new McpClientError('MCP response exceeded the response body limit', 'protocol', response.status);
+				}
+				text += decoder.decode(chunk.value, { stream: true });
+			}
+			if (chunk.done) {
+				text += decoder.decode();
+				complete = true;
+				return text;
+			}
+		}
+	} finally {
+		if (!complete) {
+			await cancelReader(reader);
+		} else {
+			try {
+				reader.releaseLock();
+			} catch {
+				// A hostile or already-detached stream must not mask the request outcome.
+			}
+		}
+	}
+}
+
 /** Parse a complete JSON or SSE payload and, when given, correlate it to one request id. */
 export function parseMcpResponseBody(text: string, expectedId?: RequestId): unknown {
 	const trimmed = text.trim();
@@ -141,30 +209,44 @@ async function readMatchingSseResponse(response: Response, expectedId: RequestId
 	const decoder = new TextDecoder();
 	const seen = new Set<string>();
 	let buffer = '';
-	for (;;) {
-		const chunk = await reader.read();
-		buffer += decoder.decode(chunk.value, { stream: !chunk.done });
-		const drained = drainCompleteSseEvents(buffer);
-		buffer = drained.remainder;
-		if (chunk.done && buffer.trim()) {
-			drained.events.push(buffer);
-			buffer = '';
-		}
-		let matched: ParsedRpcResponse | undefined;
-		for (const event of drained.events) {
-			const value = parseSseEvent(event);
-			if (value === undefined) continue;
-			const candidate = classifyJsonRpcMessage(value, expectedId, seen);
-			if (candidate) {
-				if (matched) throw new McpClientError(`MCP returned duplicate JSON-RPC id ${String(expectedId)}`, 'protocol');
-				matched = candidate;
+	let bytesRead = 0;
+	try {
+		for (;;) {
+			const chunk = await reader.read();
+			if (chunk.value) {
+				bytesRead += chunk.value.byteLength;
+				if (bytesRead > MCP_RESPONSE_BODY_MAX_BYTES) {
+					throw new McpClientError('MCP SSE response exceeded the response body limit', 'protocol', response.status);
+				}
 			}
+			buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+			const drained = drainCompleteSseEvents(buffer);
+			buffer = drained.remainder;
+			if (new TextEncoder().encode(buffer).byteLength > MCP_SSE_EVENT_MAX_BYTES) {
+				throw new McpClientError('MCP SSE event exceeded the event limit', 'protocol', response.status);
+			}
+			if (chunk.done && buffer.trim()) {
+				drained.events.push(buffer);
+				buffer = '';
+			}
+			let matched: ParsedRpcResponse | undefined;
+			for (const event of drained.events) {
+				if (new TextEncoder().encode(event).byteLength > MCP_SSE_EVENT_MAX_BYTES) {
+					throw new McpClientError('MCP SSE event exceeded the event limit', 'protocol', response.status);
+				}
+				const value = parseSseEvent(event);
+				if (value === undefined) continue;
+				const candidate = classifyJsonRpcMessage(value, expectedId, seen);
+				if (candidate) {
+					if (matched) throw new McpClientError(`MCP returned duplicate JSON-RPC id ${String(expectedId)}`, 'protocol');
+					matched = candidate;
+				}
+			}
+			if (matched) return matched;
+			if (chunk.done) throw new McpClientError('MCP SSE stream ended without a matching JSON-RPC response', 'protocol');
 		}
-		if (matched) {
-			void reader.cancel();
-			return matched;
-		}
-		if (chunk.done) throw new McpClientError('MCP SSE stream ended without a matching JSON-RPC response', 'protocol');
+	} finally {
+		await cancelReader(reader);
 	}
 }
 
@@ -249,13 +331,16 @@ export class McpHttpClient {
 			const message = error instanceof Error ? error.message : 'request failed';
 			throw new McpClientError(`MCP transport failed: ${message}`, 'transport');
 		}
-		if (response.ok && !expectPayload) return { result: undefined, headers: response.headers };
+		if (response.ok && !expectPayload) {
+			await discardResponseBody(response);
+			return { result: undefined, headers: response.headers };
+		}
 		const expectedId = body.id;
 		if (expectPayload && typeof expectedId !== 'string' && (typeof expectedId !== 'number' || !Number.isInteger(expectedId))) {
 			throw new McpClientError('MCP client request omitted a valid JSON-RPC id', 'protocol');
 		}
 		if (!response.ok) {
-			const text = await response.text();
+			const text = await readResponseTextCapped(response);
 			let remote: ParsedRpcResponse | undefined;
 			if (text.trim() && expectedId !== undefined) {
 				try {
@@ -274,7 +359,7 @@ export class McpHttpClient {
 		const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
 		const parsed = contentType.includes('text/event-stream')
 			? await readMatchingSseResponse(response, expectedId as RequestId)
-			: (parseMcpResponseBody(await response.text(), expectedId as RequestId) as ParsedRpcResponse);
+			: (parseMcpResponseBody(await readResponseTextCapped(response), expectedId as RequestId) as ParsedRpcResponse);
 		if (!parsed) throw new McpClientError('MCP response contained no matching JSON-RPC response', 'protocol', response.status);
 		if (parsed.error) {
 			throw new McpClientError(`MCP error ${parsed.error.code}: ${parsed.error.message}`, 'remote', response.status, parsed.error.code);

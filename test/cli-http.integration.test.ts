@@ -1,7 +1,12 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, expect, it } from 'vitest';
-import { McpClientError, McpHttpClient, parseMcpResponseBody } from '../src/cli/mcp-http-client';
+import {
+	MCP_RESPONSE_BODY_MAX_BYTES,
+	MCP_SSE_EVENT_MAX_BYTES,
+	McpHttpClient,
+	parseMcpResponseBody,
+} from '../src/cli/mcp-http-client';
 
 function rpc(result: unknown, headers: HeadersInit = {}, id = 1): Response {
 	return new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), {
@@ -56,7 +61,7 @@ describe('hosted MCP HTTP client', () => {
 			fetchFn: (async () => new Response('', { status })) as typeof fetch,
 			signalFactory: () => new AbortController().signal,
 		});
-		await expect(client.connect()).rejects.toMatchObject<McpClientError>({ kind: 'remote', status });
+		await expect(client.connect()).rejects.toMatchObject({ kind: 'remote', status });
 	});
 
 	it('rejects a successful request that omits its JSON-RPC response', async () => {
@@ -107,7 +112,7 @@ describe('hosted MCP HTTP client', () => {
 		expect(new Headers(requests[2]?.headers).get('mcp-session-id')).toBeNull();
 	});
 
-	it('incrementally ignores notifications and returns before the matched SSE stream closes', async () => {
+	it('returns a matched SSE response when stream cancellation rejects and releases the reader lock', async () => {
 		let cancelled = false;
 		const stream = new ReadableStream({
 			start(controller) {
@@ -119,8 +124,9 @@ describe('hosted MCP HTTP client', () => {
 				);
 				controller.enqueue(new TextEncoder().encode('"text":"ok"}],"structuredContent":{"domain":"example.com"}}}\n\n'));
 			},
-			cancel() {
+			async cancel() {
 				cancelled = true;
+				throw new Error('cancel rejected');
 			},
 		});
 		const responses = [
@@ -136,6 +142,129 @@ describe('hosted MCP HTTP client', () => {
 		await client.connect();
 		await expect(client.callTool('scan_domain', {})).resolves.toMatchObject({ structuredContent: { domain: 'example.com' } });
 		expect(cancelled).toBe(true);
+		expect(stream.locked).toBe(false);
+	});
+
+	it('cancels an unexpected initialized-notification response body', async () => {
+		let cancelled = false;
+		const notificationStream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('unexpected'));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const responses = [rpc(initialized()), new Response(notificationStream, { status: 202 })];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async () => responses.shift()!) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+
+		await expect(client.connect()).resolves.toMatchObject({ name: 'blackveil-dns-mcp' });
+		expect(cancelled).toBe(true);
+		expect(notificationStream.locked).toBe(false);
+	});
+
+	it.each([
+		['invalid JSON', 'data: {invalid}\n\n', /invalid SSE JSON/],
+		['mismatched id', 'data: {"jsonrpc":"2.0","id":9,"result":{}}\n\n', /did not match/],
+	])('cancels and unlocks the SSE reader after %s', async (_label, payload, expected) => {
+		let cancelled = false;
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode(payload));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const responses = [
+			rpc(initialized()),
+			new Response('', { status: 202 }),
+			new Response(stream, { headers: { 'content-type': 'text/event-stream' } }),
+		];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async () => responses.shift()!) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+
+		await client.connect();
+		await expect(client.callTool('scan_domain', {})).rejects.toThrow(expected as RegExp);
+		expect(cancelled).toBe(true);
+		expect(stream.locked).toBe(false);
+	});
+
+	it('releases the SSE reader lock when reading fails', async () => {
+		const stream = new ReadableStream({
+			pull(controller) {
+				controller.error(new Error('stream read failed'));
+			},
+		});
+		const responses = [
+			rpc(initialized()),
+			new Response('', { status: 202 }),
+			new Response(stream, { headers: { 'content-type': 'text/event-stream' } }),
+		];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async () => responses.shift()!) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+
+		await client.connect();
+		await expect(client.callTool('scan_domain', {})).rejects.toThrow('stream read failed');
+		expect(stream.locked).toBe(false);
+	});
+
+	it('rejects and disposes an oversized JSON response', async () => {
+		let cancelled = false;
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(new Uint8Array(MCP_RESPONSE_BODY_MAX_BYTES + 1));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async () => new Response(stream, { headers: { 'content-type': 'application/json' } })) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+
+		await expect(client.connect()).rejects.toThrow('response body limit');
+		expect(cancelled).toBe(true);
+		expect(stream.locked).toBe(false);
+	});
+
+	it('rejects and disposes an oversized SSE event', async () => {
+		let cancelled = false;
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode(`data: ${'x'.repeat(MCP_SSE_EVENT_MAX_BYTES)}`));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const responses = [
+			rpc(initialized()),
+			new Response('', { status: 202 }),
+			new Response(stream, { headers: { 'content-type': 'text/event-stream' } }),
+		];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async () => responses.shift()!) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+
+		await client.connect();
+		await expect(client.callTool('scan_domain', {})).rejects.toThrow('event limit');
+		expect(cancelled).toBe(true);
+		expect(stream.locked).toBe(false);
 	});
 
 	it.each([
