@@ -309,11 +309,45 @@ export function verifyTlsaAssociations(records: TlsaRecord[] | string[], cert: S
 	return { matched, unmatched, unverifiable, truncatedChain };
 }
 
-/** Machine-readable `notAssessedReason` tokens for an unmeasured pin verification. */
+/**
+ * Machine-readable `notAssessedReason` tokens for a pin the probe could not verify.
+ * Every one of them scores the SAME `low` "present, not verified" finding (95) as a
+ * consumer with no probe at all — an attempted-but-unanswered comparison is not better
+ * evidence than no comparison. The token tells consumers WHICH sub-state applies.
+ */
 export const DANE_PIN_NOT_ASSESSED_REASONS = {
+	/** The probe's cold-cache verdict; the answer arrives on a later call. */
 	pending: 'certificate_probe_pending',
-	failed: 'certificate_probe_failed',
+	/** The probe reached the host but could not capture a usable certificate. */
+	captureFailed: 'capture_failed',
+	/** The probe followed a redirect off the TLSA owner's host (permanent for that host). */
+	offHostRedirect: 'off_host_redirect',
+	/** The capture describes a host other than the scanned one (permanent). */
+	hostMismatch: 'host_mismatch',
+	/** The host did not answer the probe. */
+	unreachable: 'unreachable',
+	/** The probe service itself failed (5xx, throw, timeout, budget cut). */
+	probeUnavailable: 'probe_unavailable',
+	/** A trust-anchor pin may sit in the chain tail the probe dropped (permanent). */
+	chainTruncated: 'chain_truncated',
 } as const;
+
+/**
+ * Reasons a later scan may resolve by itself. A result carrying one is marked `partial`
+ * (not cached for the scan TTL, re-tried next scan). The rest are permanent for the
+ * host and cache normally — no retry-forever.
+ */
+export const DANE_PIN_TRANSIENT_REASONS: ReadonlySet<string> = new Set([
+	DANE_PIN_NOT_ASSESSED_REASONS.pending,
+	DANE_PIN_NOT_ASSESSED_REASONS.captureFailed,
+	DANE_PIN_NOT_ASSESSED_REASONS.unreachable,
+	DANE_PIN_NOT_ASSESSED_REASONS.probeUnavailable,
+]);
+
+/** True when a `notAssessedReason` names a transient probe outcome worth re-trying. */
+export function isTransientDanePinReason(reason: unknown): boolean {
+	return typeof reason === 'string' && DANE_PIN_TRANSIENT_REASONS.has(reason);
+}
 
 /**
  * Analyze a set of TLSA records for a given DNS name.
@@ -415,8 +449,13 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 	// passes it in `verification` — and the verdict ladder is:
 	//   any association matches            → info, `certificateMatchVerified: true`   (100)
 	//   certificate served, none match     → high "pin does not match"                 (75)
-	//   probe attempted, no certificate    → info, `inconclusive` + `notAssessedReason` (unmeasured, no deduction)
+	//   probe attempted, no certificate    → the SAME low "present, not verified" (95) plus
+	//                                        `certificateProbe` + `notAssessedReason` metadata
 	//   no probe capability (self-hosts)   → low "present, not verified" — the 1.18.0 posture, unchanged (95)
+	// Every unverified state sits at 95 (operator-ratified 1.18.0 posture): an attempted
+	// comparison that produced no answer is not better evidence than no comparison, so it
+	// must never outscore the honest self-host disclosure. Only an ACTUAL comparison moves
+	// the score — up to 100 or down to 75.
 	// `certificateMatchVerified` is the machine-readable marker every consumer must read
 	// (maturity staging counts a DANE pin toward Stage 4 ONLY when it is `true`).
 	if (validRecordCount > 0) {
@@ -433,8 +472,13 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 	return findings;
 }
 
-/** The 1.18.0 posture: present + well-formed, compared against nothing. Text is pinned by dane-honest-labeling.test.ts. */
-function buildUnverifiedVerdict(name: string, validRecordCount: number): Finding {
+/**
+ * The 1.18.0 posture: present + well-formed, not confirmed against the served
+ * certificate. Text is pinned by dane-honest-labeling.test.ts. `extra` carries the
+ * sub-state metadata (`certificateProbe`, `notAssessedReason`, …) when a probe was
+ * attempted; the no-probe path passes nothing so its metadata is byte-identical.
+ */
+function buildUnverifiedVerdict(name: string, validRecordCount: number, extra: Record<string, unknown> = {}): Finding {
 	const detail =
 		validRecordCount === 1
 			? `TLSA record present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.`
@@ -443,16 +487,20 @@ function buildUnverifiedVerdict(name: string, validRecordCount: number): Finding
 		name,
 		validRecordCount,
 		certificateMatchVerified: false,
+		...extra,
 	});
 }
 
 /**
- * The probe was ATTEMPTED and returned no certificate: the pin is UNMEASURED this run.
- * `info` with `inconclusive: true` — no deduction, no absence claim (#638: a probe that
- * never produced an answer must not be scored as a measurement). The caller marks the
- * result `partial` off `metadata.certificateProbe` so it is not cached and the next
- * scan re-tries; the category itself stays COMPLETED because the TLSA measurement is
- * real — only the comparison is outstanding.
+ * The probe was ATTEMPTED and returned no certificate: the pin is still unverified, so
+ * the verdict is the SAME `low` as the no-probe path (95) — never `info`/100, which
+ * would rank "we tried and learned nothing" above the honest self-host disclosure.
+ * The metadata names the sub-state: `certificateProbe` (`pending` | `failed`) and a
+ * `notAssessedReason` token. `checkDANEHTTPS` marks the result `partial` only for the
+ * TRANSIENT reasons ({@link DANE_PIN_TRANSIENT_REASONS}) so a cold cache is re-tried and
+ * a permanently-failing host is not re-probed forever. No `inconclusive` marker: that
+ * vocabulary is reserved for no-penalty abstentions, and this finding carries a penalty
+ * because the TLSA measurement itself is real.
  */
 function buildUnmeasuredVerdict(
 	name: string,
@@ -460,26 +508,9 @@ function buildUnmeasuredVerdict(
 	outcome: 'pending' | 'failed',
 	reason: string | undefined,
 ): Finding {
-	const notAssessedReason = reason ?? DANE_PIN_NOT_ASSESSED_REASONS[outcome];
-	const plural = validRecordCount === 1 ? 'TLSA record is' : `${validRecordCount} TLSA records are`;
-	const why =
-		outcome === 'pending'
-			? 'the certificate probe has not finished capturing the served certificate yet (its result arrives on a later scan)'
-			: `the certificate probe returned no usable certificate (${notAssessedReason.replace(/_/g, ' ')})`;
-	return createFinding(
-		'dane',
-		`DANE TLSA pin verification ${outcome === 'pending' ? 'pending' : 'inconclusive'} for ${name}`,
-		'info',
-		`${plural} present and syntactically well-formed for ${name}, but ${why}, so the pinned data was neither confirmed nor refuted against the certificate the server presents. This unverified state carries no deduction; the result is marked partial so the next scan re-attempts verification. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection — confirm the pin after every certificate rotation.`,
-		{
-			name,
-			validRecordCount,
-			certificateMatchVerified: false,
-			inconclusive: true,
-			notAssessedReason,
-			certificateProbe: outcome,
-		},
-	);
+	const notAssessedReason =
+		reason ?? (outcome === 'pending' ? DANE_PIN_NOT_ASSESSED_REASONS.pending : DANE_PIN_NOT_ASSESSED_REASONS.captureFailed);
+	return buildUnverifiedVerdict(name, validRecordCount, { certificateProbe: outcome, notAssessedReason });
 }
 
 /** Compact presentation of an association for prose / metadata. */
@@ -532,28 +563,17 @@ function buildVerifiedVerdict(name: string, validRecords: TlsaRecord[], cert: Se
 	}
 
 	if (verification.truncatedChain.length > 0) {
-		// A trust-anchor pin may sit in the chain tail the probe dropped: an ABSTENTION
-		// (info, no deduction), not a mismatch. Persistent for that host, so no
-		// `certificateProbe` marker — the result is not `partial` and caches normally.
-		const affected = verification.truncatedChain.map(describeAssociation);
-		return createFinding(
-			'dane',
-			`DANE TLSA pin verification inconclusive for ${name}`,
-			'info',
-			`${affected.length === 1 ? 'A trust-anchor TLSA association' : `${affected.length} trust-anchor TLSA associations`} at ${name} matched none of the ${cert.chain?.length ?? 0} chain entries the certificate probe retained, but the chain ${cert.host} served${cert.chainLength ? ` (${cert.chainLength} entries)` : ''} exceeded the probe's cap and its tail was dropped, so the anchor may be among the entries that were not compared. The pin was neither confirmed nor refuted; this carries no deduction. Where the RRset is DNSSEC-authenticated and no association matches the served chain, DANE-validating clients reject the connection — confirm the anchor against the full chain.`,
-			{
-				...served,
-				name,
-				validRecordCount: validRecords.length,
-				certificateMatchVerified: false,
-				inconclusive: true,
-				notAssessedReason: 'chain_truncated',
-				chainTruncated: true,
-				...(cert.chainLength !== undefined ? { chainLength: cert.chainLength } : {}),
-				unverifiableAssociations: verification.unverifiable.map(describeAssociation),
-				...(verification.unmatched.length > 0 ? { unmatchedAssociations: verification.unmatched.map(describeAssociation) } : {}),
-			},
-		);
+		// A trust-anchor pin may sit in the chain tail the probe dropped: the pin is
+		// unverified (the same `low`, 95), never a mismatch. Permanent for that host, so
+		// no `certificateProbe` marker — the result is not `partial` and caches normally.
+		return buildUnverifiedVerdict(name, validRecords.length, {
+			...served,
+			notAssessedReason: DANE_PIN_NOT_ASSESSED_REASONS.chainTruncated,
+			chainTruncated: true,
+			...(cert.chainLength !== undefined ? { chainLength: cert.chainLength } : {}),
+			unverifiableAssociations: verification.unverifiable.map(describeAssociation),
+			...(verification.unmatched.length > 0 ? { unmatchedAssociations: verification.unmatched.map(describeAssociation) } : {}),
+		});
 	}
 
 	if (verification.unverifiable.length > 0) {

@@ -373,17 +373,22 @@
  *   VERIFIED 100 (`info`, `certificateMatchVerified: true`) > ABSENT 95 (unchanged `low`)
  *   > MISMATCH 75 (`high` "pin does not match the served certificate", −25). A probe that
  *   was attempted but returned no certificate (cold-cache "pending", capture failure,
- *   off-host redirect, host mismatch) is UNMEASURED: an `info` with `inconclusive: true`
- *   + `notAssessedReason`, no deduction, `partial: true` (not cached, re-tried next scan)
- *   and NO `checkStatus` — the TLSA measurement itself is real, so the category stays
- *   completed. A trust-anchor pin (usage 0 / 2) that matches no RETAINED chain entry
- *   while the probe reports `chainTruncated` is likewise an `info` abstention
- *   (`notAssessedReason: 'chain_truncated'`, cached normally — persistent for the host),
- *   never a mismatch; leaf usages (1 / 3) are unaffected by truncation. Direction: DOWNWARD only for domains whose DANE-HTTPS pin does not match
- *   the served certificate (100 or 95 → 75, ≈0.09 overall points at protective weight 2);
- *   UPWARD 95 → 100 for verified pins on operator deploys. Absence is unchanged; every
- *   self-host without the binding (and `check_dane`, SMTP/25, which the HTTPS-only probe
- *   cannot serve) is bit-for-bit unchanged at the 1.18.0 posture. CEILING SAFETY:
+ *   off-host redirect, host mismatch, unreachable, probe 5xx) leaves the pin UNVERIFIED:
+ *   the SAME `low` 95 as the no-probe path (operator-ratified 1.18.0 posture — every
+ *   unverified state is 95, so "we tried and learned nothing" never outscores the honest
+ *   self-host disclosure), with `certificateProbe` + `notAssessedReason` metadata naming
+ *   the sub-state. `partial: true` (not cached, re-tried next scan) only for TRANSIENT
+ *   reasons (`certificate_probe_pending`, `capture_failed`, `unreachable`,
+ *   `probe_unavailable`); permanent ones (`off_host_redirect`, `host_mismatch`, and
+ *   `chain_truncated` — a trust-anchor pin matching no retained entry of a chain the
+ *   probe truncated; leaf usages 1 / 3 are unaffected) cache normally. NO `checkStatus`
+ *   and no `inconclusive` marker — the TLSA measurement itself is real, so the category
+ *   stays completed and scored. Direction: UPWARD 95 → 100 ONLY for pins verified against
+ *   the served certificate; DOWNWARD 95 → 75 ONLY for measured mismatches (≈0.09 overall
+ *   points either way at protective weight 2). Every unverified state is unchanged at
+ *   95, so self-hosts without the binding (and `check_dane`, SMTP/25, which the
+ *   HTTPS-only probe cannot serve) are bit-for-bit unchanged and operator deploys move
+ *   only on an actual comparison. Absence is unchanged. CEILING SAFETY:
  *   `dane_https` is in `PROFILE_CRITICAL_CATEGORIES` for `non_mail` / `web_only`, so a
  *   `high` that read as a missing control would cap the whole scan at 64; the mismatch
  *   prose is kept clear of the `MISSING_CONTROL_REGEX` triggers, declares no

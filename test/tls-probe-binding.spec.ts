@@ -338,13 +338,13 @@ describe('servedCertificateFromProbe', () => {
 	});
 
 	it.each([
-		['a different host (www vs apex)', { certificate: { ...cert(), host: 'www.example.com' } }, 'certificate_host_mismatch'],
-		['a certificate with no host', { certificate: { ...cert(), host: undefined } }, 'certificate_host_mismatch'],
-		['a certificate block missing its leaf digests', { certificate: { host: 'example.com', port: 443 } }, 'certificate_probe_failed'],
+		['a different host (www vs apex)', { certificate: { ...cert(), host: 'www.example.com' } }, 'host_mismatch'],
+		['a certificate with no host', { certificate: { ...cert(), host: undefined } }, 'host_mismatch'],
+		['a certificate block missing its leaf digests', { certificate: { host: 'example.com', port: 443 } }, 'capture_failed'],
 		['certificateError: off-host redirect', { certificateError: 'off-host redirect' }, 'off_host_redirect'],
-		['certificateError: anything else', { certificateError: 'no security state' }, 'certificate_probe_failed'],
-		['reachable: false', { reachable: false, error: 'connect timeout' }, 'host_unreachable'],
-		['no certificate block at all', { reachable: true, minVersion: 'TLS1.2' }, 'certificate_probe_failed'],
+		['certificateError: anything else', { certificateError: 'no security state' }, 'capture_failed'],
+		['reachable: false', { reachable: false, error: 'connect timeout' }, 'unreachable'],
+		['no certificate block at all', { reachable: true, minVersion: 'TLS1.2' }, 'capture_failed'],
 	])('%s → failed, reason %s', async (_label, probe, reason) => {
 		const { servedCertificateFromProbe } = await fresh();
 		const out = servedCertificateFromProbe(probe as never, 'example.com');
@@ -360,12 +360,12 @@ describe('servedCertificateFromProbe', () => {
 		expect(out.certificateProbeReason).toBe('certificate_probe_pending');
 	});
 
-	it('a null probe (binding failure) → failed', async () => {
+	it('a null probe (binding failure) → failed, probe_unavailable', async () => {
 		const { servedCertificateFromProbe } = await fresh();
 		expect(servedCertificateFromProbe(null, 'example.com')).toEqual({
 			servedCertificate: null,
 			certificateProbe: 'failed',
-			certificateProbeReason: 'certificate_probe_failed',
+			certificateProbeReason: 'probe_unavailable',
 		});
 	});
 

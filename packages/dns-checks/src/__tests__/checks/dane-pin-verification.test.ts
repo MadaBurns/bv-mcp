@@ -7,7 +7,7 @@
  * the scoring was inverted: a stale DANE-EE pin (which breaks every DANE-validating
  * client) scored 100 while deleting it scored 95. With the served certificate in hand
  * (captured by bv-tls-probe, passed in as `ServedCertificate`) the end state is
- * monotone: verified 100 > absent 95 > mismatch 75.
+ * monotone: verified 100 > {absent, unverified — with or without a probe} 95 > mismatch 75.
  *
  * The digest vectors come from OpenSSL (see served-certificate.fixture.ts), so a green
  * run proves the comparison against an independent implementation.
@@ -238,29 +238,31 @@ describe('analyzeTlsaRecords — verdict ladder with a served certificate', () =
 		}
 	});
 
-	it('chainTruncated + no TA match → info abstention (notAssessedReason chain_truncated), NOT a mismatch, no deduction', () => {
+	it('chainTruncated + no TA match → the unverified low (95) with notAssessedReason chain_truncated, NOT a mismatch', () => {
 		const truncated = servedCertificate('example.com', { chainTruncated: true, chainLength: 11 });
 		const findings = analyzeTlsaRecords([`2 1 1 ${STALE_SHA256}`], NAME, true, { servedCertificate: truncated });
 		expect(findings.some((f) => f.severity === 'high')).toBe(false);
 		const [f] = findings;
-		expect(f.severity).toBe('info');
+		expect(f.severity).toBe('low');
+		expect(f.title).toBe(`DANE TLSA configured for ${NAME}`);
 		expect(f.metadata).toMatchObject({
 			certificateMatchVerified: false,
-			inconclusive: true,
 			notAssessedReason: 'chain_truncated',
 			chainTruncated: true,
 			chainLength: 11,
 		});
+		expect(f.metadata?.inconclusive).toBeUndefined();
 		// Not a probe outcome marker — the condition is persistent for the host, so the
 		// result must cache normally rather than re-try every scan.
 		expect(f.metadata?.certificateProbe).toBeUndefined();
-		expect(buildCheckResult('dane_https', [{ ...f, category: 'dane_https' }]).score).toBe(100);
+		expect(buildCheckResult('dane_https', [{ ...f, category: 'dane_https' }]).score).toBe(95);
 	});
 
 	it('chainTruncated with a stale LEAF pin beside an unverifiable TA pin → abstention (the set may still authenticate)', () => {
 		const truncated = servedCertificate('example.com', { chainTruncated: true });
 		const findings = analyzeTlsaRecords([`3 1 1 ${STALE_SHA256}`, `2 1 1 ${STALE_SHA256}`], NAME, true, { servedCertificate: truncated });
 		expect(findings.some((f) => f.severity === 'high')).toBe(false);
+		expect(findings[0].severity).toBe('low');
 		expect(findings[0].metadata?.notAssessedReason).toBe('chain_truncated');
 		expect(findings[0].metadata?.unmatchedAssociations).toEqual([`3 1 1 ${STALE_SHA256}`]);
 	});
@@ -312,21 +314,21 @@ describe('analyzeTlsaRecords — probe outcomes without a certificate', () => {
 	});
 
 	it.each([
-		['pending', DANE_PIN_NOT_ASSESSED_REASONS.pending, /pending/],
-		['failed', DANE_PIN_NOT_ASSESSED_REASONS.failed, /inconclusive/],
-	] as const)('probe %s → info, inconclusive, notAssessedReason, NO deduction', (outcome, reason, titleRe) => {
+		['pending', DANE_PIN_NOT_ASSESSED_REASONS.pending],
+		['failed', DANE_PIN_NOT_ASSESSED_REASONS.captureFailed],
+	] as const)('probe %s → the SAME low "present, not verified" (95) with sub-state metadata, no inconclusive marker', (outcome, reason) => {
 		const [f] = analyzeTlsaRecords([`3 1 1 ${STALE_SHA256}`], NAME, true, { certificateProbe: outcome });
-		expect(f.severity).toBe('info');
-		expect(f.title).toMatch(titleRe);
-		expect(f.metadata).toMatchObject({
-			certificateMatchVerified: false,
-			inconclusive: true,
-			notAssessedReason: reason,
-			certificateProbe: outcome,
-		});
+		const baseline = analyzeTlsaRecords([`3 1 1 ${STALE_SHA256}`], NAME, true)[0];
+		expect(f.severity).toBe('low');
+		expect(f.title).toBe(baseline.title);
+		expect(f.detail).toBe(baseline.detail);
+		expect(f.metadata).toEqual({ ...baseline.metadata, certificateProbe: outcome, notAssessedReason: reason });
+		expect(f.metadata?.inconclusive).toBeUndefined();
 		expect(f.metadata?.missingControl).toBeUndefined();
-		const result = buildCheckResult('dane_https', [{ ...f, category: 'dane_https' }]);
-		expect(result.score).toBe(100);
+		// Never above the honest self-host disclosure: an attempted-but-unanswered
+		// comparison is not better evidence than no comparison.
+		expect(buildCheckResult('dane_https', [{ ...f, category: 'dane_https' }]).score).toBe(95);
+		expect(buildCheckResult('dane_https', [{ ...baseline, category: 'dane_https' }]).score).toBe(95);
 	});
 
 	it('a caller-supplied reason token becomes the notAssessedReason', () => {
@@ -335,7 +337,7 @@ describe('analyzeTlsaRecords — probe outcomes without a certificate', () => {
 			certificateProbeReason: 'off_host_redirect',
 		});
 		expect(f.metadata?.notAssessedReason).toBe('off_host_redirect');
-		expect(f.detail).toContain('off host redirect');
+		expect(f.severity).toBe('low');
 	});
 
 	it('a served certificate wins over a stale probe outcome', () => {
@@ -393,24 +395,46 @@ describe('checkDANEHTTPS — end state verified 100 > absent 95 > mismatch 75', 
 	});
 
 	it.each(['pending', 'failed'] as const)(
-		'probe %s → 100, partial: true, checkStatus untouched (category stays completed)',
+		'probe %s (default transient reason) → 95, partial: true, checkStatus untouched',
 		async (outcome) => {
 			const { queryDNS, rawQueryDNS } = dns([`3 1 1 ${STALE_SHA256}`]);
 			const result = await checkDANEHTTPS('example.com', queryDNS, { rawQueryDNS, certificateProbe: outcome });
-			expect(result.score).toBe(100);
+			expect(result.score).toBe(95);
+			expect(result.passed).toBe(true);
 			expect(result.partial).toBe(true);
 			expect(result.checkStatus).toBeUndefined();
-			expect(result.findings[0].metadata?.inconclusive).toBe(true);
+			expect(result.findings[0].severity).toBe('low');
+			expect(result.findings[0].metadata?.certificateProbe).toBe(outcome);
 		},
 	);
 
-	it('chain_truncated abstention → 100, NOT partial (persistent condition, caches normally)', async () => {
+	it.each([
+		[DANE_PIN_NOT_ASSESSED_REASONS.pending, true],
+		[DANE_PIN_NOT_ASSESSED_REASONS.captureFailed, true],
+		[DANE_PIN_NOT_ASSESSED_REASONS.unreachable, true],
+		[DANE_PIN_NOT_ASSESSED_REASONS.probeUnavailable, true],
+		[DANE_PIN_NOT_ASSESSED_REASONS.offHostRedirect, false],
+		[DANE_PIN_NOT_ASSESSED_REASONS.hostMismatch, false],
+		['some_unknown_reason', false],
+	])('reason %s → partial %s (transient reasons re-try, permanent ones cache normally)', async (reason, partial) => {
+		const { queryDNS, rawQueryDNS } = dns([`3 1 1 ${STALE_SHA256}`]);
+		const result = await checkDANEHTTPS('example.com', queryDNS, {
+			rawQueryDNS,
+			certificateProbe: 'failed',
+			certificateProbeReason: reason,
+		});
+		expect(result.score).toBe(95);
+		expect(result.partial).toBe(partial ? true : undefined);
+		expect(result.findings[0].metadata?.notAssessedReason).toBe(reason);
+	});
+
+	it('chain_truncated → 95, NOT partial (persistent condition, caches normally)', async () => {
 		const { queryDNS, rawQueryDNS } = dns([`2 1 1 ${STALE_SHA256}`]);
 		const result = await checkDANEHTTPS('example.com', queryDNS, {
 			rawQueryDNS,
 			servedCertificate: servedCertificate('example.com', { chainTruncated: true, chainLength: 9 }),
 		});
-		expect(result.score).toBe(100);
+		expect(result.score).toBe(95);
 		expect(result.partial).toBeUndefined();
 		expect(result.findings[0].metadata?.notAssessedReason).toBe('chain_truncated');
 	});
@@ -430,7 +454,7 @@ describe('checkDANEHTTPS — end state verified 100 > absent 95 > mismatch 75', 
 		expect(result.score).toBe(100);
 	});
 
-	it('a throwing resolver is a failed probe (unmeasured, partial), never a verdict', async () => {
+	it('a throwing resolver is a failed probe (probe_unavailable: 95, partial), never a verdict', async () => {
 		const { queryDNS, rawQueryDNS } = dns([`3 1 1 ${STALE_SHA256}`]);
 		const result = await checkDANEHTTPS('example.com', queryDNS, {
 			rawQueryDNS,
@@ -438,9 +462,9 @@ describe('checkDANEHTTPS — end state verified 100 > absent 95 > mismatch 75', 
 				throw new Error('binding exploded');
 			},
 		});
-		expect(result.score).toBe(100);
+		expect(result.score).toBe(95);
 		expect(result.partial).toBe(true);
-		expect(result.findings[0].metadata?.notAssessedReason).toBe(DANE_PIN_NOT_ASSESSED_REASONS.failed);
+		expect(result.findings[0].metadata?.notAssessedReason).toBe(DANE_PIN_NOT_ASSESSED_REASONS.probeUnavailable);
 	});
 
 	it('the critical-gap ceiling does not arm on a mismatch in the web_only profile', async () => {
