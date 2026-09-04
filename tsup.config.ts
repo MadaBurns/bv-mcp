@@ -42,4 +42,10 @@ export default defineConfig([
 		noExternal: ['punycode'],
 		esbuildPlugins: [cloudflareShimPlugin],
 	},
+	{
+		...shared,
+		entry: { cli: 'src/cli.ts' },
+		clean: false,
+		platform: 'node',
+	},
 ]);
