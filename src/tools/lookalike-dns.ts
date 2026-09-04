@@ -3,22 +3,50 @@
 /**
  * DNS resolution layer for the lookalike check.
  *
- * Extracted VERBATIM from `check-lookalikes.ts` (pure split, no behaviour
- * change): everything here is the "does this candidate exist, and what
- * infrastructure does it carry" question — NS existence filtering, the
- * wildcard-parent canary probe, the adaptive-batching A/MX detail probe, and
- * the two seed-side queries (`NS` for the ownership verdict, `MX` for the D4
- * overlap corroboration signal).
+ * Extracted from `check-lookalikes.ts`: everything here is the "does this
+ * candidate exist, and what infrastructure does it carry" question — NS
+ * existence filtering, the wildcard-parent canary probe, the adaptive-batching
+ * A/MX detail probe, and the two seed-side queries (`NS` for the ownership
+ * verdict, `MX` for the D4 overlap corroboration signal).
  *
  * Nothing in this module builds a Finding, decides a severity, or makes an
  * ownership claim — it only measures. The tuning constants live here rather
  * than in the orchestrator because they are properties of the query plane, and
  * `test/check-lookalikes.spec.ts` pins their exact values through the tool's
  * re-export.
+ *
+ * ⚠️ FAN-OUT IS BOUNDED, AND THE BOUND IS THE PLATFORM'S (#865 — the DNS half
+ * of #867). A Worker invocation may hold at most SIX connections simultaneously
+ * (developers.cloudflare.com/workers/platform/limits/#simultaneous-open-connections);
+ * further `fetch()` calls QUEUE, with whatever timer the caller armed already
+ * running. Phase 1 used to dispatch every permutation's NS query at once
+ * (`Promise.allSettled(domains.map(...))`, ~90 fetches) and the detail probe
+ * 20 A/MX queries per batch, each arming `AbortSignal.timeout` at call time.
+ * Any permutation whose authoritative servers are lame or slow then holds its
+ * slot for the WHOLE timer window, so a handful of them parks every slot and
+ * the queue behind them aborts before a single byte is sent — and the tool
+ * reports the names it never asked about as "DNS timeout or rate limiting".
+ *
+ * Measured 2026-09-04: openai.com has 11 of 90 permutations whose NS lookup
+ * hangs to the 2s timer even when queried ALONE. Replaying the measured
+ * per-name latencies through a six-slot FIFO with pre-armed timers predicts
+ * 70 unresolved; production reported 76 (#865: 77). The same code on an
+ * uncapped local workerd against the same resolver: 12 unresolved, 54
+ * candidates. Ninety simultaneous queries from Node: zero HTTP 429. The
+ * resolver was never refusing the burst; the platform queue was — and #892's
+ * rollup then abstained at ≥ 50% unresolved, an abstention the tool inflicted
+ * on itself.
+ *
+ * Every DoH fan-out here now runs through a {@link LOOKALIKE_DNS_PROBE_CONCURRENCY}-
+ * wide pool, arms its timers when the query is actually dispatched, and is
+ * cut by a per-phase deadline whose victims are COUNTED, with a reason — never
+ * dropped, never recorded as "no NS". Do not re-introduce a
+ * `domains.map(queryDns...)` fan-out anywhere in this module.
  */
 
-import { queryDnsRecords, queryMxRecords, queryTxtRecords } from '../lib/dns';
+import { DnsQueryError, queryDnsRecords, queryMxRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
+import { mapConcurrent } from '../lib/map-concurrent';
 import { isInBailiwick, parseDmarcReportReceivers, type DmarcReportAuthorisation } from '../lib/ownership-attribution';
 import { getRegistrableDomain } from '../lib/public-suffix';
 
@@ -37,6 +65,110 @@ export const PHASE1_DNS_OPTS: QueryDnsOptions = {
 	retries: 0,
 	skipSecondaryConfirmation: true,
 };
+
+/**
+ * DNS options for the Phase 2 A/MX legs of a REGISTERED candidate. The default
+ * per-attempt timer and the secondary-resolver confirmation on an empty answer
+ * are kept (an empty A/MX is a measurement, and it is worth confirming), but
+ * there is NO retry: a candidate whose NS answered from the parent zone while
+ * its own servers are lame hangs BOTH legs, and with the default single retry
+ * each leg held one of the six connection slots for 3s + 3s. Eleven such
+ * candidates in a 54-candidate seed (openai.com, measured) spent the whole
+ * phase budget on names that were never going to answer, and the budget cuts
+ * landed on candidates that would have. #853's case for retries is the SEED's
+ * lookups, which gate every verdict; a candidate leg is one disposable
+ * permutation and its failure is COUNTED (`probeDegradedReason`), not lost.
+ */
+export const PHASE2_DNS_OPTS: QueryDnsOptions = {
+	retries: 0,
+};
+
+/**
+ * Width of every DoH pool in this module, counted in QUERIES in flight (not
+ * candidates): the Workers simultaneous-open-connection cap is six, and the
+ * DNS phases run alone — phase 0 (seed NS/MX) is awaited before phase 1, the
+ * detail probe follows phase 1, enrichment (`lookalike-enrichment.ts`, whose
+ * two pools also sum to six) follows the detail probe — so each phase owns
+ * the whole budget. Retries and the secondary-resolver confirmation happen
+ * SEQUENTIALLY inside one query, so a pooled query never holds more than one
+ * connection. Not `SCAN_DNS_CONCURRENCY` (12): `check_lookalikes` is
+ * `scanIncluded: false` and never competes with a scan.
+ *
+ * Do not widen past six: `test/check-lookalikes-dns-starvation.spec.ts` runs
+ * the pool against an emulated six-slot runtime and turns red the moment
+ * anything queues.
+ */
+export const LOOKALIKE_DNS_PROBE_CONCURRENCY = 6;
+
+/**
+ * Why a DNS probe did not produce a measurement.
+ *
+ *  - `timeout`  — the resolver never answered within the per-query timer
+ *                 (`PHASE1_DNS_OPTS.timeoutMs` / `DNS_TIMEOUT_MS`), the query
+ *                 having been dispatched with a free connection slot.
+ *  - `deadline` — the phase deadline cut it: either its turn came after the
+ *                 deadline (never issued) or it was aborted mid-flight.
+ *  - `failed`   — transport error, non-2xx DoH response, or unparseable body.
+ *
+ * Reported per phase so a consumer can tell "the resolver is slow for these
+ * names" from "this run was budget-cut" — the two need different responses
+ * (re-run vs. nothing to do) and #865's rollup abstention hides the difference.
+ */
+export type DnsProbeFailureReason = 'timeout' | 'deadline' | 'failed';
+
+/** Per-reason tally of unresolved probes for one phase. */
+export type UnresolvedByReason = Record<DnsProbeFailureReason, number>;
+
+/** A zeroed {@link UnresolvedByReason}. */
+export function emptyUnresolvedByReason(): UnresolvedByReason {
+	return { timeout: 0, deadline: 0, failed: 0 };
+}
+
+export interface DnsPhaseOptions {
+	/**
+	 * Wall-clock deadline (epoch ms) for the phase. A query whose turn comes
+	 * after it is NOT issued (`deadline`); a query dispatched before it carries
+	 * a caller-abort signal armed at dispatch, so the deadline bounds the whole
+	 * query including retries and secondary confirmation. Absent → each query
+	 * gets its full per-query budget (direct callers).
+	 */
+	deadlineMs?: number;
+}
+
+/** Milliseconds left before `deadlineMs`; +Infinity when there is no deadline. */
+function remainingMs(deadlineMs: number | undefined): number {
+	return typeof deadlineMs === 'number' ? deadlineMs - Date.now() : Number.POSITIVE_INFINITY;
+}
+
+/**
+ * Caller-abort signal for ONE dispatched query, armed HERE — inside a pool
+ * worker, once a connection slot is free — never at enqueue. The transport
+ * composes it with its own per-attempt timer (`AbortSignal.any`) and a caller
+ * abort short-circuits its retry loop. `undefined` when there is no deadline.
+ */
+function deadlineSignal(deadlineMs: number | undefined): AbortSignal | undefined {
+	if (typeof deadlineMs !== 'number') return undefined;
+	return AbortSignal.timeout(Math.max(1, deadlineMs - Date.now()));
+}
+
+/**
+ * Classify a rejected query. The deadline signal is authoritative: a query it
+ * aborted is a budget cut, whatever the transport called it. A per-attempt
+ * timer expiry surfaces as `DNS query timed out after Nms` OR — because
+ * `AbortSignal.timeout()` rejects with a `TimeoutError`, not the `AbortError`
+ * the transport's retry branch tests for — as `DNS query failed: The operation
+ * was aborted due to timeout`; both are the resolver not answering.
+ */
+function classifyDnsFailure(err: unknown, deadline: AbortSignal | undefined): DnsProbeFailureReason {
+	if (deadline?.aborted) return 'deadline';
+	if (err instanceof DnsQueryError && /timed out|timeout/i.test(err.message)) return 'timeout';
+	return 'failed';
+}
+
+/** The "never measured" candidate shape: no positive signal, no measured absence, and the reason it is neither. */
+function unmeasuredResult(domain: string, reason: DnsProbeFailureReason): LookalikeResult {
+	return { domain, hasA: false, hasMX: false, mxExchanges: [], probeDegraded: true, probeDegradedReason: reason };
+}
 
 /**
  * Resilient DNS options for the SEED domain's own NS/MX lookups (#853).
@@ -69,6 +201,8 @@ export interface LookalikeResult {
 	 * compile a non-answer into a custody record.
 	 */
 	probeDegraded: boolean;
+	/** Why the probe is degraded (present iff `probeDegraded`). See {@link DnsProbeFailureReason}. */
+	probeDegradedReason?: DnsProbeFailureReason;
 }
 
 /**
@@ -106,23 +240,59 @@ function extractMxExchange(raw: string): string | null {
 	return target;
 }
 
+/** One leg of a candidate's detail probe, as the pool sees it. */
+type DetailLegOutcome = { ok: true; records: string[] } | { ok: false; reason: DnsProbeFailureReason };
+
+/** Worst-first precedence when both legs of a candidate degraded: a budget cut outranks a resolver timeout outranks a transport failure. */
+function worstReason(a: DnsProbeFailureReason | undefined, b: DnsProbeFailureReason | undefined): DnsProbeFailureReason | undefined {
+	const rank: Record<DnsProbeFailureReason, number> = { deadline: 3, timeout: 2, failed: 1 };
+	if (!a) return b;
+	if (!b) return a;
+	return rank[a] >= rank[b] ? a : b;
+}
+
 /**
- * Check a single lookalike domain for DNS and MX records.
- * Filters out null MX records (RFC 7505) to avoid false positives.
+ * Detail-probe one batch of registered candidates: A + MX per candidate,
+ * flattened to individual queries and run through the connection-cap pool
+ * (two candidate legs are independent, so flattening keeps every slot busy
+ * where a per-candidate pool of three would idle one whenever the legs finish
+ * apart). Filters out null MX records (RFC 7505) to avoid false positives.
+ *
+ * Both legs run on {@link PHASE2_DNS_OPTS}: the default per-attempt timer and
+ * the secondary confirmation on empty are kept, so the measurement semantics
+ * of `hasA` / `hasMX` are unchanged; the retry is dropped (see the preset).
  */
-async function probeLookalike(domain: string): Promise<LookalikeResult> {
-	const [aRecords, mxRecords] = await Promise.allSettled([queryDnsRecords(domain, 'A'), queryDnsRecords(domain, 'MX')]);
-
-	const realMxRecords = mxRecords.status === 'fulfilled' ? mxRecords.value.filter(isRealMxRecord) : [];
-	const mxExchanges = realMxRecords.map(extractMxExchange).filter((host): host is string => host !== null);
-
-	return {
-		domain,
-		hasA: aRecords.status === 'fulfilled' && aRecords.value.length > 0,
-		hasMX: realMxRecords.length > 0,
-		mxExchanges,
-		probeDegraded: aRecords.status === 'rejected' || mxRecords.status === 'rejected',
-	};
+async function probeDetailBatch(batch: string[], deadlineMs: number | undefined): Promise<LookalikeResult[]> {
+	const legs = batch.flatMap((domain) => [
+		{ domain, type: 'A' as const },
+		{ domain, type: 'MX' as const },
+	]);
+	const outcomes = await mapConcurrent(legs, LOOKALIKE_DNS_PROBE_CONCURRENCY, async (leg): Promise<DetailLegOutcome> => {
+		if (remainingMs(deadlineMs) <= 0) return { ok: false, reason: 'deadline' };
+		// Armed HERE, at dispatch — the pool guarantees a connection slot is free.
+		const deadline = deadlineSignal(deadlineMs);
+		try {
+			const records = await queryDnsRecords(leg.domain, leg.type, deadline ? { ...PHASE2_DNS_OPTS, signal: deadline } : PHASE2_DNS_OPTS);
+			return { ok: true, records };
+		} catch (err) {
+			return { ok: false, reason: classifyDnsFailure(err, deadline) };
+		}
+	});
+	return batch.map((domain, i) => {
+		const a = outcomes[2 * i];
+		const mx = outcomes[2 * i + 1];
+		const realMxRecords = mx.ok ? mx.records.filter(isRealMxRecord) : [];
+		const mxExchanges = realMxRecords.map(extractMxExchange).filter((host): host is string => host !== null);
+		const reason = worstReason(a.ok ? undefined : a.reason, mx.ok ? undefined : mx.reason);
+		return {
+			domain,
+			hasA: a.ok && a.records.length > 0,
+			hasMX: realMxRecords.length > 0,
+			mxExchanges,
+			probeDegraded: reason !== undefined,
+			...(reason !== undefined ? { probeDegradedReason: reason } : {}),
+		};
+	});
 }
 
 /**
@@ -147,10 +317,18 @@ export function getParentDomain(domain: string): string {
  */
 export async function detectWildcardParents(parentDomains: string[]): Promise<Set<string>> {
 	const wildcardParents = new Set<string>();
-	const probes = parentDomains.map(async (parent) => {
+	// A long brand yields one dot-insertion parent per label position, so this
+	// is pooled like every other fan-out here (a 16-label brand is 16 canaries),
+	// and it runs on the lean Phase-1 preset: it precedes the NS phase, whose
+	// budget it would otherwise eat — a canary under a lame parent zone used to
+	// cost 3s + one retry + a secondary-resolver confirmation, ~7s, before the
+	// first permutation was ever asked about. A canary that fails is "not a
+	// wildcard", which only means the parent's permutations get probed like any
+	// other; nothing is concluded from it.
+	await mapConcurrent(parentDomains, LOOKALIKE_DNS_PROBE_CONCURRENCY, async (parent) => {
 		try {
 			const canary = `${WILDCARD_CANARY_LABEL}.${parent}`;
-			const records = await queryDnsRecords(canary, 'A');
+			const records = await queryDnsRecords(canary, 'A', PHASE1_DNS_OPTS);
 			if (records.length > 0) {
 				wildcardParents.add(parent);
 			}
@@ -158,40 +336,60 @@ export async function detectWildcardParents(parentDomains: string[]): Promise<Se
 			// Query failed — not a wildcard
 		}
 	});
-	await Promise.allSettled(probes);
 	return wildcardParents;
 }
 
+/** Outcome of the pooled Phase 1 result: either a measured NS answer, or why there is none. */
+type NsExistenceOutcome =
+	{ domain: string; measured: true; ns: string[] } | { domain: string; measured: false; reason: DnsProbeFailureReason };
+
 /**
- * Phase 1: Fast NS existence check for all domains in parallel.
- * Returns only domains that have NS records (i.e., are registered),
- * along with their normalized NS record data for ownership comparison.
+ * Phase 1: NS existence check for all domains through the connection-cap
+ * pool. Returns only domains that have NS records (i.e., are registered),
+ * along with their normalized NS record data for ownership comparison, plus
+ * the count — and the reasons — of lookups that produced NO measurement.
+ *
+ * A REJECTED NS lookup is not "unregistered" — it is UNKNOWN, and dropping it
+ * silently is the primary source of run-to-run variance (#781). This phase
+ * gates everything downstream, so a timed-out NS query makes a registered
+ * domain vanish from the result set entirely, with nothing in the response
+ * distinguishing that from a deregistration. Measured on openclaw.ai: three
+ * `force_refresh` runs minutes apart returned 12, 10 and 13 candidates, with
+ * three names appearing only in the third. The same law applies to a lookup
+ * the phase deadline cut: counted, with reason `deadline`, never "no NS".
  */
 export async function filterByNsExistence(
 	domains: string[],
-): Promise<{ registered: string[]; nsMap: Map<string, Set<string>>; unresolved: number }> {
+	options: DnsPhaseOptions = {},
+): Promise<{ registered: string[]; nsMap: Map<string, Set<string>>; unresolved: number; unresolvedByReason: UnresolvedByReason }> {
 	const nsMap = new Map<string, Set<string>>();
-	const results = await Promise.allSettled(
-		domains.map(async (domain) => {
-			const ns = await queryDnsRecords(domain, 'NS', PHASE1_DNS_OPTS);
-			if (ns.length > 0) {
-				nsMap.set(domain, normalizeNsSet(ns));
-			}
-			return { domain, hasNs: ns.length > 0 };
-		}),
-	);
-	const registered = results
-		.filter((r): r is PromiseFulfilledResult<{ domain: string; hasNs: boolean }> => r.status === 'fulfilled' && r.value.hasNs)
-		.map((r) => r.value.domain);
-	// A REJECTED NS lookup is not "unregistered" — it is UNKNOWN, and dropping it
-	// silently is the primary source of run-to-run variance (#781). This phase
-	// gates everything downstream, so a timed-out NS query makes a registered
-	// domain vanish from the result set entirely, with nothing in the response
-	// distinguishing that from a deregistration. Measured on openclaw.ai: three
-	// `force_refresh` runs minutes apart returned 12, 10 and 13 candidates, with
-	// three names appearing only in the third.
-	const unresolved = results.filter((r) => r.status === 'rejected').length;
-	return { registered, nsMap, unresolved };
+	const outcomes = await mapConcurrent(domains, LOOKALIKE_DNS_PROBE_CONCURRENCY, async (domain): Promise<NsExistenceOutcome> => {
+		if (remainingMs(options.deadlineMs) <= 0) return { domain, measured: false, reason: 'deadline' };
+		// Armed HERE, at dispatch — the pool guarantees a connection slot is free,
+		// so both this signal and the transport's PHASE1 timer measure the
+		// resolver, not a queue.
+		const deadline = deadlineSignal(options.deadlineMs);
+		try {
+			const ns = await queryDnsRecords(domain, 'NS', deadline ? { ...PHASE1_DNS_OPTS, signal: deadline } : PHASE1_DNS_OPTS);
+			return { domain, measured: true, ns };
+		} catch (err) {
+			return { domain, measured: false, reason: classifyDnsFailure(err, deadline) };
+		}
+	});
+	const registered: string[] = [];
+	const unresolvedByReason = emptyUnresolvedByReason();
+	for (const outcome of outcomes) {
+		if (!outcome.measured) {
+			unresolvedByReason[outcome.reason]++;
+			continue;
+		}
+		if (outcome.ns.length > 0) {
+			nsMap.set(outcome.domain, normalizeNsSet(outcome.ns));
+			registered.push(outcome.domain);
+		}
+	}
+	const unresolved = unresolvedByReason.timeout + unresolvedByReason.deadline + unresolvedByReason.failed;
+	return { registered, nsMap, unresolved, unresolvedByReason };
 }
 
 /**
@@ -331,26 +529,52 @@ export async function queryPrimaryMx(domain: string): Promise<Set<string>> {
 }
 
 /**
- * Run permutation probes with adaptive batch sizing and backoff.
- * Starts at INITIAL_BATCH_SIZE, halves on repeated failures (floor at MIN_BATCH_SIZE),
- * recovers on clean batches.
+ * Phase 2: detail-probe (A + MX) the registered candidates in batches of up to
+ * INITIAL_BATCH_SIZE, each batch through the connection-cap pool. Halves the
+ * batch on repeated failures (floor at MIN_BATCH_SIZE) with a BACKOFF_DELAY_MS
+ * pause, and recovers on clean batches.
+ *
+ * "Failure" here is a candidate whose A or MX leg the resolver did not answer
+ * (`timeout` / `failed`). The pre-pool version counted REJECTED per-candidate
+ * promises — which could never occur, because the per-candidate probe settled
+ * both legs internally — so the backoff was unreachable, and it hid a second
+ * defect: the loop advanced by the NEW batch size after halving, so a live
+ * backoff would have re-probed half of the batch it had just finished. Both
+ * fixed here; a deadline cut is not a resolver failure and never triggers a
+ * backoff (there is nothing left to be polite about).
+ *
+ * Every candidate comes back FULFILLED — a degraded one carries
+ * `probeDegraded: true` + `probeDegradedReason`. The `PromiseSettledResult`
+ * return shape is kept for the orchestrator's existing accounting.
  */
-export async function probeWithAdaptiveBatching(permutations: string[]): Promise<PromiseSettledResult<LookalikeResult>[]> {
+export async function probeWithAdaptiveBatching(
+	permutations: string[],
+	options: DnsPhaseOptions = {},
+): Promise<PromiseSettledResult<LookalikeResult>[]> {
 	const allResults: PromiseSettledResult<LookalikeResult>[] = [];
 	let batchSize = INITIAL_BATCH_SIZE;
 	let delayMs = 0;
 
-	for (let i = 0; i < permutations.length; i += batchSize) {
+	let i = 0;
+	while (i < permutations.length) {
+		if (remainingMs(options.deadlineMs) <= 0) {
+			// Budget spent: everything left is UNMEASURED with a stated reason —
+			// never dropped, never reported as registered-but-dark.
+			for (const domain of permutations.slice(i)) {
+				allResults.push({ status: 'fulfilled', value: unmeasuredResult(domain, 'deadline') });
+			}
+			break;
+		}
 		if (delayMs > 0) {
 			await new Promise((resolve) => setTimeout(resolve, delayMs));
 		}
 
 		const batch = permutations.slice(i, i + batchSize);
-		const batchResults = await Promise.allSettled(batch.map((d) => probeLookalike(d)));
-		allResults.push(...batchResults);
+		i += batch.length;
+		const batchResults = await probeDetailBatch(batch, options.deadlineMs);
+		for (const value of batchResults) allResults.push({ status: 'fulfilled', value });
 
-		// Count failures in this batch
-		const failures = batchResults.filter((r) => r.status === 'rejected').length;
+		const failures = batchResults.filter((r) => r.probeDegraded && r.probeDegradedReason !== 'deadline').length;
 		if (failures > FAILURE_THRESHOLD) {
 			// Back off: halve batch size (floor to MIN_BATCH_SIZE) and add delay
 			batchSize = Math.max(MIN_BATCH_SIZE, Math.floor(batchSize / 2));

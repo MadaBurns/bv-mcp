@@ -20,6 +20,71 @@ afterEach(() => {
 	restore();
 });
 
+describe('queryDns — AbortSignal propagation into the secondary confirmation (PR #903 review)', () => {
+	/** Primary (Cloudflare) answers EMPTY; the secondary (Google) hangs, honouring whatever signal it was given. */
+	function mockEmptyPrimaryHangingSecondary() {
+		const secondaryInits: RequestInit[] = [];
+		globalThis.fetch = vi.fn((url: string, init?: RequestInit) => {
+			const host = new URL(url).hostname;
+			if (host === 'dns.google') {
+				secondaryInits.push(init ?? {});
+				return new Promise<Response>((_resolve, reject) => {
+					const onAbort = () => reject(init?.signal?.reason ?? new DOMException('aborted', 'AbortError'));
+					if (init?.signal?.aborted) return onAbort();
+					init?.signal?.addEventListener('abort', onAbort, { once: true });
+				});
+			}
+			return Promise.resolve(
+				new Response(
+					JSON.stringify({
+						Status: 0,
+						TC: false,
+						RD: true,
+						RA: true,
+						AD: false,
+						CD: false,
+						Question: [{ name: 'example.com', type: 16 }],
+						Answer: [],
+					}),
+					{
+						status: 200,
+					},
+				),
+			);
+		}) as unknown as typeof globalThis.fetch;
+		return secondaryInits;
+	}
+
+	it('a caller signal aborts a hanging secondary confirmation, and the query REJECTS (never a confirmed-empty answer)', async () => {
+		const secondaryInits = mockEmptyPrimaryHangingSecondary();
+		const controller = new AbortController();
+		const started = Date.now();
+		const promise = queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			timeoutMs: 3000,
+			confirmWithSecondaryOnEmpty: true,
+			signal: controller.signal,
+		});
+		setTimeout(() => controller.abort(), 30);
+
+		await expect(promise).rejects.toThrow(/aborted by caller/i);
+		// Cut by the caller, not by the secondary's own 3s timer.
+		expect(Date.now() - started).toBeLessThan(1000);
+		expect(secondaryInits.length).toBe(1);
+		expect(secondaryInits[0].signal?.aborted).toBe(true);
+	});
+
+	it('without a caller signal the secondary confirmation keeps its own timeout (behaviour preserved)', async () => {
+		const secondaryInits = mockEmptyPrimaryHangingSecondary();
+		const started = Date.now();
+		const result = await queryDns('example.com', 'TXT', false, { retries: 0, timeoutMs: 80, confirmWithSecondaryOnEmpty: true });
+		// Secondary timed out → unconfirmed → the primary's empty answer stands.
+		expect(result.Answer ?? []).toEqual([]);
+		expect(Date.now() - started).toBeGreaterThanOrEqual(60);
+		expect(secondaryInits.length).toBe(1);
+	});
+});
+
 describe('queryDns — AbortSignal propagation (Phase 1)', () => {
 	it('rejects when the caller-supplied AbortSignal aborts mid-fetch', async () => {
 		const controller = new AbortController();

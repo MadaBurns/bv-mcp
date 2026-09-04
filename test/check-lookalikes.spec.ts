@@ -161,10 +161,14 @@ describe('checkLookalikes', () => {
 		});
 		const result = await run('test.com');
 		expect(result.category).toBe('lookalikes');
-		// Should still produce a finding (info: no active lookalikes)
+		// Should still produce a finding — but NOT "no active lookalikes": every
+		// lookup was unresolved, so nothing about the estate was measured (#865
+		// follow-up; the same law as #781). The run says so and is partial.
 		expect(result.findings.length).toBeGreaterThan(0);
-		const info = result.findings.find((f) => /No active lookalike/i.test(f.title));
-		expect(info).toBeDefined();
+		expect(result.findings.find((f) => /No active lookalike/i.test(f.title))).toBeUndefined();
+		const incomplete = result.findings.find((f) => /enumeration was incomplete/i.test(f.title));
+		expect(incomplete).toBeDefined();
+		expect(result.partial).toBe(true);
 	});
 
 	it('exports adaptive batching constants', async () => {
@@ -1752,10 +1756,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 			const result = await run('testco.com');
 			const summary = result.findings.find((f) => f.metadata?.lookalikeDomainCount !== undefined);
 			expect(summary).toBeDefined();
-			expect(
-				summary!.title,
-				'the title must not name a wider set than the count applies',
-			).not.toMatch(/mail capability/i);
+			expect(summary!.title, 'the title must not name a wider set than the count applies').not.toMatch(/mail capability/i);
 			expect(summary!.title).toMatch(/pre-phishing staging signals/i);
 		});
 
@@ -1768,9 +1769,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 			// went unnoticed.
 			expect(summary!.metadata?.mailCapableCount).toBeDefined();
 			expect(summary!.metadata?.mailCapableDomains).toContain('twstco.com');
-			expect(summary!.metadata?.mailCapableCount as number).toBeGreaterThanOrEqual(
-				summary!.metadata?.lookalikeDomainCount as number,
-			);
+			expect(summary!.metadata?.mailCapableCount as number).toBeGreaterThanOrEqual(summary!.metadata?.lookalikeDomainCount as number);
 		});
 
 		it('a null-MX candidate is not counted as mail-capable', async () => {
@@ -1779,15 +1778,11 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 				const { name, type } = parseDohQuery(input);
 				if (name === 'testco.com' && (type === 'NS' || type === '2')) {
-					return Promise.resolve(
-						createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
 				}
 				if (name === 'twstco.com') {
 					if (type === 'NS' || type === '2') {
-						return Promise.resolve(
-							createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]),
-						);
+						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
 					}
 					if (type === 'MX' || type === '15') {
 						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '0 .' }]));
@@ -1830,15 +1825,11 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 				const { name, type } = parseDohQuery(input);
 				if (name === 'testco.com' && (type === 'NS' || type === '2')) {
-					return Promise.resolve(
-						createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
 				}
 				if (name === 'twstco.com') {
 					if (type === 'NS' || type === '2') {
-						return Promise.resolve(
-							createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]),
-						);
+						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
 					}
 					if (type === 'MX' || type === '15') {
 						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
@@ -1919,9 +1910,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 		// Retitled by #779: it used to say "with mail capability detected", a
 		// strictly WIDER predicate than the mail-infra-PLUS-corroborator matrix it
 		// actually counts. The count is unchanged; only the claim is now honest.
-		const summary = result.findings.find((f) =>
-			/lookalike domains? showing pre-phishing staging signals/i.test(f.title),
-		);
+		const summary = result.findings.find((f) => /lookalike domains? showing pre-phishing staging signals/i.test(f.title));
 		expect(summary).toBeDefined();
 		expect(summary!.severity).toBe('high');
 		expect(summary!.metadata?.findingAxis).toBe('threat_observation');
@@ -2348,18 +2337,14 @@ describe('isSameEntityOrgMatch - fix round 2 residual (direct semantic pin)', ()
 			if (name === 'test.com' && isNs) {
 				seedNsAttempts += 1;
 				if (seedNsAttempts === 1) return Promise.reject(new Error('transient resolver throttle'));
-				return Promise.resolve(
-					createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.seedowner.com.' }]),
-				);
+				return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.seedowner.com.' }]));
 			}
 
 			// One registered candidate sharing the seed's nameservers — it can
 			// only be attributed if the seed NS resolved.
 			if (name === 'tes.com') {
 				if (isNs) {
-					return Promise.resolve(
-						createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.seedowner.com.' }]),
-					);
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.seedowner.com.' }]));
 				}
 				if (type === 'A' || type === '1') {
 					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.1' }]));
@@ -2385,5 +2370,4 @@ describe('isSameEntityOrgMatch - fix round 2 residual (direct semantic pin)', ()
 		expect(attributedCandidate).toBeDefined();
 		expect(attributedCandidate?.metadata?.ownershipVerdict).not.toBe('unmeasured');
 	});
-
 });
