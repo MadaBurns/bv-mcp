@@ -323,6 +323,14 @@ describe('servedCertificateFromProbe', () => {
 		});
 	});
 
+	it('projects chainTruncated / chainLength from the probe contract', async () => {
+		const { servedCertificateFromProbe } = await fresh();
+		const out = servedCertificateFromProbe({ certificate: { ...cert(), chainTruncated: true, chainLength: 11 } }, 'example.com');
+		expect(out.servedCertificate).toMatchObject({ chainTruncated: true, chainLength: 11 });
+		const plain = servedCertificateFromProbe({ certificate: cert() }, 'example.com');
+		expect(plain.servedCertificate?.chainTruncated).toBeUndefined();
+	});
+
 	it('host comparison is case-insensitive and ignores a trailing dot', async () => {
 		const { servedCertificateFromProbe } = await fresh();
 		const out = servedCertificateFromProbe({ certificate: { ...cert(), host: 'Example.COM.' } }, 'example.com');

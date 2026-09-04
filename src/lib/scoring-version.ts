@@ -376,7 +376,10 @@
  *   off-host redirect, host mismatch) is UNMEASURED: an `info` with `inconclusive: true`
  *   + `notAssessedReason`, no deduction, `partial: true` (not cached, re-tried next scan)
  *   and NO `checkStatus` — the TLSA measurement itself is real, so the category stays
- *   completed. Direction: DOWNWARD only for domains whose DANE-HTTPS pin does not match
+ *   completed. A trust-anchor pin (usage 0 / 2) that matches no RETAINED chain entry
+ *   while the probe reports `chainTruncated` is likewise an `info` abstention
+ *   (`notAssessedReason: 'chain_truncated'`, cached normally — persistent for the host),
+ *   never a mismatch; leaf usages (1 / 3) are unaffected by truncation. Direction: DOWNWARD only for domains whose DANE-HTTPS pin does not match
  *   the served certificate (100 or 95 → 75, ≈0.09 overall points at protective weight 2);
  *   UPWARD 95 → 100 for verified pins on operator deploys. Absence is unchanged; every
  *   self-host without the binding (and `check_dane`, SMTP/25, which the HTTPS-only probe

@@ -116,6 +116,21 @@ describe('verifyTlsaAssociations — RFC 7671 usage × selector × matching type
 		expect(v.unmatched).toEqual([]);
 	});
 
+	it('chainTruncated: a TA pin matching no RETAINED entry is unverifiable (truncatedChain), a leaf pin is still unmatched', () => {
+		const truncated = servedCertificate('example.com', { chainTruncated: true, chainLength: 11 });
+		const ta = verifyTlsaAssociations([rec(2, 1, 1, STALE_SHA256), rec(0, 0, 1, STALE_SHA256)], truncated);
+		expect(ta.unmatched).toEqual([]);
+		expect(ta.unverifiable).toHaveLength(2);
+		expect(ta.truncatedChain).toHaveLength(2);
+		const ee = verifyTlsaAssociations([rec(3, 1, 1, STALE_SHA256), rec(1, 0, 1, STALE_SHA256)], truncated);
+		expect(ee.unmatched).toHaveLength(2);
+		expect(ee.truncatedChain).toEqual([]);
+		// A TA pin that DOES match a retained entry is still matched.
+		expect(verifyTlsaAssociations([rec(2, 0, 1, INTERMEDIATE_SHA256)], truncated).matched).toHaveLength(1);
+		// Without truncation the same TA pin is a plain mismatch.
+		expect(verifyTlsaAssociations([rec(2, 1, 1, STALE_SHA256)], servedCertificate()).unmatched).toHaveLength(1);
+	});
+
 	it('an empty chain falls back to the leaf for TA usages', () => {
 		const leafOnly = servedCertificate('example.com', { chain: [] });
 		expect(verifyTlsaAssociations([rec(2, 1, 1, LEAF_SPKI_SHA256)], leafOnly).matched).toHaveLength(1);
@@ -221,6 +236,39 @@ describe('analyzeTlsaRecords — verdict ladder with a served certificate', () =
 			);
 			expect(result.score).toBe(75);
 		}
+	});
+
+	it('chainTruncated + no TA match → info abstention (notAssessedReason chain_truncated), NOT a mismatch, no deduction', () => {
+		const truncated = servedCertificate('example.com', { chainTruncated: true, chainLength: 11 });
+		const findings = analyzeTlsaRecords([`2 1 1 ${STALE_SHA256}`], NAME, true, { servedCertificate: truncated });
+		expect(findings.some((f) => f.severity === 'high')).toBe(false);
+		const [f] = findings;
+		expect(f.severity).toBe('info');
+		expect(f.metadata).toMatchObject({
+			certificateMatchVerified: false,
+			inconclusive: true,
+			notAssessedReason: 'chain_truncated',
+			chainTruncated: true,
+			chainLength: 11,
+		});
+		// Not a probe outcome marker — the condition is persistent for the host, so the
+		// result must cache normally rather than re-try every scan.
+		expect(f.metadata?.certificateProbe).toBeUndefined();
+		expect(buildCheckResult('dane_https', [{ ...f, category: 'dane_https' }]).score).toBe(100);
+	});
+
+	it('chainTruncated with a stale LEAF pin beside an unverifiable TA pin → abstention (the set may still authenticate)', () => {
+		const truncated = servedCertificate('example.com', { chainTruncated: true });
+		const findings = analyzeTlsaRecords([`3 1 1 ${STALE_SHA256}`, `2 1 1 ${STALE_SHA256}`], NAME, true, { servedCertificate: truncated });
+		expect(findings.some((f) => f.severity === 'high')).toBe(false);
+		expect(findings[0].metadata?.notAssessedReason).toBe('chain_truncated');
+		expect(findings[0].metadata?.unmatchedAssociations).toEqual([`3 1 1 ${STALE_SHA256}`]);
+	});
+
+	it('chainTruncated with a stale LEAF-only RRset → still a mismatch (truncation cannot hide an end-entity pin)', () => {
+		const truncated = servedCertificate('example.com', { chainTruncated: true });
+		const [f] = analyzeTlsaRecords([`3 1 1 ${STALE_SHA256}`], NAME, true, { servedCertificate: truncated });
+		expect(f.severity).toBe('high');
 	});
 
 	it('a mixed unmatched + unverifiable set falls back to the honest "present, not verified" low (a broken pin is not established)', () => {
@@ -355,6 +403,17 @@ describe('checkDANEHTTPS — end state verified 100 > absent 95 > mismatch 75', 
 			expect(result.findings[0].metadata?.inconclusive).toBe(true);
 		},
 	);
+
+	it('chain_truncated abstention → 100, NOT partial (persistent condition, caches normally)', async () => {
+		const { queryDNS, rawQueryDNS } = dns([`2 1 1 ${STALE_SHA256}`]);
+		const result = await checkDANEHTTPS('example.com', queryDNS, {
+			rawQueryDNS,
+			servedCertificate: servedCertificate('example.com', { chainTruncated: true, chainLength: 9 }),
+		});
+		expect(result.score).toBe(100);
+		expect(result.partial).toBeUndefined();
+		expect(result.findings[0].metadata?.notAssessedReason).toBe('chain_truncated');
+	});
 
 	it('the lazy resolver is called ONLY when TLSA records exist', async () => {
 		let calls = 0;

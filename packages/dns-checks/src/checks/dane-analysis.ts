@@ -103,6 +103,14 @@ export interface ServedCertificate {
 	leafSpkiSha512?: string;
 	/** Whole served chain, index 0 == leaf (DANE-TA usage 2 / PKIX-TA usage 0 search every entry). */
 	chain?: ServedCertificateChainEntry[];
+	/**
+	 * True when the served chain exceeded the probe's entry cap and trailing entries were
+	 * dropped. A trust-anchor usage (0 / 2) that matches no RETAINED entry is then
+	 * UNVERIFIABLE — the anchor may sit in the dropped tail — never a mismatch.
+	 */
+	chainTruncated?: boolean;
+	/** The chain's original length before truncation. */
+	chainLength?: number;
 	subjectName?: string;
 	subjectAlternativeNames?: string[];
 	validFrom?: number;
@@ -136,8 +144,14 @@ export interface TlsaVerification {
 	matched: TlsaRecord[];
 	/** Associations the served certificate could be compared against and does NOT match. */
 	unmatched: TlsaRecord[];
-	/** Associations that could not be compared (unknown field values, or probe material absent). */
+	/** Associations that could not be compared (unknown field values, probe material absent, or a truncated chain). */
 	unverifiable: TlsaRecord[];
+	/**
+	 * The subset of `unverifiable` whose verdict was withheld ONLY because the served chain
+	 * was truncated (`chainTruncated: true`): trust-anchor usages that matched no retained
+	 * entry. Empty unless the probe reported truncation.
+	 */
+	truncatedChain: TlsaRecord[];
 }
 
 /** Decode base64 to lowercase hex. Returns null when the input is not valid base64. */
@@ -257,6 +271,7 @@ export function verifyTlsaAssociations(records: TlsaRecord[] | string[], cert: S
 	const matched: TlsaRecord[] = [];
 	const unmatched: TlsaRecord[] = [];
 	const unverifiable: TlsaRecord[] = [];
+	const truncatedChain: TlsaRecord[] = [];
 	for (const raw of records) {
 		const record = typeof raw === 'string' ? parseTlsaRecord(raw) : raw;
 		if (!record) continue;
@@ -284,9 +299,14 @@ export function verifyTlsaAssociations(records: TlsaRecord[] | string[], cert: S
 		}
 		if (hit) matched.push(record);
 		else if (sawUncomparable) unverifiable.push(record);
-		else unmatched.push(record);
+		else if ((record.usage === 0 || record.usage === 2) && cert.chainTruncated === true) {
+			// Every RETAINED chain entry was compared and differs, but the probe dropped the
+			// chain's tail — the anchor may be there. Withhold the verdict.
+			unverifiable.push(record);
+			truncatedChain.push(record);
+		} else unmatched.push(record);
 	}
-	return { matched, unmatched, unverifiable };
+	return { matched, unmatched, unverifiable, truncatedChain };
 }
 
 /** Machine-readable `notAssessedReason` tokens for an unmeasured pin verification. */
@@ -507,6 +527,31 @@ function buildVerifiedVerdict(name: string, validRecords: TlsaRecord[], cert: Se
 				matchedCertData: canonicalHex(first.certData),
 				...(verification.unmatched.length > 0 ? { unmatchedAssociations: verification.unmatched.map(describeAssociation) } : {}),
 				...(verification.unverifiable.length > 0 ? { unverifiableAssociations: verification.unverifiable.map(describeAssociation) } : {}),
+			},
+		);
+	}
+
+	if (verification.truncatedChain.length > 0) {
+		// A trust-anchor pin may sit in the chain tail the probe dropped: an ABSTENTION
+		// (info, no deduction), not a mismatch. Persistent for that host, so no
+		// `certificateProbe` marker — the result is not `partial` and caches normally.
+		const affected = verification.truncatedChain.map(describeAssociation);
+		return createFinding(
+			'dane',
+			`DANE TLSA pin verification inconclusive for ${name}`,
+			'info',
+			`${affected.length === 1 ? 'A trust-anchor TLSA association' : `${affected.length} trust-anchor TLSA associations`} at ${name} matched none of the ${cert.chain?.length ?? 0} chain entries the certificate probe retained, but the chain ${cert.host} served${cert.chainLength ? ` (${cert.chainLength} entries)` : ''} exceeded the probe's cap and its tail was dropped, so the anchor may be among the entries that were not compared. The pin was neither confirmed nor refuted; this carries no deduction. Where the RRset is DNSSEC-authenticated and no association matches the served chain, DANE-validating clients reject the connection — confirm the anchor against the full chain.`,
+			{
+				...served,
+				name,
+				validRecordCount: validRecords.length,
+				certificateMatchVerified: false,
+				inconclusive: true,
+				notAssessedReason: 'chain_truncated',
+				chainTruncated: true,
+				...(cert.chainLength !== undefined ? { chainLength: cert.chainLength } : {}),
+				unverifiableAssociations: verification.unverifiable.map(describeAssociation),
+				...(verification.unmatched.length > 0 ? { unmatchedAssociations: verification.unmatched.map(describeAssociation) } : {}),
 			},
 		);
 	}
