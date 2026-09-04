@@ -40,6 +40,15 @@ const INCOMPLETE_TARGET = {
 	reason: 'connection_failed',
 } as const;
 
+const PARTIAL_TARGET = {
+	...INCOMPLETE_TARGET,
+	status: 'partial',
+	starttlsAdvertised: true,
+	tlsNegotiated: null,
+	postTlsEhloAccepted: null,
+	reason: 'deadline_exceeded',
+} as const;
+
 describe('SMTP STARTTLS result contract', () => {
 	it('accepts a bounded non-scoring measurement', async () => {
 		const { SmtpStarttlsResultSchema } = await import('../src/schemas/smtp-starttls');
@@ -95,30 +104,42 @@ describe('SMTP STARTTLS result contract', () => {
 		).toBe(false);
 	});
 
-	it('accepts partial mixed only for genuinely mixed measurements or explicit incomplete evidence', async () => {
+	it('uses measured mixed for heterogeneous complete target outcomes', async () => {
+		const { SmtpStarttlsResultSchema } = await import('../src/schemas/smtp-starttls');
+		const mixed = { ...VALID_RESULT, outcome: 'mixed', targets: [VALID_RESULT.targets[0], FAILED_TARGET] } as const;
+
+		expect(SmtpStarttlsResultSchema.safeParse(mixed).success).toBe(true);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...mixed, outcome: 'starttls_available' }).success).toBe(false);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...mixed, outcome: 'starttls_unavailable' }).success).toBe(false);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...mixed, targets: [VALID_RESULT.targets[0]] }).success).toBe(false);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...mixed, targets: [FAILED_TARGET] }).success).toBe(false);
+	});
+
+	it('requires partial mixed to combine measured facts with explicit incomplete evidence', async () => {
 		const { SmtpStarttlsResultSchema } = await import('../src/schemas/smtp-starttls');
 		const partial = { ...VALID_RESULT, status: 'partial', outcome: 'mixed' } as const;
 
-		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [VALID_RESULT.targets[0], FAILED_TARGET] }).success).toBe(true);
 		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [VALID_RESULT.targets[0], INCOMPLETE_TARGET] }).success).toBe(true);
-		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [VALID_RESULT.targets[0]] }).success).toBe(false);
-		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [FAILED_TARGET] }).success).toBe(false);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [VALID_RESULT.targets[0], PARTIAL_TARGET] }).success).toBe(true);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [VALID_RESULT.targets[0], FAILED_TARGET] }).success).toBe(false);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [INCOMPLETE_TARGET] }).success).toBe(false);
 	});
 
-	it('rejects uniform partial outcomes with incomplete or contradictory target evidence', async () => {
+	it('represents all target failures to assess as top-level not-assessed with bounded detail', async () => {
 		const { SmtpStarttlsResultSchema } = await import('../src/schemas/smtp-starttls');
-		const partial = { ...VALID_RESULT, status: 'partial' } as const;
+		const result = {
+			...VALID_RESULT,
+			status: 'not-assessed',
+			outcome: 'not_assessed',
+			targets: [INCOMPLETE_TARGET],
+			reason: 'targets_not_assessed',
+		} as const;
 
-		for (const candidate of [
-			{ ...partial, outcome: 'starttls_available', targets: [VALID_RESULT.targets[0], INCOMPLETE_TARGET] },
-			{ ...partial, outcome: 'starttls_available', targets: [VALID_RESULT.targets[0], FAILED_TARGET] },
-			{ ...partial, outcome: 'starttls_available', targets: [VALID_RESULT.targets[0]] },
-			{ ...partial, outcome: 'starttls_unavailable', targets: [FAILED_TARGET, INCOMPLETE_TARGET] },
-			{ ...partial, outcome: 'starttls_unavailable', targets: [FAILED_TARGET, VALID_RESULT.targets[0]] },
-			{ ...partial, outcome: 'starttls_unavailable', targets: [FAILED_TARGET] },
-		] as const) {
-			expect(SmtpStarttlsResultSchema.safeParse(candidate).success).toBe(false);
-		}
+		expect(SmtpStarttlsResultSchema.safeParse(result).success).toBe(true);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...result, reason: 'probe_failed' }).success).toBe(false);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...result, targets: [] }).success).toBe(false);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...result, targets: Array(4).fill(INCOMPLETE_TARGET) }).success).toBe(false);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...result, targets: [VALID_RESULT.targets[0]] }).success).toBe(false);
 	});
 
 	it('represents null MX only as not-applicable', async () => {

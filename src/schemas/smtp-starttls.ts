@@ -46,6 +46,7 @@ const SmtpNotAssessedReasonSchema = z.enum([
 	'probe_response_invalid',
 ]);
 export type SmtpNotAssessedReason = z.infer<typeof SmtpNotAssessedReasonSchema>;
+const SmtpAggregateNotAssessedReasonSchema = z.union([SmtpNotAssessedReasonSchema, z.literal('targets_not_assessed')]);
 const SmtpTlsSchema = z
 	.object({
 		protocol: z.string().min(1).max(32),
@@ -112,26 +113,6 @@ export const SmtpTargetResultSchema = z
 
 export type SmtpTargetResult = z.infer<typeof SmtpTargetResultSchema>;
 
-function targetKnownAvailable(target: SmtpTargetResult): boolean {
-	return (
-		target.status !== 'not-assessed' &&
-		target.starttlsAdvertised === true &&
-		target.tlsNegotiated === true &&
-		target.postTlsEhloAccepted === true &&
-		target.tls?.peerNameValid === true
-	);
-}
-
-function targetKnownUnavailable(target: SmtpTargetResult): boolean {
-	return (
-		target.status !== 'not-assessed' &&
-		(target.starttlsAdvertised === false ||
-			target.tlsNegotiated === false ||
-			target.postTlsEhloAccepted === false ||
-			target.tls?.peerNameValid === false)
-	);
-}
-
 const SmtpResultBase = {
 	schemaVersion: z.literal('1.0'),
 	probe: z.literal('smtp_starttls'),
@@ -144,7 +125,7 @@ const SmtpMeasuredResultSchema = z
 		...SmtpResultBase,
 		domain: z.string().min(1).max(253),
 		status: z.literal('measured'),
-		outcome: z.enum(['starttls_available', 'starttls_unavailable']),
+		outcome: z.enum(['starttls_available', 'starttls_unavailable', 'mixed']),
 		targets: z.array(SmtpTargetResultSchema).min(1).max(3),
 	})
 	.strict();
@@ -154,7 +135,7 @@ const SmtpPartialResultSchema = z
 		...SmtpResultBase,
 		domain: z.string().min(1).max(253),
 		status: z.literal('partial'),
-		outcome: z.enum(['starttls_available', 'starttls_unavailable', 'mixed']),
+		outcome: z.literal('mixed'),
 		targets: z.array(SmtpTargetResultSchema).min(1).max(3),
 	})
 	.strict();
@@ -165,8 +146,8 @@ const SmtpNotAssessedResultSchema = z
 		domain: z.string().min(1).max(253).nullable(),
 		status: z.literal('not-assessed'),
 		outcome: z.enum(['no_explicit_mx', 'not_assessed']),
-		targets: z.array(SmtpTargetResultSchema).length(0),
-		reason: SmtpNotAssessedReasonSchema,
+		targets: z.array(SmtpNotAssessedTargetResultSchema).max(3),
+		reason: SmtpAggregateNotAssessedReasonSchema,
 	})
 	.strict();
 
@@ -204,31 +185,18 @@ export const SmtpStarttlsResultSchema = z
 			if (result.outcome === 'starttls_unavailable' && successful !== 0) {
 				ctx.addIssue({ code: 'custom', message: 'An unavailable measured result cannot include a successful STARTTLS target' });
 			}
+			if (result.outcome === 'mixed' && (successful === 0 || successful === result.targets.length)) {
+				ctx.addIssue({ code: 'custom', message: 'A mixed measured result requires both available and unavailable targets' });
+			}
 		}
 		if (result.status === 'partial') {
-			const hasIncompleteEvidence = result.targets.some((target) => target.status !== 'measured');
-			const hasKnownAvailable = result.targets.some(targetKnownAvailable);
-			const hasKnownUnavailable = result.targets.some(targetKnownUnavailable);
-
-			if (result.outcome === 'mixed') {
-				if (!hasIncompleteEvidence && !(hasKnownAvailable && hasKnownUnavailable)) {
-					ctx.addIssue({
-						code: 'custom',
-						message: 'A mixed partial result requires both measured outcomes or an explicit partial/not-assessed target',
-					});
-				}
-			} else {
-				if (hasIncompleteEvidence) {
-					ctx.addIssue({ code: 'custom', message: 'A uniform STARTTLS outcome cannot contain incomplete target evidence' });
-				}
-				const contradictsAvailable = result.outcome === 'starttls_available' && hasKnownUnavailable;
-				const contradictsUnavailable = result.outcome === 'starttls_unavailable' && hasKnownAvailable;
-				if (contradictsAvailable || contradictsUnavailable) {
-					ctx.addIssue({ code: 'custom', message: 'Known target evidence contradicts the aggregate STARTTLS outcome' });
-				}
-				if (!hasIncompleteEvidence && !contradictsAvailable && !contradictsUnavailable) {
-					ctx.addIssue({ code: 'custom', message: 'Uniform complete target evidence must use measured aggregate status' });
-				}
+			const measuredTargets = result.targets.filter((target) => target.status === 'measured').length;
+			const incompleteTargets = result.targets.length - measuredTargets;
+			if (measuredTargets === 0) {
+				ctx.addIssue({ code: 'custom', message: 'A partial result requires at least one measured target fact' });
+			}
+			if (incompleteTargets === 0) {
+				ctx.addIssue({ code: 'custom', message: 'A partial result requires at least one partial or not-assessed target' });
 			}
 		}
 		if (result.status === 'not-assessed') {
@@ -237,6 +205,9 @@ export const SmtpStarttlsResultSchema = z
 			}
 			if ((result.reason === 'invalid_domain') !== (result.domain === null)) {
 				ctx.addIssue({ code: 'custom', message: 'Only an invalid-domain result may omit the normalized domain' });
+			}
+			if ((result.reason === 'targets_not_assessed') !== result.targets.length > 0) {
+				ctx.addIssue({ code: 'custom', message: 'Target detail is permitted exactly when every selected target was not assessed' });
 			}
 		}
 	});
