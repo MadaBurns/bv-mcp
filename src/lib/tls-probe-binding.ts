@@ -9,6 +9,8 @@
 import { z } from 'zod';
 
 import type { CheckResult, Finding } from './scoring';
+import { DANE_PIN_NOT_ASSESSED_REASONS } from '@blackveil/dns-checks';
+import type { ServedCertificate, TlsaVerificationContext } from '@blackveil/dns-checks';
 import { buildCheckResult, createFinding } from './scoring';
 import { logEvent } from './log';
 import type { BindingDegradationKind, BindingDegradationSink } from './binding-degradation';
@@ -65,6 +67,49 @@ const DEFAULT_PROBE_PORT = 443;
 const TLS_PROBE_MAX_BODY_BYTES = 256 * 1024;
 const MIN_TLS_PROBE_CAPABILITY_BYTES = 32;
 
+/** One served-chain member as bv-tls-probe reports it (digests lowercase hex, DER base64). */
+const ServedChainEntrySchema = z
+	.object({
+		sha256: z.string().optional(),
+		sha512: z.string().optional(),
+		spkiSha256: z.string().optional(),
+		spkiSha512: z.string().optional(),
+		der: z.string().optional(),
+		spkiDer: z.string().optional(),
+	})
+	.passthrough();
+
+/**
+ * The served-certificate block bv-tls-probe adds to `/probe` for DANE pin verification
+ * (#841). Additive to the existing response; every field optional so a probe build that
+ * predates it, or omits a field, still validates. The block as a whole is `.catch`-ed:
+ * a malformed certificate object degrades to "no certificate" (the DANE check reports an
+ * unmeasured pin) instead of failing the whole response and taking the TLS-version
+ * enrichment down with it.
+ */
+const ServedCertificateSchema = z
+	.object({
+		host: z.string().optional(),
+		port: z.number().optional(),
+		capturedAt: z.string().optional(),
+		leafDer: z.string().optional(),
+		leafSpkiDer: z.string().optional(),
+		leafSha256: z.string().optional(),
+		leafSha512: z.string().optional(),
+		leafSpkiSha256: z.string().optional(),
+		leafSpkiSha512: z.string().optional(),
+		chain: z.array(ServedChainEntrySchema).optional(),
+		/** True when the served chain exceeded the probe's entry cap and its tail was dropped. */
+		chainTruncated: z.boolean().optional(),
+		/** The chain's original length before truncation. */
+		chainLength: z.number().optional(),
+		subjectName: z.string().optional(),
+		subjectAlternativeNames: z.array(z.string()).optional(),
+		validFrom: z.number().optional(),
+		validTo: z.number().optional(),
+	})
+	.passthrough();
+
 /** Defensive shape of a bv-tls-probe /probe response. All fields optional/lenient
  *  so unknown extras never fail validation. */
 const TlsProbeResponseSchema = z
@@ -78,6 +123,9 @@ const TlsProbeResponseSchema = z
 		cipher: z.object({ name: z.string().optional(), bits: z.number().optional() }).passthrough().optional(),
 		error: z.string().optional(),
 		probedAt: z.string().optional(),
+		certificate: ServedCertificateSchema.optional().catch(undefined),
+		/** Set when the capture failed ('off-host redirect', 'no security state', …). */
+		certificateError: z.string().optional(),
 	})
 	.passthrough();
 export type TlsProbeResult = z.infer<typeof TlsProbeResponseSchema>;
@@ -165,4 +213,91 @@ export function mergeTlsFinding(result: CheckResult, probe: TlsProbeResult): Che
 	// Preserve controlPresent — detectDomainContext reads it for profile detection,
 	// so dropping it here would flip sslPass to false for legacy-TLS-but-reachable hosts.
 	return buildCheckResult('ssl', [...result.findings, finding], result.controlPresent);
+}
+
+/**
+ * `notAssessedReason` vocabulary for a DANE pin the probe could not verify (#841) — the
+ * package's tokens, re-exported so the projection below and its consumers share one SSOT.
+ */
+export const DANE_CERTIFICATE_PROBE_REASONS = DANE_PIN_NOT_ASSESSED_REASONS;
+
+/** A probe result that is still warming its cache (the DEFAULT path on a cold call). */
+const PROBE_PENDING_RE = /pending|warming/i;
+const OFF_HOST_REDIRECT_RE = /redirect/i;
+
+function normalizeHost(host: string): string {
+	return host.trim().toLowerCase().replace(/\.$/, '');
+}
+
+function unmeasured(outcome: 'pending' | 'failed', reason: string): TlsaVerificationContext {
+	return { servedCertificate: null, certificateProbe: outcome, certificateProbeReason: reason };
+}
+
+/**
+ * Project a `/probe` response onto the DANE check's verification input (#841).
+ *
+ * - `certificate` present AND its `host` equals the scanned name → the served certificate.
+ *   DANE pins the TLSA owner's EXACT host — apex and `www` can serve different
+ *   certificates — so a capture describing any other host (or none) is `failed` /
+ *   `host_mismatch` (permanent), never a verdict.
+ * - `certificateError` → failed: `off_host_redirect` (permanent) when the probe says so,
+ *   else `capture_failed` (transient).
+ * - `error` matching the probe's "pending — cache warming" verdict → pending
+ *   (`certificate_probe_pending`, transient): the real answer arrives on a later call.
+ * - `reachable: false` → `unreachable` (transient); a null result (binding 5xx / throw /
+ *   timeout) → `probe_unavailable` (transient); a response with no certificate block at
+ *   all (a probe build predating the contract) → `capture_failed`.
+ *
+ * Every outcome without a certificate scores the same unverified 95 in the package; the
+ * reason token only decides the sub-state metadata and whether the result is re-tried.
+ * Never throws; never fabricates material — a certificate block missing its leaf
+ * digests is treated as absent.
+ */
+export function servedCertificateFromProbe(probe: TlsProbeResult | null, expectedHost: string): TlsaVerificationContext {
+	if (!probe) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.probeUnavailable);
+	const cert = probe.certificate;
+	if (cert) {
+		const host = cert.host ? normalizeHost(cert.host) : '';
+		if (host.length === 0 || host !== normalizeHost(expectedHost)) {
+			return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.hostMismatch);
+		}
+		if (!cert.leafSha256 || !cert.leafSpkiSha256) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.captureFailed);
+		const served: ServedCertificate = {
+			host,
+			port: cert.port ?? DEFAULT_PROBE_PORT,
+			capturedAt: cert.capturedAt,
+			leafDer: cert.leafDer,
+			leafSpkiDer: cert.leafSpkiDer,
+			leafSha256: cert.leafSha256,
+			leafSha512: cert.leafSha512,
+			leafSpkiSha256: cert.leafSpkiSha256,
+			leafSpkiSha512: cert.leafSpkiSha512,
+			chain: (cert.chain ?? []).map((entry) => ({
+				sha256: entry.sha256,
+				sha512: entry.sha512,
+				spkiSha256: entry.spkiSha256,
+				spkiSha512: entry.spkiSha512,
+				der: entry.der,
+				spkiDer: entry.spkiDer,
+			})),
+			chainTruncated: cert.chainTruncated,
+			chainLength: cert.chainLength,
+			subjectName: cert.subjectName,
+			subjectAlternativeNames: cert.subjectAlternativeNames,
+			validFrom: cert.validFrom,
+			validTo: cert.validTo,
+		};
+		return { servedCertificate: served };
+	}
+	if (probe.certificateError) {
+		return unmeasured(
+			'failed',
+			OFF_HOST_REDIRECT_RE.test(probe.certificateError)
+				? DANE_CERTIFICATE_PROBE_REASONS.offHostRedirect
+				: DANE_CERTIFICATE_PROBE_REASONS.captureFailed,
+		);
+	}
+	if (probe.error && PROBE_PENDING_RE.test(probe.error)) return unmeasured('pending', DANE_CERTIFICATE_PROBE_REASONS.pending);
+	if (probe.reachable === false) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.unreachable);
+	return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.captureFailed);
 }
