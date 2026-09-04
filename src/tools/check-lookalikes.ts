@@ -48,6 +48,7 @@ import {
 	queryPrimaryMx,
 	queryPrimaryNs,
 	type LookalikeResult,
+	type UnresolvedByReason,
 } from './lookalike-dns';
 import { EMPTY_RDAP_PROBE, enrichLookalikes, probePrimaryRegistration } from './lookalike-enrichment';
 import {
@@ -110,6 +111,49 @@ const LOOKALIKE_TIMEOUT_MS = 20_000;
  * set into explicit `not_attempted` ages instead of a timed-out check.
  */
 const ENRICHMENT_RESERVE_MS = 4_000;
+
+/**
+ * Smallest enrichment window the DNS phases must leave open before
+ * `enrichmentDeadlineMs`. Sized for the RDAP pool (4-wide, ~0.5s per lookup —
+ * #894): a 25-candidate set, the #867 shape, ages in ~3–4s. The DNS phases are
+ * cut before they can eat into it; their victims are counted as unresolved
+ * with reason `deadline` (`lookalike-dns.ts`).
+ */
+const ENRICHMENT_MIN_WINDOW_MS = 4_000;
+
+/**
+ * Wall-clock budget for the DNS phases (wildcard canary, seed NS/MX, NS
+ * existence, A/MX detail), measured from `startedAt`: what remains of the
+ * outer timeout once enrichment's window and its reserve are set aside.
+ * Both DNS pools run six queries wide (the platform cap — #865), so a
+ * 90-permutation seed with 11 hanging names (openai.com, measured) needs
+ * ~6s for NS existence and ~5s for the detail probe of 54 registered
+ * candidates; a seed larger than that degrades to explicit `deadline` cuts
+ * instead of tripping the outer race, which discards every finding.
+ */
+const DNS_PHASES_BUDGET_MS = LOOKALIKE_TIMEOUT_MS - ENRICHMENT_RESERVE_MS - ENRICHMENT_MIN_WINDOW_MS;
+
+/**
+ * Most of {@link DNS_PHASES_BUDGET_MS} the NS-existence phase may consume,
+ * counted from the moment IT starts — not from `startedAt`. The wildcard
+ * canaries and the seed's own NS/MX lookups run first, and the seed lookups
+ * are deliberately resilient (#853: 5s × up to three attempts), so anchoring
+ * this phase on `startedAt` let a slow seed zone hand phase 1 a budget that
+ * was already spent (measured on a local build: 6 resolved / 83 `deadline`
+ * from one run, 54 / 27 from the next, same seed, minutes apart). The
+ * absolute {@link DNS_PHASES_BUDGET_MS} boundary still caps it, so enrichment's
+ * window is never eaten; the detail probe gets whatever remains, so a fast
+ * phase 1 is never penalised and a slow one cannot starve phase 2 of the
+ * registered candidates it already found. Sized from measurement: 90
+ * permutations at six wide with 11 hanging names (openai.com) took 5.0s.
+ */
+const NS_PHASE_BUDGET_MS = 6_000;
+
+/** Attach the per-reason unresolved tally beside a scan_status finding's `enumeration` (see the comment at the enumeration site below). */
+function withUnresolvedReasons(finding: Finding, unresolvedByReason: UnresolvedByReason): Finding {
+	finding.metadata = { ...finding.metadata, unresolvedByReason: { ...unresolvedByReason } };
+	return finding;
+}
 
 /**
  * Extract a specific candidate domain bv-recon's CT_LOOKALIKE hit names, if
@@ -224,8 +268,11 @@ async function checkLookalikesCore(
 	// that already takes seconds; a voided attribution costs the whole result.
 	const [primaryNsProbe, primaryMx] = await Promise.all([queryPrimaryNs(domain), queryPrimaryMx(domain)]);
 
-	// Phase 1: Fast NS existence check — filter out unregistered domains.
-	const nsResult = await filterByNsExistence(permsToProbe);
+	// Phase 1: NS existence check — filter out unregistered domains. Pooled to
+	// the platform connection cap and deadline-cut (#865): see lookalike-dns.ts.
+	const dnsPhasesDeadlineMs = startedAt + DNS_PHASES_BUDGET_MS;
+	const nsPhaseDeadlineMs = Math.min(dnsPhasesDeadlineMs, Date.now() + NS_PHASE_BUDGET_MS);
+	const nsResult = await filterByNsExistence(permsToProbe, { deadlineMs: nsPhaseDeadlineMs });
 	const { registered: registeredPerms, nsMap: lookalikeNsMap, unresolved: nsUnresolved } = nsResult;
 	const primaryNs = primaryNsProbe.ns;
 	// #832 — the seed's own NS lookup failed, so the ownership comparison has
@@ -235,8 +282,35 @@ async function checkLookalikesCore(
 	const seedNsUnmeasured = !primaryNsProbe.resolved;
 
 	if (registeredPerms.length === 0) {
-		findings.push(buildNoRegisteredCandidatesFinding(domain, permutations.length));
-		return buildCheckResult('lookalikes', findings);
+		if (nsUnresolved === 0) {
+			findings.push(buildNoRegisteredCandidatesFinding(domain, permutations.length));
+			return buildCheckResult('lookalikes', findings);
+		}
+		// #865 follow-up — this return used to say "No active registrations
+		// detected", `deterministic`, even when EVERY lookup went unresolved: a
+		// run whose phase 1 was entirely cut reported a clean estate, and the
+		// unresolved count never reached the response (the enumeration contract
+		// below is only built once a candidate exists). Same law as #781: an
+		// unmeasured set is a SAMPLE, and a fully unmeasured one is no sample at
+		// all. Partial, so the non-answer is not cached for the TTL.
+		const nsOnlyEnumeration = {
+			permutationsGenerated: permutations.length,
+			permutationsProbed: permsToProbe.length,
+			candidatesResolved: 0,
+			unresolvedCount: nsUnresolved,
+			complete: false,
+		};
+		if (nsUnresolved < permsToProbe.length) {
+			// Some lookups DID measure an absence — say so, but not as a certainty
+			// about the set.
+			const none = buildNoRegisteredCandidatesFinding(domain, permutations.length);
+			none.metadata = { ...none.metadata, confidence: 'heuristic' };
+			findings.push(none);
+		}
+		findings.push(withUnresolvedReasons(buildIncompleteEnumerationFinding(domain, nsOnlyEnumeration), nsResult.unresolvedByReason));
+		const result = buildCheckResult('lookalikes', findings);
+		result.partial = true;
+		return result;
 	}
 
 	// D4 (2026-07-26 correctness-defects design) — classify every registered
@@ -267,8 +341,8 @@ async function checkLookalikesCore(
 		);
 	}
 
-	// Phase 2: Detail probe only registered domains
-	const probeResults = await probeWithAdaptiveBatching(registeredPerms);
+	// Phase 2: Detail probe only registered domains (pooled + deadline-cut, #865).
+	const probeResults = await probeWithAdaptiveBatching(registeredPerms, { deadlineMs: dnsPhasesDeadlineMs });
 	const results: LookalikeResult[] = [];
 	for (const result of probeResults) {
 		if (result.status === 'fulfilled') {
@@ -305,6 +379,18 @@ async function checkLookalikesCore(
 		unresolvedCount: nsUnresolved + probeUnresolved + infraUnknownCount,
 		complete: nsUnresolved + probeUnresolved + infraUnknownCount === 0,
 	};
+	// WHY the unresolved ones are unresolved (#865 follow-up): a resolver that
+	// never answered (`timeout`), a phase deadline cut (`deadline`), or a
+	// transport failure (`failed`). Kept BESIDE `enumeration`, not inside it —
+	// the five-key enumeration object is the contract #892's rollup reads and
+	// consumers diff — and attached to the scan_status findings below, whose
+	// builders live in `lookalike-summary-findings.ts` (owned by #865/#863;
+	// annotated here rather than there). Sums to `unresolvedCount`.
+	const unresolvedByReason: UnresolvedByReason = { ...nsResult.unresolvedByReason };
+	for (const r of results) {
+		if (r.probeDegraded) unresolvedByReason[r.probeDegradedReason ?? 'failed']++;
+	}
+	unresolvedByReason.failed += probeUnresolved;
 
 	// #864 — second attribution pass. The NS-only pass above cannot see a
 	// same-entity domain on a DIFFERENT DNS platform (amazon.com.au on amzndns.*
@@ -558,7 +644,11 @@ async function checkLookalikesCore(
 	// seed label permit a count; otherwise a not-assessed notice, never an
 	// integer.
 	const rollup = buildThreatRollupFinding({ seedDomain: domain, seedLabel: brand, members: rollupMembers, enumeration });
-	if (rollup.finding) findings.push(rollup.finding);
+	if (rollup.finding) {
+		findings.push(
+			rollup.notAssessedReason === 'enumeration_throttled' ? withUnresolvedReasons(rollup.finding, unresolvedByReason) : rollup.finding,
+		);
+	}
 
 	// If no active lookalikes found
 	if (findings.length === 0) {
@@ -579,7 +669,7 @@ async function checkLookalikesCore(
 	}
 
 	if (!enumeration.complete) {
-		findings.push(buildIncompleteEnumerationFinding(domain, enumeration));
+		findings.push(withUnresolvedReasons(buildIncompleteEnumerationFinding(domain, enumeration), unresolvedByReason));
 	}
 
 	// Recon enrichment: additive-only, fail-soft.

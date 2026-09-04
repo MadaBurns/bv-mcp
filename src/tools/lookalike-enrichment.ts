@@ -362,10 +362,16 @@ export async function probePrimaryRegistration(domain: string, options: Enrichme
  *
  * A probe whose turn comes after `deadlineMs` is NOT issued and reports `true`
  * — "unknown" must fail toward the safe side, never toward the HIGH corroborator.
+ * The same law for a probe that TIMES OUT (#894 residual 2): a host that has
+ * not answered within the budget is unknown, not "no content" — a slow parked
+ * host and a slow real one look identical from here. Only a MEASURED refusal
+ * (reset, refused, TLS failure, no route) is the no-content signal.
  */
 export async function probeHasWebContent(domain: string, deadlineMs?: number): Promise<boolean> {
 	const budgetMs = remainingBudgetMs(WEB_PROBE_TIMEOUT_MS, deadlineMs);
 	if (budgetMs <= 0) return true;
+	// Armed HERE, at dispatch — the pool guarantees a connection slot is free (#867).
+	const signal = AbortSignal.timeout(budgetMs);
 	try {
 		// safeFetch + manual redirect: the candidate is attacker-influenced, so we
 		// MUST NOT auto-follow a 302 → internal/Cloudflare host (blind SSRF oracle,
@@ -375,12 +381,13 @@ export async function probeHasWebContent(domain: string, deadlineMs?: number): P
 		const resp = await safeFetch(`https://${domain}/`, {
 			method: 'HEAD',
 			redirect: 'manual',
-			signal: AbortSignal.timeout(budgetMs),
+			signal,
 		});
 		// Any HTTP response (incl. 3xx) means the host is reachable — content exists.
 		return Boolean(resp);
 	} catch {
-		// Transport failure (refused, timeout, DNS) — treat as no content (HIGH corroborator).
-		return false;
+		// Timed out → unknown → `true` (never the HIGH corroborator).
+		// Measured transport refusal (reset, refused, DNS/TLS failure) → no content.
+		return signal.aborted;
 	}
 }
