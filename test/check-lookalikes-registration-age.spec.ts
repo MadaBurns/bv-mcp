@@ -263,9 +263,12 @@ describe('enrichLookalikes — bounded fan-out (#867)', () => {
 		const starved = candidates.filter((c) => results.get(c.domain)?.registrationDays === null);
 		expect(starved.length).toBeGreaterThanOrEqual(10);
 		for (const c of starved) expect(results.get(c.domain)?.lookup, c.domain).toBe('timeout');
-		// And the same starvation manufactured the "no reachable web content"
-		// HIGH corroborator for HEAD probes that were never sent.
-		expect(candidates.some((c) => results.get(c.domain)?.hasWebContent === false)).toBe(true);
+		// The same starvation used to manufacture the "no reachable web content"
+		// HIGH corroborator for HEAD probes that were never sent (#894 residual
+		// 2, closed with the #865 follow-up): a HEAD probe that times out — in
+		// the queue or at the server — is UNKNOWN and fails toward `true`, so
+		// even this pre-fix fan-out shape can no longer synthesise it.
+		expect(candidates.every((c) => results.get(c.domain)?.hasWebContent === true)).toBe(true);
 	});
 
 	it('bounded fan-out never queues behind the six slots, so no timer runs while waiting and every candidate is populated', async () => {

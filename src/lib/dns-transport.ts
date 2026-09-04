@@ -49,11 +49,14 @@ function retryDelay(attempt: number): Promise<void> {
  *
  * @param token - Optional auth token sent as `X-BV-Token` (for custom secondary resolvers).
  * @param useEdgeCache - If true, attaches Cloudflare `cf` cache directive. Omit for external origins.
+ * @param signal - Optional caller abort signal, composed with the per-fetch
+ *   timeout exactly as `queryDns` composes it for the primary fetch, so a
+ *   caller deadline bounds this fetch too. Absent → timeout alone (unchanged).
  */
 export async function fetchDohOutcome(
 	url: string,
 	timeoutMs: number,
-	opts?: { token?: string; useEdgeCache?: boolean; semaphore?: Semaphore },
+	opts?: { token?: string; useEdgeCache?: boolean; semaphore?: Semaphore; signal?: AbortSignal },
 ): Promise<DohOutcome> {
 	try {
 		const headers: Record<string, string> = { Accept: 'application/dns-json' };
@@ -62,11 +65,11 @@ export async function fetchDohOutcome(
 			fetch(url, {
 				method: 'GET',
 				headers,
-				signal: AbortSignal.timeout(timeoutMs),
+				signal: opts?.signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), opts.signal]) : AbortSignal.timeout(timeoutMs),
 				redirect: 'manual',
 				...(opts?.useEdgeCache ? { cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true } } : {}),
 			});
-		const response = opts?.semaphore ? await opts.semaphore.run(doFetch) : await doFetch();
+		const response = opts?.semaphore ? await opts.semaphore.run(doFetch, opts.signal) : await doFetch();
 		if (!response.ok) {
 			const status = response.status;
 			await disposeUnreadResponseBody(response);
@@ -170,9 +173,7 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		// Either firing aborts the fetch. AbortSignal.any is a standard Web API
 		// available in workerd; falls back gracefully if the caller didn't pass
 		// a signal (timeout alone).
-		const fetchSignal = callerSignal
-			? AbortSignal.any([AbortSignal.timeout(timeoutMs), callerSignal])
-			: AbortSignal.timeout(timeoutMs);
+		const fetchSignal = callerSignal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), callerSignal]) : AbortSignal.timeout(timeoutMs);
 
 		try {
 			response = await guardedFetch(url, {
@@ -226,10 +227,20 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		const data = validated.data as DohResponse;
 
 		if (confirmWithSecondaryOnEmpty && !opts?.skipSecondaryConfirmation && !hasTypedAnswers(data, type)) {
-			const secondaryOpts = opts?.secondaryDoh
-				? { secondaryDoh: { url: opts.secondaryDoh.endpoint, token: opts.secondaryDoh.token } }
-				: undefined;
+			// The caller's signal rides into the secondary fetches too (PR #903
+			// review): without it, an empty primary answer let the confirmation
+			// arm its own fresh timer and run up to `timeoutMs` PAST the caller's
+			// deadline while holding a connection slot.
+			const secondaryOpts = {
+				...(opts?.secondaryDoh ? { secondaryDoh: { url: opts.secondaryDoh.endpoint, token: opts.secondaryDoh.token } } : {}),
+				...(callerSignal ? { signal: callerSignal } : {}),
+			};
 			const secondaryResult = await confirmWithSecondaryResolvers(domain, type, dnssecCheck, timeoutMs, sem, secondaryOpts);
+			// An aborted confirmation is NOT a confirmed-empty answer: the caller
+			// stopped the measurement, so it must see the abort, never `data`.
+			if (callerSignal?.aborted) {
+				throw new DnsQueryError(`DNS query aborted by caller`, domain, type);
+			}
 			if ('kind' in secondaryResult && secondaryResult.kind === 'unconfirmed') {
 				// Secondary confirmation unavailable — keep the primary result as-is.
 				// (Do NOT change primary to empty; primary is authoritative when we can't verify.)
@@ -259,18 +270,19 @@ export async function confirmWithSecondaryResolvers(
 	dnssecCheck: boolean,
 	timeoutMs: number,
 	sem?: Semaphore,
-	opts?: { secondaryDoh?: { url: string; token?: string } },
+	opts?: { secondaryDoh?: { url: string; token?: string }; signal?: AbortSignal },
 ): Promise<DohResponse | { kind: 'unconfirmed' }> {
 	const bvDnsUrl = opts?.secondaryDoh ? buildDohUrl(opts.secondaryDoh.url, domain, type, dnssecCheck) : null;
 	const googleUrl = buildDohUrl(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck);
+	const signal = opts?.signal;
 	const candidates = [
 		bvDnsUrl
-			? fetchDohOutcome(bvDnsUrl, timeoutMs, { token: opts!.secondaryDoh!.token, semaphore: sem })
+			? fetchDohOutcome(bvDnsUrl, timeoutMs, { token: opts!.secondaryDoh!.token, semaphore: sem, signal })
 			: Promise.resolve({ kind: 'error', reason: 'network' } as const),
 		// No edge cache on the secondary: it's the rare fallback used precisely when
 		// the primary missed, so caching its responses risks persisting a transient
 		// empty at the edge for the cache TTL (#199).
-		fetchDohOutcome(googleUrl, timeoutMs, { semaphore: sem }),
+		fetchDohOutcome(googleUrl, timeoutMs, { semaphore: sem, signal }),
 	];
 	const results = await Promise.allSettled(candidates);
 	for (const r of results) {
