@@ -239,8 +239,9 @@ function unmeasured(outcome: 'pending' | 'failed', reason: string): TlsaVerifica
  *
  * bv-tls-probe captures the served certificate from a headless browser inside Cloudflare
  * Browser Rendering, and that browser does NOT see the origin's certificate: Browser
- * Rendering egresses page traffic through a TLS-terminating proxy that re-signs every
- * non-Cloudflare origin with a per-session "Mockttp Cert - DO NOT TRUST" CA. Measured
+ * Rendering egresses page traffic through a TLS-terminating proxy that re-signed all three
+ * non-Cloudflare origins measured (Cloudflare-fronted origins were NOT measured) with a
+ * per-session "Mockttp Cert - DO NOT TRUST" CA. Measured
  * 2026-09-04 against the probe (prod and a remote-binding dev run): fedoraproject.org,
  * kernel.org and www.debian.org all returned a Mockttp-issued RSA leaf that exists in no
  * CT log, while openssl from the public internet saw their real DigiCert / Let's Encrypt

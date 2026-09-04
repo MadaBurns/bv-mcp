@@ -334,8 +334,8 @@ export const DANE_PIN_NOT_ASSESSED_REASONS = {
 	 * The probe's vantage cannot observe the origin's certificate, so no capture from it
 	 * is admissible as evidence (permanent — a property of the probe, not of the host).
 	 * Cloudflare Browser Rendering egresses the headless browser through a TLS-terminating
-	 * proxy that re-signs every non-Cloudflare origin with a per-session "Mockttp Cert -
-	 * DO NOT TRUST" CA (measured 2026-09-04: fedoraproject.org, kernel.org, www.debian.org
+	 * proxy that re-signed every non-Cloudflare origin measured with a per-session "Mockttp
+	 * Cert - DO NOT TRUST" CA (Cloudflare-fronted origins unmeasured; 2026-09-04: fedoraproject.org, kernel.org, www.debian.org
 	 * all captured a Mockttp leaf absent from every CT log while openssl saw the real,
 	 * TLSA-matching DigiCert/LE keys). Compared against a TLSA RRset that capture is a
 	 * GUARANTEED mismatch — 3.75.0 shipped it as a `high` "pin does not match" (75) on

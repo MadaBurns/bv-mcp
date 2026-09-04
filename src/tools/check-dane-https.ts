@@ -12,8 +12,8 @@
  * binding receive the unmodified base result (present, not verified — the 1.18.0 posture).
  *
  * ⚠️ KILL-SWITCHED since 3.75.1 (`DANE_PIN_VERIFICATION_ENABLED = false`): the probe's
- * Browser Rendering vantage is TLS-intercepted (Mockttp re-signs every non-Cloudflare
- * origin), so its capture can never match a real pin. With the binding present the check
+ * Browser Rendering vantage is TLS-intercepted (a Mockttp CA re-signed every non-Cloudflare
+ * origin measured), so its capture cannot be trusted to match a real pin. With the binding present the check
  * now reports `probe_vantage_intercepted` (permanent, 95, cached) and spends no probe
  * call; the verification path above is retained for a future non-intercepted capture.
  */
