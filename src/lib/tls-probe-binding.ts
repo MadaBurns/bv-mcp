@@ -98,6 +98,10 @@ const ServedCertificateSchema = z
 		leafSpkiSha256: z.string().optional(),
 		leafSpkiSha512: z.string().optional(),
 		chain: z.array(ServedChainEntrySchema).optional(),
+		/** True when the served chain exceeded the probe's entry cap and its tail was dropped. */
+		chainTruncated: z.boolean().optional(),
+		/** The chain's original length before truncation. */
+		chainLength: z.number().optional(),
 		subjectName: z.string().optional(),
 		subjectAlternativeNames: z.array(z.string()).optional(),
 		validFrom: z.number().optional(),
@@ -277,6 +281,8 @@ export function servedCertificateFromProbe(probe: TlsProbeResult | null, expecte
 				der: entry.der,
 				spkiDer: entry.spkiDer,
 			})),
+			chainTruncated: cert.chainTruncated,
+			chainLength: cert.chainLength,
 			subjectName: cert.subjectName,
 			subjectAlternativeNames: cert.subjectAlternativeNames,
 			validFrom: cert.validFrom,
