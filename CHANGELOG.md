@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.75.1] - 2026-09-04
+
+Hotfix withdrawing 3.75.0's DANE pin verification: the probe it relied on cannot see the origin's certificate. **Scoring change — `SCORING_MODEL_VERSION` 1.22.0 → 1.23.0** (upward only, 75 → 95 for the falsely mismatched). `@blackveil/dns-checks` 1.34.0 → 1.35.0 (`PARITY_CORPUS_VERSION` in lockstep) — bv-web-prod re-vendor required.
+
+### Fixed
+
+- **`check_dane_https` scored correct TLSA pins as a `high` mismatch (model 1.23.0).** bv-tls-probe captures the served certificate from a headless browser inside Cloudflare Browser Rendering, and that browser is behind a TLS-terminating proxy that re-signed every non-Cloudflare origin measured with a per-session "Mockttp Cert - DO NOT TRUST" CA (Cloudflare-fronted origins were not measured). Post-deploy verification of 3.75.0 caught it: fedoraproject.org's real key matches its `3 1 1` record on every proxy node, yet prod compared a Mockttp leaf (absent from every CT log) and reported "pin does not match the served certificate" (category 75). kernel.org and www.debian.org captured the same way. Every comparison from that vantage is a guaranteed mismatch, so pin verification is now **kill-switched** (`DANE_PIN_VERIFICATION_ENABLED = false` in `src/lib/tls-probe-binding.ts`, a switch not a deletion): with the binding present the check hands the analyzer no certificate, reports the new permanent `notAssessedReason: 'probe_vantage_intercepted'` (`certificateProbe: 'failed'`) at the unchanged `low` 95, spends no probe call, and caches normally. The 1.22.0 verified/mismatch ladder stays in the package for a future capture that genuinely observes the origin. Self-hosts and free-tier scans are bit-for-bit unchanged; maturity staging is unchanged (DANE earns no Stage-4 credit until a real capture exists — one of six hardening signals, never a sole gate). (PR #907, closes #906; probe follow-up bv-web-prod#2848)
+
 ## [3.75.0] - 2026-09-04
 
 Correctness release closing #841: DANE-HTTPS TLSA pins are now verified against the certificate the host actually serves. **Scoring change — `SCORING_MODEL_VERSION` 1.21.0 → 1.22.0.** `@blackveil/dns-checks` 1.33.0 → 1.34.0 — bv-web-prod re-vendor required (bv-web-prod#2842).

@@ -399,8 +399,34 @@
  *   band, `SEVERITY_PENALTIES` entry or profile-detection rule changed. Population
  *   UNMEASURED against the corpus: DANE-for-HTTPS adoption is ≈0% and the mismatch rate
  *   within it is unknown; the only measured instance is the issue's own repro domain.
+ * - 1.23.0 — DANE pin verification KILL-SWITCHED (dns-checks 1.35.0, server 3.75.1).
+ *   The 1.22.0 capture source — bv-tls-probe's headless browser inside Cloudflare
+ *   Browser Rendering — does not observe the origin's certificate: Browser Rendering
+ *   egresses page traffic through a TLS-terminating proxy that re-signed all three
+ *   non-Cloudflare origins measured (Cloudflare-fronted origins were not measured) with
+ *   a per-session "Mockttp Cert - DO NOT TRUST" CA. Measured
+ *   2026-09-04 (prod + a remote-binding dev run): fedoraproject.org, kernel.org and
+ *   www.debian.org all captured a Mockttp RSA leaf present in no CT log, while openssl
+ *   saw their real keys — fedoraproject.org's real SPKI matched its `3 1 1` TLSA record
+ *   exactly, yet 3.75.0 scored it `high` "pin does not match" (75). Every comparison from
+ *   that vantage is a guaranteed mismatch, so the wrapper now hands the analyzer NO
+ *   certificate when the binding is present: the pin takes the unverified `low` 95 with
+ *   `certificateProbe: 'failed'` + `notAssessedReason: 'probe_vantage_intercepted'`
+ *   (PERMANENT — not `partial`, cached normally, and no probe call is spent). The 1.22.0
+ *   ladder (verified 100 / mismatch 75) is retained in the package for a future capture
+ *   that genuinely observes the origin (`DANE_PIN_VERIFICATION_ENABLED` in
+ *   src/lib/tls-probe-binding.ts) but is unreachable in production. Maturity staging is
+ *   unchanged (Stage-4 DANE credit still requires `certificateMatchVerified: true`, which
+ *   no production scan can now carry — DANE contributes nothing to Stage 4 until a real
+ *   capture exists; it is one of six hardening signals, never a sole gate). Direction:
+ *   UPWARD 75 → 95 for every operator-tier scan that hit the false mismatch (≈0.09
+ *   overall points at protective weight 2); no legitimate 100 was ever produced, so
+ *   nothing moves down. Self-hosts and free-tier scans are bit-for-bit unchanged. No
+ *   weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule
+ *   changed. Population: every domain with a `_443._tcp` TLSA RRset scanned at operator
+ *   tier since 3.75.0 (≈0% adoption; fedoraproject.org is the measured instance).
  */
-export const SCORING_MODEL_VERSION = '1.22.0';
+export const SCORING_MODEL_VERSION = '1.23.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

@@ -330,6 +330,19 @@ export const DANE_PIN_NOT_ASSESSED_REASONS = {
 	probeUnavailable: 'probe_unavailable',
 	/** A trust-anchor pin may sit in the chain tail the probe dropped (permanent). */
 	chainTruncated: 'chain_truncated',
+	/**
+	 * The probe's vantage cannot observe the origin's certificate, so no capture from it
+	 * is admissible as evidence (permanent — a property of the probe, not of the host).
+	 * Cloudflare Browser Rendering egresses the headless browser through a TLS-terminating
+	 * proxy that re-signed every non-Cloudflare origin measured with a per-session "Mockttp
+	 * Cert - DO NOT TRUST" CA (Cloudflare-fronted origins unmeasured; 2026-09-04: fedoraproject.org, kernel.org, www.debian.org
+	 * all captured a Mockttp leaf absent from every CT log while openssl saw the real,
+	 * TLSA-matching DigiCert/LE keys). Compared against a TLSA RRset that capture is a
+	 * GUARANTEED mismatch — 3.75.0 shipped it as a `high` "pin does not match" (75) on
+	 * fedoraproject.org, whose pin was correct. The consumer therefore refuses to hand
+	 * the analyzer any certificate from that vantage and reports this reason instead.
+	 */
+	vantageIntercepted: 'probe_vantage_intercepted',
 } as const;
 
 /**
@@ -444,9 +457,13 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 	//
 	// HONESTY (#841): this analyzer parses DNS; it never fetches a certificate. A stale
 	// DANE-EE pin parses identically to a correct one, so "well-formed" is a SYNTAX
-	// verdict. Since scoring model 1.22.0 the served certificate CAN reach this function —
-	// the bv-mcp wrapper captures it over the operator-only bv-tls-probe binding and
-	// passes it in `verification` — and the verdict ladder is:
+	// verdict. Since scoring model 1.22.0 a served certificate CAN reach this function via
+	// `verification`, and the verdict ladder below applies to it. Since 1.23.0 the ONLY
+	// capture source the bv-mcp wrapper has (bv-tls-probe over Browser Rendering) is
+	// refused as evidence — its vantage is TLS-intercepted, see
+	// `DANE_PIN_NOT_ASSESSED_REASONS.vantageIntercepted` — so in production every pin
+	// takes the unverified 95 leg with that reason; the verified / mismatch legs stay
+	// for a future capture that genuinely observes the origin. The ladder:
 	//   any association matches            → info, `certificateMatchVerified: true`   (100)
 	//   certificate served, none match     → high "pin does not match"                 (75)
 	//   probe attempted, no certificate    → the SAME low "present, not verified" (95) plus
