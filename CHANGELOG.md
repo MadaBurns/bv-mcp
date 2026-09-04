@@ -4,6 +4,22 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.75.0] - 2026-09-04
+
+Correctness release closing #841: DANE-HTTPS TLSA pins are now verified against the certificate the host actually serves. **Scoring change — `SCORING_MODEL_VERSION` 1.21.0 → 1.22.0.** `@blackveil/dns-checks` 1.33.0 → 1.34.0 — bv-web-prod re-vendor required (bv-web-prod#2842).
+
+### Scoring
+
+- **DANE-HTTPS pins are verified, and the inversion is gone (model 1.22.0).** `check_dane_https` obtains the served leaf and chain from the operator-only bv-tls-probe service (bv-web-prod#2843: CDP `Security.visibleSecurityStateChanged`, host-pinned to the exact TLSA owner, leaf-first order verified by issuer linkage, SPKI digests proven byte-exact against OpenSSL) and compares every TLSA association per RFC 7671 — usage 1/3 against the leaf, usage 0/2 against any chain entry, selector 0/1, matching type 0/1/2. Ladder: **verified 100 > every unverified state 95 > mismatch 75**. A matching association → `info` with `certificateMatchVerified: true`; no association matching a captured certificate → `high` "DANE TLSA pin does not match the served certificate" (worded and structured so it can never arm the critical-gap ceiling); absence, self-hosts without the probe, and probe-attempted-but-no-certificate (pending cold cache, off-host redirect, host mismatch, unreachable, truncated chain) all keep the ratified `low` 95 with `certificateProbe` + `notAssessedReason` metadata — transient reasons are `partial` and retried, permanent ones cache normally. Self-hosts are bit-for-bit unchanged. Maturity Stage 4 now credits a DANE pin only when `certificateMatchVerified: true`; unverified SMTP pins no longer promote. (PR #901, closes #841)
+
+### Changed
+
+- `bv-tls-probe` `/probe` responses now carry `certificate` (leaf DER/SPKI, SHA-256/512 digests, ordered chain with per-entry digests and `spkiDer`, `chainTruncated`/`chainLength`/`chainDerTruncated`, SAN cap) or `certificateError`; a captured chain proves reachability so Cloudflare-fronted hosts are no longer discarded as `reachable: false`. The Zod schema in `tls-probe-binding.ts` accepts all of it as optional passthrough. (bv-web-prod#2843)
+
+### Fixed
+
+- **`check_lookalikes` was throttling itself.** The DNS phases fanned ~90 NS queries and 20-wide A/MX batches at once with 2–3 s timers armed at call time; Cloudflare Workers hold six simultaneous connections, so queued queries aborted unsent, and each lame delegation parked a slot for its whole timer (openai.com: 13 % inherent unresolved became 84 %, and the #865 rollup abstained on a self-inflicted blind spot). Phases now run in six-wide pools with dispatch-armed deadline signals and per-phase budgets that preserve the enrichment window; deadline-cut probes are counted unresolved with a reason (`unresolvedByReason`) beside the unchanged `enumeration` stats; the caller's deadline now reaches the secondary-resolver confirmation in the shared DoH transport; `hasWebContent` no longer manufactures a HIGH corroborator from a timeout. Measured locally: openai.com 13/76 resolved/unresolved → 54/7; cohere.com 28/40 → 39/0 complete. (PR #903; follow-up to #865, #867)
+
 ## [3.74.0] - 2026-09-03
 
 Correctness release closing the open issue backlog: abstention-doctrine fixes across MTA-STS, subdomain discovery and lookalike analysis, plus attribution of header-less public traffic. **Scoring changes — `SCORING_MODEL_VERSION` 1.18.0 → 1.21.0** (1.19.0 and 1.20.0 were merged after 3.73.3 and ship here for the first time; both operator-ratified). `@blackveil/dns-checks` 1.32.0 → 1.33.0 — bv-web-prod re-vendor required.
