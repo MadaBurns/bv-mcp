@@ -91,10 +91,10 @@ const ADAPTIVE_WEIGHTS_MAX_BODY_BYTES = 128 * 1024;
 const PROBE_ELIGIBLE_TIERS = new Set(['developer', 'enterprise', 'partner', 'owner']);
 
 /**
- * Resolve the TLS-probe binding for the ssl check, gated on tier eligibility.
- * Paid-tier only — free/agent/anonymous scans skip Browser Rendering.
+ * Resolve the TLS-probe binding for the `ssl` and `dane_https` checks, gated on tier
+ * eligibility. Paid-tier only — free/agent/anonymous scans skip Browser Rendering.
  */
-function resolveSslOptions(rt?: ScanRuntimeOptions): { tlsProbeBinding?: { fetch: typeof fetch }; tlsProbeAuthToken?: string } {
+function resolveTlsProbeOptions(rt?: ScanRuntimeOptions): { tlsProbeBinding?: { fetch: typeof fetch }; tlsProbeAuthToken?: string } {
 	return {
 		tlsProbeBinding: PROBE_ELIGIBLE_TIERS.has(rt?.authTier ?? '') ? rt?.tlsProbeBinding : undefined,
 		tlsProbeAuthToken: rt?.tlsProbeAuthToken,
@@ -174,7 +174,7 @@ const CHECK_DISPATCH: Record<string, CheckRunner> = {
 	// per-check / scan-level timeout aborts their in-flight HTTPS subrequests.
 	// undefined outside scan context (direct calls / retry path) → unchanged.
 	ssl: (d, _dns, rt, sig, _zone, robots, budget) =>
-		checkSsl(d, { ...resolveSslOptions(rt), signal: sig, robotsMemo: robots, budgetMs: budget }),
+		checkSsl(d, { ...resolveTlsProbeOptions(rt), signal: sig, robotsMemo: robots, budgetMs: budget }),
 	// #674: `mta_sts` and `subdomain_takeover` are the remaining raw-HTTP checks whose
 	// fetches carry fixed timeouts the caller cannot lower (the package hardcodes the
 	// policy-fetch and fingerprint-probe timeouts), so they take the budget for the same
@@ -188,7 +188,12 @@ const CHECK_DISPATCH: Record<string, CheckRunner> = {
 	http_security: (d, _dns, _rt, sig, _zone, robots, budget) => checkHttpSecurity(d, { signal: sig, robotsMemo: robots, budgetMs: budget }),
 	dane: (d, dns) => checkDane(d, dns),
 	mx: (d, dns, rt) => checkMx(d, resolveProviderSignatureOptions(rt), dns),
-	dane_https: (d, dns) => checkDaneHttps(d, dns),
+	// #841: TLSA pin verification captures the served certificate over the same
+	// paid-tier-gated probe as `ssl`. The probe is a service binding the fetch budget
+	// cannot wrap, so the budget is threaded for its `signal()`; the wrapper launches it
+	// only when TLSA records exist, so a DANE-less domain (≈ all of them) pays nothing.
+	dane_https: (d, dns, rt, sig, _zone, _robots, budget) =>
+		checkDaneHttps(d, dns, { ...resolveTlsProbeOptions(rt), signal: sig, budgetMs: budget }),
 	svcb_https: (d, dns) => checkSvcbHttps(d, dns),
 	subdomailing: (d, dns) => checkSubdomailing(d, dns),
 	dnskey_strength: (d, dns) => checkDnskeyStrength(d, dns),
@@ -699,21 +704,22 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	let scanTimeoutId: ReturnType<typeof setTimeout> | undefined;
 	const settled = await Promise.race([
 		Promise.allSettled(checkPromises),
-		new Promise<PromiseSettledResult<CheckResult>[]>((resolve) =>
-			(scanTimeoutId = setTimeout(() => {
-				timedOut = true;
-				// R7: abort the scan-level controller so EVERY still-in-flight subrequest
-				// (DoH via scanDns.signal + the raw HTTPS fetches via each composed
-				// per-check signal) is cancelled, not merely abandoned — the scan is over,
-				// so freeing the Workers subrequest budget is unambiguously correct here.
-				scanAbort.abort();
-				// Snapshot whatever has settled so far by racing each promise with an immediate rejection
-				resolve(
-					Promise.allSettled(
-						checkPromises.map((p) => Promise.race([p, new Promise<never>((_, reject) => reject(new Error('__check_pending__')))])),
-					),
-				);
-			}, timeoutBudget.scanTimeoutMs)),
+		new Promise<PromiseSettledResult<CheckResult>[]>(
+			(resolve) =>
+				(scanTimeoutId = setTimeout(() => {
+					timedOut = true;
+					// R7: abort the scan-level controller so EVERY still-in-flight subrequest
+					// (DoH via scanDns.signal + the raw HTTPS fetches via each composed
+					// per-check signal) is cancelled, not merely abandoned — the scan is over,
+					// so freeing the Workers subrequest budget is unambiguously correct here.
+					scanAbort.abort();
+					// Snapshot whatever has settled so far by racing each promise with an immediate rejection
+					resolve(
+						Promise.allSettled(
+							checkPromises.map((p) => Promise.race([p, new Promise<never>((_, reject) => reject(new Error('__check_pending__')))])),
+						),
+					);
+				}, timeoutBudget.scanTimeoutMs)),
 		),
 	]);
 	if (scanTimeoutId !== undefined) clearTimeout(scanTimeoutId);

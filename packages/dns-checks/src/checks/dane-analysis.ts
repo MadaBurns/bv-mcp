@@ -10,6 +10,7 @@
 
 import type { Finding } from '../types';
 import { createFinding } from '../check-utils';
+import { SUBJECT_TERMS_METADATA_KEY } from '../scoring/model';
 
 /** Parsed TLSA record with usage, selector, matching type, and certificate data */
 export interface TlsaRecord {
@@ -61,13 +62,247 @@ const USAGE_LABELS: Record<number, string> = {
 };
 
 /**
+ * One member of the certificate chain a host served, as captured by an out-of-package
+ * probe (bv-tls-probe over the operator-only `BV_TLS_PROBE` binding). Digests are
+ * lowercase hex; DER is base64. Every field is optional so a probe that omits one
+ * makes the affected association UNVERIFIABLE rather than UNMATCHED — a dropped field
+ * must never read as a broken pin.
+ */
+export interface ServedCertificateChainEntry {
+	/** SHA-256 over the certificate DER (TLSA selector 0, matching type 1). */
+	sha256?: string;
+	/** SHA-512 over the certificate DER (selector 0, matching type 2). */
+	sha512?: string;
+	/** SHA-256 over the SubjectPublicKeyInfo DER (selector 1, matching type 1). */
+	spkiSha256?: string;
+	/** SHA-512 over the SubjectPublicKeyInfo DER (selector 1, matching type 2). */
+	spkiSha512?: string;
+	/** Base64 certificate DER (selector 0, matching type 0 — full data). */
+	der?: string;
+	/** Base64 SubjectPublicKeyInfo DER (selector 1, matching type 0). Not in the probe contract for non-leaf entries. */
+	spkiDer?: string;
+}
+
+/**
+ * The certificate a host served on a given port, captured by an external probe.
+ * Runtime-agnostic: this package never parses X.509 — every comparison is digest /
+ * hex equality against material the probe already derived. `chain[0]` is the leaf;
+ * the leaf-level fields duplicate it for the selector-0 / selector-1 end-entity paths.
+ */
+export interface ServedCertificate {
+	/** Exact host the probe pinned — DANE pins the TLSA owner's host, so this MUST equal the scanned name. */
+	host: string;
+	port: number;
+	/** ISO timestamp of the capture. */
+	capturedAt?: string;
+	leafDer?: string;
+	leafSpkiDer?: string;
+	leafSha256?: string;
+	leafSha512?: string;
+	leafSpkiSha256?: string;
+	leafSpkiSha512?: string;
+	/** Whole served chain, index 0 == leaf (DANE-TA usage 2 / PKIX-TA usage 0 search every entry). */
+	chain?: ServedCertificateChainEntry[];
+	subjectName?: string;
+	subjectAlternativeNames?: string[];
+	validFrom?: number;
+	validTo?: number;
+}
+
+/**
+ * What the certificate probe reported when no certificate is available.
+ * - `unavailable` — no probe capability at all (BSL self-hosts without the binding).
+ *   The pin stays "present, not verified" and keeps its small deduction.
+ * - `pending` — the probe was reached but is still warming its cache; the verdict
+ *   arrives on a later call. The pin is UNMEASURED this run: no deduction, `partial`.
+ * - `failed` — the probe was attempted and returned no usable certificate (capture
+ *   error, off-host redirect, host mismatch, transport failure). Also UNMEASURED.
+ */
+export type CertificateProbeOutcome = 'unavailable' | 'pending' | 'failed';
+
+/** Verification input for {@link analyzeTlsaRecords}: the served certificate, or why there is none. */
+export interface TlsaVerificationContext {
+	/** The certificate the host served. When present, every association is compared against it. */
+	servedCertificate?: ServedCertificate | null;
+	/** Why no certificate is available. Ignored when `servedCertificate` is set. Default `unavailable`. */
+	certificateProbe?: CertificateProbeOutcome;
+	/** Machine token explaining a `pending` / `failed` probe (surfaced as `notAssessedReason`). */
+	certificateProbeReason?: string;
+}
+
+/** Result of {@link verifyTlsaAssociations}. */
+export interface TlsaVerification {
+	/** Associations whose pinned data matches the served certificate (RFC 7671: one suffices). */
+	matched: TlsaRecord[];
+	/** Associations the served certificate could be compared against and does NOT match. */
+	unmatched: TlsaRecord[];
+	/** Associations that could not be compared (unknown field values, or probe material absent). */
+	unverifiable: TlsaRecord[];
+}
+
+/** Decode base64 to lowercase hex. Returns null when the input is not valid base64. */
+function base64ToHex(b64: string): string | null {
+	try {
+		const bin = atob(b64.replace(/\s+/g, ''));
+		let hex = '';
+		for (let i = 0; i < bin.length; i++) hex += bin.charCodeAt(i).toString(16).padStart(2, '0');
+		return hex;
+	} catch {
+		return null;
+	}
+}
+
+/** Canonical form for hex comparison: lowercase, whitespace stripped (TLSA presentation may split hex). */
+function canonicalHex(value: string): string {
+	return value.replace(/\s+/g, '').toLowerCase();
+}
+
+/** The material one chain member offers for a given selector. Absent fields are uncomparable. */
+interface AssociationCandidate {
+	sha256?: string;
+	sha512?: string;
+	/** Base64 DER of the selected object (certificate or SPKI). */
+	der?: string;
+}
+
+function leafCandidate(cert: ServedCertificate, selector: number): AssociationCandidate {
+	return selector === 0
+		? { sha256: cert.leafSha256, sha512: cert.leafSha512, der: cert.leafDer }
+		: { sha256: cert.leafSpkiSha256, sha512: cert.leafSpkiSha512, der: cert.leafSpkiDer };
+}
+
+function chainCandidate(
+	entry: ServedCertificateChainEntry,
+	selector: number,
+	isLeaf: boolean,
+	cert: ServedCertificate,
+): AssociationCandidate {
+	if (selector === 0) {
+		return {
+			sha256: entry.sha256 ?? (isLeaf ? cert.leafSha256 : undefined),
+			sha512: entry.sha512 ?? (isLeaf ? cert.leafSha512 : undefined),
+			der: entry.der ?? (isLeaf ? cert.leafDer : undefined),
+		};
+	}
+	return {
+		sha256: entry.spkiSha256 ?? (isLeaf ? cert.leafSpkiSha256 : undefined),
+		sha512: entry.spkiSha512 ?? (isLeaf ? cert.leafSpkiSha512 : undefined),
+		// The probe contract carries no SPKI DER for non-leaf entries; the leaf's is known.
+		der: entry.spkiDer ?? (isLeaf ? cert.leafSpkiDer : undefined),
+	};
+}
+
+/**
+ * The chain members a record's usage may match (RFC 7671 §5). End-entity usages (1, 3)
+ * bind the LEAF only; trust-anchor usages (0, 2) may match ANY served chain member —
+ * including the leaf, which §5.2 allows when the TA is also the EE. Returns null for a
+ * usage outside 0–3.
+ */
+function candidatesFor(record: TlsaRecord, cert: ServedCertificate): AssociationCandidate[] | null {
+	if (record.selector !== 0 && record.selector !== 1) return null;
+	switch (record.usage) {
+		case 1:
+		case 3:
+			return [leafCandidate(cert, record.selector)];
+		case 0:
+		case 2: {
+			const chain = cert.chain ?? [];
+			if (chain.length === 0) return [leafCandidate(cert, record.selector)];
+			return chain.map((entry, i) => chainCandidate(entry, record.selector, i === 0, cert));
+		}
+		default:
+			return null;
+	}
+}
+
+/** true = match, false = compared and differs, null = this candidate cannot be compared. */
+function compareCandidate(record: TlsaRecord, candidate: AssociationCandidate): boolean | null {
+	const pinned = canonicalHex(record.certData);
+	if (pinned.length === 0) return null;
+	switch (record.matchingType) {
+		case 1:
+			return candidate.sha256 === undefined ? null : canonicalHex(candidate.sha256) === pinned;
+		case 2:
+			return candidate.sha512 === undefined ? null : canonicalHex(candidate.sha512) === pinned;
+		case 0: {
+			if (candidate.der === undefined) return null;
+			const hex = base64ToHex(candidate.der);
+			return hex === null ? null : hex === pinned;
+		}
+		default:
+			return null;
+	}
+}
+
+/**
+ * Compare a TLSA RRset against the certificate the host served (RFC 7671 semantics).
+ *
+ * Pure and runtime-agnostic — digest / hex equality only, no X.509 parsing:
+ *
+ * | usage        | compared against              | selector 0 → | selector 1 → |
+ * | ------------ | ----------------------------- | ------------ | ------------ |
+ * | 3 DANE-EE    | the leaf                      | cert DER     | SPKI DER     |
+ * | 1 PKIX-EE    | the leaf                      | cert DER     | SPKI DER     |
+ * | 2 DANE-TA    | ANY served chain entry (incl. leaf, §5.2) | cert DER | SPKI DER |
+ * | 0 PKIX-TA    | ANY served chain entry (incl. leaf)       | cert DER | SPKI DER |
+ *
+ * matching type 1 = SHA-256 of the selected object, 2 = SHA-512, 0 = the full object
+ * (hex of the base64-decoded DER, compared case-insensitively). Any other usage /
+ * selector / matching type — or probe material the comparison needs but does not have
+ * — lands in `unverifiable`, never `unmatched`. Strings are parsed with
+ * {@link parseTlsaRecord}; unparseable strings are dropped (they carry their own
+ * "Malformed TLSA record" finding upstream).
+ */
+export function verifyTlsaAssociations(records: TlsaRecord[] | string[], cert: ServedCertificate): TlsaVerification {
+	const matched: TlsaRecord[] = [];
+	const unmatched: TlsaRecord[] = [];
+	const unverifiable: TlsaRecord[] = [];
+	for (const raw of records) {
+		const record = typeof raw === 'string' ? parseTlsaRecord(raw) : raw;
+		if (!record) continue;
+		const candidates = candidatesFor(record, cert);
+		if (!candidates) {
+			unverifiable.push(record);
+			continue;
+		}
+		// A record is UNMATCHED only when EVERY candidate it may match was compared and
+		// differs. One uncomparable candidate (a chain member the probe carried no material
+		// for) is enough to withhold that verdict — for a TA usage the pin may match that
+		// very member — so it lands in `unverifiable` instead.
+		let sawUncomparable = false;
+		let hit = false;
+		for (const candidate of candidates) {
+			const outcome = compareCandidate(record, candidate);
+			if (outcome === null) {
+				sawUncomparable = true;
+				continue;
+			}
+			if (outcome) {
+				hit = true;
+				break;
+			}
+		}
+		if (hit) matched.push(record);
+		else if (sawUncomparable) unverifiable.push(record);
+		else unmatched.push(record);
+	}
+	return { matched, unmatched, unverifiable };
+}
+
+/** Machine-readable `notAssessedReason` tokens for an unmeasured pin verification. */
+export const DANE_PIN_NOT_ASSESSED_REASONS = {
+	pending: 'certificate_probe_pending',
+	failed: 'certificate_probe_failed',
+} as const;
+
+/**
  * Analyze a set of TLSA records for a given DNS name.
  * Validates field ranges, checks DNSSEC dependency, and flags weak matching types.
  */
-export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: boolean): Finding[] {
+export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: boolean, verification?: TlsaVerificationContext): Finding[] {
 	const findings: Finding[] = [];
 	const seenDaneWithoutDnssec = new Set<string>();
-	let validRecordCount = 0;
+	const validRecords: TlsaRecord[] = [];
 
 	for (const record of records) {
 		const parsed = parseTlsaRecord(record);
@@ -146,34 +381,172 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 			);
 		}
 
-		// Count valid DANE records for consolidated info finding
-		validRecordCount++;
+		// Collect well-formed records for the consolidated verdict below
+		validRecords.push(parsed);
 	}
+	const validRecordCount = validRecords.length;
 
-	// Emit a single consolidated info finding for all well-formed TLSA records.
-	// HONESTY (#841): "well-formed" is a SYNTAX verdict only. This analyzer never
-	// fetches the certificate the host serves, so it cannot know whether the pinned
-	// data still matches — a stale DANE-EE pin (which breaks every DANE-validating
-	// client) parses identically to a correct one. The wording and the
-	// `certificateMatchVerified: false` marker must keep saying so until a live
-	// leaf/SPKI source is wired into this check. The upstream browser probe can expose
-	// certificate material, but this package does not receive it yet. Presence therefore
-	// earns a small deduction rather than the former unsupported perfect score.
+	// Consolidated verdict for the well-formed records (#841).
+	//
+	// HONESTY (#841): this analyzer parses DNS; it never fetches a certificate. A stale
+	// DANE-EE pin parses identically to a correct one, so "well-formed" is a SYNTAX
+	// verdict. Since scoring model 1.22.0 the served certificate CAN reach this function —
+	// the bv-mcp wrapper captures it over the operator-only bv-tls-probe binding and
+	// passes it in `verification` — and the verdict ladder is:
+	//   any association matches            → info, `certificateMatchVerified: true`   (100)
+	//   certificate served, none match     → high "pin does not match"                 (75)
+	//   probe attempted, no certificate    → info, `inconclusive` + `notAssessedReason` (unmeasured, no deduction)
+	//   no probe capability (self-hosts)   → low "present, not verified" — the 1.18.0 posture, unchanged (95)
+	// `certificateMatchVerified` is the machine-readable marker every consumer must read
+	// (maturity staging counts a DANE pin toward Stage 4 ONLY when it is `true`).
 	if (validRecordCount > 0) {
-		const detail =
-			validRecordCount === 1
-				? `TLSA record present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.`
-				: `${validRecordCount} DANE TLSA records present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.`;
-		findings.push(
-			createFinding('dane', `DANE TLSA configured for ${name}`, 'low', detail, {
-				name,
-				validRecordCount,
-				certificateMatchVerified: false,
-			}),
-		);
+		const cert = verification?.servedCertificate ?? null;
+		if (cert) {
+			findings.push(buildVerifiedVerdict(name, validRecords, cert));
+		} else if (verification?.certificateProbe === 'pending' || verification?.certificateProbe === 'failed') {
+			findings.push(buildUnmeasuredVerdict(name, validRecordCount, verification.certificateProbe, verification.certificateProbeReason));
+		} else {
+			findings.push(buildUnverifiedVerdict(name, validRecordCount));
+		}
 	}
 
 	return findings;
+}
+
+/** The 1.18.0 posture: present + well-formed, compared against nothing. Text is pinned by dane-honest-labeling.test.ts. */
+function buildUnverifiedVerdict(name: string, validRecordCount: number): Finding {
+	const detail =
+		validRecordCount === 1
+			? `TLSA record present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection. Confirm the pin matches the live certificate after every certificate rotation.`
+			: `${validRecordCount} DANE TLSA records present and syntactically well-formed for ${name}. This check does not verify the pinned data against the certificate the server presents, so a stale pin is not detected here. Authentication succeeds while any one association still matches, so a single superseded record during a rollover is not itself fatal; where the RRset is DNSSEC-authenticated and none match, DANE-validating clients reject the connection. Confirm each pin matches the live certificate after every certificate rotation.`;
+	return createFinding('dane', `DANE TLSA configured for ${name}`, 'low', detail, {
+		name,
+		validRecordCount,
+		certificateMatchVerified: false,
+	});
+}
+
+/**
+ * The probe was ATTEMPTED and returned no certificate: the pin is UNMEASURED this run.
+ * `info` with `inconclusive: true` — no deduction, no absence claim (#638: a probe that
+ * never produced an answer must not be scored as a measurement). The caller marks the
+ * result `partial` off `metadata.certificateProbe` so it is not cached and the next
+ * scan re-tries; the category itself stays COMPLETED because the TLSA measurement is
+ * real — only the comparison is outstanding.
+ */
+function buildUnmeasuredVerdict(
+	name: string,
+	validRecordCount: number,
+	outcome: 'pending' | 'failed',
+	reason: string | undefined,
+): Finding {
+	const notAssessedReason = reason ?? DANE_PIN_NOT_ASSESSED_REASONS[outcome];
+	const plural = validRecordCount === 1 ? 'TLSA record is' : `${validRecordCount} TLSA records are`;
+	const why =
+		outcome === 'pending'
+			? 'the certificate probe has not finished capturing the served certificate yet (its result arrives on a later scan)'
+			: `the certificate probe returned no usable certificate (${notAssessedReason.replace(/_/g, ' ')})`;
+	return createFinding(
+		'dane',
+		`DANE TLSA pin verification ${outcome === 'pending' ? 'pending' : 'inconclusive'} for ${name}`,
+		'info',
+		`${plural} present and syntactically well-formed for ${name}, but ${why}, so the pinned data was neither confirmed nor refuted against the certificate the server presents. This unverified state carries no deduction; the result is marked partial so the next scan re-attempts verification. Where the RRset is DNSSEC-authenticated and no association matches the served certificate, DANE-validating clients reject the connection — confirm the pin after every certificate rotation.`,
+		{
+			name,
+			validRecordCount,
+			certificateMatchVerified: false,
+			inconclusive: true,
+			notAssessedReason,
+			certificateProbe: outcome,
+		},
+	);
+}
+
+/** Compact presentation of an association for prose / metadata. */
+function describeAssociation(r: TlsaRecord): string {
+	return `${r.usage} ${r.selector} ${r.matchingType} ${canonicalHex(r.certData)}`;
+}
+
+/**
+ * A certificate WAS captured: compare and rule. The `high` mismatch wording is
+ * deliberately free of the `MISSING_CONTROL_REGEX` triggers ("missing", "required",
+ * "not found", "no … record") — `dane_https` sits in `PROFILE_CRITICAL_CATEGORIES`
+ * for `non_mail` / `web_only`, and a `high` that read as a missing control would arm
+ * the critical-gap ceiling and cap the whole scan at 64. A mismatch is a MEASURED
+ * defect (−25, category 75), not an absent control. Pinned by
+ * dane-pin-verification.test.ts.
+ */
+function buildVerifiedVerdict(name: string, validRecords: TlsaRecord[], cert: ServedCertificate): Finding {
+	const verification = verifyTlsaAssociations(validRecords, cert);
+	const served = {
+		servedHost: cert.host,
+		servedPort: cert.port,
+		...(cert.capturedAt ? { capturedAt: cert.capturedAt } : {}),
+		...(cert.leafSha256 ? { servedLeafSha256: canonicalHex(cert.leafSha256) } : {}),
+		...(cert.leafSpkiSha256 ? { servedLeafSpkiSha256: canonicalHex(cert.leafSpkiSha256) } : {}),
+	};
+
+	if (verification.matched.length > 0) {
+		const first = verification.matched[0];
+		const usageLabel = USAGE_LABELS[first.usage] ?? `usage ${first.usage}`;
+		const others = validRecords.length - verification.matched.length;
+		return createFinding(
+			'dane',
+			`DANE TLSA verified against the served certificate for ${name}`,
+			'info',
+			`The TLSA association ${describeAssociation(first)} (${usageLabel}) at ${name} matches the certificate ${cert.host} serves on port ${cert.port}${cert.capturedAt ? ` (captured ${cert.capturedAt})` : ''}.${others > 0 ? ` ${others} further association${others === 1 ? '' : 's'} in the RRset did not match — normal during a certificate rollover, harmless while one association matches.` : ''} Keep the RRset in step with certificate rotation; a CDN-managed certificate rotates on the provider's schedule.`,
+			{
+				...served,
+				name,
+				validRecordCount: validRecords.length,
+				certificateMatchVerified: true,
+				matchedAssociations: verification.matched.map(describeAssociation),
+				matchedUsage: first.usage,
+				matchedSelector: first.selector,
+				matchedMatchingType: first.matchingType,
+				matchedCertData: canonicalHex(first.certData),
+				...(verification.unmatched.length > 0 ? { unmatchedAssociations: verification.unmatched.map(describeAssociation) } : {}),
+				...(verification.unverifiable.length > 0 ? { unverifiableAssociations: verification.unverifiable.map(describeAssociation) } : {}),
+			},
+		);
+	}
+
+	if (verification.unverifiable.length > 0) {
+		// At least one association could not be compared, so "the pin is wrong" is not
+		// established — fall back to the honest present-not-verified posture.
+		const unverified = buildUnverifiedVerdict(name, validRecords.length);
+		return {
+			...unverified,
+			metadata: {
+				...unverified.metadata,
+				...served,
+				unmatchedAssociations: verification.unmatched.map(describeAssociation),
+				unverifiableAssociations: verification.unverifiable.map(describeAssociation),
+			},
+		};
+	}
+
+	const pinned = verification.unmatched.map(describeAssociation);
+	const count = pinned.length;
+	return createFinding(
+		'dane',
+		`DANE TLSA pin does not match the served certificate for ${name}`,
+		'high',
+		`${count === 1 ? 'The TLSA association' : `Each of the ${count} TLSA associations`} published at ${name} was compared against the certificate ${cert.host} serves on port ${cert.port}${cert.capturedAt ? ` (captured ${cert.capturedAt})` : ''} and none of them match it: pinned ${pinned.join('; ')}; served leaf SPKI SHA-256 ${served.servedLeafSpkiSha256 ?? 'unavailable'}, leaf SHA-256 ${served.servedLeafSha256 ?? 'unavailable'}. Where the RRset is DNSSEC-authenticated, DANE-validating clients reject the connection to this host. Republish the TLSA RRset from the current certificate (its issuer for DANE-TA) and automate the update on every rotation — a CDN-managed certificate rotates on the provider's schedule, so a hand-maintained DANE-EE pin drifts by default.`,
+		{
+			...served,
+			name,
+			validRecordCount: validRecords.length,
+			certificateMatchVerified: false,
+			pinned,
+			unmatchedAssociations: pinned,
+			// The pinned data is a raw DNS record token the zone owner controls. Declaring it
+			// as subject data has the missing-control predicate test the prose WITHOUT it, so
+			// a record such as `3 1 1 missing` cannot smuggle a regex trigger into a `high`
+			// finding and zero the category / arm the critical-gap ceiling.
+			[SUBJECT_TERMS_METADATA_KEY]: pinned,
+		},
+	);
 }
 
 /**

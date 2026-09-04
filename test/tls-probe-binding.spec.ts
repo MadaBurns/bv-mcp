@@ -287,3 +287,97 @@ describe('mergeTlsFinding', () => {
 		expect(merged.controlPresent).toBe(true);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// servedCertificateFromProbe (#841) — projecting /probe onto the DANE check's input
+// ---------------------------------------------------------------------------
+describe('servedCertificateFromProbe', () => {
+	const cert = () => ({
+		host: 'example.com',
+		port: 443,
+		capturedAt: '2026-09-04T00:00:00.000Z',
+		leafDer: 'MAMCAQE=',
+		leafSpkiDer: 'MAMCAQE=',
+		leafSha256: 'aa'.repeat(32),
+		leafSha512: 'bb'.repeat(64),
+		leafSpkiSha256: 'cc'.repeat(32),
+		leafSpkiSha512: 'dd'.repeat(64),
+		chain: [
+			{ sha256: 'aa'.repeat(32), sha512: 'bb'.repeat(64), spkiSha256: 'cc'.repeat(32), spkiSha512: 'dd'.repeat(64), der: 'MAMCAQE=' },
+		],
+		subjectName: 'example.com',
+		subjectAlternativeNames: ['example.com', 'www.example.com'],
+	});
+
+	it('a certificate for the scanned host → the served certificate, chain projected verbatim', async () => {
+		const { servedCertificateFromProbe } = await fresh();
+		const out = servedCertificateFromProbe({ reachable: true, certificate: cert() }, 'example.com');
+		expect(out.certificateProbe).toBeUndefined();
+		expect(out.servedCertificate).toMatchObject({
+			host: 'example.com',
+			port: 443,
+			leafSha256: 'aa'.repeat(32),
+			leafSpkiSha256: 'cc'.repeat(32),
+			chain: [{ sha256: 'aa'.repeat(32), spkiSha256: 'cc'.repeat(32) }],
+			subjectAlternativeNames: ['example.com', 'www.example.com'],
+		});
+	});
+
+	it('host comparison is case-insensitive and ignores a trailing dot', async () => {
+		const { servedCertificateFromProbe } = await fresh();
+		const out = servedCertificateFromProbe({ certificate: { ...cert(), host: 'Example.COM.' } }, 'example.com');
+		expect(out.servedCertificate?.host).toBe('example.com');
+	});
+
+	it.each([
+		['a different host (www vs apex)', { certificate: { ...cert(), host: 'www.example.com' } }, 'certificate_host_mismatch'],
+		['a certificate with no host', { certificate: { ...cert(), host: undefined } }, 'certificate_host_mismatch'],
+		['a certificate block missing its leaf digests', { certificate: { host: 'example.com', port: 443 } }, 'certificate_probe_failed'],
+		['certificateError: off-host redirect', { certificateError: 'off-host redirect' }, 'off_host_redirect'],
+		['certificateError: anything else', { certificateError: 'no security state' }, 'certificate_probe_failed'],
+		['reachable: false', { reachable: false, error: 'connect timeout' }, 'host_unreachable'],
+		['no certificate block at all', { reachable: true, minVersion: 'TLS1.2' }, 'certificate_probe_failed'],
+	])('%s → failed, reason %s', async (_label, probe, reason) => {
+		const { servedCertificateFromProbe } = await fresh();
+		const out = servedCertificateFromProbe(probe as never, 'example.com');
+		expect(out.servedCertificate).toBeNull();
+		expect(out.certificateProbe).toBe('failed');
+		expect(out.certificateProbeReason).toBe(reason);
+	});
+
+	it('the cold-cache "pending" verdict → pending', async () => {
+		const { servedCertificateFromProbe } = await fresh();
+		const out = servedCertificateFromProbe({ error: 'probe pending — cache warming…' }, 'example.com');
+		expect(out.certificateProbe).toBe('pending');
+		expect(out.certificateProbeReason).toBe('certificate_probe_pending');
+	});
+
+	it('a null probe (binding failure) → failed', async () => {
+		const { servedCertificateFromProbe } = await fresh();
+		expect(servedCertificateFromProbe(null, 'example.com')).toEqual({
+			servedCertificate: null,
+			certificateProbe: 'failed',
+			certificateProbeReason: 'certificate_probe_failed',
+		});
+	});
+
+	it('callTlsProbe: a MALFORMED certificate block degrades to "no certificate" without losing the TLS-version fields', async () => {
+		const { callTlsProbe } = await fresh();
+		const binding = bindingReturning({
+			reachable: true,
+			minVersion: 'TLS1.2',
+			certificate: { host: 'example.com', port: '443', chain: 'nope' },
+		});
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com');
+		expect(out).not.toBeNull();
+		expect(out!.minVersion).toBe('TLS1.2');
+		expect(out!.certificate).toBeUndefined();
+	});
+
+	it('callTlsProbe: a well-formed certificate block survives validation', async () => {
+		const { callTlsProbe } = await fresh();
+		const binding = bindingReturning({ reachable: true, minVersion: 'TLS1.2', certificate: cert(), certificateError: undefined });
+		const out = await callTlsProbe(binding, STRONG_TLS_KEY, 'example.com');
+		expect(out!.certificate?.leafSpkiSha256).toBe('cc'.repeat(32));
+	});
+});
