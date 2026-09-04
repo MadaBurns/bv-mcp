@@ -415,6 +415,8 @@ describe('checkDANEHTTPS — end state verified 100 > absent 95 > mismatch 75', 
 		[DANE_PIN_NOT_ASSESSED_REASONS.probeUnavailable, true],
 		[DANE_PIN_NOT_ASSESSED_REASONS.offHostRedirect, false],
 		[DANE_PIN_NOT_ASSESSED_REASONS.hostMismatch, false],
+		// A property of the probe, not of the host: re-trying can never resolve it.
+		[DANE_PIN_NOT_ASSESSED_REASONS.vantageIntercepted, false],
 		['some_unknown_reason', false],
 	])('reason %s → partial %s (transient reasons re-try, permanent ones cache normally)', async (reason, partial) => {
 		const { queryDNS, rawQueryDNS } = dns([`3 1 1 ${STALE_SHA256}`]);
