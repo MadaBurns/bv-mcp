@@ -234,6 +234,38 @@ function unmeasured(outcome: 'pending' | 'failed', reason: string): TlsaVerifica
 }
 
 /**
+ * Kill-switch (NOT a deletion) for DANE pin verification over bv-tls-probe — `false`
+ * since 3.75.1 / scoring model 1.23.0.
+ *
+ * bv-tls-probe captures the served certificate from a headless browser inside Cloudflare
+ * Browser Rendering, and that browser does NOT see the origin's certificate: Browser
+ * Rendering egresses page traffic through a TLS-terminating proxy that re-signs every
+ * non-Cloudflare origin with a per-session "Mockttp Cert - DO NOT TRUST" CA. Measured
+ * 2026-09-04 against the probe (prod and a remote-binding dev run): fedoraproject.org,
+ * kernel.org and www.debian.org all returned a Mockttp-issued RSA leaf that exists in no
+ * CT log, while openssl from the public internet saw their real DigiCert / Let's Encrypt
+ * keys — and fedoraproject.org's real SPKI matched its TLSA record exactly. 3.75.0
+ * compared the Mockttp leaf against that record and shipped a `high` "pin does not match
+ * the served certificate" (category 75) against a correct pin. Every DANE-EE / DANE-TA
+ * comparison from this vantage is a guaranteed mismatch, so NO capture from it may reach
+ * the analyzer. The projection ({@link servedCertificateFromProbe}) stays pure and tested
+ * for a future capture that genuinely observes the origin; flipping this to `true` without
+ * a new, non-intercepted capture source re-ships the 3.75.0 false positive.
+ * Pinned by test/tls-probe-binding.spec.ts and test/check-dane-https-pin-verification.spec.ts.
+ */
+export const DANE_PIN_VERIFICATION_ENABLED = false;
+
+/**
+ * The verification context handed to the package while the kill-switch is off: a
+ * permanent (non-transient, cached-normally) `failed` probe with the
+ * `probe_vantage_intercepted` reason — the unverified `low` 95, never a verdict, and
+ * no Browser Rendering session is spent producing it.
+ */
+export function interceptedVantageContext(): TlsaVerificationContext {
+	return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.vantageIntercepted);
+}
+
+/**
  * Project a `/probe` response onto the DANE check's verification input (#841).
  *
  * - `certificate` present AND its `host` equals the scanned name → the served certificate.

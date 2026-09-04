@@ -10,6 +10,12 @@
  * matching one a verified `info` (100). A probe that produced no certificate leaves the
  * pin at the unverified `low` (95) with sub-state metadata. BSL self-hosts without the
  * binding receive the unmodified base result (present, not verified — the 1.18.0 posture).
+ *
+ * ⚠️ KILL-SWITCHED since 3.75.1 (`DANE_PIN_VERIFICATION_ENABLED = false`): the probe's
+ * Browser Rendering vantage is TLS-intercepted (Mockttp re-signs every non-Cloudflare
+ * origin), so its capture can never match a real pin. With the binding present the check
+ * now reports `probe_vantage_intercepted` (permanent, 95, cached) and spends no probe
+ * call; the verification path above is retained for a future non-intercepted capture.
  */
 
 import { checkDANEHTTPS } from '@blackveil/dns-checks';
@@ -18,7 +24,12 @@ import { queryDns } from '../lib/dns';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult } from '../lib/scoring';
-import { callTlsProbe, servedCertificateFromProbe } from '../lib/tls-probe-binding';
+import {
+	callTlsProbe,
+	servedCertificateFromProbe,
+	DANE_PIN_VERIFICATION_ENABLED,
+	interceptedVantageContext,
+} from '../lib/tls-probe-binding';
 import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-binding';
 import { createFetchBudget } from '../lib/fetch-budget';
 
@@ -61,6 +72,10 @@ export async function checkDaneHttps(
 	// (unmeasured), never into a verdict.
 	const resolveServedCertificate = binding
 		? async (): Promise<TlsaVerificationContext> => {
+				// Kill-switch (3.75.1): the probe's Browser Rendering vantage is TLS-intercepted, so
+				// its capture is never admissible — report the permanent reason WITHOUT spending a
+				// probe call. See `DANE_PIN_VERIFICATION_ENABLED` for the measured evidence.
+				if (!DANE_PIN_VERIFICATION_ENABLED) return interceptedVantageContext();
 				const probe = await callTlsProbe(binding, probeOptions.tlsProbeAuthToken, domain, {
 					telemetry: probeOptions.onBindingDegradation,
 					signal: budget.signal(probeOptions.signal),

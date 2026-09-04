@@ -389,3 +389,23 @@ describe('servedCertificateFromProbe', () => {
 		expect(out!.certificate?.leafSpkiSha256).toBe('cc'.repeat(32));
 	});
 });
+
+describe('DANE pin verification kill-switch (3.75.1)', () => {
+	it('is OFF — the Browser Rendering vantage is TLS-intercepted, so no capture is admissible', async () => {
+		const { DANE_PIN_VERIFICATION_ENABLED } = await import('../src/lib/tls-probe-binding');
+		expect(DANE_PIN_VERIFICATION_ENABLED).toBe(false);
+	});
+
+	it('the substitute context is a PERMANENT failed probe with the intercepted-vantage reason (no certificate)', async () => {
+		const { interceptedVantageContext } = await import('../src/lib/tls-probe-binding');
+		const { DANE_PIN_NOT_ASSESSED_REASONS, isTransientDanePinReason } = await import('@blackveil/dns-checks');
+		const ctx = interceptedVantageContext();
+		expect(ctx).toEqual({
+			servedCertificate: null,
+			certificateProbe: 'failed',
+			certificateProbeReason: DANE_PIN_NOT_ASSESSED_REASONS.vantageIntercepted,
+		});
+		expect(ctx.certificateProbeReason).toBe('probe_vantage_intercepted');
+		expect(isTransientDanePinReason(ctx.certificateProbeReason)).toBe(false);
+	});
+});

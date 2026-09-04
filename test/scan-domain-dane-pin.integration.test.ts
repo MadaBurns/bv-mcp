@@ -1,14 +1,16 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Scan-path scoring-coherence guard for DANE-HTTPS pin verification (#841).
+ * Scan-path scoring-coherence guard for DANE-HTTPS pin verification (#841), now
+ * KILL-SWITCHED (3.75.1, `DANE_PIN_VERIFICATION_ENABLED = false`).
  *
  * `scan_domain` does NOT route through the tool registry — it invokes `checkDaneHttps`
- * from its `CHECK_DISPATCH` table. These tests prove the BV_TLS_PROBE binding is
- * threaded all the way into the scan's `dane_https` category, tier-gated exactly as
- * the `ssl` enrichment is, so a real scan's DANE score reflects the served certificate:
- *
- *   verified pin (100)  >  absent / unverified (95)  >  mismatch (75)
+ * from its `CHECK_DISPATCH` table. These tests prove that, measured through a real scan
+ * with the BV_TLS_PROBE binding threaded in exactly as the `ssl` enrichment is, the
+ * `dane_https` category NEVER moves on the probe's capture any more: every pin sits at
+ * the unverified 95 with the permanent `probe_vantage_intercepted` sub-state, the probe
+ * is consulted only by `ssl`, and neither the 3.75.0 false mismatch (75) nor a verified
+ * 100 can be produced from the intercepted Browser Rendering vantage.
  *
  * Mirrors test/scan-domain-tls-probe.integration.test.ts's domain-agnostic harness.
  */
@@ -82,7 +84,7 @@ function mockCleanScan(tlsaFor: (domain: string) => string | null) {
 	});
 }
 
-/** A bv-tls-probe binding that answers with the served certificate for whatever host was asked. */
+/** A bv-tls-probe binding that answers with a served certificate for whatever host was asked. */
 function probeBinding(bodyFor: (host: string) => unknown, status = 200) {
 	return {
 		fetch: vi.fn(async (input: RequestInfo | URL) => {
@@ -109,76 +111,81 @@ const withProbe = (binding: ReturnType<typeof probeBinding>, authTier = 'enterpr
 	authTier,
 });
 
-describe('scan_domain DANE-HTTPS pin-verification coherence (#841)', () => {
-	it('verified 100 > absent 95 > mismatch 75 — the end state, measured through the scan path', async () => {
+function expectIntercepted(check: Awaited<ReturnType<typeof daneFor>>['check']) {
+	expect(check!.partial).toBeUndefined();
+	expect(check!.checkStatus).toBeUndefined();
+	const low = check!.findings.find((f) => f.title.startsWith('DANE TLSA configured'))!;
+	expect(low.severity).toBe('low');
+	expect(low.metadata?.certificateMatchVerified).toBe(false);
+	expect(low.metadata?.certificateProbe).toBe('failed');
+	expect(low.metadata?.notAssessedReason).toBe('probe_vantage_intercepted');
+	expect(check!.findings.some((f) => f.severity === 'high')).toBe(false);
+}
+
+describe('scan_domain DANE-HTTPS pin verification is kill-switched on the scan path (3.75.1)', () => {
+	it('would-match, would-mismatch and absent all sit at 95 — the capture never moves the category', async () => {
 		mockCleanScan(() => null);
 		const absent = await daneFor('daneabsent.com', withProbe(certProbe()));
 
 		mockCleanScan(() => LEAF_SPKI_SHA256);
-		const verified = await daneFor('daneverified.com', withProbe(certProbe()));
+		const wouldMatch = await daneFor('daneverified.com', withProbe(certProbe()));
 
 		mockCleanScan(() => STALE_SHA256);
-		const stale = await daneFor('danestale.com', withProbe(certProbe()));
+		const wouldMismatch = await daneFor('danestale.com', withProbe(certProbe()));
 
 		expect(absent.categoryScore).toBe(95);
-		expect(verified.categoryScore).toBe(100);
-		expect(stale.categoryScore).toBe(75);
-		expect(verified.categoryScore).toBeGreaterThan(absent.categoryScore);
-		expect(absent.categoryScore).toBeGreaterThan(stale.categoryScore);
-
-		expect(verified.check!.findings.some((f) => f.metadata?.certificateMatchVerified === true)).toBe(true);
-		expect(stale.check!.findings.some((f) => f.severity === 'high' && f.metadata?.certificateMatchVerified === false)).toBe(true);
-		// A mismatch is a MEASURED defect, not a missing control — the web-only critical-gap
-		// ceiling (64) must not arm on it.
-		expect(stale.result.score.overall).not.toBeNull();
-		expect(stale.result.score.overall!).toBeGreaterThan(64);
+		expect(wouldMatch.categoryScore).toBe(95);
+		expect(wouldMismatch.categoryScore).toBe(95);
+		expect(wouldMatch.check!.findings.some((f) => f.metadata?.certificateMatchVerified === true)).toBe(false);
+		expectIntercepted(wouldMatch.check);
+		expectIntercepted(wouldMismatch.check);
+		// No DANE credit toward Stage 4 can be earned from this vantage, and nothing below
+		// the 1.18.0 posture can be produced either: the scan is above the critical-gap cap.
+		expect(wouldMismatch.result.score.overall).not.toBeNull();
+		expect(wouldMismatch.result.score.overall!).toBeGreaterThan(64);
 	});
 
-	it('the probe is asked for the EXACT scanned host (the TLSA owner), port 443', async () => {
+	it('the probe is consulted ONLY by `ssl`: with a TLSA record present, DANE spends no probe call', async () => {
 		mockCleanScan(() => LEAF_SPKI_SHA256);
 		const binding = certProbe();
 		await daneFor('danehost.com', withProbe(binding));
+		expect(binding.fetch).toHaveBeenCalledOnce();
 		const hosts = binding.fetch.mock.calls.map(([input]) => new URL(String(input)).searchParams.get('host'));
-		// Both `ssl` and `dane_https` consult the probe; every call pins the scanned host itself.
-		expect(hosts.length).toBeGreaterThanOrEqual(2);
-		expect(new Set(hosts)).toEqual(new Set(['danehost.com']));
+		expect(hosts).toEqual(['danehost.com']);
 	});
 
-	it('binding absent → 95 present-not-verified (self-host posture), no probe involved', async () => {
+	it('binding absent → 95 present-not-verified (self-host posture), no probe metadata at all', async () => {
 		mockCleanScan(() => STALE_SHA256);
 		const { categoryScore, check } = await daneFor('danenoprobe.com');
 		expect(categoryScore).toBe(95);
 		expect(check!.partial).toBeUndefined();
-		expect(check!.findings.find((f) => f.title.startsWith('DANE TLSA configured'))?.severity).toBe('low');
-	});
-
-	it('free tier → the paid-tier gate withholds the binding: no probe call, 95 unchanged', async () => {
-		mockCleanScan(() => STALE_SHA256);
-		const binding = certProbe();
-		const { categoryScore } = await daneFor('danefree.com', withProbe(binding, 'free'));
-		expect(binding.fetch).not.toHaveBeenCalled();
-		expect(categoryScore).toBe(95);
-	});
-
-	it('cold-cache pending probe → 95 unverified (never above the no-probe posture), check partial, category still completed', async () => {
-		mockCleanScan(() => STALE_SHA256);
-		const pending = probeBinding(() => ({ error: 'probe pending — cache warming' }));
-		const { categoryScore, check } = await daneFor('danepending.com', withProbe(pending));
-		expect(categoryScore).toBe(95);
-		expect(check!.partial).toBe(true);
-		expect(check!.checkStatus).toBeUndefined();
 		const low = check!.findings.find((f) => f.title.startsWith('DANE TLSA configured'))!;
 		expect(low.severity).toBe('low');
-		expect(low.metadata?.notAssessedReason).toBe('certificate_probe_pending');
+		expect(low.metadata?.certificateProbe).toBeUndefined();
+		expect(low.metadata?.notAssessedReason).toBeUndefined();
 	});
 
-	it('permanent probe failure (off-host redirect) → 95, NOT partial (no retry-forever)', async () => {
+	it('free tier → the paid-tier gate withholds the binding: no probe call, 95, self-host posture', async () => {
+		mockCleanScan(() => STALE_SHA256);
+		const binding = certProbe();
+		const { categoryScore, check } = await daneFor('danefree.com', withProbe(binding, 'free'));
+		expect(binding.fetch).not.toHaveBeenCalled();
+		expect(categoryScore).toBe(95);
+		expect(check!.findings.find((f) => f.title.startsWith('DANE TLSA configured'))?.metadata?.notAssessedReason).toBeUndefined();
+	});
+
+	it('a probe that would answer "pending" or "off-host redirect" is never asked — the result is the same permanent sub-state', async () => {
+		mockCleanScan(() => STALE_SHA256);
+		const pending = probeBinding(() => ({ error: 'probe pending — cache warming' }));
+		const a = await daneFor('danepending.com', withProbe(pending));
+		expect(a.categoryScore).toBe(95);
+		expectIntercepted(a.check);
+
 		mockCleanScan(() => STALE_SHA256);
 		const redirecting = probeBinding(() => ({ reachable: true, minVersion: 'TLS1.2', certificateError: 'off-host redirect' }));
-		const { categoryScore, check } = await daneFor('daneredirect.com', withProbe(redirecting));
-		expect(categoryScore).toBe(95);
-		expect(check!.partial).toBeUndefined();
-		expect(check!.findings.find((f) => f.title.startsWith('DANE TLSA configured'))?.metadata?.notAssessedReason).toBe('off_host_redirect');
+		const b = await daneFor('daneredirect.com', withProbe(redirecting));
+		expect(b.categoryScore).toBe(95);
+		expectIntercepted(b.check);
 	});
 
 	it('no TLSA anywhere → the probe is only ever consulted by `ssl` (DANE stays lazy)', async () => {
