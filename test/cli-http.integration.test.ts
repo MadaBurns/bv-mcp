@@ -1,12 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, expect, it } from 'vitest';
-import {
-	MCP_RESPONSE_BODY_MAX_BYTES,
-	MCP_SSE_EVENT_MAX_BYTES,
-	McpHttpClient,
-	parseMcpResponseBody,
-} from '../src/cli/mcp-http-client';
+import { MCP_RESPONSE_BODY_MAX_BYTES, MCP_SSE_EVENT_MAX_BYTES, McpHttpClient, parseMcpResponseBody } from '../src/cli/mcp-http-client';
 
 function rpc(result: unknown, headers: HeadersInit = {}, id = 1): Response {
 	return new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), {
@@ -263,6 +258,38 @@ describe('hosted MCP HTTP client', () => {
 
 		await client.connect();
 		await expect(client.callTool('scan_domain', {})).rejects.toThrow('event limit');
+		expect(cancelled).toBe(true);
+		expect(stream.locked).toBe(false);
+	});
+
+	it('rejects and disposes an SSE response whose individually bounded events exceed the aggregate limit', async () => {
+		let cancelled = false;
+		const event = new TextEncoder().encode(
+			`data: {"jsonrpc":"2.0","method":"notifications/progress","params":{"padding":"${'x'.repeat(400 * 1024)}"}}\n\n`,
+		);
+		expect(event.byteLength).toBeLessThan(MCP_SSE_EVENT_MAX_BYTES);
+		expect(event.byteLength * 6).toBeGreaterThan(MCP_RESPONSE_BODY_MAX_BYTES);
+		const stream = new ReadableStream({
+			start(controller) {
+				for (let index = 0; index < 6; index += 1) controller.enqueue(event);
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const responses = [
+			rpc(initialized()),
+			new Response('', { status: 202 }),
+			new Response(stream, { headers: { 'content-type': 'text/event-stream' } }),
+		];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async () => responses.shift()!) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+
+		await client.connect();
+		await expect(client.callTool('scan_domain', {})).rejects.toThrow('response body limit');
 		expect(cancelled).toBe(true);
 		expect(stream.locked).toBe(false);
 	});
