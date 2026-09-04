@@ -10,16 +10,31 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
-import { analyzeTlsaRecords } from './dane-analysis';
+import { analyzeTlsaRecords, DANE_PIN_NOT_ASSESSED_REASONS, isTransientDanePinReason } from './dane-analysis';
+import type { TlsaVerificationContext } from './dane-analysis';
+
+/** Options for {@link checkDANEHTTPS}. */
+export interface CheckDaneHttpsOptions extends TlsaVerificationContext {
+	timeout?: number;
+	rawQueryDNS?: RawDNSQueryFunction;
+	/**
+	 * Lazy certificate source (#841). Called ONLY when the TLSA lookup returned records —
+	 * DANE-for-HTTPS adoption is ~0%, so an eager probe would spend a Browser Rendering
+	 * session on every scan to verify nothing. A throwing resolver is a `failed` probe
+	 * (`probe_unavailable`, unverified at 95, re-tried), never a verdict. Takes precedence over the static `servedCertificate` /
+	 * `certificateProbe` fields when both are supplied.
+	 */
+	resolveServedCertificate?: () => Promise<TlsaVerificationContext>;
+}
 
 /**
  * Check DANE TLSA records for a domain's HTTPS endpoint (_443._tcp.{domain}).
+ *
+ * With a served certificate (or a `resolveServedCertificate` source) the pinned data is
+ * VERIFIED against it — see `analyzeTlsaRecords` for the verdict ladder. Without one
+ * (every BSL self-host) the result is the 1.18.0 "present, not verified" posture.
  */
-export async function checkDANEHTTPS(
-	domain: string,
-	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number; rawQueryDNS?: RawDNSQueryFunction },
-): Promise<CheckResult> {
+export async function checkDANEHTTPS(domain: string, queryDNS: DNSQueryFunction, options?: CheckDaneHttpsOptions): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 	const rawQueryDNS = options?.rawQueryDNS;
 	const findings: Finding[] = [];
@@ -45,7 +60,7 @@ export async function checkDANEHTTPS(
 		const tlsaRecords = await queryDNS(tlsaName, 'TLSA', { timeout });
 		if (tlsaRecords.length > 0) {
 			hasHttpsTlsa = true;
-			findings.push(...analyzeTlsaRecords(tlsaRecords, tlsaName, hasDnssec));
+			findings.push(...analyzeTlsaRecords(tlsaRecords, tlsaName, hasDnssec, await resolveVerification(options)));
 		}
 	} catch {
 		// TLSA query failed — report and continue
@@ -92,5 +107,38 @@ export async function checkDANEHTTPS(
 	// so that branch stays undefined rather than claiming absence.
 	const recordPresent = tlsaQueryFailed ? undefined : hasHttpsTlsa;
 
-	return buildCheckResult('dane_https', remapped, undefined, recordPresent);
+	const result = buildCheckResult('dane_https', remapped, undefined, recordPresent);
+	// An ATTEMPTED-but-unanswered pin verification with a TRANSIENT reason (cold-cache
+	// pending, host unreachable, probe 5xx/throw, capture hiccup) gets `partial: true`,
+	// which keeps it out of the scan-TTL cache so the next scan re-tries (mirrors the
+	// MTA-STS not-assessed shape, #889). Permanent reasons (off-host redirect, host
+	// mismatch, truncated chain) cache normally — no retry-forever. `checkStatus` is
+	// deliberately NOT set — the TLSA measurement itself is real, so the category stays
+	// completed and scored (at the unverified 95).
+	const retryable = remapped.some(
+		(f) =>
+			(f.metadata?.certificateProbe === 'pending' || f.metadata?.certificateProbe === 'failed') &&
+			isTransientDanePinReason(f.metadata?.notAssessedReason),
+	);
+	return retryable ? { ...result, partial: true } : result;
+}
+
+/**
+ * Resolve the verification context: the lazy source wins; a throw is a `failed` probe.
+ * Absent everything → `{}` → the analyzer's default `unavailable` posture.
+ */
+async function resolveVerification(options: CheckDaneHttpsOptions | undefined): Promise<TlsaVerificationContext> {
+	if (!options) return {};
+	if (options.resolveServedCertificate) {
+		try {
+			return await options.resolveServedCertificate();
+		} catch {
+			return { certificateProbe: 'failed', certificateProbeReason: DANE_PIN_NOT_ASSESSED_REASONS.probeUnavailable };
+		}
+	}
+	return {
+		servedCertificate: options.servedCertificate,
+		certificateProbe: options.certificateProbe,
+		certificateProbeReason: options.certificateProbeReason,
+	};
 }
