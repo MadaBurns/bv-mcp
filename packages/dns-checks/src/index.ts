@@ -91,6 +91,8 @@ export {
 	parseTlsaRecord,
 	verifyTlsaAssociations,
 	DANE_PIN_NOT_ASSESSED_REASONS,
+	DANE_PIN_TRANSIENT_REASONS,
+	isTransientDanePinReason,
 	parseCaaRecord,
 	analyzeSecurityHeaders,
 } from './checks';

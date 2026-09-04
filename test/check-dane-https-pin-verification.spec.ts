@@ -2,8 +2,9 @@
 
 /**
  * `check_dane_https` wrapper — TLSA pin verification over the operator-only
- * BV_TLS_PROBE binding (#841). The package ladder (verified 100 > absent 95 >
- * mismatch 75, unmeasured = info + partial) is pinned in
+ * BV_TLS_PROBE binding (#841). The package ladder (verified 100 > absent / unverified 95 >
+ * mismatch 75; a probe with no certificate = the unverified low, partial only when
+ * transient) is pinned in
  * packages/dns-checks/src/__tests__/checks/dane-pin-verification.test.ts; THIS file
  * pins the wrapper's contract with the probe: what it sends, how each probe outcome
  * is projected, laziness, the budget signal, and the binding-absent identity.
@@ -92,55 +93,66 @@ describe('checkDaneHttps — pin verification over BV_TLS_PROBE (#841)', () => {
 	});
 
 	it.each([
-		['cold-cache pending verdict', { error: 'probe pending — cache warming, retry shortly' }, 'certificate_probe_pending'],
+		['cold-cache pending verdict', { error: 'probe pending — cache warming, retry shortly' }, 'certificate_probe_pending', true],
 		[
 			'capture failed: off-host redirect',
 			{ reachable: true, minVersion: 'TLS1.2', certificateError: 'off-host redirect to www.example.com' },
 			'off_host_redirect',
+			false,
 		],
 		[
 			'capture failed: no security state',
 			{ reachable: true, minVersion: 'TLS1.2', certificateError: 'no security state' },
-			'certificate_probe_failed',
+			'capture_failed',
+			true,
 		],
 		[
 			'certificate describes a different host',
 			{ reachable: true, certificate: servedCertificate('www.example.com') },
-			'certificate_host_mismatch',
+			'host_mismatch',
+			false,
 		],
-		['host unreachable', { reachable: false, error: 'connect timeout' }, 'host_unreachable'],
+		['host unreachable', { reachable: false, error: 'connect timeout' }, 'unreachable', true],
 		[
 			'probe predates the contract (no certificate block)',
 			{ reachable: true, minVersion: 'TLS1.2', maxVersion: 'TLS1.3' },
-			'certificate_probe_failed',
+			'capture_failed',
+			true,
 		],
-	])('%s → unmeasured: info + inconclusive + notAssessedReason, no deduction, partial', async (_label, body, reason) => {
-		mockDns([PIN_STALE]);
-		const result = await run(probeBinding(body));
-		expect(result.score).toBe(100);
-		expect(result.partial).toBe(true);
-		expect(result.checkStatus).toBeUndefined();
-		const note = result.findings.find((f) => f.metadata?.inconclusive === true)!;
-		expect(note.severity).toBe('info');
-		expect(note.metadata?.notAssessedReason).toBe(reason);
-		expect(note.metadata?.certificateMatchVerified).toBe(false);
-		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
-	});
+	])(
+		'%s → unverified 95 (the same low as no-probe) + sub-state metadata; partial only when transient',
+		async (_label, body, reason, partial) => {
+			mockDns([PIN_STALE]);
+			const result = await run(probeBinding(body));
+			expect(result.score).toBe(95);
+			expect(result.passed).toBe(true);
+			expect(result.partial).toBe(partial ? true : undefined);
+			expect(result.checkStatus).toBeUndefined();
+			const low = result.findings.find((f) => f.title.startsWith('DANE TLSA configured'))!;
+			expect(low.severity).toBe('low');
+			expect(low.metadata?.notAssessedReason).toBe(reason);
+			expect(low.metadata?.certificateProbe).toBe(reason === 'certificate_probe_pending' ? 'pending' : 'failed');
+			expect(low.metadata?.certificateMatchVerified).toBe(false);
+			expect(low.metadata?.inconclusive).toBeUndefined();
+			expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+		},
+	);
 
-	it('binding present but failing (503) → unmeasured, never a verdict', async () => {
+	it('binding present but failing (503) → probe_unavailable: 95, partial, never a verdict', async () => {
 		mockDns([PIN_STALE]);
 		const result = await run(probeBinding({ error: 'server error' }, 503));
-		expect(result.score).toBe(100);
+		expect(result.score).toBe(95);
 		expect(result.partial).toBe(true);
-		expect(result.findings.find((f) => f.metadata?.inconclusive === true)?.metadata?.notAssessedReason).toBe('certificate_probe_failed');
+		expect(result.findings.find((f) => f.title.startsWith('DANE TLSA configured'))?.metadata?.notAssessedReason).toBe('probe_unavailable');
 	});
 
-	it('binding present but its fetch throws → unmeasured (fail-soft)', async () => {
+	it('binding present but its fetch throws → probe_unavailable (fail-soft): 95, partial', async () => {
 		mockDns([PIN_STALE]);
 		const binding = { fetch: vi.fn(async () => Promise.reject(new Error('binding exploded'))) };
 		const result = await run(binding);
-		expect(result.score).toBe(100);
+		expect(result.score).toBe(95);
 		expect(result.partial).toBe(true);
+		expect(result.findings.find((f) => f.title.startsWith('DANE TLSA configured'))?.metadata?.notAssessedReason).toBe('probe_unavailable');
 	});
 
 	it('is LAZY: no TLSA record → the probe is never called, 95 unchanged', async () => {
@@ -175,7 +187,7 @@ describe('checkDaneHttps — pin verification over BV_TLS_PROBE (#841)', () => {
 		expect((init as RequestInit).signal).toBeInstanceOf(AbortSignal);
 	});
 
-	it('an already-exhausted budget aborts the probe → unmeasured, not a verdict', async () => {
+	it('an already-exhausted budget aborts the probe → probe_unavailable (95, partial), not a verdict', async () => {
 		mockDns([PIN_STALE]);
 		const binding = {
 			fetch: vi.fn(async (_input: RequestInfo | URL, init?: RequestInit) => {
@@ -189,8 +201,8 @@ describe('checkDaneHttps — pin verification over BV_TLS_PROBE (#841)', () => {
 			}),
 		};
 		const result = await run(binding, { budgetMs: 1 });
-		expect(result.score).toBe(100);
+		expect(result.score).toBe(95);
 		expect(result.partial).toBe(true);
-		expect(result.findings.find((f) => f.metadata?.inconclusive === true)?.metadata?.notAssessedReason).toBe('certificate_probe_failed');
+		expect(result.findings.find((f) => f.title.startsWith('DANE TLSA configured'))?.metadata?.notAssessedReason).toBe('probe_unavailable');
 	});
 });

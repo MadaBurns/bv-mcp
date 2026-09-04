@@ -9,6 +9,7 @@
 import { z } from 'zod';
 
 import type { CheckResult, Finding } from './scoring';
+import { DANE_PIN_NOT_ASSESSED_REASONS } from '@blackveil/dns-checks';
 import type { ServedCertificate, TlsaVerificationContext } from '@blackveil/dns-checks';
 import { buildCheckResult, createFinding } from './scoring';
 import { logEvent } from './log';
@@ -215,16 +216,10 @@ export function mergeTlsFinding(result: CheckResult, probe: TlsProbeResult): Che
 }
 
 /**
- * `notAssessedReason` vocabulary for a DANE pin the probe could not verify (#841).
- * `pending` / `failed` are the package defaults; the rest name the specific cause.
+ * `notAssessedReason` vocabulary for a DANE pin the probe could not verify (#841) — the
+ * package's tokens, re-exported so the projection below and its consumers share one SSOT.
  */
-export const DANE_CERTIFICATE_PROBE_REASONS = {
-	pending: 'certificate_probe_pending',
-	failed: 'certificate_probe_failed',
-	offHostRedirect: 'off_host_redirect',
-	hostMismatch: 'certificate_host_mismatch',
-	unreachable: 'host_unreachable',
-} as const;
+export const DANE_CERTIFICATE_PROBE_REASONS = DANE_PIN_NOT_ASSESSED_REASONS;
 
 /** A probe result that is still warming its cache (the DEFAULT path on a cold call). */
 const PROBE_PENDING_RE = /pending|warming/i;
@@ -243,26 +238,30 @@ function unmeasured(outcome: 'pending' | 'failed', reason: string): TlsaVerifica
  *
  * - `certificate` present AND its `host` equals the scanned name → the served certificate.
  *   DANE pins the TLSA owner's EXACT host — apex and `www` can serve different
- *   certificates — so a capture describing any other host (an off-host redirect the
- *   probe followed, a missing host) is a FAILED verification, never a verdict.
- * - `certificateError` → failed (`off_host_redirect` when the probe says so).
- * - `error` matching the probe's "pending — cache warming" verdict → pending: the real
- *   answer arrives on a later call, the check marks itself partial and re-tries.
- * - `reachable: false`, a null result (binding failure), or a response with no
- *   certificate block at all (a probe build predating the contract) → failed.
+ *   certificates — so a capture describing any other host (or none) is `failed` /
+ *   `host_mismatch` (permanent), never a verdict.
+ * - `certificateError` → failed: `off_host_redirect` (permanent) when the probe says so,
+ *   else `capture_failed` (transient).
+ * - `error` matching the probe's "pending — cache warming" verdict → pending
+ *   (`certificate_probe_pending`, transient): the real answer arrives on a later call.
+ * - `reachable: false` → `unreachable` (transient); a null result (binding 5xx / throw /
+ *   timeout) → `probe_unavailable` (transient); a response with no certificate block at
+ *   all (a probe build predating the contract) → `capture_failed`.
  *
+ * Every outcome without a certificate scores the same unverified 95 in the package; the
+ * reason token only decides the sub-state metadata and whether the result is re-tried.
  * Never throws; never fabricates material — a certificate block missing its leaf
  * digests is treated as absent.
  */
 export function servedCertificateFromProbe(probe: TlsProbeResult | null, expectedHost: string): TlsaVerificationContext {
-	if (!probe) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.failed);
+	if (!probe) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.probeUnavailable);
 	const cert = probe.certificate;
 	if (cert) {
 		const host = cert.host ? normalizeHost(cert.host) : '';
 		if (host.length === 0 || host !== normalizeHost(expectedHost)) {
 			return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.hostMismatch);
 		}
-		if (!cert.leafSha256 || !cert.leafSpkiSha256) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.failed);
+		if (!cert.leafSha256 || !cert.leafSpkiSha256) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.captureFailed);
 		const served: ServedCertificate = {
 			host,
 			port: cert.port ?? DEFAULT_PROBE_PORT,
@@ -295,10 +294,10 @@ export function servedCertificateFromProbe(probe: TlsProbeResult | null, expecte
 			'failed',
 			OFF_HOST_REDIRECT_RE.test(probe.certificateError)
 				? DANE_CERTIFICATE_PROBE_REASONS.offHostRedirect
-				: DANE_CERTIFICATE_PROBE_REASONS.failed,
+				: DANE_CERTIFICATE_PROBE_REASONS.captureFailed,
 		);
 	}
 	if (probe.error && PROBE_PENDING_RE.test(probe.error)) return unmeasured('pending', DANE_CERTIFICATE_PROBE_REASONS.pending);
 	if (probe.reachable === false) return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.unreachable);
-	return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.failed);
+	return unmeasured('failed', DANE_CERTIFICATE_PROBE_REASONS.captureFailed);
 }

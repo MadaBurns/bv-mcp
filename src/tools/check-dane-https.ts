@@ -6,9 +6,10 @@
  *
  * Operator-only enrichment (#841): when a `tlsProbeBinding` is provided (the BV_TLS_PROBE
  * service binding), the certificate the host serves on :443 is captured and every TLSA
- * association is VERIFIED against it — a stale pin becomes a `high` mismatch, a matching
- * one a verified `info`. BSL self-hosts without the binding receive the unmodified base
- * result (present, not verified — the 1.18.0 posture).
+ * association is VERIFIED against it — a stale pin becomes a `high` mismatch (75), a
+ * matching one a verified `info` (100). A probe that produced no certificate leaves the
+ * pin at the unverified `low` (95) with sub-state metadata. BSL self-hosts without the
+ * binding receive the unmodified base result (present, not verified — the 1.18.0 posture).
  */
 
 import { checkDANEHTTPS } from '@blackveil/dns-checks';

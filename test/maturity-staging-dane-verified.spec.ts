@@ -52,14 +52,14 @@ describe('maturity staging — DANE credit requires certificateMatchVerified (#8
 		expect(computeMaturityStage(checks, 'mail_enabled').stage).toBe(3);
 	});
 
-	it('a pending / unmeasured HTTPS pin verification does NOT promote', () => {
+	it('a pending HTTPS pin verification (unverified low with sub-state metadata) does NOT promote', () => {
 		const checks = [
 			...stage3Roster(),
 			dane(
 				'dane_https',
-				createFinding('dane_https', 'DANE TLSA pin verification pending for _443._tcp.example.com', 'info', 'unmeasured', {
+				createFinding('dane_https', 'DANE TLSA configured for _443._tcp.example.com', 'low', 'present, not verified', {
 					certificateMatchVerified: false,
-					inconclusive: true,
+					certificateProbe: 'pending',
 					notAssessedReason: 'certificate_probe_pending',
 				}),
 			),

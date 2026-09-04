@@ -8,7 +8,7 @@
  * threaded all the way into the scan's `dane_https` category, tier-gated exactly as
  * the `ssl` enrichment is, so a real scan's DANE score reflects the served certificate:
  *
- *   verified pin (100)  >  absent (95)  >  mismatch (75)
+ *   verified pin (100)  >  absent / unverified (95)  >  mismatch (75)
  *
  * Mirrors test/scan-domain-tls-probe.integration.test.ts's domain-agnostic harness.
  */
@@ -160,14 +160,25 @@ describe('scan_domain DANE-HTTPS pin-verification coherence (#841)', () => {
 		expect(categoryScore).toBe(95);
 	});
 
-	it('cold-cache pending probe → 100 unmeasured, check partial, category still completed', async () => {
+	it('cold-cache pending probe → 95 unverified (never above the no-probe posture), check partial, category still completed', async () => {
 		mockCleanScan(() => STALE_SHA256);
 		const pending = probeBinding(() => ({ error: 'probe pending — cache warming' }));
 		const { categoryScore, check } = await daneFor('danepending.com', withProbe(pending));
-		expect(categoryScore).toBe(100);
+		expect(categoryScore).toBe(95);
 		expect(check!.partial).toBe(true);
 		expect(check!.checkStatus).toBeUndefined();
-		expect(check!.findings.find((f) => f.metadata?.inconclusive === true)?.metadata?.notAssessedReason).toBe('certificate_probe_pending');
+		const low = check!.findings.find((f) => f.title.startsWith('DANE TLSA configured'))!;
+		expect(low.severity).toBe('low');
+		expect(low.metadata?.notAssessedReason).toBe('certificate_probe_pending');
+	});
+
+	it('permanent probe failure (off-host redirect) → 95, NOT partial (no retry-forever)', async () => {
+		mockCleanScan(() => STALE_SHA256);
+		const redirecting = probeBinding(() => ({ reachable: true, minVersion: 'TLS1.2', certificateError: 'off-host redirect' }));
+		const { categoryScore, check } = await daneFor('daneredirect.com', withProbe(redirecting));
+		expect(categoryScore).toBe(95);
+		expect(check!.partial).toBeUndefined();
+		expect(check!.findings.find((f) => f.title.startsWith('DANE TLSA configured'))?.metadata?.notAssessedReason).toBe('off_host_redirect');
 	});
 
 	it('no TLSA anywhere → the probe is only ever consulted by `ssl` (DANE stays lazy)', async () => {

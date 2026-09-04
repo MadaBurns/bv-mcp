@@ -10,7 +10,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
-import { analyzeTlsaRecords, DANE_PIN_NOT_ASSESSED_REASONS } from './dane-analysis';
+import { analyzeTlsaRecords, DANE_PIN_NOT_ASSESSED_REASONS, isTransientDanePinReason } from './dane-analysis';
 import type { TlsaVerificationContext } from './dane-analysis';
 
 /** Options for {@link checkDANEHTTPS}. */
@@ -21,7 +21,7 @@ export interface CheckDaneHttpsOptions extends TlsaVerificationContext {
 	 * Lazy certificate source (#841). Called ONLY when the TLSA lookup returned records —
 	 * DANE-for-HTTPS adoption is ~0%, so an eager probe would spend a Browser Rendering
 	 * session on every scan to verify nothing. A throwing resolver is a `failed` probe
-	 * (unmeasured), never a verdict. Takes precedence over the static `servedCertificate` /
+	 * (`probe_unavailable`, unverified at 95, re-tried), never a verdict. Takes precedence over the static `servedCertificate` /
 	 * `certificateProbe` fields when both are supplied.
 	 */
 	resolveServedCertificate?: () => Promise<TlsaVerificationContext>;
@@ -108,14 +108,19 @@ export async function checkDANEHTTPS(domain: string, queryDNS: DNSQueryFunction,
 	const recordPresent = tlsaQueryFailed ? undefined : hasHttpsTlsa;
 
 	const result = buildCheckResult('dane_https', remapped, undefined, recordPresent);
-	// An ATTEMPTED-but-unanswered pin verification is a transient outcome: `partial: true`
-	// keeps it out of the scan-TTL cache so the next scan re-tries (mirrors the MTA-STS
-	// not-assessed shape, #889). `checkStatus` is deliberately NOT set — the TLSA
-	// measurement itself is real, so the category stays completed and scored.
-	const verificationUnmeasured = remapped.some(
-		(f) => f.metadata?.certificateProbe === 'pending' || f.metadata?.certificateProbe === 'failed',
+	// An ATTEMPTED-but-unanswered pin verification with a TRANSIENT reason (cold-cache
+	// pending, host unreachable, probe 5xx/throw, capture hiccup) gets `partial: true`,
+	// which keeps it out of the scan-TTL cache so the next scan re-tries (mirrors the
+	// MTA-STS not-assessed shape, #889). Permanent reasons (off-host redirect, host
+	// mismatch, truncated chain) cache normally — no retry-forever. `checkStatus` is
+	// deliberately NOT set — the TLSA measurement itself is real, so the category stays
+	// completed and scored (at the unverified 95).
+	const retryable = remapped.some(
+		(f) =>
+			(f.metadata?.certificateProbe === 'pending' || f.metadata?.certificateProbe === 'failed') &&
+			isTransientDanePinReason(f.metadata?.notAssessedReason),
 	);
-	return verificationUnmeasured ? { ...result, partial: true } : result;
+	return retryable ? { ...result, partial: true } : result;
 }
 
 /**
@@ -128,7 +133,7 @@ async function resolveVerification(options: CheckDaneHttpsOptions | undefined): 
 		try {
 			return await options.resolveServedCertificate();
 		} catch {
-			return { certificateProbe: 'failed', certificateProbeReason: DANE_PIN_NOT_ASSESSED_REASONS.failed };
+			return { certificateProbe: 'failed', certificateProbeReason: DANE_PIN_NOT_ASSESSED_REASONS.probeUnavailable };
 		}
 	}
 	return {
