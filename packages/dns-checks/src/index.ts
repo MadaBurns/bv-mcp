@@ -89,10 +89,21 @@ export {
 	parseDsRecord,
 	parseDnssecAlgorithmToken,
 	parseTlsaRecord,
+	verifyTlsaAssociations,
+	DANE_PIN_NOT_ASSESSED_REASONS,
 	parseCaaRecord,
 	analyzeSecurityHeaders,
 } from './checks';
-export type { CaaRecord, TlsaRecord } from './checks';
+export type {
+	CaaRecord,
+	TlsaRecord,
+	ServedCertificate,
+	ServedCertificateChainEntry,
+	CertificateProbeOutcome,
+	TlsaVerificationContext,
+	TlsaVerification,
+	CheckDaneHttpsOptions,
+} from './checks';
 
 // RFC 8657 CAA parameter parsing (`accounturi` / `validationmethods`). Sourced
 // directly from the analysis module rather than the `./checks` barrel, which

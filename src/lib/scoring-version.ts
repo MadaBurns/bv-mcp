@@ -363,8 +363,36 @@
  *   weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule
  *   changed. Population UNMEASURED against the corpus (a scanner-side transient by
  *   definition has no stable prevalence).
+ * - 1.22.0 — `check_dane_https` VERIFIES TLSA pins against the certificate the host
+ *   serves (issue #841, dns-checks 1.34.0). The served leaf / SPKI / chain digests are
+ *   captured by bv-tls-probe over the operator-only `BV_TLS_PROBE` binding (paid-tier
+ *   scans only, launched only when TLSA records exist) and compared per RFC 7671 —
+ *   DANE-EE / PKIX-EE against the leaf, DANE-TA / PKIX-TA against any served chain member,
+ *   matching types 0/1/2 as full data / SHA-256 / SHA-512. The scoring inversion this
+ *   issue measured (a stale pin at 100, its removal at 95) ends: the ladder is now
+ *   VERIFIED 100 (`info`, `certificateMatchVerified: true`) > ABSENT 95 (unchanged `low`)
+ *   > MISMATCH 75 (`high` "pin does not match the served certificate", −25). A probe that
+ *   was attempted but returned no certificate (cold-cache "pending", capture failure,
+ *   off-host redirect, host mismatch) is UNMEASURED: an `info` with `inconclusive: true`
+ *   + `notAssessedReason`, no deduction, `partial: true` (not cached, re-tried next scan)
+ *   and NO `checkStatus` — the TLSA measurement itself is real, so the category stays
+ *   completed. Direction: DOWNWARD only for domains whose DANE-HTTPS pin does not match
+ *   the served certificate (100 or 95 → 75, ≈0.09 overall points at protective weight 2);
+ *   UPWARD 95 → 100 for verified pins on operator deploys. Absence is unchanged; every
+ *   self-host without the binding (and `check_dane`, SMTP/25, which the HTTPS-only probe
+ *   cannot serve) is bit-for-bit unchanged at the 1.18.0 posture. CEILING SAFETY:
+ *   `dane_https` is in `PROFILE_CRITICAL_CATEGORIES` for `non_mail` / `web_only`, so a
+ *   `high` that read as a missing control would cap the whole scan at 64; the mismatch
+ *   prose is kept clear of the `MISSING_CONTROL_REGEX` triggers, declares no
+ *   `missingControl`, and the package test proves both predicates decline and a web_only
+ *   scan with a mismatch stays above 64. Also in this version: maturity staging counts a
+ *   DANE pin toward Stage 4 only when the finding carries `certificateMatchVerified:
+ *   true` (previously a title regex promoted unverified SMTP pins). No weight, tier, grade
+ *   band, `SEVERITY_PENALTIES` entry or profile-detection rule changed. Population
+ *   UNMEASURED against the corpus: DANE-for-HTTPS adoption is ≈0% and the mismatch rate
+ *   within it is unknown; the only measured instance is the issue's own repro domain.
  */
-export const SCORING_MODEL_VERSION = '1.21.0';
+export const SCORING_MODEL_VERSION = '1.22.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
