@@ -312,7 +312,7 @@ interface ToolRuntimeOptions {
 	whoisBinding?: { fetch: typeof fetch };
 	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
 	reconBinding?: { fetch: typeof fetch };
-	/** Operator-only bv-tls-probe service binding (negotiated-TLS-version detection). Fail-soft; absent on BSL self-hosts → SSL check gains no TLS-version finding. */
+	/** Operator-only bv-tls-probe service binding (negotiated-TLS-version detection for `ssl`; served-certificate capture for `dane_https` pin verification, #841). Fail-soft; absent on BSL self-hosts → no TLS-version finding, DANE pins reported present-not-verified. */
 	tlsProbeBinding?: { fetch: typeof fetch };
 	/** Bearer token forwarded to bv-tls-probe. */
 	tlsProbeAuthToken?: string;
@@ -528,7 +528,17 @@ export const TOOL_REGISTRY: Record<
 	check_http_security: { cacheKey: () => 'http_security', execute: (d) => checkHttpSecurity(d) },
 	check_dane: { cacheKey: () => 'dane', execute: (d, _args, ro) => checkDane(d, buildDnsOptions(ro)) },
 	check_ptr: { cacheKey: () => 'ptr', execute: (d, _args, ro) => dynamicCheckPtr(d, ro) },
-	check_dane_https: { cacheKey: () => 'dane_https', execute: (d, _args, ro) => checkDaneHttps(d, buildDnsOptions(ro)) },
+	check_dane_https: {
+		// #841: with the probe bound the result carries a verified/mismatch verdict the
+		// probe-less result cannot, so the two must not share a cache entry (as `ssl`).
+		cacheKey: (_a, ro) => (ro?.tlsProbeBinding ? 'dane_https:tls-probe' : 'dane_https'),
+		execute: (d, _args, ro) =>
+			checkDaneHttps(d, buildDnsOptions(ro), {
+				tlsProbeBinding: ro?.tlsProbeBinding,
+				tlsProbeAuthToken: ro?.tlsProbeAuthToken,
+				onBindingDegradation: ro?.onBindingDegradation,
+			}),
+	},
 	check_svcb_https: { cacheKey: () => 'svcb_https', execute: (d, _args, ro) => checkSvcbHttps(d, buildDnsOptions(ro)) },
 	check_mx_reputation: {
 		cacheKey: () => 'mx_reputation',

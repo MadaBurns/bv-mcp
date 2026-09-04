@@ -426,9 +426,15 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 	const hasDnssec = measured(dnssecCheck) && (dnssecCheck?.passed ?? false);
 	const hasBimi = (measured(bimiCheck) && bimiCheck?.findings.some((f: Finding) => /BIMI record configured/i.test(f.title))) ?? false;
 
-	// DANE presence
-	const daneCheck = byCategory.get('dane');
-	const hasDane = (measured(daneCheck) && daneCheck?.findings.some((f: Finding) => /DANE TLSA configured/i.test(f.title))) ?? false;
+	// DANE presence — a pin counts ONLY when it was VERIFIED against the served certificate
+	// (#841, scoring model 1.22.0). Before, a title regex (`DANE TLSA configured`) matched the
+	// honest "present, not verified" finding too, so an unreadable or stale pin bought a
+	// Stage-4 promotion. `check_dane` (SMTP/25) is never verified today — the browser probe
+	// is HTTPS-only — so it contributes nothing here until a port-25 capture exists; a
+	// verified `dane_https` pin IS a DANE transport signal and does count.
+	const hasVerifiedDanePin = (check?: CheckResult): boolean =>
+		measured(check) && (check?.findings.some((f: Finding) => f.metadata?.certificateMatchVerified === true) ?? false);
+	const hasDane = hasVerifiedDanePin(byCategory.get('dane')) || hasVerifiedDanePin(byCategory.get('dane_https'));
 
 	// CAA presence (passed = CAA records found)
 	const caaCheck = byCategory.get('caa');
