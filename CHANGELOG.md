@@ -4,11 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+- Registry entry: add `title` and `websiteUrl` to `server.json` (metadata only; no version bump).
+
 ## [3.75.1] - 2026-09-04
 
 Hotfix withdrawing 3.75.0's DANE pin verification: the probe it relied on cannot see the origin's certificate. **Scoring change — `SCORING_MODEL_VERSION` 1.22.0 → 1.23.0** (upward only, 75 → 95 for the falsely mismatched). `@blackveil/dns-checks` 1.34.0 → 1.35.0 (`PARITY_CORPUS_VERSION` in lockstep) — bv-web-prod re-vendor required.
-
-- Registry entry: add `title` and `websiteUrl` to `server.json` (metadata only; no version bump).
 
 ### Fixed
 
