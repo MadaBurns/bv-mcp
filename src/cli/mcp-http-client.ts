@@ -3,24 +3,11 @@
 import { z } from 'zod';
 
 export const DEFAULT_MCP_ENDPOINT = 'https://dns-mcp.blackveilsecurity.com/mcp';
-const MCP_PROTOCOL_VERSION = '2025-06-18';
-
-const JsonRpcEnvelopeSchema = z
-	.object({
-		jsonrpc: z.literal('2.0'),
-		result: z.unknown().optional(),
-		error: z
-			.object({
-				code: z.number().int(),
-				message: z.string(),
-			})
-			.passthrough()
-			.optional(),
-	})
-	.passthrough();
+const REQUESTED_PROTOCOL_VERSION = '2025-06-18';
+const SUPPORTED_PROTOCOL_VERSIONS = new Set(['2025-06-18', '2025-03-26']);
 
 const ServerInfoSchema = z.object({ name: z.string().min(1), version: z.string().min(1) }).passthrough();
-
+const InitializeResultSchema = z.object({ protocolVersion: z.string().min(1), serverInfo: ServerInfoSchema }).passthrough();
 const ToolCallResultSchema = z
 	.object({
 		content: z.array(z.object({ type: z.string(), text: z.string().optional() }).passthrough()),
@@ -28,7 +15,6 @@ const ToolCallResultSchema = z
 		isError: z.boolean().optional(),
 	})
 	.passthrough();
-
 const ToolListSchema = z
 	.object({
 		tools: z.array(
@@ -42,6 +28,9 @@ const ToolListSchema = z
 		),
 	})
 	.passthrough();
+
+type RequestId = string | number;
+type ParsedRpcResponse = { result?: unknown; error?: { code: number; message: string } };
 
 export type ToolCallResult = z.infer<typeof ToolCallResultSchema>;
 export type ListedTool = z.infer<typeof ToolListSchema>['tools'][number];
@@ -58,30 +47,124 @@ export class McpClientError extends Error {
 	}
 }
 
-function parseSsePayload(text: string): unknown {
-	for (const event of text.split(/\r?\n\r?\n/)) {
-		const data = event
-			.split(/\r?\n/)
-			.filter((line) => line.startsWith('data:'))
-			.map((line) => line.slice(5).trimStart())
-			.join('\n');
-		if (!data || data === '[DONE]') continue;
-		try {
-			return JSON.parse(data);
-		} catch {
-			continue;
-		}
-	}
-	throw new McpClientError('MCP response contained no valid SSE data event', 'protocol');
+function requestIdKey(id: RequestId): string {
+	return `${typeof id}:${String(id)}`;
 }
 
-export function parseMcpResponseBody(text: string): unknown {
+function classifyJsonRpcMessage(value: unknown, expectedId: RequestId, seenIds: Set<string>): ParsedRpcResponse | undefined {
+	if (!value || typeof value !== 'object' || Array.isArray(value))
+		throw new McpClientError('MCP returned a malformed JSON-RPC message', 'protocol');
+	const message = value as Record<string, unknown>;
+	if (message.jsonrpc !== '2.0') throw new McpClientError('MCP returned a message with an invalid jsonrpc version', 'protocol');
+	if (typeof message.method === 'string') {
+		if (Object.hasOwn(message, 'id')) throw new McpClientError(`MCP sent unsupported server request ${message.method}`, 'protocol');
+		return undefined;
+	}
+	if (!Object.hasOwn(message, 'id') || message.id === null) throw new McpClientError('MCP response omitted its JSON-RPC id', 'protocol');
+	if (typeof message.id !== 'string' && (typeof message.id !== 'number' || !Number.isInteger(message.id))) {
+		throw new McpClientError('MCP response contained an invalid JSON-RPC id', 'protocol');
+	}
+	const key = requestIdKey(message.id);
+	if (seenIds.has(key)) throw new McpClientError(`MCP returned duplicate JSON-RPC id ${String(message.id)}`, 'protocol');
+	seenIds.add(key);
+	if (message.id !== expectedId) {
+		throw new McpClientError(`MCP response id ${String(message.id)} did not match request id ${String(expectedId)}`, 'protocol');
+	}
+	const hasResult = Object.hasOwn(message, 'result');
+	const hasError = Object.hasOwn(message, 'error');
+	if (hasResult === hasError) throw new McpClientError('MCP response must contain exactly one of result or error', 'protocol');
+	if (hasError) {
+		const parsed = z.object({ code: z.number().int(), message: z.string() }).passthrough().safeParse(message.error);
+		if (!parsed.success) throw new McpClientError('MCP returned a malformed JSON-RPC error', 'protocol');
+		return { error: parsed.data };
+	}
+	return { result: message.result };
+}
+
+function parseSseEvent(event: string): unknown | undefined {
+	const data = event
+		.split(/\r?\n/)
+		.filter((line) => line.startsWith('data:'))
+		.map((line) => line.slice(5).trimStart())
+		.join('\n');
+	if (!data || data === '[DONE]') return undefined;
+	try {
+		return JSON.parse(data);
+	} catch {
+		throw new McpClientError('MCP response contained invalid SSE JSON', 'protocol');
+	}
+}
+
+function drainCompleteSseEvents(buffer: string): { events: string[]; remainder: string } {
+	const events: string[] = [];
+	let remainder = buffer;
+	for (;;) {
+		const separator = /\r?\n\r?\n/.exec(remainder);
+		if (!separator || separator.index === undefined) return { events, remainder };
+		events.push(remainder.slice(0, separator.index));
+		remainder = remainder.slice(separator.index + separator[0].length);
+	}
+}
+
+/** Parse a complete JSON or SSE payload and, when given, correlate it to one request id. */
+export function parseMcpResponseBody(text: string, expectedId?: RequestId): unknown {
 	const trimmed = text.trim();
 	if (!trimmed) return undefined;
 	try {
-		return JSON.parse(trimmed);
-	} catch {
-		return parseSsePayload(trimmed);
+		const parsed = JSON.parse(trimmed);
+		if (expectedId === undefined) return parsed;
+		const response = classifyJsonRpcMessage(parsed, expectedId, new Set());
+		if (!response) throw new McpClientError('MCP response contained notifications but no matching response', 'protocol');
+		return response;
+	} catch (error) {
+		if (error instanceof McpClientError) throw error;
+	}
+	const seen = new Set<string>();
+	let matched: ParsedRpcResponse | undefined;
+	for (const event of text.split(/\r?\n\r?\n/)) {
+		const value = parseSseEvent(event);
+		if (value === undefined) continue;
+		if (expectedId === undefined) return value;
+		const response = classifyJsonRpcMessage(value, expectedId, seen);
+		if (response) {
+			if (matched) throw new McpClientError(`MCP returned duplicate JSON-RPC id ${String(expectedId)}`, 'protocol');
+			matched = response;
+		}
+	}
+	if (!matched) throw new McpClientError('MCP response contained no matching JSON-RPC response', 'protocol');
+	return matched;
+}
+
+async function readMatchingSseResponse(response: Response, expectedId: RequestId): Promise<ParsedRpcResponse> {
+	if (!response.body) throw new McpClientError('MCP SSE response omitted its body', 'protocol', response.status);
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	const seen = new Set<string>();
+	let buffer = '';
+	for (;;) {
+		const chunk = await reader.read();
+		buffer += decoder.decode(chunk.value, { stream: !chunk.done });
+		const drained = drainCompleteSseEvents(buffer);
+		buffer = drained.remainder;
+		if (chunk.done && buffer.trim()) {
+			drained.events.push(buffer);
+			buffer = '';
+		}
+		let matched: ParsedRpcResponse | undefined;
+		for (const event of drained.events) {
+			const value = parseSseEvent(event);
+			if (value === undefined) continue;
+			const candidate = classifyJsonRpcMessage(value, expectedId, seen);
+			if (candidate) {
+				if (matched) throw new McpClientError(`MCP returned duplicate JSON-RPC id ${String(expectedId)}`, 'protocol');
+				matched = candidate;
+			}
+		}
+		if (matched) {
+			void reader.cancel();
+			return matched;
+		}
+		if (chunk.done) throw new McpClientError('MCP SSE stream ended without a matching JSON-RPC response', 'protocol');
 	}
 }
 
@@ -106,7 +189,10 @@ export interface McpHttpClientOptions {
 	endpoint?: string;
 	apiKey?: string;
 	fetchFn?: typeof fetch;
-	signalFactory?: () => AbortSignal;
+	deadlineAt?: number;
+	timeoutMs?: number;
+	now?: () => number;
+	signalFactory?: (remainingMs: number) => AbortSignal;
 }
 
 export class McpHttpClient {
@@ -115,8 +201,13 @@ export class McpHttpClient {
 	serverInfo?: { name: string; version: string };
 	private readonly fetchFn: typeof fetch;
 	private readonly apiKey?: string;
-	private readonly signalFactory: () => AbortSignal;
+	private readonly signalFactory: (remainingMs: number) => AbortSignal;
+	private readonly now: () => number;
+	private readonly deadlineAt: number;
 	private sessionId?: string;
+	private protocolVersion = REQUESTED_PROTOCOL_VERSION;
+	private initialized = false;
+	private sessionRecoveryUsed = false;
 	private requestId = 1;
 
 	constructor(options: McpHttpClientOptions = {}) {
@@ -125,18 +216,23 @@ export class McpHttpClient {
 		this.endpointOrigin = endpoint.origin;
 		this.fetchFn = options.fetchFn ?? fetch;
 		this.apiKey = options.apiKey;
-		this.signalFactory = options.signalFactory ?? (() => AbortSignal.timeout(45_000));
+		this.now = options.now ?? Date.now;
+		this.deadlineAt = options.deadlineAt ?? this.now() + (options.timeoutMs ?? 45_000);
+		this.signalFactory = options.signalFactory ?? ((remainingMs) => AbortSignal.timeout(Math.max(1, Math.ceil(remainingMs))));
 	}
 
 	private headers(includeSession: boolean): Headers {
-		const headers = new Headers({
-			accept: 'application/json, text/event-stream',
-			'content-type': 'application/json',
-		});
-		if (includeSession) headers.set('mcp-protocol-version', MCP_PROTOCOL_VERSION);
+		const headers = new Headers({ accept: 'application/json, text/event-stream', 'content-type': 'application/json' });
+		if (includeSession) headers.set('mcp-protocol-version', this.protocolVersion);
 		if (includeSession && this.sessionId) headers.set('mcp-session-id', this.sessionId);
 		if (this.apiKey) headers.set('authorization', `Bearer ${this.apiKey}`);
 		return headers;
+	}
+
+	private remainingSignal(): AbortSignal {
+		const remainingMs = this.deadlineAt - this.now();
+		if (remainingMs <= 0) throw new McpClientError('MCP command deadline exceeded', 'transport');
+		return this.signalFactory(remainingMs);
 	}
 
 	private async request(body: Record<string, unknown>, includeSession: boolean, expectPayload: boolean) {
@@ -146,55 +242,58 @@ export class McpHttpClient {
 				method: 'POST',
 				headers: this.headers(includeSession),
 				body: JSON.stringify(body),
-				signal: this.signalFactory(),
+				signal: this.remainingSignal(),
 			});
 		} catch (error) {
+			if (error instanceof McpClientError) throw error;
 			const message = error instanceof Error ? error.message : 'request failed';
 			throw new McpClientError(`MCP transport failed: ${message}`, 'transport');
 		}
-
-		const text = await response.text();
-		let parsed: unknown;
-		try {
-			parsed = parseMcpResponseBody(text);
-		} catch (error) {
-			if (!response.ok) throw new McpClientError(`MCP returned HTTP ${response.status}`, 'remote', response.status);
-			throw error;
+		if (response.ok && !expectPayload) return { result: undefined, headers: response.headers };
+		const expectedId = body.id;
+		if (expectPayload && typeof expectedId !== 'string' && (typeof expectedId !== 'number' || !Number.isInteger(expectedId))) {
+			throw new McpClientError('MCP client request omitted a valid JSON-RPC id', 'protocol');
 		}
-
 		if (!response.ok) {
-			const envelope = JsonRpcEnvelopeSchema.safeParse(parsed);
-			const remote = envelope.success ? envelope.data.error : undefined;
+			const text = await response.text();
+			let remote: ParsedRpcResponse | undefined;
+			if (text.trim() && expectedId !== undefined) {
+				try {
+					remote = parseMcpResponseBody(text, expectedId as RequestId) as ParsedRpcResponse;
+				} catch {
+					remote = undefined;
+				}
+			}
 			throw new McpClientError(
-				remote ? `MCP error ${remote.code}: ${remote.message}` : `MCP returned HTTP ${response.status}`,
+				remote?.error ? `MCP error ${remote.error.code}: ${remote.error.message}` : `MCP returned HTTP ${response.status}`,
 				'remote',
 				response.status,
-				remote?.code,
+				remote?.error?.code,
 			);
 		}
-		if (!expectPayload) return { result: undefined, headers: response.headers };
-
-		const envelope = JsonRpcEnvelopeSchema.safeParse(parsed);
-		if (!envelope.success) throw new McpClientError('MCP returned a malformed JSON-RPC response', 'protocol', response.status);
-		if (envelope.data.error) {
-			throw new McpClientError(
-				`MCP error ${envelope.data.error.code}: ${envelope.data.error.message}`,
-				'remote',
-				response.status,
-				envelope.data.error.code,
-			);
+		const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+		const parsed = contentType.includes('text/event-stream')
+			? await readMatchingSseResponse(response, expectedId as RequestId)
+			: (parseMcpResponseBody(await response.text(), expectedId as RequestId) as ParsedRpcResponse);
+		if (!parsed) throw new McpClientError('MCP response contained no matching JSON-RPC response', 'protocol', response.status);
+		if (parsed.error) {
+			throw new McpClientError(`MCP error ${parsed.error.code}: ${parsed.error.message}`, 'remote', response.status, parsed.error.code);
 		}
-		return { result: envelope.data.result, headers: response.headers };
+		return { result: parsed.result, headers: response.headers };
 	}
 
 	async connect(): Promise<{ name: string; version: string }> {
+		this.initialized = false;
+		this.sessionId = undefined;
+		this.serverInfo = undefined;
+		this.protocolVersion = REQUESTED_PROTOCOL_VERSION;
 		const initialized = await this.request(
 			{
 				jsonrpc: '2.0',
 				id: this.requestId++,
 				method: 'initialize',
 				params: {
-					protocolVersion: MCP_PROTOCOL_VERSION,
+					protocolVersion: REQUESTED_PROTOCOL_VERSION,
 					capabilities: {},
 					clientInfo: { name: 'blackveil-cli', version: '1.0.0' },
 				},
@@ -202,41 +301,63 @@ export class McpHttpClient {
 			false,
 			true,
 		);
-		const sessionId = initialized.headers.get('mcp-session-id');
-		if (!sessionId) throw new McpClientError('MCP initialize omitted Mcp-Session-Id', 'protocol');
-		this.sessionId = sessionId;
-		const result = z.object({ serverInfo: ServerInfoSchema }).passthrough().safeParse(initialized.result);
-		if (!result.success) throw new McpClientError('MCP initialize omitted valid serverInfo', 'protocol');
+		const result = InitializeResultSchema.safeParse(initialized.result);
+		if (!result.success) throw new McpClientError('MCP initialize omitted valid protocolVersion or serverInfo', 'protocol');
+		if (!SUPPORTED_PROTOCOL_VERSIONS.has(result.data.protocolVersion)) {
+			throw new McpClientError(`MCP negotiated unsupported protocol version ${result.data.protocolVersion}`, 'protocol');
+		}
+		this.protocolVersion = result.data.protocolVersion;
 		this.serverInfo = result.data.serverInfo;
-
+		const sessionId = initialized.headers.get('mcp-session-id');
+		if (sessionId) {
+			if (!/^[\x21-\x7e]+$/.test(sessionId)) throw new McpClientError('MCP initialize returned an invalid session id', 'protocol');
+			this.sessionId = sessionId;
+		}
 		await this.request({ jsonrpc: '2.0', method: 'notifications/initialized' }, true, false);
+		this.initialized = true;
 		return this.serverInfo;
 	}
 
 	private requireConnected(): void {
-		if (!this.sessionId || !this.serverInfo) throw new McpClientError('MCP client is not initialized', 'protocol');
+		if (!this.initialized || !this.serverInfo) throw new McpClientError('MCP client is not initialized', 'protocol');
+	}
+
+	private async readOnlyRequest(factory: () => ReturnType<McpHttpClient['request']>) {
+		const hadSession = this.sessionId !== undefined;
+		try {
+			return await factory();
+		} catch (error) {
+			if (!(error instanceof McpClientError) || error.status !== 404 || !hadSession || this.sessionRecoveryUsed) throw error;
+			this.sessionRecoveryUsed = true;
+			await this.connect();
+			return factory();
+		}
 	}
 
 	async listTools(): Promise<ListedTool[]> {
 		this.requireConnected();
-		const response = await this.request({ jsonrpc: '2.0', id: this.requestId++, method: 'tools/list', params: {} }, true, true);
+		const response = await this.readOnlyRequest(() =>
+			this.request({ jsonrpc: '2.0', id: this.requestId++, method: 'tools/list', params: {} }, true, true),
+		);
 		const parsed = ToolListSchema.safeParse(response.result);
 		if (!parsed.success) throw new McpClientError('MCP tools/list returned a malformed tool list', 'protocol');
 		return parsed.data.tools;
 	}
 
-	async callTool(name: string, args: Record<string, unknown>): Promise<ToolCallResult> {
+	async callTool(name: string, args: Record<string, unknown>, options: { readOnly?: boolean } = {}): Promise<ToolCallResult> {
 		this.requireConnected();
-		const response = await this.request(
-			{
-				jsonrpc: '2.0',
-				id: this.requestId++,
-				method: 'tools/call',
-				params: { name, arguments: args },
-			},
-			true,
-			true,
-		);
+		const call = () =>
+			this.request(
+				{
+					jsonrpc: '2.0',
+					id: this.requestId++,
+					method: 'tools/call',
+					params: { name, arguments: args },
+				},
+				true,
+				true,
+			);
+		const response = options.readOnly ? await this.readOnlyRequest(call) : await call();
 		const parsed = ToolCallResultSchema.safeParse(response.result);
 		if (!parsed.success) throw new McpClientError(`MCP tool ${name} returned a malformed result`, 'protocol');
 		return parsed.data;

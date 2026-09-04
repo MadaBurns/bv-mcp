@@ -27,9 +27,11 @@ function scan(domain: string, overrides: Record<string, unknown> = {}): Record<s
 	};
 }
 
-function rpc(result: unknown, headers: HeadersInit = {}): Response {
-	return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }), { status: 200, headers });
+function rpc(result: unknown, headers: HeadersInit = {}, id = 1): Response {
+	return new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), { status: 200, headers });
 }
+
+const initialized = { protocolVersion: '2025-06-18', serverInfo: { name: 'blackveil-dns-mcp', version: '1.2.3' } };
 
 function harness(files: Record<string, string> = {}, toolResults: unknown[] = []) {
 	const stdout: string[] = [];
@@ -37,9 +39,9 @@ function harness(files: Record<string, string> = {}, toolResults: unknown[] = []
 	const writes = new Map<string, string>();
 	const calls: Array<Record<string, unknown>> = [];
 	const responses = [
-		rpc({ serverInfo: { name: 'blackveil-dns-mcp', version: '1.2.3' } }, { 'mcp-session-id': 'session-1' }),
+		rpc(initialized, { 'mcp-session-id': 'session-1' }),
 		new Response('', { status: 202 }),
-		...toolResults.map((result) => rpc(result)),
+		...toolResults.map((result, index) => rpc(result, {}, index + 2)),
 	];
 	const io: CliIo = {
 		readTextFile: async (path) => {
@@ -79,12 +81,34 @@ describe('blackveil CLI', () => {
 		expect(h.calls).toHaveLength(0);
 	});
 
+	it('starts the shared deadline before command input is read', async () => {
+		let now = 1_000;
+		const h = harness({ domains: 'example.com\n' });
+		const originalRead = h.io.readTextFile;
+		h.io.readTextFile = async (path) => {
+			const value = await originalRead(path);
+			now = 46_001;
+			return value;
+		};
+		expect(await runCli(['batch', '--file', 'domains'], { ...h, nowMs: () => now })).toBe(3);
+		expect(h.calls).toHaveLength(0);
+		expect(h.stderr.join('')).toContain('command deadline exceeded');
+	});
+
 	it('returns incomplete for an ungraded scan without treating null as zero', async () => {
 		const h = harness({}, [
 			toolResult(scan('example.com', { score: null, grade: null, passed: null, measured: false, evidenceInsufficient: true })),
 		]);
 		expect(await runCli(['scan', 'example.com', '--format', 'json'], h)).toBe(4);
 		expect(JSON.parse(h.stdout.join(''))).toMatchObject({ score: null, grade: null });
+	});
+
+	it.each([
+		{ checkStatuses: { dnssec: 'timeout' }, inconclusiveCategories: [] },
+		{ checkStatuses: { dnssec: 'completed' }, inconclusiveCategories: ['dnssec'] },
+	])('returns incomplete for non-completed scan evidence', async (overrides) => {
+		const h = harness({}, [toolResult(scan('example.com', overrides))]);
+		expect(await runCli(['scan', 'example.com'], h)).toBe(4);
 	});
 
 	it('returns policy failure only from the remote policy tool', async () => {
@@ -97,7 +121,7 @@ describe('blackveil CLI', () => {
 	it('uses the paid batch tool without per-domain fallback on denial', async () => {
 		const h = harness({ domains: 'one.example\ntwo.example\n' });
 		const responses = [
-			rpc({ serverInfo: { name: 'blackveil-dns-mcp', version: '1.2.3' } }, { 'mcp-session-id': 'session-1' }),
+			rpc(initialized, { 'mcp-session-id': 'session-1' }),
 			new Response('', { status: 202 }),
 			new Response(JSON.stringify({ jsonrpc: '2.0', id: 2, error: { code: -32003, message: 'paid access required' } }), { status: 403 }),
 		];
@@ -121,6 +145,20 @@ describe('blackveil CLI', () => {
 		const result = { category: 'dnssec', passed: true, score: 100, findings: [], checkStatus: 'completed' };
 		const h = harness({}, [tools, toolResult(result)]);
 		expect(await runCli(['check', 'dnssec', 'example.com'], h)).toBe(0);
+	});
+
+	it('returns incomplete for a non-completed check even when partial is absent', async () => {
+		const tools = { tools: [{ name: 'check_dnssec', outputSchema: { type: 'object' }, annotations: { readOnlyHint: true } }] };
+		const result = { category: 'dnssec', passed: false, score: 0, findings: [], checkStatus: 'error' };
+		const h = harness({}, [tools, toolResult(result)]);
+		expect(await runCli(['check', 'dnssec', 'example.com'], h)).toBe(4);
+	});
+
+	it('sanitizes and emits every remote tool error diagnostic', async () => {
+		const h = harness({}, [{ content: [{ type: 'text', text: '\u001b[31mdenied\r\nretry\u0000' }], isError: true }]);
+		expect(await runCli(['scan', 'example.com'], h)).toBe(3);
+		expect(h.stderr.join('')).toBe('scan_domain: denied\nretry\n');
+		expect(h.stdout).toHaveLength(0);
 	});
 
 	it('returns integrity failure before drift makes a remote request', async () => {

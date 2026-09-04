@@ -3,17 +3,25 @@
 import { describe, expect, it } from 'vitest';
 import { McpClientError, McpHttpClient, parseMcpResponseBody } from '../src/cli/mcp-http-client';
 
-function rpc(result: unknown, headers: HeadersInit = {}): Response {
-	return new Response(JSON.stringify({ jsonrpc: '2.0', id: 1, result }), { status: 200, headers });
+function rpc(result: unknown, headers: HeadersInit = {}, id = 1): Response {
+	return new Response(JSON.stringify({ jsonrpc: '2.0', id, result }), {
+		status: 200,
+		headers: { 'content-type': 'application/json', ...Object.fromEntries(new Headers(headers)) },
+	});
 }
+
+const initialized = (protocolVersion = '2025-06-18') => ({
+	protocolVersion,
+	serverInfo: { name: 'blackveil-dns-mcp', version: '1.2.3' },
+});
 
 describe('hosted MCP HTTP client', () => {
 	it('initializes a session and keeps credentials in an authorization header', async () => {
 		const requests: Array<{ url: string; init?: RequestInit }> = [];
 		const responses = [
-			rpc({ serverInfo: { name: 'blackveil-dns-mcp', version: '1.2.3' } }, { 'mcp-session-id': 'session-1' }),
+			rpc(initialized(), { 'mcp-session-id': 'session-1' }),
 			new Response('', { status: 202 }),
-			rpc({ content: [{ type: 'text', text: 'ok' }], structuredContent: { domain: 'example.com' } }),
+			rpc({ content: [{ type: 'text', text: 'ok' }], structuredContent: { domain: 'example.com' } }, {}, 2),
 		];
 		const client = new McpHttpClient({
 			endpoint: 'https://example.test/mcp',
@@ -51,13 +59,165 @@ describe('hosted MCP HTTP client', () => {
 		await expect(client.connect()).rejects.toMatchObject<McpClientError>({ kind: 'remote', status });
 	});
 
-	it('fails closed when initialize does not issue a session', async () => {
+	it('rejects a successful request that omits its JSON-RPC response', async () => {
 		const client = new McpHttpClient({
 			endpoint: 'https://example.test/mcp',
-			fetchFn: (async () => rpc({ serverInfo: { name: 'server', version: '1' } })) as typeof fetch,
+			fetchFn: (async () => new Response('', { status: 200 })) as typeof fetch,
 			signalFactory: () => new AbortController().signal,
 		});
 		await expect(client.connect()).rejects.toMatchObject({ kind: 'protocol' });
+	});
+
+	it('accepts a conforming server that does not issue a session', async () => {
+		const responses = [
+			rpc({ protocolVersion: '2025-06-18', serverInfo: { name: 'server', version: '1' } }),
+			new Response('', { status: 202 }),
+		];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async () => responses.shift()!) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+		await expect(client.connect()).resolves.toMatchObject({ name: 'server' });
+	});
+
+	it('fails closed on a protocol version it does not support', async () => {
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async () => rpc(initialized('2099-01-01'))) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+		await expect(client.connect()).rejects.toThrow('unsupported protocol version');
+	});
+
+	it('uses the negotiated protocol version on sessionless servers', async () => {
+		const requests: RequestInit[] = [];
+		const responses = [rpc(initialized('2025-03-26')), new Response('', { status: 202 }), rpc({ tools: [] }, {}, 2)];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async (_url, init) => {
+				requests.push(init ?? {});
+				return responses.shift()!;
+			}) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+		await client.connect();
+		await client.listTools();
+		expect(new Headers(requests[1]?.headers).get('mcp-protocol-version')).toBe('2025-03-26');
+		expect(new Headers(requests[2]?.headers).get('mcp-session-id')).toBeNull();
+	});
+
+	it('incrementally ignores notifications and returns before the matched SSE stream closes', async () => {
+		let cancelled = false;
+		const stream = new ReadableStream({
+			start(controller) {
+				controller.enqueue(
+					new TextEncoder().encode(
+						'data: {"jsonrpc":"2.0","method":"notifications/progress","params":{}}\n\n' +
+							'data: {"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text",',
+					),
+				);
+				controller.enqueue(new TextEncoder().encode('"text":"ok"}],"structuredContent":{"domain":"example.com"}}}\n\n'));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const responses = [
+			rpc(initialized(), { 'mcp-session-id': 'session-1' }),
+			new Response('', { status: 202 }),
+			new Response(stream, { headers: { 'content-type': 'text/event-stream' } }),
+		];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async () => responses.shift()!) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+		await client.connect();
+		await expect(client.callTool('scan_domain', {})).resolves.toMatchObject({ structuredContent: { domain: 'example.com' } });
+		expect(cancelled).toBe(true);
+	});
+
+	it.each([
+		['missing', 'data: {"jsonrpc":"2.0","result":{}}\n\n', /omitted.*id/],
+		['mismatched', 'data: {"jsonrpc":"2.0","id":9,"result":{}}\n\n', /did not match/],
+		['server request', 'data: {"jsonrpc":"2.0","id":8,"method":"sampling/createMessage"}\n\n', /unsupported server request/],
+		['duplicate', 'data: {"jsonrpc":"2.0","id":2,"result":{}}\n\ndata: {"jsonrpc":"2.0","id":2,"result":{}}\n\n', /duplicate.*id/],
+	])('rejects %s SSE response ids', (_label, payload, expected) => {
+		expect(() => parseMcpResponseBody(payload, 2)).toThrow(expected as RegExp);
+	});
+
+	it('uses one shrinking deadline across initialize, notification, and calls', async () => {
+		let now = 1_000;
+		const remaining: number[] = [];
+		const responses = [rpc(initialized()), new Response('', { status: 202 }), rpc({ tools: [] }, {}, 2)];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			deadlineAt: 46_000,
+			now: () => now,
+			signalFactory: (remainingMs) => {
+				remaining.push(remainingMs);
+				return new AbortController().signal;
+			},
+			fetchFn: (async () => {
+				const response = responses.shift()!;
+				now += 5_000;
+				return response;
+			}) as typeof fetch,
+		});
+		await client.connect();
+		await client.listTools();
+		expect(remaining).toEqual([45_000, 40_000, 35_000]);
+		now = 46_000;
+		await expect(client.listTools()).rejects.toThrow('command deadline exceeded');
+	});
+
+	it('reinitializes once and retries a read-only call after a session 404', async () => {
+		const requests: RequestInit[] = [];
+		const responses = [
+			rpc(initialized(), { 'mcp-session-id': 'old' }),
+			new Response('', { status: 202 }),
+			new Response('', { status: 404 }),
+			rpc(initialized(), { 'mcp-session-id': 'new' }, 3),
+			new Response('', { status: 202 }),
+			rpc({ content: [{ type: 'text', text: 'ok' }], structuredContent: { domain: 'example.com' } }, {}, 4),
+			new Response('', { status: 404 }),
+		];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async (_url, init) => {
+				requests.push(init ?? {});
+				return responses.shift()!;
+			}) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+		await client.connect();
+		await client.callTool('scan_domain', {}, { readOnly: true });
+		expect(requests).toHaveLength(6);
+		expect(new Headers(requests[2]?.headers).get('mcp-session-id')).toBe('old');
+		expect(new Headers(requests[5]?.headers).get('mcp-session-id')).toBe('new');
+		await expect(client.callTool('scan_domain', {}, { readOnly: true })).rejects.toMatchObject({ status: 404 });
+		expect(requests).toHaveLength(7);
+	});
+
+	it('does not retry a non-read-only call after a session 404', async () => {
+		let requests = 0;
+		const responses = [
+			rpc(initialized(), { 'mcp-session-id': 'old' }),
+			new Response('', { status: 202 }),
+			new Response('', { status: 404 }),
+		];
+		const client = new McpHttpClient({
+			endpoint: 'https://example.test/mcp',
+			fetchFn: (async () => {
+				requests += 1;
+				return responses.shift()!;
+			}) as typeof fetch,
+			signalFactory: () => new AbortController().signal,
+		});
+		await client.connect();
+		await expect(client.callTool('write_tool', {})).rejects.toMatchObject({ status: 404 });
+		expect(requests).toBe(3);
 	});
 
 	it('rejects endpoints that could expose credentials through URLs', () => {

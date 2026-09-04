@@ -26,8 +26,8 @@ describe('CLI distribution boundary', () => {
 			commandSource.indexOf('async function runBatch'),
 			commandSource.indexOf('async function runPolicy'),
 		);
-		expect(batchBody).toContain("callTool('batch_scan'");
-		expect(batchBody).not.toContain("callTool('scan_domain'");
+		expect(batchBody).toMatch(/callTool\(\s*'batch_scan'/);
+		expect(batchBody).not.toMatch(/callTool\(\s*'scan_domain'/);
 		expect(sources.toLowerCase()).not.toContain('sarif');
 	});
 
