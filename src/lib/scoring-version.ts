@@ -402,8 +402,9 @@
  * - 1.23.0 — DANE pin verification KILL-SWITCHED (dns-checks 1.35.0, server 3.75.1).
  *   The 1.22.0 capture source — bv-tls-probe's headless browser inside Cloudflare
  *   Browser Rendering — does not observe the origin's certificate: Browser Rendering
- *   egresses page traffic through a TLS-terminating proxy that re-signs every
- *   non-Cloudflare origin with a per-session "Mockttp Cert - DO NOT TRUST" CA. Measured
+ *   egresses page traffic through a TLS-terminating proxy that re-signed all three
+ *   non-Cloudflare origins measured (Cloudflare-fronted origins were not measured) with
+ *   a per-session "Mockttp Cert - DO NOT TRUST" CA. Measured
  *   2026-09-04 (prod + a remote-binding dev run): fedoraproject.org, kernel.org and
  *   www.debian.org all captured a Mockttp RSA leaf present in no CT log, while openssl
  *   saw their real keys — fedoraproject.org's real SPKI matched its `3 1 1` TLSA record

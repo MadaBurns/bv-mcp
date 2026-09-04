@@ -11,7 +11,7 @@
  * while the switch is off: with the binding present the probe is NEVER called for DANE
  * and the pin reports the permanent `probe_vantage_intercepted` sub-state at 95 — never
  * a verdict in either direction — because the probe's Browser Rendering vantage is
- * TLS-intercepted (Mockttp re-signs every non-Cloudflare origin), which made 3.75.0
+ * TLS-intercepted (a Mockttp CA re-signed every non-Cloudflare origin measured), which made 3.75.0
  * score a correct pin (fedoraproject.org) as a `high` mismatch.
  */
 

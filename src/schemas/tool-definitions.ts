@@ -311,7 +311,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_dane_https: {
 		description:
-			'Verify DANE certificate pinning for HTTPS connections. Looks up TLSA records at _443._tcp.{domain} (port 443) and, when the operator certificate probe is bound, compares each pinned association against the certificate the host actually serves (RFC 7671: DANE-EE/PKIX-EE against the leaf, DANE-TA/PKIX-TA against the served chain) — a stale pin is reported as a mismatch, not a pass. Without the probe the record is reported as present but unverified. Distinct from check_dane which covers SMTP at port 25.',
+			'Verify DANE certificate pinning for HTTPS connections. Looks up TLSA records at _443._tcp.{domain} (port 443) and validates their syntax, usage/selector/matching-type fields and DNSSEC backing. The record is reported as present but UNVERIFIED in every deployment: comparison against the certificate the host actually serves is currently withdrawn because the operator probe vantage cannot observe the origin certificate (finding metadata notAssessedReason probe_vantage_intercepted when the probe is bound), so a stale pin is NOT detected here. Distinct from check_dane which covers SMTP at port 25.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'protective',
