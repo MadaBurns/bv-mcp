@@ -23,6 +23,23 @@ const VALID_RESULT = {
 	],
 } as const;
 
+const FAILED_TARGET = {
+	...VALID_RESULT.targets[0],
+	target: { exchange: 'mx-fail.example.com', preference: 20, address: '8.8.8.8', port: 25, tlsServerName: 'mx-fail.example.com' },
+	starttlsAdvertised: false,
+	tlsNegotiated: false,
+	postTlsEhloAccepted: false,
+	tls: undefined,
+	reason: 'starttls_not_advertised',
+} as const;
+
+const INCOMPLETE_TARGET = {
+	target: { exchange: 'mx-pending.example.com', preference: 30, address: '9.9.9.9', port: 25, tlsServerName: 'mx-pending.example.com' },
+	status: 'not-assessed',
+	phase: 'connect',
+	reason: 'connection_failed',
+} as const;
+
 describe('SMTP STARTTLS result contract', () => {
 	it('accepts a bounded non-scoring measurement', async () => {
 		const { SmtpStarttlsResultSchema } = await import('../src/schemas/smtp-starttls');
@@ -76,6 +93,32 @@ describe('SMTP STARTTLS result contract', () => {
 				targets: [{ ...VALID_RESULT.targets[0], starttlsAdvertised: undefined }],
 			}).success,
 		).toBe(false);
+	});
+
+	it('accepts partial mixed only for genuinely mixed measurements or explicit incomplete evidence', async () => {
+		const { SmtpStarttlsResultSchema } = await import('../src/schemas/smtp-starttls');
+		const partial = { ...VALID_RESULT, status: 'partial', outcome: 'mixed' } as const;
+
+		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [VALID_RESULT.targets[0], FAILED_TARGET] }).success).toBe(true);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [VALID_RESULT.targets[0], INCOMPLETE_TARGET] }).success).toBe(true);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [VALID_RESULT.targets[0]] }).success).toBe(false);
+		expect(SmtpStarttlsResultSchema.safeParse({ ...partial, targets: [FAILED_TARGET] }).success).toBe(false);
+	});
+
+	it('rejects uniform partial outcomes with incomplete or contradictory target evidence', async () => {
+		const { SmtpStarttlsResultSchema } = await import('../src/schemas/smtp-starttls');
+		const partial = { ...VALID_RESULT, status: 'partial' } as const;
+
+		for (const candidate of [
+			{ ...partial, outcome: 'starttls_available', targets: [VALID_RESULT.targets[0], INCOMPLETE_TARGET] },
+			{ ...partial, outcome: 'starttls_available', targets: [VALID_RESULT.targets[0], FAILED_TARGET] },
+			{ ...partial, outcome: 'starttls_available', targets: [VALID_RESULT.targets[0]] },
+			{ ...partial, outcome: 'starttls_unavailable', targets: [FAILED_TARGET, INCOMPLETE_TARGET] },
+			{ ...partial, outcome: 'starttls_unavailable', targets: [FAILED_TARGET, VALID_RESULT.targets[0]] },
+			{ ...partial, outcome: 'starttls_unavailable', targets: [FAILED_TARGET] },
+		] as const) {
+			expect(SmtpStarttlsResultSchema.safeParse(candidate).success).toBe(false);
+		}
 	});
 
 	it('represents null MX only as not-applicable', async () => {

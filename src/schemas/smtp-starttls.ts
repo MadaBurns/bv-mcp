@@ -112,6 +112,26 @@ export const SmtpTargetResultSchema = z
 
 export type SmtpTargetResult = z.infer<typeof SmtpTargetResultSchema>;
 
+function targetKnownAvailable(target: SmtpTargetResult): boolean {
+	return (
+		target.status !== 'not-assessed' &&
+		target.starttlsAdvertised === true &&
+		target.tlsNegotiated === true &&
+		target.postTlsEhloAccepted === true &&
+		target.tls?.peerNameValid === true
+	);
+}
+
+function targetKnownUnavailable(target: SmtpTargetResult): boolean {
+	return (
+		target.status !== 'not-assessed' &&
+		(target.starttlsAdvertised === false ||
+			target.tlsNegotiated === false ||
+			target.postTlsEhloAccepted === false ||
+			target.tls?.peerNameValid === false)
+	);
+}
+
 const SmtpResultBase = {
 	schemaVersion: z.literal('1.0'),
 	probe: z.literal('smtp_starttls'),
@@ -185,8 +205,31 @@ export const SmtpStarttlsResultSchema = z
 				ctx.addIssue({ code: 'custom', message: 'An unavailable measured result cannot include a successful STARTTLS target' });
 			}
 		}
-		if (result.status === 'partial' && result.outcome !== 'mixed' && result.targets.every((target) => target.status === 'measured')) {
-			ctx.addIssue({ code: 'custom', message: 'A partial result requires a partial/not-assessed target or a mixed outcome' });
+		if (result.status === 'partial') {
+			const hasIncompleteEvidence = result.targets.some((target) => target.status !== 'measured');
+			const hasKnownAvailable = result.targets.some(targetKnownAvailable);
+			const hasKnownUnavailable = result.targets.some(targetKnownUnavailable);
+
+			if (result.outcome === 'mixed') {
+				if (!hasIncompleteEvidence && !(hasKnownAvailable && hasKnownUnavailable)) {
+					ctx.addIssue({
+						code: 'custom',
+						message: 'A mixed partial result requires both measured outcomes or an explicit partial/not-assessed target',
+					});
+				}
+			} else {
+				if (hasIncompleteEvidence) {
+					ctx.addIssue({ code: 'custom', message: 'A uniform STARTTLS outcome cannot contain incomplete target evidence' });
+				}
+				const contradictsAvailable = result.outcome === 'starttls_available' && hasKnownUnavailable;
+				const contradictsUnavailable = result.outcome === 'starttls_unavailable' && hasKnownAvailable;
+				if (contradictsAvailable || contradictsUnavailable) {
+					ctx.addIssue({ code: 'custom', message: 'Known target evidence contradicts the aggregate STARTTLS outcome' });
+				}
+				if (!hasIncompleteEvidence && !contradictsAvailable && !contradictsUnavailable) {
+					ctx.addIssue({ code: 'custom', message: 'Uniform complete target evidence must use measured aggregate status' });
+				}
+			}
 		}
 		if (result.status === 'not-assessed') {
 			if ((result.outcome === 'no_explicit_mx') !== (result.reason === 'no_explicit_mx')) {
