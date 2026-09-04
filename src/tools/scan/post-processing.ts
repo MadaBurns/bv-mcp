@@ -54,7 +54,7 @@ export interface ScanRuntimeOptions {
 	secondaryDoh?: import('../../lib/dns-types').SecondaryDohConfig;
 	/** Optional service binding for raw DNS, routing, and vantage-point probes. */
 	infraProbe?: { fetch: typeof fetch };
-	/** Operator-only bv-tls-probe service binding (negotiated-TLS-version detection). Fail-soft; absent on BSL self-hosts → scan SSL score unchanged. */
+	/** Operator-only bv-tls-probe service binding (negotiated-TLS-version detection for `ssl`; served-certificate capture for `dane_https` pin verification, #841). Fail-soft; absent on BSL self-hosts → scan `ssl` / `dane_https` scores unchanged. */
 	tlsProbeBinding?: { fetch: typeof fetch };
 	/** Bearer token forwarded to bv-tls-probe. */
 	tlsProbeAuthToken?: string;

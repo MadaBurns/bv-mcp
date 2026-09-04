@@ -29,9 +29,23 @@ export { checkHTTPSecurity } from './check-http-security';
 // ── Analysis utilities (re-exported for consumers) ───────────────────────────
 export { parseDmarcTags } from './dmarc-utils';
 export { parseDnskeyAlgorithm, parseDsRecord, parseDnssecAlgorithmToken } from './dnssec-analysis';
-export { parseTlsaRecord } from './dane-analysis';
+export {
+	parseTlsaRecord,
+	verifyTlsaAssociations,
+	DANE_PIN_NOT_ASSESSED_REASONS,
+	DANE_PIN_TRANSIENT_REASONS,
+	isTransientDanePinReason,
+} from './dane-analysis';
 export type { CaaRecord } from './caa-analysis';
 export { parseCaaRecord } from './caa-analysis';
-export type { TlsaRecord } from './dane-analysis';
+export type {
+	TlsaRecord,
+	ServedCertificate,
+	ServedCertificateChainEntry,
+	CertificateProbeOutcome,
+	TlsaVerificationContext,
+	TlsaVerification,
+} from './dane-analysis';
+export type { CheckDaneHttpsOptions } from './check-dane-https';
 export { analyzeSecurityHeaders } from './http-security-analysis';
 export { estimateTxtRrsetBytes } from './spf-analysis';
