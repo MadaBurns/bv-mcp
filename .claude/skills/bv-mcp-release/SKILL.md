@@ -13,7 +13,7 @@ A version lives in **4 hand-edited places** (plus the auto-derived `SERVER_VERSI
 2. `server.json` — **`version`** (top-level).
 3. `CHANGELOG.md` — new `[X.Y.Z]` heading.
 
-➡️ **`SERVER_VERSION` (`src/lib/server-version.ts`) is NOT a hand-edit surface — it auto-derives** (`export const SERVER_VERSION: string = pkg.version;`). Do not `sed` it; the old sed line in this skill no longer matches and would silently no-op. Bump `package.json` and `SERVER_VERSION` follows. (Prod only advertises the new `serverInfo.version` on the *next* `deploy:prod` after the bump — so the bump must precede the release deploy.)
+➡️ **`SERVER_VERSION` (`src/lib/server-version.ts`) is NOT a hand-edit surface — it auto-derives** (`export const SERVER_VERSION: string = pkg.version;`). Do not `sed` it; the old sed line in this skill no longer matches and would silently no-op. Bump `package.json` and `SERVER_VERSION` follows. (Prod only advertises the new `serverInfo.version` on the _next_ `deploy:prod` after the bump — so the bump must precede the release deploy.)
 
 ⚠️ **`server.json` is currently remotes-only** — it has a single top-level `version` and a `remotes` array, **no `packages` stanza**. CLAUDE.md's "TWO version fields (top-level + `packages[0].version`)" warning applies **only if** an npm `packages` stanza is re-added. The npm `packages` block was removed because the MCP Registry liveness-checks npm versions and the 3.3.x line isn't published to npm. **If you re-add a `packages` stanza, you re-introduce the two-field foot-gun — sync both.**
 
@@ -32,7 +32,7 @@ Re-verify: `git log --oneline -5 -- packages/dns-checks/package.json` should sho
 
 ## Pre-bump locally before tagging
 
-Pre-bumping is **enforced, not merely advised**. `publish.yml`'s `version-bump` job is a read-only *verification gate* (PR #632): it asserts `package.json`, `package-lock.json`, `server.json` (plus `packages[0].version` if that stanza ever returns) and the `CHANGELOG.md` heading already match the tag, and fails the release with a per-surface `::error::` if any disagree. It edits and pushes nothing. So do the bump first:
+Pre-bumping is **enforced, not merely advised**. `publish.yml`'s `version-bump` job is a read-only _verification gate_ (PR #632): it asserts `package.json`, `package-lock.json`, `server.json` (plus `packages[0].version` if that stanza ever returns) and the `CHANGELOG.md` heading already match the tag, and fails the release with a per-surface `::error::` if any disagree. It edits and pushes nothing. So do the bump first:
 
 ```bash
 npm version <X.Y.Z> --no-git-tag-version --allow-same-version   # package.json + lock; SERVER_VERSION auto-derives
@@ -72,6 +72,8 @@ Two transferable lessons:
 - Registry **behind** prod (published 3.8.0 while prod serves 3.9.0) is **benign** — it just means "not yet bumped," and is the safe state to pause in if the deploy is deferred. Registry **ahead** of prod is the foot-gun.
 - **The tag pipeline is ordering-safe again (2026-08-23)** — with `publish-registry` deleted, tagging advertises nothing; the manual `mcp-publisher` step is the only publisher, and the ordering rule is enforced by the operator running deploy before publish. (Between #719 and 2026-08-23 the job existed armed, making a pre-deploy tag a stale-prod hazard — that window is closed.)
 - "Formalize the release" (version surfaces + tag + GH Release) and "deploy + publish" are separable. Deploy and registry publish are outward-facing — confirm before each unless told to run the whole sequence.
+- **A PR can sit `mergeStateStatus: BLOCKED` with all four required checks green.** Two workflows (`CI` and `CI Docs`) each run a job named `build-and-test`, and a required check is satisfied only when EVERY check-run of that name has completed — the slower one (~15 min) is still `in_progress`. Diagnose with `gh api repos/MadaBurns/bv-mcp/commits/<sha>/check-runs --jq '.check_runs[] | select(.status!="completed") | .name'`; it is not a failure and needs no re-run (observed on #907, 2026-09-04).
+- **A `wrangler rollback <version-id>` may be refused by the session permission classifier** (prod-mutating class) even when a fresh deploy has just been allowed. Per the no-retry-loop rule, do not rephrase it; fix forward with a hotfix release instead (3.75.0 → 3.75.1 took ~70 min end to end) and note the blocked rollback in the issue. Cache keys carry `v<SERVER_VERSION>-dc<PARITY_CORPUS_VERSION>`, so the hotfix deploy also retires every cached result from the defective version immediately.
 
 Publish steps (key never echoed): `mcp-publisher validate` → `login dns --domain blackveilsecurity.com --private-key "$KEY"` (read `$KEY` from `.dev.vars`, ed25519) → `publish` → `logout`. Verify: `?search=com.blackveilsecurity/dns&version=latest` → expect `version=X.Y.Z status=active isLatest=true` (search endpoint sometimes returns an empty body — retry a few times).
 
@@ -98,7 +100,7 @@ Never commit `.npmrc`, registry tokens, the DNS publisher key, or generated prod
 
 - Bumping `package.json` only → CI version-sync audit fails. Hit all 4 surfaces (package.json + lock, server.json, CHANGELOG).
 - Tagging without pre-bumping → the `version-bump` gate fails the release with a per-surface `::error::` and nothing publishes. Bump all 4 surfaces, then move the tag. (It no longer tries to fix this up for you — see the 3.40.0–3.42.0 incident above.)
-- "Reformatting" `server.json` to tabs to match Prettier → harmless now, but it is the *shape* of the bug that cost three releases. Prettier flags the file; leave it alone unless you also re-verify the release path.
+- "Reformatting" `server.json` to tabs to match Prettier → harmless now, but it is the _shape_ of the bug that cost three releases. Prettier flags the file; leave it alone unless you also re-verify the release path.
 - Re-adding a `packages` stanza to `server.json` and syncing only the top-level `version` → registry/version mismatch. Sync both fields.
 - `mcp-publisher publish` BEFORE `deploy:prod` → registry advertises a version prod doesn't serve (stale-prod, public). Deploy first, publish last.
 - Hand-editing `SERVER_VERSION` → no-op at best (it auto-derives from `pkg.version`); bump `package.json` instead.
