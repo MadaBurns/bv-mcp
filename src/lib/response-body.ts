@@ -28,14 +28,17 @@ export async function disposeUnreadResponseBody(response: Response): Promise<voi
 async function drainBounded(
 	body: ReadableStream<Uint8Array> | null,
 	maxBytes: number,
-): Promise<{ chunks: Uint8Array[]; total: number; overflowed: boolean }> {
+): Promise<{ chunks: Uint8Array[]; total: number; consumed: number; overflowed: boolean; errored: boolean }> {
 	const chunks: Uint8Array[] = [];
 	let total = 0;
+	let consumed = 0;
 	let overflowed = false;
-	if (!body) return { chunks, total, overflowed };
-	const reader = body.getReader();
+	let errored = false;
+	if (!body) return { chunks, total, consumed, overflowed, errored };
+	let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
 	let finished = false;
 	try {
+		reader = body.getReader();
 		for (;;) {
 			const { done, value } = await reader.read();
 			if (done) {
@@ -43,6 +46,7 @@ async function drainBounded(
 				break;
 			}
 			if (!value) continue;
+			consumed += value.byteLength;
 			const remaining = Math.max(maxBytes - total, 0);
 			if (value.byteLength > remaining) {
 				if (remaining > 0) {
@@ -55,17 +59,23 @@ async function drainBounded(
 			chunks.push(value);
 			total += value.byteLength;
 		}
+	} catch {
+		errored = true;
 	} finally {
-		if (!finished) {
+		if (reader && !finished) {
 			try {
 				await reader.cancel();
 			} catch {
 				/* fail-open */
 			}
 		}
-		reader.releaseLock();
+		try {
+			reader?.releaseLock();
+		} catch {
+			// A hostile/locked stream must not escape this fail-open reader.
+		}
 	}
-	return { chunks, total, overflowed };
+	return { chunks, total, consumed, overflowed, errored };
 }
 
 /** Concatenate chunks into one Uint8Array. */
@@ -87,7 +97,8 @@ function concatChunks(chunks: Uint8Array[], total: number): Uint8Array {
  */
 export async function readBoundedText(body: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<string> {
 	try {
-		const { chunks, total } = await drainBounded(body, maxBytes);
+		const { chunks, total, errored } = await drainBounded(body, maxBytes);
+		if (errored) return '';
 		if (total === 0) return '';
 		return new TextDecoder().decode(concatChunks(chunks, total));
 	} catch {
@@ -104,8 +115,8 @@ export async function readBoundedText(body: ReadableStream<Uint8Array> | null, m
 export async function readBoundedOrNull(body: ReadableStream<Uint8Array> | null, maxBytes: number): Promise<string | null> {
 	try {
 		if (!body) return null;
-		const { chunks, total, overflowed } = await drainBounded(body, maxBytes);
-		if (overflowed) return null;
+		const { chunks, total, overflowed, errored } = await drainBounded(body, maxBytes);
+		if (overflowed || errored) return null;
 		return new TextDecoder().decode(concatChunks(chunks, total));
 	} catch {
 		return null;
@@ -151,4 +162,29 @@ export async function readTextResponseCapped(response: Response, maxBytes: numbe
 		return null;
 	}
 	return readBoundedOrNull(response.body, maxBytes);
+}
+
+/**
+ * Metadata-preserving variant for callers with an aggregate cross-response
+ * budget. `bytesRead` is the actual retained/read byte count on streamed paths;
+ * a Content-Length early rejection conservatively charges `maxBytes` even
+ * though the body is cancelled before it is read.
+ */
+export async function readTextResponseCappedDetailed(
+	response: Response,
+	maxBytes: number,
+): Promise<{ text: string | null; bytesRead: number; overflowed: boolean; errored: boolean }> {
+	const declared = Number(response.headers.get('content-length'));
+	if (Number.isFinite(declared) && declared > maxBytes) {
+		await disposeUnreadResponseBody(response);
+		return { text: null, bytesRead: maxBytes, overflowed: true, errored: false };
+	}
+	if (!response.body) return { text: null, bytesRead: 0, overflowed: false, errored: false };
+	const { chunks, total, consumed, overflowed, errored } = await drainBounded(response.body, maxBytes);
+	return {
+		text: overflowed || errored ? null : new TextDecoder().decode(concatChunks(chunks, total)),
+		bytesRead: consumed,
+		overflowed,
+		errored,
+	};
 }
