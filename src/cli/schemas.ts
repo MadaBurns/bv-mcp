@@ -53,6 +53,19 @@ export const CheckResultSchema = z
 	})
 	.passthrough();
 
+const NonCompletedCheckStatusSchema = z.enum(['timeout', 'error']);
+
+export function hasIncompleteCheckEvidence(result: { partial?: boolean; checkStatus?: string }): boolean {
+	return result.partial === true || NonCompletedCheckStatusSchema.safeParse(result.checkStatus).success;
+}
+
+export function hasIncompleteScanEvidence(result: { checkStatuses: Record<string, string>; inconclusiveCategories: string[] }): boolean {
+	return (
+		result.inconclusiveCategories.length > 0 ||
+		Object.values(result.checkStatuses).some((status) => NonCompletedCheckStatusSchema.safeParse(status).success)
+	);
+}
+
 export const BatchResultSchema = z
 	.object({
 		results: z.array(ScanResultSchema).min(1).max(10),

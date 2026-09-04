@@ -3,7 +3,16 @@
 import { z } from 'zod';
 import { createEvidenceSnapshot, verifyEvidenceSnapshot, type EvidenceSnapshot } from './evidence';
 import { DEFAULT_MCP_ENDPOINT, McpClientError, McpHttpClient, type ToolCallResult } from './mcp-http-client';
-import { BatchResultSchema, CheckResultSchema, DriftResultSchema, PolicyResultSchema, ScanResultSchema, type ScanResult } from './schemas';
+import {
+	BatchResultSchema,
+	CheckResultSchema,
+	DriftResultSchema,
+	hasIncompleteCheckEvidence,
+	hasIncompleteScanEvidence,
+	PolicyResultSchema,
+	ScanResultSchema,
+	type ScanResult,
+} from './schemas';
 
 export type CliExitCode = 0 | 1 | 2 | 3 | 4;
 export type CliOutputFormat = 'human' | 'json' | 'ndjson' | 'evidence';
@@ -20,6 +29,8 @@ export interface CliDependencies {
 	env?: Record<string, string | undefined>;
 	fetchFn?: typeof fetch;
 	now?: () => Date;
+	nowMs?: () => number;
+	deadlineAt?: number;
 }
 
 class CliUsageError extends Error {}
@@ -149,16 +160,66 @@ function toolErrorText(result: ToolCallResult): string {
 		.join('\n');
 }
 
-function classifyToolError(result: ToolCallResult): CliExitCode | undefined {
+export function sanitizeDiagnostic(value: string): string {
+	const withoutTerminalSequences: string[] = [];
+	for (let index = 0; index < value.length; index += 1) {
+		const code = value.charCodeAt(index);
+		if (code !== 0x1b) {
+			withoutTerminalSequences.push(value[index] ?? '');
+			continue;
+		}
+		const marker = value.charCodeAt(index + 1);
+		if (marker === 0x5b) {
+			index += 2;
+			while (index < value.length && (value.charCodeAt(index) < 0x40 || value.charCodeAt(index) > 0x7e)) index += 1;
+			continue;
+		}
+		if (marker === 0x5d) {
+			index += 2;
+			while (index < value.length) {
+				const current = value.charCodeAt(index);
+				if (current === 0x07 || (current === 0x1b && value.charCodeAt(index + 1) === 0x5c)) break;
+				index += 1;
+			}
+			if (value.charCodeAt(index) === 0x1b) index += 1;
+			continue;
+		}
+		index += 1;
+	}
+	let sanitized = '';
+	for (const character of withoutTerminalSequences.join('').normalize('NFKC')) {
+		const code = character.codePointAt(0) ?? 0;
+		const unsafeFormatting =
+			code === 0x200b ||
+			code === 0x200c ||
+			code === 0x200d ||
+			code === 0xfeff ||
+			(code >= 0x202a && code <= 0x202e) ||
+			(code >= 0x2066 && code <= 0x2069);
+		if (!unsafeFormatting && (character === '\n' || character === '\t' || (code >= 0x20 && !(code >= 0x7f && code <= 0x9f))))
+			sanitized += character;
+	}
+	return sanitized.replaceAll('\r', '').trim().slice(0, 2_000);
+}
+
+function classifyToolError(result: ToolCallResult, io: CliIo, tool: string): CliExitCode | undefined {
 	if (!result.isError) return undefined;
-	const message = toolErrorText(result);
+	const message = sanitizeDiagnostic(toolErrorText(result)) || 'Remote tool returned an unspecified error';
+	io.stderr(`${tool}: ${message}\n`);
 	if (/Invalid baseline|could not read|valid JSON/i.test(message)) return 2;
 	if (/never graded|could not be scored|nothing to measure/i.test(message)) return 4;
 	return 3;
 }
 
 function scanExit(scan: ScanResult): CliExitCode {
-	return !scan.measured || scan.score === null || scan.grade === null || scan.evidenceInsufficient || scan.error ? 4 : 0;
+	return !scan.measured ||
+		scan.score === null ||
+		scan.grade === null ||
+		scan.evidenceInsufficient ||
+		scan.error ||
+		hasIncompleteScanEvidence(scan)
+		? 4
+		: 0;
 }
 
 function policyExit(value: z.infer<typeof PolicyResultSchema>): CliExitCode {
@@ -220,10 +281,13 @@ async function emit(io: CliIo, parsed: ParsedArgs, content: string): Promise<voi
 }
 
 function createClient(deps: CliDependencies): McpHttpClient {
+	const now = deps.nowMs ?? Date.now;
 	return new McpHttpClient({
 		endpoint: deps.env?.BLACKVEIL_MCP_URL ?? DEFAULT_MCP_ENDPOINT,
 		apiKey: deps.env?.BLACKVEIL_API_KEY,
 		fetchFn: deps.fetchFn,
+		deadlineAt: deps.deadlineAt,
+		now,
 	});
 }
 
@@ -233,9 +297,9 @@ async function connectedClient(deps: CliDependencies): Promise<McpHttpClient> {
 	return client;
 }
 
-async function callPolicy(client: McpHttpClient, domain: string, baseline: Record<string, unknown>) {
-	const result = await client.callTool('compare_baseline', { domain, baseline, format: 'full' });
-	const errorExit = classifyToolError(result);
+async function callPolicy(client: McpHttpClient, domain: string, baseline: Record<string, unknown>, io: CliIo) {
+	const result = await client.callTool('compare_baseline', { domain, baseline, format: 'full' }, { readOnly: true });
+	const errorExit = classifyToolError(result, io, 'compare_baseline');
 	if (errorExit !== undefined) return { result, exit: errorExit };
 	const parsed = PolicyResultSchema.safeParse(requireStructured(result, 'compare_baseline'));
 	if (!parsed.success) throw new McpClientError('compare_baseline returned malformed structuredContent', 'protocol');
@@ -248,19 +312,23 @@ async function runScan(parsed: ParsedArgs, deps: CliDependencies): Promise<CliEx
 	const format = outputFormat(parsed);
 	const baseline = await loadPolicy(parsed, deps.io);
 	const client = await connectedClient(deps);
-	const result = await client.callTool('scan_domain', {
-		domain,
-		format: 'full',
-		...(parsed.flags.has('--force-refresh') ? { force_refresh: true } : {}),
-	});
-	const errorExit = classifyToolError(result);
+	const result = await client.callTool(
+		'scan_domain',
+		{
+			domain,
+			format: 'full',
+			...(parsed.flags.has('--force-refresh') ? { force_refresh: true } : {}),
+		},
+		{ readOnly: true },
+	);
+	const errorExit = classifyToolError(result, deps.io, 'scan_domain');
 	if (errorExit !== undefined) return errorExit;
 	const structured = ScanResultSchema.safeParse(requireStructured(result, 'scan_domain'));
 	if (!structured.success) throw new McpClientError('scan_domain returned malformed structuredContent', 'protocol');
 	await emit(deps.io, parsed, await renderedOutput({ result, format, tool: 'scan_domain', client, now: deps.now ?? (() => new Date()) }));
 	const scanCode = scanExit(structured.data);
 	if (scanCode !== 0 || !baseline) return scanCode;
-	return (await callPolicy(client, domain, baseline)).exit;
+	return (await callPolicy(client, domain, baseline, deps.io)).exit;
 }
 
 async function runCheck(parsed: ParsedArgs, deps: CliDependencies): Promise<CliExitCode> {
@@ -277,17 +345,21 @@ async function runCheck(parsed: ParsedArgs, deps: CliDependencies): Promise<CliE
 	if (!tool || tool.annotations?.readOnlyHint !== true || tool.outputSchema === undefined) {
 		throw new CliUsageError(`${toolName} is not a public read-only CheckResult tool`);
 	}
-	const result = await client.callTool(toolName, {
-		domain,
-		format: 'full',
-		...(parsed.flags.has('--force-refresh') ? { force_refresh: true } : {}),
-	});
-	const errorExit = classifyToolError(result);
+	const result = await client.callTool(
+		toolName,
+		{
+			domain,
+			format: 'full',
+			...(parsed.flags.has('--force-refresh') ? { force_refresh: true } : {}),
+		},
+		{ readOnly: true },
+	);
+	const errorExit = classifyToolError(result, deps.io, toolName);
 	if (errorExit !== undefined) return errorExit;
 	const structured = CheckResultSchema.safeParse(requireStructured(result, toolName));
 	if (!structured.success) throw new McpClientError(`${toolName} returned malformed CheckResult structuredContent`, 'protocol');
 	await emit(deps.io, parsed, await renderedOutput({ result, format, tool: toolName, client, now: deps.now ?? (() => new Date()) }));
-	return structured.data.partial ? 4 : 0;
+	return hasIncompleteCheckEvidence(structured.data) ? 4 : 0;
 }
 
 async function readDomains(io: CliIo, path: string): Promise<string[]> {
@@ -315,12 +387,16 @@ async function runBatch(parsed: ParsedArgs, deps: CliDependencies): Promise<CliE
 	const domains = await readDomains(deps.io, file);
 	const baseline = await loadPolicy(parsed, deps.io);
 	const client = await connectedClient(deps);
-	const result = await client.callTool('batch_scan', {
-		domains,
-		format: 'full',
-		...(parsed.flags.has('--force-refresh') ? { force_refresh: true } : {}),
-	});
-	const errorExit = classifyToolError(result);
+	const result = await client.callTool(
+		'batch_scan',
+		{
+			domains,
+			format: 'full',
+			...(parsed.flags.has('--force-refresh') ? { force_refresh: true } : {}),
+		},
+		{ readOnly: true },
+	);
+	const errorExit = classifyToolError(result, deps.io, 'batch_scan');
 	if (errorExit !== undefined) return errorExit;
 	const structured = BatchResultSchema.safeParse(requireStructured(result, 'batch_scan'));
 	if (!structured.success) throw new McpClientError('batch_scan returned malformed structuredContent', 'protocol');
@@ -330,7 +406,7 @@ async function runBatch(parsed: ParsedArgs, deps: CliDependencies): Promise<CliE
 	if (baseline) {
 		for (const scan of structured.data.results) {
 			if (scanExit(scan) !== 0) continue;
-			codes.push((await callPolicy(client, scan.domain, baseline)).exit);
+			codes.push((await callPolicy(client, scan.domain, baseline, deps.io)).exit);
 		}
 	}
 	return combineBatchExitCodes(codes);
@@ -343,7 +419,7 @@ async function runPolicy(parsed: ParsedArgs, deps: CliDependencies): Promise<Cli
 	if (!baseline) throw new CliUsageError('Policy requires --policy or --fail-below');
 	const format = outputFormat(parsed);
 	const client = await connectedClient(deps);
-	const evaluated = await callPolicy(client, domain, baseline);
+	const evaluated = await callPolicy(client, domain, baseline, deps.io);
 	if (evaluated.exit === 2 || evaluated.exit === 3) return evaluated.exit;
 	await emit(
 		deps.io,
@@ -368,12 +444,16 @@ async function runDriftSave(parsed: ParsedArgs, deps: CliDependencies): Promise<
 	const domain = requiredSinglePosition(parsed, 'domain');
 	if (!parsed.values.get('--out')) throw new CliUsageError('drift save requires --out');
 	const client = await connectedClient(deps);
-	const result = await client.callTool('scan_domain', {
-		domain,
-		format: 'full',
-		...(parsed.flags.has('--force-refresh') ? { force_refresh: true } : {}),
-	});
-	const errorExit = classifyToolError(result);
+	const result = await client.callTool(
+		'scan_domain',
+		{
+			domain,
+			format: 'full',
+			...(parsed.flags.has('--force-refresh') ? { force_refresh: true } : {}),
+		},
+		{ readOnly: true },
+	);
+	const errorExit = classifyToolError(result, deps.io, 'scan_domain');
 	if (errorExit !== undefined) return errorExit;
 	const structured = ScanResultSchema.safeParse(requireStructured(result, 'scan_domain'));
 	if (!structured.success) throw new McpClientError('scan_domain returned malformed structuredContent', 'protocol');
@@ -411,8 +491,8 @@ async function runDriftCompare(parsed: ParsedArgs, deps: CliDependencies): Promi
 	const baseline = driftBaselineFromScan(scan.data);
 	const format = outputFormat(parsed);
 	const client = await connectedClient(deps);
-	const result = await client.callTool('analyze_drift', { domain, baseline: JSON.stringify(baseline), format: 'full' });
-	const errorExit = classifyToolError(result);
+	const result = await client.callTool('analyze_drift', { domain, baseline: JSON.stringify(baseline), format: 'full' }, { readOnly: true });
+	const errorExit = classifyToolError(result, deps.io, 'analyze_drift');
 	if (errorExit !== undefined) return errorExit;
 	const structured = DriftResultSchema.safeParse(requireStructured(result, 'analyze_drift'));
 	if (!structured.success) throw new McpClientError('analyze_drift returned malformed structuredContent', 'protocol');
@@ -454,47 +534,51 @@ export async function runCli(argv: string[], deps: CliDependencies): Promise<Cli
 	}
 
 	try {
+		const commandDeps: CliDependencies = {
+			...deps,
+			deadlineAt: deps.deadlineAt ?? (deps.nowMs ?? Date.now)() + 45_000,
+		};
 		const [command, ...rest] = argv;
 		const parsed = parseArgs(rest);
 		switch (command) {
 			case 'scan':
-				return await runScan(parsed, deps);
+				return await runScan(parsed, commandDeps);
 			case 'check':
-				return await runCheck(parsed, deps);
+				return await runCheck(parsed, commandDeps);
 			case 'batch':
-				return await runBatch(parsed, deps);
+				return await runBatch(parsed, commandDeps);
 			case 'policy':
-				return await runPolicy(parsed, deps);
+				return await runPolicy(parsed, commandDeps);
 			case 'drift': {
 				const [subcommand, ...subcommandArgs] = rest;
 				if (!subcommand) throw new CliUsageError('drift requires save or compare');
 				const driftParsed = parseArgs(subcommandArgs);
-				if (subcommand === 'save') return await runDriftSave(driftParsed, deps);
-				if (subcommand === 'compare') return await runDriftCompare(driftParsed, deps);
+				if (subcommand === 'save') return await runDriftSave(driftParsed, commandDeps);
+				if (subcommand === 'compare') return await runDriftCompare(driftParsed, commandDeps);
 				throw new CliUsageError('drift requires save or compare');
 			}
 			case 'evidence': {
 				const [subcommand, ...subcommandArgs] = rest;
 				if (subcommand !== 'verify') throw new CliUsageError('evidence requires verify');
-				return await runEvidenceVerify(parseArgs(subcommandArgs), deps);
+				return await runEvidenceVerify(parseArgs(subcommandArgs), commandDeps);
 			}
 			default:
 				throw new CliUsageError(`Unknown command ${command}`);
 		}
 	} catch (error) {
 		if (error instanceof CliVerificationError) {
-			deps.io.stderr(`${error.message}\n`);
+			deps.io.stderr(`${sanitizeDiagnostic(error.message)}\n`);
 			return 1;
 		}
 		if (error instanceof CliUsageError) {
-			deps.io.stderr(`${error.message}\nRun blackveil --help for usage.\n`);
+			deps.io.stderr(`${sanitizeDiagnostic(error.message)}\nRun blackveil --help for usage.\n`);
 			return 2;
 		}
 		if (error instanceof McpClientError) {
-			deps.io.stderr(`${error.message}\n`);
+			deps.io.stderr(`${sanitizeDiagnostic(error.message)}\n`);
 			return 3;
 		}
-		deps.io.stderr(`${error instanceof Error ? error.message : 'Unexpected CLI failure'}\n`);
+		deps.io.stderr(`${sanitizeDiagnostic(error instanceof Error ? error.message : 'Unexpected CLI failure')}\n`);
 		return 3;
 	}
 }
