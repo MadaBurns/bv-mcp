@@ -21,6 +21,7 @@ export const NODE_POOL_AUDIT_TESTS = [
 	'test/audits/brand-audit-schema-preflight.node.test.ts',
 	'test/audits/brand-report-qa-script.node.test.ts',
 	'test/audits/brand-report-quality-audit-script.node.test.ts',
+	'test/audits/cli-pack-smoke.node.test.ts',
 	'test/audits/dependency-license.audit.test.ts',
 	'test/audits/license-headers.audit.test.ts',
 	'test/audits/pretooluse-hook-scope.node.test.ts',
