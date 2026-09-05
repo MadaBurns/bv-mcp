@@ -86,22 +86,13 @@ describe('checkDMARC', () => {
 		expect(result.findings.some((f) => f.title === 'Third-party aggregate reporting not authorized')).toBe(true);
 	});
 
-	// The RUA-authorization finding lands verbatim on the PUBLIC security-report page and
-	// names a real third party (the rua host). Two claim defects were measured 2026-09-04
-	// against meta.com -> dmarc.facebookmail.com (a TRUE finding: NXDOMAIN on 1.1.1.1 /
-	// 8.8.8.8 / 9.9.9.9, no wildcard, while Meta's ruf vendor datafeeds.phishlabs.com IS
-	// authorized — so the record construction is provably right):
-	//   1. "will be silently discarded" asserts a definite delivery outcome we cannot
-	//      observe. Receiver enforcement of external destination verification is uneven,
-	//      so the honest modal is "may be discarded by receivers that enforce" it.
-	//   2. RFC 7489 was obsoleted May 2026 by RFC 9989/9990/9991; external destination
-	//      verification now lives in RFC 9990 §4.
-	// The finding also carries confidence:'deterministic', which is only defensible for
-	// the DNS fact (the record is absent) — never for the downstream consequence.
+	// Authorization lookup establishes a DNS fact, not a report-delivery outcome.
+	// Keep the public consequence conditional, cite RFC 9990 §4, and retain the
+	// exact record the destination needs to publish. All evidence here is synthetic.
 	it('states the RUA-authorization consequence as evidence-bounded, citing the current RFC', async () => {
 		const queryDNS = createMockDNS({
-			'_dmarc.example.com': ['v=DMARC1; p=reject; rua=mailto:dmarc@otherbrand.com'],
-			'example.com._report._dmarc.otherbrand.com': [], // missing auth
+			'_dmarc.example.com': ['v=DMARC1; p=reject; rua=mailto:dmarc@reports.example.net'],
+			'example.com._report._dmarc.reports.example.net': [], // missing auth
 		});
 		const result = await checkDMARC('example.com', queryDNS);
 		const finding = result.findings.find((f) => f.title === 'Third-party aggregate reporting not authorized');
@@ -115,7 +106,7 @@ describe('checkDMARC', () => {
 		expect(finding!.detail).toMatch(/RFC 9990/);
 
 		// The actionable part must survive the rewording: name the exact record to publish.
-		expect(finding!.detail).toContain('example.com._report._dmarc.otherbrand.com');
+		expect(finding!.detail).toContain('example.com._report._dmarc.reports.example.net');
 		expect(finding!.detail).toContain('v=DMARC1');
 	});
 
