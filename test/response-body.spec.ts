@@ -126,6 +126,48 @@ describe('readBoundedOrNull', () => {
 	});
 });
 
+describe('readTextResponseCappedDetailed', () => {
+	it('reports the bytes consumed when a chunked response overflows', async () => {
+		const { readTextResponseCappedDetailed } = await import('../src/lib/response-body');
+		const cancelled = vi.fn();
+		const response = new Response(
+			streamFrom([new TextEncoder().encode('1234'), new TextEncoder().encode('5678'), new TextEncoder().encode('unread')], cancelled),
+		);
+
+		await expect(readTextResponseCappedDetailed(response, 6)).resolves.toEqual({
+			text: null,
+			bytesRead: 8,
+			overflowed: true,
+			errored: false,
+		});
+		expect(cancelled).toHaveBeenCalledOnce();
+	});
+
+	it('returns an error stamp instead of throwing for a locked response body', async () => {
+		const { readTextResponseCappedDetailed } = await import('../src/lib/response-body');
+		const response = new Response('locked');
+		const lock = response.body!.getReader();
+		await expect(readTextResponseCappedDetailed(response, 32)).resolves.toEqual({
+			text: null,
+			bytesRead: 0,
+			overflowed: false,
+			errored: true,
+		});
+		lock.releaseLock();
+	});
+
+	it('returns an error stamp instead of throwing when a response stream rejects', async () => {
+		const { readTextResponseCappedDetailed } = await import('../src/lib/response-body');
+		const response = new Response(rejectingStream());
+		await expect(readTextResponseCappedDetailed(response, 32)).resolves.toEqual({
+			text: null,
+			bytesRead: 0,
+			overflowed: false,
+			errored: true,
+		});
+	});
+});
+
 describe('readJsonResponseCapped', () => {
 	it('parses JSON below the cap', async () => {
 		const { readJsonResponseCapped } = await import('../src/lib/response-body');

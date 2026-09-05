@@ -4,7 +4,8 @@
 	"license": "BUSL-1.1",
 	"type": "module",
 	"bin": {
-		"blackveil-dns-mcp": "dist/stdio.js"
+		"blackveil-dns-mcp": "dist/stdio.js",
+		"blackveil": "dist/cli.js"
 	},
 	"files": [
 		"dist",
