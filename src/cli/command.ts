@@ -488,6 +488,11 @@ async function runDriftCompare(parsed: ParsedArgs, deps: CliDependencies): Promi
 	const scan = ScanResultSchema.safeParse(evidence.result);
 	if (!scan.success) throw new CliUsageError('Drift baseline does not contain a valid scan result');
 	if (scan.data.domain !== domain) throw new CliUsageError('Drift baseline domain does not match the requested domain');
+	// Check completeness before the baseline projection discards measurement status.
+	if (scanExit(scan.data) !== 0) {
+		deps.io.stderr('Drift baseline contains incomplete scan evidence. Save a complete scan before comparing drift.\n');
+		return 4;
+	}
 	const baseline = driftBaselineFromScan(scan.data);
 	const format = outputFormat(parsed);
 	const client = await connectedClient(deps);

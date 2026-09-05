@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { combineBatchExitCodes, runCli, type CliIo } from '../src/cli/command';
+import { createEvidenceSnapshot } from '../src/cli/evidence';
 
 const timestamp = '2026-09-05T00:00:00.000Z';
 
@@ -66,6 +67,19 @@ function harness(files: Record<string, string> = {}, toolResults: unknown[] = []
 
 function toolResult(structuredContent: Record<string, unknown>, text = 'ok') {
 	return { content: [{ type: 'text', text }], structuredContent };
+}
+
+async function baselineEvidence(overrides: Record<string, unknown> = {}): Promise<string> {
+	return JSON.stringify(
+		await createEvidenceSnapshot({
+			capturedAt: timestamp,
+			serverName: 'synthetic-server',
+			serverVersion: '1',
+			endpointOrigin: 'https://example.test',
+			tool: 'scan_domain',
+			result: scan('example.com', overrides),
+		}),
+	);
 }
 
 describe('blackveil CLI', () => {
@@ -159,6 +173,49 @@ describe('blackveil CLI', () => {
 		expect(await runCli(['scan', 'example.com'], h)).toBe(3);
 		expect(h.stderr.join('')).toBe('scan_domain: denied\nretry\n');
 		expect(h.stdout).toHaveLength(0);
+	});
+
+	it.each([
+		{ checkStatuses: { dnssec: 'timeout' }, categoryScores: { dnssec: null } },
+		{ checkStatuses: { dnssec: 'error' }, categoryScores: { dnssec: null } },
+		{ inconclusiveCategories: ['dnssec'] },
+		{ evidenceInsufficient: true },
+		{ measured: false },
+		{ error: 'batch_budget_exceeded' },
+		{ score: null, grade: null, passed: null, measured: false },
+	])('rejects an incomplete drift baseline before contacting the server: %j', async (overrides) => {
+		const drift = { domain: 'example.com', classification: 'stable', scoreDelta: 0, gradeChange: { from: 'A', to: 'A' }, timestamp };
+		const h = harness({ baseline: await baselineEvidence(overrides) }, [toolResult(drift)]);
+		expect(await runCli(['drift', 'compare', 'example.com', '--baseline', 'baseline'], h)).toBe(4);
+		expect(h.calls).toHaveLength(0);
+		expect(h.stdout).toHaveLength(0);
+		expect(h.stderr.join('')).toContain('Drift baseline contains incomplete scan evidence');
+	});
+
+	it.each([
+		{ score: 92, grade: 'A', passed: true },
+		{ score: 30, grade: 'F', passed: false },
+	])('compares a complete baseline even when its security verdict fails: %j', async (overrides) => {
+		const drift = {
+			domain: 'example.com',
+			classification: 'stable',
+			scoreDelta: 0,
+			gradeChange: { from: overrides.grade, to: overrides.grade },
+			timestamp,
+		};
+		const h = harness({ baseline: await baselineEvidence(overrides) }, [toolResult(drift)]);
+		expect(await runCli(['drift', 'compare', 'example.com', '--baseline', 'baseline', '--format', 'json'], h)).toBe(0);
+		expect(h.calls.at(-1)).toMatchObject({
+			method: 'tools/call',
+			params: {
+				name: 'analyze_drift',
+				arguments: {
+					domain: 'example.com',
+					baseline: JSON.stringify({ overall: overrides.score, grade: overrides.grade, categoryScores: { dnssec: 100 }, findings: [] }),
+				},
+			},
+		});
+		expect(JSON.parse(h.stdout.join(''))).toMatchObject(drift);
 	});
 
 	it('returns integrity failure before drift makes a remote request', async () => {
