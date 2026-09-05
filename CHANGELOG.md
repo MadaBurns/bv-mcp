@@ -4,9 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.76.0] - 2026-09-05
+
+- TODO: fill in release notes.
+
 ## [Unreleased]
 
-- Registry entry: add `title` and `websiteUrl` to `server.json` (metadata only; no version bump).
+## [3.76.0] - 2026-09-05
+
+### Added
+
+- Add the `blackveil` hosted-MCP CLI for scan, check, batch, policy, drift, and evidence verification, while preserving the `blackveil-dns-mcp` executable. Requests have command-wide deadlines, bounded responses, and exact JSON-RPC response correlation.
+- Add versioned SHA-256 evidence snapshots for integrity verification. A matching digest verifies content integrity, not authenticity.
+
+### Fixed
+
+- Reject incomplete drift baselines with exit code `4` before contacting the server, preventing missing measurements from becoming misleading drift comparisons. Complete baselines remain usable when their measured security verdict fails.
+- Describe missing external DMARC aggregate-report authorization as a conditional delivery risk and cite RFC 9990 section 4. Detection and scoring are unchanged.
+
+### Changed
+
+- Add the registry entry title and website URL.
+- Update reviewed runtime and development dependencies, including Hono, Zod, tldts, Wrangler, and CodeQL.
+
+The CSP and SMTP STARTTLS prototypes remain unregistered, unscored, unexported, and unavailable through the CLI. Scoring model 1.23.0 and dns-checks 1.35.0 are unchanged.
 
 ## [3.75.1] - 2026-09-04
 
