@@ -87,8 +87,15 @@ export function detectThirdPartyAggregators(uris: string[]): string[] {
 }
 
 /**
- * Check cross-domain RUA authorization per RFC 7489 §7.1.
+ * Check cross-domain RUA authorization per RFC 9990 §4 ("Verifying External
+ * Destinations"), which obsoleted RFC 7489 §7.1 in May 2026.
  * When rua= points to a third-party domain, verify authorization TXT records.
+ *
+ * The finding this emits is rendered verbatim on the PUBLIC security-report page and
+ * names a real third party, so its wording is evidence-bounded on purpose: the DNS
+ * fact (the authorization record is absent) is deterministic and ours to assert, but
+ * whether reports are actually dropped depends on each receiver's enforcement of
+ * external destination verification — which we cannot observe. Say "may", not "will".
  */
 export async function checkRuaAuthorization(
 	domain: string,
@@ -113,7 +120,7 @@ export async function checkRuaAuthorization(
 						'dmarc',
 						'Third-party aggregate reporting not authorized',
 						'medium',
-						`Aggregate reports sent to ${targetDomain} will be silently discarded. The authorization record ${domain}._report._dmarc.${targetDomain} must contain a TXT record with "v=DMARC1" (RFC 7489 §7.1).`,
+						`Aggregate reports sent to ${targetDomain} may be discarded by receivers that enforce external destination verification. The authorization record ${domain}._report._dmarc.${targetDomain} must contain a TXT record with "v=DMARC1" (RFC 9990 §4, which obsoletes RFC 7489 §7.1).`,
 					),
 				);
 			}
