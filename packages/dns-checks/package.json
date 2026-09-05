@@ -43,6 +43,6 @@
 	"homepage": "https://blackveilsecurity.com/dns",
 	"bugs": "https://github.com/MadaBurns/bv-mcp/issues",
 	"dependencies": {
-		"zod": "^4.4.3"
+		"zod": "^4.5.4"
 	}
 }
