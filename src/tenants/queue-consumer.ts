@@ -31,6 +31,7 @@ import { parseScoringConfigCached } from '../lib/scoring-config';
 import { parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from '../lib/config';
 import { ScanQueueMessageSchema, type ScanQueueMessage } from '../schemas/tenant-internal';
 import { streamScanResult } from '../lib/hooks/analytics-stream';
+import { synchronizeCycleProgress } from './cycle-progress';
 import { resolveTenant, type ResolverEnv, type TenantDbHandle } from './tenant-resolver';
 import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
 import { parseTenantScanSnapshot, toTenantScanSnapshot, type TenantScanSnapshot } from './scan-snapshot';
@@ -123,32 +124,6 @@ export type ScanQueueConsumerEnv = ResolverEnv & {
 	BV_DOH_TOKEN?: string;
 };
 
-/**
- * Phase 3 cycle-progress hook. After persistScan succeeds (or after a DLQ row
- * is written) we increment tenant_cycles.completed_total so the alert sweep can
- * tell when a cycle has settled.
- *
- * Fail-soft: 0 rows affected when there's no matching tenant_cycles entry (e.g.
- * the cycle was driven by /internal/tenants/scan rather than the weekly rescan).
- * Registry D1 errors are swallowed — the scan itself already landed in the
- * tenant DB so we MUST NOT cause a queue retry on a registry hiccup.
- */
-const INCREMENT_COMPLETED_SQL =
-	'UPDATE tenant_cycles SET completed_total = completed_total + 1 WHERE id = ?';
-
-async function incrementCompletedTotalIfTracked(
-	env: ScanQueueConsumerEnv,
-	cycleId: string,
-): Promise<void> {
-	const registry = env.TENANT_REGISTRY_DB;
-	if (!registry) return;
-	try {
-		await registry.prepare(INCREMENT_COMPLETED_SQL).bind(cycleId).run();
-	} catch {
-		// Registry write failed — ignored intentionally.
-	}
-}
-
 /** Generate a per-row id (scans, findings). */
 function newRowId(): string {
 	return crypto.randomUUID();
@@ -181,19 +156,14 @@ async function writeDlqRow(
 	reason: string,
 ): Promise<void> {
 	const scanId = newRowId();
-	try {
-		await tenantDb
-			.prepare(SCANS_INSERT_SQL)
-			.bind(scanId, msg.domain, Date.now(), null, null, null, 1, JSON.stringify({ error: reason }), msg.cycle_id)
-			.run();
-		await tenantDb
-			.prepare(FINDINGS_INSERT_SQL)
-			.bind(newRowId(), scanId, msg.domain, 'queue', 'high', 'queue_dlq', reason, JSON.stringify({ source: 'queue_dlq', reason }))
-			.run();
-	} catch {
-		// If even the DLQ write fails, swallow — we've exhausted retries; better
-		// to drop than to wedge the queue.
-	}
+	await tenantDb
+		.prepare(SCANS_INSERT_SQL)
+		.bind(scanId, msg.domain, Date.now(), null, null, null, 1, JSON.stringify({ error: reason }), msg.cycle_id)
+		.run();
+	await tenantDb
+		.prepare(FINDINGS_INSERT_SQL)
+		.bind(newRowId(), scanId, msg.domain, 'queue', 'high', 'queue_dlq', reason, JSON.stringify({ source: 'queue_dlq', reason }))
+		.run();
 }
 
 /** Persist a successful scan + its findings to the per-tenant D1. */
@@ -239,15 +209,44 @@ async function repairPartialScanIfNeeded(tenantDb: TenantDbHandle, cycleId: stri
 	return 'repaired';
 }
 
+/** Registry writes are retryable even after the scan's attempt budget is spent. */
+async function finishMessage(env: ScanQueueConsumerEnv, tenantDb: TenantDbHandle, msg: ScanQueueMessage): Promise<'ack' | 'retry'> {
+	try {
+		await synchronizeCycleProgress(env.TENANT_REGISTRY_DB, tenantDb, msg.cycle_id);
+		return 'ack';
+	} catch {
+		return 'retry';
+	}
+}
+
+async function deadLetterMessage(
+	env: ScanQueueConsumerEnv,
+	tenantDb: TenantDbHandle,
+	msg: ScanQueueMessage,
+	reason: string,
+): Promise<'ack' | 'retry'> {
+	try {
+		// Persistence may have failed after creating a partial scan. Repair it
+		// before inserting the marker, while preserving a concurrently completed scan.
+		if ((await repairPartialScanIfNeeded(tenantDb, msg.cycle_id, msg.domain)) !== 'complete') {
+			await writeDlqRow(tenantDb, msg, reason);
+		}
+		return finishMessage(env, tenantDb, msg);
+	} catch {
+		// Never acknowledge work whose scan and DLQ marker both failed to persist.
+		return 'retry';
+	}
+}
+
 /**
  * Process one message. Returns:
  *   - `'ack'`     → caller should `message.ack()`
  *   - `'retry'`   → caller should rethrow to trigger Cloudflare retry
  *
- * Idempotency: a duplicate `(cycle_id, domain)` row short-circuits with `'ack'`.
+ * Idempotency: a completed `(cycle_id, domain)` repairs progress before acking.
  * DLQ: when `attempts >= MAX_ATTEMPTS`, writes a marker row and returns `'ack'`
- * so the queue drains. The cycle report will surface it via the high-severity
- * `queue_dlq` finding.
+ * after durable persistence and progress synchronization. The cycle report
+ * surfaces it via the high-severity `queue_dlq` finding.
  */
 export async function processScanMessage(
 	rawBody: unknown,
@@ -287,11 +286,13 @@ export async function processScanMessage(
 	// the expected findings are present; retry repairs the stale row first.
 	try {
 		const status = await repairPartialScanIfNeeded(tenantDb, parsed.cycle_id, parsed.domain);
-		if (status === 'complete') return 'ack';
+		if (status === 'complete') {
+			return finishMessage(env, tenantDb, parsed);
+		}
 	} catch {
 		// Probe/repair failed — retry rather than risk UNIQUE conflicts or silently
 		// accepting an incomplete scan.
-		return attempts >= MAX_ATTEMPTS ? 'ack' : 'retry';
+		return 'retry';
 	}
 
 	// On the LAST allowed attempt the budget can still time out — record a DLQ
@@ -375,9 +376,7 @@ export async function processScanMessage(
 			);
 			if (result.isError) {
 				if (isLastAttempt) {
-					await writeDlqRow(tenantDb, parsed, 'queue_dlq');
-					await incrementCompletedTotalIfTracked(env, parsed.cycle_id);
-					return 'ack';
+					return deadLetterMessage(env, tenantDb, parsed, 'queue_dlq');
 				}
 				return 'retry';
 			}
@@ -385,9 +384,7 @@ export async function processScanMessage(
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : 'queue_error';
 		if (isLastAttempt) {
-			await writeDlqRow(tenantDb, parsed, reason === 'queue_timeout' ? 'queue_timeout' : 'queue_dlq');
-			await incrementCompletedTotalIfTracked(env, parsed.cycle_id);
-			return 'ack';
+			return deadLetterMessage(env, tenantDb, parsed, reason === 'queue_timeout' ? 'queue_timeout' : 'queue_dlq');
 		}
 		return 'retry';
 	}
@@ -405,19 +402,14 @@ export async function processScanMessage(
 	} catch {
 		// Persistence failure is transient (D1 contention, throttling). Retry.
 		if (isLastAttempt) {
-			await writeDlqRow(tenantDb, parsed, 'persist_failed');
-			// Even DLQ counts toward completed_total — otherwise a cycle with N
-			// permanently-stuck domains never settles and the alert never fires.
-			await incrementCompletedTotalIfTracked(env, parsed.cycle_id);
-			return 'ack';
+			return deadLetterMessage(env, tenantDb, parsed, 'persist_failed');
 		}
 		return 'retry';
 	}
 
-	// Phase 3 cycle-progress hook. Fail-soft: a registry hiccup must NOT cause
-	// a redelivery, so this swallows its own errors.
-	await incrementCompletedTotalIfTracked(env, parsed.cycle_id);
-	return 'ack';
+	// Completion is durable only after registry synchronization. Redelivery can
+	// repair a failed registry write without scanning or counting the domain twice.
+	return finishMessage(env, tenantDb, parsed);
 }
 
 /**
