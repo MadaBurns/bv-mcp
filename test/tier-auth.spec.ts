@@ -308,8 +308,7 @@ describe('tier-auth KV cache validation', () => {
 		expect(bvWeb.fetch).not.toHaveBeenCalled();
 	});
 
-	it('keeps BV_API_KEY (customer-facing) IP-gated to partner when client IP is outside OWNER_ALLOW_IPS', async () => {
-		// Regression guard: dev-key bypass must NOT extend to BV_API_KEY.
+	it('keeps BV_API_KEY IP-gated to partner when client IP is outside OWNER_ALLOW_IPS', async () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
 
 		const kv = {
@@ -443,6 +442,83 @@ describe('tier-auth KV cache validation', () => {
 	});
 });
 
+describe('tier-auth configured static API key', () => {
+	function statefulKv() {
+		const entries = new Map<string, string>();
+		const kv = {
+			get: vi.fn(async (key: string) => entries.get(key) ?? null),
+			put: vi.fn(async (key: string, value: string) => {
+				entries.set(key, value);
+			}),
+			delete: vi.fn(async (key: string) => {
+				entries.delete(key);
+			}),
+		} as unknown as KVNamespace;
+		return { kv, entries };
+	}
+
+	it('authenticates consecutive requests without caching a remote rejection of the static key', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const { kv } = statefulKv();
+		const bvWeb = { fetch: vi.fn(async () => Response.json({ tier: null })) } as unknown as Fetcher;
+		const env = { BV_API_KEY: 'static-api-key', RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' };
+
+		const first = await resolveTier('static-api-key', env, '192.0.2.10', 'https://example.com/mcp');
+		const second = await resolveTier('static-api-key', env, '192.0.2.10', 'https://example.com/mcp');
+
+		expect(first).toMatchObject({ authenticated: true, tier: 'owner' });
+		expect(second).toEqual(first);
+		expect(first.keyHash).toMatch(/^[a-f0-9]{64}$/);
+		expect(first.credentialHash).toBe(first.keyHash);
+		expect(first.legacyOwnerId).toBe(first.keyHash?.slice(0, 16));
+		expect(bvWeb.fetch).not.toHaveBeenCalled();
+		expect(kv.put).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		['negative', { tier: 'free', revokedAt: 1 }],
+		['positive', { tier: 'developer', revokedAt: null }],
+	])('ignores a stale %s entitlement cache and rechecks the owner IP gate on every request', async (_label, cached) => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const token = 'static-api-key';
+		const keyHash = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token))))
+			.map((byte) => byte.toString(16).padStart(2, '0'))
+			.join('');
+		const { kv, entries } = statefulKv();
+		entries.set(`tier:${keyHash}`, JSON.stringify(cached));
+		const bvWeb = { fetch: vi.fn(async () => Response.json({ tier: null })) } as unknown as Fetcher;
+		const env = {
+			BV_API_KEY: token,
+			RATE_LIMIT: kv,
+			BV_WEB: bvWeb,
+			BV_WEB_INTERNAL_KEY: 'internal-key',
+			OWNER_ALLOW_IPS: '192.0.2.10',
+		};
+
+		for (const [clientIp, tier] of [
+			['192.0.2.10', 'owner'],
+			['198.51.100.20', 'partner'],
+			[undefined, 'partner'],
+			['192.0.2.10', 'owner'],
+		]) {
+			expect(await resolveTier(token, env, clientIp, 'https://example.com/mcp')).toMatchObject({ authenticated: true, tier, keyHash });
+		}
+		expect(bvWeb.fetch).not.toHaveBeenCalled();
+		expect(kv.get).not.toHaveBeenCalled();
+	});
+
+	it('continues to reject and negative-cache unrelated credentials with a static key configured', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const { kv } = statefulKv();
+		const bvWeb = { fetch: vi.fn(async () => Response.json({ tier: null })) } as unknown as Fetcher;
+		const env = { BV_API_KEY: 'static-api-key', RATE_LIMIT: kv, BV_WEB: bvWeb, BV_WEB_INTERNAL_KEY: 'internal-key' };
+
+		expect(await resolveTier('unrelated-api-key', env, '192.0.2.10', 'https://example.com/mcp')).toEqual({ authenticated: false });
+		expect(await resolveTier('unrelated-api-key', env, '192.0.2.10', 'https://example.com/mcp')).toEqual({ authenticated: false });
+		expect(bvWeb.fetch).toHaveBeenCalledOnce();
+	});
+});
+
 describe('tier-auth fail-closed entitlement validation', () => {
 	// ─── Successful validation only writes the bounded positive cache ───────────
 
@@ -534,7 +610,7 @@ describe('tier-auth fail-closed entitlement validation', () => {
 		expect(vi.mocked(kv.get).mock.calls.some(([key]) => String(key) === `tier:lkg:${keyHash}`)).toBe(false);
 	});
 
-	it('falls through to BV_API_KEY when bv-web throws and no LKG entry exists', async () => {
+	it('rejects an unmatched credential when bv-web throws and no LKG entry exists', async () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
 
 		const kv = {

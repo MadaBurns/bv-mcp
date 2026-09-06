@@ -41,6 +41,12 @@ const SCAN_COMPLETION_PROBE_SQL =
 	'WHERE s.cycle_id = ? AND s.domain = ? ' +
 	'GROUP BY s.id, s.finding_count ' +
 	'LIMIT 1';
+const COMPLETED_SCANS_SQL = `
+	SELECT COUNT(*) AS completed_total FROM scans s
+	WHERE s.cycle_id = ?
+	  AND (SELECT COUNT(*) FROM findings f WHERE f.scan_id = s.id) >= COALESCE(s.finding_count, 0)
+`;
+const SYNC_COMPLETED_SQL = 'UPDATE tenant_cycles SET completed_total = MAX(completed_total, ?) WHERE id = ?';
 const SCANS_INSERT_SQL =
 	'INSERT INTO scans (id, domain, scan_at, score, grade, maturity_stage, finding_count, result_json, cycle_id) ' +
 	'VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)';
@@ -240,6 +246,37 @@ describe('processScanMessage', () => {
 		expect(handleToolsCallMock).not.toHaveBeenCalled();
 	});
 
+	it('retries a registry write failure after persistence, then repairs progress without rescanning or double counting', async () => {
+		const { processScanMessage, MAX_ATTEMPTS } = await import('../../src/tenants/queue-consumer');
+		const failures = new Set([SYNC_COMPLETED_SQL]);
+		const registry = makeMockD1({
+			throwOnSql: failures,
+			rowsBySql: {
+				'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1': [{ active: 1 }],
+				[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'x', active: 1 }],
+			},
+		});
+		const rows: Record<string, unknown[]> = { [COMPLETED_SCANS_SQL]: [{ completed_total: 1 }] };
+		const tenant = makeMockD1({ rowsBySql: rows });
+		const customEnv = { ...env, TENANT_REGISTRY_DB: registry.db, [TEST_TENANT_BINDING]: tenant.db };
+		handleToolsCallMock.mockImplementation(async (_call, _kv, options) => {
+			emitScanCapture(options, validMsg.domain, { score: 90, grade: 'A', findings: [] });
+			return { isError: false, content: [] };
+		});
+		expect(await processScanMessage(validMsg, 1, customEnv, makeCtx())).toBe('retry');
+		rows[SCAN_COMPLETION_PROBE_SQL] = [{ id: 'durable-scan', finding_count: 0, persisted_findings: 0 }];
+		// Even the final scan attempt cannot silently acknowledge lost progress.
+		expect(await processScanMessage(validMsg, MAX_ATTEMPTS, customEnv, makeCtx())).toBe('retry');
+		failures.clear();
+		expect(await processScanMessage(validMsg, MAX_ATTEMPTS, customEnv, makeCtx())).toBe('ack');
+		expect(await processScanMessage(validMsg, MAX_ATTEMPTS + 1, customEnv, makeCtx())).toBe('ack');
+		expect(handleToolsCallMock).toHaveBeenCalledTimes(1);
+		expect(tenant.calls.filter((c) => c.sql === SCANS_INSERT_SQL)).toHaveLength(1);
+		expect(registry.calls.filter((c) => c.sql === SYNC_COMPLETED_SQL).map((c) => c.binds)).toEqual(
+			Array.from({ length: 4 }, () => [1, validMsg.cycle_id]),
+		);
+	});
+
 	it('returns ack and drops a malformed message (Zod failure, no retry)', async () => {
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
 		const { customEnv, tenantCalls } = buildEnv();
@@ -345,6 +382,29 @@ describe('processScanMessage', () => {
 		expect(dlqScan.binds[4]).toBeNull();
 	});
 
+	it('retries failed DLQ progress without creating another marker or rerunning the failed scan', async () => {
+		const { processScanMessage, MAX_ATTEMPTS } = await import('../../src/tenants/queue-consumer');
+		const failures = new Set([SYNC_COMPLETED_SQL]);
+		const registry = makeMockD1({
+			throwOnSql: failures,
+			rowsBySql: {
+				'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1': [{ active: 1 }],
+				[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'x', active: 1 }],
+			},
+		});
+		const rows: Record<string, unknown[]> = { [COMPLETED_SCANS_SQL]: [{ completed_total: 1 }] };
+		const tenant = makeMockD1({ rowsBySql: rows });
+		const customEnv = { ...env, TENANT_REGISTRY_DB: registry.db, [TEST_TENANT_BINDING]: tenant.db };
+		handleToolsCallMock.mockResolvedValue({ isError: true, content: [] });
+		expect(await processScanMessage(validMsg, MAX_ATTEMPTS, customEnv, makeCtx())).toBe('retry');
+		rows[SCAN_COMPLETION_PROBE_SQL] = [{ id: 'durable-dlq', finding_count: 1, persisted_findings: 1 }];
+		failures.clear();
+		expect(await processScanMessage(validMsg, MAX_ATTEMPTS + 1, customEnv, makeCtx())).toBe('ack');
+		expect(handleToolsCallMock).toHaveBeenCalledTimes(1);
+		expect(tenant.calls.filter((c) => c.sql === SCANS_INSERT_SQL)).toHaveLength(1);
+		expect(tenant.calls.filter((c) => c.sql === FINDINGS_INSERT_SQL)).toHaveLength(1);
+	});
+
 	it('returns retry when handleToolsCall throws on a non-final attempt', async () => {
 		handleToolsCallMock.mockRejectedValue(new Error('upstream_500'));
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
@@ -354,7 +414,7 @@ describe('processScanMessage', () => {
 		expect(outcome).toBe('retry');
 	});
 
-	it('returns ack and writes DLQ persist_failed when D1 insert throws on the last attempt', async () => {
+	it('retries when both the scan and DLQ marker fail to persist on the last attempt', async () => {
 		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
 			emitScanCapture(runtimeOptions, 'example.com', { score: 90, grade: 'A' });
 			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
@@ -375,7 +435,7 @@ describe('processScanMessage', () => {
 		};
 
 		const outcome = await processScanMessage(validMsg, MAX_ATTEMPTS, customEnv, makeCtx());
-		expect(outcome).toBe('ack');
+		expect(outcome).toBe('retry');
 		expect(tenant.calls.filter((c) => c.sql === SCANS_INSERT_SQL).length).toBeGreaterThanOrEqual(1);
 	});
 

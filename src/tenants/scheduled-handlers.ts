@@ -22,6 +22,7 @@
  * sharing the same trigger). Errors are logged via `logError`.
  */
 
+import { synchronizeCycleProgress } from './cycle-progress';
 import { computeFingerprint, fingerprintsDiffer, type DnsQueryFn } from './dns-fingerprint';
 import {
 	computeCycleDiff,
@@ -71,9 +72,14 @@ const UPDATE_FINGERPRINT_SQL =
 	'UPDATE domains SET fingerprint = ?, fingerprint_at = ? WHERE domain = ?';
 const INSERT_CYCLE_SQL =
 	'INSERT INTO tenant_cycles (id, super_tenant_id, sub_tenant_id, started_at, expected_total, completed_total, errored_total, baseline_cycle_id) ' +
-	'VALUES (?, ?, ?, ?, ?, 0, 0, ?)';
+	'VALUES (?, ?, ?, ?, ?, 0, ?, ?)';
 const INCREMENT_ERRORED_SQL =
 	'UPDATE tenant_cycles SET errored_total = errored_total + ? WHERE id = ?';
+const UNSETTLED_CYCLES_SQL = `
+	SELECT id, sub_tenant_id FROM tenant_cycles
+	WHERE alert_sent_at IS NULL AND completed_total + errored_total < expected_total
+	ORDER BY started_at DESC LIMIT ?
+`;
 const FIND_BASELINE_CYCLE_SQL =
 	'SELECT id FROM tenant_cycles WHERE sub_tenant_id = ? AND alert_sent_at IS NOT NULL ORDER BY started_at DESC LIMIT 1';
 const PENDING_CYCLES_SQL = `
@@ -86,10 +92,36 @@ const PENDING_CYCLES_SQL = `
 `;
 const STAMP_ALERT_SQL =
 	'UPDATE tenant_cycles SET alert_sent_at = ?, alert_outcome = ? WHERE id = ?';
+// Preserve durable queue failure markers as operational alerts while excluding
+// unmeasured security findings from posture comparisons.
 const FINDINGS_FOR_CYCLE_SQL = `
 	SELECT f.domain, f.category, f.severity, f.title
 	FROM findings f
-	WHERE f.scan_id IN (SELECT id FROM scans WHERE cycle_id = ?)
+	WHERE f.scan_id IN (
+		SELECT s.id FROM scans s WHERE s.cycle_id = ?
+		AND (s.score IS NOT NULL OR (f.category = 'queue' AND f.title = 'queue_dlq'))
+		AND (SELECT COUNT(*) FROM findings measured WHERE measured.scan_id = s.id) >= COALESCE(s.finding_count, 0)
+	)
+`;
+
+// A cycle measures only selected domains. Find each measured domain's latest
+// complete, successful observation before this cycle, even when an intervening
+// partial cycle skipped that domain. Failed/partial rows never replace knowledge.
+const BASELINE_FINDINGS_SQL = `
+	SELECT f.domain, f.category, f.severity, f.title
+	FROM findings f
+	WHERE f.scan_id IN (
+		SELECT (
+			SELECT prior.id FROM scans prior
+			WHERE prior.domain = current.domain AND prior.scan_at < ?
+			  AND prior.cycle_id IS NOT current.cycle_id AND prior.score IS NOT NULL
+			  AND (SELECT COUNT(*) FROM findings pf WHERE pf.scan_id = prior.id) >= COALESCE(prior.finding_count, 0)
+			ORDER BY prior.scan_at DESC, prior.id DESC LIMIT 1
+		)
+		FROM scans current
+		WHERE current.cycle_id = ? AND current.score IS NOT NULL
+		  AND (SELECT COUNT(*) FROM findings cf WHERE cf.scan_id = current.id) >= COALESCE(current.finding_count, 0)
+	)
 `;
 
 interface ActiveTenantRow {
@@ -160,8 +192,8 @@ function toFindingRow(row: FindingRowDb): FindingRow {
  *      - now - last_scanned_at > 2 * interval → enqueue (stale-rescan bypass)
  *      - otherwise → update fingerprint_at and skip
  *   6. Insert one `tenant_cycles` row per sub-tenant with `expected_total`
- *      = enqueued domains. DNS-failed domains are recorded immediately as
- *      `errored_total` so the cycle can settle.
+ *      = selected domains + DNS errors, then publish the selected scans.
+ *      DNS errors initialize `errored_total` so the cycle can settle.
  *
  * Fail-soft: missing TENANT_REGISTRY_DB or BV_SCANNER_QUEUE → return early.
  * Per-domain or per-tenant errors are logged and the loop continues.
@@ -275,7 +307,7 @@ async function rescanTenant(
 	const cycleId = deps.newCycleId();
 	let queuedCount = 0;
 	let erroredCount = 0;
-	const queueErrors: string[] = [];
+	const selectedDomains: string[] = [];
 
 	for (const row of dueDomains) {
 		try {
@@ -285,49 +317,22 @@ async function rescanTenant(
 				continue;
 			}
 
-			const intervalMs =
-				(row.watch_interval_hours ?? DEFAULT_WATCH_INTERVAL_HOURS) * 3600 * 1000;
-			const stale =
-				row.last_scanned_at !== null &&
-				tNow - row.last_scanned_at > intervalMs * STALE_RESCAN_MULTIPLIER;
+			const intervalMs = (row.watch_interval_hours ?? DEFAULT_WATCH_INTERVAL_HOURS) * 3600 * 1000;
+			const stale = row.last_scanned_at !== null && tNow - row.last_scanned_at > intervalMs * STALE_RESCAN_MULTIPLIER;
 
-			const shouldEnqueue =
-				row.last_scanned_at === null ||
-				fingerprintsDiffer(fp.fingerprint, row.fingerprint) ||
-				stale;
+			const shouldEnqueue = row.last_scanned_at === null || fingerprintsDiffer(fp.fingerprint, row.fingerprint) || stale;
 
 			// Always refresh the cached fingerprint so silent drift is captured even
 			// when we skip the scan.
 			try {
-				await tenantDb
-					.prepare(UPDATE_FINGERPRINT_SQL)
-					.bind(fp.fingerprint, fp.capturedAt, row.domain)
-					.run();
+				await tenantDb.prepare(UPDATE_FINGERPRINT_SQL).bind(fp.fingerprint, fp.capturedAt, row.domain).run();
 			} catch {
 				// Best-effort cache refresh — don't surface as cycle error.
 			}
 
 			if (!shouldEnqueue) continue;
 
-			try {
-				await env.BV_SCANNER_QUEUE!.send(
-					{ cycle_id: cycleId, sub_tenant_id: tenant.id, domain: row.domain },
-					{ contentType: 'json' },
-				);
-				queuedCount += 1;
-			} catch (err) {
-				queueErrors.push(row.domain);
-				erroredCount += 1;
-				logError(err instanceof Error ? err : String(err), {
-					severity: 'warn',
-					category: 'tenant.scheduled',
-					details: {
-						message: 'tenant_weekly_rescan_queue_send_failed',
-						subTenantId: tenant.id,
-						cycleId,
-					},
-				});
-			}
+			selectedDomains.push(row.domain);
 		} catch (err) {
 			erroredCount += 1;
 			logError(err instanceof Error ? err : String(err), {
@@ -342,15 +347,12 @@ async function rescanTenant(
 		}
 	}
 
-	const expectedTotal = queuedCount + erroredCount;
+	const expectedTotal = selectedDomains.length + erroredCount;
 	if (expectedTotal === 0) return;
 
 	let baselineCycleId: string | null = null;
 	try {
-		const baselineRow = await env
-			.TENANT_REGISTRY_DB!.prepare(FIND_BASELINE_CYCLE_SQL)
-			.bind(tenant.id)
-			.first<{ id: string }>();
+		const baselineRow = await env.TENANT_REGISTRY_DB!.prepare(FIND_BASELINE_CYCLE_SQL).bind(tenant.id).first<{ id: string }>();
 		baselineCycleId = baselineRow?.id ?? null;
 	} catch {
 		// Baseline lookup is best-effort — alert sweep falls back to
@@ -358,8 +360,9 @@ async function rescanTenant(
 	}
 
 	try {
-		await env.TENANT_REGISTRY_DB!.prepare(INSERT_CYCLE_SQL)
-			.bind(cycleId, tenant.super_tenant_id, tenant.id, tNow, expectedTotal, baselineCycleId)
+		await env
+			.TENANT_REGISTRY_DB!.prepare(INSERT_CYCLE_SQL)
+			.bind(cycleId, tenant.super_tenant_id, tenant.id, tNow, expectedTotal, erroredCount, baselineCycleId)
 			.run();
 	} catch (err) {
 		logError(err instanceof Error ? err : String(err), {
@@ -374,14 +377,25 @@ async function rescanTenant(
 		return;
 	}
 
-	if (erroredCount > 0) {
+	// The complete expected count and fingerprint errors must exist before any
+	// consumer can run. A failed insert above publishes no work.
+	let sendErrors = 0;
+	for (const domain of selectedDomains) {
 		try {
-			await env.TENANT_REGISTRY_DB!.prepare(INCREMENT_ERRORED_SQL)
-				.bind(erroredCount, cycleId)
-				.run();
-		} catch {
-			// Log only; the cycle is still tracked, just with errored_total stuck at 0.
+			await env.BV_SCANNER_QUEUE!.send({ cycle_id: cycleId, sub_tenant_id: tenant.id, domain }, { contentType: 'json' });
+			queuedCount += 1;
+		} catch (err) {
+			sendErrors += 1;
+			logError(err instanceof Error ? err : String(err), {
+				severity: 'warn',
+				category: 'tenant.scheduled',
+				details: { message: 'tenant_weekly_rescan_queue_send_failed', subTenantId: tenant.id, cycleId },
+			});
 		}
+	}
+	if (sendErrors > 0) {
+		await env.TENANT_REGISTRY_DB!.prepare(INCREMENT_ERRORED_SQL).bind(sendErrors, cycleId).run();
+		erroredCount += sendErrors;
 	}
 
 	logEvent({
@@ -404,7 +418,8 @@ async function rescanTenant(
  *
  * For each settled cycle without an alert:
  *   1. Pull current findings (`scan_id IN (SELECT id FROM scans WHERE cycle_id = ?)`)
- *   2. Pull baseline findings if `baseline_cycle_id` is set.
+ *   2. Pull each measured domain's latest successful prior findings when a
+ *      baseline exists; skipped and failed domains retain their prior knowledge.
  *   3. `computeCycleDiff` produces a `TenantCycleAlert` payload.
  *   4. If totals.deltas === 0 → mark `'no_diff'`, no webhook call.
  *   5. Else `sendTenantAlert(payload, env)`. On `delivered: false` mark
@@ -428,6 +443,32 @@ export async function handleTenantCycleAlerts(
 
 	const now = options.now ?? (() => Date.now());
 	const send = options.sendAlert ?? sendTenantAlert;
+
+	// Recover completion writes lost during a registry outage, including when the
+	// queue exhausted delivery retries after the tenant scan was already durable.
+	try {
+		const unsettled = await env.TENANT_REGISTRY_DB.prepare(UNSETTLED_CYCLES_SQL)
+			.bind(MAX_CYCLES_PER_ALERT_TICK)
+			.all<{ id: string; sub_tenant_id: string }>();
+		for (const cycle of unsettled.results ?? []) {
+			try {
+				const { db } = await resolveTenantUncached(env, cycle.sub_tenant_id);
+				await synchronizeCycleProgress(env.TENANT_REGISTRY_DB, db, cycle.id);
+			} catch (err) {
+				logError(err instanceof Error ? err : String(err), {
+					severity: 'warn',
+					category: 'tenant.scheduled',
+					details: { message: 'tenant_cycle_reconcile_failed', cycleId: cycle.id },
+				});
+			}
+		}
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'tenant.scheduled',
+			details: { message: 'tenant_cycle_reconcile_query_failed' },
+		});
+	}
 
 	let pending: PendingCycleRow[];
 	try {
@@ -522,7 +563,7 @@ async function processCycleAlert(
 	try {
 		const [curr, base] = await Promise.all([
 			tenantDb.prepare(FINDINGS_FOR_CYCLE_SQL).bind(cycle.id).all<FindingRowDb>(),
-			tenantDb.prepare(FINDINGS_FOR_CYCLE_SQL).bind(cycle.baseline_cycle_id).all<FindingRowDb>(),
+			tenantDb.prepare(BASELINE_FINDINGS_SQL).bind(cycle.started_at, cycle.id).all<FindingRowDb>(),
 		]);
 		currentFindings = (curr.results ?? []).map(toFindingRow);
 		baselineFindings = (base.results ?? []).map(toFindingRow);
@@ -535,8 +576,7 @@ async function processCycleAlert(
 				cycleId: cycle.id,
 			},
 		});
-		// Mark as webhook_failed-equivalent so we don't loop on a permanently-broken cycle.
-		await stamp('findings_query_failed');
+		// Leave the cycle retryable: a transient read must not permanently lose its alert.
 		return;
 	}
 

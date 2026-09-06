@@ -18,10 +18,12 @@ import {
  * unit-testable.
  *
  * Key behaviours:
- *   - Findings are grouped by (domain, category). Within a group, an entry that
- *     exists in both arrays at different severity counts as `severity_changed`;
- *     an entry that exists only in current is `gained`; only in baseline is
- *     `lost`.
+ *   - Findings are matched by (domain, category, title), preserving duplicate
+ *     occurrence counts. Equal-severity occurrences match first; remaining
+ *     occurrences pair by severity descending as `severity_changed`, with
+ *     unmatched current/baseline occurrences counted as `gained`/`lost`.
+ *     Persisted rows have no stable cross-scan finding code, so a title change
+ *     is a loss plus a gain, not a severity transition.
  *   - `highlights` is a top-N list ordered by severity desc then by domain for
  *     stability, capped at MAX_HIGHLIGHTS = 20 (the schema also enforces this).
  *   - `totals.by_severity` counts each individual delta (not just highlights)
@@ -63,7 +65,7 @@ const SEVERITY_RANK: Record<TenantSeverity, number> = {
 const MAX_HIGHLIGHTS = 20;
 
 function findingKey(row: FindingRow): string {
-	return `${row.domain}\x00${row.category}`;
+	return JSON.stringify([row.domain, row.category, row.title]);
 }
 
 function emptySeverityCounts(): Record<TenantSeverity, number> {
@@ -79,48 +81,48 @@ interface DiffEntry {
 	title: string;
 }
 
+function groupFindings(rows: FindingRow[]): Map<string, { row: FindingRow; counts: Record<TenantSeverity, number> }> {
+	const groups = new Map<string, { row: FindingRow; counts: Record<TenantSeverity, number> }>();
+	for (const row of rows) {
+		const key = findingKey(row);
+		let group = groups.get(key);
+		if (!group) {
+			group = { row, counts: emptySeverityCounts() };
+			groups.set(key, group);
+		}
+		group.counts[row.severity] += 1;
+	}
+	return groups;
+}
+
 function buildDiffEntries(current: FindingRow[], baseline: FindingRow[]): DiffEntry[] {
-	const baselineMap = new Map<string, FindingRow>();
-	for (const row of baseline) baselineMap.set(findingKey(row), row);
-
+	const currentGroups = groupFindings(current);
+	const baselineGroups = groupFindings(baseline);
 	const entries: DiffEntry[] = [];
-	const currentSeen = new Set<string>();
-
-	for (const cur of current) {
-		const key = findingKey(cur);
-		currentSeen.add(key);
-		const prev = baselineMap.get(key);
-		if (!prev) {
+	for (const key of new Set([...currentGroups.keys(), ...baselineGroups.keys()])) {
+		const cur = currentGroups.get(key);
+		const prev = baselineGroups.get(key);
+		const row = (cur ?? prev)!.row;
+		const gained: TenantSeverity[] = [];
+		const lost: TenantSeverity[] = [];
+		for (const severity of TENANT_SEVERITY_LEVELS) {
+			const difference = (cur?.counts[severity] ?? 0) - (prev?.counts[severity] ?? 0);
+			for (let i = 0; i < Math.abs(difference); i++) {
+				(difference > 0 ? gained : lost).push(severity);
+			}
+		}
+		for (let i = 0; i < Math.max(gained.length, lost.length); i++) {
+			const severity = gained[i];
+			const previousSeverity = lost[i];
 			entries.push({
-				domain: cur.domain,
-				category: cur.category,
-				delta: 'gained',
-				severity: cur.severity,
-				title: cur.title,
-			});
-		} else if (prev.severity !== cur.severity) {
-			entries.push({
-				domain: cur.domain,
-				category: cur.category,
-				delta: 'severity_changed',
-				severity: cur.severity,
-				previousSeverity: prev.severity,
-				title: cur.title,
+				domain: row.domain,
+				category: row.category,
+				title: row.title,
+				delta: severity === undefined ? 'lost' : previousSeverity === undefined ? 'gained' : 'severity_changed',
+				severity: severity ?? previousSeverity,
+				...(severity !== undefined && previousSeverity !== undefined ? { previousSeverity } : {}),
 			});
 		}
-		// same severity → not a delta
-	}
-
-	for (const prev of baseline) {
-		const key = findingKey(prev);
-		if (currentSeen.has(key)) continue;
-		entries.push({
-			domain: prev.domain,
-			category: prev.category,
-			delta: 'lost',
-			severity: prev.severity,
-			title: prev.title,
-		});
 	}
 
 	return entries;
@@ -132,7 +134,8 @@ function compareEntries(a: DiffEntry, b: DiffEntry): number {
 	if (a.domain !== b.domain) return a.domain < b.domain ? -1 : 1;
 	if (a.category !== b.category) return a.category < b.category ? -1 : 1;
 	if (a.delta !== b.delta) return a.delta < b.delta ? -1 : 1;
-	return 0;
+	if (a.title !== b.title) return a.title < b.title ? -1 : 1;
+	return (b.previousSeverity ? SEVERITY_RANK[b.previousSeverity] : 0) - (a.previousSeverity ? SEVERITY_RANK[a.previousSeverity] : 0);
 }
 
 function toFindingDelta(entry: DiffEntry, opts: ComputeCycleDiffOptions): TenantFindingDelta {
@@ -157,11 +160,7 @@ function toFindingDelta(entry: DiffEntry, opts: ComputeCycleDiffOptions): Tenant
  * Pure function — throws only if the resulting payload fails schema validation
  * (defensive, indicates a producer bug rather than a runtime/env issue).
  */
-export function computeCycleDiff(
-	current: FindingRow[],
-	baseline: FindingRow[],
-	opts: ComputeCycleDiffOptions,
-): TenantCycleAlert {
+export function computeCycleDiff(current: FindingRow[], baseline: FindingRow[], opts: ComputeCycleDiffOptions): TenantCycleAlert {
 	const entries = buildDiffEntries(current, baseline);
 	entries.sort(compareEntries);
 

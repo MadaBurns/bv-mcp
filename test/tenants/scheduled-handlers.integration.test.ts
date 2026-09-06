@@ -411,9 +411,9 @@ describe('handleTenantWeeklyRescan', () => {
 		expect(cycleInserts).toHaveLength(1);
 		// expected_total bind position 5 (zero-indexed 4) of INSERT_CYCLE_SQL.
 		expect(cycleInserts[0].binds[4]).toBe(3);
-		const errIncs = registry.calls.filter((c) => callMatches(c.sql, INCREMENT_ERRORED_SQL));
-		expect(errIncs).toHaveLength(1);
-		expect(errIncs[0].binds[0]).toBe(1);
+		// Fingerprint errors are initialized atomically before the first send.
+		expect(cycleInserts[0].binds[5]).toBe(1);
+		expect(registry.calls.filter((c) => callMatches(c.sql, INCREMENT_ERRORED_SQL))).toHaveLength(0);
 	});
 
 	it('g. BV_SCANNER_QUEUE unbound → fail-soft, no throw', async () => {
@@ -431,6 +431,63 @@ describe('handleTenantWeeklyRescan', () => {
 		).resolves.toBeUndefined();
 		// Active-tenants enumeration NOT run — handler returns before that step.
 		expect(registry.calls.filter((c) => callMatches(c.sql, ACTIVE_TENANTS_SQL))).toHaveLength(0);
+	});
+
+	it('creates the full cycle before a fast consumer can finish the first queued domain', async () => {
+		const { handleTenantWeeklyRescan } = await import('../../src/tenants/scheduled-handlers');
+		const registry = makeMockD1({ rowsBySql: { [ACTIVE_TENANTS_SQL]: [{ id: TENANT_A, super_tenant_id: SUPER }] } });
+		const tenant = makeMockD1({
+			rowsBySql: {
+				[DUE_DOMAINS_SQL]: ['a.example.com', 'b.example.com'].map((domain) => ({
+					domain,
+					last_scanned_at: null,
+					watch_interval_hours: 168,
+					fingerprint: null,
+				})),
+			},
+		});
+		const observedCycleCounts: unknown[][] = [];
+		const queue = {
+			send: vi.fn(async () => {
+				const insert = registry.calls.find((c) => callMatches(c.sql, INSERT_CYCLE_SQL));
+				observedCycleCounts.push(insert?.binds.slice(4, 6) ?? []);
+			}),
+		};
+		await handleTenantWeeklyRescan(
+			{ ...env, TENANT_REGISTRY_DB: registry.db, [TENANT_A_BINDING]: tenant.db, BV_SCANNER_QUEUE: queue } as TenantScheduledEnv,
+			makeCtx(),
+			{
+				now: () => 1000,
+				newCycleId: () => 'cycle-fast',
+				dnsQuery: makeDnsQuery({}),
+			},
+		);
+		expect(observedCycleCounts).toEqual([
+			[2, 0],
+			[2, 0],
+		]);
+	});
+
+	it('publishes no scan work when the cycle insert fails', async () => {
+		const { handleTenantWeeklyRescan } = await import('../../src/tenants/scheduled-handlers');
+		const registry = makeMockD1({
+			rowsBySql: { [ACTIVE_TENANTS_SQL]: [{ id: TENANT_A, super_tenant_id: SUPER }] },
+			throwOnSql: new Set([INSERT_CYCLE_SQL]),
+		});
+		const tenant = makeMockD1({
+			rowsBySql: { [DUE_DOMAINS_SQL]: [{ domain: 'a.example.com', last_scanned_at: null, watch_interval_hours: 168, fingerprint: null }] },
+		});
+		const queue = makeMockQueue();
+		await handleTenantWeeklyRescan(
+			{ ...env, TENANT_REGISTRY_DB: registry.db, [TENANT_A_BINDING]: tenant.db, BV_SCANNER_QUEUE: queue } as TenantScheduledEnv,
+			makeCtx(),
+			{
+				now: () => 1000,
+				newCycleId: () => 'cycle-failed',
+				dnsQuery: makeDnsQuery({}),
+			},
+		);
+		expect(queue.sends).toHaveLength(0);
 	});
 
 	it('passes baseline_cycle_id from registry to the cycle insert when one exists', async () => {
@@ -464,8 +521,8 @@ describe('handleTenantWeeklyRescan', () => {
 
 		const inserts = registry.calls.filter((c) => callMatches(c.sql, INSERT_CYCLE_SQL));
 		expect(inserts).toHaveLength(1);
-		// baseline_cycle_id is the 6th bind (zero-indexed 5).
-		expect(inserts[0].binds[5]).toBe('baseline-cycle-7');
+		// baseline_cycle_id follows the initial errored count.
+		expect(inserts[0].binds[6]).toBe('baseline-cycle-7');
 	});
 
 	it('bounds active-tenant and due-domain enumeration per weekly tick', async () => {
@@ -517,7 +574,7 @@ function makeFindingsTenantDb(rowsByCycleId: Record<string, unknown[]>): D1Datab
 				},
 				async all<T = unknown>() {
 					if (sql.includes(FINDINGS_FOR_CYCLE_SQL)) {
-						const cycleId = binds[0] as string;
+						const cycleId = sql.includes('prior.scan_at < ?') ? 'cycle-base' : binds[0] as string;
 						const rows = rowsByCycleId[cycleId] ?? [];
 						return { results: rows as T[], success: true, meta: {} } as unknown as D1Result<T>;
 					}

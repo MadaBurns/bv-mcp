@@ -4,10 +4,10 @@
  * Tier-based API key authentication.
  *
  * Resolves a bearer token to its tier via:
+ * 0. OAuth JWT verification, then configured static credentials
  * 1. KV cache (sub-ms, 5-min TTL)
  * 2. Trial key lookup (KV `trial:` prefix, 60s cache TTL)
  * 3. bv-web service binding (cache miss fallback)
- * 4. Static BV_API_KEY comparison (self-hosted fallback)
  */
 
 import type { McpApiKeyTier } from './config';
@@ -119,12 +119,12 @@ async function hashTokenRaw(token: string): Promise<Uint8Array> {
  * constant-time XOR over the digests (never short-circuits on first mismatch)
  * so it cannot leak the secret via timing.
  */
-async function matchesStaticDevKey(tokenRaw: Uint8Array, candidate: string | undefined): Promise<boolean> {
+async function matchesStaticKey(tokenRaw: Uint8Array, candidate: string | undefined): Promise<boolean> {
 	if (!candidate) return false;
 	const b = await hashTokenRaw(candidate);
 	// Both operands are fixed-length 32-byte SHA-256 digests, so iterate the
-	// full digest with no length term (matches auth.ts and the step-4 fallback
-	// compare below). Never short-circuits on first mismatch → no timing leak.
+	// full digest with no length term (matches auth.ts). Never short-circuits
+	// on first mismatch → no timing leak.
 	let mismatch = 0;
 	for (let i = 0; i < tokenRaw.byteLength; i++) {
 		mismatch |= tokenRaw[i] ^ b[i];
@@ -145,10 +145,10 @@ function applyOwnerIpGate(tier: McpApiKeyTier, ownerAllowIps: string | undefined
  * Resolve a bearer token to its API key tier.
  *
  * Resolution order:
+ * 0. OAuth JWT verification, then load-test, internal-dev, and BV_API_KEY credentials
  * 1. KV cache lookup (`tier:{hash}`)
  * 2. Trial key lookup (`trial:{hash}` in KV — time + usage limits)
  * 3. Service binding to companion app (validate-key endpoint)
- * 4. Static BV_API_KEY comparison (self-hosted fallback → owner tier)
  *
  * Owner tier requires IP allowlist (OWNER_ALLOW_IPS env var, comma-separated).
  * If the key matches BV_API_KEY but the IP is not in the allowlist,
@@ -271,7 +271,7 @@ export async function resolveTier(
 	// source-IP allowlist is configured and the Cloudflare-observed client IP is
 	// present. This prevents a leaked test key from degrading into another
 	// authenticated tier or reaching the normal key-resolution fallbacks.
-	if (await matchesStaticDevKey(tokenRaw, env.BV_LOAD_TEST_KEY)) {
+	if (await matchesStaticKey(tokenRaw, env.BV_LOAD_TEST_KEY)) {
 		const allowedIps = parseOwnerAllowIps(env.BV_LOAD_TEST_ALLOW_IPS);
 		if (allowedIps.length === 0 || !clientIp || !allowedIps.includes(clientIp)) {
 			return { authenticated: false };
@@ -287,7 +287,17 @@ export async function resolveTier(
 	// Two independent slots (BV_INTERNAL_DEV_KEY + BV_INTERNAL_DEV_KEY_2) allow
 	// adding a per-machine key without rotating the shared one out from under
 	// other consumers. Both resolve to owner tier and remain OWNER_ALLOW_IPS-gated.
-	if ((await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY)) || (await matchesStaticDevKey(tokenRaw, env.BV_INTERNAL_DEV_KEY_2))) {
+	if ((await matchesStaticKey(tokenRaw, env.BV_INTERNAL_DEV_KEY)) || (await matchesStaticKey(tokenRaw, env.BV_INTERNAL_DEV_KEY_2))) {
+		const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
+		return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
+	}
+
+	// The configured static key is authoritative independently of remote
+	// entitlements. Resolve it before the cache so a remote negative entry cannot
+	// reject it on the next request, and a stale positive tier cannot demote it.
+	// Keep the dedicated load-test denial above and apply the owner IP gate on
+	// every request; static credentials never populate the entitlement cache.
+	if (await matchesStaticKey(tokenRaw, env.BV_API_KEY)) {
 		const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
 		return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
 	}
@@ -395,27 +405,6 @@ export async function resolveTier(
 			// Entitlement validation is an authorization boundary. Network failures,
 			// timeouts, malformed bodies, and 5xx responses all fail closed. Serving a
 			// stale positive result here would let a revoked bearer survive an outage.
-		}
-	}
-
-	// 4. Fallback: compare against static BV_API_KEY (self-hosted/dev)
-	if (env.BV_API_KEY) {
-		// Constant-time comparison: XOR raw SHA-256 digests byte-by-byte
-		// (same pattern as auth.ts — avoids timing side-channels from === on strings)
-		const a = tokenRaw;
-		const b = await hashTokenRaw(env.BV_API_KEY);
-		let mismatch = 0;
-		for (let i = 0; i < a.byteLength; i++) {
-			mismatch |= a[i] ^ b[i];
-		}
-		if (mismatch === 0) {
-			// Owner tier requires IP allowlist. If OWNER_ALLOW_IPS is set and non-empty
-			// and the client IP is not in the list, downgrade to partner (still high
-			// limits but not unlimited). If OWNER_ALLOW_IPS is unset, empty, or whitespace-
-			// only, owner is unrestricted (backward compat for self-hosted/dev where
-			// there's no IP filtering).
-			const resolvedTier = applyOwnerIpGate('owner', env.OWNER_ALLOW_IPS, clientIp);
-			return { authenticated: true, tier: resolvedTier, keyHash, legacyOwnerId: keyHash.slice(0, 16), credentialHash: keyHash };
 		}
 	}
 

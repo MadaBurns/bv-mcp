@@ -115,6 +115,75 @@ describe('computeCycleDiff', () => {
 		expect(out.totals.deltas).toBe(0);
 	});
 
+	it('unchanged findings in one category do not produce drift in either input order', () => {
+		const findings = [row('example.com', 'spf', 'high', 'Permissive policy'), row('example.com', 'spf', 'low', 'Redundant include')];
+		for (const current of [findings, [...findings].reverse()]) {
+			for (const baseline of [findings, [...findings].reverse()]) {
+				expect(computeCycleDiff(current, baseline, baseOpts).totals.deltas).toBe(0);
+			}
+		}
+	});
+
+	it('detects a gain and loss within a category that still has another finding', () => {
+		const unchanged = row('example.com', 'spf', 'high', 'Permissive policy');
+		const out = computeCycleDiff(
+			[unchanged, row('example.com', 'spf', 'low', 'New include issue')],
+			[unchanged, row('example.com', 'spf', 'low', 'Old include issue')],
+			baseOpts,
+		);
+		expect(out.totals.deltas).toBe(2);
+		expect(out.highlights).toEqual([
+			expect.objectContaining({ delta: 'gained', title: 'New include issue', severity: 'low' }),
+			expect.objectContaining({ delta: 'lost', title: 'Old include issue', severity: 'low' }),
+		]);
+	});
+
+	it('attributes a severity transition to its finding within a shared category', () => {
+		const unchanged = row('example.com', 'spf', 'high', 'Permissive policy');
+		const out = computeCycleDiff(
+			[row('example.com', 'spf', 'medium', 'Include issue'), unchanged],
+			[unchanged, row('example.com', 'spf', 'low', 'Include issue')],
+			baseOpts,
+		);
+		expect(out.totals.deltas).toBe(1);
+		expect(out.highlights[0]).toMatchObject({
+			delta: 'severity_changed',
+			title: 'Include issue',
+			severity: 'medium',
+			previous_severity: 'low',
+		});
+	});
+
+	it('matches duplicate occurrences at equal severity before pairing severity transitions', () => {
+		const high = row('example.com', 'spf', 'high', 'Include issue');
+		const low = row('example.com', 'spf', 'low', 'Include issue');
+		const medium = row('example.com', 'spf', 'medium', 'Include issue');
+		const baseline = [high, low, low];
+		expect(computeCycleDiff([low, high, low], baseline, baseOpts).totals.deltas).toBe(0);
+
+		const out = computeCycleDiff([medium, low, high], baseline, baseOpts);
+		expect(out.totals.deltas).toBe(1);
+		expect(out.highlights[0]).toMatchObject({ delta: 'severity_changed', severity: 'medium', previous_severity: 'low' });
+		expect(computeCycleDiff([high, low, medium], [...baseline].reverse(), baseOpts)).toEqual(out);
+	});
+
+	it('counts gained and lost duplicate occurrences individually', () => {
+		const finding = row('example.com', 'spf', 'low', 'Include issue');
+		const gained = computeCycleDiff([finding, finding, finding], [finding], baseOpts);
+		const lost = computeCycleDiff([finding], [finding, finding, finding], baseOpts);
+		expect(gained.totals.deltas).toBe(2);
+		expect(gained.highlights.every((entry) => entry.delta === 'gained')).toBe(true);
+		expect(lost.totals.deltas).toBe(2);
+		expect(lost.highlights.every((entry) => entry.delta === 'lost')).toBe(true);
+	});
+
+	it('orders highlights deterministically when findings share domain, category, severity and delta', () => {
+		const findings = [row('example.com', 'spf', 'high', 'Zulu issue'), row('example.com', 'spf', 'high', 'Alpha issue')];
+		const out = computeCycleDiff(findings, [], baseOpts);
+		expect(out.highlights.map((entry) => entry.title)).toEqual(['Alpha issue', 'Zulu issue']);
+		expect(computeCycleDiff([...findings].reverse(), [], baseOpts)).toEqual(out);
+	});
+
 	it('null baseline_cycle_id passes through (first-ever cycle)', () => {
 		const out = computeCycleDiff([], [], { ...baseOpts, baselineCycleId: null });
 		expect(out.baseline_cycle_id).toBeNull();
