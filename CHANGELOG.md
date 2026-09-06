@@ -4,6 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.76.1] - 2026-09-06
+
+### Fixed
+
+- Create tenant monitoring cycles before publishing scan work, and recover completion counts from persisted scans without double-counting retries.
+- Compare partial monitoring cycles against each measured domain's latest complete prior observation. Preserve earlier findings for unmeasured domains and retain queue failure alerts.
+- Match individual findings within a category so unchanged findings do not emit false severity-change alerts.
+- Keep configured static API keys independent of stale entitlement cache entries while preserving owner IP restrictions.
+
 ## [3.76.0] - 2026-09-05
 
 - TODO: fill in release notes.
