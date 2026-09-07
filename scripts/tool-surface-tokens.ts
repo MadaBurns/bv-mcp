@@ -27,6 +27,13 @@ export const PUBLIC_TOOL_COUNT = PUBLIC_TOOLS.length;
  */
 export const CHECK_TOOL_COUNT = PUBLIC_TOOLS.filter((tool) => tool.name.startsWith('check_')).length;
 
+/**
+ * Every registered tool, public and internal-only. Only CLAUDE.md advertises
+ * this — customer-facing prose quotes the public count — but it drifted to 81
+ * against a real 84 precisely because nothing gated it.
+ */
+export const TOTAL_TOOL_COUNT = TOOLS.length;
+
 export interface ToolSurfaceToken {
 	/** Repo-relative path. */
 	file: string;
@@ -99,6 +106,23 @@ export const TOOL_SURFACE_TOKENS: ToolSurfaceToken[] = [
 		pattern: /DNS and email security scanner with (\d+) MCP tools\./,
 		expected: PUBLIC_TOOL_COUNT,
 		label: 'smithery.yaml description',
+	},
+	// CLAUDE.md was NOT covered until 2026-09-07 and had silently rotted to "76
+	// public tools (81 registered)" against a real surface of 79/84 — an agent
+	// reading it reported the (correct) server.json count as stale. It is the one
+	// file here read by an agent rather than a customer, so a wrong number
+	// propagates into reasoning rather than just into copy.
+	{
+		file: 'CLAUDE.md',
+		pattern: /^(\d+) public tools \(\d+ registered in `TOOL_DEFS`/m,
+		expected: PUBLIC_TOOL_COUNT,
+		label: 'CLAUDE.md public tool count',
+	},
+	{
+		file: 'CLAUDE.md',
+		pattern: /^\d+ public tools \((\d+) registered in `TOOL_DEFS`/m,
+		expected: TOTAL_TOOL_COUNT,
+		label: 'CLAUDE.md registered tool count',
 	},
 ];
 
