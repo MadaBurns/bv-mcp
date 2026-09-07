@@ -168,6 +168,24 @@ path = '''enterprise-architecture\.md$'''
 
 # ─── Global Allowlists ───────────────────────────────────────────────
 
+# Digit runs that are phone-SHAPED but structurally cannot be a phone number.
+# Scoped to `phone-number` via targetRules, so every other rule still inspects
+# these lines -- a 64-hex string, for instance, is still examined by the
+# Cloudflare-ID and generic-api-key rules.
+#
+# Pattern-scoped on purpose rather than path-scoped: parity-fixtures.ts is a file
+# the release flow REQUIRES touching on every scoring change (PARITY_CORPUS_VERSION),
+# so a latent finding there is a landmine on a mandated path -- but exempting the
+# whole file would stop it being scanned for real secrets. Verified reachable before
+# this was added: a commit range touching these two files produced 7 findings.
+[[allowlists]]
+targetRules = ["phone-number"]
+regexTarget = "line"
+regexes = [
+  '''\b[0-9a-f]{64}\b''',   # 64-hex digests (the all-zero SHA256 sentinel in parity-fixtures.ts)
+  '''\d+\.\d{12,}''',        # IEEE-754 artifacts quoted in comments (scoring/config.ts tier-split sum)
+]
+
 # DKIM test fixtures (base64 public keys) and env-var-NAME literals trip the
 # built-in `generic-api-key` rule. Scoped to that rule with `targetRules` so the
 # BUILT-IN rule stays active and keeps its own upstream regex and stopword
