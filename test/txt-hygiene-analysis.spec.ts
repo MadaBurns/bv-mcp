@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, it, expect } from 'vitest';
-import { VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from '../src/tools/txt-hygiene-analysis';
+import { VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS, MAIL_SENDING_VERIFICATION_SERVICES } from '../src/tools/txt-hygiene-analysis';
 import type { VerificationCategory, VerificationPattern } from '../src/tools/txt-hygiene-analysis';
 
 describe('VERIFICATION_PATTERNS', () => {
@@ -114,5 +114,48 @@ describe('exported types', () => {
 	it('VerificationPattern type supports optional jurisdiction', () => {
 		const p: VerificationPattern = { prefix: 'test=', service: 'Test', category: 'search_engine', jurisdiction: 'RU' };
 		expect(p.jurisdiction).toBe('RU');
+	});
+});
+
+/**
+ * Stale-integration false positive (2026-09-07).
+ *
+ * The heuristic "verification record present but no matching SPF include => stale"
+ * was gated on membership of SERVICE_SPF_DOMAINS, which also contains two OWNERSHIP
+ * verifications that imply nothing about mail: Google Search Console
+ * (google-site-verification=) and Microsoft 365 (MS=, an Entra/tenant ownership proof).
+ *
+ * Measured over 10 well-known domains before the fix: the M365 rule misfired on 7
+ * (cloudflare, stripe, nytimes, shopify, atlassian, dropbox, reddit) and the Search
+ * Console rule on 4 (stripe, nytimes, slack, reddit) — stacking to -10 on three.
+ */
+describe('MAIL_SENDING_VERIFICATION_SERVICES (FP fix 2026-09-07)', () => {
+	it('EXCLUDES ownership-only verifications from the stale heuristic', () => {
+		// These two are the measured false positives. Using M365 for identity while mail
+		// goes elsewhere, or verifying Search Console, is ordinary — not a stale integration.
+		expect(MAIL_SENDING_VERIFICATION_SERVICES.has('Microsoft 365')).toBe(false);
+		expect(MAIL_SENDING_VERIFICATION_SERVICES.has('Google Search Console')).toBe(false);
+	});
+
+	it('still INCLUDES services whose verification does imply sending', () => {
+		for (const svc of ['SendGrid', 'Mailchimp', 'HubSpot', 'Salesforce Pardot', 'Zoho', 'Freshdesk', 'Zendesk']) {
+			expect(MAIL_SENDING_VERIFICATION_SERVICES.has(svc), `${svc} should still be stale-checkable`).toBe(true);
+		}
+	});
+
+	it('is a strict subset of SERVICE_SPF_DOMAINS — the gate narrows, never widens', () => {
+		// A service outside SERVICE_SPF_DOMAINS has no SPF domains to compare against,
+		// so listing one here would be inert and misleading.
+		for (const svc of MAIL_SENDING_VERIFICATION_SERVICES) {
+			expect(SERVICE_SPF_DOMAINS[svc], `${svc} must have SPF domains defined`).toBeDefined();
+		}
+		expect(MAIL_SENDING_VERIFICATION_SERVICES.size).toBeLessThan(Object.keys(SERVICE_SPF_DOMAINS).length);
+	});
+
+	it('keeps both excluded services in SERVICE_SPF_DOMAINS — only the verdict is gated', () => {
+		// That map still suppresses the finding when an include IS present and is read by
+		// other call sites; removing the entries would be a different (wrong) fix.
+		expect(SERVICE_SPF_DOMAINS['Microsoft 365']).toBeDefined();
+		expect(SERVICE_SPF_DOMAINS['Google Search Console']).toBeDefined();
 	});
 });
