@@ -17,7 +17,12 @@ import { getEffectiveTld } from '../lib/public-suffix';
 import { validateDomain } from '../lib/sanitize';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
-import { type VerificationCategory, VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
+import {
+	type VerificationCategory,
+	VERIFICATION_PATTERNS,
+	SERVICE_SPF_DOMAINS,
+	MAIL_SENDING_VERIFICATION_SERVICES,
+} from './txt-hygiene-analysis';
 
 // ─── Government TLD detection ────────────────────────────────────────────────
 
@@ -315,6 +320,13 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 	const spfIncludes = extractSpfIncludes(rootTxtRecords);
 	const staleServices = new Map<string, { category: VerificationCategory; records: string[] }>();
 	for (const match of matchedServices) {
+		// Gate on "does this verification record imply the domain SENDS mail here?",
+		// not merely on "do we know this service's SPF domains?" — an ownership record
+		// (Google Search Console, Microsoft 365 tenant) implies nothing about mail, so
+		// a missing SPF include is not evidence of staleness. See
+		// MAIL_SENDING_VERIFICATION_SERVICES for the measured misfire rate.
+		if (!MAIL_SENDING_VERIFICATION_SERVICES.has(match.service)) continue;
+
 		const spfDomains = SERVICE_SPF_DOMAINS[match.service];
 		if (!spfDomains) continue;
 

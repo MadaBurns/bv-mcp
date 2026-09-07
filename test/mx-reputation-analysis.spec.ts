@@ -1,7 +1,14 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, it, expect } from 'vitest';
-import { analyzePtrRecords, analyzeDnsblResults, classifyDnsblAnswers, reverseIpForDnsbl, buildDnsblZones } from '../src/tools/mx-reputation-analysis';
+import {
+	analyzePtrRecords,
+	analyzeDnsblResults,
+	classifyDnsblAnswers,
+	reverseIpForDnsbl,
+	buildDnsblZones,
+	detectSharedMxProvider,
+} from '../src/tools/mx-reputation-analysis';
 
 describe('mx-reputation-analysis', () => {
 	describe('analyzePtrRecords', () => {
@@ -231,5 +238,57 @@ describe('mx-reputation-analysis', () => {
 			expect(zones).toContain('b.barracudacentral.org');
 			expect(zones).toHaveLength(2);
 		});
+	});
+});
+
+/**
+ * Shared-provider rDNS false positive (2026-09-07).
+ *
+ * `detectSharedMxProvider` was computed at the call site but never passed into
+ * `analyzePtrRecords`, so the shared-infrastructure downgrade reached DNSBL findings
+ * only. Cloudflare Email Security publishes NO PTR on its inbound MX IPs (measured:
+ * 192.0.2.10 / 192.0.2.11 / 192.0.2.12 all NXDOMAIN on reverse lookup, while
+ * Google, M365 and Rackspace all answer), so every customer domain on it took
+ * 3 x medium = -45 on mx_reputation for infrastructure it does not operate.
+ */
+describe('analyzePtrRecords — shared-provider rDNS downgrade (FP fix 2026-09-07)', () => {
+	it('downgrades missing PTR to info when the MX is shared provider infrastructure', () => {
+		const findings = analyzePtrRecords('192.0.2.10', [], [], 'Cloudflare Email Security');
+		expect(findings).toHaveLength(1);
+		expect(findings[0].severity).toBe('info');
+		expect(findings[0].title).toContain('No PTR record');
+		expect(findings[0].metadata?.sharedProvider).toBe('Cloudflare Email Security');
+	});
+
+	it('downgrades an FCrDNS mismatch to info on shared provider infrastructure', () => {
+		const findings = analyzePtrRecords('198.51.100.1', ['mail.example.com'], ['198.51.100.99'], 'Microsoft 365');
+		expect(findings).toHaveLength(1);
+		expect(findings[0].severity).toBe('info');
+	});
+
+	it('KEEPS medium for dedicated infrastructure — the downgrade must not be blanket', () => {
+		// The domain owner normally controls the reverse zone for their own mail server,
+		// so this remains actionable and must keep scoring.
+		const findings = analyzePtrRecords('198.51.100.1', [], [], null);
+		expect(findings).toHaveLength(1);
+		expect(findings[0].severity).toBe('medium');
+		expect(findings[0].metadata?.sharedProvider).toBeUndefined();
+	});
+
+	it('explains WHY it is informational, so the report is not just silently softer', () => {
+		const findings = analyzePtrRecords('192.0.2.10', [], [], 'Cloudflare Email Security');
+		expect(findings[0].detail).toContain('Cloudflare Email Security');
+		expect(findings[0].detail).toContain('SENDING');
+	});
+});
+
+describe('detectSharedMxProvider — Cloudflare Email Security (FP fix 2026-09-07)', () => {
+	it('recognises the cf-emailsecurity.net inbound MX suffix', () => {
+		expect(detectSharedMxProvider('mxa.global.inbound.cf-emailsecurity.net')).toBe('Cloudflare Email Security');
+		expect(detectSharedMxProvider('mxb-canary.global.inbound.cf-emailsecurity.net')).toBe('Cloudflare Email Security');
+	});
+
+	it('still returns null for genuinely dedicated infrastructure', () => {
+		expect(detectSharedMxProvider('mail.example.com')).toBeNull();
 	});
 });

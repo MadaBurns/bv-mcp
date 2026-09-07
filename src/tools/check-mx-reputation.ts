@@ -137,7 +137,11 @@ export async function checkMxReputation(domain: string, dnsOptions?: QueryDnsOpt
 					}
 				}
 
-				findings.push(...analyzePtrRecords(ip, ptrHostnames, forwardIps));
+				// `sharedProvider` must be threaded here, not just used for DNSBL below:
+				// without it the rDNS findings scored `medium` against infrastructure the
+				// domain owner does not operate (Cloudflare Email Security publishes no
+				// PTR at all → 3 x medium = -45 on every customer domain).
+				findings.push(...analyzePtrRecords(ip, ptrHostnames, forwardIps, sharedProvider));
 			} catch {
 				findings.push(
 					createFinding(

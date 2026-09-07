@@ -8,7 +8,8 @@
 
 // ─── Verification pattern definitions ────────────────────────────────────────
 
-export type VerificationCategory = 'search_engine' | 'identity_auth' | 'collaboration' | 'security' | 'marketing' | 'infrastructure' | 'email_auth';
+export type VerificationCategory =
+	'search_engine' | 'identity_auth' | 'collaboration' | 'security' | 'marketing' | 'infrastructure' | 'email_auth';
 
 export interface VerificationPattern {
 	prefix: string;
@@ -77,11 +78,53 @@ export const VERIFICATION_PATTERNS: VerificationPattern[] = [
 export const SERVICE_SPF_DOMAINS: Record<string, string[]> = {
 	'Google Search Console': ['_spf.google.com', 'google.com'],
 	'Microsoft 365': ['spf.protection.outlook.com', 'outlook.com'],
-	'SendGrid': ['sendgrid.net'],
-	'Mailchimp': ['mandrillapp.com', 'mailchimp.com'],
-	'HubSpot': ['hubspotemail.net'],
+	SendGrid: ['sendgrid.net'],
+	Mailchimp: ['mandrillapp.com', 'mailchimp.com'],
+	HubSpot: ['hubspotemail.net'],
 	'Salesforce Pardot': ['salesforce.com'],
-	'Zoho': ['zoho.com', 'zoho.eu'],
-	'Freshdesk': ['freshdesk.com'],
-	'Zendesk': ['zendesk.com'],
+	Zoho: ['zoho.com', 'zoho.eu'],
+	Freshdesk: ['freshdesk.com'],
+	Zendesk: ['zendesk.com'],
 };
+
+/**
+ * Services whose verification TXT record actually implies the domain SENDS mail
+ * through them — the only services for which "verification present but no matching
+ * SPF include" is evidence of a stale integration.
+ *
+ * ⚠️ The stale heuristic MUST be gated on this set, not merely on membership of
+ * `SERVICE_SPF_DOMAINS` (#FP-2026-09-07). Two entries in that map are OWNERSHIP
+ * verifications that say nothing about mail:
+ *
+ *   - `Google Search Console` (`google-site-verification=`) proves control of the
+ *     site for Search Console. Ubiquitous on domains that send via anyone.
+ *   - `Microsoft 365` (`MS=`) proves ownership of the domain for an M365/Entra
+ *     TENANT — Teams, SharePoint, Intune, SSO. Using M365 for identity while mail
+ *     goes elsewhere is a completely ordinary configuration.
+ *
+ * Measured before gating, over 10 well-known domains: the M365 rule misfired on 7
+ * (cloudflare, stripe, nytimes, shopify, atlassian, dropbox, reddit) and the Search
+ * Console rule on 4 (stripe, nytimes, slack, reddit) — and they STACK, so three of
+ * those domains took -10 for two records that were each doing their actual job.
+ *
+ * Both stay in `SERVICE_SPF_DOMAINS`: that map is also what suppresses the finding
+ * when an include IS present, and other call sites read it. Only the stale verdict
+ * is gated.
+ *
+ * Cost of the gate: a domain that genuinely stops sending via Exchange Online is no
+ * longer flagged from its TXT records alone. That case is better served by the mail
+ * path anyway — `check_mx` identifies the actual inbound provider and the SPF checks
+ * validate the includes — neither of which has to guess from an ownership record.
+ * Deciding it properly here would need an MX lookup, which `checkTxtHygiene` does not
+ * do and should not add: `scan_domain` already fans out ~20 subrequests per domain
+ * and has measurably overrun the per-invocation ceiling.
+ */
+export const MAIL_SENDING_VERIFICATION_SERVICES: ReadonlySet<string> = new Set([
+	'SendGrid',
+	'Mailchimp',
+	'HubSpot',
+	'Salesforce Pardot',
+	'Zoho',
+	'Freshdesk',
+	'Zendesk',
+]);
