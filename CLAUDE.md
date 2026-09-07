@@ -213,9 +213,9 @@ Eight AE event indexes (`analytics.ts`): `mcp_request`, `tool_call`, `rate_limit
 
 ## False Positive Reduction
 
-- **MX Reputation**: shared provider IPs (Google, M365) → DNSBL findings → `info`
+- **MX Reputation**: shared provider IPs (Google, M365, Cloudflare Email Security, …) → DNSBL findings **and rDNS findings** → `info`. ⚠️ `detectSharedMxProvider()` must be threaded into `analyzePtrRecords()` as well as the DNSBL branch — until 2026-09-07 it was computed but only passed to DNSBL, so missing-PTR/FCrDNS scored `medium` against provider infrastructure the customer cannot configure (Cloudflare Email Security publishes no PTR at all → 3 × medium = −45 on every customer domain). Dedicated infrastructure still scores `medium`: there the owner does control the reverse zone. rDNS gates the **sending** IP, not the inbound MX.
 - **Lookalikes**: shared NS with primary → `info` (defensive registration)
 - **Shadow Domains**: shared NS (≥2 overlap) → severity downgrade with ownership signal
-- **TXT Hygiene**: record accumulation tiered (25+ → medium, 15–24 → low); duplicate verifications consolidated
+- **TXT Hygiene**: record accumulation tiered (25+ → medium, 15–24 → low); duplicate verifications consolidated. ⚠️ The "stale integration" verdict (verification record present but no matching SPF include) is gated on `MAIL_SENDING_VERIFICATION_SERVICES`, **not** on membership of `SERVICE_SPF_DOMAINS` — the latter also holds ownership-only proofs (`google-site-verification=`, M365 `MS=`) that say nothing about mail. Ungated it misfired on 7/10 well-known domains for M365 and 4/10 for Search Console, stacking to −10. Adding a service to `SERVICE_SPF_DOMAINS` does NOT make it stale-checkable; add it to the set only if its verification record implies the domain *sends* through it.
 - **Non-mail SPF** (`check_mx`): no MX → verifies `v=spf1 -all`; missing SPF → medium, non-reject → low
 - **Subdomain takeover severity**: dangling-CNAME targets embedding a provider-assigned random ID (ELB/CloudFront/API-Gateway) downgrade HIGH → MEDIUM (operational drift, not a reclaimable namespace) — `classifyTargetNamespace()` in `packages/dns-checks/src/checks/subdomain-takeover-analysis.ts`

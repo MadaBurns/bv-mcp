@@ -30,6 +30,12 @@ const SHARED_PROVIDER_MX_SUFFIXES: Array<{ suffix: string; provider: string }> =
 	{ suffix: '.messagelabs.com', provider: 'Symantec/Broadcom' },
 	{ suffix: '.fireeyecloud.com', provider: 'Trellix' },
 	{ suffix: '.iphmx.com', provider: 'Cisco IronPort' },
+	// Cloudflare Email Security. Added 2026-09-07: its inbound MX IPs publish NO PTR
+	// (measured — its inbound MX addresses return NXDOMAIN on reverse lookup, unlike Google/M365/
+	// Rackspace which all do), so every customer on it was taking 3 x medium = -45
+	// on mx_reputation for infrastructure they do not operate.
+	{ suffix: '.cf-emailsecurity.net', provider: 'Cloudflare Email Security' },
+	{ suffix: '.mx.cloudflare.net', provider: 'Cloudflare Email Security' },
 ];
 
 /**
@@ -61,19 +67,50 @@ export function detectSharedMxProvider(mxHost: string): string | null {
  * @param ip - The MX server IP address
  * @param ptrHostnames - PTR record hostnames for the IP
  * @param forwardIps - IPs resolved from PTR hostnames (for FCrDNS verification)
+ * @param sharedProvider - Provider name when this MX belongs to shared infrastructure
+ *   (from `detectSharedMxProvider`), else null. Downgrades the rDNS findings to `info`
+ *   — see the note below.
  * @returns Array of findings from PTR analysis
  */
-export function analyzePtrRecords(ip: string, ptrHostnames: string[], forwardIps: string[]): Finding[] {
+export function analyzePtrRecords(
+	ip: string,
+	ptrHostnames: string[],
+	forwardIps: string[],
+	sharedProvider: string | null = null,
+): Finding[] {
 	const findings: Finding[] = [];
+
+	// rDNS on a SHARED provider's inbound MX is not the customer's configuration and
+	// not their risk (#FP-2026-09-07). Two reasons this must not score as a weakness:
+	//
+	//  1. The customer cannot set it. PTR is published by whoever controls the IP's
+	//     reverse zone — the provider. A domain owner on Cloudflare Email Security or
+	//     M365 has no way to act on this finding, and an unactionable penalty is noise.
+	//  2. The stated harm does not apply to an inbound MX. rDNS gates OUTBOUND mail:
+	//     a receiving MTA checks the rDNS of the IP CONNECTING to it. These IPs are
+	//     the ones RECEIVING. The finding's own wording ("frequently rejected by
+	//     receiving servers") describes the sending path.
+	//
+	// Kept as `info` rather than dropped: it is still true, still worth surfacing on a
+	// report, and for DEDICATED infrastructure (sharedProvider === null) it stays
+	// `medium`, because there the domain owner usually does control the reverse zone.
+	//
+	// This mirrors exactly what the DNSBL branch already does for shared providers;
+	// the PTR branch was simply never given the provider, so the existing downgrade
+	// could not reach it.
+	const providerNote = sharedProvider
+		? ` This MX is operated by ${sharedProvider} on shared infrastructure, so its reverse DNS is the provider's to publish, not this domain's — and reverse DNS is checked against SENDING IPs, not the inbound MX. Informational only.`
+		: '';
+	const rdnsSeverity = sharedProvider ? 'info' : 'medium';
 
 	if (ptrHostnames.length === 0) {
 		findings.push(
 			createFinding(
 				'mx_reputation',
 				`No PTR record for MX server ${ip}`,
-				'medium',
-				`IP ${ip} has no reverse DNS (PTR) record. Mail servers without PTR records are frequently rejected by receiving servers.`,
-				{ ip },
+				rdnsSeverity,
+				`IP ${ip} has no reverse DNS (PTR) record. Mail servers without PTR records are frequently rejected by receiving servers.${providerNote}`,
+				{ ip, ...(sharedProvider ? { sharedProvider } : {}) },
 			),
 		);
 		return findings;
@@ -87,9 +124,9 @@ export function analyzePtrRecords(ip: string, ptrHostnames: string[], forwardIps
 			createFinding(
 				'mx_reputation',
 				`PTR does not match forward DNS for ${ip}`,
-				'medium',
-				`IP ${ip} has PTR record(s) (${ptrHostnames.join(', ')}), but none resolve back to ${ip}. Forward-confirmed reverse DNS (FCrDNS) failure reduces deliverability.`,
-				{ ip, ptrHostnames, forwardIps },
+				rdnsSeverity,
+				`IP ${ip} has PTR record(s) (${ptrHostnames.join(', ')}), but none resolve back to ${ip}. Forward-confirmed reverse DNS (FCrDNS) failure reduces deliverability.${providerNote}`,
+				{ ip, ptrHostnames, forwardIps, ...(sharedProvider ? { sharedProvider } : {}) },
 			),
 		);
 	}
@@ -201,11 +238,7 @@ export function classifyDnsblAnswers(answers: string[]): { status: DnsblStatus; 
  * @param sharedProvider - If non-null, the name of the shared provider (triggers downgrade)
  * @returns Array of findings from DNSBL analysis
  */
-export function analyzeDnsblResults(
-	ip: string,
-	results: DnsblZoneResult[],
-	sharedProvider?: string | null,
-): Finding[] {
+export function analyzeDnsblResults(ip: string, results: DnsblZoneResult[], sharedProvider?: string | null): Finding[] {
 	const findings: Finding[] = [];
 
 	for (const result of results) {
@@ -232,9 +265,7 @@ export function analyzeDnsblResults(
 				);
 			}
 		} else if (result.status === 'inconclusive') {
-			const codeList = result.returnCodes && result.returnCodes.length > 0
-				? result.returnCodes.join(', ')
-				: 'unknown';
+			const codeList = result.returnCodes && result.returnCodes.length > 0 ? result.returnCodes.join(', ') : 'unknown';
 			findings.push(
 				createFinding(
 					'mx_reputation',
