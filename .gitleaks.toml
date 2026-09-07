@@ -33,7 +33,8 @@ regexes = [
   '''mailto:[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]''', # mailto: in DMARC/TLSRPT test records
   '''support@smithery\.ai''',                                  # Smithery's public business contact
   '''support@github\.com''',                                   # GitHub's bot sign-off trailer, named in repo-safety allowlists
-  '''oldmail@retail\.com''',                                   # Fictional narrative example in older docs/MARKETING-BROCHURE.md commits
+  '''oldmail@retail\.com''',                                   # Fictional narrative example; originated in the deleted
+                                                               # docs/MARKETING-BROCHURE.md and still live in CHANGELOG.md
 ]
 
 [[rules]]
@@ -92,7 +93,6 @@ paths = [
   '''scripts/tranco-deep-.*\.json$''',     # Numeric IDs in scan artifacts
   '''scripts/phase\d+-.*\.json$''',
   '''scripts/chaos/''',                    # Test sentinels (e.g. 1234567890 placeholders)
-  '''^chaos-test-.*\.py$''',                # Old root-level path before scripts/chaos/ reshuffle
   '''crates/[^/]+/Cargo\.lock$''',         # Rust deps include numeric versions/hashes
   '''crates/[^/]+/target/''',              # Rust build artifacts (gitignored locally; safety net)
   '''docs/.*\.md$''',                      # Phone-number-shaped numerics in docs (timestamps, hashes)
@@ -166,34 +166,41 @@ id = "enterprise-architecture"
 description = "Enterprise architecture planning doc should not be committed"
 path = '''enterprise-architecture\.md$'''
 
-# ─── Built-in Rule Overrides ─────────────────────────────────────────
-# DKIM test fixtures contain base64-encoded public keys that trigger generic-api-key
+# ─── Global Allowlists ───────────────────────────────────────────────
 
-[[rules]]
-id = "generic-api-key"
-description = "Generic API Key (built-in override to allowlist test DKIM keys)"
-# Inherit the default generic-api-key pattern — override only adds allowlist
-regex = '''(?i)(?:key|api|token|secret|client|passwd|password|auth|access)(?:[0-9a-z\-_\t .]{0,20})(?:[\s|']|[\s|"]){0,3}(?:=|>|:{1,3}=|\|\|:|<=|=>|:|\?=)(?:'|\"|\s|=|\x60){0,5}([0-9a-z\-_.=]{10,150})(?:['|\"|\n|\r|\s|\x60|;]|$)'''
-keywords = ["key","api","token","secret","client","passwd","password","auth","access"]
-[rules.allowlist]
+# DKIM test fixtures (base64 public keys) and env-var-NAME literals trip the
+# built-in `generic-api-key` rule. Scoped to that rule with `targetRules` so the
+# BUILT-IN rule stays active and keeps its own upstream regex and stopword
+# allowlists.
+#
+# This replaced a `[[rules]] id = "generic-api-key"` block that redefined the rule
+# wholesale. That is not additive: gitleaks skips a default rule whose ID the user
+# config already defines, so the block REPLACED the built-in and froze a
+# hand-copied copy of its regex, which could never track upstream fixes or inherit
+# its stopwords. Verified on gitleaks 8.30.1 by the `Description` field on the
+# emitted finding -- the RuleID is identical either way and cannot tell them apart.
+[[allowlists]]
+targetRules = ["generic-api-key"]
 paths = [
   '''test/''',                       # Test fixtures use dummy keys/tokens — never real secrets
   '''packages/[^/]+/test/''',
+  '''/__tests__/''',                  # Vitest-style colocated test dirs — the other custom
+                                      # rules already allowlist this; the replaced override
+                                      # did not, and only escaped notice because its frozen
+                                      # regex copy was narrower than upstream's current one.
 ]
 regexTarget = "match"
 # Env-var-default literals — these reference the env var name (or a placeholder
 # documented in shell-export form), not a real key. Cataloged by
 # test/audits/no-tracked-secrets.audit.test.ts (N5).
 regexes = [
-  '''process\.env\.BV_API_KEY''',           # scripts/tranco-scan.mjs:21, tranco-deep-scan.mjs:28
-  '''os\.getenv\(.{0,40}BV_API_KEY''',      # scripts/chaos/chaos-test-wasm.py:9
+  '''process\.env\.BV_API_KEY''',           # scripts/tranco-scan.mjs, tranco-deep-scan.mjs
+  '''os\.getenv\(.{0,40}BV_API_KEY''',      # scripts/chaos/chaos-test-wasm.py
   '''api_key=\$\{BV_API_KEY\}''',           # .mcp.json placeholder
-  '''bv_Kx8eZ2rdtUPfdzR8e_\.\.\.''',        # docs/client-setup.md:434 — truncated doc placeholder
+  '''bv_Kx8eZ2rdtUPfdzR8e_\.\.\.''',        # docs/client-setup.md — truncated doc placeholder
 ]
 
-# ─── Global Allowlists ───────────────────────────────────────────────
-
-[allowlist]
+[[allowlists]]
 # Threat-model report-folder timestamps (YYYYMMDD-HHMMSS, e.g. the `report_folder`
 # in threat-inventory.json) trip the default `phone-number` rule. Benign date-shaped
 # values — allow the specific pattern while keeping secret scanning active on the docs.
