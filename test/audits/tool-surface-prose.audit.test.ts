@@ -19,6 +19,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import claudeMd from '../../CLAUDE.md?raw';
 import githubSettings from '../../docs/github-settings.md?raw';
 import readme from '../../README.md?raw';
 import serverJson from '../../server.json?raw';
@@ -32,6 +33,7 @@ import { CHECK_TOOL_COUNT, PUBLIC_TOOL_COUNT, TOOL_SURFACE_TOKENS } from '../../
  * rather than being read by path. Keys must match `ToolSurfaceToken.file`.
  */
 const SOURCES: Record<string, string> = {
+	'CLAUDE.md': claudeMd,
 	'README.md': readme,
 	'docs/github-settings.md': githubSettings,
 	'extensions/vscode/README.md': vscodeReadme,
