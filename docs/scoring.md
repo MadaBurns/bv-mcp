@@ -134,7 +134,7 @@ Category score formula starts at `100` and deducts per finding:
 - Low: `-5`
 - Info: `0`
 
-**SPF `~all` Downgrade Rule**: SPF soft-fail (`~all`) findings are lowered to `info` severity (0 penalty) when the domain has an enforcing DMARC policy (`p=quarantine` or `p=reject`). Since DMARC enforcement already prevents spoofing from non-aligned sources, the RFC-recommended `~all` posture is no longer considered a risk in these environments.
+**SPF `~all` Severity Rule** (scoring model 1.24.0, #927): the severity of an SPF soft-fail (`~all`) finding is set by the domain's DMARC policy. With an explicit `p=none`, `~all` is `info` (0 penalty) — soft fail is the expected interim posture while legitimate senders are inventoried from aggregate reports. With an enforcing policy (`p=quarantine` or `p=reject`, any `pct`), `~all` is `low` (−5) with a recommendation to move to `-all` once senders and forwarding paths are validated: DMARC enforcement guides receiver handling but does not guarantee rejection, so `-all` remains the recommended terminator. With no DMARC record (or an unreadable one), `~all` is `low` (−5). The earlier rule that lowered `~all` to `info` *under* DMARC enforcement was inverted and has been removed (#909).
 
 **DMARC `pct` Parsing**: The `pct` (percentage) parameter is parsed from DMARC records to determine the true enforcement context. If `pct < 100`, the enforcement is considered partial, which may affect how related findings (like SPF trust surface) are weighed.
 
