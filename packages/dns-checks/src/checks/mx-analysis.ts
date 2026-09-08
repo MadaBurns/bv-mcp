@@ -26,7 +26,14 @@ export function parseMxRecords(answers: string[]): ParsedMxRecord[] {
 	});
 }
 
-export function isNullMxRecord(record: ParsedMxRecord): boolean {
+/**
+ * RFC 7505 null MX: priority 0 with a root (`.`) exchange, meaning the domain
+ * explicitly accepts NO inbound mail. Parsers strip the trailing dot, so the
+ * exchange arrives as `''` or `'.'` depending on the caller's normalisation.
+ * Accepts any object carrying an `exchange` so Worker-side MX shapes (which
+ * lack `raw`) can share the classification instead of re-deriving it.
+ */
+export function isNullMxRecord(record: Pick<ParsedMxRecord, 'exchange'>): boolean {
 	return record.exchange === '' || record.exchange === '.';
 }
 
