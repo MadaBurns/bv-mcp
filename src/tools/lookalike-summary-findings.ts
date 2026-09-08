@@ -483,8 +483,8 @@ export function buildStagingSummaryFinding(input: {
 			// lookup was dropped is whether the SET is complete — and this
 			// finding is the one making a claim about the set.
 			confidence: enumeration.complete ? 'deterministic' : 'heuristic',
-			// Present whenever the counted set shares one verdict (the realistic
-			// case — a non-owned registered candidate is always `third_party`).
+			// Present whenever the counted set shares one verdict (usually
+			// `third_party`; `unattributed` for a same-platform pair, #929).
 			// Omitted rather than fabricated for a mixed set; either way it can
 			// never be `owned_by_seed`, since owned candidates never reach here.
 			...(highVerdicts.size === 1 ? { ownershipVerdict: [...highVerdicts][0] } : {}),
