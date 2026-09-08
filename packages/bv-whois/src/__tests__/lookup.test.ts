@@ -14,8 +14,10 @@ function makeKV() {
 	};
 }
 
-/** Registration-detail fields are absent for the registrar-only fixtures below. */
+/** Registration-detail fields are absent for the registrar-only fixtures below; a parsed record MEASURED privacy as false. */
 const NO_DETAILS = { creationDate: null, updatedDate: null, expiryDate: null, registrantOrg: null, registrantPrivacy: false } as const;
+/** Paths that never read a registrant record (short-circuit, not-found, error) leave privacy UNMEASURED = null (#931). */
+const UNMEASURED_DETAILS = { ...NO_DETAILS, registrantPrivacy: null } as const;
 
 const REGISTRAR_RESPONSE = `Domain Name: example.com\nRegistrar: TestRegistrar Inc.\nDomain Status: ok\n`;
 const DATED_RESPONSE = `Domain Name: example.com\nRegistrar: TestRegistrar Inc.\nCreation Date: 2020-01-15T00:00:00Z\nUpdated Date: 2024-03-10T00:00:00Z\nRegistry Expiry Date: 2027-01-15T00:00:00Z\nRegistrant Organization: Withheld for Privacy ehf\n`;
@@ -103,7 +105,7 @@ describe('lookupRegistrar', () => {
 
 		const result = await lookupRegistrar('example.de', deps);
 
-		expect(result).toEqual<WhoisLookupResult>({ registrar: null, registrarIanaId: null, ...NO_DETAILS, source: 'redacted' });
+		expect(result).toEqual<WhoisLookupResult>({ registrar: null, registrarIanaId: null, ...UNMEASURED_DETAILS, source: 'redacted' });
 	});
 
 	it('short-circuits .de domains to source=redacted without any whoisQuery (DENIC blocks CF egress + always-redacted by law)', async () => {
@@ -113,7 +115,7 @@ describe('lookupRegistrar', () => {
 
 		const result = await lookupRegistrar('example.de', deps);
 
-		expect(result).toEqual<WhoisLookupResult>({ registrar: null, registrarIanaId: null, ...NO_DETAILS, source: 'redacted' });
+		expect(result).toEqual<WhoisLookupResult>({ registrar: null, registrarIanaId: null, ...UNMEASURED_DETAILS, source: 'redacted' });
 		expect(whoisQuery).not.toHaveBeenCalled();
 	});
 
@@ -125,31 +127,31 @@ describe('lookupRegistrar', () => {
 		await expect(lookupRegistrar('example.ph', deps)).resolves.toEqual({
 			registrar: null,
 			registrarIanaId: null,
-			...NO_DETAILS,
+			...UNMEASURED_DETAILS,
 			source: 'redacted',
 		} satisfies WhoisLookupResult);
 		await expect(lookupRegistrar('example.co.jp', deps)).resolves.toEqual({
 			registrar: null,
 			registrarIanaId: null,
-			...NO_DETAILS,
+			...UNMEASURED_DETAILS,
 			source: 'redacted',
 		} satisfies WhoisLookupResult);
 		await expect(lookupRegistrar('example.ch', deps)).resolves.toEqual({
 			registrar: null,
 			registrarIanaId: null,
-			...NO_DETAILS,
+			...UNMEASURED_DETAILS,
 			source: 'redacted',
 		} satisfies WhoisLookupResult);
 		await expect(lookupRegistrar('example.pt', deps)).resolves.toEqual({
 			registrar: null,
 			registrarIanaId: null,
-			...NO_DETAILS,
+			...UNMEASURED_DETAILS,
 			source: 'redacted',
 		} satisfies WhoisLookupResult);
 		await expect(lookupRegistrar('example.gr', deps)).resolves.toEqual({
 			registrar: null,
 			registrarIanaId: null,
-			...NO_DETAILS,
+			...UNMEASURED_DETAILS,
 			source: 'redacted',
 		} satisfies WhoisLookupResult);
 		expect(whoisQuery).not.toHaveBeenCalled();
@@ -187,7 +189,7 @@ describe('lookupRegistrar', () => {
 
 		const result = await lookupRegistrar('no-such-domain.com', deps);
 
-		expect(result).toEqual<WhoisLookupResult>({ registrar: null, registrarIanaId: null, ...NO_DETAILS, source: 'notfound' });
+		expect(result).toEqual<WhoisLookupResult>({ registrar: null, registrarIanaId: null, ...UNMEASURED_DETAILS, source: 'notfound' });
 	});
 
 	it('returns source=error when registry unreachable', async () => {
@@ -252,5 +254,206 @@ describe('lookupRegistrar', () => {
 
 		expect(result.source).toBe('error');
 		expect(whoisQuery).not.toHaveBeenCalled();
+	});
+});
+
+/**
+ * #931 — `.dk` (Punktum dk, formerly DK Hostmaster). The registry's port-43
+ * template carries `Registered:` / `Expires:` but omits `Registrar:` for
+ * registrant-managed domains BY POLICY (spec:
+ * github.com/Punktum-dk/whois-service-specification — "the field is omitted if
+ * the domain name is under registrant management"). Fixture values are
+ * synthetic; the SHAPE mirrors a live whois.punktum.dk answer measured
+ * 2026-09-09. Pre-fix the composer fell through to `source: 'error'`, which
+ * bv-mcp reported as the retryable `whois_error` — a deterministic policy
+ * omission dressed as a transport failure.
+ */
+const PUNKTUM_REGISTRANT_MANAGED_RESPONSE = `# Hello 192.0.2.1. Your session has been logged.
+#
+# Copyright (c) 2002 - 2026 by Punktum dk A/S
+#
+# Version: 6.3.0
+
+Domain:               example.dk
+DNS:                  example.dk
+Registered:           1999-09-29
+Expires:              2026-09-30
+Registration period:  1 year
+VID:                  no
+DNSSEC:               Signed delegation
+Status:               Active
+
+Registrant
+Handle:               DATA REDACTED
+Name:                 Example ApS
+Address:              Example Street 1
+Postalcode:           1000
+City:                 Copenhagen
+Country:              DK
+
+Nameservers
+Hostname:             ns1.example.net
+Hostname:             ns2.example.net
+
+`;
+
+const PUNKTUM_NOT_FOUND_RESPONSE = `# Hello 192.0.2.1. Your session has been logged.
+#
+# Copyright (c) 2002 - 2026 by Punktum dk A/S
+
+No entries found for the selected source.
+
+`;
+
+function punktumDeps(body: string, whoisQuery = vi.fn()) {
+	const kv = makeKV();
+	whoisQuery.mockImplementation(async (server: string, query: string): Promise<string> => {
+		if (server === 'whois.iana.org') return 'whois:        whois.punktum.dk\n';
+		if (server === 'whois.punktum.dk' && query === 'example.dk') return body;
+		throw new Error(`unexpected query: ${server} ${query}`);
+	});
+	const deps: LookupDeps = { kv: kv as never, whoisQuery };
+	return deps;
+}
+
+describe('lookupRegistrar — registry omits registrar by policy (#931, .dk)', () => {
+	it('classifies a registration record WITHOUT a Registrar line as source=redacted, not error', async () => {
+		const result = await lookupRegistrar('example.dk', punktumDeps(PUNKTUM_REGISTRANT_MANAGED_RESPONSE));
+
+		expect(result.source).toBe('redacted');
+		expect(result.failureReason).toBeUndefined();
+	});
+
+	it('still surfaces the public Registered/Expires dates alongside the redacted registrar', async () => {
+		const result = await lookupRegistrar('example.dk', punktumDeps(PUNKTUM_REGISTRANT_MANAGED_RESPONSE));
+
+		expect(result.creationDate).toBe('1999-09-29');
+		expect(result.expiryDate).toBe('2026-09-30');
+		expect(result.registrar).toBeNull();
+	});
+
+	it('reports registrantPrivacy as a MEASURED false when the registrant record is present with no privacy-proxy marker', async () => {
+		const result = await lookupRegistrar('example.dk', punktumDeps(PUNKTUM_REGISTRANT_MANAGED_RESPONSE));
+
+		expect(result.registrantPrivacy).toBe(false);
+	});
+
+	it('classifies Punktum "No entries found" as notfound', async () => {
+		const result = await lookupRegistrar('example.dk', punktumDeps(PUNKTUM_NOT_FOUND_RESPONSE));
+
+		expect(result.source).toBe('notfound');
+	});
+});
+
+describe('lookupRegistrar — unmeasured registrantPrivacy reads null, never false (#931)', () => {
+	it('is null on the always-redacted short-circuit (no wire exchange happened)', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('example.de', { kv: kv as never, whoisQuery: vi.fn() });
+
+		expect(result.source).toBe('redacted');
+		expect(result.registrantPrivacy).toBeNull();
+	});
+
+	it('is null when the registry is unreachable', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('example.com', {
+			kv: kv as never,
+			whoisQuery: vi.fn(async () => {
+				throw new Error('connect ECONNREFUSED');
+			}),
+		});
+
+		expect(result.source).toBe('error');
+		expect(result.registrantPrivacy).toBeNull();
+	});
+
+	it('is null when the TLD has no WHOIS server', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('thing.totallymadeuptld', {
+			kv: kv as never,
+			whoisQuery: vi.fn(async () => '% returned 0 objects\n'),
+		});
+
+		expect(result.source).toBe('error');
+		expect(result.registrantPrivacy).toBeNull();
+	});
+
+	it('is null when the domain does not exist (there is no registrant to measure)', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('no-such-domain.com', {
+			kv: kv as never,
+			whoisQuery: vi.fn(async () => NOT_FOUND_RESPONSE),
+		});
+
+		expect(result.source).toBe('notfound');
+		expect(result.registrantPrivacy).toBeNull();
+	});
+
+	it('is null for invalid input', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('not a domain!!!', { kv: kv as never, whoisQuery: vi.fn() });
+
+		expect(result.registrantPrivacy).toBeNull();
+	});
+});
+
+describe('lookupRegistrar — concrete failureReason on source=error (#931)', () => {
+	it('reports invalid_domain for malformed input', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('not a domain!!!', { kv: kv as never, whoisQuery: vi.fn() });
+
+		expect(result).toMatchObject({ source: 'error', failureReason: 'invalid_domain' });
+	});
+
+	it('reports no_whois_server when IANA has no referral for the TLD', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('thing.totallymadeuptld', {
+			kv: kv as never,
+			whoisQuery: vi.fn(async () => '% returned 0 objects\n'),
+		});
+
+		expect(result).toMatchObject({ source: 'error', failureReason: 'no_whois_server' });
+	});
+
+	it('reports timeout when the transport times out', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('example.com', {
+			kv: kv as never,
+			whoisQuery: vi.fn(async () => {
+				throw new Error('WHOIS timeout after 5000ms');
+			}),
+		});
+
+		expect(result).toMatchObject({ source: 'error', failureReason: 'timeout' });
+	});
+
+	it('reports connect_error for any other transport throw', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('example.com', {
+			kv: kv as never,
+			whoisQuery: vi.fn(async () => {
+				throw new Error('connect ECONNREFUSED');
+			}),
+		});
+
+		expect(result).toMatchObject({ source: 'error', failureReason: 'connect_error' });
+	});
+
+	it('reports unrecognised_response when the registry answered with nothing parseable', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('example.com', {
+			kv: kv as never,
+			whoisQuery: vi.fn(async () => '% rate limit exceeded, try again later\n'),
+		});
+
+		expect(result).toMatchObject({ source: 'error', failureReason: 'unrecognised_response' });
+	});
+
+	it('carries no failureReason on a successful lookup', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('example.com', { kv: kv as never, whoisQuery: vi.fn(async () => REGISTRAR_RESPONSE) });
+
+		expect(result.source).toBe('whois');
+		expect('failureReason' in result).toBe(false);
 	});
 });

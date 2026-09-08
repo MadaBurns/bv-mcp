@@ -43,8 +43,9 @@ interface WhoisPayload {
 	updatedDate?: string | null;
 	expiryDate?: string | null;
 	registrantOrg?: string | null;
-	registrantPrivacy?: boolean;
+	registrantPrivacy?: boolean | null;
 	source: 'whois' | 'redacted' | 'notfound' | 'error';
+	failureReason?: string;
 }
 
 function makeWhoisBinding(payload: WhoisPayload) {
@@ -219,5 +220,116 @@ describe('checkRdapLookup WHOIS fallback', () => {
 		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
 		expect(reg, 'malformed shim payload should yield lookup_failed').toBeDefined();
 		expect(reg!.metadata!.registrarFailureReason).toBe('whois_error');
+	});
+});
+
+/**
+ * #931 — the `.dk` case. Punktum dk (formerly DK Hostmaster) answers on
+ * whois.punktum.dk:43 but omits `Registrar:` for registrant-managed domains by
+ * policy; the shim now classifies that as `redacted` with the public dates
+ * riding along. And on a lookup that FAILED, `registrantPrivacy` must read as
+ * unknown (null) — never a confident `false`.
+ */
+describe('checkRdapLookup WHOIS fallback — #931 (.dk / failed-lookup honesty)', () => {
+	it('never reports registrantPrivacy=false on a failed lookup (null = not measured)', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		// Old-shim shape: bare error, no detail fields at all.
+		const whoisBinding = makeWhoisBinding({ registrar: null, source: 'error' });
+
+		const result = await (await freshChecker())('example.dk', { whoisBinding });
+
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg).toBeDefined();
+		expect(reg!.metadata!.registrantPrivacy).toBeNull();
+		expect(reg!.detail).not.toContain('privacy');
+	});
+
+	it('reports registrantPrivacy=null even when a pre-#931 shim sends a confident false on its error path', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		// main-branch shim before this fix: EMPTY_REGISTRATION_DETAILS carried registrantPrivacy:false on error.
+		const whoisBinding = makeWhoisBinding({ registrar: null, registrantPrivacy: false, source: 'error' });
+
+		const result = await (await freshChecker())('example.dk', { whoisBinding });
+
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg!.metadata!.registrantPrivacy).toBeNull();
+	});
+
+	it('reports registrantPrivacy=null when no WHOIS binding is provided at all', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+
+		const result = await (await freshChecker())('example.dk');
+
+		const reg = result.findings.find(f => f.title === 'Registration details');
+		expect(reg).toBeDefined();
+		expect(reg!.metadata!.registrantPrivacy).toBeNull();
+	});
+
+	it('keeps a MEASURED registrantPrivacy=false from a successful WHOIS answer', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		const whoisBinding = makeWhoisBinding({ registrar: 'WhoisReg', registrantPrivacy: false, source: 'whois' });
+
+		const result = await (await freshChecker())('example.nz', { whoisBinding });
+
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'whois');
+		expect(reg!.metadata!.registrantPrivacy).toBe(false);
+	});
+
+	it('surfaces the shim\'s concrete failure cause as registrarFailureReason=whois_<reason>', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		const whoisBinding = makeWhoisBinding({ registrar: null, registrantPrivacy: null, source: 'error', failureReason: 'timeout' });
+
+		const result = await (await freshChecker())('example.dk', { whoisBinding });
+
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg!.metadata!.registrarFailureReason).toBe('whois_timeout');
+		expect(reg!.detail).toContain('Reason: whois_timeout');
+	});
+
+	it('distinguishes an unrouted TLD (no_whois_server) from a transport failure', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		const whoisBinding = makeWhoisBinding({ registrar: null, registrantPrivacy: null, source: 'error', failureReason: 'no_whois_server' });
+
+		const result = await (await freshChecker())('example.fakefaketld', { whoisBinding });
+
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg!.metadata!.registrarFailureReason).toBe('whois_no_whois_server');
+	});
+
+	it('falls back to the opaque whois_error when the shim sends an unrecognised failureReason token', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		const whoisBinding = makeWhoisBinding({ registrar: null, source: 'error', failureReason: 'Totally <b>Unexpected</b> Token!' });
+
+		const result = await (await freshChecker())('example.dk', { whoisBinding });
+
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg!.metadata!.registrarFailureReason).toBe('whois_error');
+	});
+
+	it('presents a registrant-managed .dk answer as redacted WITH its public dates (policy omission, not a failure)', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		// Post-fix shim shape for a Punktum registrant-managed domain.
+		const whoisBinding = makeWhoisBinding({
+			registrar: null,
+			creationDate: '1999-09-29',
+			expiryDate: '2026-09-30',
+			registrantOrg: 'Example ApS',
+			registrantPrivacy: false,
+			source: 'redacted',
+		});
+
+		const result = await (await freshChecker())('example.dk', { whoisBinding });
+
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'redacted');
+		expect(reg, 'registrar omitted by registry policy should read as redacted').toBeDefined();
+		expect(reg!.metadata!.registrarFailureReason).toBeUndefined();
+		expect(reg!.metadata!.creationDate).toBe('1999-09-29T00:00:00.000Z');
+		expect(reg!.metadata!.expirationDate).toBe('2026-09-30T00:00:00.000Z');
+		expect(reg!.metadata!.registrantPrivacy).toBe(false);
+		expect(reg!.detail).toContain('Created: 1999-09-29');
+		expect(reg!.detail).toContain('Registrar: withheld by registry');
+		// The primary finding acknowledges WHOIS answered instead of asserting the data is unavailable.
+		const primary = result.findings.find(f => f.title === 'No RDAP server found');
+		expect(primary!.detail).toContain('sourced from WHOIS');
 	});
 });

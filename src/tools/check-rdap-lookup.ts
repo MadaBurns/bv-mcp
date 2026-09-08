@@ -520,6 +520,14 @@ interface FetcherLike {
 import { z } from 'zod';
 import { parseWhoisResponse } from '@blackveil/dns-checks/whois';
 
+/**
+ * Failure tokens the bv-whois shim emits on `source: 'error'`
+ * (`packages/bv-whois/src/lookup.ts` → `WhoisFailureReason`). Closed enum on
+ * purpose: the token is echoed into finding `detail`/metadata, so an unlisted
+ * value degrades to the opaque `whois_error` rather than being echoed.
+ */
+const WhoisShimFailureReasonSchema = z.enum(['invalid_domain', 'no_whois_server', 'timeout', 'connect_error', 'unrecognised_response']);
+
 const WhoisFallbackPayloadSchema = z.object({
 	registrar: z.string().max(256).nullable(),
 	registrarIanaId: z.string().max(64).nullable().optional(),
@@ -529,8 +537,13 @@ const WhoisFallbackPayloadSchema = z.object({
 	updatedDate: z.string().max(64).nullable().optional(),
 	expiryDate: z.string().max(64).nullable().optional(),
 	registrantOrg: z.string().max(256).nullable().optional(),
-	registrantPrivacy: z.boolean().optional(),
+	// `null` = the shim never read a registrant record (#931).
+	registrantPrivacy: z.boolean().nullable().optional(),
 	source: z.enum(['whois', 'redacted', 'notfound', 'error']),
+	// Optional so pre-#931 shims (no token) and unknown tokens both fall back to
+	// `whois_error`; `.catch(undefined)` keeps a bad token from failing the whole
+	// payload (which would itself read as a transport error).
+	failureReason: WhoisShimFailureReasonSchema.optional().catch(undefined),
 });
 type WhoisFallbackPayload = z.infer<typeof WhoisFallbackPayloadSchema>;
 
@@ -653,7 +666,11 @@ function reconcileWithWhois(rdap: RegistrarOutcome, w: WhoisFallbackPayload | nu
 	if (w?.source === 'redacted') return { source: 'redacted' };
 	if (w?.source === 'notfound') return { source: 'notfound' };
 	if (w?.source === 'error') {
-		return rdap.source === 'lookup_failed' ? rdap : { source: 'lookup_failed', failureReason: 'whois_error' };
+		// Prefer the shim's concrete cause (`whois_timeout`, `whois_connect_error`,
+		// `whois_no_whois_server`, …) over the opaque `whois_error` (#931) so a
+		// consumer can tell an unrouted TLD from a refused socket.
+		const failureReason = w.failureReason ? `whois_${w.failureReason}` : 'whois_error';
+		return rdap.source === 'lookup_failed' ? rdap : { source: 'lookup_failed', failureReason };
 	}
 	// w === null (binding absent): RDAP outcome stands.
 	return rdap;
@@ -672,9 +689,19 @@ function buildWhoisFallbackFinding(domain: string, w: WhoisFallbackPayload | nul
 	const updated = normalizeWhoisDate(w?.updatedDate);
 	const expiry = normalizeWhoisDate(w?.expiryDate);
 	const registrantOrg = w?.registrantOrg ?? null;
-	const registrantPrivacy = w?.registrantPrivacy ?? false;
+	// Fail-open guard (#931): `false` is a MEASUREMENT ("record read, no privacy
+	// marker"), so it is only honoured when the shim actually read a record.
+	// Absent binding, shim error, or a missing/null field → `null` (unknown).
+	// A pre-#931 shim sent a confident `false` on its error path, hence the
+	// source gate on top of the type check.
+	const registrantPrivacy: boolean | null =
+		w && w.source !== 'error' && typeof w.registrantPrivacy === 'boolean' ? w.registrantPrivacy : null;
 	const detailParts: string[] = [];
 	if (registrar) detailParts.push(`Registrar: ${registrar}`);
+	// Registry answered but withholds registrar attribution by policy (DENIC;
+	// Punktum dk for registrant-managed .dk — #931). Say so, so the reader does
+	// not mistake a bare `Source: redacted` for a lookup that returned nothing.
+	else if (outcome.source === 'redacted') detailParts.push('Registrar: withheld by registry');
 	if (creation) detailParts.push(`Created: ${creation.display}`);
 	if (updated) detailParts.push(`Updated: ${updated.display}`);
 	if (expiry) detailParts.push(`Expires: ${expiry.display}`);
@@ -695,6 +722,7 @@ function buildWhoisFallbackFinding(domain: string, w: WhoisFallbackPayload | nul
 		updatedDate: updated?.value ?? null,
 		expirationDate: expiry?.value ?? null,
 		registrantOrg,
+		// `null` = not measured. NEVER a default `false` on a failed lookup (#931).
 		registrantPrivacy,
 	});
 }

@@ -18,19 +18,41 @@ export interface WhoisLookupResult {
 	expiryDate: string | null;
 	/** Registrant organisation/name (may be a privacy-proxy label). */
 	registrantOrg: string | null;
-	/** True when the registrant record is redacted behind a privacy/proxy service. */
-	registrantPrivacy: boolean;
+	/**
+	 * True when the registrant record is redacted behind a privacy/proxy service.
+	 * `null` = NOT MEASURED — no registrant record was read (transport error,
+	 * short-circuit, unknown TLD, domain not found). Never a confident `false`
+	 * on a path that never saw a record (#931: a failed lookup used to read as
+	 * "not private").
+	 */
+	registrantPrivacy: boolean | null;
 	source: 'whois' | 'redacted' | 'notfound' | 'error';
+	/**
+	 * Concrete cause, set iff `source === 'error'`. Lets the caller tell a
+	 * refused/timed-out socket from an unrouted TLD instead of one opaque
+	 * `whois_error` (#931).
+	 */
+	failureReason?: WhoisFailureReason;
 }
 
-/** Registration-detail fields default to absent — the registrar-only short-circuit paths carry no dates. */
+export type WhoisFailureReason = 'invalid_domain' | 'no_whois_server' | 'timeout' | 'connect_error' | 'unrecognised_response';
+
+/**
+ * Registration-detail fields default to absent — the registrar-only short-circuit
+ * paths carry no dates and MEASURED NOTHING about the registrant, so privacy is
+ * `null`, not `false`.
+ */
 const EMPTY_REGISTRATION_DETAILS = {
 	creationDate: null,
 	updatedDate: null,
 	expiryDate: null,
 	registrantOrg: null,
-	registrantPrivacy: false,
+	registrantPrivacy: null,
 } as const;
+
+function errorResult(failureReason: WhoisFailureReason): WhoisLookupResult {
+	return { registrar: null, registrarIanaId: null, ...EMPTY_REGISTRATION_DETAILS, source: 'error', failureReason };
+}
 
 export interface LookupDeps {
 	kv: KVLike;
@@ -71,7 +93,7 @@ const ALWAYS_REDACTED_TLDS = new Set<string>([
  */
 export async function lookupRegistrar(domain: string, deps: LookupDeps): Promise<WhoisLookupResult> {
 	if (typeof domain !== 'string' || !DOMAIN_RE.test(domain)) {
-		return { registrar: null, registrarIanaId: null, ...EMPTY_REGISTRATION_DETAILS, source: 'error' };
+		return errorResult('invalid_domain');
 	}
 
 	const labels = domain.toLowerCase().split('.');
@@ -82,13 +104,17 @@ export async function lookupRegistrar(domain: string, deps: LookupDeps): Promise
 	}
 
 	const server = await resolveWhoisServer(tld, deps);
-	if (!server) return { registrar: null, registrarIanaId: null, ...EMPTY_REGISTRATION_DETAILS, source: 'error' };
+	if (!server) return errorResult('no_whois_server');
 
 	let response: string;
 	try {
 		response = await deps.whoisQuery(server, domain);
-	} catch {
-		return { registrar: null, registrarIanaId: null, ...EMPTY_REGISTRATION_DETAILS, source: 'error' };
+	} catch (err) {
+		// `whoisQuery` (transport.ts) throws `WHOIS timeout after Nms` on its
+		// deadline; anything else is a socket-level failure (refused, reset,
+		// DNS, egress block).
+		const message = err instanceof Error ? err.message : String(err);
+		return errorResult(/^WHOIS timeout/i.test(message) ? 'timeout' : 'connect_error');
 	}
 
 	const parsed = parseWhoisResponse(response);
@@ -104,6 +130,20 @@ export async function lookupRegistrar(domain: string, deps: LookupDeps): Promise
 
 	if (parsed.registrar) return { registrar: parsed.registrar, registrarIanaId: parsed.registrarIanaId ?? null, ...details, source: 'whois' };
 	if (parsed.redacted) return { registrar: null, registrarIanaId: null, ...details, source: 'redacted' };
-	if (parsed.notFound) return { registrar: null, registrarIanaId: null, ...details, source: 'notfound' };
-	return { registrar: null, registrarIanaId: null, ...details, source: 'error' };
+	// No registrant record exists, so there is nothing to measure privacy on.
+	if (parsed.notFound) return { registrar: null, registrarIanaId: null, ...details, registrantPrivacy: null, source: 'notfound' };
+	// The registry answered with a REGISTRATION RECORD (dates present) that simply
+	// carries no registrar attribution. That is registry policy, not a transport
+	// failure — the same class as the DENIC short-circuit above, just discovered
+	// on the wire. Measured instance (#931): Punktum dk (.dk, whois.punktum.dk:43,
+	// referred by whois.iana.org) emits `Registered:` / `Expires:` but omits
+	// `Registrar:` for registrant-managed domains — spec:
+	// github.com/Punktum-dk/whois-service-specification ("the field is omitted
+	// if the domain name is under registrant management"). Reporting it as
+	// `error` made bv-mcp tag a deterministic answer `lookup_failed/whois_error`
+	// and retry it forever.
+	if (parsed.creationDate || parsed.expiryDate || parsed.updatedDate) {
+		return { registrar: null, registrarIanaId: null, ...details, source: 'redacted' };
+	}
+	return errorResult('unrecognised_response');
 }

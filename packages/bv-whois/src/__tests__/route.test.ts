@@ -110,7 +110,8 @@ describe('POST /lookup', () => {
 		});
 
 		expect(res.status).toBe(200);
-		expect(await res.json()).toEqual({ registrar: null, registrarIanaId: null, creationDate: null, updatedDate: null, expiryDate: null, registrantOrg: null, registrantPrivacy: false, source: 'redacted' });
+		// .de short-circuits before any wire exchange, so registrantPrivacy is UNMEASURED (null), not false (#931).
+		expect(await res.json()).toEqual({ registrar: null, registrarIanaId: null, creationDate: null, updatedDate: null, expiryDate: null, registrantOrg: null, registrantPrivacy: null, source: 'redacted' });
 	});
 
 	it('rejects body larger than 1KB', async () => {
