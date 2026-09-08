@@ -10,6 +10,7 @@
 import type { OutputFormat } from '../handlers/tool-args';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryTxtRecords, queryDnsRecords, querySrvRecords, queryMxRecords } from '../lib/dns';
+import { isNullMxRecord, parseCaaRecord, parseCaaParameters } from '@blackveil/dns-checks';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { detectProviders, matchProviderForNsHost, matchProviderForSpfInclude, matchProviderForMxHost } from './provider-guides';
 import { detectCdnFromAsn, detectHostingFromAsn } from '../lib/cdn-asn-detection';
@@ -38,8 +39,15 @@ export interface Signal {
 		| 'shadow_service'
 		| 'insecure_service'
 		| 'security_tooling_exposed'
-		| 'shared_hosting';
-	severity: 'low' | 'medium' | 'high';
+		| 'shared_hosting'
+		| 'null_mx'
+		| 'caa_no_issuance';
+	/**
+	 * `info` is a note, not a risk: it records a DNS directive that deliberately
+	 * REMOVES a dependency (RFC 7505 null MX, RFC 8659 `issue ";"`) so the absence
+	 * of a provider row is legible rather than silent.
+	 */
+	severity: 'info' | 'low' | 'medium' | 'high';
 	detail: string;
 }
 
@@ -78,14 +86,39 @@ function extractSpfIncludesFromRecord(spfRecord: string): string[] {
 	return domains;
 }
 
-/** Parse CAA record data string into tag and value. */
-function parseCaaIssuer(data: string): string | null {
-	// Human-readable format: "0 issue "letsencrypt.org""
-	const match = data.match(/^\d+\s+(issue|issuewild)\s+"?([^"]+)"?\s*$/i);
-	if (match) {
-		return match[2].toLowerCase().replace(/\.$/, '');
-	}
-	return null;
+/**
+ * Classify one CAA record for supply-chain purposes via the shared dns-checks
+ * parsers (`parseCaaRecord` + `parseCaaParameters`) rather than a local regex.
+ *
+ * Returns the issuer domain for an `issue` / `issuewild` grant (RFC 8657
+ * parameters stripped — `letsencrypt.org; validationmethods=dns-01` is a
+ * dependency on letsencrypt.org, not on that whole string), `noIssuance` for
+ * the RFC 8659 §4.2 deny-all form (`issue ";"`), which names NO provider, and
+ * `null` for every other tag or an empty value. Closes #932: the previous regex
+ * captured `;` as an issuer and rendered a CA called `;`.
+ */
+function classifyCaaRecord(data: string): { issuer: string } | { noIssuance: true; tag: string } | null {
+	const record = parseCaaRecord(data);
+	if (record === null) return null;
+	if (record.tag !== 'issue' && record.tag !== 'issuewild') return null;
+	const params = parseCaaParameters(record.value);
+	if (params.noIssuance) return { noIssuance: true, tag: record.tag };
+	const issuer = params.issuerDomain.replace(/\.$/, '');
+	return issuer.length > 0 ? { issuer } : null;
+}
+
+/**
+ * Whether a string can stand as a provider row name. Rejects empty, whitespace-only
+ * and punctuation-only strings (`''`, `';'`, `'.'`) — every degenerate name that
+ * has reached a row so far came from a DNS directive whose *value* is a symbol
+ * (RFC 7505 `0 .`, RFC 8659 `issue ";"`), and each source-specific classifier
+ * above should catch its own; this is the generic backstop so the next cousin of
+ * #286 / #932 cannot surface as a provider named `""`. Requires at least one
+ * letter or digit — the weakest test that still admits every legitimate name
+ * (hostnames, catalog names, `<domain> (self-hosted MX)` labels).
+ */
+export function isRenderableProviderName(name: string): boolean {
+	return /[\p{L}\p{N}]/u.test(name);
 }
 
 /** Determine the highest trust level for a dependency based on its sources. */
@@ -303,20 +336,33 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 	const rawNsRecords = nsSettled.status === 'fulfilled' ? nsSettled.value : [];
 	const nsHosts = rawNsRecords.map((r) => r.replace(/\.$/, '').toLowerCase());
 
-	// Extract MX exchange hosts (email-receiving providers)
+	// Extract MX exchange hosts (email-receiving providers). An RFC 7505 null MX
+	// (`0 .`) is a directive that the domain accepts NO mail — it names no
+	// provider, so it is split out here (shared `isNullMxRecord` classification
+	// from check_mx) and surfaced as a `null_mx` note below instead of a critical
+	// email-receiving row with an empty provider name (#932).
 	const rawMxRecords = mxSettled.status === 'fulfilled' ? mxSettled.value : [];
-	const mxHosts = rawMxRecords.map((r) => r.exchange.replace(/\.$/, '').toLowerCase());
+	const hasNullMx = rawMxRecords.some(isNullMxRecord);
+	const mxHosts = rawMxRecords.filter((r) => !isNullMxRecord(r)).map((r) => r.exchange.replace(/\.$/, '').toLowerCase());
 
 	// Apex A-records for the ASN-based CDN tier (resolved to origin ASN below)
 	const aRecords = aSettled.status === 'fulfilled' ? aSettled.value : [];
 
-	// Extract CAA issuers (only issue and issuewild tags)
+	// Extract CAA issuers (only issue and issuewild tags). The deny-all form
+	// (`issue ";"` / `issuewild ";"`) authorises NO CA and so yields no
+	// certificate-authority row; it is noted as `caa_no_issuance` below.
 	const rawCaaRecords = caaSettled.status === 'fulfilled' ? caaSettled.value : [];
 	const caaIssuers: string[] = [];
+	const caaNoIssuanceTags: string[] = [];
 	for (const record of rawCaaRecords) {
-		const issuer = parseCaaIssuer(record);
-		if (issuer && !caaIssuers.includes(issuer)) {
-			caaIssuers.push(issuer);
+		const classified = classifyCaaRecord(record);
+		if (classified === null) continue;
+		if ('noIssuance' in classified) {
+			if (!caaNoIssuanceTags.includes(classified.tag)) caaNoIssuanceTags.push(classified.tag);
+			continue;
+		}
+		if (!caaIssuers.includes(classified.issuer)) {
+			caaIssuers.push(classified.issuer);
 		}
 	}
 
@@ -345,6 +391,9 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 	const providerMap = new Map<string, { roles: Set<string>; sources: Set<string> }>();
 
 	function addDependency(providerName: string, source: string): void {
+		// Generic backstop (see isRenderableProviderName): a name with no letter or
+		// digit is a parsing artefact, never a vendor. Drop it rather than count it.
+		if (!isRenderableProviderName(providerName)) return;
 		const existing = providerMap.get(providerName);
 		if (existing) {
 			existing.roles.add(sourceToRole(source));
@@ -543,6 +592,28 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 		});
 	}
 
+	// Directive notes — a dependency that DNS explicitly says does not exist.
+	// Emitted as `info` so the missing row is legible, never as risk (#932).
+	if (hasNullMx) {
+		const conflict =
+			mxHosts.length > 0
+				? ` It is published alongside ${mxHosts.length} other MX record${mxHosts.length === 1 ? '' : 's'}, which RFC 7505 forbids — the null MX is dropped and the remaining exchanges are mapped as usual.`
+				: ' No email-receiving provider dependency exists.';
+		signals.push({
+			type: 'null_mx',
+			severity: 'info',
+			detail: `Null MX record (RFC 7505): the domain explicitly declares it accepts no inbound mail.${conflict}`,
+		});
+	}
+	if (caaNoIssuanceTags.length > 0) {
+		const scope = caaNoIssuanceTags.map((tag) => `${tag} ";"`).join(' and ');
+		signals.push({
+			type: 'caa_no_issuance',
+			severity: 'info',
+			detail: `CAA ${scope} (RFC 8659 §4.2): no certificate authority is authorised to issue for this scope. This is a deny-all directive, not a CA dependency.`,
+		});
+	}
+
 	// Concentration risk: provider appears in 3+ roles
 	for (const dep of dependencies) {
 		if (dep.roles.length >= 3) {
@@ -711,7 +782,7 @@ export function formatSupplyChain(result: SupplyChainMap, format: OutputFormat =
 	if (result.signals.length > 0) {
 		lines.push('## Risk Signals');
 		for (const signal of result.signals) {
-			const icon = signal.severity === 'high' ? '🔴' : signal.severity === 'medium' ? '🟠' : '🟡';
+			const icon = signal.severity === 'high' ? '🔴' : signal.severity === 'medium' ? '🟠' : signal.severity === 'low' ? '🟡' : 'ℹ️';
 			lines.push(`${icon} [${signal.severity.toUpperCase()}] ${sanitizeOutputText(signal.detail, 300)}`);
 		}
 	}

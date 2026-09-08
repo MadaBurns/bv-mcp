@@ -113,6 +113,10 @@ export type {
 export { parseCaaParameters } from './checks/caa-analysis';
 export type { CaaParameters } from './checks/caa-analysis';
 
+// RFC 7505 null-MX classification, shared with Worker-side consumers (map_supply_chain)
+// so a null MX is never re-parsed — and mis-rendered as a provider — outside check_mx.
+export { isNullMxRecord } from './checks/mx-analysis';
+
 // Scoring classifiers
 export { classifyDmarc, appendDmarcCleanInfo } from './scoring/classifiers/dmarc';
 export type { DmarcFacts } from './scoring/classifiers/dmarc';
