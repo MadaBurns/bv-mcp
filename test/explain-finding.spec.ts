@@ -730,9 +730,10 @@ describe('DETAIL_SIGNATURES catalog integrity', () => {
 		}
 	});
 
-	it('no SPF template offers "~all" as an acceptable terminator under DMARC enforcement (#909)', async () => {
-		// Sweep every SPF narrative (bucket entries AND detail signatures) for the inverted
-		// posture #927 removed from check_spf, so a future template edit cannot drift back.
+	it('no template offers "~all" as an acceptable terminator under DMARC enforcement (#909)', async () => {
+		// Sweep EVERY narrative (all bucket entries AND all detail signatures, not just SPF — a
+		// DMARC-bucket template could reintroduce it) for the inverted posture #927 removed
+		// from check_spf, so a future template edit cannot drift back.
 		const { EXPLANATIONS, DETAIL_SIGNATURES } = await getData();
 		const inverted = [
 			/~all["”]? (?:alongside|with|when|under) an? enforcing DMARC/i,
@@ -743,14 +744,12 @@ describe('DETAIL_SIGNATURES catalog integrity', () => {
 		];
 		const narratives: Array<[string, string]> = [];
 		for (const [key, entry] of Object.entries(EXPLANATIONS)) {
-			if (!key.startsWith('SPF_')) continue;
 			for (const field of ['explanation', 'recommendation', 'genericExplanation', 'genericRecommendation'] as const) {
 				const value = entry[field];
 				if (value) narratives.push([`${key}.${field}`, value]);
 			}
 		}
 		for (const rule of DETAIL_SIGNATURES) {
-			if (rule.checkType !== 'SPF') continue;
 			narratives.push([`${rule.id}.explanation`, rule.template.explanation]);
 			narratives.push([`${rule.id}.recommendation`, rule.template.recommendation]);
 		}

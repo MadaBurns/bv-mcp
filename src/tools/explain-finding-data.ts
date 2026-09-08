@@ -683,7 +683,7 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		adverseConsequences:
 			'Spoofing and phishing from the domain become trivial, and legitimate mail may also be rejected when SPF PermErrors.',
 		recommendation:
-			'Remove "+all" (use "-all", or "~all" only while DMARC is still at p=none and senders are being inventoried), and consolidate includes/flattening so the record stays under 10 DNS lookups (RFC 7208 §4.6.4).',
+			'Remove "+all" (switch to "~all" immediately as a stopgap, then "-all" once every legitimate sender is validated), and consolidate includes/flattening so the record stays under 10 DNS lookups (RFC 7208 §4.6.4).',
 		genericExplanation:
 			'A critical SPF problem was reported. The finding detail supplied with this request is the authoritative description of what was observed — it does not match a defect this library recognises, so no specific cause is asserted here.',
 		genericRecommendation:
@@ -1297,7 +1297,7 @@ export const DETAIL_SIGNATURES: DetailSignatureRule[] = [
 			adverseConsequences:
 				'Phishing that appears authenticated is trivial to send, and an SPF-aligned pass can satisfy DMARC, defeating enforcement entirely.',
 			recommendation:
-				'Replace "+all" with "-all" (hard fail) after confirming every legitimate sending source is listed, or "~all" as an interim step while DMARC is still at p=none and senders are being inventoried.',
+				'Replace "+all" with "~all" immediately as a stopgap — it is safer than "+all" under any DMARC policy — then move to "-all" (hard fail) once every legitimate sending source is listed and validated.',
 			references: ['https://datatracker.ietf.org/doc/html/rfc7208#section-5.1', 'https://datatracker.ietf.org/doc/html/rfc7208'],
 		},
 	},
@@ -1389,7 +1389,7 @@ export const DETAIL_SIGNATURES: DetailSignatureRule[] = [
 			adverseConsequences:
 				'Forged mail from unlisted hosts produces no SPF failure, weakening both SPF and any DMARC decision that depends on it.',
 			recommendation:
-				'Append an explicit terminator: "-all" once legitimate senders are validated, or "~all" as an interim step while DMARC is still at p=none.',
+				'Append an explicit terminator: "~all" immediately as a stopgap, then "-all" once every legitimate sender is validated.',
 			references: ['https://datatracker.ietf.org/doc/html/rfc7208#section-5.1'],
 		},
 	},
