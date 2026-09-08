@@ -183,6 +183,21 @@ describe('explainFinding', () => {
 		expect(result.severity).toBe('low');
 	});
 
+	it('SPF_SOFT_FAIL follows the check posture: ~all is interim under p=none, -all once DMARC enforces (#909)', async () => {
+		// #927 made check_spf report ~all as `info` under explicit p=none and `low` with a
+		// "move to -all" recommendation at enforcement. The template used to say the opposite
+		// ("the recommended terminator when an enforcing DMARC policy handles failures").
+		const { explainFinding } = await getModule();
+		const result = explainFinding('SPF', 'low', 'SPF uses "~all" while DMARC is enforcing.');
+		expect(result.matchedSignature).toBe('SPF_SOFT_FAIL');
+		const text = `${result.explanation} ${result.recommendation}`;
+		expect(text).not.toMatch(/recommended terminator when an enforcing DMARC/i);
+		expect(text).not.toMatch(/keep "~all" and publish a DMARC policy/i);
+		expect(result.recommendation).toMatch(/p=none/);
+		expect(result.recommendation).toMatch(/switch to "-all"/);
+		expect(result.explanation).toMatch(/does not guarantee rejection/i);
+	});
+
 	it('returns the permissive-all signature for +all', async () => {
 		const { explainFinding } = await getModule();
 		const result = explainFinding('SPF', 'critical', 'SPF record uses +all which allows any server');
@@ -668,7 +683,7 @@ describe('explainFinding details handling', () => {
 		const info = explainFinding(
 			'SPF',
 			'info',
-			'SPF record uses "~all" (soft fail) which is the recommended setting when DMARC enforcement is active',
+			'SPF uses "~all" while DMARC is in monitoring mode (p=none). Keep soft fail while discovering legitimate senders and reviewing aggregate reports; plan "-all" as part of the move to enforcement after validating forwarding paths.',
 		);
 		expect(info.matchedSignature).toBeUndefined();
 
@@ -712,6 +727,37 @@ describe('DETAIL_SIGNATURES catalog integrity', () => {
 		const { DETAIL_SIGNATURES } = await getData();
 		for (const rule of DETAIL_SIGNATURES) {
 			expect(rule.pattern.global, `${rule.id} pattern must not use /g`).toBe(false);
+		}
+	});
+
+	it('no template offers "~all" as an acceptable terminator under DMARC enforcement (#909)', async () => {
+		// Sweep EVERY narrative (all bucket entries AND all detail signatures, not just SPF — a
+		// DMARC-bucket template could reintroduce it) for the inverted posture #927 removed
+		// from check_spf, so a future template edit cannot drift back.
+		const { EXPLANATIONS, DETAIL_SIGNATURES } = await getData();
+		const inverted = [
+			/~all["”]? (?:alongside|with|when|under) an? enforcing DMARC/i,
+			/keep ["“]?~all["”]? (?:only )?(?:when|while|and) [^.]*?(?:quarantine|reject)/i,
+			/~all["”]? while a DMARC policy of quarantine/i,
+			/recommended terminator when an enforcing DMARC/i,
+			/acceptable (?:alongside|with|under) an? enforcing DMARC/i,
+		];
+		const narratives: Array<[string, string]> = [];
+		for (const [key, entry] of Object.entries(EXPLANATIONS)) {
+			for (const field of ['explanation', 'recommendation', 'genericExplanation', 'genericRecommendation'] as const) {
+				const value = entry[field];
+				if (value) narratives.push([`${key}.${field}`, value]);
+			}
+		}
+		for (const rule of DETAIL_SIGNATURES) {
+			narratives.push([`${rule.id}.explanation`, rule.template.explanation]);
+			narratives.push([`${rule.id}.recommendation`, rule.template.recommendation]);
+		}
+		expect(narratives.length).toBeGreaterThan(0);
+		for (const [where, text] of narratives) {
+			for (const pattern of inverted) {
+				expect(text, `${where} matches ${pattern}`).not.toMatch(pattern);
+			}
 		}
 	});
 
