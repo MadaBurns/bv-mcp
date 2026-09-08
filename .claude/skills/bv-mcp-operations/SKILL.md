@@ -112,7 +112,7 @@ Detail for the bindings whose Purpose cell in CLAUDE.md's table is a summary.
 
 ## Analytics
 
-Eight event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `tool_call`, `rate_limit`, `session` — plus `degradation` (e.g. `kv_fallback` from `session.ts` on a KV write throw, `quota_shard_salt_missing` from the sharded quota path), `queue_batch`, `tail`, and `quota_shard` (emitted from `execute.ts` when quota sharding is enabled). Queries in `analytics-queries.ts` cover the four core types plus `quota_shard` (`queryQuotaShardSkew`), `degradation` (binding-degradation alert), `queue_batch` (queue-failure alert), and `tail` (fatal-exception alert) — all wired into the 15-min cron in `scheduled.ts`. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan`. Optional — requires `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`.
+Eight event indexes are emitted (`analytics.ts`): four core — `mcp_request`, `tool_call`, `rate_limit`, `session` — plus `degradation` (e.g. `kv_fallback` from `session.ts` on a KV write throw, `quota_shard_salt_missing` from the sharded quota path), `queue_batch`, `tail`, and `quota_shard` (emitted from `execute.ts` when quota sharding is enabled). Queries in `analytics-queries.ts` cover the four core types plus `quota_shard` (`queryQuotaShardSkew`), `degradation` (binding-degradation alert), `queue_batch` (queue-failure alert), and `tail` (fatal-exception alert) — all wired into the 15-min cron in `scheduled.ts`. Scheduled handler (`scheduled.ts`) every 15 min: anomaly alerts + `handleFuzzingScan` + `handleClientIpHeaderAudit` (D1 `mcp_access_log`, #896 — see "Public client-IP header audit"). Optional — the AE lanes require `CF_ACCOUNT_ID` + `CF_ANALYTICS_TOKEN` + `ALERT_WEBHOOK_URL`; the client-IP lane needs only `INTELLIGENCE_DB` + a webhook.
 
 **Blob layout** (keep in sync when adding dimensions):
 
@@ -142,6 +142,13 @@ read-only to detect loss of `cf-connecting-ip` (#896). It queries public access-
 counts using the database's epoch-second timestamps and prints no addresses or principals.
 At least 20 observations are required; more than 5% marked `no-cf-header` exits 1. Sparse,
 malformed, or unavailable evidence exits 2, never healthy. The default window is one hour,
-bounded to at most 168 hours. This is an operator audit, not an automatically scheduled alert.
+bounded to at most 168 hours. Since the #896 repo-side fix the same SQL and thresholds (SSOT:
+`src/lib/client-ip-audit.ts`; the script carries a parity-pinned copy) also run on the 15-min
+cron as `handleClientIpHeaderAudit` (`src/scheduled.ts`, its own `waitUntil` beside
+`handleFuzzingScan`, D1-backed so it does NOT need the AE token): over the last 1h of public-door
+rows, `total >= 20` and `missing/total > 0.05` pages `client_ip_header_missing` (warning, or
+critical above 50%) with aggregates only, then arms a 6h KV cooldown (`client-ip-audit:alerted`
+in `RATE_LIMIT`). `total < 20` is logged as `unknown`, never healthy. Measured live 2026-09-09
+before the zone fix: 24h missing ratio 0.944 (51/54), 168h 0.795 (321/404).
 A failure calls for a zone managed-transform/request-header/route review; do not substitute
 `x-forwarded-for` or analytics locality hashes into enforcement identities.
