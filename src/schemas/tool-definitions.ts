@@ -241,7 +241,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_ssl: {
 		description:
-			'Check the HTTPS/TLS posture of a domain: HTTPS reachability, HSTS policy, and HTTP-to-HTTPS redirect. Also returns certificate metadata (issuer, expiry date, days remaining, SAN count) read from public Certificate Transparency logs — this describes the most recently LOGGED certificate, which may differ from the one currently served. Negotiated TLS protocol versions and cipher suites are NOT returned. Use to verify HTTPS/HSTS configuration and certificate issuer/expiry.',
+			'Check the HTTPS/TLS posture of a domain: HTTPS reachability, HSTS policy, and HTTP-to-HTTPS redirect. Also returns certificate metadata (issuer, expiry date, days remaining, SAN count) read from public Certificate Transparency logs — this describes the most recently LOGGED certificate, which may differ from the one currently served. Origin TLS protocol support and cipher suites are not assessed; legacy-TLS detection is withdrawn because the probe cannot observe the origin handshake. Use to verify HTTPS/HSTS configuration and certificate issuer/expiry.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',

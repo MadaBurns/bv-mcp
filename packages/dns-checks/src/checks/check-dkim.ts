@@ -124,8 +124,8 @@ export async function checkDKIM(
 
 			// Validate each DKIM record
 			for (const record of result.records) {
-				const isRevoked = /p=\s*;/i.test(record) || /p=\s*$/i.test(record);
 				const publicKey = getDkimTagValue(record, 'p');
+				const isRevoked = publicKey === '';
 
 				// Check for empty public key (revoked)
 				if (isRevoked) {
@@ -206,7 +206,7 @@ export async function checkDKIM(
 							createFinding(
 								'dkim',
 								`Malformed DKIM key: ${result.selector}`,
-								'medium',
+								'high',
 								`DKIM selector "${result.selector}" declares a ~${keyAnalysis.bits}-bit RSA key but the published key material is truncated or incomplete in DNS — commonly caused by splitting the key across multiple TXT records instead of one. DKIM signature verification fails until the full public key is republished as a single TXT record (RFC 6376 §3.6.2).`,
 								{
 									estimatedBits: keyAnalysis.bits,
@@ -220,7 +220,7 @@ export async function checkDKIM(
 						const severityMsg =
 							keyAnalysis.strength === 'critical'
 								? 'weak'
-								: keyAnalysis.strength === 'high'
+								: keyAnalysis.bits === 1024
 									? 'legacy'
 									: keyAnalysis.strength === 'medium'
 										? 'below recommended'
@@ -228,17 +228,15 @@ export async function checkDKIM(
 						const descriptions: Record<string, string> = {
 							critical: `DKIM RSA key for "${result.selector}" is ${severityMsg} (~${keyAnalysis.bits} bits). Upgrade to 2048-bit RSA or use Ed25519 for better security.`,
 							high: `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). Consider upgrading to 2048-bit RSA or Ed25519.`,
-							medium: `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). Major providers recommend 4096-bit RSA or Ed25519.`,
+							medium: `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). RFC 8301 §3.2 requires at least 1024-bit RSA and recommends at least 2048 bits. Plan an upgrade to 2048-bit RSA or Ed25519 where supported; if your mail provider manages this key, ask about its supported key sizes.`,
 							info: `DKIM RSA key for "${result.selector}" is strong (${keyAnalysis.bits} bits).`,
 						};
 
 						if (keyAnalysis.strength !== 'info') {
-							// SaaS-delegated CNAME chains downgrade high → medium and
-							// reframe the description to credit the provider.
-							let severity = keyAnalysis.strength;
+							// Delegation changes who can remediate, not the RFC key-size policy.
+							const severity = keyAnalysis.strength;
 							let description = descriptions[keyAnalysis.strength];
-							if (delegatedTo && severity === 'high') {
-								severity = 'medium';
+							if (delegatedTo && severity === 'medium') {
 								description = `DKIM RSA key for "${result.selector}" is ${severityMsg} (${keyAnalysis.bits} bits). The selector is CNAME-delegated to ${delegatedTo} — only ${delegatedTo} can rotate this key; raise it with your provider.`;
 							}
 							findings.push(
@@ -359,8 +357,16 @@ export async function checkDKIM(
 		}
 	}
 
-	// If multiple found selectors are ALL revoked and none have valid keys,
-	// this is a non-sending domain posture — downgrade to info
+	// Retiring an old selector alongside an active one keeps its existing medium
+	// rating. Only a revoked-only observation gets the stronger unavailable-key rating.
+	if (!hasValidKey) {
+		for (const finding of findings) {
+			if (finding.title.startsWith('Revoked DKIM key:')) finding.severity = 'high';
+		}
+	}
+
+	// Consolidate revoked selectors without claiming that the domain does not send.
+	// Selector probing cannot rule out active keys under other names.
 	if (foundSelectors.length > 1 && !hasValidKey) {
 		const revokedCount = findings.filter((f) => f.title.startsWith('Revoked DKIM key:')).length;
 		// Remove individual revoked findings
@@ -372,9 +378,9 @@ export async function checkDKIM(
 		findings.push(
 			createFinding(
 				'dkim',
-				'DKIM keys revoked (non-sending)',
-				'info',
-				`All ${revokedCount} DKIM selector(s) have revoked keys (empty p= tag). This is expected for domains that do not send email.`,
+				'DKIM keys revoked',
+				'high',
+				`All ${revokedCount} observed DKIM selector(s) have revoked keys (empty p= tag) and cannot verify signatures. Other unprobed selectors may still be active; confirm the selectors used by current senders.`,
 			),
 		);
 	}

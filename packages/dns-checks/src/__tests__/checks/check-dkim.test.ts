@@ -16,10 +16,7 @@ function createMockDNS(records: Record<string, string[]>): DNSQueryFunction {
  * - `cname[name]` returns the CNAME target for that name when type === 'CNAME'.
  *   TXT queries for a CNAME-owning name will return the TXT of the resolved target.
  */
-function createCnameAwareDNS(
-	txt: Record<string, string[]>,
-	cname: Record<string, string>,
-): DNSQueryFunction {
+function createCnameAwareDNS(txt: Record<string, string[]>, cname: Record<string, string>): DNSQueryFunction {
 	function resolveTxt(name: string, depth = 0): string[] {
 		if (depth > 5) return [];
 		if (cname[name] !== undefined) return resolveTxt(cname[name], depth + 1);
@@ -55,7 +52,7 @@ describe('checkDKIM', () => {
 			'default._domainkey.example.com': ['v=DKIM1; p=;'],
 		});
 		const result = await checkDKIM('example.com', queryDNS);
-		// Single revoked key = medium finding
+		// Single revoked key = high finding
 		expect(result.findings.some((f) => f.title.includes('Revoked DKIM key'))).toBe(true);
 	});
 
@@ -181,7 +178,7 @@ describe('checkDKIM', () => {
 		expect(versionFinding?.metadata?.delegatedTo).toBe('SendGrid');
 	});
 
-	it('downgrades 1024-bit RSA finding severity high → medium when CNAME-delegated to SaaS', async () => {
+	it('rates CNAME-delegated 1024-bit RSA medium and directs remediation to the provider', async () => {
 		// 1024-bit RSA key (~150-230 chars)
 		const legacyKey =
 			'MIGfMA0GCSqGSIb3DQEBAQUFAAOCDg8AMIIBCgKCAQEA1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012';
@@ -196,12 +193,12 @@ describe('checkDKIM', () => {
 		const result = await checkDKIM('example.com', queryDNS);
 		const legacyFinding = result.findings.find((f) => /Legacy RSA key/i.test(f.title));
 		expect(legacyFinding).toBeDefined();
-		// Downgraded from high to medium because stripe (or any tenant) can't fix SendGrid's key
+		// The same medium key-size rating applies to TXT and CNAME; ownership changes the advice.
 		expect(legacyFinding?.severity).toBe('medium');
 		expect(legacyFinding?.metadata?.delegatedTo).toBe('SendGrid');
 	});
 
-	it('preserves high severity for 1024-bit RSA when NOT CNAME-delegated', async () => {
+	it('rates TXT-hosted 1024-bit RSA medium with provider-aware advice', async () => {
 		const legacyKey =
 			'MIGfMA0GCSqGSIb3DQEBAQUFAAOCDg8AMIIBCgKCAQEA1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012';
 		const queryDNS = createMockDNS({
@@ -210,7 +207,7 @@ describe('checkDKIM', () => {
 		const result = await checkDKIM('example.com', queryDNS);
 		const legacyFinding = result.findings.find((f) => /Legacy RSA key/i.test(f.title));
 		expect(legacyFinding).toBeDefined();
-		expect(legacyFinding?.severity).toBe('high');
+		expect(legacyFinding?.severity).toBe('medium');
 		expect(legacyFinding?.metadata?.delegatedTo).toBeUndefined();
 	});
 

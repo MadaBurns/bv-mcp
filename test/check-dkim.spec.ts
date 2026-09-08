@@ -13,7 +13,7 @@ function mockDkimRecords(selectorRecords: Record<string, string[]>) {
 		for (const [selector, records] of Object.entries(selectorRecords)) {
 			const expectedName = `${selector}._domainkey.example.com`;
 			if (queriedName === expectedName) {
-				answers = records.map(data => ({
+				answers = records.map((data) => ({
 					name: expectedName,
 					type: RecordType.TXT,
 					TTL: 300,
@@ -64,7 +64,7 @@ describe('checkDkim', () => {
 			'MIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEA2a2rwplBCXGHDzhtSF5cz+DfOpZB3Q9nDy0NxQyL8iB4xQoT0Q5Ka0K9KpV4LK3+KZvP5U9ZvL1yR5pZmqZLa5N4H1s7cQ7YQ0+C1jKSRQG7jP8QF1dPLqVfE1pZe7cQ8Kxc6c4PfD8QK9pC7Z1W0K8M3K7N2R4L9Y5L8B3P4N7U5Q6K0O5M5Y6W8P1R7T9A8K6S4P8b0tVm7dC1wYzV6+C2T3U4V5W6X7Y8Z9A0B1C2D3E4F5G6H7I8J9K0L1M2N3O4P5Q6R7S8T9U0V1W2X3Y4z9zzAABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPQQRRSSTTUUVVWWXXYYZZ00112233445566778899aabbccddeeffgghhiijjkkllmmnnooppqqrrssttuuvvwwxxyyzz0011223344556677889900AABBCCDDEEFFGGHHIIJJKKLLMMNNOOPPQQRRSSTTUUVVWWXXYYZZaabbccddeeffgghhiijjkkllmmnnooppqqrrssttuuvvwwxxyyzz';
 		mockDkimRecords({ google: [`v=DKIM1; k=rsa; p=${strongKey}`] });
 		const result = await run();
-		const finding = result.findings.find(f => f.severity === 'info' && /configured|found/i.test(f.title));
+		const finding = result.findings.find((f) => f.severity === 'info' && /configured|found/i.test(f.title));
 		expect(finding).toBeDefined();
 		expect(finding!.title).toMatch(/DKIM configured/i);
 		expect(finding!.metadata).toBeDefined();
@@ -72,20 +72,20 @@ describe('checkDkim', () => {
 		expect(finding!.metadata?.selectorsFound).toContain('google');
 	});
 
-	it('returns medium finding for revoked key (empty p=)', async () => {
+	it('returns high finding for revoked key (empty p=)', async () => {
 		mockDkimRecords({ google: ['v=DKIM1; k=rsa; p=;'] });
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Revoked'));
 		expect(f).toBeDefined();
-		expect(f!.severity).toBe('medium');
+		expect(f!.severity).toBe('high');
 	});
 
-	it('returns medium finding for revoked key (p= at end)', async () => {
+	it('returns high finding for revoked key (p= at end)', async () => {
 		mockDkimRecords({ google: ['v=DKIM1; k=rsa; p='] });
 		const r = await run();
 		const f = r.findings.find((f) => f.title.includes('Revoked'));
 		expect(f).toBeDefined();
-		expect(f!.severity).toBe('medium');
+		expect(f!.severity).toBe('high');
 	});
 
 	it('returns medium finding for unknown key type', async () => {
@@ -157,18 +157,18 @@ describe('checkDkim', () => {
 		expect(keyTypeFinding).toBeDefined();
 	});
 
-	it('treats all-revoked selectors as non-sending domain posture', async () => {
+	it('consolidates revoked selectors without assuming a non-sending domain', async () => {
 		mockDkimRecords({
 			google: ['v=DKIM1; k=rsa; p='],
 			selector1: ['v=DKIM1; k=rsa; p=;'],
 			default: ['v=DKIM1; p='],
 		});
 		const r = await run();
-		// Should produce a single info finding instead of 3 medium findings
+		// One high finding; more revoked selectors do not compound the penalty.
 		expect(r.findings).toHaveLength(1);
-		expect(r.findings[0].severity).toBe('info');
-		expect(r.findings[0].title).toContain('non-sending');
-		expect(r.findings[0].detail).toContain('3 DKIM selector(s)');
+		expect(r.findings[0].severity).toBe('high');
+		expect(r.findings[0].title).toBe('DKIM keys revoked');
+		expect(r.findings[0].detail).toContain('3 observed DKIM selector(s)');
 	});
 
 	it('keeps revoked findings when mixed with valid keys', async () => {
@@ -204,7 +204,7 @@ describe('checkDkim', () => {
 		expect(finding!.metadata?.estimatedBits).toBe(512);
 	});
 
-	it('detects legacy RSA 1024-bit key (<230 chars) with high severity', async () => {
+	it('detects legacy RSA 1024-bit key (<230 chars) with medium severity', async () => {
 		// Simulates a 1024-bit RSA key (150-230 base64 chars)
 		const legacyKey =
 			'MIGfMA0GCSqGSIb3DQEBAQUFAAOCDg8AMIIBCgKCAQEA1234567890123456789012345678901234567890123456789012345678901234567890123456789012345678901234567890123456789012';
@@ -212,7 +212,7 @@ describe('checkDkim', () => {
 		const r = await run();
 		const finding = r.findings.find((f) => /legacy|1024/i.test(f.title));
 		expect(finding).toBeDefined();
-		expect(finding!.severity).toBe('high');
+		expect(finding!.severity).toBe('medium');
 		expect(finding!.metadata?.estimatedBits).toBe(1024);
 	});
 
@@ -226,7 +226,7 @@ describe('checkDkim', () => {
 		const r = await run();
 		const legacyFindings = r.findings.filter((f) => /Legacy RSA key/i.test(f.title));
 		expect(legacyFindings).toHaveLength(1);
-		expect(legacyFindings[0].severity).toBe('high');
+		expect(legacyFindings[0].severity).toBe('medium');
 
 		const consolidated = r.findings.find((f) => /consolidated/i.test(f.title));
 		expect(consolidated).toBeDefined();

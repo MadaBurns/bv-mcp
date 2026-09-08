@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { IN_MEMORY_CACHE } from '../src/lib/cache';
+import { TLS_VERSION_ENRICHMENT_ENABLED } from '../src/lib/tls-probe-binding';
 import type { AnalyticsClient } from '../src/lib/analytics';
 
 afterEach(() => {
@@ -117,29 +118,50 @@ describe('R1 binding-degradation sink wiring (tls-probe path via handleToolsCall
 	 * We only need the probe path to fail to assert the sink fires; the underlying
 	 * SSL DNS/HTTP fetches are irrelevant to the degradation wiring. We force the
 	 * probe binding to 5xx and assert the tls_probe degradation event is emitted.
+	 *
+	 * ⚠️ Origin TLS-version enrichment is WITHDRAWN (`TLS_VERSION_ENRICHMENT_ENABLED`
+	 * = false): check_ssl short-circuits before `callTlsProbe`, so the probe is never
+	 * dispatched and this seam is unreachable. Rather than delete the emission gate —
+	 * which would let the wiring rot silently and resurface as a telemetry blind spot
+	 * the day enrichment is restored — the two expectations below are mutually
+	 * exclusive on the flag: exactly one runs, so flipping the flag back on
+	 * automatically re-arms the emission gate instead of leaving a dead test behind.
 	 */
 	function tlsProbeStatus(status: number) {
 		return { fetch: vi.fn(async () => new Response(JSON.stringify({ error: 'x' }), { status })) };
 	}
 
-	it('emits a `degradation` event (binding_5xx, component=tls_probe) on a present-but-5xx probe binding', async () => {
+	/** Drive check_ssl through the dispatch seam with a present-but-5xx probe binding. */
+	async function callCheckSslWith5xxProbe(domain: string) {
 		const { client, emit } = fakeAnalytics();
+		const binding = tlsProbeStatus(502);
 		// Keep the SSL check's own fetches deterministic — the probe uses the
 		// binding's fetch (not global), so a simple OK response is enough here.
 		globalThis.fetch = vi.fn(async () => new Response('OK', { status: 200 })) as unknown as typeof fetch;
 		const { handleToolsCall } = await import('../src/handlers/tools');
-		await handleToolsCall(
-			{ name: 'check_ssl', arguments: { domain: 'tlsfail-probe.com' } },
-			undefined,
-			{
-				tlsProbeBinding: tlsProbeStatus(502),
-				tlsProbeAuthToken: 'tls-probe-degradation-key-32-bytes-minimum',
-				analytics: client,
-				onBindingDegradation: sinkFromAnalytics(client),
-			},
-		);
-		expect(emit).toHaveBeenCalledWith(
-			expect.objectContaining({ degradationType: 'binding_5xx', component: 'tls_probe' }),
-		);
-	});
+		await handleToolsCall({ name: 'check_ssl', arguments: { domain } }, undefined, {
+			tlsProbeBinding: binding,
+			tlsProbeAuthToken: 'tls-probe-degradation-key-32-bytes-minimum',
+			analytics: client,
+			onBindingDegradation: sinkFromAnalytics(client),
+		});
+		return { emit, binding };
+	}
+
+	it.skipIf(!TLS_VERSION_ENRICHMENT_ENABLED)(
+		'emits a `degradation` event (binding_5xx, component=tls_probe) on a present-but-5xx probe binding',
+		async () => {
+			const { emit } = await callCheckSslWith5xxProbe('tlsfail-probe.com');
+			expect(emit).toHaveBeenCalledWith(expect.objectContaining({ degradationType: 'binding_5xx', component: 'tls_probe' }));
+		},
+	);
+
+	it.skipIf(TLS_VERSION_ENRICHMENT_ENABLED)(
+		'stays SILENT while TLS-version enrichment is withdrawn — the probe is never dispatched, so nothing can degrade',
+		async () => {
+			const { emit, binding } = await callCheckSslWith5xxProbe('tls-withdrawn-probe.com');
+			expect(binding.fetch).not.toHaveBeenCalled();
+			expect(emit).not.toHaveBeenCalled();
+		},
+	);
 });

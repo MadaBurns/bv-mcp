@@ -145,13 +145,13 @@ describe('scan_domain DANE-HTTPS pin verification is kill-switched on the scan p
 		expect(wouldMismatch.result.score.overall!).toBeGreaterThan(64);
 	});
 
-	it('the probe is consulted ONLY by `ssl`: with a TLSA record present, DANE spends no probe call', async () => {
+	it('both intercepted probe consumers stay disabled when a TLSA record is present', async () => {
 		mockCleanScan(() => LEAF_SPKI_SHA256);
 		const binding = certProbe();
 		await daneFor('danehost.com', withProbe(binding));
-		expect(binding.fetch).toHaveBeenCalledOnce();
+		expect(binding.fetch).not.toHaveBeenCalled();
 		const hosts = binding.fetch.mock.calls.map(([input]) => new URL(String(input)).searchParams.get('host'));
-		expect(hosts).toEqual(['danehost.com']);
+		expect(hosts).toEqual([]);
 	});
 
 	it('binding absent → 95 present-not-verified (self-host posture), no probe metadata at all', async () => {
@@ -188,10 +188,10 @@ describe('scan_domain DANE-HTTPS pin verification is kill-switched on the scan p
 		expectIntercepted(b.check);
 	});
 
-	it('no TLSA anywhere → the probe is only ever consulted by `ssl` (DANE stays lazy)', async () => {
+	it('neither SSL nor DANE consults the intercepted probe without TLSA records', async () => {
 		mockCleanScan(() => null);
 		const binding = certProbe();
 		await daneFor('danelazy.com', withProbe(binding));
-		expect(binding.fetch).toHaveBeenCalledOnce();
+		expect(binding.fetch).not.toHaveBeenCalled();
 	});
 });

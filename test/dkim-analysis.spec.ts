@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { analyzeKeyStrength, consolidateSelectorProbeKeyStrengthFindings, getDkimTagValue } from '../packages/dns-checks/src/checks/dkim-analysis';
+import {
+	analyzeKeyStrength,
+	consolidateSelectorProbeKeyStrengthFindings,
+	getDkimTagValue,
+} from '../packages/dns-checks/src/checks/dkim-analysis';
 import { createFinding } from '../src/lib/scoring';
 
 describe('dkim-analysis', () => {
@@ -28,7 +32,7 @@ describe('dkim-analysis', () => {
 
 	it('estimates RSA strength from key length', () => {
 		expect(analyzeKeyStrength('x'.repeat(100), 'rsa')).toMatchObject({ bits: 512, strength: 'critical', keyType: 'rsa' });
-		expect(analyzeKeyStrength('x'.repeat(200), 'rsa')).toMatchObject({ bits: 1024, strength: 'high', keyType: 'rsa' });
+		expect(analyzeKeyStrength('x'.repeat(200), 'rsa')).toMatchObject({ bits: 1024, strength: 'medium', keyType: 'rsa' });
 		expect(analyzeKeyStrength('x'.repeat(300), 'rsa')).toMatchObject({ bits: 2048, strength: 'medium', keyType: 'rsa' });
 		expect(analyzeKeyStrength('x'.repeat(600), 'rsa')).toMatchObject({ bits: 4096, strength: 'info', keyType: 'rsa' });
 	});

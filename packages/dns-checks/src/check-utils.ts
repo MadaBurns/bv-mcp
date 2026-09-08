@@ -1,10 +1,15 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import type { CheckCategory, Finding, Severity } from './types';
+import type { CheckCategory, CheckResult, Finding, Severity } from './types';
 import { sanitizeFindingMetadata, sanitizeStructuredString } from './scoring/metadata-sanitize';
 
 // Re-export scoring functions from the single source of truth (scoring/model.ts).
 export { buildCheckResult, computeCategoryScore, inferFindingConfidence } from './scoring/model';
+
+/** Build a retryable, non-cacheable result for a control that could not be measured. */
+export function buildNotAssessedResult(category: CheckCategory, finding: Finding, status: 'error' | 'timeout' = 'error'): CheckResult {
+	return { category, findings: [finding], score: 0, passed: false, partial: true, checkStatus: status };
+}
 
 // ── Output sanitization (inlined from src/lib/output-sanitize.ts) ──────────
 

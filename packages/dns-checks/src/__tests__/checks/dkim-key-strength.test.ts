@@ -50,6 +50,32 @@ describe('checkDKIM — truncated key does not produce a false weak-key critical
 
 		const malformed = result.findings.find((f) => /malformed/i.test(f.title));
 		expect(malformed).toBeDefined();
-		expect(malformed?.severity).toBe('medium');
+		expect(malformed?.severity).toBe('high');
+	});
+});
+
+describe('DKIM RFC 8301 severity and score calibration (#902)', () => {
+	const key1024 = 'MIGfMA0GCSqGSIb3DQEBAQUAA4GNADCB' + 'A'.repeat(186);
+	it.each([
+		['2048', REAL_2048, 100],
+		['1024', key1024, 85],
+		['512', REAL_512, 60],
+		['truncated', TRUNCATED_2048, 75],
+		['revoked', '', 75],
+	] as const)('%s key has the calibrated category score', async (_kind, key, score) => {
+		const result = await checkDKIM('example.com', createMockDNS({ 'sel._domainkey.example.com': [`v=DKIM1; k=rsa; p=${key}`] }), {
+			selector: 'sel',
+		});
+		expect(result.score).toBe(score);
+	});
+	it('offers provider-aware advice for a TXT-hosted 1024-bit key without claiming provider ownership', async () => {
+		const result = await checkDKIM('example.com', createMockDNS({ 'resend._domainkey.example.com': [`v=DKIM1; k=rsa; p=${key1024}`] }), {
+			selector: 'resend',
+		});
+		const finding = result.findings.find((f) => f.metadata?.estimatedBits === 1024)!;
+		expect(finding.severity).toBe('medium');
+		expect(finding.detail).toContain('RFC 8301');
+		expect(finding.detail).toContain('if your mail provider');
+		expect(finding.metadata?.delegatedTo).toBeUndefined();
 	});
 });

@@ -60,6 +60,26 @@ describe('transient DNS failure → category is INCONCLUSIVE, not a scored defic
 		expect(hasScoredDeficiency(result.findings)).toBe(false);
 	});
 
+	it.each([checkNS, checkMX, checkCAA])('DNS abstentions are retryable and cannot be cached or read as a pass', async (check) => {
+		const result = await check('example.com', throwingDNS);
+		expect(result).toMatchObject({ checkStatus: 'error', score: 0, passed: false, partial: true });
+		expect(result.controlPresent).not.toBe(true);
+	});
+
+	it('unknown CAA zone delegation has the same non-answer contract', async () => {
+		const result = await checkCAA('sub.example.com', throwingDNS, {
+			zone: {
+				scannedLabel: 'sub.example.com',
+				registrableDomain: 'example.com',
+				zoneApex: 'example.com',
+				isApex: false,
+				delegationStatus: 'unknown',
+				apexNsRecords: [],
+			},
+		});
+		expect(result).toMatchObject({ checkStatus: 'error', score: 0, passed: false, partial: true });
+	});
+
 	it('checkDNSSEC: a thrown AD-flag query is excluded (checkStatus error), not a medium/high finding', async () => {
 		const result = await checkDNSSEC('example.com', throwingDNS, { rawQueryDNS: throwingRawDNS });
 		expect(result.checkStatus).toBe('error');

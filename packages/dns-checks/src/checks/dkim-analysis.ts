@@ -138,7 +138,10 @@ export function getDkimTagValue(record: string, tag: string): string | undefined
 
 /**
  * Analyze key strength based on key type and base64 character count.
- * For RSA keys, estimates bit-length from base64 character count.
+ * RSA policy (RFC 8301 §3.2): <1024 bits violates the mandatory minimum;
+ * 1024 meets the minimum but falls below the recommended 2048 bits (medium).
+ * Complete 2048+ keys are info. Truncated DER is high because it cannot verify.
+ * For unrecognized RSA headers, bit-length is estimated from base64 character count.
  * For Ed25519 keys, always returns info (strong by design).
  */
 export function analyzeKeyStrength(publicKeyBase64: string | undefined, declaredKeyType: string): DkimKeyAnalysis {
@@ -164,10 +167,10 @@ export function analyzeKeyStrength(publicKeyBase64: string | undefined, declared
 		// — rather than inventing a small bit-count and escalating to a false "weak key"
 		// critical — while leaving near-complete keys to the normal strength mapping.
 		if (charCount < header.fullChars * 0.7) {
-			return { bits: header.bits, strength: 'medium', keyType: 'rsa-malformed' };
+			return { bits: header.bits, strength: 'high', keyType: 'rsa-malformed' };
 		}
 		if (header.bits <= 512) return { bits: 512, strength: 'critical', keyType: 'rsa' };
-		if (header.bits <= 1024) return { bits: 1024, strength: 'high', keyType: 'rsa' };
+		if (header.bits <= 1024) return { bits: 1024, strength: 'medium', keyType: 'rsa' };
 		if (header.bits < 2048) return { bits: header.bits, strength: 'medium', keyType: 'rsa' };
 		return { bits: header.bits, strength: 'info', keyType: 'rsa' };
 	}
@@ -181,7 +184,7 @@ export function analyzeKeyStrength(publicKeyBase64: string | undefined, declared
 	}
 
 	if (charCount < 230) {
-		return { bits: 1024, strength: 'high', keyType: 'rsa' };
+		return { bits: 1024, strength: 'medium', keyType: 'rsa' };
 	}
 
 	if (charCount < 350) {

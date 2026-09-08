@@ -9,8 +9,15 @@
  */
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
-import { buildCheckResult, createFinding } from '../check-utils';
-import { getIpTargetFindings, getNullMxFinding, getPresenceFinding, getSingleMxFinding, isNullMxRecord, parseMxRecords } from './mx-analysis';
+import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
+import {
+	getIpTargetFindings,
+	getNullMxFinding,
+	getPresenceFinding,
+	getSingleMxFinding,
+	isNullMxRecord,
+	parseMxRecords,
+} from './mx-analysis';
 
 /**
  * Check MX record configuration for a domain.
@@ -21,11 +28,7 @@ import { getIpTargetFindings, getNullMxFinding, getPresenceFinding, getSingleMxF
  * on external provider signature files. Consumers can implement provider detection
  * as a post-processing step.
  */
-export async function checkMX(
-	domain: string,
-	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number },
-): Promise<CheckResult> {
+export async function checkMX(domain: string, queryDNS: DNSQueryFunction, options?: { timeout?: number }): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 	let answers: string[];
 	try {
@@ -34,17 +37,15 @@ export async function checkMX(
 		// Transient resolver failure — we could not MEASURE the mail-exchange posture. Mark the
 		// category INCONCLUSIVE (checkStatus) so the scoring engine renormalizes over the remaining
 		// categories instead of penalizing a possibly-healthy domain with a scored deficiency.
-		return {
-			...buildCheckResult('mx', [
-				createFinding(
-					'mx',
-					'MX records not assessed',
-					'info',
-					`Could not query mail-exchange (MX) records for ${domain} due to a transient DNS failure; this control was not assessed.`,
-				),
-			]),
-			checkStatus: 'error',
-		};
+		return buildNotAssessedResult(
+			'mx',
+			createFinding(
+				'mx',
+				'MX records not assessed',
+				'info',
+				`Could not query mail-exchange (MX) records for ${domain} due to a transient DNS failure; this control was not assessed.`,
+			),
+		);
 	}
 
 	if (!answers || answers.length === 0) {

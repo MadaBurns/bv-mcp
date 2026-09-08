@@ -4,15 +4,14 @@
  * SSL/TLS certificate check tool.
  * Thin wrapper around @blackveil/dns-checks — delegates all logic to the shared package.
  *
- * Operator-only enrichment: when a `tlsProbeBinding` is provided (via the BV_TLS_PROBE
- * service binding), the result is enriched with negotiated-TLS-version data. BSL
- * self-hosts without the binding receive the unmodified base result.
+ * Origin TLS-version enrichment is withdrawn: the configured browser probe sees
+ * an intercepted handshake. HTTPS/HSTS and CT metadata remain independently measured.
  */
 
 import { checkSSL, withRobotsGate } from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
 import { HTTPS_TIMEOUT_MS } from '../lib/config';
-import { callTlsProbe, mergeTlsFinding } from '../lib/tls-probe-binding';
+import { callTlsProbe, mergeTlsFinding, TLS_VERSION_ENRICHMENT_ENABLED } from '../lib/tls-probe-binding';
 import { enrichWithCertificateMetadata } from '../lib/cert-metadata-enrich';
 import type { TlsProbeBinding, BindingDegradationSink } from '../lib/tls-probe-binding';
 import { withAbortSignal } from '../lib/abort-signal';
@@ -131,7 +130,7 @@ export async function checkSsl(
 		withRobotsFetchMemo(budget.wrap(withAbortSignal(sslProbeFetch, tlsProbeOptions.signal)), tlsProbeOptions.robotsMemo),
 		{ onRobotsResolution: provenance.onResolution },
 	);
-	// The TLS probe is launched HERE, alongside the HTTPS legs, not after them.
+	// When a trusted vantage is restored, launch the TLS probe alongside the HTTPS legs.
 	// It needs only the domain — it never reads the fetch result — so running it
 	// sequentially bought nothing and cost everything: its own fixed 8s timeout on
 	// top of 7.25s of budgeted fetches, inside an 8s per-check kill. Concurrent, the
@@ -143,12 +142,13 @@ export async function checkSsl(
 	// Fail-soft is preserved end to end: `callTlsProbe` returns null on any failure,
 	// and the `.catch` is belt-and-braces so a launched-but-unawaited rejection can
 	// never surface as an unhandled rejection if `checkSSL` throws first.
-	const probePromise = tlsProbeOptions.tlsProbeBinding
-		? callTlsProbe(tlsProbeOptions.tlsProbeBinding, tlsProbeOptions.tlsProbeAuthToken, domain, {
-				telemetry: tlsProbeOptions.onBindingDegradation,
-				signal: budget.signal(tlsProbeOptions.signal),
-			}).catch(() => null)
-		: null;
+	const probePromise =
+		TLS_VERSION_ENRICHMENT_ENABLED && tlsProbeOptions.tlsProbeBinding
+			? callTlsProbe(tlsProbeOptions.tlsProbeBinding, tlsProbeOptions.tlsProbeAuthToken, domain, {
+					telemetry: tlsProbeOptions.onBindingDegradation,
+					signal: budget.signal(tlsProbeOptions.signal),
+				}).catch(() => null)
+			: null;
 	const base = (await checkSSL(domain, fetchFn, { timeout: HTTPS_TIMEOUT_MS })) as CheckResult;
 	// Certificate metadata (issuer / expiry / SANs) from Certificate Transparency.
 	// NON-SCORING: attaches to `metadata`, never appends a Finding — a CT lookup
@@ -167,7 +167,15 @@ export async function checkSsl(
 	// Fail-soft: absent binding (every BSL self-host) → result returned unchanged.
 	// callTlsProbe returns null on any failure; mergeTlsFinding only ever appends a
 	// High finding when the probe actively reports legacy TLS (≤1.1), never penalizes 1.2/1.3.
-	if (!probePromise) return provenance.stamp(result);
+	if (!probePromise)
+		return provenance.stamp(
+			tlsProbeOptions.tlsProbeBinding
+				? {
+						...result,
+						metadata: { ...result.metadata, tlsVersionAssessment: { status: 'not_assessed', reason: 'probe_vantage_intercepted' } },
+					}
+				: result,
+		);
 	const probe = await probePromise;
 	return provenance.stamp(probe ? mergeTlsFinding(result, probe) : result);
 }
