@@ -18,12 +18,24 @@ import { env } from 'cloudflare:test';
 import {
 	CLIENT_IP_AUDIT_MAX_MISSING_RATIO,
 	CLIENT_IP_AUDIT_MIN_SAMPLES,
+	CLIENT_IP_AUDIT_WINDOW_HOURS,
 	CLIENT_IP_HEADER_MISSING_ALERT_KIND,
 	assessClientIpHeaders,
 	clientIpHeaderAuditSql,
 	coerceClientIpAuditRow,
 } from '../src/lib/client-ip-audit';
-import { CLIENT_IP_ALERT_COOLDOWN_KEY, handleClientIpHeaderAudit } from '../src/scheduled';
+import { CLIENT_IP_ALERT_COOLDOWN_KEY, handleClientIpHeaderAudit, handleDailyDigest } from '../src/scheduled';
+import { buildDigestPayload } from '../src/lib/alerting';
+
+// handleDailyDigest runs the SPF canary first (20 real outbound DoH probes). Stub it:
+// the digest tests below only care about the client-IP line riding along.
+vi.mock('../src/lib/spf-canary', async () => {
+	const actual = await vi.importActual<typeof import('../src/lib/spf-canary')>('../src/lib/spf-canary');
+	return {
+		...actual,
+		runSpfCanary: async () => ({ totalProbed: 0, nullCount: 0, errorCount: 0, nullRate: 0, nullDomains: [], errorDomains: [] }),
+	};
+});
 
 const ALERT_WEBHOOK = 'https://hooks.example.test/client-ip-896';
 
@@ -32,6 +44,9 @@ describe('assessClientIpHeaders — thresholds (SSOT)', () => {
 		expect(CLIENT_IP_AUDIT_MIN_SAMPLES).toBe(20);
 		expect(CLIENT_IP_AUDIT_MAX_MISSING_RATIO).toBe(0.05);
 		expect(CLIENT_IP_HEADER_MISSING_ALERT_KIND).toBe('client_ip_header_missing');
+		// 24h, not 1h: at the measured ~2.3 public rows/hour a 1h window never reaches
+		// the 20-sample floor, so the lane would sit at `unknown` on every tick.
+		expect(CLIENT_IP_AUDIT_WINDOW_HOURS).toBe(24);
 	});
 
 	it('is `unknown` (never healthy) below the sample floor, including 0 of 0', () => {
@@ -70,10 +85,11 @@ describe('assessClientIpHeaders — thresholds (SSOT)', () => {
 	});
 
 	it('builds a bounded, public-only aggregate query and rejects invalid windows', () => {
-		const sql = clientIpHeaderAuditSql(1);
+		const sql = clientIpHeaderAuditSql();
+		expect(sql).toBe(clientIpHeaderAuditSql(CLIENT_IP_AUDIT_WINDOW_HOURS));
 		expect(sql).toContain("COALESCE(source, 'public') = 'public'");
 		expect(sql).toContain("ip_masked = 'no-cf-header'");
-		expect(sql).toContain("'-1 hours'");
+		expect(sql).toContain("'-24 hours'");
 		expect(sql).not.toMatch(/SELECT\s+\*/i);
 		for (const bad of [0, 169, NaN, 1.5, "1'); DELETE FROM mcp_access_log;--"]) {
 			expect(() => clientIpHeaderAuditSql(bad as number)).toThrow();
@@ -94,16 +110,23 @@ function fakeIntelDb(row: unknown) {
 
 let originalFetch: typeof globalThis.fetch;
 let webhookCalls: { url: string; body: string }[] = [];
+/** HTTP status the stubbed webhook answers with (tests flip it to simulate an outage). */
+let webhookStatus = 200;
 
 beforeEach(async () => {
 	await env.RATE_LIMIT.delete(CLIENT_IP_ALERT_COOLDOWN_KEY);
 	webhookCalls = [];
+	webhookStatus = 200;
 	originalFetch = globalThis.fetch;
 	globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
 		const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : input.url;
 		if (url.startsWith(ALERT_WEBHOOK)) {
 			webhookCalls.push({ url, body: typeof init?.body === 'string' ? init.body : '' });
-			return new Response('ok', { status: 200 });
+			return new Response(webhookStatus === 200 ? 'ok' : 'nope', { status: webhookStatus });
+		}
+		if (url.includes('/analytics_engine/sql')) {
+			// Daily-digest AE query stub: no tier rows, so the digest takes the empty branch.
+			return new Response(JSON.stringify({ data: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
 		}
 		return originalFetch(input as RequestInfo, init);
 	}) as typeof fetch;
@@ -122,7 +145,7 @@ describe('handleClientIpHeaderAudit — 15-min cron lane', () => {
 
 		// ONE aggregate query, executed via the SSOT SQL — not a hand-rolled copy.
 		expect(intel.prepare).toHaveBeenCalledTimes(1);
-		expect(intel.prepare).toHaveBeenCalledWith(clientIpHeaderAuditSql(1));
+		expect(intel.prepare).toHaveBeenCalledWith(clientIpHeaderAuditSql(CLIENT_IP_AUDIT_WINDOW_HOURS));
 		expect(intel.first).toHaveBeenCalledTimes(1);
 
 		expect(webhookCalls).toHaveLength(1);
@@ -158,6 +181,21 @@ describe('handleClientIpHeaderAudit — 15-min cron lane', () => {
 		expect(webhookCalls).toHaveLength(0);
 		// The query still runs every tick (cheap, and the log line stays greppable).
 		expect(intel.first).toHaveBeenCalledTimes(2);
+	});
+
+	it('rejected webhook (non-2xx) → no cooldown marker, so the next tick retries and lands once the webhook recovers', async () => {
+		const intel = fakeIntelDb({ total: 54, missing: 51 });
+		const lane = { INTELLIGENCE_DB: intel.db, RATE_LIMIT: env.RATE_LIMIT, ALERT_WEBHOOK_URL: ALERT_WEBHOOK };
+
+		webhookStatus = 500;
+		await handleClientIpHeaderAudit(lane);
+		expect(webhookCalls).toHaveLength(1);
+		expect(await env.RATE_LIMIT.get(CLIENT_IP_ALERT_COOLDOWN_KEY)).toBeNull();
+
+		webhookStatus = 200;
+		await handleClientIpHeaderAudit(lane);
+		expect(webhookCalls).toHaveLength(2);
+		expect(await env.RATE_LIMIT.get(CLIENT_IP_ALERT_COOLDOWN_KEY)).not.toBeNull();
 	});
 
 	it('healthy window → no alert and no cooldown marker', async () => {
@@ -223,5 +261,52 @@ describe('handleClientIpHeaderAudit — 15-min cron lane', () => {
 		const intel = fakeIntelDb({ total: 54, missing: 51 });
 		await handleClientIpHeaderAudit({ INTELLIGENCE_DB: intel.db, ALERT_WEBHOOK_URL: ALERT_WEBHOOK });
 		expect(webhookCalls).toHaveLength(1);
+	});
+});
+
+describe('daily digest positive control (#896)', () => {
+	const digestEnv = (db?: D1Database) => ({
+		INTELLIGENCE_DB: db,
+		RATE_LIMIT: env.RATE_LIMIT,
+		ALERT_WEBHOOK_URL: ALERT_WEBHOOK,
+		CF_ACCOUNT_ID: 'acct',
+		CF_ANALYTICS_TOKEN: 'token',
+	});
+
+	/** The digest text minus its other sections — only the Checks line matters here. */
+	const digestChecksLine = () => {
+		const digest = webhookCalls.map((c) => JSON.parse(c.body) as { text: string }).find((b) => b.text.includes('Daily Tier Digest'));
+		expect(digest, 'digest was sent').toBeDefined();
+		return digest!.text.split('\n').find((line) => line.includes('client_ip_audit:')) ?? '';
+	};
+
+	it('buildDigestPayload renders extra lines in BOTH the empty and the populated branch', () => {
+		expect(buildDigestPayload([], 1, ['client_ip_audit: unknown (0/0, last 24h)']).text).toContain(
+			'Checks:\n  client_ip_audit: unknown (0/0, last 24h)',
+		);
+		expect(buildDigestPayload([{ tier: 'free', total_calls: 3 }], 1, ['client_ip_audit: healthy (1/40, last 24h)']).text).toContain(
+			'Checks:\n  client_ip_audit: healthy (1/40, last 24h)',
+		);
+		expect(buildDigestPayload([], 1).text).not.toContain('Checks:');
+	});
+
+	it('carries the lane verdict with counts (degraded / unknown) using the same 24h SSOT query', async () => {
+		const degraded = fakeIntelDb({ total: 54, missing: 51 });
+		await handleDailyDigest(digestEnv(degraded.db));
+		expect(degraded.prepare).toHaveBeenCalledWith(clientIpHeaderAuditSql(CLIENT_IP_AUDIT_WINDOW_HOURS));
+		expect(digestChecksLine()).toBe('  client_ip_audit: degraded (51/54, last 24h)');
+
+		webhookCalls.length = 0;
+		await handleDailyDigest(digestEnv(fakeIntelDb({ total: 0, missing: 0 }).db));
+		expect(digestChecksLine()).toBe('  client_ip_audit: unknown (0/0, last 24h)');
+	});
+
+	it('an erroring or unbound lane is a visible word in the digest, never a missing line', async () => {
+		await handleDailyDigest(digestEnv(fakeIntelDb(new Error('D1_ERROR: no such column: source')).db));
+		expect(digestChecksLine()).toContain('client_ip_audit: error');
+
+		webhookCalls.length = 0;
+		await handleDailyDigest(digestEnv(undefined));
+		expect(digestChecksLine()).toContain('client_ip_audit: unbound');
 	});
 });

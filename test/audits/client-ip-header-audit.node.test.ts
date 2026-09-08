@@ -2,11 +2,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { DatabaseSync } from 'node:sqlite';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { assessClientIpHeaders, clientIpHeaderAuditSql } from '../../scripts/audits/client-ip-header-audit.mjs';
+import {
+	assessClientIpHeaders,
+	clientIpHeaderAuditSql,
+	CLIENT_IP_AUDIT_WINDOW_HOURS as SCRIPT_WINDOW_HOURS,
+} from '../../scripts/audits/client-ip-header-audit.mjs';
 import {
 	assessClientIpHeaders as assessSsot,
 	clientIpHeaderAuditSql as sqlSsot,
 	CLIENT_IP_AUDIT_MIN_SAMPLES,
+	CLIENT_IP_AUDIT_WINDOW_HOURS,
 	CLIENT_IP_HEADER_MISSING_ALERT_KIND,
 } from '../../src/lib/client-ip-audit';
 import { CLIENT_IP_ALERT_COOLDOWN_KEY, handleClientIpHeaderAudit } from '../../src/scheduled';
@@ -52,8 +57,11 @@ describe('public client-IP header audit', () => {
 // copy of the two pure functions. This pins the copy to the SSOT
 // (src/lib/client-ip-audit.ts) — a one-sided edit to either fails here.
 describe('script ↔ src/lib/client-ip-audit.ts parity (SSOT pin)', () => {
-	it('emits byte-identical SQL for every legal window', () => {
+	it('emits byte-identical SQL for every legal window, including the DEFAULT window', () => {
 		for (const hours of [1, 2, 24, 168]) expect(clientIpHeaderAuditSql(hours)).toBe(sqlSsot(hours));
+		// Default-argument parity: the window constant must not drift one-sided.
+		expect(clientIpHeaderAuditSql()).toBe(sqlSsot());
+		expect(SCRIPT_WINDOW_HOURS).toBe(CLIENT_IP_AUDIT_WINDOW_HOURS);
 	});
 	it('returns identical verdicts across the threshold boundaries', () => {
 		const rows: unknown[] = [
@@ -128,12 +136,14 @@ describe('handleClientIpHeaderAudit against real D1', () => {
 	it('counts only public-door rows inside the window, pages once, then honours the cooldown', async () => {
 		const now = Math.floor(Date.now() / 1000);
 		const rows: Array<[number, string | null, string]> = [];
-		// 30 public rows in-window: 27 missing the header, 3 masked → 0.9 ratio.
+		// 33 public rows in-window: 30 missing the header (27 recent + 3 at 23h), 3 masked → 0.909.
 		for (let i = 0; i < 27; i++) rows.push([now - i, i % 2 ? 'public' : null, 'no-cf-header']);
 		for (let i = 0; i < 3; i++) rows.push([now - i, 'public', '203.0.113.xxx']);
-		// Noise that MUST be excluded: internal door, and public rows older than 1h.
+		// Noise that MUST be excluded: internal door, and public rows older than the 24h window.
 		for (let i = 0; i < 40; i++) rows.push([now - i, 'internal', 'no-cf-header']);
-		for (let i = 0; i < 40; i++) rows.push([now - 7200 - i, 'public', 'no-cf-header']);
+		for (let i = 0; i < 40; i++) rows.push([now - 25 * 3600 - i, 'public', 'no-cf-header']);
+		// Rows 23h old are INSIDE the 24h window and must count (they would not in a 1h window).
+		for (let i = 0; i < 3; i++) rows.push([now - 23 * 3600 - i, 'public', 'no-cf-header']);
 		const { db, kv, webhookCalls } = await seeded(rows);
 
 		const lane = { INTELLIGENCE_DB: db, RATE_LIMIT: kv, ALERT_WEBHOOK_URL: ALERT_WEBHOOK };
@@ -141,9 +151,9 @@ describe('handleClientIpHeaderAudit against real D1', () => {
 		expect(webhookCalls).toHaveLength(1);
 		const text = (JSON.parse(webhookCalls[0]) as { text: string }).text;
 		expect(text).toContain(CLIENT_IP_HEADER_MISSING_ALERT_KIND);
-		expect(text).toContain('total_public_calls: 30');
-		expect(text).toContain('missing_header: 27');
-		expect(text).toContain('missing_ratio: 0.9');
+		expect(text).toContain('total_public_calls: 33');
+		expect(text).toContain('missing_header: 30');
+		expect(text).toContain('missing_ratio: 0.909');
 		expect(text).not.toMatch(/\b\d{1,3}(\.\d{1,3}){3}\b/);
 		expect(await kv.get(CLIENT_IP_ALERT_COOLDOWN_KEY)).not.toBeNull();
 

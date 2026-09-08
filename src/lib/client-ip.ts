@@ -29,7 +29,9 @@
  * thresholds): `npm run audit:client-ip-headers` on demand, and the 15-min cron
  * lane `handleClientIpHeaderAudit` (`src/scheduled.ts`) pages
  * `client_ip_header_missing` when > 5% of >= 20 public-door rows in the last
- * hour lack the header.
+ * 24h lack the header (24h, not 1h: at ~2.3 public rows/hour a 1h window never
+ * reaches the sample floor and the lane would sit at `unknown` forever). The
+ * daily digest carries the same verdict as a positive control.
  */
 
 function firstHeaderValue(value: string | null | undefined): string | undefined {

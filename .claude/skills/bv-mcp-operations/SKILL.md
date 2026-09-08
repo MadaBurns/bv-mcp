@@ -141,14 +141,21 @@ Run `npm run audit:client-ip-headers -- --config <private-config> --database INT
 read-only to detect loss of `cf-connecting-ip` (#896). It queries public access-log aggregate
 counts using the database's epoch-second timestamps and prints no addresses or principals.
 At least 20 observations are required; more than 5% marked `no-cf-header` exits 1. Sparse,
-malformed, or unavailable evidence exits 2, never healthy. The default window is one hour,
-bounded to at most 168 hours. Since the #896 repo-side fix the same SQL and thresholds (SSOT:
-`src/lib/client-ip-audit.ts`; the script carries a parity-pinned copy) also run on the 15-min
-cron as `handleClientIpHeaderAudit` (`src/scheduled.ts`, its own `waitUntil` beside
-`handleFuzzingScan`, D1-backed so it does NOT need the AE token): over the last 1h of public-door
-rows, `total >= 20` and `missing/total > 0.05` pages `client_ip_header_missing` (warning, or
-critical above 50%) with aggregates only, then arms a 6h KV cooldown (`client-ip-audit:alerted`
-in `RATE_LIMIT`). `total < 20` is logged as `unknown`, never healthy. Measured live 2026-09-09
-before the zone fix: 24h missing ratio 0.944 (51/54), 168h 0.795 (321/404).
+malformed, or unavailable evidence exits 2, never healthy. The default window is 24 hours
+(`CLIENT_IP_AUDIT_WINDOW_HOURS`), bounded to at most 168. Since the #896 repo-side fix the same
+SQL and thresholds (SSOT: `src/lib/client-ip-audit.ts`; the script carries a parity-pinned copy)
+also run on the 15-min cron as `handleClientIpHeaderAudit` (`src/scheduled.ts`, its own
+`waitUntil` beside `handleFuzzingScan`, D1-backed so it does NOT need the AE token): over the
+last 24h of public-door rows, `total >= 20` and `missing/total > 0.05` pages
+`client_ip_header_missing` (warning, or critical above 50%) with aggregates only, then arms a 6h
+KV cooldown (`client-ip-audit:alerted` in `RATE_LIMIT`) only once the webhook ACCEPTED the page.
+`total < 20` is logged as `unknown`, never healthy. ⚠️ The window is 24h, not 1h, on purpose:
+public-door volume is ~2.3 rows/hour (54/24h, 404/168h measured 2026-09-09), so a 1h window never
+reaches the 20-sample floor and the lane would read `unknown` on every tick — the fail-open trap.
+After a zone fix expect `healthy` within 24h, with up to ~4 tail pages at the 6h cooldown while
+the stale rows age out. Positive control: `handleDailyDigest` appends
+`client_ip_audit: <status> (<missing>/<total>, last 24h)` to the daily digest, so a lane stuck at
+`unknown`/`error` (e.g. schema drift) is seen daily rather than only logged. Measured live
+2026-09-09 before the zone fix: 24h missing ratio 0.944 (51/54), 168h 0.795 (321/404).
 A failure calls for a zone managed-transform/request-header/route review; do not substitute
 `x-forwarded-for` or analytics locality hashes into enforcement identities.

@@ -33,8 +33,18 @@ export const CLIENT_IP_AUDIT_MIN_SAMPLES = 20;
 /** Highest tolerated `missing / total` ratio; strictly above this is `degraded`. */
 export const CLIENT_IP_AUDIT_MAX_MISSING_RATIO = 0.05;
 
-/** Observation window the cron lane queries (hours). */
-export const CLIENT_IP_AUDIT_WINDOW_HOURS = 1;
+/**
+ * Observation window the cron lane (and the CLI default) queries, in hours.
+ *
+ * 24, not 1: public-door volume is small (measured 2026-09-09: 54 rows/24h,
+ * 404 rows/168h ≈ 2.3 rows/hour), so a 1h window only clears
+ * `CLIENT_IP_AUDIT_MIN_SAMPLES` during a ~9× burst and the lane would sit at
+ * `unknown` on essentially every tick — the fail-open trap this module exists to
+ * avoid. A 24h window is ~54 index-range rows per tick on
+ * `idx_mcp_access_log_created_at`; after the zone fix it reads `healthy` within
+ * 24h (up to ~4 tail pages at the 6h cooldown while the stale rows age out).
+ */
+export const CLIENT_IP_AUDIT_WINDOW_HOURS = 24;
 
 /** Alert kind emitted by the cron lane when the audit is `degraded`. */
 export const CLIENT_IP_HEADER_MISSING_ALERT_KIND = 'client_ip_header_missing';
@@ -45,8 +55,13 @@ export interface ClientIpAuditRow {
 	missing: number;
 }
 
+/**
+ * Verdict over one window. `unknown` covers BOTH too-few samples and a malformed
+ * row — neither is evidence of health, so neither maps to `healthy`.
+ */
 export type ClientIpAuditStatus = 'healthy' | 'degraded' | 'unknown';
 
+/** Output of {@link assessClientIpHeaders}: the verdict plus the aggregates it was made from. */
 export interface ClientIpAuditAssessment {
 	status: ClientIpAuditStatus;
 	/** Present only for `unknown` verdicts. */

@@ -1078,18 +1078,8 @@ export async function handleClientIpHeaderAudit(env: ScheduledEnv): Promise<void
 	if (!webhookUrl) return;
 
 	const windowHours = CLIENT_IP_AUDIT_WINDOW_HOURS;
-	let assessment: ClientIpAuditAssessment;
-	try {
-		const raw = await env.INTELLIGENCE_DB.prepare(clientIpHeaderAuditSql(windowHours)).first<Record<string, unknown>>();
-		assessment = assessClientIpHeaders(coerceClientIpAuditRow(raw));
-	} catch (err) {
-		logError(err instanceof Error ? err : String(err), {
-			severity: 'warn',
-			category: 'scheduled',
-			details: { message: 'client_ip_header_audit_failed', windowHours },
-		});
-		return;
-	}
+	const assessment = await queryClientIpHeaderAudit(env.INTELLIGENCE_DB, windowHours);
+	if (!assessment) return;
 
 	const ratio = assessment.missingRatio ?? null;
 	const ratioRounded = ratio === null ? null : Math.round(ratio * 1000) / 1000;
@@ -1141,7 +1131,7 @@ export async function handleClientIpHeaderAudit(env: ScheduledEnv): Promise<void
 	const total = assessment.total ?? 0;
 	const missing = assessment.missing ?? 0;
 	const pct = ratio === null ? 'n/a' : `${(ratio * 100).toFixed(1)}%`;
-	await sendAlert(
+	const delivered = await sendAlert(
 		webhookUrl,
 		buildAlertPayload({
 			title: `cf-connecting-ip missing on ${pct} of ${total} public-door calls (last ${windowHours}h) — zone-config regression, see #896`,
@@ -1161,16 +1151,51 @@ export async function handleClientIpHeaderAudit(env: ScheduledEnv): Promise<void
 		alertOptions(env),
 	);
 
-	// Mark suppression AFTER the dispatch attempt. sendAlert is fail-soft, so a
-	// webhook 500 still arms the cooldown — retrying every 15 min during a webhook
-	// outage is not useful (same reasoning as the fuzzing lane).
-	if (env.RATE_LIMIT) {
+	// Arm the cooldown ONLY on an accepted (2xx) delivery — `sendAlert` returns
+	// that boolean for exactly this. A rejected/unreachable webhook leaves the
+	// marker unset so the next tick retries and the page lands as soon as the
+	// webhook recovers, instead of being swallowed for six hours.
+	if (delivered && env.RATE_LIMIT) {
 		try {
 			await env.RATE_LIMIT.put(CLIENT_IP_ALERT_COOLDOWN_KEY, '1', { expirationTtl: CLIENT_IP_ALERT_COOLDOWN_SECONDS });
 		} catch {
 			// KV write failed — next tick will alert again, acceptable degradation.
 		}
 	}
+}
+
+/**
+ * Run the SSOT aggregate once and classify it. Returns `undefined` (after
+ * logging `client_ip_header_audit_failed`) when D1 throws — the callers treat
+ * that as "could not measure", never as healthy.
+ */
+async function queryClientIpHeaderAudit(db: D1Database, windowHours: number): Promise<ClientIpAuditAssessment | undefined> {
+	try {
+		const raw = await db.prepare(clientIpHeaderAuditSql(windowHours)).first<Record<string, unknown>>();
+		return assessClientIpHeaders(coerceClientIpAuditRow(raw));
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'scheduled',
+			details: { message: 'client_ip_header_audit_failed', windowHours },
+		});
+		return undefined;
+	}
+}
+
+/**
+ * One-line summary for the daily digest (#896 positive control). A lane stuck
+ * at `unknown` or erroring on schema drift is otherwise only an info/warn log
+ * line that nobody reads (invocation logs are off in prod); the digest puts the
+ * verdict in front of a human once a day. Fail-soft: an absent binding or a D1
+ * error becomes a visible `unbound` / `error` word, never a missing line.
+ */
+async function clientIpAuditDigestLine(env: ScheduledEnv): Promise<string> {
+	if (!env.INTELLIGENCE_DB) return `client_ip_audit: unbound (no INTELLIGENCE_DB)`;
+	const assessment = await queryClientIpHeaderAudit(env.INTELLIGENCE_DB, CLIENT_IP_AUDIT_WINDOW_HOURS);
+	if (!assessment) return `client_ip_audit: error (query failed, last ${CLIENT_IP_AUDIT_WINDOW_HOURS}h)`;
+	const counts = assessment.total === undefined ? assessment.reason : `${assessment.missing}/${assessment.total}`;
+	return `client_ip_audit: ${assessment.status} (${counts}, last ${CLIENT_IP_AUDIT_WINDOW_HOURS}h)`;
 }
 
 /**
@@ -1193,7 +1218,9 @@ export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
 			env.CF_ANALYTICS_TOKEN,
 			queryTierDigest('1', resolveAnalyticsDataset(env.ANALYTICS_DATASET)),
 		);
-		const payload = buildDigestPayload(rows, 1);
+		// #896 positive control: the client-IP lane's verdict rides along in the
+		// digest so `unknown` / `error` is seen by a human daily, not only logged.
+		const payload = buildDigestPayload(rows, 1, [await clientIpAuditDigestLine(env)]);
 		await sendAlert(digestWebhookUrl, payload, alertOptions(env));
 
 		logEvent({
