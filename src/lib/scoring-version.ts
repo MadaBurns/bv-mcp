@@ -438,8 +438,26 @@
  *   unaffected — those categories were already EXCLUDED by `checkStatus` — but the
  *   abstention is no longer written to the 5-minute cache, so a transient resolver
  *   failure is retried on the next scan instead of being pinned for five minutes.
+ * - 1.25.0 — `zone_hygiene` no longer scores wildcard-synthetic sensitive-subdomain hits
+ *   (#930). The check probes ten internal-looking names (vpn, admin, staging, …) and
+ *   scored every answer as a `medium` "Internal subdomain resolves publicly"; on a zone
+ *   with a wildcard record EVERY name answers, so a domain with none of those hosts took
+ *   ten mediums plus "Excessive internal subdomain exposure" (−165, category floored to
+ *   0 — measured on futuresoft.dk, `*.futuresoft.dk A`). One random-label canary now
+ *   precedes the sweep (at most one more to confirm a round-robin wildcard answer): a hit
+ *   carrying the wildcard's address is folded into ONE `info` observation, a hit with a
+ *   different address keeps its scored `medium`, and only those count toward "Excessive".
+ *   The clean "No sensitive subdomains resolve publicly" verdict is withheld on a wildcard
+ *   zone. A canary that itself FAILS abstains (`inconclusive` + `errorKind`, `partial`,
+ *   sweep skipped) rather than passing or failing the signal. UPWARD only, and only for
+ *   wildcard zones — non-wildcard zones produce byte-identical findings. The wildcard
+ *   itself stays scored once, by `ns` ("Wildcard DNS detected", medium). `zone_hygiene`
+ *   is Hardening (bonus-only, ~1.4 pts), so the overall-score movement is bounded by that.
+ *   No weight, tier, grade band, severity penalty or profile-detection rule changed;
+ *   `@blackveil/dns-checks` is untouched (the check is worker-side), so the package /
+ *   parity-corpus version stays at 1.36.0.
  */
-export const SCORING_MODEL_VERSION = '1.24.0';
+export const SCORING_MODEL_VERSION = '1.25.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

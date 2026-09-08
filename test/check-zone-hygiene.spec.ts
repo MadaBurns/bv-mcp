@@ -235,4 +235,171 @@ describe('checkZoneHygiene', () => {
 		expect(noSoa).toBeDefined();
 		expect(noSoa!.severity).toBe('medium');
 	});
+
+	// #930: a wildcard record answers for EVERY name, so a sensitive-name sweep on such a
+	// zone "finds" all ten hosts. The canary (`_bv-probe-<nonce>.<domain>`) is what tells
+	// a wildcard-synthetic answer from a real host.
+	describe('wildcard zone (#930)', () => {
+		const WILDCARD_IP = '198.51.100.94';
+
+		function wildcardMock(opts: { realHosts?: Record<string, string[]>; canaryIps?: string[][]; canaryThrows?: boolean } = {}) {
+			const canaryAnswers = opts.canaryIps ?? [[WILDCARD_IP]];
+			let canaryCalls = 0;
+			const aQueries: string[] = [];
+			const fetchMock = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.includes('type=NS') || url.includes('type=2')) {
+					return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+				}
+				if (url.includes('type=SOA') || url.includes('type=6')) {
+					return Promise.resolve(soaResponse('example.com', 'ns1.example.com. admin.example.com. 2024010101 7200 3600 1209600 300'));
+				}
+				if (url.includes('type=A') || url.includes('type=1')) {
+					const nameMatch = url.match(/name=([^&]+)/);
+					const name = nameMatch ? decodeURIComponent(nameMatch[1]) : '';
+					aQueries.push(name);
+					if (name.startsWith('_bv-probe-')) {
+						if (opts.canaryThrows) return Promise.reject(new Error('DNS query timed out after 3000ms'));
+						const ips = canaryAnswers[Math.min(canaryCalls, canaryAnswers.length - 1)];
+						canaryCalls++;
+						return Promise.resolve(aResponse(name, ips));
+					}
+					if (opts.realHosts?.[name]) return Promise.resolve(aResponse(name, opts.realHosts[name]));
+					// Everything else under the zone is answered by the wildcard.
+					return Promise.resolve(aResponse(name, [WILDCARD_IP]));
+				}
+				return Promise.resolve(emptyResponse('example.com', 1));
+			});
+			globalThis.fetch = fetchMock;
+			return { aQueries, canaryCalls: () => canaryCalls };
+		}
+
+		it('suppresses every wildcard-synthetic hit into a single info observation and does not zero the category', async () => {
+			const { aQueries } = wildcardMock();
+			const result = await run();
+
+			expect(result.category).toBe('zone_hygiene');
+			// Not one scored finding: ten mediums + "Excessive" used to floor this to 0.
+			expect(result.findings.filter((f) => f.severity !== 'info')).toEqual([]);
+			expect(result.findings.find((f) => f.title.startsWith('Internal subdomain resolves publicly'))).toBeUndefined();
+			expect(result.findings.find((f) => f.title.startsWith('Excessive internal subdomain exposure'))).toBeUndefined();
+			// ...and NOT the clean "none resolve" verdict either — a wildcard zone cannot support it.
+			expect(result.findings.find((f) => f.title === 'No sensitive subdomains resolve publicly')).toBeUndefined();
+			expect(result.score).toBe(100);
+			expect(result.passed).toBe(true);
+
+			const note = result.findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing');
+			expect(note).toBeDefined();
+			expect(note!.severity).toBe('info');
+			expect(note!.metadata?.wildcardDetected).toBe(true);
+			expect(note!.metadata?.wildcardIps).toEqual([WILDCARD_IP]);
+			expect(note!.metadata?.wildcardSyntheticSubdomains).toHaveLength(10);
+			expect(note!.metadata?.wildcardSyntheticSubdomains).toContain('vpn.example.com');
+			// The wildcard note is a measurement, not an abstention.
+			expect(note!.metadata?.inconclusive).toBeUndefined();
+			expect(note!.metadata?.missingControl).toBeUndefined();
+			expect(note!.detail).toContain('wildcard');
+			expect(note!.detail).not.toContain('<');
+
+			// Budget: exactly one canary on top of the ten-name sweep.
+			expect(aQueries.filter((n) => n.startsWith('_bv-probe-'))).toHaveLength(1);
+			expect(aQueries.filter((n) => !n.startsWith('_bv-probe-'))).toHaveLength(10);
+		});
+
+		it('still reports a real host whose answer differs from the wildcard answer', async () => {
+			const { aQueries } = wildcardMock({ realHosts: { 'vpn.example.com': ['203.0.113.10'] } });
+			const result = await run();
+
+			const vpn = result.findings.find((f) => f.title === 'Internal subdomain resolves publicly: vpn.example.com');
+			expect(vpn).toBeDefined();
+			expect(vpn!.severity).toBe('medium');
+			expect(vpn!.metadata?.ips).toEqual(['203.0.113.10']);
+			// Only the one real host counts — the nine synthetic hits must not trip "Excessive".
+			expect(result.findings.find((f) => f.title.startsWith('Excessive internal subdomain exposure'))).toBeUndefined();
+			expect(result.findings.filter((f) => f.severity === 'medium')).toHaveLength(1);
+
+			const note = result.findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing');
+			expect(note!.metadata?.wildcardSyntheticSubdomains).toHaveLength(9);
+			expect(note!.metadata?.wildcardSyntheticSubdomains).not.toContain('vpn.example.com');
+
+			// A differing hit costs ONE confirming canary — never more than two in total.
+			expect(aQueries.filter((n) => n.startsWith('_bv-probe-'))).toHaveLength(2);
+		});
+
+		it('treats a hit as synthetic when the confirming canary answers with its address (round-robin wildcard)', async () => {
+			// First canary → .94, second → .95; the "hits" all answer .95, so they are the wildcard.
+			wildcardMock({
+				canaryIps: [['198.51.100.94'], ['198.51.100.95']],
+				realHosts: Object.fromEntries(
+					['vpn', 'admin', 'staging', 'dev', 'test', 'corp', 'intranet', 'internal', 'portal', 'owa'].map((l) => [
+						`${l}.example.com`,
+						['198.51.100.95'],
+					]),
+				),
+			});
+			const result = await run();
+
+			expect(result.findings.filter((f) => f.severity !== 'info')).toEqual([]);
+			const note = result.findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing');
+			expect(note!.metadata?.wildcardIps).toEqual(['198.51.100.94', '198.51.100.95']);
+			expect(note!.metadata?.wildcardSyntheticSubdomains).toHaveLength(10);
+		});
+
+		it('abstains (inconclusive, not a pass) when the canary itself fails, and skips the sweep', async () => {
+			const { aQueries } = wildcardMock({ canaryThrows: true });
+			const result = await run();
+
+			// No confident verdict in either direction.
+			expect(result.findings.filter((f) => f.severity !== 'info')).toEqual([]);
+			expect(result.findings.find((f) => f.title === 'No sensitive subdomains resolve publicly')).toBeUndefined();
+			expect(result.findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing')).toBeUndefined();
+
+			const note = result.findings.find((f) => f.title === 'Sensitive subdomain probe not assessed');
+			expect(note).toBeDefined();
+			expect(note!.severity).toBe('info');
+			expect(note!.metadata?.inconclusive).toBe(true);
+			expect(note!.metadata?.errorKind).toBe('dns_error');
+			expect(note!.metadata?.missingControl).toBeUndefined();
+
+			// The sweep never ran: its ten answers could not have been interpreted.
+			expect(aQueries.filter((n) => !n.startsWith('_bv-probe-'))).toEqual([]);
+			// The SOA half was measured, so the category is not cached as if complete.
+			expect(result.partial).toBe(true);
+		});
+
+		it('keeps the non-wildcard sweep byte-identical apart from the single canary query', async () => {
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.includes('type=NS') || url.includes('type=2')) {
+					return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
+				}
+				if (url.includes('type=SOA') || url.includes('type=6')) {
+					return Promise.resolve(soaResponse('example.com', 'ns1.example.com. admin.example.com. 2024010101 7200 3600 1209600 300'));
+				}
+				if (url.includes('type=A') || url.includes('type=1')) {
+					const nameMatch = url.match(/name=([^&]+)/);
+					const name = nameMatch ? decodeURIComponent(nameMatch[1]) : '';
+					if (name === 'vpn.example.com') return Promise.resolve(aResponse(name, ['203.0.113.10']));
+					return Promise.resolve(emptyResponse(name, 1));
+				}
+				return Promise.resolve(emptyResponse('example.com', 1));
+			});
+
+			const result = await run();
+			const vpn = result.findings.find((f) => f.title === 'Internal subdomain resolves publicly: vpn.example.com');
+			expect(vpn!.severity).toBe('medium');
+			expect(result.findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing')).toBeUndefined();
+			expect(result.findings.find((f) => f.title === 'Sensitive subdomain probe not assessed')).toBeUndefined();
+			// Distinct canary NAMES, not fetches: an empty answer falls through the resolver
+			// chain (empty → secondary DoH), so one query can be two fetches — for the canary
+			// exactly as for each of the ten sweep names.
+			const probes = new Set(
+				(globalThis.fetch as ReturnType<typeof vi.fn>).mock.calls
+					.map((c) => String(c[0] instanceof Request ? c[0].url : c[0]))
+					.map((u) => u.match(/name=([^&]+)/)?.[1] ?? '')
+					.filter((n) => n.includes('_bv-probe-')),
+			);
+			expect(probes.size).toBe(1);
+		});
+	});
 });

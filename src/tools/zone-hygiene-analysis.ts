@@ -163,17 +163,88 @@ export interface SubdomainProbeResult {
 }
 
 /**
+ * Outcome of the wildcard canary that precedes the sensitive-name sweep (#930).
+ *
+ * A wildcard record (`*.<zone>`) answers for EVERY name, so on such a zone the ten
+ * probed internal names all "resolve" — to the wildcard's address — whether or not
+ * the hosts exist. The canary is a label that cannot exist; what it answers with is
+ * the wildcard answer, and any sweep hit carrying that answer is wildcard-synthetic.
+ *
+ * - `detected`: the canary resolved; `ips` is the union of every canary answer seen.
+ * - `absent`: the canary returned no answer — the sweep is interpreted as before.
+ * - `inconclusive`: the canary query itself FAILED (transport error / timeout). The
+ *   sweep cannot be interpreted either way, so it is not run and not reported.
+ */
+export type WildcardProbe =
+	| { status: 'detected'; ips: string[]; probeSubdomain: string }
+	| { status: 'absent'; probeSubdomain: string }
+	| { status: 'inconclusive'; probeSubdomain: string };
+
+/** A sweep hit is wildcard-synthetic when any of its addresses is a wildcard answer. */
+export function isWildcardSynthetic(entry: SubdomainProbeResult, wildcardIps: readonly string[]): boolean {
+	return entry.ips.some((ip) => wildcardIps.includes(ip));
+}
+
+/**
  * Analyze sensitive subdomain probe results.
  *
  * Identifies internal/infrastructure subdomains that resolve publicly,
  * which may leak internal network topology or attack surface.
  *
+ * With a `detected` wildcard probe (#930), hits that carry the wildcard answer are
+ * folded into ONE `info` observation rather than scored: they are evidence of the
+ * wildcard, not of the hosts. Only hits with a DIFFERENT answer keep their scored
+ * `medium`, and only those count toward "Excessive". The clean "No sensitive
+ * subdomains resolve publicly" verdict is withheld on a wildcard zone — public DNS
+ * cannot support it there. An `inconclusive` probe yields only an abstention note
+ * (`inconclusive` + `errorKind`, never `missingControl`): the sweep was not run.
+ *
  * @param results - Array of subdomain probe results
+ * @param wildcard - Outcome of the wildcard canary; absent/`absent` = legacy behaviour
  * @returns Findings for the zone_hygiene category
  */
-export function analyzeSensitiveSubdomains(results: SubdomainProbeResult[]): Finding[] {
+export function analyzeSensitiveSubdomains(results: SubdomainProbeResult[], wildcard?: WildcardProbe): Finding[] {
 	const findings: Finding[] = [];
-	const resolving = results.filter((r) => r.resolves);
+
+	if (wildcard?.status === 'inconclusive') {
+		findings.push(
+			createFinding(
+				'zone_hygiene',
+				'Sensitive subdomain probe not assessed',
+				'info',
+				`The wildcard canary query (${wildcard.probeSubdomain}) failed, so the internal subdomain sweep (vpn, admin, staging, dev, etc.) was not run: without knowing whether the zone answers for arbitrary names, a resolving hit could not be told from a wildcard answer. Re-run check_zone_hygiene to complete this probe.`,
+				{ inconclusive: true, errorKind: 'dns_error', probeSubdomain: wildcard.probeSubdomain },
+			),
+		);
+		return findings;
+	}
+
+	const hits = results.filter((r) => r.resolves);
+	const synthetic = wildcard?.status === 'detected' ? hits.filter((r) => isWildcardSynthetic(r, wildcard.ips)) : [];
+	const resolving = wildcard?.status === 'detected' ? hits.filter((r) => !isWildcardSynthetic(r, wildcard.ips)) : hits;
+
+	if (wildcard?.status === 'detected') {
+		const wildcardIps = wildcard.ips;
+		findings.push(
+			createFinding(
+				'zone_hygiene',
+				'Wildcard DNS masks sensitive subdomain probing',
+				'info',
+				`The zone answers for arbitrary names (canary ${wildcard.probeSubdomain} resolved to ${wildcardIps.join(', ')}), indicating a wildcard record. ` +
+					(synthetic.length > 0
+						? `${synthetic.length} probed internal name(s) returned that same wildcard answer (${synthetic.map((r) => r.subdomain).join(', ')}) — this is not evidence that those hosts exist. `
+						: '') +
+					'Sensitive-subdomain exposure cannot be assessed from public DNS on a wildcard zone; the wildcard itself is scored by the ns check.',
+				{
+					wildcardDetected: true,
+					wildcardIps,
+					probeSubdomain: wildcard.probeSubdomain,
+					wildcardSyntheticSubdomains: synthetic.map((r) => r.subdomain),
+				},
+			),
+		);
+		if (resolving.length === 0) return findings;
+	}
 
 	if (resolving.length === 0) {
 		findings.push(

@@ -169,4 +169,80 @@ describe('analyzeSensitiveSubdomains', () => {
 		const excessive = findings.find((f) => f.title.includes('Excessive'));
 		expect(excessive).toBeUndefined();
 	});
+
+	describe('wildcard zone (#930)', () => {
+		const wildcard = { status: 'detected', ips: ['198.51.100.94'], probeSubdomain: '_bv-probe-abc.example.com' } as const;
+
+		it('folds every hit that carries the wildcard answer into one info observation', () => {
+			const results: SubdomainProbeResult[] = [
+				{ subdomain: 'vpn.example.com', resolves: true, ips: ['198.51.100.94'] },
+				{ subdomain: 'admin.example.com', resolves: true, ips: ['198.51.100.94'] },
+				{ subdomain: 'staging.example.com', resolves: true, ips: ['198.51.100.94'] },
+			];
+
+			const findings = analyzeSensitiveSubdomains(results, wildcard);
+			expect(findings).toHaveLength(1);
+			expect(findings[0].severity).toBe('info');
+			expect(findings[0].title).toBe('Wildcard DNS masks sensitive subdomain probing');
+			expect(findings[0].metadata?.wildcardSyntheticSubdomains).toEqual(['vpn.example.com', 'admin.example.com', 'staging.example.com']);
+			expect(findings[0].metadata?.wildcardIps).toEqual(['198.51.100.94']);
+			expect(findings[0].metadata?.probeSubdomain).toBe('_bv-probe-abc.example.com');
+		});
+
+		it('keeps a hit whose addresses are disjoint from the wildcard answer as a scored medium', () => {
+			const results: SubdomainProbeResult[] = [
+				{ subdomain: 'vpn.example.com', resolves: true, ips: ['203.0.113.10'] },
+				{ subdomain: 'admin.example.com', resolves: true, ips: ['198.51.100.94'] },
+				{ subdomain: 'dev.example.com', resolves: false, ips: [] },
+			];
+
+			const findings = analyzeSensitiveSubdomains(results, wildcard);
+			const vpn = findings.find((f) => f.title === 'Internal subdomain resolves publicly: vpn.example.com');
+			expect(vpn?.severity).toBe('medium');
+			expect(findings.find((f) => f.title.includes('admin.example.com'))).toBeUndefined();
+			expect(findings.find((f) => f.title === 'No sensitive subdomains resolve publicly')).toBeUndefined();
+			const note = findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing');
+			expect(note?.metadata?.wildcardSyntheticSubdomains).toEqual(['admin.example.com']);
+		});
+
+		it('counts only real hits toward the excessive-exposure threshold', () => {
+			const results: SubdomainProbeResult[] = [
+				{ subdomain: 'vpn.example.com', resolves: true, ips: ['203.0.113.10'] },
+				{ subdomain: 'admin.example.com', resolves: true, ips: ['203.0.113.11'] },
+				{ subdomain: 'staging.example.com', resolves: true, ips: ['198.51.100.94'] },
+				{ subdomain: 'dev.example.com', resolves: true, ips: ['198.51.100.94'] },
+			];
+
+			const findings = analyzeSensitiveSubdomains(results, wildcard);
+			expect(findings.filter((f) => f.severity === 'medium')).toHaveLength(2);
+			expect(findings.find((f) => f.title.includes('Excessive'))).toBeUndefined();
+		});
+
+		it('emits the wildcard observation even when nothing else resolved (no clean verdict)', () => {
+			const results: SubdomainProbeResult[] = [{ subdomain: 'vpn.example.com', resolves: false, ips: [] }];
+			const findings = analyzeSensitiveSubdomains(results, wildcard);
+			expect(findings).toHaveLength(1);
+			expect(findings[0].title).toBe('Wildcard DNS masks sensitive subdomain probing');
+			expect(findings[0].metadata?.wildcardSyntheticSubdomains).toEqual([]);
+		});
+
+		it('is byte-identical to the no-argument form when the canary was absent', () => {
+			const results: SubdomainProbeResult[] = [
+				{ subdomain: 'vpn.example.com', resolves: true, ips: ['203.0.113.10'] },
+				{ subdomain: 'admin.example.com', resolves: false, ips: [] },
+			];
+			const withProbe = analyzeSensitiveSubdomains(results, { status: 'absent', probeSubdomain: '_bv-probe-abc.example.com' });
+			expect(withProbe).toEqual(analyzeSensitiveSubdomains(results));
+		});
+
+		it('returns only the abstention note when the canary was inconclusive', () => {
+			const findings = analyzeSensitiveSubdomains([], { status: 'inconclusive', probeSubdomain: '_bv-probe-abc.example.com' });
+			expect(findings).toHaveLength(1);
+			expect(findings[0].severity).toBe('info');
+			expect(findings[0].title).toBe('Sensitive subdomain probe not assessed');
+			expect(findings[0].metadata?.inconclusive).toBe(true);
+			expect(findings[0].metadata?.errorKind).toBe('dns_error');
+			expect(findings[0].metadata?.missingControl).toBeUndefined();
+		});
+	});
 });

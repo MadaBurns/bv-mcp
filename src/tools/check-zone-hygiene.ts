@@ -15,9 +15,29 @@ import {
 	SENSITIVE_SUBDOMAINS,
 	analyzeSoaConsistency,
 	analyzeSensitiveSubdomains,
+	isWildcardSynthetic,
 	parseSoaRecord,
 } from './zone-hygiene-analysis';
-import type { NsSerialEntry, SubdomainProbeResult } from './zone-hygiene-analysis';
+import type { NsSerialEntry, SubdomainProbeResult, WildcardProbe } from './zone-hygiene-analysis';
+
+/**
+ * Wildcard canary (#930). Same shape as the `ns` check's probe (`_bv-probe-<nonce>`),
+ * so the scan-level nonce normalisation in test/scan-domain-dns-semaphore.spec.ts
+ * already covers it. A random label per call: a fixed one could be registered.
+ *
+ * Three outcomes, three different claims — a thrown query is NOT "no wildcard":
+ * reading it that way would let a transient resolver failure hand the sweep a
+ * confident verdict it cannot support (the fail-open shape CLAUDE.md warns about).
+ */
+async function probeWildcard(domain: string, dnsOptions?: QueryDnsOptions): Promise<WildcardProbe> {
+	const probeSubdomain = `_bv-probe-${Math.random().toString(36).substring(2, 10)}.${domain}`;
+	try {
+		const ips = await queryDnsRecords(probeSubdomain, 'A', dnsOptions);
+		return ips.length > 0 ? { status: 'detected', ips, probeSubdomain } : { status: 'absent', probeSubdomain };
+	} catch {
+		return { status: 'inconclusive', probeSubdomain };
+	}
+}
 
 /**
  * Audit DNS zone consistency and detect sensitive subdomains.
@@ -117,6 +137,22 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 	}
 
 	// Phase 2: Sensitive Subdomain Probing (batched to limit concurrent DNS queries)
+	//
+	// #930: a wildcard record answers for every name, so a zone like futuresoft.dk
+	// (`*.futuresoft.dk A …`) used to yield ten medium "Internal subdomain resolves
+	// publicly" findings plus "Excessive exposure" for hosts that do not exist — −165
+	// on a category that additive penalties floor at 0. One canary query first; if it
+	// fails, the sweep is skipped (its answers could not be interpreted) and the
+	// category abstains on this signal rather than passing or failing it.
+	let wildcard = await probeWildcard(domain, dnsOptions);
+	if (wildcard.status === 'inconclusive') {
+		findings.push(...analyzeSensitiveSubdomains([], wildcard));
+		// The SOA half was measured, but this result is incomplete: keep it out of the
+		// 5-minute cache so the next call retries the canary (same `partial` contract as
+		// the transient paths in scan-domain.ts).
+		return { ...buildCheckResult('zone_hygiene', findings), partial: true };
+	}
+
 	const PROBE_BATCH_SIZE = 5;
 	const probeResults: SubdomainProbeResult[] = [];
 
@@ -148,7 +184,22 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 		}
 	}
 
-	const subdomainFindings = analyzeSensitiveSubdomains(probeResults);
+	// A wildcard may answer from a pool (round-robin / CDN), so a hit whose address is
+	// not the first canary's answer is not yet proven real. Spend ONE confirming canary,
+	// only when such a hit exists, and widen the wildcard answer set with whatever it
+	// returns — total canary cost stays at most 2 queries per check.
+	if (wildcard.status === 'detected') {
+		const detected = wildcard;
+		const unexplained = probeResults.some((r) => r.resolves && !isWildcardSynthetic(r, detected.ips));
+		if (unexplained) {
+			const confirm = await probeWildcard(domain, dnsOptions);
+			if (confirm.status === 'detected') {
+				wildcard = { ...detected, ips: [...new Set([...detected.ips, ...confirm.ips])] };
+			}
+		}
+	}
+
+	const subdomainFindings = analyzeSensitiveSubdomains(probeResults, wildcard);
 	findings.push(...subdomainFindings);
 
 	return buildCheckResult('zone_hygiene', findings);

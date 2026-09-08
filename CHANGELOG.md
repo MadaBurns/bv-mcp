@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+Scoring model 1.25.0 (`@blackveil/dns-checks` unchanged at 1.36.0 — the affected check is worker-side). No category weights, grade bands or severity penalties change.
+
+### Fixed
+
+- **`check_zone_hygiene` no longer scores wildcard-synthetic "Internal subdomain resolves publicly" hits** (#930). The sensitive-name sweep (vpn, admin, staging, dev, test, corp, intranet, internal, portal, owa) treated any answer as a resolving host, so a zone with a wildcard record — every name answers — took ten `medium` findings plus "Excessive internal subdomain exposure" for hosts that do not exist and scored the category 0 (measured on futuresoft.dk). A random-label wildcard canary now precedes the sweep (one query; at most one more to confirm a round-robin wildcard answer). Hits carrying the wildcard answer are folded into a single `info` "Wildcard DNS masks sensitive subdomain probing" observation with the synthetic names in metadata; a hit with a different answer keeps its `medium`, and only real hits count toward "Excessive". The clean "No sensitive subdomains resolve publicly" verdict is withheld on a wildcard zone. If the canary itself fails the sweep is skipped and the signal abstains (`inconclusive` + `errorKind: 'dns_error'`, result `partial` so it is not cached) instead of passing or failing. Non-wildcard zones are unchanged; the wildcard remains scored once, by `check_ns`.
+
 ## [3.77.0] - 2026-09-08
 
 Scoring model 1.24.0, `@blackveil/dns-checks` 1.36.0. No category weights, grade bands or severity penalties change; several finding severities do, so scores move for affected domains.
