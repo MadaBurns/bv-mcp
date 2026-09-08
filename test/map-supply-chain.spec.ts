@@ -1321,6 +1321,9 @@ describe('mapSupplyChain — null MX and CAA no-issuance are directives, not pro
 		expect(noIssuance).toBeDefined();
 		expect(noIssuance!.severity).toBe('info');
 		expect(noIssuance!.detail).toMatch(/RFC 8659/);
+		expect(noIssuance!.detail).toMatch(/no certificate authority is authorised/);
+		// Compact format clamps signal text at 200 chars — a note must never be cut mid-sentence.
+		for (const note of [nullMx!, noIssuance!]) expect(note.detail.length).toBeLessThanOrEqual(200);
 	});
 
 	it('null MX published alongside a real MX drops the null row, keeps the provider, and notes the conflict', async () => {
@@ -1338,7 +1341,23 @@ describe('mapSupplyChain — null MX and CAA no-issuance are directives, not pro
 		expect(google!.provider).toBe('Google Workspace');
 		const nullMx = result.signals.find((s) => s.type === 'null_mx');
 		expect(nullMx).toBeDefined();
-		expect(nullMx!.detail).toMatch(/alongside 1 other MX record/);
+		expect(nullMx!.detail).toMatch(/alongside 1 other MX record, which RFC 7505 forbids/);
+		expect(nullMx!.detail.length).toBeLessThanOrEqual(200);
+	});
+
+	it('issue ";" beside an issue grant is a conflict, not a denial: the grant takes effect (RFC 8659 any-match)', async () => {
+		mockDnsResponses({
+			domain: 'example.com',
+			caaRecords: ['0 issue ";"', '0 issue "letsencrypt.org"'],
+		});
+		const result = await run('example.com');
+		expect(result.dependencies.find((d) => d.provider === ';')).toBeUndefined();
+		expect(result.dependencies.filter((d) => d.roles.includes('certificate-authority')).map((d) => d.provider)).toEqual(['letsencrypt.org']);
+		const notes = result.signals.filter((s) => s.type === 'caa_no_issuance');
+		expect(notes).toHaveLength(1);
+		expect(notes[0].detail).toMatch(/alongside 1 issue grant; the grants take effect/);
+		expect(notes[0].detail).not.toMatch(/no certificate authority is authorised/);
+		expect(notes[0].detail.length).toBeLessThanOrEqual(200);
 	});
 
 	it('issuewild ";" is a deny-all too; a grant in the same RRset still yields its CA row', async () => {
@@ -1350,7 +1369,24 @@ describe('mapSupplyChain — null MX and CAA no-issuance are directives, not pro
 		expect(result.dependencies.find((d) => d.provider === ';')).toBeUndefined();
 		const caRows = result.dependencies.filter((d) => d.roles.includes('certificate-authority'));
 		expect(caRows.map((d) => d.provider)).toEqual(['letsencrypt.org']);
-		expect(result.signals.find((s) => s.type === 'caa_no_issuance')?.detail).toMatch(/issuewild/);
+		// A grant under a DIFFERENT tag does not soften the wildcard denial.
+		const note = result.signals.find((s) => s.type === 'caa_no_issuance');
+		expect(note?.detail).toMatch(/issuewild ";"/);
+		expect(note?.detail).toMatch(/no certificate authority is authorised/);
+	});
+
+	it('caps attacker-authored CAA issuer names (MAX_CAA_ISSUERS distinct, MAX_CAA_TOKEN_LENGTH each) before they reach structuredContent', async () => {
+		const { MAX_CAA_ISSUERS, MAX_CAA_TOKEN_LENGTH, TRUNCATION_MARKER } = await import('@blackveil/dns-checks');
+		const longIssuer = `${'a'.repeat(200)}.example`;
+		const many = Array.from({ length: MAX_CAA_ISSUERS + 4 }, (_, i) => `0 issue "ca${i}.example"`);
+		mockDnsResponses({ domain: 'example.com', caaRecords: [`0 issue "${longIssuer}"`, ...many] });
+		const result = await run('example.com');
+		const caRows = result.dependencies.filter((d) => d.roles.includes('certificate-authority'));
+		expect(caRows).toHaveLength(MAX_CAA_ISSUERS);
+		const clipped = caRows.find((d) => d.provider.endsWith(TRUNCATION_MARKER));
+		expect(clipped).toBeDefined();
+		expect(clipped!.provider).toBe(`${longIssuer.slice(0, MAX_CAA_TOKEN_LENGTH)}${TRUNCATION_MARKER}`);
+		expect(caRows.some((d) => d.provider === longIssuer)).toBe(false);
 	});
 
 	it('CAA RFC 8657 parameters are stripped from the CA provider name (shared parser, not a local regex)', async () => {
@@ -1407,8 +1443,9 @@ describe('mapSupplyChain — null MX and CAA no-issuance are directives, not pro
 			signals: [{ type: 'null_mx' as const, severity: 'info' as const, detail: 'Null MX record (RFC 7505).' }],
 			summary: { totalProviders: 0, critical: 0, high: 0, medium: 0, low: 0 },
 		};
-		expect(formatSupplyChain(result, 'compact')).toContain('[INFO] Null MX record (RFC 7505).');
-		expect(formatSupplyChain(result, 'full')).toContain('[INFO] Null MX record (RFC 7505).');
+		expect(formatSupplyChain(result, 'compact')).toContain('- [INFO] Null MX record (RFC 7505).');
+		// The icon is the part that changed: pre-fix the fallthrough rendered 🟡 for anything not high/medium.
+		expect(formatSupplyChain(result, 'full')).toContain('ℹ️ [INFO] Null MX record (RFC 7505).');
 	});
 });
 

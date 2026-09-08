@@ -10,8 +10,16 @@
 import type { OutputFormat } from '../handlers/tool-args';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryTxtRecords, queryDnsRecords, querySrvRecords, queryMxRecords } from '../lib/dns';
-import { isNullMxRecord, parseCaaRecord, parseCaaParameters } from '@blackveil/dns-checks';
+import {
+	isNullMxRecord,
+	parseCaaRecord,
+	parseCaaParameters,
+	MAX_CAA_ISSUERS,
+	MAX_CAA_TOKEN_LENGTH,
+	TRUNCATION_MARKER,
+} from '@blackveil/dns-checks';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { logEvent } from '../lib/log';
 import { detectProviders, matchProviderForNsHost, matchProviderForSpfInclude, matchProviderForMxHost } from './provider-guides';
 import { detectCdnFromAsn, detectHostingFromAsn } from '../lib/cdn-asn-detection';
 import { VERIFICATION_PATTERNS, SERVICE_SPF_DOMAINS } from './txt-hygiene-analysis';
@@ -97,14 +105,14 @@ function extractSpfIncludesFromRecord(spfRecord: string): string[] {
  * `null` for every other tag or an empty value. Closes #932: the previous regex
  * captured `;` as an issuer and rendered a CA called `;`.
  */
-function classifyCaaRecord(data: string): { issuer: string } | { noIssuance: true; tag: string } | null {
+function classifyCaaRecord(data: string): { issuer: string; tag: string } | { noIssuance: true; tag: string } | null {
 	const record = parseCaaRecord(data);
 	if (record === null) return null;
 	if (record.tag !== 'issue' && record.tag !== 'issuewild') return null;
 	const params = parseCaaParameters(record.value);
 	if (params.noIssuance) return { noIssuance: true, tag: record.tag };
 	const issuer = params.issuerDomain.replace(/\.$/, '');
-	return issuer.length > 0 ? { issuer } : null;
+	return issuer.length > 0 ? { issuer, tag: record.tag } : null;
 }
 
 /**
@@ -341,6 +349,10 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 	// provider, so it is split out here (shared `isNullMxRecord` classification
 	// from check_mx) and surfaced as a `null_mx` note below instead of a critical
 	// email-receiving row with an empty provider name (#932).
+	// Deliberate divergence from check_mx, which treats ANY null MX as "non-mail"
+	// and stops: the supply-chain map follows MTA behaviour (RFC 7505 §3 — skip
+	// the `.` exchange, try the next MX), so real exchanges published beside a
+	// null MX are still mapped as dependencies and the conflict is noted.
 	const rawMxRecords = mxSettled.status === 'fulfilled' ? mxSettled.value : [];
 	const hasNullMx = rawMxRecords.some(isNullMxRecord);
 	const mxHosts = rawMxRecords.filter((r) => !isNullMxRecord(r)).map((r) => r.exchange.replace(/\.$/, '').toLowerCase());
@@ -351,19 +363,30 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 	// Extract CAA issuers (only issue and issuewild tags). The deny-all form
 	// (`issue ";"` / `issuewild ";"`) authorises NO CA and so yields no
 	// certificate-authority row; it is noted as `caa_no_issuance` below.
+	// CAA values are attacker-authored DNS data: issuer names are clipped to
+	// MAX_CAA_TOKEN_LENGTH and the distinct set to MAX_CAA_ISSUERS (the same caps
+	// check_caa applies) so a hostile RRset cannot bloat `structuredContent`.
+	// Grants are counted per tag so a `;` entry beside a grant of the SAME tag is
+	// reported as a conflict, not as a denial (RFC 8659: a CA is authorised if it
+	// matches ANY `issue` record, so the empty entry simply matches no CA).
 	const rawCaaRecords = caaSettled.status === 'fulfilled' ? caaSettled.value : [];
-	const caaIssuers: string[] = [];
-	const caaNoIssuanceTags: string[] = [];
+	const caaIssuers = new Set<string>();
+	const caaGrantsByTag = new Map<string, number>();
+	const caaNoIssuanceTags = new Set<string>();
 	for (const record of rawCaaRecords) {
 		const classified = classifyCaaRecord(record);
 		if (classified === null) continue;
 		if ('noIssuance' in classified) {
-			if (!caaNoIssuanceTags.includes(classified.tag)) caaNoIssuanceTags.push(classified.tag);
+			caaNoIssuanceTags.add(classified.tag);
 			continue;
 		}
-		if (!caaIssuers.includes(classified.issuer)) {
-			caaIssuers.push(classified.issuer);
-		}
+		caaGrantsByTag.set(classified.tag, (caaGrantsByTag.get(classified.tag) ?? 0) + 1);
+		if (caaIssuers.size >= MAX_CAA_ISSUERS) continue;
+		const issuer =
+			classified.issuer.length > MAX_CAA_TOKEN_LENGTH
+				? `${classified.issuer.slice(0, MAX_CAA_TOKEN_LENGTH)}${TRUNCATION_MARKER}`
+				: classified.issuer;
+		caaIssuers.add(issuer);
 	}
 
 	// Extract SRV services
@@ -392,8 +415,21 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 
 	function addDependency(providerName: string, source: string): void {
 		// Generic backstop (see isRenderableProviderName): a name with no letter or
-		// digit is a parsing artefact, never a vendor. Drop it rather than count it.
-		if (!isRenderableProviderName(providerName)) return;
+		// digit is a parsing artefact, never a vendor. Drop it rather than count it,
+		// and say so in the tail log so the next cousin of #286 is visible instead
+		// of a quietly shorter provider list.
+		if (!isRenderableProviderName(providerName)) {
+			logEvent({
+				timestamp: new Date().toISOString(),
+				severity: 'warn',
+				category: 'supply-chain',
+				tool: 'map_supply_chain',
+				domain,
+				result: 'non_renderable_provider_dropped',
+				details: { source, name: providerName.slice(0, 32) },
+			});
+			return;
+		}
 		const existing = providerMap.get(providerName);
 		if (existing) {
 			existing.roles.add(sourceToRole(source));
@@ -594,24 +630,22 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 
 	// Directive notes — a dependency that DNS explicitly says does not exist.
 	// Emitted as `info` so the missing row is legible, never as risk (#932).
+	// Details stay under 200 characters: the compact formatter clamps signal text
+	// at 200 and a note truncated mid-sentence reads as a bug.
 	if (hasNullMx) {
-		const conflict =
+		const detail =
 			mxHosts.length > 0
-				? ` It is published alongside ${mxHosts.length} other MX record${mxHosts.length === 1 ? '' : 's'}, which RFC 7505 forbids — the null MX is dropped and the remaining exchanges are mapped as usual.`
-				: ' No email-receiving provider dependency exists.';
-		signals.push({
-			type: 'null_mx',
-			severity: 'info',
-			detail: `Null MX record (RFC 7505): the domain explicitly declares it accepts no inbound mail.${conflict}`,
-		});
+				? `Null MX (RFC 7505) declares no inbound mail, but it is published alongside ${mxHosts.length} other MX record${mxHosts.length === 1 ? '' : 's'}, which RFC 7505 forbids; the null MX is dropped and the rest are mapped.`
+				: 'Null MX record (RFC 7505): the domain explicitly declares it accepts no inbound mail. No email-receiving provider dependency exists.';
+		signals.push({ type: 'null_mx', severity: 'info', detail });
 	}
-	if (caaNoIssuanceTags.length > 0) {
-		const scope = caaNoIssuanceTags.map((tag) => `${tag} ";"`).join(' and ');
-		signals.push({
-			type: 'caa_no_issuance',
-			severity: 'info',
-			detail: `CAA ${scope} (RFC 8659 §4.2): no certificate authority is authorised to issue for this scope. This is a deny-all directive, not a CA dependency.`,
-		});
+	for (const tag of caaNoIssuanceTags) {
+		const grants = caaGrantsByTag.get(tag) ?? 0;
+		const detail =
+			grants > 0
+				? `CAA: a deny-all ${tag} ";" entry is published alongside ${grants} ${tag} grant${grants === 1 ? '' : 's'}; the grants take effect (RFC 8659) — the empty entry matches no CA and adds no dependency.`
+				: `CAA ${tag} ";" (RFC 8659 §4.2): no certificate authority is authorised to issue for this scope. This is a deny-all directive, not a CA dependency.`;
+		signals.push({ type: 'caa_no_issuance', severity: 'info', detail });
 	}
 
 	// Concentration risk: provider appears in 3+ roles
