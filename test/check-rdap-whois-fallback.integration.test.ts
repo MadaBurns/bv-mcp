@@ -296,25 +296,55 @@ describe('checkRdapLookup WHOIS fallback — #931 (.dk / failed-lookup honesty)'
 		expect(reg!.metadata!.registrarFailureReason).toBe('whois_no_whois_server');
 	});
 
-	it('falls back to the opaque whois_error when the shim sends an unrecognised failureReason token', async () => {
+	it('tolerates an unrecognised failureReason token without discarding the rest of the payload (.catch → undefined)', async () => {
 		mockIanaAndRdap(EMPTY_BOOTSTRAP);
-		const whoisBinding = makeWhoisBinding({ registrar: null, source: 'error', failureReason: 'Totally <b>Unexpected</b> Token!' });
+		// Without `.catch(undefined)` the whole payload would fail Zod and read as a
+		// transport error — the registrar must survive, and the token must not be echoed.
+		const whoisBinding = makeWhoisBinding({ registrar: 'Survivor Registrar', source: 'whois', failureReason: 'Totally <b>Unexpected</b> Token!' });
 
 		const result = await (await freshChecker())('example.dk', { whoisBinding });
 
-		const reg = result.findings.find(f => f.metadata?.registrarSource === 'lookup_failed');
-		expect(reg!.metadata!.registrarFailureReason).toBe('whois_error');
+		const reg = result.findings.find(f => f.metadata?.registrarSource === 'whois');
+		expect(reg, 'payload with a garbage failureReason must still validate').toBeDefined();
+		expect(reg!.metadata!.registrar).toBe('Survivor Registrar');
+		expect(reg!.metadata!.registrarFailureReason).toBeUndefined();
+		expect(reg!.detail).not.toContain('Unexpected');
+	});
+
+	it('marks a transient WHOIS failure (timeout / connect_error) partial so the 3600s registry cache skips it', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		const check = await freshChecker();
+
+		const timedOut = await check('example.dk', { whoisBinding: makeWhoisBinding({ registrar: null, source: 'error', failureReason: 'timeout' }) });
+		const refused = await check('example.dk', { whoisBinding: makeWhoisBinding({ registrar: null, source: 'error', failureReason: 'connect_error' }) });
+
+		expect(timedOut.partial).toBe(true);
+		expect(refused.partial).toBe(true);
+	});
+
+	it('does NOT mark deterministic WHOIS outcomes partial (they are safe to cache)', async () => {
+		mockIanaAndRdap(EMPTY_BOOTSTRAP);
+		const check = await freshChecker();
+
+		const noServer = await check('example.fakefaketld', { whoisBinding: makeWhoisBinding({ registrar: null, source: 'error', failureReason: 'no_whois_server' }) });
+		const opaque = await check('example.dk', { whoisBinding: makeWhoisBinding({ registrar: null, source: 'error' }) });
+		const redacted = await check('example.de', { whoisBinding: makeWhoisBinding({ registrar: null, source: 'redacted' }) });
+
+		expect(noServer.partial).toBeUndefined();
+		expect(opaque.partial).toBeUndefined();
+		expect(redacted.partial).toBeUndefined();
 	});
 
 	it('presents a registrant-managed .dk answer as redacted WITH its public dates (policy omission, not a failure)', async () => {
 		mockIanaAndRdap(EMPTY_BOOTSTRAP);
-		// Post-fix shim shape for a Punktum registrant-managed domain.
+		// Post-fix shim shape for a Punktum registrant-managed domain. No
+		// `registrantPrivacy` key: the parser has no Punktum markers, so the shim
+		// omits it rather than emit a confident false.
 		const whoisBinding = makeWhoisBinding({
 			registrar: null,
 			creationDate: '1999-09-29',
 			expiryDate: '2026-09-30',
 			registrantOrg: 'Example ApS',
-			registrantPrivacy: false,
 			source: 'redacted',
 		});
 
@@ -325,7 +355,8 @@ describe('checkRdapLookup WHOIS fallback — #931 (.dk / failed-lookup honesty)'
 		expect(reg!.metadata!.registrarFailureReason).toBeUndefined();
 		expect(reg!.metadata!.creationDate).toBe('1999-09-29T00:00:00.000Z');
 		expect(reg!.metadata!.expirationDate).toBe('2026-09-30T00:00:00.000Z');
-		expect(reg!.metadata!.registrantPrivacy).toBe(false);
+		// Unmeasured → null, never false (#931).
+		expect(reg!.metadata!.registrantPrivacy).toBeNull();
 		expect(reg!.detail).toContain('Created: 1999-09-29');
 		expect(reg!.detail).toContain('Registrar: withheld by registry');
 		// The primary finding acknowledges WHOIS answered instead of asserting the data is unavailable.

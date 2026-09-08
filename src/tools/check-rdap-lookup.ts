@@ -655,6 +655,28 @@ interface RegistrarOutcome {
 }
 
 /**
+ * WHOIS failure reasons that describe a TRANSIENT transport condition. A result
+ * carrying one is stamped `partial: true` so the direct `rdap_lookup` registry
+ * path (`handlers/tools.ts`, cache predicate `!r.partial`, TTL 3600s) does not
+ * pin a socket timeout for an hour as if it were a deterministic answer (#931
+ * review). Deterministic reasons (`whois_no_whois_server`,
+ * `whois_invalid_domain`, `whois_unrecognised_response`) and the opaque
+ * `whois_error` keep today's caching.
+ */
+const TRANSIENT_WHOIS_FAILURE_REASONS: ReadonlySet<string> = new Set(['whois_timeout', 'whois_connect_error']);
+
+/** Build the CheckResult, marking it uncacheable when the registrar lookup failed transiently. */
+function finishRdapResult(findings: ReturnType<typeof createFinding>[]): CheckResult {
+	const result = buildCheckResult(CATEGORY, findings) as CheckResult;
+	const transient = findings.some((f) => {
+		const reason = f.metadata?.registrarFailureReason;
+		return typeof reason === 'string' && TRANSIENT_WHOIS_FAILURE_REASONS.has(reason);
+	});
+	if (transient) result.partial = true;
+	return result;
+}
+
+/**
  * Reconcile the RDAP code-path tag (`rdap` / 'lookup_failed' / 'unknown') with the
  * WHOIS shim's reported source. WHOIS deterministic answers (whois / redacted /
  * notfound) always win over an RDAP transient failure — we got an authoritative
@@ -789,7 +811,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 				registrarFailureReason: 'caller_aborted',
 			}),
 		);
-		return buildCheckResult(CATEGORY, findings) as CheckResult;
+		return finishRdapResult(findings);
 	}
 
 	// Extract TLD
@@ -819,7 +841,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 			),
 		);
 		findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'unknown' }));
-		return buildCheckResult(CATEGORY, findings) as CheckResult;
+		return finishRdapResult(findings);
 	}
 
 	// Fetch RDAP domain data
@@ -851,7 +873,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 				),
 			);
 			findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'lookup_failed', failureReason: `rdap_http_${resp.status}` }));
-			return buildCheckResult(CATEGORY, findings) as CheckResult;
+			return finishRdapResult(findings);
 		}
 
 		const parsedRdap = await readJsonResponseCapped<RdapDomainResponse>(resp, RDAP_RESPONSE_MAX_BODY_BYTES);
@@ -879,7 +901,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 			),
 		);
 		findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'lookup_failed', failureReason: reason }));
-		return buildCheckResult(CATEGORY, findings) as CheckResult;
+		return finishRdapResult(findings);
 	}
 
 	// Parse registrar
@@ -1049,5 +1071,5 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		),
 	);
 
-	return buildCheckResult(CATEGORY, findings) as CheckResult;
+	return finishRdapResult(findings);
 }

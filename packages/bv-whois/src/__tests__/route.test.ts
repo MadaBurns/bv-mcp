@@ -110,8 +110,12 @@ describe('POST /lookup', () => {
 		});
 
 		expect(res.status).toBe(200);
-		// .de short-circuits before any wire exchange, so registrantPrivacy is UNMEASURED (null), not false (#931).
-		expect(await res.json()).toEqual({ registrar: null, registrarIanaId: null, creationDate: null, updatedDate: null, expiryDate: null, registrantOrg: null, registrantPrivacy: null, source: 'redacted' });
+		// .de short-circuits before any wire exchange, so registrantPrivacy is UNMEASURED and the
+		// key is OMITTED — not `false`, and not `null` either, so a pre-#931 bv-mcp whose schema is
+		// `z.boolean().optional()` still validates the payload (#931).
+		const body = await res.json();
+		expect(body).toEqual({ registrar: null, registrarIanaId: null, creationDate: null, updatedDate: null, expiryDate: null, registrantOrg: null, source: 'redacted' });
+		expect(body).not.toHaveProperty('registrantPrivacy');
 	});
 
 	it('rejects body larger than 1KB', async () => {
