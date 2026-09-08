@@ -508,7 +508,7 @@ describe('checkLookalikes - shared nameserver detection', () => {
 		expect(tstFinding).toBeDefined();
 		expect(tstFinding!.severity).toBe('info');
 		expect(tstFinding!.title).toContain('likely owned by same entity');
-		expect(tstFinding!.detail).toContain('dedicated nameservers');
+		expect(tstFinding!.detail).toContain('none on a known shared-tenant provider');
 		expect(tstFinding!.detail).toContain('mail infrastructure');
 		expect(tstFinding!.metadata?.ownershipVerdict).toBe('owned_by_seed');
 

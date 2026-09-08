@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **`check_lookalikes` / `check_shadow_domains` / `discover_brand_domains` attributed every tenant of a shared hosting platform to the seed.** A candidate on the same one.com nameserver pair as the seed (`ns01.one.com` / `ns02.one.com`, which one.com assigns to every customer) was reported `owned_by_seed` / `strong` / confidence 1.00 on `ns_set_match` alone and worded as "shares 2/2 dedicated nameservers" — the mirror image of #263/#864, and a squatter hosting a lookalike at one.com would have earned the seed's `info` severity ceiling for free. one.com joins `SHARED_NS_APEXES`; the complete-match shared-provider arm now credits only POOLED providers (Akamai — `POOLED_SHARED_NS_APEXES`, injected as `isPooledSharedNsHost`, defaults closed), so a complete match on a uniform platform is `third_party` with the new `ns_shared_platform` signal and a rationale naming the platform hosts; the `ns_set_match` rationale no longer says "dedicated". `discover_brand_domains` already dropped shared-apex overlap, so listing one.com fixes it outright. Not `scan_domain`-score-affecting (both checks are `scanIncluded: false`; no model bump). (Closes #929)
+
 ## [3.77.0] - 2026-09-08
 
 Scoring model 1.24.0, `@blackveil/dns-checks` 1.36.0. No category weights, grade bands or severity penalties change; several finding severities do, so scores move for affected domains.
