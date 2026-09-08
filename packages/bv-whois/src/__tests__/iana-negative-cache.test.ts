@@ -84,6 +84,27 @@ describe('resolveWhoisServer — negative IANA cache', () => {
 		expect(IANA_UNREACHABLE_TTL_SECONDS).toBeLessThan(IANA_NEGATIVE_TTL_SECONDS);
 	});
 
+	it('treats a non-referral body WITHOUT the IANA "returned N objects" line as iana_unreachable, not a 24h no_record (#935 review)', async () => {
+		const kv = makeMemoryKV();
+		const whoisQuery: WhoisQueryFn = async () => '% rate limit exceeded, try again later\n';
+
+		const result = await resolveWhoisServerDetailed('garbledtld', { kv: kv as never, whoisQuery });
+
+		expect(result).toEqual({ server: null, reason: 'iana_unreachable' });
+		const [, value, opts] = kv.put.mock.calls[0];
+		expect(JSON.parse(value)).toEqual({ server: null, reason: 'iana_unreachable' });
+		expect(opts).toEqual({ expirationTtl: IANA_UNREACHABLE_TTL_SECONDS });
+	});
+
+	it('treats an IANA record that lists no whois: server ("returned 1 object") as deterministic no_record', async () => {
+		const kv = makeMemoryKV();
+		const whoisQuery: WhoisQueryFn = async () => '% IANA WHOIS server\n% This query returned 1 object.\n\ndomain:       NOWHOIS\nstatus:       ACTIVE\n';
+
+		const result = await resolveWhoisServerDetailed('nowhois', { kv: kv as never, whoisQuery });
+
+		expect(result).toEqual({ server: null, reason: 'no_record' });
+	});
+
 	it('reads a cached iana_unreachable entry back with its reason', async () => {
 		const kv = makeMemoryKV();
 		await kv.put('iana:weirdtld', JSON.stringify({ server: null, reason: 'iana_unreachable' }), {});

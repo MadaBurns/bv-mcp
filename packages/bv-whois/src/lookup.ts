@@ -164,7 +164,12 @@ export async function lookupRegistrar(domain: string, deps: LookupDeps): Promise
 	const details = { ...dates, registrantPrivacy: parsed.registrantPrivacy };
 
 	if (parsed.registrar) return { registrar: parsed.registrar, registrarIanaId: parsed.registrarIanaId ?? null, ...details, source: 'whois' };
-	if (parsed.redacted) return { registrar: null, registrarIanaId: null, ...details, source: 'redacted' };
+	// `redacted` fires on DENIC's disclosure notice AND on "not permitted" /
+	// "exceeded the limit" banners (parse.ts) — bodies with NO registrant record,
+	// so "no privacy marker" is not a measurement there either. Positive only.
+	if (parsed.redacted) {
+		return { registrar: null, registrarIanaId: null, ...dates, ...(parsed.registrantPrivacy ? { registrantPrivacy: true } : {}), source: 'redacted' };
+	}
 	// No registrant record exists, so there is nothing to measure privacy on — key omitted.
 	if (parsed.notFound) return { registrar: null, registrarIanaId: null, ...dates, source: 'notfound' };
 	// The registry answered with a REGISTRATION RECORD (dates present) that

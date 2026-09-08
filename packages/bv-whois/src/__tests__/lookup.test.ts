@@ -414,6 +414,28 @@ describe('lookupRegistrar — unmeasured registrantPrivacy is OMITTED, never fal
 		expect(result).not.toHaveProperty('registrantPrivacy');
 	});
 
+	it('is omitted on a registry rate-limit / not-permitted banner (parser reports redacted, but no record was read)', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('example.com', {
+			kv: kv as never,
+			whoisQuery: vi.fn(async () => '% Requests of this client are not permitted. Please use https://example.invalid/whois\n'),
+		});
+
+		expect(result.source).toBe('redacted');
+		expect(result).not.toHaveProperty('registrantPrivacy');
+	});
+
+	it('is omitted on a DENIC disclosure notice read on the wire (no registrant record in the body)', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('example.example', {
+			kv: kv as never,
+			whoisQuery: vi.fn(async (server: string) => (server === 'whois.iana.org' ? 'whois:        whois.nic.example\n' : REDACTED_DENIC_RESPONSE)),
+		});
+
+		expect(result.source).toBe('redacted');
+		expect(result).not.toHaveProperty('registrantPrivacy');
+	});
+
 	it('is omitted for invalid input', async () => {
 		const kv = makeKV();
 		const result = await lookupRegistrar('not a domain!!!', { kv: kv as never, whoisQuery: vi.fn() });
@@ -438,6 +460,16 @@ describe('lookupRegistrar — concrete failureReason on source=error (#931)', ()
 		});
 
 		expect(result).toMatchObject({ source: 'error', failureReason: 'no_whois_server' });
+	});
+
+	it('reports connect_error (NOT no_whois_server) when IANA answers with a non-IANA body (rate-limit banner)', async () => {
+		const kv = makeKV();
+		const result = await lookupRegistrar('thing.totallymadeuptld', {
+			kv: kv as never,
+			whoisQuery: vi.fn(async () => '% rate limit exceeded, try again later\n'),
+		});
+
+		expect(result).toMatchObject({ source: 'error', failureReason: 'connect_error' });
 	});
 
 	it('reports connect_error (NOT no_whois_server) when the IANA referral query itself throws', async () => {

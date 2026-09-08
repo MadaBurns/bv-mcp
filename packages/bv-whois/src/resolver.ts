@@ -30,7 +30,10 @@ export const IANA_NEGATIVE_TTL_SECONDS = 24 * 60 * 60;
  */
 export const IANA_UNREACHABLE_TTL_SECONDS = 5 * 60;
 
-/** Why a negative entry exists: IANA answered "no record" vs IANA could not be reached. */
+/** Present on every genuine whois.iana.org reply (`% This query returned 0 objects.` / `... 1 object`). */
+const IANA_ANSWER_RE = /returned \d+ objects?/i;
+
+/** Why a negative entry exists: IANA answered "no record" vs IANA could not be reached / answered garbage. */
 export type NoServerReason = 'no_record' | 'iana_unreachable';
 
 interface CacheEnvelope {
@@ -159,10 +162,17 @@ export async function resolveWhoisServerDetailed(
 
 	const server = parseIanaReferral(response);
 	if (!server) {
-		await deps.kv.put(KV_PREFIX + normalized, JSON.stringify({ server: null, reason: 'no_record' }), {
-			expirationTtl: IANA_NEGATIVE_TTL_SECONDS,
+		// Only a genuine IANA ANSWER is deterministic. Every real whois.iana.org
+		// reply carries `% This query returned N object(s)` — 0 for a TLD IANA
+		// does not know, 1 for a record that simply lists no `whois:` server
+		// (measured 2026-09-09). A body without that line (rate-limit banner,
+		// truncated read, wrong peer) is not evidence the TLD has no server and
+		// must not sit in the 24h negative cache as `no_record` (#935 review).
+		const reason: NoServerReason = IANA_ANSWER_RE.test(response) ? 'no_record' : 'iana_unreachable';
+		await deps.kv.put(KV_PREFIX + normalized, JSON.stringify({ server: null, reason }), {
+			expirationTtl: reason === 'no_record' ? IANA_NEGATIVE_TTL_SECONDS : IANA_UNREACHABLE_TTL_SECONDS,
 		});
-		return { server: null, reason: 'no_record' };
+		return { server: null, reason };
 	}
 
 	await deps.kv.put(KV_PREFIX + normalized, JSON.stringify({ server }), { expirationTtl: IANA_TTL_SECONDS });
