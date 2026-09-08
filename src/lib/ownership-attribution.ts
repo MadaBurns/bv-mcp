@@ -124,6 +124,34 @@
  * apex would attribute — the same provider-class residual the NS
  * in-bailiwick arm already carries for DNS providers. Strength is `medium`
  * and `evidence[]` names every record so a consumer can audit the match.
+ *
+ * AMENDMENT — SHARED-PLATFORM NS PAIRS (2026-09-09, #929, the mirror image of
+ * #263/#864). The seed-side NS arms assumed that any nameserver NOT on a
+ * known shared provider is "dedicated", and that a COMPLETE match on a
+ * shared provider is medium evidence. Both assumptions fail on a platform
+ * that hands EVERY tenant the identical set: `net-agents.dk`, `net-agent.dk`
+ * and `net-agents.com` all delegate to `ns01.one.com` / `ns02.one.com`
+ * (one.com shared hosting, DoH 2026-09-09) and were attributed to each other
+ * at `strong` / confidence 1.00 on `ns_set_match` — a test that would also
+ * attribute every other one.com customer, and that a squatter satisfies by
+ * hosting the lookalike at one.com (earning the `info` ceiling the D4 gate
+ * reserves for the seed's own domains). Ruling A's bar applies to NS too: a
+ * verdict rests only on what the SEED alone can publish, and a
+ * platform-assigned NS set is not that.
+ *
+ * Fix: (1) one.com joins `SHARED_NS_APEXES`, so its hosts never count as
+ * dedicated; (2) the complete-match arm (step 4) now requires the injected
+ * `isPooledSharedNsHost` predicate to accept EVERY matched host — only a
+ * provider that draws hostnames per zone from a large pool (Akamai) makes an
+ * identical complete set per-account evidence. The predicate is optional and
+ * DEFAULTS CLOSED (nothing is pooled): a caller that omits it can never
+ * credit a platform. (3) An overlap confined to shared-provider hosts that
+ * does not earn step 4 now returns `third_party` with the `ns_shared_platform`
+ * signal and a rationale naming the platform hosts — it is the same
+ * `third_party` ceiling as before, worded for what was measured, and step 5b
+ * (the seed-published DMARC grant) keeps precedence over it. (4) The dedicated
+ * arm's rationale no longer says "dedicated"; it says the hosts are on no
+ * known shared-tenant provider, which is what was actually checked.
  */
 
 import type { CheckCategory, Finding, Severity } from '@blackveil/dns-checks/scoring';
@@ -156,6 +184,7 @@ export type OwnershipSignal =
 	| 'ns_in_bailiwick'
 	| 'ns_set_match'
 	| 'ns_shared_provider_complete'
+	| 'ns_shared_platform'
 	| 'mx_in_bailiwick'
 	| 'dmarc_report_authorised_by_seed'
 	| 'soa_in_bailiwick'
@@ -236,6 +265,17 @@ export interface ClassifyOwnershipInput {
 	 * never imports from `src/tenants/discovery/` (see file header).
 	 */
 	isSharedNsHost: (nsHost: string) => boolean;
+	/**
+	 * #929 — injected POOLED-shared-provider predicate (`isPooledSharedNsHost`
+	 * from `src/tenants/discovery/shared-ns-hosts.ts`): true for a shared
+	 * provider that assigns hostnames per zone from a pool large enough that
+	 * an identical COMPLETE set implies one account (Akamai). Step 4 credits a
+	 * complete shared-provider match ONLY when every matched host passes this.
+	 * OPTIONAL and DEFAULTS CLOSED — absent, no shared provider is pooled and
+	 * step 4 can never fire — so a caller that forgets it fails safe (no
+	 * platform is credited), never open. Must imply `isSharedNsHost`.
+	 */
+	isPooledSharedNsHost?: (nsHost: string) => boolean;
 	/**
 	 * True when the SEED's own NS lookup REJECTED (timeout / throttling), so
 	 * `seedNs` is empty because it was UNFETCHED, not because the seed has no
@@ -355,10 +395,13 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
  *     resolution and never reaches this arm with a matching host (Ruling B:
  *     "in-bailiwick NS requires resolution evidence").
  *  3. NS set match on hosts NOT flagged shared, >=50% AND >=2 shared → `owned_by_seed`, strong.
- *  4. Complete (100%) NS set match where every shared host is on a SHARED provider → `owned_by_seed`, medium.
- *  5. Partial overlap confined to shared-provider hosts → not evidence (falls through silently —
- *     this is the ANZ/Westpac 1/6-Akamai trap: a single shared-provider NS host in common is
- *     operational plumbing, not ownership evidence).
+ *  4. Complete (100%) NS set match where every shared host is on a POOLED shared provider
+ *     (`isPooledSharedNsHost`, #929 — Akamai; defaults closed) → `owned_by_seed`, medium.
+ *  5. Any other overlap confined to shared-provider hosts → not evidence. A partial overlap is
+ *     the ANZ/Westpac 1/6-Akamai trap (a single pooled host in common is operational plumbing);
+ *     a complete match on a NON-pooled platform (one.com `ns01`/`ns02`, #929) is what every
+ *     tenant of that platform looks like. Falls through to 5b; if 5b declines, step 6 words the
+ *     `third_party` verdict as `ns_shared_platform` rather than "distinct infrastructure".
  *  5b. (#864) SEED-AUTHORISED convergence — pre-filter: every real MX exchange inside the seed
  *     apex (attacker-free, no weight); verdict: the seed publishes the RFC 7489 §7.1 DMARC
  *     report authorisation `<candidate>._report._dmarc.<receiver-under-seed>` → `owned_by_seed`,
@@ -447,26 +490,37 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 	const sharedNs = candidateNs.filter((ns) => seedNs.includes(ns));
 	const dedicatedShared = sharedNs.filter((ns) => !input.isSharedNsHost(ns));
 	const seedTotal = seedNs.length;
+	// #929 — defaults CLOSED: with no predicate injected, no shared provider is
+	// pooled and the complete-match arm below is unreachable.
+	const isPooled = input.isPooledSharedNsHost ?? (() => false);
 
 	if (
 		seedTotal > 0 &&
 		dedicatedShared.length >= DEDICATED_NS_MATCH_MIN_COUNT &&
 		dedicatedShared.length / seedTotal >= DEDICATED_NS_MATCH_RATIO
 	) {
+		// #929 — "dedicated" was the old word here. What is actually checked is
+		// that none of the matched hosts sits on a KNOWN shared-tenant provider;
+		// say that, not more.
 		return {
 			verdict: 'owned_by_seed',
 			strength: 'strong',
 			signals: ['ns_set_match'],
-			rationale: `${candidateDomain} shares ${dedicatedShared.length}/${seedTotal} dedicated nameservers with ${seedApex}.`,
+			rationale: `${candidateDomain} shares ${dedicatedShared.length}/${seedTotal} nameservers with ${seedApex} (${dedicatedShared.join(', ')}), none on a known shared-tenant provider.`,
 		};
 	}
 
-	if (seedTotal > 0 && sharedNs.length === seedTotal && sharedNs.every((ns) => input.isSharedNsHost(ns))) {
+	if (
+		seedTotal > 0 &&
+		sharedNs.length === seedTotal &&
+		sharedNs.every((ns) => input.isSharedNsHost(ns)) &&
+		sharedNs.every((ns) => isPooled(ns))
+	) {
 		return {
 			verdict: 'owned_by_seed',
 			strength: 'medium',
 			signals: ['ns_shared_provider_complete'],
-			rationale: `${candidateDomain} matches the complete ${seedTotal}/${seedTotal} nameserver set on a shared provider. A full match is evidence; a partial match on the same provider would not be.`,
+			rationale: `${candidateDomain} matches the complete ${seedTotal}/${seedTotal} nameserver set on a pooled shared provider (${sharedNs.join(', ')}). A full match is evidence there; a partial match on the same provider would not be.`,
 		};
 	}
 
@@ -474,6 +528,22 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 	// a strong NS match is never displaced by this medium-strength verdict. Also
 	// carries the `unmeasured` outcome for an asked-but-unanswered seed probe.
 	if (convergence !== null) return convergence;
+
+	// #929 — an overlap that exists but is confined to shared-provider hosts
+	// (a complete match on a non-pooled platform such as one.com, or the 1/6
+	// Akamai partial). Same `third_party` ceiling as the arm below — a
+	// misclassification between third_party and unattributed never moves
+	// severity — but worded for what was measured: the hosts are the
+	// platform's, assigned to every tenant, and say nothing about who
+	// registered the candidate.
+	if (candidateNs.length > 0 && sharedNs.length > 0 && dedicatedShared.length === 0) {
+		return {
+			verdict: 'third_party',
+			strength: 'none',
+			signals: ['ns_shared_platform'],
+			rationale: `${candidateDomain} shares ${sharedNs.length}/${seedTotal} nameservers with ${seedApex} (${sharedNs.join(', ')}), all on a shared-tenant DNS platform that assigns the same hostnames to unrelated customers — platform plumbing, not ownership evidence.`,
+		};
+	}
 
 	if (candidateNs.length > 0) {
 		return {

@@ -14,7 +14,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { isSharedNsHost } from '../../src/tenants/discovery/shared-ns-hosts';
+import {
+	isPooledSharedNsHost,
+	isSharedNsHost,
+	POOLED_SHARED_NS_APEXES,
+	SHARED_NS_APEXES,
+} from '../../src/tenants/discovery/shared-ns-hosts';
 
 const SHARED_NS_MUST_MATCH: ReadonlyArray<readonly [string, string]> = [
 	// Parking services
@@ -31,6 +36,9 @@ const SHARED_NS_MUST_MATCH: ReadonlyArray<readonly [string, string]> = [
 	['ns1.secureserver.net', 'GoDaddy secureserver'],
 	// Namecheap registrar default
 	['dns1.registrar-servers.com', 'Namecheap registrar-default NS'],
+	// one.com shared hosting — identical pair for every tenant (#929, live 2026-09-09)
+	['ns01.one.com', 'one.com shared hosting — every tenant gets ns01/ns02'],
+	['ns02.one.com', 'one.com shared hosting — every tenant gets ns01/ns02'],
 	// Akamai — hostnames are shared across unrelated customers (2026-07-26
 	// correctness-defects design §3.3: bnz.co.nz shares a9-65.akam.net with
 	// anz.co.nz and a3-67.akam.net with westpac.co.nz — three competing banks).
@@ -68,4 +76,23 @@ describe('SHARED_NS_APEXES non-coverage — hyperscale DNS must remain ownership
 		expect(isSharedNsHost('')).toBe(false);
 		expect(isSharedNsHost('   ')).toBe(false);
 	});
+});
+
+describe('POOLED_SHARED_NS_APEXES — the only shared providers a complete NS-set match may credit (#929)', () => {
+	it('is a strict subset of SHARED_NS_APEXES (a pooled host must also be excluded from the dedicated arm)', () => {
+		expect(POOLED_SHARED_NS_APEXES.size).toBeGreaterThan(0);
+		expect(POOLED_SHARED_NS_APEXES.size).toBeLessThan(SHARED_NS_APEXES.size);
+		for (const apex of POOLED_SHARED_NS_APEXES) expect(SHARED_NS_APEXES.has(apex)).toBe(true);
+	});
+
+	it('classes Akamai as pooled (six hosts per zone from a large pool — a 6/6 match is one account)', () => {
+		expect(isPooledSharedNsHost('a1-97.akam.net')).toBe(true);
+	});
+
+	for (const [ns] of SHARED_NS_MUST_MATCH) {
+		if (ns.endsWith('.akam.net')) continue;
+		it(`does NOT class ${ns} as pooled — every tenant of that platform receives the same set`, () => {
+			expect(isPooledSharedNsHost(ns)).toBe(false);
+		});
+	}
 });

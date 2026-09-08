@@ -27,7 +27,7 @@ import {
 	classifyOwnership,
 	type OwnershipAssessment,
 } from '../lib/ownership-attribution';
-import { isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
+import { isPooledSharedNsHost, isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
 
 /** Wall-clock timeout for the entire shadow domain check (ms). */
 const SHADOW_TIMEOUT_MS = 20_000;
@@ -573,6 +573,7 @@ function classifyAndGate(probe: VariantProbeResult, seedDomain: string, seedNs: 
 		candidateDomain: probe.variant,
 		registration: { state: 'registered', ns: probe.ns, evidence },
 		isSharedNsHost,
+		isPooledSharedNsHost,
 	});
 
 	// Shared mail infrastructure with the primary is the one corroborating
