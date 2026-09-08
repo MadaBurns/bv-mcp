@@ -60,24 +60,39 @@ describe('transient DNS failure → category is INCONCLUSIVE, not a scored defic
 		expect(hasScoredDeficiency(result.findings)).toBe(false);
 	});
 
-	it.each([checkNS, checkMX, checkCAA])('DNS abstentions are retryable and cannot be cached or read as a pass', async (check) => {
-		const result = await check('example.com', throwingDNS);
+	// checkDNSSEC only abstains when the raw AD-flag probe throws — a thrown queryDNS alone
+	// is fail-soft (DNSKEY/DS treated as absent), so it is driven through rawQueryDNS here.
+	it.each([
+		{ name: 'checkNS', run: () => checkNS('example.com', throwingDNS) },
+		{ name: 'checkMX', run: () => checkMX('example.com', throwingDNS) },
+		{ name: 'checkCAA', run: () => checkCAA('example.com', throwingDNS) },
+		{ name: 'checkDNSSEC', run: () => checkDNSSEC('example.com', throwingDNS, { rawQueryDNS: throwingRawDNS }) },
+	])('$name: DNS abstentions are retryable and cannot be cached or read as a pass', async ({ run }) => {
+		const result = await run();
 		expect(result).toMatchObject({ checkStatus: 'error', score: 0, passed: false, partial: true });
 		expect(result.controlPresent).not.toBe(true);
 	});
 
+	const unknownZone = {
+		scannedLabel: 'sub.example.com',
+		registrableDomain: 'example.com',
+		zoneApex: 'example.com',
+		isApex: false,
+		delegationStatus: 'unknown' as const,
+		apexNsRecords: [],
+	};
+
 	it('unknown CAA zone delegation has the same non-answer contract', async () => {
-		const result = await checkCAA('sub.example.com', throwingDNS, {
-			zone: {
-				scannedLabel: 'sub.example.com',
-				registrableDomain: 'example.com',
-				zoneApex: 'example.com',
-				isApex: false,
-				delegationStatus: 'unknown',
-				apexNsRecords: [],
-			},
-		});
+		const result = await checkCAA('sub.example.com', throwingDNS, { zone: unknownZone });
 		expect(result).toMatchObject({ checkStatus: 'error', score: 0, passed: false, partial: true });
+	});
+
+	it('unknown DNSSEC zone delegation has the same non-answer contract (#900)', async () => {
+		// Before #900 this spread checkStatus over an info-only buildCheckResult: score 100, no
+		// `partial`, never retried by scan_domain's transient-zero pass, and cached for 5 minutes.
+		const result = await checkDNSSEC('sub.example.com', throwingDNS, { rawQueryDNS: throwingRawDNS, zone: unknownZone });
+		expect(result).toMatchObject({ checkStatus: 'error', score: 0, passed: false, partial: true });
+		expect(result.controlPresent).not.toBe(true);
 	});
 
 	it('checkDNSSEC: a thrown AD-flag query is excluded (checkStatus error), not a medium/high finding', async () => {

@@ -47,9 +47,9 @@ type ExplanationEntry = ExplanationTemplate;
  * Statuses for which a finding-signature match must NOT be applied.
  *
  * A passing or informational result can still carry detail text that mentions a
- * mechanism ("SPF record uses \"~all\" (soft fail) which is the recommended
- * setting when DMARC enforcement is active"), and swapping in the corresponding
- * defect explanation would turn a clean result into a fabricated problem.
+ * mechanism ("SPF uses \"~all\" while DMARC is in monitoring mode (p=none)" is the
+ * check's info-severity detail), and swapping in the corresponding defect
+ * explanation would turn a clean result into a fabricated problem.
  */
 const NON_ACTIONABLE_STATUSES = new Set(['pass', 'passed', 'ok', 'info', 'informational', 'n/a', 'na', 'skipped']);
 

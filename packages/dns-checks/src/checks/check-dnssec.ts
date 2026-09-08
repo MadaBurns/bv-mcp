@@ -10,7 +10,7 @@
  */
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
-import { buildCheckResult, createFinding } from '../check-utils';
+import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
 import { auditDnskeyAlgorithms, auditDsDigestTypes, auditNsec3Params } from './dnssec-analysis';
 import { isRegistryManagedDnssec } from './registry-managed-dnssec';
 
@@ -33,18 +33,20 @@ export async function checkDNSSEC(
 	const rawQueryDNS = options?.rawQueryDNS;
 	const findings: Finding[] = [];
 
+	// Zone walk did not complete: an abstention (score 0 + partial + checkStatus 'error'),
+	// NOT an info-only pass. The old shape spread checkStatus over buildCheckResult's
+	// score-100 result, so scan_domain's transient-zero retry (checkStatus error && score 0)
+	// never fired and the non-answer was cached for five minutes (#900).
 	if (options?.zone && !options.zone.isApex && options.zone.delegationStatus === 'unknown') {
-		return {
-			...buildCheckResult('dnssec', [
-				createFinding(
-					'dnssec',
-					'DNSSEC not assessed',
-					'info',
-					`Could not determine the authoritative zone for ${options.zone.scannedLabel} due to a transient DNS failure; DNSSEC posture was not assessed.`,
-				),
-			]),
-			checkStatus: 'error',
-		};
+		return buildNotAssessedResult(
+			'dnssec',
+			createFinding(
+				'dnssec',
+				'DNSSEC not assessed',
+				'info',
+				`Could not determine the authoritative zone for ${options.zone.scannedLabel} due to a transient DNS failure; DNSSEC posture was not assessed.`,
+			),
+		);
 	}
 
 	// A non-apex label with no zone of its own inherits DNSSEC posture from its
@@ -67,18 +69,16 @@ export async function checkDNSSEC(
 		// category INCONCLUSIVE (checkStatus) so the scoring engine renormalizes over the remaining
 		// categories instead of penalizing a possibly-healthy domain with a scored deficiency.
 		// (The DNSKEY/DS/NSEC3PARAM catches below are legitimate fail-soft "treat as absent" and
-		// stay unchanged.)
-		return {
-			...buildCheckResult('dnssec', [
-				createFinding(
-					'dnssec',
-					'DNSSEC not assessed',
-					'info',
-					`Could not query DNSSEC status for ${target} due to a transient DNS failure; this control was not assessed.`,
-				),
-			]),
-			checkStatus: 'error',
-		};
+		// stay unchanged.) Same retryable, non-cacheable abstention shape as caa/mx/ns (#900).
+		return buildNotAssessedResult(
+			'dnssec',
+			createFinding(
+				'dnssec',
+				'DNSSEC not assessed',
+				'info',
+				`Could not query DNSSEC status for ${target} due to a transient DNS failure; this control was not assessed.`,
+			),
+		);
 	}
 
 	// Query DNSKEY, DS, and NSEC3PARAM records independently; default to empty on failure

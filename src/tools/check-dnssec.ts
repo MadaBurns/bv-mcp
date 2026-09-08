@@ -13,6 +13,7 @@ import { resolveZoneApex } from '../lib/zone-apex';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { readJsonResponseCapped } from '../lib/response-body';
 
 export { parseDnskeyAlgorithm, parseDsRecord } from '@blackveil/dns-checks';
@@ -150,17 +151,12 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions, 
 
 		return augmentWithSource(dnssecTarget, baseResult);
 	} catch (err) {
+		// Defense-in-depth: the package check swallows its own DNS failures today, so this is
+		// latent — but it must still produce the documented Worker-side abstention (score 0 +
+		// partial + checkStatus 'error', see CLAUDE.md "DNS-failure resilience"), never an
+		// info-only score-100 result that scan_domain would neither retry nor keep out of cache.
 		if (err instanceof DnsQueryError) {
-			const message = err.message;
-			return {
-				...buildCheckResult('dnssec', [
-					createFinding('dnssec', 'DNSSEC check could not complete', 'info', `DNS query failed (${message}). DNSSEC posture unknown.`, {
-						dnsError: message,
-						checkStatus: 'error',
-					}),
-				]),
-				checkStatus: 'error' as const,
-			};
+			return buildDnsErrorResult('dnssec', 'DNSSEC', err);
 		}
 		throw err;
 	}

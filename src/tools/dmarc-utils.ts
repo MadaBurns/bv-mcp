@@ -1,10 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import { queryTxtRecords } from '../lib/dns';
-import type { QueryDnsOptions } from '../lib/dns-types';
-import { createFinding } from '../lib/scoring';
-import type { Finding } from '../lib/scoring';
-
 /** Parse DMARC tag-value pairs from a DMARC record string. */
 export function parseDmarcTags(record: string): Map<string, string> {
 	const tags = new Map<string, string>();
@@ -77,38 +72,4 @@ export function detectThirdPartyAggregators(uris: string[]): string[] {
 		}
 	}
 	return detected;
-}
-
-/**
- * Check cross-domain RUA authorization per RFC 7489 §7.1.
- * When rua= points to a third-party domain, verify authorization TXT records.
- */
-export async function checkRuaAuthorization(domain: string, ruaUris: string[], dnsOptions?: QueryDnsOptions): Promise<Finding[]> {
-	const findings: Finding[] = [];
-	const checkedDomains = new Set<string>();
-
-	for (const uri of ruaUris) {
-		const targetDomain = extractDomainFromMailto(uri);
-		if (!targetDomain || targetDomain === domain || checkedDomains.has(targetDomain)) continue;
-		checkedDomains.add(targetDomain);
-
-		try {
-			const authRecords = await queryTxtRecords(`${domain}._report._dmarc.${targetDomain}`, dnsOptions);
-			const hasAuth = authRecords.some((record) => record.toLowerCase().startsWith('v=dmarc1'));
-			if (!hasAuth) {
-				findings.push(
-					createFinding(
-						'dmarc',
-						'Third-party aggregate reporting not authorized',
-						'medium',
-						`Aggregate reports sent to ${targetDomain} will be silently discarded. The authorization record ${domain}._report._dmarc.${targetDomain} must contain a TXT record with "v=DMARC1" (RFC 7489 §7.1).`,
-					),
-				);
-			}
-		} catch {
-			// DNS query failed — don't produce a finding for transient errors.
-		}
-	}
-
-	return findings;
 }
