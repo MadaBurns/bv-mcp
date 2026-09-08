@@ -48,10 +48,16 @@ import { registeredApex } from './infrastructure-providers';
 
 /**
  * Apex-form (2-label) domains of NS providers that assign shared NS
- * hostnames across many unrelated customers. Add conservatively — false
- * negatives (missing a provider) just mean the existing orchestrator gate
- * handles it; false positives (suppressing a real Cloudflare-style signal)
- * would erase legitimate ownership evidence.
+ * hostnames across many unrelated customers.
+ *
+ * Membership bar (rewritten 2026-09-09, #929): list a provider when two
+ * UNRELATED tenants can be observed sharing NS hostnames. The cost of a
+ * missing entry is a manufacturable `owned_by_seed` — a squatter hosting a
+ * lookalike on the seed's platform earns the seed's severity ceiling — which
+ * is worse than the cost of an extra entry (an ownership lead that must be
+ * corroborated some other way). Verify with two tenants over DoH before
+ * adding; record the measurement in the entry's comment. Providers not yet
+ * verified either way are tracked in the follow-up issue linked from PR #937.
  */
 export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	// Parking services

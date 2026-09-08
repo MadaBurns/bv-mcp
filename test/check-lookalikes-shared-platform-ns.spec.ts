@@ -27,9 +27,12 @@
  *     COMPLETE set match still implies one account (design §3.3, 2026-07-26;
  *     `ns_shared_provider_complete`, medium). The only members that earn that.
  *   - everything else (parking, registrar defaults, one.com): every tenant
- *     receives the same set, so a complete match declines to `third_party`
- *     with the new `ns_shared_platform` signal — wording that names the
- *     platform, severity ceiling unchanged (D4: non-owned → `info`).
+ *     receives the same set, so a complete match declines with the new
+ *     `ns_shared_platform` signal — `unattributed` when the two whole sets
+ *     are identical (nothing distinct was observed, so the report must not
+ *     call the customer's own alias "a different organisation"), `third_party`
+ *     when the candidate also carries its own distinct hosts (the squatter's
+ *     cheapest shape). Severity ceiling unchanged (D4: non-owned → `info`).
  *
  * `classifyOwnership()` takes the pooled predicate as an OPTIONAL injected
  * input and defaults it to "nothing is pooled": a caller that forgets it
@@ -97,7 +100,7 @@ describe('shared-ns-hosts — one.com is a shared platform, and pooled ⊆ share
 // ---------------------------------------------------------------------------
 
 describe('classifyOwnership — a complete match on a shared PLATFORM pair is not ownership (#929)', () => {
-	it('net-agent.dk on the same one.com pair as the seed is third_party, never owned_by_seed / strong', async () => {
+	it('net-agent.dk on the same one.com pair as the seed is unattributed, never owned_by_seed / strong', async () => {
 		const { classifyOwnership } = await loadAttribution();
 		const result = classifyOwnership({
 			seedDomain: SEED,
@@ -107,12 +110,35 @@ describe('classifyOwnership — a complete match on a shared PLATFORM pair is no
 			isSharedNsHost,
 			isPooledSharedNsHost,
 		});
-		expect(result.verdict).toBe('third_party');
+		// `unattributed`, not `third_party`: identical whole sets on the platform
+		// observe NO distinct infrastructure, and the gate template words
+		// `third_party` as "registered to a different organisation" — false for
+		// the customer's own alias hosted at the same provider.
+		expect(result.verdict).toBe('unattributed');
 		expect(result.strength).toBe('none');
 		expect(result.signals).toEqual(['ns_shared_platform']);
 		expect(result.rationale).toContain('one.com');
 		expect(result.rationale).not.toContain('dedicated');
 		expect(result.rationale).not.toContain('no ownership signal links it');
+	});
+
+	it("the squatter's cheapest shape — the seed's one.com pair PLUS its own ns1.attacker host — is third_party, never owned", async () => {
+		// Step 4 used to accept this: `sharedNs.length === seedTotal` held and
+		// every shared host was on a shared provider, so the extra attacker host
+		// was invisible to the arm.
+		const { classifyOwnership } = await loadAttribution();
+		const result = classifyOwnership({
+			seedDomain: SEED,
+			seedNs: ONE_COM_NS,
+			candidateDomain: 'net-agent.dk',
+			registration: registered([...ONE_COM_NS, 'ns1.attacker.example']),
+			isSharedNsHost,
+			isPooledSharedNsHost,
+		});
+		expect(result.verdict).toBe('third_party');
+		expect(result.strength).toBe('none');
+		expect(result.signals).toEqual(['ns_shared_platform']);
+		expect(result.rationale).toContain('remaining nameservers are distinct');
 	});
 
 	it('the pooled predicate defaults CLOSED: without it even a complete 6/6 Akamai match declines', async () => {
@@ -124,7 +150,7 @@ describe('classifyOwnership — a complete match on a shared PLATFORM pair is no
 			registration: registered(AKAMAI_NS.slice()),
 			isSharedNsHost,
 		});
-		expect(result.verdict).toBe('third_party');
+		expect(result.verdict).toBe('unattributed');
 		expect(result.signals).toEqual(['ns_shared_platform']);
 	});
 
@@ -163,6 +189,7 @@ describe('classifyOwnership — a complete match on a shared PLATFORM pair is no
 		expect(result.verdict).toBe('third_party');
 		expect(result.signals).toEqual(['ns_shared_platform']);
 		expect(result.rationale).toContain('1/6');
+		expect(result.rationale).toContain('remaining nameservers are distinct');
 	});
 
 	it('a candidate on the same platform that ALSO holds the seed-published DMARC grant is still owned_by_seed via step 5b', async () => {
@@ -315,11 +342,17 @@ describe('checkLookalikes — net-agents.dk → net-agent.dk on the same one.com
 		expect(own.some((f) => f.metadata?.ownershipStrength === 'strong')).toBe(false);
 		const attribution = own.find((f) => f.metadata?.findingAxis === 'attribution');
 		expect(attribution).toBeDefined();
-		expect(attribution!.metadata?.ownershipVerdict).toBe('third_party');
+		expect(attribution!.metadata?.ownershipVerdict).toBe('unattributed');
 		// The attribution finding carries the verdict's rationale (the gate
-		// template does not surface `signals`): it must name the platform hosts.
+		// template does not surface `signals`): it must name the platform hosts,
+		// and neither its title nor its detail may claim the domain is someone
+		// else's — ground truth is unknown, and it may be the customer's own.
 		expect(attribution!.metadata?.ownershipRationale).toContain('ns01.one.com');
 		expect(attribution!.metadata?.ownershipRationale).toContain('shared-tenant DNS platform');
+		expect(attribution!.title).toBe('Confusable label, ownership not established: net-agent.dk');
+		expect(attribution!.detail).toContain('could not be attributed to the scanned organisation');
+		expect(attribution!.detail).not.toContain('registered to a different organisation');
+		expect(attribution!.title).not.toContain('Unrelated');
 		// D4 ceiling on the ATTRIBUTION axis: a non-owned candidate's attribution
 		// finding is capped at info. The observed-threat axis (Task 7b) is a
 		// separate, uncapped finding — it must still be emitted, and it must
@@ -327,7 +360,7 @@ describe('checkLookalikes — net-agents.dk → net-agent.dk on the same one.com
 		expect(attribution!.severity).toBe('info');
 		const threat = own.find((f) => f.metadata?.findingAxis === 'threat_observation');
 		expect(threat).toBeDefined();
-		expect(threat!.metadata?.ownershipVerdict).toBe('third_party');
+		expect(threat!.metadata?.ownershipVerdict).toBe('unattributed');
 
 		const serialised = JSON.stringify(result.findings);
 		expect(serialised).not.toContain('dedicated');
@@ -337,7 +370,7 @@ describe('checkLookalikes — net-agents.dk → net-agent.dk on the same one.com
 });
 
 describe('checkShadowDomains — net-agents.dk → net-agents.com on the same one.com pair (#929)', () => {
-	it('marks the .com variant third_party (info-capped), not owned_by_seed', async () => {
+	it('marks the .com variant unattributed (info-capped), not owned_by_seed', async () => {
 		installMock({
 			[SEED]: ONE_COM_ZONE,
 			[`_dmarc.${SEED}`]: DMARC_REJECT,
@@ -353,7 +386,32 @@ describe('checkShadowDomains — net-agents.dk → net-agents.com on the same on
 			expect(f.metadata?.ownershipVerdict).not.toBe('owned_by_seed');
 			expect(f.severity).toBe('info');
 		}
-		expect(com.some((f) => f.metadata?.ownershipVerdict === 'third_party')).toBe(true);
-		expect(JSON.stringify(result.findings)).not.toContain('dedicated nameservers');
+		expect(com.some((f) => f.metadata?.ownershipVerdict === 'unattributed')).toBe(true);
+		const serialised = JSON.stringify(result.findings);
+		expect(serialised).not.toContain('dedicated nameservers');
+		expect(serialised).not.toContain('registered to a different organisation');
+		// Before the fix this variant took the OWNED ladder: `high` "Shadow domain
+		// fully spoofable … Likely same owner" for a squatter on the seed's
+		// platform. Now nothing above info is emitted about it.
+		expect(serialised).not.toContain('Likely same owner');
+	});
+
+	it('the "Shared NS across shadow domains" rollup does not suggest common ownership for a platform pair', async () => {
+		installMock({
+			[SEED]: ONE_COM_ZONE,
+			[`_dmarc.${SEED}`]: DMARC_REJECT,
+			'net-agents.com': ONE_COM_ZONE,
+			'_dmarc.net-agents.com': DMARC_REJECT,
+			'net-agents.org': ONE_COM_ZONE,
+			'_dmarc.net-agents.org': DMARC_REJECT,
+		});
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		const result = await checkShadowDomains(SEED);
+		const rollup = result.findings.find((f) => f.title === 'Shared NS across shadow domains');
+		expect(rollup).toBeDefined();
+		expect(rollup!.severity).toBe('info');
+		expect(rollup!.metadata?.sharedPlatform).toBe(true);
+		expect(rollup!.detail).toContain('not evidence of common ownership');
+		expect(rollup!.detail).not.toContain('suggesting common ownership');
 	});
 });

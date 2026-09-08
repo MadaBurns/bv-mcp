@@ -605,13 +605,19 @@ function detectSharedNs(probes: VariantProbeResult[]): Finding[] {
 	const findings: Finding[] = [];
 	for (const [nsKey, variants] of nsMap) {
 		if (variants.length >= 2) {
+			// #929 — a pair every tenant of a shared platform receives (one.com
+			// `ns01`/`ns02`) says nothing about ownership; say so rather than
+			// "suggesting common ownership".
+			const allShared = nsKey.split(',').every((host) => isSharedNsHost(host));
 			findings.push(
 				createFinding(
 					'shadow_domains',
 					'Shared NS across shadow domains',
 					'info',
-					`${variants.join(', ')} share the same nameserver pair (${nsKey}), suggesting common ownership or registrar.`,
-					{ variants, nameservers: nsKey },
+					allShared
+						? `${variants.join(', ')} share the same nameserver pair (${nsKey}) on a shared-tenant DNS platform that assigns it to every customer — a hosting choice in common, not evidence of common ownership.`
+						: `${variants.join(', ')} share the same nameserver pair (${nsKey}), suggesting common ownership or registrar.`,
+					{ variants, nameservers: nsKey, sharedPlatform: allShared },
 				),
 			);
 		}

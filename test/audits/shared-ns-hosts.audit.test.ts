@@ -5,10 +5,11 @@
  *
  * The well-known parking services and registrar-default NS hosts MUST be
  * classified as shared-tenant so an overlap on their hostnames doesn't
- * inflate brand-discovery confidence. Conversely, hyperscale managed DNS
- * (Cloudflare, Route 53, GCP) MUST NOT be classified as shared-tenant —
- * those providers assign unique NS hostnames per account, so an overlap
- * there is genuine ownership evidence.
+ * inflate brand-discovery confidence. Cloudflare and Route 53 are pinned as
+ * NOT shared-tenant: they draw per-account / per-zone hostnames from a large
+ * pool, so an overlap there is ownership evidence. Cloud DNS is pinned as
+ * not-listed too, but only as the CURRENT state (see the entry's comment) —
+ * membership is an evidence decision (#929), never an assumption.
  *
  * Ref: v2.14.0 audit, LR-2 (Slice 6 defense-in-depth).
  */
@@ -51,7 +52,10 @@ const SHARED_NS_MUST_NOT_MATCH: ReadonlyArray<readonly [string, string]> = [
 	['alice.ns.cloudflare.com', 'Cloudflare assigns unique NS per account'],
 	['bob.ns.cloudflare.com', 'Cloudflare assigns unique NS per account'],
 	['ns-1234.awsdns-56.com', 'AWS Route 53 assigns unique NS per hosted zone'],
-	['ns-cloud-a1.googledomains.com', 'GCP Cloud DNS unique-per-zone'],
+	// Cloud DNS assigns one of a handful of FIXED `ns-cloud-{a..e}{1..4}` sets, so
+	// a full match there is manufacturable; it stays out of the shared set only
+	// because two unrelated tenants have not been measured yet (#929 follow-up).
+	['ns-cloud-a1.googledomains.com', 'GCP Cloud DNS — not yet verified as shared; pinned as-is, not as unique-per-zone'],
 	// User-controlled / clearly unrelated
 	['ns1.example.com', 'Generic example domain'],
 	['blackveilsecurity.com', 'Our own apex (defensive)'],

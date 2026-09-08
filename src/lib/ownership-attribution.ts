@@ -146,10 +146,13 @@
  * identical complete set per-account evidence. The predicate is optional and
  * DEFAULTS CLOSED (nothing is pooled): a caller that omits it can never
  * credit a platform. (3) An overlap confined to shared-provider hosts that
- * does not earn step 4 now returns `third_party` with the `ns_shared_platform`
- * signal and a rationale naming the platform hosts — it is the same
- * `third_party` ceiling as before, worded for what was measured, and step 5b
- * (the seed-published DMARC grant) keeps precedence over it. (4) The dedicated
+ * does not earn step 4 now carries the `ns_shared_platform` signal and a
+ * rationale naming the platform hosts: identical whole sets on a non-pooled
+ * platform → `unattributed` (nothing distinct was observed, so the report
+ * must not say "registered to a different organisation" about what may be
+ * the customer's own alias), any other platform-confined overlap →
+ * `third_party`. Same `info` ceiling either way; step 5b (the seed-published
+ * DMARC grant) keeps precedence. (4) The dedicated
  * arm's rationale no longer says "dedicated"; it says the hosts are on no
  * known shared-tenant provider, which is what was actually checked.
  */
@@ -400,8 +403,9 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
  *  5. Any other overlap confined to shared-provider hosts → not evidence. A partial overlap is
  *     the ANZ/Westpac 1/6-Akamai trap (a single pooled host in common is operational plumbing);
  *     a complete match on a NON-pooled platform (one.com `ns01`/`ns02`, #929) is what every
- *     tenant of that platform looks like. Falls through to 5b; if 5b declines, step 6 words the
- *     `third_party` verdict as `ns_shared_platform` rather than "distinct infrastructure".
+ *     tenant of that platform looks like. Falls through to 5b; if 5b declines: identical whole
+ *     sets on a non-pooled platform → `unattributed` (no distinct infrastructure was observed),
+ *     any other platform-confined overlap → `third_party` — both carrying `ns_shared_platform`.
  *  5b. (#864) SEED-AUTHORISED convergence — pre-filter: every real MX exchange inside the seed
  *     apex (attacker-free, no weight); verdict: the seed publishes the RFC 7489 §7.1 DMARC
  *     report authorisation `<candidate>._report._dmarc.<receiver-under-seed>` → `owned_by_seed`,
@@ -529,19 +533,37 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 	// carries the `unmeasured` outcome for an asked-but-unanswered seed probe.
 	if (convergence !== null) return convergence;
 
-	// #929 — an overlap that exists but is confined to shared-provider hosts
-	// (a complete match on a non-pooled platform such as one.com, or the 1/6
-	// Akamai partial). Same `third_party` ceiling as the arm below — a
-	// misclassification between third_party and unattributed never moves
-	// severity — but worded for what was measured: the hosts are the
-	// platform's, assigned to every tenant, and say nothing about who
-	// registered the candidate.
+	// #929 — an overlap that exists but is confined to shared-provider hosts.
+	// Neither verdict below moves severity (the third_party / unattributed
+	// split is wording only — see the file header); the choice is about what
+	// was OBSERVED:
+	//  - the candidate's WHOLE set is the seed's whole set, on a non-pooled
+	//    platform (one.com `ns01`/`ns02`): the hosts are the platform's,
+	//    assigned to every tenant, and NO distinct infrastructure was seen. That
+	//    is `unattributed` — "no ownership or third-party signal" — not
+	//    `third_party`, whose report wording ("registered to a different
+	//    organisation") would be a false claim about the customer's own alias
+	//    hosted on the same platform (PR #937 review).
+	//  - anything else (the 1/6 Akamai partial; a one.com pair PLUS the
+	//    squatter's own `ns1.attacker.example`): the candidate's REMAINING
+	//    nameservers are distinct from the seed's, so `third_party` is what
+	//    was measured, worded for the platform overlap rather than as
+	//    "distinct infrastructure".
 	if (candidateNs.length > 0 && sharedNs.length > 0 && dedicatedShared.length === 0) {
+		const identicalSets = sharedNs.length === seedTotal && sharedNs.length === candidateNs.length;
+		if (identicalSets) {
+			return {
+				verdict: 'unattributed',
+				strength: 'none',
+				signals: ['ns_shared_platform'],
+				rationale: `${candidateDomain} and ${seedApex} delegate to the same shared-tenant DNS platform hosts (${sharedNs.join(', ')}), which that platform assigns to every customer — platform plumbing, not ownership evidence either way.`,
+			};
+		}
 		return {
 			verdict: 'third_party',
 			strength: 'none',
 			signals: ['ns_shared_platform'],
-			rationale: `${candidateDomain} shares ${sharedNs.length}/${seedTotal} nameservers with ${seedApex} (${sharedNs.join(', ')}), all on a shared-tenant DNS platform that assigns the same hostnames to unrelated customers — platform plumbing, not ownership evidence.`,
+			rationale: `${candidateDomain} shares ${sharedNs.length}/${seedTotal} nameservers with ${seedApex} (${sharedNs.join(', ')}), all on a shared-tenant DNS platform that assigns the same hostnames to unrelated customers; its remaining nameservers are distinct from ${seedApex}'s — platform plumbing, not ownership evidence.`,
 		};
 	}
 
@@ -845,10 +867,14 @@ export function buildNonOwnedGateFinding(
 			: '';
 	// #832: an `unmeasured` verdict must not be TITLED "Unrelated domain" — that
 	// is the very third-party claim the degraded comparison failed to earn.
+	// #929 (PR #937 review): `unattributed` earns no "Unrelated" title either —
+	// nothing was measured that says the domain is anyone else's.
 	const title =
 		ownership.verdict === 'unmeasured'
 			? `Confusable label, ownership unmeasured this run: ${domain}`
-			: `Unrelated domain, confusable label: ${domain}`;
+			: ownership.verdict === 'unattributed'
+				? `Confusable label, ownership not established: ${domain}`
+				: `Unrelated domain, confusable label: ${domain}`;
 	return createFinding(
 		options.category,
 		title,
