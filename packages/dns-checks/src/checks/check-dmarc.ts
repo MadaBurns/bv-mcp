@@ -16,12 +16,7 @@
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult } from '../check-utils';
 import { classifyDmarc, appendDmarcCleanInfo, type DmarcFacts } from '../scoring/classifiers/dmarc';
-import {
-	checkRuaAuthorization,
-	detectThirdPartyAggregators,
-	isValidDmarcUri,
-	parseDmarcTags,
-} from './dmarc-utils';
+import { checkRuaAuthorization, detectThirdPartyAggregators, isValidDmarcUri, parseDmarcTags } from './dmarc-utils';
 
 export { parseDmarcTags } from './dmarc-utils';
 
@@ -81,11 +76,7 @@ async function dmarcTreeWalk(
 /**
  * Check DMARC records for a domain (RFC 9989, with §4.10 tree-walk discovery).
  */
-export async function checkDMARC(
-	domain: string,
-	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number },
-): Promise<CheckResult> {
+export async function checkDMARC(domain: string, queryDNS: DNSQueryFunction, options?: { timeout?: number }): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 
 	const walk = await dmarcTreeWalk(domain, queryDNS, timeout);
@@ -146,10 +137,10 @@ export async function checkDMARC(
 
 	const findings: Finding[] = classifyDmarc(facts);
 
-	// DNS-dependent cross-domain RUA authorization (RFC 9989 §7.1) — stays in the
+	// DNS-dependent cross-domain RUA authorization (RFC 9990 §4) — stays in the
 	// check wrapper, not the pure classifier.
 	if (rua) {
-		findings.push(...(await checkRuaAuthorization(domain, ruaUris, queryDNS, timeout)));
+		findings.push(...(await checkRuaAuthorization(walk.foundAt, ruaUris, queryDNS, timeout)));
 	}
 
 	// Closing reassurance finding, evaluated over the COMPLETE finding set.
@@ -164,5 +155,6 @@ export async function checkDMARC(
 	// recordPresent = a DMARC record was PUBLISHED (the tree walk found one, here or at the org
 	// domain) — true even for p=none, which reads controlPresent false. This is the exact pair the
 	// CheckResult docs table calls out; do not collapse it into `dmarcEnforcing`.
-	return buildCheckResult('dmarc', findings, dmarcEnforcing, true);
+	const result = buildCheckResult('dmarc', findings, dmarcEnforcing, true);
+	return findings.some((f) => f.metadata?.assessment === 'not_assessed') ? { ...result, partial: true } : result;
 }

@@ -1554,7 +1554,7 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 		expect(probeFetch).not.toHaveBeenCalled();
 	});
 
-	it('DOES invoke the probe binding when authTier is "developer"', async () => {
+	it('does not invoke the intercepted probe binding when authTier is "developer"', async () => {
 		mockAllDns();
 		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
 		const tlsProbeBinding = { fetch: probeFetch };
@@ -1566,10 +1566,10 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 			authTier: 'developer',
 		});
 
-		expect(probeFetch).toHaveBeenCalled();
+		expect(probeFetch).not.toHaveBeenCalled();
 	});
 
-	it('DOES invoke the probe binding when authTier is "enterprise"', async () => {
+	it('does not invoke the intercepted probe binding when authTier is "enterprise"', async () => {
 		mockAllDns();
 		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
 		const tlsProbeBinding = { fetch: probeFetch };
@@ -1581,10 +1581,10 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 			authTier: 'enterprise',
 		});
 
-		expect(probeFetch).toHaveBeenCalled();
+		expect(probeFetch).not.toHaveBeenCalled();
 	});
 
-	it('DOES invoke the probe binding when authTier is "partner"', async () => {
+	it('does not invoke the intercepted probe binding when authTier is "partner"', async () => {
 		mockAllDns();
 		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
 		const tlsProbeBinding = { fetch: probeFetch };
@@ -1596,10 +1596,10 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 			authTier: 'partner',
 		});
 
-		expect(probeFetch).toHaveBeenCalled();
+		expect(probeFetch).not.toHaveBeenCalled();
 	});
 
-	it('DOES invoke the probe binding when authTier is "owner"', async () => {
+	it('does not invoke the intercepted probe binding when authTier is "owner"', async () => {
 		mockAllDns();
 		const probeFetch = vi.fn().mockResolvedValue(new Response('{"reachable":true,"minVersion":"TLS1.3"}', { status: 200 }));
 		const tlsProbeBinding = { fetch: probeFetch };
@@ -1611,7 +1611,7 @@ describe('scanDomain — TLS probe tier-gating (Fix 1)', () => {
 			authTier: 'owner',
 		});
 
-		expect(probeFetch).toHaveBeenCalled();
+		expect(probeFetch).not.toHaveBeenCalled();
 	});
 });
 

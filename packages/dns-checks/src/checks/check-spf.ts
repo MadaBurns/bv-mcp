@@ -184,16 +184,23 @@ export async function checkSPF(domain: string, queryDNS: DNSQueryFunction, optio
 				),
 			);
 		} else if (qualifier.toLowerCase() === '~all') {
-			// ~all is the recommended setting when DMARC enforcement is active.
-			// -all causes rejection at SMTP level before DMARC can verify DKIM.
-			// See RFC 7489 §10.1, https://www.mailhardener.com/kb/spf
 			if (dmarcEnforcing) {
 				findings.push(
 					createFinding(
 						'spf',
 						'SPF soft fail (~all) with DMARC enforcement',
+						'low',
+						`SPF uses "~all" while DMARC is enforcing. After validating legitimate senders and forwarding paths, use "-all" for the recommended hard-fail posture. DMARC quarantine and reject policies guide receiver handling; they do not guarantee rejection of every unauthorized message.`,
+						spfMetadata,
+					),
+				);
+			} else if (dmarcPolicyToken === 'none') {
+				findings.push(
+					createFinding(
+						'spf',
+						'SPF soft fail (~all) during DMARC monitoring',
 						'info',
-						`SPF record uses "~all" (soft fail) which is the recommended setting when DMARC enforcement is active. The DMARC policy ensures unauthorized mail is rejected after DKIM verification, while ~all avoids premature rejection at the SMTP level.`,
+						`SPF uses "~all" while DMARC is in monitoring mode (p=none). Keep soft fail while discovering legitimate senders and reviewing aggregate reports; plan "-all" as part of the move to enforcement after validating forwarding paths.`,
 						spfMetadata,
 					),
 				);
@@ -203,7 +210,7 @@ export async function checkSPF(domain: string, queryDNS: DNSQueryFunction, optio
 						'spf',
 						'SPF soft fail (~all)',
 						'low',
-						`SPF record uses "~all" (soft fail). Consider upgrading to "-all" (hard fail) for stricter enforcement, or deploy DMARC with p=reject to handle authentication via DKIM alignment.`,
+						`SPF uses "~all" and no enforcing or monitoring DMARC policy was established. Deploy DMARC monitoring to inventory legitimate senders, then move to enforcement and "-all" after validating delivery paths.`,
 						spfMetadata,
 					),
 				);

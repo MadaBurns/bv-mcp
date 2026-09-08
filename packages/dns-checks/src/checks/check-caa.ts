@@ -9,7 +9,7 @@
  */
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
-import { buildCheckResult, createFinding } from '../check-utils';
+import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
 import {
 	type CaaRecord,
 	parseCaaRecord,
@@ -163,17 +163,15 @@ export async function checkCAA(
 	// No CAA lookup happens on this branch at all, so `recordPresent` is left undefined
 	// ("not determined") — never false.
 	if (zone && !zone.isApex && zone.delegationStatus === 'unknown') {
-		return {
-			...buildCheckResult('caa', [
-				createFinding(
-					'caa',
-					'CAA records not assessed',
-					'info',
-					`Could not determine the authoritative zone for ${zone.scannedLabel} due to a transient DNS failure; CAA inheritance was not assessed.`,
-				),
-			]),
-			checkStatus: 'error',
-		};
+		return buildNotAssessedResult(
+			'caa',
+			createFinding(
+				'caa',
+				'CAA records not assessed',
+				'info',
+				`Could not determine the authoritative zone for ${zone.scannedLabel} due to a transient DNS failure; CAA inheritance was not assessed.`,
+			),
+		);
 	}
 
 	let lookup: CaaLookup;
@@ -185,17 +183,15 @@ export async function checkCAA(
 		// categories instead of penalizing a possibly-healthy domain with a scored deficiency.
 		// (The per-ancestor climb catch above is a legitimate fail-soft and stays unchanged.)
 		// `recordPresent` likewise stays undefined: the query failed, so absence was never observed.
-		return {
-			...buildCheckResult('caa', [
-				createFinding(
-					'caa',
-					'CAA records not assessed',
-					'info',
-					`Could not query CAA records for ${domain} due to a transient DNS failure; this control was not assessed.`,
-				),
-			]),
-			checkStatus: 'error',
-		};
+		return buildNotAssessedResult(
+			'caa',
+			createFinding(
+				'caa',
+				'CAA records not assessed',
+				'info',
+				`Could not query CAA records for ${domain} due to a transient DNS failure; this control was not assessed.`,
+			),
+		);
 	}
 
 	const caaRecords: CaaRecord[] = lookup.records;

@@ -30,7 +30,15 @@ export interface Dependency {
 
 /** A risk signal detected in the supply chain. */
 export interface Signal {
-	type: 'concentration' | 'excessive_includes' | 'single_ns_provider' | 'stale_integration' | 'shadow_service' | 'insecure_service' | 'security_tooling_exposed' | 'shared_hosting';
+	type:
+		| 'concentration'
+		| 'excessive_includes'
+		| 'single_ns_provider'
+		| 'stale_integration'
+		| 'shadow_service'
+		| 'insecure_service'
+		| 'security_tooling_exposed'
+		| 'shared_hosting';
 	severity: 'low' | 'medium' | 'high';
 	detail: string;
 }
@@ -139,30 +147,72 @@ function sourceToRole(source: string): string {
  */
 const PUBLIC_SUFFIX_SECOND_LEVEL: ReadonlySet<string> = new Set([
 	// United Kingdom
-	'co.uk', 'org.uk', 'ac.uk', 'gov.uk', 'me.uk', 'ltd.uk', 'plc.uk',
+	'co.uk',
+	'org.uk',
+	'ac.uk',
+	'gov.uk',
+	'me.uk',
+	'ltd.uk',
+	'plc.uk',
 	// New Zealand
-	'co.nz', 'org.nz', 'net.nz', 'ac.nz', 'govt.nz', 'school.nz',
+	'co.nz',
+	'org.nz',
+	'net.nz',
+	'ac.nz',
+	'govt.nz',
+	'school.nz',
 	// Australia
-	'com.au', 'net.au', 'org.au', 'edu.au', 'gov.au', 'asn.au', 'id.au',
+	'com.au',
+	'net.au',
+	'org.au',
+	'edu.au',
+	'gov.au',
+	'asn.au',
+	'id.au',
 	// South Africa
-	'co.za', 'org.za', 'web.za',
+	'co.za',
+	'org.za',
+	'web.za',
 	// Japan — covers JPRS-managed organisational 2LDs. The missing
 	// `ad.jp` (network admin) / `ed.jp` (primary+secondary education) /
 	// `gr.jp` (groups) / `lg.jp` (local government) entries surfaced
 	// `ad.jp` as a "DNS provider" row on rakuten.co.jp scans (its NS lives
 	// under `*.ad.jp`); without these, any NS at a 3-label JP host collapses
 	// to the registry suffix instead of the operator's registrable domain.
-	'co.jp', 'ac.jp', 'ne.jp', 'or.jp', 'go.jp', 'ad.jp', 'ed.jp', 'gr.jp', 'lg.jp',
+	'co.jp',
+	'ac.jp',
+	'ne.jp',
+	'or.jp',
+	'go.jp',
+	'ad.jp',
+	'ed.jp',
+	'gr.jp',
+	'lg.jp',
 	// India
-	'co.in', 'org.in', 'net.in', 'gov.in', 'ac.in',
+	'co.in',
+	'org.in',
+	'net.in',
+	'gov.in',
+	'ac.in',
 	// South Korea
-	'co.kr', 'or.kr', 'ne.kr', 'go.kr',
+	'co.kr',
+	'or.kr',
+	'ne.kr',
+	'go.kr',
 	// Brazil
-	'com.br', 'net.br', 'org.br', 'gov.br',
+	'com.br',
+	'net.br',
+	'org.br',
+	'gov.br',
 	// Mexico
-	'com.mx', 'gob.mx', 'edu.mx',
+	'com.mx',
+	'gob.mx',
+	'edu.mx',
 	// Singapore
-	'com.sg', 'edu.sg', 'org.sg', 'gov.sg',
+	'com.sg',
+	'edu.sg',
+	'org.sg',
+	'gov.sg',
 ]);
 
 /**
@@ -214,10 +264,7 @@ export interface MapSupplyChainOptions {
 	precomputedCdn?: string;
 }
 
-export async function mapSupplyChain(
-	domain: string,
-	options: MapSupplyChainOptions = {},
-): Promise<SupplyChainMap> {
+export async function mapSupplyChain(domain: string, options: MapSupplyChainOptions = {}): Promise<SupplyChainMap> {
 	const { dnsOptions, precomputedCdn } = options;
 	// Query all record types in parallel — allSettled so one failure doesn't block others
 	const [txtSettled, nsSettled, caaSettled, mxSettled, aSettled, srvBatchSettled] = await Promise.allSettled([
@@ -314,11 +361,7 @@ export async function mapSupplyChain(
 	const detectedSpfDomains = new Set<string>();
 	const detectedNsHosts = new Set<string>();
 
-	const detectedMailSendingNames = new Set(
-		detectedProviders
-			.filter((p) => p.role === 'mail' || p.role === 'sending')
-			.map((p) => p.name),
-	);
+	const detectedMailSendingNames = new Set(detectedProviders.filter((p) => p.role === 'mail' || p.role === 'sending').map((p) => p.name));
 
 	// Resolve each raw SPF include against DETECTION_RULES (shared SSOT with
 	// detectProviders) so dedup can't drift from the detection patterns. This
@@ -374,18 +417,23 @@ export async function mapSupplyChain(
 	}
 
 	// Group unrecognized infra hosts (NS, MX) by registrable parent domain,
-	// skipping detected providers and self-hosted hosts. `getEffectiveParentDomain`
+	// skipping detected providers and labelling self-hosted hosts. `getEffectiveParentDomain`
 	// accounts for ccTLD-2LD suffixes (co.nz, co.uk, com.au, …) so `ns1.anz.co.nz`
 	// collapses to `anz.co.nz`, not `co.nz`. When the parent matches the scan
-	// domain itself, the host is self-hosted — skip the "third-party" row.
+	// domain itself, collapse its hosts into one explicitly self-hosted row.
 	const scanDomain = domain.toLowerCase();
 	const addUnrecognizedHostsByParent = (hosts: string[], detected: Set<string>, source: string): void => {
+		let selfHosted = false;
 		for (const host of hosts) {
 			if (detected.has(host)) continue;
 			const parentDomain = getEffectiveParentDomain(host);
-			if (parentDomain === scanDomain) continue;
+			if (parentDomain === scanDomain) {
+				selfHosted = true;
+				continue;
+			}
 			addDependency(parentDomain, source);
 		}
+		if (selfHosted) addDependency(`${scanDomain} (self-hosted ${source.toUpperCase()})`, source);
 	};
 
 	// Add unrecognized NS hosts.
@@ -395,7 +443,7 @@ export async function mapSupplyChain(
 	// path — a domain can receive via one provider (eg. Mimecast/Proofpoint
 	// inbound) and send via another (eg. M365). Match each exchange against
 	// DETECTION_RULES (shared SSOT, via matchProviderForMxHost); unrecognized
-	// hosts collapse to their registrable parent and skip self-hosted MX,
+	// hosts collapse to their registrable parent with a labelled self-hosted MX row,
 	// mirroring the NS path so the two can't drift.
 	const detectedMxHosts = new Set<string>();
 	const mxProviderNames = new Set<string>();
@@ -532,13 +580,9 @@ export async function mapSupplyChain(
 	for (const [service, count] of verificationCountByService) {
 		const expectedSpfDomains = SERVICE_SPF_DOMAINS[service];
 		if (!expectedSpfDomains || expectedSpfDomains.length === 0) continue;
-		const hasMatchingSpf = expectedSpfDomains.some((spfDomain) =>
-			spfIncludes.some((inc) => inc.includes(spfDomain)),
-		);
+		const hasMatchingSpf = expectedSpfDomains.some((spfDomain) => spfIncludes.some((inc) => inc.includes(spfDomain)));
 		if (hasMatchingSpf) continue;
-		const recordPhrase = count === 1
-			? 'a TXT verification record'
-			: `${count} TXT verification records`;
+		const recordPhrase = count === 1 ? 'a TXT verification record' : `${count} TXT verification records`;
 		signals.push({
 			type: 'stale_integration',
 			severity: 'low',
@@ -553,21 +597,13 @@ export async function mapSupplyChain(
 	// own service, not a third party — skip it. Dedup by provider name so the same
 	// service discovered across multiple SRV prefixes emits a single signal.
 	const verifiedServiceNames = new Set(verifiedServices.map((vs) => vs.service));
-	const spfProviderNames = new Set(
-		detectedProviders
-			.filter((p) => p.role === 'mail' || p.role === 'sending')
-			.map((p) => p.name),
-	);
+	const spfProviderNames = new Set(detectedProviders.filter((p) => p.role === 'mail' || p.role === 'sending').map((p) => p.name));
 	const shadowFlagged = new Set<string>();
 	for (const { name: srvProvider, target } of srvDiscovered) {
 		if (shadowFlagged.has(srvProvider)) continue;
 		// Self-hosted SRV (target on the scan's own registrable domain) is not a third party.
 		if (getEffectiveParentDomain(target) === scanDomain) continue;
-		if (
-			!verifiedServiceNames.has(srvProvider) &&
-			!spfProviderNames.has(srvProvider) &&
-			!mxProviderNames.has(srvProvider)
-		) {
+		if (!verifiedServiceNames.has(srvProvider) && !spfProviderNames.has(srvProvider) && !mxProviderNames.has(srvProvider)) {
 			// Also check raw SPF includes for partial matches
 			const inSpfRaw = spfIncludes.some((inc) => inc.toLowerCase().includes(srvProvider.toLowerCase()));
 			if (!inSpfRaw) {
@@ -587,14 +623,16 @@ export async function mapSupplyChain(
 		signals.push({
 			type: 'insecure_service',
 			severity: 'medium',
-			detail: 'IMAP SRV record (_imap._tcp) found without encrypted variant (_imaps._tcp). Clients may connect over unencrypted IMAP, exposing credentials.',
+			detail:
+				'IMAP SRV record (_imap._tcp) found without encrypted variant (_imaps._tcp). Clients may connect over unencrypted IMAP, exposing credentials.',
 		});
 	}
 	if (srvPrefixSet.has('_pop3._tcp') && !srvPrefixSet.has('_pop3s._tcp')) {
 		signals.push({
 			type: 'insecure_service',
 			severity: 'medium',
-			detail: 'POP3 SRV record (_pop3._tcp) found without encrypted variant (_pop3s._tcp). Clients may connect over unencrypted POP3, exposing credentials.',
+			detail:
+				'POP3 SRV record (_pop3._tcp) found without encrypted variant (_pop3s._tcp). Clients may connect over unencrypted POP3, exposing credentials.',
 		});
 	}
 
@@ -609,9 +647,7 @@ export async function mapSupplyChain(
 		securityCountByService.set(vs.service, (securityCountByService.get(vs.service) ?? 0) + 1);
 	}
 	for (const [service, count] of securityCountByService) {
-		const recordPhrase = count === 1
-			? 'A TXT verification record'
-			: `${count} TXT verification records`;
+		const recordPhrase = count === 1 ? 'A TXT verification record' : `${count} TXT verification records`;
 		signals.push({
 			type: 'security_tooling_exposed',
 			severity: 'low',
@@ -635,7 +671,9 @@ export async function mapSupplyChain(
 export function formatSupplyChain(result: SupplyChainMap, format: OutputFormat = 'full'): string {
 	if (format === 'compact') {
 		const lines: string[] = [];
-		lines.push(`Supply Chain: ${result.domain} — ${result.summary.totalProviders} providers (${result.summary.critical} critical, ${result.summary.high} high, ${result.summary.medium} medium, ${result.summary.low} low)`);
+		lines.push(
+			`Supply Chain: ${result.domain} — ${result.summary.totalProviders} providers (${result.summary.critical} critical, ${result.summary.high} high, ${result.summary.medium} medium, ${result.summary.low} low)`,
+		);
 		for (const dep of result.dependencies) {
 			lines.push(`- [${dep.trustLevel.toUpperCase()}] ${sanitizeOutputText(dep.provider, 80)}: ${dep.roles.join(', ')}`);
 		}
@@ -651,7 +689,9 @@ export function formatSupplyChain(result: SupplyChainMap, format: OutputFormat =
 
 	const lines: string[] = [];
 	lines.push(`# Supply Chain Map: ${result.domain}`);
-	lines.push(`Total Providers: ${result.summary.totalProviders} (${result.summary.critical} critical, ${result.summary.high} high, ${result.summary.medium} medium, ${result.summary.low} low)`);
+	lines.push(
+		`Total Providers: ${result.summary.totalProviders} (${result.summary.critical} critical, ${result.summary.high} high, ${result.summary.medium} medium, ${result.summary.low} low)`,
+	);
 	lines.push('');
 
 	if (result.dependencies.length > 0) {

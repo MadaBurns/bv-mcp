@@ -2,7 +2,13 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { checkSPF } from '../../checks/check-spf';
-import { analyzeSpfLookupBudget, checkBroadIpRanges, estimateTxtRrsetBytes, extractLookupDomains, extractSpfSignalDomains } from '../../checks/spf-analysis';
+import {
+	analyzeSpfLookupBudget,
+	checkBroadIpRanges,
+	estimateTxtRrsetBytes,
+	extractLookupDomains,
+	extractSpfSignalDomains,
+} from '../../checks/spf-analysis';
 import type { DNSQueryFunction } from '../../types';
 
 /** Build a TXT string of an exact byte length (ASCII, so 1 char === 1 byte). */
@@ -82,40 +88,40 @@ describe('checkSPF', () => {
 		expect(result.findings.find((f) => f.title.includes('Permissive SPF'))?.severity).toBe('critical');
 	});
 
-	it('flags ~all as low when DMARC is not enforcing', async () => {
+	it('accepts ~all during explicit DMARC monitoring', async () => {
 		const queryDNS = createMockDNS({
 			'example.com': ['v=spf1 include:_spf.google.com ~all'],
 			'_dmarc.example.com': ['v=DMARC1; p=none'],
 		});
 		const result = await checkSPF('example.com', queryDNS);
-		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all)' && f.severity === 'low')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) during DMARC monitoring' && f.severity === 'info')).toBe(true);
 	});
 
-	it('downgrades ~all to info when DMARC p=reject is active', async () => {
+	it('recommends hard fail with low severity when DMARC p=reject is active', async () => {
 		const queryDNS = createMockDNS({
 			'example.com': ['v=spf1 include:_spf.google.com ~all'],
 			'_dmarc.example.com': ['v=DMARC1; p=reject; aspf=s; adkim=s'],
 		});
 		const result = await checkSPF('example.com', queryDNS);
-		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) with DMARC enforcement' && f.severity === 'info')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) with DMARC enforcement' && f.severity === 'low')).toBe(true);
 	});
 
-	it('downgrades ~all to info when DMARC p=quarantine is active', async () => {
+	it('recommends hard fail with low severity when DMARC p=quarantine is active', async () => {
 		const queryDNS = createMockDNS({
 			'example.com': ['v=spf1 include:_spf.google.com ~all'],
 			'_dmarc.example.com': ['v=DMARC1; p=quarantine'],
 		});
 		const result = await checkSPF('example.com', queryDNS);
-		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) with DMARC enforcement' && f.severity === 'info')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) with DMARC enforcement' && f.severity === 'low')).toBe(true);
 	});
 
-	it('downgrades ~all to info when DMARC p=reject with pct parameter', async () => {
+	it('recommends hard fail with low severity when DMARC p=reject with pct parameter', async () => {
 		const queryDNS = createMockDNS({
 			'example.com': ['v=spf1 include:_spf.google.com ~all'],
 			'_dmarc.example.com': ['v=DMARC1; p=reject; pct=50'],
 		});
 		const result = await checkSPF('example.com', queryDNS);
-		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) with DMARC enforcement' && f.severity === 'info')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'SPF soft fail (~all) with DMARC enforcement' && f.severity === 'low')).toBe(true);
 	});
 
 	it('flags ~all as low when DMARC record is completely absent', async () => {
@@ -180,17 +186,11 @@ describe('checkSPF', () => {
 
 	it('emits a medium finding mentioning TCP fallback and RFC 7208 when the TXT RRset exceeds 512 bytes', async () => {
 		const queryDNS = createMockDNS({
-			'example.com': [
-				'v=spf1 ' + txtOfLength(250) + ' -all',
-				txtOfLength(250),
-				txtOfLength(100),
-			],
+			'example.com': ['v=spf1 ' + txtOfLength(250) + ' -all', txtOfLength(250), txtOfLength(100)],
 			'_dmarc.example.com': ['v=DMARC1; p=reject; aspf=s; adkim=s'],
 		});
 		const result = await checkSPF('example.com', queryDNS);
-		const finding = result.findings.find(
-			(f) => f.severity === 'medium' && /512-byte UDP/i.test(f.detail),
-		);
+		const finding = result.findings.find((f) => f.severity === 'medium' && /512-byte UDP/i.test(f.detail));
 		expect(finding).toBeDefined();
 		expect(finding?.detail).toMatch(/TCP fallback/i);
 		expect(finding?.detail).toMatch(/RFC 7208/i);

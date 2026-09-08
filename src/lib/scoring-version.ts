@@ -425,8 +425,21 @@
  *   weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule
  *   changed. Population: every domain with a `_443._tcp` TLSA RRset scanned at operator
  *   tier since 3.75.0 (≈0% adoption; fedoraproject.org is the measured instance).
+ * - 1.24.0 — issue review calibration: 1024-bit RSA DKIM is medium (RFC 8301
+ *   permits 1024, recommends 2048); revoked-only/truncated keys are high, and multiple
+ *   revoked selectors no longer imply a non-sending domain. Synthetic single-key
+ *   scores are 100 (2048), 85 (1024), 75 (revoked/truncated), 60 (512).
+ *   SPF soft fail is info during explicit DMARC monitoring and low at enforcement;
+ *   unknown/missing DMARC stays low. RUA authorization compares DNS-tree-walk org
+ *   domains and uses the policy owner for inherited records, removing false penalties.
+ *   Intercepted TLS-version enrichment is disabled. No weights or grade bands change.
+ *   The `ns`/`mx`/`caa` transient-failure paths now share `buildNotAssessedResult`, which
+ *   adds `partial: true` alongside the existing `checkStatus: 'error'`. Scores are
+ *   unaffected — those categories were already EXCLUDED by `checkStatus` — but the
+ *   abstention is no longer written to the 5-minute cache, so a transient resolver
+ *   failure is retried on the next scan instead of being pinned for five minutes.
  */
-export const SCORING_MODEL_VERSION = '1.23.0';
+export const SCORING_MODEL_VERSION = '1.24.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

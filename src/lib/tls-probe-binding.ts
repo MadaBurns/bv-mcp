@@ -257,6 +257,14 @@ function unmeasured(outcome: 'pending' | 'failed', reason: string): TlsaVerifica
 export const DANE_PIN_VERIFICATION_ENABLED = false;
 
 /**
+ * Disabled because Browser Rendering reports its TLS-terminating proxy handshake,
+ * not the origin's protocol floor (#910). Re-enable only after an independent
+ * origin-facing probe correctly measures a TLS-1.2-only endpoint as TLS 1.2 and
+ * distinguishes legacy-only endpoints; a modern negotiated version alone is no proof.
+ */
+export const TLS_VERSION_ENRICHMENT_ENABLED = false;
+
+/**
  * The verification context handed to the package while the kill-switch is off: a
  * permanent (non-transient, cached-normally) `failed` probe with the
  * `probe_vantage_intercepted` reason — the unverified `low` 95, never a verdict, and
