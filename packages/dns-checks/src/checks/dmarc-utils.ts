@@ -89,6 +89,13 @@ export function detectThirdPartyAggregators(uris: string[]): string[] {
 	return detected;
 }
 
+/**
+ * Distinct `rua=` destinations whose external authorization is verified per check.
+ * Legitimate records carry a handful; the cap exists to bound DNS fan-out, not to
+ * express a protocol limit (RFC 9990 sets none).
+ */
+export const MAX_RUA_AUTHORIZATION_TARGETS = 10;
+
 /** Discover the Organizational Domain with the bounded RFC 9989 §4.10 DNS tree walk. */
 export async function discoverDmarcOrganizationalDomain(domain: string, queryDNS: DNSQueryFunction, timeout?: number): Promise<string> {
 	const original = domain.toLowerCase().replace(/\.$/, '');
@@ -149,6 +156,14 @@ export async function checkRuaAuthorization(
 	for (const uri of ruaUris) {
 		const targetDomain = extractDomainFromMailto(uri);
 		if (!targetDomain || targetDomain === policyDomain || checkedDomains.has(targetDomain)) continue;
+		// Bound the fan-out. `rua=` is attacker-controlled on any domain a caller can ask us
+		// to scan, and each distinct destination now costs an organizational tree walk plus an
+		// authorization lookup (~9 DNS queries) rather than the single query it cost before.
+		// An uncapped comma list therefore scales one hostile TXT record into hundreds of
+		// subrequests against the per-invocation ceiling — the failure mode already measured
+		// on the scanner queue. Truncating is fail-SAFE: the only finding an unchecked
+		// destination could produce is a penalty, so we under-report rather than over-penalize.
+		if (checkedDomains.size >= MAX_RUA_AUTHORIZATION_TARGETS) break;
 		checkedDomains.add(targetDomain);
 
 		try {

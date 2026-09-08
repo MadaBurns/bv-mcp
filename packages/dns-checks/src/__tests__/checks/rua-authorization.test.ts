@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 import { describe, it, expect, vi } from 'vitest';
 import { checkDMARC } from '../../checks/check-dmarc';
-import { checkRuaAuthorization, discoverDmarcOrganizationalDomain } from '../../checks/dmarc-utils';
+import { MAX_RUA_AUTHORIZATION_TARGETS, checkRuaAuthorization, discoverDmarcOrganizationalDomain } from '../../checks/dmarc-utils';
 import type { DNSQueryFunction } from '../../types';
 
 const dns = (records: Record<string, string[]>): DNSQueryFunction => vi.fn(async (name) => records[name] ?? []);
@@ -58,6 +58,20 @@ describe('RUA organizational-domain authorization (#911)', () => {
 		const query = dns({ 'example.com._report._dmarc.example.net': ['v=DMARC10;'] });
 		const findings = await checkRuaAuthorization('example.com', ['mailto:reports@example.net'], query);
 		expect(findings.some((f) => f.title.includes('not authorized'))).toBe(true);
+	});
+
+	it('bounds DNS fan-out from a hostile rua= list instead of scaling with its length', async () => {
+		// One TXT record must not turn into hundreds of subrequests. Each distinct
+		// destination costs an org tree walk plus an authorization lookup, so an
+		// uncapped list is an amplification primitive against the invocation ceiling.
+		const query = dns({ '_dmarc.example.com': ['v=DMARC1; p=reject'] });
+		const uris = Array.from({ length: 200 }, (_, i) => `mailto:reports@t${i}.example${i}.test`);
+		const findings = await checkRuaAuthorization('example.com', uris, query);
+		const targetsProbed = vi.mocked(query).mock.calls.filter(([name]) => name.includes('._report._dmarc.')).length;
+		expect(targetsProbed).toBe(MAX_RUA_AUTHORIZATION_TARGETS);
+		expect(findings).toHaveLength(MAX_RUA_AUTHORIZATION_TARGETS);
+		// Truncation is fail-safe: it under-reports, never invents a passing verdict.
+		expect(findings.every((f) => f.title === 'Third-party aggregate reporting not authorized')).toBe(true);
 	});
 
 	it('caps a deep organizational tree walk at eight queries', async () => {
