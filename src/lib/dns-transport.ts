@@ -157,10 +157,6 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 	const callerSignal = opts?.signal;
 	const url = buildDohUrl(CLOUDFLARE_DOH_ENDPOINT, domain, type, dnssecCheck, opts?.checkingDisabled);
 
-	/** Optionally run a fetch through the semaphore when one is provided. */
-	const guardedFetch = (input: string | Request, init?: RequestInit & { cf?: Record<string, unknown> }): Promise<Response> =>
-		sem ? sem.run(() => fetch(input, init), callerSignal) : fetch(input, init);
-
 	for (let attempt = 0; attempt <= retries; attempt++) {
 		// Caller-abort short-circuits before each attempt — don't bother
 		// kicking off a new fetch the caller has already cancelled.
@@ -169,27 +165,29 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		}
 
 		let response: Response;
-		// Compose the per-attempt signal: internal timeout + caller signal.
-		// Either firing aborts the fetch. AbortSignal.any is a standard Web API
-		// available in workerd; falls back gracefully if the caller didn't pass
-		// a signal (timeout alone).
-		const fetchSignal = callerSignal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), callerSignal]) : AbortSignal.timeout(timeoutMs);
-
+		let fetchSignal: AbortSignal | undefined;
 		try {
-			response = await guardedFetch(url, {
-				method: 'GET',
-				headers: { Accept: 'application/dns-json' },
-				signal: fetchSignal,
-				redirect: 'manual',
-				cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true },
-			});
+			// Queue wait is bounded by the caller, not by the resolver timeout.
+			// Give every dispatched attempt its full allowance, including body reads.
+			const dispatch = () => {
+				const timeoutSignal = AbortSignal.timeout(timeoutMs);
+				fetchSignal = callerSignal ? AbortSignal.any([timeoutSignal, callerSignal]) : timeoutSignal;
+				return fetch(url, {
+					method: 'GET',
+					headers: { Accept: 'application/dns-json' },
+					signal: fetchSignal,
+					redirect: 'manual',
+					cf: { cacheTtl: DOH_EDGE_CACHE_TTL, cacheEverything: true },
+				});
+			};
+			response = await (sem ? sem.run(dispatch, callerSignal) : dispatch());
 		} catch (err) {
 			// Caller-supplied abort: propagate immediately, do NOT retry. The
 			// caller's intent is "stop now"; another attempt would defeat that.
 			if (callerSignal?.aborted) {
 				throw new DnsQueryError(`DNS query aborted by caller`, domain, type);
 			}
-			if (err instanceof DOMException && err.name === 'AbortError') {
+			if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
 				if (attempt < retries) {
 					await retryDelay(attempt);
 					continue;
@@ -217,7 +215,7 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		if (callerSignal?.aborted) {
 			throw new DnsQueryError(`DNS query aborted by caller`, domain, type);
 		}
-		if (fetchSignal.aborted) {
+		if (fetchSignal?.aborted) {
 			throw new DnsQueryError(`DNS query timed out after ${timeoutMs}ms`, domain, type);
 		}
 		const validated = DohResponseSchema.safeParse(raw);

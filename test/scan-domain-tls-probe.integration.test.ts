@@ -1,21 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-/**
- * Scan-path scoring-coherence guard for the operator-only BV_TLS_PROBE enrichment.
- *
- * `scan_domain` does NOT route through the tool registry — it invokes `checkSsl`
- * directly inside `scanDomain` (see scan-domain.ts). These tests prove the probe
- * binding is threaded all the way into the scan's `ssl` category so a real scan's
- * SSL score reflects legacy-TLS detection:
- *
- *   - probe TLS1.1  → ssl category score strictly BELOW probe-absent (High penalty)
- *   - probe TLS1.2  → ssl category score EXACTLY EQUAL to probe-absent
- *                     (the must-not-penalize-1.2 guard)
- *   - binding absent → unchanged baseline
- *
- * Mirrors test/scan-domain.spec.ts's mockAllChecks harness, made domain-agnostic
- * (echoes the queried `name`) so three distinct domains avoid cross-call cache bleed.
- */
+/** Scan-path guard: the intercepted TLS probe is disabled without losing HTTPS findings. */
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse, dnssecResponse } from './helpers/dns-mock';
@@ -52,7 +37,8 @@ function mockCleanScan() {
 				if (name.includes('_bimi.')) return Promise.resolve(txtResponse(name, ['v=BIMI1; l=https://' + base + '/logo.svg']));
 				return Promise.resolve(txtResponse(name, ['v=spf1 include:_spf.google.com -all']));
 			}
-			if (url.includes('type=NS') || url.includes('type=2')) return Promise.resolve(nsResponse(name, ['ns1.' + base + '.', 'ns2.' + base + '.']));
+			if (url.includes('type=NS') || url.includes('type=2'))
+				return Promise.resolve(nsResponse(name, ['ns1.' + base + '.', 'ns2.' + base + '.']));
 			if (url.includes('type=CAA') || url.includes('type=257')) return Promise.resolve(caaResponse(name, ['0 issue "letsencrypt.org"']));
 			if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse(name, true));
 			return Promise.resolve(createDohResponse([], []));
@@ -100,20 +86,20 @@ describe('scan_domain TLS-probe scoring coherence', () => {
 		expect(categoryScore).toBeGreaterThan(0);
 	});
 
-	it('probe TLS1.1 → SSL category score strictly BELOW probe-absent, with a High enriched finding', async () => {
+	it('does not score or call the intercepted TLS probe through scan_domain', async () => {
 		mockCleanScan();
-		const baseline = await sslScoreFor('tlsbase1.com');
+		const baseline = await sslScoreFor('baseline.example.com');
 		mockCleanScan();
-		const weak = await sslScoreFor('tlsweak.com', {
-			tlsProbeBinding: probeBinding({ reachable: true, minVersion: 'TLS1.1', maxVersion: 'TLS1.2' }),
+		const binding = probeBinding({ reachable: true, minVersion: 'TLS1.1' });
+		const scanned = await sslScoreFor('probe.example.com', {
+			tlsProbeBinding: binding,
 			tlsProbeAuthToken: TLS_PROBE_AUTH_TOKEN,
-			// Probe is a paid-tier enrichment — must supply an eligible authTier for the gate to pass.
 			authTier: 'enterprise',
 		});
-		expect(weak.categoryScore).toBeLessThan(baseline.categoryScore);
-		const enriched = weak.sslCheck!.findings.find((f) => f.metadata?.tlsProbeEnriched === true);
-		expect(enriched).toBeDefined();
-		expect(enriched!.severity).toBe('high');
+		expect(binding.fetch).not.toHaveBeenCalled();
+		expect(scanned.categoryScore).toBe(baseline.categoryScore);
+		expect(scanned.sslCheck!.metadata?.tlsVersionAssessment).toEqual({ status: 'not_assessed', reason: 'probe_vantage_intercepted' });
+		expect(scanned.sslCheck!.findings.some((f) => f.metadata?.tlsProbeEnriched === true)).toBe(false);
 	});
 
 	it('probe TLS1.2 → SSL category score EXACTLY EQUAL to probe-absent (must-not-penalize-1.2)', async () => {
@@ -127,7 +113,7 @@ describe('scan_domain TLS-probe scoring coherence', () => {
 			// Probe is a paid-tier enrichment — must supply an eligible authTier for the gate to pass.
 			authTier: 'enterprise',
 		});
-		expect(modernProbe.fetch).toHaveBeenCalledOnce();
+		expect(modernProbe.fetch).not.toHaveBeenCalled();
 		expect(modern.categoryScore).toBe(baseline.categoryScore);
 		expect(modern.sslCheck!.findings.some((f) => f.metadata?.tlsProbeEnriched === true)).toBe(false);
 	});
@@ -143,7 +129,7 @@ describe('scan_domain TLS-probe scoring coherence', () => {
 			// Probe is a paid-tier enrichment — must supply an eligible authTier for the gate to pass.
 			authTier: 'enterprise',
 		});
-		expect(downProbe.fetch).toHaveBeenCalledOnce();
+		expect(downProbe.fetch).not.toHaveBeenCalled();
 		expect(down.categoryScore).toBe(baseline.categoryScore);
 		expect(down.sslCheck!.findings.some((f) => f.metadata?.tlsProbeEnriched === true)).toBe(false);
 	});

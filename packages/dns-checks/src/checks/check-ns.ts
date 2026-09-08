@@ -9,7 +9,7 @@
  */
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
-import { buildCheckResult, createFinding } from '../check-utils';
+import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
 import {
 	MAX_LAME_DELEGATION_PROBES,
 	assessLameDelegation,
@@ -110,11 +110,7 @@ async function probeNameserverReachable(
  * healthy zone, a total-lame zone, and an indeterminate zone all cost zero extra. A
  * thrown probe yields "not claimable" — a failure to measure never manufactures a claim.
  */
-async function resolveClaimableNameservers(
-	targets: string[],
-	rawQueryDNS: RawDNSQueryFunction,
-	timeout: number,
-): Promise<string[]> {
+async function resolveClaimableNameservers(targets: string[], rawQueryDNS: RawDNSQueryFunction, timeout: number): Promise<string[]> {
 	const byBase = new Map<string, string[]>();
 	for (const nameserver of targets) {
 		const base = nameserverBaseDomain(nameserver);
@@ -203,17 +199,15 @@ export async function checkNS(
 		// MEASURE the nameserver posture. Mark the category INCONCLUSIVE (checkStatus) so the
 		// scoring engine renormalizes over the remaining categories instead of penalizing a
 		// possibly-healthy domain with a scored "NS query failed" deficiency.
-		return {
-			...buildCheckResult('ns', [
-				createFinding(
-					'ns',
-					'Nameserver configuration not assessed',
-					'info',
-					`Could not query nameserver (NS) records for ${domain} due to a transient DNS failure; this control was not assessed.`,
-				),
-			]),
-			checkStatus: 'error',
-		};
+		return buildNotAssessedResult(
+			'ns',
+			createFinding(
+				'ns',
+				'Nameserver configuration not assessed',
+				'info',
+				`Could not query nameserver (NS) records for ${domain} due to a transient DNS failure; this control was not assessed.`,
+			),
+		);
 	}
 
 	if (nsRecords.length === 0) {

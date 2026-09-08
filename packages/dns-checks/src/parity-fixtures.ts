@@ -40,7 +40,7 @@ export interface DmarcParityFixture {
 }
 
 /** Must equal the package version (asserted by both repos' version-lock). */
-export const PARITY_CORPUS_VERSION = '1.35.0';
+export const PARITY_CORPUS_VERSION = '1.36.0';
 
 /**
  * MX parity fixture. No-MX scoring is SPF-context (NIST SP 800-177r1 §4.4.2):
@@ -502,6 +502,8 @@ export const SPF_PARITY_FIXTURES: SpfParityFixture[] = [
 	{ check: 'spf', name: 'no SPF record (spoofable)', domain: 'example.com', txtByName: {}, expectedScore: 0, expectedMissingControl: true },
 	{ check: 'spf', name: 'hard fail -all', domain: 'example.com', txtByName: { 'example.com': ['v=spf1 -all'] }, expectedScore: 100, expectedMissingControl: false },
 	{ check: 'spf', name: 'soft fail ~all', domain: 'example.com', txtByName: { 'example.com': ['v=spf1 ~all'] }, expectedScore: 95, expectedMissingControl: false },
+	{ check: 'spf', name: 'soft fail during DMARC monitoring', domain: 'example.com', txtByName: { 'example.com': ['v=spf1 ~all'], '_dmarc.example.com': ['v=DMARC1; p=none'] }, expectedScore: 100, expectedMissingControl: false },
+	{ check: 'spf', name: 'soft fail during DMARC enforcement', domain: 'example.com', txtByName: { 'example.com': ['v=spf1 ~all'], '_dmarc.example.com': ['v=DMARC1; p=reject'] }, expectedScore: 95, expectedMissingControl: false },
 	{ check: 'spf', name: 'permissive +all', domain: 'example.com', txtByName: { 'example.com': ['v=spf1 +all'] }, expectedScore: 60, expectedMissingControl: false },
 	{ check: 'spf', name: 'ptr mechanism (deprecated)', domain: 'example.com', txtByName: { 'example.com': ['v=spf1 ptr -all'] }, expectedScore: 85, expectedMissingControl: false },
 	{ check: 'spf', name: '>10 DNS lookups (RFC 7208 §4.6.4)', domain: 'example.com', txtByName: SPF_OVERLIMIT_TXT, expectedScore: 75, expectedMissingControl: false },
@@ -518,9 +520,9 @@ const DKIM_RSA_1024_P =
 export const DKIM_PARITY_FIXTURES: DkimParityFixture[] = [
 	{ check: 'dkim', name: 'no record at selector (heuristic, not zeroed)', domain: 'example.com', selector: 'sel', txt: [], expectedScore: 50, expectedMissingControl: false },
 	{ check: 'dkim', name: 'valid RSA-2048', domain: 'example.com', selector: 'sel', txt: [`v=DKIM1; k=rsa; p=${DKIM_RSA_2048_P}`], expectedScore: 100, expectedMissingControl: false },
-	{ check: 'dkim', name: 'weak RSA-1024', domain: 'example.com', selector: 'sel', txt: [`v=DKIM1; k=rsa; p=${DKIM_RSA_1024_P}`], expectedScore: 75, expectedMissingControl: false },
+	{ check: 'dkim', name: 'RSA-1024 below recommended minimum', domain: 'example.com', selector: 'sel', txt: [`v=DKIM1; k=rsa; p=${DKIM_RSA_1024_P}`], expectedScore: 85, expectedMissingControl: false },
 	{ check: 'dkim', name: 'h=sha1 (RFC 8301 deprecated)', domain: 'example.com', selector: 'sel', txt: [`v=DKIM1; h=sha1; k=rsa; p=${DKIM_RSA_2048_P}`], expectedScore: 75, expectedMissingControl: false },
-	{ check: 'dkim', name: 'revoked (empty p=)', domain: 'example.com', selector: 'sel', txt: ['v=DKIM1; k=rsa; p='], expectedScore: 85, expectedMissingControl: false },
+	{ check: 'dkim', name: 'revoked (empty p=)', domain: 'example.com', selector: 'sel', txt: ['v=DKIM1; k=rsa; p='], expectedScore: 75, expectedMissingControl: false },
 ];
 
 export const BIMI_PARITY_FIXTURES: BimiParityFixture[] = [

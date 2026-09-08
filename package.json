@@ -55,6 +55,7 @@
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
 		"validate:internal-deps": "node scripts/maintenance/validate-internal-deps.mjs",
+		"audit:client-ip-headers": "node scripts/audits/client-ip-header-audit.mjs",
 		"audit:repo-safety": "node scripts/repo-safety/scan-sensitive-surface.mjs",
 		"audit:licenses": "node scripts/license-check.mjs",
 		"audit:rate-limits": "tsx scripts/audits/tool-rate-limit-inventory.ts",

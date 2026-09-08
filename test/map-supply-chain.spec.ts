@@ -558,7 +558,7 @@ describe('mapSupplyChain', () => {
 		// stops at the ccTLD-second-level. After the fix:
 		//   - akam.net surfaces as the actual third-party DNS host
 		//   - anz.co.nz is recognised as a registry-suffix-aware parent
-		//   - the self-hosted NS (ns1/ns2.example.co.nz) is dropped, not relabelled
+		//   - the self-hosted NS (ns1/ns2.example.co.nz) gets one labelled row
 		mockDnsResponses({
 			spf: 'v=spf1 -all',
 			nsHosts: [
@@ -1031,10 +1031,17 @@ describe('mapSupplyChain — MX email-receiving providers (Task 1)', () => {
 		expect(r.dependencies.some((d) => d.provider === 'co.uk')).toBe(false);
 	});
 
-	it('does not emit a third-party row for self-hosted MX', async () => {
-		mockDnsResponses({ domain: 'acme.com', mxRecords: [{ pref: 10, host: 'mail.acme.com' }] });
-		const r = await run('acme.com');
-		expect(r.dependencies.some((d) => d.provider === 'acme.com' && d.sources.includes('mx'))).toBe(false);
+	it('collapses self-hosted MX and NS into labelled first-party rows', async () => {
+		mockDnsResponses({ domain: 'example.com', nsHosts: ['ns1.example.com', 'ns2.example.com'],
+			mxRecords: [{ pref: 10, host: 'mx1.example.com' }, { pref: 20, host: 'mx2.example.com' }] });
+		const r = await run('example.com');
+		const mx = r.dependencies.filter((d) => d.sources.includes('mx'));
+		expect(mx).toHaveLength(1);
+		expect(mx[0]).toMatchObject({ provider: 'example.com (self-hosted MX)', roles: ['email-receiving'], trustLevel: 'critical' });
+		const ns = r.dependencies.filter((d) => d.sources.includes('ns'));
+		expect(ns).toHaveLength(1);
+		expect(ns[0]).toMatchObject({ provider: 'example.com (self-hosted NS)', roles: ['dns-hosting'], trustLevel: 'high' });
+		expect(r.summary.critical).toBeGreaterThanOrEqual(1);
 	});
 
 	it('handles a web-only domain with no MX records', async () => {

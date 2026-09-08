@@ -198,6 +198,7 @@ const INERT_HOLE_EXPRESSIONS: ReadonlySet<string> = new Set([
 	'contentLength', // byte count
 	'facts.recordCount', // count of DMARC TXT records
 	'iterations', // NSEC3 iteration count
+	'keyAnalysis.bits', // number|null from the internal DER-header/length classifier; never DNS prose
 ]);
 
 /** `cond ? 'literal' : 'literal'` — a hole whose every branch is a source-fixed string. */

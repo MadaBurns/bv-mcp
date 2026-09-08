@@ -10,7 +10,7 @@
  */
 
 import type { DNSQueryFunction, Finding } from '../types';
-import { createFinding, isSubdomainOf } from '../check-utils';
+import { createFinding } from '../check-utils';
 
 /** Parse DMARC tag-value pairs from a DMARC record string. */
 export function parseDmarcTags(record: string): Map<string, string> {
@@ -21,7 +21,10 @@ export function parseDmarcTags(record: string): Map<string, string> {
 		const eqIndex = trimmed.indexOf('=');
 		if (eqIndex > 0) {
 			const key = trimmed.substring(0, eqIndex).trim().toLowerCase();
-			const value = trimmed.substring(eqIndex + 1).trim().toLowerCase();
+			const value = trimmed
+				.substring(eqIndex + 1)
+				.trim()
+				.toLowerCase();
 			tags.set(key, value);
 		}
 	}
@@ -87,6 +90,37 @@ export function detectThirdPartyAggregators(uris: string[]): string[] {
 }
 
 /**
+ * Distinct `rua=` destinations whose external authorization is verified per check.
+ * Legitimate records carry a handful; the cap exists to bound DNS fan-out, not to
+ * express a protocol limit (RFC 9990 sets none).
+ */
+export const MAX_RUA_AUTHORIZATION_TARGETS = 10;
+
+/** Discover the Organizational Domain with the bounded RFC 9989 §4.10 DNS tree walk. */
+export async function discoverDmarcOrganizationalDomain(domain: string, queryDNS: DNSQueryFunction, timeout?: number): Promise<string> {
+	const original = domain.toLowerCase().replace(/\.$/, '');
+	const labels = original.split('.');
+	let current = labels;
+	let selected = original;
+	while (current.length > 0) {
+		const name = current.join('.');
+		const records = (await queryDNS(`_dmarc.${name}`, 'TXT', { timeout })).filter((record) => /^v=DMARC1(?:\s*;|\s*$)/i.test(record));
+		if (records.length === 1) {
+			const tags = parseDmarcTags(records[0]);
+			if (['none', 'quarantine', 'reject'].includes(tags.get('p') ?? '')) {
+				if (tags.get('psd') === 'n') return name;
+				if (tags.get('psd') === 'y') {
+					return name === original ? original : labels.slice(-(current.length + 1)).join('.');
+				}
+				selected = name;
+			}
+		}
+		current = current.length >= 8 ? current.slice(-7) : current.slice(1);
+	}
+	return selected;
+}
+
+/**
  * Check cross-domain RUA authorization per RFC 9990 §4 ("Verifying External
  * Destinations"), which obsoleted RFC 7489 §7.1 in May 2026.
  * When rua= points to a third-party domain, verify authorization TXT records.
@@ -105,27 +139,65 @@ export async function checkRuaAuthorization(
 ): Promise<Finding[]> {
 	const findings: Finding[] = [];
 	const checkedDomains = new Set<string>();
+	const policyDomain = domain.toLowerCase().replace(/\.$/, '');
+	// Per-check memo shares ancestor lookups across destinations and both walks.
+	const queries = new Map<string, Promise<string[]>>();
+	const memoDNS: DNSQueryFunction = (name, type, options) => {
+		const key = `${name}:${type}`;
+		let pending = queries.get(key);
+		if (!pending) {
+			pending = queryDNS(name, type, options);
+			queries.set(key, pending);
+		}
+		return pending;
+	};
+	let policyOrg: Promise<string> | undefined;
 
 	for (const uri of ruaUris) {
 		const targetDomain = extractDomainFromMailto(uri);
-		if (!targetDomain || isSubdomainOf(targetDomain, domain) || checkedDomains.has(targetDomain)) continue;
+		if (!targetDomain || targetDomain === policyDomain || checkedDomains.has(targetDomain)) continue;
+		// Bound the fan-out. `rua=` is attacker-controlled on any domain a caller can ask us
+		// to scan, and each distinct destination now costs an organizational tree walk plus an
+		// authorization lookup (~9 DNS queries) rather than the single query it cost before.
+		// An uncapped comma list therefore scales one hostile TXT record into hundreds of
+		// subrequests against the per-invocation ceiling — the failure mode already measured
+		// on the scanner queue. Truncating is fail-SAFE: the only finding an unchecked
+		// destination could produce is a penalty, so we under-report rather than over-penalize.
+		if (checkedDomains.size >= MAX_RUA_AUTHORIZATION_TARGETS) break;
 		checkedDomains.add(targetDomain);
 
 		try {
-			const authRecords = await queryDNS(`${domain}._report._dmarc.${targetDomain}`, 'TXT', { timeout });
-			const hasAuth = authRecords.some((record) => record.toLowerCase().startsWith('v=dmarc1'));
+			policyOrg ??= discoverDmarcOrganizationalDomain(policyDomain, memoDNS, timeout);
+			const [sourceOrg, targetOrg] = await Promise.all([policyOrg, discoverDmarcOrganizationalDomain(targetDomain, memoDNS, timeout)]);
+			if (sourceOrg === targetOrg) continue;
+			const authRecords = await memoDNS(`${policyDomain}._report._dmarc.${targetDomain}`, 'TXT', { timeout });
+			const hasAuth = authRecords.some((record) => /^v=DMARC1(?:\s*;|\s*$)/i.test(record));
 			if (!hasAuth) {
 				findings.push(
 					createFinding(
 						'dmarc',
 						'Third-party aggregate reporting not authorized',
 						'medium',
-						`Aggregate reports sent to ${targetDomain} may be discarded by receivers that enforce external destination verification. The authorization record ${domain}._report._dmarc.${targetDomain} must contain a TXT record with "v=DMARC1" (RFC 9990 §4, which obsoletes RFC 7489 §7.1).`,
+						`Aggregate reports sent to ${targetDomain} may be discarded by receivers that enforce external destination verification. The authorization record ${policyDomain}._report._dmarc.${targetDomain} must contain a TXT record with "v=DMARC1" (RFC 9990 §4, which obsoletes RFC 7489 §7.1).`,
 					),
 				);
 			}
 		} catch {
-			// DNS query failed — don't produce a finding for transient errors.
+			findings.push(
+				createFinding(
+					'dmarc',
+					'Aggregate reporting authorization not assessed',
+					'info',
+					`Could not establish external reporting authorization for ${targetDomain} because a DNS lookup failed. Authorization is unknown; retry the check.`,
+					{
+						component: 'rua_authorization',
+						assessment: 'not_assessed',
+						inconclusive: true,
+						errorKind: 'dns_error',
+						confidence: 'heuristic',
+					},
+				),
+			);
 		}
 	}
 

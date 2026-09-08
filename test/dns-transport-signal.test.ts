@@ -162,3 +162,59 @@ describe('queryDns — AbortSignal propagation (Phase 1)', () => {
 		expect(fetchMock).toHaveBeenCalledTimes(1);
 	});
 });
+
+describe('queryDns — dispatch timeout under semaphore contention (#904)', () => {
+	it('gives all 30 queries a fresh timeout after acquiring one of 12 slots', async () => {
+		const { Semaphore } = await import('../src/lib/semaphore');
+		const sem = new Semaphore(12);
+		const signals: AbortSignal[] = [];
+		const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+		globalThis.fetch = vi.fn(async (_input, init) => {
+			signals.push(init!.signal!);
+			await new Promise((resolve) => setTimeout(resolve, 45));
+			if (init!.signal!.aborted) throw init!.signal!.reason;
+			return new Response(JSON.stringify({ Status: 0, Answer: [{ name: 'example.com', type: 16, TTL: 60, data: 'ok' }] }));
+		}) as typeof fetch;
+		try {
+			const queries = Array.from({ length: 30 }, (_, i) =>
+				queryDns(`q${i}.example.com`, 'TXT', false, {
+					dnsSemaphore: sem,
+					retries: 0,
+					timeoutMs: 100,
+					confirmWithSecondaryOnEmpty: false,
+				}),
+			);
+			await Promise.resolve();
+			expect(timeoutSpy).toHaveBeenCalledTimes(12);
+			expect(sem.waiting).toBe(18);
+			const results = await Promise.all(queries);
+			expect(results).toHaveLength(30);
+			expect(signals).toHaveLength(30);
+			expect(timeoutSpy).toHaveBeenCalledTimes(30);
+		} finally {
+			timeoutSpy.mockRestore();
+		}
+	});
+
+	it('classifies workerd TimeoutError as a resolver timeout', async () => {
+		globalThis.fetch = vi.fn(async () => {
+			throw new DOMException('expired', 'TimeoutError');
+		});
+		await expect(queryDns('example.com', 'TXT', false, { retries: 0, timeoutMs: 25 })).rejects.toThrow('DNS query timed out after 25ms');
+	});
+
+	it('cancels queued queries without dispatching them', async () => {
+		const { Semaphore } = await import('../src/lib/semaphore');
+		const sem = new Semaphore(1);
+		const release = await sem.acquire();
+		const controller = new AbortController();
+		const mock = vi.fn();
+		globalThis.fetch = mock;
+		const pending = queryDns('example.com', 'TXT', false, { dnsSemaphore: sem, signal: controller.signal, retries: 2 });
+		controller.abort();
+		await expect(pending).rejects.toThrow('aborted by caller');
+		release();
+		expect(mock).not.toHaveBeenCalled();
+		expect(sem.waiting).toBe(0);
+	});
+});

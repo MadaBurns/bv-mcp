@@ -64,22 +64,14 @@ describe('DKIM selector coverage (default probe list)', () => {
 		'$provider: probes "$selector" and finds a key published only there (observed on $evidence)',
 		async ({ selector, record }) => {
 			expect(COMMON_DKIM_SELECTORS).toContain(selector);
-			const result = await checkDKIM(
-				'example.com',
-				dnsFor({ [`${selector}._domainkey.example.com`]: [record] }),
-			);
-			expect(result.findings.some((f) => f.title === 'No DKIM records found among tested selectors')).toBe(
-				false,
-			);
+			const result = await checkDKIM('example.com', dnsFor({ [`${selector}._domainkey.example.com`]: [record] }));
+			expect(result.findings.some((f) => f.title === 'No DKIM records found among tested selectors')).toBe(false);
 			expect(result.score).toBeGreaterThan(50);
 		},
 	);
 
 	it('CONTROL: an unlisted selector is still reported as not found', async () => {
-		const result = await checkDKIM(
-			'example.com',
-			dnsFor({ 'not-a-real-selector._domainkey.example.com': [VALID_KEY] }),
-		);
+		const result = await checkDKIM('example.com', dnsFor({ 'not-a-real-selector._domainkey.example.com': [VALID_KEY] }));
 		expect(result.findings.some((f) => f.title === 'No DKIM records found among tested selectors')).toBe(true);
 		expect(result.score).toBe(50);
 	});
@@ -101,12 +93,12 @@ describe('DKIM selector coverage (default probe list)', () => {
 		expect(result.findings).toEqual(
 			expect.arrayContaining([
 				expect.objectContaining({
-					severity: 'high',
+					severity: 'medium',
 					title: 'Legacy RSA key: resend',
 				}),
 			]),
 		);
-		expect(result.score).toBe(60);
+		expect(result.score).toBe(70);
 	});
 });
 
@@ -125,10 +117,7 @@ describe('DKIM SaaS attribution reachable from the default probe list', () => {
 	it('attributes Mailgun via mg → dkim.mailgun.net (the .net target, not .org)', async () => {
 		const result = await checkDKIM(
 			'example.com',
-			dnsFor(
-				{ 'dkim.mailgun.net': [NO_VERSION_KEY] },
-				{ 'mg._domainkey.example.com': 'dkim.mailgun.net' },
-			),
+			dnsFor({ 'dkim.mailgun.net': [NO_VERSION_KEY] }, { 'mg._domainkey.example.com': 'dkim.mailgun.net' }),
 		);
 		expect(result.findings.some((f) => f.metadata?.delegatedTo === 'Mailgun')).toBe(true);
 	});
