@@ -2,7 +2,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { parseSoaRecord, analyzeSoaConsistency, analyzeSensitiveSubdomains } from '../src/tools/zone-hygiene-analysis';
-import type { NsSerialEntry, SubdomainProbeResult } from '../src/tools/zone-hygiene-analysis';
+import type { NsSerialEntry, SubdomainProbeResult, WildcardProbe } from '../src/tools/zone-hygiene-analysis';
 
 describe('parseSoaRecord', () => {
 	it('should parse a valid SOA record', () => {
@@ -171,7 +171,7 @@ describe('analyzeSensitiveSubdomains', () => {
 	});
 
 	describe('wildcard zone (#930)', () => {
-		const wildcard = { status: 'detected', ips: ['198.51.100.94'], probeSubdomain: '_bv-probe-abc.example.com' } as const;
+		const wildcard: WildcardProbe = { status: 'detected', ips: ['198.51.100.94'], probeSubdomain: '_bv-probe-abc.example.com' };
 
 		it('folds every hit that carries the wildcard answer into one info observation', () => {
 			const results: SubdomainProbeResult[] = [
