@@ -382,6 +382,13 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 		}
 		caaGrantsByTag.set(classified.tag, (caaGrantsByTag.get(classified.tag) ?? 0) + 1);
 		if (caaIssuers.size >= MAX_CAA_ISSUERS) continue;
+		// Backstop on the PRE-clip value: TRUNCATION_MARKER contains letters, so a
+		// clipped punctuation-only issuer would otherwise pass isRenderableProviderName.
+		// Routing it through addDependency unclipped keeps the drop logged.
+		if (!isRenderableProviderName(classified.issuer)) {
+			addDependency(classified.issuer, 'caa');
+			continue;
+		}
 		const issuer =
 			classified.issuer.length > MAX_CAA_TOKEN_LENGTH
 				? `${classified.issuer.slice(0, MAX_CAA_TOKEN_LENGTH)}${TRUNCATION_MARKER}`

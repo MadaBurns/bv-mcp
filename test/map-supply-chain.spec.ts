@@ -1389,6 +1389,14 @@ describe('mapSupplyChain — null MX and CAA no-issuance are directives, not pro
 		expect(caRows.some((d) => d.provider === longIssuer)).toBe(false);
 	});
 
+	it('a long punctuation-only issuer is rejected on the pre-clip value, not rescued by the letters in TRUNCATION_MARKER', async () => {
+		mockDnsResponses({ domain: 'example.com', caaRecords: [`0 issue "${'.'.repeat(100)}"`, '0 issue "letsencrypt.org"'] });
+		const result = await run('example.com');
+		const caRows = result.dependencies.filter((d) => d.roles.includes('certificate-authority')).map((d) => d.provider);
+		expect(caRows).toEqual(['letsencrypt.org']);
+		expect(result.dependencies.some((d) => d.provider.includes('...(truncated)'))).toBe(false);
+	});
+
 	it('CAA RFC 8657 parameters are stripped from the CA provider name (shared parser, not a local regex)', async () => {
 		mockDnsResponses({
 			domain: 'example.com',
