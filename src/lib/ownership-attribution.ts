@@ -403,8 +403,8 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
  *  5. Any other overlap confined to shared-provider hosts → not evidence. A partial overlap is
  *     the ANZ/Westpac 1/6-Akamai trap (a single pooled host in common is operational plumbing);
  *     a complete match on a NON-pooled platform (one.com `ns01`/`ns02`, #929) is what every
- *     tenant of that platform looks like. Falls through to 5b; if 5b declines: identical whole
- *     sets on a non-pooled platform → `unattributed` (no distinct infrastructure was observed),
+ *     tenant of that platform looks like. Falls through to 5b; if 5b declines: the candidate's
+ *     WHOLE set is platform hosts the seed uses → `unattributed` (nothing distinct observed),
  *     any other platform-confined overlap → `third_party` — both carrying `ns_shared_platform`.
  *  5b. (#864) SEED-AUTHORISED convergence — pre-filter: every real MX exchange inside the seed
  *     apex (attacker-free, no weight); verdict: the seed publishes the RFC 7489 §7.1 DMARC
@@ -537,26 +537,29 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 	// Neither verdict below moves severity (the third_party / unattributed
 	// split is wording only — see the file header); the choice is about what
 	// was OBSERVED:
-	//  - the candidate's WHOLE set is the seed's whole set, on a non-pooled
-	//    platform (one.com `ns01`/`ns02`): the hosts are the platform's,
-	//    assigned to every tenant, and NO distinct infrastructure was seen. That
-	//    is `unattributed` — "no ownership or third-party signal" — not
-	//    `third_party`, whose report wording ("registered to a different
-	//    organisation") would be a false claim about the customer's own alias
-	//    hosted on the same platform (PR #937 review).
+	//  - the candidate's WHOLE set is shared-platform hosts the seed also uses
+	//    (one.com `ns01`/`ns02`; or a candidate that carries only the platform
+	//    half of a seed that ALSO has its own hosts): the hosts are the
+	//    platform's, assigned to every tenant, and NO distinct infrastructure
+	//    was seen on the candidate. That is `unattributed` — "no ownership or
+	//    third-party signal" — not `third_party`, whose report wording
+	//    ("registered to a different organisation") would be a false claim
+	//    about the customer's own alias hosted on the same platform (PR #937
+	//    review, both rounds). The seed's total does NOT enter this test: the
+	//    `third_party` sentence below must be literally true of the CANDIDATE.
 	//  - anything else (the 1/6 Akamai partial; a one.com pair PLUS the
 	//    squatter's own `ns1.attacker.example`): the candidate's REMAINING
 	//    nameservers are distinct from the seed's, so `third_party` is what
 	//    was measured, worded for the platform overlap rather than as
 	//    "distinct infrastructure".
 	if (candidateNs.length > 0 && sharedNs.length > 0 && dedicatedShared.length === 0) {
-		const identicalSets = sharedNs.length === seedTotal && sharedNs.length === candidateNs.length;
-		if (identicalSets) {
+		const candidateWhollyOnPlatform = sharedNs.length === candidateNs.length;
+		if (candidateWhollyOnPlatform) {
 			return {
 				verdict: 'unattributed',
 				strength: 'none',
 				signals: ['ns_shared_platform'],
-				rationale: `${candidateDomain} and ${seedApex} delegate to the same shared-tenant DNS platform hosts (${sharedNs.join(', ')}), which that platform assigns to every customer — platform plumbing, not ownership evidence either way.`,
+				rationale: `${candidateDomain} delegates only to shared-tenant DNS platform hosts that ${seedApex} also uses (${sharedNs.join(', ')}), which that platform assigns to every customer — platform plumbing, not ownership evidence either way.`,
 			};
 		}
 		return {

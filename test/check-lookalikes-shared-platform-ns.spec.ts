@@ -122,6 +122,26 @@ describe('classifyOwnership — a complete match on a shared PLATFORM pair is no
 		expect(result.rationale).not.toContain('no ownership signal links it');
 	});
 
+	it('a candidate carrying ONLY the platform half of a seed that also has its own hosts is unattributed (candidate ⊂ seed)', async () => {
+		// Seed = 2 own hosts + the one.com pair; candidate = the one.com pair
+		// alone. The candidate has NO remaining nameservers, so the `third_party`
+		// sentence ("its remaining nameservers are distinct") would be false and
+		// the gate would call a possible alias "a different organisation"
+		// (PR #937 re-verification). The seed's total must not enter the test.
+		const { classifyOwnership } = await loadAttribution();
+		const result = classifyOwnership({
+			seedDomain: SEED,
+			seedNs: ['ns1.net-agents.dk', 'ns2.net-agents.dk', ...ONE_COM_NS],
+			candidateDomain: 'net-agent.dk',
+			registration: registered(ONE_COM_NS.slice()),
+			isSharedNsHost,
+			isPooledSharedNsHost,
+		});
+		expect(result.verdict).toBe('unattributed');
+		expect(result.signals).toEqual(['ns_shared_platform']);
+		expect(result.rationale).not.toContain('remaining nameservers');
+	});
+
 	it("the squatter's cheapest shape — the seed's one.com pair PLUS its own ns1.attacker host — is third_party, never owned", async () => {
 		// Step 4 used to accept this: `sharedNs.length === seedTotal` held and
 		// every shared host was on a shared provider, so the extra attacker host
