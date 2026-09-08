@@ -4,6 +4,30 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [3.77.0] - 2026-09-08
+
+Scoring model 1.24.0, `@blackveil/dns-checks` 1.36.0. No category weights, grade bands or severity penalties change; several finding severities do, so scores move for affected domains.
+
+### Changed
+
+- DKIM key strength: a 1024-bit RSA key is now `medium` rather than `high`. RFC 8301 §3.2 permits 1024 bits and recommends 2048, so a conforming key was being reported as a serious deficiency. Revoked and truncated keys rise to `high` — a truncated key cannot verify a signature at all.
+- A set of revoked DKIM selectors no longer reports the domain as non-sending. Selector probing cannot rule out active keys under names that were never probed, so the finding now states what was observed instead of inferring intent.
+- SPF soft fail (`~all`) is `info` when DMARC is explicitly in monitoring (`p=none`), which is the correct posture while a sender inventory is being built, and `low` under DMARC enforcement. Unknown or missing DMARC remains `low`.
+- `check_ssl` no longer reports origin TLS protocol versions or legacy-TLS findings. The browser-based probe observes its own TLS-terminating proxy handshake rather than the origin's, so the signal described the probe rather than the scanned host. Scans now report the assessment as not performed.
+
+### Fixed
+
+- DMARC external aggregate reporting authorization (RFC 9990 §4) now compares organizational domains discovered by DNS tree walk and builds the authorization record from the policy owner. A subdomain inheriting an organization-level DMARC record previously probed the wrong name and could be reported as unauthorized when it was correctly configured.
+- A DNS failure while checking reporting authorization records an explicit not-assessed result instead of passing silently, and marks the check partial so it is not cached.
+- Bounded the DNS fan-out of reporting-authorization checks. An unbounded `rua=` destination list combined with per-destination organizational lookups could expand a single DNS record into a large number of subrequests.
+- Transient DNS failures in the nameserver, MX and CAA checks are no longer written to the five-minute result cache, so a resolver blip is retried on the next scan rather than pinned. Scores are unaffected — these categories were already excluded from scoring when a check could not complete.
+- DNS-over-HTTPS queries now start each attempt's timeout when the request is dispatched rather than while it waits for a connection slot, so a queued query no longer spends its allowance waiting. Timeout errors are retried alongside aborts.
+- `map_supply_chain` labels self-hosted nameserver and mail-exchange infrastructure explicitly instead of omitting it, matching how self-hosted SPF is already reported.
+
+### Added
+
+- `npm run audit:client-ip-headers` — a read-only aggregate audit of client-IP header presence on the public request path that reports an unknown result rather than a healthy one when there is insufficient evidence.
+
 ## [3.76.1] - 2026-09-06
 
 ### Fixed
