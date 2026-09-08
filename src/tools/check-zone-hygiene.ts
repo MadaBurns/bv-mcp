@@ -9,7 +9,8 @@
  */
 
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
-import { queryDnsRecords } from '../lib/dns';
+import { queryDns, queryDnsRecords } from '../lib/dns';
+import { RecordType } from '../lib/dns-types';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import {
 	SENSITIVE_SUBDOMAINS,
@@ -21,6 +22,23 @@ import {
 import type { NsSerialEntry, SubdomainProbeResult, WildcardProbe } from './zone-hygiene-analysis';
 
 /**
+ * One A lookup, read raw: the addresses (type 1) AND the CNAME target (type 5) the
+ * resolver followed to reach them. The target is what identifies a `*.zone CNAME
+ * cdn` wildcard whose CDN hands every new label a different address subset —
+ * addresses alone cannot match those. Normalised (lower-case, no trailing dot).
+ */
+async function lookupA(fqdn: string, dnsOptions?: QueryDnsOptions): Promise<{ ips: string[]; cname?: string }> {
+	const resp = await queryDns(fqdn, 'A', false, dnsOptions);
+	const answers = resp.Answer ?? [];
+	const ips = answers.filter((a) => a.type === RecordType.A).map((a) => a.data);
+	const cname = answers
+		.find((a) => a.type === RecordType.CNAME)
+		?.data.toLowerCase()
+		.replace(/\.$/, '');
+	return cname ? { ips, cname } : { ips };
+}
+
+/**
  * Wildcard canary (#930). Same shape as the `ns` check's probe (`_bv-probe-<nonce>`),
  * so the scan-level nonce normalisation in test/scan-domain-dns-semaphore.spec.ts
  * already covers it. A random label per call: a fixed one could be registered.
@@ -28,12 +46,19 @@ import type { NsSerialEntry, SubdomainProbeResult, WildcardProbe } from './zone-
  * Three outcomes, three different claims — a thrown query is NOT "no wildcard":
  * reading it that way would let a transient resolver failure hand the sweep a
  * confident verdict it cannot support (the fail-open shape CLAUDE.md warns about).
+ * A CNAME-only answer (dangling wildcard alias, no address) still counts as
+ * `detected`: the zone answers for arbitrary names even though nothing "resolves".
+ *
+ * Known blind spot, shared with check-ns.ts's probe: this is an A lookup, so an
+ * AAAA-only wildcard is not seen — but the sweep is A-only too, so such a zone
+ * cannot produce the false hits this canary exists to explain.
  */
 async function probeWildcard(domain: string, dnsOptions?: QueryDnsOptions): Promise<WildcardProbe> {
 	const probeSubdomain = `_bv-probe-${Math.random().toString(36).substring(2, 10)}.${domain}`;
 	try {
-		const ips = await queryDnsRecords(probeSubdomain, 'A', dnsOptions);
-		return ips.length > 0 ? { status: 'detected', ips, probeSubdomain } : { status: 'absent', probeSubdomain };
+		const { ips, cname } = await lookupA(probeSubdomain, dnsOptions);
+		if (ips.length === 0 && cname === undefined) return { status: 'absent', probeSubdomain };
+		return { status: 'detected', ips, ...(cname ? { cnameTarget: cname } : {}), probeSubdomain };
 	} catch {
 		return { status: 'inconclusive', probeSubdomain };
 	}
@@ -147,10 +172,15 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 	let wildcard = await probeWildcard(domain, dnsOptions);
 	if (wildcard.status === 'inconclusive') {
 		findings.push(...analyzeSensitiveSubdomains([], wildcard));
-		// The SOA half was measured, but this result is incomplete: keep it out of the
-		// 5-minute cache so the next call retries the canary (same `partial` contract as
-		// the transient paths in scan-domain.ts).
-		return { ...buildCheckResult('zone_hygiene', findings), partial: true };
+		// `partial: true` only keeps the incomplete result out of the 5-minute cache; the
+		// ENGINE reads `checkStatus`, and an absent one counts as measured
+		// (`isCheckMeasured`, scoring/evidence.ts). Same split as check-subdomain-takeover's
+		// markProbeInconclusive: if the SOA half produced scored evidence the category
+		// stands on that; if every finding is `info` the only thing an unflagged result
+		// would assert is a clean 100 the withheld sweep cannot support, so EXCLUDE it.
+		const result = { ...buildCheckResult('zone_hygiene', findings), partial: true };
+		if (findings.some((f) => f.severity !== 'info')) return result;
+		return { ...result, score: 0, passed: false, checkStatus: 'error' };
 	}
 
 	const PROBE_BATCH_SIZE = 5;
@@ -162,11 +192,12 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 			batch.map(async (subdomain) => {
 				const fqdn = `${subdomain}.${domain}`;
 				try {
-					const aRecords = await queryDnsRecords(fqdn, 'A', dnsOptions);
+					const { ips, cname } = await lookupA(fqdn, dnsOptions);
 					return {
 						subdomain: fqdn,
-						resolves: aRecords.length > 0,
-						ips: aRecords,
+						resolves: ips.length > 0,
+						ips,
+						...(cname ? { cname } : {}),
 					} as SubdomainProbeResult;
 				} catch {
 					return {
@@ -190,11 +221,15 @@ export async function checkZoneHygiene(domain: string, dnsOptions?: QueryDnsOpti
 	// returns — total canary cost stays at most 2 queries per check.
 	if (wildcard.status === 'detected') {
 		const detected = wildcard;
-		const unexplained = probeResults.some((r) => r.resolves && !isWildcardSynthetic(r, detected.ips));
+		const unexplained = probeResults.some((r) => r.resolves && !isWildcardSynthetic(r, detected));
 		if (unexplained) {
 			const confirm = await probeWildcard(domain, dnsOptions);
 			if (confirm.status === 'detected') {
-				wildcard = { ...detected, ips: [...new Set([...detected.ips, ...confirm.ips])] };
+				wildcard = {
+					...detected,
+					ips: [...new Set([...detected.ips, ...confirm.ips])],
+					...((detected.cnameTarget ?? confirm.cnameTarget) ? { cnameTarget: detected.cnameTarget ?? confirm.cnameTarget } : {}),
+				};
 			}
 		}
 	}

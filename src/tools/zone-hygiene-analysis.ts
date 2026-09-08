@@ -160,6 +160,8 @@ export interface SubdomainProbeResult {
 	subdomain: string;
 	resolves: boolean;
 	ips: string[];
+	/** Normalised CNAME target from the same A lookup, when the name is an alias (#930). */
+	cname?: string;
 }
 
 /**
@@ -176,13 +178,24 @@ export interface SubdomainProbeResult {
  *   sweep cannot be interpreted either way, so it is not run and not reported.
  */
 export type WildcardProbe =
-	| { status: 'detected'; ips: string[]; probeSubdomain: string }
+	| { status: 'detected'; ips: string[]; cnameTarget?: string; probeSubdomain: string }
 	| { status: 'absent'; probeSubdomain: string }
 	| { status: 'inconclusive'; probeSubdomain: string };
 
-/** A sweep hit is wildcard-synthetic when any of its addresses is a wildcard answer. */
-export function isWildcardSynthetic(entry: SubdomainProbeResult, wildcardIps: readonly string[]): boolean {
-	return entry.ips.some((ip) => wildcardIps.includes(ip));
+/** The `detected` arm of {@link WildcardProbe}. */
+export type DetectedWildcard = Extract<WildcardProbe, { status: 'detected' }>;
+
+/**
+ * A sweep hit is wildcard-synthetic when it is explained by the wildcard answer:
+ * either its CNAME target is the wildcard's CNAME target (a `*.zone CNAME cdn`
+ * pool hands each new label its own address subset, so addresses alone cannot
+ * match), or EVERY one of its addresses is a wildcard answer. `every`, not `some`:
+ * a real host that also carries the wildcard's address alongside its own must
+ * stay a real host.
+ */
+export function isWildcardSynthetic(entry: SubdomainProbeResult, wildcard: Pick<DetectedWildcard, 'ips' | 'cnameTarget'>): boolean {
+	if (entry.cname !== undefined && wildcard.cnameTarget !== undefined && entry.cname === wildcard.cnameTarget) return true;
+	return entry.ips.length > 0 && entry.ips.every((ip) => wildcard.ips.includes(ip));
 }
 
 /**
@@ -220,17 +233,21 @@ export function analyzeSensitiveSubdomains(results: SubdomainProbeResult[], wild
 	}
 
 	const hits = results.filter((r) => r.resolves);
-	const synthetic = wildcard?.status === 'detected' ? hits.filter((r) => isWildcardSynthetic(r, wildcard.ips)) : [];
-	const resolving = wildcard?.status === 'detected' ? hits.filter((r) => !isWildcardSynthetic(r, wildcard.ips)) : hits;
+	const synthetic = wildcard?.status === 'detected' ? hits.filter((r) => isWildcardSynthetic(r, wildcard)) : [];
+	const resolving = wildcard?.status === 'detected' ? hits.filter((r) => !isWildcardSynthetic(r, wildcard)) : hits;
 
 	if (wildcard?.status === 'detected') {
 		const wildcardIps = wildcard.ips;
+		const answer =
+			wildcardIps.length > 0
+				? `resolved to ${wildcardIps.join(', ')}${wildcard.cnameTarget ? ` via ${wildcard.cnameTarget}` : ''}`
+				: `is an alias for ${wildcard.cnameTarget} that yields no address`;
 		findings.push(
 			createFinding(
 				'zone_hygiene',
 				'Wildcard DNS masks sensitive subdomain probing',
 				'info',
-				`The zone answers for arbitrary names (canary ${wildcard.probeSubdomain} resolved to ${wildcardIps.join(', ')}), indicating a wildcard record. ` +
+				`The zone answers for arbitrary names (canary ${wildcard.probeSubdomain} ${answer}), indicating a wildcard record. ` +
 					(synthetic.length > 0
 						? `${synthetic.length} probed internal name(s) returned that same wildcard answer (${synthetic.map((r) => r.subdomain).join(', ')}) — this is not evidence that those hosts exist. `
 						: '') +
@@ -238,6 +255,7 @@ export function analyzeSensitiveSubdomains(results: SubdomainProbeResult[], wild
 				{
 					wildcardDetected: true,
 					wildcardIps,
+					...(wildcard.cnameTarget ? { wildcardCnameTarget: wildcard.cnameTarget } : {}),
 					probeSubdomain: wildcard.probeSubdomain,
 					wildcardSyntheticSubdomains: synthetic.map((r) => r.subdomain),
 				},

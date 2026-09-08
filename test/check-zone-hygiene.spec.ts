@@ -242,7 +242,24 @@ describe('checkZoneHygiene', () => {
 	describe('wildcard zone (#930)', () => {
 		const WILDCARD_IP = '198.51.100.94';
 
-		function wildcardMock(opts: { realHosts?: Record<string, string[]>; canaryIps?: string[][]; canaryThrows?: boolean } = {}) {
+		/** DoH response for an alias: CNAME to `target` plus the A records reached through it (possibly none). */
+		function cnameResponse(name: string, target: string, ips: string[]) {
+			return createDohResponse(
+				[{ name, type: 1 }],
+				[{ name, type: 5, TTL: 300, data: target }, ...ips.map((ip) => ({ name: target, type: 1, TTL: 300, data: ip }))],
+			);
+		}
+
+		function wildcardMock(
+			opts: {
+				realHosts?: Record<string, string[]>;
+				canaryIps?: string[][];
+				canaryThrows?: boolean;
+				/** Wildcard is `*.zone CNAME <target>`; each canary/hit gets `[target, ips]`. */
+				cnamePool?: { target: string; canaryIps: string[]; hitIps: string[] };
+				soaExpire?: number;
+			} = {},
+		) {
 			const canaryAnswers = opts.canaryIps ?? [[WILDCARD_IP]];
 			let canaryCalls = 0;
 			const aQueries: string[] = [];
@@ -252,7 +269,9 @@ describe('checkZoneHygiene', () => {
 					return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
 				}
 				if (url.includes('type=SOA') || url.includes('type=6')) {
-					return Promise.resolve(soaResponse('example.com', 'ns1.example.com. admin.example.com. 2024010101 7200 3600 1209600 300'));
+					return Promise.resolve(
+						soaResponse('example.com', `ns1.example.com. admin.example.com. 2024010101 7200 3600 ${opts.soaExpire ?? 1209600} 300`),
+					);
 				}
 				if (url.includes('type=A') || url.includes('type=1')) {
 					const nameMatch = url.match(/name=([^&]+)/);
@@ -260,12 +279,14 @@ describe('checkZoneHygiene', () => {
 					aQueries.push(name);
 					if (name.startsWith('_bv-probe-')) {
 						if (opts.canaryThrows) return Promise.reject(new Error('DNS query timed out after 3000ms'));
-						const ips = canaryAnswers[Math.min(canaryCalls, canaryAnswers.length - 1)];
 						canaryCalls++;
+						if (opts.cnamePool) return Promise.resolve(cnameResponse(name, opts.cnamePool.target, opts.cnamePool.canaryIps));
+						const ips = canaryAnswers[Math.min(canaryCalls - 1, canaryAnswers.length - 1)];
 						return Promise.resolve(aResponse(name, ips));
 					}
 					if (opts.realHosts?.[name]) return Promise.resolve(aResponse(name, opts.realHosts[name]));
 					// Everything else under the zone is answered by the wildcard.
+					if (opts.cnamePool) return Promise.resolve(cnameResponse(name, opts.cnamePool.target, opts.cnamePool.hitIps));
 					return Promise.resolve(aResponse(name, [WILDCARD_IP]));
 				}
 				return Promise.resolve(emptyResponse('example.com', 1));
@@ -363,8 +384,61 @@ describe('checkZoneHygiene', () => {
 
 			// The sweep never ran: its ten answers could not have been interpreted.
 			expect(aQueries.filter((n) => !n.startsWith('_bv-probe-'))).toEqual([]);
-			// The SOA half was measured, so the category is not cached as if complete.
+			// Not cached as if complete...
 			expect(result.partial).toBe(true);
+			// ...and EXCLUDED from scoring: `partial` never reaches the engine, an absent
+			// `checkStatus` counts as measured (isCheckMeasured), and all-info would have
+			// entered the weighted score as a clean 100 the withheld sweep cannot support.
+			expect(result.checkStatus).toBe('error');
+			expect(result.score).toBe(0);
+			expect(result.passed).toBe(false);
+		});
+
+		it("keeps the SOA half's scored evidence when the canary fails (abstains on the sweep only)", async () => {
+			// expire 86400 < 604800 → a real, measured `low` from Phase 1.
+			wildcardMock({ canaryThrows: true, soaExpire: 86400 });
+			const result = await run();
+
+			expect(result.findings.find((f) => f.title === 'SOA expire value is short')?.severity).toBe('low');
+			expect(result.findings.find((f) => f.title === 'Sensitive subdomain probe not assessed')).toBeDefined();
+			// Measured evidence stands: the category is NOT excluded, only left uncached.
+			expect(result.checkStatus).toBeUndefined();
+			expect(result.partial).toBe(true);
+			expect(result.score).toBe(95);
+			expect(result.passed).toBe(true);
+		});
+
+		it('recognises a CNAME-pool wildcard whose CDN hands each label a different address subset', async () => {
+			// `*.example.com CNAME pool.cdn.example.net.`; the canary sees .10/.11, the hits see .12/.13.
+			const { aQueries } = wildcardMock({
+				cnamePool: {
+					target: 'Pool.cdn.example.net.',
+					canaryIps: ['198.51.100.10', '198.51.100.11'],
+					hitIps: ['198.51.100.12', '198.51.100.13'],
+				},
+			});
+			const result = await run();
+
+			expect(result.findings.filter((f) => f.severity !== 'info')).toEqual([]);
+			const note = result.findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing');
+			expect(note!.metadata?.wildcardCnameTarget).toBe('pool.cdn.example.net');
+			expect(note!.metadata?.wildcardSyntheticSubdomains).toHaveLength(10);
+			expect(note!.detail).toContain('via pool.cdn.example.net');
+			// Every hit was explained by the CNAME target, so no confirming canary was needed.
+			expect(aQueries.filter((n) => n.startsWith('_bv-probe-'))).toHaveLength(1);
+		});
+
+		it('treats a dangling wildcard alias (CNAME, no address) as a wildcard and withholds the clean verdict', async () => {
+			wildcardMock({ cnamePool: { target: 'gone.example.net.', canaryIps: [], hitIps: [] } });
+			const result = await run();
+
+			expect(result.findings.filter((f) => f.severity !== 'info')).toEqual([]);
+			expect(result.findings.find((f) => f.title === 'No sensitive subdomains resolve publicly')).toBeUndefined();
+			const note = result.findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing');
+			expect(note).toBeDefined();
+			expect(note!.metadata?.wildcardIps).toEqual([]);
+			expect(note!.metadata?.wildcardCnameTarget).toBe('gone.example.net');
+			expect(note!.detail).toContain('is an alias for gone.example.net that yields no address');
 		});
 
 		it('keeps the non-wildcard sweep byte-identical apart from the single canary query', async () => {

@@ -218,6 +218,38 @@ describe('analyzeSensitiveSubdomains', () => {
 			expect(findings.find((f) => f.title.includes('Excessive'))).toBeUndefined();
 		});
 
+		it('keeps a real host that carries the wildcard address alongside its own (every, not some)', () => {
+			const results: SubdomainProbeResult[] = [
+				{ subdomain: 'vpn.example.com', resolves: true, ips: ['198.51.100.94', '203.0.113.10'] },
+				{ subdomain: 'admin.example.com', resolves: true, ips: ['198.51.100.94'] },
+			];
+
+			const findings = analyzeSensitiveSubdomains(results, wildcard);
+			expect(findings.find((f) => f.title === 'Internal subdomain resolves publicly: vpn.example.com')?.severity).toBe('medium');
+			const note = findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing');
+			expect(note?.metadata?.wildcardSyntheticSubdomains).toEqual(['admin.example.com']);
+		});
+
+		it('folds a hit whose CNAME target is the wildcard target even when its addresses differ', () => {
+			const pooled: WildcardProbe = {
+				status: 'detected',
+				ips: ['198.51.100.10'],
+				cnameTarget: 'pool.cdn.example.net',
+				probeSubdomain: '_bv-probe-abc.example.com',
+			};
+			const results: SubdomainProbeResult[] = [
+				{ subdomain: 'vpn.example.com', resolves: true, ips: ['198.51.100.12'], cname: 'pool.cdn.example.net' },
+				{ subdomain: 'admin.example.com', resolves: true, ips: ['203.0.113.10'], cname: 'real.example.net' },
+			];
+
+			const findings = analyzeSensitiveSubdomains(results, pooled);
+			expect(findings.find((f) => f.title.includes('vpn.example.com'))).toBeUndefined();
+			expect(findings.find((f) => f.title === 'Internal subdomain resolves publicly: admin.example.com')?.severity).toBe('medium');
+			const note = findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing');
+			expect(note?.metadata?.wildcardSyntheticSubdomains).toEqual(['vpn.example.com']);
+			expect(note?.metadata?.wildcardCnameTarget).toBe('pool.cdn.example.net');
+		});
+
 		it('emits the wildcard observation even when nothing else resolved (no clean verdict)', () => {
 			const results: SubdomainProbeResult[] = [{ subdomain: 'vpn.example.com', resolves: false, ips: [] }];
 			const findings = analyzeSensitiveSubdomains(results, wildcard);

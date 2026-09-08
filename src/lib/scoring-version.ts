@@ -444,12 +444,19 @@
  *   with a wildcard record EVERY name answers, so a domain with none of those hosts took
  *   ten mediums plus "Excessive internal subdomain exposure" (−165, category floored to
  *   0 — measured on futuresoft.dk, `*.futuresoft.dk A`). One random-label canary now
- *   precedes the sweep (at most one more to confirm a round-robin wildcard answer): a hit
- *   carrying the wildcard's address is folded into ONE `info` observation, a hit with a
- *   different address keeps its scored `medium`, and only those count toward "Excessive".
- *   The clean "No sensitive subdomains resolve publicly" verdict is withheld on a wildcard
- *   zone. A canary that itself FAILS abstains (`inconclusive` + `errorKind`, `partial`,
- *   sweep skipped) rather than passing or failing the signal. UPWARD only, and only for
+ *   precedes the sweep (at most one more to confirm a round-robin wildcard answer), read
+ *   raw so it carries both the addresses and the CNAME target the resolver followed. A
+ *   hit is wildcard-synthetic when its CNAME target is the wildcard's (a `*.zone CNAME
+ *   cdn` pool hands each label its own address subset) or when EVERY one of its addresses
+ *   is a wildcard answer; synthetic hits fold into ONE `info` observation, any other hit
+ *   keeps its scored `medium`, and only those count toward "Excessive". A CNAME-only
+ *   canary answer (dangling wildcard alias) still counts as a wildcard. The clean "No
+ *   sensitive subdomains resolve publicly" verdict is withheld on a wildcard zone. A canary
+ *   that itself FAILS abstains: sweep skipped, `inconclusive` + `errorKind` (never
+ *   `missingControl`), `partial`; if the SOA half produced no scored evidence the result
+ *   is `checkStatus: 'error'` so the engine EXCLUDES the category (an unflagged all-info
+ *   result would enter the weighted score as a clean 100 — `isCheckMeasured` treats an
+ *   absent status as measured), otherwise the SOA evidence stands. UPWARD only for
  *   wildcard zones — non-wildcard zones produce byte-identical findings. The wildcard
  *   itself stays scored once, by `ns` ("Wildcard DNS detected", medium). `zone_hygiene`
  *   is Hardening (bonus-only, ~1.4 pts), so the overall-score movement is bounded by that.
