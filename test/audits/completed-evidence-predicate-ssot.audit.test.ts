@@ -10,7 +10,7 @@
  * re-declared inside `map_compliance`'s `evaluateCompliance` instead of
  * importing the primitive; an inline arrow-function copy of the same per-check
  * test inside that same function's per-control partition; two more inline
- * copies inside `generate_fix_plan` and `map_csc_products` (both explicitly
+ * copies inside `generate_fix_plan` and `map_registrar_products` (both explicitly
  * commented as "mirrors map_compliance's completed filter" — a comment that
  * correctly diagnosed the duplication without fixing it); and, in
  * `format-report.ts`'s customer-facing `buildStructuredScanResult`, a
@@ -264,7 +264,7 @@ function identifierPattern(aliases: string[]): string {
  *     — a hand-written restatement of `isCompletedCheck`'s own body.
  *   - NOT-COMPLETED-OR: `=== 'error' || ... === 'timeout'` (the complement
  *     form used by the fix-plan `transientCategories` filter,
- *     `map_csc_products`' single-result gate, and — before this collapse —
+ *     `map_registrar_products`' single-result gate, and — before this collapse —
  *     `format-report.ts`'s `inconclusiveCategories` partition).
  *   - ARRAY-MEMBERSHIP (M5a): `['timeout','error'].includes(checkStatus)`,
  *     either literal order, optionally parenthesised/`as const`-cast and
@@ -364,7 +364,7 @@ describe('completed-evidence predicate SSOT (src/ only)', () => {
 		expect(paths).toContain(SSOT_PATH);
 		expect(paths).toContain('../../src/tools/map-compliance.ts');
 		expect(paths).toContain('../../src/tools/generate-fix-plan.ts');
-		expect(paths).toContain('../../src/tools/map-csc-products.ts');
+		expect(paths).toContain('../../src/tools/map-registrar-products.ts');
 		expect(paths).toContain('../../src/tools/scan/format-report.ts');
 		// The comment-stripping preprocessor must actually remove something on a
 		// real file, not silently no-op (which would make the M5c defense vacuous).

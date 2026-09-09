@@ -205,11 +205,11 @@ export const ValidateFixArgs = z
 /** map_supply_chain — same as BaseDomainArgs */
 export const MapSupplyChainArgs = BaseDomainArgs;
 
-/** map_csc_products — single-domain, no extra args */
-export const MapCscProductsArgs = BaseDomainArgs;
+/** map_registrar_products — single-domain, no extra args */
+export const MapRegistrarProductsArgs = BaseDomainArgs;
 
-/** prioritize_csc_leads — multi-domain OR a brand seed (exactly one). */
-export const PrioritizeCscLeadsArgs = z
+/** prioritize_portfolio_leads — multi-domain OR a brand seed (exactly one). */
+export const PrioritizePortfolioLeadsArgs = z
 	.object({
 		domains: z
 			.array(z.string().min(1).max(253))
@@ -485,7 +485,7 @@ export const BrandAuditFormatSchema = z
 	.describe('Output mode: json (CheckResult only), markdown (compact summary), both.');
 
 /** view selector for brand-audit output mode. */
-export const BrandAuditViewSchema = z.enum(['standard', 'csc_complement']);
+export const BrandAuditViewSchema = z.enum(['standard', 'registrar_complement']);
 
 /** brand_audit_single — sync brand-portfolio audit for one target. */
 export const BrandAuditSingleArgs = z
@@ -508,7 +508,7 @@ export const BrandAuditSingleArgs = z
 		brand_aliases: BrandAliasesArg,
 		candidate_domains: BrandCandidateDomainsArg,
 		view: BrandAuditViewSchema.optional().describe(
-			"Output view mode. 'csc_complement' produces a CSC-tuned payload; requires enterprise tier. Default 'standard'.",
+			"Output view mode. 'registrar_complement' produces a registrar-complement payload; requires enterprise tier. Default 'standard'.",
 		),
 		discovery_mode: z
 			.enum(['classic', 'tiered'])
@@ -559,7 +559,7 @@ export const BrandAuditBatchStartArgs = z
 					'Required when discovery_mode is "tiered" and the caller is not an enterprise/owner/partner principal.',
 			),
 		view: BrandAuditViewSchema.optional().describe(
-			"Output view mode. 'csc_complement' produces a CSC-tuned payload; requires enterprise tier. Default 'standard'.",
+			"Output view mode. 'registrar_complement' produces a registrar-complement payload; requires enterprise tier. Default 'standard'.",
 		),
 	})
 	.passthrough();
@@ -713,8 +713,8 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	resolve_spf_chain: BaseDomainArgs,
 	discover_subdomains: BaseDomainArgs,
 	map_compliance: BaseDomainArgs,
-	map_csc_products: MapCscProductsArgs,
-	prioritize_csc_leads: PrioritizeCscLeadsArgs,
+	map_registrar_products: MapRegistrarProductsArgs,
+	prioritize_portfolio_leads: PrioritizePortfolioLeadsArgs,
 	simulate_attack_paths: BaseDomainArgs,
 	check_dbl: BaseDomainArgs,
 	check_rbl: BaseDomainArgs,

@@ -32,9 +32,9 @@ describe('aggregateRegistrarPortfolio', () => {
 		});
 
 		expect(result.totalApexes).toBe(4); // anchor + 3 candidates
-		const csc = result.byFamily.find((f) => f.family === 'csc corporate domains');
-		expect(csc?.count).toBe(3); // anchor + brand-beta.com.au + ford.de
-		expect(csc?.exampleApexes).toContain('brand-beta.com');
+		const corporateDomains = result.byFamily.find((f) => f.family === 'corporate domains registrar');
+		expect(corporateDomains?.count).toBe(3); // anchor + brand-beta.com.au + ford.de
+		expect(corporateDomains?.exampleApexes).toContain('brand-beta.com');
 
 		const godaddy = result.byFamily.find((f) => f.family === 'godaddy');
 		expect(godaddy?.count).toBe(1);

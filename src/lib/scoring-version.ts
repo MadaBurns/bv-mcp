@@ -44,8 +44,8 @@
  *   (default 60%) of its attempted checks is now UNGRADED (`overall`/`grade` null,
  *   `evidenceInsufficient: true`) rather than receiving a confident letter. Grade bands,
  *   category weights and the check matrix are unchanged. (c) Compliance/reporting surfaces
- *   (`map_compliance`, `generate_fix_plan`, `map_csc_products`, `compare_baseline`,
- *   `prioritize_csc_leads`) now ABSTAIN on a check that never completed — `not_assessed` /
+ *   (`map_compliance`, `generate_fix_plan`, `map_registrar_products`, `compare_baseline`,
+ *   `prioritize_portfolio_leads`) now ABSTAIN on a check that never completed — `not_assessed` /
  *   `assessed: false` — rather than grading it as a pass or fail; see the `[3.37.0]`
  *   CHANGELOG.md entry for the full per-tool breakdown.
  * - 1.5.0 — three new detection families that penalise previously-unmeasured defects. No

@@ -3,8 +3,8 @@
 import { describe, it, expect } from 'vitest';
 import type { CheckResult } from '../src/lib/scoring';
 import type { LockPosture } from '../src/tools/check-rdap-lookup';
-import { evaluateCscProducts, extractLockPosture, formatCscProducts } from '../src/tools/map-csc-products';
-import type { CscProductReport, CscProductRecommendation } from '../src/tools/map-csc-products';
+import { evaluateRegistrarProducts, extractLockPosture, formatRegistrarProducts } from '../src/tools/map-registrar-products';
+import type { RegistrarProductReport, RegistrarProductRecommendation } from '../src/tools/map-registrar-products';
 
 /** Minimal CheckResult fixture. */
 function makeCheck(category: string, passed: boolean, findings: Array<{ title: string; severity: string }> = []): CheckResult {
@@ -34,71 +34,71 @@ function allPassing(): CheckResult[] {
 	return [makeCheck('dmarc', true), makeCheck('ssl', true), makeCheck('dnssec', true)];
 }
 
-function recFor(report: CscProductReport, key: CscProductRecommendation['product']): CscProductRecommendation {
+function recFor(report: RegistrarProductReport, key: RegistrarProductRecommendation['product']): RegistrarProductRecommendation {
 	const r = report.recommendations.find((x) => x.product === key);
 	if (!r) throw new Error(`no recommendation for ${key}`);
 	return r;
 }
 
-describe('evaluateCscProducts — CSC MultiLock (reads booleans, not level)', () => {
+describe('evaluateRegistrarProducts — Registry lock (reads booleans, not level)', () => {
 	it('registry-lock posture (registryLevel true) → not recommended, none', () => {
-		const r = evaluateCscProducts(
+		const r = evaluateRegistrarProducts(
 			allPassing(),
 			lp({ level: 'registry-lock', registryLevel: true, transferLocked: true }),
 			'a.com',
 			90,
 			'A',
 		);
-		const m = recFor(r, 'csc_multilock');
+		const m = recFor(r, 'registry_lock');
 		expect(m.recommended).toBe(false);
 		expect(m.priority).toBe('none');
 	});
 
 	it('unlocked posture → recommended high, gap mentions transfer', () => {
-		const r = evaluateCscProducts(allPassing(), lp({ level: 'unlocked', transferLocked: false }), 'a.com', 90, 'A');
-		const m = recFor(r, 'csc_multilock');
+		const r = evaluateRegistrarProducts(allPassing(), lp({ level: 'unlocked', transferLocked: false }), 'a.com', 90, 'A');
+		const m = recFor(r, 'registry_lock');
 		expect(m.recommended).toBe(true);
 		expect(m.priority).toBe('high');
 		expect(m.justifyingGap.toLowerCase()).toContain('transfer');
 	});
 
 	it('registrar-lock posture (registrarLevel true, registryLevel false) → recommended medium', () => {
-		const r = evaluateCscProducts(
+		const r = evaluateRegistrarProducts(
 			allPassing(),
 			lp({ level: 'registrar-lock', registrarLevel: true, transferLocked: true }),
 			'a.com',
 			90,
 			'A',
 		);
-		const m = recFor(r, 'csc_multilock');
+		const m = recFor(r, 'registry_lock');
 		expect(m.recommended).toBe(true);
 		expect(m.priority).toBe('medium');
 	});
 
 	it('null posture → not recommended, gap mentions unobservable', () => {
-		const r = evaluateCscProducts(allPassing(), null, 'a.com', 90, 'A');
-		const m = recFor(r, 'csc_multilock');
+		const r = evaluateRegistrarProducts(allPassing(), null, 'a.com', 90, 'A');
+		const m = recFor(r, 'registry_lock');
 		expect(m.recommended).toBe(false);
 		expect(m.priority).toBe('none');
 		expect(m.justifyingGap.toLowerCase()).toContain('unobservable');
 	});
 
 	it('unknown level → treated like null (unknown is never a gap)', () => {
-		const r = evaluateCscProducts(allPassing(), lp({ level: 'unknown' }), 'a.com', 90, 'A');
-		const m = recFor(r, 'csc_multilock');
+		const r = evaluateRegistrarProducts(allPassing(), lp({ level: 'unknown' }), 'a.com', 90, 'A');
+		const m = recFor(r, 'registry_lock');
 		expect(m.recommended).toBe(false);
 		expect(m.priority).toBe('none');
 	});
 
 	it('BOOLEANS guard: level=unlocked but registryLevel=true (server delete lock, no transfer lock) → NOT recommended', () => {
-		const r = evaluateCscProducts(
+		const r = evaluateRegistrarProducts(
 			allPassing(),
 			lp({ level: 'unlocked', registryLevel: true, transferLocked: false, deleteLocked: true }),
 			'a.com',
 			90,
 			'A',
 		);
-		const m = recFor(r, 'csc_multilock');
+		const m = recFor(r, 'registry_lock');
 		expect(m.recommended).toBe(false);
 	});
 
@@ -108,39 +108,39 @@ describe('evaluateCscProducts — CSC MultiLock (reads booleans, not level)', ()
 	 * and `lockPosture.level === 'unknown'` (RDAP DID answer, the record just
 	 * carries no EPP status codes) used to share `assessed: true` and one
 	 * "unavailable/redacted" gap sentence. That let an unreachable RDAP lookup
-	 * render byte-identical to a genuine clean pass (`✓ CSC MultiLock`, no
+	 * render byte-identical to a genuine clean pass (`✓ Registry lock`, no
 	 * disclosure) — an incomplete measurement presented with full confidence.
 	 * `assessed` must now distinguish the two: null is NOT an observation,
 	 * `level: 'unknown'` (non-null) IS one.
 	 */
 	it('null posture (RDAP unreachable) → assessed: false — an incomplete measurement, not a clean pass', () => {
-		const r = evaluateCscProducts(allPassing(), null, 'a.com', 90, 'A');
-		const m = recFor(r, 'csc_multilock');
+		const r = evaluateRegistrarProducts(allPassing(), null, 'a.com', 90, 'A');
+		const m = recFor(r, 'registry_lock');
 		expect(m.assessed).toBe(false);
 	});
 
 	it('level=unknown but posture object present (RDAP answered, no EPP status) → assessed: true — a real observation (control)', () => {
-		const r = evaluateCscProducts(allPassing(), lp({ level: 'unknown' }), 'a.com', 90, 'A');
-		const m = recFor(r, 'csc_multilock');
+		const r = evaluateRegistrarProducts(allPassing(), lp({ level: 'unknown' }), 'a.com', 90, 'A');
+		const m = recFor(r, 'registry_lock');
 		expect(m.assessed).toBe(true);
 	});
 });
 
 /**
- * Final review round, item 1 (render side): `formatCscProducts` must use the
- * per-recommendation `assessed` discriminant for MultiLock exactly like it
- * already does for the three scan-driven products — a not-assessed MultiLock
+ * Final review round, item 1 (render side): `formatRegistrarProducts` must use the
+ * per-recommendation `assessed` discriminant for registry lock exactly like it
+ * already does for the three scan-driven products — a not-assessed registry lock
  * must never render the same icon/tag a genuine clean pass gets, in EITHER
  * format.
  */
-describe('formatCscProducts — an unassessed MultiLock (null lock posture) renders distinct from a clean pass', () => {
+describe('formatRegistrarProducts — an unassessed registry lock (null lock posture) renders distinct from a clean pass', () => {
 	function unreachableRdapReport() {
-		return evaluateCscProducts(allPassing(), null, 'rdap-unreachable.com', 90, 'A');
+		return evaluateRegistrarProducts(allPassing(), null, 'rdap-unreachable.com', 90, 'A');
 	}
 
 	it('compact: shows "?" and the unobservable gap text, never the clean-pass "✓" with no disclosure', () => {
-		const compact = formatCscProducts(unreachableRdapReport(), 'compact');
-		const line = compact.split('\n').find((l) => l.includes('CSC MultiLock'));
+		const compact = formatRegistrarProducts(unreachableRdapReport(), 'compact');
+		const line = compact.split('\n').find((l) => l.includes('Registry lock'));
 		expect(line).toBeDefined();
 		expect(line).not.toContain('✓');
 		expect(line).toContain('?');
@@ -148,15 +148,15 @@ describe('formatCscProducts — an unassessed MultiLock (null lock posture) rend
 	});
 
 	it('full: shows the ❓ / NOT ASSESSED tag, never "➖ … — OK"', () => {
-		const full = formatCscProducts(unreachableRdapReport(), 'full');
-		expect(full).toContain('❓ **CSC MultiLock** — NOT ASSESSED');
-		expect(full).not.toContain('➖ **CSC MultiLock** — OK');
+		const full = formatRegistrarProducts(unreachableRdapReport(), 'full');
+		expect(full).toContain('❓ **Registry lock** — NOT ASSESSED');
+		expect(full).not.toContain('➖ **Registry lock** — OK');
 	});
 });
 
-describe('evaluateCscProducts — scan-driven products', () => {
+describe('evaluateRegistrarProducts — scan-driven products', () => {
 	it('dmarc passing → managed_dmarc not recommended', () => {
-		const r = evaluateCscProducts(allPassing(), lp({ level: 'registry-lock', registryLevel: true }), 'a.com', 90, 'A');
+		const r = evaluateRegistrarProducts(allPassing(), lp({ level: 'registry-lock', registryLevel: true }), 'a.com', 90, 'A');
 		expect(recFor(r, 'managed_dmarc').recommended).toBe(false);
 	});
 
@@ -166,7 +166,7 @@ describe('evaluateCscProducts — scan-driven products', () => {
 			makeCheck('ssl', true),
 			makeCheck('dnssec', true),
 		];
-		const m = recFor(evaluateCscProducts(checks, null, 'a.com', 50, 'F'), 'managed_dmarc');
+		const m = recFor(evaluateRegistrarProducts(checks, null, 'a.com', 50, 'F'), 'managed_dmarc');
 		expect(m.recommended).toBe(true);
 		expect(m.priority).toBe('high');
 		expect(m.relatedFindings).toContain('No DMARC record');
@@ -178,12 +178,12 @@ describe('evaluateCscProducts — scan-driven products', () => {
 			makeCheck('ssl', true),
 			makeCheck('dnssec', true),
 		];
-		expect(recFor(evaluateCscProducts(checks, null, 'a.com', 60, 'D'), 'managed_dmarc').priority).toBe('medium');
+		expect(recFor(evaluateRegistrarProducts(checks, null, 'a.com', 60, 'D'), 'managed_dmarc').priority).toBe('medium');
 	});
 
 	it('dmarc absent from checks → recommended low, gap "not observed"', () => {
 		const checks = [makeCheck('ssl', true), makeCheck('dnssec', true)];
-		const m = recFor(evaluateCscProducts(checks, null, 'a.com', 60, 'D'), 'managed_dmarc');
+		const m = recFor(evaluateRegistrarProducts(checks, null, 'a.com', 60, 'D'), 'managed_dmarc');
 		expect(m.recommended).toBe(true);
 		expect(m.priority).toBe('low');
 		expect(m.justifyingGap.toLowerCase()).toContain('not observed');
@@ -195,8 +195,8 @@ describe('evaluateCscProducts — scan-driven products', () => {
 			makeCheck('ssl', false, [{ title: 'Certificate expired', severity: 'high' }]),
 			makeCheck('dnssec', true),
 		];
-		expect(recFor(evaluateCscProducts(fail, null, 'a.com', 60, 'D'), 'digital_certificates').recommended).toBe(true);
-		expect(recFor(evaluateCscProducts(allPassing(), null, 'a.com', 90, 'A'), 'digital_certificates').recommended).toBe(false);
+		expect(recFor(evaluateRegistrarProducts(fail, null, 'a.com', 60, 'D'), 'digital_certificates').recommended).toBe(true);
+		expect(recFor(evaluateRegistrarProducts(allPassing(), null, 'a.com', 90, 'A'), 'digital_certificates').recommended).toBe(false);
 	});
 
 	it('dnssec failing → dnssec_management medium; absent → low', () => {
@@ -205,9 +205,9 @@ describe('evaluateCscProducts — scan-driven products', () => {
 			makeCheck('ssl', true),
 			makeCheck('dnssec', false, [{ title: 'DNSSEC not enabled', severity: 'medium' }]),
 		];
-		expect(recFor(evaluateCscProducts(fail, null, 'a.com', 70, 'C'), 'dnssec_management').priority).toBe('medium');
+		expect(recFor(evaluateRegistrarProducts(fail, null, 'a.com', 70, 'C'), 'dnssec_management').priority).toBe('medium');
 		const absent = [makeCheck('dmarc', true), makeCheck('ssl', true)];
-		expect(recFor(evaluateCscProducts(absent, null, 'a.com', 70, 'C'), 'dnssec_management').priority).toBe('low');
+		expect(recFor(evaluateRegistrarProducts(absent, null, 'a.com', 70, 'C'), 'dnssec_management').priority).toBe('low');
 	});
 
 	it('relatedFindings excludes info-severity findings', () => {
@@ -219,16 +219,16 @@ describe('evaluateCscProducts — scan-driven products', () => {
 			makeCheck('ssl', true),
 			makeCheck('dnssec', true),
 		];
-		const m = recFor(evaluateCscProducts(checks, null, 'a.com', 50, 'F'), 'managed_dmarc');
+		const m = recFor(evaluateRegistrarProducts(checks, null, 'a.com', 50, 'F'), 'managed_dmarc');
 		expect(m.relatedFindings).toContain('Real gap');
 		expect(m.relatedFindings).not.toContain('Just info');
 	});
 });
 
-describe('evaluateCscProducts — report shape', () => {
+describe('evaluateRegistrarProducts — report shape', () => {
 	it('exactly 4 recommendations in fixed order; recommendedCount matches; passthrough fields', () => {
 		const posture = lp({ level: 'unlocked', transferLocked: false });
-		const r = evaluateCscProducts(
+		const r = evaluateRegistrarProducts(
 			[makeCheck('dmarc', false, [{ title: 'x', severity: 'high' }]), makeCheck('ssl', true), makeCheck('dnssec', true)],
 			posture,
 			'shape.com',
@@ -236,13 +236,13 @@ describe('evaluateCscProducts — report shape', () => {
 			'F',
 		);
 		expect(r.recommendations.map((x) => x.product)).toEqual([
-			'csc_multilock',
+			'registry_lock',
 			'managed_dmarc',
 			'digital_certificates',
 			'dnssec_management',
 		]);
 		expect(r.recommendedCount).toBe(r.recommendations.filter((x) => x.recommended).length);
-		expect(r.recommendedCount).toBe(2); // multilock high + dmarc high
+		expect(r.recommendedCount).toBe(2); // registry lock high + dmarc high
 		expect(r.lockPosture).toEqual(posture);
 		expect(r.domain).toBe('shape.com');
 		expect(r.score).toBe(42);
@@ -250,7 +250,7 @@ describe('evaluateCscProducts — report shape', () => {
 	});
 
 	it('all-clean: all-pass checks + registry-lock posture → recommendedCount 0, every priority none', () => {
-		const r = evaluateCscProducts(
+		const r = evaluateRegistrarProducts(
 			allPassing(),
 			lp({ level: 'registry-lock', registryLevel: true, transferLocked: true }),
 			'clean.com',
@@ -288,9 +288,9 @@ describe('extractLockPosture', () => {
 	});
 });
 
-describe('formatCscProducts', () => {
-	function sampleReport(): CscProductReport {
-		return evaluateCscProducts(
+describe('formatRegistrarProducts', () => {
+	function sampleReport(): RegistrarProductReport {
+		return evaluateRegistrarProducts(
 			[makeCheck('dmarc', false, [{ title: 'No DMARC record', severity: 'high' }]), makeCheck('ssl', true), makeCheck('dnssec', true)],
 			lp({ level: 'unlocked', transferLocked: false }),
 			'fmt.com',
@@ -300,27 +300,27 @@ describe('formatCscProducts', () => {
 	}
 
 	it('full output names every product and shows justifyingGap for recommended lines', () => {
-		const out = formatCscProducts(sampleReport(), 'full');
-		expect(out).toContain('CSC MultiLock');
+		const out = formatRegistrarProducts(sampleReport(), 'full');
+		expect(out).toContain('Registry lock');
 		expect(out).toContain('Managed DMARC');
 		expect(out).toContain('Digital Certificates');
 		expect(out).toContain('DNSSEC management');
 		expect(out).toContain('fmt.com');
-		// recommended MultiLock + DMARC gaps surfaced
+		// recommended registry lock + DMARC gaps surfaced
 		expect(out).toContain('Domain transfer not locked');
 		expect(out).toContain('DMARC present but not passing');
 	});
 
 	it('compact output is shorter than full and still names the products', () => {
 		const report = sampleReport();
-		const full = formatCscProducts(report, 'full');
-		const compact = formatCscProducts(report, 'compact');
+		const full = formatRegistrarProducts(report, 'full');
+		const compact = formatRegistrarProducts(report, 'compact');
 		expect(compact.length).toBeLessThan(full.length);
-		expect(compact).toContain('CSC MultiLock');
+		expect(compact).toContain('Registry lock');
 	});
 
 	it('renders "not measured" instead of null/100 (null) for an ungraded scan', async () => {
-		const { evaluateCscProducts: evaluate, formatCscProducts: fmt } = await import('../src/tools/map-csc-products');
+		const { evaluateRegistrarProducts: evaluate, formatRegistrarProducts: fmt } = await import('../src/tools/map-registrar-products');
 		const report = evaluate([], null, 'never-measured.example', null, null);
 		const text = fmt(report, 'full');
 
@@ -329,7 +329,7 @@ describe('formatCscProducts', () => {
 	});
 
 	it('still renders the real score for a measured scan (control)', async () => {
-		const { formatCscProducts: fmt } = await import('../src/tools/map-csc-products');
+		const { formatRegistrarProducts: fmt } = await import('../src/tools/map-registrar-products');
 		// Without this the assertion above would hold under a formatter that printed
 		// the ungraded token unconditionally.
 		const text = fmt(sampleReport(), 'full');
@@ -339,23 +339,23 @@ describe('formatCscProducts', () => {
 });
 
 /**
- * `map_csc_products` sold three products for a domain nobody measured.
+ * `map_registrar_products` sold three products for a domain nobody measured.
  *
- * `evaluateCscProducts` set `assessed: isMeasured(checkResults)` and
- * `formatCscProducts` never read it, so an NXDOMAIN domain rendered
+ * `evaluateRegistrarProducts` set `assessed: isMeasured(checkResults)` and
+ * `formatRegistrarProducts` never read it, so an NXDOMAIN domain rendered
  * "**Score:** not measured | **3** recommended" followed by three priority-tagged
  * upsells justified by "DMARC not observed" — every one of them derived from
- * having observed nothing. `prioritize_csc_leads` suppresses exactly this from the
+ * having observed nothing. `prioritize_portfolio_leads` suppresses exactly this from the
  * SAME producer output ("printing them under a 'not measured' score would sell
  * products for a domain nobody looked at"); two tools, one input, opposite answers.
  *
  * Both directions are pinned here: abstain when nothing ran, and never suppress a
  * product gap that rests on real evidence.
  */
-describe('formatCscProducts — a domain where no check ran', () => {
+describe('formatRegistrarProducts — a domain where no check ran', () => {
 	/** The exact producer output for a domain that does not resolve: no checks, no RDAP posture. */
 	async function unassessed(domain = 'never-measured-domain.com') {
-		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { evaluateRegistrarProducts: evaluate } = await import('../src/tools/map-registrar-products');
 		return evaluate([], null, domain, null, null);
 	}
 
@@ -373,7 +373,7 @@ describe('formatCscProducts — a domain where no check ran', () => {
 		// The four products still appear in fixed order — the shape is unchanged, only
 		// the verdict abstains.
 		expect(report.recommendations.map((r) => r.product)).toEqual([
-			'csc_multilock',
+			'registry_lock',
 			'managed_dmarc',
 			'digital_certificates',
 			'dnssec_management',
@@ -381,13 +381,13 @@ describe('formatCscProducts — a domain where no check ran', () => {
 	});
 
 	it.each(['compact', 'full'] as const)('prints the honest note and no recommendation list [%s]', async (format) => {
-		const { formatCscProducts: fmt, UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+		const { formatRegistrarProducts: fmt, UNASSESSED_PRODUCT_NOTE } = await import('../src/tools/map-registrar-products');
 		const text = fmt(await unassessed(), format);
 
 		expect(text, format).toContain('not measured');
-		// The established wording, shared with prioritize_csc_leads — not a third
+		// The established wording, shared with prioritize_portfolio_leads — not a third
 		// vocabulary for the same state.
-		expect(text, format).toContain(UNASSESSED_CSC_NOTE);
+		expect(text, format).toContain(UNASSESSED_PRODUCT_NOTE);
 		// No product line, and no count claim about products.
 		expect(text, format).not.toContain('Managed DMARC');
 		expect(text, format).not.toContain('Digital Certificates');
@@ -400,7 +400,7 @@ describe('formatCscProducts — a domain where no check ran', () => {
 	});
 
 	it.each(['compact', 'full'] as const)('still lists every product for a MEASURED domain [%s] (control)', async (format) => {
-		const { evaluateCscProducts: evaluate, formatCscProducts: fmt, UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+		const { evaluateRegistrarProducts: evaluate, formatRegistrarProducts: fmt, UNASSESSED_PRODUCT_NOTE } = await import('../src/tools/map-registrar-products');
 		// Without this control every assertion above would hold under a formatter that
 		// suppressed the product list unconditionally.
 		const report = evaluate(
@@ -415,13 +415,13 @@ describe('formatCscProducts — a domain where no check ran', () => {
 		expect(report.assessed).toBe(true);
 		expect(report.recommendedCount).toBe(2);
 		expect(text, format).toContain('Managed DMARC');
-		expect(text, format).toContain('CSC MultiLock');
-		expect(text, format).not.toContain(UNASSESSED_CSC_NOTE);
+		expect(text, format).toContain('Registry lock');
+		expect(text, format).not.toContain(UNASSESSED_PRODUCT_NOTE);
 		expect(text, format).toContain('55/100 (F)');
 	});
 
 	it('does NOT suppress a real RDAP lock gap just because the scan measured nothing (mirror)', async () => {
-		const { evaluateCscProducts: evaluate, formatCscProducts: fmt } = await import('../src/tools/map-csc-products');
+		const { evaluateRegistrarProducts: evaluate, formatRegistrarProducts: fmt } = await import('../src/tools/map-registrar-products');
 		// A registered domain whose zone is broken still has an observable registrar
 		// lock status: RDAP is fetched independently of the scan. That gap is a real
 		// measurement, and abstaining on it would be the over-abstain mirror of the
@@ -431,7 +431,7 @@ describe('formatCscProducts — a domain where no check ran', () => {
 		expect(report.assessed).toBe(false);
 		expect(report.recommendedCount).toBe(1);
 		const full = fmt(report, 'full');
-		expect(full).toContain('CSC MultiLock');
+		expect(full).toContain('Registry lock');
 		expect(full).toContain('Domain transfer not locked');
 		// …while the three CHECK-derived products stay suppressed.
 		expect(full).not.toContain('Managed DMARC');
@@ -448,13 +448,13 @@ describe('formatCscProducts — a domain where no check ran', () => {
  * as zero checks, with DISTINCT wording ("no checks ran" would be false when
  * N checks DID run).
  */
-describe('evaluateCscProducts: a total outage (all checks attempted, none completed) is honestly unassessed', () => {
+describe('evaluateRegistrarProducts: a total outage (all checks attempted, none completed) is honestly unassessed', () => {
 	it('assessed is false with a truthful, distinct caveat, and no priced product gap', async () => {
 		const {
-			evaluateCscProducts: evaluate,
-			buildAllTransientCscNote,
-			UNASSESSED_CSC_NOTE: NOTE,
-		} = await import('../src/tools/map-csc-products');
+			evaluateRegistrarProducts: evaluate,
+			buildAllTransientProductNote,
+			UNASSESSED_PRODUCT_NOTE: NOTE,
+		} = await import('../src/tools/map-registrar-products');
 		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 
@@ -473,21 +473,21 @@ describe('evaluateCscProducts: a total outage (all checks attempted, none comple
 		expect(report.recommendedCount).toBe(0);
 		expect(report.recommendations.every((r) => r.recommended === false)).toBe(true);
 		expect(report.recommendations.every((r) => r.priority === 'none')).toBe(true);
-		expect(report.caveat).toBe(buildAllTransientCscNote(allTransient.length));
+		expect(report.caveat).toBe(buildAllTransientProductNote(allTransient.length));
 		expect(report.caveat).not.toBe(NOTE);
 		expect(report.caveat).toMatch(/attempted/i);
 		expect(report.caveat!.toLowerCase()).not.toContain('no checks ran');
 	});
 
 	it('keeps the genuine no-evidence case byte-identical to its pre-existing wording (control)', async () => {
-		const { evaluateCscProducts: evaluate, UNASSESSED_CSC_NOTE: NOTE } = await import('../src/tools/map-csc-products');
+		const { evaluateRegistrarProducts: evaluate, UNASSESSED_PRODUCT_NOTE: NOTE } = await import('../src/tools/map-registrar-products');
 		const report = evaluate([], null, 'never-measured.example', null, null);
 		expect(report.assessed).toBe(false);
 		expect(report.caveat).toBe(NOTE);
 	});
 
 	it('still lists real recommendations for a MEASURED domain (guard — no over-abstain, 1-of-N completed)', async () => {
-		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { evaluateRegistrarProducts: evaluate } = await import('../src/tools/map-registrar-products');
 		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 
@@ -530,7 +530,7 @@ describe('evaluateCscProducts: a total outage (all checks attempted, none comple
  * `map_compliance`/`generate_fix_plan` fix (see `src/tools/map-compliance.ts:272`
  * for the reference implementation this is modeled on).
  */
-describe('evaluateCscProducts: the priced category itself failed transiently (not the whole scan)', () => {
+describe('evaluateRegistrarProducts: the priced category itself failed transiently (not the whole scan)', () => {
 	async function buildFixtures() {
 		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 		const transientDmarc = {
@@ -555,7 +555,7 @@ describe('evaluateCscProducts: the priced category itself failed transiently (no
 	}
 
 	it('managed_dmarc is NOT priced as an upsell when DMARC itself is the transient category, but digital_certificates IS priced from the genuine ssl finding', async () => {
-		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { evaluateRegistrarProducts: evaluate } = await import('../src/tools/map-registrar-products');
 		const { transientDmarc, genuineSsl } = await buildFixtures();
 
 		const report = evaluate([transientDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
@@ -577,7 +577,7 @@ describe('evaluateCscProducts: the priced category itself failed transiently (no
 	});
 
 	it('the transient category is REPRESENTED (not assessed), not silently dropped from the recommendation list', async () => {
-		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { evaluateRegistrarProducts: evaluate } = await import('../src/tools/map-registrar-products');
 		const { transientDmarc, genuineSsl } = await buildFixtures();
 
 		const report = evaluate([transientDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
@@ -598,7 +598,7 @@ describe('evaluateCscProducts: the priced category itself failed transiently (no
 	 * about a scan where a sibling category plainly did complete.
 	 */
 	it('the per-category transient wording does not falsely claim the whole scan failed to complete (F6)', async () => {
-		const { evaluateCscProducts: evaluate } = await import('../src/tools/map-csc-products');
+		const { evaluateRegistrarProducts: evaluate } = await import('../src/tools/map-registrar-products');
 		const { transientDmarc, genuineSsl } = await buildFixtures();
 
 		const report = evaluate([transientDmarc, genuineSsl], null, 'partial-transient.example', 55, 'D');
@@ -609,7 +609,7 @@ describe('evaluateCscProducts: the priced category itself failed transiently (no
 
 		// Control: the WHOLE-report all-transient case genuinely has nothing that
 		// completed, so "none completed" IS true there and must still render.
-		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const { unassessedScanProduct } = await import('../src/tools/map-registrar-products');
 		const wholeReport = unassessedScanProduct('managed_dmarc', 'DMARC', 'all_transient');
 		expect(wholeReport.justifyingGap.toLowerCase()).toContain('none completed');
 	});
@@ -627,8 +627,8 @@ describe('evaluateCscProducts: the priced category itself failed transiently (no
 	 * guarantee — instead of grepping for a substring a silent drop can still
 	 * satisfy.
 	 */
-	it('formatCscProducts renders an unassessed transient product as visually DISTINCT from a genuine clean pass — not a silent omission', async () => {
-		const { evaluateCscProducts: evaluate, formatCscProducts } = await import('../src/tools/map-csc-products');
+	it('formatRegistrarProducts renders an unassessed transient product as visually DISTINCT from a genuine clean pass — not a silent omission', async () => {
+		const { evaluateRegistrarProducts: evaluate, formatRegistrarProducts } = await import('../src/tools/map-registrar-products');
 		const { buildCheckResult } = await import('@blackveil/dns-checks/scoring');
 		const { transientDmarc, genuineSsl } = await buildFixtures();
 		const cleanDmarc = { ...buildCheckResult('dmarc', []), score: 100, passed: true };
@@ -639,8 +639,8 @@ describe('evaluateCscProducts: the priced category itself failed transiently (no
 		const dmarcLine = (text: string) => text.split('\n').find((l) => l.includes('Managed DMARC'))!;
 
 		for (const format of ['full', 'compact'] as const) {
-			const transientLine = dmarcLine(formatCscProducts(transientReport, format));
-			const cleanLine = dmarcLine(formatCscProducts(cleanReport, format));
+			const transientLine = dmarcLine(formatRegistrarProducts(transientReport, format));
+			const cleanLine = dmarcLine(formatRegistrarProducts(cleanReport, format));
 
 			// The core F1 property: the two states must never render identically.
 			expect(transientLine).not.toBe(cleanLine);
@@ -656,19 +656,19 @@ describe('evaluateCscProducts: the priced category itself failed transiently (no
 
 /**
  * Round 6c, N2: `unassessedScanProduct` used to classify by comparing the
- * `caveat` STRING against `UNASSESSED_CSC_NOTE` identity, with "anything
+ * `caveat` STRING against `UNASSESSED_PRODUCT_NOTE` identity, with "anything
  * else" silently defaulting to the transient branch. That meant a renamed
- * `UNASSESSED_CSC_NOTE` constant, an edited `buildAllTransientCscNote`
+ * `UNASSESSED_PRODUCT_NOTE` constant, an edited `buildAllTransientProductNote`
  * wording, or a third failure-mode string introduced later would have
  * misclassified with no compiler or test signal. It now takes a
  * `caveatKind: CaveatKind | null` parameter instead and never reads prose at
  * all — these tests pin that decoupling directly, at the unit responsible
- * for the classification, independent of whatever `evaluateCscProducts`
+ * for the classification, independent of whatever `evaluateRegistrarProducts`
  * happens to compute for `caveat`.
  */
 describe('unassessedScanProduct — classifies by caveatKind, never by comparing the caveat string (round 6c, N2 pin)', () => {
 	it('caveatKind "all_transient" always reads as attempted-none-completed, regardless of any caveat prose', async () => {
-		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const { unassessedScanProduct } = await import('../src/tools/map-registrar-products');
 		const rec = unassessedScanProduct('managed_dmarc', 'DMARC', 'all_transient');
 		expect(rec.justifyingGap).toContain('checks attempted, none completed');
 		expect(rec.justifyingGap.toLowerCase()).not.toContain('no checks ran');
@@ -677,29 +677,29 @@ describe('unassessedScanProduct — classifies by caveatKind, never by comparing
 	});
 
 	it('caveatKind "never_ran" always reads as no-checks-ran, regardless of any caveat prose', async () => {
-		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const { unassessedScanProduct } = await import('../src/tools/map-registrar-products');
 		const rec = unassessedScanProduct('digital_certificates', 'TLS/SSL', 'never_ran');
 		expect(rec.justifyingGap).toContain('no checks ran');
 		expect(rec.justifyingGap).not.toContain('attempted, none completed');
 	});
 
 	it('caveatKind null (defensive — should not occur for a real unassessed report) still classifies as never-ran, not transient', async () => {
-		const { unassessedScanProduct } = await import('../src/tools/map-csc-products');
+		const { unassessedScanProduct } = await import('../src/tools/map-registrar-products');
 		const rec = unassessedScanProduct('dnssec_management', 'DNSSEC', null);
 		expect(rec.justifyingGap).toContain('no checks ran');
 	});
 
 	it('PIN: a renamed/edited caveat constant does not flip classification — the old string-identity code would have misclassified it', async () => {
-		const { unassessedScanProduct, UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+		const { unassessedScanProduct, UNASSESSED_PRODUCT_NOTE } = await import('../src/tools/map-registrar-products');
 
 		// The pre-fix implementation, reconstructed here to demonstrate the bug it
-		// had: `caveat === UNASSESSED_CSC_NOTE ? never-ran : transient` (anything
+		// had: `caveat === UNASSESSED_PRODUCT_NOTE ? never-ran : transient` (anything
 		// that isn't an EXACT match defaults to transient). A wording edit to the
 		// never-ran constant — e.g. adding a trailing space, rephrasing a clause —
 		// breaks that exact-match test and silently flips a never-ran domain to
 		// read as a transient outage.
-		const oldStyleIsNeverRan = (caveat: string | null): boolean => caveat === UNASSESSED_CSC_NOTE;
-		const renamedNeverRanWording = `${UNASSESSED_CSC_NOTE} `; // trailing space: a realistic, easy-to-miss edit
+		const oldStyleIsNeverRan = (caveat: string | null): boolean => caveat === UNASSESSED_PRODUCT_NOTE;
+		const renamedNeverRanWording = `${UNASSESSED_PRODUCT_NOTE} `; // trailing space: a realistic, easy-to-miss edit
 
 		// The OLD code misclassifies the renamed wording as transient:
 		expect(oldStyleIsNeverRan(renamedNeverRanWording)).toBe(false);
