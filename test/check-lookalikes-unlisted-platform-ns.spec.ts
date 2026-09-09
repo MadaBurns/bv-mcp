@@ -20,23 +20,25 @@
  *   Squarespace    usahockeymagazine.com (p05) / biosites.com (p06)
  *                                                        ns01-04.squarespacedns.com + dns1-4.p0N.nsone.net
  *   Porkbun        enby.software / spqrome.org           curitiba, fortaleza, maceio, salvador.ns.porkbun.com
- *   digital.govt.nz  13 NZ agencies                      ns1..ns5.digital.govt.nz
- *   Enterprise-gated corporate registrar  natwest.com / natwest.co.uk  udns1.cscdns.net, udns2.cscdns.uk
  *   Yandex Cloud (PSL private suffix)  bigenc.ru / 4lapy.ru  ns1, ns2.yandexcloud.net
  *
- * The corporate-registrar pair is deliberately a seed and its OWN defensive
- * registration: the enterprise-gated platforms (that registrar, MarkMonitor, digital.govt.nz,
- * UltraDNS) are not self-service, so listing them is a disclosed
- * behaviour change on enterprise-tier output — the customer's own
- * same-platform name drops from `owned_by_seed` to `unattributed`, gains the
- * uncapped threat observation in check_lookalikes and loses the owned-only
- * "lacks DMARC" rung in check_shadow_domains. The cases below PIN that
- * decision (#947 review; the own-name wording is issue #949).
+ * Every platform above is SELF-SERVICE: a squatter can land a lookalike on
+ * the seed's exact NS set for the price of an account. The ENTERPRISE-GATED
+ * platforms the same sweep measured uniform — a corporate brand-protection
+ * registrar, MarkMonitor, the shared NZ-government platform
+ * `ns1-5.digital.govt.nz`, UltraDNS — are deliberately NOT listed (#947
+ * review, operator decision): nobody lands on those sets for the price of
+ * an account, so a complete-set match there stays real ownership evidence,
+ * and listing them would drop a paying customer's OWN defensive registration
+ * to `unattributed` (Refs #949). The last block below pins that a complete
+ * match on such a platform still attributes; the audit
+ * (`test/audits/shared-ns-hosts.audit.test.ts`) pins the apexes as absent.
  *
- * Every case asserts the verdict is `unattributed` or `third_party` and NEVER
- * `owned_by_seed`. The list is the only thing that changed — the mechanism
- * (#937) is untouched — so each case is red with the entry removed from
- * `SHARED_NS_APEXES` and green with it present (verified before commit).
+ * Every self-service case asserts the verdict is `unattributed` or
+ * `third_party` and NEVER `owned_by_seed`. The list is the only thing that
+ * changed — the mechanism (#937) is untouched — so each case is red with the
+ * entry removed from `SHARED_NS_APEXES` and green with it present (verified
+ * before commit).
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -63,29 +65,23 @@ const CLOUD_DNS_B = [
 const SQUARESPACE_NS = ['ns01.squarespacedns.com', 'ns02.squarespacedns.com', 'ns03.squarespacedns.com', 'ns04.squarespacedns.com'];
 const nsonePool = (n: string) => [`dns1.${n}.nsone.net`, `dns2.${n}.nsone.net`, `dns3.${n}.nsone.net`, `dns4.${n}.nsone.net`];
 const PORKBUN_NS = ['curitiba.ns.porkbun.com', 'fortaleza.ns.porkbun.com', 'maceio.ns.porkbun.com', 'salvador.ns.porkbun.com'];
-const CORP_REGISTRAR_UDNS = ['udns1.cscdns.net', 'udns2.cscdns.uk'];
 const YANDEX_CLOUD_NS = ['ns1.yandexcloud.net', 'ns2.yandexcloud.net'];
+// Enterprise-gated sets, live 2026-09-09 — DELIBERATELY UNLISTED (see header).
+const MARKMONITOR_NS = [1, 2, 3, 4, 5, 6, 7].map((n) => `ns${n}.markmonitor.com`);
+const ULTRADNS_PDNS = [
+	'pdns1.ultradns.net',
+	'pdns2.ultradns.net',
+	'pdns3.ultradns.org',
+	'pdns4.ultradns.org',
+	'pdns5.ultradns.info',
+	'pdns6.ultradns.co.uk',
+];
 const DIGITAL_GOVT_NZ_NS = [
 	'ns1.digital.govt.nz',
 	'ns2.digital.govt.nz',
 	'ns3.digital.govt.nz',
 	'ns4.digital.govt.nz',
 	'ns5.digital.govt.nz',
-];
-/** Every agency observed on the platform, 2026-09-09 (seed `nzta.govt.nz` excluded). */
-const DIGITAL_GOVT_NZ_TENANTS = [
-	'dia.govt.nz',
-	'customs.govt.nz',
-	'linz.govt.nz',
-	'stats.govt.nz',
-	'treasury.govt.nz',
-	'tec.govt.nz',
-	'corrections.govt.nz',
-	'mfat.govt.nz',
-	'beehive.govt.nz',
-	'dpmc.govt.nz',
-	'nzdf.mil.nz',
-	'tpk.govt.nz',
 ];
 
 function registered(ns: string[]): RegistrationState {
@@ -110,25 +106,11 @@ const IDENTICAL_SET_CASES: Case[] = [
 	},
 	{ platform: 'Porkbun', seed: 'enby.software', candidate: 'spqrome.org', seedNs: PORKBUN_NS, candidateNs: PORKBUN_NS },
 	{
-		platform: 'Enterprise-gated corporate registrar (own defensive registration)',
-		seed: 'natwest.com',
-		candidate: 'natwest.co.uk',
-		seedNs: CORP_REGISTRAR_UDNS,
-		candidateNs: CORP_REGISTRAR_UDNS,
-	},
-	{
 		platform: 'Yandex Cloud (PSL private suffix — hostname-keyed entries)',
 		seed: 'bigenc.ru',
 		candidate: '4lapy.ru',
 		seedNs: YANDEX_CLOUD_NS,
 		candidateNs: YANDEX_CLOUD_NS,
-	},
-	{
-		platform: 'digital.govt.nz',
-		seed: 'nzta.govt.nz',
-		candidate: 'dia.govt.nz',
-		seedNs: DIGITAL_GOVT_NZ_NS,
-		candidateNs: DIGITAL_GOVT_NZ_NS,
 	},
 	{
 		platform: 'Squarespace (same NS1 pool member)',
@@ -230,7 +212,41 @@ describe('classifyOwnership — an identical platform set is never owned_by_seed
 });
 
 // ---------------------------------------------------------------------------
-// discover_brand_domains — the NS correlator on the real digital.govt.nz data
+// Enterprise-gated platforms — deliberately UNLISTED, still ownership-bearing
+// ---------------------------------------------------------------------------
+
+describe('classifyOwnership — a complete set on an enterprise-gated platform still attributes (deliberately unlisted; Refs #949)', () => {
+	// The seed's own defensive registration on a platform a squatter cannot
+	// buy into. Fictional names: the point is the platform set, not a tenant.
+	const gated: Array<{ platform: string; ns: string[] }> = [
+		{ platform: 'MarkMonitor ns1-7', ns: MARKMONITOR_NS },
+		{ platform: 'UltraDNS pdns1-6 (six apexes)', ns: ULTRADNS_PDNS },
+		{ platform: 'digital.govt.nz ns1-5', ns: DIGITAL_GOVT_NZ_NS },
+	];
+	for (const g of gated) {
+		it(`${g.platform}: no host is shared-tenant and an identical complete set is owned_by_seed / strong on ns_set_match`, async () => {
+			for (const host of g.ns) {
+				expect(isSharedNsHost(host)).toBe(false);
+				expect(isPooledSharedNsHost(host)).toBe(false);
+			}
+			const { classifyOwnership } = await loadAttribution();
+			const result = classifyOwnership({
+				seedDomain: 'brand.example',
+				seedNs: g.ns,
+				candidateDomain: 'brand-defensive.example',
+				registration: registered(g.ns.slice()),
+				isSharedNsHost,
+				isPooledSharedNsHost,
+			});
+			expect(result.verdict).toBe('owned_by_seed');
+			expect(result.strength).toBe('strong');
+			expect(result.signals).toEqual(['ns_set_match']);
+		});
+	}
+});
+
+// ---------------------------------------------------------------------------
+// discover_brand_domains — the NS correlator on a real Cloud DNS fixed set
 // ---------------------------------------------------------------------------
 
 function nsResponse(name: string, hosts: string[]): DohResponse {
@@ -246,21 +262,7 @@ function nsResponse(name: string, hosts: string[]): DohResponse {
 	};
 }
 
-describe('correlateNs — a shared national platform does not co-own unrelated agencies (#939)', () => {
-	it('nzta.govt.nz on digital.govt.nz reports NO co-owned domain among the 12 other agencies on the identical set', async () => {
-		const { correlateNs } = await import('../src/tenants/discovery/ns-correlator');
-		const zones: Record<string, string[]> = { 'nzta.govt.nz': DIGITAL_GOVT_NZ_NS };
-		for (const agency of DIGITAL_GOVT_NZ_TENANTS) zones[agency] = DIGITAL_GOVT_NZ_NS;
-		const dnsQuery = vi.fn(async (name: string) => {
-			const key = name.toLowerCase().replace(/\.$/, '');
-			const hosts = zones[key];
-			return hosts ? nsResponse(key, hosts) : { ...nsResponse(key, []), Answer: [] };
-		});
-		const result = await correlateNs('nzta.govt.nz', { dnsQuery, candidateDomains: DIGITAL_GOVT_NZ_TENANTS });
-		expect(result.queryStatus).toBe('ok');
-		expect(result.coOwnedDomains).toEqual([]);
-	});
-
+describe('correlateNs — a fixed platform set does not co-own unrelated tenants (#939)', () => {
 	it('Cloud DNS set b: americanbanker.com does not co-own edmontonjournal.com', async () => {
 		const { correlateNs } = await import('../src/tenants/discovery/ns-correlator');
 		const zones: Record<string, string[]> = { 'americanbanker.com': CLOUD_DNS_B, 'edmontonjournal.com': CLOUD_DNS_B };
@@ -364,74 +366,6 @@ describe('checkLookalikes — debugpoint.com → debugpoin.com on the same Hosti
 		expect(serialised).not.toContain('dedicated');
 		expect(serialised).not.toContain('likely owned by same entity');
 		expect(result.partial).not.toBe(true);
-	});
-});
-
-// ---------------------------------------------------------------------------
-// End-to-end — the enterprise-gated cost, pinned (corporate registrar udns pair, live 2026-09-09)
-// ---------------------------------------------------------------------------
-
-const CORP_REGISTRAR_SEED = 'natwest.com';
-/** The seed's own defensive-style name on the enterprise-gated registrar, but mail-capable — the shape that now surfaces a threat observation. */
-const CORP_REGISTRAR_ZONE_WITH_MX: Zone = {
-	NS: CORP_REGISTRAR_UDNS.map((h) => `${h}.`),
-	A: ['192.0.2.20'],
-	MX: ['10 mx.natwest.example.'],
-};
-
-describe('checkLookalikes — natwest.com → natwes.com on the enterprise-gated registrar udns pair (#939, cost pinned)', () => {
-	it('is unattributed with an uncapped medium threat observation, never owned_by_seed', async () => {
-		installMock({
-			[CORP_REGISTRAR_SEED]: CORP_REGISTRAR_ZONE_WITH_MX,
-			[`_dmarc.${CORP_REGISTRAR_SEED}`]: DMARC_REJECT,
-			'natwes.com': CORP_REGISTRAR_ZONE_WITH_MX,
-		});
-		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
-		const result = await checkLookalikes(CORP_REGISTRAR_SEED);
-
-		const own = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'natwes.com');
-		expect(own.length).toBeGreaterThan(0);
-		expect(own.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(false);
-		const attribution = own.find((f) => f.metadata?.findingAxis === 'attribution');
-		expect(attribution).toBeDefined();
-		expect(attribution!.metadata?.ownershipVerdict).toBe('unattributed');
-		expect(attribution!.metadata?.ownershipRationale).toContain('udns1.cscdns.net');
-		expect(attribution!.severity).toBe('info');
-		// THE DISCLOSED CHANGE: before #939 this candidate was owned_by_seed and
-		// the threat axis was spared; now it is counted at the #264 calibrated
-		// severity (MX + reachable web → medium). If this is the customer's own
-		// registration, that is a false positive the operator has accepted in
-		// exchange for never capping a squatter's severity — see #949.
-		const threat = own.find((f) => f.metadata?.findingAxis === 'threat_observation');
-		expect(threat).toBeDefined();
-		expect(threat!.severity).toBe('medium');
-		expect(threat!.metadata?.ownershipVerdict).toBe('unattributed');
-	});
-});
-
-describe('checkShadowDomains — natwest.com → natwest.net on the enterprise-gated registrar udns pair (#939, cost pinned)', () => {
-	it('clamps the variant to info — the owned-only "lacks DMARC" rung is no longer reachable for it', async () => {
-		installMock({
-			[CORP_REGISTRAR_SEED]: CORP_REGISTRAR_ZONE_WITH_MX,
-			[`_dmarc.${CORP_REGISTRAR_SEED}`]: DMARC_REJECT,
-			// MX, no SPF, no DMARC: the top rung of the OWNED ladder.
-			'natwest.net': CORP_REGISTRAR_ZONE_WITH_MX,
-		});
-		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
-		const result = await checkShadowDomains(CORP_REGISTRAR_SEED);
-
-		const net = result.findings.filter((f) => (f.metadata as { variant?: string } | undefined)?.variant === 'natwest.net');
-		expect(net.length).toBeGreaterThan(0);
-		// THE DISCLOSED CHANGE: while wrongly owned_by_seed this variant carried
-		// the real high "fully spoofable … Likely same owner" finding. Now it is
-		// info: if natwest.net really is the customer's, a true positive about
-		// its DMARC posture is lost here (it is still reported when the customer
-		// scans natwest.net directly). Accepted per #937's rule; see #949.
-		for (const f of net) {
-			expect(f.metadata?.ownershipVerdict).toBe('unattributed');
-			expect(f.severity).toBe('info');
-		}
-		expect(JSON.stringify(result.findings)).not.toContain('Likely same owner');
 	});
 });
 

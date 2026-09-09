@@ -33,6 +33,23 @@
  * therefore stays UNLISTED and a complete `a/b/c.dns.gandi.net` match still
  * reaches the dedicated arm. Fixing it needs host-level keying, not an entry.
  *
+ * DELIBERATELY UNLISTED — ENTERPRISE-GATED PLATFORMS (#947 review; kept
+ * ownership-bearing by operator decision, mitigation tracked in #949). A
+ * corporate brand-protection registrar's uniform `dns1`/`dns2` and
+ * `udns1`/`udns2` sets, MarkMonitor's `ns1-7`, the shared NZ-government
+ * platform `ns1-5.digital.govt.nz` (13 agencies of one government) and
+ * UltraDNS's `pdns*` sets were all measured uniform across unrelated tenants
+ * in the #939 sweep, but none is self-service: a squatter cannot land a
+ * lookalike on the seed's exact NS set there for the price of an account, so
+ * a complete-set match on those platforms remains real ownership evidence.
+ * Listing them would trade a theoretical false attribution (two unrelated
+ * enterprises on one fixed set) for a measured harm to the customers who pay
+ * for that tier — their OWN defensive registration on the same platform
+ * would drop from `owned_by_seed` to `unattributed`, gaining an uncapped
+ * threat observation in check_lookalikes and losing the owned-only "lacks
+ * DMARC" rung in check_shadow_domains. The `shared-ns-hosts` audit pins each
+ * of those apexes as NOT listed so a future sweep cannot silently re-add them.
+ *
  * The ns-correlator drops shared-NS entries whose apex matches this set
  * from its `confidence` math; if ALL shared NS land here, the candidate is
  * skipped entirely (no signal contribution).
@@ -90,8 +107,8 @@ import { registeredApex } from './infrastructure-providers';
  * OVH's `dnsN`/`nsN`, Azure's 23 numbered sets, Cloud DNS's five) is listed
  * on the same evidence as a uniform-set one: a complete match there is not
  * per-account. Two tenant names per entry, not the whole sample; the raw
- * table is in the PR for #939. Multi-apex sets (IONOS, UltraDNS, Hetzner
- * Robot, Aruba, DNSimple edge) list EVERY apex the set spans — half-listing
+ * table is in the PR for #939. Multi-apex sets (IONOS, Hetzner Robot,
+ * Aruba, DNSimple edge) list EVERY apex the set spans — half-listing
  * a set leaves the other half counting as "dedicated" and `ns_set_match`'s
  * >=50% bar is met by that half alone (Squarespace: 4 platform + 4 NS1 hosts).
  */
@@ -187,12 +204,6 @@ export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	// `dns200`/`ns200.anycast.me` (vide-greniers.org, rcf.fr).
 	'ovh.net',
 	'anycast.me',
-	// digital.govt.nz — the shared NZ-government DNS platform: the identical
-	// `ns1`–`ns5.digital.govt.nz` set on 13 distinct agencies of one
-	// government (#939: nzta,
-	// dia, customs, stats, treasury, linz, tec, corrections, mfat, beehive,
-	// dpmc, tpk .govt.nz and nzdf.mil.nz, 2026-09-09).
-	'digital.govt.nz',
 	// Cloud / hosting platforms with one fixed set for every tenant (#939,
 	// 2026-09-09; two of the sampled tenants named per entry).
 	'digitalocean.com', // ns1-3 — peoplespharmacy.com, fakturoid.cz
@@ -213,38 +224,13 @@ export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	'dnsimple-edge.net',
 	'dnsimple-edge.io',
 	'dnsimple-edge.org',
-	// Enterprise managed DNS / brand registrars that assign a FIXED set. Two
-	// unrelated enterprises on the same set attributed each other's lookalikes
-	// (#939, 2026-09-09). DISCLOSED COST — this is a behaviour change on
-	// enterprise-tier output, not only a bugfix: these platforms are NOT
-	// self-service, so a seed's OWN defensive registration on the same set
-	// (natwest.com -> natwest.co.uk, both on the enterprise-gated registrar's
-	// udns pair, live 2026-09-09)
-	// also drops from `owned_by_seed`/strong to `unattributed`. In
-	// check_lookalikes that candidate now carries the uncapped threat
-	// observation (medium with MX, high with MX plus a recent/disposable/dark
-	// corroborator) instead of one info finding; in check_shadow_domains it is
-	// clamped to info, so a customer's own variant on that platform with no DMARC
-	// loses the true-positive "lacks DMARC" finding it had while wrongly
-	// attributed. Listing is still right for `classifyOwnership()` (#937's
-	// rule: only what the SEED alone publishes may attribute); the customer's
-	// own-name case is issue #949 (an enterprise-gated corroborator for the
-	// brand-held wording, not an attribution).
-	'cscdns.net', // corporate brand-protection registrar: dns1/dns2 — stryker.com, dentsu.com; udns1/udns2 — natwest.com, delonghi.com
-	'cscdns.uk', // the .uk half of the same registrar's udns set
-	'markmonitor.com', // ns1-7 — rockwool.com, ahdictionary.com
+	// Self-service managed DNS that assigns a FIXED set per tenant (#939,
+	// 2026-09-09). The ENTERPRISE-GATED managed-DNS / brand-registrar
+	// platforms measured uniform in the same sweep are deliberately NOT here —
+	// see DELIBERATELY UNLISTED in the header.
 	'dnsmadeeasy.com', // ns0-4 — travelweekly.com, viarail.ca; ns10-15 — agu.org, kissmetrics.com
 	'constellix.com', // ns11/21/31 + .net ns41/51/61 — hesk.com, ih8mud.com
 	'constellix.net',
-	// UltraDNS (Vercara) — shared `pdns1-6` set spans six apexes (pioneer.com,
-	// installshield.com); numbered sets such as `pdns109.*` are ALSO shared
-	// (cricket.com.au, danskebank.dk); #939, 2026-09-09.
-	'ultradns.net',
-	'ultradns.org',
-	'ultradns.com',
-	'ultradns.biz',
-	'ultradns.info',
-	'ultradns.co.uk',
 	// Azure DNS — 4-host sets numbered `ns1-NN.azure-dns.com` … from a pool
 	// of ~23 over 178 sampled tenants (#939: lawsociety.org.uk and umicore.com
 	// on set 09; 360learning.com and schoolspecialty.com on set 02).

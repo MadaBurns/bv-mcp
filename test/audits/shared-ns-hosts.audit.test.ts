@@ -16,8 +16,14 @@
  * classic set `a/b/c.dns.gandi.net` IS uniform (two sampled tenants). The
  * set keys on `registeredApex()`, so listing the apex would also erase
  * LiveDNS evidence; the classic set stays unlisted until keying is
- * host-level. Membership is an evidence decision (#929), never an
- * assumption. Every pin below names a REAL hostname so a public-suffix
+ * host-level. Four ENTERPRISE-GATED platforms measured uniform in the same
+ * sweep — a corporate brand-protection registrar, MarkMonitor,
+ * `digital.govt.nz` and UltraDNS — are pinned as DELIBERATELY UNLISTED: a
+ * squatter cannot land on a seed's exact NS set there for the price of an
+ * account, so a complete-set match stays ownership-bearing, and listing them
+ * would drop a paying customer's own defensive registration on the same
+ * platform to `unattributed` (Refs #949). Membership is an evidence decision
+ * (#929), never an assumption. Every pin below names a REAL hostname so a public-suffix
  * surprise (`ns1.dns.ne.jp` registers under `ne.jp`; `yandexcloud.net` is a
  * PRIVATE suffix) shows up here, not in production, and every member of
  * `SHARED_NS_APEXES` must have at least one pin.
@@ -85,8 +91,6 @@ const SHARED_NS_MUST_MATCH: ReadonlyArray<readonly [string, string]> = [
 	['dns100.ovh.net', 'OVH — dnsN/nsN pairs from a small pool'],
 	['ns14.ovh.net', 'OVH — dnsN/nsN pairs from a small pool'],
 	['dns200.anycast.me', 'OVH anycast — uniform dns200/ns200'],
-	['ns1.digital.govt.nz', 'digital.govt.nz — shared NZ-government platform, identical ns1-5 on 13 agencies'],
-	['ns5.digital.govt.nz', 'digital.govt.nz — shared NZ-government platform (registrable apex under govt.nz)'],
 	['ns1.digitalocean.com', 'DigitalOcean — uniform ns1-3'],
 	['ns5.linode.com', 'Linode — uniform ns1-5'],
 	['ns1.vercel-dns.com', 'Vercel — uniform ns1/ns2'],
@@ -101,18 +105,9 @@ const SHARED_NS_MUST_MATCH: ReadonlyArray<readonly [string, string]> = [
 	['curitiba.ns.porkbun.com', 'Porkbun — uniform 4-host set'],
 	['ns1.eurodns.com', 'EuroDNS — uniform ns1-4'],
 	['ns1.dyna-ns.net', 'Dynadot — uniform ns1/ns2'],
-	['dns1.cscdns.net', 'corporate brand-protection registrar — uniform dns1/dns2 shared by unrelated enterprises'],
-	['udns2.cscdns.uk', 'corporate brand-protection registrar — .uk half of the udns set'],
-	['ns1.markmonitor.com', 'MarkMonitor — uniform ns1-7 shared by unrelated enterprises'],
 	['ns0.dnsmadeeasy.com', 'DNS Made Easy — fixed shared sets'],
 	['ns11.constellix.com', 'Constellix — fixed shared set'],
 	['ns41.constellix.net', 'Constellix — .net half of the same set'],
-	['pdns1.ultradns.net', 'UltraDNS — shared pdns1-6 set'],
-	['pdns3.ultradns.org', 'UltraDNS — shared pdns1-6 set'],
-	['pdns5.ultradns.info', 'UltraDNS — shared pdns1-6 set'],
-	['pdns6.ultradns.co.uk', 'UltraDNS — shared pdns1-6 set (registrable apex under co.uk)'],
-	['pdns109.ultradns.com', 'UltraDNS — numbered sets are shared too'],
-	['pdns109.ultradns.biz', 'UltraDNS — numbered sets are shared too'],
 	['ns1-09.azure-dns.com', 'Azure DNS — numbered sets from a pool of ~23'],
 	['ns2-09.azure-dns.net', 'Azure DNS — numbered sets from a pool of ~23'],
 	['ns3-09.azure-dns.org', 'Azure DNS — numbered sets from a pool of ~23'],
@@ -168,9 +163,50 @@ const SHARED_NS_MUST_NOT_MATCH: ReadonlyArray<readonly [string, string]> = [
 	// keys on the apex. KNOWN RESIDUAL: a complete classic-set match still
 	// reaches the dedicated arm. Pinned so the residual is visible, not hidden.
 	['a.dns.gandi.net', 'Gandi classic — uniform, but unlistable under apex keying without also catching LiveDNS (residual)'],
+	// ENTERPRISE-GATED — DELIBERATELY UNLISTED (#947 review, operator decision;
+	// Refs #949). Each set below WAS measured uniform across unrelated tenants
+	// in the #939 sweep (2026-09-09), but none is self-service: a squatter
+	// cannot land on the seed's exact NS set there for the price of an
+	// account, so a complete-set match stays real ownership evidence. Listing
+	// them trades a theoretical false attribution for a measured harm to the
+	// customers who pay for that tier (their own defensive registration on the
+	// same platform would drop to `unattributed`). Pinned so a future sweep
+	// cannot silently re-add them; the apex-level assertion is further down.
+	['dns1.cscdns.net', 'corporate brand-protection registrar — enterprise-gated, deliberately unlisted'],
+	['udns1.cscdns.net', 'corporate brand-protection registrar — enterprise-gated, deliberately unlisted'],
+	['udns2.cscdns.uk', 'corporate brand-protection registrar (.uk half of the udns set) — enterprise-gated, deliberately unlisted'],
+	['ns1.markmonitor.com', 'MarkMonitor — enterprise-gated, deliberately unlisted'],
+	['ns7.markmonitor.com', 'MarkMonitor — enterprise-gated, deliberately unlisted'],
+	['ns1.digital.govt.nz', 'digital.govt.nz — shared NZ-government platform, not self-service; deliberately unlisted'],
+	['ns5.digital.govt.nz', 'digital.govt.nz — registrable apex under govt.nz; deliberately unlisted'],
+	['pdns1.ultradns.net', 'UltraDNS — enterprise-gated, deliberately unlisted'],
+	['pdns3.ultradns.org', 'UltraDNS — enterprise-gated, deliberately unlisted'],
+	['pdns5.ultradns.info', 'UltraDNS — enterprise-gated, deliberately unlisted'],
+	['pdns6.ultradns.co.uk', 'UltraDNS (registrable apex under co.uk) — enterprise-gated, deliberately unlisted'],
+	['pdns109.ultradns.com', 'UltraDNS numbered set — enterprise-gated, deliberately unlisted'],
+	['pdns109.ultradns.biz', 'UltraDNS numbered set — enterprise-gated, deliberately unlisted'],
 	// User-controlled / clearly unrelated
 	['ns1.example.com', 'Generic example domain'],
 	['blackveilsecurity.com', 'Our own apex (defensive)'],
+];
+
+/**
+ * Apexes of the enterprise-gated platforms above, asserted ABSENT from
+ * `SHARED_NS_APEXES` by apex string (not only through `isSharedNsHost()`), so
+ * a future sweep that re-adds one fails here with the rationale attached.
+ * DNS data only — the corporate registrar is referred to by role.
+ */
+const ENTERPRISE_GATED_DELIBERATELY_UNLISTED: ReadonlyArray<readonly [string, string]> = [
+	['cscdns.net', 'corporate brand-protection registrar'],
+	['cscdns.uk', 'corporate brand-protection registrar (.uk half of the udns set)'],
+	['markmonitor.com', 'MarkMonitor'],
+	['digital.govt.nz', 'shared NZ-government DNS platform'],
+	['ultradns.net', 'UltraDNS'],
+	['ultradns.org', 'UltraDNS'],
+	['ultradns.com', 'UltraDNS'],
+	['ultradns.biz', 'UltraDNS'],
+	['ultradns.info', 'UltraDNS'],
+	['ultradns.co.uk', 'UltraDNS'],
 ];
 
 describe('SHARED_NS_APEXES coverage — parking / registrar-default NS', () => {
@@ -192,6 +228,19 @@ describe('SHARED_NS_APEXES non-coverage — hyperscale DNS must remain ownership
 		expect(isSharedNsHost('')).toBe(false);
 		expect(isSharedNsHost('   ')).toBe(false);
 	});
+});
+
+describe('SHARED_NS_APEXES — enterprise-gated platforms stay ownership-bearing (deliberately unlisted; Refs #949)', () => {
+	// A complete-set match on a platform a squatter cannot buy into remains
+	// real ownership evidence; listing it would cost paying customers their
+	// own defensive registrations. Re-adding any of these is an operator
+	// decision, not a sweep outcome.
+	for (const [apex, platform] of ENTERPRISE_GATED_DELIBERATELY_UNLISTED) {
+		it(`${apex} (${platform}) is NOT in SHARED_NS_APEXES`, () => {
+			expect(SHARED_NS_APEXES.has(apex)).toBe(false);
+			expect(POOLED_SHARED_NS_APEXES.has(apex)).toBe(false);
+		});
+	}
 });
 
 describe('POOLED_SHARED_NS_APEXES — the only shared providers a complete NS-set match may credit (#929)', () => {
