@@ -15,6 +15,7 @@ if (!existsSync(privateConfigPath)) {
 
 const require = createRequire(import.meta.url);
 const wranglerCliPath = require.resolve('wrangler');
+const tsxCliPath = require.resolve('tsx/cli');
 
 /** Run one deploy step, streaming its output and aborting the deploy on any non-zero exit. */
 function runStep(argv, description) {
@@ -34,6 +35,15 @@ function runStep(argv, description) {
 // unknown-overlay-key guard, and the required-secrets declaration. Deploying the overlay
 // as-is once meant shipping without PROFILE_ACCUMULATOR, because the example overlay
 // carried its own stale `durable_objects` copy. Always deploy the injected config.
+// This is the SECOND deploy door and it skips the `deploy:prod` npm chain entirely,
+// so every gate wired there has to be re-wired here or it is simply a bypass. The
+// sidecar deploy-drift gate (#945) blocks when bv-whois / bv-infra-probe are behind
+// their source — neither this door nor `deploy:prod` deploys them, and their drift is
+// invisible in an otherwise-green run (bv-whois shipped 4 source commits stale for 3
+// months). Runs first: it is ~2s and must fail before any build work.
+// Override: BV_ALLOW_STALE_SIDECARS=1.
+runStep([tsxCliPath, 'scripts/ci/sidecar-deploy-drift-check.ts'], 'Sidecar deploy-drift gate');
+
 runStep(['scripts/inject-private-config.cjs'], 'Private config injection');
 
 runStep(['scripts/brand-audit-schema-preflight.mjs', '--config', generatedConfigPath], 'Brand Audit schema preflight');
