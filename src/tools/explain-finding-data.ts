@@ -683,11 +683,11 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		adverseConsequences:
 			'Spoofing and phishing from the domain become trivial, and legitimate mail may also be rejected when SPF PermErrors.',
 		recommendation:
-			'Remove "+all" (use "-all" or "~all"), and consolidate includes/flattening so the record stays under 10 DNS lookups (RFC 7208 §4.6.4).',
+			'Remove "+all" (switch to "~all" immediately as a stopgap, then "-all" once every legitimate sender is validated), and consolidate includes/flattening so the record stays under 10 DNS lookups (RFC 7208 §4.6.4).',
 		genericExplanation:
 			'A critical SPF problem was reported. The finding detail supplied with this request is the authoritative description of what was observed — it does not match a defect this library recognises, so no specific cause is asserted here.',
 		genericRecommendation:
-			'Remediate the specific problem named in the finding detail. General SPF guidance: publish exactly one v=spf1 record, keep the recursive DNS-lookup count within the RFC 7208 §4.6.4 limit of 10, scope ip4/ip6 mechanisms to hosts you actually send from, and terminate with "-all" (or "~all" alongside an enforcing DMARC policy).',
+			'Remediate the specific problem named in the finding detail. General SPF guidance: publish exactly one v=spf1 record, keep the recursive DNS-lookup count within the RFC 7208 §4.6.4 limit of 10, scope ip4/ip6 mechanisms to hosts you actually send from, and terminate with "-all" (keep "~all" only while DMARC is still at p=none and senders are being inventoried).',
 		references: ['https://datatracker.ietf.org/doc/html/rfc7208'],
 	},
 	SPF_HIGH: {
@@ -702,7 +702,7 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		genericExplanation:
 			'A high-severity SPF issue was reported. The finding detail supplied with this request is the authoritative description of what was observed — it does not match a defect this library recognises, so no specific cause is asserted here.',
 		genericRecommendation:
-			'Remediate the specific issue named in the finding detail. General SPF guidance: publish exactly one v=spf1 record, keep the recursive DNS-lookup count within the RFC 7208 §4.6.4 limit of 10, scope ip4/ip6 mechanisms to hosts you actually send from, and terminate with "-all" (or "~all" alongside an enforcing DMARC policy).',
+			'Remediate the specific issue named in the finding detail. General SPF guidance: publish exactly one v=spf1 record, keep the recursive DNS-lookup count within the RFC 7208 §4.6.4 limit of 10, scope ip4/ip6 mechanisms to hosts you actually send from, and terminate with "-all" (keep "~all" only while DMARC is still at p=none and senders are being inventoried).',
 		references: ['https://datatracker.ietf.org/doc/html/rfc7208'],
 	},
 	SPF_MEDIUM: {
@@ -713,25 +713,26 @@ export const EXPLANATIONS: Record<string, ExplanationTemplate> = {
 		impact: 'SPF protection is weaker or less reliable than recommended.',
 		adverseConsequences: 'Edge-case authentication failures and unnecessary attack surface can persist over time.',
 		recommendation:
-			'Remove deprecated mechanisms such as "ptr" and prefer explicit ip4/ip6/include mechanisms with a "-all" or "~all" terminator.',
+			'Remove deprecated mechanisms such as "ptr" and prefer explicit ip4/ip6/include mechanisms with a "-all" terminator (or "~all" while DMARC is still at p=none).',
 		genericExplanation:
 			'A medium-severity SPF issue was reported. The finding detail supplied with this request is the authoritative description of what was observed — it does not match a defect this library recognises, so no specific cause is asserted here.',
 		genericRecommendation:
-			'Remediate the specific issue named in the finding detail. General SPF guidance: prefer explicit ip4/ip6/include mechanisms over deprecated ones, keep the record within the RFC 7208 §4.6.4 10-lookup limit, and terminate with "-all" or "~all".',
+			'Remediate the specific issue named in the finding detail. General SPF guidance: prefer explicit ip4/ip6/include mechanisms over deprecated ones, keep the record within the RFC 7208 §4.6.4 10-lookup limit, and terminate with "-all" (or "~all" while DMARC is still at p=none).',
 		references: ['https://datatracker.ietf.org/doc/html/rfc7208'],
 	},
 	SPF_LOW: {
 		title: 'SPF Soft Fail / Minor Issue',
 		severity: 'low',
 		explanation:
-			'A low-severity SPF observation — typically a "~all" soft-fail terminator. Soft fail accepts but flags failing mail; it is acceptable alongside an enforcing DMARC policy but is weaker than "-all" on its own.',
+			'A low-severity SPF observation — typically a "~all" soft-fail terminator. Soft fail accepts but flags failing mail; it is an acceptable interim posture while DMARC is at p=none and senders are still being inventoried, but once DMARC enforces the recommended terminator is "-all".',
 		impact: 'Mail that fails SPF may still be accepted rather than rejected at the SMTP layer.',
 		adverseConsequences: 'Some spoofed mail can reach recipients unless DMARC enforcement compensates.',
-		recommendation: 'Use "-all" for strict enforcement, or keep "~all" only when a DMARC policy of quarantine/reject handles failures.',
+		recommendation:
+			'Move to "-all" once every legitimate sender and forwarding path is validated — especially once DMARC is at p=quarantine or p=reject, which guides receiver handling but does not guarantee rejection. Keep "~all" only while DMARC is still at p=none.',
 		genericExplanation:
 			'A low-severity SPF observation was reported. The finding detail supplied with this request is the authoritative description of what was observed — it does not match an observation this library recognises, so no specific cause is asserted here.',
 		genericRecommendation:
-			'Address the specific observation named in the finding detail. General SPF guidance: keep the record to a single v=spf1 TXT entry, within the RFC 7208 §4.6.4 10-lookup limit, with tightly scoped mechanisms and an explicit "-all" or "~all" terminator.',
+			'Address the specific observation named in the finding detail. General SPF guidance: keep the record to a single v=spf1 TXT entry, within the RFC 7208 §4.6.4 10-lookup limit, with tightly scoped mechanisms and an explicit "-all" terminator (or "~all" while DMARC is still at p=none).',
 		references: ['https://datatracker.ietf.org/doc/html/rfc7208#section-8.1'],
 	},
 
@@ -1296,7 +1297,7 @@ export const DETAIL_SIGNATURES: DetailSignatureRule[] = [
 			adverseConsequences:
 				'Phishing that appears authenticated is trivial to send, and an SPF-aligned pass can satisfy DMARC, defeating enforcement entirely.',
 			recommendation:
-				'Replace "+all" with "-all" (hard fail) after confirming every legitimate sending source is listed, or "~all" while a DMARC policy of quarantine/reject handles failures.',
+				'Replace "+all" with "~all" immediately as a stopgap — it is safer than "+all" under any DMARC policy — then move to "-all" (hard fail) once every legitimate sending source is listed and validated.',
 			references: ['https://datatracker.ietf.org/doc/html/rfc7208#section-5.1', 'https://datatracker.ietf.org/doc/html/rfc7208'],
 		},
 	},
@@ -1367,11 +1368,12 @@ export const DETAIL_SIGNATURES: DetailSignatureRule[] = [
 		template: {
 			title: 'SPF Ends in Soft Fail ("~all")',
 			explanation:
-				'The record terminates with "~all", which tells receivers to accept mail that fails SPF while marking it suspicious. That is the recommended terminator when an enforcing DMARC policy handles failures, but on its own it asks receivers to deliver unauthenticated mail anyway.',
+				'The record terminates with "~all", which tells receivers to accept mail that fails SPF while marking it suspicious. That is a reasonable interim posture while DMARC is at p=none and legitimate senders are still being inventoried from aggregate reports, but once DMARC enforces (p=quarantine or p=reject) the recommended terminator is "-all": DMARC enforcement guides receiver handling and does not guarantee rejection of every unauthorized message.',
 			impact: 'Mail failing SPF is generally still delivered rather than rejected at the SMTP layer.',
-			adverseConsequences: 'Some spoofed mail reaches recipients unless DMARC enforcement compensates.',
+			adverseConsequences:
+				'Some spoofed mail can still reach recipients — DMARC quarantine/reject reduces this but does not guarantee rejection.',
 			recommendation:
-				'Either move to "-all" once every legitimate source is listed, or keep "~all" and publish a DMARC policy of p=quarantine or p=reject so failures are acted upon.',
+				'Keep "~all" only while DMARC is at p=none and you are inventorying senders from aggregate reports. Once DMARC moves to p=quarantine or p=reject, validate every legitimate sender and forwarding path and switch to "-all".',
 			references: ['https://datatracker.ietf.org/doc/html/rfc7208#section-8.1'],
 		},
 	},
@@ -1386,7 +1388,8 @@ export const DETAIL_SIGNATURES: DetailSignatureRule[] = [
 			impact: 'Unlisted senders are neither authorised nor rejected, leaving the policy open-ended.',
 			adverseConsequences:
 				'Forged mail from unlisted hosts produces no SPF failure, weakening both SPF and any DMARC decision that depends on it.',
-			recommendation: 'Append an explicit terminator: "-all" for strict enforcement, or "~all" alongside an enforcing DMARC policy.',
+			recommendation:
+				'Append an explicit terminator: "~all" immediately as a stopgap, then "-all" once every legitimate sender is validated.',
 			references: ['https://datatracker.ietf.org/doc/html/rfc7208#section-5.1'],
 		},
 	},

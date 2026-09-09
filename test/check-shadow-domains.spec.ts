@@ -878,7 +878,7 @@ describe('checkShadowDomains — shared NS severity downgrade', () => {
 
 		const high = result.findings.find((f) => f.severity === 'high' && f.detail.includes('example.net') && /fully spoofable/i.test(f.title));
 		expect(high).toBeDefined();
-		expect(high!.detail).toContain('shares 2/2 dedicated nameservers');
+		expect(high!.detail).toContain('shares 2/2 nameservers');
 		expect((high!.metadata as { ownershipVerdict?: string }).ownershipVerdict).toBe('owned_by_seed');
 	});
 
@@ -916,7 +916,7 @@ describe('checkShadowDomains — shared NS severity downgrade', () => {
 
 		const medium = result.findings.find((f) => f.severity === 'medium' && f.detail.includes('example.net') && /lacks DMARC/i.test(f.title));
 		expect(medium).toBeDefined();
-		expect(medium!.detail).toContain('shares 2/2 dedicated nameservers');
+		expect(medium!.detail).toContain('shares 2/2 nameservers');
 		expect((medium!.metadata as { ownershipVerdict?: string }).ownershipVerdict).toBe('owned_by_seed');
 	});
 
@@ -955,7 +955,7 @@ describe('checkShadowDomains — shared NS severity downgrade', () => {
 			(f) => f.severity === 'medium' && f.detail.includes('example.net') && /not enforcing/i.test(f.title),
 		);
 		expect(medium).toBeDefined();
-		expect(medium!.detail).toContain('shares 2/2 dedicated nameservers');
+		expect(medium!.detail).toContain('shares 2/2 nameservers');
 		expect((medium!.metadata as { ownershipVerdict?: string }).ownershipVerdict).toBe('owned_by_seed');
 	});
 
