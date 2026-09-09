@@ -33,6 +33,9 @@ describe('repo safety policy coverage', () => {
 				'.reports/',
 				'*.pdf',
 				'*.env',
+				'.client-reports/',
+				'*-discovery-report.json',
+				'*-discovery-report.pdf',
 				'scripts/tranco-*.json',
 			]),
 		);

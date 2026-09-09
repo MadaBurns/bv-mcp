@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * CSC-complement payload builder.
+ * Registrar-complement payload builder.
  *
- * Composes the fast-stage cscComplement payload from the brand-audit pipeline's
+ * Composes the fast-stage registrarComplement payload from the brand-audit pipeline's
  * classified findings:
  *   1. Per-candidate enrichment (MX + HTTP) → defensive-registration labels
  *   2. Registrar portfolio aggregation
@@ -15,13 +15,13 @@
  * report, avoiding any dependency on the discovery output shape.
  */
 
-import { CSC_VIEW_VERSION, type BrandAuditCsc } from '../schemas/brand-audit-csc';
+import { REGISTRAR_VIEW_VERSION, type BrandAuditRegistrar } from '../schemas/brand-audit-registrar';
 import { aggregateRegistrarPortfolio, type PortfolioCandidate } from './registrar-portfolio';
-import { enrichCandidatesForDefensiveDetection } from './brand-audit-csc-enrichment';
+import { enrichCandidatesForDefensiveDetection } from './brand-audit-registrar-enrichment';
 import { classifyRegistrarFamily } from './registrar-identity';
 import type { Finding } from './scoring';
 
-const KSUID_PREFIX = 'csc_rpt_';
+const KSUID_PREFIX = 'reg_rpt_';
 
 function makeReportId(now: () => number): string {
 	const ts = now().toString(36);
@@ -46,7 +46,7 @@ function candidateFromFinding(finding: Finding): PortfolioCandidate | null {
 	return { domain: md.candidate, registrar, registrarSource };
 }
 
-export interface BuildCscComplementInput {
+export interface BuildRegistrarComplementInput {
 	/** The seed domain — top-level target of the brand audit. */
 	seedDomain: string;
 	/** Registrar name for the anchor domain (from RDAP/WHOIS lookup). */
@@ -62,9 +62,9 @@ export interface BuildCscComplementInput {
 }
 
 /**
- * Build the fast-stage cscComplement payload for a brand audit.
+ * Build the fast-stage registrarComplement payload for a brand audit.
  *
- * Constructs the CSC complement view from classified findings by:
+ * Constructs the registrar complement view from classified findings by:
  * 1. Extracting portfolio candidates from finding metadata
  * 2. Running inline enrichment (MX + HTTP checks) on top-N candidates to determine defensive registration
  * 3. Aggregating registrar portfolio from detected candidates
@@ -72,9 +72,9 @@ export interface BuildCscComplementInput {
  * 5. Initializing postureSnapshot and deepScan with 'pending' stage (to be filled by deep-scan job)
  *
  * @param input - Contains seedDomain, primaryRegistrar, classifiedFindings, and clock function
- * @returns Populated BrandAuditCsc with anchor, portfolio, defensive registrations, and pending posture/deep-scan stages
+ * @returns Populated BrandAuditRegistrar with anchor, portfolio, defensive registrations, and pending posture/deep-scan stages
  */
-export async function buildCscComplement(input: BuildCscComplementInput): Promise<BrandAuditCsc> {
+export async function buildRegistrarComplement(input: BuildRegistrarComplementInput): Promise<BrandAuditRegistrar> {
 	const { seedDomain, primaryRegistrar, primaryRegistrarSource, primaryRegistrarIanaId, classifiedFindings, now } = input;
 
 	// Derive PortfolioCandidate list from classified findings.
@@ -99,14 +99,14 @@ export async function buildCscComplement(input: BuildCscComplementInput): Promis
 
 	// Anchor section.
 	const anchorFamily = classifyRegistrarFamily(primaryRegistrar);
-	const anchor: BrandAuditCsc['anchor'] = {
+	const anchor: BrandAuditRegistrar['anchor'] = {
 		apex: seedDomain,
 		primaryRegistrar: {
 			family: anchorFamily,
 			name: primaryRegistrar || null,
 			ianaId: primaryRegistrarIanaId,
 		},
-		managedByCsc: anchorFamily === 'csc corporate domains',
+		managedByRegistrar: anchorFamily === 'corporate domains registrar',
 	};
 
 	// Portfolio aggregation.
@@ -117,7 +117,7 @@ export async function buildCscComplement(input: BuildCscComplementInput): Promis
 	});
 
 	// Shadow-IT highlights: classified as shadowIt + owned_off_primary_registrar.
-	const shadowItHighlights: BrandAuditCsc['shadowItHighlights'] = classifiedFindings.flatMap((finding) => {
+	const shadowItHighlights: BrandAuditRegistrar['shadowItHighlights'] = classifiedFindings.flatMap((finding) => {
 		const md = finding.metadata;
 		if (!isRecord(md)) return [];
 		if (md.bucket !== 'shadowIt' || md.relationshipType !== 'owned_off_primary_registrar') return [];
@@ -131,7 +131,7 @@ export async function buildCscComplement(input: BuildCscComplementInput): Promis
 	});
 
 	// Defensive registration examples from enrichment.
-	const defensiveExamples: BrandAuditCsc['defensiveRegistrations']['examples'] = [];
+	const defensiveExamples: BrandAuditRegistrar['defensiveRegistrations']['examples'] = [];
 	for (const candidate of enrichResult.candidates) {
 		if (candidate.defensive && candidate.defensiveReason) {
 			defensiveExamples.push({ apex: candidate.domain, defensiveReason: candidate.defensiveReason });
@@ -142,7 +142,7 @@ export async function buildCscComplement(input: BuildCscComplementInput): Promis
 	const finalEnrichmentStatus = enrichInput.length === 0 ? 'sparse' : enrichResult.enrichmentStatus;
 
 	return {
-		viewVersion: CSC_VIEW_VERSION,
+		viewVersion: REGISTRAR_VIEW_VERSION,
 		anchor,
 		registrarPortfolio: portfolio,
 		shadowItHighlights,

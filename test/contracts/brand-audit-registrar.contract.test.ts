@@ -1,19 +1,19 @@
 import { describe, it, expect } from 'vitest';
-import fastFixture from '../fixtures/csc-complement/ford-com-fast.golden.json';
-import fullFixture from '../fixtures/csc-complement/ford-com-full.golden.json';
-import { BrandAuditCscSchema, CSC_VIEW_VERSION } from '../../src/schemas/brand-audit-csc';
+import fastFixture from '../fixtures/registrar-complement/ford-com-fast.golden.json';
+import fullFixture from '../fixtures/registrar-complement/ford-com-full.golden.json';
+import { BrandAuditRegistrarSchema, REGISTRAR_VIEW_VERSION } from '../../src/schemas/brand-audit-registrar';
 
-describe('cscComplement contract', () => {
+describe('registrarComplement contract', () => {
 	it('fast-stage golden fixture parses against current schema', () => {
-		const parsed = BrandAuditCscSchema.parse(fastFixture);
-		expect(parsed.viewVersion).toBe(CSC_VIEW_VERSION);
+		const parsed = BrandAuditRegistrarSchema.parse(fastFixture);
+		expect(parsed.viewVersion).toBe(REGISTRAR_VIEW_VERSION);
 		expect(parsed.postureSnapshot.stage).toBe('pending');
 		expect(parsed.deepScan.stage).toBe('pending');
 	});
 
 	it('full-stage golden fixture parses against current schema', () => {
-		const parsed = BrandAuditCscSchema.parse(fullFixture);
-		expect(parsed.viewVersion).toBe(CSC_VIEW_VERSION);
+		const parsed = BrandAuditRegistrarSchema.parse(fullFixture);
+		expect(parsed.viewVersion).toBe(REGISTRAR_VIEW_VERSION);
 		expect(parsed.postureSnapshot.stage).toBe('ready');
 		expect(parsed.deepScan.stage).toBe('ready');
 		expect(parsed.deepScan.subdomainInventoryByApex['ford.com'].source).toBe('certificate_transparency');

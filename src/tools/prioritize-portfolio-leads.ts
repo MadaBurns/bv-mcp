@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * CSC sales-lead prioritization tool (portfolio aggregation layer).
+ * Registrar-partner sales-lead prioritization tool (portfolio aggregation layer).
  * Aggregates a brand's portfolio (or an operator-supplied domain set) into a
  * ranked sales-lead list, ordered by product-gap value × ownership actionability,
- * reusing Spec B's PURE units (evaluateCscProducts + extractLockPosture) per domain.
+ * reusing Spec B's PURE units (evaluateRegistrarProducts + extractLockPosture) per domain.
  * Emits NO new security finding/severity — gapSeverity/priorityRank are SALES
  * signals, deliberately distinct from a security severity. Paid-gated, multi-domain.
  */
 
 import type { Bucket } from '../lib/brand-classification';
-import type { CscProductKey, CscPriority, CscProductReport, CaveatKind } from './map-csc-products';
-import { evaluateCscProducts, extractLockPosture, UNASSESSED_CSC_NOTE } from './map-csc-products';
+import type { RegistrarProductKey, ProductPriority, RegistrarProductReport, CaveatKind } from './map-registrar-products';
+import { evaluateRegistrarProducts, extractLockPosture, UNASSESSED_PRODUCT_NOTE } from './map-registrar-products';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import type { CheckResult } from '../lib/scoring';
@@ -27,7 +27,7 @@ import { UNGRADED_DISPLAY, formatScoreGrade } from '../lib/ungraded-display';
 export type OwnershipBucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation' | 'impersonationSurface' | 'unknown';
 
 /** A single ranked sales lead. */
-export interface CscLead {
+export interface PortfolioLead {
 	domain: string;
 	/** `null` when the scan produced no gradeable measurement. Never a coerced 0. */
 	score: number | null;
@@ -35,7 +35,7 @@ export interface CscLead {
 	grade: string | null;
 	/**
 	 * Is there any COMPLETED check evidence for this domain? (`hasCompletedEvidence`,
-	 * via `evaluateCscProducts` — NOT `isMeasured`: a total-outage scan has checks
+	 * via `evaluateRegistrarProducts` — NOT `isMeasured`: a total-outage scan has checks
 	 * with `checkStatus: 'timeout' | 'error'` on every one of them, which
 	 * `isMeasured` alone could not tell apart from a genuinely measured scan.)
 	 * Gates everything derived from the CHECKS: `gapSeverity`, the product list,
@@ -45,10 +45,10 @@ export interface CscLead {
 	assessed: boolean;
 	/**
 	 * `null` when `assessed` is `true`; otherwise the producer's own
-	 * (`evaluateCscProducts`'s) explanation of WHY — "no checks ran"
-	 * ({@link UNASSESSED_CSC_NOTE}) vs. "checks were attempted but none
-	 * completed" (`buildAllTransientCscNote`, from `map_csc_products`).
-	 * Threaded straight through from `CscProductReport.caveat` so this tool
+	 * (`evaluateRegistrarProducts`'s) explanation of WHY — "no checks ran"
+	 * ({@link UNASSESSED_PRODUCT_NOTE}) vs. "checks were attempted but none
+	 * completed" (`buildAllTransientProductNote`, from `map_registrar_products`).
+	 * Threaded straight through from `RegistrarProductReport.caveat` so this tool
 	 * never re-derives or re-guesses the reason — it only had ONE reason to say
 	 * before this field existed, which is exactly how an all-transient lead
 	 * ended up printing the false "no checks ran" sentence.
@@ -56,11 +56,11 @@ export interface CscLead {
 	caveat: string | null;
 	/**
 	 * REQUIRED — the STRUCTURAL discriminant paired with `caveat`, threaded
-	 * straight through from `CscProductReport.caveatKind`. `null` exactly when
+	 * straight through from `RegistrarProductReport.caveatKind`. `null` exactly when
 	 * `assessed` is `true`. The render helpers below (`leadUnassessedNote`,
 	 * `compactUnassessedNote`, `buildReportCaveat`) MUST branch on this field,
 	 * never on `caveat`'s string content — see the type doc on `CaveatKind` in
-	 * `map_csc_products`.
+	 * `map_registrar_products`.
 	 */
 	caveatKind: CaveatKind | null;
 	/**
@@ -76,11 +76,11 @@ export interface CscLead {
 	 */
 	graded: boolean;
 	ownershipBucket: OwnershipBucket;
-	recommendedCscProducts: CscProductKey[];
+	recommendedProducts: RegistrarProductKey[];
 	/**
 	 * `null` for an UNASSESSED lead — NOT 0, and not merely for an ungraded one.
 	 *
-	 * `evaluateCscProducts` recommends every scan-driven product it could not
+	 * `evaluateRegistrarProducts` recommends every scan-driven product it could not
 	 * observe ("DMARC not observed", …), so a domain that does not resolve
 	 * manufactures gapValue 3+2+2 = 7 — above HOT_LEAD_THRESHOLD — purely from
 	 * having measured nothing. Since `gapSeverity` is the FIRST sort key, that
@@ -95,7 +95,7 @@ export interface CscLead {
 	gapSeverity: number | null;
 	priorityRank: number;
 	recommendedCount: number;
-	topPriority: CscPriority;
+	topPriority: ProductPriority;
 }
 
 /** Brand-level portfolio rollup grade (weighted average of contributing domains' scan scores). */
@@ -108,11 +108,11 @@ export interface PortfolioGrade {
 	contributingDomains: number;
 }
 
-export interface CscLeadReport {
+export interface PortfolioLeadReport {
 	brand: string | null;
 	totalDomains: number;
-	rankedLeads: CscLead[];
-	/** NEW — additive/optional. rankCscLeads ALWAYS sets it (PortfolioGrade or null). */
+	rankedLeads: PortfolioLead[];
+	/** NEW — additive/optional. rankPortfolioLeads ALWAYS sets it (PortfolioGrade or null). */
 	portfolioGrade?: PortfolioGrade | null;
 	/**
 	 * Set when at least one ranked lead was not fully measured; `null` otherwise.
@@ -133,7 +133,7 @@ export interface CscLeadReport {
 	caveat?: string | null;
 	summary: {
 		totalRecommendations: number;
-		byProduct: Record<CscProductKey, number>;
+		byProduct: Record<RegistrarProductKey, number>;
 		hotLeads: number;
 		/**
 		 * Ranked leads with no COMPLETED check evidence — excluded from every
@@ -157,18 +157,18 @@ export interface CscLeadReport {
  * The per-lead qualifier for "no check ran" — the domain does not resolve, or its
  * zone is broken. Nothing derived from the checks is reported for such a domain.
  *
- * The first sentence is {@link UNASSESSED_CSC_NOTE}, shared with
- * `map_csc_products` so both tools say the same thing about the same state; the
+ * The first sentence is {@link UNASSESSED_PRODUCT_NOTE}, shared with
+ * `map_registrar_products` so both tools say the same thing about the same state; the
  * second is the leads-specific consequence.
  *
  * Byte-identical to its pre-fix-round wording — kept as the CONTROL a lead
- * whose producer caveat genuinely is {@link UNASSESSED_CSC_NOTE} still renders.
+ * whose producer caveat genuinely is {@link UNASSESSED_PRODUCT_NOTE} still renders.
  * A lead whose caveat is the DIFFERENT "attempted, none completed" sentence
  * (a total-outage scan) must NOT render this constant — see
  * {@link leadUnassessedNote}, which chooses between the two using the
  * producer's own `caveat`.
  */
-export const UNASSESSED_LEAD_NOTE = `${UNASSESSED_CSC_NOTE} It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.`;
+export const UNASSESSED_LEAD_NOTE = `${UNASSESSED_PRODUCT_NOTE} It is excluded from the hot-lead count, the recommendation totals and the portfolio grade.`;
 
 /**
  * True when a per-lead `caveatKind` is the producer's never-ran reason
@@ -176,7 +176,7 @@ export const UNASSESSED_LEAD_NOTE = `${UNASSESSED_CSC_NOTE} It is excluded from 
  * DoH/network outage). STRUCTURAL — reads the discriminant, never the
  * `caveat` string. `null`/`'never_ran'` both classify as never-ran; only the
  * literal `'all_transient'` classifies as transient. A round-1 version of
- * this compared `caveat === UNASSESSED_CSC_NOTE` by STRING IDENTITY, with
+ * this compared `caveat === UNASSESSED_PRODUCT_NOTE` by STRING IDENTITY, with
  * "anything else" defaulting to transient — a renamed constant or a third
  * wording introduced later would have silently misclassified. `caveatKind`
  * cannot drift that way: it is a closed union the producer sets explicitly.
@@ -190,8 +190,8 @@ function isNeverRanKind(caveatKind: CaveatKind | null): boolean {
  * two producer-computed reasons rather than always printing
  * {@link UNASSESSED_LEAD_NOTE}. Before this, EVERY unassessed lead printed "no
  * checks ran" — false for a lead whose checks were attempted and errored out
- * (a total-outage scan), which is exactly the state `map_csc_products` already
- * distinguishes via `CscProductReport.caveatKind`. This tool only had to start
+ * (a total-outage scan), which is exactly the state `map_registrar_products` already
+ * distinguishes via `RegistrarProductReport.caveatKind`. This tool only had to start
  * reading that field. `caveat` (the prose) is still what gets PRINTED; only the
  * BRANCH is decided by `caveatKind`.
  */
@@ -222,7 +222,7 @@ export const UNSCORED_LEAD_NOTE =
 /**
  * The same fact for an unscored lead with NO recommendations — reachable whenever
  * the scoring bundle fails on a clean domain. {@link UNSCORED_LEAD_NOTE} promises
- * "the gaps below are real" and the next line then reads "No CSC upsell — posture
+ * "the gaps below are real" and the next line then reads "No registrar upsell — posture
  * clean": a dangling referent, a promise the output immediately breaks.
  */
 export const UNSCORED_LEAD_NOTE_NO_GAPS =
@@ -239,7 +239,7 @@ function domainCount(n: number): string {
  * fully measured. Each clause is a statement about the REPORT.
  *
  * STATE-AWARE: `unassessedKinds` is one entry per unassessed lead (its own
- * `caveatKind`, threaded from `CscProductReport.caveatKind`), not a bare
+ * `caveatKind`, threaded from `RegistrarProductReport.caveatKind`), not a bare
  * count. A hardcoded "no checks ran" reason here was false whenever the
  * exclusions were actually a total-outage scan (checks attempted, none
  * completed) — the exact same defect this fix round addresses at the
@@ -273,8 +273,8 @@ function buildReportCaveat(unassessedKinds: ReadonlyArray<CaveatKind | null>, un
 }
 
 /** A domain to rank, paired with its portfolio ownership lens. */
-export interface CscLeadEntry {
-	report: CscProductReport;
+export interface PortfolioLeadEntry {
+	report: RegistrarProductReport;
 	ownershipBucket: OwnershipBucket;
 }
 
@@ -284,18 +284,18 @@ export interface DiscoveredCandidate {
 	ownershipBucket: OwnershipBucket;
 }
 
-const CSC_PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
+const REGISTRAR_PRODUCT_ORDER: RegistrarProductKey[] = ['registry_lock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
 
-// Product sales value — MultiLock is the flagship anti-hijacking product.
-const PRODUCT_VALUE: Record<CscProductKey, number> = {
-	csc_multilock: 4,
+// Product sales value — registry lock is the flagship anti-hijacking product.
+const PRODUCT_VALUE: Record<RegistrarProductKey, number> = {
+	registry_lock: 4,
 	managed_dmarc: 3,
 	digital_certificates: 2,
 	dnssec_management: 2,
 };
 // Spec B sales priority → weight.
-const PRIORITY_WEIGHT: Record<CscPriority, number> = { high: 3, medium: 2, low: 1, none: 0 };
-// Ownership actionability — can CSC actually sell THIS domain a lock?
+const PRIORITY_WEIGHT: Record<ProductPriority, number> = { high: 3, medium: 2, low: 1, none: 0 };
+// Ownership actionability — can the registrar actually sell THIS domain a lock?
 const OWNERSHIP_MULTIPLIER: Record<OwnershipBucket, number> = {
 	consolidated: 1.0,
 	shadowIt: 1.0,
@@ -328,7 +328,7 @@ const PORTFOLIO_ROLLUP_WEIGHTS: Record<OwnershipBucket, number> = {
  * once, then calls nistScoreToGrade(weightedScore) exactly once so the displayed score and letter
  * never disagree at a band edge.
  */
-export function computePortfolioGrade(leads: Pick<CscLead, 'score' | 'ownershipBucket' | 'grade'>[]): PortfolioGrade | null {
+export function computePortfolioGrade(leads: Pick<PortfolioLead, 'score' | 'ownershipBucket' | 'grade'>[]): PortfolioGrade | null {
 	let numerator = 0;
 	let denominator = 0;
 	let contributingDomains = 0;
@@ -354,7 +354,7 @@ export function bucketFromClassification(b: Bucket): OwnershipBucket {
 }
 
 /** Σ over recommended products of PRODUCT_VALUE × PRIORITY_WEIGHT. */
-function gapValue(report: CscProductReport): number {
+function gapValue(report: RegistrarProductReport): number {
 	let total = 0;
 	for (const r of report.recommendations) {
 		if (r.recommended) total += PRODUCT_VALUE[r.product] * PRIORITY_WEIGHT[r.priority];
@@ -363,20 +363,20 @@ function gapValue(report: CscProductReport): number {
 }
 
 /** "Product-gap value × ownership severity", rounded. PURE. */
-export function computeGapSeverity(report: CscProductReport, bucket: OwnershipBucket): number {
+export function computeGapSeverity(report: RegistrarProductReport, bucket: OwnershipBucket): number {
 	return Math.round(gapValue(report) * OWNERSHIP_MULTIPLIER[bucket]);
 }
 
 /** Recommended product keys in fixed product order. */
-function recommendedProducts(report: CscProductReport): CscProductKey[] {
-	return CSC_PRODUCT_ORDER.filter((k) => report.recommendations.find((r) => r.product === k)?.recommended === true);
+function recommendedProductKeys(report: RegistrarProductReport): RegistrarProductKey[] {
+	return REGISTRAR_PRODUCT_ORDER.filter((k) => report.recommendations.find((r) => r.product === k)?.recommended === true);
 }
 
-const PRIORITY_RANK: Record<CscPriority, number> = { high: 3, medium: 2, low: 1, none: 0 };
+const PRIORITY_RANK: Record<ProductPriority, number> = { high: 3, medium: 2, low: 1, none: 0 };
 
 /** Highest sales priority among the recommended products ('none' when nothing recommended). */
-function topPriorityOf(report: CscProductReport): CscPriority {
-	let best: CscPriority = 'none';
+function topPriorityOf(report: RegistrarProductReport): ProductPriority {
+	let best: ProductPriority = 'none';
 	for (const r of report.recommendations) {
 		if (r.recommended && PRIORITY_RANK[r.priority] > PRIORITY_RANK[best]) best = r.priority;
 	}
@@ -384,16 +384,16 @@ function topPriorityOf(report: CscProductReport): CscPriority {
 }
 
 /**
- * Rank a set of per-domain CSC product reports into prioritized sales leads (PURE).
+ * Rank a set of per-domain registrar product reports into prioritized sales leads (PURE).
  * Sort: gapSeverity desc, then lower score, then domain asc (total order). The
  * heart of Spec C's TDD — no I/O.
  */
-export function rankCscLeads(
-	entries: CscLeadEntry[],
+export function rankPortfolioLeads(
+	entries: PortfolioLeadEntry[],
 	brand: string | null = null,
 	skipped: Array<{ domain: string; reason: string }> = [],
-): CscLeadReport {
-	const leads: CscLead[] = entries.map((e) => {
+): PortfolioLeadReport {
+	const leads: PortfolioLead[] = entries.map((e) => {
 		// Two predicates, deliberately separate. `graded` is the SAME condition
 		// `computePortfolioGrade` has always used to drop a lead from the weighted
 		// average. `assessed` is whether there is any COMPLETED check evidence —
@@ -407,15 +407,15 @@ export function rankCscLeads(
 			grade: e.report.grade,
 			assessed,
 			// Threaded straight from the producer — never re-derived — so this tool
-			// says the SAME reason `map_csc_products` would say about the same
+			// says the SAME reason `map_registrar_products` would say about the same
 			// domain. `null` exactly when `assessed` is `true`.
 			caveat: e.report.caveat,
 			// The STRUCTURAL twin, likewise threaded straight through. See the
-			// type doc on `CscLead.caveatKind`.
+			// type doc on `PortfolioLead.caveatKind`.
 			caveatKind: e.report.caveatKind,
 			graded,
 			ownershipBucket: e.ownershipBucket,
-			recommendedCscProducts: recommendedProducts(e.report),
+			recommendedProducts: recommendedProductKeys(e.report),
 			// Absence of observation is not a gap. See the `gapSeverity` doc above.
 			gapSeverity: assessed ? computeGapSeverity(e.report, e.ownershipBucket) : null,
 			priorityRank: 0, // assigned after the sort
@@ -428,8 +428,8 @@ export function rankCscLeads(
 	// lead (-Infinity under the descending primary key) rather than being ordered by
 	// a severity manufactured from non-observation. Two ungraded leads then fall
 	// through to the score key — also absent — and finally to the domain tiebreak.
-	const severityRank = (l: CscLead): number => (l.gapSeverity === null ? Number.NEGATIVE_INFINITY : l.gapSeverity);
-	const scoreRank = (l: CscLead): number => (l.score === null ? Number.POSITIVE_INFINITY : l.score);
+	const severityRank = (l: PortfolioLead): number => (l.gapSeverity === null ? Number.NEGATIVE_INFINITY : l.gapSeverity);
+	const scoreRank = (l: PortfolioLead): number => (l.score === null ? Number.POSITIVE_INFINITY : l.score);
 	leads.sort((a, b) => severityRank(b) - severityRank(a) || scoreRank(a) - scoreRank(b) || a.domain.localeCompare(b.domain));
 	leads.forEach((lead, i) => {
 		lead.priorityRank = i + 1;
@@ -443,14 +443,14 @@ export function rankCscLeads(
 	// Only the score-derived portfolio grade uses `graded`, inside
 	// `computePortfolioGrade` where that condition has always lived.
 	const assessedLeads = leads.filter((l) => l.assessed);
-	const byProduct: Record<CscProductKey, number> = {
-		csc_multilock: 0,
+	const byProduct: Record<RegistrarProductKey, number> = {
+		registry_lock: 0,
 		managed_dmarc: 0,
 		digital_certificates: 0,
 		dnssec_management: 0,
 	};
 	for (const lead of assessedLeads) {
-		for (const key of lead.recommendedCscProducts) byProduct[key] += 1;
+		for (const key of lead.recommendedProducts) byProduct[key] += 1;
 	}
 
 	const portfolioGrade = computePortfolioGrade(leads);
@@ -515,8 +515,8 @@ export function extractDiscoveredCandidates(result: CheckResult): DiscoveredCand
 	return out;
 }
 
-/** Render a ranked CSC lead report for display. */
-export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'full'): string {
+/** Render a ranked portfolio lead report for display. */
+export function formatPortfolioLeads(report: PortfolioLeadReport, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 	const brandLabel = report.brand ? sanitizeOutputText(report.brand, 253) : 'domain set';
 
@@ -525,7 +525,7 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 		const portfolioSegment = report.portfolioGrade
 			? ` — portfolio ${report.portfolioGrade.grade} (${report.portfolioGrade.weightedScore})`
 			: '';
-		lines.push(`CSC leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot${portfolioSegment}`);
+		lines.push(`Sales leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot${portfolioSegment}`);
 		for (const lead of report.rankedLeads) {
 			// Only an UNASSESSED lead loses its severity and product count. An
 			// unscored-but-assessed lead keeps both — `formatScoreGrade` already
@@ -540,7 +540,7 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 		return lines.join('\n').trimEnd();
 	}
 
-	lines.push(`# CSC Sales Leads: ${brandLabel}`);
+	lines.push(`# Sales Leads: ${brandLabel}`);
 	lines.push(`**${report.totalDomains}** domain(s) ranked | **${report.summary.hotLeads}** hot lead(s)`);
 	if (report.portfolioGrade) {
 		lines.push(
@@ -577,18 +577,18 @@ export function formatCscLeads(report: CscLeadReport, format: OutputFormat = 'fu
 		// reusing the "no checks ran" sentence — and only promise gaps when the next
 		// line will actually list some.
 		if (!lead.graded) {
-			lines.push(`  - ${lead.recommendedCscProducts.length > 0 ? UNSCORED_LEAD_NOTE : UNSCORED_LEAD_NOTE_NO_GAPS}`);
+			lines.push(`  - ${lead.recommendedProducts.length > 0 ? UNSCORED_LEAD_NOTE : UNSCORED_LEAD_NOTE_NO_GAPS}`);
 		}
-		if (lead.recommendedCscProducts.length > 0) {
-			lines.push(`  - Recommended CSC products: ${lead.recommendedCscProducts.join(', ')}`);
+		if (lead.recommendedProducts.length > 0) {
+			lines.push(`  - Recommended registrar products: ${lead.recommendedProducts.join(', ')}`);
 		} else {
-			lines.push('  - No CSC upsell — posture clean');
+			lines.push('  - No registrar upsell — posture clean');
 		}
 	}
 	lines.push('');
 	lines.push('## Summary');
 	lines.push(`  - Total recommendations: ${report.summary.totalRecommendations}`);
-	for (const key of CSC_PRODUCT_ORDER) {
+	for (const key of REGISTRAR_PRODUCT_ORDER) {
 		lines.push(`  - ${key}: ${report.summary.byProduct[key]} domain(s)`);
 	}
 	if (report.summary.skipped.length > 0) {
@@ -605,25 +605,25 @@ const SCAN_CONCURRENCY = 3; // scan_domain is already ~16× parallel internally
 const LEAD_BUDGET = 10; // max leads ranked (parity with the domains[] cap)
 
 /** runtimeOptions accepted by the orchestrator — ScanRuntimeOptions plus the optional WHOIS binding the RDAP call threads. */
-export type CscRuntimeOptions = ScanRuntimeOptions & { whoisBinding?: { fetch: typeof fetch } };
+export type RegistrarRuntimeOptions = ScanRuntimeOptions & { whoisBinding?: { fetch: typeof fetch } };
 
 export type DiscoverPortfolioFn = (
 	brand: string,
-	opts: { kv?: KVNamespace; runtimeOptions?: CscRuntimeOptions; deadlineMs: number },
+	opts: { kv?: KVNamespace; runtimeOptions?: RegistrarRuntimeOptions; deadlineMs: number },
 ) => Promise<DiscoveredCandidate[]>;
 
-export interface PrioritizeCscLeadsDeps {
+export interface PrioritizePortfolioLeadsDeps {
 	/** Override the brand portfolio discoverer (default wraps brandAuditSingle). */
 	discoverPortfolio?: DiscoverPortfolioFn;
 }
 
-export interface PrioritizeCscLeadsArgsShape {
+export interface PrioritizePortfolioLeadsArgsShape {
 	domains?: string[];
 	brand?: string;
 	force_refresh?: boolean;
 }
 
-/** Buckets CSC can actually sell a lock — preferred when truncating to LEAD_BUDGET. */
+/** Buckets the registrar can actually sell a lock — preferred when truncating to LEAD_BUDGET. */
 const SELLABLE_BUCKETS: ReadonlySet<OwnershipBucket> = new Set<OwnershipBucket>(['consolidated', 'shadowIt']);
 
 /** Default brand discoverer — runs a bounded brand audit, then extracts candidates+buckets. */
@@ -640,13 +640,13 @@ const defaultDiscoverPortfolio: DiscoverPortfolioFn = async (brand, opts) => {
 	return extractDiscoveredCandidates(result);
 };
 
-/** Evaluate one domain → a CscLeadEntry (scan + RDAP + Spec B pure evaluation). */
+/** Evaluate one domain → a PortfolioLeadEntry (scan + RDAP + Spec B pure evaluation). */
 async function evaluateOne(
 	domain: string,
 	ownershipBucket: OwnershipBucket,
 	kv: KVNamespace | undefined,
-	runtimeOptions: CscRuntimeOptions | undefined,
-): Promise<CscLeadEntry> {
+	runtimeOptions: RegistrarRuntimeOptions | undefined,
+): Promise<PortfolioLeadEntry> {
 	const scanResult = await scanDomain(domain, kv, runtimeOptions);
 	const rdap = await checkRdapLookup(domain, {
 		whoisBinding: runtimeOptions?.whoisBinding,
@@ -654,21 +654,21 @@ async function evaluateOne(
 		deadlineMs: Date.now() + RDAP_LOOKUP_SYNC_BUDGET_MS,
 	});
 	const lockPosture = extractLockPosture(rdap);
-	const report = evaluateCscProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, scanResult.score.grade);
+	const report = evaluateRegistrarProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, scanResult.score.grade);
 	return { report, ownershipBucket };
 }
 
 /**
- * Prioritize CSC sales leads across a domain set or a brand portfolio (orchestrator — impure).
+ * Prioritize registrar-partner sales leads across a domain set or a brand portfolio (orchestrator — impure).
  * Per-domain isolation + a wall-clock budget (batch_scan pattern): one bad domain
  * lands in summary.skipped and never sinks the batch. NEVER throws a non-allowlisted error.
  */
-export async function prioritizeCscLeads(
-	args: PrioritizeCscLeadsArgsShape,
+export async function prioritizePortfolioLeads(
+	args: PrioritizePortfolioLeadsArgsShape,
 	kv?: KVNamespace,
-	runtimeOptions?: CscRuntimeOptions,
-	deps: PrioritizeCscLeadsDeps = {},
-): Promise<CscLeadReport> {
+	runtimeOptions?: RegistrarRuntimeOptions,
+	deps: PrioritizePortfolioLeadsDeps = {},
+): Promise<PortfolioLeadReport> {
 	const deadline = Date.now() + TOTAL_BUDGET_MS;
 	const skipped: Array<{ domain: string; reason: string }> = [];
 	let brand: string | null = null;
@@ -686,7 +686,7 @@ export async function prioritizeCscLeads(
 		}
 		if (candidates.length === 0) {
 			skipped.push({ domain: args.brand, reason: 'discovery_incomplete' });
-			return rankCscLeads([], brand, skipped);
+			return rankPortfolioLeads([], brand, skipped);
 		}
 		// Prefer sellable buckets when truncating to the lead budget.
 		const ordered = [...candidates].sort(
@@ -706,7 +706,7 @@ export async function prioritizeCscLeads(
 	}
 
 	// 2. Evaluate with bounded concurrency + per-domain budget (batch_scan pattern).
-	const entries: CscLeadEntry[] = [];
+	const entries: PortfolioLeadEntry[] = [];
 	let cursor = 0;
 	const worker = async (): Promise<void> => {
 		while (cursor < work.length) {
@@ -734,5 +734,5 @@ export async function prioritizeCscLeads(
 	await Promise.all(Array.from({ length: Math.max(1, Math.min(SCAN_CONCURRENCY, work.length || 1)) }, () => worker()));
 
 	// 3. Rank (pure).
-	return rankCscLeads(entries, brand, skipped);
+	return rankPortfolioLeads(entries, brand, skipped);
 }

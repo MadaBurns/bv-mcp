@@ -46,7 +46,7 @@ export interface BrandAuditGetReportDeps {
 	publicOrigin?: string;
 	/** Clock override for tests + dead-zone closure. */
 	now?: () => number;
-	/** Step store for CSC complement pipeline steps. When omitted, cscComplement is not attached. */
+	/** Step store for registrar complement pipeline steps. When omitted, registrarComplement is not attached. */
 	stepStore?: BrandAuditStepStore;
 }
 
@@ -175,17 +175,17 @@ export async function brandAuditGetReport(
 			pdfPending = true;
 		}
 
-		// CSC complement: prefer full scan payload; fall back to fast scan. Attach
+		// Registrar complement: prefer full scan payload; fall back to fast scan. Attach
 		// only when the step-store is provisioned (operator deploys). A missing
 		// stepStore is a no-op — the field is simply absent from the response.
-		let cscComplement: unknown = undefined;
+		let registrarComplement: unknown = undefined;
 		if (deps.stepStore) {
 			const normalizedTarget = target.trim().toLowerCase();
-			const fullCsc = await deps.stepStore.get(auditId, normalizedTarget, 'csc_complement_full');
-			const fastCsc = await deps.stepStore.get(auditId, normalizedTarget, 'csc_complement_fast');
-			const cscPayload = (fullCsc?.status === 'completed' ? fullCsc.payload : null) ?? (fastCsc?.status === 'completed' ? fastCsc.payload : null);
-			if (cscPayload !== null && cscPayload !== undefined) {
-				cscComplement = cscPayload;
+			const fullRegistrar = await deps.stepStore.get(auditId, normalizedTarget, 'registrar_complement_full');
+			const fastRegistrar = await deps.stepStore.get(auditId, normalizedTarget, 'registrar_complement_fast');
+			const registrarPayload = (fullRegistrar?.status === 'completed' ? fullRegistrar.payload : null) ?? (fastRegistrar?.status === 'completed' ? fastRegistrar.payload : null);
+			if (registrarPayload !== null && registrarPayload !== undefined) {
+				registrarComplement = registrarPayload;
 			}
 		}
 
@@ -206,7 +206,7 @@ export async function brandAuditGetReport(
 						: targetRow.error,
 					pdfUrl,
 					pdfPending,
-					...(cscComplement !== undefined ? { cscComplement } : {}),
+					...(registrarComplement !== undefined ? { registrarComplement } : {}),
 				},
 			),
 		]);
