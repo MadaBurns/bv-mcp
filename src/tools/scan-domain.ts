@@ -492,7 +492,7 @@ export async function runCheckRetry(
 	const checkPromise = CHECK_DISPATCH[category]?.(domain, retryDns, runtimeOptions);
 	if (!checkPromise) {
 		// Unsupported category (e.g. profile-only authoritative_dns_infra) — synthetic error result.
-		return { ...buildCheckResult(category, []), score: 0, passed: false, checkStatus: 'error' as const };
+		return { ...buildCheckResult(category, []), score: 0, passed: false, checkStatus: 'error' as const, partial: true };
 	}
 
 	return Promise.race([checkPromise, timeoutPromise]);
@@ -1016,7 +1016,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		if (degradedStatuses.size > 0) {
 			checkResults = checkResults.map((r) => {
 				const status = degradedStatuses.get(r.category);
-				return status ? { ...r, score: 0, checkStatus: status } : r;
+				return status ? { ...r, score: 0, passed: false, checkStatus: status } : r;
 			});
 		}
 		// Defense-in-depth: the fallback re-runs the SAME scoring call, so if the
@@ -1232,6 +1232,10 @@ async function safeCheck(
 		// `partial: true` keeps the one-off transient error OUT of the 5-min
 		// per-check cache (see runCachedCheck's shouldCache predicate) so it
 		// self-heals and isn't served to direct check_* calls.
-		return { ...result, score: 0, checkStatus, partial: true };
+		// `passed: false` explicitly: buildCheckResult derived `passed: true` from the
+		// single high/low finding's score (75/95), which survived the `score: 0` spread —
+		// the post-processing re-apply masked it in scan output, but the intermediate
+		// result must carry the same not-assessed contract as buildDnsErrorResult.
+		return { ...result, score: 0, passed: false, checkStatus, partial: true };
 	}
 }

@@ -574,7 +574,9 @@ export async function checkHttpSecurity(
 				{ inconclusive: true, confidence: 'heuristic', errorKind: 'timeout' },
 			);
 			const base = buildCheckResult('http_security', [finding]);
-			return provenance.stamp({ ...base, score: 0, passed: false, checkStatus: 'timeout' });
+			// `partial: true` — a budget cut is transient, so the abstention must not be served
+			// from the 5-minute per-check cache (#900 class; both cache predicates are `!partial`).
+			return provenance.stamp({ ...base, score: 0, passed: false, checkStatus: 'timeout', partial: true });
 		}
 		return provenance.stamp(raced);
 	} finally {

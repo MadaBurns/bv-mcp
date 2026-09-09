@@ -83,12 +83,16 @@ describe('checkDnskeyStrength', () => {
 		expect(info!.metadata?.missingControl).toBeUndefined();
 	});
 
-	it('handles a DNS error gracefully (no throw, checkStatus error)', async () => {
+	it('handles a DNS error gracefully (no throw) with the retryable, non-cacheable abstention shape', async () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS timeout'));
 		const result = await run();
 		expect(result.category).toBe('dnskey_strength');
-		const info = result.findings.find((f) => f.severity === 'info');
-		expect(info).toBeDefined();
-		expect(result.checkStatus).toBe('error');
+		// #900 class: the old catch spread checkStatus over an info-only result (score 100,
+		// passed true, no partial). The buildDnsErrorResult shape is what lets scan_domain's
+		// transient-zero retry fire and keeps the non-answer out of the 5-min cache.
+		expect(result).toMatchObject({ checkStatus: 'error', score: 0, passed: false, partial: true });
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].metadata?.errorKind).toBe('dns_error');
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
 	});
 });

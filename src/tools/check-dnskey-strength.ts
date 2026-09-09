@@ -14,6 +14,7 @@
 import { parseDnskeyAlgorithm } from '@blackveil/dns-checks';
 import { queryDnsRecords, DnsQueryError } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, Finding } from '../lib/scoring';
 
@@ -129,18 +130,13 @@ export async function checkDnskeyStrength(domain: string, dnsOptions?: QueryDnsO
 		return buildCheckResult('dnskey_strength', findings);
 	} catch (err) {
 		if (err instanceof DnsQueryError) {
-			return {
-				...buildCheckResult('dnskey_strength', [
-					createFinding(
-						'dnskey_strength',
-						'DNSKEY strength check could not complete',
-						'info',
-						`DNS query failed (${err.message}). DNSKEY algorithm strength unknown.`,
-						{ dnsError: err.message, checkStatus: 'error', confidence: 'heuristic' },
-					),
-				]),
-				checkStatus: 'error' as const,
-			};
+			// The documented Worker-side abstention (CLAUDE.md "DNS-failure resilience"): score 0 +
+			// passed false + partial true + checkStatus 'error' + an `errorKind: 'dns_error'`
+			// finding. Before this (#900 class) the catch spread `checkStatus` over an info-only
+			// buildCheckResult — score 100, passed true, no `partial` — so a resolver blip read as
+			// a pass on a direct call, was cached for 5 minutes, and was never retried by
+			// scan_domain's transient-zero pass. Pinned by test/audits/check-abstention-shape.
+			return buildDnsErrorResult('dnskey_strength', 'DNSKEY strength', err);
 		}
 		throw err;
 	}
