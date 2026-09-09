@@ -128,7 +128,11 @@ function markProbeInconclusive(result: CheckResult, domain: string): CheckResult
 	// All-`info` means the sweep found nothing, i.e. the only finding is the package's
 	// clean "No dangling CNAME records found". Dropping it is the point: keeping it would
 	// re-assert the very claim the cut probe cannot support.
-	return { ...buildCheckResult('subdomain_takeover', [note]), score: 0, passed: false, checkStatus: 'error' };
+	//
+	// `partial: true`: a budget cut is transient by definition (the note above tells the
+	// caller to re-run), so the non-answer must not be served from the 5-minute per-check
+	// cache — both cache predicates are `!partial` (#900 class).
+	return { ...buildCheckResult('subdomain_takeover', [note]), score: 0, passed: false, checkStatus: 'error', partial: true };
 }
 
 /**

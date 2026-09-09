@@ -117,6 +117,8 @@ describe('checkSSL: transient / unassessable HTTPS → INCONCLUSIVE, not a score
 		};
 		const result = await checkSSL('example.com', fetchFn);
 		expect(result.checkStatus).toBe('timeout');
+		// #900 class: a thrown fetch is transient — retryable (score 0) and never cached (partial).
+		expect(result).toMatchObject({ score: 0, passed: false, partial: true });
 	});
 
 	it('(ii) a connection refusal is excluded with checkStatus error', async () => {
@@ -125,6 +127,7 @@ describe('checkSSL: transient / unassessable HTTPS → INCONCLUSIVE, not a score
 		};
 		const result = await checkSSL('example.com', fetchFn);
 		expect(result.checkStatus).toBe('error');
+		expect(result).toMatchObject({ score: 0, passed: false, partial: true });
 	});
 
 	it('(iii) an origin-unreachable 530 is not assessable — checkStatus error and no scored HSTS finding', async () => {
@@ -134,5 +137,15 @@ describe('checkSSL: transient / unassessable HTTPS → INCONCLUSIVE, not a score
 		// The old code emitted a medium "No HSTS header" against an unreachable origin.
 		expect(result.findings.some((f) => f.title === 'No HSTS header')).toBe(false);
 		expect(hasScoredDeficiency(result.findings)).toBe(false);
+		// The not-assessed scalars apply, but an origin that ANSWERED 0/5xx is origin-persistent
+		// (same split as check-http-security's 5xx branch), so it caches: no `partial`.
+		expect(result).toMatchObject({ score: 0, passed: false });
+		expect(result.partial).toBeUndefined();
+	});
+
+	it('(iv) a no-content 204 is transient — not assessed, and kept out of the cache', async () => {
+		const fetchFn: FetchFunction = async () => new Response(null, { status: 204 });
+		const result = await checkSSL('example.com', fetchFn);
+		expect(result).toMatchObject({ checkStatus: 'error', score: 0, passed: false, partial: true });
 	});
 });

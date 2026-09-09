@@ -43,6 +43,10 @@ describe('checkRootServerSet', () => {
 		expect(fetch).toHaveBeenCalledOnce();
 		expect(result).toMatchObject({
 			category: 'authoritative_dns_infra',
+			// #900 class: an unavailable probe measured nothing, so the scalars carry the
+			// not-assessed contract (never score 100 / passed true from the info finding).
+			score: 0,
+			passed: false,
 			checkStatus: 'error',
 			partial: true,
 			metadata: { evidenceMode: 'probe_unavailable', rootServers: ROOT_SERVER_NAMES },

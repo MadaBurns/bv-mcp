@@ -295,11 +295,15 @@ describe('checkAuthoritativeDnsInfra', () => {
 		expect(fetch).toHaveBeenCalledOnce();
 		expect(result).toMatchObject({
 			category: 'authoritative_dns_infra',
+			// #900 class: an unavailable probe measured nothing, so the scalars carry the
+			// not-assessed contract (never score 100 / passed true from the info finding).
+			score: 0,
+			passed: false,
 			checkStatus: 'error',
 			partial: true,
 			metadata: { evidenceMode: 'probe_unavailable', hostname: 'a.root-servers.net' },
 		});
-		// Inconclusive (excluded from score), not a zeroed failure.
+		// Inconclusive (excluded from score) with the not-assessed scalars — never a fabricated pass.
 		expect(result.findings).toContainEqual(
 			expect.objectContaining({
 				title: 'Authoritative DNS infra probe unavailable',
