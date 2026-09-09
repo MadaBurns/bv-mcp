@@ -72,6 +72,12 @@ export async function checkRootServerSet(
 					{ evidenceMode: 'probe_unavailable' },
 				),
 			]),
+			// Nothing was measured — the same #696 rule as the unprovisioned branch above.
+			// `buildCheckResult` would otherwise derive score 100 / passed true from the single
+			// `info` finding (#900 class); `checkStatus` is what excludes the category from
+			// scoring, `partial` is what keeps the transient outcome out of the cache.
+			score: 0,
+			passed: false,
 			checkStatus: 'error',
 			partial: true,
 			metadata: {
