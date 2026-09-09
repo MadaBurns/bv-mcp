@@ -43,7 +43,7 @@ afterEach(() => {
 	mockCheckRdap.mockReset();
 });
 
-/** RDAP with no lock posture — MultiLock degrades to "unobservable", the scan-driven products still evaluate. */
+/** RDAP with no lock posture — registry lock degrades to "unobservable", the scan-driven products still evaluate. */
 function rdapNoPosture(): CheckResult {
 	return { category: 'rdap', passed: true, score: 100, findings: [] } as unknown as CheckResult;
 }
@@ -298,25 +298,25 @@ describe('generateFixPlan — producer wiring for a total outage (all checks att
  * The leads surface on the SCORING-FAILURE shape.
  *
  * `scoringFailedScan` was modelled here for `map_compliance` and
- * `generate_fix_plan` but never for `prioritize_csc_leads`, whose fixtures only
+ * `generate_fix_plan` but never for `prioritize_portfolio_leads`, whose fixtures only
  * ever used the nothing-ran flavour of ungraded. That gap is exactly why the tool
  * shipped a note claiming "No checks ran for this domain" about a domain whose
  * checks ran and found a critical expired certificate.
  */
-describe('prioritizeCscLeads — producer wiring across BOTH ungraded shapes', () => {
+describe('prioritizePortfolioLeads — producer wiring across BOTH ungraded shapes', () => {
 	// NOTE: real-shaped `.com` domains — the orchestrator runs `validateDomain`,
 	// and `.example` is a BLOCKED TLD, so a reserved-TLD fixture never reaches the
 	// scan and lands in `skipped` instead. The reachability guards below caught it.
-	/** The full orchestrator path, so the report reaches `rankCscLeads` as production builds it. */
+	/** The full orchestrator path, so the report reaches `rankPortfolioLeads` as production builds it. */
 	async function runLeads(domain: string) {
 		mockCheckRdap.mockResolvedValue(rdapNoPosture());
-		const { prioritizeCscLeads } = await import('../src/tools/prioritize-csc-leads');
-		return prioritizeCscLeads({ domains: [domain] });
+		const { prioritizePortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
+		return prioritizePortfolioLeads({ domains: [domain] });
 	}
 
 	it('does not claim "no checks ran" when the checks ran but the scan did not score', async () => {
 		mockScanDomain.mockResolvedValue(scoringFailedScan('unscored-scan.com'));
-		const { formatCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		const { formatPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
 		const report = await runLeads('unscored-scan.com');
 
 		// Reachability guard: the orchestrator really produced a lead from the
@@ -327,7 +327,7 @@ describe('prioritizeCscLeads — producer wiring across BOTH ungraded shapes', (
 		expect(lead.assessed).toBe(true);
 		expect(lead.graded).toBe(false);
 		expect(report.caveat).not.toMatch(/no checks ran/i);
-		expect(formatCscLeads(report, 'full')).not.toMatch(/no checks ran/i);
+		expect(formatPortfolioLeads(report, 'full')).not.toMatch(/no checks ran/i);
 	});
 
 	it('does not drop the measured findings of a scan that failed to score', async () => {
@@ -338,7 +338,7 @@ describe('prioritizeCscLeads — producer wiring across BOTH ungraded shapes', (
 		// The DMARC failure is real evidence and must survive into the sales rollups.
 		expect(lead.gapSeverity).not.toBeNull();
 		expect(lead.gapSeverity!).toBeGreaterThan(0);
-		expect(lead.recommendedCscProducts).toContain('managed_dmarc');
+		expect(lead.recommendedProducts).toContain('managed_dmarc');
 		expect(report.summary.totalRecommendations).toBeGreaterThan(0);
 		expect(report.summary.byProduct.managed_dmarc).toBe(1);
 		expect(report.summary.unassessedDomains).toBe(0);

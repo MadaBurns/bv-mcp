@@ -34,7 +34,8 @@ for (const t of results) {
 		if (/markmonitor/.test(reg)) families.add('MarkMonitor');
 		else if (/com\s*laude|nom[ -]?iq/.test(reg)) families.add('Com Laude');
 		else if (/safenames/.test(reg)) families.add('SafeNames');
-		else if (/brand-audit\s*corporate|brand-audit\s*global|corporate domains/.test(reg)) families.add('BrandAudit');
+		// Keys on the family label emitted by `normalizeRegistrar()` in src/lib/brand-classification.ts.
+		else if (/corporate\s*domains|corporation\s+service\s+company/.test(reg)) families.add('CorporateDomains');
 		else if (/cloudflare/.test(reg)) families.add('Cloudflare');
 		else if (/tucows/.test(reg)) families.add('Tucows');
 		else if (reg === 'unknown') families.add('Unknown');
@@ -47,17 +48,17 @@ lines.push(`- **${totalShadow}** shadow IT / provider sprawl (high-confidence br
 lines.push(`- **${totalIndet}** indeterminate (registry redacts registrar by policy — e.g. DENIC)`);
 lines.push(`- **${totalImp}** likely impersonation / low-confidence noise`);
 lines.push('');
-lines.push('### Premise check: how many targets actually use BrandAudit?');
+lines.push('### Premise check: how many targets actually use the corporate-domains registrar?');
 lines.push('');
-lines.push('| Target | Registrar family | On BrandAudit? |');
+lines.push('| Target | Registrar family | On CorporateDomains? |');
 lines.push('|---|---|:---:|');
 for (const target of Object.keys(targetRegs.family)) {
 	const fam = targetRegs.family[target];
-	const onBrandAudit = fam === 'BrandAudit' ? '✓' : '—';
-	lines.push(`| ${target} | ${fam} (${targetRegs.raw[target]}) | ${onBrandAudit} |`);
+	const onCorporateDomains = fam === 'CorporateDomains' ? '✓' : '—';
+	lines.push(`| ${target} | ${fam} (${targetRegs.raw[target]}) | ${onCorporateDomains} |`);
 }
 lines.push('');
-lines.push('> **Only 2 of 11 are BrandAudit-managed (Disney, Walmart).** The original audit premise treated all 11 as BrandAudit; six are actually on MarkMonitor, Apple on Com Laude, Stripe on SafeNames, Blackveil on Cloudflare.');
+lines.push('> **Only 2 of 11 are on the corporate-domains registrar (Disney, Walmart).** The original audit premise treated all 11 as being there; six are actually on MarkMonitor, Apple on Com Laude, Stripe on SafeNames, Blackveil on Cloudflare.');
 lines.push('');
 
 // Per-target detail

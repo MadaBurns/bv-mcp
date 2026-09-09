@@ -5,9 +5,9 @@ import { setupFetchMock } from './helpers/dns-mock';
 import type { CheckResult, Finding } from '../src/lib/scoring';
 
 /**
- * Integration test for runBrandAuditPipeline when view='csc_complement'.
+ * Integration test for runBrandAuditPipeline when view='registrar_complement'.
  *
- * The CSC branch fires AFTER classification and derives its cscComplement payload
+ * The registrar-complement branch fires AFTER classification and derives its registrarComplement payload
  * from the pipeline's classifiedFindings array. This means the discovery stub must
  * return a valid CheckResult with candidate findings whose metadata drives the
  * classifier to the expected bucket distribution.
@@ -16,7 +16,7 @@ import type { CheckResult, Finding } from '../src/lib/scoring';
  *   - ford.co.uk: signals ['dkim_key_reuse', 'san'], registrar GoDaddy (off-primary).
  *     Rule 2 → isExactBrandPortfolioDomain(ford.co.uk, ford.com)=true → realShadowItClassification
  *     → shadowIt/owned_off_primary_registrar.
- *   - ford.com.au: signals ['dkim_key_reuse', 'ns'], registrar CSC (same family as target).
+ *   - ford.com.au: signals ['dkim_key_reuse', 'ns'], registrar on the corporate-domains family (same family as target).
  *     Rule 2 → isExactBrandPortfolioDomain(ford.com.au, ford.com)=true → isOffPrimaryRegistrar=false
  *     → consolidated/owned_primary.
  */
@@ -120,7 +120,7 @@ function setupEnrichmentFetchMock(candidates: string[]): void {
 	});
 }
 
-describe('runBrandAuditPipeline with view=csc_complement', () => {
+describe('runBrandAuditPipeline with view=registrar_complement', () => {
 	let mockHandle: ReturnType<typeof setupFetchMock>;
 
 	beforeEach(() => {
@@ -131,7 +131,7 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 		mockHandle.restore();
 	});
 
-	it('emits cscComplement on the result when view=csc_complement', async () => {
+	it('emits registrarComplement on the result when view=registrar_complement', async () => {
 		// Set up enrichment fetch mock for the two candidate domains.
 		setupEnrichmentFetchMock(['ford.co.uk', 'ford.com.au']);
 
@@ -139,14 +139,14 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 
 		// Discovery stub: returns CheckResult with 2 candidates.
 		// ford.co.uk → will classify as shadowIt (GoDaddy, off-primary registrar, strong dkim signal)
-		// ford.com.au → will classify as consolidated (CSC, same registrar family, strong dkim signal)
+		// ford.com.au → will classify as consolidated (same corporate-domains registrar family, strong dkim signal)
 		const discoverBrandDomains = async () =>
 			makeDiscoveryResult('ford.com', [
 				{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] },
 				{ domain: 'ford.com.au', signals: ['dkim_key_reuse', 'ns'] },
 			]);
 
-		// RDAP stubs: target ford.com → CSC; ford.co.uk → GoDaddy; ford.com.au → CSC.
+		// RDAP stubs: target ford.com → corporate-domains registrar; ford.co.uk → GoDaddy; ford.com.au → corporate-domains registrar.
 		const checkRdapLookup = async (domain: string) => {
 			if (domain === 'ford.co.uk') return makeRdapResult('GoDaddy.com, LLC');
 			return makeRdapResult('CSC Corporate Domains, Inc.');
@@ -154,36 +154,36 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 
 		const result = await runBrandAuditPipeline(
 			'ford.com',
-			{ view: 'csc_complement' },
+			{ view: 'registrar_complement' },
 			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup: checkRdapLookup as never },
 		);
 
-		const structured = (result as unknown as { cscComplement?: unknown }).cscComplement;
+		const structured = (result as unknown as { registrarComplement?: unknown }).registrarComplement;
 		expect(structured).toBeDefined();
 
-		const { BrandAuditCscSchema } = await import('../src/schemas/brand-audit-csc');
-		const parsed = BrandAuditCscSchema.parse(structured);
+		const { BrandAuditRegistrarSchema } = await import('../src/schemas/brand-audit-registrar');
+		const parsed = BrandAuditRegistrarSchema.parse(structured);
 
 		expect(parsed.anchor.apex).toBe('ford.com');
-		expect(parsed.anchor.managedByCsc).toBe(true);
+		expect(parsed.anchor.managedByRegistrar).toBe(true);
 		expect(parsed.registrarPortfolio.offPortfolioCount).toBe(1);
 		expect(parsed.registrarPortfolio.offPortfolioApexes).toEqual(['ford.co.uk']);
 		expect(parsed.shadowItHighlights).toHaveLength(1);
 		expect(parsed.shadowItHighlights[0].apex).toBe('ford.co.uk');
 		expect(parsed.postureSnapshot.stage).toBe('pending');
 		expect(parsed.deepScan.stage).toBe('pending');
-		expect(parsed.viewVersion).toBe(1);
-		expect(parsed.reportId).toMatch(/^csc_rpt_/);
+		expect(parsed.viewVersion).toBe(2);
+		expect(parsed.reportId).toMatch(/^reg_rpt_/);
 	});
 
-	it('persists csc_complement_fast step when stepStore is provided', async () => {
+	it('persists registrar_complement_fast step when stepStore is provided', async () => {
 		setupEnrichmentFetchMock(['ford.co.uk']);
 
 		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
 		const { createMemoryBrandAuditStepStore } = await import('../src/lib/brand-audit-step-store');
 
 		const stepStore = createMemoryBrandAuditStepStore();
-		const auditId = 'test-audit-csc';
+		const auditId = 'test-audit-registrar';
 
 		const discoverBrandDomains = async () =>
 			makeDiscoveryResult('ford.com', [{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
@@ -194,21 +194,21 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 
 		await runBrandAuditPipeline(
 			'ford.com',
-			{ view: 'csc_complement', auditId, stepStore },
+			{ view: 'registrar_complement', auditId, stepStore },
 			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup: checkRdapLookup as never },
 		);
 
-		const record = await stepStore.get(auditId, 'ford.com', 'csc_complement_fast');
+		const record = await stepStore.get(auditId, 'ford.com', 'registrar_complement_fast');
 		expect(record).not.toBeNull();
 		expect(record?.status).toBe('completed');
 		expect(record?.payload).toBeDefined();
 
-		const { BrandAuditCscSchema } = await import('../src/schemas/brand-audit-csc');
-		const parsed = BrandAuditCscSchema.parse(record?.payload);
-		expect(parsed.anchor.managedByCsc).toBe(true);
+		const { BrandAuditRegistrarSchema } = await import('../src/schemas/brand-audit-registrar');
+		const parsed = BrandAuditRegistrarSchema.parse(record?.payload);
+		expect(parsed.anchor.managedByRegistrar).toBe(true);
 	});
 
-	it('does NOT emit cscComplement when view is omitted (default)', async () => {
+	it('does NOT emit registrarComplement when view is omitted (default)', async () => {
 		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
 
 		const discoverBrandDomains = async () =>
@@ -221,10 +221,10 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup: checkRdapLookup as never },
 		);
 
-		expect((result as unknown as { cscComplement?: unknown }).cscComplement).toBeUndefined();
+		expect((result as unknown as { registrarComplement?: unknown }).registrarComplement).toBeUndefined();
 	});
 
-	it('does NOT emit cscComplement when view=standard', async () => {
+	it('does NOT emit registrarComplement when view=standard', async () => {
 		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
 
 		const discoverBrandDomains = async () =>
@@ -237,7 +237,7 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup: checkRdapLookup as never },
 		);
 
-		expect((result as unknown as { cscComplement?: unknown }).cscComplement).toBeUndefined();
+		expect((result as unknown as { registrarComplement?: unknown }).registrarComplement).toBeUndefined();
 	});
 
 	it('enqueues a deep_scan message after fast_ready', async () => {
@@ -261,7 +261,7 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 
 		await runBrandAuditPipeline(
 			'ford.com',
-			{ view: 'csc_complement', auditId: 'audit-1' },
+			{ view: 'registrar_complement', auditId: 'audit-1' },
 			{
 				brandAuditQueue,
 				discoverBrandDomains: discoverBrandDomains as never,
@@ -279,7 +279,7 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 		// Queues send() rejection — backpressure, regional issue, write-rate cap —
 		// would propagate out of runBrandAuditPipeline. The queue consumer would
 		// catch the throw at processBrandAuditMessage and flip the entire target
-		// row to `failed` even though csc_complement_fast was already persisted.
+		// row to `failed` even though registrar_complement_fast was already persisted.
 		// The sync request path would surface a JSON-RPC error to the client even
 		// though the same fast result is in step-store. Both are user-visible
 		// regressions caused by a transient infrastructure blip.
@@ -305,7 +305,7 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 
 		const result = await runBrandAuditPipeline(
 			'ford.com',
-			{ view: 'csc_complement', auditId: 'audit-1' },
+			{ view: 'registrar_complement', auditId: 'audit-1' },
 			{
 				brandAuditQueue,
 				discoverBrandDomains: discoverBrandDomains as never,
@@ -313,12 +313,12 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 			},
 		);
 
-		// Pipeline returns normally; csc_complement_fast is attached to the result.
+		// Pipeline returns normally; registrar_complement_fast is attached to the result.
 		expect(result).toBeDefined();
-		expect((result as unknown as { cscComplement?: unknown }).cscComplement).toBeDefined();
+		expect((result as unknown as { registrarComplement?: unknown }).registrarComplement).toBeDefined();
 	});
 
-	it('runs runDeepScanFromStepStore and merges to csc_complement_full', async () => {
+	it('runs runDeepScanFromStepStore and merges to registrar_complement_full', async () => {
 		const stored = new Map<string, unknown>();
 		const stepStore = {
 			get: async (auditId: string, target: string, step: string): Promise<{ status: string; payload: unknown } | null> => {
@@ -330,18 +330,18 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 			},
 		};
 
-		stored.set('a-1:ford.com:csc_complement_fast', {
+		stored.set('a-1:ford.com:registrar_complement_fast', {
 			status: 'completed',
 			payload: {
-				viewVersion: 1,
-				anchor: { apex: 'ford.com', primaryRegistrar: { family: 'csc corporate domains', name: 'CSC', ianaId: null }, managedByCsc: true },
-				registrarPortfolio: { totalApexes: 1, byFamily: [{ family: 'csc corporate domains', count: 1, percent: 100, exampleApexes: ['ford.com'] }], offPortfolioCount: 0, offPortfolioApexes: [] },
+				viewVersion: 2,
+				anchor: { apex: 'ford.com', primaryRegistrar: { family: 'corporate domains registrar', name: 'Brand Registrar, Inc.', ianaId: null }, managedByRegistrar: true },
+				registrarPortfolio: { totalApexes: 1, byFamily: [{ family: 'corporate domains registrar', count: 1, percent: 100, exampleApexes: ['ford.com'] }], offPortfolioCount: 0, offPortfolioApexes: [] },
 				shadowItHighlights: [],
 				defensiveRegistrations: { count: 0, examples: [], enrichmentStatus: 'ready' },
 				postureSnapshot: { stage: 'pending', apexesScanned: 0, apexesTotal: 0, apexes: [], medianGrade: null, distribution: {} },
 				deepScan: { stage: 'pending', apexesScanned: 0, apexesTotal: 0, danglingDns: [], danglingDnsTotal: 0, subdomainInventoryByApex: {} },
 				generatedAt: '2026-05-22T00:00:00Z',
-				reportId: 'csc_rpt_abc',
+				reportId: 'reg_rpt_abc',
 			},
 		});
 
@@ -351,10 +351,10 @@ describe('runBrandAuditPipeline with view=csc_complement', () => {
 			structuredContent: { domain: args.domain, score: 80, grade: 'B+', categoryScores: {}, totalSubdomains: 100, subdomains: [] },
 		});
 
-		const { runDeepScanFromStepStore } = await import('../src/lib/brand-audit-csc-deepscan-job');
+		const { runDeepScanFromStepStore } = await import('../src/lib/brand-audit-registrar-deepscan-job');
 		await runDeepScanFromStepStore({ auditId: 'a-1', target: 'ford.com', stepStore: stepStore as never, internalCall });
 
-		const full = stored.get('a-1:ford.com:csc_complement_full') as {
+		const full = stored.get('a-1:ford.com:registrar_complement_full') as {
 			status: string;
 			payload: { postureSnapshot: { stage: string; apexesScanned: number; apexes: Array<{ apex: string; grade: string }> } };
 		};
