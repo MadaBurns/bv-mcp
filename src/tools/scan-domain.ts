@@ -555,9 +555,21 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// check additionally gets its OWN controller (linked to this one via
 	// AbortSignal.any) so a single check's per-check timeout cancels ONLY that
 	// check's fetches, never a sibling's still-needed work. The composed
-	// per-check signal is threaded into queryDns (DoH checks) and into the
-	// raw-`fetch` ssl/http checks. The apex-state probe below shares `scanDns`
-	// (and thus the scan signal) but runs BEFORE any timeout can fire.
+	// per-check signal reaches ONLY the raw-`fetch` checks (ssl, http_security,
+	// dane_https) as the 4th dispatch argument. DoH checks deliberately do NOT
+	// get it: they share one `queryCache`, so a per-check abort would cancel an
+	// in-flight query a SIBLING had deduplicated onto — see the CheckRunner
+	// JSDoc above, which is the authoritative account of this split.
+	// Consequence (#941, measured + accepted): a DoH query still QUEUED on the
+	// shared semaphore when a check's per-check race expires is not withdrawn —
+	// it dispatches later and returns a result nobody reads, bounded only by the
+	// 15s scan abort. Magnitude is ~0-8 orphaned subrequests per healthy scan
+	// (more under batch_scan's narrower pool) against the 10,000/invocation
+	// ceiling at a ~500 baseline, so the waste is real but not worth buying with
+	// a correctness change to the cached DoH hot path. Do NOT "fix" this by
+	// giving the semaphore a maxWaitMs — see the note in lib/semaphore.ts.
+	// The apex-state probe below shares `scanDns` (and thus the scan signal) but
+	// runs BEFORE any timeout can fire.
 	const scanAbort = new AbortController();
 	const parentSignal = runtimeOptions?.signal;
 	const scanSignal = parentSignal ? AbortSignal.any([scanAbort.signal, parentSignal]) : scanAbort.signal;

@@ -10,7 +10,31 @@
  */
 
 export interface SemaphoreOptions {
-	/** Maximum milliseconds a caller waits in the queue before rejection. */
+	/**
+	 * Maximum milliseconds a caller waits in the queue before rejection.
+	 *
+	 * ⚠️ DELIBERATELY UNUSED ON THE DoH PATH — do not wire this into the scan or
+	 * batch semaphores to withdraw queries orphaned by a per-check timeout (#941).
+	 * It looks like the cheap fix and is actively harmful:
+	 *
+	 * 1. `SemaphoreTimeoutError` is NOT abort-classified by `dns-transport`, so it
+	 *    falls through to the generic retry arm and is retried once — the effective
+	 *    queue budget becomes 2 × maxWaitMs, never one.
+	 * 2. It then surfaces as a generic `DnsQueryError` → `checkStatus: 'error'` with
+	 *    score 0, which satisfies `shouldRetry()` in scan-domain.ts and re-runs the
+	 *    WHOLE check, re-issuing every one of its DoH queries. That ADDS subrequests
+	 *    to the ceiling this was meant to protect.
+	 * 3. Worst: several package checks swallow a rejected query into an empty-record
+	 *    verdict (see the TXT catch in check-dkim.ts), so rejecting a DoH query while
+	 *    a check is still LIVE can turn a transient into a scored `missingControl` —
+	 *    the fail-open class the scoring doctrine exists to prevent. Today the only
+	 *    signal that can reject a live query is the scan-level abort, which fires at
+	 *    the same instant the result snapshot is taken, so nothing captures it.
+	 *
+	 * The option itself is correct and unit-tested (`test/dns-semaphore.spec.ts`);
+	 * it is retained for callers that want a genuine queue deadline. It is simply
+	 * the wrong instrument for per-check DoH withdrawal.
+	 */
 	maxWaitMs?: number;
 }
 
