@@ -130,6 +130,83 @@ describe('checkMx', () => {
 		expect(finding!.detail).toContain('ghost.dangling.com');
 	});
 
+	/**
+	 * #944 — a loopback MX is a DEFECT, not an RFC 7505 no-mail declaration.
+	 *
+	 * Option A (settled on measurement, not preference): 0 loopback-MX domains in a
+	 * 992-measured stratified Tranco 1000 corpus; 15/29,385 (0.051%) in a wider
+	 * 29,780-domain sample, ALL of them the identical string `0 localhost.` — an
+	 * operator reaching for `0 .` and getting the exchange wrong. So `check_mx`
+	 * reports it, rather than reclassifying the domain as non-mail.
+	 *
+	 * The anti-stacking assertions below are the load-bearing half: severity
+	 * penalties are additive and `mx` has no cap, so the new medium must REPLACE the
+	 * dangling / IP-target mediums, not add to them. Score stays 80 — unchanged from
+	 * the live pre-fix behaviour measured on `1xlite-85316.pro`.
+	 *
+	 * Mock isolation: `checkMx` is imported dynamically inside each case, per the
+	 * repo's mock-isolation requirement.
+	 */
+	function mockLoopbackZone(domain: string, mxData: string[]) {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				const answers = mxData.map((data) => ({ name: domain, type: 15, TTL: 300, data }));
+				return Promise.resolve(createDohResponse([{ name: domain, type: 15 }], answers));
+			}
+			// Every A/AAAA probe returns empty — so a record that IS probed shows up as dangling.
+			return Promise.resolve(createDohResponse([{ name: domain, type: 1 }], []));
+		});
+	}
+
+	it('flags `0 localhost.` as a loopback defect and does NOT also flag it as dangling (#944)', async () => {
+		mockLoopbackZone('loopback.com', ['0 localhost.']);
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('loopback.com');
+
+		const loopback = result.findings.find((f) => f.title === 'MX points at localhost');
+		expect(loopback).toBeDefined();
+		expect(loopback!.severity).toBe('medium');
+		expect(loopback!.detail).toContain('localhost');
+
+		// ANTI-STACKING: the loopback finding REPLACES the dangling finding.
+		expect(result.findings.find((f) => f.title === 'Dangling MX record')).toBeUndefined();
+
+		// Option A: MX records were measured and are present — still a mail control.
+		expect(result.controlPresent).toBe(true);
+		// Neutrality claim: one medium (-15) + one low single-MX (-5) = 80, unchanged.
+		expect(result.score).toBe(80);
+		expect(result.findings.filter((f) => f.severity === 'medium')).toHaveLength(1);
+	});
+
+	it('flags `10 127.0.0.1` as loopback and does NOT also flag it as an IP target (#944)', async () => {
+		mockLoopbackZone('loopback4.com', ['10 127.0.0.1']);
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('loopback4.com');
+
+		const loopback = result.findings.find((f) => f.title === 'MX points at localhost');
+		expect(loopback).toBeDefined();
+		expect(loopback!.severity).toBe('medium');
+
+		// ANTI-STACKING: loopback records are excluded from the IP-target pass too.
+		expect(result.findings.find((f) => f.title === 'MX points to IP address')).toBeUndefined();
+		expect(result.findings.filter((f) => f.severity === 'medium')).toHaveLength(1);
+		expect(result.score).toBe(80);
+	});
+
+	it('a real exchange published beside a loopback MX is still mapped and still probed for dangling', async () => {
+		mockLoopbackZone('mixed.com', ['10 mx.example.com.', '20 localhost.']);
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('mixed.com');
+
+		expect(result.findings.find((f) => f.title === 'MX points at localhost')).toBeDefined();
+		// The routable record keeps its own treatment — exclusion is per-record, not per-zone.
+		const dangling = result.findings.find((f) => f.title === 'Dangling MX record');
+		expect(dangling).toBeDefined();
+		expect(dangling!.detail).toContain('mx.example.com');
+		expect(dangling!.detail).not.toContain('localhost');
+	});
+
 	it('surfaces providerDetectionFailed metadata when provider signature fetch fails', async () => {
 		const { restore: localRestore } = setupFetchMock();
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {

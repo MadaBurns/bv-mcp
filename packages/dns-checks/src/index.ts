@@ -115,7 +115,11 @@ export type { CaaParameters } from './checks/caa-analysis';
 
 // RFC 7505 null-MX classification, shared with Worker-side consumers (map_supply_chain)
 // so a null MX is never re-parsed — and mis-rendered as a provider — outside check_mx.
-export { isNullMxRecord } from './checks/mx-analysis';
+// `isLoopbackMxRecord` rides alongside for the same reason (#944): a `0 localhost.`
+// exchange names no provider either, but it is a DEFECT rather than a no-mail
+// declaration, so the two classifications stay separate. See the decision record on
+// `isNullMxRecord` before merging them.
+export { isNullMxRecord, isLoopbackMxRecord } from './checks/mx-analysis';
 
 // Scoring classifiers
 export { classifyDmarc, appendDmarcCleanInfo } from './scoring/classifiers/dmarc';
