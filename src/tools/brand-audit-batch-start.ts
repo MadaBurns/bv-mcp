@@ -56,11 +56,11 @@ export interface BrandAuditBatchStartOptions {
 	 */
 	discovery_mode?: 'classic' | 'tiered';
 	/**
-	 * Output view mode. `'csc_complement'` triggers CSC enrichment in the
+	 * Output view mode. `'registrar_complement'` triggers CSC enrichment in the
 	 * pipeline. Threaded onto each queue message so the consumer can forward
 	 * it to `runBrandAuditPipeline`. Default `'standard'`.
 	 */
-	view?: 'standard' | 'csc_complement';
+	view?: 'standard' | 'registrar_complement';
 }
 
 export type EnforceBrandAuditQuota = (count: number) => Promise<{
@@ -82,7 +82,7 @@ export interface BrandAuditQueueMessage {
 	/** Per-target discovery mode override. Consumer threads to runBrandAuditPipeline. */
 	discovery_mode?: 'classic' | 'tiered';
 	/** Output view mode. Forwarded to runBrandAuditPipeline on the consumer side. */
-	view?: 'standard' | 'csc_complement';
+	view?: 'standard' | 'registrar_complement';
 }
 
 export interface BrandAuditQueueProducer {

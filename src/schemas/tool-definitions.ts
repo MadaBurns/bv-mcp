@@ -18,8 +18,8 @@ import {
 	GetProviderInsightsArgs,
 	ValidateFixArgs,
 	MapSupplyChainArgs,
-	MapCscProductsArgs,
-	PrioritizeCscLeadsArgs,
+	MapRegistrarProductsArgs,
+	PrioritizePortfolioLeadsArgs,
 	AnalyzeDriftArgs,
 	CheckFastFluxArgs,
 	CheckAgentDiscoveryArgs,
@@ -519,17 +519,17 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
-	map_csc_products: {
+	map_registrar_products: {
 		description:
 			'Map a domain’s observed security gaps to CSC commercial products (CSC MultiLock, Managed DMARC, Digital Certificates, DNSSEC management) for sales/upsell prioritization. Reads the scan plus RDAP lock posture. Distinct from map_compliance, which maps findings to compliance frameworks (NIST/PCI/SOC2/CIS).',
-		schema: MapCscProductsArgs,
+		schema: MapRegistrarProductsArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
-	prioritize_csc_leads: {
+	prioritize_portfolio_leads: {
 		description:
-			'Rank a brand’s portfolio (or an explicit domain set) into prioritized CSC sales leads by product-gap value × severity. Multi-domain, paid. Reuses map_csc_products per domain, then ranks. Distinct from map_csc_products (per-domain product mapping) and batch_scan (raw scores).',
-		schema: PrioritizeCscLeadsArgs,
+			'Rank a brand’s portfolio (or an explicit domain set) into prioritized CSC sales leads by product-gap value × severity. Multi-domain, paid. Reuses map_registrar_products per domain, then ranks. Distinct from map_registrar_products (per-domain product mapping) and batch_scan (raw scores).',
+		schema: PrioritizePortfolioLeadsArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
@@ -867,8 +867,8 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'resolve_spf_chain',
 	'discover_subdomains',
 	'map_compliance',
-	'map_csc_products',
-	'prioritize_csc_leads',
+	'map_registrar_products',
+	'prioritize_portfolio_leads',
 	'simulate_attack_paths',
 	// discover_brand_domains async trio — custom summary-metadata shape
 	'discover_brand_domains_start',

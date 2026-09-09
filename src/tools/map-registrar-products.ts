@@ -18,13 +18,13 @@ import { sanitizeOutputText } from '../lib/output-sanitize';
 import { formatScoreGrade, hasCompletedEvidence, isCompletedCheck } from '../lib/ungraded-display';
 import { isDnsErrorFinding } from '../lib/dns-error-result';
 
-export type CscProductKey = 'csc_multilock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
+export type RegistrarProductKey = 'registry_lock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
 
 /**
  * The STRUCTURAL twin of `caveat`. `caveat` is prose meant to be read; `caveatKind`
  * is the machine-readable reason a classifier should branch on. Before this existed,
- * `unassessedScanProduct` (here) and `isNeverRanCaveat` (`prioritize_csc_leads`)
- * classified state by comparing the `caveat` STRING against `UNASSESSED_CSC_NOTE`
+ * `unassessedScanProduct` (here) and `isNeverRanCaveat` (`prioritize_portfolio_leads`)
+ * classified state by comparing the `caveat` STRING against `UNASSESSED_PRODUCT_NOTE`
  * identity, with "anything else" silently defaulting to the transient branch — a
  * renamed constant, an edited wording, or a third failure mode introduced later
  * would misclassify with no compiler or test signal. `caveatKind` cannot drift from
@@ -33,13 +33,13 @@ export type CscProductKey = 'csc_multilock' | 'managed_dmarc' | 'digital_certifi
 export type CaveatKind = 'never_ran' | 'all_transient';
 
 /** Sales-upsell priority — NOT a security severity. */
-export type CscPriority = 'high' | 'medium' | 'low' | 'none';
+export type ProductPriority = 'high' | 'medium' | 'low' | 'none';
 
-export interface CscProductRecommendation {
-	product: CscProductKey;
+export interface RegistrarProductRecommendation {
+	product: RegistrarProductKey;
 	productName: string;
 	recommended: boolean;
-	priority: CscPriority;
+	priority: ProductPriority;
 	justifyingGap: string;
 	relatedFindings: string[];
 	/**
@@ -47,7 +47,7 @@ export interface CscProductRecommendation {
 	 * category (or the whole scan) was never actually observed. Every OTHER
 	 * construction site (`evalMultiLock`, `evalScanProduct`'s pass/fail/absent
 	 * branches) sets this `true`. This is the render-time discriminant
-	 * `formatCscProducts` MUST use to keep an unassessed product visually
+	 * `formatRegistrarProducts` MUST use to keep an unassessed product visually
 	 * distinct from a genuine clean pass — before this field existed, both
 	 * states shared `recommended: false` and rendered byte-identical
 	 * (`✓ Managed DMARC` / `➖ Managed DMARC — OK`) in both format modes, so a
@@ -58,7 +58,7 @@ export interface CscProductRecommendation {
 	assessed: boolean;
 }
 
-export interface CscProductReport {
+export interface RegistrarProductReport {
 	domain: string;
 	/** `null` when the scan produced no gradeable measurement. Never a coerced 0. */
 	score: number | null;
@@ -83,9 +83,9 @@ export interface CscProductReport {
 	assessed: boolean;
 	/**
 	 * REQUIRED — `null` when `assessed` is `true`, a non-null string otherwise.
-	 * Distinguishes "no checks ran" ({@link UNASSESSED_CSC_NOTE}) from "checks
+	 * Distinguishes "no checks ran" ({@link UNASSESSED_PRODUCT_NOTE}) from "checks
 	 * were attempted but none of them completed"
-	 * ({@link buildAllTransientCscNote}) — the two failure modes
+	 * ({@link buildAllTransientProductNote}) — the two failure modes
 	 * `hasCompletedEvidence` collapses into the same `assessed: false`, but which
 	 * are NOT the same fact and get distinct wording. Required (not optional) so
 	 * every construction site — the real producer AND every hand-built test
@@ -98,7 +98,7 @@ export interface CscProductReport {
 	 * REQUIRED — the STRUCTURAL discriminant paired with `caveat`: `null` exactly
 	 * when `caveat` is `null` (`assessed: true`), `'never_ran'` or `'all_transient'`
 	 * otherwise. Classifiers (`unassessedScanProduct` here,
-	 * `prioritize_csc_leads`' render helpers) MUST branch on this field, never on
+	 * `prioritize_portfolio_leads`' render helpers) MUST branch on this field, never on
 	 * `caveat`'s string content — see the type doc on {@link CaveatKind}.
 	 */
 	caveatKind: CaveatKind | null;
@@ -106,10 +106,10 @@ export interface CscProductReport {
 	/**
 	 * Always the four products in fixed order. When `assessed` is `false` the three
 	 * scan-driven entries are `recommended: false, priority: 'none'` — absence of
-	 * evidence, never a priced gap. Only `csc_multilock` can still be recommended
+	 * evidence, never a priced gap. Only `registry_lock` can still be recommended
 	 * there, and only on independent RDAP evidence.
 	 */
-	recommendations: CscProductRecommendation[];
+	recommendations: RegistrarProductRecommendation[];
 	/** Count of `recommended` entries — 0 for an unassessed domain with no RDAP lock gap. */
 	recommendedCount: number;
 }
@@ -117,17 +117,17 @@ export interface CscProductReport {
 /**
  * The SINGLE sentence for "no check ran, so no product gap could be assessed".
  *
- * Owned here because this is where `assessed` is computed; `prioritize_csc_leads`
+ * Owned here because this is where `assessed` is computed; `prioritize_portfolio_leads`
  * composes its per-lead note from it (leads imports from this module, never the
  * reverse). One sentence, so the two tools cannot describe the same state in two
  * vocabularies — which is exactly how they came to give opposite answers about the
  * same producer output.
  */
-export const UNASSESSED_CSC_NOTE = 'No checks ran for this domain, so no product gap could be assessed.';
+export const UNASSESSED_PRODUCT_NOTE = 'No checks ran for this domain, so no product gap could be assessed.';
 
 /**
- * A SEPARATE wording from {@link UNASSESSED_CSC_NOTE} for a different failure
- * mode. `UNASSESSED_CSC_NOTE` describes "no checks ran" (NXDOMAIN, broken
+ * A SEPARATE wording from {@link UNASSESSED_PRODUCT_NOTE} for a different failure
+ * mode. `UNASSESSED_PRODUCT_NOTE` describes "no checks ran" (NXDOMAIN, broken
  * zone — `checkResults: []`). This describes "checks ran, none of them
  * finished" — a total DoH/network outage where every attempted check carries
  * a transient `checkStatus: 'timeout'`/`'error'`
@@ -136,7 +136,7 @@ export const UNASSESSED_CSC_NOTE = 'No checks ran for this domain, so no product
  * sales team reading this note as "nothing observed" rather than "transient,
  * retry". Mirrors `map_compliance`'s `buildAllTransientCaveat`.
  */
-export function buildAllTransientCscNote(attempted: number): string {
+export function buildAllTransientProductNote(attempted: number): string {
 	return (
 		`${attempted} check${attempted === 1 ? '' : 's'} ${attempted === 1 ? 'was' : 'were'} attempted for this domain, ` +
 		`but none of them completed (transient DNS/network failure) — no product gap could be assessed from this scan. ` +
@@ -144,8 +144,8 @@ export function buildAllTransientCscNote(attempted: number): string {
 	);
 }
 
-const CSC_PRODUCT_NAMES: Record<CscProductKey, string> = {
-	csc_multilock: 'CSC MultiLock',
+const REGISTRAR_PRODUCT_NAMES: Record<RegistrarProductKey, string> = {
+	registry_lock: 'CSC MultiLock',
 	managed_dmarc: 'Managed DMARC',
 	digital_certificates: 'Digital Certificates',
 	dnssec_management: 'DNSSEC management',
@@ -165,7 +165,7 @@ function nonInfoTitles(result: CheckResult | undefined): string[] {
 
 /**
  * MultiLock recommendation — reads the booleans, not `level` alone (Spec A handoff).
- * MultiLock reads RDAP independently of the scan (see `evaluateCscProducts`'s doc
+ * MultiLock reads RDAP independently of the scan (see `evaluateRegistrarProducts`'s doc
  * on why it is never gated on the report-level `assessed`), but it has its OWN
  * two-way assessed split — distinct from `evalScanProduct`'s transient-check
  * split — because `lockPosture == null` and `lockPosture.level === 'unknown'` are
@@ -187,10 +187,10 @@ function nonInfoTitles(result: CheckResult | undefined): string[] {
  * exists to close. The doc also conflated "unavailable" with "redacted"; the two
  * branches above are the actual, distinguishable causes.
  */
-function evalMultiLock(lockPosture: LockPosture | null): CscProductRecommendation {
+function evalMultiLock(lockPosture: LockPosture | null): RegistrarProductRecommendation {
 	const base = {
-		product: 'csc_multilock' as const,
-		productName: CSC_PRODUCT_NAMES.csc_multilock,
+		product: 'registry_lock' as const,
+		productName: REGISTRAR_PRODUCT_NAMES.registry_lock,
 		relatedFindings: [] as string[],
 	};
 	if (lockPosture == null) {
@@ -250,12 +250,12 @@ function evalMultiLock(lockPosture: LockPosture | null): CscProductRecommendatio
  * nothing, for a category nobody actually measured.
  */
 function evalScanProduct(
-	product: Exclude<CscProductKey, 'csc_multilock'>,
+	product: Exclude<RegistrarProductKey, 'registry_lock'>,
 	result: CheckResult | undefined,
 	gaps: { passing: string; failing: string; absent: string },
 	concern: string,
-): CscProductRecommendation {
-	const base = { product, productName: CSC_PRODUCT_NAMES[product], assessed: true as const };
+): RegistrarProductRecommendation {
+	const base = { product, productName: REGISTRAR_PRODUCT_NAMES[product], assessed: true as const };
 	if (result === undefined) {
 		return { ...base, recommended: true, priority: 'low', justifyingGap: gaps.absent, relatedFindings: [] };
 	}
@@ -284,7 +284,7 @@ function evalScanProduct(
  * state introduced by `evalScanProduct`'s `checkStatus` branch: THIS category's
  * own check failed transiently while the rest of the scan may well have
  * completed normally — `CaveatKind` deliberately does NOT gain this value
- * (it is a per-report field consumed elsewhere, e.g. `prioritize_csc_leads`'
+ * (it is a per-report field consumed elsewhere, e.g. `prioritize_portfolio_leads`'
  * `isNeverRanKind`, which is not written to expect a third state), so this is
  * a local, wider type instead of a change to the exported `CaveatKind` union.
  */
@@ -293,7 +293,7 @@ type UnassessedReason = CaveatKind | 'category_transient';
 /**
  * The scan-driven product line for a domain with no COMPLETED check evidence —
  * either the WHOLE report (`caveatKind`/`'never_ran'`/`'all_transient'`, via
- * `evaluateCscProducts`) or a SINGLE category within an otherwise-assessed scan
+ * `evaluateRegistrarProducts`) or a SINGLE category within an otherwise-assessed scan
  * (`'category_transient'`, via `evalScanProduct`'s `checkStatus` branch).
  *
  * `evalScanProduct`'s `absent` branch ("DMARC not observed") means "we looked and
@@ -304,20 +304,20 @@ type UnassessedReason = CaveatKind | 'category_transient';
  *
  * `reason` (the STRUCTURAL discriminant, {@link UnassessedReason}) picks the
  * wording: "no checks ran" is false — and this exact text, ending up on the
- * `recommendations[].justifyingGap` WIRE field even though `formatCscProducts`
+ * `recommendations[].justifyingGap` WIRE field even though `formatRegistrarProducts`
  * never prints it to prose — for a total-outage scan where N checks WERE
  * attempted; "checks attempted, none completed" is equally false when it is
  * ONE category, not the whole scan, that never completed. Classifying on
  * `reason` rather than comparing the `caveat` STRING means a renamed/edited
  * caveat wording cannot silently flip which branch this takes. Exported for
  * direct unit testing of that decoupling — see the round-6c pin test in
- * `test/map-csc-products.spec.ts`.
+ * `test/map-registrar-products.spec.ts`.
  */
 export function unassessedScanProduct(
-	product: Exclude<CscProductKey, 'csc_multilock'>,
+	product: Exclude<RegistrarProductKey, 'registry_lock'>,
 	concern: string,
 	reason: UnassessedReason | null,
-): CscProductRecommendation {
+): RegistrarProductRecommendation {
 	const reasonText =
 		reason === 'category_transient'
 			? "this category's check failed transiently — other categories in this scan may have completed normally"
@@ -326,7 +326,7 @@ export function unassessedScanProduct(
 				: 'no checks ran';
 	return {
 		product,
-		productName: CSC_PRODUCT_NAMES[product],
+		productName: REGISTRAR_PRODUCT_NAMES[product],
 		recommended: false,
 		priority: 'none',
 		assessed: false,
@@ -339,13 +339,13 @@ export function unassessedScanProduct(
  * Evaluate CSC product recommendations from scan results + RDAP lock posture (PURE).
  * Exported for direct unit testing without mocking scanDomain/checkRdapLookup.
  */
-export function evaluateCscProducts(
+export function evaluateRegistrarProducts(
 	checkResults: CheckResult[],
 	lockPosture: LockPosture | null,
 	domain: string,
 	score: number | null,
 	grade: string | null,
-): CscProductReport {
+): RegistrarProductReport {
 	const byCategory = new Map<string, CheckResult>();
 	for (const r of checkResults) byCategory.set(r.category, r);
 
@@ -357,13 +357,13 @@ export function evaluateCscProducts(
 	// finding manufactured by the transient failure, not off a real gap.
 	const assessed = hasCompletedEvidence(checkResults);
 	const caveatKind: CaveatKind | null = assessed ? null : checkResults.length === 0 ? 'never_ran' : 'all_transient';
-	const caveat = assessed ? null : checkResults.length === 0 ? UNASSESSED_CSC_NOTE : buildAllTransientCscNote(checkResults.length);
+	const caveat = assessed ? null : checkResults.length === 0 ? UNASSESSED_PRODUCT_NOTE : buildAllTransientProductNote(checkResults.length);
 
 	// MultiLock is deliberately NOT gated on `assessed`: it reads the RDAP lock
 	// posture, which is fetched independently of the scan. A registered domain whose
 	// zone is broken can still show a genuinely unlocked transfer status, and that is
 	// a real measurement — suppressing it would be the mirror defect.
-	const recommendations: CscProductRecommendation[] = [
+	const recommendations: RegistrarProductRecommendation[] = [
 		evalMultiLock(lockPosture),
 		assessed
 			? evalScanProduct(
@@ -432,7 +432,7 @@ export function extractLockPosture(rdap: CheckResult): LockPosture | null {
 	return null;
 }
 
-const CSC_PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
+const REGISTRAR_PRODUCT_ORDER: RegistrarProductKey[] = ['registry_lock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
 
 /**
  * Render a CSC product report for display.
@@ -441,23 +441,23 @@ const CSC_PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'd
  * unassessed domain rendered "**Score:** not measured | **3** recommended"
  * followed by three priority-tagged upsells justified by "DMARC not observed" —
  * recommendations derived entirely from non-observation, sitting under a score line
- * that admitted nothing was measured. `prioritize_csc_leads` already refused to
+ * that admitted nothing was measured. `prioritize_portfolio_leads` already refused to
  * print exactly that from the same producer output; this is the other half of that
  * decision, stated once for both tools.
  */
-export function formatCscProducts(report: CscProductReport, format: OutputFormat = 'full'): string {
+export function formatRegistrarProducts(report: RegistrarProductReport, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 	const byKey = new Map(report.recommendations.map((r) => [r.product, r]));
 	// Unassessed: no product list and no count claim — except a product that is STILL
 	// recommended, which can only be MultiLock on independent RDAP evidence. Withholding
 	// that would suppress a real measurement.
-	const shown = CSC_PRODUCT_ORDER.map((key) => byKey.get(key)).filter(
-		(r): r is CscProductRecommendation => r !== undefined && (report.assessed || r.recommended),
+	const shown = REGISTRAR_PRODUCT_ORDER.map((key) => byKey.get(key)).filter(
+		(r): r is RegistrarProductRecommendation => r !== undefined && (report.assessed || r.recommended),
 	);
 
-	// `caveat` is REQUIRED on `CscProductReport`, so the real producer
-	// (`evaluateCscProducts`) always states which reason applies whenever
-	// `!assessed`. Falling back to `UNASSESSED_CSC_NOTE` specifically was the
+	// `caveat` is REQUIRED on `RegistrarProductReport`, so the real producer
+	// (`evaluateRegistrarProducts`) always states which reason applies whenever
+	// `!assessed`. Falling back to `UNASSESSED_PRODUCT_NOTE` specifically was the
 	// same silent-wrong-prose shape this fix round exists to remove: a
 	// transient-outage report with a somehow-unset `caveat` would render the
 	// "no checks ran" text even though N checks DID run. The only genuinely
@@ -507,13 +507,13 @@ export function formatCscProducts(report: CscProductReport, format: OutputFormat
 }
 
 /** runtimeOptions accepted by the orchestrator — ScanRuntimeOptions plus the optional WHOIS binding the RDAP call threads. */
-type CscRuntimeOptions = ScanRuntimeOptions & { whoisBinding?: { fetch: typeof fetch } };
+type RegistrarRuntimeOptions = ScanRuntimeOptions & { whoisBinding?: { fetch: typeof fetch } };
 
 /**
  * Map a domain's security gaps to CSC products (orchestrator — the only impure unit).
  * Runs a full scan (cached) + a budget-bounded RDAP lookup, then evaluates.
  */
-export async function mapCscProducts(domain: string, kv?: KVNamespace, runtimeOptions?: CscRuntimeOptions): Promise<CscProductReport> {
+export async function mapRegistrarProducts(domain: string, kv?: KVNamespace, runtimeOptions?: RegistrarRuntimeOptions): Promise<RegistrarProductReport> {
 	// Capture the deadline epoch BEFORE kicking off both calls so the RDAP budget
 	// is not charged for scan elapsed time (the two calls are independent).
 	const deadlineMs = Date.now() + RDAP_LOOKUP_SYNC_BUDGET_MS;
@@ -526,5 +526,5 @@ export async function mapCscProducts(domain: string, kv?: KVNamespace, runtimeOp
 		}),
 	]);
 	const lockPosture = extractLockPosture(rdap);
-	return evaluateCscProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, scanResult.score.grade);
+	return evaluateRegistrarProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, scanResult.score.grade);
 }

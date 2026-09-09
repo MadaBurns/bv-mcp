@@ -143,12 +143,12 @@ describe('ungraded representation', () => {
 	it('no reporting tool emits a fabricated verdict on the wire for an unmeasured domain', async () => {
 		const { buildToolResult } = await import('../../src/handlers/tool-formatters');
 		const { evaluateCompliance, formatCompliance } = await import('../../src/tools/map-compliance');
-		const { evaluateCscProducts, formatCscProducts } = await import('../../src/tools/map-csc-products');
-		const { rankCscLeads, formatCscLeads } = await import('../../src/tools/prioritize-csc-leads');
+		const { evaluateRegistrarProducts, formatRegistrarProducts } = await import('../../src/tools/map-registrar-products');
+		const { rankPortfolioLeads, formatPortfolioLeads } = await import('../../src/tools/prioritize-portfolio-leads');
 
-		const unmeasuredCsc = evaluateCscProducts([], null, 'never-measured.example', null, null);
+		const unmeasuredRegistrar = evaluateRegistrarProducts([], null, 'never-measured.example', null, null);
 		const unmeasuredCompliance = evaluateCompliance([], 'never-measured.example', null, null);
-		const unmeasuredLeads = rankCscLeads([{ report: unmeasuredCsc, ownershipBucket: 'consolidated' as const }]);
+		const unmeasuredLeads = rankPortfolioLeads([{ report: unmeasuredRegistrar, ownershipBucket: 'consolidated' as const }]);
 
 		const surfaces = [
 			{
@@ -163,9 +163,9 @@ describe('ungraded representation', () => {
 				proseRequired: ['not measured'],
 			},
 			{
-				tool: 'map_csc_products',
-				text: formatCscProducts(unmeasuredCsc, 'full'),
-				data: unmeasuredCsc as unknown,
+				tool: 'map_registrar_products',
+				text: formatRegistrarProducts(unmeasuredRegistrar, 'full'),
+				data: unmeasuredRegistrar as unknown,
 				// `assessed` was on the wire from the start and the formatter simply
 				// never read it, so a payload rule alone did not catch the defect: the
 				// prose sold three priority-tagged products under a "not measured"
@@ -177,8 +177,8 @@ describe('ungraded representation', () => {
 				proseRequired: ['not measured', 'No checks ran for this domain, so no product gap could be assessed.'],
 			},
 			{
-				tool: 'prioritize_csc_leads',
-				text: formatCscLeads(unmeasuredLeads, 'full'),
+				tool: 'prioritize_portfolio_leads',
+				text: formatPortfolioLeads(unmeasuredLeads, 'full'),
 				data: unmeasuredLeads as unknown,
 				// A severity manufactured from non-observation, and a hot-lead count
 				// that includes a domain nobody measured.
@@ -193,11 +193,11 @@ describe('ungraded representation', () => {
 		// must have actually produced something to inspect.
 		expect(surfaces).toHaveLength(3);
 		expect(unmeasuredCompliance.frameworks.soc2.mappings.length).toBeGreaterThan(0);
-		expect(unmeasuredCsc.recommendations.length).toBeGreaterThan(0);
+		expect(unmeasuredRegistrar.recommendations.length).toBeGreaterThan(0);
 		expect(unmeasuredLeads.rankedLeads.length).toBeGreaterThan(0);
 
 		for (const { tool, text, data, forbidden, required, proseForbidden, proseRequired } of surfaces) {
-			// The prose is the other half of the same result. `map_csc_products` shipped
+			// The prose is the other half of the same result. `map_registrar_products` shipped
 			// a clean payload and a fabricated report for four commits because only the
 			// payload was under a rule here.
 			for (const token of proseForbidden) expect(text, `${tool}/prose: must not contain ${token}`).not.toContain(token);
@@ -278,14 +278,14 @@ describe('ungraded representation', () => {
 	 * (`checkStatus: 'timeout' | 'error'` on every one). `hasCompletedEvidence`
 	 * exists to distinguish this from the never-ran (`checks: []`) state above,
 	 * and this is the EXACT state F1 caught a regression in: commit ec984197
-	 * correctly flipped `prioritize_csc_leads`' `assessed` to `false` for it, but
+	 * correctly flipped `prioritize_portfolio_leads`' `assessed` to `false` for it, but
 	 * every per-lead/report-level note kept printing the never-ran "no checks
 	 * ran" sentence — false, since N checks DID run. Had this invariant existed
 	 * before ec984197, it would have failed on that commit.
 	 *
-	 * `map_csc_products`, `prioritize_csc_leads`, and `compare_baseline` are
-	 * built by their REAL producers (`evaluateCscProducts` /
-	 * `rankCscLeads` over it / `compareBaseline`) from a hand-built all-transient
+	 * `map_registrar_products`, `prioritize_portfolio_leads`, and `compare_baseline` are
+	 * built by their REAL producers (`evaluateRegistrarProducts` /
+	 * `rankPortfolioLeads` over it / `compareBaseline`) from a hand-built all-transient
 	 * `CheckResult[]` — the SAME fixture pattern as the transient-`map_compliance`
 	 * block above and `map-compliance.spec.ts`'s own fixture, since a corpus
 	 * audit must not mock `scanDomain`.
@@ -301,9 +301,9 @@ describe('ungraded representation', () => {
 	 */
 	it('no reporting tool renders the never-ran wording on the wire for an attempted-none-completed (all-transient) domain', async () => {
 		const { buildToolResult } = await import('../../src/handlers/tool-formatters');
-		const { evaluateCscProducts, formatCscProducts, buildAllTransientCscNote, UNASSESSED_CSC_NOTE } =
-			await import('../../src/tools/map-csc-products');
-		const { rankCscLeads, formatCscLeads } = await import('../../src/tools/prioritize-csc-leads');
+		const { evaluateRegistrarProducts, formatRegistrarProducts, buildAllTransientProductNote, UNASSESSED_PRODUCT_NOTE } =
+			await import('../../src/tools/map-registrar-products');
+		const { rankPortfolioLeads, formatPortfolioLeads } = await import('../../src/tools/prioritize-portfolio-leads');
 		const { compareBaseline, formatBaselineResult } = await import('../../src/tools/compare-baseline');
 		const { buildAllTransientFixPlanCaveat, formatFixPlan } = await import('../../src/tools/generate-fix-plan');
 		const { SCAN_CATEGORIES } = await import('../../src/tools/scan-domain');
@@ -322,8 +322,8 @@ describe('ungraded representation', () => {
 		// never-ran block above) before asserting on it.
 		expect(allTransient.length).toBeGreaterThan(10);
 
-		const cscReport = evaluateCscProducts(allTransient, null, 'total-outage.example', null, null);
-		const leadsReport = rankCscLeads([{ report: cscReport, ownershipBucket: 'consolidated' as const }]);
+		const registrarReport = evaluateRegistrarProducts(allTransient, null, 'total-outage.example', null, null);
+		const leadsReport = rankPortfolioLeads([{ report: registrarReport, ownershipBucket: 'consolidated' as const }]);
 		// eslint-disable-next-line @typescript-eslint/no-explicit-any
 		const baselineScan: any = {
 			domain: 'total-outage.example',
@@ -356,17 +356,17 @@ describe('ungraded representation', () => {
 
 		const surfaces = [
 			{
-				tool: 'map_csc_products',
-				text: formatCscProducts(cscReport, 'full'),
-				data: cscReport as unknown,
-				// Names the transient state explicitly (`buildAllTransientCscNote`).
+				tool: 'map_registrar_products',
+				text: formatRegistrarProducts(registrarReport, 'full'),
+				data: registrarReport as unknown,
+				// Names the transient state explicitly (`buildAllTransientProductNote`).
 				proseNamesTransient: true,
 			},
 			{
-				tool: 'prioritize_csc_leads',
-				text: formatCscLeads(leadsReport, 'full'),
+				tool: 'prioritize_portfolio_leads',
+				text: formatPortfolioLeads(leadsReport, 'full'),
 				data: leadsReport as unknown,
-				// Threads the SAME wording via `CscLead.caveat` (F1).
+				// Threads the SAME wording via `PortfolioLead.caveat` (F1).
 				proseNamesTransient: true,
 			},
 			{
@@ -392,18 +392,18 @@ describe('ungraded representation', () => {
 		// Non-vacuity: every surface must carry at least one rule-worthy fixture,
 		// and the producers must have actually produced something to inspect.
 		expect(surfaces).toHaveLength(4);
-		expect(cscReport.assessed).toBe(false);
+		expect(registrarReport.assessed).toBe(false);
 		expect(leadsReport.rankedLeads).toHaveLength(1);
 		expect(leadsReport.rankedLeads[0]!.assessed).toBe(false);
 		expect(baselineResult.passed).toBeNull();
 		expect(baselineResult.inconclusiveRules.length).toBeGreaterThan(0);
 
 		// The never-ran sentence, in the exact wording every one of these four
-		// tools shares (`map_csc_products`' `UNASSESSED_CSC_NOTE`, or the leads/
+		// tools shares (`map_registrar_products`' `UNASSESSED_PRODUCT_NOTE`, or the leads/
 		// fix-plan constants built from it). It must not appear ANYWHERE for an
 		// all-transient result — neither in prose nor on either wire channel.
 		const NEVER_RAN_SENTENCE = 'No checks ran for this domain';
-		expect(NEVER_RAN_SENTENCE).toBe(UNASSESSED_CSC_NOTE.slice(0, NEVER_RAN_SENTENCE.length));
+		expect(NEVER_RAN_SENTENCE).toBe(UNASSESSED_PRODUCT_NOTE.slice(0, NEVER_RAN_SENTENCE.length));
 
 		// Non-vacuity for the flag itself: at least one surface names the
 		// transient state and at least one deliberately doesn't (compare_baseline)
@@ -429,11 +429,11 @@ describe('ungraded representation', () => {
 				expect(payload, `${tool}/${channel}: must not carry the never-ran sentence`).not.toContain(NEVER_RAN_SENTENCE);
 				// Case-insensitive and NOT anchored to the full sentence — catches the
 				// fragment anywhere on the wire, including NESTED text a top-level
-				// `caveat` field doesn't cover. `map_csc_products`' own
+				// `caveat` field doesn't cover. `map_registrar_products`' own
 				// `recommendations[].justifyingGap` used to hardcode "…not assessed —
 				// no checks ran" regardless of WHY the domain was unassessed, which sat
 				// on this exact wire channel (via `structuredContent`) even though
-				// `formatCscProducts` never printed it to prose — a fabrication this
+				// `formatRegistrarProducts` never printed it to prose — a fabrication this
 				// substring check alone can catch where the sentence-level check above
 				// cannot. None of the correct all-transient wordings contain this
 				// fragment (they say "no checks running at ALL", not "ran").
@@ -447,9 +447,9 @@ describe('ungraded representation', () => {
 		// renders for a genuinely never-ran domain. Without this, every assertion
 		// above could hold under a producer that stopped saying the never-ran
 		// sentence ANYWHERE, including where it is still correct.
-		const neverRanCsc = evaluateCscProducts([], null, 'never-measured.example', null, null);
-		expect(formatCscProducts(neverRanCsc, 'full')).toContain(NEVER_RAN_SENTENCE);
-		expect(buildAllTransientCscNote(allTransient.length)).not.toContain(NEVER_RAN_SENTENCE);
+		const neverRanRegistrar = evaluateRegistrarProducts([], null, 'never-measured.example', null, null);
+		expect(formatRegistrarProducts(neverRanRegistrar, 'full')).toContain(NEVER_RAN_SENTENCE);
+		expect(buildAllTransientProductNote(allTransient.length)).not.toContain(NEVER_RAN_SENTENCE);
 	});
 
 	// Spec §D1's scoring-boundary guard, expressed as an invariant over the three

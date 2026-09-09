@@ -38,7 +38,7 @@ describe('registrar identity matching', () => {
 	});
 
 	it('strips corporate suffixes without deleting meaningful tokens', () => {
-		expect(normalizeRegistrarIdentity('CSC Corporate Domains, Inc.')).toBe('csc corporate domains');
+		expect(normalizeRegistrarIdentity('CSC Corporate Domains, Inc.')).toBe('corporate domains registrar');
 	});
 
 	it('matches CSC regional WHOIS display variants as the same registrar family', () => {
@@ -81,14 +81,14 @@ describe('registrar identity matching', () => {
 		// Two regional CSC subsidiaries observed verbatim in production WHOIS
 		// for regional-alpha.example.com, regional-beta.example.com, regional-gamma.example.com, etc.
 		const fordAu: RegistrarIdentity = { name: 'Corporation Service Company (Aust) Pty Ltd' };
-		const cscMalaysia: RegistrarIdentity = { name: 'CSC Digital Brand Services Malaysia Sdn Bhd' };
-		const cscUs: RegistrarIdentity = { name: 'CSC Corporate Domains, Inc.' };
+		const brandRegistrarMalaysia: RegistrarIdentity = { name: 'CSC Digital Brand Services Malaysia Sdn Bhd' };
+		const brandRegistrarUs: RegistrarIdentity = { name: 'CSC Corporate Domains, Inc.' };
 		// All pairwise comparisons must be same-family — this is the
 		// user-visible bug: any pair returning false drives an off-primary-registrar
 		// inference and a shadowIt finding in the brand-audit report.
-		expect(sameRegistrarFamily(fordAu, cscMalaysia)).toBe(true);
-		expect(sameRegistrarFamily(fordAu, cscUs)).toBe(true);
-		expect(sameRegistrarFamily(cscMalaysia, cscUs)).toBe(true);
+		expect(sameRegistrarFamily(fordAu, brandRegistrarMalaysia)).toBe(true);
+		expect(sameRegistrarFamily(fordAu, brandRegistrarUs)).toBe(true);
+		expect(sameRegistrarFamily(brandRegistrarMalaysia, brandRegistrarUs)).toBe(true);
 	});
 
 	it('falls back to registrar-family names when registry-specific registrar IDs differ', () => {

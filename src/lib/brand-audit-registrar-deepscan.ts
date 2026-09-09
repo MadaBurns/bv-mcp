@@ -6,7 +6,7 @@
  * For each top-N apex (default cap 25), runs scan_domain, discover_subdomains
  * and check_subdomain_takeover via an injected internal-call function.
  * Aggregates per-apex posture (grade/score), subdomain inventory, and
- * dangling-DNS findings into the cscComplement payload.
+ * dangling-DNS findings into the registrarComplement payload.
  *
  * The injected `internalCall` is `handleToolsCall` (see `src/index.ts` — the
  * brand-audit queue consumer's closure), so every response is an MCP tool
@@ -14,7 +14,7 @@
  * payload lives in **`structuredContent`** — there is no `structured` field on
  * that path. Reading the wrong key yields `undefined` for every apex and the
  * whole deep-scan silently reports zero results, so the envelope shape is
- * pinned by `test/brand-audit-csc-deepscan.spec.ts` against payloads built by
+ * pinned by `test/brand-audit-registrar-deepscan.spec.ts` against payloads built by
  * the real production builders.
  *
  * Parallel cap 5. Per-apex failures are partial: a failed scan_domain omits
@@ -23,7 +23,7 @@
  * section. Stage still reaches 'ready'.
  */
 
-import type { BrandAuditCsc } from '../schemas/brand-audit-csc';
+import type { BrandAuditRegistrar } from '../schemas/brand-audit-registrar';
 
 const MAX_APEXES = 25;
 const PARALLEL_CAP = 5;
@@ -106,8 +106,8 @@ export interface RunDeepScanInput {
 }
 
 export interface RunDeepScanResult {
-	postureSnapshot: BrandAuditCsc['postureSnapshot'];
-	deepScan: BrandAuditCsc['deepScan'];
+	postureSnapshot: BrandAuditRegistrar['postureSnapshot'];
+	deepScan: BrandAuditRegistrar['deepScan'];
 }
 
 async function runWithConcurrency<T, U>(items: ReadonlyArray<T>, limit: number, worker: (item: T) => Promise<U>): Promise<U[]> {
@@ -187,9 +187,9 @@ const DANGLING_SEVERITIES = new Set(['critical', 'high', 'medium', 'low']);
  * entries. `info` findings (the "no dangling CNAME records found" all-clear)
  * and findings with no recoverable FQDN are skipped.
  */
-function extractDangling(apex: string, takeover: SubdomainTakeoverStructured | undefined): BrandAuditCsc['deepScan']['danglingDns'] {
+function extractDangling(apex: string, takeover: SubdomainTakeoverStructured | undefined): BrandAuditRegistrar['deepScan']['danglingDns'] {
 	if (!takeover) return [];
-	const dangling: BrandAuditCsc['deepScan']['danglingDns'] = [];
+	const dangling: BrandAuditRegistrar['deepScan']['danglingDns'] = [];
 	for (const f of takeover.findings ?? []) {
 		if (f.category !== undefined && f.category !== 'subdomain_takeover') continue;
 		const severity = (f.severity ?? 'medium').toLowerCase();
@@ -245,7 +245,7 @@ function distribution(grades: Array<string | null>): Record<string, number> {
 
 /**
  * Deep-scan top-N apexes via injected internalCall. Produces the postureSnapshot
- * + deepScan sections of a cscComplement payload. Per-apex failures degrade the
+ * + deepScan sections of a registrarComplement payload. Per-apex failures degrade the
  * result to partial (apexesScanned < apexesTotal) without aborting siblings.
  */
 export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanResult> {
@@ -260,9 +260,9 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 		return { apex, scan, discover, takeover };
 	});
 
-	const postureApexes: BrandAuditCsc['postureSnapshot']['apexes'] = [];
-	const dangling: BrandAuditCsc['deepScan']['danglingDns'] = [];
-	const inventory: BrandAuditCsc['deepScan']['subdomainInventoryByApex'] = {};
+	const postureApexes: BrandAuditRegistrar['postureSnapshot']['apexes'] = [];
+	const dangling: BrandAuditRegistrar['deepScan']['danglingDns'] = [];
+	const inventory: BrandAuditRegistrar['deepScan']['subdomainInventoryByApex'] = {};
 	const grades: Array<string | null> = [];
 
 	for (const r of perApex) {

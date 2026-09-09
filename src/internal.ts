@@ -669,7 +669,7 @@ internalRoutes.post('/tools/call', async (c) => {
 	if (wantStructured && capturedResult !== null) {
 		return c.json({ result: capturedResult, isError: result.isError ?? false });
 	}
-	// Custom-shape tools (e.g. prioritize_csc_leads, map_csc_products, scan_domain) don't
+	// Custom-shape tools (e.g. prioritize_portfolio_leads, map_registrar_products, scan_domain) don't
 	// produce a CheckResult but DO set structuredContent. Surface that report under the
 	// top-level `result` field the internal door contract uses (bv-web's door reads
 	// `payload.result`; without this it would only see `structuredContent`, a different
@@ -1051,8 +1051,8 @@ internalRoutes.post('/tools/batch', async (c) => {
 				// MCP frame. Two kinds of tool produce that payload differently:
 				//
 				//   1. TOOL_REGISTRY CheckResult tools → captured via `resultCapture`.
-				//   2. Custom-shape tools (scan_domain, prioritize_csc_leads,
-				//      map_csc_products, … — the `NON_CHECK_RESULT_TOOLS` set) produce
+				//   2. Custom-shape tools (scan_domain, prioritize_portfolio_leads,
+				//      map_registrar_products, … — the `NON_CHECK_RESULT_TOOLS` set) produce
 				//      no CheckResult but DO set `structuredContent`.
 				//
 				// Case 2 previously fell through to `toolResult`, so a batched

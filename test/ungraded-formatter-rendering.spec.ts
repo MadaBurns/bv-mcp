@@ -88,7 +88,7 @@ describe('formatCompliance — ungraded scan', () => {
 	});
 });
 
-describe('formatCscProducts — ungraded scan', () => {
+describe('formatRegistrarProducts — ungraded scan', () => {
 	function report(score: number | null, grade: string | null) {
 		// `assessed` is what the formatter gates the product list on, so this fixture
 		// must carry it: an ungraded fixture that omitted the flag was read as
@@ -103,7 +103,7 @@ describe('formatCscProducts — ungraded scan', () => {
 			lockPosture: null,
 			recommendations: [
 				{
-					product: 'csc_multilock',
+					product: 'registry_lock',
 					productName: 'CSC MultiLock',
 					recommended: true,
 					priority: 'high',
@@ -141,13 +141,13 @@ describe('formatCscProducts — ungraded scan', () => {
 	}
 
 	it.each(FORMATS)('renders the ungraded token, not null/100 (null) [%s]', async (format) => {
-		const { formatCscProducts } = await import('../src/tools/map-csc-products');
-		expectUngraded(formatCscProducts(report(null, null), format), `csc/${format}`);
+		const { formatRegistrarProducts } = await import('../src/tools/map-registrar-products');
+		expectUngraded(formatRegistrarProducts(report(null, null), format), `csc/${format}`);
 	});
 
 	it.each(FORMATS)('still renders a real score line for a measured scan [%s] (control)', async (format) => {
-		const { formatCscProducts } = await import('../src/tools/map-csc-products');
-		const text = formatCscProducts(report(73, 'C+'), format);
+		const { formatRegistrarProducts } = await import('../src/tools/map-registrar-products');
+		const text = formatRegistrarProducts(report(73, 'C+'), format);
 		expect(text).toContain('73/100 (C+)');
 		expect(text).not.toContain('not measured');
 	});
@@ -184,10 +184,10 @@ describe('formatFixPlan — ungraded scan', () => {
 	});
 });
 
-describe('formatCscLeads — ungraded lead', () => {
+describe('formatPortfolioLeads — ungraded lead', () => {
 	// An ungraded lead carries NO gap severity and is excluded from the hot-lead
 	// count — a severity of 7 for a domain nobody measured is manufactured by
-	// `evaluateCscProducts` recommending every product it could not observe.
+	// `evaluateRegistrarProducts` recommending every product it could not observe.
 	function leadReport(score: number | null, grade: string | null) {
 		const graded = score !== null;
 		// This fixture stands for the nothing-ran case: no severity, not hot.
@@ -205,7 +205,7 @@ describe('formatCscLeads — ungraded lead', () => {
 					ownershipBucket: 'consolidated',
 					gapSeverity: graded ? 7 : null,
 					priorityRank: 1,
-					recommendedCscProducts: [],
+					recommendedProducts: [],
 					recommendedCount: 0,
 					topPriority: 'none',
 				},
@@ -225,20 +225,20 @@ describe('formatCscLeads — ungraded lead', () => {
 	}
 
 	it.each(FORMATS)('renders the ungraded token on the lead line, not null/100 (null) [%s]', async (format) => {
-		const { formatCscLeads } = await import('../src/tools/prioritize-csc-leads');
-		expectUngraded(formatCscLeads(leadReport(null, null), format), `leads/${format}`);
+		const { formatPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
+		expectUngraded(formatPortfolioLeads(leadReport(null, null), format), `leads/${format}`);
 	});
 
 	it.each(FORMATS)('still renders a real score on the lead line for a measured domain [%s] (control)', async (format) => {
-		const { formatCscLeads } = await import('../src/tools/prioritize-csc-leads');
-		const text = formatCscLeads(leadReport(73, 'C+'), format);
+		const { formatPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
+		const text = formatPortfolioLeads(leadReport(73, 'C+'), format);
 		expect(text).toContain('73/100 (C+)');
 	});
 
 	it('renders the SAME ungraded token for an ungradeable portfolio as for an ungraded lead', async () => {
-		const { formatCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		const { formatPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
 		const { UNGRADED_DISPLAY } = await import('../src/tools/scan/format-report');
-		const text = formatCscLeads(leadReport(null, null), 'full');
+		const text = formatPortfolioLeads(leadReport(null, null), 'full');
 
 		// The defect this pins: ONE output carrying three vocabularies for the same
 		// state — a lead line saying `null/100 (null)`, a portfolio line saying `N/A`,

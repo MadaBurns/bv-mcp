@@ -3,7 +3,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { setupFetchMock } from './helpers/dns-mock';
 
-describe('view=csc_complement tier gate', () => {
+describe('view=registrar_complement tier gate', () => {
 	let mockCtx: { restore: () => void };
 
 	beforeEach(() => {
@@ -15,11 +15,11 @@ describe('view=csc_complement tier gate', () => {
 		vi.resetModules();
 	});
 
-	it('rejects view=csc_complement when authTier is below enterprise', async () => {
+	it('rejects view=registrar_complement when authTier is below enterprise', async () => {
 		const { handleToolsCall } = await import('../src/handlers/tools');
 
 		const result = await handleToolsCall(
-			{ name: 'brand_audit_single', arguments: { domain: 'example.com', view: 'csc_complement' } },
+			{ name: 'brand_audit_single', arguments: { domain: 'example.com', view: 'registrar_complement' } },
 			undefined,
 			{ authTier: 'agent' } as never,
 		);
@@ -27,10 +27,10 @@ describe('view=csc_complement tier gate', () => {
 		expect(result.isError).toBe(true);
 		const textContent = result.content[0];
 		const text = textContent && 'text' in textContent ? textContent.text : '';
-		expect(text).toMatch(/^Error: Invalid view: 'csc_complement' requires enterprise tier/);
+		expect(text).toMatch(/^Error: Invalid view: 'registrar_complement' requires enterprise tier/);
 	});
 
-	it('does not reject view=csc_complement at the gate when authTier is enterprise', async () => {
+	it('does not reject view=registrar_complement at the gate when authTier is enterprise', async () => {
 		// Mock brandAuditSingle at the module level before importing handleToolsCall.
 		// This short-circuits the tool after the gate passes, avoiding hangs from real discovery.
 		// Lift the mock function so we can assert it was called with view forwarded.
@@ -53,7 +53,7 @@ describe('view=csc_complement tier gate', () => {
 
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		const result = await handleToolsCall(
-			{ name: 'brand_audit_single', arguments: { domain: 'example.com', view: 'csc_complement' } },
+			{ name: 'brand_audit_single', arguments: { domain: 'example.com', view: 'registrar_complement' } },
 			undefined,
 			{ authTier: 'enterprise' } as never,
 		);
@@ -70,13 +70,13 @@ describe('view=csc_complement tier gate', () => {
 		// This catches the regression where the gate passes but view is dropped before the pipeline.
 		expect(brandAuditSingleMock!).toHaveBeenCalledWith(
 			expect.anything(),
-			expect.objectContaining({ view: 'csc_complement' }),
+			expect.objectContaining({ view: 'registrar_complement' }),
 			expect.anything(),
 		);
 	});
 
 	it('omits view → schema accepts and view is undefined', async () => {
-		// Asserts the Zod schema accepts a missing `view`; gate logic only fires when view is explicitly csc_complement.
+		// Asserts the Zod schema accepts a missing `view`; gate logic only fires when view is explicitly registrar_complement.
 		const { BrandAuditSingleArgs } = await import('../src/schemas/tool-args');
 		const parsed = BrandAuditSingleArgs.parse({ domain: 'example.com' });
 		expect(parsed.view).toBeUndefined();
@@ -88,8 +88,8 @@ describe('view=csc_complement tier gate', () => {
 		// brand_audit_single tool runs in the request path, so it must forward
 		// ro.brandAuditQueue (constructed from env.BRAND_AUDIT_QUEUE in
 		// src/index.ts) into the pipeline deps — otherwise sync audits with
-		// view='csc_complement' write only csc_complement_fast and never trigger
-		// the deep-scan job that fills csc_complement_full.
+		// view='registrar_complement' write only registrar_complement_fast and never trigger
+		// the deep-scan job that fills registrar_complement_full.
 		let brandAuditSingleMock: ReturnType<typeof vi.fn>;
 		vi.doMock('../src/tools/brand-audit-single', () => {
 			brandAuditSingleMock = vi.fn().mockResolvedValue({
@@ -104,7 +104,7 @@ describe('view=csc_complement tier gate', () => {
 		const brandAuditQueue = { send: vi.fn().mockResolvedValue(undefined) };
 		const { handleToolsCall } = await import('../src/handlers/tools');
 		await handleToolsCall(
-			{ name: 'brand_audit_single', arguments: { domain: 'example.com', view: 'csc_complement' } },
+			{ name: 'brand_audit_single', arguments: { domain: 'example.com', view: 'registrar_complement' } },
 			undefined,
 			{ authTier: 'enterprise', brandAuditQueue } as never,
 		);

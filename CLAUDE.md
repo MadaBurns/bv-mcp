@@ -5,7 +5,7 @@ Guidance for Claude Code working in this repo. This file carries the big picture
 ## What is this?
 
 Blackveil DNS — source-available DNS & email security scanner, built as a Cloudflare Worker.
-79 public tools (84 registered in `TOOL_DEFS`; 5 internal-only via `INTERNAL_ONLY_TOOLS` — `map_csc_products` + the four `identity_secops` M365 tools, withdrawn 3.63.0) exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` is directly callable AND runs inside `scan_domain` (a `scanIncluded: false` special slot in `CHECK_DISPATCH`). Listed on the MCP Registry as `com.blackveilsecurity/dns`.
+79 public tools (84 registered in `TOOL_DEFS`; 5 internal-only via `INTERNAL_ONLY_TOOLS` — `map_registrar_products` + the four `identity_secops` M365 tools, withdrawn 3.63.0) exposed via MCP Streamable HTTP (JSON-RPC 2.0) at `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in `src/schemas/tool-definitions.ts`. `check_subdomain_takeover` is directly callable AND runs inside `scan_domain` (a `scanIncluded: false` special slot in `CHECK_DISPATCH`). Listed on the MCP Registry as `com.blackveilsecurity/dns`.
 
 **Version sync is automatic** — `npm version <X.Y.Z>` runs a lifecycle hook that syncs `server.json` + the `CHANGELOG.md` heading and stages them. Do not hand-edit those, `SERVER_VERSION`, or `package-lock.json` versions. Full surface list + release flow: **`bv-mcp-release` skill** (and `bv-mcp-operations` → "Version-sync surfaces").
 

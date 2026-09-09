@@ -3,7 +3,7 @@
 	"anchor": {
 		"apex": "ford.com",
 		"primaryRegistrar": { "family": "csc corporate domains", "name": "CSC Corporate Domains, Inc.", "ianaId": "299" },
-		"managedByCsc": true
+		"managedByRegistrar": true
 	},
 	"registrarPortfolio": {
 		"totalApexes": 4,
@@ -41,5 +41,5 @@
 		}
 	},
 	"generatedAt": "2026-05-22T14:32:00Z",
-	"reportId": "csc_rpt_abcdef123"
+	"reportId": "reg_rpt_abcdef123"
 }

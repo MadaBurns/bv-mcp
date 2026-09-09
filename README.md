@@ -106,7 +106,7 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
   resolve_spf_chain     check_nsec_             brand_audit_status
   discover_subdomains     walkability           brand_audit_get_
   map_compliance        check_dnssec_chain        report
-  prioritize_csc_leads
+  prioritize_portfolio_leads
   simulate_attack_paths check_fast_flux         list_brand_audit_watches
   check_agent_discovery check_dnskey_strength
                         check_authoritative_dns_infra

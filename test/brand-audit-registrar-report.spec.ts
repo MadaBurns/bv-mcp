@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Tests for cscComplement surfacing in brand_audit_get_report and
+ * Tests for registrarComplement surfacing in brand_audit_get_report and
  * CSC stage reporting in brand_audit_status.
  *
  * These features require a `stepStore` dep (operator-deploy only); without it
@@ -119,12 +119,12 @@ function makeD1ForStatus(opts: { targets?: { target: string }[] } = {}) {
 	return db;
 }
 
-describe('brand_audit_get_report with cscComplement', () => {
-	it('attaches cscComplement from csc_complement_full when present', async () => {
+describe('brand_audit_get_report with registrarComplement', () => {
+	it('attaches registrarComplement from registrar_complement_full when present', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 		const stepStore = createMemoryBrandAuditStepStore();
-		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'csc_complement_full', status: 'completed', payload: { viewVersion: 1, reportId: 'csc_rpt_full' } });
-		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'csc_complement_fast', status: 'completed', payload: { viewVersion: 1, reportId: 'csc_rpt_fast' } });
+		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_full', status: 'completed', payload: { viewVersion: 1, reportId: 'reg_rpt_full' } });
+		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_fast', status: 'completed', payload: { viewVersion: 1, reportId: 'reg_rpt_fast' } });
 
 		const result = await brandAuditGetReport({ auditId: 'a-1', target: 'ford.com' }, 'owner-1', {
 			db: makeD1ForGetReport(),
@@ -132,13 +132,13 @@ describe('brand_audit_get_report with cscComplement', () => {
 		});
 
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
-		expect(summary?.metadata?.cscComplement).toMatchObject({ reportId: 'csc_rpt_full' });
+		expect(summary?.metadata?.registrarComplement).toMatchObject({ reportId: 'reg_rpt_full' });
 	});
 
-	it('falls back to csc_complement_fast when full is absent', async () => {
+	it('falls back to registrar_complement_fast when full is absent', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 		const stepStore = createMemoryBrandAuditStepStore();
-		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'csc_complement_fast', status: 'completed', payload: { viewVersion: 1, reportId: 'csc_rpt_fast' } });
+		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_fast', status: 'completed', payload: { viewVersion: 1, reportId: 'reg_rpt_fast' } });
 
 		const result = await brandAuditGetReport({ auditId: 'a-1', target: 'ford.com' }, 'owner-1', {
 			db: makeD1ForGetReport(),
@@ -146,10 +146,10 @@ describe('brand_audit_get_report with cscComplement', () => {
 		});
 
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
-		expect(summary?.metadata?.cscComplement).toMatchObject({ reportId: 'csc_rpt_fast' });
+		expect(summary?.metadata?.registrarComplement).toMatchObject({ reportId: 'reg_rpt_fast' });
 	});
 
-	it('does not attach cscComplement when neither step is completed', async () => {
+	it('does not attach registrarComplement when neither step is completed', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 		const stepStore = createMemoryBrandAuditStepStore();
 
@@ -159,10 +159,10 @@ describe('brand_audit_get_report with cscComplement', () => {
 		});
 
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
-		expect(summary?.metadata?.cscComplement).toBeUndefined();
+		expect(summary?.metadata?.registrarComplement).toBeUndefined();
 	});
 
-	it('does not attach cscComplement when stepStore is omitted', async () => {
+	it('does not attach registrarComplement when stepStore is omitted', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 
 		const result = await brandAuditGetReport({ auditId: 'a-1', target: 'ford.com' }, 'owner-1', {
@@ -170,15 +170,15 @@ describe('brand_audit_get_report with cscComplement', () => {
 		});
 
 		const summary = result.findings.find((f) => f.metadata?.summary === true);
-		expect(summary?.metadata?.cscComplement).toBeUndefined();
+		expect(summary?.metadata?.registrarComplement).toBeUndefined();
 	});
 });
 
 describe('brand_audit_status CSC stages', () => {
-	it('reports fast_ready when csc_complement_fast is completed but full is absent', async () => {
+	it('reports fast_ready when registrar_complement_fast is completed but full is absent', async () => {
 		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
 		const stepStore = createMemoryBrandAuditStepStore();
-		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'csc_complement_fast', status: 'completed', payload: {} });
+		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_fast', status: 'completed', payload: {} });
 
 		const result = await brandAuditStatus('a-1', 'owner-1', {
 			db: makeD1ForStatus(),
@@ -190,11 +190,11 @@ describe('brand_audit_status CSC stages', () => {
 		expect(summary?.metadata?.stage).toBe('fast_ready');
 	});
 
-	it('reports deep_ready when csc_complement_full is completed', async () => {
+	it('reports deep_ready when registrar_complement_full is completed', async () => {
 		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
 		const stepStore = createMemoryBrandAuditStepStore();
-		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'csc_complement_full', status: 'completed', payload: {} });
-		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'csc_complement_fast', status: 'completed', payload: {} });
+		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_full', status: 'completed', payload: {} });
+		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_fast', status: 'completed', payload: {} });
 
 		const result = await brandAuditStatus('a-1', 'owner-1', {
 			db: makeD1ForStatus(),
@@ -236,8 +236,8 @@ describe('brand_audit_status CSC stages', () => {
 		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
 		const stepStore = createMemoryBrandAuditStepStore();
 		// target1 has fast only; target2 has full — deep_ready should win
-		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'csc_complement_fast', status: 'completed', payload: {} });
-		await stepStore.put({ auditId: 'a-1', target: 'lincoln.com', step: 'csc_complement_full', status: 'completed', payload: {} });
+		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_fast', status: 'completed', payload: {} });
+		await stepStore.put({ auditId: 'a-1', target: 'lincoln.com', step: 'registrar_complement_full', status: 'completed', payload: {} });
 
 		const result = await brandAuditStatus('a-1', 'owner-1', {
 			db: makeD1ForStatus({ targets: [{ target: 'ford.com' }, { target: 'lincoln.com' }] }),

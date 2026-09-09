@@ -40,7 +40,7 @@ const KNOWN_REGISTRAR_FAMILIES: Array<{ family: string; patterns: RegExp[]; rawP
 		// inference does not flag CSC-managed ccTLD registrations as shadowIt.
 		// Regression source: 2026-05 CSC registrar-family fixture verification of
 		// regional-alpha.example.com / regional-beta.example.com / regional-gamma.example.com.
-		family: 'csc corporate domains',
+		family: 'corporate domains registrar',
 		patterns: [
 			/^csc\s+corporate\s+domains(?:\b|$)/,
 			/^csc\s+corp\s+domains(?:\b|$)/,

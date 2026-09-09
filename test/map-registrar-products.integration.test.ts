@@ -36,7 +36,7 @@ afterEach(() => {
 	mockCheckRdap.mockReset();
 });
 
-describe('mapCscProducts — concurrency', () => {
+describe('mapRegistrarProducts — concurrency', () => {
 	it('runs scan and RDAP in parallel (total ≈ max(delays), not sum)', async () => {
 		const DELAY_MS = 40;
 		mockScanDomain.mockImplementation(
@@ -47,9 +47,9 @@ describe('mapCscProducts — concurrency', () => {
 		);
 		mockCheckRdap.mockImplementation(() => new Promise<CheckResult>((r) => setTimeout(() => r(rdapFailed()), DELAY_MS)));
 
-		const { mapCscProducts } = await import('../src/tools/map-csc-products');
+		const { mapRegistrarProducts } = await import('../src/tools/map-registrar-products');
 		const t0 = Date.now();
-		await mapCscProducts('parallel.com');
+		await mapRegistrarProducts('parallel.com');
 		const elapsed = Date.now() - t0;
 
 		// Sequential (await scan THEN rdap) would be ≥ 2 × DELAY_MS ≈ 80ms.
@@ -59,7 +59,7 @@ describe('mapCscProducts — concurrency', () => {
 	});
 });
 
-describe('mapCscProducts — wiring', () => {
+describe('mapRegistrarProducts — wiring', () => {
 	it('unlocked RDAP + failing DMARC + passing SSL/DNSSEC → MultiLock high + Managed DMARC; count 2', async () => {
 		mockScanDomain.mockResolvedValue({
 			checks: [check('dmarc', false, [{ title: 'No DMARC record', severity: 'high' }]), check('ssl', true), check('dnssec', true)],
@@ -67,10 +67,10 @@ describe('mapCscProducts — wiring', () => {
 		});
 		mockCheckRdap.mockResolvedValue(rdapWithPosture({ level: 'unlocked', transferLocked: false, deleteLocked: false, updateLocked: false, registryLevel: false, registrarLevel: false }));
 
-		const { mapCscProducts } = await import('../src/tools/map-csc-products');
-		const report = await mapCscProducts('unlocked.com');
+		const { mapRegistrarProducts } = await import('../src/tools/map-registrar-products');
+		const report = await mapRegistrarProducts('unlocked.com');
 
-		const multilock = report.recommendations.find((r) => r.product === 'csc_multilock')!;
+		const multilock = report.recommendations.find((r) => r.product === 'registry_lock')!;
 		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
 		expect(multilock.recommended).toBe(true);
 		expect(multilock.priority).toBe('high');
@@ -90,11 +90,11 @@ describe('mapCscProducts — wiring', () => {
 		});
 		mockCheckRdap.mockResolvedValue(rdapFailed());
 
-		const { mapCscProducts } = await import('../src/tools/map-csc-products');
-		const report = await mapCscProducts('failrdap.com');
+		const { mapRegistrarProducts } = await import('../src/tools/map-registrar-products');
+		const report = await mapRegistrarProducts('failrdap.com');
 
 		expect(report.lockPosture).toBeNull();
-		expect(report.recommendations.find((r) => r.product === 'csc_multilock')!.recommended).toBe(false);
+		expect(report.recommendations.find((r) => r.product === 'registry_lock')!.recommended).toBe(false);
 		expect(report.recommendations.find((r) => r.product === 'managed_dmarc')!.recommended).toBe(true);
 		expect(report.recommendations.find((r) => r.product === 'digital_certificates')!.recommended).toBe(true);
 	});

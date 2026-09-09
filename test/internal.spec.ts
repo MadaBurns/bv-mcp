@@ -296,7 +296,7 @@ describe('Internal service binding routes', () => {
 
 			expect(response.status).toBe(200);
 			const body = (await response.json()) as { content?: unknown; structuredContent?: unknown; result?: Record<string, unknown> };
-			// scan_domain (and prioritize_csc_leads / map_csc_products) set structuredContent
+			// scan_domain (and prioritize_portfolio_leads / map_registrar_products) set structuredContent
 			// but produce no CheckResult. It is surfaced under the top-level `result` field
 			// the internal door contract uses — so bv-web's door (which reads payload.result)
 			// gets the report instead of undefined.

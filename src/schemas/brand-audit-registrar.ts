@@ -1,21 +1,21 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Zod schema for the cscComplement section of a brand-audit report.
+ * Zod schema for the registrarComplement section of a brand-audit report.
  *
- * Producer-side: bv-mcp emits this when `view='csc_complement'`. Consumer-side
- * (bv-web) mirrors this schema in `agentic-csc-complement/product-contract.ts`.
+ * Producer-side: bv-mcp emits this when `view='registrar_complement'`. Consumer-side
+ * (bv-web) mirrors this schema in `agentic-registrar-complement/product-contract.ts`.
  * Cross-repo drift is caught by the contract test in `test/contracts/`.
  *
  * `viewVersion` is independent of the brand-audit sidecar's v4 version — the
  * CSC view evolves separately. Any breaking change to this schema requires
- * bumping `CSC_VIEW_VERSION` (enforced by audit test).
+ * bumping `REGISTRAR_VIEW_VERSION` (enforced by audit test).
  */
 
 import { z } from 'zod';
 
 /** Version of the CSC view schema — independent of brand-audit v4. Bump on breaking changes. */
-export const CSC_VIEW_VERSION = 1;
+export const REGISTRAR_VIEW_VERSION = 1;
 
 const StageEnum = z.enum(['pending', 'running', 'ready']);
 
@@ -30,7 +30,7 @@ const RegistrarIdentitySchema = z.object({
 const AnchorSchema = z.object({
 	apex: z.string().min(1),
 	primaryRegistrar: RegistrarIdentitySchema,
-	managedByCsc: z.boolean(),
+	managedByRegistrar: z.boolean(),
 });
 
 /** Family entry in registrar portfolio: counts, percentages, and example apexes. */
@@ -128,8 +128,8 @@ const DeepScanSchema = z.object({
 });
 
 /** Complete CSC complement view: all sections of the brand-audit report for CSC-managed domains. */
-export const BrandAuditCscSchema = z.object({
-	viewVersion: z.literal(CSC_VIEW_VERSION),
+export const BrandAuditRegistrarSchema = z.object({
+	viewVersion: z.literal(REGISTRAR_VIEW_VERSION),
 	anchor: AnchorSchema,
 	registrarPortfolio: RegistrarPortfolioSchema,
 	shadowItHighlights: z.array(ShadowItHighlightSchema),
@@ -137,8 +137,8 @@ export const BrandAuditCscSchema = z.object({
 	postureSnapshot: PostureSnapshotSchema,
 	deepScan: DeepScanSchema,
 	generatedAt: z.string(),
-	reportId: z.string().regex(/^csc_rpt_[a-zA-Z0-9]+$/),
+	reportId: z.string().regex(/^reg_rpt_[a-zA-Z0-9]+$/),
 });
 
 /** TypeScript type derived from the schema — use for inline type annotations. */
-export type BrandAuditCsc = z.infer<typeof BrandAuditCscSchema>;
+export type BrandAuditRegistrar = z.infer<typeof BrandAuditRegistrarSchema>;

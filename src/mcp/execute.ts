@@ -783,7 +783,7 @@ function buildGatedToolResponse(
 }
 
 /**
- * Reject a PUBLIC `/mcp` tools/call for an INTERNAL-ONLY tool (e.g. map_csc_products).
+ * Reject a PUBLIC `/mcp` tools/call for an INTERNAL-ONLY tool (e.g. map_registrar_products).
  *
  * Returns the SAME unknown-tool result a nonexistent tool name produces via the
  * dispatch path (handlers/tools.ts `default` case) — a JSON-RPC success wrapping a
@@ -791,7 +791,7 @@ function buildGatedToolResponse(
  * tool's existence is NOT leaked on the public surface and no 403/UPGRADE_REQUIRED is
  * emitted. executeMcpRequest is the public path only; the internal path
  * (src/internal.ts → handleToolsCall) bypasses this and remains fully callable,
- * as does the direct FUNCTION call from prioritize_csc_leads.
+ * as does the direct FUNCTION call from prioritize_portfolio_leads.
  */
 function buildInternalOnlyToolResponse(
 	id: JsonRpcRequest['id'],
@@ -860,12 +860,12 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		};
 	}
 
-	// PUBLIC-PATH-ONLY internal-only gate. map_csc_products (INTERNAL_ONLY_TOOLS) is
+	// PUBLIC-PATH-ONLY internal-only gate. map_registrar_products (INTERNAL_ONLY_TOOLS) is
 	// removed from the public /mcp surface: reject BEFORE any tier branching so it
 	// applies to ALL callers (unauthenticated, free, developer, owner) with the same
 	// unknown-tool result — no existence leak, no 403. The internal path
 	// (src/internal.ts → handleToolsCall) never reaches executeMcpRequest, so the
-	// tool stays callable there and via the direct prioritize_csc_leads function call.
+	// tool stays callable there and via the direct prioritize_portfolio_leads function call.
 	if (method === 'tools/call') {
 		const internalOnlyNameRaw =
 			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;

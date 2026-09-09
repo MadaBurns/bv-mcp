@@ -132,11 +132,11 @@ export interface BrandAuditPipelineOptions {
 	/** Clock override for deterministic tests. */
 	now?: () => number;
 	/**
-	 * Output view mode. `'csc_complement'` triggers CSC enrichment + portfolio
-	 * aggregation and emits a `cscComplement` payload on the returned CheckResult.
+	 * Output view mode. `'registrar_complement'` triggers CSC enrichment + portfolio
+	 * aggregation and emits a `registrarComplement` payload on the returned CheckResult.
 	 * Default `'standard'` — backward-compatible, no change to existing output.
 	 */
-	view?: 'standard' | 'csc_complement';
+	view?: 'standard' | 'registrar_complement';
 }
 
 /** Injectable dependencies. Tests pass stubs; production omits these and the module imports win. */
@@ -1073,9 +1073,9 @@ export async function runBrandAuditPipeline(
 	const result = buildCheckResult(CATEGORY, [summary, ...classifiedFindings]);
 	await stepStore?.put({ auditId, target: seedDomain, step: 'classification', status: 'completed', payload: result });
 
-	if (options.view === 'csc_complement') {
-		const { buildCscComplement } = await import('./brand-audit-csc-builder');
-		const cscComplement = await buildCscComplement({
+	if (options.view === 'registrar_complement') {
+		const { buildRegistrarComplement } = await import('./brand-audit-registrar-builder');
+		const registrarComplement = await buildRegistrarComplement({
 			seedDomain,
 			primaryRegistrar: targetLookup.registrar,
 			primaryRegistrarSource: targetLookup.registrarSource,
@@ -1083,26 +1083,26 @@ export async function runBrandAuditPipeline(
 			classifiedFindings,
 			now,
 		});
-		// Side-channel attach cscComplement to result to avoid polluting the shared CheckResult type.
+		// Side-channel attach registrarComplement to result to avoid polluting the shared CheckResult type.
 		// Value is also persisted to step-store; consumers reading via brand_audit_get_report validate
-		// against BrandAuditCscSchema at runtime. Type coercion is non-load-bearing downstream.
-		(result as unknown as { cscComplement: typeof cscComplement }).cscComplement = cscComplement;
+		// against BrandAuditRegistrarSchema at runtime. Type coercion is non-load-bearing downstream.
+		(result as unknown as { registrarComplement: typeof registrarComplement }).registrarComplement = registrarComplement;
 
 		if (stepStore) {
 			await stepStore.put({
 				auditId,
 				target: seedDomain,
-				step: 'csc_complement_fast',
+				step: 'registrar_complement_fast',
 				status: 'completed',
-				payload: cscComplement,
+				payload: registrarComplement,
 			});
 		}
 
 		if (deps.brandAuditQueue) {
 			// Best-effort: a Queue send failure leaves the audit with only the
-			// csc_complement_fast payload already persisted just above. Letting
+			// registrar_complement_fast payload already persisted just above. Letting
 			// the throw propagate would surface as a JSON-RPC error in the sync
-			// request path (despite csc_complement_fast being in step-store) and
+			// request path (despite registrar_complement_fast being in step-store) and
 			// would tip the entire target row to `failed` in the queue consumer
 			// (caught at processBrandAuditMessage's outer try/catch). The cron
 			// reaper / brand_audit_get_report fallback to the fast payload
