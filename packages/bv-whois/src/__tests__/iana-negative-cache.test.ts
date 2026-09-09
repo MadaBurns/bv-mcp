@@ -14,7 +14,7 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { resolveWhoisServer, IANA_NEGATIVE_TTL_SECONDS, type WhoisQueryFn } from '../resolver';
+import { resolveWhoisServer, resolveWhoisServerDetailed, IANA_NEGATIVE_TTL_SECONDS, IANA_UNREACHABLE_TTL_SECONDS, type WhoisQueryFn } from '../resolver';
 
 function makeMemoryKV() {
 	const data = new Map<string, string>();
@@ -40,9 +40,10 @@ describe('resolveWhoisServer — negative IANA cache', () => {
 		const [key, value, opts] = kv.put.mock.calls[0];
 		expect(key).toBe('iana:madeuptld');
 		expect(opts).toEqual({ expirationTtl: IANA_NEGATIVE_TTL_SECONDS });
-		// Envelope format: JSON with server:null marker.
+		// Envelope format: JSON with server:null marker + the reason (#931: an
+		// ANSWERED "no record" is the deterministic kind).
 		const parsed = JSON.parse(value);
-		expect(parsed).toEqual({ server: null });
+		expect(parsed).toEqual({ server: null, reason: 'no_record' });
 	});
 
 	it('skips IANA on a subsequent call when negative-cache is hit', async () => {
@@ -66,18 +67,60 @@ describe('resolveWhoisServer — negative IANA cache', () => {
 		expect(whoisQuery).not.toHaveBeenCalled();
 	});
 
-	it('caches a thrown WHOIS error as a negative entry (transient lookups should not hammer IANA)', async () => {
+	it('caches a thrown IANA query as a SHORT-lived iana_unreachable entry, not a 24h "no record" (#931)', async () => {
 		const kv = makeMemoryKV();
 		const whoisQuery: WhoisQueryFn = vi.fn(async () => {
 			throw new Error('connection refused');
 		});
 
-		await resolveWhoisServer('weirdtld', { kv: kv as never, whoisQuery });
+		const result = await resolveWhoisServerDetailed('weirdtld', { kv: kv as never, whoisQuery });
 
+		expect(result).toEqual({ server: null, reason: 'iana_unreachable' });
 		expect(kv.put).toHaveBeenCalledTimes(1);
-		const [key, value] = kv.put.mock.calls[0];
+		const [key, value, opts] = kv.put.mock.calls[0];
 		expect(key).toBe('iana:weirdtld');
-		expect(JSON.parse(value)).toEqual({ server: null });
+		expect(JSON.parse(value)).toEqual({ server: null, reason: 'iana_unreachable' });
+		expect(opts).toEqual({ expirationTtl: IANA_UNREACHABLE_TTL_SECONDS });
+		expect(IANA_UNREACHABLE_TTL_SECONDS).toBeLessThan(IANA_NEGATIVE_TTL_SECONDS);
+	});
+
+	it('treats a non-referral body WITHOUT the IANA "returned N objects" line as iana_unreachable, not a 24h no_record (#935 review)', async () => {
+		const kv = makeMemoryKV();
+		const whoisQuery: WhoisQueryFn = async () => '% rate limit exceeded, try again later\n';
+
+		const result = await resolveWhoisServerDetailed('garbledtld', { kv: kv as never, whoisQuery });
+
+		expect(result).toEqual({ server: null, reason: 'iana_unreachable' });
+		const [, value, opts] = kv.put.mock.calls[0];
+		expect(JSON.parse(value)).toEqual({ server: null, reason: 'iana_unreachable' });
+		expect(opts).toEqual({ expirationTtl: IANA_UNREACHABLE_TTL_SECONDS });
+	});
+
+	it('treats an IANA record that lists no whois: server ("returned 1 object") as deterministic no_record', async () => {
+		const kv = makeMemoryKV();
+		const whoisQuery: WhoisQueryFn = async () => '% IANA WHOIS server\n% This query returned 1 object.\n\ndomain:       NOWHOIS\nstatus:       ACTIVE\n';
+
+		const result = await resolveWhoisServerDetailed('nowhois', { kv: kv as never, whoisQuery });
+
+		expect(result).toEqual({ server: null, reason: 'no_record' });
+	});
+
+	it('reads a cached iana_unreachable entry back with its reason', async () => {
+		const kv = makeMemoryKV();
+		await kv.put('iana:weirdtld', JSON.stringify({ server: null, reason: 'iana_unreachable' }), {});
+
+		const result = await resolveWhoisServerDetailed('weirdtld', { kv: kv as never, whoisQuery: vi.fn() });
+
+		expect(result).toEqual({ server: null, reason: 'iana_unreachable' });
+	});
+
+	it('reads a pre-#931 reason-less negative entry as no_record (the old, deterministic meaning)', async () => {
+		const kv = makeMemoryKV();
+		await kv.put('iana:oldtld', JSON.stringify({ server: null }), {});
+
+		const result = await resolveWhoisServerDetailed('oldtld', { kv: kv as never, whoisQuery: vi.fn() });
+
+		expect(result).toEqual({ server: null, reason: 'no_record' });
 	});
 
 	it('positive cache reads still work after Phase 5 envelope change (bare-string back-compat)', async () => {
