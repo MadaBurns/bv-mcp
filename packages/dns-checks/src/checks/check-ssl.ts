@@ -27,7 +27,7 @@ export async function checkSSL(domain: string, fetchFn: FetchFunction, options?:
 	const timeoutMs = options?.timeout ?? HTTPS_TIMEOUT_MS;
 	const findings: Finding[] = [];
 
-	const { findings: httpsFindings, reachable, robotsDisallowed, inconclusive } = await checkHttps(domain, fetchFn, timeoutMs);
+	const { findings: httpsFindings, reachable, robotsDisallowed, inconclusive, transient } = await checkHttps(domain, fetchFn, timeoutMs);
 	findings.push(...httpsFindings);
 
 	// The entire `ssl` category signal comes from fetching the target — when robots.txt disallows
@@ -49,11 +49,23 @@ export async function checkSSL(domain: string, fetchFn: FetchFunction, options?:
 	// `passed: true`, with no `partial`. So scan_domain's transient-zero retry
 	// (`checkStatus === 'error' && score === 0`) never re-ran the leg, the non-answer was
 	// written to the 5-minute per-check cache, and a direct check_ssl call read as a pass.
-	// `score: 0` + `passed: false` + `partial: true` is the same contract every other
-	// abstention uses (`buildNotAssessedResult`, `buildDnsErrorResult`). Scoring is unchanged:
-	// the category was, and is, EXCLUDED by `checkStatus`.
+	// `score: 0` + `passed: false` is the same contract every other abstention uses
+	// (`buildNotAssessedResult`, `buildDnsErrorResult`). Scoring is unchanged: the category
+	// was, and is, EXCLUDED by `checkStatus`.
+	//
+	// `partial: true` (keeps the result OUT of the 5-minute per-check cache) is scoped to the
+	// TRANSIENT lanes — a thrown fetch, a no-content 204/205, an unresolved redirect chain —
+	// mirroring the sibling check-http-security's `transientUnmeasured`. An origin that
+	// answered 0/5xx is an origin-persistent state (the same posture the sibling takes for
+	// its 5xx branch) and caches normally; re-probing it every call would not change the answer.
 	if (inconclusive) {
-		return { ...buildCheckResult('ssl', findings, reachable), score: 0, passed: false, checkStatus: inconclusive, partial: true };
+		return {
+			...buildCheckResult('ssl', findings, reachable),
+			score: 0,
+			passed: false,
+			checkStatus: inconclusive,
+			...(transient ? { partial: true } : {}),
+		};
 	}
 
 	// Only check HTTP redirect if HTTPS is working (no critical findings)
@@ -89,13 +101,21 @@ async function checkHttps(
 	domain: string,
 	fetchFn: FetchFunction,
 	timeoutMs: number,
-): Promise<{ findings: Finding[]; reachable: boolean | undefined; robotsDisallowed: boolean; inconclusive?: 'timeout' | 'error' }> {
+): Promise<{
+	findings: Finding[];
+	reachable: boolean | undefined;
+	robotsDisallowed: boolean;
+	inconclusive?: 'timeout' | 'error';
+	/** Set with `inconclusive` when the cause is transient (see checkSSL's `partial` note). */
+	transient?: boolean;
+}> {
 	const findings: Finding[] = [];
 	let reachable = false;
 	// Set when the HTTPS/HSTS posture could not actually be MEASURED (execution failure or an
 	// unassessable origin), as opposed to a real header gap. checkSSL excludes the category from
 	// scoring when this is set — see the scoring-engine transientFailures handling.
 	let inconclusive: 'timeout' | 'error' | undefined;
+	let transient = false;
 
 	try {
 		const response = await fetchFn(`https://${domain}`, {
@@ -129,6 +149,7 @@ async function checkHttps(
 			// `missingControl`: a 204 measured nothing (issue #638 law) — `inconclusive` +
 			// `errorKind` are the honest unmeasured markers.
 			inconclusive = 'error';
+			transient = true;
 			findings.push(
 				createFinding(
 					'ssl',
@@ -181,6 +202,9 @@ async function checkHttps(
 					// recorded as absence) instead of scoring "No HSTS header" from a hop nobody
 					// would ever land on, or letting the empty finding set read as a clean pass.
 					inconclusive = followed.kind === 'unresolved' && followed.reason === 'timeout' ? 'timeout' : 'error';
+					// A cut chain or a no-content terminal is transient; a terminal 0/5xx is the
+					// origin-persistent class (same split as the first-hop branches above).
+					transient = followed.kind !== 'final' || followed.response.status === 204 || followed.response.status === 205;
 					findings.push(
 						createFinding(
 							'ssl',
@@ -208,10 +232,11 @@ async function checkHttps(
 		// A thrown fetch is a transient execution failure — exclude the category rather than scoring
 		// the connection-failure finding as a real deficiency. The existing finding is retained.
 		inconclusive = message === 'Connection timeout' ? 'timeout' : 'error';
+		transient = true;
 		findings.push(getHttpsErrorFinding(domain, message));
 	}
 
-	return { findings, reachable, robotsDisallowed: false, inconclusive };
+	return { findings, reachable, robotsDisallowed: false, inconclusive, transient };
 }
 
 /** Maximum HTTPS→HTTPS hops to follow when hunting the terminal response's HSTS header. */

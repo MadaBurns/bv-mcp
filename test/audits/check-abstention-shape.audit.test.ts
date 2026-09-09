@@ -28,11 +28,18 @@
  * that is not directly callable fails the parity assertion; a new directly-callable check is
  * swept automatically.
  *
- * Non-scored tools have ONE documented exemption: a result carrying an unmeasured marker
+ * The second lane (every `check_*` registry tool outside `SCAN_CATEGORIES` — the intelligence
+ * tools, plus the infra-profile pair `check_authoritative_dns_infra` / `check_root_server_set`,
+ * which are core-tier under their own profile but not part of the normal-profile dispatch
+ * table) has ONE documented exemption: a result carrying an unmeasured marker
  * (`unprovisioned` / `upstreamUnavailable` / `upstreamNotFound`, src/lib/unmeasured-result.ts)
  * belongs to the #695 class, where the scalars are deliberately left alone and only
- * `checkStatus` is stamped. Scored categories get no exemption at all — an unmeasured marker
- * on one is already a build failure (unmeasured-marker-scope.audit.test.ts).
+ * `checkStatus` is stamped. The `SCAN_CATEGORIES` lane gets no exemption — an unmeasured
+ * marker on one of those is already a build failure (unmeasured-marker-scope.audit.test.ts).
+ *
+ * A tool that THROWS is accepted only when the throw is the injected failure itself or
+ * `lib/dns-transport.ts`'s `DnsQueryError` wrapping of it — any other throw (a signature
+ * drift, a `Missing required parameter`) fails loudly instead of reading as a pass.
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -46,18 +53,37 @@ afterEach(() => {
 	globalThis.fetch = savedFetch;
 });
 
-/** The failure classes a transient probe can raise. `name` drives the timeout classifiers. */
+/**
+ * The failure classes a transient probe can raise. `name` drives the timeout classifiers; the
+ * sentinel messages let the throw-path assertion recognise the injected failure.
+ */
 const FAILURES = [
-	{ kind: 'error', make: () => new Error('transient resolver failure') },
+	{ kind: 'error', make: () => new Error('abstention-audit: injected transient resolver failure') },
 	{
 		kind: 'timeout',
 		make: () => {
-			const e = new Error('The operation timed out');
+			const e = new Error('abstention-audit: injected timeout');
 			e.name = 'TimeoutError';
 			return e;
 		},
 	},
 ] as const;
+
+/**
+ * True when `err` is the injected failure: the same instance, a faithful re-throw, or the
+ * `DnsQueryError` that `lib/dns-transport.ts` wraps a rejected DoH fetch in — `DNS query
+ * failed: <message>` for a plain error, `DNS query timed out after Nms` (message dropped) for
+ * a TimeoutError/AbortError. Nothing else qualifies.
+ */
+function isInjectedFailure(err: unknown, injected: Error): boolean {
+	if (err === injected) return true;
+	if (!(err instanceof Error)) return false;
+	if (err.name === injected.name && err.message === injected.message) return true;
+	if (err.name !== 'DnsQueryError') return false;
+	return injected.name === 'TimeoutError'
+		? /^DNS query timed out after \d+ms$/.test(err.message)
+		: err.message === `DNS query failed: ${injected.message}`;
+}
 
 const SCORED_TOOLS = SCAN_CATEGORIES.map((category) => `check_${category}`).sort();
 const OTHER_CHECK_TOOLS = Object.keys(TOOL_REGISTRY)
@@ -80,15 +106,20 @@ function abstentionViolations(result: CheckResult): string[] {
 	return violations;
 }
 
-async function runTool(name: string, make: () => Error): Promise<CheckResult | 'throws'> {
+async function runTool(name: string, kind: string, make: () => Error): Promise<CheckResult | 'throws'> {
+	const injected = make();
 	globalThis.fetch = vi.fn().mockImplementation(async () => {
-		throw make();
+		throw injected;
 	});
 	try {
 		return await TOOL_REGISTRY[name].execute('example.com', {}, undefined);
-	} catch {
-		// A throw surfaces as a failed tool call (no cached, no scored, no `passed` result), which
-		// is outside this audit's claim. scan_domain's safeCheck converts it to the same shape.
+	} catch (err) {
+		// A re-throw of the injected failure surfaces as a failed tool call (nothing cached,
+		// scored, or `passed`), which is outside this audit's claim — scan_domain's safeCheck
+		// converts it to the same shape. Any OTHER throw must fail here, not read as a pass.
+		expect(isInjectedFailure(err, injected), `${name} (${kind}) threw something other than the injected failure: ${String(err)}`).toBe(
+			true,
+		);
 		return 'throws';
 	}
 }
@@ -104,7 +135,7 @@ describe('check abstention shape (Worker direct-call registry)', () => {
 
 	describe.each(FAILURES)('$kind: scored checks — every abstention is score 0 / passed false / partial true', ({ kind, make }) => {
 		it.each(SCORED_TOOLS)('%s', async (name) => {
-			const result = await runTool(name, make);
+			const result = await runTool(name, kind, make);
 			if (result === 'throws') return;
 			expect(abstentionViolations(result), `${name} (${kind}) → ${JSON.stringify(result)}`).toEqual([]);
 		});
@@ -112,14 +143,32 @@ describe('check abstention shape (Worker direct-call registry)', () => {
 
 	describe.each(FAILURES)('$kind: other directly-callable checks — same contract, #695 unmeasured class exempt', ({ kind, make }) => {
 		it.each(OTHER_CHECK_TOOLS)('%s', async (name) => {
-			const result = await runTool(name, make);
+			const result = await runTool(name, kind, make);
 			if (result === 'throws') return;
 			if (isUnmeasuredResult(result)) return;
 			expect(abstentionViolations(result), `${name} (${kind}) → ${JSON.stringify(result)}`).toEqual([]);
 		});
 	});
 
-	describe('positive control — the predicate discriminates', () => {
+	describe('positive control — the predicates discriminate', () => {
+		it('the throw-path guard accepts only the injected failure and its DnsQueryError wrap', async () => {
+			// No registry tool currently throws under a rejecting fetch, so the guard is proved
+			// directly: a drift throw must be rejected, else the throw path is a vacuous pass.
+			const { DnsQueryError } = await import('../../src/lib/dns-transport');
+			for (const { make } of FAILURES) {
+				const injected = make();
+				expect(isInjectedFailure(injected, injected)).toBe(true);
+				const wrapped =
+					injected.name === 'TimeoutError'
+						? new DnsQueryError('DNS query timed out after 5000ms', 'example.com', 'TXT')
+						: new DnsQueryError(`DNS query failed: ${injected.message}`, 'example.com', 'TXT');
+				expect(isInjectedFailure(wrapped, injected)).toBe(true);
+				expect(isInjectedFailure(new Error('Missing required parameter: domain'), injected)).toBe(false);
+				expect(isInjectedFailure(new DnsQueryError('DoH returned HTTP 503', 'example.com', 'TXT'), injected)).toBe(false);
+				expect(isInjectedFailure(new TypeError('run is not a function'), injected)).toBe(false);
+			}
+		});
+
 		it('rejects the pre-#900 shape and accepts the buildDnsErrorResult shape', async () => {
 			const { buildCheckResult, createFinding } = await import('../../src/lib/scoring');
 			const { buildDnsErrorResult } = await import('../../src/lib/dns-error-result');
