@@ -247,7 +247,7 @@ describe('processBrandAuditMessage', () => {
 		);
 	});
 
-	it('passes the brandAuditQueue binding into brandAuditSingle deps for queued audits (CSC deep_scan enqueue)', async () => {
+	it('passes the brandAuditQueue binding into brandAuditSingle deps for queued audits ((registrar deep_scan enqueue))', async () => {
 		// The pipeline at brand-audit-pipeline.ts:1061 only enqueues the
 		// {phase:'deep_scan'} message when deps.brandAuditQueue is present.
 		// Without this forwarding, queued view='registrar_complement' audits write

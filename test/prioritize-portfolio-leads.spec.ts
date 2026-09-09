@@ -529,13 +529,13 @@ describe('rankPortfolioLeads — a never-measured domain must not outrank a meas
 		const ungradedBlock = full.split('\n## ').find((b) => b.startsWith('2. never-measured.example'));
 		expect(ungradedBlock).toBeDefined();
 		expect(ungradedBlock).toMatch(/No checks ran/i);
-		expect(ungradedBlock).not.toContain('Recommended CSC products');
+		expect(ungradedBlock).not.toContain('Recommended registrar products');
 		expect(ungradedBlock).not.toContain('digital_certificates');
 		expect(ungradedBlock).not.toContain('Top priority');
 
 		// Control — the measured lead's block still carries every sales claim.
 		const gradedBlock = full.split('\n## ').find((b) => b.startsWith('1. measured.example'));
-		expect(gradedBlock).toContain('Recommended CSC products: managed_dmarc');
+		expect(gradedBlock).toContain('Recommended registrar products: managed_dmarc');
 		expect(gradedBlock).toContain('Top priority: medium');
 	});
 
@@ -665,7 +665,7 @@ describe('rankPortfolioLeads — checks ran but the scan could not be scored', (
 		expect(text).not.toContain('the gaps below are real');
 		// The unscored FACT must survive — only the promise of gaps goes.
 		expect(text).toMatch(/could not be scored/i);
-		expect(text).toContain('No CSC upsell — posture clean');
+		expect(text).toContain('No registrar upsell — posture clean');
 	});
 
 	it('still says "the gaps below are real" when there ARE gaps (control)', async () => {

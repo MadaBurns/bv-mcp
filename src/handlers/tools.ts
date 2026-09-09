@@ -843,7 +843,7 @@ export const TOOL_REGISTRY: Record<
 					certstreamAuthToken: ro?.certstreamAuthToken,
 					whoisBinding: ro?.whoisBinding,
 					enforceQuota: buildMonthlyEnforceQuota(ro),
-					// The brand-audit queue binding doubles as the CSC fast→full
+					// The brand-audit queue binding doubles as the registrar fast→full
 					// deep-scan trigger in the pipeline (brand-audit-pipeline.ts:1061).
 					// Without it, sync view='registrar_complement' audits write only the
 					// fast payload and brand_audit_get_report can never surface the

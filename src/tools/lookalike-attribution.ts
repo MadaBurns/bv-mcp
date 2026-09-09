@@ -40,7 +40,7 @@ const SAME_ENTITY_RDAP_CAP = 10;
  * IANA registrar IDs of BRAND-PROTECTION registrars — corporate registrars
  * that do not sell to the general public. Getting a domain registered through
  * one requires a corporate account and a contract; you cannot buy a name at
- * CSC or MarkMonitor the way you can at a retail registrar.
+ * a corporate brand-protection registrar the way you can at a retail registrar.
  *
  * WHY THIS IS DIFFERENT FROM THE REGISTRANT-ORG FIELD (and therefore why it is
  * allowed to corroborate ownership at all). Ruling A / F2 bars the registrant
@@ -51,7 +51,8 @@ const SAME_ENTITY_RDAP_CAP = 10;
  * the delegation record. A registrant cannot set it, and cannot move a domain
  * into a corporate registrar's accreditation without that registrar's consent.
  *
- * It is still NOT proof of common ownership — many brands share CSC — which is
+ * It is still NOT proof of common ownership — many brands share the same
+ * corporate brand-protection registrar — which is
  * why {@link isBrandHeldRegistration} requires the candidate's INFRASTRUCTURE
  * to be defensively shaped as well, and why nothing here can ever produce an
  * `owned_by_seed` verdict (that remains seed-side NS evidence only).
@@ -62,7 +63,7 @@ const SAME_ENTITY_RDAP_CAP = 10;
  * pins that GoDaddy is not treated as evidence.
  */
 const BRAND_PROTECTION_REGISTRAR_IANA_IDS: ReadonlySet<string> = new Set([
-	'299', // CSC Corporate Domains, Inc.
+	'299', // corporate brand-protection registrar (IANA 299)
 	'292', // MarkMonitor Inc.
 	'470', // Com Laude (Nom-IQ Ltd)
 	'447', // SafeNames Ltd

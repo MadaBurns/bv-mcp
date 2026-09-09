@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * CSC sales-lead prioritization tool (portfolio aggregation layer).
+ * Registrar-partner sales-lead prioritization tool (portfolio aggregation layer).
  * Aggregates a brand's portfolio (or an operator-supplied domain set) into a
  * ranked sales-lead list, ordered by product-gap value × ownership actionability,
  * reusing Spec B's PURE units (evaluateRegistrarProducts + extractLockPosture) per domain.
@@ -222,7 +222,7 @@ export const UNSCORED_LEAD_NOTE =
 /**
  * The same fact for an unscored lead with NO recommendations — reachable whenever
  * the scoring bundle fails on a clean domain. {@link UNSCORED_LEAD_NOTE} promises
- * "the gaps below are real" and the next line then reads "No CSC upsell — posture
+ * "the gaps below are real" and the next line then reads "No registrar upsell — posture
  * clean": a dangling referent, a promise the output immediately breaks.
  */
 export const UNSCORED_LEAD_NOTE_NO_GAPS =
@@ -295,7 +295,7 @@ const PRODUCT_VALUE: Record<RegistrarProductKey, number> = {
 };
 // Spec B sales priority → weight.
 const PRIORITY_WEIGHT: Record<ProductPriority, number> = { high: 3, medium: 2, low: 1, none: 0 };
-// Ownership actionability — can CSC actually sell THIS domain a lock?
+// Ownership actionability — can the registrar actually sell THIS domain a lock?
 const OWNERSHIP_MULTIPLIER: Record<OwnershipBucket, number> = {
 	consolidated: 1.0,
 	shadowIt: 1.0,
@@ -384,7 +384,7 @@ function topPriorityOf(report: RegistrarProductReport): ProductPriority {
 }
 
 /**
- * Rank a set of per-domain CSC product reports into prioritized sales leads (PURE).
+ * Rank a set of per-domain registrar product reports into prioritized sales leads (PURE).
  * Sort: gapSeverity desc, then lower score, then domain asc (total order). The
  * heart of Spec C's TDD — no I/O.
  */
@@ -515,7 +515,7 @@ export function extractDiscoveredCandidates(result: CheckResult): DiscoveredCand
 	return out;
 }
 
-/** Render a ranked CSC lead report for display. */
+/** Render a ranked portfolio lead report for display. */
 export function formatPortfolioLeads(report: PortfolioLeadReport, format: OutputFormat = 'full'): string {
 	const lines: string[] = [];
 	const brandLabel = report.brand ? sanitizeOutputText(report.brand, 253) : 'domain set';
@@ -525,7 +525,7 @@ export function formatPortfolioLeads(report: PortfolioLeadReport, format: Output
 		const portfolioSegment = report.portfolioGrade
 			? ` — portfolio ${report.portfolioGrade.grade} (${report.portfolioGrade.weightedScore})`
 			: '';
-		lines.push(`CSC leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot${portfolioSegment}`);
+		lines.push(`Sales leads (${brandLabel}): ${report.totalDomains} ranked, ${report.summary.hotLeads} hot${portfolioSegment}`);
 		for (const lead of report.rankedLeads) {
 			// Only an UNASSESSED lead loses its severity and product count. An
 			// unscored-but-assessed lead keeps both — `formatScoreGrade` already
@@ -540,7 +540,7 @@ export function formatPortfolioLeads(report: PortfolioLeadReport, format: Output
 		return lines.join('\n').trimEnd();
 	}
 
-	lines.push(`# CSC Sales Leads: ${brandLabel}`);
+	lines.push(`# Sales Leads: ${brandLabel}`);
 	lines.push(`**${report.totalDomains}** domain(s) ranked | **${report.summary.hotLeads}** hot lead(s)`);
 	if (report.portfolioGrade) {
 		lines.push(
@@ -580,9 +580,9 @@ export function formatPortfolioLeads(report: PortfolioLeadReport, format: Output
 			lines.push(`  - ${lead.recommendedProducts.length > 0 ? UNSCORED_LEAD_NOTE : UNSCORED_LEAD_NOTE_NO_GAPS}`);
 		}
 		if (lead.recommendedProducts.length > 0) {
-			lines.push(`  - Recommended CSC products: ${lead.recommendedProducts.join(', ')}`);
+			lines.push(`  - Recommended registrar products: ${lead.recommendedProducts.join(', ')}`);
 		} else {
-			lines.push('  - No CSC upsell — posture clean');
+			lines.push('  - No registrar upsell — posture clean');
 		}
 	}
 	lines.push('');
@@ -623,7 +623,7 @@ export interface PrioritizePortfolioLeadsArgsShape {
 	force_refresh?: boolean;
 }
 
-/** Buckets CSC can actually sell a lock — preferred when truncating to LEAD_BUDGET. */
+/** Buckets the registrar can actually sell a lock — preferred when truncating to LEAD_BUDGET. */
 const SELLABLE_BUCKETS: ReadonlySet<OwnershipBucket> = new Set<OwnershipBucket>(['consolidated', 'shadowIt']);
 
 /** Default brand discoverer — runs a bounded brand audit, then extracts candidates+buckets. */
@@ -659,7 +659,7 @@ async function evaluateOne(
 }
 
 /**
- * Prioritize CSC sales leads across a domain set or a brand portfolio (orchestrator — impure).
+ * Prioritize registrar-partner sales leads across a domain set or a brand portfolio (orchestrator — impure).
  * Per-domain isolation + a wall-clock budget (batch_scan pattern): one bad domain
  * lands in summary.skipped and never sinks the batch. NEVER throws a non-allowlisted error.
  */

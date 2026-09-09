@@ -521,14 +521,14 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	map_registrar_products: {
 		description:
-			'Map a domain’s observed security gaps to CSC commercial products (CSC MultiLock, Managed DMARC, Digital Certificates, DNSSEC management) for sales/upsell prioritization. Reads the scan plus RDAP lock posture. Distinct from map_compliance, which maps findings to compliance frameworks (NIST/PCI/SOC2/CIS).',
+			'Map a domain’s observed security gaps to a corporate brand-protection registrar’s commercial products (registry lock, managed DMARC, digital certificates, DNSSEC management) for sales/upsell prioritization. Reads the scan plus RDAP lock posture. Distinct from map_compliance, which maps findings to compliance frameworks (NIST/PCI/SOC2/CIS).',
 		schema: MapRegistrarProductsArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	prioritize_portfolio_leads: {
 		description:
-			'Rank a brand’s portfolio (or an explicit domain set) into prioritized CSC sales leads by product-gap value × severity. Multi-domain, paid. Reuses map_registrar_products per domain, then ranks. Distinct from map_registrar_products (per-domain product mapping) and batch_scan (raw scores).',
+			'Rank a brand’s portfolio (or an explicit domain set) into prioritized registrar-partner sales leads by product-gap value × severity. Multi-domain, paid. Reuses map_registrar_products per domain, then ranks. Distinct from map_registrar_products (per-domain product mapping) and batch_scan (raw scores).',
 		schema: PrioritizePortfolioLeadsArgs,
 		group: 'intelligence',
 		scanIncluded: false,

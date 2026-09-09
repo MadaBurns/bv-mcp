@@ -21,7 +21,7 @@ describe('classifyRegistrarFamily', () => {
 		expect(classifyRegistrarFamily(undefined)).toBeNull();
 	});
 
-	it('matches cscglobal.com via raw pattern', () => {
+	it('matches the registrar bare website host via raw pattern', () => {
 		expect(classifyRegistrarFamily('cscglobal.com')).toBe('corporate domains registrar');
 	});
 });

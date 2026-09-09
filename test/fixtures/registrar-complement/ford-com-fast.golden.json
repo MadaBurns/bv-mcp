@@ -1,14 +1,14 @@
 {
-	"viewVersion": 1,
+	"viewVersion": 2,
 	"anchor": {
 		"apex": "ford.com",
-		"primaryRegistrar": { "family": "csc corporate domains", "name": "CSC Corporate Domains, Inc.", "ianaId": "299" },
+		"primaryRegistrar": { "family": "corporate domains registrar", "name": "Brand Registrar, Inc.", "ianaId": "299" },
 		"managedByRegistrar": true
 	},
 	"registrarPortfolio": {
 		"totalApexes": 4,
 		"byFamily": [
-			{ "family": "csc corporate domains", "count": 3, "percent": 75, "exampleApexes": ["ford.com", "ford.com.au", "ford.de"] },
+			{ "family": "corporate domains registrar", "count": 3, "percent": 75, "exampleApexes": ["ford.com", "ford.com.au", "ford.de"] },
 			{ "family": "godaddy", "count": 1, "percent": 25, "exampleApexes": ["fordcorp.com"] }
 		],
 		"offPortfolioCount": 1,

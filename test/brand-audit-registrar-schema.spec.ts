@@ -6,10 +6,10 @@ import { buildRegistrarComplement } from '../src/lib/brand-audit-registrar-build
 
 function validFixture() {
 	return {
-		viewVersion: 1,
+		viewVersion: 2,
 		anchor: {
 			apex: 'brand-beta.com',
-			primaryRegistrar: { family: 'corporate domains registrar', name: 'CSC Corporate Domains, Inc.', ianaId: '299' },
+			primaryRegistrar: { family: 'corporate domains registrar', name: 'Brand Registrar, Inc.', ianaId: '299' },
 			managedByRegistrar: true,
 		},
 		registrarPortfolio: {
@@ -66,19 +66,26 @@ describe('BrandAuditRegistrarSchema', () => {
 		}
 	});
 
-	it('exports REGISTRAR_VIEW_VERSION === 1', () => {
-		expect(REGISTRAR_VIEW_VERSION).toBe(1);
+	it('exports REGISTRAR_VIEW_VERSION === 2', () => {
+		expect(REGISTRAR_VIEW_VERSION).toBe(2);
 	});
 
-	it('accepts a valid v1 fixture', () => {
+	it('accepts a valid v2 fixture', () => {
 		const parsed = BrandAuditRegistrarSchema.parse(validFixture());
-		expect(parsed.viewVersion).toBe(1);
+		expect(parsed.viewVersion).toBe(2);
 		expect(parsed.anchor.managedByRegistrar).toBe(true);
 	});
 
-	it('rejects a fixture with viewVersion !== 1', () => {
-		const bad = { ...validFixture(), viewVersion: 2 };
+	it('rejects a fixture with viewVersion !== 2', () => {
+		const bad = { ...validFixture(), viewVersion: 1 };
 		expect(() => BrandAuditRegistrarSchema.parse(bad)).toThrow();
+	});
+
+	it('accepts report identifiers minted under a legacy prefix (prefix-agnostic regex)', () => {
+		const legacy = { ...validFixture(), reportId: 'legacy_rpt_abc123' };
+		expect(BrandAuditRegistrarSchema.parse(legacy).reportId).toBe('legacy_rpt_abc123');
+		const malformed = { ...validFixture(), reportId: 'rpt_abc123' };
+		expect(() => BrandAuditRegistrarSchema.parse(malformed)).toThrow();
 	});
 
 	it('rejects a fixture missing anchor', () => {

@@ -46,7 +46,7 @@ export interface BrandAuditGetReportDeps {
 	publicOrigin?: string;
 	/** Clock override for tests + dead-zone closure. */
 	now?: () => number;
-	/** Step store for CSC complement pipeline steps. When omitted, registrarComplement is not attached. */
+	/** Step store for registrar complement pipeline steps. When omitted, registrarComplement is not attached. */
 	stepStore?: BrandAuditStepStore;
 }
 
@@ -175,7 +175,7 @@ export async function brandAuditGetReport(
 			pdfPending = true;
 		}
 
-		// CSC complement: prefer full scan payload; fall back to fast scan. Attach
+		// Registrar complement: prefer full scan payload; fall back to fast scan. Attach
 		// only when the step-store is provisioned (operator deploys). A missing
 		// stepStore is a no-op — the field is simply absent from the response.
 		let registrarComplement: unknown = undefined;

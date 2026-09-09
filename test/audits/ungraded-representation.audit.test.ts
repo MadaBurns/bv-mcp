@@ -184,7 +184,7 @@ describe('ungraded representation', () => {
 				// that includes a domain nobody measured.
 				forbidden: ['"gapSeverity":7', '"assessed":true', '"hotLeads":1', '"score":0'],
 				required: ['"score":null', '"grade":null', '"assessed":false', '"graded":false', '"gapSeverity":null'],
-				proseForbidden: ['Recommended CSC products', 'Top priority'],
+				proseForbidden: ['Recommended registrar products', 'Top priority'],
 				proseRequired: ['not measured', 'No checks ran for this domain, so no product gap could be assessed.'],
 			},
 		];

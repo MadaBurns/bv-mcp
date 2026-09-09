@@ -82,7 +82,7 @@ describe('view=registrar_complement tier gate', () => {
 		expect(parsed.view).toBeUndefined();
 	});
 
-	it('forwards ro.brandAuditQueue into brand_audit_single pipeline deps (CSC deep_scan enqueue)', async () => {
+	it('forwards ro.brandAuditQueue into brand_audit_single pipeline deps ((registrar deep_scan enqueue))', async () => {
 		// brand-audit-pipeline.ts:1061 only enqueues the {phase:'deep_scan'}
 		// follow-up message when deps.brandAuditQueue is present. The synchronous
 		// brand_audit_single tool runs in the request path, so it must forward

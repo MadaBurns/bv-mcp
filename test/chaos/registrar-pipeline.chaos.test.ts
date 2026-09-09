@@ -1,7 +1,7 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { setupFetchMock } from '../helpers/dns-mock';
 
-describe('CHAOS: CSC pipeline failure modes', () => {
+describe('CHAOS: registrar-complement pipeline failure modes', () => {
 	let fetchMock: ReturnType<typeof setupFetchMock>;
 
 	beforeEach(() => {

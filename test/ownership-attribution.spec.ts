@@ -591,7 +591,7 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		restoreThisTest = undefined;
 	});
 
-	/** IANA registrar IDs: CSC Corporate Domains = 299 (corporate-only), GoDaddy = 146 (retail). */
+	/** IANA registrar IDs: corporate brand-protection registrar = 299 (corporate-only), GoDaddy = 146 (retail). */
 	const BRAND_REGISTRAR_IANA_ID = '299';
 	const GODADDY_IANA_ID = '146';
 
@@ -682,11 +682,11 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		return checkLookalikes('contoso.com');
 	}
 
-	/** The defensive registration: parked at CSC, same corporate registrar as the seed. */
+	/** The defensive registration: parked at the same corporate brand-protection registrar as the seed. */
 	const DEFENSIVE = {
 		candidate: 'cont0so.com',
-		candidateRdap: rdapDoc({ ianaId: BRAND_REGISTRAR_IANA_ID, registrarName: 'CSC Corporate Domains, Inc.' }),
-		seedRdap: rdapDoc({ ianaId: BRAND_REGISTRAR_IANA_ID, registrarName: 'CSC Corporate Domains, Inc.' }),
+		candidateRdap: rdapDoc({ ianaId: BRAND_REGISTRAR_IANA_ID, registrarName: 'Brand Registrar, Inc.' }),
+		seedRdap: rdapDoc({ ianaId: BRAND_REGISTRAR_IANA_ID, registrarName: 'Brand Registrar, Inc.' }),
 	};
 
 	function findingsFor(result: { findings: Array<{ metadata?: Record<string, unknown> }> }, domain: string) {
@@ -729,7 +729,7 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		const result = await runFixture({
 			candidate: 'cont0so.com',
 			candidateRdap: rdapDoc({ ianaId: '1234', registrarName: 'Bulk Register LLC' }),
-			seedRdap: rdapDoc({ ianaId: BRAND_REGISTRAR_IANA_ID, registrarName: 'CSC Corporate Domains, Inc.' }),
+			seedRdap: rdapDoc({ ianaId: BRAND_REGISTRAR_IANA_ID, registrarName: 'Brand Registrar, Inc.' }),
 		});
 		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
 		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
@@ -746,7 +746,7 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		// the equality line left the variant above green and only this one red).
 		const result = await runFixture({
 			candidate: 'cont0so.com',
-			candidateRdap: rdapDoc({ ianaId: BRAND_REGISTRAR_IANA_ID, registrarName: 'CSC Corporate Domains, Inc.' }),
+			candidateRdap: rdapDoc({ ianaId: BRAND_REGISTRAR_IANA_ID, registrarName: 'Brand Registrar, Inc.' }),
 			seedRdap: rdapDoc({ ianaId: '292', registrarName: 'MarkMonitor Inc.' }),
 		});
 		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');

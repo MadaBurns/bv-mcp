@@ -7,7 +7,7 @@ import type { CheckResult, Finding } from '../src/lib/scoring';
 /**
  * Integration test for runBrandAuditPipeline when view='registrar_complement'.
  *
- * The CSC branch fires AFTER classification and derives its registrarComplement payload
+ * The registrar-complement branch fires AFTER classification and derives its registrarComplement payload
  * from the pipeline's classifiedFindings array. This means the discovery stub must
  * return a valid CheckResult with candidate findings whose metadata drives the
  * classifier to the expected bucket distribution.
@@ -16,7 +16,7 @@ import type { CheckResult, Finding } from '../src/lib/scoring';
  *   - ford.co.uk: signals ['dkim_key_reuse', 'san'], registrar GoDaddy (off-primary).
  *     Rule 2 → isExactBrandPortfolioDomain(ford.co.uk, ford.com)=true → realShadowItClassification
  *     → shadowIt/owned_off_primary_registrar.
- *   - ford.com.au: signals ['dkim_key_reuse', 'ns'], registrar CSC (same family as target).
+ *   - ford.com.au: signals ['dkim_key_reuse', 'ns'], registrar on the corporate-domains family (same family as target).
  *     Rule 2 → isExactBrandPortfolioDomain(ford.com.au, ford.com)=true → isOffPrimaryRegistrar=false
  *     → consolidated/owned_primary.
  */
@@ -139,14 +139,14 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 
 		// Discovery stub: returns CheckResult with 2 candidates.
 		// ford.co.uk → will classify as shadowIt (GoDaddy, off-primary registrar, strong dkim signal)
-		// ford.com.au → will classify as consolidated (CSC, same registrar family, strong dkim signal)
+		// ford.com.au → will classify as consolidated (same corporate-domains registrar family, strong dkim signal)
 		const discoverBrandDomains = async () =>
 			makeDiscoveryResult('ford.com', [
 				{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] },
 				{ domain: 'ford.com.au', signals: ['dkim_key_reuse', 'ns'] },
 			]);
 
-		// RDAP stubs: target ford.com → CSC; ford.co.uk → GoDaddy; ford.com.au → CSC.
+		// RDAP stubs: target ford.com → corporate-domains registrar; ford.co.uk → GoDaddy; ford.com.au → corporate-domains registrar.
 		const checkRdapLookup = async (domain: string) => {
 			if (domain === 'ford.co.uk') return makeRdapResult('GoDaddy.com, LLC');
 			return makeRdapResult('CSC Corporate Domains, Inc.');
@@ -172,7 +172,7 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		expect(parsed.shadowItHighlights[0].apex).toBe('ford.co.uk');
 		expect(parsed.postureSnapshot.stage).toBe('pending');
 		expect(parsed.deepScan.stage).toBe('pending');
-		expect(parsed.viewVersion).toBe(1);
+		expect(parsed.viewVersion).toBe(2);
 		expect(parsed.reportId).toMatch(/^reg_rpt_/);
 	});
 
@@ -183,7 +183,7 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		const { createMemoryBrandAuditStepStore } = await import('../src/lib/brand-audit-step-store');
 
 		const stepStore = createMemoryBrandAuditStepStore();
-		const auditId = 'test-audit-csc';
+		const auditId = 'test-audit-registrar';
 
 		const discoverBrandDomains = async () =>
 			makeDiscoveryResult('ford.com', [{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
@@ -333,8 +333,8 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		stored.set('a-1:ford.com:registrar_complement_fast', {
 			status: 'completed',
 			payload: {
-				viewVersion: 1,
-				anchor: { apex: 'ford.com', primaryRegistrar: { family: 'corporate domains registrar', name: 'CSC', ianaId: null }, managedByRegistrar: true },
+				viewVersion: 2,
+				anchor: { apex: 'ford.com', primaryRegistrar: { family: 'corporate domains registrar', name: 'Brand Registrar, Inc.', ianaId: null }, managedByRegistrar: true },
 				registrarPortfolio: { totalApexes: 1, byFamily: [{ family: 'corporate domains registrar', count: 1, percent: 100, exampleApexes: ['ford.com'] }], offPortfolioCount: 0, offPortfolioApexes: [] },
 				shadowItHighlights: [],
 				defensiveRegistrations: { count: 0, examples: [], enrichmentStatus: 'ready' },

@@ -104,7 +104,7 @@ describe('formatRegistrarProducts — ungraded scan', () => {
 			recommendations: [
 				{
 					product: 'registry_lock',
-					productName: 'CSC MultiLock',
+					productName: 'Registry lock',
 					recommended: true,
 					priority: 'high',
 					justifyingGap: 'no lock',
@@ -142,7 +142,7 @@ describe('formatRegistrarProducts — ungraded scan', () => {
 
 	it.each(FORMATS)('renders the ungraded token, not null/100 (null) [%s]', async (format) => {
 		const { formatRegistrarProducts } = await import('../src/tools/map-registrar-products');
-		expectUngraded(formatRegistrarProducts(report(null, null), format), `csc/${format}`);
+		expectUngraded(formatRegistrarProducts(report(null, null), format), `registrar/${format}`);
 	});
 
 	it.each(FORMATS)('still renders a real score line for a measured scan [%s] (control)', async (format) => {

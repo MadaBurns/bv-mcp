@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Deep-scan orchestrator for CSC-complement view.
+ * Deep-scan orchestrator for the registrar-complement view.
  *
  * For each top-N apex (default cap 25), runs scan_domain, discover_subdomains
  * and check_subdomain_takeover via an injected internal-call function.

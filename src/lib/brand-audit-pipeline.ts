@@ -132,7 +132,7 @@ export interface BrandAuditPipelineOptions {
 	/** Clock override for deterministic tests. */
 	now?: () => number;
 	/**
-	 * Output view mode. `'registrar_complement'` triggers CSC enrichment + portfolio
+	 * Output view mode. `'registrar_complement'` triggers registrar enrichment + portfolio
 	 * aggregation and emits a `registrarComplement` payload on the returned CheckResult.
 	 * Default `'standard'` — backward-compatible, no change to existing output.
 	 */
@@ -169,7 +169,7 @@ export interface BrandAuditPipelineDeps {
 	 * `discoverBrandDomains` via its `deps` arg.
 	 */
 	tier2Lookup?: (domain: string) => Promise<Tier2Result>;
-	/** Optional queue binding for deferring CSC deep-scan. Provided in prod; undefined in tests. */
+	/** Optional queue binding for deferring the registrar deep-scan. Provided in prod; undefined in tests. */
 	brandAuditQueue?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 }
 

@@ -2,7 +2,7 @@
 
 /**
  * Tests for registrarComplement surfacing in brand_audit_get_report and
- * CSC stage reporting in brand_audit_status.
+ * Registrar-view stage reporting in brand_audit_status.
  *
  * These features require a `stepStore` dep (operator-deploy only); without it
  * the fields are absent. The memory step store is used here to avoid D1 wiring.
@@ -123,8 +123,8 @@ describe('brand_audit_get_report with registrarComplement', () => {
 	it('attaches registrarComplement from registrar_complement_full when present', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 		const stepStore = createMemoryBrandAuditStepStore();
-		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_full', status: 'completed', payload: { viewVersion: 1, reportId: 'reg_rpt_full' } });
-		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_fast', status: 'completed', payload: { viewVersion: 1, reportId: 'reg_rpt_fast' } });
+		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_full', status: 'completed', payload: { viewVersion: 2, reportId: 'reg_rpt_full' } });
+		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_fast', status: 'completed', payload: { viewVersion: 2, reportId: 'reg_rpt_fast' } });
 
 		const result = await brandAuditGetReport({ auditId: 'a-1', target: 'ford.com' }, 'owner-1', {
 			db: makeD1ForGetReport(),
@@ -138,7 +138,7 @@ describe('brand_audit_get_report with registrarComplement', () => {
 	it('falls back to registrar_complement_fast when full is absent', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 		const stepStore = createMemoryBrandAuditStepStore();
-		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_fast', status: 'completed', payload: { viewVersion: 1, reportId: 'reg_rpt_fast' } });
+		await stepStore.put({ auditId: 'a-1', target: 'ford.com', step: 'registrar_complement_fast', status: 'completed', payload: { viewVersion: 2, reportId: 'reg_rpt_fast' } });
 
 		const result = await brandAuditGetReport({ auditId: 'a-1', target: 'ford.com' }, 'owner-1', {
 			db: makeD1ForGetReport(),
@@ -174,7 +174,7 @@ describe('brand_audit_get_report with registrarComplement', () => {
 	});
 });
 
-describe('brand_audit_status CSC stages', () => {
+describe('brand_audit_status registrar-view stages', () => {
 	it('reports fast_ready when registrar_complement_fast is completed but full is absent', async () => {
 		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
 		const stepStore = createMemoryBrandAuditStepStore();
@@ -206,7 +206,7 @@ describe('brand_audit_status CSC stages', () => {
 		expect(summary?.metadata?.stage).toBe('deep_ready');
 	});
 
-	it('does not report stage when no CSC steps are complete', async () => {
+	it('does not report stage when no registrar-view steps are complete', async () => {
 		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
 		const stepStore = createMemoryBrandAuditStepStore();
 

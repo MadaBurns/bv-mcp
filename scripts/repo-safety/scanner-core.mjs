@@ -1,5 +1,21 @@
 import { createHash } from 'node:crypto';
 
+/**
+ * @typedef {object} RepoSafetyPolicy
+ * @property {string[]} [forbiddenPaths]
+ * @property {string[]} [sourceExtensions]
+ * @property {string[]} [allowedEmailDomains]
+ * @property {string[]} [allowedEmailAddresses]
+ * @property {string[]} [allowedDomainSuffixes]
+ * @property {string[]} [allowedInternalHostnames]
+ * @property {string[]} [forbiddenClientDomains]
+ * @property {string[]} [forbiddenClientDomainsSha256]
+ * @property {string[]} [forbiddenClientContextPhrasesSha256]
+ * @property {string[]} [allowedPaths]
+ * @property {string[]} [allowedPathPrefixes]
+ */
+
+/** @type {Required<RepoSafetyPolicy>} */
 const DEFAULT_POLICY = {
 	forbiddenPaths: [],
 	sourceExtensions: ['.cjs', '.js', '.json', '.jsonc', '.md', '.mjs', '.py', '.sh', '.sql', '.toml', '.ts', '.tsx', '.yaml', '.yml'],
@@ -11,6 +27,7 @@ const DEFAULT_POLICY = {
 	allowedInternalHostnames: [],
 	forbiddenClientDomains: [],
 	forbiddenClientDomainsSha256: [],
+	forbiddenClientContextPhrasesSha256: [],
 	allowedPaths: [],
 	allowedPathPrefixes: [],
 };
@@ -33,8 +50,19 @@ const RULES = [
 		pattern: /\b(?:tenant-pilot-\d+|tenant-db-tenant-|true-force-scan|X-Emergency-Dispatch)\b/gi,
 	},
 	{ id: 'customer-marker', pattern: /\bCustomer\s+[A-Z][A-Za-z0-9-]*\s+(?:Corp|Inc|LLC|Ltd|Co)\b/g },
-	{ id: 'client-context', pattern: /\b(?:CSC pilot brands|sales-meeting verification|production audit|validation batch)\b/gi },
+	{ id: 'client-context', pattern: /\b(?:sales-meeting verification|production audit|validation batch)\b/gi },
 ];
+
+// Client-context phrases that must never appear in the repo, stored as SHA-256
+// of the lowercased, single-spaced phrase (same hashed-gate mechanism as
+// `forbiddenClientDomainsSha256`, so the guard does not itself carry the name).
+// Built-in (not policy.json) so the commit-msg hook path, which scans without
+// a policy file, still enforces it. Extend per-repo via
+// `forbiddenClientContextPhrasesSha256` in policy.json.
+const BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256 = ['ef6b9b94f52b435a826c9558de024878508fb0b151ea98d387c8de54eb03f09a'];
+const CLIENT_CONTEXT_PHRASE_MIN_WORDS = 2;
+const CLIENT_CONTEXT_PHRASE_MAX_WORDS = 4;
+const WORD_TOKEN_PATTERN = /[A-Za-z0-9][A-Za-z0-9-]*/g;
 
 const PUBLIC_IPV4_PATTERN = /\b(?:(?:25[0-5]|2[0-4]\d|1?\d?\d)\.){3}(?:25[0-5]|2[0-4]\d|1?\d?\d)\b/g;
 const EMAIL_PATTERN = /[A-Z0-9._%+-]+@([A-Z0-9.-]+\.[A-Z]{2,})/gi;
@@ -59,6 +87,7 @@ const GITHUB_ACTIONS_THREAT_RULES = [
 ];
 const ALLOWED_GITHUB_ACTIONS_REMOTE_SHELL_INSTALLERS = [];
 
+/** @param {RepoSafetyPolicy} [policy] */
 export function normalizePolicy(policy = {}) {
 	return {
 		...DEFAULT_POLICY,
@@ -71,16 +100,19 @@ export function normalizePolicy(policy = {}) {
 		allowedInternalHostnames: policy.allowedInternalHostnames ?? DEFAULT_POLICY.allowedInternalHostnames,
 		forbiddenClientDomains: policy.forbiddenClientDomains ?? DEFAULT_POLICY.forbiddenClientDomains,
 		forbiddenClientDomainsSha256: policy.forbiddenClientDomainsSha256 ?? DEFAULT_POLICY.forbiddenClientDomainsSha256,
+		forbiddenClientContextPhrasesSha256: policy.forbiddenClientContextPhrasesSha256 ?? DEFAULT_POLICY.forbiddenClientContextPhrasesSha256,
 		allowedPaths: policy.allowedPaths ?? DEFAULT_POLICY.allowedPaths,
 		allowedPathPrefixes: policy.allowedPathPrefixes ?? DEFAULT_POLICY.allowedPathPrefixes,
 	};
 }
 
+/** @param {string} file @param {RepoSafetyPolicy} [policy] */
 export function isAllowedPath(file, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
 	return normalized.allowedPaths.includes(file) || normalized.allowedPathPrefixes.some((prefix) => file.startsWith(prefix));
 }
 
+/** @param {string} file @param {RepoSafetyPolicy} [policy] */
 export function shouldScanFile(file, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
 	if (isAllowedPath(file, normalized)) return false;
@@ -94,6 +126,7 @@ export function pathMatchesPattern(file, pattern) {
 	return file === pattern || file.startsWith(`${pattern}/`);
 }
 
+/** @param {string} file @param {RepoSafetyPolicy} [policy] */
 export function scanPathForForbiddenSurface(file, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
 	if (isAllowedPath(file, normalized)) return [];
@@ -124,6 +157,7 @@ export function isAllowedIPv4(value) {
 	);
 }
 
+/** @param {string} value @param {RepoSafetyPolicy} [policy] */
 export function isAllowedEmail(value, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
 	const address = value.toLowerCase();
@@ -139,6 +173,7 @@ export function isAllowedEmail(value, policy = DEFAULT_POLICY) {
 	return normalized.allowedEmailDomains.includes(domain) || normalized.allowedEmailDomains.some((allowed) => domain.endsWith(`.${allowed}`));
 }
 
+/** @param {string} value @param {RepoSafetyPolicy} [policy] */
 export function isAllowedInternalHostname(value, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
 	return normalized.allowedInternalHostnames.includes(value.toLowerCase());
@@ -162,6 +197,25 @@ function* tailSuffixes(domain) {
 	const labels = domain.toLowerCase().split('.');
 	for (let i = 0; i < labels.length - 1; i++) {
 		yield labels.slice(i).join('.');
+	}
+}
+
+// Sliding word-window candidates (2..4 words, lowercased, single-spaced) so a
+// hashed phrase can be matched without the plaintext ever living in the repo.
+function* phraseWindows(line) {
+	const tokens = [...line.matchAll(WORD_TOKEN_PATTERN)];
+	for (let start = 0; start < tokens.length; start++) {
+		for (let size = CLIENT_CONTEXT_PHRASE_MIN_WORDS; size <= CLIENT_CONTEXT_PHRASE_MAX_WORDS; size++) {
+			const end = start + size;
+			if (end > tokens.length) break;
+			const first = tokens[start];
+			const last = tokens[end - 1];
+			const phrase = tokens
+				.slice(start, end)
+				.map((token) => token[0])
+				.join(' ');
+			yield { phrase, index: first.index, length: last.index + last[0].length - first.index };
+		}
 	}
 }
 
@@ -198,6 +252,7 @@ export function scanGithubActionsWorkflowForThreats(file, text) {
 	return findings;
 }
 
+/** @param {string} file @param {string} text @param {RepoSafetyPolicy} [policy] */
 export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
 	if (isAllowedPath(file, normalized)) return [];
@@ -231,6 +286,13 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 			}
 		}
 
+		const phraseHashes = new Set([...BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256, ...normalized.forbiddenClientContextPhrasesSha256]);
+		for (const window of phraseWindows(line)) {
+			if (phraseHashes.has(sha256Hex(window.phrase))) {
+				findings.push(finding(file, line, lineIndex, { index: window.index, 0: line.slice(window.index, window.index + window.length) }, 'client-context'));
+			}
+		}
+
 		for (const match of line.matchAll(PUBLIC_IPV4_PATTERN)) {
 			if (!isAllowedIPv4(match[0])) findings.push(finding(file, line, lineIndex, match, 'public-ipv4'));
 		}
@@ -243,6 +305,7 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 	return findings;
 }
 
+/** @param {string} file @param {string} text @param {RepoSafetyPolicy} [policy] */
 export function scanFileContent(file, text, policy = DEFAULT_POLICY) {
 	return [
 		...scanPathForForbiddenSurface(file, policy),
@@ -251,6 +314,7 @@ export function scanFileContent(file, text, policy = DEFAULT_POLICY) {
 	];
 }
 
+/** @param {string} text @param {RepoSafetyPolicy} [policy] */
 export function scanCommitMessage(text, policy = DEFAULT_POLICY) {
 	return scanTextForSensitiveSurface('.git/COMMIT_EDITMSG', text, policy);
 }

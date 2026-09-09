@@ -56,7 +56,7 @@ export interface BrandAuditBatchStartOptions {
 	 */
 	discovery_mode?: 'classic' | 'tiered';
 	/**
-	 * Output view mode. `'registrar_complement'` triggers CSC enrichment in the
+	 * Output view mode. `'registrar_complement'` triggers registrar enrichment in the
 	 * pipeline. Threaded onto each queue message so the consumer can forward
 	 * it to `runBrandAuditPipeline`. Default `'standard'`.
 	 */

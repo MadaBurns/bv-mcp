@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * CSC product mapping tool (sales-upsell layer).
- * Maps a domain's observed security gaps to the four CSC commercial products.
+ * Registrar product mapping tool (sales-upsell layer).
+ * Maps a domain's observed security gaps to the four commercial products a corporate brand-protection registrar sells.
  * Reads existing CheckResults (dmarc/ssl/dnssec) plus Spec A's RDAP lock posture.
  * Emits NO new security finding/severity — `priority` here is a SALES priority,
  * deliberately distinct from a security severity. Modeled on map-compliance.ts.
@@ -145,7 +145,7 @@ export function buildAllTransientProductNote(attempted: number): string {
 }
 
 const REGISTRAR_PRODUCT_NAMES: Record<RegistrarProductKey, string> = {
-	registry_lock: 'CSC MultiLock',
+	registry_lock: 'Registry lock',
 	managed_dmarc: 'Managed DMARC',
 	digital_certificates: 'Digital Certificates',
 	dnssec_management: 'DNSSEC management',
@@ -336,7 +336,7 @@ export function unassessedScanProduct(
 }
 
 /**
- * Evaluate CSC product recommendations from scan results + RDAP lock posture (PURE).
+ * Evaluate registrar product recommendations from scan results + RDAP lock posture (PURE).
  * Exported for direct unit testing without mocking scanDomain/checkRdapLookup.
  */
 export function evaluateRegistrarProducts(
@@ -435,7 +435,7 @@ export function extractLockPosture(rdap: CheckResult): LockPosture | null {
 const REGISTRAR_PRODUCT_ORDER: RegistrarProductKey[] = ['registry_lock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
 
 /**
- * Render a CSC product report for display.
+ * Render a registrar product report for display.
  *
  * `assessed` is load-bearing here, not decoration. Before it was read, an
  * unassessed domain rendered "**Score:** not measured | **3** recommended"
@@ -466,7 +466,7 @@ export function formatRegistrarProducts(report: RegistrarProductReport, format: 
 
 	if (format === 'compact') {
 		const countSegment = report.assessed ? ` — ${report.recommendedCount} upsell(s)` : '';
-		lines.push(`CSC products: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}${countSegment}`);
+		lines.push(`Registrar products: ${sanitizeOutputText(report.domain, 253)} — ${formatScoreGrade(report.score, report.grade)}${countSegment}`);
 		if (!report.assessed) lines.push(caveat);
 		for (const r of shown) {
 			// `!r.assessed` (F1, review round 1): a product `unassessedScanProduct`
@@ -485,7 +485,7 @@ export function formatRegistrarProducts(report: RegistrarProductReport, format: 
 			lines.push(`${icon} ${sanitizeOutputText(r.productName, 40)}${suffix}`);
 		}
 	} else {
-		lines.push(`# CSC Product Recommendations: ${sanitizeOutputText(report.domain, 253)}`);
+		lines.push(`# Registrar Product Recommendations: ${sanitizeOutputText(report.domain, 253)}`);
 		const countSegment = report.assessed ? ` | **${report.recommendedCount}** recommended` : '';
 		lines.push(`**Score:** ${formatScoreGrade(report.score, report.grade)}${countSegment}`);
 		if (!report.assessed) lines.push(caveat);
@@ -510,7 +510,7 @@ export function formatRegistrarProducts(report: RegistrarProductReport, format: 
 type RegistrarRuntimeOptions = ScanRuntimeOptions & { whoisBinding?: { fetch: typeof fetch } };
 
 /**
- * Map a domain's security gaps to CSC products (orchestrator — the only impure unit).
+ * Map a domain's security gaps to registrar products (orchestrator — the only impure unit).
  * Runs a full scan (cached) + a budget-bounded RDAP lookup, then evaluates.
  */
 export async function mapRegistrarProducts(domain: string, kv?: KVNamespace, runtimeOptions?: RegistrarRuntimeOptions): Promise<RegistrarProductReport> {

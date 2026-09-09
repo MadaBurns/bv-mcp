@@ -275,7 +275,7 @@ export interface BrandAuditConsumerDeps {
 	 */
 	certstreamAuthToken?: string;
 	/**
-	 * Optional internal-call closure for the CSC deep-scan queue job.
+	 * Optional internal-call closure for the registrar deep-scan queue job.
 	 * Wraps handleToolsCall so the deep-scan orchestrator can invoke scan_domain
 	 * and discover_subdomains without going through HTTP framing. Constructed at
 	 * the queue dispatch site in src/index.ts; undefined on BSL self-hosts where
@@ -435,7 +435,7 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		...(deps.certstream ? { certstream: deps.certstream } : {}),
 		...(deps.certstreamAuthToken ? { certstreamAuthToken: deps.certstreamAuthToken } : {}),
 		// The same brandAuditQueue binding that powers the Phase 2b retry-enqueue
-		// at line 416 doubles as the CSC fast→full deep-scan trigger inside the
+		// at line 416 doubles as the registrar fast→full deep-scan trigger inside the
 		// pipeline (brand-audit-pipeline.ts:1061). The send() signature there is
 		// `{ send(unknown): Promise<void> }`, wider (more permissive in input
 		// type) than the consumer's typed-message variant — the runtime shape
@@ -469,7 +469,7 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		// in the pipeline's effective-mode resolution.
 		discovery_mode: message.discovery_mode,
 		// Output view mode from the batch_start payload. Forwarded into the
-		// pipeline so CSC enrichment runs when the caller requested registrar_complement.
+		// pipeline so registrar enrichment runs when the caller requested registrar_complement.
 		view: message.view,
 		signal: controller.signal,
 		deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,

@@ -109,8 +109,8 @@ describe('handleBrandAuditQueue — deep_scan branch', () => {
 
 	it('invokes internalCall for anchor apex when registrar_complement_fast is seeded', async () => {
 		const fastPayload = {
-			viewVersion: 1,
-			anchor: { apex: 'ford.com', primaryRegistrar: { family: 'corporate domains registrar', name: 'CSC', ianaId: null }, managedByRegistrar: true },
+			viewVersion: 2,
+			anchor: { apex: 'ford.com', primaryRegistrar: { family: 'corporate domains registrar', name: 'Brand Registrar, Inc.', ianaId: null }, managedByRegistrar: true },
 			registrarPortfolio: { totalApexes: 1, byFamily: [{ family: 'corporate domains registrar', count: 1, percent: 100, exampleApexes: ['ford.com'] }], offPortfolioCount: 0, offPortfolioApexes: [] },
 			shadowItHighlights: [],
 			defensiveRegistrations: { count: 0, examples: [], enrichmentStatus: 'ready' },

@@ -23,7 +23,7 @@ import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-categor
 export interface BrandAuditStatusDeps {
 	db: D1Database;
 	now?: () => number;
-	/** Step store for CSC complement pipeline steps. When omitted, stage is not reported. */
+	/** Step store for registrar complement pipeline steps. When omitted, stage is not reported. */
 	stepStore?: BrandAuditStepStore;
 }
 
@@ -202,8 +202,8 @@ export async function brandAuditStatus(
 	if (targetStatusCounts.queued > 0 && updatedAgeMs > 300_000) {
 		warnings.push(`Audit has ${targetStatusCounts.queued} queued target(s) and has not updated for ${updatedAgeMs}ms.`);
 	}
-	// CSC complement stage: scan all targets' step-store entries and compute
-	// the coarsest stage that describes the audit's CSC readiness. Strategy:
+	// Registrar complement stage: scan all targets' step-store entries and compute
+	// the coarsest stage that describes the audit's registrar-view readiness. Strategy:
 	//   deep_ready — at least one target has registrar_complement_full completed
 	//   fast_ready — at least one target has registrar_complement_fast completed (and no full)
 	// For a single-target audit (the common case) this is unambiguous. For

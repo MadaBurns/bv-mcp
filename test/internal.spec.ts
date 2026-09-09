@@ -103,7 +103,7 @@ describe('Internal service binding routes', () => {
 		// Regression: the internal door built tool options without brandAuditDb/
 		// brandAuditQueue (only the public /mcp path wired them), so the async
 		// discover_brand_domains_start / brand_audit_batch_start tools short-circuited
-		// to `unprovisioned` with no auditId over the door — the bv2-ops csc-discovery
+		// to `unprovisioned` with no auditId over the door — the bv2-ops brand-discovery
 		// sweep polled forever and stored nothing. This asserts the door reaches the
 		// D1 store + queue so the async producer actually enqueues.
 		it('passes BRAND_AUDIT_DB/QUEUE through the internal door so discover_brand_domains_start enqueues', async () => {

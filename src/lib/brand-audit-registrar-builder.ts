@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * CSC-complement payload builder.
+ * Registrar-complement payload builder.
  *
  * Composes the fast-stage registrarComplement payload from the brand-audit pipeline's
  * classified findings:
@@ -64,7 +64,7 @@ export interface BuildRegistrarComplementInput {
 /**
  * Build the fast-stage registrarComplement payload for a brand audit.
  *
- * Constructs the CSC complement view from classified findings by:
+ * Constructs the registrar complement view from classified findings by:
  * 1. Extracting portfolio candidates from finding metadata
  * 2. Running inline enrichment (MX + HTTP checks) on top-N candidates to determine defensive registration
  * 3. Aggregating registrar portfolio from detected candidates

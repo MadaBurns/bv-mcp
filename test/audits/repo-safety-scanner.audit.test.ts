@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import { scanCommitMessage, scanFileContent, scanTextForSensitiveSurface, formatFindings } from '../../scripts/repo-safety/scanner-core.mjs';
 
@@ -75,12 +76,22 @@ describe('repo safety scanner helper', () => {
 	});
 
 	it('flags sensitive commit-message wording before public pushes', () => {
-		const findings = scanCommitMessage(
-			'Verified against brand-beta.com.au during a CSC pilot brands production audit.',
-			clientDomainPolicy,
-		);
+		const findings = scanCommitMessage('Verified against brand-beta.com.au during a production audit.', clientDomainPolicy);
 
 		expect(findings.map((finding) => finding.ruleId)).toEqual(expect.arrayContaining(['client-domain', 'client-context']));
+	});
+
+	it('flags hashed client-context phrases without the plaintext living in the repo', () => {
+		// The phrase is hashed at runtime here; in production the hash is built into
+		// scanner-core.mjs so the commit-msg hook (which scans without policy.json)
+		// still enforces it. Matching is case-insensitive and whitespace-normalised.
+		const phrase = 'acme pilot brands';
+		const hashedPolicy = { forbiddenClientContextPhrasesSha256: [createHash('sha256').update(phrase).digest('hex')] };
+		const findings = scanCommitMessage('Verified during an   Acme   PILOT brands walkthrough.', hashedPolicy);
+
+		expect(findings.map((finding) => finding.ruleId)).toEqual(['client-context']);
+		expect(findings[0].column).toBe('Verified during an   '.length + 1);
+		expect(scanCommitMessage('Verified during an acme pilot walkthrough.', hashedPolicy)).toEqual([]);
 	});
 
 	it('flags Megalodon-style workflow injection indicators even when .github is otherwise allowlisted', () => {

@@ -508,7 +508,7 @@ export const BrandAuditSingleArgs = z
 		brand_aliases: BrandAliasesArg,
 		candidate_domains: BrandCandidateDomainsArg,
 		view: BrandAuditViewSchema.optional().describe(
-			"Output view mode. 'registrar_complement' produces a CSC-tuned payload; requires enterprise tier. Default 'standard'.",
+			"Output view mode. 'registrar_complement' produces a registrar-complement payload; requires enterprise tier. Default 'standard'.",
 		),
 		discovery_mode: z
 			.enum(['classic', 'tiered'])
@@ -559,7 +559,7 @@ export const BrandAuditBatchStartArgs = z
 					'Required when discovery_mode is "tiered" and the caller is not an enterprise/owner/partner principal.',
 			),
 		view: BrandAuditViewSchema.optional().describe(
-			"Output view mode. 'registrar_complement' produces a CSC-tuned payload; requires enterprise tier. Default 'standard'.",
+			"Output view mode. 'registrar_complement' produces a registrar-complement payload; requires enterprise tier. Default 'standard'.",
 		),
 	})
 	.passthrough();

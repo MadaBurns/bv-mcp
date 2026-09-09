@@ -108,7 +108,7 @@ plan-*.md
 
 # Internal reports / call prep — never commit (drift catchers)
 /reports
-/.csc
+/.client-reports
 /.reports
 /BENCHMARK_REPORT.md
 /BENCHMARK_*.md

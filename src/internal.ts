@@ -615,7 +615,7 @@ internalRoutes.post('/tools/call', async (c) => {
 		// brand_audit_batch_start / register_brand_audit_watch). Same
 		// failure mode as the recon binding above: without these the
 		// async *_start tools short-circuit to `unprovisioned` with no
-		// auditId, so the bv2-ops csc-discovery sweep polls forever and
+		// auditId, so the bv2-ops brand-discovery sweep polls forever and
 		// stores nothing. Bound to the same worker as the public path.
 		brandAuditDb: c.env.BRAND_AUDIT_DB,
 		brandAuditQueue: c.env.BRAND_AUDIT_QUEUE,

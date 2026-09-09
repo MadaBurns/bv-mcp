@@ -40,7 +40,7 @@ function recFor(report: RegistrarProductReport, key: RegistrarProductRecommendat
 	return r;
 }
 
-describe('evaluateRegistrarProducts — CSC MultiLock (reads booleans, not level)', () => {
+describe('evaluateRegistrarProducts — Registry lock (reads booleans, not level)', () => {
 	it('registry-lock posture (registryLevel true) → not recommended, none', () => {
 		const r = evaluateRegistrarProducts(
 			allPassing(),
@@ -108,7 +108,7 @@ describe('evaluateRegistrarProducts — CSC MultiLock (reads booleans, not level
 	 * and `lockPosture.level === 'unknown'` (RDAP DID answer, the record just
 	 * carries no EPP status codes) used to share `assessed: true` and one
 	 * "unavailable/redacted" gap sentence. That let an unreachable RDAP lookup
-	 * render byte-identical to a genuine clean pass (`✓ CSC MultiLock`, no
+	 * render byte-identical to a genuine clean pass (`✓ Registry lock`, no
 	 * disclosure) — an incomplete measurement presented with full confidence.
 	 * `assessed` must now distinguish the two: null is NOT an observation,
 	 * `level: 'unknown'` (non-null) IS one.
@@ -140,7 +140,7 @@ describe('formatRegistrarProducts — an unassessed MultiLock (null lock posture
 
 	it('compact: shows "?" and the unobservable gap text, never the clean-pass "✓" with no disclosure', () => {
 		const compact = formatRegistrarProducts(unreachableRdapReport(), 'compact');
-		const line = compact.split('\n').find((l) => l.includes('CSC MultiLock'));
+		const line = compact.split('\n').find((l) => l.includes('Registry lock'));
 		expect(line).toBeDefined();
 		expect(line).not.toContain('✓');
 		expect(line).toContain('?');
@@ -149,8 +149,8 @@ describe('formatRegistrarProducts — an unassessed MultiLock (null lock posture
 
 	it('full: shows the ❓ / NOT ASSESSED tag, never "➖ … — OK"', () => {
 		const full = formatRegistrarProducts(unreachableRdapReport(), 'full');
-		expect(full).toContain('❓ **CSC MultiLock** — NOT ASSESSED');
-		expect(full).not.toContain('➖ **CSC MultiLock** — OK');
+		expect(full).toContain('❓ **Registry lock** — NOT ASSESSED');
+		expect(full).not.toContain('➖ **Registry lock** — OK');
 	});
 });
 
@@ -301,7 +301,7 @@ describe('formatRegistrarProducts', () => {
 
 	it('full output names every product and shows justifyingGap for recommended lines', () => {
 		const out = formatRegistrarProducts(sampleReport(), 'full');
-		expect(out).toContain('CSC MultiLock');
+		expect(out).toContain('Registry lock');
 		expect(out).toContain('Managed DMARC');
 		expect(out).toContain('Digital Certificates');
 		expect(out).toContain('DNSSEC management');
@@ -316,7 +316,7 @@ describe('formatRegistrarProducts', () => {
 		const full = formatRegistrarProducts(report, 'full');
 		const compact = formatRegistrarProducts(report, 'compact');
 		expect(compact.length).toBeLessThan(full.length);
-		expect(compact).toContain('CSC MultiLock');
+		expect(compact).toContain('Registry lock');
 	});
 
 	it('renders "not measured" instead of null/100 (null) for an ungraded scan', async () => {
@@ -415,7 +415,7 @@ describe('formatRegistrarProducts — a domain where no check ran', () => {
 		expect(report.assessed).toBe(true);
 		expect(report.recommendedCount).toBe(2);
 		expect(text, format).toContain('Managed DMARC');
-		expect(text, format).toContain('CSC MultiLock');
+		expect(text, format).toContain('Registry lock');
 		expect(text, format).not.toContain(UNASSESSED_PRODUCT_NOTE);
 		expect(text, format).toContain('55/100 (F)');
 	});
@@ -431,7 +431,7 @@ describe('formatRegistrarProducts — a domain where no check ran', () => {
 		expect(report.assessed).toBe(false);
 		expect(report.recommendedCount).toBe(1);
 		const full = fmt(report, 'full');
-		expect(full).toContain('CSC MultiLock');
+		expect(full).toContain('Registry lock');
 		expect(full).toContain('Domain transfer not locked');
 		// …while the three CHECK-derived products stay suppressed.
 		expect(full).not.toContain('Managed DMARC');
