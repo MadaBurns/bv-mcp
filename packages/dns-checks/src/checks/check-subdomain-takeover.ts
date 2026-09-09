@@ -10,8 +10,8 @@
  */
 
 import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';
-import { buildCheckResult } from '../check-utils';
-import { KNOWN_SUBDOMAINS, getNoTakeoverFinding, scanSubdomainForTakeover } from './subdomain-takeover-analysis';
+import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
+import { KNOWN_SUBDOMAINS, getNoTakeoverFinding, scanSubdomainForTakeoverInternal } from './subdomain-takeover-analysis';
 
 /** Cap on caller-supplied subdomain lists to bound per-call DNS+HTTP cost. */
 const MAX_SUBDOMAINS = 1000;
@@ -52,16 +52,68 @@ export async function checkSubdomainTakeover(
 		: null;
 	const subdomainsToScan = explicit && explicit.length > 0 ? explicit : KNOWN_SUBDOMAINS;
 
-	const findingsPerSubdomain = await Promise.all(
-		subdomainsToScan.map((subdomain) => scanSubdomainForTakeover(domain, subdomain, queryDNS, fetchFn, timeout)),
+	const outcomes = await Promise.all(
+		subdomainsToScan.map(async (subdomain) => ({
+			subdomain,
+			...(await scanSubdomainForTakeoverInternal(domain, subdomain, queryDNS, fetchFn, timeout)),
+		})),
 	);
 
-	for (const subdomainFindings of findingsPerSubdomain) {
-		findings.push(...subdomainFindings);
+	for (const outcome of outcomes) {
+		findings.push(...outcome.findings);
 	}
 
+	const unmeasured = outcomes.filter((o) => o.cnameQueryFailed).map((o) => o.subdomain);
+	const answeredCount = outcomes.length - unmeasured.length;
+
+	// Any non-`info` finding is real, DNS-derived evidence of a dangling record. It stands
+	// on its own regardless of how many sibling probes failed — positive evidence is
+	// monotone, so an unmeasured neighbour cannot invalidate it.
+	if (findings.some((f) => f.severity !== 'info')) {
+		return buildCheckResult('subdomain_takeover', findings);
+	}
+
+	// Issue #948 — abstain when ZERO swept subdomains answered.
+	//
+	// Every CNAME query threw, so `getNoTakeoverFinding` below would assert "no subdomain
+	// takeover vectors detected" — score 100, passed, and written to the 5-minute cache —
+	// for a sweep that never reached a resolver. `checkStatus: 'error'` is what makes the
+	// scoring engine EXCLUDE the category (`isCheckMeasured`, scoring/evidence.ts) and what
+	// arms scan_domain's transient-zero retry (`shouldRetry` requires `'error'`; a
+	// `'timeout'` status is never retried); `partial: true` keeps the non-answer out of the
+	// cache. The finding carries `inconclusive` + `errorKind` and deliberately NOT
+	// `missingControl` — nothing was measured, so nothing can be claimed absent (#638 law).
+	if (answeredCount === 0) {
+		return buildNotAssessedResult(
+			'subdomain_takeover',
+			createFinding(
+				'subdomain_takeover',
+				'Subdomain takeover not assessed — every subdomain probe failed',
+				'info',
+				`No CNAME lookup in the subdomain sweep for ${domain} completed: all ${outcomes.length} queries failed, so no subdomain was examined. This is not evidence that the domain is free of dangling CNAMEs — the category is excluded from scoring rather than passed. Re-run the check once name resolution is working.`,
+				{
+					// No `verificationStatus`: the TakeoverVerificationStatus union describes
+					// outcomes of a completed probe, and nothing was probed. Matches the Worker
+					// wrapper's cut-probe note, which omits it for the same reason.
+					evidence: ['cname_sweep_failed'],
+					inconclusive: true,
+					errorKind: 'dns_error',
+					subdomainsUnmeasured: unmeasured,
+				},
+			),
+			'error',
+		);
+	}
+
+	// Some probes answered: the clean verdict stands, narrowed to the subdomains that were
+	// actually swept so the scope of the claim stays auditable.
 	if (findings.length === 0) {
-		findings.push(getNoTakeoverFinding(domain));
+		const clean = getNoTakeoverFinding(domain);
+		findings.push(
+			unmeasured.length > 0
+				? { ...clean, metadata: { ...(clean.metadata ?? {}), subdomainsUnmeasured: unmeasured } }
+				: clean,
+		);
 	}
 
 	return buildCheckResult('subdomain_takeover', findings);
