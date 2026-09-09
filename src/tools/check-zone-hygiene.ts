@@ -39,25 +39,43 @@ async function lookupA(fqdn: string, dnsOptions?: QueryDnsOptions): Promise<{ ip
 }
 
 /**
+ * One AAAA lookup (#942), read the same way. Spent ONLY when the A canary came back
+ * completely empty, so a zone with an IPv4 wildcard never pays for it.
+ */
+async function lookupAaaa(fqdn: string, dnsOptions?: QueryDnsOptions): Promise<string[]> {
+	const resp = await queryDns(fqdn, 'AAAA', false, dnsOptions);
+	return (resp.Answer ?? []).filter((a) => a.type === RecordType.AAAA).map((a) => a.data);
+}
+
+/**
  * Wildcard canary (#930). Same shape as the `ns` check's probe (`_bv-probe-<nonce>`),
  * so the scan-level nonce normalisation in test/scan-domain-dns-semaphore.spec.ts
  * already covers it. A random label per call: a fixed one could be registered.
  *
- * Three outcomes, three different claims — a thrown query is NOT "no wildcard":
+ * Four outcomes, four different claims — a thrown query is NOT "no wildcard":
  * reading it that way would let a transient resolver failure hand the sweep a
  * confident verdict it cannot support (the fail-open shape CLAUDE.md warns about).
  * A CNAME-only answer (dangling wildcard alias, no address) still counts as
  * `detected`: the zone answers for arbitrary names even though nothing "resolves".
  *
- * Known blind spot, shared with check-ns.ts's probe: this is an A lookup, so an
- * AAAA-only wildcard is not seen — but the sweep is A-only too, so such a zone
- * cannot produce the false hits this canary exists to explain.
+ * #942: an empty A answer no longer settles it. The DoH record layer filters answers
+ * to the requested type, so an AAAA-only wildcard used to read as `absent` and the
+ * A-only sweep below then earned a clean "no sensitive subdomains resolve publicly"
+ * verdict for names that DO resolve over IPv6. One conditional AAAA query — never
+ * issued on a zone whose A canary answered — turns that into the distinct
+ * `detected_ipv6` outcome, which withholds the clean verdict without inventing hits.
+ * A thrown AAAA query is `inconclusive` for the same reason a thrown A query is: the
+ * sweep's answers could not be interpreted either way.
  */
 async function probeWildcard(domain: string, dnsOptions?: QueryDnsOptions): Promise<WildcardProbe> {
 	const probeSubdomain = `_bv-probe-${Math.random().toString(36).substring(2, 10)}.${domain}`;
 	try {
 		const { ips, cname } = await lookupA(probeSubdomain, dnsOptions);
-		if (ips.length === 0 && cname === undefined) return { status: 'absent', probeSubdomain };
+		if (ips.length === 0 && cname === undefined) {
+			const v6 = await lookupAaaa(probeSubdomain, dnsOptions);
+			if (v6.length > 0) return { status: 'detected_ipv6', ips: v6, probeSubdomain };
+			return { status: 'absent', probeSubdomain };
+		}
 		return { status: 'detected', ips, ...(cname ? { cnameTarget: cname } : {}), probeSubdomain };
 	} catch {
 		return { status: 'inconclusive', probeSubdomain };
