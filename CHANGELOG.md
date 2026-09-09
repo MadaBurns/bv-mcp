@@ -8,7 +8,9 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
-Scoring model 1.25.0 (`@blackveil/dns-checks` unchanged at 1.36.0 — the affected check is worker-side). No category weights, grade bands or severity penalties change.
+## [3.78.0] - 2026-09-09
+
+Scoring model 1.25.0, `@blackveil/dns-checks` 1.37.0 (parity corpus 1.37.0). No category weights, grade bands or severity penalties change.
 
 ### Changed
 
@@ -22,6 +24,20 @@ Scoring model 1.25.0 (`@blackveil/dns-checks` unchanged at 1.36.0 — the affect
 - **The same false attribution on every other uniform-set nameserver platform.** #929's fix listed only one.com; any platform that hands every tenant the same NS set but was not in `SHARED_NS_APEXES` still reached the "dedicated" `ns_set_match` arm and reported `owned_by_seed` / `strong` on a complete match. Measured across 14,062 Tranco domains (two DoH vantages, 2026-09-09), the list now carries every platform on which an identical complete set was observed on unrelated tenants: Hostinger, Wix, Squarespace Domains (+ NS1 pools), Google Cloud DNS (five fixed sets — was pinned as unlisted), IONOS, Bluehost, Strato, Hetzner (Console and Robot), OVH, DigitalOcean, Linode, Vercel, Hover, DNSimple, DreamHost, SiteGround, Porkbun, EuroDNS, Dynadot, DNS Made Easy, Constellix, Azure DNS, Network Solutions, ClouDNS, Namecheap hosting/Spaceship, and the regional defaults of Alibaba, HiChina, DNSPod, dnsv4, share-dns, Xinnet, REG.RU, Timeweb, Beget, Selectel, RU-CENTER, Yandex, GMO, Sakura, ns14.net and Aruba. None is pooled; a same-platform candidate is `unattributed` (identical sets) or `third_party` (platform hosts plus its own), never `owned_by_seed`. Cloudflare and Route 53 stay ownership-bearing on the same measurement. Mechanism unchanged; not `scan_domain`-score-affecting. (Refs #939)
   - Enterprise-gated platforms measured uniform in the same sweep — a corporate brand-protection registrar, MarkMonitor, `digital.govt.nz` and UltraDNS — are deliberately NOT listed: a squatter cannot land on a seed's exact NS set there for the price of an account, so a complete-set match on those platforms stays ownership-bearing, and listing them would drop a paying customer's own defensive registration to `unattributed`; the audit pins each apex as absent (Refs #949).
   - Known residual: Gandi's legacy classic set `a/b/c.dns.gandi.net` is uniform but shares its apex with per-zone LiveDNS, and the set keys on the apex — it stays unlisted (pinned in the audit as a residual).
+
+- **Check abstentions now carry one shape everywhere: score 0, `passed: false`, `partial: true`, excluded from the scan score** (#900 follow-up, #946; `@blackveil/dns-checks` **1.37.0**, parity corpus 1.37.0). Nine sites disagreed: `check_ssl`'s inconclusive lane kept a **score of 60** with its connection-failure finding, `check_dnskey_strength` returned **100 / passed** on a DNS error, `check_root_server_set` and `check_authoritative_dns_infra` returned 100 when the probe was unavailable, and `check_http_security` / `check_subdomain_takeover` budget cuts lacked `partial` and were cached for the full TTL. A new audit (`test/audits/check-abstention-shape.audit.test.ts`) pins every `checkStatus: 'error' | 'timeout'` emission site to the shape.
+- **`explain_finding` still gave the pre-#927 SPF `~all` guidance** (#909 residual, #936): it called `~all` the recommended terminator under an enforcing DMARC policy. It now describes `~all` as the interim posture under `p=none` and recommends `-all` once DMARC enforces, matching what `check_spf` scores. `docs/scoring.md` and the finding-data sweep test follow. A dead duplicate of the DMARC RUA authorisation helper was removed.
+- **`map_supply_chain` reported an RFC 7505 null MX (`0 .`) as a critical dependency named `""` and a deny-all CAA `issue ";"` as a certificate authority named `";"`** (#932, #933). Both are directives, not providers; they are now surfaced as informational rows, and `issue "ca.example; validationmethods=dns-01"` names the CA, not the whole parameter string.
+- **`rdap_lookup` no longer reports `registrantPrivacy: false` after a failed or registry-omitted lookup** (#931, #935). Registries that omit the registrar by policy (Punktum `.dk`) are classified `redacted`; a missing or errored WHOIS fallback leaves the field absent instead of asserting "not private". The `bv-whois` shim omits the key on its short-circuit paths (needs its own deploy).
+- **The dead Worker-side `mx-analysis` duplicate is gone** (#940); its five behaviours are pinned against the package module that actually runs.
+
+### Added
+
+- **Cron alert `client_ip_header_missing`** (#896, #938): a 15-minute D1-backed lane over `mcp_access_log` raises an operator alert when more than 5% of public-door rows in the last 24 hours (minimum 20 rows) arrived without `cf-connecting-ip`, and the daily digest carries `client_ip_audit: …` as its positive control. Measured at 80–94% missing on the custom domain on 2026-09-09; the cause is zone-level header removal, not the Worker. `npm run audit:client-ip-headers` runs the same query on demand.
+
+### Removed
+
+- **Partnership demo material** (#951): the `docs/demos/` tree and vendor-specific wording in AGENTS.md, SECURITY.md, CONTRIBUTING.md, the tenant-ops runbook and the threat model. Historical changelog entries that named the vendor are redacted in place (see the note at the top of this file).
 
 ## [3.77.0] - 2026-09-08
 
@@ -55,12 +71,6 @@ Scoring model 1.24.0, `@blackveil/dns-checks` 1.36.0. No category weights, grade
 - Compare partial monitoring cycles against each measured domain's latest complete prior observation. Preserve earlier findings for unmeasured domains and retain queue failure alerts.
 - Match individual findings within a category so unchanged findings do not emit false severity-change alerts.
 - Keep configured static API keys independent of stale entitlement cache entries while preserving owner IP restrictions.
-
-## [3.76.0] - 2026-09-05
-
-- TODO: fill in release notes.
-
-## [Unreleased]
 
 ## [3.76.0] - 2026-09-05
 
