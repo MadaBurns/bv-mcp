@@ -114,7 +114,7 @@ describe('resolveWhoisServer', () => {
 		expect(kv.put).toHaveBeenCalledTimes(1);
 		const [key, value] = kv.put.mock.calls[0];
 		expect(key).toBe('iana:fakefaketld');
-		expect(JSON.parse(value)).toEqual({ server: null });
+		expect(JSON.parse(value)).toEqual({ server: null, reason: 'no_record' });
 	});
 
 	it('normalizes TLD to lowercase before lookup', async () => {

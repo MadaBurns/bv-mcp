@@ -73,6 +73,18 @@ function validateHost(hostname: string): void {
 }
 
 /**
+ * Thrown by {@link whoisQuery} when the per-query deadline elapses. Identified
+ * by `name` (not message text) so the lookup composer can classify a timeout
+ * without coupling to the message format.
+ */
+export class WhoisTimeoutError extends Error {
+	override readonly name = 'WhoisTimeoutError';
+	constructor(timeoutMs: number) {
+		super(`WHOIS timeout after ${timeoutMs}ms`);
+	}
+}
+
+/**
  * Open a TCP/43 connection to a WHOIS server, send the query (CRLF-terminated),
  * collect the full response, and return as a string. Response is capped at
  * MAX_RESPONSE_BYTES and the connection is aborted on timeout.
@@ -86,7 +98,7 @@ export async function whoisQuery(
 
 	const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	const factory = options.socketFactory ?? defaultSocketFactory;
-	const timeoutError = () => new Error(`WHOIS timeout after ${timeoutMs}ms`);
+	const timeoutError = () => new WhoisTimeoutError(timeoutMs);
 
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let stopRequested = false;

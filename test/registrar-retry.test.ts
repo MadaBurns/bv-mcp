@@ -113,6 +113,28 @@ describe('findRetryableCandidates', () => {
 		expect(retryable.target).toBeNull();
 		expect(retryable.candidates).toEqual([]);
 	});
+
+	it('does NOT flag deterministic WHOIS reasons as retryable (#931: whois_invalid_domain / whois_no_whois_server / whois_unrecognised_response)', () => {
+		const result = makeResult([
+			summary('lookup_failed', { failureReason: 'whois_no_whois_server' }),
+			candidate('a.com', 'lookup_failed', { failureReason: 'whois_invalid_domain' }),
+			candidate('b.com', 'lookup_failed', { failureReason: 'whois_no_whois_server' }),
+			candidate('c.com', 'lookup_failed', { failureReason: 'whois_unrecognised_response' }),
+		]);
+		const retryable = findRetryableCandidates(result);
+		expect(retryable.target).toBeNull();
+		expect(retryable.candidates).toEqual([]);
+	});
+
+	it('still flags transient WHOIS reasons as retryable (#931: whois_timeout / whois_connect_error)', () => {
+		const result = makeResult([
+			summary('lookup_failed', { failureReason: 'whois_timeout' }),
+			candidate('a.com', 'lookup_failed', { failureReason: 'whois_connect_error' }),
+		]);
+		const retryable = findRetryableCandidates(result);
+		expect(retryable.target).toEqual({ failureReason: 'whois_timeout' });
+		expect(retryable.candidates).toEqual([{ domain: 'a.com', failureReason: 'whois_connect_error' }]);
+	});
 });
 
 describe('shouldRetryAudit', () => {
