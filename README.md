@@ -106,7 +106,8 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
   resolve_spf_chain     check_nsec_             brand_audit_status
   discover_subdomains     walkability           brand_audit_get_
   map_compliance        check_dnssec_chain        report
-  prioritize_csc_leads
+  prioritize_portfolio_
+    leads
   simulate_attack_paths check_fast_flux         list_brand_audit_watches
   check_agent_discovery check_dnskey_strength
                         check_authoritative_dns_infra
@@ -251,7 +252,7 @@ See [**docs/scoring.md**](docs/scoring.md) for the grade scales and the evidence
 - **Reliable Sessions**: Hardened tombstone logic prevents race-condition revival of terminated sessions
 - **Protocol Enforcement**: Unsupported MCP versions fail closed; notifications and SSE connections use the same session-validity rules as other post-initialize requests
 - **Bounded Egress**: Public CT and target-HTML responses are streamed under byte ceilings before parsing or fingerprinting
-- **Cryptographic Identifiers**: Session and CSC report identifiers use Web Crypto randomness
+- **Cryptographic Identifiers**: Session and brand-report identifiers use Web Crypto randomness
 - **Adaptive Scoring**: Durable Object telemetry adjusts weights based on real-world distributions
 - **Client Awareness**: Automatic response formatting (`compact` vs `full`) based on client `User-Agent`
 
