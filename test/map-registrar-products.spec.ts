@@ -128,12 +128,12 @@ describe('evaluateRegistrarProducts — Registry lock (reads booleans, not level
 
 /**
  * Final review round, item 1 (render side): `formatRegistrarProducts` must use the
- * per-recommendation `assessed` discriminant for MultiLock exactly like it
- * already does for the three scan-driven products — a not-assessed MultiLock
+ * per-recommendation `assessed` discriminant for registry lock exactly like it
+ * already does for the three scan-driven products — a not-assessed registry lock
  * must never render the same icon/tag a genuine clean pass gets, in EITHER
  * format.
  */
-describe('formatRegistrarProducts — an unassessed MultiLock (null lock posture) renders distinct from a clean pass', () => {
+describe('formatRegistrarProducts — an unassessed registry lock (null lock posture) renders distinct from a clean pass', () => {
 	function unreachableRdapReport() {
 		return evaluateRegistrarProducts(allPassing(), null, 'rdap-unreachable.com', 90, 'A');
 	}
@@ -242,7 +242,7 @@ describe('evaluateRegistrarProducts — report shape', () => {
 			'dnssec_management',
 		]);
 		expect(r.recommendedCount).toBe(r.recommendations.filter((x) => x.recommended).length);
-		expect(r.recommendedCount).toBe(2); // multilock high + dmarc high
+		expect(r.recommendedCount).toBe(2); // registry lock high + dmarc high
 		expect(r.lockPosture).toEqual(posture);
 		expect(r.domain).toBe('shape.com');
 		expect(r.score).toBe(42);
@@ -306,7 +306,7 @@ describe('formatRegistrarProducts', () => {
 		expect(out).toContain('Digital Certificates');
 		expect(out).toContain('DNSSEC management');
 		expect(out).toContain('fmt.com');
-		// recommended MultiLock + DMARC gaps surfaced
+		// recommended registry lock + DMARC gaps surfaced
 		expect(out).toContain('Domain transfer not locked');
 		expect(out).toContain('DMARC present but not passing');
 	});

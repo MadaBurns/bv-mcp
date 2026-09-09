@@ -62,7 +62,7 @@ describe('registrar identity matching', () => {
 	// shadowIt findings on regional-alpha.example.com, regional-beta.example.com, regional-gamma.example.com because
 	// the registrar display string contained "Corporation Service Company (Aust) Pty Ltd"
 	// — the registrar's Australian arm — and the family detector did not collapse it into the family.
-	it('matches the registrar\'s global regional subsidiary strings (Aust Pty Ltd, Digital Brand Services, Global)', () => {
+	it('matches the registrar\'s global regional subsidiary strings (regional Pty Ltd, brand-services arm, global)', () => {
 		const target: RegistrarIdentity = { name: 'CSC Corporate Domains, Inc.' };
 		for (const variant of [
 			'Corporation Service Company (Aust) Pty Ltd',

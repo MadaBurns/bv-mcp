@@ -34,7 +34,7 @@ for (const t of results) {
 		if (/markmonitor/.test(reg)) families.add('MarkMonitor');
 		else if (/com\s*laude|nom[ -]?iq/.test(reg)) families.add('Com Laude');
 		else if (/safenames/.test(reg)) families.add('SafeNames');
-		// Family label mirrors `normalizeRegistrar()` in src/lib/brand-classification.ts.
+		// Keys on the family label emitted by `normalizeRegistrar()` in src/lib/brand-classification.ts.
 		else if (/corporate\s*domains|corporation\s+service\s+company/.test(reg)) families.add('CorporateDomains');
 		else if (/cloudflare/.test(reg)) families.add('Cloudflare');
 		else if (/tucows/.test(reg)) families.add('Tucows');

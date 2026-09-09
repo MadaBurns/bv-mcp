@@ -45,7 +45,7 @@ export interface RegistrarProductRecommendation {
 	/**
 	 * `false` exactly for a product built by {@link unassessedScanProduct} — the
 	 * category (or the whole scan) was never actually observed. Every OTHER
-	 * construction site (`evalMultiLock`, `evalScanProduct`'s pass/fail/absent
+	 * construction site (`evalRegistryLock`, `evalScanProduct`'s pass/fail/absent
 	 * branches) sets this `true`. This is the render-time discriminant
 	 * `formatRegistrarProducts` MUST use to keep an unassessed product visually
 	 * distinct from a genuine clean pass — before this field existed, both
@@ -164,8 +164,8 @@ function nonInfoTitles(result: CheckResult | undefined): string[] {
 }
 
 /**
- * MultiLock recommendation — reads the booleans, not `level` alone (Spec A handoff).
- * MultiLock reads RDAP independently of the scan (see `evaluateRegistrarProducts`'s doc
+ * Registry-lock recommendation — reads the booleans, not `level` alone (Spec A handoff).
+ * Registry lock reads RDAP independently of the scan (see `evaluateRegistrarProducts`'s doc
  * on why it is never gated on the report-level `assessed`), but it has its OWN
  * two-way assessed split — distinct from `evalScanProduct`'s transient-check
  * split — because `lockPosture == null` and `lockPosture.level === 'unknown'` are
@@ -187,7 +187,7 @@ function nonInfoTitles(result: CheckResult | undefined): string[] {
  * exists to close. The doc also conflated "unavailable" with "redacted"; the two
  * branches above are the actual, distinguishable causes.
  */
-function evalMultiLock(lockPosture: LockPosture | null): RegistrarProductRecommendation {
+function evalRegistryLock(lockPosture: LockPosture | null): RegistrarProductRecommendation {
 	const base = {
 		product: 'registry_lock' as const,
 		productName: REGISTRAR_PRODUCT_NAMES.registry_lock,
@@ -359,12 +359,12 @@ export function evaluateRegistrarProducts(
 	const caveatKind: CaveatKind | null = assessed ? null : checkResults.length === 0 ? 'never_ran' : 'all_transient';
 	const caveat = assessed ? null : checkResults.length === 0 ? UNASSESSED_PRODUCT_NOTE : buildAllTransientProductNote(checkResults.length);
 
-	// MultiLock is deliberately NOT gated on `assessed`: it reads the RDAP lock
+	// Registry lock is deliberately NOT gated on `assessed`: it reads the RDAP lock
 	// posture, which is fetched independently of the scan. A registered domain whose
 	// zone is broken can still show a genuinely unlocked transfer status, and that is
 	// a real measurement — suppressing it would be the mirror defect.
 	const recommendations: RegistrarProductRecommendation[] = [
-		evalMultiLock(lockPosture),
+		evalRegistryLock(lockPosture),
 		assessed
 			? evalScanProduct(
 					'managed_dmarc',
@@ -420,7 +420,7 @@ export function evaluateRegistrarProducts(
  * Extract the LockPosture from a check_rdap_lookup CheckResult.
  * Spec A attaches one shared `metadata` object (with `lockPosture`) to all RDAP
  * findings, so the first finding carrying it is authoritative. Returns null when
- * none (lookup_failed / redacted) — the MultiLock line then degrades to
+ * none (lookup_failed / redacted) — the registry lock line then degrades to
  * "unobservable" while the scan-driven products still evaluate.
  */
 export function extractLockPosture(rdap: CheckResult): LockPosture | null {
@@ -449,7 +449,7 @@ export function formatRegistrarProducts(report: RegistrarProductReport, format: 
 	const lines: string[] = [];
 	const byKey = new Map(report.recommendations.map((r) => [r.product, r]));
 	// Unassessed: no product list and no count claim — except a product that is STILL
-	// recommended, which can only be MultiLock on independent RDAP evidence. Withholding
+	// recommended, which can only be registry lock on independent RDAP evidence. Withholding
 	// that would suppress a real measurement.
 	const shown = REGISTRAR_PRODUCT_ORDER.map((key) => byKey.get(key)).filter(
 		(r): r is RegistrarProductRecommendation => r !== undefined && (report.assessed || r.recommended),

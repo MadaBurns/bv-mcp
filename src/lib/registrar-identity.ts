@@ -48,7 +48,7 @@ const KNOWN_REGISTRAR_FAMILIES: Array<{ family: string; patterns: RegExp[]; rawP
 			/^csc\s+corp\s+domains(?:\b|$)/,
 			/^csc\s+digital\s+brand\s+services?(?:\b|$)/,
 			/^csc\s+global(?:\b|$)/,
-			// "Corporation Service Company" with any trailing regional qualifier
+			// Matches the registrar's legal-entity name with any trailing regional qualifier
 			// (e.g. "Aust Pty"); corporate suffixes like Ltd/LLC are already
 			// stripped by normalizeRegistrarIdentity before this regex runs.
 			/^corporation\s+service\s+company(?:\b|$)/,

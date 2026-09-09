@@ -59,7 +59,7 @@ describe('computeGapSeverity', () => {
 		expect(computeGapSeverity(report, 'impersonation')).toBe(0);
 	});
 
-	it('MultiLock high only (4×3=12), bucket consolidated (×1.0) → 12', () => {
+	it('Registry lock high only (4×3=12), bucket consolidated (×1.0) → 12', () => {
 		const report = makeReport('a.com', 90, 'A', [rec('registry_lock', true, 'high')]);
 		expect(computeGapSeverity(report, 'consolidated')).toBe(12);
 	});
@@ -69,7 +69,7 @@ describe('computeGapSeverity', () => {
 		expect(computeGapSeverity(report, 'impersonation')).toBe(4);
 	});
 
-	it('multiple recommendations sum: MultiLock high(12) + DMARC medium(6) + DNSSEC low(2), bucket unknown → 20', () => {
+	it('multiple recommendations sum: registry lock high(12) + DMARC medium(6) + DNSSEC low(2), bucket unknown → 20', () => {
 		const report = makeReport('a.com', 50, 'F', [
 			rec('registry_lock', true, 'high'),
 			rec('managed_dmarc', true, 'medium'),
@@ -97,7 +97,7 @@ function entry(
 
 describe('rankPortfolioLeads — ordering and ranks', () => {
 	it('orders by gapSeverity descending; priorityRank is 1-based', () => {
-		// sev 12 (multilock high), 4 (multilock high × impersonation 0.3), 20 (multilock high + dmarc medium + dnssec low)
+		// sev 12 (registry lock high), 4 (registry lock high × impersonation 0.3), 20 (registry lock high + dmarc medium + dnssec low)
 		const e12 = entry('twelve.com', 80, 'B', [rec('registry_lock', true, 'high')], 'unknown');
 		const e4 = entry('four.com', 80, 'B', [rec('registry_lock', true, 'high')], 'impersonation');
 		const e20 = entry('twenty.com', 80, 'B', [rec('registry_lock', true, 'high'), rec('managed_dmarc', true, 'medium'), rec('dnssec_management', true, 'low')], 'unknown');

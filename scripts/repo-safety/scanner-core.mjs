@@ -59,7 +59,7 @@ const RULES = [
 // Built-in (not policy.json) so the commit-msg hook path, which scans without
 // a policy file, still enforces it. Extend per-repo via
 // `forbiddenClientContextPhrasesSha256` in policy.json.
-const BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256 = ['ef6b9b94f52b435a826c9558de024878508fb0b151ea98d387c8de54eb03f09a'];
+export const BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256 = ['ef6b9b94f52b435a826c9558de024878508fb0b151ea98d387c8de54eb03f09a'];
 const CLIENT_CONTEXT_PHRASE_MIN_WORDS = 2;
 const CLIENT_CONTEXT_PHRASE_MAX_WORDS = 4;
 const WORD_TOKEN_PATTERN = /[A-Za-z0-9][A-Za-z0-9-]*/g;
@@ -120,7 +120,8 @@ export function shouldScanFile(file, policy = DEFAULT_POLICY) {
 }
 
 export function pathMatchesPattern(file, pattern) {
-	if (pattern.startsWith('*.')) return file.endsWith(pattern.slice(1));
+	// `*<suffix>` — extension (`*.pdf`) or output-shape (`*-discovery-report.json`) match, any directory.
+	if (pattern.startsWith('*')) return file.endsWith(pattern.slice(1));
 	if (pattern.endsWith('/')) return file === pattern.slice(0, -1) || file.startsWith(pattern);
 	if (pattern.endsWith('*')) return file.startsWith(pattern.slice(0, -1));
 	return file === pattern || file.startsWith(`${pattern}/`);

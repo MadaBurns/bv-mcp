@@ -43,7 +43,7 @@ afterEach(() => {
 	mockCheckRdap.mockReset();
 });
 
-/** RDAP with no lock posture — MultiLock degrades to "unobservable", the scan-driven products still evaluate. */
+/** RDAP with no lock posture — registry lock degrades to "unobservable", the scan-driven products still evaluate. */
 function rdapNoPosture(): CheckResult {
 	return { category: 'rdap', passed: true, score: 100, findings: [] } as unknown as CheckResult;
 }

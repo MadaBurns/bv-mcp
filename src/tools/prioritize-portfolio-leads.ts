@@ -286,7 +286,7 @@ export interface DiscoveredCandidate {
 
 const REGISTRAR_PRODUCT_ORDER: RegistrarProductKey[] = ['registry_lock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
 
-// Product sales value — MultiLock is the flagship anti-hijacking product.
+// Product sales value — registry lock is the flagship anti-hijacking product.
 const PRODUCT_VALUE: Record<RegistrarProductKey, number> = {
 	registry_lock: 4,
 	managed_dmarc: 3,

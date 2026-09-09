@@ -1,6 +1,13 @@
 import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
-import { scanCommitMessage, scanFileContent, scanTextForSensitiveSurface, formatFindings } from '../../scripts/repo-safety/scanner-core.mjs';
+import {
+	BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256,
+	scanCommitMessage,
+	scanFileContent,
+	scanPathForForbiddenSurface,
+	scanTextForSensitiveSurface,
+	formatFindings,
+} from '../../scripts/repo-safety/scanner-core.mjs';
 
 const clientDomainPolicy = {
 	forbiddenClientDomains: ['brand-eta.com', 'brand-beta.com.au', 'brand-kappa.com', 'brand-theta.com'],
@@ -85,13 +92,48 @@ describe('repo safety scanner helper', () => {
 		// The phrase is hashed at runtime here; in production the hash is built into
 		// scanner-core.mjs so the commit-msg hook (which scans without policy.json)
 		// still enforces it. Matching is case-insensitive and whitespace-normalised.
-		const phrase = 'acme pilot brands';
+		const phrase = 'northwind rollout cohort';
 		const hashedPolicy = { forbiddenClientContextPhrasesSha256: [createHash('sha256').update(phrase).digest('hex')] };
-		const findings = scanCommitMessage('Verified during an   Acme   PILOT brands walkthrough.', hashedPolicy);
+		const findings = scanCommitMessage('Verified during the   Northwind   ROLLOUT cohort walkthrough.', hashedPolicy);
 
 		expect(findings.map((finding) => finding.ruleId)).toEqual(['client-context']);
-		expect(findings[0].column).toBe('Verified during an   '.length + 1);
-		expect(scanCommitMessage('Verified during an acme pilot walkthrough.', hashedPolicy)).toEqual([]);
+		expect(findings[0].column).toBe('Verified during the   '.length + 1);
+		expect(scanCommitMessage('Verified during the northwind rollout walkthrough.', hashedPolicy)).toEqual([]);
+	});
+
+	it('keeps the original client-context phrase gated by its built-in hash', () => {
+		// SHA-256 of the lowercased, single-spaced original phrase. The plaintext
+		// deliberately appears nowhere in the repo; verify by hashing it in a
+		// scratch shell if this ever needs re-derivation.
+		expect(BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256).toContain('ef6b9b94f52b435a826c9558de024878508fb0b151ea98d387c8de54eb03f09a');
+		for (const hash of BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256) expect(hash).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it('unions policy-supplied phrase hashes with the built-in list instead of replacing it', () => {
+		const policyPhrase = 'northwind rollout cohort';
+		const policy = { forbiddenClientContextPhrasesSha256: [createHash('sha256').update(policyPhrase).digest('hex')] };
+		// A policy that supplies its own hashes must not disable the built-in gate:
+		// probe with a synthetic phrase whose hash we splice into the built-in list.
+		const builtinProbe = 'contoso pilot cohort';
+		const builtinHash = createHash('sha256').update(builtinProbe).digest('hex');
+		BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256.push(builtinHash);
+		try {
+			expect(scanCommitMessage(`note: ${builtinProbe} and ${policyPhrase}`, policy).map((finding) => finding.ruleId)).toEqual([
+				'client-context',
+				'client-context',
+			]);
+		} finally {
+			BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256.splice(BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256.indexOf(builtinHash), 1);
+		}
+	});
+
+	it('forbids promoted brand-report pairs by output shape in any directory', () => {
+		const policy = { forbiddenPaths: ['.client-reports/', '*-discovery-report.json', '*-discovery-report.pdf', '*.pdf'] };
+		expect(scanPathForForbiddenSurface('.some-local-dir/example.com-discovery-report.json', policy).map((f) => f.detail)).toEqual([
+			'*-discovery-report.json',
+		]);
+		expect(scanPathForForbiddenSurface('.client-reports/notes.md', policy).map((f) => f.detail)).toEqual(['.client-reports/']);
+		expect(scanPathForForbiddenSurface('src/tools/discovery-report.ts', policy)).toEqual([]);
 	});
 
 	it('flags Megalodon-style workflow injection indicators even when .github is otherwise allowlisted', () => {

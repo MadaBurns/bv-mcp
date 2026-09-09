@@ -97,7 +97,7 @@ describe('prioritizePortfolioLeads — domains[] path', () => {
 		expect(report.summary.skipped.map((s) => s.domain)).toContain('boom.com');
 	});
 
-	it('RDAP failure isolation: MultiLock not recommended while scan-driven products still evaluate', async () => {
+	it('RDAP failure isolation: registry lock not recommended while scan-driven products still evaluate', async () => {
 		mockScanDomain.mockResolvedValue(scan([check('dmarc', false, [{ title: 'No DMARC', severity: 'high' }]), check('ssl', false, [{ title: 'Cert expired', severity: 'high' }]), check('dnssec', true)], 40, 'F'));
 		mockCheckRdap.mockResolvedValue(rdapFailed());
 

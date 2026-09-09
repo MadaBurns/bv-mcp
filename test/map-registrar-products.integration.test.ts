@@ -60,7 +60,7 @@ describe('mapRegistrarProducts — concurrency', () => {
 });
 
 describe('mapRegistrarProducts — wiring', () => {
-	it('unlocked RDAP + failing DMARC + passing SSL/DNSSEC → MultiLock high + Managed DMARC; count 2', async () => {
+	it('unlocked RDAP + failing DMARC + passing SSL/DNSSEC → registry lock high + Managed DMARC; count 2', async () => {
 		mockScanDomain.mockResolvedValue({
 			checks: [check('dmarc', false, [{ title: 'No DMARC record', severity: 'high' }]), check('ssl', true), check('dnssec', true)],
 			score: { overall: 55, grade: 'F' },
@@ -70,10 +70,10 @@ describe('mapRegistrarProducts — wiring', () => {
 		const { mapRegistrarProducts } = await import('../src/tools/map-registrar-products');
 		const report = await mapRegistrarProducts('unlocked.com');
 
-		const multilock = report.recommendations.find((r) => r.product === 'registry_lock')!;
+		const registryLock = report.recommendations.find((r) => r.product === 'registry_lock')!;
 		const dmarc = report.recommendations.find((r) => r.product === 'managed_dmarc')!;
-		expect(multilock.recommended).toBe(true);
-		expect(multilock.priority).toBe('high');
+		expect(registryLock.recommended).toBe(true);
+		expect(registryLock.priority).toBe('high');
 		expect(dmarc.recommended).toBe(true);
 		expect(report.recommendations.find((r) => r.product === 'digital_certificates')!.recommended).toBe(false);
 		expect(report.recommendations.find((r) => r.product === 'dnssec_management')!.recommended).toBe(false);
@@ -83,7 +83,7 @@ describe('mapRegistrarProducts — wiring', () => {
 		expect(report.grade).toBe('F');
 	});
 
-	it('RDAP lookup_failed isolates the MultiLock line — scan-driven products still evaluate', async () => {
+	it('RDAP lookup_failed isolates the registry lock line — scan-driven products still evaluate', async () => {
 		mockScanDomain.mockResolvedValue({
 			checks: [check('dmarc', false, [{ title: 'No DMARC record', severity: 'high' }]), check('ssl', false, [{ title: 'Cert expired', severity: 'high' }]), check('dnssec', true)],
 			score: { overall: 40, grade: 'F' },
