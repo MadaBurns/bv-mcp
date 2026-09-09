@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 import { describe, it, expect, afterEach } from 'vitest';
-import { isSharedNsHost } from '../src/tenants/discovery/shared-ns-hosts';
+import { isPooledSharedNsHost, isSharedNsHost } from '../src/tenants/discovery/shared-ns-hosts';
 import { UNKNOWN_REASON_PHRASES } from '../src/lib/registration-state';
 import type { RegistrationState } from '../src/lib/registration-state';
 
@@ -59,6 +59,9 @@ describe('classifyOwnership — §4 fixture corpus (2026-07-26 correctness-defec
 			candidateDomain: 'bnzpartners.co.nz',
 			registration: registered(SEED_NS.slice()),
 			isSharedNsHost,
+			// #929 — Akamai is the POOLED shared provider; the complete-match arm
+			// needs this predicate (it defaults closed — see the #929 spec).
+			isPooledSharedNsHost,
 		});
 		expect(result.verdict).toBe('owned_by_seed');
 		expect(result.strength).toBe('medium');

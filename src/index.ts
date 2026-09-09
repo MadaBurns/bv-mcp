@@ -1622,7 +1622,7 @@ app.all('*', (c) => {
 });
 
 import { handleTail } from './tail';
-import { handleScheduled, handleDailyDigest, handleFuzzingScan, handleBrandAuditWatches } from './scheduled';
+import { handleScheduled, handleDailyDigest, handleFuzzingScan, handleBrandAuditWatches, handleClientIpHeaderAudit } from './scheduled';
 import type { ScheduledEnv } from './scheduled';
 import { handleScanQueue, type ScanQueueConsumerEnv } from './tenants/queue-consumer';
 import { brandWebhookPeerSecretsFromEnv, handleBrandAuditQueue, type BrandAuditConsumerDeps } from './queue/brand-audit-consumer';
@@ -1760,6 +1760,9 @@ export default {
 		} else {
 			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
 			ctx.waitUntil(handleFuzzingScan(env as ScheduledEnv));
+			// #896: D1-backed public-door cf-connecting-ip presence audit. Own waitUntil so
+			// an AE-token-less deploy (or an AE outage) cannot silence it, and vice versa.
+			ctx.waitUntil(handleClientIpHeaderAudit(env as ScheduledEnv));
 			ctx.waitUntil(handleTenantCycleAlerts(env, ctx));
 			ctx.waitUntil(handleBrandAuditWatches(env, ctx));
 		}

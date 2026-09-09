@@ -36,7 +36,7 @@ import { buildCheckResult } from '../lib/scoring';
 import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes } from './lookalike-analysis';
 import { calibrateLookalikeSeverity, type LookalikeSignals } from './lookalike-severity';
 import { attributionConfidence, classifyOwnership, type OwnershipAssessment } from '../lib/ownership-attribution';
-import { isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
+import { isPooledSharedNsHost, isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
 import { extractBrandName } from '../lib/public-suffix';
 import {
 	detectWildcardParents,
@@ -336,6 +336,7 @@ async function checkLookalikesCore(
 				candidateDomain: perm,
 				registration: { state: 'registered', ns: candidateNs, evidence: candidateNs.length > 0 ? ['ns'] : ['a'] },
 				isSharedNsHost,
+				isPooledSharedNsHost,
 				seedNsUnresolved: seedNsUnmeasured,
 			}),
 		);
@@ -408,6 +409,7 @@ async function checkLookalikesCore(
 		nsByDomain: lookalikeNsMap,
 		ownershipByDomain,
 		isSharedNsHost,
+		isPooledSharedNsHost,
 		probeAuthorisation: probeDmarcReportAuthorisation,
 	});
 

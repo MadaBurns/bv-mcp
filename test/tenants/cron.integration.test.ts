@@ -22,6 +22,7 @@ const brandAuditCycleAlertsMock = vi.hoisted(() => vi.fn(async (_e: unknown, _c:
 const fuzzingScanMock = vi.hoisted(() => vi.fn(async (_e: unknown) => undefined));
 const dailyDigestMock = vi.hoisted(() => vi.fn(async (_e: unknown) => undefined));
 const scheduledMock = vi.hoisted(() => vi.fn(async (_e: unknown) => undefined));
+const clientIpAuditMock = vi.hoisted(() => vi.fn(async (_e: unknown) => undefined));
 
 vi.mock('../../src/tenants/scheduled-handlers', async () => {
 	const actual = await vi.importActual<typeof import('../../src/tenants/scheduled-handlers')>(
@@ -41,6 +42,7 @@ vi.mock('../../src/scheduled', async () => {
 		handleScheduled: scheduledMock,
 		handleDailyDigest: dailyDigestMock,
 		handleFuzzingScan: fuzzingScanMock,
+		handleClientIpHeaderAudit: clientIpAuditMock,
 	};
 });
 
@@ -50,6 +52,7 @@ beforeEach(() => {
 	fuzzingScanMock.mockClear();
 	dailyDigestMock.mockClear();
 	scheduledMock.mockClear();
+	clientIpAuditMock.mockClear();
 });
 
 async function runCron(cron: string) {
@@ -70,6 +73,7 @@ describe('worker.scheduled cron dispatch', () => {
 		expect(brandAuditCycleAlertsMock).not.toHaveBeenCalled();
 		expect(fuzzingScanMock).not.toHaveBeenCalled();
 		expect(scheduledMock).not.toHaveBeenCalled();
+		expect(clientIpAuditMock).not.toHaveBeenCalled();
 		expect(dailyDigestMock).not.toHaveBeenCalled();
 	});
 
@@ -87,9 +91,10 @@ describe('worker.scheduled cron dispatch', () => {
 		expect(dailyDigestMock).not.toHaveBeenCalled();
 	});
 
-	it('b. 15-min cron *\\/15 * * * * → handleFuzzingScan AND handleTenantCycleAlerts both run', async () => {
+	it('b. 15-min cron *\\/15 * * * * → handleFuzzingScan, handleClientIpHeaderAudit AND handleTenantCycleAlerts all run', async () => {
 		await runCron('*/15 * * * *');
 		expect(fuzzingScanMock).toHaveBeenCalledTimes(1);
+		expect(clientIpAuditMock).toHaveBeenCalledTimes(1);
 		expect(brandAuditCycleAlertsMock).toHaveBeenCalledTimes(1);
 		expect(scheduledMock).toHaveBeenCalledTimes(1);
 		expect(brandAuditWeeklyRescanMock).not.toHaveBeenCalled();
@@ -103,6 +108,7 @@ describe('worker.scheduled cron dispatch', () => {
 		expect(brandAuditCycleAlertsMock).not.toHaveBeenCalled();
 		expect(fuzzingScanMock).not.toHaveBeenCalled();
 		expect(scheduledMock).not.toHaveBeenCalled();
+		expect(clientIpAuditMock).not.toHaveBeenCalled();
 	});
 
 	it('d. rejection in handleTenantCycleAlerts does NOT prevent the other two handlers from being scheduled', async () => {
@@ -126,6 +132,7 @@ describe('worker.scheduled cron dispatch', () => {
 
 		expect(fuzzingScanMock).toHaveBeenCalledTimes(1);
 		expect(scheduledMock).toHaveBeenCalledTimes(1);
+		expect(clientIpAuditMock).toHaveBeenCalledTimes(1);
 		expect(brandAuditCycleAlertsMock).toHaveBeenCalledTimes(1);
 	});
 });

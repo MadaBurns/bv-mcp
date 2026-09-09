@@ -22,16 +22,37 @@ export const IANA_TTL_SECONDS = 7 * 24 * 60 * 60;
  */
 export const IANA_NEGATIVE_TTL_SECONDS = 24 * 60 * 60;
 
+/**
+ * 5 minutes. A THROWN IANA query (socket refused / timed out) says nothing
+ * about whether the TLD has a record, so it must not sit in the 24h negative
+ * cache reading as "no WHOIS server" (#931 review). Long enough to absorb a
+ * batch, short enough that a blip recovers.
+ */
+export const IANA_UNREACHABLE_TTL_SECONDS = 5 * 60;
+
+/** Present on every genuine whois.iana.org reply (`% This query returned 0 objects.` / `... 1 object`). */
+const IANA_ANSWER_RE = /returned \d+ objects?/i;
+
+/** Why a negative entry exists: IANA answered "no record" vs IANA could not be reached / answered garbage. */
+export type NoServerReason = 'no_record' | 'iana_unreachable';
+
 interface CacheEnvelope {
 	server: string | null;
+	reason?: NoServerReason;
 }
+
+/** Discriminated resolution result — `reason` only when `server` is null. */
+export type ResolvedWhoisServer = { server: string } | { server: null; reason: NoServerReason };
 
 function parseCacheEntry(raw: string): CacheEnvelope {
 	try {
 		const parsed = JSON.parse(raw) as unknown;
 		if (parsed && typeof parsed === 'object' && 'server' in parsed) {
-			const server = (parsed as { server: unknown }).server;
-			if (server === null) return { server: null };
+			const { server, reason } = parsed as { server: unknown; reason?: unknown };
+			// Pre-#931 negative entries carry no reason; they were written for BOTH
+			// "no record" and "IANA threw", so read them as the deterministic kind
+			// (the old behaviour) until they expire.
+			if (server === null) return { server: null, reason: reason === 'iana_unreachable' ? 'iana_unreachable' : 'no_record' };
 			if (typeof server === 'string' && server.length > 0) return { server };
 		}
 	} catch {
@@ -101,38 +122,59 @@ export async function resolveWhoisServer(
 	tld: string,
 	deps: { kv: KVLike; whoisQuery: WhoisQueryFn },
 ): Promise<string | null> {
+	return (await resolveWhoisServerDetailed(tld, deps)).server;
+}
+
+/**
+ * As {@link resolveWhoisServer}, but a null server carries WHY: `no_record`
+ * (IANA answered — deterministic) vs `iana_unreachable` (the referral query
+ * threw — transient, cached only briefly). The lookup composer maps these to
+ * distinct failure reasons so a flaky IANA socket never reads as "this TLD has
+ * no WHOIS server".
+ */
+export async function resolveWhoisServerDetailed(
+	tld: string,
+	deps: { kv: KVLike; whoisQuery: WhoisQueryFn },
+): Promise<ResolvedWhoisServer> {
 	const normalized = tld.toLowerCase();
 
 	const hardcoded = HARDCODED_SERVERS[normalized];
-	if (hardcoded) return hardcoded;
+	if (hardcoded) return { server: hardcoded };
 
 	const cached = await deps.kv.get(KV_PREFIX + normalized);
 	if (cached) {
 		const envelope = parseCacheEntry(cached);
-		return envelope.server;
+		return envelope.server === null ? { server: null, reason: envelope.reason ?? 'no_record' } : { server: envelope.server };
 	}
 
 	let response: string;
 	try {
 		response = await deps.whoisQuery(IANA_SERVER, normalized);
 	} catch {
-		// Cache the transient/permanent failure so a batch over non-existent or
-		// flaky TLDs doesn't re-hit IANA on every call. TTL is shorter than the
-		// positive path so a legit-but-temporarily-flaky TLD recovers within a day.
-		await deps.kv.put(KV_PREFIX + normalized, JSON.stringify({ server: null }), {
-			expirationTtl: IANA_NEGATIVE_TTL_SECONDS,
+		// Cache the transient failure briefly so a batch over flaky TLDs doesn't
+		// re-hit IANA on every call — but tag it, and keep the TTL short: a thrown
+		// referral is not evidence the TLD has no server.
+		await deps.kv.put(KV_PREFIX + normalized, JSON.stringify({ server: null, reason: 'iana_unreachable' }), {
+			expirationTtl: IANA_UNREACHABLE_TTL_SECONDS,
 		});
-		return null;
+		return { server: null, reason: 'iana_unreachable' };
 	}
 
 	const server = parseIanaReferral(response);
 	if (!server) {
-		await deps.kv.put(KV_PREFIX + normalized, JSON.stringify({ server: null }), {
-			expirationTtl: IANA_NEGATIVE_TTL_SECONDS,
+		// Only a genuine IANA ANSWER is deterministic. Every real whois.iana.org
+		// reply carries `% This query returned N object(s)` — 0 for a TLD IANA
+		// does not know, 1 for a record that simply lists no `whois:` server
+		// (measured 2026-09-09). A body without that line (rate-limit banner,
+		// truncated read, wrong peer) is not evidence the TLD has no server and
+		// must not sit in the 24h negative cache as `no_record` (#935 review).
+		const reason: NoServerReason = IANA_ANSWER_RE.test(response) ? 'no_record' : 'iana_unreachable';
+		await deps.kv.put(KV_PREFIX + normalized, JSON.stringify({ server: null, reason }), {
+			expirationTtl: reason === 'no_record' ? IANA_NEGATIVE_TTL_SECONDS : IANA_UNREACHABLE_TTL_SECONDS,
 		});
-		return null;
+		return { server: null, reason };
 	}
 
 	await deps.kv.put(KV_PREFIX + normalized, JSON.stringify({ server }), { expirationTtl: IANA_TTL_SECONDS });
-	return server;
+	return { server };
 }

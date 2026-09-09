@@ -49,6 +49,7 @@ Tenant jobs are handled by scheduled handlers:
 | Job | Cadence | Handler |
 |---|---|---|
 | Analytics and fuzzing alert sweep | every 15 minutes | `handleFuzzingScan` |
+| Public-door `cf-connecting-ip` presence audit (#896) | every 15 minutes | `handleClientIpHeaderAudit` |
 | Tenant weekly rescan dispatch | weekly | `handleTenantWeeklyRescan` |
 | Tenant cycle-alert sweep | every 15 minutes | `handleTenantCycleAlerts` |
 
