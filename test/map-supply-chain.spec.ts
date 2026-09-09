@@ -1282,3 +1282,206 @@ describe('mapSupplyChain — catalog batch v3.3.27 (G1/G2/G3)', () => {
 		});
 	});
 });
+
+describe('mapSupplyChain — null MX and CAA no-issuance are directives, not providers (#932)', () => {
+	async function run(domain: string) {
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		return mapSupplyChain(domain);
+	}
+
+	it('net-agents.dk shape: MX `0 .` + CAA `issue ";"` yield no "" / ";" provider rows and honest counts', async () => {
+		// Measured 2026-09-08 (engine 1.36.0): net-agents.dk publishes an RFC 7505 null
+		// MX and an RFC 8659 §4.2 deny-all CAA. The mock's `host: ''` renders as `0 .`,
+		// exactly the wire form DoH returns for a null MX.
+		mockDnsResponses({
+			domain: 'net-agents.dk',
+			mxRecords: [{ pref: 0, host: '' }],
+			caaRecords: ['0 issue ";"'],
+			nsHosts: ['ns01.one.com', 'ns02.one.com'],
+		});
+
+		const result = await run('net-agents.dk');
+
+		// No degenerate provider names, whatever the source.
+		expect(result.dependencies.find((d) => d.provider === '')).toBeUndefined();
+		expect(result.dependencies.find((d) => d.provider === ';')).toBeUndefined();
+		// The directives produce no dependency of their role at all.
+		expect(result.dependencies.some((d) => d.roles.includes('email-receiving'))).toBe(false);
+		expect(result.dependencies.some((d) => d.roles.includes('certificate-authority'))).toBe(false);
+		// Only the real (DNS-hosting) dependency survives, and the summary counts survivors only.
+		expect(result.dependencies.map((d) => d.provider)).toEqual(['one.com']);
+		expect(result.summary).toEqual({ totalProviders: 1, critical: 0, high: 1, medium: 0, low: 0 });
+
+		// Both directives are surfaced as informational notes, not as risk.
+		const nullMx = result.signals.find((s) => s.type === 'null_mx');
+		expect(nullMx).toBeDefined();
+		expect(nullMx!.severity).toBe('info');
+		expect(nullMx!.detail).toMatch(/RFC 7505/);
+		const noIssuance = result.signals.find((s) => s.type === 'caa_no_issuance');
+		expect(noIssuance).toBeDefined();
+		expect(noIssuance!.severity).toBe('info');
+		expect(noIssuance!.detail).toMatch(/RFC 8659/);
+		expect(noIssuance!.detail).toMatch(/no certificate authority is authorised/);
+		// Compact format clamps signal text at 200 chars — a note must never be cut mid-sentence.
+		for (const note of [nullMx!, noIssuance!]) expect(note.detail.length).toBeLessThanOrEqual(200);
+	});
+
+	it('null MX published alongside a real MX drops the null row, keeps the provider, and notes the conflict', async () => {
+		mockDnsResponses({
+			domain: 'example.com',
+			mxRecords: [
+				{ pref: 0, host: '' },
+				{ pref: 10, host: 'aspmx.l.google.com' },
+			],
+		});
+		const result = await run('example.com');
+		expect(result.dependencies.find((d) => d.provider === '')).toBeUndefined();
+		const google = result.dependencies.find((d) => d.roles.includes('email-receiving'));
+		expect(google).toBeDefined();
+		expect(google!.provider).toBe('Google Workspace');
+		const nullMx = result.signals.find((s) => s.type === 'null_mx');
+		expect(nullMx).toBeDefined();
+		expect(nullMx!.detail).toMatch(/alongside 1 other MX record, which RFC 7505 forbids/);
+		expect(nullMx!.detail.length).toBeLessThanOrEqual(200);
+	});
+
+	it('issue ";" beside an issue grant is a conflict, not a denial: the grant takes effect (RFC 8659 any-match)', async () => {
+		mockDnsResponses({
+			domain: 'example.com',
+			caaRecords: ['0 issue ";"', '0 issue "letsencrypt.org"'],
+		});
+		const result = await run('example.com');
+		expect(result.dependencies.find((d) => d.provider === ';')).toBeUndefined();
+		expect(result.dependencies.filter((d) => d.roles.includes('certificate-authority')).map((d) => d.provider)).toEqual(['letsencrypt.org']);
+		const notes = result.signals.filter((s) => s.type === 'caa_no_issuance');
+		expect(notes).toHaveLength(1);
+		expect(notes[0].detail).toMatch(/alongside 1 issue grant; the grants take effect/);
+		expect(notes[0].detail).not.toMatch(/no certificate authority is authorised/);
+		expect(notes[0].detail.length).toBeLessThanOrEqual(200);
+	});
+
+	it('issuewild ";" is a deny-all too; a grant in the same RRset still yields its CA row', async () => {
+		mockDnsResponses({
+			domain: 'example.com',
+			caaRecords: ['0 issue "letsencrypt.org"', '0 issuewild ";"'],
+		});
+		const result = await run('example.com');
+		expect(result.dependencies.find((d) => d.provider === ';')).toBeUndefined();
+		const caRows = result.dependencies.filter((d) => d.roles.includes('certificate-authority'));
+		expect(caRows.map((d) => d.provider)).toEqual(['letsencrypt.org']);
+		// A grant under a DIFFERENT tag does not soften the wildcard denial.
+		const note = result.signals.find((s) => s.type === 'caa_no_issuance');
+		expect(note?.detail).toMatch(/issuewild ";"/);
+		expect(note?.detail).toMatch(/no certificate authority is authorised/);
+	});
+
+	it('caps attacker-authored CAA issuer names (MAX_CAA_ISSUERS distinct, MAX_CAA_TOKEN_LENGTH each) before they reach structuredContent', async () => {
+		const { MAX_CAA_ISSUERS, MAX_CAA_TOKEN_LENGTH, TRUNCATION_MARKER } = await import('@blackveil/dns-checks');
+		const longIssuer = `${'a'.repeat(200)}.example`;
+		const many = Array.from({ length: MAX_CAA_ISSUERS + 4 }, (_, i) => `0 issue "ca${i}.example"`);
+		mockDnsResponses({ domain: 'example.com', caaRecords: [`0 issue "${longIssuer}"`, ...many] });
+		const result = await run('example.com');
+		const caRows = result.dependencies.filter((d) => d.roles.includes('certificate-authority'));
+		expect(caRows).toHaveLength(MAX_CAA_ISSUERS);
+		const clipped = caRows.find((d) => d.provider.endsWith(TRUNCATION_MARKER));
+		expect(clipped).toBeDefined();
+		expect(clipped!.provider).toBe(`${longIssuer.slice(0, MAX_CAA_TOKEN_LENGTH)}${TRUNCATION_MARKER}`);
+		expect(caRows.some((d) => d.provider === longIssuer)).toBe(false);
+	});
+
+	it('a long punctuation-only issuer is rejected on the pre-clip value, not rescued by the letters in TRUNCATION_MARKER', async () => {
+		mockDnsResponses({ domain: 'example.com', caaRecords: [`0 issue "${'.'.repeat(100)}"`, '0 issue "letsencrypt.org"'] });
+		const result = await run('example.com');
+		const caRows = result.dependencies.filter((d) => d.roles.includes('certificate-authority')).map((d) => d.provider);
+		expect(caRows).toEqual(['letsencrypt.org']);
+		expect(result.dependencies.some((d) => d.provider.includes('...(truncated)'))).toBe(false);
+	});
+
+	it('CAA RFC 8657 parameters are stripped from the CA provider name (shared parser, not a local regex)', async () => {
+		mockDnsResponses({
+			domain: 'example.com',
+			caaRecords: [
+				'0 issue "letsencrypt.org; validationmethods=dns-01"',
+				'0 issue "sectigo.com; accounturi=https://acme.sectigo.com/acct/123"',
+			],
+		});
+		const result = await run('example.com');
+		const caRows = result.dependencies.filter((d) => d.roles.includes('certificate-authority')).map((d) => d.provider);
+		expect(caRows.sort()).toEqual(['letsencrypt.org', 'sectigo.com']);
+	});
+
+	it('an empty CAA issue value (`issue ""`) is neither a provider nor a no-issuance directive', async () => {
+		mockDnsResponses({ domain: 'example.com', caaRecords: ['0 issue ""'] });
+		const result = await run('example.com');
+		expect(result.dependencies.some((d) => d.roles.includes('certificate-authority'))).toBe(false);
+		expect(result.signals.find((s) => s.type === 'caa_no_issuance')).toBeUndefined();
+	});
+
+	it('a clean zone emits neither note', async () => {
+		mockDnsResponses({
+			domain: 'example.com',
+			mxRecords: [{ pref: 10, host: 'aspmx.l.google.com' }],
+			caaRecords: ['0 issue "letsencrypt.org"'],
+		});
+		const result = await run('example.com');
+		expect(result.signals.find((s) => s.type === 'null_mx')).toBeUndefined();
+		expect(result.signals.find((s) => s.type === 'caa_no_issuance')).toBeUndefined();
+	});
+
+	describe('isRenderableProviderName — the generic guard every provider row passes through', () => {
+		it('rejects empty, whitespace-only, and punctuation-only names', async () => {
+			const { isRenderableProviderName } = await import('../src/tools/map-supply-chain');
+			for (const bad of ['', ' ', '\t', ';', '.', '..', '-', '";"', '. ;']) {
+				expect(isRenderableProviderName(bad), JSON.stringify(bad)).toBe(false);
+			}
+		});
+		it('accepts hostnames, catalog names, and labelled self-hosted rows', async () => {
+			const { isRenderableProviderName } = await import('../src/tools/map-supply-chain');
+			for (const good of ['one.com', 'Google Workspace', 'example.com (self-hosted MX)', 'ns1', 'Microsoft 365']) {
+				expect(isRenderableProviderName(good), good).toBe(true);
+			}
+		});
+	});
+
+	it('formatSupplyChain renders an info-severity note in both formats', async () => {
+		const { formatSupplyChain } = await import('../src/tools/map-supply-chain');
+		const result = {
+			domain: 'net-agents.dk',
+			dependencies: [],
+			signals: [{ type: 'null_mx' as const, severity: 'info' as const, detail: 'Null MX record (RFC 7505).' }],
+			summary: { totalProviders: 0, critical: 0, high: 0, medium: 0, low: 0 },
+		};
+		expect(formatSupplyChain(result, 'compact')).toContain('- [INFO] Null MX record (RFC 7505).');
+		// The icon is the part that changed: pre-fix the fallthrough rendered 🟡 for anything not high/medium.
+		expect(formatSupplyChain(result, 'full')).toContain('ℹ️ [INFO] Null MX record (RFC 7505).');
+	});
+});
+
+describe('mapSupplyChain — self-hosted MX under a ccTLD-2LD is labelled, not dropped (#926, fixed by #927)', () => {
+	it('police.govt.nz shape: self-hosted MX row + M365 SPF row, both critical', async () => {
+		// #926 reported police.govt.nz's own mx1/mx2 vanishing from the map. #927 collapses
+		// them into an explicit self-hosted row; the existing pin covers only example.com,
+		// so this exercises the reported ccTLD-2LD shape (`govt.nz` is in PUBLIC_SUFFIX_SECOND_LEVEL).
+		mockDnsResponses({
+			domain: 'police.govt.nz',
+			mxRecords: [
+				{ pref: 10, host: 'mx1.police.govt.nz' },
+				{ pref: 20, host: 'mx2.police.govt.nz' },
+			],
+			spf: 'v=spf1 include:spf.protection.outlook.com -all',
+		});
+		const { mapSupplyChain } = await import('../src/tools/map-supply-chain');
+		const result = await mapSupplyChain('police.govt.nz');
+
+		const selfHosted = result.dependencies.filter((d) => d.provider === 'police.govt.nz (self-hosted MX)');
+		expect(selfHosted).toHaveLength(1);
+		expect(selfHosted[0].roles).toContain('email-receiving');
+		expect(selfHosted[0].sources).toEqual(['mx']);
+		expect(selfHosted[0].trustLevel).toBe('critical');
+		// Neither raw host nor the bare registrable parent may leak through as its own row.
+		expect(result.dependencies.find((d) => d.provider === 'police.govt.nz')).toBeUndefined();
+		expect(result.dependencies.find((d) => /^mx[12]\.police\.govt\.nz$/.test(d.provider))).toBeUndefined();
+		expect(result.dependencies.find((d) => d.provider === 'Microsoft 365')?.trustLevel).toBe('critical');
+		expect(result.summary.critical).toBe(2);
+	});
+});
