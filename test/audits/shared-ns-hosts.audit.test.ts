@@ -10,12 +10,17 @@
  * `ns_set_match` arm. Cloudflare and Route 53 are pinned as NOT shared-tenant:
  * re-measured 2026-09-09 (14,062 Tranco domains) they draw per-account /
  * per-zone hostnames from a large pool, so an overlap there is ownership
- * evidence. Gandi LiveDNS is pinned as not-listed as the CURRENT state (47
- * distinct 3-host sets across 48 sampled tenants — no repeat observed, pool
- * unbounded) — membership is an evidence decision (#929), never an
+ * evidence. `gandi.net` is pinned as not-listed as a KNOWN RESIDUAL, not as
+ * proof of uniqueness: Gandi LiveDNS draws `ns-N-{a,b,c}.gandi.net` per zone
+ * from a large pool (47 distinct sets / 48 sampled tenants), but the legacy
+ * classic set `a/b/c.dns.gandi.net` IS uniform (two sampled tenants). The
+ * set keys on `registeredApex()`, so listing the apex would also erase
+ * LiveDNS evidence; the classic set stays unlisted until keying is
+ * host-level. Membership is an evidence decision (#929), never an
  * assumption. Every pin below names a REAL hostname so a public-suffix
- * surprise (`ns1.dns.ne.jp` registers under `ne.jp`) shows up here, not in
- * production.
+ * surprise (`ns1.dns.ne.jp` registers under `ne.jp`; `yandexcloud.net` is a
+ * PRIVATE suffix) shows up here, not in production, and every member of
+ * `SHARED_NS_APEXES` must have at least one pin.
  *
  * Ref: v2.14.0 audit, LR-2 (Slice 6 defense-in-depth).
  */
@@ -27,6 +32,7 @@ import {
 	POOLED_SHARED_NS_APEXES,
 	SHARED_NS_APEXES,
 } from '../../src/tenants/discovery/shared-ns-hosts';
+import { registeredApex } from '../../src/tenants/discovery/infrastructure-providers';
 
 const SHARED_NS_MUST_MATCH: ReadonlyArray<readonly [string, string]> = [
 	// Parking services
@@ -37,6 +43,12 @@ const SHARED_NS_MUST_MATCH: ReadonlyArray<readonly [string, string]> = [
 	['ns1.dan.com', 'Dan.com / Sedo parking'],
 	['ns1.above.com', 'Above.com parking'],
 	['ns1.dnsowl.com', 'DNSOwl parking'],
+	// Pre-#939 parking entries that had no pin until the every-member invariant
+	// below was added; pinned for that invariant, not re-measured.
+	['ns1.parkingcrew.net', 'ParkingCrew (.net apex)'],
+	['ns1.cashparking.com', 'GoDaddy CashParking'],
+	['ns1.internettraffic.com', 'InternetTraffic parking'],
+	['ns1.parklogic.com', 'ParkLogic parking'],
 	// GoDaddy default / parked
 	['ns01.domaincontrol.com', 'GoDaddy default NS (parked or default-registered)'],
 	['ns73.domaincontrol.com', 'GoDaddy default NS — high-number variant'],
@@ -125,7 +137,10 @@ const SHARED_NS_MUST_MATCH: ReadonlyArray<readonly [string, string]> = [
 	['a.ns.selectel.ru', 'Selectel — uniform a-d set'],
 	['ns4-l2.nic.ru', 'RU-CENTER — fixed shared set'],
 	['dns1.yandex.net', 'Yandex 360 — uniform dns1/dns2'],
-	['ns1.yandexcloud.net', 'Yandex Cloud — uniform ns1/ns2'],
+	// `yandexcloud.net` is a PSL PRIVATE suffix: registeredApex() returns the
+	// hostname itself, so the set keys both hostnames and both need a pin.
+	['ns1.yandexcloud.net', 'Yandex Cloud — uniform ns1/ns2 (private-suffix keyed hostname)'],
+	['ns2.yandexcloud.net', 'Yandex Cloud — uniform ns1/ns2 (private-suffix keyed hostname)'],
 	['01.dnsv.jp', 'GMO — uniform 01-04'],
 	['ns1.dns.ne.jp', 'Sakura — uniform ns1/ns2 (registrable apex dns.ne.jp under the ne.jp public suffix)'],
 	['a.ns14.net', 'ns14.net — uniform a-d'],
@@ -145,9 +160,14 @@ const SHARED_NS_MUST_NOT_MATCH: ReadonlyArray<readonly [string, string]> = [
 	['bob.ns.cloudflare.com', 'Cloudflare assigns unique NS per account'],
 	['ns-1234.awsdns-56.com', 'AWS Route 53 assigns unique NS per hosted zone'],
 	// Gandi LiveDNS draws `ns-N-{a,b,c}.gandi.net` per zone from a large pool:
-	// 47 distinct sets across 48 sampled tenants, no repeat (#939, 2026-09-09).
-	// Pinned as the CURRENT state, not as proof of uniqueness.
-	['ns-67-b.gandi.net', 'Gandi LiveDNS — no shared complete set observed; pinned as-is'],
+	// 47 distinct sets across 48 sampled tenants (#939, 2026-09-09) —
+	// ownership-bearing, and the reason the apex cannot be listed.
+	['ns-67-b.gandi.net', 'Gandi LiveDNS — per-zone pool; listing gandi.net would erase this evidence'],
+	// Gandi CLASSIC `a/b/c.dns.gandi.net` IS a uniform set (mediamass.net and
+	// ifoponline.com, 2026-09-09) but shares the apex with LiveDNS, and this set
+	// keys on the apex. KNOWN RESIDUAL: a complete classic-set match still
+	// reaches the dedicated arm. Pinned so the residual is visible, not hidden.
+	['a.dns.gandi.net', 'Gandi classic — uniform, but unlistable under apex keying without also catching LiveDNS (residual)'],
 	// User-controlled / clearly unrelated
 	['ns1.example.com', 'Generic example domain'],
 	['blackveilsecurity.com', 'Our own apex (defensive)'],
@@ -195,4 +215,16 @@ describe('POOLED_SHARED_NS_APEXES — the only shared providers a complete NS-se
 	it('#939 added no pooled apex — Akamai remains the only member (each new platform was measured uniform or small-pool)', () => {
 		expect([...POOLED_SHARED_NS_APEXES]).toEqual(['akam.net']);
 	});
+});
+
+describe('SHARED_NS_APEXES — every member is pinned by at least one real hostname above', () => {
+	// An entry with no pin is an entry nobody measured through the real
+	// `registeredApex()` path — the PSL-private `yandexcloud.net` case is why
+	// this matters: its two hostname entries need two pins.
+	const pinnedApexes = new Set(SHARED_NS_MUST_MATCH.map(([ns]) => registeredApex(ns)));
+	for (const apex of SHARED_NS_APEXES) {
+		it(`${apex} has a SHARED_NS_MUST_MATCH pin`, () => {
+			expect(pinnedApexes.has(apex)).toBe(true);
+		});
+	}
 });

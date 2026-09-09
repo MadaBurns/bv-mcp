@@ -15,11 +15,23 @@
  * hostnames per account / per zone from a large pool, so an overlap there
  * still implies same-account ownership. Both were re-measured for #939
  * (2026-09-09, 14,062 resolved Tranco domains): Route 53 repeated a complete
- * 4-host set only within one organisation (zooplus.*, condenast/vogue/gq);
- * Cloudflare produced 4,661 distinct pairs across 5,254 tenants, its repeats
- * consistent with multi-domain accounts. Google Cloud DNS is NOT in that
- * class — it hands out one of five fixed `ns-cloud-{a..e}{1..4}` sets — and
- * is listed below.
+ * 4-host set seven times, each within one organisation as far as could be
+ * told (zooplus.it/.co.uk/.gr; gqmagazine.fr/condenast.com/vogue.mx;
+ * schibsted.io/.fi; koat.com/wptz.com — both Hearst stations;
+ * ladygaga.com/gwenstefani.com; biolifeplasma.com/baxalta.com;
+ * podname.com/verybark.com — the last pair unverified); Cloudflare produced
+ * 4,661 distinct pairs across 5,254 tenants, its repeats consistent with
+ * multi-domain accounts. Google Cloud DNS is NOT in that class — it hands out
+ * one of five fixed `ns-cloud-{a..e}{1..4}` sets — and is listed below.
+ *
+ * KNOWN RESIDUAL — `gandi.net`: Gandi runs TWO products under one apex.
+ * LiveDNS draws `ns-N-{a,b,c}.gandi.net` per zone from a large pool (47
+ * distinct sets / 48 sampled tenants — ownership-bearing), while the legacy
+ * classic set `a/b/c.dns.gandi.net` is uniform (mediamass.net and
+ * ifoponline.com, 2026-09-09). This set is keyed by `registeredApex()`, so
+ * listing `gandi.net` would also erase LiveDNS evidence; the classic set
+ * therefore stays UNLISTED and a complete `a/b/c.dns.gandi.net` match still
+ * reaches the dedicated arm. Fixing it needs host-level keying, not an entry.
  *
  * The ns-correlator drops shared-NS entries whose apex matches this set
  * from its `confidence` math; if ALL shared NS land here, the candidate is
@@ -66,13 +78,17 @@ import { registeredApex } from './infrastructure-providers';
  *
  * #939 (2026-09-09): the bar was applied at scale. A sweep of 14,334 Tranco
  * domains (ranks 20k–1M, NS over Cloudflare + Google DoH, 14,062 resolved)
- * was grouped by exact NS set; every apex below whose comment cites "#939"
- * showed an IDENTICAL complete set on at least three tenants that are
- * visibly different organisations, and the two named tenants were then
- * re-read from both resolvers. A platform whose sets are drawn from a pool
- * SMALL enough that unrelated tenants collide (GoDaddy's ~50 pairs, OVH's
- * `dnsN`/`nsN`, Azure's 23 numbered sets, Cloud DNS's five) is listed on the
- * same evidence as a uniform-set one: a complete match there is not
+ * was grouped by exact NS set and the membership bar above — TWO unrelated
+ * tenants observed sharing the platform's hosts — was applied to every apex
+ * whose comment cites "#939"; the two named tenants were then re-read from
+ * both resolvers. Most entries clear it by a wide margin (an identical
+ * complete set on dozens of tenants); the thinnest are named honestly in
+ * their comments: Squarespace (four tenants, four DISTINCT complete sets —
+ * listed on the uniform platform HALF of the set, see the entry) and Strato
+ * (one repeated pair in 20 tenants). A platform whose sets are drawn from a
+ * pool SMALL enough that unrelated tenants collide (GoDaddy's ~50 pairs,
+ * OVH's `dnsN`/`nsN`, Azure's 23 numbered sets, Cloud DNS's five) is listed
+ * on the same evidence as a uniform-set one: a complete match there is not
  * per-account. Two tenant names per entry, not the whole sample; the raw
  * table is in the PR for #939. Multi-apex sets (IONOS, UltraDNS, Hetzner
  * Robot, Aruba, DNSimple edge) list EVERY apex the set spans — half-listing
@@ -143,8 +159,15 @@ export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	// Bluehost — uniform `ns1`/`ns2.bluehost.com` (#939: godandscience.org,
 	// heraldwholesale.com, 2026-09-09).
 	'bluehost.com',
-	// Strato — `docksNN`/`shadesNN.rzone.de` pairs from a small pool (#939:
-	// handball360.net and elsbett.com both on docks08/shades18, 2026-09-09).
+	// Strato — `docksNN`/`shadesNN.rzone.de` pairs. THIN EVIDENCE, stated
+	// plainly: 20 sampled tenants gave 19 distinct pairs and ONE repeat
+	// (handball360.net and elsbett.com on docks08/shades18, 2026-09-09) out of
+	// a pool of at most 19 x 18 = 342 combinations (highest docks/shades
+	// numbers observed) — chance-level, the same
+	// shape as Gandi LiveDNS, which is NOT listed. It is listed anyway because
+	// the bar is "two unrelated tenants observed sharing" (met) and the pair
+	// is platform-assigned, so a squatter on Strato can land on the seed's
+	// pair by retrying signups; the cost of listing is one lost lead.
 	'rzone.de',
 	// Hetzner DNS Console — uniform `hydrogen`/`oxygen.ns.hetzner.com` +
 	// `helium.ns.hetzner.de` (#939: edudip.com, echo-online.de, 2026-09-09).
@@ -165,7 +188,8 @@ export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	'ovh.net',
 	'anycast.me',
 	// digital.govt.nz — the shared NZ-government DNS platform: the identical
-	// `ns1`–`ns5.digital.govt.nz` set on 13 unrelated agencies (#939: nzta,
+	// `ns1`–`ns5.digital.govt.nz` set on 13 distinct agencies of one
+	// government (#939: nzta,
 	// dia, customs, stats, treasury, linz, tec, corrections, mfat, beehive,
 	// dpmc, tpk .govt.nz and nzdf.mil.nz, 2026-09-09).
 	'digital.govt.nz',
@@ -189,10 +213,22 @@ export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	'dnsimple-edge.net',
 	'dnsimple-edge.io',
 	'dnsimple-edge.org',
-	// Enterprise managed DNS / brand registrars that assign a FIXED set — the
-	// case that matters most for this scanner's customers, because two
-	// Fortune-500 seeds on the same set attribute each other's lookalikes
-	// (#939, 2026-09-09).
+	// Enterprise managed DNS / brand registrars that assign a FIXED set. Two
+	// unrelated enterprises on the same set attributed each other's lookalikes
+	// (#939, 2026-09-09). DISCLOSED COST — this is a behaviour change on
+	// enterprise-tier output, not only a bugfix: these platforms are NOT
+	// self-service, so a seed's OWN defensive registration on the same set
+	// (natwest.com -> natwest.co.uk, both udns1/udns2 on CSC, live 2026-09-09)
+	// also drops from `owned_by_seed`/strong to `unattributed`. In
+	// check_lookalikes that candidate now carries the uncapped threat
+	// observation (medium with MX, high with MX plus a recent/disposable/dark
+	// corroborator) instead of one info finding; in check_shadow_domains it is
+	// clamped to info, so a customer's own CSC-hosted variant with no DMARC
+	// loses the true-positive "lacks DMARC" finding it had while wrongly
+	// attributed. Listing is still right for `classifyOwnership()` (#937's
+	// rule: only what the SEED alone publishes may attribute); the customer's
+	// own-name case is issue #949 (an enterprise-gated corroborator for the
+	// brand-held wording, not an attribution).
 	'cscdns.net', // CSC dns1/dns2 — stryker.com, dentsu.com; udns1/udns2 — natwest.com, delonghi.com
 	'cscdns.uk', // the .uk half of CSC's udns set
 	'markmonitor.com', // ns1-7 — rockwool.com, ahdictionary.com
