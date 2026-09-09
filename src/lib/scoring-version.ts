@@ -463,8 +463,34 @@
  *   No weight, tier, grade band, severity penalty or profile-detection rule changed;
  *   `@blackveil/dns-checks` is untouched (the check is worker-side), so the package /
  *   parity-corpus version stays at 1.36.0.
+ * - 1.26.0 — `subdomain_takeover` and `dkim` abstain when every probe fails (#948,
+ *   dns-checks 1.38.0). This REVERSES DIRECTION relative to 1.24.0/#900: those entries
+ *   moved already-excluded categories onto a shared helper without changing a score. This
+ *   one newly EXCLUDES categories that were previously SCORED, because both checks were
+ *   swallowing a thrown DNS query and returning a COMPLETED result (no `checkStatus`)
+ *   carrying a confident verdict for a measurement that never happened. `subdomain_takeover`
+ *   moves from a false 100 ("No dangling CNAME records found", passed, cached) to n/a; `dkim`
+ *   moves from a false 50 (a `high` "No DKIM records found among tested selectors" derived
+ *   from 41 selectors that all threw) to n/a. Both now return
+ *   `buildNotAssessedResult(..., 'error')` — score 0, `passed: false`, `partial: true`,
+ *   `checkStatus: 'error'` — so the engine renormalises them out of the weighted score
+ *   (`isCheckMeasured`), `scan_domain`'s transient-zero retry can fire (`shouldRetry`
+ *   requires `'error'`, never `'timeout'`), and the non-answer is not written to the 5-minute
+ *   per-check cache. The abstention findings are `info` and carry `inconclusive` +
+ *   `errorKind: 'dns_error'`, never `missingControl` (#638 law).
+ *   The rule is ZERO-answered, not a ratio: a PARTIAL failure still emits the existing
+ *   verdict at its existing severity and score, but narrows its metadata to what answered —
+ *   DKIM's `selectorsChecked` is now the answered selectors plus a new `selectorsUnmeasured`
+ *   list, and the clean takeover verdict carries `subdomainsUnmeasured`. A found DKIM
+ *   selector still returns a completed result no matter how many siblings failed (positive
+ *   evidence is monotone). Direction: DOWNWARD in the sense that two false passes/floors
+ *   become n/a, but no domain whose probes answer changes by a single point — a domain with
+ *   a working resolver produces byte-identical findings. Population: only scans where every
+ *   probe for a category threw (a resolver outage or a fully blocked path), which the corpus
+ *   cannot size because the defect made those scans indistinguishable from clean ones. No
+ *   weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.25.0';
+export const SCORING_MODEL_VERSION = '1.26.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

@@ -260,4 +260,65 @@ describe('checkDKIM', () => {
 		expect(versionFinding).toBeDefined();
 		expect(versionFinding?.metadata?.delegatedTo).toBe('Mailchimp');
 	});
+
+	// ── #948: a thrown selector probe is not "no record published" ──────────
+	describe('unmeasured selector probes (#948)', () => {
+		it('abstains when EVERY selector probe throws', async () => {
+			const queryDNS: DNSQueryFunction = vi.fn(async () => {
+				throw new Error('SERVFAIL');
+			});
+			const result = await checkDKIM('example.com', queryDNS);
+			expect(result.checkStatus).toBe('error');
+			expect(result.score).toBe(0);
+			expect(result.passed).toBe(false);
+			expect(result.partial).toBe(true);
+			expect(result.findings).toHaveLength(1);
+			expect(result.findings[0].severity).toBe('info');
+			expect(result.findings[0].title).toBe('DKIM not assessed — every selector probe failed');
+			expect(result.findings[0].metadata?.inconclusive).toBe(true);
+			expect(result.findings[0].metadata?.errorKind).toBe('dns_error');
+			// #638 law: nothing was measured, so nothing may be claimed absent.
+			expect(result.findings[0].metadata?.missingControl).toBeUndefined();
+			expect((result.findings[0].metadata?.selectorsUnmeasured as string[]).length).toBeGreaterThan(1);
+		});
+
+		it('abstains when the single explicit selector probe throws', async () => {
+			const queryDNS: DNSQueryFunction = vi.fn(async () => {
+				throw new Error('SERVFAIL');
+			});
+			const result = await checkDKIM('example.com', queryDNS, { selector: 'myselector' });
+			expect(result.checkStatus).toBe('error');
+			expect(result.findings[0].metadata?.selectorsUnmeasured).toEqual(['myselector']);
+		});
+
+		it('still emits the high finding when only SOME probes throw, narrowed to what answered', async () => {
+			const queryDNS: DNSQueryFunction = vi.fn(async (name: string) => {
+				if (name.startsWith('default.')) throw new Error('SERVFAIL');
+				return [];
+			});
+			const result = await checkDKIM('example.com', queryDNS);
+			expect(result.checkStatus).toBeUndefined();
+			const notFound = result.findings.find((f) => f.title === 'No DKIM records found among tested selectors');
+			expect(notFound).toBeDefined();
+			expect(notFound?.severity).toBe('high');
+			expect(result.score).toBe(50);
+			expect(notFound?.metadata?.selectorsUnmeasured).toEqual(['default']);
+			expect(notFound?.metadata?.selectorsChecked).not.toContain('default');
+			expect((notFound?.metadata?.selectorsChecked as string[]).length).toBeGreaterThan(1);
+		});
+
+		it('returns a completed result when a key is found despite sibling probe failures', async () => {
+			const queryDNS: DNSQueryFunction = vi.fn(async (name: string, type: string) => {
+				if (name === 'google._domainkey.example.com' && type !== 'CNAME') {
+					return ['v=DKIM1; k=rsa; p=' + 'A'.repeat(600)];
+				}
+				throw new Error('SERVFAIL');
+			});
+			const result = await checkDKIM('example.com', queryDNS);
+			// Positive evidence is monotone: a discovered key cannot be invalidated by an
+			// unmeasured sibling, so the result stays measured and scored.
+			expect(result.checkStatus).toBeUndefined();
+			expect(result.findings.some((f) => f.title === 'DKIM configured')).toBe(true);
+		});
+	});
 });

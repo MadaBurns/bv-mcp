@@ -35,6 +35,15 @@
  * COMPLETED result (no `checkStatus`) is outside this audit's claim: it is the separate
  * "transient failure scored as a deficiency" class pinned per-check by
  * transient-inconclusive.test.ts.
+ *
+ * As of #948, `checkDKIM` and `checkSubdomainTakeover` are no longer in that
+ * outside-the-claim set. Both used to swallow a thrown probe and return a COMPLETED result
+ * carrying a confident verdict (DKIM a `high` "no records found" floored to 50; subdomain
+ * takeover a clean `info` verdict at 100). Both now abstain via
+ * `buildNotAssessedResult(..., 'error')` when EVERY probe fails, so this audit's implication
+ * holds NON-vacuously for them: they emit a `checkStatus` and are matched against the
+ * not-assessed shape above. A PARTIAL failure still returns a completed result by design —
+ * the verdict stands on the probes that answered, narrowed to them.
  */
 
 import { describe, it, expect } from 'vitest';
