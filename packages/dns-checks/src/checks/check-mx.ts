@@ -149,7 +149,23 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 		}
 	}
 
-	// Check for single MX (no redundancy)
+	// Check for single MX (no redundancy).
+	//
+	// Deliberately counts ALL records, not `routableRecords` (#944 review). Two
+	// reasons, both load-bearing — do not "tidy" this to `routableRecords`:
+	//   1. It would MOVE SCORES on the very population this change is about. The
+	//      measured shape is a lone `0 localhost.`; filtering leaves zero routable
+	//      records, `getSingleMxFinding` returns null on `length !== 1`, and the
+	//      domain scores 85 instead of the 80 it scores today — a silent leniency
+	//      change wearing the costume of a cleanup.
+	//   2. The behaviour predates #944 (it counted every record before loopback
+	//      classification existed), so leaving it is preservation, not oversight.
+	//
+	// Known residual, also pre-#944 and deliberately not fixed here: a zone
+	// publishing one real exchange BESIDE a loopback one has no actual redundancy
+	// but escapes this finding, because the raw count is 2. Correcting that is a
+	// scoring change in its own right and belongs in its own PR with its own
+	// version bump, not smuggled in beside a false-positive fix.
 	const singleMxFinding = getSingleMxFinding(mxRecords);
 	if (singleMxFinding) {
 		findings.push(singleMxFinding);
