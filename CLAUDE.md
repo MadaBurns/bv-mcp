@@ -170,7 +170,7 @@ Five gates: (1) blocked paths (`docs/plans|code-review|superpowers/`, `.dev/`, `
 
 - **Required checks are exactly four** (verified live 2026-08-23): `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`. Everything else (`contract`, `fast-checks`, `typecheck-tests`, `dns-scan`, `registry-drift-check`) is advisory — a green-but-`BLOCKED` PR waits on one of the four.
 - **Branch protection (SETTLED 2026-08-23)**: the four checks + `strict=true`, **NO required reviews** (deliberate — solo maintainer), `enforce_admins=true`, `required_conversation_resolution=true`, no force pushes. ⚠️ `PUT .../protection` is FULL-REPLACE — re-apply the whole canonical object, never a fragment. `mergeStateStatus: UNSTABLE` is mergeable once the required four pass.
-- **Deploy**: `npm run deploy:prod` run by an operator is THE authoritative path. `deploy-prod.yml` is dispatch-only and disarmed by default (never deployed anything); the old tag-triggered/auto-deploy workflows are REMOVED. ⚠️ `npm run deploy:prod` does NOT deploy bv-infra-probe — deploy it explicitly (`npx wrangler deploy --config wrangler.infra-probe.jsonc`) when its source changes.
+- **Deploy**: `npm run deploy:prod` run by an operator is THE authoritative path. `deploy-prod.yml` is dispatch-only and disarmed by default (never deployed anything); the old tag-triggered/auto-deploy workflows are REMOVED. ⚠️ `npm run deploy:prod` deploys the MCP Worker ONLY — the sidecars ship via `npm run deploy:whois` and `npm run deploy:infra-probe`. Since #945 the `check:sidecar-freshness` gate (early in `deploy:prod`, `deploy:prod:staged` and `deploy-private.mjs`) **BLOCKS** when a sidecar's live deployment predates its source, fail-closed, override `BV_ALLOW_STALE_SIDECARS=1`.
 - `typecheck-tests` is a per-file **ratchet** (baseline `test/typecheck-baseline.json`; bank improvements with `-- --update`); `ci.yml`'s `fast-checks` typechecks `src/` only.
 - Workflow inventory, histories, dogfood scan, workflow-cost guard, and the full deploy-mode narrative: **`bv-mcp-operations` skill**.
 
@@ -204,8 +204,16 @@ debugging a binding.
 
 Two facts kept here because they bite during unrelated work: **`BV_WEB` IS declared in the
 public `wrangler.jsonc`** (audit-enforced — do not "clean it up" into the private overrides),
-and **`npm run deploy:prod` does NOT deploy `bv-infra-probe`** — deploy that explicitly when
-its source changes.
+and **`npm run deploy:prod` deploys the MCP Worker ONLY — never the sidecars**. The two
+sidecar Workers ship separately: `npm run deploy:whois` (`packages/bv-whois/wrangler.jsonc`)
+and `npm run deploy:infra-probe` (`wrangler.infra-probe.jsonc`). Since #945 that is no longer
+a thing to remember: `npm run check:sidecar-freshness` runs early in both deploy chains (and
+in `deploy-private.mjs`) and **BLOCKS the deploy** when a sidecar's live deployment predates
+its source. It is fail-closed — an unreadable deployment list blocks too — with the named
+override `BV_ALLOW_STALE_SIDECARS=1` (deliberately distinct from `BV_ALLOW_STALE_DEPLOY`).
+The gate exists because nothing invoked those commands: bv-whois ran **4 source commits
+stale for 3 months**, including the commit that added the WHOIS dates the RDAP fallback asks
+it for. Decision core `scripts/sidecar-deploy-drift.ts`, CLI `scripts/ci/sidecar-deploy-drift-check.ts`.
 
 ## Analytics
 

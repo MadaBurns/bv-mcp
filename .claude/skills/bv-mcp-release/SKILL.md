@@ -86,9 +86,18 @@ Publish steps (key never echoed): `mcp-publisher validate` → `login dns --doma
 ```bash
 npm -w packages/dns-checks run build && npm run build
 npm publish --access public      # only if npm is intended + token present
-npm run deploy:prod              # injects private bindings, deploys the Worker
+npm run deploy:prod              # injects private bindings, deploys the MCP Worker ONLY
+npm run deploy:whois             # sidecar: bv-whois (packages/bv-whois/wrangler.jsonc)
+npm run deploy:infra-probe       # sidecar: bv-infra-probe (wrangler.infra-probe.jsonc)
 mcp-publisher publish            # MCP Registry, DNS-TXT-gated namespace
 ```
+
+The two sidecar lines are not optional extras — `deploy:prod` has never deployed either
+Worker, and until #945 nothing else did: bv-whois sat 4 source commits stale for 3 months.
+`deploy:prod` now runs `check:sidecar-freshness` early and **blocks** when either sidecar's
+live deployment predates its source, naming the commits and the exact fix command. Deploy
+the named sidecar and re-run; the escape hatch is `BV_ALLOW_STALE_SIDECARS=1` (distinct from
+`BV_ALLOW_STALE_DEPLOY`, so a deliberate rollback does not also wave the sidecars through).
 
 Never commit `.npmrc`, registry tokens, the DNS publisher key, or generated production config. Keep the publisher key in `.dev.vars` / an approved secret manager only.
 
@@ -105,6 +114,7 @@ Never commit `.npmrc`, registry tokens, the DNS publisher key, or generated prod
 - `mcp-publisher publish` BEFORE `deploy:prod` → registry advertises a version prod doesn't serve (stale-prod, public). Deploy first, publish last.
 - Hand-editing `SERVER_VERSION` → no-op at best (it auto-derives from `pkg.version`); bump `package.json` instead.
 - A single early post-deploy version/scoring mismatch is usually **Cloudflare rollout propagation lag**, not a stale bundle — re-poll a few times before debugging. (A genuine stale bundle is when `packages/dns-checks` wasn't rebuilt before `deploy:prod` — always `npm -w packages/dns-checks run build` first.)
+- A `check:sidecar-freshness` result of **`unverified` is NOT proof the sidecars are current** — it means the gate could not read the deployment list (expired/absent `CLOUDFLARE_API_TOKEN`, offline, wrangler missing; wrangler prints an auth banner on STDOUT while exiting non-zero, which is why stdout is never parsed without a status check). Restore auth and re-run. Do NOT reach for `BV_ALLOW_STALE_SIDECARS=1` — that turns "I could not measure" into "I shipped anyway", which is the exact fail-open shape #945 was filed against.
 - `wrangler d1 execute --remote --file=-` with stdin → not supported; pass a real file path.
 
 ## Provenance
