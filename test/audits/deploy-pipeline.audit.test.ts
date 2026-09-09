@@ -65,6 +65,34 @@ describe('deploy:prod pipeline integrity', () => {
 		expect(gateIndex, 'the sidecar gate must run before wrangler deploy').toBeLessThan(deployIndex);
 	});
 
+	// #945 review: the sidecar gate's evidence is `git log HEAD -- <watchPaths>`, which can
+	// only see commits that are ANCESTORS of HEAD. On a checkout behind origin/main a
+	// sidecar commit that landed upstream but not locally is invisible, the drift list comes
+	// back empty, and the gate reports `fresh` — a false green in a fail-closed gate. The
+	// freshness check is what proves HEAD ⊇ origin/main, so it MUST precede the sidecar gate
+	// on every door. deploy:prod / deploy:prod:staged get it from their npm chains; this door
+	// runs it explicitly, and once did not.
+	it('runs the freshness gate BEFORE the sidecar gate on the private door — HEAD-based drift evidence is worthless on a stale checkout', () => {
+		const freshnessIndex = deployPrivateSource.indexOf('deploy-freshness-check.ts');
+		const sidecarIndex = deployPrivateSource.indexOf('sidecar-deploy-drift-check.ts');
+		expect(freshnessIndex, 'deploy-private.mjs must run the deploy-freshness gate').toBeGreaterThan(-1);
+		expect(sidecarIndex, 'deploy-private.mjs must run the sidecar deploy-drift gate').toBeGreaterThan(-1);
+		expect(freshnessIndex, 'freshness must prove HEAD ⊇ origin/main before the sidecar gate trusts `git log HEAD`').toBeLessThan(
+			sidecarIndex,
+		);
+	});
+
+	// Same ordering on the two npm doors, asserted from the scripts themselves so a
+	// reordering of the chain cannot silently invert the dependency.
+	it.each(['deploy:prod', 'deploy:prod:staged'])('runs the freshness gate before the sidecar gate in %s', (scriptName) => {
+		const script = pkg.scripts?.[scriptName] ?? '';
+		const freshnessIndex = script.indexOf('check:deploy-freshness');
+		const sidecarIndex = script.indexOf('check:sidecar-freshness');
+		expect(freshnessIndex, `${scriptName} must run check:deploy-freshness`).toBeGreaterThan(-1);
+		expect(sidecarIndex, `${scriptName} must run check:sidecar-freshness`).toBeGreaterThan(-1);
+		expect(freshnessIndex, 'freshness must precede the sidecar gate').toBeLessThan(sidecarIndex);
+	});
+
 	it('refuses production deployment until the remote Brand Audit schema preflight passes', () => {
 		const preflightIndex = deployScript.indexOf('brand-audit-schema-preflight.mjs');
 		const deployIndex = deployScript.indexOf('wrangler deploy');
@@ -147,14 +175,10 @@ describe('inject-private-config fail-closed on missing overlay', () => {
 	}
 
 	it('hard-fails (process.exit(1)) when the private overlay is absent', () => {
-		expect(missingOverlayBranch(), 'the missing-overlay branch must hard-fail rather than return 0').toContain(
-			'process.exit(1)',
-		);
+		expect(missingOverlayBranch(), 'the missing-overlay branch must hard-fail rather than return 0').toContain('process.exit(1)');
 	});
 
 	it('does not silently `return` from the missing-overlay branch', () => {
-		expect(missingOverlayBranch(), 'a bare return would let the deploy proceed against a stale config').not.toMatch(
-			/\breturn\b/,
-		);
+		expect(missingOverlayBranch(), 'a bare return would let the deploy proceed against a stale config').not.toMatch(/\breturn\b/);
 	});
 });

@@ -80,6 +80,19 @@ export function probeSidecar(target: SidecarTarget, spawnSync: SpawnSyncLike = n
 	// TREE, and `check:deploy-freshness` has already proven HEAD ⊇ origin/main by
 	// the time this runs — so HEAD is both the thing being shipped and the
 	// stricter comparison.
+	//
+	// ⚠️ THAT PRECONDITION IS THIS GATE'S ONE EXTERNAL DEPENDENCY (#945 review).
+	// `git log HEAD` can only see commits that are ANCESTORS of HEAD, so on a
+	// checkout behind origin/main a sidecar commit that landed upstream but not
+	// locally is invisible: the drift list comes back empty and this gate reports
+	// `fresh`. That is a false green in a gate that exists to be fail-closed.
+	// Every caller MUST therefore run `check:deploy-freshness` first. All three
+	// doors now do — `deploy:prod` and `deploy:prod:staged` via their npm chains,
+	// and `scripts/deploy-private.mjs` via an explicit step added in the same
+	// review (it previously ran this gate with nothing enforcing the assumption).
+	// `test/audits/deploy-pipeline.audit.test.ts` pins the ordering on all three.
+	// If you wire this gate into a FOURTH caller, run freshness there too, or
+	// teach this probe to verify HEAD ⊇ origin/main itself.
 	let driftCommits: string[] = [];
 	const log = spawnSync('git', ['log', GIT_LOG_FORMAT, 'HEAD', '--', ...target.watchPaths], { encoding: 'utf8' });
 	if (log.error || log.status !== 0) {
