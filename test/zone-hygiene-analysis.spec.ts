@@ -267,6 +267,67 @@ describe('analyzeSensitiveSubdomains', () => {
 			expect(withProbe).toEqual(analyzeSensitiveSubdomains(results));
 		});
 
+		// #942: an AAAA-only wildcard answers for every name in a family the sweep never
+		// queries. The sweep still RAN, so its IPv4 hits are real evidence — only the
+		// clean "none resolve" verdict is unsupportable.
+		describe('AAAA-only wildcard zone (#942)', () => {
+			const v6Wildcard: WildcardProbe = {
+				status: 'detected_ipv6',
+				ips: ['2001:db8::94'],
+				probeSubdomain: '_bv-probe-abc.example.com',
+			};
+
+			it('withholds the clean verdict and emits exactly one info note when nothing resolved over IPv4', () => {
+				const results: SubdomainProbeResult[] = [
+					{ subdomain: 'vpn.example.com', resolves: false, ips: [] },
+					{ subdomain: 'admin.example.com', resolves: false, ips: [] },
+				];
+
+				const findings = analyzeSensitiveSubdomains(results, v6Wildcard);
+				expect(findings).toHaveLength(1);
+				expect(findings[0].title).toBe('Wildcard DNS (IPv6) masks the sensitive-subdomain verdict');
+				expect(findings[0].severity).toBe('info');
+				expect(findings[0].metadata?.wildcardFamily).toBe('aaaa');
+				expect(findings[0].metadata?.wildcardIps).toEqual(['2001:db8::94']);
+				expect(findings[0].metadata?.probeSubdomain).toBe('_bv-probe-abc.example.com');
+				// Score-neutral: an `info` note, NOT the inconclusive abstention lane.
+				expect(findings[0].metadata?.inconclusive).toBeUndefined();
+				expect(findings[0].metadata?.missingControl).toBeUndefined();
+				expect(findings.find((f) => f.title === 'No sensitive subdomains resolve publicly')).toBeUndefined();
+			});
+
+			it('keeps every IPv4 hit as a scored medium alongside the note (a v6 wildcard cannot fabricate an A answer)', () => {
+				const results: SubdomainProbeResult[] = [
+					{ subdomain: 'vpn.example.com', resolves: true, ips: ['203.0.113.10'] },
+					{ subdomain: 'admin.example.com', resolves: false, ips: [] },
+				];
+
+				const findings = analyzeSensitiveSubdomains(results, v6Wildcard);
+				expect(findings.find((f) => f.title === 'Wildcard DNS (IPv6) masks the sensitive-subdomain verdict')).toBeDefined();
+				const vpn = findings.find((f) => f.title === 'Internal subdomain resolves publicly: vpn.example.com');
+				expect(vpn?.severity).toBe('medium');
+				expect(vpn?.metadata?.ips).toEqual(['203.0.113.10']);
+				expect(findings.filter((f) => f.severity === 'medium')).toHaveLength(1);
+				// Nothing was folded away: `isWildcardSynthetic` must never see v6 addresses.
+				expect(findings.find((f) => f.metadata?.wildcardSyntheticSubdomains)).toBeUndefined();
+			});
+
+			it('still fires the excessive-exposure finding at 3 IPv4 hits', () => {
+				const results: SubdomainProbeResult[] = [
+					{ subdomain: 'vpn.example.com', resolves: true, ips: ['203.0.113.10'] },
+					{ subdomain: 'admin.example.com', resolves: true, ips: ['203.0.113.11'] },
+					{ subdomain: 'staging.example.com', resolves: true, ips: ['203.0.113.12'] },
+				];
+
+				const findings = analyzeSensitiveSubdomains(results, v6Wildcard);
+				const excessive = findings.find((f) => f.title.includes('Excessive internal subdomain exposure'));
+				expect(excessive).toBeDefined();
+				expect(excessive!.severity).toBe('medium');
+				expect(excessive!.title).toContain('3 found');
+				expect(findings.filter((f) => f.severity === 'medium')).toHaveLength(4);
+			});
+		});
+
 		it('returns only the abstention note when the canary was inconclusive', () => {
 			const findings = analyzeSensitiveSubdomains([], { status: 'inconclusive', probeSubdomain: '_bv-probe-abc.example.com' });
 			expect(findings).toHaveLength(1);

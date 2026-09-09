@@ -250,6 +250,14 @@ describe('checkZoneHygiene', () => {
 			);
 		}
 
+		/** Build a DoH response containing AAAA records (#942). */
+		function aaaaResponse(name: string, ips: string[]) {
+			return createDohResponse(
+				[{ name, type: 28 }],
+				ips.map((ip) => ({ name, type: 28, TTL: 300, data: ip })),
+			);
+		}
+
 		function wildcardMock(
 			opts: {
 				realHosts?: Record<string, string[]>;
@@ -257,46 +265,69 @@ describe('checkZoneHygiene', () => {
 				canaryThrows?: boolean;
 				/** Wildcard is `*.zone CNAME <target>`; each canary/hit gets `[target, ips]`. */
 				cnamePool?: { target: string; canaryIps: string[]; hitIps: string[] };
+				/** AAAA-only wildcard (#942): the A canary is empty, this answers the AAAA one. */
+				aaaaWildcard?: string[];
 				soaExpire?: number;
 			} = {},
 		) {
 			const canaryAnswers = opts.canaryIps ?? [[WILDCARD_IP]];
 			let canaryCalls = 0;
 			const aQueries: string[] = [];
+			const aaaaQueries: string[] = [];
 			const fetchMock = vi.fn().mockImplementation((input: string | URL | Request) => {
 				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-				if (url.includes('type=NS') || url.includes('type=2')) {
+				// 🚨 EXACT type match, never `url.includes('type=A')` — `'type=AAAA'.includes('type=A')`
+				// is TRUE, so a substring dispatch silently answers every AAAA query from the A arm
+				// and this suite would pass while the #942 fix did nothing (same style as
+				// test/check-ns.spec.ts). The AAAA arm is also placed FIRST as belt-and-braces.
+				const type = url.match(/[?&]type=([^&]+)/)?.[1] ?? '';
+				const name = decodeURIComponent(url.match(/[?&]name=([^&]+)/)?.[1] ?? '');
+				if (type === 'NS' || type === '2') {
 					return Promise.resolve(nsResponse('example.com', ['ns1.example.com.', 'ns2.example.com.']));
 				}
-				if (url.includes('type=SOA') || url.includes('type=6')) {
+				if (type === 'SOA' || type === '6') {
 					return Promise.resolve(
 						soaResponse('example.com', `ns1.example.com. admin.example.com. 2024010101 7200 3600 ${opts.soaExpire ?? 1209600} 300`),
 					);
 				}
-				if (url.includes('type=A') || url.includes('type=1')) {
-					const nameMatch = url.match(/name=([^&]+)/);
-					const name = nameMatch ? decodeURIComponent(nameMatch[1]) : '';
+				if (type === 'AAAA' || type === '28') {
+					aaaaQueries.push(name);
+					if (name.startsWith('_bv-probe-') && opts.aaaaWildcard) {
+						return Promise.resolve(aaaaResponse(name, opts.aaaaWildcard));
+					}
+					return Promise.resolve(emptyResponse(name, 28));
+				}
+				if (type === 'A' || type === '1') {
 					aQueries.push(name);
 					if (name.startsWith('_bv-probe-')) {
 						if (opts.canaryThrows) return Promise.reject(new Error('DNS query timed out after 3000ms'));
+						// An AAAA-only wildcard zone answers nothing in the A family, canary included.
+						if (opts.aaaaWildcard) return Promise.resolve(emptyResponse(name, 1));
 						canaryCalls++;
 						if (opts.cnamePool) return Promise.resolve(cnameResponse(name, opts.cnamePool.target, opts.cnamePool.canaryIps));
 						const ips = canaryAnswers[Math.min(canaryCalls - 1, canaryAnswers.length - 1)];
 						return Promise.resolve(aResponse(name, ips));
 					}
 					if (opts.realHosts?.[name]) return Promise.resolve(aResponse(name, opts.realHosts[name]));
-					// Everything else under the zone is answered by the wildcard.
+					// Everything else under the zone is answered by the wildcard — except on an
+					// AAAA-only wildcard zone, where the A family is genuinely empty.
+					if (opts.aaaaWildcard) return Promise.resolve(emptyResponse(name, 1));
 					if (opts.cnamePool) return Promise.resolve(cnameResponse(name, opts.cnamePool.target, opts.cnamePool.hitIps));
 					return Promise.resolve(aResponse(name, [WILDCARD_IP]));
 				}
 				return Promise.resolve(emptyResponse('example.com', 1));
 			});
 			globalThis.fetch = fetchMock;
-			return { aQueries, canaryCalls: () => canaryCalls };
+			return { aQueries, aaaaQueries, canaryCalls: () => canaryCalls };
+		}
+
+		/** Distinct query NAMES of a given shape — an empty answer costs two fetches (secondary confirmation). */
+		function canaryNames(queries: string[]) {
+			return new Set(queries.filter((n) => n.startsWith('_bv-probe-')));
 		}
 
 		it('suppresses every wildcard-synthetic hit into a single info observation and does not zero the category', async () => {
-			const { aQueries } = wildcardMock();
+			const { aQueries, aaaaQueries } = wildcardMock();
 			const result = await run();
 
 			expect(result.category).toBe('zone_hygiene');
@@ -322,13 +353,16 @@ describe('checkZoneHygiene', () => {
 			expect(note!.detail).toContain('wildcard');
 			expect(note!.detail).not.toContain('<');
 
-			// Budget: exactly one canary on top of the ten-name sweep.
+			// Budget: exactly one A canary on top of the ten-name sweep, and — because that
+			// canary ANSWERED — not one AAAA canary (#942 spends the v6 query only on an
+			// empty A answer).
 			expect(aQueries.filter((n) => n.startsWith('_bv-probe-'))).toHaveLength(1);
 			expect(aQueries.filter((n) => !n.startsWith('_bv-probe-'))).toHaveLength(10);
+			expect(aaaaQueries).toEqual([]);
 		});
 
 		it('still reports a real host whose answer differs from the wildcard answer', async () => {
-			const { aQueries } = wildcardMock({ realHosts: { 'vpn.example.com': ['203.0.113.10'] } });
+			const { aQueries, aaaaQueries } = wildcardMock({ realHosts: { 'vpn.example.com': ['203.0.113.10'] } });
 			const result = await run();
 
 			const vpn = result.findings.find((f) => f.title === 'Internal subdomain resolves publicly: vpn.example.com');
@@ -343,8 +377,10 @@ describe('checkZoneHygiene', () => {
 			expect(note!.metadata?.wildcardSyntheticSubdomains).toHaveLength(9);
 			expect(note!.metadata?.wildcardSyntheticSubdomains).not.toContain('vpn.example.com');
 
-			// A differing hit costs ONE confirming canary — never more than two in total.
+			// A differing hit costs ONE confirming canary — never more than two A canaries in
+			// total, and no AAAA canary at all (both A canaries answered).
 			expect(aQueries.filter((n) => n.startsWith('_bv-probe-'))).toHaveLength(2);
+			expect(aaaaQueries).toEqual([]);
 		});
 
 		it('treats a hit as synthetic when the confirming canary answers with its address (round-robin wildcard)', async () => {
@@ -410,7 +446,7 @@ describe('checkZoneHygiene', () => {
 
 		it('recognises a CNAME-pool wildcard whose CDN hands each label a different address subset', async () => {
 			// `*.example.com CNAME pool.cdn.example.net.`; the canary sees .10/.11, the hits see .12/.13.
-			const { aQueries } = wildcardMock({
+			const { aQueries, aaaaQueries } = wildcardMock({
 				cnamePool: {
 					target: 'Pool.cdn.example.net.',
 					canaryIps: ['198.51.100.10', '198.51.100.11'],
@@ -424,8 +460,10 @@ describe('checkZoneHygiene', () => {
 			expect(note!.metadata?.wildcardCnameTarget).toBe('pool.cdn.example.net');
 			expect(note!.metadata?.wildcardSyntheticSubdomains).toHaveLength(10);
 			expect(note!.detail).toContain('via pool.cdn.example.net');
-			// Every hit was explained by the CNAME target, so no confirming canary was needed.
+			// Every hit was explained by the CNAME target, so no confirming canary was needed
+			// — and the A canary carried an answer, so no AAAA canary either.
 			expect(aQueries.filter((n) => n.startsWith('_bv-probe-'))).toHaveLength(1);
+			expect(aaaaQueries).toEqual([]);
 		});
 
 		it('treats a dangling wildcard alias (CNAME, no address) as a wildcard and withholds the clean verdict', async () => {
@@ -439,6 +477,51 @@ describe('checkZoneHygiene', () => {
 			expect(note!.metadata?.wildcardIps).toEqual([]);
 			expect(note!.metadata?.wildcardCnameTarget).toBe('gone.example.net');
 			expect(note!.detail).toContain('is an alias for gone.example.net that yields no address');
+		});
+
+		// #942: the canary and the sweep are both A-only, so an AAAA-only wildcard used to
+		// read as "no wildcard" and the sweep then earned the clean verdict for names that
+		// DO resolve — over IPv6. One conditional AAAA canary closes it, score-neutrally.
+		it('detects an AAAA-only wildcard and withholds the clean verdict', async () => {
+			const { aQueries, aaaaQueries } = wildcardMock({ aaaaWildcard: ['2001:db8::94'] });
+			const result = await run();
+
+			// Positive control: the AAAA canary was actually ISSUED as an AAAA query. If the
+			// mock's A arm had swallowed it (the `'type=AAAA'.includes('type=A')` trap), this
+			// set would be empty and the note below would be missing.
+			expect(canaryNames(aaaaQueries).size).toBe(1);
+
+			const note = result.findings.find((f) => f.title === 'Wildcard DNS (IPv6) masks the sensitive-subdomain verdict');
+			expect(note).toBeDefined();
+			expect(note!.severity).toBe('info');
+			expect(note!.metadata?.wildcardFamily).toBe('aaaa');
+			expect(note!.metadata?.wildcardIps).toEqual(['2001:db8::94']);
+			expect(note!.detail).not.toContain('<');
+
+			// The clean verdict is withheld — but the category is NOT excluded: the A sweep
+			// genuinely ran, so this half stays score-neutral (info = 0 penalty).
+			expect(result.findings.find((f) => f.title === 'No sensitive subdomains resolve publicly')).toBeUndefined();
+			expect(result.findings.filter((f) => f.severity !== 'info')).toEqual([]);
+			expect(result.checkStatus).toBeUndefined();
+			expect(result.score).toBe(100);
+			expect(result.passed).toBe(true);
+
+			// Budget: one A canary, one AAAA canary, and the ten-name sweep still ran.
+			expect(canaryNames(aQueries).size).toBe(1);
+			expect(new Set(aQueries.filter((n) => !n.startsWith('_bv-probe-'))).size).toBe(10);
+		});
+
+		it('still scores an IPv4 hit on an AAAA-only wildcard zone (a v6 wildcard cannot answer an A query)', async () => {
+			wildcardMock({ aaaaWildcard: ['2001:db8::94'], realHosts: { 'vpn.example.com': ['203.0.113.10'] } });
+			const result = await run();
+
+			const vpn = result.findings.find((f) => f.title === 'Internal subdomain resolves publicly: vpn.example.com');
+			expect(vpn).toBeDefined();
+			expect(vpn!.severity).toBe('medium');
+			expect(vpn!.metadata?.ips).toEqual(['203.0.113.10']);
+			expect(result.findings.find((f) => f.title === 'Wildcard DNS (IPv6) masks the sensitive-subdomain verdict')).toBeDefined();
+			// The real hit is never folded into the wildcard note.
+			expect(result.findings.filter((f) => f.severity === 'medium')).toHaveLength(1);
 		});
 
 		it('keeps the non-wildcard sweep byte-identical apart from the single canary query', async () => {
