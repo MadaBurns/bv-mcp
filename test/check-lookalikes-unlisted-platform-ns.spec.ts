@@ -21,11 +21,11 @@
  *                                                        ns01-04.squarespacedns.com + dns1-4.p0N.nsone.net
  *   Porkbun        enby.software / spqrome.org           curitiba, fortaleza, maceio, salvador.ns.porkbun.com
  *   digital.govt.nz  13 NZ agencies                      ns1..ns5.digital.govt.nz
- *   CSC (enterprise-gated)  natwest.com / natwest.co.uk  udns1.cscdns.net, udns2.cscdns.uk
+ *   Enterprise-gated corporate registrar  natwest.com / natwest.co.uk  udns1.cscdns.net, udns2.cscdns.uk
  *   Yandex Cloud (PSL private suffix)  bigenc.ru / 4lapy.ru  ns1, ns2.yandexcloud.net
  *
- * The CSC pair is deliberately a seed and its OWN defensive registration:
- * the enterprise-gated platforms (CSC, MarkMonitor, digital.govt.nz,
+ * The corporate-registrar pair is deliberately a seed and its OWN defensive
+ * registration: the enterprise-gated platforms (that registrar, MarkMonitor, digital.govt.nz,
  * UltraDNS) are not self-service, so listing them is a disclosed
  * behaviour change on enterprise-tier output — the customer's own
  * same-platform name drops from `owned_by_seed` to `unattributed`, gains the
@@ -63,7 +63,7 @@ const CLOUD_DNS_B = [
 const SQUARESPACE_NS = ['ns01.squarespacedns.com', 'ns02.squarespacedns.com', 'ns03.squarespacedns.com', 'ns04.squarespacedns.com'];
 const nsonePool = (n: string) => [`dns1.${n}.nsone.net`, `dns2.${n}.nsone.net`, `dns3.${n}.nsone.net`, `dns4.${n}.nsone.net`];
 const PORKBUN_NS = ['curitiba.ns.porkbun.com', 'fortaleza.ns.porkbun.com', 'maceio.ns.porkbun.com', 'salvador.ns.porkbun.com'];
-const CSC_UDNS = ['udns1.cscdns.net', 'udns2.cscdns.uk'];
+const CORP_REGISTRAR_UDNS = ['udns1.cscdns.net', 'udns2.cscdns.uk'];
 const YANDEX_CLOUD_NS = ['ns1.yandexcloud.net', 'ns2.yandexcloud.net'];
 const DIGITAL_GOVT_NZ_NS = [
 	'ns1.digital.govt.nz',
@@ -110,11 +110,11 @@ const IDENTICAL_SET_CASES: Case[] = [
 	},
 	{ platform: 'Porkbun', seed: 'enby.software', candidate: 'spqrome.org', seedNs: PORKBUN_NS, candidateNs: PORKBUN_NS },
 	{
-		platform: 'CSC (enterprise-gated, own defensive registration)',
+		platform: 'Enterprise-gated corporate registrar (own defensive registration)',
 		seed: 'natwest.com',
 		candidate: 'natwest.co.uk',
-		seedNs: CSC_UDNS,
-		candidateNs: CSC_UDNS,
+		seedNs: CORP_REGISTRAR_UDNS,
+		candidateNs: CORP_REGISTRAR_UDNS,
 	},
 	{
 		platform: 'Yandex Cloud (PSL private suffix — hostname-keyed entries)',
@@ -368,22 +368,26 @@ describe('checkLookalikes — debugpoint.com → debugpoin.com on the same Hosti
 });
 
 // ---------------------------------------------------------------------------
-// End-to-end — the enterprise-gated cost, pinned (CSC udns set, live 2026-09-09)
+// End-to-end — the enterprise-gated cost, pinned (corporate registrar udns pair, live 2026-09-09)
 // ---------------------------------------------------------------------------
 
-const CSC_SEED = 'natwest.com';
-/** The seed's own defensive-style name on CSC, but mail-capable — the shape that now surfaces a threat observation. */
-const CSC_ZONE_WITH_MX: Zone = { NS: CSC_UDNS.map((h) => `${h}.`), A: ['192.0.2.20'], MX: ['10 mx.natwest.example.'] };
+const CORP_REGISTRAR_SEED = 'natwest.com';
+/** The seed's own defensive-style name on the enterprise-gated registrar, but mail-capable — the shape that now surfaces a threat observation. */
+const CORP_REGISTRAR_ZONE_WITH_MX: Zone = {
+	NS: CORP_REGISTRAR_UDNS.map((h) => `${h}.`),
+	A: ['192.0.2.20'],
+	MX: ['10 mx.natwest.example.'],
+};
 
-describe('checkLookalikes — natwest.com → natwes.com on the same CSC udns set (#939, enterprise-gated cost pinned)', () => {
+describe('checkLookalikes — natwest.com → natwes.com on the enterprise-gated registrar udns pair (#939, cost pinned)', () => {
 	it('is unattributed with an uncapped medium threat observation, never owned_by_seed', async () => {
 		installMock({
-			[CSC_SEED]: CSC_ZONE_WITH_MX,
-			[`_dmarc.${CSC_SEED}`]: DMARC_REJECT,
-			'natwes.com': CSC_ZONE_WITH_MX,
+			[CORP_REGISTRAR_SEED]: CORP_REGISTRAR_ZONE_WITH_MX,
+			[`_dmarc.${CORP_REGISTRAR_SEED}`]: DMARC_REJECT,
+			'natwes.com': CORP_REGISTRAR_ZONE_WITH_MX,
 		});
 		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
-		const result = await checkLookalikes(CSC_SEED);
+		const result = await checkLookalikes(CORP_REGISTRAR_SEED);
 
 		const own = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'natwes.com');
 		expect(own.length).toBeGreaterThan(0);
@@ -405,16 +409,16 @@ describe('checkLookalikes — natwest.com → natwes.com on the same CSC udns se
 	});
 });
 
-describe('checkShadowDomains — natwest.com → natwest.net on the same CSC udns set (#939, enterprise-gated cost pinned)', () => {
+describe('checkShadowDomains — natwest.com → natwest.net on the enterprise-gated registrar udns pair (#939, cost pinned)', () => {
 	it('clamps the variant to info — the owned-only "lacks DMARC" rung is no longer reachable for it', async () => {
 		installMock({
-			[CSC_SEED]: CSC_ZONE_WITH_MX,
-			[`_dmarc.${CSC_SEED}`]: DMARC_REJECT,
+			[CORP_REGISTRAR_SEED]: CORP_REGISTRAR_ZONE_WITH_MX,
+			[`_dmarc.${CORP_REGISTRAR_SEED}`]: DMARC_REJECT,
 			// MX, no SPF, no DMARC: the top rung of the OWNED ladder.
-			'natwest.net': CSC_ZONE_WITH_MX,
+			'natwest.net': CORP_REGISTRAR_ZONE_WITH_MX,
 		});
 		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
-		const result = await checkShadowDomains(CSC_SEED);
+		const result = await checkShadowDomains(CORP_REGISTRAR_SEED);
 
 		const net = result.findings.filter((f) => (f.metadata as { variant?: string } | undefined)?.variant === 'natwest.net');
 		expect(net.length).toBeGreaterThan(0);

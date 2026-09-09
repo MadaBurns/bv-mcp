@@ -218,19 +218,20 @@ export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	// (#939, 2026-09-09). DISCLOSED COST — this is a behaviour change on
 	// enterprise-tier output, not only a bugfix: these platforms are NOT
 	// self-service, so a seed's OWN defensive registration on the same set
-	// (natwest.com -> natwest.co.uk, both udns1/udns2 on CSC, live 2026-09-09)
+	// (natwest.com -> natwest.co.uk, both on the enterprise-gated registrar's
+	// udns pair, live 2026-09-09)
 	// also drops from `owned_by_seed`/strong to `unattributed`. In
 	// check_lookalikes that candidate now carries the uncapped threat
 	// observation (medium with MX, high with MX plus a recent/disposable/dark
 	// corroborator) instead of one info finding; in check_shadow_domains it is
-	// clamped to info, so a customer's own CSC-hosted variant with no DMARC
+	// clamped to info, so a customer's own variant on that platform with no DMARC
 	// loses the true-positive "lacks DMARC" finding it had while wrongly
 	// attributed. Listing is still right for `classifyOwnership()` (#937's
 	// rule: only what the SEED alone publishes may attribute); the customer's
 	// own-name case is issue #949 (an enterprise-gated corroborator for the
 	// brand-held wording, not an attribution).
-	'cscdns.net', // CSC dns1/dns2 — stryker.com, dentsu.com; udns1/udns2 — natwest.com, delonghi.com
-	'cscdns.uk', // the .uk half of CSC's udns set
+	'cscdns.net', // corporate brand-protection registrar: dns1/dns2 — stryker.com, dentsu.com; udns1/udns2 — natwest.com, delonghi.com
+	'cscdns.uk', // the .uk half of the same registrar's udns set
 	'markmonitor.com', // ns1-7 — rockwool.com, ahdictionary.com
 	'dnsmadeeasy.com', // ns0-4 — travelweekly.com, viarail.ca; ns10-15 — agu.org, kissmetrics.com
 	'constellix.com', // ns11/21/31 + .net ns41/51/61 — hesk.com, ih8mud.com
