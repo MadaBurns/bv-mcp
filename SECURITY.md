@@ -68,7 +68,7 @@ If a credential, real customer data, internal infrastructure detail, generated r
 2. Remove the data from the current tree, then rewrite Git history for every affected branch or tag.
 3. Open a GitHub Support request to purge cached views, pull request refs, and other retained PR refs that history rewriting cannot remove.
 4. Identify forks made after the exposure and ask fork owners to delete or rewrite the affected fork history.
-5. Treat generated PDFs, reports, CSC outputs, tenant SQL, and `.dev/` material as sensitive even when they contain partial or test-looking data.
+5. Treat generated PDFs, reports, client-engagement outputs, tenant SQL, and `.dev/` material as sensitive even when they contain partial or test-looking data.
 6. Document the incident privately, including rotation evidence, rewritten refs, GitHub Support ticket links, and fork remediation status.
 
 ## Contact
