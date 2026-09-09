@@ -41,8 +41,19 @@ export async function checkSSL(domain: string, fetchFn: FetchFunction, options?:
 	// (status 0 / 5xx), means the HTTPS/HSTS posture could not be MEASURED. Exclude the category
 	// (checkStatus) so a momentary blip doesn't score a false "No HSTS"/"redirect" deficiency, and
 	// skip the HTTP-redirect leg (there's nothing reliable to compare it against).
+	//
+	// The not-assessed SHAPE matters as much as the status (#900 class, pinned by
+	// abstention-shape.audit.test.ts): `checkStatus` alone spread over `buildCheckResult`
+	// left `score` at whatever the retained finding derived (60 for the critical
+	// connection-failure finding, 100 for the info-only 5xx/204/redirect-chain lanes) and
+	// `passed: true`, with no `partial`. So scan_domain's transient-zero retry
+	// (`checkStatus === 'error' && score === 0`) never re-ran the leg, the non-answer was
+	// written to the 5-minute per-check cache, and a direct check_ssl call read as a pass.
+	// `score: 0` + `passed: false` + `partial: true` is the same contract every other
+	// abstention uses (`buildNotAssessedResult`, `buildDnsErrorResult`). Scoring is unchanged:
+	// the category was, and is, EXCLUDED by `checkStatus`.
 	if (inconclusive) {
-		return { ...buildCheckResult('ssl', findings, reachable), checkStatus: inconclusive };
+		return { ...buildCheckResult('ssl', findings, reachable), score: 0, passed: false, checkStatus: inconclusive, partial: true };
 	}
 
 	// Only check HTTP redirect if HTTPS is working (no critical findings)
