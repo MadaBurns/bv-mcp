@@ -266,6 +266,8 @@ export interface SeedAuthorisationRefinementInput {
 	/** The run's ownership map — updated IN PLACE for every probed candidate. */
 	ownershipByDomain: Map<string, OwnershipAssessment>;
 	isSharedNsHost: (nsHost: string) => boolean;
+	/** #929 — pooled-shared-provider predicate, threaded through unchanged; defaults closed inside `classifyOwnership()`. */
+	isPooledSharedNsHost?: (nsHost: string) => boolean;
 	/** Injected seed-side probe (`probeDmarcReportAuthorisation` in production; a stub in tests). */
 	probeAuthorisation: (candidate: string, seedDomain: string) => Promise<DmarcReportAuthorisation>;
 }
@@ -325,6 +327,7 @@ export async function refineOwnershipBySeedAuthorisation(
 			candidateDomain: result.domain,
 			registration: { state: 'registered', ns: candidateNs, evidence: candidateNs.length > 0 ? ['ns'] : ['a'] },
 			isSharedNsHost: input.isSharedNsHost,
+			isPooledSharedNsHost: input.isPooledSharedNsHost,
 			seedNsUnresolved: input.seedNsUnresolved,
 			candidateMx: result.mxExchanges,
 			dmarcReportAuthorisation: authorisations[index],

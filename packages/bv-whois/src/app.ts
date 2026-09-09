@@ -5,7 +5,8 @@
  * Routes:
  *   POST /lookup   — body { domain }, returns { registrar, registrarIanaId,
  *                    creationDate, updatedDate, expiryDate, registrantOrg,
- *                    registrantPrivacy, source }
+ *                    registrantPrivacy (boolean | null = not measured), source,
+ *                    failureReason? (iff source === 'error') }
  *   GET  /health   — liveness probe
  */
 

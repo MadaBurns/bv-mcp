@@ -185,8 +185,11 @@ export async function correlateNs(seedDomain: string, options: NsCorrelationOpti
 		// Parking services / shared-tenant DNS providers publish the same NS
 		// hostnames across many unrelated customers. Their overlap is operational
 		// plumbing, not ownership evidence — exclude them from the confidence
-		// math. Hyperscale managed DNS (Cloudflare, Route 53, GCP) assigns unique
-		// NS per account, so those remain ownership-bearing.
+		// math. Providers NOT in `SHARED_NS_APEXES` remain ownership-bearing by
+		// omission, not by proof: Route 53 draws four hosts from a large pool,
+		// but Cloud DNS hands out one of a handful of fixed
+		// `ns-cloud-*.googledomains.com` sets, so a full match there is weaker
+		// than this math credits (#929 follow-up issue, linked from PR #937).
 		const ownershipBearingShared = shared.filter((ns) => !isSharedNsHost(ns));
 		if (ownershipBearingShared.length === 0) return { candidate: null, failed: false };
 

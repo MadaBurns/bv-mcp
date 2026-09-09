@@ -38,6 +38,20 @@ function readMetaBool(metadata: unknown, key: string): boolean {
 	return (metadata as Record<string, unknown>)[key] === true;
 }
 
+/**
+ * `lookup_failed` reasons that are DETERMINISTIC — retrying cannot change them,
+ * so they are excluded from the retry surface (#931 review). Everything else
+ * under `lookup_failed` (rdap_http_*, rdap_fetch_error, caller_aborted,
+ * whois_timeout, whois_connect_error, the opaque whois_error, exception) stays
+ * retryable. Tokens come from the bv-whois shim via
+ * `check-rdap-lookup.ts` (`whois_<WhoisFailureReason>`).
+ */
+export const NON_RETRYABLE_FAILURE_REASONS: ReadonlySet<string> = new Set([
+	'whois_invalid_domain',
+	'whois_no_whois_server',
+	'whois_unrecognised_response',
+]);
+
 export function findRetryableCandidates(result: CheckResult): RetryablePayload {
 	let target: RetryablePayload['target'] = null;
 	const candidates: RetryableCandidate[] = [];
@@ -51,7 +65,7 @@ export function findRetryableCandidates(result: CheckResult): RetryablePayload {
 		if (readMetaBool(md, 'summary')) {
 			if (readMetaString(md, 'targetRegistrarSource') === 'lookup_failed') {
 				const reason = readMetaString(md, 'targetRegistrarFailureReason');
-				if (reason) target = { failureReason: reason };
+				if (reason && !NON_RETRYABLE_FAILURE_REASONS.has(reason)) target = { failureReason: reason };
 			}
 			continue;
 		}
@@ -69,7 +83,7 @@ export function findRetryableCandidates(result: CheckResult): RetryablePayload {
 		}
 		if (readMetaString(md, 'registrarSource') !== 'lookup_failed') continue;
 		const reason = readMetaString(md, 'registrarFailureReason');
-		if (!reason) continue;
+		if (!reason || NON_RETRYABLE_FAILURE_REASONS.has(reason)) continue;
 		candidates.push({ domain, failureReason: reason });
 	}
 
