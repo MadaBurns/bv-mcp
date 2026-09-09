@@ -127,7 +127,7 @@ async function postWebhookJson(
 	webhookUrl: string,
 	body: unknown,
 	options: SendAlertOptions | undefined,
-	failureMessage: string
+	failureMessage: string,
 ): Promise<boolean> {
 	const binding = options?.bvWeb && isBvWebIngestUrl(webhookUrl) ? options.bvWeb : undefined;
 	const transport = binding ? 'service_binding' : 'public_url';
@@ -173,13 +173,21 @@ export interface TierDigestRow {
 	avg_latency_ms?: number;
 }
 
-/** Build a daily digest payload summarizing per-tier usage. */
-export function buildDigestPayload(rows: TierDigestRow[], days: number): AlertPayload {
+/**
+ * Build a daily digest payload summarizing per-tier usage.
+ *
+ * `extraLines` are appended as a "Checks:" block before the timestamp — used for
+ * daily positive controls (e.g. the #896 client-IP audit verdict) that must be
+ * seen by a human even when they are not alert-worthy. Rendered in BOTH the
+ * empty and the populated branch: a quiet day must not hide the checks.
+ */
+export function buildDigestPayload(rows: TierDigestRow[], days: number, extraLines: string[] = []): AlertPayload {
 	const header = `[Blackveil DNS] Daily Tier Digest (${days}d)\n`;
 	const timestamp = `Time: ${new Date().toISOString()}\n`;
+	const checks = extraLines.length ? `Checks:\n${extraLines.map((line) => `  ${line}`).join('\n')}\n\n` : '';
 
 	if (!rows.length) {
-		const text = `${header}\nNo activity in the last ${days} day(s).\n\n${timestamp}`;
+		const text = `${header}\nNo activity in the last ${days} day(s).\n\n${checks}${timestamp}`;
 		return { text, content: text };
 	}
 
@@ -194,7 +202,7 @@ export function buildDigestPayload(rows: TierDigestRow[], days: number): AlertPa
 	});
 
 	const totalCalls = rows.reduce((sum, r) => sum + (r.total_calls ?? 0), 0);
-	const text = `${header}\nTotal: ${totalCalls} calls across ${rows.length} tier(s)\n\n${tierLines.join('\n')}\n\n${timestamp}`;
+	const text = `${header}\nTotal: ${totalCalls} calls across ${rows.length} tier(s)\n\n${tierLines.join('\n')}\n\n${checks}${timestamp}`;
 
 	return { text, content: text };
 }
