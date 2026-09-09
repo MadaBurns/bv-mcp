@@ -325,6 +325,42 @@ describe('scan-post-processing helpers', () => {
 			vi.doUnmock('../src/lib/dns');
 		});
 
+		/**
+		 * #944 — the executable form of the Option-A decision.
+		 *
+		 * A loopback MX (`0 localhost.`) is a misconfiguration, NOT an RFC 7505 no-mail
+		 * declaration, so `check_mx` leaves `controlPresent: true` and this domain gets
+		 * NO non-mail downgrade. Option B (classifying localhost as a no-mail signal)
+		 * would flip `controlPresent` to false and hand exactly these spoofable
+		 * email-auth findings a clean `info` pass. Without this case a future Option-B
+		 * attempt would land silently.
+		 *
+		 * The decision was settled on a measurement: 0/992 loopback-MX domains in a
+		 * stratified Tranco 1000 corpus; 15/29,385 (0.051%) in a 29,780-domain sample,
+		 * all of them the identical string `0 localhost.`.
+		 */
+		it('does NOT downgrade a localhost-MX domain — a loopback MX is a defect, not a no-mail signal (#944)', async () => {
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=reject']) }));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			// The real check-mx loopback path: presence info + the loopback medium, controlPresent TRUE.
+			const results = [
+				...EMAIL_FINDINGS(),
+				buildCheckResult(
+					'mx',
+					[
+						createFinding('mx', 'MX records found', 'info', '1 mail exchange record(s) present.'),
+						createFinding('mx', 'MX points at localhost', 'medium', 'MX target(s) "localhost" name the loopback interface.'),
+					],
+					true,
+				),
+			];
+
+			const updated = await applyScanPostProcessing('sub.example.com', results);
+			expect(severities(updated)).toEqual(['critical', 'high', 'high']);
+			vi.doUnmock('../src/lib/dns');
+		});
+
 		it('does NOT downgrade when the MX lookup was INCONCLUSIVE — absence is never asserted from a failed probe', async () => {
 			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=reject']) }));
 			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');

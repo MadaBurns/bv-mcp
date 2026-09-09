@@ -12,9 +12,11 @@ import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
 import {
 	getIpTargetFindings,
+	getLoopbackMxFinding,
 	getNullMxFinding,
 	getPresenceFinding,
 	getSingleMxFinding,
+	isLoopbackMxRecord,
 	isNullMxRecord,
 	parseMxRecords,
 } from './mx-analysis';
@@ -103,11 +105,24 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 
 	findings.push(getPresenceFinding(mxRecords));
 
-	findings.push(...getIpTargetFindings(mxRecords));
+	// Loopback MX (`0 localhost.`, `10 127.0.0.1`, `::1`) — a misconfiguration, NOT an
+	// RFC 7505 no-mail declaration (#944; the measurement and the reasoning live in the
+	// `isNullMxRecord` decision record). Reported once for the whole set, and the
+	// loopback records are then EXCLUDED from the IP-target and dangling-MX passes
+	// below: severity penalties are additive and `mx` has no cap, so letting one
+	// condition pay two or three mediums would zero a category over a single defect.
+	// This finding REPLACES those, keeping the measured population at one `medium`.
+	const loopbackRecords = mxRecords.filter(isLoopbackMxRecord);
+	if (loopbackRecords.length > 0) {
+		findings.push(getLoopbackMxFinding(loopbackRecords));
+	}
+	const routableRecords = mxRecords.filter((r) => !isLoopbackMxRecord(r));
+
+	findings.push(...getIpTargetFindings(routableRecords));
 
 	// Check for dangling MX records (hostnames that don't resolve)
 	const ipPattern = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
-	const hostnameRecords = mxRecords.filter((r) => !ipPattern.test(r.exchange));
+	const hostnameRecords = routableRecords.filter((r) => !ipPattern.test(r.exchange));
 	const resolutions = await Promise.all(
 		hostnameRecords.map(async (r) => {
 			try {
