@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Changed
+
+- **`blackveil_dns_action` retired from `STRUCTURED_COMMENT_LEGACY_CLIENTS`.** blackveil-dns-action v1.4.0 (2026-09-10) negotiates protocol `2025-06-18`, sends the `MCP-Protocol-Version` header and reads the MCP-standard `structuredContent` field first, so the ~20 KB `<!-- STRUCTURED_RESULT … -->` comment it was allowlisted to receive is now dropped for it like any other modern client. Older action versions (`<= 1.3.0`) negotiate `2025-03-26` and send no version header, so the existing protocol gate in `stripRedundantStructuredComment()` still serves them the comment — no compatibility window needed. The allowlist set stays (empty) as the mechanism for any future comment-only client. Not score-affecting.
+
 ## [3.78.0] - 2026-09-09
 
 Scoring model 1.25.0, `@blackveil/dns-checks` 1.37.0 (parity corpus 1.37.0). No category weights, grade bands or severity penalties change.

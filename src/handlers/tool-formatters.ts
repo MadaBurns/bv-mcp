@@ -27,7 +27,7 @@ export function mcpText(text: string): McpContent {
  * Emission is format-driven here; whether a given client still *needs* this backward-compat comment
  * is decided downstream at the dispatch boundary — `stripRedundantStructuredComment` in `mcp/dispatch.ts`
  * removes it for clients that read the MCP-standard `structuredContent` field (protocol >= 2025-06-18,
- * excluding known comment-parsers like `blackveil_dns_action`).
+ * excluding any client listed in `STRUCTURED_COMMENT_LEGACY_CLIENTS` — currently none).
  */
 export function buildToolContent(text: string, structuredData: unknown, format: OutputFormat): McpContent[] {
 	const content: McpContent[] = [mcpText(text)];
