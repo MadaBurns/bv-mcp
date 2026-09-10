@@ -42,6 +42,43 @@ Other workflows: `ci-contract.yml` (Zod contracts — ⚠️ **NOT a required ch
 
 ⚠️ **Two removed workflows, both dead `exit 1` stubs under `environment: production`:** `auto-deploy-main.yml` (deployed the public `wrangler.jsonc`, so it shipped without the private overlay/bindings) and `deploy-hook.yml` (#718 — dispatch-only, last succeeded 2026-05-20; CLAUDE.md wrongly called it "the active deploy path" for months). `publish.yml`'s `deploy-cloudflare` job was removed for the same reason: it declared `environment: production` and exited 1, so every tagged release left a standing approval that could only ever fail. Three contradictory deploy paths is how nobody could say which was authoritative. MCP-Registry publish stays a manual post-deploy step (`bv-mcp-release` skill).
 
+## Private config injection (what `deploy:prod` actually ships)
+
+`npm run deploy:prod` runs `scripts/inject-private-config.cjs`, which merges the
+public `wrangler.jsonc` with gitignored private overrides into a generated
+`wrangler.production.jsonc` immediately before the deploy.
+
+⚠️ **Mandate: never hardcode prod endpoints, secrets, or internal bindings in
+`wrangler.jsonc`** — use the private overrides. And ⚠️ **the inject script must
+enumerate every binding kind**: a kind it does not know about is silently
+dropped, and silent drops have shipped misconfigured deploys before.
+
+Two exceptions worth remembering because they bite during unrelated work:
+`BV_WEB` **is** declared in the public `wrangler.jsonc` (audit-enforced — do not
+"clean it up" into the private overrides), and `npm run deploy:prod` does **not**
+deploy `bv-infra-probe` (`npx wrangler deploy --config wrangler.infra-probe.jsonc`
+when its source changes).
+
+## Service-binding door — what the two paths do and do not share
+
+`/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`.
+`/internal/tools/batch` runs one **read-only, domain-required** tool across many
+domains (max 500, concurrency 1–50, 256 KB body); mutating/destructive tools fail
+closed there and must use the idempotent single-call contract.
+
+`?format=structured` returns the tool's **payload** under `result` per domain —
+the raw `CheckResult` for `check_*` tools, `structuredContent` for
+`NON_CHECK_RESULT_TOOLS`. Cross-door parity is asserted in `test/internal.spec.ts`.
+
+| Layer | public `/mcp` | internal `/internal/*` |
+|---|:-:|:-:|
+| CORS, Origin, Auth, Rate limiting, Sessions, JSON-RPC, Body limit | ✓ | — |
+| Tool execution, Caching, Analytics, SSRF | ✓ | ✓ |
+
+⚠️ Free-tier paid-gating (403) and the distinct-domain cap are **public-`/mcp`
+only** — the internal path bypasses them, and bv-web enforces paid entitlement
+before forwarding. Detail in **bv-mcp-security-surface**.
+
 ## Binding reference table
 
 The full binding inventory. Moved here from the repo CLAUDE.md on 2026-09-07: it is a
@@ -98,7 +135,7 @@ Detail for the bindings whose Purpose cell in CLAUDE.md's table is a summary.
 
 **`CERTSPOTTER_TOKEN`** (Secret) — SSLMate Cert Spotter API key, sent as `Authorization: Bearer` on the Certspotter CT source. **Optional and fail-soft** — absent → unauthenticated and still functional, but on a per-IP, per-hour free quota a batch sweep exhausts (measured HTTP 429 `rate_limited`). ⚠️ Raises RATE LIMITS ONLY: the free "Small" tier keeps a **15s per-query timeout**, so a large estate (`meta.com`) still returns HTTP 504 authenticated — that is #735's deterministic timeout and only a paid tier addresses it. Same name and same secret as `cloudflare/certstream` in bv-web-prod; one secret must not acquire two spellings
 
-**`BV_RECON`** (Service) — **Operator-deploy only.** bv-recon OSINT/recon worker — powers the recon tools (`check_realtime_threat_feed`, `scan_buckets_*`, `osint_investigate_*`/`osint_investigation_*`) + optional enrichment of `cymru_asn`/`check_lookalikes`/`check_fast_flux`. Fail-soft when absent (tools return `unprovisioned`). Not in public `wrangler.jsonc`.
+**`BV_RECON`** (Service, wrapper `src/lib/recon-binding.ts`) — **Operator-deploy only.** bv-recon OSINT/recon worker — powers the 11 recon tools (`check_realtime_threat_feed`, `scan_buckets_*`, `osint_investigate_*`/`osint_investigation_*`) + optional enrichment of `cymru_asn`/`check_lookalikes`/`check_fast_flux`. Async recon tools use start → poll (`*_status`) → retrieve (`*_findings`/`*_report`). Fail-soft when absent (tools return `unprovisioned` on BSL self-hosts). Not in public `wrangler.jsonc`.
 
 **`BV_TLS_PROBE`** (Service) — **Operator-deploy only.** bv-tls-probe worker (bv-web-prod `satellites/tls-probe`, a headless browser inside Cloudflare Browser Rendering) — reports the browser-to-proxy TLS version, which cannot establish origin protocol support; since bv-web-prod#2843 it also returns a `certificate` block (leaf/SPKI/chain digests). Fail-soft when absent (no TLS-version finding, no score change). Not in public wrangler.jsonc. See src/lib/tls-probe-binding.ts.
 
