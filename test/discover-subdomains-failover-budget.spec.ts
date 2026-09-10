@@ -58,14 +58,29 @@ describe('CT failover budget invariant (#738)', () => {
 
 		// The real handler deadline. Elapsed time is non-zero by the time crt.sh
 		// aborts, which is precisely what the pre-fix arithmetic could not absorb.
-		const result = await discoverSubdomains('example.com', undefined, undefined, {
-			deadlineMs: Date.now() + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
-		});
+		// Faked clock, NOT a shortened budget: the arithmetic under test is between
+		// the production constants, so shrinking any of them would test different
+		// numbers than the ones that ship. `composeAbortSignal` arms the per-source
+		// cut with a plain `setTimeout`, so advancing the clock reaches the identical
+		// abort — without the 8s of real waiting CT_SOURCE_TIMEOUT_MS otherwise costs.
+		let result: Awaited<ReturnType<typeof discoverSubdomains>>;
+		vi.useFakeTimers();
+		try {
+			const pending = discoverSubdomains('example.com', undefined, undefined, {
+				deadlineMs: Date.now() + DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS,
+			});
+			// Past CT_SOURCE_TIMEOUT_MS so crt.sh is cut, but short of the handler
+			// deadline so Certspotter still has its window — the whole point here.
+			await vi.advanceTimersByTimeAsync(CT_SOURCE_TIMEOUT_MS + CT_FAILOVER_HEADROOM_MS);
+			result = await pending;
+		} finally {
+			vi.useRealTimers();
+		}
 
 		expect(consulted).toEqual(['crtsh', 'certspotter']);
 		expect(result.coverage?.notConsulted ?? []).not.toContain('certspotter');
 		expect(result.totalSubdomains).toBe(1);
-	}, 30_000);
+	});
 
 	afterEach(() => {
 		vi.unstubAllGlobals();
