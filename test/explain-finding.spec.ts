@@ -283,6 +283,33 @@ describe('explainFinding', () => {
 		expect(result.title).toBe('DMARC Aggregate Reporting Not Configured');
 	});
 
+	it('returns the quarantine signature for the REAL classifier detail (scoring model 1.26.0: medium bucket)', async () => {
+		// Feed the classifier's own prose, not a paraphrase: the detail was reworded in 1.26.0
+		// and must resolve to its own signature rather than being swallowed by the broader
+		// rua= / pct= / sp= rules or falling to the generic DMARC_MEDIUM bucket text.
+		const { explainFinding } = await getModule();
+		const { classifyDmarc } = await import('@blackveil/dns-checks/scoring');
+		const quarantine = classifyDmarc({ recordCount: 1, policy: 'quarantine', domain: 'example.com', rua: 'mailto:d@example.com' }).find(
+			(f) => f.title === 'DMARC policy set to quarantine',
+		);
+		expect(quarantine?.severity).toBe('medium');
+		const result = explainFinding('DMARC', quarantine!.severity, quarantine!.detail);
+		expect(result.matchedSignature).toBe('DMARC_POLICY_QUARANTINE');
+		expect(result.title).toBe('DMARC Policy Is Quarantine, Not Reject (p=quarantine)');
+		expect(result.severity).toBe('medium');
+		expect(result.recommendation).toContain('p=reject');
+	});
+
+	it('does NOT let the quarantine signature steal the sp=none-under-quarantine subdomain finding', async () => {
+		const { explainFinding } = await getModule();
+		const result = explainFinding(
+			'DMARC',
+			'medium',
+			'Subdomain policy is set to "none" while domain policy is "quarantine". Subdomains are unprotected against spoofing.',
+		);
+		expect(result.matchedSignature).toBe('DMARC_SUBDOMAIN_POLICY');
+	});
+
 	// DNSSEC — only DNSSEC_PASS and DNSSEC_FAIL keys exist.
 	it('returns the unsigned-zone signature for a missing DNSKEY', async () => {
 		const { explainFinding } = await getModule();

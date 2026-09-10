@@ -168,12 +168,43 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 			),
 		);
 	} else if (policy === 'quarantine') {
+		// Scoring model 1.26.0: quarantine is PARTIAL enforcement, one step below reject. Before
+		// this change quarantine and reject were score-IDENTICAL at the category level (both 85
+		// on the parity fixture: this finding cost `low` −5, and reject paid the same −5 via
+		// "No subdomain policy"), so the model offered no gradient toward reject at all. Two
+		// things move here, and only for the profiles where dmarc is a critical category
+		// (`mail_enabled` / `enterprise_mail` — the gate is keyed on `criticalCategories`, so
+		// non-mail profiles are untouched by construction):
+		//
+		//   1. severity `low` → `medium` (−5 → −15): quarantine now scores BELOW reject.
+		//   2. `partialEnforcement: true` — a STRUCTURAL declaration (never prose-inferred; the
+		//      2026-08-20 subject-data incident is why) consumed by
+		//      `findingsIndicatePartialEnforcement` → `partialEnforcementCeiling` (94). A mail
+		//      domain that is enforcing but not at full reject tops out at NIST display A,
+		//      never A+ ("Hardened across every dimension"). NZ SGE (Oct 2026), US BOD 18-01
+		//      and BSI TR-03182 all name p=reject as the end state.
+		//
+		// Deliberately NOT `missingControl`: quarantine IS enforcement (spoofed mail is
+		// diverted, not delivered as normal), so it must never collapse into the no-record /
+		// p=none bucket (64, D). The ordering the ceiling preserves is
+		// none/absent (64) < partial enforcement (≤94) < full reject (100). The operator's
+		// original "cannot pass D without p=reject" cap was adjudicated against: 0 of 12
+		// surveyed peer graders cap a composite on quarantine.
+		//
+		// The TITLE stays unchanged — `assess_spoofability` derives posture from it,
+		// `generate_rollout_plan` and maturity staging match it by substring.
+		//
+		// DETAIL wording is constrained twice over: it must stay clear of MISSING_CONTROL_REGEX
+		// (no "missing" / "required" / "not found" / "no … record" — say "needed"), and of
+		// every other DMARC explain_finding detail signature (`rua=` / "aggregate report" /
+		// `pct=` / `sp=` / "p=none") so `explain_finding` resolves it to its own signature.
 		findings.push(
 			createFinding(
 				'dmarc',
 				'DMARC policy set to quarantine',
-				'low',
-				`DMARC policy is "quarantine". Consider upgrading to "reject" for maximum protection once you've verified legitimate email flows.`,
+				'medium',
+				`DMARC policy is "quarantine": receivers deliver messages that fail authentication to spam or junk folders, where a recipient can still open and act on them. A "reject" policy bounces those messages at the SMTP gate before they reach any mailbox. Move to "reject" once reporting confirms every legitimate sender aligns — it is needed for the top grade and is the mandated end state (NZ Secure Government Email, US BOD 18-01).`,
+				{ partialEnforcement: true },
 			),
 		);
 	}
@@ -310,12 +341,19 @@ export function classifyDmarc(facts: DmarcFacts): Finding[] {
 				),
 			);
 		} else if (pctValue < 100) {
+			// Scoring model 1.26.0: a staged pct= is PARTIAL enforcement whatever the p= says —
+			// receivers apply the policy to only that fraction of failing mail and hand the rest
+			// the next-weaker action (RFC 7489 §6.6.4), so `p=reject; pct=50` is not full reject.
+			// Same structural declaration as the quarantine finding above, same ceiling (94),
+			// same critical-category gating. Severity is UNCHANGED (medium) — the category-level
+			// penalty already discriminated; only the top-letter gate is new.
 			findings.push(
 				createFinding(
 					'dmarc',
 					'DMARC not applied to all emails',
 					'medium',
 					`DMARC pct=${pctValue} means the policy only applies to ${pctValue}% of emails. Set pct=100 for full coverage.`,
+					{ partialEnforcement: true },
 				),
 			);
 		}
