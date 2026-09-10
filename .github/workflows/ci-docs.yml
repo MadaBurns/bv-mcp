@@ -3,13 +3,37 @@ name: CI Docs
 # Companion to ci.yml's `paths-ignore`: a docs-only PR skips the real CI
 # workflow entirely, so the required `build-and-test` check would never
 # report and GitHub would block the merge under strict branch protection.
-# This workflow runs ONLY on the paths ci.yml ignores and reports a
-# passing check with the SAME job id, satisfying the required context.
+# This workflow runs ONLY on the paths ci.yml ignores and reports under the
+# SAME job name, satisfying the required context. The two path lists are
+# EXACT complements — keep them that way or a PR falls into the gap and
+# nothing ever reports `build-and-test`.
+#
 # A docs-only PR triggers this (ci.yml is skipped); a code-only PR triggers
 # ci.yml (this is skipped). A mixed PR triggers BOTH — `paths-ignore` skips
 # ci.yml only when ALL files match, while `paths` fires this when ANY file
-# matches — producing two `build-and-test` runs that both must pass. Both do
-# (this one trivially), so there is no deadlock; GitHub aggregates by name.
+# matches. That is safe: GitHub matches required checks by NAME with no "or"
+# semantics, so when two runs share a name BOTH must pass. A failing ci.yml
+# still blocks the merge even though this one passes.
+#
+# ⚠️ This job is NOT a no-op, and must not be reduced back to one. It used to
+# `echo` and exit 0, which meant a docs-only PR merged without ever running
+# the audits that assert documentation matches the code. That is precisely
+# backwards: the audits guarding the docs were the ones a docs change skipped.
+# Four audits read markdown that only this workflow's paths can change —
+# `tool-surface-prose` (CLAUDE.md, README.md, docs/github-settings.md,
+# extensions/vscode/README.md), `public-quota-surface` (README.md,
+# docs/client-setup.md, docs/troubleshooting.md), `tenant-ops-runbook`
+# (docs/tenant-ops-runbook.md) and `security-capability-inventory`
+# (docs/operator-runbook.md) — so a wrong tool count or a stale quota number
+# in prose could reach main and only surface later, on somebody else's
+# unrelated code PR. `npm run audit:docs-surface` is that set.
+#
+# The doc audits already inside `audit:oss-safety` (readme-tool-surface,
+# busl-positioning, repo-safety-docs, npm-publish-surface, repo-safety-scanner)
+# are NOT repeated here: `repo-hygiene.yml` carries no paths filter, so its
+# required `File hygiene check` already runs them on every PR including this
+# one. Add a new markdown-reading audit to whichever of the two matches how it
+# is grouped, never to both.
 on:
   push:
     branches: [main]
@@ -18,6 +42,13 @@ on:
     branches: [main]
     paths: ['**.md', 'docs/**', 'LICENSE']
 
+concurrency:
+  group: ci-docs-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 permissions:
   contents: read
 
@@ -25,4 +56,16 @@ jobs:
   build-and-test:
     runs-on: ubuntu-latest
     steps:
-      - run: echo "Docs-only change — full CI (build-and-test) intentionally skipped; reporting success to satisfy the required check."
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The prose audits import from src/ (TOOL_DEFS, the quota constants), not
+      # from the built package, so no dns-checks build step is needed here.
+      - name: Run documentation-surface audits
+        run: npm run audit:docs-surface
