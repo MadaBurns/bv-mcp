@@ -30,6 +30,50 @@ Human-readable text + (non-interactive clients only, `format=full`) `<!-- STRUCT
 
 Other workflows: `ci-contract.yml` (Zod contracts — ⚠️ **NOT a required check**, despite long being described as one; its `contract` job is absent from branch protection's context list, verified live 2026-08-23), `security.yml` (its `Secret & PII scan` + `Dependency audit` jobs ARE both required contexts), `repo-hygiene.yml` (reusable — ⚠️ consumed by the PUBLIC repos `blackveil-dns-action` and `bv-claude-dns` via `uses: MadaBurns/bv-mcp/.github/workflows/repo-hygiene.yml@main`; a public caller cannot consume a private reusable workflow, so making this repo private breaks both), `deploy-prod.yml` (the ONLY CI deploy workflow — dispatch-only, disarmed by default; see below), `publish.yml` (tagged-release pipeline — validates + cuts the GH Release ONLY; its npm/registry publish jobs were **removed 2026-08-23** after never once publishing successfully — 3.60–3.62 failed, 3.63/3.64 parked forever in `waiting` on the `production` environment reviewer, who is the same person doing the tagging. The manual worktree path in the `bv-mcp-release` skill is the authoritative publisher; `registry-drift-check.yml` is the safety net), `triage-issues.yml`, `registry-drift-check.yml` (12-hourly; compares live `serverInfo.version` against the MCP Registry and opens/escalates/closes a `registry-drift` issue — detection only, it never publishes; advisory, not required), `.gitleaks.toml`. `dns-security.yml` runs a **$0 dogfood scan** of blackveilsecurity.com with bv-mcp's own built scanner (`scripts/ci/dogfood-scan.mjs`, min grade B, advisory/not-required) — it replaced the paid `MadaBurns/blackveil-dns-action` path. A `test/audits/workflow-cost.audit.test.ts` guard (via `scripts/ci/check-workflow-cost.mjs`) fails CI on any self-hosted runner or paid marketplace action; rationale in `docs/ci-cost-posture.md`.
 
+## `build-and-test` is reported by TWO workflows — and the gap that hid in that
+
+`ci.yml` carries `paths-ignore: ['**.md', 'docs/**', 'LICENSE']`, so a docs-only
+PR skips it entirely and the required `build-and-test` check would never report,
+leaving the PR permanently BLOCKED under `strict=true`. `ci-docs.yml` exists to
+close that: it runs on **exactly** the complementary `paths` and declares a job
+with the **same name**.
+
+Two facts that make this safe, both verified rather than assumed (2026-09-11):
+
+- **GitHub matches required checks by NAME, with no "or" semantics.** On a mixed
+  PR — `paths-ignore` runs `ci.yml` because not all files match, `paths` runs
+  `ci-docs` because some do — **both** report `build-and-test` and **both must
+  pass**. A failing `ci.yml` still blocks. So the fast job cannot green-light a
+  suite that did not run.
+- **The two path lists must stay exact complements.** If they ever diverge, a PR
+  falls into the gap where *neither* workflow fires and nothing reports
+  `build-and-test` — permanent BLOCKED, with no failing check to point at.
+
+⚠️ **The gap that DID exist (fixed #976): `ci-docs`'s job was a bare `echo`.** A
+PR touching only markdown therefore merged without running the audits that
+assert documentation matches the code — the gate guarding the docs was the one a
+docs change skipped. Four audits read markdown reachable only by these paths and
+are **not** in `audit:oss-safety`:
+
+| Audit | Reads |
+|---|---|
+| `tool-surface-prose` | `CLAUDE.md`, `README.md`, `docs/github-settings.md`, vscode `README.md` |
+| `public-quota-surface` | `README.md`, `docs/client-setup.md`, `docs/troubleshooting.md` |
+| `tenant-ops-runbook` | `docs/tenant-ops-runbook.md` |
+| `security-capability-inventory` | `docs/operator-runbook.md` |
+
+`npm run audit:docs-surface` is that set, and `ci-docs` now runs it (~23s with
+install, vs the old 3s echo).
+
+**Where a new markdown-reading audit goes**: `audit:oss-safety` if it belongs
+with the public-source-safety family — `repo-hygiene.yml` has **no** paths
+filter, so its required `File hygiene check` already runs on every PR including
+docs-only ones. Otherwise `audit:docs-surface`. **Never both.**
+
+The generalisable shape, worth recognising elsewhere: *a gate that is skipped by
+the same condition that makes it relevant is not a gate.* A path filter that
+excuses a check is only safe when something else still covers the excused paths.
+
 ## Required checks & branch protection
 
 **Required checks are exactly four** (verified live 2026-08-23): `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`. Everything else — `contract`, `fast-checks`, `typecheck-tests`, `dns-scan`/`dogfood-scan`, `registry-drift-check` — is advisory. A green-but-`BLOCKED` PR is waiting on one of those four, not on the advisory ones.
