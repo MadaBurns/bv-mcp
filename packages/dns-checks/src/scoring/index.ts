@@ -14,6 +14,7 @@ export {
 	inferFindingConfidence,
 	scoreIndicatesMissingControl,
 	findingsIndicateMissingControl,
+	findingsIndicatePartialEnforcement,
 	redactSubjectData,
 	SUBJECT_TERMS_METADATA_KEY,
 	computeCategoryScore,

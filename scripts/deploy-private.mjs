@@ -15,6 +15,7 @@ if (!existsSync(privateConfigPath)) {
 
 const require = createRequire(import.meta.url);
 const wranglerCliPath = require.resolve('wrangler');
+const tsxCliPath = require.resolve('tsx/cli');
 
 /** Run one deploy step, streaming its output and aborting the deploy on any non-zero exit. */
 function runStep(argv, description) {
@@ -34,6 +35,29 @@ function runStep(argv, description) {
 // unknown-overlay-key guard, and the required-secrets declaration. Deploying the overlay
 // as-is once meant shipping without PROFILE_ACCUMULATOR, because the example overlay
 // carried its own stale `durable_objects` copy. Always deploy the injected config.
+// This is the SECOND deploy door and it skips the `deploy:prod` npm chain entirely,
+// so every gate wired there has to be re-wired here or it is simply a bypass. The
+// sidecar deploy-drift gate (#945) blocks when bv-whois / bv-infra-probe are behind
+// their source — neither this door nor `deploy:prod` deploys them, and their drift is
+// invisible in an otherwise-green run (bv-whois shipped 4 source commits stale for 3
+// months). Runs first: it is ~2s and must fail before any build work.
+// Override: BV_ALLOW_STALE_SIDECARS=1.
+//
+// ORDER IS LOAD-BEARING — freshness FIRST (#945 review). The sidecar gate's git
+// evidence is `git log HEAD -- <watchPaths>`, which can only see commits that are
+// ancestors of HEAD. On a checkout behind origin/main, a sidecar commit that has
+// landed upstream but not locally is INVISIBLE to it: the drift list comes back
+// empty and the gate prints "fresh" — a false green in a gate whose entire purpose
+// is fail-closed. `deploy:prod` and `deploy:prod:staged` avoid this because their
+// npm chains run `check:deploy-freshness` first, which proves HEAD ⊇ origin/main;
+// this door skipped it, so the sidecar gate was resting on a precondition nothing
+// enforced here. Run it, and the assumption holds on all three doors.
+// (Stale checkouts are a proven incident class in this repo — see the
+// deploy-freshness.ts docstring. Override: BV_ALLOW_STALE_DEPLOY=1.)
+runStep([tsxCliPath, 'scripts/ci/deploy-freshness-check.ts'], 'Deploy freshness gate');
+
+runStep([tsxCliPath, 'scripts/ci/sidecar-deploy-drift-check.ts'], 'Sidecar deploy-drift gate');
+
 runStep(['scripts/inject-private-config.cjs'], 'Private config injection');
 
 runStep(['scripts/brand-audit-schema-preflight.mjs', '--config', generatedConfigPath], 'Brand Audit schema preflight');

@@ -11,7 +11,7 @@ if (domains.length === 0) {
 	process.exit(1);
 }
 
-mkdirSync('.csc', { recursive: true });
+mkdirSync('.client-reports', { recursive: true });
 
 for (const domain of domains) {
 	const qa = spawnSync(process.execPath, ['scripts/audits/brand-report-qa.mjs', domain], {
@@ -21,7 +21,7 @@ for (const domain of domains) {
 		console.error(`QA failed for ${domain}; not promoting.`);
 		process.exit(qa.status ?? 1);
 	}
-	copyFileSync(join('reports', `${domain}-discovery-report.json`), join('.csc', `${domain}-discovery-report.json`));
-	copyFileSync(join('reports', `${domain}-discovery-report.pdf`), join('.csc', `${domain}-discovery-report.pdf`));
-	console.log(`Promoted QA-passing report pair for ${domain} into .csc/.`);
+	copyFileSync(join('reports', `${domain}-discovery-report.json`), join('.client-reports', `${domain}-discovery-report.json`));
+	copyFileSync(join('reports', `${domain}-discovery-report.pdf`), join('.client-reports', `${domain}-discovery-report.pdf`));
+	console.log(`Promoted QA-passing report pair for ${domain} into .client-reports/.`);
 }

@@ -6,7 +6,7 @@ import serverJsonText from '../../server.json?raw';
 import { TOOLS } from '../../src/schemas/tool-definitions';
 import { INTERNAL_ONLY_TOOLS } from '../../src/lib/config';
 
-// Public-facing count: internal-only tools (e.g. map_csc_products) are removed
+// Public-facing count: internal-only tools (e.g. map_registrar_products) are removed
 // from the public /mcp surface, so registry-listing prose advertises this count.
 const PUBLIC_TOOL_COUNT = TOOLS.length - INTERNAL_ONLY_TOOLS.size;
 
