@@ -173,12 +173,21 @@ export interface SubdomainProbeResult {
  * the wildcard answer, and any sweep hit carrying that answer is wildcard-synthetic.
  *
  * - `detected`: the canary resolved; `ips` is the union of every canary answer seen.
- * - `absent`: the canary returned no answer — the sweep is interpreted as before.
+ * - `detected_ipv6`: the canary resolved over AAAA ONLY (#942) — the zone answers for
+ *   arbitrary names, but not in the family the sweep queries.
+ * - `absent`: the canary returned no answer in EITHER family — the sweep is interpreted
+ *   as before.
  * - `inconclusive`: the canary query itself FAILED (transport error / timeout). The
  *   sweep cannot be interpreted either way, so it is not run and not reported.
+ *
+ * ⚠️ `detected_ipv6` is a DISTINCT status, deliberately NOT a `family` flag on
+ * `detected`: `isWildcardSynthetic` compares a hit's IPv4 answers against the wildcard's
+ * addresses, and feeding it v6 addresses would let a v6 wildcard fold a REAL IPv4 hit
+ * into nothing — silently downgrading a genuine `medium`. The v6 arm must never reach it.
  */
 export type WildcardProbe =
 	| { status: 'detected'; ips: string[]; cnameTarget?: string; probeSubdomain: string }
+	| { status: 'detected_ipv6'; ips: string[]; probeSubdomain: string }
 	| { status: 'absent'; probeSubdomain: string }
 	| { status: 'inconclusive'; probeSubdomain: string };
 
@@ -212,6 +221,15 @@ export function isWildcardSynthetic(entry: SubdomainProbeResult, wildcard: Pick<
  * cannot support it there. An `inconclusive` probe yields only an abstention note
  * (`inconclusive` + `errorKind`, never `missingControl`): the sweep was not run.
  *
+ * A `detected_ipv6` probe (#942) is the narrow middle case: the sweep DID run and it is
+ * IPv4-only, so every hit it found is REAL evidence — an AAAA wildcard cannot fabricate
+ * an A answer — and keeps its scored `medium` (and its place in the "Excessive" count).
+ * Only the CLEAN verdict is unsupportable, because a name that fails to resolve over
+ * IPv4 may still resolve over the wildcard's IPv6. So this arm withholds that one
+ * finding and adds a single `info` note: score-neutral by construction, and NOT routed
+ * through the `inconclusive` / `checkStatus: 'error'` abstention lane, which would
+ * discard measurements that were actually taken.
+ *
  * @param results - Array of subdomain probe results
  * @param wildcard - Outcome of the wildcard canary; absent/`absent` = legacy behaviour
  * @returns Findings for the zone_hygiene category
@@ -230,6 +248,23 @@ export function analyzeSensitiveSubdomains(results: SubdomainProbeResult[], wild
 			),
 		);
 		return findings;
+	}
+
+	if (wildcard?.status === 'detected_ipv6') {
+		findings.push(
+			createFinding(
+				'zone_hygiene',
+				'Wildcard DNS (IPv6) masks the sensitive-subdomain verdict',
+				'info',
+				`The zone answers for arbitrary names over IPv6 (canary ${wildcard.probeSubdomain} resolved to ${wildcard.ips.join(', ')}) while returning no IPv4 answer, indicating an AAAA-only wildcard record. The internal-name sweep queries A records, so a name that returned no IPv4 address cannot be shown absent — it may still resolve through the wildcard over IPv6 — and the clean "no sensitive subdomains resolve publicly" verdict is therefore withheld. Any name that DID resolve over IPv4 is reported normally: an IPv6 wildcard cannot produce an IPv4 answer, so those hits are real.`,
+				{
+					wildcardDetected: true,
+					wildcardFamily: 'aaaa',
+					wildcardIps: wildcard.ips,
+					probeSubdomain: wildcard.probeSubdomain,
+				},
+			),
+		);
 	}
 
 	const hits = results.filter((r) => r.resolves);
@@ -265,6 +300,10 @@ export function analyzeSensitiveSubdomains(results: SubdomainProbeResult[], wild
 	}
 
 	if (resolving.length === 0) {
+		// #942: on an AAAA-only wildcard zone the IPv4 sweep cannot prove absence, so the
+		// clean verdict is withheld — the note above already stands in its place, and it
+		// is `info`, which keeps this arm score-neutral.
+		if (wildcard?.status === 'detected_ipv6') return findings;
 		findings.push(
 			createFinding(
 				'zone_hygiene',

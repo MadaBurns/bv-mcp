@@ -538,8 +538,42 @@
  *   probe for a category threw (a resolver outage or a fully blocked path), which the corpus
  *   cannot size because the defect made those scans indistinguishable from clean ones. No
  *   weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule changed.
+ * - 1.28.0 — the wildcard canary sees every record family (#942, dns-checks 1.40.0). Both
+ *   wildcard canaries queried A ONLY, and the DoH record layer filters answers to the
+ *   requested type, so two real wildcard shapes read as "no wildcard": a zone whose wildcard
+ *   is AAAA-only, and a `*.zone CNAME <dangling>` alias whose A answer carries only the
+ *   CNAME. `check_ns` now reads RAW answers — the one A query it already issues also settles
+ *   the CNAME shape, and a second AAAA query is spent ONLY when that answer came back
+ *   completely empty (serial and conditional: +1 subrequest on zones with no A wildcard,
+ *   none on a wildcard zone). `rawQueryDNS` stays OPTIONAL; a consumer that omits it
+ *   (bv-web-prod calls `checkNS` from the vendored tarball) keeps the historical A-only path
+ *   verbatim and re-grades identically to today.
+ *   ⚠️ The `check_ns` half MOVES SCORES, on a population this repo has NOT measured. A
+ *   newly-detected wildcard is the EXISTING `medium` "Wildcard DNS detected" finding at its
+ *   existing −15 penalty, so `ns` goes 100 → 85, and it also SUPPRESSES the clean
+ *   "Nameservers properly configured" finding (emitted only when nothing else fired).
+ *   DOWNWARD only, and only for zones that genuinely answer for arbitrary names in a family
+ *   the old canary could not see. Prevalence of AAAA-only and dangling-CNAME wildcards is
+ *   UNMEASURED — the defect made those zones indistinguishable from wildcard-free ones, so
+ *   the corpus cannot size it. No finding title, severity, weight, tier, grade band,
+ *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed; the
+ *   finding gains only a `wildcardFamily` metadata field ('a' | 'aaaa' | 'cname').
+ *   The `check_zone_hygiene` half is SCORE-NEUTRAL by construction. An AAAA-only wildcard
+ *   now yields a distinct `detected_ipv6` canary outcome that emits ONE `info` finding
+ *   (0 penalty) and WITHHOLDS the clean "No sensitive subdomains resolve publicly" verdict,
+ *   which an IPv4-only sweep cannot support on such a zone. Deliberately NOT routed through
+ *   the `inconclusive` / `checkStatus: 'error'` abstention lane: the A sweep genuinely ran
+ *   and an AAAA wildcard cannot fabricate an A answer, so every IPv4 hit stays REAL evidence
+ *   — it keeps its scored `medium` and its place in the "Excessive exposure" count. The
+ *   status is distinct rather than a `family` flag on `detected` precisely so
+ *   `isWildcardSynthetic` never compares a hit's IPv4 answers against v6 addresses, which
+ *   would fold a real hit into nothing and silently downgrade a genuine `medium`.
+ *   `check_zone_hygiene` is `scanIncluded: false` and absent from `CHECK_DISPATCH`, so its
+ *   extra canary query is direct-call latency, never scan budget, and its category score
+ *   never reaches `computeScanScore`. `absent` / `detected` / `inconclusive` paths are
+ *   byte-identical.
  */
-export const SCORING_MODEL_VERSION = '1.27.0';
+export const SCORING_MODEL_VERSION = '1.28.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
