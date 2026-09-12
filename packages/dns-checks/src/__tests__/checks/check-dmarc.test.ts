@@ -27,12 +27,18 @@ describe('checkDMARC', () => {
 		expect(result.findings.some((f) => f.title === 'DMARC policy set to none')).toBe(true);
 	});
 
-	it('flags p=quarantine as low', async () => {
+	it('flags p=quarantine as medium partial enforcement (scoring model 1.26.0), passing, not a missing control', async () => {
 		const queryDNS = createMockDNS({
 			'_dmarc.example.com': ['v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com'],
 		});
 		const result = await checkDMARC('example.com', queryDNS);
-		expect(result.findings.some((f) => f.title === 'DMARC policy set to quarantine')).toBe(true);
+		const quarantine = result.findings.find((f) => f.title === 'DMARC policy set to quarantine');
+		expect(quarantine).toBeDefined();
+		expect(quarantine?.severity).toBe('medium');
+		expect(quarantine?.metadata?.partialEnforcement).toBe(true);
+		// Enforcing → still an active control and a passing category (75 on this record).
+		expect(result.passed).toBe(true);
+		expect(result.controlPresent).toBe(true);
 	});
 
 	it('reports properly configured for p=reject with strict alignment', async () => {

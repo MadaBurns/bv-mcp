@@ -4,8 +4,8 @@ export type BrandAuditPipelineStep =
 	| 'discovery'
 	| 'registrar_enrichment'
 	| 'classification'
-	| 'csc_complement_fast'
-	| 'csc_complement_full'
+	| 'registrar_complement_fast'
+	| 'registrar_complement_full'
 	| 'retry_scheduled';
 export type BrandAuditStepPersistedStatus = 'completed' | 'partial' | 'failed';
 

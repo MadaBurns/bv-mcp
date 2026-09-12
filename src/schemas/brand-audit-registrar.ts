@@ -1,21 +1,25 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 /**
- * Zod schema for the cscComplement section of a brand-audit report.
+ * Zod schema for the registrarComplement section of a brand-audit report.
  *
- * Producer-side: bv-mcp emits this when `view='csc_complement'`. Consumer-side
- * (bv-web) mirrors this schema in `agentic-csc-complement/product-contract.ts`.
- * Cross-repo drift is caught by the contract test in `test/contracts/`.
+ * Producer-side: bv-mcp emits this when `view='registrar_complement'`.
+ * Consumer: bv-web-prod stores the payload; no field-level consumer on main as
+ * of 2026-09-09. Golden-fixture drift is caught by the contract test in
+ * `test/contracts/`.
  *
  * `viewVersion` is independent of the brand-audit sidecar's v4 version — the
- * CSC view evolves separately. Any breaking change to this schema requires
- * bumping `CSC_VIEW_VERSION` (enforced by audit test).
+ * registrar view evolves separately. Any breaking change to this schema requires
+ * bumping `REGISTRAR_VIEW_VERSION` (enforced by audit test).
  */
 
 import { z } from 'zod';
 
-/** Version of the CSC view schema — independent of brand-audit v4. Bump on breaking changes. */
-export const CSC_VIEW_VERSION = 1;
+/**
+ * Version of the registrar view schema — independent of brand-audit v4. Bump on breaking changes.
+ * v2: the view was renamed `registrar_complement` (field `managedByRegistrar`, report-id prefix `reg_rpt_`).
+ */
+export const REGISTRAR_VIEW_VERSION = 2;
 
 const StageEnum = z.enum(['pending', 'running', 'ready']);
 
@@ -26,11 +30,11 @@ const RegistrarIdentitySchema = z.object({
 	ianaId: z.string().nullable(),
 });
 
-/** Anchor domain: primary apex, its registrar, and CSC management status. */
+/** Anchor domain: primary apex, its registrar, and whether it sits on the anchor brand-protection registrar. */
 const AnchorSchema = z.object({
 	apex: z.string().min(1),
 	primaryRegistrar: RegistrarIdentitySchema,
-	managedByCsc: z.boolean(),
+	managedByRegistrar: z.boolean(),
 });
 
 /** Family entry in registrar portfolio: counts, percentages, and example apexes. */
@@ -127,9 +131,9 @@ const DeepScanSchema = z.object({
 	subdomainInventoryByApex: z.record(z.string(), SubdomainInventoryEntrySchema),
 });
 
-/** Complete CSC complement view: all sections of the brand-audit report for CSC-managed domains. */
-export const BrandAuditCscSchema = z.object({
-	viewVersion: z.literal(CSC_VIEW_VERSION),
+/** Complete registrar complement view: all sections of the brand-audit report for a registrar-managed portfolio. */
+export const BrandAuditRegistrarSchema = z.object({
+	viewVersion: z.literal(REGISTRAR_VIEW_VERSION),
 	anchor: AnchorSchema,
 	registrarPortfolio: RegistrarPortfolioSchema,
 	shadowItHighlights: z.array(ShadowItHighlightSchema),
@@ -137,8 +141,9 @@ export const BrandAuditCscSchema = z.object({
 	postureSnapshot: PostureSnapshotSchema,
 	deepScan: DeepScanSchema,
 	generatedAt: z.string(),
-	reportId: z.string().regex(/^csc_rpt_[a-zA-Z0-9]+$/),
+	// Prefix-agnostic: legacy prefixes from earlier view versions remain valid.
+	reportId: z.string().regex(/^[a-z]+_rpt_[a-zA-Z0-9]+$/),
 });
 
 /** TypeScript type derived from the schema — use for inline type annotations. */
-export type BrandAuditCsc = z.infer<typeof BrandAuditCscSchema>;
+export type BrandAuditRegistrar = z.infer<typeof BrandAuditRegistrarSchema>;
