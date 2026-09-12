@@ -228,8 +228,11 @@ Five gates: (1) blocked paths (`docs/plans|code-review|superpowers/`, `.dev/`,
   pass on a mixed PR; GitHub has no "or" semantics for a required name.
 - **Deploy**: `npm run deploy:prod` run by an operator is THE authoritative
   path. `deploy-prod.yml` is dispatch-only and disarmed by default. ⚠️
-  `deploy:prod` does NOT deploy bv-infra-probe — deploy it explicitly when its
-  source changes.
+  `deploy:prod` deploys the MCP Worker ONLY — the two sidecars ship via `npm run
+  deploy:whois` and `npm run deploy:infra-probe`. Since #945 the
+  `check:sidecar-freshness` gate runs early in both deploy chains and **BLOCKS**,
+  fail-closed, when a sidecar's live deployment predates its source (override
+  `BV_ALLOW_STALE_SIDECARS=1`).
 - `typecheck-tests` is a per-file **ratchet** (baseline
   `test/typecheck-baseline.json`; bank improvements with `-- --update`).
 
