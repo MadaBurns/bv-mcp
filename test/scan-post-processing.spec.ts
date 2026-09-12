@@ -20,6 +20,50 @@ describe('scan-post-processing helpers', () => {
 		vi.doUnmock('../src/lib/dns');
 	});
 
+	it('never resurrects an abstained check: a dkim non-answer stays excluded from the score (#948)', async () => {
+		// The adjustment functions reshape findings and re-derive the result with
+		// `buildCheckResult`, which recomputes passed/score from findings alone and
+		// carries neither `checkStatus` nor `partial`. An abstention's findings are
+		// all `info`, so a naive rebuild returns score 100 / passed true for a probe
+		// that never ran — re-creating the exact false pass #948 removed, one stage
+		// later. `dkim` is in three of the category lists, so this is reachable on
+		// any no-MX domain under an enforcing parent DMARC policy.
+		vi.doMock('../src/lib/dns', () => ({
+			queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=reject']),
+		}));
+		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+		const dkimAbstained: CheckResult = {
+			category: 'dkim',
+			score: 0,
+			passed: false,
+			partial: true,
+			checkStatus: 'error',
+			findings: [
+				createFinding('dkim', 'DKIM not assessed', 'info', 'Every DKIM selector query failed before an answer was received.', {
+					inconclusive: true,
+					errorKind: 'dns_error',
+				}),
+			],
+		};
+
+		const results: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'No inbound mail is configured.')]),
+			dkimAbstained,
+		];
+
+		const updated = await applyScanPostProcessing('app.example.com', results);
+		const dkim = updated.find((r) => r.category === 'dkim');
+
+		expect(dkim?.checkStatus).toBe('error');
+		expect(dkim?.partial).toBe(true);
+		expect(dkim?.score).toBe(0);
+		expect(dkim?.passed).toBe(false);
+		// The abstention finding must not be relabelled as a measured absence.
+		expect(dkim?.findings[0].metadata?.missingControl).toBeUndefined();
+		vi.doUnmock('../src/lib/dns');
+	});
+
 	it('clarifies MTA-STS text for mail domains with MX records', async () => {
 		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 

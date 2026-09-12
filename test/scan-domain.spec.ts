@@ -1410,7 +1410,10 @@ describe('scanDomain — transient zero retry', () => {
 		// retry candidate. Failing the name permanently keeps that deterministic. That leaves
 		// 4 qualifying retries in checkResults order — spf, dmarc, bimi, tlsrpt — against
 		// MAX_RETRIES_PER_SCAN=3: spf, dmarc and bimi recover; tlsrpt stays errored, which is
-		// the cap doing its job. (DKIM is excluded because it swallows DNS errors internally.)
+		// the cap doing its job. (DKIM is excluded because this mock answers every
+		// `_domainkey.` TXT query with a valid record, so it measures cleanly and never
+		// becomes a retry candidate. Since #948 a DKIM whose probes ALL throw does abstain
+		// with `checkStatus: 'error'` and would qualify — it just never happens here.)
 		const counters: Record<string, number> = { spf: 0, dmarc: 0, tlsrpt: 0, bimi: 0 };
 		function shouldThrow(key: string, limit = 2): boolean {
 			counters[key]++;
