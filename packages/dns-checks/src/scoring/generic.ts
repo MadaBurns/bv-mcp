@@ -17,6 +17,11 @@
  * - **Critical penalty**: -criticalOverallPenalty (default 15) if findingSeverityCounts.critical > 0.
  * - **Critical gap ceiling**: If any non-transient criticalCategories key has missingControls=true,
  *   cap at criticalGapCeiling (default 64).
+ * - **Partial-enforcement ceiling**: If any non-transient criticalCategories key has
+ *   partialEnforcement=true and is NOT a missing control, cap at partialEnforcementCeiling
+ *   (default 94 — the top of NIST display A). Applied after the critical gap ceiling, so the
+ *   two compose as min(); a key the critical-gap ceiling already owns is never double-listed.
+ *   Ordering this preserves for a critical DMARC: absent/none (64) < partial (≤94) < full reject.
  */
 
 import type { CategoryTier } from '../types';
@@ -62,6 +67,14 @@ export interface GenericScoringContext {
 
 	/** Category key → true if the control is fundamentally missing (deterministic/verified). */
 	missingControls: Record<string, boolean>;
+
+	/**
+	 * Category key → true if the control is present and active but PARTIALLY enforced
+	 * (structurally declared via `metadata.partialEnforcement: true` on a measured finding;
+	 * never prose-inferred). Drives the partial-enforcement ceiling on criticalCategories
+	 * keys. Optional: absent means no key is partially enforced.
+	 */
+	partialEnforcement?: Record<string, boolean>;
 
 	/** Hardening category key → true if passed. Only submitted keys count. */
 	hardeningPassed: Record<string, boolean>;
@@ -109,6 +122,12 @@ export interface GenericScanScore {
 	/** Category keys that triggered the critical gap ceiling. */
 	criticalGaps: string[];
 
+	/**
+	 * Category keys that triggered the partial-enforcement ceiling. Disjoint from
+	 * `criticalGaps` by construction — a missing control is never also "partial".
+	 */
+	partialEnforcementGaps: string[];
+
 	/** Provider confidence modifier (-2 to +2). Reported for analytics; NOT applied to the overall score. */
 	providerModifier: number;
 
@@ -155,6 +174,7 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 	const thresholds = cfg.thresholds;
 
 	const transient = input.transientFailures ?? {};
+	const partial = input.partialEnforcement ?? {};
 	const emailKeys = input.emailBonusKeys ?? DEFAULT_EMAIL_BONUS_KEYS;
 
 	// --- Partition weights by tier, excluding transient failures ---
@@ -272,9 +292,37 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 			criticalGaps.push(key);
 		}
 	}
-	const overall = criticalGaps.length > 0
+	const afterCriticalCeiling = criticalGaps.length > 0
 		? Math.min(preCeiling, thresholds.criticalGapCeiling)
 		: preCeiling;
+
+	// --- Partial-enforcement ceiling (scoring model 1.26.0) ---
+	// A critical category whose control is PRESENT and ACTIVE but stops short of its full
+	// setting (DMARC p=quarantine, or any p= with pct<100) caps the overall at the top of
+	// NIST display A: enforcing-but-not-reject can never print A+. Three guards, same shape
+	// as the critical-gap loop above: transient wins (an unmeasured check cannot prove
+	// partiality), and a key the critical-gap ceiling already owns is skipped — missing beats
+	// partial, and listing it twice would misdescribe the evidence. Keyed on
+	// criticalCategories, so a profile where the category is not critical (dmarc in
+	// web_only / non_mail / minimal) is untouched by construction.
+	//
+	// `Number.isFinite` rather than `??`: `computeGenericScore` is a published API and a
+	// consumer can hand-build a `ScoringConfig` whose `thresholds` predates this key
+	// (undefined) or carries a coerced NaN — either must fall back to the default, not
+	// silently disable the ceiling (`Math.min(x, undefined)` is NaN, and NaN propagates into
+	// the grade).
+	const partialCeiling = Number.isFinite(thresholds.partialEnforcementCeiling)
+		? thresholds.partialEnforcementCeiling
+		: DEFAULT_SCORING_CONFIG.thresholds.partialEnforcementCeiling;
+	const partialEnforcementGaps: string[] = [];
+	for (const key of input.criticalCategories) {
+		if (partial[key] && !transient[key] && !input.missingControls[key]) {
+			partialEnforcementGaps.push(key);
+		}
+	}
+	const overall = partialEnforcementGaps.length > 0
+		? Math.min(afterCriticalCeiling, partialCeiling)
+		: afterCriticalCeiling;
 
 	// --- Grade ---
 	const grade = scoreToGrade(overall, config);
@@ -306,6 +354,7 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 		},
 		emailBonus,
 		criticalGaps,
+		partialEnforcementGaps,
 		providerModifier,
 		criticalPenalty,
 	};

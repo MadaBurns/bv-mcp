@@ -142,7 +142,7 @@ async function makeInternalCall(options?: { dangling?: boolean; failOn?: { tool:
 describe('runDeepScan — production internal-call envelope', () => {
 	it('reads structuredContent, the only machine-readable field handleToolsCall emits', async () => {
 		const { internalCall, envelopes } = await makeInternalCall();
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({ anchorApex: 'ford.com', apexes: ['ford.com'], internalCall });
 
 		// Pin the contract on the emitting side: the envelope carries
@@ -168,7 +168,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 			content: [],
 			structured: { domain: args.domain, score: 80, grade: 'B+', categoryScores: {}, findings: [] },
 		});
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({ anchorApex: 'ford.com', apexes: ['ford.com'], internalCall: legacyShapedCall });
 
 		expect(result.postureSnapshot.apexesScanned).toBe(0);
@@ -177,7 +177,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 
 	it('runs scan_domain + discover_subdomains + check_subdomain_takeover for each apex', async () => {
 		const { internalCall, calls } = await makeInternalCall();
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({
 			anchorApex: 'ford.com',
 			apexes: ['ford.com', 'ford.com.au', 'fordcorp.com'],
@@ -203,7 +203,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 
 	it('extracts dangling DNS from real check_subdomain_takeover findings', async () => {
 		const { internalCall } = await makeInternalCall({ dangling: true });
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({ anchorApex: 'ford.com', apexes: ['ford.com'], internalCall });
 
 		expect(result.deepScan.danglingDnsTotal).toBe(1);
@@ -218,7 +218,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 
 	it('emits no dangling entries for the all-clear (info) takeover finding', async () => {
 		const { internalCall } = await makeInternalCall({ dangling: false });
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({ anchorApex: 'ford.com', apexes: ['ford.com'], internalCall });
 
 		expect(result.deepScan.danglingDns).toEqual([]);
@@ -228,7 +228,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 	it('caps apexes at 25; later apexes are dropped', async () => {
 		const { internalCall } = await makeInternalCall();
 		const apexes = Array.from({ length: 40 }, (_, i) => `apex${i}.com`);
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({ anchorApex: 'apex0.com', apexes, internalCall });
 
 		expect(result.postureSnapshot.apexesTotal).toBe(25);
@@ -237,7 +237,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 
 	it('treats a scan_domain failure as partial without aborting sibling apexes', async () => {
 		const { internalCall } = await makeInternalCall({ failOn: { tool: 'scan_domain', domain: 'broken.com' } });
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({
 			anchorApex: 'a.com',
 			apexes: ['a.com', 'broken.com', 'b.com'],
@@ -252,7 +252,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 
 	it('keeps posture when discover_subdomains fails, dropping only that inventory entry', async () => {
 		const { internalCall } = await makeInternalCall({ failOn: { tool: 'discover_subdomains', domain: 'a.com' } });
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({ anchorApex: 'a.com', apexes: ['a.com', 'b.com'], internalCall });
 
 		expect(result.postureSnapshot.apexesScanned).toBe(2);
@@ -263,7 +263,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 	it('treats an isError envelope as a failed call rather than a zero-value result', async () => {
 		const erroringCall = async (tool: string): Promise<unknown> =>
 			tool === 'scan_domain' ? { content: [{ type: 'text', text: 'Error: Invalid domain' }], isError: true } : { content: [] };
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({ anchorApex: 'a.com', apexes: ['a.com'], internalCall: erroringCall });
 
 		expect(result.postureSnapshot.apexesScanned).toBe(0);
@@ -301,7 +301,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 			'graded.com': { overall: 90, grade: 'A', measured: true },
 			'nxdomain.com': { overall: 0, grade: 'F', measured: false },
 		});
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({ anchorApex: 'graded.com', apexes: ['graded.com', 'nxdomain.com'], internalCall });
 
 		// Only the one genuinely-graded apex may appear in the customer-visible rollup.
@@ -326,7 +326,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 			'graded.com': { overall: 85, grade: 'B', measured: true },
 			'nochecks.com': { overall: 100, grade: 'A+', measured: false },
 		});
-		const { runDeepScan } = await import('../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({ anchorApex: 'graded.com', apexes: ['graded.com', 'nochecks.com'], internalCall });
 
 		// NOTE (same as the envelope test above): `buildStructuredScanResult` recomputes

@@ -52,7 +52,7 @@ Follow the pattern in `src/tools/check-spf.ts` — use `createFinding()` and `bu
 
 ## Public Fixtures
 
-Use synthetic fixtures only. There must be no real customer data, real tenant lists, customer emails, public IP literals, internal hostnames, generated reports, PDFs, CSC artifacts, or private Wrangler config in commits.
+Use synthetic fixtures only. There must be no real customer data, real tenant lists, customer emails, public IP literals, internal hostnames, generated reports, PDFs, client-engagement artifacts, or private Wrangler config in commits.
 
 Safe examples:
 
