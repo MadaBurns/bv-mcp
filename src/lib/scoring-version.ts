@@ -44,8 +44,8 @@
  *   (default 60%) of its attempted checks is now UNGRADED (`overall`/`grade` null,
  *   `evidenceInsufficient: true`) rather than receiving a confident letter. Grade bands,
  *   category weights and the check matrix are unchanged. (c) Compliance/reporting surfaces
- *   (`map_compliance`, `generate_fix_plan`, `map_csc_products`, `compare_baseline`,
- *   `prioritize_csc_leads`) now ABSTAIN on a check that never completed — `not_assessed` /
+ *   (`map_compliance`, `generate_fix_plan`, `map_registrar_products`, `compare_baseline`,
+ *   `prioritize_portfolio_leads`) now ABSTAIN on a check that never completed — `not_assessed` /
  *   `assessed: false` — rather than grading it as a pass or fail; see the `[3.37.0]`
  *   CHANGELOG.md entry for the full per-tool breakdown.
  * - 1.5.0 — three new detection families that penalise previously-unmeasured defects. No
@@ -463,8 +463,57 @@
  *   No weight, tier, grade band, severity penalty or profile-detection rule changed;
  *   `@blackveil/dns-checks` is untouched (the check is worker-side), so the package /
  *   parity-corpus version stays at 1.36.0.
- * - 1.26.0 — `subdomain_takeover` and `dkim` abstain when every probe fails (#948,
- *   dns-checks 1.38.0). This REVERSES DIRECTION relative to 1.24.0/#900: those entries
+ * - 1.26.0 — DMARC partial enforcement is a real gradient and gates the top letter
+ *   (`@blackveil/dns-checks` 1.37.0 → 1.38.0, parity corpus 1.38.0). Measured 2026-09-10
+ *   on the 1.25.0 package (mail_enabled, every other check perfect): absent 64 · p=none
+ *   64 · p=quarantine 100 · p=reject 100 · reject+strict 100 — quarantine and reject were
+ *   score-IDENTICAL, so the model offered no gradient toward the end state that NZ SGE
+ *   (Oct 2026), US BOD 18-01 and BSI TR-03182 all name: p=reject. Two coupled changes,
+ *   both declared STRUCTURALLY (`metadata.partialEnforcement: true`, consumed by the new
+ *   `findingsIndicatePartialEnforcement`; no prose regex — the 2026-08-20 subject-data
+ *   incident is why a second prose gate was not added): (1) `DMARC policy set to
+ *   quarantine` moves `low` → `medium` and declares partial enforcement, and `DMARC not
+ *   applied to all emails` (pct<100) keeps `medium` and gains the declaration; (2) the
+ *   generic engine caps the overall at a new `thresholds.partialEnforcementCeiling` (94,
+ *   the top of NIST display A) when a CRITICAL category is partially enforced and not
+ *   already a critical gap. The ceiling is critical-category-keyed, so dmarc arms it in
+ *   `mail_enabled` / `enterprise_mail` ONLY — the CEILING cannot arm in web_only /
+ *   non_mail / minimal / authoritative_dns_infra by construction. The SEVERITY step is
+ *   profile-independent: a p=quarantine domain in web_only / non_mail moves 99 → 98 on an
+ *   otherwise-perfect roster (dmarc weight 3 there), minimal 99 → 99 — so a non-mail
+ *   quarantine domain sitting exactly on a NIST boundary can drop a letter. Ordering
+ *   preserved: absent/none (64, D) < partial enforcement (≤94, A) < full reject (100, A+).
+ *   The operator's original "cannot pass D without p=reject" cap was adjudicated AGAINST
+ *   (none of the 12 peer graders surveyed in bv-web-prod's 2026-09-01 spec §3 caps a
+ *   composite grade even on p=none — two of the 12 were unverified displays — so a
+ *   fortiori none does on quarantine; it would also flatten quarantine into the
+ *   no-record bucket), and quarantine is deliberately NOT a missing control. DIRECTION:
+ *   DOWNWARD ONLY. Mail-profile domains at p=quarantine or pct<100 take the 94 ceiling
+ *   (including a subdomain inheriting sp=quarantine — the effective policy is what
+ *   scores); every quarantine domain in any profile takes the −10 category step (≈−1
+ *   overall in non-mail profiles). MAGNITUDE: dmarc category on the `p=quarantine + rua` parity fixture
+ *   85 → 75 (−5 → −15 on the one finding; the task brief's 85 → 70 assumed a −20 step
+ *   that `SEVERITY_PENALTIES` does not have), the inherited-sp=quarantine fixture 75 → 65,
+ *   `p=quarantine; pct=50` 70 → 60; a perfect quarantine mail domain 100 → 94 overall,
+ *   i.e. NIST display A+ → A. The engine's INTERNAL 9-band `grade` still reads A+ at 94
+ *   (`grades.aPlus` = 92) — it is the customer-visible NIST letter that moves; the
+ *   9-band is unchanged and non-display. POPULATION: 5.5% of a 1,953-domain GSI sample
+ *   (107 domains) sit at p=quarantine vs 120 at p=reject; the reject-with-pct<100 share is
+ *   UNMEASURED on our corpus (DMARCeye Q1 2026 reports ~6% of enforcing domains use a
+ *   staged pct). Absent / p=none / reject-at-pct=100 postures and every other category
+ *   are bit-for-bit unchanged. `ScanScore` gains optional `criticalGaps` /
+ *   `partialEnforcementGaps` (additive) so a consumer can read WHICH ceiling capped a
+ *   score. Finding TITLES are unchanged (assess_spoofability, generate_rollout_plan and
+ *   maturity staging match on them); `explain_finding` gains a `DMARC_POLICY_QUARANTINE`
+ *   detail signature so the reworded finding resolves to its own narrative rather than
+ *   the generic medium bucket. `sp=` and `t=y` classifier semantics are untouched. The
+ *   2026-08-26 twin DEFERs (`sp=none`, and `pct<100` read as enforcing) concern
+ *   bv-web-prod's consumer-side `dmarcEnforcing` boolean, not this engine's scoring; this
+ *   entry DOES change `pct<100` SCORING (flag + ceiling) and leaves `dmarcEnforcing`
+ *   alone. No weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection
+ *   rule changed.
+ * - 1.27.0 — `subdomain_takeover` and `dkim` abstain when every probe fails (#948,
+ *   dns-checks 1.39.0). This REVERSES DIRECTION relative to 1.24.0/#900: those entries
  *   moved already-excluded categories onto a shared helper without changing a score. This
  *   one newly EXCLUDES categories that were previously SCORED, because both checks were
  *   swallowing a thrown DNS query and returning a COMPLETED result (no `checkStatus`)
@@ -490,7 +539,7 @@
  *   cannot size because the defect made those scans indistinguishable from clean ones. No
  *   weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.26.0';
+export const SCORING_MODEL_VERSION = '1.27.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

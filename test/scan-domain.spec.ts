@@ -222,10 +222,14 @@ describe('scanDomain', () => {
 		});
 
 		const { scanDomain } = await import('../src/tools/scan-domain');
-		// scanDomain has a 12s timeout and per-check 8s timeout
-		// The SSL check will hit the per-check timeout first (8s),
-		// so we should still get all results including a degraded SSL result
-		const result = await scanDomain('example.com');
+		// The SSL check hits the PER-CHECK timeout first, so safeCheck still hands
+		// back a degraded ssl result rather than the scan race discarding everything.
+		// Both budgets come from `resolveScanTimeoutBudget`, so shrinking them here
+		// exercises the identical code path at 1/25th the wall clock (the defaults —
+		// 15s scan / 8s per check — cost this one test 8.0s of real time). The scan
+		// ceiling must stay above RETRY_BUDGET_MS (3s) or the per-check killer is
+		// clamped away and the transient-zero retry pass goes unreachable.
+		const result = await scanDomain('example.com', undefined, { scanTimeoutMs: 4_000, perCheckTimeoutMs: 300 });
 
 		// Even with the hanging SSL check, we should get all 12 checks
 		// because safeCheck wraps each with a per-check timeout
@@ -240,7 +244,7 @@ describe('scanDomain', () => {
 			expect(sslCheck.findings[0]?.severity).toBe('low');
 			expect(sslCheck.findings[0]?.title).toContain('timed out');
 		}
-	}, 15_000);
+	});
 
 	it('caches results with KV and returns cached:true on hit', async () => {
 		mockAllChecks();
@@ -271,7 +275,10 @@ describe('scanDomain', () => {
 		// First scan: SSL times out. forceRefresh skips the cache READ only — the
 		// per-check WRITE still happens, which is exactly what we're guarding.
 		mockSslHangs();
-		const first = await scanDomain('example.com', undefined, { forceRefresh: true });
+		// Shrunk budgets (same `resolveScanTimeoutBudget` path production uses) so
+		// waiting out the per-check killer costs ~0.3s, not the default 8s. The scan
+		// ceiling stays above RETRY_BUDGET_MS (3s) so the killer is not clamped away.
+		const first = await scanDomain('example.com', undefined, { forceRefresh: true, scanTimeoutMs: 4_000, perCheckTimeoutMs: 300 });
 		const firstSsl = first.checks.find((c) => c.category === 'ssl');
 		expect(firstSsl).toBeDefined();
 		// Precondition: confirm safeCheck actually caught the transient failure.
@@ -291,7 +298,7 @@ describe('scanDomain', () => {
 		const secondSsl = second.checks.find((c) => c.category === 'ssl');
 		expect(secondSsl).toBeDefined();
 		expect(secondSsl!.checkStatus).not.toBe('timeout');
-	}, 20_000);
+	});
 });
 
 /** Healthy mock for every check EXCEPT SSL, whose HTTPS fetch hangs forever. */

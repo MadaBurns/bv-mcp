@@ -7,7 +7,7 @@
  * apex (anchor + discovered candidates) by registrar family using
  * `classifyRegistrarFamily`, computes percentages, and surfaces the
  * off-portfolio set (candidates whose family differs from the anchor's)
- * as the headline CSC-narrative artifact.
+ * as the headline registrar-portfolio narrative artifact.
  *
  * `registrarSource ∈ {'unknown', 'lookup_failed'}` forces the candidate
  * into the `unknown` family regardless of any name string — we don't

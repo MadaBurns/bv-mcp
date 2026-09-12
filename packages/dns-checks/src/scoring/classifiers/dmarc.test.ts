@@ -24,9 +24,14 @@ describe('classifyDmarc', () => {
 		expect(none?.metadata?.missingControl).toBe(true);
 	});
 
-	it('flags p=quarantine as low', () => {
+	it('flags p=quarantine as medium partial enforcement, not a missing control (scoring model 1.26.0)', () => {
 		const f = classifyDmarc({ ...base, policy: 'quarantine', rua: 'mailto:dmarc@example.com' });
-		expect(f.find((x) => x.title === 'DMARC policy set to quarantine')?.severity).toBe('low');
+		const quarantine = f.find((x) => x.title === 'DMARC policy set to quarantine');
+		// Was `low` until 1.26.0, which left quarantine score-identical to reject at the
+		// category level. Declared structurally so the top-letter ceiling survives a reword.
+		expect(quarantine?.severity).toBe('medium');
+		expect(quarantine?.metadata?.partialEnforcement).toBe(true);
+		expect(quarantine?.metadata?.missingControl).toBeUndefined();
 	});
 
 	it('emits no significant finding for a clean p=reject record', () => {

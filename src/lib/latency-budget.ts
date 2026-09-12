@@ -44,7 +44,7 @@
  * that reintroduced sequential awaits, (c) Workers CPU quota contention.
  *
  * @see test/hot-path-concurrency.perf.spec.ts — stable regression guard
- * @see docs/superpowers/specs/ — I2 (CSC demo) cites these constants
+ * @see docs/superpowers/specs/ — the brand-audit latency spec cites these constants
  */
 
 export interface ToolLatencyBudget {
@@ -114,6 +114,6 @@ export const LATENCY_BUDGET_SCAN_CHECK_COUNT = 19;
 /**
  * The measured concurrency speedup ratio for scan_domain.
  * sequential_ms / concurrent_ms ≈ 7000 / 1062 ≈ 6.6×
- * Maintained here for I2 to cite in the CSC demo.
+ * Maintained here for the brand-audit latency spec to cite.
  */
 export const LATENCY_BUDGET_CONCURRENCY_SPEEDUP = 6.6;

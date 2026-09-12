@@ -57,30 +57,30 @@ describe('normalizeRegistrar', () => {
 		expect(normalizeRegistrar('Nom-IQ Ltd. dba Com Laude')).toBe('Com Laude');
 	});
 
-	it('collapses CSC Corporate Domains variants to "CSC" (not the legacy "BrandAudit" placeholder)', () => {
+	it('collapses corporate-domains registrar variants to "CorporateDomains" (not the legacy "BrandAudit" placeholder)', () => {
 		// Surfaced 2026-05-19: production PDFs for brand-delta.example.com showed
 		// `shared registrar family (BrandAudit) + 3 corroborating signals` when
-		// CSC was the actual registrar. The legacy regex used 'BrandAudit' as a
+		// the corporate-domains registrar was the actual registrar. The legacy regex used 'BrandAudit' as a
 		// placeholder name; rename to the real family identifier so analyst
 		// reasons read truthfully.
-		expect(normalizeRegistrar('CSC Corporate Domains, Inc.')).toBe('CSC');
-		expect(normalizeRegistrar('CSC Corporate Domains Inc')).toBe('CSC');
-		expect(normalizeRegistrar('CSC CORPORATE DOMAINS INC.')).toBe('CSC');
-		expect(normalizeRegistrar('CSC Corporate Domains (Canada) Company')).toBe('CSC');
+		expect(normalizeRegistrar('CSC Corporate Domains, Inc.')).toBe('CorporateDomains');
+		expect(normalizeRegistrar('CSC Corporate Domains Inc')).toBe('CorporateDomains');
+		expect(normalizeRegistrar('CSC CORPORATE DOMAINS INC.')).toBe('CorporateDomains');
+		expect(normalizeRegistrar('CSC Corporate Domains (Canada) Company')).toBe('CorporateDomains');
 	});
 
-	it('collapses CSC global subsidiaries (regression: 2026-05 regional-alpha.example.com shadowIt FP)', () => {
+	it('collapses the registrar\'s global subsidiaries (regression: 2026-05 regional-alpha.example.com shadowIt FP)', () => {
 		// Real WHOIS strings observed in production brand-audit PDFs for
 		// regional-alpha.example.com, regional-beta.example.com, regional-gamma.example.com — all flagged as
-		// shadowIt because the family detector did not recognise CSC's regional
-		// arms. Collapse them all to the canonical "CSC" family so analyst
-		// reasons consistently attribute defensive registration to CSC.
-		expect(normalizeRegistrar('Corporation Service Company (Aust) Pty Ltd')).toBe('CSC');
-		expect(normalizeRegistrar('Corporation Service Company, LLC')).toBe('CSC');
-		expect(normalizeRegistrar('CSC Digital Brand Services Malaysia Sdn Bhd')).toBe('CSC');
-		expect(normalizeRegistrar('CSC Digital Brand Services, Inc.')).toBe('CSC');
-		expect(normalizeRegistrar('CSC Global')).toBe('CSC');
-		expect(normalizeRegistrar('cscglobal.com')).toBe('CSC');
+		// shadowIt because the family detector did not recognise the registrar's regional
+		// arms. Collapse them all to the canonical "CorporateDomains" family so analyst
+		// reasons consistently attribute defensive registration to that family.
+		expect(normalizeRegistrar('Corporation Service Company (Aust) Pty Ltd')).toBe('CorporateDomains');
+		expect(normalizeRegistrar('Corporation Service Company, LLC')).toBe('CorporateDomains');
+		expect(normalizeRegistrar('CSC Digital Brand Services Malaysia Sdn Bhd')).toBe('CorporateDomains');
+		expect(normalizeRegistrar('CSC Digital Brand Services, Inc.')).toBe('CorporateDomains');
+		expect(normalizeRegistrar('CSC Global')).toBe('CorporateDomains');
+		expect(normalizeRegistrar('cscglobal.com')).toBe('CorporateDomains');
 	});
 
 	it('returns Unknown for empty / Unknown', () => {
@@ -217,7 +217,7 @@ describe('classifyCandidate', () => {
 				target({
 					domain: 'brand-delta.example.com',
 					registrar: 'CSC Corporate Domains, Inc.',
-					registrarFamily: 'CSC',
+					registrarFamily: 'CorporateDomains',
 				}),
 			);
 			expect(result.bucket).toBe('indeterminate');
@@ -238,7 +238,7 @@ describe('classifyCandidate', () => {
 				target({
 					domain: 'brandepsilon.com',
 					registrar: 'CSC Corporate Domains, Inc.',
-					registrarFamily: 'CSC',
+					registrarFamily: 'CorporateDomains',
 				}),
 			);
 			expect(result.bucket).toBe('shadowIt');
@@ -259,7 +259,7 @@ describe('classifyCandidate', () => {
 				target({
 					domain: 'brandalpha.com',
 					registrar: 'CSC Corporate Domains, Inc.',
-					registrarFamily: 'CSC',
+					registrarFamily: 'CorporateDomains',
 				}),
 			);
 			expect(result.bucket).toBe('shadowIt');
@@ -276,12 +276,12 @@ describe('classifyCandidate', () => {
 			expect(classifyCandidate(c, target()).bucket).toBe('consolidated');
 		});
 
-		// Regression: 2026-05 CSC registrar-family fixture verification.
-		// regional-alpha.example.com (CSC Australia: "Corporation Service Company (Aust) Pty Ltd")
-		// was flagged as shadowIt against primary-alpha.example.com (CSC US). Both are CSC. The
-		// off-primary-registrar inference must NOT fire on cross-subsidiary CSC
+		// Regression: 2026-05 registrar-family fixture verification.
+		// regional-alpha.example.com (the Australian arm: "Corporation Service Company (Aust) Pty Ltd")
+		// was flagged as shadowIt against primary-alpha.example.com (the US arm). Both are one family. The
+		// off-primary-registrar inference must NOT fire on cross-subsidiary
 		// registrations — that's defensive registration, not shadow IT.
-		it('CSC regional subsidiaries (regional-alpha.example.com CSC AU ↔ primary-alpha.example.com CSC US) are NOT shadowIt', () => {
+		it('regional subsidiaries of one registrar family (regional-alpha.example.com AU ↔ primary-alpha.example.com US) are NOT shadowIt', () => {
 			const c = candidate({
 				domain: 'regional-alpha.example.com',
 				signals: ['markov_gen', 'ns', 'spf_include'],
@@ -294,14 +294,14 @@ describe('classifyCandidate', () => {
 				target({
 					domain: 'primary-alpha.example.com',
 					registrar: 'CSC Corporate Domains, Inc.',
-					registrarFamily: 'CSC',
+					registrarFamily: 'CorporateDomains',
 				}),
 			);
 			expect(result.bucket).not.toBe('shadowIt');
 			expect((result as { relationshipType?: string }).relationshipType).not.toBe('owned_off_primary_registrar');
 		});
 
-		it('two CSC global subsidiaries (CSC Malaysia ↔ CSC US) classify as consolidated, not shadowIt', () => {
+		it('two global subsidiaries of one registrar family (Malaysia ↔ US) classify as consolidated, not shadowIt', () => {
 			const c = candidate({
 				domain: 'regional-gamma-my.example.com',
 				signals: ['markov_gen', 'ns', 'spf_include'],
@@ -314,7 +314,7 @@ describe('classifyCandidate', () => {
 				target({
 					domain: 'primary-gamma.example.com',
 					registrar: 'CSC Corporate Domains, Inc.',
-					registrarFamily: 'CSC',
+					registrarFamily: 'CorporateDomains',
 				}),
 			);
 			expect(result.bucket).not.toBe('shadowIt');
@@ -396,7 +396,7 @@ describe('classifyCandidate', () => {
 			});
 			const t = target({
 				registrar: 'CSC Corporate Domains, Inc.',
-				registrarFamily: 'CSC',
+				registrarFamily: 'CorporateDomains',
 				registrarIanaId: '299',
 			});
 
@@ -416,7 +416,7 @@ describe('classifyCandidate', () => {
 			});
 			const t = target({
 				registrar: 'CSC Corporate Domains, Inc.',
-				registrarFamily: 'CSC',
+				registrarFamily: 'CorporateDomains',
 				registrarIanaId: '299',
 			});
 
@@ -492,7 +492,7 @@ describe('classifyCandidate', () => {
 			const t = target({
 				domain: 'brand-beta.example.com',
 				registrar: 'CSC Corporate Domains, Inc.',
-				registrarFamily: 'CSC',
+				registrarFamily: 'CorporateDomains',
 			});
 
 			expect(classifyCandidate(c, t).bucket).toBe('indeterminate');
@@ -591,7 +591,7 @@ describe('classifyCandidate', () => {
 				target({
 					domain: 'brand-alpha.example.com',
 					registrar: 'CSC Corporate Domains, Inc.',
-					registrarFamily: 'CSC',
+					registrarFamily: 'CorporateDomains',
 				}),
 			);
 
