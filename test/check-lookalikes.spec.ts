@@ -786,12 +786,16 @@ describe('checkLookalikes - timeout partial flag', () => {
 		// Make all DNS queries hang indefinitely so the timeout fires
 		globalThis.fetch = vi.fn().mockImplementation(() => {
 			return new Promise(() => {
-				// Never resolves — forces the LOOKALIKE_TIMEOUT_MS race to win
+				// Never resolves — forces the outer timeout race to win
 			});
 		});
 
 		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
-		const result = await checkLookalikes('test.com');
+		// `timeoutMs` shortens the SAME race production runs; the default 20_000
+		// made this one test the wall-clock floor of the whole file (measured:
+		// 20.0s of the file's 23.6s). The path under test is identical — only the
+		// ceiling moves.
+		const result = await checkLookalikes('test.com', { timeoutMs: 200 });
 
 		// Timeout path should mark result as partial
 		expect(result.partial).toBe(true);
@@ -799,7 +803,7 @@ describe('checkLookalikes - timeout partial flag', () => {
 		expect(result.findings[0].title).toBe('Lookalike check incomplete');
 		expect(result.findings[0].severity).toBe('info');
 		expect(result.findings[0].detail).toContain('did not complete within the time limit');
-	}, 25_000);
+	});
 
 	it('does not mark successful results as partial', async () => {
 		// All DNS queries return empty — check completes normally

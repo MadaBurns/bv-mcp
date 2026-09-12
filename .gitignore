@@ -108,8 +108,12 @@ plan-*.md
 
 # Internal reports / call prep — never commit (drift catchers)
 /reports
-/.csc
+/.client-reports
 /.reports
+# Promoted brand-report pairs — by OUTPUT SHAPE, so a report parked in any local
+# directory (not just the ignored ones above) can never be swept into the index.
+*-discovery-report.json
+*-discovery-report.pdf
 /BENCHMARK_REPORT.md
 /BENCHMARK_*.md
 /CAPACITY_ANALYSIS.md

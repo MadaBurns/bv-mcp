@@ -405,10 +405,8 @@ export interface SubdomainScanOutcome {
  * The real sweep. Returns measurement provenance alongside the findings.
  *
  * This is the additive shape; `scanSubdomainForTakeover` below stays as a thin `Finding[]`
- * wrapper because that name is an already-published package symbol consumed outside this
- * repo (bv-web-prod vendors `@blackveil/dns-checks` as a tarball). Widening the existing
- * export's return type would be a breaking change to a published surface for the sake of
- * one in-package caller, so the new shape gets a new name instead.
+ * wrapper. See that function's note for the (measured) reason — it is NOT the public-API
+ * argument an earlier draft of this comment made.
  */
 export async function scanSubdomainForTakeoverInternal(
 	domain: string,
@@ -498,12 +496,24 @@ export async function scanSubdomainForTakeoverInternal(
 }
 
 /**
- * Published wrapper preserving the pre-#948 `Finding[]` signature.
+ * Wrapper preserving the pre-#948 `Finding[]` signature.
  *
- * `scanSubdomainForTakeover` is exported from the package barrel and appears in the
- * published `.d.ts`, so downstream consumers (bv-web-prod vendors this package as a
- * tarball) compile against this exact shape. In-package callers that need to know whether
- * the CNAME probe answered use `scanSubdomainForTakeoverInternal` instead.
+ * ⚠️ CORRECTION (#948 review): an earlier version of this comment claimed the name is
+ * barrel-exported and part of the published surface that bv-web-prod compiles against.
+ * That is FALSE, and it was checked: `scanSubdomainForTakeover` is NOT re-exported from
+ * `packages/dns-checks/src/index.ts`, and the manifest's `exports` map offers only `.`,
+ * `./scoring`, `./whois` and `./cert` — no subpath reaches this module. Changing its
+ * signature could not break a downstream tarball consumer, because none can import it.
+ * (The fleet rule this violated: verify a vendored package's `exports`, never assume from
+ * the filename.)
+ *
+ * The wrapper is kept anyway, for a smaller and honest reason: eight call sites in
+ * `test/subdomain-takeover-analysis.spec.ts` use this signature, and churning them to
+ * destructure `.findings` would add diff noise to a scoring fix without buying anything.
+ * In-package callers that need the measurement provenance use
+ * `scanSubdomainForTakeoverInternal`.
+ *
+ * If a future change wants this name gone, deleting it is safe — just update those tests.
  */
 export async function scanSubdomainForTakeover(
 	domain: string,

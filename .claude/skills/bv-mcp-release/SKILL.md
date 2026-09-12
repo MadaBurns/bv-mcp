@@ -37,6 +37,9 @@ Pre-bumping is **enforced, not merely advised**. `publish.yml`'s `version-bump` 
 ```bash
 npm version <X.Y.Z> --no-git-tag-version --allow-same-version   # package.json + lock; SERVER_VERSION auto-derives
 # server.json top-level version + a CHANGELOG.md [X.Y.Z] stub are auto-synced by the `version` lifecycle hook (scripts/bump-version.mjs) and STAGED — fill the CHANGELOG stub in by hand; `git diff` won't show server.json because it is already staged
+# ⚠️ The stub is inserted ABOVE the existing `## [Unreleased]` section, not in place of it: delete the `- TODO` stub, retitle the
+# populated `[Unreleased]` heading to `[X.Y.Z] - date`, and leave an EMPTY `## [Unreleased]` above it. Skipping this left a
+# stray `[3.76.0]` TODO block + duplicate `[Unreleased]` in the file for two releases (removed in #960).
 git commit -am "chore: release <X.Y.Z>" && git push origin main   # via PR — direct push to main is blocked
 git tag v<X.Y.Z> <merged-main-HEAD> && git push origin v<X.Y.Z>   # tag the squashed merge commit, not the bump-branch tip
 ```
@@ -73,6 +76,7 @@ Two transferable lessons:
 - **The tag pipeline is ordering-safe again (2026-08-23)** — with `publish-registry` deleted, tagging advertises nothing; the manual `mcp-publisher` step is the only publisher, and the ordering rule is enforced by the operator running deploy before publish. (Between #719 and 2026-08-23 the job existed armed, making a pre-deploy tag a stale-prod hazard — that window is closed.)
 - "Formalize the release" (version surfaces + tag + GH Release) and "deploy + publish" are separable. Deploy and registry publish are outward-facing — confirm before each unless told to run the whole sequence.
 - **A PR can sit `mergeStateStatus: BLOCKED` with all four required checks green.** Two workflows (`CI` and `CI Docs`) each run a job named `build-and-test`, and a required check is satisfied only when EVERY check-run of that name has completed — the slower one (~15 min) is still `in_progress`. Diagnose with `gh api repos/MadaBurns/bv-mcp/commits/<sha>/check-runs --jq '.check_runs[] | select(.status!="completed") | .name'`; it is not a failure and needs no re-run (observed on #907, 2026-09-04).
+- **In auto mode the classifier can refuse `npm run deploy:prod` itself** (2026-09-09, 3.78.0: refused both as a compound command and as the bare script). Do everything up to the deploy (merge, tag, pin a worktree to the merge commit, copy `.dev/wrangler.deploy.jsonc`, `npm ci`), then hand the operator the exact `cd` + `nvm use 22` + `npm run deploy:prod` + verify + `publish:registry` sequence in a fenced block; after they run it, verify `serverInfo.version`, the registry `?version=X.Y.Z`, and one behaviour probe yourself.
 - **A `wrangler rollback <version-id>` may be refused by the session permission classifier** (prod-mutating class) even when a fresh deploy has just been allowed. Per the no-retry-loop rule, do not rephrase it; fix forward with a hotfix release instead (3.75.0 → 3.75.1 took ~70 min end to end) and note the blocked rollback in the issue. Cache keys carry `v<SERVER_VERSION>-dc<PARITY_CORPUS_VERSION>`, so the hotfix deploy also retires every cached result from the defective version immediately.
 
 Publish steps (key never echoed): `mcp-publisher validate` → `login dns --domain blackveilsecurity.com --private-key "$KEY"` (read `$KEY` from `.dev.vars`, ed25519) → `publish` → `logout`. Verify: `?search=com.blackveilsecurity/dns&version=latest` → expect `version=X.Y.Z status=active isLatest=true` (search endpoint sometimes returns an empty body — retry a few times).
@@ -86,9 +90,18 @@ Publish steps (key never echoed): `mcp-publisher validate` → `login dns --doma
 ```bash
 npm -w packages/dns-checks run build && npm run build
 npm publish --access public      # only if npm is intended + token present
-npm run deploy:prod              # injects private bindings, deploys the Worker
+npm run deploy:prod              # injects private bindings, deploys the MCP Worker ONLY
+npm run deploy:whois             # sidecar: bv-whois (packages/bv-whois/wrangler.jsonc)
+npm run deploy:infra-probe       # sidecar: bv-infra-probe (wrangler.infra-probe.jsonc)
 mcp-publisher publish            # MCP Registry, DNS-TXT-gated namespace
 ```
+
+The two sidecar lines are not optional extras — `deploy:prod` has never deployed either
+Worker, and until #945 nothing else did: bv-whois sat 4 source commits stale for 3 months.
+`deploy:prod` now runs `check:sidecar-freshness` early and **blocks** when either sidecar's
+live deployment predates its source, naming the commits and the exact fix command. Deploy
+the named sidecar and re-run; the escape hatch is `BV_ALLOW_STALE_SIDECARS=1` (distinct from
+`BV_ALLOW_STALE_DEPLOY`, so a deliberate rollback does not also wave the sidecars through).
 
 Never commit `.npmrc`, registry tokens, the DNS publisher key, or generated production config. Keep the publisher key in `.dev.vars` / an approved secret manager only.
 
@@ -105,6 +118,7 @@ Never commit `.npmrc`, registry tokens, the DNS publisher key, or generated prod
 - `mcp-publisher publish` BEFORE `deploy:prod` → registry advertises a version prod doesn't serve (stale-prod, public). Deploy first, publish last.
 - Hand-editing `SERVER_VERSION` → no-op at best (it auto-derives from `pkg.version`); bump `package.json` instead.
 - A single early post-deploy version/scoring mismatch is usually **Cloudflare rollout propagation lag**, not a stale bundle — re-poll a few times before debugging. (A genuine stale bundle is when `packages/dns-checks` wasn't rebuilt before `deploy:prod` — always `npm -w packages/dns-checks run build` first.)
+- A `check:sidecar-freshness` result of **`unverified` is NOT proof the sidecars are current** — it means the gate could not read the deployment list (expired/absent `CLOUDFLARE_API_TOKEN`, offline, wrangler missing; wrangler prints an auth banner on STDOUT while exiting non-zero, which is why stdout is never parsed without a status check). Restore auth and re-run. Do NOT reach for `BV_ALLOW_STALE_SIDECARS=1` — that turns "I could not measure" into "I shipped anyway", which is the exact fail-open shape #945 was filed against.
 - `wrangler d1 execute --remote --file=-` with stdin → not supported; pass a real file path.
 
 ## Provenance

@@ -437,11 +437,27 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 				}),
 		);
 
-		const start = Date.now();
-		const result = await run('slow.example.com');
-		const elapsed = Date.now() - start;
+		// Fake timers, NOT a shortened budget: the constant under test here is the
+		// DEFAULT `TOTAL_BUDGET_MS` that direct callers get, so passing `budgetMs`
+		// would silently move the assertion onto the budgeted arm (already covered by
+		// `http-security-fetch-budget.spec.ts`). Advancing the clock keeps the same
+		// unbudgeted path and drops 10s of real waiting from the suite.
+		let result: Awaited<ReturnType<typeof run>>;
+		let elapsed: number;
+		vi.useFakeTimers();
+		try {
+			const start = Date.now();
+			const pending = run('slow.example.com');
+			// Async variant: it flushes microtasks between timer steps, so the check's
+			// awaits before the race resolve instead of deadlocking the advance.
+			await vi.advanceTimersByTimeAsync(11_000);
+			result = await pending;
+			elapsed = Date.now() - start;
+		} finally {
+			vi.useRealTimers();
+		}
 
-		// Total-budget cap (implementation): 10_000 ms. Test tolerates 12s wall.
+		// Total-budget cap (implementation): 10_000 ms. Test tolerates 12s.
 		expect(elapsed).toBeLessThan(12_000);
 		expect(result.category).toBe('http_security');
 		expect(result.checkStatus === 'timeout' || result.checkStatus === 'error').toBe(true);
@@ -460,7 +476,7 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 		// The exclusion is driven by checkStatus, not by the metadata — pinned so a future
 		// refactor cannot quietly move the load-bearing signal onto the flag we just removed.
 		expect(result.checkStatus).toBe('timeout');
-	}, 15_000);
+	});
 
 	describe('Cloudflare WAF events served as 4xx (cf-403 fingerprint)', () => {
 		// Every probe (dual HEAD, body GET, package GET-fallback) returns the same CF response.
