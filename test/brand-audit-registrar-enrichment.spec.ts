@@ -28,7 +28,7 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 			return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
 		});
 
-		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-csc-enrichment');
+		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
 			target: 'ford.com',
 			candidates: [{ domain: 'forrd.com', combinedConfidence: 0.9 }],
@@ -50,7 +50,7 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 			return Promise.resolve({ ok: true, status: 200, headers: new Headers() });
 		});
 
-		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-csc-enrichment');
+		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		await enrichCandidatesForDefensiveDetection({
 			target: 'ford.com',
 			candidates: [{ domain: 'forrd.com', combinedConfidence: 0.9 }],
@@ -78,7 +78,7 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 			return Promise.reject(new Error('timeout'));
 		});
 
-		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-csc-enrichment');
+		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
 			target: 'ford.com',
 			candidates: [
@@ -104,7 +104,7 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 			domain: `c${i}.com`,
 			combinedConfidence: i / 100,
 		}));
-		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-csc-enrichment');
+		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
 			target: 'ford.com',
 			candidates,
@@ -140,7 +140,7 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 			domain: `c${i}.com`,
 			combinedConfidence: 0.9,
 		}));
-		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-csc-enrichment');
+		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
 			target: 'ford.com',
 			candidates,
@@ -169,7 +169,7 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 			return Promise.reject(new Error('Unexpected fetch'));
 		});
 
-		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-csc-enrichment');
+		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
 			target: 'target.com',
 			candidates: [{ domain: '192.168.1.1', combinedConfidence: 0.9 }],

@@ -45,6 +45,65 @@ npm test                                 # full suite (~3300 tests, Workers pool
 npx vitest run test/check-spf.spec.ts    # single spec — fast feedback loop
 ```
 
+## Wall-clock in a spec: three tools, and the one that does not work
+
+A spec that exercises a deadline/budget path will sit through the production
+constant in REAL TIME unless you do something about it. Measured 2026-09-11:
+five specs were burning 81.3s between them, one test alone waiting out
+`LOOKALIKE_TIMEOUT_MS` (20s). Pick by what the test actually claims:
+
+1. **The budget is already injectable — just unused.** Check first. `scanDomain`
+   has taken `scanTimeoutMs`/`perCheckTimeoutMs` via `resolveScanTimeoutBudget`
+   all along; two specs waited out the 8s default anyway. ⚠️ Keep the scan
+   ceiling above `RETRY_BUDGET_MS` (3s) or the per-check killer is clamped away
+   and the transient-zero retry pass silently goes unreachable.
+2. **No knob exists → add one on the options bag, with a resolver.** Follow
+   `resolveScanTimeoutBudget` / `resolveLookalikeTimeoutBudget`: resolve the
+   ceiling and its dependent sub-budgets TOGETHER. Sub-budgets here are measured
+   absolutes, so the resolver must return today's exact numbers at the default —
+   scale only a shorter override, or the arithmetic goes negative (below 8s the
+   bare `timeout - reserve - window` deadlined every lookalike DNS phase at once).
+3. **The constant under test IS the production default → fake timers.** Passing
+   an override there moves the assertion onto a different arm (for
+   `check_http_security` the budgeted arm is already covered by
+   `http-security-fetch-budget.spec.ts`). Use `await vi.advanceTimersByTimeAsync(n)`
+   — the async variant flushes microtasks between steps, so awaited rounds
+   resolve instead of deadlocking the advance — and attach the rejection handler
+   BEFORE advancing, or a re-throwing tool settles unhandled. Always restore in
+   a `finally`.
+
+⚠️ **Fake timers do NOT patch `AbortSignal.timeout`.** Vitest patches
+`setTimeout`/`Date`; `AbortSignal.timeout` is a platform static on the real
+clock. So a spec bounded by one is irreducible without shortening a shipped
+constant — which tests something other than what ships. That is what makes the
+`no budget → unchanged` cases in the fetch-budget specs and the lookalikes
+fan-out pair (`dns-starvation`, `registration-age`) legitimately slow: leave
+them. `composeAbortSignal` in `discover-subdomains.ts` uses a plain `setTimeout`
+and IS fakeable — check the primitive before assuming.
+
+## The suite is import-bound, not test-bound
+
+Measured 2026-09-11 (M4 Pro, 14 cores): full run **~3:06 wall**, of which
+**import is 1,016s cumulative across 727 files (~1.4s/file)** against 735s of
+cumulative test time. Consequences before anyone "optimises the tests":
+
+- Shaving cumulative test time barely moves the wall clock. Cutting those 81.3s
+  to 10.4s changed the full run by nothing measurable (3:06.28 → 3:09.50, inside
+  variance). It is an **inner-loop** win — one spec 22s → 2s — not a CI win.
+- `--maxWorkers` does not help: 89 files ran 27.45s at default, 29.92s at 14.
+- The import cost is the mock-isolation convention (rule 1 above) re-importing
+  the worker graph per file. That is the only real lever left, and it trades
+  against the isolation those dynamic imports buy.
+- **Adding a spec FILE costs ~1.4s.** Splitting a slow file is a net loss once
+  its slow test is fixed.
+
+⚠️ **Never baseline a timing run without checking CPU utilisation.** The first
+measurement of this suite read 6:10 at **187% CPU**; every later run read ~3:06
+at ~280%. The 6:10 was a contended machine, not the suite, and reporting it
+overstated the wall clock by 2×. The five "failures" in that run were the
+teardown/segfault flake documented below — they vanish on a quiet run with no
+code change. Re-run before concluding.
+
 ## Expected `npm test` exit 1 in a FRESH WORKTREE — not a real failure
 
 `test/wasm-integration.test.ts` fails to **LOAD** with `No such module …bv_wasm_core_bg.wasm`, and the run reports **0 test failures**. `crates/bv-wasm-core/pkg/` is produced only by `npm run build:wasm` (wasm-pack), which **neither `scripts/worktree-setup.sh` nor `npm ci` runs** — CI builds it separately with a cached wasm-pack binary. Distinguish it from a real failure by that shape: a *suite-load* error alongside `N passed, 0 failed`. Run `npm run build:wasm` once per worktree for a fully green local run. Confirmed independently by two agents on unrelated branches (2026-08-03). **Do not "fix" it by editing the spec.**

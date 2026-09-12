@@ -1,7 +1,7 @@
 import { vi, describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { setupFetchMock } from '../helpers/dns-mock';
 
-describe('CHAOS: CSC pipeline failure modes', () => {
+describe('CHAOS: registrar-complement pipeline failure modes', () => {
 	let fetchMock: ReturnType<typeof setupFetchMock>;
 
 	beforeEach(() => {
@@ -33,7 +33,7 @@ describe('CHAOS: CSC pipeline failure modes', () => {
 			return Promise.reject(new Error('Unexpected fetch'));
 		});
 
-		const { enrichCandidatesForDefensiveDetection } = await import('../../src/lib/brand-audit-csc-enrichment');
+		const { enrichCandidatesForDefensiveDetection } = await import('../../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
 			target: 'ford.com',
 			candidates: [
@@ -70,7 +70,7 @@ describe('CHAOS: CSC pipeline failure modes', () => {
 			};
 		};
 
-		const { runDeepScan } = await import('../../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({
 			anchorApex: 'ok1.com',
 			apexes: ['ok1.com', 'broken.com', 'ok2.com'],
@@ -109,7 +109,7 @@ describe('CHAOS: CSC pipeline failure modes', () => {
 			};
 		};
 
-		const { runDeepScan } = await import('../../src/lib/brand-audit-csc-deepscan');
+		const { runDeepScan } = await import('../../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({
 			anchorApex: 'a.com',
 			apexes: ['a.com', 'b.com'],

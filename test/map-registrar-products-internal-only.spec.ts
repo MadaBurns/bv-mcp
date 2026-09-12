@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 //
-// Security hotfix: map_csc_products is INTERNAL-ONLY. It stays registered in
+// Security hotfix: map_registrar_products is INTERNAL-ONLY. It stays registered in
 // TOOL_DEFS/TOOLS (so it is callable on the /internal/tools/* path and usable
-// internally by prioritize_csc_leads), but is hidden from and rejected on the
+// internally by prioritize_portfolio_leads), but is hidden from and rejected on the
 // PUBLIC /mcp surface. These tests pin all four halves of that contract:
 //   1. isInternalOnlyTool / INTERNAL_ONLY_TOOLS membership.
 //   2. handleToolsList (public) hides internal tools → 79 tools; scan_domain still present.
@@ -23,7 +23,7 @@ import type { JsonRpcRequest } from '../src/lib/json-rpc';
 const PUBLIC_TOOL_COUNT = TOOLS.length - INTERNAL_ONLY_TOOLS.size;
 
 // Keep the internal-path execution assertion fast: stub scan + RDAP so
-// mapCscProducts resolves without live DNS. (Mirrors map-csc-products.integration.test.ts.)
+// mapRegistrarProducts resolves without live DNS. (Mirrors map-registrar-products.integration.test.ts.)
 const mockScanDomain = vi.fn();
 const mockCheckRdap = vi.fn();
 vi.mock('../src/tools/scan-domain', () => ({ scanDomain: (...a: unknown[]) => mockScanDomain(...a) }));
@@ -61,23 +61,23 @@ afterEach(() => {
 });
 
 describe('INTERNAL_ONLY_TOOLS membership', () => {
-	it('map_csc_products is internal-only; scan_domain is not', () => {
-		expect(isInternalOnlyTool('map_csc_products')).toBe(true);
+	it('map_registrar_products is internal-only; scan_domain is not', () => {
+		expect(isInternalOnlyTool('map_registrar_products')).toBe(true);
 		expect(isInternalOnlyTool('scan_domain')).toBe(false);
-		expect(INTERNAL_ONLY_TOOLS.has('map_csc_products')).toBe(true);
+		expect(INTERNAL_ONLY_TOOLS.has('map_registrar_products')).toBe(true);
 	});
 });
 
 describe('tool registry vs public surface', () => {
-	it('TOOLS still includes map_csc_products (internal callability preserved) — length 84', () => {
-		expect(TOOLS.some((t) => t.name === 'map_csc_products')).toBe(true);
+	it('TOOLS still includes map_registrar_products (internal callability preserved) — length 84', () => {
+		expect(TOOLS.some((t) => t.name === 'map_registrar_products')).toBe(true);
 		expect(TOOLS.length).toBe(84);
 	});
 
 	it('handleToolsList hides every internal-only tool and returns the public count (79)', () => {
 		const { tools } = handleToolsList();
 		const names = tools.map((t) => t.name);
-		expect(names).not.toContain('map_csc_products');
+		expect(names).not.toContain('map_registrar_products');
 		// Withdrawn from the catalog in 3.63.0 alongside the tenant-read kill switch.
 		expect(names).not.toContain('query_signins');
 		expect(names).toContain('scan_domain');
@@ -88,7 +88,7 @@ describe('tool registry vs public surface', () => {
 });
 
 describe('executeMcpRequest — internal-only tool rejected on public /mcp', () => {
-	it('unauthenticated public map_csc_products → unknown-tool result (200, not 403, not executed)', async () => {
+	it('unauthenticated public map_registrar_products → unknown-tool result (200, not 403, not executed)', async () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
@@ -96,7 +96,7 @@ describe('executeMcpRequest — internal-only tool rejected on public /mcp', () 
 					jsonrpc: '2.0',
 					id: 200,
 					method: 'tools/call',
-					params: { name: 'map_csc_products', arguments: { domain: 'example.com' } },
+					params: { name: 'map_registrar_products', arguments: { domain: 'example.com' } },
 				} as JsonRpcRequest,
 				isAuthenticated: false,
 			}),
@@ -116,7 +116,7 @@ describe('executeMcpRequest — internal-only tool rejected on public /mcp', () 
 		expect(mockScanDomain).not.toHaveBeenCalled();
 	});
 
-	it('authenticated OWNER-tier public map_csc_products is also rejected (removed from surface entirely)', async () => {
+	it('authenticated OWNER-tier public map_registrar_products is also rejected (removed from surface entirely)', async () => {
 		const { executeMcpRequest } = await import('../src/mcp/execute');
 		const result = await executeMcpRequest(
 			baseOptions({
@@ -124,7 +124,7 @@ describe('executeMcpRequest — internal-only tool rejected on public /mcp', () 
 					jsonrpc: '2.0',
 					id: 201,
 					method: 'tools/call',
-					params: { name: 'map_csc_products', arguments: { domain: 'example.com' } },
+					params: { name: 'map_registrar_products', arguments: { domain: 'example.com' } },
 				} as JsonRpcRequest,
 				isAuthenticated: true,
 				tierAuthResult: { authenticated: true, tier: 'owner', keyHash: 'k_owner' },
@@ -145,13 +145,13 @@ describe('executeMcpRequest — internal-only tool rejected on public /mcp', () 
 	});
 });
 
-describe('handleToolsCall — internal path still executes map_csc_products', () => {
-	it('resolves map_csc_products (does NOT return an unknown-tool error)', async () => {
+describe('handleToolsCall — internal path still executes map_registrar_products', () => {
+	it('resolves map_registrar_products (does NOT return an unknown-tool error)', async () => {
 		mockScanDomain.mockResolvedValue({ checks: [], score: { overall: 90, grade: 'A' } });
 		mockCheckRdap.mockResolvedValue({ category: 'rdap', passed: true, score: 100, findings: [] });
 
 		const { handleToolsCall } = await import('../src/handlers/tools');
-		const result = await handleToolsCall({ name: 'map_csc_products', arguments: { domain: 'example.com' } });
+		const result = await handleToolsCall({ name: 'map_registrar_products', arguments: { domain: 'example.com' } });
 
 		const text = result.content?.[0]?.text ?? '';
 		expect(text).not.toContain('Unknown tool');

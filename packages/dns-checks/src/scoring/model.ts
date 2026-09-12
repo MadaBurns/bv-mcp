@@ -300,6 +300,30 @@ export function findingsIndicateMissingControl(findings: Finding[]): boolean {
 }
 
 /**
+ * Canonical partial-enforcement decision for a set of findings (scoring model 1.26.0).
+ *
+ * "Partial enforcement" means the control is PRESENT and ACTIVE but stops short of its
+ * full setting — DMARC `p=quarantine`, or any `p=` with `pct<100`. It is neither a missing
+ * control (the category is not zeroed) nor a clean pass: in the profiles where the category
+ * is critical, the generic engine caps the overall score at `partialEnforcementCeiling`
+ * (94 → NIST display A, never A+).
+ *
+ * STRUCTURAL ONLY, by design. Unlike {@link findingsIndicateMissingControl} there is no
+ * prose-inference leg: a check author declares the state with `metadata.partialEnforcement:
+ * true` or it does not exist. The 2026-08-20 incident (a scanned domain's own name supplying
+ * the substring "missing" and zeroing a category — see {@link redactSubjectData}) is the
+ * reason a second prose-driven gate is not being added.
+ *
+ * A finding that ALSO declares `missingControl: true` does not count: missing beats partial,
+ * and the engine's partial-enforcement ceiling is skipped for any category the critical-gap
+ * ceiling already owns. Measurement status is intentionally not accepted here: callers
+ * operating on whole check results must gate this predicate with `isCheckMeasured`.
+ */
+export function findingsIndicatePartialEnforcement(findings: Finding[]): boolean {
+	return findings.some((f) => f.metadata?.partialEnforcement === true && f.metadata?.missingControl !== true);
+}
+
+/**
  * Build a CheckResult from a category and its findings.
  * A check fails (passed=false) if the score is below 50, if findings indicate
  * a fundamentally missing security control (e.g., no SPF/DMARC record), or if

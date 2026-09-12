@@ -55,8 +55,8 @@ import { computeDrift, formatDriftReport, isUsableDriftBaseline } from '../tools
 import { resolveSpfChain, formatSpfChain } from '../tools/resolve-spf-chain';
 import { discoverSubdomains, formatSubdomainDiscovery, DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS } from '../tools/discover-subdomains';
 import { mapCompliance, formatCompliance } from '../tools/map-compliance';
-import { mapCscProducts, formatCscProducts } from '../tools/map-csc-products';
-import { prioritizeCscLeads, formatCscLeads } from '../tools/prioritize-csc-leads';
+import { mapRegistrarProducts, formatRegistrarProducts } from '../tools/map-registrar-products';
+import { prioritizePortfolioLeads, formatPortfolioLeads } from '../tools/prioritize-portfolio-leads';
 import { simulateAttackPaths, formatAttackPaths } from '../tools/simulate-attack-paths';
 import { checkDbl } from '../tools/check-dbl';
 import { checkRbl } from '../tools/check-rbl';
@@ -145,7 +145,7 @@ interface WireTool {
  */
 export function handleToolsList(): { tools: WireTool[] } {
 	return {
-		// Internal-only tools (INTERNAL_ONLY_TOOLS, e.g. map_csc_products) stay in
+		// Internal-only tools (INTERNAL_ONLY_TOOLS, e.g. map_registrar_products) stay in
 		// TOOLS for internal-path callability but are hidden from the PUBLIC surface.
 		tools: TOOLS.filter((tool) => !isInternalOnlyTool(tool.name)).map((tool) => ({
 			name: tool.name,
@@ -218,8 +218,8 @@ export const DIRECT_DISPATCH_TOOLS = new Set([
 	'resolve_spf_chain',
 	'discover_subdomains',
 	'map_compliance',
-	'map_csc_products',
-	'prioritize_csc_leads',
+	'map_registrar_products',
+	'prioritize_portfolio_leads',
 	'simulate_attack_paths',
 	'query_signins',
 	'query_ual',
@@ -830,7 +830,7 @@ export const TOOL_REGISTRY: Record<
 					discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
 					brand_aliases: args.brand_aliases as string[] | undefined,
 					candidate_domains: args.candidate_domains as string[] | undefined,
-					view: args.view as 'standard' | 'csc_complement' | undefined,
+					view: args.view as 'standard' | 'registrar_complement' | undefined,
 					// T13 — propagate the BlackVeil-production runtime override.
 					// Pipeline only honours it when the caller omits `discovery_mode`;
 					// undefined on BSL self-hosts (schema default `'classic'` wins).
@@ -843,9 +843,9 @@ export const TOOL_REGISTRY: Record<
 					certstreamAuthToken: ro?.certstreamAuthToken,
 					whoisBinding: ro?.whoisBinding,
 					enforceQuota: buildMonthlyEnforceQuota(ro),
-					// The brand-audit queue binding doubles as the CSC fast→full
+					// The brand-audit queue binding doubles as the registrar fast→full
 					// deep-scan trigger in the pipeline (brand-audit-pipeline.ts:1061).
-					// Without it, sync view='csc_complement' audits write only the
+					// Without it, sync view='registrar_complement' audits write only the
 					// fast payload and brand_audit_get_report can never surface the
 					// full enrichment.
 					...(ro?.brandAuditQueue ? { brandAuditQueue: ro.brandAuditQueue } : {}),
@@ -890,7 +890,7 @@ export const TOOL_REGISTRY: Record<
 					brand_aliases: args.brand_aliases as string[] | undefined,
 					candidate_domains: args.candidate_domains as string[] | undefined,
 					discovery_mode: args.discovery_mode as 'classic' | 'tiered' | undefined,
-					view: args.view as 'standard' | 'csc_complement' | undefined,
+					view: args.view as 'standard' | 'registrar_complement' | undefined,
 				},
 				principalId,
 				{ db, queue, enforceQuota: buildMonthlyEnforceQuota(ro) },
@@ -1238,13 +1238,13 @@ export async function handleToolsCall(
 				return buildToolErrorResult('Invalid request: m365_proxy_unauthenticated (authentication required).');
 			}
 
-			// Tier gate: csc_complement view requires enterprise or owner tier.
+			// Tier gate: registrar_complement view requires enterprise or owner tier.
 			if (name === 'brand_audit_single' || name === 'brand_audit_batch_start') {
 				const requestedView = (validatedArgs as { view?: string }).view;
-				if (requestedView === 'csc_complement') {
+				if (requestedView === 'registrar_complement') {
 					const tier = runtimeOptions?.authTier;
 					if (tier !== 'enterprise' && tier !== 'owner') {
-						return buildToolErrorResult("Invalid view: 'csc_complement' requires enterprise tier");
+						return buildToolErrorResult("Invalid view: 'registrar_complement' requires enterprise tier");
 					}
 				}
 			}
@@ -1867,19 +1867,19 @@ export async function handleToolsCall(
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 					return buildToolResult(formatCompliance(result, effectiveFormat), result, effectiveFormat);
 				}
-				case 'map_csc_products': {
+				case 'map_registrar_products': {
 					const forceRefresh = extractForceRefresh(validatedArgs);
 					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
-					const result = await mapCscProducts(validDomain, scanCacheKV, scanOptions);
+					const result = await mapRegistrarProducts(validDomain, scanCacheKV, scanOptions);
 					logResult = `${result.recommendedCount} recommended`;
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-					return buildToolResult(formatCscProducts(result, effectiveFormat), result, effectiveFormat);
+					return buildToolResult(formatRegistrarProducts(result, effectiveFormat), result, effectiveFormat);
 				}
-				case 'prioritize_csc_leads': {
+				case 'prioritize_portfolio_leads': {
 					const forceRefresh = extractForceRefresh(validatedArgs);
 					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
-					const result = await prioritizeCscLeads(
+					const result = await prioritizePortfolioLeads(
 						{
 							domains: validatedArgs.domains as string[] | undefined,
 							brand: validatedArgs.brand as string | undefined,
@@ -1891,7 +1891,7 @@ export async function handleToolsCall(
 					logResult = `${result.rankedLeads.length} leads, ${result.summary.hotLeads} hot`;
 					logDetails = { totalDomains: result.totalDomains, hotLeads: result.summary.hotLeads };
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
-					return buildToolResult(formatCscLeads(result, effectiveFormat), result, effectiveFormat);
+					return buildToolResult(formatPortfolioLeads(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'simulate_attack_paths': {
 					const result = await simulateAttackPaths(validDomain, buildDnsOptions(runtimeOptions));
