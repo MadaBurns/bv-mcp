@@ -389,13 +389,32 @@ export function isTlsCertAltnameMismatch(message: string): boolean {
 	);
 }
 
-export async function scanSubdomainForTakeover(
+/** One swept subdomain's findings plus whether its CNAME probe actually answered (#948). */
+export interface SubdomainScanOutcome {
+	findings: Finding[];
+	/**
+	 * True when the outer `queryDNS(fqdn, 'CNAME')` threw, i.e. this subdomain was never
+	 * measured. An empty `findings` array on its own cannot distinguish "measured, nothing
+	 * dangling" from "the query failed", and conflating the two let a total resolver
+	 * outage produce the clean "No dangling CNAME records found" verdict at score 100.
+	 */
+	cnameQueryFailed: boolean;
+}
+
+/**
+ * The real sweep. Returns measurement provenance alongside the findings.
+ *
+ * This is the additive shape; `scanSubdomainForTakeover` below stays as a thin `Finding[]`
+ * wrapper. See that function's note for the (measured) reason — it is NOT the public-API
+ * argument an earlier draft of this comment made.
+ */
+export async function scanSubdomainForTakeoverInternal(
 	domain: string,
 	subdomain: string,
 	queryDNS: DNSQueryFunction,
 	fetchFn: FetchFunction,
 	timeout?: number,
-): Promise<Finding[]> {
+): Promise<SubdomainScanOutcome> {
 	// Allow subdomain to be a full FQDN (caller passes from CT enumeration) OR a
 	// short label that we append to the apex (legacy KNOWN_SUBDOMAINS path).
 	const fqdn = subdomain.includes('.') ? subdomain.replace(/^\*\./, '') : `${subdomain}.${domain}`;
@@ -466,9 +485,44 @@ export async function scanSubdomainForTakeover(
 			}
 		}
 	} catch {
-		// No CNAME or query failed; not critical.
+		// The CNAME query itself failed — this subdomain was NOT measured. Nothing is
+		// pushed (a failed lookup is not evidence of a dangling record), but the caller
+		// is told, so it can abstain rather than issue a clean verdict for a sweep that
+		// never happened (#948).
+		return { findings, cnameQueryFailed: true };
 	}
 
+	return { findings, cnameQueryFailed: false };
+}
+
+/**
+ * Wrapper preserving the pre-#948 `Finding[]` signature.
+ *
+ * ⚠️ CORRECTION (#948 review): an earlier version of this comment claimed the name is
+ * barrel-exported and part of the published surface that bv-web-prod compiles against.
+ * That is FALSE, and it was checked: `scanSubdomainForTakeover` is NOT re-exported from
+ * `packages/dns-checks/src/index.ts`, and the manifest's `exports` map offers only `.`,
+ * `./scoring`, `./whois` and `./cert` — no subpath reaches this module. Changing its
+ * signature could not break a downstream tarball consumer, because none can import it.
+ * (The fleet rule this violated: verify a vendored package's `exports`, never assume from
+ * the filename.)
+ *
+ * The wrapper is kept anyway, for a smaller and honest reason: eight call sites in
+ * `test/subdomain-takeover-analysis.spec.ts` use this signature, and churning them to
+ * destructure `.findings` would add diff noise to a scoring fix without buying anything.
+ * In-package callers that need the measurement provenance use
+ * `scanSubdomainForTakeoverInternal`.
+ *
+ * If a future change wants this name gone, deleting it is safe — just update those tests.
+ */
+export async function scanSubdomainForTakeover(
+	domain: string,
+	subdomain: string,
+	queryDNS: DNSQueryFunction,
+	fetchFn: FetchFunction,
+	timeout?: number,
+): Promise<Finding[]> {
+	const { findings } = await scanSubdomainForTakeoverInternal(domain, subdomain, queryDNS, fetchFn, timeout);
 	return findings;
 }
 
