@@ -267,6 +267,8 @@ describe('checkZoneHygiene', () => {
 				cnamePool?: { target: string; canaryIps: string[]; hitIps: string[] };
 				/** AAAA-only wildcard (#942): the A canary is empty, this answers the AAAA one. */
 				aaaaWildcard?: string[];
+				/** The AAAA canary THROWS while the A canary answers cleanly (#942 review). */
+				aaaaCanaryThrows?: boolean;
 				soaExpire?: number;
 			} = {},
 		) {
@@ -292,6 +294,9 @@ describe('checkZoneHygiene', () => {
 				}
 				if (type === 'AAAA' || type === '28') {
 					aaaaQueries.push(name);
+					if (name.startsWith('_bv-probe-') && opts.aaaaCanaryThrows) {
+						return Promise.reject(new Error('DNS query timed out after 3000ms'));
+					}
 					if (name.startsWith('_bv-probe-') && opts.aaaaWildcard) {
 						return Promise.resolve(aaaaResponse(name, opts.aaaaWildcard));
 					}
@@ -302,7 +307,8 @@ describe('checkZoneHygiene', () => {
 					if (name.startsWith('_bv-probe-')) {
 						if (opts.canaryThrows) return Promise.reject(new Error('DNS query timed out after 3000ms'));
 						// An AAAA-only wildcard zone answers nothing in the A family, canary included.
-						if (opts.aaaaWildcard) return Promise.resolve(emptyResponse(name, 1));
+						// `aaaaCanaryThrows` models the same A-side shape: no IPv4 wildcard at all.
+						if (opts.aaaaWildcard || opts.aaaaCanaryThrows) return Promise.resolve(emptyResponse(name, 1));
 						canaryCalls++;
 						if (opts.cnamePool) return Promise.resolve(cnameResponse(name, opts.cnamePool.target, opts.cnamePool.canaryIps));
 						const ips = canaryAnswers[Math.min(canaryCalls - 1, canaryAnswers.length - 1)];
@@ -311,7 +317,7 @@ describe('checkZoneHygiene', () => {
 					if (opts.realHosts?.[name]) return Promise.resolve(aResponse(name, opts.realHosts[name]));
 					// Everything else under the zone is answered by the wildcard — except on an
 					// AAAA-only wildcard zone, where the A family is genuinely empty.
-					if (opts.aaaaWildcard) return Promise.resolve(emptyResponse(name, 1));
+					if (opts.aaaaWildcard || opts.aaaaCanaryThrows) return Promise.resolve(emptyResponse(name, 1));
 					if (opts.cnamePool) return Promise.resolve(cnameResponse(name, opts.cnamePool.target, opts.cnamePool.hitIps));
 					return Promise.resolve(aResponse(name, [WILDCARD_IP]));
 				}
@@ -325,6 +331,27 @@ describe('checkZoneHygiene', () => {
 		function canaryNames(queries: string[]) {
 			return new Set(queries.filter((n) => n.startsWith('_bv-probe-')));
 		}
+
+		it('a thrown AAAA canary does not withdraw the answer the A canary already gave (#942 review)', async () => {
+			// The AAAA canary is a STRICT ADDITION: it can upgrade the verdict to an IPv6
+			// wildcard, never withdraw the A canary's measurement. Here the A canary answers
+			// cleanly (this zone has no IPv4 wildcard — the COMMON case) and only the AAAA
+			// query flakes. The sensitive sweep is IPv4-only, so it is still fully meaningful
+			// and must run; routing this through the inconclusive lane would report the whole
+			// check unassessed on one flaked query, roughly doubling the abstention rate.
+			wildcardMock({ aaaaCanaryThrows: true, realHosts: { 'vpn.example.com': ['203.0.113.10'] } });
+			const result = await run();
+
+			// The sweep RAN: the real IPv4 host is reported, at its real severity.
+			const vpn = result.findings.find((f) => f.title === 'Internal subdomain resolves publicly: vpn.example.com');
+			expect(vpn).toBeDefined();
+			expect(vpn!.severity).toBe('medium');
+
+			// And the check is NOT reported as unassessed.
+			expect(result.checkStatus).toBeUndefined();
+			expect(result.partial).toBeUndefined();
+			expect(result.findings.find((f) => f.title === 'Wildcard DNS masks sensitive subdomain probing')).toBeUndefined();
+		});
 
 		it('suppresses every wildcard-synthetic hit into a single info observation and does not zero the category', async () => {
 			const { aQueries, aaaaQueries } = wildcardMock();

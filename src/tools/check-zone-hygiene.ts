@@ -72,7 +72,25 @@ async function probeWildcard(domain: string, dnsOptions?: QueryDnsOptions): Prom
 	try {
 		const { ips, cname } = await lookupA(probeSubdomain, dnsOptions);
 		if (ips.length === 0 && cname === undefined) {
-			const v6 = await lookupAaaa(probeSubdomain, dnsOptions);
+			// The A canary ANSWERED, and its answer is that this zone synthesises no IPv4
+			// wildcard. The sensitive-subdomain sweep below is IPv4-only (`lookupA`), so that
+			// one fact already settles every hit the sweep can produce — an IPv4 hit here
+			// cannot be wildcard-synthetic. The AAAA canary is a STRICT ADDITION on top: it can
+			// only UPGRADE the verdict to `detected_ipv6`. It must never be able to WITHDRAW a
+			// measurement the A canary already made, so it gets its own catch.
+			//
+			// Inside the outer try it did exactly that: on any domain with no IPv4 wildcard —
+			// the common case, not the rare one — a single flaked AAAA query returned
+			// `inconclusive`, which skips the whole sweep and reports the check unassessed with
+			// a note claiming we could not tell a resolving hit from a wildcard answer. The A
+			// canary had told us precisely that. Same rule the `detected_ipv6` arm already
+			// states: never route a measurement that WAS taken through the inconclusive lane.
+			let v6: string[] = [];
+			try {
+				v6 = await lookupAaaa(probeSubdomain, dnsOptions);
+			} catch {
+				v6 = [];
+			}
 			if (v6.length > 0) return { status: 'detected_ipv6', ips: v6, probeSubdomain };
 			return { status: 'absent', probeSubdomain };
 		}

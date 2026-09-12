@@ -186,10 +186,10 @@ export async function correlateNs(seedDomain: string, options: NsCorrelationOpti
 		// hostnames across many unrelated customers. Their overlap is operational
 		// plumbing, not ownership evidence — exclude them from the confidence
 		// math. Providers NOT in `SHARED_NS_APEXES` remain ownership-bearing by
-		// omission, not by proof: Route 53 draws four hosts from a large pool,
-		// but Cloud DNS hands out one of a handful of fixed
-		// `ns-cloud-*.googledomains.com` sets, so a full match there is weaker
-		// than this math credits (#929 follow-up issue, linked from PR #937).
+		// omission, not by proof. Route 53 and Cloudflare were re-measured for
+		// #939 (2026-09-09) and stay ownership-bearing (per-zone / per-account
+		// pools); Cloud DNS's five fixed `ns-cloud-*.googledomains.com` sets
+		// are now listed as shared, with the other uniform-set platforms.
 		const ownershipBearingShared = shared.filter((ns) => !isSharedNsHost(ns));
 		if (ownershipBearingShared.length === 0) return { candidate: null, failed: false };
 

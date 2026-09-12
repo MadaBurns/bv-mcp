@@ -80,6 +80,15 @@ export interface ScoringConfig {
 		criticalOverallPenalty: number;
 		criticalGapCeiling: number;
 		/**
+		 * Overall-score ceiling applied when a critical category is PARTIALLY enforced
+		 * (`metadata.partialEnforcement: true` on a measured finding — DMARC `p=quarantine`
+		 * or `pct<100`) and not already a critical gap. Default 94: the highest score that
+		 * still reads NIST display `A`, so a mail domain short of full `p=reject` can never
+		 * print `A+`. Scoring model 1.26.0. Like `criticalGapCeiling`, merged numerically
+		 * and unclamped; the engine falls back to the default if a hand-built config omits it.
+		 */
+		partialEnforcementCeiling: number;
+		/**
 		 * Minimum fraction of attempted checks that must COMPLETE for a scan to be
 		 * graded at all (0–1). Not a scoring cut-point: it never changes what a grade
 		 * means, only whether one is emitted. Clamped to [0, 1] on parse.
@@ -190,6 +199,7 @@ export const DEFAULT_SCORING_CONFIG: ScoringConfig = {
 		spfStrongThreshold: 57,
 		criticalOverallPenalty: 15,
 		criticalGapCeiling: 64,
+		partialEnforcementCeiling: 94,
 		evidenceSufficiency: EVIDENCE_SUFFICIENCY_THRESHOLD,
 	},
 	grades: {

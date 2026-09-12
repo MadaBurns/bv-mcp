@@ -260,7 +260,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		register_brand_audit_watch: 0,
 		delete_brand_audit_watch: 0,
 		list_brand_audit_watches: 0,
-		prioritize_csc_leads: 0,
+		prioritize_portfolio_leads: 0,
 		query_signins: 0,
 		query_ual: 0,
 		get_ca_policies: 0,
@@ -292,7 +292,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		register_brand_audit_watch: 0,
 		delete_brand_audit_watch: 0,
 		list_brand_audit_watches: 0,
-		prioritize_csc_leads: 0,
+		prioritize_portfolio_leads: 0,
 		query_signins: 0,
 		query_ual: 0,
 		get_ca_policies: 0,
@@ -345,9 +345,9 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	resolve_spf_chain: 15,
 	discover_subdomains: 0,
 	map_compliance: 5,
-	// map_csc_products is INTERNAL_ONLY_TOOLS — not public-callable, so it carries
+	// map_registrar_products is INTERNAL_ONLY_TOOLS — not public-callable, so it carries
 	// no public free-tier quota (tool-quota-coverage audit exempts internal-only tools).
-	prioritize_csc_leads: 0,
+	prioritize_portfolio_leads: 0,
 	simulate_attack_paths: 0,
 	check_dbl: 5,
 	check_rbl: 5,
@@ -422,7 +422,7 @@ export const GATED_PAID_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
 	'batch_scan_status',
 	'batch_scan_findings',
 	'compare_domains',
-	'prioritize_csc_leads',
+	'prioritize_portfolio_leads',
 	// already paid-only; folded in for a consistent upgrade message
 	'discover_brand_domains',
 	'discover_brand_domains_start',
@@ -447,7 +447,7 @@ export function isGatedPaidOnlyTool(toolName: string): boolean {
  * Tools removed from the PUBLIC `/mcp` surface but still registered in
  * TOOL_DEFS/TOOLS so they remain callable over the internal path
  * (`/internal/tools/*` → handleToolsCall) and usable internally by other tools
- * (e.g. `prioritize_csc_leads` calls the map_csc_products FUNCTION directly).
+ * (e.g. `prioritize_portfolio_leads` calls the map_registrar_products FUNCTION directly).
  *
  * Enforcement (public path only, in src/mcp/execute.ts): a public `tools/call`
  * for a member short-circuits and returns the SAME unknown-tool result a
@@ -459,7 +459,7 @@ export function isGatedPaidOnlyTool(toolName: string): boolean {
  * the tool-quota-coverage audit exempts them.
  */
 export const INTERNAL_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
-	'map_csc_products',
+	'map_registrar_products',
 
 	// ── identity_secops (M365 client-tenant surface) ──────────────────────────
 	// Withdrawn from the public catalog alongside the 3.62.0 fail-closed kill
@@ -827,9 +827,9 @@ export const INTENTIONALLY_PARTNER_FLAT_TOOLS: ReadonlySet<string> = new Set<str
 	'analyze_drift',
 	'validate_fix',
 	'map_compliance',
-	'prioritize_csc_leads',
+	'prioritize_portfolio_leads',
 	'simulate_attack_paths',
-	'map_csc_products', // INTERNAL_ONLY_TOOLS — not public-callable; flat limit is moot but recorded
+	'map_registrar_products', // INTERNAL_ONLY_TOOLS — not public-callable; flat limit is moot but recorded
 
 	// ── Multi-domain orchestrators. Bounded by their own budget/concurrency
 	// (batch_scan: budgetMs 25s, concurrency 3), so the daily count is not the

@@ -335,6 +335,75 @@ describe('checkRdapLookup WHOIS fallback — #931 (.dk / failed-lookup honesty)'
 		expect(redacted.partial).toBeUndefined();
 	});
 
+	// #943 — the RDAP side of the same hazard. The registry entry caches every
+	// non-partial rdap_lookup result for 3600s, so an RDAP transient (including
+	// our own 24s RDAP_LOOKUP_SYNC_BUDGET_MS expiring) used to be pinned for an
+	// hour as though it were a deterministic answer.
+	it('marks an RDAP fetch error (WHOIS also down) partial so the 3600s registry cache skips it', async () => {
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input.toString();
+			if (url.includes('data.iana.org')) return new Response(JSON.stringify(COM_BOOTSTRAP), { status: 200 });
+			throw new TypeError('network down');
+		}) as never;
+		const whoisBinding = makeWhoisBinding({ registrar: null, source: 'error', failureReason: 'timeout' });
+
+		const result = await (await freshChecker())('example.com', { whoisBinding });
+
+		const reg = result.findings.find((f) => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg, 'an RDAP throw with no WHOIS rescue should yield lookup_failed').toBeDefined();
+		// Assert the discriminator too: if reconcileWithWhois ever stopped carrying
+		// the RDAP reason through, the partial assertion alone would pass vacuously
+		// (whois_timeout is transient as well).
+		expect(reg!.metadata!.registrarFailureReason).toBe('rdap_fetch_error');
+		expect(result.partial).toBe(true);
+	});
+
+	it('marks a caller_aborted lookup partial (our own budget expiring is not a fact about the domain)', async () => {
+		mockIanaAndRdap(COM_BOOTSTRAP, RDAP_WITH_REGISTRAR);
+		const controller = new AbortController();
+		controller.abort();
+
+		const result = await (await freshChecker())('example.com', { signal: controller.signal });
+
+		const reg = result.findings.find((f) => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg, 'a pre-aborted signal should fast-path to lookup_failed').toBeDefined();
+		expect(reg!.metadata!.registrarFailureReason).toBe('caller_aborted');
+		expect(result.partial).toBe(true);
+	});
+
+	it('marks a retryable RDAP HTTP status (503) partial', async () => {
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input.toString();
+			if (url.includes('data.iana.org')) return new Response(JSON.stringify(COM_BOOTSTRAP), { status: 200 });
+			return new Response('Service Unavailable', { status: 503 });
+		}) as never;
+		const whoisBinding = makeWhoisBinding({ registrar: null, source: 'error' });
+
+		const result = await (await freshChecker())('example.com', { whoisBinding });
+
+		const reg = result.findings.find((f) => f.metadata?.registrarSource === 'lookup_failed');
+		expect(reg!.metadata!.registrarFailureReason).toBe('rdap_http_503');
+		expect(result.partial).toBe(true);
+	});
+
+	// The guard: this is what pins the claim that reconcileWithWhois — NOT an
+	// extra gate inside finishRdapResult — keeps a WHOIS-rescued result cacheable.
+	it('leaves an RDAP failure that WHOIS rescued cacheable (partial undefined, source=whois)', async () => {
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL) => {
+			const url = typeof input === 'string' ? input : input.toString();
+			if (url.includes('data.iana.org')) return new Response(JSON.stringify(COM_BOOTSTRAP), { status: 200 });
+			throw new TypeError('network down');
+		}) as never;
+		const whoisBinding = makeWhoisBinding({ registrar: 'WhoisReg', source: 'whois' });
+
+		const result = await (await freshChecker())('example.com', { whoisBinding });
+
+		const reg = result.findings.find((f) => f.metadata?.registrarSource);
+		expect(reg!.metadata!.registrarSource).toBe('whois');
+		expect(reg!.metadata!.registrarFailureReason).toBeUndefined();
+		expect(result.partial).toBeUndefined();
+	});
+
 	it('presents a registrant-managed .dk answer as redacted WITH its public dates (policy omission, not a failure)', async () => {
 		mockIanaAndRdap(EMPTY_BOOTSTRAP);
 		// Post-fix shim shape for a Punktum registrant-managed domain. No

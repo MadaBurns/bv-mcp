@@ -1502,6 +1502,28 @@ export const DETAIL_SIGNATURES: DetailSignatureRule[] = [
 		},
 	},
 	{
+		// Scoring model 1.26.0: the quarantine finding moved low → medium, which relocated
+		// it from the DMARC_LOW bucket ("Alignment / Reporting Refinement") into DMARC_MEDIUM
+		// ("Coverage Gap") — neither of which describes it. This signature gives it its own
+		// narrative. Ordered AFTER the subdomain-policy rule (whose "…domain policy is
+		// 'quarantine'" prose would otherwise match here) and BEFORE the rua= / pct= rules,
+		// so the classifier's quarantine detail — which avoids those tokens — lands here.
+		id: 'DMARC_POLICY_QUARANTINE',
+		checkType: 'DMARC',
+		pattern: /p=quarantine|policy (?:is |set to )?["']?quarantine/i,
+		template: {
+			title: 'DMARC Policy Is Quarantine, Not Reject (p=quarantine)',
+			explanation:
+				'A valid DMARC record is published and enforcing, but at p=quarantine: receivers divert messages that fail authentication to spam or junk, where a recipient can still open and act on them. A p=reject policy refuses those messages at the SMTP gate before they reach any mailbox. Quarantine is real enforcement one step short of the end state.',
+			impact: 'Spoofed mail is diverted rather than refused, so a share of it is still opened.',
+			adverseConsequences:
+				'Impersonation attempts that land in junk folders continue to succeed at the rate recipients rescue them, and the domain cannot reach the top grade or satisfy p=reject mandates (NZ SGE, US BOD 18-01, BSI TR-03182).',
+			recommendation:
+				'Confirm from DMARC reporting that every legitimate sender aligns, then move p=quarantine to p=reject (keeping pct=100). Tighten sp= to match so subdomains are covered.',
+			references: ['https://datatracker.ietf.org/doc/html/rfc7489#section-6.3'],
+		},
+	},
+	{
 		id: 'DMARC_NO_AGGREGATE_REPORTING',
 		checkType: 'DMARC',
 		pattern: /rua=|aggregate report/i,

@@ -149,6 +149,50 @@ const DNS_PHASES_BUDGET_MS = LOOKALIKE_TIMEOUT_MS - ENRICHMENT_RESERVE_MS - ENRI
  */
 const NS_PHASE_BUDGET_MS = 6_000;
 
+/** Options accepted by {@link checkLookalikes}. */
+export interface CheckLookalikesOptions {
+	reconBinding?: ReconBinding;
+	reconAuthToken?: string;
+	onBindingDegradation?: BindingDegradationSink;
+	/**
+	 * Override the check's outer wall-clock ceiling (ms). Defaults to
+	 * {@link LOOKALIKE_TIMEOUT_MS}. Exists so a caller under its OWN deadline —
+	 * and, in practice, the specs that exercise the timeout path — need not sit
+	 * through 20s of real time to observe it. Production passes nothing.
+	 */
+	timeoutMs?: number;
+}
+
+/** The outer ceiling plus every sub-budget measured against it. */
+interface LookalikeTimeoutBudget {
+	timeoutMs: number;
+	enrichmentReserveMs: number;
+	dnsPhasesBudgetMs: number;
+	nsPhaseBudgetMs: number;
+}
+
+/**
+ * Resolve the outer ceiling and its dependent sub-budgets together.
+ *
+ * The sub-budgets above are measured absolutes, not fractions of the outer
+ * timeout — so they are used AS THEY STAND at the production ceiling, and this
+ * returns exactly today's numbers for any `timeoutMs >= LOOKALIKE_TIMEOUT_MS`
+ * (the `Math.min(1, …)` cap). The ratio exists solely to keep a SHORTER
+ * override internally coherent: scaled down together, the phases keep their
+ * relative shape and `dnsPhasesBudgetMs` cannot go negative — which is what a
+ * bare `timeoutMs - ENRICHMENT_RESERVE_MS - ENRICHMENT_MIN_WINDOW_MS` would do
+ * below 8s, silently deadlining every DNS phase before it started.
+ */
+function resolveLookalikeTimeoutBudget(timeoutMs: number = LOOKALIKE_TIMEOUT_MS): LookalikeTimeoutBudget {
+	const ratio = Math.min(1, Math.max(0, timeoutMs) / LOOKALIKE_TIMEOUT_MS);
+	return {
+		timeoutMs,
+		enrichmentReserveMs: ENRICHMENT_RESERVE_MS * ratio,
+		dnsPhasesBudgetMs: DNS_PHASES_BUDGET_MS * ratio,
+		nsPhaseBudgetMs: NS_PHASE_BUDGET_MS * ratio,
+	};
+}
+
 /** Attach the per-reason unresolved tally beside a scan_status finding's `enumeration` (see the comment at the enumeration site below). */
 function withUnresolvedReasons(finding: Finding, unresolvedByReason: UnresolvedByReason): Finding {
 	finding.metadata = { ...finding.metadata, unresolvedByReason: { ...unresolvedByReason } };
@@ -180,13 +224,11 @@ export function extractReconMatchedDomain(reconResult: ReconScanResult, seedDoma
  * Generates domain permutations and checks for active registrations using adaptive batching.
  * Filters out false positives from wildcard DNS on parent domains and null MX records.
  */
-export async function checkLookalikes(
-	domain: string,
-	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
-): Promise<CheckResult> {
+export async function checkLookalikes(domain: string, reconOptions: CheckLookalikesOptions = {}): Promise<CheckResult> {
+	const budget = resolveLookalikeTimeoutBudget(reconOptions.timeoutMs);
 	return Promise.race([
-		checkLookalikesCore(domain, reconOptions),
-		new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Lookalike check timed out')), LOOKALIKE_TIMEOUT_MS)),
+		checkLookalikesCore(domain, reconOptions, budget),
+		new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Lookalike check timed out')), budget.timeoutMs)),
 	]).catch(() => {
 		const result = buildCheckResult('lookalikes', [buildTimeoutFinding()]);
 		// Mark as partial so callers can skip caching
@@ -197,7 +239,8 @@ export async function checkLookalikes(
 
 async function checkLookalikesCore(
 	domain: string,
-	reconOptions: { reconBinding?: ReconBinding; reconAuthToken?: string; onBindingDegradation?: BindingDegradationSink } = {},
+	reconOptions: CheckLookalikesOptions = {},
+	budget: LookalikeTimeoutBudget = resolveLookalikeTimeoutBudget(reconOptions.timeoutMs),
 ): Promise<CheckResult> {
 	const startedAt = Date.now();
 	const findings: Finding[] = [];
@@ -270,8 +313,8 @@ async function checkLookalikesCore(
 
 	// Phase 1: NS existence check — filter out unregistered domains. Pooled to
 	// the platform connection cap and deadline-cut (#865): see lookalike-dns.ts.
-	const dnsPhasesDeadlineMs = startedAt + DNS_PHASES_BUDGET_MS;
-	const nsPhaseDeadlineMs = Math.min(dnsPhasesDeadlineMs, Date.now() + NS_PHASE_BUDGET_MS);
+	const dnsPhasesDeadlineMs = startedAt + budget.dnsPhasesBudgetMs;
+	const nsPhaseDeadlineMs = Math.min(dnsPhasesDeadlineMs, Date.now() + budget.nsPhaseBudgetMs);
 	const nsResult = await filterByNsExistence(permsToProbe, { deadlineMs: nsPhaseDeadlineMs });
 	const { registered: registeredPerms, nsMap: lookalikeNsMap, unresolved: nsUnresolved } = nsResult;
 	const primaryNs = primaryNsProbe.ns;
@@ -423,7 +466,7 @@ async function checkLookalikesCore(
 		const sameOwner = ownershipByDomain.get(r.domain)?.verdict === 'owned_by_seed';
 		return !sameOwner && (r.hasMX || r.hasA);
 	});
-	const enrichmentDeadlineMs = startedAt + LOOKALIKE_TIMEOUT_MS - ENRICHMENT_RESERVE_MS;
+	const enrichmentDeadlineMs = startedAt + budget.timeoutMs - budget.enrichmentReserveMs;
 	const enrichment = await enrichLookalikes(candidatesToEnrich, { deadlineMs: enrichmentDeadlineMs });
 
 	// Same-entity correlation (issue #263): a flagged lookalike that shares the
@@ -449,7 +492,7 @@ async function checkLookalikesCore(
 	// (the brand-held-registration signal). No extra network cost for the second.
 	const primaryRegistration =
 		sameEntityCandidates.length > 0
-			? await probePrimaryRegistration(domain, { deadlineMs: enrichmentDeadlineMs + ENRICHMENT_RESERVE_MS / 2 })
+			? await probePrimaryRegistration(domain, { deadlineMs: enrichmentDeadlineMs + budget.enrichmentReserveMs / 2 })
 			: EMPTY_RDAP_PROBE;
 	const primaryRegistrantOrg = primaryRegistration.registrantOrg;
 	const sameEntityMatches = new Map<string, string>();
