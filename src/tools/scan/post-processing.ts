@@ -593,8 +593,32 @@ function clarifyMtaStsForMailDomain(domain: string, results: CheckResult[]): Che
 			}
 			return finding;
 		});
-		return buildCheckResult(result.category, adjusted);
+		return rebuildUnlessAbstained(result, adjusted);
 	});
+}
+
+/**
+ * Rebuild a post-processed result — but NEVER resurrect one that abstained.
+ *
+ * Every adjustment below reshapes findings and then re-derives the result with
+ * `buildCheckResult`, which recomputes `passed`/`score` from the findings alone
+ * and carries neither `checkStatus` nor `partial`. Feed it an ABSTENTION (score
+ * 0, `partial: true`, `checkStatus: 'error'`, findings all `info`) and it hands
+ * back a confident `score: 100, passed: true` — the exact false pass #948
+ * removed from `check_dkim` and `check_subdomain_takeover`, re-created one stage
+ * later. `dkim` sits in three of these category lists, so the leak is reachable
+ * on any no-MX / SPF `-all` domain whose DKIM queries all threw: the check
+ * abstains, post-processing scores it 100, and `isCheckMeasured` then counts the
+ * category as measured instead of renormalising it out.
+ *
+ * An unmeasured result has no real finding to downgrade in the first place, so
+ * returning it untouched is both the safe and the correct answer. Measured-ness
+ * is asked through `isCompletedCheck`, the `src/`-side SSOT —
+ * `completed-evidence-predicate-ssot.audit.test.ts` bans re-deriving it here.
+ */
+function rebuildUnlessAbstained(result: CheckResult, adjusted: Finding[]): CheckResult {
+	if (!isCompletedCheck(result)) return result;
+	return buildCheckResult(result.category, adjusted);
 }
 
 function adjustForNonApexNonMailHost(results: CheckResult[]): CheckResult[] {
@@ -611,7 +635,7 @@ function adjustForNonApexNonMailHost(results: CheckResult[]): CheckResult[] {
 			}
 			return finding;
 		});
-		return buildCheckResult(result.category, adjusted);
+		return rebuildUnlessAbstained(result, adjusted);
 	});
 }
 
@@ -631,7 +655,7 @@ function adjustForNonMailDomain(results: CheckResult[]): CheckResult[] {
 			}
 			return finding;
 		});
-		return buildCheckResult(result.category, adjusted);
+		return rebuildUnlessAbstained(result, adjusted);
 	});
 }
 
@@ -660,7 +684,7 @@ function adjustBimiForNonMailDomain(results: CheckResult[]): CheckResult[] {
 			}
 			return finding;
 		});
-		return buildCheckResult(result.category, adjusted);
+		return rebuildUnlessAbstained(result, adjusted);
 	});
 }
 
@@ -726,7 +750,7 @@ function escalateDmarcForImpersonation(results: CheckResult[]): CheckResult[] {
 			}
 			return finding;
 		});
-		return buildCheckResult(result.category, adjusted);
+		return rebuildUnlessAbstained(result, adjusted);
 	});
 }
 
@@ -744,6 +768,6 @@ function adjustForNoSendDomain(results: CheckResult[]): CheckResult[] {
 			}
 			return finding;
 		});
-		return buildCheckResult(result.category, adjusted);
+		return rebuildUnlessAbstained(result, adjusted);
 	});
 }
