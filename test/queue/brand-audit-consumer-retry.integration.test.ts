@@ -354,12 +354,12 @@ describe('processBrandAuditMessage — Phase 2b retry orchestration', () => {
 		expect(queue.sent, 'retry pass cannot enqueue another retry').toEqual([]);
 	});
 
-	it('retry pass does NOT forward brandAuditQueue into pipeline deps (prevents double CSC deep_scan enqueue)', async () => {
-		// Scenario: primary pass with view='csc_complement' enqueues deep_scan #1
+	it('retry pass does NOT forward brandAuditQueue into pipeline deps (prevents double registrar deep_scan enqueue)', async () => {
+		// Scenario: primary pass with view='registrar_complement' enqueues deep_scan #1
 		// (from brand-audit-pipeline.ts:1061). If the retry pass also forwarded
-		// brandAuditQueue, it would re-enter the CSC branch with force_refresh=true,
-		// re-write csc_complement_fast, and enqueue deep_scan #2 — producing a race
-		// where two runDeepScanFromStepStore workers contend on csc_complement_full
+		// brandAuditQueue, it would re-enter the registrar-complement branch with force_refresh=true,
+		// re-write registrar_complement_fast, and enqueue deep_scan #2 — producing a race
+		// where two runDeepScanFromStepStore workers contend on registrar_complement_full
 		// (last-write-wins UPSERT, no MVCC). Gate at the consumer side: the
 		// brandAuditQueue dep is forwarded to the pipeline only on the primary
 		// (non-retry) pass. The consumer's own retry-enqueue path is already
@@ -371,7 +371,7 @@ describe('processBrandAuditMessage — Phase 2b retry orchestration', () => {
 		const queue = makeQueue();
 
 		await processBrandAuditMessage(
-			{ auditId: 'aud-1', target: 'example.com', format: 'json', view: 'csc_complement', retry_attempt: 1 },
+			{ auditId: 'aud-1', target: 'example.com', format: 'json', view: 'registrar_complement', retry_attempt: 1 },
 			{ db, brandAuditSingle, brandAuditQueue: queue.binding, now: () => 1_750_000_000_000 },
 		);
 

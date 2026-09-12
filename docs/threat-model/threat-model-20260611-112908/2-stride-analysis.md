@@ -321,7 +321,7 @@
 | ID | Category | Threat | Prerequisites | Affected Flow | Mitigation | Status | Change |
 |----|----------|--------|---------------|---------------|------------|--------|--------|
 | T37.T | Tampering | Redirect-based SSRF — `Location:` header pointing at internal targets | None | DF10 | `redirect:'manual'` + per-hop re-validation through SafeFetch (`src/lib/safe-fetch.ts`) | Mitigated | Existing |
-| T38.I | Information Disclosure | Attacker-influenced URL (BIMI `l=`/`a=`) fetched against internal services | None | DF10 | HTTPS-only, blocklist, userinfo rejection in SafeFetch; new outbound paths (lookalike web probe, brand CSC enrichment) verified to use safeFetch; RDAP enrichment restricted to a hardcoded registry-endpoint allowlist (`src/tools/check-lookalikes.ts:641-668`) | Mitigated | Existing |
+| T38.I | Information Disclosure | Attacker-influenced URL (BIMI `l=`/`a=`) fetched against internal services | None | DF10 | HTTPS-only, blocklist, userinfo rejection in SafeFetch; new outbound paths (lookalike web probe, brand registrar enrichment) verified to use safeFetch; RDAP enrichment restricted to a hardcoded registry-endpoint allowlist (`src/tools/check-lookalikes.ts:641-668`) | Mitigated | Existing |
 | T39.D | Denial of Service | Slowloris/large-response from an attacker-controlled fetch target | None | DF10 | `AbortSignal.timeout` + total-budget caps (`check_http_security` 10 s) | Mitigated | Existing |
 
 #### Tier 2 — Conditional Risk

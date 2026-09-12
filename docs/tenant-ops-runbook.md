@@ -110,7 +110,7 @@ export locations in ignored notes.
   should be set per contract in the private tenant inventory before provisioning.
 - export: use D1 export or read-only SQL against placeholder tenant IDs first,
   then write customer exports only to approved private storage. Do not commit
-  exports, generated reports, PDFs, CSC output, or tenant databases.
+  exports, generated reports, PDFs, client-engagement output, or tenant databases.
 - erasure: deactivate the `sub_tenants` row, revoke tenant keys, stop scheduled
   scans, delete or tombstone per-tenant D1 data under the approved retention
   policy, then record the operator action in the registry audit log.

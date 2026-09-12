@@ -2,17 +2,6 @@
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Write|Edit",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "jq -r '.tool_input.file_path // .tool_response.filePath // empty' | { read -r f; case \"$f\" in *.ts) npx eslint --no-error-on-unmatched-pattern \"$f\" 2>/dev/null || true;; esac; }",
-            "timeout": 15,
-            "statusMessage": "Linting..."
-          }
-        ]
-      },
-      {
         "matcher": "Bash",
         "hooks": [
           {

@@ -66,12 +66,14 @@ const STRUCTURED_CONTENT_MIN_VERSION = '2025-06-18';
 /**
  * Client types known to parse the embedded `<!-- STRUCTURED_RESULT … -->` comment instead of
  * the MCP-standard `structuredContent` field. The comment is preserved for these regardless of
- * protocol version. `blackveil_dns_action` (its `scan.mjs`) regex-extracts the comment for
- * `score`/`grade`/`categoryScores` and does not read `structuredContent`; it also negotiates
- * `2025-03-26`, so it would be protected by the version gate anyway — the allowlist is
- * belt-and-suspenders against a future protocol bump on that client.
+ * protocol version. EMPTY as of blackveil-dns-action v1.4.0 (2026-09-10): that action now
+ * negotiates `2025-06-18`, sends the `MCP-Protocol-Version` header, and reads `structuredContent`
+ * first (comment second, text third). Older action versions (`<= 1.3.0`, protocol `2025-03-26`,
+ * no version header) are still served the comment by the protocol gate below, which is why the
+ * allowlist entry could be retired without a compatibility window. The set stays as the
+ * mechanism for any future comment-only client.
  */
-export const STRUCTURED_COMMENT_LEGACY_CLIENTS: ReadonlySet<string> = new Set(['blackveil_dns_action']);
+export const STRUCTURED_COMMENT_LEGACY_CLIENTS: ReadonlySet<string> = new Set<string>([]);
 
 /**
  * Client types verified to NOT consume the embedded comment, for which it is dropped regardless of

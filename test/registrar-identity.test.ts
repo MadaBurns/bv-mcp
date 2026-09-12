@@ -41,7 +41,7 @@ describe('registrar identity matching', () => {
 		expect(normalizeRegistrarIdentity('CSC Corporate Domains, Inc.')).toBe('csc corporate domains');
 	});
 
-	it('matches CSC regional WHOIS display variants as the same registrar family', () => {
+	it('matches the corporate-domains registrar\'s regional WHOIS display variants as the same registrar family', () => {
 		const target: RegistrarIdentity = { name: 'CSC Corporate Domains, Inc.' };
 		for (const variant of [
 			'CSC Corporate Domains, Inc. ( https://nic.at/registrar/533 )',
@@ -58,11 +58,11 @@ describe('registrar identity matching', () => {
 		expect(sameRegistrarFamily({ name: 'REG-IPMIRROR' }, target)).toBe(false);
 	});
 
-	// Regression: 2026-05 CSC registrar-family fixture verification surfaced false-positive
+	// Regression: 2026-05 registrar-family fixture verification surfaced false-positive
 	// shadowIt findings on regional-alpha.example.com, regional-beta.example.com, regional-gamma.example.com because
 	// the registrar display string contained "Corporation Service Company (Aust) Pty Ltd"
-	// — CSC's Australian arm — and the family detector did not collapse it to CSC.
-	it('matches CSC global regional subsidiary registrar strings (Aust Pty Ltd, Digital Brand Services, CSC Global)', () => {
+	// — the registrar's Australian arm — and the family detector did not collapse it into the family.
+	it('matches the registrar\'s global regional subsidiary strings (regional Pty Ltd, brand-services arm, global)', () => {
 		const target: RegistrarIdentity = { name: 'CSC Corporate Domains, Inc.' };
 		for (const variant of [
 			'Corporation Service Company (Aust) Pty Ltd',
@@ -77,18 +77,18 @@ describe('registrar identity matching', () => {
 		}
 	});
 
-	it('groups two CSC-subsidiary candidates into the same registrar family (consolidated, not shadowIt)', () => {
-		// Two regional CSC subsidiaries observed verbatim in production WHOIS
+	it('groups two regional-subsidiary candidates into the same registrar family (consolidated, not shadowIt)', () => {
+		// Two regional subsidiaries of one registrar observed verbatim in production WHOIS
 		// for regional-alpha.example.com, regional-beta.example.com, regional-gamma.example.com, etc.
 		const fordAu: RegistrarIdentity = { name: 'Corporation Service Company (Aust) Pty Ltd' };
-		const cscMalaysia: RegistrarIdentity = { name: 'CSC Digital Brand Services Malaysia Sdn Bhd' };
-		const cscUs: RegistrarIdentity = { name: 'CSC Corporate Domains, Inc.' };
+		const brandRegistrarMalaysia: RegistrarIdentity = { name: 'CSC Digital Brand Services Malaysia Sdn Bhd' };
+		const brandRegistrarUs: RegistrarIdentity = { name: 'CSC Corporate Domains, Inc.' };
 		// All pairwise comparisons must be same-family — this is the
 		// user-visible bug: any pair returning false drives an off-primary-registrar
 		// inference and a shadowIt finding in the brand-audit report.
-		expect(sameRegistrarFamily(fordAu, cscMalaysia)).toBe(true);
-		expect(sameRegistrarFamily(fordAu, cscUs)).toBe(true);
-		expect(sameRegistrarFamily(cscMalaysia, cscUs)).toBe(true);
+		expect(sameRegistrarFamily(fordAu, brandRegistrarMalaysia)).toBe(true);
+		expect(sameRegistrarFamily(fordAu, brandRegistrarUs)).toBe(true);
+		expect(sameRegistrarFamily(brandRegistrarMalaysia, brandRegistrarUs)).toBe(true);
 	});
 
 	it('falls back to registrar-family names when registry-specific registrar IDs differ', () => {

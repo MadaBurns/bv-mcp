@@ -18,7 +18,7 @@
  * from `ScanScore.grade`, so wiz.io at 92 was "A" in `scan_domain` and "A+" here.
  *
  * SCOPE: a TEXT scan of specific `src/` files. It deliberately does NOT ban
- * `nistScoreToGrade` corpus-wide: `src/tools/prioritize-csc-leads.ts` computes a
+ * `nistScoreToGrade` corpus-wide: `src/tools/prioritize-portfolio-leads.ts` computes a
  * display letter from its own weighted lead score (not a scan score), which is a
  * legitimate second caller. The invariant here is narrower and precise — the
  * SCAN-score display surfaces must not re-derive a letter.

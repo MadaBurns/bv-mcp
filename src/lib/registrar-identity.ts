@@ -26,33 +26,35 @@ const UNKNOWN_REGISTRAR_NAMES = new Set([
  *   Use anchored regexes to avoid substring false-positives.
  * - `rawPatterns` run against the raw lowercased input (no normalization).
  *   Use sparingly — only for cases where normalization deletes the signal,
- *   e.g. `cscglobal.com` whose URL strip removes the host.
+ *   e.g. a registrar's bare website host whose URL strip removes the signal.
  */
 const KNOWN_REGISTRAR_FAMILIES: Array<{ family: string; patterns: RegExp[]; rawPatterns?: RegExp[] }> = [
 	{ family: 'markmonitor', patterns: [/^markmonitor(?:\b|$)/] },
 	{ family: 'com laude', patterns: [/(?:^|\b)com\s+laude(?:\b|$)/, /^nom\s*iq(?:\b|$)/] },
 	{ family: 'safenames', patterns: [/^safenames(?:\b|$)/] },
 	{
-		// CSC operates many regional subsidiaries (CSC US, CSC Canada, CSC UK,
-		// CSC Digital Brand Services Malaysia, Corporation Service Company (Aust)
+		// This corporate-domains registrar operates many regional subsidiaries
+		// (US, Canada, UK, a Malaysian digital-brand-services arm, an Australian
 		// Pty Ltd, etc.) all sharing infrastructure. Collapse every regional
 		// brand string into a single family so the off-primary-registrar
-		// inference does not flag CSC-managed ccTLD registrations as shadowIt.
-		// Regression source: 2026-05 CSC registrar-family fixture verification of
+		// inference does not flag its ccTLD registrations as shadowIt.
+		// Regression source: 2026-05 registrar-family fixture verification of
 		// regional-alpha.example.com / regional-beta.example.com / regional-gamma.example.com.
-		family: 'csc corporate domains',
+		// The WHOIS name patterns below are neutral technical data (like the
+		// MarkMonitor / GoDaddy entries beside them) and must stay as observed.
+		family: 'corporate domains registrar',
 		patterns: [
 			/^csc\s+corporate\s+domains(?:\b|$)/,
 			/^csc\s+corp\s+domains(?:\b|$)/,
 			/^csc\s+digital\s+brand\s+services?(?:\b|$)/,
 			/^csc\s+global(?:\b|$)/,
-			// "Corporation Service Company" with any trailing regional qualifier
+			// Matches the registrar's legal-entity name with any trailing regional qualifier
 			// (e.g. "Aust Pty"); corporate suffixes like Ltd/LLC are already
 			// stripped by normalizeRegistrarIdentity before this regex runs.
 			/^corporation\s+service\s+company(?:\b|$)/,
 			/^corporation\s+service$/,
 		],
-		// cscglobal.com appears verbatim in some WHOIS responses; the URL strip
+		// The registrar's website host appears verbatim in some WHOIS responses; the URL strip
 		// in normalizeRegistrarIdentity would delete it, so match against raw.
 		rawPatterns: [/(?:^|\b)cscglobal\.com(?:\b|$)/],
 	},
@@ -134,7 +136,7 @@ export function sameRegistrarFamily(left: RegistrarIdentity, right: RegistrarIde
  * `KNOWN_REGISTRAR_FAMILIES` entry.
  *
  * Used by the registrar-portfolio aggregator to bucket discovered apexes by
- * registrar family for the CSC-complement view.
+ * registrar family for the registrar-complement view.
  */
 export function classifyRegistrarFamily(name: string | null | undefined): string | null {
 	const normalized = normalizeRegistrarIdentity(name);

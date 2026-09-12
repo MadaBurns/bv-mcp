@@ -2,21 +2,21 @@
 
 import { describe, it, expect } from 'vitest';
 import type { Bucket } from '../src/lib/brand-classification';
-import type { CscProductKey, CscPriority, CscProductReport, CscProductRecommendation, CaveatKind } from '../src/tools/map-csc-products';
+import type { RegistrarProductKey, ProductPriority, RegistrarProductReport, RegistrarProductRecommendation, CaveatKind } from '../src/tools/map-registrar-products';
 import type { CheckResult } from '../src/lib/scoring';
-import { bucketFromClassification, computeGapSeverity, computePortfolioGrade, rankCscLeads, formatCscLeads, extractDiscoveredCandidates } from '../src/tools/prioritize-csc-leads';
-import type { OwnershipBucket, CscLeadEntry } from '../src/tools/prioritize-csc-leads';
+import { bucketFromClassification, computeGapSeverity, computePortfolioGrade, rankPortfolioLeads, formatPortfolioLeads, extractDiscoveredCandidates } from '../src/tools/prioritize-portfolio-leads';
+import type { OwnershipBucket, PortfolioLeadEntry } from '../src/tools/prioritize-portfolio-leads';
 import { UNGRADED_DISPLAY } from '../src/lib/ungraded-display';
 
-const PRODUCT_ORDER: CscProductKey[] = ['csc_multilock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
+const PRODUCT_ORDER: RegistrarProductKey[] = ['registry_lock', 'managed_dmarc', 'digital_certificates', 'dnssec_management'];
 
 /** Build one recommendation. productName is cosmetic for these pure tests. */
-function rec(product: CscProductKey, recommended: boolean, priority: CscPriority): CscProductRecommendation {
+function rec(product: RegistrarProductKey, recommended: boolean, priority: ProductPriority): RegistrarProductRecommendation {
 	return { product, productName: product, recommended, priority, justifyingGap: '', relatedFindings: [] };
 }
 
-/** Build a CscProductReport with all 4 recommendations in fixed order; missing ones default to not-recommended/none. */
-function makeReport(domain: string, score: number | null, grade: string | null, recs: CscProductRecommendation[]): CscProductReport {
+/** Build a RegistrarProductReport with all 4 recommendations in fixed order; missing ones default to not-recommended/none. */
+function makeReport(domain: string, score: number | null, grade: string | null, recs: RegistrarProductRecommendation[]): RegistrarProductReport {
 	const byKey = new Map(recs.map((r) => [r.product, r]));
 	const recommendations = PRODUCT_ORDER.map((k) => byKey.get(k) ?? rec(k, false, 'none'));
 	return {
@@ -25,7 +25,7 @@ function makeReport(domain: string, score: number | null, grade: string | null, 
 		grade,
 		// These hand-built fixtures all stand for domains whose checks RAN — the
 		// recommendations are given explicitly. The nothing-ran case is built by the
-		// real producer (`evaluateCscProducts([], …)`) in the describes below,
+		// real producer (`evaluateRegistrarProducts([], …)`) in the describes below,
 		// because only the producer manufactures the "recommended because
 		// unobserved" shape that defect lives in.
 		assessed: true,
@@ -59,19 +59,19 @@ describe('computeGapSeverity', () => {
 		expect(computeGapSeverity(report, 'impersonation')).toBe(0);
 	});
 
-	it('MultiLock high only (4×3=12), bucket consolidated (×1.0) → 12', () => {
-		const report = makeReport('a.com', 90, 'A', [rec('csc_multilock', true, 'high')]);
+	it('Registry lock high only (4×3=12), bucket consolidated (×1.0) → 12', () => {
+		const report = makeReport('a.com', 90, 'A', [rec('registry_lock', true, 'high')]);
 		expect(computeGapSeverity(report, 'consolidated')).toBe(12);
 	});
 
 	it('same report, bucket impersonation (×0.3) → round(3.6) = 4', () => {
-		const report = makeReport('a.com', 90, 'A', [rec('csc_multilock', true, 'high')]);
+		const report = makeReport('a.com', 90, 'A', [rec('registry_lock', true, 'high')]);
 		expect(computeGapSeverity(report, 'impersonation')).toBe(4);
 	});
 
-	it('multiple recommendations sum: MultiLock high(12) + DMARC medium(6) + DNSSEC low(2), bucket unknown → 20', () => {
+	it('multiple recommendations sum: registry lock high(12) + DMARC medium(6) + DNSSEC low(2), bucket unknown → 20', () => {
 		const report = makeReport('a.com', 50, 'F', [
-			rec('csc_multilock', true, 'high'),
+			rec('registry_lock', true, 'high'),
 			rec('managed_dmarc', true, 'medium'),
 			rec('dnssec_management', true, 'low'),
 		]);
@@ -79,7 +79,7 @@ describe('computeGapSeverity', () => {
 	});
 
 	it('bucket unknown multiplier is 1.0 (bare-list path not penalized)', () => {
-		const report = makeReport('a.com', 50, 'F', [rec('csc_multilock', true, 'high')]);
+		const report = makeReport('a.com', 50, 'F', [rec('registry_lock', true, 'high')]);
 		expect(computeGapSeverity(report, 'unknown')).toBe(12);
 	});
 });
@@ -89,57 +89,57 @@ function entry(
 	domain: string,
 	score: number | null,
 	grade: string | null,
-	recs: CscProductRecommendation[],
+	recs: RegistrarProductRecommendation[],
 	bucket: OwnershipBucket,
-): CscLeadEntry {
+): PortfolioLeadEntry {
 	return { report: makeReport(domain, score, grade, recs), ownershipBucket: bucket };
 }
 
-describe('rankCscLeads — ordering and ranks', () => {
+describe('rankPortfolioLeads — ordering and ranks', () => {
 	it('orders by gapSeverity descending; priorityRank is 1-based', () => {
-		// sev 12 (multilock high), 4 (multilock high × impersonation 0.3), 20 (multilock high + dmarc medium + dnssec low)
-		const e12 = entry('twelve.com', 80, 'B', [rec('csc_multilock', true, 'high')], 'unknown');
-		const e4 = entry('four.com', 80, 'B', [rec('csc_multilock', true, 'high')], 'impersonation');
-		const e20 = entry('twenty.com', 80, 'B', [rec('csc_multilock', true, 'high'), rec('managed_dmarc', true, 'medium'), rec('dnssec_management', true, 'low')], 'unknown');
-		const report = rankCscLeads([e12, e4, e20]);
+		// sev 12 (registry lock high), 4 (registry lock high × impersonation 0.3), 20 (registry lock high + dmarc medium + dnssec low)
+		const e12 = entry('twelve.com', 80, 'B', [rec('registry_lock', true, 'high')], 'unknown');
+		const e4 = entry('four.com', 80, 'B', [rec('registry_lock', true, 'high')], 'impersonation');
+		const e20 = entry('twenty.com', 80, 'B', [rec('registry_lock', true, 'high'), rec('managed_dmarc', true, 'medium'), rec('dnssec_management', true, 'low')], 'unknown');
+		const report = rankPortfolioLeads([e12, e4, e20]);
 		expect(report.rankedLeads.map((l) => l.domain)).toEqual(['twenty.com', 'twelve.com', 'four.com']);
 		expect(report.rankedLeads.map((l) => l.priorityRank)).toEqual([1, 2, 3]);
 		expect(report.rankedLeads[0].gapSeverity).toBe(20);
 	});
 
 	it('tie on gapSeverity → lower score ranks first', () => {
-		const a = entry('a.com', 70, 'C', [rec('csc_multilock', true, 'high')], 'unknown'); // sev 12, score 70
-		const b = entry('b.com', 40, 'F', [rec('csc_multilock', true, 'high')], 'unknown'); // sev 12, score 40
-		const report = rankCscLeads([a, b]);
+		const a = entry('a.com', 70, 'C', [rec('registry_lock', true, 'high')], 'unknown'); // sev 12, score 70
+		const b = entry('b.com', 40, 'F', [rec('registry_lock', true, 'high')], 'unknown'); // sev 12, score 40
+		const report = rankPortfolioLeads([a, b]);
 		expect(report.rankedLeads.map((l) => l.domain)).toEqual(['b.com', 'a.com']);
 	});
 
 	it('tie on gapSeverity AND score → domain ascending (lexical total order)', () => {
-		const b = entry('b.com', 50, 'F', [rec('csc_multilock', true, 'high')], 'unknown');
-		const a = entry('a.com', 50, 'F', [rec('csc_multilock', true, 'high')], 'unknown');
-		const report = rankCscLeads([b, a]);
+		const b = entry('b.com', 50, 'F', [rec('registry_lock', true, 'high')], 'unknown');
+		const a = entry('a.com', 50, 'F', [rec('registry_lock', true, 'high')], 'unknown');
+		const report = rankPortfolioLeads([b, a]);
 		expect(report.rankedLeads.map((l) => l.domain)).toEqual(['a.com', 'b.com']);
 	});
 });
 
-describe('rankCscLeads — per-lead fields', () => {
-	it('recommendedCscProducts = recommended keys in fixed product order; recommendedCount matches', () => {
-		const e = entry('x.com', 60, 'D', [rec('csc_multilock', true, 'high'), rec('digital_certificates', true, 'medium')], 'consolidated');
-		const lead = rankCscLeads([e]).rankedLeads[0];
-		expect(lead.recommendedCscProducts).toEqual(['csc_multilock', 'digital_certificates']);
+describe('rankPortfolioLeads — per-lead fields', () => {
+	it('recommendedProducts = recommended keys in fixed product order; recommendedCount matches', () => {
+		const e = entry('x.com', 60, 'D', [rec('registry_lock', true, 'high'), rec('digital_certificates', true, 'medium')], 'consolidated');
+		const lead = rankPortfolioLeads([e]).rankedLeads[0];
+		expect(lead.recommendedProducts).toEqual(['registry_lock', 'digital_certificates']);
 		expect(lead.recommendedCount).toBe(2);
 	});
 
 	it('topPriority = max priority among recommended; none when nothing recommended', () => {
-		const hi = entry('hi.com', 60, 'D', [rec('csc_multilock', true, 'medium'), rec('managed_dmarc', true, 'high')], 'unknown');
-		expect(rankCscLeads([hi]).rankedLeads[0].topPriority).toBe('high');
+		const hi = entry('hi.com', 60, 'D', [rec('registry_lock', true, 'medium'), rec('managed_dmarc', true, 'high')], 'unknown');
+		expect(rankPortfolioLeads([hi]).rankedLeads[0].topPriority).toBe('high');
 		const clean = entry('clean.com', 98, 'A+', [], 'unknown');
-		expect(rankCscLeads([clean]).rankedLeads[0].topPriority).toBe('none');
+		expect(rankPortfolioLeads([clean]).rankedLeads[0].topPriority).toBe('none');
 	});
 
 	it('pass-through: domain/score/grade/ownershipBucket copied verbatim; a null grade is preserved', () => {
-		const e = entry('p.com', null, null, [rec('csc_multilock', true, 'high')], 'shadowIt');
-		const lead = rankCscLeads([e]).rankedLeads[0];
+		const e = entry('p.com', null, null, [rec('registry_lock', true, 'high')], 'shadowIt');
+		const lead = rankPortfolioLeads([e]).rankedLeads[0];
 		expect(lead.domain).toBe('p.com');
 		expect(lead.score).toBeNull();
 		expect(lead.grade).toBeNull();
@@ -147,38 +147,38 @@ describe('rankCscLeads — per-lead fields', () => {
 	});
 });
 
-describe('rankCscLeads — summary', () => {
+describe('rankPortfolioLeads — summary', () => {
 	it('byProduct counts domains needing each product; totalRecommendations = Σ recommendedCount; hotLeads counts gapSeverity >= 6', () => {
-		const e1 = entry('one.com', 50, 'F', [rec('csc_multilock', true, 'high'), rec('managed_dmarc', true, 'medium')], 'unknown'); // sev 18, recs 2
+		const e1 = entry('one.com', 50, 'F', [rec('registry_lock', true, 'high'), rec('managed_dmarc', true, 'medium')], 'unknown'); // sev 18, recs 2
 		const e2 = entry('two.com', 90, 'A', [rec('managed_dmarc', true, 'low')], 'unknown'); // sev 3, recs 1
-		const report = rankCscLeads([e1, e2]);
-		expect(report.summary.byProduct).toEqual({ csc_multilock: 1, managed_dmarc: 2, digital_certificates: 0, dnssec_management: 0 });
+		const report = rankPortfolioLeads([e1, e2]);
+		expect(report.summary.byProduct).toEqual({ registry_lock: 1, managed_dmarc: 2, digital_certificates: 0, dnssec_management: 0 });
 		expect(report.summary.totalRecommendations).toBe(3);
 		expect(report.summary.hotLeads).toBe(1); // only one.com (18) clears 6; two.com (3) does not
 	});
 
 	it('skipped passed through; totalDomains counts only ranked leads, not skipped', () => {
-		const e = entry('ok.com', 50, 'F', [rec('csc_multilock', true, 'high')], 'unknown');
-		const report = rankCscLeads([e], null, [{ domain: 'bad.com', reason: 'invalid_domain' }]);
+		const e = entry('ok.com', 50, 'F', [rec('registry_lock', true, 'high')], 'unknown');
+		const report = rankPortfolioLeads([e], null, [{ domain: 'bad.com', reason: 'invalid_domain' }]);
 		expect(report.summary.skipped).toEqual([{ domain: 'bad.com', reason: 'invalid_domain' }]);
 		expect(report.totalDomains).toBe(1);
 		expect(report.rankedLeads).toHaveLength(1);
 	});
 
 	it('empty input → rankedLeads [], summary zeroes, no throw', () => {
-		const report = rankCscLeads([]);
+		const report = rankPortfolioLeads([]);
 		expect(report.rankedLeads).toEqual([]);
 		expect(report.totalDomains).toBe(0);
 		expect(report.summary.totalRecommendations).toBe(0);
 		expect(report.summary.hotLeads).toBe(0);
-		expect(report.summary.byProduct).toEqual({ csc_multilock: 0, managed_dmarc: 0, digital_certificates: 0, dnssec_management: 0 });
+		expect(report.summary.byProduct).toEqual({ registry_lock: 0, managed_dmarc: 0, digital_certificates: 0, dnssec_management: 0 });
 		expect(report.summary.skipped).toEqual([]);
 	});
 
 	it('brand pass-through: report.brand set when provided, null otherwise', () => {
 		const e = entry('z.com', 50, 'F', [], 'unknown');
-		expect(rankCscLeads([e], 'acme').brand).toBe('acme');
-		expect(rankCscLeads([e]).brand).toBeNull();
+		expect(rankPortfolioLeads([e], 'acme').brand).toBe('acme');
+		expect(rankPortfolioLeads([e]).brand).toBeNull();
 	});
 });
 
@@ -187,7 +187,7 @@ function pl(
 	bucket: OwnershipBucket,
 	score: number | null,
 	grade: string | null = 'B',
-): Pick<CscLeadEntry['report'], 'score' | 'grade'> & { ownershipBucket: OwnershipBucket } {
+): Pick<PortfolioLeadEntry['report'], 'score' | 'grade'> & { ownershipBucket: OwnershipBucket } {
 	return { score, grade, ownershipBucket: bucket };
 }
 
@@ -251,39 +251,39 @@ describe('computePortfolioGrade', () => {
 	});
 });
 
-describe('rankCscLeads — portfolioGrade field', () => {
+describe('rankPortfolioLeads — portfolioGrade field', () => {
 	it('sets portfolioGrade equal to computePortfolioGrade(rankedLeads)', () => {
-		const e1 = entry('one.com', 90, 'A', [rec('csc_multilock', true, 'high')], 'consolidated');
+		const e1 = entry('one.com', 90, 'A', [rec('registry_lock', true, 'high')], 'consolidated');
 		const e2 = entry('two.com', 60, 'D', [rec('managed_dmarc', true, 'medium')], 'shadowIt');
-		const report = rankCscLeads([e1, e2]);
+		const report = rankPortfolioLeads([e1, e2]);
 		expect(report.portfolioGrade).toEqual(computePortfolioGrade(report.rankedLeads));
 		expect(report.portfolioGrade).toEqual({ grade: 'B', weightedScore: 80, contributingDomains: 2 });
 	});
 
 	it('empty input → portfolioGrade null', () => {
-		expect(rankCscLeads([]).portfolioGrade).toBeNull();
-		expect(rankCscLeads([], 'acme', []).portfolioGrade).toBeNull();
+		expect(rankPortfolioLeads([]).portfolioGrade).toBeNull();
+		expect(rankPortfolioLeads([], 'acme', []).portfolioGrade).toBeNull();
 	});
 
 	it('only impersonation buckets → portfolioGrade null', () => {
-		const e = entry('imp.com', 20, 'F', [rec('csc_multilock', true, 'high')], 'impersonation');
-		expect(rankCscLeads([e]).portfolioGrade).toBeNull();
+		const e = entry('imp.com', 20, 'F', [rec('registry_lock', true, 'high')], 'impersonation');
+		expect(rankPortfolioLeads([e]).portfolioGrade).toBeNull();
 	});
 });
 
-describe('formatCscLeads — portfolio grade line', () => {
+describe('formatPortfolioLeads — portfolio grade line', () => {
 	it('full output renders the portfolio grade line when present', () => {
-		const report = rankCscLeads([entry('one.com', 90, 'A', [], 'consolidated'), entry('two.com', 60, 'D', [], 'shadowIt')], 'acme');
-		const out = formatCscLeads(report, 'full');
+		const report = rankPortfolioLeads([entry('one.com', 90, 'A', [], 'consolidated'), entry('two.com', 60, 'D', [], 'shadowIt')], 'acme');
+		const out = formatPortfolioLeads(report, 'full');
 		expect(out).toContain('Portfolio grade: B');
 		expect(out).toContain('weighted 80/100');
 		expect(out).toContain('2 domain(s)');
 	});
 
 	it('full output renders the shared ungraded token on the portfolio line when there are no gradeable domains', () => {
-		const report = rankCscLeads([], 'acme');
-		const out = formatCscLeads(report, 'full');
-		// Was 'Portfolio grade: N/A'. One prioritize_csc_leads output could carry THREE
+		const report = rankPortfolioLeads([], 'acme');
+		const out = formatPortfolioLeads(report, 'full');
+		// Was 'Portfolio grade: N/A'. One prioritize_portfolio_leads output could carry THREE
 		// vocabularies for the same state — a lead line saying `null/100 (null)`, this
 		// portfolio line saying N/A, and the scan surfaces saying 'not measured'. The
 		// assertion is unchanged in intent: the line still names the ungraded state and
@@ -294,32 +294,32 @@ describe('formatCscLeads — portfolio grade line', () => {
 	});
 
 	it('compact output appends a portfolio segment when present', () => {
-		const report = rankCscLeads([entry('one.com', 90, 'A', [], 'consolidated'), entry('two.com', 60, 'D', [], 'shadowIt')], 'acme');
-		const compact = formatCscLeads(report, 'compact');
+		const report = rankPortfolioLeads([entry('one.com', 90, 'A', [], 'consolidated'), entry('two.com', 60, 'D', [], 'shadowIt')], 'acme');
+		const compact = formatPortfolioLeads(report, 'compact');
 		expect(compact).toContain('portfolio B (80)');
 	});
 
 	it('compact output omits the portfolio segment entirely when null', () => {
-		const report = rankCscLeads([], 'acme');
-		const compact = formatCscLeads(report, 'compact');
+		const report = rankPortfolioLeads([], 'acme');
+		const compact = formatPortfolioLeads(report, 'compact');
 		expect(compact.toLowerCase()).not.toContain('portfolio');
 	});
 });
 
-describe('formatCscLeads', () => {
+describe('formatPortfolioLeads', () => {
 	function sampleReport() {
-		const hot = entry('hot.com', 40, 'F', [rec('csc_multilock', true, 'high'), rec('managed_dmarc', true, 'high')], 'consolidated');
+		const hot = entry('hot.com', 40, 'F', [rec('registry_lock', true, 'high'), rec('managed_dmarc', true, 'high')], 'consolidated');
 		const cold = entry('cold.com', 95, 'A+', [], 'unknown');
-		return rankCscLeads([hot, cold], 'acme');
+		return rankPortfolioLeads([hot, cold], 'acme');
 	}
 
 	it('full output lists leads in rank order with domain, score/grade, products and a summary block', () => {
-		const out = formatCscLeads(sampleReport(), 'full');
+		const out = formatPortfolioLeads(sampleReport(), 'full');
 		expect(out).toContain('acme');
 		expect(out).toContain('hot.com');
 		expect(out).toContain('cold.com');
 		expect(out).toContain('40/100');
-		expect(out).toContain('csc_multilock');
+		expect(out).toContain('registry_lock');
 		// rank order: hot.com (rank 1) appears before cold.com
 		expect(out.indexOf('hot.com')).toBeLessThan(out.indexOf('cold.com'));
 		// a summary rollup is present
@@ -328,14 +328,14 @@ describe('formatCscLeads', () => {
 
 	it('compact output is shorter than full and still names the top lead', () => {
 		const report = sampleReport();
-		const full = formatCscLeads(report, 'full');
-		const compact = formatCscLeads(report, 'compact');
+		const full = formatPortfolioLeads(report, 'full');
+		const compact = formatPortfolioLeads(report, 'compact');
 		expect(compact.length).toBeLessThan(full.length);
 		expect(compact).toContain('hot.com');
 	});
 
 	it('renders "not measured" for an ungraded lead and excludes it from the portfolio rollup', async () => {
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank, formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		const report = rank([entry('graded.com', 90, 'A', [], 'consolidated'), entry('ungraded.com', null, null, [], 'consolidated')]);
 
 		const ungradedLead = report.rankedLeads.filter((l) => l.domain === 'ungraded.com');
@@ -356,7 +356,7 @@ describe('formatCscLeads', () => {
 	});
 
 	it('still calls a graded lead with no gaps "posture clean" (control)', async () => {
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank, formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		const text = fmt(rank([entry('clean.com', 95, 'A+', [], 'consolidated')]), 'full');
 		expect(text).toContain('posture clean');
 	});
@@ -365,7 +365,7 @@ describe('formatCscLeads', () => {
 /**
  * A never-measured domain was ranked as the #1 HOT lead.
  *
- * `evaluateCscProducts([], null, …)` — the real producer for a domain that does
+ * `evaluateRegistrarProducts([], null, …)` — the real producer for a domain that does
  * not resolve — marks all three scan-driven products `recommended: true,
  * priority: 'low'` on the strength of having observed nothing ("DMARC not
  * observed", …). That is gapValue 3+2+2 = 7, and `consolidated` multiplies by
@@ -375,15 +375,15 @@ describe('formatCscLeads', () => {
  * policy, and is counted in `hotLeads`. Nothing on the wire let a dashboard
  * gate on it.
  *
- * Every fixture below is built by the REAL producers — `evaluateCscProducts`
+ * Every fixture below is built by the REAL producers — `evaluateRegistrarProducts`
  * over real CheckResults — because a hand-built lead shape cannot reach this
  * defect: it is the producer's own "recommended because unobserved" output that
  * manufactures the severity.
  */
 /** The exact producer output for a domain that does not resolve: no checks, no score. */
 async function ungradedReport(domain: string) {
-	const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
-	return evaluateCscProducts([], null, domain, null, null);
+	const { evaluateRegistrarProducts } = await import('../src/tools/map-registrar-products');
+	return evaluateRegistrarProducts([], null, domain, null, null);
 }
 
 /**
@@ -392,7 +392,7 @@ async function ungradedReport(domain: string) {
  * unmeasured domain used to manufacture, so the ordering assertion has teeth.
  */
 async function gradedReport(domain: string) {
-	const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+	const { evaluateRegistrarProducts } = await import('../src/tools/map-registrar-products');
 	const checks = [
 		{
 			category: 'dmarc',
@@ -404,11 +404,11 @@ async function gradedReport(domain: string) {
 		{ category: 'dnssec', passed: true, score: 100, findings: [] },
 	] as unknown as CheckResult[];
 	const locked = { level: 'registry-lock', registryLevel: true, transferLocked: true } as never;
-	return evaluateCscProducts(checks, locked, domain, 73, 'C+');
+	return evaluateRegistrarProducts(checks, locked, domain, 73, 'C+');
 }
 
 async function mixedPortfolio() {
-	const { rankCscLeads: rank } = await import('../src/tools/prioritize-csc-leads');
+	const { rankPortfolioLeads: rank } = await import('../src/tools/prioritize-portfolio-leads');
 	return rank([
 		{ report: await ungradedReport('never-measured.example'), ownershipBucket: 'consolidated' },
 		{ report: await gradedReport('measured.example'), ownershipBucket: 'consolidated' },
@@ -417,7 +417,7 @@ async function mixedPortfolio() {
 
 /** The buildUnscoredResult shape: real findings, no score. */
 async function unscoredReport(domain: string) {
-	const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+	const { evaluateRegistrarProducts } = await import('../src/tools/map-registrar-products');
 	const checks = [
 		{
 			category: 'ssl',
@@ -438,10 +438,10 @@ async function unscoredReport(domain: string) {
 			findings: [{ category: 'dnssec', title: 'DNSSEC not enabled', severity: 'medium', detail: '' }],
 		},
 	] as unknown as CheckResult[];
-	return evaluateCscProducts(checks, null, domain, null, null);
+	return evaluateRegistrarProducts(checks, null, domain, null, null);
 }
 
-describe('rankCscLeads — a never-measured domain must not outrank a measured one', () => {
+describe('rankPortfolioLeads — a never-measured domain must not outrank a measured one', () => {
 
 	it('assigns the unmeasured domain NO gap severity, so it cannot outrank a measured one', async () => {
 		const report = await mixedPortfolio();
@@ -484,7 +484,7 @@ describe('rankCscLeads — a never-measured domain must not outrank a measured o
 	});
 
 	it('carries the qualifier on the wire so a dashboard can gate on it', async () => {
-		const { formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		const { buildToolResult } = await import('../src/handlers/tool-formatters');
 		const report = await mixedPortfolio();
 		const result = buildToolResult(fmt(report, 'full'), report, 'full');
@@ -495,7 +495,7 @@ describe('rankCscLeads — a never-measured domain must not outrank a measured o
 		expect(wire).toContain('"graded":false');
 		expect(wire).toContain('"gapSeverity":null');
 		expect(wire).toContain('"unassessedDomains":1');
-		// True of THIS fixture — `evaluateCscProducts([], …)` really did run no checks.
+		// True of THIS fixture — `evaluateRegistrarProducts([], …)` really did run no checks.
 		expect(report.caveat).toMatch(/no checks ran/i);
 
 		const comment = result.content.map((c) => c.text).find((t) => t.includes('STRUCTURED_RESULT'));
@@ -504,7 +504,7 @@ describe('rankCscLeads — a never-measured domain must not outrank a measured o
 	});
 
 	it('never presents the unmeasured domain as a severity-bearing lead in the prose', async () => {
-		const { formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		const report = await mixedPortfolio();
 
 		// Each format is checked against the string IT can actually emit: `full` says
@@ -529,18 +529,18 @@ describe('rankCscLeads — a never-measured domain must not outrank a measured o
 		const ungradedBlock = full.split('\n## ').find((b) => b.startsWith('2. never-measured.example'));
 		expect(ungradedBlock).toBeDefined();
 		expect(ungradedBlock).toMatch(/No checks ran/i);
-		expect(ungradedBlock).not.toContain('Recommended CSC products');
+		expect(ungradedBlock).not.toContain('Recommended registrar products');
 		expect(ungradedBlock).not.toContain('digital_certificates');
 		expect(ungradedBlock).not.toContain('Top priority');
 
 		// Control — the measured lead's block still carries every sales claim.
 		const gradedBlock = full.split('\n## ').find((b) => b.startsWith('1. measured.example'));
-		expect(gradedBlock).toContain('Recommended CSC products: managed_dmarc');
+		expect(gradedBlock).toContain('Recommended registrar products: managed_dmarc');
 		expect(gradedBlock).toContain('Top priority: medium');
 	});
 
 	it('leaves an all-measured portfolio completely unchanged (control)', async () => {
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank, formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 
 		const report = rank([
 			{ report: await gradedReport('a.example'), ownershipBucket: 'consolidated' },
@@ -577,10 +577,10 @@ describe('rankCscLeads — a never-measured domain must not outrank a measured o
  * CHECKS — not from the score. So `isMeasured` is the predicate that makes it
  * true, and it is what now gates it.
  */
-describe('rankCscLeads — checks ran but the scan could not be scored', () => {
+describe('rankPortfolioLeads — checks ran but the scan could not be scored', () => {
 
 	it('does NOT claim that no checks ran', async () => {
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank, formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		const report = rank([{ report: await unscoredReport('unscored.example'), ownershipBucket: 'consolidated' }]);
 
 		for (const format of ['compact', 'full'] as const) {
@@ -594,7 +594,7 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
 	});
 
 	it('keeps the measured evidence — real severity, real products, counted in the rollups', async () => {
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank, formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		const input = await unscoredReport('unscored.example');
 		// Fixture-reachability guard: the producer really did derive recommendations
 		// from the findings, so there is genuine evidence available to suppress.
@@ -606,7 +606,7 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
 
 		expect(lead.assessed).toBe(true);
 		expect(lead.graded).toBe(false);
-		// Was null, and the whole lead was demoted. csc_multilock is not recommended
+		// Was null, and the whole lead was demoted. registry_lock is not recommended
 		// (no RDAP posture); the three scan-driven products give
 		// 3x3 (dmarc high) + 2x3 (ssl high) + 2x2 (dnssec medium) = 19, x1.0 for
 		// `consolidated`. Asserted exactly: a merely-positive severity would also be
@@ -627,7 +627,7 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
 	});
 
 	it('still withholds the SCORE-derived claims', async () => {
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank, formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		const report = rank([{ report: await unscoredReport('unscored.example'), ownershipBucket: 'consolidated' }]);
 
 		// No score means no portfolio grade contribution and no score line — the half
@@ -639,11 +639,11 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
 	});
 
 	it('does not promise "the gaps below are real" when the lead has no gaps', async () => {
-		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { evaluateRegistrarProducts } = await import('../src/tools/map-registrar-products');
+		const { rankPortfolioLeads: rank, formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		// Reachable whenever the scoring bundle fails on a CLEAN domain: checks ran,
 		// everything passed, registry lock in place — so no product is recommended.
-		const clean = evaluateCscProducts(
+		const clean = evaluateRegistrarProducts(
 			[
 				{ category: 'dmarc', passed: true, score: 100, findings: [] },
 				{ category: 'ssl', passed: true, score: 100, findings: [] },
@@ -656,7 +656,7 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
 		);
 		const report = rank([{ report: clean, ownershipBucket: 'consolidated' }]);
 		// Fixture-reachability guard: this really is the no-gaps shape.
-		expect(report.rankedLeads[0].recommendedCscProducts).toEqual([]);
+		expect(report.rankedLeads[0].recommendedProducts).toEqual([]);
 		expect(report.rankedLeads[0].assessed).toBe(true);
 		expect(report.rankedLeads[0].graded).toBe(false);
 
@@ -665,11 +665,11 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
 		expect(text).not.toContain('the gaps below are real');
 		// The unscored FACT must survive — only the promise of gaps goes.
 		expect(text).toMatch(/could not be scored/i);
-		expect(text).toContain('No CSC upsell — posture clean');
+		expect(text).toContain('No registrar upsell — posture clean');
 	});
 
 	it('still says "the gaps below are real" when there ARE gaps (control)', async () => {
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank, formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		const report = rank([{ report: await unscoredReport('unscored.example'), ownershipBucket: 'consolidated' }]);
 		// Without this the assertion above would hold under an implementation that
 		// dropped the phrase unconditionally, losing the distinction from the
@@ -678,7 +678,7 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
 	});
 
 	it('ranks an unscored-but-measured lead by its REAL severity, above a lower-severity graded lead', async () => {
-		const { rankCscLeads: rank } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank } = await import('../src/tools/prioritize-portfolio-leads');
 		// graded.example has severity 6; the unscored domain has genuine gaps worth
 		// more. Under the previous fix it had NO severity and sorted last, burying a
 		// critical finding beneath a lesser one.
@@ -699,9 +699,9 @@ describe('rankCscLeads — checks ran but the scan could not be scored', () => {
  * the two per-lead notes produced a self-contradiction: "No checks ran for this
  * domain… The checks for this domain ran…".
  */
-describe('formatCscLeads / rankCscLeads — report-level sentences', () => {
+describe('formatPortfolioLeads / rankPortfolioLeads — report-level sentences', () => {
 	it('states the caveat in report-level terms, with no singular referent and no contradiction', async () => {
-		const { rankCscLeads: rank } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank } = await import('../src/tools/prioritize-portfolio-leads');
 		const report = rank([
 			{ report: await ungradedReport('nothing-ran.example'), ownershipBucket: 'consolidated' },
 			{ report: await unscoredReport('unscored.example'), ownershipBucket: 'consolidated' },
@@ -723,7 +723,7 @@ describe('formatCscLeads / rankCscLeads — report-level sentences', () => {
 	});
 
 	it('pluralises and omits the half that does not apply', async () => {
-		const { rankCscLeads: rank } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank } = await import('../src/tools/prioritize-portfolio-leads');
 		const onlyUnassessed = rank([
 			{ report: await ungradedReport('a.example'), ownershipBucket: 'consolidated' },
 			{ report: await ungradedReport('b.example'), ownershipBucket: 'consolidated' },
@@ -746,7 +746,7 @@ describe('formatCscLeads / rankCscLeads — report-level sentences', () => {
 	 * domains printed "no gradeable domains" directly above `Score: 91/100 (A)`.
 	 */
 	it('does not claim "no gradeable domains" when every domain IS graded but carries no rollup weight', async () => {
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank, formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		const report = rank([{ report: await gradedReport('impersonator.example'), ownershipBucket: 'impersonation' }]);
 
 		// Fixture-reachability guard: graded, yet no portfolio grade — the exact
@@ -761,7 +761,7 @@ describe('formatCscLeads / rankCscLeads — report-level sentences', () => {
 	});
 
 	it('still says "no gradeable domains" when nothing is graded (control)', async () => {
-		const { rankCscLeads: rank, formatCscLeads: fmt } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads: rank, formatPortfolioLeads: fmt } = await import('../src/tools/prioritize-portfolio-leads');
 		const report = rank([{ report: await ungradedReport('nothing-ran.example'), ownershipBucket: 'consolidated' }]);
 		// Without this the assertion above would hold under an implementation that
 		// printed the rollup-weight wording for every ungradeable portfolio.
@@ -816,23 +816,23 @@ describe('extractDiscoveredCandidates', () => {
 
 /**
  * Fix round 1, F1 (MEDIUM regression from Task 6b, commit ec984197): before
- * ec984197, `evaluateCscProducts` read `assessed: isMeasured(checkResults)`,
+ * ec984197, `evaluateRegistrarProducts` read `assessed: isMeasured(checkResults)`,
  * so an all-transient lead (checks attempted, none completed) was
  * `assessed: true` and `UNASSESSED_LEAD_NOTE`/`buildReportCaveat`'s "no
  * checks ran" wording was UNREACHABLE for it. ec984197 made `assessed`
  * correctly `false` for that state — which made the hardcoded "no checks
  * ran" prose REACHABLE, and false: N checks WERE attempted. This closes that
- * gap by threading `CscProductReport.caveat` (map_csc_products already
- * computes the correct sentence) into `CscLead.caveat` and reading it at
+ * gap by threading `RegistrarProductReport.caveat` (map_registrar_products already
+ * computes the correct sentence) into `PortfolioLead.caveat` and reading it at
  * every per-lead and report-level render site, using the REAL producer
- * (`evaluateCscProducts` → `rankCscLeads` → `formatCscLeads`) throughout —
- * no hand-built `CscLead`/`CscLeadReport` literals, since only the real
+ * (`evaluateRegistrarProducts` → `rankPortfolioLeads` → `formatPortfolioLeads`) throughout —
+ * no hand-built `PortfolioLead`/`PortfolioLeadReport` literals, since only the real
  * producer manufactures the exact shape the defect lived in.
  */
-describe('prioritize_csc_leads — a total outage (all checks attempted, none completed) is honestly unassessed (fix round 1, F1)', () => {
-	/** One all-transient CscLeadEntry via the REAL producer chain (evaluateCscProducts). */
-	async function allTransientEntry(domain: string, ownershipBucket: OwnershipBucket = 'unknown'): Promise<CscLeadEntry> {
-		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+describe('prioritize_portfolio_leads — a total outage (all checks attempted, none completed) is honestly unassessed (fix round 1, F1)', () => {
+	/** One all-transient PortfolioLeadEntry via the REAL producer chain (evaluateRegistrarProducts). */
+	async function allTransientEntry(domain: string, ownershipBucket: OwnershipBucket = 'unknown'): Promise<PortfolioLeadEntry> {
+		const { evaluateRegistrarProducts } = await import('../src/tools/map-registrar-products');
 		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 
@@ -847,20 +847,20 @@ describe('prioritize_csc_leads — a total outage (all checks attempted, none co
 		// never-ran control below) before asserting on it.
 		expect(allTransient.length).toBeGreaterThan(10);
 
-		const report = evaluateCscProducts(allTransient, null, domain, null, null);
+		const report = evaluateRegistrarProducts(allTransient, null, domain, null, null);
 		return { report, ownershipBucket };
 	}
 
-	/** One never-ran CscLeadEntry via the REAL producer chain — the byte-identical control. */
-	async function neverRanEntry(domain: string, ownershipBucket: OwnershipBucket = 'unknown'): Promise<CscLeadEntry> {
-		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
-		return { report: evaluateCscProducts([], null, domain, null, null), ownershipBucket };
+	/** One never-ran PortfolioLeadEntry via the REAL producer chain — the byte-identical control. */
+	async function neverRanEntry(domain: string, ownershipBucket: OwnershipBucket = 'unknown'): Promise<PortfolioLeadEntry> {
+		const { evaluateRegistrarProducts } = await import('../src/tools/map-registrar-products');
+		return { report: evaluateRegistrarProducts([], null, domain, null, null), ownershipBucket };
 	}
 
-	it('threads the producer caveat onto CscLead, distinct from the never-ran wording', async () => {
-		const { rankCscLeads } = await import('../src/tools/prioritize-csc-leads');
+	it('threads the producer caveat onto PortfolioLead, distinct from the never-ran wording', async () => {
+		const { rankPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
 		const entry = await allTransientEntry('total-outage.example');
-		const report = rankCscLeads([entry]);
+		const report = rankPortfolioLeads([entry]);
 		const lead = report.rankedLeads[0];
 
 		expect(lead.assessed).toBe(false);
@@ -872,10 +872,10 @@ describe('prioritize_csc_leads — a total outage (all checks attempted, none co
 	it.each(['compact', 'full'] as const)(
 		'renders the attempted-none-completed wording per lead, NOT "no checks ran" [%s]',
 		async (format) => {
-			const { rankCscLeads, formatCscLeads } = await import('../src/tools/prioritize-csc-leads');
+			const { rankPortfolioLeads, formatPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
 			const entry = await allTransientEntry('total-outage.example');
-			const report = rankCscLeads([entry]);
-			const text = formatCscLeads(report, format);
+			const report = rankPortfolioLeads([entry]);
+			const text = formatPortfolioLeads(report, format);
 
 			expect(text.toLowerCase()).not.toContain('no checks ran');
 			expect(text).toMatch(/attempted/i);
@@ -883,9 +883,9 @@ describe('prioritize_csc_leads — a total outage (all checks attempted, none co
 	);
 
 	it('the report-level caveat (buildReportCaveat) is also state-aware — not the false "no checks ran" reason', async () => {
-		const { rankCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
 		const entry = await allTransientEntry('total-outage.example');
-		const report = rankCscLeads([entry]);
+		const report = rankPortfolioLeads([entry]);
 
 		expect(report.caveat).not.toBeNull();
 		expect(report.caveat!.toLowerCase()).not.toContain('no checks ran');
@@ -893,10 +893,10 @@ describe('prioritize_csc_leads — a total outage (all checks attempted, none co
 	});
 
 	it('a MIXED unassessed population states both reasons at the report level rather than picking one', async () => {
-		const { rankCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
 		const transient = await allTransientEntry('total-outage.example');
 		const neverRan = await neverRanEntry('never-measured.example');
-		const report = rankCscLeads([transient, neverRan]);
+		const report = rankPortfolioLeads([transient, neverRan]);
 
 		expect(report.summary.unassessedDomains).toBe(2);
 		expect(report.caveat).toMatch(/no checks run at all/i);
@@ -904,27 +904,27 @@ describe('prioritize_csc_leads — a total outage (all checks attempted, none co
 	});
 
 	it('keeps the never-ran case byte-identical to its pre-fix-round wording at every site (control)', async () => {
-		const { rankCscLeads, formatCscLeads, UNASSESSED_LEAD_NOTE } = await import('../src/tools/prioritize-csc-leads');
-		const { UNASSESSED_CSC_NOTE } = await import('../src/tools/map-csc-products');
+		const { rankPortfolioLeads, formatPortfolioLeads, UNASSESSED_LEAD_NOTE } = await import('../src/tools/prioritize-portfolio-leads');
+		const { UNASSESSED_PRODUCT_NOTE } = await import('../src/tools/map-registrar-products');
 		const entry = await neverRanEntry('never-measured.example');
-		const report = rankCscLeads([entry]);
+		const report = rankPortfolioLeads([entry]);
 		const lead = report.rankedLeads[0];
 
 		// Without this control, the "not 'no checks ran'" assertions above could
 		// hold under an implementation that stopped saying "no checks ran" ANYWHERE.
 		expect(lead.assessed).toBe(false);
-		expect(lead.caveat).toBe(UNASSESSED_CSC_NOTE);
+		expect(lead.caveat).toBe(UNASSESSED_PRODUCT_NOTE);
 
-		const compact = formatCscLeads(report, 'compact');
-		const full = formatCscLeads(report, 'full');
+		const compact = formatPortfolioLeads(report, 'compact');
+		const full = formatPortfolioLeads(report, 'full');
 		expect(compact).toContain('no checks ran');
 		expect(full).toContain(UNASSESSED_LEAD_NOTE);
 		expect(report.caveat).toContain('no checks ran');
 	});
 
 	it('still lists real recommendations for a MEASURED lead (guard — no over-abstain, 1-of-N completed)', async () => {
-		const { rankCscLeads } = await import('../src/tools/prioritize-csc-leads');
-		const { evaluateCscProducts } = await import('../src/tools/map-csc-products');
+		const { rankPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
+		const { evaluateRegistrarProducts } = await import('../src/tools/map-registrar-products');
 		const { SCAN_CATEGORIES } = await import('../src/tools/scan-domain');
 		const { buildCheckResult, createFinding } = await import('@blackveil/dns-checks/scoring');
 
@@ -946,31 +946,31 @@ describe('prioritize_csc_leads — a total outage (all checks attempted, none co
 		});
 		expect(mostlyTransient.length).toBeGreaterThan(10);
 
-		const report = evaluateCscProducts(mostlyTransient, null, 'partial-outage.example', null, null);
-		const leadsReport = rankCscLeads([{ report, ownershipBucket: 'unknown' }]);
+		const report = evaluateRegistrarProducts(mostlyTransient, null, 'partial-outage.example', null, null);
+		const leadsReport = rankPortfolioLeads([{ report, ownershipBucket: 'unknown' }]);
 		const lead = leadsReport.rankedLeads[0];
 
 		expect(lead.assessed).toBe(true);
 		expect(lead.caveat).toBeNull();
-		expect(lead.recommendedCscProducts).toContain('managed_dmarc');
+		expect(lead.recommendedProducts).toContain('managed_dmarc');
 	});
 });
 
 /**
  * Round 6c, N2: `isNeverRanCaveat` (the pre-fix name) classified a lead by
- * comparing `caveat` against `UNASSESSED_CSC_NOTE` STRING identity, with
+ * comparing `caveat` against `UNASSESSED_PRODUCT_NOTE` STRING identity, with
  * "anything else" defaulting to the transient branch. `isNeverRanKind` (the
  * fix) reads the STRUCTURAL `caveatKind` field instead — these tests build
- * `CscProductReport` fixtures where `caveat` (the prose) and `caveatKind`
+ * `RegistrarProductReport` fixtures where `caveat` (the prose) and `caveatKind`
  * (the discriminant) deliberately DISAGREE, proving the render helpers follow
  * `caveatKind`, never the prose. A real producer can never produce such a
  * disagreement — only a hand-built fixture can isolate the classifier this
  * way, which is the point: it proves the classifier no longer trusts prose at
  * all, not merely that today's two real prose strings happen to differ.
  */
-describe('prioritize_csc_leads — classifies by caveatKind, never by comparing the caveat string (round 6c, N2 pin)', () => {
-	/** A CscProductReport with mismatched caveat prose vs. caveatKind — only constructible by hand. */
-	function mismatchedReport(domain: string, caveat: string, caveatKind: CaveatKind): CscProductReport {
+describe('prioritize_portfolio_leads — classifies by caveatKind, never by comparing the caveat string (round 6c, N2 pin)', () => {
+	/** A RegistrarProductReport with mismatched caveat prose vs. caveatKind — only constructible by hand. */
+	function mismatchedReport(domain: string, caveat: string, caveatKind: CaveatKind): RegistrarProductReport {
 		return {
 			domain,
 			score: null,
@@ -985,10 +985,10 @@ describe('prioritize_csc_leads — classifies by caveatKind, never by comparing 
 	}
 
 	it('PIN: caveatKind "all_transient" renders the attempted-none-completed wording even when the caveat PROSE says "no checks ran"', async () => {
-		const { rankCscLeads, formatCscLeads } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads, formatPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
 		// The prose text is EXACTLY the never-ran sentence, but the structural
 		// kind says all_transient. Under the OLD string-identity code, `caveat
-		// === UNASSESSED_CSC_NOTE` would have been TRUE here (exact match),
+		// === UNASSESSED_PRODUCT_NOTE` would have been TRUE here (exact match),
 		// misclassifying this as never-ran. The kind-based classifier must not be
 		// fooled by prose that happens to match the constant exactly.
 		const report = mismatchedReport(
@@ -996,7 +996,7 @@ describe('prioritize_csc_leads — classifies by caveatKind, never by comparing 
 			'No checks ran for this domain, so no product gap could be assessed.',
 			'all_transient',
 		);
-		const leadsReport = rankCscLeads([{ report, ownershipBucket: 'unknown' }]);
+		const leadsReport = rankPortfolioLeads([{ report, ownershipBucket: 'unknown' }]);
 		const lead = leadsReport.rankedLeads[0];
 
 		expect(lead.caveatKind).toBe('all_transient');
@@ -1004,16 +1004,16 @@ describe('prioritize_csc_leads — classifies by caveatKind, never by comparing 
 		// Compact mode's wording is derived ENTIRELY from caveatKind (never
 		// touches the caveat prose) — the cleanest proof the branch decision
 		// came from the structural field, not from string comparison.
-		const compact = formatCscLeads(leadsReport, 'compact');
+		const compact = formatPortfolioLeads(leadsReport, 'compact');
 		expect(compact).toContain('checks attempted, none completed');
 		expect(compact).not.toMatch(/\bno checks ran\b/i);
 	});
 
 	it('PIN: caveatKind "never_ran" renders the no-checks-ran wording even when the caveat PROSE says "attempted"', async () => {
-		const { rankCscLeads, formatCscLeads, UNASSESSED_LEAD_NOTE } = await import('../src/tools/prioritize-csc-leads');
+		const { rankPortfolioLeads, formatPortfolioLeads, UNASSESSED_LEAD_NOTE } = await import('../src/tools/prioritize-portfolio-leads');
 		// The prose text here is a renamed/edited transient-style wording, but the
 		// structural kind says never_ran. Under the OLD string-identity code,
-		// `caveat === UNASSESSED_CSC_NOTE` would have been FALSE (the prose
+		// `caveat === UNASSESSED_PRODUCT_NOTE` would have been FALSE (the prose
 		// doesn't match the exact constant), and "anything else" defaulted to the
 		// TRANSIENT branch — misclassifying this as transient. The kind-based
 		// classifier must not default that way.
@@ -1022,13 +1022,13 @@ describe('prioritize_csc_leads — classifies by caveatKind, never by comparing 
 			'5 checks were attempted for this domain, but none of them completed (a renamed edit of the real wording).',
 			'never_ran',
 		);
-		const leadsReport = rankCscLeads([{ report, ownershipBucket: 'unknown' }]);
+		const leadsReport = rankPortfolioLeads([{ report, ownershipBucket: 'unknown' }]);
 		const lead = leadsReport.rankedLeads[0];
 
 		expect(lead.caveatKind).toBe('never_ran');
 
-		const compact = formatCscLeads(leadsReport, 'compact');
-		const full = formatCscLeads(leadsReport, 'full');
+		const compact = formatPortfolioLeads(leadsReport, 'compact');
+		const full = formatPortfolioLeads(leadsReport, 'full');
 		expect(compact).toContain('no checks ran');
 		expect(compact).not.toContain('checks attempted, none completed');
 		expect(full).toContain(UNASSESSED_LEAD_NOTE);

@@ -5,7 +5,7 @@ const FAMILY_FIXTURES: Array<{ family: string; sampleName: string }> = [
 	{ family: 'markmonitor', sampleName: 'MarkMonitor Inc.' },
 	{ family: 'com laude', sampleName: 'Com Laude' },
 	{ family: 'safenames', sampleName: 'Safenames Ltd' },
-	{ family: 'csc corporate domains', sampleName: 'CSC Corporate Domains, Inc.' },
+	{ family: 'corporate domains registrar', sampleName: 'CSC Corporate Domains, Inc.' },
 	{ family: 'cloudflare', sampleName: 'Cloudflare, Inc.' },
 	{ family: 'tucows', sampleName: 'Tucows Domains Inc.' },
 	{ family: 'godaddy', sampleName: 'GoDaddy.com, LLC' },
@@ -54,7 +54,7 @@ describe('AUDIT: registrar-portfolio family coverage', () => {
 		expect(Array.from(fixtureFamilies).sort()).toEqual([
 			'cloudflare',
 			'com laude',
-			'csc corporate domains',
+			'corporate domains registrar',
 			'gandi',
 			'godaddy',
 			'markmonitor',

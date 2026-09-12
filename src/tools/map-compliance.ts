@@ -500,7 +500,7 @@ export function formatCompliance(report: ComplianceReport, format: OutputFormat 
 	// (`evaluateCompliance`) always states which reason applies whenever
 	// `!assessed`. Falling back to `UNASSESSED_COMPLIANCE_CAVEAT` specifically
 	// is the same silent-wrong-prose shape closed elsewhere this fix round
-	// (map_csc_products, generate_fix_plan): a fabricated/hand-built report
+	// (map_registrar_products, generate_fix_plan): a fabricated/hand-built report
 	// with a somehow-unset `caveat` would render the never-ran-specific text
 	// even for an all-transient state. The only genuinely safe fallback here
 	// makes no specific claim.
