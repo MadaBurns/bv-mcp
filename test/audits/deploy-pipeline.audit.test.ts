@@ -34,6 +34,65 @@ describe('deploy:prod pipeline integrity', () => {
 		expect(buildIndex, 'the dns-checks build must run before wrangler deploy').toBeLessThan(deployIndex);
 	});
 
+	// #945: deploy:prod deploys the MCP Worker ONLY. bv-whois and bv-infra-probe have
+	// their own configs and their own deploy commands, and until this gate existed
+	// nothing invoked them — both were months stale behind a fully green deploy.
+	it('refuses production deployment until the sidecar Workers are proven current', () => {
+		expect(deployScript, 'deploy:prod must run the sidecar deploy-drift gate').toContain('npm run check:sidecar-freshness');
+	});
+
+	it('runs the sidecar gate BEFORE wrangler deploy (and early, before the build)', () => {
+		const sidecarIndex = deployScript.indexOf('npm run check:sidecar-freshness');
+		const deployIndex = deployScript.indexOf('wrangler deploy');
+		const buildIndex = deployScript.indexOf('npm -w packages/dns-checks run build');
+		expect(sidecarIndex).toBeGreaterThan(-1);
+		expect(sidecarIndex, 'the sidecar gate must run before wrangler deploy').toBeLessThan(deployIndex);
+		// ~2s of wrangler reads; failing after a full dns-checks build wastes the
+		// operator's time for no added signal.
+		expect(sidecarIndex, 'the sidecar gate must fail before the dns-checks build').toBeLessThan(buildIndex);
+	});
+
+	it('exposes the deploy command the sidecar gate tells the operator to run', () => {
+		// A gate that names a command package.json does not define is a dead end.
+		expect(pkg.scripts?.['deploy:whois'] ?? '').toBe('npm -w packages/bv-whois run deploy');
+		expect(pkg.scripts?.['deploy:infra-probe'] ?? '').toContain('wrangler.infra-probe.jsonc');
+	});
+
+	it('also gates the private deploy helper — the second door must not be a bypass', () => {
+		const gateIndex = deployPrivateSource.indexOf('sidecar-deploy-drift-check.ts');
+		const deployIndex = deployPrivateSource.indexOf("[wranglerCliPath, 'deploy'");
+		expect(gateIndex, 'deploy-private.mjs must run the sidecar deploy-drift gate').toBeGreaterThan(-1);
+		expect(gateIndex, 'the sidecar gate must run before wrangler deploy').toBeLessThan(deployIndex);
+	});
+
+	// #945 review: the sidecar gate's evidence is `git log HEAD -- <watchPaths>`, which can
+	// only see commits that are ANCESTORS of HEAD. On a checkout behind origin/main a
+	// sidecar commit that landed upstream but not locally is invisible, the drift list comes
+	// back empty, and the gate reports `fresh` — a false green in a fail-closed gate. The
+	// freshness check is what proves HEAD ⊇ origin/main, so it MUST precede the sidecar gate
+	// on every door. deploy:prod / deploy:prod:staged get it from their npm chains; this door
+	// runs it explicitly, and once did not.
+	it('runs the freshness gate BEFORE the sidecar gate on the private door — HEAD-based drift evidence is worthless on a stale checkout', () => {
+		const freshnessIndex = deployPrivateSource.indexOf('deploy-freshness-check.ts');
+		const sidecarIndex = deployPrivateSource.indexOf('sidecar-deploy-drift-check.ts');
+		expect(freshnessIndex, 'deploy-private.mjs must run the deploy-freshness gate').toBeGreaterThan(-1);
+		expect(sidecarIndex, 'deploy-private.mjs must run the sidecar deploy-drift gate').toBeGreaterThan(-1);
+		expect(freshnessIndex, 'freshness must prove HEAD ⊇ origin/main before the sidecar gate trusts `git log HEAD`').toBeLessThan(
+			sidecarIndex,
+		);
+	});
+
+	// Same ordering on the two npm doors, asserted from the scripts themselves so a
+	// reordering of the chain cannot silently invert the dependency.
+	it.each(['deploy:prod', 'deploy:prod:staged'])('runs the freshness gate before the sidecar gate in %s', (scriptName) => {
+		const script = pkg.scripts?.[scriptName] ?? '';
+		const freshnessIndex = script.indexOf('check:deploy-freshness');
+		const sidecarIndex = script.indexOf('check:sidecar-freshness');
+		expect(freshnessIndex, `${scriptName} must run check:deploy-freshness`).toBeGreaterThan(-1);
+		expect(sidecarIndex, `${scriptName} must run check:sidecar-freshness`).toBeGreaterThan(-1);
+		expect(freshnessIndex, 'freshness must precede the sidecar gate').toBeLessThan(sidecarIndex);
+	});
+
 	it('refuses production deployment until the remote Brand Audit schema preflight passes', () => {
 		const preflightIndex = deployScript.indexOf('brand-audit-schema-preflight.mjs');
 		const deployIndex = deployScript.indexOf('wrangler deploy');
@@ -76,6 +135,7 @@ describe('deploy:prod pipeline integrity', () => {
 			expect(stagedScript, 'package.json must define a deploy:prod:staged script').not.toBe('');
 			for (const gate of [
 				'npm run check:deploy-freshness',
+				'npm run check:sidecar-freshness',
 				'npm run check:release-integrity',
 				'npm -w packages/dns-checks run build',
 				'node scripts/inject-private-config.cjs',
@@ -115,14 +175,10 @@ describe('inject-private-config fail-closed on missing overlay', () => {
 	}
 
 	it('hard-fails (process.exit(1)) when the private overlay is absent', () => {
-		expect(missingOverlayBranch(), 'the missing-overlay branch must hard-fail rather than return 0').toContain(
-			'process.exit(1)',
-		);
+		expect(missingOverlayBranch(), 'the missing-overlay branch must hard-fail rather than return 0').toContain('process.exit(1)');
 	});
 
 	it('does not silently `return` from the missing-overlay branch', () => {
-		expect(missingOverlayBranch(), 'a bare return would let the deploy proceed against a stale config').not.toMatch(
-			/\breturn\b/,
-		);
+		expect(missingOverlayBranch(), 'a bare return would let the deploy proceed against a stale config').not.toMatch(/\breturn\b/);
 	});
 });

@@ -20,6 +20,50 @@ describe('scan-post-processing helpers', () => {
 		vi.doUnmock('../src/lib/dns');
 	});
 
+	it('never resurrects an abstained check: a dkim non-answer stays excluded from the score (#948)', async () => {
+		// The adjustment functions reshape findings and re-derive the result with
+		// `buildCheckResult`, which recomputes passed/score from findings alone and
+		// carries neither `checkStatus` nor `partial`. An abstention's findings are
+		// all `info`, so a naive rebuild returns score 100 / passed true for a probe
+		// that never ran — re-creating the exact false pass #948 removed, one stage
+		// later. `dkim` is in three of the category lists, so this is reachable on
+		// any no-MX domain under an enforcing parent DMARC policy.
+		vi.doMock('../src/lib/dns', () => ({
+			queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=reject']),
+		}));
+		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+		const dkimAbstained: CheckResult = {
+			category: 'dkim',
+			score: 0,
+			passed: false,
+			partial: true,
+			checkStatus: 'error',
+			findings: [
+				createFinding('dkim', 'DKIM not assessed', 'info', 'Every DKIM selector query failed before an answer was received.', {
+					inconclusive: true,
+					errorKind: 'dns_error',
+				}),
+			],
+		};
+
+		const results: CheckResult[] = [
+			buildCheckResult('mx', [createFinding('mx', 'No MX records found', 'info', 'No inbound mail is configured.')]),
+			dkimAbstained,
+		];
+
+		const updated = await applyScanPostProcessing('app.example.com', results);
+		const dkim = updated.find((r) => r.category === 'dkim');
+
+		expect(dkim?.checkStatus).toBe('error');
+		expect(dkim?.partial).toBe(true);
+		expect(dkim?.score).toBe(0);
+		expect(dkim?.passed).toBe(false);
+		// The abstention finding must not be relabelled as a measured absence.
+		expect(dkim?.findings[0].metadata?.missingControl).toBeUndefined();
+		vi.doUnmock('../src/lib/dns');
+	});
+
 	it('clarifies MTA-STS text for mail domains with MX records', async () => {
 		const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
 
@@ -318,6 +362,42 @@ describe('scan-post-processing helpers', () => {
 			const results = [
 				...EMAIL_FINDINGS(),
 				buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 MX records configured.')], true),
+			];
+
+			const updated = await applyScanPostProcessing('sub.example.com', results);
+			expect(severities(updated)).toEqual(['critical', 'high', 'high']);
+			vi.doUnmock('../src/lib/dns');
+		});
+
+		/**
+		 * #944 — the executable form of the Option-A decision.
+		 *
+		 * A loopback MX (`0 localhost.`) is a misconfiguration, NOT an RFC 7505 no-mail
+		 * declaration, so `check_mx` leaves `controlPresent: true` and this domain gets
+		 * NO non-mail downgrade. Option B (classifying localhost as a no-mail signal)
+		 * would flip `controlPresent` to false and hand exactly these spoofable
+		 * email-auth findings a clean `info` pass. Without this case a future Option-B
+		 * attempt would land silently.
+		 *
+		 * The decision was settled on a measurement: 0/992 loopback-MX domains in a
+		 * stratified Tranco 1000 corpus; 15/29,385 (0.051%) in a 29,780-domain sample,
+		 * all of them the identical string `0 localhost.`.
+		 */
+		it('does NOT downgrade a localhost-MX domain — a loopback MX is a defect, not a no-mail signal (#944)', async () => {
+			vi.doMock('../src/lib/dns', () => ({ queryTxtRecords: vi.fn().mockResolvedValue(['v=DMARC1; p=reject']) }));
+			const { applyScanPostProcessing } = await import('../src/tools/scan/post-processing');
+
+			// The real check-mx loopback path: presence info + the loopback medium, controlPresent TRUE.
+			const results = [
+				...EMAIL_FINDINGS(),
+				buildCheckResult(
+					'mx',
+					[
+						createFinding('mx', 'MX records found', 'info', '1 mail exchange record(s) present.'),
+						createFinding('mx', 'MX points at localhost', 'medium', 'MX target(s) "localhost" name the loopback interface.'),
+					],
+					true,
+				),
 			];
 
 			const updated = await applyScanPostProcessing('sub.example.com', results);

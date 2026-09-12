@@ -12,6 +12,7 @@ import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryTxtRecords, queryDnsRecords, querySrvRecords, queryMxRecords } from '../lib/dns';
 import {
 	isNullMxRecord,
+	isLoopbackMxRecord,
 	parseCaaRecord,
 	parseCaaParameters,
 	MAX_CAA_ISSUERS,
@@ -49,6 +50,7 @@ export interface Signal {
 		| 'security_tooling_exposed'
 		| 'shared_hosting'
 		| 'null_mx'
+		| 'loopback_mx'
 		| 'caa_no_issuance';
 	/**
 	 * `info` is a note, not a risk: it records a DNS directive that deliberately
@@ -353,9 +355,17 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 	// and stops: the supply-chain map follows MTA behaviour (RFC 7505 §3 — skip
 	// the `.` exchange, try the next MX), so real exchanges published beside a
 	// null MX are still mapped as dependencies and the conflict is noted.
+	// A loopback exchange (`0 localhost.`) is split out for a RELATED but distinct
+	// reason (#944): it names no third party either — mapping it produced a bogus
+	// `{ provider: 'localhost', roles: ['email-receiving'], trustLevel: 'critical' }`
+	// row on the measured control — but unlike a null MX it is a misconfiguration,
+	// not a directive, so it is noted at `low` rather than `info` below.
 	const rawMxRecords = mxSettled.status === 'fulfilled' ? mxSettled.value : [];
 	const hasNullMx = rawMxRecords.some(isNullMxRecord);
-	const mxHosts = rawMxRecords.filter((r) => !isNullMxRecord(r)).map((r) => r.exchange.replace(/\.$/, '').toLowerCase());
+	const hasLoopbackMx = rawMxRecords.some(isLoopbackMxRecord);
+	const mxHosts = rawMxRecords
+		.filter((r) => !isNullMxRecord(r) && !isLoopbackMxRecord(r))
+		.map((r) => r.exchange.replace(/\.$/, '').toLowerCase());
 
 	// Apex A-records for the ASN-based CDN tier (resolved to origin ASN below)
 	const aRecords = aSettled.status === 'fulfilled' ? aSettled.value : [];
@@ -645,6 +655,17 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 				? `Null MX (RFC 7505) declares no inbound mail, but it is published alongside ${mxHosts.length} other MX record${mxHosts.length === 1 ? '' : 's'}, which RFC 7505 forbids; the null MX is dropped and the rest are mapped.`
 				: 'Null MX record (RFC 7505): the domain explicitly declares it accepts no inbound mail. No email-receiving provider dependency exists.';
 		signals.push({ type: 'null_mx', severity: 'info', detail });
+	}
+	// NOT a directive note: `low`, not `info`. The `info` band above is reserved for a
+	// DNS record that deliberately removes a dependency; a loopback MX is a
+	// misconfiguration that happens to remove one (#944). Same 200-character clamp.
+	if (hasLoopbackMx) {
+		signals.push({
+			type: 'loopback_mx',
+			severity: 'low',
+			detail:
+				'MX points at localhost (loopback): it receives no mail and names no provider, so no email-receiving dependency is mapped. Publish a null MX ("0 .", RFC 7505) or a real exchange.',
+		});
 	}
 	for (const tag of caaNoIssuanceTags) {
 		const grants = caaGrantsByTag.get(tag) ?? 0;
