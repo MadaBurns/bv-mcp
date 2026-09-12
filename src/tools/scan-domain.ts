@@ -127,9 +127,12 @@ function resolveProviderSignatureOptions(rt?: ScanRuntimeOptions): {
  *     B is driven by A's signal; a PER-CHECK abort there would cross-contaminate
  *     a sibling. The scan-level signal only fires when the whole scan times out,
  *     at which point abandoning every in-flight DoH query is correct.
- *   • The raw-`fetch` checks (`ssl`, `http_security`) make INDEPENDENT,
- *     un-cached fetches, so they safely receive the narrower `perCheckSignal`
- *     (composed: this check's per-check timeout OR the scan-level abort).
+ *   • THREE checks make INDEPENDENT, un-cached requests that no sibling can be
+ *     deduplicated onto, so they safely receive the narrower `perCheckSignal`
+ *     (composed: this check's per-check timeout OR the scan-level abort): the
+ *     raw-`fetch` `ssl` and `http_security`, plus `dane_https`, whose TLS-probe
+ *     service binding is likewise outside the shared `queryCache`. `dane_https`
+ *     DOES still take `dnsOptions` for its TLSA lookup; the other two ignore it.
  *
  * The optional 6th `robotsMemo` (issue #641) is the ONE piece of per-scan state
  * those two raw-`fetch` checks DO share: a URL-keyed memo so the single
