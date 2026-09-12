@@ -13,7 +13,7 @@ import { TOOLS } from '../../src/schemas/tool-definitions';
 import { INTERNAL_ONLY_TOOLS } from '../../src/lib/config';
 
 // Public-facing count advertised in customer-facing prose. Internal-only tools
-// (e.g. map_csc_products) are removed from the public /mcp surface; the count
+// (e.g. map_registrar_products) are removed from the public /mcp surface; the count
 // tripwire on the full TOOLS.length lives in tool-count-ssot.audit.test.ts.
 const PUBLIC_TOOL_COUNT = TOOLS.length - INTERNAL_ONLY_TOOLS.size;
 

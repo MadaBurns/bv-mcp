@@ -335,7 +335,7 @@ describe('formatFixPlan — a domain that was never measured', () => {
  * synthetic "check error" finding `buildDnsErrorResult` attaches carries
  * `metadata.errorKind: 'dns_error'` — that finding is the ABSENCE of a
  * measurement, not a customer gap to fix. Mirrors the equivalent
- * `map_compliance`/`map_csc_products` fix (see `src/tools/map-compliance.ts:272`
+ * `map_compliance`/`map_registrar_products` fix (see `src/tools/map-compliance.ts:272`
  * for the reference implementation this is modeled on).
  */
 describe('evaluateFixPlan: a category that failed transiently is not turned into a remediation action', () => {
@@ -479,7 +479,7 @@ describe('evaluateFixPlan: a category that failed transiently is not turned into
 
 	/**
 	 * Proves the `isDnsErrorFinding` per-finding filter is NOT dead code in this
-	 * file (contrast with map-csc-products.ts, where the reviewer's M2a proved
+	 * file (contrast with map-registrar-products.ts, where the reviewer's M2a proved
 	 * the equivalent per-finding filters ARE dead once the `checkStatus` guard
 	 * exists). A check can COMPLETE (`checkStatus` absent/'completed') and still
 	 * attach its OWN errorKind-tagged finding for a narrower reason than a full

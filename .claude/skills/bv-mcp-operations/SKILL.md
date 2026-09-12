@@ -30,6 +30,50 @@ Human-readable text + (non-interactive clients only, `format=full`) `<!-- STRUCT
 
 Other workflows: `ci-contract.yml` (Zod contracts — ⚠️ **NOT a required check**, despite long being described as one; its `contract` job is absent from branch protection's context list, verified live 2026-08-23), `security.yml` (its `Secret & PII scan` + `Dependency audit` jobs ARE both required contexts), `repo-hygiene.yml` (reusable — ⚠️ consumed by the PUBLIC repos `blackveil-dns-action` and `bv-claude-dns` via `uses: MadaBurns/bv-mcp/.github/workflows/repo-hygiene.yml@main`; a public caller cannot consume a private reusable workflow, so making this repo private breaks both), `deploy-prod.yml` (the ONLY CI deploy workflow — dispatch-only, disarmed by default; see below), `publish.yml` (tagged-release pipeline — validates + cuts the GH Release ONLY; its npm/registry publish jobs were **removed 2026-08-23** after never once publishing successfully — 3.60–3.62 failed, 3.63/3.64 parked forever in `waiting` on the `production` environment reviewer, who is the same person doing the tagging. The manual worktree path in the `bv-mcp-release` skill is the authoritative publisher; `registry-drift-check.yml` is the safety net), `triage-issues.yml`, `registry-drift-check.yml` (12-hourly; compares live `serverInfo.version` against the MCP Registry and opens/escalates/closes a `registry-drift` issue — detection only, it never publishes; advisory, not required), `.gitleaks.toml`. `dns-security.yml` runs a **$0 dogfood scan** of blackveilsecurity.com with bv-mcp's own built scanner (`scripts/ci/dogfood-scan.mjs`, min grade B, advisory/not-required) — it replaced the paid `MadaBurns/blackveil-dns-action` path. A `test/audits/workflow-cost.audit.test.ts` guard (via `scripts/ci/check-workflow-cost.mjs`) fails CI on any self-hosted runner or paid marketplace action; rationale in `docs/ci-cost-posture.md`.
 
+## `build-and-test` is reported by TWO workflows — and the gap that hid in that
+
+`ci.yml` carries `paths-ignore: ['**.md', 'docs/**', 'LICENSE']`, so a docs-only
+PR skips it entirely and the required `build-and-test` check would never report,
+leaving the PR permanently BLOCKED under `strict=true`. `ci-docs.yml` exists to
+close that: it runs on **exactly** the complementary `paths` and declares a job
+with the **same name**.
+
+Two facts that make this safe, both verified rather than assumed (2026-09-11):
+
+- **GitHub matches required checks by NAME, with no "or" semantics.** On a mixed
+  PR — `paths-ignore` runs `ci.yml` because not all files match, `paths` runs
+  `ci-docs` because some do — **both** report `build-and-test` and **both must
+  pass**. A failing `ci.yml` still blocks. So the fast job cannot green-light a
+  suite that did not run.
+- **The two path lists must stay exact complements.** If they ever diverge, a PR
+  falls into the gap where *neither* workflow fires and nothing reports
+  `build-and-test` — permanent BLOCKED, with no failing check to point at.
+
+⚠️ **The gap that DID exist (fixed #976): `ci-docs`'s job was a bare `echo`.** A
+PR touching only markdown therefore merged without running the audits that
+assert documentation matches the code — the gate guarding the docs was the one a
+docs change skipped. Four audits read markdown reachable only by these paths and
+are **not** in `audit:oss-safety`:
+
+| Audit | Reads |
+|---|---|
+| `tool-surface-prose` | `CLAUDE.md`, `README.md`, `docs/github-settings.md`, vscode `README.md` |
+| `public-quota-surface` | `README.md`, `docs/client-setup.md`, `docs/troubleshooting.md` |
+| `tenant-ops-runbook` | `docs/tenant-ops-runbook.md` |
+| `security-capability-inventory` | `docs/operator-runbook.md` |
+
+`npm run audit:docs-surface` is that set, and `ci-docs` now runs it (~23s with
+install, vs the old 3s echo).
+
+**Where a new markdown-reading audit goes**: `audit:oss-safety` if it belongs
+with the public-source-safety family — `repo-hygiene.yml` has **no** paths
+filter, so its required `File hygiene check` already runs on every PR including
+docs-only ones. Otherwise `audit:docs-surface`. **Never both.**
+
+The generalisable shape, worth recognising elsewhere: *a gate that is skipped by
+the same condition that makes it relevant is not a gate.* A path filter that
+excuses a check is only safe when something else still covers the excused paths.
+
 ## Required checks & branch protection
 
 **Required checks are exactly four** (verified live 2026-08-23): `build-and-test`, `Secret & PII scan`, `Dependency audit`, `File hygiene check`. Everything else — `contract`, `fast-checks`, `typecheck-tests`, `dns-scan`/`dogfood-scan`, `registry-drift-check` — is advisory. A green-but-`BLOCKED` PR is waiting on one of those four, not on the advisory ones.
@@ -41,6 +85,43 @@ Other workflows: `ci-contract.yml` (Zod contracts — ⚠️ **NOT a required ch
 **`npm run deploy:prod`, run by an operator, is the authoritative path.** `deploy-prod.yml` is the single CI implementation of that same command — **`workflow_dispatch`-only (the `v*` tag trigger was REMOVED, #717) and disarmed by default**. It gates on the repo variable `DEPLOY_PROD_ENABLED=true` via a `preflight` job that runs OUTSIDE `environment: production`, because a job declaring the environment is what parks an approval prompt — so while unprovisioned the deploy job is never created and **no workflow can queue a production deployment it cannot complete**. Armed, it flows: `production` GitHub Environment reviewer → private overlay reconstructed from `WRANGLER_DEPLOY_OVERLAY_B64` → real `npm run deploy:prod` → infra-probe deploy + OAuth probe → live `serverInfo.version` + `scan_domain` + the `compare_baseline` control-predicate smoke (#725) via `scripts/ci/verify-deploy.mjs`. Requires `CLOUDFLARE_API_TOKEN`, `WRANGLER_DEPLOY_OVERLAY_B64`, `BV_INTERNAL_DEV_KEY` in the `production` Environment (fails fast until set — as of 2026-08-20 **none of the three is set, and this workflow has never deployed anything**).
 
 ⚠️ **Two removed workflows, both dead `exit 1` stubs under `environment: production`:** `auto-deploy-main.yml` (deployed the public `wrangler.jsonc`, so it shipped without the private overlay/bindings) and `deploy-hook.yml` (#718 — dispatch-only, last succeeded 2026-05-20; CLAUDE.md wrongly called it "the active deploy path" for months). `publish.yml`'s `deploy-cloudflare` job was removed for the same reason: it declared `environment: production` and exited 1, so every tagged release left a standing approval that could only ever fail. Three contradictory deploy paths is how nobody could say which was authoritative. MCP-Registry publish stays a manual post-deploy step (`bv-mcp-release` skill).
+
+## Private config injection (what `deploy:prod` actually ships)
+
+`npm run deploy:prod` runs `scripts/inject-private-config.cjs`, which merges the
+public `wrangler.jsonc` with gitignored private overrides into a generated
+`wrangler.production.jsonc` immediately before the deploy.
+
+⚠️ **Mandate: never hardcode prod endpoints, secrets, or internal bindings in
+`wrangler.jsonc`** — use the private overrides. And ⚠️ **the inject script must
+enumerate every binding kind**: a kind it does not know about is silently
+dropped, and silent drops have shipped misconfigured deploys before.
+
+Two exceptions worth remembering because they bite during unrelated work:
+`BV_WEB` **is** declared in the public `wrangler.jsonc` (audit-enforced — do not
+"clean it up" into the private overrides), and `npm run deploy:prod` does **not**
+deploy `bv-infra-probe` (`npx wrangler deploy --config wrangler.infra-probe.jsonc`
+when its source changes).
+
+## Service-binding door — what the two paths do and do not share
+
+`/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`.
+`/internal/tools/batch` runs one **read-only, domain-required** tool across many
+domains (max 500, concurrency 1–50, 256 KB body); mutating/destructive tools fail
+closed there and must use the idempotent single-call contract.
+
+`?format=structured` returns the tool's **payload** under `result` per domain —
+the raw `CheckResult` for `check_*` tools, `structuredContent` for
+`NON_CHECK_RESULT_TOOLS`. Cross-door parity is asserted in `test/internal.spec.ts`.
+
+| Layer | public `/mcp` | internal `/internal/*` |
+|---|:-:|:-:|
+| CORS, Origin, Auth, Rate limiting, Sessions, JSON-RPC, Body limit | ✓ | — |
+| Tool execution, Caching, Analytics, SSRF | ✓ | ✓ |
+
+⚠️ Free-tier paid-gating (403) and the distinct-domain cap are **public-`/mcp`
+only** — the internal path bypasses them, and bv-web enforces paid entitlement
+before forwarding. Detail in **bv-mcp-security-surface**.
 
 ## Binding reference table
 
@@ -98,7 +179,7 @@ Detail for the bindings whose Purpose cell in CLAUDE.md's table is a summary.
 
 **`CERTSPOTTER_TOKEN`** (Secret) — SSLMate Cert Spotter API key, sent as `Authorization: Bearer` on the Certspotter CT source. **Optional and fail-soft** — absent → unauthenticated and still functional, but on a per-IP, per-hour free quota a batch sweep exhausts (measured HTTP 429 `rate_limited`). ⚠️ Raises RATE LIMITS ONLY: the free "Small" tier keeps a **15s per-query timeout**, so a large estate (`meta.com`) still returns HTTP 504 authenticated — that is #735's deterministic timeout and only a paid tier addresses it. Same name and same secret as `cloudflare/certstream` in bv-web-prod; one secret must not acquire two spellings
 
-**`BV_RECON`** (Service) — **Operator-deploy only.** bv-recon OSINT/recon worker — powers the recon tools (`check_realtime_threat_feed`, `scan_buckets_*`, `osint_investigate_*`/`osint_investigation_*`) + optional enrichment of `cymru_asn`/`check_lookalikes`/`check_fast_flux`. Fail-soft when absent (tools return `unprovisioned`). Not in public `wrangler.jsonc`.
+**`BV_RECON`** (Service, wrapper `src/lib/recon-binding.ts`) — **Operator-deploy only.** bv-recon OSINT/recon worker — powers the 11 recon tools (`check_realtime_threat_feed`, `scan_buckets_*`, `osint_investigate_*`/`osint_investigation_*`) + optional enrichment of `cymru_asn`/`check_lookalikes`/`check_fast_flux`. Async recon tools use start → poll (`*_status`) → retrieve (`*_findings`/`*_report`). Fail-soft when absent (tools return `unprovisioned` on BSL self-hosts). Not in public `wrangler.jsonc`.
 
 **`BV_TLS_PROBE`** (Service) — **Operator-deploy only.** bv-tls-probe worker (bv-web-prod `satellites/tls-probe`, a headless browser inside Cloudflare Browser Rendering) — reports the browser-to-proxy TLS version, which cannot establish origin protocol support; since bv-web-prod#2843 it also returns a `certificate` block (leaf/SPKI/chain digests). Fail-soft when absent (no TLS-version finding, no score change). Not in public wrangler.jsonc. See src/lib/tls-probe-binding.ts.
 

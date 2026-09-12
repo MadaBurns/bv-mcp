@@ -7,6 +7,7 @@ import {
 	type Finding,
 	inferFindingConfidence,
 	findingsIndicateMissingControl,
+	findingsIndicatePartialEnforcement,
 	type ScanScore,
 } from './model';
 import type { DomainContext } from './profiles';
@@ -227,6 +228,19 @@ function buildGenericContext(
 		}
 	}
 
+	// --- Build partialEnforcement map (scoring model 1.26.0) ---
+	// Same measurement gate as missingControls, for the same reason: a timed-out or errored
+	// check's synthetic findings must never arm a ceiling. The predicate is structural only
+	// (`metadata.partialEnforcement: true`, never prose), and a finding that is also a
+	// missing control does not count — the generic engine additionally skips any key the
+	// critical-gap ceiling already owns, so the two maps can never double-cap one category.
+	const partialEnforcement: Record<string, boolean> = {};
+	for (const result of results) {
+		if (isCheckMeasured(result.checkStatus) && findingsIndicatePartialEnforcement(result.findings)) {
+			partialEnforcement[result.category] = true;
+		}
+	}
+
 	// --- Build transientFailures map ---
 	// A check whose execution failed (checkStatus 'timeout'/'error', or any other non-measured
 	// status) is INCONCLUSIVE — we couldn't measure it. That is distinct from a genuinely-missing
@@ -314,6 +328,7 @@ function buildGenericContext(
 		tierMap: { ...CATEGORY_TIERS },
 		weights,
 		missingControls,
+		partialEnforcement,
 		transientFailures,
 		hardeningPassed,
 		criticalCategories: [...criticalCategories],
@@ -518,6 +533,12 @@ export function computeScanScore(
 		findings: allFindings,
 		summary,
 		tierBreakdown: genericResult.tierBreakdown,
+		// Which ceiling (if any) produced a capped `overall`. The generic engine keys these by
+		// string; every key it can emit came from `criticalCategories`, which this wrapper
+		// populates from `PROFILE_CRITICAL_CATEGORIES` / `DEFAULT_CRITICAL_CATEGORIES` — both
+		// typed `CheckCategory[]` — so the narrowing is sound.
+		criticalGaps: genericResult.criticalGaps as CheckCategory[],
+		partialEnforcementGaps: genericResult.partialEnforcementGaps as CheckCategory[],
 		evidence,
 	};
 }

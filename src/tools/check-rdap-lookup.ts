@@ -1015,7 +1015,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	}
 
 	// Lock posture finding (transfer-driven; at most one). Severities per Spec A:
-	// only a genuine gap (unlocked) escalates above info; the MultiLock upsell is
+	// only a genuine gap (unlocked) escalates above info; the registry lock upsell is
 	// derived by the sales layer from metadata.lockPosture.level, not from severity.
 	if (lockPosture.level === 'unlocked') {
 		findings.push(

@@ -349,7 +349,7 @@ describe('checkRdapLookup', () => {
 								'vcard',
 								[
 									['version', {}, 'text', '4.0'],
-									['fn', {}, 'text', 'Corporation Service Company'],
+									['fn', {}, 'text', 'Brand Registrar, Inc.'],
 								],
 							],
 						},
@@ -359,7 +359,7 @@ describe('checkRdapLookup', () => {
 
 		const result = await run();
 		const infoFinding = result.findings.find((f) => f.metadata?.registrarSource === 'rdap');
-		expect(infoFinding?.metadata?.registrar).toBe('Corporation Service Company');
+		expect(infoFinding?.metadata?.registrar).toBe('Brand Registrar, Inc.');
 		expect(infoFinding?.metadata?.registrarIanaId).toBe('299');
 	});
 
