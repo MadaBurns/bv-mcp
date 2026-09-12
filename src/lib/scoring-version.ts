@@ -572,8 +572,34 @@
  *   extra canary query is direct-call latency, never scan budget, and its category score
  *   never reaches `computeScanScore`. `absent` / `detected` / `inconclusive` paths are
  *   byte-identical.
+ * - 1.29.0 — `check_mx` names a loopback MX instead of mislabelling it (#944, dns-checks
+ *   1.41.0). Loopback exchanges (`localhost`, `localhost.localdomain`, `*.localhost`,
+ *   127.0.0.0/8, `::1`) now emit ONE `medium` "MX points at localhost" finding recommending
+ *   the RFC 7505 `0 .` form. SCORE-NEUTRAL on the measured population by construction: the
+ *   loopback records are EXCLUDED from the IP-target and dangling-MX passes, so the new
+ *   finding REPLACES the `medium` those would have emitted rather than stacking with it
+ *   (measured counterfactual: 80 shipped, 65 if it stacked with dangling, 50 with a third
+ *   medium — `mx` has no severity cap, so stacking here is a real hazard).
+ *   Deliberately NOT classified as an RFC 7505 null MX — this is the recorded Option A
+ *   decision. `isNullMxRecord` is unchanged and stays RFC-7505-only, `controlPresent` stays
+ *   `true`, and `scan_domain`'s non-mail downgrade does NOT fire, so no domain flips to the
+ *   non-mail wording or severities. Measured exposure: 0/992 of a stratified Tranco-1000
+ *   corpus and 15/29,385 (0.051%) of a 29,780-domain sample, ALL of them the identical
+ *   string `0 localhost.` — an operator reaching for RFC 7505 and missing, which is why the
+ *   honest output is a finding that says so rather than a silent reclassification that hides
+ *   the mistake.
+ *   Why this is still a policy move despite being score-neutral today: it is a NEW detection
+ *   family. Current behaviour on these domains is a `medium` "Dangling MX record" that only
+ *   fires because Cloudflare and Google both NXDOMAIN `localhost`; RFC 6761 permits a
+ *   recursive resolver to answer `localhost` → 127.0.0.1, and on such a resolver the domain
+ *   scores 95 with no finding at all. The dedicated finding makes the verdict
+ *   resolver-independent, which moves the score on that vantage.
+ *   `map_supply_chain` (display-only, unscored) no longer emits a bogus
+ *   `trustLevel: critical` `localhost` email-receiving provider row, and notes the condition
+ *   as a `low` `loopback_mx` signal. No weight, tier, grade band, `SEVERITY_PENALTIES` entry,
+ *   missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.28.0';
+export const SCORING_MODEL_VERSION = '1.29.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
