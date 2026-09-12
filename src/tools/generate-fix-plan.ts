@@ -162,7 +162,7 @@ function findingToAction(finding: Finding): string {
 /**
  * Evaluate a fix plan from check results (pure function).
  * Exported for direct unit testing without needing to mock scanDomain.
- * Modeled on `evaluateCompliance`/`evaluateCscProducts`.
+ * Modeled on `evaluateCompliance`/`evaluateRegistrarProducts`.
  */
 export function evaluateFixPlan(
 	checkResults: CheckResult[],
@@ -326,7 +326,7 @@ export function formatFixPlan(plan: FixPlanResult, format: OutputFormat = 'full'
 			// (`generateFixPlan`) always states which reason applies whenever
 			// `!assessed`. Falling back to `UNASSESSED_FIX_PLAN_CAVEAT` specifically
 			// is the same silent-wrong-prose shape closed elsewhere this fix round
-			// (map_csc_products, map_compliance): a fabricated/hand-built plan with
+			// (map_registrar_products, map_compliance): a fabricated/hand-built plan with
 			// a somehow-unset `caveat` would render the never-ran-specific text
 			// even for an all-transient state. The only genuinely safe fallback
 			// here makes no specific claim.

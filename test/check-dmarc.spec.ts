@@ -66,12 +66,14 @@ describe('checkDmarc', () => {
 		expect(finding!.metadata?.missingControl).toBe(true);
 	});
 
-	it('should return low finding for p=quarantine', async () => {
+	it('should return a medium partial-enforcement finding for p=quarantine (scoring model 1.26.0)', async () => {
 		mockTxtRecords(['v=DMARC1; p=quarantine; rua=mailto:dmarc@example.com']);
 		const result = await run();
 		const finding = result.findings.find((f) => /quarantine/i.test(f.title));
 		expect(finding).toBeDefined();
-		expect(finding!.severity).toBe('low');
+		expect(finding!.severity).toBe('medium');
+		expect(finding!.metadata?.partialEnforcement).toBe(true);
+		expect(finding!.metadata?.missingControl).toBeUndefined();
 	});
 
 	// controlPresent = "DMARC is an ACTIVE anti-spoofing control" = enforcing (p=quarantine|reject).

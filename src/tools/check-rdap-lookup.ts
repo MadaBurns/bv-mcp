@@ -655,22 +655,49 @@ interface RegistrarOutcome {
 }
 
 /**
- * WHOIS failure reasons that describe a TRANSIENT transport condition. A result
- * carrying one is stamped `partial: true` so the direct `rdap_lookup` registry
- * path (`handlers/tools.ts`, cache predicate `!r.partial`, TTL 3600s) does not
- * pin a socket timeout for an hour as if it were a deterministic answer (#931
- * review). Deterministic reasons (`whois_no_whois_server`,
- * `whois_invalid_domain`, `whois_unrecognised_response`) and the opaque
- * `whois_error` keep today's caching.
+ * Failure reasons — from EITHER side of the lookup — that describe a TRANSIENT
+ * condition. A result carrying one is stamped `partial: true` so the direct
+ * `rdap_lookup` registry path (`handlers/tools.ts`, cache predicate `!r.partial`,
+ * TTL 3600s) does not pin a flake for an hour as if it were a deterministic
+ * answer (#931 review, widened in #943).
+ *
+ * Deterministic reasons keep today's caching: the WHOIS set
+ * (`whois_no_whois_server`, `whois_invalid_domain`, `whois_unrecognised_response`,
+ * and the opaque `whois_error`) and every non-retryable RDAP HTTP status
+ * (`rdap_http_404` is a real "no such registration", not a flake).
+ *
+ * Three notes for whoever is tempted to tidy a token back out:
+ *
+ * 1. `caller_aborted` is a fact about OUR OWN clock, never about the domain.
+ *    The synchronous tool path arms `RDAP_LOOKUP_SYNC_BUDGET_MS` (24s) as both
+ *    the caller `AbortSignal` and `deadlineMs` (wired in `src/handlers/tools.ts`
+ *    at the `rdap_lookup` registry entry), so a slow-but-healthy registry that
+ *    overruns our budget produces this reason. Caching that for an hour would
+ *    publish our timeout as the registry's answer.
+ * 2. No WHOIS-outcome gate is needed here. `reconcileWithWhois()` (below) lets a
+ *    deterministic WHOIS answer (`whois` / `redacted` / `notfound`) win outright
+ *    and returns an outcome with NO `failureReason`, and
+ *    `buildWhoisFallbackFinding()` only writes `registrarFailureReason` when one
+ *    is present. So an RDAP-side reason reaches this set ONLY when WHOIS also
+ *    failed to answer — a WHOIS-rescued result stays cacheable.
+ * 3. The `rdap_http_*` members are derived from `RDAP_RETRYABLE_HTTP_STATUSES`
+ *    (the same 429/503/504 set the internal retry loop honours) — deliberately
+ *    an exact list, never a `rdap_http_` prefix match.
  */
-const TRANSIENT_WHOIS_FAILURE_REASONS: ReadonlySet<string> = new Set(['whois_timeout', 'whois_connect_error']);
+const TRANSIENT_FAILURE_REASONS: ReadonlySet<string> = new Set([
+	'whois_timeout',
+	'whois_connect_error',
+	'rdap_fetch_error',
+	'caller_aborted',
+	...[...RDAP_RETRYABLE_HTTP_STATUSES].map((status) => `rdap_http_${status}`),
+]);
 
 /** Build the CheckResult, marking it uncacheable when the registrar lookup failed transiently. */
 function finishRdapResult(findings: ReturnType<typeof createFinding>[]): CheckResult {
 	const result = buildCheckResult(CATEGORY, findings) as CheckResult;
 	const transient = findings.some((f) => {
 		const reason = f.metadata?.registrarFailureReason;
-		return typeof reason === 'string' && TRANSIENT_WHOIS_FAILURE_REASONS.has(reason);
+		return typeof reason === 'string' && TRANSIENT_FAILURE_REASONS.has(reason);
 	});
 	if (transient) result.partial = true;
 	return result;
@@ -1015,7 +1042,7 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	}
 
 	// Lock posture finding (transfer-driven; at most one). Severities per Spec A:
-	// only a genuine gap (unlocked) escalates above info; the MultiLock upsell is
+	// only a genuine gap (unlocked) escalates above info; the registry lock upsell is
 	// derived by the sales layer from metadata.lockPosture.level, not from severity.
 	if (lockPosture.level === 'unlocked') {
 		findings.push(
