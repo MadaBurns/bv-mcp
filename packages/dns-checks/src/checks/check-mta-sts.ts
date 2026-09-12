@@ -377,6 +377,14 @@ export async function checkMTASTS(
  * least one real (non-null, RFC 7505) MX record. Any DNS failure resolves to
  * `false` (treat as "no inbound mail") so a flaky lookup can't synthesise a
  * medium-severity finding out of nothing.
+ *
+ * DELIBERATE (#944): a loopback exchange (`0 localhost.`) still counts as
+ * inbound mail here. Under the settled decision we do NOT reclassify localhost
+ * as a no-mail signal — only the RFC 7505 null MX is a declaration — so this
+ * predicate stays keyed on `isNullMxRecord` alone and such a domain keeps
+ * branching as inbound-mail-receiving. `check_mx` reports the misconfiguration;
+ * MTA-STS behaviour is intentionally unchanged. See the decision record on
+ * `isNullMxRecord` in `mx-analysis.ts`.
  */
 async function detectInboundMail(domain: string, queryDNS: DNSQueryFunction, timeout: number): Promise<boolean> {
 	try {
