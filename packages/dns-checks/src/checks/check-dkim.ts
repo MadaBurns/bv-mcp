@@ -9,7 +9,7 @@
  */
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
-import { buildCheckResult, createFinding } from '../check-utils';
+import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
 import {
 	analyzeHashRestriction,
 	analyzeKeyStrength,
@@ -34,20 +34,30 @@ const MAX_CNAME_HOPS = 5;
  * those extra queries to selectors that actually returned TXT records, so
  * the negative-probe path (the common case) still costs one query per
  * selector.
+ *
+ * `answered` records whether the TXT probe actually reached a resolver and
+ * came back (issue #948). A thrown TXT query is NOT "no record published" —
+ * it is no measurement at all, and treating the two alike let a total resolver
+ * failure read as 41 absent selectors and score a confident 50. Only the TXT
+ * catch clears it: the CNAME chain walk below runs solely to attribute an
+ * already-found record to a SaaS provider, so a failure there loses attribution
+ * detail, never the evidence that the selector answered.
  */
 async function probeSelectorWithCname(
 	queryDNS: DNSQueryFunction,
 	name: string,
 	timeout: number,
-): Promise<{ records: string[]; chain: string[] }> {
+): Promise<{ records: string[]; chain: string[]; answered: boolean }> {
 	let records: string[] = [];
+	let answered = true;
 	try {
 		const txt = await queryDNS(name, 'TXT', { timeout });
 		records = txt.filter((r) => r.toLowerCase().includes('v=dkim1') || r.includes('p='));
 	} catch {
 		records = [];
+		answered = false;
 	}
-	if (records.length === 0) return { records, chain: [] };
+	if (records.length === 0) return { records, chain: [], answered };
 
 	const chain: string[] = [];
 	let current = name;
@@ -63,7 +73,7 @@ async function probeSelectorWithCname(
 		chain.push(target);
 		current = target;
 	}
-	return { records, chain };
+	return { records, chain, answered };
 }
 
 /**
@@ -87,10 +97,14 @@ export async function checkDKIM(
 	const results = await Promise.all(
 		selectorsToCheck.map(async (sel) => {
 			const name = `${sel}._domainkey.${domain}`;
-			const { records, chain } = await probeSelectorWithCname(queryDNS, name, timeout);
-			return { selector: sel, records, chain };
+			const { records, chain, answered } = await probeSelectorWithCname(queryDNS, name, timeout);
+			return { selector: sel, records, chain, answered };
 		}),
 	);
+
+	// Issue #948 — how much of the selector set actually got measured.
+	const answeredSelectors = results.filter((r) => r.answered).map((r) => r.selector);
+	const unmeasuredSelectors = results.filter((r) => !r.answered).map((r) => r.selector);
 
 	for (const result of results) {
 		if (result.records.length > 0) {
@@ -390,19 +404,60 @@ export async function checkDKIM(
 		consolidateSelectorProbeKeyStrengthFindings(findings);
 	}
 
+	// Issue #948 — abstain when ZERO selector probes answered.
+	//
+	// Every selector query threw, so the "no DKIM records found" verdict below would be a
+	// confident claim of absence drawn from a measurement that never happened: 41 selectors
+	// read absent, a `high` finding, and the category floored to 50 for a domain nobody
+	// looked at. `checkStatus: 'error'` is what makes the scoring engine EXCLUDE the category
+	// (`isCheckMeasured`, scoring/evidence.ts) and what arms scan_domain's transient-zero
+	// retry (`shouldRetry` requires `'error'` — a `'timeout'` status is never retried);
+	// `partial: true` keeps the non-answer out of the 5-minute per-check cache.
+	//
+	// The finding deliberately carries NO `missingControl` — a probe that never reached a
+	// resolver cannot assert the control is absent (#638 law, enforced by both #946 audits).
+	//
+	// A positive result is NOT gated on this: `foundSelectors.length > 0` returns a completed
+	// result above regardless of how many siblings failed, because a discovered key is
+	// monotone evidence that an unmeasured sibling cannot invalidate. This branch also covers
+	// the `options.selector` single-probe path (probed = 1, throw → zero evidence).
+	if (foundSelectors.length === 0 && answeredSelectors.length === 0) {
+		return buildNotAssessedResult(
+			'dkim',
+			createFinding(
+				'dkim',
+				'DKIM not assessed — every selector probe failed',
+				'info',
+				`No DKIM selector probe for ${domain} completed: all ${selectorsToCheck.length} DNS query/queries for <selector>._domainkey.${domain} failed, so DKIM was not measured. This is not evidence that DKIM is missing — the category is excluded from scoring rather than penalised. Re-run the check once name resolution is working.`,
+				{
+					signalType: 'dkim',
+					inconclusive: true,
+					errorKind: 'dns_error',
+					detectionMethod: 'selector-probing',
+					selectorsUnmeasured: unmeasuredSelectors,
+				},
+			),
+			'error',
+		);
+	}
+
 	if (foundSelectors.length === 0) {
 		findings.push(
 			createFinding(
 				'dkim',
 				'No DKIM records found among tested selectors',
 				'high',
-				`No DKIM records were found for ${domain} among the tested selector set (${selectorsToCheck.join(', ')}). This result is based on selector probing and may miss custom selector names. DKIM helps verify email authenticity and integrity.`,
+				`No DKIM records were found for ${domain} among the tested selector set (${answeredSelectors.join(', ')}). This result is based on selector probing and may miss custom selector names. DKIM helps verify email authenticity and integrity.`,
 				{
 					signalType: 'dkim',
 					confidence: 'heuristic',
 					detectionMethod: 'selector-probing',
-					selectorsChecked: selectorsToCheck,
+					// Narrowed to the selectors whose probe actually answered (#948): a partial
+					// resolver failure still emits this verdict, but it may only claim absence
+					// over the selectors that were measured.
+					selectorsChecked: answeredSelectors,
 					selectorsFound: [],
+					selectorsUnmeasured: unmeasuredSelectors,
 				},
 			),
 		);

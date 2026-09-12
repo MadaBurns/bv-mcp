@@ -512,8 +512,94 @@
  *   entry DOES change `pct<100` SCORING (flag + ceiling) and leaves `dmarcEnforcing`
  *   alone. No weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection
  *   rule changed.
+ * - 1.27.0 — `subdomain_takeover` and `dkim` abstain when every probe fails (#948,
+ *   dns-checks 1.39.0). This REVERSES DIRECTION relative to 1.24.0/#900: those entries
+ *   moved already-excluded categories onto a shared helper without changing a score. This
+ *   one newly EXCLUDES categories that were previously SCORED, because both checks were
+ *   swallowing a thrown DNS query and returning a COMPLETED result (no `checkStatus`)
+ *   carrying a confident verdict for a measurement that never happened. `subdomain_takeover`
+ *   moves from a false 100 ("No dangling CNAME records found", passed, cached) to n/a; `dkim`
+ *   moves from a false 50 (a `high` "No DKIM records found among tested selectors" derived
+ *   from 41 selectors that all threw) to n/a. Both now return
+ *   `buildNotAssessedResult(..., 'error')` — score 0, `passed: false`, `partial: true`,
+ *   `checkStatus: 'error'` — so the engine renormalises them out of the weighted score
+ *   (`isCheckMeasured`), `scan_domain`'s transient-zero retry can fire (`shouldRetry`
+ *   requires `'error'`, never `'timeout'`), and the non-answer is not written to the 5-minute
+ *   per-check cache. The abstention findings are `info` and carry `inconclusive` +
+ *   `errorKind: 'dns_error'`, never `missingControl` (#638 law).
+ *   The rule is ZERO-answered, not a ratio: a PARTIAL failure still emits the existing
+ *   verdict at its existing severity and score, but narrows its metadata to what answered —
+ *   DKIM's `selectorsChecked` is now the answered selectors plus a new `selectorsUnmeasured`
+ *   list, and the clean takeover verdict carries `subdomainsUnmeasured`. A found DKIM
+ *   selector still returns a completed result no matter how many siblings failed (positive
+ *   evidence is monotone). Direction: DOWNWARD in the sense that two false passes/floors
+ *   become n/a, but no domain whose probes answer changes by a single point — a domain with
+ *   a working resolver produces byte-identical findings. Population: only scans where every
+ *   probe for a category threw (a resolver outage or a fully blocked path), which the corpus
+ *   cannot size because the defect made those scans indistinguishable from clean ones. No
+ *   weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule changed.
+ * - 1.28.0 — the wildcard canary sees every record family (#942, dns-checks 1.40.0). Both
+ *   wildcard canaries queried A ONLY, and the DoH record layer filters answers to the
+ *   requested type, so two real wildcard shapes read as "no wildcard": a zone whose wildcard
+ *   is AAAA-only, and a `*.zone CNAME <dangling>` alias whose A answer carries only the
+ *   CNAME. `check_ns` now reads RAW answers — the one A query it already issues also settles
+ *   the CNAME shape, and a second AAAA query is spent ONLY when that answer came back
+ *   completely empty (serial and conditional: +1 subrequest on zones with no A wildcard,
+ *   none on a wildcard zone). `rawQueryDNS` stays OPTIONAL; a consumer that omits it
+ *   (bv-web-prod calls `checkNS` from the vendored tarball) keeps the historical A-only path
+ *   verbatim and re-grades identically to today.
+ *   ⚠️ The `check_ns` half MOVES SCORES, on a population this repo has NOT measured. A
+ *   newly-detected wildcard is the EXISTING `medium` "Wildcard DNS detected" finding at its
+ *   existing −15 penalty, so `ns` goes 100 → 85, and it also SUPPRESSES the clean
+ *   "Nameservers properly configured" finding (emitted only when nothing else fired).
+ *   DOWNWARD only, and only for zones that genuinely answer for arbitrary names in a family
+ *   the old canary could not see. Prevalence of AAAA-only and dangling-CNAME wildcards is
+ *   UNMEASURED — the defect made those zones indistinguishable from wildcard-free ones, so
+ *   the corpus cannot size it. No finding title, severity, weight, tier, grade band,
+ *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed; the
+ *   finding gains only a `wildcardFamily` metadata field ('a' | 'aaaa' | 'cname').
+ *   The `check_zone_hygiene` half is SCORE-NEUTRAL by construction. An AAAA-only wildcard
+ *   now yields a distinct `detected_ipv6` canary outcome that emits ONE `info` finding
+ *   (0 penalty) and WITHHOLDS the clean "No sensitive subdomains resolve publicly" verdict,
+ *   which an IPv4-only sweep cannot support on such a zone. Deliberately NOT routed through
+ *   the `inconclusive` / `checkStatus: 'error'` abstention lane: the A sweep genuinely ran
+ *   and an AAAA wildcard cannot fabricate an A answer, so every IPv4 hit stays REAL evidence
+ *   — it keeps its scored `medium` and its place in the "Excessive exposure" count. The
+ *   status is distinct rather than a `family` flag on `detected` precisely so
+ *   `isWildcardSynthetic` never compares a hit's IPv4 answers against v6 addresses, which
+ *   would fold a real hit into nothing and silently downgrade a genuine `medium`.
+ *   `check_zone_hygiene` is `scanIncluded: false` and absent from `CHECK_DISPATCH`, so its
+ *   extra canary query is direct-call latency, never scan budget, and its category score
+ *   never reaches `computeScanScore`. `absent` / `detected` / `inconclusive` paths are
+ *   byte-identical.
+ * - 1.29.0 — `check_mx` names a loopback MX instead of mislabelling it (#944, dns-checks
+ *   1.41.0). Loopback exchanges (`localhost`, `localhost.localdomain`, `*.localhost`,
+ *   127.0.0.0/8, `::1`) now emit ONE `medium` "MX points at localhost" finding recommending
+ *   the RFC 7505 `0 .` form. SCORE-NEUTRAL on the measured population by construction: the
+ *   loopback records are EXCLUDED from the IP-target and dangling-MX passes, so the new
+ *   finding REPLACES the `medium` those would have emitted rather than stacking with it
+ *   (measured counterfactual: 80 shipped, 65 if it stacked with dangling, 50 with a third
+ *   medium — `mx` has no severity cap, so stacking here is a real hazard).
+ *   Deliberately NOT classified as an RFC 7505 null MX — this is the recorded Option A
+ *   decision. `isNullMxRecord` is unchanged and stays RFC-7505-only, `controlPresent` stays
+ *   `true`, and `scan_domain`'s non-mail downgrade does NOT fire, so no domain flips to the
+ *   non-mail wording or severities. Measured exposure: 0/992 of a stratified Tranco-1000
+ *   corpus and 15/29,385 (0.051%) of a 29,780-domain sample, ALL of them the identical
+ *   string `0 localhost.` — an operator reaching for RFC 7505 and missing, which is why the
+ *   honest output is a finding that says so rather than a silent reclassification that hides
+ *   the mistake.
+ *   Why this is still a policy move despite being score-neutral today: it is a NEW detection
+ *   family. Current behaviour on these domains is a `medium` "Dangling MX record" that only
+ *   fires because Cloudflare and Google both NXDOMAIN `localhost`; RFC 6761 permits a
+ *   recursive resolver to answer `localhost` → 127.0.0.1, and on such a resolver the domain
+ *   scores 95 with no finding at all. The dedicated finding makes the verdict
+ *   resolver-independent, which moves the score on that vantage.
+ *   `map_supply_chain` (display-only, unscored) no longer emits a bogus
+ *   `trustLevel: critical` `localhost` email-receiving provider row, and notes the condition
+ *   as a `low` `loopback_mx` signal. No weight, tier, grade band, `SEVERITY_PENALTIES` entry,
+ *   missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.26.0';
+export const SCORING_MODEL_VERSION = '1.29.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

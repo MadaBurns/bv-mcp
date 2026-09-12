@@ -175,7 +175,7 @@ describe('checkSubdomainTakeover', () => {
 		expect(result.findings[0].title).toContain('No dangling CNAME');
 	});
 
-	it('handles outer CNAME query failure gracefully', async () => {
+	it('abstains when every outer CNAME query fails (#948)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -188,10 +188,44 @@ describe('checkSubdomainTakeover', () => {
 		});
 
 		const result = await run('example.com');
-		// Should gracefully handle failures — no dangling CNAME found
+		// Nothing was measured, so the clean "no dangling CNAME" verdict must NOT be
+		// issued: the category abstains and is excluded from scoring instead.
 		expect(result.category).toBe('subdomain_takeover');
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].title).toContain('not assessed');
+		expect(result.findings[0].metadata?.inconclusive).toBe(true);
+		expect(result.findings[0].metadata?.errorKind).toBe('dns_error');
+		// #638 law: an unmeasured probe may never claim the control is absent.
+		expect(result.findings[0].metadata?.missingControl).toBeUndefined();
+		expect((result.findings[0].metadata?.subdomainsUnmeasured as string[]).length).toBeGreaterThan(0);
+	});
+
+	it('keeps the clean verdict when only SOME subdomain probes fail (#948)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=CNAME') || url.includes('type=5')) {
+				// One subdomain's probe fails; every other answers empty.
+				if (url.includes('www.example.com')) return Promise.reject(new Error('Network timeout'));
+				const nameMatch = url.match(/name=([^&]+)/);
+				const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+				return Promise.resolve(emptyResponse(name, 5));
+			}
+
+			return Promise.resolve(emptyResponse('unknown', 1));
+		});
+
+		const result = await run('example.com');
+		// A partial failure still emits the verdict — narrowed to what answered.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toContain('No dangling CNAME');
+		expect(result.findings[0].metadata?.subdomainsUnmeasured).toEqual(['www']);
 	});
 
 	it('detects multiple dangling CNAMEs across subdomains', async () => {

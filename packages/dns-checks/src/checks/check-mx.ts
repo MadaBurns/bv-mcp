@@ -12,9 +12,11 @@ import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
 import {
 	getIpTargetFindings,
+	getLoopbackMxFinding,
 	getNullMxFinding,
 	getPresenceFinding,
 	getSingleMxFinding,
+	isLoopbackMxRecord,
 	isNullMxRecord,
 	parseMxRecords,
 } from './mx-analysis';
@@ -103,11 +105,24 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 
 	findings.push(getPresenceFinding(mxRecords));
 
-	findings.push(...getIpTargetFindings(mxRecords));
+	// Loopback MX (`0 localhost.`, `10 127.0.0.1`, `::1`) — a misconfiguration, NOT an
+	// RFC 7505 no-mail declaration (#944; the measurement and the reasoning live in the
+	// `isNullMxRecord` decision record). Reported once for the whole set, and the
+	// loopback records are then EXCLUDED from the IP-target and dangling-MX passes
+	// below: severity penalties are additive and `mx` has no cap, so letting one
+	// condition pay two or three mediums would zero a category over a single defect.
+	// This finding REPLACES those, keeping the measured population at one `medium`.
+	const loopbackRecords = mxRecords.filter(isLoopbackMxRecord);
+	if (loopbackRecords.length > 0) {
+		findings.push(getLoopbackMxFinding(loopbackRecords));
+	}
+	const routableRecords = mxRecords.filter((r) => !isLoopbackMxRecord(r));
+
+	findings.push(...getIpTargetFindings(routableRecords));
 
 	// Check for dangling MX records (hostnames that don't resolve)
 	const ipPattern = /^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/;
-	const hostnameRecords = mxRecords.filter((r) => !ipPattern.test(r.exchange));
+	const hostnameRecords = routableRecords.filter((r) => !ipPattern.test(r.exchange));
 	const resolutions = await Promise.all(
 		hostnameRecords.map(async (r) => {
 			try {
@@ -134,7 +149,23 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 		}
 	}
 
-	// Check for single MX (no redundancy)
+	// Check for single MX (no redundancy).
+	//
+	// Deliberately counts ALL records, not `routableRecords` (#944 review). Two
+	// reasons, both load-bearing — do not "tidy" this to `routableRecords`:
+	//   1. It would MOVE SCORES on the very population this change is about. The
+	//      measured shape is a lone `0 localhost.`; filtering leaves zero routable
+	//      records, `getSingleMxFinding` returns null on `length !== 1`, and the
+	//      domain scores 85 instead of the 80 it scores today — a silent leniency
+	//      change wearing the costume of a cleanup.
+	//   2. The behaviour predates #944 (it counted every record before loopback
+	//      classification existed), so leaving it is preservation, not oversight.
+	//
+	// Known residual, also pre-#944 and deliberately not fixed here: a zone
+	// publishing one real exchange BESIDE a loopback one has no actual redundancy
+	// but escapes this finding, because the raw count is 2. Correcting that is a
+	// scoring change in its own right and belongs in its own PR with its own
+	// version bump, not smuggled in beside a false-positive fix.
 	const singleMxFinding = getSingleMxFinding(mxRecords);
 	if (singleMxFinding) {
 		findings.push(singleMxFinding);

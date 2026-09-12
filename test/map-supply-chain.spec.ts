@@ -1417,6 +1417,59 @@ describe('mapSupplyChain — null MX and CAA no-issuance are directives, not pro
 		expect(result.signals.find((s) => s.type === 'caa_no_issuance')).toBeUndefined();
 	});
 
+	/**
+	 * #944 — measured live pre-fix on `1xlite-85316.pro` (`0 localhost.`, confirmed
+	 * from Cloudflare DoH, Google DoH and `dig @8.8.8.8`): map_supply_chain emitted
+	 * `{"provider":"localhost","roles":["email-receiving"],"trustLevel":"critical"}`.
+	 * A loopback exchange names no third party, so it produces no dependency row —
+	 * but unlike an RFC 7505 null MX it is a misconfiguration, not a directive, so
+	 * the note lands at `low`, outside the `info` band reserved for directives.
+	 */
+	it('a `0 localhost.` MX yields no email-receiving row and a low-severity loopback note', async () => {
+		mockDnsResponses({
+			domain: 'loopback.example',
+			mxRecords: [{ pref: 0, host: 'localhost' }],
+			nsHosts: ['ns01.one.com', 'ns02.one.com'],
+		});
+		const result = await run('loopback.example');
+
+		// The measured bug: a critical `localhost` email-receiving provider row.
+		expect(result.dependencies.find((d) => d.provider === 'localhost')).toBeUndefined();
+		expect(result.dependencies.some((d) => d.roles.includes('email-receiving'))).toBe(false);
+
+		const note = result.signals.find((s) => s.type === 'loopback_mx');
+		expect(note).toBeDefined();
+		expect(note!.severity).toBe('low');
+		expect(note!.detail).toMatch(/localhost/);
+		// Compact format clamps signal text at 200 chars — never cut mid-sentence.
+		expect(note!.detail.length).toBeLessThanOrEqual(200);
+		// A loopback MX is NOT an RFC 7505 declaration, so it must not raise the null-MX note.
+		expect(result.signals.find((s) => s.type === 'null_mx')).toBeUndefined();
+	});
+
+	it('null MX + loopback MX + a real MX: only the real host is mapped, both notes fire', async () => {
+		mockDnsResponses({
+			domain: 'mixed.example',
+			mxRecords: [
+				{ pref: 0, host: '' },
+				{ pref: 5, host: 'localhost' },
+				{ pref: 10, host: 'aspmx.l.google.com' },
+			],
+		});
+		const result = await run('mixed.example');
+
+		const receiving = result.dependencies.filter((d) => d.roles.includes('email-receiving'));
+		expect(receiving.map((d) => d.provider)).toEqual(['Google Workspace']);
+		expect(result.dependencies.find((d) => d.provider === 'localhost')).toBeUndefined();
+		expect(result.dependencies.find((d) => d.provider === '')).toBeUndefined();
+
+		expect(result.signals.find((s) => s.type === 'loopback_mx')?.severity).toBe('low');
+		expect(result.signals.find((s) => s.type === 'null_mx')?.severity).toBe('info');
+		// The null-MX conflict count is taken over MAPPED hosts, so the loopback row
+		// must not inflate it: one other MX, not two.
+		expect(result.signals.find((s) => s.type === 'null_mx')!.detail).toMatch(/alongside 1 other MX record, which RFC 7505 forbids/);
+	});
+
 	it('a clean zone emits neither note', async () => {
 		mockDnsResponses({
 			domain: 'example.com',
@@ -1454,6 +1507,18 @@ describe('mapSupplyChain — null MX and CAA no-issuance are directives, not pro
 		expect(formatSupplyChain(result, 'compact')).toContain('- [INFO] Null MX record (RFC 7505).');
 		// The icon is the part that changed: pre-fix the fallthrough rendered 🟡 for anything not high/medium.
 		expect(formatSupplyChain(result, 'full')).toContain('ℹ️ [INFO] Null MX record (RFC 7505).');
+	});
+
+	it('formatSupplyChain renders the loopback note as low-severity risk, not as an info note (#944)', async () => {
+		const { formatSupplyChain } = await import('../src/tools/map-supply-chain');
+		const result = {
+			domain: 'loopback.example',
+			dependencies: [],
+			signals: [{ type: 'loopback_mx' as const, severity: 'low' as const, detail: 'MX points at localhost (loopback).' }],
+			summary: { totalProviders: 0, critical: 0, high: 0, medium: 0, low: 0 },
+		};
+		expect(formatSupplyChain(result, 'compact')).toContain('- [LOW] MX points at localhost (loopback).');
+		expect(formatSupplyChain(result, 'full')).toContain('🟡 [LOW] MX points at localhost (loopback).');
 	});
 });
 

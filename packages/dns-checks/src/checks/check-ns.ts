@@ -29,8 +29,9 @@ import {
 } from './ns-analysis';
 import type { NameserverProbeOutcome, NameserverProbeResult } from './ns-analysis';
 
-/** DoH numeric record types used by the nameserver-reachability probe. */
+/** DoH numeric record types used by the nameserver-reachability and wildcard probes. */
 const DOH_TYPE_A = 1;
+const DOH_TYPE_CNAME = 5;
 const DOH_TYPE_AAAA = 28;
 
 /**
@@ -294,19 +295,60 @@ export async function checkNS(
 		}
 	}
 
-	// Wildcard DNS detection — probe a random subdomain
+	// Wildcard DNS detection — probe a random subdomain.
+	//
+	// #942: the canary used to be a single `queryDNS(probeFqdn, 'A')`, and the
+	// `DNSQueryFunction` projection FILTERS answers to the requested type — so a zone
+	// whose wildcard is AAAA-only, or a `*.zone CNAME <dangling>` alias that yields no
+	// address, both arrived as `[]` and read as "no wildcard". Raw answers close both
+	// shapes: the ONE A query already carries the CNAME the resolver followed, and the
+	// AAAA query is spent ONLY when the A answer came back completely empty.
+	//
+	// The AAAA probe is deliberately SERIAL-CONDITIONAL, never a `Promise.all`: `ns` is
+	// explicitly not a bounded-parallelism candidate and `SCAN_DNS_CONCURRENCY` is
+	// zero-sum across the 19 scan categories, so this costs +1 subrequest only on zones
+	// with no A wildcard, and nothing at all on a wildcard zone. Same "AAAA only when A
+	// was empty" discipline as `probeNameserverReachable` above.
+	//
+	// NOTE: the Worker's inline `rawQueryDNS` (src/tools/check-ns.ts) takes THREE
+	// parameters and drops the fourth, so `{ timeout }` is discarded on raw probes —
+	// pre-existing for every raw probe in this file, not a regression of this change.
 	try {
 		const probeId = Math.random().toString(36).substring(2, 10);
 		const probeFqdn = `_bv-probe-${probeId}.${domain}`;
-		const probeRecords = await queryDNS(probeFqdn, 'A', { timeout });
-		if (probeRecords.length > 0) {
+		let wildcardFamily: 'a' | 'aaaa' | 'cname' | null = null;
+
+		if (rawQueryDNS) {
+			const aResp = await rawQueryDNS(probeFqdn, 'A', false, { timeout });
+			const aAnswers = aResp.Answer ?? [];
+			if (aAnswers.some((ans) => ans.type === DOH_TYPE_A)) {
+				wildcardFamily = 'a';
+			} else if (aAnswers.some((ans) => ans.type === DOH_TYPE_CNAME)) {
+				// A dangling wildcard alias: the zone answers for arbitrary names even
+				// though nothing resolves. Free — this answer is already in hand.
+				wildcardFamily = 'cname';
+			} else if (aAnswers.length === 0) {
+				const aaaaResp = await rawQueryDNS(probeFqdn, 'AAAA', false, { timeout });
+				if ((aaaaResp.Answer ?? []).some((ans) => ans.type === DOH_TYPE_AAAA)) {
+					wildcardFamily = 'aaaa';
+				}
+			}
+		} else {
+			// `rawQueryDNS` is OPTIONAL — direct package consumers (bv-web-prod calls
+			// `checkNS` from the vendored tarball) may not supply it. Keep the historical
+			// type-filtered A-only path verbatim for them rather than degrading.
+			const probeRecords = await queryDNS(probeFqdn, 'A', { timeout });
+			if (probeRecords.length > 0) wildcardFamily = 'a';
+		}
+
+		if (wildcardFamily !== null) {
 			findings.push(
 				createFinding(
 					'ns',
 					'Wildcard DNS detected',
 					'medium',
 					`Domain responds to arbitrary subdomains, indicating a wildcard DNS record (*.${domain}). Wildcard records can mask dangling CNAMEs, complicate subdomain enumeration defences, and make subdomain takeover detection unreliable.`,
-					{ wildcardDetected: true, probeSubdomain: probeFqdn },
+					{ wildcardDetected: true, probeSubdomain: probeFqdn, wildcardFamily },
 				),
 			);
 		}
