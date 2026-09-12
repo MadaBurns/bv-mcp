@@ -305,13 +305,13 @@ Timing-difference tests on static-key comparison stay flat; `alg=none` and tampe
 
 > **[Existing]**
 
-Documents the SSRF control chain: input-side domain blocklists (IP literals, localhost, rebinding hosts), egress-side `safeFetch` (HTTPS-only, manual redirects, per-hop re-validation), and the platform `global_fetch_strictly_public` flag. All outbound paths added this window were audited: lookalike web probes and brand CSC enrichment use `safeFetch`; RDAP enrichment hits a hardcoded registry-endpoint allowlist; recon/M365/TLS-probe traffic goes to fixed in-account service bindings. One open assumption: the bv-tls-probe worker's own target-host validation is not verifiable from this repo (T89.I).
+Documents the SSRF control chain: input-side domain blocklists (IP literals, localhost, rebinding hosts), egress-side `safeFetch` (HTTPS-only, manual redirects, per-hop re-validation), and the platform `global_fetch_strictly_public` flag. All outbound paths added this window were audited: lookalike web probes and brand registrar enrichment use `safeFetch`; RDAP enrichment hits a hardcoded registry-endpoint allowlist; recon/M365/TLS-probe traffic goes to fixed in-account service bindings. One open assumption: the bv-tls-probe worker's own target-host validation is not verifiable from this repo (T89.I).
 
 #### Evidence
 
 **Prerequisite basis:** Attacker-influenced URLs originate from public `/mcp` tool inputs (Exposure Table: `None`).
 
-`src/lib/safe-fetch.ts` (unchanged, intact); `src/tools/check-lookalikes.ts:697` (safeFetch web probe), `:641-668` (RDAP via `FALLBACK_RDAP_SERVERS` allowlist — domain appears only in the URL path); `src/lib/brand-audit-csc-enrichment.ts:70,97` (hardcoded Google DoH + safeFetch); `src/lib/tls-probe-binding.ts:63-83` (host forwarded to operator-controlled probe — validation assumed there).
+`src/lib/safe-fetch.ts` (unchanged, intact); `src/tools/check-lookalikes.ts:697` (safeFetch web probe), `:641-668` (RDAP via `FALLBACK_RDAP_SERVERS` allowlist — domain appears only in the URL path); `src/lib/brand-audit-registrar-enrichment.ts:70,97` (hardcoded Google DoH + safeFetch); `src/lib/tls-probe-binding.ts:63-83` (host forwarded to operator-controlled probe — validation assumed there).
 
 #### Remediation
 

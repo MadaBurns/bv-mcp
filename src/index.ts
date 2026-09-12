@@ -1850,7 +1850,7 @@ export default {
 				// Cloudflare Workers re-bind env per invocation; the request-path
 				// closures constructed in `executeMcpRequest` never reach here.
 				const tierLookups = buildBrandTierLookups(env);
-				// Build internalCall closure for the CSC deep-scan job. Wraps
+				// Build internalCall closure for the registrar deep-scan job. Wraps
 				// handleToolsCall so the job can invoke scan_domain / discover_subdomains
 				// without HTTP framing. Dynamic import keeps the queue cold-start path
 				// unaffected; the import is cached after the first deep-scan message.

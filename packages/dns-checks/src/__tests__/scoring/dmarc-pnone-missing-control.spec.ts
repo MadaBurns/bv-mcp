@@ -109,8 +109,13 @@ describe('classifier: p=none declares the missing enforcement control', () => {
 	it('does NOT extend the declaration to quarantine (discrimination control)', () => {
 		const findings = classifyDmarc({ recordCount: 1, policy: 'quarantine', domain: 'victim.example', rua: 'mailto:d@victim.example' });
 		const quarantine = findings.find((f) => f.title === 'DMARC policy set to quarantine');
-		expect(quarantine?.severity).toBe('low');
+		// Severity is `medium` since scoring model 1.26.0 (was `low`) and the finding declares
+		// `partialEnforcement` — a DIFFERENT, non-zeroing declaration. What this control pins is
+		// that quarantine never becomes a missing control: it must not collapse into the p=none
+		// / no-record bucket. See dmarc-partial-enforcement-ceiling.spec.ts for the 1.26.0 gate.
+		expect(quarantine?.severity).toBe('medium');
 		expect(quarantine?.metadata?.missingControl).toBeUndefined();
+		expect(quarantine?.metadata?.partialEnforcement).toBe(true);
 	});
 });
 

@@ -104,7 +104,7 @@ export function displayGradeFor(score: { overall: number | null; grade: string |
  * `StructuredScanResult.measured` (its documented meaning there — see
  * `hasCompletedEvidence`'s doc below) and by the never-ran (`checks: []`)
  * branch every `assessed`/`caveat` computation in `map_compliance`,
- * `generate_fix_plan`, `map_csc_products`, and `compare_baseline` special-cases.
+ * `generate_fix_plan`, `map_registrar_products`, and `compare_baseline` special-cases.
  * None of those four surfaces use `isMeasured` alone as their assessed/measured
  * predicate any more — a total-outage scan (`checks.length > 0`, but every
  * check's `checkStatus` is `'timeout' | 'error'`) is `isMeasured: true` despite
@@ -157,7 +157,7 @@ interface CheckStatusBearer {
  *    `checkStatus: 'timeout' | 'error'` (the `buildDnsErrorResult`/`safeCheck`
  *    shape). `isMeasured` is `true` here (`checks.length > 0`) even though
  *    there is zero usable evidence — this is precisely the gap that let
- *    `generate_fix_plan`/`map_csc_products`/`compare_baseline` claim a
+ *    `generate_fix_plan`/`map_registrar_products`/`compare_baseline` claim a
  *    confident `assessed: true` for a domain nobody actually measured.
  * 3. At least one check produced COMPLETED evidence — `checkStatus` absent
  *    (legacy shape, treated as completed) or `'completed'`. This is the only
