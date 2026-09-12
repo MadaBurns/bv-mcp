@@ -141,7 +141,7 @@ const INDETERMINATE_CONFIDENCE_THRESHOLD = 0.5;
  * Lookalike-similarity threshold at which a candidate is plausibly a typosquat.
  * Combined with a registrar-family mismatch and no shared-infra evidence, this
  * tips a candidate into the impersonation bucket. Calibrated against the
- * empirical BrandAudit brand-audit set (`reports/brand-audit-audit-results.json`).
+ * empirical brand-audit set (`reports/brand-audit-audit-results.json`).
  */
 const IMPERSONATION_LOOKALIKE_THRESHOLD = 0.85;
 
@@ -168,20 +168,20 @@ export function normalizeRegistrar(raw: string): string {
 	if (/markmonitor/.test(lower)) return 'MarkMonitor';
 	if (/com\s*laude|nom[ -]?iq/.test(lower)) return 'Com Laude';
 	if (/safenames/.test(lower)) return 'SafeNames';
-	// CSC Corporate Domains operates dozens of regional entities (CSC US, CSC
-	// Canada, CSC UK, CSC Digital Brand Services Malaysia, Corporation Service
-	// Company (Aust) Pty Ltd, etc.) all sharing infra. Match the family, not
-	// each regional variant. Legacy regex used 'BrandAudit' as a placeholder
-	// name — see test for the production incident that surfaced this.
-	// Regression: 2026-05 CSC Global verification of regional-alpha.example.com /
+	// The corporate-domains registrar operates dozens of regional entities (US,
+	// Canada, UK, a Malaysian digital-brand-services arm, an Australian Pty
+	// Ltd, etc.) all sharing infra. Match the family, not each regional
+	// variant. A legacy regex used 'BrandAudit' as a placeholder family name —
+	// see the test for the production incident that surfaced this.
+	// Regression: a 2026-05 verification of regional-alpha.example.com /
 	// regional-beta.example.com / regional-gamma.example.com showed the AU subsidiary string
-	// ("Corporation Service Company (Aust) Pty Ltd") slipping through and
-	// driving false-positive shadowIt findings.
-	if (/corporate\s*domains/.test(lower)) return 'CSC';
-	if (/corporation\s+service\s+company/.test(lower)) return 'CSC';
-	if (/csc\s+digital\s+brand\s+services?/.test(lower)) return 'CSC';
-	if (/(?:^|\b)csc\s+global(?:\b|$)/.test(lower)) return 'CSC';
-	if (/(?:^|\b)cscglobal\.com(?:\b|$)/.test(lower)) return 'CSC';
+	// slipping through and driving false-positive shadowIt findings.
+	// The WHOIS name patterns are neutral technical data — keep them as observed.
+	if (/corporate\s*domains/.test(lower)) return 'CorporateDomains';
+	if (/corporation\s+service\s+company/.test(lower)) return 'CorporateDomains';
+	if (/csc\s+digital\s+brand\s+services?/.test(lower)) return 'CorporateDomains';
+	if (/(?:^|\b)csc\s+global(?:\b|$)/.test(lower)) return 'CorporateDomains';
+	if (/(?:^|\b)cscglobal\.com(?:\b|$)/.test(lower)) return 'CorporateDomains';
 	if (/cloudflare/.test(lower)) return 'Cloudflare';
 	if (/tucows/.test(lower)) return 'Tucows';
 	if (/godaddy/.test(lower)) return 'GoDaddy';

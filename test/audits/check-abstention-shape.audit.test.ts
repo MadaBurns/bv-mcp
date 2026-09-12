@@ -106,13 +106,38 @@ function abstentionViolations(result: CheckResult): string[] {
 	return violations;
 }
 
+/**
+ * Wall-clock budget to fast-forward through per invocation. Nothing here waits on
+ * a real remote — `fetch` rejects on the first call — but several checks sleep
+ * between rounds on the way to their abstention (`check_fast_flux` alone paces two
+ * rounds 2s apart, and at two failure kinds × the registry sweep that one default
+ * was 8.7s of the audit's 17.6s). This audit asserts result SHAPE, never timing, so
+ * the clock is faked and advanced rather than waited out; the registry entry still
+ * runs with its production defaults, which is the whole point of driving
+ * `TOOL_REGISTRY` instead of calling the checks directly.
+ */
+const ABSTENTION_FASTFORWARD_MS = 60_000;
+
 async function runTool(name: string, kind: string, make: () => Error): Promise<CheckResult | 'throws'> {
 	const injected = make();
 	globalThis.fetch = vi.fn().mockImplementation(async () => {
 		throw injected;
 	});
+	vi.useFakeTimers();
 	try {
-		return await TOOL_REGISTRY[name].execute('example.com', {}, undefined);
+		const pending = TOOL_REGISTRY[name].execute('example.com', {}, undefined);
+		// Attach the rejection handler BEFORE advancing: the advance flushes
+		// microtasks, so a tool that re-throws would otherwise settle unhandled.
+		const settled = pending.then(
+			(value) => ({ ok: true as const, value }),
+			(err: unknown) => ({ ok: false as const, err }),
+		);
+		// Async variant — it flushes microtasks between timer steps, so each awaited
+		// round resolves instead of deadlocking the advance.
+		await vi.advanceTimersByTimeAsync(ABSTENTION_FASTFORWARD_MS);
+		const outcome = await settled;
+		if (outcome.ok) return outcome.value;
+		throw outcome.err;
 	} catch (err) {
 		// A re-throw of the injected failure surfaces as a failed tool call (nothing cached,
 		// scored, or `passed`), which is outside this audit's claim — scan_domain's safeCheck
@@ -121,6 +146,8 @@ async function runTool(name: string, kind: string, make: () => Error): Promise<C
 			true,
 		);
 		return 'throws';
+	} finally {
+		vi.useRealTimers();
 	}
 }
 

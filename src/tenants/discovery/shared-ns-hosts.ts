@@ -11,9 +11,44 @@
  * unrelated zones, so an overlap there is operational plumbing, not
  * ownership evidence.
  *
- * Hyperscale managed-DNS providers (Cloudflare, Route 53, Google Cloud DNS)
- * are deliberately NOT in this set — they assign *unique* NS hostnames per
- * account/zone, so an overlap there still implies same-account ownership.
+ * Cloudflare and Route 53 are deliberately NOT in this set: they draw NS
+ * hostnames per account / per zone from a large pool, so an overlap there
+ * still implies same-account ownership. Both were re-measured for #939
+ * (2026-09-09, 14,062 resolved Tranco domains): Route 53 repeated a complete
+ * 4-host set seven times, each within one organisation as far as could be
+ * told (zooplus.it/.co.uk/.gr; gqmagazine.fr/condenast.com/vogue.mx;
+ * schibsted.io/.fi; koat.com/wptz.com — both Hearst stations;
+ * ladygaga.com/gwenstefani.com; biolifeplasma.com/baxalta.com;
+ * podname.com/verybark.com — the last pair unverified); Cloudflare produced
+ * 4,661 distinct pairs across 5,254 tenants, its repeats consistent with
+ * multi-domain accounts. Google Cloud DNS is NOT in that class — it hands out
+ * one of five fixed `ns-cloud-{a..e}{1..4}` sets — and is listed below.
+ *
+ * KNOWN RESIDUAL — `gandi.net`: Gandi runs TWO products under one apex.
+ * LiveDNS draws `ns-N-{a,b,c}.gandi.net` per zone from a large pool (47
+ * distinct sets / 48 sampled tenants — ownership-bearing), while the legacy
+ * classic set `a/b/c.dns.gandi.net` is uniform (mediamass.net and
+ * ifoponline.com, 2026-09-09). This set is keyed by `registeredApex()`, so
+ * listing `gandi.net` would also erase LiveDNS evidence; the classic set
+ * therefore stays UNLISTED and a complete `a/b/c.dns.gandi.net` match still
+ * reaches the dedicated arm. Fixing it needs host-level keying, not an entry.
+ *
+ * DELIBERATELY UNLISTED — ENTERPRISE-GATED PLATFORMS (#947 review; kept
+ * ownership-bearing by operator decision, mitigation tracked in #949). A
+ * corporate brand-protection registrar's uniform `dns1`/`dns2` and
+ * `udns1`/`udns2` sets, MarkMonitor's `ns1-7`, the shared NZ-government
+ * platform `ns1-5.digital.govt.nz` (13 agencies of one government) and
+ * UltraDNS's `pdns*` sets were all measured uniform across unrelated tenants
+ * in the #939 sweep, but none is self-service: a squatter cannot land a
+ * lookalike on the seed's exact NS set there for the price of an account, so
+ * a complete-set match on those platforms remains real ownership evidence.
+ * Listing them would trade a theoretical false attribution (two unrelated
+ * enterprises on one fixed set) for a measured harm to the customers who pay
+ * for that tier — their OWN defensive registration on the same platform
+ * would drop from `owned_by_seed` to `unattributed`, gaining an uncapped
+ * threat observation in check_lookalikes and losing the owned-only "lacks
+ * DMARC" rung in check_shadow_domains. The `shared-ns-hosts` audit pins each
+ * of those apexes as NOT listed so a future sweep cannot silently re-add them.
  *
  * The ns-correlator drops shared-NS entries whose apex matches this set
  * from its `confidence` math; if ALL shared NS land here, the candidate is
@@ -56,8 +91,26 @@ import { registeredApex } from './infrastructure-providers';
  * lookalike on the seed's platform earns the seed's severity ceiling — which
  * is worse than the cost of an extra entry (an ownership lead that must be
  * corroborated some other way). Verify with two tenants over DoH before
- * adding; record the measurement in the entry's comment. Providers not yet
- * verified either way are tracked in the follow-up issue linked from PR #937.
+ * adding; record the measurement in the entry's comment.
+ *
+ * #939 (2026-09-09): the bar was applied at scale. A sweep of 14,334 Tranco
+ * domains (ranks 20k–1M, NS over Cloudflare + Google DoH, 14,062 resolved)
+ * was grouped by exact NS set and the membership bar above — TWO unrelated
+ * tenants observed sharing the platform's hosts — was applied to every apex
+ * whose comment cites "#939"; the two named tenants were then re-read from
+ * both resolvers. Most entries clear it by a wide margin (an identical
+ * complete set on dozens of tenants); the thinnest are named honestly in
+ * their comments: Squarespace (four tenants, four DISTINCT complete sets —
+ * listed on the uniform platform HALF of the set, see the entry) and Strato
+ * (one repeated pair in 20 tenants). A platform whose sets are drawn from a
+ * pool SMALL enough that unrelated tenants collide (GoDaddy's ~50 pairs,
+ * OVH's `dnsN`/`nsN`, Azure's 23 numbered sets, Cloud DNS's five) is listed
+ * on the same evidence as a uniform-set one: a complete match there is not
+ * per-account. Two tenant names per entry, not the whole sample; the raw
+ * table is in the PR for #939. Multi-apex sets (IONOS, Hetzner Robot,
+ * Aruba, DNSimple edge) list EVERY apex the set spans — half-listing
+ * a set leaves the other half counting as "dedicated" and `ns_set_match`'s
+ * >=50% bar is met by that half alone (Squarespace: 4 platform + 4 NS1 hosts).
  */
 export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	// Parking services
@@ -71,16 +124,158 @@ export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	'internettraffic.com',
 	'dnsowl.com',
 	'parklogic.com',
-	// GoDaddy default / parked / shared
+	// GoDaddy default / parked / shared — ~50 `nsNN`/`nsNN+1` pairs over 489
+	// sampled tenants (#939: stonyfield.com and centerforfoodsafety.org both
+	// on ns33/ns34.domaincontrol.com, 2026-09-09).
 	'domaincontrol.com',
 	'secureserver.net',
-	// Namecheap registrar-default
+	// Namecheap registrar-default — BasicDNS `dns1`/`dns2` (111 of 122
+	// sampled tenants; #939: candidthemes.com, bighugelabs.com) and PremiumDNS
+	// `pdns1`/`pdns2` (seedr.cc, sketchucation.com), 2026-09-09.
 	'registrar-servers.com',
+	// Namecheap shared hosting `dns1`/`dns2.namecheaphosting.com` (#939:
+	// airsial.com, drawingdatabase.com, 2026-09-09) and Spaceship
+	// `launch1`/`launch2` (openstepnews.com, itray.net).
+	'namecheaphosting.com',
+	'spaceship.net',
 	// one.com shared hosting — every tenant delegates to the identical
 	// `ns01.one.com` / `ns02.one.com` pair (#929; verified live 2026-09-09 on
 	// net-agents.dk, net-agent.dk, net-agents.com). NOT pooled: a complete
 	// 2/2 match is what any two one.com customers look like.
 	'one.com',
+	// Hostinger — `ns1`/`ns2.dns-parking.com` is the default for every
+	// Hostinger domain, parked or live (#939: debugpoint.com, sweetberry.gr;
+	// 69 of 95 sampled tenants on the identical pair, 2026-09-09).
+	'dns-parking.com',
+	// Wix — pairs `ns{2k}`/`ns{2k+1}.wixdns.net` from a pool of ~8 (#939:
+	// lviusa.com and interclinicapuertovaras.cl on ns0/ns1; tendersgo.com and
+	// myhomepropertymarketing.com on ns2/ns3, 2026-09-09).
+	'wixdns.net',
+	// Squarespace Domains — every tenant carries the same
+	// `ns01`–`ns04.squarespacedns.com` plus one NS1 `dns1-4.p0N.nsone.net`
+	// quartet (#939: usahockeymagazine.com p05, biosites.com p06, 2026-09-09).
+	// The four squarespacedns hosts alone are 4/8 = the ns_set_match bar.
+	'squarespacedns.com',
+	// NS1 (IBM) — `dns1-4.p0N.nsone.net` quartets, N from a pool of ~9 (#939:
+	// zonealarm.com and gooddata.com both on p01, 2026-09-09).
+	'nsone.net',
+	// Google Cloud DNS / Google Domains — one of five FIXED sets
+	// `ns-cloud-{a..e}{1..4}.googledomains.com`, manufacturable by any GCP
+	// project (#939: americanbanker.com and edmontonjournal.com on set b;
+	// motorcycle.com and japanknowledge.com on set a; local.ch and macon.com
+	// on set c; 1001fonts.com and aptoslabs.com on set d; cardinalhealth.com
+	// and rewe-group.com on set e — 2026-09-09).
+	'googledomains.com',
+	// IONOS (1&1) — `ns{N}.ui-dns.{com,de,org,biz}`; the same N is handed to
+	// unrelated tenants (#939: calcionapoli24.it, aicateringequipments.ie and
+	// hoteldesigns.net all on ns1045 x4, 2026-09-09).
+	'ui-dns.com',
+	'ui-dns.de',
+	'ui-dns.org',
+	'ui-dns.biz',
+	// Bluehost — uniform `ns1`/`ns2.bluehost.com` (#939: godandscience.org,
+	// heraldwholesale.com, 2026-09-09).
+	'bluehost.com',
+	// Strato — `docksNN`/`shadesNN.rzone.de` pairs. THIN EVIDENCE, stated
+	// plainly: 20 sampled tenants gave 19 distinct pairs and ONE repeat
+	// (handball360.net and elsbett.com on docks08/shades18, 2026-09-09) out of
+	// a pool of at most 19 x 18 = 342 combinations (highest docks/shades
+	// numbers observed) — chance-level, the same
+	// shape as Gandi LiveDNS, which is NOT listed. It is listed anyway because
+	// the bar is "two unrelated tenants observed sharing" (met) and the pair
+	// is platform-assigned, so a squatter on Strato can land on the seed's
+	// pair by retrying signups; the cost of listing is one lost lead.
+	'rzone.de',
+	// Hetzner DNS Console — uniform `hydrogen`/`oxygen.ns.hetzner.com` +
+	// `helium.ns.hetzner.de` (#939: edudip.com, echo-online.de, 2026-09-09).
+	'hetzner.com',
+	'hetzner.de',
+	// Hetzner Robot — uniform `ns1.first-ns.de` / `robotns2.second-ns.de` /
+	// `robotns3.second-ns.com` (#939: netzpolitik.org, jtl-software.de) and
+	// the older `ns1.your-server.de` / `ns.second-ns.com` / `ns3.second-ns.de`
+	// set (namibia-forum.ch, retailads.net), 2026-09-09.
+	'first-ns.de',
+	'second-ns.de',
+	'second-ns.com',
+	'your-server.de',
+	// OVH — `dnsN`/`nsN.ovh.net` pairs, N from a small pool (#939:
+	// framaforms.org and ffhandball.fr on dns100/ns100; spip.net and
+	// foot-national.com on dns14/ns14, 2026-09-09); OVH anycast is the uniform
+	// `dns200`/`ns200.anycast.me` (vide-greniers.org, rcf.fr).
+	'ovh.net',
+	'anycast.me',
+	// Cloud / hosting platforms with one fixed set for every tenant (#939,
+	// 2026-09-09; two of the sampled tenants named per entry).
+	'digitalocean.com', // ns1-3 — peoplespharmacy.com, fakturoid.cz
+	'linode.com', // ns1-5 — owlcat.games, international-schools-database.com
+	'vercel-dns.com', // ns1/ns2 — break.com, moneygeek.com
+	'hover.com', // ns1/ns2 — thespinoff.co.nz, accountingtools.com
+	'dreamhost.com', // ns1-3 — victorianweb.org, earthisland.org
+	'siteground.net', // ns1/ns2 — bluezones.com, anseladams.com
+	'porkbun.com', // curitiba/fortaleza/maceio/salvador.ns — enby.software, spqrome.org
+	'eurodns.com', // ns1-4 — wbcsd.org, proteste.pt
+	'dyna-ns.net', // Dynadot ns1/ns2 — bhajanganga.com, fwme.eu
+	// DNSimple — uniform `ns1-4.dnsimple.com` (eventsair.com, borisfx.com) or
+	// the uniform edge set `ns1.dnsimple-edge.com` / `ns2.dnsimple-edge.net` /
+	// `ns3.dnsimple-edge.io` / `ns4.dnsimple-edge.org` (nutrislice.com,
+	// openapis.org); #939, 2026-09-09.
+	'dnsimple.com',
+	'dnsimple-edge.com',
+	'dnsimple-edge.net',
+	'dnsimple-edge.io',
+	'dnsimple-edge.org',
+	// Self-service managed DNS that assigns a FIXED set per tenant (#939,
+	// 2026-09-09). The ENTERPRISE-GATED managed-DNS / brand-registrar
+	// platforms measured uniform in the same sweep are deliberately NOT here —
+	// see DELIBERATELY UNLISTED in the header.
+	'dnsmadeeasy.com', // ns0-4 — travelweekly.com, viarail.ca; ns10-15 — agu.org, kissmetrics.com
+	'constellix.com', // ns11/21/31 + .net ns41/51/61 — hesk.com, ih8mud.com
+	'constellix.net',
+	// Azure DNS — 4-host sets numbered `ns1-NN.azure-dns.com` … from a pool
+	// of ~23 over 178 sampled tenants (#939: lawsociety.org.uk and umicore.com
+	// on set 09; 360learning.com and schoolspecialty.com on set 02).
+	'azure-dns.com',
+	'azure-dns.net',
+	'azure-dns.org',
+	'azure-dns.info',
+	// Network Solutions — `nsNN`/`nsNN+1.worldnic.com` pairs from a small pool
+	// (#939: fedbar.org and royrogersrestaurants.com on ns47/ns48).
+	'worldnic.com',
+	// ClouDNS — `pns21-24` / `gns21-24` quartets shared across tenants (#939:
+	// transfermarkt.technology, conservador.cl on pns21-24).
+	'cloudns.net',
+	// Regional registrar / hosting defaults with one fixed set (#939,
+	// 2026-09-09). CN:
+	'alidns.com', // Alibaba vip3/vip4 — yicai.com, hoymiles.com
+	'hichina.com', // Alibaba/HiChina dns9/dns10 — huion.com, dulwich.org
+	'dnspod.net', // Tencent f1g1ns1/f1g1ns2 — leiphone.com, 360che.com
+	'dnsv4.com', // ns3/ns4 — xywy.com, wuhan.gov.cn
+	'share-dns.com', // a.share-dns.com / b.share-dns.net — fabang.com, huajinlawyer.com
+	'share-dns.net',
+	'xincache.com', // ns11/ns12 — cankaoxiaoxi.com, sdcourt.gov.cn
+	// RU:
+	'reg.ru', // ns1/ns2 — translate.ru, wi-fi.ru
+	'timeweb.ru', // ns1/ns2.timeweb.ru + ns3/ns4.timeweb.org — rosebook.ru, accreditation.ru
+	'timeweb.org',
+	'beget.com', // ns1/ns2 across .com/.pro/.ru — mds.ru, clmedical.ru
+	'beget.pro',
+	'beget.ru',
+	'selectel.ru', // a-d.ns.selectel.ru — cerkov.ru, moe-online.ru
+	'nic.ru', // ns3-l2/ns4-l2/ns8-l2 + ns4-cloud/ns8-cloud — subscribe.ru, sudact.ru
+	'yandex.net', // dns1/dns2 — poliklinika45.ru, audiosector.ru
+	// Yandex Cloud DNS ns1/ns2 — bigenc.ru, 4lapy.ru. `yandexcloud.net` is a
+	// PRIVATE public suffix (tldts, allowPrivateDomains), so `registeredApex()`
+	// returns the hostname itself; the set therefore keys the two hostnames.
+	'ns1.yandexcloud.net',
+	'ns2.yandexcloud.net',
+	// JP:
+	'dnsv.jp', // GMO 01-04.dnsv.jp — fate-go.jp, gyomusuper.jp
+	'dns.ne.jp', // Sakura ns1/ns2.dns.ne.jp (registrable apex under the ne.jp public suffix) — pressnet.or.jp, mansion-review.jp
+	// DE / IT:
+	'ns14.net', // a-d.ns14.net — wttc.org, ifw-kiel.de
+	'technorail.com', // Aruba dns/dns2.technorail.com + dns3.arubadns.net + dns4.arubadns.cz — museoscienza.org, retailwatch.it
+	'arubadns.net',
+	'arubadns.cz',
 	// Akamai — assigns NS hostnames from a shared pool reused across unrelated
 	// customer zones (2026-07-26 correctness-defects design §3.3, verified
 	// live: bnz.co.nz shares a9-65.akam.net with anz.co.nz and a3-67.akam.net

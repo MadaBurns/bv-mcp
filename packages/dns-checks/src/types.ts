@@ -226,6 +226,21 @@ export interface ScanScore {
 	 */
 	tierBreakdown?: { core: number; protective: number; hardening: number };
 	/**
+	 * Critical categories whose control was measured MISSING, arming the critical-gap
+	 * ceiling (64). Mirrors `GenericScanScore.criticalGaps`; surfaced here since scoring
+	 * model 1.26.0 so a consumer can tell WHICH ceiling produced a capped `overall`
+	 * rather than inferring it from the number. Optional: present only on a graded result
+	 * (additive — older results simply lack the key). Empty array when no ceiling armed.
+	 */
+	criticalGaps?: CheckCategory[];
+	/**
+	 * Critical categories whose control is present and active but PARTIALLY enforced
+	 * (DMARC `p=quarantine` / `pct<100`), arming the partial-enforcement ceiling (94 —
+	 * the top of NIST display A). Disjoint from `criticalGaps`: missing beats partial.
+	 * Same presence rule as `criticalGaps`. Scoring model 1.26.0.
+	 */
+	partialEnforcementGaps?: CheckCategory[];
+	/**
 	 * Coverage of this scan: how many checks were attempted and how many completed.
 	 * Present on EVERY result, graded or not, so a consumer can always judge the
 	 * scan's own reliability rather than inferring it from a missing grade.

@@ -108,10 +108,16 @@ describe('stripRedundantStructuredComment (#363 follow-up — "Both (conservativ
 		expect(out.structuredContent).toEqual({ score: 80 });
 	});
 
-	it('KEEPS the comment for the legacy comment-parsing client even on modern protocol', () => {
+	it('DROPS the comment for blackveil_dns_action on modern protocol (v1.4.0+ reads structuredContent; allowlist retired)', () => {
 		const out = stripRedundantStructuredComment(make(), { clientType: 'blackveil_dns_action', protocolVersionHeader: '2025-06-18' });
+		expect(hasComment(out)).toBe(false);
+		expect(out.structuredContent).toEqual({ score: 80 });
+		expect(STRUCTURED_COMMENT_LEGACY_CLIENTS.has('blackveil_dns_action')).toBe(false);
+	});
+
+	it('KEEPS the comment for blackveil_dns_action on the older 2025-03-26 protocol (action <= 1.3.0)', () => {
+		const out = stripRedundantStructuredComment(make(), { clientType: 'blackveil_dns_action', protocolVersionHeader: '2025-03-26' });
 		expect(hasComment(out)).toBe(true);
-		expect(STRUCTURED_COMMENT_LEGACY_CLIENTS.has('blackveil_dns_action')).toBe(true);
 	});
 
 	it('KEEPS the comment when the protocol header is absent (most clients omit it)', () => {
@@ -286,8 +292,14 @@ describe('redundant STRUCTURED_RESULT comment stripping (#363 follow-up, end-to-
 		expect(out.hasStructured).toBe(true);
 	});
 
-	it('keeps the comment for the blackveil_dns_action client even on protocol 2025-06-18', async () => {
-		const out = await explainFinding(await initSession(), { protocolHeader: '2025-06-18', userAgent: 'blackveil-dns-action/1.0' });
+	it('drops the comment for blackveil-dns-action >= 1.4.0 (protocol 2025-06-18, reads structuredContent)', async () => {
+		const out = await explainFinding(await initSession(), { protocolHeader: '2025-06-18', userAgent: 'blackveil-dns-action/1.4.0' });
+		expect(out.hasComment).toBe(false);
+		expect(out.hasStructured).toBe(true);
+	});
+
+	it('keeps the comment for blackveil-dns-action <= 1.3.0 (protocol 2025-03-26, comment parser)', async () => {
+		const out = await explainFinding(await initSession(), { protocolHeader: '2025-03-26', userAgent: 'blackveil-dns-action/1.3.0' });
 		expect(out.hasComment).toBe(true);
 	});
 

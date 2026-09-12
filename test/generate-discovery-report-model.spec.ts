@@ -7,7 +7,7 @@ describe('discovery report model', () => {
 	it('splits authorized vendor dependencies from real Shadow IT ARR opportunities', () => {
 		const model = buildDiscoveryReportModel({
 			target: 'brand-delta.example.com',
-			primaryRegistrar: 'CSC Corporate Domains, Inc.',
+			primaryRegistrar: 'Brand Registrar, Inc.',
 			result: {
 				category: 'brand_discovery',
 				passed: true,
@@ -61,7 +61,7 @@ describe('discovery report model', () => {
 	it('emits v4 tiered sidecar relationship sections while preserving legacy buckets', () => {
 		const model = buildDiscoveryReportModel({
 			target: 'brand-delta.example.com',
-			primaryRegistrar: 'CSC Corporate Domains, Inc.',
+			primaryRegistrar: 'Brand Registrar, Inc.',
 			result: {
 				category: 'brand_discovery',
 				passed: true,

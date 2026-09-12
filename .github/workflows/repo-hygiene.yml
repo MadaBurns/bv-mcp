@@ -121,6 +121,10 @@ jobs:
             'reports/'
             '.reports/**'
             '.reports/'
+            '.client-reports/**'
+            '.client-reports/'
+            '*-discovery-report.json'
+            '*-discovery-report.pdf'
             'scripts/tranco-*.json'
             'wrangler.production.jsonc'
             '.mcp-registry-key.pem'
@@ -235,15 +239,135 @@ jobs:
             echo "✓ No large tracked files found."
           fi
 
+      # The npm-backed audits below are bv-mcp's own scripts. This workflow is
+      # also consumed by sibling repos (workflow_call) that have no package.json,
+      # or a package.json without these scripts — for them the file-level checks
+      # above are the whole contract. Detect what exists and SAY what is skipped,
+      # so a green run in a consumer never silently implies the audits ran.
+      - name: Detect npm audit surface
+        id: npm
+        run: |
+          set -euo pipefail
+          lockfile=false; repo_safety=false; oss_safety=false
+          if [ -f package.json ]; then
+            if [ -f package-lock.json ] || [ -f npm-shrinkwrap.json ]; then lockfile=true; fi
+            if [ "$(jq -r '.scripts["audit:repo-safety"] // empty' package.json)" != "" ]; then repo_safety=true; fi
+            if [ "$(jq -r '.scripts["audit:oss-safety"] // empty' package.json)" != "" ]; then oss_safety=true; fi
+          fi
+          {
+            echo "lockfile=$lockfile"
+            echo "repo_safety=$repo_safety"
+            echo "oss_safety=$oss_safety"
+          } >> "$GITHUB_OUTPUT"
+          [ "$lockfile" = true ] || echo "::notice::No package-lock.json — skipping npm install and npm-backed audits."
+          [ "$repo_safety" = true ] || echo "::notice::No audit:repo-safety script in package.json — repo safety scanner skipped."
+          [ "$oss_safety" = true ] || echo "::notice::No audit:oss-safety script in package.json — public source safety audits skipped."
+
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: steps.npm.outputs.lockfile == 'true'
         with:
           node-version: 22
           cache: npm
 
       - run: npm ci
+        if: steps.npm.outputs.lockfile == 'true'
 
       - name: Run repo safety scanner
+        if: steps.npm.outputs.lockfile == 'true' && steps.npm.outputs.repo_safety == 'true'
         run: npm run audit:repo-safety
 
       - name: Run public source safety audits
+        if: steps.npm.outputs.lockfile == 'true' && steps.npm.outputs.oss_safety == 'true'
         run: npm run audit:oss-safety
+
+  # ---------------------------------------------------------------------------
+  # Agent-attribution trailer integrity — ADVISORY BY CONTRACT, exits 0 always.
+  #
+  # WHAT THIS DOES NOT DO: it never requires a Co-Authored-By trailer to be
+  # present. That is deliberate and load-bearing. macrohard.nz publishes an
+  # "agent-authored share" computed from these repos, and the trailer is only a
+  # meaningful signal while it stays OPTIONAL — measured 2026-09-12, 109 of 230
+  # human-authored commits in this repo's last 250 correctly carry no trailer.
+  # Mandating it would turn the published figure into a compliance counter that
+  # trends to 100% and measures nothing. Do not "upgrade" this into a gate.
+  #
+  # WHAT IT DOES: when a trailer IS present, assert it parses under the exact
+  # regex macrohard uses (parseAgentTrailers, src/receipts.ts). A trailer that
+  # names Claude but is missing its <email> is silently invisible to that
+  # parser, so the published number would UNDERCOUNT with nothing to say so.
+  # Measured at adoption: 0 malformed across 625 trailers in the four tracked
+  # repos. This step's job is to keep that zero honest.
+  #
+  # Advisory because the fleet's standing rule for telemetry-derived checks
+  # (FA-13) is that they ship fail-soft and are falsified before they ever gate.
+  trailer-integrity:
+    name: Agent-attribution trailer integrity (advisory)
+    runs-on: ubuntu-latest
+    steps:
+      # fetch-depth: 0 so a base..head range resolves. Kept in its own job so the
+      # file-hygiene job above keeps its fast depth-1 checkout.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Check Co-Authored-By trailers parse
+        # Commit messages are attacker-controlled on a fork PR, so they are NEVER
+        # interpolated into this script — not through ${{ }}, not through the
+        # shell. The only ${{ }} values are event metadata passed via env, and
+        # every message is read from git inside python.
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_REF: ${{ github.base_ref }}
+          PUSH_BEFORE: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os, re, subprocess, sys
+
+          # Character-for-character the regex in macrohard src/receipts.ts.
+          STRICT = re.compile(r'^co-authored-by:\s*(claude[^<\n]*?)\s*<[^>]*>\s*$', re.I)
+          LOOSE = re.compile(r'^co-authored-by:.*claude', re.I)
+
+          def git(*args):
+              return subprocess.run(['git', *args], capture_output=True, text=True).stdout
+
+          event = os.environ.get('EVENT_NAME', '')
+          base = os.environ.get('BASE_REF', '')
+          before = os.environ.get('PUSH_BEFORE', '')
+
+          if event == 'pull_request' and base:
+              shas = git('rev-list', f'origin/{base}..HEAD').split()
+          elif before and not re.fullmatch(r'0+', before):
+              shas = git('rev-list', f'{before}..HEAD').split()
+          else:
+              # First push on a branch, or no usable range: check the tip only.
+              shas = git('rev-list', '-1', 'HEAD').split()
+
+          if not shas:
+              print('No commits in range - nothing to check.')
+              sys.exit(0)
+
+          malformed = []
+          with_trailer = 0
+          for sha in shas:
+              msg = git('log', '-1', '--format=%B', sha)
+              hits = [l.strip() for l in msg.splitlines() if LOOSE.match(l.strip())]
+              if hits:
+                  with_trailer += 1
+              malformed += [(sha, l) for l in hits if not STRICT.match(l)]
+
+          print('Commits checked: %d' % len(shas))
+          print('Commits carrying a Claude trailer: %d '
+                '(absence is expected and is never reported)' % with_trailer)
+
+          for sha, line in malformed:
+              print('::warning::Malformed Claude trailer in %s: %r - macrohard '
+                    'parseAgentTrailers will NOT count this commit. Expected form: '
+                    '"Co-Authored-By: Claude <model> <email@host>"' % (sha[:9], line))
+
+          if malformed:
+              print('%d malformed trailer(s). Advisory only - not failing the build.'
+                    % len(malformed))
+          else:
+              print('All Claude trailers in this range parse correctly.')
+          PY

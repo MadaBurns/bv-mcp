@@ -586,7 +586,7 @@ describe('handleToolsList', () => {
 		const { INTERNAL_ONLY_TOOLS, isInternalOnlyTool } = await import('../src/lib/config');
 		const result = handleToolsList();
 		expect(Array.isArray(result.tools)).toBe(true);
-		// handleToolsList filters out internal-only tools (e.g. map_csc_products) — public count.
+		// handleToolsList filters out internal-only tools (e.g. map_registrar_products) — public count.
 		expect(result.tools).toHaveLength(TOOLS.length - INTERNAL_ONLY_TOOLS.size);
 		expect(result.tools.some((t) => isInternalOnlyTool(t.name))).toBe(false);
 	});

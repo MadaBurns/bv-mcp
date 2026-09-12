@@ -228,7 +228,7 @@ describe('evaluateDefensiveRegistration — check_lookalikes call-site contract'
 			candidateDomain: 'cont0so.com',
 			targetDomain: TARGET,
 			mxRecords: undefined,
-			nsHosts: ['ns1.cscdns.net'],
+			nsHosts: ['ns1.brand-registrar.example'],
 		});
 		expect(result.defensive).toBe(false);
 	});
@@ -238,7 +238,7 @@ describe('evaluateDefensiveRegistration — check_lookalikes call-site contract'
 			candidateDomain: 'cont0so.com',
 			targetDomain: TARGET,
 			mxRecords: [],
-			nsHosts: ['ns1.cscdns.net'],
+			nsHosts: ['ns1.brand-registrar.example'],
 		});
 		expect(result).toEqual({ defensive: true, reason: 'no-mx' });
 	});
@@ -250,7 +250,7 @@ describe('evaluateDefensiveRegistration — check_lookalikes call-site contract'
 			candidateDomain: 'cont0so.com',
 			targetDomain: TARGET,
 			mxRecords: ['mail.attacker.example'],
-			nsHosts: ['ns1.cscdns.net'],
+			nsHosts: ['ns1.brand-registrar.example'],
 		});
 		expect(result.defensive).toBe(false);
 	});
@@ -262,7 +262,7 @@ describe('evaluateDefensiveRegistration — check_lookalikes call-site contract'
 			candidateDomain: 'totally-unrelated.com',
 			targetDomain: TARGET,
 			mxRecords: [],
-			nsHosts: ['ns1.cscdns.net'],
+			nsHosts: ['ns1.brand-registrar.example'],
 		});
 		expect(result.defensive).toBe(false);
 	});

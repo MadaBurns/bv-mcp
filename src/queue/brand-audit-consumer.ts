@@ -153,7 +153,7 @@ export const BrandAuditQueueMessageSchema = z.object({
 	 * Output view mode forwarded by brand_audit_batch_start. Explicit
 	 * caller-supplied value is threaded into runBrandAuditPipeline.
 	 */
-	view: z.enum(['standard', 'csc_complement']).optional(),
+	view: z.enum(['standard', 'registrar_complement']).optional(),
 	/** Set when the message originated from the watch cron — drives post-completion diff/webhook. */
 	watchId: z.string().min(1).max(64).optional(),
 	/** Bound at enqueue time so the consumer doesn't need a D1 round-trip to look up the watch's owner. */
@@ -275,7 +275,7 @@ export interface BrandAuditConsumerDeps {
 	 */
 	certstreamAuthToken?: string;
 	/**
-	 * Optional internal-call closure for the CSC deep-scan queue job.
+	 * Optional internal-call closure for the registrar deep-scan queue job.
 	 * Wraps handleToolsCall so the deep-scan orchestrator can invoke scan_domain
 	 * and discover_subdomains without going through HTTP framing. Constructed at
 	 * the queue dispatch site in src/index.ts; undefined on BSL self-hosts where
@@ -435,13 +435,13 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		...(deps.certstream ? { certstream: deps.certstream } : {}),
 		...(deps.certstreamAuthToken ? { certstreamAuthToken: deps.certstreamAuthToken } : {}),
 		// The same brandAuditQueue binding that powers the Phase 2b retry-enqueue
-		// at line 416 doubles as the CSC fast→full deep-scan trigger inside the
+		// at line 416 doubles as the registrar fast→full deep-scan trigger inside the
 		// pipeline (brand-audit-pipeline.ts:1061). The send() signature there is
 		// `{ send(unknown): Promise<void> }`, wider (more permissive in input
 		// type) than the consumer's typed-message variant — the runtime shape
 		// is identical. Gated on `!isRetry` because the primary pass already
 		// enqueued deep_scan #1; allowing the retry pass to enqueue deep_scan #2
-		// produces a race on csc_complement_full (last-write-wins UPSERT in the
+		// produces a race on registrar_complement_full (last-write-wins UPSERT in the
 		// step-store, no MVCC). Consumer's own retry-enqueue path is already
 		// gated on `!isRetry` at line 411, so the consumer doesn't need
 		// brandAuditQueue on retry messages either.
@@ -469,7 +469,7 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		// in the pipeline's effective-mode resolution.
 		discovery_mode: message.discovery_mode,
 		// Output view mode from the batch_start payload. Forwarded into the
-		// pipeline so CSC enrichment runs when the caller requested csc_complement.
+		// pipeline so registrar enrichment runs when the caller requested registrar_complement.
 		view: message.view,
 		signal: controller.signal,
 		deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
@@ -866,13 +866,13 @@ export async function handleBrandAuditQueue(batch: MessageBatch<unknown>, deps: 
 			const { auditId, target } = rawBody as { auditId: string; target: string; phase: string };
 			if (typeof auditId === 'string' && typeof target === 'string' && deps.internalCall) {
 				try {
-					const { runDeepScanFromStepStore } = await import('../lib/brand-audit-csc-deepscan-job');
+					const { runDeepScanFromStepStore } = await import('../lib/brand-audit-registrar-deepscan-job');
 					const stepStore = createD1BrandAuditStepStore(deps.db);
 					await runDeepScanFromStepStore({ auditId, target, stepStore, internalCall: deps.internalCall });
 				} catch (err) {
 					// Deep-scan failures are not retryable: the step-store is the durability boundary.
 					// The fast-stage payload is already persisted; brand_audit_get_report falls back to
-					// csc_complement_fast when csc_complement_full is absent. Ack and let the cron reaper
+					// registrar_complement_fast when registrar_complement_full is absent. Ack and let the cron reaper
 					// re-enqueue if needed.
 					logError(err instanceof Error ? err : String(err), { category: 'brand_audit', result: 'deep_scan_failed' });
 				}
