@@ -14,7 +14,7 @@ skill is the right home; it usually is. Trimmed 2026-09-11 from 28,897 B
 
 Blackveil DNS — source-available DNS & email security scanner, built as a
 Cloudflare Worker.
-79 public tools (84 registered in `TOOL_DEFS`; 5 internal-only via
+80 public tools (85 registered in `TOOL_DEFS`; 5 internal-only via
 `INTERNAL_ONLY_TOOLS` — `map_registrar_products` + the four `identity_secops`
 M365 tools, withdrawn 3.63.0) exposed via MCP Streamable HTTP (JSON-RPC 2.0) at
 `https://dns-mcp.blackveilsecurity.com/mcp`. Source of truth: `TOOL_DEFS` in

@@ -87,6 +87,7 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "scan_buckets_start" => PermissionMode::WorkspaceWrite,
         "scan_buckets_status" => PermissionMode::ReadOnly,
         "scan_domain" => PermissionMode::ReadOnly,
+        "sge_quickscan" => PermissionMode::ReadOnly,
         "simulate_attack_paths" => PermissionMode::ReadOnly,
         "validate_fix" => PermissionMode::ReadOnly,
         _ => PermissionMode::DangerFullAccess,
