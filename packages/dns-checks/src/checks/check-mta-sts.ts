@@ -132,6 +132,14 @@ export async function checkMTASTS(
 
 	// Check for _mta-sts TXT record
 	let hasTxtRecord = false;
+
+	// POLICY STRENGTH, for compliance consumers (NZ SGE requires `mode: enforce`).
+	// Stays `undefined` unless the policy file was actually fetched AND parsed: an
+	// unreachable or oversized policy is an UNMEASURED mode, never `none`. Reporting
+	// `none` for a policy we failed to read would be an affirmative claim from zero
+	// evidence. Recorded on the CheckResult rather than a finding because the
+	// compliant state, `enforce`, emits no finding at all.
+	let observedPolicyMode: string | undefined;
 	try {
 		const txtRecords = await queryDNS(`_mta-sts.${domain}`, 'TXT', { timeout });
 		const txtAnalysis = getMtaStsTxtFindings(txtRecords);
@@ -201,6 +209,8 @@ export async function checkMTASTS(
 					const policyMxPatterns = extractPolicyMxPatterns(body);
 					const modeMatch = body.match(/mode:\s*(enforce|testing|none)/i);
 					const policyMode = modeMatch ? modeMatch[1].toLowerCase() : '';
+					// Surface it; a body with no parseable `mode:` leaves this undefined.
+					observedPolicyMode = modeMatch ? policyMode : undefined;
 					if (policyMxPatterns.length > 0 && (policyMode === 'enforce' || policyMode === 'testing')) {
 						try {
 							const mxAnswers = await queryDNS(domain, 'MX', { timeout });
@@ -368,7 +378,13 @@ export async function checkMTASTS(
 	// policy file (an unfetchable policy is still a published record). On this (measured) path
 	// the lookup answered, so `false` is a genuine observed absence; a lookup that never
 	// answered returned early above with both flags `undefined`.
-	return buildCheckResult('mta_sts', findings, hasTxtRecord, hasTxtRecord);
+	return buildCheckResult(
+		'mta_sts',
+		findings,
+		hasTxtRecord,
+		hasTxtRecord,
+		observedPolicyMode === undefined ? undefined : { mtaStsMode: observedPolicyMode },
+	);
 }
 
 /**

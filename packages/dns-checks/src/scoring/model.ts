@@ -333,12 +333,66 @@ export function findingsIndicatePartialEnforcement(findings: Finding[]): boolean
  * the scoring path — it exists so consumers can answer "is this control configured?" without
  * misusing `controlPresent` (which conflates absent with inactive) or a score band. See
  * {@link CheckResult.recordPresent}.
+ *
+ * `metadata` carries POLICY-STRENGTH facts a compliance consumer needs and the three booleans
+ * above cannot express: "is SPF at `-all`?", "is MTA-STS at `mode: enforce`?". Like
+ * `recordPresent` it is observational and NEVER read by the scoring path.
+ *
+ * Why it lives here rather than on a finding, the way DMARC's `metadata.partialEnforcement`
+ * does: that pattern works only because `p=quarantine` always emits a finding. The states a
+ * compliance consumer must AFFIRM are the correct ones, and those are silent — `-all` emits no
+ * SPF finding and `mode: enforce` emits no MTA-STS finding at all. A finding-attached signal
+ * therefore cannot express them. Attaching the value to the result instead also keeps it out of
+ * reach of prose inference, which is forbidden here (see {@link findingsIndicatePartialEnforcement}).
+ *
+ * Absent stays absent: a caller that did not determine the value passes nothing, and the key
+ * never appears. Never synthesise a default — "unmeasured" and "measured as none" are different
+ * facts, and collapsing them is the false-affirmative shape these signals exist to prevent.
  */
+/**
+ * The `all` mechanism's qualifier on a published SPF record, or `no-all-mechanism`
+ * when the record omits it entirely (a `redirect=` record, say). A domain with NO
+ * SPF record reports nothing — {@link spfAllQualifier} returns `undefined` — because
+ * "nothing published" and "published, permissive" are different facts.
+ */
+export type SpfAllQualifier = '-all' | '~all' | '?all' | '+all' | 'no-all-mechanism';
+
+/** MTA-STS policy mode, as read from a policy file that was actually fetched and parsed. */
+export type MtaStsPolicyMode = 'enforce' | 'testing' | 'none';
+
+const SPF_ALL_QUALIFIERS: readonly string[] = ['-all', '~all', '?all', '+all', 'no-all-mechanism'];
+const MTA_STS_MODES: readonly string[] = ['enforce', 'testing', 'none'];
+
+/**
+ * Read the SPF `all` qualifier off a check result, or `undefined` when it was not
+ * determined (no SPF record, or a check that never ran).
+ *
+ * Use this instead of matching finding prose: the qualifier appears in finding titles
+ * ("Permissive SPF: +all") but prose inference is forbidden here, and the COMPLIANT
+ * value `-all` emits no finding at all, so prose could never affirm it.
+ */
+export function spfAllQualifier(result: CheckResult): SpfAllQualifier | undefined {
+	const value = result.metadata?.spfAll;
+	return typeof value === 'string' && SPF_ALL_QUALIFIERS.includes(value) ? (value as SpfAllQualifier) : undefined;
+}
+
+/**
+ * Read the MTA-STS policy mode off a check result, or `undefined` when it was not
+ * determined — no `_mta-sts` TXT record, or a policy file that could not be fetched
+ * or parsed. `undefined` is NOT `none`: treating an unreadable policy as mode `none`
+ * would be an affirmative claim from zero evidence.
+ */
+export function mtaStsPolicyMode(result: CheckResult): MtaStsPolicyMode | undefined {
+	const value = result.metadata?.mtaStsMode;
+	return typeof value === 'string' && MTA_STS_MODES.includes(value) ? (value as MtaStsPolicyMode) : undefined;
+}
+
 export function buildCheckResult(
 	category: CheckCategory,
 	findings: Finding[],
 	controlPresent?: boolean,
 	recordPresent?: boolean,
+	metadata?: Record<string, unknown>,
 ): CheckResult {
 	const normalizedFindings = findings.map(withConfidenceMetadata);
 	const score = computeCategoryScore(normalizedFindings, category);
@@ -353,6 +407,7 @@ export function buildCheckResult(
 		// consumers can distinguish "definitively absent" (false) from "not determined" (undefined).
 		...(controlPresent === undefined ? {} : { controlPresent }),
 		...(recordPresent === undefined ? {} : { recordPresent }),
+		...(metadata === undefined ? {} : { metadata }),
 	};
 }
 

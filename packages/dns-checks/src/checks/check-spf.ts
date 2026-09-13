@@ -171,6 +171,15 @@ export async function checkSPF(domain: string, queryDNS: DNSQueryFunction, optio
 
 	// Check for overly permissive +all or ?all
 	const allMechanism = spf.match(/[+?~-]all/i);
+
+	// POLICY STRENGTH, for compliance consumers (NZ SGE requires `-all`; several
+	// frameworks distinguish hard fail from soft fail). Recorded on the CheckResult
+	// rather than a finding because the COMPLIANT state, `-all`, emits no finding —
+	// so a finding-attached signal could never affirm it. Normalised to lower case;
+	// `no-all-mechanism` is a DISTINCT member, never conflated with `~all`, and a
+	// domain with no SPF record at all returns earlier and reports nothing here.
+	const spfAll = allMechanism ? allMechanism[0].toLowerCase() : 'no-all-mechanism';
+
 	if (allMechanism) {
 		const qualifier = allMechanism[0];
 		if (RISKY_MECHANISMS.includes(qualifier.toLowerCase())) {
@@ -299,5 +308,8 @@ export async function checkSPF(domain: string, queryDNS: DNSQueryFunction, optio
 		);
 	}
 
-	return buildCheckResult('spf', findings);
+	// controlPresent/recordPresent stay deliberately unset for spf — adding them here
+	// would change what `isUnrebuttedAbsence` and the control-satisfaction predicates
+	// conclude, which is a behaviour change, not a new signal. Only metadata is added.
+	return buildCheckResult('spf', findings, undefined, undefined, { spfAll });
 }
