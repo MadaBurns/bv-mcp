@@ -169,37 +169,39 @@ export async function checkSPF(domain: string, queryDNS: DNSQueryFunction, optio
 	// Check for redirect= — determines whether missing 'all' is an issue
 	const hasRedirect = /\bredirect=/i.test(spf);
 
-	// Check for overly permissive +all or ?all
-	const allMechanism = spf.match(/[+?~-]all/i);
+	// THE `all` MECHANISM — ONE extraction, both consumers (bv-mcp #988).
+	//
+	// The record is split into SPF terms (RFC 7208 §4.6.1, whitespace-separated) and
+	// the first whole term that IS an `all` mechanism wins — `all` always matches
+	// (§5.1), so evaluation never reaches a later one. A bare `all` carries the
+	// implicit `+` qualifier (§4.6.2) and normalises to `+all`: it is the MOST
+	// permissive disposition, not an unspecified one. `undefined` means the record
+	// genuinely has no `all` term (a `redirect=` record, say); a domain with no SPF
+	// record at all returns earlier and reports nothing.
+	//
+	// ⚠️ Never reintroduce an unanchored `spf.match(/[+?~-]all/i)` here. That scan is
+	// won by any HOSTNAME containing the text — `send-all.`, `mail-all.`, `smtp-all.`
+	// are ordinary names — so `v=spf1 include:send-all.example.net ~all` read as
+	// `-all` and suppressed the soft-fail finding entirely, while a `+all`-containing
+	// hostname raised a critical "Permissive SPF" against a domain publishing `-all`.
+	// #987 fixed the metadata signal this way and deliberately left the finding path
+	// on the old scan because its severities are score-bearing; #988 is the other
+	// half, and both paths now read this one expression so they cannot diverge again.
+	const allTerm = spf
+		.split(/\s+/)
+		.find((term) => /^[+?~-]?all$/i.test(term))
+		?.toLowerCase();
+	/** The qualifier as an evaluator sees it, with §4.6.2's implicit `+` made explicit. */
+	const allQualifier = allTerm === undefined ? undefined : allTerm === 'all' ? '+all' : allTerm;
 
 	// POLICY STRENGTH, for compliance consumers (NZ SGE requires `-all`; several
 	// frameworks distinguish hard fail from soft fail). Recorded on the CheckResult
 	// rather than a finding because the COMPLIANT state, `-all`, emits no finding —
 	// so a finding-attached signal could never affirm it.
-	//
-	// ⚠️ Deliberately NOT reusing `allMechanism` above. That match is an unanchored
-	// substring scan, so a HOSTNAME containing the text wins it: in
-	// `v=spf1 include:send-all.example.net ~all` it returns `-all`, which would
-	// certify a soft-fail domain as the strictest posture — a false affirmative in
-	// the one signal built to prevent them. It is kept as-is because the finding
-	// path's severities are score-bearing and this change is score-neutral; the
-	// divergence is intentional and the finding path's own bug is filed separately.
-	//
-	// Here the record is split into SPF terms (RFC 7208 §4.6.1, whitespace-separated)
-	// and the first whole term that IS an `all` mechanism wins — `all` always matches
-	// (§5.1), so evaluation never reaches a later one. A bare `all` carries the
-	// implicit `+` qualifier (§4.6.2) and is reported as `+all`, since it is the most
-	// permissive disposition, not an unspecified one. `no-all-mechanism` means the
-	// record genuinely has no `all` term (a `redirect=` record, say); a domain with no
-	// SPF record at all returns earlier and reports nothing.
-	const allTerm = spf
-		.split(/\s+/)
-		.find((term) => /^[+?~-]?all$/i.test(term))
-		?.toLowerCase();
-	const spfAll = allTerm === undefined ? 'no-all-mechanism' : allTerm === 'all' ? '+all' : allTerm;
+	const spfAll = allQualifier ?? 'no-all-mechanism';
 
-	if (allMechanism) {
-		const qualifier = allMechanism[0];
+	if (allQualifier !== undefined) {
+		const qualifier = allQualifier;
 		if (RISKY_MECHANISMS.includes(qualifier.toLowerCase())) {
 			findings.push(
 				createFinding(
