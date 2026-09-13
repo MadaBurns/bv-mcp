@@ -1,0 +1,275 @@
+[
+	{
+		"category": "dmarc",
+		"passed": true,
+		"score": 50,
+		"findings": [
+			{
+				"category": "dmarc",
+				"title": "Subdomain policy weaker than parent policy",
+				"severity": "high",
+				"detail": "Subdomain policy is set to \"none\" while parent policy is \"reject\". This leaves subdomains vulnerable to spoofing.",
+				"metadata": {
+					"confidence": "deterministic"
+				}
+			},
+			{
+				"category": "dmarc",
+				"title": "Non-existent subdomains spoofable (np=none)",
+				"severity": "medium",
+				"detail": "The organizational domain enforces DMARC but non-existent subdomains resolve to np=none, leaving them spoofable (e.g. payroll.example.com). Set np=reject to close this gap.",
+				"metadata": {
+					"confidence": "deterministic"
+				}
+			},
+			{
+				"category": "dmarc",
+				"title": "Third-party DMARC aggregator detected",
+				"severity": "info",
+				"detail": "Using third-party aggregator(s): powerdmarc.com. Ensure these services are authorized to receive your DMARC reports.",
+				"metadata": {
+					"aggregators": ["powerdmarc.com"],
+					"confidence": "deterministic"
+				}
+			},
+			{
+				"category": "dmarc",
+				"title": "No forensic reporting configured (ruf= absent)",
+				"severity": "low",
+				"detail": "Aggregate reporting (rua=) is configured but forensic reporting (ruf=) is not. Forensic reports provide detailed failure information useful for troubleshooting.",
+				"metadata": {
+					"confidence": "deterministic"
+				}
+			},
+			{
+				"category": "dmarc",
+				"title": "Relaxed DKIM alignment",
+				"severity": "low",
+				"detail": "DKIM alignment mode is relaxed (adkim=r or unset). Consider adkim=s (strict) for stronger authentication.",
+				"metadata": {
+					"confidence": "deterministic"
+				}
+			},
+			{
+				"category": "dmarc",
+				"title": "Relaxed SPF alignment",
+				"severity": "info",
+				"detail": "SPF alignment mode is relaxed (aspf=r or unset). Strict alignment (aspf=s) only strengthens DMARC when every authorized sender's return-path (envelope-from) domain exactly matches the From domain — untrue for most ESP-relayed mail (e.g. Resend, SendGrid, Mailchimp, SES with a custom MAIL FROM), where the return-path sits on a subdomain: wherever the From domain differs from it (typically the apex), aspf=s fails SPF alignment for that traffic and leaves DKIM as the only authentication leg. Mail whose From address stays on that same subdomain still aligns under aspf=s. Set aspf=s only after DMARC aggregate reports confirm every sender's return-path domain exactly matches the From domain; otherwise aspf=r is the correct setting.",
+				"metadata": {
+					"confidence": "deterministic"
+				}
+			}
+		],
+		"controlPresent": true,
+		"recordPresent": true
+	},
+	{
+		"category": "spf",
+		"passed": true,
+		"score": 85,
+		"findings": [
+			{
+				"category": "spf",
+				"title": "TXT RRset exceeds UDP limit",
+				"severity": "medium",
+				"detail": "The combined TXT RRset for health.govt.nz is ~707 bytes, which exceeds the 512-byte UDP limit and requires TCP fallback. Legacy resolvers and restrictive middleboxes that do not retry over TCP may only see the first ~512 bytes, silently breaking SPF for some receiving MTAs. RFC 7208 §3.4 advises keeping the SPF record and surrounding TXT RRset small enough to fit a single UDP packet.",
+				"metadata": {
+					"findingCode": "SPF_RRSET_LARGE",
+					"rrsetBytes": 707,
+					"confidence": "deterministic"
+				}
+			},
+			{
+				"category": "spf",
+				"title": "SPF delegates to shared sending platform (unrecognized): _spf.createsend.com",
+				"severity": "info",
+				"detail": "SPF include:_spf.createsend.com delegates sending to an external multi-tenant-style platform that is not in the recognized ESP catalog. It still widens your trust surface even though the specific provider is not named. This is common and not inherently a misconfiguration, but it expands the sending infrastructure you rely on. The risk becomes more material when DMARC enforcement and alignment are weak.",
+				"metadata": {
+					"trustSurface": true,
+					"platform": "unrecognized shared sender",
+					"includeDomain": "_spf.createsend.com",
+					"recognized": false,
+					"dmarcCorroborated": false,
+					"dmarcPolicy": "reject",
+					"dmarcAlignmentMode": "relaxed",
+					"confidence": "deterministic"
+				}
+			},
+			{
+				"category": "spf",
+				"title": "SPF delegates to shared sending platform (unrecognized): spf.odmad.quest-on-demand.com",
+				"severity": "info",
+				"detail": "SPF include:spf.odmad.quest-on-demand.com delegates sending to an external multi-tenant-style platform that is not in the recognized ESP catalog. It still widens your trust surface even though the specific provider is not named. This is common and not inherently a misconfiguration, but it expands the sending infrastructure you rely on. The risk becomes more material when DMARC enforcement and alignment are weak.",
+				"metadata": {
+					"trustSurface": true,
+					"platform": "unrecognized shared sender",
+					"includeDomain": "spf.odmad.quest-on-demand.com",
+					"recognized": false,
+					"dmarcCorroborated": false,
+					"dmarcPolicy": "reject",
+					"dmarcAlignmentMode": "relaxed",
+					"confidence": "deterministic"
+				}
+			},
+			{
+				"category": "spf",
+				"title": "SPF delegates to shared platform: Microsoft 365",
+				"severity": "info",
+				"detail": "SPF include:spf.protection.outlook.com authorizes Microsoft 365. Any M365 tenant can send as your domain without DKIM/DMARC enforcement. This is common and not inherently a misconfiguration, but it expands the sending infrastructure you rely on. The risk becomes more material when DMARC enforcement and alignment are weak.",
+				"metadata": {
+					"trustSurface": true,
+					"platform": "Microsoft 365",
+					"includeDomain": "spf.protection.outlook.com",
+					"dmarcCorroborated": false,
+					"dmarcPolicy": "reject",
+					"dmarcAlignmentMode": "relaxed",
+					"confidence": "deterministic"
+				}
+			},
+			{
+				"category": "spf",
+				"title": "SPF trust surface: 3 shared platforms",
+				"severity": "info",
+				"detail": "SPF record delegates sending authority to 3 multi-tenant platforms (_spf.createsend.com (unrecognized), spf.odmad.quest-on-demand.com (unrecognized), Microsoft 365). Audit each include to confirm it is still needed, configure provider-specific DKIM, and keep DMARC enforcement and alignment strong across every authorized sender.",
+				"metadata": {
+					"trustSurface": true,
+					"platformCount": 3,
+					"platforms": "_spf.createsend.com (unrecognized), spf.odmad.quest-on-demand.com (unrecognized), Microsoft 365",
+					"dmarcCorroborated": false,
+					"dmarcPolicy": "reject",
+					"dmarcAlignmentMode": "relaxed",
+					"confidence": "deterministic"
+				}
+			}
+		],
+		"metadata": {
+			"spfAll": "-all"
+		}
+	},
+	{
+		"category": "dkim",
+		"passed": true,
+		"score": 100,
+		"findings": [
+			{
+				"category": "dkim",
+				"title": "DKIM configured",
+				"severity": "info",
+				"detail": "DKIM records found for selectors: selector1, cf2024-1",
+				"metadata": {
+					"signalType": "dkim",
+					"selectorsChecked": [
+						"default",
+						"mail",
+						"dkim",
+						"dkim1",
+						"dkim2",
+						"k1",
+						"s1",
+						"s2",
+						"google",
+						"20230601",
+						"selector1",
+						"selector2",
+						"amazonses",
+						"zoho",
+						"cf2024-1",
+						"protonmail",
+						"protonmail2",
+						"protonmail3",
+						"mandrill",
+						"mte1",
+						"mte2",
+						"scph1220",
+						"scph0322",
+						"pm",
+						"resend",
+						"fm1",
+						"fm2",
+						"fm3",
+						"k2",
+						"k3",
+						"hs1",
+						"hs2",
+						"kl",
+						"kl2",
+						"mg",
+						"pic",
+						"smtpapi",
+						"m1",
+						"zendesk1",
+						"zendesk2",
+						"mailjet"
+					],
+					"selectorsFound": ["selector1", "cf2024-1"],
+					"confidence": "deterministic"
+				}
+			}
+		],
+		"controlPresent": true
+	},
+	{
+		"category": "mta_sts",
+		"passed": true,
+		"score": 100,
+		"findings": [
+			{
+				"category": "mta_sts",
+				"title": "MTA-STS properly configured",
+				"severity": "info",
+				"detail": "MTA-STS is properly configured for health.govt.nz with an accessible policy file.",
+				"metadata": {
+					"confidence": "deterministic"
+				}
+			}
+		],
+		"controlPresent": true,
+		"recordPresent": true,
+		"metadata": {
+			"mtaStsMode": "enforce"
+		}
+	},
+	{
+		"category": "tlsrpt",
+		"passed": true,
+		"score": 100,
+		"findings": [
+			{
+				"category": "tlsrpt",
+				"title": "TLS-RPT record configured",
+				"severity": "info",
+				"detail": "TLS-RPT record found and configured at _smtp._tls.health.govt.nz: v=TLSRPTv1; rua=mailto:496msrauhe@tls.powerdmarc.com",
+				"metadata": {
+					"confidence": "deterministic"
+				}
+			}
+		],
+		"recordPresent": true
+	},
+	{
+		"category": "mx",
+		"passed": true,
+		"score": 95,
+		"findings": [
+			{
+				"category": "mx",
+				"title": "MX records found",
+				"severity": "info",
+				"detail": "1 mail exchange record(s) present.",
+				"metadata": {
+					"confidence": "deterministic"
+				}
+			},
+			{
+				"category": "mx",
+				"title": "Single MX record",
+				"severity": "low",
+				"detail": "Only one MX record found. Consider adding a backup MX for redundancy.",
+				"metadata": {
+					"confidence": "deterministic"
+				}
+			}
+		],
+		"controlPresent": true
+	}
+]
