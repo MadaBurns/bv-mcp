@@ -713,6 +713,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	resolve_spf_chain: BaseDomainArgs,
 	discover_subdomains: BaseDomainArgs,
 	map_compliance: BaseDomainArgs,
+	sge_quickscan: BaseDomainArgs,
 	map_registrar_products: MapRegistrarProductsArgs,
 	prioritize_portfolio_leads: PrioritizePortfolioLeadsArgs,
 	simulate_attack_paths: BaseDomainArgs,

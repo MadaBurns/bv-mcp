@@ -55,6 +55,7 @@ import { computeDrift, formatDriftReport, isUsableDriftBaseline } from '../tools
 import { resolveSpfChain, formatSpfChain } from '../tools/resolve-spf-chain';
 import { discoverSubdomains, formatSubdomainDiscovery, DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS } from '../tools/discover-subdomains';
 import { mapCompliance, formatCompliance } from '../tools/map-compliance';
+import { sgeQuickscan, formatSgeQuickscan } from '../tools/sge-quickscan';
 import { mapRegistrarProducts, formatRegistrarProducts } from '../tools/map-registrar-products';
 import { prioritizePortfolioLeads, formatPortfolioLeads } from '../tools/prioritize-portfolio-leads';
 import { simulateAttackPaths, formatAttackPaths } from '../tools/simulate-attack-paths';
@@ -218,6 +219,7 @@ export const DIRECT_DISPATCH_TOOLS = new Set([
 	'resolve_spf_chain',
 	'discover_subdomains',
 	'map_compliance',
+	'sge_quickscan',
 	'map_registrar_products',
 	'prioritize_portfolio_leads',
 	'simulate_attack_paths',
@@ -1866,6 +1868,17 @@ export async function handleToolsCall(
 					logDetails = result;
 					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
 					return buildToolResult(formatCompliance(result, effectiveFormat), result, effectiveFormat);
+				}
+				case 'sge_quickscan': {
+					const forceRefresh = extractForceRefresh(validatedArgs);
+					const scanOptions = { ...runtimeOptions, ...(forceRefresh && { forceRefresh }) };
+					const result = await sgeQuickscan(validDomain, scanCacheKV, scanOptions);
+					// The log line carries the VERDICT, never a count of ticks: "5 satisfied"
+					// in a log is the same misreading the rendered output is built to prevent.
+					logResult = result.verdict;
+					logDetails = result;
+					logToolSuccess({ ...ctx(), status: 'pass', logResult, logDetails, severity: 'info' });
+					return buildToolResult(formatSgeQuickscan(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'map_registrar_products': {
 					const forceRefresh = extractForceRefresh(validatedArgs);
