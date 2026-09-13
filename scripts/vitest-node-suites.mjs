@@ -21,6 +21,9 @@ export const NODE_POOL_AUDIT_TESTS = [
 	'test/tenants/cycle-alerts-d1.node.test.ts',
 	'test/scheduled/brand-audit-cron-d1.node.test.ts',
 	'test/audits/brand-audit-schema-preflight.node.test.ts',
+	// Sweeps every tracked source/public/doc file for the "open source" licence
+	// claim via `git ls-files` + real node:fs — neither exists in the Workers pool.
+	'test/audits/busl-positioning-sweep.audit.test.ts',
 	'test/audits/brand-report-qa-script.node.test.ts',
 	'test/audits/brand-report-quality-audit-script.node.test.ts',
 	'test/audits/cli-pack-smoke.node.test.ts',
