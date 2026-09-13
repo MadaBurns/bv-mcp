@@ -340,15 +340,22 @@ async function addAsnCdnHeuristic(
 /**
  * Append a heuristic CDN finding to the http_security check, preserving its
  * scoring fields (buildCheckResult creates a fresh CheckResult).
+ *
+ * `metadata` used to be re-attached by hand in the merge below; `controlPresent`
+ * and `recordPresent` were not, so they were dropped here too (#994). Latent
+ * rather than live — nothing on the `http_security` path sets either signal today
+ * (`grep -c 'controlPresent\|recordPresent' packages/dns-checks/src/checks/check-http-security.ts src/tools/check-http-security.ts`
+ * → 0) — but it is the same two-argument rebuild, so it is closed the same way.
+ * The score/passed/checkStatus overrides stay: a heuristic attribution must not
+ * re-derive the category score.
  */
 function appendCdnFinding(httpResult: CheckResult, results: CheckResult[], cdnFinding: Finding): CheckResult[] {
-	const updated = buildCheckResult('http_security', [...httpResult.findings, cdnFinding]);
+	const updated = rebuildPreservingSignals(httpResult, [...httpResult.findings, cdnFinding]);
 	const merged: CheckResult = {
 		...updated,
 		score: httpResult.score,
 		passed: httpResult.passed,
 		checkStatus: httpResult.checkStatus,
-		metadata: httpResult.metadata,
 	};
 	return upsertCheckResult(results, merged);
 }
@@ -404,6 +411,43 @@ function upsertCheckResult(results: CheckResult[], updated: CheckResult): CheckR
 	return results.map((result) => (result.category === updated.category ? updated : result));
 }
 
+/**
+ * THE ONE PLACE in post-processing that may call `buildCheckResult` (#994).
+ *
+ * `buildCheckResult(category, findings)` compiles cleanly against a FIVE-argument
+ * signature, so every rebuild in this file silently discarded `controlPresent`,
+ * `recordPresent` and `metadata` — the structured signals the SGE evaluator, the
+ * profile detector and the per-check UI read. Nothing failed; the signals just
+ * stopped existing one stage after they were measured. On `health.govt.nz` that
+ * turned `spfAll: '-all'` and `mtaStsMode: 'enforce'` into NOT MEASURED and made
+ * `sge_quickscan` assert a cause ("its policy file could not be fetched or
+ * parsed") that nothing observed.
+ *
+ * Why a wholesale carry-forward is the CORRECT answer here, rather than a
+ * per-site judgement call: `passed`/`score` are OUTPUTS — derived from the
+ * findings, so they must be, and are, recomputed. The three signals are INPUTS:
+ * they record what the probe OBSERVED (was a record published, is the control
+ * active, what qualifier did the record carry). Every adjustment in this file
+ * rewrites finding SEVERITY and PROSE to express APPLICABILITY — "this control
+ * does not apply to a non-mail domain", "this gap is worse because lookalikes
+ * exist". None of them re-measures anything, so none of them can invalidate an
+ * observation. If an adjustment is ever added that genuinely changes what the
+ * result MEANS (re-probing, or re-attributing the result to a different name),
+ * it must override the signal explicitly at its own call site rather than lean
+ * on this helper — carrying forward an observation the adjustment has just
+ * falsified would be the mirror-image defect.
+ *
+ * `undefined` propagates as `undefined`: `buildCheckResult` omits the key
+ * entirely for an undefined argument, so "not determined" never becomes a
+ * fabricated `false`, and a measured `false` never decays to "not determined".
+ *
+ * Enforced by `test/scan-post-processing-build-chokepoint.audit.test.ts`, which
+ * fails on any new bare `buildCheckResult(` call in this file.
+ */
+function rebuildPreservingSignals(source: CheckResult, adjusted: Finding[]): CheckResult {
+	return buildCheckResult(source.category, adjusted, source.controlPresent, source.recordPresent, source.metadata);
+}
+
 async function addOutboundProviderInference(results: CheckResult[], runtimeOptions?: ScanRuntimeOptions): Promise<CheckResult[]> {
 	// If the MX provider detection failed, skip provider-informed DKIM/SPF adjustments
 	// to avoid false inferences based on incomplete or degraded provider data.
@@ -451,8 +495,14 @@ async function addOutboundProviderInference(results: CheckResult[], runtimeOptio
 	const baseConfidence = signatures.source === 'runtime' ? 0.85 : signatures.source === 'stale' ? 0.7 : 0.65;
 	const providerConfidence = Math.min(0.95, baseConfidence + signalBoost);
 
+	// `buildCheckResult('spf', [])` is a synthetic EMPTY baseline — no probe ran, so
+	// there are no signals to carry and `rebuildPreservingSignals` would have nothing
+	// to preserve. It is also unreachable as OUTPUT: `upsertCheckResult` only replaces
+	// an existing `spf` entry, so with no `spfResult` the rebuild is discarded. Kept
+	// as-is rather than deleted, but it is the one deliberate bare call in this file.
+	// bv-signals-checked: synthetic empty baseline, no source result to carry from
 	const spfBaseline = spfResult ?? buildCheckResult('spf', []);
-	const updatedSpf = buildCheckResult('spf', [
+	const updatedSpf = rebuildPreservingSignals(spfBaseline, [
 		...spfBaseline.findings,
 		createFinding('spf', 'Outbound email provider inferred', 'info', `Outbound provider(s): ${providerNames}. Evidence: ${evidence}.`, {
 			detectionType: 'outbound',
@@ -618,7 +668,10 @@ function clarifyMtaStsForMailDomain(domain: string, results: CheckResult[]): Che
  */
 function rebuildUnlessAbstained(result: CheckResult, adjusted: Finding[]): CheckResult {
 	if (!isCompletedCheck(result)) return result;
-	return buildCheckResult(result.category, adjusted);
+	// `rebuildPreservingSignals`, never a bare `buildCheckResult` — see #994 and the
+	// helper's own note. The abstention early-return above already carries the whole
+	// original object (signals included) through untouched.
+	return rebuildPreservingSignals(result, adjusted);
 }
 
 function adjustForNonApexNonMailHost(results: CheckResult[]): CheckResult[] {
