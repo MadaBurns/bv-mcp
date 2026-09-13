@@ -73,6 +73,26 @@ async function dmarcTreeWalk(
 	return { txtRecords: [], foundAt: null };
 }
 
+const DMARC_POLICY_TOKENS = new Set(['none', 'quarantine', 'reject']);
+
+/**
+ * Map a raw `p=` / `sp=` / `np=` token onto the closed {@link DmarcPolicyValue}
+ * union, WITHOUT applying any RFC 9989 §4.7 inheritance.
+ *
+ * `undefined` in (tag absent from a published record) becomes `not-specified`,
+ * and anything else unrecognised becomes `invalid`. Both are measured facts
+ * about a record that exists; neither is `none`. The np -> sp -> p fallback
+ * chain is deliberately NOT resolved here — a consumer needs to see which tags
+ * were actually published in order to explain its own verdict, and a resolved
+ * value would erase that evidence.
+ */
+function normalizeDmarcPolicyTag(raw: string | null | undefined): 'none' | 'quarantine' | 'reject' | 'not-specified' | 'invalid' {
+	if (raw === undefined || raw === null) return 'not-specified';
+	const token = raw.trim().toLowerCase();
+	if (token === '') return 'not-specified';
+	return DMARC_POLICY_TOKENS.has(token) ? (token as 'none' | 'quarantine' | 'reject') : 'invalid';
+}
+
 /**
  * Check DMARC records for a domain (RFC 9989, with §4.10 tree-walk discovery).
  */
@@ -152,9 +172,38 @@ export async function checkDMARC(domain: string, queryDNS: DNSQueryFunction, opt
 	// existing scan post-processing enforcement convention.
 	const dmarcEnforcing = policy === 'quarantine' || policy === 'reject';
 
+	// POLICY-STRENGTH METADATA (bv-mcp #991, following the #987 shape for spf/mta_sts).
+	//
+	// `sp`, `np` and `pct` have been parsed into DmarcFacts above since long before this,
+	// and were then discarded: their only surviving trace was a finding TITLE, and prose
+	// inference is forbidden downstream (findingsIndicatePartialEnforcement's docblock
+	// records why). A compliance consumer asking "does this p=reject domain leave its
+	// subdomains open?" had no structured answer at all.
+	//
+	// UNMEASURED IS NOT A VALUE. This block is reached only when the tree walk FOUND a
+	// record; the no-record path returns above and carries no metadata, so every reader
+	// reports `undefined` there. Within a found record, an omitted tag is the DISTINCT
+	// member `not-specified` and an out-of-union token is `invalid` — neither is `none`,
+	// because reporting an unstated subdomain policy as "none" would invent an exposure.
+	//
+	// `pct` is recorded as PRESENCE only: RFC 9989 Appendix A.6 removes the tag, so the
+	// value is irrelevant to the question, and the raw token is subject-controlled while
+	// top-level metadata does NOT pass through sanitizeFindingMetadata.
+	//
+	// Observational, never read by the scoring path — identical to controlPresent /
+	// recordPresent / spfAll / mtaStsMode in that respect. No score, severity, `passed`
+	// or grade depends on any of it.
+	const metadata = {
+		dmarcPolicy: normalizeDmarcPolicyTag(p),
+		dmarcSubdomainPolicy: normalizeDmarcPolicyTag(sp),
+		dmarcNonExistentSubdomainPolicy: normalizeDmarcPolicyTag(tags.get('np')),
+		dmarcPctPresent: tags.get('pct') !== undefined,
+		dmarcInheritedFromParent: inheritedFromParent,
+	};
+
 	// recordPresent = a DMARC record was PUBLISHED (the tree walk found one, here or at the org
 	// domain) — true even for p=none, which reads controlPresent false. This is the exact pair the
 	// CheckResult docs table calls out; do not collapse it into `dmarcEnforcing`.
-	const result = buildCheckResult('dmarc', findings, dmarcEnforcing, true);
+	const result = buildCheckResult('dmarc', findings, dmarcEnforcing, true, metadata);
 	return findings.some((f) => f.metadata?.assessment === 'not_assessed') ? { ...result, partial: true } : result;
 }

@@ -17,6 +17,11 @@ export {
 	findingsIndicatePartialEnforcement,
 	spfAllQualifier,
 	mtaStsPolicyMode,
+	dmarcPolicyTag,
+	dmarcSubdomainPolicy,
+	dmarcNonExistentSubdomainPolicy,
+	dmarcPctTagPresent,
+	dmarcRecordInheritedFromParent,
 	redactSubjectData,
 	SUBJECT_TERMS_METADATA_KEY,
 	computeCategoryScore,
@@ -24,7 +29,7 @@ export {
 	createFinding,
 } from './model';
 export type { CheckCategory, CategoryTier, Finding, FindingConfidence, CheckResult, CheckStatus, ScanScore, Severity } from './model';
-export type { SpfAllQualifier, MtaStsPolicyMode } from './model';
+export type { SpfAllQualifier, MtaStsPolicyMode, DmarcPolicyValue } from './model';
 
 export {
 	IMPORTANCE_WEIGHTS,
