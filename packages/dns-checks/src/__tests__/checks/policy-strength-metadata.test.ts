@@ -55,6 +55,34 @@ describe('SPF `all` qualifier is exposed structurally', () => {
 		expect(result.metadata?.spfAll).toBe('no-all-mechanism');
 	});
 
+	it('is not fooled by a hostname containing "-all"', async () => {
+		// REGRESSION. The qualifier was extracted with an unanchored first-match
+		// `/[+?~-]all/i`, so `include:send-all.example.net ~all` matched the `-all`
+		// inside the HOSTNAME and reported `-all` — a soft-fail domain certified as
+		// the strictest posture, in the signal whose whole purpose is to prevent
+		// false affirmatives. The union reader cannot catch it: `-all` is valid.
+		const result = await checkSPF(
+			'example.com',
+			dnsReturning({ 'example.com': ['v=spf1 include:send-all.example.net ~all'] }),
+		);
+		expect(result.metadata?.spfAll).toBe('~all');
+	});
+
+	it('treats a bare `all` as the `+all` it means', async () => {
+		// RFC 7208 §4.6.2: a mechanism with no qualifier defaults to `+` (pass), the
+		// MOST permissive disposition. Reporting it as `no-all-mechanism` understated
+		// a wide-open record as merely unspecified.
+		const result = await checkSPF('example.com', dnsReturning({ 'example.com': ['v=spf1 include:_spf.example.net all'] }));
+		expect(result.metadata?.spfAll).toBe('+all');
+	});
+
+	it('reads the FIRST all term, which is the one SPF evaluation reaches', async () => {
+		// `all` always matches (RFC 7208 §5.1), so evaluation stops at the first one;
+		// anything after it is unreachable.
+		const result = await checkSPF('example.com', dnsReturning({ 'example.com': ['v=spf1 ~all -all'] }));
+		expect(result.metadata?.spfAll).toBe('~all');
+	});
+
 	it('reports NO qualifier at all when there is no SPF record', async () => {
 		// Absence of a record is not a qualifier value. A consumer must be able to tell
 		// "nothing published" from "published, permissive" — conflating them is the
