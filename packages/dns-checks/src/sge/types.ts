@@ -108,12 +108,80 @@ export type SgeVerdict = 'compliant' | 'non_compliant' | 'indeterminate';
  */
 export type SgeMailTransport = 'present' | 'absent' | 'unknown';
 
+/**
+ * Advisories — facts that sit ALONGSIDE the six controls and never change one.
+ *
+ * WHY THIS EXISTS (bv-mcp #991). `p=reject; sp=none` satisfies `dmarc_reject`:
+ * RFC 9989 §4.7 says `sp` "applies only to existing subdomains … and not to the
+ * Organizational Domain itself", SGE's requirement is "DMARC needs to be set to
+ * p=reject on all email enabled domains" and never mentions `sp`, and NZISM
+ * 15 point 2 point 36 point C point 02 is likewise silent on it. Downgrading
+ * the control would be a false negative against the written requirement.
+ *
+ * But the subdomain tree really is exposed, and this package's own scorer says
+ * so at severity `high`. An SGE surface that reported six green ticks and
+ * nothing else would read as a clean bill of health on subdomains while the
+ * scorer said the opposite — two live surfaces, opposite impressions, same
+ * input. Advisories are how the evaluator carries the second fact without
+ * corrupting the first.
+ *
+ * They are STRUCTURED, not prose, so a caller renders them distinctly — their
+ * own section, their own severity column, their own evidence. A sentence
+ * appended to a control's text would be unrenderable and unparseable.
+ */
+export const SGE_ADVISORY_IDS = ['subdomain_policy_gap', 'pct_tag_present'] as const;
+
+export type SgeAdvisoryId = (typeof SGE_ADVISORY_IDS)[number];
+
+/**
+ * How an advisory should read next to the controls.
+ *
+ * - `exposure` — a MEASURED security gap the six controls do not cover. It is
+ *   not a control failure and must never be rendered as one, but it must never
+ *   be rendered as cosmetic either.
+ * - `advisory` — a conformance or spec-currency note with no measured attack
+ *   surface of its own.
+ *
+ * Deliberately NOT the `Severity` union used by findings: that union is
+ * score-bearing, and reusing it here would invite a consumer to add these into
+ * a severity tally that the scoring engine never saw.
+ */
+export type SgeAdvisorySeverity = 'exposure' | 'advisory';
+
+export interface SgeAdvisory {
+	id: SgeAdvisoryId;
+	/** Short human label. Display only — never parsed. */
+	label: string;
+	severity: SgeAdvisorySeverity;
+	/**
+	 * The control this advisory sits ALONGSIDE, so a renderer can place it. It
+	 * is emphatically NOT the control it modifies — no advisory ever changes a
+	 * control's `status`, and the verdict is computed from the controls alone.
+	 */
+	relatedControl: SgeControlId;
+	/** One-line explanation, with the standards basis. Display only. */
+	summary: string;
+	/** @see SgeEvidence — same structural rules; re-derivable, never prose-matched. */
+	evidence: SgeEvidence[];
+}
+
 export interface SgeEvaluation {
 	domain: string;
 	verdict: SgeVerdict;
 	mailTransport: SgeMailTransport;
 	/** All six controls, always, in `SGE_CONTROL_IDS` order. Never filtered. */
 	controls: SgeControlEvaluation[];
+	/**
+	 * Zero or more advisories, in `SGE_ADVISORY_IDS` order. ALWAYS an array —
+	 * empty rather than absent — so a consumer cannot skip the field by testing
+	 * for its existence.
+	 *
+	 * ⚠️ A `compliant` verdict with a non-empty `advisories` array is a real and
+	 * expected state. It means the six written SGE controls are met AND a gap
+	 * outside them was measured. Rendering the verdict without the advisories
+	 * reintroduces exactly the "reads as clean" defect they exist to close.
+	 */
+	advisories: SgeAdvisory[];
 	counts: {
 		satisfied: number;
 		notSatisfied: number;

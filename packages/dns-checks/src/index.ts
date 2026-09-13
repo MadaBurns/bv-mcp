@@ -201,8 +201,11 @@ export {
 // reported three-state (satisfied / not-satisfied / NOT-MEASURED) with the
 // structured signals the verdict came from. Reads no score, no `passed`, and no
 // finding prose. Score-neutral: nothing here is consumed by the scoring path.
-export { evaluateSgeCompliance, SGE_CONTROL_IDS } from './sge';
+export { evaluateSgeCompliance, SGE_CONTROL_IDS, SGE_ADVISORY_IDS } from './sge';
 export type {
+	SgeAdvisory,
+	SgeAdvisoryId,
+	SgeAdvisorySeverity,
 	SgeControlId,
 	SgeControlStatus,
 	SgeNotMeasuredReason,

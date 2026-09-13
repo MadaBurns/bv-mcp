@@ -387,6 +387,104 @@ export function mtaStsPolicyMode(result: CheckResult): MtaStsPolicyMode | undefi
 	return typeof value === 'string' && MTA_STS_MODES.includes(value) ? (value as MtaStsPolicyMode) : undefined;
 }
 
+/**
+ * A DMARC policy tag's value as PUBLISHED, with two distinct non-policy members.
+ *
+ * - `none` / `quarantine` / `reject` — the three RFC 9989 §4.7 policy values.
+ * - `not-specified` — a DMARC record exists and OMITS this tag. A distinct fact
+ *   from "no record at all", which reports `undefined` instead. Never collapse
+ *   the two: an absent `sp=` means subdomains inherit `p=` (§4.7), whereas an
+ *   absent record means nothing is published, and reporting either as `none`
+ *   would invent an exposure that was never measured.
+ * - `invalid` — the tag is published carrying a value outside the union. Also a
+ *   MEASURED fact, and equally not `none`.
+ */
+export type DmarcPolicyValue = 'none' | 'quarantine' | 'reject' | 'not-specified' | 'invalid';
+
+const DMARC_POLICY_VALUES: readonly string[] = ['none', 'quarantine', 'reject', 'not-specified', 'invalid'];
+
+function dmarcPolicyMetadata(result: CheckResult, key: string): DmarcPolicyValue | undefined {
+	const value = result.metadata?.[key];
+	return typeof value === 'string' && DMARC_POLICY_VALUES.includes(value) ? (value as DmarcPolicyValue) : undefined;
+}
+
+/**
+ * The DMARC `p=` tag on the record that was found, or `undefined` when no DMARC
+ * record was found at all.
+ *
+ * ⚠️ This is the tag AS PUBLISHED on the record, which on an inherited result is
+ * the ORGANIZATIONAL DOMAIN's `p=`, not the effective policy for the queried
+ * name (that resolves through `sp=`). Pair it with
+ * {@link dmarcRecordInheritedFromParent} before treating it as "this name's
+ * policy". For the plain question "is this domain enforcing?", `controlPresent`
+ * already answers it and is the cheaper oracle.
+ */
+export function dmarcPolicyTag(result: CheckResult): DmarcPolicyValue | undefined {
+	return dmarcPolicyMetadata(result, 'dmarcPolicy');
+}
+
+/**
+ * The DMARC `sp=` tag — the policy for EXISTING subdomains of the Organizational
+ * Domain.
+ *
+ * RFC 9989 §4.7, verbatim: `sp` "applies only to existing subdomains of the
+ * message's Organizational Domain in the DNS hierarchy and not to the
+ * Organizational Domain itself." So `sp=none` says nothing whatsoever about the
+ * apex policy, and a consumer must never read it as weakening `p=`.
+ */
+export function dmarcSubdomainPolicy(result: CheckResult): DmarcPolicyValue | undefined {
+	return dmarcPolicyMetadata(result, 'dmarcSubdomainPolicy');
+}
+
+/**
+ * The DMARC `np=` tag — the policy for NON-EXISTENT subdomains.
+ *
+ * RFC 9989 §4.7, verbatim: "If the 'np' tag is absent, the policy specified by
+ * the 'sp' tag (if the 'sp' tag is present) or the policy specified by the 'p'
+ * tag (if the 'sp' tag is not present) MUST be applied for non-existent
+ * subdomains." That np -> sp -> p fallback is the CONSUMER's to apply; this
+ * reader reports the tag, and `not-specified` means the chain falls through.
+ * Resolving the chain inside the signal would destroy the evidence a consumer
+ * needs to explain its own verdict.
+ */
+export function dmarcNonExistentSubdomainPolicy(result: CheckResult): DmarcPolicyValue | undefined {
+	return dmarcPolicyMetadata(result, 'dmarcNonExistentSubdomainPolicy');
+}
+
+/**
+ * Whether the found DMARC record publishes a `pct=` tag at all — `undefined`
+ * when no record was found.
+ *
+ * PRESENCE, not value, and deliberately so. RFC 9989 Appendix A.6 ("Removal of
+ * the `pct` Tag") removes it from the specification outright, so `pct=100` is as
+ * out-of-spec as `pct=50`; a value-bearing signal would invite a consumer to
+ * treat 100 as fine. It is also a boolean rather than the raw token because
+ * top-level `metadata` does NOT pass through `sanitizeFindingMetadata`
+ * (see {@link CheckResult.metadata}), and the raw token is subject-controlled.
+ *
+ * The SEPARATE question "is enforcement partial?" is already answered by
+ * {@link findingsIndicatePartialEnforcement}, which the classifier sets for any
+ * `pct<100`. This signal does not duplicate it.
+ */
+export function dmarcPctTagPresent(result: CheckResult): boolean | undefined {
+	const value = result.metadata?.dmarcPctPresent;
+	return typeof value === 'boolean' ? value : undefined;
+}
+
+/**
+ * Whether the DMARC record was found ABOVE the queried name by the RFC 9989
+ * §4.10 tree walk — i.e. the queried name is itself a subdomain inheriting its
+ * Organizational Domain's record.
+ *
+ * A consumer reasoning about subdomain posture MUST gate on this: on an
+ * inherited result the queried name is the subdomain, so `sp=` describes the
+ * name in hand rather than a gap beneath it.
+ */
+export function dmarcRecordInheritedFromParent(result: CheckResult): boolean | undefined {
+	const value = result.metadata?.dmarcInheritedFromParent;
+	return typeof value === 'boolean' ? value : undefined;
+}
+
 export function buildCheckResult(
 	category: CheckCategory,
 	findings: Finding[],
