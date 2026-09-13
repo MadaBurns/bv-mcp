@@ -5,8 +5,10 @@
 // internally by prioritize_portfolio_leads), but is hidden from and rejected on the
 // PUBLIC /mcp surface. These tests pin all four halves of that contract:
 //   1. isInternalOnlyTool / INTERNAL_ONLY_TOOLS membership.
-//   2. handleToolsList (public) hides internal tools → 79 tools; scan_domain still present.
-//   3. TOOLS registry still contains it (length 84) — internal callability.
+//   2. handleToolsList (public) hides internal tools → TOOLS.length − INTERNAL_ONLY_TOOLS.size;
+//      scan_domain still present. (Derived, not a literal — the tool-surface total has ONE
+//      tripwire, test/audits/tool-count-ssot.audit.test.ts.)
+//   3. TOOLS registry still contains it — internal callability.
 //   4. Public executeMcpRequest tools/call → unknown-tool result (NOT 403, NOT
 //      executed), for both an unauthenticated and an authenticated owner caller.
 //   5. handleToolsCall (the internal-path entrypoint) still executes it.
@@ -69,12 +71,11 @@ describe('INTERNAL_ONLY_TOOLS membership', () => {
 });
 
 describe('tool registry vs public surface', () => {
-	it('TOOLS still includes map_registrar_products (internal callability preserved) — length 84', () => {
+	it('TOOLS still includes map_registrar_products (internal callability preserved)', () => {
 		expect(TOOLS.some((t) => t.name === 'map_registrar_products')).toBe(true);
-		expect(TOOLS.length).toBe(84);
 	});
 
-	it('handleToolsList hides every internal-only tool and returns the public count (79)', () => {
+	it('handleToolsList hides every internal-only tool and returns the derived public count', () => {
 		const { tools } = handleToolsList();
 		const names = tools.map((t) => t.name);
 		expect(names).not.toContain('map_registrar_products');
@@ -82,8 +83,14 @@ describe('tool registry vs public surface', () => {
 		expect(names).not.toContain('query_signins');
 		expect(names).toContain('scan_domain');
 		expect(tools.length).toBe(PUBLIC_TOOL_COUNT);
-		// Literal tripwire: 84 registered − 5 internal-only.
-		expect(tools.length).toBe(79);
+		// The literal that belongs to THIS spec is the size of the internal-only set —
+		// the subject under test — not the tool-surface total. A hardcoded registered
+		// count here was a SECOND tool-count tripwire competing with the one SSOT
+		// (`test/audits/tool-count-ssot.audit.test.ts`), which is the arrangement
+		// that file's docblock exists to forbid. The hiding is still proven: the
+		// public list is strictly smaller than the registry by exactly this many.
+		expect(INTERNAL_ONLY_TOOLS.size).toBe(5);
+		expect(TOOLS.length - tools.length).toBe(INTERNAL_ONLY_TOOLS.size);
 	});
 });
 

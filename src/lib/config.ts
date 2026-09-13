@@ -345,6 +345,8 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	resolve_spf_chain: 15,
 	discover_subdomains: 0,
 	map_compliance: 5,
+	// Same cost class as map_compliance: one cached scan, then local evaluation.
+	sge_quickscan: 5,
 	// map_registrar_products is INTERNAL_ONLY_TOOLS — not public-callable, so it carries
 	// no public free-tier quota (tool-quota-coverage audit exempts internal-only tools).
 	prioritize_portfolio_leads: 0,
@@ -827,6 +829,7 @@ export const INTENTIONALLY_PARTNER_FLAT_TOOLS: ReadonlySet<string> = new Set<str
 	'analyze_drift',
 	'validate_fix',
 	'map_compliance',
+	'sge_quickscan',
 	'prioritize_portfolio_leads',
 	'simulate_attack_paths',
 	'map_registrar_products', // INTERNAL_ONLY_TOOLS — not public-callable; flat limit is moot but recorded

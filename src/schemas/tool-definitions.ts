@@ -519,6 +519,13 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	sge_quickscan: {
+		description:
+			'Answer, for ONE domain, whether it meets the New Zealand Secure Government Email (SGE) requirements agencies must satisfy by October 2026. Reports all six SGE controls — DMARC p=reject, SPF -all, DKIM, SMTP transport TLS, MTA-STS enforce, TLS-RPT — each as satisfied, not satisfied, or NOT MEASURED, with the structured evidence behind every verdict. SMTP transport TLS cannot be observed from DNS, so a DNS-only result tops out at INDETERMINATE, which is not a pass. Distinct from map_compliance, which maps findings to NIST/PCI/SOC 2/CIS.',
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
 	map_registrar_products: {
 		description:
 			'Map a domain’s observed security gaps to a corporate brand-protection registrar’s commercial products (registry lock, managed DMARC, digital certificates, DNSSEC management) for sales/upsell prioritization. Reads the scan plus RDAP lock posture. Distinct from map_compliance, which maps findings to compliance frameworks (NIST/PCI/SOC2/CIS).',
@@ -867,6 +874,10 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 	'resolve_spf_chain',
 	'discover_subdomains',
 	'map_compliance',
+	// Custom shape: an SgeEvaluation (six three-state controls + evidence), not a
+	// CheckResult. Publishing the CheckResult outputSchema would advertise a
+	// `score`/`passed` this tool deliberately never computes.
+	'sge_quickscan',
 	'map_registrar_products',
 	'prioritize_portfolio_leads',
 	'simulate_attack_paths',
