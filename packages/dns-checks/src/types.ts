@@ -181,7 +181,20 @@ export interface CheckResult {
 	 * published-but-weak control as unconfigured. Score-neutral: nothing in the scoring path reads it.
 	 */
 	recordPresent?: boolean;
-	/** Optional structured metadata attached to the result by the check wrapper (not the core package). */
+	/**
+	 * Optional structured metadata on the result. Written from two places:
+	 * the check WRAPPER (e.g. certificate enrichment, read at
+	 * `handlers/tool-formatters.ts` as `metadata.certificate`), and CORE checks
+	 * for policy-strength signals — `spfAll` and `mtaStsMode`, read via the
+	 * `spfAllQualifier()` / `mtaStsPolicyMode()` helpers in `scoring/model`.
+	 * (This said "not the core package" until 2026-09-13, when the core began
+	 * writing it.)
+	 *
+	 * Score-neutral: nothing in the scoring path reads it. Note it does NOT pass
+	 * through `sanitizeFindingMetadata`, which `createFinding` applies to FINDING
+	 * metadata — so only check-controlled values belong here, never raw
+	 * subject-supplied text.
+	 */
 	metadata?: Record<string, unknown>;
 }
 
