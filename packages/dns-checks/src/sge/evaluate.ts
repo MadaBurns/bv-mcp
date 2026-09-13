@@ -65,13 +65,22 @@
 
 import type { CheckCategory, CheckResult } from '../types';
 import {
+	dmarcNonExistentSubdomainPolicy,
+	dmarcPctTagPresent,
+	dmarcPolicyTag,
+	dmarcRecordInheritedFromParent,
+	dmarcSubdomainPolicy,
 	findingsIndicateMissingControl,
 	findingsIndicatePartialEnforcement,
 	isCheckMeasured,
 	mtaStsPolicyMode,
 	spfAllQualifier,
+	type DmarcPolicyValue,
 } from '../scoring';
 import {
+	SGE_ADVISORY_IDS,
+	type SgeAdvisory,
+	type SgeAdvisoryId,
 	SGE_CONTROL_IDS,
 	type SgeControlEvaluation,
 	type SgeControlId,
@@ -131,10 +140,20 @@ function measurementGate(control: SgeControlId, result: CheckResult | undefined)
  * `p=quarantine` and for any `pct<100`, and for nothing else. Both are read
  * through the canonical exported predicate, never by inspecting metadata here.
  *
- * `sp=none` deliberately does NOT make this control fail: it is a real
- * subdomain weakness and the scan reports it, but the SGE control named here is
- * the organisational domain's own `p=`. Reading the sp= finding as a failure is
- * how a p=reject domain produced a FALSE NEGATIVE under the old oracle.
+ * `sp=none` deliberately does NOT make this control fail — SETTLED by operator
+ * ruling on bv-mcp #991, not an open question. RFC 9989 §4.7, verbatim: `sp`
+ * "applies only to existing subdomains of the message's Organizational Domain in
+ * the DNS hierarchy and not to the Organizational Domain itself", so it cannot
+ * weaken the apex policy this control is about. SGE's requirement in full is
+ * "DMARC needs to be set to p=reject on all email enabled domains" and never
+ * mentions `sp`; NZISM 15 point 2 point 36 point C point 02, the only binding NZ
+ * control naming DMARC, is likewise silent on it. Reading the sp= finding as a
+ * failure is how a p=reject domain produced a FALSE NEGATIVE under the old
+ * oracle.
+ *
+ * The exposure is REAL and is reported — as a separate `subdomain_policy_gap`
+ * advisory on the evaluation, never by touching this control's status. See
+ * {@link subdomainPolicyGap}.
  */
 function evaluateDmarc(result: CheckResult | undefined): SgeControlEvaluation {
 	const gated = measurementGate('dmarc_reject', result);
@@ -327,6 +346,152 @@ function byCategory(results: readonly CheckResult[], category: CheckCategory): C
 	return results.find((r) => r.category === category);
 }
 
+/**
+ * Enforcement strength, for comparing `sp=` against `p=`.
+ *
+ * Only the three real policy values are ranked. `not-specified` and `invalid`
+ * are deliberately absent: neither is a weaker policy, and giving either a rank
+ * would let an unstated or unparseable tag compare as though it had been
+ * measured as permissive. Callers must handle them before comparing.
+ */
+const POLICY_STRENGTH: Partial<Record<DmarcPolicyValue, number>> = { none: 0, quarantine: 1, reject: 2 };
+
+/**
+ * The SGE subdomain exposure — the distinct finding the #991 ruling requires.
+ *
+ * THE RULING, verbatim: "`p=reject; sp=none` SATISFIES the SGE `dmarc_reject`
+ * control. The real exposure is reported as a SEPARATE, distinct finding —
+ * never by downgrading `dmarc_reject`." This function is that separate finding,
+ * and it is the ONLY place the sp= signal is read.
+ *
+ * WHEN IT FIRES. The apex is enforcing AND `sp=` is published strictly weaker
+ * than `p=`. Each conjunct earns its place:
+ *
+ * - APEX ENFORCING. A `p=none` domain already fails `dmarc_reject` outright;
+ *   adding a subdomain advisory would report one absence of enforcement twice.
+ * - `sp=` PUBLISHED. An ABSENT `sp=` is not a gap — RFC 9989 §4.7 has
+ *   subdomains apply `p=` in that case — so `not-specified` never fires. This
+ *   is why the signal keeps `not-specified` as a member distinct from `none`;
+ *   collapsing them would manufacture this advisory on every well-configured
+ *   apex-only record in existence.
+ * - STRICTLY WEAKER. `sp=reject` under `p=quarantine` is stronger, not a gap.
+ *
+ * WHY np= DOES NOT RETRACT IT. RFC 9989 §4.7, verbatim: "If the 'np' tag is
+ * absent, the policy specified by the 'sp' tag (if the 'sp' tag is present) or
+ * the policy specified by the 'p' tag (if the 'sp' tag is not present) MUST be
+ * applied for non-existent subdomains." So `np=reject` closes the NON-EXISTENT
+ * half and nothing else; EXISTING subdomains stay on `sp=`. The evidence records
+ * which half is mitigated rather than letting a partial mitigation silence the
+ * whole advisory — which is also what the scorer does, downgrading its finding
+ * to `low` under `np` while never withdrawing it.
+ *
+ * WHY IT IS NOT SGE'S FULL SUB-DOMAIN CONTROL. SGE explicitly refuses `sp` as
+ * the mechanism ("This requirement remains even if the root level domain has
+ * SP=reject set within its DMARC record") and demands an explicit `_dmarc`
+ * record on EVERY sub-domain. Verifying THAT needs subdomain enumeration, which
+ * `evaluateSgeCompliance` has no input for. This advisory is therefore a
+ * strictly narrower, fully-measurable statement about the apex record alone —
+ * the enumeration control is filed separately, not approximated here.
+ */
+function subdomainPolicyGap(dmarc: CheckResult | undefined): SgeAdvisory | undefined {
+	if (!dmarc || !isCheckMeasured(dmarc.checkStatus)) return undefined;
+
+	// On an inherited record the queried name IS the subdomain, so `sp=` describes
+	// the name in hand rather than a gap beneath it.
+	if (dmarcRecordInheritedFromParent(dmarc) !== false) return undefined;
+
+	const policy = dmarcPolicyTag(dmarc);
+	const sp = dmarcSubdomainPolicy(dmarc);
+	if (policy === undefined || sp === undefined) return undefined;
+
+	const apexStrength = POLICY_STRENGTH[policy];
+	const spStrength = POLICY_STRENGTH[sp];
+	// `not-specified` / `invalid` on either tag yields undefined here and stops.
+	if (apexStrength === undefined || spStrength === undefined) return undefined;
+	if (apexStrength === 0) return undefined; // p=none: a control failure, not a subdomain gap.
+	if (spStrength >= apexStrength) return undefined;
+
+	const np = dmarcNonExistentSubdomainPolicy(dmarc);
+	const npMitigates = np === 'reject' || np === 'quarantine';
+
+	return {
+		id: 'subdomain_policy_gap',
+		label: 'Subdomain DMARC policy weaker than the apex',
+		severity: 'exposure',
+		relatedControl: 'dmarc_reject',
+		summary:
+			`The apex enforces p=${policy}, but sp=${sp} applies to its existing subdomains. ` +
+			'This does NOT affect the SGE DMARC control — RFC 9989 §4.7 confines sp= to subdomains and SGE requires only ' +
+			'"DMARC needs to be set to p=reject on all email enabled domains" — but the subdomain tree is measurably unprotected. ' +
+			(npMitigates
+				? `np=${np} protects NON-EXISTENT subdomains; EXISTING subdomains remain on sp=${sp}.`
+				: 'No np= tag is published, so under the RFC 9989 §4.7 np->sp->p fallback BOTH existing and non-existent subdomains are unenforced.') +
+			' SGE does not accept sp= as the remedy in any case: it requires an explicit _dmarc record on every sub-domain.',
+		evidence: [
+			{ signal: 'dmarcPolicyTag()', value: policy },
+			{ signal: 'dmarcSubdomainPolicy()', value: sp },
+			{ signal: 'dmarcNonExistentSubdomainPolicy()', value: np },
+			{ signal: 'npMitigatesNonExistentSubdomains', value: npMitigates },
+		],
+	};
+}
+
+/**
+ * The `pct=` advisory.
+ *
+ * WHY IT LIVES HERE AND NOT AS A DMARC CHECK FINDING. Three reasons, in order
+ * of weight:
+ *
+ * 1. It is a COMPLIANCE fact, not a security one. A `pct=100` record is not
+ *    weaker than one with no `pct=` at all — receivers apply the policy to all
+ *    mail either way. What makes it reportable is that RFC 9989 Appendix A.6
+ *    ("Removal of the `pct` Tag") removed the tag from the specification and the
+ *    DIA SGE Deployment Guide lists it among tags that should not be used. Both
+ *    of those are SGE/spec-currency statements, and this module is the SGE
+ *    surface.
+ * 2. The security-relevant half is ALREADY reported by the check. The classifier
+ *    flags `pct<100` as partial enforcement, which `dmarc_reject` reads through
+ *    `findingsIndicatePartialEnforcement()` and turns into `not_satisfied`.
+ *    A new finding would duplicate that for the only case that carries risk.
+ * 3. Finding severities are SCORE-BEARING. Adding a finding to the classifier
+ *    would move every scanned domain publishing `pct=` — an operator decision
+ *    about re-grading customers, not a side effect of a compliance feature.
+ *
+ * Severity is `advisory`, never `exposure`: a removed tag is not an attack
+ * surface.
+ */
+function pctTagPresent(dmarc: CheckResult | undefined): SgeAdvisory | undefined {
+	if (!dmarc || !isCheckMeasured(dmarc.checkStatus)) return undefined;
+	if (dmarcPctTagPresent(dmarc) !== true) return undefined;
+
+	return {
+		id: 'pct_tag_present',
+		label: 'DMARC pct= tag published',
+		severity: 'advisory',
+		relatedControl: 'dmarc_reject',
+		summary:
+			'The DMARC record publishes a pct= tag. RFC 9989 Appendix A.6 ("Removal of the pct Tag") removes it from the ' +
+			'specification, and the DIA SGE Deployment Guide lists it among tags that should not be used — including at ' +
+			'pct=100, where it is redundant. Remove the tag. (A pct below 100 is a separate and more serious matter: it is ' +
+			'partial enforcement, and the DMARC control reports it as NOT SATISFIED on its own.)',
+		evidence: [{ signal: 'dmarcPctTagPresent()', value: true }],
+	};
+}
+
+/**
+ * All advisories, in `SGE_ADVISORY_IDS` order.
+ *
+ * Ordering is part of the contract for the same reason `SGE_CONTROL_IDS` is: a
+ * consumer renders this as a list, and a reshuffle would silently reorder it.
+ */
+function evaluateAdvisories(dmarc: CheckResult | undefined): SgeAdvisory[] {
+	const byId: Partial<Record<SgeAdvisoryId, SgeAdvisory | undefined>> = {
+		subdomain_policy_gap: subdomainPolicyGap(dmarc),
+		pct_tag_present: pctTagPresent(dmarc),
+	};
+	return SGE_ADVISORY_IDS.map((id) => byId[id]).filter((a): a is SgeAdvisory => a !== undefined);
+}
+
 function verdictFrom(controls: readonly SgeControlEvaluation[]): SgeVerdict {
 	if (controls.some((c) => c.status === 'not_satisfied')) return 'non_compliant';
 	if (controls.some((c) => c.status === 'not_measured')) return 'indeterminate';
@@ -360,9 +525,13 @@ export function evaluateSgeCompliance(domain: string, results: readonly CheckRes
 
 	return {
 		domain,
+		// Computed from the CONTROLS ALONE. Advisories are orthogonal by design: the
+		// #991 ruling is that the subdomain exposure must never reach a control status,
+		// and letting it reach the verdict would be the same downgrade one level up.
 		verdict: verdictFrom(controls),
 		mailTransport: transport,
 		controls,
+		advisories: evaluateAdvisories(byCategory(results, 'dmarc')),
 		counts: {
 			satisfied: controls.filter((c) => c.status === 'satisfied').length,
 			notSatisfied: controls.filter((c) => c.status === 'not_satisfied').length,

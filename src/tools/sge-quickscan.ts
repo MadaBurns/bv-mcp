@@ -47,18 +47,32 @@
  * rendered output states that in the headline caveat rather than leaving a user
  * to read five ticks as a clean bill of health.
  *
- * OPEN QUESTION, DELIBERATELY NOT SETTLED HERE
+ * THE SUBDOMAIN QUESTION — SETTLED (bv-mcp #991), no longer open
  *
- * The evaluator reports DMARC `satisfied` for `p=reject; sp=none` (health.govt.nz
- * is exactly this shape). Whether SGE should accept an unprotected subdomain
- * tree is an operator/policy judgement with real-world consequences for NZ
- * government agencies, so it is filed as an issue rather than decided in code.
- * This wrapper implements the evaluator's CURRENT behaviour and does not
- * pre-empt the decision.
+ * The evaluator reports DMARC `satisfied` for `p=reject; sp=none`
+ * (health.govt.nz is exactly this shape), and the operator has ruled that this
+ * is correct: RFC 9989 §4.7 confines `sp` to subdomains "and not to the
+ * Organizational Domain itself", and SGE's requirement is "DMARC needs to be set
+ * to p=reject on all email enabled domains" with no mention of `sp`.
+ *
+ * The exposure is nonetheless real, and this repo's own DMARC classifier calls
+ * it out at severity `high`. So the evaluator emits it as a separate
+ * `subdomain_policy_gap` ADVISORY, and this renderer gives advisories their own
+ * section on both formats. That section is not optional decoration: without it
+ * a reader would see six ticks and conclude the subdomain tree was clean while
+ * the scan's own findings said otherwise — the exact two-surfaces-disagreeing
+ * defect the advisory exists to close.
  */
 
 import { evaluateSgeCompliance } from '@blackveil/dns-checks';
-import type { SgeControlStatus, SgeEvaluation, SgeMailTransport, SgeNotMeasuredReason, SgeVerdict } from '@blackveil/dns-checks';
+import type {
+	SgeAdvisorySeverity,
+	SgeControlStatus,
+	SgeEvaluation,
+	SgeMailTransport,
+	SgeNotMeasuredReason,
+	SgeVerdict,
+} from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
 import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
@@ -168,6 +182,36 @@ const NOT_MEASURED_REASON_TEXT: Record<SgeNotMeasuredReason, string> = {
 	no_transport_probe: 'this scanner never opens an SMTP session, so transport TLS is never observed here.',
 };
 
+/**
+ * Advisory display vocabulary. A `Record` on purpose, like
+ * {@link NOT_MEASURED_REASON_TEXT}: a new severity added upstream fails the
+ * build here rather than rendering `undefined` next to a security exposure.
+ *
+ * `exposure` gets a warning glyph and `advisory` an informational one. Neither
+ * shares a glyph with a control status — an advisory is not a seventh control,
+ * and putting it in the same visual column as `❌` would make it read as a
+ * compliance failure, which is precisely the downgrade the #991 ruling forbids.
+ */
+const ADVISORY_ICON: Record<SgeAdvisorySeverity, string> = {
+	exposure: '⚠️',
+	advisory: 'ℹ️',
+};
+
+const ADVISORY_LABEL: Record<SgeAdvisorySeverity, string> = {
+	exposure: 'EXPOSURE — measured, and outside the six SGE controls (it does NOT change any control status)',
+	advisory: 'ADVISORY — a conformance note, not a measured attack surface',
+};
+
+/**
+ * The header that precedes the advisory section, and the whole reason the
+ * section exists: it states in words that the control tally above is not a
+ * clean bill of health.
+ */
+export const SGE_ADVISORY_SECTION_CAVEAT =
+	'ADDITIONAL FINDINGS OUTSIDE THE SIX CONTROLS. These do NOT change any control status and do NOT change the verdict — ' +
+	'the SGE controls are written as they are written. They are measured facts this scan found anyway, and a control tally ' +
+	'that omitted them would read as a clean bill of health it has not earned.';
+
 const MAIL_TRANSPORT_TEXT: Record<SgeMailTransport, string> = {
 	present: 'present (the domain publishes a mail exchanger)',
 	absent: 'absent (no mail exchanger, or a null MX) — the inbound-transport controls have nothing to measure',
@@ -246,6 +290,14 @@ export function formatSgeQuickscan(report: SgeQuickscanReport, format: OutputFor
 			const reason = c.notMeasuredReason ? ` — ${NOT_MEASURED_REASON_TEXT[c.notMeasuredReason]}` : '';
 			lines.push(`${STATUS_ICON_COMPACT[c.status]} ${sanitizeOutputText(c.label, 40)}: ${STATUS_LABEL[c.status]}${reason}`);
 		}
+
+		if (report.advisories.length > 0) {
+			lines.push('');
+			lines.push(SGE_ADVISORY_SECTION_CAVEAT);
+			for (const a of report.advisories) {
+				lines.push(`${ADVISORY_ICON[a.severity]} ${sanitizeOutputText(a.label, 80)}: ${sanitizeOutputText(a.summary, 600)}`);
+			}
+		}
 	} else {
 		lines.push(`# NZ Secure Government Email (SGE): ${domain}`);
 		lines.push(`**Verdict:** ${VERDICT_HEADLINE[report.verdict]}`);
@@ -265,6 +317,21 @@ export function formatSgeQuickscan(report: SgeQuickscanReport, format: OutputFor
 				lines.push(`  - Evidence: ${sanitizeOutputText(e.signal, 80)} = ${formatEvidenceValue(e.value)}`);
 			}
 			lines.push('');
+		}
+
+		if (report.advisories.length > 0) {
+			lines.push('## Additional findings');
+			lines.push(`> **${SGE_ADVISORY_SECTION_CAVEAT}**`);
+			lines.push('');
+			for (const a of report.advisories) {
+				lines.push(`${ADVISORY_ICON[a.severity]} **${sanitizeOutputText(a.label, 80)}** — ${ADVISORY_LABEL[a.severity]}`);
+				lines.push(`  - Related control: ${sanitizeOutputText(a.relatedControl, 40)} (status UNCHANGED by this advisory)`);
+				lines.push(`  - ${sanitizeOutputText(a.summary, 600)}`);
+				for (const e of a.evidence) {
+					lines.push(`  - Evidence: ${sanitizeOutputText(e.signal, 80)} = ${formatEvidenceValue(e.value)}`);
+				}
+				lines.push('');
+			}
 		}
 	}
 

@@ -20,11 +20,25 @@
  * Live DNS moves. If this fixture stops matching reality that is a fixture
  * refresh, not a code failure — but the ASSERTIONS below are about the
  * evaluator's logic given these signals, and they hold regardless.
+ *
+ * REFRESHED 2026-09-14 (1.44.0, bv-mcp #991). The `dmarc` entry gained the
+ * `metadata` block that `checkDMARC` now emits — `dmarcPolicy` / `sp` / `np` /
+ * `pct` presence / inheritance. The underlying record was RE-MEASURED before
+ * writing it, from BOTH 1.1.1.1 and 8.8.8.8, and came back byte-identical to
+ * the 2026-09-13 string above. Nothing else in the fixture changed; no score,
+ * finding, severity, `passed`, `controlPresent` or `recordPresent` moved.
+ *
+ * The metadata block is NOT hand-derived from the record by a human reading the
+ * tags. The `coherence` suite at the bottom of this file runs the REAL
+ * `checkDMARC` over that same record string and asserts the evaluator reaches
+ * the same conclusion — so if this hand-copied block ever drifts from what the
+ * check actually emits, that suite is measuring the check rather than the copy.
  */
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { evaluateSgeCompliance } from '../../sge';
-import type { CheckResult } from '../../types';
+import { checkDMARC } from '../../checks/check-dmarc';
+import type { CheckResult, DNSQueryFunction } from '../../types';
 import measured from './fixtures/health-govt-nz-2026-09-13.json';
 
 const RESULTS = measured as unknown as CheckResult[];
@@ -120,4 +134,115 @@ describe('health.govt.nz — the whole evaluation', () => {
 		expect(evaluation.verdict).toBe('compliant');
 		expect(evaluation.counts.satisfied).toBe(6);
 	});
+
+	// THE POINT OF THE WHOLE #991 CHANGE, on the real domain. A COMPLIANT verdict
+	// here is correct against the six written SGE controls AND the subdomain tree is
+	// measurably open. Before this change the second half was invisible on this
+	// surface: six ticks, verdict COMPLIANT, and no trace of the exposure that the
+	// same scan's own DMARC findings flagged at severity `high`.
+	it('is COMPLIANT and STILL reports the subdomain exposure — the two facts coexist', () => {
+		const evaluation = evaluateSgeCompliance('health.govt.nz', RESULTS, { smtpTls: 'enforced' });
+		expect(evaluation.verdict).toBe('compliant');
+
+		const gap = evaluation.advisories.find((a) => a.id === 'subdomain_policy_gap');
+		expect(gap).toBeDefined();
+		expect(gap?.severity).toBe('exposure');
+		// np= is absent on this record, so the RFC 9989 §4.7 np->sp->p chain falls
+		// through to sp=none: BOTH existing and non-existent subdomains are unenforced.
+		expect(gap?.evidence).toContainEqual({ signal: 'npMitigatesNonExistentSubdomains', value: false });
+		expect(gap?.evidence).toContainEqual({ signal: 'dmarcNonExistentSubdomainPolicy()', value: 'not-specified' });
+
+		// …and the control the ruling protects did not move.
+		expect(evaluation.controls.find((c) => c.control === 'dmarc_reject')?.status).toBe('satisfied');
+		expect(evaluation.counts).toEqual({ satisfied: 6, notSatisfied: 0, notMeasured: 0 });
+	});
+
+	it('reports the pct= tag this record publishes as an ADVISORY, not an exposure', () => {
+		const evaluation = evaluateSgeCompliance('health.govt.nz', RESULTS);
+		const pct = evaluation.advisories.find((a) => a.id === 'pct_tag_present');
+		expect(pct?.severity).toBe('advisory');
+	});
+});
+
+/**
+ * THE SCORER/EVALUATOR COHERENCE LOCK (bv-mcp #991).
+ *
+ * Two live surfaces rule on this exact record. The SCORER
+ * (`scoring/classifiers/dmarc.ts`) raises "Subdomain policy weaker than parent
+ * policy" at severity `high`. The SGE EVALUATOR reports `dmarc_reject`
+ * satisfied. Before this change those read as opposite verdicts on the same
+ * input, and the SGE output carried no trace of the subdomain exposure at all —
+ * so a reader of the SGE surface alone would have concluded the domain was
+ * clean on subdomains while our own scorer said it was not.
+ *
+ * The ruling keeps BOTH: the control stays satisfied (RFC 9989 §4.7 — `sp`
+ * does not apply to the Organizational Domain, so it cannot weaken the apex
+ * policy the control is about) and the scorer's finding stays (it is a security
+ * finding, not an SGE control verdict). Coherence is restored by making the SGE
+ * surface REPORT the exposure as its own advisory.
+ *
+ * This lock asserts the two surfaces agree in DIRECTION. The two sides have
+ * INDEPENDENT PROVENANCE by construction: the scorer side is finding PROSE
+ * produced by the classifier, the evaluator side is a structured advisory
+ * derived from `CheckResult.metadata`, which the classifier never reads and
+ * never writes. Neither can be satisfied by the other's implementation. (Prose
+ * matching is forbidden in PRODUCTION code on this path; a test asserting that
+ * production prose and production structure agree is exactly where it belongs.)
+ */
+describe('coherence: the scorer and the SGE evaluator agree in direction on sp=none', () => {
+	const SUBDOMAIN_FINDING = 'Subdomain policy weaker than parent policy';
+
+	function dmarcFromRecord(domain: string, record: string | null): Promise<CheckResult> {
+		const zone: Record<string, string[]> = record === null ? {} : { [`_dmarc.${domain}`]: [record] };
+		const dns: DNSQueryFunction = vi.fn(async (name: string) => zone[name] ?? []);
+		return checkDMARC(domain, dns);
+	}
+
+	// The record measured live on 2026-09-14 from BOTH 1.1.1.1 and 8.8.8.8, byte for
+	// byte. Positive control for that measurement: the apex `_dmarc` query returned
+	// non-empty on both resolvers while `_dmarc.www.health.govt.nz` returned empty on
+	// both, and `www.health.govt.nz` resolved A 104.20.42.43 / 172.66.155.110 — so the
+	// www subdomain exists, is unprotected, and the empty answer is a real NODATA
+	// rather than a dead probe.
+	const LIVE_RECORD = 'v=DMARC1; p=reject; sp=none; pct=100; rua=mailto:496msrauhe@rua.powerdmarc.com;';
+
+	it('both surfaces fire on the live health.govt.nz record', async () => {
+		const dmarc = await dmarcFromRecord('health.govt.nz', LIVE_RECORD);
+		const scorerFlags = dmarc.findings.some((f) => f.title === SUBDOMAIN_FINDING);
+		const evaluation = evaluateSgeCompliance('health.govt.nz', [{ category: 'mx', passed: true, score: 100, findings: [], controlPresent: true }, dmarc]);
+		const sgeFlags = evaluation.advisories.some((a) => a.id === 'subdomain_policy_gap');
+
+		expect(scorerFlags).toBe(true);
+		expect(sgeFlags).toBe(true);
+		// And the control the ruling protects is untouched.
+		expect(evaluation.controls.find((c) => c.control === 'dmarc_reject')?.status).toBe('satisfied');
+	});
+
+	// A lock that only ever asserts `true === true` proves nothing. These cases make
+	// both sides go quiet together, and the last one is the positive control for the
+	// scorer leg specifically.
+	const cases: Array<{ label: string; record: string; expected: boolean }> = [
+		{ label: 'p=reject; sp=none', record: 'v=DMARC1; p=reject; sp=none', expected: true },
+		{ label: 'p=reject; sp=quarantine', record: 'v=DMARC1; p=reject; sp=quarantine', expected: true },
+		{ label: 'p=quarantine; sp=none', record: 'v=DMARC1; p=quarantine; sp=none', expected: true },
+		{ label: 'p=reject; sp=none; np=reject', record: 'v=DMARC1; p=reject; sp=none; np=reject', expected: true },
+		{ label: 'p=reject; sp=reject', record: 'v=DMARC1; p=reject; sp=reject', expected: false },
+		{ label: 'p=reject with no sp=', record: 'v=DMARC1; p=reject', expected: false },
+	];
+
+	for (const { label, record, expected } of cases) {
+		it(`${label}: scorer finding and SGE advisory both ${expected ? 'fire' : 'stay silent'}`, async () => {
+			const dmarc = await dmarcFromRecord('example.test', record);
+			const evaluation = evaluateSgeCompliance('example.test', [{ category: 'mx', passed: true, score: 100, findings: [], controlPresent: true }, dmarc]);
+
+			// `Subdomain policy weaker than DOMAIN policy` is the quarantine-apex wording;
+			// both spellings are the same classifier branch family, so match the stem.
+			const scorerFlags = dmarc.findings.some((f) => f.title.startsWith('Subdomain policy weaker than'));
+			const sgeFlags = evaluation.advisories.some((a) => a.id === 'subdomain_policy_gap');
+
+			expect(scorerFlags).toBe(expected);
+			expect(sgeFlags).toBe(expected);
+			expect(sgeFlags).toBe(scorerFlags);
+		});
+	}
 });
