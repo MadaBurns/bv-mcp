@@ -61,7 +61,14 @@
 			}
 		],
 		"controlPresent": true,
-		"recordPresent": true
+		"recordPresent": true,
+		"metadata": {
+			"dmarcPolicy": "reject",
+			"dmarcSubdomainPolicy": "none",
+			"dmarcNonExistentSubdomainPolicy": "not-specified",
+			"dmarcPctPresent": true,
+			"dmarcInheritedFromParent": false
+		}
 	},
 	{
 		"category": "spf",

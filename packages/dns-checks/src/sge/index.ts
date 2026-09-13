@@ -7,8 +7,11 @@
  */
 
 export { evaluateSgeCompliance } from './evaluate';
-export { SGE_CONTROL_IDS } from './types';
+export { SGE_CONTROL_IDS, SGE_ADVISORY_IDS } from './types';
 export type {
+	SgeAdvisory,
+	SgeAdvisoryId,
+	SgeAdvisorySeverity,
 	SgeControlId,
 	SgeControlStatus,
 	SgeNotMeasuredReason,
