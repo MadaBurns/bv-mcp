@@ -306,7 +306,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 						name: 'Blackveil DNS',
 						version: options.serverVersion,
 						description:
-							'Open-source DNS & email security scanner — 80+ checks across 20 categories with scoring, grading, and remediation guidance',
+							'Source-available DNS & email security scanner — 80+ checks across 20 categories with scoring, grading, and remediation guidance',
 					},
 					instructions: SERVER_INSTRUCTIONS,
 				}),
