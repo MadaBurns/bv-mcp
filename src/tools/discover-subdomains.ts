@@ -127,6 +127,27 @@ const CT_SOURCE_RETRY_BACKOFF_MS = 500;
 const CT_SOURCE_MAX_BODY_BYTES = 5 * 1024 * 1024;
 
 /**
+ * Maximum bytes read from a REFUSAL body (HTTP 403) to look for the provider's
+ * own restriction code. Deliberately tiny and separate from
+ * {@link CT_SOURCE_MAX_BODY_BYTES}: the measured body is ~230 bytes of JSON, and
+ * the only thing wanted from it is a short `code`. An over-cap body fails closed
+ * to `access_denied` — a refusal we cannot read is a refusal whose reason we did
+ * not establish, never a licence to assume one.
+ */
+const CT_REFUSAL_BODY_MAX_BYTES = 4 * 1024;
+
+/**
+ * Machine-readable restriction codes a CT provider may declare in a 403 body.
+ *
+ * MEASURED ONLY — extend this when a provider's code has actually been observed,
+ * never on a guess. Anything outside this set (or any body we cannot parse
+ * inside {@link CT_REFUSAL_BODY_MAX_BYTES}) stays `access_denied`, which claims
+ * nothing about why. Measured 2026-09-14: CertSpotter returns
+ * `not_allowed_by_plan` when the queried name is one its plan will not search.
+ */
+const CT_DECLARED_RESTRICTION_CODES: ReadonlySet<string> = new Set(['not_allowed_by_plan']);
+
+/**
  * Last-known-good cache key prefix + TTL for the resilience fallback.
  *
  * A successful enumeration is written here; when EVERY live CT source fails we
@@ -1088,7 +1109,7 @@ function logCtSource(domain: string, source: string, outcome: CtSourceOutcome): 
 }
 
 /**
- * Classify a non-OK HTTP response from a CT source (#735).
+ * Classify a non-OK HTTP status from a CT source (#735, SQ-2). Pure.
  *
  * 429 is separated from the generic `http_error` because it inverts the correct
  * caller response. Every other upstream failure is worth retrying; a 429 means
@@ -1097,9 +1118,39 @@ function logCtSource(domain: string, source: string, outcome: CtSourceOutcome): 
  * once Certspotter 504s on a large estate it 429s the same caller, and the
  * lockout survived a 75-second wait — so an eager retry loop converts one slow
  * domain into a sweep-wide outage.
+ *
+ * 403 is separated for the mirror-image reason: the source was REACHED and
+ * refused the request, so "may be transient — a retry is worthwhile" is simply
+ * false. `restrictionDeclared` decides which 403 member applies, and it is the
+ * provider's own claim (a recognized code in its error body), never an inference
+ * from the status alone — see {@link CT_DECLARED_RESTRICTION_CODES}.
+ *
+ * Every other status keeps `http_error`, retry guidance included: 5xx really is
+ * the transient case, and #735's discriminating half depends on it staying so.
  */
-function httpFailureOutcome(status: number): CtSourceOutcome {
-	return status === 429 ? 'rate_limited' : 'http_error';
+function httpFailureOutcome(status: number, restrictionDeclared = false): CtSourceOutcome {
+	if (status === 429) return 'rate_limited';
+	if (status === 403) return restrictionDeclared ? 'provider_restricted' : 'access_denied';
+	return 'http_error';
+}
+
+/**
+ * {@link httpFailureOutcome} for a real response: reads a 403's body — bounded,
+ * and ONLY to test its `code` against the measured set — then classifies.
+ *
+ * Consumes or cancels the body on every path, so no caller needs to dispose of
+ * it afterwards. The parsed body never escapes this function: the upstream
+ * message (which in the measured case names the refused domain and a vendor
+ * contact address) must never reach a caller, a log line, or the cache.
+ */
+async function classifyHttpFailure(response: Response): Promise<CtSourceOutcome> {
+	if (response.status !== 403) {
+		await disposeUnreadResponseBody(response);
+		return httpFailureOutcome(response.status);
+	}
+	const body = await readJsonResponseCapped<{ code?: unknown }>(response, CT_REFUSAL_BODY_MAX_BYTES);
+	const code = typeof body?.code === 'string' ? body.code : undefined;
+	return httpFailureOutcome(403, code !== undefined && CT_DECLARED_RESTRICTION_CODES.has(code));
 }
 
 /** Fetch + parse crt.sh into normalized entries. Bounded body, no throw. */
@@ -1109,10 +1160,7 @@ async function fetchCrtShEntries(domain: string, signal: AbortSignal): Promise<S
 			signal,
 			redirect: 'manual',
 		});
-		if (!response.ok) {
-			await disposeUnreadResponseBody(response);
-			return { outcome: httpFailureOutcome(response.status), entries: [] };
-		}
+		if (!response.ok) return { outcome: await classifyHttpFailure(response), entries: [] };
 		const declaredLength = Number(response.headers.get('content-length'));
 		if (Number.isFinite(declaredLength) && declaredLength > CT_SOURCE_MAX_BODY_BYTES) {
 			await disposeUnreadResponseBody(response);
@@ -1189,8 +1237,8 @@ async function fetchCertspotterEntries(domain: string, signal: AbortSignal, opti
 
 			if (!response.ok) {
 				const retryAfterSeconds = response.status === 429 ? parseRetryAfterSeconds(response.headers.get('retry-after')) : undefined;
+				if (pagesRead === 0) return { outcome: await classifyHttpFailure(response), entries: [], retryAfterSeconds };
 				await disposeUnreadResponseBody(response);
-				if (pagesRead === 0) return { outcome: httpFailureOutcome(response.status), entries: [], retryAfterSeconds };
 				stopIncomplete();
 				break;
 			}
@@ -1623,21 +1671,25 @@ function certstreamAttempt(outcome: CtSourceOutcome, contributed: boolean): CtSo
  * Ordered by what the caller must DO, not by severity: a 429 is the one outcome
  * whose correct response is the opposite of the usual one (back off — retrying
  * extends a lockout on a quota shared with the next domain), so it must never be
- * masked by a subsequent generic error. Timeout ranks next because it is
+ * masked by a subsequent generic error. The two 403 refusals rank next: each is
+ * terminal for this request as issued and the more specific fact about it, so a
+ * later timeout or 5xx must not hide them. Timeout follows because it is
  * deterministic per-domain (#735) and tells the caller not to retry identically.
  *
  * Deliberately a `Record` over the union and NOT an array + `indexOf`: `indexOf`
  * returns -1 for a member missing from the list, which compares as the MOST
- * actionable rank, so adding a seventh `CtSourceOutcome` would silently make it
+ * actionable rank, so adding a `CtSourceOutcome` member would silently make it
  * beat a real 429. As a `Record` the same omission is a compile error.
  */
 const CERTSTREAM_OUTCOME_PRECEDENCE: Record<CtSourceOutcome, number> = {
 	rate_limited: 0,
-	timeout: 1,
-	http_error: 2,
-	error: 3,
-	empty: 4,
-	ok: 5,
+	provider_restricted: 1,
+	access_denied: 2,
+	timeout: 3,
+	http_error: 4,
+	error: 5,
+	empty: 6,
+	ok: 7,
 };
 
 function worstCertstreamOutcome(a: CtSourceOutcome, b: CtSourceOutcome): CtSourceOutcome {
@@ -1659,10 +1711,7 @@ async function queryCertstreamEndpoint<T>(
 			...(certstreamAuthToken ? { headers: { Authorization: `Bearer ${certstreamAuthToken}` } } : {}),
 			signal: composed.signal,
 		});
-		if (!response.ok) {
-			await disposeUnreadResponseBody(response);
-			return { data: null, outcome: httpFailureOutcome(response.status) };
-		}
+		if (!response.ok) return { data: null, outcome: await classifyHttpFailure(response) };
 		const data = await readJsonResponseCapped<T>(response, CT_SOURCE_MAX_BODY_BYTES);
 		return data === null ? { data: null, outcome: 'error' } : { data, outcome: 'ok' };
 	} catch {
@@ -1909,6 +1958,8 @@ function ctFailureGuidance(coverage: CtCoverage | undefined): string {
 	const perSource = coverage?.perSource ?? [];
 	const timedOut = perSource.filter((s) => s.outcome === 'timeout').map((s) => s.source);
 	const limited = perSource.filter((s) => s.outcome === 'rate_limited').map((s) => s.source);
+	const restricted = perSource.filter((s) => s.outcome === 'provider_restricted').map((s) => s.source);
+	const denied = perSource.filter((s) => s.outcome === 'access_denied').map((s) => s.source);
 	const errored = perSource.filter((s) => s.outcome === 'http_error' || s.outcome === 'error').map((s) => s.source);
 	const never = coverage?.notConsulted ?? [];
 
@@ -1938,6 +1989,23 @@ function ctFailureGuidance(coverage: CtCoverage | undefined): string {
 	if (limited.length > 0) {
 		parts.push(
 			`${limited.join(', ')} rate-limited this caller (HTTP 429) — the unauthenticated quota is spent. Back off; retrying extends the lockout and the quota is shared with the next domain scanned.`,
+		);
+	}
+	if (restricted.length > 0) {
+		// The provider's OWN claim about its own policy, stated without repeating a
+		// word of its body. What it does not say matters as much: this response is
+		// evidence about THIS request only, so the guidance must not go on to rule
+		// out a different credential, source, or related name — none was measured.
+		parts.push(
+			`${restricted.join(', ')} REFUSED this query (HTTP 403) and declared the reason itself: the query is not permitted for this caller's access plan. An identical retry is refused identically — this is not a transient error. Whether another access level or CT source can cover this name was not measured here.`,
+		);
+	}
+	if (denied.length > 0) {
+		// A 403 with nothing recognizable in it. The refusal is a measurement; the
+		// reason is not, so naming one would invent a provider claim. Saying it
+		// "may be transient — a retry is worthwhile" would invent the opposite.
+		parts.push(
+			`${denied.join(', ')} refused this request (HTTP 403) without declaring a reason, so WHY was not established — do not read it as a restriction on this name. The same request is refused the same way; only a changed request could differ.`,
 		);
 	}
 	if (errored.length > 0) {

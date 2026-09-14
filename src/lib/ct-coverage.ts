@@ -52,8 +52,26 @@
  * other domain scanned next. Measured 2026-08-21 — after Certspotter 504s on a
  * large estate it 429s the same unauthenticated caller, and the lockout outlived
  * a 75-second wait.
+ *
+ * `provider_restricted` and `access_denied` split HTTP 403 out for the same
+ * reason. Measured 2026-09-14 — CertSpotter answered a query for a public-suffix
+ * apex with HTTP 403 in 0.65s and the machine-readable code
+ * `not_allowed_by_plan`: a categorical refusal of that query, identical on every
+ * retry, forever. Folded into `http_error` it earned "may be transient — a retry
+ * is worthwhile", the opposite of the truth. The two new members are told apart
+ * by EVIDENCE, not by remediation (neither is retryable as issued):
+ *
+ *  - `provider_restricted` — the provider DECLARED the restriction itself, as a
+ *    recognized machine-readable code in its own error body.
+ *  - `access_denied`       — a 403 whose body declares nothing recognizable
+ *    (absent, malformed, over-cap, or an unknown code). The refusal is observed;
+ *    the REASON is not established, so no restriction may be claimed from it.
+ *
+ * Neither carries upstream text: only the code is read, under a byte cap, and it
+ * is never re-emitted to a caller.
  */
-export type CtSourceOutcome = 'ok' | 'empty' | 'http_error' | 'rate_limited' | 'timeout' | 'error';
+export type CtSourceOutcome =
+	'ok' | 'empty' | 'http_error' | 'rate_limited' | 'provider_restricted' | 'access_denied' | 'timeout' | 'error';
 
 /**
  * How much of CT history a source can see AT ALL, independent of whether we
