@@ -13,6 +13,10 @@
  * received the IDENTICAL complete NS set from the platform:
  *
  *   Hostinger      debugpoint.com / sweetberry.gr        ns1, ns2.dns-parking.com
+ *   Wix            lviusa.com / interclinicapuertovaras.cl
+ *                                                        ns0, ns1.wixdns.net
+ *   Namecheap      seedr.cc / sketchucation.com          pdns1, pdns2.registrar-servers.com
+ *   (PremiumDNS)
  *   IONOS          calcionapoli24.it / aicateringequipments.ie
  *                                                        ns1045.ui-dns.{biz,com,de,org}
  *   Cloud DNS      americanbanker.com / edmontonjournal.com
@@ -55,6 +59,8 @@ afterEach(() => restore());
 // ---------------------------------------------------------------------------
 
 const HOSTINGER_NS = ['ns1.dns-parking.com', 'ns2.dns-parking.com'];
+const WIX_NS = ['ns0.wixdns.net', 'ns1.wixdns.net'];
+const NAMECHEAP_PREMIUM_NS = ['pdns1.registrar-servers.com', 'pdns2.registrar-servers.com'];
 const IONOS_NS = ['ns1045.ui-dns.biz', 'ns1045.ui-dns.com', 'ns1045.ui-dns.de', 'ns1045.ui-dns.org'];
 const CLOUD_DNS_B = [
 	'ns-cloud-b1.googledomains.com',
@@ -96,6 +102,14 @@ type Case = { platform: string; seed: string; candidate: string; seedNs: string[
 
 const IDENTICAL_SET_CASES: Case[] = [
 	{ platform: 'Hostinger', seed: 'debugpoint.com', candidate: 'sweetberry.gr', seedNs: HOSTINGER_NS, candidateNs: HOSTINGER_NS },
+	{ platform: 'Wix', seed: 'lviusa.com', candidate: 'interclinicapuertovaras.cl', seedNs: WIX_NS, candidateNs: WIX_NS },
+	{
+		platform: 'Namecheap PremiumDNS',
+		seed: 'seedr.cc',
+		candidate: 'sketchucation.com',
+		seedNs: NAMECHEAP_PREMIUM_NS,
+		candidateNs: NAMECHEAP_PREMIUM_NS,
+	},
 	{ platform: 'IONOS', seed: 'calcionapoli24.it', candidate: 'aicateringequipments.ie', seedNs: IONOS_NS, candidateNs: IONOS_NS },
 	{
 		platform: 'Google Cloud DNS',
