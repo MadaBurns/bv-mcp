@@ -19,6 +19,10 @@
 		"type": "git",
 		"url": "git+https://github.com/MadaBurns/bv-mcp.git"
 	},
+	"funding": {
+		"type": "ko-fi",
+		"url": "https://ko-fi.com/madaburns"
+	},
 	"mcpName": "com.blackveilsecurity/dns",
 	"bugs": {
 		"url": "https://github.com/MadaBurns/bv-mcp/issues"
