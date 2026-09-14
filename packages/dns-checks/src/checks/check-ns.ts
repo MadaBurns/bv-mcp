@@ -327,7 +327,27 @@ export async function checkNS(
 				// A dangling wildcard alias: the zone answers for arbitrary names even
 				// though nothing resolves. Free — this answer is already in hand.
 				wildcardFamily = 'cname';
-			} else if (aAnswers.length === 0) {
+			} else {
+				// #1008 — reached when the A answer classified as NEITHER family, which
+				// covers two shapes, not one. The obvious shape is an empty answer. The
+				// other is an answer that is non-empty but carries nothing this check
+				// reads: a DNAME chain whose records are neither A(1) nor CNAME(5).
+				//
+				// This branch used to require `aAnswers.length === 0`, so the DNAME shape
+				// fell through BOTH the classification and the AAAA probe — `wildcardFamily`
+				// stayed null and the AAAA-only wildcard behind such a zone was never
+				// looked for. Nothing in the result said so, which is what made it silent.
+				//
+				// It is narrow because RFC 6672 has the responder synthesize a CNAME
+				// alongside the DNAME, and that synthesized record hits the branch above.
+				// The gap is the responder that omits it for a client presumed to
+				// understand DNAME. Gating on "nothing classified" instead of "nothing
+				// came back" collapses both shapes into one condition and matches
+				// `probeNameserverReachable`, which has always fallen through to AAAA on
+				// any non-matching A answer rather than on an empty one.
+				//
+				// Subrequest cost is unchanged for every zone that was already probed, and
+				// +1 only for the DNAME shape that previously got no probe at all.
 				const aaaaResp = await rawQueryDNS(probeFqdn, 'AAAA', false, { timeout });
 				if ((aaaaResp.Answer ?? []).some((ans) => ans.type === DOH_TYPE_AAAA)) {
 					wildcardFamily = 'aaaa';

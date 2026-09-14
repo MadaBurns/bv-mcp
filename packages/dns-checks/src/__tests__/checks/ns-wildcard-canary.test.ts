@@ -12,7 +12,11 @@
  * that answers for every name.
  *
  * The fix reads RAW answers (`rawQueryDNS`, which the Worker always supplies) and spends
- * the AAAA query ONLY when the A answer came back completely empty. These tests pin both
+ * the AAAA query ONLY when the A answer classified as neither family. ⚠️ That condition was
+ * originally "the A answer came back completely EMPTY", which is not the same thing and is
+ * the defect #1008 corrects: an answer holding only records this check does not read — a
+ * DNAME chain — is non-empty AND unclassified, so it fell through both the classification
+ * and the probe. These tests pin both
  * halves: the DETECTION (every family reaches the same one finding) and the BUDGET (the
  * v6 query is never issued on a zone whose A canary answered — `ns` is deliberately not a
  * bounded-parallelism candidate, and SCAN_DNS_CONCURRENCY is zero-sum across the 19 scan
@@ -123,6 +127,38 @@ describe('wildcard canary record families (#942)', () => {
 		expect(finding!.severity).toBe('medium');
 		expect(finding!.metadata?.wildcardFamily).toBe('aaaa');
 		// SERIAL and CONDITIONAL: AAAA only after an empty A, never a parallel pair.
+		expect(canaryQueries(queries)).toEqual(['A', 'AAAA']);
+	});
+
+	it('detects an AAAA-only wildcard behind a DNAME chain, where the A answer is non-empty but unclassified (#1008)', async () => {
+		const { queryDNS, rawQueryDNS, queries } = resolvers({
+			probe: {
+				// A DNAME (type 39) alone: non-empty, but neither A(1) nor CNAME(5). RFC 6672
+				// has the responder synthesize a CNAME beside it, and that synthesized record
+				// would hit the CNAME branch — this is the responder that omits it for a
+				// client presumed to understand DNAME. The old `aAnswers.length === 0` gate
+				// therefore skipped the AAAA probe on the one shape it could not classify.
+				A: { Status: RCODE_NOERROR, Answer: [{ type: 39, data: 'alias.example.net.' }] },
+				AAAA: { Status: RCODE_NOERROR, Answer: [{ type: 28, data: '2001:db8::dead' }] },
+			},
+		});
+
+		const result = await checkNS(DOMAIN, queryDNS, { rawQueryDNS });
+		const finding = wildcardFinding(result.findings);
+		expect(finding, 'an AAAA-only wildcard must be found even when the A answer was non-empty').toBeDefined();
+		expect(finding!.severity).toBe('medium');
+		expect(finding!.metadata?.wildcardFamily).toBe('aaaa');
+		expect(canaryQueries(queries)).toEqual(['A', 'AAAA']);
+	});
+
+	it('still reports no wildcard when an unclassified A answer has no AAAA behind it (#1008)', async () => {
+		// The other half of the same gate: falling through must not manufacture a finding.
+		const { queryDNS, rawQueryDNS, queries } = resolvers({
+			probe: { A: { Status: RCODE_NOERROR, Answer: [{ type: 39, data: 'alias.example.net.' }] } },
+		});
+
+		const result = await checkNS(DOMAIN, queryDNS, { rawQueryDNS });
+		expect(wildcardFinding(result.findings)).toBeUndefined();
 		expect(canaryQueries(queries)).toEqual(['A', 'AAAA']);
 	});
 
