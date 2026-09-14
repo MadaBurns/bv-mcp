@@ -40,6 +40,10 @@
 		"url": "git+https://github.com/MadaBurns/bv-mcp.git",
 		"directory": "packages/dns-checks"
 	},
+	"funding": {
+		"type": "ko-fi",
+		"url": "https://ko-fi.com/madaburns"
+	},
 	"homepage": "https://blackveilsecurity.com/dns",
 	"bugs": "https://github.com/MadaBurns/bv-mcp/issues",
 	"dependencies": {
