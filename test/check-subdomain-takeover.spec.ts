@@ -120,7 +120,7 @@ describe('checkSubdomainTakeover', () => {
 		expect(result.findings[0].severity).toBe('info');
 	});
 
-	it('flags high severity when CNAME resolution fails (throws error)', async () => {
+	it('abstains instead of scoring when the CNAME TARGET query throws (#983)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
 
@@ -144,11 +144,62 @@ describe('checkSubdomainTakeover', () => {
 		});
 
 		const result = await run('example.com');
-		const high = result.findings.find((f) => f.severity === 'high');
-		expect(high).toBeDefined();
-		expect(high!.title).toContain('CNAME resolution failed');
-		expect(high!.detail).toContain('manual verification');
-		expect(high!.metadata?.verificationStatus).toBe('potential');
+
+		// The probe never reached the origin, so nothing may be scored on it: the finding is
+		// an `info` disclosure carrying `inconclusive` + `errorKind`, never a scored `high`
+		// and never `missingControl` (#638 law). The title is stable because
+		// `parseTakeoverTarget` in brand-audit recovers the FQDN from it.
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+		const failed = result.findings.find((f) => f.title.includes('CNAME resolution failed'));
+		expect(failed).toBeDefined();
+		expect(failed!.severity).toBe('info');
+		expect(failed!.metadata?.inconclusive).toBe(true);
+		expect(failed!.metadata?.errorKind).toBe('dns_error');
+		expect(failed!.metadata?.missingControl).toBeUndefined();
+		expect(failed!.detail).toContain('NOT assessed');
+
+		// Other subdomains DID answer, so the clean verdict still stands — narrowed to the
+		// subdomains actually swept, with the unassessed one disclosed.
+		const clean = result.findings.find((f) => f.title.includes('No dangling CNAME'));
+		expect(clean).toBeDefined();
+		expect(clean!.metadata?.subdomainsUnmeasured).toContain('portal');
+
+		// The category is not penalized for a measurement that never completed.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.score).toBe(100);
+		expect(result.passed).toBe(true);
+	});
+
+	it('excludes the category when EVERY probe fails, target-resolution throws included (#983)', async () => {
+		// The issue's scenario: one subdomain's CNAME answers but its target query throws,
+		// while every other sweep query throws too. Before the fix the answered CNAME leg made
+		// `answeredCount` non-zero, so the scored `high` stood alone as the whole verdict for a
+		// sweep in which nothing was actually assessed.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=CNAME') || url.includes('type=5')) {
+				if (url.includes('www.example.com')) {
+					return Promise.resolve(cnameResponse('www.example.com', 'd123.cloudfront.net'));
+				}
+				return Promise.reject(new Error('resolver unreachable'));
+			}
+			return Promise.reject(new Error('resolver unreachable'));
+		});
+
+		const result = await run('example.com');
+
+		// `checkStatus: 'error'` is what makes the scoring engine EXCLUDE the category and
+		// arms scan_domain's transient retry; `partial: true` keeps the non-answer out of the
+		// 5-minute cache.
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+		const notAssessed = result.findings.find((f) => f.title.includes('not assessed'));
+		expect(notAssessed).toBeDefined();
+		expect(notAssessed!.metadata?.inconclusive).toBe(true);
+		expect(notAssessed!.metadata?.missingControl).toBeUndefined();
+		expect(notAssessed!.metadata?.subdomainsUnmeasured).toContain('www');
 	});
 
 	it('ignores non-third-party CNAME records (no finding)', async () => {
