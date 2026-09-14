@@ -63,12 +63,18 @@ export async function checkSubdomainTakeover(
 		findings.push(...outcome.findings);
 	}
 
-	const unmeasured = outcomes.filter((o) => o.cnameQueryFailed).map((o) => o.subdomain);
+	// A subdomain counts as measured only when its takeover question was actually answered.
+	// Two ways it is not: the CNAME query threw (#948), or a third-party CNAME target's own
+	// A query threw (#983) — the latter leaves us knowing the subdomain points at a
+	// takeover-prone service and nothing about whether that service still holds the name.
+	const unmeasured = outcomes.filter((o) => o.cnameQueryFailed || o.targetResolutionFailed).map((o) => o.subdomain);
 	const answeredCount = outcomes.length - unmeasured.length;
 
 	// Any non-`info` finding is real, DNS-derived evidence of a dangling record. It stands
 	// on its own regardless of how many sibling probes failed — positive evidence is
-	// monotone, so an unmeasured neighbour cannot invalidate it.
+	// monotone, so an unmeasured neighbour cannot invalidate it. The one finding that used
+	// to reach this guard without being evidence (the thrown CNAME-target path) is now an
+	// `info` abstention, so the comment is true as written (#983).
 	if (findings.some((f) => f.severity !== 'info')) {
 		return buildCheckResult('subdomain_takeover', findings);
 	}
@@ -90,7 +96,7 @@ export async function checkSubdomainTakeover(
 				'subdomain_takeover',
 				'Subdomain takeover not assessed — every subdomain probe failed',
 				'info',
-				`No CNAME lookup in the subdomain sweep for ${domain} completed: all ${outcomes.length} queries failed, so no subdomain was examined. This is not evidence that the domain is free of dangling CNAMEs — the category is excluded from scoring rather than passed. Re-run the check once name resolution is working.`,
+				`No subdomain in the sweep for ${domain} was examined: all ${outcomes.length} probes failed, either because the CNAME lookup threw or because a third-party CNAME target could not be resolved. This is not evidence that the domain is free of dangling CNAMEs — the category is excluded from scoring rather than passed. Re-run the check once name resolution is working.`,
 				{
 					// No `verificationStatus`: the TakeoverVerificationStatus union describes
 					// outcomes of a completed probe, and nothing was probed. Matches the Worker
@@ -106,8 +112,11 @@ export async function checkSubdomainTakeover(
 	}
 
 	// Some probes answered: the clean verdict stands, narrowed to the subdomains that were
-	// actually swept so the scope of the claim stays auditable.
-	if (findings.length === 0) {
+	// actually swept so the scope of the claim stays auditable. An inconclusive finding does
+	// not suppress it — a subdomain whose target could not be resolved (#983) is disclosed
+	// through `subdomainsUnmeasured` exactly like a subdomain whose CNAME query threw, and
+	// without this the result would carry only an "it failed" note and no verdict at all.
+	if (findings.every((f) => (f.metadata as { inconclusive?: boolean } | undefined)?.inconclusive === true)) {
 		const clean = getNoTakeoverFinding(domain);
 		findings.push(
 			unmeasured.length > 0
