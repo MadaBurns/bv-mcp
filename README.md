@@ -12,6 +12,7 @@ Source-available DNS & email security scanner for Claude, Cursor, VS Code, and M
 [![MCP](https://img.shields.io/badge/MCP-2025--06--18-blue)](https://modelcontextprotocol.io/)
 [![Cloudflare Workers](https://img.shields.io/badge/Cloudflare%20Workers-F38020?logo=cloudflare&logoColor=white)](https://workers.cloudflare.com/)
 [![TypeScript](https://img.shields.io/badge/TypeScript-6.0-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![Support on Ko-fi](https://img.shields.io/badge/Ko--fi-Support%20us-FF5E5B?logo=ko-fi&logoColor=white)](https://ko-fi.com/madaburns)
 
 ![DNS Security](https://dns-mcp.blackveilsecurity.com/badge/blackveilsecurity.com)
 
@@ -342,6 +343,7 @@ These demonstrate core functionality — paste any of them into Claude with the 
 - **Bug reports & feature requests:** [GitHub Issues](https://github.com/MadaBurns/bv-mcp/issues)
 - **Security vulnerabilities:** [security@blackveilsecurity.com](mailto:security@blackveilsecurity.com) (see [SECURITY.md](SECURITY.md))
 - **General questions:** [GitHub Discussions](https://github.com/MadaBurns/bv-mcp/discussions)
+- **Support the project:** [Ko-fi](https://ko-fi.com/madaburns) — the hosted scanner is free to use; tips help keep it that way
 
 ---
 
