@@ -454,3 +454,184 @@ describe('discover_subdomains — rendered text always states the sample caveat'
 		});
 	});
 });
+
+// SQ-2 — an explicitly DECLARED provider restriction is not a transient error.
+//
+// Measured 2026-09-14 (diagnosis SQ-1, raw capture in that ticket's verification
+// evidence): CertSpotter answered
+// `…/v1/issuances?domain=<public-suffix apex>&include_subdomains=true…` with
+// HTTP 403 in 0.65s carrying a machine-readable `code` of `not_allowed_by_plan`
+// — a categorical refusal of that query, identical on every retry, forever.
+// `httpFailureOutcome` mapped every non-429 status to `http_error`, so the
+// total-failure banner told the caller "certspotter returned an upstream error,
+// which may be transient — a retry is worthwhile" about a permanent refusal.
+// Same defect class as #735 (429) and #738 (never-consulted): the outcome union
+// could not carry the truth, so the prose stated a falsehood.
+//
+// Only the provider's machine-readable `code` is read, under a byte cap, and
+// NOTHING from the upstream body reaches the output — so the fixtures below
+// carry a placeholder `message`, never the upstream prose or its contact route.
+describe('discover_subdomains — a declared provider restriction is not a retryable error (SQ-2)', () => {
+	beforeEach(() => {
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+	});
+	afterEach(() => vi.restoreAllMocks());
+
+	/** The observed refusal body, with the upstream prose replaced. */
+	const declaredRestriction = { code: 'not_allowed_by_plan', message: '<upstream prose not reproduced>' };
+
+	interface CtResponders {
+		crtsh: () => Response;
+		certspotter: () => Response;
+	}
+
+	async function run(responders: CtResponders) {
+		const { discoverSubdomains, formatSubdomainDiscovery } = await import('../src/tools/discover-subdomains');
+		globalThis.fetch = vi.fn(async (url: string | URL | Request) => {
+			const s = typeof url === 'string' ? url : url instanceof URL ? url.toString() : (url as Request).url;
+			if (s.includes('crt.sh')) return responders.crtsh();
+			if (s.includes('certspotter.com')) return responders.certspotter();
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+		const result = await discoverSubdomains('example.com');
+		return { result, output: formatSubdomainDiscovery(result, 'full') };
+	}
+
+	function outcomeOf(result: { coverage?: { perSource: Array<{ source: string; outcome: string }> } }, source: string): string | undefined {
+		return result.coverage?.perSource.find((s) => s.source === source)?.outcome;
+	}
+
+	it('records the declared refusal as provider_restricted, not as a generic http_error', async () => {
+		const { result } = await run({
+			crtsh: () => Response.json({}, { status: 503 }),
+			certspotter: () => Response.json(declaredRestriction, { status: 403 }),
+		});
+
+		// The defect: a permanent refusal wore the label of a transient outage…
+		expect(outcomeOf(result, 'certspotter')).toBe('provider_restricted');
+		// …while a real 5xx in the SAME run must keep that label.
+		expect(outcomeOf(result, 'crtsh')).toBe('http_error');
+	});
+
+	it('never turns a refusal into a successful zero', async () => {
+		const { result } = await run({
+			crtsh: () => Response.json(declaredRestriction, { status: 403 }),
+			certspotter: () => Response.json(declaredRestriction, { status: 403 }),
+		});
+
+		expect(result.sourceUnavailable).toBe(true);
+		expect(result.totalSubdomains).toBe(0);
+		expect(result.issues.some((i) => i.type === 'unconfirmed_zero')).toBe(true);
+		expect(result.countBasis).toBe('floor');
+	});
+
+	it('does not invite a retry when every source declared a restriction', async () => {
+		const { output } = await run({
+			crtsh: () => Response.json(declaredRestriction, { status: 403 }),
+			certspotter: () => Response.json(declaredRestriction, { status: 403 }),
+		});
+
+		expect(output).toMatch(/REFUSED this query \(HTTP 403\)/);
+		expect(output).toMatch(/not a transient error/i);
+		expect(output).not.toMatch(/retry is worthwhile|retry shortly/i);
+	});
+
+	it('keeps the 5xx retry advice for the source that merely errored, alongside the refusal', async () => {
+		const { output } = await run({
+			crtsh: () => Response.json({}, { status: 503 }),
+			certspotter: () => Response.json(declaredRestriction, { status: 403 }),
+		});
+
+		// Two failures, two different remediations — each attached to the source it
+		// was measured on, never one verdict smeared over both.
+		expect(output).toMatch(/crtsh returned an upstream error[^.]*retry is worthwhile/i);
+		expect(output).toMatch(/certspotter REFUSED this query/);
+	});
+
+	it('states no claim the provider did not make about other access levels or children', async () => {
+		const { output } = await run({
+			crtsh: () => Response.json({}, { status: 503 }),
+			certspotter: () => Response.json(declaredRestriction, { status: 403 }),
+		});
+
+		// A paid token / another source MIGHT cover this domain — nothing here
+		// measured that, so the guidance must not rule it in or out.
+		expect(output).toMatch(/not measured/i);
+		expect(output).not.toMatch(/token cannot|will not help either|no source can/i);
+	});
+
+	it('never renders the upstream refusal body, its wording, or its contact route', async () => {
+		const { result, output } = await run({
+			crtsh: () => Response.json({}, { status: 503 }),
+			certspotter: () =>
+				Response.json({ code: 'not_allowed_by_plan', message: 'please contact refusals@example.invalid for options' }, { status: 403 }),
+		});
+
+		expect(output).not.toContain('refusals@example.invalid');
+		expect(output).not.toMatch(/contact/i);
+		// Not stashed in the structured payload either — the code included.
+		expect(JSON.stringify(result)).not.toContain('refusals@example.invalid');
+		expect(JSON.stringify(result)).not.toContain('not_allowed_by_plan');
+	});
+
+	// A 403 that does not DECLARE a restriction proves only that the request was
+	// refused. Reading a plan/eligibility restriction into it would manufacture a
+	// provider claim nobody made — the mirror image of the defect above.
+	const unprovenRefusals: Array<{ label: string; respond: () => Response }> = [
+		{ label: 'no body at all', respond: () => new Response(null, { status: 403 }) },
+		{ label: 'a non-JSON body', respond: () => new Response('Forbidden', { status: 403, headers: { 'content-type': 'text/plain' } }) },
+		{ label: 'an unrecognized code', respond: () => Response.json({ code: 'forbidden' }, { status: 403 }) },
+		{ label: 'a non-string code', respond: () => Response.json({ code: { plan: false } }, { status: 403 }) },
+		{
+			label: 'a declared code buried in an over-cap body',
+			respond: () => Response.json({ code: 'not_allowed_by_plan', pad: 'x'.repeat(8 * 1024) }, { status: 403 }),
+		},
+	];
+
+	for (const mode of unprovenRefusals) {
+		it(`records a 403 with ${mode.label} as access_denied, never as a proven restriction`, async () => {
+			const { result, output } = await run({ crtsh: () => Response.json({}, { status: 503 }), certspotter: mode.respond });
+
+			expect(outcomeOf(result, 'certspotter')).toBe('access_denied');
+			expect(output).toMatch(/certspotter refused this request \(HTTP 403\) without declaring a reason/);
+			// No invented reason, and no promise that retrying the same request helps.
+			expect(output).not.toMatch(/access plan/);
+			expect(output).not.toMatch(/certspotter[^.]*retry is worthwhile/i);
+		});
+	}
+
+	it('still offers a retry when every source returned a 5xx', async () => {
+		const { result, output } = await run({
+			crtsh: () => Response.json({}, { status: 503 }),
+			certspotter: () => Response.json({}, { status: 502 }),
+		});
+
+		expect(outcomeOf(result, 'crtsh')).toBe('http_error');
+		expect(outcomeOf(result, 'certspotter')).toBe('http_error');
+		expect(output).toMatch(/retry is worthwhile/i);
+	});
+
+	it('still records a 429 as rate_limited and tells the caller to back off', async () => {
+		const { result, output } = await run({
+			crtsh: () => Response.json({ code: 'rate_limited' }, { status: 429 }),
+			certspotter: () => Response.json({ code: 'rate_limited' }, { status: 429 }),
+		});
+
+		expect(outcomeOf(result, 'certspotter')).toBe('rate_limited');
+		expect(output).toMatch(/back off/i);
+		expect(output).not.toMatch(/provider_restricted|access_denied/);
+	});
+
+	it('leaves a genuine empty 200 an empty answer, not a refusal', async () => {
+		const { result } = await run({
+			crtsh: () => Response.json([], { status: 200 }),
+			certspotter: () => Response.json([], { status: 200 }),
+		});
+
+		expect(outcomeOf(result, 'crtsh')).toBe('empty');
+		expect(outcomeOf(result, 'certspotter')).toBe('empty');
+		expect(result.sourceUnavailable).toBeFalsy();
+		// Still never a verified absence (#575).
+		expect(result.issues.some((i) => i.type === 'unconfirmed_zero')).toBe(true);
+	});
+});
