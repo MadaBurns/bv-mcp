@@ -331,8 +331,18 @@ describe('checkRdapLookup WHOIS fallback — #931 (.dk / failed-lookup honesty)'
 		const redacted = await check('example.de', { whoisBinding: makeWhoisBinding({ registrar: null, source: 'redacted' }) });
 
 		expect(noServer.partial).toBeUndefined();
-		expect(opaque.partial).toBeUndefined();
 		expect(redacted.partial).toBeUndefined();
+
+		// ⚠️ REVERSED in #982. This line asserted `undefined` — that the OPAQUE `whois_error`
+		// was safe to cache. It is not: the shim emits a bare `error` with no `failureReason`
+		// for a past deadline, a non-2xx from the shim, an over-cap body, and any throw
+		// including the budget AbortError. Every one of those is transient, and nothing
+		// deterministic reaches the opaque token — a shim that knows why it failed sends a
+		// concrete one, which is what the `noServer` case above exercises. The old assertion
+		// also put this file in direct contradiction with `src/lib/registrar-retry.ts`, which
+		// has always classified the opaque `whois_error` as retryable. Two surfaces, opposite
+		// verdicts on one token; this is the one that was wrong.
+		expect(opaque.partial).toBe(true);
 	});
 
 	// #943 — the RDAP side of the same hazard. The registry entry caches every
