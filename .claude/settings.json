@@ -1,4 +1,12 @@
 {
+  "extraKnownMarketplaces": {
+    "eigenwise-toolshed": {
+      "source": {
+        "source": "github",
+        "repo": "Eigenwise/eigenwise-toolshed"
+      }
+    }
+  },
   "hooks": {
     "PostToolUse": [
       {
