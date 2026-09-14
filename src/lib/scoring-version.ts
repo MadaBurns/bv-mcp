@@ -598,8 +598,32 @@
  *   `trustLevel: critical` `localhost` email-receiving provider row, and notes the condition
  *   as a `low` `loopback_mx` signal. No weight, tier, grade band, `SEVERITY_PENALTIES` entry,
  *   missing-control rule or profile-detection rule changed.
+ * - 1.30.0 — `check_subdomain_takeover` abstains when a CNAME TARGET query throws, instead of
+ *   scoring it (#983, dns-checks 1.45.0). The inner catch in `subdomain-takeover-analysis.ts`
+ *   emitted a `high` "CNAME resolution failed: <fqdn> → <cname>" whose only evidence token is
+ *   `cname_target_resolution_error` — a thrown query, the same transport-failure class #948
+ *   already abstains for one level up. Knowing a subdomain points at a takeover-prone service
+ *   is not knowing whether that service still holds the name; the target's own resolution is
+ *   the sole discriminator between a dangling record and a healthy one, and it is exactly
+ *   what failed. Because `subdomain_takeover` is in `PROFILE_CRITICAL_CATEGORIES` for all six
+ *   profiles, a resolver blip on one A query took a critical category down on evidence that
+ *   was never collected.
+ *   SCORE-BEARING, UPWARD ONLY, and only on scans that hit the thrown-target path. The
+ *   finding drops `high` → `info` (−25 → 0) and gains `inconclusive: true` +
+ *   `errorKind: 'dns_error'`; it deliberately does NOT gain `missingControl`, because nothing
+ *   was measured (#638 law). Its TITLE and evidence token are unchanged, so
+ *   `parseTakeoverTarget` in `src/lib/brand-audit-registrar-deepscan.ts` still recovers the
+ *   FQDN — that consumer skips `info` findings, which is the intended new behaviour: an
+ *   unresolvable probe does not belong in a dangling-DNS inventory.
+ *   The subdomain is also folded into the #948 unmeasured set, so a sweep in which EVERY
+ *   probe failed this way now routes to the `checkStatus: 'error'` abstention (category
+ *   excluded from scoring, `partial: true`, not cached) rather than returning a confident
+ *   verdict. When other probes did answer, the clean "No dangling CNAME records found"
+ *   verdict still stands and carries `subdomainsUnmeasured`, so the scope of the claim stays
+ *   auditable. No weight, tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule
+ *   or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.29.0';
+export const SCORING_MODEL_VERSION = '1.30.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

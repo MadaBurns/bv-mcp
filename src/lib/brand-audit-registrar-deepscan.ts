@@ -147,7 +147,10 @@ async function callStructured<T>(internalCall: InternalCallFn, tool: string, dom
  * recovered from the finding's own text. All three dangling-CNAME producers in
  * `packages/dns-checks/src/checks/subdomain-takeover-analysis.ts` emit one of:
  *   - title  `Dangling CNAME[ (operational drift)]: <fqdn> → <cname>`
- *   - title  `CNAME resolution failed: <fqdn> → <cname>`
+ *   - title  `CNAME resolution failed: <fqdn> → <cname>` (⚠️ since dns-checks 1.45.0 this one
+ *     is emitted as `info` + `inconclusive`, so `extractDangling` skips it by severity — a
+ *     target whose own lookup threw was never assessed and does not belong in a dangling-DNS
+ *     inventory. The title is kept parseable in case a future caller wants the FQDN.)
  *   - detail `Subdomain <fqdn> points to <cname>, which …`
  *   - detail `Could not resolve CNAME target <cname> for <fqdn>.`
  * `metadata.subdomain` / `metadata.cnameTarget` are preferred if a future

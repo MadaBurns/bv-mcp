@@ -399,6 +399,15 @@ export interface SubdomainScanOutcome {
 	 * outage produce the clean "No dangling CNAME records found" verdict at score 100.
 	 */
 	cnameQueryFailed: boolean;
+	/**
+	 * True when a third-party CNAME target's A query threw, i.e. the takeover question for
+	 * this subdomain was never answered (#983). The CNAME leg answered, so
+	 * `cnameQueryFailed` is false and the older #948 counter would have called the subdomain
+	 * measured — but knowing a subdomain points at a takeover-prone service says nothing
+	 * about whether that service still holds the name. The caller folds this into the same
+	 * unmeasured set so a sweep where nothing resolved abstains instead of scoring.
+	 */
+	targetResolutionFailed: boolean;
 }
 
 /**
@@ -419,6 +428,7 @@ export async function scanSubdomainForTakeoverInternal(
 	// short label that we append to the apex (legacy KNOWN_SUBDOMAINS path).
 	const fqdn = subdomain.includes('.') ? subdomain.replace(/^\*\./, '') : `${subdomain}.${domain}`;
 	const findings: Finding[] = [];
+	let targetResolutionFailed = false;
 
 	try {
 		const cnameRecords = await queryDNS(fqdn, 'CNAME', { timeout });
@@ -473,13 +483,35 @@ export async function scanSubdomainForTakeoverInternal(
 					);
 				}
 			} catch {
+				// #983 — the TARGET query threw, so this subdomain was not assessed.
+				//
+				// This used to emit a scored `high` reading "a potential takeover signal".
+				// It is not: a thrown query is the transport-failure class #948 already
+				// abstains for, and `subdomain_takeover` is in PROFILE_CRITICAL_CATEGORIES
+				// for all six profiles, so a resolver blip on one A query took a critical
+				// category down on evidence that was never collected. Knowing the CNAME
+				// points at a takeover-prone service is not knowing whether the service
+				// still holds the name — the only thing that distinguishes a dangling
+				// record from a healthy one is the target's own resolution, which is
+				// exactly what failed.
+				//
+				// The finding is kept as a visible `info` disclosure (an operator still
+				// wants to see which target could not be checked) carrying `inconclusive`
+				// + `errorKind`, and deliberately NOT `missingControl` — nothing was
+				// measured, so nothing can be claimed absent (#638 law). The TITLE is
+				// unchanged on purpose: `parseTakeoverTarget` in
+				// `src/lib/brand-audit-registrar-deepscan.ts` recovers the FQDN from it.
+				// That consumer skips `info` findings, which is the correct new behaviour —
+				// an unresolvable probe does not belong in a dangling-DNS inventory.
+				targetResolutionFailed = true;
 				findings.push(
 					createTakeoverFinding(
 						`CNAME resolution failed: ${fqdn} → ${cname}`,
-						'high',
-						`Could not resolve CNAME target ${cname} for ${fqdn}. This is a potential takeover signal and requires manual verification.`,
+						'info',
+						`Could not resolve CNAME target ${cname} for ${fqdn}: the lookup failed rather than returning an answer. This subdomain was NOT assessed for takeover — it is neither confirmed dangling nor confirmed healthy, and it is excluded from the verdict rather than penalized. Re-run the check once name resolution is working.`,
 						'potential',
 						['cname_target_resolution_error'],
+						{ inconclusive: true, errorKind: 'dns_error' },
 					),
 				);
 			}
@@ -489,10 +521,10 @@ export async function scanSubdomainForTakeoverInternal(
 		// pushed (a failed lookup is not evidence of a dangling record), but the caller
 		// is told, so it can abstain rather than issue a clean verdict for a sweep that
 		// never happened (#948).
-		return { findings, cnameQueryFailed: true };
+		return { findings, cnameQueryFailed: true, targetResolutionFailed };
 	}
 
-	return { findings, cnameQueryFailed: false };
+	return { findings, cnameQueryFailed: false, targetResolutionFailed };
 }
 
 /**
