@@ -157,15 +157,21 @@ interface RdapDomainResponse {
  * Fetch and parse the IANA RDAP bootstrap file. Caches the result for
  * BOOTSTRAP_TTL_MS on success, BOOTSTRAP_FAILURE_TTL_MS on failure (so we don't
  * hammer IANA during an outage but recover quickly once it returns).
- * Returns a TLD → RDAP server URL map.
+ * Returns a TLD → RDAP server URL map alongside whether that map is AUTHORITATIVE.
+ *
+ * #982 — an empty map alone cannot distinguish "IANA says this TLD has no RDAP server" from
+ * "we never read IANA". Both used to yield `{}`, and the caller then asserted the former
+ * about the registry, on no measurement, for an hour. `failed: true` marks every path where
+ * the registry was not read: a cached recent failure, a non-2xx, an unparseable or over-cap
+ * body, and any throw (including the fetch timeout).
  */
-async function fetchBootstrap(): Promise<Record<string, string>> {
+async function fetchBootstrap(): Promise<{ map: Record<string, string>; failed: boolean }> {
 	const now = Date.now();
 	if (bootstrapState && now - bootstrapState.fetchedAt < BOOTSTRAP_TTL_MS) {
-		return bootstrapState.value;
+		return { map: bootstrapState.value, failed: false };
 	}
 	if (bootstrapFailure && now - bootstrapFailure.failedAt < BOOTSTRAP_FAILURE_TTL_MS) {
-		return {};
+		return { map: {}, failed: true };
 	}
 	try {
 		const resp = await fetch(IANA_BOOTSTRAP_URL, {
@@ -176,13 +182,13 @@ async function fetchBootstrap(): Promise<Record<string, string>> {
 		if (!resp.ok) {
 			await disposeUnreadResponseBody(resp);
 			bootstrapFailure = { failedAt: Date.now() };
-			return {};
+			return { map: {}, failed: true };
 		}
 
 		const data = await readJsonResponseCapped<{ services?: [string[], string[]][] }>(resp, RDAP_BOOTSTRAP_MAX_BODY_BYTES);
 		if (data === null) {
 			bootstrapFailure = { failedAt: Date.now() };
-			return {};
+			return { map: {}, failed: true };
 		}
 		const map: Record<string, string> = {};
 		if (Array.isArray(data.services)) {
@@ -196,26 +202,32 @@ async function fetchBootstrap(): Promise<Record<string, string>> {
 		}
 		bootstrapState = { value: map, fetchedAt: Date.now() };
 		bootstrapFailure = null;
-		return map;
+		return { map, failed: false };
 	} catch {
 		bootstrapFailure = { failedAt: Date.now() };
-		return {};
+		return { map: {}, failed: true };
 	}
 }
 
 /**
  * Resolve the RDAP server URL for a given TLD.
  * Tries IANA bootstrap first, then hardcoded fallbacks.
+ *
+ * `bootstrapUnavailable` is true only when the answer is a non-answer: the bootstrap registry
+ * could not be read AND no hardcoded fallback covered the TLD. With a fallback hit, or with a
+ * registry we did read, the `null` is a real "this TLD has no RDAP server" (#982).
  */
-async function resolveRdapServer(tld: string): Promise<string | null> {
+async function resolveRdapServer(tld: string): Promise<{ url: string | null; bootstrapUnavailable: boolean }> {
 	const normalizedTld = tld.toLowerCase();
 
 	// Try bootstrap
 	const bootstrap = await fetchBootstrap();
-	if (bootstrap[normalizedTld]) return bootstrap[normalizedTld];
+	const fromBootstrap = bootstrap.map[normalizedTld];
+	if (fromBootstrap) return { url: fromBootstrap, bootstrapUnavailable: false };
 
 	// Fallback to hardcoded map
-	return FALLBACK_RDAP_SERVERS[normalizedTld] ?? null;
+	const fallback = FALLBACK_RDAP_SERVERS[normalizedTld] ?? null;
+	return { url: fallback, bootstrapUnavailable: bootstrap.failed && fallback === null };
 }
 
 /** Extract the full name from a vCard array for a given role. */
@@ -661,10 +673,24 @@ interface RegistrarOutcome {
  * TTL 3600s) does not pin a flake for an hour as if it were a deterministic
  * answer (#931 review, widened in #943).
  *
- * Deterministic reasons keep today's caching: the WHOIS set
- * (`whois_no_whois_server`, `whois_invalid_domain`, `whois_unrecognised_response`,
- * and the opaque `whois_error`) and every non-retryable RDAP HTTP status
- * (`rdap_http_404` is a real "no such registration", not a flake).
+ * Deterministic reasons keep today's caching: the concrete WHOIS set
+ * (`whois_no_whois_server`, `whois_invalid_domain`, `whois_unrecognised_response`) and every
+ * RDAP 4xx (`rdap_http_404` is a real "no such registration", not a flake).
+ *
+ * Two reasons moved INTO this set in #982:
+ *
+ * - **Every RDAP 5xx**, not just 503/504. The retry loop honours 429/503/504, but a 500, a
+ *   502, or the Cloudflare 52x/530 family a .co registry returns is an origin error — pure
+ *   infrastructure, and never a statement about the domain. `isTransientRdapHttpReason`
+ *   parses the status out of the token under a strict anchored pattern, so this is still an
+ *   exact numeric decision and not a `rdap_http_` prefix match.
+ * - **The opaque `whois_error`.** The shim emits it with NO `failureReason` for four
+ *   conditions, every one of them transient: a deadline already past, a non-2xx from the
+ *   shim, an over-cap body, and any throw including the budget AbortError. Nothing
+ *   deterministic reaches it — a shim that knows why it failed sends a concrete token
+ *   instead. This also resolves a direct contradiction: `src/lib/registrar-retry.ts` has
+ *   always classified the opaque `whois_error` as retryable, so the two surfaces returned
+ *   opposite verdicts on one token.
  *
  * Three notes for whoever is tempted to tidy a token back out:
  *
@@ -680,24 +706,45 @@ interface RegistrarOutcome {
  *    `buildWhoisFallbackFinding()` only writes `registrarFailureReason` when one
  *    is present. So an RDAP-side reason reaches this set ONLY when WHOIS also
  *    failed to answer — a WHOIS-rescued result stays cacheable.
- * 3. The `rdap_http_*` members are derived from `RDAP_RETRYABLE_HTTP_STATUSES`
- *    (the same 429/503/504 set the internal retry loop honours) — deliberately
- *    an exact list, never a `rdap_http_` prefix match.
+ * 3. `rdap_bootstrap_error` is about the IANA registry, never about the TLD. It is emitted
+ *    only when the bootstrap file could not be read AND no hardcoded fallback covered the
+ *    TLD — i.e. when "no RDAP server for this TLD" would be a claim we never measured.
  */
 const TRANSIENT_FAILURE_REASONS: ReadonlySet<string> = new Set([
 	'whois_timeout',
 	'whois_connect_error',
+	'whois_error',
 	'rdap_fetch_error',
+	'rdap_bootstrap_error',
 	'caller_aborted',
-	...[...RDAP_RETRYABLE_HTTP_STATUSES].map((status) => `rdap_http_${status}`),
 ]);
+
+/** Matches exactly `rdap_http_<three digits>`; nothing else may reach the status test. */
+const RDAP_HTTP_REASON_PATTERN = /^rdap_http_(\d{3})$/;
+
+/**
+ * True for an RDAP HTTP status that describes the SERVER's condition rather than the domain's:
+ * 429 (rate limited) and the whole 5xx range. 4xx stays deterministic — a 404 is a real "no
+ * such registration" and a 400/403 is a real refusal, both of which are answers.
+ */
+function isTransientRdapHttpReason(reason: string): boolean {
+	const match = RDAP_HTTP_REASON_PATTERN.exec(reason);
+	if (!match) return false;
+	const status = Number(match[1]);
+	return status === 429 || status >= 500;
+}
+
+/** True when a failure reason describes a condition that may resolve on its own. */
+function isTransientFailureReason(reason: string): boolean {
+	return TRANSIENT_FAILURE_REASONS.has(reason) || isTransientRdapHttpReason(reason);
+}
 
 /** Build the CheckResult, marking it uncacheable when the registrar lookup failed transiently. */
 function finishRdapResult(findings: ReturnType<typeof createFinding>[]): CheckResult {
 	const result = buildCheckResult(CATEGORY, findings) as CheckResult;
 	const transient = findings.some((f) => {
 		const reason = f.metadata?.registrarFailureReason;
-		return typeof reason === 'string' && TRANSIENT_FAILURE_REASONS.has(reason);
+		return typeof reason === 'string' && isTransientFailureReason(reason);
 	});
 	if (transient) result.partial = true;
 	return result;
@@ -846,28 +893,44 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 	const tld = labels[labels.length - 1];
 
 	// Resolve RDAP server
-	const rdapServerUrl = await resolveRdapServer(tld);
+	const { url: rdapServerUrl, bootstrapUnavailable } = await resolveRdapServer(tld);
 	if (!rdapServerUrl) {
-		// Deterministic: TLD has no RDAP server. Fetch WHOIS FIRST so the primary
-		// finding can present WHOIS-sourced registration details instead of a bare
-		// "unavailable" when WHOIS answered. reconcileWithWhois handles provenance.
+		// Two different conditions land here and only one of them is an answer (#982).
+		// With the IANA bootstrap registry read, "no RDAP server for this TLD" is
+		// deterministic and stays cacheable. With the registry UNREAD and no hardcoded
+		// fallback for the TLD, we measured nothing about the TLD at all — so the finding
+		// says the lookup failed, and `rdap_bootstrap_error` marks the result uncacheable
+		// rather than pinning a network flake for an hour as a claim about a registry.
+		// Fetch WHOIS FIRST either way so the primary finding can present WHOIS-sourced
+		// registration details instead of a bare "unavailable" when WHOIS answered.
 		const whois = await fetchWhoisRegistrar(domain, options.whoisBinding, callerSignal, deadlineMs);
 		const hasData = whoisHasRegistrationData(whois);
 		findings.push(
 			createFinding(
 				CATEGORY,
-				'No RDAP server found',
+				bootstrapUnavailable ? 'RDAP lookup failed' : 'No RDAP server found',
 				'info',
-				hasData
-					? `No RDAP server found for TLD ".${tld}"; registration details sourced from WHOIS instead.`
-					: `No RDAP server found for TLD ".${tld}". RDAP data unavailable for this domain.`,
+				bootstrapUnavailable
+					? hasData
+						? `Could not determine an RDAP server for TLD ".${tld}": the IANA bootstrap registry could not be read, so this is not a finding that the TLD has no RDAP server. Registration details sourced from WHOIS instead.`
+						: `Could not determine an RDAP server for TLD ".${tld}": the IANA bootstrap registry could not be read. This is not a finding that the TLD has no RDAP server — the lookup did not complete.`
+					: hasData
+						? `No RDAP server found for TLD ".${tld}"; registration details sourced from WHOIS instead.`
+						: `No RDAP server found for TLD ".${tld}". RDAP data unavailable for this domain.`,
 				{
 					domain,
 					tld,
+					...(bootstrapUnavailable ? { bootstrapUnavailable: true } : {}),
 				},
 			),
 		);
-		findings.push(buildWhoisFallbackFinding(domain, whois, { source: 'unknown' }));
+		findings.push(
+			buildWhoisFallbackFinding(
+				domain,
+				whois,
+				bootstrapUnavailable ? { source: 'lookup_failed', failureReason: 'rdap_bootstrap_error' } : { source: 'unknown' },
+			),
+		);
 		return finishRdapResult(findings);
 	}
 
@@ -950,7 +1013,18 @@ export async function checkRdapLookup(domain: string, options: RdapCheckOptions 
 		// failure. So pass 'unknown' as the RDAP-side outcome (NOT lookup_failed); WHOIS
 		// can still elevate to deterministic answer or 'whois_error'.
 		const reconciled = reconcileWithWhois({ source: 'unknown' }, whois);
-		const outcome: RegistrarOutcome = reconciled.source === 'lookup_failed' ? { source: 'redacted' } : reconciled;
+		// #982 — `redacted` is a DETERMINISTIC verdict ("the registry withholds registrar
+		// attribution by policy"), and the detail line says exactly that. Rewriting every
+		// `lookup_failed` to it turned a WHOIS timeout or an opaque shim error into a policy
+		// statement that was never measured, dropped the `failureReason` so the caching
+		// chokepoint could not see the flake, and made #935's own `whois_timeout` token inert
+		// on this branch. Only a WHOIS failure that is itself deterministic — the registry
+		// answered and had nothing to attribute — supports the redaction reading.
+		const outcome: RegistrarOutcome =
+			reconciled.source === 'lookup_failed' &&
+			!(typeof reconciled.failureReason === 'string' && isTransientFailureReason(reconciled.failureReason))
+				? { source: 'redacted' }
+				: reconciled;
 		registrarSource = outcome.source;
 		registrarFailureReason = outcome.failureReason;
 		if (whois?.registrar) registrarName = whois.registrar;
