@@ -8,6 +8,11 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **The OAuth rate limiter no longer 429s a caller whose window expired in flight (#985).** `consumeOAuthRateLimit` aligns its window on the caller's clock, but the coordinator judges it: `handleReserveBudget` refuses outright when `expiresAt <= now`. A request computing its window a few milliseconds before a 60-second boundary therefore arrived with a window that had already ended, and the refusal reached the endpoint as `exceeded: true` with no `unavailable` — a 429 telling a caller who had spent NOTHING that it had made too many requests. Reproduced against a principal on its first request. This is a live defect on every OAuth endpoint behind the limiter, and it is also the second flake mode behind the `test/oauth/token.spec.ts` failures: the assertion that failed on CI sat inside a loop that already used a unique address, so per-test bucket isolation could never have fixed it. The limiter now makes ONE bounded retry with the window recomputed from the current clock, so the reservation is charged to the window the request actually landed in. The retry is not a way around the limit — a caller inside one live window still gets exactly `limit` admissions, which is pinned by its own test. No limit, window length, key or cache changed.
+
+
 ## [3.80.0] - 2026-09-15
 
 Scoring model **1.31.0** (from 1.29.0), `@blackveil/dns-checks` **1.46.0** (from 1.44.0, `PARITY_CORPUS_VERSION` in lockstep) — bv-web-prod re-vendor required (it pins 1.36.0 today). No category weights, grade bands, tiers, `SEVERITY_PENALTIES` entries, missing-control rules or profile-detection rules change in this block.
