@@ -116,7 +116,16 @@ function main(): void {
 	writeFileSync(join(distDir, 'BUILD_INFO.json'), `${JSON.stringify(buildInfo, null, 2)}\n`, 'utf8');
 	writeFileSync(join(distDir, 'SCORING_CONTRACT.json'), contractJson, 'utf8');
 
-	console.log(
+	// STDERR, never stdout. This runs as a `prepack` lifecycle script, so anything it
+	// writes to stdout is interleaved with the output of the command that invoked it —
+	// and `npm pack --json`, which the dns-checks release workflow parses with `jq` to
+	// recover the tarball filename, emits ITS payload on the same stream. A friendly
+	// stamp line on stdout therefore lands in front of the JSON and the parse dies with
+	// `Invalid numeric literal`, taking the release with it. That is not hypothetical:
+	// it is why the first use of that workflow since 1.0.0 failed at the pack step while
+	// every gate before it passed. Progress messages are diagnostics; the caller's
+	// machine-readable output belongs to the caller.
+	console.error(
 		`${verdict.message}\nStamped dist/BUILD_INFO.json and dist/SCORING_CONTRACT.json ` +
 			`(contract sha256=${scoringContractSha256}).`,
 	);

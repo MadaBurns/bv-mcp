@@ -37,8 +37,21 @@ jobs:
 
       - name: Pack immutable artifact and checksum
         id: pack
+        env:
+          VERSION: ${{ inputs.version }}
         run: |
-          TARBALL="$(npm pack --workspace=packages/dns-checks --json | jq -r '.[0].filename')"
+          # The filename is derived, not parsed. `npm pack --json` writes its payload to
+          # the SAME stdout the package's own prepack lifecycle script writes to, so any
+          # progress line from that script lands in front of the JSON and `jq` dies with
+          # `Invalid numeric literal` — which is exactly how the first use of this
+          # workflow since 1.0.0 failed, after every gate before it had passed. The
+          # prepack script now logs to stderr, and this step no longer depends on that
+          # remaining true. npm's name is deterministic: the scope is stripped and the
+          # exact version appended, which is the same name the bv-web-prod vendor script
+          # independently asserts.
+          TARBALL="blackveil-dns-checks-$VERSION.tgz"
+          npm pack --workspace=packages/dns-checks
+          test -f "$TARBALL"
           SHA256="$(sha256sum "$TARBALL" | cut -d ' ' -f 1)"
           printf '%s  %s\n' "$SHA256" "$TARBALL" > "$TARBALL.sha256"
           printf 'tarball=%s\nsha256=%s\n' "$TARBALL" "$SHA256" >> "$GITHUB_OUTPUT"

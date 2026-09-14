@@ -8,6 +8,11 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **The dns-checks release workflow can pack again (`scripts/ci/dns-checks-prepack.ts`).** The prepack lifecycle script wrote its "Stamped dist/BUILD_INFO.json" line to **stdout**, which is the same stream `npm pack --json` uses for its payload, so the release workflow's `jq` parse died with `Invalid numeric literal` and the run failed at the pack step with every gate before it green. Found on the first use of that workflow since 1.0.0, while promoting 1.46.0 to bv-web-prod. The message moves to stderr, where a progress diagnostic belongs, and the workflow no longer parses stdout at all — it derives the deterministic tarball name from the version input and asserts the file exists, so a future lifecycle script cannot break the release the same way.
+
+
 ## [3.80.0] - 2026-09-15
 
 Scoring model **1.31.0** (from 1.29.0), `@blackveil/dns-checks` **1.46.0** (from 1.44.0, `PARITY_CORPUS_VERSION` in lockstep) — bv-web-prod re-vendor required (it pins 1.36.0 today). No category weights, grade bands, tiers, `SEVERITY_PENALTIES` entries, missing-control rules or profile-detection rules change in this block.
