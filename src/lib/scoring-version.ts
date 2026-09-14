@@ -622,8 +622,27 @@
  *   verdict still stands and carries `subdomainsUnmeasured`, so the scope of the claim stays
  *   auditable. No weight, tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule
  *   or profile-detection rule changed.
+ * - 1.31.0 — the `check_ns` wildcard canary stops skipping its AAAA probe on an A answer it
+ *   could not classify (#1008, dns-checks 1.46.0). The probe was gated on
+ *   `aAnswers.length === 0`, which conflates "nothing came back" with "nothing came back that
+ *   this check reads". A DNAME chain produces the second shape — records that are neither
+ *   A(1) nor CNAME(5) — so `wildcardFamily` stayed null AND the AAAA query was never spent,
+ *   and an AAAA-only wildcard behind such a zone was never looked for. The gate now tests
+ *   classification rather than length, which also matches `probeNameserverReachable`, whose
+ *   own A-then-AAAA fallthrough has always been written that way.
+ *   SCORE-BEARING, DOWNWARD, on a population measured as vanishingly small. It is a
+ *   previously-unreachable case of an EXISTING detection, not a new family: the finding,
+ *   its `medium` severity and its `wildcardFamily: 'aaaa'` metadata are byte-identical to
+ *   what #942 (model 1.28.0) already emitted for an empty A answer. Only the set of zones
+ *   that reach it grows. The shape is narrow because RFC 6672 has the responder synthesize
+ *   a CNAME beside the DNAME, and that synthesized record hits the CNAME branch already —
+ *   the gap is the responder that omits it for a client presumed to understand DNAME.
+ *   Subrequest cost is unchanged for every zone previously probed and +1 only for the DNAME
+ *   shape that previously got no second probe at all; `ns` remains not a
+ *   bounded-parallelism candidate. No weight, tier, grade band, `SEVERITY_PENALTIES` entry,
+ *   missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.30.0';
+export const SCORING_MODEL_VERSION = '1.31.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
