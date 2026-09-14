@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`test/oauth/token.spec.ts` no longer shares one rate-limit bucket across unrelated tests (#985).** Every OAuth endpoint this spec exercises is rate limited per client IP, and a request without `cf-connecting-ip` falls back to a single shared bucket — `unknown` for the token and consent limiters, `0.0.0.0` for register. The file requested nine authorization codes against a consent limiter that admits five per fifteen minutes and registered thirteen clients against a ten-per-minute limiter, so only the per-test KV and coordinator reset kept it green; any incompleteness there surfaced as a 429 asserted inside a test about something else, on a REQUIRED gate. The three request helpers now mint a unique documentation-range address per call, and the two tests that are about bucket sharing opt into the shared bucket explicitly through a new raw poster. No production limit, window or key changed.
+
 ## [3.79.0] - 2026-09-14
 
 Scoring model 1.29.0, `@blackveil/dns-checks` **1.44.0** (`PARITY_CORPUS_VERSION` in lockstep) — bv-web-prod re-vendor required (it pins 1.36.0 today). No category weights or grade bands change, and no `SEVERITY_PENALTIES` entry moves. **Two changes in this block ARE score-bearing**, each with its own entry below: dns-checks **1.38.0** (#971, scoring model 1.26.0 — DMARC partial enforcement) and dns-checks **1.43.0** (#989 — the SPF `all`-term extraction reaching the finding path). One finding's assigned severity does move (DMARC quarantine `low` → `medium`, #971); the penalty table it indexes does not.
