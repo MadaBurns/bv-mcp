@@ -86,3 +86,41 @@ describe('CT failover budget invariant (#738)', () => {
 		vi.unstubAllGlobals();
 	});
 });
+
+// SQ-2 — a 403 refusal is still a FAILOVER, not an abort.
+//
+// Classifying the refusal distinctly (`provider_restricted`) changes what the
+// caller is TOLD, and must change nothing about control flow: the ladder has to
+// keep walking to the next source exactly as it does for a 5xx, or a single
+// provider's policy would take the whole tool down for that domain.
+describe('CT failover past a declared provider restriction (SQ-2)', () => {
+	afterEach(() => {
+		vi.unstubAllGlobals();
+		vi.restoreAllMocks();
+	});
+
+	it('still consults Certspotter when crt.sh refuses the query outright', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const consulted: string[] = [];
+		vi.stubGlobal('fetch', async (input: RequestInfo | URL) => {
+			const url = String(input instanceof Request ? input.url : input);
+			if (url.includes('crt.sh')) {
+				consulted.push('crtsh');
+				return Response.json({ code: 'not_allowed_by_plan', message: '<upstream prose not reproduced>' }, { status: 403 });
+			}
+			if (url.includes('certspotter.com')) {
+				consulted.push('certspotter');
+				return Response.json([{ id: '1', dns_names: ['api.example.com'], not_before: '', not_after: '' }], { status: 200 });
+			}
+			return Response.json({ Status: 0, Answer: [] }, { status: 200 });
+		});
+
+		const result = await discoverSubdomains('example.com');
+
+		expect(consulted).toEqual(['crtsh', 'certspotter']);
+		expect(result.totalSubdomains).toBe(1);
+		expect(result.coverage?.perSource.find((s) => s.source === 'crtsh')?.outcome).toBe('provider_restricted');
+		// A refused source is a cut in recall, so the count is a floor (#866).
+		expect(result.countBasis).toBe('floor');
+	});
+});
