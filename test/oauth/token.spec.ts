@@ -12,6 +12,19 @@ const TEST_SIGNING_SECRET = 'a'.repeat(32);
 type TestEnv = typeof env & { BV_API_KEY?: string; OAUTH_SIGNING_SECRET?: string };
 const authEnv = { ...env, BV_API_KEY: TEST_API_KEY, OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET } as TestEnv;
 
+/**
+ * A fresh documentation-range IPv6 address, used as `cf-connecting-ip` so a request lands in
+ * its own rate-limit bucket.
+ *
+ * Every OAuth endpoint this file exercises is rate limited per client IP, and a request with
+ * no `cf-connecting-ip` falls back to ONE shared bucket (`unknown` for token/consent,
+ * `0.0.0.0` for register). Sharing that bucket made the whole file order- and wall-clock
+ * dependent: the consent limiter alone admits only 5 per 15 minutes, and this file requests
+ * nine authorization codes. The per-test KV/coordinator reset was the only thing keeping it
+ * green, so any incompleteness there surfaced as a 429 inside an assertion about something
+ * else (#985). The three helpers below therefore mint a unique IP per call, and the tests
+ * that are ABOUT bucket sharing opt into it explicitly.
+ */
 function uniqueRateLimitIp(): string {
 	const words = new Uint16Array(4);
 	crypto.getRandomValues(words);
@@ -37,7 +50,7 @@ async function registerClient(): Promise<string> {
 	// Register doesn't touch BV_API_KEY/OAUTH_SIGNING_SECRET — SELF.fetch is fine.
 	const r = await SELF.fetch('https://example.com/oauth/register', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
+		headers: { 'Content-Type': 'application/json', 'cf-connecting-ip': uniqueRateLimitIp() },
 		body: JSON.stringify({ redirect_uris: ['https://claude.ai/cb'] }),
 	});
 	return ((await r.json()) as { client_id: string }).client_id;
@@ -55,7 +68,7 @@ async function getAuthCode(cid: string, challenge: string, customEnv: TestEnv = 
 	const body = new URLSearchParams({ api_key: TEST_API_KEY, _q: q });
 	const req = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/authorize', {
 		method: 'POST',
-		headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+		headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': uniqueRateLimitIp() },
 		body: body.toString(),
 		redirect: 'manual',
 	});
@@ -65,7 +78,12 @@ async function getAuthCode(cid: string, challenge: string, customEnv: TestEnv = 
 	return new URL(res.headers.get('location') ?? '').searchParams.get('code') ?? '';
 }
 
-async function postToken(body: URLSearchParams, customEnv: TestEnv = authEnv, headers: Record<string, string> = {}): Promise<Response> {
+/**
+ * POST /oauth/token exactly as given — no `cf-connecting-ip` is added, so a caller that omits
+ * one lands in the shared `unknown` bucket. Only use this from a test that is ABOUT that
+ * bucket; everything else wants `postToken`.
+ */
+async function postTokenRaw(body: URLSearchParams, customEnv: TestEnv = authEnv, headers: Record<string, string> = {}): Promise<Response> {
 	const req = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/token', {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/x-www-form-urlencoded', ...headers },
@@ -75,6 +93,14 @@ async function postToken(body: URLSearchParams, customEnv: TestEnv = authEnv, he
 	const res = await worker.fetch(req, customEnv, ctx);
 	await waitOnExecutionContext(ctx);
 	return res;
+}
+
+/**
+ * POST /oauth/token from its own rate-limit bucket. An explicit `cf-connecting-ip` in
+ * `headers` wins, so a test can still pin several calls to one bucket on purpose.
+ */
+async function postToken(body: URLSearchParams, customEnv: TestEnv = authEnv, headers: Record<string, string> = {}): Promise<Response> {
+	return postTokenRaw(body, customEnv, { 'cf-connecting-ip': uniqueRateLimitIp(), ...headers });
 }
 
 beforeEach(async () => {
@@ -487,12 +513,12 @@ describe('POST /oauth/token', () => {
 		});
 
 		for (let i = 0; i < 30; i++) {
-			const res = await postToken(body, authEnv, { 'x-forwarded-for': '198.51.100.20' });
+			const res = await postTokenRaw(body, authEnv, { 'x-forwarded-for': '198.51.100.20' });
 			expect(res.status).not.toBe(429);
 		}
 
 		// Rotating XFF must NOT mint a fresh bucket — all 'unknown' IPs share one.
-		const differentIp = await postToken(body, authEnv, { 'x-forwarded-for': '203.0.113.30' });
+		const differentIp = await postTokenRaw(body, authEnv, { 'x-forwarded-for': '203.0.113.30' });
 		expect(differentIp.status).toBe(429);
 	});
 });
