@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { handleToolsList, handleToolsCall } from '../handlers/tools';
-import { handleResourcesList, handleResourcesRead } from '../handlers/resources';
+import { handleResourcesList, handleResourcesRead, TOOL_COUNT, CHECK_TOOL_COUNT, SCAN_CATEGORY_COUNT } from '../handlers/resources';
 import { handlePromptsList, handlePromptsGet } from '../handlers/prompts';
 import { parseAllowedHosts } from './request';
 import { createSession, checkSessionCreateRateLimit } from '../lib/session';
@@ -305,8 +305,7 @@ export async function dispatchMcpMethod(options: DispatchMcpMethodOptions): Prom
 					serverInfo: {
 						name: 'Blackveil DNS',
 						version: options.serverVersion,
-						description:
-							'Source-available DNS & email security scanner — 80+ checks across 20 categories with scoring, grading, and remediation guidance',
+						description: `Source-available DNS & email security scanner — ${TOOL_COUNT} MCP tools (${CHECK_TOOL_COUNT} check_* checks) across ${SCAN_CATEGORY_COUNT} scan categories, with scoring, grading, and remediation guidance`,
 					},
 					instructions: SERVER_INSTRUCTIONS,
 				}),
