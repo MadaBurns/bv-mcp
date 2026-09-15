@@ -445,17 +445,23 @@ export function buildThreatObservationFinding(
 	// web address set AND mail hosts (`seed_infrastructure_match`). Those records
 	// are copyable, so the observation and its severity stay; only the advice to
 	// gateway-block and take down what may be the customer's own domain goes.
+	// #974 reopened — and when it is one of 3+ exact-label TLD variants on the
+	// seed's web address set and one identical nameserver and mail estate
+	// (`seed_label_cohort`). Same posture: the advice changes, nothing else.
 	const seedInfra = !brandHeld && ownership.signals.includes('seed_infrastructure_match');
+	const labelCohort = !brandHeld && ownership.signals.includes('seed_label_cohort');
 	const attributionClause = brandHeld
 		? brandHeld.registrarIanaId !== null
 			? `the registry publishes the same brand-protection registrar for it as for ${seedDomain}, so it is most likely the scanned organisation's own defensive registration`
 			: `it delegates to the same complete nameserver set as ${seedDomain} on a DNS platform that does not offer self-service registration, so it is most likely the scanned organisation's own defensive registration`
 		: seedInfra
 			? `it resolves to the same web address set and mail hosts as ${seedDomain}, the shape of the scanned organisation's own brand-variant registration, though those records can be copied and ownership is not established`
-			: `${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested`;
+			: labelCohort
+				? `it resolves to the same web address set as ${seedDomain} and shares identical nameservers and mail hosts with other exact-label variants of it, the shape of the scanned organisation's own brand-variant portfolio, though those records can be copied and ownership is not established`
+				: `${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested`;
 	const remediationClause = brandHeld
 		? `Because this looks like your own defensive registration, treat it as portfolio hygiene rather than a threat: confirm it against your domain portfolio, and keep it parked with mail explicitly disabled so it cannot be used to send. Do NOT report it for takedown without confirming ownership first.`
-		: seedInfra
+		: seedInfra || labelCohort
 			? `Confirm ${candidateDomain} against your domain portfolio first. If it is yours, no action is needed beyond keeping its mail authentication aligned with ${seedDomain}. If it is not, monitor it and report it to its registrar or a takedown provider. Do NOT block it at the gateway or report it for takedown before confirming ownership.`
 			: `Defensive options that need no access to ${candidateDomain}: monitor it, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`;
 	return createFinding(
