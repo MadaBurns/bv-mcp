@@ -168,7 +168,11 @@ type CheckRunner = (
  * profile-only checks are deliberately NOT here — that profile takes its own
  * branch (Promise.all + mergeAuthoritativeDnsInfraResults).
  */
-const CHECK_DISPATCH: Record<string, CheckRunner> = {
+// Exported (only) so `test/audits/scan-domain-dns-pool-classification.audit.test.ts`
+// can independently re-derive, via source-text reflection, which entries discard
+// their `dns` parameter — see CHECKS_WITHOUT_DNS_POOL below. Not part of the
+// public runtime contract; use CHECK_DISPATCH[cat](...) only, never re-key it.
+export const CHECK_DISPATCH: Record<string, CheckRunner> = {
 	spf: (d, dns) => checkSpf(d, dns),
 	dmarc: (d, dns) => checkDmarc(d, dns),
 	dkim: (d, dns) => checkDkim(d, undefined, dns),
@@ -209,6 +213,25 @@ const CHECK_DISPATCH: Record<string, CheckRunner> = {
  * this against the `scanIncluded` SSOT in TOOL_DEFS.
  */
 export const SCAN_CATEGORIES: CheckCategory[] = Object.keys(CHECK_DISPATCH) as CheckCategory[];
+
+/**
+ * Dispatch entries that ignore the `dnsOptions` (2nd) parameter entirely — see
+ * the CheckRunner JSDoc above — and so never call `dnsSemaphore.run()`. These
+ * are the ONLY two of the 19 {@link CHECK_DISPATCH} entries a raw-`fetch`
+ * check can be: `dane_https` also takes the narrow per-check signal but DOES
+ * still thread `dnsOptions` through for its TLSA lookup, so it is NOT here.
+ *
+ * #952/SQ-15 repair: `safeCheck`'s per-check timer extension (the `queueClock`
+ * argument) must be withheld from these two. The original #952 fix wired the
+ * shared `dnsSemaphore.saturatedMs()` unconditionally to every category, so a
+ * raw-fetch check's declared timeout went silently unenforced whenever ANY
+ * OTHER check in the same scan queued on the DNS pool — even though `ssl`/
+ * `http_security` never wait on it themselves. Pinned against dispatch-table
+ * drift by `test/audits/scan-domain-dns-pool-classification.audit.test.ts`,
+ * which fails if a new entry discards its `dns` parameter without being added
+ * here (or vice versa).
+ */
+export const CHECKS_WITHOUT_DNS_POOL: ReadonlySet<CheckCategory> = new Set<CheckCategory>(['ssl', 'http_security']);
 
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
@@ -708,7 +731,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 								),
 							timeoutBudget.perCheckTimeoutMs,
 							() => perCheckAbort.abort(),
-							() => dnsSemaphore.saturatedMs(),
+							// #952/SQ-15: withhold the queue-clock extension from checks that
+							// never wait on the DNS pool — see CHECKS_WITHOUT_DNS_POOL above.
+							CHECKS_WITHOUT_DNS_POOL.has(cat) ? undefined : () => dnsSemaphore.saturatedMs(),
 						),
 					kv,
 					cacheTtl,
