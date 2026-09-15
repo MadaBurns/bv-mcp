@@ -222,6 +222,12 @@ export interface LookalikeResult {
 	/** MX exchange hosts (lowercased, trailing-dot-stripped) — empty when no real MX. */
 	mxExchanges: string[];
 	/**
+	 * #974 — the resolved A addresses (trimmed). Absent = not probed (hand-built
+	 * fixtures); `[]` = no A answer or a degraded A leg. Feeds the step-5c
+	 * seed-infrastructure match in `classifyOwnership()`.
+	 */
+	aAddresses?: string[];
+	/**
 	 * True when the A or MX lookup for this candidate REJECTED (timeout /
 	 * throttling), so the corresponding `false` above is UNFETCHED, not
 	 * measured (#831/#832). A candidate with no positive signal and a degraded
@@ -323,6 +329,7 @@ async function probeDetailBatch(batch: string[], deadlineMs: number | undefined)
 			hasA: a.ok && a.records.length > 0,
 			hasMX: realMxRecords.length > 0,
 			mxExchanges,
+			aAddresses: a.ok ? a.records.map((r) => r.trim()) : [],
 			probeDegraded: reason !== undefined,
 			...(reason !== undefined ? { probeDegradedReason: reason } : {}),
 		};
@@ -561,6 +568,19 @@ export async function queryPrimaryMx(domain: string): Promise<Set<string>> {
 		return new Set(mx.map((r) => r.exchange.toLowerCase().replace(/\.$/, '')));
 	} catch {
 		return new Set<string>();
+	}
+}
+
+/**
+ * #974 — query the seed's own A addresses, the web leg of the step-5c
+ * seed-infrastructure match. Fail-soft to an empty set, which makes that match
+ * unreachable (fails closed to the NS-only outcome), never a false match.
+ */
+export async function queryPrimaryA(domain: string): Promise<string[]> {
+	try {
+		return (await queryDnsRecords(domain, 'A', SEED_DNS_OPTS)).map((r) => r.trim());
+	} catch {
+		return [];
 	}
 }
 

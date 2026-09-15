@@ -420,12 +420,21 @@ export function buildThreatObservationFinding(
 	// that it is the scanned organisation's OWN defensive registration, both are
 	// replaced — the observation itself and its calibrated severity are
 	// untouched, so nothing here moves a score.
+	// #974 — the same substitution when the candidate resolves to the seed's own
+	// web address set AND mail hosts (`seed_infrastructure_match`). Those records
+	// are copyable, so the observation and its severity stay; only the advice to
+	// gateway-block and take down what may be the customer's own domain goes.
+	const seedInfra = !brandHeld && ownership.signals.includes('seed_infrastructure_match');
 	const attributionClause = brandHeld
 		? `the registry publishes the same brand-protection registrar for it as for ${seedDomain}, so it is most likely the scanned organisation's own defensive registration`
-		: `${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested`;
+		: seedInfra
+			? `it resolves to the same web address set and mail hosts as ${seedDomain}, the shape of the scanned organisation's own brand-variant registration, though those records can be copied and ownership is not established`
+			: `${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested`;
 	const remediationClause = brandHeld
 		? `Because this looks like your own defensive registration, treat it as portfolio hygiene rather than a threat: confirm it against your domain portfolio, and keep it parked with mail explicitly disabled so it cannot be used to send. Do NOT report it for takedown without confirming ownership first.`
-		: `Defensive options that need no access to ${candidateDomain}: monitor it, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`;
+		: seedInfra
+			? `Confirm ${candidateDomain} against your domain portfolio first. If it is yours, no action is needed beyond keeping its mail authentication aligned with ${seedDomain}. If it is not, monitor it and report it to its registrar or a takedown provider. Do NOT block it at the gateway or report it for takedown before confirming ownership.`
+			: `Defensive options that need no access to ${candidateDomain}: monitor it, block or quarantine mail bearing that name at the gateway, and report it to its registrar or a takedown provider.`;
 	return createFinding(
 		'lookalikes',
 		`Impersonation-shaped ${signals.hasMX ? 'infrastructure' : 'web infrastructure'} observed: ${candidateDomain}`,
