@@ -42,11 +42,11 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 const WHOIS = SIDECAR_TARGETS[0]!;
 
-type SpawnCall = [string, string[], { encoding: 'utf8' }];
-type SpawnResult = { status: number | null; stdout?: string; stderr?: string; error?: Error };
+type SpawnCall = [string, string[], { encoding: 'utf8'; timeout?: number }];
+type SpawnResult = { status: number | null; stdout?: string; stderr?: string; error?: Error; signal?: NodeJS.Signals | null };
 
 function fakeSpawn(handler: (command: string, args: string[]) => SpawnResult) {
-	return vi.fn((command: string, args: string[], _options: { encoding: 'utf8' }) => handler(command, args)) as unknown as ((
+	return vi.fn((command: string, args: string[], _options: { encoding: 'utf8'; timeout?: number }) => handler(command, args)) as unknown as ((
 		...call: SpawnCall
 	) => SpawnResult) & { mock: { calls: SpawnCall[] } };
 }
@@ -113,6 +113,30 @@ describe('sidecar drift CLI — process contract', () => {
 		const verdict = runSidecarDriftCheck(spawn, {});
 		expect(verdict.ok).toBe(false);
 		expect(verdict.code).toBe('unverified');
+	});
+
+	it('a wrangler call that times out BLOCKS and names the timeout (#SQ-25)', () => {
+		const timeoutError = Object.assign(new Error('spawnSync npx ETIMEDOUT'), { code: 'ETIMEDOUT' });
+		const spawn = fakeSpawn((command) =>
+			command === 'npx' ? { status: null, stdout: '', stderr: '', error: timeoutError } : { status: 0, stdout: '', stderr: '' },
+		);
+
+		const probe = probeSidecar(WHOIS, spawn);
+		expect(probe.deployedAtMs).toBeNull();
+		expect(probe.unverifiedReason).toMatch(/timed out/);
+
+		const verdict = runSidecarDriftCheck(spawn, {});
+		expect(verdict.ok).toBe(false);
+		expect(verdict.code).toBe('unverified');
+	});
+
+	it('a wrangler call killed with SIGTERM (timeout, no ETIMEDOUT error) still BLOCKS (#SQ-25)', () => {
+		const spawn = fakeSpawn((command) =>
+			command === 'npx' ? { status: null, stdout: '', stderr: '', signal: 'SIGTERM' } : { status: 0, stdout: '', stderr: '' },
+		);
+
+		const probe = probeSidecar(WHOIS, spawn);
+		expect(probe.unverifiedReason).toMatch(/timed out/);
 	});
 
 	it('a wrangler that will not launch BLOCKS', () => {
@@ -188,6 +212,17 @@ describe('verifyHeadContainsUpstream — HEAD ⊇ origin/main proof (#981 item 1
 	it('BLOCKS when the upstream fetch fails', () => {
 		const spawn = fixedSpawn({ fetch: { status: 128, stdout: '', stderr: 'could not resolve host' } });
 		expect(verifyHeadContainsUpstream(spawn)).toMatch(/could not fetch origin\/main/);
+	});
+
+	it('BLOCKS and names the timeout when `git fetch` times out (#SQ-25)', () => {
+		const timeoutError = Object.assign(new Error('spawnSync git ETIMEDOUT'), { code: 'ETIMEDOUT' });
+		const spawn = fixedSpawn({ fetch: { status: null, stdout: '', stderr: '', error: timeoutError } });
+		expect(verifyHeadContainsUpstream(spawn)).toMatch(/git fetch origin\/main.*timed out/);
+	});
+
+	it('BLOCKS and names the timeout when `git merge-base` times out, even with no error object (#SQ-25)', () => {
+		const spawn = fixedSpawn({ mergeBase: { status: null, stdout: '', stderr: '', signal: 'SIGTERM' } });
+		expect(verifyHeadContainsUpstream(spawn)).toMatch(/merge-base.*timed out/);
 	});
 
 	it('BLOCKS on an unexpected merge-base exit status rather than guessing', () => {

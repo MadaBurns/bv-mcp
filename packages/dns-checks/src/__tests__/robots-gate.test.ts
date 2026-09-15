@@ -372,7 +372,9 @@ describe('withRobotsGate', () => {
 		await replacementRequest;
 		const afterReplacement = getRobotsGroupCacheStats(cache);
 		expect(afterReplacement.entries).toBe(1);
-		expect(afterReplacement.retainedBytes).toBeLessThan(whileReplacementPending.retainedBytes);
+		// The replacement is still charged only its pending key weight while in flight; had
+		// the expired settlement resized it to the old policy's weight, these would be equal.
+		expect(whileReplacementPending.retainedBytes).toBeLessThan(afterReplacement.retainedBytes);
 		await expect(gated('https://example.com/old')).resolves.toBeInstanceOf(Response);
 		await expect(gated('https://example.com/new')).rejects.toBeInstanceOf(RobotsDisallowedError);
 		expect(robotsFetches).toBe(2);
