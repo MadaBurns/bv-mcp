@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **The sidecar deploy-drift gate's `spawnSync` calls had no timeout (#SQ-25).** `wrangler deployments list`, `git fetch origin main`, `git log`, and `git merge-base --is-ancestor` in `scripts/ci/sidecar-deploy-drift-check.ts` could hang the deploy pipeline forever on a wedged network call or a stuck local process. Added named timeout budgets (30s for the network-bound wrangler and fetch calls, 5s for the local git log/merge-base calls); a timed-out call now fails closed — `verifyHeadContainsUpstream` returns a reason string naming the timeout and `probeSidecar` reports `unverified`, never `fresh`.
+
 ## [3.81.1] - 2026-09-15
 
 Fixes the two issues that 3.81.0 did not resolve in production (#973, #974). Scoring model **1.33.0** (from 1.32.0) and `@blackveil/dns-checks` **1.48.0** (from 1.47.0, `PARITY_CORPUS_VERSION` in lockstep), so bv-web-prod needs to re-vendor. The one score-bearing change is the #973 fix, which lowers scores only for domains that serve the Cloudways unmapped-domain edge. No weight, tier or grade band changed.

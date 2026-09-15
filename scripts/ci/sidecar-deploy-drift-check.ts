@@ -45,14 +45,35 @@ export const GIT_LOG_FORMAT = '--format=%H%x09%cI%x09%s';
 
 const UPSTREAM = 'origin/main';
 
+/**
+ * Timeout budgets for every `spawnSync` in this file (#SQ-25). Unbounded
+ * spawns can hang the deploy pipeline forever on a wedged network call or a
+ * stuck local git process. `wrangler` and the network-bound `git fetch` get
+ * the full 30s network budget; `git log`/`git merge-base` are purely local
+ * and get a much shorter leash.
+ */
+const WRANGLER_TIMEOUT_MS = 30_000;
+const GIT_FETCH_TIMEOUT_MS = 30_000;
+const GIT_LOCAL_TIMEOUT_MS = 5_000;
+
 type SpawnSyncLike = (
 	command: string,
 	args: string[],
-	options: { encoding: 'utf8' },
-) => { status: number | null; stdout?: string | null; stderr?: string | null; error?: Error };
+	options: { encoding: 'utf8'; timeout?: number },
+) => { status: number | null; stdout?: string | null; stderr?: string | null; error?: Error; signal?: NodeJS.Signals | null };
 
 function firstStderrLine(stderr: string | null | undefined): string {
 	return (stderr ?? '').trim().split('\n')[0]?.trim() || 'no stderr';
+}
+
+/**
+ * A timed-out `spawnSync` call must FAIL CLOSED, never pass as fresh. Node
+ * reports a timeout as `error.code === 'ETIMEDOUT'`, and the killed child
+ * also carries `signal: 'SIGTERM'` — check both so a mocked `SpawnSyncLike`
+ * that only sets one of the two is still caught.
+ */
+function isSpawnTimeout(result: { error?: Error; signal?: NodeJS.Signals | null }): boolean {
+	return (result.error as NodeJS.ErrnoException | undefined)?.code === 'ETIMEDOUT' || result.signal === 'SIGTERM';
 }
 
 /**
@@ -63,8 +84,10 @@ export function probeSidecar(target: SidecarTarget, spawnSync: SpawnSyncLike = n
 	let deployedAtMs: number | null = null;
 	let unverifiedReason: string | null = null;
 
-	const listed = spawnSync('npx', [...WRANGLER_DEPLOYMENTS_ARGV, target.configPath], { encoding: 'utf8' });
-	if (listed.error) {
+	const listed = spawnSync('npx', [...WRANGLER_DEPLOYMENTS_ARGV, target.configPath], { encoding: 'utf8', timeout: WRANGLER_TIMEOUT_MS });
+	if (isSpawnTimeout(listed)) {
+		unverifiedReason = `\`wrangler deployments list\` timed out after ${WRANGLER_TIMEOUT_MS}ms`;
+	} else if (listed.error) {
 		unverifiedReason = `could not launch wrangler: ${listed.error.message}`;
 	} else if (listed.status !== 0) {
 		// Exit status is the reliable signal — stdout carries an auth banner even
@@ -102,10 +125,15 @@ export function probeSidecar(target: SidecarTarget, spawnSync: SpawnSyncLike = n
 	// represented by the merge commit, whose committer date is when it reached
 	// main — which is what "deployed after this" must be measured against.
 	let driftCommits: string[] = [];
-	const log = spawnSync('git', ['log', '--first-parent', GIT_LOG_FORMAT, 'HEAD', '--', ...target.watchPaths], { encoding: 'utf8' });
-	if (log.error || log.status !== 0) {
+	const log = spawnSync('git', ['log', '--first-parent', GIT_LOG_FORMAT, 'HEAD', '--', ...target.watchPaths], {
+		encoding: 'utf8',
+		timeout: GIT_LOCAL_TIMEOUT_MS,
+	});
+	if (isSpawnTimeout(log)) {
 		// A failed `git log` is not evidence of freshness — degrade to unverified
 		// rather than to an empty commit list.
+		unverifiedReason ??= `\`git log\` for ${target.watchPaths.join(', ')} timed out after ${GIT_LOCAL_TIMEOUT_MS}ms`;
+	} else if (log.error || log.status !== 0) {
 		unverifiedReason ??= `\`git log\` failed for ${target.watchPaths.join(', ')}: ${log.error ? log.error.message : firstStderrLine(log.stderr)}`;
 	} else if (deployedAtMs !== null) {
 		try {
@@ -137,12 +165,18 @@ export function probeSidecar(target: SidecarTarget, spawnSync: SpawnSyncLike = n
  * unverified and every probe must BLOCK.
  */
 export function verifyHeadContainsUpstream(spawnSync: SpawnSyncLike = nodeSpawnSync as SpawnSyncLike): string | null {
-	const fetched = spawnSync('git', ['fetch', 'origin', 'main', '--quiet'], { encoding: 'utf8' });
+	const fetched = spawnSync('git', ['fetch', 'origin', 'main', '--quiet'], { encoding: 'utf8', timeout: GIT_FETCH_TIMEOUT_MS });
+	if (isSpawnTimeout(fetched)) {
+		return `\`git fetch ${UPSTREAM}\` timed out after ${GIT_FETCH_TIMEOUT_MS}ms`;
+	}
 	if (fetched.error || fetched.status !== 0) {
 		return `could not fetch ${UPSTREAM}: ${fetched.error ? fetched.error.message : firstStderrLine(fetched.stderr)}`;
 	}
 
-	const mergeBase = spawnSync('git', ['merge-base', '--is-ancestor', UPSTREAM, 'HEAD'], { encoding: 'utf8' });
+	const mergeBase = spawnSync('git', ['merge-base', '--is-ancestor', UPSTREAM, 'HEAD'], { encoding: 'utf8', timeout: GIT_LOCAL_TIMEOUT_MS });
+	if (isSpawnTimeout(mergeBase)) {
+		return `\`git merge-base --is-ancestor ${UPSTREAM} HEAD\` timed out after ${GIT_LOCAL_TIMEOUT_MS}ms`;
+	}
 	if (mergeBase.error) {
 		return `could not verify HEAD contains ${UPSTREAM}: ${mergeBase.error.message}`;
 	}
