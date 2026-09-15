@@ -48,3 +48,22 @@ export function extractBrandName(domain: string): string | null {
 	if (!domain) return null;
 	return parseDomain(domain).domainWithoutSuffix ?? null;
 }
+
+/**
+ * True when `domain` is itself an ICANN public suffix (eTLD) — e.g. `govt.nz`,
+ * `co.nz`, `nz`, `com` — rather than a registrable name under one.
+ *
+ * ICANN-only (`allowPrivateDomains: false`) is deliberate and NOT the same
+ * question {@link getRegistrableDomain} answers: that helper enables private
+ * suffixes so tenant hosts are treated as registrable, so it ALSO returns
+ * `null` for a private-suffix apex like `github.io` — a name CertSpotter
+ * accepts and answers. Only a true ICANN eTLD is refused with the
+ * `not_allowed_by_plan` code (#1004).
+ *
+ * Measured 2026-09-14: `govt.nz` / `co.nz` / `nz` / `com` → true;
+ * `blackveilsecurity.com` / `github.io` / `tenant.github.io` → false.
+ */
+export function isPublicSuffixApex(domain: string): boolean {
+	if (!domain) return false;
+	return parse(domain, { allowPrivateDomains: false }).domain === null;
+}

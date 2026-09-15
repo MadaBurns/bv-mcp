@@ -15,7 +15,10 @@
  *      re-querying only spends scarce provider quota, then
  *   1. bv-certstream-worker binding (fast, cached) when present, then
  *   2. direct public sources in order — crt.sh → Certspotter — each with a
- *      bounded retry and a per-source `ct_source` health log, then
+ *      bounded retry and a per-source `ct_source` health log (a public-suffix
+ *      apex such as `govt.nz` skips Certspotter entirely — it refuses that
+ *      input class categorically — and gives crt.sh the full budget, #1004),
+ *      then
  *   3. last-known-good KV cache, returned marked `stale` with its age.
  * Only when all of the above are exhausted do we report `sourceUnavailable`.
  * Steps 0 and 3 read the SAME entry; only its age decides which job it does.
@@ -36,6 +39,7 @@ import type { CtCoverage, CtSourceAttempt, CtSourceOutcome } from '../lib/ct-cov
 import { buildCtCoverage, formatCoverageLine } from '../lib/ct-coverage';
 import { logEvent } from '../lib/log';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { isPublicSuffixApex } from '../lib/public-suffix';
 import { disposeUnreadResponseBody, readBoundedOrNull, readJsonResponseCapped } from '../lib/response-body';
 
 /**
@@ -110,6 +114,25 @@ export const CT_FAILOVER_HEADROOM_MS = 2_000;
  * Pinned by `test/discover-subdomains-failover-budget.spec.ts`.
  */
 export const CT_SOURCE_TIMEOUT_MS = DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS - CERTSPOTTER_TIMEOUT_MS - CT_FAILOVER_HEADROOM_MS;
+
+/**
+ * Per-attempt timeout for crt.sh when the requested apex is itself a public
+ * suffix (an ICANN eTLD such as `govt.nz`, `co.nz` — see
+ * {@link isPublicSuffixApex}), #1004.
+ *
+ * CertSpotter refuses EVERY query for this input class with a categorical,
+ * deterministic `not_allowed_by_plan` 403 (measured 2026-09-14, 0.65s) — so
+ * `queryDirectSources` never spends a fetch on it for a PSL apex, and none of
+ * {@link CERTSPOTTER_TIMEOUT_MS}'s reservation is needed. crt.sh gets the
+ * whole synchronous budget instead, minus only {@link CT_FAILOVER_HEADROOM_MS}
+ * for the non-CT work described there.
+ *
+ * Without this, {@link CT_SOURCE_TIMEOUT_MS} (8s) reserves 16s for a provider
+ * that will refuse the query in under a second — and a warm crt.sh query for a
+ * large PSL apex (measured ~8.3s for `govt.nz`) misses its own slot, producing
+ * a false `sourceUnavailable` while crt.sh was in fact up and answering.
+ */
+export const CT_SOURCE_TIMEOUT_MS_PSL_APEX = DISCOVER_SUBDOMAINS_SYNC_BUDGET_MS - CT_FAILOVER_HEADROOM_MS;
 
 /**
  * Retry PASSES over the whole source list on a transient outcome (timeout / 5xx
@@ -1359,6 +1382,11 @@ async function queryDirectSources(
 	domain: string,
 	options?: DiscoverSubdomainsOptions,
 ): Promise<{ available: boolean; entries: CrtShEntry[]; sources?: string[]; sourceIndexExhausted?: boolean; attempts: CtSourceAttempt[] }> {
+	// #1004: a public-suffix apex (govt.nz, co.nz, …) gets crt.sh only, with the
+	// whole budget — see CT_SOURCE_TIMEOUT_MS_PSL_APEX. Every other apex keeps
+	// the exact ladder and timeouts below, unchanged.
+	const pslApex = isPublicSuffixApex(domain);
+
 	// Per-source timeouts differ by backend: crt.sh is Postgres-backed and often
 	// slow on a cold query, while Certspotter is a fast JSON API — giving the
 	// fallback a tighter bound keeps both inside one budget.
@@ -1367,7 +1395,7 @@ async function queryDirectSources(
 		timeoutMs: number;
 		fetch: (d: string, signal: AbortSignal, options?: DiscoverSubdomainsOptions) => Promise<SourceResult>;
 	}> = [
-		{ name: 'crtsh', timeoutMs: CT_SOURCE_TIMEOUT_MS, fetch: fetchCrtShEntries },
+		{ name: 'crtsh', timeoutMs: pslApex ? CT_SOURCE_TIMEOUT_MS_PSL_APEX : CT_SOURCE_TIMEOUT_MS, fetch: fetchCrtShEntries },
 		{ name: 'certspotter', timeoutMs: CERTSPOTTER_TIMEOUT_MS, fetch: fetchCertspotterEntries },
 	];
 
@@ -1387,12 +1415,27 @@ async function queryDirectSources(
 	const attempts = (): CtSourceAttempt[] =>
 		sources.filter((s) => attemptLog.has(s.name)).map((s) => attemptLog.get(s.name) as CtSourceAttempt);
 
+	// #1004: CertSpotter refuses EVERY query for a public-suffix apex with a
+	// categorical, deterministic `not_allowed_by_plan` 403 (measured
+	// 2026-09-14) — record that known reason UP FRONT, not inside the
+	// per-source loop below, so it is always present in the coverage record
+	// even when crt.sh answers first and the loop returns before CertSpotter's
+	// turn is ever reached. This is a record only: no fetch is spent re-
+	// observing the identical refusal, and the source does not fall out as a
+	// bare "not consulted" with no explanation.
+	if (pslApex) {
+		logCtSource(domain, 'certspotter', 'provider_restricted');
+		recordAttempt('certspotter', 'provider_restricted', false);
+	}
+
 	for (let pass = 0; pass <= CT_SOURCE_MAX_RETRIES; pass++) {
 		// Backoff applies BETWEEN passes, not between sources — failover should be
 		// immediate, only a repeat attempt at the same source needs to back off.
 		if (pass > 0) await delayWithSignal(CT_SOURCE_RETRY_BACKOFF_MS, options?.signal);
 
 		for (const source of sources) {
+			// Already recorded above — never fetched for a public-suffix apex.
+			if (pslApex && source.name === 'certspotter') continue;
 			// Never start an attempt we can't finish inside the budget. An empty
 			// answer already gathered from an earlier source in this loop is real
 			// information — surface it rather than downgrading to a bare outage
