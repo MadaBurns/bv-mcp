@@ -381,6 +381,17 @@ export interface LabelCohortMember {
 /** Minimum matched exact-label siblings besides the candidate itself, so a cohort is 3+ variants (#974). */
 export const MIN_LABEL_COHORT_SIBLINGS = 2;
 
+/**
+ * Minimum exact-label cohort size — siblings plus the candidate itself, all
+ * on the seed's A set — at which step 5d waives its shared-NS exclusion
+ * (#974 live: `ltmcguinness.{com,net,co,io,ai,nz}`, a 6-member brand-TLD set
+ * hosted on `ns1/ns2.siteground.net`, a `SHARED_NS_APEXES` platform). Below
+ * this size the #929 guard against forming a cohort out of unrelated tenants
+ * of one shared platform stays in force — a small shared-NS "cohort" is
+ * exactly the accidental grouping that guard exists to reject.
+ */
+export const SEED_LABEL_COHORT_SHARED_NS_MIN = 5;
+
 /** Minimum ratio of dedicated (non-shared-provider) NS hosts shared with the seed to count as strong evidence. */
 const DEDICATED_NS_MATCH_RATIO = 0.5;
 /** Minimum absolute count of dedicated shared NS hosts, alongside the ratio above. */
@@ -450,7 +461,9 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
  *     never `owned_by_seed` (candidate-published, copyable). Replaces only a `third_party` outcome
  *     (step 5's platform-partial arm, step 6); step 5's whole-platform `unattributed` is kept.
  *  5d. (#974 reopened) The candidate is an exact-label TLD variant on the seed's A set, and 2+ other
- *     exact-label variants share its identical A, NS and MX sets on non-platform NS
+ *     exact-label variants share its identical A, NS and MX sets on non-platform NS — or, when the
+ *     cohort has {@link SEED_LABEL_COHORT_SHARED_NS_MIN}+ members (siblings plus the candidate), on a
+ *     shared-tenant platform NS too (#974 large-cohort exception) —
  *     ({@link seedLabelCohortMatch}) → `unattributed` with `seed_label_cohort`. Same posture as 5c,
  *     consulted only when 5c declined.
  *  6. Registered with its own resolvable NS, no ownership signal → `third_party`.
@@ -740,8 +753,10 @@ function identicalNonEmptySet(
  *     `labelCohort` share the candidate's identical A set, identical complete NS
  *     set and identical MX set, so 3+ variants match;
  *  3. no host in that shared NS set is on a shared-tenant platform
- *     (`isSharedNsHost`, i.e. `SHARED_NS_APEXES`), because a platform assigns
- *     the same uniform set to every tenant.
+ *     (`isSharedNsHost`, i.e. `SHARED_NS_APEXES`) — UNLESS the exact-label
+ *     cohort on the seed's A set (siblings plus the candidate) has at least
+ *     {@link SEED_LABEL_COHORT_SHARED_NS_MIN} members, in which case the
+ *     shared-NS exclusion is waived (#974 live).
  *
  * WHY: the live cohort (`ltmcguinness.{com,net,co,io,ai}`) sits on the seed's
  * A address but on an agency's NS and a hosting provider's antispam MX, so step
@@ -749,20 +764,28 @@ function identicalNonEmptySet(
  * either: its PTR is a cloud host and the MX is a host's gateway, so it may be a
  * shared hosting IP (#929's lesson for NS, applied to A). What adds the second
  * signal is the cohort: the exact brand label swept across several TLDs, every
- * one on one identical non-platform NS/MX estate AND on the seed's own web
- * address. That is how an organisation's agency registers a defensive portfolio.
+ * one on one identical NS/MX estate AND on the seed's own web address. That is
+ * how an organisation's agency registers a defensive portfolio.
  *
  * A TYPOSQUAT NEVER QUALIFIES, as candidate or as sibling: a character edit
  * (`ltmcguiness.com`) is not the exact label, and edited names are what
  * squatters buy. Condition 3 keeps unrelated tenants of one platform (Wix,
- * one.com) from forming a cohort by accident.
+ * one.com) from forming a cohort by accident — SMALL cohorts. #974's REOPEN
+ * evidence (SQ-23) was itself a live miss: `ltmcguinness`'s cohort is on
+ * `siteground.net`, a `SHARED_NS_APEXES` platform, and condition 3 as
+ * originally written rejected it outright regardless of cohort size. A
+ * cohort of 5+ exact-label variants, all on the seed's A and one identical
+ * NS/MX estate, is no longer the accidental 2-3-tenant grouping condition 3
+ * exists to catch — it is a brand sweep that happens to be hosted on a
+ * shared-tenant registrar. Below {@link SEED_LABEL_COHORT_SHARED_NS_MIN}
+ * members, shared-NS candidates are rejected exactly as before.
  *
  * WHY `unattributed`, NOT `owned_by_seed`: every compared record is
  * CANDIDATE-published and free to copy, and a squatter's own portfolio also
  * shares one NS/MX estate. So, as with step 5c (Ruling A), the match can only
  * falsify the `third_party` arm's "distinct infrastructure / no ownership signal"
  * claim. It never earns ownership, never lifts the attribution ceiling, and
- * never moves severity.
+ * never moves severity — whatever the cohort size.
  */
 export function seedLabelCohortMatch(input: {
 	seedDomain: string;
@@ -788,7 +811,7 @@ export function seedLabelCohortMatch(input: {
 	const a = identicalNonEmptySet(input.candidateA, input.seedA, (v) => v.trim().toLowerCase());
 	if (a === null) return null;
 	const ns = [...new Set(input.registration.ns.map(normHost).filter(Boolean))].sort();
-	if (ns.length === 0 || ns.some((host) => input.isSharedNsHost(host))) return null;
+	if (ns.length === 0) return null;
 	const mx = [...new Set(input.candidateMx.map(normHost).filter(Boolean))].sort();
 
 	const siblings = input.labelCohort
@@ -802,6 +825,14 @@ export function seedLabelCohortMatch(input: {
 		)
 		.map((member) => normHost(member.domain))
 		.sort();
+
+	// #974 — condition 3 (no shared-tenant NS host) is waived only for a
+	// large-enough cohort: siblings.length + 1 counts the candidate itself.
+	// Below SEED_LABEL_COHORT_SHARED_NS_MIN, a shared-platform NS set behaves
+	// exactly as before — the #929 guard against an accidental small grouping
+	// of unrelated platform tenants stays in force.
+	if (ns.some((host) => input.isSharedNsHost(host)) && siblings.length + 1 < SEED_LABEL_COHORT_SHARED_NS_MIN) return null;
+
 	return siblings.length >= MIN_LABEL_COHORT_SIBLINGS ? { a, ns, mx, siblings } : null;
 }
 

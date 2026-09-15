@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-dns",
-	"version": "3.81.1",
+	"version": "3.81.2",
 	"license": "BUSL-1.1",
 	"type": "module",
 	"bin": {
@@ -55,7 +55,9 @@
 		"deploy:infra-probe": "npx wrangler deploy --config wrangler.infra-probe.jsonc",
 		"deploy:whois": "npm -w packages/bv-whois run deploy",
 		"dev:multi": "npx wrangler dev --config wrangler.jsonc --config wrangler.infra-probe.jsonc",
+		"pretest": "npm -w packages/dns-checks run build",
 		"test": "node scripts/vitest-filter-workerd.mjs",
+		"pretypecheck": "npm -w packages/dns-checks run build",
 		"typecheck": "wrangler types && tsc --noEmit",
 		"typecheck:tests": "wrangler types && node scripts/ci/typecheck-tests.mjs",
 		"lint": "eslint .",
@@ -113,6 +115,7 @@
 	},
 	"overrides": {
 		"esbuild": "0.28.1",
-		"ws": "^8.20.1"
+		"ws": "^8.20.1",
+		"sharp": ">=0.35.4"
 	}
 }
