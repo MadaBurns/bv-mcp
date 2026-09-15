@@ -583,6 +583,42 @@ describe('checkSubdomainTakeover', () => {
 		});
 	});
 
+	it('fetches each host robots.txt once across a multi-host A-vector sweep (HTTPS + HTTP fallback share one decision)', async () => {
+		// Regression: every in-flight robots.txt cache entry used to reserve ~2 MiB of the
+		// 4 MiB cache, so a sibling host's pending entry evicted the first one and the
+		// HTTP fallback leg re-fetched robots.txt for the same host.
+		const hosts = ['www.example.com', 'app.example.com', 'api.example.com'];
+		const robotsFetches = new Map<string, number>();
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=CNAME') || url.includes('type=5')) {
+					const nameMatch = url.match(/name=([^&]+)/);
+					const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+					return Promise.resolve(emptyResponse(name, 5));
+				}
+				if (url.includes('type=A') || url.includes('type=1')) {
+					const host = hosts.find((h) => url.includes(`name=${h}`));
+					if (host) return Promise.resolve(aResponse(host, ['203.0.113.10']));
+				}
+				return Promise.resolve(emptyResponse('unknown', 1));
+			}
+
+			const parsed = new URL(url);
+			if (parsed.pathname === '/robots.txt') {
+				robotsFetches.set(parsed.hostname, (robotsFetches.get(parsed.hostname) ?? 0) + 1);
+			}
+			// HTTPS fails outright so every host also takes the HTTP fallback leg.
+			if (url.startsWith('https://')) return Promise.reject(new Error('connect ECONNREFUSED'));
+			return Promise.resolve(new Response('<html><body>Welcome</body></html>', { status: 200 }));
+		});
+
+		const result = await run('example.com');
+		expect(result.findings[0].title).toContain('No dangling CNAME');
+		expect(robotsFetches).toEqual(new Map(hosts.map((h) => [h, 1])));
+	});
+
 	it('detects dangling CNAME to newly added service (Vercel)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;

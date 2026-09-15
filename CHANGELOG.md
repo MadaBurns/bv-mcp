@@ -11,6 +11,7 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 ### Fixed
 
 - **The sidecar deploy-drift gate's `spawnSync` calls had no timeout (#SQ-25).** `wrangler deployments list`, `git fetch origin main`, `git log`, and `git merge-base --is-ancestor` in `scripts/ci/sidecar-deploy-drift-check.ts` could hang the deploy pipeline forever on a wedged network call or a stuck local process. Added named timeout budgets (30s for the network-bound wrangler and fetch calls, 5s for the local git log/merge-base calls); a timed-out call now fails closed — `verifyHeadContainsUpstream` returns a reason string naming the timeout and `probeSidecar` reports `unverified`, never `fresh`.
+- **The robots.txt gate no longer re-fetches a host's robots.txt when sibling hosts are probed concurrently.** Each in-flight robots.txt cache entry reserved a worst-case ~2 MiB body against the 4 MiB cache cap, so a second host's pending entry evicted the first before it was reused: a `check_subdomain_takeover` sweep over several A/AAAA-vector hosts fetched every host's robots.txt twice (once for the HTTPS probe, again for the HTTP fallback). A pending entry now weighs only its key, and the policy is charged at its real size when it settles, still evicting to stay under the 4 MiB cap. The robots posture is unchanged (unreachable is fail-open; disallow semantics as before).
 
 ## [3.81.1] - 2026-09-15
 
