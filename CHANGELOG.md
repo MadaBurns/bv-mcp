@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`check_subdomain_takeover` still missed the #973 Cloudways reproduction in production on 3.81.1.** On the Cloudflare edge, an HTTPS fetch to an origin with a broken certificate does not reject the way it does locally; the edge returns a synthetic `526` (invalid SSL certificate) or `525` (handshake failed) response. The fingerprint probe treated that page as a completed HTTPS leg, matched nothing, and never ran the plain-HTTP fallback. It now treats a `525`/`526` on the HTTPS leg as a failed leg, so the A/AAAA vector falls back to HTTP and the CNAME vector abstains exactly as it does for a rejected fetch. Needs a `@blackveil/dns-checks` version bump.
+
 ## [3.81.1] - 2026-09-15
 
 Fixes the two issues that 3.81.0 did not resolve in production (#973, #974). Scoring model **1.33.0** (from 1.32.0) and `@blackveil/dns-checks` **1.48.0** (from 1.47.0, `PARITY_CORPUS_VERSION` in lockstep), so bv-web-prod needs to re-vendor. The one score-bearing change is the #973 fix, which lowers scores only for domains that serve the Cloudways unmapped-domain edge. No weight, tier or grade band changed.
