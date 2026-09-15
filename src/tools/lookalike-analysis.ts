@@ -4,7 +4,7 @@
  * Lookalike domain generation utilities.
  * Generates typosquat/lookalike domain permutations using multiple strategies:
  * adjacent key swaps, character omission, character duplication, dot insertion,
- * common TLD swaps, and homoglyph substitution.
+ * common TLD swaps, homoglyph substitution, and adjacent character transposition.
  */
 
 import { LABEL_REGEX, MAX_DOMAIN_LENGTH, MAX_LABEL_LENGTH } from '../lib/config';
@@ -179,6 +179,53 @@ export function generateLookalikes(domain: string): string[] {
 		.sort();
 
 	return results.slice(0, MAX_PERMUTATIONS);
+}
+
+/** Cap on transposition permutations returned — bounds the extra DNS-probe cost. */
+const MAX_TRANSPOSITIONS = 30;
+
+/**
+ * Generate ADJACENT CHARACTER TRANSPOSITION permutations (#979): swapping
+ * each pair of neighbouring characters in the base label, e.g.
+ * `nzpost` -> `nzpots`, `microsoft` -> `mircosoft`, `google` -> `gogole`.
+ * Transposition is one of the four classic edit-distance operations
+ * (substitution/keyboard-adjacency, deletion/omission and insertion/
+ * duplication already live in {@link generateLookalikes}) and, empirically,
+ * one of the most common real typos — yet it was never generated at all.
+ *
+ * Kept in its OWN function with its OWN cap, exactly like the cognitive-error
+ * and combosquat lanes below: folding it into `generateLookalikes`'s shared
+ * `MAX_PERMUTATIONS` Set was measured to silently evict OTHER motor
+ * candidates that unrelated regression fixtures depend on (a handful of
+ * short seeds sit right at the 50-item boundary already, e.g.
+ * `testco.com` -> `twstco.com`, `net-agents.dk` -> `net-agent.dk`,
+ * `debugpoint.com` -> `debugpoin.com` — adding even a few more raw
+ * candidates alphabetically bumped those out). A dedicated small cap avoids
+ * that collision entirely, at the cost of one small extra DNS-probe lane
+ * (the same trade the cognitive/combosquat lanes already make).
+ *
+ * Skips a swap that would reproduce the seed unchanged (adjacent identical
+ * letters, e.g. the 'oo' in 'school').
+ *
+ * Returns up to {@link MAX_TRANSPOSITIONS} unique, valid, alphabetically
+ * sorted permutations.
+ */
+export function generateTranspositions(domain: string): string[] {
+	const normalizedDomain = domain.toLowerCase();
+	const { base, tld } = splitDomainTld(normalizedDomain);
+	const candidates = new Set<string>();
+
+	for (let i = 0; i < base.length - 1; i++) {
+		if (base[i] === base[i + 1]) continue;
+		const permuted = base.slice(0, i) + base[i + 1] + base[i] + base.slice(i + 2);
+		candidates.add(permuted + tld);
+	}
+
+	const results = Array.from(candidates)
+		.filter((candidate) => candidate !== normalizedDomain && isDomainValid(candidate))
+		.sort();
+
+	return results.slice(0, MAX_TRANSPOSITIONS);
 }
 
 /* -------------------------------------------------------------------------

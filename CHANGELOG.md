@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Added
+
+- **`check_lookalikes` now generates adjacent-character-transposition typosquats (#979).** The permutation generator had no rule for swapping two neighbouring characters, so a high-frequency real typo class — `nzpost.co.nz` → `nzpots.co.nz`, `microsoft.com` → `mircosoft.com`, `google.com` → `gogole.com` — was never generated, let alone probed; `nzpots.co.nz` is mail-capable with no web presence and was invisible to every existing rule. Added as its own `generateTranspositions` lane with its own cap, rather than folded into the existing `generateLookalikes` motor-error set: measured against the existing fixture suite, folding it in evicted OTHER already-relied-on candidates (`net-agent.dk`, `debugpoin.com`, `twstco.com`) whenever a seed's raw candidate pool already sat near the 50-item cap, because that cap truncates alphabetically. The dedicated lane avoids that collision entirely. `MAX_PERMUTATIONS` (the existing generator's cap) is unchanged. No scoring, tier, or category change — `check_lookalikes` is not a scored check.
+
 ### Fixed
 
 - **`map_registrar_products` and `prioritize_portfolio_leads` no longer print the internal 9-band grade beside a 6-band scale elsewhere in the same report (#962).** Both tools threaded `scanResult.score.grade` — the internal `scoreToGrade` scale — straight into their reports, so a domain at 86 (9-band `B+`) could read `B+` on its own score line while `prioritize_portfolio_leads`' portfolio rollup, computed separately via `nistScoreToGrade`, showed the customer-facing `B` for the same scan. Same defect class as `analyze_drift` (#727): both call sites now route the grade through `displayGradeFor`, so an ungraded scan still renders "not measured" rather than a fabricated letter, and a graded one shows the same 6-band letter everywhere.

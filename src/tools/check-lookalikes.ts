@@ -33,7 +33,7 @@ import { callReconScan, isReconHit } from '../lib/recon-binding';
 import type { ReconBinding, BindingDegradationSink, ReconScanResult } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult } from '../lib/scoring';
-import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes } from './lookalike-analysis';
+import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes, generateTranspositions } from './lookalike-analysis';
 import { calibrateLookalikeSeverity, type LookalikeSignals } from './lookalike-severity';
 import { attributionConfidence, classifyOwnership, type OwnershipAssessment } from '../lib/ownership-attribution';
 import { isPooledSharedNsHost, isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
@@ -244,12 +244,17 @@ async function checkLookalikesCore(
 ): Promise<CheckResult> {
 	const startedAt = Date.now();
 	const findings: Finding[] = [];
-	// THREE disjoint candidate lanes, deduped into one set that flows through the
+	// FOUR disjoint candidate lanes, deduped into one set that flows through the
 	// same NS-existence → probe → enrich → severity pipeline:
 	//
 	//  - `generateLookalikes` — MOTOR errors (keyboard adjacency, omission,
 	//    duplication, dot insertion, TLD swap, homoglyph): a slip of the finger
 	//    by someone who knows the correct spelling.
+	//  - `generateTranspositions` — the MOTOR error `generateLookalikes` was
+	//    missing entirely: swapping two adjacent characters (#979). Kept as its
+	//    own lane rather than folded into `generateLookalikes` because doing so
+	//    was measured to evict OTHER motor candidates for seeds that already
+	//    sit near that lane's cap.
 	//  - `generateCognitiveLookalikes` — COGNITIVE errors: the spelling a large
 	//    population believes IS correct (`sketchers`, `berenstein`), typed
 	//    deliberately and repeatedly. The motor set cannot reach these except by
@@ -260,7 +265,12 @@ async function checkLookalikesCore(
 	// Each lane carries its OWN cap, so adding one can never evict another's
 	// candidates through a shared truncation.
 	const permutations = [
-		...new Set([...generateLookalikes(domain), ...generateCognitiveLookalikes(domain), ...generateCombosquats(domain)]),
+		...new Set([
+			...generateLookalikes(domain),
+			...generateTranspositions(domain),
+			...generateCognitiveLookalikes(domain),
+			...generateCombosquats(domain),
+		]),
 	];
 
 	if (permutations.length === 0) {
