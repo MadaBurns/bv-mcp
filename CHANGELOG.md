@@ -12,6 +12,15 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 - Bumped the transitive `sharp` devDependency (pulled in by `wrangler`/`miniflare` and `@cloudflare/vitest-pool-workers`) to `>=0.35.4` via a `package.json` `overrides` entry, resolving Dependabot alert #42 (GHSA-g89c-p67h-r497, GHSA-2jg2-4ch7-h545 in libheif). Dev/test-only dependency; no runtime code uses `sharp`.
 
+## [3.81.2] - 2026-09-15
+
+Fixes the two issues that 3.81.1 still did not resolve in production (#973, #974). Scoring model **1.34.0** (from 1.33.0) and `@blackveil/dns-checks` **1.49.0** (from 1.48.0, `PARITY_CORPUS_VERSION` in lockstep), so bv-web-prod needs to re-vendor. The one score-bearing change is the #973 fix, which lowers scores only for domains serving the Cloudways edge behind a broken certificate. No weight, tier or grade band changed.
+
+### Fixed
+
+- **`check_subdomain_takeover` still missed the #973 Cloudways reproduction in production on 3.81.1.** On the Cloudflare edge, an HTTPS fetch to an origin with a broken certificate does not reject the way it does locally; the edge returns a synthetic `526` (invalid SSL certificate) or `525` (handshake failed) response. The fingerprint probe treated that page as a completed HTTPS leg, matched nothing, and never ran the plain-HTTP fallback. It now treats a `525`/`526` on the HTTPS leg as a failed leg, so the A/AAAA vector falls back to HTTP and the CNAME vector abstains exactly as it does for a rejected fetch. Scoring model 1.34.0, `@blackveil/dns-checks` 1.49.0.
+- **`check_lookalikes` no longer calls a large exact-label TLD cohort `third_party` just because it is hosted on a shared-tenant DNS platform (#974, third reopen).** The live SMB cohort (`ltmcguinness.{com,net,co,io,ai,nz}`) sits on `ns1/ns2.siteground.net`, a `SHARED_NS_APEXES` platform, so step 5d's `seed_label_cohort` corroborator rejected it outright regardless of cohort size, and the whole 6-domain sweep was reported `third_party` with takedown advice. A new `SEED_LABEL_COHORT_SHARED_NS_MIN` (5) now waives the shared-NS exclusion only when the exact-label cohort on the seed's A set — siblings plus the candidate — has 5 or more members; below that size a shared-platform NS set is rejected exactly as before (the #929 guard against an accidental grouping of unrelated platform tenants). The verdict stays `unattributed`, never `owned_by_seed`, whatever the cohort size. No other step-5d rule (exact label, the seed's A, 2+ siblings) changed, and no other `third_party` branch is affected. No scoring change: `check_lookalikes` is not a scored check.
+
 ## [3.81.1] - 2026-09-15
 
 Fixes the two issues that 3.81.0 did not resolve in production (#973, #974). Scoring model **1.33.0** (from 1.32.0) and `@blackveil/dns-checks` **1.48.0** (from 1.47.0, `PARITY_CORPUS_VERSION` in lockstep), so bv-web-prod needs to re-vendor. The one score-bearing change is the #973 fix, which lowers scores only for domains that serve the Cloudways unmapped-domain edge. No weight, tier or grade band changed.
