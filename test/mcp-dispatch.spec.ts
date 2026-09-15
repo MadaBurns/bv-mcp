@@ -75,7 +75,16 @@ describe('mcp-dispatch', () => {
 
 		expect(result.kind).toBe('success');
 		if (result.kind !== 'success') throw new Error('expected success result');
-		const { description } = result.payload.result.serverInfo;
+
+		// `JsonRpcPayload` is the success|error union and `jsonRpcSuccess` types its `result`
+		// as `unknown`, so narrow with an `in` check rather than reaching straight through.
+		// The neighbouring tests in this file reach through and are parked in
+		// `test/typecheck-baseline.json` at 9 errors; this test deliberately does NOT add a
+		// tenth. Do not "simplify" it back — the baseline is a ratchet, not a budget.
+		const { payload } = result;
+		if (!('result' in payload)) throw new Error('expected a success payload');
+		const { description } = (payload.result as { serverInfo: { description: string } })
+			.serverInfo;
 
 		// Each figure is named with its own unit — tools, check_* checks, and scan
 		// categories are different counts and must not be interchangeable in the string.
