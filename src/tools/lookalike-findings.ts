@@ -187,6 +187,16 @@ export function buildRegisteredDarkFinding(result: LookalikeResult, seedDomain: 
  * registered to a different organisation" — a claim the nameserver evidence
  * alone never supported and which is simply false here.
  *
+ * `brandHeld.registrarIanaId === null` (#949) marks the ENTERPRISE-GATED
+ * NS-SET corroborator form: RDAP published no IANA registrar ID for either
+ * domain (routine for `.uk` / `.nz` / `.dk` ccTLDs), so the wording must not
+ * cite a registrar ID it doesn't have — it cites the shared, non-self-service
+ * nameserver platform instead. D4 WORDING FIX: this is the surface that used
+ * to leave such a candidate to the generic non-owned gate, which — for a
+ * `third_party` verdict — says "is registered to a different organisation";
+ * routing it here instead means an unattributed/no-IANA-ID candidate that IS
+ * corroborated this way never reaches that sentence.
+ *
  * SEVERITY IS `info`, EXACTLY AS {@link applyOwnershipGate} WOULD HAVE CAPPED
  * IT. This branch changes what the report SAYS, never what it SCORES:
  * `capAttributionSeverity()` caps every non-`owned_by_seed` attribution finding
@@ -197,24 +207,32 @@ export function buildBrandHeldFinding(
 	result: LookalikeResult,
 	seedDomain: string,
 	ownership: OwnershipAssessment,
-	brandHeld: { registrarIanaId: string; registrarName: string | null; reason: DefensiveReason },
+	brandHeld: { registrarIanaId: string | null; registrarName: string | null; reason: DefensiveReason },
 ): Finding {
+	const viaRegistrar = brandHeld.registrarIanaId !== null;
 	const registrarLabel = brandHeld.registrarName
 		? `${brandHeld.registrarName} (IANA ${brandHeld.registrarIanaId})`
 		: `IANA registrar ${brandHeld.registrarIanaId}`;
+	const title = viaRegistrar
+		? `Confusable domain held at the same brand-protection registrar: ${result.domain}`
+		: `Confusable domain on the same enterprise-gated nameserver platform: ${result.domain}`;
+	const corroborationSentence = viaRegistrar
+		? `the registry publishes the SAME brand-protection registrar for both (${registrarLabel})`
+		: `both delegate to an identical, complete nameserver set on a DNS platform that does not offer self-service registration — a squatter cannot buy onto it, so this is a registrant-grade signal even though neither domain's registration record publishes an IANA registrar ID`;
+	const notProofClause = viaRegistrar ? 'one such registrar serves many brands' : 'that platform serves many enterprise brands';
 	return createFinding(
 		'lookalikes',
-		`Confusable domain held at the same brand-protection registrar: ${result.domain}`,
+		title,
 		'info',
-		`The domain ${result.domain} is a confusable variant of ${seedDomain}, and the registry publishes the SAME brand-protection registrar for both (${registrarLabel}). Its infrastructure also has the shape of a defensive registration — ${DEFENSIVE_REASON_PHRASES[brandHeld.reason]}. Brand-protection registrars do not sell to the general public and the IANA registrar ID is published by the registry rather than declared by the registrant, so this corroborates that ${result.domain} is held by the scanned organisation itself; it is not proof, since one such registrar serves many brands. Nameserver evidence is separate and did not link the two: ${ownership.rationale} Confirm against your own domain portfolio before treating ${result.domain} as an outside party's.`,
+		`The domain ${result.domain} is a confusable variant of ${seedDomain}, and ${corroborationSentence}. Its infrastructure also has the shape of a defensive registration — ${DEFENSIVE_REASON_PHRASES[brandHeld.reason]}. This corroborates that ${result.domain} is held by the scanned organisation itself; it is not proof, since ${notProofClause}. The structural nameserver-set ownership check reached a separate conclusion: ${ownership.rationale} Confirm against your own domain portfolio before treating ${result.domain} as an outside party's.`,
 		{
 			lookalikeDomain: result.domain,
 			hasA: result.hasA,
 			hasMX: result.hasMX,
 			brandHeldRegistration: true,
-			sharedRegistrarIanaId: brandHeld.registrarIanaId,
+			...(viaRegistrar ? { sharedRegistrarIanaId: brandHeld.registrarIanaId } : { sharedEnterpriseGatedNsSet: true }),
 			defensiveReason: brandHeld.reason,
-			// Ruling A holds: registrar evidence never manufactures
+			// Ruling A holds: neither corroborator form manufactures
 			// `owned_by_seed`. The STRUCTURAL verdict travels unchanged.
 			ownershipVerdict: ownership.verdict,
 			ownershipRationale: ownership.rationale,
@@ -394,15 +412,18 @@ export function buildThreatObservationFinding(
 	corroboratorReasons: string,
 	sharedRegistrantOrg: string | undefined,
 	/**
-	 * True when `isBrandHeldRegistration` corroborated that the candidate
-	 * is the scanned organisation's OWN defensive registration. Changes the
+	 * Set when `isBrandHeldRegistration` corroborated that the candidate is
+	 * the scanned organisation's OWN defensive registration. Changes the
 	 * closing REMEDIATION sentence only — the observation and its calibrated
 	 * severity are emitted unchanged, per the F1 ruling that an attribution
 	 * signal may annotate the threat axis but never switch it off or discount
 	 * it. Telling a customer to report their own domain for takedown is not a
-	 * severity question; it is simply wrong advice.
+	 * severity question; it is simply wrong advice. `registrarIanaId: null`
+	 * (#949) means the corroborator was the enterprise-gated NS-set leg, not a
+	 * shared IANA registrar ID — wording must not claim an ID RDAP never
+	 * published for either domain.
 	 */
-	brandHeld = false,
+	brandHeld: { registrarIanaId: string | null } | undefined = undefined,
 ): Finding {
 	const infraPhrase = signals.hasMX
 		? `active mail infrastructure (MX records), so it is capable of sending mail that resembles ${seedDomain}`
@@ -421,7 +442,9 @@ export function buildThreatObservationFinding(
 	// replaced — the observation itself and its calibrated severity are
 	// untouched, so nothing here moves a score.
 	const attributionClause = brandHeld
-		? `the registry publishes the same brand-protection registrar for it as for ${seedDomain}, so it is most likely the scanned organisation's own defensive registration`
+		? brandHeld.registrarIanaId !== null
+			? `the registry publishes the same brand-protection registrar for it as for ${seedDomain}, so it is most likely the scanned organisation's own defensive registration`
+			: `it delegates to the same complete nameserver set as ${seedDomain} on a DNS platform that does not offer self-service registration, so it is most likely the scanned organisation's own defensive registration`
 		: `${candidateDomain} does not appear to belong to the scanned organisation, this finding claims no control over it, and no change to it is requested`;
 	const remediationClause = brandHeld
 		? `Because this looks like your own defensive registration, treat it as portfolio hygiene rather than a threat: confirm it against your domain portfolio, and keep it parked with mail explicitly disabled so it cannot be used to send. Do NOT report it for takedown without confirming ownership first.`

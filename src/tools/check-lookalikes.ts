@@ -36,7 +36,7 @@ import { buildCheckResult } from '../lib/scoring';
 import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes } from './lookalike-analysis';
 import { calibrateLookalikeSeverity, type LookalikeSignals } from './lookalike-severity';
 import { attributionConfidence, classifyOwnership, type OwnershipAssessment } from '../lib/ownership-attribution';
-import { isPooledSharedNsHost, isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
+import { isEnterpriseGatedNsHost, isPooledSharedNsHost, isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
 import { extractBrandName } from '../lib/public-suffix';
 import {
 	detectWildcardParents,
@@ -496,8 +496,13 @@ async function checkLookalikesCore(
 			: EMPTY_RDAP_PROBE;
 	const primaryRegistrantOrg = primaryRegistration.registrantOrg;
 	const sameEntityMatches = new Map<string, string>();
-	/** Candidates the registration record corroborates as the seed org's own defensive registrations. */
-	const brandHeldMatches = new Map<string, { registrarIanaId: string; registrarName: string | null; reason: DefensiveReason }>();
+	/**
+	 * Candidates the registration record corroborates as the seed org's own
+	 * defensive registrations. `registrarIanaId: null` (#949) marks a candidate
+	 * corroborated via the enterprise-gated NS-set leg instead of a shared IANA
+	 * registrar ID — RDAP published no such ID for either side.
+	 */
+	const brandHeldMatches = new Map<string, { registrarIanaId: string | null; registrarName: string | null; reason: DefensiveReason }>();
 	for (const candidateDomain of sameEntityCandidates) {
 		const corroborators = enrichment.get(candidateDomain);
 		const candidateOrg = corroborators?.registrantOrg ?? null;
@@ -521,6 +526,8 @@ async function checkLookalikesCore(
 			candidateRegistrarIanaId: corroborators?.registrarIanaId ?? null,
 			candidateMxExchanges: probe.mxExchanges,
 			candidateNsHosts: Array.from(lookalikeNsMap.get(candidateDomain) ?? []),
+			seedNsHosts: primaryNsList,
+			isEnterpriseGatedNsHost,
 		});
 		if (brandHeld.brandHeld) {
 			brandHeldMatches.set(candidateDomain, {
@@ -667,7 +674,7 @@ async function checkLookalikesCore(
 				ownership,
 				corroboratorReasons,
 				matchedOrg,
-				brandHeld !== undefined,
+				brandHeld !== undefined ? { registrarIanaId: brandHeld.registrarIanaId } : undefined,
 			),
 		);
 		// `hasMX` is already false for an RFC 7505 null MX (`0 .`), which is the

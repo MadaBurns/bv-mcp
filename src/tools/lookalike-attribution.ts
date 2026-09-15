@@ -179,26 +179,67 @@ export function computeSameEntityCandidates(
 }
 
 /**
+ * LEG 1, ALTERNATIVE FORM (#949) — true when the seed and candidate delegate
+ * to an IDENTICAL, COMPLETE nameserver set on an ENTERPRISE-GATED platform
+ * (see `ENTERPRISE_GATED_NS_APEXES`, `src/tenants/discovery/shared-ns-hosts.ts`).
+ * A squatter cannot self-serve onto one of those platforms, so a complete set
+ * match there is a registrant-grade signal of the same KIND as a shared IANA
+ * brand-protection registrar ID — usable when RDAP publishes no such ID on
+ * either side (routine for `.uk` / `.nz` / `.dk` and other ccTLD registries).
+ *
+ * Requires the SEED's entire resolved NS set to sit on an enterprise-gated
+ * apex (never a partial platform overlap) and the candidate's resolved set to
+ * be exactly equal to it — not merely overlapping. `classifyOwnership()` may
+ * independently decline to attribute this same pair (its own set-comparison
+ * has a different ratio/threshold shape); that is not a contradiction, only a
+ * SEPARATE structural check reaching a separate conclusion (Ruling A: this
+ * corroborator never feeds back into it).
+ */
+function sharesCompleteEnterpriseGatedNsSet(
+	seedNsHosts: readonly string[],
+	candidateNsHosts: readonly string[],
+	isEnterpriseGatedNsHost: (nsHost: string) => boolean,
+): boolean {
+	if (seedNsHosts.length === 0 || candidateNsHosts.length === 0) return false;
+	if (!seedNsHosts.every(isEnterpriseGatedNsHost)) return false;
+	const seedSet = new Set(seedNsHosts);
+	const candidateSet = new Set(candidateNsHosts);
+	if (seedSet.size !== candidateSet.size) return false;
+	for (const host of seedSet) {
+		if (!candidateSet.has(host)) return false;
+	}
+	return true;
+}
+
+/**
  * THE predicate deciding whether a candidate is the scanned organisation's own
  * DEFENSIVE REGISTRATION rather than a third party's domain.
  *
  * Requires BOTH, and neither alone is sufficient:
  *
- *  1. REGISTRATION-RECORD corroboration — the candidate and the seed share an
- *     IANA registrar ID belonging to a brand-protection registrar
- *     ({@link BRAND_PROTECTION_REGISTRAR_IANA_IDS}). A shared RETAIL registrar
- *     is explicitly not evidence: millions of unrelated registrants share one.
+ *  1. REGISTRATION-RECORD corroboration — EITHER of two independent forms:
+ *
+ *     a. the candidate and the seed share an IANA registrar ID belonging to a
+ *        brand-protection registrar ({@link BRAND_PROTECTION_REGISTRAR_IANA_IDS}).
+ *        A shared RETAIL registrar is explicitly not evidence: millions of
+ *        unrelated registrants share one.
+ *
+ *     b. (#949) the two share an identical, COMPLETE nameserver set on an
+ *        ENTERPRISE-GATED platform ({@link sharesCompleteEnterpriseGatedNsSet}) —
+ *        checked only when (a) did not already match, so a real registrar-ID
+ *        corroboration is never displaced by the weaker NS-only form.
  *
  *  2. DEFENSIVE INFRASTRUCTURE SHAPE — `evaluateDefensiveRegistration()`
  *     (`src/lib/brand-defensive-registration.ts`) agrees the candidate is a
  *     typo-close label parked with minimal infrastructure. An attacker who
- *     somehow reached the same corporate registrar but stood up live mail
- *     still fails this leg and gets the full threat treatment.
+ *     somehow reached the same corporate registrar (or the same enterprise-
+ *     gated platform) but stood up live mail still fails this leg and gets
+ *     the full threat treatment.
  *
  * WHAT THIS DELIBERATELY DOES NOT DO: it does not, and must not, produce an
  * `owned_by_seed` ownership verdict. `classifyOwnership()` stays driven by
- * seed-side nameserver evidence alone (Ruling A), and every finding about this
- * candidate keeps carrying its structural `third_party` verdict. What changes
+ * seed-side nameserver evidence alone (Ruling A / #937), and every finding
+ * about this candidate keeps carrying its structural verdict. What changes
  * is what the report CLAIMS and RECOMMENDS: it stops asserting the domain
  * "is registered to a different organisation" on evidence that never
  * addressed the question, and stops telling the customer to report their own
@@ -206,18 +247,15 @@ export function computeSameEntityCandidates(
  *
  * NULL-GUARD NOTE — VERIFIED BY MUTATION, NOT ASSUMED (the same disclosure
  * `isSameEntityOrgMatch` above makes about its own both-sides gate). The
- * `=== null` guard on the first line is currently REDUNDANT: deleting it left
- * the entire suite green, because two `null` IDs pass the equality check and
- * are then rejected by `BRAND_PROTECTION_REGISTRAR_IANA_IDS.has(null)` anyway.
- * No fixture can discriminate the two implementations while membership is an
- * exact-set test, so none is shipped pretending to.
- *
- * It is kept as DEFENCE IN DEPTH and becomes load-bearing the moment that
- * membership test is relaxed — a name-based or fuzzy registrar comparison, or
- * an "any shared registrar" mode — at which point "both sides published
- * nothing" would read as a match and silently mark every RDAP-less candidate
- * as brand-held. Anyone relaxing it MUST keep this guard and ship a fixture
- * that discriminates it, which only becomes constructible then.
+ * `=== null` guard on the registrar-ID leg used to be REDUNDANT: deleting it
+ * left the entire suite green, because two `null` IDs pass the equality check
+ * and are then rejected by `BRAND_PROTECTION_REGISTRAR_IANA_IDS.has(null)`
+ * anyway. #949 IS the relaxation that guard's own doc warned about: leg 1 no
+ * longer fails closed when both registrar IDs are null, because the NS-set
+ * form (b) can still fire independently. The fixture that discriminates it
+ * ships alongside this change: both IDs null + a complete enterprise-gated
+ * set → brand-held; both IDs null + a complete SELF-SERVICE set → not (that
+ * platform IS buyable by a squatter, so it must never satisfy leg 1).
  */
 export function isBrandHeldRegistration(input: {
 	seedDomain: string;
@@ -226,11 +264,24 @@ export function isBrandHeldRegistration(input: {
 	candidateRegistrarIanaId: string | null;
 	candidateMxExchanges: readonly string[];
 	candidateNsHosts: readonly string[];
-}): { brandHeld: false } | { brandHeld: true; registrarIanaId: string; reason: DefensiveReason } {
+	/** The seed's own resolved NS hostnames — required for leg 1's NS-set alternative form (#949). */
+	seedNsHosts: readonly string[];
+	/** Enterprise-gated-platform predicate, injected (mirrors `isSharedNsHost` elsewhere) so this module stays free of a direct `src/tenants/discovery` import. */
+	isEnterpriseGatedNsHost: (nsHost: string) => boolean;
+}): { brandHeld: false } | { brandHeld: true; registrarIanaId: string | null; reason: DefensiveReason } {
 	const { seedRegistrarIanaId, candidateRegistrarIanaId } = input;
-	if (seedRegistrarIanaId === null || candidateRegistrarIanaId === null) return { brandHeld: false };
-	if (seedRegistrarIanaId !== candidateRegistrarIanaId) return { brandHeld: false };
-	if (!BRAND_PROTECTION_REGISTRAR_IANA_IDS.has(candidateRegistrarIanaId)) return { brandHeld: false };
+
+	const registrarMatch =
+		seedRegistrarIanaId !== null && candidateRegistrarIanaId !== null && seedRegistrarIanaId === candidateRegistrarIanaId
+			? candidateRegistrarIanaId
+			: null;
+	const leg1RegistrarId = registrarMatch !== null && BRAND_PROTECTION_REGISTRAR_IANA_IDS.has(registrarMatch) ? registrarMatch : null;
+
+	const leg1EnterpriseGatedNs =
+		leg1RegistrarId === null &&
+		sharesCompleteEnterpriseGatedNsSet(input.seedNsHosts, input.candidateNsHosts, input.isEnterpriseGatedNsHost);
+
+	if (leg1RegistrarId === null && !leg1EnterpriseGatedNs) return { brandHeld: false };
 
 	const shape = evaluateDefensiveRegistration({
 		candidateDomain: input.candidateDomain,
@@ -242,7 +293,10 @@ export function isBrandHeldRegistration(input: {
 		nsHosts: input.candidateNsHosts,
 	});
 	if (!shape.defensive || shape.reason === undefined) return { brandHeld: false };
-	return { brandHeld: true, registrarIanaId: candidateRegistrarIanaId, reason: shape.reason };
+	// `registrarIanaId: null` marks the NS-set corroborator form — callers must
+	// not fabricate a registrar ID that RDAP never published (see the D4 wording
+	// fix in `lookalike-findings.ts`'s `buildBrandHeldFinding`).
+	return { brandHeld: true, registrarIanaId: leg1RegistrarId, reason: shape.reason };
 }
 
 /**
