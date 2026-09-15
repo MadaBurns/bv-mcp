@@ -31,11 +31,22 @@ describe('mcp-dispatch', () => {
 		expect(result.kind).toBe('success');
 		if (result.kind !== 'success') throw new Error('expected success result');
 		expect(result.newSessionId).toBe('session-abc');
-		expect(result.payload.result.serverInfo.version).toBe('1.0.0');
-		expect(result.payload.result.serverInfo.description).toBeTruthy();
-		expect(typeof result.payload.result.instructions).toBe('string');
-		expect(result.payload.result.instructions.length).toBeGreaterThan(0);
-		expect(result.payload.result.capabilities.prompts).toEqual({ listChanged: false });
+
+		// `JsonRpcPayload` is the success|error union and `jsonRpcSuccess` types its `result`
+		// as `unknown`, so narrow with an `in` check rather than reaching straight through.
+		const { payload } = result;
+		if (!('result' in payload)) throw new Error('expected a success payload');
+		const initResult = payload.result as {
+			serverInfo: { version: string; description: string };
+			instructions: string;
+			capabilities: { prompts: { listChanged: boolean } };
+		};
+
+		expect(initResult.serverInfo.version).toBe('1.0.0');
+		expect(initResult.serverInfo.description).toBeTruthy();
+		expect(typeof initResult.instructions).toBe('string');
+		expect(initResult.instructions.length).toBeGreaterThan(0);
+		expect(initResult.capabilities.prompts).toEqual({ listChanged: false });
 		expect(auditSessionCreated).toHaveBeenCalledWith('203.0.113.11', 'session-abc');
 	});
 
@@ -78,9 +89,8 @@ describe('mcp-dispatch', () => {
 
 		// `JsonRpcPayload` is the success|error union and `jsonRpcSuccess` types its `result`
 		// as `unknown`, so narrow with an `in` check rather than reaching straight through.
-		// The neighbouring tests in this file reach through and are parked in
-		// `test/typecheck-baseline.json` at 9 errors; this test deliberately does NOT add a
-		// tenth. Do not "simplify" it back — the baseline is a ratchet, not a budget.
+		// The other tests in this file now follow the same shape (SQ-30, `test/typecheck-baseline.json`
+		// is 0 for this file) — do not "simplify" any of them back to a bare reach-through.
 		const { payload } = result;
 		if (!('result' in payload)) throw new Error('expected a success payload');
 		const { description } = (payload.result as { serverInfo: { description: string } })
@@ -159,8 +169,11 @@ describe('mcp-dispatch', () => {
 
 		expect(result.kind).toBe('success');
 		if (result.kind !== 'success') throw new Error('expected success result');
-		expect(result.payload.result.prompts).toBeDefined();
-		expect(Array.isArray(result.payload.result.prompts)).toBe(true);
+		const { payload } = result;
+		if (!('result' in payload)) throw new Error('expected a success payload');
+		const { prompts } = payload.result as { prompts: unknown[] };
+		expect(prompts).toBeDefined();
+		expect(Array.isArray(prompts)).toBe(true);
 		expect(result.logCategory).toBe('prompts');
 	});
 
@@ -178,7 +191,10 @@ describe('mcp-dispatch', () => {
 
 		expect(result.kind).toBe('success');
 		if (result.kind !== 'success') throw new Error('expected success result');
-		expect(result.payload.result.messages).toBeDefined();
+		const { payload } = result;
+		if (!('result' in payload)) throw new Error('expected a success payload');
+		const { messages } = payload.result as { messages: unknown[] };
+		expect(messages).toBeDefined();
 		expect(result.logCategory).toBe('prompts');
 	});
 
@@ -196,7 +212,9 @@ describe('mcp-dispatch', () => {
 
 		expect(result.kind).toBe('success');
 		if (result.kind !== 'success') throw new Error('expected success result');
-		expect(result.payload.error.code).toBe(-32601);
+		const { payload } = result;
+		if (!('error' in payload)) throw new Error('expected an error payload');
+		expect(payload.error.code).toBe(-32601);
 		expect(result.logResult).toBe('method_not_found');
 	});
 });
