@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-dns",
-	"version": "3.81.1",
+	"version": "3.81.2",
 	"license": "BUSL-1.1",
 	"type": "module",
 	"bin": {
@@ -113,6 +113,7 @@
 	},
 	"overrides": {
 		"esbuild": "0.28.1",
-		"ws": "^8.20.1"
+		"ws": "^8.20.1",
+		"sharp": ">=0.35.4"
 	}
 }

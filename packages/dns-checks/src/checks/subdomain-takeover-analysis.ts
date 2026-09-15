@@ -30,6 +30,9 @@ export type TakeoverVerificationStatus = 'potential' | 'verified' | 'not_exploit
 /** Default HTTPS timeout for fingerprint probing (ms) */
 const HTTPS_TIMEOUT_MS = 4_000;
 
+/** Cloudflare edge statuses for an origin TLS failure: 525 handshake failed, 526 invalid certificate. */
+const EDGE_TLS_FAILURE_STATUSES = new Set([525, 526]);
+
 export const KNOWN_SUBDOMAINS = [
 	'www',
 	'app',
@@ -427,6 +430,15 @@ async function fetchAndMatchFingerprint(
 		redirect: 'manual',
 		signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
 	});
+	// #973 live miss (3.81.1): on the Cloudflare edge an origin TLS failure does NOT reject
+	// the fetch the way local workerd/Node do — the edge answers with a synthetic 525 (SSL
+	// handshake failed) or 526 (invalid SSL certificate) Response. Read as a completed leg,
+	// that page matched nothing and the #973 HTTP fallback never ran. Throw instead, so
+	// every caller sees exactly what a rejected https leg already means to it.
+	if (url.startsWith('https://') && EDGE_TLS_FAILURE_STATUSES.has(response.status)) {
+		void response.body?.cancel().catch(() => undefined);
+		throw new Error(`HTTPS origin TLS failure (edge status ${response.status})`);
+	}
 	// Skip fingerprint matching on redirects — redirecting services are not deprovisioned.
 	// Release the unread body so workerd doesn't cancel a stalled response.
 	if (response.status >= 300 && response.status < 400) {

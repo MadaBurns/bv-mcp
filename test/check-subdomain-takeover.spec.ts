@@ -541,7 +541,7 @@ describe('checkSubdomainTakeover', () => {
 			globalThis.fetch = dohMock(() => (url) => {
 				// HTTPS (including the robots.txt probe it gates behind) fails with
 				// no response at all — the live reproduction's exact wording.
-				if (url.startsWith('https://')) {
+				if (String(url).startsWith('https://')) {
 					return Promise.reject(new Error('connect ECONNREFUSED'));
 				}
 				// The HTTP fallback reaches the origin and gets the iframe-only 403 body.
@@ -556,6 +556,29 @@ describe('checkSubdomainTakeover', () => {
 			expect(finding!.metadata?.verificationStatus).toBe('potential');
 			expect(finding!.metadata?.vector).toBe('a_record');
 		});
+
+		it.each([526, 525])(
+			'falls back to plain HTTP when the Cloudflare edge answers the HTTPS leg with a synthetic %i (production shape, 3.81.1 live miss)',
+			async (edgeStatus) => {
+				// Production Workers do NOT reject a fetch to an origin with a broken certificate:
+				// the edge returns a 525/526 Response (measured live: check_ssl on the same host
+				// reports "status 526"). The robots.txt fetch gets the same page. Local workerd
+				// rejects instead, which is why the rejection-shaped test above passed while prod
+				// still returned "No dangling CNAME records found".
+				globalThis.fetch = dohMock(() => (url) => {
+					if (String(url).startsWith('https://')) {
+						return Promise.resolve(new Response('<html><title>Invalid SSL certificate | Error code 526</title></html>', { status: edgeStatus }));
+					}
+					return Promise.resolve(new Response(iframeOnlyBody, { status: 403 }));
+				});
+
+				const result = await run('example.com');
+				const finding = result.findings.find((f) => f.title.includes('Cloudways'));
+				expect(finding).toBeDefined();
+				expect(finding!.severity).toBe('high');
+				expect(finding!.metadata?.vector).toBe('a_record');
+			},
+		);
 
 		it('stays silent when both HTTPS and the HTTP fallback fail', async () => {
 			globalThis.fetch = dohMock(() => (_url) => Promise.reject(new Error('connect ECONNREFUSED')));
