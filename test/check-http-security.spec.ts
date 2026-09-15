@@ -534,6 +534,109 @@ describe('checkHttpSecurity — dual-fetch header union', () => {
 		});
 	});
 
+	describe('issue #972 — an unfingerprinted UA/TLS-based 403 (non-Cloudflare nginx) must abstain, not publish 6 false "No <header>" findings', () => {
+		// Already correct on main via the generic-appliance path exercised above (guard test at
+		// line ~529) — this pins the EXACT reported shape (a consistent 403 with no vendor
+		// fingerprint and no security headers on either HEAD or the GET fallback) so a future
+		// change to the dual-fetch/WAF-detection wiring can't silently regress it. No production
+		// code change was needed for this half of #972 — see `check-ssl.spec.ts`'s
+		// "issue #972" describe block for the half that DID (the ssl category's HSTS/redirect
+		// analysis had no block-status guard at all).
+		it('a consistent 403 (HEAD and GET fallback, no security headers, no CF/Akamai signal) abstains with zero header-missing findings', async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 403,
+				headers: new Headers(),
+				text: async () => '<html><body>Forbidden</body></html>',
+			} as unknown as Response);
+			const result = await run();
+			expect(result.checkStatus).toBe('error');
+			expect(result.score).toBe(0);
+			expect(result.passed).toBe(false);
+			// No confident "No <header>" findings derived from the unfingerprinted block page.
+			expect(result.findings.some((f) => f.title.startsWith('No '))).toBe(false);
+			expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+			expect(result.findings.some((f) => f.title === 'HTTP check blocked by security appliance')).toBe(true);
+		});
+
+		// Control: a normal 200 with genuinely missing headers is unaffected by this abstention path.
+		it('a real 200 with missing headers still publishes the findings (control)', async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 200,
+				headers: new Headers(),
+			});
+			const result = await run();
+			expect(result.checkStatus).toBeUndefined();
+			expect(result.findings.some((f) => f.title === 'No Content-Security-Policy')).toBe(true);
+		});
+	});
+
+	describe('issue #972 repair (SQ-17) — an unfingerprinted 2xx-shaped block (202) must also abstain', () => {
+		// The SQ-4 candidate fixed only check_ssl; SQ-17's review reproduced this exact shape
+		// still publishing a full false "No <header>" slate at score 45 with checkStatus
+		// undefined, because `response.ok` is true for 202 and the package's no-content guard
+		// covered only 204/205. Permanent regressions for both reported shapes.
+		it('a uniform unfingerprinted 202 interstitial with no CF/Akamai signal and no security headers on both dual-fetch HEAD probes must not publish header-missing findings', async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue({
+				ok: true,
+				status: 202,
+				headers: new Headers(),
+				text: async () => '<html><body>Accepted interstitial placeholder</body></html>',
+			} as unknown as Response);
+
+			const result = await run();
+
+			expect(result.findings.some((f) => f.title.startsWith('No '))).toBe(false);
+			expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+			expect(result.checkStatus).toBe('error');
+			expect(result.score).toBe(0);
+			expect(result.passed).toBe(false);
+		});
+
+		it('HEAD to 403 then GET fallback to 202 with empty security headers must not publish header-missing findings', async () => {
+			globalThis.fetch = vi.fn().mockImplementation((_url, init) => {
+				if (init && init.method === 'GET') {
+					return Promise.resolve({
+						ok: true,
+						status: 202,
+						headers: new Headers(),
+						text: async () => '<html><body>Accepted interstitial placeholder</body></html>',
+					});
+				}
+				return Promise.resolve({
+					ok: false,
+					status: 403,
+					headers: new Headers(),
+					text: async () => '<html><body>Forbidden</body></html>',
+				});
+			});
+
+			const result = await run();
+
+			expect(result.findings.some((f) => f.title.startsWith('No '))).toBe(false);
+			expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+			expect(result.checkStatus).toBe('error');
+			expect(result.score).toBe(0);
+			expect(result.passed).toBe(false);
+		});
+
+		// Sanity: the already-handled 5xx shape must remain untouched by this repair.
+		it('a uniform 503 on both dual-fetch HEAD probes correctly abstains (sanity: already-handled shape)', async () => {
+			globalThis.fetch = vi.fn().mockResolvedValue({
+				ok: false,
+				status: 503,
+				headers: new Headers(),
+				text: async () => '<html><body>Service unavailable</body></html>',
+			} as unknown as Response);
+
+			const result = await run();
+
+			expect(result.findings.some((f) => f.title.startsWith('No '))).toBe(false);
+			expect(result.checkStatus).toBe('error');
+		});
+	});
+
 	describe('inconclusive fetches set checkStatus (so scoring excludes them, not zeroes)', () => {
 		it('a connection timeout sets checkStatus=timeout', async () => {
 			globalThis.fetch = vi.fn().mockRejectedValue(new Error('The operation timed out'));
