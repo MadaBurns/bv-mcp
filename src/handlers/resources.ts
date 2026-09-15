@@ -71,10 +71,12 @@ const RESOURCES: McpResource[] = [
 // PUBLIC counts, not registry counts. Internal-only tools are hidden from
 // `tools/list`, so counting them here advertised 81 tools over a surface that
 // serves 76 — a number the client cannot reconcile against what it can call.
+// Exported so other surfaces (e.g. `serverInfo.description` in ../mcp/dispatch)
+// derive the same figures instead of hand-typing a second copy that can drift.
 const PUBLIC_TOOLS = TOOLS.filter((tool) => !INTERNAL_ONLY_TOOLS.has(tool.name));
-const TOOL_COUNT = PUBLIC_TOOLS.length;
-const CHECK_TOOL_COUNT = PUBLIC_TOOLS.filter((tool) => tool.name.startsWith('check_')).length;
-const SCAN_CATEGORY_COUNT = TOOLS.filter((tool) => tool.scanIncluded).length;
+export const TOOL_COUNT = PUBLIC_TOOLS.length;
+export const CHECK_TOOL_COUNT = PUBLIC_TOOLS.filter((tool) => tool.name.startsWith('check_')).length;
+export const SCAN_CATEGORY_COUNT = TOOLS.filter((tool) => tool.scanIncluded).length;
 
 /** Resource content keyed by URI */
 const RESOURCE_CONTENT: Record<string, string> = {
