@@ -188,3 +188,25 @@ describe('prioritizePortfolioLeads — brand path (real defaultDiscoverPortfolio
 		expect(report.rankedLeads[0].ownershipBucket).toBe('consolidated');
 	});
 });
+
+// #962: evaluateOne threaded scanResult.score.grade — the INTERNAL 9-band scale —
+// straight into the per-domain report, so a score of 86 (9-band 'B+') printed a
+// per-domain line disagreeing with the 6-band rollup letter. Same defect class as
+// map_registrar_products (#727's pattern); both must route through displayGradeFor.
+describe('prioritizePortfolioLeads — customer-facing grade is the 6-band scale (#962)', () => {
+	it('score 86 (9-band B+) reports the 6-band letter B on the per-domain line and the rollup', async () => {
+		mockScanDomain.mockResolvedValue(scan([check('dmarc', true), check('ssl', true), check('dnssec', true)], 86, 'B+'));
+		mockCheckRdap.mockResolvedValue(rdapFailed());
+
+		const { prioritizePortfolioLeads, formatPortfolioLeads } = await import('../src/tools/prioritize-portfolio-leads');
+		const report = await prioritizePortfolioLeads({ domains: ['sixband.com'] });
+
+		const lead = report.rankedLeads[0];
+		expect(lead.score).toBe(86);
+		expect(lead.grade).toBe('B');
+		expect(report.portfolioGrade?.grade).toBe('B');
+		const rendered = formatPortfolioLeads(report, 'full');
+		expect(rendered).toContain('86/100 (B)');
+		expect(rendered).not.toContain('(B+)');
+	});
+});

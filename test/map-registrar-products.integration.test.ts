@@ -99,3 +99,39 @@ describe('mapRegistrarProducts — wiring', () => {
 		expect(report.recommendations.find((r) => r.product === 'digital_certificates')!.recommended).toBe(true);
 	});
 });
+
+// #962: mapRegistrarProducts threaded scanResult.score.grade — the INTERNAL 9-band
+// scale — straight into the report, so a score of 86 (9-band 'B+') printed
+// "(B+)" beside a customer-facing rollup that would show the 6-band 'B'
+// elsewhere. It must route through displayGradeFor like analyze_drift (#727).
+describe('mapRegistrarProducts — customer-facing grade is the 6-band scale (#962)', () => {
+	it('score 86 (9-band B+) reports the 6-band letter B, not B+', async () => {
+		mockScanDomain.mockResolvedValue({
+			checks: [check('dmarc', true), check('ssl', true), check('dnssec', true)],
+			score: { overall: 86, grade: 'B+' },
+		});
+		mockCheckRdap.mockResolvedValue(rdapFailed());
+
+		const { mapRegistrarProducts, formatRegistrarProducts } = await import('../src/tools/map-registrar-products');
+		const report = await mapRegistrarProducts('sixband.com');
+
+		expect(report.score).toBe(86);
+		expect(report.grade).toBe('B');
+		expect(formatRegistrarProducts(report, 'full')).toContain('86/100 (B)');
+		expect(formatRegistrarProducts(report, 'full')).not.toContain('(B+)');
+	});
+
+	it('an ungraded scan (null score/grade) renders "not measured", never a fabricated letter', async () => {
+		mockScanDomain.mockResolvedValue({
+			checks: [],
+			score: { overall: null, grade: null },
+		});
+		mockCheckRdap.mockResolvedValue(rdapFailed());
+
+		const { mapRegistrarProducts, formatRegistrarProducts } = await import('../src/tools/map-registrar-products');
+		const report = await mapRegistrarProducts('ungraded.com');
+
+		expect(report.grade).toBeNull();
+		expect(formatRegistrarProducts(report, 'full')).toContain('not measured');
+	});
+});

@@ -15,7 +15,7 @@ import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
-import { formatScoreGrade, hasCompletedEvidence, isCompletedCheck } from '../lib/ungraded-display';
+import { displayGradeFor, formatScoreGrade, hasCompletedEvidence, isCompletedCheck } from '../lib/ungraded-display';
 import { isDnsErrorFinding } from '../lib/dns-error-result';
 
 export type RegistrarProductKey = 'registry_lock' | 'managed_dmarc' | 'digital_certificates' | 'dnssec_management';
@@ -526,5 +526,8 @@ export async function mapRegistrarProducts(domain: string, kv?: KVNamespace, run
 		}),
 	]);
 	const lockPosture = extractLockPosture(rdap);
-	return evaluateRegistrarProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, scanResult.score.grade);
+	// Customer-facing grade: route through the 6-band chokepoint rather than
+	// the 9-band `scanResult.score.grade` (internal scale) — see `displayGradeFor`'s
+	// doc for the #640/badge defect this prevents from recurring here.
+	return evaluateRegistrarProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, displayGradeFor(scanResult.score));
 }
