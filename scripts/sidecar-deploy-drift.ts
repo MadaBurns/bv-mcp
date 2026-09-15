@@ -58,7 +58,17 @@ export const SIDECAR_TARGETS: readonly SidecarTarget[] = [
 	{
 		worker: 'bv-whois',
 		configPath: 'packages/bv-whois/wrangler.jsonc',
-		watchPaths: ['packages/bv-whois/src'],
+		// #981 item 3: bv-whois imports `@blackveil/dns-checks/whois`, so a change
+		// under that vendored subtree changes the deployed bundle without touching
+		// `packages/bv-whois/src` at all. The config and package manifest are
+		// watched too — the #881/#883 dependency bumps there were themselves
+		// undeployed source changes this gate could not see.
+		watchPaths: [
+			'packages/bv-whois/src',
+			'packages/bv-whois/wrangler.jsonc',
+			'packages/bv-whois/package.json',
+			'packages/dns-checks/src/whois',
+		],
 		deployCommand: 'npm run deploy:whois',
 	},
 	{
@@ -68,7 +78,20 @@ export const SIDECAR_TARGETS: readonly SidecarTarget[] = [
 		// is shared with the main Worker, which is precisely why it belongs here:
 		// a change there ships to the MCP Worker on the next `deploy:prod` and to
 		// the probe never, which is the drift this gate exists to catch.
-		watchPaths: ['src/workers/infra-probe.ts', 'src/lib/authoritative-dns-infra'],
+		// #981 item 3: the entrypoint and `authoritative-dns-infra` alone missed
+		// the shared modules those files import one level up in `src/lib/` —
+		// `request-body` (entrypoint), and `dns`, `dns-transport`, `dns-types`,
+		// `scoring`, `response-body` (imported from inside authoritative-dns-infra).
+		watchPaths: [
+			'src/workers/infra-probe.ts',
+			'src/lib/authoritative-dns-infra',
+			'src/lib/request-body.ts',
+			'src/lib/dns.ts',
+			'src/lib/dns-transport.ts',
+			'src/lib/dns-types.ts',
+			'src/lib/scoring.ts',
+			'src/lib/response-body.ts',
+		],
 		deployCommand: 'npm run deploy:infra-probe',
 	},
 ];
