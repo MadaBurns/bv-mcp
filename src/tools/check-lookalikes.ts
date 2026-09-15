@@ -45,6 +45,7 @@ import {
 	labelCount,
 	probeWithAdaptiveBatching,
 	probeDmarcReportAuthorisation,
+	queryPrimaryA,
 	queryPrimaryMx,
 	queryPrimaryNs,
 	type LookalikeResult,
@@ -309,7 +310,9 @@ async function checkLookalikesCore(
 	// `seedNsUnresolved: true` on 2/2 idle runs while a standalone DoH NS query
 	// for it returned 4 answers. Sequencing costs one round trip on a check
 	// that already takes seconds; a voided attribution costs the whole result.
-	const [primaryNsProbe, primaryMx] = await Promise.all([queryPrimaryNs(domain), queryPrimaryMx(domain)]);
+	// #974 — the seed's A set rides the same phase: the web leg of the step-5c
+	// seed-infrastructure match (one query; fail-soft to [] = match unreachable).
+	const [primaryNsProbe, primaryMx, primaryA] = await Promise.all([queryPrimaryNs(domain), queryPrimaryMx(domain), queryPrimaryA(domain)]);
 
 	// Phase 1: NS existence check — filter out unregistered domains. Pooled to
 	// the platform connection cap and deadline-cut (#865): see lookalike-dns.ts.
@@ -366,11 +369,26 @@ async function checkLookalikesCore(
 	// shadow-domains bug this design also fixes). Every registered candidate
 	// here was proven registered via NS (filterByNsExistence only returns
 	// domains with NS records), so `registration.ns` is always non-empty.
+	//
+	// #974 — Phase 2 (the A/MX detail probe) now runs BEFORE this pass, so the
+	// candidate's own A and MX sets reach `classifyOwnership()` step 5c. Before
+	// that, the pass had only NS to go on and its terminal arm claimed
+	// "distinct infrastructure" for a candidate on the seed's own A and MX.
+	// Phase 2: Detail probe only registered domains (pooled + deadline-cut, #865).
+	const probeResults = await probeWithAdaptiveBatching(registeredPerms, { deadlineMs: dnsPhasesDeadlineMs });
+	const results: LookalikeResult[] = [];
+	for (const result of probeResults) {
+		if (result.status === 'fulfilled') {
+			results.push(result.value);
+		}
+	}
 	const primaryNsList = Array.from(primaryNs);
+	const primaryMxList = Array.from(primaryMx);
 	const brand = extractBrandName(domain) ?? '';
 	const ownershipByDomain = new Map<string, OwnershipAssessment>();
 	for (const perm of registeredPerms) {
 		const candidateNs = Array.from(lookalikeNsMap.get(perm) ?? []);
+		const probed = results.find((r) => r.domain === perm);
 		ownershipByDomain.set(
 			perm,
 			classifyOwnership({
@@ -381,18 +399,14 @@ async function checkLookalikesCore(
 				isSharedNsHost,
 				isPooledSharedNsHost,
 				seedNsUnresolved: seedNsUnmeasured,
+				candidateA: probed?.aAddresses,
+				candidateMx: probed?.mxExchanges,
+				seedA: primaryA,
+				seedMx: primaryMxList,
 			}),
 		);
 	}
 
-	// Phase 2: Detail probe only registered domains (pooled + deadline-cut, #865).
-	const probeResults = await probeWithAdaptiveBatching(registeredPerms, { deadlineMs: dnsPhasesDeadlineMs });
-	const results: LookalikeResult[] = [];
-	for (const result of probeResults) {
-		if (result.status === 'fulfilled') {
-			results.push(result.value);
-		}
-	}
 	// Second silent-drop site (#781): a candidate already KNOWN registered, whose
 	// infrastructure probe failed, disappears here.
 	const probeUnresolved = probeResults.filter((r) => r.status === 'rejected').length;
@@ -453,6 +467,8 @@ async function checkLookalikesCore(
 		ownershipByDomain,
 		isSharedNsHost,
 		isPooledSharedNsHost,
+		seedA: primaryA,
+		seedMx: primaryMxList,
 		probeAuthorisation: probeDmarcReportAuthorisation,
 	});
 
