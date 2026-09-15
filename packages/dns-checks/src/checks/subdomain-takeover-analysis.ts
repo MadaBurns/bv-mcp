@@ -217,6 +217,14 @@ const A_RECORD_UNCLAIMED_FINGERPRINTS: { service: string; patterns: string[] }[]
 		patterns: [
 			'the requested domain is not authorized on cloudways server',
 			'the domain has been successfully pointed to a cloudways server but it is not mapped to an application',
+			// Live-miss reopen (#973, 2026-09-15): some Cloudways edges answer the
+			// unmapped-domain block page as a bare 403 whose ENTIRE body is an
+			// `<iframe>` pointing at this S3-hosted maintenance page — the
+			// unmapped-domain wording above lives only inside that iframe
+			// document, which this check does not fetch. The iframe `src` marker
+			// itself, present verbatim in the origin's own 403 body, is the
+			// evidence; do not fetch the iframe URL to look for the text.
+			'cloudways-static-content.s3.us-east-1.amazonaws.com/error_page/maintenance-domain-mapping.html',
 		],
 	},
 ];
@@ -340,9 +348,18 @@ export async function probeHttpFingerprint(fqdn: string, cname: string, fetchFn:
  * domain" fingerprints in {@link A_RECORD_UNCLAIMED_FINGERPRINTS} (#973).
  * There is no CNAME target to gate the match on, so every entry is checked
  * unconditionally — the list is deliberately small and verbatim-evidenced.
+ *
+ * Falls back to a plain `http://` attempt when the `https://` leg fails
+ * outright (live-miss reopen, #973 2026-09-15): some Cloudways edges refuse
+ * the TLS handshake entirely for an unmapped domain but still answer plain
+ * HTTP with the unmapped-domain fingerprint page. An HTTPS failure followed
+ * by an HTTP match is a finding; both legs failing stays the existing silent
+ * abstention. The CNAME vector ({@link probeHttpFingerprint}) does not get
+ * this fallback — its targets are known third-party HTTPS-serving platforms,
+ * not the bare-A-record case this vector exists for.
  */
 export async function probeARecordUnclaimedFingerprint(fqdn: string, fetchFn: FetchFunction): Promise<string | null> {
-	return matchFingerprintOverHttp(fqdn, A_RECORD_UNCLAIMED_FINGERPRINTS, fetchFn);
+	return matchFingerprintOverHttp(fqdn, A_RECORD_UNCLAIMED_FINGERPRINTS, fetchFn, { httpFallbackOnFailure: true });
 }
 
 /**
@@ -355,33 +372,12 @@ async function matchFingerprintOverHttp(
 	fqdn: string,
 	matchingEntries: { service: string; patterns: string[] }[],
 	fetchFn: FetchFunction,
+	options?: { httpFallbackOnFailure?: boolean },
 ): Promise<string | null> {
 	if (matchingEntries.length === 0) return null;
 
 	try {
-		const response = await fetchFn(`https://${fqdn}`, {
-			redirect: 'manual',
-			signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
-		});
-		// Skip fingerprint matching on redirects — redirecting services are not deprovisioned.
-		// Release the unread body so workerd doesn't cancel a stalled response.
-		if (response.status >= 300 && response.status < 400) {
-			void response.body?.cancel().catch(() => undefined);
-			return null;
-		}
-
-		const MAX_BODY_BYTES = 65_536; // 64 KB — no legitimate takeover fingerprint exceeds this
-		const body = await readResponseTextCapped(response, MAX_BODY_BYTES);
-		if (body === null) return null;
-
-		const lowerBody = body.toLowerCase();
-		for (const { service, patterns } of matchingEntries) {
-			for (const pattern of patterns) {
-				if (lowerBody.includes(pattern.toLowerCase())) {
-					return SERVICE_DISPLAY_NAMES[service] ?? service;
-				}
-			}
-		}
+		return await fetchAndMatchFingerprint(`https://${fqdn}`, matchingEntries, fetchFn);
 	} catch (err) {
 		// TLS-SNI / cert-altname mismatch IS a deprovision signal: a properly
 		// provisioned endpoint serves a certificate whose SAN list includes the
@@ -395,8 +391,60 @@ async function matchFingerprintOverHttp(
 		if (isTlsCertAltnameMismatch(message)) {
 			return TLS_SNI_MISMATCH_DISPLAY;
 		}
-		// Other transport errors (timeout, DNS, connect refused) are not
-		// deprovision evidence — stay silent.
+		// Other transport errors (timeout, DNS, connect refused, or a TLS
+		// handshake failure that never produced a distinguishable altname
+		// message) are not deprovision evidence on their own. Without an HTTP
+		// fallback, stay silent exactly as before.
+		if (!options?.httpFallbackOnFailure) {
+			return null;
+		}
+	}
+
+	// The https:// leg failed with a non-SNI-mismatch error and the caller opted
+	// into the #973 HTTP fallback. Same fetchFn (unchanged SSRF posture), same
+	// timeout budget, same fingerprint patterns — only the scheme differs.
+	try {
+		return await fetchAndMatchFingerprint(`http://${fqdn}`, matchingEntries, fetchFn);
+	} catch {
+		// Both legs failed — stay silent, the existing abstention.
+		return null;
+	}
+}
+
+/**
+ * Fetch one URL and check its body against `matchingEntries`. Returns the
+ * matched display-name, or null when the fetch completed but nothing
+ * matched (including a skipped redirect). Throws on transport failure —
+ * callers decide what a thrown fetch means (TLS-SNI signal, HTTP fallback,
+ * or silent abstention).
+ */
+async function fetchAndMatchFingerprint(
+	url: string,
+	matchingEntries: { service: string; patterns: string[] }[],
+	fetchFn: FetchFunction,
+): Promise<string | null> {
+	const response = await fetchFn(url, {
+		redirect: 'manual',
+		signal: AbortSignal.timeout(HTTPS_TIMEOUT_MS),
+	});
+	// Skip fingerprint matching on redirects — redirecting services are not deprovisioned.
+	// Release the unread body so workerd doesn't cancel a stalled response.
+	if (response.status >= 300 && response.status < 400) {
+		void response.body?.cancel().catch(() => undefined);
+		return null;
+	}
+
+	const MAX_BODY_BYTES = 65_536; // 64 KB — no legitimate takeover fingerprint exceeds this
+	const body = await readResponseTextCapped(response, MAX_BODY_BYTES);
+	if (body === null) return null;
+
+	const lowerBody = body.toLowerCase();
+	for (const { service, patterns } of matchingEntries) {
+		for (const pattern of patterns) {
+			if (lowerBody.includes(pattern.toLowerCase())) {
+				return SERVICE_DISPLAY_NAMES[service] ?? service;
+			}
+		}
 	}
 
 	return null;

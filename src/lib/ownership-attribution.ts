@@ -159,7 +159,7 @@
 
 import type { CheckCategory, Finding, Severity } from '@blackveil/dns-checks/scoring';
 import { createFinding } from '@blackveil/dns-checks/scoring';
-import { getRegistrableDomain } from './public-suffix';
+import { extractBrandName, getRegistrableDomain } from './public-suffix';
 import { UNKNOWN_REASON_PHRASES, type RegistrationState } from './registration-state';
 
 /**
@@ -191,6 +191,7 @@ export type OwnershipSignal =
 	| 'mx_in_bailiwick'
 	| 'dmarc_report_authorised_by_seed'
 	| 'seed_infrastructure_match'
+	| 'seed_label_cohort'
 	| 'soa_in_bailiwick'
 	| 'spf_include_seed'
 	| 'http_redirect_seed'
@@ -321,6 +322,14 @@ export interface ClassifyOwnershipInput {
 	seedA?: readonly string[];
 	seedMx?: readonly string[];
 	/**
+	 * #974 (reopened) — the run's OTHER fully-measured candidates, for the step-5d
+	 * exact-label cohort corroborator ({@link seedLabelCohortMatch}). The caller
+	 * passes it only when the candidate's own A/MX probe completed, and leaves out
+	 * members whose probe was degraded. `undefined` / `[]` = step 5d cannot fire.
+	 * Like the step-5c inputs, it can only WITHHOLD a `third_party` claim.
+	 */
+	labelCohort?: readonly LabelCohortMember[];
+	/**
 	 * OWNERSHIP RULE — SEED-SIDE CONTROL ONLY (Ruling A, 2026-07-27 task-7c;
 	 * fields DELETED 2026-07-27 ownership-attribution followups item 2 — see
 	 * the file header "OWNERSHIP-ATTRIBUTION FOLLOWUPS, ITEM 2" note for why).
@@ -359,6 +368,18 @@ export interface ClassifyOwnershipInput {
 	 * declarations a self-hosted zone can publish at no cost.
 	 */
 }
+
+/** One resolved candidate's measured record sets, as {@link seedLabelCohortMatch} compares them. */
+export interface LabelCohortMember {
+	domain: string;
+	a: readonly string[];
+	ns: readonly string[];
+	/** Real MX exchange hosts; `[]` = measured, no mail. */
+	mx: readonly string[];
+}
+
+/** Minimum matched exact-label siblings besides the candidate itself, so a cohort is 3+ variants (#974). */
+export const MIN_LABEL_COHORT_SIBLINGS = 2;
 
 /** Minimum ratio of dedicated (non-shared-provider) NS hosts shared with the seed to count as strong evidence. */
 const DEDICATED_NS_MATCH_RATIO = 0.5;
@@ -428,6 +449,10 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
  *     ({@link seedInfrastructureMatch}) → `unattributed` with `seed_infrastructure_match` —
  *     never `owned_by_seed` (candidate-published, copyable). Replaces only a `third_party` outcome
  *     (step 5's platform-partial arm, step 6); step 5's whole-platform `unattributed` is kept.
+ *  5d. (#974 reopened) The candidate is an exact-label TLD variant on the seed's A set, and 2+ other
+ *     exact-label variants share its identical A, NS and MX sets on non-platform NS
+ *     ({@link seedLabelCohortMatch}) → `unattributed` with `seed_label_cohort`. Same posture as 5c,
+ *     consulted only when 5c declined.
  *  6. Registered with its own resolvable NS, no ownership signal → `third_party`.
  *  7. Everything else (no NS info at all) → `unattributed`.
  *
@@ -555,15 +580,25 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 	// only where a `third_party` would otherwise be returned (the #929
 	// whole-platform `unattributed` arm keeps its own, more specific rationale).
 	const infraMatch = seedInfrastructureMatch(input);
+	// #974 reopened — step 5d, consulted only when 5c declined. Both share the
+	// `seedInfraAssessment` slot: they replace the same `third_party` outcomes.
+	const cohortMatch = infraMatch === null ? seedLabelCohortMatch(input) : null;
 	const seedInfraAssessment: OwnershipAssessment | null =
-		infraMatch === null
-			? null
-			: {
+		infraMatch !== null
+			? {
 					verdict: 'unattributed',
 					strength: 'none',
 					signals: ['seed_infrastructure_match'],
 					rationale: `${candidateDomain} does not share ${seedApex}'s nameserver set, but resolves to the same web address set (${infraMatch.a.join(', ')}) and the same mail hosts (${infraMatch.mx.join(', ')}) as ${seedApex} — the shape of the organisation's own brand-variant registration hosted by an agency or platform. Those records are self-published and can be copied, so ownership is not established either way.`,
-				};
+				}
+			: cohortMatch !== null
+				? {
+						verdict: 'unattributed',
+						strength: 'none',
+						signals: ['seed_label_cohort'],
+						rationale: `${candidateDomain} does not share ${seedApex}'s nameserver set, but resolves to the same web address set (${cohortMatch.a.join(', ')}) as ${seedApex}, and ${cohortMatch.siblings.length} other exact-label variants (${cohortMatch.siblings.join(', ')}) share its identical address set, nameservers (${cohortMatch.ns.join(', ')}) and mail hosts (${cohortMatch.mx.length > 0 ? cohortMatch.mx.join(', ') : 'none'}) — the shape of the organisation's own brand-variant portfolio registered through one agency or registrar. Those records are self-published and can be copied, so ownership is not established either way.`,
+					}
+				: null;
 
 	// #929 — an overlap that exists but is confined to shared-provider hosts.
 	// Neither verdict below moves severity (the third_party / unattributed
@@ -691,6 +726,88 @@ function identicalNonEmptySet(
 	if (l.size === 0 || l.size !== r.size) return null;
 	for (const v of l) if (!r.has(v)) return null;
 	return [...l].sort();
+}
+
+/**
+ * #974 (reopened) cohort corroborator bar (step 5d of `classifyOwnership()`).
+ * Returns the matched cohort when ALL of these hold, else `null`:
+ *
+ *  0. the candidate is an EXACT-LABEL TLD variant of the seed: it is itself a
+ *     registrable domain, its label equals the seed's, and it is not the seed's
+ *     own apex (`ltmcguinness.com` for `ltmcguinness.co.nz`);
+ *  1. its A set is IDENTICAL to the seed's non-empty A set;
+ *  2. at least {@link MIN_LABEL_COHORT_SIBLINGS} OTHER exact-label variants in
+ *     `labelCohort` share the candidate's identical A set, identical complete NS
+ *     set and identical MX set, so 3+ variants match;
+ *  3. no host in that shared NS set is on a shared-tenant platform
+ *     (`isSharedNsHost`, i.e. `SHARED_NS_APEXES`), because a platform assigns
+ *     the same uniform set to every tenant.
+ *
+ * WHY: the live cohort (`ltmcguinness.{com,net,co,io,ai}`) sits on the seed's
+ * A address but on an agency's NS and a hosting provider's antispam MX, so step
+ * 5c's A+MX identity with the SEED never holds. The seed's A alone is not enough
+ * either: its PTR is a cloud host and the MX is a host's gateway, so it may be a
+ * shared hosting IP (#929's lesson for NS, applied to A). What adds the second
+ * signal is the cohort: the exact brand label swept across several TLDs, every
+ * one on one identical non-platform NS/MX estate AND on the seed's own web
+ * address. That is how an organisation's agency registers a defensive portfolio.
+ *
+ * A TYPOSQUAT NEVER QUALIFIES, as candidate or as sibling: a character edit
+ * (`ltmcguiness.com`) is not the exact label, and edited names are what
+ * squatters buy. Condition 3 keeps unrelated tenants of one platform (Wix,
+ * one.com) from forming a cohort by accident.
+ *
+ * WHY `unattributed`, NOT `owned_by_seed`: every compared record is
+ * CANDIDATE-published and free to copy, and a squatter's own portfolio also
+ * shares one NS/MX estate. So, as with step 5c (Ruling A), the match can only
+ * falsify the `third_party` arm's "distinct infrastructure / no ownership signal"
+ * claim. It never earns ownership, never lifts the attribution ceiling, and
+ * never moves severity.
+ */
+export function seedLabelCohortMatch(input: {
+	seedDomain: string;
+	candidateDomain: string;
+	registration: RegistrationState;
+	isSharedNsHost: (nsHost: string) => boolean;
+	candidateA?: readonly string[];
+	seedA?: readonly string[];
+	candidateMx?: readonly string[];
+	labelCohort?: readonly LabelCohortMember[];
+}): { a: string[]; ns: string[]; mx: string[]; siblings: string[] } | null {
+	if (input.registration.state !== 'registered' || input.candidateMx === undefined || !input.labelCohort?.length) return null;
+	const seedLabel = extractBrandName(normHost(input.seedDomain));
+	const seedApex = getRegistrableDomain(normHost(input.seedDomain));
+	if (!seedLabel || !seedApex) return null;
+	const isExactLabelVariant = (domain: string): boolean => {
+		const d = normHost(domain);
+		return d !== seedApex && getRegistrableDomain(d) === d && extractBrandName(d) === seedLabel;
+	};
+	const candidate = normHost(input.candidateDomain);
+	if (!isExactLabelVariant(candidate)) return null;
+
+	const a = identicalNonEmptySet(input.candidateA, input.seedA, (v) => v.trim().toLowerCase());
+	if (a === null) return null;
+	const ns = [...new Set(input.registration.ns.map(normHost).filter(Boolean))].sort();
+	if (ns.length === 0 || ns.some((host) => input.isSharedNsHost(host))) return null;
+	const mx = [...new Set(input.candidateMx.map(normHost).filter(Boolean))].sort();
+
+	const siblings = input.labelCohort
+		.filter(
+			(member) =>
+				normHost(member.domain) !== candidate &&
+				isExactLabelVariant(member.domain) &&
+				identicalNonEmptySet(member.a, a, (v) => v.trim().toLowerCase()) !== null &&
+				identicalNonEmptySet(member.ns, ns, normHost) !== null &&
+				identicalSet(member.mx, mx),
+		)
+		.map((member) => normHost(member.domain))
+		.sort();
+	return siblings.length >= MIN_LABEL_COHORT_SIBLINGS ? { a, ns, mx, siblings } : null;
+}
+
+/** Set identity that, unlike {@link identicalNonEmptySet}, treats two measured-empty sets as identical. */
+function identicalSet(left: readonly string[], right: readonly string[]): boolean {
+	return right.length === 0 ? left.map(normHost).filter(Boolean).length === 0 : identicalNonEmptySet(left, right, normHost) !== null;
 }
 
 /**

@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { generateCombosquats, generateLookalikes, generateTranspositions } from '../src/tools/lookalike-analysis';
+import {
+	MAX_TLD_VARIANTS,
+	generateCombosquats,
+	generateLookalikes,
+	generateTldVariants,
+	generateTranspositions,
+} from '../src/tools/lookalike-analysis';
 
 describe('generateLookalikes', () => {
 	it('generates expected permutation types for a simple domain', () => {
@@ -163,5 +169,41 @@ describe('generateCombosquats', () => {
 
 	it('returns [] for input with no resolvable TLD', () => {
 		expect(generateCombosquats('localhost')).toEqual([]);
+	});
+});
+
+describe('generateTldVariants (#974)', () => {
+	const COMMON = ['com', 'net', 'org', 'co', 'io', 'ai'];
+
+	it('emits the exact label under the common gTLDs and the .nz family for a .co.nz seed', () => {
+		const results = generateTldVariants('example.co.nz');
+		for (const tld of COMMON) expect(results).toContain(`example.${tld}`);
+		expect(results).toEqual(expect.arrayContaining(['example.nz', 'example.net.nz', 'example.org.nz']));
+		expect(results).not.toContain('example.co.nz');
+		// Not a registrable .nz second level, so never probed.
+		expect(results).not.toContain('example.com.nz');
+	});
+
+	it('emits the common gTLDs and the major country forms (co.uk) for a .com seed', () => {
+		const results = generateTldVariants('example.com');
+		for (const tld of COMMON.filter((t) => t !== 'com')) expect(results).toContain(`example.${tld}`);
+		expect(results).toEqual(expect.arrayContaining(['example.co.uk', 'example.com.au', 'example.co.nz']));
+		expect(results).not.toContain('example.com');
+	});
+
+	it('the motor lane alone never reached them — the reason the lane exists', () => {
+		const motor = generateLookalikes('example.co.nz');
+		expect(['example.net', 'example.co', 'example.io', 'example.ai'].filter((d) => motor.includes(d))).toEqual([]);
+		expect(generateLookalikes('example.com')).not.toContain('example.co.uk');
+	});
+
+	it('is capped, deduplicated, never returns the seed apex for a subdomain seed, and returns [] without a suffix', () => {
+		for (const seed of ['example.co.nz', 'example.com', 'example.co.uk', 'shop.example.com']) {
+			const results = generateTldVariants(seed);
+			expect(results.length).toBeLessThanOrEqual(MAX_TLD_VARIANTS);
+			expect(new Set(results).size).toBe(results.length);
+		}
+		expect(generateTldVariants('shop.example.com')).not.toContain('example.com');
+		expect(generateTldVariants('localhost')).toEqual([]);
 	});
 });

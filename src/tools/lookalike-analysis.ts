@@ -8,6 +8,7 @@
  */
 
 import { LABEL_REGEX, MAX_DOMAIN_LENGTH, MAX_LABEL_LENGTH } from '../lib/config';
+import { extractBrandName, getEffectiveTld, isPublicSuffixApex } from '../lib/public-suffix';
 
 /**
  * QWERTY keyboard adjacency map for typosquat detection.
@@ -226,6 +227,67 @@ export function generateTranspositions(domain: string): string[] {
 		.sort();
 
 	return results.slice(0, MAX_TRANSPOSITIONS);
+}
+
+/** Generic TLDs every seed's exact label is probed under (#974). */
+const COMMON_VARIANT_TLDS: readonly string[] = ['com', 'net', 'org', 'co', 'io', 'ai'];
+
+/**
+ * Second-level forms tried under the seed's OWN ccTLD. Each is kept only when
+ * the Public Suffix List publishes it as an ICANN suffix, so `.nz` yields
+ * `co.nz`/`net.nz`/`org.nz` and never a `com.nz` nobody can register.
+ */
+const CC_FAMILY_SECOND_LEVELS: readonly string[] = ['co', 'com', 'net', 'org'];
+
+/**
+ * Country second-level forms probed for EVERY seed: the same Anglosphere forms
+ * `splitDomainTld` already special-cases. `natwest.com` never generated
+ * `natwest.co.uk` (#974), because the motor lane's pairwise `TLD_SWAPS` table
+ * has no `.com` ↔ `.co.uk` pair.
+ */
+const MAJOR_CC_SECOND_LEVEL_TLDS: readonly string[] = ['co.uk', 'com.au', 'co.nz'];
+
+/** Cap on exact-label TLD variants returned. The three tables above yield at most 14, so it never bites today. */
+export const MAX_TLD_VARIANTS = 16;
+
+/**
+ * Generate EXACT-LABEL TLD VARIANTS (#974): the seed's registrable label under
+ * the common generic TLDs, its own ccTLD family, and the major country
+ * second-level forms. `ltmcguinness.co.nz` -> `ltmcguinness.com`, `.net`,
+ * `.org`, `.co`, `.io`, `.ai`, `.nz`, `.net.nz`, `.org.nz`, `.co.uk`, `.com.au`.
+ *
+ * The motor lane's `TLD_SWAPS` is a pairwise table: a `.co.nz` seed got
+ * `.com` and nothing else, so an agency-registered brand cohort on
+ * `.net`/`.co`/`.io`/`.ai` was never a candidate, and the step-5d cohort
+ * corroborator in `classifyOwnership()` could not see it. Kept as its own lane
+ * with its own cap, like the transposition lane above: adding these to
+ * `generateLookalikes`' alphabetical `MAX_PERMUTATIONS` slice would evict
+ * other motor candidates. Overlap with that lane (`.com`, `.net`, ...) is
+ * deduplicated by the orchestrator, so it costs no second probe.
+ *
+ * Deterministic, ordered generic -> own family -> major country forms. Never
+ * returns the seed or the seed's registrable apex.
+ */
+export function generateTldVariants(domain: string): string[] {
+	const normalizedDomain = domain.toLowerCase();
+	const label = extractBrandName(normalizedDomain);
+	const suffix = getEffectiveTld(normalizedDomain);
+	if (!label || !suffix) return [];
+	const seedApex = `${label}.${suffix}`;
+
+	const topLevel = suffix.slice(suffix.lastIndexOf('.') + 1);
+	const family = /^[a-z]{2}$/.test(topLevel) ? [topLevel, ...CC_FAMILY_SECOND_LEVELS.map((sl) => `${sl}.${topLevel}`)] : [];
+
+	const results: string[] = [];
+	for (const variantSuffix of [...COMMON_VARIANT_TLDS, ...family, ...MAJOR_CC_SECOND_LEVEL_TLDS]) {
+		if (!isPublicSuffixApex(variantSuffix)) continue;
+		const candidate = `${label}.${variantSuffix}`;
+		if (candidate === seedApex || candidate === normalizedDomain || results.includes(candidate)) continue;
+		if (!isDomainValid(candidate)) continue;
+		results.push(candidate);
+		if (results.length >= MAX_TLD_VARIANTS) break;
+	}
+	return results;
 }
 
 /* -------------------------------------------------------------------------
