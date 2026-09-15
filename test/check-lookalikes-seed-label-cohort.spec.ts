@@ -16,6 +16,15 @@
  *    non-platform NS → `unattributed` (never `owned_by_seed`), severity
  *    unchanged, "confirm ownership before blocking or takedown" advice, and
  *    `attributionConfidence: 'corroborated'` (two agreeing signals).
+ *
+ * #974 large-cohort exception (SQ-24, from SQ-23's live finding): the LIVE
+ * `ltmcguinness` cohort sits on `ns1/ns2.siteground.net` — a
+ * `SHARED_NS_APEXES` platform — so the non-platform-NS condition above
+ * rejected it outright and the whole cohort was live-missed a second time.
+ * `SEED_LABEL_COHORT_SHARED_NS_MIN` (5) waives that exclusion only when the
+ * exact-label cohort has 5+ members (siblings plus the candidate); below 5,
+ * shared-NS candidates behave exactly as before (the #929 guard against an
+ * accidental small grouping of unrelated platform tenants).
  */
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
@@ -136,6 +145,52 @@ describe('classifyOwnership step 5d — seed label cohort (#974 reopened)', () =
 	});
 });
 
+describe('classifyOwnership step 5d — large-cohort exception to the shared-NS exclusion (#974)', () => {
+	/** The live shape: 6 exact-label TLD variants, all on a SHARED_NS_APEXES platform. */
+	const SITEGROUND_SIX = [...COHORT, 'example.nz'].map((d) => member(d, { ns: PLATFORM_NS }));
+
+	it('a 6-member exact-label cohort on a shared-tenant platform NS is unattributed via seed_label_cohort', async () => {
+		const a = await classify('example.com', SITEGROUND_SIX, { ns: PLATFORM_NS });
+		expect(a.verdict).toBe('unattributed');
+		expect(a.signals).toEqual(['seed_label_cohort']);
+		expect(a.rationale).toContain('example.net');
+	});
+
+	it('every member of the 6-variant cohort resolves unattributed, never owned_by_seed', async () => {
+		for (const domain of [...COHORT, 'example.nz']) {
+			const a = await classify(domain, SITEGROUND_SIX, { ns: PLATFORM_NS });
+			expect(a.verdict, domain).toBe('unattributed');
+			expect(a.signals, domain).toEqual(['seed_label_cohort']);
+		}
+	});
+
+	it('a 4-member cohort on the same platform stays third_party — below the large-cohort threshold, the #929 guard still applies', async () => {
+		const four = SITEGROUND_SIX.slice(0, 4); // candidate + 3 siblings = 4 members
+		const a = await classify('example.com', four, { ns: PLATFORM_NS });
+		expect(a.verdict).toBe('third_party');
+		expect(a.signals).not.toContain('seed_label_cohort');
+	});
+
+	it('exactly 5 members waives the exclusion; 4 does not', async () => {
+		const five = SITEGROUND_SIX.slice(0, 5); // candidate + 4 siblings = 5 members
+		expect((await classify('example.com', five, { ns: PLATFORM_NS })).verdict).toBe('unattributed');
+		const four = SITEGROUND_SIX.slice(0, 4);
+		expect((await classify('example.com', four, { ns: PLATFORM_NS })).verdict).toBe('third_party');
+	});
+
+	it('a 6-member cohort whose A does not equal the seed A stays third_party — the exception never bypasses the A check', async () => {
+		const otherA = ['198.51.100.7'];
+		const cohort = SITEGROUND_SIX.map((m) => ({ ...m, a: otherA }));
+		const a = await classify('example.com', cohort, { ns: PLATFORM_NS, a: otherA });
+		expect(a.verdict).toBe('third_party');
+	});
+
+	it('the large-cohort exception never yields owned_by_seed, whatever the cohort size', async () => {
+		const a = await classify('example.com', SITEGROUND_SIX, { ns: PLATFORM_NS });
+		expect(a.verdict).not.toBe('owned_by_seed');
+	});
+});
+
 // ---------------------------------------------------------------------------
 // End-to-end through checkLookalikes()
 // ---------------------------------------------------------------------------
@@ -218,6 +273,29 @@ describe('checkLookalikes — exact-label TLD cohort on the seed A (#974 reopene
 
 	it('a 3-variant cohort on a SHARED_NS_APEXES platform stays third_party', async () => {
 		const { attribution, threat } = await runFor(['example.com', 'example.net', 'example.io'], PLATFORM_NS);
+		expect(attribution!.metadata?.ownershipVerdict).toBe('third_party');
+		expect(threat!.detail).toContain('block or quarantine mail bearing that name at the gateway');
+	});
+});
+
+describe('checkLookalikes — large-cohort exception to the shared-NS exclusion (#974)', () => {
+	/** The live shape (SQ-24): 6 exact-label TLD variants, all on siteground.net (`SHARED_NS_APEXES`). */
+	const SIX_VARIANTS = [...COHORT, 'example.nz'];
+
+	it('a 6-variant cohort on a SHARED_NS_APEXES platform is unattributed with confirm-first advice, not takedown', async () => {
+		const { result, attribution, threat } = await runFor(SIX_VARIANTS, PLATFORM_NS);
+		for (const variant of SIX_VARIANTS) {
+			const row = result.findings.find((f) => f.metadata?.lookalikeDomain === variant && f.metadata?.findingAxis === 'attribution');
+			expect(row?.metadata?.ownershipVerdict, variant).toBe('unattributed');
+		}
+		expect(result.findings.some((f) => f.metadata?.ownershipVerdict === 'third_party')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.ownershipVerdict === 'owned_by_seed')).toBe(false);
+		expect(attribution!.metadata?.attributionConfidence).toBe('corroborated');
+		expect(threat!.detail).toContain('Do NOT block it at the gateway or report it for takedown before confirming ownership');
+	});
+
+	it('a 4-variant cohort on the same platform stays third_party with takedown advice — below the large-cohort threshold', async () => {
+		const { attribution, threat } = await runFor(SIX_VARIANTS.slice(0, 4), PLATFORM_NS);
 		expect(attribution!.metadata?.ownershipVerdict).toBe('third_party');
 		expect(threat!.detail).toContain('block or quarantine mail bearing that name at the gateway');
 	});
