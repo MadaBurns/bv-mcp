@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.81.1] - 2026-09-15
+
+Fixes the two issues that 3.81.0 did not resolve in production (#973, #974). Scoring model **1.33.0** (from 1.32.0) and `@blackveil/dns-checks` **1.48.0** (from 1.47.0, `PARITY_CORPUS_VERSION` in lockstep), so bv-web-prod needs to re-vendor. The one score-bearing change is the #973 fix, which lowers scores only for domains that serve the Cloudways unmapped-domain edge. No weight, tier or grade band changed.
+
 ### Fixed
 
 - **`check_subdomain_takeover` still missed the live #973 Cloudways reproduction after 3.81.0's A/AAAA-vector fix (#973 reopen).** Two gaps: the shipped Cloudways fingerprint only matched the "not mapped to an application" wording, but some Cloudways edges serve a bare 403 whose ENTIRE body is an `<iframe>` pointing at a separate S3-hosted maintenance page — that wording lives only inside the iframe document, never fetched. Added the iframe `src` marker itself (present verbatim in the origin's own response) as a second fingerprint. Separately, HTTPS to those hosts can fail outright (TLS/connect failure, no response) before the fingerprint probe ever reads a body; the A/AAAA vector now retries over plain HTTP through the same fetch function and timeout budget when the HTTPS leg throws (excluding a TLS-SNI-altname mismatch, which is already its own deprovision signal) — an HTTPS failure followed by an HTTP fingerprint match is a finding, both legs failing stays the existing silent abstention. The CNAME-vector probe (`probeHttpFingerprint`) is unchanged; its targets are known third-party HTTPS-serving platforms, not the bare-A-record case this vector exists for. Scoring model 1.33.0, `@blackveil/dns-checks` 1.48.0.
