@@ -33,9 +33,15 @@ import { callReconScan, isReconHit } from '../lib/recon-binding';
 import type { ReconBinding, BindingDegradationSink, ReconScanResult } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult } from '../lib/scoring';
-import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes, generateTranspositions } from './lookalike-analysis';
+import {
+	generateCognitiveLookalikes,
+	generateCombosquats,
+	generateLookalikes,
+	generateTldVariants,
+	generateTranspositions,
+} from './lookalike-analysis';
 import { calibrateLookalikeSeverity, type LookalikeSignals } from './lookalike-severity';
-import { attributionConfidence, classifyOwnership, type OwnershipAssessment } from '../lib/ownership-attribution';
+import { attributionConfidence, classifyOwnership, type LabelCohortMember, type OwnershipAssessment } from '../lib/ownership-attribution';
 import { isEnterpriseGatedNsHost, isPooledSharedNsHost, isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
 import { extractBrandName } from '../lib/public-suffix';
 import {
@@ -245,7 +251,7 @@ async function checkLookalikesCore(
 ): Promise<CheckResult> {
 	const startedAt = Date.now();
 	const findings: Finding[] = [];
-	// FOUR disjoint candidate lanes, deduped into one set that flows through the
+	// FIVE disjoint candidate lanes, deduped into one set that flows through the
 	// same NS-existence → probe → enrich → severity pipeline:
 	//
 	//  - `generateLookalikes` — MOTOR errors (keyboard adjacency, omission,
@@ -262,6 +268,10 @@ async function checkLookalikesCore(
 	//    coincidence, so before this lane existed they were simply never probed.
 	//  - `generateCombosquats` — brand + lure affix, which defeats edit distance
 	//    entirely.
+	//  - `generateTldVariants` — the EXACT seed label under the common gTLDs and
+	//    the seed's ccTLD family (#974). The motor lane's pairwise TLD swap gave a
+	//    `.co.nz` seed only `.com`, so a brand's agency-registered cohort was
+	//    invisible to the step-5d cohort corroborator.
 	//
 	// Each lane carries its OWN cap, so adding one can never evict another's
 	// candidates through a shared truncation.
@@ -271,6 +281,7 @@ async function checkLookalikesCore(
 			...generateTranspositions(domain),
 			...generateCognitiveLookalikes(domain),
 			...generateCombosquats(domain),
+			...generateTldVariants(domain),
 		]),
 	];
 
@@ -395,6 +406,12 @@ async function checkLookalikesCore(
 	const primaryNsList = Array.from(primaryNs);
 	const primaryMxList = Array.from(primaryMx);
 	const brand = extractBrandName(domain) ?? '';
+	// #974 reopened — every fully-measured candidate's record sets, for the
+	// step-5d exact-label cohort corroborator. A degraded probe's empty sets were
+	// unfetched, so neither it nor a degraded candidate takes part.
+	const labelCohort: LabelCohortMember[] = results
+		.filter((r) => !r.probeDegraded)
+		.map((r) => ({ domain: r.domain, a: r.aAddresses ?? [], ns: Array.from(lookalikeNsMap.get(r.domain) ?? []), mx: r.mxExchanges }));
 	const ownershipByDomain = new Map<string, OwnershipAssessment>();
 	for (const perm of registeredPerms) {
 		const candidateNs = Array.from(lookalikeNsMap.get(perm) ?? []);
@@ -413,6 +430,7 @@ async function checkLookalikesCore(
 				candidateMx: probed?.mxExchanges,
 				seedA: primaryA,
 				seedMx: primaryMxList,
+				labelCohort: probed && !probed.probeDegraded ? labelCohort : undefined,
 			}),
 		);
 	}
@@ -479,6 +497,7 @@ async function checkLookalikesCore(
 		isPooledSharedNsHost,
 		seedA: primaryA,
 		seedMx: primaryMxList,
+		labelCohort,
 		probeAuthorisation: probeDmarcReportAuthorisation,
 	});
 
@@ -658,7 +677,10 @@ async function checkLookalikesCore(
 		// The D4 MX-overlap corroboration signal feeds `attributionConfidence()`
 		// for BOTH the per-domain attribution wording below and the rollup member
 		// (#863) — computed once so the two can never disagree.
-		const mxOverlapsPrimary = result.mxExchanges.some((ex) => primaryMx.has(ex));
+		// #974 reopened — a `seed_label_cohort` verdict already rests on two agreeing
+		// signals (the seed's A set, and the identical sibling cohort), so it
+		// corroborates the label match exactly as an MX overlap does.
+		const attributionCorroborated = result.mxExchanges.some((ex) => primaryMx.has(ex)) || ownership.signals.includes('seed_label_cohort');
 		if (brandHeld !== undefined) {
 			findings.push(buildBrandHeldFinding(result, domain, ownership, brandHeld));
 		} else if (matchedOrg !== undefined) {
@@ -671,7 +693,7 @@ async function checkLookalikesCore(
 
 			// Attribution pushed FIRST so a consumer scanning for the ownership
 			// statement about a candidate finds it ahead of the threat observation.
-			findings.push(applyOwnershipGate(rawFinding, ownership, brand, mxOverlapsPrimary));
+			findings.push(applyOwnershipGate(rawFinding, ownership, brand, attributionCorroborated));
 		}
 
 		// #832 — an UNMEASURED ownership verdict withholds the impersonation-
@@ -714,7 +736,7 @@ async function checkLookalikesCore(
 			registrationDays: signals.registrationDays,
 			// #863 — the row's own hedge travels with it; the rollup excludes and
 			// caps on `uncorroborated` so it never out-claims the rows.
-			attributionConfidence: attributionConfidence(ownership.verdict, brand, mxOverlapsPrimary),
+			attributionConfidence: attributionConfidence(ownership.verdict, brand, attributionCorroborated),
 		});
 	}
 

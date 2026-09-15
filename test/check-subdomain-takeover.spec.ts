@@ -493,6 +493,96 @@ describe('checkSubdomainTakeover', () => {
 		expect(result.findings[0].title).toContain('No dangling CNAME');
 	});
 
+	describe('Cloudways iframe-marker live miss (#973 reopen, 2026-09-15)', () => {
+		// Production reproduction: toolbelt/intranet.ltmcguinness.co.nz resolve via
+		// A record only (no CNAME) to shared Cloudways infrastructure. HTTPS fails
+		// outright (TLS/connect failure, no response); HTTP answers 403 with a
+		// body whose ENTIRE content is an <iframe> pointing at Cloudways'
+		// S3-hosted maintenance page — the "not mapped to an application" wording
+		// the 3.81.0 fix looked for lives only inside that iframe document, never
+		// fetched. The exact 343-byte body from the issue.
+		const iframeOnlyBody =
+			'<!DOCTYPE html>\n<html>\n    <iframe src="https://cloudways-static-content.s3.us-east-1.amazonaws.com/error_page/maintenance-domain-mapping.html" frameborder="0" style="overflow:hidden;overflow-x:hidden;overflow-y:hidden;height:100%;width:100%;position:absolute;top:0px;left:0px;right:0px;bottom:0px" height="100%" width="100%"></iframe>\n</html>';
+
+		function dohMock(getFetch: () => (input: string | URL | Request) => Promise<Response>) {
+			return vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+				if (url.includes('cloudflare-dns.com')) {
+					if (url.includes('type=CNAME') || url.includes('type=5')) {
+						const nameMatch = url.match(/name=([^&]+)/);
+						const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+						return Promise.resolve(emptyResponse(name, 5));
+					}
+					if (url.includes('type=A') || url.includes('type=1')) {
+						if (url.includes('app.example.com')) {
+							return Promise.resolve(aResponse('app.example.com', ['45.77.51.111']));
+						}
+					}
+					return Promise.resolve(emptyResponse('unknown', 1));
+				}
+
+				return getFetch()(url);
+			});
+		}
+
+		it('matches the iframe marker on a direct HTTPS 403 (no fallback needed)', async () => {
+			globalThis.fetch = dohMock(() => (_url) => Promise.resolve(new Response(iframeOnlyBody, { status: 403 })));
+
+			const result = await run('example.com');
+			const finding = result.findings.find((f) => f.title.includes('Cloudways'));
+			expect(finding).toBeDefined();
+			expect(finding!.severity).toBe('high');
+			expect(finding!.metadata?.verificationStatus).toBe('potential');
+			expect(finding!.metadata?.vector).toBe('a_record');
+		});
+
+		it('falls back to plain HTTP when HTTPS fails outright, and matches the iframe marker', async () => {
+			globalThis.fetch = dohMock(() => (url) => {
+				// HTTPS (including the robots.txt probe it gates behind) fails with
+				// no response at all — the live reproduction's exact wording.
+				if (url.startsWith('https://')) {
+					return Promise.reject(new Error('connect ECONNREFUSED'));
+				}
+				// The HTTP fallback reaches the origin and gets the iframe-only 403 body.
+				return Promise.resolve(new Response(iframeOnlyBody, { status: 403 }));
+			});
+
+			const result = await run('example.com');
+			const finding = result.findings.find((f) => f.title.includes('Cloudways'));
+			expect(finding).toBeDefined();
+			expect(finding!.severity).toBe('high');
+			expect(finding!.detail).toContain('no CNAME');
+			expect(finding!.metadata?.verificationStatus).toBe('potential');
+			expect(finding!.metadata?.vector).toBe('a_record');
+		});
+
+		it('stays silent when both HTTPS and the HTTP fallback fail', async () => {
+			globalThis.fetch = dohMock(() => (_url) => Promise.reject(new Error('connect ECONNREFUSED')));
+
+			const result = await run('example.com');
+			expect(result.findings).toHaveLength(1);
+			expect(result.findings[0].severity).toBe('info');
+			expect(result.findings[0].title).toContain('No dangling CNAME');
+		});
+
+		it('control: a normal page with an unrelated iframe produces no finding', async () => {
+			globalThis.fetch = dohMock(
+				() => (_url) =>
+					Promise.resolve(
+						new Response('<!DOCTYPE html><html><body><iframe src="https://maps.example.com/embed"></iframe></body></html>', {
+							status: 200,
+						}),
+					),
+			);
+
+			const result = await run('example.com');
+			expect(result.findings).toHaveLength(1);
+			expect(result.findings[0].severity).toBe('info');
+			expect(result.findings[0].title).toContain('No dangling CNAME');
+		});
+	});
+
 	it('detects dangling CNAME to newly added service (Vercel)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
