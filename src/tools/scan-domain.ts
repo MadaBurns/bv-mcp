@@ -168,7 +168,11 @@ type CheckRunner = (
  * profile-only checks are deliberately NOT here — that profile takes its own
  * branch (Promise.all + mergeAuthoritativeDnsInfraResults).
  */
-const CHECK_DISPATCH: Record<string, CheckRunner> = {
+// Exported (only) so `test/audits/scan-domain-dns-pool-classification.audit.test.ts`
+// can independently re-derive, via source-text reflection, which entries discard
+// their `dns` parameter — see CHECKS_WITHOUT_DNS_POOL below. Not part of the
+// public runtime contract; use CHECK_DISPATCH[cat](...) only, never re-key it.
+export const CHECK_DISPATCH: Record<string, CheckRunner> = {
 	spf: (d, dns) => checkSpf(d, dns),
 	dmarc: (d, dns) => checkDmarc(d, dns),
 	dkim: (d, dns) => checkDkim(d, undefined, dns),
@@ -209,6 +213,25 @@ const CHECK_DISPATCH: Record<string, CheckRunner> = {
  * this against the `scanIncluded` SSOT in TOOL_DEFS.
  */
 export const SCAN_CATEGORIES: CheckCategory[] = Object.keys(CHECK_DISPATCH) as CheckCategory[];
+
+/**
+ * Dispatch entries that ignore the `dnsOptions` (2nd) parameter entirely — see
+ * the CheckRunner JSDoc above — and so never call `dnsSemaphore.run()`. These
+ * are the ONLY two of the 19 {@link CHECK_DISPATCH} entries a raw-`fetch`
+ * check can be: `dane_https` also takes the narrow per-check signal but DOES
+ * still thread `dnsOptions` through for its TLSA lookup, so it is NOT here.
+ *
+ * #952/SQ-15 repair: `safeCheck`'s per-check timer extension (the `queueClock`
+ * argument) must be withheld from these two. The original #952 fix wired the
+ * shared `dnsSemaphore.saturatedMs()` unconditionally to every category, so a
+ * raw-fetch check's declared timeout went silently unenforced whenever ANY
+ * OTHER check in the same scan queued on the DNS pool — even though `ssl`/
+ * `http_security` never wait on it themselves. Pinned against dispatch-table
+ * drift by `test/audits/scan-domain-dns-pool-classification.audit.test.ts`,
+ * which fails if a new entry discards its `dns` parameter without being added
+ * here (or vice versa).
+ */
+export const CHECKS_WITHOUT_DNS_POOL: ReadonlySet<CheckCategory> = new Set<CheckCategory>(['ssl', 'http_security']);
 
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
@@ -708,6 +731,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 								),
 							timeoutBudget.perCheckTimeoutMs,
 							() => perCheckAbort.abort(),
+							// #952/SQ-15: withhold the queue-clock extension from checks that
+							// never wait on the DNS pool — see CHECKS_WITHOUT_DNS_POOL above.
+							CHECKS_WITHOUT_DNS_POOL.has(cat) ? undefined : () => dnsSemaphore.saturatedMs(),
 						),
 					kv,
 					cacheTtl,
@@ -1206,24 +1232,44 @@ async function safeCheck(
 	fn: () => Promise<CheckResult>,
 	perCheckTimeoutMs: number,
 	onTimeout?: () => void,
+	queueClock?: () => number,
 ): Promise<CheckResult> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		const result = await Promise.race([
 			fn(),
-			new Promise<never>((_, reject) =>
-				setTimeout(() => {
-					// R7: fire the per-check abort BEFORE rejecting so the orphaned
-					// raw-fetch subrequests of THIS check are cancelled the moment the
-					// per-check budget is exceeded. Fail-soft: an onTimeout throw must
-					// not mask the timeout rejection.
-					try {
-						onTimeout?.();
-					} catch {
-						/* best-effort abort — never let it swallow the timeout */
-					}
-					reject(new Error('Check timed out'));
-				}, perCheckTimeoutMs),
-			),
+			new Promise<never>((_, reject) => {
+				// #952: the budget is for the check's own work, not for waiting on the
+				// shared DoH pool. batch_scan runs its scans through ONE 5-slot pool, and
+				// measured at 150ms DoH latency checks expired while their queries sat
+				// QUEUED — excluding categories a single scan of the same domain measured
+				// fine. Widening the pool cannot buy real parallelism (the Workers runtime
+				// caps an invocation at 6 connections waiting for headers), so instead each
+				// time the timer fires it is extended by the pool-saturated time accrued
+				// since it was last armed. Still bounded by the scan race and batch budget.
+				let saturatedAtArm = queueClock?.() ?? 0;
+				const arm = (ms: number) => {
+					timer = setTimeout(() => {
+						const queued = (queueClock?.() ?? 0) - saturatedAtArm;
+						if (queued > 0) {
+							saturatedAtArm += queued;
+							arm(queued);
+							return;
+						}
+						// R7: fire the per-check abort BEFORE rejecting so the orphaned
+						// raw-fetch subrequests of THIS check are cancelled the moment the
+						// per-check budget is exceeded. Fail-soft: an onTimeout throw must
+						// not mask the timeout rejection.
+						try {
+							onTimeout?.();
+						} catch {
+							/* best-effort abort — never let it swallow the timeout */
+						}
+						reject(new Error('Check timed out'));
+					}, ms);
+				};
+				arm(perCheckTimeoutMs);
+			}),
 		]);
 		return result;
 	} catch (err) {
@@ -1252,5 +1298,7 @@ async function safeCheck(
 		// the post-processing re-apply masked it in scan output, but the intermediate
 		// result must carry the same not-assessed contract as buildDnsErrorResult.
 		return { ...result, score: 0, passed: false, checkStatus, partial: true };
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
 	}
 }

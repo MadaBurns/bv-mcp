@@ -22,25 +22,33 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, resolve } from 'node:path';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
 
 import { parseJsonc } from '../../scripts/brand-audit-schema-preflight.mjs';
-import { MAIN_WORKER_NAME, SIDECAR_TARGETS } from '../../scripts/sidecar-deploy-drift';
-import { probeSidecar, runSidecarDriftCheck, WRANGLER_DEPLOYMENTS_ARGV } from '../../scripts/ci/sidecar-deploy-drift-check';
+import { MAIN_WORKER_NAME, SIDECAR_TARGETS, type SidecarTarget } from '../../scripts/sidecar-deploy-drift';
+import {
+	isInvokedDirectly,
+	probeSidecar,
+	runSidecarDriftCheck,
+	verifyHeadContainsUpstream,
+	WRANGLER_DEPLOYMENTS_ARGV,
+} from '../../scripts/ci/sidecar-deploy-drift-check';
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 const WHOIS = SIDECAR_TARGETS[0]!;
 
 type SpawnCall = [string, string[], { encoding: 'utf8' }];
+type SpawnResult = { status: number | null; stdout?: string; stderr?: string; error?: Error };
 
-function fakeSpawn(handler: (command: string, args: string[]) => { status: number | null; stdout?: string; stderr?: string }) {
+function fakeSpawn(handler: (command: string, args: string[]) => SpawnResult) {
 	return vi.fn((command: string, args: string[], _options: { encoding: 'utf8' }) => handler(command, args)) as unknown as ((
 		...call: SpawnCall
-	) => { status: number | null; stdout?: string; stderr?: string }) & { mock: { calls: SpawnCall[] } };
+	) => SpawnResult) & { mock: { calls: SpawnCall[] } };
 }
 
 const OK_DEPLOYMENTS = JSON.stringify([{ id: 'v1', created_on: '2026-05-20T22:01:09.022895Z' }]);
@@ -138,6 +146,195 @@ describe('sidecar drift CLI — process contract', () => {
 		expect(runSidecarDriftCheck(broken, { BV_ALLOW_STALE_SIDECARS: '1' }).code).toBe('override');
 		// The git-freshness override must NOT release this gate.
 		expect(runSidecarDriftCheck(broken, { BV_ALLOW_STALE_DEPLOY: '1' }).ok).toBe(false);
+	});
+
+	it('reads git history with --first-parent, not a plain history-simplified log (#981 item 2)', () => {
+		// This repo merges via merge commits. A plain `git log -- <path>` surfaces
+		// the ORIGINAL side-branch commit (and its side-branch committer date), not
+		// the merge that landed it on main — `--first-parent` is what fixes that
+		// (see the real temp-repo reproduction below).
+		const spawn = fakeSpawn((command) => ({ status: 0, stdout: command === 'npx' ? OK_DEPLOYMENTS : '', stderr: '' }));
+		probeSidecar(WHOIS, spawn);
+
+		const [command, args] = spawn.mock.calls[1]!;
+		expect(command).toBe('git');
+		expect(args[0]).toBe('log');
+		expect(args).toContain('--first-parent');
+	});
+});
+
+describe('verifyHeadContainsUpstream — HEAD ⊇ origin/main proof (#981 item 1)', () => {
+	function fixedSpawn(overrides: { fetch?: SpawnResult; mergeBase?: SpawnResult } = {}) {
+		return fakeSpawn((command, args) => {
+			if (command === 'git' && args[0] === 'fetch') return overrides.fetch ?? { status: 0, stdout: '', stderr: '' };
+			if (command === 'git' && args[0] === 'merge-base') return overrides.mergeBase ?? { status: 0, stdout: '', stderr: '' };
+			return { status: 0, stdout: '', stderr: '' };
+		});
+	}
+
+	it('proves HEAD ⊇ origin/main via `git merge-base --is-ancestor origin/main HEAD`', () => {
+		const spawn = fixedSpawn();
+		expect(verifyHeadContainsUpstream(spawn)).toBeNull();
+
+		const mergeBaseCall = spawn.mock.calls.find(([command, args]) => command === 'git' && args[0] === 'merge-base');
+		expect(mergeBaseCall?.[1]).toEqual(['merge-base', '--is-ancestor', 'origin/main', 'HEAD']);
+	});
+
+	it('BLOCKS when HEAD does not contain origin/main (exit 1 from --is-ancestor)', () => {
+		const spawn = fixedSpawn({ mergeBase: { status: 1, stdout: '', stderr: '' } });
+		expect(verifyHeadContainsUpstream(spawn)).toMatch(/does not contain origin\/main/);
+	});
+
+	it('BLOCKS when the upstream fetch fails', () => {
+		const spawn = fixedSpawn({ fetch: { status: 128, stdout: '', stderr: 'could not resolve host' } });
+		expect(verifyHeadContainsUpstream(spawn)).toMatch(/could not fetch origin\/main/);
+	});
+
+	it('BLOCKS on an unexpected merge-base exit status rather than guessing', () => {
+		const spawn = fixedSpawn({ mergeBase: { status: 128, stdout: '', stderr: 'fatal: not a valid object name' } });
+		expect(verifyHeadContainsUpstream(spawn)).toMatch(/exited 128/);
+	});
+
+	// The exact fail-open path #981 item 1 reports: BV_ALLOW_STALE_DEPLOY=1 makes
+	// `assessDeployFreshness` return ok:true WITHOUT proving HEAD ⊇ origin/main
+	// (scripts/deploy-freshness.ts). This sidecar gate must not inherit that hole
+	// by trusting the freshness gate ran (or ran honestly) — it proves the same
+	// precondition itself, and BV_ALLOW_STALE_DEPLOY must have no effect on it.
+	it('a checkout behind origin/main BLOCKS the sidecar gate even under BV_ALLOW_STALE_DEPLOY=1', () => {
+		const spawn = fakeSpawn((command, args) => {
+			if (command === 'git' && args[0] === 'fetch') return { status: 0, stdout: '', stderr: '' };
+			if (command === 'git' && args[0] === 'merge-base') return { status: 1, stdout: '', stderr: '' }; // HEAD behind
+			if (command === 'npx') return { status: 0, stdout: OK_DEPLOYMENTS, stderr: '' };
+			return { status: 0, stdout: '', stderr: '' }; // git log: no drift visible from a stale HEAD
+		});
+
+		const verdict = runSidecarDriftCheck(spawn, { BV_ALLOW_STALE_DEPLOY: '1' });
+		expect(verdict.ok).toBe(false);
+		expect(verdict.code).toBe('unverified');
+	});
+
+	it('BV_ALLOW_STALE_SIDECARS still releases the gate even when HEAD is unproven', () => {
+		// The one sanctioned bypass for THIS gate stays effective — only the
+		// git-freshness override (BV_ALLOW_STALE_DEPLOY) must not reach it.
+		const spawn = fakeSpawn((command, args) => {
+			if (command === 'git' && args[0] === 'merge-base') return { status: 1, stdout: '', stderr: '' };
+			if (command === 'npx') return { status: 0, stdout: OK_DEPLOYMENTS, stderr: '' };
+			return { status: 0, stdout: '', stderr: '' };
+		});
+		expect(runSidecarDriftCheck(spawn, { BV_ALLOW_STALE_SIDECARS: '1' }).code).toBe('override');
+	});
+
+	it("a probe's own failure reason is reported over the shared HEAD-ancestry reason", () => {
+		const spawn = fakeSpawn((command, args) => {
+			if (command === 'git' && args[0] === 'merge-base') return { status: 1, stdout: '', stderr: '' };
+			if (command === 'npx') return { status: 1, stdout: '', stderr: 'Authentication error [code: 10000]' };
+			return { status: 0, stdout: '', stderr: '' };
+		});
+		const verdict = runSidecarDriftCheck(spawn, {});
+		expect(verdict.ok).toBe(false);
+		expect(verdict.message).toMatch(/exited 1/);
+	});
+});
+
+describe('probeSidecar uses the merge date, not the side-branch committer date (#981 item 2 — real git repo)', () => {
+	// Reproduces the exact shape measured in the issue: 9c170b0d (#526) carries a
+	// side-branch committer date of 2026-07-20, four days before it actually
+	// merged on 2026-07-24. A sidecar deployed in that four-day window must see
+	// this as drift — the change reached main AFTER the deployment — even though
+	// the original commit predates it.
+	it('flags drift when the MERGE landed after the deployment, even though the side-branch commit predates it', () => {
+		const repo = mkdtempSync(join(tmpdir(), 'sq981-first-parent-'));
+		const prevCwd = process.cwd();
+		const run = (args: string[], env?: Record<string, string>) =>
+			execFileSync('git', args, { cwd: repo, encoding: 'utf8', env: { ...process.env, ...env } });
+
+		try {
+			run(['init', '-q']);
+			run(['config', 'user.email', 'test@example.com']);
+			run(['config', 'user.name', 'Test']);
+			run(['checkout', '-q', '-b', 'main']);
+			writeFileSync(join(repo, 'watched.txt'), 'base\n');
+			run(['add', 'watched.txt']);
+			run(['commit', '-q', '-m', 'base'], { GIT_AUTHOR_DATE: '2026-01-01T00:00:00Z', GIT_COMMITTER_DATE: '2026-01-01T00:00:00Z' });
+
+			run(['checkout', '-q', '-b', 'feature']);
+			writeFileSync(join(repo, 'watched.txt'), 'feature-change\n');
+			run(['add', 'watched.txt']);
+			// Side-branch date: BEFORE the sidecar's deployment.
+			run(['commit', '-q', '-m', 'fix(rdap): surface WHOIS dates (#526)'], {
+				GIT_AUTHOR_DATE: '2026-07-20T15:17:39+12:00',
+				GIT_COMMITTER_DATE: '2026-07-20T15:17:39+12:00',
+			});
+
+			run(['checkout', '-q', 'main']);
+			// Merge date: AFTER the sidecar's deployment — when the change actually
+			// reached main and became eligible to ship.
+			run(['merge', '--no-ff', '-q', '-m', 'Merge feature', 'feature'], {
+				GIT_AUTHOR_DATE: '2026-07-24T09:00:00+12:00',
+				GIT_COMMITTER_DATE: '2026-07-24T09:00:00+12:00',
+			});
+
+			process.chdir(repo);
+
+			const target: SidecarTarget = {
+				worker: 'fixture-sidecar',
+				configPath: 'fixture.jsonc',
+				watchPaths: ['watched.txt'],
+				deployCommand: 'npm run deploy:fixture',
+			};
+			// Deployed BETWEEN the two dates — the exact #526 shape.
+			const deployedAt = '2026-07-22T00:00:00+12:00';
+			const spawn = fakeSpawn((command, args) => {
+				if (command === 'npx') return { status: 0, stdout: JSON.stringify([{ created_on: deployedAt }]), stderr: '' };
+				try {
+					return { status: 0, stdout: execFileSync(command, args, { cwd: repo, encoding: 'utf8' }), stderr: '' };
+				} catch (error) {
+					const e = error as { status?: number | null; stdout?: string; stderr?: string };
+					return { status: e.status ?? 1, stdout: e.stdout ?? '', stderr: e.stderr ?? '' };
+				}
+			});
+
+			const probe = probeSidecar(target, spawn);
+			expect(probe.unverifiedReason).toBeNull();
+			// This is the regression: on current main (no `--first-parent`), `git log`
+			// surfaces the side-branch commit dated 2026-07-20 — BEFORE the 07-22
+			// deployment — so `selectCommitsAfter` would drop it and report `fresh`,
+			// exactly the false-clean signal #981 item 2 describes.
+			expect(probe.driftCommits).toHaveLength(1);
+			expect(probe.driftCommits[0]).toContain('Merge feature');
+		} finally {
+			process.chdir(prevCwd);
+			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+});
+
+describe('isInvokedDirectly — argv guard resists a symlinked invocation path (#981 item 4)', () => {
+	const MODULE_URL = 'file:///repo/scripts/ci/sidecar-deploy-drift-check.ts';
+	const REAL_PATH = fileURLToPath(MODULE_URL);
+
+	it('treats a symlinked argv[1] as the entrypoint once realpathed to the module path', () => {
+		const symlinkArgv = '/repo/.worktrees/agent-x/scripts/ci/sidecar-deploy-drift-check.ts';
+		const fakeRealpath = (p: string) => (p === symlinkArgv ? REAL_PATH : p);
+		expect(isInvokedDirectly(symlinkArgv, MODULE_URL, fakeRealpath)).toBe(true);
+	});
+
+	it('a plain resolve() would NOT have caught this — the exact #981 item 4 bug', () => {
+		// `resolve()` normalizes but never follows symlinks, so a checkout reached
+		// through a symlinked path component left it disagreeing with
+		// `fileURLToPath(import.meta.url)` forever, and the guard silently no-op'd.
+		const symlinkArgv = '/repo/.worktrees/agent-x/scripts/ci/sidecar-deploy-drift-check.ts';
+		expect(resolve(symlinkArgv)).not.toBe(REAL_PATH);
+	});
+
+	it('returns false when argv1 is absent', () => {
+		expect(isInvokedDirectly(undefined, MODULE_URL, () => REAL_PATH)).toBe(false);
+	});
+
+	it('returns false for a genuine non-entrypoint import', () => {
+		const otherArgv = '/repo/test/audits/sidecar-deploy-drift-check.node.test.ts';
+		const fakeRealpath = (p: string) => p;
+		expect(isInvokedDirectly(otherArgv, MODULE_URL, fakeRealpath)).toBe(false);
 	});
 });
 

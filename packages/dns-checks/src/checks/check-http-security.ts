@@ -5,6 +5,7 @@
 import type { CheckResult, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { analyzeSecurityHeaders } from './http-security-analysis';
+import { isBlockedProbeStatus } from './ssl-analysis';
 import {
 	SCANNER_USER_AGENT,
 	RobotsDisallowedError,
@@ -45,6 +46,26 @@ function noContentFinding(domain: string, status: number): Finding {
 		'info',
 		`https://${domain} answered the scanner with HTTP ${status} (no content). No page was delivered, so security headers could not be verified — the response may be an egress anomaly or challenge rather than the site.`,
 		{ inconclusive: true, confidence: 'heuristic', errorKind: 'no_content' },
+	);
+}
+
+/**
+ * The finding for a 2xx-shaped edge/WAF/rate-limit block (issue #972). `isBlockedProbeStatus()`
+ * (shared with check-ssl/ssl-analysis, issue #972) classifies 202 as a blocked-probe status, but
+ * 202 still satisfies `response.ok` — so without this guard an unfingerprinted origin's 202
+ * interstitial (no CF/Akamai signal for `detectWafEvent` in waf-detection.ts to match) fell
+ * straight into `analyzeSecurityHeaders()` and produced a full slate of confident "No <header>"
+ * findings from a probe that never reached the real page. No `missingControl` — a blocked probe
+ * measured nothing (issue #638 law); the score-0/passed-false shape is applied via
+ * `unmeasuredZero` at the call sites, same as the no-content branch above.
+ */
+function blockedProbeFinding(domain: string, status: number): Finding {
+	return createFinding(
+		'http_security',
+		'HTTP check blocked',
+		'info',
+		`https://${domain} answered the scanner with HTTP ${status}, an edge/WAF/rate-limit-shaped response with no vendor fingerprint to match. Security headers could not be verified — the response is likely an interstitial or challenge page rather than the site's own answer.`,
+		{ inconclusive: true },
 	);
 }
 
@@ -193,6 +214,16 @@ export async function checkHTTPSecurity(
 			unmeasuredZero = true;
 			transientUnmeasured = true;
 			findings.push(noContentFinding(domain, response.status));
+		} else if (isBlockedProbeStatus(response.status) && response.ok) {
+			// Issue #972 — a 2xx-shaped edge/WAF/rate-limit block (202 "Accepted" is the only
+			// isBlockedProbeStatus member that satisfies response.ok). Must be checked before the
+			// generic response.ok branch below, or the block page's headers are read as the site's.
+			// Treated as origin-persistent (no `transientUnmeasured`/`partial`), same as the
+			// 401/403/"other 4xx" blocked-probe branches further down, not the transient no-content
+			// pair above.
+			inconclusive = 'error';
+			unmeasuredZero = true;
+			findings.push(blockedProbeFinding(domain, response.status));
 		} else if (response.ok) {
 			// 200-299: analyze headers normally
 			findings.push(...analyzeSecurityHeaders(response.headers));
@@ -221,6 +252,13 @@ export async function checkHTTPSecurity(
 					unmeasuredZero = true;
 					transientUnmeasured = true;
 					findings.push(noContentFinding(domain, followed.status));
+				} else if (isBlockedProbeStatus(followed.status) && followed.ok) {
+					// Issue #972 — the GET fallback itself can land on the same 2xx-shaped block
+					// (e.g. HEAD 403 -> GET 202), so it needs the identical guard as the initial
+					// HEAD probe above before analysis.
+					inconclusive = 'error';
+					unmeasuredZero = true;
+					findings.push(blockedProbeFinding(domain, followed.status));
 				} else {
 					findings.push(...analyzeSecurityHeaders(followed.headers));
 				}

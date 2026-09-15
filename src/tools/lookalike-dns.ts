@@ -141,26 +141,54 @@ function remainingMs(deadlineMs: number | undefined): number {
 }
 
 /**
+ * A per-query deadline: the signal to pass down to the transport, plus a
+ * cleanup that releases the underlying timer once the query it gated has
+ * settled (success or failure) — the caller MUST call it in a `finally`.
+ */
+interface QueryDeadline {
+	signal: AbortSignal;
+	clear: () => void;
+}
+
+/**
  * Caller-abort signal for ONE dispatched query, armed HERE — inside a pool
  * worker, once a connection slot is free — never at enqueue. The transport
  * composes it with its own per-attempt timer (`AbortSignal.any`) and a caller
  * abort short-circuits its retry loop. `undefined` when there is no deadline.
+ *
+ * Backed by a plain `AbortController` + `setTimeout`, NOT `AbortSignal.timeout()`:
+ * the latter cannot be cancelled once armed, so a query that settles well
+ * before its deadline still leaves a live timer pending for the FULL
+ * remaining duration. Harmless for one request in production (the Worker
+ * invocation ends and the isolate's timers go with it), but a test run that
+ * issues thousands of these mocked, near-instant queries across one shared
+ * runtime process accumulates them until it exhausts the runtime's
+ * active-timer ceiling (measured: `QuotaExceededError: max active timeouts`
+ * partway through `test/check-lookalikes.spec.ts` once #979 added a fourth
+ * candidate lane). `clear()` releases the timer as soon as the caller's
+ * query settles, so it never outlives the work it was gating.
  */
-function deadlineSignal(deadlineMs: number | undefined): AbortSignal | undefined {
+function deadlineSignal(deadlineMs: number | undefined): QueryDeadline | undefined {
 	if (typeof deadlineMs !== 'number') return undefined;
-	return AbortSignal.timeout(Math.max(1, deadlineMs - Date.now()));
+	const controller = new AbortController();
+	const timer = setTimeout(
+		() => controller.abort(new DOMException('The operation was aborted due to timeout', 'TimeoutError')),
+		Math.max(1, deadlineMs - Date.now()),
+	);
+	return { signal: controller.signal, clear: () => clearTimeout(timer) };
 }
 
 /**
  * Classify a rejected query. The deadline signal is authoritative: a query it
  * aborted is a budget cut, whatever the transport called it. A per-attempt
- * timer expiry surfaces as `DNS query timed out after Nms` OR — because
- * `AbortSignal.timeout()` rejects with a `TimeoutError`, not the `AbortError`
- * the transport's retry branch tests for — as `DNS query failed: The operation
- * was aborted due to timeout`; both are the resolver not answering.
+ * timer expiry surfaces as `DNS query timed out after Nms` OR — because the
+ * deadline signal aborts with a `TimeoutError` DOMException, not the
+ * `AbortError` the transport's retry branch tests for — as `DNS query failed:
+ * The operation was aborted due to timeout`; both are the resolver not
+ * answering.
  */
-function classifyDnsFailure(err: unknown, deadline: AbortSignal | undefined): DnsProbeFailureReason {
-	if (deadline?.aborted) return 'deadline';
+function classifyDnsFailure(err: unknown, deadline: QueryDeadline | undefined): DnsProbeFailureReason {
+	if (deadline?.signal.aborted) return 'deadline';
 	if (err instanceof DnsQueryError && /timed out|timeout/i.test(err.message)) return 'timeout';
 	return 'failed';
 }
@@ -193,6 +221,12 @@ export interface LookalikeResult {
 	hasMX: boolean;
 	/** MX exchange hosts (lowercased, trailing-dot-stripped) — empty when no real MX. */
 	mxExchanges: string[];
+	/**
+	 * #974 — the resolved A addresses (trimmed). Absent = not probed (hand-built
+	 * fixtures); `[]` = no A answer or a degraded A leg. Feeds the step-5c
+	 * seed-infrastructure match in `classifyOwnership()`.
+	 */
+	aAddresses?: string[];
 	/**
 	 * True when the A or MX lookup for this candidate REJECTED (timeout /
 	 * throttling), so the corresponding `false` above is UNFETCHED, not
@@ -272,10 +306,16 @@ async function probeDetailBatch(batch: string[], deadlineMs: number | undefined)
 		// Armed HERE, at dispatch — the pool guarantees a connection slot is free.
 		const deadline = deadlineSignal(deadlineMs);
 		try {
-			const records = await queryDnsRecords(leg.domain, leg.type, deadline ? { ...PHASE2_DNS_OPTS, signal: deadline } : PHASE2_DNS_OPTS);
+			const records = await queryDnsRecords(
+				leg.domain,
+				leg.type,
+				deadline ? { ...PHASE2_DNS_OPTS, signal: deadline.signal } : PHASE2_DNS_OPTS,
+			);
 			return { ok: true, records };
 		} catch (err) {
 			return { ok: false, reason: classifyDnsFailure(err, deadline) };
+		} finally {
+			deadline?.clear();
 		}
 	});
 	return batch.map((domain, i) => {
@@ -289,6 +329,7 @@ async function probeDetailBatch(batch: string[], deadlineMs: number | undefined)
 			hasA: a.ok && a.records.length > 0,
 			hasMX: realMxRecords.length > 0,
 			mxExchanges,
+			aAddresses: a.ok ? a.records.map((r) => r.trim()) : [],
 			probeDegraded: reason !== undefined,
 			...(reason !== undefined ? { probeDegradedReason: reason } : {}),
 		};
@@ -370,10 +411,12 @@ export async function filterByNsExistence(
 		// resolver, not a queue.
 		const deadline = deadlineSignal(options.deadlineMs);
 		try {
-			const ns = await queryDnsRecords(domain, 'NS', deadline ? { ...PHASE1_DNS_OPTS, signal: deadline } : PHASE1_DNS_OPTS);
+			const ns = await queryDnsRecords(domain, 'NS', deadline ? { ...PHASE1_DNS_OPTS, signal: deadline.signal } : PHASE1_DNS_OPTS);
 			return { domain, measured: true, ns };
 		} catch (err) {
 			return { domain, measured: false, reason: classifyDnsFailure(err, deadline) };
+		} finally {
+			deadline?.clear();
 		}
 	});
 	const registered: string[] = [];
@@ -525,6 +568,19 @@ export async function queryPrimaryMx(domain: string): Promise<Set<string>> {
 		return new Set(mx.map((r) => r.exchange.toLowerCase().replace(/\.$/, '')));
 	} catch {
 		return new Set<string>();
+	}
+}
+
+/**
+ * #974 — query the seed's own A addresses, the web leg of the step-5c
+ * seed-infrastructure match. Fail-soft to an empty set, which makes that match
+ * unreachable (fails closed to the NS-only outcome), never a false match.
+ */
+export async function queryPrimaryA(domain: string): Promise<string[]> {
+	try {
+		return (await queryDnsRecords(domain, 'A', SEED_DNS_OPTS)).map((r) => r.trim());
+	} catch {
+		return [];
 	}
 }
 

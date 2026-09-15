@@ -301,6 +301,37 @@ export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 export const POOLED_SHARED_NS_APEXES: ReadonlySet<string> = new Set(['akam.net']);
 
 /**
+ * The DELIBERATELY-UNLISTED enterprise-gated apexes from the header above —
+ * measured uniform across unrelated tenants (#939) but not self-service, so
+ * `classifyOwnership()` correctly keeps a complete match here ownership-
+ * bearing (`SHARED_NS_APEXES` must NOT contain any of these; the audit pins
+ * that absence). #949: this is the SEPARATE list a squatter cannot buy onto,
+ * consumed only by {@link isEnterpriseGatedNsHost} — never by
+ * `classifyOwnership()` — as an alternative leg-1 corroborator in
+ * `isBrandHeldRegistration()` (`src/tools/lookalike-attribution.ts`) for the
+ * case where RDAP publishes no IANA registrar ID on either side (common for
+ * `.uk` / `.nz` / `.dk` registries): a seed and candidate sharing an
+ * IDENTICAL, COMPLETE NS set on one of these platforms is a registrant-grade
+ * signal of the same kind as a shared brand-protection registrar ID, because
+ * neither can be bought by a squatter. UltraDNS's inclusion here carries the
+ * same caveat as the header above (self-service tier unverified) and is kept
+ * for parity with the existing deliberately-unlisted decision (#947); this
+ * ticket does not re-verify it.
+ */
+export const ENTERPRISE_GATED_NS_APEXES: ReadonlySet<string> = new Set([
+	'cscdns.net', // corporate brand-protection registrar
+	'cscdns.uk', // corporate brand-protection registrar (.uk half of the udns set)
+	'markmonitor.com',
+	'digital.govt.nz',
+	'ultradns.net',
+	'ultradns.org',
+	'ultradns.com',
+	'ultradns.biz',
+	'ultradns.info',
+	'ultradns.co.uk',
+]);
+
+/**
  * True if `nsHost` (a nameserver hostname like `ns1.sedoparking.com`) is
  * served by a shared-tenant NS provider — i.e. its registered apex appears
  * in SHARED_NS_APEXES.
@@ -320,4 +351,17 @@ export function isPooledSharedNsHost(nsHost: string): boolean {
 	if (!nsHost) return false;
 	const apex = registeredApex(nsHost);
 	return POOLED_SHARED_NS_APEXES.has(apex);
+}
+
+/**
+ * True if `nsHost` is served by an ENTERPRISE-GATED platform (see
+ * {@link ENTERPRISE_GATED_NS_APEXES}) — a squatter cannot self-serve onto it,
+ * so a complete matching set is a registrant-grade signal usable as a leg-1
+ * corroborator (#949). Deliberately DISJOINT from `isSharedNsHost()`: these
+ * apexes are never in `SHARED_NS_APEXES`.
+ */
+export function isEnterpriseGatedNsHost(nsHost: string): boolean {
+	if (!nsHost) return false;
+	const apex = registeredApex(nsHost);
+	return ENTERPRISE_GATED_NS_APEXES.has(apex);
 }

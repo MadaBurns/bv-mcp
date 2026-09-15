@@ -136,6 +136,22 @@ function markProbeInconclusive(result: CheckResult, domain: string): CheckResult
 }
 
 /**
+ * Cap on how many swept subdomains carry the #973 A/AAAA-only takeover vector when this
+ * check runs INSIDE `scan_domain` (identified by `options.budgetMs` being set — see
+ * below). Each vector-checked host adds at least one DNS query (A, plus AAAA only when
+ * A comes back empty — see the package). The default 15-name `KNOWN_SUBDOMAINS` sweep
+ * has no CNAME on any host in `test/hot-path-concurrency.perf.spec.ts`'s fixture, so
+ * checking the vector on all 15 pushed the scan's total DoH fetch count from 121 to 151
+ * — over the shared `<125` dedup-guard ceiling that bounds the whole scan, not just this
+ * check. Capping the vector to the first N swept subdomains keeps the addition small and
+ * bounded regardless of how many hosts in the sweep lack a CNAME.
+ *
+ * A direct `check_subdomain_takeover` call (no `budgetMs`) is NOT capped: the shared
+ * scan-level ceiling does not apply outside `scan_domain`, so the full sweep stands.
+ */
+const SCAN_A_RECORD_VECTOR_SAMPLE_CAP = 2;
+
+/**
  * Check for dangling CNAME records and provider-deprovisioned takeover
  * fingerprints. Default surface: 15 hardcoded "known" subdomain names. Pass
  * `subdomains` to sweep a real enumeration instead.
@@ -149,12 +165,14 @@ export async function checkSubdomainTakeover(
 	// "return before `safeCheck` kills this check", which is absolute, not a per-fetch
 	// allowance. Whatever the DNS legs spend is what the fingerprint probes do not get.
 	const budget = createFetchBudget(options?.budgetMs);
-	const { fetchFn, wasCut } = resolveProbeFetch(budget, options?.budgetMs !== undefined);
+	const budgeted = options?.budgetMs !== undefined;
+	const { fetchFn, wasCut } = resolveProbeFetch(budget, budgeted);
 
 	const result = (await checkSubdomainTakeoverPkg(domain, makeQueryDNS(dnsOptions), {
 		timeout: dnsOptions?.timeoutMs ?? HTTPS_TIMEOUT_MS,
 		fetchFn,
 		...(options?.subdomains ? { subdomains: options.subdomains } : {}),
+		...(budgeted ? { aRecordVectorSampleCap: SCAN_A_RECORD_VECTOR_SAMPLE_CAP } : {}),
 	})) as CheckResult;
 
 	return wasCut() ? markProbeInconclusive(result, domain) : result;

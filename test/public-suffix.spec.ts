@@ -212,4 +212,41 @@ describe('public-suffix', () => {
 			expect(extractBrandName('a.b.c.example.co.nz')).toBe('example');
 		});
 	});
+
+	// #1004 — the ICANN-only public-suffix-apex predicate discover_subdomains
+	// uses to decide whether CertSpotter would refuse the query outright.
+	describe('isPublicSuffixApex', () => {
+		it.each(['govt.nz', 'co.nz', 'nz', 'com'])('returns true for the ICANN eTLD %s itself', async (domain) => {
+			const { isPublicSuffixApex } = await loadModule();
+			expect(isPublicSuffixApex(domain)).toBe(true);
+		});
+
+		it.each(['blackveilsecurity.com', 'health.govt.nz', 'acc.co.nz'])(
+			'returns false for a registrable name under an ICANN eTLD: %s',
+			async (domain) => {
+				const { isPublicSuffixApex } = await loadModule();
+				expect(isPublicSuffixApex(domain)).toBe(false);
+			},
+		);
+
+		it('returns false for a private-suffix apex, unlike getRegistrableDomain', async () => {
+			const { isPublicSuffixApex, getRegistrableDomain } = await loadModule();
+			// getRegistrableDomain (allowPrivateDomains: true) returns null for
+			// `github.io` too — isPublicSuffixApex must NOT, since CertSpotter
+			// accepts and answers this input class (only a true ICANN eTLD is
+			// refused).
+			expect(getRegistrableDomain('github.io')).toBeNull();
+			expect(isPublicSuffixApex('github.io')).toBe(false);
+		});
+
+		it('returns false for a subdomain under a private suffix', async () => {
+			const { isPublicSuffixApex } = await loadModule();
+			expect(isPublicSuffixApex('tenant.github.io')).toBe(false);
+		});
+
+		it('returns false for an empty string', async () => {
+			const { isPublicSuffixApex } = await loadModule();
+			expect(isPublicSuffixApex('')).toBe(false);
+		});
+	});
 });

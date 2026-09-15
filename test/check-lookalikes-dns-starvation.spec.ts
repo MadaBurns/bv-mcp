@@ -262,6 +262,48 @@ describe('filterByNsExistence — bounded to the Workers connection cap (#865 fo
 		expect(result.unresolved).toBe(1);
 		expect(result.unresolvedByReason).toEqual({ timeout: 1, deadline: 0, failed: 0 });
 	});
+
+	// #979 follow-up — the per-query deadline used to be `AbortSignal.timeout()`,
+	// which cannot be cancelled once armed: a query that settles well before its
+	// deadline still left a live timer pending for the full remaining duration.
+	// One request in production is harmless; a test run issuing thousands of
+	// near-instant mocked queries across one shared runtime process accumulated
+	// them until `test/check-lookalikes.spec.ts` started throwing
+	// `QuotaExceededError: max active timeouts`. The deadline is now a plain
+	// `setTimeout` cleared as soon as its query settles, so it must never
+	// outlive the call it gated.
+	it('clears the per-query deadline timer once the query settles, leaving nothing pending (#979 follow-up)', async () => {
+		vi.useFakeTimers();
+		try {
+			globalThis.fetch = vi.fn().mockImplementation((input: FetchInput) => {
+				const { name } = dohQuery(input);
+				return Promise.resolve(nsAnswer(name));
+			});
+			const { filterByNsExistence } = await loadDns();
+			const before = vi.getTimerCount();
+			const result = await filterByNsExistence(['settles-fast.com', 'also-fast.com'], { deadlineMs: Date.now() + 5000 });
+			expect(result.registered).toEqual(['settles-fast.com', 'also-fast.com']);
+			// The deadline timer for each settled query is gone, not merely inert —
+			// no pending timer count growth survives the call.
+			expect(vi.getTimerCount()).toBe(before);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('still clears the deadline timer when the query REJECTS (transport failure), not only on success', async () => {
+		vi.useFakeTimers();
+		try {
+			globalThis.fetch = vi.fn().mockImplementation(() => Promise.reject(new TypeError('connection reset')));
+			const { filterByNsExistence } = await loadDns();
+			const before = vi.getTimerCount();
+			const result = await filterByNsExistence(['broken-fast.com'], { deadlineMs: Date.now() + 5000 });
+			expect(result.unresolvedByReason.failed).toBe(1);
+			expect(vi.getTimerCount()).toBe(before);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 });
 
 // ---------------------------------------------------------------------------

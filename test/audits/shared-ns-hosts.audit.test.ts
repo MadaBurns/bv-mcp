@@ -33,6 +33,8 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+	ENTERPRISE_GATED_NS_APEXES,
+	isEnterpriseGatedNsHost,
 	isPooledSharedNsHost,
 	isSharedNsHost,
 	POOLED_SHARED_NS_APEXES,
@@ -241,6 +243,34 @@ describe('SHARED_NS_APEXES — enterprise-gated platforms stay ownership-bearing
 			expect(POOLED_SHARED_NS_APEXES.has(apex)).toBe(false);
 		});
 	}
+});
+
+describe('ENTERPRISE_GATED_NS_APEXES — the leg-1 corroborator set for isBrandHeldRegistration (#949)', () => {
+	// The corroborator list must name EXACTLY the platforms #947 deliberately
+	// kept out of SHARED_NS_APEXES — no more (a self-service platform would
+	// become a manufacturable brand-held match) and no fewer (a real
+	// enterprise-gated platform silently excluded from the corroborator).
+	it('is exactly the deliberately-unlisted apex set above', () => {
+		expect([...ENTERPRISE_GATED_NS_APEXES].sort()).toEqual([...ENTERPRISE_GATED_DELIBERATELY_UNLISTED.map(([apex]) => apex)].sort());
+	});
+
+	for (const [ns, reason] of SHARED_NS_MUST_NOT_MATCH) {
+		if (!ENTERPRISE_GATED_DELIBERATELY_UNLISTED.some(([apex]) => ns === apex || ns.endsWith(`.${apex}`))) continue;
+		it(`classifies ${ns} as enterprise-gated (${reason})`, () => {
+			expect(isEnterpriseGatedNsHost(ns)).toBe(true);
+		});
+	}
+
+	for (const [ns, reason] of SHARED_NS_MUST_MATCH) {
+		it(`does NOT classify ${ns} as enterprise-gated — it is self-service (${reason})`, () => {
+			expect(isEnterpriseGatedNsHost(ns)).toBe(false);
+		});
+	}
+
+	it('returns false for empty / whitespace input (defensive)', () => {
+		expect(isEnterpriseGatedNsHost('')).toBe(false);
+		expect(isEnterpriseGatedNsHost('   ')).toBe(false);
+	});
 });
 
 describe('POOLED_SHARED_NS_APEXES — the only shared providers a complete NS-set match may credit (#929)', () => {

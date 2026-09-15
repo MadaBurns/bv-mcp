@@ -33,10 +33,10 @@ import { callReconScan, isReconHit } from '../lib/recon-binding';
 import type { ReconBinding, BindingDegradationSink, ReconScanResult } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult } from '../lib/scoring';
-import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes } from './lookalike-analysis';
+import { generateCognitiveLookalikes, generateCombosquats, generateLookalikes, generateTranspositions } from './lookalike-analysis';
 import { calibrateLookalikeSeverity, type LookalikeSignals } from './lookalike-severity';
 import { attributionConfidence, classifyOwnership, type OwnershipAssessment } from '../lib/ownership-attribution';
-import { isPooledSharedNsHost, isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
+import { isEnterpriseGatedNsHost, isPooledSharedNsHost, isSharedNsHost } from '../tenants/discovery/shared-ns-hosts';
 import { extractBrandName } from '../lib/public-suffix';
 import {
 	detectWildcardParents,
@@ -45,6 +45,7 @@ import {
 	labelCount,
 	probeWithAdaptiveBatching,
 	probeDmarcReportAuthorisation,
+	queryPrimaryA,
 	queryPrimaryMx,
 	queryPrimaryNs,
 	type LookalikeResult,
@@ -244,12 +245,17 @@ async function checkLookalikesCore(
 ): Promise<CheckResult> {
 	const startedAt = Date.now();
 	const findings: Finding[] = [];
-	// THREE disjoint candidate lanes, deduped into one set that flows through the
+	// FOUR disjoint candidate lanes, deduped into one set that flows through the
 	// same NS-existence → probe → enrich → severity pipeline:
 	//
 	//  - `generateLookalikes` — MOTOR errors (keyboard adjacency, omission,
 	//    duplication, dot insertion, TLD swap, homoglyph): a slip of the finger
 	//    by someone who knows the correct spelling.
+	//  - `generateTranspositions` — the MOTOR error `generateLookalikes` was
+	//    missing entirely: swapping two adjacent characters (#979). Kept as its
+	//    own lane rather than folded into `generateLookalikes` because doing so
+	//    was measured to evict OTHER motor candidates for seeds that already
+	//    sit near that lane's cap.
 	//  - `generateCognitiveLookalikes` — COGNITIVE errors: the spelling a large
 	//    population believes IS correct (`sketchers`, `berenstein`), typed
 	//    deliberately and repeatedly. The motor set cannot reach these except by
@@ -260,7 +266,12 @@ async function checkLookalikesCore(
 	// Each lane carries its OWN cap, so adding one can never evict another's
 	// candidates through a shared truncation.
 	const permutations = [
-		...new Set([...generateLookalikes(domain), ...generateCognitiveLookalikes(domain), ...generateCombosquats(domain)]),
+		...new Set([
+			...generateLookalikes(domain),
+			...generateTranspositions(domain),
+			...generateCognitiveLookalikes(domain),
+			...generateCombosquats(domain),
+		]),
 	];
 
 	if (permutations.length === 0) {
@@ -309,7 +320,9 @@ async function checkLookalikesCore(
 	// `seedNsUnresolved: true` on 2/2 idle runs while a standalone DoH NS query
 	// for it returned 4 answers. Sequencing costs one round trip on a check
 	// that already takes seconds; a voided attribution costs the whole result.
-	const [primaryNsProbe, primaryMx] = await Promise.all([queryPrimaryNs(domain), queryPrimaryMx(domain)]);
+	// #974 — the seed's A set rides the same phase: the web leg of the step-5c
+	// seed-infrastructure match (one query; fail-soft to [] = match unreachable).
+	const [primaryNsProbe, primaryMx, primaryA] = await Promise.all([queryPrimaryNs(domain), queryPrimaryMx(domain), queryPrimaryA(domain)]);
 
 	// Phase 1: NS existence check — filter out unregistered domains. Pooled to
 	// the platform connection cap and deadline-cut (#865): see lookalike-dns.ts.
@@ -366,11 +379,26 @@ async function checkLookalikesCore(
 	// shadow-domains bug this design also fixes). Every registered candidate
 	// here was proven registered via NS (filterByNsExistence only returns
 	// domains with NS records), so `registration.ns` is always non-empty.
+	//
+	// #974 — Phase 2 (the A/MX detail probe) now runs BEFORE this pass, so the
+	// candidate's own A and MX sets reach `classifyOwnership()` step 5c. Before
+	// that, the pass had only NS to go on and its terminal arm claimed
+	// "distinct infrastructure" for a candidate on the seed's own A and MX.
+	// Phase 2: Detail probe only registered domains (pooled + deadline-cut, #865).
+	const probeResults = await probeWithAdaptiveBatching(registeredPerms, { deadlineMs: dnsPhasesDeadlineMs });
+	const results: LookalikeResult[] = [];
+	for (const result of probeResults) {
+		if (result.status === 'fulfilled') {
+			results.push(result.value);
+		}
+	}
 	const primaryNsList = Array.from(primaryNs);
+	const primaryMxList = Array.from(primaryMx);
 	const brand = extractBrandName(domain) ?? '';
 	const ownershipByDomain = new Map<string, OwnershipAssessment>();
 	for (const perm of registeredPerms) {
 		const candidateNs = Array.from(lookalikeNsMap.get(perm) ?? []);
+		const probed = results.find((r) => r.domain === perm);
 		ownershipByDomain.set(
 			perm,
 			classifyOwnership({
@@ -381,18 +409,14 @@ async function checkLookalikesCore(
 				isSharedNsHost,
 				isPooledSharedNsHost,
 				seedNsUnresolved: seedNsUnmeasured,
+				candidateA: probed?.aAddresses,
+				candidateMx: probed?.mxExchanges,
+				seedA: primaryA,
+				seedMx: primaryMxList,
 			}),
 		);
 	}
 
-	// Phase 2: Detail probe only registered domains (pooled + deadline-cut, #865).
-	const probeResults = await probeWithAdaptiveBatching(registeredPerms, { deadlineMs: dnsPhasesDeadlineMs });
-	const results: LookalikeResult[] = [];
-	for (const result of probeResults) {
-		if (result.status === 'fulfilled') {
-			results.push(result.value);
-		}
-	}
 	// Second silent-drop site (#781): a candidate already KNOWN registered, whose
 	// infrastructure probe failed, disappears here.
 	const probeUnresolved = probeResults.filter((r) => r.status === 'rejected').length;
@@ -453,6 +477,8 @@ async function checkLookalikesCore(
 		ownershipByDomain,
 		isSharedNsHost,
 		isPooledSharedNsHost,
+		seedA: primaryA,
+		seedMx: primaryMxList,
 		probeAuthorisation: probeDmarcReportAuthorisation,
 	});
 
@@ -496,8 +522,13 @@ async function checkLookalikesCore(
 			: EMPTY_RDAP_PROBE;
 	const primaryRegistrantOrg = primaryRegistration.registrantOrg;
 	const sameEntityMatches = new Map<string, string>();
-	/** Candidates the registration record corroborates as the seed org's own defensive registrations. */
-	const brandHeldMatches = new Map<string, { registrarIanaId: string; registrarName: string | null; reason: DefensiveReason }>();
+	/**
+	 * Candidates the registration record corroborates as the seed org's own
+	 * defensive registrations. `registrarIanaId: null` (#949) marks a candidate
+	 * corroborated via the enterprise-gated NS-set leg instead of a shared IANA
+	 * registrar ID — RDAP published no such ID for either side.
+	 */
+	const brandHeldMatches = new Map<string, { registrarIanaId: string | null; registrarName: string | null; reason: DefensiveReason }>();
 	for (const candidateDomain of sameEntityCandidates) {
 		const corroborators = enrichment.get(candidateDomain);
 		const candidateOrg = corroborators?.registrantOrg ?? null;
@@ -521,6 +552,8 @@ async function checkLookalikesCore(
 			candidateRegistrarIanaId: corroborators?.registrarIanaId ?? null,
 			candidateMxExchanges: probe.mxExchanges,
 			candidateNsHosts: Array.from(lookalikeNsMap.get(candidateDomain) ?? []),
+			seedNsHosts: primaryNsList,
+			isEnterpriseGatedNsHost,
 		});
 		if (brandHeld.brandHeld) {
 			brandHeldMatches.set(candidateDomain, {
@@ -667,7 +700,7 @@ async function checkLookalikesCore(
 				ownership,
 				corroboratorReasons,
 				matchedOrg,
-				brandHeld !== undefined,
+				brandHeld !== undefined ? { registrarIanaId: brandHeld.registrarIanaId } : undefined,
 			),
 		);
 		// `hasMX` is already false for an RFC 7505 null MX (`0 .`), which is the

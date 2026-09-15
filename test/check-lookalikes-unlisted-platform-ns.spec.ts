@@ -13,6 +13,10 @@
  * received the IDENTICAL complete NS set from the platform:
  *
  *   Hostinger      debugpoint.com / sweetberry.gr        ns1, ns2.dns-parking.com
+ *   Wix            lviusa.com / interclinicapuertovaras.cl
+ *                                                        ns0, ns1.wixdns.net
+ *   Namecheap      seedr.cc / sketchucation.com          pdns1, pdns2.registrar-servers.com
+ *   (PremiumDNS)
  *   IONOS          calcionapoli24.it / aicateringequipments.ie
  *                                                        ns1045.ui-dns.{biz,com,de,org}
  *   Cloud DNS      americanbanker.com / edmontonjournal.com
@@ -43,9 +47,13 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
-import { isSharedNsHost, isPooledSharedNsHost } from '../src/tenants/discovery/shared-ns-hosts';
+import { isEnterpriseGatedNsHost, isPooledSharedNsHost, isSharedNsHost } from '../src/tenants/discovery/shared-ns-hosts';
+import { isBrandHeldRegistration } from '../src/tools/lookalike-attribution';
+import { buildBrandHeldFinding } from '../src/tools/lookalike-findings';
 import type { RegistrationState } from '../src/lib/registration-state';
 import type { DohResponse } from '../src/lib/dns-types';
+import type { OwnershipAssessment } from '../src/lib/ownership-attribution';
+import type { LookalikeResult } from '../src/tools/lookalike-dns';
 
 const { restore } = setupFetchMock();
 afterEach(() => restore());
@@ -55,6 +63,8 @@ afterEach(() => restore());
 // ---------------------------------------------------------------------------
 
 const HOSTINGER_NS = ['ns1.dns-parking.com', 'ns2.dns-parking.com'];
+const WIX_NS = ['ns0.wixdns.net', 'ns1.wixdns.net'];
+const NAMECHEAP_PREMIUM_NS = ['pdns1.registrar-servers.com', 'pdns2.registrar-servers.com'];
 const IONOS_NS = ['ns1045.ui-dns.biz', 'ns1045.ui-dns.com', 'ns1045.ui-dns.de', 'ns1045.ui-dns.org'];
 const CLOUD_DNS_B = [
 	'ns-cloud-b1.googledomains.com',
@@ -96,6 +106,14 @@ type Case = { platform: string; seed: string; candidate: string; seedNs: string[
 
 const IDENTICAL_SET_CASES: Case[] = [
 	{ platform: 'Hostinger', seed: 'debugpoint.com', candidate: 'sweetberry.gr', seedNs: HOSTINGER_NS, candidateNs: HOSTINGER_NS },
+	{ platform: 'Wix', seed: 'lviusa.com', candidate: 'interclinicapuertovaras.cl', seedNs: WIX_NS, candidateNs: WIX_NS },
+	{
+		platform: 'Namecheap PremiumDNS',
+		seed: 'seedr.cc',
+		candidate: 'sketchucation.com',
+		seedNs: NAMECHEAP_PREMIUM_NS,
+		candidateNs: NAMECHEAP_PREMIUM_NS,
+	},
 	{ platform: 'IONOS', seed: 'calcionapoli24.it', candidate: 'aicateringequipments.ie', seedNs: IONOS_NS, candidateNs: IONOS_NS },
 	{
 		platform: 'Google Cloud DNS',
@@ -243,6 +261,131 @@ describe('classifyOwnership — a complete set on an enterprise-gated platform s
 			expect(result.signals).toEqual(['ns_set_match']);
 		});
 	}
+});
+
+// ---------------------------------------------------------------------------
+// isBrandHeldRegistration — enterprise-gated NS set as an alternative leg-1
+// corroborator (#949 follow-up to #947)
+// ---------------------------------------------------------------------------
+
+describe('isBrandHeldRegistration — enterprise-gated NS set as leg 1 when RDAP publishes no IANA registrar ID (#949)', () => {
+	// Fictional names, transposed labels within the defensive-registration
+	// heuristic's edit-distance bar: "brand" -> "brnad".
+	const SEED_DOMAIN = 'brand.example';
+	const CANDIDATE_DOMAIN = 'brnad.example';
+
+	it('complete MarkMonitor set + no-mx shape + BOTH RDAP registrar IDs null -> brand-held via the NS-set leg (null registrarIanaId)', () => {
+		const result = isBrandHeldRegistration({
+			seedDomain: SEED_DOMAIN,
+			candidateDomain: CANDIDATE_DOMAIN,
+			seedRegistrarIanaId: null,
+			candidateRegistrarIanaId: null,
+			candidateMxExchanges: [],
+			candidateNsHosts: MARKMONITOR_NS,
+			seedNsHosts: MARKMONITOR_NS,
+			isEnterpriseGatedNsHost,
+		});
+		expect(result).toEqual({ brandHeld: true, registrarIanaId: null, reason: 'no-mx' });
+	});
+
+	it('an enterprise-gated NS match ALONE, with live mail (no defensive shape), is NOT brand-held — leg 1 without leg 2 is insufficient', () => {
+		const result = isBrandHeldRegistration({
+			seedDomain: SEED_DOMAIN,
+			candidateDomain: CANDIDATE_DOMAIN,
+			seedRegistrarIanaId: null,
+			candidateRegistrarIanaId: null,
+			candidateMxExchanges: ['mail.brnad.example'],
+			candidateNsHosts: MARKMONITOR_NS,
+			seedNsHosts: MARKMONITOR_NS,
+			isEnterpriseGatedNsHost,
+		});
+		expect(result).toEqual({ brandHeld: false });
+	});
+
+	it('a PARTIAL enterprise-gated NS overlap (not a complete set) is NOT brand-held, even with a defensive shape', () => {
+		const result = isBrandHeldRegistration({
+			seedDomain: SEED_DOMAIN,
+			candidateDomain: CANDIDATE_DOMAIN,
+			seedRegistrarIanaId: null,
+			candidateRegistrarIanaId: null,
+			candidateMxExchanges: [],
+			candidateNsHosts: MARKMONITOR_NS.slice(0, 4), // missing 3 of 7 hosts
+			seedNsHosts: MARKMONITOR_NS,
+			isEnterpriseGatedNsHost,
+		});
+		expect(result).toEqual({ brandHeld: false });
+	});
+
+	it('a complete SELF-SERVICE platform set (Hostinger) does NOT satisfy leg 1, even with both RDAP IDs null and a defensive shape — the null-guard relaxation must stay scoped to enterprise-gated platforms', () => {
+		const result = isBrandHeldRegistration({
+			seedDomain: SEED_DOMAIN,
+			candidateDomain: CANDIDATE_DOMAIN,
+			seedRegistrarIanaId: null,
+			candidateRegistrarIanaId: null,
+			candidateMxExchanges: [],
+			candidateNsHosts: HOSTINGER_NS,
+			seedNsHosts: HOSTINGER_NS,
+			isEnterpriseGatedNsHost,
+		});
+		expect(result).toEqual({ brandHeld: false });
+	});
+
+	it('the pre-existing IANA-registrar-ID leg is unaffected: a shared brand-protection registrar ID still corroborates regardless of NS evidence', () => {
+		const result = isBrandHeldRegistration({
+			seedDomain: SEED_DOMAIN,
+			candidateDomain: CANDIDATE_DOMAIN,
+			seedRegistrarIanaId: '299',
+			candidateRegistrarIanaId: '299',
+			candidateMxExchanges: [],
+			candidateNsHosts: ['ns1.some-other-provider.example'],
+			seedNsHosts: ['ns1.some-other-provider.example'],
+			isEnterpriseGatedNsHost,
+		});
+		expect(result).toEqual({ brandHeld: true, registrarIanaId: '299', reason: 'no-mx' });
+	});
+});
+
+describe('buildBrandHeldFinding — D4 wording for the no-IANA-ID enterprise-gated-NS corroborator (#949)', () => {
+	const fakeResult: LookalikeResult = {
+		domain: 'brnad.example',
+		hasA: true,
+		hasMX: false,
+		mxExchanges: [],
+		probeDegraded: false,
+	};
+	const fakeOwnership: OwnershipAssessment = {
+		verdict: 'third_party',
+		strength: 'none',
+		signals: ['distinct_infrastructure'],
+		rationale:
+			'brnad.example is registered with its own nameservers, distinct from brand.example — no ownership signal links it to this organisation.',
+	};
+
+	it('never claims "registered to a different organisation" and never fabricates an IANA registrar ID when the corroborator is the NS-set leg', () => {
+		const finding = buildBrandHeldFinding(fakeResult, 'brand.example', fakeOwnership, {
+			registrarIanaId: null,
+			registrarName: null,
+			reason: 'no-mx',
+		});
+		expect(finding.detail).not.toContain('registered to a different organisation');
+		expect(finding.detail).not.toContain('IANA registrar null');
+		expect(finding.detail).not.toContain('IANA null');
+		expect(finding.detail).toMatch(/does not offer self-service registration/);
+		expect(finding.metadata?.sharedRegistrarIanaId).toBeUndefined();
+		expect(finding.metadata?.sharedEnterpriseGatedNsSet).toBe(true);
+	});
+
+	it('keeps the registrar-ID wording unchanged when the corroborator IS a shared IANA registrar ID', () => {
+		const finding = buildBrandHeldFinding(fakeResult, 'brand.example', fakeOwnership, {
+			registrarIanaId: '299',
+			registrarName: null,
+			reason: 'no-mx',
+		});
+		expect(finding.detail).toContain('IANA registrar 299');
+		expect(finding.detail).not.toContain('registered to a different organisation');
+		expect(finding.metadata?.sharedRegistrarIanaId).toBe('299');
+		expect(finding.metadata?.sharedEnterpriseGatedNsSet).toBeUndefined();
+	});
 });
 
 // ---------------------------------------------------------------------------
