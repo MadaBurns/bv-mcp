@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Security
+
+- Bumped the transitive `sharp` devDependency (pulled in by `wrangler`/`miniflare` and `@cloudflare/vitest-pool-workers`) to `>=0.35.4` via a `package.json` `overrides` entry, resolving Dependabot alert #42 (GHSA-g89c-p67h-r497, GHSA-2jg2-4ch7-h545 in libheif). Dev/test-only dependency; no runtime code uses `sharp`.
+
 ## [3.81.1] - 2026-09-15
 
 Fixes the two issues that 3.81.0 did not resolve in production (#973, #974). Scoring model **1.33.0** (from 1.32.0) and `@blackveil/dns-checks` **1.48.0** (from 1.47.0, `PARITY_CORPUS_VERSION` in lockstep), so bv-web-prod needs to re-vendor. The one score-bearing change is the #973 fix, which lowers scores only for domains that serve the Cloudways unmapped-domain edge. No weight, tier or grade band changed.
