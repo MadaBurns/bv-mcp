@@ -708,6 +708,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 								),
 							timeoutBudget.perCheckTimeoutMs,
 							() => perCheckAbort.abort(),
+							() => dnsSemaphore.saturatedMs(),
 						),
 					kv,
 					cacheTtl,
@@ -1206,24 +1207,44 @@ async function safeCheck(
 	fn: () => Promise<CheckResult>,
 	perCheckTimeoutMs: number,
 	onTimeout?: () => void,
+	queueClock?: () => number,
 ): Promise<CheckResult> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
 		const result = await Promise.race([
 			fn(),
-			new Promise<never>((_, reject) =>
-				setTimeout(() => {
-					// R7: fire the per-check abort BEFORE rejecting so the orphaned
-					// raw-fetch subrequests of THIS check are cancelled the moment the
-					// per-check budget is exceeded. Fail-soft: an onTimeout throw must
-					// not mask the timeout rejection.
-					try {
-						onTimeout?.();
-					} catch {
-						/* best-effort abort — never let it swallow the timeout */
-					}
-					reject(new Error('Check timed out'));
-				}, perCheckTimeoutMs),
-			),
+			new Promise<never>((_, reject) => {
+				// #952: the budget is for the check's own work, not for waiting on the
+				// shared DoH pool. batch_scan runs its scans through ONE 5-slot pool, and
+				// measured at 150ms DoH latency checks expired while their queries sat
+				// QUEUED — excluding categories a single scan of the same domain measured
+				// fine. Widening the pool cannot buy real parallelism (the Workers runtime
+				// caps an invocation at 6 connections waiting for headers), so instead each
+				// time the timer fires it is extended by the pool-saturated time accrued
+				// since it was last armed. Still bounded by the scan race and batch budget.
+				let saturatedAtArm = queueClock?.() ?? 0;
+				const arm = (ms: number) => {
+					timer = setTimeout(() => {
+						const queued = (queueClock?.() ?? 0) - saturatedAtArm;
+						if (queued > 0) {
+							saturatedAtArm += queued;
+							arm(queued);
+							return;
+						}
+						// R7: fire the per-check abort BEFORE rejecting so the orphaned
+						// raw-fetch subrequests of THIS check are cancelled the moment the
+						// per-check budget is exceeded. Fail-soft: an onTimeout throw must
+						// not mask the timeout rejection.
+						try {
+							onTimeout?.();
+						} catch {
+							/* best-effort abort — never let it swallow the timeout */
+						}
+						reject(new Error('Check timed out'));
+					}, ms);
+				};
+				arm(perCheckTimeoutMs);
+			}),
 		]);
 		return result;
 	} catch (err) {
@@ -1252,5 +1273,7 @@ async function safeCheck(
 		// the post-processing re-apply masked it in scan output, but the intermediate
 		// result must carry the same not-assessed contract as buildDnsErrorResult.
 		return { ...result, score: 0, passed: false, checkStatus, partial: true };
+	} finally {
+		if (timer !== undefined) clearTimeout(timer);
 	}
 }

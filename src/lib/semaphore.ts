@@ -65,6 +65,8 @@ export class Semaphore {
 	private readonly _queue: Waiter[] = [];
 	private readonly maxConcurrent: number;
 	private readonly maxWaitMs?: number;
+	private _saturatedMs = 0;
+	private _saturatedSince: number | undefined;
 
 	constructor(maxConcurrent: number, options?: SemaphoreOptions) {
 		this.maxConcurrent = maxConcurrent;
@@ -77,6 +79,28 @@ export class Semaphore {
 
 	get waiting(): number {
 		return this._queue.length;
+	}
+
+	/**
+	 * Cumulative wall-clock ms during which at least one caller was QUEUED on this
+	 * semaphore (every slot busy and work waiting). A caller can subtract the delta
+	 * over its own lifetime from an elapsed-time budget so time spent waiting for a
+	 * slot is not charged as if the work itself were slow (#952).
+	 */
+	saturatedMs(): number {
+		return this._saturatedMs + (this._saturatedSince === undefined ? 0 : Date.now() - this._saturatedSince);
+	}
+
+	private enqueue(waiter: Waiter): void {
+		if (this._queue.length === 0) this._saturatedSince = Date.now();
+		this._queue.push(waiter);
+	}
+
+	private dequeued(): void {
+		if (this._queue.length === 0 && this._saturatedSince !== undefined) {
+			this._saturatedMs += Date.now() - this._saturatedSince;
+			this._saturatedSince = undefined;
+		}
 	}
 
 	/** Acquire a semaphore slot. Returns a release function. */
@@ -93,6 +117,7 @@ export class Semaphore {
 				const idx = this._queue.indexOf(waiter);
 				if (idx !== -1) {
 					this._queue.splice(idx, 1);
+					this.dequeued();
 					if (waiter.timer !== undefined) clearTimeout(waiter.timer);
 					reject(abortError());
 				}
@@ -104,13 +129,14 @@ export class Semaphore {
 					const idx = this._queue.indexOf(waiter);
 					if (idx !== -1) {
 						this._queue.splice(idx, 1);
+						this.dequeued();
 						if (waiter.signal && waiter.onAbort) waiter.signal.removeEventListener('abort', waiter.onAbort);
 						reject(new SemaphoreTimeoutError(this.maxWaitMs!));
 					}
 				}, this.maxWaitMs);
 			}
 
-			this._queue.push(waiter);
+			this.enqueue(waiter);
 		});
 	}
 
@@ -134,6 +160,7 @@ export class Semaphore {
 	private release(): void {
 		if (this._queue.length > 0) {
 			const next = this._queue.shift()!;
+			this.dequeued();
 			if (next.timer !== undefined) clearTimeout(next.timer);
 			if (next.signal && next.onAbort) next.signal.removeEventListener('abort', next.onAbort);
 			// Don't decrement — we're handing the slot to the next waiter
