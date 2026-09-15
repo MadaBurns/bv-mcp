@@ -541,7 +541,7 @@ describe('checkSubdomainTakeover', () => {
 			globalThis.fetch = dohMock(() => (url) => {
 				// HTTPS (including the robots.txt probe it gates behind) fails with
 				// no response at all — the live reproduction's exact wording.
-				if (url.startsWith('https://')) {
+				if (String(url).startsWith('https://')) {
 					return Promise.reject(new Error('connect ECONNREFUSED'));
 				}
 				// The HTTP fallback reaches the origin and gets the iframe-only 403 body.
@@ -566,7 +566,7 @@ describe('checkSubdomainTakeover', () => {
 				// rejects instead, which is why the rejection-shaped test above passed while prod
 				// still returned "No dangling CNAME records found".
 				globalThis.fetch = dohMock(() => (url) => {
-					if (url.startsWith('https://')) {
+					if (String(url).startsWith('https://')) {
 						return Promise.resolve(new Response('<html><title>Invalid SSL certificate | Error code 526</title></html>', { status: edgeStatus }));
 					}
 					return Promise.resolve(new Response(iframeOnlyBody, { status: 403 }));
