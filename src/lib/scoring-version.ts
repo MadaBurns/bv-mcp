@@ -655,8 +655,16 @@
  *   SCORE-BEARING, UPWARD on affected scans (false header/HSTS/redirect findings removed). No
  *   weight, tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or
  *   profile-detection rule changed.
+ * - 1.33.0 — `check_subdomain_takeover`'s A/AAAA vector now matches the live Cloudways edge
+ *   (#973 reopen, dns-checks 1.48.0). That edge answers a bare 403 whose whole body is an iframe
+ *   to a Cloudways-hosted maintenance page, so the 1.32.0 text fingerprint never matched; the
+ *   verbatim iframe `src` marker is now a second fingerprint. When the HTTPS leg throws (other
+ *   than a TLS altname mismatch, which is already its own signal) the vector retries over plain
+ *   HTTP with its own timeout. SCORE-BEARING, DOWNWARD, only on domains serving that edge. Same
+ *   scan sample cap; no DoH query added. No weight, tier, grade band, `SEVERITY_PENALTIES`
+ *   entry, missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.32.0';
+export const SCORING_MODEL_VERSION = '1.33.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
