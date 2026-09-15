@@ -11,7 +11,13 @@
 
 import type { CheckResult, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
-import { getHttpRedirectFindings, getHttpsErrorFinding, getHttpsFindings, getRobotsDisallowedFinding } from './ssl-analysis';
+import {
+	getHttpRedirectFindings,
+	getHttpsErrorFinding,
+	getHttpsFindings,
+	getRobotsDisallowedFinding,
+	isBlockedProbeStatus,
+} from './ssl-analysis';
 import { RobotsDisallowedError } from '../robots-gate';
 
 /** Default HTTPS timeout (ms) */
@@ -125,10 +131,12 @@ async function checkHttps(
 		});
 		reachable = true;
 
-		if (response.status === 0 || response.status >= 500) {
-			// Origin-unreachable / server error (e.g. Cloudflare 530): the page is NOT assessable, so
-			// do NOT emit the "No HSTS"/redirect scored findings — a transient origin blip must not
-			// read as a security deficiency. One honest info finding + exclude from scoring.
+		if (isBlockedProbeStatus(response.status)) {
+			// Origin-unreachable / server error (e.g. Cloudflare 530), or an edge/WAF/rate-limit
+			// block (401/403/429/202 — issue #972, a non-Cloudflare, unfingerprinted UA/TLS block
+			// with no vendor body signature to match): the page is NOT assessable, so do NOT emit
+			// the "No HSTS"/redirect scored findings — a blocked or transient probe must not read as
+			// a security deficiency. One honest info finding + exclude from scoring.
 			inconclusive = 'error';
 			findings.push(
 				createFinding(
@@ -181,15 +189,13 @@ async function checkHttps(
 				findings.push(...getHttpsFindings(domain, redirectTarget, hstsHeader));
 			} else {
 				const followed = await followHttpsRedirectChain(response, fetchFn, timeoutMs);
-				// Terminal statuses that measure nothing: origin-unreachable / server error, and the
-				// #806/#819 no-content pair — the same classes the initial-response branches above
-				// route to the inconclusive lane, reached via a redirect instead of directly.
+				// Terminal statuses that measure nothing: origin-unreachable / server error, an
+				// edge/WAF/rate-limit block (401/403/429/202 — issue #972), and the #806/#819
+				// no-content pair — the same classes the initial-response branches above route to
+				// the inconclusive lane, reached via a redirect instead of directly.
 				const terminalUnassessable =
 					followed.kind === 'final' &&
-					(followed.response.status === 0 ||
-						followed.response.status >= 500 ||
-						followed.response.status === 204 ||
-						followed.response.status === 205);
+					(isBlockedProbeStatus(followed.response.status) || followed.response.status === 204 || followed.response.status === 205);
 				if (followed.kind === 'downgrade') {
 					// The chain left HTTPS mid-flight — same critical downgrade the first-hop
 					// `isDowngrade` branch scores, just discovered a hop later.

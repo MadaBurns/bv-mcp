@@ -13,6 +13,30 @@ import { createFinding } from '../check-utils';
 import type { RobotsDisallowScope } from '../robots-gate';
 import { describeRobotsScope, robotsAbstentionMetadata } from '../robots-gate';
 
+/**
+ * Status codes that mean an edge/WAF/rate-limit block intercepted the probe rather than the
+ * origin answering normally (issue #972 — a non-Cloudflare, unfingerprinted UA/TLS-based 403 on
+ * a plain nginx origin). None of these establish the origin's real HSTS/redirect posture, so a
+ * response carrying one must not be read as the site's own answer — the same #638 law that an
+ * unmeasured probe is never scored as "absence" applies here exactly as it does to the 204/205
+ * no-content lane already handled by both callers of this predicate.
+ *
+ * 401/403/429 are the generic auth/forbidden/rate-limit codes WAFs and reverse proxies answer
+ * with regardless of vendor — issue #972's origin carries no Cloudflare/Akamai fingerprint to
+ * match (`src/lib/waf-detection.ts` is vendor-body-keyed and would miss it), so the fix has to
+ * be status-shaped, not body-shaped. 202 is the "Accepted" shape some anti-bot/challenge vendors
+ * return for an interstitial or queued check instead of an interactive page.
+ *
+ * Deliberately NOT included: ordinary 4xx that name a genuine origin response (404, 418, ...) —
+ * `getHttpRedirectFindings`'s existing coverage for those statuses is pinned by
+ * `ssl-no-content.test.ts` and must keep emitting the real finding. `>=500`/`0` (server error /
+ * no response) were already routed to the unmeasured lane by callers; folding them in here lets
+ * every call site test one predicate instead of duplicating the range check.
+ */
+export function isBlockedProbeStatus(status: number): boolean {
+	return status === 0 || status >= 500 || status === 401 || status === 403 || status === 429 || status === 202;
+}
+
 export function getHttpsFindings(domain: string, responseUrl: string | undefined, hstsHeader: string | null): Finding[] {
 	const findings: Finding[] = [];
 
@@ -110,6 +134,17 @@ export function getHttpRedirectFindings(domain: string, status: number, location
 	// letting the catch-all below emit a scored claim. Real statuses (200, 4xx,
 	// 3xx→http) keep their behavior.
 	if (status === 204 || status === 205) {
+		return [];
+	}
+
+	// Issue #972: a block/challenge/rate-limit response on the plain-HTTP probe (401/403/429/5xx/202)
+	// measured an edge decision, not the origin's redirect posture — the catch-all below would
+	// otherwise read it as "not redirected" and publish a confident deficiency for a probe that
+	// never reached the real vhost (observed live: a 202 interstitial reported as "No HTTP to
+	// HTTPS redirect (status 202)" on an origin that does 301 for every honest client). Same
+	// unmeasured-not-absent posture as the 204/205 guard above; skip silently exactly like a
+	// failed fetch already does in `checkHttpRedirect`'s catch block.
+	if (isBlockedProbeStatus(status)) {
 		return [];
 	}
 
