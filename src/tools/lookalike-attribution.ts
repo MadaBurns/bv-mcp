@@ -18,7 +18,13 @@
 
 import { evaluateDefensiveRegistration, type DefensiveReason } from '../lib/brand-defensive-registration';
 import { mapConcurrent } from '../lib/map-concurrent';
-import { classifyOwnership, mxRoutedIntoSeed, type DmarcReportAuthorisation, type OwnershipAssessment } from '../lib/ownership-attribution';
+import {
+	classifyOwnership,
+	mxRoutedIntoSeed,
+	type DmarcReportAuthorisation,
+	type LabelCohortMember,
+	type OwnershipAssessment,
+} from '../lib/ownership-attribution';
 import { isRedactedRegistrantOrg } from './check-rdap-lookup';
 import { SEED_AUTHORISATION_CONCURRENCY, type LookalikeResult } from './lookalike-dns';
 import type { LookalikeCorroborators } from './lookalike-enrichment';
@@ -326,6 +332,8 @@ export interface SeedAuthorisationRefinementInput {
 	/** #974 — the seed's A addresses and MX hosts, threaded through so re-classification keeps step 5c. */
 	seedA?: readonly string[];
 	seedMx?: readonly string[];
+	/** #974 reopened — the run's fully-measured candidates, threaded through so re-classification keeps step 5d. */
+	labelCohort?: readonly LabelCohortMember[];
 	/** Injected seed-side probe (`probeDmarcReportAuthorisation` in production; a stub in tests). */
 	probeAuthorisation: (candidate: string, seedDomain: string) => Promise<DmarcReportAuthorisation>;
 }
@@ -392,6 +400,7 @@ export async function refineOwnershipBySeedAuthorisation(
 			candidateA: result.aAddresses,
 			seedA: input.seedA,
 			seedMx: input.seedMx,
+			labelCohort: result.probeDegraded ? undefined : input.labelCohort,
 		});
 		input.ownershipByDomain.set(result.domain, assessment);
 		outcome.probed.push(result.domain);
