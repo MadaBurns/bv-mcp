@@ -199,7 +199,30 @@ const TAKEOVER_FINGERPRINTS: { service: string; patterns: string[] }[] = [
 	{ service: 'pages.dev', patterns: ['Failed to load Cloudflare Pages content'] },
 ];
 
+/**
+ * Provider fingerprints for the A/AAAA-only takeover vector (#973): a host with
+ * NO CNAME whose A/AAAA record points at shared hosting that has not been
+ * claimed for this hostname. Unlike {@link TAKEOVER_FINGERPRINTS}, there is no
+ * CNAME target hostname to gate the match on — the response body IS the only
+ * signal, so this list is probed for every swept subdomain that resolves via
+ * A/AAAA with no CNAME. Keep this list to verbatim-evidenced providers only.
+ */
+const A_RECORD_UNCLAIMED_FINGERPRINTS: { service: string; patterns: string[] }[] = [
+	// Cloudways: verbatim text from the provider's "unmapped domain" block page
+	// (issue #973). Shared IP, no CNAME — the domain resolves straight to the
+	// platform's edge, which serves this page for any hostname it doesn't have
+	// an application mapped to.
+	{
+		service: 'cloudways',
+		patterns: [
+			'the requested domain is not authorized on cloudways server',
+			'the domain has been successfully pointed to a cloudways server but it is not mapped to an application',
+		],
+	},
+];
+
 const SERVICE_DISPLAY_NAMES: Record<string, string> = {
+	cloudways: 'Cloudways',
 	'cloudfront.net': 'AWS CloudFront',
 	's3.amazonaws.com': 'AWS S3',
 	'amazonaws.com': 'AWS S3',
@@ -309,6 +332,30 @@ export function classifyTargetNamespace(cname: string): TargetClaimability {
  */
 export async function probeHttpFingerprint(fqdn: string, cname: string, fetchFn: FetchFunction): Promise<string | null> {
 	const matchingEntries = TAKEOVER_FINGERPRINTS.filter((entry) => cname.includes(entry.service));
+	return matchFingerprintOverHttp(fqdn, matchingEntries, fetchFn);
+}
+
+/**
+ * Probe an A/AAAA-only host (no CNAME) for the shared-hosting "unclaimed
+ * domain" fingerprints in {@link A_RECORD_UNCLAIMED_FINGERPRINTS} (#973).
+ * There is no CNAME target to gate the match on, so every entry is checked
+ * unconditionally — the list is deliberately small and verbatim-evidenced.
+ */
+export async function probeARecordUnclaimedFingerprint(fqdn: string, fetchFn: FetchFunction): Promise<string | null> {
+	return matchFingerprintOverHttp(fqdn, A_RECORD_UNCLAIMED_FINGERPRINTS, fetchFn);
+}
+
+/**
+ * Shared fetch-and-match core for both {@link probeHttpFingerprint} (CNAME
+ * vector) and {@link probeARecordUnclaimedFingerprint} (A/AAAA vector, #973).
+ * Returns the matched display-name, or null when nothing matched or the fetch
+ * was inconclusive (redirect, transport error other than a TLS-SNI mismatch).
+ */
+async function matchFingerprintOverHttp(
+	fqdn: string,
+	matchingEntries: { service: string; patterns: string[] }[],
+	fetchFn: FetchFunction,
+): Promise<string | null> {
 	if (matchingEntries.length === 0) return null;
 
 	try {
@@ -416,6 +463,12 @@ export interface SubdomainScanOutcome {
  * This is the additive shape; `scanSubdomainForTakeover` below stays as a thin `Finding[]`
  * wrapper. See that function's note for the (measured) reason — it is NOT the public-API
  * argument an earlier draft of this comment made.
+ *
+ * @param checkARecordVector - Whether to run the #973 A/AAAA-only takeover vector for
+ * this subdomain (defaults to true — every direct caller keeps the full check). The
+ * `scan_domain` orchestration caps how many swept subdomains carry this leg, to stay
+ * inside its shared DNS-query ceiling (see `aRecordVectorSampleCap` on the package's
+ * `checkSubdomainTakeover`); the CNAME leg above is unaffected either way.
  */
 export async function scanSubdomainForTakeoverInternal(
 	domain: string,
@@ -423,6 +476,7 @@ export async function scanSubdomainForTakeoverInternal(
 	queryDNS: DNSQueryFunction,
 	fetchFn: FetchFunction,
 	timeout?: number,
+	checkARecordVector = true,
 ): Promise<SubdomainScanOutcome> {
 	// Allow subdomain to be a full FQDN (caller passes from CT enumeration) OR a
 	// short label that we append to the apex (legacy KNOWN_SUBDOMAINS path).
@@ -516,6 +570,67 @@ export async function scanSubdomainForTakeoverInternal(
 				);
 			}
 		}
+
+		// #973 — A/AAAA-only vector: no CNAME at all, so `isThirdPartyTakeoverService`
+		// (which matches CNAME target hostnames) cannot gate this the way it gates the
+		// loop above. A host wired straight to shared PaaS by A/AAAA record is invisible
+		// to the CNAME model even when the platform openly reports the domain as
+		// unclaimed (Cloudways' "not mapped to an application" page). Probe the body
+		// directly whenever the subdomain resolves via A/AAAA with no CNAME present —
+		// this reuses the same already-enumerated subdomain list and the same per-check
+		// fetch budget, it does not add a new enumeration source.
+		//
+		// `checkARecordVector` gates the whole leg (both queries below): `scan_domain`
+		// only sets it false past its sample cap, to stay inside the shared DNS-query
+		// ceiling (test/hot-path-concurrency.perf.spec.ts). A skipped host is neither
+		// measured nor unmeasured for this vector — it was simply not sampled, which the
+		// caller discloses in the all-clear finding rather than reporting as a failure.
+		if (cnameRecords.length === 0 && checkARecordVector) {
+			try {
+				// AAAA is queried only when A comes back empty: an A answer alone already
+				// proves the host resolves via this vector, so a second query would just
+				// spend DNS-query budget confirming what is already known. This halves the
+				// common-case cost of the leg without changing what it can detect.
+				const aRecords = await queryDNS(fqdn, 'A', { timeout });
+				const aaaaRecords = aRecords.length > 0 ? [] : await queryDNS(fqdn, 'AAAA', { timeout });
+				if (aRecords.length > 0 || aaaaRecords.length > 0) {
+					const vulnerableService = await probeARecordUnclaimedFingerprint(fqdn, fetchFn);
+					if (vulnerableService) {
+						findings.push(
+							createTakeoverFinding(
+								`Subdomain possible takeover signal (${vulnerableService})`,
+								'high',
+								`Subdomain ${fqdn} has no CNAME but resolves via A/AAAA record to shared hosting that returns a ${vulnerableService} unclaimed-domain fingerprint. This is strong provider evidence that the hostname is not mapped to any application on that platform, but it is not proof of exploitability. Confirm with authorized proof-of-control testing before reporting a confirmed takeover.`,
+								'potential',
+								['a_record_resolves', 'provider_unclaimed_domain_fingerprint'],
+								{
+									evidenceStrength: 'provider_deprovisioned_fingerprint',
+									proofRequired: 'authorized_proof_of_control',
+									severityRationale: 'provider_deprovisioned_signal',
+									vector: 'a_record',
+								},
+							),
+						);
+					}
+				}
+			} catch {
+				// The A/AAAA query itself threw — this subdomain's A-record vector was not
+				// assessed. Mirrors the CNAME-target-failed handling above: disclose as an
+				// `info` abstention carrying `inconclusive` + `errorKind`, never a scored
+				// finding and never `missingControl` (#638 law) — nothing was measured.
+				targetResolutionFailed = true;
+				findings.push(
+					createTakeoverFinding(
+						`A/AAAA resolution failed: ${fqdn}`,
+						'info',
+						`Could not resolve A/AAAA records for ${fqdn}: the lookup failed rather than returning an answer. This subdomain was NOT assessed for the A-record takeover vector — it is neither confirmed dangling nor confirmed healthy, and it is excluded from the verdict rather than penalized. Re-run the check once name resolution is working.`,
+						'potential',
+						['a_record_resolution_error'],
+						{ inconclusive: true, errorKind: 'dns_error' },
+					),
+				);
+			}
+		}
 	} catch {
 		// The CNAME query itself failed — this subdomain was NOT measured. Nothing is
 		// pushed (a failed lookup is not evidence of a dangling record), but the caller
@@ -558,11 +673,26 @@ export async function scanSubdomainForTakeover(
 	return findings;
 }
 
-export function getNoTakeoverFinding(domain: string): Finding {
+/**
+ * @param options.aRecordVectorSampled - True when the #973 A/AAAA vector was only
+ * checked on a capped subset of the swept subdomains (the `scan_domain` orchestration,
+ * to stay inside its shared DNS-query ceiling), not on all of them. Changes the detail
+ * text from a coverage claim to a sampling disclosure — the CNAME vector is always
+ * swept in full regardless.
+ */
+export function getNoTakeoverFinding(domain: string, options?: { aRecordVectorSampled?: boolean }): Finding {
+	const aRecordCoverage = options?.aRecordVectorSampled
+		? 'checked on a sampled subset of them'
+		: 'checked on every one of them';
 	return createTakeoverFinding(
 		'No dangling CNAME records found',
 		'info',
-		`No subdomain takeover vectors detected for ${domain} among known/active subdomains.`,
+		// #973: this must not read as "no takeover exposure" — it is a claim about the
+		// specific vectors this check models, not every way a subdomain can be hijacked.
+		// State the coverage rather than the absence: dangling CNAMEs against a known
+		// third-party service list, plus the Cloudways unmapped-domain HTTP fingerprint
+		// on A/AAAA-only hosts (or a disclosed sample of them, see `aRecordVectorSampled`).
+		`No dangling CNAME records or unclaimed shared-hosting A/AAAA records were found for ${domain} among the known/active subdomains swept by this check. Coverage is limited to CNAME targets on a known third-party service list, checked on every swept subdomain, and the Cloudways unmapped-domain HTTP fingerprint on A/AAAA-only hosts, ${aRecordCoverage}; other takeover vectors are not modelled.`,
 		'not_exploitable',
 		['no_takeover_signals_detected'],
 	);

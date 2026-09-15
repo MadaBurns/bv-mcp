@@ -36,6 +36,9 @@ export const NODE_POOL_AUDIT_TESTS = [
 	'test/audits/score-stability-chaos-script.node.test.ts',
 	'test/audits/scoring-version-gate.node.test.ts',
 	'test/audits/security-capability-inventory.node.test.ts',
+	// Parses src/lib/scoring-version.ts's hand-maintained history comment via
+	// real node:fs — the Workers pool has no filesystem (#984 guard).
+	'test/scoring-version/model-version-history.node.test.ts',
 	// Imports scripts/ci/sidecar-deploy-drift-check.ts (node:child_process) and
 	// walks tracked wrangler*.jsonc with real node:fs. In the Workers pool the
 	// child_process import is a hard SIGSEGV, not a catchable error.

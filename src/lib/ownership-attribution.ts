@@ -190,6 +190,7 @@ export type OwnershipSignal =
 	| 'ns_shared_platform'
 	| 'mx_in_bailiwick'
 	| 'dmarc_report_authorised_by_seed'
+	| 'seed_infrastructure_match'
 	| 'soa_in_bailiwick'
 	| 'spf_include_seed'
 	| 'http_redirect_seed'
@@ -309,6 +310,17 @@ export interface ClassifyOwnershipInput {
 	 */
 	dmarcReportAuthorisation?: DmarcReportAuthorisation;
 	/**
+	 * #974 — the candidate's RESOLVED A addresses, the seed's A addresses and the
+	 * seed's MX exchange hosts. `undefined` / `[]` = not probed or nothing
+	 * resolved; either way step 5c cannot fire (fails closed to the prior
+	 * outcome). Candidate-published and free to copy, so these can only WITHHOLD
+	 * a `third_party` claim (→ `unattributed`), never earn `owned_by_seed` — see
+	 * {@link seedInfrastructureMatch}.
+	 */
+	candidateA?: readonly string[];
+	seedA?: readonly string[];
+	seedMx?: readonly string[];
+	/**
 	 * OWNERSHIP RULE — SEED-SIDE CONTROL ONLY (Ruling A, 2026-07-27 task-7c;
 	 * fields DELETED 2026-07-27 ownership-attribution followups item 2 — see
 	 * the file header "OWNERSHIP-ATTRIBUTION FOLLOWUPS, ITEM 2" note for why).
@@ -412,6 +424,10 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
  *     medium, with `evidence`. Requires the caller to have supplied `candidateMx` +
  *     `dmarcReportAuthorisation`. A wildcard grant is evidence-only. If the pre-filter holds but
  *     the seed-side probe REJECTED, the verdict is `unmeasured`, not `third_party`.
+ *  5c. (#974) The candidate's A set AND real MX set are each identical to the seed's
+ *     ({@link seedInfrastructureMatch}) → `unattributed` with `seed_infrastructure_match` —
+ *     never `owned_by_seed` (candidate-published, copyable). Replaces only a `third_party` outcome
+ *     (step 5's platform-partial arm, step 6); step 5's whole-platform `unattributed` is kept.
  *  6. Registered with its own resolvable NS, no ownership signal → `third_party`.
  *  7. Everything else (no NS info at all) → `unattributed`.
  *
@@ -533,6 +549,22 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 	// carries the `unmeasured` outcome for an asked-but-unanswered seed probe.
 	if (convergence !== null) return convergence;
 
+	// #974 — step 5c. Every arm that could attribute has declined; before either
+	// `third_party` arm below claims distinct infrastructure, check whether the
+	// candidate in fact points at the SEED's own web and mail hosts. Applied
+	// only where a `third_party` would otherwise be returned (the #929
+	// whole-platform `unattributed` arm keeps its own, more specific rationale).
+	const infraMatch = seedInfrastructureMatch(input);
+	const seedInfraAssessment: OwnershipAssessment | null =
+		infraMatch === null
+			? null
+			: {
+					verdict: 'unattributed',
+					strength: 'none',
+					signals: ['seed_infrastructure_match'],
+					rationale: `${candidateDomain} does not share ${seedApex}'s nameserver set, but resolves to the same web address set (${infraMatch.a.join(', ')}) and the same mail hosts (${infraMatch.mx.join(', ')}) as ${seedApex} — the shape of the organisation's own brand-variant registration hosted by an agency or platform. Those records are self-published and can be copied, so ownership is not established either way.`,
+				};
+
 	// #929 — an overlap that exists but is confined to shared-provider hosts.
 	// Neither verdict below moves severity (the third_party / unattributed
 	// split is wording only — see the file header); the choice is about what
@@ -562,6 +594,7 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 				rationale: `${candidateDomain} delegates only to shared-tenant DNS platform hosts that ${seedApex} also uses (${sharedNs.join(', ')}), which that platform assigns to every customer — platform plumbing, not ownership evidence either way.`,
 			};
 		}
+		if (seedInfraAssessment !== null) return seedInfraAssessment;
 		return {
 			verdict: 'third_party',
 			strength: 'none',
@@ -569,6 +602,8 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 			rationale: `${candidateDomain} shares ${sharedNs.length}/${seedTotal} nameservers with ${seedApex} (${sharedNs.join(', ')}), all on a shared-tenant DNS platform that assigns the same hostnames to unrelated customers; its remaining nameservers are distinct from ${seedApex}'s — platform plumbing, not ownership evidence.`,
 		};
 	}
+
+	if (seedInfraAssessment !== null) return seedInfraAssessment;
 
 	if (candidateNs.length > 0) {
 		return {
@@ -605,6 +640,57 @@ export function mxRoutedIntoSeed(candidateMx: readonly string[] | undefined, see
 	const normalisedSeed = normHost(seedDomain);
 	const seedApex = getRegistrableDomain(normalisedSeed) ?? normalisedSeed;
 	return candidateMx.every((mx) => isInBailiwick(mx, seedApex));
+}
+
+/**
+ * #974 corroborator bar (step 5c of `classifyOwnership()`). Returns the matched
+ * sets when BOTH hold, else `null`:
+ *
+ *  1. the candidate's A set is non-empty and IDENTICAL to the seed's (same
+ *     addresses, same count — an overlap is not enough), AND
+ *  2. the candidate's real MX set is non-empty and IDENTICAL to the seed's.
+ *
+ * Neither leg alone is sufficient: a shared-hosting web IP (one server, many
+ * tenants) or a multi-tenant mail provider (Google, M365, a host's antispam
+ * relay) is exactly what an UNRELATED tenant of the same platform looks like —
+ * the #929 lesson for NS, applied to A and MX. Together, exact web+mail
+ * identity is what an SMB's agency-hosted defensive cohort looks like
+ * (ltmcguinness.{com,net,co,io,ai} on the agency's NS, all on the seed's A and
+ * MX), and what no typosquat running its OWN infrastructure looks like.
+ *
+ * WHY THE OUTCOME IS `unattributed`, NOT `owned_by_seed` (Ruling A, and the
+ * #864 review that rejected candidate MX as verdict-bearing, 931f7b81d): both
+ * legs are CANDIDATE-published and cost a squatter nothing to copy, and two
+ * unrelated tenants of one platform can match both. So the match cannot earn
+ * the ownership verdict — which would lift the attribution ceiling and switch
+ * off the threat observation for a squatter who copied the records — but it
+ * does falsify the `third_party` arm's "distinct infrastructure / no ownership
+ * signal" claim, which is the defect. Severity is unaffected (`third_party` and
+ * `unattributed` share the `info` ceiling).
+ */
+export function seedInfrastructureMatch(input: {
+	candidateA?: readonly string[];
+	seedA?: readonly string[];
+	candidateMx?: readonly string[];
+	seedMx?: readonly string[];
+}): { a: string[]; mx: string[] } | null {
+	const a = identicalNonEmptySet(input.candidateA, input.seedA, (v) => v.trim().toLowerCase());
+	if (a === null) return null;
+	const mx = identicalNonEmptySet(input.candidateMx, input.seedMx, normHost);
+	if (mx === null) return null;
+	return { a, mx };
+}
+
+function identicalNonEmptySet(
+	left: readonly string[] | undefined,
+	right: readonly string[] | undefined,
+	norm: (v: string) => string,
+): string[] | null {
+	const l = new Set((left ?? []).map(norm).filter(Boolean));
+	const r = new Set((right ?? []).map(norm).filter(Boolean));
+	if (l.size === 0 || l.size !== r.size) return null;
+	for (const v of l) if (!r.has(v)) return null;
+	return [...l].sort();
 }
 
 /**
@@ -731,7 +817,7 @@ function assessSeedAuthorisedConvergence(
 }
 
 /** {@link attributionConfidence} return type — deliberately not a boolean; see its JSDoc for why. */
-export type AttributionConfidence = 'corroborated' | 'uncorroborated';
+export type AttributionConfidence = 'corroborated' | 'single_signal' | 'uncorroborated';
 
 /**
  * D4 WORDING/CONFIDENCE classifier: does a non-owned candidate's brand-label
@@ -754,10 +840,17 @@ export type AttributionConfidence = 'corroborated' | 'uncorroborated';
  * global DNS for a bare label match to mean anything on its own — see spec
  * §5 D4. This is a WORDING signal only: whatever it returns, the finding is
  * still emitted, at the severity `capAttributionSeverity()` computed.
+ *
+ * #974 — `'corroborated'` means a second, independent signal actually agrees
+ * (the caller's `corroborated` flag), not merely that the label is long. A
+ * non-owned verdict whose only support is the verdict's own signal (e.g. NS
+ * non-overlap) with a long-enough label is `'single_signal'`: it used to read
+ * `'corroborated'`, over-claiming a one-signal `third_party`. Consumers that
+ * gate on `!== 'uncorroborated'` (the #863 rollup) treat both the same.
  */
 export function attributionConfidence(verdict: OwnershipVerdict, brandLabel: string, corroborated: boolean): AttributionConfidence {
-	if (verdict === 'owned_by_seed') return 'corroborated';
-	return brandLabel.length >= MIN_ATTRIBUTION_LABEL_LENGTH || corroborated ? 'corroborated' : 'uncorroborated';
+	if (verdict === 'owned_by_seed' || corroborated) return 'corroborated';
+	return brandLabel.length >= MIN_ATTRIBUTION_LABEL_LENGTH ? 'single_signal' : 'uncorroborated';
 }
 
 /**

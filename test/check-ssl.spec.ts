@@ -216,6 +216,78 @@ describe('checkSsl', () => {
 		expect(finding).toBeUndefined();
 	});
 
+	describe('issue #972 — an unfingerprinted UA/TLS-based block completes the check with false findings', () => {
+		it.each([[401], [403], [429], [202]])(
+			'should NOT emit "No HSTS header" when the https:// probe returns a blocked %d with no headers',
+			async (status) => {
+				globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+					const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+					if (url.startsWith('https://')) {
+						return Promise.resolve({
+							url: 'https://example.com/',
+							ok: status >= 200 && status < 300,
+							status,
+							headers: new Headers(),
+						});
+					}
+					return Promise.resolve({
+						ok: false,
+						status: 301,
+						headers: new Headers({ location: 'https://example.com/' }),
+					});
+				});
+				const result = await run();
+				expect(result.findings.some((f) => f.title === 'No HSTS header')).toBe(false);
+				expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+				expect(result.checkStatus).toBe('error');
+				expect(result.score).toBe(0);
+				expect(result.passed).toBe(false);
+			},
+		);
+
+		it('should NOT emit "No HTTP to HTTPS redirect" when the http:// probe is answered with a 202 interstitial (the exact reported shape)', async () => {
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.startsWith('https://')) {
+					return Promise.resolve({
+						url: 'https://example.com/',
+						ok: true,
+						status: 200,
+						headers: new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
+					});
+				}
+				// The origin does a real 301 for honest clients, but the scanner's probe is
+				// answered with a 202 interstitial (issue #972's reported shape).
+				return Promise.resolve({ ok: true, status: 202, headers: new Headers() });
+			});
+			const result = await run();
+			expect(result.findings.some((f) => f.title === 'No HTTP to HTTPS redirect')).toBe(false);
+			expect(result.checkStatus).toBeUndefined();
+		});
+
+		it('headers that ARE present on a blocked 403 must not be reported missing', async () => {
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.startsWith('https://')) {
+					return Promise.resolve({
+						url: 'https://example.com/',
+						ok: false,
+						status: 403,
+						headers: new Headers({ 'strict-transport-security': 'max-age=31536000; includeSubDomains' }),
+					});
+				}
+				return Promise.resolve({
+					ok: false,
+					status: 301,
+					headers: new Headers({ location: 'https://example.com/' }),
+				});
+			});
+			const result = await run();
+			expect(result.findings.some((f) => f.title === 'No HSTS header')).toBe(false);
+			expect(result.checkStatus).toBe('error');
+		});
+	});
+
 	it.each([[204], [205]])(
 		'should NOT emit an HSTS finding when the https:// probe returns a no-content %d (issue #806 follow-up)',
 		async (status) => {

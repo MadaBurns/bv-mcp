@@ -350,9 +350,9 @@ describe('attributionConfidence — D4 minimum label length (WORDING classifier,
 		expect(attributionConfidence('third_party', 'hnz', true)).toBe('corroborated');
 	});
 
-	it('corroborated for a non-owned candidate at or above the minimum length with no corroboration needed', async () => {
+	it('single_signal (not corroborated, #974) for a non-owned candidate at or above the minimum length with no second signal', async () => {
 		const { attributionConfidence } = await loadModule();
-		expect(attributionConfidence('third_party', 'bankof', false)).toBe('corroborated');
+		expect(attributionConfidence('third_party', 'bankof', false)).toBe('single_signal');
 	});
 });
 

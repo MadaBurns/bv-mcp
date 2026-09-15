@@ -21,7 +21,7 @@ import { checkRdapLookup, RDAP_LOOKUP_SYNC_BUDGET_MS } from './check-rdap-lookup
 import { brandAuditSingle } from './brand-audit-single';
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
 import type { ScanRuntimeOptions } from './scan/post-processing';
-import { UNGRADED_DISPLAY, formatScoreGrade } from '../lib/ungraded-display';
+import { UNGRADED_DISPLAY, displayGradeFor, formatScoreGrade } from '../lib/ungraded-display';
 
 /** Portfolio ownership lens (from classifyCandidate) + 'unknown' for a bare domain list. */
 export type OwnershipBucket = 'consolidated' | 'shadowIt' | 'indeterminate' | 'impersonation' | 'impersonationSurface' | 'unknown';
@@ -654,7 +654,10 @@ async function evaluateOne(
 		deadlineMs: Date.now() + RDAP_LOOKUP_SYNC_BUDGET_MS,
 	});
 	const lockPosture = extractLockPosture(rdap);
-	const report = evaluateRegistrarProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, scanResult.score.grade);
+	// Customer-facing grade: route through the 6-band chokepoint, not the 9-band
+	// `scanResult.score.grade` (internal scale) — matches `map_registrar_products`'s
+	// fix for the same defect class (#640/badge).
+	const report = evaluateRegistrarProducts(scanResult.checks, lockPosture, domain, scanResult.score.overall, displayGradeFor(scanResult.score));
 	return { report, ownershipBucket };
 }
 

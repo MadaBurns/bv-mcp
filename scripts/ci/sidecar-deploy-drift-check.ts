@@ -19,8 +19,8 @@
  */
 
 import { spawnSync as nodeSpawnSync } from 'node:child_process';
+import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { resolve } from 'node:path';
 import {
 	assessSidecarDrift,
 	parseNewestDeployment,
@@ -42,6 +42,8 @@ export const WRANGLER_DEPLOYMENTS_ARGV = ['wrangler', 'deployments', 'list', '--
 
 /** `git log` format: `<sha>\t<committer date ISO>\t<subject>`; `%x09` is a literal tab. */
 export const GIT_LOG_FORMAT = '--format=%H%x09%cI%x09%s';
+
+const UPSTREAM = 'origin/main';
 
 type SpawnSyncLike = (
 	command: string,
@@ -77,24 +79,30 @@ export function probeSidecar(target: SidecarTarget, spawnSync: SpawnSyncLike = n
 	}
 
 	// Compare against HEAD, not origin/main. `deploy:prod` uploads the WORKING
-	// TREE, and `check:deploy-freshness` has already proven HEAD ⊇ origin/main by
-	// the time this runs — so HEAD is both the thing being shipped and the
-	// stricter comparison.
-	//
-	// ⚠️ THAT PRECONDITION IS THIS GATE'S ONE EXTERNAL DEPENDENCY (#945 review).
+	// TREE, so HEAD is the thing being shipped. `runSidecarDriftCheck` proves
+	// HEAD ⊇ origin/main itself (`verifyHeadContainsUpstream`, #981 item 1) —
 	// `git log HEAD` can only see commits that are ANCESTORS of HEAD, so on a
 	// checkout behind origin/main a sidecar commit that landed upstream but not
-	// locally is invisible: the drift list comes back empty and this gate reports
-	// `fresh`. That is a false green in a gate that exists to be fail-closed.
-	// Every caller MUST therefore run `check:deploy-freshness` first. All three
-	// doors now do — `deploy:prod` and `deploy:prod:staged` via their npm chains,
-	// and `scripts/deploy-private.mjs` via an explicit step added in the same
-	// review (it previously ran this gate with nothing enforcing the assumption).
-	// `test/audits/deploy-pipeline.audit.test.ts` pins the ordering on all three.
-	// If you wire this gate into a FOURTH caller, run freshness there too, or
-	// teach this probe to verify HEAD ⊇ origin/main itself.
+	// locally would otherwise be invisible: the drift list comes back empty and
+	// this gate reports `fresh`, a false green in a gate that exists to be
+	// fail-closed. `check:deploy-freshness` running first on all three doors
+	// (`test/audits/deploy-pipeline.audit.test.ts`) is belt-and-suspenders, not
+	// the only proof — `BV_ALLOW_STALE_DEPLOY=1` deliberately skips that gate's
+	// own proof, so this probe cannot depend on a caller having run it.
+	//
+	// `--first-parent` matters as much as `HEAD` does (#981 item 2): this repo
+	// merges via merge commits, so a plain `git log -- <path>` history
+	// simplification surfaces the ORIGINAL side-branch commit — keeping its
+	// side-branch committer date — not the merge that landed it on main.
+	// Measured in-repo: 9c170b0d (#526) carries a committer date four days
+	// before it actually merged. A sidecar deployed in that four-day window
+	// would filter #526 out as "already deployed" and the drift would be
+	// permanently invisible. `--first-parent` walks the mainline only, so a
+	// squashed commit keeps its own (correct) date and a merged branch is
+	// represented by the merge commit, whose committer date is when it reached
+	// main — which is what "deployed after this" must be measured against.
 	let driftCommits: string[] = [];
-	const log = spawnSync('git', ['log', GIT_LOG_FORMAT, 'HEAD', '--', ...target.watchPaths], { encoding: 'utf8' });
+	const log = spawnSync('git', ['log', '--first-parent', GIT_LOG_FORMAT, 'HEAD', '--', ...target.watchPaths], { encoding: 'utf8' });
 	if (log.error || log.status !== 0) {
 		// A failed `git log` is not evidence of freshness — degrade to unverified
 		// rather than to an empty commit list.
@@ -110,11 +118,60 @@ export function probeSidecar(target: SidecarTarget, spawnSync: SpawnSyncLike = n
 	return { target, deployedAtMs, driftCommits, unverifiedReason };
 }
 
+/**
+ * Prove HEAD ⊇ origin/main before trusting `git log HEAD -- <watchPaths>` as
+ * evidence of "no drift" (#981 item 1).
+ *
+ * `probeSidecar`'s `git log HEAD` can only see commits that are ANCESTORS of
+ * HEAD, so on a checkout behind origin/main a sidecar commit that landed
+ * upstream but not locally is invisible — the drift list comes back empty and
+ * the gate reports `fresh`. `check:deploy-freshness` proves this precondition
+ * on every real deploy door, EXCEPT that `BV_ALLOW_STALE_DEPLOY=1` makes that
+ * gate return `ok: true` without ever proving it, for a deliberate rollback.
+ * That override does not — and must not — apply here: a rollback that skips
+ * the freshness proof still needs this gate to notice a stale sidecar. So this
+ * gate proves the precondition itself rather than trusting a caller to have
+ * run something else first.
+ *
+ * Returns `null` when proven; a reason string means the git evidence below is
+ * unverified and every probe must BLOCK.
+ */
+export function verifyHeadContainsUpstream(spawnSync: SpawnSyncLike = nodeSpawnSync as SpawnSyncLike): string | null {
+	const fetched = spawnSync('git', ['fetch', 'origin', 'main', '--quiet'], { encoding: 'utf8' });
+	if (fetched.error || fetched.status !== 0) {
+		return `could not fetch ${UPSTREAM}: ${fetched.error ? fetched.error.message : firstStderrLine(fetched.stderr)}`;
+	}
+
+	const mergeBase = spawnSync('git', ['merge-base', '--is-ancestor', UPSTREAM, 'HEAD'], { encoding: 'utf8' });
+	if (mergeBase.error) {
+		return `could not verify HEAD contains ${UPSTREAM}: ${mergeBase.error.message}`;
+	}
+	// `--is-ancestor` uses its exit code as the answer: 0 = yes, 1 = no. Any
+	// other status (128 = no such ref, detached weirdness) is not evidence
+	// either way.
+	if (mergeBase.status === 1) {
+		return `HEAD does not contain ${UPSTREAM} — the git-log drift evidence above is unreliable on a checkout behind the remote`;
+	}
+	if (mergeBase.status !== 0) {
+		return `\`git merge-base --is-ancestor\` exited ${mergeBase.status ?? 'with no status'}: ${firstStderrLine(mergeBase.stderr)}`;
+	}
+	return null;
+}
+
 export function runSidecarDriftCheck(
 	spawnSync: SpawnSyncLike = nodeSpawnSync as SpawnSyncLike,
 	env: NodeJS.ProcessEnv = process.env,
 ): SidecarDriftVerdict {
-	const probes = SIDECAR_TARGETS.map((target) => probeSidecar(target, spawnSync));
+	// Checked ONCE, before probing any sidecar, rather than inside
+	// `probeSidecar` per target — the proof is the same for every target and
+	// probing it twice would double the `git fetch` cost for no added signal.
+	const headReason = verifyHeadContainsUpstream(spawnSync);
+	const probes = SIDECAR_TARGETS.map((target) => {
+		const probe = probeSidecar(target, spawnSync);
+		// A probe's own unverifiedReason (bad wrangler token, failed git log)
+		// always wins over the shared precondition failure — it is more specific.
+		return headReason ? { ...probe, unverifiedReason: probe.unverifiedReason ?? headReason } : probe;
+	});
 	return assessSidecarDrift(probes, env[SIDECAR_OVERRIDE_ENV] === '1');
 }
 
@@ -127,7 +184,27 @@ function main(): void {
 	console.log(verdict.message);
 }
 
+/**
+ * True when this file was invoked as the CLI entrypoint, not merely imported
+ * (the Node-pool audit test imports `probeSidecar`/`runSidecarDriftCheck`
+ * without running the real gate, which depends on this staying accurate).
+ *
+ * `resolve()` does NOT resolve symlinks, but the ESM loader realpaths
+ * `import.meta.url` before handing it to the module (#981 item 4) — so a
+ * checkout reached through a symlinked path component made
+ * `resolve(process.argv[1])` disagree with `fileURLToPath(import.meta.url)`
+ * and this guard silently no-op'd, exiting 0 without ever probing a sidecar.
+ * `realpathSync` matches what the loader already did to `import.meta.url`.
+ */
+export function isInvokedDirectly(
+	argv1: string | undefined,
+	moduleUrl: string,
+	realpath: (path: string) => string = realpathSync,
+): boolean {
+	if (!argv1) return false;
+	return realpath(argv1) === fileURLToPath(moduleUrl);
+}
+
 // Guarded so the Node-pool audit can import `probeSidecar` without running the
 // real gate (and without shelling out to wrangler) as an import side effect.
-const invoked = process.argv[1] ? resolve(process.argv[1]) : '';
-if (invoked === fileURLToPath(import.meta.url)) main();
+if (isInvokedDirectly(process.argv[1], import.meta.url)) main();

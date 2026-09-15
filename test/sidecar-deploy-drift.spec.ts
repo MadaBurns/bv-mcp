@@ -251,4 +251,29 @@ describe('SIDECAR_TARGETS shape', () => {
 	it('never names the main Worker — deploy:prod already ships that one', () => {
 		expect(SIDECAR_TARGETS.map((t) => t.worker)).not.toContain('bv-dns-security-mcp');
 	});
+
+	// #981 item 3: watchPaths covered only part of each sidecar's bundle. A
+	// commit to one of these shared modules ships to the MCP Worker on the next
+	// `deploy:prod` and to the sidecar never, which is exactly the drift class
+	// this gate exists to catch.
+	it('bv-infra-probe watches the shared src/lib modules its entrypoint and authoritative-dns-infra import transitively', () => {
+		const infraProbe = SIDECAR_TARGETS.find((t) => t.worker === 'bv-infra-probe')!;
+		for (const required of [
+			'src/lib/request-body.ts',
+			'src/lib/dns.ts',
+			'src/lib/dns-transport.ts',
+			'src/lib/dns-types.ts',
+			'src/lib/scoring.ts',
+			'src/lib/response-body.ts',
+		]) {
+			expect(infraProbe.watchPaths, `bv-infra-probe must watch ${required}`).toContain(required);
+		}
+	});
+
+	it('bv-whois watches the vendored dns-checks whois subtree and its own config/manifest', () => {
+		const whois = SIDECAR_TARGETS.find((t) => t.worker === 'bv-whois')!;
+		for (const required of ['packages/dns-checks/src/whois', 'packages/bv-whois/wrangler.jsonc', 'packages/bv-whois/package.json']) {
+			expect(whois.watchPaths, `bv-whois must watch ${required}`).toContain(required);
+		}
+	});
 });

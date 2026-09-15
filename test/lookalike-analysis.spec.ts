@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateCombosquats, generateLookalikes } from '../src/tools/lookalike-analysis';
+import { generateCombosquats, generateLookalikes, generateTranspositions } from '../src/tools/lookalike-analysis';
 
 describe('generateLookalikes', () => {
 	it('generates expected permutation types for a simple domain', () => {
@@ -69,6 +69,63 @@ describe('generateLookalikes', () => {
 		const results = generateLookalikes('[redacted-domain]');
 		expect(results).not.toContain('paypal-login.com');
 		expect(results).not.toContain('login-[redacted-domain]');
+	});
+
+	// #979 — adjacent character transposition is now its own lane
+	// (`generateTranspositions`), not folded into `generateLookalikes`.
+	it("does NOT generate adjacent transpositions (that is generateTranspositions' job)", () => {
+		expect(generateLookalikes('nzpost.co.nz')).not.toContain('nzpots.co.nz');
+	});
+});
+
+describe('generateTranspositions', () => {
+	// #979 — the permutation generator had no adjacent-transposition rule at
+	// all, so a high-frequency real typo class was never generated, let alone
+	// probed.
+	it('generates adjacent character transpositions for the #979 seeds', () => {
+		expect(generateTranspositions('nzpost.co.nz')).toContain('nzpots.co.nz');
+		expect(generateTranspositions('microsoft.com')).toContain('mircosoft.com');
+		expect(generateTranspositions('google.com')).toContain('gogole.com');
+	});
+
+	it('never returns a duplicate or seed-equal entry for the #979 seeds', () => {
+		for (const seed of ['nzpost.co.nz', 'microsoft.com', 'google.com']) {
+			const results = generateTranspositions(seed);
+			expect(results).not.toContain(seed);
+			expect(new Set(results).size).toBe(results.length);
+		}
+	});
+
+	it('does not waste a transposition slot on an identical adjacent-letter swap', () => {
+		// 'school.com' has a doubled 'oo': transposing it with itself would
+		// reproduce the seed, so that pair must be skipped rather than
+		// generated-then-filtered.
+		const results = generateTranspositions('school.com');
+		expect(results).not.toContain('school.com');
+		// The genuine transposition of the adjacent 'ch'/'ho' pairs should still
+		// be produced.
+		expect(results).toContain('shcool.com');
+	});
+
+	it("is kept in its own lane with its own cap, rather than sharing generateLookalikes' MAX_PERMUTATIONS", () => {
+		// A domain whose base is long enough to produce many transpositions
+		// still returns a bounded, valid, alphabetically sorted list.
+		const results = generateTranspositions('longdomainnametranspositiontest.com');
+		expect(results.length).toBeGreaterThan(0);
+		expect(results).toEqual([...results].sort());
+		for (const domain of results) {
+			const labels = domain.split('.');
+			for (const label of labels) {
+				expect(label.length).toBeGreaterThan(0);
+				expect(label.length).toBeLessThanOrEqual(63);
+			}
+		}
+	});
+
+	it('does not include the original domain and handles short/edge-case labels', () => {
+		expect(generateTranspositions('test.com')).not.toContain('test.com');
+		expect(generateTranspositions('ab.com')).toEqual(['ba.com']);
+		expect(generateTranspositions('a.com')).toEqual([]);
 	});
 });
 

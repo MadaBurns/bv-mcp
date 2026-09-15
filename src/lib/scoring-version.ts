@@ -641,8 +641,22 @@
  *   shape that previously got no second probe at all; `ns` remains not a
  *   bounded-parallelism candidate. No weight, tier, grade band, `SEVERITY_PENALTIES` entry,
  *   missing-control rule or profile-detection rule changed.
+ * - 1.32.0 — two changes in one wave (dns-checks 1.47.0). (1) `check_subdomain_takeover` models
+ *   the A/AAAA takeover vector (#973): an A/AAAA-only host in the already-enumerated sweep now
+ *   gets the same HTTP-body fingerprint probe as a CNAME host, matched against a verbatim
+ *   Cloudways unmapped-domain fingerprint; a match is `high`, as for the CNAME vector. A failed
+ *   A/AAAA query abstains (`inconclusive`), never `missingControl`. SCORE-BEARING, DOWNWARD, on
+ *   domains matching that fingerprint only. Inside `scan_domain` the A/AAAA vector is sampled on at most 2 swept
+ *   subdomains (AAAA only when A is empty) to stay under the scan DNS-query guard; the direct
+ *   tool sweeps every subdomain. (2) `check_ssl` and
+ *   `check_http_security` abstain when the probe is answered with a block-shaped status
+ *   (401/403/429/202/5xx or no response) instead of scoring that answer as the site's real page
+ *   (#972): the category routes to `checkStatus: 'error'` and is excluded from scoring.
+ *   SCORE-BEARING, UPWARD on affected scans (false header/HSTS/redirect findings removed). No
+ *   weight, tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or
+ *   profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.31.0';
+export const SCORING_MODEL_VERSION = '1.32.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
