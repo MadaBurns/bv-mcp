@@ -663,8 +663,16 @@
  *   HTTP with its own timeout. SCORE-BEARING, DOWNWARD, only on domains serving that edge. Same
  *   scan sample cap; no DoH query added. No weight, tier, grade band, `SEVERITY_PENALTIES`
  *   entry, missing-control rule or profile-detection rule changed.
+ * - 1.34.0 — `check_subdomain_takeover`'s fingerprint probe treats a Cloudflare-edge synthetic
+ *   525/526 on the HTTPS leg as a failed leg (#973 second reopen, dns-checks 1.49.0). In
+ *   production the edge answers a broken-certificate origin with its own 526 page instead of
+ *   rejecting, so the 1.33.0 plain-HTTP fallback never ran. The A/AAAA vector now falls back to
+ *   HTTP and the CNAME vector abstains, as for a rejected fetch. SCORE-BEARING, DOWNWARD, only on
+ *   domains serving the Cloudways edge behind a broken certificate. No DoH query added. No
+ *   weight, tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or
+ *   profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.33.0';
+export const SCORING_MODEL_VERSION = '1.34.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
