@@ -42,11 +42,11 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 const WHOIS = SIDECAR_TARGETS[0]!;
 
-type SpawnCall = [string, string[], { encoding: 'utf8' }];
-type SpawnResult = { status: number | null; stdout?: string; stderr?: string; error?: Error; signal?: string };
+type SpawnCall = [string, string[], { encoding: 'utf8'; timeout?: number }];
+type SpawnResult = { status: number | null; stdout?: string; stderr?: string; error?: Error; signal?: NodeJS.Signals | null };
 
 function fakeSpawn(handler: (command: string, args: string[]) => SpawnResult) {
-	return vi.fn((command: string, args: string[], _options: { encoding: 'utf8' }) => handler(command, args)) as unknown as ((
+	return vi.fn((command: string, args: string[], _options: { encoding: 'utf8'; timeout?: number }) => handler(command, args)) as unknown as ((
 		...call: SpawnCall
 	) => SpawnResult) & { mock: { calls: SpawnCall[] } };
 }
