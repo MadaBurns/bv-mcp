@@ -27,6 +27,17 @@ export interface SubdomainTakeoverOptions {
 	 * at `MAX_SUBDOMAINS` per call.
 	 */
 	subdomains?: readonly string[];
+	/**
+	 * Cap on how many swept subdomains (in sweep order) run the #973 A/AAAA-only
+	 * takeover vector. Undefined (every direct `check_subdomain_takeover` call) means
+	 * no cap — every swept subdomain gets the full CNAME + A/AAAA sweep, unchanged
+	 * from before #973. `scan_domain` passes a small cap to stay inside its shared
+	 * DNS-query ceiling (test/hot-path-concurrency.perf.spec.ts); subdomains past the
+	 * cap still get the CNAME leg, just not the A/AAAA leg. When the cap actually
+	 * truncates the sweep, the all-clear finding discloses the vector as sampled
+	 * rather than claiming full coverage.
+	 */
+	aRecordVectorSampleCap?: number;
 }
 
 /**
@@ -52,10 +63,22 @@ export async function checkSubdomainTakeover(
 		: null;
 	const subdomainsToScan = explicit && explicit.length > 0 ? explicit : KNOWN_SUBDOMAINS;
 
+	const aRecordCap = options?.aRecordVectorSampleCap;
+	// True only when the cap actually cuts the sweep short — a cap ≥ the sweep size
+	// checks every subdomain anyway and is not a sample.
+	const aRecordVectorSampled = aRecordCap !== undefined && subdomainsToScan.length > aRecordCap;
+
 	const outcomes = await Promise.all(
-		subdomainsToScan.map(async (subdomain) => ({
+		subdomainsToScan.map(async (subdomain, index) => ({
 			subdomain,
-			...(await scanSubdomainForTakeoverInternal(domain, subdomain, queryDNS, fetchFn, timeout)),
+			...(await scanSubdomainForTakeoverInternal(
+				domain,
+				subdomain,
+				queryDNS,
+				fetchFn,
+				timeout,
+				aRecordCap === undefined || index < aRecordCap,
+			)),
 		})),
 	);
 
@@ -117,7 +140,7 @@ export async function checkSubdomainTakeover(
 	// through `subdomainsUnmeasured` exactly like a subdomain whose CNAME query threw, and
 	// without this the result would carry only an "it failed" note and no verdict at all.
 	if (findings.every((f) => (f.metadata as { inconclusive?: boolean } | undefined)?.inconclusive === true)) {
-		const clean = getNoTakeoverFinding(domain);
+		const clean = getNoTakeoverFinding(domain, { aRecordVectorSampled });
 		findings.push(
 			unmeasured.length > 0
 				? { ...clean, metadata: { ...(clean.metadata ?? {}), subdomainsUnmeasured: unmeasured } }

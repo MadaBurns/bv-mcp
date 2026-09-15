@@ -424,6 +424,75 @@ describe('checkSubdomainTakeover', () => {
 		expect(result.findings[0].title).toContain('No dangling CNAME');
 	});
 
+	it('detects A/AAAA-only host pointing to unclaimed Cloudways infrastructure (#973)', async () => {
+		// `app` has NO CNAME (empty CNAME answer) but its A record resolves to shared
+		// Cloudways infrastructure that serves the provider's verbatim "unmapped
+		// domain" page — the reproduction from issue #973.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=CNAME') || url.includes('type=5')) {
+					const nameMatch = url.match(/name=([^&]+)/);
+					const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+					return Promise.resolve(emptyResponse(name, 5));
+				}
+				if (url.includes('type=A') || url.includes('type=1')) {
+					if (url.includes('app.example.com')) {
+						return Promise.resolve(aResponse('app.example.com', ['45.77.51.111']));
+					}
+				}
+				return Promise.resolve(emptyResponse('unknown', 1));
+			}
+
+			// HTTP fingerprint probe — Cloudways' verbatim unmapped-domain block page.
+			return Promise.resolve(
+				new Response(
+					'The request was unfortunately blocked by our system because the requested domain is not authorized on Cloudways server i.e. The domain has been successfully pointed to a Cloudways server but it is not mapped to an application.',
+					{ status: 403 },
+				),
+			);
+		});
+
+		const result = await run('example.com');
+		const finding = result.findings.find((f) => f.title.includes('Cloudways'));
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('high');
+		expect(finding!.title).toContain('possible takeover signal');
+		expect(finding!.detail).toContain('no CNAME');
+		expect(finding!.detail).toContain('not proof of exploitability');
+		expect(finding!.metadata?.verificationStatus).toBe('potential');
+		expect(finding!.metadata?.vector).toBe('a_record');
+	});
+
+	it('does not flag an A/AAAA-only host serving a normal page (no fingerprint)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=CNAME') || url.includes('type=5')) {
+					const nameMatch = url.match(/name=([^&]+)/);
+					const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+					return Promise.resolve(emptyResponse(name, 5));
+				}
+				if (url.includes('type=A') || url.includes('type=1')) {
+					if (url.includes('app.example.com')) {
+						return Promise.resolve(aResponse('app.example.com', ['203.0.113.10']));
+					}
+				}
+				return Promise.resolve(emptyResponse('unknown', 1));
+			}
+
+			// A normally-serving origin — no takeover fingerprint anywhere in the body.
+			return Promise.resolve(new Response('<html><body>Welcome to our site</body></html>', { status: 200 }));
+		});
+
+		const result = await run('example.com');
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].title).toContain('No dangling CNAME');
+	});
+
 	it('detects dangling CNAME to newly added service (Vercel)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
