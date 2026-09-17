@@ -136,6 +136,17 @@ function graphSharedSignalCount(metadata: Record<string, unknown> | undefined): 
 	return typeof raw === 'number' && Number.isFinite(raw) ? raw : 0;
 }
 
+/**
+ * ⚠️ #1041 — this gate reads the graph CLAIM (`specificityScore`, `signalTypes` /
+ * `signalType`, `numSharedSignals`) and must NOT be taught to read
+ * `observation.signal`: a legitimate deterministic tier-1 graph observation is stored
+ * under the seed signal `markov_gen` too, so it is byte-identical to a degraded one in
+ * that field (PR #1045 keyed on it via `isSeedObservation()` and broke the pinned
+ * deterministic-tier-1 routing). A degraded tier-1 observation arrives here with its
+ * claim already withdrawn by `tieredObservationEvidence()` in
+ * src/tools/discover-brand-domains.ts — the site that performs the degrade is the only
+ * one that can tell the two states apart.
+ */
 export function clearsTier1GraphEvidence(observation: BrandEvidenceObservation): boolean {
 	const specificityScore = observation.specificityScore ?? 0;
 	if (specificityScore < TIER_1_SPECIFICITY_THRESHOLD) return false;

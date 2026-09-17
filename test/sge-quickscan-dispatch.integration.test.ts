@@ -48,8 +48,8 @@ afterEach(() => {
 
 const DOMAIN = 'example.com';
 
-/** The six control labels the renderer must emit on EVERY run, unfiltered and in order. */
-const CONTROL_LABELS = ['DMARC', 'SPF', 'DKIM', 'SMTP TLS', 'MTA-STS', 'TLS-RPT'] as const;
+/** The seven control labels the renderer must emit on EVERY run, unfiltered and in order. */
+const CONTROL_LABELS = ['DMARC', 'SPF', 'DKIM', 'SMTP TLS', 'MTA-STS', 'TLS-RPT', 'Sub-domain coverage'] as const;
 
 /**
  * A mail-bearing domain: MX present, DMARC at p=reject, an SPF record with a real
@@ -131,7 +131,7 @@ describe('sge_quickscan — the tool is REACHABLE through the dispatch layer', (
 		expect(result.isError).toBeUndefined();
 		expect(result.content).toHaveLength(2);
 		expect(result.content[0].text).toContain('# NZ Secure Government Email (SGE): example.com');
-		expect(structured(result).controls).toHaveLength(6);
+		expect(structured(result).controls).toHaveLength(7);
 	});
 
 	// The guard must reject the shapes it exists for, or the test above proves
@@ -159,7 +159,7 @@ describe('sge_quickscan — the tool is REACHABLE through the dispatch layer', (
 });
 
 describe('sge_quickscan through dispatch — all three states survive to the rendered text', () => {
-	it('renders every one of the six controls, never filtered and never reordered', async () => {
+	it('renders every one of the seven controls, never filtered and never reordered', async () => {
 		mockMailDomain();
 		const result = await callDispatch({ domain: DOMAIN });
 		const rendered = result.content[0].text;
@@ -170,20 +170,20 @@ describe('sge_quickscan through dispatch — all three states survive to the ren
 		}
 	});
 
-	// The counts are a partition of six. A control that vanished from one bucket
+	// The counts are a partition of seven. A control that vanished from one bucket
 	// without arriving in another would let a reader tally a pass out of silence.
-	it('the three counts always partition the six controls', async () => {
+	it('the three counts always partition the seven controls', async () => {
 		mockMailDomain();
 		const { counts, controls } = structured(await callDispatch({ domain: DOMAIN }));
 
 		expect(counts.satisfied + counts.notSatisfied + counts.notMeasured).toBe(controls.length);
-		expect(controls).toHaveLength(6);
+		expect(controls).toHaveLength(7);
 	});
 });
 
 describe('sge_quickscan through dispatch — no clean bill of health while SMTP TLS is unmeasured', () => {
 	// Structural, not incidental: this scanner never opens an SMTP session, so on a
-	// mail-bearing domain control 4 of 6 is ALWAYS unmeasured and `compliant` is
+	// mail-bearing domain control 4 of 7 is ALWAYS unmeasured and `compliant` is
 	// therefore unreachable. A future change that made this verdict `compliant`
 	// without a transport observation would be claiming something never measured.
 	it('a mail-bearing domain is INDETERMINATE, carries the transport caveat, and is never COMPLIANT', async () => {
@@ -207,23 +207,23 @@ describe('sge_quickscan through dispatch — no clean bill of health while SMTP 
 describe('sge_quickscan through dispatch — an abstaining scan reads as NOT MEASURED', () => {
 	// Never a pass, never a failure, never omitted. This is the one shape where a
 	// renderer bug is most expensive: five ticks over an unmeasured domain.
-	it('a domain nothing could be measured for reports six NOT MEASURED controls and says so', async () => {
+	it('a domain nothing could be measured for reports seven NOT MEASURED controls and says so', async () => {
 		mockTotalResolutionFailure();
 		const result = await callDispatch({ domain: 'nonexistent-sge-probe-20260914.com' });
 		const report = structured(result);
 		const rendered = result.content[0].text;
 
 		expect(result.isError).toBeUndefined();
-		expect(report.counts).toEqual({ satisfied: 0, notSatisfied: 0, notMeasured: 6 });
+		expect(report.counts).toEqual({ satisfied: 0, notSatisfied: 0, notMeasured: 7 });
 		expect(report.controls.every((c) => c.status === 'not_measured')).toBe(true);
 
 		// `assessed` is NOT asserted here, and that is a measured fact rather than an
 		// oversight: it answers "did ANY check in the 19-category scan complete", not
-		// "was any of the SIX SGE controls measured". With every DNS lookup failing,
+		// "was any of the SEVEN SGE controls measured". With every DNS lookup failing,
 		// a non-DNS category can still complete and leave `assessed: true` — so the
-		// `SGE_UNASSESSED_CAVEAT` is suppressed while all six controls are unmeasured.
+		// `SGE_UNASSESSED_CAVEAT` is suppressed while all seven controls are unmeasured.
 		// Measured through this dispatch path 2026-09-14. The stronger invariant —
-		// that all six read NOT MEASURED and neither glyph appears — is asserted above
+		// that all seven read NOT MEASURED and neither glyph appears — is asserted above
 		// and below, and it holds either way.
 		expect(rendered).toContain('NOT MEASURED — no verdict was reached (neither a pass nor a failure)');
 		// The pass and fail glyphs must be absent entirely — not merely outnumbered.
