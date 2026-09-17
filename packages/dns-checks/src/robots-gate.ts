@@ -28,9 +28,6 @@ const ROBOTS_CACHE_ENTRY_OVERHEAD_BYTES = 256;
 const ROBOTS_CACHE_GROUP_OVERHEAD_BYTES = 128;
 const ROBOTS_CACHE_AGENT_OVERHEAD_BYTES = 32;
 const ROBOTS_CACHE_RULE_OVERHEAD_BYTES = 64;
-// A pending fetch can decode a max-sized body to UTF-16 and retain a selected
-// rule string of the same length. Reserve both until its exact outcome settles.
-const ROBOTS_CACHE_PENDING_BODY_BYTES = ROBOTS_MAX_BODY_BYTES * 4;
 
 /**
  * Which robots.txt group produced the disallow.
@@ -227,8 +224,16 @@ function getRobotsGroupCacheState(cache: RobotsGroupCache): RobotsGroupCacheStat
 	return state;
 }
 
+/**
+ * An in-flight entry retains only its key and promise; the body it may read is
+ * bounded by ROBOTS_MAX_BODY_BYTES and charged exactly when the outcome settles
+ * (`cacheResize`, which evicts siblings or drops the entry to stay under
+ * `maxBytes`). Reserving a worst-case body here instead let one sibling's pending
+ * reservation evict another in-flight host, so its second gated request (e.g. the
+ * takeover probe's HTTP fallback) re-fetched robots.txt.
+ */
 function pendingCacheWeight(key: string): number {
-	return ROBOTS_CACHE_ENTRY_OVERHEAD_BYTES + key.length * 2 + ROBOTS_CACHE_PENDING_BODY_BYTES;
+	return ROBOTS_CACHE_ENTRY_OVERHEAD_BYTES + key.length * 2;
 }
 
 function deleteCacheEntry(cache: RobotsGroupCache, state: RobotsGroupCacheState, key: string, expected?: Promise<unknown>): boolean {
