@@ -423,6 +423,29 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
 }
 
 /**
+ * True when `candidateDomain` is an EXACT-LABEL TLD variant of the seed: it is
+ * itself a registrable domain, its brand label equals the seed's, and it is not
+ * the seed's own apex (`anz.co.nz` / `xero.com.au` for seed `anz.com` / `xero.com`).
+ *
+ * THE SHAPE OF A REGIONAL ESTATE, AND ONE A SQUATTER DOES NOT BUY — the rule
+ * step 5d ({@link seedLabelCohortMatch}) already relies on, extracted here
+ * (SQ-36) so the pooled-platform arm of `classifyOwnership()` can apply the SAME
+ * bar rather than a second, drifting copy. A character edit (`bnz.co.nz` for
+ * `anz.com`, `ltmcguiness.com` for `ltmcguinness.co.nz`) is NOT the exact label,
+ * and edited names are what squatters register — so this predicate separates
+ * "the organisation's other TLD" from "a typosquat", without ever asserting
+ * which of the two it is: it only decides which arms may look further.
+ */
+export function isExactLabelTldVariant(candidateDomain: string, seedDomain: string): boolean {
+	const seed = normHost(seedDomain);
+	const seedLabel = extractBrandName(seed);
+	const seedApex = getRegistrableDomain(seed);
+	if (!seedLabel || !seedApex) return false;
+	const candidate = normHost(candidateDomain);
+	return candidate !== seedApex && getRegistrableDomain(candidate) === candidate && extractBrandName(candidate) === seedLabel;
+}
+
+/**
  * Classify a candidate's ownership relative to a seed domain.
  *
  * Precedence (design doc §4 P2, corrected per §3.3, and per Ruling A
@@ -450,6 +473,12 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
  *     tenant of that platform looks like. Falls through to 5b; if 5b declines: the candidate's
  *     WHOLE set is platform hosts the seed uses → `unattributed` (nothing distinct observed),
  *     any other platform-confined overlap → `third_party` — both carrying `ns_shared_platform`.
+ *     (SQ-36) The MIRROR of that whole-set case on a POOLED platform: the seed's whole set is on
+ *     one pooled provider and every candidate host is either on that same provider or inside the
+ *     candidate's OWN registrable domain. A pooled provider assigns hostnames per zone, so
+ *     NON-identity there is the provider's doing, and a self-referential nameserver names no
+ *     operator — nothing distinct was observed → `unattributed`, `ns_shared_platform`. Consulted
+ *     before the arms above, and like them it can never yield `owned_by_seed`.
  *  5b. (#864) SEED-AUTHORISED convergence — pre-filter: every real MX exchange inside the seed
  *     apex (attacker-free, no weight); verdict: the seed publishes the RFC 7489 §7.1 DMARC
  *     report authorisation `<candidate>._report._dmarc.<receiver-under-seed>` → `owned_by_seed`,
@@ -661,6 +690,70 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 					}
 				: null;
 
+	// #929 MIRROR — THE POOLED HALF (SQ-36; live anz.com / anz.co.nz, 2026-09-17).
+	// On a POOLED provider (`POOLED_SHARED_NS_APEXES`, Akamai: six hostnames drawn
+	// from ~128) the set is assigned PER ZONE, so two zones of the SAME account are
+	// given DIFFERENT hostnames by design — measured: anz.com holds a1-206, a16-67,
+	// a28-67, a7-66, a8-67, a9-67.akam.net; anz.co.nz holds a1-6, a12-66, a28-67,
+	// a3-66, a6-65, a9-65.akam.net plus ns1/ns2.anz.co.nz. #929 established that an
+	// IDENTICAL set on a UNIFORM platform observes nothing about ownership; the
+	// mirror is that a NON-identical set on a POOLED platform observes nothing about
+	// DISTINCTNESS: the difference is the provider's per-zone assignment, not the
+	// candidate's own infrastructure. Without this arm the block below reports the
+	// bank's own NZ domain as "registered to a different organisation" — the exact
+	// false claim PR #937's review ruled the `third_party` sentence must never make.
+	//
+	// A nameserver inside the CANDIDATE's own registrable domain (ns1.anz.co.nz) is
+	// a SELF-REFERENCE. Anyone who controls the candidate zone can publish one, so
+	// under the OWNERSHIP RULE (see `ClassifyOwnershipInput`) it can never be
+	// ownership evidence — and for the identical reason it is not DISTINCTNESS
+	// evidence either: it names no operator. It is therefore counted as NEITHER
+	// here, never as a signal.
+	//
+	// THE OUTCOME IS `unattributed`, NEVER `owned_by_seed`. A squatter that hosts
+	// its lookalike on the seed's pooled provider gains only the neutral wording
+	// every unattributed candidate already carries: the `info` ceiling
+	// (`capAttributionSeverity()`) and the separate threat observation are
+	// untouched. Any candidate host that is neither on the seed's pooled platform
+	// nor self-referential — the squatter's own `ns1.attacker.example` — fails the
+	// `every()` below and keeps the candidate out of this arm entirely.
+	//
+	// SCOPED TO EXACT-LABEL TLD VARIANTS ({@link isExactLabelTldVariant}), the bar
+	// step 5d already uses. This is what keeps #929's pinned outcome intact: the
+	// UNRELATED bnz.co.nz also sits wholly on Akamai and also shares one pooled
+	// host with anz.co.nz, and a character-edit label is the squatter's shape — so
+	// that pair stays `third_party` on the arm below. Only the brand's own other
+	// TLD reaches this one.
+	//
+	// MEASURED BLAST RADIUS (63 registered seed/candidate pairs across 20 brands'
+	// ccTLD estates, DoH 2026-09-17): two rows move. anz.co.nz `third_party` →
+	// `unattributed` (the defect). adobe.fr keeps the same verdict and the same
+	// signal and only takes its rationale from here instead of the whole-set arm
+	// below — it is an exact-label variant whose hosts are a SUBSET of the seed's
+	// Akamai set, so both arms describe it correctly. No pair gains `owned_by_seed`.
+	const nsApex = (host: string): string => getRegistrableDomain(host) ?? host;
+	const seedPooledApexes = new Set(seedNs.filter((ns) => isPooled(ns)).map(nsApex));
+	const onSeedPooledPlatform = (ns: string): boolean => isPooled(ns) && seedPooledApexes.has(nsApex(ns));
+	const candidateApex = getRegistrableDomain(normHost(candidateDomain)) ?? normHost(candidateDomain);
+	if (
+		isExactLabelTldVariant(candidateDomain, input.seedDomain) &&
+		seedNs.length > 0 &&
+		seedNs.every(onSeedPooledPlatform) &&
+		candidateNs.length > 0 &&
+		candidateNs.some(onSeedPooledPlatform) &&
+		candidateNs.every((ns) => onSeedPooledPlatform(ns) || isInBailiwick(ns, candidateApex))
+	) {
+		const platformNs = candidateNs.filter(onSeedPooledPlatform);
+		const selfNs = candidateNs.filter((ns) => !onSeedPooledPlatform(ns));
+		const selfClause = selfNs.length > 0 ? `, plus nameserver(s) inside its own domain (${selfNs.join(', ')})` : '';
+		return {
+			verdict: 'unattributed',
+			strength: 'none',
+			signals: ['ns_shared_platform'],
+			rationale: `${candidateDomain} is delegated to ${[...seedPooledApexes].join(', ')} (${platformNs.join(', ')})${selfClause} — the same DNS platform ${seedApex} uses, and one that assigns every zone its own hostnames from a shared pool, so two zones held by one account do not match there. Nothing distinct from ${seedApex} was observed, and nothing that identifies the registrant either: this is not ownership evidence in either direction.`,
+		};
+	}
+
 	// #929 — an overlap that exists but is confined to shared-provider hosts.
 	// Neither verdict below moves severity (the third_party / unattributed
 	// split is wording only — see the file header); the choice is about what
@@ -846,13 +939,7 @@ export function seedLabelCohortMatch(input: {
 	labelCohort?: readonly LabelCohortMember[];
 }): { a: string[]; ns: string[]; mx: string[]; siblings: string[] } | null {
 	if (input.registration.state !== 'registered' || input.candidateMx === undefined || !input.labelCohort?.length) return null;
-	const seedLabel = extractBrandName(normHost(input.seedDomain));
-	const seedApex = getRegistrableDomain(normHost(input.seedDomain));
-	if (!seedLabel || !seedApex) return null;
-	const isExactLabelVariant = (domain: string): boolean => {
-		const d = normHost(domain);
-		return d !== seedApex && getRegistrableDomain(d) === d && extractBrandName(d) === seedLabel;
-	};
+	const isExactLabelVariant = (domain: string): boolean => isExactLabelTldVariant(domain, input.seedDomain);
 	const candidate = normHost(input.candidateDomain);
 	if (!isExactLabelVariant(candidate)) return null;
 
@@ -1075,6 +1162,15 @@ export function capAttributionSeverity(verdict: OwnershipVerdict): Severity | 'u
  * Extracted (fix round 2, F1) after `check-lookalikes.ts` and
  * `check-shadow-domains.ts` each hand-built this same four-field object and
  * drifted apart within a single slice — see {@link buildNonOwnedGateFinding}.
+ *
+ * SQ-36 — `ownershipStrength` / `ownershipSignals` travel here too. They used to
+ * appear ONLY on `buildOwnedBySeedFinding()` (`src/tools/lookalike-findings.ts`),
+ * so a NON-owned finding published a verdict with no machine-readable trace of
+ * WHICH arm reached it: a consumer auditing `third_party` on anz.co.nz saw an
+ * absent signal list and could not tell "evaluated, every arm declined" from
+ * "never evaluated". The arrays are the same ones `classifyOwnership()` already
+ * returned — this surfaces them, it does not change a verdict, a signal or a
+ * severity (`capAttributionSeverity()` still keys on `verdict` ALONE).
  */
 export function buildOwnershipGateMetadata(
 	finding: Finding,
@@ -1085,6 +1181,8 @@ export function buildOwnershipGateMetadata(
 		...finding.metadata,
 		ownershipVerdict: ownership.verdict,
 		ownershipRationale: ownership.rationale,
+		ownershipStrength: ownership.strength,
+		ownershipSignals: ownership.signals,
 		attributionConfidence: confidence,
 		severityCappedBy: 'ownership_attribution',
 	};
