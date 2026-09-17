@@ -50,10 +50,6 @@
       "head_sampling_rate": 0.01
     }
   },
-  "ai": {
-    "binding": "AI",
-    "remote": true
-  },
   "triggers": {
     "crons": [
       "*/15 * * * *",

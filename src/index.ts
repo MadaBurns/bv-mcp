@@ -136,18 +136,6 @@ function logAnalyticsBindingStatus(enabled: boolean): void {
 }
 
 type BvMcpEnv = Env & {
-	/**
-	 * Workers AI. OPTIONAL and fail-soft by contract: a BUSL self-host, a local
-	 * `wrangler dev` without the binding, and the Vitest pool all see `undefined`.
-	 * Every consumer must degrade (abstain / fall back to the deterministic path)
-	 * rather than throw — same doctrine as `resolveCertspotterToken`, which its
-	 * docblock states "must never become a hard dependency".
-	 *
-	 * NOTE: Workers AI returns generated text, NOT a calibrated probability
-	 * distribution. It cannot gate anything on a confidence threshold, so it must
-	 * never feed `computeScanScore`.
-	 */
-	AI?: Ai;
 	RATE_LIMIT?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
