@@ -12,6 +12,11 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 - Bumped the transitive `sharp` devDependency (pulled in by `wrangler`/`miniflare` and `@cloudflare/vitest-pool-workers`) to `>=0.35.4` via a `package.json` `overrides` entry, resolving Dependabot alert #42 (GHSA-g89c-p67h-r497, GHSA-2jg2-4ch7-h545 in libheif). Dev/test-only dependency; no runtime code uses `sharp`.
 
+### Fixed
+
+- **The sidecar deploy-drift gate's `spawnSync` calls had no timeout.** `wrangler deployments list`, `git fetch origin main`, `git log`, and `git merge-base --is-ancestor` in `scripts/ci/sidecar-deploy-drift-check.ts` could hang the deploy pipeline forever on a wedged network call or a stuck local process. Added named timeout budgets (30s for the network-bound wrangler and fetch calls, 5s for the local git log/merge-base calls); a timed-out call now fails closed — `verifyHeadContainsUpstream` returns a reason string naming the timeout and `probeSidecar` reports `unverified`, never `fresh`.
+- **The robots.txt gate no longer re-fetches a host's robots.txt when sibling hosts are probed concurrently.** Each in-flight robots.txt cache entry reserved a worst-case ~2 MiB body against the 4 MiB cache cap, so a second host's pending entry evicted the first before it was reused: a `check_subdomain_takeover` sweep over several A/AAAA-vector hosts fetched every host's robots.txt twice (once for the HTTPS probe, again for the HTTP fallback). A pending entry now weighs only its key, and the policy is charged at its real size when it settles, still evicting to stay under the 4 MiB cap. The robots posture is unchanged (unreachable is fail-open; disallow semantics as before).
+
 ## [3.81.2] - 2026-09-15
 
 Fixes the two issues that 3.81.1 still did not resolve in production (#973, #974). Scoring model **1.34.0** (from 1.33.0) and `@blackveil/dns-checks` **1.49.0** (from 1.48.0, `PARITY_CORPUS_VERSION` in lockstep), so bv-web-prod needs to re-vendor. The one score-bearing change is the #973 fix, which lowers scores only for domains serving the Cloudways edge behind a broken certificate. No weight, tier or grade band changed.
