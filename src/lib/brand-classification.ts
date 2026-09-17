@@ -140,8 +140,7 @@ const INDETERMINATE_CONFIDENCE_THRESHOLD = 0.5;
 /**
  * Lookalike-similarity threshold at which a candidate is plausibly a typosquat.
  * Combined with a registrar-family mismatch and no shared-infra evidence, this
- * tips a candidate into the impersonation bucket. Calibrated against the
- * empirical brand-audit set (`reports/brand-audit-audit-results.json`).
+ * tips a candidate into the impersonation bucket.
  */
 const IMPERSONATION_LOOKALIKE_THRESHOLD = 0.85;
 
