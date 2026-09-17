@@ -9,7 +9,7 @@
  *
  * It is a WRAPPER. Every compliance judgement is made by
  * `evaluateSgeCompliance` in `@blackveil/dns-checks` (`src/sge/`), which owns
- * the six controls, their three-state semantics and the verdict rule. Nothing
+ * the seven controls, their three-state semantics and the verdict rule. Nothing
  * here re-derives a control, and nothing here reads `passed`,
  * `controlPresent`-as-presence, `recordPresent`, a score, a band, a grade or a
  * finding title. Those oracles are exactly the ones that made `map_compliance`
@@ -35,7 +35,7 @@
  *
  * `@blackveil/dns-checks` reads DNS and HTTPS. It never opens a session to port
  * 25, so it cannot observe whether a mail exchanger negotiates TLS. The
- * evaluator therefore leaves control 4 of 6 `not_measured` unless a caller
+ * evaluator therefore leaves control 4 of 7 `not_measured` unless a caller
  * supplies a transport observation, and this tool has none to supply: the
  * operator-only `BV_TLS_PROBE` binding is a direct-TLS prober (default port
  * 443, no STARTTLS), so feeding it here would be an inference from an adjacent
@@ -47,7 +47,20 @@
  * rendered output states that in the headline caveat rather than leaving a user
  * to read five ticks as a clean bill of health.
  *
- * THE SUBDOMAIN QUESTION — SETTLED (bv-mcp #991), no longer open
+ * FULL SUB-DOMAIN COVERAGE IS NEVER MEASURED HERE EITHER (bv-mcp #996)
+ *
+ * SGE's sub-domain requirement is that EVERY sub-domain publishes its own
+ * `_dmarc` record, `v=spf1 -all` and a null `v=DKIM1; p=` record, down to a
+ * sub-domain that is only an A record — and SGE refuses `sp=` at the apex as the
+ * remedy in as many words. The evaluator carries that as control 7 of 7, gated
+ * on a caller-supplied enumeration exactly as SMTP TLS is gated on a transport
+ * probe. This tool enumerates nothing: it holds one domain's scan, not a
+ * sub-domain inventory, and a CT-log sweep could not claim completeness anyway.
+ * So the control is `not_measured` on every run of this tool, and the second
+ * headline caveat says so rather than letting a reader infer that a tally with
+ * no red marks means the sub-domain tree was checked.
+ *
+ * THE sp= QUESTION — SETTLED (bv-mcp #991), no longer open
  *
  * The evaluator reports DMARC `satisfied` for `p=reject; sp=none`
  * (health.govt.nz is exactly this shape), and the operator has ruled that this
@@ -59,7 +72,7 @@
  * it out at severity `high`. So the evaluator emits it as a separate
  * `subdomain_policy_gap` ADVISORY, and this renderer gives advisories their own
  * section on both formats. That section is not optional decoration: without it
- * a reader would see six ticks and conclude the subdomain tree was clean while
+ * a reader would see a clean tally and conclude the subdomain tree was clean while
  * the scan's own findings said otherwise — the exact two-surfaces-disagreeing
  * defect the advisory exists to close.
  */
@@ -112,6 +125,13 @@ export interface SgeQuickscanReport extends SgeEvaluation {
 	 * misdescribe).
 	 */
 	transportTlsCaveat: string | null;
+	/**
+	 * Populated whenever sub-domain coverage went unmeasured for want of an
+	 * enumeration — i.e. on every run of this tool, which enumerates nothing.
+	 * `null` only when a caller supplied a coverage input and the control reached
+	 * a verdict, or when it was unmeasured for a different reason.
+	 */
+	subdomainCoverageCaveat: string | null;
 }
 
 /**
@@ -121,9 +141,26 @@ export interface SgeQuickscanReport extends SgeEvaluation {
  * copy that can drift out of the renderer.
  */
 export const SGE_TRANSPORT_TLS_CAVEAT =
-	'SMTP transport TLS (control 4 of 6) is NOT MEASURED here: this scanner reads DNS and HTTPS and never opens an SMTP session, ' +
+	'SMTP transport TLS (control 4 of 7) is NOT MEASURED here: this scanner reads DNS and HTTPS and never opens an SMTP session, ' +
 	'so it never observes whether a mail exchanger negotiates TLS. A DNS-only result can therefore never be COMPLIANT — ' +
 	'INDETERMINATE is the ceiling, and INDETERMINATE is not a pass. Supply a transport observation from an SMTP probe to decide this control.';
+
+/**
+ * The second structurally-unmeasurable control, and the second reason this tool
+ * cannot return COMPLIANT (bv-mcp #996).
+ *
+ * It is stated as loudly as the transport one for the same reason: a reader who
+ * saw only the transport caveat would conclude an SMTP probe was all that stood
+ * between this domain and a pass. It is not. SGE requires every sub-domain to
+ * publish its own `_dmarc`, `v=spf1 -all` and null DKIM records, and this tool
+ * enumerates no sub-domains — so it measures that control not at all, which is
+ * neither a pass nor a failure.
+ */
+export const SGE_SUBDOMAIN_COVERAGE_CAVEAT =
+	'Full sub-domain coverage (control 7 of 7) is NOT MEASURED here: SGE requires EVERY sub-domain to publish its own _dmarc record, ' +
+	'v=spf1 -all and a null v=DKIM1; p= record — and it does not accept sp= at the apex as the remedy — but this tool enumerates no ' +
+	'sub-domains, so it measured none of them. That is the absence of a verdict, NOT a finding that the sub-domains are protected and ' +
+	'NOT a finding that they are exposed. Supply a sub-domain enumeration to decide this control.';
 
 /** The "nothing was measured at all" qualifier. @see SGE_TRANSPORT_TLS_CAVEAT */
 export const SGE_UNASSESSED_CAVEAT =
@@ -136,7 +173,7 @@ export const SGE_UNASSESSED_CAVEAT =
  * come away thinking the domain was cleared.
  */
 const VERDICT_HEADLINE: Record<SgeVerdict, string> = {
-	compliant: 'COMPLIANT — all six SGE controls were measured and satisfied.',
+	compliant: 'COMPLIANT — all seven SGE controls were measured and satisfied.',
 	non_compliant: 'NOT COMPLIANT — at least one SGE control was measured and found unmet.',
 	indeterminate:
 		'INDETERMINATE — this is NOT a pass and NOT a failure. One or more controls could not be measured, ' +
@@ -180,6 +217,12 @@ const NOT_MEASURED_REASON_TEXT: Record<SgeNotMeasuredReason, string> = {
 		'no common DKIM selector answered. DKIM has no discovery mechanism, so a miss is indistinguishable from a key under an uncommon selector — it is not evidence of absence.',
 	no_mail_exchanger: 'the domain publishes no mail exchanger, so there is no inbound mail transport to measure.',
 	no_transport_probe: 'this scanner never opens an SMTP session, so transport TLS is never observed here.',
+	no_subdomain_enumeration:
+		'no sub-domain enumeration was supplied, so no sub-domain was measured. This is the ABSENCE OF A MEASUREMENT, not a finding that the sub-domains are unprotected.',
+	subdomain_enumeration_incomplete:
+		'the sub-domain enumeration was declared incomplete. "Every sub-domain is covered" cannot be concluded from a partial list, however many of the listed sub-domains pass.',
+	subdomain_records_not_measured:
+		'the sub-domain list is complete, but at least one sub-domain had a record that was never measured. An unmeasured record is not a pass.',
 };
 
 /**
@@ -225,8 +268,10 @@ const MAIL_TRANSPORT_TEXT: Record<SgeMailTransport, string> = {
  * testable against fixtures without a scan, and so a caller holding results
  * from elsewhere reuses this exact logic rather than a second opinion.
  *
- * No `smtpTls` observation is passed to the evaluator. See the module docblock:
- * this tool has nothing honest to put there.
+ * NEITHER evaluator option is passed: no `smtpTls` observation and no
+ * `subdomainCoverage` enumeration. See the module docblock — this tool has
+ * nothing honest to put in either, and inventing one would turn two unmeasured
+ * controls into fabricated verdicts.
  */
 export function buildSgeQuickscanReport(domain: string, checks: readonly CheckResult[]): SgeQuickscanReport {
 	const evaluation = evaluateSgeCompliance(domain, checks);
@@ -240,11 +285,22 @@ export function buildSgeQuickscanReport(domain: string, checks: readonly CheckRe
 	const transportTlsCaveat =
 		smtpTls?.status === 'not_measured' && smtpTls.notMeasuredReason === 'no_transport_probe' ? SGE_TRANSPORT_TLS_CAVEAT : null;
 
+	// Same rule, same reason, for the second unmeasurable control. Narrowed to
+	// `no_subdomain_enumeration` so a caller that DID supply a list but declared it
+	// partial gets that control's own reason text rather than this caveat, which
+	// would misdescribe it.
+	const subdomainCoverage = evaluation.controls.find((c) => c.control === 'subdomain_coverage');
+	const subdomainCoverageCaveat =
+		subdomainCoverage?.status === 'not_measured' && subdomainCoverage.notMeasuredReason === 'no_subdomain_enumeration'
+			? SGE_SUBDOMAIN_COVERAGE_CAVEAT
+			: null;
+
 	return {
 		...evaluation,
 		assessed,
 		caveat: assessed ? null : SGE_UNASSESSED_CAVEAT,
 		transportTlsCaveat,
+		subdomainCoverageCaveat,
 	};
 }
 
@@ -284,6 +340,7 @@ export function formatSgeQuickscan(report: SgeQuickscanReport, format: OutputFor
 		lines.push(tally);
 		if (report.caveat) lines.push(report.caveat);
 		if (report.transportTlsCaveat) lines.push(report.transportTlsCaveat);
+		if (report.subdomainCoverageCaveat) lines.push(report.subdomainCoverageCaveat);
 		lines.push('');
 
 		for (const c of report.controls) {
@@ -305,6 +362,7 @@ export function formatSgeQuickscan(report: SgeQuickscanReport, format: OutputFor
 		lines.push(`**Inbound mail transport:** ${MAIL_TRANSPORT_TEXT[report.mailTransport]}`);
 		if (report.caveat) lines.push(`> **${report.caveat}**`);
 		if (report.transportTlsCaveat) lines.push(`> **${report.transportTlsCaveat}**`);
+		if (report.subdomainCoverageCaveat) lines.push(`> **${report.subdomainCoverageCaveat}**`);
 		lines.push('');
 
 		for (const c of report.controls) {

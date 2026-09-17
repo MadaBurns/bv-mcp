@@ -521,7 +521,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	sge_quickscan: {
 		description:
-			'Answer, for ONE domain, whether it meets the New Zealand Secure Government Email (SGE) requirements agencies must satisfy by October 2026. Reports all six SGE controls — DMARC p=reject, SPF -all, DKIM, SMTP transport TLS, MTA-STS enforce, TLS-RPT — each as satisfied, not satisfied, or NOT MEASURED, with the structured evidence behind every verdict. SMTP transport TLS cannot be observed from DNS, so a DNS-only result tops out at INDETERMINATE, which is not a pass. Distinct from map_compliance, which maps findings to NIST/PCI/SOC 2/CIS.',
+			'Answer, for ONE domain, whether it meets the New Zealand Secure Government Email (SGE) requirements agencies must satisfy by October 2026. Reports all seven SGE controls — DMARC p=reject, SPF -all, DKIM, SMTP transport TLS, MTA-STS enforce, TLS-RPT, full sub-domain coverage — each as satisfied, not satisfied, or NOT MEASURED, with the structured evidence behind every verdict. Neither SMTP transport TLS nor sub-domain coverage can be observed from a single domain scan, so a DNS-only result tops out at INDETERMINATE, which is not a pass. Distinct from map_compliance, which maps findings to NIST/PCI/SOC 2/CIS.',
 		schema: BaseDomainArgs,
 		group: 'intelligence',
 		scanIncluded: false,
