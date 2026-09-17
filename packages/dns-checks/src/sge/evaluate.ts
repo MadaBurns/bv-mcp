@@ -3,7 +3,7 @@
 /**
  * NZ Secure Government Email (SGE) — per-domain evaluator.
  *
- * NZ government agencies must meet SGE by October 2026. The six controls
+ * NZ government agencies must meet SGE by October 2026. The seven controls
  * evaluated here are the ones an agency is measured on:
  *
  *   1. DMARC at `p=reject`
@@ -12,6 +12,7 @@
  *   4. SMTP transport TLS
  *   5. MTA-STS at `mode: enforce`
  *   6. TLS-RPT reporting
+ *   7. Full sub-domain coverage
  *
  * WHAT THIS MODULE REFUSES TO DO, and why
  *
@@ -63,6 +64,9 @@
  * @module
  */
 
+// bv-oversize-ok: one pure evaluator with no glue to split off — the length is
+// the per-control rationale this module is required to carry in-code, not
+// tangled responsibilities. Types live in ./types, readers in ../scoring.
 import type { CheckCategory, CheckResult } from '../types';
 import {
 	dmarcNonExistentSubdomainPolicy,
@@ -89,6 +93,7 @@ import {
 	type SgeEvidence,
 	type SgeMailTransport,
 	type SgeNotMeasuredReason,
+	type SgeSubdomainObservation,
 	type SgeVerdict,
 } from './types';
 
@@ -99,6 +104,11 @@ const LABELS: Record<SgeControlId, { label: string; requirement: string }> = {
 	smtp_tls: { label: 'SMTP TLS', requirement: 'Mail exchangers offer and use TLS for SMTP transport.' },
 	mta_sts_enforce: { label: 'MTA-STS', requirement: 'An MTA-STS policy served at mode: enforce.' },
 	tls_rpt: { label: 'TLS-RPT', requirement: 'A published TLS-RPT record so transport failures are reported.' },
+	subdomain_coverage: {
+		label: 'Sub-domain coverage',
+		requirement:
+			'EVERY sub-domain publishes its own _dmarc record, v=spf1 -all and a null v=DKIM1; p= record — down to a sub-domain that is only an A record. sp= at the apex does not satisfy this.',
+	},
 };
 
 function satisfied(control: SgeControlId, evidence: SgeEvidence[]): SgeControlEvaluation {
@@ -326,6 +336,118 @@ function evaluateTlsRpt(result: CheckResult | undefined, transport: SgeMailTrans
 }
 
 /**
+ * Full sub-domain coverage (bv-mcp #996).
+ *
+ * THE REQUIREMENT, in SGE's own terms: every sub-domain publishes its OWN
+ * anti-spoofing records — an explicit `_dmarc` record, `v=spf1 -all`, and a null
+ * `v=DKIM1; p=` record — down to a sub-domain consisting of "as little as a
+ * single A record".
+ *
+ * SGE REFUSES `sp=` AS THE MECHANISM, verbatim: "This requirement remains even
+ * if the root level domain has SP=reject set within its DMARC record", and
+ * "having SP=reject in the root record will only partially resolve the issue".
+ * So nothing about the apex record — not `p=`, not `sp=`, not `np=` — can
+ * satisfy or excuse this control, and none of those signals is read here. The
+ * apex-only fact this evaluator CAN measure is reported separately as the
+ * `subdomain_policy_gap` advisory; see {@link subdomainPolicyGap}.
+ *
+ * WHY IT IS AN INPUT. This function performs no I/O — the module is pure by
+ * design — and verifying the requirement needs enumeration plus a per-name scan.
+ * The caller owns both, exactly as it owns the SMTP transport observation. With
+ * no input the control is `not_measured` / `no_subdomain_enumeration`: "we
+ * enumerated nothing" is NOT "the sub-domains are uncovered", and recording the
+ * second from the first would zero a control nobody measured (bv-mcp #638).
+ *
+ * THE ORDER OF THE BRANCHES IS THE WHOLE DESIGN, and it is deliberately NOT
+ * "incomplete enumeration short-circuits everything":
+ *
+ * 1. A MEASURED FAILURE WINS, whatever the enumeration claims. If an observed
+ *    sub-domain is measurably missing one of the three records, SGE's "every
+ *    sub-domain" is measurably violated and the control is `not_satisfied`.
+ *    Discarding that because the LIST might be incomplete would suppress real
+ *    evidence — the mirror image of the false affirmative, and against the
+ *    module's own rule that one measured failure decides.
+ * 2. An INCOMPLETE enumeration can never produce `satisfied`. "Every sub-domain
+ *    is covered" is an unbounded negative; a partial list cannot support it
+ *    however many observed names pass.
+ * 3. A COMPLETE enumeration whose observations left records UNMEASURED is
+ *    `not_measured` too — undefined is not a pass.
+ * 4. Only a complete enumeration in which every observation carries all three
+ *    records is `satisfied`.
+ *
+ * TRANSPORT IS IRRELEVANT HERE. Unlike the three inbound-transport controls this
+ * one is NOT excused on a no-MX domain: it is anti-spoofing, and a parked domain
+ * with an unprotected sub-domain tree is exactly the case SGE is written about.
+ */
+function evaluateSubdomainCoverage(options: SgeEvaluateOptions): SgeControlEvaluation {
+	const coverage = options.subdomainCoverage;
+	if (!coverage) {
+		return notMeasured('subdomain_coverage', 'no_subdomain_enumeration', [
+			{ signal: 'SgeEvaluateOptions.subdomainCoverage', value: undefined },
+		]);
+	}
+
+	const evidence: SgeEvidence[] = [
+		{ signal: 'SgeSubdomainCoverage.enumeration', value: coverage.enumeration },
+		{ signal: 'SgeSubdomainCoverage.source', value: coverage.source },
+		{ signal: 'SgeSubdomainCoverage.observations.length', value: coverage.observations.length },
+	];
+
+	const uncovered = coverage.observations.filter(isMeasurablyUncovered);
+	if (uncovered.length > 0) {
+		evidence.push({ signal: 'subdomainsMeasurablyMissingRecords', value: nameList(uncovered) });
+		return notSatisfied('subdomain_coverage', evidence);
+	}
+
+	if (coverage.enumeration !== 'complete') {
+		return notMeasured('subdomain_coverage', 'subdomain_enumeration_incomplete', evidence);
+	}
+
+	const unmeasured = coverage.observations.filter((o) => !isFullyMeasuredAndCovered(o));
+	if (unmeasured.length > 0) {
+		evidence.push({ signal: 'subdomainsWithUnmeasuredRecords', value: nameList(unmeasured) });
+		return notMeasured('subdomain_coverage', 'subdomain_records_not_measured', evidence);
+	}
+
+	// A complete enumeration with zero sub-domains satisfies "every sub-domain
+	// publishes …" vacuously. The truth of `'complete'` is the caller's claim, the
+	// same way `smtpTls` is — this module reports what it was told, structurally.
+	return satisfied('subdomain_coverage', evidence);
+}
+
+/**
+ * Is this sub-domain MEASURABLY missing one of the three records?
+ *
+ * `undefined` is never a miss — it is "not measured", and answering it as a miss
+ * is the whole defect this control was designed around. Only an affirmative
+ * `false`, or an SPF qualifier that was read and is not `-all`, counts.
+ */
+function isMeasurablyUncovered(o: SgeSubdomainObservation): boolean {
+	return o.dmarcRecordPresent === false || o.dkimNullRecordPresent === false || (o.spfAll !== undefined && o.spfAll !== '-all');
+}
+
+/** Were all three records measured AND found compliant on this sub-domain? */
+function isFullyMeasuredAndCovered(o: SgeSubdomainObservation): boolean {
+	return o.dmarcRecordPresent === true && o.dkimNullRecordPresent === true && o.spfAll === '-all';
+}
+
+/**
+ * Sub-domain names for an evidence value, bounded.
+ *
+ * Structural, like every other evidence value: it names WHICH sub-domains the
+ * verdict came from so a reader can re-derive it. Capped so one evidence line
+ * cannot become an unbounded dump of subject-supplied strings; the exact count
+ * is already carried by its own signal.
+ */
+const EVIDENCE_NAME_LIMIT = 10;
+
+function nameList(observations: readonly SgeSubdomainObservation[]): string {
+	const shown = observations.slice(0, EVIDENCE_NAME_LIMIT).map((o) => o.name);
+	const overflow = observations.length - shown.length;
+	return overflow > 0 ? `${shown.join(', ')} (+${overflow} more)` : shown.join(', ');
+}
+
+/**
  * Inbound mail transport, from the mx check's `controlPresent`.
  *
  * This is the one place `controlPresent` is read for mx, and it is read for
@@ -388,10 +510,12 @@ const POLICY_STRENGTH: Partial<Record<DmarcPolicyValue, number>> = { none: 0, qu
  * WHY IT IS NOT SGE'S FULL SUB-DOMAIN CONTROL. SGE explicitly refuses `sp` as
  * the mechanism ("This requirement remains even if the root level domain has
  * SP=reject set within its DMARC record") and demands an explicit `_dmarc`
- * record on EVERY sub-domain. Verifying THAT needs subdomain enumeration, which
- * `evaluateSgeCompliance` has no input for. This advisory is therefore a
- * strictly narrower, fully-measurable statement about the apex record alone —
- * the enumeration control is filed separately, not approximated here.
+ * record on EVERY sub-domain. That requirement is its own control —
+ * {@link evaluateSubdomainCoverage}, added in bv-mcp #996 — and it reads a
+ * caller-supplied enumeration, never this apex record. This advisory remains a
+ * strictly narrower, fully-measurable statement about the apex record alone, and
+ * is emitted independently of that control: it fires on a weaker `sp=` even when
+ * no enumeration was supplied, and it is not an approximation of the control.
  */
 function subdomainPolicyGap(dmarc: CheckResult | undefined): SgeAdvisory | undefined {
 	if (!dmarc || !isCheckMeasured(dmarc.checkStatus)) return undefined;
@@ -499,12 +623,15 @@ function verdictFrom(controls: readonly SgeControlEvaluation[]): SgeVerdict {
 }
 
 /**
- * Evaluate a domain against the six NZ SGE controls.
+ * Evaluate a domain against the seven NZ SGE controls.
  *
  * @param domain  The domain the results describe. Echoed back; never parsed.
  * @param results The check results to read. Extra categories are ignored and
  *                missing ones become `not_measured` / `check_absent` — a
  *                control is never dropped from the output.
+ * @param options Observations this package cannot make itself: an SMTP transport
+ *                observation, and a sub-domain enumeration. Each omitted member
+ *                leaves its control `not_measured` — never `not_satisfied`.
  */
 export function evaluateSgeCompliance(domain: string, results: readonly CheckResult[], options: SgeEvaluateOptions = {}): SgeEvaluation {
 	const transport = resolveMailTransport(byCategory(results, 'mx'));
@@ -516,6 +643,7 @@ export function evaluateSgeCompliance(domain: string, results: readonly CheckRes
 		evaluateSmtpTls(transport, options),
 		evaluateMtaSts(byCategory(results, 'mta_sts'), transport),
 		evaluateTlsRpt(byCategory(results, 'tlsrpt'), transport),
+		evaluateSubdomainCoverage(options),
 	];
 
 	// Order contract: the array above must match SGE_CONTROL_IDS exactly. Asserted

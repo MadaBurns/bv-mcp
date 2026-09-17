@@ -29,10 +29,15 @@ test:
   3. Runs `npm -w packages/dns-checks run build` — Worker code and tests
      import the BUILT packages/dns-checks/dist/, not its src/, so this step
      is required even for a pure TypeScript source checkout.
+  4. Runs `npm run build:wasm` (crates/bv-wasm-core), mirroring the CI build
+     step, so test/wasm-integration.test.ts has a real
+     crates/bv-wasm-core/pkg/ to import — SKIPPED with a warning if the Rust
+     toolchain (cargo/wasm-pack) is absent, since a TypeScript-only
+     contributor should not be blocked by a missing Rust install.
 
 Idempotent: safe to re-run any time (e.g. after a fresh `npm ci` or a
 dependency bump) — it does not skip or special-case a partially-set-up
-worktree, it just repeats the three steps above.
+worktree, it just repeats the steps above.
 
 Do NOT symlink node_modules from another checkout instead of running this
 script — see the comment at the top of this file for why.
@@ -75,6 +80,17 @@ npm ci --ignore-scripts
 
 echo "==> Building packages/dns-checks (Worker code + tests import dist/, not src/)"
 npm -w packages/dns-checks run build
+
+echo "==> Building WASM (crates/bv-wasm-core, needed by test/wasm-integration.test.ts)"
+if command -v cargo >/dev/null 2>&1 && command -v wasm-pack >/dev/null 2>&1; then
+  npm run build:wasm
+else
+  echo "WARNING: cargo and/or wasm-pack not found on PATH — skipping WASM build." >&2
+  echo "         test/wasm-integration.test.ts will fail until you install the" >&2
+  echo "         Rust toolchain (cargo, wasm-pack) and re-run this script or" >&2
+  echo "         'npm run build:wasm' directly. This is not an error for a" >&2
+  echo "         TypeScript-only contributor." >&2
+fi
 
 echo "==> Done. node_modules is a real directory, not a symlink:"
 ls -ld node_modules

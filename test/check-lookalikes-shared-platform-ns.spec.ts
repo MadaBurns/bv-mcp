@@ -254,6 +254,121 @@ describe('classifyOwnership — a complete match on a shared PLATFORM pair is no
 });
 
 // ---------------------------------------------------------------------------
+// #1039 — the exact-set match that mixes dedicated and shared-provider hosts
+// ---------------------------------------------------------------------------
+
+/**
+ * Live (DoH, 2026-09-18): `barclays.com` delegates to nine hosts — six on
+ * Akamai (a shared, pooled platform) and three `ns*.barcap.com` of its own.
+ * `barclays.co.uk` carries the byte-identical set, and was still reported
+ * `third_party` with "no ownership signal links it": the off-platform three
+ * are 3/9 = 33%, under step 3's ratio, and step 4's every-matched-host-is-
+ * shared test fails on those same three.
+ *
+ * The exact-set arm (step 3b) requires BOTH set identity and at least two
+ * DISTINCT matched hosts on no known shared provider. The last case below is
+ * what defends the second guard against a future loosening to one.
+ */
+describe('classifyOwnership — an EXACT set match mixing dedicated and platform hosts (#1039)', () => {
+	const BARCAP_NS = ['ns2.barcap.com', 'ns3.barcap.com', 'ns7.barcap.com'];
+	const BARCLAYS_AKAMAI_NS = [
+		'a1-71.akam.net',
+		'a9-66.akam.net',
+		'a10-66.akam.net',
+		'a11-67.akam.net',
+		'a12-64.akam.net',
+		'a18-65.akam.net',
+	];
+	const BARCLAYS_NS = [...BARCLAYS_AKAMAI_NS, ...BARCAP_NS];
+
+	it('barclays.co.uk on the identical 9/9 mixed set is owned_by_seed / strong, not "no ownership signal links it"', async () => {
+		const { classifyOwnership } = await loadAttribution();
+		const result = classifyOwnership({
+			seedDomain: 'barclays.com',
+			seedNs: BARCLAYS_NS,
+			candidateDomain: 'barclays.co.uk',
+			registration: registered(BARCLAYS_NS.slice()),
+			isSharedNsHost,
+			isPooledSharedNsHost,
+		});
+		expect(result.verdict).toBe('owned_by_seed');
+		expect(result.strength).toBe('strong');
+		expect(result.signals).toEqual(['ns_set_match']);
+		expect(result.rationale).toContain('complete 9-nameserver set');
+		for (const host of BARCAP_NS) expect(result.rationale).toContain(host);
+		expect(result.rationale).not.toContain('no ownership signal links it');
+	});
+
+	it('an ALL-shared exact set of the same size stays unattributed — #929 is not regressed', async () => {
+		// Same nine-host shape, but the three off-platform hosts are replaced by
+		// hosts on a listed shared platform: nothing off-platform is matched, so
+		// the new arm must decline exactly as before.
+		const { classifyOwnership } = await loadAttribution();
+		const allShared = [...BARCLAYS_AKAMAI_NS, 'ns33.domaincontrol.com', 'ns34.domaincontrol.com', 'ns35.domaincontrol.com'];
+		for (const host of allShared) expect(isSharedNsHost(host)).toBe(true);
+		const result = classifyOwnership({
+			seedDomain: 'tenant-seed.example',
+			seedNs: allShared,
+			candidateDomain: 'tenant-lookalike.example',
+			registration: registered(allShared.slice()),
+			isSharedNsHost,
+			isPooledSharedNsHost,
+		});
+		expect(result.verdict).toBe('unattributed');
+		expect(result.signals).toEqual(['ns_shared_platform']);
+	});
+
+	it('an 8-of-9 near miss is not a set match — still third_party', async () => {
+		const { classifyOwnership } = await loadAttribution();
+		const result = classifyOwnership({
+			seedDomain: 'barclays.com',
+			seedNs: BARCLAYS_NS,
+			candidateDomain: 'barclays-secure-login.example',
+			registration: registered([...BARCLAYS_AKAMAI_NS.slice(1), ...BARCAP_NS]),
+			isSharedNsHost,
+			isPooledSharedNsHost,
+		});
+		expect(result.verdict).toBe('third_party');
+		expect(result.signals).toEqual(['distinct_infrastructure']);
+	});
+
+	it('a candidate SUPERSET — the whole seed set plus one attacker host — is not a set match, still third_party', async () => {
+		const { classifyOwnership } = await loadAttribution();
+		const result = classifyOwnership({
+			seedDomain: 'barclays.com',
+			seedNs: BARCLAYS_NS,
+			candidateDomain: 'barclays-secure-login.example',
+			registration: registered([...BARCLAYS_NS, 'ns1.attacker.example']),
+			isSharedNsHost,
+			isPooledSharedNsHost,
+		});
+		expect(result.verdict).toBe('third_party');
+		expect(result.signals).toEqual(['distinct_infrastructure']);
+	});
+
+	it('two listed-shared hosts plus ONE unlisted host, exactly matched, stays non-owned — the pin that holds the bar at two', async () => {
+		// A squatter buys the same self-service platform pair and adds one host
+		// of its own; the seed happens to be shaped the same way. Only one
+		// matched host is off-platform, which is under
+		// `DEDICATED_NS_MATCH_MIN_COUNT` — do not loosen that bar to one.
+		const { classifyOwnership } = await loadAttribution();
+		const pairPlusOne = ['ns33.domaincontrol.com', 'ns34.domaincontrol.com', 'ns1.small-host.example'];
+		expect(isSharedNsHost('ns33.domaincontrol.com')).toBe(true);
+		expect(isSharedNsHost('ns1.small-host.example')).toBe(false);
+		const result = classifyOwnership({
+			seedDomain: 'smallbiz.example',
+			seedNs: pairPlusOne,
+			candidateDomain: 'smallbizz.example',
+			registration: registered(pairPlusOne.slice()),
+			isSharedNsHost,
+			isPooledSharedNsHost,
+		});
+		expect(result.verdict).not.toBe('owned_by_seed');
+		expect(result.verdict).toBe('third_party');
+	});
+});
+
+// ---------------------------------------------------------------------------
 // discover_brand_domains — the NS correlator
 // ---------------------------------------------------------------------------
 

@@ -597,6 +597,54 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 		};
 	}
 
+	// #1039 — step 3b: an EXACT nameserver-set match that MIXES dedicated and
+	// shared-provider hosts, which fell between the two arms either side of it.
+	// Step 3 above declines because the off-platform hosts are a minority of the
+	// set (barclays.co.uk carries all nine of barclays.com's hosts, but only the
+	// three `ns*.barcap.com` are on no known shared provider — 3/9 = 33%, under
+	// `DEDICATED_NS_MATCH_RATIO`); step 4 below declines because its
+	// every-matched-host-is-shared test is false on those same three. Control
+	// then reached the distinct-infrastructure arm, which publishes "no
+	// ownership signal links it" about a byte-identical set — literally false.
+	//
+	// Both guards are load-bearing, because `owned_by_seed` does not merely lift
+	// the severity cap: the lookalike surfaces drop the threat finding entirely
+	// for an owned candidate, so a false positive here silently suppresses a
+	// threat.
+	//  - EXACT set equality, not overlap: a candidate carrying the seed's set
+	//    PLUS its own host, or all but one of it, is a different shape and keeps
+	//    its `third_party` verdict.
+	//  - at least `DEDICATED_NS_MATCH_MIN_COUNT` DISTINCT matched hosts on no
+	//    known shared-tenant provider. ⚠️ That is 2, NOT 1, and must not be
+	//    "simplified" to 1: across 1,819 measured seed/candidate pairs the two
+	//    bars behave identically (30 flips either way, none of them a genuine
+	//    impersonation), so the stricter bar costs nothing measured and closes
+	//    three shapes a squatter can buy with a self-service account — two
+	//    `domaincontrol.com` hosts plus one unlisted host, two
+	//    `registrar-servers.com` hosts plus one, and six `akam.net` plus one.
+	//    Known residual under BOTH bars: a seed split across azure-dns (listed,
+	//    but a small pool) plus a two-host unlisted provider. It was unobserved
+	//    across those 1,819 pairs, so it is recorded here rather than paid for
+	//    with a wider guard.
+	const candidateNsUnique = [...new Set(candidateNs)];
+	const seedNsUnique = [...new Set(seedNs)];
+	const exactNsSetMatch =
+		seedNsUnique.length > 0 &&
+		candidateNsUnique.length === seedNsUnique.length &&
+		candidateNsUnique.every((ns) => seedNsUnique.includes(ns));
+	// Counted DISTINCT: a candidate that lists one off-platform host twice must
+	// not reach the two-host bar on its own.
+	const dedicatedSharedDistinct = [...new Set(dedicatedShared)];
+
+	if (exactNsSetMatch && dedicatedSharedDistinct.length >= DEDICATED_NS_MATCH_MIN_COUNT) {
+		return {
+			verdict: 'owned_by_seed',
+			strength: 'strong',
+			signals: ['ns_set_match'],
+			rationale: `${candidateDomain} delegates to exactly ${seedApex}'s complete ${seedNsUnique.length}-nameserver set (${seedNsUnique.join(', ')}), of which ${dedicatedSharedDistinct.length} (${dedicatedSharedDistinct.join(', ')}) are on no known shared-tenant provider — an account-level match on ${seedApex}'s own nameserver set.`,
+		};
+	}
+
 	if (
 		seedTotal > 0 &&
 		sharedNs.length === seedTotal &&

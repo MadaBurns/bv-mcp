@@ -111,12 +111,19 @@ function isDomainValid(domain: string): boolean {
  * Applies six strategies: adjacent key swaps, character omission, character duplication,
  * dot insertion, common TLD swaps, and homoglyph substitution.
  *
- * Returns up to 50 unique, valid, alphabetically sorted permutations.
+ * Returns up to 50 unique, valid permutations, ordered by FAIR-SHARE ROUND-ROBIN
+ * across the six strategies (see the merge step below) rather than alphabetically
+ * — an alphabetical `.sort()` picks survivors by an accident of spelling that has
+ * no relationship to which typo a real attacker or victim is likely to produce.
  */
 export function generateLookalikes(domain: string): string[] {
 	const normalizedDomain = domain.toLowerCase();
 	const { base, tld } = splitDomainTld(normalizedDomain);
-	const candidates = new Set<string>();
+
+	// Each strategy collects into its OWN ordered lane (left-to-right generation
+	// order) instead of one shared Set, so the merge below can allocate the cap
+	// fairly across strategies instead of by spelling.
+	const lanes: string[][] = [[], [], [], [], [], []];
 
 	// 1. Adjacent key swaps — swap each char in base with QWERTY adjacent keys
 	for (let i = 0; i < base.length; i++) {
@@ -125,7 +132,7 @@ export function generateLookalikes(domain: string): string[] {
 		if (adjacent) {
 			for (const adj of adjacent) {
 				const permuted = base.slice(0, i) + adj + base.slice(i + 1);
-				candidates.add(permuted + tld);
+				lanes[0].push(permuted + tld);
 			}
 		}
 	}
@@ -134,14 +141,14 @@ export function generateLookalikes(domain: string): string[] {
 	for (let i = 0; i < base.length; i++) {
 		const permuted = base.slice(0, i) + base.slice(i + 1);
 		if (permuted.length > 0) {
-			candidates.add(permuted + tld);
+			lanes[1].push(permuted + tld);
 		}
 	}
 
 	// 3. Character duplication — double one char at a time in base
 	for (let i = 0; i < base.length; i++) {
 		const permuted = base.slice(0, i) + base[i] + base[i] + base.slice(i + 1);
-		candidates.add(permuted + tld);
+		lanes[2].push(permuted + tld);
 	}
 
 	// 4. Dot insertion — insert dots between chars in base (both parts must be >= 2 chars)
@@ -149,16 +156,16 @@ export function generateLookalikes(domain: string): string[] {
 		const left = base.slice(0, i);
 		const right = base.slice(i);
 		if (left.length >= 2 && right.length >= 2) {
-			candidates.add(left + '.' + right + tld);
+			lanes[3].push(left + '.' + right + tld);
 		}
 	}
 
 	// 5. Common TLD swaps — swap to different TLD if original matches
 	for (const [fromTld, toTld] of TLD_SWAPS) {
 		if (tld === fromTld) {
-			candidates.add(base + toTld);
+			lanes[4].push(base + toTld);
 		} else if (tld === toTld) {
-			candidates.add(base + fromTld);
+			lanes[4].push(base + fromTld);
 		}
 	}
 
@@ -169,17 +176,59 @@ export function generateLookalikes(domain: string): string[] {
 			const idx = base.indexOf(from, searchIdx);
 			if (idx === -1) break;
 			const permuted = base.slice(0, idx) + to + base.slice(idx + from.length);
-			candidates.add(permuted + tld);
+			lanes[5].push(permuted + tld);
 			searchIdx = idx + 1;
 		}
 	}
 
-	// Filter, dedup, and cap
-	const results = Array.from(candidates)
-		.filter((candidate) => candidate !== normalizedDomain && isDomainValid(candidate))
-		.sort();
+	// Filter each lane to valid, non-seed candidates BEFORE merging, so a
+	// lane's share of the cap is spent only on candidates that can survive.
+	const filteredLanes = lanes.map((lane) => lane.filter((candidate) => candidate !== normalizedDomain && isDomainValid(candidate)));
 
-	return results.slice(0, MAX_PERMUTATIONS);
+	// Merge ROUND-ROBIN across the six lanes (fixed lane order 1→6, one pick per
+	// lane per round) instead of concatenating-then-capping. Concatenation has
+	// the same defect as the alphabetical sort it replaces, with a different
+	// accidental winner: strategy 1 (keyboard-adjacent substitution) mechanically
+	// produces far more raw candidates per character than the others, simply
+	// because a QWERTY key has 2-6 neighbours — a fact about keyboard layout
+	// degree, not about which typo is riskier. Measured against this ticket's
+	// example seeds, strategy 1 alone already exceeds MAX_PERMUTATIONS for a
+	// 12-character label (`ltmcguinness`: 52 raw candidates), so
+	// concatenate-then-slice would silently return ZERO TLD-swap and ZERO
+	// homoglyph candidates for it — the exact "one lane wipes out every other
+	// lane by accident" failure this ticket exists to fix, just moved from the
+	// alphabet to the keyboard graph.
+	//
+	// Round-robin gives every lane a turn before any lane gets a second pick, so
+	// the cap is spent proportionally across six DISTINCT edit mechanisms
+	// (keyboard slip, drop, double-tap, mis-placed dot, TLD confusion, visual
+	// homoglyph) instead of being dominated by whichever mechanism happens to
+	// have the largest raw output for a given label length. Lane order is fixed
+	// and each lane's internal order is its stable left-to-right generation
+	// order, so a tie (two lanes both due for a pick, or a candidate produced by
+	// more than one lane) always resolves the same way for the same input —
+	// required determinism for the 5-minute cache and any snapshot test.
+	const results: string[] = [];
+	const seen = new Set<string>();
+	const cursors = new Array(filteredLanes.length).fill(0);
+	let progressed = true;
+	while (results.length < MAX_PERMUTATIONS && progressed) {
+		progressed = false;
+		for (let lane = 0; lane < filteredLanes.length && results.length < MAX_PERMUTATIONS; lane++) {
+			// Skip candidates this lane already lost to an earlier lane or an
+			// earlier round — a cross-lane duplicate never costs its lane a turn.
+			while (cursors[lane] < filteredLanes[lane].length && seen.has(filteredLanes[lane][cursors[lane]])) {
+				cursors[lane]++;
+			}
+			if (cursors[lane] >= filteredLanes[lane].length) continue;
+			const candidate = filteredLanes[lane][cursors[lane]++];
+			seen.add(candidate);
+			results.push(candidate);
+			progressed = true;
+		}
+	}
+
+	return results;
 }
 
 /** Cap on transposition permutations returned — bounds the extra DNS-probe cost. */
@@ -260,10 +309,10 @@ export const MAX_TLD_VARIANTS = 16;
  * `.com` and nothing else, so an agency-registered brand cohort on
  * `.net`/`.co`/`.io`/`.ai` was never a candidate, and the step-5d cohort
  * corroborator in `classifyOwnership()` could not see it. Kept as its own lane
- * with its own cap, like the transposition lane above: adding these to
- * `generateLookalikes`' alphabetical `MAX_PERMUTATIONS` slice would evict
- * other motor candidates. Overlap with that lane (`.com`, `.net`, ...) is
- * deduplicated by the orchestrator, so it costs no second probe.
+ * with its own cap, like the transposition lane above: folding these into
+ * `generateLookalikes`'s `MAX_PERMUTATIONS` slice would still cost it a share
+ * of that cap. Overlap with that lane (`.com`, `.net`, ...) is deduplicated by
+ * the orchestrator, so it costs no second probe.
  *
  * Deterministic, ordered generic -> own family -> major country forms. Never
  * returns the seed or the seed's registrable apex.
@@ -310,8 +359,8 @@ export function generateTldVariants(domain: string): string[] {
  * character, and it never reaches `sketchers` (an inserted letter) or
  * `berenstein` (a substitution across the keyboard). The three operations
  * below close that gap and are deliberately kept in their OWN function with
- * their OWN cap, so they cannot displace motor candidates through
- * `generateLookalikes`' alphabetical MAX_PERMUTATIONS truncation.
+ * their OWN cap, so they cannot cost motor candidates a share of
+ * `generateLookalikes`' MAX_PERMUTATIONS cap.
  * ---------------------------------------------------------------------- */
 
 /**
@@ -446,8 +495,9 @@ const MORPHEME_SWAPS: ReadonlyArray<readonly [string, string]> = [
  * same way {@link MAX_COMBOSQUATS} does for the combosquat lane. The ordering
  * below is by OPERATION CLASS, not alphabetical, precisely so this cap can
  * never evict a morpheme swap or a substitution in favour of a low-signal
- * insertion — the failure mode `generateLookalikes`' alphabetical `.sort()`
- * + `.slice()` truncation has.
+ * insertion — the failure mode `generateLookalikes`'s alphabetical
+ * `.sort()` + `.slice()` truncation used to have, before it was replaced with
+ * the fair-share round-robin merge documented on that function.
  *
  * SIZED ON MEASUREMENT, not taste. Against the four-brand Mandela corpus the
  * known cognitive spelling lands at rank 1 (`berenstein`, `jcpenny`), 13
@@ -521,9 +571,10 @@ function orthographicInsertions(base: string): string[] {
  *   3. orthographically-bounded arbitrary insertion.
  *
  * Deliberately a SEPARATE function with its own cap rather than more branches
- * inside `generateLookalikes()`: that function sorts alphabetically and slices
- * at `MAX_PERMUTATIONS`, so folding these in would silently evict existing
- * motor candidates on any brand that already saturates the cap (most do).
+ * inside `generateLookalikes()`: that function's fair-share round-robin merge
+ * (see its docstring) still only has `MAX_PERMUTATIONS` slots total, so
+ * folding these in would still cost existing motor candidates a share of the
+ * cap on any brand that already saturates it (most do).
  *
  * Returns up to {@link MAX_COGNITIVE_LOOKALIKES} unique, valid permutations.
  * Deterministic; only the label is mutated, never the (possibly multi-part)

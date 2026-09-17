@@ -822,6 +822,40 @@ describe('classifyCandidate', () => {
 			expect(result.tier).toBe(1);
 		});
 
+		it('does NOT route a DEGRADED tier 1 graph observation to consolidated (#1041)', () => {
+			// The other half of the pin above: an unmapped tier-1 `signalType` degrades to
+			// the seed signal at the degradation site (`tieredObservationEvidence()` in
+			// src/tools/discover-brand-domains.ts), which moves the graph claim under
+			// `degradedGraphSignal` and drops `specificityScore`. The two observations are
+			// byte-identical in `signal`, so only the metadata can tell them apart — which
+			// is why the authority lives at the degradation site and not in this gate.
+			const c = candidate({
+				domain: 'apple-degraded-graph.example',
+				confidence: 0.3,
+				signals: [],
+				evidenceObservations: [
+					{
+						signal: 'markov_gen',
+						confidence: 0.8,
+						tier: 1,
+						metadata: {
+							source: 'infra_graph_signal',
+							degradedGraphSignal: {
+								specificityScore: 0.9,
+								signalType: 'cert_fingerprint',
+								signalTypes: ['cert_fingerprint'],
+								numSharedSignals: 1,
+								maxSpecificity: 0.9,
+							},
+						},
+					},
+				],
+			});
+			const result = classifyCandidate(c, target());
+			expect(result.bucket).not.toBe('consolidated');
+			expect(result.tier).toBeUndefined();
+		});
+
 		it('falls through to legacy rules when tier 1 obs has specificityScore < 0.5', () => {
 			// Low specificity → not enough confidence to claim graph ownership;
 			// the legacy classifier path takes over and routes by other rules.

@@ -106,7 +106,7 @@ describe('sge_quickscan — it REUSES the evaluator, it does not re-derive', () 
 			expect(wrapped.mailTransport, label).toBe(direct.mailTransport);
 			expect(wrapped.counts, label).toEqual(direct.counts);
 			// Deep equality on the controls array covers evidence[] verbatim and the
-			// fixed six-control ordering: a wrapper that filtered, reordered or
+			// fixed seven-control ordering: a wrapper that filtered, reordered or
 			// summarised a control fails here.
 			expect(wrapped.controls, label).toEqual(direct.controls);
 		}
@@ -117,10 +117,15 @@ describe('sge_quickscan — measured-good', () => {
 	const r = report(MEASURED_GOOD);
 	const rendered = formatSgeQuickscan(r, 'full');
 
-	it('satisfies the five DNS-observable controls and abstains on SMTP TLS', () => {
-		expect(r.counts).toEqual({ satisfied: 5, notSatisfied: 0, notMeasured: 1 });
+	it('satisfies the five DNS-observable controls and abstains on the two it cannot observe', () => {
+		// notMeasured is 2, not 1: SMTP TLS (no transport probe) AND sub-domain
+		// coverage (no enumeration input, bv-mcp #996). Both are abstentions, and
+		// neither may be counted as a failure.
+		expect(r.counts).toEqual({ satisfied: 5, notSatisfied: 0, notMeasured: 2 });
 		expect(controlOf(r, 'smtp_tls').status).toBe('not_measured');
 		expect(controlOf(r, 'smtp_tls').notMeasuredReason).toBe('no_transport_probe');
+		expect(controlOf(r, 'subdomain_coverage').status).toBe('not_measured');
+		expect(controlOf(r, 'subdomain_coverage').notMeasuredReason).toBe('no_subdomain_enumeration');
 	});
 
 	// The product fact: five green ticks is NOT a pass. This is the assertion
@@ -129,7 +134,7 @@ describe('sge_quickscan — measured-good', () => {
 		expect(r.verdict).toBe('indeterminate');
 		expect(rendered).toContain('INDETERMINATE');
 		expect(rendered).toContain('NOT a pass');
-		expect(rendered).not.toContain('COMPLIANT — all six SGE controls were measured and satisfied.');
+		expect(rendered).not.toContain('COMPLIANT — all seven SGE controls were measured and satisfied.');
 	});
 
 	it('states plainly, in the rendered text, that SMTP TLS was not measured here', () => {
@@ -162,7 +167,7 @@ describe('sge_quickscan — measured-bad', () => {
 
 	it('is NOT COMPLIANT on measured failures, despite every check carrying passed:true / score:100', () => {
 		expect(r.verdict).toBe('non_compliant');
-		expect(r.counts).toEqual({ satisfied: 1, notSatisfied: 4, notMeasured: 1 });
+		expect(r.counts).toEqual({ satisfied: 1, notSatisfied: 4, notMeasured: 2 });
 		expect(rendered).toContain('NOT COMPLIANT');
 	});
 
@@ -176,7 +181,10 @@ describe('sge_quickscan — measured-bad', () => {
 
 	it('still abstains on SMTP TLS rather than folding an unmeasured control into the failure count', () => {
 		expect(controlOf(r, 'smtp_tls').status).toBe('not_measured');
-		expect(r.counts.notMeasured).toBe(1);
+		// 2, not 1 — sub-domain coverage abstains here too, and a domain with four
+		// MEASURED failures must not have either abstention swept into that tally.
+		expect(r.counts.notMeasured).toBe(2);
+		expect(controlOf(r, 'subdomain_coverage').status).toBe('not_measured');
 	});
 
 	it('keeps the one satisfied control visibly satisfied', () => {
@@ -193,13 +201,13 @@ describe('sge_quickscan — abstaining (every check attempted, none completed)',
 	it('measures nothing, claims nothing, and reports INDETERMINATE', () => {
 		expect(r.assessed).toBe(false);
 		expect(r.caveat).toBe(SGE_UNASSESSED_CAVEAT);
-		expect(r.counts).toEqual({ satisfied: 0, notSatisfied: 0, notMeasured: 6 });
+		expect(r.counts).toEqual({ satisfied: 0, notSatisfied: 0, notMeasured: 7 });
 		expect(r.verdict).toBe('indeterminate');
 	});
 
-	it('renders ALL SIX controls as NOT MEASURED — none omitted, none a pass, none a failure', () => {
+	it('renders ALL SEVEN controls as NOT MEASURED — none omitted, none a pass, none a failure', () => {
 		expect(rendered).toContain(SGE_UNASSESSED_CAVEAT);
-		for (const label of ['DMARC', 'SPF', 'DKIM', 'SMTP TLS', 'MTA-STS', 'TLS-RPT']) {
+		for (const label of ['DMARC', 'SPF', 'DKIM', 'SMTP TLS', 'MTA-STS', 'TLS-RPT', 'Sub-domain coverage']) {
 			const line = rendered.split('\n').find((l) => l.includes(`**${label}**`));
 			expect(line, `${label} must be rendered`).toBeDefined();
 			expect(line, label).toContain('❓');
@@ -232,7 +240,7 @@ describe('sge_quickscan — compact format keeps the same three-state vocabulary
 
 		const none = formatSgeQuickscan(report(ABSTAINING), 'compact');
 		expect(none).toContain(SGE_UNASSESSED_CAVEAT);
-		expect(none.split('\n').filter((l) => l.startsWith(' ? '))).toHaveLength(6);
+		expect(none.split('\n').filter((l) => l.startsWith(' ? '))).toHaveLength(7);
 	});
 });
 
