@@ -5,19 +5,31 @@
  *
  * SCOPE. This answers ONE question, per domain: "is THIS domain compliant with
  * NZ SGE?" It is not an aggregate statistic, and it is deliberately NOT a
- * compliance-framework map (`map_compliance`'s shape) — it maps six named
+ * compliance-framework map (`map_compliance`'s shape) — it maps seven named
  * controls, each with its own evidence, and nothing else.
  *
  * @module
  */
 
+import type { SpfAllQualifier } from '../scoring';
+
 /**
- * The six SGE controls, in the fixed order an evaluation reports them.
+ * The seven SGE controls, in the fixed order an evaluation reports them.
  *
  * Ordering is part of the contract: consumers render this as a checklist, and a
- * reordering would silently reshuffle a rendered table.
+ * reordering would silently reshuffle a rendered table. `subdomain_coverage` is
+ * therefore APPENDED (bv-mcp #996) rather than slotted next to `dmarc_reject`
+ * where it thematically belongs — every existing index stays where it was.
  */
-export const SGE_CONTROL_IDS = ['dmarc_reject', 'spf_hardfail', 'dkim', 'smtp_tls', 'mta_sts_enforce', 'tls_rpt'] as const;
+export const SGE_CONTROL_IDS = [
+	'dmarc_reject',
+	'spf_hardfail',
+	'dkim',
+	'smtp_tls',
+	'mta_sts_enforce',
+	'tls_rpt',
+	'subdomain_coverage',
+] as const;
 
 export type SgeControlId = (typeof SGE_CONTROL_IDS)[number];
 
@@ -61,7 +73,29 @@ export type SgeNotMeasuredReason =
 	/** The domain publishes no mail exchanger, so there is no inbound mail transport to measure. */
 	| 'no_mail_exchanger'
 	/** SMTP TLS: this package opens no SMTP connection, so it never measures transport TLS. */
-	| 'no_transport_probe';
+	| 'no_transport_probe'
+	/**
+	 * Sub-domain coverage: no {@link SgeSubdomainCoverage} was supplied. This
+	 * package enumerates nothing, so with no caller-supplied list there is no
+	 * sub-domain to measure — which is emphatically NOT "the sub-domains are
+	 * uncovered". Recording an absent enumeration input as a measured absence is
+	 * the bv-mcp #638 defect class.
+	 */
+	| 'no_subdomain_enumeration'
+	/**
+	 * Sub-domain coverage: the caller declared its enumeration `'partial'`. "Every
+	 * sub-domain is covered" is an unbounded negative; an enumeration that cannot
+	 * claim completeness can never support it, however many observed sub-domains
+	 * pass.
+	 */
+	| 'subdomain_enumeration_incomplete'
+	/**
+	 * Sub-domain coverage: the enumeration is complete, nothing is measurably
+	 * missing, but at least one observation left a record UNMEASURED
+	 * (`undefined`). Distinct from `subdomain_enumeration_incomplete`: the list of
+	 * names is whole, the records on it are not.
+	 */
+	| 'subdomain_records_not_measured';
 
 /**
  * One structured signal a verdict was derived from.
@@ -91,7 +125,7 @@ export interface SgeControlEvaluation {
 /**
  * Domain-level verdict.
  *
- * `compliant` requires all six controls `satisfied`. A single `not_measured`
+ * `compliant` requires all seven controls `satisfied`. A single `not_measured`
  * control yields `indeterminate`, never `compliant` — certifying compliance
  * over an unmeasured control is the false affirmative this module exists to
  * prevent. `non_compliant` wins over `indeterminate`: one measured failure is
@@ -169,7 +203,7 @@ export interface SgeEvaluation {
 	domain: string;
 	verdict: SgeVerdict;
 	mailTransport: SgeMailTransport;
-	/** All six controls, always, in `SGE_CONTROL_IDS` order. Never filtered. */
+	/** All seven controls, always, in `SGE_CONTROL_IDS` order. Never filtered. */
 	controls: SgeControlEvaluation[];
 	/**
 	 * Zero or more advisories, in `SGE_ADVISORY_IDS` order. ALWAYS an array —
@@ -201,7 +235,67 @@ export interface SgeEvaluation {
  */
 export type SgeSmtpTlsObservation = 'enforced' | 'not_enforced';
 
+/**
+ * One enumerated sub-domain, and the three anti-spoofing records measured ON IT.
+ *
+ * THREE-STATE PER RECORD, never a bare boolean: `undefined` means "not
+ * measured", exactly as `SgeControlStatus` means it one level up. A caller that
+ * did not probe `_dmarc` on this name leaves `dmarcRecordPresent` undefined; it
+ * must never send `false`, which is the affirmative claim "we looked and the
+ * record is not there".
+ *
+ * ⚠️ `dkimNullRecordPresent` is SGE's NULL-key requirement (`v=DKIM1; p=` with
+ * an empty `p=`), which is how a sub-domain declares it signs nothing. A
+ * sub-domain that legitimately SENDS mail publishes a real key instead, and that
+ * is not a state this flag can express — a caller observing a real key on a
+ * sending sub-domain leaves the field `undefined` (unmeasured) rather than
+ * reporting `false`, which would fail the control on a correctly-configured
+ * name.
+ */
+export interface SgeSubdomainObservation {
+	/** The fully-qualified sub-domain. Echoed into evidence; never parsed. */
+	name: string;
+	/** An explicit `_dmarc` record published ON the sub-domain. */
+	dmarcRecordPresent?: boolean;
+	/** The sub-domain's own SPF `all` qualifier. SGE requires `-all`. */
+	spfAll?: SpfAllQualifier;
+	/** A null DKIM record (`v=DKIM1; p=`) published on the sub-domain. */
+	dkimNullRecordPresent?: boolean;
+}
+
+/**
+ * A caller-supplied sub-domain enumeration and its per-name observations.
+ *
+ * WHY THIS IS AN INPUT AND NOT A LOOKUP (bv-mcp #996). `evaluateSgeCompliance`
+ * is pure and performs no I/O; verifying "every sub-domain publishes its own
+ * records" needs enumeration plus a per-name scan, which lives in the Worker
+ * layer and is inherently incomplete (CT logs miss names that never got a
+ * certificate). This follows the {@link SgeSmtpTlsObservation} precedent
+ * exactly: a control this package cannot observe is supplied by a caller that
+ * DID observe it, or it stays `not_measured`.
+ *
+ * ⚠️ `enumeration` is the caller's HONESTY DECLARATION and the evaluator trusts
+ * it. `'partial'` yields `not_measured`, never `satisfied`, even when every
+ * observed sub-domain passes — "all of them are covered" is an unbounded
+ * negative that no discovery source can prove. Realistically almost every caller
+ * must declare `'partial'`; that is the correct outcome, not a limitation to
+ * work around.
+ */
+export interface SgeSubdomainCoverage {
+	/**
+	 * Whether the sub-domain list is claimed to be EVERY sub-domain of the
+	 * evaluated domain. @see SgeSubdomainCoverage
+	 */
+	enumeration: 'complete' | 'partial';
+	/** How the list was obtained (e.g. a zone transfer, a CT-log sweep). Evidence only; never parsed. */
+	source: string;
+	/** Zero or more observations. Empty under `'complete'` means "this domain has no sub-domains". */
+	observations: SgeSubdomainObservation[];
+}
+
 export interface SgeEvaluateOptions {
 	/** @see SgeSmtpTlsObservation */
 	smtpTls?: SgeSmtpTlsObservation;
+	/** @see SgeSubdomainCoverage */
+	subdomainCoverage?: SgeSubdomainCoverage;
 }

@@ -197,7 +197,7 @@ export {
 } from './cert';
 
 // NZ Secure Government Email (SGE) — PER-DOMAIN compliance evaluator. Answers
-// "is THIS domain compliant with NZ SGE?" across the six named controls, each
+// "is THIS domain compliant with NZ SGE?" across the seven named controls, each
 // reported three-state (satisfied / not-satisfied / NOT-MEASURED) with the
 // structured signals the verdict came from. Reads no score, no `passed`, and no
 // finding prose. Score-neutral: nothing here is consumed by the scoring path.
@@ -215,5 +215,7 @@ export type {
 	SgeMailTransport,
 	SgeEvaluation,
 	SgeSmtpTlsObservation,
+	SgeSubdomainObservation,
+	SgeSubdomainCoverage,
 	SgeEvaluateOptions,
 } from './sge';
