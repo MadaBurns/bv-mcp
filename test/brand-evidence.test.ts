@@ -123,11 +123,13 @@ describe('brand evidence tier policy', () => {
 		});
 
 		it('returns true for a tier-1 observation with deterministic graph provenance and specificityScore >= 0.5', () => {
+			// The discovery pipeline maps a raw `ns` signalType to `signal: 'ns'`
+			// (never `markov_gen`) — see graphSignalForTieredObservation().
 			expect(
 				clearsOwnershipGate(
 					[
 						{
-							signal: 'markov_gen',
+							signal: 'ns',
 							confidence: 0.7,
 							tier: 1,
 							specificityScore: 0.7,
@@ -161,11 +163,13 @@ describe('brand evidence tier policy', () => {
 		});
 
 		it('auto-clears tier-1 graph observations with deterministic graph signal provenance', () => {
+			// Raw signalType `spf_include` maps to `signal: 'spf_include'`, not
+			// `markov_gen` — mirrors graphSignalForTieredObservation()'s mapping.
 			expect(
 				clearsOwnershipGate(
 					[
 						{
-							signal: 'markov_gen',
+							signal: 'spf_include',
 							confidence: 0.92,
 							tier: 1,
 							specificityScore: 0.7,
@@ -182,11 +186,15 @@ describe('brand evidence tier policy', () => {
 		});
 
 		it('auto-clears tier-1 graph observations with multiple independent graph signal types and high specificity', () => {
+			// Top contributor `mx_platform` maps to `signal: 'mx_platform'` (not
+			// `markov_gen`); neither `soa_admin` nor `mx_platform` is in the
+			// deterministic-type set, so this exercises the numSharedSignals
+			// count-based bypass path, not the type-match path.
 			expect(
 				clearsOwnershipGate(
 					[
 						{
-							signal: 'markov_gen',
+							signal: 'mx_platform',
 							confidence: 0.88,
 							tier: 1,
 							specificityScore: 0.82,
@@ -194,6 +202,53 @@ describe('brand evidence tier policy', () => {
 								source: 'infra_graph_signal',
 								numSharedSignals: 2,
 								signalTypes: ['soa_admin', 'mx_platform'],
+							},
+						},
+					],
+					{ callerAsserted: false },
+				),
+			).toBe(true);
+		});
+
+		it('does NOT clear the gate for a degraded (unmapped) tier-1 signalType, even when the raw metadata matches a gate-recognized deterministic type', () => {
+			// Regression for #1041: `cert_fingerprint` is absent from the
+			// discovery-side TIER1_GRAPH_SIGNAL_MAP (so it degrades to
+			// `markov_gen`) but present in the gate's own
+			// DETERMINISTIC_GRAPH_SIGNAL_TYPES — before the fix this asymmetry
+			// let a degraded observation clear the gate on raw metadata alone.
+			expect(
+				clearsOwnershipGate(
+					[
+						{
+							signal: 'markov_gen',
+							confidence: 0.9,
+							tier: 1,
+							specificityScore: 0.9,
+							metadata: {
+								source: 'infra_graph_signal',
+								numSharedSignals: 1,
+								signalTypes: ['cert_fingerprint'],
+							},
+						},
+					],
+					{ callerAsserted: false },
+				),
+			).toBe(false);
+		});
+
+		it('still clears the gate when the tier-1 signalType is properly mapped to a deterministic signal', () => {
+			expect(
+				clearsOwnershipGate(
+					[
+						{
+							signal: 'cname_alignment',
+							confidence: 0.9,
+							tier: 1,
+							specificityScore: 0.6,
+							metadata: {
+								source: 'infra_graph_signal',
+								numSharedSignals: 1,
+								signalTypes: ['cname_alignment'],
 							},
 						},
 					],
