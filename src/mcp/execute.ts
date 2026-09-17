@@ -172,6 +172,8 @@ export interface ExecuteMcpRequestOptions {
 	certstreamAuthToken?: string;
 	/** SSLMate Cert Spotter API token for CT queries. Absent → unauthenticated. */
 	certspotterToken?: string;
+	/** TypeSafe (Jev) API key for STANDALONE judgment calls. Absent → deterministic path. Never reaches the score. */
+	typesafeApiKey?: string;
 	whoisBinding?: { fetch: typeof fetch };
 	/** Operator-only bv-recon service binding. Fail-soft; absent on BSL self-hosts. */
 	reconBinding?: { fetch: typeof fetch };
