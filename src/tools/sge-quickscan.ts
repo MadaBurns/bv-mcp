@@ -173,7 +173,7 @@ export const SGE_UNASSESSED_CAVEAT =
  * come away thinking the domain was cleared.
  */
 const VERDICT_HEADLINE: Record<SgeVerdict, string> = {
-	compliant: 'COMPLIANT — all six SGE controls were measured and satisfied.',
+	compliant: 'COMPLIANT — all seven SGE controls were measured and satisfied.',
 	non_compliant: 'NOT COMPLIANT — at least one SGE control was measured and found unmet.',
 	indeterminate:
 		'INDETERMINATE — this is NOT a pass and NOT a failure. One or more controls could not be measured, ' +
