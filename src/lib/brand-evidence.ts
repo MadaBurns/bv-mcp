@@ -137,6 +137,14 @@ function graphSharedSignalCount(metadata: Record<string, unknown> | undefined): 
 }
 
 export function clearsTier1GraphEvidence(observation: BrandEvidenceObservation): boolean {
+	// An unmapped raw signalType degrades `observation.signal` to the same
+	// `markov_gen` seed label used for a purely speculative candidate
+	// (`graphSignalForTieredObservation()` in discover-brand-domains.ts). Once
+	// degraded, the raw metadata below (specificityScore, signalType(s),
+	// numSharedSignals) must not be read as if it still described a
+	// classified signal — that resurrects exactly the evidence the degrade
+	// was meant to invalidate. Read the degraded signal first.
+	if (isSeedObservation(observation)) return false;
 	const specificityScore = observation.specificityScore ?? 0;
 	if (specificityScore < TIER_1_SPECIFICITY_THRESHOLD) return false;
 	const types = graphSignalTypes(observation.metadata);
