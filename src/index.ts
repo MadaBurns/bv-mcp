@@ -136,6 +136,18 @@ function logAnalyticsBindingStatus(enabled: boolean): void {
 }
 
 type BvMcpEnv = Env & {
+	/**
+	 * Workers AI. OPTIONAL and fail-soft by contract: a BUSL self-host, a local
+	 * `wrangler dev` without the binding, and the Vitest pool all see `undefined`.
+	 * Every consumer must degrade (abstain / fall back to the deterministic path)
+	 * rather than throw — same doctrine as `resolveCertspotterToken`, which its
+	 * docblock states "must never become a hard dependency".
+	 *
+	 * NOTE: Workers AI returns generated text, NOT a calibrated probability
+	 * distribution. It cannot gate anything on a confidence threshold, so it must
+	 * never feed `computeScanScore`.
+	 */
+	AI?: Ai;
 	RATE_LIMIT?: KVNamespace;
 	SCAN_CACHE?: KVNamespace;
 	SESSION_STORE?: KVNamespace;
@@ -420,6 +432,7 @@ const authedPaths = [...mcpPaths, '/reports/*'] as const;
 import { buildBrandTierLookups } from './lib/brand-tier-lookups';
 import {
 	resolveCertspotterToken as certspotterToken,
+	resolveTypesafeApiKey as typesafeApiKey,
 	resolveCertstreamAuthToken as certstreamAuthToken,
 	resolveOAuthAvailability as oauthAvailability,
 	resolveQuotaShardRouting,
@@ -1024,6 +1037,7 @@ app.post('/mcp', async (c) => {
 					certstream: c.env.BV_CERTSTREAM,
 					certstreamAuthToken: certstreamAuthToken(c.env),
 					certspotterToken: certspotterToken(c.env),
+					typesafeApiKey: typesafeApiKey(c.env),
 					whoisBinding: c.env.BV_WHOIS,
 					reconBinding: c.env.BV_RECON,
 					reconAuthToken: c.env.BV_RECON_KEY,
@@ -1130,6 +1144,7 @@ app.post('/mcp', async (c) => {
 		certstream: c.env.BV_CERTSTREAM,
 		certstreamAuthToken: certstreamAuthToken(c.env),
 		certspotterToken: certspotterToken(c.env),
+		typesafeApiKey: typesafeApiKey(c.env),
 		whoisBinding: c.env.BV_WHOIS,
 		reconBinding: c.env.BV_RECON,
 		reconAuthToken: c.env.BV_RECON_KEY,
@@ -1338,6 +1353,7 @@ app.post('/mcp/messages', async (c) => {
 				certstream: c.env.BV_CERTSTREAM,
 				certstreamAuthToken: certstreamAuthToken(c.env),
 				certspotterToken: certspotterToken(c.env),
+				typesafeApiKey: typesafeApiKey(c.env),
 				whoisBinding: c.env.BV_WHOIS,
 				reconBinding: c.env.BV_RECON,
 				reconAuthToken: c.env.BV_RECON_KEY,
