@@ -31,12 +31,76 @@ describe('mcp-dispatch', () => {
 		expect(result.kind).toBe('success');
 		if (result.kind !== 'success') throw new Error('expected success result');
 		expect(result.newSessionId).toBe('session-abc');
-		expect(result.payload.result.serverInfo.version).toBe('1.0.0');
-		expect(result.payload.result.serverInfo.description).toBeTruthy();
-		expect(typeof result.payload.result.instructions).toBe('string');
-		expect(result.payload.result.instructions.length).toBeGreaterThan(0);
-		expect(result.payload.result.capabilities.prompts).toEqual({ listChanged: false });
+
+		// `JsonRpcPayload` is the success|error union and `jsonRpcSuccess` types its `result`
+		// as `unknown`, so narrow with an `in` check rather than reaching straight through.
+		const { payload } = result;
+		if (!('result' in payload)) throw new Error('expected a success payload');
+		const initResult = payload.result as {
+			serverInfo: { version: string; description: string };
+			instructions: string;
+			capabilities: { prompts: { listChanged: boolean } };
+		};
+
+		expect(initResult.serverInfo.version).toBe('1.0.0');
+		expect(initResult.serverInfo.description).toBeTruthy();
+		expect(typeof initResult.instructions).toBe('string');
+		expect(initResult.instructions.length).toBeGreaterThan(0);
+		expect(initResult.capabilities.prompts).toEqual({ listChanged: false });
 		expect(auditSessionCreated).toHaveBeenCalledWith('203.0.113.11', 'session-abc');
+	});
+
+	it('derives serverInfo.description from the resources module constants, not an independent literal', async () => {
+		// Drift guard for the "80+ checks across 20 categories" defect: dispatch.ts must read
+		// TOOL_COUNT / CHECK_TOOL_COUNT / SCAN_CATEGORY_COUNT from ../handlers/resources rather
+		// than hand-typing its own numbers. Mocking those exports to sentinel values and asserting
+		// they surface in the description proves dispatch.ts actually imports and interpolates
+		// them — a test that only pinned the current output string would still pass if dispatch.ts
+		// went back to a hardcoded literal that happened to match today's counts, and would
+		// silently stop catching the bug the moment either side's real count changed.
+		vi.doMock('../src/lib/session', () => ({
+			checkSessionCreateRateLimit: vi.fn().mockResolvedValue({ allowed: true }),
+			createSession: vi.fn().mockResolvedValue('session-drift'),
+		}));
+		vi.doMock('../src/lib/audit', () => ({
+			auditSessionCreated: vi.fn(),
+		}));
+		vi.doMock('../src/handlers/resources', () => ({
+			handleResourcesList: vi.fn(),
+			handleResourcesRead: vi.fn(),
+			TOOL_COUNT: 111,
+			CHECK_TOOL_COUNT: 222,
+			SCAN_CATEGORY_COUNT: 333,
+		}));
+
+		const { dispatchMcpMethod } = await import('../src/mcp/dispatch');
+		const result = await dispatchMcpMethod({
+			id: 19,
+			method: 'initialize',
+			params: {},
+			ip: '203.0.113.19',
+			isAuthenticated: false,
+			rateHeaders: {},
+			serverVersion: '1.0.0',
+		});
+
+		expect(result.kind).toBe('success');
+		if (result.kind !== 'success') throw new Error('expected success result');
+
+		// `JsonRpcPayload` is the success|error union and `jsonRpcSuccess` types its `result`
+		// as `unknown`, so narrow with an `in` check rather than reaching straight through.
+		// The other tests in this file now follow the same shape (SQ-30, `test/typecheck-baseline.json`
+		// is 0 for this file) — do not "simplify" any of them back to a bare reach-through.
+		const { payload } = result;
+		if (!('result' in payload)) throw new Error('expected a success payload');
+		const { description } = (payload.result as { serverInfo: { description: string } })
+			.serverInfo;
+
+		// Each figure is named with its own unit — tools, check_* checks, and scan
+		// categories are different counts and must not be interchangeable in the string.
+		expect(description).toContain('111 MCP tools');
+		expect(description).toContain('222 check_* checks');
+		expect(description).toContain('333 scan categories');
 	});
 
 	it('returns an early 429 initialize error when session creation is rate limited', async () => {
@@ -105,8 +169,11 @@ describe('mcp-dispatch', () => {
 
 		expect(result.kind).toBe('success');
 		if (result.kind !== 'success') throw new Error('expected success result');
-		expect(result.payload.result.prompts).toBeDefined();
-		expect(Array.isArray(result.payload.result.prompts)).toBe(true);
+		const { payload } = result;
+		if (!('result' in payload)) throw new Error('expected a success payload');
+		const { prompts } = payload.result as { prompts: unknown[] };
+		expect(prompts).toBeDefined();
+		expect(Array.isArray(prompts)).toBe(true);
 		expect(result.logCategory).toBe('prompts');
 	});
 
@@ -124,7 +191,10 @@ describe('mcp-dispatch', () => {
 
 		expect(result.kind).toBe('success');
 		if (result.kind !== 'success') throw new Error('expected success result');
-		expect(result.payload.result.messages).toBeDefined();
+		const { payload } = result;
+		if (!('result' in payload)) throw new Error('expected a success payload');
+		const { messages } = payload.result as { messages: unknown[] };
+		expect(messages).toBeDefined();
 		expect(result.logCategory).toBe('prompts');
 	});
 
@@ -142,7 +212,9 @@ describe('mcp-dispatch', () => {
 
 		expect(result.kind).toBe('success');
 		if (result.kind !== 'success') throw new Error('expected success result');
-		expect(result.payload.error.code).toBe(-32601);
+		const { payload } = result;
+		if (!('error' in payload)) throw new Error('expected an error payload');
+		expect(payload.error.code).toBe(-32601);
 		expect(result.logResult).toBe('method_not_found');
 	});
 });

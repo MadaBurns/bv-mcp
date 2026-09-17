@@ -14,6 +14,7 @@ type RuntimeConfigEnv = OAuthEnv & {
 	BV_CERTSTREAM_ADMIN_KEY?: string;
 	BV_INTERNAL_DEV_KEY?: string;
 	CERTSPOTTER_TOKEN?: string;
+	TYPESAFE_AI_API_KEY?: string;
 	QUOTA_SHARDING_ENABLED?: string;
 	QUOTA_SHARD_SALT?: string;
 };
@@ -49,6 +50,24 @@ export function resolveCertstreamAuthToken(env: RuntimeConfigEnv): string | unde
  */
 export function resolveCertspotterToken(env: RuntimeConfigEnv): string | undefined {
 	return env.CERTSPOTTER_TOKEN || undefined;
+}
+
+/**
+ * TypeSafe (System One / Jev) API key, sent as `Authorization: Bearer` by the SDK.
+ *
+ * Absent → every judgment call returns `null` and callers keep their deterministic
+ * path, byte-for-byte. Fail-soft by design: this must never become a hard
+ * dependency, for the same reason `resolveCertspotterToken` must not — a missing
+ * key degrades enrichment, it does not break scanning.
+ *
+ * Unprovisioned is the NORMAL state on a BUSL self-host and in the Vitest pool.
+ * ⚠️ Name is `TYPESAFE_AI_API_KEY`, which deliberately DIFFERS from the SDK's own
+ * `ENV.apiKey` literal (`TYPESAFE_API_KEY`). We always pass `apiKey` explicitly, so
+ * the SDK never reads the environment and the mismatch is inert. The operator's
+ * existing spelling wins: one secret must not acquire two spellings.
+ */
+export function resolveTypesafeApiKey(env: RuntimeConfigEnv): string | undefined {
+	return env.TYPESAFE_AI_API_KEY || undefined;
 }
 
 /** Build quota routing with the existing default-off behavior. */

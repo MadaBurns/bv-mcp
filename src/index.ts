@@ -420,6 +420,7 @@ const authedPaths = [...mcpPaths, '/reports/*'] as const;
 import { buildBrandTierLookups } from './lib/brand-tier-lookups';
 import {
 	resolveCertspotterToken as certspotterToken,
+	resolveTypesafeApiKey as typesafeApiKey,
 	resolveCertstreamAuthToken as certstreamAuthToken,
 	resolveOAuthAvailability as oauthAvailability,
 	resolveQuotaShardRouting,
@@ -1024,6 +1025,7 @@ app.post('/mcp', async (c) => {
 					certstream: c.env.BV_CERTSTREAM,
 					certstreamAuthToken: certstreamAuthToken(c.env),
 					certspotterToken: certspotterToken(c.env),
+					typesafeApiKey: typesafeApiKey(c.env),
 					whoisBinding: c.env.BV_WHOIS,
 					reconBinding: c.env.BV_RECON,
 					reconAuthToken: c.env.BV_RECON_KEY,
@@ -1130,6 +1132,7 @@ app.post('/mcp', async (c) => {
 		certstream: c.env.BV_CERTSTREAM,
 		certstreamAuthToken: certstreamAuthToken(c.env),
 		certspotterToken: certspotterToken(c.env),
+		typesafeApiKey: typesafeApiKey(c.env),
 		whoisBinding: c.env.BV_WHOIS,
 		reconBinding: c.env.BV_RECON,
 		reconAuthToken: c.env.BV_RECON_KEY,
@@ -1338,6 +1341,7 @@ app.post('/mcp/messages', async (c) => {
 				certstream: c.env.BV_CERTSTREAM,
 				certstreamAuthToken: certstreamAuthToken(c.env),
 				certspotterToken: certspotterToken(c.env),
+				typesafeApiKey: typesafeApiKey(c.env),
 				whoisBinding: c.env.BV_WHOIS,
 				reconBinding: c.env.BV_RECON,
 				reconAuthToken: c.env.BV_RECON_KEY,

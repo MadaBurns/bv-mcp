@@ -55,7 +55,9 @@
 		"deploy:infra-probe": "npx wrangler deploy --config wrangler.infra-probe.jsonc",
 		"deploy:whois": "npm -w packages/bv-whois run deploy",
 		"dev:multi": "npx wrangler dev --config wrangler.jsonc --config wrangler.infra-probe.jsonc",
+		"pretest": "npm -w packages/dns-checks run build",
 		"test": "node scripts/vitest-filter-workerd.mjs",
+		"pretypecheck": "npm -w packages/dns-checks run build",
 		"typecheck": "wrangler types && tsc --noEmit",
 		"typecheck:tests": "wrangler types && node scripts/ci/typecheck-tests.mjs",
 		"lint": "eslint .",
@@ -85,11 +87,12 @@
 	"dependencies": {
 		"@blackveil/dns-checks": "^1.0.4",
 		"@streamparser/json-whatwg": "^0.0.26",
+		"@typesafe-ai/sdk": "^0.6.0",
 		"drizzle-orm": "0.45.2",
-		"marked": "^18.0.11",
+		"marked": "^18.0.13",
 		"pdf-lib": "^1.17.1",
 		"punycode": "^2.3.1",
-		"tldts": "^7.4.11",
+		"tldts": "^7.4.13",
 		"zod": "4.5.4"
 	},
 	"devDependencies": {
@@ -102,9 +105,9 @@
 		"playwright": "^1.63.0",
 		"tsup": "8.5.1",
 		"typescript": "6.0.3",
-		"typescript-eslint": "8.69.0",
+		"typescript-eslint": "8.70.0",
 		"vitest": "4.1.11",
-		"wrangler": "^4.130.0"
+		"wrangler": "^4.131.1"
 	},
 	"pnpm": {
 		"overrides": {
