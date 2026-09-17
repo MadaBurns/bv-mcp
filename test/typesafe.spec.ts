@@ -28,6 +28,30 @@ describe('createTypesafeClient', () => {
 		const { createTypesafeClient } = await import('../src/lib/typesafe');
 		expect(createTypesafeClient('ts-test-key')).not.toBeNull();
 	});
+
+	it('disables SDK retries so a clamped budget cannot be overrun ~3x', async () => {
+		// The SDK applies `timeout` PER ATTEMPT inside its retry loop and sleeps
+		// ~500ms/~1000ms between attempts, so the default `maxRetries: 2` would let
+		// one retryable 429/5xx cost ~3x the deadline askTypesafe just clamped to the
+		// caller's FetchBudget. Asserted on BEHAVIOUR — count the transport calls —
+		// rather than on the config value, so this still fails if the SDK changes
+		// where the policy is read from.
+		const { createTypesafeClient, askTypesafe } = await import('../src/lib/typesafe');
+		const client = createTypesafeClient('ts-test-key');
+		expect(client).not.toBeNull();
+
+		let attempts = 0;
+		// 503 is in the SDK's retryable set; with retries on this would be called 3x.
+		(client as unknown as { fetch: typeof fetch }).fetch = (async () => {
+			attempts++;
+			return new Response('{}', { status: 503 });
+		}) as unknown as typeof fetch;
+
+		const result = await askTypesafe(client, { seed: 'a.com' }, { q: { type: 'noul', instructions: 'x' } });
+
+		expect(result).toBeNull(); // fail-soft contract holds
+		expect(attempts, 'a retryable 503 must be attempted exactly once, not retried').toBe(1);
+	});
 });
 
 describe('askTypesafe', () => {

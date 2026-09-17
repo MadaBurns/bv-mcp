@@ -60,6 +60,22 @@ export function createTypesafeClient(apiKey: string | undefined): TypeSafeClient
 			// `globalThis.fetch` and bypasses `validateOutboundUrl` entirely.
 			fetch: safeFetch,
 			timeout: TYPESAFE_DEFAULT_TIMEOUT_MS,
+			// ⚠️ RETRIES OFF — do not restore the SDK default (`maxRetries: 2`).
+			//
+			// The SDK applies `timeout` PER ATTEMPT, inside its retry loop, and adds
+			// ~500ms/~1000ms of backoff between attempts. With the default policy a
+			// retryable 408/429/5xx therefore costs up to ~3x the timeout this
+			// wrapper just clamped to the caller's `FetchBudget`, plus ~1.5s — so the
+			// budget it promises to honour would be silently overrun. That is the
+			// #641 failure class (`lib/fetch-budget.ts`): sequential legs summing past
+			// a deadline and killing the check mid-flight.
+			//
+			// A retry also buys nothing here. Every failure path in `askTypesafe`
+			// collapses to `null` and the caller keeps its deterministic result, so a
+			// retry can only add latency risk to an enrichment that is allowed to be
+			// absent. Set at CLIENT level, not per request, so it holds for any future
+			// call site that does not route through `askTypesafe`.
+			retry: { maxRetries: 0 },
 		});
 	} catch {
 		// Constructor validates apiKey/baseURL/timeout. A bad value is a
