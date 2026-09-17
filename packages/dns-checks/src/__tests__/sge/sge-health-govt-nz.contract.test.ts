@@ -37,6 +37,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { evaluateSgeCompliance } from '../../sge';
+import type { SgeEvaluateOptions } from '../../sge';
 import { checkDMARC } from '../../checks/check-dmarc';
 import type { CheckResult, DNSQueryFunction } from '../../types';
 import measured from './fixtures/health-govt-nz-2026-09-13.json';
@@ -118,30 +119,56 @@ describe('health.govt.nz — the evaluator gets both formerly-wrong controls rig
 	});
 });
 
+/**
+ * The two observations this package cannot make itself, supplied so the fixture
+ * can reach a decided verdict. Both are caller claims, not measurements taken
+ * here — which is exactly why each has to be handed in.
+ */
+const BOTH_OBSERVED: SgeEvaluateOptions = {
+	smtpTls: 'enforced',
+	subdomainCoverage: {
+		enumeration: 'complete',
+		source: 'test fixture',
+		observations: [{ name: 'www.health.govt.nz', dmarcRecordPresent: true, spfAll: '-all', dkimNullRecordPresent: true }],
+	},
+};
+
 describe('health.govt.nz — the whole evaluation', () => {
-	it('is indeterminate on DNS evidence alone, with SMTP TLS the single unmeasured control', () => {
+	it('is indeterminate on DNS evidence alone, with SMTP TLS and sub-domain coverage unmeasured', () => {
 		const evaluation = evaluateSgeCompliance('health.govt.nz', RESULTS);
 		expect(evaluation.mailTransport).toBe('present');
-		expect(evaluation.counts).toEqual({ satisfied: 5, notSatisfied: 0, notMeasured: 1 });
+		expect(evaluation.counts).toEqual({ satisfied: 5, notSatisfied: 0, notMeasured: 2 });
 		expect(evaluation.verdict).toBe('indeterminate');
 		const unmeasured = evaluation.controls.filter((c) => c.status === 'not_measured');
-		expect(unmeasured.map((c) => c.control)).toEqual(['smtp_tls']);
-		expect(unmeasured[0].notMeasuredReason).toBe('no_transport_probe');
+		expect(unmeasured.map((c) => c.control)).toEqual(['smtp_tls', 'subdomain_coverage']);
+		expect(unmeasured.map((c) => c.notMeasuredReason)).toEqual(['no_transport_probe', 'no_subdomain_enumeration']);
 	});
 
-	it('reaches compliant once a transport probe supplies the sixth control', () => {
+	// bv-mcp #996. This record is `p=reject; sp=none`, but even `sp=reject` would not
+	// move the sub-domain control: SGE refuses sp= as the mechanism outright. A
+	// transport probe alone therefore no longer clears the domain, and the ceiling
+	// stays INDETERMINATE until someone enumerates the sub-domains.
+	it('does NOT reach compliant on a transport probe alone — sub-domain coverage is still unmeasured', () => {
 		const evaluation = evaluateSgeCompliance('health.govt.nz', RESULTS, { smtpTls: 'enforced' });
+		expect(evaluation.verdict).toBe('indeterminate');
+		expect(evaluation.controls.find((c) => c.control === 'subdomain_coverage')?.status).toBe('not_measured');
+	});
+
+	it('reaches compliant once both caller-supplied observations are present', () => {
+		const evaluation = evaluateSgeCompliance('health.govt.nz', RESULTS, BOTH_OBSERVED);
 		expect(evaluation.verdict).toBe('compliant');
-		expect(evaluation.counts.satisfied).toBe(6);
+		expect(evaluation.counts.satisfied).toBe(7);
 	});
 
 	// THE POINT OF THE WHOLE #991 CHANGE, on the real domain. A COMPLIANT verdict
-	// here is correct against the six written SGE controls AND the subdomain tree is
-	// measurably open. Before this change the second half was invisible on this
-	// surface: six ticks, verdict COMPLIANT, and no trace of the exposure that the
-	// same scan's own DMARC findings flagged at severity `high`.
+	// here is correct against the written SGE controls AND the subdomain tree is
+	// measurably open at the APEX RECORD level. Before that change the second half
+	// was invisible on this surface: all ticks, verdict COMPLIANT, and no trace of
+	// the exposure that the same scan's own DMARC findings flagged at severity
+	// `high`. The #996 control is a different statement — it reads an enumeration,
+	// never this record — so the advisory still has to carry the apex fact.
 	it('is COMPLIANT and STILL reports the subdomain exposure — the two facts coexist', () => {
-		const evaluation = evaluateSgeCompliance('health.govt.nz', RESULTS, { smtpTls: 'enforced' });
+		const evaluation = evaluateSgeCompliance('health.govt.nz', RESULTS, BOTH_OBSERVED);
 		expect(evaluation.verdict).toBe('compliant');
 
 		const gap = evaluation.advisories.find((a) => a.id === 'subdomain_policy_gap');
@@ -154,7 +181,7 @@ describe('health.govt.nz — the whole evaluation', () => {
 
 		// …and the control the ruling protects did not move.
 		expect(evaluation.controls.find((c) => c.control === 'dmarc_reject')?.status).toBe('satisfied');
-		expect(evaluation.counts).toEqual({ satisfied: 6, notSatisfied: 0, notMeasured: 0 });
+		expect(evaluation.counts).toEqual({ satisfied: 7, notSatisfied: 0, notMeasured: 0 });
 	});
 
 	it('reports the pct= tag this record publishes as an ADVISORY, not an exposure', () => {
