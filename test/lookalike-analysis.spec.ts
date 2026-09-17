@@ -44,10 +44,52 @@ describe('generateLookalikes', () => {
 		}
 	});
 
-	it('results are sorted alphabetically', () => {
-		const results = generateLookalikes('test.com');
-		const sorted = [...results].sort();
-		expect(results).toEqual(sorted);
+	it('results are deduplicated and deterministic across repeated calls (not alphabetically sorted)', () => {
+		// SQ-34: a plain alphabetical sort has no relationship to typo risk and
+		// was silently discarding candidates by spelling accident. Ordering is
+		// now a fair-share round-robin across the six generation strategies (see
+		// the function's docstring), which is NOT alphabetical order in general.
+		const results = generateLookalikes('microsoft.com');
+		expect(new Set(results).size).toBe(results.length);
+		expect(results).toEqual(generateLookalikes('microsoft.com'));
+		// The historical alphabetical-sort assertion no longer holds: with 39
+		// strategy-1 candidates for this seed, a fair round-robin interleaves in
+		// candidates from the smaller lanes long before the alphabet would.
+		expect(results).not.toEqual([...results].sort());
+	});
+
+	it('gives every generation strategy a fair share of the cap instead of letting the largest lane win by volume', () => {
+		// SQ-34: `microsoft.com` has a base long enough (9 chars) that the
+		// adjacent-key (motor substitution) strategy alone produces 39 raw
+		// candidates — most of MAX_PERMUTATIONS (50). Under the OLD alphabetical
+		// `.sort().slice(0, 50)`, `rnicrosoft.com` (the classic 'rn'->'m'
+		// homoglyph attack, e.g. against microsoft.com) and `microssoft.com`
+		// (character duplication) both sorted past position 50 and were
+		// silently dropped — confirmed by running the reverted implementation.
+		// The fair-share round-robin recovers both because every lane gets a
+		// turn before strategy 1 (keyboard adjacency) gets a second pick.
+		const results = generateLookalikes('microsoft.com');
+		expect(results.length).toBe(50);
+		expect(results).toContain('rnicrosoft.com');
+		expect(results).toContain('microssoft.com');
+
+		// `ltmcguinness.co.nz` (12-char base) drives strategy 1 alone to 52 raw
+		// candidates — MORE than the entire cap — so a plain concatenate-then-
+		// slice would return the TLD-swap and homoglyph lanes as ZERO. Round-
+		// robin still gives the sole TLD-swap candidate and the 'm'->'rn'
+		// homoglyph a slot.
+		const ltmcguinnessResults = generateLookalikes('ltmcguinness.co.nz');
+		expect(ltmcguinnessResults.length).toBe(50);
+		expect(ltmcguinnessResults).toContain('ltmcguinness.com');
+		expect(ltmcguinnessResults).toContain('ltrncguinness.co.nz');
+	});
+
+	it('breaks ties stably: identical input always yields the identical order', () => {
+		// Cache and snapshot stability requires no run-to-run flapping.
+		const seeds = ['anz.com', '[redacted-domain]', 'microsoft.com', 'ltmcguinness.co.nz'];
+		for (const seed of seeds) {
+			expect(generateLookalikes(seed)).toEqual(generateLookalikes(seed));
+		}
 	});
 
 	it('handles two-letter domain names gracefully', () => {
