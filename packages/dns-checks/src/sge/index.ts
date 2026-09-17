@@ -21,5 +21,7 @@ export type {
 	SgeMailTransport,
 	SgeEvaluation,
 	SgeSmtpTlsObservation,
+	SgeSubdomainObservation,
+	SgeSubdomainCoverage,
 	SgeEvaluateOptions,
 } from './types';

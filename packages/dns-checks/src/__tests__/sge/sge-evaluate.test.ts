@@ -2,7 +2,7 @@
 
 import { describe, it, expect } from 'vitest';
 import { evaluateSgeCompliance, SGE_CONTROL_IDS } from '../../sge';
-import type { SgeControlId, SgeEvaluation } from '../../sge';
+import type { SgeControlId, SgeEvaluation, SgeSubdomainCoverage, SgeSubdomainObservation } from '../../sge';
 import type { CheckCategory, CheckResult, Finding } from '../../types';
 
 /**
@@ -28,11 +28,23 @@ function control(evaluation: SgeEvaluation, id: SgeControlId) {
 /** A mail-bearing domain, so the transport controls are not excused. */
 const MX_PRESENT = result('mx', { controlPresent: true });
 
+/** A sub-domain with all three SGE anti-spoofing records MEASURED and present. */
+function covered(name: string, over: Partial<SgeSubdomainObservation> = {}): SgeSubdomainObservation {
+	return { name, dmarcRecordPresent: true, spfAll: '-all', dkimNullRecordPresent: true, ...over };
+}
+
+/** A complete enumeration in which every sub-domain is covered. */
+const FULL_COVERAGE: SgeSubdomainCoverage = {
+	enumeration: 'complete',
+	source: 'test',
+	observations: [covered('www.example.test'), covered('mail.example.test')],
+};
+
 describe('evaluateSgeCompliance — shape and three-state contract', () => {
-	it('always reports all six controls, in SGE_CONTROL_IDS order, even with no input at all', () => {
+	it('always reports all seven controls, in SGE_CONTROL_IDS order, even with no input at all', () => {
 		const evaluation = evaluateSgeCompliance('example.test', []);
 		expect(evaluation.controls.map((c) => c.control)).toEqual([...SGE_CONTROL_IDS]);
-		expect(evaluation.controls).toHaveLength(6);
+		expect(evaluation.controls).toHaveLength(7);
 	});
 
 	it('surfaces a missing check as not_measured — never as a fail, never as a pass, never omitted', () => {
@@ -41,7 +53,7 @@ describe('evaluateSgeCompliance — shape and three-state contract', () => {
 			expect(c.status).toBe('not_measured');
 			expect(c.notMeasuredReason).toBeDefined();
 		}
-		expect(evaluation.counts).toEqual({ satisfied: 0, notSatisfied: 0, notMeasured: 6 });
+		expect(evaluation.counts).toEqual({ satisfied: 0, notSatisfied: 0, notMeasured: 7 });
 		expect(evaluation.verdict).toBe('indeterminate');
 	});
 
@@ -315,9 +327,24 @@ describe('a domain with no MX', () => {
 				result('spf', { metadata: { spfAll: '-all' } }),
 				result('dkim', { controlPresent: true }),
 			],
-			{ smtpTls: 'enforced' },
+			{ smtpTls: 'enforced', subdomainCoverage: FULL_COVERAGE },
 		);
 		expect(evaluation.verdict).toBe('indeterminate');
+	});
+
+	// Sub-domain coverage is ANTI-SPOOFING, not inbound transport. A parked domain
+	// with an unprotected sub-domain tree is precisely what SGE is written about, so
+	// this control is never excused by the absence of an MX — unlike the three
+	// transport controls directly above.
+	it('still evaluates sub-domain coverage — it is anti-spoofing, not inbound transport', () => {
+		const evaluation = evaluateSgeCompliance('parked.test', [NO_MX], {
+			subdomainCoverage: {
+				enumeration: 'complete',
+				source: 'test',
+				observations: [{ name: 'old.parked.test', dmarcRecordPresent: false, spfAll: '-all', dkimNullRecordPresent: true }],
+			},
+		});
+		expect(control(evaluation, 'subdomain_coverage').status).toBe('not_satisfied');
 	});
 
 	it('an mx check that did not resolve the question leaves transport unknown and evaluates normally', () => {
@@ -337,22 +364,32 @@ describe('verdict', () => {
 		result('tlsrpt', { recordPresent: true }),
 	];
 
-	it('is compliant only when all six controls are satisfied', () => {
-		const evaluation = evaluateSgeCompliance('example.test', ALL_GOOD, { smtpTls: 'enforced' });
+	it('is compliant only when all seven controls are satisfied', () => {
+		const evaluation = evaluateSgeCompliance('example.test', ALL_GOOD, { smtpTls: 'enforced', subdomainCoverage: FULL_COVERAGE });
 		expect(evaluation.verdict).toBe('compliant');
-		expect(evaluation.counts).toEqual({ satisfied: 6, notSatisfied: 0, notMeasured: 0 });
+		expect(evaluation.counts).toEqual({ satisfied: 7, notSatisfied: 0, notMeasured: 0 });
 	});
 
 	it('is indeterminate — never compliant — when a control is unmeasured', () => {
-		const evaluation = evaluateSgeCompliance('example.test', ALL_GOOD);
+		const evaluation = evaluateSgeCompliance('example.test', ALL_GOOD, { subdomainCoverage: FULL_COVERAGE });
 		expect(evaluation.verdict).toBe('indeterminate');
 		expect(evaluation.counts.notMeasured).toBe(1);
+	});
+
+	// bv-mcp #996: the two caller-supplied controls are independent ceilings. Supplying
+	// only one leaves the other unmeasured, and one unmeasured control is enough to
+	// keep the verdict off `compliant`.
+	it('is indeterminate when everything is measured EXCEPT sub-domain coverage', () => {
+		const evaluation = evaluateSgeCompliance('example.test', ALL_GOOD, { smtpTls: 'enforced' });
+		expect(evaluation.verdict).toBe('indeterminate');
+		expect(evaluation.counts).toEqual({ satisfied: 6, notSatisfied: 0, notMeasured: 1 });
+		expect(control(evaluation, 'subdomain_coverage').notMeasuredReason).toBe('no_subdomain_enumeration');
 	});
 
 	it('is non_compliant when any control is a measured failure, whatever else is unmeasured', () => {
 		const evaluation = evaluateSgeCompliance('example.test', [MX_PRESENT, result('spf', { metadata: { spfAll: '~all' } })]);
 		expect(evaluation.verdict).toBe('non_compliant');
 		expect(evaluation.counts.notSatisfied).toBe(1);
-		expect(evaluation.counts.notMeasured).toBe(5);
+		expect(evaluation.counts.notMeasured).toBe(6);
 	});
 });

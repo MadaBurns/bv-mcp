@@ -34,7 +34,7 @@
 //   npm run typecheck:tests -- --update  # rewrite the baseline (deliberate, reviewable diff)
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -133,6 +133,32 @@ function totalOf(counts) {
 	return Object.values(counts).reduce((sum, n) => sum + n, 0);
 }
 
+/**
+ * Walk a directory recursively and return the most extreme (per `isMoreExtreme`) file mtime
+ * found under it, in milliseconds. Returns `null` for an empty tree.
+ *
+ * @param {string} dir
+ * @param {(candidate: number, current: number) => boolean} isMoreExtreme
+ * @returns {number | null}
+ */
+function extremeMtimeMs(dir, isMoreExtreme) {
+	let extreme = null;
+	const stack = [dir];
+	while (stack.length > 0) {
+		const current = stack.pop();
+		for (const entry of readdirSync(current, { withFileTypes: true })) {
+			const full = path.join(current, entry.name);
+			if (entry.isDirectory()) {
+				stack.push(full);
+			} else if (entry.isFile()) {
+				const mtimeMs = statSync(full).mtimeMs;
+				if (extreme === null || isMoreExtreme(mtimeMs, extreme)) extreme = mtimeMs;
+			}
+		}
+	}
+	return extreme;
+}
+
 // ---------------------------------------------------------------------------------------------
 
 const update = process.argv.includes('--update');
@@ -140,10 +166,28 @@ const update = process.argv.includes('--update');
 // `test/tsconfig.json` resolves `@blackveil/dns-checks/*` through the workspace package's built
 // `dist/`. Without it, module resolution collapses and the run reports hundreds of phantom
 // errors that have nothing to do with the diff — so fail loudly instead of scoring the noise.
-if (!existsSync(path.join(REPO_ROOT, 'packages', 'dns-checks', 'dist', 'index.d.ts'))) {
+const DNS_CHECKS_SRC = path.join(REPO_ROOT, 'packages', 'dns-checks', 'src');
+const DNS_CHECKS_DIST = path.join(REPO_ROOT, 'packages', 'dns-checks', 'dist');
+if (!existsSync(path.join(DNS_CHECKS_DIST, 'index.d.ts'))) {
 	fail(
 		'packages/dns-checks/dist is not built — run `npm run build --workspace=packages/dns-checks` first.\n' +
 			'  (Counting against an unbuilt dist would report hundreds of unrelated resolution errors.)',
+	);
+}
+
+// Presence isn't freshness: 74 test-tree files resolve `@blackveil/dns-checks` through this
+// `dist/` via the package's `exports` map, so a STALE build silently hides a type change made in
+// `packages/dns-checks/src` from every one of them — the count comes back unchanged instead of
+// reflecting the edit. Fail the same way the presence check above does, rather than reporting a
+// number that root-caused type changes cannot move.
+const newestSrcMtime = extremeMtimeMs(DNS_CHECKS_SRC, (candidate, current) => candidate > current);
+const oldestDistMtime = extremeMtimeMs(DNS_CHECKS_DIST, (candidate, current) => candidate < current);
+if (newestSrcMtime !== null && oldestDistMtime !== null && newestSrcMtime > oldestDistMtime) {
+	fail(
+		'packages/dns-checks/dist is STALE — packages/dns-checks/src has a file newer than the built dist.\n' +
+			'  Run `npm run build --workspace=packages/dns-checks` first.\n' +
+			'  (Test-tree files resolve @blackveil/dns-checks through dist, so a stale build can silently\n' +
+			'  hide a type change in dns-checks/src from this gate.)',
 	);
 }
 
