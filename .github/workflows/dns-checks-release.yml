@@ -66,7 +66,25 @@ jobs:
           --verify-tag --title "@blackveil/dns-checks $VERSION"
           --notes "Immutable scoring artifact. Consumers must verify the attached SHA-256 before installation."
 
+      # BV_WEB_PROD_REPO_TOKEN has never been provisioned on this repository
+      # (#1019), so the dispatch step below always failed the `test -n`
+      # guard and the workflow reported `failure` even though the artifact
+      # above published correctly. This check step lets the workflow tell
+      # the truth: dispatch when the secret exists, otherwise skip with a
+      # loud, explicit annotation instead of a silent or misleading pass.
+      - name: Check bv-web-prod promotion secret
+        id: promotion-secret
+        env:
+          TOKEN: ${{ secrets.BV_WEB_PROD_REPO_TOKEN }}
+        run: |
+          if [ -n "$TOKEN" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Request bv-web-prod promotion PR
+        if: steps.promotion-secret.outputs.present == 'true'
         env:
           GH_TOKEN: ${{ secrets.BV_WEB_PROD_REPO_TOKEN }}
           VERSION: ${{ inputs.version }}
@@ -80,3 +98,19 @@ jobs:
             -f "client_payload[sha256]=$SHA256" \
             -f "client_payload[source_commit]=$SOURCE_COMMIT" \
             -f "client_payload[release_tag]=dns-checks-v$VERSION"
+
+      # Absent-secret and broken-dispatch stay distinguishable: this step
+      # only runs (and only ever succeeds) when the secret is missing. If
+      # the secret IS present, the step above runs instead and fails loudly
+      # like any other step when `gh api` errors.
+      - name: Skip bv-web-prod promotion PR (secret not configured)
+        if: steps.promotion-secret.outputs.present != 'true'
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          echo "::warning::Skipping bv-web-prod promotion dispatch — the BV_WEB_PROD_REPO_TOKEN secret is not configured on this repository. The repository_dispatch to MadaBurns/bv-web-prod (event_type=dns-checks-released, version=$VERSION) was NOT sent; the promotion PR must be raised by hand for this release."
+          {
+            echo "### bv-web-prod promotion NOT dispatched"
+            echo
+            echo "\`BV_WEB_PROD_REPO_TOKEN\` is not configured on this repository, so the cross-repo \`repository_dispatch\` to \`MadaBurns/bv-web-prod\` (event_type \`dns-checks-released\`, version \`$VERSION\`) was skipped. The dns-checks release artifact above published successfully — only the automated promotion is missing. An operator must provision the secret (a token with dispatch access to MadaBurns/bv-web-prod) for this step to fire automatically, or the promotion PR must be opened by hand."
+          } >> "$GITHUB_STEP_SUMMARY"
