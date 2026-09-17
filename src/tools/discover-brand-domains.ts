@@ -540,10 +540,82 @@ const TIER1_GRAPH_SIGNAL_MAP: Partial<Record<string, DiscoverSignal>> = {
 	cert_san: 'san',
 };
 
+/**
+ * Metadata keys that make up a tier-1 graph ownership CLAIM. `clearsTier1GraphEvidence()`
+ * (src/lib/brand-evidence.ts) reads exactly these to decide whether a tier-1 observation
+ * may bypass N-of-M corroboration: `specificityScore` (lifted onto the observation by
+ * `specificityFromSource()` above), `signalTypes` / `signalType`, and `numSharedSignals`.
+ * `maxSpecificity` is the same number as `specificityScore` per the Tier 1 contract, so it
+ * travels with them rather than being left behind as a re-derivable claim.
+ */
+const TIER1_GRAPH_CLAIM_KEYS: ReadonlySet<string> = new Set([
+	'specificityScore',
+	'signalType',
+	'signalTypes',
+	'numSharedSignals',
+	'maxSpecificity',
+]);
+
+/**
+ * Map a tiered observation onto a reportable `DiscoverSignal`, degrading a tier-1 graph
+ * observation whose strongest `signalType` has no supported mapping to the weak seed
+ * signal `markov_gen`.
+ *
+ * ⚠️ #1041 — THE DEGRADE MUST CARRY ITS METADATA WITH IT, and that is why
+ * `tieredObservationEvidence()` below (not the ownership gate) owns the decision.
+ *
+ * The gate CANNOT be taught to key on `observation.signal`: a LEGITIMATE deterministic
+ * tier-1 graph observation is stored with the SAME seed signal (`markov_gen`) and carries
+ * its tier-1-ness in `tier` + `metadata` only, so a degraded observation and a legitimate
+ * one are byte-identical in that field. PR #1045 tried exactly that — make
+ * `clearsTier1GraphEvidence()` return false whenever `isSeedObservation(observation)` — and
+ * broke the pinned deterministic-tier-1 routing invariants in
+ * src/lib/brand-classification.test.ts and
+ * test/audits/brand-discovery-tier-mutual-exclusion.audit.test.ts. Do not re-attempt it.
+ *
+ * This site is the only one that knows which case it is in, because it is the code
+ * performing the degrade — so on the degrade path ONLY the raw graph claim is moved out of
+ * the keys the gate reads (see `tieredObservationEvidence()`). Every other path passes its
+ * metadata through untouched.
+ */
 function graphSignalForTieredObservation(obs: { tier: 0 | 1 | 2 | 4; metadata: Record<string, unknown> }): DiscoverSignal {
 	if (obs.tier !== 1) return 'markov_gen';
 	const raw = typeof obs.metadata.signalType === 'string' ? obs.metadata.signalType.trim().toLowerCase() : '';
 	return TIER1_GRAPH_SIGNAL_MAP[raw] ?? 'markov_gen';
+}
+
+/**
+ * Move a tier-1 graph claim under `degradedGraphSignal`: retained for provenance in the
+ * candidate's `sources` metadata, but no longer readable by `clearsTier1GraphEvidence()`.
+ */
+function withDegradedGraphClaim(metadata: Record<string, unknown>): Record<string, unknown> {
+	const kept: Record<string, unknown> = {};
+	const degraded: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(metadata)) {
+		if (TIER1_GRAPH_CLAIM_KEYS.has(key)) degraded[key] = value;
+		else kept[key] = value;
+	}
+	if (Object.keys(degraded).length === 0) return kept;
+	return { ...kept, degradedGraphSignal: degraded };
+}
+
+/**
+ * Resolve the aggregator signal AND the evidence metadata for one tiered observation.
+ * Both come from here because they are a single decision: a tier-1 graph observation that
+ * degrades to the weak seed signal must not keep asserting the graph specificity that the
+ * ownership gate reads, or the degrade is inert (#1041). See the WHY note on
+ * `graphSignalForTieredObservation()` above. Exported for unit tests.
+ */
+export function tieredObservationEvidence(obs: { tier: 0 | 1 | 2 | 4; metadata: Record<string, unknown> }): {
+	signal: DiscoverSignal;
+	metadata: Record<string, unknown>;
+} {
+	const signal = graphSignalForTieredObservation(obs);
+	// Only a DEGRADED tier-1 graph observation loses its claim. Tier 0/2/4 observations
+	// (which are `markov_gen` by construction) and successfully mapped tier-1 signals keep
+	// their metadata exactly as the producer sent it.
+	if (obs.tier !== 1 || signal !== 'markov_gen') return { signal, metadata: obs.metadata };
+	return { signal, metadata: withDegradedGraphClaim(obs.metadata) };
 }
 
 function buildEvidenceObservations(entry: CandidateAggregator): BrandEvidenceObservation[] {
@@ -962,11 +1034,14 @@ export async function discoverBrandDomains(
 				callerAssertedDomains.add(obs.candidate.trim().toLowerCase().replace(/\.$/, ''));
 			}
 			// Tier 1 graph observations preserve their supported signal type while
-			// retaining graph provenance in metadata for the ownership gate.
-			addObservation(aggregator, obs.candidate, graphSignalForTieredObservation(obs), obs.confidence, {
+			// retaining graph provenance in metadata for the ownership gate. An
+			// unmapped signal type degrades to the weak seed signal AND surrenders
+			// its graph claim, so the degrade is not inert at the gate (#1041).
+			const tieredEvidence = tieredObservationEvidence(obs);
+			addObservation(aggregator, obs.candidate, tieredEvidence.signal, obs.confidence, {
 				tier: obs.tier,
 				source: obs.source,
-				...obs.metadata,
+				...tieredEvidence.metadata,
 			});
 		}
 
