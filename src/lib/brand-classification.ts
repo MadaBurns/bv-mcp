@@ -598,6 +598,16 @@ export function classifyCandidate(c: CandidateInput, t: TargetContext): Classifi
 	}
 
 	// Rule 8: Low confidence + no strong signals → likely parked / unrelated / impersonation.
+	//
+	// PRECONDITION (#1037): only reachable when `c.confidence < INDETERMINATE_CONFIDENCE_THRESHOLD`
+	// (0.5). At every caller's default `min_confidence` (also 0.5 — discover-brand-domains.ts's
+	// DEFAULT_MIN_CONFIDENCE, brand-audit-pipeline.ts:1050's `?? 0.5`), the discoverer already drops
+	// every candidate with `combined < minConfidence` before it reaches classifyCandidate(), so this
+	// rule cannot fire under default configuration. It IS reachable: `min_confidence` is a public,
+	// unclamped-below-0.5 (`z.number().min(0).max(1)`) parameter on discover_brand_domains,
+	// brand_audit_single, and brand_audit_batch_start (src/schemas/tool-args.ts) — any caller that
+	// explicitly lowers it below 0.5 lets [min_confidence, 0.5)-confidence candidates through to this
+	// branch. See test/brand-classification.spec.ts for the pinned path.
 	reasons.push('low confidence, no strong infra signal');
 	return classification('impersonation', tier, 'impersonation_risk', reasons);
 }
