@@ -1,7 +1,39 @@
 import { describe, it, expect, beforeAll } from 'vitest';
-// @ts-expect-error WASM module import for testing
+
+/**
+ * crates/bv-wasm-core/pkg/ is wasm-pack build output (`npm run build:wasm`), not checked in.
+ * typecheck-tests CI has no Rust toolchain and never builds it (see .github/workflows/ci.yml),
+ * so real file-based resolution for these two imports fails there with TS2307 — while
+ * build-and-test's `npm test` builds wasm first, so the same imports resolve for real there and
+ * report no error at all (the module exists; `allowSyntheticDefaultImports` in the root
+ * tsconfig.json covers the .wasm file's lack of an explicit default export, and the generated
+ * bv_wasm_core.js carries its own `@ts-self-types` pointer to bv_wasm_core.d.ts).
+ *
+ * That's exactly why `@ts-expect-error` bimodally flipped the ratchet: it's correct only in the
+ * unbuilt state and becomes an "Unused '@ts-expect-error' directive" (TS2578) error in the
+ * built one. `@ts-ignore` doesn't have that failure mode — it suppresses an error when one is
+ * present and is silently inert when the line is already clean — so both states now agree, and
+ * a signature mismatch surfacing here in the built state (the one place the real
+ * wasm-bindgen-generated types actually exist) still fails the build for real.
+ *
+ * A `declare module` alternative (matching test/raw-modules.d.ts's `*?raw` ambient pattern) was
+ * evaluated first and rejected on hard evidence, not preference: TypeScript resolves a relative
+ * specifier through the filesystem either way, so `declare module '../crates/.../foo'` is
+ * treated as a genuine ambient declaration ONLY while the real file is absent, and as an
+ * AUGMENTATION of the real module once pkg/ is built — which then rejects `export default` and
+ * a re-declared `type` alias with TS2666/TS2300 (confirmed empirically). A wildcard shorthand
+ * dodges that specific clash but TypeScript only accepts a wildcard ambient module in a global
+ * (non-module) file — this spec file is itself a module via its `vitest` import, so a wildcard
+ * declared here reports TS2664 "Invalid module name in augmentation" in BOTH states (also
+ * confirmed empirically). A real fix along that path needs a new ambient .d.ts file alongside
+ * raw-modules.d.ts, which is outside this ticket's declared scope (test/wasm-integration.test.ts,
+ * test/tsconfig.json only).
+ */
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment -- see file-level comment: @ts-ignore (not @ts-expect-error) is required here so the directive doesn't itself flip pass/fail depending on whether crates/bv-wasm-core/pkg has been built
+// @ts-ignore WASM module import: only resolvable after `npm run build:wasm`
 import wasm from '../crates/bv-wasm-core/pkg/bv_wasm_core_bg.wasm';
-// @ts-expect-error WASM module import for testing
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment -- see file-level comment: @ts-ignore (not @ts-expect-error) is required here so the directive doesn't itself flip pass/fail depending on whether crates/bv-wasm-core/pkg has been built
+// @ts-ignore WASM module import: only resolvable after `npm run build:wasm`
 import { initSync, estimateTokens, checkPermission } from '../crates/bv-wasm-core/pkg/bv_wasm_core.js';
 
 describe('Wasm Integration', () => {
