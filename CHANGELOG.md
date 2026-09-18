@@ -8,14 +8,83 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.82.0] - 2026-09-18
+
+Adds a seventh SGE control and the fail-soft TypeSafe/Jev client foundation, plus a
+round of attribution and brand-discovery correctness fixes. Scoring model stays at
+**1.34.0** and `@blackveil/dns-checks` at **1.49.0** (`PARITY_CORPUS_VERSION` in
+lockstep), so **bv-web-prod does not need to re-vendor for this release**. No weight,
+tier or grade band changed.
+
+### Added
+
+- **A seventh SGE control: full sub-domain coverage** (#996, #1047). Extends
+  `sge_quickscan`'s control set beyond the previous six.
+- **TypeSafe/Jev foundation** (#1030) — a fail-soft Jev client behind `safeFetch`, with
+  a scan-path isolation audit. **Phase 3 is deliberately NOT wired**: the measurement
+  said not to, so no scan path calls it. Ships as foundation only.
+
+### Fixed
+
+- **`check_lookalikes` published an empty `ownershipSignals` array on gated findings**
+  (#1036). `classifyOwnership()` computed the signals, but `buildOwnershipGateMetadata`
+  emitted only verdict/rationale/confidence — so "evaluated, every arm declined" was
+  indistinguishable from "never evaluated". `ownershipStrength` and `ownershipSignals`
+  now travel on every gated finding.
+- **A pooled provider's per-zone nameservers are not distinct infrastructure** (#1036).
+  Mirrors #929's uniform-platform rule for the pooled case: a provider that assigns each
+  zone its own hostnames from a shared pool makes non-identity the provider's doing, not
+  the candidate's. Scoped to exact-label TLD variants; the arm can only ever return
+  `unattributed`, never `owned_by_seed`, so the `info` severity ceiling is untouched.
+- **An exact NS-set match mixing dedicated and platform hosts was not attributed**
+  (#1039, #1046).
+- **`discover_brand_domains` kept the graph claim when a tier-1 `signalType` degraded**
+  (#1041, #1048) — it now withdraws the claim instead of clearing the ownership gate on
+  raw specificity metadata.
+- **`check_lookalikes` truncated candidates alphabetically** (#1033), which silently
+  favoured early labels; replaced with fair-share round-robin ordering.
+- **brand-classification cited a dangling report and rested on a false premise** (#1035).
+- **Rule 8's `min_confidence` precondition was undocumented** (#1037, #1043); now
+  documented with reachability pinned.
+- **The sidecar deploy-drift gate's `spawnSync` calls had no timeout** (#1018).
+  `wrangler deployments list`, `git fetch origin main`, `git log`, and `git merge-base
+  --is-ancestor` in `scripts/ci/sidecar-deploy-drift-check.ts` could hang the deploy
+  pipeline forever on a wedged network call or a stuck local process. Added named timeout
+  budgets (30s for the network-bound wrangler and fetch calls, 5s for the local git
+  log/merge-base calls); a timed-out call now fails closed — `verifyHeadContainsUpstream`
+  returns a reason string naming the timeout and `probeSidecar` reports `unverified`,
+  never `fresh`.
+- **The robots.txt gate no longer re-fetches a host's robots.txt when sibling hosts are
+  probed concurrently** (#1018). Each in-flight robots.txt cache entry reserved a
+  worst-case ~2 MiB body against the 4 MiB cache cap, so a second host's pending entry
+  evicted the first before it was reused: a `check_subdomain_takeover` sweep over several
+  A/AAAA-vector hosts fetched every host's robots.txt twice (once for the HTTPS probe,
+  again for the HTTP fallback). A pending entry now weighs only its key, and the policy is
+  charged at its real size when it settles, still evicting to stay under the 4 MiB cap.
+  The robots posture is unchanged (unreachable is fail-open; disallow semantics as
+  before).
+- **The TypeSafe SDK could overrun a clamped budget via its own retries** (#1031) —
+  retries are now disabled.
+- **`serverInfo.description` was a hand-typed literal** (#1020); it now derives from the
+  tool/category constants.
+- **The bv-web-prod promotion dispatch failed dishonestly when its secret was unset**
+  (#1044) — it now skips honestly rather than reporting success.
+- **CI/build correctness**: `packages/dns-checks` is built before typecheck and test
+  (#1021); `typecheck:tests` now asserts `packages/dns-checks/dist` freshness (#1032);
+  `scripts/worktree-setup.sh` builds wasm so fresh worktrees pass `wasm-integration`
+  (#1042); a `@ts-expect-error` no longer flips the wasm-integration typecheck ratchet
+  (#1034); `mcp-dispatch.spec.ts` narrows `JsonRpcPayload` access and clears parked type
+  errors (#1022).
+
 ### Security
 
 - Bumped the transitive `sharp` devDependency (pulled in by `wrangler`/`miniflare` and `@cloudflare/vitest-pool-workers`) to `>=0.35.4` via a `package.json` `overrides` entry, resolving Dependabot alert #42 (GHSA-g89c-p67h-r497, GHSA-2jg2-4ch7-h545 in libheif). Dev/test-only dependency; no runtime code uses `sharp`.
 
-### Fixed
+### Changed
 
-- **The sidecar deploy-drift gate's `spawnSync` calls had no timeout.** `wrangler deployments list`, `git fetch origin main`, `git log`, and `git merge-base --is-ancestor` in `scripts/ci/sidecar-deploy-drift-check.ts` could hang the deploy pipeline forever on a wedged network call or a stuck local process. Added named timeout budgets (30s for the network-bound wrangler and fetch calls, 5s for the local git log/merge-base calls); a timed-out call now fails closed — `verifyHeadContainsUpstream` returns a reason string naming the timeout and `probeSidecar` reports `unverified`, never `fresh`.
-- **The robots.txt gate no longer re-fetches a host's robots.txt when sibling hosts are probed concurrently.** Each in-flight robots.txt cache entry reserved a worst-case ~2 MiB body against the 4 MiB cache cap, so a second host's pending entry evicted the first before it was reused: a `check_subdomain_takeover` sweep over several A/AAAA-vector hosts fetched every host's robots.txt twice (once for the HTTPS probe, again for the HTTP fallback). A pending entry now weighs only its key, and the policy is charged at its real size when it settles, still evicting to stay under the 4 MiB cap. The robots posture is unchanged (unreachable is fail-open; disallow semantics as before).
+- Dependency bumps: `zod` 4.5.4 → 4.6.5 (#1028), `tldts` 7.4.11 → 7.4.13 (#1027),
+  `marked` 18.0.11 → 18.0.13 (#1026), `typescript-eslint` 8.69.0 → 8.70.0 (#1025), the
+  cloudflare group (#1023) and the codeql-action group (#1029).
 
 ## [3.81.2] - 2026-09-15
 
