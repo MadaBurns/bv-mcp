@@ -9,6 +9,7 @@ import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
 import { DNS_CHECKS_PACKAGE_VERSION } from '../../lib/dns-checks-version';
 import { displayGradeFor, formatScoreGrade, isCompletedCheck, isMeasured, normalizeCheckStatus, UNGRADED_DISPLAY } from '../../lib/ungraded-display';
+import { isSatisfiedControl } from '../../lib/control-presence';
 
 // All three live in a tiny leaf module so every formatter in src/tools/ can share
 // them without importing the scan orchestrator. Re-exported here because this is
@@ -300,14 +301,14 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		// Only infer `domain_configured` when the zone is actually signed. An UNSIGNED
 		// zone now scores 60 (penaltyOverride −40) and therefore `passed === true`
 		// (60 ≥ 50, no missingControl), so a `passed`-only fallback wrongly stamped
-		// unsigned domains as `domain_configured`. Exclude the DNSSEC deficiency findings
-		// — "DNSSEC not enabled" (60, passes), and the broken/failing chains (0, fail) —
-		// so only a genuinely validated/configured zone (no deficiency finding) defaults
-		// to `domain_configured`.
-		const dnssecDeficient = dnssecCheck.findings.some(
-			(f) => f.title === 'DNSSEC not enabled' || f.title === 'DNSSEC island of trust' || f.title === 'DNSSEC chain of trust incomplete' || f.title === 'DNSSEC validation failing',
-		);
-		if (dnssecSource === null && dnssecCheck.passed && !dnssecDeficient && isCompletedCheck(dnssecCheck)) {
+		// unsigned domains as `domain_configured`. `isSatisfiedControl` is the shared
+		// structured signal for this class (control-presence.ts): it excludes an
+		// unrebutted absence ("DNSSEC not enabled") and any measured medium+ finding
+		// ("DNSSEC island of trust", the broken/failing chains — the latter two already
+		// carry `missingControl` and fail `passed` outright) without matching finding
+		// TITLES, so a new deficiency finding is covered automatically rather than
+		// needing a fifth string added here.
+		if (dnssecSource === null && isSatisfiedControl(dnssecCheck) && isCompletedCheck(dnssecCheck)) {
 			dnssecSource = 'domain_configured';
 		}
 	}
