@@ -55,7 +55,7 @@ function makeBrandAuditResult(): CheckResult {
 					registrarSource: 'rdap',
 					reasons: ['lookalike score 0.92'],
 					signals: ['markov_gen'],
-					combinedConfidence: 0.30,
+					combinedConfidence: 0.3,
 				},
 			},
 		],
@@ -87,7 +87,13 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		// empty one. (Text-content assertion lives in higher-level snapshot
 		// tests if/when we add them with a text-extract dependency.)
 		const empty = await renderBrandAuditPdf(
-			{ category: 'brand_discovery', score: 100, findings: [{ category: 'brand_discovery', title: 's', severity: 'info', detail: '', metadata: { summary: true, target: 'apple.com' } }] },
+			{
+				category: 'brand_discovery',
+				score: 100,
+				findings: [
+					{ category: 'brand_discovery', title: 's', severity: 'info', detail: '', metadata: { summary: true, target: 'apple.com' } },
+				],
+			},
 			'apple.com',
 			{ serverVersion: '2.21.4' },
 		);
@@ -108,7 +114,9 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		const empty: CheckResult = {
 			category: 'brand_discovery',
 			score: 100,
-			findings: [{ category: 'brand_discovery', title: 'summary', severity: 'info', detail: '', metadata: { summary: true, target: 'example.com' } }],
+			findings: [
+				{ category: 'brand_discovery', title: 'summary', severity: 'info', detail: '', metadata: { summary: true, target: 'example.com' } },
+			],
 		};
 		const bytes = await renderBrandAuditPdf(empty, 'example.com', { serverVersion: '2.21.4' });
 		expect(bytes.byteLength).toBeGreaterThan(500);
@@ -135,9 +143,7 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 						summary: true,
 						target: 'example.com',
 						depth: {
-							warnings: [
-								'Candidate universe was truncated by cap (154 candidate(s) dropped); discovery coverage is incomplete.',
-							],
+							warnings: ['Candidate universe was truncated by cap (154 candidate(s) dropped); discovery coverage is incomplete.'],
 						},
 					},
 				},
@@ -221,7 +227,11 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 					combinedConfidence: 0.95,
 				},
 			}));
-		const withReasons: CheckResult = { category: 'brand_discovery', score: 100, findings: makeFindings(['some specific reason text appears here']) };
+		const withReasons: CheckResult = {
+			category: 'brand_discovery',
+			score: 100,
+			findings: makeFindings(['some specific reason text appears here']),
+		};
 		const withoutReasons: CheckResult = { category: 'brand_discovery', score: 100, findings: makeFindings([]) };
 
 		const aBytes = await renderBrandAuditPdf(withReasons, 'example.com', { serverVersion: '2.21.4' });
@@ -277,12 +287,18 @@ describe('renderBrandAuditPdf (pdf-lib)', () => {
 		expect(header).toBe('%PDF-');
 	});
 
-	it('emits deterministic bytes for a given input (modulo CreationDate)', async () => {
+	it('emits byte-identical output for a given input and injected clock (#1049)', async () => {
 		const { renderBrandAuditPdf } = await import('../src/lib/brand-audit-pdf-render');
 		const r = makeBrandAuditResult();
 		const now = () => new Date('2026-05-19T12:00:00Z').getTime();
 		const a = await renderBrandAuditPdf(r, 'apple.com', { serverVersion: '2.21.4', now });
 		const b = await renderBrandAuditPdf(r, 'apple.com', { serverVersion: '2.21.4', now });
+		// Full byte equality, not just length: the renderer pins pdf-lib's
+		// CreationDate/ModificationDate to `now`, so nothing in the document may
+		// depend on the real clock. A length-only assertion was both flaky
+		// (renders straddling a real-clock second shifted the xref offsets by
+		// one byte) and weak (same-length nondeterminism passed).
 		expect(a.byteLength).toBe(b.byteLength);
+		expect(a).toEqual(b);
 	});
 });

@@ -17,12 +17,39 @@ function levenshtein(a: string, b: string): number {
 	return dp[a.length][b.length];
 }
 
+/**
+ * (#1038) Denominator floor applied when the labels are exactly ONE edit
+ * apart. The plain ratio `1 - distance/maxLen` makes a single-edit typosquat's
+ * score depend on the BRAND NAME'S LENGTH, not on how close the labels are:
+ * for one edit the score is `1 - 1/maxLen`, which clears the downstream 0.85
+ * impersonation gate only when `maxLen >= 7`. So `paypall` (insertion, maxLen
+ * 7 → 0.86) passed while `paypa` / `paypai` (deletion/substitution, maxLen 6
+ * → 0.83) failed — three equally-close one-edit typosquats of the same brand.
+ * Flooring the denominator at 7 for the single-edit case scores every one-edit
+ * typosquat of a >=MIN_SINGLE_EDIT_LABEL_LENGTH-char brand identically
+ * (>= 0.86), independent of which side of the brand length it lands on.
+ */
+const SINGLE_EDIT_DENOMINATOR_FLOOR = 7;
+
+/**
+ * (#1038) The single-edit floor only applies when BOTH labels are at least
+ * this long. On very short labels (`hp` vs `hq`) a one-character edit is 25-50%
+ * of the label and overwhelmingly a coincidence between unrelated brands, not
+ * a typosquat — those keep the plain ratio.
+ */
+const MIN_SINGLE_EDIT_LABEL_LENGTH = 4;
+
 export function domainLabelSimilarity(target: string, candidate: string): number {
 	const left = label(target);
 	const right = label(candidate);
 	if (!left || !right) return 0;
+	const distance = levenshtein(left, right);
 	const maxLen = Math.max(left.length, right.length);
-	return Math.round((1 - levenshtein(left, right) / maxLen) * 100) / 100;
+	const denominator =
+		distance === 1 && Math.min(left.length, right.length) >= MIN_SINGLE_EDIT_LABEL_LENGTH
+			? Math.max(maxLen, SINGLE_EDIT_DENOMINATOR_FLOOR)
+			: maxLen;
+	return Math.round((1 - distance / denominator) * 100) / 100;
 }
 
 // ---------------------------------------------------------------------------
