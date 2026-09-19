@@ -21,6 +21,14 @@ import type { CheckResult, Finding } from '../../lib/scoring';
 import type { DomainProfile } from '../../lib/scoring';
 import { nistScoreToGrade } from '../../lib/scoring';
 import { isCompletedCheck } from '../../lib/ungraded-display';
+// `passed` means "did not penalize", NOT "the control exists" (CLAUDE.md). The
+// three signals below (DNSSEC, CAA, MTA-STS) each have a graded-not-zeroed
+// absence path — an unsigned zone, no CAA, or no MTA-STS all still score
+// `passed: true` — so a bare `check?.passed` reads an absent control as
+// present. `isSatisfiedControl` is the shared structural predicate
+// (`recordPresent`/`controlPresent` + a disqualifying-finding floor) that
+// answers "does the control actually exist" instead.
+import { isSatisfiedControl } from '../../lib/control-presence';
 // Single SSOT for "this domain accepts no inbound mail" — shared with scan
 // post-processing so staging and severity-downgrading can never diverge (#643).
 import { mxDeclaresNoInboundMail } from './post-processing';
@@ -245,7 +253,7 @@ function computeWebOnlyLadder(byCategory: Map<string, CheckResult>): MaturitySta
 	// they read TRUE and a measurement failure inflated maturity UPWARD.
 	const sslMeasured = measured(sslCheck);
 	const hasSsl = sslMeasured && (sslCheck?.passed ?? false);
-	const hasDnssec = measured(dnssecCheck) && (dnssecCheck?.passed ?? false);
+	const hasDnssec = measured(dnssecCheck) && isSatisfiedControl(dnssecCheck!);
 	const hasHsts =
 		(measured(httpSecurityCheck) &&
 			httpSecurityCheck?.findings.some((f: Finding) => /HSTS/i.test(f.title) && !/missing|no HSTS|no\s+HSTS/i.test(f.title))) ??
@@ -393,7 +401,7 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 	// mail — the predicate refuses to assert absence from a failed probe.
 	const hasNoMx = mxDeclaresNoInboundMail(mxCheck);
 	if (hasNoMx && profile === undefined) {
-		const hasDnssec = measured(dnssecCheck) && (dnssecCheck?.passed ?? false);
+		const hasDnssec = measured(dnssecCheck) && isSatisfiedControl(dnssecCheck!);
 		return {
 			stage: hasDnssec ? 1 : 0,
 			label: hasDnssec ? 'DNS-Only' : 'Unprotected',
@@ -422,8 +430,8 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 	const hasRua = measured(dmarcCheck) && !dmarcCheck!.findings.some((f: Finding) => /No aggregate reporting/i.test(f.title));
 
 	// Determine MTA-STS, DNSSEC, BIMI
-	const hasMtaSts = measured(mtaStsCheck) && (mtaStsCheck?.passed ?? false);
-	const hasDnssec = measured(dnssecCheck) && (dnssecCheck?.passed ?? false);
+	const hasMtaSts = measured(mtaStsCheck) && isSatisfiedControl(mtaStsCheck!);
+	const hasDnssec = measured(dnssecCheck) && isSatisfiedControl(dnssecCheck!);
 	const hasBimi = (measured(bimiCheck) && bimiCheck?.findings.some((f: Finding) => /BIMI record configured/i.test(f.title))) ?? false;
 
 	// DANE presence — a pin counts ONLY when it was VERIFIED against the served certificate
@@ -438,7 +446,7 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 
 	// CAA presence (passed = CAA records found)
 	const caaCheck = byCategory.get('caa');
-	const hasCaa = measured(caaCheck) && (caaCheck?.passed ?? false);
+	const hasCaa = measured(caaCheck) && isSatisfiedControl(caaCheck!);
 
 	// DKIM "discovered" = at least one selector physically found (not provider-implied)
 	// Provider-implied findings have metadata.detectionMethod === 'provider-implied'
