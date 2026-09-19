@@ -1015,11 +1015,13 @@ describe('missing-control intent — interpolated values must not arm the gate',
 describe('missing-control intent — computed subjectTerms declarations are not invisible', () => {
 	it('recognizes the real repo sites that declare [SUBJECT_TERMS_METADATA_KEY]', () => {
 		// Non-vacuity: if this list is empty, every assertion below passes for the wrong reason.
-		// Keyed on the `createFinding(` call's own line (`site.line`), not the metadata property's
-		// line further down the call — the two differ by several lines at every one of these sites.
+		// Keyed on the declaring FILE, deliberately not on `site.line`: the census this pins is
+		// "which files declare the shape, and how many sites in each". Line numbers shift whenever
+		// anything above a site is edited (SQ-95's rcode imports moved all four check-dkim.ts sites
+		// down by 8), which would fail this audit for a reason it does not actually care about.
 		const declaring = SITES.filter((s) => parseSubjectTermDeclarations(s.metadataSource).length > 0);
 		expect(
-			declaring.map((s) => `${s.file}:${s.line}`).sort(),
+			declaring.map((s) => s.file).sort(),
 			'expected exactly the 4 check-dkim.ts sites ("Malformed DKIM key", the weak/legacy RSA key finding, ' +
 				'"Deprecated hash algorithm (h=sha1)", "No DKIM records found") + 1 dane-analysis.ts site (the TLSA ' +
 				'pin mismatch) known to declare this shape; a different count means either a declaration was ' +
@@ -1027,11 +1029,11 @@ describe('missing-control intent — computed subjectTerms declarations are not 
 				'updating',
 		).toEqual(
 			[
-				'checks/check-dkim.ts:221',
-				'checks/check-dkim.ts:261',
-				'checks/check-dkim.ts:316',
-				'checks/check-dkim.ts:454',
-				'checks/dane-analysis.ts:613',
+				'checks/check-dkim.ts',
+				'checks/check-dkim.ts',
+				'checks/check-dkim.ts',
+				'checks/check-dkim.ts',
+				'checks/dane-analysis.ts',
 			].sort(),
 		);
 	});
