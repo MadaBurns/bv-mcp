@@ -389,11 +389,20 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 	const evidence = computeScanEvidence(result.checks);
 	const evidenceInsufficient = result.score.evidenceInsufficient === true && evidence.attempted > 0;
 
+	// `passed` MUST agree with `grade` — both are derived from the same
+	// `displayGradeFor` call rather than re-testing `overall` against a SEPARATE
+	// threshold (the old `overall >= 50` read), which let a 50-59 scan report
+	// `passed: true` beside a displayed grade of 'F' (the NIST display floor is 60).
+	// Deriving `passed` from the already-computed display grade makes the two agree
+	// by construction: `null` exactly when ungraded, `true` iff the displayed letter
+	// is not 'F'.
+	const grade = displayGradeFor(result.score);
+
 	return {
 		domain: result.domain,
 		score: result.score.overall,
-		grade: displayGradeFor(result.score),
-		passed: result.score.overall === null ? null : result.score.overall >= 50,
+		grade,
+		passed: grade === null ? null : grade !== 'F',
 		measured: isMeasured(result.checks),
 		// `?? null` alone is not enough: the three degraded builders all emit a
 		// maturity OBJECT carrying a placeholder `stage: 0`, so the guard never

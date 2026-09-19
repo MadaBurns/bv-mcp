@@ -26,11 +26,20 @@ export {
 	computeScanScore,
 	createFinding,
 	inferFindingConfidence,
+	// `scoreToGrade` is the INTERNAL 9-band scale (SSOT ordering, cohort percentiles) —
+	// it never faced customers directly, and it takes a plain `number` with no
+	// "ungraded" representation of its own. A caller holding a possibly-null score MUST
+	// route through `displayGradeFor` (below) instead, which returns `null` rather than
+	// fabricating a letter.
 	scoreToGrade,
+	isGraded,
+	nistScoreToGrade,
+	NIST_GRADE_THRESHOLDS,
 	type CheckCategory,
 	type CheckResult,
 	type Finding,
 	type FindingConfidence,
+	type NistGrade,
 	type ProfileAwareScanScore,
 	type ScanScore,
 	type Severity,
@@ -39,6 +48,12 @@ export {
 	type DomainContext,
 	type DomainProfile,
 } from './lib/scoring';
+
+// The customer-facing display-grade chokepoint (see `ungraded-display.ts` for the full
+// rationale). `displayGradeFor` is the function a package consumer should call to render
+// the same 6-band letter the Worker shows customers: it returns `null` for an ungraded
+// scan instead of collapsing it to a fabricated 'F'.
+export { displayGradeFor, formatScoreGrade, UNGRADED_DISPLAY } from './lib/ungraded-display';
 
 export { sanitizeDomain, sanitizeInput, validateDomain } from './lib/sanitize';
 export { SERVER_VERSION } from './lib/server-version';

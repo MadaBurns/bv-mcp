@@ -133,6 +133,21 @@ export interface GenericScanScore {
 
 	/** Critical penalty applied (0 or criticalOverallPenalty from config). */
 	criticalPenalty: number;
+
+	/**
+	 * Category keys present in `tierMap` but ABSENT from the caller's `categoryScores` —
+	 * i.e. keys `categoryScores` filled to the neutral default of 100 rather than echoing
+	 * a real measurement. That default is deliberate for the weighted-accumulation math
+	 * (an unsubmitted category must not zero or otherwise skew a tier it didn't
+	 * participate in), but it is NOT itself a measurement, and reading `categoryScores[key]
+	 * === 100` as "this category passed perfectly" is the same fabricated-grade defect
+	 * {@link displayGradeFor} exists to prevent one layer up — a direct caller of
+	 * `computeGenericScore` has no other signal to tell the two apart. Check this list (or
+	 * `key in categoryScores` on the ORIGINAL input) before treating a filled 100 as a
+	 * pass. Always populated (possibly empty), so equality/length checks never see
+	 * `undefined`.
+	 */
+	unmeasuredCategories: string[];
 }
 
 const DEFAULT_EMAIL_BONUS_KEYS: EmailBonusKeyMap = {
@@ -332,7 +347,11 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 
 	// --- Populate category scores with absent defaults ---
 	const filledScores: Record<string, number> = {};
+	const unmeasuredCategories: string[] = [];
 	for (const key of Object.keys(input.tierMap)) {
+		if (!(key in input.categoryScores)) {
+			unmeasuredCategories.push(key);
+		}
 		filledScores[key] = input.categoryScores[key] ?? 100;
 	}
 	// Also include any explicitly-provided scores not in tierMap
@@ -357,6 +376,7 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 		partialEnforcementGaps,
 		providerModifier,
 		criticalPenalty,
+		unmeasuredCategories,
 	};
 }
 
