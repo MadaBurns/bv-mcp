@@ -12,9 +12,10 @@
  * against a future call site skipping it. This test is that backstop.
  *
  * What it flags: a bare identifier call `fetch(...)` — the raw global — plus
- * three evasions of that same raw global closed by SQ-81 (a follow-up from
- * SQ-76's adversarial review of this gate itself, which found no live
- * exploit of them but confirmed the detector missed all three):
+ * four evasions of that same raw global: three closed by SQ-81 (a follow-up
+ * from SQ-76's adversarial review of this gate itself, which found no live
+ * exploit of them but confirmed the detector missed all three) and a fourth
+ * closed by SQ-94 (found by the SQ-87 read-only audit):
  *   - `globalThis['fetch'](...)` / `self['fetch'](...)` / `window['fetch'](...)`
  *     — bracket-string access carries no `fetch(` token for the bare pattern
  *     to find.
@@ -25,6 +26,10 @@
  *   - `const f = fetch; f(url)` — aliasing the raw global to a local name
  *     before calling it. See FETCH_ALIAS_ASSIGNMENT_PATTERN below for the
  *     documented bound on how far this one reaches.
+ *   - `const net = { go: globalThis.fetch }; net.go(url)` — the same
+ *     aliasing evasion via an object-literal property value instead of a
+ *     plain assignment RHS. See FETCH_OBJECT_PROPERTY_VALUE_PATTERN below
+ *     for the same documented bound.
  *
  * It does NOT flag:
  *   - `safeFetch(...)` (different identifier — already validated).
@@ -42,7 +47,7 @@
  *     {`) — a declaration, not a call.
  *
  * What's left after those exclusions is a bare call to the global `fetch`,
- * including through the three evasions above.
+ * including through the four evasions above.
  * Every existing one has been read and classified into one of two safe
  * shapes, recorded in ALLOWLIST with a one-line reason each:
  *   - fixed/trusted host, scan input travels only in the query string or
@@ -106,7 +111,7 @@ const ALLOWLIST: Readonly<Record<string, AllowlistEntry>> = {
 	},
 	'src/lib/analytics-engine.ts': {
 		count: 1,
-		why: "Fixed api.cloudflare.com Analytics Engine SQL endpoint; accountId/token are operator config, not scan input.",
+		why: 'Fixed api.cloudflare.com Analytics Engine SQL endpoint; accountId/token are operator config, not scan input.',
 	},
 	'src/lib/brand-audit-registrar-enrichment.ts': {
 		count: 1,
@@ -114,7 +119,7 @@ const ALLOWLIST: Readonly<Record<string, AllowlistEntry>> = {
 	},
 	'src/lib/provider-signature-source.ts': {
 		count: 1,
-		why: "Fetches the operator-configured provider-signature source URL; the caller verifies the response against an expected SHA-256, so the content is integrity-pinned even though the transport is unwrapped.",
+		why: 'Fetches the operator-configured provider-signature source URL; the caller verifies the response against an expected SHA-256, so the content is integrity-pinned even though the transport is unwrapped.',
 	},
 	'src/tenants/discovery/app-links-detector.ts': {
 		count: 1,
@@ -130,7 +135,7 @@ const ALLOWLIST: Readonly<Record<string, AllowlistEntry>> = {
 	},
 	'src/tools/check-http-security.ts': {
 		count: 2,
-		why: "First-party gatedFetch (unbudgeted + budgeted variants) issues the direct request to the already-validated scanned domain with manual redirect handling. Its sibling gatedSafeFetch (a few lines below each, wrapping safeFetch) is what actually follows redirect targets — those go through safeFetch, not here.",
+		why: 'First-party gatedFetch (unbudgeted + budgeted variants) issues the direct request to the already-validated scanned domain with manual redirect handling. Its sibling gatedSafeFetch (a few lines below each, wrapping safeFetch) is what actually follows redirect targets — those go through safeFetch, not here.',
 	},
 	'src/tools/check-mta-sts.ts': {
 		count: 2,
@@ -146,11 +151,11 @@ const ALLOWLIST: Readonly<Record<string, AllowlistEntry>> = {
 	},
 	'src/tools/check-ssl.ts': {
 		count: 1,
-		why: "SQ-60-reviewed firstParty ternary: `firstParty ? fetch(input, init) : safeFetch(input, init)`. Only the already-validated first-party host skips safeFetch; every other target on the same line routes through it.",
+		why: 'SQ-60-reviewed firstParty ternary: `firstParty ? fetch(input, init) : safeFetch(input, init)`. Only the already-validated first-party host skips safeFetch; every other target on the same line routes through it.',
 	},
 	'src/tools/check-subdomain-takeover.ts': {
 		count: 1,
-		why: "First-party: fingerprint-probes a subdomain the check itself enumerated under the already-validated scanned domain, not an externally supplied redirect target.",
+		why: 'First-party: fingerprint-probes a subdomain the check itself enumerated under the already-validated scanned domain, not an externally supplied redirect target.',
 	},
 	'src/tools/discover-subdomains.ts': {
 		count: 2,
@@ -195,10 +200,34 @@ const GLOBAL_BRACKET_FETCH_CALL_PATTERN = /(^|[^.\w])(?:globalThis|self|window)\
  * that's an ordinary call already caught by BARE_FETCH_CALL_PATTERN or
  * GLOBAL_ALIAS_FETCH_CALL_PATTERN above, not an aliasing evasion. Object
  * shorthand (`{ fetch }`) and destructuring aliases are NOT covered — out of
- * bound, same reasoning.
+ * bound, same reasoning. An object-literal property VALUE (`{ go: fetch }`)
+ * IS covered, by FETCH_OBJECT_PROPERTY_VALUE_PATTERN below (SQ-94).
  */
 const FETCH_ALIAS_ASSIGNMENT_PATTERN =
 	/(^|[^.\w])(?:const|let|var)\s+\w+\s*(?::[^=]+)?=\s*(?:globalThis\.|self\.|window\.)?fetch\b(?!\s*\()/g;
+
+/**
+ * SQ-94: the same local-aliasing evasion as above, but through an
+ * object-literal property value instead of a plain assignment RHS —
+ * `const net = { go: globalThis.fetch }; net.go(url)` — found by the SQ-87
+ * read-only audit. FETCH_ALIAS_ASSIGNMENT_PATTERN's `=`-anchored RHS never
+ * sees this: the object literal moves the reference out of that anchored
+ * position while carrying no destructuring syntax, so it falls outside that
+ * pattern's documented shorthand/destructuring exception too.
+ *
+ * Same documented bound as the alias-assignment pattern: this flags the
+ * property VALUE at the point it's captured, not later calls through it
+ * (`net.go(url)` carries no `fetch(` token either — tracing an alias through
+ * later use is scope analysis, not a line-oriented regex's job). A property
+ * value that calls immediately (`{ go: fetch(url) }`) is excluded (negative
+ * lookahead) — that's an ordinary call already caught by
+ * BARE_FETCH_CALL_PATTERN or GLOBAL_ALIAS_FETCH_CALL_PATTERN above, not an
+ * aliasing evasion. Object shorthand (`{ fetch }`) and destructuring remain
+ * NOT covered here either — same out-of-bound reasoning. A `typeof fetch`
+ * type-position value (`{ fetch: typeof fetch }`) does not match either: the
+ * required token immediately after the colon is `typeof`, not `fetch`.
+ */
+const FETCH_OBJECT_PROPERTY_VALUE_PATTERN = /[\w$]+\s*:\s*(?:globalThis\.|self\.|window\.)?fetch\b(?!\s*\()/g;
 
 /** All patterns that count as an undocumented use of the raw global fetch. */
 const EVASION_PATTERNS: readonly RegExp[] = [
@@ -206,6 +235,7 @@ const EVASION_PATTERNS: readonly RegExp[] = [
 	GLOBAL_ALIAS_FETCH_CALL_PATTERN,
 	GLOBAL_BRACKET_FETCH_CALL_PATTERN,
 	FETCH_ALIAS_ASSIGNMENT_PATTERN,
+	FETCH_OBJECT_PROPERTY_VALUE_PATTERN,
 ];
 
 function isCommentLine(trimmed: string): boolean {
@@ -249,8 +279,7 @@ describe('safe-fetch-required (audit)', () => {
 			const entry = ALLOWLIST[path];
 			if (!entry) {
 				problems.push(
-					`${path}: ${hits.length} bare fetch() call(s) NOT in ALLOWLIST:\n` +
-						hits.map((h) => `    :${h.line}  ${h.snippet}`).join('\n'),
+					`${path}: ${hits.length} bare fetch() call(s) NOT in ALLOWLIST:\n` + hits.map((h) => `    :${h.line}  ${h.snippet}`).join('\n'),
 				);
 				continue;
 			}
@@ -264,7 +293,9 @@ describe('safe-fetch-required (audit)', () => {
 
 		for (const path of Object.keys(ALLOWLIST)) {
 			if (!byFile.has(path)) {
-				problems.push(`${path}: ALLOWLIST entry expects ${ALLOWLIST[path].count} bare fetch() call(s), found 0 — stale entry, remove or correct it.`);
+				problems.push(
+					`${path}: ALLOWLIST entry expects ${ALLOWLIST[path].count} bare fetch() call(s), found 0 — stale entry, remove or correct it.`,
+				);
 			}
 		}
 
@@ -280,5 +311,45 @@ describe('safe-fetch-required (audit)', () => {
 				`the two accepted shapes), add or correct its entry in ALLOWLIST above with a one-line reason ` +
 				`for why it does not need safeFetch.`,
 		).toEqual([]);
+	});
+});
+
+/**
+ * Self-test fixtures for the detector itself (SQ-94): a detector-pattern
+ * change that cannot itself fail would repeat the exact defect this ticket
+ * fixes, so every EVASION_PATTERNS addition needs a positive control proving
+ * it fires, plus a negative control proving it doesn't overreach into a
+ * documented-safe shape.
+ */
+describe('findBareFetchCalls (detector self-test)', () => {
+	it('flags a raw global fetch smuggled through an object-literal property value (SQ-94 positive control)', () => {
+		expect(findBareFetchCalls('const net = { go: globalThis.fetch };')).toHaveLength(1);
+		expect(findBareFetchCalls('const net = { go: fetch };')).toHaveLength(1);
+		expect(findBareFetchCalls('const net = { go: self.fetch };')).toHaveLength(1);
+		expect(findBareFetchCalls('const net = { go: window.fetch };')).toHaveLength(1);
+	});
+
+	it('does not re-flag a call through the resulting property (scope-tracing bound, documented above)', () => {
+		expect(findBareFetchCalls('return net.go(url);')).toHaveLength(0);
+	});
+
+	it('does not flag a named function reference stored under an unrelated key (negative control)', () => {
+		expect(findBareFetchCalls('const sources = { fetch: fetchCrtShEntries };')).toHaveLength(0);
+	});
+
+	it('does not flag a `typeof fetch` type-position value shaped like a property (negative control)', () => {
+		expect(findBareFetchCalls('type Binding = { fetch: typeof fetch };')).toHaveLength(0);
+	});
+
+	it('does not double-flag a property value that calls immediately (caught elsewhere, not an alias)', () => {
+		expect(findBareFetchCalls('const net = { go: fetch(url) };')).toHaveLength(1);
+	});
+
+	it('still flags the pre-existing alias-assignment evasion (SQ-81 regression control)', () => {
+		expect(findBareFetchCalls('const g = globalThis.fetch;')).toHaveLength(1);
+	});
+
+	it('still flags a bare fetch() call (baseline control)', () => {
+		expect(findBareFetchCalls('await fetch(url);')).toHaveLength(1);
 	});
 });
