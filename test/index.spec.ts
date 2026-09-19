@@ -479,17 +479,17 @@ describe('DNS Security MCP Server', () => {
 			};
 			expect(response.status).toBe(503);
 			expect(body.status).toBe('degraded');
-			for (const key of [
-				'tenantRegistryDb',
-				'scannerQueue',
-				'brandAuditDb',
-				'brandReports',
-				'brandAuditQueue',
-				'brandAuditPdfQueue',
-				'alertWebhook',
-			]) {
+			// `brandAuditDb` is deliberately NOT in this list. SQ-69 declared a REAL
+			// `d1Databases: ['BRAND_AUDIT_DB']` binding in vitest.config.mts so the
+			// brand-audit D1 assertions execute against SQLite instead of a hand-rolled
+			// mock that only string-matched SQL. That binding is genuinely present in the
+			// test runtime, so the health endpoint correctly reports it `ok` here. The
+			// six below are still unbound, and still drive the 503 + `degraded` asserted
+			// above, so this case keeps its teeth.
+			for (const key of ['tenantRegistryDb', 'scannerQueue', 'brandReports', 'brandAuditQueue', 'brandAuditPdfQueue', 'alertWebhook']) {
 				expect(body.bindings[key]).toBe('absent');
 			}
+			expect(body.bindings.brandAuditDb).toBe('ok');
 		});
 	});
 

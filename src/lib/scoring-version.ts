@@ -671,8 +671,35 @@
  *   domains serving the Cloudways edge behind a broken certificate. No DoH query added. No
  *   weight, tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or
  *   profile-detection rule changed.
+ * - 1.35.0 — scored correctness no longer depends on the English wording of a finding
+ *   (story US-2, the audit-remediation wave). `metadata.missingControl` is now authoritative
+ *   in BOTH directions via `declaredMissingControl()`; only an UNDECLARED finding falls
+ *   through to the prose regex. `check-dnssec.ts` states `{ penaltyOverride: 40,
+ *   missingControl: false }` structurally, replacing a comment that made the score depend on
+ *   a copywriting constraint — on the pre-fix tree, rewording that detail scored the category
+ *   0 instead of 60, capping whole domains at grade D. The `'among tested selectors'` literal
+ *   is deleted from `inferFindingConfidence`; it was measured DEAD for scoring across all 471
+ *   `createFinding` sites in both trees, so its removal moves nothing.
+ *   SCORE-BEARING, DOWNWARD, and ONLY here: the email bonus now requires affirmative DKIM
+ *   evidence (`controlPresent === true`). Capped at 5 points, only for `mail_enabled` /
+ *   `enterprise_mail` profiles that also pass `spfStrong` and `dmarcPresent` and whose dkim
+ *   result has `controlPresent === false`. `dkim` keeps its graded 50, sets no
+ *   `missingControls` key and arms no ceiling. Abstention was rejected because the selector
+ *   probes ANSWER (a real bounded measurement, and abstaining would arm the transient retry
+ *   and block caching on every DKIM-less domain); zeroing was rejected because DKIM is
+ *   inferred and "not discovered" is not "absent".
+ *   ⚠️ The affected share is ESTIMATED at ~5-15% from the 2026-08-03 corpus memory, NOT
+ *   re-measured — no scoring corpus fixture exists in-repo.
+ *   Also in this wave, NOT score-bearing: the DoH RCODE is now surfaced so a SERVFAIL stops
+ *   being recorded as a measured absence (additive; no check reads it yet); the maturity
+ *   ladder, cohort statistics, `compare_baseline` and `format-report` stop reading `passed`
+ *   as "control exists" and use `isSatisfiedControl()` / `dmarcPolicyTag()`; an SSL transport
+ *   failure becomes an `info` abstention rather than a `critical` finding (the category was
+ *   ALREADY excluded from scoring, so no score moves).
+ *   No weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule
+ *   changed. `NIST_GRADE_THRESHOLDS` untouched.
  */
-export const SCORING_MODEL_VERSION = '1.34.0';
+export const SCORING_MODEL_VERSION = '1.35.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
