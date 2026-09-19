@@ -679,6 +679,38 @@ describe('computeGenericScore', () => {
 			// Total: 70+15 = 85
 			expect(result.overall).toBe(85);
 		});
+
+		it('scoring: reports the filled-100 keys in unmeasuredCategories rather than as a silent pass', () => {
+			// SQ-66: the 100 default is correct for the WEIGHTED MATH (a category a direct
+			// caller never submitted must not zero or skew a tier it isn't part of), but
+			// `categoryScores.dmarc === 100` alone is indistinguishable from a real
+			// measured 100 unless the caller also checks `unmeasuredCategories`.
+			const ctx = buildContext({
+				categoryScores: { spf: 100 },
+				tierMap: { spf: 'core', dmarc: 'core', dkim: 'core' },
+				weights: { spf: 10, dmarc: 16, dkim: 10 },
+			});
+
+			const result = computeGenericScore(ctx);
+
+			expect(result.categoryScores.dmarc).toBe(100);
+			expect(result.categoryScores.dkim).toBe(100);
+			expect(result.unmeasuredCategories.sort()).toEqual(['dkim', 'dmarc']);
+			// The submitted key is echoed back but never reported as unmeasured.
+			expect(result.unmeasuredCategories).not.toContain('spf');
+		});
+
+		it('scoring: reports no unmeasured categories when every tierMap key was explicitly submitted (control)', () => {
+			const ctx = buildContext({
+				categoryScores: { spf: 100, dmarc: 100 },
+				tierMap: { spf: 'core', dmarc: 'core' },
+				weights: { spf: 10, dmarc: 16 },
+			});
+
+			const result = computeGenericScore(ctx);
+
+			expect(result.unmeasuredCategories).toEqual([]);
+		});
 	});
 
 	describe('provider modifier', () => {

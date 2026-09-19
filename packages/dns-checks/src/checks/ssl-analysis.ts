@@ -92,28 +92,46 @@ export function getHttpsFindings(domain: string, responseUrl: string | undefined
 	return findings;
 }
 
+/**
+ * A thrown `fetch` (timeout, TLS/egress failure, connection refusal, DNS resolution
+ * failure for the scanned host, ...) means the scanner never reached the origin — we did
+ * not MEASURE the TLS/HSTS posture, we failed to observe it. Issue #638 law: an unmeasured
+ * probe must never read as a scored security deficiency, so this returns the same `info` +
+ * `inconclusive`/`errorKind` abstention shape as the sibling unassessable-origin lanes in
+ * this file (`no_content`, `redirect_chain_unresolved`) and in `check-mta-sts.ts`'s
+ * `classifyTransportFailure`, not a `high`/`critical` "may not support HTTPS" / "may not
+ * have a valid SSL certificate" finding. `checkSSL` (check-ssl.ts) independently sets
+ * `checkStatus` from the same timeout/error split to exclude the category from scoring;
+ * this finding carries the matching honest label for what's shown to the caller.
+ *
+ * The raw upstream error message is deliberately NOT interpolated into the detail: a
+ * `high`/`critical` finding is tested by `scoreIndicatesMissingControl`
+ * (`MISSING_CONTROL_REGEX` — "missing" / "required" / "not found" / "no ... record") and an
+ * upstream error string is attacker/environment-controlled prose that could arm it (the
+ * `redactSubjectData` incident this regex already survived once, #345-class). Downgrading to
+ * `info` already takes this finding out of that gate's severity precondition; omitting the
+ * raw text closes it structurally too, so a future severity change can't reopen it.
+ */
 export function getHttpsErrorFinding(domain: string, message: string): Finding {
-	if (message.includes('timeout') || message.includes('abort')) {
-		return createFinding(
-			'ssl',
-			'HTTPS connection timeout',
-			'high',
-			`Could not establish HTTPS connection to ${domain} within 10 seconds. The server may not support HTTPS.`,
-		);
-	}
+	const isTimeout = message.includes('timeout') || message.includes('abort');
+	const errorKind = isTimeout ? 'timeout' : 'transport_error';
 
 	return createFinding(
 		'ssl',
-		'HTTPS connection failed',
-		'critical',
-		`Failed to connect to ${domain} over HTTPS: ${message}. The domain may not have a valid SSL certificate.`,
+		isTimeout ? 'HTTPS connection not assessed (scanner timeout)' : 'HTTPS connection not assessed (transport error)',
+		'info',
+		isTimeout
+			? `The scanner's HTTPS connection attempt to ${domain} did not complete before the timeout, so HTTPS/HSTS posture could not be verified on this run. This is not evidence about ${domain}'s TLS configuration. Retry to re-measure.`
+			: `The scanner's HTTPS connection attempt to ${domain} failed before any response was received, so HTTPS/HSTS posture could not be verified on this run. This is not evidence about ${domain}'s TLS configuration. Retry to re-measure.`,
+		{ inconclusive: true, confidence: 'heuristic', errorKind },
 	);
 }
 
 /**
  * Neutral, zero-penalty finding for when the target's robots.txt disallows our
- * scanner — distinct from `getHttpsErrorFinding`, which implies a real
- * connectivity/certificate problem. This is never a security weakness.
+ * scanner — the same abstention posture `getHttpsErrorFinding` now takes for a thrown
+ * fetch, distinguished only by cause (a policy the scanner honored, not a probe it lost).
+ * This is never a security weakness.
  */
 export function getRobotsDisallowedFinding(domain: string, scope: RobotsDisallowScope = 'blanket'): Finding {
 	return createFinding(

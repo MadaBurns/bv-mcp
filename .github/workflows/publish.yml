@@ -59,6 +59,15 @@ jobs:
       - name: Lint
         run: npm run lint
 
+      # Required before any Vitest run: vitest.config.mts imports
+      # src/workers/infra-probe, which transitively reaches src/lib/dns-records.ts
+      # -> `isInconclusiveRcode` from @blackveil/dns-checks, making the built dist
+      # a config-load dependency. `npm ci` does not build workspace packages, so
+      # without this the release suite dies at config resolution rather than on a
+      # real assertion. Keep this step immediately before any job that runs tests.
+      - name: Build dns-checks workspace
+        run: npm run build --workspace=packages/dns-checks
+
       - name: Test
         run: npm test
 

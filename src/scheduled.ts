@@ -7,9 +7,15 @@
  * Slack/Discord webhook alerts when thresholds are breached.
  *
  * Required env vars: CF_ACCOUNT_ID, CF_ANALYTICS_TOKEN, ALERT_WEBHOOK_URL
- * Optional env vars: ALERT_ERROR_THRESHOLD (default 5%), ALERT_MIN_ERROR_SAMPLES (default 20),
- *   ALERT_P95_THRESHOLD (default 15000ms), ALERT_RATE_LIMIT_THRESHOLD (default 50 hits),
- *   ALERT_LOOKBACK_MINUTES (default 15)
+ * Optional env vars: ALERT_ERROR_THRESHOLD (default 5%), ALERT_P95_THRESHOLD (default 15000ms),
+ *   ALERT_RATE_LIMIT_THRESHOLD (default 50 hits), ALERT_LOOKBACK_MINUTES (default 15)
+ *
+ * A handful of alert thresholds (minimum error samples, SPF-canary null rate, binding
+ * degradation, queue failure, tail exception, tool-outcome) are NOT operator-configurable —
+ * no `wrangler.jsonc` or deploy file declares an env var for them, so a `ScheduledEnv`
+ * field would always read as unset and silently resolve to its code default. They are
+ * plain `DEFAULT_*` constants below instead, so the effective value is visible at the
+ * point of use rather than implied by a fallback nobody can ever trigger.
  *
  * Every RATE-based lane here pairs its threshold with a minimum-sample floor and
  * abstains below it. A percentage over a handful of events is not a measurement, and
@@ -119,17 +125,10 @@ export interface ScheduledEnv {
 	ALERT_LATENCY_LOOKBACK_MINUTES?: string;
 	/** Minimum tool calls in a class before its p95 is believed (default 20). Below this, p95 degenerates toward max. */
 	ALERT_MIN_LATENCY_SAMPLES?: string;
-	/** Minimum tool calls in the error-rate window before an error PERCENTAGE is believed (default 20). Below this the lane abstains — see DEFAULT_MIN_ERROR_SAMPLES. */
-	ALERT_MIN_ERROR_SAMPLES?: string;
-	ALERT_SPF_NULL_RATE_THRESHOLD?: string;
-	/** Min present-binding-degradation events in the lookback window to alert (default 1). */
-	ALERT_BINDING_DEGRADATION_THRESHOLD?: string;
-	/** Min async-path (queue/cron) failed messages/sub-tasks in the lookback window to alert (default 1). */
-	ALERT_QUEUE_FAILURE_THRESHOLD?: string;
-	/** Min fatal Worker exceptions exported by the tail consumer in the lookback window to alert (default 1). */
-	ALERT_TAIL_EXCEPTION_THRESHOLD?: string;
-	/** Minimum non-completed outcomes before alerting (default 3). */
-	ALERT_TOOL_OUTCOME_THRESHOLD?: string;
+	// ALERT_MIN_ERROR_SAMPLES, ALERT_SPF_NULL_RATE_THRESHOLD, ALERT_BINDING_DEGRADATION_THRESHOLD,
+	// ALERT_QUEUE_FAILURE_THRESHOLD, ALERT_TAIL_EXCEPTION_THRESHOLD, and ALERT_TOOL_OUTCOME_THRESHOLD
+	// are NOT env-configurable — see the file-header comment. Their effective values are the
+	// DEFAULT_* constants used directly at each call site below.
 	RATE_LIMIT?: KVNamespace;
 	BRAND_AUDIT_DB?: D1Database;
 	INTELLIGENCE_DB?: D1Database;
@@ -307,6 +306,87 @@ const CRON_INTERVAL_MINUTES = 15;
 const DEFAULT_BINDING_DEGRADATION_THRESHOLD = 1;
 /** A single errored async-path batch (brand-audit queue throw, cron failure) is worth surfacing. */
 const DEFAULT_QUEUE_FAILURE_THRESHOLD = 1;
+/** A single fatal Worker exception exported by the tail consumer is worth surfacing. */
+const DEFAULT_TAIL_EXCEPTION_THRESHOLD = 1;
+/** Minimum non-completed tool outcomes in the lookback window before alerting. */
+const DEFAULT_TOOL_OUTCOME_THRESHOLD = 3;
+
+/** Lookback window used to size the "how much traffic went uncounted" context on the {@link checkAccessRollupProvisioned} alert. */
+const ROLLUP_HEALTH_LOOKBACK_HOURS = 24;
+
+/**
+ * Fail-open measurement guard (SQ-72 #3): `mcp_access_rollup` (Phase 1, decision #2,
+ * `scripts/intelligence/sql/0004_mcp_access_rollup.sql`) is shipped in-repo but NOT
+ * provisioned in production — every write throws `SQLITE_ERROR: no such table`
+ * (code 7500), and the write site (`incrementAccessRollup` in `src/mcp/execute.ts`)
+ * is a best-effort `fireAndForget` that logs one `warn` per request. That per-request
+ * warn is indistinguishable from any other transient D1 hiccup, so a permanently
+ * unprovisioned table reads as ordinary background noise — nobody can tell "the table
+ * doesn't exist" from "zero internal traffic this tick", and D1's only `auth_tier`
+ * column sits behind it.
+ *
+ * This probes the table ONCE per cron tick (not per request) and, on a missing-table
+ * error, correlates it against real `mcp_access_log` volume in the same window so the
+ * alert carries a magnitude ("N requests went uncounted") instead of a bare boolean.
+ * Any other D1 error (not "no such table") is left alone — that is a different,
+ * already-covered failure mode, not this ticket's fail-open gap.
+ *
+ * Does NOT run or provision the migration — provisioning production D1 is
+ * operator-gated (see CLAUDE.md pre-commit / deploy doctrine).
+ *
+ * ⚠️ UNIT TRAP: `mcp_access_log.created_at` is SECONDS (epoch), unlike
+ * `brand_audits.created_at` which is MILLISECONDS — the two tables do not share a
+ * convention. The cutoff below is computed in seconds to match.
+ */
+async function checkAccessRollupProvisioned(env: ScheduledEnv, webhookUrl: string): Promise<void> {
+	const db = env.INTELLIGENCE_DB;
+	if (!db) return;
+
+	try {
+		await db.prepare('SELECT 1 FROM mcp_access_rollup LIMIT 1').first();
+		return; // table exists — nothing to report
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		if (!/no such table/i.test(message)) return; // a different D1 error is not this gap
+
+		let uncountedRequests: number | null = null;
+		try {
+			const cutoffSeconds = Math.floor(Date.now() / 1000) - ROLLUP_HEALTH_LOOKBACK_HOURS * 3600;
+			const row = await db
+				.prepare(`SELECT COUNT(*) AS cnt FROM mcp_access_log WHERE source = 'internal' AND created_at >= ?`)
+				.bind(cutoffSeconds)
+				.first<{ cnt: number }>();
+			uncountedRequests = row?.cnt ?? null;
+		} catch {
+			// Best-effort context only — the missing-table alert below fires regardless.
+		}
+
+		logError('mcp_access_rollup is not provisioned in production: auth_tier adoption telemetry is fail-open (masquerading as zero, not measured)', {
+			category: 'scheduled',
+			result: 'access_rollup_unprovisioned',
+			details: {
+				migration: 'scripts/intelligence/sql/0004_mcp_access_rollup.sql',
+				dbError: message,
+				uncountedInternalRequests: uncountedRequests,
+				lookbackHours: ROLLUP_HEALTH_LOOKBACK_HOURS,
+			},
+		});
+
+		await sendAlert(
+			webhookUrl,
+			buildAlertPayload({
+				title: 'mcp_access_rollup table missing in production — auth_tier telemetry is fail-open, not zero',
+				severity: 'warning',
+				metrics: {
+					uncounted_internal_requests_24h: uncountedRequests ?? 'unknown (mcp_access_log query also failed)',
+					migration: '0004_mcp_access_rollup.sql (not applied)',
+				},
+				threshold: 'mcp_access_rollup_table_exists',
+			}),
+			alertOptions(env),
+		).catch(() => {});
+	}
+}
 
 /** Main scheduled handler — called by Cron Trigger. */
 export async function handleScheduled(env: ScheduledEnv): Promise<void> {
@@ -405,6 +485,10 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	// docs/plans/2026-07-09-operator-alert-webhook-binding.md.
 	const webhookUrl = await resolveAlertWebhookUrl(env);
 	if (!webhookUrl) return;
+
+	// D1-only lane — runs even when AE credentials below are absent (self-hosts).
+	await checkAccessRollupProvisioned(env, webhookUrl);
+
 	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
 
 	// Resolve the AE DATASET name once (defaults to bv_dns_security_mcp — the prod
@@ -418,16 +502,13 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	const p95Threshold = Number.isFinite(parsedP95) ? parsedP95 : DEFAULT_P95_THRESHOLD;
 	const parsedRateLimit = parseFloat(env.ALERT_RATE_LIMIT_THRESHOLD ?? '');
 	const rateLimitThreshold = Number.isFinite(parsedRateLimit) ? parsedRateLimit : DEFAULT_RATE_LIMIT_THRESHOLD;
-	const parsedBindingDegradation = parseFloat(env.ALERT_BINDING_DEGRADATION_THRESHOLD ?? '');
-	const bindingDegradationThreshold = Number.isFinite(parsedBindingDegradation)
-		? parsedBindingDegradation
-		: DEFAULT_BINDING_DEGRADATION_THRESHOLD;
-	const parsedQueueFailure = parseFloat(env.ALERT_QUEUE_FAILURE_THRESHOLD ?? '');
-	const queueFailureThreshold = Number.isFinite(parsedQueueFailure) ? parsedQueueFailure : DEFAULT_QUEUE_FAILURE_THRESHOLD;
-	const parsedTailException = parseFloat(env.ALERT_TAIL_EXCEPTION_THRESHOLD ?? '');
-	const tailExceptionThreshold = Number.isFinite(parsedTailException) ? parsedTailException : 1;
-	const parsedToolOutcome = parseFloat(env.ALERT_TOOL_OUTCOME_THRESHOLD ?? '');
-	const toolOutcomeThreshold = Number.isFinite(parsedToolOutcome) ? parsedToolOutcome : 3;
+	// Not env-configurable — see the file-header comment: no deploy config declares these,
+	// so an env-parse-with-fallback here would always silently take the fallback. The
+	// DEFAULT_* constant IS the effective value.
+	const bindingDegradationThreshold = DEFAULT_BINDING_DEGRADATION_THRESHOLD;
+	const queueFailureThreshold = DEFAULT_QUEUE_FAILURE_THRESHOLD;
+	const tailExceptionThreshold = DEFAULT_TAIL_EXCEPTION_THRESHOLD;
+	const toolOutcomeThreshold = DEFAULT_TOOL_OUTCOME_THRESHOLD;
 	const lookback = env.ALERT_LOOKBACK_MINUTES ?? String(DEFAULT_LOOKBACK_MINUTES);
 	const parsedBatchP95 = parseFloat(env.ALERT_BATCH_P95_THRESHOLD ?? '');
 	const batchP95Threshold = Number.isFinite(parsedBatchP95) ? parsedBatchP95 : DEFAULT_BATCH_P95_THRESHOLD;
@@ -436,9 +517,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		Number.isFinite(parsedLatencyLookback) && parsedLatencyLookback > 0 ? parsedLatencyLookback : DEFAULT_LATENCY_LOOKBACK_MINUTES;
 	const parsedMinSamples = parseInt(env.ALERT_MIN_LATENCY_SAMPLES ?? '', 10);
 	const minLatencySamples = Number.isFinite(parsedMinSamples) && parsedMinSamples >= 0 ? parsedMinSamples : DEFAULT_MIN_LATENCY_SAMPLES;
-	const parsedMinErrorSamples = parseInt(env.ALERT_MIN_ERROR_SAMPLES ?? '', 10);
-	const minErrorSamples =
-		Number.isFinite(parsedMinErrorSamples) && parsedMinErrorSamples >= 0 ? parsedMinErrorSamples : DEFAULT_MIN_ERROR_SAMPLES;
+	// Not env-configurable (see above) — the effective value is always DEFAULT_MIN_ERROR_SAMPLES.
+	const minErrorSamples = DEFAULT_MIN_ERROR_SAMPLES;
 
 	// EACH QUERY GETS ITS OWN try. Running all six inside a single try meant the
 	// FIRST rejection aborted the whole check, taking every later alert down with
@@ -1239,12 +1319,16 @@ export async function handleDailyDigest(env: ScheduledEnv): Promise<void> {
 	}
 }
 
-/** Default null-rate threshold (15%): with 20 canaries, 3+ nulls trips it. */
+/**
+ * Null-rate threshold (15%): with 20 canaries, 3+ nulls trips it. Not env-configurable
+ * — see the file-header comment: no deploy config declares an override, so this
+ * constant IS the effective value.
+ */
 const DEFAULT_SPF_NULL_RATE_THRESHOLD = 0.15;
 
 /**
  * SPF canary — daily synthetic probe of a curated stable-SPF domain set. When
- * the null rate breaches `ALERT_SPF_NULL_RATE_THRESHOLD` (default 15%), emits a
+ * the null rate breaches {@link DEFAULT_SPF_NULL_RATE_THRESHOLD} (15%), emits a
  * webhook alert listing the failing domains so the next responder has a
  * concrete reproducer instead of a dashboard impression.
  *
@@ -1254,9 +1338,7 @@ const DEFAULT_SPF_NULL_RATE_THRESHOLD = 0.15;
 export async function handleSpfCanary(env: ScheduledEnv): Promise<void> {
 	try {
 		const result = await runSpfCanary();
-		const rawThreshold = env.ALERT_SPF_NULL_RATE_THRESHOLD ? Number(env.ALERT_SPF_NULL_RATE_THRESHOLD) : NaN;
-		const threshold =
-			Number.isFinite(rawThreshold) && rawThreshold > 0 && rawThreshold <= 1 ? rawThreshold : DEFAULT_SPF_NULL_RATE_THRESHOLD;
+		const threshold = DEFAULT_SPF_NULL_RATE_THRESHOLD;
 
 		logEvent({
 			timestamp: new Date().toISOString(),

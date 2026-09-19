@@ -26,6 +26,10 @@ export default defineConfig({
 						wrangler: { configPath: './wrangler.jsonc' },
 						miniflare: {
 							kvNamespaces: ['SESSION_STORE', 'RATE_LIMIT'],
+							// Real D1 so test/brand-audit-watch.integration.test.ts executes its SQL
+							// against actual SQLite instead of a string-matching mock — malformed SQL
+							// now throws in the test the way it would against production D1.
+							d1Databases: ['BRAND_AUDIT_DB'],
 							serviceBindings: {
 								BV_WEB: async (_req: Request) => {
 									return new Response(JSON.stringify({ status: 'ok' }), { status: 200 });

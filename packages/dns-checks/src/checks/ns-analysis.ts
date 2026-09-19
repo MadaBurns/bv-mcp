@@ -255,7 +255,6 @@ export interface NameserverProbeResult {
  */
 export const CONFIDENCE_DEMOTING_PHRASES = [
 	'common selectors',
-	'among tested selectors',
 	'inferred',
 	'manual review',
 	'possible',

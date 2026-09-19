@@ -13,6 +13,7 @@ export {
 	SEVERITY_PENALTIES,
 	inferFindingConfidence,
 	scoreIndicatesMissingControl,
+	declaredMissingControl,
 	findingsIndicateMissingControl,
 	findingsIndicatePartialEnforcement,
 	spfAllQualifier,

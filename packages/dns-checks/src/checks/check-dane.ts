@@ -11,19 +11,8 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, RawDNSResponse } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
+import { describeRcode, isInconclusiveRcode } from '../dns-rcode';
 import { analyzeTlsaRecords } from './dane-analysis';
-
-/**
- * DNS rcodes (RFC 1035 §4.1.1) that mean "the resolver could not answer" rather than
- * "no such record exists". A DoH endpoint returns HTTP 200 carrying one of these with
- * an EMPTY answer set, so nothing throws and the `DNSQueryFunction` (`string[]`)
- * projection renders them indistinguishable from a genuine NODATA.
- *
- * NXDOMAIN (3) is deliberately NOT here: "this name does not exist" IS a measurement,
- * and a name that does not exist accepts no mail.
- */
-const RCODE_SERVFAIL = 2;
-const RCODE_REFUSED = 5;
 
 /**
  * Corroborate an EMPTY MX answer before claiming SMTP DANE is not applicable (#639).
@@ -54,10 +43,12 @@ async function assertEmptyMxIsAMeasurement(domain: string, rawQueryDNS: RawDNSQu
 		throw new Error(`DNS query for MX records of ${domain} failed; SMTP DANE applicability could not be determined`);
 	}
 
-	if (response.Status === RCODE_SERVFAIL || response.Status === RCODE_REFUSED) {
-		const rcode = response.Status === RCODE_SERVFAIL ? 'SERVFAIL' : 'REFUSED';
+	// `isInconclusiveRcode` is the shared rule (see ../dns-rcode): NOERROR and NXDOMAIN are
+	// conclusions — and a name that does not exist accepts no mail — while every other rcode
+	// means the resolver declined or failed to answer, so the empty MX set measured nothing.
+	if (isInconclusiveRcode(response.Status)) {
 		throw new Error(
-			`DNS query for MX records of ${domain} returned ${rcode}; the zone could not be resolved, so SMTP DANE applicability is undetermined`,
+			`DNS query for MX records of ${domain} returned ${describeRcode(response.Status)}; the zone could not be resolved, so SMTP DANE applicability is undetermined`,
 		);
 	}
 }

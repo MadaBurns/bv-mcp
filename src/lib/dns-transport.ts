@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { isInconclusiveRcode } from '@blackveil/dns-checks';
 import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY, DOH_EDGE_CACHE_TTL, DNS_RETRY_BASE_DELAY_MS } from './config';
 import { type DohResponse, type DohOutcome, type QueryDnsOptions, RecordType, type RecordTypeName } from './dns-types';
 import { DohResponseSchema } from '../schemas/dns';
@@ -246,6 +247,15 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 			}
 			// secondaryResult is DohResponse here
 			const confirmedResponse = secondaryResult as DohResponse;
+			// The confirmation REPLACES the primary response wholesale, rcode included. A
+			// secondary that could not answer (SERVFAIL/REFUSED) must therefore not overwrite a
+			// primary that DID conclude: both responses carry an empty answer set, so the swap is
+			// invisible in the data and silently turns a real measurement into an abstention.
+			// Conclusive-over-inconclusive only; the reverse swap — an inconclusive primary
+			// corrected by a secondary that answered — is exactly what this path exists for.
+			if (isInconclusiveRcode(confirmedResponse.Status) && !isInconclusiveRcode(data.Status)) {
+				return data;
+			}
 			return confirmedResponse;
 		}
 
@@ -287,7 +297,13 @@ export async function confirmWithSecondaryResolvers(
 		if (r.status === 'fulfilled' && r.value.kind === 'ok' && hasTypedAnswers(r.value.response, type)) return r.value.response;
 	}
 	// No secondary returned typed answers — return the first successful response if any,
-	// so callers get a valid (possibly empty) DohResponse instead of unconfirmed.
+	// so callers get a valid (possibly empty) DohResponse instead of unconfirmed. A
+	// resolver that CONCLUDED (NOERROR/NXDOMAIN) outranks one that only returned HTTP 200
+	// carrying SERVFAIL/REFUSED: both are `kind: 'ok'` with an empty answer set, and only
+	// the rcode says which of them actually measured anything.
+	for (const r of results) {
+		if (r.status === 'fulfilled' && r.value.kind === 'ok' && !isInconclusiveRcode(r.value.response.Status)) return r.value.response;
+	}
 	for (const r of results) {
 		if (r.status === 'fulfilled' && r.value.kind === 'ok') return r.value.response;
 	}

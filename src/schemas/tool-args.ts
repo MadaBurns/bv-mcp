@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { z } from 'zod';
+// Type-only: tool-definitions.ts imports (runtime) FROM this file, so this
+// reverse edge must stay `import type` — erased at build time, so the module
+// graph stays a one-way DAG and no runtime cycle is introduced.
+import type { ToolName } from './tool-definitions';
 import {
 	DomainSchema,
 	FormatSchema,
@@ -755,4 +759,4 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	query_ual: QueryUalArgs,
 	get_ca_policies: GetCaPoliciesArgs,
 	assess_coverage: AssessCoverageArgs,
-};
+} satisfies Record<ToolName, z.ZodTypeAny>;

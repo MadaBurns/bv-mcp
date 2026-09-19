@@ -136,26 +136,33 @@ export async function checkDNSSEC(
 		// LABEL is `high` (not `critical`): DNSSEC is one of several integrity controls,
 		// not a sole baseline, so it doesn't warrant the top triage tier — but the heavy
 		// proportionate deduction the prior `critical` carried is preserved via the
-		// override, keeping the category score unchanged at 60. We do NOT set
-		// `missingControl: true` (which would zero the category). The detail text
-		// deliberately avoids "no … record / missing / not found" so
-		// `scoreIndicatesMissingControl` cannot auto-zero the finding.
+		// override, keeping the category score unchanged at 60.
+		//
+		// `missingControl: false` is the STRUCTURAL statement of that decision: an unsigned
+		// zone is a graded deficiency, never a zeroing. It replaces a copywriting constraint
+		// that used to live in this comment — the detail text was required to avoid the words
+		// "no … record", "missing" and "not found" so `scoreIndicatesMissingControl`'s regex
+		// could not auto-zero the finding. Nothing enforced that, and `dnssec` is a critical
+		// category in EVERY profile, so a reword would not merely have zeroed the category: it
+		// would have capped the whole domain at `criticalGapCeiling` (64 → grade D). The
+		// declaration outranks the prose (scoring/model.ts `findingsIndicateMissingControl`),
+		// so the sentence below is now ordinary, editable prose.
 		findings.push(
 			createFinding(
 				'dnssec',
 				'DNSSEC not enabled',
 				'high',
 				`DNSSEC is not configured for ${target}. Without DNSSEC, DNS responses are not cryptographically verified, leaving SPF, DMARC, and DKIM records vulnerable to DNS-level manipulation.`,
-				{ penaltyOverride: 40 },
+				{ penaltyOverride: 40, missingControl: false },
 			),
 		);
 	} else if (dnskeyRecords.length > 0 && dsRecords.length === 0 && !dsQueryFailed) {
 		// DNSKEY published without a parent DS is an island of trust. Validating
 		// resolvers classify the delegation as INSECURE, not BOGUS: the zone gets no
 		// origin authentication, but answers do not fail validation solely because the
-		// parent has not anchored the child. Grade it like an unsigned zone (60) and do
-		// not assert missingControl, which would zero this critical category and cap the
-		// entire domain at grade D.
+		// parent has not anchored the child. Grade it like an unsigned zone (60) and
+		// declare `missingControl: false`, since asserting the control absent would zero
+		// this critical category and cap the entire domain at grade D.
 		//
 		// ⚠️ The `!dsQueryFailed` gate is LOAD-BEARING. A DS probe that THREW leaves
 		// `dsRecords` empty, which is structurally indistinguishable here from a
@@ -173,7 +180,7 @@ export async function checkDNSSEC(
 				'DNSSEC island of trust',
 				'high',
 				`DNSKEY records are published for ${target}, but the parent zone does not publish a DS linkage. Validating resolvers therefore treat the delegation as insecure: answers remain available, but DNSSEC provides no origin authentication until the registrar publishes the DS.`,
-				{ penaltyOverride: 40 },
+				{ penaltyOverride: 40, missingControl: false },
 			),
 		);
 	} else if (dnskeyRecords.length === 0 && dsRecords.length > 0 && !dnskeyQueryFailed) {

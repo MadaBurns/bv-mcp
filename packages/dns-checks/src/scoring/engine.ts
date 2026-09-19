@@ -228,6 +228,19 @@ function buildGenericContext(
 		}
 	}
 
+	// --- Build controlPresent map (scoring model 1.35.0) ---
+	// Verbatim pass-through of each result's own determination, and ONLY when it made one:
+	// a check that left `controlPresent` undefined contributes no key, so the generic engine
+	// can tell "measured, not working" from "never determined". Measurement-gated like its
+	// siblings — an errored or timed-out check's residual flag must not read as evidence.
+	// Consumed only by the email-bonus DKIM leg (see generic.ts); nothing else reads it.
+	const controlPresent: Record<string, boolean> = {};
+	for (const result of results) {
+		if (isCheckMeasured(result.checkStatus) && typeof result.controlPresent === 'boolean') {
+			controlPresent[result.category] = result.controlPresent;
+		}
+	}
+
 	// --- Build partialEnforcement map (scoring model 1.26.0) ---
 	// Same measurement gate as missingControls, for the same reason: a timed-out or errored
 	// check's synthetic findings must never arm a ceiling. The predicate is structural only
@@ -311,8 +324,14 @@ function buildGenericContext(
 
 	// --- Email bonus eligibility ---
 	// Original engine requires actual SPF and DMARC results to exist for the bonus
-	// (!!spfResult && !!dmarcResult). Absent DKIM qualifies (dkimNotDeterministicallyMissing = !dkimResult || ...).
-	// Disable email bonus entirely when SPF or DMARC has no result to match original behavior.
+	// (!!spfResult && !!dmarcResult). Disable email bonus entirely when SPF or DMARC has no
+	// result to match original behavior.
+	//
+	// DKIM is NOT part of this gate. Its leg lives in `computeGenericScore` and, since
+	// scoring model 1.35.0, reads the `controlPresent` map built above rather than "nobody
+	// proved it missing" — a domain whose DKIM check RAN and found no active key no longer
+	// earns the bonus. A DKIM check that never ran contributes no key and keeps the legacy
+	// reading; see the DKIM-leg comment in generic.ts for the full rationale.
 	let emailBonusEligible = context ? PROFILE_EMAIL_BONUS_ELIGIBLE[context.profile] : true;
 	if (!resultMap.has('spf') || !resultMap.has('dmarc')) {
 		emailBonusEligible = false;
@@ -328,6 +347,7 @@ function buildGenericContext(
 		tierMap: { ...CATEGORY_TIERS },
 		weights,
 		missingControls,
+		controlPresent,
 		partialEnforcement,
 		transientFailures,
 		hardeningPassed,

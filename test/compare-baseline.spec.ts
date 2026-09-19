@@ -156,6 +156,53 @@ describe('compareBaseline', () => {
 		expect(result.violations).toContainEqual(expect.objectContaining({ rule: 'require_dmarc_enforce' }));
 	});
 
+	it('SQ-71 regression: flags DMARC as NOT enforced from the structured policy tag even when no finding text says "p=none"', async () => {
+		// The pre-fix `dmarcEnforced` read `passed && !hasNonePolicyFinding`, where
+		// `hasNonePolicyFinding` string-matched finding TITLE/DETAIL for "p=none"/"policy
+		// is none". A `p=none` record with `passed: true` (score >= 50 is possible even
+		// unenforced) and no finding whose text happens to contain that literal substring
+		// read as a false "enforced" all-clear. `dmarcPolicyTag()` reads the parsed tag
+		// directly and cannot be fooled by finding wording.
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const result = compareBaseline(
+			createMockScan({
+				domain: 'false-clear.com',
+				checks: [
+					{
+						category: 'dmarc',
+						passed: true,
+						score: 60,
+						findings: [],
+						metadata: { dmarcPolicy: 'none' },
+					},
+				],
+			}),
+			{ require_dmarc_enforce: true },
+		);
+		expect(result.passed).toBe(false);
+		expect(result.violations).toContainEqual(expect.objectContaining({ rule: 'require_dmarc_enforce' }));
+	});
+
+	it('SQ-71 regression: reads DMARC as enforced from the structured policy tag for p=quarantine', async () => {
+		const { compareBaseline } = await import('../src/tools/compare-baseline');
+		const result = compareBaseline(
+			createMockScan({
+				domain: 'quarantine.com',
+				checks: [
+					{
+						category: 'dmarc',
+						passed: true,
+						score: 90,
+						findings: [],
+						metadata: { dmarcPolicy: 'quarantine' },
+					},
+				],
+			}),
+			{ require_dmarc_enforce: true },
+		);
+		expect(result.violations).not.toContainEqual(expect.objectContaining({ rule: 'require_dmarc_enforce' }));
+	});
+
 	it('flags critical finding count exceeding max', async () => {
 		const { compareBaseline } = await import('../src/tools/compare-baseline');
 		const result = compareBaseline(

@@ -232,12 +232,16 @@ describe('checkSSL', () => {
 		expect(result.findings.some((f) => f.title === 'HTTPS and HSTS properly configured')).toBe(true);
 	});
 
-	it('reports connection failure', async () => {
+	it('reports connection failure as an unmeasured abstention, not a scored deficiency', async () => {
 		const fetchFn: FetchFunction = vi.fn(async () => {
 			throw new Error('Connection failed');
 		});
 		const result = await checkSSL('example.com', fetchFn);
-		expect(result.findings.some((f) => f.title === 'HTTPS connection failed')).toBe(true);
+		const finding = result.findings.find((f) => f.title === 'HTTPS connection not assessed (transport error)');
+		expect(finding).toBeDefined();
+		expect(finding?.severity).toBe('info');
+		expect(finding?.metadata).toMatchObject({ inconclusive: true, errorKind: 'transport_error' });
+		expect(result.checkStatus).toBe('error');
 	});
 
 	it('reports missing HSTS when an HTTPS redirect chain ends without HSTS anywhere (#839)', async () => {
