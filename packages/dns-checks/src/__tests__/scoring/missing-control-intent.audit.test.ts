@@ -522,9 +522,13 @@ function parseMetadata(source: string | null): Record<string, unknown> | undefin
  *
  * This recognizes exactly that one computed-key shape (an array literal or a bare array
  * identifier as the value) and returns the raw hole EXPRESSION TEXT(s) it declares as subject
- * data — not resolved values, which only the running check knows. Any OTHER computed key is a
- * metadata shape this audit does not understand, so it FAILS LOUD instead of silently dropping
- * it, per the ticket's explicit fallback: failing loud is acceptable, silently skipping is not.
+ * data — not resolved values, which only the running check knows. A boolean-valued computed key
+ * (`{ [flag]: true }`) is skipped rather than routed through the fail-loud path below: it cannot
+ * be this shape (SUBJECT_TERMS_METADATA_KEY's value is always an array or an array-referencing
+ * identifier) and cannot arm or disarm the missing-control gate either, so there is nothing for
+ * this audit to silently lose by ignoring it. Any OTHER (non-boolean) computed key is a metadata
+ * shape this audit does not understand, so it FAILS LOUD instead of silently dropping it, per the
+ * ticket's explicit fallback: failing loud is acceptable, silently skipping is not.
  */
 const COMPUTED_METADATA_KEY = /\[\s*([A-Za-z_$][\w$]*)\s*\]\s*:\s*(\[[^\]]*\]|[A-Za-z_$][\w$.]*)/g;
 
@@ -532,6 +536,15 @@ function parseSubjectTermDeclarations(source: string | null): readonly string[] 
 	if (!source) return [];
 	const declared: string[] = [];
 	for (const m of source.matchAll(COMPUTED_METADATA_KEY)) {
+		// A boolean-valued computed key (`{ [flag]: true }`, seen in the root worker tree's
+		// error-result builders — SQ-100) can never be the SUBJECT_TERMS_METADATA_KEY shape: that
+		// shape's value is always an array literal or an identifier referencing one. It also cannot
+		// arm or disarm the missing-control gate itself — the key is a status marker, not prose or a
+		// redaction declaration — so it is not "metadata this audit cannot parse" in the sense the
+		// fail-loud guard exists for. Skipping it here (rather than routing it through the throw
+		// below) keeps that guard aimed at the one shape it is actually protecting.
+		const rawValue = m[2].trim();
+		if (rawValue === 'true' || rawValue === 'false') continue;
 		if (m[1] !== 'SUBJECT_TERMS_METADATA_KEY') {
 			throw new Error(
 				`missing-control-intent audit: unrecognised computed metadata key "[${m[1]}]" in "${source.trim()}". ` +
@@ -541,8 +554,7 @@ function parseSubjectTermDeclarations(source: string | null): readonly string[] 
 					'gate and list it as reviewed) before this passes.',
 			);
 		}
-		const value = m[2].trim();
-		const inner = value.startsWith('[') ? value.slice(1, -1) : value;
+		const inner = rawValue.startsWith('[') ? rawValue.slice(1, -1) : rawValue;
 		for (const part of inner.split(',')) {
 			const trimmed = part.trim();
 			if (trimmed) declared.push(trimmed);
