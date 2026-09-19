@@ -688,19 +688,35 @@
  *   probes ANSWER (a real bounded measurement, and abstaining would arm the transient retry
  *   and block caching on every DKIM-less domain); zeroing was rejected because DKIM is
  *   inferred and "not discovered" is not "absent".
- *   ⚠️ The affected share is UNMEASURED. An earlier draft of this entry estimated ~5-15%
- *   from the 2026-08-03 corpus memory; that citation does not support the claim and was
- *   withdrawn. `reference_scoring-corpus-1000-2026-08.md` carries no DKIM
- *   presence/`controlPresent` statistic and no joint distribution. Its one DKIM datum (mean
- *   69.4 over 693 measured), against the not-found floor of exactly 50
- *   (`check-dkim.ts:514`), implies a not-found share nearer 45-60% — i.e. the evidence
- *   pushes the estimate UP, not down. Measured over bonus RECIPIENTS rather than all
- *   domains, the affected share is likely a majority. No scoring corpus fixture exists
- *   in-repo; measuring this needs a `scripts/ci/dogfood-scan.mjs` `runScan()` pass over a
- *   domain population, reading `dkim.controlPresent` (NOT `passed`, and NOT `score > 0` —
- *   the 50 floor makes that report ~100% presence, the same shape as the DNSSEC `> 60` trap).
- *   The loss is 2, 3 or 5 by DMARC score, and `clampPercent` or a binding ceiling can make
- *   the realized delta smaller or zero.
+ *   MEASURED 2026-09-20, n=1954 scored domains (Tranco JZNVY: 992 from ranks 1-1000, 962
+ *   sampled uniformly from 1001-1e6, seed 20260920). The honest single figure:
+ *   ⚠️ **24.3% of old-rule bonus RECIPIENTS lose the bonus** (154/634, 95% CI 21.1-27.8) —
+ *   about one in four. Quote that, not the 7.9% share of ALL scanned domains whose score
+ *   moves: 7.9% reads like the withdrawn "~5-15%" while meaning something different.
+ *   `P(dkim.controlPresent === false)` is 54.4% overall [52.2-56.6].
+ *   The loss is 2, 3 or 5 by DMARC score and `clampPercent` and both ceilings absorbed
+ *   NOTHING — 154/154 realized exactly, mean drop 0.273 pts across all scored domains, zero
+ *   upward moves, zero movement on any non-mail profile (the strictly-downward property
+ *   confirmed empirically, not just structurally). 2.9% of scanned domains cross a NIST
+ *   6-band `displayGradeFor` boundary (56/1954; B->C x34, A->B x15, A+->A x6, C->D x1; no F).
+ *   ⚠️ An earlier draft estimated ~5-15% citing `reference_scoring-corpus-1000-2026-08.md`.
+ *   That memory carries no DKIM presence statistic at all; the citation did not support the
+ *   claim and was withdrawn before measurement. The measured 54.4% did land inside the
+ *   45-60% band implied by that memory's dkim mean of 69.4 against the floor of 50.
+ *   ⚠️ `enterprise_mail` is the LEAST affected mail profile, not the most: 11.6% of its
+ *   recipients lose the bonus vs 44.3% for `mail_enabled` (same sign in both cohorts
+ *   independently). The provider-implied branch at `check-dkim.ts:97-108` is real — 35 of
+ *   the 48 enterprise_mail `controlPresent:false` domains hit it — but it does not scale,
+ *   because the standard Google/M365 selectors are already in the probe wordlist, so 89.7%
+ *   of that cohort is discovered and reads true. A prior reading that this concentrates on
+ *   enterprise customers was refuted with the sign inverted; its boundary-proximity half
+ *   does hold (42.0% of enterprise_mail sits within 5 pts above an 80/90 line vs 12.3%).
+ *   ⚠️ Re-measuring this: read `dkim.controlPresent`. The dkim category score is 0 on 1 of
+ *   1954 domains, so a `score > 0` test reports 99.9% presence against a measured 45.6% —
+ *   the DNSSEC `> 60` trap again. 47 domains read `controlPresent:false` at a dkim score
+ *   >=75, nine of them at a full 100. `passed` and `score` are both unusable here. Note
+ *   `check-dkim.ts:510` is `foundSelectors.length > 0 && hasValidKey`, so a found-but-revoked
+ *   key also reads false (google.com is exactly that: dkim 75, bonus 3->0, 84->81).
  *   Also in this wave, NOT score-bearing but the LARGEST customer-visible change here: the
  *   maturity ladder, cohort statistics, `compare_baseline` and `format-report` stop reading
  *   `passed` as "control exists" and use `isSatisfiedControl()` / `dmarcPolicyTag()`. No
