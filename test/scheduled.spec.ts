@@ -125,7 +125,6 @@ describe('handleScheduled', () => {
 			CF_ACCOUNT_ID: 'test-account',
 			CF_ANALYTICS_TOKEN: 'test-token',
 			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
-			ALERT_TOOL_OUTCOME_THRESHOLD: '3',
 		});
 
 		const webhookCall = fetchCalls.find((call) => call.url.includes('hooks.slack.com'));

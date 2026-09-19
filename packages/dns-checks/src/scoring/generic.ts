@@ -69,6 +69,17 @@ export interface GenericScoringContext {
 	missingControls: Record<string, boolean>;
 
 	/**
+	 * Category key → whether the control was OBSERVED working (`CheckResult.controlPresent`).
+	 * A key is present only when the check DETERMINED the value; an undetermined or
+	 * unsubmitted category is absent from the map, and absent is NOT `false`.
+	 *
+	 * Read only by the email bonus, which needs an AFFIRMATIVE reading and cannot get one
+	 * from `missingControls` — see the bonus block below. Optional and additive: a caller
+	 * that omits it keeps the pre-1.35.0 behaviour exactly.
+	 */
+	controlPresent?: Record<string, boolean>;
+
+	/**
 	 * Category key → true if the control is present and active but PARTIALLY enforced
 	 * (structurally declared via `metadata.partialEnforcement: true` on a measured finding;
 	 * never prose-inferred). Drives the partial-enforcement ceiling on criticalCategories
@@ -133,6 +144,21 @@ export interface GenericScanScore {
 
 	/** Critical penalty applied (0 or criticalOverallPenalty from config). */
 	criticalPenalty: number;
+
+	/**
+	 * Category keys present in `tierMap` but ABSENT from the caller's `categoryScores` —
+	 * i.e. keys `categoryScores` filled to the neutral default of 100 rather than echoing
+	 * a real measurement. That default is deliberate for the weighted-accumulation math
+	 * (an unsubmitted category must not zero or otherwise skew a tier it didn't
+	 * participate in), but it is NOT itself a measurement, and reading `categoryScores[key]
+	 * === 100` as "this category passed perfectly" is the same fabricated-grade defect
+	 * {@link displayGradeFor} exists to prevent one layer up — a direct caller of
+	 * `computeGenericScore` has no other signal to tell the two apart. Check this list (or
+	 * `key in categoryScores` on the ORIGINAL input) before treating a filled 100 as a
+	 * pass. Always populated (possibly empty), so equality/length checks never see
+	 * `undefined`.
+	 */
+	unmeasuredCategories: string[];
 }
 
 const DEFAULT_EMAIL_BONUS_KEYS: EmailBonusKeyMap = {
@@ -252,12 +278,35 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 		const spfScore = input.categoryScores[spfKey] ?? 0;
 		const spfStrong = !input.missingControls[spfKey] && spfScore >= thresholds.spfStrongThreshold;
 
-		const dkimNotMissing = !input.missingControls[dkimKey];
+		// DKIM leg — an AFFIRMATIVE reading where one is available (scoring model 1.35.0).
+		//
+		// This used to be `!input.missingControls[dkimKey]`: "nobody proved DKIM absent".
+		// Because DKIM absence is a graded deficiency and never a missing control (it is
+		// INFERRED from a selector wordlist — see check-dkim.ts), that key is effectively
+		// never set, so the bonus flowed to every domain with no discoverable DKIM, and to
+		// domains whose DKIM check never ran at all. Absence of proof is not the evidence a
+		// REWARD should rest on; the same doctrine already governs `controlPresent`,
+		// `spfAllQualifier` and `mtaStsPolicyMode` ("never synthesise an affirmative from
+		// absent evidence"), and the SPF and DMARC legs here already demand a positive
+		// measurement.
+		//
+		// Three states, deliberately distinguished:
+		//   true      — an active DKIM key was observed        → the leg is satisfied
+		//   false     — probes answered, no active key found   → NOT satisfied (the change)
+		//   undefined — the check did not determine it         → fall back to the legacy rule
+		//
+		// `undefined` keeps the legacy reading on purpose. It covers a DKIM check that
+		// abstained (all selector probes failed) and any consumer that does not populate this
+		// map at all, and the repo's rule for an unmeasured category is to exclude it rather
+		// than penalise it. Not-discovered is still not called "absent" anywhere: `dkim` keeps
+		// its graded 50, no critical-gap ceiling fires, and only the 2–5 point bonus moves.
+		const dkimEvidence = input.controlPresent?.[dkimKey];
+		const dkimLegSatisfied = dkimEvidence === undefined ? !input.missingControls[dkimKey] : dkimEvidence;
 
 		const dmarcScore = input.categoryScores[dmarcKey];
 		const dmarcPresent = dmarcScore !== undefined && !input.missingControls[dmarcKey];
 
-		if (spfStrong && dkimNotMissing && dmarcPresent) {
+		if (spfStrong && dkimLegSatisfied && dmarcPresent) {
 			if (dmarcScore >= 90) {
 				emailBonus = thresholds.emailBonusFull;
 			} else if (dmarcScore >= 70) {
@@ -332,7 +381,11 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 
 	// --- Populate category scores with absent defaults ---
 	const filledScores: Record<string, number> = {};
+	const unmeasuredCategories: string[] = [];
 	for (const key of Object.keys(input.tierMap)) {
+		if (!(key in input.categoryScores)) {
+			unmeasuredCategories.push(key);
+		}
 		filledScores[key] = input.categoryScores[key] ?? 100;
 	}
 	// Also include any explicitly-provided scores not in tierMap
@@ -357,6 +410,7 @@ export function computeGenericScore(input: GenericScoringContext, config?: Scori
 		partialEnforcementGaps,
 		providerModifier,
 		criticalPenalty,
+		unmeasuredCategories,
 	};
 }
 

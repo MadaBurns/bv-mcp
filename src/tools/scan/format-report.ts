@@ -9,6 +9,7 @@ import { resolveImpactNarrative } from '../explain-finding';
 import { SCORING_MODEL_VERSION, computeScoringConfigHash } from '../../lib/scoring-version';
 import { DNS_CHECKS_PACKAGE_VERSION } from '../../lib/dns-checks-version';
 import { displayGradeFor, formatScoreGrade, isCompletedCheck, isMeasured, normalizeCheckStatus, UNGRADED_DISPLAY } from '../../lib/ungraded-display';
+import { isSatisfiedControl } from '../../lib/control-presence';
 
 // All three live in a tiny leaf module so every formatter in src/tools/ can share
 // them without importing the scan orchestrator. Re-exported here because this is
@@ -300,14 +301,14 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 		// Only infer `domain_configured` when the zone is actually signed. An UNSIGNED
 		// zone now scores 60 (penaltyOverride −40) and therefore `passed === true`
 		// (60 ≥ 50, no missingControl), so a `passed`-only fallback wrongly stamped
-		// unsigned domains as `domain_configured`. Exclude the DNSSEC deficiency findings
-		// — "DNSSEC not enabled" (60, passes), and the broken/failing chains (0, fail) —
-		// so only a genuinely validated/configured zone (no deficiency finding) defaults
-		// to `domain_configured`.
-		const dnssecDeficient = dnssecCheck.findings.some(
-			(f) => f.title === 'DNSSEC not enabled' || f.title === 'DNSSEC island of trust' || f.title === 'DNSSEC chain of trust incomplete' || f.title === 'DNSSEC validation failing',
-		);
-		if (dnssecSource === null && dnssecCheck.passed && !dnssecDeficient && isCompletedCheck(dnssecCheck)) {
+		// unsigned domains as `domain_configured`. `isSatisfiedControl` is the shared
+		// structured signal for this class (control-presence.ts): it excludes an
+		// unrebutted absence ("DNSSEC not enabled") and any measured medium+ finding
+		// ("DNSSEC island of trust", the broken/failing chains — the latter two already
+		// carry `missingControl` and fail `passed` outright) without matching finding
+		// TITLES, so a new deficiency finding is covered automatically rather than
+		// needing a fifth string added here.
+		if (dnssecSource === null && isSatisfiedControl(dnssecCheck) && isCompletedCheck(dnssecCheck)) {
 			dnssecSource = 'domain_configured';
 		}
 	}
@@ -389,11 +390,20 @@ export function buildStructuredScanResult(result: ScanDomainResult, enrichment?:
 	const evidence = computeScanEvidence(result.checks);
 	const evidenceInsufficient = result.score.evidenceInsufficient === true && evidence.attempted > 0;
 
+	// `passed` MUST agree with `grade` — both are derived from the same
+	// `displayGradeFor` call rather than re-testing `overall` against a SEPARATE
+	// threshold (the old `overall >= 50` read), which let a 50-59 scan report
+	// `passed: true` beside a displayed grade of 'F' (the NIST display floor is 60).
+	// Deriving `passed` from the already-computed display grade makes the two agree
+	// by construction: `null` exactly when ungraded, `true` iff the displayed letter
+	// is not 'F'.
+	const grade = displayGradeFor(result.score);
+
 	return {
 		domain: result.domain,
 		score: result.score.overall,
-		grade: displayGradeFor(result.score),
-		passed: result.score.overall === null ? null : result.score.overall >= 50,
+		grade,
+		passed: grade === null ? null : grade !== 'F',
 		measured: isMeasured(result.checks),
 		// `?? null` alone is not enough: the three degraded builders all emit a
 		// maturity OBJECT carrying a placeholder `stage: 0`, so the guard never

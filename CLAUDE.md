@@ -70,7 +70,8 @@ pre-commit gate + a CI job now block staged/tracked symlinks. Incident detail:
 
 npm workspace. Root = Cloudflare Worker. `packages/dns-checks`
 (`@blackveil/dns-checks`) is the runtime-agnostic core, published separately and
-consumed via npm.
+consumed via npm. `packages/bv-whois` is the WHOIS-over-TCP/43-to-HTTPS shim
+sidecar Worker for the RDAP fallback path, deployed via `npm run deploy:whois`.
 
 **Entrypoints**: `src/index.ts` (Worker/Hono), `src/package.ts` (npm),
 `src/stdio.ts` (CLI), `src/internal.ts` (service binding), `src/scheduled.ts`

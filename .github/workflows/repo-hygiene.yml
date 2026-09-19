@@ -272,6 +272,17 @@ jobs:
       - run: npm ci
         if: steps.npm.outputs.lockfile == 'true'
 
+      # Required: `audit:oss-safety` runs Vitest, and vitest.config.mts imports
+      # src/workers/infra-probe, which transitively reaches src/lib/dns-records.ts ->
+      # `isInconclusiveRcode` from @blackveil/dns-checks. That makes the workspace's
+      # built dist a CONFIG-LOAD dependency, not just a test-time one: without it
+      # Vitest dies at config resolution with "Failed to resolve entry for package
+      # @blackveil/dns-checks" before collecting a single test. `npm ci` does not
+      # build workspace packages, so the build must be explicit here. ci.yml already
+      # does this for its own jobs; this job was the gap.
+      - run: npm run build --workspace=packages/dns-checks
+        if: steps.npm.outputs.lockfile == 'true'
+
       - name: Run repo safety scanner
         if: steps.npm.outputs.lockfile == 'true' && steps.npm.outputs.repo_safety == 'true'
         run: npm run audit:repo-safety

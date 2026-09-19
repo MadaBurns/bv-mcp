@@ -89,3 +89,38 @@ describe('safeCheck error handling', () => {
 		expect(mtaSts!.checkStatus).toBe('error');
 	});
 });
+
+describe('scan-domain retry acceptance (SQ-71 regression)', () => {
+	afterEach(() => {
+		vi.doUnmock('../src/tools/check-mta-sts');
+		vi.resetModules();
+	});
+
+	it('accepts a retry that correctly measures a genuine absence (score 0), not just score > 0', async () => {
+		// First attempt throws (safeCheck's catch -> checkStatus:'error', score:0, shouldRetry() fires).
+		// The retry itself succeeds and genuinely measures the control absent (missingControl -> score 0,
+		// checkStatus 'completed'/undefined) -- the better measurement, and must replace the transient
+		// error rather than being discarded by a `score > 0` gate.
+		vi.resetModules();
+		const { buildCheckResult, createFinding } = await import('../src/lib/scoring');
+		const genuineAbsence = buildCheckResult('mta_sts', [
+			createFinding('mta_sts', 'MTA-STS not configured', 'high', 'No MTA-STS policy was published for example.com.', { missingControl: true }),
+		]);
+		vi.doMock('../src/tools/check-mta-sts', () => ({
+			checkMtaSts: vi
+				.fn()
+				.mockRejectedValueOnce(new Error('Simulated transient check failure'))
+				.mockResolvedValue(genuineAbsence),
+		}));
+		mockAllChecks();
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const result = await scanDomain('example.com');
+
+		const mtaSts = result.checks.find((c) => c.category === 'mta_sts');
+		expect(mtaSts).toBeDefined();
+		// The retry's real measurement won -- not the discarded transient error.
+		expect(mtaSts!.score).toBe(0);
+		expect(mtaSts!.checkStatus).not.toBe('error');
+		expect(mtaSts!.findings.some((f) => f.title === 'MTA-STS not configured')).toBe(true);
+	});
+});

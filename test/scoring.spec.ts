@@ -64,14 +64,29 @@ describe('scoring', () => {
 	});
 
 	describe('inferFindingConfidence', () => {
-		it('returns heuristic for selector-probing DKIM misses', () => {
-			const finding = createFinding(
+		it('reads a DECLARED confidence rather than sniffing the DKIM miss wording', () => {
+			// Until scoring model 1.35.0 this returned `heuristic` from a literal
+			// `text.includes('among tested selectors')` — a prose defence standing between a
+			// prose trigger ("No DKIM records found" matches MISSING_CONTROL_REGEX) and a zeroed
+			// core category. The literal was deleted: the real emission site in
+			// `packages/dns-checks/src/checks/check-dkim.ts` declares `confidence: 'heuristic'`
+			// AND `missingControl: false`, so the wording carries no weight either way.
+			const declared = createFinding(
+				'dkim',
+				'No DKIM records found among tested selectors',
+				'high',
+				'No DKIM records were found among tested selector set.',
+				{ confidence: 'heuristic' },
+			);
+			expect(inferFindingConfidence(declared)).toBe('heuristic');
+
+			const wordingOnly = createFinding(
 				'dkim',
 				'No DKIM records found among tested selectors',
 				'high',
 				'No DKIM records were found among tested selector set.',
 			);
-			expect(inferFindingConfidence(finding)).toBe('heuristic');
+			expect(inferFindingConfidence(wordingOnly), 'the deleted literal is back — wording must not set confidence').toBe('deterministic');
 		});
 
 		it('returns verified for takeover findings with verified metadata', () => {

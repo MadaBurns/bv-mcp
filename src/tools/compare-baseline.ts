@@ -19,6 +19,7 @@ import { hasCompletedEvidence } from '../lib/ungraded-display';
 // surfaces answer the same customer question ("does this domain have control X")
 // and must not drift on what "satisfied" and "applicable" mean.
 import { hasDisqualifyingFinding, isSatisfiedControl, notApplicableCategoriesFor } from '../lib/control-presence';
+import { dmarcPolicyTag } from '@blackveil/dns-checks/scoring';
 import type { ScanDomainResult } from './scan-domain';
 
 const GRADE_ORDER = ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E', 'F'] as const;
@@ -135,16 +136,24 @@ function unsatisfiedReason(scan: ScanDomainResult, category: CheckCategory, labe
 	return `${label} is required but the scan found no evidence it is in effect`;
 }
 
+/**
+ * Is this domain's DMARC policy actually enforcing (`p=quarantine` or `p=reject`)?
+ *
+ * Used to read `passed` plus a `p=none`/"policy is none" substring test over finding
+ * TITLE and DETAIL text — the same fragile, `passed`-as-verdict class this ticket
+ * closes elsewhere. `passed` records whether the category was PENALIZED, not what
+ * policy is published (a downgraded-to-`info` "policy is none" finding, or wording
+ * that never says "p=none" verbatim, both slipped through as a false "enforced").
+ * `dmarcPolicyTag` reads the parsed `p=` tag directly — the same structural fact
+ * `check-dmarc.ts` itself uses for `controlPresent` — so this can never disagree
+ * with what the record actually publishes.
+ */
 function dmarcEnforced(scan: ScanDomainResult): boolean {
 	const dmarcCheck = scan.checks.find((value) => value.category === 'dmarc');
 	if (!dmarcCheck) return false;
 
-	const hasNonePolicyFinding = dmarcCheck.findings.some((finding: Finding) => {
-		const text = `${finding.title} ${finding.detail}`.toLowerCase();
-		return finding.severity !== 'info' && (text.includes('p=none') || text.includes('policy is none'));
-	});
-
-	return dmarcCheck.passed && !hasNonePolicyFinding;
+	const policy = dmarcPolicyTag(dmarcCheck);
+	return policy === 'quarantine' || policy === 'reject';
 }
 
 /** Compare a scan result against a policy baseline. */

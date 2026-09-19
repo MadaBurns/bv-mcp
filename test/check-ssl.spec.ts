@@ -59,20 +59,28 @@ describe('checkSsl', () => {
 		expect(finding!.severity).toBe('critical');
 	});
 
-	it('should return high finding on connection timeout', async () => {
+	// A Worker-vantage network failure is an unmeasured abstention, never a scored SSL
+	// security defect (#638 law): we did not measure the origin's TLS, we failed to reach
+	// it. `checkStatus` is what excludes the category from scoring; the finding itself must
+	// also read as `info` + `inconclusive`, not a `high`/`critical` deficiency.
+	it('should return an info, inconclusive finding (not scored) on connection timeout', async () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error('The operation was aborted due to timeout'));
 		const result = await run();
 		expect(result.findings).toHaveLength(1);
-		expect(result.findings[0].severity).toBe('high');
+		expect(result.findings[0].severity).toBe('info');
 		expect(result.findings[0].title).toMatch(/timeout/i);
+		expect(result.findings[0].metadata).toMatchObject({ inconclusive: true, errorKind: 'timeout' });
+		expect(result.checkStatus).toBe('timeout');
 	});
 
-	it('should return critical finding on connection failure', async () => {
+	it('should return an info, inconclusive finding (not scored) on connection failure', async () => {
 		mockFetchError(new Error('ECONNREFUSED'));
 		const result = await run();
 		expect(result.findings).toHaveLength(1);
-		expect(result.findings[0].severity).toBe('critical');
-		expect(result.findings[0].title).toMatch(/failed/i);
+		expect(result.findings[0].severity).toBe('info');
+		expect(result.findings[0].title).toMatch(/not assessed/i);
+		expect(result.findings[0].metadata).toMatchObject({ inconclusive: true, errorKind: 'transport_error' });
+		expect(result.checkStatus).toBe('error');
 	});
 
 	it('should return medium finding when HSTS header is missing', async () => {

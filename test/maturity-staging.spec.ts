@@ -555,3 +555,61 @@ describe('#640 grade/maturity reconciliation invariant', () => {
 		}
 	});
 });
+
+// ---------------------------------------------------------------------------
+// SQ-64 — the ladder used to read `hasDnssec`/`hasMtaSts`/`hasCaa` straight off
+// `check.passed`, but `passed` means "did not penalize", not "the control
+// exists": an unsigned zone (`check-dnssec.ts` `penaltyOverride: 40`), no CAA
+// records (`check-caa.ts` medium -> 85), and no MTA-STS/TLS-RPT with MX present
+// (`check-mta-sts.ts` medium -> 85) are all GRADED, not zeroed, so they all
+// still report `passed: true` despite the control being genuinely absent
+// (`controlPresent: false`, `recordPresent: false`). A mail domain with SPF +
+// DMARC p=reject and NONE of those three controls was crediting
+// `hardeningCount = 3` from three absent controls and printing Stage 4
+// "Hardened … defense in depth".
+// ---------------------------------------------------------------------------
+describe('SQ-64 — hardening credit requires an actually-present control, not a graded-absent pass', () => {
+	/** The exact production shape for a genuinely absent, GRADED (non-zeroing) control. */
+	function absentButGradedCheck(category: 'dnssec' | 'caa' | 'mta_sts', title: string, detail: string): CheckResult {
+		return buildCheckResult(category, [createFinding(category, title, category === 'dnssec' ? 'high' : 'medium', detail)], false, false);
+	}
+
+	function spfDmarcRejectNoHardeningChecks(): CheckResult[] {
+		return [
+			buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 records')]),
+			buildCheckResult('spf', [createFinding('spf', 'SPF record configured', 'info', 'ok')]),
+			buildCheckResult('dmarc', [createFinding('dmarc', 'DMARC record found', 'info', 'p=reject')]),
+			absentButGradedCheck('dnssec', 'DNSSEC not enabled', 'DNSSEC is not configured.'),
+			absentButGradedCheck('caa', 'No CAA records', 'No CAA records found.'),
+			absentButGradedCheck('mta_sts', 'No MTA-STS or TLS-RPT records found', 'No MTA-STS or TLS-RPT configured.'),
+		];
+	}
+
+	it('does NOT reach Stage 4 when DNSSEC/CAA/MTA-STS are absent-but-graded-passing', () => {
+		const stage = computeMaturityStage(spfDmarcRejectNoHardeningChecks());
+		expect(stage.stage).not.toBe(4);
+		expect(stage.stage).toBe(3);
+		expect(stage.label).toBe('Enforcing');
+	});
+
+	it('does NOT claim defense in depth for those domains', () => {
+		const stage = computeMaturityStage(spfDmarcRejectNoHardeningChecks());
+		expect(`${stage.label} ${stage.description}`).not.toMatch(/defense in depth/i);
+		expect(stage.label).not.toBe('Hardened');
+	});
+
+	it('CONTROL: the same domain WITH DNSSEC and CAA actually present does reach Stage 4', () => {
+		// Non-vacuity guard — proves the assertions above are discriminating on
+		// presence, not merely broken for every input. Two hardening signals are
+		// required for Stage 4 (see `hardeningCount >= 2` below), one of which must
+		// be a transport/integrity signal — DNSSEC covers that; CAA supplies the second.
+		const checks = spfDmarcRejectNoHardeningChecks().map((c) => {
+			if (c.category === 'dnssec') return buildCheckResult('dnssec', [createFinding('dnssec', 'DNSSEC validated', 'info', 'ok')], true, true);
+			if (c.category === 'caa') return buildCheckResult('caa', [createFinding('caa', 'CAA records found', 'info', 'ok')], true, true);
+			return c;
+		});
+		const stage = computeMaturityStage(checks);
+		expect(stage.stage).toBe(4);
+		expect(stage.label).toBe('Hardened');
+	});
+});

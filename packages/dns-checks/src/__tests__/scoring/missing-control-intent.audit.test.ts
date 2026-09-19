@@ -9,11 +9,15 @@
  *
  * `scoreIndicatesMissingControl` (scoring/model.ts) runs a regex over a finding's `title`
  * and `detail`. A match at `high`/`critical` severity with `deterministic`/`verified`
- * confidence makes `buildCheckResult` force `score: 0, passed: false`, and — because
- * `scoring/engine.ts` builds its `missingControls` map from this predicate and NOTHING else,
- * not from `metadata.missingControl` — it ALSO trips the critical-gap ceiling of 64 for any
- * category in `PROFILE_CRITICAL_CATEGORIES`. Incidental PROSE is therefore strictly more
- * powerful than the deliberate `missingControl: true` flag.
+ * confidence makes `buildCheckResult` force `score: 0, passed: false`, and it ALSO trips the
+ * critical-gap ceiling of 64 for any category in `PROFILE_CRITICAL_CATEGORIES`.
+ *
+ * This file tests the CANONICAL predicate `findingsIndicateMissingControl`, which is what
+ * `buildCheckResult` and `scoring/engine.ts` actually call — not the regex leg alone. Since
+ * scoring model 1.35.0 that predicate resolves each finding independently: an explicit
+ * `metadata.missingControl` boolean is the answer, in BOTH directions, and only an
+ * UNDECLARED finding falls through to the prose regex. So a declaration now outranks
+ * incidental wording instead of being outranked by it.
  *
  * Three consequences follow, and all three are measured, not theoretical:
  *
@@ -40,15 +44,20 @@
  *
  * This audit is enumerative instead. It discovers every `createFinding` call site from source,
  * reconstructs the real title/detail/severity/metadata, and runs the REAL exported
- * `scoreIndicatesMissingControl` over them — so the regex, the severity gate and the
- * prose-inferred confidence gate can never drift from what this test believes they are.
+ * predicates over them — so the regex, the severity gate, the confidence gate and the
+ * structural declaration can never drift from what this test believes they are.
  *
- * It asserts four directions plus a planted positive control:
+ * It asserts six directions plus a planted positive control:
  *
- *   A. Every site that zeroes on its own static text is on `INTENDED_MISSING_CONTROLS`.
+ *   A. Every site that zeroes its category is on `INTENDED_MISSING_CONTROLS`.
  *   B. Every entry on `INTENDED_MISSING_CONTROLS` still zeroes (the silent-loss direction).
  *   C. No qualifying-severity site can be armed by an INTERPOLATED target-controlled value.
  *   D. The classifier is proven to fire, and proven to discriminate, on planted findings.
+ *   E. A site that DECLARES `metadata.missingControl` is prose-independent — rewording its
+ *      title and detail to anything at all, hostile or innocuous, cannot move the decision.
+ *   F. No site's decision depends on the prose-inferred confidence sniff in
+ *      `inferFindingConfidence`. That sniff is a display heuristic; a check that needs to
+ *      stay out of the gate declares `missingControl: false` instead of choosing adjectives.
  *
  * Discovery is via `import.meta.glob(..., '?raw')` — vite-resolved and scoped to this package's
  * `src/`, so it never walks the filesystem and can never descend into a nested `.worktrees/`
@@ -56,7 +65,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { scoreIndicatesMissingControl } from '../../scoring/model';
+import { findingsIndicateMissingControl, scoreIndicatesMissingControl } from '../../scoring/model';
 import type { CheckCategory, Finding, Severity } from '../../types';
 
 // ---------------------------------------------------------------------------
@@ -69,6 +78,17 @@ interface IntendedZeroer {
 	/** Exact `createFinding` title argument. Identity is file+title, not line — lines churn. */
 	readonly title: string;
 	readonly category: CheckCategory;
+	/**
+	 * How the site zeroes.
+	 *
+	 * `declared` — `metadata.missingControl: true`. The author said so; severity is irrelevant
+	 * (the structural leg has no severity gate) and a reword cannot silently un-zero it.
+	 * `prose` — the regex reads the title/detail. Fragile by construction: it needs
+	 * `high`/`critical` severity AND particular words, so a reword or a severity change
+	 * un-zeroes the category and moves production scores upward. Assertion B is what notices.
+	 * Migrating a `prose` row to `declared` is the standing remediation.
+	 */
+	readonly mechanism: 'declared' | 'prose';
 	/** Why zeroing this category is the DESIGNED outcome, not an accident of wording. */
 	readonly reason: string;
 }
@@ -85,28 +105,36 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 		file: 'scoring/classifiers/dmarc.ts',
 		title: 'Missing DMARC policy',
 		category: 'dmarc',
+		mechanism: 'declared',
 		reason:
 			'A DMARC record with no `p=` tag is a control no receiver can evaluate, so zeroing is the ' +
 			'same correct outcome the no-record case (`:67`) and the multiple-record case (`:82`) already ' +
 			'get. Added 2026-08-20: this site previously zeroed PURELY by prose accident — its detail ' +
 			'contains both "missing" and "required" — while its two siblings declared the intent. It now ' +
-			'carries an explicit `{ missingControl: true }` so a reword cannot silently un-zero it. The ' +
-			'declaration is behaviourally inert today (engine.ts reads the regex, never the flag); that ' +
-			'gap is tracked in bv-web docs/superpowers/specs/2026-08-20-missing-control-prose-hazard.md.',
+			'carries an explicit `{ missingControl: true }` so a reword cannot silently un-zero it. Since ' +
+			'scoring model 1.35.0 that declaration is the OPERATIVE signal rather than a comment: ' +
+			'`findingsIndicateMissingControl` resolves the flag first and consults prose only when a ' +
+			'finding declares nothing.',
 	},
 	{
 		file: 'checks/check-spf.ts',
 		title: 'No SPF record found',
 		category: 'spf',
+		mechanism: 'prose',
 		reason:
 			'Genuinely absent control: zero TXT records begin with the v=spf1 version token, so no receiver ' +
 			'can evaluate SPF at all. Emitted at `critical` on the early-return path immediately before ' +
-			"buildCheckResult('spf', findings). The parity corpus pins this outcome as 'no record (missingControl)'.",
+			"buildCheckResult('spf', findings). The parity corpus pins this outcome as 'no record (missingControl)'. " +
+			'STILL PROSE-DRIVEN: the site declares nothing, so its zeroing rests on the words "No SPF record ' +
+			'found". Migrating it to `{ missingControl: true }` is a one-line change in a file outside this ' +
+			"ticket's scope (SQ-68); until then assertion B is the only thing standing between a reword and a " +
+			'silent scoring change.',
 	},
 	{
 		file: 'checks/ns-analysis.ts',
 		title: 'No NS records found',
 		category: 'ns',
+		mechanism: 'declared',
 		reason:
 			'Genuinely absent control: NS returned nothing AND the A-record fallback returned nothing. ' +
 			'Carries an explicit `{ missingControl: true, domainResolves: false }` — the author declared ' +
@@ -116,21 +144,67 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 		file: 'checks/check-dnssec.ts',
 		title: 'DNSSEC chain of trust incomplete',
 		category: 'dnssec',
+		mechanism: 'declared',
 		reason:
 			'A parent DS is published while the child DNSKEY is unavailable, so validating resolvers cannot ' +
 			'authenticate the zone. This genuinely bogus branch retains explicit `{ missingControl: true }`; ' +
-			'the DNSKEY-without-parent-DS island now has a distinct graded title.',
+			'the DNSKEY-without-parent-DS island now has a distinct graded title and declares ' +
+			'`missingControl: false`.',
+	},
+	{
+		file: 'checks/check-dnssec.ts',
+		title: 'DNSSEC validation failing',
+		category: 'dnssec',
+		mechanism: 'declared',
+		reason:
+			'DNSKEY and DS are both published but the AD flag is unset: the zone is BOGUS, and a validating ' +
+			'resolver rejects its data outright — worse than not deploying DNSSEC at all. Declared since the ' +
+			'DNSSEC-1 decision. It appears in this register only from scoring model 1.35.0, because before ' +
+			'that this audit measured the regex leg alone and a declared-but-prose-clean site was invisible ' +
+			'to it — the register under-described what actually zeroes.',
 	},
 	{
 		file: 'scoring/classifiers/dmarc.ts',
 		title: 'No DMARC record found',
 		category: 'dmarc',
+		mechanism: 'declared',
 		reason:
 			'Genuinely absent control: recordCount === 0 on the classifier early-return path. No DMARC ' +
 			'record exists, so receivers apply no policy. Zeroing is the correct representation of absence. ' +
 			'Since scoring model 1.13.0 the finding also DECLARES `missingControl: true` (like its ' +
 			'multiple-record and missing-p= siblings), so the zeroing survives a reword of the prose ' +
 			'this assertion pins.',
+	},
+	{
+		file: 'scoring/classifiers/dmarc.ts',
+		title: 'Multiple DMARC records — no valid policy',
+		category: 'dmarc',
+		mechanism: 'declared',
+		reason:
+			'RFC 9989 §4.7: more than one DMARC record at `_dmarc` means receivers MUST apply no policy, so ' +
+			'the published records protect nothing. Declared `missingControl: true`; newly visible to this ' +
+			'register for the same reason as "DNSSEC validation failing".',
+	},
+	{
+		file: 'checks/check-mx.ts',
+		title: 'No MX and no SPF — domain spoofable',
+		category: 'mx',
+		mechanism: 'declared',
+		reason:
+			'A domain with neither MX nor SPF publishes nothing a receiver can use to reject forged mail in ' +
+			'its name. Declared `missingControl: true` at `medium` severity — legitimate, because the ' +
+			'structural leg has no severity gate, and deliberate: `mx` is protective, so zeroing the category ' +
+			"costs weighted points without arming any ceiling (`mx` is in no profile's criticalCategories).",
+	},
+	{
+		file: 'checks/check-bimi.ts',
+		title: 'BIMI record ineffective (DMARC not enforcing)',
+		category: 'bimi',
+		mechanism: 'declared',
+		reason:
+			'A BIMI record under a non-enforcing DMARC policy is inert — no mail client will render the logo — ' +
+			'so the control is published but absent in effect. Declared `missingControl: true` at `medium`. ' +
+			'`bimi` is a hardening category, so the zero is a binary pass/fail within a 10-point tier.',
 	},
 	// The four RFC 8461 conformance findings below. Grouped because they share one reason:
 	// a policy file missing any REQUIRED directive is one a conforming sender must refuse to
@@ -152,24 +226,28 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 		file: 'checks/mta-sts-analysis.ts',
 		title: 'MTA-STS policy missing or invalid version',
 		category: 'mta_sts',
+		mechanism: 'prose',
 		reason: 'RFC 8461 requires `version: STSv1`; without it a conforming sender refuses the policy, so MTA-STS does not function.',
 	},
 	{
 		file: 'checks/mta-sts-analysis.ts',
 		title: 'MTA-STS policy missing mode',
 		category: 'mta_sts',
+		mechanism: 'prose',
 		reason: 'No `mode:` directive means the policy is inert — nothing is enforced or even tested, despite a file being served.',
 	},
 	{
 		file: 'checks/mta-sts-analysis.ts',
 		title: 'MTA-STS policy missing MX entries',
 		category: 'mta_sts',
+		mechanism: 'prose',
 		reason: 'A policy with no `mx:` pattern covers no host, so no inbound mail path is protected by it.',
 	},
 	{
 		file: 'checks/mta-sts-analysis.ts',
 		title: 'MTA-STS policy missing max_age',
 		category: 'mta_sts',
+		mechanism: 'prose',
 		reason: 'RFC 8461 requires `max_age`; a policy without one cannot be cached or applied, so senders fall back to opportunistic TLS.',
 	},
 ];
@@ -490,9 +568,29 @@ function toFinding(site: Site, fill: (expression: string, index: number) => stri
 	};
 }
 
-/** Does this site zero its category, per the REAL scoring gate? */
+/**
+ * Does this site zero its category, per the REAL scoring gate?
+ *
+ * `findingsIndicateMissingControl`, not the regex leg alone — it is the predicate
+ * `buildCheckResult` and `scoring/engine.ts` call, so it is the only one whose answer moves a
+ * score. Using the regex leg here (as this file did until scoring model 1.35.0) made the audit
+ * blind in both directions at once: a site that zeroes by DECLARATION went unregistered, and a
+ * site that declares `missingControl: false` was still reported as armable by its own prose.
+ */
 function zeroesCategory(site: Site, fill?: (expression: string, index: number) => string): boolean {
-	return scoreIndicatesMissingControl([toFinding(site, fill)]);
+	return findingsIndicateMissingControl([toFinding(site, fill)]);
+}
+
+/**
+ * The same decision, with any prose-INFERRED confidence replaced by an explicit
+ * `deterministic`. Used by assertion F: if this disagrees with {@link zeroesCategory}, the
+ * site's score depends on `inferFindingConfidence`'s adjective sniff.
+ */
+function zeroesCategoryWithoutProseConfidence(site: Site): boolean {
+	const finding = toFinding(site);
+	return findingsIndicateMissingControl([
+		{ ...finding, metadata: { ...(finding.metadata ?? {}), confidence: finding.metadata?.confidence ?? 'deterministic' } },
+	]);
 }
 
 function ref(site: Site): string {
@@ -557,17 +655,26 @@ describe('missing-control intent — positive controls (the guard can fail)', ()
 	});
 
 	it('DISCRIMINATES on confidence: the same finding at `heuristic` is NOT caught (the third gate)', () => {
-		// Confidence is the gate most easily forgotten, and it is itself prose-inferred by a
-		// seven-phrase sniff in inferFindingConfidence — so a copy edit can arm or disarm from
+		// Confidence is the gate most easily forgotten, and it is still partly prose-inferred by
+		// an adjective sniff in inferFindingConfidence — so a copy edit can arm or disarm from
 		// either side. Both routes are exercised: the explicit key, and the inferred phrase.
+		// (Assertion F below proves no REAL site relies on the inferred route.)
 		const explicit: Site = { ...PLANTED_BASE, metadataSource: "{ confidence: 'heuristic' }" };
 		expect(zeroesCategory(explicit)).toBe(false);
 
 		const inferred: Site = {
 			...PLANTED_BASE,
-			detail: fixed('The SPF record is missing among tested selectors.'),
+			detail: fixed('The SPF record is missing — a possible misconfiguration.'),
 		};
 		expect(zeroesCategory(inferred)).toBe(false);
+	});
+
+	it('DISCRIMINATES on declaration: `missingControl: false` beats matching prose', () => {
+		// The direction added in scoring model 1.35.0. Same sentence, same severity, same
+		// deterministic confidence as the FIRES control above — only the declaration differs.
+		const declaredFalse: Site = { ...PLANTED_BASE, metadataSource: '{ missingControl: false }' };
+		expect(zeroesCategory(PLANTED_BASE), 'the base control must still fire, or this proves nothing').toBe(true);
+		expect(zeroesCategory(declaredFalse)).toBe(false);
 	});
 
 	it('DISCRIMINATES on prose: a high-severity finding with no trigger word is NOT caught', () => {
@@ -698,7 +805,7 @@ describe('missing-control intent — only listed findings may zero a category', 
 // ---------------------------------------------------------------------------
 
 describe('missing-control intent — listed findings must keep zeroing', () => {
-	it.each(INTENDED_MISSING_CONTROLS)('$file — "$title" still zeroes its category', (entry) => {
+	it.each(INTENDED_MISSING_CONTROLS)('$file — "$title" still zeroes its category ($mechanism)', (entry) => {
 		const site = CLASSIFIABLE.find((s) => s.file === entry.file && neutralText(s.title) === entry.title);
 		expect(
 			site,
@@ -706,7 +813,18 @@ describe('missing-control intent — listed findings must keep zeroing', () => {
 				'Either it was reworded (which silently un-zeroes the category and moves production scores UPWARD ' +
 				'with nothing else to notice) or it was removed. Update this register in the same commit.',
 		).toBeDefined();
-		expect(severityOf(site!), `${entry.file} "${entry.title}" must stay at high/critical to keep zeroing`).toMatch(/^(high|critical)$/);
+		if (entry.mechanism === 'prose') {
+			// Only the regex leg has a severity gate. A `prose` row that drops below high/critical
+			// stops zeroing, so pin the severity as part of the row's contract.
+			expect(severityOf(site!), `${entry.file} "${entry.title}" must stay at high/critical to keep zeroing`).toMatch(/^(high|critical)$/);
+		} else {
+			expect(
+				parseMetadata(site!.metadataSource)?.missingControl,
+				`${entry.file} "${entry.title}" is registered as a DECLARED zeroer but no longer carries ` +
+					'`missingControl: true`. Either restore the declaration or change the row to mechanism: "prose" ' +
+					'and accept that its wording is now load-bearing.',
+			).toBe(true);
+		}
 		expect(isStatic(site!.category) ? site!.category.parts[0] : null).toBe(entry.category);
 		expect(
 			zeroesCategory(site!),
@@ -760,7 +878,7 @@ function armedBy(site: Site, hostileValues: readonly string[]): string[] {
 				title: render(site.title, fillTitle),
 				detail: render(site.detail, fillDetail),
 			};
-			if (scoreIndicatesMissingControl([probe])) {
+			if (findingsIndicateMissingControl([probe])) {
 				armed.push(`${holes[index]} <- "${value}"`);
 				break;
 			}
@@ -816,6 +934,105 @@ describe('missing-control intent — interpolated values must not arm the gate',
 			);
 		}
 		expect(exposed.length, 'detector went silent — it should still see this population').toBeGreaterThan(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// E. A DECLARED finding is prose-independent. This is the property the whole file exists
+//    to make true: after a declaration, wording is wording.
+// ---------------------------------------------------------------------------
+
+/** Sites whose author stated the missing-control decision structurally, either way. */
+const DECLARED_SITES = CLASSIFIABLE.filter((s) => typeof parseMetadata(s.metadataSource)?.missingControl === 'boolean');
+
+/** Prose engineered to match `MISSING_CONTROL_REGEX` on every branch it has. */
+const HOSTILE_TITLE = 'Missing required control';
+const HOSTILE_DETAIL = 'No SPF record found. The control is missing and a policy is required; it was not found.';
+
+describe('missing-control intent — a declared finding is prose-independent', () => {
+	it('the declared population is non-empty and exercises BOTH directions', () => {
+		expect(DECLARED_SITES.length, 'no site declares metadata.missingControl — the sweep below is vacuous').toBeGreaterThan(5);
+		const directions = new Set(DECLARED_SITES.map((s) => parseMetadata(s.metadataSource)!.missingControl));
+		expect(
+			[...directions].sort(),
+			'both `true` (zero this category) and `false` (this is a graded deficiency, not an absence claim) ' +
+				'must appear, or only half the contract is under test.',
+		).toEqual([false, true]);
+	});
+
+	it.each(DECLARED_SITES.map((s) => [ref(s), s] as const))('%s keeps its verdict through any reword', (_ref, site) => {
+		const declared = parseMetadata(site.metadataSource)!.missingControl as boolean;
+		const base = toFinding(site);
+		const hostile: Finding = { ...base, title: HOSTILE_TITLE, detail: HOSTILE_DETAIL };
+		const innocuous: Finding = { ...base, title: 'Observation', detail: 'The zone is configured as described.' };
+
+		expect(findingsIndicateMissingControl([base]), 'the site does not honour its own declaration').toBe(declared);
+		expect(
+			findingsIndicateMissingControl([hostile]),
+			`${ref(site)} changes its scoring verdict when its prose is reworded into the trigger words. A declared ` +
+				'finding must be immune to its own wording — that is the entire point of declaring.',
+		).toBe(declared);
+		expect(
+			findingsIndicateMissingControl([innocuous]),
+			`${ref(site)} changes its scoring verdict when its prose is reworded into neutral text.`,
+		).toBe(declared);
+	});
+
+	it('is NOT vacuous: the DKIM absence finding would zero its category on prose alone', () => {
+		// The site the whole ticket turns on. Its title MATCHES the missing-control regex, `dkim`
+		// is a critical category in mail_enabled/enterprise_mail, and before scoring model 1.35.0
+		// the only thing between it and a zeroed core category (plus the 64 ceiling → grade D) was
+		// its `confidence: 'heuristic'` metadata, seconded by a literal `'among tested selectors'`
+		// inside inferFindingConfidence. Prose defending against prose.
+		const dkim = CLASSIFIABLE.find(
+			(s) => s.file === 'checks/check-dkim.ts' && neutralText(s.title) === 'No DKIM records found among tested selectors',
+		);
+		expect(dkim, 'the DKIM absence site was not recovered — this pin is watching nothing').toBeDefined();
+		expect(parseMetadata(dkim!.metadataSource)?.missingControl).toBe(false);
+		expect(severityOf(dkim!)).toBe('high');
+
+		// Strip the declaration and the declared confidence: what remains is the sentence, and the
+		// sentence still says "No DKIM records found". If this ever goes false the sentence stopped
+		// being dangerous on its own and the assertions above stopped proving anything.
+		const proseOnly: Finding = { ...toFinding(dkim!), metadata: { confidence: 'deterministic' } };
+		expect(scoreIndicatesMissingControl([proseOnly]), 'the regex leg no longer reads this sentence').toBe(true);
+		expect(findingsIndicateMissingControl([toFinding(dkim!)]), 'the declaration must beat that prose').toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// F. No score may rest on the prose-inferred CONFIDENCE sniff.
+//    `inferFindingConfidence` sniffs seven adjectives ("possible", "potential", "inferred", …)
+//    and downgrades to `heuristic`, which disarms the gate. That is a display heuristic being
+//    used as a scoring control from the opposite direction: a copy edit that deletes the word
+//    "potential" arms a zeroing nobody asked for. Measured across both source trees at the
+//    time of writing: zero sites depend on it. This assertion keeps it that way.
+// ---------------------------------------------------------------------------
+
+describe('missing-control intent — no verdict may depend on the prose-confidence sniff', () => {
+	it('every site decides identically with and without the adjective sniff', () => {
+		const dependent = CLASSIFIABLE.filter((s) => zeroesCategory(s) !== zeroesCategoryWithoutProseConfidence(s)).map(label);
+		expect(
+			dependent,
+			'These findings are held out of (or pushed into) the missing-control gate by an ADJECTIVE. Deleting the ' +
+				'word "possible"/"potential"/"inferred" from one of these sentences would zero its category and, for a ' +
+				'critical category, cap the whole domain at 64. Declare the intent instead: `missingControl: false` for ' +
+				'a graded deficiency, `missingControl: true` for a measured absence. Both outrank prose.',
+		).toEqual([]);
+	});
+
+	it('is NOT vacuous: the sniff still disarms a planted finding', () => {
+		const planted: Site = {
+			file: 'checks/__planted__.ts',
+			line: 1,
+			category: fixed('spf'),
+			title: fixed('Planted sniff-dependent finding'),
+			severity: fixed('high'),
+			detail: fixed('A potential problem: no SPF record found for this zone.'),
+			metadataSource: null,
+		};
+		expect(zeroesCategory(planted), '"potential" should downgrade this to heuristic and disarm the gate').toBe(false);
+		expect(zeroesCategoryWithoutProseConfidence(planted), 'without the sniff the same sentence zeroes the category').toBe(true);
 	});
 });
 
