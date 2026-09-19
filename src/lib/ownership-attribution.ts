@@ -423,6 +423,47 @@ export function isInBailiwick(nsHost: string, seedApex: string): boolean {
 }
 
 /**
+ * KNOB (#1040) — namespaces under a DNS/hosting provider's OWN registered apex
+ * where the provider's product assigns every CUSTOMER's nameserver hostnames.
+ *
+ * An NS host in one of these namespaces is in-bailiwick to the provider's apex
+ * by construction, but names a provider-customer relationship, not ownership:
+ * when a brand-protection scan is run against the provider's own domain (seed
+ * `cloudflare.com`), any of the provider's millions of customers — including a
+ * deliberate typosquat of the provider's own brand (`cloaudflare.com` on
+ * `lara.ns.cloudflare.com` / `arch.ns.cloudflare.com`, live 2026-09-17) —
+ * would otherwise read as `owned_by_seed` and have its severity clamped to
+ * info. The provider's own dedicated/branded NS (`ns3.cloudflare.com` …
+ * `ns7.cloudflare.com`) sit OUTSIDE the customer namespace and keep full
+ * in-bailiwick weight.
+ *
+ * Membership bar (mirrors `SHARED_NS_APEXES`' posture): only providers whose
+ * customer-NS pool is MEASURED to nest under their own registered apex, in a
+ * namespace disjoint from their own branded NS set. Cite the measurement.
+ * This is deliberately NOT the shared-NS-overlap question — Cloudflare stays
+ * ownership-bearing for literal hostname overlap (#939); this list only stops
+ * the suffix-only in-bailiwick arm from firing on pool hosts.
+ */
+export const PROVIDER_CUSTOMER_NS_NAMESPACES: readonly string[] = [
+	// Cloudflare assigns every customer zone an NS pair `<name>.ns.cloudflare.com`
+	// drawn from a large pool (measured 2026-09-17, #1040 repro); Cloudflare's own
+	// zones delegate to `ns3`–`ns7.cloudflare.com`, outside this namespace.
+	'ns.cloudflare.com',
+];
+
+/**
+ * True when `nsHost` sits inside a known provider customer-NS namespace
+ * ({@link PROVIDER_CUSTOMER_NS_NAMESPACES}) — i.e. it is a hostname the
+ * provider hands to arbitrary customers, so its being in-bailiwick to the
+ * provider's apex carries no ownership signal (#1040).
+ */
+export function isProviderCustomerNsHost(nsHost: string): boolean {
+	const host = normHost(nsHost);
+	if (!host) return false;
+	return PROVIDER_CUSTOMER_NS_NAMESPACES.some((namespace) => host === namespace || host.endsWith('.' + namespace));
+}
+
+/**
  * True when `candidateDomain` is an EXACT-LABEL TLD variant of the seed: it is
  * itself a registrable domain, its brand label equals the seed's, and it is not
  * the seed's own apex (`anz.co.nz` / `xero.com.au` for seed `anz.com` / `xero.com`).
@@ -456,7 +497,11 @@ export function isExactLabelTldVariant(candidateDomain: string, seedDomain: stri
  *     carries an `ns` field at all, so an in-bailiwick match is structurally
  *     unreachable for `unregistered`/`unknown` (Ruling B) — this precedence
  *     step returns before `registration.ns` is ever read.
- *  2. NS in-bailiwick to the seed apex → `owned_by_seed`, strong. Because
+ *  2. NS in-bailiwick to the seed apex → `owned_by_seed`, strong — EXCEPT
+ *     (#1040) hosts in a known provider customer-NS namespace
+ *     ({@link PROVIDER_CUSTOMER_NS_NAMESPACES}) or flagged by the injected
+ *     shared-tenant predicate, which name a provider-customer relationship,
+ *     not ownership, and fall through to the set-comparison arms. Because
  *     `registration.ns` is only ever populated from an ACTUALLY-RESOLVED NS
  *     answer set (see `resolveRegistrationUncached()` in
  *     `./registration-state`), a lame delegation — attacker sets NS =
@@ -533,7 +578,20 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
 	const candidateNs = registration.ns.map(normHost).filter(Boolean);
 	const seedNs = input.seedNs.map(normHost).filter(Boolean);
 
-	const inBailiwickNs = candidateNs.filter((ns) => isInBailiwick(ns, seedApex));
+	// #1040 — an in-bailiwick host is ownership evidence only when the seed
+	// organisation actually operates it as ITS OWN infrastructure. Two classes
+	// of in-bailiwick host name a provider-customer relationship instead and
+	// are excluded before the short-circuit: (a) hosts inside a known provider
+	// customer-NS namespace (`lara.ns.cloudflare.com` under seed
+	// `cloudflare.com` — every Cloudflare customer, typosquats included,
+	// carries one); (b) hosts the injected shared-tenant predicate flags
+	// (reachable only when the seed apex IS a shared-NS provider's apex, e.g.
+	// seed `one.com` vs a customer on `ns01.one.com`). Excluded hosts fall
+	// through to the set-comparison arms below, which judge them on literal
+	// overlap like any other shared-platform host.
+	const inBailiwickNs = candidateNs.filter(
+		(ns) => isInBailiwick(ns, seedApex) && !isProviderCustomerNsHost(ns) && !input.isSharedNsHost(ns),
+	);
 	if (inBailiwickNs.length > 0) {
 		return {
 			verdict: 'owned_by_seed',
