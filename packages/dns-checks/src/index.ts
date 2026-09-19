@@ -37,6 +37,10 @@ export { isGraded } from './scoring/engine';
 // Check utilities
 export { createFinding, buildCheckResult, computeCategoryScore, inferFindingConfidence, sanitizeDnsData } from './check-utils';
 
+// DNS response-code classification — the single answer to "was this empty answer set a
+// measurement, or did the resolver never conclude?" (see ./dns-rcode).
+export { DNS_RCODE, isConclusiveRcode, isInconclusiveRcode, describeRcode, buildRcodeAbstentionResult } from './dns-rcode';
+
 // Robot policy
 export {
 	SCANNER_USER_AGENT,
