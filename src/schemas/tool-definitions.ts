@@ -296,7 +296,7 @@ const TOOL_DEFS = {
 	},
 	check_dane: {
 		description:
-			"Check DANE/TLSA certificate pinning for SMTP at port 25. Resolves the domain's MX hosts and looks up TLSA records at _25._tcp.<mx-host>, verifying whether SMTP mail-server certificates are bound in DNS (DNSSEC-backed protection against CA misissuance and MITM on inbound mail). Use when asked if SMTP connections are protected by DANE/TLSA pinning. For HTTPS DANE at port 443, use check_dane_https instead.",
+			"Check DANE/TLSA certificate pinning for SMTP at port 25. Resolves the domain's MX hosts and looks up TLSA records at _25._tcp.<mx-host>, validating their syntax, usage/selector/matching-type fields and DNSSEC backing on the MX host's zone. The record is reported as present but UNVERIFIED: there is no certificate probe for port 25/SMTP, so the pinned data is never compared against the certificate the mail server actually serves (the comparable capture-and-compare pipeline exists only for check_dane_https at port 443, and is itself currently kill-switched there — see that tool's description). Use when asked if SMTP mail servers publish DANE/TLSA pinning; this does not confirm the pin matches the live certificate. For HTTPS DANE at port 443, use check_dane_https instead.",
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
