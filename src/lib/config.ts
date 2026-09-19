@@ -731,6 +731,120 @@ export function isAuthRequiredTool(toolName: string): boolean {
 }
 
 /**
+ * Effective per-tool daily quota for a tier: the per-tool override when one
+ * exists, else the flat tier limit. Exported so the quota path and the policy
+ * chokepoint below read the SAME number — a divergence here is how a tool ends
+ * up gated by one and not the other.
+ */
+export function tierToolDailyLimit(tier: McpApiKeyTier, toolName: string): number {
+	return TIER_TOOL_DAILY_LIMITS[tier]?.[toolName] ?? TIER_DAILY_LIMITS[tier];
+}
+
+/** Entry-point surface a `tools/call` arrived on. */
+export type ToolPolicySurface = 'public' | 'internal';
+
+/** Per-tool policy denial reasons, listed in evaluation precedence order. */
+export type ToolPolicyBlock = 'internal_only' | 'auth_required' | 'paid_only' | 'contract_flag';
+
+/** Verdict of {@link evaluateToolPolicy}. */
+export type ToolPolicyDecision = { allowed: true } | { allowed: false; block: ToolPolicyBlock };
+
+/** Inputs to {@link evaluateToolPolicy}. */
+export type ToolPolicyInput = {
+	surface: ToolPolicySurface;
+	/** Canonical tool name — normalize the `scan` alias BEFORE calling. */
+	tool: string;
+	/**
+	 * `public`: the caller presented a verified API key / OAuth token.
+	 * `internal`: the caller presented one of the internal door's capability
+	 * keys (false when `REQUIRE_INTERNAL_AUTH=false` left only the network guard).
+	 */
+	authenticated: boolean;
+	/** Resolved tier, or null when there is no principal (unauthenticated public caller). */
+	tier: McpApiKeyTier | null;
+	/**
+	 * `internal` surface only: this principal carries the operator's full internal
+	 * tool authority (the bv-web capability, or the operator's explicit
+	 * network-guard-only opt-out). Lower-trust internal principals (the mobile
+	 * Worker, tenant delegation, ops cleanup) leave it false and are policed by
+	 * the tier rules below in addition to their own tool allowlists.
+	 */
+	fullInternalAuthority?: boolean;
+	hasContractFlag?: boolean;
+	contractFlagGateEnabled?: boolean;
+};
+
+const TOOL_POLICY_ALLOWED: ToolPolicyDecision = { allowed: true };
+
+/**
+ * THE per-tool policy chokepoint. Every entry point that reaches tool dispatch
+ * asks this ONE function whether the call is permitted, so the four gates
+ * ({@link INTERNAL_ONLY_TOOLS}, {@link AUTH_REQUIRED_TOOLS},
+ * {@link GATED_PAID_ONLY_TOOLS}, {@link contractFlagBlocks}) cannot fork per
+ * surface again — which is exactly how `/internal/tools/*` came to bypass all
+ * four while `/mcp` enforced them (the two entry points each re-implemented the
+ * decision, and only one of them was ever updated).
+ *
+ * Callers keep their own response shapes: the public path answers in JSON-RPC
+ * (unknown-tool / 401 / 403-upgrade), the internal door in its flat
+ * `{ error }` envelope. Only the DECISION is shared.
+ *
+ * Per-surface dispositions, stated once so neither surface has to guess:
+ *
+ * - **internal-only** — blocked on `public` (the tool is withdrawn from that
+ *   catalog); ALLOWED on `internal`, because "callable over the internal path"
+ *   is the definition of {@link INTERNAL_ONLY_TOOLS}, not an oversight.
+ * - **auth-required** — blocked for an unauthenticated public caller. On the
+ *   internal door these are the M365 client-tenant reads that forward the
+ *   trusted internal bearer to bv-web, so only a full-authority principal
+ *   holding a real capability key may reach them: the network-guard-only
+ *   opt-out is not sufficient. `handlers/tools.ts` still hard-rejects without a
+ *   verified M365 identity underneath this.
+ * - **paid-only** — blocked for an unauthenticated public caller, and for any
+ *   principal whose tier pins the tool to a zero daily quota (free/agent).
+ *   A full-authority internal principal is first-party, not a commercial tier,
+ *   and passes.
+ * - **contract-flag** — the D2 enumeration entitlement. INERT unless the
+ *   operator sets `ENFORCE_CONTRACT_FLAG_GATE`; `owner` bypasses.
+ */
+export function evaluateToolPolicy(input: ToolPolicyInput): ToolPolicyDecision {
+	const { surface, tool, authenticated, tier } = input;
+	if (!tool) return TOOL_POLICY_ALLOWED;
+	const fullInternalAuthority = surface === 'internal' && input.fullInternalAuthority === true;
+
+	if (isInternalOnlyTool(tool) && surface === 'public') {
+		return { allowed: false, block: 'internal_only' };
+	}
+
+	if (isAuthRequiredTool(tool)) {
+		if (surface === 'public') {
+			if (!authenticated) return { allowed: false, block: 'auth_required' };
+		} else if (!authenticated || !fullInternalAuthority) {
+			return { allowed: false, block: 'auth_required' };
+		}
+	}
+
+	if (isGatedPaidOnlyTool(tool) && !fullInternalAuthority) {
+		if (tier === null) return { allowed: false, block: 'paid_only' };
+		if (tierToolDailyLimit(tier, tool) === 0) return { allowed: false, block: 'paid_only' };
+	}
+
+	if (
+		tier !== null &&
+		contractFlagBlocks({
+			gateEnabled: input.contractFlagGateEnabled === true,
+			tier,
+			tool,
+			hasContractFlag: input.hasContractFlag === true,
+		})
+	) {
+		return { allowed: false, block: 'contract_flag' };
+	}
+
+	return TOOL_POLICY_ALLOWED;
+}
+
+/**
  * Kill switch for the three active M365 CLIENT-TENANT read tools.
  *
  * These three are the ONLY tools whose data path requires authenticating into a

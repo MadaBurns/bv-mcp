@@ -1202,6 +1202,20 @@ const BRAND_AUDIT_SINGLE_SYNC_HANDOFF_MS = 24_000;
  */
 const DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS = 24_000;
 
+/**
+ * Tool dispatch. This function applies NO per-tool policy of its own beyond the
+ * identity_secops no-principal hard reject below — the four policy gates
+ * (internal-only, auth-required, paid-only, contract-flag) live in
+ * `evaluateToolPolicy` (src/lib/config.ts) and are the CALLER's responsibility.
+ *
+ * Every externally-reachable entry point must consult that chokepoint before it
+ * gets here. `src/mcp/execute.ts` (public `/mcp`) and `src/internal.ts`
+ * (`/internal/tools/{call,batch}`) both do; the remaining callers are trusted
+ * server-side orchestration (queue consumers, tenant scan pipeline) that select
+ * the tool themselves rather than taking it from a request. That census is
+ * pinned by `test/tool-policy-chokepoint.audit.test.ts`, which fails when a new
+ * caller appears without declaring which of the two it is.
+ */
 export async function handleToolsCall(
 	params: {
 		name: string;

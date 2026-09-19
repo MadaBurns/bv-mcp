@@ -18,14 +18,10 @@ import {
 	FREE_DISTINCT_DOMAIN_DAILY_LIMIT,
 	FORCE_REFRESH_DAILY_LIMIT,
 	GLOBAL_DAILY_TOOL_LIMIT,
-	TIER_DAILY_LIMITS,
-	TIER_TOOL_DAILY_LIMITS,
 	TIER_CONCURRENT_LIMITS,
-	isGatedPaidOnlyTool,
-	isAuthRequiredTool,
-	isInternalOnlyTool,
 	buildUpgradeData,
-	contractFlagBlocks,
+	evaluateToolPolicy,
+	tierToolDailyLimit,
 } from '../lib/config';
 import { jsonRpcSuccess } from '../lib/json-rpc';
 import { mcpError } from '../handlers/tool-formatters';
@@ -872,7 +868,17 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		const internalOnlyNameRaw =
 			typeof params === 'object' && params !== null && 'name' in params ? (params as Record<string, unknown>).name : undefined;
 		const internalOnlyName = typeof internalOnlyNameRaw === 'string' ? normalizeToolName(internalOnlyNameRaw) : '';
-		if (internalOnlyName && isInternalOnlyTool(internalOnlyName)) {
+		// Only the internal-only verdict is acted on here: it is the highest-precedence
+		// block in evaluateToolPolicy, so reading it alone keeps this gate exactly where
+		// it has always been (before tier branching) while the DECISION comes from the
+		// shared chokepoint. The remaining blocks are read at their existing sites below.
+		const internalOnlyPolicy = evaluateToolPolicy({
+			surface: 'public',
+			tool: internalOnlyName,
+			authenticated: options.isAuthenticated === true,
+			tier: options.tierAuthResult?.tier ?? null,
+		});
+		if (!internalOnlyPolicy.allowed && internalOnlyPolicy.block === 'internal_only') {
 			return buildInternalOnlyToolResponse(id, internalOnlyName, method, options, eventId, accessLogInput);
 		}
 	}
@@ -964,7 +970,8 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		// tool-daily check). Preserve that EXACTLY by excluding tool-daily from the
 		// batch for those tools — scoped-rate still runs for everyone (slot consumed),
 		// matching the prior checkRateLimit-first ordering.
-		const toolGated = !!toolName && (isAuthRequiredTool(toolName) || isGatedPaidOnlyTool(toolName));
+		const unauthPolicy = evaluateToolPolicy({ surface: 'public', tool: toolName, authenticated: false, tier: null });
+		const toolGated = !unauthPolicy.allowed && (unauthPolicy.block === 'auth_required' || unauthPolicy.block === 'paid_only');
 		const batchToolDailyLimit = !toolGated ? toolDailyLimit : undefined;
 
 		const quotaBatch = await checkIpScopedQuotaBatch(options.ip, toolName, batchToolDailyLimit, {
@@ -1045,10 +1052,10 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		// unauthenticated caller: dispatch would forward to bv-web's internal M365 proxy
 		// carrying the trusted internal bearer with keyHash:undefined. Reject before
 		// dispatch with HTTP 401 + an allowlisted ("Invalid") message prefix.
-		if (toolName && isAuthRequiredTool(toolName)) {
+		if (!unauthPolicy.allowed && unauthPolicy.block === 'auth_required') {
 			return buildAuthRequiredResponse(id, toolName, method, options, eventId, accessLogInput);
 		}
-		if (toolName && isGatedPaidOnlyTool(toolName)) {
+		if (!unauthPolicy.allowed && unauthPolicy.block === 'paid_only') {
 			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
 		}
 		if (toolDailyLimit !== undefined) {
@@ -1213,9 +1220,17 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		const toolName = typeof toolNameRaw === 'string' ? normalizeToolName(toolNameRaw) : 'unknown';
 
 		// Per-tool tier override takes precedence over flat tier limit
-		const dailyLimit = TIER_TOOL_DAILY_LIMITS[tier]?.[toolName] ?? TIER_DAILY_LIMITS[tier];
+		const dailyLimit = tierToolDailyLimit(tier, toolName);
 
-		if (dailyLimit === 0 && isGatedPaidOnlyTool(toolName)) {
+		const authedPolicy = evaluateToolPolicy({
+			surface: 'public',
+			tool: toolName,
+			authenticated: true,
+			tier,
+			hasContractFlag: options.tierAuthResult.contractFlag === true,
+			contractFlagGateEnabled: options.contractFlagGateEnabled === true,
+		});
+		if (!authedPolicy.allowed && authedPolicy.block === 'paid_only') {
 			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
 		}
 
@@ -1225,14 +1240,7 @@ export async function executeMcpRequest(options: ExecuteMcpRequestOptions): Prom
 		// flag → same sales-channel 403 as an unpaid caller, so a cheap paid seat can't
 		// buy the enumeration corpus. `owner` bypasses; the flag is the entitlement for
 		// everyone else. Default OFF → contractFlagBlocks() returns false → no-op.
-		if (
-			contractFlagBlocks({
-				gateEnabled: options.contractFlagGateEnabled === true,
-				tier,
-				tool: toolName,
-				hasContractFlag: options.tierAuthResult.contractFlag === true,
-			})
-		) {
+		if (!authedPolicy.allowed && authedPolicy.block === 'contract_flag') {
 			return buildGatedToolResponse(id, toolName, method, options, eventId, accessLogInput);
 		}
 
