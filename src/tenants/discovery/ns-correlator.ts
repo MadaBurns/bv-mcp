@@ -18,7 +18,7 @@
 
 import { queryDns } from '../../lib/dns-transport';
 import type { DohResponse, RecordTypeName } from '../../lib/dns-types';
-import { isInBailiwick } from '../../lib/ownership-attribution';
+import { isInBailiwick, isProviderCustomerNsHost } from '../../lib/ownership-attribution';
 import { getRegistrableDomain } from '../../lib/public-suffix';
 import { mapConcurrent } from '../../lib/map-concurrent';
 import { validateDomain } from '../../lib/sanitize';
@@ -165,8 +165,19 @@ export async function correlateNs(seedDomain: string, options: NsCorrelationOpti
 		// set). Accepted cost: a legitimate mid-migration domain with one
 		// stray external nameserver loses the auto-include bypass and must
 		// clear set_overlap's bar instead.
+		// (#1040) An in-bailiwick host counts here only when it is NOT a
+		// provider-customer hostname: hosts inside a known provider customer-NS
+		// namespace (`lara.ns.cloudflare.com` under seed `cloudflare.com`) or on
+		// a shared-tenant apex (`ns01.one.com` under seed `one.com`) are what
+		// EVERY customer of that provider carries — typosquats of the provider's
+		// own brand included — so they must not grant the single-signal 'strong'
+		// in_bailiwick tier. Excluding them here breaks the full-match condition
+		// below and the candidate falls through to set_overlap, which judges it
+		// on literal overlap with the seed's own NS set.
 		const candidateNsList = Array.from(candidateOutcome.set);
-		const inBailiwick = candidateNsList.filter((ns) => isInBailiwick(ns, seedApex)).sort();
+		const inBailiwick = candidateNsList
+			.filter((ns) => isInBailiwick(ns, seedApex) && !isProviderCustomerNsHost(ns) && !isSharedNsHost(ns))
+			.sort();
 		const isFullInBailiwickMatch = inBailiwick.length > 0 && inBailiwick.length === candidateNsList.length;
 		if (isFullInBailiwickMatch) {
 			return {

@@ -836,3 +836,62 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		expect(scoreIndicatesMissingControl(asHigh)).toBe(false);
 	});
 });
+
+describe('#1040 — provider customer-NS pool hosts carry no in-bailiwick ownership weight', () => {
+	// Live repro (2026-09-17): seed cloudflare.com, candidate cloaudflare.com — a
+	// typosquat hosted BY Cloudflare, so its NS (`lara.ns.cloudflare.com` /
+	// `arch.ns.cloudflare.com`) are in-bailiwick to the seed apex by
+	// construction. Pre-fix that made it `owned_by_seed` (strong) and clamped
+	// its severity to info — suppressing a live impersonation of the one brand
+	// every Cloudflare customer resembles by hosting choice alone.
+	const CF_SEED_NS = ['ns3.cloudflare.com', 'ns4.cloudflare.com', 'ns5.cloudflare.com', 'ns6.cloudflare.com', 'ns7.cloudflare.com'];
+
+	it('does NOT classify a Cloudflare-customer typosquat of cloudflare.com as owned_by_seed', async () => {
+		const { classifyOwnership } = await loadModule();
+		const result = classifyOwnership({
+			seedDomain: 'cloudflare.com',
+			seedNs: CF_SEED_NS,
+			candidateDomain: 'cloaudflare.com',
+			registration: registered(['lara.ns.cloudflare.com', 'arch.ns.cloudflare.com']),
+			isSharedNsHost,
+		});
+		expect(result.verdict).not.toBe('owned_by_seed');
+		expect(result.signals).not.toContain('ns_in_bailiwick');
+	});
+
+	it('still grants in-bailiwick to the provider\u2019s own branded (non-pool) NS hosts', async () => {
+		const { classifyOwnership } = await loadModule();
+		const result = classifyOwnership({
+			seedDomain: 'cloudflare.com',
+			seedNs: CF_SEED_NS,
+			candidateDomain: 'cloudflare.net',
+			registration: registered(['ns3.cloudflare.com', 'ns4.cloudflare.com']),
+			isSharedNsHost,
+		});
+		expect(result.verdict).toBe('owned_by_seed');
+		expect(result.strength).toBe('strong');
+		expect(result.signals).toContain('ns_in_bailiwick');
+	});
+
+	it('an in-bailiwick host flagged by the injected shared-tenant predicate is likewise excluded (seed IS a shared-NS provider apex)', async () => {
+		const { classifyOwnership } = await loadModule();
+		const result = classifyOwnership({
+			seedDomain: 'sharedhost.example',
+			seedNs: ['ns01.sharedhost.example', 'ns02.sharedhost.example'],
+			candidateDomain: 'sharedh0st.example',
+			registration: registered(['ns01.sharedhost.example', 'ns02.sharedhost.example']),
+			isSharedNsHost: () => true,
+		});
+		expect(result.verdict).not.toBe('owned_by_seed');
+		expect(result.signals).not.toContain('ns_in_bailiwick');
+	});
+
+	it('isProviderCustomerNsHost matches pool hosts and nothing else', async () => {
+		const { isProviderCustomerNsHost } = await loadModule();
+		expect(isProviderCustomerNsHost('lara.ns.cloudflare.com')).toBe(true);
+		expect(isProviderCustomerNsHost('LARA.NS.CLOUDFLARE.COM.')).toBe(true);
+		expect(isProviderCustomerNsHost('ns3.cloudflare.com')).toBe(false);
+		expect(isProviderCustomerNsHost('ns2.bnz.co.nz')).toBe(false);
+		expect(isProviderCustomerNsHost('')).toBe(false);
+	});
+});
