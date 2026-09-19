@@ -11,14 +11,29 @@
  * call sites and found `safeFetch` correctly used, but found no CI backstop
  * against a future call site skipping it. This test is that backstop.
  *
- * What it flags: a bare identifier call `fetch(...)` — the raw global. It
- * does NOT flag:
+ * What it flags: a bare identifier call `fetch(...)` — the raw global — plus
+ * three evasions of that same raw global closed by SQ-81 (a follow-up from
+ * SQ-76's adversarial review of this gate itself, which found no live
+ * exploit of them but confirmed the detector missed all three):
+ *   - `globalThis['fetch'](...)` / `self['fetch'](...)` / `window['fetch'](...)`
+ *     — bracket-string access carries no `fetch(` token for the bare pattern
+ *     to find.
+ *   - `globalThis.fetch(...)`, `self.fetch(...)`, `window.fetch(...)` — these
+ *     look like member calls but are byte-identical in behaviour to the raw
+ *     global in the Workers runtime, so the member exemption below must not
+ *     cover them even though it covers everything else shaped like `.fetch(`.
+ *   - `const f = fetch; f(url)` — aliasing the raw global to a local name
+ *     before calling it. See FETCH_ALIAS_ASSIGNMENT_PATTERN below for the
+ *     documented bound on how far this one reaches.
+ *
+ * It does NOT flag:
  *   - `safeFetch(...)` (different identifier — already validated).
  *   - `<obj>.fetch(...)` (a MEMBER call, e.g. `env.BV_RECON.fetch(...)`,
  *     `stub.fetch(...)`, `binding.fetch(...)`) — Cloudflare service-binding
  *     calls resolve to an operator-configured internal route, never an
  *     attacker-supplied host, so they're structurally exempt without needing
- *     an ALLOWLIST entry — the `.` before `fetch(` is the whole test.
+ *     an ALLOWLIST entry — the `.` before `fetch(` is the whole test. This
+ *     exemption does NOT cover `globalThis`/`self`/`window` (see above).
  *   - anything under `test/` — this audit only walks `src/`, so test mocks
  *     and fixtures (`global.fetch = vi.fn()`, etc.) are out of scope by
  *     construction.
@@ -26,7 +41,8 @@
  *     entrypoint handler (`async fetch(request: Request): Promise<Response>
  *     {`) — a declaration, not a call.
  *
- * What's left after those exclusions is a bare call to the global `fetch`.
+ * What's left after those exclusions is a bare call to the global `fetch`,
+ * including through the three evasions above.
  * Every existing one has been read and classified into one of two safe
  * shapes, recorded in ALLOWLIST with a one-line reason each:
  *   - fixed/trusted host, scan input travels only in the query string or
@@ -148,6 +164,50 @@ const DECLARATION_PATTERN = /^(async\s+)?fetch\s*\([^)]*\)\s*:\s*Promise/;
 /** Matches a bare, non-member `fetch(` call: not preceded by `.` or a word character (so `x.fetch(`, `safeFetch(`, `dohFetch(` never match). */
 const BARE_FETCH_CALL_PATTERN = /(^|[^.\w])fetch\s*\(/g;
 
+/**
+ * SQ-81 gap 2: `globalThis.fetch(`, `self.fetch(`, `window.fetch(` match the
+ * `.fetch(` shape the member exemption above exists for, but unlike a real
+ * service binding they resolve to the same raw global as a bare `fetch(` call
+ * in the Workers runtime — so they must be treated as bare, not exempt.
+ */
+const GLOBAL_ALIAS_FETCH_CALL_PATTERN = /(^|[^.\w])(?:globalThis|self|window)\.fetch\s*\(/g;
+
+/**
+ * SQ-81 gap 1: the same three globals accessed via bracket-string notation
+ * (`globalThis['fetch'](`, `self["fetch"](`, `window['fetch'](`) carry no
+ * `fetch(` token at all, so BARE_FETCH_CALL_PATTERN never sees them.
+ */
+const GLOBAL_BRACKET_FETCH_CALL_PATTERN = /(^|[^.\w])(?:globalThis|self|window)\s*\[\s*['"]fetch['"]\s*\]\s*\(/g;
+
+/**
+ * SQ-81 gap 3: direct local aliasing of the raw global — `const f = fetch`,
+ * `let g = globalThis.fetch` — before the alias is ever called, so the call
+ * site itself (`f(url)`) carries no `fetch(` token either.
+ *
+ * Documented bound: tracing an alias identifier through the rest of a file
+ * (reassignment, calls in a different function, calls in a different file) is
+ * scope analysis, not something a line-oriented regex can do — and the ticket
+ * explicitly rules out adding an AST parser for this. So this pattern flags
+ * the ALIAS ASSIGNMENT itself rather than trying to follow its later uses:
+ * the raw global is caught at the one point it's guaranteed to appear as
+ * plain text, the moment it's captured under a new name. An assignment that
+ * calls immediately (`= fetch(...)`) is excluded here (negative lookahead) —
+ * that's an ordinary call already caught by BARE_FETCH_CALL_PATTERN or
+ * GLOBAL_ALIAS_FETCH_CALL_PATTERN above, not an aliasing evasion. Object
+ * shorthand (`{ fetch }`) and destructuring aliases are NOT covered — out of
+ * bound, same reasoning.
+ */
+const FETCH_ALIAS_ASSIGNMENT_PATTERN =
+	/(^|[^.\w])(?:const|let|var)\s+\w+\s*(?::[^=]+)?=\s*(?:globalThis\.|self\.|window\.)?fetch\b(?!\s*\()/g;
+
+/** All patterns that count as an undocumented use of the raw global fetch. */
+const EVASION_PATTERNS: readonly RegExp[] = [
+	BARE_FETCH_CALL_PATTERN,
+	GLOBAL_ALIAS_FETCH_CALL_PATTERN,
+	GLOBAL_BRACKET_FETCH_CALL_PATTERN,
+	FETCH_ALIAS_ASSIGNMENT_PATTERN,
+];
+
 function isCommentLine(trimmed: string): boolean {
 	return trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*');
 }
@@ -159,9 +219,11 @@ function findBareFetchCalls(content: string): Array<{ line: number; snippet: str
 		const trimmed = line.trim();
 		if (isCommentLine(trimmed)) return;
 		if (DECLARATION_PATTERN.test(trimmed)) return;
-		const matches = [...line.matchAll(BARE_FETCH_CALL_PATTERN)];
-		for (const _match of matches) {
-			hits.push({ line: idx + 1, snippet: line.trim().slice(0, 140) });
+		for (const pattern of EVASION_PATTERNS) {
+			const matches = [...line.matchAll(pattern)];
+			for (const _match of matches) {
+				hits.push({ line: idx + 1, snippet: line.trim().slice(0, 140) });
+			}
 		}
 	});
 	return hits;
