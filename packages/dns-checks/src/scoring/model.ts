@@ -26,6 +26,19 @@ function isExplicitConfidence(value: unknown): value is FindingConfidence {
  * - verified: explicit proof (currently only supported on takeover checks)
  * - heuristic: signal-based or partial-evidence checks
  * - deterministic: direct record/protocol validation
+ *
+ * ⚠️ The prose sniff at the bottom is a DISPLAY/analytics heuristic. It must never be the
+ * thing that keeps a finding from zeroing its category — that decision belongs on
+ * `metadata.missingControl` (see {@link declaredMissingControl}), which outranks prose in
+ * BOTH directions. `missing-control-intent.audit.test.ts` enumerates every `createFinding`
+ * site in this package and fails if any of them would start zeroing once the sniff is
+ * removed, so a new check cannot quietly acquire a prose-shaped defence.
+ *
+ * The `'among tested selectors'` literal that used to sit in this list was deleted with
+ * that guard: it existed solely for `check-dkim.ts`'s "No DKIM records found among tested
+ * selectors" finding, which declares `confidence: 'heuristic'` (and now
+ * `missingControl: false`) outright, so the literal never reached that finding and matched
+ * nothing else in either source tree. Rewording that title is now provably score-neutral.
  */
 export function inferFindingConfidence(finding: Finding): FindingConfidence {
 	const declared = finding.metadata?.confidence;
@@ -40,7 +53,6 @@ export function inferFindingConfidence(finding: Finding): FindingConfidence {
 	const text = `${finding.title} ${finding.detail}`.toLowerCase();
 	if (
 		text.includes('common selectors') ||
-		text.includes('among tested selectors') ||
 		text.includes('inferred') ||
 		text.includes('manual review') ||
 		text.includes('possible') ||
@@ -285,18 +297,57 @@ export function scoreIndicatesMissingControl(findings: Finding[]): boolean {
 }
 
 /**
+ * Read a finding's EXPLICIT missing-control declaration, or `undefined` when its author
+ * made none.
+ *
+ * `true` — "I measured, and the control is absent." `false` — "I measured, and whatever my
+ * prose happens to say, this is NOT an assertion that the control is absent." Absent — no
+ * declaration; the legacy prose inference decides.
+ *
+ * Only a real boolean counts. A non-boolean value (garbage from an unvalidated cache
+ * re-read, a stringified `"false"`) reads as "undeclared" and falls through to prose rather
+ * than silently arming or disarming the gate.
+ */
+export function declaredMissingControl(finding: Finding): boolean | undefined {
+	const declared = finding.metadata?.missingControl;
+	return typeof declared === 'boolean' ? declared : undefined;
+}
+
+/**
  * Canonical missing-control decision for a set of findings.
  *
- * A check author may declare the state structurally with
- * `metadata.missingControl: true`; legacy checks may still express it through
- * deterministic/verified prose interpreted by {@link scoreIndicatesMissingControl}.
- * Every scoring layer must use this predicate so category zeroing, the email
- * bonus and the critical-gap ceiling cannot disagree about the same evidence.
- * Measurement status is intentionally not accepted here: callers operating on
- * whole check results must gate this predicate with `isCheckMeasured`.
+ * Every scoring layer must use this predicate so category zeroing, the email bonus and the
+ * critical-gap ceiling cannot disagree about the same evidence. Measurement status is
+ * intentionally not accepted here: callers operating on whole check results must gate this
+ * predicate with `isCheckMeasured`.
+ *
+ * ## The declaration outranks the prose, in BOTH directions
+ *
+ * Per finding: an explicit {@link declaredMissingControl} is the answer; only an
+ * UNDECLARED finding falls through to {@link scoreIndicatesMissingControl}'s regex.
+ *
+ * The `false` direction is the half that was missing, and it is what a check needs in order
+ * to be correct by construction rather than by copywriting. Two live sites depended on
+ * wording alone:
+ *
+ * - `check-dnssec.ts`'s unsigned-zone finding carried an in-source note that its detail
+ *   "deliberately avoids 'no … record / missing / not found'". An unsigned zone is a graded
+ *   −40 deficiency (category 60), NOT a zero — but nothing except that sentence enforced it,
+ *   and `dnssec` is a critical category in every profile, so a reword would have capped whole
+ *   domains at the 64 ceiling (grade D).
+ * - `check-dkim.ts`'s "No DKIM records found among tested selectors" MATCHES the regex; it was
+ *   held back only by its `confidence: 'heuristic'` metadata, with a literal in
+ *   {@link inferFindingConfidence} standing by as a second, prose-shaped defence.
+ *
+ * Both now declare `missingControl: false`, so their titles and details are ordinary prose
+ * again: editable, translatable, and unable to move a score.
+ *
+ * The scope is deliberately one finding, not the whole result: a category that also emits a
+ * genuinely absent-control finding still zeroes on THAT finding. A `false` declaration
+ * retracts one claim, it does not immunise a check.
  */
 export function findingsIndicateMissingControl(findings: Finding[]): boolean {
-	return scoreIndicatesMissingControl(findings) || findings.some((f) => f.metadata?.missingControl === true);
+	return findings.some((f) => declaredMissingControl(f) ?? scoreIndicatesMissingControl([f]));
 }
 
 /**

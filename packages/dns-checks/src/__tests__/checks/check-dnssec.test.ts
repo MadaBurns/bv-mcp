@@ -29,7 +29,11 @@ describe('checkDNSSEC', () => {
 		expect(absent?.metadata?.penaltyOverride).toBe(40);
 		expect(result.passed).toBe(true);
 		expect(result.score).toBe(60);
-		expect(absent?.metadata?.missingControl).toBeUndefined();
+		// Since scoring model 1.35.0 the "graded, never zeroed" decision is DECLARED rather than
+		// implied by carefully-chosen words. `false` is a stronger statement than the `undefined`
+		// this used to assert: it also forbids the prose leg from reaching this finding, so the
+		// detail can be reworded (or translated) without moving the score.
+		expect(absent?.metadata?.missingControl).toBe(false);
 	});
 
 	it('does not accept AD=true without DNSKEY and DS as a validated zone', async () => {
