@@ -214,7 +214,15 @@ function calculateEstimatedDuration(phases: RolloutPhase[]): string {
 			totalDays += match[2] === 'week' ? num * 7 : num;
 		}
 	}
-	if (totalDays === 0) return 'already at target';
+	// `already at target` is owned SOLELY by the at-target branch in
+	// `generateRolloutPlan`, which returns before this function is ever called.
+	// A zero total here therefore never means "nothing to do" — it means the
+	// phases that exist carry no numeric duration, which is exactly the
+	// quarantine->reject case (its single `Reject` phase is `ongoing`). Emitting
+	// the at-target sentinel there told an operator no work was required while the
+	// same payload said `atTarget: false` with a populated `phases[]` (#1053).
+	if (phases.length === 0) return 'already at target';
+	if (totalDays === 0) return 'ongoing';
 
 	const weeks = Math.floor(totalDays / 7);
 	const days = totalDays % 7;

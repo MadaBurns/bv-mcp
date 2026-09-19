@@ -283,6 +283,39 @@ describe('checkAuthoritativeDnsInfra', () => {
 		expect(inconclusiveFinding!.severity).toBe('info');
 		expect(inconclusiveFinding!.detail).not.toMatch(/passed|satisfied/i);
 		expect(inconclusiveFinding!.metadata?.inconclusive).toBe(true);
+		// No `errors` in this fixture, so the generic wording stands.
+		expect(inconclusiveFinding!.metadata?.unprovisioned).toBeUndefined();
+	});
+
+	// #1054: the deployed sidecar answers a hostname target with
+	// `errors: ['live_raw_dns_probe_not_configured']` and no capability evidence,
+	// while the root-server-set lane returns real evidence in the same session.
+	// The all-inconclusive result was correct but its prose read as a transient
+	// failure, inviting a retry that cannot succeed. Name the provisioning state.
+	it('names the unprovisioned probe lane instead of implying a transient failure (#1054)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'nwebbed.com',
+			checkedAt: '2026-09-19T00:00:00.000Z',
+			reachability: { ipv4: { addresses: [] }, ipv6: { addresses: [] } },
+			errors: ['live_raw_dns_probe_not_configured'],
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('nwebbed.com', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		// Honest abstention is unchanged — this is a wording/metadata fix only.
+		expect(result).toMatchObject({ passed: false, score: 0, checkStatus: 'error', partial: true });
+
+		const finding = result.findings.find((f) => f.title === 'Authoritative DNS infrastructure checks inconclusive');
+		expect(finding).toBeDefined();
+		expect(finding!.detail).toContain('live_raw_dns_probe_not_configured');
+		expect(finding!.detail).toMatch(/not provisioned/i);
+		expect(finding!.detail).toMatch(/not a transient failure/i);
+		expect(finding!.detail).not.toMatch(/passed|satisfied/i);
+		expect(finding!.metadata?.inconclusive).toBe(true);
+		expect(finding!.metadata?.unprovisioned).toBe(true);
+		expect(finding!.metadata?.probeErrors).toEqual(['live_raw_dns_probe_not_configured']);
 	});
 
 	it('degrades gracefully (does not throw) when the infra probe returns HTTP 503', async () => {
