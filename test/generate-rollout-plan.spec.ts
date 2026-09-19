@@ -181,6 +181,50 @@ describe('generateRolloutPlan', () => {
 		expect(result.phases[0].record).toContain('p=reject');
 	});
 
+	/**
+	 * #1053: the quarantine->reject path builds one phase whose duration is the
+	 * literal `ongoing`, so the duration sum was 0 and hit the `already at target`
+	 * sentinel — in a payload that simultaneously said `atTarget: false` with a
+	 * populated `phases[]`. The general invariant, not just the one path: the
+	 * at-target string may never appear while there is work to do.
+	 */
+	it('never reports "already at target" while atTarget is false', async () => {
+		const cases: Array<{ dmarc: string | null; target: 'reject' | 'quarantine' }> = [
+			{ dmarc: 'v=DMARC1; p=quarantine; rua=mailto:d@example.com', target: 'reject' },
+			{ dmarc: 'v=DMARC1; p=none; rua=mailto:d@example.com', target: 'reject' },
+			{ dmarc: null, target: 'reject' },
+			{ dmarc: null, target: 'quarantine' },
+		];
+
+		for (const { dmarc, target } of cases) {
+			mockEmailAuth({ spf: 'v=spf1 include:_spf.google.com -all', dmarc, dkim: true });
+			const { generateRolloutPlan } = await import('../src/tools/generate-rollout-plan');
+			const result = await generateRolloutPlan('example.com', target);
+
+			expect(result.atTarget).toBe(false);
+			expect(result.phases.length).toBeGreaterThan(0);
+			expect(result.estimatedDuration).not.toBe('already at target');
+		}
+	});
+
+	it('reports an ongoing duration for the single ongoing quarantine->reject phase', async () => {
+		mockEmailAuth({ spf: 'v=spf1 include:_spf.google.com -all', dmarc: 'v=DMARC1; p=quarantine; rua=mailto:d@example.com', dkim: true });
+		const { generateRolloutPlan } = await import('../src/tools/generate-rollout-plan');
+		const result = await generateRolloutPlan('example.com', 'reject');
+
+		expect(result.estimatedDuration).toBe('ongoing');
+	});
+
+	it('still reports "already at target" when there is genuinely nothing to do', async () => {
+		mockEmailAuth({ spf: 'v=spf1 include:_spf.google.com -all', dmarc: 'v=DMARC1; p=reject; rua=mailto:d@example.com', dkim: true });
+		const { generateRolloutPlan } = await import('../src/tools/generate-rollout-plan');
+		const result = await generateRolloutPlan('example.com', 'reject');
+
+		expect(result.atTarget).toBe(true);
+		expect(result.phases).toHaveLength(0);
+		expect(result.estimatedDuration).toBe('already at target');
+	});
+
 	it('phases include rollback records', async () => {
 		mockEmailAuth({ spf: 'v=spf1 include:_spf.google.com -all', dmarc: null, dkim: true });
 		const { generateRolloutPlan } = await import('../src/tools/generate-rollout-plan');
