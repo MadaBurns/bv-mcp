@@ -688,14 +688,31 @@
  *   probes ANSWER (a real bounded measurement, and abstaining would arm the transient retry
  *   and block caching on every DKIM-less domain); zeroing was rejected because DKIM is
  *   inferred and "not discovered" is not "absent".
- *   ⚠️ The affected share is ESTIMATED at ~5-15% from the 2026-08-03 corpus memory, NOT
- *   re-measured — no scoring corpus fixture exists in-repo.
- *   Also in this wave, NOT score-bearing: the DoH RCODE is now surfaced so a SERVFAIL stops
- *   being recorded as a measured absence (additive; no check reads it yet); the maturity
- *   ladder, cohort statistics, `compare_baseline` and `format-report` stop reading `passed`
- *   as "control exists" and use `isSatisfiedControl()` / `dmarcPolicyTag()`; an SSL transport
- *   failure becomes an `info` abstention rather than a `critical` finding (the category was
- *   ALREADY excluded from scoring, so no score moves).
+ *   ⚠️ The affected share is UNMEASURED. An earlier draft of this entry estimated ~5-15%
+ *   from the 2026-08-03 corpus memory; that citation does not support the claim and was
+ *   withdrawn. `reference_scoring-corpus-1000-2026-08.md` carries no DKIM
+ *   presence/`controlPresent` statistic and no joint distribution. Its one DKIM datum (mean
+ *   69.4 over 693 measured), against the not-found floor of exactly 50
+ *   (`check-dkim.ts:514`), implies a not-found share nearer 45-60% — i.e. the evidence
+ *   pushes the estimate UP, not down. Measured over bonus RECIPIENTS rather than all
+ *   domains, the affected share is likely a majority. No scoring corpus fixture exists
+ *   in-repo; measuring this needs a `scripts/ci/dogfood-scan.mjs` `runScan()` pass over a
+ *   domain population, reading `dkim.controlPresent` (NOT `passed`, and NOT `score > 0` —
+ *   the 50 floor makes that report ~100% presence, the same shape as the DNSSEC `> 60` trap).
+ *   The loss is 2, 3 or 5 by DMARC score, and `clampPercent` or a binding ceiling can make
+ *   the realized delta smaller or zero.
+ *   Also in this wave, NOT score-bearing but the LARGEST customer-visible change here: the
+ *   maturity ladder, cohort statistics, `compare_baseline` and `format-report` stop reading
+ *   `passed` as "control exists" and use `isSatisfiedControl()` / `dmarcPolicyTag()`. No
+ *   score moves, but `isSatisfiedControl` rejects a result carrying a high finding and an
+ *   unsigned zone emits one, so `hasDnssec` flips true→false for the ~93% of domains
+ *   measured unsigned (`hasCaa` for ~84%). `maturityStage` is PERSISTED per scan
+ *   (`src/tenants/scan-snapshot.ts:61`) and rendered "N/4", so stored maturity trends take a
+ *   step discontinuity at this version — a reporting artifact of the fix, not a regression.
+ *   Also NOT score-bearing: the DoH RCODE is now surfaced so a SERVFAIL stops being recorded
+ *   as a measured absence (additive; no check reads it yet); an SSL transport failure becomes
+ *   an `info` abstention rather than a `critical` finding (the category was ALREADY excluded
+ *   from scoring, so no score moves).
  *   No weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule
  *   changed. `NIST_GRADE_THRESHOLDS` untouched.
  */
