@@ -147,7 +147,16 @@ export async function consumeOAuthRateLimit(options: OAuthRateLimitOptions): Pro
 				if (!isBudgetReservation(reservation, options.limit)) {
 					return { exceeded: true, retryAfterSeconds: retryAfterSeconds(expiresAt, attemptNowMs), unavailable: true };
 				}
-				if (attempt === 0 && isExpiredWindowRefusal(reservation)) continue;
+				if (isExpiredWindowRefusal(reservation)) {
+					if (attempt === 0) continue;
+					// The retry recomputed the window from `Date.now()`, so a SECOND expired-window
+					// refusal is not the same race again — it means window judgement is unreliable
+					// right now (e.g. a coordinator clock far enough from the caller's). Reporting
+					// `exceeded: true` here would 429 a principal whose `used` is still 0, which is
+					// exactly the defect #985/#1011 fixed for attempt 0. Fail as unavailable (503)
+					// instead, unconditionally preserving "never 429 a principal with used === 0".
+					return { exceeded: true, retryAfterSeconds: retryAfterSeconds(expiresAt, attemptNowMs), unavailable: true };
+				}
 				try {
 					await options.kv.put(options.kvKey, JSON.stringify({ count: reservation.used, expiresAt }), {
 						expirationTtl: Math.max(60, retryAfterSeconds(expiresAt, attemptNowMs)),
