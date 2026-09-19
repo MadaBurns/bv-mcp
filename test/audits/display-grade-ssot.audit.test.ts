@@ -40,6 +40,37 @@ const SOURCES = (import.meta as unknown as GlobbingImportMeta).glob(
 	{ eager: true, query: '?raw', import: 'default' },
 );
 
+/**
+ * Every tool module, swept as a set rather than enumerated — #1052's actual
+ * lesson. #640, #727 and #962 each fixed the ONE surface that was reported and
+ * extended this audit by one hand-listed file, so `generate-fix-plan.ts` (which
+ * was already wrong at the time of all three) stayed green through every sweep
+ * and shipped an inflated letter until an agent re-found it. A glob has no
+ * "the file nobody thought to list" failure mode.
+ */
+const TOOL_SOURCES = (import.meta as unknown as GlobbingImportMeta).glob(['../../src/tools/*.ts', '../../src/tools/scan/*.ts'], {
+	eager: true,
+	query: '?raw',
+	import: 'default',
+});
+
+/**
+ * Files allowed to read a raw engine `.score.grade`, each for a reason that is
+ * NOT "renders a letter to a customer":
+ *
+ * - `compare-baseline.ts` compares a scan against a caller-supplied baseline
+ *   grade. Both sides of that comparison are the engine scale; it emits a
+ *   pass/fail policy verdict, not a display letter. Converting only one side
+ *   would silently change every stored baseline's meaning — a behaviour change
+ *   that belongs to its own issue, not to this audit.
+ */
+const RAW_GRADE_ALLOWLIST = ['compare-baseline.ts'];
+
+/** Strip line and block comments so the prose warnings ABOUT the bad pattern do not trip the scan. */
+function stripComments(source: string): string {
+	return source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+}
+
 function source(suffix: string): string {
 	const key = Object.keys(SOURCES).find((k) => k.endsWith(suffix));
 	// Anti-vacuity: a renamed/moved file must fail loudly, not silently pass.
@@ -81,6 +112,37 @@ describe('display-grade SSOT', () => {
 		// The precise regression, kept literal so the failure names the exact bad call.
 		expect(drift).not.toMatch(/from: baseline\.grade/);
 		expect(drift).not.toMatch(/to: current\.grade/);
+	});
+
+	it('no tool module passes the raw engine grade where a display letter is expected', () => {
+		// Anti-vacuity: the glob must actually have matched the tool tree.
+		const names = Object.keys(TOOL_SOURCES);
+		expect(names.length).toBeGreaterThan(20);
+		expect(names.some((k) => k.endsWith('generate-fix-plan.ts'))).toBe(true);
+
+		const offenders: string[] = [];
+		for (const [path, raw] of Object.entries(TOOL_SOURCES)) {
+			const file = path.slice(path.lastIndexOf('/') + 1);
+			if (RAW_GRADE_ALLOWLIST.includes(file)) continue;
+			// `<something>.score.grade` is the engine's 9-band letter. Reading it in a tool
+			// module means a customer-visible surface is about to print the wrong scale
+			// (#1052: fix_plan printed "A" for the 88 that scan_domain reports as "B").
+			// Route it through `displayGradeFor(<something>.score)` instead.
+			if (/\.score\.grade\b/.test(stripComments(raw))) offenders.push(file);
+		}
+
+		expect(offenders, `route these through displayGradeFor(): ${offenders.join(', ')}`).toEqual([]);
+	});
+
+	it('generate_fix_plan hands evaluateFixPlan the display grade (#1052)', () => {
+		const key = Object.keys(TOOL_SOURCES).find((k) => k.endsWith('generate-fix-plan.ts'));
+		expect(key, 'expected src/tools/generate-fix-plan.ts').toBeDefined();
+		const plan = TOOL_SOURCES[key!];
+
+		expect(plan).toMatch(/import \{[^}]*displayGradeFor[^}]*\} from '\.\.\/lib\/ungraded-display'/);
+		expect(plan).toMatch(/displayGradeFor\(scanResult\.score\)/);
+		// The precise regression, kept literal so the failure names the exact bad call.
+		expect(stripComments(plan)).not.toMatch(/scanResult\.score\.grade/);
 	});
 
 	it('only the leaf module derives a NIST letter for a scan score', () => {
