@@ -414,6 +414,16 @@ export async function renderBrandAuditPdf(result: CheckResult, target: string, o
 	const doc = await PDFDocument.create();
 	doc.setCreator('bv-mcp brand-audit');
 	doc.setProducer('pdf-lib (bv-mcp)');
+	// #1049 — pin pdf-lib's own document metadata to the injected clock.
+	// PDFDocument.create() stamps CreationDate/ModificationDate from the REAL
+	// clock, so without this two renders of identical input are byte-identical
+	// only when they land in the same wall-clock second — the source of an
+	// intermittent 1-byte xref-offset drift in CI, and of non-reproducible
+	// PDFs for real callers. Everything date-shaped in the document now flows
+	// from `now`.
+	const stamped = new Date(now());
+	doc.setCreationDate(stamped);
+	doc.setModificationDate(stamped);
 
 	const font = await doc.embedFont(StandardFonts.Helvetica);
 	const bold = await doc.embedFont(StandardFonts.HelveticaBold);

@@ -9,6 +9,24 @@ describe('domainLabelSimilarity', () => {
 		expect(domainLabelSimilarity('example.com', 'totallydifferent.net')).toBeLessThan(0.5);
 	});
 
+	it('scores every one-edit typosquat of a brand identically, regardless of which side of the brand length it lands (#1038)', () => {
+		// Pre-fix, `1 - distance/maxLen` made the score depend on the BRAND
+		// length: paypall (insertion, maxLen 7) scored 0.86 while paypa
+		// (deletion) and paypai (substitution) scored 0.83 — same one-edit
+		// closeness, opposite side of the 0.85 impersonation gate.
+		expect(domainLabelSimilarity('paypal.com', 'paypa.com')).toBeGreaterThanOrEqual(0.85);
+		expect(domainLabelSimilarity('paypal.com', 'paypai.com')).toBeGreaterThanOrEqual(0.85);
+		expect(domainLabelSimilarity('paypal.com', 'paypall.com')).toBeGreaterThanOrEqual(0.85);
+	});
+
+	it('keeps the plain ratio for one-edit pairs of very short labels — coincidence, not typosquat (#1038 guard)', () => {
+		expect(domainLabelSimilarity('hp.com', 'hq.com')).toBeLessThan(0.85);
+	});
+
+	it('keeps the plain ratio when the labels are more than one edit apart (#1038 floor is single-edit only)', () => {
+		expect(domainLabelSimilarity('paypal.com', 'payp.com')).toBeLessThan(0.85);
+	});
+
 	it('cannot see a brand token inside a longer combosquat label (the gap combosquatMatch fills)', () => {
 		// `paypal-login` vs `paypal` scores far below the 0.85 impersonation
 		// threshold — this is exactly why combosquats need a separate detector.

@@ -347,6 +347,32 @@ describe('correlateNs', () => {
 	// bypass is reserved for a FULL match. Previously (fix round 1, before
 	// this ruling) any non-empty in-bailiwick subset qualified; this is the
 	// missing mixed fixture the ruling calls out as absent.
+	it('a provider-customer pool host under the seed apex does NOT get the in_bailiwick bypass (#1040 — cloudflare.com seed vs its own customer typosquat)', async () => {
+		// Live repro (2026-09-17): cloaudflare.com is a Cloudflare-hosted
+		// typosquat OF cloudflare.com. Its NS are in-bailiwick to the seed apex
+		// by construction (`<name>.ns.cloudflare.com` — the pool every Cloudflare
+		// customer draws from), but that names a provider-customer relationship,
+		// not ownership. It must fall through to set_overlap, share nothing with
+		// the seed's own branded set (ns3–ns7), and be dropped.
+		const dnsQuery = dnsQueryFromMap({
+			'cloudflare.com': ['ns3.cloudflare.com.', 'ns4.cloudflare.com.', 'ns5.cloudflare.com.', 'ns6.cloudflare.com.', 'ns7.cloudflare.com.'],
+			'cloaudflare.com': ['lara.ns.cloudflare.com.', 'arch.ns.cloudflare.com.'],
+		});
+		const result = await correlateNs('cloudflare.com', { dnsQuery, candidateDomains: ['cloaudflare.com'] });
+		expect(result.queryStatus).toBe('ok');
+		expect(result.coOwnedDomains).toEqual([]);
+	});
+
+	it('the provider\u2019s own branded (non-pool) hosts still qualify for in_bailiwick (#1040 guard against over-filtering)', async () => {
+		const dnsQuery = dnsQueryFromMap({
+			'cloudflare.com': ['ns3.cloudflare.com.', 'ns4.cloudflare.com.'],
+			'cloudflare.net': ['ns5.cloudflare.com.', 'ns6.cloudflare.com.'],
+		});
+		const result = await correlateNs('cloudflare.com', { dnsQuery, candidateDomains: ['cloudflare.net'] });
+		expect(result.coOwnedDomains).toHaveLength(1);
+		expect(result.coOwnedDomains[0]).toMatchObject({ domain: 'cloudflare.net', confidence: 1, matchType: 'in_bailiwick' });
+	});
+
 	it('a candidate with a PARTIAL in-bailiwick NS subset (1 of 2) does NOT get the confidence-1/in_bailiwick bypass — falls through to set_overlap', async () => {
 		const dnsQuery = dnsQueryFromMap({
 			'bnz.co.nz': ['ns1.bnz.co.nz.', 'ns2.bnz.co.nz.'],
