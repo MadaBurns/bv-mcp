@@ -8,6 +8,33 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`generate(fix_plan)` printed the engine's internal 9-band grade** (#1052). The
+  remediation artifact most likely to be pasted into a client document reported "A"
+  for a score of 88 that `scan_domain` reports as "B", because it passed
+  `scanResult.score.grade` straight through instead of the 6-band `displayGradeFor()`
+  chokepoint every other surface uses. Fourth instance of the #640/#727/#962 family —
+  and the first three each extended the SSOT audit by one hand-listed file, which is
+  why this one survived all of them. `display-grade-ssot.audit.test.ts` now **globs**
+  `src/tools/`, so a new surface is covered the day it is written.
+- **`generate(rollout_plan)` reported "already at target" for every quarantine →
+  reject rollout** (#1053), in the same payload that said `atTarget: false` with a
+  populated `phases[]`. The single `Reject` phase carries the literal duration
+  `ongoing`, which the duration sum skips — and a zero sum was treated as the
+  at-target sentinel, a state the real at-target branch has already returned for.
+  Zero-sum-with-phases now reports `ongoing`; the sentinel is keyed on
+  `phases.length === 0`. A spec pins the general invariant: the at-target string can
+  never appear while `atTarget` is false.
+- **`check_authoritative_dns_infra` read as a transient failure on hostname targets**
+  (#1054). The sidecar's raw DNS lane is unprovisioned — it answers any non-root
+  hostname with `live_raw_dns_probe_not_configured` and no capability evidence, while
+  the root-server-set lane serves real evidence from static hints in the same session.
+  The abstention itself was correct (#812 holding); its prose invited a retry that
+  cannot succeed. The finding now names the provisioning state and carries
+  `unprovisioned` / `probeErrors` metadata. Wording and metadata only — no score,
+  status or capability result changed.
+
 ## [3.82.0] - 2026-09-18
 
 Adds a seventh SGE control and the fail-soft TypeSafe/Jev client foundation, plus a

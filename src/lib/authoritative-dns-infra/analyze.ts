@@ -416,13 +416,28 @@ export function analyzeAuthoritativeDnsInfraEvidence(
 				),
 			);
 		} else {
+			// #1054: "did not yield any conclusive capability checks" reads as a transient
+			// failure and invites a pointless retry. When the probe TOLD us why — it reports
+			// `live_raw_dns_probe_not_configured` for any hostname that is not itself a root
+			// server, because the raw UDP/TCP DNS lane is unprovisioned in this deployment
+			// while the root-server-set lane answers from static hints — say so. Retrying
+			// cannot change that outcome, and the reader was left comparing an all-
+			// inconclusive hostname result against a same-session root-set result carrying
+			// real evidence, with nothing in either payload explaining the difference.
+			const unconfigured = (evidence.errors ?? []).filter((code) => code.endsWith('_not_configured'));
 			findings.push(
 				createFinding(
 					CATEGORY,
 					'Authoritative DNS infrastructure checks inconclusive',
 					'info',
-					`Infra probe evidence for ${evidence.hostname} did not yield any conclusive capability checks; nothing was verified.`,
-					{ evidenceMode: 'infra_probe', inconclusive: true },
+					unconfigured.length > 0
+						? `The infra probe's raw DNS lane is not provisioned for hostname targets in this deployment (${unconfigured.join(', ')}), so no capability check for ${evidence.hostname} could be verified either way. This is a provisioning state, not a transient failure — retrying returns the same result. Root-server-set evidence is served from a separate lane and is unaffected.`
+						: `Infra probe evidence for ${evidence.hostname} did not yield any conclusive capability checks; nothing was verified.`,
+					{
+						evidenceMode: 'infra_probe',
+						inconclusive: true,
+						...(unconfigured.length > 0 ? { unprovisioned: true, probeErrors: unconfigured } : {}),
+					},
 				),
 			);
 		}
