@@ -11,6 +11,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
+import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import { parseDmarcTags } from './dmarc-utils';
 import {
 	DNS_UDP_LIMIT_BYTES,
@@ -107,7 +108,15 @@ async function getTrustSurfaceDmarcContext(
 export async function checkSPF(domain: string, queryDNS: DNSQueryFunction, options?: { timeout?: number }): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 	const findings: Finding[] = [];
-	const txtRecords = await queryDNS(domain, 'TXT', { timeout });
+	const apexTxt = await queryWithRcode(queryDNS, domain, 'TXT', timeout);
+
+	// The apex TXT lookup never concluded, so the `critical` "No SPF record found" verdict
+	// below would zero a Core category for a domain whose TXT RRset was never read.
+	if (isInconclusiveRcode(apexTxt.rcode)) {
+		return buildRcodeAbstentionResult('spf', 'SPF', domain, 'TXT', apexTxt.rcode);
+	}
+
+	const txtRecords = apexTxt.records;
 
 	// A TXT record is an SPF record only if it BEGINS with the version token "v=spf1"
 	// followed by a space or end-of-record (RFC 7208 §4.5 / ABNF: version *( SP terms )).

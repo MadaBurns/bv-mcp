@@ -10,6 +10,7 @@
 
 import type { CheckResult, CheckStatus, DNSQueryFunction, FetchFunction, Finding, ZoneContext } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
+import { describeRcode, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import { readResponseTextCapped } from '../response-body';
 import { RobotsDisallowedError, describeRobotsScope, robotsAbstentionMetadata } from '../robots-gate';
 import { isNullMxRecord, parseMxRecords } from './mx-analysis';
@@ -96,18 +97,29 @@ function hasDefiniteMtaStsMeasurement(findings: Finding[]): boolean {
 	return findings.some((f) => f.severity !== 'info' && f.metadata?.inconclusive !== true);
 }
 
-/** The `info` finding documenting a rejected `_mta-sts` / `_smtp._tls` TXT lookup. */
-function buildDnsNotAssessedFinding(label: string, name: string, status: CheckStatus): Finding {
+/**
+ * The `info` finding documenting an `_mta-sts` / `_smtp._tls` TXT lookup that produced no
+ * measurement — either because it was REJECTED (threw) or because it ANSWERED with an
+ * inconclusive rcode, which is the same non-measurement wearing an HTTP 200 and an empty
+ * answer set. `rcode` names the latter; it is absent for a throw, which has no rcode.
+ */
+function buildDnsNotAssessedFinding(label: string, name: string, status: CheckStatus, rcode?: number): Finding {
 	return createFinding(
 		'mta_sts',
 		`${label} not assessed (DNS lookup ${status === 'timeout' ? 'timed out' : 'failed'})`,
 		'info',
 		`The scanner's TXT lookup for ${name} did not complete, so ${label} could not be assessed on this run. ` +
+			(rcode !== undefined ? `The resolver answered ${describeRcode(rcode)} rather than a record set. ` : '') +
 			`This is not evidence about the domain — an empty answer would have been graded as a missing record. Retry to re-measure.`,
 		// `errorKind: 'dns_error'` is the marker `isDnsErrorFinding` consumers filter on (no
 		// remediation, no compliance verdict, nothing to sell against an unmeasured category).
 		// Never `missingControl` alongside it (issue #638).
-		{ inconclusive: true, errorKind: 'dns_error', notAssessedReason: 'dns_query_failed' satisfies MtaStsNotAssessedReason },
+		{
+			inconclusive: true,
+			errorKind: 'dns_error',
+			notAssessedReason: 'dns_query_failed' satisfies MtaStsNotAssessedReason,
+			...(rcode !== undefined ? { dnsRcode: rcode } : {}),
+		},
 	);
 }
 
@@ -141,8 +153,14 @@ export async function checkMTASTS(
 	// compliant state, `enforce`, emits no finding at all.
 	let observedPolicyMode: string | undefined;
 	try {
-		const txtRecords = await queryDNS(`_mta-sts.${domain}`, 'TXT', { timeout });
-		const txtAnalysis = getMtaStsTxtFindings(txtRecords);
+		const outcome = await queryWithRcode(queryDNS, `_mta-sts.${domain}`, 'TXT', timeout);
+		// An inconclusive rcode is the SAME zero-evidence state as the throw below — the
+		// resolver declined the question — it just arrives as an empty answer set over
+		// HTTP 200, so it must abstain rather than be graded as a missing record.
+		if (isInconclusiveRcode(outcome.rcode)) {
+			return buildNotAssessedResult([buildDnsNotAssessedFinding('MTA-STS', `_mta-sts.${domain}`, 'error', outcome.rcode)], 'error', false);
+		}
+		const txtAnalysis = getMtaStsTxtFindings(outcome.records);
 		hasTxtRecord = txtAnalysis.hasTxtRecord;
 		findings.push(...finalizeMissingMtaStsRecordFinding(txtAnalysis.findings, domain));
 	} catch (err) {
@@ -274,16 +292,11 @@ export async function checkMTASTS(
 	// True ONLY when the lookup ANSWERED (an empty answer is a measured absence). A rejected
 	// lookup must not read as "we looked" — that was the #889 `tlsRptChecked = true` defect.
 	let tlsRptChecked = false;
-	try {
-		const tlsrptRecords = await queryDNS(`_smtp._tls.${domain}`, 'TXT', { timeout });
-		tlsRptChecked = true;
-		const tlsRptAnalysis = getTlsRptRecordFindings(tlsrptRecords);
-		hasTlsRptRecord = tlsRptAnalysis.hasTlsRptRecord;
-		findings.push(...finalizeMissingTlsRptRecordFinding(tlsRptAnalysis.findings, domain));
-	} catch (err) {
-		// Was a scored `low` "TLS-RPT DNS query failed" (category 95) recorded as measured.
-		const status = classifyTransportFailure(err);
-		const tlsRptNotAssessed = buildDnsNotAssessedFinding('TLS-RPT', `_smtp._tls.${domain}`, status);
+	/**
+	 * Record a TLS-RPT sub-probe that produced no measurement, whether it threw or answered
+	 * an inconclusive rcode. Both leave `tlsRptChecked` false — nothing was looked at.
+	 */
+	const recordTlsRptNotAssessed = (status: CheckStatus, tlsRptNotAssessed: Finding): void => {
 		if (notAssessedStatus === null && hasDefiniteMtaStsMeasurement(findings)) {
 			// TLS-RPT is a SUB-PROBE of this category. When MTA-STS itself already produced a
 			// definite measurement (a policy 404, a missing/duplicated record, a broken policy),
@@ -297,6 +310,24 @@ export async function checkMTASTS(
 			notAssessedStatus ??= status;
 			notAssessedFindings.push(tlsRptNotAssessed);
 		}
+	};
+
+	try {
+		const tlsRptOutcome = await queryWithRcode(queryDNS, `_smtp._tls.${domain}`, 'TXT', timeout);
+		if (isInconclusiveRcode(tlsRptOutcome.rcode)) {
+			// Answered HTTP 200 with an empty answer set and a resolver failure inside it:
+			// `finalizeMissingTlsRptRecordFinding` would grade that as a missing record.
+			recordTlsRptNotAssessed('error', buildDnsNotAssessedFinding('TLS-RPT', `_smtp._tls.${domain}`, 'error', tlsRptOutcome.rcode));
+		} else {
+			tlsRptChecked = true;
+			const tlsRptAnalysis = getTlsRptRecordFindings(tlsRptOutcome.records);
+			hasTlsRptRecord = tlsRptAnalysis.hasTlsRptRecord;
+			findings.push(...finalizeMissingTlsRptRecordFinding(tlsRptAnalysis.findings, domain));
+		}
+	} catch (err) {
+		// Was a scored `low` "TLS-RPT DNS query failed" (category 95) recorded as measured.
+		const status = classifyTransportFailure(err);
+		recordTlsRptNotAssessed(status, buildDnsNotAssessedFinding('TLS-RPT', `_smtp._tls.${domain}`, status));
 	}
 
 	if (notAssessedStatus) {

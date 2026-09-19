@@ -13,8 +13,9 @@
  * Licensed under BUSL-1.1
  */
 
-import type { CheckResult, DNSQueryFunction, Finding } from '../types';
+import type { CheckResult, DNSQueryFunction, DNSQueryOutcome, Finding } from '../types';
 import { buildCheckResult } from '../check-utils';
+import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import { classifyDmarc, appendDmarcCleanInfo, type DmarcFacts } from '../scoring/classifiers/dmarc';
 import { checkRuaAuthorization, detectThirdPartyAggregators, isValidDmarcUri, parseDmarcTags } from './dmarc-utils';
 
@@ -49,24 +50,35 @@ function treeWalkTargets(domain: string): string[] {
  * Walk `_dmarc.<name>` up the hierarchy (RFC 9989 §4.10), stopping at the first
  * name with a v=DMARC1 record. NXDOMAIN (DNS status 3) halts the walk; NODATA
  * continues up. Returns the found name's TXT records + where it was found.
+ *
+ * An INCONCLUSIVE rcode (SERVFAIL, REFUSED, …) at any step aborts the walk with
+ * `inconclusive` set instead of walking past it: the step answered nothing, so neither
+ * "no record here" nor "no record inherited from above" was established. That matches
+ * what a thrown lookup has always done — abort the whole check — and is the difference
+ * the `string[]` projection used to erase, since a resolver that could not answer and a
+ * name with no DMARC record both arrive as an empty array over HTTP 200.
  */
 async function dmarcTreeWalk(
 	domain: string,
 	queryDNS: DNSQueryFunction,
 	timeout: number,
-): Promise<{ txtRecords: string[]; foundAt: string | null }> {
+): Promise<{ txtRecords: string[]; foundAt: string | null; inconclusive?: { name: string; rcode: number } }> {
 	for (const name of treeWalkTargets(domain)) {
-		let txt: string[];
+		const queryName = `_dmarc.${name}`;
+		let outcome: DNSQueryOutcome;
 		try {
-			txt = await queryDNS(`_dmarc.${name}`, 'TXT', { timeout });
+			outcome = await queryWithRcode(queryDNS, queryName, 'TXT', timeout);
 		} catch (error) {
 			if ((error as { dnsStatus?: number })?.dnsStatus === 3) {
 				return { txtRecords: [], foundAt: null };
 			}
 			throw error;
 		}
-		if (/v=dmarc1/i.test(txt.join(''))) {
-			return { txtRecords: txt, foundAt: name };
+		if (isInconclusiveRcode(outcome.rcode)) {
+			return { txtRecords: [], foundAt: null, inconclusive: { name: queryName, rcode: outcome.rcode } };
+		}
+		if (/v=dmarc1/i.test(outcome.records.join(''))) {
+			return { txtRecords: outcome.records, foundAt: name };
 		}
 		// NODATA at this name — continue up the tree.
 	}
@@ -100,6 +112,13 @@ export async function checkDMARC(domain: string, queryDNS: DNSQueryFunction, opt
 	const timeout = options?.timeout ?? 5000;
 
 	const walk = await dmarcTreeWalk(domain, queryDNS, timeout);
+
+	// A step of the tree walk never concluded. `controlPresent: false` below would be a
+	// measured absence — the one claim this run is not entitled to make — and `dmarc` is a
+	// Core category, so it would cap the whole scan on a resolver failure.
+	if (walk.inconclusive) {
+		return buildRcodeAbstentionResult('dmarc', 'DMARC', walk.inconclusive.name, 'TXT', walk.inconclusive.rcode);
+	}
 
 	if (!walk.foundAt) {
 		// No DMARC record at all → not an active control. controlPresent:false (definitively
