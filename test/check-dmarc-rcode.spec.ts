@@ -56,6 +56,32 @@ describe('_dmarc NOERROR-empty is still a measured absence', () => {
 	});
 });
 
+describe('the SCORED path abstains: checkDmarc itself under an inconclusive rcode', () => {
+	// The seam cases below prove the plumbing. These prove the SHIPPED check consumes it:
+	// they call the same entry point `scan_domain` calls, so a `checkDMARC` that reads the
+	// rcode-discarding projection again fails here rather than passing on a helper nobody
+	// is wired to (the SQ-62 wave-1 blind spot).
+	it.each([
+		[2, 'SERVFAIL'],
+		[5, 'REFUSED'],
+	])('rcode %i (%s) returns the abstention shape, not a zeroed Core category', async (status) => {
+		mockEmptyDoh(status);
+		const { checkDmarc } = await import('../src/tools/check-dmarc');
+
+		const result = await checkDmarc('example.com', noSecondary);
+
+		expect(result.checkStatus).toBe('error');
+		expect(isCheckMeasured(result.checkStatus)).toBe(false);
+		expect(result.partial).toBe(true);
+
+		// The #638 law on the scored path: a probe that never concluded may not claim absence.
+		expect(findingsIndicateMissingControl(result.findings)).toBe(false);
+		expect(result.findings.every((f) => f.metadata?.missingControl === undefined)).toBe(true);
+		expect(result.controlPresent).toBeUndefined();
+		expect(result.findings[0].detail).toContain(status === 2 ? 'SERVFAIL' : 'REFUSED');
+	});
+});
+
 describe('_dmarc SERVFAIL/REFUSED is an abstention, never a missing control', () => {
 	it.each([
 		[2, 'SERVFAIL'],

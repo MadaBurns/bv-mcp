@@ -11,20 +11,25 @@
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
+import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 
 /**
  * Check TLS-RPT records for a domain.
  * Validates the presence and configuration of SMTP TLS Reporting records.
  */
-export async function checkTLSRPT(
-	domain: string,
-	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number },
-): Promise<CheckResult> {
+export async function checkTLSRPT(domain: string, queryDNS: DNSQueryFunction, options?: { timeout?: number }): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 	const findings: Finding[] = [];
 	const tlsrptDomain = `_smtp._tls.${domain}`;
-	const txtRecords = await queryDNS(tlsrptDomain, 'TXT', { timeout });
+	const outcome = await queryWithRcode(queryDNS, tlsrptDomain, 'TXT', timeout);
+
+	// The resolver never answered the only question this check asks, so the "No TLS-RPT
+	// record found" verdict below would be a confident absence drawn from no measurement.
+	if (isInconclusiveRcode(outcome.rcode)) {
+		return buildRcodeAbstentionResult('tlsrpt', 'TLS-RPT', tlsrptDomain, 'TXT', outcome.rcode);
+	}
+
+	const txtRecords = outcome.records;
 
 	// Concatenate all TXT records to handle cases where TLS-RPT data is split across multiple records
 	const concatenatedTxt = txtRecords.join('');

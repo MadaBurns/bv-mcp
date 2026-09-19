@@ -10,6 +10,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
+import { isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import { SUBJECT_TERMS_METADATA_KEY } from '../scoring/model';
 import {
 	analyzeHashRestriction,
@@ -37,12 +38,13 @@ const MAX_CNAME_HOPS = 5;
  * selector.
  *
  * `answered` records whether the TXT probe actually reached a resolver and
- * came back (issue #948). A thrown TXT query is NOT "no record published" —
- * it is no measurement at all, and treating the two alike let a total resolver
- * failure read as 41 absent selectors and score a confident 50. Only the TXT
- * catch clears it: the CNAME chain walk below runs solely to attribute an
- * already-found record to a SaaS provider, so a failure there loses attribution
- * detail, never the evidence that the selector answered.
+ * came back with a CONCLUSION (issue #948). A thrown TXT query is NOT "no record
+ * published" — it is no measurement at all, and treating the two alike let a total
+ * resolver failure read as 41 absent selectors and score a confident 50. A SERVFAIL
+ * or REFUSED is the same non-measurement wearing an HTTP 200, so it clears `answered`
+ * too. Only the TXT probe clears it: the CNAME chain walk below runs solely to
+ * attribute an already-found record to a SaaS provider, so a failure there loses
+ * attribution detail, never the evidence that the selector answered.
  */
 async function probeSelectorWithCname(
 	queryDNS: DNSQueryFunction,
@@ -52,8 +54,14 @@ async function probeSelectorWithCname(
 	let records: string[] = [];
 	let answered = true;
 	try {
-		const txt = await queryDNS(name, 'TXT', { timeout });
-		records = txt.filter((r) => r.toLowerCase().includes('v=dkim1') || r.includes('p='));
+		const outcome = await queryWithRcode(queryDNS, name, 'TXT', timeout);
+		// A SERVFAIL/REFUSED arrives as an EMPTY answer set over HTTP 200, so without the
+		// rcode it is byte-identical to "this selector publishes no key" — the same
+		// zero-evidence state as the throw below, and it clears `answered` the same way.
+		if (isInconclusiveRcode(outcome.rcode)) {
+			return { records: [], chain: [], answered: false };
+		}
+		records = outcome.records.filter((r) => r.toLowerCase().includes('v=dkim1') || r.includes('p='));
 	} catch {
 		records = [];
 		answered = false;

@@ -9,8 +9,48 @@
 
 // SPDX-License-Identifier: BUSL-1.1
 
-// DNS query function — dependency injection interface
-export type DNSQueryFunction = (domain: string, recordType: string, options?: { timeout?: number }) => Promise<string[]>;
+/**
+ * Answer strings TOGETHER with the response code they were projected from — the
+ * `DNSQueryFunction` return value with the one field it discards kept.
+ */
+export interface DNSQueryOutcome {
+	/** Answer `data` strings of the requested type — identical to `DNSQueryFunction`'s return. */
+	records: string[];
+	/**
+	 * The RFC 1035 §4.1.1 response code (DoH JSON `Status`) the records came from.
+	 *
+	 * `undefined` means this adapter has no rcode channel, NOT that something failed:
+	 * the caller's prior behaviour must stand. `isInconclusiveRcode` (./dns-rcode) is
+	 * the single rule that reads this field, and it answers `false` for `undefined`.
+	 */
+	rcode?: number;
+}
+
+/** {@link DNSQueryFunction}'s query, with the rcode kept instead of discarded. */
+export type RcodeAwareDNSQueryFunction = (domain: string, recordType: string, options?: { timeout?: number }) => Promise<DNSQueryOutcome>;
+
+/**
+ * DNS query function — dependency injection interface.
+ *
+ * ⚠️ The `Promise<string[]>` projection ERASES the difference between
+ * NOERROR-with-no-answers (a measurement: this name publishes no such record) and
+ * SERVFAIL/REFUSED (a measurement FAILURE: the resolver could not answer). A DoH endpoint
+ * answers HTTP 200 for both, so nothing throws, and a check that concludes from an EMPTY
+ * result files a confident `missingControl` for a control it never observed — zeroing a
+ * scored category from underneath the `checkStatus` abstention discipline (#638 / #639).
+ *
+ * `withRcode` is the escape hatch, and it is OPTIONAL on purpose: an adapter that has no
+ * rcode channel (a hand-rolled resolver, a test double, a wrapper that composes queries)
+ * simply omits it and every consumer keeps its pre-existing behaviour. A check that draws
+ * a conclusion from an empty answer set should reach for it through `queryWithRcode`
+ * (./dns-rcode), which falls back to the plain call when it is absent. It is the SAME
+ * lookup at the SAME cost — the rcode is kept rather than thrown away — so a call site
+ * that switches over adds no query.
+ */
+export interface DNSQueryFunction {
+	(domain: string, recordType: string, options?: { timeout?: number }): Promise<string[]>;
+	withRcode?: RcodeAwareDNSQueryFunction;
+}
 
 /**
  * Raw DoH-style DNS response for checks that need the AD flag or full Answer array.

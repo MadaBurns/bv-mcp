@@ -22,7 +22,7 @@
  */
 
 import { buildNotAssessedResult, createFinding } from './check-utils';
-import type { CheckCategory, CheckResult } from './types';
+import type { CheckCategory, CheckResult, DNSQueryFunction, DNSQueryOutcome } from './types';
 
 /** DNS response codes (RFC 1035 §4.1.1) this codebase names explicitly. */
 export const DNS_RCODE = {
@@ -62,6 +62,33 @@ export function isConclusiveRcode(status: number | undefined): boolean {
  */
 export function isInconclusiveRcode(status: number | undefined): status is number {
 	return status !== undefined && !isConclusiveRcode(status);
+}
+
+/**
+ * Run one lookup through the injected `queryDNS`, keeping the rcode when the adapter
+ * offers one — the ONE call every check that concludes from an empty answer set should use.
+ *
+ * Same query, same cost, same options as calling `queryDNS` directly: `withRcode` is the
+ * identical lookup with the response code kept instead of discarded, so switching a call
+ * site over adds no DNS traffic and no second probe.
+ *
+ * When the adapter has no `withRcode` (a hand-rolled resolver, a test double, a composing
+ * wrapper) the plain call is made and `rcode` comes back `undefined`, which
+ * `isInconclusiveRcode` reads as "nothing to say" — the caller's pre-existing behaviour
+ * stands rather than degrading into a blanket abstention.
+ *
+ * Throws are NOT caught: a rejected lookup is a different failure mode with its own
+ * established handling at every call site (`buildDnsErrorResult`, the #948 selector
+ * abstention, MTA-STS's `classifyTransportFailure`), and swallowing it here would erase it.
+ */
+export async function queryWithRcode(
+	queryDNS: DNSQueryFunction,
+	name: string,
+	recordType: string,
+	timeout: number,
+): Promise<DNSQueryOutcome> {
+	if (queryDNS.withRcode) return queryDNS.withRcode(name, recordType, { timeout });
+	return { records: await queryDNS(name, recordType, { timeout }) };
 }
 
 /** Human-readable rcode name for finding prose, falling back to `RCODE <n>`. */

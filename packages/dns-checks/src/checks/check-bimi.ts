@@ -11,6 +11,7 @@
 
 import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
+import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import { RobotsDisallowedError, describeRobotsScope, robotsAbstentionMetadata } from '../robots-gate';
 import { readResponseTextCapped } from '../response-body';
 import { isNoSendPolicy } from './spf-analysis';
@@ -181,7 +182,16 @@ export async function checkBIMI(
 	const fetchFn = options?.fetchFn;
 	const findings: Finding[] = [];
 	const bimiDomain = `default._bimi.${domain}`;
-	const txtRecords = await queryDNS(bimiDomain, 'TXT', { timeout });
+	const bimiOutcome = await queryWithRcode(queryDNS, bimiDomain, 'TXT', timeout);
+
+	// The BIMI record lookup never concluded, so "No BIMI record found" would be an
+	// absence nobody measured. (The `_dmarc` and apex-SPF lookups below stay fail-soft:
+	// they only shape the wording of a verdict this record lookup has already earned.)
+	if (isInconclusiveRcode(bimiOutcome.rcode)) {
+		return buildRcodeAbstentionResult('bimi', 'BIMI', bimiDomain, 'TXT', bimiOutcome.rcode);
+	}
+
+	const txtRecords = bimiOutcome.records;
 
 	// Concatenate all TXT records to handle cases where BIMI data is split across multiple records
 	const concatenatedTxt = txtRecords.join('');
