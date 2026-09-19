@@ -3,6 +3,15 @@
 import type { Tier } from '../schemas/primitives';
 import { isStrongDistinctSecurityCapability, type McpSecurityCriticalSecretKey } from './security-capabilities';
 import type { TlsProbeBinding } from './tls-probe-binding';
+import type { ToolName } from '../schemas/tool-definitions';
+
+/**
+ * {@link ToolName} plus the `scan` → `scan_domain` alias key some quota maps
+ * below carry (see {@link RATE_LIMIT_ALIAS_KEYS}). Kept local to this file:
+ * the alias is a rate-limit-lookup convenience, not a real tool name, so it
+ * has no place in the TOOL_DEFS-derived ToolName union itself.
+ */
+type ToolNameOrAlias = ToolName | 'scan';
 
 /**
  * Centralized configuration for domain normalization and validation.
@@ -205,7 +214,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		query_ual: 2_000,
 		get_ca_policies: 2_000,
 		assess_coverage: 2_000,
-	},
+	} satisfies Partial<Record<ToolNameOrAlias, number>>,
 	developer: {
 		brand_audit_single: 50,
 		brand_audit_batch_start: 50,
@@ -218,7 +227,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		query_ual: 100,
 		get_ca_policies: 100,
 		assess_coverage: 100,
-	},
+	} satisfies Partial<Record<ToolNameOrAlias, number>>,
 	enterprise: {
 		brand_audit_single: 500,
 		brand_audit_batch_start: 500,
@@ -231,7 +240,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		query_ual: 2_000,
 		get_ca_policies: 2_000,
 		assess_coverage: 2_000,
-	},
+	} satisfies Partial<Record<ToolNameOrAlias, number>>,
 	agent: {
 		discover_subdomains: 0,
 		simulate_attack_paths: 0,
@@ -265,7 +274,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		query_ual: 0,
 		get_ca_policies: 0,
 		assess_coverage: 0,
-	},
+	} satisfies Partial<Record<ToolNameOrAlias, number>>,
 	free: {
 		discover_subdomains: 0,
 		simulate_attack_paths: 0,
@@ -297,7 +306,7 @@ export const TIER_TOOL_DAILY_LIMITS: Partial<Record<McpApiKeyTier, Record<string
 		query_ual: 0,
 		get_ca_policies: 0,
 		assess_coverage: 0,
-	},
+	} satisfies Partial<Record<ToolNameOrAlias, number>>,
 };
 
 export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
@@ -389,7 +398,7 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	query_ual: 0,
 	get_ca_policies: 0,
 	assess_coverage: 0,
-};
+} satisfies Partial<Record<ToolNameOrAlias, number>>;
 
 /** Free-tier daily cap on cache-bypassing (force_refresh) requests. Far below the
  *  per-tool quota so cache-busting cannot amplify backend load (FIND-06). */
@@ -403,7 +412,7 @@ export const FORCE_REFRESH_DAILY_LIMIT = 5;
  * TIER_DAILY_LIMITS fallback. Single source of truth for the "upgrade required"
  * 403 branch in src/mcp/execute.ts. Audited by gated-tools-ssot.audit.test.ts.
  */
-export const GATED_PAID_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
+export const GATED_PAID_ONLY_TOOLS: ReadonlySet<string> = new Set<ToolName>([
 	// offensive recon / job creators
 	'discover_subdomains',
 	'simulate_attack_paths',
@@ -460,7 +469,7 @@ export function isGatedPaidOnlyTool(toolName: string): boolean {
  * Members carry NO FREE_TOOL_DAILY_LIMITS entry (they are not public-callable);
  * the tool-quota-coverage audit exempts them.
  */
-export const INTERNAL_ONLY_TOOLS: ReadonlySet<string> = new Set<string>([
+export const INTERNAL_ONLY_TOOLS: ReadonlySet<string> = new Set<ToolName>([
 	'map_registrar_products',
 
 	// ── identity_secops (M365 client-tenant surface) ──────────────────────────
@@ -497,7 +506,7 @@ export function isInternalOnlyTool(toolName: string): boolean {
  * normalized BEFORE calling isAgentAllowedTool() (same ordering as the gated-tool
  * check relative to normalizeToolName).
  */
-export const AGENT_ALLOWED_TOOLS: ReadonlySet<string> = new Set<string>([
+export const AGENT_ALLOWED_TOOLS: ReadonlySet<string> = new Set<ToolName>([
 	'scan_domain',
 	'check_spf',
 	'check_dkim',
@@ -561,7 +570,7 @@ export const UPGRADE_SALES_URL = 'https://blackveilsecurity.com/contact';
  * drift. The `upgrade-channel-ssot` audit pins the partition + a name-pattern
  * tripwire that blocks an enumerator from silently joining the self-serve set.
  */
-export const SELF_SERVE_UPGRADE_TOOLS: ReadonlySet<string> = new Set<string>(['batch_scan', 'compare_domains']);
+export const SELF_SERVE_UPGRADE_TOOLS: ReadonlySet<string> = new Set<ToolName>(['batch_scan', 'compare_domains']);
 
 /** Derived: the gated tools whose upgrade path routes to SALES (all non-self-serve gated tools). */
 export const ENUMERABLE_RECON_UPGRADE_TOOLS: ReadonlySet<string> = new Set<string>(
@@ -709,7 +718,7 @@ export const FREE_DISTINCT_DOMAIN_DAILY_LIMIT = 12;
  * TIER_TOOL_DAILY_LIMITS and the paid tiers have explicit per-principal caps to
  * bound Microsoft Graph cost. Single source of truth for both gates.
  */
-export const AUTH_REQUIRED_TOOLS: ReadonlySet<string> = new Set<string>([
+export const AUTH_REQUIRED_TOOLS: ReadonlySet<string> = new Set<ToolName>([
 	'query_signins',
 	'query_ual',
 	'get_ca_policies',
@@ -781,7 +790,7 @@ export function tlsProbeBindings(
 }
 
 /** Tools intentionally governed by per-IP rate limits only (no per-tool free-tier quota). Audited by test/audits/tool-quota-coverage.audit.test.ts. */
-export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string>();
+export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<ToolName>();
 
 /**
  * Tools where the FLAT partner-tier limit (TIER_DAILY_LIMITS.partner) is the
@@ -804,7 +813,7 @@ export const INTENTIONALLY_UNLIMITED_TOOLS: ReadonlySet<string> = new Set<string
  * cleanup — those carry a NEEDS-PRODUCT-DECISION comment and must not be
  * silently retuned.
  */
-export const INTENTIONALLY_PARTNER_FLAT_TOOLS: ReadonlySet<string> = new Set<string>([
+export const INTENTIONALLY_PARTNER_FLAT_TOOLS: ReadonlySet<string> = new Set<ToolName>([
 	// ── Cheap DoH-only checks. Same cost class as the 500k check_* siblings; the
 	// 100k flat is lower, so it is safe, and RAISING to 500k for parity is a
 	// product call (see NEEDS PRODUCT DECISION, #746).
@@ -902,7 +911,7 @@ export const RATE_LIMIT_ALIAS_KEYS: ReadonlySet<string> = new Set<string>(['scan
  * that is the failure direction to guard against, so keep this set small and
  * justified. Pinned by test/p95-latency-lane.spec.ts.
  */
-export const LONG_RUNNING_TOOLS: ReadonlySet<string> = new Set<string>([
+export const LONG_RUNNING_TOOLS: ReadonlySet<string> = new Set<ToolName>([
 	'batch_scan', // explicit budgetMs, default 25_000 (see CLAUDE.md > batch_scan)
 	'compare_domains', // scans N domains in one call; cost scales with N
 	'discover_subdomains', // CT-log enumeration via BV_CERTSTREAM + fallback sweep

@@ -107,7 +107,7 @@ import { markUnmeasured, isAccessRefusal } from '../lib/unmeasured-result';
 import { isCompletedCheck } from '../lib/ungraded-display';
 import type { McpContent } from './tool-formatters';
 import { QUERY_UAL_LIFECYCLE, TOOL_STATUS_META_KEY, TOOLS } from '../schemas/tool-definitions';
-import type { McpTool } from '../schemas/tool-definitions';
+import type { McpTool, ToolName } from '../schemas/tool-definitions';
 import type { QuotaCoordinator } from '../lib/quota-coordinator';
 
 /** MCP tools/call result */
@@ -198,7 +198,7 @@ export const MUTATING_DEDUP_TOOLS = new Set(
  * Kept as an executable dispatch manifest so the characterization suite detects
  * a newly declared tool that is listed but has no resolution path.
  */
-export const DIRECT_DISPATCH_TOOLS = new Set([
+export const DIRECT_DISPATCH_TOOLS: Set<string> = new Set<ToolName>([
 	'scan_domain',
 	'batch_scan',
 	'batch_scan_start',
@@ -463,20 +463,27 @@ async function brandAuditWatchUnprovisioned(): Promise<CheckResult> {
 	]);
 }
 
+/** Entry shape for {@link TOOL_REGISTRY}. */
+interface ToolRegistryEntry {
+	/** cacheKey may consult runtimeOptions to bind principal (defense against owner-scoped IDOR via cache). */
+	cacheKey: (args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => string;
+	execute: (domain: string, args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => Promise<CheckResult>;
+	cacheable?: boolean;
+	cacheTtlSeconds?: number;
+}
+
 /**
  * Registry mapping tool names to their cache key and execution function.
  * Replaces repetitive switch cases for individual DNS check tools.
+ *
+ * Kept `Record<string, ...>` (not `Record<ToolName, ...>`) so the dispatch
+ * lookup below can safely index with an unvalidated request-supplied tool
+ * name; the `satisfies` clause still makes every literal key here a compile
+ * error if it drifts from {@link ToolName} (the TOOL_DEFS SSOT), without
+ * requiring this necessarily-partial registry to cover every tool — the
+ * other half dispatches via DIRECT_DISPATCH_TOOLS below.
  */
-export const TOOL_REGISTRY: Record<
-	string,
-	{
-		/** cacheKey may consult runtimeOptions to bind principal (defense against owner-scoped IDOR via cache). */
-		cacheKey: (args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => string;
-		execute: (domain: string, args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => Promise<CheckResult>;
-		cacheable?: boolean;
-		cacheTtlSeconds?: number;
-	}
-> = {
+export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 	check_mx: { cacheKey: () => 'mx', execute: (d, _args, ro) => dynamicCheckMx(d, ro) },
 	check_spf: { cacheKey: () => 'spf', execute: (d, _args, ro) => checkSpf(d, buildDnsOptions(ro)) },
 	check_dmarc: { cacheKey: () => 'dmarc', execute: (d, _args, ro) => checkDmarc(d, buildDnsOptions(ro)) },
@@ -1142,7 +1149,7 @@ export const TOOL_REGISTRY: Record<
 			),
 		cacheTtlSeconds: 30,
 	},
-};
+} satisfies Partial<Record<ToolName, ToolRegistryEntry>>;
 
 function buildToolErrorResult(message: string): McpToolResult {
 	return { content: [mcpError(message)], isError: true };

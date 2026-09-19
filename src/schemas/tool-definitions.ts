@@ -198,7 +198,7 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 }
 
 /** All MCP tool definitions. */
-const TOOL_DEFS: Record<string, ToolDef> = {
+const TOOL_DEFS = {
 	check_mx: {
 		description:
 			'Look up MX records for a domain. Identifies which mail servers receive inbound email for the domain and which email hosting provider is used (Google Workspace, Microsoft 365, Proofpoint, etc.). Use when asked which email provider hosts inbound mail for a domain, or to see MX record configuration.',
@@ -836,7 +836,15 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		tier: 'protective',
 		scanIncluded: false,
 	},
-};
+} satisfies Record<string, ToolDef>;
+
+/**
+ * A tool's canonical, published name — the literal key union derived from
+ * {@link TOOL_DEFS} (the SSOT). Compile-time-linking a registry to this type
+ * turns a typo'd or drifted tool name into a build error instead of a
+ * runtime/test-time audit finding.
+ */
+export type ToolName = keyof typeof TOOL_DEFS;
 
 /**
  * Special-case tools whose `tools/call` `structuredContent` is NOT a `CheckResult`
@@ -911,7 +919,7 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 /** Lenient CheckResult output schema — derived once, shared across all CheckResult tools. */
 const CHECK_RESULT_OUTPUT_SCHEMA = buildCheckResultOutputJsonSchema();
 
-export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => ({
+export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]: [string, ToolDef]) => ({
 	name,
 	description: def.scanIncluded ? `${def.description} Part of the scan_domain audit.` : def.description,
 	inputSchema: toInputSchema(def.schema),
