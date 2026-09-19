@@ -276,7 +276,14 @@ function computeWebOnlyLadder(byCategory: Map<string, CheckResult>): MaturitySta
 			stage: 4,
 			label: WEB_ONLY_LADDER_LABELS[4],
 			description:
-				'This web-only domain has full transport (SSL), DNS integrity (DNSSEC), browser hardening (HSTS), and an anti-spoof email policy (SPF -all / DMARC reject).',
+				// "full transport (SSL)" overstated the scored `ssl` surface — it is HSTS +
+				// HTTP→HTTPS redirect + reachability only. Certificate data (issuer/expiry/SANs)
+				// comes from Certificate Transparency and is explicitly non-scoring; negotiated
+				// TLS version/cipher suite is not assessed (kill-switched, see
+				// TLS_VERSION_ENRICHMENT_ENABLED). No chain, hostname, expiry or protocol enters
+				// this label — say what was measured, not "full". (HSTS itself stays in its own
+				// clause below — that signal is read off the separate `http_security` result.)
+				'This web-only domain has HTTPS reachability (SSL), DNS integrity (DNSSEC), browser hardening (HSTS), and an anti-spoof email policy (SPF -all / DMARC reject).',
 			nextStep: '',
 		};
 	}

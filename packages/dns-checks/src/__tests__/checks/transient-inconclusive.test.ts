@@ -111,7 +111,7 @@ describe('transient DNS failure → category is INCONCLUSIVE, not a scored defic
 });
 
 describe('checkSSL: transient / unassessable HTTPS → INCONCLUSIVE, not a scored deficiency', () => {
-	it('(i) a fetch timeout is excluded with checkStatus timeout', async () => {
+	it('(i) a fetch timeout is excluded with checkStatus timeout, and is not a scored deficiency', async () => {
 		const fetchFn: FetchFunction = async () => {
 			throw new Error('fetch timeout');
 		};
@@ -119,15 +119,32 @@ describe('checkSSL: transient / unassessable HTTPS → INCONCLUSIVE, not a score
 		expect(result.checkStatus).toBe('timeout');
 		// #900 class: a thrown fetch is transient — retryable (score 0) and never cached (partial).
 		expect(result).toMatchObject({ score: 0, passed: false, partial: true });
+		// A Worker-vantage network failure must never be presented as a scored SSL security
+		// finding (high/critical) — it is an abstention, not a measured deficiency.
+		expect(hasScoredDeficiency(result.findings)).toBe(false);
 	});
 
-	it('(ii) a connection refusal is excluded with checkStatus error', async () => {
+	it('(ii) a connection refusal is excluded with checkStatus error, and is not a scored deficiency', async () => {
 		const fetchFn: FetchFunction = async () => {
 			throw new Error('ECONNREFUSED');
 		};
 		const result = await checkSSL('example.com', fetchFn);
 		expect(result.checkStatus).toBe('error');
 		expect(result).toMatchObject({ score: 0, passed: false, partial: true });
+		expect(hasScoredDeficiency(result.findings)).toBe(false);
+	});
+
+	it('(v) an upstream error message containing a MISSING_CONTROL_REGEX trigger word cannot zero the category', async () => {
+		// The error text itself contains "missing" and "not found" — words that would arm
+		// scoreIndicatesMissingControl on a high/critical finding. The fix must keep this
+		// finding out of that gate's severity precondition (info, not high/critical).
+		const fetchFn: FetchFunction = async () => {
+			throw new Error('required certificate is missing: SNI extension not found');
+		};
+		const result = await checkSSL('example.com', fetchFn);
+		expect(result.checkStatus).toBe('error');
+		expect(hasScoredDeficiency(result.findings)).toBe(false);
+		expect(result.findings.every((f) => f.severity !== 'high' && f.severity !== 'critical')).toBe(true);
 	});
 
 	it('(iii) an origin-unreachable 530 is not assessable — checkStatus error and no scored HSTS finding', async () => {
