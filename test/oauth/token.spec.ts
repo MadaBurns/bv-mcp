@@ -103,6 +103,27 @@ async function postToken(body: URLSearchParams, customEnv: TestEnv = authEnv, he
 	return postTokenRaw(body, customEnv, { 'cf-connecting-ip': uniqueRateLimitIp(), ...headers });
 }
 
+/**
+ * Runs a count-exact rate-limit burst, retrying with fresh state when the burst straddled a
+ * 60-second window boundary.
+ *
+ * The OAuth window is aligned on wall-clock minutes (`rate-limit.ts`: `Math.floor(now / windowMs)
+ * * windowMs`) so every colo derives the same coordination key — that alignment cannot change.
+ * But it also means a burst of exact-count assertions is only valid if every request in it lands
+ * in the same window; one that happens to straddle the boundary changes the coordination key
+ * mid-burst and invalidates a fixed expected count (SQ-99). `run` should mint its own fresh
+ * principal/IP each call so a retry is a genuinely new burst, not a re-ask of a still-limited one.
+ */
+async function withoutWindowStraddle<T>(run: () => Promise<T>): Promise<T> {
+	for (let attempt = 0; attempt < 3; attempt++) {
+		const windowBefore = Math.floor(Date.now() / 60_000);
+		const result = await run();
+		const windowAfter = Math.floor(Date.now() / 60_000);
+		if (windowBefore === windowAfter || attempt === 2) return result;
+	}
+	throw new Error('unreachable');
+}
+
 beforeEach(async () => {
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
@@ -452,7 +473,6 @@ describe('POST /oauth/token', () => {
 		// with a bogus code so each one short-circuits at invalid_grant (cheap path) — the rate
 		// limiter check runs BEFORE content-type / grant-type / Zod parsing, so the status
 		// progression is deterministic regardless of downstream validation.
-		const ip = uniqueRateLimitIp();
 		const body = new URLSearchParams({
 			grant_type: 'authorization_code',
 			code: 'never-issued',
@@ -461,7 +481,7 @@ describe('POST /oauth/token', () => {
 			code_verifier: 'v'.repeat(43),
 		});
 
-		async function postWithIp(): Promise<Response> {
+		async function postWithIp(ip: string): Promise<Response> {
 			const req = new Request<unknown, IncomingRequestCfProperties>('https://example.com/oauth/token', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/x-www-form-urlencoded', 'cf-connecting-ip': ip },
@@ -473,11 +493,16 @@ describe('POST /oauth/token', () => {
 			return res;
 		}
 
-		for (let i = 0; i < 30; i++) {
-			const res = await postWithIp();
-			expect(res.status).not.toBe(429);
-		}
-		const limited = await postWithIp();
+		// This burst assumes all 31 requests land in one 60s coordination window; see
+		// withoutWindowStraddle for why that can straddle and how the retry recovers.
+		const limited = await withoutWindowStraddle(async () => {
+			const ip = uniqueRateLimitIp();
+			for (let i = 0; i < 30; i++) {
+				const res = await postWithIp(ip);
+				expect(res.status).not.toBe(429);
+			}
+			return postWithIp(ip);
+		});
 		expect(limited.status).toBe(429);
 		const payload = (await limited.json()) as Record<string, unknown>;
 		expect(payload.error).toBe('invalid_request');
@@ -492,18 +517,24 @@ describe('POST /oauth/token', () => {
 			redirect_uri: 'https://claude.ai/cb',
 			code_verifier: 'v'.repeat(43),
 		});
-		const ip = uniqueRateLimitIp();
-		const responses = await Promise.all(Array.from({ length: 50 }, () => postToken(body, authEnv, { 'cf-connecting-ip': ip })));
-		const statuses = responses.map((response) => response.status);
+		// See withoutWindowStraddle: a concurrent 50-request burst can straddle the 60s
+		// coordination window, splitting it across two windows and breaking the exact 30/20 count.
+		const statuses = await withoutWindowStraddle(async () => {
+			const ip = uniqueRateLimitIp();
+			const responses = await Promise.all(Array.from({ length: 50 }, () => postToken(body, authEnv, { 'cf-connecting-ip': ip })));
+			return responses.map((response) => response.status);
+		});
 		expect(statuses.filter((status) => status === 400)).toHaveLength(30);
 		expect(statuses.filter((status) => status === 429)).toHaveLength(20);
 	});
 
-	it('ignores x-forwarded-for and rate-limits the shared "unknown" bucket when cf-connecting-ip is absent', async () => {
-		// Security: x-forwarded-for is attacker-controlled. Rotating it must NOT
-		// reset the per-IP rate limit. Without cf-connecting-ip, all requests
-		// share the 'unknown' bucket — so 30 hits from any spoofed XFF + a 31st
-		// from a different spoofed XFF should still 429 (same bucket).
+	it('ignores x-forwarded-for and keeps one cf-connecting-ip in a single rate-limit bucket', async () => {
+		// Security: x-forwarded-for is attacker-controlled. Rotating it must NOT mint a fresh
+		// bucket — the coordination key comes from cf-connecting-ip alone. Pinning one real IP
+		// and rotating only x-forwarded-for proves that directly, instead of relying on the
+		// fallback 'unknown' bucket every other test in this file avoids (it is shared across
+		// any caller that omits cf-connecting-ip, which made this the file's last exposure to
+		// cross-test bucket sharing).
 		const body = new URLSearchParams({
 			grant_type: 'authorization_code',
 			code: 'never-issued',
@@ -512,13 +543,16 @@ describe('POST /oauth/token', () => {
 			code_verifier: 'v'.repeat(43),
 		});
 
-		for (let i = 0; i < 30; i++) {
-			const res = await postTokenRaw(body, authEnv, { 'x-forwarded-for': '198.51.100.20' });
-			expect(res.status).not.toBe(429);
-		}
-
-		// Rotating XFF must NOT mint a fresh bucket — all 'unknown' IPs share one.
-		const differentIp = await postTokenRaw(body, authEnv, { 'x-forwarded-for': '203.0.113.30' });
-		expect(differentIp.status).toBe(429);
+		// See withoutWindowStraddle: this burst also assumes one coordination window.
+		const differentXff = await withoutWindowStraddle(async () => {
+			const ip = uniqueRateLimitIp();
+			for (let i = 0; i < 30; i++) {
+				const res = await postTokenRaw(body, authEnv, { 'cf-connecting-ip': ip, 'x-forwarded-for': `198.51.100.${i}` });
+				expect(res.status).not.toBe(429);
+			}
+			// Rotating XFF must NOT mint a fresh bucket — the pinned cf-connecting-ip still owns it.
+			return postTokenRaw(body, authEnv, { 'cf-connecting-ip': ip, 'x-forwarded-for': '203.0.113.30' });
+		});
+		expect(differentXff.status).toBe(429);
 	});
 });

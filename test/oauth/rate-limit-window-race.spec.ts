@@ -20,7 +20,7 @@
  */
 
 import { env } from 'cloudflare:test';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { consumeOAuthRateLimit } from '../../src/oauth/rate-limit';
 
 /** A fresh documentation-range address, so every case starts on an unused principal. */
@@ -44,6 +44,10 @@ function limiterOptions(overrides: { principal: string; nowMs?: number }) {
 }
 
 describe('OAuth rate limit — a window that expires in flight (#985)', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
 	it('admits a fresh principal whose aligned window had already ended', async () => {
 		const principal = uniquePrincipal();
 		// One whole window in the past: `expiresAt` is behind real `Date.now()` by the time
@@ -86,5 +90,29 @@ describe('OAuth rate limit — a window that expires in flight (#985)', () => {
 		// 1 (the retry) + 29 admitted = 30; the 30th call in this loop is the 31st overall.
 		expect(results.filter((exceeded) => exceeded === false)).toHaveLength(29);
 		expect(results[29], 'the request past the limit is denied').toBe(true);
+	});
+
+	it('reports unavailable rather than 429 when the retry ALSO lands on an expired window (SQ-99)', async () => {
+		// Extremely low reachability: this needs TWO consecutive window-boundary races — one on
+		// the initial attempt and one on the immediate retry, which recomputes from `Date.now()`
+		// specifically so it lands in a live window. A real double race isn't practically
+		// reproducible from wall-clock timing, so the coordinator response is mocked directly.
+		// If this retry's expired-window refusal reached the endpoint as plain `exceeded: true`,
+		// it would 429 a principal that spent NOTHING — the exact defect #985/#1011 fixed for
+		// attempt 0, just one retry later.
+		const quotaCoordinator = await import('../../src/lib/quota-coordinator');
+		vi.spyOn(quotaCoordinator, 'reserveBudgetWithCoordinator').mockResolvedValue({
+			allowed: false,
+			used: 0,
+			remaining: 30,
+			limit: 30,
+		});
+
+		const { consumeOAuthRateLimit: consume } = await import('../../src/oauth/rate-limit');
+		const principal = uniquePrincipal();
+		const result = await consume(limiterOptions({ principal, nowMs: Date.now() }));
+
+		expect(result.unavailable, 'a principal that has spent nothing must not be 429ed').toBe(true);
+		expect(result.exceeded).toBe(true);
 	});
 });
