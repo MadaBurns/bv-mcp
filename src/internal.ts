@@ -40,13 +40,16 @@ import { parseScoringConfigCached } from './lib/scoring-config';
 import { buildBrandTierLookups } from './lib/brand-tier-lookups';
 import {
 	AGENT_CALLER_HEADER,
+	evaluateToolPolicy,
 	isAgentAllowedTool,
 	isAgentCaller,
+	isContractFlagGateEnabled,
 	MAX_REQUEST_BODY_BYTES,
 	OAUTH_CODE_TTL_SECONDS,
 	parseCacheTtl,
 	parsePerCheckTimeout,
 	parseScanTimeout,
+	type ToolPolicyBlock,
 } from './lib/config';
 import { normalizeToolName } from './handlers/tool-args';
 import { recordInternalAccessLog, extractAccessLogDomain } from './mcp/execute';
@@ -195,6 +198,13 @@ type InternalEnv = Partial<Record<McpSecurityCriticalSecretKey, string | undefin
 	MCP_ANALYTICS_QUEUE?: { send(message: unknown, options?: { contentType?: 'json' }): Promise<void> };
 	/** Operator-chosen PII capture depth for the access log. Undefined → 'coarse'. */
 	ANALYTICS_PII_LEVEL?: string;
+	/**
+	 * D2 contract-flag gate switch, mirrored from `BvMcpEnv` so the internal door
+	 * evaluates the SAME per-tool policy the public `/mcp` path does. Default OFF —
+	 * `isContractFlagGateEnabled(undefined)` is false, so this is inert until an
+	 * operator sets it.
+	 */
+	ENFORCE_CONTRACT_FLAG_GATE?: string;
 };
 
 type InternalPrincipal = 'web' | 'mobile' | 'tenant' | 'tenant-tool' | 'watch-cleanup' | 'network';
@@ -229,6 +239,66 @@ const TENANT_DELEGATED_TOOLS: ReadonlySet<string> = new Set([
 ]);
 
 const WATCH_CLEANUP_TOOLS: ReadonlySet<string> = new Set(['list_brand_audit_watches', 'delete_brand_audit_watch']);
+
+/**
+ * Per-principal authority handed to the shared per-tool policy chokepoint
+ * (`evaluateToolPolicy`). A TOTAL record on purpose: adding a member to
+ * {@link InternalPrincipal} without deciding its authority is a compile error,
+ * so a new internal consumer cannot silently inherit bv-web's reach over the
+ * paid-only / auth-required gates.
+ *
+ * - `capabilityAuthenticated` — a real internal capability key matched.
+ *   `network` is the operator's `REQUIRE_INTERNAL_AUTH=false` opt-out: the
+ *   unspoofable cf-connecting-ip guard is the only authorization and NO key was
+ *   presented, so it cannot reach the auth-required M365 tools (those forward
+ *   the trusted internal bearer to bv-web).
+ * - `fullAuthority` — speaks for the operator across the whole internal tool
+ *   surface, so the commercial paid-only gate does not apply. bv-web's fleet
+ *   credential does; so does the network-guard-only opt-out, which is how ops
+ *   sweeps and load tests reach `*_start` tools today. Every narrower principal
+ *   is false and is additionally bounded by its own tool allowlist above.
+ */
+const INTERNAL_TOOL_AUTHORITY: Record<InternalPrincipal, { capabilityAuthenticated: boolean; fullAuthority: boolean }> = {
+	web: { capabilityAuthenticated: true, fullAuthority: true },
+	network: { capabilityAuthenticated: false, fullAuthority: true },
+	mobile: { capabilityAuthenticated: true, fullAuthority: false },
+	tenant: { capabilityAuthenticated: true, fullAuthority: false },
+	'tenant-tool': { capabilityAuthenticated: true, fullAuthority: false },
+	'watch-cleanup': { capabilityAuthenticated: true, fullAuthority: false },
+};
+
+/**
+ * Run the shared per-tool policy chokepoint for an internal-door call.
+ *
+ * Before this existed the internal door reached `handleToolsCall` without
+ * consulting ANY of the four gates the public `/mcp` path enforces — the
+ * network guard and the capability bearer held the line, but the per-tool
+ * policy invariant was unenforced and untested, so it could drift silently.
+ * Runs AFTER the principal allowlists above, so their error codes are
+ * unchanged; it only denies calls those allowlists let through.
+ *
+ * Returns the denial body, or null when the call is permitted.
+ */
+function internalToolPolicyDenial(input: {
+	principal: InternalPrincipal;
+	tool: string;
+	tier: ToolDoorIdentity['authTier'];
+	contractFlagGateEnabled: boolean;
+}): { error: 'tool_policy_denied'; policy: ToolPolicyBlock } | null {
+	const authority = INTERNAL_TOOL_AUTHORITY[input.principal];
+	const decision = evaluateToolPolicy({
+		surface: 'internal',
+		tool: input.tool,
+		authenticated: authority.capabilityAuthenticated,
+		tier: input.tier,
+		fullInternalAuthority: authority.fullAuthority,
+		// The internal door carries no per-contract entitlement claim; the gate is
+		// inert unless an operator turns it on, and `owner` (bv-web) bypasses it.
+		hasContractFlag: false,
+		contractFlagGateEnabled: input.contractFlagGateEnabled,
+	});
+	return decision.allowed ? null : { error: 'tool_policy_denied', policy: decision.block };
+}
 
 function dedicatedCapability(env: InternalEnv, key: McpSecurityCriticalSecretKey): string | null {
 	const value = env[key];
@@ -580,6 +650,16 @@ internalRoutes.post('/tools/call', async (c) => {
 	if (isAgentCaller(c.req.header(AGENT_CALLER_HEADER)) && !isAgentAllowedTool(normalizedToolName)) {
 		return c.json({ error: 'agent_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
 	}
+
+	// Shared per-tool policy gates (internal-only / auth-required / paid-only /
+	// contract-flag) — the same chokepoint the public /mcp path consults.
+	const policyDenial = internalToolPolicyDenial({
+		principal: c.get('internalPrincipal'),
+		tool: normalizedToolName,
+		tier: identity.identity.authTier,
+		contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
+	});
+	if (policyDenial) return c.json(policyDenial, 403, { 'Cache-Control': 'no-store' });
 
 	const url = new URL(c.req.url);
 	const wantStructured = url.searchParams.get('format') === 'structured';
@@ -939,6 +1019,16 @@ internalRoutes.post('/tools/batch', async (c) => {
 	if (isAgentCaller(c.req.header(AGENT_CALLER_HEADER)) && !isAgentAllowedTool(normalizedToolName)) {
 		return c.json({ error: 'agent_tool_not_allowed' }, 403, { 'Cache-Control': 'no-store' });
 	}
+
+	// Same shared per-tool policy chokepoint as /tools/call — the batch door fans one
+	// request out across many domains, so it must not be the softer of the two.
+	const policyDenial = internalToolPolicyDenial({
+		principal: c.get('internalPrincipal'),
+		tool: normalizedToolName,
+		tier: identity.identity.authTier,
+		contractFlagGateEnabled: isContractFlagGateEnabled(c.env.ENFORCE_CONTRACT_FLAG_GATE),
+	});
+	if (policyDenial) return c.json(policyDenial, 403, { 'Cache-Control': 'no-store' });
 
 	const toolName = body.tool;
 	const rawArgs = body.arguments ?? {};

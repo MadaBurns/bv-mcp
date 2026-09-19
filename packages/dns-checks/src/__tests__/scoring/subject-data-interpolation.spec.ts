@@ -120,7 +120,12 @@ describe('subject data interpolated into finding prose', () => {
 			const result = await checkDNSSEC('example.com', queryDNS, { rawQueryDNS });
 			const finding = result.findings.find((f) => f.title === 'DNSSEC island of trust');
 			expect(finding).toBeDefined();
-			expect(finding?.metadata?.missingControl).toBeUndefined();
+			// Since scoring model 1.35.0 the "graded, not zeroed" decision is DECLARED, which is
+			// strictly stronger than the `undefined` this used to assert: `false` also forbids the
+			// prose leg from reaching this finding, so the detail is no longer required to dodge
+			// particular words. The prose assertion below is kept — it pins that the sentence is
+			// ALSO clean, so the declaration is a belt, not the only thing holding the trousers up.
+			expect(finding?.metadata?.missingControl).toBe(false);
 			expect(scoreIndicatesMissingControl([finding!])).toBe(false);
 			expect(result.score).toBe(60);
 			expect(result.passed).toBe(true);
@@ -130,9 +135,12 @@ describe('subject data interpolated into finding prose', () => {
 			const findings = classifyDmarc({ recordCount: 0, policy: null, domain: 'example.com' });
 			expect(findings[0]?.title).toBe('No DMARC record found');
 			// Since scoring model 1.13.0 the site ALSO declares the flag (like its
-			// multiple-record and missing-p= siblings). The load-bearing assertion is the
-			// next line: the PROSE route must stay live independently of the flag, because
-			// it is the prose, not the flag, that reaches engine.ts's critical-gap ceiling.
+			// multiple-record and missing-p= siblings). Both routes are pinned because both are
+			// live: `findingsIndicateMissingControl` — the predicate buildCheckResult and
+			// engine.ts's critical-gap ceiling both call — resolves the flag first and falls
+			// through to the prose only for an UNDECLARED finding. (An earlier version of this
+			// comment claimed the flag never reached the ceiling; that stopped being true when
+			// engine.ts switched its missingControls map to the canonical predicate.)
 			expect(findings[0]?.metadata?.missingControl).toBe(true);
 			expect(scoreIndicatesMissingControl(findings)).toBe(true);
 			const result = buildCheckResult('dmarc', findings);

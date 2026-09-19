@@ -8,6 +8,41 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Added
+
+- **The DoH response code (RCODE) is now available to callers of the DNS record
+  helpers.** A DoH endpoint answers HTTP 200 for SERVFAIL and REFUSED exactly as it does
+  for NOERROR, carrying the difference only in the JSON `Status` field — so
+  `queryDnsRecords`' `string[]` projection rendered "the resolver could not answer"
+  byte-identically to "this name publishes no such record". A `_dmarc` SERVFAIL therefore
+  reached the DMARC classifier as a measured absence, zeroing a Core category for a domain
+  whose record may be fine, underneath the `checkStatus`/`isCheckMeasured` abstention
+  discipline that would otherwise have excluded it. New siblings
+  `queryDnsRecordsWithRcode` / `queryTxtRecordsWithRcode` return
+  `{ records, rcode, inconclusive }` from the same single lookup; `queryDnsRecords` and
+  `queryTxtRecords` are unchanged for the call sites still on them. `@blackveil/dns-checks`
+  gains the shared rule behind it — `isConclusiveRcode` / `isInconclusiveRcode`
+  (NOERROR and NXDOMAIN are conclusions, every other rcode is not), `DNS_RCODE`,
+  `describeRcode`, and `buildRcodeAbstentionResult`, which maps an inconclusive rcode onto
+  the existing abstention shape (`checkStatus: 'error'` + `errorKind: 'dns_error'`, never
+  `missingControl`). Additive: no check reads the new signal yet.
+
+### Fixed
+
+- **A secondary resolver that could not answer could overwrite a primary that had.** The
+  empty-result confirmation path replaces the primary DoH response wholesale, rcode
+  included, and both a NOERROR-with-no-answers and a SERVFAIL arrive as HTTP 200 with an
+  empty answer set — so the swap was invisible in the data. `confirmWithSecondaryResolvers`
+  now prefers a secondary that concluded over one that returned SERVFAIL/REFUSED, and
+  `queryDns` keeps a conclusive primary rather than adopting an inconclusive confirmation.
+  The reverse correction — an inconclusive primary fixed up by a secondary that answered —
+  is unchanged. Only the direct `check_*` path is affected; `scan_domain` sets
+  `skipSecondaryConfirmation`.
+- **`check_dane` read rcodes other than SERVFAIL/REFUSED as a measurement.** Its
+  empty-MX corroboration now uses the shared `isInconclusiveRcode` rule, so a FORMERR,
+  NOTIMP or other non-conclusion on the MX lookup abstains instead of reporting SMTP DANE
+  as not applicable. NOERROR and NXDOMAIN behaviour is unchanged.
+
 ## [3.83.0] - 2026-09-19
 
 ### Fixed

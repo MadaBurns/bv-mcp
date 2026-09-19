@@ -10,6 +10,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
+import { SUBJECT_TERMS_METADATA_KEY } from '../scoring/model';
 import {
 	analyzeHashRestriction,
 	analyzeKeyStrength,
@@ -226,6 +227,9 @@ export async function checkDKIM(
 									estimatedBits: keyAnalysis.bits,
 									keyType: 'rsa-malformed',
 									selector: result.selector,
+									// `high` severity, target-controlled bare label in the prose — see the
+									// subjectTerms note on the "No DKIM records found" finding below.
+									[SUBJECT_TERMS_METADATA_KEY]: [result.selector],
 									...(delegatedTo ? { delegatedTo } : {}),
 								},
 							),
@@ -263,6 +267,8 @@ export async function checkDKIM(
 										estimatedBits: keyAnalysis.bits,
 										keyType: keyAnalysis.keyType,
 										selector: result.selector,
+										// Reaches `critical`/`high` for weak keys — same target-controlled label.
+										[SUBJECT_TERMS_METADATA_KEY]: [result.selector],
 										...(delegatedTo ? { delegatedTo } : {}),
 									},
 								),
@@ -314,6 +320,8 @@ export async function checkDKIM(
 								// "have permanently failed evaluation" → high, not medium.
 								'high',
 								`DKIM selector "${result.selector}" only accepts SHA-1 signatures (h=sha1). RFC 8301 §3.1 states SHA-1 MUST NOT be used and such signatures have permanently failed evaluation. Add sha256 to the h= tag or remove the restriction.`,
+								// `high` severity, target-controlled bare label in the prose — same reason.
+								{ selector: result.selector, [SUBJECT_TERMS_METADATA_KEY]: [result.selector] },
 							),
 						);
 					} else if (hashRestriction.kind === 'no-sha256') {
@@ -451,6 +459,27 @@ export async function checkDKIM(
 				{
 					signalType: 'dkim',
 					confidence: 'heuristic',
+					// NOT-DISCOVERED IS NOT ABSENT, AND THIS IS THE STRUCTURAL SAYING-SO.
+					//
+					// This title and detail both MATCH `MISSING_CONTROL_REGEX` ("No DKIM records…").
+					// Until scoring model 1.35.0 the only thing standing between them and a zeroed
+					// core category was the `confidence: 'heuristic'` line above, backed by a
+					// literal `text.includes('among tested selectors')` inside
+					// `inferFindingConfidence` — a prose defence against a prose trigger. `dkim` is
+					// a critical category in `mail_enabled`/`enterprise_mail`, so an accidental
+					// reword would have zeroed the category AND capped those domains at the 64
+					// critical-gap ceiling (grade D).
+					//
+					// `false` is the correct value on the merits, not just the safe one: DKIM is
+					// INFERRED here from a selector wordlist plus a provider guess, never
+					// enumerated. "None of the selectors we thought to try answered with a key" is
+					// a bounded, honest observation; "this domain does not sign its mail" is a
+					// claim this probe cannot support. The deficiency is still scored — the
+					// category is floored at 50 below — it is simply graded rather than zeroed.
+					//
+					// A probe that never REACHED a resolver takes the abstention path above
+					// instead; see the #948 block.
+					missingControl: false,
 					detectionMethod: 'selector-probing',
 					// Narrowed to the selectors whose probe actually answered (#948): a partial
 					// resolver failure still emits this verdict, but it may only claim absence
@@ -458,6 +487,11 @@ export async function checkDKIM(
 					selectorsChecked: answeredSelectors,
 					selectorsFound: [],
 					selectorsUnmeasured: unmeasuredSelectors,
+					// Selector names are TARGET-CONTROLLED single-label tokens interpolated into the
+					// sentence above, and `redactSubjectData` cannot recognise a bare label as
+					// subject data on its own (only hosts/URLs/emails). Declare them so a selector
+					// called `missing` cannot supply a trigger word to the finding's own prose.
+					[SUBJECT_TERMS_METADATA_KEY]: answeredSelectors,
 				},
 			),
 		);

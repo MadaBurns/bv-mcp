@@ -65,7 +65,18 @@ jobs:
 
       - run: npm ci
 
-      # The prose audits import from src/ (TOOL_DEFS, the quota constants), not
-      # from the built package, so no dns-checks build step is needed here.
+      # The prose audits themselves import from src/ (TOOL_DEFS, the quota
+      # constants), not from the built package — but they run under Vitest, and
+      # vitest.config.mts imports src/workers/infra-probe, which transitively
+      # reaches src/lib/dns-records.ts -> `isInconclusiveRcode` from
+      # @blackveil/dns-checks. That makes the built dist a CONFIG-LOAD
+      # dependency: without it Vitest dies at config resolution with "Failed to
+      # resolve entry for package @blackveil/dns-checks" before collecting a
+      # single test, no matter what the audits themselves import. `npm ci` does
+      # not build workspace packages, so this step is required.
+      # (This comment previously claimed no build step was needed. That was true
+      # until the dns-records/dns-transport rcode seam landed.)
+      - run: npm run build --workspace=packages/dns-checks
+
       - name: Run documentation-surface audits
         run: npm run audit:docs-surface

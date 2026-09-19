@@ -37,15 +37,30 @@ describe('getHttpsFindings', () => {
 });
 
 describe('getHttpsErrorFinding', () => {
-	it('maps a timeout/abort message to a high "HTTPS connection timeout" finding', () => {
+	// A thrown fetch means the scanner never reached the origin — this must read as an
+	// unmeasured abstention (info + inconclusive/errorKind), never a scored high/critical
+	// security deficiency (#638 law: we did not measure, we failed to connect).
+	it('maps a timeout/abort message to an info, inconclusive abstention finding', () => {
 		const finding = getHttpsErrorFinding('example.com', 'The operation was aborted due to timeout');
-		expect(finding.title).toBe('HTTPS connection timeout');
-		expect(finding.severity).toBe('high');
+		expect(finding.title).toBe('HTTPS connection not assessed (scanner timeout)');
+		expect(finding.severity).toBe('info');
+		expect(finding.metadata).toMatchObject({ inconclusive: true, confidence: 'heuristic', errorKind: 'timeout' });
 	});
 
-	it('maps any other connection error to a critical "HTTPS connection failed" finding', () => {
+	it('maps any other connection error to an info, inconclusive abstention finding', () => {
 		const finding = getHttpsErrorFinding('example.com', 'ECONNREFUSED');
-		expect(finding.title).toBe('HTTPS connection failed');
-		expect(finding.severity).toBe('critical');
+		expect(finding.title).toBe('HTTPS connection not assessed (transport error)');
+		expect(finding.severity).toBe('info');
+		expect(finding.metadata).toMatchObject({ inconclusive: true, confidence: 'heuristic', errorKind: 'transport_error' });
+	});
+
+	it('never interpolates the raw upstream error message into the finding detail (MISSING_CONTROL_REGEX safety)', () => {
+		// A raw upstream message containing a MISSING_CONTROL_REGEX trigger word must not be
+		// able to reach the finding text and falsely arm the missing-control gate — the same
+		// #345-class incident redactSubjectData exists to guard against for scanned-domain data.
+		const finding = getHttpsErrorFinding('example.com', 'required certificate not found: missing SNI extension');
+		expect(finding.detail).not.toContain('required certificate not found');
+		expect(finding.detail).not.toContain('missing SNI extension');
+		expect(finding.severity).toBe('info');
 	});
 });

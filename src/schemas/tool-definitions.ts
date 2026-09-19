@@ -198,7 +198,7 @@ function toInputSchema(schema: z.ZodTypeAny): McpTool['inputSchema'] {
 }
 
 /** All MCP tool definitions. */
-const TOOL_DEFS: Record<string, ToolDef> = {
+const TOOL_DEFS = {
 	check_mx: {
 		description:
 			'Look up MX records for a domain. Identifies which mail servers receive inbound email for the domain and which email hosting provider is used (Google Workspace, Microsoft 365, Proofpoint, etc.). Use when asked which email provider hosts inbound mail for a domain, or to see MX record configuration.',
@@ -296,7 +296,7 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 	},
 	check_dane: {
 		description:
-			"Check DANE/TLSA certificate pinning for SMTP at port 25. Resolves the domain's MX hosts and looks up TLSA records at _25._tcp.<mx-host>, verifying whether SMTP mail-server certificates are bound in DNS (DNSSEC-backed protection against CA misissuance and MITM on inbound mail). Use when asked if SMTP connections are protected by DANE/TLSA pinning. For HTTPS DANE at port 443, use check_dane_https instead.",
+			"Check DANE/TLSA certificate pinning for SMTP at port 25. Resolves the domain's MX hosts and looks up TLSA records at _25._tcp.<mx-host>, validating their syntax, usage/selector/matching-type fields and DNSSEC backing on the MX host's zone. The record is reported as present but UNVERIFIED: there is no certificate probe for port 25/SMTP, so the pinned data is never compared against the certificate the mail server actually serves (the comparable capture-and-compare pipeline exists only for check_dane_https at port 443, and is itself currently kill-switched there — see that tool's description). Use when asked if SMTP mail servers publish DANE/TLSA pinning; this does not confirm the pin matches the live certificate. For HTTPS DANE at port 443, use check_dane_https instead.",
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'hardening',
@@ -836,7 +836,15 @@ const TOOL_DEFS: Record<string, ToolDef> = {
 		tier: 'protective',
 		scanIncluded: false,
 	},
-};
+} satisfies Record<string, ToolDef>;
+
+/**
+ * A tool's canonical, published name — the literal key union derived from
+ * {@link TOOL_DEFS} (the SSOT). Compile-time-linking a registry to this type
+ * turns a typo'd or drifted tool name into a build error instead of a
+ * runtime/test-time audit finding.
+ */
+export type ToolName = keyof typeof TOOL_DEFS;
 
 /**
  * Special-case tools whose `tools/call` `structuredContent` is NOT a `CheckResult`
@@ -911,7 +919,7 @@ export const NON_CHECK_RESULT_TOOLS = new Set<string>([
 /** Lenient CheckResult output schema — derived once, shared across all CheckResult tools. */
 const CHECK_RESULT_OUTPUT_SCHEMA = buildCheckResultOutputJsonSchema();
 
-export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]) => ({
+export const TOOLS: McpTool[] = Object.entries(TOOL_DEFS).map(([name, def]: [string, ToolDef]) => ({
 	name,
 	description: def.scanIncluded ? `${def.description} Part of the scan_domain audit.` : def.description,
 	inputSchema: toInputSchema(def.schema),

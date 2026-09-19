@@ -36,6 +36,7 @@
 		"build": "npm -w packages/dns-checks run build && tsup",
 		"generate:tool-surface": "tsx scripts/generate-tool-surface.ts",
 		"check:tool-surface": "tsx scripts/generate-tool-surface.ts --check",
+		"check:tool-schema-sync": "tsx scripts/check-tool-schema-sync.ts",
 		"generate:wasm-permissions": "tsx scripts/generate-wasm-permissions.ts",
 		"check:wasm-permissions": "tsx scripts/generate-wasm-permissions.ts --check",
 		"build:wasm": "npm run generate:wasm-permissions && cd crates/bv-wasm-core && wasm-pack build --target web",

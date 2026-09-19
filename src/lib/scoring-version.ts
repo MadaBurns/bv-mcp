@@ -671,8 +671,68 @@
  *   domains serving the Cloudways edge behind a broken certificate. No DoH query added. No
  *   weight, tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or
  *   profile-detection rule changed.
+ * - 1.35.0 — scored correctness no longer depends on the English wording of a finding
+ *   (story US-2, the audit-remediation wave). `metadata.missingControl` is now authoritative
+ *   in BOTH directions via `declaredMissingControl()`; only an UNDECLARED finding falls
+ *   through to the prose regex. `check-dnssec.ts` states `{ penaltyOverride: 40,
+ *   missingControl: false }` structurally, replacing a comment that made the score depend on
+ *   a copywriting constraint — on the pre-fix tree, rewording that detail scored the category
+ *   0 instead of 60, capping whole domains at grade D. The `'among tested selectors'` literal
+ *   is deleted from `inferFindingConfidence`; it was measured DEAD for scoring across all 471
+ *   `createFinding` sites in both trees, so its removal moves nothing.
+ *   SCORE-BEARING, DOWNWARD, and ONLY here: the email bonus now requires affirmative DKIM
+ *   evidence (`controlPresent === true`). Capped at 5 points, only for `mail_enabled` /
+ *   `enterprise_mail` profiles that also pass `spfStrong` and `dmarcPresent` and whose dkim
+ *   result has `controlPresent === false`. `dkim` keeps its graded 50, sets no
+ *   `missingControls` key and arms no ceiling. Abstention was rejected because the selector
+ *   probes ANSWER (a real bounded measurement, and abstaining would arm the transient retry
+ *   and block caching on every DKIM-less domain); zeroing was rejected because DKIM is
+ *   inferred and "not discovered" is not "absent".
+ *   MEASURED 2026-09-20, n=1954 scored domains (Tranco JZNVY: 992 from ranks 1-1000, 962
+ *   sampled uniformly from 1001-1e6, seed 20260920). The honest single figure:
+ *   ⚠️ **24.3% of old-rule bonus RECIPIENTS lose the bonus** (154/634, 95% CI 21.1-27.8) —
+ *   about one in four. Quote that, not the 7.9% share of ALL scanned domains whose score
+ *   moves: 7.9% reads like the withdrawn "~5-15%" while meaning something different.
+ *   `P(dkim.controlPresent === false)` is 54.4% overall [52.2-56.6].
+ *   The loss is 2, 3 or 5 by DMARC score and `clampPercent` and both ceilings absorbed
+ *   NOTHING — 154/154 realized exactly, mean drop 0.273 pts across all scored domains, zero
+ *   upward moves, zero movement on any non-mail profile (the strictly-downward property
+ *   confirmed empirically, not just structurally). 2.9% of scanned domains cross a NIST
+ *   6-band `displayGradeFor` boundary (56/1954; B->C x34, A->B x15, A+->A x6, C->D x1; no F).
+ *   ⚠️ An earlier draft estimated ~5-15% citing `reference_scoring-corpus-1000-2026-08.md`.
+ *   That memory carries no DKIM presence statistic at all; the citation did not support the
+ *   claim and was withdrawn before measurement. The measured 54.4% did land inside the
+ *   45-60% band implied by that memory's dkim mean of 69.4 against the floor of 50.
+ *   ⚠️ `enterprise_mail` is the LEAST affected mail profile, not the most: 11.6% of its
+ *   recipients lose the bonus vs 44.3% for `mail_enabled` (same sign in both cohorts
+ *   independently). The provider-implied branch at `check-dkim.ts:97-108` is real — 35 of
+ *   the 48 enterprise_mail `controlPresent:false` domains hit it — but it does not scale,
+ *   because the standard Google/M365 selectors are already in the probe wordlist, so 89.7%
+ *   of that cohort is discovered and reads true. A prior reading that this concentrates on
+ *   enterprise customers was refuted with the sign inverted; its boundary-proximity half
+ *   does hold (42.0% of enterprise_mail sits within 5 pts above an 80/90 line vs 12.3%).
+ *   ⚠️ Re-measuring this: read `dkim.controlPresent`. The dkim category score is 0 on 1 of
+ *   1954 domains, so a `score > 0` test reports 99.9% presence against a measured 45.6% —
+ *   the DNSSEC `> 60` trap again. 47 domains read `controlPresent:false` at a dkim score
+ *   >=75, nine of them at a full 100. `passed` and `score` are both unusable here. Note
+ *   `check-dkim.ts:510` is `foundSelectors.length > 0 && hasValidKey`, so a found-but-revoked
+ *   key also reads false (google.com is exactly that: dkim 75, bonus 3->0, 84->81).
+ *   Also in this wave, NOT score-bearing but the LARGEST customer-visible change here: the
+ *   maturity ladder, cohort statistics, `compare_baseline` and `format-report` stop reading
+ *   `passed` as "control exists" and use `isSatisfiedControl()` / `dmarcPolicyTag()`. No
+ *   score moves, but `isSatisfiedControl` rejects a result carrying a high finding and an
+ *   unsigned zone emits one, so `hasDnssec` flips true→false for the ~93% of domains
+ *   measured unsigned (`hasCaa` for ~84%). `maturityStage` is PERSISTED per scan
+ *   (`src/tenants/scan-snapshot.ts:61`) and rendered "N/4", so stored maturity trends take a
+ *   step discontinuity at this version — a reporting artifact of the fix, not a regression.
+ *   Also NOT score-bearing: the DoH RCODE is now surfaced so a SERVFAIL stops being recorded
+ *   as a measured absence (additive; no check reads it yet); an SSL transport failure becomes
+ *   an `info` abstention rather than a `critical` finding (the category was ALREADY excluded
+ *   from scoring, so no score moves).
+ *   No weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule
+ *   changed. `NIST_GRADE_THRESHOLDS` untouched.
  */
-export const SCORING_MODEL_VERSION = '1.34.0';
+export const SCORING_MODEL_VERSION = '1.35.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

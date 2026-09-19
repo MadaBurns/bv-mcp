@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+import { isInconclusiveRcode } from '@blackveil/dns-checks';
 import { queryDns } from './dns-transport';
-import { RecordType, type QueryDnsOptions, type RecordTypeName } from './dns-types';
+import { RecordType, type DohResponse, type QueryDnsOptions, type RecordTypeName } from './dns-types';
 import { CaaRecordSchema, TlsaRecordSchema } from '../schemas/dns';
 
 /** Parsed CAA record with flags, tag, and value */
@@ -33,12 +34,59 @@ export interface TlsaRecord {
 }
 
 /**
+ * An answer projection that keeps the DoH response code alongside the data strings.
+ *
+ * `queryDnsRecords`' `string[]` ERASES the difference between NOERROR-with-no-answers
+ * ("this name publishes no such record" — a measurement) and SERVFAIL/REFUSED ("the
+ * resolver could not answer" — no measurement at all). A DoH endpoint returns HTTP 200
+ * for both, so nothing throws, and a check reading only the strings files a confident
+ * absence for a control it never observed.
+ */
+export interface DnsRecordsOutcome {
+	/** Answer `data` strings of the requested type — identical to `queryDnsRecords`' return. */
+	records: string[];
+	/** The DoH `Status` field: the RFC 1035 §4.1.1 response code the records came from. */
+	rcode: number;
+	/**
+	 * `true` when `rcode` means the resolver never concluded (SERVFAIL, REFUSED, …), so an
+	 * empty `records` array is NOT evidence of absence and the caller must abstain rather
+	 * than record a missing control. NOERROR and NXDOMAIN are conclusions — see
+	 * `isInconclusiveRcode` in `@blackveil/dns-checks`, the single rule both sides share.
+	 */
+	inconclusive: boolean;
+}
+
+function projectRecords(resp: DohResponse, type: RecordTypeName): DnsRecordsOutcome {
+	return {
+		records: (resp.Answer ?? []).filter((answer) => answer.type === RecordType[type]).map((answer) => answer.data),
+		rcode: resp.Status,
+		inconclusive: isInconclusiveRcode(resp.Status),
+	};
+}
+
+/**
  * Query DNS and return just the answer data strings.
  * Returns an empty array if no answers are found.
+ *
+ * ⚠️ A SERVFAIL/REFUSED is indistinguishable from "no such record" in this return shape.
+ * A caller that draws a conclusion from an EMPTY result must use
+ * {@link queryDnsRecordsWithRcode} instead.
  */
 export async function queryDnsRecords(domain: string, type: RecordTypeName, opts?: QueryDnsOptions): Promise<string[]> {
+	return (await queryDnsRecordsWithRcode(domain, type, opts)).records;
+}
+
+/**
+ * Query DNS and return the answer data strings TOGETHER with the response code, so a
+ * caller can tell a measured absence from a probe that never concluded.
+ *
+ * Same query, same cost and same options as {@link queryDnsRecords} — it is the identical
+ * lookup with the rcode kept instead of discarded, so switching a call site over costs
+ * nothing and needs no second probe.
+ */
+export async function queryDnsRecordsWithRcode(domain: string, type: RecordTypeName, opts?: QueryDnsOptions): Promise<DnsRecordsOutcome> {
 	const resp = await queryDns(domain, type, false, opts);
-	return (resp.Answer ?? []).filter((answer) => answer.type === RecordType[type]).map((answer) => answer.data);
+	return projectRecords(resp, type);
 }
 
 /**
@@ -52,14 +100,29 @@ export async function queryDnsRecords(domain: string, type: RecordTypeName, opts
  * we unescape both `\X` (single-char) and `\DDD` (decimal octet) forms.
  */
 export async function queryTxtRecords(domain: string, opts?: QueryDnsOptions): Promise<string[]> {
-	const records = await queryDnsRecords(domain, 'TXT', opts);
-	return records.map((record) =>
-		unescapeDnsTxt(
-			record
-				.replace(/" "/g, '')
-				.replace(/^"|"$/g, ''),
+	return (await queryTxtRecordsWithRcode(domain, opts)).records;
+}
+
+/**
+ * {@link queryTxtRecords} with the response code kept, so a caller can tell an absent TXT
+ * record from a lookup that never concluded.
+ *
+ * This is the funnel that matters most: every TXT-published control — DMARC, SPF, DKIM,
+ * BIMI, TLS-RPT, MTA-STS — reaches its classifier through here, so a `_dmarc` SERVFAIL
+ * read as `[]` becomes "no DMARC record", zeroes a Core category and caps the scan.
+ */
+export async function queryTxtRecordsWithRcode(domain: string, opts?: QueryDnsOptions): Promise<DnsRecordsOutcome> {
+	const outcome = await queryDnsRecordsWithRcode(domain, 'TXT', opts);
+	return {
+		...outcome,
+		records: outcome.records.map((record) =>
+			unescapeDnsTxt(
+				record
+					.replace(/" "/g, '')
+					.replace(/^"|"$/g, ''),
+			),
 		),
-	);
+	};
 }
 
 /**

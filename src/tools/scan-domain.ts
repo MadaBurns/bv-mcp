@@ -68,6 +68,7 @@ import type { ScanRuntimeOptions } from './scan/post-processing';
 import { logError } from '../lib/log';
 import { createRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
 import { fetchBudgetFor } from '../lib/fetch-budget';
+import { isSatisfiedControl } from '../lib/control-presence';
 import {
 	getAdaptiveWeights,
 	publishAdaptiveWeightSummary,
@@ -798,7 +799,14 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			);
 			for (let i = 0; i < retryable.length; i++) {
 				const s = retrySettled[i];
-				if (s.status === 'fulfilled' && s.value.checkStatus !== 'error' && s.value.score > 0) {
+				// `checkStatus !== 'error'` alone gates acceptance — NOT `score > 0`. A
+				// completed retry that correctly measures a genuine absence (e.g. a
+				// `missingControl` finding, score 0) is the better measurement and must
+				// replace the earlier transient-error result, not be discarded in the
+				// domain's favour. `runCheckRetry` only returns `checkStatus: 'error'`
+				// itself for an unsupported category's synthetic result; any other
+				// fulfilled retry is a real completed measurement, whatever score it lands on.
+				if (s.status === 'fulfilled' && s.value.checkStatus !== 'error') {
 					checkResults[retryable[i].idx] = s.value;
 					// Clear the degraded status since the retry succeeded
 					degradedStatuses.delete(retryable[i].r.category);
@@ -1020,7 +1028,17 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 			const telemetry: ScanTelemetry = {
 				profile: domainContext.profile,
 				provider: domainContext.detectedProvider,
-				categoryFindings: checkResults.map((r) => ({ category: r.category, score: r.score, passed: r.passed })),
+				// `isSatisfiedControl`, not raw `passed` — `passed` records whether the
+				// category was PENALIZED, not whether the control exists (#705/#706/#725).
+				// Absent DNSSEC (60), CAA (85) and MTA-STS (85) all carry `passed: true`
+				// and would otherwise be invisible to this telemetry's own cohort-failure
+				// statistics (`topFailingCategories` in profile-accumulator.ts) — the exact
+				// surface this feeds and the exact class of gap it exists to report. This
+				// does NOT reactivate the adaptive-weights scoring path: the published score
+				// above is always `canonicalScore` (never the adaptive one), so this only
+				// changes what the reporting/statistics layer records, not what any domain
+				// is scored or graded.
+				categoryFindings: checkResults.map((r) => ({ category: r.category, score: r.score, passed: isSatisfiedControl(r) })),
 				timestamp: Date.now(),
 				overallScore: score.overall,
 			};

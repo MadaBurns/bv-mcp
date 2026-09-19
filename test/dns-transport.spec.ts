@@ -758,3 +758,82 @@ describe('confirmWithSecondaryResolvers', () => {
 		expect((result as { kind?: string }).kind).not.toBe('unconfirmed');
 	});
 });
+
+/**
+ * The empty-result confirmation REPLACES the primary response wholesale, rcode included.
+ * Both a NOERROR-with-no-answers and a SERVFAIL arrive as HTTP 200 with an empty answer
+ * set, so the swap is invisible in the data — only `Status` says which of them measured
+ * anything. Without these guards a secondary that could not answer silently converts a
+ * caller's real "no such record" measurement into an abstention.
+ */
+describe('secondary confirmation preserves rcode conclusiveness', () => {
+	const emptyResponse = (status: number): unknown => ({
+		Status: status,
+		TC: false,
+		RD: true,
+		RA: true,
+		AD: false,
+		CD: false,
+		Question: [{ name: 'example.com', type: RecordType.TXT }],
+	});
+
+	function mockResolvers(primaryStatus: number, secondaryStatus: number, googleStatus: number): void {
+		globalThis.fetch = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const urlStr = typeof url === 'string' ? url : url instanceof URL ? url.toString() : url.url;
+			const status = urlStr.includes('cloudflare-dns.com') ? primaryStatus : urlStr.includes('dns.google') ? googleStatus : secondaryStatus;
+			return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve(emptyResponse(status)) } as unknown as Response);
+		}) as unknown as typeof globalThis.fetch;
+	}
+
+	it('keeps a conclusive primary NOERROR when every secondary returns SERVFAIL', async () => {
+		mockResolvers(0, 2, 2);
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query' },
+		});
+
+		// A measured absence, NOT an abstention: the primary concluded and no secondary did.
+		expect(result.Status).toBe(0);
+	});
+
+	it('prefers a secondary that concluded over one that returned REFUSED', async () => {
+		// bv-dns REFUSED, Google NOERROR-empty: the answer sets are identical, the rcodes are not.
+		mockResolvers(0, 5, 0);
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query' },
+		});
+
+		expect(result.Status).toBe(0);
+	});
+
+	it('still lets a conclusive secondary correct an inconclusive primary', async () => {
+		// The direction this confirmation path exists for: the primary could not answer,
+		// a secondary could, so the secondary's conclusion wins.
+		mockResolvers(2, 0, 0);
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query' },
+		});
+
+		expect(result.Status).toBe(0);
+	});
+
+	it('surfaces SERVFAIL when neither the primary nor any secondary concluded', async () => {
+		mockResolvers(2, 2, 2);
+
+		const result = await queryDns('example.com', 'TXT', false, {
+			retries: 0,
+			confirmWithSecondaryOnEmpty: true,
+			secondaryDoh: { endpoint: 'https://secondary-doh.test/dns-query' },
+		});
+
+		expect(result.Status).toBe(2);
+	});
+});

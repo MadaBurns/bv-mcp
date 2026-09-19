@@ -221,6 +221,23 @@ describe('buildStructuredScanResult — ungraded scan', () => {
 		expect(structured.passed).toBe(true);
 		expect(structured.measured).toBe(true);
 	});
+
+	it('never reports passed:true alongside a displayed grade of F (SQ-66)', async () => {
+		// The NIST display floor is 60 (NIST_GRADE_THRESHOLDS.D), but the old `passed`
+		// read `overall >= 50` — a SEPARATE threshold. A scan scoring 50-59 therefore
+		// emitted `grade: 'F'` (< 60) together with `passed: true` (>= 50): a customer-
+		// visible contradiction on the very same report.
+		const { buildStructuredScanResult } = await import('../src/tools/scan/format-report');
+		const structured = buildStructuredScanResult(
+			scanResult(gradedScore({ overall: 55, grade: 'D' }), {
+				checks: [{ category: 'spf', passed: true, score: 100, findings: [] }],
+			}),
+		);
+
+		expect(structured.score).toBe(55);
+		expect(structured.grade).toBe('F');
+		expect(structured.passed).toBe(false);
+	});
 });
 
 describe('gradeBadge — null grade', () => {
