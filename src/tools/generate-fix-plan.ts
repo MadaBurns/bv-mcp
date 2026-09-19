@@ -14,7 +14,7 @@ import type { CheckResult, Finding, Severity, CheckCategory } from '@blackveil/d
 import { IMPORTANCE_WEIGHTS, isGraded } from '@blackveil/dns-checks/scoring';
 import { scanDomain } from './scan-domain';
 import type { ScanRuntimeOptions } from './scan/post-processing';
-import { formatScoreGrade, hasCompletedEvidence, isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { displayGradeFor, formatScoreGrade, hasCompletedEvidence, isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
 import { isDnsErrorFinding } from '../lib/dns-error-result';
 
 /** A single remediation action in a fix plan. */
@@ -294,7 +294,12 @@ export async function generateFixPlan(domain: string, kv?: KVNamespace, runtimeO
 		scanResult.checks,
 		domain,
 		scanResult.score.overall,
-		scanResult.score.grade,
+		// Customer-facing grade: route through the 6-band chokepoint rather than the
+		// 9-band `scanResult.score.grade` (internal scale). `fix_plan` is the artifact
+		// most likely to be pasted into a client document, and emitting the engine
+		// letter here printed "A" for a score of 88 that `scan_domain` reports as "B"
+		// (#1052 — fourth instance of the #640/#727/#962 family).
+		displayGradeFor(scanResult.score),
 		// `indeterminate` (#574) is the half `isGraded` cannot see: a scan can produce a
 		// real overall score AND still have the maturity ladder abstain, because a
 		// load-bearing check (TLS, or SPF/DMARC) was never measured. That stage 0 is a
