@@ -46,6 +46,7 @@ import {
 	CLIENT_IP_AUDIT_MAX_MISSING_RATIO,
 	CLIENT_IP_AUDIT_MIN_SAMPLES,
 	CLIENT_IP_AUDIT_WINDOW_HOURS,
+	CLIENT_IP_AUDIT_FALLBACK_WINDOW_HOURS,
 	CLIENT_IP_HEADER_MISSING_ALERT_KIND,
 	assessClientIpHeaders,
 	clientIpHeaderAuditSql,
@@ -361,16 +362,19 @@ async function checkAccessRollupProvisioned(env: ScheduledEnv, webhookUrl: strin
 			// Best-effort context only — the missing-table alert below fires regardless.
 		}
 
-		logError('mcp_access_rollup is not provisioned in production: auth_tier adoption telemetry is fail-open (masquerading as zero, not measured)', {
-			category: 'scheduled',
-			result: 'access_rollup_unprovisioned',
-			details: {
-				migration: 'scripts/intelligence/sql/0004_mcp_access_rollup.sql',
-				dbError: message,
-				uncountedInternalRequests: uncountedRequests,
-				lookbackHours: ROLLUP_HEALTH_LOOKBACK_HOURS,
+		logError(
+			'mcp_access_rollup is not provisioned in production: auth_tier adoption telemetry is fail-open (masquerading as zero, not measured)',
+			{
+				category: 'scheduled',
+				result: 'access_rollup_unprovisioned',
+				details: {
+					migration: 'scripts/intelligence/sql/0004_mcp_access_rollup.sql',
+					dbError: message,
+					uncountedInternalRequests: uncountedRequests,
+					lookbackHours: ROLLUP_HEALTH_LOOKBACK_HOURS,
+				},
 			},
-		});
+		);
 
 		await sendAlert(
 			webhookUrl,
@@ -1157,9 +1161,9 @@ export async function handleClientIpHeaderAudit(env: ScheduledEnv): Promise<void
 	const webhookUrl = await resolveAlertWebhookUrl(env);
 	if (!webhookUrl) return;
 
-	const windowHours = CLIENT_IP_AUDIT_WINDOW_HOURS;
-	const assessment = await queryClientIpHeaderAudit(env.INTELLIGENCE_DB, windowHours);
-	if (!assessment) return;
+	const escalated = await queryClientIpHeaderAuditEscalating(env.INTELLIGENCE_DB);
+	if (!escalated) return;
+	const { assessment, windowHours } = escalated;
 
 	const ratio = assessment.missingRatio ?? null;
 	const ratioRounded = ratio === null ? null : Math.round(ratio * 1000) / 1000;
@@ -1171,6 +1175,10 @@ export async function handleClientIpHeaderAudit(env: ScheduledEnv): Promise<void
 		missing: assessment.missing,
 		missingRatio: ratioRounded,
 		windowHours,
+		// True when the 24h window was below the floor and the wider window answered
+		// instead (#1066) — a `healthy` read over 168h is a weaker statement about
+		// today than the same verdict over 24h, so the two must stay greppable apart.
+		widenedWindow: windowHours !== CLIENT_IP_AUDIT_WINDOW_HOURS,
 		minSamples: CLIENT_IP_AUDIT_MIN_SAMPLES,
 		maxMissingRatio: CLIENT_IP_AUDIT_MAX_MISSING_RATIO,
 	};
@@ -1224,7 +1232,13 @@ export async function handleClientIpHeaderAudit(env: ScheduledEnv): Promise<void
 				missing_header: missing,
 				missing_ratio: ratioRounded,
 				window_hours: windowHours,
-				runbook: 'npm run audit:client-ip-headers (SSOT: src/lib/client-ip-audit.ts)',
+				// #1066: this string is what a paged operator actually types, so it has to run
+				// as printed. The bare form exited `unknown` / `audit_failed` EVERY time,
+				// because the script requires both flags — a guaranteed non-answer wearing the
+				// same word as the real low-sample verdict. The npm script now supplies these
+				// defaults; they are named here too so the command survives a changed default.
+				runbook:
+					'npm run audit:client-ip-headers -- --config wrangler.production.jsonc --database INTELLIGENCE_DB (SSOT: src/lib/client-ip-audit.ts)',
 			},
 			threshold: `${CLIENT_IP_HEADER_MISSING_ALERT_KIND}: missing/total > ${CLIENT_IP_AUDIT_MAX_MISSING_RATIO} with total >= ${CLIENT_IP_AUDIT_MIN_SAMPLES}`,
 		}),
@@ -1264,18 +1278,46 @@ async function queryClientIpHeaderAudit(db: D1Database, windowHours: number): Pr
 }
 
 /**
+ * Run the SSOT aggregate over the standard window, and retry ONCE over the wider
+ * window when the first read is below the sample floor (#1066).
+ *
+ * Shared by the alerting lane and the daily digest so the blind spot cannot be
+ * fixed in one and left in the other. Returns the window the returned verdict was
+ * actually computed over — callers must report that number rather than assume 24h.
+ *
+ * Only `insufficient_samples` escalates: an `invalid_aggregate` row is a schema or
+ * driver fault, and re-running the same broken read over more hours just spends a
+ * second D1 query to reach the same verdict.
+ */
+async function queryClientIpHeaderAuditEscalating(
+	db: D1Database,
+): Promise<{ assessment: ClientIpAuditAssessment; windowHours: number } | undefined> {
+	const assessment = await queryClientIpHeaderAudit(db, CLIENT_IP_AUDIT_WINDOW_HOURS);
+	if (!assessment) return undefined;
+	if (assessment.status === 'unknown' && assessment.reason === 'insufficient_samples') {
+		const widened = await queryClientIpHeaderAudit(db, CLIENT_IP_AUDIT_FALLBACK_WINDOW_HOURS);
+		if (widened) return { assessment: widened, windowHours: CLIENT_IP_AUDIT_FALLBACK_WINDOW_HOURS };
+	}
+	return { assessment, windowHours: CLIENT_IP_AUDIT_WINDOW_HOURS };
+}
+
+/**
  * One-line summary for the daily digest (#896 positive control). A lane stuck
  * at `unknown` or erroring on schema drift is otherwise only an info/warn log
  * line that nobody reads (invocation logs are off in prod); the digest puts the
  * verdict in front of a human once a day. Fail-soft: an absent binding or a D1
  * error becomes a visible `unbound` / `error` word, never a missing line.
+ *
+ * #1066: shares the escalating read, so a low-traffic day reports a real verdict
+ * here too instead of a daily `unknown` that a reader learns to skip.
  */
 async function clientIpAuditDigestLine(env: ScheduledEnv): Promise<string> {
 	if (!env.INTELLIGENCE_DB) return `client_ip_audit: unbound (no INTELLIGENCE_DB)`;
-	const assessment = await queryClientIpHeaderAudit(env.INTELLIGENCE_DB, CLIENT_IP_AUDIT_WINDOW_HOURS);
-	if (!assessment) return `client_ip_audit: error (query failed, last ${CLIENT_IP_AUDIT_WINDOW_HOURS}h)`;
+	const escalated = await queryClientIpHeaderAuditEscalating(env.INTELLIGENCE_DB);
+	if (!escalated) return `client_ip_audit: error (query failed, last ${CLIENT_IP_AUDIT_WINDOW_HOURS}h)`;
+	const { assessment, windowHours } = escalated;
 	const counts = assessment.total === undefined ? assessment.reason : `${assessment.missing}/${assessment.total}`;
-	return `client_ip_audit: ${assessment.status} (${counts}, last ${CLIENT_IP_AUDIT_WINDOW_HOURS}h)`;
+	return `client_ip_audit: ${assessment.status} (${counts}, last ${windowHours}h)`;
 }
 
 /**

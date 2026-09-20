@@ -11,6 +11,7 @@ import {
 	assessClientIpHeaders as assessSsot,
 	clientIpHeaderAuditSql as sqlSsot,
 	CLIENT_IP_AUDIT_MIN_SAMPLES,
+	CLIENT_IP_AUDIT_FALLBACK_WINDOW_HOURS,
 	CLIENT_IP_AUDIT_WINDOW_HOURS,
 	CLIENT_IP_HEADER_MISSING_ALERT_KIND,
 } from '../../src/lib/client-ip-audit';
@@ -176,5 +177,95 @@ describe('handleClientIpHeaderAudit against real D1', () => {
 		expect(logged).toContain('"status":"unknown"');
 		expect(logged).toContain(`"minSamples":${CLIENT_IP_AUDIT_MIN_SAMPLES}`);
 		expect(await kv.get(CLIENT_IP_ALERT_COOLDOWN_KEY)).toBeNull();
+	});
+
+	/**
+	 * #1066 — the volume floor was a blind spot, not a safety margin. Below 20 rows the
+	 * verdict is `unknown`, and `unknown` pages nobody, so a low-traffic day could go
+	 * FULLY dark on client-IP attribution in silence. Measured day buckets from the #896
+	 * window that reported nothing: 8 rows/100% missing, 11 rows/100% missing.
+	 */
+	it('pages on a dark low-traffic day by widening the window instead of reporting `unknown`', async () => {
+		const now = Math.floor(Date.now() / 1000);
+		const rows: Array<[number, string | null, string]> = [];
+		// The dark day: 11 public rows in the last 24h, every one missing the header.
+		// 11 < 20, so the 24h window ALONE resolves to `unknown` and never pages.
+		for (let i = 0; i < 11; i++) rows.push([now - i * 60, 'public', 'no-cf-header']);
+		// The rest of the week was healthy — enough rows to clear the floor at 168h.
+		for (let i = 0; i < 30; i++) rows.push([now - (30 + i) * 3600, 'public', '203.0.113.xxx']);
+
+		const { db, kv, webhookCalls } = await seeded(rows);
+		await handleClientIpHeaderAudit({ INTELLIGENCE_DB: db, RATE_LIMIT: kv, ALERT_WEBHOOK_URL: ALERT_WEBHOOK });
+
+		expect(webhookCalls).toHaveLength(1);
+		const text = (JSON.parse(webhookCalls[0]) as { text: string }).text;
+		expect(text).toContain(CLIENT_IP_HEADER_MISSING_ALERT_KIND);
+		// Reported over the widened window, and the alert says so rather than implying 24h.
+		expect(text).toContain('total_public_calls: 41');
+		expect(text).toContain('missing_header: 11');
+		expect(text).toContain(`window_hours: ${CLIENT_IP_AUDIT_FALLBACK_WINDOW_HOURS}`);
+		// Dilution does not re-hide it: 11/41 = 0.268, still far above the 0.05 line.
+		expect(text).toContain('missing_ratio: 0.268');
+		expect(text).not.toMatch(/\b\d{1,3}(\.\d{1,3}){3}\b/);
+	});
+
+	it('still reports `unknown` without paging when even the widened window is below the floor', async () => {
+		const now = Math.floor(Date.now() / 1000);
+		// 8 rows all week — genuinely unmeasurable, and widening must not invent a verdict.
+		const rows: Array<[number, string | null, string]> = [];
+		for (let i = 0; i < 8; i++) rows.push([now - i * 3600, 'public', 'no-cf-header']);
+
+		const { db, kv, webhookCalls } = await seeded(rows);
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		let logged = '';
+		try {
+			await handleClientIpHeaderAudit({ INTELLIGENCE_DB: db, RATE_LIMIT: kv, ALERT_WEBHOOK_URL: ALERT_WEBHOOK });
+			logged = logSpy.mock.calls.map((c) => String(c[0])).join('\n');
+		} finally {
+			logSpy.mockRestore();
+		}
+		expect(webhookCalls).toHaveLength(0);
+		expect(logged).toContain('"status":"unknown"');
+		expect(logged).toContain('"reason":"insufficient_samples"');
+		// The widened attempt happened and is greppable, so a reader can tell this apart
+		// from a lane that never escalated at all.
+		expect(logged).toContain('"widenedWindow":true');
+		expect(await kv.get(CLIENT_IP_ALERT_COOLDOWN_KEY)).toBeNull();
+	});
+});
+
+/**
+ * #1066 defect 2 — the runbook string the alert prints was not runnable. The bare
+ * command exited `unknown` / `audit_failed` every time, which is the same word the
+ * genuine low-sample verdict uses, so a paged operator reads a non-answer as a
+ * measurement.
+ */
+describe('CLI usage errors are distinguishable from query failures (#1066)', () => {
+	it('names the required flags instead of collapsing into audit_failed', async () => {
+		const { execFileSync } = await import('node:child_process');
+		let stderr = '';
+		try {
+			execFileSync(process.execPath, ['scripts/audits/client-ip-header-audit.mjs'], {
+				encoding: 'utf8',
+				stdio: ['ignore', 'pipe', 'pipe'],
+			});
+		} catch (err) {
+			stderr = String((err as { stderr?: string }).stderr ?? '');
+		}
+		const parsed = JSON.parse(stderr.trim()) as { status: string; reason: string; detail?: string };
+		expect(parsed.status).toBe('unknown');
+		expect(parsed.reason).toBe('invalid_usage');
+		expect(parsed.reason).not.toBe('audit_failed');
+		expect(parsed.detail).toContain('--config');
+		expect(parsed.detail).toContain('--database');
+	});
+
+	it('the npm script supplies both flags, so the runbook command is runnable as printed', async () => {
+		const pkg = JSON.parse(await (await import('node:fs/promises')).readFile('package.json', 'utf8')) as {
+			scripts: Record<string, string>;
+		};
+		const script = pkg.scripts['audit:client-ip-headers'];
+		expect(script).toContain('--config');
+		expect(script).toContain('--database');
 	});
 });
