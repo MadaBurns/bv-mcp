@@ -72,25 +72,26 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 		file: 'lib/authoritative-dns-infra/delegation-analysis.ts',
 		title: 'In-bailiwick nameserver glue is missing',
 		category: 'ns',
-		mechanism: 'prose',
+		mechanism: 'declared',
 		reason:
 			'An in-bailiwick nameserver (one whose own name lives inside the zone it serves) with no A/AAAA glue at ' +
 			'the parent creates a circular resolution dependency: resolvers cannot look up the nameserver without ' +
 			'already knowing its address. That is a genuinely broken delegation, not a graded deficiency, so zeroing ' +
-			'`ns` is correct. STILL PROSE-DRIVEN: the site declares nothing, so a reword of "is missing" would ' +
-			'silently un-zero this — assertion B below is what would notice.',
+			'`ns` is correct. SQ-74: carries an explicit `{ missingControl: true }` — a reword can no longer ' +
+			'silently un-zero this.',
 	},
 	{
 		file: 'tools/check-shadow-domains.ts',
 		title: 'Shadow domain fully spoofable',
 		category: 'shadow_domains',
-		mechanism: 'prose',
+		mechanism: 'declared',
 		reason:
 			'Emitted only on the top rung of the ladder: the seed domain has MX records but neither SPF nor DMARC. ' +
 			'A domain that publishes mail infrastructure with zero sender-authentication controls is the same ' +
 			'"genuinely absent control" shape as `check-mx.ts`\'s "No MX and no SPF" entry in the sibling file\'s ' +
-			'register. Matches on the static "no SPF or DMARC records" text, independent of the interpolated ' +
-			'`${variant}` domain-name hole (see the interpolation section below).',
+			'register. SQ-74: carries an explicit `{ missingControl: true }` (spread onto the shared `meta` object ' +
+			'for only this rung), independent of the interpolated `${variant}` domain-name hole (see the ' +
+			'interpolation section below).',
 	},
 	{
 		file: 'tools/check-zone-hygiene.ts',
@@ -133,12 +134,12 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 		file: 'tools/ns-analysis.ts',
 		title: 'No NS records found',
 		category: 'ns',
-		mechanism: 'prose',
+		mechanism: 'declared',
 		reason:
 			'Root-tree counterpart to the sibling file\'s `checks/ns-analysis.ts` "No NS records found" entry — a ' +
 			'distinct file in this tree, same genuinely-absent-control shape: zero NS records means the domain ' +
-			'cannot resolve at all. Emitted at `critical` on the `!domainResolves` branch. STILL PROSE-DRIVEN: no ' +
-			'declaration, so a reword is the silent-loss risk assertion B guards against.',
+			'cannot resolve at all. Emitted at `critical` on the `!domainResolves` branch. SQ-74: carries an ' +
+			'explicit `{ missingControl: true }` — a reword can no longer silently un-zero this.',
 	},
 ];
 
@@ -798,10 +799,11 @@ const HOSTILE_DETAIL = 'No SPF record found. The control is missing and a policy
 describe('missing-control intent (root tree) — a declared finding is prose-independent', () => {
 	it('the declared population is non-empty', () => {
 		// Unlike the sibling file, this tree's declared population is measured to be `true`-only
-		// today (4 sites: check-zone-hygiene.ts ×2, dane-analysis.ts ×2) — no root-tree site declares
-		// `missingControl: false` yet. That asymmetry is reported honestly rather than asserted away:
-		// this test checks non-vacuity of what actually exists, not both directions the sibling file
-		// can prove because its tree happens to have both.
+		// today (7 sites as of SQ-74: check-zone-hygiene.ts ×2, dane-analysis.ts ×2,
+		// delegation-analysis.ts, check-shadow-domains.ts, ns-analysis.ts) — no root-tree site
+		// declares `missingControl: false` yet. That asymmetry is reported honestly rather than
+		// asserted away: this test checks non-vacuity of what actually exists, not both directions
+		// the sibling file can prove because its tree happens to have both.
 		expect(DECLARED_SITES.length, 'no site declares metadata.missingControl — the sweep below is vacuous').toBeGreaterThan(2);
 		expect([...new Set(DECLARED_SITES.map((s) => parseMetadata(s.metadataSource)!.missingControl))]).toEqual([true]);
 	});

@@ -347,7 +347,10 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], ownersh
 				'Shadow domain fully spoofable',
 				'high',
 				`${variant} has mail servers but no SPF or DMARC records. Any sender can forge email from this domain.${sameOwner ? ownerNote : ''}`,
-				meta,
+				// SQ-74: mail infra with zero sender-authentication is a genuinely absent control,
+				// declared structurally (only this rung — the other rungs below keep plain `meta`)
+				// so a reword cannot silently un-zero `shadow_domains`.
+				{ ...meta, missingControl: true },
 			);
 		}
 

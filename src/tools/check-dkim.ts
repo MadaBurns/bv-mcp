@@ -49,9 +49,13 @@ export async function checkDkim(domain: string, selector?: string, dnsOptions?: 
  */
 export function applyProviderDkimContext(dkimResult: CheckResult, provider: string): CheckResult {
 	const normalizedProvider = provider.toLowerCase();
-	const notFoundIdx = dkimResult.findings.findIndex(
-		(f) => /No DKIM records found/i.test(f.title) && f.severity === 'high',
-	);
+	// SQ-74: identify the "not discovered among tested selectors" finding STRUCTURALLY —
+	// @blackveil/dns-checks tags it `detectionMethod: 'selector-probing'` at `high` severity —
+	// instead of matching its TITLE text. A title-string match silently stops finding the
+	// site the moment the package rewords it (no error, just a no-op downgrade); the other two
+	// `high` dkim findings ("Malformed DKIM key", "DKIM keys revoked") never carry this metadata
+	// key, so the combination stays unambiguous. See test/audits/dkim-title-coupling.audit.test.ts.
+	const notFoundIdx = dkimResult.findings.findIndex((f) => f.severity === 'high' && f.metadata?.detectionMethod === 'selector-probing');
 	if (notFoundIdx === -1) return dkimResult;
 
 	const selectorsChecked = (dkimResult.findings[notFoundIdx].metadata?.selectorsChecked as string[]) ?? [];

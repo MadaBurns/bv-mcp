@@ -37,6 +37,10 @@ export function getNsVisibilityFinding(domain: string, domainResolves: boolean):
 		'No NS records found',
 		'critical',
 		`No nameserver records found for ${domain}. Without NS records, the domain cannot resolve.`,
+		// SQ-74: a domain with zero NS records cannot resolve at all — a genuinely absent
+		// control, declared structurally so a reword cannot silently un-zero `ns` (critical
+		// in every profile), matching SQ-68's precedent for DNSSEC.
+		{ missingControl: true },
 	);
 }
 
