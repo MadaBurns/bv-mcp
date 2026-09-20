@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { afterEach, describe, expect, it } from 'vitest';
-// @ts-expect-error cloudflare:test exports are injected by the Workers Vitest pool at runtime.
 import { env } from 'cloudflare:test';
 import {
 	beginIdempotentRequestWithCoordinator,
