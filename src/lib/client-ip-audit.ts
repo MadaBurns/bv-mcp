@@ -46,6 +46,29 @@ export const CLIENT_IP_AUDIT_MAX_MISSING_RATIO = 0.05;
  */
 export const CLIENT_IP_AUDIT_WINDOW_HOURS = 24;
 
+/**
+ * Wider window retried when {@link CLIENT_IP_AUDIT_WINDOW_HOURS} falls below the
+ * sample floor (#1066).
+ *
+ * ⚠️ The volume floor was a blind spot, not a safety margin. `total < 20` resolves
+ * to `unknown`, and `unknown` pages nobody — so on a low-traffic day a TOTAL outage
+ * of client-IP attribution was silent. Measured day buckets from the #896 window:
+ * 8 rows / 100% missing, 11 rows / 100% missing — both below the floor, both
+ * reported nothing.
+ *
+ * 168, because the floor has to be cleared by real rows rather than lowered: at the
+ * measured public-door rate (54 rows/24h, 404 rows/168h on 2026-09-09) a week clears
+ * 20 comfortably where a day may not. Dilution does not reintroduce the blind spot at
+ * this threshold — a single fully-dark day inside an otherwise healthy week is ~1/7
+ * of the window (~14%), still well above the 5% `degraded` line.
+ *
+ * Escalation lives in the CALLERS, deliberately: `assessClientIpHeaders` and
+ * `clientIpHeaderAuditSql` are pinned byte-for-byte against the CLI copy by
+ * `test/audits/client-ip-header-audit.node.test.ts`, so widening the window must not
+ * change either function's behaviour.
+ */
+export const CLIENT_IP_AUDIT_FALLBACK_WINDOW_HOURS = 168;
+
 /** Alert kind emitted by the cron lane when the audit is `degraded`. */
 export const CLIENT_IP_HEADER_MISSING_ALERT_KIND = 'client_ip_header_missing';
 
