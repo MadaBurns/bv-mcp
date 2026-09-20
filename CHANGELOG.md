@@ -42,6 +42,26 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   empty-MX corroboration now uses the shared `isInconclusiveRcode` rule, so a FORMERR,
   NOTIMP or other non-conclusion on the MX lookup abstains instead of reporting SMTP DANE
   as not applicable. NOERROR and NXDOMAIN behaviour is unchanged.
+- **Three high/critical findings zeroed a category by prose alone, outside the audit that
+  governs everything else.** `missing-control-intent.audit.test.ts` (added for the DNSSEC
+  `github.com`/`missingkids.org` hazard) is scoped to `packages/dns-checks/src/`, so the
+  equivalent risk in this repo's own `src/` tree — `authoritative-dns-infra/delegation-
+  analysis.ts`'s "In-bailiwick nameserver glue is missing" (`ns`), `check-shadow-
+  domains.ts`'s "Shadow domain fully spoofable" (`shadow_domains`), and `ns-analysis.ts`'s
+  "No NS records found" (`ns`, critical in every profile) — sat outside it, reworded to
+  wording without a trigger word by anyone at any time silently un-zeroing the category
+  with nothing to notice. All three, plus `check-spf.ts`'s "No SPF record found" and the
+  four RFC 8461 conformance findings in `mta-sts-analysis.ts` that were already intended to
+  zero their category but did so on prose alone, now declare an explicit
+  `missingControl: true`, matching the structural pattern SQ-68 established for DNSSEC and
+  DMARC. `test/audits/missing-control-intent-root.audit.test.ts` (added alongside this
+  fix) covers the root tree's ~296 `createFinding` call sites the same way the package
+  audit covers its own. `src/tools/check-dkim.ts`'s `applyProviderDkimContext` no longer
+  identifies the DKIM "not discovered" finding by matching its title text — a reword there
+  used to silently stop the provider-informed downgrade with no error — it now matches the
+  finding's structural `detectionMethod: 'selector-probing'` metadata, pinned by
+  `test/audits/dkim-title-coupling.audit.test.ts`. No score moved: every migrated finding
+  already zeroed its category on its existing prose before this change.
 
 ## [3.83.0] - 2026-09-19
 

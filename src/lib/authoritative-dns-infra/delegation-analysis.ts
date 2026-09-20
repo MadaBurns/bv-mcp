@@ -93,7 +93,10 @@ export function analyzeDelegationConsistency(evidence: DelegationConsistencyEvid
 				'In-bailiwick nameserver glue is missing',
 				'high',
 				`${missingGlue.join(', ')} ${missingGlue.length === 1 ? 'is' : 'are'} inside ${evidence.hostname} but the parent referral supplied no A or AAAA glue. This creates a circular dependency that can make the delegation unreachable. Publish glue at the registrar or registry.`,
-				{ missingGlueNameservers: missingGlue, evidenceMode: 'direct_dns_tcp' },
+				// SQ-74: a circular in-bailiwick delegation is a genuinely broken control, not a
+				// graded deficiency — declared structurally so a reword cannot silently un-zero `ns`
+				// (a critical category in every profile), matching SQ-68's precedent for DNSSEC.
+				{ missingGlueNameservers: missingGlue, evidenceMode: 'direct_dns_tcp', missingControl: true },
 			),
 		);
 	}
