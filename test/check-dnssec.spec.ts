@@ -205,14 +205,18 @@ describe('checkDnssec — AD flag confirmation probe', () => {
 		hasDs?: boolean;
 		googleAd?: boolean;
 		googleThrows?: boolean;
+		googleStatus?: number;
 	}) {
-		const { primaryAd, hasDnskey = true, hasDs = true, googleAd = true, googleThrows = false } = opts;
+		const { primaryAd, hasDnskey = true, hasDs = true, googleAd = true, googleThrows = false, googleStatus } = opts;
 
 		globalThis.fetch = vi.fn().mockImplementation((url: string) => {
 			// Google DoH confirmation probe
 			if (typeof url === 'string' && url.startsWith('https://dns.google/resolve')) {
 				if (googleThrows) {
 					return Promise.reject(new Error('Google DoH timeout'));
+				}
+				if (googleStatus !== undefined && googleStatus >= 400) {
+					return Promise.resolve(new Response('rate limited', { status: googleStatus }));
 				}
 				return Promise.resolve(
 					createDohResponse(
@@ -236,9 +240,7 @@ describe('checkDnssec — AD flag confirmation probe', () => {
 				);
 			}
 			if (type === 'DNSKEY') {
-				const answers = hasDnskey
-					? [{ name: 'example.com', type: RecordType.DNSKEY, TTL: 300, data: '257 3 13 mdsswUyr3DPW...' }]
-					: [];
+				const answers = hasDnskey ? [{ name: 'example.com', type: RecordType.DNSKEY, TTL: 300, data: '257 3 13 mdsswUyr3DPW...' }] : [];
 				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 48 }], answers));
 			}
 			if (type === 'DS') {
@@ -274,16 +276,37 @@ describe('checkDnssec — AD flag confirmation probe', () => {
 		expect(validationFailing!.severity).toBe('high');
 	});
 
-	it('degrades gracefully when Google DoH throws an error', async () => {
-		// Primary says AD=false with DNSKEY+DS, Google DoH throws
+	/**
+	 * ⚠️ #1065 — these two cases previously asserted the OPPOSITE: that a failed confirmation
+	 * probe preserved the high-severity "DNSSEC validation failing" finding. That encoded the
+	 * defect. The probe exists precisely because a lone AD=false reading is untrustworthy, so
+	 * when the second opinion never arrives there is no trustworthy reading to score — the
+	 * category must abstain (checkStatus 'error', excluded and renormalized) rather than keep a
+	 * Core-tier penalty on a possibly correctly-signed zone.
+	 */
+	it('abstains instead of penalizing when the Google AD probe throws', async () => {
 		mockDnssecWithGoogleConfirmation({ primaryAd: false, hasDnskey: true, hasDs: true, googleThrows: true });
 		const { checkDnssec } = await import('../src/tools/check-dnssec');
 		const result = await checkDnssec('example.com');
 
-		// Original result preserved — "DNSSEC validation failing" still present
-		const validationFailing = result.findings.find((f) => f.title === 'DNSSEC validation failing');
-		expect(validationFailing).toBeDefined();
-		expect(validationFailing!.severity).toBe('high');
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.findings.find((f) => f.title === 'DNSSEC validation failing')).toBeUndefined();
+		const notAssessed = result.findings.find((f) => f.title === 'DNSSEC not assessed');
+		expect(notAssessed).toBeDefined();
+		expect(notAssessed!.severity).toBe('info');
+		expect(notAssessed!.metadata?.errorKind).toBe('transport_error');
+	});
+
+	it('abstains instead of penalizing when the Google AD probe returns a non-2xx status', async () => {
+		// Previously uncovered: a 429/5xx took the same silent `return false` path as a real AD=false.
+		mockDnssecWithGoogleConfirmation({ primaryAd: false, hasDnskey: true, hasDs: true, googleStatus: 429 });
+		const { checkDnssec } = await import('../src/tools/check-dnssec');
+		const result = await checkDnssec('example.com');
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.find((f) => f.title === 'DNSSEC validation failing')).toBeUndefined();
+		expect(result.findings.find((f) => f.title === 'DNSSEC not assessed')).toBeDefined();
 	});
 
 	it('does not fire AD confirmation probe when no DNSKEY/DS records exist', async () => {
@@ -296,10 +319,7 @@ describe('checkDnssec — AD flag confirmation probe', () => {
 		// Other Google calls (secondary resolver for DNSKEY/DS empty confirmation) are expected.
 		const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
 		const adProbeCalls = fetchMock.mock.calls.filter(
-			(call: unknown[]) =>
-				typeof call[0] === 'string' &&
-				call[0].startsWith('https://dns.google/resolve') &&
-				call[0].includes('type=A'),
+			(call: unknown[]) => typeof call[0] === 'string' && call[0].startsWith('https://dns.google/resolve') && call[0].includes('type=A'),
 		);
 		expect(adProbeCalls).toHaveLength(0);
 	});
