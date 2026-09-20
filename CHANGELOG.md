@@ -42,6 +42,18 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   empty-MX corroboration now uses the shared `isInconclusiveRcode` rule, so a FORMERR,
   NOTIMP or other non-conclusion on the MX lookup abstains instead of reporting SMTP DANE
   as not applicable. NOERROR and NXDOMAIN behaviour is unchanged.
+- **`check_dmarc`'s docstring claimed a SERVFAIL conversion the Worker path never ran,
+  and a dead branch kept a bv-web-prod-only convention alive after nothing set it.**
+  `src/tools/check-dmarc.ts` said SERVFAIL was converted to a structured result via
+  `buildDnsErrorResult` — untrue since the DMARC tree walk never throws for it; the RCODE
+  seam (previous entry) catches it first via `buildRcodeAbstentionResult`, before this
+  wrapper is reached. The docstring now names the actual mechanism.
+  `packages/dns-checks/src/checks/check-dmarc.ts`'s tree walk also caught a thrown error's
+  `dnsStatus === 3` (NXDOMAIN) — a convention from bv-web-prod's own DoH resolver, which
+  was confirmed (read against its `origin/main`) to never construct that value: NXDOMAIN
+  is a normal, non-throwing return there too, exactly as on the Worker path. Dead on both
+  runtimes; removed rather than documented as a cross-runtime contract. Behavior is
+  unchanged: NXDOMAIN and NODATA already both continued the tree walk.
 
 ## [3.83.0] - 2026-09-19
 
