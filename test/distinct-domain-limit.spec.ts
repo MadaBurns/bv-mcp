@@ -1,4 +1,3 @@
-// @ts-expect-error cloudflare:test exports are injected by the Workers Vitest pool at runtime.
 import { env } from 'cloudflare:test';
 import { beforeEach, describe, it, expect } from 'vitest';
 import { checkDistinctDomainDailyLimit, resetQuotaCoordinatorBreaker } from '../src/lib/rate-limiter';

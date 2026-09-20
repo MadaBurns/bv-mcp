@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-// @ts-expect-error cloudflare:test exports are injected by the Workers Vitest pool at runtime.
 import { createExecutionContext, env, waitOnExecutionContext } from 'cloudflare:test';
 import { describe, expect, it, vi } from 'vitest';
 import worker from '../src';
