@@ -48,8 +48,12 @@ function treeWalkTargets(domain: string): string[] {
 
 /**
  * Walk `_dmarc.<name>` up the hierarchy (RFC 9989 §4.10), stopping at the first
- * name with a v=DMARC1 record. NXDOMAIN (DNS status 3) halts the walk; NODATA
- * continues up. Returns the found name's TXT records + where it was found.
+ * name with a v=DMARC1 record. NXDOMAIN and NODATA both mean "no record published
+ * at this name" and the walk continues up — RFC 9989 draws no distinction between
+ * the two here, and neither throws: NXDOMAIN is a CONCLUSIVE rcode (see
+ * `isConclusiveRcode`) exactly like NOERROR-with-no-answers, so it reaches this
+ * loop as an ordinary empty `records` array, not a thrown error. Returns the
+ * found name's TXT records + where it was found.
  *
  * An INCONCLUSIVE rcode (SERVFAIL, REFUSED, …) at any step aborts the walk with
  * `inconclusive` set instead of walking past it: the step answered nothing, so neither
@@ -57,6 +61,10 @@ function treeWalkTargets(domain: string): string[] {
  * what a thrown lookup has always done — abort the whole check — and is the difference
  * the `string[]` projection used to erase, since a resolver that could not answer and a
  * name with no DMARC record both arrive as an empty array over HTTP 200.
+ *
+ * A lookup that genuinely throws (transport failure — timeout, network error, DoH
+ * HTTP error) is NOT caught here: `queryWithRcode` documents that contract, and the
+ * throw propagates to `checkDMARC`'s caller unchanged.
  */
 async function dmarcTreeWalk(
 	domain: string,
@@ -65,22 +73,14 @@ async function dmarcTreeWalk(
 ): Promise<{ txtRecords: string[]; foundAt: string | null; inconclusive?: { name: string; rcode: number } }> {
 	for (const name of treeWalkTargets(domain)) {
 		const queryName = `_dmarc.${name}`;
-		let outcome: DNSQueryOutcome;
-		try {
-			outcome = await queryWithRcode(queryDNS, queryName, 'TXT', timeout);
-		} catch (error) {
-			if ((error as { dnsStatus?: number })?.dnsStatus === 3) {
-				return { txtRecords: [], foundAt: null };
-			}
-			throw error;
-		}
+		const outcome: DNSQueryOutcome = await queryWithRcode(queryDNS, queryName, 'TXT', timeout);
 		if (isInconclusiveRcode(outcome.rcode)) {
 			return { txtRecords: [], foundAt: null, inconclusive: { name: queryName, rcode: outcome.rcode } };
 		}
 		if (/v=dmarc1/i.test(outcome.records.join(''))) {
 			return { txtRecords: outcome.records, foundAt: name };
 		}
-		// NODATA at this name — continue up the tree.
+		// NXDOMAIN or NODATA at this name — continue up the tree.
 	}
 	return { txtRecords: [], foundAt: null };
 }
