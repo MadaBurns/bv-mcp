@@ -23,11 +23,23 @@ const AD_CONFIRM_TIMEOUT_MS = 3000;
 const DOH_MAX_BODY_BYTES = 512 * 1024;
 
 /**
- * Confirm the AD (Authenticated Data) flag via Google DoH.
- * Sends a single A-record query with CD=0 and returns whether AD is set.
- * Returns false on any error — callers should treat failure as "not confirmed".
+ * Outcome of the second-opinion AD probe.
+ *
+ * ⚠️ These are THREE states, not two. `contradicted` means Google answered and said AD=false;
+ * `unavailable` means Google never answered, so we learned nothing. Collapsing them (as this
+ * helper did until #1065) makes an unreachable probe indistinguishable from a real negative,
+ * and the caller then scores a Core-tier DNSSEC penalty nobody measured.
  */
-async function confirmAdWithGoogle(domain: string, timeoutMs = AD_CONFIRM_TIMEOUT_MS): Promise<boolean> {
+type AdConfirmation = 'confirmed' | 'contradicted' | 'unavailable';
+
+/**
+ * Confirm the AD (Authenticated Data) flag via Google DoH.
+ * Sends a single A-record query with CD=0.
+ *
+ * Returns `unavailable` — never `contradicted` — on transport failure, a non-2xx response, or a
+ * body that exceeds the cap: "we could not ask" is not "the answer was no".
+ */
+async function confirmAdWithGoogle(domain: string, timeoutMs = AD_CONFIRM_TIMEOUT_MS): Promise<AdConfirmation> {
 	try {
 		const url = `${GOOGLE_DOH_ENDPOINT}?name=${encodeURIComponent(domain)}&type=A&cd=0`;
 		const resp = await fetch(url, {
@@ -38,12 +50,14 @@ async function confirmAdWithGoogle(domain: string, timeoutMs = AD_CONFIRM_TIMEOU
 		});
 		if (!resp.ok) {
 			void resp.body?.cancel().catch(() => undefined);
-			return false;
+			return 'unavailable';
 		}
 		const data = await readJsonResponseCapped<{ AD?: boolean }>(resp, DOH_MAX_BODY_BYTES);
-		return data?.AD === true;
+		// A capped/unparseable body yields undefined — that is a non-answer, not a negative.
+		if (data === undefined || data === null) return 'unavailable';
+		return data.AD === true ? 'confirmed' : 'contradicted';
 	} catch {
-		return false;
+		return 'unavailable';
 	}
 }
 
@@ -132,8 +146,34 @@ export async function checkDnssec(domain: string, dnsOptions?: QueryDnsOptions, 
 		// The AD flag flaps across Cloudflare edge nodes — Google provides a stable second opinion.
 		const validationFailing = baseResult.findings.some((f) => f.title === 'DNSSEC validation failing');
 		if (validationFailing) {
-			const googleConfirmsAd = await confirmAdWithGoogle(dnssecTarget, dnsOptions?.timeoutMs ?? AD_CONFIRM_TIMEOUT_MS);
-			if (googleConfirmsAd) {
+			const adConfirmation = await confirmAdWithGoogle(dnssecTarget, dnsOptions?.timeoutMs ?? AD_CONFIRM_TIMEOUT_MS);
+
+			// #1065: the whole reason this probe exists is that the primary resolver's AD flag flaps,
+			// so a lone AD=false is NOT trustworthy enough to score on its own. When the second opinion
+			// is unavailable we therefore have no trustworthy reading at all — abstain rather than keep
+			// a Core-tier penalty. Same retryable, non-cacheable shape the package uses for a transient
+			// DNS failure (buildNotAssessedResult, #900): score 0 + partial + checkStatus 'error' keeps
+			// the category OUT of the score (renormalized), it does not zero it.
+			if (adConfirmation === 'unavailable') {
+				return {
+					category: 'dnssec',
+					findings: [
+						createFinding(
+							'dnssec',
+							'DNSSEC not assessed',
+							'info',
+							`The primary resolver reported DNSSEC validation failing for ${dnssecTarget}, but the independent confirmation lookup did not answer. The AD flag is known to flap between resolvers, so this single unconfirmed reading is not sufficient to report a DNSSEC defect; this control was not assessed.`,
+							{ errorKind: 'transport_error' },
+						),
+					],
+					score: 0,
+					passed: false,
+					partial: true,
+					checkStatus: 'error' as const,
+				};
+			}
+
+			if (adConfirmation === 'confirmed') {
 				// Google says AD=true — re-run with corrected flag to get the right findings
 				const correctedResult = (await checkDNSSEC(domain, makeQueryDNS(dnsOptions), {
 					timeout: dnsOptions?.timeoutMs ?? 5000,
