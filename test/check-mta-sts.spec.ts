@@ -373,8 +373,9 @@ describe('checkMtaSts — absence is graded, not category-zeroing (scoring model
 
 	it('DEPLOYED-BUT-BROKEN policy still penalises confidently — absence relief must not leak to it', async () => {
 		// Record published, policy file missing its `version:` and `mode:` → the package's
-		// confident `high` findings. Those never carried `missingControl`, so 1.6.0 leaves them
-		// untouched and they must still drive the category below a passing score.
+		// confident `high` findings. Under 1.6.0 those never carried `missingControl` and zeroed
+		// on prose alone; SQ-74 migrated them to an explicit `missingControl: true` (same outcome,
+		// prose-independent) — they must still drive the category below a passing score.
 		mockMultiFetch({
 			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
 			policyFetch: policyResponse('max_age: 604800'),

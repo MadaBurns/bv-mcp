@@ -97,7 +97,9 @@ describe('subject data interpolated into finding prose', () => {
 			const finding = result.findings.find((f) => f.title === 'No SPF record found');
 			expect(finding).toBeDefined();
 			expect(finding?.severity).toBe('critical');
-			expect(finding?.metadata?.missingControl).toBeUndefined(); // zeroes by PROSE, no explicit flag
+			// SQ-74: migrated from prose-only to an explicit declaration — the regex leg below
+			// still matches this finding's (unchanged) prose too, so both legs agree.
+			expect(finding?.metadata?.missingControl).toBe(true);
 			expect(scoreIndicatesMissingControl(result.findings)).toBe(true);
 			expect(result.score).toBe(0);
 			expect(result.passed).toBe(false);

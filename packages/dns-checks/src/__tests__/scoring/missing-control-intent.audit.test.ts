@@ -120,15 +120,12 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 		file: 'checks/check-spf.ts',
 		title: 'No SPF record found',
 		category: 'spf',
-		mechanism: 'prose',
+		mechanism: 'declared',
 		reason:
 			'Genuinely absent control: zero TXT records begin with the v=spf1 version token, so no receiver ' +
 			'can evaluate SPF at all. Emitted at `critical` on the early-return path immediately before ' +
 			"buildCheckResult('spf', findings). The parity corpus pins this outcome as 'no record (missingControl)'. " +
-			'STILL PROSE-DRIVEN: the site declares nothing, so its zeroing rests on the words "No SPF record ' +
-			'found". Migrating it to `{ missingControl: true }` is a one-line change in a file outside this ' +
-			"ticket's scope (SQ-68); until then assertion B is the only thing standing between a reword and a " +
-			'silent scoring change.',
+			'SQ-74: carries an explicit `{ missingControl: true }` — a reword can no longer silently un-zero this.',
 	},
 	{
 		file: 'checks/ns-analysis.ts',
@@ -218,36 +215,36 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 	// belongs in that review, not in a reword: the counter-argument (a partial deployment
 	// should still beat publishing nothing, which scores 85) is real but unadjudicated.
 	//
-	// ⚠️ These zero on AUTHORED prose, so `redactSubjectData` cannot reach them — unlike the
-	// interpolated-subject-data sites, no domain name is involved. Rewording any of these
-	// titles or details to drop "missing"/"required" would SILENTLY un-zero the category;
-	// assertion B below is what catches that.
+	// SQ-74: these now carry an explicit `{ missingControl: true }` — a reword of any of these
+	// titles or details can no longer silently un-zero the category. (Previously they zeroed on
+	// AUTHORED prose alone; `redactSubjectData` was never relevant here since no domain name is
+	// involved.)
 	{
 		file: 'checks/mta-sts-analysis.ts',
 		title: 'MTA-STS policy missing or invalid version',
 		category: 'mta_sts',
-		mechanism: 'prose',
+		mechanism: 'declared',
 		reason: 'RFC 8461 requires `version: STSv1`; without it a conforming sender refuses the policy, so MTA-STS does not function.',
 	},
 	{
 		file: 'checks/mta-sts-analysis.ts',
 		title: 'MTA-STS policy missing mode',
 		category: 'mta_sts',
-		mechanism: 'prose',
+		mechanism: 'declared',
 		reason: 'No `mode:` directive means the policy is inert — nothing is enforced or even tested, despite a file being served.',
 	},
 	{
 		file: 'checks/mta-sts-analysis.ts',
 		title: 'MTA-STS policy missing MX entries',
 		category: 'mta_sts',
-		mechanism: 'prose',
+		mechanism: 'declared',
 		reason: 'A policy with no `mx:` pattern covers no host, so no inbound mail path is protected by it.',
 	},
 	{
 		file: 'checks/mta-sts-analysis.ts',
 		title: 'MTA-STS policy missing max_age',
 		category: 'mta_sts',
-		mechanism: 'prose',
+		mechanism: 'declared',
 		reason: 'RFC 8461 requires `max_age`; a policy without one cannot be cached or applied, so senders fall back to opportunistic TLS.',
 	},
 ];
