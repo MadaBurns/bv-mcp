@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.84.0] - 2026-09-20
+
 ### Added
 
 - **The DoH response code (RCODE) is now available to callers of the DNS record
