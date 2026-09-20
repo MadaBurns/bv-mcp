@@ -61,7 +61,7 @@ Two transferable lessons:
 
 ## Current publish reality (verify, don't assume)
 
-- **`publish.yml` carries NO publish jobs (removed 2026-08-23).** History for context: the jobs sat behind `if: false` for ~46 minor versions (skipped = GREEN, npm rotted at `blackveil-dns` 2.13.0 / `@blackveil/dns-checks` 1.3.12); #719 re-enabled them fail-loud, but they then never once succeeded — 3.60–3.62 failed, 3.63/3.64 parked on the `production` environment reviewer. The jobs were deleted rather than re-armed (tombstone comment in the workflow explains; re-arming requires a second reviewer so approval isn't a self-deadlock). npm publish remains gated off deliberately (#719 posture: no live `NPM_TOKEN`).
+- **`publish.yml` carries NO publish jobs (removed 2026-08-23).** History for context: the jobs sat behind `if: false` for ~46 minor versions (skipped = GREEN, npm rotted at `blackveil-dns` 2.13.0 / `@blackveil/dns-checks` 1.3.12); #719 re-enabled them fail-loud, but they then never once succeeded — 3.60–3.62 failed, 3.63/3.64 parked on the `production` environment reviewer. The jobs were deleted rather than re-armed (tombstone comment in the workflow explains). npm publish remains gated off deliberately (#719). **Two claims previously recorded here were MEASURED FALSE on 2026-09-20 - do not restate them:** (a) there is NO self-deadlock - the `production` environment has `prevent_self_review: false` with a sole required reviewer, so the maintainer CAN approve his own deployment and a gated job waits for one click; (b) `NPM_TOKEN` IS set in that environment (created 2026-05-07, never rotated) - the real blocker is that **no workflow, script or package.json consumes it**, so setting or rotating it changes nothing observable. That token last failed `npm whoami` with E401 on the v3.62.0 publish run.
 - **MCP Registry is published manually** via `mcp-publisher publish` with `MCP_PUBLISHER_KEY` (in `.dev.vars`) + DNS-TXT auth for `com.blackveilsecurity/*` — this IS the authoritative path, not a fallback. The server entry is **remotes-only**.
 - Verify what's live: query the registry with `?version=latest` (CDN-cached — cache-bust, and check `?version=X.Y.Z` before trusting `latest`). `registry-drift-check.yml` compares live prod vs registry every 12h and opens a `registry-drift` issue on drift.
 
@@ -89,7 +89,8 @@ Publish steps (key never echoed): `mcp-publisher validate` → `login dns --doma
 
 ```bash
 npm -w packages/dns-checks run build && npm run build
-npm publish --access public      # only if npm is intended + token present
+npm publish --access public                      # root pkg (blackveil-dns) - only if npm is intended + token present
+npm publish -w packages/dns-checks --access public  # REQUIRED TOO: the root publish does NOT ship the workspace package
 npm run deploy:prod              # injects private bindings, deploys the MCP Worker ONLY
 npm run deploy:whois             # sidecar: bv-whois (packages/bv-whois/wrangler.jsonc)
 npm run deploy:infra-probe       # sidecar: bv-infra-probe (wrangler.infra-probe.jsonc)

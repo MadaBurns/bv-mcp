@@ -161,15 +161,26 @@ jobs:
   # here for the record: publish-npm at the old L151, publish-registry at L319).
   # Neither ever published successfully — 3.60.0-3.62.0 runs FAILED and
   # 3.63.0/3.64.0 runs PARKED on the `environment: production` reviewer (a
-  # solo-maintainer repo cannot approve its own environment gate), holding the
+  # required reviewer had not approved), holding the
   # concurrency group each time. The AUTHORITATIVE publish path is the manual
   # one: from a worktree pinned to the release tag, `npm run publish:registry`
   # (gate: check:release-integrity:publish — refuses a dirty/untagged tree,
   # with NO override for publish). Drift is monitored by
   # registry-drift-check.yml every 12h, which opens/escalates an issue if the
   # registry falls behind live prod. npm publishing stays gated off (#719).
+  #
+  # MEASURED 2026-09-20, correcting two claims previously recorded here and in
+  # the bv-mcp-release skill:
+  #   1. The production environment has prevent_self_review: false with
+  #      MadaBurns as sole required reviewer, so a solo maintainer CAN approve
+  #      its own deployment. There is no self-deadlock; a gated job waits for
+  #      one click.
+  #   2. NPM_TOKEN IS set in the production environment (created 2026-05-07,
+  #      never rotated). The blocker is not a missing secret: no workflow,
+  #      script or package.json consumes it. That token last failed
+  #      `npm whoami` with E401 on the v3.62.0 publish run.
   # If a CI publish path is ever re-armed, re-add the job WITH the
-  # environment gate only once a second reviewer exists — see the
+  # environment gate — it is satisfiable today, see the
   # bv-mcp-release skill.
   github-release:
     name: Create GitHub Release
