@@ -2,7 +2,7 @@
 
 import type { DNSQueryFunction } from '@blackveil/dns-checks';
 import { DNS_TIMEOUT_MS } from './config';
-import { queryDnsRecords, queryTxtRecords } from './dns';
+import { queryDnsRecords, queryDnsRecordsWithRcode, queryTxtRecords, queryTxtRecordsWithRcode } from './dns';
 import type { QueryDnsOptions } from './dns-types';
 
 /**
@@ -47,7 +47,7 @@ import type { QueryDnsOptions } from './dns-types';
 export function makeQueryDNS(dnsOptions?: QueryDnsOptions): DNSQueryFunction {
 	const workerTimeoutMs = dnsOptions?.timeoutMs ?? DNS_TIMEOUT_MS;
 
-	return async (domain: string, type: string, options?: { timeout?: number }): Promise<string[]> => {
+	const resolveOptions = (options?: { timeout?: number }): QueryDnsOptions | undefined => {
 		const requested = options?.timeout;
 		// Clamp DOWN only. A non-positive/non-finite request is treated as absent.
 		const effective =
@@ -57,11 +57,31 @@ export function makeQueryDNS(dnsOptions?: QueryDnsOptions): DNSQueryFunction {
 		// actually lowers the timeout — the no-options path (every current caller of
 		// the underlying check helpers) must stay byte-for-byte identical, including
 		// the `queryCache` / `dnsSemaphore` / `signal` identities carried on it.
-		const opts = effective === workerTimeoutMs ? dnsOptions : { ...dnsOptions, timeoutMs: effective };
+		return effective === workerTimeoutMs ? dnsOptions : { ...dnsOptions, timeoutMs: effective };
+	};
+
+	const queryDNS: DNSQueryFunction = async (domain: string, type: string, options?: { timeout?: number }): Promise<string[]> => {
+		const opts = resolveOptions(options);
 
 		if (type === 'TXT') {
 			return queryTxtRecords(domain, opts);
 		}
 		return queryDnsRecords(domain, type as Parameters<typeof queryDnsRecords>[1], opts);
 	};
+
+	// The rcode channel (issue #639 / #638). `queryTxtRecords` and `queryDnsRecords` are
+	// already thin projections over these very functions — `records` is byte-identical and
+	// the query, cache entry and subrequest are the SAME one — so a check that opts in
+	// through `queryWithRcode` costs nothing extra and simply stops being told an empty
+	// SERVFAIL answer is an empty NOERROR answer.
+	queryDNS.withRcode = async (domain: string, type: string, options?: { timeout?: number }) => {
+		const opts = resolveOptions(options);
+
+		if (type === 'TXT') {
+			return queryTxtRecordsWithRcode(domain, opts);
+		}
+		return queryDnsRecordsWithRcode(domain, type as Parameters<typeof queryDnsRecords>[1], opts);
+	};
+
+	return queryDNS;
 }

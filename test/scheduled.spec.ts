@@ -320,6 +320,174 @@ describe('handleScheduled', () => {
 	});
 });
 
+describe('checkAccessRollupProvisioned (via handleScheduled)', () => {
+	let originalFetch: typeof globalThis.fetch;
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
+
+	/** Records every `.bind()` call so a test can assert on the exact args a query received. */
+	interface FakeD1Options {
+		/** `SELECT 1 FROM mcp_access_rollup LIMIT 1` resolves (no throw) — table exists. `first()` returns null (0 rows), matching an empty-but-provisioned table. */
+		rollupTableExists?: boolean;
+		/** Message thrown by the rollup probe when the table is absent — override to simulate a DIFFERENT (non "no such table") D1 error. */
+		rollupErrorMessage?: string;
+		/** Row returned by the `mcp_access_log` correlation query. */
+		accessLogRow?: { cnt: number } | null;
+		/** Make the correlation query itself throw (best-effort context failure). */
+		accessLogThrows?: boolean;
+	}
+
+	function makeFakeIntelligenceDb(opts: FakeD1Options) {
+		const bindCalls: Array<{ sql: string; args: unknown[] }> = [];
+		const db = {
+			prepare(sql: string) {
+				const stmt = {
+					bind(...args: unknown[]) {
+						bindCalls.push({ sql, args });
+						return stmt;
+					},
+					async first<T = unknown>(): Promise<T | null> {
+						if (sql.includes('FROM mcp_access_rollup')) {
+							if (opts.rollupTableExists) return null; // provisioned, empty result set
+							throw new Error(opts.rollupErrorMessage ?? 'D1_ERROR: no such table: mcp_access_rollup: SQLITE_ERROR');
+						}
+						if (sql.includes('FROM mcp_access_log')) {
+							if (opts.accessLogThrows) throw new Error('D1_ERROR: transient failure querying mcp_access_log');
+							return (opts.accessLogRow ?? null) as T;
+						}
+						return null;
+					},
+					async run() {
+						// Only the retention DELETE hits this in these tests — no-op success.
+						return { success: true } as unknown as D1Result;
+					},
+				};
+				return stmt;
+			},
+		};
+		return { db: db as unknown as D1Database, bindCalls };
+	}
+
+	function mockFetchCapturing(): Array<{ url: string; body: string }> {
+		const fetchCalls: Array<{ url: string; body: string }> = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			fetchCalls.push({ url, body: init?.body as string });
+			return new Response('ok');
+		}) as typeof fetch;
+		return fetchCalls;
+	}
+
+	it('fires an alert on the missing-table error ("no such table")', async () => {
+		const { db } = makeFakeIntelligenceDb({ rollupTableExists: false, accessLogRow: { cnt: 42 } });
+		const fetchCalls = mockFetchCapturing();
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			INTELLIGENCE_DB: db,
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		} as unknown as ScheduledEnv);
+
+		const webhookCall = fetchCalls.find((c) => c.url.includes('hooks.slack.com'));
+		expect(webhookCall).toBeDefined();
+		expect(webhookCall!.body).toContain('mcp_access_rollup table missing');
+		expect(webhookCall!.body).toContain('uncounted_internal_requests_24h: 42');
+	});
+
+	it('does NOT alert when mcp_access_rollup is provisioned (table present, even if empty)', async () => {
+		const { db } = makeFakeIntelligenceDb({ rollupTableExists: true });
+		const fetchCalls = mockFetchCapturing();
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			INTELLIGENCE_DB: db,
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		} as unknown as ScheduledEnv);
+
+		expect(fetchCalls.filter((c) => c.url.includes('hooks.slack.com'))).toHaveLength(0);
+	});
+
+	it('does NOT alert on an unrelated D1 error (not "no such table") — a different, already-covered failure mode', async () => {
+		const { db } = makeFakeIntelligenceDb({ rollupTableExists: false, rollupErrorMessage: 'D1_ERROR: database is locked' });
+		const fetchCalls = mockFetchCapturing();
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			INTELLIGENCE_DB: db,
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		} as unknown as ScheduledEnv);
+
+		expect(fetchCalls.filter((c) => c.url.includes('hooks.slack.com'))).toHaveLength(0);
+	});
+
+	it('computes the mcp_access_log cutoff in epoch SECONDS, matching created_at\'s convention (the docstring unit trap)', async () => {
+		const FIXED_NOW_MS = 1_800_000_000_000; // 2027-01-15T06:40:00.000Z — arbitrary fixed instant
+		vi.spyOn(Date, 'now').mockReturnValue(FIXED_NOW_MS);
+		const { db, bindCalls } = makeFakeIntelligenceDb({ rollupTableExists: false, accessLogRow: { cnt: 7 } });
+		mockFetchCapturing();
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			INTELLIGENCE_DB: db,
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		} as unknown as ScheduledEnv);
+
+		// NOTE: the unrelated retention-prune lane (`DELETE FROM mcp_access_log ...`,
+		// a DIFFERENT 90-day-default cutoff) also binds against `mcp_access_log` in
+		// the same tick — match the correlation SELECT specifically, not just the table name.
+		const accessLogCall = bindCalls.find((c) => c.sql.includes('SELECT COUNT(*)') && c.sql.includes('mcp_access_log'));
+		expect(accessLogCall).toBeDefined();
+		const cutoff = accessLogCall!.args[0] as number;
+
+		// The exact conversion the docstring warns about: seconds, not the epoch-ms
+		// Date.now() itself uses. `brand_audits.created_at` is milliseconds; a cutoff
+		// computed on that convention here would be ~1000x this value and land in the
+		// far future relative to mcp_access_log's SECONDS created_at column.
+		const expectedCutoffSeconds = Math.floor(FIXED_NOW_MS / 1000) - 24 * 3600;
+		expect(cutoff).toBe(expectedCutoffSeconds);
+		expect(cutoff).toBeLessThan(FIXED_NOW_MS / 1000);
+		expect(String(Math.trunc(cutoff)).length).toBeLessThanOrEqual(10); // epoch-SECONDS magnitude, not epoch-ms (13 digits)
+	});
+
+	it('reports an explicit 0 (not "unknown") when mcp_access_log has zero matching rows', async () => {
+		const { db } = makeFakeIntelligenceDb({ rollupTableExists: false, accessLogRow: { cnt: 0 } });
+		const fetchCalls = mockFetchCapturing();
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			INTELLIGENCE_DB: db,
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		} as unknown as ScheduledEnv);
+
+		const webhookCall = fetchCalls.find((c) => c.url.includes('hooks.slack.com'));
+		expect(webhookCall).toBeDefined();
+		expect(webhookCall!.body).toContain('uncounted_internal_requests_24h: 0');
+		expect(webhookCall!.body).not.toContain('unknown (mcp_access_log query also failed)');
+	});
+
+	it('reports "unknown" (never a false 0) when the correlation query itself fails', async () => {
+		const { db } = makeFakeIntelligenceDb({ rollupTableExists: false, accessLogThrows: true });
+		const fetchCalls = mockFetchCapturing();
+
+		const { handleScheduled } = await import('../src/scheduled');
+		await handleScheduled({
+			INTELLIGENCE_DB: db,
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		} as unknown as ScheduledEnv);
+
+		const webhookCall = fetchCalls.find((c) => c.url.includes('hooks.slack.com'));
+		expect(webhookCall).toBeDefined();
+		expect(webhookCall!.body).toContain('uncounted_internal_requests_24h: unknown (mcp_access_log query also failed)');
+	});
+});
+
 describe('scheduled.ts alert webhook resolution', () => {
 	afterEach(() => {
 		vi.restoreAllMocks();

@@ -510,6 +510,69 @@ function parseMetadata(source: string | null): Record<string, unknown> | undefin
 	return Object.keys(meta).length > 0 ? meta : undefined;
 }
 
+/**
+ * `parseMetadata`'s leaf regex requires an IDENTIFIER key (`key: value`) — a computed key
+ * (`[SUBJECT_TERMS_METADATA_KEY]: [result.selector]`) starts with `[`, never matches, and is
+ * silently absent from the reconstructed object with no signal that anything was dropped
+ * (SQ-97). `check-dkim.ts` declares exactly this shape on 4 high/critical findings to redact a
+ * caller-controlled DKIM selector before the missing-control regex sees it; `dane-analysis.ts`
+ * declares it on a 5th to redact a zone-owner-controlled TLSA token. A parser that cannot see a
+ * declared defense cannot notice one being deleted — the defense and its test would both go
+ * silently dark together.
+ *
+ * This recognizes exactly that one computed-key shape (an array literal or a bare array
+ * identifier as the value) and returns the raw hole EXPRESSION TEXT(s) it declares as subject
+ * data — not resolved values, which only the running check knows. A boolean-valued computed key
+ * (`{ [flag]: true }`) is skipped rather than routed through the fail-loud path below: it cannot
+ * be this shape (SUBJECT_TERMS_METADATA_KEY's value is always an array or an array-referencing
+ * identifier) and cannot arm or disarm the missing-control gate either, so there is nothing for
+ * this audit to silently lose by ignoring it. Any OTHER (non-boolean) computed key is a metadata
+ * shape this audit does not understand, so it FAILS LOUD instead of silently dropping it, per the
+ * ticket's explicit fallback: failing loud is acceptable, silently skipping is not.
+ */
+const COMPUTED_METADATA_KEY = /\[\s*([A-Za-z_$][\w$]*)\s*\]\s*:\s*(\[[^\]]*\]|[A-Za-z_$][\w$.]*)/g;
+
+function parseSubjectTermDeclarations(source: string | null): readonly string[] {
+	if (!source) return [];
+	const declared: string[] = [];
+	for (const m of source.matchAll(COMPUTED_METADATA_KEY)) {
+		// A boolean-valued computed key (`{ [flag]: true }`, seen in the root worker tree's
+		// error-result builders — SQ-100) can never be the SUBJECT_TERMS_METADATA_KEY shape: that
+		// shape's value is always an array literal or an identifier referencing one. It also cannot
+		// arm or disarm the missing-control gate itself — the key is a status marker, not prose or a
+		// redaction declaration — so it is not "metadata this audit cannot parse" in the sense the
+		// fail-loud guard exists for. Skipping it here (rather than routing it through the throw
+		// below) keeps that guard aimed at the one shape it is actually protecting.
+		const rawValue = m[2].trim();
+		if (rawValue === 'true' || rawValue === 'false') continue;
+		if (m[1] !== 'SUBJECT_TERMS_METADATA_KEY') {
+			throw new Error(
+				`missing-control-intent audit: unrecognised computed metadata key "[${m[1]}]" in "${source.trim()}". ` +
+					'parseMetadata only understands the [SUBJECT_TERMS_METADATA_KEY] shape; any other computed key ' +
+					'would otherwise be silently dropped from every assertion in this file — the exact SQ-97 defect. ' +
+					'Teach parseSubjectTermDeclarations the new shape (or confirm it cannot arm the missing-control ' +
+					'gate and list it as reviewed) before this passes.',
+			);
+		}
+		const inner = rawValue.startsWith('[') ? rawValue.slice(1, -1) : rawValue;
+		for (const part of inner.split(',')) {
+			const trimmed = part.trim();
+			if (trimmed) declared.push(trimmed);
+		}
+	}
+	return declared;
+}
+
+/**
+ * True when interpolation hole `hole` carries the same runtime value the metadata declares as
+ * subject data — either the exact same expression (`result.selector` metadata / `result.selector`
+ * hole) or a value DERIVED from it (`pinned` metadata / `pinned.join('; ')` hole, dane-analysis's
+ * shape). Both are real shapes in this package; a bare identity check would miss the second.
+ */
+function holeMatchesDeclaration(hole: string, declaration: string): boolean {
+	return hole === declaration || hole.startsWith(`${declaration}.`);
+}
+
 const SITES: readonly Site[] = (() => {
 	const found: Site[] = [];
 	for (const [globKey, source] of Object.entries(PACKAGE_SOURCES)) {
@@ -541,6 +604,16 @@ const SITES: readonly Site[] = (() => {
 	}
 	return found;
 })();
+
+/**
+ * `[SUBJECT_TERMS_METADATA_KEY]`-style declarations recognized EAGERLY, over every discovered
+ * site, at module load — so an unmodeled computed key anywhere in the package fails the whole
+ * file immediately, not only when the particular site happens to be probed by `armedBy` below.
+ * This is the fail-loud half of the fix: `parseSubjectTermDeclarations` throws on any computed
+ * key it does not recognize, and mapping it over `SITES` up front forces that check for real,
+ * rather than leaving it to fire lazily (or never) depending on which sites later get probed.
+ */
+SITES.forEach((s) => parseSubjectTermDeclarations(s.metadataSource));
 
 // ---------------------------------------------------------------------------
 // 3. CLASSIFICATION — through the REAL exported gate, never a copied regex
@@ -867,8 +940,16 @@ const STANDALONE_HOSTILE_VALUES = ['missing', 'required', 'not found'];
 function armedBy(site: Site, hostileValues: readonly string[]): string[] {
 	const armed: string[] = [];
 	const holes = [...site.title.holes, ...site.detail.holes];
+	const declarations = parseSubjectTermDeclarations(site.metadataSource);
+	const baseMetadata = parseMetadata(site.metadataSource);
 	for (let index = 0; index < holes.length; index++) {
 		if (isInertHole(holes[index])) continue;
+		// A hole this site declares via `[SUBJECT_TERMS_METADATA_KEY]` is the SAME runtime value
+		// as the hostile fill below — in the real check the array literal interpolates that exact
+		// hole expression. Modeling that here is what makes this detector see the check-dkim.ts /
+		// dane-analysis.ts redaction at all; without it every declared site looked identical to an
+		// undeclared one (SQ-97).
+		const isDeclaredSubjectData = declarations.some((d) => holeMatchesDeclaration(holes[index], d));
 		for (const value of hostileValues) {
 			// Title and detail hole indices are numbered independently by `render`, so probe each.
 			const fillTitle = (_e: string, i: number) => (i === index ? value : INERT_FILL);
@@ -877,6 +958,7 @@ function armedBy(site: Site, hostileValues: readonly string[]): string[] {
 				...toFinding(site),
 				title: render(site.title, fillTitle),
 				detail: render(site.detail, fillDetail),
+				...(isDeclaredSubjectData ? { metadata: { ...baseMetadata, subjectTerms: [value] } } : {}),
 			};
 			if (findingsIndicateMissingControl([probe])) {
 				armed.push(`${holes[index]} <- "${value}"`);
@@ -934,6 +1016,106 @@ describe('missing-control intent — interpolated values must not arm the gate',
 			);
 		}
 		expect(exposed.length, 'detector went silent — it should still see this population').toBeGreaterThan(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// SQ-97. Computed-key `[SUBJECT_TERMS_METADATA_KEY]` declarations must be visible to this
+// audit, not silently dropped by `parseMetadata`'s identifier-only regex.
+// ---------------------------------------------------------------------------
+
+describe('missing-control intent — computed subjectTerms declarations are not invisible', () => {
+	it('recognizes the real repo sites that declare [SUBJECT_TERMS_METADATA_KEY]', () => {
+		// Non-vacuity: if this list is empty, every assertion below passes for the wrong reason.
+		// Keyed on the declaring FILE, deliberately not on `site.line`: the census this pins is
+		// "which files declare the shape, and how many sites in each". Line numbers shift whenever
+		// anything above a site is edited (SQ-95's rcode imports moved all four check-dkim.ts sites
+		// down by 8), which would fail this audit for a reason it does not actually care about.
+		const declaring = SITES.filter((s) => parseSubjectTermDeclarations(s.metadataSource).length > 0);
+		expect(
+			declaring.map((s) => s.file).sort(),
+			'expected exactly the 4 check-dkim.ts sites ("Malformed DKIM key", the weak/legacy RSA key finding, ' +
+				'"Deprecated hash algorithm (h=sha1)", "No DKIM records found") + 1 dane-analysis.ts site (the TLSA ' +
+				'pin mismatch) known to declare this shape; a different count means either a declaration was ' +
+				'silently lost again or a new one was added — either way this list (and the report in SQ-97) needs ' +
+				'updating',
+		).toEqual(
+			[
+				'checks/check-dkim.ts',
+				'checks/check-dkim.ts',
+				'checks/check-dkim.ts',
+				'checks/check-dkim.ts',
+				'checks/dane-analysis.ts',
+			].sort(),
+		);
+	});
+
+	it('the real "Malformed DKIM key" / SHA-1-only / DANE-pin-mismatch sites are not armed, on their DECLARED hole, by a standalone trigger word', () => {
+		// Before this fix these sites were structurally invisible to armedBy — their declared
+		// subjectTerms never reached the reconstructed finding, so a hostile selector/pinned-record
+		// value would have shown up as "exposed" (or worse: removing the declaration entirely would
+		// have changed nothing this file could see). This is now a hard assertion on the SPECIFIC
+		// declared hole, not the whole-site sweep above: dane-analysis's OTHER interpolated holes
+		// (`name`, `cert.host`, …) are undeclared and share the file's pre-existing, deliberately
+		// non-failing exposure to a value that IS the trigger word verbatim — a different, wider gap
+		// this ticket does not touch. (The weak/legacy-RSA-key finding at check-dkim.ts:261 also
+		// declares this shape but its `severity` and `detail` are runtime variables, not source
+		// literals, so it is UNCLASSIFIABLE and outside what this file can probe at all — captured
+		// as a known blind spot, not silently ignored.)
+		const targets: ReadonlyArray<{ site: Site | undefined; declaredHole: string }> = [
+			{
+				site: CLASSIFIABLE.find((s) => s.file === 'checks/check-dkim.ts' && neutralText(s.title) === 'Malformed DKIM key: •'),
+				declaredHole: 'result.selector',
+			},
+			{
+				site: CLASSIFIABLE.find(
+					(s) => s.file === 'checks/check-dkim.ts' && neutralText(s.title) === 'Deprecated hash algorithm (h=sha1): •',
+				),
+				declaredHole: 'result.selector',
+			},
+			{
+				site: CLASSIFIABLE.find(
+					(s) => s.file === 'checks/dane-analysis.ts' && neutralText(s.title) === 'DANE TLSA pin does not match the served certificate for •',
+				),
+				declaredHole: "pinned.join('; ')",
+			},
+		];
+		for (const { site, declaredHole } of targets) {
+			expect(site, 'anchor site not recovered — the parser or the source moved').toBeDefined();
+			const armedOnDeclaredHole = armedBy(site!, STANDALONE_HOSTILE_VALUES).filter((entry) => entry.startsWith(`${declaredHole} <- `));
+			expect(
+				armedOnDeclaredHole,
+				`${label(site!)}'s declared [SUBJECT_TERMS_METADATA_KEY] hole "${declaredHole}" is armed by a standalone ` +
+					'trigger word — its redaction is not being modeled (or was actually removed from source).',
+			).toEqual([]);
+		}
+	});
+
+	it('DISCRIMINATES: the same planted hole is armed WITHOUT the declaration and clean WITH it', () => {
+		// Positive control (this file's own doctrine: an audit never seen to fail is not evidence).
+		const undeclared: Site = {
+			file: 'checks/__planted__.ts',
+			line: 1,
+			category: fixed('dkim'),
+			title: interpolated(['Weak RSA key: '], ['selector']),
+			severity: fixed('high'),
+			detail: fixed('placeholder'),
+			metadataSource: null,
+		};
+		// `armedBy` tries STANDALONE_HOSTILE_VALUES in order and stops at the first that arms —
+		// 'missing' is first, so an undeclared hole is caught by it before 'required' is even tried.
+		expect(armedBy(undeclared, STANDALONE_HOSTILE_VALUES), 'an undeclared hole must still be armable — otherwise this proves nothing').toEqual([
+			'selector <- "missing"',
+		]);
+
+		const declared: Site = { ...undeclared, metadataSource: '{ [SUBJECT_TERMS_METADATA_KEY]: [selector] }' };
+		expect(armedBy(declared, STANDALONE_HOSTILE_VALUES), 'the declaration must disarm the identical hole against every hostile value').toEqual(
+			[],
+		);
+	});
+
+	it('FAILS LOUD on a computed metadata key this parser does not recognize', () => {
+		expect(() => parseSubjectTermDeclarations('{ [SOME_OTHER_COMPUTED_KEY]: [value] }')).toThrow(/unrecognised computed metadata key/);
 	});
 });
 
