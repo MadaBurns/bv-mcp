@@ -340,6 +340,7 @@ describe('provider-informed DKIM', () => {
 		const findings = [
 			createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM records found', {
 				confidence: 'heuristic',
+				detectionMethod: 'selector-probing',
 				selectorsChecked: ['default', 'google'],
 			}),
 		];
@@ -361,6 +362,7 @@ describe('provider-informed DKIM', () => {
 		const findings = [
 			createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM records found', {
 				confidence: 'heuristic',
+				detectionMethod: 'selector-probing',
 				selectorsChecked: ['default', 'google'],
 			}),
 		];
@@ -377,6 +379,7 @@ describe('provider-informed DKIM', () => {
 		const findings = [
 			createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM records found', {
 				confidence: 'heuristic',
+				detectionMethod: 'selector-probing',
 				selectorsChecked: ['default'],
 			}),
 		];
@@ -395,6 +398,7 @@ describe('provider-informed DKIM', () => {
 		const findings = [
 			createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM records found', {
 				confidence: 'heuristic',
+				detectionMethod: 'selector-probing',
 				selectorsChecked: ['default'],
 			}),
 		];
@@ -425,6 +429,7 @@ describe('provider-informed DKIM', () => {
 		const findings = [
 			createFinding('dkim', 'No DKIM records found among tested selectors', 'high', 'No DKIM records found', {
 				confidence: 'heuristic',
+				detectionMethod: 'selector-probing',
 				selectorsChecked: selectors,
 			}),
 		];

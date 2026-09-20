@@ -134,6 +134,10 @@ export async function checkSPF(domain: string, queryDNS: DNSQueryFunction, optio
 				'No SPF record found',
 				'critical',
 				`No SPF (v=spf1) TXT record found for ${domain}. Without SPF, any server can send email claiming to be from your domain.`,
+				// SQ-74: zero TXT records begin with v=spf1, so no receiver can evaluate SPF at
+				// all — a genuinely absent control, declared structurally so a reword cannot
+				// silently un-zero `spf`, matching the DMARC/DNSSEC precedent from SQ-68.
+				{ missingControl: true },
 			),
 		);
 		return buildCheckResult('spf', findings);

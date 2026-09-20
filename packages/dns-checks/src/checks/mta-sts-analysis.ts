@@ -100,6 +100,9 @@ export function getMtaStsPolicyFindings(body: string, policyUrl: string): Findin
 				'MTA-STS policy missing or invalid version',
 				'high',
 				'The MTA-STS policy must contain "version: STSv1" as required by RFC 8461.',
+				// SQ-74: a deployed policy that fails RFC 8461 conformance does not function —
+				// declared structurally so a reword cannot silently un-zero `mta_sts`.
+				{ missingControl: true },
 			),
 		);
 	}
@@ -108,7 +111,11 @@ export function getMtaStsPolicyFindings(body: string, policyUrl: string): Findin
 
 	if (!modeMatch) {
 		findings.push(
-			createFinding('mta_sts', 'MTA-STS policy missing mode', 'high', 'MTA-STS policy file does not contain a valid "mode:" directive.'),
+			// SQ-74: no mode: directive means the policy is inert — declared structurally (see
+			// missingControl below) so a reword cannot silently un-zero `mta_sts`.
+			createFinding('mta_sts', 'MTA-STS policy missing mode', 'high', 'MTA-STS policy file does not contain a valid "mode:" directive.', {
+				missingControl: true,
+			}),
 		);
 	} else {
 		const mode = modeMatch[1].toLowerCase();
@@ -130,6 +137,9 @@ export function getMtaStsPolicyFindings(body: string, policyUrl: string): Findin
 				'MTA-STS policy missing MX entries',
 				'high',
 				'MTA-STS policy file does not contain any "mx:" entries. At least one MX pattern is required.',
+				// SQ-74: a policy covering no host protects no inbound mail path — declared
+				// structurally so a reword cannot silently un-zero `mta_sts`.
+				{ missingControl: true },
 			),
 		);
 	}
@@ -142,6 +152,9 @@ export function getMtaStsPolicyFindings(body: string, policyUrl: string): Findin
 				'MTA-STS policy missing max_age',
 				'high',
 				'The max_age directive is required by RFC 8461. Without it, the policy is technically invalid.',
+				// SQ-74: without max_age the policy cannot be cached or applied — declared
+				// structurally so a reword cannot silently un-zero `mta_sts`.
+				{ missingControl: true },
 			),
 		);
 	} else {
@@ -173,7 +186,16 @@ export function getMtaStsPolicyFindings(body: string, policyUrl: string): Findin
 
 	return findings.map((finding) =>
 		finding.title === 'MTA-STS policy missing mode' || finding.title === 'MTA-STS policy missing MX entries'
-			? createFinding('mta_sts', finding.title, finding.severity, finding.detail.replace('MTA-STS policy file', `MTA-STS policy file at ${policyUrl}`))
+			? // SQ-74: preserve metadata (missingControl: true) through this rewrite — a bare
+				// reconstruction without it would silently drop the structural declaration and
+				// fall back to prose for these two titles.
+				createFinding(
+					'mta_sts',
+					finding.title,
+					finding.severity,
+					finding.detail.replace('MTA-STS policy file', `MTA-STS policy file at ${policyUrl}`),
+					finding.metadata,
+				)
 			: finding,
 	);
 }
