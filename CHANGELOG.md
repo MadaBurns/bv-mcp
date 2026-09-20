@@ -8,6 +8,46 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.85.0] - 2026-09-20
+
+### Fixed
+
+- **`check_dnssec` no longer reports a DNSSEC defect it never measured.** When the
+  primary resolver reports `AD=false` on a signed zone, the check asks Google DoH for a
+  second opinion, because the AD flag is known to flap between resolver edge nodes. That
+  confirmation helper returned a bare boolean, so "Google answered `AD=false`" and "Google
+  never answered" (a non-2xx, a transport error, a timeout, or a body over the cap) were
+  the same value. The caller cleared the finding only on `true`, so a probe that never
+  reached Google left a high-severity, Core-tier `DNSSEC validation failing` penalty
+  standing on a zone whose validation state was never established — inverting the reason
+  the probe exists, since a lone `AD=false` is precisely the reading it was added not to
+  trust. The helper now returns three states and the caller abstains when the second
+  opinion is unavailable, using the same retryable, non-cacheable shape the package uses
+  for a transient DNS failure (`checkStatus: 'error'` + `partial`), which keeps the
+  category OUT of the score by renormalization rather than zeroing it. Measured across 55
+  signed domains before the change: the probe is reached on 0.45% of observations and
+  failed 0 times in 460 attempts (p95 862ms against a >=3000ms budget), so this moves no
+  scores in steady state — its value is that the failure mode is correlated, and a Google
+  DoH outage would previously have penalized every affected signed domain at once,
+  silently and with no retry.
+
+- **The client-IP header audit lane can now fire on a low-traffic day, and its runbook
+  command runs as printed.** Two defects in the detector added for the zone-config
+  regression. First, below the 20-row sample floor the verdict is `unknown`, and `unknown`
+  pages nobody — so a day with too few rows resolved to silence. The floor turned out to
+  sit closer to real daily volume than its reasoning assumed: day buckets from the original
+  investigation include 8 rows at 100% missing and 11 rows at 100% missing, both total
+  outages of client-IP attribution, and neither was reported. Both the alerting lane and
+  the daily digest now retry once over a 168h window when the 24h read is below the floor,
+  and report the window the verdict was actually computed over. Second, the runbook string
+  the alert prints (`npm run audit:client-ip-headers`) passed no arguments, while the
+  script requires `--config` and `--database` and collapsed every failure into
+  `audit_failed` — so the exact command a paged operator would type returned a guaranteed
+  non-answer wearing the same word (`unknown`) as the genuine low-sample verdict. The npm
+  script now supplies both flags, the runbook names them, and a usage error is reported
+  distinctly as `invalid_usage`; other failures still redact, since they may carry paths or
+  credentials.
+
 ## [3.84.0] - 2026-09-20
 
 ### Added
