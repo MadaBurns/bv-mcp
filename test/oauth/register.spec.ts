@@ -1,4 +1,3 @@
-// @ts-expect-error cloudflare:test exports are injected by the Workers Vitest pool at runtime.
 import { SELF, env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import worker from '../../src/index';
