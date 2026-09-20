@@ -19,6 +19,7 @@ import {
 	CLIENT_IP_AUDIT_MAX_MISSING_RATIO,
 	CLIENT_IP_AUDIT_MIN_SAMPLES,
 	CLIENT_IP_AUDIT_WINDOW_HOURS,
+	CLIENT_IP_AUDIT_FALLBACK_WINDOW_HOURS,
 	CLIENT_IP_HEADER_MISSING_ALERT_KIND,
 	assessClientIpHeaders,
 	clientIpHeaderAuditSql,
@@ -298,7 +299,11 @@ describe('daily digest positive control (#896)', () => {
 
 		webhookCalls.length = 0;
 		await handleDailyDigest(digestEnv(fakeIntelDb({ total: 0, missing: 0 }).db));
-		expect(digestChecksLine()).toBe('  client_ip_audit: unknown (0/0, last 24h)');
+		// #1066: an empty 24h window now escalates to the wider one before giving up, so the
+		// digest reports the window the verdict was ACTUALLY computed over. `last 168h` says
+		// "a whole week was checked and still could not tell" — strictly more than `last 24h`,
+		// and it must not be reported as 24h when 24h is not what was read.
+		expect(digestChecksLine()).toBe(`  client_ip_audit: unknown (0/0, last ${CLIENT_IP_AUDIT_FALLBACK_WINDOW_HOURS}h)`);
 	});
 
 	it('an erroring or unbound lane is a visible word in the digest, never a missing line', async () => {
