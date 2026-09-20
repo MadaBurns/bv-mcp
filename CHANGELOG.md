@@ -27,6 +27,16 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   the existing abstention shape (`checkStatus: 'error'` + `errorKind: 'dns_error'`, never
   `missingControl`). Additive: no check reads the new signal yet.
 
+### Changed
+
+- **`@blackveil/dns-checks` bumped 1.51.0 -> 1.52.0 so the vendored tarball cannot reuse a
+  version number across differing content.** Two changes in this Unreleased block edit the
+  package's own source (the DMARC docstring/dead-branch fix and the missing-control
+  declarations) while it still carried 1.51.0, so "1.51.0" would have denoted two distinct
+  trees — and bv-web-prod vendors this package as a tarball, where the filename is not
+  evidence of contents. `PARITY_CORPUS_VERSION` is bumped in lockstep, as its own contract
+  requires ("Must equal the package version", asserted by both repos' version-lock).
+
 ### Fixed
 
 - **A secondary resolver that could not answer could overwrite a primary that had.** The
