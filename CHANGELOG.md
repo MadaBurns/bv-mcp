@@ -8,6 +8,21 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **The OAuth register rate-limit specs no longer depend on where the wall clock happens
+  to be.** `test/oauth/register-rate-limit.spec.ts` intermittently saw `201` where the 11th
+  registration from one IP must be `429` — it failed the v3.85.0 release run and passed on a
+  re-run of the identical commit. The limiter counts into an aligned window
+  (`Math.floor(now / windowMs) * windowMs`), so a burst that crossed a minute boundary was
+  split across two counters and the request past the limit was legitimately admitted; the
+  assertion, not the limiter, assumed one window, which is why exposure grew with runner
+  load. Both files now pin `Date.now` inside a single window several minutes ahead of real
+  time, so neither the caller's window choice nor the coordinator's expiry judgement can move
+  mid-burst, and the boundary crossing itself is asserted by a dedicated test instead of being
+  met by accident. Production rate-limit semantics — the limit, window length, key shape and
+  429 body — are unchanged; the fixed-window burst-at-boundary behaviour is intended.
+
 ## [3.85.0] - 2026-09-20
 
 ### Fixed
