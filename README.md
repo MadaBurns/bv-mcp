@@ -151,11 +151,11 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
 
 ### Authoritative DNS infrastructure
 
-`check_authoritative_dns_infra` scores authoritative DNS hosting behavior for a hostname. It is designed to consume raw UDP/TCP DNS, authoritative AA/RA behavior, zone-transfer refusal, DNSSEC, abuse-resistance, BGP/RPKI, and multi-vantage evidence from the `BV_INFRA_PROBE` service binding when that worker is provisioned.
+`check_authoritative_dns_infra` measures authoritative DNS infrastructure posture for a hostname over direct DNS-over-TCP/53 from a single vantage, via the `BV_INFRA_PROBE` service binding: TCP/53 reachability, the authoritative AA flag, recursion exposure, SOA serial consistency across nameservers, DNSKEY/RRSIG presence (not validation), IPv4/IPv6 answer parity, and unsupported-query handling. For authenticated callers only, it also runs a zone-transfer refusal test (first response only — no zone data is ever retrieved) and CHAOS `version.bind`/`id.server` disclosure. It does not measure, and reports as inconclusive: UDP/53 reachability, amplification, EDNS large-response/truncation, DNS cookies/RRL, BGP origin, RPKI, route-leak signals, anycast diversity, vantage latency, and RIR/RDAP.
 
-`check_root_server_set` validates the DNS root-server set against the embedded official root hints. With `BV_INFRA_PROBE`, it also checks live root priming, glue, parent/child delegation, DNSKEY, and SOA serial evidence across roots.
+`check_root_server_set` queries a rotating sample of 3 root servers per call and compares the priming NS set, glue, SOA serials, and cross-root consistency with the embedded official root hints, via `BV_INFRA_PROBE`.
 
-Self-hosted or local deployments without `BV_INFRA_PROBE` still return structured partial results. The worker-only mode records the embedded root hints and marks live raw-DNS, routing, RPKI, and vantage capabilities as inconclusive rather than pretending they ran. The `bv-infra-probe` worker in this repo is a contract stub for those live lanes: it reports them as `…_not_configured`, and both tools then withhold their verdict (`checkStatus: 'error'`, excluded from scoring) instead of grading reference data.
+Self-hosted or local deployments without `BV_INFRA_PROBE` still return structured partial results. The worker-only mode records the embedded root hints and marks every live-probe capability inconclusive rather than pretending it ran; both tools then withhold their verdict (`checkStatus: 'error'`, excluded from scoring) instead of grading reference data.
 
 ---
 
@@ -248,7 +248,7 @@ See [**docs/scoring.md**](docs/scoring.md) for the grade scales and the evidence
 ```
 
 - **Generic Scoring Engine**: Runtime-agnostic, string-keyed three-tier scoring with configurable weights
-- **Infra Probe Binding**: Optional `BV_INFRA_PROBE` service binding supplies raw authoritative DNS, root-server, BGP/RPKI, and vantage evidence for the authoritative DNS infrastructure profile
+- **Infra Probe Binding**: Optional `BV_INFRA_PROBE` service binding supplies live DNS-over-TCP/53 authoritative DNS and root-server evidence for the authoritative DNS infrastructure profile
 - **WASM Policy Engine**: High-performance permission and token checks via `bv-wasm-core`
 - **Reliable Sessions**: Hardened tombstone logic prevents race-condition revival of terminated sessions
 - **Protocol Enforcement**: Unsupported MCP versions fail closed; notifications and SSE connections use the same session-validity rules as other post-initialize requests
