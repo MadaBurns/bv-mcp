@@ -25,6 +25,21 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   'error'`, excluded from scoring); no other target's result changes. Ship with
   `npm run deploy:infra-probe` as well as `deploy:prod`.
 
+- **`check_root_server_set` published 100 / passed for a root zone nobody queried.** Same
+  sidecar, same shape: its root-server-set lane reports
+  `live_root_server_set_probe_not_configured`, yet returned `observedRootServers` (a copy of
+  the hints), `glueMatchesHints: true` and `parentChildDelegationMatches: true`, and its
+  `rootHints` is the same module the analyzer compares against — four capabilities "passed"
+  on constants, and the tool had no `measuredNothing` guard at all. The sidecar now returns
+  `rootHints` only; the analyzer withholds every cross-root claim from a lane that reports
+  itself unconfigured; and the tool abstains (`checkStatus: 'error'`, `score: 0`,
+  `partial: true`) when nothing was conclusive, naming the provisioning state as #1054 did
+  for hostnames. One deliberate asymmetry: a hints MATCH from an unconfigured lane is the
+  checker agreeing with itself (inconclusive), while a MISMATCH is two deployed tables
+  disagreeing and still fails, as #828 settled. A probe that reports no such error is graded
+  exactly as before. `scan_domain` under `profile: 'authoritative_dns_infra'` is unchanged —
+  it already graded `null`, because the hostname half abstained.
+
 ## [3.86.0] - 2026-09-21
 
 ### Fixed

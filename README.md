@@ -155,7 +155,7 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
 
 `check_root_server_set` validates the DNS root-server set against the embedded official root hints. With `BV_INFRA_PROBE`, it also checks live root priming, glue, parent/child delegation, DNSKEY, and SOA serial evidence across roots.
 
-Self-hosted or local deployments without `BV_INFRA_PROBE` still return structured partial results. The worker-only mode records the embedded root hints and marks live raw-DNS, routing, RPKI, and vantage capabilities as inconclusive rather than pretending they ran.
+Self-hosted or local deployments without `BV_INFRA_PROBE` still return structured partial results. The worker-only mode records the embedded root hints and marks live raw-DNS, routing, RPKI, and vantage capabilities as inconclusive rather than pretending they ran. The `bv-infra-probe` worker in this repo is a contract stub for those live lanes: it reports them as `…_not_configured`, and both tools then withhold their verdict (`checkStatus: 'error'`, excluded from scoring) instead of grading reference data.
 
 ---
 

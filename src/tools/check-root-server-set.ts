@@ -89,23 +89,37 @@ export async function checkRootServerSet(
 	const analysis = analyzeRootServerSetEvidence(evidence);
 	const checkedAt = evidence.checkedAt ?? new Date().toISOString();
 
+	// The probe answered — but did it MEASURE anything? Twin of `measuredNothing` in
+	// check-authoritative-dns-infra.ts (#696): with no capability conclusive either way the
+	// remaining findings are `info`, which `buildCheckResult` turns into 100 / passed. This is
+	// the LIVE state — the deployed sidecar's root-server-set lane is unconfigured and the
+	// analyzer withholds every verdict from it.
+	const measuredNothing =
+		analysis.capabilitySummary.passed.length === 0 && analysis.capabilitySummary.failed.length === 0;
+
+	const evidenceReceived = createFinding(
+		'authoritative_dns_infra',
+		'Root server set probe evidence received',
+		'info',
+		'Infra probe returned root-server-set evidence.',
+		{ evidenceMode: 'infra_probe', checkedAt },
+	);
+
 	return {
-		...buildCheckResult('authoritative_dns_infra', [
-			createFinding(
-				'authoritative_dns_infra',
-				'Root server set probe evidence received',
-				'info',
-				'Infra probe returned root-server-set evidence.',
-				{ evidenceMode: 'infra_probe', checkedAt },
-			),
-			...analysis.findings,
-		]),
+		// "evidence received" is unearned when nothing was established — drop it rather than
+		// let it stand beside a withheld verdict.
+		...buildCheckResult(
+			'authoritative_dns_infra',
+			measuredNothing ? analysis.findings : [evidenceReceived, ...analysis.findings],
+		),
+		...(measuredNothing ? { score: 0, passed: false, checkStatus: 'error' as const, partial: true } : {}),
 		metadata: {
 			evidenceMode: 'infra_probe',
 			hostname: '.',
 			checkedAt,
 			rootServers: ROOT_SERVER_NAMES,
 			capabilitySummary: analysis.capabilitySummary,
+			...(measuredNothing ? { inconclusive: true } : {}),
 		},
 	};
 }

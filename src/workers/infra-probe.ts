@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { probeDelegationConsistency, type DelegationProbeDependencies } from '../lib/authoritative-dns-infra/delegation-probe';
-import { ROOT_HINTS, ROOT_SERVER_NAMES } from '../lib/authoritative-dns-infra/root-hints';
+import { ROOT_HINTS } from '../lib/authoritative-dns-infra/root-hints';
 import { normalizeInfraHostname } from '../lib/authoritative-dns-infra/probe-client';
 import { readBoundedText } from '../lib/request-body';
 import type {
@@ -112,13 +112,16 @@ function handleRootServerSetProbe(request: Request): Response {
 		return jsonResponse({ error: 'method_not_allowed' }, 405);
 	}
 
+	// ⚠️ Same rule as the authoritative lane above: no query is issued, so nothing is
+	// "observed". This used to add `observedRootServers` (a copy of the hints) plus
+	// `glueMatchesHints: true` and `parentChildDelegationMatches: true`, which
+	// check_root_server_set published as four measured passes and a score of 100.
+	// `rootHints` stays because the evidence contract requires it (#828) — it is this
+	// deployment's embedded table, not a measurement of the root zone.
 	const evidence: RootServerSetEvidence = {
 		hostname: '.',
 		checkedAt: new Date().toISOString(),
 		rootHints: [...ROOT_HINTS],
-		observedRootServers: [...ROOT_SERVER_NAMES],
-		parentChildDelegationMatches: true,
-		glueMatchesHints: true,
 		errors: ['live_root_server_set_probe_not_configured'],
 	};
 	return jsonResponse(evidence);

@@ -2,7 +2,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import infraProbeWorker, { handleDelegationConsistencyProbe } from '../src/workers/infra-probe';
-import { ROOT_HINTS, ROOT_SERVER_NAMES } from '../src/lib/authoritative-dns-infra/root-hints';
+import { ROOT_HINTS } from '../src/lib/authoritative-dns-infra/root-hints';
 
 describe('infra probe worker', () => {
 	it('returns root-hint reference addresses for a root hostname, and nothing verdict-shaped', async () => {
@@ -33,7 +33,7 @@ describe('infra probe worker', () => {
 		expect(typeof body.checkedAt).toBe('string');
 	});
 
-	it('returns embedded root-server-set evidence', async () => {
+	it('returns embedded root hints for the root-server-set lane, and nothing verdict-shaped', async () => {
 		const response = await infraProbeWorker.fetch(new Request('https://infra-probe.internal/probe/root-server-set', {
 			method: 'POST',
 		}));
@@ -43,12 +43,34 @@ describe('infra probe worker', () => {
 		expect(body).toMatchObject({
 			hostname: '.',
 			rootHints: ROOT_HINTS,
-			observedRootServers: ROOT_SERVER_NAMES,
-			parentChildDelegationMatches: true,
-			glueMatchesHints: true,
 			errors: ['live_root_server_set_probe_not_configured'],
 		});
+		// No query is issued, so nothing was "observed": the lane once returned
+		// `observedRootServers` (a copy of the hints), `glueMatchesHints: true` and
+		// `parentChildDelegationMatches: true`, which check_root_server_set published as 100.
+		expect(Object.keys(body).sort()).toEqual(['checkedAt', 'errors', 'hostname', 'rootHints']);
 		expect(typeof body.checkedAt).toBe('string');
+	});
+
+	// The seam, not the units: each side passed its own spec while the pair published
+	// 100 / passed for lanes that query nothing. Drive the REAL worker through the REAL tools.
+	it('makes both infra tools abstain end-to-end while its live lanes are unconfigured', async () => {
+		const { checkAuthoritativeDnsInfra } = await import('../src/tools/check-authoritative-dns-infra');
+		const { checkRootServerSet } = await import('../src/tools/check-root-server-set');
+		const infraProbe = {
+			fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
+				infraProbeWorker.fetch(new Request(input, init))) as typeof globalThis.fetch,
+		};
+
+		for (const result of [
+			await checkAuthoritativeDnsInfra('a.root-servers.net', { infraProbe }),
+			await checkAuthoritativeDnsInfra('example.com', { infraProbe }),
+			await checkRootServerSet({ infraProbe }),
+		]) {
+			expect(result).toMatchObject({ passed: false, score: 0, checkStatus: 'error', partial: true });
+			expect(result.metadata?.capabilitySummary).toMatchObject({ passed: [], failed: [] });
+			expect(result.findings.every((finding) => finding.metadata?.unprovisioned === true)).toBe(true);
+		}
 	});
 
 	it('returns ordinary-zone parent/child delegation evidence through the injected probe seam', async () => {
