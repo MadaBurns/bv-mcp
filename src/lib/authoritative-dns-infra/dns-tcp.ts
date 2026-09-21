@@ -201,6 +201,11 @@ export async function resolvePublicNameserverAddresses(
 
 function encodeName(name: string): Uint8Array {
 	const normalized = name.replace(/\.$/, '').toLowerCase();
+	// The root zone is the one legal name with zero labels: a single terminating octet.
+	// Without this, `.` was rejected as invalid, so no root-zone query (`. NS`, `. SOA`,
+	// `. DNSKEY`) could ever be built and every live root probe abstained. An EMPTY string
+	// is still rejected — only an explicit `.` means the root.
+	if (name === '.') return new Uint8Array([0]);
 	const labels = normalized.split('.');
 	if (!normalized || labels.some((label) => label.length === 0 || label.length > 63)) {
 		throw new Error('Invalid DNS name');

@@ -54,6 +54,23 @@ function framedStream(chunks: Uint8Array[], onCancel: () => void): ReadableStrea
 }
 
 describe('direct DNS-over-TCP wire codec', () => {
+	// The root zone is the only name with zero labels. `encodeName` rejected it as invalid,
+	// so no `. NS` / `. SOA` / `. DNSKEY` query could be built and every LIVE root probe
+	// abstained — invisible to the lane specs, which inject fake sessions.
+	it('builds a query for the root zone as a single terminating octet', () => {
+		const query = buildDirectDnsQuery('.', 2, 0x0001);
+		expect(query.length).toBe(12 + 1 + 4);
+		expect(query[12]).toBe(0);
+		const view = new DataView(query.buffer);
+		expect(view.getUint16(13)).toBe(2); // QTYPE NS
+		expect(view.getUint16(15)).toBe(1); // QCLASS IN
+	});
+
+	it('still rejects an empty name — only an explicit "." means the root', () => {
+		expect(() => buildDirectDnsQuery('', 2, 0x0001)).toThrow('Invalid DNS name');
+		expect(() => buildDirectDnsQuery('a..b', 2, 0x0001)).toThrow('Invalid DNS name');
+	});
+
 	it('builds a recursion-disabled NS query', () => {
 		const query = buildDirectDnsQuery('Example.COM.', 2, 0x1234);
 		const view = new DataView(query.buffer);
