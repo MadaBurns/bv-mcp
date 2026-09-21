@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { Mock } from 'vitest';
 import {
 	buildDirectDnsQuery,
 	isGloballyRoutableIp,
@@ -325,7 +326,7 @@ describe('first-framed-response reader (AXFR refusal probe)', () => {
 
 // The session opens a real socket via a dynamic `import('cloudflare:sockets')`, so it's
 // mocked at that virtual specifier and exercised with a fake in-memory duplex.
-let connectSpy: ReturnType<typeof vi.fn>;
+let connectSpy: Mock<(...args: unknown[]) => unknown>;
 
 vi.mock('cloudflare:sockets', () => ({
 	connect: (...args: unknown[]) => connectSpy(...args),
@@ -373,7 +374,7 @@ function minimalResponse(id: number): Uint8Array {
 
 describe('DNS TCP session (one socket, sequential multi-query per RFC 7766)', () => {
 	beforeEach(() => {
-		connectSpy = vi.fn();
+		connectSpy = vi.fn<(...args: unknown[]) => unknown>();
 	});
 
 	afterEach(() => {

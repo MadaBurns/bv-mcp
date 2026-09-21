@@ -31,8 +31,10 @@ export interface DirectDnsRecord {
 
 export interface DirectDnsResponse {
 	aa: boolean;
-	ra: boolean;
-	tc: boolean;
+	// Optional so existing fakes and fixtures that build a response literal keep compiling;
+	// `parseDirectDnsResponse` always sets both. Read them as `=== true`.
+	ra?: boolean;
+	tc?: boolean;
 	rcode: number;
 	answers: DirectDnsRecord[];
 	authority: DirectDnsRecord[];
