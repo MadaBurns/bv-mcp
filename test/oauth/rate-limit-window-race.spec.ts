@@ -17,11 +17,21 @@
  *
  * `nowMs` pins the window deterministically, so these tests reproduce on demand what CI hit
  * by luck.
+ *
+ * `nowMs` alone was not enough (#1072). Pinning it to the CURRENT window left `expiresAt`
+ * somewhere in the next 60 real seconds, so on a loaded runner a long burst could outlive its
+ * own pinned window: the coordinator then refuses mid-burst as expired, the retry recomputes
+ * into the next window, and the count-exact assertions below see a counter that restarted.
+ * `pinRateLimitWindow()` therefore pins BOTH clocks the code consults — it freezes `Date.now`
+ * (which the retry path reads, `src/oauth/rate-limit.ts:127`) on a window several minutes
+ * ahead of real time, so the coordinator cannot judge it expired part-way through. The cases
+ * that are ABOUT an already-ended window keep using a real, genuinely past instant.
  */
 
 import { env } from 'cloudflare:test';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { consumeOAuthRateLimit } from '../../src/oauth/rate-limit';
+import { pinRateLimitWindow } from '../helpers/rate-limit-window';
 
 /** A fresh documentation-range address, so every case starts on an unused principal. */
 function uniquePrincipal(): string {
@@ -52,7 +62,10 @@ describe('OAuth rate limit — a window that expires in flight (#985)', () => {
 		const principal = uniquePrincipal();
 		// One whole window in the past: `expiresAt` is behind real `Date.now()` by the time
 		// the coordinator sees it. That is the boundary race, made deterministic.
-		const result = await consumeOAuthRateLimit(limiterOptions({ principal, nowMs: Date.now() - 61_000 }));
+		const expiredNowMs = Date.now() - 61_000;
+		// The retry reads `Date.now()`; pin it so the window it recomputes cannot itself expire.
+		pinRateLimitWindow();
+		const result = await consumeOAuthRateLimit(limiterOptions({ principal, nowMs: expiredNowMs }));
 
 		expect(result.exceeded, 'a principal that has spent nothing must not be rate limited').toBe(false);
 		expect(result.retryAfterSeconds).toBe(0);
@@ -64,7 +77,7 @@ describe('OAuth rate limit — a window that expires in flight (#985)', () => {
 		// The retry must not become a way around the limit: it recomputes the window, so a
 		// caller inside ONE live window still gets exactly `limit` admissions.
 		const principal = uniquePrincipal();
-		const nowMs = Date.now();
+		const nowMs = pinRateLimitWindow().nowMs;
 		const statuses: boolean[] = [];
 		for (let i = 0; i < 31; i++) {
 			const result = await consumeOAuthRateLimit(limiterOptions({ principal, nowMs }));
@@ -79,9 +92,12 @@ describe('OAuth rate limit — a window that expires in flight (#985)', () => {
 		// After the in-flight expiry the reservation belongs to the CURRENT window, so a
 		// following request in that same window sees the retry's spend.
 		const principal = uniquePrincipal();
-		await consumeOAuthRateLimit(limiterOptions({ principal, nowMs: Date.now() - 61_000 }));
+		const expiredNowMs = Date.now() - 61_000;
+		// Pinned BEFORE the expired-window call, so the retry lands in the same window the
+		// follow-up burst uses — that shared window is what "the window it landed in" means.
+		const now = pinRateLimitWindow().nowMs;
+		await consumeOAuthRateLimit(limiterOptions({ principal, nowMs: expiredNowMs }));
 
-		const now = Date.now();
 		const results: boolean[] = [];
 		for (let i = 0; i < 30; i++) {
 			results.push((await consumeOAuthRateLimit(limiterOptions({ principal, nowMs: now }))).exceeded);
