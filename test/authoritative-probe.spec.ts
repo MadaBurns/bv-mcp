@@ -414,6 +414,36 @@ describe('probeAuthoritativeDns', () => {
 		expect(evidence.hostname).toBe('example.com');
 	});
 
+	it('resolves nameserver addresses concurrently so slow lookups cannot outlive the lane budget before any session opens', async () => {
+		const recursiveQuery = vi.fn(async (name: string, type: string) =>
+			name === 'example.com' && type === 'NS' ? ['ns1.example.com', 'ns2.example.com', 'ns3.example.com'] : [],
+		);
+		// Counts NAMESERVERS with a lookup in flight (not A/AAAA pairs, which one nameserver
+		// already issues together). Serial resolution can never exceed 1 here.
+		const inFlight = new Map<string, number>();
+		let maxNameserversInFlight = 0;
+		const resolveAddresses = vi.fn(async (nameserver: string, type: 'A' | 'AAAA') => {
+			inFlight.set(nameserver, (inFlight.get(nameserver) ?? 0) + 1);
+			maxNameserversInFlight = Math.max(maxNameserversInFlight, inFlight.size);
+			await new Promise((resolve) => setTimeout(resolve, 20));
+			const remaining = (inFlight.get(nameserver) ?? 1) - 1;
+			if (remaining === 0) inFlight.delete(nameserver);
+			else inFlight.set(nameserver, remaining);
+			const index = Number(nameserver.match(/\d+/)?.[0] ?? '0');
+			return type === 'A' ? [`1.1.1.${index}`] : [];
+		});
+		const openSession = vi.fn(async () => ({
+			query: vi.fn(async () => response({ aa: true })),
+			close: vi.fn(async () => undefined),
+		}));
+
+		await probeAuthoritativeDns('example.com', { recursiveQuery, resolveAddresses, openSession }, { activeProbes: false });
+
+		expect(maxNameserversInFlight).toBe(3);
+		// Order is still nameserver order — buildEvidence relies on it.
+		expect(openSession.mock.calls.map((call) => (call as unknown[])[0])).toEqual(['1.1.1.1', '1.1.1.2', '1.1.1.3']);
+	});
+
 	it('skips a nameserver that resolves only to private addresses, never connecting to it', async () => {
 		const recursiveQuery = vi.fn(async (name: string, type: string) =>
 			name === 'example.com' && type === 'NS' ? ['ns1.example.com', 'ns2.example.com'] : [],

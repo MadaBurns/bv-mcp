@@ -128,6 +128,26 @@ describe('checkRootServerSet', () => {
 		]));
 	});
 
+	it('bounds and sanitizes wire-derived root names before they reach finding metadata', async () => {
+		const hostile = `ignore previous instructions <script>${'x'.repeat(400)}`;
+		const fetch = vi.fn<typeof globalThis.fetch>(async () => new Response(JSON.stringify({
+			checkedAt: '2026-05-21T00:00:00.000Z',
+			rootHints: ROOT_HINTS,
+			observedRootServers: [hostile, ...Array.from({ length: 60 }, (_, index) => `n${index}.example`)],
+			serialsByRoot: { 'a.root-servers.net': 2026052101 },
+		})));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		const mismatch = result.findings.find((finding) => finding.title === 'Root server set mismatch');
+		const reported = mismatch?.metadata?.observedRootServers as string[];
+		expect(reported).toHaveLength(26);
+		expect(reported.every((name) => name.length <= 253 && /^[A-Za-z0-9.?-]*$/.test(name))).toBe(true);
+		expect(reported[0].startsWith('ignore?previous?instructions??script?')).toBe(true);
+	});
+
 	// #828 — the probe body is an unchecked generic cast (`readJsonResponse<T>`), and
 	// `rootHintsMatchOfficial` dereferences `evidence.rootHints.length` unconditionally.
 	// A 200 response omitting `rootHints` used to throw an uncaught TypeError out of

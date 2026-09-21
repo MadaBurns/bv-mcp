@@ -518,12 +518,19 @@ export async function probeAuthoritativeDns(
 		return { hostname: normalizedHostname, checkedAt, errors: [NO_CONTACT_ERROR] };
 	}
 
-	const addressTargets: ResolvedNameserverAddress[] = [];
-	for (const nameserver of target.nameservers) {
-		if (Date.now() >= deadline) break;
-		const addresses = await resolveNameserverAddresses(nameserver, target.rootServerMode, dependencies.resolveAddresses, NAMESERVER_RESOLUTION_TIMEOUT_MS);
-		addressTargets.push(...addresses);
-	}
+	// Resolved CONCURRENTLY and clamped to what is left of the lane budget. Serially, three
+	// slow-but-healthy resolutions (3 x NAMESERVER_RESOLUTION_TIMEOUT_MS) outlived both the
+	// lane budget and the caller's 5 s client timeout before a single TCP session opened, so
+	// a measurable zone abstained (SQ-131 S2). At most MAX_NAMESERVERS lookups run here and
+	// no TCP session is open yet, so this stays inside the Workers connection limit.
+	// `Promise.all` preserves nameserver order, which `buildEvidence` relies on.
+	const resolutionTimeoutMs = Math.max(1, Math.min(NAMESERVER_RESOLUTION_TIMEOUT_MS, deadline - Date.now()));
+	const resolved = await Promise.all(
+		target.nameservers.map((nameserver) =>
+			resolveNameserverAddresses(nameserver, target.rootServerMode, dependencies.resolveAddresses, resolutionTimeoutMs),
+		),
+	);
+	const addressTargets: ResolvedNameserverAddress[] = resolved.flat();
 
 	if (addressTargets.length === 0) {
 		return { hostname: normalizedHostname, checkedAt, errors: [NO_CONTACT_ERROR] };

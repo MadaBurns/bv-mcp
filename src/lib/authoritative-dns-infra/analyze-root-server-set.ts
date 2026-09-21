@@ -74,6 +74,18 @@ const ROOT_SET_NO_CONTACT = 'root_server_set_probe_no_contact';
  * usually DNS interception on the probe's network path, or a lame delegation. */
 const ROOT_SET_NO_AUTHORITATIVE_ANSWER = 'root_server_set_probe_no_authoritative_answer';
 
+const MAX_REPORTED_ROOT_NAMES = 26;
+const MAX_HOSTNAME_LENGTH = 253;
+
+/**
+ * Names decoded off the wire are attacker-influenced (an on-path responder can put any
+ * bytes in an NS RDATA label) and this metadata reaches LLM clients verbatim. Report at
+ * most twice the real root set, each reduced to hostname characters and capped (SQ-131 S6).
+ */
+function boundedHostnames(names: readonly string[] | undefined): string[] | undefined {
+	return names?.slice(0, MAX_REPORTED_ROOT_NAMES).map((name) => name.replace(/[^A-Za-z0-9.-]/g, '?').slice(0, MAX_HOSTNAME_LENGTH));
+}
+
 /**
  * Did this evidence carry at least one LIVE authoritative observation of the root zone?
  * `official_root_hints_match` compares the sidecar's `rootHints` against this Worker's own
@@ -140,7 +152,7 @@ export function analyzeRootServerSetEvidence(probeEvidence: RootServerSetEvidenc
 			detail: 'Root priming did not return the complete a.root-servers.net through m.root-servers.net set.',
 			metadata: {
 				missingControl: true,
-				observedRootServers: evidence.observedRootServers,
+				observedRootServers: boundedHostnames(evidence.observedRootServers),
 			},
 		},
 	);
