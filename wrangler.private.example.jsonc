@@ -20,14 +20,19 @@
 	"vars": {
 		// Set BV_API_KEY with `npx wrangler secret put BV_API_KEY`.
 		"PROVIDER_SIGNATURES_URL": "",
-		// The injector refuses to generate a production config without these four, and it
+		// The injector refuses to generate a production config without these three, and it
 		// PINS OAUTH_ISSUER to the value below. A fork serving the Worker from a different
 		// hostname must change REQUIRED_PRODUCTION_VARS in scripts/inject-private-config.cjs
 		// to match its own origin — issued tokens are rejected as cross-issuer otherwise.
-		// The other three are fail-closed production gates; keep them as-is.
+		// All three are fail-closed production gates; keep them as-is.
 		"OAUTH_ISSUER": "https://dns-mcp.blackveilsecurity.com",
 		"REJECT_QUERY_API_KEY": "true",
-		"REQUIRE_PRODUCTION_BINDINGS": "true",
-		"ALERT_WEBHOOK_URL": "https://replace-me.invalid/your-alert-webhook"
+		"REQUIRE_PRODUCTION_BINDINGS": "true"
+		// ALERT_WEBHOOK_URL is deliberately NOT a var here (#1073) — it is a capability
+		// secret. Set it with:
+		//   printf %s "https://your-alert-webhook" | npx wrangler secret put ALERT_WEBHOOK_URL --config .dev/wrangler.deploy.jsonc
+		// scripts/inject-private-config.cjs fails the deploy closed unless
+		// `wrangler secret list` shows it provisioned, and fails closed (a different
+		// message) if it is ALSO present here as a var — a name cannot be both.
 	}
 }

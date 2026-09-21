@@ -10,6 +10,26 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **`ALERT_WEBHOOK_URL` no longer prints in full on every production deploy.**
+  It was a plaintext `vars` entry, and `wrangler types --config
+  wrangler.production.jsonc` (`check:bindings:prod`, run right after the
+  private-config injector) renders every plaintext var inline — so the
+  webhook URL, a capability secret whose path token alone is sufficient to
+  post to the ops alert endpoint, was re-disclosed to the terminal and any
+  captured deploy log on every `deploy:prod`. It is now required to be a
+  Worker secret instead: `scripts/inject-private-config.cjs`'s
+  `assessAlertWebhookSecretGate` fails the deploy closed unless `wrangler
+  secret list` shows it provisioned, and fails closed with a different
+  message if it is (still, or also) present in `vars` — a binding name
+  cannot be both a var and a secret (`wrangler secret put` rejects the
+  collision with `[code: 10053]`). A one-shot `BV_ALLOW_MISSING_ALERT_SECRET=1`
+  covers the transition deploy (var removed, secret not yet provisioned),
+  logging a loud warning that the fallback is unverified for that deploy
+  only; the dynamic bv-web-prod lookup (`resolveAlertWebhookUrl`) is
+  unaffected and still tried first. No runtime change — a secret and a var
+  are both plain `env` properties. Migration steps:
+  `docs/operator-runbook.md` §8.
+
 - **`npm run typecheck:tests` is now hermetic — it no longer reads `+2` on a dev checkout
   whose tree CI grades clean.** `wrangler types` folds the key names of a local `.dev.vars`
   into the generated `Env` as **required `string`** members. A dev checkout has that file and

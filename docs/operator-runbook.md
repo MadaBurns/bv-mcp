@@ -29,9 +29,12 @@ Prerequisites:
    BV_MCP_WATCH_CLEANUP_KEY,
    BV_MCP_M365_KEY, BV_MCP_BRAND_WEBHOOK_KEY, BV_RECON_KEY, BV_TLS_PROBE_KEY,
    BV_BROWSER_RENDERER_KEY, KV_ENVELOPE_KEY, MCP_ACCESS_LOG_IP_ENCRYPTION_KEY,
-   BV_DOH_ENDPOINT, BV_DOH_TOKEN, CF_ANALYTICS_TOKEN. Values in the secret
-   manager; secrets survive deploys (only re-`put` when rotating).
-   `BV_DOH_ENDPOINT`/`BV_DOH_TOKEN` are optional — see §9.
+   BV_DOH_ENDPOINT, BV_DOH_TOKEN, CF_ANALYTICS_TOKEN, ALERT_WEBHOOK_URL.
+   Values in the secret manager; secrets survive deploys (only re-`put` when
+   rotating). `BV_DOH_ENDPOINT`/`BV_DOH_TOKEN` are optional — see §9.
+   `ALERT_WEBHOOK_URL` (#1073, §8) is required —
+   `scripts/inject-private-config.cjs` fails the deploy closed unless
+   `wrangler secret list` shows it provisioned.
 
 Deploy:
 
@@ -152,11 +155,83 @@ unset. Set up an external heartbeat:
 | `OAUTH_SIGNING_SECRET`             | `npx wrangler secret put OAUTH_SIGNING_SECRET`                       | Invalidates ALL outstanding OAuth JWTs — customers re-consent                                                                     |
 | `MCP_ACCESS_LOG_IP_ENCRYPTION_KEY` | `npx wrangler secret put ...` + bump `MCP_ACCESS_LOG_IP_KEY_VERSION` | Old ciphertexts need the old key retained in the vault for forensics                                                              |
 | `BV_DOH_TOKEN`                     | `npx wrangler secret put BV_DOH_TOKEN`                               | Rotate `BLACKVEIL_DOH_TOKEN` on the bv-dns host to the SAME value. A mismatch is non-fatal — see §9                               |
+| `ALERT_WEBHOOK_URL`                | `printf %s "<url>" \| npx wrangler secret put ALERT_WEBHOOK_URL --config .dev/wrangler.deploy.jsonc` | Static fallback only — `resolveAlertWebhookUrl` tries the dynamic bv-web-prod lookup first (§ "Two exceptions" in the bv-mcp-operations skill). Pipe the value; never pass it as an argv, which would leak into shell history |
 
 Trial-key revocation requires `QUOTA_COORDINATOR`: the revoke route writes an
 authoritative deny marker before deleting the eventually consistent KV record.
 If strong state is unavailable it returns 503 and leaves the KV record intact;
 do not treat that response as a completed revocation.
+
+### Migrating ALERT_WEBHOOK_URL from a var to a secret (#1073)
+
+`ALERT_WEBHOOK_URL` was a plaintext `vars` entry until #1073: `wrangler types
+--config wrangler.production.jsonc` (run by `check:bindings:prod`, immediately
+after `scripts/inject-private-config.cjs`) renders every plaintext var inline,
+so the webhook URL — its path token alone is sufficient to post to the ops
+alert endpoint — printed in full on every prod deploy. It is now a Worker
+secret. `scripts/inject-private-config.cjs`'s `assessAlertWebhookSecretGate`
+fails the deploy closed unless `wrangler secret list` shows it provisioned,
+and ALSO fails closed (a different message) if the name is still present in
+`vars` — a binding name cannot be both: `wrangler secret put` fails with
+`[code: 10053]` while it is.
+
+The installed wrangler (4.131.1; checked via `npx wrangler deploy --help`)
+supports `--secrets-file` on both `wrangler deploy` and `wrangler versions
+upload`, which lands the var removal and the secret creation in the SAME
+deploy — no window with alerting silently off. The one-shot override IS still
+needed for this single command, though: `deploy:prod` (package.json:52)
+`&&`-chains `node scripts/inject-private-config.cjs` — whose gate calls
+`wrangler secret list` — BEFORE the final `npx wrangler deploy` step, and
+`npm run deploy:prod -- --secrets-file <file>` only appends `--secrets-file`
+to that LAST chained command. So at gate-check time `ALERT_WEBHOOK_URL` is not
+yet listed as a Worker secret (it uploads atomically with the deploy call that
+comes AFTER the gate), and with the var already removed from step 1 the gate
+fails closed. The override does not weaken that: it only tells the gate to
+skip the pre-check for this one command, and the deploy that follows is what
+actually provisions the secret.
+
+1. Remove `ALERT_WEBHOOK_URL` from `.dev/wrangler.deploy.jsonc`'s `vars`.
+2. Write a secrets file — gitignored the same way as the overlay, and never
+   committed — e.g. `.dev/alert-webhook.secrets.json`:
+   `{"ALERT_WEBHOOK_URL": "https://your-alert-webhook"}` (JSON or `.env`
+   form; wrangler accepts either).
+3. Deploy with it, using the override inline for this one command only — set
+   it on the same command line, never `export`ed from a shell profile, since a
+   persisted override silently disables the alerting guarantee on every
+   deploy from then on (the gate still warns loudly each time it fires, but
+   nothing forces you to notice a standing override):
+
+       BV_ALLOW_MISSING_ALERT_SECRET=1 npm run deploy:prod -- --secrets-file .dev/alert-webhook.secrets.json
+
+   (`deploy:prod`'s trailing `&&`-chained `npx wrangler deploy` forwards args
+   after `--`.) Delete the secrets file afterward — secrets persist on the
+   Worker across deploys, so wrangler does not need it again.
+4. The NEXT `npm run deploy:prod` — without the override — is what actually
+   proves the secret landed: the gate re-runs, finds `ALERT_WEBHOOK_URL` in
+   `wrangler secret list`, and passes on its own. Do not skip this step;
+   running only the overridden deploy leaves the gate unverified.
+
+If `--secrets-file` is unavailable (an older wrangler) or a two-step deploy is
+preferred:
+
+1. Remove `ALERT_WEBHOOK_URL` from `.dev/wrangler.deploy.jsonc`'s `vars`.
+2. Deploy once with the one-shot override, since the secret is not yet
+   provisioned. Set it inline on this one command only — never `export`ed
+   from a shell profile, since a persisted override silently disables the
+   alerting guarantee on every deploy from then on:
+
+       BV_ALLOW_MISSING_ALERT_SECRET=1 npm run deploy:prod
+
+   This logs a loud warning that alerting fallback is UNVERIFIED for this one
+   deploy. It does not touch `resolveAlertWebhookUrl`'s dynamic bv-web-prod
+   lookup, which is tried first regardless and is unaffected either way.
+3. Provision the secret, piped on stdin (never as an argv):
+
+       printf %s "https://your-alert-webhook" | npx wrangler secret put ALERT_WEBHOOK_URL --config .dev/wrangler.deploy.jsonc
+
+4. The next `npm run deploy:prod` (no override) runs the gate normally and
+   confirms the secret is live — this is what proves the migration is
+   complete, not the overridden deploy in step 2.
 
 ## 9. Secondary DoH resolver (bv-dns) — optional, default-OFF
 
