@@ -16,6 +16,12 @@ const DNS_HEADER_BYTES = 12;
 const DNS_CLASS_IN = 1;
 const MAX_DNS_MESSAGE_BYTES = 65_535;
 const MAX_NAMESERVER_ADDRESSES = 16;
+// EDNS0 OPT pseudo-RR (RFC 6891): root owner + type(2) + class-as-udp-size(2) +
+// ttl-as-extended-flags(4) + rdlength(2), no options.
+const OPT_RECORD_TYPE = 41;
+const EDNS0_UDP_PAYLOAD_SIZE = 1232;
+const EDNS0_DO_BIT = 0x0000_8000;
+const OPT_RECORD_BYTES = 11;
 
 export interface DirectDnsRecord {
 	name: string;
@@ -25,10 +31,20 @@ export interface DirectDnsRecord {
 
 export interface DirectDnsResponse {
 	aa: boolean;
+	ra: boolean;
+	tc: boolean;
 	rcode: number;
 	answers: DirectDnsRecord[];
 	authority: DirectDnsRecord[];
 	additional: DirectDnsRecord[];
+}
+
+/** Options for `buildDirectDnsQuery`. RD is never settable here: it stays 0 always. */
+export interface DirectQueryOptions {
+	/** Query class. Defaults to IN (1). CHAOS is 3 (`version.bind` / `id.server`). */
+	qclass?: number;
+	/** When true, append one EDNS0 OPT RR with the DNSSEC OK (DO) bit set. */
+	dnssecOk?: boolean;
 }
 
 export type DirectDnsQuery = (
@@ -204,17 +220,28 @@ function encodeName(name: string): Uint8Array {
 	return output;
 }
 
-export function buildDirectDnsQuery(name: string, type: number, id: number): Uint8Array {
+export function buildDirectDnsQuery(name: string, type: number, id: number, options?: DirectQueryOptions): Uint8Array {
 	const qname = encodeName(name);
-	const message = new Uint8Array(DNS_HEADER_BYTES + qname.length + 4);
+	const qclass = options?.qclass ?? DNS_CLASS_IN;
+	const dnssecOk = options?.dnssecOk === true;
+	const message = new Uint8Array(DNS_HEADER_BYTES + qname.length + 4 + (dnssecOk ? OPT_RECORD_BYTES : 0));
 	const view = new DataView(message.buffer);
 	view.setUint16(0, id);
 	view.setUint16(2, 0); // RD=0: ask this server directly; never recurse.
 	view.setUint16(4, 1); // QDCOUNT
+	view.setUint16(10, dnssecOk ? 1 : 0); // ARCOUNT
 	message.set(qname, DNS_HEADER_BYTES);
 	const tail = DNS_HEADER_BYTES + qname.length;
 	view.setUint16(tail, type);
-	view.setUint16(tail + 2, DNS_CLASS_IN);
+	view.setUint16(tail + 2, qclass);
+	if (dnssecOk) {
+		const optOffset = tail + 4;
+		message[optOffset] = 0; // root owner name
+		view.setUint16(optOffset + 1, OPT_RECORD_TYPE);
+		view.setUint16(optOffset + 3, EDNS0_UDP_PAYLOAD_SIZE); // "class" repurposed as UDP payload size
+		view.setUint32(optOffset + 5, EDNS0_DO_BIT); // extended-rcode(0) + version(0) + DO flag + Z(0)
+		view.setUint16(optOffset + 9, 0); // RDLENGTH=0, no options
+	}
 	return message;
 }
 
@@ -286,6 +313,22 @@ function parseRecord(message: Uint8Array, startOffset: number): { record: Direct
 		data = ipv6Presentation(message.subarray(dataOffset, nextOffset));
 	} else if (type === 2 || type === 5 || type === 12) {
 		data = decodeName(message, dataOffset).name;
+	} else if (type === 6) {
+		// SOA -> serial only, as a decimal string (skip MNAME/RNAME via decodeName).
+		const mname = decodeName(message, dataOffset);
+		const rname = decodeName(message, mname.nextOffset);
+		if (rname.nextOffset + 4 > message.length) throw new Error('Truncated SOA serial');
+		data = String(view.getUint32(rname.nextOffset));
+	} else if (type === 16) {
+		// TXT -> first character-string only, capped at 255 bytes (its own max length).
+		if (dataLength >= 1) {
+			const txtLength = Math.min(message[dataOffset], 255, dataLength - 1);
+			const txtStart = dataOffset + 1;
+			data = new TextDecoder().decode(message.subarray(txtStart, txtStart + txtLength));
+		}
+	} else if (type === 48 || type === 46) {
+		// DNSKEY / RRSIG -> presence only, RDATA is not decoded.
+		data = '';
 	}
 
 	return { record: { name: owner.name, type, data }, nextOffset };
@@ -318,6 +361,8 @@ export function parseDirectDnsResponse(message: Uint8Array, expectedId: number):
 
 	return {
 		aa: (flags & 0x0400) !== 0,
+		tc: (flags & 0x0200) !== 0,
+		ra: (flags & 0x0080) !== 0,
 		rcode: flags & 0x000f,
 		answers: sections[0],
 		authority: sections[1],
@@ -377,6 +422,53 @@ export async function readFramedResponse(stream: ReadableStream<Uint8Array>): Pr
 	}
 }
 
+/**
+ * Like `readFramedResponse`, but for a probe that must hang up after the
+ * first message no matter what the server keeps sending next (an AXFR
+ * refusal test: never let a zone transfer accumulate in memory). Same fixed,
+ * protocol-sized buffer discipline; any bytes beyond frame 1 are truncated at
+ * the copy step rather than buffered, and the reader is cancelled as soon as
+ * frame 1 completes.
+ */
+export async function readFirstFramedResponse(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+	const reader = stream.getReader();
+	const maxFrameBytes = MAX_DNS_MESSAGE_BYTES + 2;
+	const buffered = new Uint8Array(maxFrameBytes);
+	let bufferedLength = 0;
+	let expectedLength: number | undefined;
+
+	try {
+		while (true) {
+			const { value, done } = await reader.read();
+			if (done) throw new Error('DNS TCP connection closed before a full response');
+			if (!value?.length) continue;
+
+			// Never copy past the frame boundary (once known) or past the fixed
+			// buffer (before it's known); anything beyond that is discarded.
+			const remainingFrameBytes = expectedLength === undefined ? maxFrameBytes - bufferedLength : expectedLength + 2 - bufferedLength;
+			const usable = value.length > remainingFrameBytes ? value.subarray(0, remainingFrameBytes) : value;
+			buffered.set(usable, bufferedLength);
+			bufferedLength += usable.length;
+
+			if (expectedLength === undefined && bufferedLength >= 2) {
+				expectedLength = new DataView(buffered.buffer, 0, 2).getUint16(0);
+				if (expectedLength === 0 || expectedLength > MAX_DNS_MESSAGE_BYTES) {
+					await reader.cancel('Invalid DNS TCP frame length').catch(() => undefined);
+					throw new Error('Invalid DNS TCP frame length');
+				}
+				if (bufferedLength > expectedLength + 2) bufferedLength = expectedLength + 2;
+			}
+
+			if (expectedLength !== undefined && bufferedLength === expectedLength + 2) {
+				await reader.cancel('DNS TCP first-frame response complete; discarding anything further').catch(() => undefined);
+				return buffered.slice(2, expectedLength + 2);
+			}
+		}
+	} finally {
+		reader.releaseLock();
+	}
+}
+
 async function withTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	try {
@@ -424,4 +516,77 @@ export const directDnsQuery: DirectDnsQuery = async (nameserver, name, type, tim
 	} finally {
 		await socket.close().catch(() => undefined);
 	}
+};
+
+/** A single TCP connection to one authoritative address, used for multiple sequential queries (RFC 7766). */
+export interface DnsTcpSession {
+	/** Writes one framed query and reads exactly one framed response before resolving. Never pipelined. */
+	query(name: string, type: number, options?: DirectQueryOptions): Promise<DirectDnsResponse>;
+	/** Idempotent; always closes the underlying socket. */
+	close(): Promise<void>;
+}
+
+export type DnsTcpSessionFactory = (pinnedAddress: string, timeoutMs: number) => Promise<DnsTcpSession>;
+
+/**
+ * Opens one TCP socket to a pinned IP literal and lets the caller run several
+ * queries over it sequentially, sharing a single overall deadline. The
+ * address is never a hostname: it must already have passed
+ * `isGloballyRoutableIp` (SSRF pinning happens once, before this is called;
+ * this function refuses to connect otherwise).
+ */
+export const openDnsTcpSession: DnsTcpSessionFactory = async (pinnedAddress, timeoutMs) => {
+	if (!isGloballyRoutableIp(pinnedAddress)) {
+		throw new Error('DNS TCP session requires a globally routable IP literal');
+	}
+
+	const deadline = Date.now() + timeoutMs;
+	// Keep the runtime-only module behind the execution seam so Node-side tooling
+	// can import and test the wire codec without trying to resolve cloudflare: URLs.
+	const { connect } = await import('cloudflare:sockets');
+	const socket = connect({ hostname: pinnedAddress, port: DNS_PORT }, { secureTransport: 'off', allowHalfOpen: true });
+	void socket.closed.catch(() => undefined);
+
+	let closed = false;
+	const close = async (): Promise<void> => {
+		if (closed) return;
+		closed = true;
+		await socket.close().catch(() => undefined);
+	};
+
+	// Chains queries onto the previous one so the wire is never pipelined, even
+	// if a caller fires several `query()` calls without awaiting between them.
+	let pending: Promise<unknown> = Promise.resolve();
+
+	const query = (name: string, type: number, options?: DirectQueryOptions): Promise<DirectDnsResponse> => {
+		const run = async (): Promise<DirectDnsResponse> => {
+			if (closed) throw new Error('DNS TCP session is closed');
+			const remainingMs = deadline - Date.now();
+			if (remainingMs <= 0) throw new Error('DNS TCP session deadline exceeded');
+			const id = crypto.getRandomValues(new Uint16Array(1))[0];
+			const built = buildDirectDnsQuery(name, type, id, options);
+			return withTimeout(
+				(async () => {
+					await socket.opened;
+					const writer = socket.writable.getWriter();
+					try {
+						await writer.write(frameQuery(built));
+					} finally {
+						writer.releaseLock();
+					}
+					const response = await readFramedResponse(socket.readable);
+					return parseDirectDnsResponse(response, id);
+				})(),
+				remainingMs,
+			);
+		};
+		const result = pending.then(run, run);
+		pending = result.then(
+			() => undefined,
+			() => undefined,
+		);
+		return result;
+	};
+
+	return { query, close };
 };
