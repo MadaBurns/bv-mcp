@@ -3,7 +3,7 @@
 import { type Finding, createFinding } from '../scoring';
 import { ROOT_HINTS, ROOT_SERVER_NAMES } from './root-hints';
 import type { InfraCapabilityKey, InfraCapabilitySeverity, RootServerSetEvidence } from './types';
-import type { InfraCapabilitySummary } from './analyze';
+import { type InfraCapabilitySummary, isUnconfiguredLaneCode } from './analyze';
 
 const CATEGORY = 'authoritative_dns_infra';
 
@@ -66,15 +66,40 @@ function valuesConverge(record: Record<string, string | number> | undefined): bo
 	return unique.size <= 1;
 }
 
-export function analyzeRootServerSetEvidence(evidence: RootServerSetEvidence): RootServerSetAnalysis {
+/** Reported by the sidecar when its root-server-set lane queried nothing. */
+const ROOT_SET_LANE_UNCONFIGURED = 'live_root_server_set_probe_not_configured';
+
+export function analyzeRootServerSetEvidence(probeEvidence: RootServerSetEvidence): RootServerSetAnalysis {
 	const findings: Finding[] = [];
 	const capabilitySummary: InfraCapabilitySummary = { passed: [], failed: [], inconclusive: [] };
 
+	// A lane that reports itself unconfigured observed nothing, so none of its cross-root
+	// claims — pass OR fail — is a measurement. The sidecar used to send `observedRootServers`
+	// (a copy of the hints), `glueMatchesHints: true` and `parentChildDelegationMatches: true`
+	// beside this very error, and the tool published 100 / passed for a root zone nobody
+	// queried. The sidecar deploys separately from this Worker, so a stale one must not be
+	// able to do that; twin of `withoutUnmeasuredRawDnsEvidence` in analyze.ts.
+	const laneUnconfigured = (probeEvidence.errors ?? []).includes(ROOT_SET_LANE_UNCONFIGURED);
+	const evidence: RootServerSetEvidence = laneUnconfigured
+		? {
+				hostname: probeEvidence.hostname,
+				checkedAt: probeEvidence.checkedAt,
+				rootHints: probeEvidence.rootHints,
+				errors: probeEvidence.errors,
+			}
+		: probeEvidence;
+
+	// ⚠️ Deliberately asymmetric. With the lane unconfigured, `rootHints` is the sidecar's
+	// build of the SAME root-hints module this file imports, so a MATCH is the checker
+	// agreeing with itself — inconclusive, the rule check-root-server-set.ts already applies
+	// to its unprovisioned branch (#696). A MISMATCH is two deployed tables disagreeing: an
+	// observed inconsistency, and #828 settled that it scores as a real failure.
+	const hintsMatch = rootHintsMatchOfficial(evidence);
 	pushCapabilityResult(
 		capabilitySummary,
 		findings,
 		'official_root_hints_match',
-		rootHintsMatchOfficial(evidence),
+		laneUnconfigured && hintsMatch ? undefined : hintsMatch,
 		{
 			title: 'Root hints do not match official constants',
 			severity: 'critical',
@@ -168,13 +193,22 @@ export function analyzeRootServerSetEvidence(evidence: RootServerSetEvidence): R
 				),
 			);
 		} else {
+			// Same reasoning as #1054: when the probe says WHY nothing was verified, name the
+			// provisioning state — a retry cannot change it.
+			const unconfigured = (evidence.errors ?? []).filter(isUnconfiguredLaneCode);
 			findings.push(
 				createFinding(
 					CATEGORY,
 					'Root server set checks inconclusive',
 					'info',
-					'Root-server-set evidence did not yield any conclusive capability checks; nothing was verified.',
-					{ evidenceMode: 'infra_probe', inconclusive: true },
+					unconfigured.length > 0
+						? `The infra probe's root-server-set lane is not provisioned in this deployment (${unconfigured.join(', ')}): it returns the embedded official root hints without querying the root zone, so no capability could be verified either way. This is a provisioning state, not a transient failure — retrying returns the same result.`
+						: 'Root-server-set evidence did not yield any conclusive capability checks; nothing was verified.',
+					{
+						evidenceMode: 'infra_probe',
+						inconclusive: true,
+						...(unconfigured.length > 0 ? { unprovisioned: true, probeErrors: unconfigured } : {}),
+					},
 				),
 			);
 		}

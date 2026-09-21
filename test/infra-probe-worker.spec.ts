@@ -2,10 +2,10 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import infraProbeWorker, { handleDelegationConsistencyProbe } from '../src/workers/infra-probe';
-import { ROOT_HINTS, ROOT_SERVER_NAMES } from '../src/lib/authoritative-dns-infra/root-hints';
+import { ROOT_HINTS } from '../src/lib/authoritative-dns-infra/root-hints';
 
 describe('infra probe worker', () => {
-	it('returns official root-hint baseline evidence for known root server hostnames', async () => {
+	it('returns root-hint reference addresses for a root hostname, and nothing verdict-shaped', async () => {
 		const response = await infraProbeWorker.fetch(new Request('https://infra-probe.internal/probe/authoritative-dns', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
@@ -20,22 +20,20 @@ describe('infra probe worker', () => {
 				ipv4: { addresses: ['198.41.0.4'] },
 				ipv6: { addresses: ['2001:503:ba3e::2:30'] },
 			},
-			rootPriming: {
-				nsNames: ROOT_SERVER_NAMES,
-				matchesOfficialHints: true,
-			},
-			transportParity: {
-				ipv4Ipv6Parity: true,
-			},
-			operationalExposure: {
-				ptrRecords: ['a.root-servers.net'],
-			},
 		});
 		expect(body.errors).toEqual(['live_raw_dns_probe_not_configured']);
+		// The raw DNS lane issues no query. It once asserted `matchesOfficialHints: true`,
+		// `ipv4Ipv6Parity: true` and `ptrRecords: [hostname]` (the input echoed back), which
+		// check_authoritative_dns_infra published as 100 / passed. Reference data only.
+		expect(Object.keys(body).sort()).toEqual(['checkedAt', 'errors', 'hostname', 'reachability']);
+		expect(body.reachability).toEqual({
+			ipv4: { addresses: ['198.41.0.4'] },
+			ipv6: { addresses: ['2001:503:ba3e::2:30'] },
+		});
 		expect(typeof body.checkedAt).toBe('string');
 	});
 
-	it('returns embedded root-server-set evidence', async () => {
+	it('returns embedded root hints for the root-server-set lane, and nothing verdict-shaped', async () => {
 		const response = await infraProbeWorker.fetch(new Request('https://infra-probe.internal/probe/root-server-set', {
 			method: 'POST',
 		}));
@@ -45,12 +43,34 @@ describe('infra probe worker', () => {
 		expect(body).toMatchObject({
 			hostname: '.',
 			rootHints: ROOT_HINTS,
-			observedRootServers: ROOT_SERVER_NAMES,
-			parentChildDelegationMatches: true,
-			glueMatchesHints: true,
 			errors: ['live_root_server_set_probe_not_configured'],
 		});
+		// No query is issued, so nothing was "observed": the lane once returned
+		// `observedRootServers` (a copy of the hints), `glueMatchesHints: true` and
+		// `parentChildDelegationMatches: true`, which check_root_server_set published as 100.
+		expect(Object.keys(body).sort()).toEqual(['checkedAt', 'errors', 'hostname', 'rootHints']);
 		expect(typeof body.checkedAt).toBe('string');
+	});
+
+	// The seam, not the units: each side passed its own spec while the pair published
+	// 100 / passed for lanes that query nothing. Drive the REAL worker through the REAL tools.
+	it('makes both infra tools abstain end-to-end while its live lanes are unconfigured', async () => {
+		const { checkAuthoritativeDnsInfra } = await import('../src/tools/check-authoritative-dns-infra');
+		const { checkRootServerSet } = await import('../src/tools/check-root-server-set');
+		const infraProbe = {
+			fetch: ((input: RequestInfo | URL, init?: RequestInit) =>
+				infraProbeWorker.fetch(new Request(input, init))) as typeof globalThis.fetch,
+		};
+
+		for (const result of [
+			await checkAuthoritativeDnsInfra('a.root-servers.net', { infraProbe }),
+			await checkAuthoritativeDnsInfra('example.com', { infraProbe }),
+			await checkRootServerSet({ infraProbe }),
+		]) {
+			expect(result).toMatchObject({ passed: false, score: 0, checkStatus: 'error', partial: true });
+			expect(result.metadata?.capabilitySummary).toMatchObject({ passed: [], failed: [] });
+			expect(result.findings.every((finding) => finding.metadata?.unprovisioned === true)).toBe(true);
+		}
 	});
 
 	it('returns ordinary-zone parent/child delegation evidence through the injected probe seam', async () => {
