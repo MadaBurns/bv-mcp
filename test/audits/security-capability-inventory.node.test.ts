@@ -11,6 +11,10 @@ const EXPLICIT_NON_CAPABILITY_CONFIG = new Set([
 	'BV_DOH_ENDPOINT',
 	'MCP_ACCESS_LOG_IP_KEY_VERSION',
 	'REJECT_QUERY_API_KEY',
+	// DNS RR-type constant (RecordType.DNSKEY, US-4 authoritative-dns-infra lanes) — a public
+	// DNS record type name, not bearer/HMAC/encryption authority. The KEY-suffix heuristic
+	// above cannot tell it apart from a real *_KEY secret property.
+	'DNSKEY',
 ]);
 
 function sourceFiles(root: string): string[] {
