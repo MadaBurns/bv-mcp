@@ -75,7 +75,7 @@ For Streamable HTTP, clients should retain the `Mcp-Session-Id` returned by `ini
 - **Compliance mapping** — `map_compliance` maps scan findings to NIST 800-177, PCI DSS 4.0, SOC 2, and CIS Controls
 - **Self-tuning scoring** — adaptive weights adjust category importance based on patterns seen across scans via Durable Object telemetry
 - **Per-tier analytics** — usage tracking by auth tier with operator API for tier summaries, key-level usage, and daily digests
-- **Passive and read-only** — all checks use public Cloudflare DNS-over-HTTPS; no authorization required from the target
+- **Read-only** — checks never modify a target and need no authorization from it. Most are passive lookups over public Cloudflare DNS-over-HTTPS; `check_authoritative_dns_infra` and `check_root_server_set` query authoritative and root nameservers directly over TCP/53, and for authenticated callers `check_authoritative_dns_infra` also tests whether a domain's nameservers refuse a zone transfer (no zone data is retrieved)
 
 ---
 

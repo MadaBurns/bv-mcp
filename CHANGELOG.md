@@ -44,14 +44,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   true` without `unprovisioned: true` — a dropped connection or an intercepting middlebox is
   transient and worth retrying, unlike a genuinely unprovisioned sidecar lane.
 - Root-zone SOA-serial divergence across sampled roots is reported as measured (no
-  convergence tolerance for legitimate multi-minute root-zone-push skew) — left as an open
-  integrator decision; see the story log.
-- The public surface (tool descriptions, MCP `instructions`, README, `docs/scoring.md`,
-  `docs/troubleshooting.md`) now describes what the two infra tools actually measure instead
+  convergence tolerance for legitimate multi-minute root-zone-push skew) — an open decision.
+- The public surface (tool descriptions, MCP `instructions`, README, the VS Code extension
+  README, `docs/scoring.md`, `docs/troubleshooting.md`) now describes what the two infra tools actually measure instead
   of the withdrawn UDP/BGP/RPKI/vantage-evidence claim. "All checks are passive and
   read-only" is no longer true for authenticated callers of `check_authoritative_dns_infra`
-  (it also runs an AXFR-refusal test and CHAOS disclosure) and has been reworded
-  accordingly; every check remains read-only.
+  (it also runs an AXFR-refusal test and CHAOS disclosure), and both infra tools now query
+  nameservers directly over TCP/53, so it has been reworded accordingly; every check
+  remains read-only.
 
 ## [3.86.1] - 2026-09-21
 
