@@ -242,7 +242,7 @@ describe('probeRootServerSet', () => {
 	it('returns the no-authoritative-answer abstention when every session answers but none is AA=1', async () => {
 		// A middlebox transparently intercepting TCP/53 also "answers" (a TCP response is
 		// parsed), so `answered: true` alone is not contact — only an AA=1 response is
-		// trustworthy evidence about the root zone. Comment c_mubkwv04_a0fee8: this exact
+		// trustworthy evidence about the root zone. Found by live smoke: this exact
 		// shape (REFUSED/AA=0/RA=1 from every session) used to fall through with NO evidence
 		// AND NO errors, which the analyzer read as a self-consistent hints match and
 		// published a fabricated pass.

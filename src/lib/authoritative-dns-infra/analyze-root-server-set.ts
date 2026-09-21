@@ -90,7 +90,7 @@ function boundedHostnames(names: readonly string[] | undefined): string[] | unde
  * Did this evidence carry at least one LIVE authoritative observation of the root zone?
  * `official_root_hints_match` compares the sidecar's `rootHints` against this Worker's own
  * embedded copy of the SAME module — with no other live signal alongside it, a MATCH is the
- * checker agreeing with itself, not a measurement (#1079 class, comment c_mubkwv04_a0fee8).
+ * checker agreeing with itself, not a measurement (the #1079 defect class).
  */
 function hasLiveObservation(evidence: RootServerSetEvidence): boolean {
 	return (evidence.observedRootServers?.length ?? 0) > 0 || Object.keys(evidence.serialsByRoot ?? {}).length > 0;
@@ -120,7 +120,7 @@ export function analyzeRootServerSetEvidence(probeEvidence: RootServerSetEvidenc
 	// only when the evidence also carries a live authoritative observation
 	// (`hasLiveObservation`) — rootHints alone is the sidecar's build of the SAME root-hints
 	// module this file imports, so a bare MATCH is the checker agreeing with itself
-	// (#696/#1079, live-smoke evidence comment c_mubkwv04_a0fee8: an intercepting middlebox
+	// (#696/#1079, found by live smoke: an intercepting middlebox
 	// answered every session non-authoritatively and the old `laneUnconfigured`-only gate let
 	// the vacuous self-match through as a published pass). A MISMATCH is always a genuine
 	// observed inconsistency and still scores as a real failure regardless of live

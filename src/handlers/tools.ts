@@ -654,8 +654,8 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 		},
 	},
 	check_authoritative_dns_infra: {
-		// Partitioned on the active-probe gate (US-4 contract addendum, comment
-		// c_mubjao6j_f0986b): an authenticated result carries AXFR/CHAOS fields an anonymous
+		// Partitioned on the active-probe gate: an authenticated result carries AXFR/CHAOS
+		// fields an anonymous
 		// caller must never see served back from cache, and the reverse would hide measured
 		// capabilities from a paying caller for the 5-minute TTL.
 		cacheKey: (_args, ro) => (activeProbesAllowed(ro) ? 'authoritative_dns_infra:active' : 'authoritative_dns_infra'),

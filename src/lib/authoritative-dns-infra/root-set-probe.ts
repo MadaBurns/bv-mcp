@@ -243,7 +243,7 @@ export async function probeRootServerSet(
 	// authoritative — a middlebox transparently intercepting TCP/53 answers too. A single
 	// vantage cannot distinguish that from a genuine root server, so "contact" for this
 	// lane means an AA=1 answer, not merely a parsed TCP response (orchestrator live-smoke
-	// finding, comment c_mubkwv04_a0fee8: an intercepted network answered REFUSED/AA=0/RA=1
+	// finding: an intercepted network answered REFUSED/AA=0/RA=1
 	// and the lane returned no evidence AND no errors, which `analyzeRootServerSetEvidence`
 	// then read as a self-consistent hints match and published a fabricated pass).
 	const anyAuthoritative = attempts.some(

@@ -229,7 +229,7 @@ describe('infra probe worker', () => {
 
 	// The seam, not the units: each lane passed its own spec while the pair once published
 	// 100 / passed for lanes that queried nothing (#696/#812), and separately abstained silently
-	// on a non-authoritative answer (comment c_mubkwv04_a0fee8). Drive the REAL worker handlers
+	// on a non-authoritative answer (found by live smoke). Drive the REAL worker handlers
 	// through the REAL tools with injected fake sessions.
 	it('measures both infra tools end-to-end through the real worker handlers with healthy injected sessions', async () => {
 		const { checkAuthoritativeDnsInfra } = await import('../src/tools/check-authoritative-dns-infra');

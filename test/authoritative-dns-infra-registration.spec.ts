@@ -103,7 +103,7 @@ describe('authoritative DNS infra registration', () => {
 		expect(authedSummary.passed).toContain('zone_transfer_refusal');
 	});
 
-	// Comment c_mubjao6j_f0986b (orchestrator, binding contract addendum): the whole-scan
+	// US-4 contract addendum: the whole-scan
 	// cache key for this profile must partition on the active-probe gate, or an authenticated
 	// scan's AXFR/CHAOS-bearing result gets served to a later anonymous caller for the same
 	// domain inside the 5-minute TTL (and the reverse hides measured capabilities from a

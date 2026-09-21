@@ -552,7 +552,7 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const explicitProfile = runtimeOptions?.profile;
 	const isExplicit = explicitProfile && explicitProfile !== 'auto';
 	// The authoritative_dns_infra profile's ENTIRE result is the active-probe gate's evidence
-	// (US-4 contract addendum, comment c_mubjao6j_f0986b): partition its cache key on the gate
+	// (US-4 contract addendum): partition its cache key on the gate
 	// so an authenticated scan's AXFR/CHAOS-bearing result is never served to an anonymous
 	// caller within the TTL, and the reverse never hides measured capabilities from a paying
 	// caller. Every other profile is unaffected.

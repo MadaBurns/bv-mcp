@@ -346,7 +346,7 @@ describe('checkRootServerSet', () => {
 		expect(result.findings.map((finding) => finding.title)).toContain('Root hints do not match official constants');
 	});
 
-	// SQ-128, comment c_mubkwv04_a0fee8 (orchestrator, live-smoke finding): this test used to
+	// Live-smoke finding: this test used to
 	// assert that root hints matching ALONE — with zero live observation — was a genuine pass.
 	// That is exactly the #1079-class bug the live smoke caught by a new route: the sidecar's
 	// `rootHints` is the SAME root-hints module this analyzer imports, so a bare self-match
@@ -354,7 +354,7 @@ describe('checkRootServerSet', () => {
 	// measurement — reachable from an intercepting middlebox that answers every session
 	// non-authoritatively. `official_root_hints_match` now requires a live authoritative
 	// observation alongside the match; a MISMATCH still fails regardless (#828, next test).
-	it('does not report a pass on root hints alone with zero live observation (comment c_mubkwv04_a0fee8)', async () => {
+	it('does not report a pass on root hints alone with zero live observation', async () => {
 		const fetch = vi.fn(async () => new Response(JSON.stringify({
 			hostname: '.',
 			checkedAt: '2026-05-21T00:00:00.000Z',
