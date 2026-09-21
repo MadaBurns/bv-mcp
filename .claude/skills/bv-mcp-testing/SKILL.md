@@ -124,8 +124,15 @@ Same family, different signature (seen 2026-08-19): `*** Received signal #11: Se
 
 To actually prove a query is accepted, execute it against the live API. Tests can't: they run in `workerd`, which has no fs and cannot read `~/.wrangler/config/default.toml` for a token. Drive the builders from a **`.mts`** script via `npx tsx` (a `.ts` file dies on *"Top-level await is currently not supported with the cjs output format"*). ⚠️ The AE API rate-limits hard (`10429`/`971`) — a ~58-query sweep exhausts it and a follow-up control run returns **all-429, masking the 422s and looking like a pass**. Throttle ~4s between calls, and treat an all-429 run as contaminated, not as evidence.
 
+## The `typecheck:tests` ratchet reads the GENERATED `Env` — keep it hermetic
+
+`npm run typecheck:tests` (`scripts/ci/typecheck-tests.mjs`, baseline `test/typecheck-baseline.json`) counts per-file `tsc` errors across `test/tsconfig.json` + `packages/dns-checks/tsconfig.test.json`, and the test project's `Env` type is a **generated** artifact. ⚠️ `wrangler types` folds the **key names of a local `.dev.vars`** into that generated `Env` as **required `string`** members. A dev checkout has `.dev.vars`; CI does not — so identical source read **522 locally and 520 in CI** (#1068). The mechanism is narrow and worth recognising: `TestEnv = typeof env & { OAUTH_SIGNING_SECRET?: string }` intersects to a *required* `string` once `.dev.vars` contributes the key, which turns two `{ ...env, OAUTH_SIGNING_SECRET: undefined } as TestEnv` fixtures (`test/chaos/oauth-misconfiguration.chaos.test.ts:85`, `test/oauth/token.spec.ts:385`) into `TS2352` "neither type sufficiently overlaps". Fixed by generating the test project's types **hermetically** — `wrangler types <out> --env-file <empty file>` into `node_modules/.cache/bv-mcp/`, never the repo-root `worker-configuration.d.ts` (which `npm run typecheck` still generates from your real `.dev.vars`, and which this gate must not clobber). The script prints the generator's content hash; **a local hash differing from CI's is the whole diagnosis** — compare that line before theorising.
+
+Two standing rules. **Never bank a delta you cannot attribute to your diff** with `-- --update`: a machine-local artifact in the baseline hides the next real error, and this one was mistaken for a regression on `main` for four rounds. And because the delta is *deterministic*, it silently rides along on every branch — including ticket verification that re-runs this gate locally — so an unexplained `+N` is a tooling question first, a code question second.
+
 ## Red flags
 
+- "`typecheck:tests` is red locally but CI is green" → compare the generated-types hash the script prints; do NOT `-- --update`.
 - "The tool ignores my mocked DNS" → you imported it statically. Move the import inside the test fn.
 - "Second test case sees stale data" → you cleared one cache key, not both.
 - "~10 failures at the end of `npm test`" → likely teardown noise; re-run those specs alone before debugging.
@@ -138,3 +145,5 @@ Moved here from the fleet-global `bv-cc` skills library (`~/.claude/skills/`) on
 Keep it here. If a fact in it turns out to be cross-repo (a seam bv-web-prod also depends on), the cross-repo half belongs in `fleet-architecture`, not back in the global library.
 
 **2026-08-19** — added the AE-SQL section and the segfault flake signature, both measured while root-causing the `alerting_self_check` page (PR #708). The AE dialect limits were established by executing each construct against the live SQL API, with a control run proving the probe discriminates (known-bad → the quoted 422, known-good → 200).
+
+**2026-09-21** — added the `typecheck:tests` hermeticity section (#1068). Measured on wrangler 4.131.1 by generating types with and without a dummy `.dev.vars` whose key names mirror the real one: the generated `Env` gained 11 required `string` members and the config hash flipped `fd7eb823…` ↔ `a9d025f5…`, the latter matching the hash the main checkout had been reporting.

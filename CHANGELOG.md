@@ -8,6 +8,28 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`npm run typecheck:tests` is now hermetic — it no longer reads `+2` on a dev checkout
+  whose tree CI grades clean.** `wrangler types` folds the key names of a local `.dev.vars`
+  into the generated `Env` as **required `string`** members. A dev checkout has that file and
+  CI does not, so the identical source tree counted 522 test-tree errors locally against a
+  520 baseline while `typecheck-tests` stayed green on `main`. The two extras were the same
+  shape in both files: `TestEnv = typeof env & { OAUTH_SIGNING_SECRET?: string }` intersects
+  to a *required* `string` once `.dev.vars` contributes that key, so
+  `{ ...env, OAUTH_SIGNING_SECRET: undefined } as TestEnv` stopped overlapping and raised
+  `TS2352` (`test/chaos/oauth-misconfiguration.chaos.test.ts:85`, `test/oauth/token.spec.ts:385`).
+  The delta belonged to no branch's diff, yet every branch inherited it, and it blocked three
+  unrelated tickets whose verification re-runs this gate locally. `scripts/ci/typecheck-tests.mjs`
+  now generates the test project's env types itself with an empty `--env-file`, from tracked
+  `wrangler.jsonc` only, into `node_modules/.cache/bv-mcp/` — so it never clobbers the
+  repo-root `worker-configuration.d.ts` that `npm run typecheck` and editors use. It also
+  prints the generator's content hash, which is the one-glance local-vs-CI comparison the
+  original investigation lacked. Verified on wrangler 4.131.1 with and without a `.dev.vars`
+  present: same hash, same counts (520 / 17 / 537), rc=0 both ways. The baseline is unchanged
+  — the delta was a machine-local artifact and banking it would have hidden the next real
+  error. (#1068)
+
 ## [3.85.0] - 2026-09-20
 
 ### Fixed
