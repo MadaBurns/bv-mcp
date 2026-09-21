@@ -114,8 +114,8 @@ ${TOOL_COUNT} MCP tools, including ${CHECK_TOOL_COUNT} \`check_*\` tools and \`s
 | \`check_nsec_walkability\` | DNSSEC Enumeration | NSEC/NSEC3 walkability risk |
 | \`check_dnssec_chain\` | DNSSEC Chain | DS/DNSKEY chain-of-trust details |
 | \`check_fast_flux\` | Fast Flux | Multi-round A/AAAA rotation and TTL analysis |
-| \`check_authoritative_dns_infra\` | Authoritative DNS Infrastructure | Raw DNS, authoritative behavior, routing, RPKI, and vantage evidence |
-| \`check_root_server_set\` | Authoritative DNS Infrastructure | Root hints, root priming, glue, delegation, DNSKEY, and SOA serial evidence |
+| \`check_authoritative_dns_infra\` | Authoritative DNS Infrastructure | Direct DNS-over-TCP/53: reachability, AA flag, recursion exposure, SOA/DNSKEY evidence, IPv4/IPv6 parity; zone-transfer refusal + CHAOS disclosure for authenticated callers |
+| \`check_root_server_set\` | Authoritative DNS Infrastructure | Rotating 3-root sample: priming NS set, glue, SOA serials, cross-root consistency vs. official hints |
 | \`check_bimi\` | BIMI | Record presence, logo URL, mark-certificate authority evidence (VMC or CMC) |
 | \`check_tlsrpt\` | TLS-RPT | Record presence, reporting URI |
 | \`check_lookalikes\` | Lookalikes | Typosquat detection, DNS + MX probing |
