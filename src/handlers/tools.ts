@@ -402,6 +402,19 @@ function buildDnsOptions(runtimeOptions?: ToolRuntimeOptions): QueryDnsOptions |
 }
 
 /**
+ * Gate for `check_authoritative_dns_infra`'s AXFR + CHAOS active probes (US-4 frozen
+ * decision 5). `/mcp` is zero-auth, so an unauthenticated request's `authTier` is `'anon'`;
+ * a caller entitled through bv-web but resolving to no MCP tier reads `'free'`. Every OTHER
+ * tier (`agent`, `developer`, `enterprise`, `partner`, `owner`) has presented a credential —
+ * active probes are enabled ONLY for those, so anonymous/free traffic can never make this
+ * server issue an AXFR or CHAOS query on their behalf.
+ */
+function activeProbesAllowed(runtimeOptions?: ToolRuntimeOptions): boolean {
+	const tier = runtimeOptions?.authTier;
+	return tier !== undefined && tier !== 'anon' && tier !== 'free';
+}
+
+/**
  * Construct a closure that calls `enforceBrandAuditQuota` with the principal +
  * tier bound from `ToolRuntimeOptions`. Returns `undefined` when the required
  * bindings/principal aren't present — the tool then falls back to its own
@@ -641,8 +654,12 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 		},
 	},
 	check_authoritative_dns_infra: {
-		cacheKey: () => 'authoritative_dns_infra',
-		execute: (d, _args, ro) => checkAuthoritativeDnsInfra(d, { infraProbe: ro?.infraProbe }),
+		// Partitioned on the active-probe gate: an authenticated result carries AXFR/CHAOS
+		// fields an anonymous
+		// caller must never see served back from cache, and the reverse would hide measured
+		// capabilities from a paying caller for the 5-minute TTL.
+		cacheKey: (_args, ro) => (activeProbesAllowed(ro) ? 'authoritative_dns_infra:active' : 'authoritative_dns_infra'),
+		execute: (d, _args, ro) => checkAuthoritativeDnsInfra(d, { infraProbe: ro?.infraProbe, activeProbes: activeProbesAllowed(ro) }),
 	},
 	check_root_server_set: {
 		cacheKey: () => 'root_server_set',

@@ -200,6 +200,11 @@ export function isUnconfiguredLaneCode(code: unknown): code is string {
 
 /** Reported by the sidecar when its raw UDP/TCP DNS lane issued no query at all. */
 const RAW_DNS_LANE_UNCONFIGURED = 'live_raw_dns_probe_not_configured';
+/** Reported by the lane when no session answered at all — transient/environmental. */
+const RAW_DNS_NO_CONTACT = 'raw_dns_probe_no_contact';
+/** Reported by the lane when sessions answered but none proved authoritative (AA=1) for the
+ * zone — usually DNS interception on the probe's network path, or a lame delegation. */
+const RAW_DNS_NO_AUTHORITATIVE_ANSWER = 'raw_dns_probe_no_authoritative_answer';
 
 /**
  * Drop every raw-DNS-lane claim from evidence whose own `errors` say that lane never ran.
@@ -454,26 +459,31 @@ export function analyzeAuthoritativeDnsInfraEvidence(
 			);
 		} else {
 			// #1054: "did not yield any conclusive capability checks" reads as a transient
-			// failure and invites a pointless retry. When the probe TOLD us why — it reports
-			// `live_raw_dns_probe_not_configured` because the raw UDP/TCP DNS lane is
-			// unprovisioned in this deployment — say so. Retrying cannot change that outcome.
-			// (The root-server-set lane is unprovisioned too and now abstains the same way; it
-			// once returned constants that read as "real evidence" beside this result.)
+			// failure and invites a pointless retry. When the probe TOLD us why, say so.
+			// A PROVISIONING state (`*_not_configured`) cannot change on retry; a NO-CONTACT /
+			// NO-AUTHORITATIVE-ANSWER abstention is transient and environmental (a dropped
+			// connection, or a middlebox intercepting TCP/53) and IS worth retrying, so it must
+			// never carry `unprovisioned: true`.
 			const unconfigured = (evidence.errors ?? []).filter(isUnconfiguredLaneCode);
+			const errors = evidence.errors ?? [];
+			const noAuthoritativeAnswer = errors.includes(RAW_DNS_NO_AUTHORITATIVE_ANSWER);
+			const noContact = errors.includes(RAW_DNS_NO_CONTACT);
+			let detail: string;
+			if (unconfigured.length > 0) {
+				detail = `The infra probe's raw DNS lane is not provisioned for hostname targets in this deployment (${unconfigured.join(', ')}), so no capability check for ${evidence.hostname} could be verified either way. This is a provisioning state, not a transient failure — retrying returns the same result.`;
+			} else if (noAuthoritativeAnswer) {
+				detail = `The infra probe received responses from ${evidence.hostname}'s nameservers, but none was authoritative (AA=1) for the zone, which usually means DNS interception on the probe's network path or a lame delegation. This is transient and environmental, not a provisioning state — retrying, or a different vantage, may succeed.`;
+			} else if (noContact) {
+				detail = `The infra probe could not establish contact with any nameserver for ${evidence.hostname}. This is transient and environmental, not a provisioning state — retrying may succeed.`;
+			} else {
+				detail = `Infra probe evidence for ${evidence.hostname} did not yield any conclusive capability checks; nothing was verified.`;
+			}
 			findings.push(
-				createFinding(
-					CATEGORY,
-					'Authoritative DNS infrastructure checks inconclusive',
-					'info',
-					unconfigured.length > 0
-						? `The infra probe's raw DNS lane is not provisioned for hostname targets in this deployment (${unconfigured.join(', ')}), so no capability check for ${evidence.hostname} could be verified either way. This is a provisioning state, not a transient failure — retrying returns the same result.`
-						: `Infra probe evidence for ${evidence.hostname} did not yield any conclusive capability checks; nothing was verified.`,
-					{
-						evidenceMode: 'infra_probe',
-						inconclusive: true,
-						...(unconfigured.length > 0 ? { unprovisioned: true, probeErrors: unconfigured } : {}),
-					},
-				),
+				createFinding(CATEGORY, 'Authoritative DNS infrastructure checks inconclusive', 'info', detail, {
+					evidenceMode: 'infra_probe',
+					inconclusive: true,
+					...(unconfigured.length > 0 ? { unprovisioned: true, probeErrors: unconfigured } : {}),
+				}),
 			);
 		}
 	}
