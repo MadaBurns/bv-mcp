@@ -59,7 +59,7 @@ export async function resolveAlertWebhookUrl(env: ScheduledEnv): Promise<string 
 
 		if (res?.status === 401) {
 			await disposeUnreadResponseBody(res);
-			// Definitive client error — skip the cache entirely, straight to static var.
+			// Definitive client error — skip the cache entirely, straight to the static secret.
 			return usableWebhookUrl(env.ALERT_WEBHOOK_URL);
 		}
 

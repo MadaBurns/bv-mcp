@@ -103,6 +103,27 @@ Two exceptions worth remembering because they bite during unrelated work:
 deploy `bv-infra-probe` (`npx wrangler deploy --config wrangler.infra-probe.jsonc`
 when its source changes).
 
+⚠️ **`ALERT_WEBHOOK_URL` is a Worker secret, not a `vars` entry (#1073).**
+`wrangler types --config wrangler.production.jsonc` (`check:bindings:prod`,
+run immediately after the injector) renders every plaintext var inline, so a
+`vars` entry re-disclosed the webhook URL — a capability secret; the path
+token alone is enough to post to the ops alert endpoint — on every deploy.
+`validateProductionSecurityConfig`'s `assessAlertWebhookSecretGate` now
+requires the name be listed by `wrangler secret list` (injected as
+`listSecretNames` so tests never shell out) and fails closed if it is instead
+(or also) present in `vars` — a binding name cannot be both; `wrangler secret
+put` rejects the collision with `[code: 10053]`. One-shot transition override:
+`BV_ALLOW_MISSING_ALERT_SECRET=1` (checked before the lister runs, so it also
+covers an unreachable `wrangler secret list` — same shape as
+`BV_ALLOW_STALE_SIDECARS`). ⚠️ The override is required for BOTH documented
+migration paths, including the `--secrets-file` one-deploy path — the gate
+runs (`node scripts/inject-private-config.cjs`, package.json:52) BEFORE the
+final `npx wrangler deploy` step that `--secrets-file` attaches to, so the
+secret is never listed yet at gate-check time. Set it inline on that one
+command only, never exported from a shell profile — a persisted override
+silently disables the alerting guarantee on every subsequent deploy. Full
+migration steps: `docs/operator-runbook.md` §8.
+
 ## Service-binding door — what the two paths do and do not share
 
 `/internal/tools/call` accepts `{ name, arguments }` → `{ content, isError? }`.

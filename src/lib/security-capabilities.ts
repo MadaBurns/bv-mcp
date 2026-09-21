@@ -31,6 +31,7 @@ export const MCP_SECURITY_CRITICAL_SECRET_KEYS = [
 	'BV_TLS_PROBE_KEY',
 	'CF_D1_API_TOKEN',
 	'CF_ANALYTICS_TOKEN',
+	'ALERT_WEBHOOK_URL',
 ] as const;
 
 export type McpSecurityCriticalSecretKey = (typeof MCP_SECURITY_CRITICAL_SECRET_KEYS)[number];
