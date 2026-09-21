@@ -24,14 +24,11 @@ const MAX_CONCURRENT_SESSIONS = 4;
 /** Whole-lane deadline; shrinks the per-session timeout as sessions queue behind the concurrency cap. */
 const DEFAULT_BUDGET_MS = 4000;
 /**
- * Textual root-zone name. NOTE for the integrator (SQ-128): `dns-tcp.ts`'s
- * `encodeName` throws on any name that normalizes to the empty string, so a
- * query for the literal root ('.') always throws through the real
- * `openDnsTcpSession` today. This lane still abstains safely in that case
- * (falls through to `root_server_set_probe_no_contact`), but it cannot
- * successfully query a live root server until that codec gap is fixed —
- * out of this ticket's scope (`dns-tcp.ts` is off-limits). Flagged in the
- * submit report and the story log.
+ * Textual root-zone name. `dns-tcp.ts`'s `encodeName` used to throw on any name
+ * that normalizes to the empty string, so a query for the literal root ('.')
+ * always threw through the real `openDnsTcpSession` — fixed by e1155ee72
+ * (single zero-length terminating octet, no labels), so this lane can now
+ * successfully query a live root server.
  */
 const ROOT_ZONE_NAME = '.';
 
@@ -240,6 +237,20 @@ export async function probeRootServerSet(
 
 	if (!anyAnswered) {
 		return { hostname: '.', checkedAt, rootHints, errors: ['root_server_set_probe_no_contact'] };
+	}
+
+	// A session can "answer" (a TCP response was parsed) without that response being
+	// authoritative — a middlebox transparently intercepting TCP/53 answers too. A single
+	// vantage cannot distinguish that from a genuine root server, so "contact" for this
+	// lane means an AA=1 answer, not merely a parsed TCP response (orchestrator live-smoke
+	// finding, comment c_mubkwv04_a0fee8: an intercepted network answered REFUSED/AA=0/RA=1
+	// and the lane returned no evidence AND no errors, which `analyzeRootServerSetEvidence`
+	// then read as a self-consistent hints match and published a fabricated pass).
+	const anyAuthoritative = attempts.some(
+		(attempt) => attempt.result.ns?.aa === true || attempt.result.soa?.aa === true || attempt.result.dnskey?.aa === true,
+	);
+	if (!anyAuthoritative) {
+		return { hostname: '.', checkedAt, rootHints, errors: ['root_server_set_probe_no_authoritative_answer'] };
 	}
 
 	const byRoot = new Map<string, RootSessionAttempt[]>();

@@ -8,6 +8,45 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Added
+
+- **`check_authoritative_dns_infra` and `check_root_server_set` now issue real DNS-over-TCP
+  queries** against a target's own nameservers (authoritative lane) and a rotating 3-of-13
+  sample of the root servers (root-server-set lane), instead of returning reference data or a
+  provisioning stub. Measured when contact is proven by an AA=1 answer: UDP/TCP-53
+  reachability, the authoritative AA flag and recursion exposure, SOA-serial consistency,
+  direct DNSKEY/RRSIG presence, EDNS0/TCP-fallback handling, zone-transfer (AXFR) refusal,
+  unsupported-query refusal, IPv4/IPv6 transport parity, and — for the root-server-set lane —
+  the observed root NS set, root glue-vs-hints match, parent/child delegation agreement, and
+  cross-root SOA-serial convergence. `official_root_hints_match` now passes only alongside a
+  live authoritative observation, never on a bare comparison against this Worker's own
+  embedded hints table.
+- **AXFR and CHAOS (`version.bind`/`id.server`) active probes, gated to authenticated
+  callers.** AXFR is sent only as a first-frame refusal test — the socket is closed
+  immediately after the first response frame, so no zone data is ever transferred, stored, or
+  logged. Anonymous and free-tier callers on the zero-auth `/mcp` surface produce zero
+  AXFR/CHAOS traffic; the 5-minute result cache (both the direct tool and `scan_domain`'s
+  `authoritative_dns_infra` profile) is partitioned on the gate so an authenticated result is
+  never served back to an anonymous caller, or the reverse, within the TTL.
+
+### Fixed
+
+- A probe that received TCP/53 responses but none proved authoritative (AA=1) for the zone —
+  the signature of a middlebox transparently intercepting TCP/53, not a genuine answer — no
+  longer publishes a fabricated pass. Both lanes now abstain explicitly
+  (`raw_dns_probe_no_authoritative_answer` / `root_server_set_probe_no_authoritative_answer`)
+  instead of silently omitting every verdict-shaped field with no error, which the analyzer
+  had been reading as a self-consistent hints match.
+
+### Changed
+
+- The two new no-contact / no-authoritative-answer abstention codes report `inconclusive:
+  true` without `unprovisioned: true` — a dropped connection or an intercepting middlebox is
+  transient and worth retrying, unlike a genuinely unprovisioned sidecar lane.
+- Root-zone SOA-serial divergence across sampled roots is reported as measured (no
+  convergence tolerance for legitimate multi-minute root-zone-push skew) — left as an open
+  integrator decision; see the story log.
+
 ## [3.86.1] - 2026-09-21
 
 ### Fixed

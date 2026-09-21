@@ -239,7 +239,13 @@ describe('probeRootServerSet', () => {
 		expect(tracker.current).toBe(0); // all sessions closed
 	});
 
-	it('never sets a verdict-shaped field from a non-AA=1 answer', async () => {
+	it('returns the no-authoritative-answer abstention when every session answers but none is AA=1', async () => {
+		// A middlebox transparently intercepting TCP/53 also "answers" (a TCP response is
+		// parsed), so `answered: true` alone is not contact — only an AA=1 response is
+		// trustworthy evidence about the root zone. Comment c_mubkwv04_a0fee8: this exact
+		// shape (REFUSED/AA=0/RA=1 from every session) used to fall through with NO evidence
+		// AND NO errors, which the analyzer read as a self-consistent hints match and
+		// published a fabricated pass.
 		const handlers = healthyHandlers();
 		for (const hint of ROOT_HINTS) {
 			const nonAuthoritative = (_name: string, type: number): DirectDnsResponse | undefined => {
@@ -257,12 +263,14 @@ describe('probeRootServerSet', () => {
 		});
 
 		// The lane DID get responses (answered=true), so this is not the no-contact shape;
-		// but none of those responses were AA=1, so nothing verdict-shaped may be set.
-		expect(evidence.errors).toBeUndefined();
-		expect(evidence.observedRootServers).toBeUndefined();
-		expect(evidence.parentChildDelegationMatches).toBeUndefined();
-		expect(evidence.glueMatchesHints).toBeUndefined();
-		expect(evidence.serialsByRoot).toBeUndefined();
+		// but none of those responses were AA=1, so the lane must abstain explicitly rather
+		// than silently omit every verdict-shaped field.
+		expect(evidence).toEqual({
+			hostname: '.',
+			checkedAt: '2026-09-22T00:00:00.000Z',
+			rootHints: [...ROOT_HINTS],
+			errors: ['root_server_set_probe_no_authoritative_answer'],
+		});
 	});
 
 	it('always includes rootHints and never fills dnskeyDigestsByRoot (W1 decodes DNSKEY as presence-only)', async () => {
