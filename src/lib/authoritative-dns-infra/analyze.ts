@@ -190,6 +190,14 @@ function probeEstablishedContact(evidence: AuthoritativeDnsInfraEvidence): boole
 	return false;
 }
 
+/**
+ * Probe `errors` reach client-visible finding text and metadata, so only a code-shaped
+ * token is echoed — never free text from the other side of the service binding.
+ */
+export function isUnconfiguredLaneCode(code: unknown): code is string {
+	return typeof code === 'string' && /^[a-z0-9_]{1,64}_not_configured$/.test(code);
+}
+
 /** Reported by the sidecar when its raw UDP/TCP DNS lane issued no query at all. */
 const RAW_DNS_LANE_UNCONFIGURED = 'live_raw_dns_probe_not_configured';
 
@@ -451,7 +459,7 @@ export function analyzeAuthoritativeDnsInfraEvidence(
 			// unprovisioned in this deployment — say so. Retrying cannot change that outcome.
 			// (The root-server-set lane is unprovisioned too and now abstains the same way; it
 			// once returned constants that read as "real evidence" beside this result.)
-			const unconfigured = (evidence.errors ?? []).filter((code) => code.endsWith('_not_configured'));
+			const unconfigured = (evidence.errors ?? []).filter(isUnconfiguredLaneCode);
 			findings.push(
 				createFinding(
 					CATEGORY,

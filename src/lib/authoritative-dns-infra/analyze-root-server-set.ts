@@ -3,7 +3,7 @@
 import { type Finding, createFinding } from '../scoring';
 import { ROOT_HINTS, ROOT_SERVER_NAMES } from './root-hints';
 import type { InfraCapabilityKey, InfraCapabilitySeverity, RootServerSetEvidence } from './types';
-import type { InfraCapabilitySummary } from './analyze';
+import { type InfraCapabilitySummary, isUnconfiguredLaneCode } from './analyze';
 
 const CATEGORY = 'authoritative_dns_infra';
 
@@ -195,7 +195,7 @@ export function analyzeRootServerSetEvidence(probeEvidence: RootServerSetEvidenc
 		} else {
 			// Same reasoning as #1054: when the probe says WHY nothing was verified, name the
 			// provisioning state — a retry cannot change it.
-			const unconfigured = (evidence.errors ?? []).filter((code) => code.endsWith('_not_configured'));
+			const unconfigured = (evidence.errors ?? []).filter(isUnconfiguredLaneCode);
 			findings.push(
 				createFinding(
 					CATEGORY,
