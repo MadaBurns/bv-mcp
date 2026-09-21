@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.86.1] - 2026-09-21
+
 ### Fixed
 
 - **`check_authoritative_dns_infra` published 100 / passed for root-server hostnames that
