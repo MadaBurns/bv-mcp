@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.87.0] - 2026-09-21
+
 ### Added
 
 - **`check_authoritative_dns_infra` and `check_root_server_set` now issue real DNS-over-TCP
