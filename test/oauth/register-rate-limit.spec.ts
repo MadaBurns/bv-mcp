@@ -4,11 +4,19 @@
  *
  * Verifies that the 10/min limit fires on the 11th request from the same IP
  * and that a different IP is NOT blocked (proving per-IP isolation).
+ *
+ * Every count-exact burst here runs under `pinRateLimitWindow()`. The limiter counts into
+ * an ALIGNED window (`src/oauth/rate-limit.ts:128`), so a burst that crossed a wall-clock
+ * minute boundary used to be split across two counters and the 11th request was legitimately
+ * admitted — the #1072 flake, which went red on a release run and green on a re-run of the
+ * same commit. Pinning the clock removes the boundary instead of tolerating it; the crossing
+ * itself is covered deliberately by the last test in this file.
  */
 import { SELF, env } from 'cloudflare:test';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { resetQuotaCoordinatorState } from '../../src/lib/quota-coordinator';
 import { clearKvPrefix } from '../helpers/kv';
+import { pinRateLimitWindow } from '../helpers/rate-limit-window';
 
 const VALID_BODY = JSON.stringify({ redirect_uris: ['https://claude.ai/cb'] });
 const HEADERS = { 'Content-Type': 'application/json' };
@@ -25,6 +33,7 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+	vi.restoreAllMocks();
 	await clearKvPrefix(env.SESSION_STORE, 'oauth:');
 	await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
 });
@@ -39,6 +48,7 @@ function register(ip: string): Promise<Response> {
 
 describe('POST /oauth/register — per-IP rate limit', () => {
 	it('allows 10 registrations from the same IP then blocks the 11th with 429', async () => {
+		pinRateLimitWindow();
 		const ip = uniqueRateLimitIp();
 
 		// Drive 10 successful requests.
@@ -63,6 +73,7 @@ describe('POST /oauth/register — per-IP rate limit', () => {
 	});
 
 	it('allows a different IP to register after the first IP is blocked', async () => {
+		pinRateLimitWindow();
 		const blockedIp = uniqueRateLimitIp();
 		const allowedIp = uniqueRateLimitIp();
 
@@ -79,10 +90,39 @@ describe('POST /oauth/register — per-IP rate limit', () => {
 	});
 
 	it('admits exactly 10 registrations from a concurrent same-IP burst', async () => {
+		pinRateLimitWindow();
 		const ip = uniqueRateLimitIp();
 		const responses = await Promise.all(Array.from({ length: 25 }, () => register(ip)));
 		const statuses = responses.map((response) => response.status);
 		expect(statuses.filter((status) => status === 201)).toHaveLength(10);
 		expect(statuses.filter((status) => status === 429)).toHaveLength(15);
+	});
+
+	/**
+	 * The #1072 flake, made deterministic.
+	 *
+	 * This is the mechanism the release run hit by luck: the per-IP counter lives under an
+	 * aligned window key (`src/oauth/rate-limit.ts:128-140`), so a burst that crosses a
+	 * minute boundary is counted twice and the request past the limit is admitted. That is
+	 * fixed-window behaviour working as designed — an operator-visible property of the
+	 * limiter, not a defect — so it is asserted here rather than engineered away, and the
+	 * count-exact tests above pin the clock so they can never meet it by accident.
+	 */
+	it('admits an 11th registration when the burst crosses an aligned window boundary (#1072)', async () => {
+		const window = pinRateLimitWindow();
+		const ip = uniqueRateLimitIp();
+
+		// The first window's full allowance is spent.
+		for (let i = 0; i < 10; i++) {
+			expect((await register(ip)).status, `request ${i + 1} should succeed`).toBe(201);
+		}
+		expect((await register(ip)).status, 'inside one window the 11th is blocked').toBe(429);
+
+		// Nothing changes but the window. Crossing the boundary puts the next request under a
+		// different coordination key, where it is the FIRST request of a fresh allowance — so
+		// the same 11th request that was just refused is now admitted. That is the 201 the
+		// release run saw, with the wall clock removed as a variable.
+		window.advanceToNextWindow();
+		expect((await register(ip)).status, 'a boundary crossing starts a fresh aligned window').toBe(201);
 	});
 });
