@@ -10,6 +10,10 @@ import { analyzeAuthoritativeDnsInfraEvidence } from '../lib/authoritative-dns-i
 
 export interface AuthoritativeDnsInfraCheckOptions {
 	infraProbe?: InfraProbeBinding;
+	/** Gates AXFR + CHAOS active probes on the sidecar (US-4 contract #5). Callers set this
+	 * true ONLY for an authenticated tier — every anonymous/free caller must produce zero
+	 * AXFR/CHAOS traffic. */
+	activeProbes?: boolean;
 }
 
 export async function checkAuthoritativeDnsInfra(
@@ -45,7 +49,7 @@ export async function checkAuthoritativeDnsInfra(
 
 	let evidence: Awaited<ReturnType<typeof fetchAuthoritativeDnsEvidence>>;
 	try {
-		evidence = await fetchAuthoritativeDnsEvidence(hostname, options.infraProbe);
+		evidence = await fetchAuthoritativeDnsEvidence(hostname, options.infraProbe, { activeProbes: options.activeProbes === true });
 	} catch (err) {
 		// Provisioned-but-failing path (5xx / non-OK / network error). Degrade
 		// gracefully to an INCONCLUSIVE result (excluded from scoring via

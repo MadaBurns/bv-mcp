@@ -13,9 +13,10 @@
  *  2. `check_lookalikes` is the only consumer contemplated, and it is
  *     `scanIncluded: false`. Scored checks abstain via `checkStatus`; an
  *     inference timeout must never be able to zero a category.
- *  3. README.md markets every check as "Passive and read-only — all checks use
- *     public Cloudflare DNS-over-HTTPS". Third-party inference on a scan path is
- *     NEW EGRESS and would contradict that claim.
+ *  3. README.md markets the checks as "Read-only … Most are passive lookups over
+ *     public Cloudflare DNS-over-HTTPS" and names the only direct-query tools.
+ *     Third-party inference on a scan path is NEW EGRESS and would contradict
+ *     that claim.
  *
  * ⚠️ This is enforced MECHANICALLY rather than by convention because the wiring
  * is latent, not hypothetical: `lookalikes` carries `importance: 2` in

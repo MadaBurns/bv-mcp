@@ -292,7 +292,7 @@ type BvMcpEnv = Env & {
 	 */
 	/** Tier 1 — bv-infrastructure-graph (HTTP service binding). */
 	BV_INFRA_GRAPH?: Fetcher;
-	/** Optional raw authoritative DNS/BGP/RPKI/vantage probe binding. */
+	/** Optional bv-infra-probe sidecar binding: live DNS-over-TCP/53 probes of authoritative and root nameservers. */
 	BV_INFRA_PROBE?: Fetcher;
 	/**
 	 * Tier 2 — bv-intel-gateway (Workers RPC binding to a `WorkerEntrypoint`).

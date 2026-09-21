@@ -91,7 +91,7 @@ Add to your VS Code settings or `.vscode/mcp.json`:
 
 ## Privacy
 
-All checks are **passive and read-only** — they query public DNS records via Cloudflare DNS-over-HTTPS. No authorization is required from the target domain. No data is stored beyond 5-minute result caching.
+All checks are **read-only** — they never modify a target, and no authorization is required from the target domain. Most are passive lookups of public DNS records via Cloudflare DNS-over-HTTPS; `check_authoritative_dns_infra` and `check_root_server_set` query authoritative and root nameservers directly over TCP/53, and for authenticated callers `check_authoritative_dns_infra` also tests whether a domain's nameservers refuse a zone transfer (no zone data is retrieved). No data is stored beyond 5-minute result caching.
 
 ## Links
 

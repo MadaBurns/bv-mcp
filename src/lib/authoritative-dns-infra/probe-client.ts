@@ -25,11 +25,24 @@ async function readJsonResponse<T>(response: Response, probeName: string): Promi
 	return body;
 }
 
-export async function fetchAuthoritativeDnsEvidence(domain: string, infraProbe: InfraProbeBinding): Promise<AuthoritativeDnsInfraEvidence> {
+export interface FetchAuthoritativeDnsEvidenceOptions {
+	/** Gates AXFR + CHAOS active probes on the sidecar side (US-4 contract #5). Only a literal
+	 * `true` enables them; omit or pass `false` for every unauthenticated/free caller. */
+	activeProbes?: boolean;
+}
+
+export async function fetchAuthoritativeDnsEvidence(
+	domain: string,
+	infraProbe: InfraProbeBinding,
+	options: FetchAuthoritativeDnsEvidenceOptions = {},
+): Promise<AuthoritativeDnsInfraEvidence> {
 	const response = await infraProbe.fetch('https://infra-probe.internal/probe/authoritative-dns', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ hostname: normalizeInfraHostname(domain) }),
+		body: JSON.stringify({
+			hostname: normalizeInfraHostname(domain),
+			...(options.activeProbes ? { activeProbes: true } : {}),
+		}),
 		signal: AbortSignal.timeout(INFRA_PROBE_TIMEOUT_MS),
 	});
 	return readJsonResponse<AuthoritativeDnsInfraEvidence>(response, 'authoritative dns probe');

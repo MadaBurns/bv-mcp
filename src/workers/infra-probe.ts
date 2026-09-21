@@ -1,16 +1,16 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { probeDelegationConsistency, type DelegationProbeDependencies } from '../lib/authoritative-dns-infra/delegation-probe';
-import { ROOT_HINTS } from '../lib/authoritative-dns-infra/root-hints';
+import { probeAuthoritativeDns, type AuthoritativeProbeDependencies } from '../lib/authoritative-dns-infra/authoritative-probe';
+import { probeRootServerSet, type RootSetProbeDependencies } from '../lib/authoritative-dns-infra/root-set-probe';
 import { normalizeInfraHostname } from '../lib/authoritative-dns-infra/probe-client';
 import { readBoundedText } from '../lib/request-body';
-import type {
-	AuthoritativeDnsInfraEvidence,
-	RootServerSetEvidence,
-} from '../lib/authoritative-dns-infra/types';
 
 interface AuthoritativeProbeRequest {
 	hostname?: unknown;
+	/** Gates AXFR + CHAOS active probes (US-4 contract #5). Only a literal `true` enables
+	 * them — anything else (absent, a truthy non-boolean, a string) is treated as false. */
+	activeProbes?: unknown;
 }
 
 const MAX_PROBE_BODY_BYTES = 1024;
@@ -43,11 +43,10 @@ function validHostname(value: string): boolean {
 	);
 }
 
-function rootHintForHostname(hostname: string) {
-	return ROOT_HINTS.find((hint) => hint.name === hostname);
-}
-
-async function handleAuthoritativeDnsProbe(request: Request): Promise<Response> {
+export async function handleAuthoritativeDnsProbe(
+	request: Request,
+	dependencies: AuthoritativeProbeDependencies = {},
+): Promise<Response> {
 	if (request.method !== 'POST') {
 		return jsonResponse({ error: 'method_not_allowed' }, 405);
 	}
@@ -60,26 +59,15 @@ async function handleAuthoritativeDnsProbe(request: Request): Promise<Response> 
 	if (!validHostname(hostname)) {
 		return jsonResponse({ error: 'invalid_hostname' }, 400);
 	}
+	// Only a literal `true` enables AXFR/CHAOS; anything else is false (US-4 contract #5).
+	const activeProbes = body.activeProbes === true;
 
-	const rootHint = rootHintForHostname(hostname);
-	const evidence: AuthoritativeDnsInfraEvidence = {
-		hostname,
-		checkedAt: new Date().toISOString(),
-		reachability: {
-			ipv4: { addresses: rootHint ? [rootHint.ipv4] : [] },
-			ipv6: { addresses: rootHint ? [rootHint.ipv6] : [] },
-		},
-		errors: ['live_raw_dns_probe_not_configured'],
-	};
-
-	// ⚠️ This lane issues no DNS query, so it must not emit anything verdict-shaped. For a
-	// root hostname it used to add `rootPriming.matchesOfficialHints: true`,
-	// `transportParity.ipv4Ipv6Parity: true` and `operationalExposure.ptrRecords: [hostname]`
-	// — the hints table compared with itself, and the input echoed back as its own PTR. The
-	// analyzer read those as three measured passes and the tool published 100 / passed. The
-	// hint addresses above are reference data and carry no `reachable` flag; keep it that way
-	// until a live raw-DNS probe exists. Pinned by test/infra-probe-worker.spec.ts.
-	return jsonResponse(evidence);
+	try {
+		return jsonResponse(await probeAuthoritativeDns(hostname, dependencies, { activeProbes }));
+	} catch {
+		console.error('Authoritative DNS probe failed');
+		return jsonResponse({ error: 'authoritative_probe_failed' }, 502);
+	}
 }
 
 export async function handleDelegationConsistencyProbe(
@@ -107,24 +95,20 @@ export async function handleDelegationConsistencyProbe(
 	}
 }
 
-function handleRootServerSetProbe(request: Request): Response {
+export async function handleRootServerSetProbe(
+	request: Request,
+	dependencies: RootSetProbeDependencies = {},
+): Promise<Response> {
 	if (request.method !== 'POST') {
 		return jsonResponse({ error: 'method_not_allowed' }, 405);
 	}
 
-	// ⚠️ Same rule as the authoritative lane above: no query is issued, so nothing is
-	// "observed". This used to add `observedRootServers` (a copy of the hints) plus
-	// `glueMatchesHints: true` and `parentChildDelegationMatches: true`, which
-	// check_root_server_set published as four measured passes and a score of 100.
-	// `rootHints` stays because the evidence contract requires it (#828) — it is this
-	// deployment's embedded table, not a measurement of the root zone.
-	const evidence: RootServerSetEvidence = {
-		hostname: '.',
-		checkedAt: new Date().toISOString(),
-		rootHints: [...ROOT_HINTS],
-		errors: ['live_root_server_set_probe_not_configured'],
-	};
-	return jsonResponse(evidence);
+	try {
+		return jsonResponse(await probeRootServerSet(dependencies));
+	} catch {
+		console.error('Root server set probe failed');
+		return jsonResponse({ error: 'root_server_set_probe_failed' }, 502);
+	}
 }
 
 export default {

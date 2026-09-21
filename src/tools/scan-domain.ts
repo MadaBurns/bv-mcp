@@ -526,6 +526,18 @@ export async function runCheckRetry(
 }
 
 /**
+ * Same active-probe tier gate as `src/handlers/tools.ts`'s `activeProbesAllowed` (US-4
+ * frozen decision 5): `/mcp` is zero-auth, so an unauthenticated request's `authTier` is
+ * `'anon'`; a caller entitled through bv-web but resolving to no MCP tier reads `'free'`.
+ * Every OTHER tier has presented a credential — active probes (and the AXFR/CHAOS evidence
+ * they produce) are enabled ONLY for those.
+ */
+function activeProbesAllowedForScan(runtimeOptions?: ScanRuntimeOptions): boolean {
+	const tier = runtimeOptions?.authTier;
+	return tier !== undefined && tier !== 'anon' && tier !== 'free';
+}
+
+/**
  * Run a full DNS security scan on a domain.
  * Executes all checks in parallel and computes an overall score.
  *
@@ -539,8 +551,15 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	const timeoutBudget = resolveScanTimeoutBudget(runtimeOptions);
 	const explicitProfile = runtimeOptions?.profile;
 	const isExplicit = explicitProfile && explicitProfile !== 'auto';
+	// The authoritative_dns_infra profile's ENTIRE result is the active-probe gate's evidence
+	// (US-4 contract addendum): partition its cache key on the gate
+	// so an authenticated scan's AXFR/CHAOS-bearing result is never served to an anonymous
+	// caller within the TTL, and the reverse never hides measured capabilities from a paying
+	// caller. Every other profile is unaffected.
+	const infraProfileCacheKeySuffix =
+		isExplicit && explicitProfile === 'authoritative_dns_infra' && activeProbesAllowedForScan(runtimeOptions) ? ':active' : '';
 	// Versioned (cache:v<version>:...) so a deploy auto-invalidates — see buildScanCacheKey.
-	const cacheKey = isExplicit ? buildScanCacheKey(domain, explicitProfile) : buildScanCacheKey(domain);
+	const cacheKey = isExplicit ? buildScanCacheKey(domain, `${explicitProfile}${infraProfileCacheKeySuffix}`) : buildScanCacheKey(domain);
 
 	// Fingerprint of the EFFECTIVE scoring config this scan runs under. Stamped onto
 	// every result this function returns so downstream formatting reports the config
@@ -697,7 +716,11 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				Promise.all([
 					safeCheck(
 						'authoritative_dns_infra',
-						() => checkAuthoritativeDnsInfra(domain, { infraProbe: runtimeOptions?.infraProbe }),
+						() =>
+							checkAuthoritativeDnsInfra(domain, {
+								infraProbe: runtimeOptions?.infraProbe,
+								activeProbes: activeProbesAllowedForScan(runtimeOptions),
+							}),
 						timeoutBudget.perCheckTimeoutMs,
 					),
 					safeCheck(

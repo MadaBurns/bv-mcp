@@ -628,7 +628,7 @@ const TOOL_DEFS = {
 	},
 	check_authoritative_dns_infra: {
 		description:
-			'Check authoritative DNS infrastructure posture for a hostname. Uses BV_INFRA_PROBE when available for raw DNS, routing, RPKI, and vantage-point evidence.',
+			'Measure authoritative DNS infrastructure posture for a hostname over direct DNS-over-TCP/53 from a single vantage: TCP/53 reachability, the authoritative AA flag, recursion exposure, SOA serial consistency across nameservers, DNSKEY/RRSIG presence (not validation), IPv4/IPv6 answer parity, and unsupported-query handling — plus, for authenticated callers, a zone-transfer refusal test (first response only, no zone data retrieved) and CHAOS version.bind/id.server disclosure. Reports UDP/53 reachability, amplification, EDNS large-response/truncation, DNS cookies/RRL, BGP origin, RPKI, route-leak signals, anycast diversity, vantage latency, and RIR/RDAP as inconclusive — none of those are measured. Uses BV_INFRA_PROBE when available.',
 		schema: BaseDomainArgs,
 		group: 'infrastructure',
 		tier: 'core',
@@ -636,7 +636,7 @@ const TOOL_DEFS = {
 	},
 	check_root_server_set: {
 		description:
-			'Check the DNS root server set against official root hints, root glue, delegation, serial, and DNSKEY cross-root evidence.',
+			'Query a rotating sample of 3 root servers per call and compare the priming NS set, glue, SOA serials, and cross-root consistency against the embedded official root hints. Uses BV_INFRA_PROBE when available; without it, returns the embedded hints as reference data only.',
 		schema: RootServerSetArgs,
 		group: 'infrastructure',
 		tier: 'core',

@@ -321,14 +321,14 @@ Source: `packages/dns-checks/src/scoring/profiles.ts`.
 
 ### Authoritative DNS Infrastructure Profile
 
-The `authoritative_dns_infra` category covers hostname and root-server evidence that normal DoH-only scans cannot observe directly: UDP/TCP 53 reachability, AA flag behavior, recursion refusal, zone-transfer refusal, direct DNSSEC material, EDNS0/TCP fallback behavior, abuse-resistance signals, IPv4/IPv6 parity, BGP origin/RPKI state, anycast/vantage evidence, PTR consistency, and root-server set conformance.
+The `authoritative_dns_infra` category covers hostname and root-server evidence that normal DoH-only scans cannot observe directly, measured over direct DNS-over-TCP/53 from a single vantage: TCP/53 reachability, the AA flag, recursion exposure, SOA serial consistency across nameservers, DNSKEY/RRSIG presence (not validation), IPv4/IPv6 answer parity, unsupported-query handling, and root-server set conformance; for authenticated callers, also zone-transfer refusal and CHAOS `version.bind`/`id.server` disclosure. It does not measure, and reports as inconclusive: UDP/53 reachability, amplification, EDNS large-response/truncation, DNS cookies/RRL, BGP origin, RPKI, route-leak signals, anycast diversity, vantage latency, and RIR/RDAP.
 
 Two MCP tools populate this category:
 
 - `check_authoritative_dns_infra` checks a hostname's authoritative DNS infrastructure posture.
-- `check_root_server_set` checks the DNS root-server set against official root hints and, when available, live root evidence.
+- `check_root_server_set` queries a rotating sample of 3 root servers per call and compares the priming NS set, glue, SOA serials, and cross-root consistency with the embedded official hints.
 
-Both tools return structured partial results when `BV_INFRA_PROBE` is not configured. In that worker-only mode, raw DNS, BGP/RPKI, and vantage-dependent capabilities are marked inconclusive; `check_root_server_set` still returns the embedded official root-server names.
+Both tools return structured partial results when `BV_INFRA_PROBE` is not configured. In that worker-only mode, every live-probe capability is marked inconclusive; `check_root_server_set` still returns the embedded official root-server names.
 
 Source: `src/tools/check-authoritative-dns-infra.ts`, `src/tools/check-root-server-set.ts`, and `src/lib/authoritative-dns-infra/`.
 
