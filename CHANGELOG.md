@@ -8,6 +8,23 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`check_authoritative_dns_infra` published 100 / passed for root-server hostnames that
+  nothing had probed.** The `bv-infra-probe` sidecar's raw DNS lane issues no query, yet for
+  a root hostname it returned `matchesOfficialHints: true`, `ipv4Ipv6Parity: true` and
+  `ptrRecords: [hostname]` — its static hints table compared with itself, and the input
+  echoed back as its own PTR — beside `live_raw_dns_probe_not_configured`. Three capabilities
+  counted as passed, so the #696 `measuredNothing` guard never fired and the result read
+  "satisfied all conclusive capability checks" at `confidence: deterministic`; under
+  `profile: 'authoritative_dns_infra'` that category is the whole grade. Two layers, because
+  the sidecar deploys separately: the sidecar now returns hint addresses as reference data
+  only, and the analyzer discards every raw-DNS-lane claim (pass or fail) from evidence whose
+  own `errors` report that lane unconfigured. Routing, RPKI, vantage and RIR/RDAP evidence is
+  untouched. Root hostnames now abstain exactly like any other hostname (`checkStatus:
+  'error'`, excluded from scoring); no other target's result changes. Ship with
+  `npm run deploy:infra-probe` as well as `deploy:prod`.
+
 ## [3.86.0] - 2026-09-21
 
 ### Fixed

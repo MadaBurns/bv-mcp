@@ -190,9 +190,38 @@ function probeEstablishedContact(evidence: AuthoritativeDnsInfraEvidence): boole
 	return false;
 }
 
+/** Reported by the sidecar when its raw UDP/TCP DNS lane issued no query at all. */
+const RAW_DNS_LANE_UNCONFIGURED = 'live_raw_dns_probe_not_configured';
+
+/**
+ * Drop every raw-DNS-lane claim from evidence whose own `errors` say that lane never ran.
+ *
+ * The sidecar answered root hostnames with `matchesOfficialHints: true`,
+ * `ipv4Ipv6Parity: true` and `ptrRecords: [hostname]` — constants from its static hints
+ * table, the PTR being the input echoed back — next to `live_raw_dns_probe_not_configured`.
+ * Three capabilities "passed", `measuredNothing` stayed false, and the tool published
+ * 100 / passed for a probe that issued no query (the #696 / #812 class). The sidecar
+ * deploys separately from this Worker, so a stale one must not be able to do that: a
+ * verdict — pass OR fail — from a lane that reports itself unconfigured is not a measurement.
+ *
+ * ⚠️ Scoped to the raw DNS lane. `routing`, `vantage` and the RIR/RDAP half of
+ * `operationalExposure` come from other lanes and need no DNS contact; discarding them
+ * would throw away genuinely measured critical findings.
+ */
+function withoutUnmeasuredRawDnsEvidence(evidence: AuthoritativeDnsInfraEvidence): AuthoritativeDnsInfraEvidence {
+	if (!(evidence.errors ?? []).includes(RAW_DNS_LANE_UNCONFIGURED)) return evidence;
+	const { hostname, checkedAt, routing, vantage, operationalExposure, errors } = evidence;
+	const registry =
+		operationalExposure?.rir !== undefined || operationalExposure?.rdapHandle !== undefined
+			? { rir: operationalExposure.rir, rdapHandle: operationalExposure.rdapHandle }
+			: undefined;
+	return { hostname, checkedAt, routing, vantage, ...(registry ? { operationalExposure: registry } : {}), errors };
+}
+
 export function analyzeAuthoritativeDnsInfraEvidence(
-	evidence: AuthoritativeDnsInfraEvidence,
+	probeEvidence: AuthoritativeDnsInfraEvidence,
 ): AuthoritativeDnsInfraAnalysis {
+	const evidence = withoutUnmeasuredRawDnsEvidence(probeEvidence);
 	const findings: Finding[] = [];
 	const capabilitySummary: InfraCapabilitySummary = { passed: [], failed: [], inconclusive: [] };
 

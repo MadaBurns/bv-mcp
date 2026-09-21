@@ -5,7 +5,7 @@ import infraProbeWorker, { handleDelegationConsistencyProbe } from '../src/worke
 import { ROOT_HINTS, ROOT_SERVER_NAMES } from '../src/lib/authoritative-dns-infra/root-hints';
 
 describe('infra probe worker', () => {
-	it('returns official root-hint baseline evidence for known root server hostnames', async () => {
+	it('returns root-hint reference addresses for a root hostname, and nothing verdict-shaped', async () => {
 		const response = await infraProbeWorker.fetch(new Request('https://infra-probe.internal/probe/authoritative-dns', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
@@ -20,18 +20,16 @@ describe('infra probe worker', () => {
 				ipv4: { addresses: ['198.41.0.4'] },
 				ipv6: { addresses: ['2001:503:ba3e::2:30'] },
 			},
-			rootPriming: {
-				nsNames: ROOT_SERVER_NAMES,
-				matchesOfficialHints: true,
-			},
-			transportParity: {
-				ipv4Ipv6Parity: true,
-			},
-			operationalExposure: {
-				ptrRecords: ['a.root-servers.net'],
-			},
 		});
 		expect(body.errors).toEqual(['live_raw_dns_probe_not_configured']);
+		// The raw DNS lane issues no query. It once asserted `matchesOfficialHints: true`,
+		// `ipv4Ipv6Parity: true` and `ptrRecords: [hostname]` (the input echoed back), which
+		// check_authoritative_dns_infra published as 100 / passed. Reference data only.
+		expect(Object.keys(body).sort()).toEqual(['checkedAt', 'errors', 'hostname', 'reachability']);
+		expect(body.reachability).toEqual({
+			ipv4: { addresses: ['198.41.0.4'] },
+			ipv6: { addresses: ['2001:503:ba3e::2:30'] },
+		});
 		expect(typeof body.checkedAt).toBe('string');
 	});
 

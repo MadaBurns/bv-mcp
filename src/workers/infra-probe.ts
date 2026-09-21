@@ -72,20 +72,13 @@ async function handleAuthoritativeDnsProbe(request: Request): Promise<Response> 
 		errors: ['live_raw_dns_probe_not_configured'],
 	};
 
-	if (rootHint) {
-		evidence.rootPriming = {
-			nsNames: [...ROOT_SERVER_NAMES],
-			matchesOfficialHints: true,
-		};
-		evidence.transportParity = {
-			ipv4Ipv6Parity: true,
-			notes: [`official_root_hint_operator:${rootHint.operator}`],
-		};
-		evidence.operationalExposure = {
-			ptrRecords: [hostname],
-		};
-	}
-
+	// ⚠️ This lane issues no DNS query, so it must not emit anything verdict-shaped. For a
+	// root hostname it used to add `rootPriming.matchesOfficialHints: true`,
+	// `transportParity.ipv4Ipv6Parity: true` and `operationalExposure.ptrRecords: [hostname]`
+	// — the hints table compared with itself, and the input echoed back as its own PTR. The
+	// analyzer read those as three measured passes and the tool published 100 / passed. The
+	// hint addresses above are reference data and carry no `reachable` flag; keep it that way
+	// until a live raw-DNS probe exists. Pinned by test/infra-probe-worker.spec.ts.
 	return jsonResponse(evidence);
 }
 
