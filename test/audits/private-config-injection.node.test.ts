@@ -319,7 +319,7 @@ describe('ALERT_WEBHOOK_URL secret gate — listProductionSecretNames', () => {
 	const { listProductionSecretNames, WRANGLER_SECRET_LIST_ARGV } = injectScript;
 
 	it('issues a read-only `wrangler secret list --format json --name <worker>` and nothing else', () => {
-		const spawnSyncFn = vi.fn((_command: string, _args: string[]) => ({ status: 0, stdout: '[]', stderr: '' }));
+		const spawnSyncFn = vi.fn((..._args: unknown[]) => ({ status: 0, stdout: '[]', stderr: '' }));
 		listProductionSecretNames('bv-dns-security-mcp', spawnSyncFn);
 
 		expect(spawnSyncFn).toHaveBeenCalledTimes(1);
