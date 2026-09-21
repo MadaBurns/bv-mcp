@@ -36,8 +36,11 @@ production safety vars:
 - `REJECT_QUERY_API_KEY`: `true`, so hosted production ignores URL credentials.
 - `REQUIRE_PRODUCTION_BINDINGS`: `true`, so `/health?deep=1` degrades on missing
   tenant, brand-audit, queue, storage, or alert bindings.
-- `ALERT_WEBHOOK_URL`: non-empty. Keep the real webhook URL in the ignored
-  overlay or secret manager, never in tracked docs.
+- `ALERT_WEBHOOK_URL`: provisioned as a **Worker secret** (`wrangler secret
+  list`, not a `vars` entry — #1073, `wrangler types` renders plaintext vars
+  inline on every deploy). Keep the real webhook URL in the secret manager,
+  never in tracked docs. The injector fails the deploy closed if it is
+  missing as a secret, or if it reappears as a var.
 
 Run `npm run deploy:prod` from a clean checkout. If the injector rejects the
 overlay, fix the private deployment config instead of bypassing the gate.
