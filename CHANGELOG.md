@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.86.0] - 2026-09-21
+
 ### Fixed
 
 - **`ALERT_WEBHOOK_URL` no longer prints in full on every production deploy.**
