@@ -51,6 +51,37 @@ category nobody measured (#638).
 The contract is pinned repo-wide by
 `test/audits/check-abstention-shape.audit.test.ts`.
 
+### Two ways a probe returns a non-answer that LOOKS like evidence
+
+Both were live defects; both published a clean pass over data nobody measured.
+The abstention shape above only helps once the check has *decided* it did not
+measure — these are about that decision being wrong.
+
+⚠️ **An answer is not evidence unless the responder proved authority.** A
+middlebox intercepting TCP/53 answers fast and well-formed (measured on a fleet
+workstation: a root server "replied" in 44 ms with REFUSED / AA=0 / RA=1). A
+lane that accepts any parsed response records the interceptor's posture as the
+customer's — and `RA=1` from an interceptor reads as *the customer exposing
+recursion*. The authoritative and root lanes therefore gate on **AA=1 for that
+same session**: answers from a session that never proved AA=1 are discarded and
+the lane abstains (`*_no_authoritative_answer`). Sibling rule, same shape:
+never score `AD=false` (`reference_ad-flag-not-a-validation-signal`).
+
+⚠️ **A checker comparing its own constants against a copy of them is not
+measuring.** `check_root_server_set` compares the sidecar's root hints with the
+Worker's — but both import the SAME module, so a MATCH is the checker agreeing
+with itself. With the lane returning no evidence *and* no error, that self-match
+scored 100 — reproducing #1079 by a new route, months after #1079 was fixed.
+Guard: `hasLiveObservation()` in `analyze-root-server-set.ts`; a "match" claim
+requires at least one live observation alongside it.
+
+**Transferable test:** for every field a check can assert, ask *what did the
+wire have to do for this to be true?* If the answer is "nothing" or "the
+responder merely replied", it is not a measurement. Neither defect had a failing
+unit test — the fakes answered the way the code expected. The first was found by
+a live smoke run on a hostile network, the second by tracing what the analyzer
+would do with that smoke's output.
+
 ## Per-check fetch budgets (#641/#674)
 
 `createFetchBudget(budgetMs)` (`src/lib/fetch-budget.ts`) opens **one** deadline
