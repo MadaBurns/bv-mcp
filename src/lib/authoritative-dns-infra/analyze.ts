@@ -190,9 +190,46 @@ function probeEstablishedContact(evidence: AuthoritativeDnsInfraEvidence): boole
 	return false;
 }
 
+/**
+ * Probe `errors` reach client-visible finding text and metadata, so only a code-shaped
+ * token is echoed — never free text from the other side of the service binding.
+ */
+export function isUnconfiguredLaneCode(code: unknown): code is string {
+	return typeof code === 'string' && /^[a-z0-9_]{1,64}_not_configured$/.test(code);
+}
+
+/** Reported by the sidecar when its raw UDP/TCP DNS lane issued no query at all. */
+const RAW_DNS_LANE_UNCONFIGURED = 'live_raw_dns_probe_not_configured';
+
+/**
+ * Drop every raw-DNS-lane claim from evidence whose own `errors` say that lane never ran.
+ *
+ * The sidecar answered root hostnames with `matchesOfficialHints: true`,
+ * `ipv4Ipv6Parity: true` and `ptrRecords: [hostname]` — constants from its static hints
+ * table, the PTR being the input echoed back — next to `live_raw_dns_probe_not_configured`.
+ * Three capabilities "passed", `measuredNothing` stayed false, and the tool published
+ * 100 / passed for a probe that issued no query (the #696 / #812 class). The sidecar
+ * deploys separately from this Worker, so a stale one must not be able to do that: a
+ * verdict — pass OR fail — from a lane that reports itself unconfigured is not a measurement.
+ *
+ * ⚠️ Scoped to the raw DNS lane. `routing`, `vantage` and the RIR/RDAP half of
+ * `operationalExposure` come from other lanes and need no DNS contact; discarding them
+ * would throw away genuinely measured critical findings.
+ */
+function withoutUnmeasuredRawDnsEvidence(evidence: AuthoritativeDnsInfraEvidence): AuthoritativeDnsInfraEvidence {
+	if (!(evidence.errors ?? []).includes(RAW_DNS_LANE_UNCONFIGURED)) return evidence;
+	const { hostname, checkedAt, routing, vantage, operationalExposure, errors } = evidence;
+	const registry =
+		operationalExposure?.rir !== undefined || operationalExposure?.rdapHandle !== undefined
+			? { rir: operationalExposure.rir, rdapHandle: operationalExposure.rdapHandle }
+			: undefined;
+	return { hostname, checkedAt, routing, vantage, ...(registry ? { operationalExposure: registry } : {}), errors };
+}
+
 export function analyzeAuthoritativeDnsInfraEvidence(
-	evidence: AuthoritativeDnsInfraEvidence,
+	probeEvidence: AuthoritativeDnsInfraEvidence,
 ): AuthoritativeDnsInfraAnalysis {
+	const evidence = withoutUnmeasuredRawDnsEvidence(probeEvidence);
 	const findings: Finding[] = [];
 	const capabilitySummary: InfraCapabilitySummary = { passed: [], failed: [], inconclusive: [] };
 
@@ -418,20 +455,18 @@ export function analyzeAuthoritativeDnsInfraEvidence(
 		} else {
 			// #1054: "did not yield any conclusive capability checks" reads as a transient
 			// failure and invites a pointless retry. When the probe TOLD us why — it reports
-			// `live_raw_dns_probe_not_configured` for any hostname that is not itself a root
-			// server, because the raw UDP/TCP DNS lane is unprovisioned in this deployment
-			// while the root-server-set lane answers from static hints — say so. Retrying
-			// cannot change that outcome, and the reader was left comparing an all-
-			// inconclusive hostname result against a same-session root-set result carrying
-			// real evidence, with nothing in either payload explaining the difference.
-			const unconfigured = (evidence.errors ?? []).filter((code) => code.endsWith('_not_configured'));
+			// `live_raw_dns_probe_not_configured` because the raw UDP/TCP DNS lane is
+			// unprovisioned in this deployment — say so. Retrying cannot change that outcome.
+			// (The root-server-set lane is unprovisioned too and now abstains the same way; it
+			// once returned constants that read as "real evidence" beside this result.)
+			const unconfigured = (evidence.errors ?? []).filter(isUnconfiguredLaneCode);
 			findings.push(
 				createFinding(
 					CATEGORY,
 					'Authoritative DNS infrastructure checks inconclusive',
 					'info',
 					unconfigured.length > 0
-						? `The infra probe's raw DNS lane is not provisioned for hostname targets in this deployment (${unconfigured.join(', ')}), so no capability check for ${evidence.hostname} could be verified either way. This is a provisioning state, not a transient failure — retrying returns the same result. Root-server-set evidence is served from a separate lane and is unaffected.`
+						? `The infra probe's raw DNS lane is not provisioned for hostname targets in this deployment (${unconfigured.join(', ')}), so no capability check for ${evidence.hostname} could be verified either way. This is a provisioning state, not a transient failure — retrying returns the same result.`
 						: `Infra probe evidence for ${evidence.hostname} did not yield any conclusive capability checks; nothing was verified.`,
 					{
 						evidenceMode: 'infra_probe',

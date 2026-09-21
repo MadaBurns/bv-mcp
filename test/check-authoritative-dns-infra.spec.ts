@@ -318,6 +318,73 @@ describe('checkAuthoritativeDnsInfra', () => {
 		expect(finding!.metadata?.probeErrors).toEqual(['live_raw_dns_probe_not_configured']);
 	});
 
+	// The sidecar used to answer a ROOT hostname with `matchesOfficialHints: true`,
+	// `ipv4Ipv6Parity: true` and `ptrRecords: [hostname]` — constants written from its own
+	// static hints table, the PTR being the input echoed back — alongside the same
+	// `live_raw_dns_probe_not_configured` error. Three capabilities "passed", so
+	// `measuredNothing` stayed false and the tool published 100 / passed for a probe that
+	// issued no query. The sidecar deploys separately from this Worker, so the analyzer must
+	// not honour raw-DNS verdicts from a probe that says its raw-DNS lane never ran.
+	it('withholds the verdict when a probe reporting its raw DNS lane unconfigured still claims raw-DNS passes', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'a.root-servers.net',
+			checkedAt: '2026-09-21T00:00:00.000Z',
+			reachability: { ipv4: { addresses: ['198.41.0.4'] }, ipv6: { addresses: ['2001:503:ba3e::2:30'] } },
+			rootPriming: { nsNames: ['a.root-servers.net'], matchesOfficialHints: true },
+			transportParity: { ipv4Ipv6Parity: true },
+			operationalExposure: { ptrRecords: ['a.root-servers.net'] },
+			errors: ['live_raw_dns_probe_not_configured'],
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('a.root-servers.net', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(result).toMatchObject({ passed: false, score: 0, checkStatus: 'error', partial: true });
+		const summary = result.metadata?.capabilitySummary as { passed: string[]; failed: string[] };
+		expect(summary.passed).toEqual([]);
+		expect(summary.failed).toEqual([]);
+		expect(result.findings.map((f) => f.title)).toEqual(['Authoritative DNS infrastructure checks inconclusive']);
+		expect(result.findings[0].metadata?.unprovisioned).toBe(true);
+	});
+
+	it('does not turn unmeasured raw-DNS claims into failures either', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'a.root-servers.net',
+			rootPriming: { matchesOfficialHints: false },
+			transportParity: { ipv4Ipv6Parity: false },
+			operationalExposure: { ptrRecords: [] },
+			errors: ['live_raw_dns_probe_not_configured'],
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('a.root-servers.net', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		expect(result).toMatchObject({ passed: false, score: 0, checkStatus: 'error', partial: true });
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+	});
+
+	// Routing / RPKI / vantage evidence needs no DNS contact (see `measuredNothing` in the
+	// tool), so an unconfigured raw-DNS lane must not discard it.
+	it('keeps routing-lane verdicts when only the raw DNS lane is unconfigured', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'a.root-servers.net',
+			transportParity: { ipv4Ipv6Parity: true },
+			routing: { rpkiStatus: 'invalid' },
+			errors: ['live_raw_dns_probe_not_configured'],
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('a.root-servers.net', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		const summary = result.metadata?.capabilitySummary as { passed: string[]; failed: string[] };
+		expect(summary.failed).toContain('rpki_roa_validity');
+		expect(summary.passed).not.toContain('ipv4_ipv6_parity');
+		expect(result.checkStatus).toBeUndefined();
+	});
+
 	it('degrades gracefully (does not throw) when the infra probe returns HTTP 503', async () => {
 		const fetch = vi.fn(async () => new Response('upstream unavailable', { status: 503 }));
 

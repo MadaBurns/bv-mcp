@@ -8,6 +8,38 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`check_authoritative_dns_infra` published 100 / passed for root-server hostnames that
+  nothing had probed.** The `bv-infra-probe` sidecar's raw DNS lane issues no query, yet for
+  a root hostname it returned `matchesOfficialHints: true`, `ipv4Ipv6Parity: true` and
+  `ptrRecords: [hostname]` — its static hints table compared with itself, and the input
+  echoed back as its own PTR — beside `live_raw_dns_probe_not_configured`. Three capabilities
+  counted as passed, so the #696 `measuredNothing` guard never fired and the result read
+  "satisfied all conclusive capability checks" at `confidence: deterministic`; under
+  `profile: 'authoritative_dns_infra'` that category is the whole grade. Two layers, because
+  the sidecar deploys separately: the sidecar now returns hint addresses as reference data
+  only, and the analyzer discards every raw-DNS-lane claim (pass or fail) from evidence whose
+  own `errors` report that lane unconfigured. Routing, RPKI, vantage and RIR/RDAP evidence is
+  untouched. Root hostnames now abstain exactly like any other hostname (`checkStatus:
+  'error'`, excluded from scoring); no other target's result changes. Ship with
+  `npm run deploy:infra-probe` as well as `deploy:prod`.
+
+- **`check_root_server_set` published 100 / passed for a root zone nobody queried.** Same
+  sidecar, same shape: its root-server-set lane reports
+  `live_root_server_set_probe_not_configured`, yet returned `observedRootServers` (a copy of
+  the hints), `glueMatchesHints: true` and `parentChildDelegationMatches: true`, and its
+  `rootHints` is the same module the analyzer compares against — four capabilities "passed"
+  on constants, and the tool had no `measuredNothing` guard at all. The sidecar now returns
+  `rootHints` only; the analyzer withholds every cross-root claim from a lane that reports
+  itself unconfigured; and the tool abstains (`checkStatus: 'error'`, `score: 0`,
+  `partial: true`) when nothing was conclusive, naming the provisioning state as #1054 did
+  for hostnames. One deliberate asymmetry: a hints MATCH from an unconfigured lane is the
+  checker agreeing with itself (inconclusive), while a MISMATCH is two deployed tables
+  disagreeing and still fails, as #828 settled. A probe that reports no such error is graded
+  exactly as before. `scan_domain` under `profile: 'authoritative_dns_infra'` is unchanged —
+  it already graded `null`, because the hostname half abstained.
+
 ## [3.86.0] - 2026-09-21
 
 ### Fixed
