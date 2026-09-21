@@ -3,6 +3,10 @@
 	"compilerOptions": {
 		"types": ["@cloudflare/vitest-pool-workers/types", "vite/client"]
 	},
-	"include": ["./**/*.ts", "../worker-configuration.d.ts"],
+	/* The Cloudflare env types are generated HERMETICALLY by scripts/ci/typecheck-tests.mjs (issue
+	   #1068) into node_modules/.cache/, NOT read from the repo-root worker-configuration.d.ts —
+	   that copy folds in the keys of a local .dev.vars, which a dev checkout has and CI does not,
+	   and the extra required Env members moved this gate's error count by +2 on identical source. */
+	"include": ["./**/*.ts", "../node_modules/.cache/bv-mcp/worker-configuration.d.ts"],
 	"exclude": []
 }

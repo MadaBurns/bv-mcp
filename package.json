@@ -60,7 +60,7 @@
 		"test": "node scripts/vitest-filter-workerd.mjs",
 		"pretypecheck": "npm -w packages/dns-checks run build",
 		"typecheck": "wrangler types && tsc --noEmit",
-		"typecheck:tests": "wrangler types && node scripts/ci/typecheck-tests.mjs",
+		"typecheck:tests": "node scripts/ci/typecheck-tests.mjs",
 		"lint": "eslint .",
 		"lint:fix": "eslint . --fix",
 		"validate:internal-deps": "node scripts/maintenance/validate-internal-deps.mjs",
