@@ -161,11 +161,17 @@ async function checkHttps(
 		if (needsGetFallback(response.status)) {
 			const getResponse = await tryGetFallback(`https://${domain}`, fetchFn, timeoutMs);
 			if (getResponse && !needsGetFallback(getResponse.status)) {
+				// Abandon the HEAD response, adopt the GET one. Only status/headers are read from
+				// here on (redirect following issues fresh requests), so release the adopted
+				// body immediately rather than leaving a stalled stream.
 				void response.body?.cancel().catch(() => undefined);
 				response = getResponse;
-				// Only status/headers are read from here on (redirect following issues fresh
-				// requests), so release the body now rather than leaving a stalled stream.
 				void response.body?.cancel().catch(() => undefined);
+			} else {
+				// NOT adopted (same block class, or the fetch failed). Unlike the HEAD probe above
+				// a GET carries a real body, so it must be released here too — otherwise every
+				// still-blocked origin leaks a stalled stream for the rest of the scan.
+				void getResponse?.body?.cancel().catch(() => undefined);
 			}
 		}
 

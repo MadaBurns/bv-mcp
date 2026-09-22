@@ -100,6 +100,33 @@ describe('checkSSL — the fallback must NOT rescue a genuinely blocked origin (
 		expect(result.checkStatus).toBe('error');
 	});
 
+	it('releases the body of a GET fallback it does NOT adopt', async () => {
+		// A HEAD response carries no body, but the GET fallback does. When the fallback is
+		// refused we still hold its stream, so without an explicit release every still-blocked
+		// origin leaks a stalled stream for the remainder of the scan.
+		let cancelled = false;
+		const body = new ReadableStream({
+			start(controller) {
+				controller.enqueue(new TextEncoder().encode('blocked challenge page'));
+			},
+			cancel() {
+				cancelled = true;
+			},
+		});
+		const fetchFn: FetchFunction = async (url, init) => {
+			const method = (init as { method?: string } | undefined)?.method ?? 'GET';
+			if (url.startsWith('http://')) return new Response(null, { status: 301, headers: { location: 'https://example.com/' } });
+			if (method === 'HEAD') return new Response(null, { status: 403 });
+			return new Response(body, { status: 403 });
+		};
+
+		const result = await checkSSL('example.com', fetchFn);
+
+		expect(result.checkStatus).toBe('error');
+		await new Promise((resolve) => setTimeout(resolve, 0)); // let the void'd cancel settle
+		expect(cancelled).toBe(true);
+	});
+
 	it('a fetch error on the fallback still abstains', async () => {
 		const fetchFn: FetchFunction = async (url, init) => {
 			const method = (init as { method?: string } | undefined)?.method ?? 'GET';
