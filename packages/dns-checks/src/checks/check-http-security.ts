@@ -5,6 +5,7 @@
 import type { CheckResult, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { analyzeSecurityHeaders } from './http-security-analysis';
+import { tryGetFallback } from './probe-fetch';
 import { isBlockedProbeStatus } from './ssl-analysis';
 import {
 	SCANNER_USER_AGENT,
@@ -126,23 +127,6 @@ async function followRedirects(
 	}
 
 	return response;
-}
-
-/**
- * Attempt a GET request as fallback when HEAD is blocked (403/405).
- * Returns null on any fetch error.
- */
-async function tryGetFallback(url: string, fetchFn: FetchFunction, timeoutMs: number): Promise<Response | null> {
-	try {
-		return await fetchFn(url, {
-			method: 'GET',
-			redirect: 'manual',
-			headers: { 'User-Agent': SCANNER_USER_AGENT },
-			signal: AbortSignal.timeout(timeoutMs),
-		});
-	} catch {
-		return null;
-	}
 }
 
 /**

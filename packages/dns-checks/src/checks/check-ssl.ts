@@ -18,10 +18,27 @@ import {
 	getRobotsDisallowedFinding,
 	isBlockedProbeStatus,
 } from './ssl-analysis';
+import { tryGetFallback } from './probe-fetch';
 import { RobotsDisallowedError } from '../robots-gate';
 
 /** Default HTTPS timeout (ms) */
 const HTTPS_TIMEOUT_MS = 4_000;
+
+/**
+ * Statuses that mean "this response is not the site's answer about its HTTPS posture", so a
+ * GET fallback is worth attempting and, failing that, the category must abstain.
+ *
+ * This is `isBlockedProbeStatus` PLUS 405. 405 is deliberately absent from that predicate —
+ * it is a perfectly real status elsewhere — but on a HEAD probe it means "this method is not
+ * allowed", i.e. a refusal to answer, never a measurement of HSTS. Before this, a HEAD 405
+ * fell through to the analysis branch and its (typically header-free) response was read as
+ * the site's own, manufacturing a confident "No HSTS header" — the same defect family as
+ * #972, reached by a different status. The sibling check-http-security already treats
+ * 403/405 alike as "retry with GET".
+ */
+function needsGetFallback(status: number): boolean {
+	return isBlockedProbeStatus(status) || status === 405;
+}
 
 /**
  * Check SSL/TLS configuration for a domain.
@@ -124,14 +141,41 @@ async function checkHttps(
 	let transient = false;
 
 	try {
-		const response = await fetchFn(`https://${domain}`, {
+		let response = await fetchFn(`https://${domain}`, {
 			method: 'HEAD',
 			redirect: 'manual',
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 		reachable = true;
 
-		if (isBlockedProbeStatus(response.status)) {
+		// A refused or server-failed HEAD is NOT proof the origin is unassessable: plenty of
+		// origins reject HEAD (403/405) or 500 on it while serving GET normally. The sibling
+		// check-http-security has retried with GET since #806/#972, but this check never did,
+		// so the two probed the SAME origin in the SAME scan and disagreed about whether it
+		// was measurable — http_security reported real headers while ssl abstained.
+		//
+		// Adopt the fallback ONLY when it is genuinely better evidence: a GET that lands on
+		// the same block class stays unmeasured, so a blocked origin still abstains rather
+		// than being scored off a challenge page (#972's law). The 204/205 no-content guard
+		// below then applies to the adopted response unchanged (#806).
+		if (needsGetFallback(response.status)) {
+			const getResponse = await tryGetFallback(`https://${domain}`, fetchFn, timeoutMs);
+			if (getResponse && !needsGetFallback(getResponse.status)) {
+				// Abandon the HEAD response, adopt the GET one. Only status/headers are read from
+				// here on (redirect following issues fresh requests), so release the adopted
+				// body immediately rather than leaving a stalled stream.
+				void response.body?.cancel().catch(() => undefined);
+				response = getResponse;
+				void response.body?.cancel().catch(() => undefined);
+			} else {
+				// NOT adopted (same block class, or the fetch failed). Unlike the HEAD probe above
+				// a GET carries a real body, so it must be released here too — otherwise every
+				// still-blocked origin leaks a stalled stream for the rest of the scan.
+				void getResponse?.body?.cancel().catch(() => undefined);
+			}
+		}
+
+		if (needsGetFallback(response.status)) {
 			// Origin-unreachable / server error (e.g. Cloudflare 530), or an edge/WAF/rate-limit
 			// block (401/403/429/202 — issue #972, a non-Cloudflare, unfingerprinted UA/TLS block
 			// with no vendor body signature to match): the page is NOT assessable, so do NOT emit
