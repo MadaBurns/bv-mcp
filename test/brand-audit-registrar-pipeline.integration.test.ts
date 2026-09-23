@@ -13,11 +13,11 @@ import type { CheckResult, Finding } from '../src/lib/scoring';
  * classifier to the expected bucket distribution.
  *
  * Classification rules used:
- *   - ford.co.uk: signals ['dkim_key_reuse', 'san'], registrar GoDaddy (off-primary).
- *     Rule 2 → isExactBrandPortfolioDomain(ford.co.uk, ford.com)=true → realShadowItClassification
+ *   - contoso.co.uk: signals ['dkim_key_reuse', 'san'], registrar GoDaddy (off-primary).
+ *     Rule 2 → isExactBrandPortfolioDomain(contoso.co.uk, contoso.com)=true → realShadowItClassification
  *     → shadowIt/owned_off_primary_registrar.
- *   - ford.com.au: signals ['dkim_key_reuse', 'ns'], registrar on the corporate-domains family (same family as target).
- *     Rule 2 → isExactBrandPortfolioDomain(ford.com.au, ford.com)=true → isOffPrimaryRegistrar=false
+ *   - contoso.com.au: signals ['dkim_key_reuse', 'ns'], registrar on the corporate-domains family (same family as target).
+ *     Rule 2 → isExactBrandPortfolioDomain(contoso.com.au, contoso.com)=true → isOffPrimaryRegistrar=false
  *     → consolidated/owned_primary.
  */
 
@@ -133,27 +133,27 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 
 	it('emits registrarComplement on the result when view=registrar_complement', async () => {
 		// Set up enrichment fetch mock for the two candidate domains.
-		setupEnrichmentFetchMock(['ford.co.uk', 'ford.com.au']);
+		setupEnrichmentFetchMock(['contoso.co.uk', 'contoso.com.au']);
 
 		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
 
 		// Discovery stub: returns CheckResult with 2 candidates.
-		// ford.co.uk → will classify as shadowIt (GoDaddy, off-primary registrar, strong dkim signal)
-		// ford.com.au → will classify as consolidated (same corporate-domains registrar family, strong dkim signal)
+		// contoso.co.uk → will classify as shadowIt (GoDaddy, off-primary registrar, strong dkim signal)
+		// contoso.com.au → will classify as consolidated (same corporate-domains registrar family, strong dkim signal)
 		const discoverBrandDomains = async () =>
-			makeDiscoveryResult('ford.com', [
-				{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] },
-				{ domain: 'ford.com.au', signals: ['dkim_key_reuse', 'ns'] },
+			makeDiscoveryResult('contoso.com', [
+				{ domain: 'contoso.co.uk', signals: ['dkim_key_reuse', 'san'] },
+				{ domain: 'contoso.com.au', signals: ['dkim_key_reuse', 'ns'] },
 			]);
 
-		// RDAP stubs: target ford.com → corporate-domains registrar; ford.co.uk → GoDaddy; ford.com.au → corporate-domains registrar.
+		// RDAP stubs: target contoso.com → corporate-domains registrar; contoso.co.uk → GoDaddy; contoso.com.au → corporate-domains registrar.
 		const checkRdapLookup = async (domain: string) => {
-			if (domain === 'ford.co.uk') return makeRdapResult('GoDaddy.com, LLC');
+			if (domain === 'contoso.co.uk') return makeRdapResult('GoDaddy.com, LLC');
 			return makeRdapResult('CSC Corporate Domains, Inc.');
 		};
 
 		const result = await runBrandAuditPipeline(
-			'ford.com',
+			'contoso.com',
 			{ view: 'registrar_complement' },
 			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup: checkRdapLookup as never },
 		);
@@ -164,12 +164,12 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		const { BrandAuditRegistrarSchema } = await import('../src/schemas/brand-audit-registrar');
 		const parsed = BrandAuditRegistrarSchema.parse(structured);
 
-		expect(parsed.anchor.apex).toBe('ford.com');
+		expect(parsed.anchor.apex).toBe('contoso.com');
 		expect(parsed.anchor.managedByRegistrar).toBe(true);
 		expect(parsed.registrarPortfolio.offPortfolioCount).toBe(1);
-		expect(parsed.registrarPortfolio.offPortfolioApexes).toEqual(['ford.co.uk']);
+		expect(parsed.registrarPortfolio.offPortfolioApexes).toEqual(['contoso.co.uk']);
 		expect(parsed.shadowItHighlights).toHaveLength(1);
-		expect(parsed.shadowItHighlights[0].apex).toBe('ford.co.uk');
+		expect(parsed.shadowItHighlights[0].apex).toBe('contoso.co.uk');
 		expect(parsed.postureSnapshot.stage).toBe('pending');
 		expect(parsed.deepScan.stage).toBe('pending');
 		expect(parsed.viewVersion).toBe(2);
@@ -177,7 +177,7 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 	});
 
 	it('persists registrar_complement_fast step when stepStore is provided', async () => {
-		setupEnrichmentFetchMock(['ford.co.uk']);
+		setupEnrichmentFetchMock(['contoso.co.uk']);
 
 		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
 		const { createMemoryBrandAuditStepStore } = await import('../src/lib/brand-audit-step-store');
@@ -186,19 +186,19 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		const auditId = 'test-audit-registrar';
 
 		const discoverBrandDomains = async () =>
-			makeDiscoveryResult('ford.com', [{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
+			makeDiscoveryResult('contoso.com', [{ domain: 'contoso.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
 		const checkRdapLookup = async (domain: string) => {
-			if (domain === 'ford.co.uk') return makeRdapResult('GoDaddy.com, LLC');
+			if (domain === 'contoso.co.uk') return makeRdapResult('GoDaddy.com, LLC');
 			return makeRdapResult('CSC Corporate Domains, Inc.');
 		};
 
 		await runBrandAuditPipeline(
-			'ford.com',
+			'contoso.com',
 			{ view: 'registrar_complement', auditId, stepStore },
 			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup: checkRdapLookup as never },
 		);
 
-		const record = await stepStore.get(auditId, 'ford.com', 'registrar_complement_fast');
+		const record = await stepStore.get(auditId, 'contoso.com', 'registrar_complement_fast');
 		expect(record).not.toBeNull();
 		expect(record?.status).toBe('completed');
 		expect(record?.payload).toBeDefined();
@@ -212,11 +212,11 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
 
 		const discoverBrandDomains = async () =>
-			makeDiscoveryResult('ford.com', [{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
+			makeDiscoveryResult('contoso.com', [{ domain: 'contoso.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
 		const checkRdapLookup = async () => makeRdapResult('CSC Corporate Domains, Inc.');
 
 		const result = await runBrandAuditPipeline(
-			'ford.com',
+			'contoso.com',
 			{},
 			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup: checkRdapLookup as never },
 		);
@@ -228,11 +228,11 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
 
 		const discoverBrandDomains = async () =>
-			makeDiscoveryResult('ford.com', [{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
+			makeDiscoveryResult('contoso.com', [{ domain: 'contoso.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
 		const checkRdapLookup = async () => makeRdapResult('CSC Corporate Domains, Inc.');
 
 		const result = await runBrandAuditPipeline(
-			'ford.com',
+			'contoso.com',
 			{ view: 'standard' },
 			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup: checkRdapLookup as never },
 		);
@@ -241,7 +241,7 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 	});
 
 	it('enqueues a deep_scan message after fast_ready', async () => {
-		setupEnrichmentFetchMock(['ford.co.uk']);
+		setupEnrichmentFetchMock(['contoso.co.uk']);
 
 		const enqueued: unknown[] = [];
 		const brandAuditQueue = {
@@ -253,14 +253,14 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
 
 		const discoverBrandDomains = async () =>
-			makeDiscoveryResult('ford.com', [{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
+			makeDiscoveryResult('contoso.com', [{ domain: 'contoso.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
 		const checkRdapLookup = async (domain: string) => {
-			if (domain === 'ford.co.uk') return makeRdapResult('GoDaddy.com, LLC');
+			if (domain === 'contoso.co.uk') return makeRdapResult('GoDaddy.com, LLC');
 			return makeRdapResult('CSC Corporate Domains, Inc.');
 		};
 
 		await runBrandAuditPipeline(
-			'ford.com',
+			'contoso.com',
 			{ view: 'registrar_complement', auditId: 'audit-1' },
 			{
 				brandAuditQueue,
@@ -270,7 +270,7 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		);
 
 		expect(enqueued.length).toBe(1);
-		expect(enqueued[0]).toMatchObject({ auditId: 'audit-1', target: 'ford.com', phase: 'deep_scan' });
+		expect(enqueued[0]).toMatchObject({ auditId: 'audit-1', target: 'contoso.com', phase: 'deep_scan' });
 	});
 
 	it('does not propagate Queue send failures — deep_scan enqueue is best-effort', async () => {
@@ -286,7 +286,7 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		//
 		// Policy: same as pdfQueue.send() at brand-audit-consumer.ts:425-429 —
 		// best-effort, log on failure, never abort the audit.
-		setupEnrichmentFetchMock(['ford.co.uk']);
+		setupEnrichmentFetchMock(['contoso.co.uk']);
 
 		const brandAuditQueue = {
 			send: async (): Promise<void> => {
@@ -297,14 +297,14 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		const { runBrandAuditPipeline } = await import('../src/lib/brand-audit-pipeline');
 
 		const discoverBrandDomains = async () =>
-			makeDiscoveryResult('ford.com', [{ domain: 'ford.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
+			makeDiscoveryResult('contoso.com', [{ domain: 'contoso.co.uk', signals: ['dkim_key_reuse', 'san'] }]);
 		const checkRdapLookup = async (domain: string) => {
-			if (domain === 'ford.co.uk') return makeRdapResult('GoDaddy.com, LLC');
+			if (domain === 'contoso.co.uk') return makeRdapResult('GoDaddy.com, LLC');
 			return makeRdapResult('CSC Corporate Domains, Inc.');
 		};
 
 		const result = await runBrandAuditPipeline(
-			'ford.com',
+			'contoso.com',
 			{ view: 'registrar_complement', auditId: 'audit-1' },
 			{
 				brandAuditQueue,
@@ -330,12 +330,12 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 			},
 		};
 
-		stored.set('a-1:ford.com:registrar_complement_fast', {
+		stored.set('a-1:contoso.com:registrar_complement_fast', {
 			status: 'completed',
 			payload: {
 				viewVersion: 2,
-				anchor: { apex: 'ford.com', primaryRegistrar: { family: 'corporate domains registrar', name: 'Brand Registrar, Inc.', ianaId: null }, managedByRegistrar: true },
-				registrarPortfolio: { totalApexes: 1, byFamily: [{ family: 'corporate domains registrar', count: 1, percent: 100, exampleApexes: ['ford.com'] }], offPortfolioCount: 0, offPortfolioApexes: [] },
+				anchor: { apex: 'contoso.com', primaryRegistrar: { family: 'corporate domains registrar', name: 'Brand Registrar, Inc.', ianaId: null }, managedByRegistrar: true },
+				registrarPortfolio: { totalApexes: 1, byFamily: [{ family: 'corporate domains registrar', count: 1, percent: 100, exampleApexes: ['contoso.com'] }], offPortfolioCount: 0, offPortfolioApexes: [] },
 				shadowItHighlights: [],
 				defensiveRegistrations: { count: 0, examples: [], enrichmentStatus: 'ready' },
 				postureSnapshot: { stage: 'pending', apexesScanned: 0, apexesTotal: 0, apexes: [], medianGrade: null, distribution: {} },
@@ -352,9 +352,9 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		});
 
 		const { runDeepScanFromStepStore } = await import('../src/lib/brand-audit-registrar-deepscan-job');
-		await runDeepScanFromStepStore({ auditId: 'a-1', target: 'ford.com', stepStore: stepStore as never, internalCall });
+		await runDeepScanFromStepStore({ auditId: 'a-1', target: 'contoso.com', stepStore: stepStore as never, internalCall });
 
-		const full = stored.get('a-1:ford.com:registrar_complement_full') as {
+		const full = stored.get('a-1:contoso.com:registrar_complement_full') as {
 			status: string;
 			payload: { postureSnapshot: { stage: string; apexesScanned: number; apexes: Array<{ apex: string; grade: string }> } };
 		};
@@ -362,6 +362,6 @@ describe('runBrandAuditPipeline with view=registrar_complement', () => {
 		expect(full.payload.postureSnapshot.stage).toBe('ready');
 		// Not vacuous: the merge must carry real per-apex posture, not an empty snapshot.
 		expect(full.payload.postureSnapshot.apexesScanned).toBe(1);
-		expect(full.payload.postureSnapshot.apexes[0]).toMatchObject({ apex: 'ford.com', grade: 'B+' });
+		expect(full.payload.postureSnapshot.apexes[0]).toMatchObject({ apex: 'contoso.com', grade: 'B+' });
 	});
 });

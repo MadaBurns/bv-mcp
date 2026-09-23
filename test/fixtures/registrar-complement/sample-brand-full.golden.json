@@ -1,0 +1,45 @@
+{
+	"viewVersion": 2,
+	"anchor": {
+		"apex": "contoso.com",
+		"primaryRegistrar": { "family": "corporate domains registrar", "name": "Brand Registrar, Inc.", "ianaId": "299" },
+		"managedByRegistrar": true
+	},
+	"registrarPortfolio": {
+		"totalApexes": 4,
+		"byFamily": [
+			{ "family": "corporate domains registrar", "count": 3, "percent": 75, "exampleApexes": ["contoso.com", "contoso.com.au", "contoso.de"] },
+			{ "family": "godaddy", "count": 1, "percent": 25, "exampleApexes": ["contosocorp.com"] }
+		],
+		"offPortfolioCount": 1,
+		"offPortfolioApexes": ["contosocorp.com"]
+	},
+	"shadowItHighlights": [
+		{ "apex": "contosocorp.com", "registrar": "GoDaddy.com, LLC", "combinedConfidence": 0.8, "reasons": ["off-primary"], "evidence": "TXT verification reuse" }
+	],
+	"defensiveRegistrations": { "count": 1, "examples": [{ "apex": "contosso.com", "defensiveReason": "redirect-to-target" }], "enrichmentStatus": "ready" },
+	"postureSnapshot": {
+		"stage": "ready",
+		"apexesScanned": 4,
+		"apexesTotal": 4,
+		"apexes": [
+			{ "apex": "contoso.com", "grade": "B+", "score": 82, "dmarc": "p=reject", "spf": "v=spf1 -all", "dnssec": true, "dkim": "valid", "mtaSts": "enforce", "scannedAt": "2026-05-22T14:35:00Z" }
+		],
+		"medianGrade": "C+",
+		"distribution": { "B+": 1, "C": 1, "C+": 1, "F": 1 }
+	},
+	"deepScan": {
+		"stage": "ready",
+		"apexesScanned": 4,
+		"apexesTotal": 4,
+		"danglingDns": [
+			{ "subdomain": "old-promo.contoso.com", "apex": "contoso.com", "recordType": "CNAME", "target": "contoso-promo.elasticbeanstalk.com", "takeoverProvider": "AWS Elastic Beanstalk", "severity": "high", "evidence": "NXDOMAIN at CNAME target" }
+		],
+		"danglingDnsTotal": 1,
+		"subdomainInventoryByApex": {
+			"contoso.com": { "total": 1247, "dangling": 1, "source": "certificate_transparency", "sample": ["www.contoso.com", "secure.contoso.com"], "partial": false }
+		}
+	},
+	"generatedAt": "2026-05-22T14:32:00Z",
+	"reportId": "reg_rpt_abcdef123"
+}

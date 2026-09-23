@@ -35,7 +35,7 @@ describe('CHAOS: registrar-complement pipeline failure modes', () => {
 
 		const { enrichCandidatesForDefensiveDetection } = await import('../../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
-			target: 'ford.com',
+			target: 'contoso.com',
 			candidates: [
 				{ domain: 'a.com', combinedConfidence: 0.9 },
 				{ domain: 'b.com', combinedConfidence: 0.8 },

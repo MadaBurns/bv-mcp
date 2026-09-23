@@ -143,7 +143,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 	it('reads structuredContent, the only machine-readable field handleToolsCall emits', async () => {
 		const { internalCall, envelopes } = await makeInternalCall();
 		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
-		const result = await runDeepScan({ anchorApex: 'ford.com', apexes: ['ford.com'], internalCall });
+		const result = await runDeepScan({ anchorApex: 'contoso.com', apexes: ['contoso.com'], internalCall });
 
 		// Pin the contract on the emitting side: the envelope carries
 		// `structuredContent` and has no `structured` key at all.
@@ -169,7 +169,7 @@ describe('runDeepScan — production internal-call envelope', () => {
 			structured: { domain: args.domain, score: 80, grade: 'B+', categoryScores: {}, findings: [] },
 		});
 		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
-		const result = await runDeepScan({ anchorApex: 'ford.com', apexes: ['ford.com'], internalCall: legacyShapedCall });
+		const result = await runDeepScan({ anchorApex: 'contoso.com', apexes: ['contoso.com'], internalCall: legacyShapedCall });
 
 		expect(result.postureSnapshot.apexesScanned).toBe(0);
 		expect(result.postureSnapshot.apexes).toHaveLength(0);
@@ -179,8 +179,8 @@ describe('runDeepScan — production internal-call envelope', () => {
 		const { internalCall, calls } = await makeInternalCall();
 		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({
-			anchorApex: 'ford.com',
-			apexes: ['ford.com', 'ford.com.au', 'fordcorp.com'],
+			anchorApex: 'contoso.com',
+			apexes: ['contoso.com', 'contoso.com.au', 'contosocorp.com'],
 			internalCall,
 		});
 
@@ -194,32 +194,32 @@ describe('runDeepScan — production internal-call envelope', () => {
 		expect(result.postureSnapshot.distribution).toEqual({ C: 3 });
 
 		expect(result.deepScan.stage).toBe('ready');
-		const inventory = result.deepScan.subdomainInventoryByApex['ford.com'];
+		const inventory = result.deepScan.subdomainInventoryByApex['contoso.com'];
 		expect(inventory.total).toBe(2);
 		expect(inventory.source).toBe('certificate_transparency');
-		expect(inventory.sample).toEqual(['www.ford.com', 'api.ford.com']);
+		expect(inventory.sample).toEqual(['www.contoso.com', 'api.contoso.com']);
 		expect(inventory.partial).toBe(false);
 	});
 
 	it('extracts dangling DNS from real check_subdomain_takeover findings', async () => {
 		const { internalCall } = await makeInternalCall({ dangling: true });
 		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
-		const result = await runDeepScan({ anchorApex: 'ford.com', apexes: ['ford.com'], internalCall });
+		const result = await runDeepScan({ anchorApex: 'contoso.com', apexes: ['contoso.com'], internalCall });
 
 		expect(result.deepScan.danglingDnsTotal).toBe(1);
 		const [finding] = result.deepScan.danglingDns;
-		expect(finding.subdomain).toBe('www.ford.com');
-		expect(finding.apex).toBe('ford.com');
+		expect(finding.subdomain).toBe('www.contoso.com');
+		expect(finding.apex).toBe('contoso.com');
 		expect(finding.recordType).toBe('CNAME');
-		expect(finding.target).toBe('ford-brand.herokuapp.com');
+		expect(finding.target).toBe('contoso-brand.herokuapp.com');
 		expect(finding.severity).toBe('high');
-		expect(result.deepScan.subdomainInventoryByApex['ford.com'].dangling).toBe(1);
+		expect(result.deepScan.subdomainInventoryByApex['contoso.com'].dangling).toBe(1);
 	});
 
 	it('emits no dangling entries for the all-clear (info) takeover finding', async () => {
 		const { internalCall } = await makeInternalCall({ dangling: false });
 		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
-		const result = await runDeepScan({ anchorApex: 'ford.com', apexes: ['ford.com'], internalCall });
+		const result = await runDeepScan({ anchorApex: 'contoso.com', apexes: ['contoso.com'], internalCall });
 
 		expect(result.deepScan.danglingDns).toEqual([]);
 		expect(result.deepScan.danglingDnsTotal).toBe(0);
