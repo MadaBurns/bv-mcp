@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-_Entries for released versions below were edited on 2026-09-09 to remove a third-party vendor name. Tool, view, file and type identifiers in those entries are shown under their current (post-rename) names; at the versions listed they shipped under earlier names._
+_Entries for released versions below were edited on 2026-09-09 to remove a third-party vendor name. Tool, view, file and type identifiers in those entries are shown under their current (post-rename) names; at the versions listed they shipped under earlier names. A further edit on 2026-09-23 redacted client domain names cited as fact-check examples in historical entries, shown as `<redacted>` or a neutral brand description; no scoring, detection, or behavioral semantics changed._
 
 ## [Unreleased]
 
@@ -2503,7 +2503,7 @@ Scoring-contract recalibration aligning email-authentication and DNS-integrity s
 
 - **`map_supply_chain` shadow_service signal — three correctness fixes (surfaced by a 16-domain fact-check sweep).**
   - **MX corroboration (B2):** the shadow_service check considered only TXT-verification + SPF providers, so a service discovered via MX + SRV (e.g. Microsoft 365 SIP, Google Workspace) was falsely flagged "undocumented or unauthorized". It now also corroborates against MX-detected providers. (Observed: nytimes.com flagged "Google Workspace discovered via SRV…" while Google Workspace was its MX provider.)
-  - **Self-hosted SRV (B3):** a SRV record whose target is on the scan's own registrable domain is the org's own service, not a third party — no longer flagged. (Observed: microsoft.com→`sipdog3.microsoft.com`, [redacted-domain]→`xmpp.[redacted-domain]`, oracle.com→`vcse.dtvlb.oracle.com`.)
+  - **Self-hosted SRV (B3):** a SRV record whose target is on the scan's own registrable domain is the org's own service, not a third party — no longer flagged. (Observed: microsoft.com→`sipdog3.microsoft.com`, `<redacted>`→`xmpp.<redacted>`, oracle.com→`vcse.dtvlb.oracle.com`.)
   - **Dedup (B1):** the same provider discovered across multiple SRV prefixes now emits a single signal (mirrors the #261 dedup for stale_integration / security_tooling). (Observed: oracle.com emitted the `vcse.dtvlb.oracle.com` shadow_service twice.)
   - SRV targets are now normalized (trailing dot stripped, lowercased) and the originating target is carried so the self-domain check works. (#285)
 
@@ -2605,7 +2605,7 @@ Scoring-contract recalibration aligning email-authentication and DNS-integrity s
 
 ### Fixed
 
-- **`map_supply_chain`: self-owned SPF wrapper subdomains no longer show as critical third-parties.** Confirmed recurring on PayPal (`pp._spf.[redacted-domain]` + 4 `3ph*` siblings) and Stripe (`[redacted-domain]`, `[redacted-domain]`). When an SPF include's effective parent equals the scan domain, the rows collapse into a single `<domain> (self-hosted SPF)` entry. Genuine third-party includes preserved. (#265)
+- **`map_supply_chain`: self-owned SPF wrapper subdomains no longer show as critical third-parties.** Confirmed recurring on a large payments brand (`pp._spf.<redacted>` + 4 `3ph*` siblings) and a SaaS billing platform (`spf1.<redacted>`, `greenhouse-outbound-mail.<redacted>`). When an SPF include's effective parent equals the scan domain, the rows collapse into a single `<domain> (self-hosted SPF)` entry. Genuine third-party includes preserved. (#265)
 - **`map_supply_chain`: UltraDNS no longer double-counted across sibling TLDs.** `ultradns.com` + `ultradns.net` (Neustar's redundant TLDs) now collapse to one `UltraDNS (Neustar)` row, matching the existing AWS Route 53 multi-TLD treatment. (#265)
 - **`map_supply_chain`: `security_tooling_exposed` findings deduplicated when a service has multiple TXT records.** Same pre-aggregation pattern as the v3.3.9 `stale_integration` GSC fix — xero.com's 2 OneTrust TXT records → 1 finding with count embedded. Closes #261. (#265)
 - **`check_dkim`: probe list expanded from 13 → 25 selectors.** New `dkim-selectors.ts` catalog adds Proton (`protonmail`/`protonmail2`/`protonmail3` — fixes proton.me false-negative), Mandrill, MailerSend, SparkPost, Postmark variants, and others. Custom selectors still pass via the `--selector` arg. (#265)

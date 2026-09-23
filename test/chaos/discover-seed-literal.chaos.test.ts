@@ -45,7 +45,7 @@ function makeDeps(overrides: Partial<DiscoverBrandDomainsDeps> = {}): DiscoverBr
 
 // Valid seeds the tool MUST scan verbatim — including the exact bug case (clau.de),
 // short ccTLD, multi-label, punycode/IDN, and a long single label.
-const VERBATIM_SEEDS = ['clau.de', '[redacted-domain]', 'sub.example.co.uk', 'xn--mnchen-3ya.de', 'a-very-long-brand-label.com'];
+const VERBATIM_SEEDS = ['clau.de', 'fabpay.com', 'sub.example.co.uk', 'xn--mnchen-3ya.de', 'a-very-long-brand-label.com'];
 
 // Hostile / malformed seeds — must be rejected cleanly, never substituted or crashed on.
 const HOSTILE_SEEDS = ['not a domain', 'evil.com\ninjected.com', 'http://x.example', `${'a'.repeat(300)}.com`, '', '   '];

@@ -60,6 +60,16 @@ const RULES = [
 // a policy file, still enforces it. Extend per-repo via
 // `forbiddenClientContextPhrasesSha256` in policy.json.
 export const BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256 = ['ef6b9b94f52b435a826c9558de024878508fb0b151ea98d387c8de54eb03f09a'];
+
+// The `client-domain` and `client-context` (hashed phrase window) rules ignore
+// `allowedPaths`/`allowedPathPrefixes` everywhere — a client name is exposure
+// regardless of which directory it lands in. These two files are the sole,
+// explicit exception: they carry the DELIBERATE positive-control fixtures for
+// those same rules (this file's RULES/hash constants, and the audit test's
+// synthetic-domain assertions), so scanning them for `client-context` would
+// trip on the mechanism's own scaffolding. `client-domain` still applies to
+// both — a real client domain must never appear here even as a control.
+export const CLIENT_RULE_SELF_TEST_PATHS = ['scripts/repo-safety/scanner-core.mjs', 'test/audits/repo-safety-scanner.audit.test.ts'];
 const CLIENT_CONTEXT_PHRASE_MIN_WORDS = 2;
 const CLIENT_CONTEXT_PHRASE_MAX_WORDS = 4;
 const WORD_TOKEN_PATTERN = /[A-Za-z0-9][A-Za-z0-9-]*/g;
@@ -112,10 +122,17 @@ export function isAllowedPath(file, policy = DEFAULT_POLICY) {
 	return normalized.allowedPaths.includes(file) || normalized.allowedPathPrefixes.some((prefix) => file.startsWith(prefix));
 }
 
-/** @param {string} file @param {RepoSafetyPolicy} [policy] */
+/**
+ * Extension gate only. Allowlisting no longer skips content scanning outright:
+ * `scanTextForSensitiveSurface` still runs for an allowed path, because the
+ * client-domain and client-context rules must see every scannable file
+ * regardless of `allowedPaths`/`allowedPathPrefixes` — only the OTHER rules
+ * (public-ipv4, real-email, internal-hostname, etc.) skip an allowed path,
+ * and that skip now lives inside `scanTextForSensitiveSurface` itself.
+ * @param {string} file @param {RepoSafetyPolicy} [policy]
+ */
 export function shouldScanFile(file, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
-	if (isAllowedPath(file, normalized)) return false;
 	return normalized.sourceExtensions.some((extension) => file.endsWith(extension));
 }
 
@@ -140,6 +157,75 @@ export function scanPathForForbiddenSurface(file, policy = DEFAULT_POLICY) {
 			ruleId: 'forbidden-path',
 			detail: pattern,
 		}));
+}
+
+// A client domain hidden in a filename doesn't always keep its dot: a fixture
+// or report named after one is as much exposure whether it spells the domain
+// with a literal dot, a dash, or an underscore (`brand.com`, `brand-com`,
+// `brand_com`). For each `.`-delimited path segment we generate: (a) every
+// contiguous window of its dot-labels (the plain dotted form), and (b) for
+// any dot-label that itself contains a `-`/`_`, one candidate per separator
+// position with that separator promoted to `.` and the token immediately
+// after it taken as the TLD-like final label — recovering `brand.com` from
+// `brand-com` without disturbing a hyphen that's just part of a real label
+// (`synthetic-client-test-fast` yields `synthetic-client.test` this way).
+function pathSegmentDomainCandidates(segment) {
+	const candidates = new Set();
+	const dotLabels = segment.split('.').filter(Boolean);
+
+	for (let start = 0; start < dotLabels.length; start++) {
+		for (let end = start + 1; end < dotLabels.length; end++) {
+			candidates.add(dotLabels.slice(start, end + 1).join('.'));
+		}
+	}
+
+	for (const label of dotLabels) {
+		for (let i = 0; i < label.length; i++) {
+			if (label[i] !== '-' && label[i] !== '_') continue;
+			const left = label.slice(0, i);
+			const rightToken = label.slice(i + 1).split(/[-_]/)[0];
+			if (left && rightToken) candidates.add(`${left}.${rightToken}`);
+		}
+	}
+
+	return candidates;
+}
+
+// Shared by the filename check below; content scanning keeps its own inline
+// plaintext + hashed checks since it also needs the regex match object.
+function matchesForbiddenClientDomain(candidate, normalized) {
+	const lower = candidate.toLowerCase();
+	if (normalized.forbiddenClientDomains.some((domain) => lower === domain.toLowerCase())) return true;
+	if (normalized.forbiddenClientDomainsSha256.length === 0) return false;
+	const hashes = new Set(normalized.forbiddenClientDomainsSha256);
+	for (const suffix of tailSuffixes(lower)) {
+		if (hashes.has(sha256Hex(suffix))) return true;
+	}
+	return false;
+}
+
+/**
+ * Flags a path whose segments spell a forbidden client domain in dotted or
+ * dash/underscore-joined form, independent of `scanPathForForbiddenSurface`
+ * (glob-based, hygiene-only) and of any text content. Applies regardless of
+ * `allowedPaths`/`allowedPathPrefixes` — same rationale as the content-side
+ * `client-domain` rule. PII-free: the matched candidate never rides along in
+ * the finding, only the fixed `client-domain` rule id.
+ * @param {string} file @param {RepoSafetyPolicy} [policy]
+ */
+export function scanPathForClientDomainSurface(file, policy = DEFAULT_POLICY) {
+	const normalized = normalizePolicy(policy);
+	if (normalized.forbiddenClientDomains.length === 0 && normalized.forbiddenClientDomainsSha256.length === 0) return [];
+
+	for (const segment of file.split('/')) {
+		for (const candidate of pathSegmentDomainCandidates(segment)) {
+			if (matchesForbiddenClientDomain(candidate, normalized)) {
+				return [{ file, line: 0, column: 0, ruleId: 'client-domain' }];
+			}
+		}
+	}
+
+	return [];
 }
 
 export function isAllowedIPv4(value) {
@@ -253,19 +339,33 @@ export function scanGithubActionsWorkflowForThreats(file, text) {
 	return findings;
 }
 
-/** @param {string} file @param {string} text @param {RepoSafetyPolicy} [policy] */
+/**
+ * `client-domain` (plaintext + hashed) and `client-context` (hashed phrase
+ * windows) are evaluated for every scannable file REGARDLESS of
+ * `allowedPaths`/`allowedPathPrefixes` — a client name is exposure no matter
+ * which directory it lands in, and `test/` fixtures are not an exception.
+ * Every other rule here (public-ipv4, real-email, internal-hostname,
+ * tenant/customer markers, the plaintext client-context phrase list) keeps
+ * the original allowlist semantics, since `test/` legitimately carries fixture
+ * IPs/emails. `client-context` additionally exempts exactly the two files in
+ * `CLIENT_RULE_SELF_TEST_PATHS`, which carry this mechanism's own positive
+ * control and would otherwise trip on their own scaffolding.
+ * @param {string} file @param {string} text @param {RepoSafetyPolicy} [policy]
+ */
 export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
-	if (isAllowedPath(file, normalized)) return [];
+	const allowed = isAllowedPath(file, normalized);
 	const findings = [];
 	const lines = text.split(/\r?\n/);
 
 	lines.forEach((line, lineIndex) => {
-		for (const rule of RULES) {
-			const pattern = new RegExp(rule.pattern.source, rule.pattern.flags);
-			for (const match of line.matchAll(pattern)) {
-				if (rule.id === 'internal-hostname' && isAllowedInternalHostname(match[0], normalized)) continue;
-				findings.push(finding(file, line, lineIndex, match, rule.id));
+		if (!allowed) {
+			for (const rule of RULES) {
+				const pattern = new RegExp(rule.pattern.source, rule.pattern.flags);
+				for (const match of line.matchAll(pattern)) {
+					if (rule.id === 'internal-hostname' && isAllowedInternalHostname(match[0], normalized)) continue;
+					findings.push(finding(file, line, lineIndex, match, rule.id));
+				}
 			}
 		}
 
@@ -287,19 +387,23 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 			}
 		}
 
-		const phraseHashes = new Set([...BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256, ...normalized.forbiddenClientContextPhrasesSha256]);
-		for (const window of phraseWindows(line)) {
-			if (phraseHashes.has(sha256Hex(window.phrase))) {
-				findings.push(finding(file, line, lineIndex, { index: window.index, 0: line.slice(window.index, window.index + window.length) }, 'client-context'));
+		if (!CLIENT_RULE_SELF_TEST_PATHS.includes(file)) {
+			const phraseHashes = new Set([...BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256, ...normalized.forbiddenClientContextPhrasesSha256]);
+			for (const window of phraseWindows(line)) {
+				if (phraseHashes.has(sha256Hex(window.phrase))) {
+					findings.push(finding(file, line, lineIndex, { index: window.index, 0: line.slice(window.index, window.index + window.length) }, 'client-context'));
+				}
 			}
 		}
 
-		for (const match of line.matchAll(PUBLIC_IPV4_PATTERN)) {
-			if (!isAllowedIPv4(match[0])) findings.push(finding(file, line, lineIndex, match, 'public-ipv4'));
-		}
+		if (!allowed) {
+			for (const match of line.matchAll(PUBLIC_IPV4_PATTERN)) {
+				if (!isAllowedIPv4(match[0])) findings.push(finding(file, line, lineIndex, match, 'public-ipv4'));
+			}
 
-		for (const match of line.matchAll(EMAIL_PATTERN)) {
-			if (!isAllowedEmail(match[0], normalized)) findings.push(finding(file, line, lineIndex, match, 'real-email'));
+			for (const match of line.matchAll(EMAIL_PATTERN)) {
+				if (!isAllowedEmail(match[0], normalized)) findings.push(finding(file, line, lineIndex, match, 'real-email'));
+			}
 		}
 	});
 
@@ -310,6 +414,7 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 export function scanFileContent(file, text, policy = DEFAULT_POLICY) {
 	return [
 		...scanPathForForbiddenSurface(file, policy),
+		...scanPathForClientDomainSurface(file, policy),
 		...scanGithubActionsWorkflowForThreats(file, text),
 		...(shouldScanFile(file, policy) ? scanTextForSensitiveSurface(file, text, policy) : []),
 	];

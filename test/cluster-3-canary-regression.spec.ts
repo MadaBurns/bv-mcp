@@ -7,9 +7,9 @@
 //
 // Coverage:
 //   - gov.uk: web_only profile must yield maturity stage ≥ 3 (was 1)
-//   - [redacted-domain]: mail_enabled profile must NOT be Hardened (was 4) — stage ≤ 3
+//   - fabrikam.com: mail_enabled profile must NOT be Hardened (was 4) — stage ≤ 3
 //   - proton.me: mail_enabled regression — stays at stage 4 Hardened
-//   - DMARC cross-domain ordering: gov.uk score > [redacted-domain] score
+//   - DMARC cross-domain ordering: gov.uk score > fabrikam.com score
 //   - DMARC floor: gov.uk DMARCbis-strict policy scores ≥ 85 (was 70)
 //
 // Tests are unit-level (call the staging classifier + DMARC check directly with
@@ -26,7 +26,7 @@ import type { DNSQueryFunction } from '../packages/dns-checks/src/types';
 // Canary DNS fixtures captured 2026-05-28. See fact-check plan §0.
 
 const GOV_UK_DMARC = 'v=DMARC1; p=reject; sp=none; np=reject; adkim=s; aspf=s; fo=1; rua=mailto:dmarc-rua@dmarc.service.gov.uk';
-const STRIPE_DMARC = 'v=DMARC1; p=reject; pct=100; fo=1; rua=mailto:dmarc@[redacted-domain]; ruf=mailto:ruf@[redacted-domain]';
+const FABRIKAM_DMARC = 'v=DMARC1; p=reject; pct=100; fo=1; rua=mailto:dmarc@fabrikam.com; ruf=mailto:ruf@fabrikam.com';
 
 function dmarcMock(domain: string, record: string): DNSQueryFunction {
 	return vi.fn(async (q: string, _type: string) => (q === `_dmarc.${domain}` ? [record] : []));
@@ -49,7 +49,7 @@ function govUkChecks(): CheckResult[] {
 	];
 }
 
-function stripeChecks(): CheckResult[] {
+function fabrikamChecks(): CheckResult[] {
 	return [
 		buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 records')]),
 		passingCheck('spf', 'SPF record configured'),
@@ -59,7 +59,7 @@ function stripeChecks(): CheckResult[] {
 		]),
 		passingCheck('ssl', 'SSL certificate valid'),
 		buildCheckResult('caa', [createFinding('caa', 'CAA records found', 'info', '0 issue "amazon.com"')]),
-		// [redacted-domain] has NO DNSSEC, NO MTA-STS, NO BIMI, NO DANE (per 2026-05-28 fact-check)
+		// fabrikam.com has NO DNSSEC, NO MTA-STS, NO BIMI, NO DANE (per 2026-05-28 fact-check)
 		buildCheckResult('dnssec', [createFinding('dnssec', 'No DNSKEY records found', 'high', 'No DNSSEC')]),
 		buildCheckResult('mta_sts', [createFinding('mta_sts', 'No MTA-STS or TLS-RPT records found', 'high', 'missing')]),
 	];
@@ -86,8 +86,8 @@ describe('Cluster 3 canary regression — maturity classifier', () => {
 		expect(stage.label).not.toBe('DNS-Only');
 	});
 
-	it('[redacted-domain] maturityStage ≤ 3 under mail_enabled (regression — 2026-05-28 baseline was 4 "Hardened")', () => {
-		const stage = computeMaturityStage(stripeChecks(), 'mail_enabled');
+	it('fabrikam.com maturityStage ≤ 3 under mail_enabled (regression — 2026-05-28 baseline was 4 "Hardened")', () => {
+		const stage = computeMaturityStage(fabrikamChecks(), 'mail_enabled');
 		expect(stage.stage).toBeLessThanOrEqual(3);
 		expect(stage.label).not.toBe('Hardened');
 	});
@@ -98,10 +98,10 @@ describe('Cluster 3 canary regression — maturity classifier', () => {
 		expect(stage.label).toBe('Hardened');
 	});
 
-	it('cross-domain ordering: proton.me > [redacted-domain] (regression — both classified on mail-enabled ladder)', () => {
+	it('cross-domain ordering: proton.me > fabrikam.com (regression — both classified on mail-enabled ladder)', () => {
 		const proton = computeMaturityStage(protonChecks(), 'mail_enabled');
-		const stripe = computeMaturityStage(stripeChecks(), 'mail_enabled');
-		expect(proton.stage).toBeGreaterThan(stripe.stage);
+		const fabrikam = computeMaturityStage(fabrikamChecks(), 'mail_enabled');
+		expect(proton.stage).toBeGreaterThan(fabrikam.stage);
 	});
 });
 
@@ -111,13 +111,13 @@ describe('Cluster 3 canary regression — DMARC scoring', () => {
 		expect(result.score).toBeGreaterThanOrEqual(85);
 	});
 
-	it('cross-domain ordering: gov.uk DMARC ≥ [redacted-domain] DMARC (regression — was 70 < 85)', async () => {
+	it('cross-domain ordering: gov.uk DMARC ≥ fabrikam.com DMARC (regression — was 70 < 85)', async () => {
 		const govuk = await checkDMARC('gov.uk', dmarcMock('gov.uk', GOV_UK_DMARC));
-		const stripe = await checkDMARC('[redacted-domain]', dmarcMock('[redacted-domain]', STRIPE_DMARC));
+		const fabrikam = await checkDMARC('fabrikam.com', dmarcMock('fabrikam.com', FABRIKAM_DMARC));
 		// ≥, not >: since #842 (model 1.15.0) relaxed aspf is advisory info, so the two
 		// records legitimately tie at 90. The regression this canary guards is gov.uk
-		// falling BELOW stripe (the 2026-05-28 70 < 85 defect), which ≥ still catches.
-		expect(govuk.score).toBeGreaterThanOrEqual(stripe.score);
+		// falling BELOW fabrikam (the 2026-05-28 70 < 85 defect), which ≥ still catches.
+		expect(govuk.score).toBeGreaterThanOrEqual(fabrikam.score);
 	});
 
 	it('np=reject downgrades subdomain-weaker finding from HIGH to LOW (mechanism that drives gov.uk floor)', async () => {

@@ -11,12 +11,12 @@ describe('domainLabelSimilarity', () => {
 
 	it('scores every one-edit typosquat of a brand identically, regardless of which side of the brand length it lands (#1038)', () => {
 		// Pre-fix, `1 - distance/maxLen` made the score depend on the BRAND
-		// length: paypall (insertion, maxLen 7) scored 0.86 while paypa
-		// (deletion) and paypai (substitution) scored 0.83 — same one-edit
+		// length: fabpayy (insertion, maxLen 7) scored 0.86 while fabpa
+		// (deletion) and fabpai (substitution) scored 0.83 — same one-edit
 		// closeness, opposite side of the 0.85 impersonation gate.
-		expect(domainLabelSimilarity('[redacted-domain]', 'paypa.com')).toBeGreaterThanOrEqual(0.85);
-		expect(domainLabelSimilarity('[redacted-domain]', 'paypai.com')).toBeGreaterThanOrEqual(0.85);
-		expect(domainLabelSimilarity('[redacted-domain]', 'paypall.com')).toBeGreaterThanOrEqual(0.85);
+		expect(domainLabelSimilarity('fabpay.com', 'fabpa.com')).toBeGreaterThanOrEqual(0.85);
+		expect(domainLabelSimilarity('fabpay.com', 'fabpai.com')).toBeGreaterThanOrEqual(0.85);
+		expect(domainLabelSimilarity('fabpay.com', 'fabpayy.com')).toBeGreaterThanOrEqual(0.85);
 	});
 
 	it('keeps the plain ratio for one-edit pairs of very short labels — coincidence, not typosquat (#1038 guard)', () => {
@@ -24,41 +24,41 @@ describe('domainLabelSimilarity', () => {
 	});
 
 	it('keeps the plain ratio when the labels are more than one edit apart (#1038 floor is single-edit only)', () => {
-		expect(domainLabelSimilarity('[redacted-domain]', 'payp.com')).toBeLessThan(0.85);
+		expect(domainLabelSimilarity('fabpay.com', 'fabp.com')).toBeLessThan(0.85);
 	});
 
 	it('cannot see a brand token inside a longer combosquat label (the gap combosquatMatch fills)', () => {
-		// `paypal-login` vs `paypal` scores far below the 0.85 impersonation
+		// `fabpay-login` vs `fabpay` scores far below the 0.85 impersonation
 		// threshold — this is exactly why combosquats need a separate detector.
-		expect(domainLabelSimilarity('paypal', 'paypal-login')).toBeLessThan(0.85);
+		expect(domainLabelSimilarity('fabpay', 'fabpay-login')).toBeLessThan(0.85);
 	});
 });
 
 describe('combosquatMatch', () => {
 	it('flags delimited brand-token segments (brand-keyword, keyword-brand)', () => {
-		expect(combosquatMatch('paypal', 'paypal-login')).toMatchObject({
-			brandToken: 'paypal',
+		expect(combosquatMatch('fabpay', 'fabpay-login')).toMatchObject({
+			brandToken: 'fabpay',
 			extraTokens: ['login'],
 			hasLureKeyword: true,
 			matchKind: 'delimited',
 		});
-		expect(combosquatMatch('paypal', 'secure-paypal')).toMatchObject({ extraTokens: ['secure'], hasLureKeyword: true });
+		expect(combosquatMatch('fabpay', 'secure-fabpay')).toMatchObject({ extraTokens: ['secure'], hasLureKeyword: true });
 		expect(combosquatMatch('microsoft', 'login.microsoft.update')).toMatchObject({ matchKind: 'delimited' });
 	});
 
 	it('flags a non-lure extra token but marks hasLureKeyword false (severity hint, still a match)', () => {
-		expect(combosquatMatch('paypal', 'paypal-shop')).toMatchObject({ extraTokens: ['shop'], hasLureKeyword: false });
+		expect(combosquatMatch('fabpay', 'fabpay-shop')).toMatchObject({ extraTokens: ['shop'], hasLureKeyword: false });
 	});
 
 	it('flags undelimited concatenation only when the remainder is a known lure keyword', () => {
-		expect(combosquatMatch('paypal', 'paypallogin')).toMatchObject({ matchKind: 'undelimited', extraTokens: ['login'] });
+		expect(combosquatMatch('fabpay', 'fabpaylogin')).toMatchObject({ matchKind: 'undelimited', extraTokens: ['login'] });
 		expect(combosquatMatch('microsoft', 'verifymicrosoft')).toMatchObject({ matchKind: 'undelimited', extraTokens: ['verify'] });
 		// remainder is not a lure keyword → not a combosquat
-		expect(combosquatMatch('paypal', 'paypalways')).toBeNull();
+		expect(combosquatMatch('fabpay', 'fabpayways')).toBeNull();
 	});
 
 	it('does NOT match an exact label (owned portfolio domain, not a combosquat)', () => {
-		expect(combosquatMatch('paypal', 'paypal')).toBeNull();
+		expect(combosquatMatch('fabpay', 'fabpay')).toBeNull();
 	});
 
 	it('does NOT match a short brand token concatenated into an unrelated word (FP guard)', () => {
@@ -72,7 +72,7 @@ describe('combosquatMatch', () => {
 	});
 
 	it('handles empty / whitespace input safely', () => {
-		expect(combosquatMatch('', 'paypal-login')).toBeNull();
-		expect(combosquatMatch('paypal', '   ')).toBeNull();
+		expect(combosquatMatch('', 'fabpay-login')).toBeNull();
+		expect(combosquatMatch('fabpay', '   ')).toBeNull();
 	});
 });

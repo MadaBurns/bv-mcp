@@ -38,7 +38,7 @@ function makeD1ForGetReport(opts: {
 					if (sql.includes('FROM brand_audit_targets')) {
 						return {
 							audit_id: 'a-1',
-							target: '[redacted-domain]',
+							target: 'contoso.com',
 							status: targetStatus,
 							result_json: resultJson,
 							pdf_r2_key: null,
@@ -63,7 +63,7 @@ function makeD1ForGetReport(opts: {
 }
 
 function makeD1ForStatus(opts: { targets?: { target: string }[] } = {}) {
-	const targetList = opts.targets ?? [{ target: '[redacted-domain]' }];
+	const targetList = opts.targets ?? [{ target: 'contoso.com' }];
 	const db = {
 		prepare(sql: string) {
 			let binds: unknown[] = [];
@@ -123,10 +123,10 @@ describe('brand_audit_get_report with registrarComplement', () => {
 	it('attaches registrarComplement from registrar_complement_full when present', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 		const stepStore = createMemoryBrandAuditStepStore();
-		await stepStore.put({ auditId: 'a-1', target: '[redacted-domain]', step: 'registrar_complement_full', status: 'completed', payload: { viewVersion: 2, reportId: 'reg_rpt_full' } });
-		await stepStore.put({ auditId: 'a-1', target: '[redacted-domain]', step: 'registrar_complement_fast', status: 'completed', payload: { viewVersion: 2, reportId: 'reg_rpt_fast' } });
+		await stepStore.put({ auditId: 'a-1', target: 'contoso.com', step: 'registrar_complement_full', status: 'completed', payload: { viewVersion: 2, reportId: 'reg_rpt_full' } });
+		await stepStore.put({ auditId: 'a-1', target: 'contoso.com', step: 'registrar_complement_fast', status: 'completed', payload: { viewVersion: 2, reportId: 'reg_rpt_fast' } });
 
-		const result = await brandAuditGetReport({ auditId: 'a-1', target: '[redacted-domain]' }, 'owner-1', {
+		const result = await brandAuditGetReport({ auditId: 'a-1', target: 'contoso.com' }, 'owner-1', {
 			db: makeD1ForGetReport(),
 			stepStore,
 		});
@@ -138,9 +138,9 @@ describe('brand_audit_get_report with registrarComplement', () => {
 	it('falls back to registrar_complement_fast when full is absent', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 		const stepStore = createMemoryBrandAuditStepStore();
-		await stepStore.put({ auditId: 'a-1', target: '[redacted-domain]', step: 'registrar_complement_fast', status: 'completed', payload: { viewVersion: 2, reportId: 'reg_rpt_fast' } });
+		await stepStore.put({ auditId: 'a-1', target: 'contoso.com', step: 'registrar_complement_fast', status: 'completed', payload: { viewVersion: 2, reportId: 'reg_rpt_fast' } });
 
-		const result = await brandAuditGetReport({ auditId: 'a-1', target: '[redacted-domain]' }, 'owner-1', {
+		const result = await brandAuditGetReport({ auditId: 'a-1', target: 'contoso.com' }, 'owner-1', {
 			db: makeD1ForGetReport(),
 			stepStore,
 		});
@@ -153,7 +153,7 @@ describe('brand_audit_get_report with registrarComplement', () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 		const stepStore = createMemoryBrandAuditStepStore();
 
-		const result = await brandAuditGetReport({ auditId: 'a-1', target: '[redacted-domain]' }, 'owner-1', {
+		const result = await brandAuditGetReport({ auditId: 'a-1', target: 'contoso.com' }, 'owner-1', {
 			db: makeD1ForGetReport(),
 			stepStore,
 		});
@@ -165,7 +165,7 @@ describe('brand_audit_get_report with registrarComplement', () => {
 	it('does not attach registrarComplement when stepStore is omitted', async () => {
 		const { brandAuditGetReport } = await import('../src/tools/brand-audit-get-report');
 
-		const result = await brandAuditGetReport({ auditId: 'a-1', target: '[redacted-domain]' }, 'owner-1', {
+		const result = await brandAuditGetReport({ auditId: 'a-1', target: 'contoso.com' }, 'owner-1', {
 			db: makeD1ForGetReport(),
 		});
 
@@ -178,7 +178,7 @@ describe('brand_audit_status registrar-view stages', () => {
 	it('reports fast_ready when registrar_complement_fast is completed but full is absent', async () => {
 		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
 		const stepStore = createMemoryBrandAuditStepStore();
-		await stepStore.put({ auditId: 'a-1', target: '[redacted-domain]', step: 'registrar_complement_fast', status: 'completed', payload: {} });
+		await stepStore.put({ auditId: 'a-1', target: 'contoso.com', step: 'registrar_complement_fast', status: 'completed', payload: {} });
 
 		const result = await brandAuditStatus('a-1', 'owner-1', {
 			db: makeD1ForStatus(),
@@ -193,8 +193,8 @@ describe('brand_audit_status registrar-view stages', () => {
 	it('reports deep_ready when registrar_complement_full is completed', async () => {
 		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
 		const stepStore = createMemoryBrandAuditStepStore();
-		await stepStore.put({ auditId: 'a-1', target: '[redacted-domain]', step: 'registrar_complement_full', status: 'completed', payload: {} });
-		await stepStore.put({ auditId: 'a-1', target: '[redacted-domain]', step: 'registrar_complement_fast', status: 'completed', payload: {} });
+		await stepStore.put({ auditId: 'a-1', target: 'contoso.com', step: 'registrar_complement_full', status: 'completed', payload: {} });
+		await stepStore.put({ auditId: 'a-1', target: 'contoso.com', step: 'registrar_complement_fast', status: 'completed', payload: {} });
 
 		const result = await brandAuditStatus('a-1', 'owner-1', {
 			db: makeD1ForStatus(),
@@ -236,11 +236,11 @@ describe('brand_audit_status registrar-view stages', () => {
 		const { brandAuditStatus } = await import('../src/tools/brand-audit-status');
 		const stepStore = createMemoryBrandAuditStepStore();
 		// target1 has fast only; target2 has full — deep_ready should win
-		await stepStore.put({ auditId: 'a-1', target: '[redacted-domain]', step: 'registrar_complement_fast', status: 'completed', payload: {} });
+		await stepStore.put({ auditId: 'a-1', target: 'contoso.com', step: 'registrar_complement_fast', status: 'completed', payload: {} });
 		await stepStore.put({ auditId: 'a-1', target: 'lincoln.com', step: 'registrar_complement_full', status: 'completed', payload: {} });
 
 		const result = await brandAuditStatus('a-1', 'owner-1', {
-			db: makeD1ForStatus({ targets: [{ target: '[redacted-domain]' }, { target: 'lincoln.com' }] }),
+			db: makeD1ForStatus({ targets: [{ target: 'contoso.com' }, { target: 'lincoln.com' }] }),
 			stepStore,
 			now: () => 1_750_000_100_000,
 		});

@@ -25,7 +25,7 @@ import { describe, expect, it } from 'vitest';
 import { classifyCandidate, type CandidateInput, type TargetContext } from '../src/lib/brand-classification';
 
 const TARGET: TargetContext = {
-	domain: '[redacted-domain]',
+	domain: 'fabpay.com',
 	registrar: 'MarkMonitor Inc.',
 	registrarFamily: 'MarkMonitor',
 };
@@ -68,7 +68,7 @@ describe('#1037: Rule 8 (low-confidence fallback) reachability', () => {
 		// ever reached, proving Rule 8 is strictly the last resort.
 		const result = classifyCandidate(
 			candidate({
-				domain: 'paypal-support.example',
+				domain: 'fabpay-support.example',
 				confidence: 0.3,
 				registrar: 'MarkMonitor Inc.',
 				signals: ['ns', 'san'],

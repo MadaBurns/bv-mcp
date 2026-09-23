@@ -108,7 +108,7 @@ describe('checkLookalikes', () => {
 	});
 
 	it('surfaces a registered combosquat (brand + lure affix) that edit-distance generation misses, capped at info (no ownership signal)', async () => {
-		// `paypal-login.com` is a combosquat of `[redacted-domain]`: generateLookalikes
+		// `northwindbank-login.com` is a combosquat of `northwindbank.com`: generateLookalikes
 		// (edit-distance mutators) never produces it — generateCombosquats does.
 		// It has mail infrastructure and would calibrate to MEDIUM per the #264
 		// matrix, but carries no ownership signal (third_party) so the D4 gate
@@ -116,7 +116,7 @@ describe('checkLookalikes', () => {
 		// ownership-gated pipeline as every other detection path.
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const { name, type } = parseDohQuery(input);
-			if (name === 'paypal-login.com') {
+			if (name === 'northwindbank-login.com') {
 				if (type === 'NS' || type === '2') {
 					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.registrar.com.' }]));
 				}
@@ -129,14 +129,14 @@ describe('checkLookalikes', () => {
 			}
 			return Promise.resolve(createDohResponse([], []));
 		});
-		const result = await run('[redacted-domain]');
-		const surfaced = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'paypal-login.com');
+		const result = await run('northwindbank.com');
+		const surfaced = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'northwindbank-login.com');
 		expect(surfaced.length).toBeGreaterThan(0);
 		// Task 7b: attribution capped at info; the #264 mail-infra MEDIUM now
 		// surfaces on the threat axis instead of being discarded.
 		expect(surfaced.filter((f) => f.metadata?.findingAxis === 'attribution').every((f) => f.severity === 'info')).toBe(true);
 		expect(surfaced.filter((f) => f.metadata?.findingAxis === 'threat_observation').every((f) => f.severity === 'medium')).toBe(true);
-		expect(JSON.stringify(result.findings)).toContain('paypal-login.com');
+		expect(JSON.stringify(result.findings)).toContain('northwindbank-login.com');
 	});
 
 	it('should handle individual query failures gracefully via Promise.allSettled', async () => {

@@ -88,7 +88,7 @@ describe('handleBrandAuditQueue — deep_scan branch', () => {
 	it('acks message and skips internalCall when registrar_complement_fast is absent', async () => {
 		const { handleBrandAuditQueue } = await import('../src/queue/brand-audit-consumer');
 		const internalCall = vi.fn();
-		const { batch, ack, retry } = makeDeepScanBatch('audit-1', '[redacted-domain]');
+		const { batch, ack, retry } = makeDeepScanBatch('audit-1', 'contoso.com');
 
 		await handleBrandAuditQueue(batch, { db: makeEmptyD1(), internalCall });
 
@@ -99,7 +99,7 @@ describe('handleBrandAuditQueue — deep_scan branch', () => {
 
 	it('acks message even when D1 throws inside runDeepScanFromStepStore (error containment)', async () => {
 		const { handleBrandAuditQueue } = await import('../src/queue/brand-audit-consumer');
-		const { batch, ack, retry } = makeDeepScanBatch('audit-2', '[redacted-domain]');
+		const { batch, ack, retry } = makeDeepScanBatch('audit-2', 'contoso.com');
 
 		await expect(handleBrandAuditQueue(batch, { db: makeThrowingD1() })).resolves.toBeUndefined();
 
@@ -110,8 +110,8 @@ describe('handleBrandAuditQueue — deep_scan branch', () => {
 	it('invokes internalCall for anchor apex when registrar_complement_fast is seeded', async () => {
 		const fastPayload = {
 			viewVersion: 2,
-			anchor: { apex: '[redacted-domain]', primaryRegistrar: { family: 'corporate domains registrar', name: 'Brand Registrar, Inc.', ianaId: null }, managedByRegistrar: true },
-			registrarPortfolio: { totalApexes: 1, byFamily: [{ family: 'corporate domains registrar', count: 1, percent: 100, exampleApexes: ['[redacted-domain]'] }], offPortfolioCount: 0, offPortfolioApexes: [] },
+			anchor: { apex: 'contoso.com', primaryRegistrar: { family: 'corporate domains registrar', name: 'Brand Registrar, Inc.', ianaId: null }, managedByRegistrar: true },
+			registrarPortfolio: { totalApexes: 1, byFamily: [{ family: 'corporate domains registrar', count: 1, percent: 100, exampleApexes: ['contoso.com'] }], offPortfolioCount: 0, offPortfolioApexes: [] },
 			shadowItHighlights: [],
 			defensiveRegistrations: { count: 0, examples: [], enrichmentStatus: 'ready' },
 			postureSnapshot: { stage: 'pending', apexesScanned: 0, apexesTotal: 0, apexes: [], medianGrade: null, distribution: {} },
@@ -124,14 +124,14 @@ describe('handleBrandAuditQueue — deep_scan branch', () => {
 		// internalCall is the network/tool boundary — the correct mock point.
 		const internalCall = vi.fn().mockResolvedValue({
 			content: [],
-			structuredContent: { domain: '[redacted-domain]', score: 80, grade: 'B+', categoryScores: {}, totalSubdomains: 0, subdomains: [] },
+			structuredContent: { domain: 'contoso.com', score: 80, grade: 'B+', categoryScores: {}, totalSubdomains: 0, subdomains: [] },
 		});
-		const { batch, ack, retry } = makeDeepScanBatch('audit-3', '[redacted-domain]');
+		const { batch, ack, retry } = makeDeepScanBatch('audit-3', 'contoso.com');
 
-		await handleBrandAuditQueue(batch, { db: makeSeededD1('audit-3', '[redacted-domain]', fastPayload), internalCall });
+		await handleBrandAuditQueue(batch, { db: makeSeededD1('audit-3', 'contoso.com', fastPayload), internalCall });
 
 		expect(internalCall).toHaveBeenCalled();
-		expect((internalCall.mock.calls[0] as [string, { domain: string }])[1].domain).toBe('[redacted-domain]');
+		expect((internalCall.mock.calls[0] as [string, { domain: string }])[1].domain).toBe('contoso.com');
 		expect(ack).toHaveBeenCalledOnce();
 		expect(retry).not.toHaveBeenCalled();
 	});

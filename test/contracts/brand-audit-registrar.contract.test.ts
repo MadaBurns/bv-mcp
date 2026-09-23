@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import fastFixture from '../fixtures/registrar-complement/ford-com-fast.golden.json';
-import fullFixture from '../fixtures/registrar-complement/ford-com-full.golden.json';
+import fastFixture from '../fixtures/registrar-complement/sample-brand-fast.golden.json';
+import fullFixture from '../fixtures/registrar-complement/sample-brand-full.golden.json';
 import { BrandAuditRegistrarSchema, REGISTRAR_VIEW_VERSION } from '../../src/schemas/brand-audit-registrar';
 
 describe('registrarComplement contract', () => {
@@ -16,7 +16,7 @@ describe('registrarComplement contract', () => {
 		expect(parsed.viewVersion).toBe(REGISTRAR_VIEW_VERSION);
 		expect(parsed.postureSnapshot.stage).toBe('ready');
 		expect(parsed.deepScan.stage).toBe('ready');
-		expect(parsed.deepScan.subdomainInventoryByApex['[redacted-domain]'].source).toBe('certificate_transparency');
+		expect(parsed.deepScan.subdomainInventoryByApex['contoso.com'].source).toBe('certificate_transparency');
 	});
 
 	it('fast fixture .viewVersion === full fixture .viewVersion', () => {

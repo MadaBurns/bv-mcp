@@ -36,8 +36,8 @@ describe('groupByProvider', () => {
 		});
 	});
 	it('returns multiple providers when NS list crosses orgs', () => {
-		expect(groupByProvider(['a.ns.[redacted-domain]', 'b.ns.[redacted-domain]', 'pdns1.ultradns.net', 'pdns2.ultradns.com'])).toEqual({
-			'[redacted-domain]': 2,
+		expect(groupByProvider(['a.ns.northwindbank.com', 'b.ns.northwindbank.com', 'pdns1.ultradns.net', 'pdns2.ultradns.com'])).toEqual({
+			'northwindbank.com': 2,
 			'UltraDNS (Vercara)': 2,
 		});
 	});
@@ -50,8 +50,8 @@ describe('isMultiProvider', () => {
 	it('returns false for single-provider AWS spread', () => {
 		expect(isMultiProvider(['ns-52.awsdns-52.com', 'ns-1234.awsdns-43.co.uk'])).toBe(false);
 	});
-	it('returns true for paypal-style UltraDNS + in-house', () => {
-		expect(isMultiProvider(['pdns1.ultradns.net', 'pdns2.ultradns.com', 'a.ns.[redacted-domain]', 'b.ns.[redacted-domain]'])).toBe(true);
+	it('returns true for northwindbank-style UltraDNS + in-house', () => {
+		expect(isMultiProvider(['pdns1.ultradns.net', 'pdns2.ultradns.com', 'a.ns.northwindbank.com', 'b.ns.northwindbank.com'])).toBe(true);
 	});
 	it('returns false for single-provider list', () => {
 		expect(isMultiProvider(['ns1.google.com', 'ns2.google.com', 'ns3.google.com'])).toBe(false);

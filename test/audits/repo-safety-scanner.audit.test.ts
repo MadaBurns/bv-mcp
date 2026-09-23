@@ -2,8 +2,10 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
 	BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256,
+	CLIENT_RULE_SELF_TEST_PATHS,
 	scanCommitMessage,
 	scanFileContent,
+	scanPathForClientDomainSurface,
 	scanPathForForbiddenSurface,
 	scanTextForSensitiveSurface,
 	formatFindings,
@@ -12,6 +14,13 @@ import {
 const clientDomainPolicy = {
 	forbiddenClientDomains: ['brand-eta.com', 'brand-beta.com.au', 'brand-kappa.com', 'brand-theta.com'],
 };
+
+// A domain that is not a real client of ours, used only to prove the gate-bypass
+// mechanics without putting any real client domain in this repo. Injected as a
+// SHA-256 hash, same as production `forbiddenClientDomainsSha256` entries.
+const SYNTHETIC_DOMAIN = 'synthetic-client.test';
+const syntheticDomainHash = createHash('sha256').update(SYNTHETIC_DOMAIN).digest('hex');
+const syntheticDomainPolicy = { forbiddenClientDomainsSha256: [syntheticDomainHash] };
 
 describe('repo safety scanner helper', () => {
 	it('flags BV key shapes without printing the raw key', () => {
@@ -163,5 +172,84 @@ describe('repo safety scanner helper', () => {
 		);
 
 		expect(findings.map((finding) => finding.ruleId)).toContain('github-actions-remote-shell-exec');
+	});
+
+	describe('client-domain and client-context bypass allowedPaths/allowedPathPrefixes', () => {
+		it('flags a hashed client domain inside test/ content even though test/ is an allowed path prefix', () => {
+			const findings = scanTextForSensitiveSurface(
+				'test/foo.spec.ts',
+				`const target = "${SYNTHETIC_DOMAIN}";`,
+				{ ...syntheticDomainPolicy, allowedPathPrefixes: ['test/'] },
+			);
+
+			expect(findings.map((finding) => finding.ruleId)).toContain('client-domain');
+		});
+
+		it('flags a hashed client domain inside an allowedPaths file (CHANGELOG.md)', () => {
+			const findings = scanTextForSensitiveSurface(
+				'CHANGELOG.md',
+				`Investigated the ${SYNTHETIC_DOMAIN} incident.`,
+				{ ...syntheticDomainPolicy, allowedPaths: ['CHANGELOG.md'] },
+			);
+
+			expect(findings.map((finding) => finding.ruleId)).toContain('client-domain');
+		});
+
+		it('still allows fixture IPs/emails under an allowed test/ prefix (other rules keep old semantics)', () => {
+			// Same content would trip real-email + public-ipv4 outside an allowed path
+			// (fixture.example is not in allowedEmailDomains, 8.8.8.8 is a real public IP).
+			const findings = scanTextForSensitiveSurface(
+				'test/fixture-real.spec.ts',
+				'Contact ops@fixture.example about the probe at 8.8.8.8.',
+				{ allowedPathPrefixes: ['test/'] },
+			);
+
+			expect(findings).toEqual([]);
+		});
+
+		it('flags a client domain hidden in a dash-joined filename regardless of allowedPaths', () => {
+			const path = 'test/fixtures/x/synthetic-client-test-fast.golden.json';
+			const findings = scanPathForClientDomainSurface(path, { ...syntheticDomainPolicy, allowedPathPrefixes: ['test/'] });
+
+			expect(findings.map((finding) => finding.ruleId)).toEqual(['client-domain']);
+		});
+
+		it('flags a client domain hidden in a dotted filename segment regardless of allowedPaths', () => {
+			const path = `test/fixtures/x/${SYNTHETIC_DOMAIN}.notes.md`;
+			const findings = scanPathForClientDomainSurface(path, { ...syntheticDomainPolicy, allowedPathPrefixes: ['test/'] });
+
+			expect(findings.map((finding) => finding.ruleId)).toEqual(['client-domain']);
+		});
+
+		it('does not flag an ordinary hyphenated filename with no matching hashed domain', () => {
+			const findings = scanPathForClientDomainSurface('src/tools/check-subdomain-takeover.ts', syntheticDomainPolicy);
+			expect(findings).toEqual([]);
+		});
+
+		it('keeps a filename-level client-domain finding free of the plaintext domain', () => {
+			const path = `test/fixtures/x/${SYNTHETIC_DOMAIN}.notes.md`;
+			const findings = scanPathForClientDomainSurface(path, syntheticDomainPolicy);
+			const output = formatFindings(findings);
+
+			// The path itself (which the caller already has) still appears via `file`,
+			// but no extra field (e.g. `detail`) may carry the matched domain string.
+			expect(findings[0]).not.toHaveProperty('detail');
+			expect(output).toContain('client-domain');
+		});
+
+		it('exempts exactly the two self-test files from the client-context hashed-phrase rule', () => {
+			const phrase = 'contoso rollout waypoint';
+			const hash = createHash('sha256').update(phrase).digest('hex');
+			const policy = { forbiddenClientContextPhrasesSha256: [hash] };
+
+			for (const file of CLIENT_RULE_SELF_TEST_PATHS) {
+				const findings = scanTextForSensitiveSurface(file, `Notes: ${phrase} recap.`, policy);
+				expect(findings.map((finding) => finding.ruleId)).not.toContain('client-context');
+			}
+
+			// Sanity: the same hashed phrase is still caught everywhere else.
+			const elsewhere = scanTextForSensitiveSurface('docs/other.md', `Notes: ${phrase} recap.`, policy);
+			expect(elsewhere.map((finding) => finding.ruleId)).toContain('client-context');
+		});
 	});
 });

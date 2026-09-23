@@ -86,7 +86,7 @@ describe('generateLookalikes', () => {
 
 	it('breaks ties stably: identical input always yields the identical order', () => {
 		// Cache and snapshot stability requires no run-to-run flapping.
-		const seeds = ['anz.com', '[redacted-domain]', 'microsoft.com', 'ltmcguinness.co.nz'];
+		const seeds = ['anz.com', 'northwindbank.com', 'microsoft.com', 'ltmcguinness.co.nz'];
 		for (const seed of seeds) {
 			expect(generateLookalikes(seed)).toEqual(generateLookalikes(seed));
 		}
@@ -114,9 +114,9 @@ describe('generateLookalikes', () => {
 	});
 
 	it('does NOT generate combosquats (those defeat edit-distance mutators)', () => {
-		const results = generateLookalikes('[redacted-domain]');
-		expect(results).not.toContain('paypal-login.com');
-		expect(results).not.toContain('login-[redacted-domain]');
+		const results = generateLookalikes('northwindbank.com');
+		expect(results).not.toContain('northwindbank-login.com');
+		expect(results).not.toContain('login-northwindbank.com');
 	});
 
 	// #979 — adjacent character transposition is now its own lane
@@ -179,11 +179,11 @@ describe('generateTranspositions', () => {
 
 describe('generateCombosquats', () => {
 	it('generates brand+affix combos in both positions, hyphen-delimited', () => {
-		const results = generateCombosquats('[redacted-domain]');
-		expect(results).toContain('paypal-login.com');
-		expect(results).toContain('login-[redacted-domain]');
-		expect(results).toContain('secure-[redacted-domain]');
-		expect(results).toContain('paypal-verify.com');
+		const results = generateCombosquats('northwindbank.com');
+		expect(results).toContain('northwindbank-login.com');
+		expect(results).toContain('login-northwindbank.com');
+		expect(results).toContain('secure-northwindbank.com');
+		expect(results).toContain('northwindbank-verify.com');
 	});
 
 	it('preserves the original TLD (including multi-part TLDs)', () => {
@@ -191,9 +191,9 @@ describe('generateCombosquats', () => {
 	});
 
 	it('caps output and never includes the original domain', () => {
-		const results = generateCombosquats('[redacted-domain]');
+		const results = generateCombosquats('northwindbank.com');
 		expect(results.length).toBeLessThanOrEqual(20);
-		expect(results).not.toContain('[redacted-domain]');
+		expect(results).not.toContain('northwindbank.com');
 	});
 
 	it('produces only structurally valid, alphabetically sorted domains', () => {
