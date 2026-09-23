@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.87.0] - 2026-09-23
+
 ### Added
 
 - **`check_authoritative_dns_infra` and `check_root_server_set` now issue real DNS-over-TCP
@@ -31,6 +33,11 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **`check_ssl` retries a refused HEAD with GET, and no longer scores a HEAD 405 as a missing
+  HSTS header** (#1086, #1087). An origin that refuses HEAD but serves GET is now measured
+  instead of abstaining, using the same GET fallback `check_http_security` already had. A 405
+  that GET cannot rescue now abstains (excluded from scoring) instead of emitting a scored
+  `No HSTS header`. `SCORING_MODEL_VERSION` 1.36.0, `@blackveil/dns-checks` 1.53.0.
 - A probe that received TCP/53 responses but none proved authoritative (AA=1) for the zone —
   the signature of a middlebox transparently intercepting TCP/53, not a genuine answer — no
   longer publishes a fabricated pass. Both lanes now abstain explicitly
