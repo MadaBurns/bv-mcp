@@ -136,11 +136,14 @@ jobs:
       # so it has to exist before the binding resolves. This step used to live in
       # publish.yml's `deploy-cloudflare` job — behind that job's `exit 1`, which
       # means it had never actually run. Its config is fully public and
-      # self-contained (no private overlay), so a plain wrangler deploy is right.
+      # self-contained (no private overlay). It now goes through the gated
+      # `deploy:infra-probe` npm script (deploy-freshness + release-integrity
+      # checks before the wrangler deploy) rather than a bare wrangler call
+      # (#1082/#1095).
       - name: Deploy infra probe worker
         env:
           CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-        run: npx wrangler deploy -c wrangler.infra-probe.jsonc
+        run: npm run deploy:infra-probe
 
       - name: Deploy to Cloudflare (prod)
         env:
