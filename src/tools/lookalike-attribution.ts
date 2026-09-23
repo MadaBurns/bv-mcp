@@ -274,6 +274,14 @@ export function isBrandHeldRegistration(input: {
 	seedNsHosts: readonly string[];
 	/** Enterprise-gated-platform predicate, injected (mirrors `isSharedNsHost` elsewhere) so this module stays free of a direct `src/tenants/discovery` import. */
 	isEnterpriseGatedNsHost: (nsHost: string) => boolean;
+	/**
+	 * 3xx `Location` the candidate's web root answered with (enrichment's HEAD
+	 * probe; never followed). Candidate-published, so it feeds ONLY leg 2's
+	 * `redirect-to-target` shape — it can never satisfy leg 1, which stays the
+	 * registry-published registrar ID or an enterprise-gated NS set. `undefined`
+	 * or `null` = no redirect evidence; the shape leg then abstains on it.
+	 */
+	candidateHttpRedirectLocation?: string | null;
 }): { brandHeld: false } | { brandHeld: true; registrarIanaId: string | null; reason: DefensiveReason } {
 	const { seedRegistrarIanaId, candidateRegistrarIanaId } = input;
 
@@ -297,6 +305,12 @@ export function isBrandHeldRegistration(input: {
 		// abstains on `undefined`, which would silently disable this leg.
 		mxRecords: input.candidateMxExchanges,
 		nsHosts: input.candidateNsHosts,
+		// A defensive portfolio name is often NOT parked: the corporate registrar
+		// keeps catch-all mail on it and 301s the web root to the brand. Leg 1 has
+		// already required the seed's own corporate registrar (or an enterprise-
+		// gated NS set), which a squatter cannot self-serve onto — that is what
+		// lets a candidate-published redirect count here at all.
+		httpRedirectLocation: input.candidateHttpRedirectLocation ?? undefined,
 	});
 	if (!shape.defensive || shape.reason === undefined) return { brandHeld: false };
 	// `registrarIanaId: null` marks the NS-set corroborator form — callers must
