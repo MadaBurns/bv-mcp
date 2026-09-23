@@ -81,7 +81,7 @@ function makeRdapResult(registrar: string): CheckResult {
 					registrar,
 					registrarIanaId: null,
 					registrarSource: 'rdap',
-					registrant: 'Ford Motor Company',
+					registrant: 'Contoso Ltd',
 				},
 			},
 		],
