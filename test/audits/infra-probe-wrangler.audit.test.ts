@@ -50,12 +50,18 @@ describe('infra probe wrangler wiring', () => {
 		// Anchor on the `run:` step bodies, not bare command text — the file's
 		// header comment also names `npm run deploy:prod`, and matching that
 		// would compare a comment's position against a step's.
-		const infraDeployIndex = deployWorkflowSource.indexOf('run: npx wrangler deploy -c wrangler.infra-probe.jsonc');
+		const infraDeployIndex = deployWorkflowSource.indexOf('run: npm run deploy:infra-probe');
 		const mainDeployIndex = deployWorkflowSource.indexOf('run: npm run deploy:prod');
 
-		expect(infraDeployIndex, 'deploy-prod.yml must deploy the infra probe worker').toBeGreaterThan(-1);
+		expect(infraDeployIndex, 'deploy-prod.yml must deploy the infra probe worker via the gated npm script').toBeGreaterThan(-1);
 		expect(mainDeployIndex, 'deploy-prod.yml must deploy the main Worker via deploy:prod').toBeGreaterThan(-1);
 		expect(infraDeployIndex, 'the infra probe must be deployed BEFORE the Worker that binds to it').toBeLessThan(mainDeployIndex);
+	});
+
+	it('does not ship the infra probe worker via a raw wrangler call, bypassing the gated npm script', () => {
+		expect(deployWorkflowSource, 'deploy-prod.yml must use npm run deploy:infra-probe, not a bare wrangler deploy').not.toContain(
+			'run: npx wrangler deploy -c wrangler.infra-probe.jsonc',
+		);
 	});
 
 	// The removed jobs were reachable-looking dead ends: `exit 1` as step one,

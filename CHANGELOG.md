@@ -43,6 +43,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   sidecars being current, so adding it to a sidecar's own deploy would block the exact command
   that fixes staleness. Reuses the gates' existing one-shot overrides
   (`BV_ALLOW_STALE_DEPLOY=1`, `BV_ALLOW_UNPINNED_DEPLOY=1`); no new override needed.
+- **`deploy-prod.yml`'s "Deploy infra probe worker" step still called `wrangler deploy` directly**,
+  bypassing the `deploy:infra-probe` gates added in #1082 (#1095). The step now runs
+  `npm run deploy:infra-probe`, in the same position (before the main Worker deploy, since its
+  `BV_INFRA_PROBE` service binding resolves by name) and with the same `env`.
 
 ### Changed
 
