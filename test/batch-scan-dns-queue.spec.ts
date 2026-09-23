@@ -9,15 +9,18 @@ import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse
  * measured all 19 categories, while the batch lost 2-4 categories per domain to
  * `checkStatus: 'timeout'` because the per-check clock kept running while the
  * check's queries sat QUEUED on the shared pool. This spec reproduces that on a
- * compressed timeline (40ms latency, 1.5s per-check budget) so it stays fast.
+ * compressed timeline (10ms latency, 375ms per-check budget — SQ-162 lowered
+ * these from 40ms/1.5s, same ~1:37.5 ratio, after confirming the negative
+ * control still times out 5-14 of 19 categories per domain at this scale) so
+ * it stays fast.
  */
 
 const { restore } = setupFetchMock();
 beforeEach(() => IN_MEMORY_CACHE.clear());
 afterEach(() => restore());
 
-const LATENCY_MS = 40;
-const PER_CHECK_TIMEOUT_MS = 1_500;
+const LATENCY_MS = 10;
+const PER_CHECK_TIMEOUT_MS = 375;
 
 function mockSlowDoh() {
 	globalThis.fetch = vi.fn().mockImplementation(async (input: string | URL | Request) => {
