@@ -81,7 +81,7 @@ function makeRdapResult(registrar: string): CheckResult {
 					registrar,
 					registrarIanaId: null,
 					registrarSource: 'rdap',
-					registrant: '[redacted-org]',
+					registrant: 'Contoso Ltd',
 				},
 			},
 		],
