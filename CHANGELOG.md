@@ -18,6 +18,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   (`Math.max(0, timeoutMs - elapsed)`); below a 250ms floor it is skipped entirely and the
   check falls back to its existing HEAD-status abstention. Not score-bearing — no
   `SCORING_MODEL_VERSION` bump. `@blackveil/dns-checks` 1.53.1.
+- **`deploy:whois` and `deploy:infra-probe` deployed straight to `wrangler` with no freshness
+  or release-tag proof** (#1082). Both now run the same `check:deploy-freshness` (checkout not
+  behind `origin/main`) and `check:release-integrity` (`HEAD` at a tag) gates `deploy:prod`
+  runs, from the repo root, before their own `wrangler deploy`. `check:sidecar-freshness` is
+  deliberately not wired into either — it exists to block the MCP Worker deploy on the
+  sidecars being current, so adding it to a sidecar's own deploy would block the exact command
+  that fixes staleness. Reuses the gates' existing one-shot overrides
+  (`BV_ALLOW_STALE_DEPLOY=1`, `BV_ALLOW_UNPINNED_DEPLOY=1`); no new override needed.
 
 ## [3.87.0] - 2026-09-23
 

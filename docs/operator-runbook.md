@@ -48,6 +48,26 @@ Verify (MANDATORY after every deploy):
 
 The reported serverInfo version must match `package.json`.
 
+### 1a. Deploying the sidecar Workers (bv-whois, bv-infra-probe)
+
+`deploy:prod` deploys the MCP Worker ONLY. The two sidecar Workers ship via
+their own commands, each running from the repo root:
+
+    npm run deploy:whois
+    npm run deploy:infra-probe
+
+Since #1082 both run the same freshness and release-tag gates `deploy:prod`
+runs — `check:deploy-freshness` (checkout not behind `origin/main`) and
+`check:release-integrity` (`HEAD` at a tag) — before their own `wrangler
+deploy`. Neither runs `check:sidecar-freshness`: that gate exists to block the
+MCP Worker deploy on the sidecars being current, so wiring it into a sidecar's
+own deploy would block the exact command that fixes staleness.
+
+The gates use their existing one-shot overrides, same as `deploy:prod`:
+`BV_ALLOW_STALE_DEPLOY=1` bypasses the freshness check, and
+`BV_ALLOW_UNPINNED_DEPLOY=1` bypasses the release-tag check. Both warn loudly
+on use — treat either as a signal to fix the checkout, not a habit.
+
 ## 2. Rolling back a bad deploy
 
 Workers keeps prior versions. Fastest path:
