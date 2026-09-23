@@ -83,9 +83,76 @@ function formatSerialsByRoot(serialsByRoot: Record<string, number> | undefined):
  */
 function buildSerialDivergenceDetail(serialsByRoot: Record<string, number> | undefined): string {
 	const base =
-		'SOA serial evidence differed across root servers. Root operators pick up a new root-zone publication at slightly different times, so serials one publication apart during this propagation window are expected and benign. Re-run this check later; a persistent or large gap indicates stale data.';
+		'SOA serial evidence differed across root servers. Root zones are commonly published twice a day ' +
+		'(RSSAC047 §5.4). Root operators pick up a new zone publication over a propagation window whose ' +
+		"documented outer bound is 65 minutes (RSSAC047 §5.4 publication-latency threshold: 2 × SOA refresh " +
+		'1800 s + one 5-minute measurement interval). Root serials use the YYYYMMDDNN scheme, so two roots ' +
+		'one increment apart inside that window is normal propagation, not a fault. Re-run this check later; ' +
+		'a persistent or large gap indicates stale data.';
 	const observed = formatSerialsByRoot(serialsByRoot);
 	return observed ? `${base} Observed serials: ${observed}.` : base;
+}
+
+/** `YYYYMMDDNN` split into its date prefix and two-digit increment, or `undefined` when the
+ * serial isn't the expected 10-digit RFC-1035-style scheme (#1083 metadata is best-effort). */
+function parseRootZoneSerial(serial: number): { datePrefix: string; increment: number } | undefined {
+	const text = String(Math.trunc(serial));
+	if (text.length !== 10) return undefined;
+	return { datePrefix: text.slice(0, 8), increment: Number(text.slice(8, 10)) };
+}
+
+/** `datePrefix` (`YYYYMMDD`) parsed as a UTC calendar day, or `undefined` when it isn't one. */
+function parseSerialDate(datePrefix: string): Date | undefined {
+	const year = Number(datePrefix.slice(0, 4));
+	const month = Number(datePrefix.slice(4, 6));
+	const day = Number(datePrefix.slice(6, 8));
+	const date = new Date(Date.UTC(year, month - 1, day));
+	const roundTrips = date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+	return roundTrips ? date : undefined;
+}
+
+/** The higher serial is the FIRST publication (`NN` = 00) of the calendar day right after the
+ * lower serial's day — a midnight straddle where one root is still on the previous day's last
+ * publication and the other has already picked up the new day's first one. The raw numeric gap
+ * between the two is not 1 in this case (`...0199` -> `...0200` jumps by 99), so this is checked
+ * independently of `spread`, not as a special case of it. */
+function isConsecutiveDayRollover(min: number, max: number): boolean {
+	const minParsed = parseRootZoneSerial(min);
+	const maxParsed = parseRootZoneSerial(max);
+	if (!minParsed || !maxParsed || maxParsed.increment !== 0) return false;
+	const minDate = parseSerialDate(minParsed.datePrefix);
+	const maxDate = parseSerialDate(maxParsed.datePrefix);
+	if (!minDate || !maxDate) return false;
+	const expectedNextDay = new Date(minDate);
+	expectedNextDay.setUTCDate(expectedNextDay.getUTCDate() + 1);
+	return expectedNextDay.getTime() === maxDate.getTime();
+}
+
+/** Max − min across the observed per-root serials, or `undefined` when fewer than two roots
+ * reported a serial (nothing to spread). */
+function computeSerialSpread(serialsByRoot: Record<string, number> | undefined): number | undefined {
+	const values = Object.values(serialsByRoot ?? {});
+	if (values.length < 2) return undefined;
+	return Math.max(...values) - Math.min(...values);
+}
+
+/**
+ * True when the observed serials are consistent with normal RSSAC047 §5.4 propagation lag: a
+ * same-day gap of exactly one increment, or a midnight straddle onto the next day's first
+ * publication (#1083). Never used to change severity or `passed` — purely descriptive metadata
+ * so the reader can tell a one-increment gap from a genuinely stale one at a glance.
+ */
+function isWithinOnePropagationIncrement(serialsByRoot: Record<string, number> | undefined): boolean {
+	const values = Object.values(serialsByRoot ?? {});
+	if (values.length < 2) return false;
+	const min = Math.min(...values);
+	const max = Math.max(...values);
+	if (max - min === 1) {
+		const minParsed = parseRootZoneSerial(min);
+		const maxParsed = parseRootZoneSerial(max);
+		if (minParsed && maxParsed && minParsed.datePrefix === maxParsed.datePrefix) return true;
+	}
+	return isConsecutiveDayRollover(min, max);
 }
 
 /** Reported by the sidecar when its root-server-set lane queried nothing. */
@@ -222,6 +289,11 @@ export function analyzeRootServerSetEvidence(probeEvidence: RootServerSetEvidenc
 			title: 'Root zone serials differ across roots',
 			severity: 'medium',
 			detail: buildSerialDivergenceDetail(evidence.serialsByRoot),
+			// Descriptive only (#1083) — never read by scoring/passed.
+			metadata: {
+				serialSpread: computeSerialSpread(evidence.serialsByRoot),
+				withinOneIncrement: isWithinOnePropagationIncrement(evidence.serialsByRoot),
+			},
 		},
 	);
 
