@@ -731,8 +731,16 @@
  *   from scoring, so no score moves).
  *   No weight, tier, grade band, `SEVERITY_PENALTIES` entry or profile-detection rule
  *   changed. `NIST_GRADE_THRESHOLDS` untouched.
+ * - 1.36.0 — `check_ssl` no longer scores a HEAD refusal as a missing control (#1086 / #1087,
+ *   dns-checks 1.53.0). A HEAD 405 previously fell through to the "real page" branch and its
+ *   header-free response manufactured a scored `No HSTS header`; blocked HEAD statuses (incl.
+ *   405) now retry with GET via the shared `probe-fetch.ts` helper (same one `check-http-security`
+ *   uses), and adopt it only when it is better evidence. An unrescued 405 now ABSTAINS
+ *   (`checkStatus: 'error'`, excluded from scoring and renormalized). SCORE-BEARING, only on
+ *   origins that refuse HEAD. No DoH query added. No weight, tier, grade band,
+ *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.35.0';
+export const SCORING_MODEL_VERSION = '1.36.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
