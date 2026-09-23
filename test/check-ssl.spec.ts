@@ -331,4 +331,54 @@ describe('checkSsl', () => {
 			expect(result.checkStatus).toBe('error');
 		},
 	);
+
+	describe('GET fallback budget (#1088)', () => {
+		// These call the package's checkSSL directly (not the src/tools/check-ssl wrapper,
+		// which never exposes a caller-controlled `timeout`) so a short budget can prove the
+		// HEAD+GET pair shares ONE timeout instead of the GET re-arming a fresh copy of it.
+		it('a HEAD 403 followed by a GET that never resolves on its own keeps total elapsed within ~1.5x the budget', async () => {
+			const { checkSSL } = await import('@blackveil/dns-checks');
+			const timeoutMs = 300;
+			const fetchFn = vi.fn().mockImplementation((_url: string, init?: RequestInit) => {
+				if (init?.method === 'GET') {
+					// Settles only when its OWN AbortSignal fires — the old bug re-armed this with
+					// a fresh `timeoutMs`, doubling the pair's real elapsed time.
+					return new Promise<Response>((_resolve, reject) => {
+						init.signal!.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+					});
+				}
+				return Promise.resolve(new Response(null, { status: 403 }));
+			});
+			const startedAt = Date.now();
+			const result = await checkSSL('example.com', fetchFn, { timeout: timeoutMs });
+			const elapsed = Date.now() - startedAt;
+
+			expect(result.checkStatus).toBe('error');
+			expect(result.findings.some((f) => f.title === 'HTTPS endpoint not assessable (status 403)')).toBe(true);
+			expect(elapsed).toBeLessThan(timeoutMs * 1.5);
+		});
+
+		it('skips the GET fallback entirely when the HEAD already spent nearly the whole budget', async () => {
+			const { checkSSL } = await import('@blackveil/dns-checks');
+			const timeoutMs = 300;
+			let getAttempted = false;
+			const fetchFn = vi.fn().mockImplementation(async (_url: string, init?: RequestInit) => {
+				if (init?.method === 'GET') {
+					getAttempted = true;
+					return new Response(null, { status: 200, headers: { 'strict-transport-security': 'max-age=31536000' } });
+				}
+				// Leaves well under the 250ms floor (GET_FALLBACK_MIN_BUDGET_MS) of the budget.
+				await new Promise((resolve) => setTimeout(resolve, timeoutMs - 100));
+				return new Response(null, { status: 403 });
+			});
+			const startedAt = Date.now();
+			const result = await checkSSL('example.com', fetchFn, { timeout: timeoutMs });
+			const elapsed = Date.now() - startedAt;
+
+			expect(getAttempted).toBe(false);
+			expect(result.checkStatus).toBe('error');
+			expect(result.findings.some((f) => f.title === 'HTTPS endpoint not assessable (status 403)')).toBe(true);
+			expect(elapsed).toBeLessThan(timeoutMs * 1.5);
+		});
+	});
 });

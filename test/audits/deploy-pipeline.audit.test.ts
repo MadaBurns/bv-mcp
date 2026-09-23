@@ -54,8 +54,45 @@ describe('deploy:prod pipeline integrity', () => {
 
 	it('exposes the deploy command the sidecar gate tells the operator to run', () => {
 		// A gate that names a command package.json does not define is a dead end.
-		expect(pkg.scripts?.['deploy:whois'] ?? '').toBe('npm -w packages/bv-whois run deploy');
+		expect(pkg.scripts?.['deploy:whois'] ?? '').toContain('npm -w packages/bv-whois run deploy');
 		expect(pkg.scripts?.['deploy:infra-probe'] ?? '').toContain('wrangler.infra-probe.jsonc');
+		});
+
+		// #1082: deploy:whois and deploy:infra-probe used to hand off straight to
+		// wrangler with no freshness or release-tag proof - a checkout behind
+		// origin/main, or one not sitting on a tagged release, could ship a sidecar
+		// with zero warning. Both doors run the applicable subset of deploy:prod's
+		// gate chain from the repo root (so they resolve the same origin/main and
+		// version-surface files deploy:prod does), before their own wrangler call.
+		// check:sidecar-freshness is deliberately excluded from both - it exists to
+		// gate the MCP Worker deploy on the sidecars being current, so wiring it
+		// into a sidecar's OWN deploy would block the exact command that fixes
+		// staleness.
+		describe.each([
+			['deploy:whois', 'npm -w packages/bv-whois run deploy'],
+			['deploy:infra-probe', 'npx wrangler deploy --config wrangler.infra-probe.jsonc'],
+		])('%s gate chain', (scriptName, deployCommand) => {
+			const script = pkg.scripts?.[scriptName] ?? '';
+
+			it('runs the deploy-freshness and release-integrity gates', () => {
+				expect(script, `${scriptName} must run check:deploy-freshness`).toContain('npm run check:deploy-freshness');
+				expect(script, `${scriptName} must run check:release-integrity`).toContain('npm run check:release-integrity');
+			});
+
+			it('does not run check:sidecar-freshness against itself', () => {
+				expect(script, `${scriptName} must not gate on the sidecar-freshness check it exists to satisfy`).not.toContain(
+					'check:sidecar-freshness',
+				);
+			});
+
+			it('runs the gates before its own wrangler deploy call, in freshness-then-release-integrity order', () => {
+				const freshnessIndex = script.indexOf('npm run check:deploy-freshness');
+				const releaseIndex = script.indexOf('npm run check:release-integrity');
+				const deployIndex = script.indexOf(deployCommand);
+				expect(deployIndex, `${scriptName} must contain its own deploy command`).toBeGreaterThan(-1);
+				expect(freshnessIndex, 'freshness must precede release-integrity').toBeLessThan(releaseIndex);
+				expect(releaseIndex, 'both gates must precede the sidecar wrangler deploy').toBeLessThan(deployIndex);
+			});
 	});
 
 	it('also gates the private deploy helper — the second door must not be a bypass', () => {

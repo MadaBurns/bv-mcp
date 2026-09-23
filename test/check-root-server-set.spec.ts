@@ -126,6 +126,14 @@ describe('checkRootServerSet', () => {
 			'Root DNSKEY digests differ across roots',
 			'Root zone serials differ across roots',
 		]));
+
+		// #1083 — the serial-divergence finding must explain that a one-publication gap during
+		// the propagation window is expected and benign, tell the reader to re-run later, and
+		// append the observed per-root serials so the finding is self-dismissable.
+		const serialFinding = result.findings.find((finding) => finding.title === 'Root zone serials differ across roots');
+		expect(serialFinding?.detail).toMatch(/propagation/i);
+		expect(serialFinding?.detail).toMatch(/re-run/i);
+		expect(serialFinding?.detail).toContain('a: 2026052101, b: 2026052102');
 	});
 
 	it('bounds and sanitizes wire-derived root names before they reach finding metadata', async () => {

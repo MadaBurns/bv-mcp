@@ -8,6 +8,34 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `check_ssl`/`check_http_security` HEAD→GET fallback now shares ONE timeout budget
+  instead of re-arming a fresh one for the GET** (#1088). A HEAD probe that had already
+  consumed most of its `timeoutMs` still handed the GET fallback a full fresh copy of that
+  same budget, so a refused-HEAD origin could push the HEAD+GET pair to roughly 2x the
+  intended per-fetch budget. The GET now receives only what remains
+  (`Math.max(0, timeoutMs - elapsed)`); below a 250ms floor it is skipped entirely and the
+  check falls back to its existing HEAD-status abstention. Not score-bearing — no
+  `SCORING_MODEL_VERSION` bump. `@blackveil/dns-checks` 1.53.1.
+- **`deploy:whois` and `deploy:infra-probe` deployed straight to `wrangler` with no freshness
+  or release-tag proof** (#1082). Both now run the same `check:deploy-freshness` (checkout not
+  behind `origin/main`) and `check:release-integrity` (`HEAD` at a tag) gates `deploy:prod`
+  runs, from the repo root, before their own `wrangler deploy`. `check:sidecar-freshness` is
+  deliberately not wired into either — it exists to block the MCP Worker deploy on the
+  sidecars being current, so adding it to a sidecar's own deploy would block the exact command
+  that fixes staleness. Reuses the gates' existing one-shot overrides
+  (`BV_ALLOW_STALE_DEPLOY=1`, `BV_ALLOW_UNPINNED_DEPLOY=1`); no new override needed.
+
+### Changed
+
+- **`check_root_server_set`'s "Root zone serials differ across roots" finding now explains the
+  propagation window**: root operators pick up a new root-zone publication at slightly different
+  times, so serials one publication apart are expected and benign; the finding now says so, tells
+  the reader to re-run later (a persistent or large gap indicates stale data), and appends the
+  observed per-root serials so it is self-dismissable without a follow-up lookup. Wording only —
+  no change to severity, scoring, or pass/fail logic (#1083).
+
 ## [3.87.0] - 2026-09-23
 
 ### Added
