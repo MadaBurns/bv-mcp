@@ -2,6 +2,7 @@
 // real tenant/customer domain lists. Use synthetic/reserved namespaces instead.
 
 import { describe, expect, it } from 'vitest';
+import { containsTenantMarker } from '../../scripts/repo-safety/scanner-core.mjs';
 
 const WHOIS_FIXTURE_FILES = import.meta.glob('/packages/dns-checks/src/__tests__/fixtures/whois/**/*.{txt,ts}', {
 	query: '?raw',
@@ -28,8 +29,9 @@ const EMAIL_PATTERN = /[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi;
 const WHOIS_CONTACT_FIELD_PATTERN =
 	/^\s*(?:phone|fax-no|e-mail|registrant|admin|tech|billing|registrar abuse contact)\b/im;
 const OLD_REAL_FIXTURE_MARKERS = /\b(?:google|markmonitor|verisign)\b/i;
-const PRIVATE_MAINTENANCE_MARKERS =
-	/\b(?:tenant-pilot-\d+|bv-edge\.workers\.dev|[redacted-tenant]|[redacted-tenant]|[redacted-tenant])\b/i;
+// The private tenant markers are matched by hash (`containsTenantMarker`), so
+// neither this test nor the scanner carries them in plaintext.
+const PRIVATE_MAINTENANCE_MARKERS = /\b(?:tenant-pilot-\d+|bv-edge\.workers\.dev)\b/i;
 
 function rawBody(mod: unknown): string {
 	const body = (mod as { default?: unknown }).default;
@@ -139,7 +141,8 @@ describe('OSS fixture safety', () => {
 
 		for (const [absKey, mod] of Object.entries(MAINTENANCE_FILES)) {
 			const file = rel(absKey);
-			if (PRIVATE_MAINTENANCE_MARKERS.test(rawBody(mod))) {
+			const body = rawBody(mod);
+			if (PRIVATE_MAINTENANCE_MARKERS.test(body) || containsTenantMarker(body)) {
 				offenders.push(file);
 			}
 		}

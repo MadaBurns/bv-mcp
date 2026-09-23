@@ -2,6 +2,8 @@ import { createHash } from 'node:crypto';
 import { describe, expect, it } from 'vitest';
 import {
 	BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256,
+	BUILTIN_TENANT_MARKERS_SHA256,
+	containsTenantMarker,
 	CLIENT_RULE_SELF_TEST_PATHS,
 	scanCommitMessage,
 	scanFileContent,
@@ -77,7 +79,7 @@ describe('repo safety scanner helper', () => {
 	});
 
 	it('flags real email addresses and customer/tenant markers', () => {
-		const findings = scanTextForSensitiveSurface('docs/private.md', 'Customer Acme Corp uses admin@customer.invalid for [redacted-tenant].');
+		const findings = scanTextForSensitiveSurface('docs/private.md', 'Customer Acme Corp uses admin@customer.invalid for tenant-pilot-7.');
 		expect(findings.map((finding) => finding.ruleId)).toEqual(expect.arrayContaining(['real-email', 'customer-marker', 'tenant-marker']));
 	});
 
@@ -92,7 +94,9 @@ describe('repo safety scanner helper', () => {
 	});
 
 	it('flags sensitive commit-message wording before public pushes', () => {
-		const findings = scanCommitMessage('Verified against brand-beta.com.au during a [redacted-context].', clientDomainPolicy);
+		const phrase = 'contoso pilot cohort';
+		const policy = { ...clientDomainPolicy, forbiddenClientContextPhrasesSha256: [createHash('sha256').update(phrase).digest('hex')] };
+		const findings = scanCommitMessage(`Verified against brand-beta.com.au during a ${phrase}.`, policy);
 
 		expect(findings.map((finding) => finding.ruleId)).toEqual(expect.arrayContaining(['client-domain', 'client-context']));
 	});
@@ -116,6 +120,52 @@ describe('repo safety scanner helper', () => {
 		// scratch shell if this ever needs re-derivation.
 		expect(BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256).toContain('ef6b9b94f52b435a826c9558de024878508fb0b151ea98d387c8de54eb03f09a');
 		for (const hash of BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256) expect(hash).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	// The 2026-09 history rewrite replaced the plaintext tenant markers and three
+	// client-context phrases with placeholders, which broke the scanner's regexes.
+	// They are now matched by hash; these tests pin that mechanism with synthetic
+	// values spliced into the built-in lists, never the real ones.
+	it('keeps the rewritten tenant markers and context phrases gated by their built-in hashes', () => {
+		expect(BUILTIN_TENANT_MARKERS_SHA256).toHaveLength(3);
+		expect(BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256).toEqual(
+			expect.arrayContaining([
+				'7b7c3036e1e205272ccbad0b074810ab4f6337c49edaa7f85a707f066e65ac81',
+				'bb6db9412fb5f91edb31e6be5dbf08e8b49aece55c72529122f78d33ee949c06',
+				'792d2b227b53c09bb9a55bf33f4364e633d856deb737e0e8c7f2a5554e65bdac',
+			]),
+		);
+		for (const hash of BUILTIN_TENANT_MARKERS_SHA256) expect(hash).toMatch(/^[0-9a-f]{64}$/);
+	});
+
+	it('flags a hashed tenant marker as a whole token, inside a hyphenated token, and as a hyphen-ending prefix', () => {
+		const marker = 'fabrikam-pod';
+		const prefixMarker = 'fabrikam-db-';
+		const added = [marker, prefixMarker].map((value) => createHash('sha256').update(value).digest('hex'));
+		BUILTIN_TENANT_MARKERS_SHA256.push(...added);
+		try {
+			const rules = (text: string, file = 'docs/private.md') => scanTextForSensitiveSurface(file, text).map((finding) => finding.ruleId);
+			expect(rules('routed to fabrikam-pod today')).toEqual(['tenant-marker']);
+			expect(rules('routed to FABRIKAM-POD-2 today')).toEqual(['tenant-marker']);
+			expect(rules('routed to east-fabrikam-pod today')).toEqual(['tenant-marker']);
+			expect(rules('created fabrikam-db-7')).toEqual(['tenant-marker']);
+			expect(rules('the fabrikam pod rollout')).toEqual([]);
+			expect(rules('routed to fabrikam-pod today', 'test/fixture.ts')).toEqual(['tenant-marker']);
+			expect(containsTenantMarker('line one\ncreated fabrikam-db-7')).toBe(true);
+			expect(containsTenantMarker('the fabrikam pod rollout')).toBe(false);
+		} finally {
+			BUILTIN_TENANT_MARKERS_SHA256.splice(-added.length, added.length);
+		}
+	});
+
+	it('flags a hashed client-context phrase glued to a neighbour by a hyphen, once per occurrence', () => {
+		const phrase = 'northwind rollout';
+		const policy = { forbiddenClientContextPhrasesSha256: [createHash('sha256').update(phrase).digest('hex')] };
+		const rules = (text: string) => scanCommitMessage(text, policy).map((finding) => finding.ruleId);
+		expect(rules('during the northwind rollout-2 review')).toEqual(['client-context']);
+		expect(rules('during the pre-northwind rollout review')).toEqual(['client-context']);
+		expect(rules('during the northwind rollout review')).toEqual(['client-context']);
+		expect(rules('during the northwind-rollout review')).toEqual([]);
 	});
 
 	it('unions policy-supplied phrase hashes with the built-in list instead of replacing it', () => {
