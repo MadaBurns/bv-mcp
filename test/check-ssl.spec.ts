@@ -381,4 +381,63 @@ describe('checkSsl', () => {
 			expect(elapsed).toBeLessThan(timeoutMs * 1.5);
 		});
 	});
+
+	describe('Redirect-chain deadline (#1093)', () => {
+		// HEAD + GET fallback + the HTTPS redirect chain that follows either of them now share the
+		// SAME ONE `timeoutMs` budget (measured from the HEAD start), not a fresh copy per chain.
+		it('a HEAD 403 → GET 301 → hop that hangs still resolves to the existing unresolved/timeout outcome within ~1.5x the budget', async () => {
+			const { checkSSL } = await import('@blackveil/dns-checks');
+			// A larger budget, with the HEAD and GET each deliberately spending over a third of it,
+			// so the old per-hop-fresh-timeout bug (a chain-local `AbortSignal.timeout(timeoutMs)`
+			// re-armed the FULL budget at chain-entry, ignoring what HEAD+GET already spent) pushes
+			// total elapsed past 1.5x — this is what makes the test a real regression guard rather
+			// than one that happens to pass either way.
+			const timeoutMs = 1000;
+			const fetchFn = vi.fn().mockImplementation(async (url: string, init?: RequestInit) => {
+				if (init?.method === 'GET') {
+					await new Promise((resolve) => setTimeout(resolve, 350));
+					return new Response(null, { status: 301, headers: new Headers({ location: 'https://hop.example.com/' }) });
+				}
+				if (url === 'https://example.com') {
+					await new Promise((resolve) => setTimeout(resolve, 350));
+					return new Response(null, { status: 403 });
+				}
+				// The redirect-chain hop settles only when its own AbortSignal fires — proves the
+				// chain shares the HEAD+GET pair's remaining budget rather than a fresh timeoutMs.
+				return new Promise<Response>((_resolve, reject) => {
+					init!.signal!.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+				});
+			});
+			const startedAt = Date.now();
+			const result = await checkSSL('example.com', fetchFn, { timeout: timeoutMs });
+			const elapsed = Date.now() - startedAt;
+
+			expect(elapsed).toBeLessThan(timeoutMs * 1.5);
+			expect(result.checkStatus).toBe('timeout');
+			expect(result.findings.some((f) => f.title === 'HTTPS redirect chain not assessable')).toBe(true);
+		});
+
+		it('issues no redirect-chain hop when the HEAD already spent nearly the whole budget', async () => {
+			const { checkSSL } = await import('@blackveil/dns-checks');
+			const timeoutMs = 300;
+			let hopAttempted = false;
+			const fetchFn = vi.fn().mockImplementation(async (url: string) => {
+				if (url === 'https://example.com') {
+					// Leaves well under the 250ms floor (GET_FALLBACK_MIN_BUDGET_MS) of the budget.
+					await new Promise((resolve) => setTimeout(resolve, timeoutMs - 100));
+					return new Response(null, { status: 301, headers: new Headers({ location: 'https://hop.example.com/' }) });
+				}
+				hopAttempted = true;
+				return new Response(null, { status: 200, headers: new Headers({ 'strict-transport-security': 'max-age=31536000' }) });
+			});
+			const startedAt = Date.now();
+			const result = await checkSSL('example.com', fetchFn, { timeout: timeoutMs });
+			const elapsed = Date.now() - startedAt;
+
+			expect(hopAttempted).toBe(false);
+			expect(fetchFn).toHaveBeenCalledTimes(1);
+			expect(result.checkStatus).toBe('timeout');
+			expect(elapsed).toBeLessThan(timeoutMs * 1.5);
+		});
+	});
 });
