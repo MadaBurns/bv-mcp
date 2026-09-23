@@ -16,7 +16,7 @@ import { setupFetchMock, createDohResponse, txtResponse, nsResponse, caaResponse
  *
  * This reproduces that on a compressed timeline: `dnsConcurrency: 1` forces
  * every DNS-consuming category to serialize through one slot (guaranteed
- * contention within a single scan), 40ms DoH latency, and `ssl`'s own raw
+ * contention within a single scan), 10ms DoH latency, and `ssl`'s own raw
  * HTTPS fetches mocked at 300ms — well past the 150ms per-check budget.
  *
  * Pre-repair (SQ-11 candidate 110c0f4a3): `ssl` completes despite its own
@@ -32,7 +32,7 @@ const { restore } = setupFetchMock();
 beforeEach(() => IN_MEMORY_CACHE.clear());
 afterEach(() => restore());
 
-const DOH_LATENCY_MS = 40;
+const DOH_LATENCY_MS = 10;
 const RAW_FETCH_LATENCY_MS = 300;
 const PER_CHECK_TIMEOUT_MS = 150;
 

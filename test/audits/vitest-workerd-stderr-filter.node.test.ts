@@ -24,7 +24,7 @@ describe('vitest workerd stderr filter', () => {
 	});
 
 	it('keeps expected Worker-pool teardown output free of peer-disconnect noise', () => {
-		const result = spawnSync('npm', ['test', '--', noisyWorkerPoolSpec], {
+		const result = spawnSync(process.execPath, ['scripts/vitest-filter-workerd.mjs', noisyWorkerPoolSpec], {
 			cwd: process.cwd(),
 			encoding: 'utf8',
 			env: {
