@@ -1193,6 +1193,32 @@ describe('checkHttpSecurity — redirect-chain deadline (#1093)', () => {
 		expect(result.findings.some((f) => f.title === 'No Content-Security-Policy')).toBe(false);
 	});
 
+	// Regression guard for SQ-142/SQ-143: an SSRF rejection message embeds the origin-controlled
+	// redirect hostname, so a hostname like "timeout.localhost" must NOT be misread as a deadline
+	// abort merely because the word "timeout" appears in the message text.
+	it('still analyzes the held headers when a hop is rejected by an SSRF error whose message contains "timeout"', async () => {
+		const { checkHTTPSecurity } = await import('@blackveil/dns-checks');
+		const fetchFn = vi.fn().mockImplementation((url: string) => {
+			if (url === 'https://example.com') {
+				return Promise.resolve(
+					new Response(null, {
+						status: 301,
+						headers: new Headers({
+							location: 'https://timeout.localhost/',
+							'content-security-policy': "default-src 'self'",
+						}),
+					}),
+				);
+			}
+			return Promise.reject(new TypeError('Outbound fetch blocked: Domain "timeout.localhost" is not allowed: reserved hostname'));
+		});
+		const result = await checkHTTPSecurity('example.com', fetchFn);
+
+		expect(result.checkStatus).not.toBe('timeout');
+		expect(result.findings.some((f) => f.title === 'HTTPS connection timed out')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'No Content-Security-Policy')).toBe(false);
+	});
+
 	it('issues no redirect-chain hop when the HEAD already spent nearly the whole budget', async () => {
 		const { checkHTTPSecurity } = await import('@blackveil/dns-checks');
 		const timeoutMs = 300;

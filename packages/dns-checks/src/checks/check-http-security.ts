@@ -132,10 +132,13 @@ async function followRedirects(
 				signal: AbortSignal.timeout(remainingMs),
 			});
 		} catch (err) {
-			// AbortSignal.timeout throws a DOMException named 'TimeoutError' (message "The
-			// operation timed out"); also match abort/timeout phrasings from other runtimes.
+			// AbortSignal.timeout() rejects with a DOMException named 'TimeoutError';
+			// 'AbortError' covers runtimes and mocks that report a plain abort. Message
+			// text is NOT consulted: SSRF rejection messages embed the origin-controlled
+			// redirect hostname (src/lib/safe-fetch.ts:39, src/lib/sanitize.ts:126-151), so
+			// matching on message text would let an attacker steer this classification.
 			const e = err as { name?: string; message?: string };
-			const isTimeout = e?.name === 'TimeoutError' || /timed?\s*out|abort|timeout/i.test(e?.message ?? '');
+			const isTimeout = e?.name === 'TimeoutError' || e?.name === 'AbortError';
 			if (isTimeout) {
 				return { response, deadlineExceeded: true };
 			}
