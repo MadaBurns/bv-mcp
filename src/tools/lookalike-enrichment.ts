@@ -110,6 +110,14 @@ export interface LookalikeCorroborators {
 	registrarIanaId: string | null;
 	/** Registrar display name, for report prose only. */
 	registrarName: string | null;
+	/**
+	 * `Location` of a 3xx answer to the web HEAD probe, read off the SAME single
+	 * request that sets {@link hasWebContent} — never followed. `null` = the probe
+	 * answered without a redirect; `undefined` = not measured (no A record, the
+	 * probe failed, timed out or was never issued). Feeds only the defensive-shape
+	 * leg of `isBrandHeldRegistration`, which abstains on `undefined`.
+	 */
+	httpRedirectLocation?: string | null;
 }
 
 export interface EnrichmentOptions {
@@ -160,7 +168,7 @@ export async function enrichLookalikes(
 	const [rdapResults, webResults] = await Promise.all([
 		mapConcurrent(ordered, RDAP_PROBE_CONCURRENCY, (candidate) => probeRdap(candidate.domain, deadlineMs)),
 		mapConcurrent(ordered, WEB_PROBE_CONCURRENCY, (candidate) =>
-			candidate.hasA ? probeHasWebContent(candidate.domain, deadlineMs) : Promise.resolve(true),
+			candidate.hasA ? probeWebPresence(candidate.domain, deadlineMs) : Promise.resolve(UNMEASURED_WEB_PRESENCE),
 		),
 	]);
 	ordered.forEach((candidate, i) => {
@@ -170,10 +178,11 @@ export async function enrichLookalikes(
 			ageUnknown: rdap.registrationDays === null,
 			registrationLookup: rdap.lookup,
 			mxOnDisposable: candidate.mxExchanges.some(isDisposableMxHost),
-			hasWebContent: webResults[i],
+			hasWebContent: webResults[i].hasWebContent,
 			registrantOrg: rdap.registrantOrg,
 			registrarIanaId: rdap.registrarIanaId,
 			registrarName: rdap.registrarName,
+			httpRedirectLocation: webResults[i].redirectLocation,
 		});
 	});
 	return map;
@@ -368,26 +377,59 @@ export async function probePrimaryRegistration(domain: string, options: Enrichme
  * (reset, refused, TLS failure, no route) is the no-content signal.
  */
 export async function probeHasWebContent(domain: string, deadlineMs?: number): Promise<boolean> {
+	return (await probeWebPresence(domain, deadlineMs)).hasWebContent;
+}
+
+/** One HEAD probe's two readings. See {@link probeHasWebContent} for the `hasWebContent` law. */
+export interface WebPresence {
+	hasWebContent: boolean;
+	/** 3xx `Location`, absolute; `null` = answered without a redirect; `undefined` = not measured. */
+	redirectLocation: string | null | undefined;
+}
+
+/** Not probed (no A record): content defaults to the safe `true`, the redirect is unmeasured. */
+const UNMEASURED_WEB_PRESENCE: WebPresence = { hasWebContent: true, redirectLocation: undefined };
+
+/**
+ * The HEAD probe behind {@link probeHasWebContent}, also returning the redirect
+ * target it was already handed. The `Location` is only READ — never fetched —
+ * so recording it adds no request and no egress. A relative `Location` is
+ * resolved against the probed URL; one that does not parse is recorded as
+ * unmeasured rather than as "no redirect".
+ */
+export async function probeWebPresence(domain: string, deadlineMs?: number): Promise<WebPresence> {
 	const budgetMs = remainingBudgetMs(WEB_PROBE_TIMEOUT_MS, deadlineMs);
-	if (budgetMs <= 0) return true;
+	if (budgetMs <= 0) return UNMEASURED_WEB_PRESENCE;
 	// Armed HERE, at dispatch — the pool guarantees a connection slot is free (#867).
 	const signal = AbortSignal.timeout(budgetMs);
+	const probeUrl = `https://${domain}/`;
 	try {
 		// safeFetch + manual redirect: the candidate is attacker-influenced, so we
 		// MUST NOT auto-follow a 302 → internal/Cloudflare host (blind SSRF oracle,
 		// OWASP A10). safeFetch validates the destination hostname; manual redirect
 		// stops the worker from chasing an attacker-supplied Location. A 3xx still
 		// proves the host is reachable, so any response counts as "has content".
-		const resp = await safeFetch(`https://${domain}/`, {
+		const resp = await safeFetch(probeUrl, {
 			method: 'HEAD',
 			redirect: 'manual',
 			signal,
 		});
 		// Any HTTP response (incl. 3xx) means the host is reachable — content exists.
-		return Boolean(resp);
+		return { hasWebContent: Boolean(resp), redirectLocation: readRedirectLocation(resp, probeUrl) };
 	} catch {
 		// Timed out → unknown → `true` (never the HIGH corroborator).
 		// Measured transport refusal (reset, refused, DNS/TLS failure) → no content.
-		return signal.aborted;
+		return { hasWebContent: signal.aborted, redirectLocation: undefined };
+	}
+}
+
+function readRedirectLocation(resp: Response | undefined, probeUrl: string): string | null | undefined {
+	if (!resp || resp.status < 300 || resp.status >= 400) return resp ? null : undefined;
+	const location = resp.headers?.get('Location');
+	if (!location) return undefined;
+	try {
+		return new URL(location, probeUrl).href;
+	} catch {
+		return undefined;
 	}
 }

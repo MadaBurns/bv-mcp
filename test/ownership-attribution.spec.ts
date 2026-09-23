@@ -642,7 +642,16 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		seedRdap: object;
 		/** Defensive shape = parked: A record, no mail. Set true to give it live mail instead. */
 		withMx?: boolean;
+		/** The candidate's web root answers `301 Location: <redirectTo>` instead of a plain 200. */
+		redirectTo?: string;
+		/** More candidates given exactly the same records, RDAP and redirect as `candidate`. */
+		extraCandidates?: readonly string[];
+		/** Serve `redirectTo` on plain http:// only; the https:// probe gets no answer (servicenow.net, measured). */
+		redirectOnHttpOnly?: boolean;
+		/** Collects every http:// URL the tool requested, so a test can assert the fallback's scope. */
+		httpRequests?: string[];
 	}) {
+		const candidates = new Set([opts.candidate, ...(opts.extraCandidates ?? [])]);
 		const { setupFetchMock, createDohResponse } = await import('./helpers/dns-mock');
 		const { restore } = setupFetchMock();
 		restoreThisTest = restore;
@@ -655,7 +664,7 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 				if (name === 'contoso.com' && (type === 'NS' || type === '2')) {
 					return createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]);
 				}
-				if (name === opts.candidate) {
+				if (candidates.has(name)) {
 					if (type === 'NS' || type === '2') {
 						return createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.brand-registrar.example.' }]);
 					}
@@ -668,11 +677,34 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 				}
 				return createDohResponse([], []);
 			}
-			if (url.includes('rdap') && url.includes(`/domain/${opts.candidate}`)) {
+			const rdapDomain = url.includes('rdap') ? /\/domain\/([^/?#]+)/.exec(url)?.[1] : undefined;
+			if (rdapDomain !== undefined && candidates.has(rdapDomain)) {
 				return { ok: true, status: 200, json: () => Promise.resolve(opts.candidateRdap) } as unknown as Response;
 			}
-			if (url.includes('rdap') && url.includes('/domain/contoso.com')) {
+			if (rdapDomain === 'contoso.com') {
 				return { ok: true, status: 200, json: () => Promise.resolve(opts.seedRdap) } as unknown as Response;
+			}
+			const web = /^(https?):\/\/([^/]+)\//.exec(url);
+			const webHost = web?.[2];
+			if (web?.[1] === 'http') opts.httpRequests?.push(url);
+			if (opts.redirectOnHttpOnly && web?.[1] === 'https' && webHost !== undefined && candidates.has(webHost)) {
+				throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+			}
+			if (opts.redirectOnHttpOnly && web?.[1] === 'http' && webHost !== undefined && candidates.has(webHost)) {
+				return {
+					ok: false,
+					status: 301,
+					headers: new Headers({ Location: opts.redirectTo ?? '' }),
+					json: () => Promise.resolve({}),
+				} as unknown as Response;
+			}
+			if (opts.redirectTo !== undefined && !opts.redirectOnHttpOnly && webHost !== undefined && candidates.has(webHost)) {
+				return {
+					ok: false,
+					status: 301,
+					headers: new Headers({ Location: opts.redirectTo }),
+					json: () => Promise.resolve({}),
+				} as unknown as Response;
 			}
 			// HEAD web probe — reachable (a parked redirect page).
 			return { ok: true, status: 200, headers: new Headers(), json: () => Promise.resolve({}) } as unknown as Response;
@@ -689,7 +721,10 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		seedRdap: rdapDoc({ ianaId: BRAND_REGISTRAR_IANA_ID, registrarName: 'Brand Registrar, Inc.' }),
 	};
 
-	function findingsFor(result: { findings: Array<{ metadata?: Record<string, unknown> }> }, domain: string) {
+	function findingsFor<F extends { detail: string; severity: string; metadata?: Record<string, unknown> }>(
+		result: { findings: F[] },
+		domain: string,
+	): F[] {
 		return result.findings.filter((f) => f.metadata?.lookalikeDomain === domain);
 	}
 
@@ -781,6 +816,109 @@ describe('brand-held defensive registration — NS delegation is not the only ow
 		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
 		const threat = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'threat_observation');
 		expect(threat!.detail).toContain('report it to its registrar');
+	});
+
+	/**
+	 * A brand's own defensive portfolio is often NOT parked: a corporate
+	 * registrar keeps catch-all mail on it and 301s the web root to the brand
+	 * (measured 2026-09-24: servicenow.net / .org / .ai / .co.uk and
+	 * serviceenow.com, all at the same corporate registrar as servicenow.com,
+	 * all with live MX, all reported as third-party impersonation). The HEAD
+	 * probe enrichment already issues sees that 301; the redirect-to-target
+	 * shape signal was simply never wired into this tool.
+	 */
+	it('recognises a live-mail defensive registration at the same brand-protection registrar that redirects to the seed', async () => {
+		const result = await runFixture({ ...DEFENSIVE, withMx: true, redirectTo: 'https://www.contoso.com/' });
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution!.metadata?.brandHeldRegistration).toBe(true);
+		expect(attribution!.detail).not.toContain('is registered to a different organisation');
+		// Still never owned_by_seed (Ruling A), and the threat observation still exists.
+		for (const finding of findingsFor(result, 'cont0so.com')) {
+			expect(finding.metadata?.ownershipVerdict).toBe('third_party');
+		}
+		const threat = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'threat_observation');
+		expect(threat).toBeDefined();
+	});
+
+	it('checks EVERY enriched candidate, not only the SAME_ENTITY_RDAP_CAP (10) highest-ranked', async () => {
+		// servicenow.com: 18 mail-capable candidates against a cap of 10, and the
+		// brand-held check only ever saw the capped list. Twelve defensive names
+		// here, all identically shaped, must all be recognised.
+		const { generateLookalikes } = await import('../src/tools/lookalike-analysis');
+		// Single-label .com names only: a dot-insertion variant (con.toso.com) is a
+		// name under a DIFFERENT registrable domain (toso.com) and rightly fails
+		// the defensive shape's label-distance bar.
+		const twelve = generateLookalikes('contoso.com')
+			.filter((d) => d.endsWith('.com') && d.split('.').length === 2 && d !== 'cont0so.com')
+			.slice(0, 11);
+		expect(twelve).toHaveLength(11);
+		const result = await runFixture({ ...DEFENSIVE, withMx: true, redirectTo: 'https://www.contoso.com/', extraCandidates: twelve });
+		const attributed = [DEFENSIVE.candidate, ...twelve].map(
+			(d) => findingsFor(result, d).find((f) => f.metadata?.findingAxis === 'attribution')?.metadata?.brandHeldRegistration,
+		);
+		expect(attributed).toEqual(new Array(12).fill(true));
+	});
+
+	it('KNOWN LIMIT — a redirect served only on plain http:// is not read; the probe stays https-only', async () => {
+		// servicenow.net (measured 2026-09-24): https:// times out, http:// answers
+		// `301 https://www.servicenow.com/`. safeFetch refuses non-https egress
+		// (validateOutboundUrl), so the redirect is unmeasured and the shape leg
+		// abstains. Pinned so that widening egress is a deliberate, reviewed change.
+		const httpRequests: string[] = [];
+		const result = await runFixture({
+			...DEFENSIVE,
+			withMx: true,
+			redirectTo: 'https://www.contoso.com/',
+			redirectOnHttpOnly: true,
+			httpRequests,
+		});
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
+		expect(httpRequests).toEqual([]);
+	});
+
+	it('BOUNDARY: the redirect changes wording only — the threat observation keeps its calibrated severity', async () => {
+		const redirecting = await runFixture({ ...DEFENSIVE, withMx: true, redirectTo: 'https://www.contoso.com/' });
+		const plain = await runFixture({ ...DEFENSIVE, withMx: true });
+		const sev = (r: { findings: Array<{ severity: string; metadata?: Record<string, unknown> }> }) =>
+			r.findings.find((f) => f.metadata?.lookalikeDomain === 'cont0so.com' && f.metadata?.findingAxis === 'threat_observation')?.severity;
+		expect(sev(redirecting)).toBeDefined();
+		expect(sev(redirecting)).toBe(sev(plain));
+	});
+
+	it('CONTROL — a redirect to the seed at a RETAIL registrar, with live mail, is not brand-held', async () => {
+		// A phisher can point the web root at the real brand to look benign while
+		// using the name for mail; without the corporate-registrar leg that shape
+		// carries no ownership information.
+		const result = await runFixture({
+			candidate: 'cont0so.com',
+			candidateRdap: rdapDoc({ ianaId: GODADDY_IANA_ID, registrarName: 'GoDaddy.com, LLC' }),
+			seedRdap: rdapDoc({ ianaId: GODADDY_IANA_ID, registrarName: 'GoDaddy.com, LLC' }),
+			withMx: true,
+			redirectTo: 'https://www.contoso.com/',
+		});
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
+		const threat = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'threat_observation');
+		expect(threat!.detail).toContain('report it to its registrar');
+	});
+
+	it('CONTROL — a redirect somewhere OTHER than the seed does not satisfy the defensive shape', async () => {
+		const result = await runFixture({ ...DEFENSIVE, withMx: true, redirectTo: 'https://login.cont0so-portal.example/' });
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
+	});
+
+	it('CONTROL — a redirect to the seed at a DIFFERENT brand-protection registrar is not brand-held', async () => {
+		const result = await runFixture({
+			candidate: 'cont0so.com',
+			candidateRdap: rdapDoc({ ianaId: BRAND_REGISTRAR_IANA_ID, registrarName: 'Brand Registrar, Inc.' }),
+			seedRdap: rdapDoc({ ianaId: '292', registrarName: 'MarkMonitor Inc.' }),
+			withMx: true,
+			redirectTo: 'https://www.contoso.com/',
+		});
+		const attribution = findingsFor(result, 'cont0so.com').find((f) => f.metadata?.findingAxis === 'attribution');
+		expect(attribution!.metadata?.brandHeldRegistration).toBeUndefined();
 	});
 
 	it('never manufactures owned_by_seed — the structural verdict stays third_party on registrar evidence alone', async () => {

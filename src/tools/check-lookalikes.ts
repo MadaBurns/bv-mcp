@@ -549,11 +549,22 @@ async function checkLookalikesCore(
 	 */
 	const brandHeldMatches = new Map<string, { registrarIanaId: string | null; registrarName: string | null; reason: DefensiveReason }>();
 	for (const candidateDomain of sameEntityCandidates) {
-		const corroborators = enrichment.get(candidateDomain);
-		const candidateOrg = corroborators?.registrantOrg ?? null;
+		const candidateOrg = enrichment.get(candidateDomain)?.registrantOrg ?? null;
 		if (candidateOrg !== null && isSameEntityOrgMatch(primaryRegistrantOrg, candidateOrg)) {
 			sameEntityMatches.set(candidateDomain, candidateOrg);
 		}
+	}
+	// The brand-held check is NOT bound by SAME_ENTITY_RDAP_CAP. That cap bounds
+	// which candidates justify the seed's RDAP fetch; every input the check reads
+	// (the candidate's registrar ID and redirect) was already gathered by
+	// enrichment for EVERY non-owned candidate with infrastructure, so checking
+	// all of them costs nothing. Iterating the capped list instead dropped the
+	// lowest-ranked candidates — measured on servicenow.com, 18 mail-capable
+	// candidates against a cap of 10 — and reported them as third-party.
+	// Known limit: a redirect served only on port 80 (servicenow.net, measured
+	// 2026-09-24) stays unmeasured — safeFetch is https-only by egress policy.
+	for (const { domain: candidateDomain } of primaryRegistration === EMPTY_RDAP_PROBE ? [] : candidatesToEnrich) {
+		const corroborators = enrichment.get(candidateDomain);
 		const probe = results.find((r) => r.domain === candidateDomain);
 		// An ABSENT probe is "we never looked", which is NOT "there is no mail" —
 		// and the defensive-shape heuristic fires its `no-mx` reason on an empty
@@ -573,6 +584,7 @@ async function checkLookalikesCore(
 			candidateNsHosts: Array.from(lookalikeNsMap.get(candidateDomain) ?? []),
 			seedNsHosts: primaryNsList,
 			isEnterpriseGatedNsHost,
+			candidateHttpRedirectLocation: corroborators?.httpRedirectLocation,
 		});
 		if (brandHeld.brandHeld) {
 			brandHeldMatches.set(candidateDomain, {
