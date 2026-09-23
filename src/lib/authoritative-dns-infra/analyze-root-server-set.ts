@@ -66,6 +66,28 @@ function valuesConverge(record: Record<string, string | number> | undefined): bo
 	return unique.size <= 1;
 }
 
+/** Compact `root: serial` list, e.g. `a: 2026092300, b: 2026092301`, so a divergence finding
+ * carries the actual observed values instead of just naming that a mismatch occurred. */
+function formatSerialsByRoot(serialsByRoot: Record<string, number> | undefined): string | undefined {
+	const entries = Object.entries(serialsByRoot ?? {}).sort(([left], [right]) => left.localeCompare(right));
+	if (entries.length === 0) return undefined;
+	return entries.map(([root, serial]) => `${root.split('.')[0]}: ${serial}`).join(', ');
+}
+
+/**
+ * Root operators each pick up a new root-zone publication at a slightly different time, so
+ * serials one publication apart across roots during that propagation window are expected and
+ * benign, not a fault. Only a persistent or large gap on a re-run indicates genuinely stale
+ * data — this finding says so and appends the observed per-root serials so it is
+ * self-dismissable without a follow-up lookup (#1083).
+ */
+function buildSerialDivergenceDetail(serialsByRoot: Record<string, number> | undefined): string {
+	const base =
+		'SOA serial evidence differed across root servers. Root operators pick up a new root-zone publication at slightly different times, so serials one publication apart during this propagation window are expected and benign. Re-run this check later; a persistent or large gap indicates stale data.';
+	const observed = formatSerialsByRoot(serialsByRoot);
+	return observed ? `${base} Observed serials: ${observed}.` : base;
+}
+
 /** Reported by the sidecar when its root-server-set lane queried nothing. */
 const ROOT_SET_LANE_UNCONFIGURED = 'live_root_server_set_probe_not_configured';
 /** Reported by the lane when no session answered at all — transient/environmental. */
@@ -199,7 +221,7 @@ export function analyzeRootServerSetEvidence(probeEvidence: RootServerSetEvidenc
 		{
 			title: 'Root zone serials differ across roots',
 			severity: 'medium',
-			detail: 'SOA serial evidence differed across root servers, which can indicate stale root-zone data.',
+			detail: buildSerialDivergenceDetail(evidence.serialsByRoot),
 		},
 	);
 
