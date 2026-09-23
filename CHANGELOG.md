@@ -10,6 +10,23 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **The `check_ssl`/`check_http_security` redirect chain now shares the SAME ONE timeout
+  budget as the HEAD+GET pair that precedes it, instead of a fresh `timeoutMs` per chain/hop**
+  (#1093, follow-up to #1088). `check-ssl`'s `followHttpsRedirectChain` re-armed a full
+  `AbortSignal.timeout(timeoutMs)` at chain-entry regardless of what the HEAD (and any GET
+  fallback) had already spent; `check-http-security`'s `followRedirects` re-armed a fresh
+  `timeoutMs` on EVERY hop. Both now compute what's LEFT of the check's total `timeoutMs` from
+  the HEAD start and pass that remaining budget through; below the existing
+  `GET_FALLBACK_MIN_BUDGET_MS` floor a hop is never issued. In `check-http-security`, a hop cut
+  by the deadline no longer falls through to `analyzeSecurityHeaders()` on whatever headers the
+  abandoned hop was still holding (which would have scored a probe that never reached a final
+  page as a real "missing header" finding) — it now abstains via the check's existing
+  `transientUnmeasured`/`checkStatus: 'timeout'` lane, the same shape a caller-thrown timeout
+  already used. `check-ssl`'s existing `unresolved`/`timeout` outcome is unchanged in shape,
+  only in how the deadline is computed. The SSRF-rejection (non-abort error) path in both
+  checks is untouched — it still falls out of the loop and analyzes whatever headers are
+  already held. Not score-bearing — no `SCORING_MODEL_VERSION` bump. `@blackveil/dns-checks`
+  1.53.2.
 - **The `check_ssl`/`check_http_security` HEAD→GET fallback now shares ONE timeout budget
   instead of re-arming a fresh one for the GET** (#1088). A HEAD probe that had already
   consumed most of its `timeoutMs` still handed the GET fallback a full fresh copy of that
