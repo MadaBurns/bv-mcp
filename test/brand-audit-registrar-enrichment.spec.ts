@@ -15,14 +15,14 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 	it('stamps defensive=true with reason=redirect-to-target on a candidate that 301s to target', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-			if (url.includes('dns.google') && url.includes('forrd.com') && url.includes('type=MX')) {
+			if (url.includes('dns.google') && url.includes('contosso.com') && url.includes('type=MX')) {
 				return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ Answer: [] }) });
 			}
-			if (url === 'https://forrd.com/') {
+			if (url === 'https://contosso.com/') {
 				return Promise.resolve({
 					ok: false,
 					status: 301,
-					headers: new Headers({ Location: 'https://ford.com/' }),
+					headers: new Headers({ Location: 'https://contoso.com/' }),
 				});
 			}
 			return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({}) });
@@ -30,8 +30,8 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 
 		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
-			target: 'ford.com',
-			candidates: [{ domain: 'forrd.com', combinedConfidence: 0.9 }],
+			target: 'contoso.com',
+			candidates: [{ domain: 'contosso.com', combinedConfidence: 0.9 }],
 			budgetMs: 5_000,
 		});
 
@@ -52,8 +52,8 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 
 		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		await enrichCandidatesForDefensiveDetection({
-			target: 'ford.com',
-			candidates: [{ domain: 'forrd.com', combinedConfidence: 0.9 }],
+			target: 'contoso.com',
+			candidates: [{ domain: 'contosso.com', combinedConfidence: 0.9 }],
 			budgetMs: 5_000,
 		});
 
@@ -64,14 +64,14 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 	it('returns enrichmentStatus=partial when some fetches fail', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
-			if (url.includes('dns.google') && url.includes('forrd.com') && url.includes('type=MX')) {
+			if (url.includes('dns.google') && url.includes('contosso.com') && url.includes('type=MX')) {
 				return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ Answer: [] }) });
 			}
-			if (url === 'https://forrd.com/') {
+			if (url === 'https://contosso.com/') {
 				return Promise.resolve({
 					ok: false,
 					status: 301,
-					headers: new Headers({ Location: 'https://ford.com/' }),
+					headers: new Headers({ Location: 'https://contoso.com/' }),
 				});
 			}
 			// timeout.com fetches all throw
@@ -80,9 +80,9 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 
 		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
-			target: 'ford.com',
+			target: 'contoso.com',
 			candidates: [
-				{ domain: 'forrd.com', combinedConfidence: 0.9 },
+				{ domain: 'contosso.com', combinedConfidence: 0.9 },
 				{ domain: 'timeout.com', combinedConfidence: 0.7 },
 			],
 			budgetMs: 5_000,
@@ -106,7 +106,7 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 		}));
 		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
-			target: 'ford.com',
+			target: 'contoso.com',
 			candidates,
 			budgetMs: 5_000,
 		});
@@ -142,7 +142,7 @@ describe('enrichCandidatesForDefensiveDetection', () => {
 		}));
 		const { enrichCandidatesForDefensiveDetection } = await import('../src/lib/brand-audit-registrar-enrichment');
 		const result = await enrichCandidatesForDefensiveDetection({
-			target: 'ford.com',
+			target: 'contoso.com',
 			candidates,
 			budgetMs: 1,
 		});

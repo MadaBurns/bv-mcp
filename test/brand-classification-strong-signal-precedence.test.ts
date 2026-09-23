@@ -28,7 +28,7 @@ import { describe, expect, it } from 'vitest';
 import { classifyCandidate, isImpersonation, type CandidateInput, type TargetContext } from '../src/lib/brand-classification';
 
 const TARGET: TargetContext = {
-	domain: 'paypal.com',
+	domain: 'fabpay.com',
 	registrar: 'MarkMonitor Inc.',
 	registrarFamily: 'MarkMonitor',
 };

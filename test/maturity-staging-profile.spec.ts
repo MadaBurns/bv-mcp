@@ -4,7 +4,7 @@
 //   Maturity classifier must respect scoringProfile.
 //   - web_only domains evaluate against a WEB-ONLY ladder (no mail categories
 //     can pull the stage up or down).
-//   - mail_enabled stage 4 ("Hardened") tightened: stripe.com (no DNSSEC,
+//   - mail_enabled stage 4 ("Hardened") tightened: fabrikam.com (no DNSSEC,
 //     no MTA-STS, no BIMI, no DANE) is NOT Hardened despite hasCaa +
 //     hasDkimDiscovered = 2.
 //
@@ -12,7 +12,7 @@
 // Fact-check baseline (2026-05-28):
 //   - gov.uk currently → stage 1 "DNS-Only" (wrong — has DNSSEC + DMARCbis
 //     + HSTS + Fastly + strong web posture).
-//   - stripe.com currently → stage 4 "Hardened" (wrong — missing transport
+//   - fabrikam.com currently → stage 4 "Hardened" (wrong — missing transport
 //     and integrity hardening).
 
 import { describe, it, expect } from 'vitest';
@@ -44,8 +44,8 @@ function govUkChecks(): CheckResult[] {
 	];
 }
 
-// stripe.com-shaped checks (mail_enabled, no DNSSEC, no MTA-STS, no BIMI, no DANE)
-function stripeChecks(): CheckResult[] {
+// fabrikam.com-shaped checks (mail_enabled, no DNSSEC, no MTA-STS, no BIMI, no DANE)
+function fabrikamChecks(): CheckResult[] {
 	return [
 		buildCheckResult('mx', [createFinding('mx', 'MX records found', 'info', '2 records')]),
 		passingCheck('spf', 'SPF record configured'),
@@ -53,7 +53,7 @@ function stripeChecks(): CheckResult[] {
 		buildCheckResult('dkim', [createFinding('dkim', 'DKIM configured', 'info', 'selectors found', { selectorsFound: ['s1', 's2'] })]),
 		buildCheckResult('caa', [createFinding('caa', 'CAA records found', 'info', '0 issue "amazon.com"')]),
 		buildCheckResult('ssl', [createFinding('ssl', 'SSL certificate valid', 'info', 'ok')]),
-		// No DNSSEC, no MTA-STS, no BIMI, no DANE — stripe.com lacks transport hardening.
+		// No DNSSEC, no MTA-STS, no BIMI, no DANE — fabrikam.com lacks transport hardening.
 		// Use high-severity findings so `passed=false` and the maturity classifier sees them as absent.
 		buildCheckResult('dnssec', [createFinding('dnssec', 'No DNSKEY records found', 'high', 'No DNSSEC')]),
 		buildCheckResult('mta_sts', [createFinding('mta_sts', 'No MTA-STS or TLS-RPT records found', 'high', 'missing')]),
@@ -93,26 +93,26 @@ describe('Defect I — computeMaturityStage accepts profile and respects it', ()
 		expect(stage.label).toBe('Hardened');
 	});
 
-	it('classifies stripe.com-style mail-enabled domain at stage ≤ 3 (NOT Hardened) — regression', () => {
-		// stripe.com is missing DNSSEC, MTA-STS, BIMI, DANE — transport/integrity hardening absent.
-		const stage = computeMaturityStage(stripeChecks(), 'mail_enabled');
+	it('classifies fabrikam.com-style mail-enabled domain at stage ≤ 3 (NOT Hardened) — regression', () => {
+		// fabrikam.com is missing DNSSEC, MTA-STS, BIMI, DANE — transport/integrity hardening absent.
+		const stage = computeMaturityStage(fabrikamChecks(), 'mail_enabled');
 		expect(stage.stage).toBeLessThanOrEqual(3);
 		expect(stage.label).not.toBe('Hardened');
 	});
 
-	it('cross-domain ordering: proton.me Hardened > stripe.com (regression)', () => {
+	it('cross-domain ordering: proton.me Hardened > fabrikam.com (regression)', () => {
 		const proton = computeMaturityStage(protonChecks(), 'mail_enabled');
-		const stripe = computeMaturityStage(stripeChecks(), 'mail_enabled');
-		expect(proton.stage).toBeGreaterThan(stripe.stage);
+		const fabrikam = computeMaturityStage(fabrikamChecks(), 'mail_enabled');
+		expect(proton.stage).toBeGreaterThan(fabrikam.stage);
 	});
 
-	it('cross-domain ordering: gov.uk web_only stage ≥ 3, stripe.com stage ≤ 3 — both are mid-tier in their own ladders', () => {
+	it('cross-domain ordering: gov.uk web_only stage ≥ 3, fabrikam.com stage ≤ 3 — both are mid-tier in their own ladders', () => {
 		const govuk = computeMaturityStage(govUkChecks(), 'web_only');
-		const stripe = computeMaturityStage(stripeChecks(), 'mail_enabled');
+		const fabrikam = computeMaturityStage(fabrikamChecks(), 'mail_enabled');
 		// gov.uk: classified on web-only ladder, gets ≥3 ("Defensive" or higher).
 		expect(govuk.stage).toBeGreaterThanOrEqual(3);
-		// stripe: classified on mail-enabled ladder, capped at ≤3 ("Enforcing") without transport hardening.
-		expect(stripe.stage).toBeLessThanOrEqual(3);
+		// fabrikam: classified on mail-enabled ladder, capped at ≤3 ("Enforcing") without transport hardening.
+		expect(fabrikam.stage).toBeLessThanOrEqual(3);
 	});
 
 	it('backward-compatible: omitting profile argument still produces a stage (legacy callers)', () => {

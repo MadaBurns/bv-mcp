@@ -82,7 +82,7 @@ describe('chaos: SAN certstream-auth degradation', () => {
 	it('Given a healthy certstream + token, the cached /sans path is used and crt.sh is NEVER touched (the fix)', async () => {
 		const { correlateSans } = await import('../../src/tenants/discovery/san-correlator');
 		// A spread of seed shapes — the token+cached-path invariant must hold for every brand, not just one.
-		const seeds = ['seed.com', 'paypal.com', 'a-very-long-brand-name.com', 'xn--mnchen-3ya.de', 'brand.co.uk'];
+		const seeds = ['seed.com', 'fabpay.com', 'a-very-long-brand-name.com', 'xn--mnchen-3ya.de', 'brand.co.uk'];
 		for (const seed of seeds) {
 			const certFetch = vi.fn<typeof fetch>().mockResolvedValue(certstreamOk(['sib-one.com', 'sib-two.com']));
 			const directFetch = vi.fn<typeof fetch>(); // must never be invoked
