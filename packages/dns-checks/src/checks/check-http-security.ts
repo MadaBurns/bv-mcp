@@ -178,6 +178,7 @@ export async function checkHTTPSecurity(
 	let transientUnmeasured = false;
 
 	try {
+		const headStartedAt = Date.now();
 		let response = await fetchFn(`https://${domain}`, {
 			method: 'HEAD',
 			redirect: 'manual',
@@ -225,8 +226,13 @@ export async function checkHTTPSecurity(
 			// Still a redirect after max hops — analyze whatever headers we have
 			findings.push(...analyzeSecurityHeaders(response.headers));
 		} else if (response.status === 403 || response.status === 405) {
-			// WAF block or HEAD not allowed — retry with GET to get real headers
-			const getResponse = await tryGetFallback(`https://${domain}`, fetchFn, timeoutMs);
+			// WAF block or HEAD not allowed — retry with GET to get real headers. The GET gets
+			// what's LEFT of timeoutMs (which the HEAD + any followRedirects hops already spent
+			// part of), not a fresh copy of it — the pair is bounded by ONE total budget (#1088).
+			// tryGetFallback skips the request (and returns null, same as a fetch error) once too
+			// little remains for a real answer.
+			const remainingMs = Math.max(0, timeoutMs - (Date.now() - headStartedAt));
+			const getResponse = await tryGetFallback(`https://${domain}`, fetchFn, remainingMs);
 			if (getResponse && (getResponse.ok || (getResponse.status >= 300 && getResponse.status < 400))) {
 				const followed = await followRedirects(getResponse, fetchFn, timeoutMs);
 				if (NO_CONTENT_STATUSES.has(followed.status)) {

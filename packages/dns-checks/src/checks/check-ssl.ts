@@ -141,6 +141,7 @@ async function checkHttps(
 	let transient = false;
 
 	try {
+		const headStartedAt = Date.now();
 		let response = await fetchFn(`https://${domain}`, {
 			method: 'HEAD',
 			redirect: 'manual',
@@ -159,7 +160,11 @@ async function checkHttps(
 		// than being scored off a challenge page (#972's law). The 204/205 no-content guard
 		// below then applies to the adopted response unchanged (#806).
 		if (needsGetFallback(response.status)) {
-			const getResponse = await tryGetFallback(`https://${domain}`, fetchFn, timeoutMs);
+			// The GET fallback gets what's LEFT of timeoutMs, not a fresh copy of it — the pair
+			// is bounded by ONE total budget (#1088). tryGetFallback skips the request (and
+			// returns null, same as a fetch error) once too little remains for a real answer.
+			const remainingMs = Math.max(0, timeoutMs - (Date.now() - headStartedAt));
+			const getResponse = await tryGetFallback(`https://${domain}`, fetchFn, remainingMs);
 			if (getResponse && !needsGetFallback(getResponse.status)) {
 				// Abandon the HEAD response, adopt the GET one. Only status/headers are read from
 				// here on (redirect following issues fresh requests), so release the adopted

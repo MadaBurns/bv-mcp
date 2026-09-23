@@ -8,6 +8,17 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **The `check_ssl`/`check_http_security` HEAD→GET fallback now shares ONE timeout budget
+  instead of re-arming a fresh one for the GET** (#1088). A HEAD probe that had already
+  consumed most of its `timeoutMs` still handed the GET fallback a full fresh copy of that
+  same budget, so a refused-HEAD origin could push the HEAD+GET pair to roughly 2x the
+  intended per-fetch budget. The GET now receives only what remains
+  (`Math.max(0, timeoutMs - elapsed)`); below a 250ms floor it is skipped entirely and the
+  check falls back to its existing HEAD-status abstention. Not score-bearing — no
+  `SCORING_MODEL_VERSION` bump. `@blackveil/dns-checks` 1.53.1.
+
 ## [3.87.0] - 2026-09-23
 
 ### Added
