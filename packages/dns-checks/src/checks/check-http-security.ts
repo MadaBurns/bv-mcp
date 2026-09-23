@@ -5,7 +5,7 @@
 import type { CheckResult, FetchFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { analyzeSecurityHeaders } from './http-security-analysis';
-import { tryGetFallback } from './probe-fetch';
+import { GET_FALLBACK_MIN_BUDGET_MS, tryGetFallback } from './probe-fetch';
 import { isBlockedProbeStatus } from './ssl-analysis';
 import {
 	SCANNER_USER_AGENT,
@@ -78,6 +78,13 @@ function blockedProbeFinding(domain: string, status: number): Finding {
  * Handles Cloudflare Workers opaque redirect responses (status 0) and standard
  * 3xx redirects. Only follows HTTPS redirects (no protocol downgrade).
  *
+ * `budgetMs` is what's LEFT of the check's total `timeoutMs` when this is called — HEAD, any
+ * GET fallback, and this chain share ONE budget from `headStartedAt` (#1093), not a fresh
+ * `timeoutMs` per hop. Below `GET_FALLBACK_MIN_BUDGET_MS` remaining, a hop cannot return a
+ * genuine answer, so it is never issued and `deadlineExceeded: true` tells the caller so —
+ * analyzing whatever headers a stalled/aborted hop last held would score a probe that never
+ * reached a final page as if it had.
+ *
  * SSRF note (H3 fix, 2026-05-08): the redirect target hostname is attacker-
  * controlled (it's whatever the origin's `Location:` header says). Callers must
  * pass a `fetchFn` that validates the destination before issuing the request —
@@ -88,8 +95,9 @@ function blockedProbeFinding(domain: string, status: number): Finding {
 async function followRedirects(
 	response: Response,
 	fetchFn: FetchFunction,
-	timeoutMs: number,
-): Promise<Response> {
+	budgetMs: number,
+): Promise<{ response: Response; deadlineExceeded: boolean }> {
+	const deadlineAt = Date.now() + budgetMs;
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
 		const status = response.status;
 		const isRedirect = (status >= 300 && status < 400) || response.type === 'opaqueredirect' || (status === 0 && response.headers.get('location'));
@@ -108,6 +116,11 @@ async function followRedirects(
 		// Only follow HTTPS redirects
 		if (!nextUrl.startsWith('https://')) break;
 
+		const remainingMs = deadlineAt - Date.now();
+		if (remainingMs < GET_FALLBACK_MIN_BUDGET_MS) {
+			return { response, deadlineExceeded: true };
+		}
+
 		try {
 			// Release the body of the response we're about to abandon (e.g. a GET
 			// fallback that itself redirects) so workerd doesn't cancel a stalled stream.
@@ -116,9 +129,16 @@ async function followRedirects(
 				method: 'HEAD',
 				redirect: 'manual',
 				headers: { 'User-Agent': SCANNER_USER_AGENT },
-				signal: AbortSignal.timeout(timeoutMs),
+				signal: AbortSignal.timeout(remainingMs),
 			});
-		} catch {
+		} catch (err) {
+			// AbortSignal.timeout throws a DOMException named 'TimeoutError' (message "The
+			// operation timed out"); also match abort/timeout phrasings from other runtimes.
+			const e = err as { name?: string; message?: string };
+			const isTimeout = e?.name === 'TimeoutError' || /timed?\s*out|abort|timeout/i.test(e?.message ?? '');
+			if (isTimeout) {
+				return { response, deadlineExceeded: true };
+			}
 			// Includes SSRF rejection from a safeFetch wrapper — fall out of the
 			// redirect loop and let analysis run with whatever headers we already
 			// have, treating the hostile redirect target as a network failure.
@@ -126,7 +146,25 @@ async function followRedirects(
 		}
 	}
 
-	return response;
+	return { response, deadlineExceeded: false };
+}
+
+/**
+ * The finding for a HEAD+GET+redirect-chain probe that ran out of its shared time budget
+ * mid-flight (#1093). Distinct from the bottom-of-function catch's "Connection timed out" —
+ * that one never got a response at all, this one has a response but the chain that would
+ * resolve it to an analyzable final page could not complete in time.
+ */
+function deadlineExceededFinding(domain: string): Finding {
+	return createFinding(
+		'http_security',
+		'HTTPS connection timed out',
+		'medium',
+		`Could not fetch https://${domain} to check security headers: the HEAD/GET/redirect-chain probe exceeded its time budget.`,
+		// No `missingControl` (issue #638) — the chain never reached a final, analyzable page, so
+		// nothing about the headers was established. See `unmeasuredZero` at the call site.
+		{ inconclusive: true },
+	);
 }
 
 /**
@@ -186,10 +224,22 @@ export async function checkHTTPSecurity(
 			signal: AbortSignal.timeout(timeoutMs),
 		});
 
-		// Follow redirects to get the final destination's headers
-		response = await followRedirects(response, fetchFn, timeoutMs);
+		// Follow redirects to get the final destination's headers. Bounded by what's LEFT of
+		// timeoutMs after the HEAD probe already spent part of it — HEAD + this chain share ONE
+		// total budget (#1093), same contract #1088 established for HEAD+GET.
+		const headFollowed = await followRedirects(response, fetchFn, Math.max(0, timeoutMs - (Date.now() - headStartedAt)));
+		response = headFollowed.response;
 
-		if (NO_CONTENT_STATUSES.has(response.status)) {
+		if (headFollowed.deadlineExceeded) {
+			// The redirect chain ran out of the shared HEAD+GET+chain budget mid-flight. Route to
+			// the same abstention a caller-thrown timeout uses — analyzing whatever headers a
+			// stalled hop is still holding (e.g. a 301's) would score a probe that never reached a
+			// final page as if it had (#1093).
+			inconclusive = 'timeout';
+			unmeasuredZero = true;
+			transientUnmeasured = true;
+			findings.push(deadlineExceededFinding(domain));
+		} else if (NO_CONTENT_STATUSES.has(response.status)) {
 			// Issue #806 — the terminal response is accepted here, so the no-content guard
 			// runs BEFORE any header-read branch (it also structurally shields the still-3xx
 			// branch below, where a 204/205 can never appear). `checkStatus: 'error'` makes
@@ -234,28 +284,38 @@ export async function checkHTTPSecurity(
 			const remainingMs = Math.max(0, timeoutMs - (Date.now() - headStartedAt));
 			const getResponse = await tryGetFallback(`https://${domain}`, fetchFn, remainingMs);
 			if (getResponse && (getResponse.ok || (getResponse.status >= 300 && getResponse.status < 400))) {
-				const followed = await followRedirects(getResponse, fetchFn, timeoutMs);
-				if (NO_CONTENT_STATUSES.has(followed.status)) {
-					// Issue #806 — the GET fallback's terminal response is accepted here, so the
-					// same no-content guard applies before analysis.
-					inconclusive = 'error';
+				// Same shared-budget contract as the HEAD-triggered call above (#1093): what's LEFT
+				// of timeoutMs, not a fresh copy of it.
+				const getFollowed = await followRedirects(getResponse, fetchFn, Math.max(0, timeoutMs - (Date.now() - headStartedAt)));
+				if (getFollowed.deadlineExceeded) {
+					inconclusive = 'timeout';
 					unmeasuredZero = true;
 					transientUnmeasured = true;
-					findings.push(noContentFinding(domain, followed.status));
-				} else if (isBlockedProbeStatus(followed.status) && followed.ok) {
-					// Issue #972 — the GET fallback itself can land on the same 2xx-shaped block
-					// (e.g. HEAD 403 -> GET 202), so it needs the identical guard as the initial
-					// HEAD probe above before analysis.
-					inconclusive = 'error';
-					unmeasuredZero = true;
-					findings.push(blockedProbeFinding(domain, followed.status));
+					findings.push(deadlineExceededFinding(domain));
 				} else {
-					findings.push(...analyzeSecurityHeaders(followed.headers));
+					const followed = getFollowed.response;
+					if (NO_CONTENT_STATUSES.has(followed.status)) {
+						// Issue #806 — the GET fallback's terminal response is accepted here, so the
+						// same no-content guard applies before analysis.
+						inconclusive = 'error';
+						unmeasuredZero = true;
+						transientUnmeasured = true;
+						findings.push(noContentFinding(domain, followed.status));
+					} else if (isBlockedProbeStatus(followed.status) && followed.ok) {
+						// Issue #972 — the GET fallback itself can land on the same 2xx-shaped block
+						// (e.g. HEAD 403 -> GET 202), so it needs the identical guard as the initial
+						// HEAD probe above before analysis.
+						inconclusive = 'error';
+						unmeasuredZero = true;
+						findings.push(blockedProbeFinding(domain, followed.status));
+					} else {
+						findings.push(...analyzeSecurityHeaders(followed.headers));
+					}
+					// GET fallback returns a real body we never read (followRedirects only
+					// cancels it when it redirects); release it so workerd doesn't cancel a
+					// stalled stream.
+					void followed.body?.cancel().catch(() => undefined);
 				}
-				// GET fallback returns a real body we never read (followRedirects only
-				// cancels it when it redirects); release it so workerd doesn't cancel a
-				// stalled stream.
-				void followed.body?.cancel().catch(() => undefined);
 			} else {
 				inconclusive = 'error';
 				unmeasuredZero = true;

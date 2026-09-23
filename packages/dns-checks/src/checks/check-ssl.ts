@@ -18,7 +18,7 @@ import {
 	getRobotsDisallowedFinding,
 	isBlockedProbeStatus,
 } from './ssl-analysis';
-import { tryGetFallback } from './probe-fetch';
+import { GET_FALLBACK_MIN_BUDGET_MS, tryGetFallback } from './probe-fetch';
 import { RobotsDisallowedError } from '../robots-gate';
 
 /** Default HTTPS timeout (ms) */
@@ -237,7 +237,11 @@ async function checkHttps(
 			if (!isHttpsRedirect || hstsHeader !== null) {
 				findings.push(...getHttpsFindings(domain, redirectTarget, hstsHeader));
 			} else {
-				const followed = await followHttpsRedirectChain(response, fetchFn, timeoutMs);
+				// Bounded by what's LEFT of timeoutMs after the HEAD probe (and any GET fallback)
+				// already spent part of it (#1093) — HEAD + GET fallback + this chain share ONE
+				// total budget, the same contract #1088 established for HEAD+GET alone.
+				const remainingMs = Math.max(0, timeoutMs - (Date.now() - headStartedAt));
+				const followed = await followHttpsRedirectChain(response, fetchFn, remainingMs);
 				// Terminal statuses that measure nothing: origin-unreachable / server error, an
 				// edge/WAF/rate-limit block (401/403/429/202 — issue #972), and the #806/#819
 				// no-content pair — the same classes the initial-response branches above route to
@@ -314,12 +318,15 @@ type RedirectChainResult =
  * destination before issuing the request — the bv-mcp Worker passes a safeFetch-based wrapper.
  * Embedders that pass raw `fetch` are responsible for their own SSRF protection.
  */
-async function followHttpsRedirectChain(response: Response, fetchFn: FetchFunction, timeoutMs: number): Promise<RedirectChainResult> {
-	// ONE deadline for the whole chain, not a fresh timeout per hop: per-hop timeouts stack
-	// (3 hops × timeoutMs on top of the initial and HTTP legs), which on unbudgeted direct
-	// calls can push the check past the tool-level race. A chain that cannot resolve within
-	// one leg's allowance reports `unresolved` — the inconclusive lane — rather than stalling.
-	const chainSignal = AbortSignal.timeout(timeoutMs);
+async function followHttpsRedirectChain(response: Response, fetchFn: FetchFunction, budgetMs: number): Promise<RedirectChainResult> {
+	// ONE deadline for the whole chain, not a fresh timeout per hop — and, since #1093, that
+	// budget is what's LEFT of the check's total timeoutMs after the HEAD probe (and any GET
+	// fallback) already spent part of it, not a fresh copy of it: HEAD + GET fallback + chain
+	// share ONE total budget, the same contract #1088 established for HEAD+GET alone. A chain
+	// that cannot resolve within the remaining allowance reports `unresolved` — the inconclusive
+	// lane — rather than stalling.
+	const deadlineAt = Date.now() + budgetMs;
+	const chainSignal = AbortSignal.timeout(budgetMs);
 	let current = response;
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
 		const isRedirect = current.status >= 300 && current.status < 400;
@@ -336,6 +343,13 @@ async function followHttpsRedirectChain(response: Response, fetchFn: FetchFuncti
 		}
 		if (nextUrl.startsWith('http://')) return { kind: 'downgrade', target: nextUrl };
 		if (!nextUrl.startsWith('https://')) return { kind: 'unresolved', reason: 'error' };
+
+		// Below GET_FALLBACK_MIN_BUDGET_MS remaining, a hop cannot return a genuine answer —
+		// abstain rather than spend a fetch doomed to abort almost immediately (#1093, mirroring
+		// tryGetFallback's own gate).
+		if (deadlineAt - Date.now() < GET_FALLBACK_MIN_BUDGET_MS) {
+			return { kind: 'unresolved', reason: 'timeout' };
+		}
 
 		try {
 			// Release the abandoned hop's body so workerd doesn't cancel a stalled stream.

@@ -1135,3 +1135,84 @@ describe('checkHttpSecurity — GET fallback budget (#1088)', () => {
 		expect(elapsed).toBeLessThan(timeoutMs * 1.5);
 	});
 });
+
+describe('checkHttpSecurity — redirect-chain deadline (#1093)', () => {
+	// HEAD + GET fallback + the redirect chain that follows either of them now share the SAME
+	// ONE `timeoutMs` budget (measured from the HEAD start), not a fresh copy per chain hop.
+	it('aborts a stalled hop at the shared deadline and abstains instead of scoring the held headers', async () => {
+		const { checkHTTPSecurity } = await import('@blackveil/dns-checks');
+		const timeoutMs = 300;
+		const fetchFn = vi.fn().mockImplementation((url: string, init?: RequestInit) => {
+			if (url === 'https://example.com') {
+				return Promise.resolve(new Response(null, { status: 301, headers: new Headers({ location: 'https://hop1.example.com/' }) }));
+			}
+			if (url === 'https://hop1.example.com/') {
+				return Promise.resolve(new Response(null, { status: 301, headers: new Headers({ location: 'https://hop2.example.com/' }) }));
+			}
+			// hop2: settles only when its own AbortSignal fires — proves the chain shares the
+			// HEAD's budget rather than re-arming a fresh timeoutMs per hop.
+			return new Promise<Response>((_resolve, reject) => {
+				init!.signal!.addEventListener('abort', () => reject(new DOMException('The operation was aborted.', 'AbortError')));
+			});
+		});
+		const startedAt = Date.now();
+		const result = await checkHTTPSecurity('example.com', fetchFn, { timeout: timeoutMs });
+		const elapsed = Date.now() - startedAt;
+
+		expect(elapsed).toBeLessThan(timeoutMs * 1.5);
+		expect(result.checkStatus).toBe('timeout');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		// The abandoned hop's 301 must never be scored as a missing-header slate.
+		expect(result.findings.some((f) => /^No /.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(true);
+	});
+
+	// Regression guard: an SSRF-rejecting hop (a non-abort error, e.g. safeFetch refusing the
+	// redirect target) must keep falling out of the loop and analyzing whatever headers the
+	// check already holds — the deadline handling above must not touch this path.
+	it('still analyzes the held headers when a hop is rejected by a non-abort error', async () => {
+		const { checkHTTPSecurity } = await import('@blackveil/dns-checks');
+		const fetchFn = vi.fn().mockImplementation((url: string) => {
+			if (url === 'https://example.com') {
+				return Promise.resolve(
+					new Response(null, {
+						status: 301,
+						headers: new Headers({
+							location: 'https://blocked.example.com/',
+							'content-security-policy': "default-src 'self'",
+						}),
+					}),
+				);
+			}
+			return Promise.reject(new Error('SSRF: destination blocked'));
+		});
+		const result = await checkHTTPSecurity('example.com', fetchFn);
+
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings.some((f) => f.title === 'No Content-Security-Policy')).toBe(false);
+	});
+
+	it('issues no redirect-chain hop when the HEAD already spent nearly the whole budget', async () => {
+		const { checkHTTPSecurity } = await import('@blackveil/dns-checks');
+		const timeoutMs = 300;
+		let hopAttempted = false;
+		const fetchFn = vi.fn().mockImplementation(async (url: string) => {
+			if (url === 'https://example.com') {
+				// Leaves well under the 250ms floor (GET_FALLBACK_MIN_BUDGET_MS) of the budget.
+				await new Promise((resolve) => setTimeout(resolve, timeoutMs - 100));
+				return new Response(null, { status: 301, headers: new Headers({ location: 'https://hop.example.com/' }) });
+			}
+			hopAttempted = true;
+			return new Response(null, { status: 200, headers: new Headers() });
+		});
+		const startedAt = Date.now();
+		const result = await checkHTTPSecurity('example.com', fetchFn, { timeout: timeoutMs });
+		const elapsed = Date.now() - startedAt;
+
+		expect(hopAttempted).toBe(false);
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(result.checkStatus).toBe('timeout');
+		expect(elapsed).toBeLessThan(timeoutMs * 1.5);
+	});
+});
