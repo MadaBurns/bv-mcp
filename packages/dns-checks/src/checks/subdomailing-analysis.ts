@@ -102,6 +102,14 @@ export interface SubdomailingProbeResult {
 	nsTargets?: string[];
 	takeoverService?: string;
 	detail: string;
+	/**
+	 * True when at least one of this domain's takeover-relevant DNS lookups (the CNAME-target
+	 * `A` lookup, an `A` lookup in the NS-host fan-out, or the TXT lookup) THREW rather than
+	 * answering, and no positive risk finding was otherwise determined. Only an ANSWERED-EMPTY
+	 * lookup is evidence of non-resolution (#1103); a throw means this domain could not be
+	 * fully cleared, so callers must not count it toward "resolves correctly".
+	 */
+	unmeasured?: true;
 }
 
 /**
@@ -308,10 +316,17 @@ export async function probeIncludeDomain(
 	options?: { timeout?: number },
 ): Promise<SubdomailingProbeResult> {
 	const timeout = options?.timeout ?? PROBE_TIMEOUT_MS;
-	const base: Omit<SubdomailingProbeResult, 'riskType' | 'severity' | 'detail'> = {
+	const base: Omit<SubdomailingProbeResult, 'riskType' | 'severity' | 'detail' | 'unmeasured'> = {
 		domain: includeDomain,
 		mechanism,
 	};
+
+	// Set when a takeover-relevant lookup THREW rather than answering, so evidence for that
+	// vector is missing. Only an ANSWERED-EMPTY (`[]`) result is evidence of non-resolution
+	// (#1103) — a throw is never used to infer or rule out a finding on its own. A later step
+	// finding a genuine (answered) risk still returns that finding regardless of this flag:
+	// positive evidence stands even when a sibling probe was inconclusive.
+	let unmeasured = false;
 
 	// ── 1. CNAME probe ──────────────────────────────────────────────────────
 	try {
@@ -320,16 +335,20 @@ export async function probeIncludeDomain(
 			const cname = cnameRecords[0].replace(/\.$/, '').toLowerCase();
 
 			if (isThirdPartyTakeoverService(cname)) {
-				// Check if the CNAME target actually resolves
+				// Check if the CNAME target actually resolves. A throw here is UNMEASURED, not
+				// "does not resolve" — never guess a dangling CNAME from the CNAME alone (#1103).
 				let resolves = false;
+				let targetUnmeasured = false;
 				try {
 					const aRecords = await queryDNS(cname, 'A', { timeout });
 					resolves = aRecords.length > 0;
 				} catch {
-					// Query failure = does not resolve
+					targetUnmeasured = true;
 				}
 
-				if (!resolves) {
+				if (targetUnmeasured) {
+					unmeasured = true;
+				} else if (!resolves) {
 					return {
 						...base,
 						riskType: 'dangling_cname',
@@ -351,19 +370,20 @@ export async function probeIncludeDomain(
 		if (nsRecords.length > 0) {
 			const nsHosts = nsRecords.map((ns) => ns.replace(/\.$/, '').toLowerCase());
 
-			// One `A` lookup per nameserver, independent of each other — the only consumer of
-			// the result is the `join(', ')` in the detail string below, so the outcomes are
-			// written back BY INDEX and `danglingNs` keeps NS-record order exactly as the
-			// serial loop produced it. A thrown lookup still means "does not resolve".
-			const dangling = await mapConcurrent(nsHosts, NS_LOOKUP_CONCURRENCY, async (nsHost) => {
+			// One `A` lookup per nameserver, independent of each other. Written back BY INDEX so
+			// `danglingNs` keeps NS-record order exactly as the serial loop produced it. A thrown
+			// lookup is UNMEASURED, not dangling (#1103) — `dangling_ns` is only ever emitted for
+			// hosts whose `A` lookup ANSWERED empty. If every candidate threw, there is no finding
+			// for this step at all, just an unmeasured domain.
+			const outcomes = await mapConcurrent(nsHosts, NS_LOOKUP_CONCURRENCY, async (nsHost): Promise<'dangling' | 'resolves' | 'unmeasured'> => {
 				try {
 					const aRecords = await queryDNS(nsHost, 'A', { timeout });
-					return aRecords.length === 0;
+					return aRecords.length === 0 ? 'dangling' : 'resolves';
 				} catch {
-					return true;
+					return 'unmeasured';
 				}
 			});
-			const danglingNs = nsHosts.filter((_, index) => dangling[index]);
+			const danglingNs = nsHosts.filter((_, index) => outcomes[index] === 'dangling');
 
 			if (danglingNs.length > 0) {
 				return {
@@ -373,6 +393,10 @@ export async function probeIncludeDomain(
 					nsTargets: danglingNs,
 					detail: `SPF ${mechanism} points to ${includeDomain} whose nameserver(s) do not resolve: ${danglingNs.join(', ')}. An attacker could register these NS targets and control the SPF authorization for the domain.`,
 				};
+			}
+
+			if (outcomes.some((outcome) => outcome === 'unmeasured')) {
+				unmeasured = true;
 			}
 		}
 	} catch {
@@ -392,12 +416,18 @@ export async function probeIncludeDomain(
 			};
 		}
 	} catch {
-		// TXT query also failed — treat as void
+		// TXT query threw — UNMEASURED, not void_include (#1103): we never learned whether the
+		// include publishes SPF, so this cannot be recorded as "no SPF record".
+		unmeasured = true;
+	}
+
+	if (unmeasured) {
 		return {
 			...base,
-			riskType: 'void_include',
-			severity: 'low',
-			detail: `SPF ${mechanism} points to ${includeDomain} which could not be queried. This could indicate a DNS resolution issue or abandoned domain.`,
+			riskType: null,
+			severity: 'info',
+			unmeasured: true,
+			detail: `SPF ${mechanism} points to ${includeDomain} — one or more DNS lookups could not be queried, so this include could not be fully assessed. This is not evidence that it is safe.`,
 		};
 	}
 
@@ -410,9 +440,23 @@ export async function probeIncludeDomain(
 	};
 }
 
+/** Result of probing every SPF include/redirect domain in a chain. */
+export interface SubdomailingProbeSummary {
+	findings: Finding[];
+	/** Total include domains probed. */
+	probedCount: number;
+	/**
+	 * How many of those probes could not be fully assessed (`SubdomailingProbeResult.unmeasured`)
+	 * because a takeover-relevant DNS lookup threw. Lets the caller disclose partial coverage
+	 * instead of claiming every include "resolves correctly" (#1103).
+	 */
+	unmeasuredCount: number;
+}
+
 /**
  * Probe all include domains through a bounded query gate.
- * Returns findings for any domains with detected risks.
+ * Returns findings for any domains with detected risks, plus how many domains were probed
+ * and how many of those could not be fully assessed.
  *
  * Every domain is dispatched at once and the `PROBE_CONCURRENCY` gate — not a batch boundary —
  * is what bounds the DNS lookups, so a domain that hangs occupies one permit instead of
@@ -423,16 +467,18 @@ export async function probeAllIncludes(
 	includes: Map<string, string>,
 	queryDNS: DNSQueryFunction,
 	options?: { timeout?: number },
-): Promise<Finding[]> {
+): Promise<SubdomailingProbeSummary> {
 	const findings: Finding[] = [];
 	const entries = Array.from(includes.entries());
 	const gatedQuery = gateQueries(queryDNS, PROBE_CONCURRENCY);
 
 	const results = await Promise.allSettled(entries.map(([domain, mechanism]) => probeIncludeDomain(domain, mechanism, gatedQuery, options)));
 
+	let unmeasuredCount = 0;
 	for (const result of results) {
 		if (result.status !== 'fulfilled') continue;
 		const probe = result.value;
+		if (probe.unmeasured) unmeasuredCount++;
 		if (probe.riskType === null) continue;
 
 		findings.push(
@@ -447,7 +493,7 @@ export async function probeAllIncludes(
 		);
 	}
 
-	return findings;
+	return { findings, probedCount: entries.length, unmeasuredCount };
 }
 
 function titleForRisk(riskType: SubdomailingRiskType): string {

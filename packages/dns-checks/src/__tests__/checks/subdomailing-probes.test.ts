@@ -58,6 +58,20 @@ describe('probeIncludeDomain', () => {
 		expect(result.detail).toContain('abandoned.herokuapp.com');
 	});
 
+	it('#1103: a CNAME-target A-lookup that throws is UNMEASURED, not dangling_cname — never guess from the CNAME alone', async () => {
+		const queryDNS = createMockDNS({
+			'unknown.example.com:CNAME': ['maybe-abandoned.herokuapp.com.'],
+			'maybe-abandoned.herokuapp.com:A': new Error('SERVFAIL'),
+			'unknown.example.com:NS': [],
+			'unknown.example.com:TXT': ['v=spf1 -all'],
+		});
+		const result = await probeIncludeDomain('unknown.example.com', 'include:unknown.example.com', queryDNS);
+		expect(result.riskType).toBeNull();
+		expect(result.cnameTarget).toBeUndefined();
+		expect(result.takeoverService).toBeUndefined();
+		expect(result.unmeasured).toBe(true);
+	});
+
 	it('does not flag a CNAME to a takeover-pattern host that still resolves', async () => {
 		const queryDNS = createMockDNS({
 			'shop.example.com:CNAME': ['storefront.myshopify.com.'],
@@ -93,15 +107,30 @@ describe('probeIncludeDomain', () => {
 		expect(result.detail).toContain('ns1.lame-provider.com');
 	});
 
-	it('treats a nameserver A-lookup that throws the same as one that resolves empty (dangling)', async () => {
+	it('#1103: a nameserver A-lookup that throws is UNMEASURED, not dangling — only an answered-empty lookup is evidence', async () => {
 		const queryDNS = createMockDNS({
 			'throws-ns.example.com:CNAME': [],
 			'throws-ns.example.com:NS': ['ns1.throws.com.'],
 			'ns1.throws.com:A': new Error('SERVFAIL'),
+			'throws-ns.example.com:TXT': ['v=spf1 -all'],
 		});
 		const result = await probeIncludeDomain('throws-ns.example.com', 'include:throws-ns.example.com', queryDNS);
+		expect(result.riskType).toBeNull();
+		expect(result.nsTargets).toBeUndefined();
+		expect(result.unmeasured).toBe(true);
+	});
+
+	it('#1103: dangling_ns is emitted only for the NS host that ANSWERED empty when a sibling host throws', async () => {
+		const queryDNS = createMockDNS({
+			'mixed-throw.example.com:CNAME': [],
+			'mixed-throw.example.com:NS': ['ns1.answers-dangling.com.', 'ns2.throws.com.'],
+			'ns1.answers-dangling.com:A': [],
+			'ns2.throws.com:A': new Error('SERVFAIL'),
+		});
+		const result = await probeIncludeDomain('mixed-throw.example.com', 'include:mixed-throw.example.com', queryDNS);
 		expect(result.riskType).toBe('dangling_ns');
-		expect(result.nsTargets).toEqual(['ns1.throws.com']);
+		expect(result.nsTargets).toEqual(['ns1.answers-dangling.com']);
+		expect(result.nsTargets).not.toContain('ns2.throws.com');
 	});
 
 	it('flags dangling_ns even when only some of several nameservers fail to resolve', async () => {
@@ -158,36 +187,35 @@ describe('probeIncludeDomain', () => {
 			expect(result.detail).toContain('has no SPF record');
 		});
 
-		it('a resolver error on the TXT probe is worded as "could not be queried", not "has no SPF record"', async () => {
+		it('#1103: a resolver error on the TXT probe is UNMEASURED, not void_include — never guess "no SPF record" from a throw', async () => {
 			const queryDNS = createMockDNS({
 				'errored.example.com:CNAME': [],
 				'errored.example.com:NS': [],
 				'errored.example.com:TXT': new Error('SERVFAIL'),
 			});
 			const result = await probeIncludeDomain('errored.example.com', 'include:errored.example.com', queryDNS);
-			expect(result.riskType).toBe('void_include');
-			expect(result.detail).toContain('could not be queried');
+			expect(result.riskType).toBeNull();
+			expect(result.unmeasured).toBe(true);
 			expect(result.detail).not.toContain('has no SPF record');
 		});
 
-		it('a timeout on the TXT probe gets the same "could not be queried" wording as any other resolver error', async () => {
+		it('#1103: a timeout on the TXT probe gets the same UNMEASURED treatment as any other resolver error', async () => {
 			const queryDNS = createMockDNS({
 				'timedout.example.com:CNAME': [],
 				'timedout.example.com:NS': [],
 				'timedout.example.com:TXT': new Error('DNS query timed out after 3000ms'),
 			});
 			const result = await probeIncludeDomain('timedout.example.com', 'include:timedout.example.com', queryDNS);
-			expect(result.riskType).toBe('void_include');
-			expect(result.detail).toContain('could not be queried');
+			expect(result.riskType).toBeNull();
+			expect(result.unmeasured).toBe(true);
+			expect(result.detail).not.toContain('has no SPF record');
 		});
 
-		// NOTE (not fixed — TEST-ONLY scope): the two tests above show `probeIncludeDomain`
-		// gives a resolver error and a real answered-empty TXT the SAME `riskType` ('void_include')
-		// and the SAME `severity` ('low') — they differ only in `detail` wording. A caller that
-		// reads riskType/severity alone (as `probeAllIncludes` does when building findings) cannot
-		// tell "the origin was never reached" from "we measured and it's genuinely absent". This
-		// is the shape CLAUDE.md's missingControl-vs-inconclusive rule warns about; flagged for
-		// the orchestrator, not fixed here.
+		// #1103 fixed the gap the NOTE here used to describe: a thrown TXT lookup and a real
+		// answered-empty TXT no longer share `riskType`/`severity`. A throw now surfaces as
+		// `riskType: null` + `unmeasured: true` (no finding at all downstream), while an
+		// answered-empty TXT still produces `riskType: 'void_include'` — the two tests above vs.
+		// the answered-empty test above them are the regression guard for that distinction.
 	});
 });
 
@@ -228,7 +256,7 @@ describe('probeAllIncludes', () => {
 		expect(cnameCalls).toHaveLength(1);
 	});
 
-	it('a domain whose every DNS query rejects still yields findings for the other domains in the batch', async () => {
+	it('#1103: a domain whose every DNS query rejects is counted unmeasured, not a void_include finding, and does not suppress its sibling', async () => {
 		const includes = new Map<string, string>([
 			['healthy.example.com', 'include:healthy.example.com'],
 			['hostile.example.com', 'include:hostile.example.com'],
@@ -241,9 +269,31 @@ describe('probeAllIncludes', () => {
 			'hostile.example.com:NS': new Error('boom'),
 			'hostile.example.com:TXT': new Error('boom'),
 		});
-		const findings = await probeAllIncludes(includes, queryDNS);
-		expect(findings).toHaveLength(1);
-		expect(findings[0].metadata?.includeDomain).toBe('hostile.example.com');
+		const summary = await probeAllIncludes(includes, queryDNS);
+		expect(summary.findings).toHaveLength(0);
+		expect(summary.probedCount).toBe(2);
+		expect(summary.unmeasuredCount).toBe(1);
+	});
+
+	it('#1103: one include answered-dangling plus one throwing yields exactly one dangling finding, and the other is counted unmeasured', async () => {
+		const includes = new Map<string, string>([
+			['dangling.example.com', 'include:dangling.example.com'],
+			['hostile.example.com', 'include:hostile.example.com'],
+		]);
+		const queryDNS = createMockDNS({
+			'dangling.example.com:CNAME': [],
+			'dangling.example.com:NS': ['ns1.dead.com.'],
+			'ns1.dead.com:A': [],
+			'hostile.example.com:CNAME': new Error('boom'),
+			'hostile.example.com:NS': new Error('boom'),
+			'hostile.example.com:TXT': new Error('boom'),
+		});
+		const summary = await probeAllIncludes(includes, queryDNS);
+		expect(summary.findings).toHaveLength(1);
+		expect(summary.findings[0].metadata?.includeDomain).toBe('dangling.example.com');
+		expect(summary.findings[0].metadata?.riskType).toBe('dangling_ns');
+		expect(summary.probedCount).toBe(2);
+		expect(summary.unmeasuredCount).toBe(1);
 	});
 
 	it('produces the documented title for each reachable risk type', async () => {
@@ -262,7 +312,7 @@ describe('probeAllIncludes', () => {
 			'void-risk.example.com:NS': [],
 			'void-risk.example.com:TXT': [],
 		});
-		const findings = await probeAllIncludes(includes, queryDNS);
+		const { findings } = await probeAllIncludes(includes, queryDNS);
 		const byRisk = new Map(findings.map((f) => [f.metadata?.riskType as string | undefined, f.title]));
 		expect(byRisk.get('dangling_cname')).toBe('Dangling CNAME in SPF include chain');
 		expect(byRisk.get('dangling_ns')).toBe('Dangling NS delegation in SPF include chain');
@@ -283,7 +333,7 @@ describe('probeAllIncludes', () => {
 			rules[`wide${i}.example.com:TXT`] = ['v=spf1 -all'];
 		}
 		const queryDNS = createMockDNS(rules, calls);
-		const findings = await probeAllIncludes(includes, queryDNS);
+		const { findings } = await probeAllIncludes(includes, queryDNS);
 		expect(findings).toHaveLength(0); // all six are healthy
 		expect(calls).toHaveLength(18); // CNAME + NS + TXT per domain, none dropped or duplicated
 	});
@@ -295,7 +345,7 @@ describe('probeAllIncludes', () => {
 			'healthy.example.com:NS': [],
 			'healthy.example.com:TXT': ['v=spf1 -all'],
 		});
-		const findings = await probeAllIncludes(includes, queryDNS);
+		const { findings } = await probeAllIncludes(includes, queryDNS);
 		expect(findings).toHaveLength(0);
 	});
 });

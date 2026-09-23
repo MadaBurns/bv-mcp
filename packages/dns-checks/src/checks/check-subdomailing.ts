@@ -12,7 +12,7 @@
  */
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
-import { buildCheckResult, createFinding } from '../check-utils';
+import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
 import { extractSpfIncludeChain, probeAllIncludes } from './subdomailing-analysis';
 
 /**
@@ -31,13 +31,26 @@ export async function checkSubdomailing(
 	const timeout = options?.timeout ?? 5000;
 	const findings: Finding[] = [];
 
-	// Extract all SPF include/redirect domains recursively
+	// Extract all SPF include/redirect domains recursively.
+	// `extractSpfIncludeChain` swallows a thrown queryDNS internally (resolveSpfNode never
+	// rethrows), so this catch is currently unreachable (transient-inconclusive.test.ts). Kept
+	// as the abstention shape rather than a scored `medium` so it cannot become a live
+	// fail-open finding if that internal guarantee ever changes (#1103).
 	let chainResult: { domains: Map<string, string>; spfRecord: string | null };
 	try {
 		chainResult = await extractSpfIncludeChain(domain, queryDNS, { timeout });
 	} catch {
-		findings.push(createFinding('subdomailing', 'SubdoMailing check failed', 'medium', `Could not resolve SPF include chain for ${domain}.`));
-		return buildCheckResult('subdomailing', findings);
+		return buildNotAssessedResult(
+			'subdomailing',
+			createFinding(
+				'subdomailing',
+				'SubdoMailing not assessed — SPF include chain could not be resolved',
+				'info',
+				`Could not resolve the SPF include chain for ${domain}. This is not evidence that the domain is free of SubdoMailing risk — the category is excluded from scoring rather than passed. Re-run the check once name resolution is working.`,
+				{ inconclusive: true, errorKind: 'dns_error' },
+			),
+			'error',
+		);
 	}
 
 	// No SPF record → not applicable
@@ -57,19 +70,45 @@ export async function checkSubdomailing(
 	}
 
 	// Probe all include domains for takeover risks
-	const riskFindings = await probeAllIncludes(chainResult.domains, queryDNS, { timeout });
+	const { findings: riskFindings, probedCount, unmeasuredCount } = await probeAllIncludes(chainResult.domains, queryDNS, { timeout });
 	findings.push(...riskFindings);
 
-	// If no risks found, add a passing finding
-	if (findings.length === 0) {
-		findings.push(
+	// Every include probe was unmeasured (a thrown lookup, never an answered-empty result) —
+	// abstain rather than assert a clean verdict over a chain nothing actually resolved
+	// (subdomain_takeover precedent, #956/#1006).
+	if (unmeasuredCount > 0 && unmeasuredCount === probedCount) {
+		return buildNotAssessedResult(
+			'subdomailing',
 			createFinding(
 				'subdomailing',
-				'No SubdoMailing risk detected',
+				'SubdoMailing not assessed — every SPF include probe failed',
 				'info',
-				`Analyzed ${chainResult.domains.size} SPF include/redirect domain(s) for ${domain}. All resolve correctly with no takeover indicators.`,
-				{ includeCount: chainResult.domains.size },
+				`No SPF include/redirect domain in the chain for ${domain} could be assessed: all ${probedCount} probe(s) hit a DNS lookup that threw rather than answering. This is not evidence that the domain is free of SubdoMailing risk — the category is excluded from scoring rather than passed. Re-run the check once name resolution is working.`,
+				{ inconclusive: true, errorKind: 'dns_error', includeCount: probedCount },
 			),
+			'error',
+		);
+	}
+
+	// If no risks found, add a passing finding — but don't claim full coverage when some
+	// includes could not be queried (#1103).
+	if (findings.length === 0) {
+		findings.push(
+			unmeasuredCount > 0
+				? createFinding(
+						'subdomailing',
+						'No SubdoMailing risk detected',
+						'info',
+						`Analyzed ${probedCount} SPF include/redirect domain(s) for ${domain}. ${probedCount - unmeasuredCount} of ${probedCount} resolved with no takeover indicators; ${unmeasuredCount} could not be queried (DNS lookup failure) and are not confirmed safe.`,
+						{ includeCount: probedCount, unmeasuredCount },
+					)
+				: createFinding(
+						'subdomailing',
+						'No SubdoMailing risk detected',
+						'info',
+						`Analyzed ${probedCount} SPF include/redirect domain(s) for ${domain}. All resolve correctly with no takeover indicators.`,
+						{ includeCount: probedCount },
+					),
 		);
 	}
 

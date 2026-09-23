@@ -108,6 +108,26 @@ describe('transient DNS failure → category is INCONCLUSIVE, not a scored defic
 		expect(result.checkStatus).toBeUndefined();
 		expect(hasScoredDeficiency(result.findings)).toBe(false);
 	});
+
+	it('checkSubdomailing (#1103): a resolvable SPF chain whose include lookups all throw abstains, not a scored/low finding', async () => {
+		// The apex SPF record itself answers (so the chain has one real include to probe), but
+		// every subsequent lookup for that include (CNAME, NS, A, TXT) throws — models a resolver
+		// that can reach the apex but not the rest of the chain, distinct from `throwingDNS` above
+		// where nothing answers and the check never gets past "No SPF record".
+		const apexAnswersButIncludeThrows: DNSQueryFunction = async (domain, recordType) => {
+			if (domain === 'example.com' && recordType === 'TXT') {
+				return ['v=spf1 include:sub.example.net -all'];
+			}
+			throw new Error('transient resolver failure');
+		};
+
+		const result = await checkSubdomailing('example.com', apexAnswersButIncludeThrows);
+		expect(result.checkStatus).toBe('error');
+		expect(hasScoredDeficiency(result.findings)).toBe(false);
+		// hasScoredDeficiency only counts medium+ — assert `low` explicitly too, since a thrown
+		// lookup used to fail open into a scored `low` (void_include) or worse (#1103).
+		expect(result.findings.some((f) => f.severity === 'low')).toBe(false);
+	});
 });
 
 describe('checkSSL: transient / unassessable HTTPS → INCONCLUSIVE, not a scored deficiency', () => {

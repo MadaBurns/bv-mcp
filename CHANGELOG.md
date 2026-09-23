@@ -10,6 +10,20 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **`check_subdomailing` no longer treats a THROWN DNS lookup as SubdoMailing takeover
+  evidence** (#1103). `probeIncludeDomain` had three fail-open sites: a thrown CNAME-target `A`
+  lookup manufactured a `critical` `dangling_cname`, a thrown per-nameserver `A` lookup
+  manufactured a `high` `dangling_ns`, and a thrown TXT lookup manufactured a `low`
+  `void_include` — a single transient resolver timeout on a customer's SPF include could read
+  as "an attacker could claim this resource and send authenticated email as the target domain."
+  Only an ANSWERED-EMPTY (`[]`) lookup is now evidence of non-resolution; a throw surfaces as
+  `unmeasured` and produces no finding, though a genuine answered risk on a sibling lookup still
+  reports normally. The clean "No SubdoMailing risk detected" verdict no longer claims every
+  include "resolves correctly" when some were unmeasured, and `check_subdomailing` now abstains
+  (`checkStatus: 'error'`, excluded from scoring) when every include in the chain was
+  unmeasured, matching the `check_subdomain_takeover` precedent (#956/#1006). SCORE-BEARING only
+  on a domain whose SPF include chain hits a thrown DNS lookup during the probe phase —
+  `SCORING_MODEL_VERSION` 1.37.0, `@blackveil/dns-checks` 1.53.3.
 - **The `check_ssl`/`check_http_security` redirect chain now shares the SAME ONE timeout
   budget as the HEAD+GET pair that precedes it, instead of a fresh `timeoutMs` per chain/hop**
   (#1093, follow-up to #1088). `check-ssl`'s `followHttpsRedirectChain` re-armed a full
