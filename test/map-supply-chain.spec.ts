@@ -644,33 +644,33 @@ describe('mapSupplyChain', () => {
 
 	// --- Cluster 1 (v3.3.13): supply-chain dedup & attribution ---
 
-	it('collapses SPF includes whose effective parent equals the scan domain into a self-hosted row (PayPal pattern)', async () => {
+	it('collapses SPF includes whose effective parent equals the scan domain into a self-hosted row (self-hosted wrapper pattern)', async () => {
 		mockDnsResponses({
-			spf: 'v=spf1 include:pp._spf.paypal.com include:3ph1._spf.paypal.com include:3ph2._spf.paypal.com include:sendgrid.net ~all',
+			spf: 'v=spf1 include:pp._spf.northwindbank.com include:3ph1._spf.northwindbank.com include:3ph2._spf.northwindbank.com include:sendgrid.net ~all',
 			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
-			domain: 'paypal.com',
+			domain: 'northwindbank.com',
 		});
-		const result = await run('paypal.com');
-		// pp._spf, 3ph1._spf, 3ph2._spf are paypal-owned subdomains — not 3 third parties
-		expect(result.dependencies.filter((d) => d.provider.endsWith('.paypal.com')).length).toBe(0);
+		const result = await run('northwindbank.com');
+		// pp._spf, 3ph1._spf, 3ph2._spf are northwindbank-owned subdomains — not 3 third parties
+		expect(result.dependencies.filter((d) => d.provider.endsWith('.northwindbank.com')).length).toBe(0);
 		// single self-hosted row, not 3 critical-third-party rows
-		const selfHosted = result.dependencies.find((d) => d.provider === 'paypal.com (self-hosted SPF)');
+		const selfHosted = result.dependencies.find((d) => d.provider === 'northwindbank.com (self-hosted SPF)');
 		expect(selfHosted).toBeDefined();
 		expect(selfHosted!.sources).toContain('spf');
 		// SendGrid (real third party) still appears
 		expect(result.dependencies.find((d) => d.provider === 'SendGrid')).toBeDefined();
 	});
 
-	it('collapses Stripe self-wrapper subdomains (spf1.stripe.com, greenhouse-outbound-mail.stripe.com)', async () => {
+	it('collapses fabrikam-style self-wrapper subdomains (spf1.fabrikam.com, greenhouse-outbound-mail.fabrikam.com)', async () => {
 		mockDnsResponses({
-			spf: 'v=spf1 include:spf1.stripe.com include:greenhouse-outbound-mail.stripe.com include:_spf.thirdparty-unknown.io ~all',
+			spf: 'v=spf1 include:spf1.fabrikam.com include:greenhouse-outbound-mail.fabrikam.com include:_spf.thirdparty-unknown.io ~all',
 			nsHosts: ['ns1.cloudflare.com', 'ns2.cloudflare.com'],
-			domain: 'stripe.com',
+			domain: 'fabrikam.com',
 		});
-		const result = await run('stripe.com');
-		expect(result.dependencies.filter((d) => d.provider.endsWith('.stripe.com')).length).toBe(0);
+		const result = await run('fabrikam.com');
+		expect(result.dependencies.filter((d) => d.provider.endsWith('.fabrikam.com')).length).toBe(0);
 		// Self-hosted row present.
-		expect(result.dependencies.find((d) => d.provider === 'stripe.com (self-hosted SPF)')).toBeDefined();
+		expect(result.dependencies.find((d) => d.provider === 'fabrikam.com (self-hosted SPF)')).toBeDefined();
 		// Genuine (uncataloged) third-party include preserved as raw entry.
 		expect(result.dependencies.find((d) => d.provider === '_spf.thirdparty-unknown.io')).toBeDefined();
 	});
@@ -696,13 +696,13 @@ describe('mapSupplyChain', () => {
 		expect(result.dependencies.filter((d) => d.provider.endsWith('.example.com')).length).toBe(0);
 	});
 
-	it('treats ultradns.com and ultradns.net as a single UltraDNS (Neustar) provider (PayPal pattern)', async () => {
+	it('treats ultradns.com and ultradns.net as a single UltraDNS (Neustar) provider (self-hosted wrapper pattern)', async () => {
 		mockDnsResponses({
 			spf: 'v=spf1 -all',
-			nsHosts: ['pdns100.ultradns.com', 'pdns100.ultradns.net', 'ns1-pchnet.paypal.com'],
-			domain: 'paypal.com',
+			nsHosts: ['pdns100.ultradns.com', 'pdns100.ultradns.net', 'ns1-pchnet.northwindbank.com'],
+			domain: 'northwindbank.com',
 		});
-		const result = await run('paypal.com');
+		const result = await run('northwindbank.com');
 		const udRows = result.dependencies.filter((d) => /ultradns/i.test(d.provider));
 		expect(udRows.length).toBe(1);
 		expect(udRows[0].provider).toBe('UltraDNS (Neustar)');

@@ -5,9 +5,9 @@
 // Cross-domain evidence (fact-check 2026-05-28):
 //   - gov.uk DMARC = "v=DMARC1;p=reject;sp=none;np=reject;adkim=s;aspf=s;fo=1;rua=..."
 //     → score 70 (WRONG — DMARCbis non-existent-subdomain protection is strict)
-//   - stripe.com DMARC = "v=DMARC1;p=reject;pct=100;fo=1;rua=...;ruf=..." → score 85
+//   - fabrikam.com DMARC = "v=DMARC1;p=reject;pct=100;fo=1;rua=...;ruf=..." → score 85
 //
-// Required ordering: gov.uk DMARC > stripe.com DMARC. gov.uk floor ≥ 85.
+// Required ordering: gov.uk DMARC > fabrikam.com DMARC. gov.uk floor ≥ 85.
 //
 // Approach (single-mechanism, penalty-based): when DMARCbis `np=reject` or
 // `np=quarantine` is present, downgrade the "Subdomain policy weaker than
@@ -63,7 +63,7 @@ describe('Defect J — DMARC scoring credits modern best practices', () => {
 		expect(withPct.score).toBe(withoutPct.score);
 	});
 
-	it('cross-domain ordering: gov.uk (DMARCbis + strict) > stripe.com (basic + pct=100)', async () => {
+	it('cross-domain ordering: gov.uk (DMARCbis + strict) > fabrikam.com (basic + pct=100)', async () => {
 		const govuk = await checkDMARC(
 			'gov.uk',
 			mockDmarc(
@@ -71,18 +71,18 @@ describe('Defect J — DMARC scoring credits modern best practices', () => {
 				'v=DMARC1; p=reject; sp=none; np=reject; adkim=s; aspf=s; fo=1; rua=mailto:dmarc-rua@dmarc.service.gov.uk',
 			),
 		);
-		const stripe = await checkDMARC(
-			'stripe.com',
+		const fabrikam = await checkDMARC(
+			'fabrikam.com',
 			mockDmarc(
-				'stripe.com',
-				'v=DMARC1; p=reject; pct=100; fo=1; rua=mailto:dmarc@stripe.com; ruf=mailto:ruf@stripe.com',
+				'fabrikam.com',
+				'v=DMARC1; p=reject; pct=100; fo=1; rua=mailto:dmarc@fabrikam.com; ruf=mailto:ruf@fabrikam.com',
 			),
 		);
-		// ≥, not >: since #842 (model 1.15.0) relaxed aspf is advisory info, so stripe's
+		// ≥, not >: since #842 (model 1.15.0) relaxed aspf is advisory info, so fabrikam's
 		// only aspf penalty is gone and the two records legitimately tie at 90 (gov.uk's
-		// sp=none/no-ruf lows offset stripe's adkim/no-sp lows). The regression this
-		// guards is gov.uk falling BELOW stripe (was 70 < 85), which ≥ still catches.
-		expect(govuk.score).toBeGreaterThanOrEqual(stripe.score);
+		// sp=none/no-ruf lows offset fabrikam's adkim/no-sp lows). The regression this
+		// guards is gov.uk falling BELOW fabrikam (was 70 < 85), which ≥ still catches.
+		expect(govuk.score).toBeGreaterThanOrEqual(fabrikam.score);
 	});
 
 	it('np=reject downgrades "Subdomain policy weaker than parent" from HIGH to LOW (DMARCbis covers non-existent subdomains)', async () => {
