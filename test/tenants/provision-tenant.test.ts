@@ -146,7 +146,7 @@ function makeDeps(overrides: Partial<{
 
 const baseOpts = {
 	'super-tenant': 'super-tenant-1',
-	'sub-tenant': 'tenant-1',
+	'sub-tenant': 'sub-1',
 	'display-name': 'Acme Corp',
 };
 
@@ -156,34 +156,34 @@ describe('pure helpers', () => {
 	it('parseArgs splits --name=value pairs and treats bare flags as true', () => {
 		const out = parseArgs([
 			'--super-tenant=super-tenant-1',
-			'--sub-tenant=tenant-1',
+			'--sub-tenant=sub-1',
 			'--display-name=Acme Corp',
 			'--dry-run',
 		]);
 		expect(out['super-tenant']).toBe('super-tenant-1');
-		expect(out['sub-tenant']).toBe('tenant-1');
+		expect(out['sub-tenant']).toBe('sub-1');
 		expect(out['display-name']).toBe('Acme Corp');
 		expect(out['dry-run']).toBe(true);
 	});
 
 	it('tenantBindingName replaces hyphens with underscores and uppercases', () => {
-		expect(tenantBindingName('tenant-1')).toBe('TENANT_DB_TENANT_1');
+		expect(tenantBindingName('sub-1')).toBe('TENANT_DB_SUB_1');
 	});
 
 	it('tenantDbName prepends tenant-db- prefix', () => {
-		expect(tenantDbName('tenant-1')).toBe('[redacted-tenant]1');
+		expect(tenantDbName('sub-1')).toBe('tenant-db-sub-1');
 	});
 
 	it('buildBindingStanza emits a JSONC-friendly stanza', () => {
-		const s = buildBindingStanza('tenant-1', 'uuid-123');
-		expect(s).toContain('"binding": "TENANT_DB_TENANT_1"');
-		expect(s).toContain('"database_name": "[redacted-tenant]1"');
+		const s = buildBindingStanza('sub-1', 'uuid-123');
+		expect(s).toContain('"binding": "TENANT_DB_SUB_1"');
+		expect(s).toContain('"database_name": "tenant-db-sub-1"');
 		expect(s).toContain('"database_id": "uuid-123"');
 	});
 
 	it("buildSubTenantInsertSql escapes single quotes in display name", () => {
 		const sql = buildSubTenantInsertSql({
-			id: 'tenant-1',
+			id: 'sub-1',
 			super_tenant_id: 'super-tenant-1',
 			name: "O'Reilly Inc",
 			d1_db_id: 'u',
@@ -194,7 +194,7 @@ describe('pure helpers', () => {
 	});
 
 	it('validateSubTenantId returns null for valid ids and an Invalid-prefixed error otherwise', () => {
-		expect(validateSubTenantId('tenant-1')).toBeNull();
+		expect(validateSubTenantId('sub-1')).toBeNull();
 		expect(validateSubTenantId('Tenant-1')).toMatch(/^Invalid /);
 		expect(validateSubTenantId('1leading-digit')).toMatch(/^Invalid /);
 	});
@@ -236,12 +236,12 @@ describe('provisionTenant', () => {
 		const sequence = wranglerCalls.map((c) => `${c.args[0]} ${c.args[1]} ${c.args[2] ?? ''}`.trim());
 		expect(sequence[0]).toContain('d1 execute');
 		expect(sequence[1]).toContain('d1 execute');
-		expect(sequence[2]).toBe('d1 create [redacted-tenant]1');
+		expect(sequence[2]).toBe('d1 create tenant-db-sub-1');
 		expect(sequence[3]).toContain('d1 execute');
 		// Two final inserts: sub_tenants + tenant_keys
 		const allOutput = stdout.join('');
-		expect(allOutput).toContain('TENANT_DB_TENANT_1');
-		expect(allOutput).toContain('[redacted-tenant]1');
+		expect(allOutput).toContain('TENANT_DB_SUB_1');
+		expect(allOutput).toContain('tenant-db-sub-1');
 		// API key — 64 lowercase hex on its own line (or as a token in a line)
 		expect(allOutput).toMatch(/[0-9a-f]{64}/);
 	});
@@ -252,7 +252,7 @@ describe('provisionTenant', () => {
 				if (file === 'wrangler' && args[0] === 'd1' && args[1] === 'execute') {
 					const cmd = args.find((a) => a.startsWith('--command=')) ?? '';
 					if (/super_tenants/i.test(cmd)) return JSON.stringify([{ results: [{ id: 'super-tenant-1' }] }]);
-					if (/sub_tenants/i.test(cmd)) return JSON.stringify([{ results: [{ id: 'tenant-1' }] }]);
+					if (/sub_tenants/i.test(cmd)) return JSON.stringify([{ results: [{ id: 'sub-1' }] }]);
 				}
 				return '';
 			},
@@ -261,7 +261,7 @@ describe('provisionTenant', () => {
 		expect(code).toBe(1);
 		const err = stderr.join('');
 		expect(err).toMatch(/^Invalid /);
-		expect(err).toContain('tenant-1');
+		expect(err).toContain('sub-1');
 	});
 
 	it('rolls back the freshly-created D1 when migrations fail', async () => {
@@ -289,7 +289,7 @@ describe('provisionTenant', () => {
 			(c) => c.file === 'wrangler' && c.args[0] === 'd1' && c.args[1] === 'delete',
 		);
 		expect(deleteCall).toBeTruthy();
-		expect(deleteCall?.args).toContain('[redacted-tenant]1');
+		expect(deleteCall?.args).toContain('tenant-db-sub-1');
 	});
 
 	it('--dry-run prints commands and never invokes runCmd', async () => {

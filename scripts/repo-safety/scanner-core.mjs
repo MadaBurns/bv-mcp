@@ -47,10 +47,22 @@ const RULES = [
 	},
 	{
 		id: 'tenant-marker',
-		pattern: /\b(?:tenant-pilot-\d+|[redacted-tenant]|[redacted-tenant]|[redacted-tenant])\b/gi,
+		pattern: /\b(?:tenant-pilot-\d+)\b/gi,
 	},
 	{ id: 'customer-marker', pattern: /\bCustomer\s+[A-Z][A-Za-z0-9-]*\s+(?:Corp|Inc|LLC|Ltd|Co)\b/g },
-	{ id: 'client-context', pattern: /\b(?:[redacted-context]|[redacted-context]|[redacted-context])\b/gi },
+];
+
+// Private tenant markers, stored as SHA-256 of the lowercased marker so the
+// guard does not itself carry them. They used to be plaintext alternations in
+// the `tenant-marker` regex above; the 2026-09 history rewrite replaced those
+// literals with placeholders, which broke the regex. Matched per hyphen-segment
+// window of each word token (see `tenantMarkerWindows`), which reproduces the
+// old `\b…\b` semantics — including a marker that ends in `-` and is followed
+// by more of the token.
+export const BUILTIN_TENANT_MARKERS_SHA256 = [
+	'75fa9b6779dcadb44af64530e01071d36edee72f6ef9c1694dbc060d32af4733',
+	'2e3ff8cc0b31f5d28e5a78561def610bc712c0b142a78a565f562dabe33f0eee',
+	'a9d4a1bac95c2ecedf24bf01ccdc95a5bcfe0de29cce85bb63a6e267d913d800',
 ];
 
 // Client-context phrases that must never appear in the repo, stored as SHA-256
@@ -59,7 +71,15 @@ const RULES = [
 // Built-in (not policy.json) so the commit-msg hook path, which scans without
 // a policy file, still enforces it. Extend per-repo via
 // `forbiddenClientContextPhrasesSha256` in policy.json.
-export const BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256 = ['ef6b9b94f52b435a826c9558de024878508fb0b151ea98d387c8de54eb03f09a'];
+// The last three were plaintext alternations of a `client-context` regex until
+// the 2026-09 history rewrite replaced them with placeholders (breaking the
+// regex); hashing them here keeps the same phrases gated.
+export const BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256 = [
+	'ef6b9b94f52b435a826c9558de024878508fb0b151ea98d387c8de54eb03f09a',
+	'7b7c3036e1e205272ccbad0b074810ab4f6337c49edaa7f85a707f066e65ac81',
+	'bb6db9412fb5f91edb31e6be5dbf08e8b49aece55c72529122f78d33ee949c06',
+	'792d2b227b53c09bb9a55bf33f4364e633d856deb737e0e8c7f2a5554e65bdac',
+];
 
 // The `client-domain` and `client-context` (hashed phrase window) rules ignore
 // `allowedPaths`/`allowedPathPrefixes` everywhere — a client name is exposure
@@ -306,6 +326,55 @@ function* phraseWindows(line) {
 	}
 }
 
+const ATOM_PATTERN = /[A-Za-z0-9]+/g;
+const ATOM_WINDOW_MAX = 8;
+
+/**
+ * Every window of up to ATOM_WINDOW_MAX consecutive alphanumeric runs joined by
+ * a single `-` or by whitespace (normalised to one space), plus the same window
+ * with a trailing `-` when a `-` and a word character follow it. This is the hashed
+ * stand-in for a plaintext `\b(?:literal)\b` alternation: unlike
+ * `phraseWindows`, it also sees a literal that is glued to a neighbour by `-`.
+ * @param {string} line
+ */
+function* atomWindows(line) {
+	const atoms = [...line.matchAll(ATOM_PATTERN)];
+	const joiner = (i) => {
+		const gap = line.slice(atoms[i].index + atoms[i][0].length, atoms[i + 1].index);
+		if (gap === '-') return '-';
+		return /^\s+$/.test(gap) ? ' ' : null;
+	};
+	for (let start = 0; start < atoms.length; start++) {
+		let value = atoms[start][0];
+		for (let end = start; end < atoms.length && end - start < ATOM_WINDOW_MAX; end++) {
+			if (end > start) value += joiner(end - 1) + atoms[end][0];
+			yield { value, index: atoms[start].index };
+			const after = atoms[end].index + atoms[end][0].length;
+			if (line[after] === '-' && /\w/.test(line[after + 1] ?? '')) yield { value: `${value}-`, index: atoms[start].index };
+			if (end + 1 >= atoms.length || joiner(end) === null) break;
+		}
+	}
+}
+
+/**
+ * Whether `text` carries one of the hashed private tenant markers.
+ * @param {string} text
+ */
+export function containsTenantMarker(text) {
+	return text.split(/\r?\n/).some((line) => hashedWindowFindings('', line, 0, BUILTIN_TENANT_MARKERS_SHA256, 'tenant-marker').length > 0);
+}
+
+function hashedWindowFindings(file, line, lineIndex, hashList, ruleId) {
+	const hashes = new Set(hashList);
+	const findings = [];
+	for (const window of atomWindows(line)) {
+		if (hashes.has(sha256Hex(window.value))) {
+			findings.push(finding(file, line, lineIndex, { index: window.index, 0: window.value }, ruleId));
+		}
+	}
+	return findings;
+}
+
 function finding(file, text, lineIndex, match, ruleId) {
 	return {
 		file,
@@ -367,6 +436,7 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 					findings.push(finding(file, line, lineIndex, match, rule.id));
 				}
 			}
+			findings.push(...hashedWindowFindings(file, line, lineIndex, BUILTIN_TENANT_MARKERS_SHA256, 'tenant-marker'));
 		}
 
 		for (const domain of normalized.forbiddenClientDomains) {
@@ -389,9 +459,19 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 
 		if (!CLIENT_RULE_SELF_TEST_PATHS.includes(file)) {
 			const phraseHashes = new Set([...BUILTIN_CLIENT_CONTEXT_PHRASES_SHA256, ...normalized.forbiddenClientContextPhrasesSha256]);
+			const seen = new Set();
 			for (const window of phraseWindows(line)) {
 				if (phraseHashes.has(sha256Hex(window.phrase))) {
+					seen.add(window.index);
 					findings.push(finding(file, line, lineIndex, { index: window.index, 0: line.slice(window.index, window.index + window.length) }, 'client-context'));
+				}
+			}
+			// Second pass: a phrase glued to a neighbour by `-` is one word token to
+			// `phraseWindows`, so it would slip past; `atomWindows` sees it.
+			for (const hit of hashedWindowFindings(file, line, lineIndex, [...phraseHashes], 'client-context')) {
+				if (!seen.has(hit.column - 1)) {
+					seen.add(hit.column - 1);
+					findings.push(hit);
 				}
 			}
 		}
