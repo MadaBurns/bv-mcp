@@ -739,8 +739,21 @@
  *   (`checkStatus: 'error'`, excluded from scoring and renormalized). SCORE-BEARING, only on
  *   origins that refuse HEAD. No DoH query added. No weight, tier, grade band,
  *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
+ * - 1.37.0 — `check_subdomailing`'s `probeIncludeDomain` no longer treats a THROWN DNS lookup as
+ *   takeover evidence (#1103, dns-checks 1.53.3). Three sites previously fail-opened a resolver
+ *   error/timeout into a scored finding: a thrown CNAME-target `A` lookup manufactured a
+ *   `critical` `dangling_cname`, a thrown per-NS `A` lookup manufactured a `high` `dangling_ns`,
+ *   and a thrown TXT lookup manufactured a `low` `void_include`. Only an ANSWERED-EMPTY (`[]`)
+ *   lookup is now evidence of non-resolution; a throw surfaces as `unmeasured` and produces no
+ *   finding. When every include in a chain is unmeasured, `check_subdomailing` now ABSTAINS
+ *   (`checkStatus: 'error'`, excluded from scoring) instead of asserting a clean verdict, matching
+ *   the `check_subdomain_takeover` precedent (#956/#1006); when some but not all are unmeasured,
+ *   the clean summary no longer claims every include "resolves correctly". SCORE-BEARING only on
+ *   a domain whose SPF include chain hits a thrown DNS lookup during the probe phase. No weight,
+ *   tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule
+ *   changed.
  */
-export const SCORING_MODEL_VERSION = '1.36.0';
+export const SCORING_MODEL_VERSION = '1.37.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
