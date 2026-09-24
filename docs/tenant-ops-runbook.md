@@ -96,6 +96,49 @@ fail-soft. Common checks:
 | Webhook failures repeat | Receiver outage | Fix receiver, then re-trigger deliberately. |
 | Duplicate cycle/domain rows | Schema drift | Verify the unique index migration. |
 
+## Schema Drift
+
+Tenant migrations are applied as raw SQL files by `provision-tenant.mjs` at
+provisioning time — there is no `d1_migrations` / `__drizzle_migrations`
+ledger recording what a live database actually has, so a migration added
+after a tenant was provisioned does not reach that tenant's database on its
+own.
+
+Run the read-only checker before and after any change to
+`src/tenants/db/migrations/`:
+
+```bash
+npm run check:tenant-schema
+```
+
+It compares the registry D1 and every `TENANT_DB_*` D1 listed in
+`wrangler.production.jsonc` against the schema derived from
+`src/tenants/db/migrations/{registry,tenant}/*.sql`, and exits non-zero
+naming each missing table, column, or index. It never executes DDL — only
+`SELECT` against `sqlite_master` / `pragma_table_info`. A D1 binding with no
+known migration source (for example `BRAND_AUDIT_DB`, which is hand-schema'd
+via `src/lib/db/brand-audit-schema.ts`) is reported as skipped, not silently
+ignored.
+
+Applying a missing migration file to a live database is an operator action —
+this repository does not automate it. Use `wrangler d1 execute <db> --remote
+--file=<migration>` with the exact source file, for example the two files
+this checker currently reports missing in production, per a read-only
+measurement taken 2026-09-24:
+
+```bash
+npx wrangler d1 execute <tenant-registry-db> --remote \
+  --file=src/tenants/db/migrations/registry/0003_sad_frank_castle.sql
+
+npx wrangler d1 execute <tenant-db-name> --remote \
+  --file=src/tenants/db/migrations/tenant/0002_findings_scan_id_index.sql
+```
+
+Re-run `npm run check:tenant-schema` after applying to confirm the drift is
+gone. A restore drill (see Data Lifecycle and Recovery above) should include
+running this checker against the restored database before treating it as
+production-ready.
+
 ## Rate Limits
 
 Per-tenant limits live in `src/tenants/per-tenant-rate-limit.ts`. The limiter is
