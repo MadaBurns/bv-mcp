@@ -133,7 +133,37 @@ describe('checkRootServerSet', () => {
 		const serialFinding = result.findings.find((finding) => finding.title === 'Root zone serials differ across roots');
 		expect(serialFinding?.detail).toMatch(/propagation/i);
 		expect(serialFinding?.detail).toMatch(/re-run/i);
+		expect(serialFinding?.detail).toMatch(/65 minutes/);
+		expect(serialFinding?.detail).toMatch(/RSSAC047/);
 		expect(serialFinding?.detail).toContain('a: 2026052101, b: 2026052102');
+		// Spread 1, same-day increment — normal propagation, not a fault (no severity change).
+		expect(serialFinding?.metadata).toMatchObject({ serialSpread: 1, withinOneIncrement: true });
+	});
+
+	it('reports withinOneIncrement:false for a serial-divergence finding wider than one increment', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: '.',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+			rootHints: ROOT_HINTS,
+			observedRootServers: ROOT_SERVER_NAMES,
+			parentChildDelegationMatches: true,
+			glueMatchesHints: true,
+			serialsByRoot: {
+				'a.root-servers.net': 2026052101,
+				'b.root-servers.net': 2026052103,
+			},
+		})));
+
+		const result = await checkRootServerSet({
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		const serialFinding = result.findings.find((finding) => finding.title === 'Root zone serials differ across roots');
+		expect(serialFinding?.detail).toMatch(/65 minutes/);
+		expect(serialFinding?.detail).toMatch(/RSSAC047/);
+		// No severity change: still 'medium', spread 2 is outside a single propagation increment.
+		expect(serialFinding?.severity).toBe('medium');
+		expect(serialFinding?.metadata).toMatchObject({ serialSpread: 2, withinOneIncrement: false });
 	});
 
 	it('bounds and sanitizes wire-derived root names before they reach finding metadata', async () => {
