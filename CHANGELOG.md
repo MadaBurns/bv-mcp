@@ -10,6 +10,16 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **An unrecognized cron trigger no longer runs the tenant sweep.** `routeCron`
+  had no `'unknown'` route: any cron string that didn't match a named branch
+  — garbage, a typo in `wrangler.jsonc`, or a new trigger added before its
+  dispatch branch — fell into the same `'periodic'` fallback as the legitimate
+  15-minute sweep and silently ran `handleTenantCycleAlerts` plus the other
+  periodic handlers, with no distinct log line (chaos SQ-193 H4). `routeCron`
+  now maps only the actual 15-minute cron to `'periodic'`; every other
+  unmatched cron returns `'unknown'`, and `scheduled()` responds to it by
+  logging one structured warn (`category: 'cron'`, `result: 'unknown_cron'`,
+  the cron string) and running no handler at all.
 - **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
   consumer's catch around the scan-persist call discarded the thrown error, so a
   `queue_dlq` finding from a failed tenant D1 write could not distinguish a
