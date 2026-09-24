@@ -190,10 +190,31 @@ export function listSqlFiles(fs, dir) {
 // -- live schema fetch (read-only) -----------------------------------------------
 
 // Only ever SELECT against sqlite_master / the pragma_table_info table-valued
-// function. `pragma_table_info(m.name)` joined against `sqlite_master` pulls
-// every table's columns in one query instead of one-call-per-table.
+// function. D1 refuses a correlated join of `pragma_table_info(m.name)`
+// against `sqlite_master` ("not authorized: SQLITE_AUTH [code: 7500]" —
+// measured directly against production 2026-09-24), so column introspection
+// cannot pull every table's columns in one query. Instead it runs one literal
+// `SELECT name FROM pragma_table_info('<table>')` per table, built by
+// `columnsSqlForTable` below, which refuses to interpolate anything that
+// isn't a bare SQL identifier.
 export const TABLES_AND_INDEXES_SQL = "SELECT type, name, tbl_name FROM sqlite_master WHERE type IN ('table','index')";
-export const COLUMNS_SQL = "SELECT m.name AS tbl, p.name AS col FROM sqlite_master m JOIN pragma_table_info(m.name) p WHERE m.type = 'table'";
+
+/** A bare SQL identifier: what `columnsSqlForTable` requires before interpolating a table name into SQL text. */
+export const TABLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+
+/**
+ * Build the literal per-table column-introspection query for `table`. Throws
+ * if `table` isn't a bare identifier matching `TABLE_NAME_RE` — this is the
+ * only thing standing between a live table name and string interpolation
+ * into SQL text, so it must reject anything that could smuggle in a join,
+ * a second statement, or any other SQL syntax.
+ */
+export function columnsSqlForTable(table) {
+	if (typeof table !== 'string' || !TABLE_NAME_RE.test(table)) {
+		throw new Error(`refusing to build a columns query for an unsafe table name: ${JSON.stringify(table)}`);
+	}
+	return `SELECT name FROM pragma_table_info('${table}')`;
+}
 
 const DDL_KEYWORDS = /\b(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE|REPLACE|ATTACH|DETACH|PRAGMA(?!_table_info\())\b/i;
 
@@ -229,10 +250,14 @@ export function createWranglerRunner(execWrangler) {
 	};
 }
 
-/** Fetch the live tables/indexes/columns for one D1 database. */
+/**
+ * Fetch the live tables/indexes/columns for one D1 database. Tables and
+ * indexes come from one `sqlite_master` query; columns are fetched with one
+ * `pragma_table_info` query per live table (see `columnsSqlForTable` above —
+ * D1 refuses the single-query join form).
+ */
 export function fetchLiveSchema(deps, database, configPath) {
 	const objRows = deps.runWranglerQuery(database, configPath, TABLES_AND_INDEXES_SQL);
-	const colRows = deps.runWranglerQuery(database, configPath, COLUMNS_SQL);
 	const tables = new Set();
 	const indexes = new Set();
 	for (const row of objRows) {
@@ -240,10 +265,11 @@ export function fetchLiveSchema(deps, database, configPath) {
 		else if (row.type === 'index') indexes.add(row.name);
 	}
 	const columnsByTable = new Map();
-	for (const row of colRows) {
-		const set = columnsByTable.get(row.tbl) ?? new Set();
-		set.add(row.col);
-		columnsByTable.set(row.tbl, set);
+	for (const table of tables) {
+		const colRows = deps.runWranglerQuery(database, configPath, columnsSqlForTable(table));
+		const cols = new Set();
+		for (const row of colRows) cols.add(row.name);
+		columnsByTable.set(table, cols);
 	}
 	return { tables, indexes, columnsByTable };
 }

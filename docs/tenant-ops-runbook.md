@@ -122,9 +122,9 @@ ignored.
 
 Applying a missing migration file to a live database is an operator action —
 this repository does not automate it. Use `wrangler d1 execute <db> --remote
---file=<migration>` with the exact source file, for example the two files
-this checker currently reports missing in production, per a read-only
-measurement taken 2026-09-24:
+--file=<migration>` with the exact source file — for example, the two files
+that were missing on 2026-09-24, per a read-only measurement taken that day
+(both were applied by an operator later the same day):
 
 ```bash
 npx wrangler d1 execute <tenant-registry-db> --remote \

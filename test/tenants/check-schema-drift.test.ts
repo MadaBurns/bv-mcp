@@ -26,7 +26,8 @@ import {
 	createWranglerRunner,
 	runSchemaDriftCheck,
 	TABLES_AND_INDEXES_SQL,
-	COLUMNS_SQL,
+	TABLE_NAME_RE,
+	columnsSqlForTable,
 } from '../../scripts/tenants/check-schema-drift.mjs';
 
 const CREATE_SUB_TENANTS = [
@@ -175,10 +176,35 @@ describe('compareSchema', () => {
 	});
 });
 
+describe('columnsSqlForTable', () => {
+	it('pins the exact per-table pragma_table_info query shape', () => {
+		expect(columnsSqlForTable('sub_tenants')).toBe("SELECT name FROM pragma_table_info('sub_tenants')");
+		expect(columnsSqlForTable('findings')).toBe("SELECT name FROM pragma_table_info('findings')");
+	});
+
+	it('rejects a table name that is not a bare identifier — including an attempt to smuggle in the old join form', () => {
+		// The join form this checker used to run against sqlite_master + pragma_table_info(m.name) —
+		// D1 measured-refuses it (SQLITE_AUTH); this function must never be able to build it either.
+		expect(() => columnsSqlForTable("m WHERE m.type = 'table'")).toThrow(/unsafe table name/);
+		expect(() => columnsSqlForTable('sub_tenants JOIN other')).toThrow(/unsafe table name/);
+		expect(() => columnsSqlForTable("sub_tenants'); DROP TABLE x; --")).toThrow(/unsafe table name/);
+		expect(() => columnsSqlForTable('')).toThrow(/unsafe table name/);
+		expect(() => columnsSqlForTable(undefined)).toThrow(/unsafe table name/);
+	});
+
+	it('TABLE_NAME_RE accepts only bare identifiers', () => {
+		expect(TABLE_NAME_RE.test('sub_tenants')).toBe(true);
+		expect(TABLE_NAME_RE.test('_private1')).toBe(true);
+		expect(TABLE_NAME_RE.test('sub tenants')).toBe(false);
+		expect(TABLE_NAME_RE.test("sub_tenants'")).toBe(false);
+		expect(TABLE_NAME_RE.test('1table')).toBe(false);
+	});
+});
+
 describe('assertReadOnlySql', () => {
-	it('accepts the two live-schema query constants', () => {
+	it('accepts the live-schema query constants, including a per-table columns query', () => {
 		expect(() => assertReadOnlySql(TABLES_AND_INDEXES_SQL)).not.toThrow();
-		expect(() => assertReadOnlySql(COLUMNS_SQL)).not.toThrow();
+		expect(() => assertReadOnlySql(columnsSqlForTable('sub_tenants'))).not.toThrow();
 	});
 
 	it('rejects DDL', () => {
@@ -228,22 +254,36 @@ describe('createWranglerRunner', () => {
 });
 
 describe('fetchLiveSchema', () => {
-	it('splits the two query result sets into tables/indexes/columnsByTable', () => {
+	it('fetches tables/indexes with one query, then issues one literal per-table pragma_table_info query for columns — never the join form', () => {
+		const calls: string[] = [];
 		const deps = {
 			runWranglerQuery: (_database: string, _config: string, sql: string) => {
+				calls.push(sql);
 				if (sql === TABLES_AND_INDEXES_SQL) {
 					return [
 						{ type: 'table', name: 'sub_tenants' },
+						{ type: 'table', name: 'super_tenants' },
 						{ type: 'index', name: 'idx_x' },
 					];
 				}
-				return [{ tbl: 'sub_tenants', col: 'id' }];
+				// A mock that only understands the two known literal per-table queries: any
+				// join-style query (the form D1 measured-refuses) falls through and throws,
+				// so this test fails if fetchLiveSchema ever reverts to a joined query.
+				if (sql === columnsSqlForTable('sub_tenants')) return [{ name: 'id' }, { name: 'routing_mode' }];
+				if (sql === columnsSqlForTable('super_tenants')) return [{ name: 'id' }];
+				throw new Error(`unexpected query shape (not a literal per-table pragma_table_info select): ${sql}`);
 			},
 		};
 		const live = fetchLiveSchema(deps, 'TENANT_REGISTRY_DB', 'wrangler.production.jsonc');
-		expect(live.tables).toEqual(new Set(['sub_tenants']));
+		expect(live.tables).toEqual(new Set(['sub_tenants', 'super_tenants']));
 		expect(live.indexes).toEqual(new Set(['idx_x']));
-		expect(live.columnsByTable.get('sub_tenants')).toEqual(new Set(['id']));
+		expect(live.columnsByTable.get('sub_tenants')).toEqual(new Set(['id', 'routing_mode']));
+		expect(live.columnsByTable.get('super_tenants')).toEqual(new Set(['id']));
+		expect(calls).toEqual([
+			TABLES_AND_INDEXES_SQL,
+			"SELECT name FROM pragma_table_info('sub_tenants')",
+			"SELECT name FROM pragma_table_info('super_tenants')",
+		]);
 	});
 });
 
@@ -258,7 +298,7 @@ function makeConfig(bindings: string[]) {
 function makeOrchestrationDeps(opts: {
 	config: string;
 	migrationFiles: Record<'registry' | 'tenant', Record<string, string>>;
-	liveByBinding: Record<string, { objects: unknown[]; columns: unknown[] }>;
+	liveByBinding: Record<string, { objects: unknown[]; columnsByTable: Record<string, unknown[]> }>;
 }) {
 	const stdout: string[] = [];
 	const stderr: string[] = [];
@@ -285,7 +325,13 @@ function makeOrchestrationDeps(opts: {
 	const runWranglerQuery = (database: string, _config: string, sql: string) => {
 		const live = opts.liveByBinding[database];
 		if (!live) throw new Error(`unexpected binding ${database}`);
-		return sql === TABLES_AND_INDEXES_SQL ? live.objects : live.columns;
+		if (sql === TABLES_AND_INDEXES_SQL) return live.objects;
+		// Only a literal single-table pragma_table_info query is understood — the join form
+		// this checker used to run (and D1 measured-refuses) has no match here and throws,
+		// so a regression back to it fails every orchestration test below.
+		const match = /^SELECT name FROM pragma_table_info\('([A-Za-z_][A-Za-z0-9_]*)'\)$/.exec(sql);
+		if (match) return live.columnsByTable[match[1]] ?? [];
+		throw new Error(`unexpected query shape: ${sql}`);
 	};
 	return {
 		deps: {
@@ -313,12 +359,9 @@ describe('runSchemaDriftCheck — full orchestration against fixtures', () => {
 			liveByBinding: {
 				TENANT_REGISTRY_DB: {
 					objects: [{ type: 'table', name: 'sub_tenants' }],
-					columns: [
-						{ tbl: 'sub_tenants', col: 'id' },
-						{ tbl: 'sub_tenants', col: 'super_tenant_id' },
-						{ tbl: 'sub_tenants', col: 'name' },
-						{ tbl: 'sub_tenants', col: 'routing_mode' },
-					],
+					columnsByTable: {
+						sub_tenants: [{ name: 'id' }, { name: 'super_tenant_id' }, { name: 'name' }, { name: 'routing_mode' }],
+					},
 				},
 				TENANT_DB_PILOT_1: {
 					objects: [
@@ -326,11 +369,9 @@ describe('runSchemaDriftCheck — full orchestration against fixtures', () => {
 						{ type: 'index', name: 'idx_findings_domain' },
 						{ type: 'index', name: 'idx_findings_scan_id' },
 					],
-					columns: [
-						{ tbl: 'findings', col: 'id' },
-						{ tbl: 'findings', col: 'scan_id' },
-						{ tbl: 'findings', col: 'domain' },
-					],
+					columnsByTable: {
+						findings: [{ name: 'id' }, { name: 'scan_id' }, { name: 'domain' }],
+					},
 				},
 			},
 		});
@@ -349,20 +390,16 @@ describe('runSchemaDriftCheck — full orchestration against fixtures', () => {
 				TENANT_REGISTRY_DB: {
 					objects: [{ type: 'table', name: 'sub_tenants' }],
 					// routing_mode not applied — mirrors the measured prod state.
-					columns: [
-						{ tbl: 'sub_tenants', col: 'id' },
-						{ tbl: 'sub_tenants', col: 'super_tenant_id' },
-						{ tbl: 'sub_tenants', col: 'name' },
-					],
+					columnsByTable: {
+						sub_tenants: [{ name: 'id' }, { name: 'super_tenant_id' }, { name: 'name' }],
+					},
 				},
 				TENANT_DB_PILOT_1: {
 					objects: [{ type: 'table', name: 'findings' }, { type: 'index', name: 'idx_findings_domain' }],
 					// idx_findings_scan_id not applied — mirrors the measured prod state.
-					columns: [
-						{ tbl: 'findings', col: 'id' },
-						{ tbl: 'findings', col: 'scan_id' },
-						{ tbl: 'findings', col: 'domain' },
-					],
+					columnsByTable: {
+						findings: [{ name: 'id' }, { name: 'scan_id' }, { name: 'domain' }],
+					},
 				},
 			},
 		});
