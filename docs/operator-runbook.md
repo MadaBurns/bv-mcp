@@ -195,6 +195,13 @@ and ALSO fails closed (a different message) if the name is still present in
 `vars` — a binding name cannot be both: `wrangler secret put` fails with
 `[code: 10053]` while it is.
 
+As defence in depth, `check:bindings`/`check:bindings:prod` now run through
+`scripts/check-bindings.mjs`, which captures `wrangler types`' stdout instead
+of printing it and shows only a `bindings check: OK (N vars, M bindings)`
+summary — the full generated `worker-configuration.d.ts` (still written to
+disk, gitignored and pre-commit-blocked) is the only place literal values
+appear.
+
 The installed wrangler (4.131.1; checked via `npx wrangler deploy --help`)
 supports `--secrets-file` on both `wrangler deploy` and `wrangler versions
 upload`, which lands the var removal and the secret creation in the SAME
