@@ -42,9 +42,11 @@ export const QUEUE_MESSAGE_TIMEOUT_MS = 20_000;
 /** After this many delivery attempts, the consumer writes a DLQ row and acks. */
 export const MAX_ATTEMPTS = 3;
 
+// `f.domain = s.domain` keeps the join bounded by the base-schema domain index
+// when `idx_findings_scan_id` is missing (see COMPLETED_SCANS_SQL in cycle-progress.ts).
 const SCAN_COMPLETION_PROBE_SQL =
 	'SELECT s.id, s.finding_count, COUNT(f.id) AS persisted_findings ' +
-	'FROM scans s LEFT JOIN findings f ON f.scan_id = s.id ' +
+	'FROM scans s LEFT JOIN findings f ON f.scan_id = s.id AND f.domain = s.domain ' +
 	'WHERE s.cycle_id = ? AND s.domain = ? ' +
 	'GROUP BY s.id, s.finding_count ' +
 	'LIMIT 1';

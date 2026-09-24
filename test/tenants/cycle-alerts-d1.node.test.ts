@@ -2,7 +2,7 @@
 
 import { readFileSync, readdirSync } from 'node:fs';
 import { Miniflare, convertV4MiniflareOptions } from 'miniflare';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { handleTenantCycleAlerts, handleTenantWeeklyRescan } from '../../src/tenants/scheduled-handlers';
 import { synchronizeCycleProgress } from '../../src/tenants/cycle-progress';
 import { resolveTenantUncached } from '../../src/tenants/tenant-resolver';
@@ -164,7 +164,7 @@ describe('Tenant cycle lifecycle against real D1', () => {
 		await scan('complete', 'a.example.com', 'cycle-recover', 1001, ['Measured finding']);
 		await scan('dlq', 'b.example.com', 'cycle-recover', 1001, ['queue_dlq'], null);
 		await scan('partial', 'c.example.com', 'cycle-recover', 1001, [], 70, 1);
-		await handleTenantCycleAlerts(environment(), ctx);
+		await handleTenantCycleAlerts(environment(), ctx, { now: () => 2000 });
 		expect(
 			await registry.prepare('SELECT completed_total, alert_sent_at FROM tenant_cycles WHERE id = ?').bind('cycle-recover').first(),
 		).toEqual({ completed_total: 2, alert_sent_at: null });
@@ -177,5 +177,102 @@ describe('Tenant cycle lifecycle against real D1', () => {
 		expect(
 			await registry.prepare('SELECT completed_total, alert_sent_at FROM tenant_cycles WHERE id = ?').bind('cycle-recover').first(),
 		).toEqual({ completed_total: 3, alert_sent_at: 3000 });
+	});
+
+	// SQ-167: the prod tenant DB lacked idx_findings_scan_id (migration 0002). The
+	// per-message completion count then did a full `findings` scan per cycle scan,
+	// 9.0 s / 24M rows at 240 scans, and the weekly cycle stalled at 240/500.
+	it('keeps every per-scan findings access index-bounded when idx_findings_scan_id is missing', async () => {
+		await tenant.exec('DROP INDEX idx_findings_scan_id');
+		await cycle('cycle-current', 10_000, 2);
+		await scan('a-old', 'a.example.com', 'cycle-baseline', 100, ['Old finding']);
+		await scan('a-current', 'a.example.com', 'cycle-current', 10_001, ['Current finding']);
+		await scan('b-current', 'b.example.com', 'cycle-current', 10_001, []);
+
+		const statements: string[] = [];
+		const recordingTenant = {
+			prepare(sql: string) {
+				statements.push(sql);
+				return tenant.prepare(sql);
+			},
+		} as unknown as D1Database;
+		// Built once as a variable (not an inline literal) so the extra tenant binding is
+		// not rejected by TypeScript's excess-property check on ResolverEnv / TenantScheduledEnv.
+		const recordingEnv = { ...environment(), TENANT_DB_TENANT_1: recordingTenant };
+		await synchronizeCycleProgress(registry, (await resolveTenantUncached(recordingEnv, 'tenant-1')).db, 'cycle-current');
+		await handleTenantCycleAlerts(recordingEnv, ctx, {
+			now: () => 20_000,
+			sendAlert: async () => ({ delivered: true }),
+		});
+		expect(
+			await registry.prepare('SELECT completed_total, alert_outcome FROM tenant_cycles WHERE id = ?').bind('cycle-current').first(),
+		).toEqual({ completed_total: 2, alert_outcome: 'sent' });
+
+		const findingsStatements = [...new Set(statements.filter((sql) => /\bfindings\s+\w+/.test(sql)))];
+		// Completion count, current-cycle findings, and baseline findings.
+		expect(findingsStatements.length).toBeGreaterThanOrEqual(3);
+		for (const sql of findingsStatements) {
+			const aliases = [...sql.matchAll(/\bfindings\s+(?!WHERE\b)(\w+)/g)].map((m) => m[1]);
+			const placeholders = (sql.match(/\?/g) ?? []).length;
+			const plan = await tenant
+				.prepare(`EXPLAIN QUERY PLAN ${sql}`)
+				.bind(...Array<null>(placeholders).fill(null))
+				.all<{ detail: string }>();
+			const fullScans = plan.results.map((row) => row.detail).filter((detail) => aliases.some((alias) => detail === `SCAN ${alias}`));
+			expect({ sql: sql.replace(/\s+/g, ' ').trim(), fullScans }).toEqual({ sql: sql.replace(/\s+/g, ' ').trim(), fullScans: [] });
+		}
+	});
+
+	it('settles a stalled cycle as partial once and raises one operator alert', async () => {
+		const operatorAlerts: string[] = [];
+		vi.stubGlobal('fetch', async (_url: string, init?: RequestInit) => {
+			operatorAlerts.push(String(init?.body ?? ''));
+			return new Response('ok');
+		});
+		try {
+			const startedAt = 1_000_000;
+			const sixHours = 6 * 3600 * 1000;
+			await cycle('cycle-stalled', startedAt, 3);
+			await scan('a-old', 'a.example.com', 'cycle-baseline', 100, ['Old finding']);
+			await scan('a-current', 'a.example.com', 'cycle-stalled', startedAt + 1, ['Old finding']);
+			const tenantAlerts: TenantCycleAlert[] = [];
+			const sweep = (now: number) =>
+				handleTenantCycleAlerts(environment(), ctx, {
+					now: () => now,
+					sendAlert: async (payload) => {
+						tenantAlerts.push(payload);
+						return { delivered: true };
+					},
+				});
+			const row = () =>
+				registry
+					.prepare('SELECT completed_total, errored_total, alert_sent_at, alert_outcome FROM tenant_cycles WHERE id = ?')
+					.bind('cycle-stalled')
+					.first();
+
+			// Before the deadline a short cycle is only reconciled, never settled.
+			await sweep(startedAt + sixHours);
+			expect(await row()).toEqual({ completed_total: 1, errored_total: 0, alert_sent_at: null, alert_outcome: null });
+			expect(operatorAlerts).toHaveLength(0);
+
+			// Past the deadline the missing domains become errored and the cycle settles.
+			await sweep(startedAt + sixHours + 1);
+			expect(await row()).toEqual({
+				completed_total: 1,
+				errored_total: 2,
+				alert_sent_at: startedAt + sixHours + 1,
+				alert_outcome: 'no_diff',
+			});
+			expect(operatorAlerts).toHaveLength(1);
+			expect(operatorAlerts[0]).toContain('settled partial: 2 of 3 domains never completed');
+			expect(operatorAlerts[0]).toContain('cycle_id: cycle-stalled');
+			expect(tenantAlerts).toHaveLength(0);
+
+			// A settled cycle is never re-settled or re-alerted.
+			await sweep(startedAt + 2 * sixHours);
+			expect(operatorAlerts).toHaveLength(1);
+		} finally {
+			vi.unstubAllGlobals();
+		}
 	});
 });
