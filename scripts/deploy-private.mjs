@@ -62,6 +62,10 @@ runStep(['scripts/inject-private-config.cjs'], 'Private config injection');
 
 runStep(['scripts/brand-audit-schema-preflight.mjs', '--config', generatedConfigPath], 'Brand Audit schema preflight');
 
+// INTELLIGENCE_DB bound to an unmigrated database makes every fire-and-forget access-log insert throw
+// with nothing to surface it (SQ-187). Needs the injected config, so it runs after the injector.
+runStep(['scripts/access-log-schema-preflight.mjs', '--config', generatedConfigPath], 'Access-log schema preflight');
+
 const result = spawnSync(process.execPath, [wranglerCliPath, 'deploy', '--config', generatedConfigPath, ...process.argv.slice(2)], {
 	stdio: 'inherit',
 });

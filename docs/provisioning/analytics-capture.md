@@ -7,20 +7,35 @@ bearer tokens in ignored deployment notes — never in this repo.
 
 Design reference: `docs/superpowers/specs/2026-06-26-detailed-analytics-capture-design.md`.
 
-## 1. Apply the enrichment migration FIRST
+## 1. Provision the access-log database FIRST
 
-Run the additive migration **before** deploying the enriched consumer. All new
-columns are nullable, so this is safe on the existing populated table (existing
-rows and the inline-fallback insert keep working). A lagging migration would
-otherwise make the consumer's INSERT fail (logged, fail-open) rather than corrupt
-data.
+The `INTELLIGENCE_DB` binding holds `mcp_access_log` and `mcp_access_log_audit`.
+Its database is `mcp-access-log-v1`, owned by bv-mcp (SQ-187). It replaces
+`bv-intelligence`, bv-web-prod's decommissioned database, on which bv-mcp was
+the only remaining writer. The binding **name** is unchanged; only the
+`database_name`/`database_id` behind it in the private overlay moved.
+
+A new database gets the consolidated baseline, which already carries every
+enrichment (0002) and `source` (0003) column:
 
 ```bash
-wrangler d1 execute bv-intelligence --remote --file scripts/intelligence/sql/0002_mcp_access_log_enrich.sql
+npx wrangler d1 create mcp-access-log-v1 --location oc
+npx wrangler d1 execute mcp-access-log-v1 --remote --file scripts/access-log/sql/0001_baseline.sql
 ```
 
-`bv-intelligence` is a placeholder — substitute the project-approved private
-`INTELLIGENCE_DB` database name.
+Do **not** replay `scripts/intelligence/sql/0001`–`0003` on a new database. The
+live table drifted from that chain (`ip_masked` is `NOT NULL`, and the index set
+differs), and the baseline reproduces live, not the chain. Those files remain the
+history of the old database. `0004_mcp_access_rollup.sql` is optional and
+separate; the rollup is off.
+
+A deploy against an unmigrated database is refused.
+`scripts/access-log-schema-preflight.mjs` runs in `deploy:prod`,
+`deploy:prod:staged` and `scripts/deploy-private.mjs`, and fails the deploy unless
+the database behind `INTELLIGENCE_DB` has every column the Worker writes. Without
+it, every access-log insert would throw inside a fire-and-forget: total, silent
+row loss. To move an existing deployment's rows across, follow
+[operator-runbook.md §3a](../operator-runbook.md#3a-moving-the-access-log-to-mcp-access-log-v1-sq-187-cut-over).
 
 ## 2. Add the queue producer + consumer (private overlay)
 
@@ -80,7 +95,8 @@ npm run deploy:prod
 ```
 
 This runs `scripts/inject-private-config.cjs`, merging the public `wrangler.jsonc`
-with the private overlay above.
+with the private overlay above, then the access-log schema preflight from §1
+against the merged config.
 
 ## 5. PII-level reference
 

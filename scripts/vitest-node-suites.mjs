@@ -21,6 +21,10 @@ export const NODE_POOL_AUDIT_TESTS = [
 	'test/tenants/cycle-alerts-d1.node.test.ts',
 	'test/scheduled/brand-audit-cron-d1.node.test.ts',
 	'test/audits/brand-audit-schema-preflight.node.test.ts',
+	// SQ-187: the access-log deploy preflight and operator copy script, both proven against real
+	// (Miniflare) D1 databases and a real temp directory.
+	'test/audits/access-log-schema-preflight.node.test.ts',
+	'test/audits/access-log-copy.node.test.ts',
 	// Sweeps every tracked file for the forbidden licence phrasing via
 	// `git ls-files` + real node:fs — neither exists in the Workers pool.
 	// (Deliberately does not spell the phrase itself: this file is swept too.)

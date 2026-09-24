@@ -27,6 +27,27 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Added
 
+- **A bv-mcp-owned access-log database, and a deploy gate for it (SQ-187).**
+  `mcp_access_log` and `mcp_access_log_audit` still live on `bv-intelligence`,
+  which is bv-web-prod's decommissioned database; bv-mcp is its only writer. This
+  release ships the repo half of moving them to a new D1, `mcp-access-log-v1`,
+  behind the unchanged `INTELLIGENCE_DB` binding. The operator runs the cut-over
+  itself (`docs/operator-runbook.md` §3a); no `src/` code changes.
+  - `scripts/access-log/sql/0001_baseline.sql` is the new database's schema. It
+    is copied from the live DDL, because the live table drifted from
+    `scripts/intelligence/sql/0001`–`0003` (`ip_masked NOT NULL`, a different
+    index set).
+  - `scripts/access-log/copy-from-intelligence.mjs` is the operator copy tool.
+    Its `--bulk`, `--delta`, `--verify` and `--replay-erasures` modes page by id
+    and emit literal-value INSERTs that preserve each row's `id` and
+    `created_at`. It only ever runs a single `SELECT` against either database.
+  - `scripts/access-log-schema-preflight.mjs` now runs in `deploy:prod`,
+    `deploy:prod:staged` and `scripts/deploy-private.mjs`. It refuses a deploy
+    whose `INTELLIGENCE_DB` lacks any column the Worker writes. Before this gate,
+    repointing the binding at an unmigrated database would have made every
+    fire-and-forget access-log insert fail with no alert.
+  - Tests exercise the gate and the copy against real (Miniflare) D1 databases.
+    The gate's column list is pinned to the Worker's `ACCESS_LOG_COLUMNS`.
 - **`bv-scanner-queue` dead-letter queue support** (private-config injector, bindings
   check, runbook). SQ-169 found `bv-scanner-queue` had no dead-letter queue: when the
   consumer exhausted `max_retries=3` on the 09-13 and 09-20 tenant cycles, 260 of 500
