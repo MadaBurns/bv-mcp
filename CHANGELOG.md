@@ -10,6 +10,18 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **`check_http_security` now abstains on an exhausted redirect-hop cap instead of scoring
+  the loop's last hop.** A persistent redirect loop was correctly BOUNDED by the hop cap, but
+  once the cap was hit while the last response was still a 3xx, `analyzeSecurityHeaders()` ran
+  on that redirect response's headers as if it were the final page — `checkStatus` stayed
+  undefined (measured) and a probe that never reached the origin produced a confident "header
+  missing" slate (chaos SQ-194 H3). `followRedirects` now reports `hopCapExceeded`, and the
+  exhausted-cap branch abstains (`checkStatus: 'error'`, `errorKind: 'redirect_chain_unresolved'`,
+  no `missingControl`) so `scan_domain` excludes `http_security` (absent, not zeroed) the same
+  way the existing 503/blocked-probe/deadline branches already do. The wrapper's dual-fetch
+  redirect cap (`src/tools/check-http-security.ts`) now imports the package's
+  `MAX_REDIRECT_HOPS` (exported as `HTTP_SECURITY_MAX_REDIRECT_HOPS`) instead of hardcoding a
+  separate, larger cap of its own. A chain that resolves within the cap is unchanged.
 - **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
   consumer's catch around the scan-persist call discarded the thrown error, so a
   `queue_dlq` finding from a failed tenant D1 write could not distinguish a

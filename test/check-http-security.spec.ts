@@ -84,7 +84,12 @@ describe('checkHttpSecurity', () => {
 		expect(result.findings[0].detail).toContain('500');
 	});
 
-	it('should analyze headers on redirect responses (3xx)', async () => {
+	it('abstains (not a scored analysis) when every hop keeps redirecting to itself (SQ-204)', async () => {
+		// Every fetch — the apex, every redirect hop, and robots.txt — resolves to the SAME
+		// canned 301, i.e. a chain that never terminates within the hop cap. Before SQ-204
+		// this fell through to `analyzeSecurityHeaders()` on the last (never-final) redirect
+		// response; the fix routes an exhausted, still-redirecting hop cap to an abstention
+		// instead (see the chaos-suite H3 coverage for the full contract).
 		globalThis.fetch = vi.fn().mockResolvedValue({
 			ok: false,
 			status: 301,
@@ -94,11 +99,12 @@ describe('checkHttpSecurity', () => {
 			}),
 		});
 		const result = await run();
-		// Should still analyze — 301 is < 500
-		expect(result.findings.length).toBeGreaterThan(0);
-		// CSP is present so no CSP finding, but other headers are missing
-		const cspFinding = result.findings.find((f) => f.title === 'No Content-Security-Policy');
-		expect(cspFinding).toBeUndefined();
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.some((f) => f.metadata?.errorKind === 'redirect_chain_unresolved')).toBe(true);
+		// CSP WAS present on every hop, yet no CSP (or other "No <header>") finding fires —
+		// the response was never analyzed as the site's answer in the first place.
+		expect(result.findings.some((f) => f.title === 'No Content-Security-Policy')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
 	});
 
 	it('should return multiple findings when multiple headers missing', async () => {

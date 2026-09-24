@@ -11,7 +11,13 @@
  * passed to the package's analysis layer.
  */
 
-import { checkHTTPSecurity, withRobotsGate, SCANNER_USER_AGENT, createRobotsGroupCache } from '@blackveil/dns-checks';
+import {
+	checkHTTPSecurity,
+	withRobotsGate,
+	SCANNER_USER_AGENT,
+	createRobotsGroupCache,
+	HTTP_SECURITY_MAX_REDIRECT_HOPS,
+} from '@blackveil/dns-checks';
 import type { FetchFunction } from '@blackveil/dns-checks';
 import { createRobotsProvenance, type RobotsProvenance } from '../lib/robots-provenance';
 import type { CheckResult } from '../lib/scoring';
@@ -36,8 +42,17 @@ const MERGE_HEADERS = [
 	'cross-origin-embedder-policy',
 ] as const;
 
-/** Maximum manual redirect hops to follow during dual-fetch probes. */
-const MAX_REDIRECT_HOPS = 5;
+/**
+ * Maximum manual redirect hops to follow during dual-fetch probes.
+ *
+ * Imported from the package (SQ-204) rather than hardcoded here — this used to be a separate
+ * `= 5` local constant, independent of the package's own `followRedirects` cap (3). A wrapper
+ * cap larger than the package's meant the dual-fetch pre-probe could exhaust ITS OWN cap while
+ * still redirecting and hand the package a synthetic "final" response that was never actually
+ * final, defeating the package's exhausted-cap abstention (see check-http-security.ts there).
+ * One constant, imported here, keeps the two hop budgets from disagreeing again.
+ */
+const MAX_REDIRECT_HOPS = HTTP_SECURITY_MAX_REDIRECT_HOPS;
 
 /**
  * Vendor-specific, origin-set CDN headers worth carrying forward across redirect
