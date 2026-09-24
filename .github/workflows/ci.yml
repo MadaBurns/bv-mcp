@@ -33,7 +33,12 @@ jobs:
           PR_BODY: ${{ github.event.pull_request.body }}
         run: node scripts/ci/check-scoring-version.mjs ${{ github.event.pull_request.base.sha }} ${{ github.event.pull_request.head.sha }}
 
-  build-and-test:
+  # `preflight` runs everything that must happen exactly once (lint, typecheck,
+  # the scoring-contract gate, and the Rust/WASM build) plus the one spec that
+  # needs the built WASM. `test-shard` fans the rest of the suite out across 3
+  # parallel matrix jobs. `build-and-test` below is a same-name aggregator so
+  # the required check is unaffected — see CLAUDE.md's CI/CD & Deploy section.
+  preflight:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -46,10 +51,16 @@ jobs:
           cache: npm
 
       - run: npm ci
+      - run: npm run lint
+      # Builds packages/dns-checks as a side effect (its own `pretypecheck`
+      # npm lifecycle hook) — required before the wasm-integration test below,
+      # since vitest.config.mts imports src/workers/infra-probe at config-load
+      # time, which resolves @blackveil/dns-checks and fails to even start
+      # vitest if the workspace package hasn't been built yet.
+      - run: npm run check:bindings
       - run: npm run check:scoring-contract-change
         env:
           SCORING_CONTRACT_BASE_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
-      - run: npm run build --workspace=packages/dns-checks
 
       - name: Cache Rust
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -73,19 +84,59 @@ jobs:
         run: cargo install wasm-pack --version 0.13.1 --locked
 
       - name: Build WASM
-        working-directory: crates/bv-wasm-core
-        run: wasm-pack build --target web
+        run: npm run build:wasm
 
-      - run: npm run check:bindings
-      - run: npm run lint
-      - run: npm test
+      - run: npx vitest run test/wasm-integration.test.ts
 
-      - name: Upload coverage
-        if: always()
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+  test-shard:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          name: coverage-report
-          path: coverage/
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+      # `npm test`'s `pretest` lifecycle hook builds this automatically; the
+      # wrapper script below is invoked directly, so it needs an explicit step.
+      - run: npm run build --workspace=packages/dns-checks
+
+      # vitest's `--exclude` CLI flag has no effect on the `workers` project in
+      # vitest.config.mts: that project defines its own literal `test.exclude`
+      # array, which fully overrides any CLI-supplied exclude for file
+      # discovery (verified empirically — `--exclude test/wasm-integration.test.ts`
+      # still collected and imported the file, failing on the unbuilt WASM
+      # module). Editing vitest.config.mts or the spec is out of scope, so
+      # remove the file from this disposable, per-job checkout instead; it's
+      # already covered by the `preflight` job's WASM build above.
+      - name: Exclude WASM-only spec (covered by preflight)
+        run: rm test/wasm-integration.test.ts
+
+      - run: node scripts/vitest-filter-workerd.mjs run --shard=${{ matrix.shard }}/3
+
+  # SAME job id and name as before: this is the required check. It aggregates
+  # preflight + test-shard so a skip/cancel/failure in either fails it too —
+  # `if: always()` is required so a failed/cancelled dependency doesn't skip
+  # this job (a skipped required check reads as passing).
+  build-and-test:
+    needs: [preflight, test-shard]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check preflight and test-shard results
+        run: |
+          echo "preflight: ${{ needs.preflight.result }}"
+          echo "test-shard: ${{ needs.test-shard.result }}"
+          if [ "${{ needs.preflight.result }}" != "success" ] || [ "${{ needs.test-shard.result }}" != "success" ]; then
+            echo "One or more required jobs did not succeed."
+            exit 1
+          fi
 
   fast-checks:
     runs-on: ubuntu-latest
