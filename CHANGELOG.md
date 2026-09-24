@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.90.0] - 2026-09-24
+
 ### Fixed
 
 - **An unrecognized cron trigger no longer runs the tenant sweep.** `routeCron`
