@@ -169,16 +169,30 @@ interface SpfNode {
 }
 
 /**
- * Resolve one domain's SPF adjacency. TOTAL — never throws.
+ * Resolve one domain's SPF adjacency.
  *
- * Collapsing "the TXT query threw" and "no SPF record present" into a single `null` matches the
- * serial walk exactly: both made it `return` without recursing and without setting `rootSpf`.
+ * For an INCLUDED domain this is TOTAL — never throws: collapsing "the TXT query threw" and "no
+ * SPF record present" into a single `null` matches the serial walk exactly (both made it
+ * `return` without recursing), and the include itself is still probed — with its own
+ * unmeasured accounting (#1103) — by `probeIncludeDomain`.
+ *
+ * For the ROOT (`propagateFailure`), a thrown TXT lookup is re-thrown. Collapsed to `null` it
+ * read as "the domain publishes no SPF record", so a probe that never reached a resolver
+ * returned a COMPLETED "No SPF record" verdict scored 100 (SQ-201). Re-thrown, it reaches
+ * `checkSubdomailing`'s not-assessed catch instead. An answered-empty or NXDOMAIN root lookup
+ * does not throw, so a genuinely SPF-less domain still reads as "No SPF record".
  */
-async function resolveSpfNode(domain: string, queryDNS: DNSQueryFunction, timeout: number): Promise<SpfNode | null> {
+async function resolveSpfNode(
+	domain: string,
+	queryDNS: DNSQueryFunction,
+	timeout: number,
+	propagateFailure = false,
+): Promise<SpfNode | null> {
 	let txtRecords: string[];
 	try {
 		txtRecords = await queryDNS(domain, 'TXT', { timeout });
-	} catch {
+	} catch (err) {
+		if (propagateFailure) throw err;
 		return null;
 	}
 
@@ -268,6 +282,9 @@ function replayIncludeWalk(domain: string, adjacency: ReadonlyMap<string, SpfNod
  * `MAX_RECURSION_DEPTH + 2` rounds); once it is spent a round still resolves at least the one
  * domain the walk provably needs next, and the walk visits at most `1 + MAX_INCLUDE_PROBES`
  * domains, so the loop always terminates.
+ *
+ * Throws when the ROOT domain's own TXT lookup throws (see `resolveSpfNode`): with no answer for
+ * the root there is no chain to report, and `spfRecord: null` would claim a measured absence.
  */
 export async function extractSpfIncludeChain(
 	domain: string,
@@ -277,6 +294,8 @@ export async function extractSpfIncludeChain(
 	const timeout = options?.timeout ?? PROBE_TIMEOUT_MS;
 	const adjacency = new Map<string, SpfNode | null>();
 	let speculationBudget = SPECULATIVE_LOOKUP_BUDGET;
+	// The replay records domains lowercased, so this is the root's key in `frontier`.
+	const root = domain.toLowerCase();
 
 	for (;;) {
 		const replay = replayIncludeWalk(domain, adjacency);
@@ -292,7 +311,7 @@ export async function extractSpfIncludeChain(
 		const frontier = replay.unresolved.slice(0, width);
 		speculationBudget -= frontier.length - 1;
 
-		const nodes = await mapConcurrent(frontier, CHAIN_LOOKUP_CONCURRENCY, (d) => resolveSpfNode(d, queryDNS, timeout));
+		const nodes = await mapConcurrent(frontier, CHAIN_LOOKUP_CONCURRENCY, (d) => resolveSpfNode(d, queryDNS, timeout, d === root));
 		frontier.forEach((d, index) => adjacency.set(d, nodes[index]));
 	}
 }

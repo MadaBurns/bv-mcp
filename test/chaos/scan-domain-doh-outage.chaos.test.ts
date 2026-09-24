@@ -222,18 +222,19 @@ async function dnsBackedCategories(): Promise<CheckCategory[]> {
 }
 
 /**
- * DNS-backed categories that do NOT abstain when every DoH query fails (measured
- * 2026-09-24). Each catches its own failed query and returns a COMPLETED result:
- *  - dane_https: packages/dns-checks check-dane-https.ts catch, a `low` finding (score 95)
- *  - svcb_https: packages/dns-checks check-svcb-https.ts catch, a `low` finding (score 95)
- *  - subdomailing: extractSpfIncludeChain swallows the failed SPF lookup. The check then
- *    reads that as "no SPF published" and returns an `info` finding (score 100). Its own
- *    not-assessed catch in check-subdomailing.ts is never reached.
+ * The three DNS-backed categories that USED to fail open under a total outage (measured
+ * 2026-09-24, SQ-188; fixed by SQ-201). Each caught its own failed query and returned a
+ * COMPLETED result that counted as measured evidence:
+ *  - dane_https: a `low` "DANE HTTPS query failed" finding (score 95)
+ *  - svcb_https: a `low` "HTTPS record query failed" finding (score 95)
+ *  - subdomailing: extractSpfIncludeChain swallowed the failed root SPF lookup, so the check
+ *    read it as "no SPF published" and returned an `info` "No SPF record" finding (score 100).
+ * `failOpenTitle` is the completed-result finding each one used to emit.
  */
-const FAIL_OPEN_UNDER_OUTAGE: ReadonlyArray<{ category: CheckCategory; findingTitle: string }> = [
-	{ category: 'dane_https', findingTitle: 'DANE HTTPS query failed' },
-	{ category: 'svcb_https', findingTitle: 'HTTPS record query failed' },
-	{ category: 'subdomailing', findingTitle: 'No SPF record' },
+const FORMERLY_FAIL_OPEN: ReadonlyArray<{ category: CheckCategory; failOpenTitle: string }> = [
+	{ category: 'dane_https', failOpenTitle: 'DANE HTTPS query failed' },
+	{ category: 'svcb_https', failOpenTitle: 'HTTPS record query failed' },
+	{ category: 'subdomailing', failOpenTitle: 'No SPF record' },
 ];
 
 const OUTAGE_MODES: ReadonlyArray<{ label: string; mode: ResolverMode }> = [
@@ -249,7 +250,7 @@ describe('chaos: scan_domain under a total DoH outage (H1)', () => {
 	const domain = 'example.org';
 
 	it.each(OUTAGE_MODES)(
-		'Given every DoH resolver $label for every query, scan_domain should abstain: ungraded (displayGradeFor null, never an F), maturity indeterminate, no declared missingControl, and each abstaining DNS-backed category errored and absent from categoryScores',
+		'Given every DoH resolver $label for every query, scan_domain should abstain: ungraded (displayGradeFor null, never an F), maturity indeterminate, no declared missingControl, and every DNS-backed category errored and absent from categoryScores',
 		async ({ mode }) => {
 			const net = installNetwork({ domain, primary: mode, fallback: mode });
 			const { scanDomain } = await import('../../src/tools/scan-domain');
@@ -267,8 +268,10 @@ describe('chaos: scan_domain under a total DoH outage (H1)', () => {
 			expect(result.maturity.indeterminate).toBe(true);
 			expect(declaredMissingControls(result)).toEqual([]);
 
-			const failOpen = new Set<string>(FAIL_OPEN_UNDER_OUTAGE.map((entry) => entry.category));
-			const abstaining = (await dnsBackedCategories()).filter((category) => !failOpen.has(category));
+			const abstaining = await dnsBackedCategories();
+			// All 17 DNS-backed categories (19 scan categories minus the two raw-fetch checks),
+			// including the three that used to fail open.
+			for (const { category } of FORMERLY_FAIL_OPEN) expect(abstaining).toContain(category);
 			const statuses = statusByCategory(result);
 			const scored = new Set(scoredCategories(result));
 			const observed = Object.fromEntries(
@@ -288,32 +291,39 @@ describe('chaos: scan_domain under a total DoH outage (H1)', () => {
 		},
 	);
 
-	it('FALSIFIED: Given every DoH resolver fails, dane_https, svcb_https and subdomailing should abstain like the other DNS-backed checks. Instead they report COMPLETED (no checkStatus), are scored into categoryScores, and count as measured evidence', async () => {
-		installNetwork({ domain, primary: 'http503', fallback: 'http503' });
-		const { scanDomain, SCAN_CATEGORIES, CHECKS_WITHOUT_DNS_POOL } = await import('../../src/tools/scan-domain');
+	it.each(OUTAGE_MODES)(
+		'Given every DoH resolver $label, dane_https, svcb_https and subdomailing should abstain like the other DNS-backed checks: errored, absent from categoryScores, carrying only the dns_error marker, and not counted as evidence (completed = the two raw-fetch checks only)',
+		async ({ mode }) => {
+			installNetwork({ domain, primary: mode, fallback: mode });
+			const { scanDomain, SCAN_CATEGORIES, CHECKS_WITHOUT_DNS_POOL } = await import('../../src/tools/scan-domain');
 
-		const result = await scanDomain(domain, undefined, { secondaryDoh: SECONDARY_DOH });
+			const result = await scanDomain(domain, undefined, { secondaryDoh: SECONDARY_DOH });
 
-		const statuses = statusByCategory(result);
-		const scored = new Set(scoredCategories(result));
-		for (const { category, findingTitle } of FAIL_OPEN_UNDER_OUTAGE) {
-			const check = result.checks.find((c) => c.category === category);
-			expect(statuses[category], `${category} checkStatus`).toBe('measured');
-			expect(scored.has(category), `${category} in categoryScores`).toBe(true);
-			expect(result.score.categoryScores[category], `${category} score`).toBeGreaterThan(0);
-			expect(check?.findings.map((f) => f.title)).toContain(findingTitle);
-		}
+			const statuses = statusByCategory(result);
+			const scored = new Set(scoredCategories(result));
+			for (const { category, failOpenTitle } of FORMERLY_FAIL_OPEN) {
+				const check = result.checks.find((c) => c.category === category);
+				expect(statuses[category], `${category} checkStatus`).toBe('error');
+				expect(check?.passed, `${category} passed`).toBe(false);
+				expect(scored.has(category), `${category} in categoryScores`).toBe(false);
+				expect(check?.findings.map((f) => f.title)).not.toContain(failOpenTitle);
+				expect(
+					check?.findings.every((f) => f.metadata?.errorKind === 'dns_error'),
+					`${category} findings all carry errorKind dns_error`,
+				).toBe(true);
+			}
 
-		// Completed evidence = the two raw-fetch checks plus the three that failed open.
-		// The rest of the matrix abstained, so the evidence gate still withholds the grade.
-		// That gate is the only reason this outage does not publish a score.
-		const completed = CHECKS_WITHOUT_DNS_POOL.size + FAIL_OPEN_UNDER_OUTAGE.length;
-		expect(result.score.evidence).toEqual({
-			attempted: SCAN_CATEGORIES.length,
-			completed,
-			ratio: completed / SCAN_CATEGORIES.length,
-		});
-	});
+			// Completed evidence = ONLY the two raw-fetch checks (ssl, http_security): 2 of 19.
+			// Every DNS-backed category abstained, so nothing measured through DNS counts.
+			const completed = CHECKS_WITHOUT_DNS_POOL.size;
+			expect(completed).toBe(2);
+			expect(result.score.evidence).toEqual({
+				attempted: SCAN_CATEGORIES.length,
+				completed,
+				ratio: completed / SCAN_CATEGORIES.length,
+			});
+		},
+	);
 
 	it('FALSIFIED: Given every DoH resolver fails, scan_domain should NOT write the ungraded result to the 5-min scan cache. Instead it DOES: the second call is served from cache (cached: true) without one new DoH query', async () => {
 		const net = installNetwork({ domain, primary: 'http503', fallback: 'http503' });
