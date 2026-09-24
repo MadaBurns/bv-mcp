@@ -8,6 +8,20 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.88.1] - 2026-09-24
+
+### Fixed
+
+- **`check:bindings` / `check:bindings:prod` no longer echo plaintext `vars` values to the
+  terminal or CI log** (#1113, defence-in-depth for #1073). `wrangler types` prints the whole
+  generated `Env` interface including every `vars` value, and that inherited stdout was the
+  channel the 3.85.0 deploy disclosure went through. The new `scripts/check-bindings.mjs`
+  captures that stdout, prints only `bindings check: OK (N vars, M bindings)` computed by key
+  shape from the still-written, gitignored `worker-configuration.d.ts`, then runs `tsc --noEmit`
+  exactly as before. What is checked is unchanged; deploy call sites, production config handling
+  and the private-config secret gate are untouched. Tooling only; no runtime code, no scoring
+  change.
+
 ## [3.88.0] - 2026-09-24
 
 ### Fixed
