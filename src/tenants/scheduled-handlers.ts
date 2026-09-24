@@ -29,6 +29,7 @@ import {
 	sendTenantAlert,
 	type FindingRow,
 } from './alerts';
+import { buildAlertPayload, sendAlert } from '../lib/alerting';
 import { logEvent, logError } from '../lib/log';
 import { resolveTenantUncached, type TenantDbHandle } from './tenant-resolver';
 import type { ScanQueueMessage } from '../schemas/tenant-internal';
@@ -42,6 +43,8 @@ export type TenantScheduledEnv = {
 	TENANT_REGISTRY_DB?: D1Database;
 	BV_SCANNER_QUEUE?: ScanQueueProducer;
 	ALERT_WEBHOOK_URL?: string;
+	/** bv-web-prod binding: operator alerts to its ingest route go over it (see `sendAlert`). */
+	BV_WEB?: Fetcher;
 };
 
 /** Default watch interval (hours) when a domain row has it NULL. Matches the schema default. */
@@ -76,9 +79,24 @@ const INSERT_CYCLE_SQL =
 const INCREMENT_ERRORED_SQL =
 	'UPDATE tenant_cycles SET errored_total = errored_total + ? WHERE id = ?';
 const UNSETTLED_CYCLES_SQL = `
-	SELECT id, sub_tenant_id FROM tenant_cycles
+	SELECT id, super_tenant_id, sub_tenant_id, started_at FROM tenant_cycles
 	WHERE alert_sent_at IS NULL AND completed_total + errored_total < expected_total
 	ORDER BY started_at DESC LIMIT ?
+`;
+/**
+ * A cycle still short of `expected_total` this long after it started will not
+ * complete. The queue drops a message after `max_retries` with no durable marker
+ * (bv-scanner-queue has no dead-letter queue). Healthy 500-domain cycles finish
+ * in under 10 minutes. Without a deadline such a cycle never settles, never
+ * alerts and is re-reconciled every tick forever (SQ-167: 09-13 and 09-20 cycles).
+ */
+const STALLED_CYCLE_SETTLE_MS = 6 * 3600 * 1000;
+// Count every domain that never reported as errored so the cycle settles into
+// the normal alert path. The guard makes this idempotent and race-safe.
+const SETTLE_STALLED_CYCLE_SQL = `
+	UPDATE tenant_cycles SET errored_total = expected_total - completed_total
+	WHERE id = ? AND alert_sent_at IS NULL AND completed_total + errored_total < expected_total
+	RETURNING expected_total, completed_total, errored_total
 `;
 const FIND_BASELINE_CYCLE_SQL =
 	'SELECT id FROM tenant_cycles WHERE sub_tenant_id = ? AND alert_sent_at IS NOT NULL ORDER BY started_at DESC LIMIT 1';
@@ -94,34 +112,42 @@ const STAMP_ALERT_SQL =
 	'UPDATE tenant_cycles SET alert_sent_at = ?, alert_outcome = ? WHERE id = ?';
 // Preserve durable queue failure markers as operational alerts while excluding
 // unmeasured security findings from posture comparisons.
+//
+// Drive the query from the cycle's scans and join their findings. The previous
+// form, `FROM findings f WHERE f.scan_id IN (... f.category ...)`, correlated
+// the IN-subquery with the outer row. It scanned the whole findings table and
+// re-ran the cycle subquery for every row. On prod, 2026-09-24, a 500-scan
+// cycle over ~100k findings exceeded D1's CPU limit and reset the database even
+// with idx_findings_scan_id present. The join returns the same rows in 14 ms.
+// Every findings count also matches `domain`, so each stays bounded by the
+// base-schema domain index when idx_findings_scan_id is missing (SQ-167).
 const FINDINGS_FOR_CYCLE_SQL = `
 	SELECT f.domain, f.category, f.severity, f.title
-	FROM findings f
-	WHERE f.scan_id IN (
-		SELECT s.id FROM scans s WHERE s.cycle_id = ?
-		AND (s.score IS NOT NULL OR (f.category = 'queue' AND f.title = 'queue_dlq'))
-		AND (SELECT COUNT(*) FROM findings measured WHERE measured.scan_id = s.id) >= COALESCE(s.finding_count, 0)
-	)
+	FROM scans s
+	JOIN findings f ON f.scan_id = s.id AND f.domain = s.domain
+	WHERE s.cycle_id = ?
+	  AND (s.score IS NOT NULL OR (f.category = 'queue' AND f.title = 'queue_dlq'))
+	  AND (SELECT COUNT(*) FROM findings measured WHERE measured.scan_id = s.id AND measured.domain = s.domain) >= COALESCE(s.finding_count, 0)
 `;
 
 // A cycle measures only selected domains. Find each measured domain's latest
 // complete, successful observation before this cycle, even when an intervening
 // partial cycle skipped that domain. Failed/partial rows never replace knowledge.
+// Joined from the cycle's scans like FINDINGS_FOR_CYCLE_SQL, so no findings
+// access is a whole-table scan when idx_findings_scan_id is missing (SQ-167).
+// Bind order is unchanged: the scan_at bound comes before the cycle id.
 const BASELINE_FINDINGS_SQL = `
 	SELECT f.domain, f.category, f.severity, f.title
-	FROM findings f
-	WHERE f.scan_id IN (
-		SELECT (
-			SELECT prior.id FROM scans prior
-			WHERE prior.domain = current.domain AND prior.scan_at < ?
-			  AND prior.cycle_id IS NOT current.cycle_id AND prior.score IS NOT NULL
-			  AND (SELECT COUNT(*) FROM findings pf WHERE pf.scan_id = prior.id) >= COALESCE(prior.finding_count, 0)
-			ORDER BY prior.scan_at DESC, prior.id DESC LIMIT 1
-		)
-		FROM scans current
-		WHERE current.cycle_id = ? AND current.score IS NOT NULL
-		  AND (SELECT COUNT(*) FROM findings cf WHERE cf.scan_id = current.id) >= COALESCE(current.finding_count, 0)
+	FROM scans current
+	JOIN findings f ON f.domain = current.domain AND f.scan_id = (
+		SELECT prior.id FROM scans prior
+		WHERE prior.domain = current.domain AND prior.scan_at < ?
+		  AND prior.cycle_id IS NOT current.cycle_id AND prior.score IS NOT NULL
+		  AND (SELECT COUNT(*) FROM findings pf WHERE pf.scan_id = prior.id AND pf.domain = prior.domain) >= COALESCE(prior.finding_count, 0)
+		ORDER BY prior.scan_at DESC, prior.id DESC LIMIT 1
 	)
+	WHERE current.cycle_id = ? AND current.score IS NOT NULL
+	  AND (SELECT COUNT(*) FROM findings cf WHERE cf.scan_id = current.id AND cf.domain = current.domain) >= COALESCE(current.finding_count, 0)
 `;
 
 interface ActiveTenantRow {
@@ -134,6 +160,13 @@ interface DueDomainRow {
 	last_scanned_at: number | null;
 	watch_interval_hours: number | null;
 	fingerprint: string | null;
+}
+
+interface UnsettledCycleRow {
+	id: string;
+	super_tenant_id: string;
+	sub_tenant_id: string;
+	started_at: number;
 }
 
 interface PendingCycleRow {
@@ -413,6 +446,50 @@ async function rescanTenant(
 }
 
 /**
+ * Settle a cycle that passed {@link STALLED_CYCLE_SETTLE_MS} still short of its
+ * expected total. Every domain that never reported is counted as errored, so the
+ * cycle reaches the normal alert path in the same sweep. That path compares only
+ * the measured domains; unmeasured ones keep their prior knowledge. Because some
+ * domains were never measured, one operator alert fires when the guarded UPDATE
+ * settles the cycle. Delivery is fail-open.
+ */
+async function settleStalledCycle(env: TenantScheduledEnv, cycle: UnsettledCycleRow, nowMs: number): Promise<void> {
+	const settled = await env
+		.TENANT_REGISTRY_DB!.prepare(SETTLE_STALLED_CYCLE_SQL)
+		.bind(cycle.id)
+		.first<{ expected_total: number; completed_total: number; errored_total: number }>();
+	if (!settled) return; // Settled concurrently (late completions or another tick).
+
+	const details = {
+		cycleId: cycle.id,
+		superTenantId: cycle.super_tenant_id,
+		subTenantId: cycle.sub_tenant_id,
+		expected: settled.expected_total,
+		completed: settled.completed_total,
+		notCompleted: settled.errored_total,
+		ageHours: Math.round((nowMs - cycle.started_at) / 3_600_000),
+	};
+	logError('tenant_cycle_settled_partial', { severity: 'error', category: 'tenant.scheduled', details });
+	await sendAlert(
+		env.ALERT_WEBHOOK_URL ?? '',
+		buildAlertPayload({
+			title: `Tenant monitoring cycle settled partial: ${details.notCompleted} of ${details.expected} domains never completed`,
+			severity: 'warning',
+			metrics: {
+				cycle_id: details.cycleId,
+				sub_tenant_id: details.subTenantId,
+				expected: details.expected,
+				completed: details.completed,
+				not_completed: details.notCompleted,
+				age_hours: details.ageHours,
+			},
+			threshold: `cycle complete within ${STALLED_CYCLE_SETTLE_MS / 3_600_000}h of start`,
+		}),
+		{ bvWeb: env.BV_WEB },
+	).catch(() => {});
+}
+
+/**
  * Per-cycle alert sweep. Runs alongside the existing fuzzing scan on the
  * 15-minute trigger.
  *
@@ -449,11 +526,14 @@ export async function handleTenantCycleAlerts(
 	try {
 		const unsettled = await env.TENANT_REGISTRY_DB.prepare(UNSETTLED_CYCLES_SQL)
 			.bind(MAX_CYCLES_PER_ALERT_TICK)
-			.all<{ id: string; sub_tenant_id: string }>();
+			.all<UnsettledCycleRow>();
 		for (const cycle of unsettled.results ?? []) {
 			try {
 				const { db } = await resolveTenantUncached(env, cycle.sub_tenant_id);
 				await synchronizeCycleProgress(env.TENANT_REGISTRY_DB, db, cycle.id);
+				if (now() - cycle.started_at > STALLED_CYCLE_SETTLE_MS) {
+					await settleStalledCycle(env, cycle, now());
+				}
 			} catch (err) {
 				logError(err instanceof Error ? err : String(err), {
 					severity: 'warn',
