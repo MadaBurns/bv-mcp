@@ -3,7 +3,7 @@ import type { Context } from 'hono';
 import type { AppEnv } from '../index';
 import { RegisterRequestSchema } from '../schemas/oauth';
 import { isAllowedOAuthRedirectUri, OAUTH_KV_PREFIX } from '../lib/config';
-import { putClient } from './storage';
+import { putClient, StrongStateUnavailableError } from './storage';
 import { parseEnvelopeKey } from '../lib/kv-envelope';
 import { readBoundedText } from '../lib/request-body';
 import { consumeOAuthRateLimit, type OAuthRateLimitResult } from './rate-limit';
@@ -178,7 +178,16 @@ export async function handleRegister(c: Context<AppEnv>): Promise<Response> {
 		software_id: parsed.software_id,
 		software_version: parsed.software_version,
 	};
-	await putClient(kv, rec, kvEnvelopeKey);
+	try {
+		await putClient(kv, rec, kvEnvelopeKey);
+	} catch (error) {
+		if (error instanceof StrongStateUnavailableError) {
+			return c.json({ error: 'temporarily_unavailable', error_description: 'Client registration state is unavailable' }, 503, {
+				'Cache-Control': 'no-store',
+			});
+		}
+		throw error;
+	}
 
 	return c.json(
 		{

@@ -10,6 +10,21 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **`POST /oauth/token`, `/oauth/authorize`, and `/oauth/register` no longer return a bare
+  500 when the OAuth `SESSION_STORE` KV read or write rejects.** SQ-192 chaos H4 measured
+  that `consumeCode()`'s initial `kv.get()` in `src/oauth/storage.ts` was unwrapped: a
+  rejecting KV binding threw past `handleToken()`'s only `StrongStateUnavailableError`
+  catch and Hono's default (no `app.onError`) handler answered a plain 500 with no OAuth
+  error shape. Every KV access in `storage.ts` that a caller depends on to distinguish a
+  genuine miss from an outage (`getClient`, `putClient`, `putCode`, `consumeCode`'s read
+  and both deletes, and the legacy-seed reads in the token-version/entitlement-generation
+  helpers) now goes through `safeKvGet`/`safeKvPut`/`safeKvDelete`, which map a rejection
+  to `StrongStateUnavailableError` while keeping a `null` miss a non-error result. The
+  token endpoint already had the 503 `temporarily_unavailable` mapping wired for that
+  error type; `authorize.ts` and `register.ts` gained the same catch (a redirect-carried
+  `error=temporarily_unavailable` for `/oauth/authorize`'s post-validation code write, an
+  inline 503 JSON body for `/oauth/register`'s client write) since they shared the same
+  gap.
 - **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
   consumer's catch around the scan-persist call discarded the thrown error, so a
   `queue_dlq` finding from a failed tenant D1 write could not distinguish a
