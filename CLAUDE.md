@@ -227,6 +227,19 @@ Five gates: (1) blocked paths (`docs/plans|code-review|superpowers/`, `.dev/`,
   suite) and `ci-docs.yml` (docs-only PRs, which `ci.yml`'s `paths-ignore`
   skips). Their path lists are exact complements — keep them that way. Both must
   pass on a mixed PR; GitHub has no "or" semantics for a required name.
+- **`build-and-test` in `ci.yml` is a same-name aggregator, not the test runner
+  itself** — `preflight` (lint, `check:bindings`, the scoring-contract gate,
+  the Rust/WASM build, and `test/wasm-integration.test.ts`, the only spec that
+  needs the built WASM) and `test-shard` (a 3-way `matrix.shard` fanning out
+  the rest of the suite via `vitest --shard`) run in parallel; `build-and-test`
+  `needs: [preflight, test-shard]` with `if: always()` and fails unless both
+  report `success` (a skipped/cancelled dependency must not read as passing).
+  The job id and `name:` must stay `build-and-test` — that's the literal string
+  branch protection requires. `test-shard` deletes `test/wasm-integration.test.ts`
+  from its checkout before running: vitest's `--exclude` CLI flag has no effect
+  on the `workers` project in `vitest.config.mts`, since that project sets its
+  own literal `test.exclude` array which fully overrides any CLI-supplied
+  exclude for file discovery.
 - **Deploy**: `npm run deploy:prod` run by an operator is THE authoritative
   path. `deploy-prod.yml` is dispatch-only and disarmed by default. ⚠️
   `deploy:prod` deploys the MCP Worker ONLY — the two sidecars ship via `npm run
