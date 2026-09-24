@@ -176,6 +176,42 @@ describe('private Wrangler config injection', () => {
 		expect(injected.secrets?.required).not.toContain('ALERT_WEBHOOK_URL');
 	});
 
+	// SQ-185/SQ-169: bv-scanner-queue had no dead_letter_queue, so a message that
+	// exhausted max_retries was dropped with no durable marker. The queues merge is a
+	// wholesale replace (not a per-consumer field merge), so this asserts that stays
+	// true — an unknown consumer key like `dead_letter_queue` must pass through untouched.
+	it('passes through a dead_letter_queue field on a queues.consumers[] entry', () => {
+		const cwd = setupInjectFixture();
+		writePrivateOverlay(cwd, {
+			vars: productionVars(),
+			queues: {
+				producers: [{ binding: 'BV_SCANNER_QUEUE', queue: 'bv-scanner-queue' }],
+				consumers: [
+					{
+						queue: 'bv-scanner-queue',
+						max_batch_size: 25,
+						max_retries: 3,
+						dead_letter_queue: 'bv-scanner-dlq',
+					},
+				],
+			},
+		});
+
+		runInject(cwd);
+		const injected = JSON.parse(readFileSync(join(cwd, 'wrangler.production.jsonc'), 'utf8')) as {
+			queues?: { consumers?: Array<Record<string, unknown>> };
+		};
+
+		expect(injected.queues?.consumers).toEqual([
+			{
+				queue: 'bv-scanner-queue',
+				max_batch_size: 25,
+				max_retries: 3,
+				dead_letter_queue: 'bv-scanner-dlq',
+			},
+		]);
+	});
+
 	// wrangler.private.example.jsonc is the template operators copy to .dev/, and
 	// scripts/deploy-private.mjs deploys the result. It previously carried its own
 	// `durable_objects` copy that had gone stale, so a fresh overlay was missing
@@ -195,6 +231,7 @@ describe('private Wrangler config injection', () => {
 			migrations?: Array<{ tag?: string }>;
 			triggers?: { crons?: string[] };
 			vars?: Record<string, unknown>;
+			queues?: { consumers?: Array<Record<string, unknown>> };
 		};
 
 		expect(
@@ -207,6 +244,10 @@ describe('private Wrangler config injection', () => {
 		// ALERT_WEBHOOK_URL as a var (#1073) — that is the exact disclosure this
 		// ticket removes, and the injector fails closed if either does.
 		expect(injected.vars, 'ALERT_WEBHOOK_URL must not ship as a var').not.toHaveProperty('ALERT_WEBHOOK_URL');
+		// SQ-185: the shipped example's bv-scanner-queue consumer carries a
+		// dead_letter_queue, and it must survive the real injector end-to-end.
+		const scannerConsumer = injected.queues?.consumers?.find((consumer) => consumer.queue === 'bv-scanner-queue');
+		expect(scannerConsumer?.dead_letter_queue).toBe('bv-scanner-dlq');
 	});
 });
 

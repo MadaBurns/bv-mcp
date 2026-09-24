@@ -96,6 +96,69 @@ fail-soft. Common checks:
 | Webhook failures repeat | Receiver outage | Fix receiver, then re-trigger deliberately. |
 | Duplicate cycle/domain rows | Schema drift | Verify the unique index migration. |
 
+### Dead-Letter Queue Setup
+
+`bv-scanner-queue` has no dead-letter queue by default. A message that
+exhausts `max_retries` (3) is dropped with no durable marker anywhere —
+SQ-169's queue analytics found 260 of 500 messages lost this way across the
+09-13 and 09-20 tenant cycles (`DeleteMessage` failures, ~3x redelivery, then
+silence). `npm run check:bindings:prod` warns (without failing) when the
+`bv-scanner-queue` consumer in the generated `wrangler.production.jsonc` has
+no `dead_letter_queue`, so an unset DLQ is visible before every deploy.
+
+To wire one in:
+
+```bash
+npx wrangler queues create bv-scanner-dlq
+```
+
+Then add the field to the `bv-scanner-queue` consumer in
+`.dev/wrangler.deploy.jsonc` (see `wrangler.private.example.jsonc` for the
+shape):
+
+```jsonc
+{
+	"queues": {
+		"consumers": [
+			{
+				"queue": "bv-scanner-queue",
+				"max_batch_size": 25,
+				"max_retries": 3,
+				"dead_letter_queue": "bv-scanner-dlq"
+			}
+		]
+	}
+}
+```
+
+Redeploy (`npm run deploy:prod`) so `scripts/inject-private-config.cjs`
+regenerates `wrangler.production.jsonc` with the field and `wrangler deploy`
+provisions the binding.
+
+A dead-letter queue is consumed like any other queue — Cloudflare has no
+separate "peek"/"inspect" verb for it. For a one-off look without deploying a
+Worker, attach an HTTP pull consumer and drain it via the Queues HTTP Pull API:
+
+```bash
+npx wrangler queues consumer http add bv-scanner-dlq
+```
+
+then `POST /accounts/{account_id}/queues/{queue_id}/messages/pull` (and
+`.../ack` to remove read messages) with an API token, per Cloudflare's Queues
+HTTP Pull Consumer docs. For ongoing handling, attach a real Worker consumer
+instead:
+
+```bash
+npx wrangler queues consumer worker add bv-scanner-dlq <inspection-worker-name>
+```
+
+Each dead-lettered message is the original scan payload (`{ cycle_id,
+sub_tenant_id, domain }`), so a recovered message can be re-`send()`ed onto
+`bv-scanner-queue` to retry the scan once the underlying failure (see Schema
+Drift below, or a D1/CPU-limit issue) is fixed. Add DLQ depth to the
+spend-monitoring notification set in
+[operator-runbook.md](./operator-runbook.md) §4 once this is live.
+
 ## Schema Drift
 
 Tenant migrations are applied as raw SQL files by `provision-tenant.mjs` at
