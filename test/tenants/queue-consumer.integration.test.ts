@@ -61,11 +61,20 @@ type RecordedCall = { sql: string; binds: unknown[] };
 interface MakeMockD1Options {
 	rowsBySql?: Record<string, unknown[]>;
 	throwOnSql?: Set<string>;
+	/**
+	 * SQ-179: throw a specific (named) error on the FIRST `.run()` for the given
+	 * SQL, then succeed on every subsequent call for that same SQL. Models a
+	 * transient D1 write failure — e.g. `persistScan`'s SCANS_INSERT_SQL failing
+	 * once while `writeDlqRow`'s later insert of the same SQL still succeeds —
+	 * without the blanket always-throw semantics of `throwOnSql`.
+	 */
+	throwOnRunOnce?: Map<string, Error>;
 }
 
 function makeMockD1(opts: MakeMockD1Options = {}) {
 	const rowsBySql = opts.rowsBySql ?? {};
 	const throwOnSql = opts.throwOnSql ?? new Set<string>();
+	const throwOnRunOnce = opts.throwOnRunOnce ?? new Map<string, Error>();
 	const calls: RecordedCall[] = [];
 	const db: D1Database = {
 		prepare(sql: string) {
@@ -90,6 +99,11 @@ function makeMockD1(opts: MakeMockD1Options = {}) {
 				async run() {
 					calls.push({ sql, binds });
 					if (throwOnSql.has(sql)) throw new Error('d1_run_failed');
+					const onceErr = throwOnRunOnce.get(sql);
+					if (onceErr) {
+						throwOnRunOnce.delete(sql);
+						throw onceErr;
+					}
 					return {
 						success: true,
 						meta: { changes: 1, last_row_id: 0, duration: 0, rows_read: 0, rows_written: 1, size_after: 0 },
@@ -146,12 +160,29 @@ function makeCtx() {
 	return { waitUntil: (p: Promise<unknown>) => ctx.waitUntil(p) };
 }
 
+/** Parse all structured JSON objects emitted via console.log (mirrors test/audit.spec.ts). */
+function getConsoleLogs(spy: ReturnType<typeof vi.spyOn>): Record<string, unknown>[] {
+	const logs: Record<string, unknown>[] = [];
+	for (const call of spy.mock.calls) {
+		const arg = call[0];
+		if (typeof arg === 'string') {
+			try {
+				logs.push(JSON.parse(arg) as Record<string, unknown>);
+			} catch {
+				// not JSON, skip
+			}
+		}
+	}
+	return logs;
+}
+
 beforeEach(() => {
 	resetTenantResolverCache();
 	handleToolsCallMock.mockReset();
 });
 afterEach(() => {
 	resetTenantResolverCache();
+	vi.restoreAllMocks();
 });
 
 describe('processScanMessage', () => {
@@ -380,6 +411,69 @@ describe('processScanMessage', () => {
 		expect(dlqScan.binds[3]).toBeNull();
 		expect(dlqScan.binds[3]).not.toBe(0);
 		expect(dlqScan.binds[4]).toBeNull();
+	});
+
+	it('logs the persist error cause and carries it into the queue_dlq finding detail (SQ-179)', async () => {
+		// Regression guard: `catch {}` around persistScan used to discard the
+		// thrown error entirely, so a persist_failed DLQ row could never tell an
+		// operator whether the tenant D1 write failed on a constraint, a
+		// timeout, or a size limit. Force a NAMED error out of the scan-row
+		// insert and assert both the structured log call and the finding detail
+		// carry its name + a bounded, sanitised message.
+		handleToolsCallMock.mockImplementation(async (_call, _kv, runtimeOptions) => {
+			emitScanCapture(runtimeOptions, 'example.com', { score: 90, grade: 'A', findings: [] });
+			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
+		});
+		const { processScanMessage, MAX_ATTEMPTS } = await import('../../src/tenants/queue-consumer');
+		const registry = makeMockD1({
+			rowsBySql: {
+				[REGISTRY_LOOKUP_SQL]: [
+					{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'x', active: 1 },
+				],
+			},
+		});
+
+		class D1ConstraintError extends Error {
+			constructor(message: string) {
+				super(message);
+				this.name = 'D1_ERROR';
+			}
+		}
+		// Fails only the FIRST SCANS_INSERT_SQL run (persistScan) — the later
+		// insert from writeDlqRow's own DLQ marker must still succeed.
+		const tenant = makeMockD1({
+			throwOnRunOnce: new Map([[SCANS_INSERT_SQL, new D1ConstraintError('UNIQUE constraint failed: scans.id')]]),
+		});
+		const customEnv = {
+			...env,
+			TENANT_REGISTRY_DB: registry.db,
+			[TEST_TENANT_BINDING]: tenant.db,
+		};
+		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		const outcome = await processScanMessage(validMsg, MAX_ATTEMPTS, customEnv, makeCtx());
+		expect(outcome).toBe('ack');
+
+		// Structured log: category 'tenant.queue', error name, cycle_id / domain hash.
+		const persistLog = getConsoleLogs(consoleSpy).find((l) => l.category === 'tenant.queue');
+		expect(persistLog).toBeDefined();
+		expect(persistLog!.error).toContain('UNIQUE constraint failed');
+		const logDetails = persistLog!.details as Record<string, unknown>;
+		expect(logDetails.errorName).toBe('D1_ERROR');
+		expect(logDetails.cycleId).toBe(validMsg.cycle_id);
+		expect(typeof logDetails.domainHash).toBe('string');
+		expect(logDetails.domainHash).not.toBe(validMsg.domain);
+
+		// queue_dlq finding: detail + metadata.reason carry the sanitised cause,
+		// not a bare 'persist_failed'.
+		const findingInserts = tenant.calls.filter((c) => c.sql === FINDINGS_INSERT_SQL);
+		expect(findingInserts).toHaveLength(1);
+		const detail = findingInserts[0]!.binds[6] as string;
+		expect(detail).toContain('persist_failed');
+		expect(detail).toContain('D1_ERROR');
+		expect(detail).toContain('UNIQUE constraint failed');
+		const metadata = JSON.parse(findingInserts[0]!.binds[7] as string) as { reason: string };
+		expect(metadata.reason).toBe(detail);
 	});
 
 	it('retries failed DLQ progress without creating another marker or rerunning the failed scan', async () => {

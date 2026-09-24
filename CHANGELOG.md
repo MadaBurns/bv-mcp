@@ -8,6 +8,16 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
+  consumer's catch around the scan-persist call discarded the thrown error, so a
+  `queue_dlq` finding from a failed tenant D1 write could not distinguish a
+  constraint violation from a timeout or a size limit. The consumer now logs the
+  error's name and a bounded, sanitised message (`category: 'tenant.queue'`,
+  cycle id, domain hash) and carries the same sanitised reason into the finding's
+  `detail` and `metadata.reason`.
+
 ## [3.89.0] - 2026-09-24
 
 ### Added

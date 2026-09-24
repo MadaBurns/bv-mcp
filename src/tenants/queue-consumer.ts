@@ -26,7 +26,7 @@
 
 import { ZodError } from 'zod';
 import { handleToolsCall } from '../handlers/tools';
-import { createAnalyticsClient } from '../lib/analytics';
+import { createAnalyticsClient, hashDomain } from '../lib/analytics';
 import { parseScoringConfigCached } from '../lib/scoring-config';
 import { parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from '../lib/config';
 import { ScanQueueMessageSchema, type ScanQueueMessage } from '../schemas/tenant-internal';
@@ -35,12 +35,20 @@ import { synchronizeCycleProgress } from './cycle-progress';
 import { resolveTenant, type ResolverEnv, type TenantDbHandle } from './tenant-resolver';
 import { resolveAccumulatorShardModeFromEnv } from '../lib/profile-accumulator';
 import { parseTenantScanSnapshot, toTenantScanSnapshot, type TenantScanSnapshot } from './scan-snapshot';
+import { logError, sanitizeString } from '../lib/log';
 import type { Finding } from '../lib/scoring';
 
 /** Wall-clock budget for one message — covers handleToolsCall + the D1 inserts. */
 export const QUEUE_MESSAGE_TIMEOUT_MS = 20_000;
 /** After this many delivery attempts, the consumer writes a DLQ row and acks. */
 export const MAX_ATTEMPTS = 3;
+/**
+ * Bound on the sanitised error message carried into the log line and the
+ * `queue_dlq` finding (SQ-179). D1 error text is a diagnostic string, never
+ * customer data or the failing SQL itself — this only guards against an
+ * unexpectedly long driver message bloating the finding row.
+ */
+const MAX_PERSIST_ERROR_MESSAGE_LENGTH = 200;
 
 // `f.domain = s.domain` keeps the join bounded by the base-schema domain index
 // when `idx_findings_scan_id` is missing (see COMPLETED_SCANS_SQL in cycle-progress.ts).
@@ -401,10 +409,22 @@ export async function processScanMessage(
 			sub_tenant_id: parsed.sub_tenant_id,
 			cycle_id: parsed.cycle_id
 		}));
-	} catch {
+	} catch (err) {
 		// Persistence failure is transient (D1 contention, throttling). Retry.
+		// SQ-179: the prior `catch {}` discarded the thrown error entirely, so a
+		// queue_dlq finding from this path could never distinguish a constraint
+		// violation from a timeout or a size limit. Capture the error's name and
+		// a bounded, sanitised message (never the raw SQL or bound values) so an
+		// operator triaging the cycle report can tell them apart.
+		const errorName = err instanceof Error ? err.name || 'Error' : 'UnknownError';
+		const errorMessage = sanitizeString(err instanceof Error ? err.message : String(err), MAX_PERSIST_ERROR_MESSAGE_LENGTH);
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'error',
+			category: 'tenant.queue',
+			details: { message: 'tenant_queue_persist_failed', cycleId: parsed.cycle_id, domainHash: hashDomain(parsed.domain), errorName },
+		});
 		if (isLastAttempt) {
-			return deadLetterMessage(env, tenantDb, parsed, 'persist_failed');
+			return deadLetterMessage(env, tenantDb, parsed, `persist_failed:${errorName}:${errorMessage}`);
 		}
 		return 'retry';
 	}
