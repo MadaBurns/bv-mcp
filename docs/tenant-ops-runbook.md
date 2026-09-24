@@ -123,8 +123,12 @@ export locations in ignored notes.
 
 ### Legacy `scans` rows with a null score
 
-Two separate defects left null scores in the `scans` table. They need different
-handling, so identify which one produced a given row before acting on it.
+Two past defects and one by-design outcome all leave a null score in the
+`scans` table. They need different handling, so identify which one produced a
+given row before acting on it. In practice the third case dominates: a 09-20
+cycle sample of 17 null rows was 14 ungraded-by-design and 3 DLQ, zero pre-fix
+capture-gap rows (that defect is fixed and its rows age out over the retention
+window).
 
 **1. Pre-fix rows: the capture hook never fired.** Until `scanResultCapture` was
 added (`src/handlers/tools.ts`, with the projection in
@@ -147,13 +151,44 @@ now write a **null** score; before that fix they wrote a hardcoded `0`, which
 misreported an unmeasured domain as a real catastrophic score and, being
 non-null, survived any null-skipping filter.
 
+**3. Ungraded by design: the scanner measured and declined to grade.** This is
+the dominant live case, not a defect. `buildNonResolvingResult` and
+`buildDnsBrokenResult` (`src/tools/scan-domain.ts:353-386` and `:408`) return a
+null score with no findings and no per-category scores when the apex does not
+resolve at all — the non-resolving gate in `computeScanScore`
+(`packages/dns-checks/src/scoring/engine.ts:476-489`) enforces the same rule
+scan-side: a dead or unresolvable zone has no measurable posture, so scoring it
+would fabricate "absence = missing control" passes instead of reporting
+nothing. DoH-verified reason classes behind these rows:
+
+  - **NXDOMAIN** — the apex does not resolve at all; the domain is not
+    registered or has no delegation.
+  - **SERVFAIL, `dnssec_bogus`** — the validating query SERVFAILs but a
+    checking-disabled (`cd=1`) retry succeeds: the zone's DNSSEC signatures are
+    bogus or expired.
+  - **SERVFAIL, `unresolvable`** — both the validating query and the `cd=1`
+    retry SERVFAIL: a broken or lame delegation, not a DNSSEC issue.
+  - **Timeout before enough was gathered** — the scan's per-check budget expired
+    with too little collected (e.g. no NS or A records observed) to assess.
+
+The stored shape is `result_json = {"score":null,"grade":null,"maturityStage":
+0-or-null,"findings":[]}` with `finding_count` 0 — no `error` key, which is
+what distinguishes it from a DLQ row.
+
+**The same small set of public-sector domains (`.gov`/`.us` TLDs observed) recur
+in this bucket every cycle** — broken or lame NS delegation that has not been
+fixed upstream, not a scanner regression. Do not re-investigate a domain that
+was already confirmed ungraded-by-design in a prior cycle; check whether it
+recurs before treating it as new.
+
 Identify which is which (placeholder tenant, read-only first):
 
 ```sql
 SELECT
   CASE
-    WHEN result_json IS NULL                    THEN 'pre_fix_capture_gap'
-    WHEN json_extract(result_json,'$.error') IS NOT NULL THEN 'dlq'
+    WHEN result_json IS NULL                               THEN 'pre_fix_capture_gap'
+    WHEN json_extract(result_json,'$.error') IS NOT NULL    THEN 'dlq'
+    WHEN json_extract(result_json,'$.findings') IS NOT NULL THEN 'ungraded_by_design'
     ELSE 'other'
   END AS kind,
   COUNT(*) AS rows, MIN(scan_at), MAX(scan_at)
