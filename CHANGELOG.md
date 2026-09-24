@@ -17,7 +17,6 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   error's name and a bounded, sanitised message (`category: 'tenant.queue'`,
   cycle id, domain hash) and carries the same sanitised reason into the finding's
   `detail` and `metadata.reason`.
-=======
 - **Weekly-rescan queue-send failures are now alertable, not console-only.** A failed
   `BV_SCANNER_QUEUE.send` during the Sunday dispatch (`tenant_weekly_rescan_queue_send_failed`)
   logged via `logError` only, so it never reached the `bv_dns_security_mcp` Analytics Engine
