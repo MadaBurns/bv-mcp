@@ -1679,10 +1679,15 @@ export function normalizeCron(expr: string): string {
 
 /**
  * Discriminated route for a scheduled cron trigger. `'periodic'` is the
- * catch-all (the 15-min sweep) — every cron without a dedicated branch routes
- * here, so the cron-dispatch-coverage audit treats it as the explicit fallback.
+ * legitimate 15-minute-interval sweep, matched explicitly — it is NOT a
+ * catch-all. `'unknown'` is the true catch-all: any cron string (garbage, a
+ * typo in wrangler.jsonc, or a well-formed expression nobody wired a branch
+ * for) that matches none of the recognized routes, including the periodic
+ * one. `scheduled()` must run nothing for `'unknown'` — only log it — so a
+ * misconfigured trigger never silently runs the tenant sweep on the wrong
+ * cadence.
  */
-export type CronRoute = 'daily-digest' | 'weekly-tenant-rescan' | 'scan-dispatch' | 'scan-rate-recompute' | 'periodic';
+export type CronRoute = 'daily-digest' | 'weekly-tenant-rescan' | 'scan-dispatch' | 'scan-rate-recompute' | 'periodic' | 'unknown';
 
 /**
  * Map a cron expression to its dispatch route, comparing the normalized form so
@@ -1701,7 +1706,8 @@ export function routeCron(cron: string): CronRoute {
 	// operator adds them at enable time; the handlers no-op while the flag is off.
 	if (normalized === normalizeCron('* * * * *')) return 'scan-dispatch';
 	if (normalized === normalizeCron('*/30 * * * *')) return 'scan-rate-recompute';
-	return 'periodic';
+	if (normalized === normalizeCron('*/15 * * * *')) return 'periodic';
+	return 'unknown';
 }
 
 export default {
@@ -1761,7 +1767,7 @@ export default {
 		} else if (route === 'scan-rate-recompute') {
 			// Phase 2 scheduler (DARK) — persist per-lane adaptive rate to KV.
 			ctx.waitUntil(handleScanRateRecompute(env as ScanDispatchEnv, ctx));
-		} else {
+		} else if (route === 'periodic') {
 			ctx.waitUntil(handleScheduled(env as ScheduledEnv));
 			ctx.waitUntil(handleFuzzingScan(env as ScheduledEnv));
 			// #896: D1-backed public-door cf-connecting-ip presence audit. Own waitUntil so
@@ -1769,6 +1775,20 @@ export default {
 			ctx.waitUntil(handleClientIpHeaderAudit(env as ScheduledEnv));
 			ctx.waitUntil(handleTenantCycleAlerts(env, ctx));
 			ctx.waitUntil(handleBrandAuditWatches(env, ctx));
+		} else {
+			// True catch-all: a cron string (typo in wrangler.jsonc, or a new
+			// trigger added before its dispatch branch) that matches nothing,
+			// including the periodic sweep. Run NO handler — silently folding an
+			// unrecognized cron into the tenant sweep would run it on whatever
+			// cadence the typo produced. `details.cron` is bounded/control-char
+			// stripped by `logEvent`'s `sanitizeLogValue`.
+			logEvent({
+				timestamp: new Date().toISOString(),
+				category: 'cron',
+				result: 'unknown_cron',
+				severity: 'warn',
+				details: { cron: event.cron },
+			});
 		}
 	},
 	/**

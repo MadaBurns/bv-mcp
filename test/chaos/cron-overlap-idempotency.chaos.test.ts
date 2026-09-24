@@ -429,23 +429,25 @@ describe('Chaos F: cron overlap and idempotency', () => {
 
 	describe('H4: routeCron receives an unknown cron string', () => {
 		it(
-			'FALSIFIED: an unrecognized cron is NOT a distinct "unknown" route — routeCron folds it into the same ' +
-				"'periodic' fallback as the legitimate 15-min sweep, so scheduled() runs the full periodic handler set " +
-				'(including the tenant cycle-alerts handler), with no dedicated unknown-cron log line',
+			'FIXED (SQ-198): an unrecognized cron is a distinct "unknown" route, never the "periodic" fallback used ' +
+				'by the legitimate 15-min sweep',
 			async () => {
 				const { routeCron } = await import('../../src/index');
 				// Not a recognized route AND not a plausible 5-field cron at all.
-				expect(routeCron('not a cron expression')).toBe('periodic');
-				// Even a well-formed but otherwise-unmapped 5-field cron folds to the
-				// same fallback (no distinct "unrecognized" branch exists).
-				expect(routeCron('17 3 * * 2')).toBe('periodic');
+				expect(routeCron('not a cron expression')).toBe('unknown');
+				// Even a well-formed but otherwise-unmapped 5-field cron routes to
+				// 'unknown', not the periodic fallback.
+				expect(routeCron('17 3 * * 2')).toBe('unknown');
+				// Negative control on the fallback itself: the actual periodic cron
+				// still routes to 'periodic', so 'unknown' is a genuinely separate
+				// branch rather than routeCron always returning 'unknown' now.
+				expect(routeCron('*/15 * * * *')).toBe('periodic');
 			},
 		);
 
 		it(
-			'FALSIFIED (integration): scheduled() with an unknown cron string still invokes handleTenantCycleAlerts ' +
-				'(a tenant handler) — contradicts "resolves without running any tenant handler" — but scheduled() ' +
-				'itself does resolve without throwing',
+			'FIXED (SQ-198): scheduled() with an unknown cron string invokes NO handler (tenant or periodic), logs a ' +
+				"single structured warn ('cron'/'unknown_cron') carrying the cron string, and resolves without throwing",
 			async () => {
 				const handleTenantWeeklyRescanMock = vi.fn(async (_e: unknown, _c: unknown) => undefined);
 				const handleTenantCycleAlertsMock = vi.fn(async (_e: unknown, _c: unknown) => undefined);
@@ -453,6 +455,7 @@ describe('Chaos F: cron overlap and idempotency', () => {
 				const handleDailyDigestMock = vi.fn(async (_e: unknown) => undefined);
 				const handleFuzzingScanMock = vi.fn(async (_e: unknown) => undefined);
 				const handleClientIpHeaderAuditMock = vi.fn(async (_e: unknown) => undefined);
+				const handleBrandAuditWatchesMock = vi.fn(async (_e: unknown, _c: unknown) => undefined);
 
 				vi.doMock('../../src/tenants/scheduled-handlers', async () => {
 					const actual = await vi.importActual<typeof import('../../src/tenants/scheduled-handlers')>(
@@ -472,9 +475,12 @@ describe('Chaos F: cron overlap and idempotency', () => {
 						handleDailyDigest: handleDailyDigestMock,
 						handleFuzzingScan: handleFuzzingScanMock,
 						handleClientIpHeaderAudit: handleClientIpHeaderAuditMock,
+						handleBrandAuditWatches: handleBrandAuditWatchesMock,
 					};
 				});
 				vi.resetModules();
+
+				const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
 				const worker = (await import('../../src')).default;
 				const ctx = createExecutionContext();
@@ -487,17 +493,23 @@ describe('Chaos F: cron overlap and idempotency', () => {
 				).resolves.toBeUndefined();
 				await waitOnExecutionContext(ctx);
 
-				// The periodic fallback set ran in full, including the tenant cycle
-				// alerts handler — the ticket's H4 premise that NO tenant handler runs
-				// for an unknown cron does not hold against the actual dispatcher.
-				expect(handleScheduledMock).toHaveBeenCalledTimes(1);
-				expect(handleFuzzingScanMock).toHaveBeenCalledTimes(1);
-				expect(handleClientIpHeaderAuditMock).toHaveBeenCalledTimes(1);
-				expect(handleTenantCycleAlertsMock).toHaveBeenCalledTimes(1);
-				// The weekly-rescan branch specifically does NOT run (it's gated on the
-				// dedicated Sunday-02:00 route, not the periodic fallback).
+				// No handler — tenant or periodic — ran for the unrecognized cron.
+				expect(handleScheduledMock).not.toHaveBeenCalled();
+				expect(handleFuzzingScanMock).not.toHaveBeenCalled();
+				expect(handleClientIpHeaderAuditMock).not.toHaveBeenCalled();
+				expect(handleTenantCycleAlertsMock).not.toHaveBeenCalled();
+				expect(handleBrandAuditWatchesMock).not.toHaveBeenCalled();
 				expect(handleTenantWeeklyRescanMock).not.toHaveBeenCalled();
 				expect(handleDailyDigestMock).not.toHaveBeenCalled();
+
+				// A single structured warn was logged, carrying the offending cron string.
+				const unknownCronLogs = logSpy.mock.calls
+					.map((c) => String(c[0]))
+					.filter((line) => line.includes('"result":"unknown_cron"'));
+				expect(unknownCronLogs).toHaveLength(1);
+				expect(unknownCronLogs[0]).toContain('"category":"cron"');
+				expect(unknownCronLogs[0]).toContain('"severity":"warn"');
+				expect(unknownCronLogs[0]).toContain('garbage not a cron');
 
 				vi.doUnmock('../../src/tenants/scheduled-handlers');
 				vi.doUnmock('../../src/scheduled');
