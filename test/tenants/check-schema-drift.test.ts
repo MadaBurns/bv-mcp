@@ -193,11 +193,10 @@ describe('columnsSqlForTable', () => {
 	});
 
 	it('TABLE_NAME_RE accepts only bare identifiers', () => {
-		expect(TABLE_NAME_RE.test('sub_tenants')).toBe(true);
-		expect(TABLE_NAME_RE.test('_private1')).toBe(true);
-		expect(TABLE_NAME_RE.test('sub tenants')).toBe(false);
-		expect(TABLE_NAME_RE.test("sub_tenants'")).toBe(false);
-		expect(TABLE_NAME_RE.test('1table')).toBe(false);
+		const bareIdentifiers = ['sub_tenants', '_private1'];
+		const unsafeNames = ['sub tenants', "sub_tenants'", '1table'];
+		for (const name of bareIdentifiers) expect(TABLE_NAME_RE.test(name)).toBe(true);
+		for (const name of unsafeNames) expect(TABLE_NAME_RE.test(name)).toBe(false);
 	});
 });
 
