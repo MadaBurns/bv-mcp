@@ -62,4 +62,28 @@ describe('parseScoringConfigCached', () => {
 		expect(result1).toBe(result2);
 		expect(result1).toEqual(DEFAULT_SCORING_CONFIG);
 	});
+
+	// SQ-203: malformed SCORING_CONFIG JSON used to resolve to defaults with zero
+	// trace — parseScoringConfig's JSON.parse catch returned before the warn path
+	// ran. It now routes through a structured logEvent (category 'config', result
+	// 'scoring_config_invalid_json'), and — same memoization as every other input
+	// above — only once per isolate for a repeated identical malformed value.
+	it('logs a structured warning exactly once per isolate for malformed JSON, not once per call', async () => {
+		const logModule = await import('../src/lib/log');
+		const logEventSpy = vi.spyOn(logModule, 'logEvent');
+		const { parseScoringConfigCached } = await import('../src/lib/scoring-config');
+		const { DEFAULT_SCORING_CONFIG } = await import('@blackveil/dns-checks/scoring');
+
+		const raw = '{not valid json';
+		const result1 = parseScoringConfigCached(raw);
+		const result2 = parseScoringConfigCached(raw);
+
+		expect(result1).toBe(result2);
+		expect(result1).toEqual(DEFAULT_SCORING_CONFIG);
+		expect(logEventSpy).toHaveBeenCalledTimes(1);
+		const event = logEventSpy.mock.calls[0]?.[0];
+		expect(event?.category).toBe('config');
+		expect(event?.result).toBe('scoring_config_invalid_json');
+		expect(event?.severity).toBe('warn');
+	});
 });

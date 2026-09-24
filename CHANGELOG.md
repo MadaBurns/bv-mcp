@@ -69,6 +69,53 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   `alert_outcome = 'unreconcilable'`, guarded so the alert is not repeated. The cycle stays
   unsettled and settles normally if the D1 recovers.
 
+- **`dane_https`, `svcb_https` and `subdomailing` now abstain when their DNS probe never
+  got an answer.** Under a DoH transport failure or timeout, the other 14 DNS-backed
+  categories returned `checkStatus: 'error'` and dropped out of scoring, but these three
+  caught their own failed lookup and returned a COMPLETED result that counted as measured
+  evidence: a `low` "query failed" finding at 95 for `dane_https` and `svcb_https`, and for
+  `subdomailing` a "No SPF record" verdict at 100, because the SPF include-chain walk
+  swallowed the failed root TXT lookup. A total outage therefore read 5/19 completed instead
+  of 2/19. Each now returns the not-assessed shape (`checkStatus: 'error'`, score 0,
+  `passed: false`, `partial: true`, one `info` finding marked `errorKind: 'dns_error'`),
+  so the category is excluded from scoring, retried and kept out of the cache. An answered
+  empty or NXDOMAIN lookup is still a measured absence. Scores for domains whose lookups
+  answer are unchanged (the parity corpus is unaffected). The fix is in
+  `@blackveil/dns-checks` (`checkDANEHTTPS`, `checkSVCBHTTPS`, `checkSubdomailing`), so
+  bv-web-prod gets it when it next re-vendors the package.
+- **`check_http_security` now abstains on an exhausted redirect-hop cap instead of scoring
+  the loop's last hop.** A persistent redirect loop was correctly BOUNDED by the hop cap, but
+  once the cap was hit while the last response was still a 3xx, `analyzeSecurityHeaders()` ran
+  on that redirect response's headers as if it were the final page — `checkStatus` stayed
+  undefined (measured) and a probe that never reached the origin produced a confident "header
+  missing" slate (chaos SQ-194 H3). `followRedirects` now reports `hopCapExceeded`, and the
+  exhausted-cap branch abstains (`checkStatus: 'error'`, `errorKind: 'redirect_chain_unresolved'`,
+  no `missingControl`) so `scan_domain` excludes `http_security` (absent, not zeroed) the same
+  way the existing 503/blocked-probe/deadline branches already do. The wrapper's dual-fetch
+  redirect cap (`src/tools/check-http-security.ts`) now imports the package's
+  `MAX_REDIRECT_HOPS` (exported as `HTTP_SECURITY_MAX_REDIRECT_HOPS`) instead of hardcoding a
+  separate, larger cap of its own. A chain that resolves within the cap is unchanged. A hop
+  that was _cut_ is not a loop. That covers a spent fetch budget, a stalled hop that aborted or
+  timed out, and a refused (SSRF/robots) redirect target. The wrapper's pre-probe used to hand
+  the package a synthetic 3xx that it re-served on every follow-up hop, so a stalled hop under
+  `scan_domain` was reported as `redirect_chain_unresolved` and dropped from the score. Now,
+  when a pre-probe hop throws, the package's follow-up hop fails the same way, and the category
+  stays measured from the last 3xx that did answer (#674). The abstention fires only after the
+  full hop cap of real 3xx answers. (SQ-208)
+- **Two silent misconfigurations now log instead of degrading invisibly.** A malformed
+  `SCORING_CONFIG` JSON env var made `parseScoringConfig` return
+  `DEFAULT_SCORING_CONFIG` from the `JSON.parse` catch before the warn path ever ran
+  — the same silent-override class as the previously-fixed inert `coreWeights`
+  override. It now emits one structured warning (`category: 'config'`,
+  `result: 'scoring_config_invalid_json'`), bounded and never echoing the raw config
+  text, at most once per isolate via the existing memoization. Separately, an
+  unparseable `ALERT_WEBHOOK_URL` made `sendAlert`'s `catch` around `new URL()`
+  return `false` without ever calling `fetch` or `logError`, dropping every operator
+  alert with zero trace. It now logs once per call (`category: 'alerting'`,
+  `result: 'webhook_url_invalid'`), recording only the URL's length and scheme, never
+  the URL value itself. Measured by chaos SQ-195; fixed by SQ-203. Both behaviors
+  (still defaulting/still returning `false`) are unchanged — logging-only fixes.
+
 ## [3.90.0] - 2026-09-24
 
 ### Fixed

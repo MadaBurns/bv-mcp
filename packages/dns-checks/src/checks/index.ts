@@ -24,7 +24,7 @@ export { checkDANEHTTPS } from './check-dane-https';
 export { checkSVCBHTTPS } from './check-svcb-https';
 export { checkSubdomainTakeover } from './check-subdomain-takeover';
 export { checkSubdomailing } from './check-subdomailing';
-export { checkHTTPSecurity } from './check-http-security';
+export { checkHTTPSecurity, MAX_REDIRECT_HOPS as HTTP_SECURITY_MAX_REDIRECT_HOPS } from './check-http-security';
 
 // ── Analysis utilities (re-exported for consumers) ───────────────────────────
 export { parseDmarcTags } from './dmarc-utils';

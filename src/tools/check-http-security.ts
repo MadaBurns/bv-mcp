@@ -11,7 +11,13 @@
  * passed to the package's analysis layer.
  */
 
-import { checkHTTPSecurity, withRobotsGate, SCANNER_USER_AGENT, createRobotsGroupCache } from '@blackveil/dns-checks';
+import {
+	checkHTTPSecurity,
+	withRobotsGate,
+	SCANNER_USER_AGENT,
+	createRobotsGroupCache,
+	HTTP_SECURITY_MAX_REDIRECT_HOPS,
+} from '@blackveil/dns-checks';
 import type { FetchFunction } from '@blackveil/dns-checks';
 import { createRobotsProvenance, type RobotsProvenance } from '../lib/robots-provenance';
 import type { CheckResult } from '../lib/scoring';
@@ -36,8 +42,17 @@ const MERGE_HEADERS = [
 	'cross-origin-embedder-policy',
 ] as const;
 
-/** Maximum manual redirect hops to follow during dual-fetch probes. */
-const MAX_REDIRECT_HOPS = 5;
+/**
+ * Maximum manual redirect hops to follow during dual-fetch probes.
+ *
+ * Imported from the package (SQ-204) rather than hardcoded here — this used to be a separate
+ * `= 5` local constant, independent of the package's own `followRedirects` cap (3). A wrapper
+ * cap larger than the package's meant the dual-fetch pre-probe could exhaust ITS OWN cap while
+ * still redirecting and hand the package a synthetic "final" response that was never actually
+ * final, defeating the package's exhausted-cap abstention (see check-http-security.ts there).
+ * One constant, imported here, keeps the two hop budgets from disagreeing again.
+ */
+const MAX_REDIRECT_HOPS = HTTP_SECURITY_MAX_REDIRECT_HOPS;
 
 /**
  * Vendor-specific, origin-set CDN headers worth carrying forward across redirect
@@ -137,8 +152,12 @@ function detectCdnProvider(headers: Headers): string | null {
  * apex 301 served by CloudFront ahead of a Fastly-served www origin) so the two
  * can be attributed separately ("origin: Fastly, edge: CloudFront") instead of
  * the edge signal shadowing the origin.
+ *
+ * `hopFailed` is true when a redirect hop's fetch THREW (budget exhaustion, abort,
+ * timeout, SSRF or robots rejection) and the chain stopped on the last 3xx it had —
+ * as opposed to exhausting MAX_REDIRECT_HOPS on real 3xx answers (SQ-208).
  */
-type RedirectResult = { response: Response; edgeSignals: Headers };
+type RedirectResult = { response: Response; edgeSignals: Headers; hopFailed: boolean };
 
 /**
  * Fetch a URL with HEAD and follow up to MAX_REDIRECT_HOPS HTTPS redirects
@@ -155,6 +174,7 @@ async function fetchWithRedirects(
 	callerSignal?: AbortSignal,
 ): Promise<RedirectResult> {
 	const edgeSignals = new Headers();
+	let hopFailed = false;
 	// Initial fetch goes to https://<domain> where <domain> is already validated
 	// upstream. Use raw fetch to keep the cost off the validation path. Subsequent
 	// redirect targets ARE attacker-controlled (Location header) and go via
@@ -215,15 +235,18 @@ async function fetchWithRedirects(
 			);
 		} catch {
 			// safeFetch throws TypeError on a blocked target (SSRF protection); withRobotsGate
-			// throws RobotsDisallowedError on a disallowed redirect target. Both cases: fall out
-			// of the redirect loop and let analysis run with whatever headers we already
-			// collected — a hostile OR disallowed redirect destination is treated like a network
-			// error, not a crash.
+			// throws RobotsDisallowedError on a disallowed redirect target; the fetch budget
+			// rejects with a plain Error once it is spent; a stalled hop aborts. All cases: fall
+			// out of the redirect loop and let analysis run with whatever headers we already
+			// collected — a hostile, disallowed OR cut redirect hop is treated like a network
+			// error, not a crash. `hopFailed` tells the caller the chain ended here, not at the
+			// hop cap (see capturingFetch in checkHttpSecurityInner).
+			hopFailed = true;
 			break;
 		}
 	}
 
-	return { response, edgeSignals };
+	return { response, edgeSignals, hopFailed };
 }
 
 /**
@@ -261,7 +284,7 @@ async function dualFetchHeaders(
 	timeoutMs: number,
 	gates: GatedFetchers,
 	callerSignal?: AbortSignal,
-): Promise<{ headers: Headers; edgeSignals: Headers; ok: boolean; status: number; usable: boolean } | null> {
+): Promise<{ headers: Headers; edgeSignals: Headers; ok: boolean; status: number; usable: boolean; hopFailed: boolean } | null> {
 	const url = `https://${domain}`;
 	const results = await Promise.allSettled([
 		fetchWithRedirects(url, timeoutMs, gates, callerSignal),
@@ -279,6 +302,7 @@ async function dualFetchHeaders(
 	// shadowing the origin. Not in MERGE_HEADERS, so security analysis is unaffected.
 	const edgeSignals = new Headers();
 	for (const s of settled) accumulateCdnSignals(edgeSignals, s.edgeSignals);
+	const hopFailed = settled.some((s) => s.hopFailed);
 
 	const responses = settled.map((s) => s.response);
 	// Only .headers/.status/.ok/.type are ever read below — no caller of this
@@ -298,12 +322,12 @@ async function dualFetchHeaders(
 		// attribute/short-circuit it; otherwise return null so the package's GET-fallback handles
 		// it as a generic block. usable:false means "don't analyze these headers as the site's".
 		const cf = responses.find((r) => looksLikeWaf(r.headers));
-		if (cf) return { headers: cf.headers, edgeSignals, ok: false, status: cf.status, usable: false };
+		if (cf) return { headers: cf.headers, edgeSignals, ok: false, status: cf.status, usable: false, hopFailed };
 		return null;
 	}
 
 	if (usable.length === 1) {
-		return { headers: usable[0].headers, edgeSignals, ok: usable[0].ok, status: usable[0].status, usable: true };
+		return { headers: usable[0].headers, edgeSignals, ok: usable[0].ok, status: usable[0].status, usable: true, hopFailed };
 	}
 
 	const merged = mergeSecurityHeaders(usable[0].headers, usable[1].headers);
@@ -318,7 +342,7 @@ async function dualFetchHeaders(
 	const contentful = usable.filter((r) => !isNoContent(r));
 	const pool = contentful.length > 0 ? contentful : usable;
 	const primary = pool.find((r) => r.ok) ?? pool[0];
-	return { headers: merged, edgeSignals, ok: primary.ok, status: primary.status, usable: true };
+	return { headers: merged, edgeSignals, ok: primary.ok, status: primary.status, usable: true, hopFailed };
 }
 
 /**
@@ -623,12 +647,33 @@ async function checkHttpSecurityInner(domain: string, gates: GatedFetchers, call
 	}
 
 	let capturedHeaders: Headers | null = null;
+	let servedSynthetic = false;
 
 	const capturingFetch: typeof fetch = async (input, init) => {
 		// Only feed the dual-fetch headers to the package when they came from a usable (2xx/3xx)
 		// response. A non-event 4xx (usable:false) falls through to the package's GET-fallback,
 		// which surfaces the generic "blocked by security appliance" finding.
 		if (dualResult && dualResult.usable) {
+			// When the synthetic is a 3xx, the package follows its Location and calls back here
+			// for each hop, so this must replay how the pre-probe's chain actually ended. Three
+			// rulings meet here (SQ-208):
+			//   - #674: a stalled/budget-cut hop keeps the category MEASURED from the held 3xx.
+			//     So when the pre-probe chain ended on a hop that THREW (any kind: the fetch
+			//     budget's plain Error, AbortError, TimeoutError, SSRF/robots rejection), fail
+			//     the package's follow-up hop with a NON-abort error. The package then keeps and
+			//     analyses the held 3xx instead of re-following the synthetic.
+			//   - #1093: the package's own stalled hop is deadlineExceeded → checkStatus
+			//     'timeout', excluded from scoring. That path and its `deadlineExceededFinding`
+			//     were never reachable through this wrapper (before SQ-204 the package just
+			//     re-followed the synthetic 3xx), and a non-abort error keeps it that way.
+			//   - SQ-204: abstain (`redirect_chain_unresolved`) only on a real 3xx loop. Re-serving
+			//     the synthetic 3xx is correct only when the pre-probe made MAX_REDIRECT_HOPS real
+			//     3xx fetches without a throw. Re-serving it after a cut hop made the package
+			//     read a stall as a loop.
+			if (servedSynthetic && dualResult.hopFailed) {
+				throw new Error('HTTP pre-probe redirect hop failed');
+			}
+			servedSynthetic = true;
 			capturedHeaders = dualResult.headers;
 			// Synthetic response with the merged headers — the package will
 			// analyze this as if it were the real response.

@@ -84,7 +84,12 @@ describe('checkHttpSecurity', () => {
 		expect(result.findings[0].detail).toContain('500');
 	});
 
-	it('should analyze headers on redirect responses (3xx)', async () => {
+	it('abstains (not a scored analysis) when every hop keeps redirecting to itself (SQ-204)', async () => {
+		// Every fetch — the apex, every redirect hop, and robots.txt — resolves to the SAME
+		// canned 301, i.e. a chain that never terminates within the hop cap. Before SQ-204
+		// this fell through to `analyzeSecurityHeaders()` on the last (never-final) redirect
+		// response; the fix routes an exhausted, still-redirecting hop cap to an abstention
+		// instead (see the chaos-suite H3 coverage for the full contract).
 		globalThis.fetch = vi.fn().mockResolvedValue({
 			ok: false,
 			status: 301,
@@ -94,11 +99,47 @@ describe('checkHttpSecurity', () => {
 			}),
 		});
 		const result = await run();
-		// Should still analyze — 301 is < 500
-		expect(result.findings.length).toBeGreaterThan(0);
-		// CSP is present so no CSP finding, but other headers are missing
-		const cspFinding = result.findings.find((f) => f.title === 'No Content-Security-Policy');
-		expect(cspFinding).toBeUndefined();
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.some((f) => f.metadata?.errorKind === 'redirect_chain_unresolved')).toBe(true);
+		// CSP WAS present on every hop, yet no CSP (or other "No <header>") finding fires —
+		// the response was never analyzed as the site's answer in the first place.
+		expect(result.findings.some((f) => f.title === 'No Content-Security-Policy')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+	});
+
+	// SQ-208 / #674: a redirect hop that is CUT (fetch budget spent, stalled hop aborted or timed
+	// out) is not a redirect loop. The wrapper's pre-probe keeps the 301 it already read, and the
+	// package must analyse that 301 as a MEASURED result. It must not re-follow a synthetic 3xx
+	// into the SQ-204 hop-cap abstention.
+	it.each([
+		['a spent fetch budget (plain Error)', () => new Error('Fetch budget exhausted before this request (timeout)')],
+		['an aborted hop (AbortError)', () => new DOMException('The operation was aborted.', 'AbortError')],
+		['a timed-out hop (TimeoutError)', () => new DOMException('The operation timed out.', 'TimeoutError')],
+	])('stays measured from the held 301 when %s cuts the redirect chain (SQ-208 / #674)', async (_label, makeHopError) => {
+		let cutHops = 0;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.endsWith('/robots.txt')) return Promise.resolve(new Response('User-agent: *\nDisallow:\n', { status: 200 }));
+			if (url.startsWith('https://example.com/next')) {
+				cutHops += 1;
+				return Promise.reject(makeHopError());
+			}
+			return Promise.resolve(
+				new Response(null, {
+					status: 301,
+					headers: new Headers({ location: 'https://example.com/next', 'content-security-policy': "default-src 'self'" }),
+				}),
+			);
+		});
+		const result = await run();
+
+		// Precondition: the cut hop was actually reached.
+		expect(cutHops).toBeGreaterThan(0);
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings.some((f) => f.metadata?.errorKind === 'redirect_chain_unresolved')).toBe(false);
+		// Measured from the held 301: its CSP counts, and a header it lacks is reported.
+		expect(result.findings.some((f) => f.title === 'No Content-Security-Policy')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'No X-Frame-Options')).toBe(true);
 	});
 
 	it('should return multiple findings when multiple headers missing', async () => {
