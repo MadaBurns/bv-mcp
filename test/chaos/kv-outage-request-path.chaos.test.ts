@@ -27,8 +27,10 @@
 //  H3 — SCAN_CACHE KV throws on every get/put around scan_domain.
 //       MEASURED: FALSIFIED as literally stated — see the H3 describe block.
 //  H4 — SESSION_STORE (the KV `handleToken` uses for OAuth code/token state)
-//       throws during POST /oauth/token. MEASURED: FALSIFIED as literally
-//       stated — see the H4 describe block.
+//       throws during POST /oauth/token. Returns a 503 `temporarily_unavailable`
+//       OAuth error body, never a 500 or a leaked internal message (SQ-199
+//       wrapped consumeCode()'s unwrapped kv.get() as StrongStateUnavailableError
+//       — see the H4 describe block).
 
 import { env, createExecutionContext, waitOnExecutionContext } from 'cloudflare:test';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -403,20 +405,15 @@ describe('H3: SCAN_CACHE KV throws — scan_domain', () => {
 // Ticket hypothesis: the route returns a 503 OAuth error body with an
 // allowlisted message, never a stack trace or a 500 with internals.
 //
-// MEASURED — FALSIFIED as literally stated. src/oauth/storage.ts
-// `consumeCode()` calls `await kv.get(codeKey(code))` UNWRAPPED (no
-// try/catch) before it ever reaches the `StrongStateUnavailableError` path.
-// src/oauth/token.ts `handleToken()` only converts `StrongStateUnavailableError`
-// to a 503; a plain KV throw is `error instanceof StrongStateUnavailableError`
-// === false, so `handleToken` re-throws it. Hono has no app.onError registered
-// (grep confirmed) and `export default { fetch }` in src/index.ts does not wrap
-// `app.fetch()` in try/catch either, so the request path really does end in an
-// UNHANDLED rejection reaching Hono's own default handler. This test asserts
-// the MEASURED response — see the assertions below for the actual status/body
-// — rather than the ticket's assumed 503. It still asserts the safety property
-// that matters most: whatever status comes back, the body never contains the
-// raw error message or a stack trace (no internals leak), matching the
-// allowlisted-error-surface contract in bv-mcp-security-surface.
+// SQ-199 fix: src/oauth/storage.ts `consumeCode()` previously called
+// `await kv.get(codeKey(code))` UNWRAPPED (no try/catch) before it ever
+// reached the `StrongStateUnavailableError` path, so `handleToken()`'s catch
+// (`error instanceof StrongStateUnavailableError`) never matched and the
+// request path ended in an UNHANDLED rejection reaching Hono's own default
+// handler (500, no app.onError registered). `consumeCode()`'s initial read
+// now goes through a `safeKvGet` wrapper that maps a rejecting binding to
+// `StrongStateUnavailableError`, so `handleToken`'s existing catch now
+// converts it to the 503 `temporarily_unavailable` OAuth error body.
 //
 // Negative control: the identical request against a healthy SESSION_STORE
 // completes as an ordinary `invalid_grant` 400 (unknown code) — proves the
@@ -434,7 +431,7 @@ describe('H4: SESSION_STORE (OAuth storage) KV throws — POST /oauth/token', ()
 		});
 	}
 
-	it('MEASURED: response never leaks the raw KV error message or a stack trace', async () => {
+	it('returns 503 temporarily_unavailable and never leaks the raw KV error message or a stack trace', async () => {
 		type TestEnv = typeof env & { OAUTH_SIGNING_SECRET?: string };
 		const tokenEnv = {
 			...env,
@@ -464,11 +461,14 @@ describe('H4: SESSION_STORE (OAuth storage) KV throws — POST /oauth/token', ()
 		expect(text.toLowerCase()).not.toContain('.ts:');
 		expect(text.toLowerCase()).not.toContain('at consumecode');
 
-		// MEASURED status: NOT the ticket's assumed 503 — consumeCode()'s unwrapped
-		// kv.get() throw is not a StrongStateUnavailableError, so handleToken()
-		// re-throws past its only catch, and with no app.onError registered the
-		// request path ends in Hono's own default unhandled-error response.
-		expect(res.status).toBe(500);
+		// The ticket contract: consumeCode()'s kv.get() rejection is now wrapped
+		// as StrongStateUnavailableError, so handleToken()'s existing catch
+		// converts it to the OAuth 503 temporarily_unavailable shape — never the
+		// unwrapped 500 this test used to measure.
+		expect(res.status).toBe(503);
+		const body = JSON.parse(text) as { error?: string; error_description?: string };
+		expect(body.error).toBe('temporarily_unavailable');
+		expect(typeof body.error_description).toBe('string');
 	});
 
 	it('negative control: the identical request against a healthy SESSION_STORE resolves as an ordinary invalid_grant 400', async () => {

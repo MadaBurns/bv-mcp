@@ -359,4 +359,40 @@ describe('POST /oauth/authorize', () => {
 		expect(rec.client_id).toBe(cid);
 		expect(rec.redirect_uri).toBe('https://claude.ai/cb');
 	});
+
+	// SQ-199: putCode()'s kv.put() previously threw unwrapped on a KV outage,
+	// so a rejecting SESSION_STORE ended in Hono's default 500 handler instead
+	// of the OAuth temporarily_unavailable redirect error (redirect_uri is
+	// already validated by this point, so RFC 6749 §4.1.2 subsection 1 puts the error on
+	// the redirect, not an inline body — mirrors the ownerOAuthEnabled-false
+	// branch above it in authorize.ts).
+	it('returns error=temporarily_unavailable redirect when SESSION_STORE rejects on the code write, never a 500', async () => {
+		const cid = await registerClient();
+		const form = buildForm(TEST_API_KEY, cid);
+		const realKv = env.SESSION_STORE;
+		const rejectingPutKv = {
+			get: (key: string) => realKv.get(key),
+			put: async () => {
+				throw new Error('KV unavailable (SQ-199 authorize test — must never reach the client)');
+			},
+			delete: (key: string) => realKv.delete(key),
+		} as unknown as typeof env.SESSION_STORE;
+		const authEnv = { ...env, BV_API_KEY: TEST_API_KEY, SESSION_STORE: rejectingPutKv } as Env;
+		const request = new Request('https://example.com/oauth/authorize', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+			body: form.toString(),
+			redirect: 'manual',
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, authEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(res.status).toBe(302);
+		const loc = new URL(res.headers.get('location') ?? '');
+		expect(loc.origin + loc.pathname).toBe('https://claude.ai/cb');
+		expect(loc.searchParams.get('error')).toBe('temporarily_unavailable');
+		expect(loc.searchParams.get('state')).toBe('stateval');
+		expect(loc.toString()).not.toContain('SQ-199 authorize test');
+	});
 });
