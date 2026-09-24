@@ -196,16 +196,16 @@ describe('H2: SESSION_STORE KV throws — initialize and session validation', ()
 		resetSessions();
 	});
 
-	function initializeRequest(): Request<unknown, IncomingRequestCfProperties> {
-		return new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+	function initializeRequest(): Request {
+		return new Request('http://example.com/mcp', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
 			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} }),
 		});
 	}
 
-	function toolsListRequest(sessionId: string): Request<unknown, IncomingRequestCfProperties> {
-		return new Request<unknown, IncomingRequestCfProperties>('http://example.com/mcp', {
+	function toolsListRequest(sessionId: string): Request {
+		return new Request('http://example.com/mcp', {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json', Accept: 'application/json', 'Mcp-Session-Id': sessionId },
 			body: JSON.stringify({ jsonrpc: '2.0', id: 2, method: 'tools/list', params: {} }),
