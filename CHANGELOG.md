@@ -84,7 +84,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   way the existing 503/blocked-probe/deadline branches already do. The wrapper's dual-fetch
   redirect cap (`src/tools/check-http-security.ts`) now imports the package's
   `MAX_REDIRECT_HOPS` (exported as `HTTP_SECURITY_MAX_REDIRECT_HOPS`) instead of hardcoding a
-  separate, larger cap of its own. A chain that resolves within the cap is unchanged.
+  separate, larger cap of its own. A chain that resolves within the cap is unchanged. A hop
+  that was _cut_ is not a loop. That covers a spent fetch budget, a stalled hop that aborted or
+  timed out, and a refused (SSRF/robots) redirect target. The wrapper's pre-probe used to hand
+  the package a synthetic 3xx that it re-served on every follow-up hop, so a stalled hop under
+  `scan_domain` was reported as `redirect_chain_unresolved` and dropped from the score. Now,
+  when a pre-probe hop throws, the package's follow-up hop fails the same way, and the category
+  stays measured from the last 3xx that did answer (#674). The abstention fires only after the
+  full hop cap of real 3xx answers. (SQ-208)
 - **Two silent misconfigurations now log instead of degrading invisibly.** A malformed
   `SCORING_CONFIG` JSON env var made `parseScoringConfig` return
   `DEFAULT_SCORING_CONFIG` from the `JSON.parse` catch before the warn path ever ran

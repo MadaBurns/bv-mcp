@@ -107,6 +107,41 @@ describe('checkHttpSecurity', () => {
 		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
 	});
 
+	// SQ-208 / #674: a redirect hop that is CUT (fetch budget spent, stalled hop aborted or timed
+	// out) is not a redirect loop. The wrapper's pre-probe keeps the 301 it already read, and the
+	// package must analyse that 301 as a MEASURED result. It must not re-follow a synthetic 3xx
+	// into the SQ-204 hop-cap abstention.
+	it.each([
+		['a spent fetch budget (plain Error)', () => new Error('Fetch budget exhausted before this request (timeout)')],
+		['an aborted hop (AbortError)', () => new DOMException('The operation was aborted.', 'AbortError')],
+		['a timed-out hop (TimeoutError)', () => new DOMException('The operation timed out.', 'TimeoutError')],
+	])('stays measured from the held 301 when %s cuts the redirect chain (SQ-208 / #674)', async (_label, makeHopError) => {
+		let cutHops = 0;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.endsWith('/robots.txt')) return Promise.resolve(new Response('User-agent: *\nDisallow:\n', { status: 200 }));
+			if (url.startsWith('https://example.com/next')) {
+				cutHops += 1;
+				return Promise.reject(makeHopError());
+			}
+			return Promise.resolve(
+				new Response(null, {
+					status: 301,
+					headers: new Headers({ location: 'https://example.com/next', 'content-security-policy': "default-src 'self'" }),
+				}),
+			);
+		});
+		const result = await run();
+
+		// Precondition: the cut hop was actually reached.
+		expect(cutHops).toBeGreaterThan(0);
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings.some((f) => f.metadata?.errorKind === 'redirect_chain_unresolved')).toBe(false);
+		// Measured from the held 301: its CSP counts, and a header it lacks is reported.
+		expect(result.findings.some((f) => f.title === 'No Content-Security-Policy')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'No X-Frame-Options')).toBe(true);
+	});
+
 	it('should return multiple findings when multiple headers missing', async () => {
 		globalThis.fetch = vi.fn().mockResolvedValue({
 			ok: true,
