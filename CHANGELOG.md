@@ -8,6 +8,16 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **Weekly-rescan queue-send failures are now alertable, not console-only.** A failed
+  `BV_SCANNER_QUEUE.send` during the Sunday dispatch (`tenant_weekly_rescan_queue_send_failed`)
+  logged via `logError` only, so it never reached the `bv_dns_security_mcp` Analytics Engine
+  dataset and was invisible to `queryRecentAnomalies`/the daily digest, unlike the consumer's
+  `queue_batch` rows. `handleTenantWeeklyRescan` now also emits one fail-open `queue_batch` AE
+  row per affected cycle (handler `tenant_weekly_rescan_queue_send`, outcome `error`,
+  aggregate failure count — no domain names) via the same writer the queue consumer uses.
+
 ## [3.89.0] - 2026-09-24
 
 ### Added
