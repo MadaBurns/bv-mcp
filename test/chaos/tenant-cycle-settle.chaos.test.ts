@@ -7,7 +7,10 @@
  * src/tenants/cycle-progress.ts), then, past STALLED_CYCLE_SETTLE_MS (6h),
  * `settleStalledCycle`: a guarded `UPDATE … RETURNING`, a
  * `tenant_cycle_settled_partial` log and ONE operator alert via
- * `sendAlert(env.ALERT_WEBHOOK_URL, …, { bvWeb: env.BV_WEB })`.
+ * `sendAlert(env.ALERT_WEBHOOK_URL, …, { bvWeb: env.BV_WEB })`. A stalled cycle
+ * whose progress cannot be read is not settled but escalated ONCE as
+ * unreconcilable (SQ-197), and the customer alert of a settled cycle is sent only
+ * by the sweep whose guarded `alert_sent_at` claim changed the row (SQ-197).
  *
  * Each test is a hypothesis: "Given [failure], the sweep should [degradation]"
  * (testing-methodology principle 8). Only boundaries are mocked: the registry
@@ -33,12 +36,17 @@ const SQL_TAGS = {
 	SETTLE_STALLED: 'SET errored_total = expected_total - completed_total',
 	PENDING_CYCLES: 'completed_total + errored_total >= expected_total',
 	STAMP_ALERT: 'UPDATE tenant_cycles SET alert_sent_at = ?',
+	MARK_UNRECONCILABLE: 'SET alert_outcome = ? WHERE id = ? AND alert_sent_at IS NULL',
+	RECORD_OUTCOME: 'SET alert_outcome = ? WHERE id = ? AND alert_outcome = ?',
 	// Registry: src/tenants/cycle-progress.ts
 	SYNC_PROGRESS: 'SET completed_total = MAX(completed_total, ?)',
 	// Registry: src/tenants/tenant-resolver.ts (convention routing)
 	REGISTRY_LOOKUP: 'd1_db_id, routing_mode, active FROM sub_tenants',
 	// Per-tenant D1: src/tenants/cycle-progress.ts
 	COMPLETED_SCANS: 'SELECT COUNT(*) AS completed_total FROM scans s',
+	// Per-tenant D1: src/tenants/scheduled-handlers.ts (customer diff)
+	CYCLE_FINDINGS: 'JOIN findings f ON f.scan_id = s.id',
+	BASELINE_FINDINGS: 'FROM scans current',
 } as const;
 type SqlTag = keyof typeof SQL_TAGS;
 
@@ -47,17 +55,23 @@ const REGISTRY_TAGS: readonly SqlTag[] = [
 	'SETTLE_STALLED',
 	'PENDING_CYCLES',
 	'STAMP_ALERT',
+	'MARK_UNRECONCILABLE',
+	'RECORD_OUTCOME',
 	'SYNC_PROGRESS',
 	'REGISTRY_LOOKUP',
 ];
-const TENANT_TAGS: readonly SqlTag[] = ['COMPLETED_SCANS'];
+const TENANT_TAGS: readonly SqlTag[] = ['COMPLETED_SCANS', 'CYCLE_FINDINGS', 'BASELINE_FINDINGS'];
 
 /**
- * The race guard SETTLE_STALLED_CYCLE_SQL must carry. The registry mock applies
- * it only when the statement contains it, so dropping the guard from the SQL
- * shows up here as a second settle rather than being masked by the mock.
+ * The race guards the registry writes must carry. The registry mock applies each
+ * only when the statement contains it, so dropping a guard from the SQL shows up
+ * here as a second settle, claim or escalation rather than being masked by the mock.
  */
 const SETTLE_GUARD = ['alert_sent_at IS NULL', 'completed_total + errored_total < expected_total'] as const;
+/** STAMP_ALERT_SQL: only the sweep whose claim changes the row may deliver the customer alert (SQ-197). */
+const STAMP_GUARD = 'alert_sent_at IS NULL';
+/** MARK_UNRECONCILABLE_SQL: the unreconcilable operator alert fires once per cycle (SQ-197). */
+const MARK_GUARD = 'alert_outcome IS NULL';
 
 const SUPER = 'super-1';
 const TENANT_1 = 'tenant-1';
@@ -124,7 +138,28 @@ function stalledCycle(id: string, subTenantId: string, startedAt = STARTED_AT): 
 	};
 }
 
+/** A settled cycle (all three domains completed) with a baseline, so the sweep reaches the customer diff. */
+function settledCycle(id: string, subTenantId: string): CycleRow {
+	return { ...stalledCycle(id, subTenantId), completed_total: 3, baseline_cycle_id: 'cycle-0' };
+}
+
+/** A write handler returns its changed-row count, surfaced as `meta.changes` on `run()`. */
 type SqlHandler = (tag: SqlTag, binds: unknown[], sql: string) => unknown;
+
+/** Resolves once `parties` callers have arrived; a no-op when `parties` is unset. */
+function makeBarrier(parties?: number): () => Promise<void> {
+	let arrived = 0;
+	let release = () => {};
+	const allArrived = new Promise<void>((resolve) => {
+		release = resolve;
+	});
+	return async () => {
+		if (!parties) return;
+		arrived += 1;
+		if (arrived >= parties) release();
+		await allArrived;
+	};
+}
 
 /** D1 stub that records every statement and routes it by SQL substring (see the header warning). */
 function makeD1(label: string, tags: readonly SqlTag[], calls: SqlCall[], handle: SqlHandler): D1Database {
@@ -149,8 +184,8 @@ function makeD1(label: string, tags: readonly SqlTag[], calls: SqlCall[], handle
 				first: async () => (await execute('first')) ?? null,
 				all: async () => ({ results: (await execute('all')) ?? [], success: true, meta: {} }),
 				run: async () => {
-					await execute('run');
-					return { success: true, meta: {} };
+					const changes = await execute('run');
+					return { success: true, meta: typeof changes === 'number' ? { changes } : {} };
 				},
 				raw: notModeled,
 			};
@@ -176,15 +211,14 @@ function makeRegistry(
 		settleFailsFor?: string[];
 		/** Hold every UNSETTLED read until this many sweeps have read, so all of them saw the same pre-settle snapshot. */
 		concurrentSweeps?: number;
+		/** Hold every PENDING read until this many sweeps have read, so all of them saw the same pre-claim snapshot. */
+		concurrentAlertSweeps?: number;
 	},
 ) {
 	const cycles = new Map(options.cycles.map((cycle) => [cycle.id, { ...cycle }]));
 	const isUnsettled = (c: CycleRow) => c.alert_sent_at === null && c.completed_total + c.errored_total < c.expected_total;
-	let readers = 0;
-	let releaseReaders = () => {};
-	const allReadersArrived = new Promise<void>((resolve) => {
-		releaseReaders = resolve;
-	});
+	const unsettledReaders = makeBarrier(options.concurrentSweeps);
+	const pendingReaders = makeBarrier(options.concurrentAlertSweeps);
 
 	const db = makeD1('registry', REGISTRY_TAGS, calls, async (tag, binds, sql) => {
 		switch (tag) {
@@ -194,11 +228,7 @@ function makeRegistry(
 					.sort((a, b) => b.started_at - a.started_at)
 					.slice(0, binds[0] as number)
 					.map(({ id, super_tenant_id, sub_tenant_id, started_at }) => ({ id, super_tenant_id, sub_tenant_id, started_at }));
-				if (options.concurrentSweeps) {
-					readers += 1;
-					if (readers >= options.concurrentSweeps) releaseReaders();
-					await allReadersArrived;
-				}
+				await unsettledReaders();
 				return snapshot;
 			}
 			case 'REGISTRY_LOOKUP': {
@@ -223,17 +253,35 @@ function makeRegistry(
 				if (!sql.includes('RETURNING')) return null;
 				return { expected_total: cycle.expected_total, completed_total: cycle.completed_total, errored_total: cycle.errored_total };
 			}
-			case 'PENDING_CYCLES':
-				return [...cycles.values()]
+			case 'PENDING_CYCLES': {
+				const snapshot = [...cycles.values()]
 					.filter((c) => c.alert_sent_at === null && c.completed_total + c.errored_total >= c.expected_total)
 					.sort((a, b) => a.started_at - b.started_at)
 					.slice(0, binds[0] as number)
 					.map((c) => ({ ...c }));
+				await pendingReaders();
+				return snapshot;
+			}
 			case 'STAMP_ALERT': {
 				const [sentAt, outcome, id] = binds as [number, string, string];
 				const cycle = cycles.get(id);
-				if (cycle) Object.assign(cycle, { alert_sent_at: sentAt, alert_outcome: outcome });
-				return undefined;
+				if (!cycle || (sql.includes(STAMP_GUARD) && cycle.alert_sent_at !== null)) return 0;
+				Object.assign(cycle, { alert_sent_at: sentAt, alert_outcome: outcome });
+				return 1;
+			}
+			case 'MARK_UNRECONCILABLE': {
+				const [outcome, id] = binds as [string, string];
+				const cycle = cycles.get(id);
+				if (!cycle || cycle.alert_sent_at !== null || (sql.includes(MARK_GUARD) && cycle.alert_outcome !== null)) return 0;
+				cycle.alert_outcome = outcome;
+				return 1;
+			}
+			case 'RECORD_OUTCOME': {
+				const [outcome, id, claim] = binds as [string, string, string];
+				const cycle = cycles.get(id);
+				if (!cycle || cycle.alert_outcome !== claim) return 0;
+				cycle.alert_outcome = outcome;
+				return 1;
 			}
 			default:
 				throw new Error(`registry mock: ${tag} not modeled`);
@@ -243,10 +291,28 @@ function makeRegistry(
 	return { db, cycle: (id: string) => ({ ...cycles.get(id) }) };
 }
 
-/** Per-tenant D1: answers the durable-completion recount, or fails it while `outage.down` is set. */
-function makeTenantDb(label: string, calls: SqlCall[], completedByCycle: Record<string, number>, outage = { down: false }): D1Database {
-	return makeD1(label, TENANT_TAGS, calls, (_tag, binds) => {
+interface FindingRow {
+	domain: string;
+	category: string;
+	severity: string;
+	title: string;
+}
+
+/**
+ * Per-tenant D1: answers the durable-completion recount and the customer-diff
+ * findings reads, or fails every read while `outage.down` is set.
+ */
+function makeTenantDb(
+	label: string,
+	calls: SqlCall[],
+	completedByCycle: Record<string, number>,
+	outage = { down: false },
+	findings: { current: FindingRow[]; baseline: FindingRow[] } = { current: [], baseline: [] },
+): D1Database {
+	return makeD1(label, TENANT_TAGS, calls, (tag, binds) => {
 		if (outage.down) throw new Error(TENANT_DB_DOWN);
+		if (tag === 'CYCLE_FINDINGS') return findings.current;
+		if (tag === 'BASELINE_FINDINGS') return findings.baseline;
 		return { completed_total: completedByCycle[binds[0] as string] ?? 0 };
 	});
 }
@@ -306,6 +372,7 @@ function logLines(): LogLine[] {
 
 const settledPartialLogs = () => logLines().filter((line) => line.error === 'tenant_cycle_settled_partial');
 const reconcileFailures = () => logLines().filter((line) => line.details?.message === 'tenant_cycle_reconcile_failed');
+const unreconcilableLogs = () => logLines().filter((line) => line.error === 'tenant_cycle_unreconcilable');
 const settleCalls = (calls: SqlCall[], cycleId: string) => calls.filter((c) => c.tag === 'SETTLE_STALLED' && c.binds[0] === cycleId);
 const unmatchedSql = (calls: SqlCall[]) => calls.filter((c) => c.tag === 'UNMATCHED').map((c) => `${c.db}: ${c.sql.trim()}`);
 
@@ -324,7 +391,7 @@ afterEach(() => {
 });
 
 describe('Tenant stalled-cycle settle chaos (#1122)', () => {
-	it('H1: Given the per-tenant D1 throws during the progress recount of a cycle past the 6h deadline, the sweep does NOT settle it (could not measure is not stalled) and still settles the next tenant', async () => {
+	it('H1: Given the per-tenant D1 throws during the progress recount of a cycle past the 6h deadline, the sweep does NOT settle it (could not measure is not stalled), escalates it once as unreconcilable, and still settles the next tenant', async () => {
 		const { handleTenantCycleAlerts } = await import('../../src/tenants/scheduled-handlers');
 		const calls: SqlCall[] = [];
 		// cycle-1 is newer, so UNSETTLED_CYCLES (ORDER BY started_at DESC) hands it to the loop first.
@@ -347,9 +414,9 @@ describe('Tenant stalled-cycle settle chaos (#1122)', () => {
 		// The recount reached the broken D1 and failed there.
 		const failedRecount = calls.findIndex((c) => c.db === TENANT_1 && c.tag === 'COMPLETED_SCANS');
 		expect(failedRecount).toBeGreaterThanOrEqual(0);
-		// An unmeasured cycle is never settled or alerted...
+		// An unmeasured cycle is never settled or customer-stamped; past the deadline it is only marked unreconcilable (SQ-197)...
 		expect(settleCalls(calls, 'cycle-1')).toHaveLength(0);
-		expect(registry.cycle('cycle-1')).toMatchObject({ completed_total: 0, errored_total: 0, alert_sent_at: null });
+		expect(registry.cycle('cycle-1')).toMatchObject({ completed_total: 0, errored_total: 0, alert_sent_at: null, alert_outcome: 'unreconcilable' });
 		// ...and the recount failure is logged against it rather than thrown.
 		expect(reconcileFailures()).toEqual([
 			expect.objectContaining({ error: TENANT_DB_DOWN, details: expect.objectContaining({ cycleId: 'cycle-1' }) }),
@@ -360,16 +427,22 @@ describe('Tenant stalled-cycle settle chaos (#1122)', () => {
 		const [settleCycle2] = settleCalls(calls, 'cycle-2');
 		expect(calls.indexOf(settleCycle2)).toBeGreaterThan(failedRecount);
 		expect(registry.cycle('cycle-2')).toMatchObject({ completed_total: 1, errored_total: 2, alert_outcome: 'skipped_no_baseline' });
-		expect(deliveries).toHaveLength(1);
-		expect(deliveries[0].body).toContain('cycle_id: cycle-2');
+		// Two operator alerts: cycle-1's one-time unreconcilable escalation, then cycle-2's settle.
+		expect(deliveries).toHaveLength(2);
+		expect(deliveries[0].body).toContain('Tenant monitoring cycle unreconcilable');
+		expect(deliveries[0].body).toContain('cycle_id: cycle-1');
+		expect(deliveries[1].body).toContain('cycle_id: cycle-2');
 		expect(settledPartialLogs().map((line) => line.details?.cycleId)).toEqual(['cycle-2']);
 
-		// Deferred, not lost: once the D1 answers, the next sweep measures cycle-1 and settles it.
+		// Deferred, not lost: once the D1 answers, the next sweep measures cycle-1 and settles it,
+		// and the normal alert stamp replaces the unreconcilable marker.
 		tenant1Outage.down = false;
 		await handleTenantCycleAlerts(env, ctx, { now: () => PAST_DEADLINE + FIFTEEN_MINUTES_MS });
 		expect(settleCalls(calls, 'cycle-1')).toHaveLength(1);
 		expect(registry.cycle('cycle-1')).toMatchObject({ completed_total: 1, errored_total: 2, alert_outcome: 'skipped_no_baseline' });
-		expect(deliveries.map((d) => d.body.includes('cycle_id: cycle-1'))).toEqual([false, true]);
+		expect(deliveries.map((d) => d.body.includes('cycle_id: cycle-1'))).toEqual([true, false, true]);
+		expect(deliveries[2].body).toContain('settled partial');
+		expect(unreconcilableLogs()).toHaveLength(1);
 		expect(unmatchedSql(calls)).toEqual([]);
 	});
 
@@ -563,4 +636,92 @@ describe('Tenant stalled-cycle settle chaos (#1122)', () => {
 		expect(registry.cycle('cycle-1')).toMatchObject({ completed_total: 1, errored_total: 0, alert_sent_at: null });
 		expect(unmatchedSql(calls)).toEqual([]);
 	});
+
+	it('H6: Given two concurrent sweeps that BOTH listed the same settled cycle with new findings, the guarded alert_sent_at claim lets only one of them deliver the customer alert (SQ-197)', async () => {
+		const { handleTenantCycleAlerts } = await import('../../src/tenants/scheduled-handlers');
+		const calls: SqlCall[] = [];
+		const registry = makeRegistry(calls, {
+			cycles: [settledCycle('cycle-1', TENANT_1)],
+			tenants: [TENANT_1],
+			concurrentAlertSweeps: 2,
+		});
+		const gained = { domain: 'a.example.com', category: 'spf', severity: 'high', title: 'SPF record allows any sender' };
+		const env = sweepEnv(
+			registry.db,
+			{ [TENANT_1_BINDING]: makeTenantDb(TENANT_1, calls, {}, undefined, { current: [gained], baseline: [] }) },
+			{ ALERT_WEBHOOK_URL: OPS_WEBHOOK },
+		);
+
+		await expect(
+			Promise.all([
+				handleTenantCycleAlerts(env, ctx, { now: () => PAST_DEADLINE }),
+				handleTenantCycleAlerts(env, ctx, { now: () => PAST_DEADLINE }),
+			]),
+		).resolves.toEqual([undefined, undefined]);
+
+		// Race control: both sweeps listed the cycle, computed the diff, and tried to claim it...
+		expect(calls.filter((c) => c.tag === 'PENDING_CYCLES')).toHaveLength(2);
+		expect(calls.filter((c) => c.db === TENANT_1 && c.tag === 'CYCLE_FINDINGS')).toHaveLength(2);
+		expect(calls.filter((c) => c.tag === 'STAMP_ALERT' && c.binds[2] === 'cycle-1')).toHaveLength(2);
+		// ...but only the sweep whose UPDATE changed the row delivered the customer alert.
+		expect(deliveries).toHaveLength(1);
+		expect(JSON.parse(deliveries[0].body)).toMatchObject({ type: 'tenant_cycle_diff', current_cycle_id: 'cycle-1', totals: { deltas: 1 } });
+		expect(calls.filter((c) => c.tag === 'RECORD_OUTCOME').map((c) => c.binds)).toEqual([['sent', 'cycle-1', 'sending']]);
+		expect(registry.cycle('cycle-1')).toMatchObject({ alert_sent_at: PAST_DEADLINE, alert_outcome: 'sent' });
+		expect(logLines().filter((line) => line.details?.message === 'tenant_alert_sweep_cycle_failed')).toEqual([]);
+		expect(unmatchedSql(calls)).toEqual([]);
+	});
+
+	const unreconcilable = [
+		{ name: 'per-tenant D1 stays unreadable', registered: [TENANT_1], down: true, reason: TENANT_DB_DOWN },
+		{ name: 'registry lookup returns Tenant not found', registered: [], down: false, reason: `Tenant not found: ${TENANT_1}` },
+	] as const;
+
+	it.each(unreconcilable)(
+		'H7: Given a stalled cycle whose $name, the sweep raises ONE "Tenant monitoring cycle unreconcilable" operator alert once past the 6h deadline, never before it and never again on later sweeps, and leaves the cycle unsettled (SQ-197)',
+		async ({ registered, down, reason }) => {
+			const { handleTenantCycleAlerts } = await import('../../src/tenants/scheduled-handlers');
+			const calls: SqlCall[] = [];
+			const registry = makeRegistry(calls, { cycles: [stalledCycle('cycle-1', TENANT_1)], tenants: [...registered] });
+			const env = sweepEnv(
+				registry.db,
+				{ [TENANT_1_BINDING]: makeTenantDb(TENANT_1, calls, { 'cycle-1': 1 }, { down }) },
+				{ ALERT_WEBHOOK_URL: OPS_WEBHOOK },
+			);
+
+			// Inside the deadline the failure is only logged: the cycle may yet become measurable.
+			await handleTenantCycleAlerts(env, ctx, { now: () => PAST_DEADLINE - 2 * FIFTEEN_MINUTES_MS });
+			expect(calls.filter((c) => c.tag === 'MARK_UNRECONCILABLE')).toHaveLength(0);
+			expect(deliveries).toHaveLength(0);
+
+			// Past it, three consecutive sweeps fail the same way.
+			for (const tick of [0, 1, 2]) {
+				await handleTenantCycleAlerts(env, ctx, { now: () => PAST_DEADLINE + tick * FIFTEEN_MINUTES_MS });
+			}
+
+			expect(reconcileFailures()).toHaveLength(4);
+			expect(reconcileFailures().every((line) => line.error === reason)).toBe(true);
+			// Every past-deadline sweep attempted the guarded mark; only the first changed the row...
+			expect(calls.filter((c) => c.tag === 'MARK_UNRECONCILABLE')).toHaveLength(3);
+			// ...so exactly one operator alert went out, over the settle alert's transport.
+			expect(deliveries).toHaveLength(1);
+			expect(deliveries[0].url).toBe(OPS_WEBHOOK);
+			expect(deliveries[0].body).toContain('Tenant monitoring cycle unreconcilable');
+			expect(deliveries[0].body).toContain('cycle_id: cycle-1');
+			expect(deliveries[0].body).toContain(`reason: ${reason}`);
+			expect(unreconcilableLogs()).toEqual([
+				expect.objectContaining({ details: expect.objectContaining({ cycleId: 'cycle-1', reason }) }),
+			]);
+			// Could-not-measure is not stalled: never settled, never customer-stamped, still retried.
+			expect(settleCalls(calls, 'cycle-1')).toHaveLength(0);
+			expect(settledPartialLogs()).toEqual([]);
+			expect(registry.cycle('cycle-1')).toMatchObject({
+				completed_total: 0,
+				errored_total: 0,
+				alert_sent_at: null,
+				alert_outcome: 'unreconcilable',
+			});
+			expect(unmatchedSql(calls)).toEqual([]);
+		},
+	);
 });
