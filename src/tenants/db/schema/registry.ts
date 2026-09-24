@@ -82,10 +82,16 @@ export const billingEvents = sqliteTable(
 /**
  * Cross-tenant security/compliance audit log.
  *
- * Append-only ledger of every security-relevant action — tenant CRUD, scan
- * lifecycle, cross-tenant access decisions, auth outcomes. Never holds raw IPs
- * or secrets: `ip_hash` is the FNV-1a hash from `lib/analytics.ts`, and
- * `blob` is sanitized via `lib/log.ts` before insert (see `src/tenants/audit.ts`).
+ * Append-only ledger written ONLY by `recordAuditEvent` (`src/tenants/audit.ts`)
+ * via `dispatchAudit` (`src/tenants/routes.ts`), called from the four
+ * `/internal/tenants/*` request handlers — `POST /portfolio` (portfolio
+ * upsert), `POST /scan` (scan start), `POST /discover` (discovery start),
+ * `GET /report/:cycle_id` (report read) — and their shared `denyIfOutOfScope`
+ * BOLA-deny helper. It does NOT cover cron cycle starts, alert dispatch, queue
+ * scans, or key use: those are unaudited here — see `tenant_cycles` for cron
+ * cycle state and the Analytics Engine dataset for request-level telemetry.
+ * Never holds raw IPs or secrets: `ip_hash` is the FNV-1a hash from
+ * `lib/analytics.ts`, and `blob` is sanitized via `lib/log.ts` before insert.
  *
  * Indexes serve the four documented read patterns:
  *   - per super-tenant timeline       → idx_audit_super_tenant_ts
