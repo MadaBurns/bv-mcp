@@ -59,6 +59,20 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   `error=temporarily_unavailable` for `/oauth/authorize`'s post-validation code write, an
   inline 503 JSON body for `/oauth/register`'s client write) since they shared the same
   gap.
+- **`dane_https`, `svcb_https` and `subdomailing` now abstain when their DNS probe never
+  got an answer.** Under a DoH transport failure or timeout, the other 14 DNS-backed
+  categories returned `checkStatus: 'error'` and dropped out of scoring, but these three
+  caught their own failed lookup and returned a COMPLETED result that counted as measured
+  evidence: a `low` "query failed" finding at 95 for `dane_https` and `svcb_https`, and for
+  `subdomailing` a "No SPF record" verdict at 100, because the SPF include-chain walk
+  swallowed the failed root TXT lookup. A total outage therefore read 5/19 completed instead
+  of 2/19. Each now returns the not-assessed shape (`checkStatus: 'error'`, score 0,
+  `passed: false`, `partial: true`, one `info` finding marked `errorKind: 'dns_error'`),
+  so the category is excluded from scoring, retried and kept out of the cache. An answered
+  empty or NXDOMAIN lookup is still a measured absence. Scores for domains whose lookups
+  answer are unchanged (the parity corpus is unaffected). The fix is in
+  `@blackveil/dns-checks` (`checkDANEHTTPS`, `checkSVCBHTTPS`, `checkSubdomailing`), so
+  bv-web-prod gets it when it next re-vendors the package.
 - **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
   consumer's catch around the scan-persist call discarded the thrown error, so a
   `queue_dlq` finding from a failed tenant D1 write could not distinguish a
