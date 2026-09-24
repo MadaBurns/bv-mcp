@@ -42,7 +42,7 @@ const REGISTRY_LOOKUP_SQL =
 const ACTIVE_PROBE_SQL = 'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1';
 const SCAN_COMPLETION_PROBE_SQL =
 	'SELECT s.id, s.finding_count, COUNT(f.id) AS persisted_findings ' +
-	'FROM scans s LEFT JOIN findings f ON f.scan_id = s.id ' +
+	'FROM scans s LEFT JOIN findings f ON f.scan_id = s.id AND f.domain = s.domain ' +
 	'WHERE s.cycle_id = ? AND s.domain = ? ' +
 	'GROUP BY s.id, s.finding_count ' +
 	'LIMIT 1';

@@ -25,7 +25,9 @@ const SQL_TAGS = {
 	DUE_DOMAINS: 'FROM domains',
 	PENDING_CYCLES: 'completed_total + errored_total >= expected_total',
 	STAMP_ALERT: 'UPDATE tenant_cycles SET alert_sent_at = ?',
-	FINDINGS_FOR_CYCLE: 'FROM findings f',
+	// SQ-167: the cycle and baseline findings reads now drive from `scans` and JOIN
+	// findings; both carry this fragment, and the mock tells them apart by binds[0].
+	FINDINGS_FOR_CYCLE: 'JOIN findings f',
 	INSERT_CYCLE: 'INSERT INTO tenant_cycles',
 	// Phase 4: the cron now resolves the per-tenant DB via resolveTenantUncached,
 	// which reads this registry row (routing_mode → convention => the static binding).

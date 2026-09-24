@@ -10,6 +10,25 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **The weekly tenant rescan completes again. It had stalled at 240 of 500 domains since
+  2026-09-13.** Since 3.76.1 every scanner-queue message recounts the whole cycle's completions.
+  The count matched findings by `scan_id` alone. On a tenant database missing
+  `idx_findings_scan_id`, each count was a full `findings` scan per cycle scan: 9.0 s and 24M
+  rows at 240 scans, measured on production. Tenant D1 writes then failed. Findings writes went
+  partial from about 170 scans. The remaining messages exhausted their queue retries and were
+  dropped. Every findings-per-scan count in the consumer probe, the progress sync and the
+  cycle-alert reads now also matches the scan's domain. The base-schema domain index keeps each
+  count bounded (62 ms / 52k rows unindexed for the same count). The cycle-alert findings read
+  now joins from the cycle's scans. Its previous form correlated an `IN` subquery with every
+  findings row and exceeded D1's CPU limit on a 500-scan cycle even with the index present.
+- **A monitoring cycle that cannot complete now settles and alerts instead of staying open
+  forever.** The queue drops a message after its retries without leaving any marker, so such a
+  cycle never reached its expected total. It never alerted and was re-reconciled every 15
+  minutes. The 15-minute sweep now settles a cycle still short six hours after it started:
+  every domain that never reported counts as errored. The cycle then goes through the normal
+  diff alert, which compares only the domains that were measured. One operator alert (`Tenant
+  monitoring cycle settled partial`) goes to `ALERT_WEBHOOK_URL`. On the first sweep after
+  deploy this settles the two stalled production cycles from 2026-09-13 and 2026-09-20.
 - **Tenant scan snapshots no longer persist `maturity_stage: 0` for domains that don't resolve.**
   `toTenantScanSnapshot` (`src/tenants/scan-snapshot.ts`) only nulled the stage when
   `maturity.indeterminate === true`, so an ungraded scan (NXDOMAIN / SERVFAIL / no-records —

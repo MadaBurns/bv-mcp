@@ -37,14 +37,14 @@ const REGISTRY_LOOKUP_SQL =
 	'SELECT id, super_tenant_id, d1_db_id, routing_mode, active FROM sub_tenants WHERE id = ? LIMIT 1';
 const SCAN_COMPLETION_PROBE_SQL =
 	'SELECT s.id, s.finding_count, COUNT(f.id) AS persisted_findings ' +
-	'FROM scans s LEFT JOIN findings f ON f.scan_id = s.id ' +
+	'FROM scans s LEFT JOIN findings f ON f.scan_id = s.id AND f.domain = s.domain ' +
 	'WHERE s.cycle_id = ? AND s.domain = ? ' +
 	'GROUP BY s.id, s.finding_count ' +
 	'LIMIT 1';
 const COMPLETED_SCANS_SQL = `
 	SELECT COUNT(*) AS completed_total FROM scans s
 	WHERE s.cycle_id = ?
-	  AND (SELECT COUNT(*) FROM findings f WHERE f.scan_id = s.id) >= COALESCE(s.finding_count, 0)
+	  AND (SELECT COUNT(*) FROM findings f WHERE f.scan_id = s.id AND f.domain = s.domain) >= COALESCE(s.finding_count, 0)
 `;
 const SYNC_COMPLETED_SQL = 'UPDATE tenant_cycles SET completed_total = MAX(completed_total, ?) WHERE id = ?';
 const SCANS_INSERT_SQL =

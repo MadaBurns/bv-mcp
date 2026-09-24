@@ -38,7 +38,7 @@ const SQL_TAGS = {
 	FIND_BASELINE: 'alert_sent_at IS NOT NULL ORDER BY started_at DESC',
 	PENDING_CYCLES: 'completed_total + errored_total >= expected_total',
 	STAMP_ALERT: 'UPDATE tenant_cycles SET alert_sent_at = ?',
-	FINDINGS_FOR_CYCLE: 'FROM findings f',
+	FINDINGS_FOR_CYCLE: 'SELECT f.domain, f.category, f.severity, f.title',
 } as const;
 
 const ACTIVE_TENANTS_SQL = SQL_TAGS.ACTIVE_TENANTS;
