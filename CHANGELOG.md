@@ -10,16 +10,6 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
-- **An unrecognized cron trigger no longer runs the tenant sweep.** `routeCron`
-  had no `'unknown'` route: any cron string that didn't match a named branch
-  — garbage, a typo in `wrangler.jsonc`, or a new trigger added before its
-  dispatch branch — fell into the same `'periodic'` fallback as the legitimate
-  15-minute sweep and silently ran `handleTenantCycleAlerts` plus the other
-  periodic handlers, with no distinct log line (chaos SQ-193 H4). `routeCron`
-  now maps only the actual 15-minute cron to `'periodic'`; every other
-  unmatched cron returns `'unknown'`, and `scheduled()` responds to it by
-  logging one structured warn (`category: 'cron'`, `result: 'unknown_cron'`,
-  the cron string) and running no handler at all.
 - **`scan_domain` no longer caches an ungraded outage result for 5 minutes.**
   Under a total DoH outage `scan_domain` correctly returned an ungraded result
   (`score.overall: null`, `maturity.indeterminate: true`) but wrote it to the
@@ -59,6 +49,26 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   `error=temporarily_unavailable` for `/oauth/authorize`'s post-validation code write, an
   inline 503 JSON body for `/oauth/register`'s client write) since they shared the same
   gap.
+- **A double-delivered weekly rescan no longer creates duplicate cycles.** When Cloudflare
+  delivered `0 2 * * SUN` twice, or a slow tick overlapped the next one, each invocation
+  inserted its own `tenant_cycles` row and queued every due domain again (measured 2x by
+  the SQ-193 chaos suite). The cycle insert is now one guarded `INSERT … SELECT … WHERE NOT
+  EXISTS` statement. A tenant with a cycle started within the last 6 hours is skipped with
+  `tenant_weekly_rescan_skipped_duplicate` and the existing cycle id, so a double delivery
+  yields one cycle and one queue message per due domain.
+- **Overlapping alert sweeps can no longer both send one cycle's customer alert.** The
+  `alert_sent_at` stamp had no `IS NULL` guard and was written after the webhook call, so
+  two sweeps that listed the same pending cycle could both deliver it. The sweep now claims
+  the cycle first (`alert_outcome = 'sending'`, guarded on `alert_sent_at IS NULL`). Only
+  the sweep whose UPDATE changed the row sends, then records `sent` or `webhook_failed`.
+- **A cycle whose tenant D1 cannot be read now reaches an operator.** A sub-tenant whose D1
+  stayed unreadable, or whose lookup returned `Tenant not found`, logged
+  `tenant_cycle_reconcile_failed` every 15 minutes and never raised an alert, because the
+  6-hour settle needs a successful reconcile. Past that deadline the sweep now sends ONE
+  "Tenant monitoring cycle unreconcilable" operator alert and marks the cycle
+  `alert_outcome = 'unreconcilable'`, guarded so the alert is not repeated. The cycle stays
+  unsettled and settles normally if the D1 recovers.
+
 - **`dane_https`, `svcb_https` and `subdomailing` now abstain when their DNS probe never
   got an answer.** Under a DoH transport failure or timeout, the other 14 DNS-backed
   categories returned `checkStatus: 'error'` and dropped out of scoring, but these three
@@ -105,6 +115,21 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   `result: 'webhook_url_invalid'`), recording only the URL's length and scheme, never
   the URL value itself. Measured by chaos SQ-195; fixed by SQ-203. Both behaviors
   (still defaulting/still returning `false`) are unchanged — logging-only fixes.
+
+## [3.90.0] - 2026-09-24
+
+### Fixed
+
+- **An unrecognized cron trigger no longer runs the tenant sweep.** `routeCron`
+  had no `'unknown'` route: any cron string that didn't match a named branch
+  — garbage, a typo in `wrangler.jsonc`, or a new trigger added before its
+  dispatch branch — fell into the same `'periodic'` fallback as the legitimate
+  15-minute sweep and silently ran `handleTenantCycleAlerts` plus the other
+  periodic handlers, with no distinct log line (chaos SQ-193 H4). `routeCron`
+  now maps only the actual 15-minute cron to `'periodic'`; every other
+  unmatched cron returns `'unknown'`, and `scheduled()` responds to it by
+  logging one structured warn (`category: 'cron'`, `result: 'unknown_cron'`,
+  the cron string) and running no handler at all.
 - **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
   consumer's catch around the scan-persist call discarded the thrown error, so a
   `queue_dlq` finding from a failed tenant D1 write could not distinguish a
@@ -119,25 +144,6 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   `queue_batch` rows. `handleTenantWeeklyRescan` now also emits one fail-open `queue_batch` AE
   row per affected cycle (handler `tenant_weekly_rescan_queue_send`, outcome `error`,
   aggregate failure count — no domain names) via the same writer the queue consumer uses.
-- **A double-delivered weekly rescan no longer creates duplicate cycles.** When Cloudflare
-  delivered `0 2 * * SUN` twice, or a slow tick overlapped the next one, each invocation
-  inserted its own `tenant_cycles` row and queued every due domain again (measured 2x by
-  the SQ-193 chaos suite). The cycle insert is now one guarded `INSERT … SELECT … WHERE NOT
-  EXISTS` statement. A tenant with a cycle started within the last 6 hours is skipped with
-  `tenant_weekly_rescan_skipped_duplicate` and the existing cycle id, so a double delivery
-  yields one cycle and one queue message per due domain.
-- **Overlapping alert sweeps can no longer both send one cycle's customer alert.** The
-  `alert_sent_at` stamp had no `IS NULL` guard and was written after the webhook call, so
-  two sweeps that listed the same pending cycle could both deliver it. The sweep now claims
-  the cycle first (`alert_outcome = 'sending'`, guarded on `alert_sent_at IS NULL`). Only
-  the sweep whose UPDATE changed the row sends, then records `sent` or `webhook_failed`.
-- **A cycle whose tenant D1 cannot be read now reaches an operator.** A sub-tenant whose D1
-  stayed unreadable, or whose lookup returned `Tenant not found`, logged
-  `tenant_cycle_reconcile_failed` every 15 minutes and never raised an alert, because the
-  6-hour settle needs a successful reconcile. Past that deadline the sweep now sends ONE
-  "Tenant monitoring cycle unreconcilable" operator alert and marks the cycle
-  `alert_outcome = 'unreconcilable'`, guarded so the alert is not repeated. The cycle stays
-  unsettled and settles normally if the D1 recovers.
 
 ### Added
 
