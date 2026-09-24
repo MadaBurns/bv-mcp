@@ -202,6 +202,20 @@ export const TABLES_AND_INDEXES_SQL = "SELECT type, name, tbl_name FROM sqlite_m
 /** A bare SQL identifier: what `columnsSqlForTable` requires before interpolating a table name into SQL text. */
 export const TABLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 
+// Cloudflare/SQLite internal bookkeeping tables that appear in every D1's
+// `sqlite_master` but refuse `pragma_table_info` introspection. Measured
+// directly against production 2026-09-24: `SELECT name FROM
+// pragma_table_info('_cf_KV')` returns "not authorized: SQLITE_AUTH [code:
+// 7500]" — the per-table columns loop below must never query one of these, and
+// since no migration ever governs them, they must never be reported as an
+// extra/unexpected live table either.
+export const INTERNAL_TABLE_PREFIXES = ['_cf_', 'sqlite_'];
+
+/** Whether `name` is a Cloudflare/SQLite-internal table this checker must skip (see `INTERNAL_TABLE_PREFIXES`). */
+export function isInternalTable(name) {
+	return typeof name === 'string' && INTERNAL_TABLE_PREFIXES.some((prefix) => name.startsWith(prefix));
+}
+
 /**
  * Build the literal per-table column-introspection query for `table`. Throws
  * if `table` isn't a bare identifier matching `TABLE_NAME_RE` — this is the
@@ -254,15 +268,20 @@ export function createWranglerRunner(execWrangler) {
  * Fetch the live tables/indexes/columns for one D1 database. Tables and
  * indexes come from one `sqlite_master` query; columns are fetched with one
  * `pragma_table_info` query per live table (see `columnsSqlForTable` above —
- * D1 refuses the single-query join form).
+ * D1 refuses the single-query join form). A `sqlite_master` row for an
+ * internal Cloudflare/SQLite table (see `INTERNAL_TABLE_PREFIXES`) is dropped
+ * before the per-table columns loop runs, so no columns query is ever issued
+ * for it and it never appears in the returned `tables` set.
  */
 export function fetchLiveSchema(deps, database, configPath) {
 	const objRows = deps.runWranglerQuery(database, configPath, TABLES_AND_INDEXES_SQL);
 	const tables = new Set();
 	const indexes = new Set();
 	for (const row of objRows) {
-		if (row.type === 'table') tables.add(row.name);
-		else if (row.type === 'index') indexes.add(row.name);
+		if (row.type === 'table') {
+			if (isInternalTable(row.name)) continue;
+			tables.add(row.name);
+		} else if (row.type === 'index') indexes.add(row.name);
 	}
 	const columnsByTable = new Map();
 	for (const table of tables) {

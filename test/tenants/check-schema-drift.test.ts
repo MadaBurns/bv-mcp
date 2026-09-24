@@ -28,6 +28,8 @@ import {
 	TABLES_AND_INDEXES_SQL,
 	TABLE_NAME_RE,
 	columnsSqlForTable,
+	INTERNAL_TABLE_PREFIXES,
+	isInternalTable,
 } from '../../scripts/tenants/check-schema-drift.mjs';
 
 const CREATE_SUB_TENANTS = [
@@ -252,7 +254,42 @@ describe('createWranglerRunner', () => {
 	});
 });
 
+describe('isInternalTable', () => {
+	it('flags Cloudflare/SQLite-internal bookkeeping tables by prefix', () => {
+		expect(INTERNAL_TABLE_PREFIXES).toEqual(['_cf_', 'sqlite_']);
+		expect(isInternalTable('_cf_KV')).toBe(true);
+		expect(isInternalTable('sqlite_sequence')).toBe(true);
+		expect(isInternalTable('sub_tenants')).toBe(false);
+		expect(isInternalTable('findings')).toBe(false);
+	});
+});
+
 describe('fetchLiveSchema', () => {
+	it('skips a Cloudflare-internal table (e.g. _cf_KV): issues no column query for it and omits it from the returned tables', () => {
+		const calls: string[] = [];
+		const deps = {
+			runWranglerQuery: (_database: string, _config: string, sql: string) => {
+				calls.push(sql);
+				if (sql === TABLES_AND_INDEXES_SQL) {
+					return [
+						{ type: 'table', name: '_cf_KV' },
+						{ type: 'table', name: 'sub_tenants' },
+					];
+				}
+				// D1 refuses pragma_table_info('_cf_KV') with SQLITE_AUTH — if fetchLiveSchema
+				// ever stops skipping internal tables, this mock throws instead of the real
+				// query result masking the regression.
+				if (sql === columnsSqlForTable('_cf_KV')) throw new Error('must never query columns for an internal table');
+				if (sql === columnsSqlForTable('sub_tenants')) return [{ name: 'id' }];
+				throw new Error(`unexpected query shape: ${sql}`);
+			},
+		};
+		const live = fetchLiveSchema(deps, 'TENANT_REGISTRY_DB', 'wrangler.production.jsonc');
+		expect(live.tables).toEqual(new Set(['sub_tenants']));
+		expect(live.tables.has('_cf_KV')).toBe(false);
+		expect(calls).toEqual([TABLES_AND_INDEXES_SQL, "SELECT name FROM pragma_table_info('sub_tenants')"]);
+	});
+
 	it('fetches tables/indexes with one query, then issues one literal per-table pragma_table_info query for columns — never the join form', () => {
 		const calls: string[] = [];
 		const deps = {
