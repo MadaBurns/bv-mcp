@@ -243,9 +243,63 @@ function makeStatefulRegistry(tenants: Array<{ id: string; super_tenant_id: stri
 
 describe('Chaos F: cron overlap and idempotency', () => {
 	describe('H1: weekly rescan cron fires TWICE for the same week', () => {
+		afterEach(() => {
+			vi.restoreAllMocks();
+		});
+
+		/**
+		 * Registry for H1: the `makeRecordingD1` fixtures plus an in-memory
+		 * `tenant_cycles` that honours INSERT_CYCLE_SQL's double-fire guard ONLY
+		 * when the statement carries it (the `WHERE NOT EXISTS` probe, evaluated
+		 * from the statement's own guard binds). Dropping the guard from the
+		 * production SQL therefore shows up here as a second cycle row and a second
+		 * round of sends, not as a mock error.
+		 */
+		function makeGuardedCycleRegistry() {
+			const recording = makeRecordingD1({
+				'FROM sub_tenants WHERE active = 1': [{ id: TENANT_A, super_tenant_id: SUPER }],
+				'd1_db_id, routing_mode, active FROM sub_tenants': [REGISTRY_ROW_A],
+			});
+			const cycles: Array<{ id: string; sub_tenant_id: string; started_at: number }> = [];
+			const startedAfter = (subTenantId: string, after: number) =>
+				cycles.filter((c) => c.sub_tenant_id === subTenantId && c.started_at > after).sort((a, b) => b.started_at - a.started_at);
+			const db = {
+				...(recording.db as unknown as Record<string, unknown>),
+				prepare(sql: string) {
+					const insert = sql.includes('INSERT INTO tenant_cycles');
+					const recent = sql.includes('SELECT id FROM tenant_cycles WHERE sub_tenant_id = ? AND started_at > ?');
+					if (!insert && !recent) return recording.db.prepare(sql);
+					let binds: unknown[] = [];
+					const stmt = {
+						bind(...args: unknown[]) {
+							binds = args;
+							return stmt;
+						},
+						async run() {
+							recording.calls.push({ sql, binds });
+							const [id, , subTenantId, startedAt] = binds as [string, string, string, number];
+							const [guardTenant, guardAfter] = binds.slice(7) as [string, number];
+							if (sql.includes('WHERE NOT EXISTS') && startedAfter(guardTenant, guardAfter).length > 0) {
+								return { success: true, meta: { changes: 0 } } as unknown as D1Response;
+							}
+							cycles.push({ id, sub_tenant_id: subTenantId, started_at: startedAt });
+							return { success: true, meta: { changes: 1 } } as unknown as D1Response;
+						},
+						async first<T = unknown>(): Promise<T | null> {
+							recording.calls.push({ sql, binds });
+							const [newest] = startedAfter(binds[0] as string, binds[1] as number);
+							return (newest ? { id: newest.id } : null) as T | null;
+						},
+					};
+					return stmt as unknown as D1PreparedStatement;
+				},
+			};
+			return { db: db as unknown as D1Database, calls: recording.calls, cycles };
+		}
+
 		it(
-			'FALSIFIED: no double-fire guard exists — two scheduled() calls for the same tick insert TWO ' +
-				'tenant_cycles rows and enqueue each domain TWICE, not once (guard absent — filed as follow-up, see SQ-193 comment)',
+			'two scheduled() deliveries of the same tick create exactly ONE tenant_cycles row and enqueue each due domain once: ' +
+				'the guarded insert refuses the second and logs tenant_weekly_rescan_skipped_duplicate with the existing cycle id',
 			async () => {
 				const { handleTenantWeeklyRescan } = await import('../../src/tenants/scheduled-handlers');
 
@@ -253,14 +307,11 @@ describe('Chaos F: cron overlap and idempotency', () => {
 					{ domain: 'a.example.com', last_scanned_at: null, watch_interval_hours: 168, fingerprint: null },
 					{ domain: 'b.example.com', last_scanned_at: null, watch_interval_hours: 168, fingerprint: null },
 				];
-				// Same mock registry/tenant-db state is read by BOTH calls — matching the
-				// real hazard: `last_scanned_at` only advances once a scan COMPLETES (via
-				// the queue consumer, elsewhere), never during dispatch itself, so a
+				// Same tenant-db state is read by BOTH calls — matching the real hazard:
+				// `last_scanned_at` only advances once a scan COMPLETES (via the queue
+				// consumer, elsewhere), never during dispatch itself, so a
 				// double-delivered tick sees the identical "due" set both times.
-				const registry = makeRecordingD1({
-					'FROM sub_tenants WHERE active = 1': [{ id: TENANT_A, super_tenant_id: SUPER }],
-					'd1_db_id, routing_mode, active FROM sub_tenants': [REGISTRY_ROW_A],
-				});
+				const registry = makeGuardedCycleRegistry();
 				const tenant = makeRecordingD1({ 'FROM domains': due });
 
 				const queueSends: unknown[] = [];
@@ -275,6 +326,7 @@ describe('Chaos F: cron overlap and idempotency', () => {
 					BV_SCANNER_QUEUE: queue,
 					[TENANT_A_BINDING]: tenant.db,
 				} as TenantScheduledEnv;
+				const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 
 				const T0 = 9_999_999_999_999;
 				let cycleCounter = 0;
@@ -287,13 +339,26 @@ describe('Chaos F: cron overlap and idempotency', () => {
 				await expect(handleTenantWeeklyRescan(customEnv, makeCtx(), { now: () => T0, newCycleId, dnsQuery: okDns })).resolves.toBeUndefined();
 				await expect(handleTenantWeeklyRescan(customEnv, makeCtx(), { now: () => T0, newCycleId, dnsQuery: okDns })).resolves.toBeUndefined();
 
+				// Race control: BOTH deliveries reached the cycle insert with the full due set...
 				const cycleInserts = registry.calls.filter((c) => c.sql.includes('INSERT INTO tenant_cycles'));
-				// H1 as phrased ("exactly one tenant_cycles row … enqueues each domain
-				// once") is FALSIFIED: nothing in handleTenantWeeklyRescan / rescanTenant
-				// deduplicates a same-tick redelivery (no week-marker, no upsert-by-week
-				// key, no advisory lock). This asserts the MEASURED behavior instead.
 				expect(cycleInserts).toHaveLength(2);
-				expect(queueSends).toHaveLength(4); // 2 domains x 2 deliveries, not 2.
+				// ...scoped to this tenant and anchored on the tick time (the 6h dispatch window).
+				expect(cycleInserts[1].binds.slice(7)).toEqual([TENANT_A, T0 - 6 * 3600 * 1000]);
+				// ...but the guard admitted only the first: one cycle row, one send per due domain.
+				expect(registry.cycles.map((c) => c.id)).toEqual(['cycle-1']);
+				expect(queueSends).toHaveLength(due.length);
+				expect(queueSends).toEqual(due.map((row) => ({ cycle_id: 'cycle-1', sub_tenant_id: TENANT_A, domain: row.domain })));
+				const skipped = logSpy.mock.calls
+					.map((call) => {
+						try {
+							return JSON.parse(String(call[0])) as { details?: Record<string, unknown> };
+						} catch {
+							return null;
+						}
+					})
+					.filter((line) => line?.details?.message === 'tenant_weekly_rescan_skipped_duplicate');
+				// (subTenantId is present but redacted by the logger's tenantId key rule.)
+				expect(skipped).toEqual([expect.objectContaining({ details: expect.objectContaining({ existingCycleId: 'cycle-1' }) })]);
 			},
 		);
 	});

@@ -25,6 +25,8 @@ const SQL_TAGS = {
 	DUE_DOMAINS: 'FROM domains',
 	PENDING_CYCLES: 'completed_total + errored_total >= expected_total',
 	STAMP_ALERT: 'UPDATE tenant_cycles SET alert_sent_at = ?',
+	// SQ-197: the claiming sweep records the delivery result over its own `sending` claim.
+	RECORD_OUTCOME: 'UPDATE tenant_cycles SET alert_outcome = ?',
 	// SQ-167: the cycle and baseline findings reads now drive from `scans` and JOIN
 	// findings; both carry this fragment, and the mock tells them apart by binds[0].
 	FINDINGS_FOR_CYCLE: 'JOIN findings f',
@@ -358,9 +360,11 @@ describe('Tenant cron chaos', () => {
 		expect(sendAlert).toHaveBeenCalledTimes(1);
 		const stamps = registry.calls.filter((c) => c.sql.includes(SQL_TAGS.STAMP_ALERT));
 		expect(stamps).toHaveLength(1);
-		// alert_sent_at (binds[0]) is set so the cycle won't loop next tick.
+		// alert_sent_at (binds[0]) is set by the pre-send claim so the cycle won't loop next tick.
 		expect(stamps[0].binds[0]).toBe(2_000_000);
-		// alert_outcome (binds[1]) records the failure.
-		expect(stamps[0].binds[1]).toBe('webhook_failed');
+		expect(stamps[0].binds[1]).toBe('sending');
+		// alert_outcome then records the failure over this sweep's own claim (SQ-197).
+		const records = registry.calls.filter((c) => c.sql.includes(SQL_TAGS.RECORD_OUTCOME));
+		expect(records.map((c) => c.binds)).toEqual([['webhook_failed', 'cycle-curr', 'sending']]);
 	});
 });
