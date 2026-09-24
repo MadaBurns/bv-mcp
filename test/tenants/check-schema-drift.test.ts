@@ -236,7 +236,7 @@ describe('parseWranglerRows', () => {
 describe('createWranglerRunner', () => {
 	it('routes every query through assertReadOnlySql before the injected exec function', () => {
 		const calls: string[] = [];
-		const runner = createWranglerRunner((database, configPath, sql) => {
+		const runner = createWranglerRunner((database: string, configPath: string, sql: string) => {
 			calls.push(sql);
 			return JSON.stringify([{ success: true, results: [{ ok: 1 }] }]);
 		});
