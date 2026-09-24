@@ -1146,14 +1146,28 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// hash the result was actually scored under (see the cache-read branch above).
 	result = { ...result, scoringConfigHash };
 
-	// Cache the result (use configurable TTL if provided)
-	// Defer the write via waitUntil when available to avoid blocking the response.
-	if (parentSignal?.aborted) throw parentSignal.reason ?? new Error('scan_aborted');
-	const cachePromise = cacheSet(cacheKey, result, kv, runtimeOptions?.cacheTtlSeconds);
-	if (runtimeOptions?.waitUntil) {
-		runtimeOptions.waitUntil(cachePromise);
-	} else {
-		await cachePromise;
+	// Cache the result (use configurable TTL if provided) — but ONLY when it is a real,
+	// gradeable measurement. An ungraded result (score.overall === null, arising from
+	// score.evidenceInsufficient — the evidence gate withholding a grade when most checks
+	// never ran, e.g. a total DoH outage — or from a scoring-path failure in
+	// buildUnscoredResult) or a result whose maturity ladder abstained
+	// (maturity.indeterminate === true) describes the SCAN's own failure to measure, not
+	// the domain's posture. Caching either would serve that "couldn't measure" verdict
+	// with `cached: true` to every caller for the full TTL, turning one transient resolver
+	// blip into a 5-minute grade blackout. A single errored category on an otherwise
+	// graded scan (score.overall is still a number) is ordinary partial degradation and
+	// keeps caching exactly as before — only the three existing "nothing to report" fields
+	// gate the write, no new heuristic.
+	const isCacheableResult = result.score.overall !== null && !result.score.evidenceInsufficient && !result.maturity.indeterminate;
+	if (isCacheableResult) {
+		// Defer the write via waitUntil when available to avoid blocking the response.
+		if (parentSignal?.aborted) throw parentSignal.reason ?? new Error('scan_aborted');
+		const cachePromise = cacheSet(cacheKey, result, kv, runtimeOptions?.cacheTtlSeconds);
+		if (runtimeOptions?.waitUntil) {
+			runtimeOptions.waitUntil(cachePromise);
+		} else {
+			await cachePromise;
+		}
 	}
 
 	return result;

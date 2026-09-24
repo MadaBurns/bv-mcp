@@ -315,7 +315,7 @@ describe('chaos: scan_domain under a total DoH outage (H1)', () => {
 		});
 	});
 
-	it('FALSIFIED: Given every DoH resolver fails, scan_domain should NOT write the ungraded result to the 5-min scan cache. Instead it DOES: the second call is served from cache (cached: true) without one new DoH query', async () => {
+	it('Given every DoH resolver fails, scan_domain should NOT write the ungraded result to the 5-min scan cache, so a second call re-probes DNS instead of replaying the outage verdict', async () => {
 		const net = installNetwork({ domain, primary: 'http503', fallback: 'http503' });
 		const { scanDomain } = await import('../../src/tools/scan-domain');
 
@@ -325,14 +325,14 @@ describe('chaos: scan_domain under a total DoH outage (H1)', () => {
 		const queriesAfterFirst = net.queries.length;
 		expect(queriesAfterFirst).toBeGreaterThan(0);
 
-		// The ungraded outage result sits under the top-level scan key...
+		// The ungraded outage result must NOT have been admitted to the top-level scan key.
 		const stored = await cacheGet<ScanDomainResult>(buildScanCacheKey(domain));
-		expect(stored?.score.overall).toBeNull();
+		expect(stored).toBeUndefined();
 
-		// ...so the next call within the TTL replays it and never re-probes DNS.
+		// ...so the next call within the TTL re-probes DNS instead of replaying the outage.
 		const second = await scanDomain(domain, undefined, { secondaryDoh: SECONDARY_DOH });
-		expect(second.cached).toBe(true);
-		expect(net.queries.length - queriesAfterFirst).toBe(0);
+		expect(second.cached).toBe(false);
+		expect(net.queries.length).toBeGreaterThan(queriesAfterFirst);
 	});
 });
 
