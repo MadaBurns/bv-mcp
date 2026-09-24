@@ -1150,15 +1150,18 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// gradeable measurement. An ungraded result (score.overall === null, arising from
 	// score.evidenceInsufficient — the evidence gate withholding a grade when most checks
 	// never ran, e.g. a total DoH outage — or from a scoring-path failure in
-	// buildUnscoredResult) or a result whose maturity ladder abstained
-	// (maturity.indeterminate === true) describes the SCAN's own failure to measure, not
-	// the domain's posture. Caching either would serve that "couldn't measure" verdict
-	// with `cached: true` to every caller for the full TTL, turning one transient resolver
-	// blip into a 5-minute grade blackout. A single errored category on an otherwise
-	// graded scan (score.overall is still a number) is ordinary partial degradation and
-	// keeps caching exactly as before — only the three existing "nothing to report" fields
-	// gate the write, no new heuristic.
-	const isCacheableResult = result.score.overall !== null && !result.score.evidenceInsufficient && !result.maturity.indeterminate;
+	// buildUnscoredResult) describes the SCAN's own failure to measure, not the domain's
+	// posture. Caching it would serve that "couldn't measure" verdict with `cached: true`
+	// to every caller for the full TTL, turning one transient resolver blip into a
+	// 5-minute grade blackout. Deliberately keyed on score.overall ALONE: a graded scan
+	// whose maturity ladder abstained (maturity.indeterminate — TLS not measured behind an
+	// edge/WAF block, or spf/dmarc inconclusive) still carries a real grade and real
+	// findings and MUST keep caching; gating on that field would re-scan exactly the
+	// hosts that are most expensive to probe on every call
+	// (test/characterization/scan-result-contract.spec.ts caught this on the first cut).
+	// A single errored category on an otherwise graded scan is ordinary partial
+	// degradation and keeps caching exactly as before — no new heuristic.
+	const isCacheableResult = result.score.overall !== null;
 	if (isCacheableResult) {
 		// Defer the write via waitUntil when available to avoid blocking the response.
 		if (parentSignal?.aborted) throw parentSignal.reason ?? new Error('scan_aborted');

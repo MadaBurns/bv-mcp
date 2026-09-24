@@ -25,12 +25,12 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   (`score.overall: null`, `maturity.indeterminate: true`) but wrote it to the
   5-minute scan cache unconditionally, so a single transient resolver blip was
   replayed as `cached: true` — and a fully blank grade — to every caller for the
-  full TTL. The scan-level cache write is now gated on the existing
-  `score.overall`, `score.evidenceInsufficient` and `maturity.indeterminate`
-  fields: an ungraded or evidence-gate-withheld result is never admitted to the
-  cache, so the next call re-probes DNS instead of replaying the outage. Partial
-  degradation (a single errored category on an otherwise graded scan) is
-  unaffected and keeps caching as before. [no-scoring-change]
+  full TTL. The scan-level cache write is now gated on `score.overall`: an
+  ungraded result (the evidence gate withheld a grade) is never admitted to the
+  cache, so the next call re-probes DNS instead of replaying the outage. A graded
+  scan keeps caching as before, including one whose maturity ladder abstained
+  (`maturity.indeterminate`, e.g. TLS unmeasured behind an edge block) and
+  partial degradation (a single errored category). [no-scoring-change]
 - **Poison scanner-queue messages are now logged and DLQ'd where recoverable,
   not silently dropped.** A message whose body failed the strict
   `ScanQueueMessageSchema` (chaos SQ-191, H1) was unconditionally acked with
@@ -112,6 +112,25 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   `queue_batch` rows. `handleTenantWeeklyRescan` now also emits one fail-open `queue_batch` AE
   row per affected cycle (handler `tenant_weekly_rescan_queue_send`, outcome `error`,
   aggregate failure count — no domain names) via the same writer the queue consumer uses.
+- **A double-delivered weekly rescan no longer creates duplicate cycles.** When Cloudflare
+  delivered `0 2 * * SUN` twice, or a slow tick overlapped the next one, each invocation
+  inserted its own `tenant_cycles` row and queued every due domain again (measured 2x by
+  the SQ-193 chaos suite). The cycle insert is now one guarded `INSERT … SELECT … WHERE NOT
+  EXISTS` statement. A tenant with a cycle started within the last 6 hours is skipped with
+  `tenant_weekly_rescan_skipped_duplicate` and the existing cycle id, so a double delivery
+  yields one cycle and one queue message per due domain.
+- **Overlapping alert sweeps can no longer both send one cycle's customer alert.** The
+  `alert_sent_at` stamp had no `IS NULL` guard and was written after the webhook call, so
+  two sweeps that listed the same pending cycle could both deliver it. The sweep now claims
+  the cycle first (`alert_outcome = 'sending'`, guarded on `alert_sent_at IS NULL`). Only
+  the sweep whose UPDATE changed the row sends, then records `sent` or `webhook_failed`.
+- **A cycle whose tenant D1 cannot be read now reaches an operator.** A sub-tenant whose D1
+  stayed unreadable, or whose lookup returned `Tenant not found`, logged
+  `tenant_cycle_reconcile_failed` every 15 minutes and never raised an alert, because the
+  6-hour settle needs a successful reconcile. Past that deadline the sweep now sends ONE
+  "Tenant monitoring cycle unreconcilable" operator alert and marks the cycle
+  `alert_outcome = 'unreconcilable'`, guarded so the alert is not repeated. The cycle stays
+  unsettled and settles normally if the D1 recovers.
 
 ### Added
 
