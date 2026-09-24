@@ -10,6 +10,17 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **`scan_domain` no longer caches an ungraded outage result for 5 minutes.**
+  Under a total DoH outage `scan_domain` correctly returned an ungraded result
+  (`score.overall: null`, `maturity.indeterminate: true`) but wrote it to the
+  5-minute scan cache unconditionally, so a single transient resolver blip was
+  replayed as `cached: true` — and a fully blank grade — to every caller for the
+  full TTL. The scan-level cache write is now gated on the existing
+  `score.overall`, `score.evidenceInsufficient` and `maturity.indeterminate`
+  fields: an ungraded or evidence-gate-withheld result is never admitted to the
+  cache, so the next call re-probes DNS instead of replaying the outage. Partial
+  degradation (a single errored category on an otherwise graded scan) is
+  unaffected and keeps caching as before. [no-scoring-change]
 - **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
   consumer's catch around the scan-persist call discarded the thrown error, so a
   `queue_dlq` finding from a failed tenant D1 write could not distinguish a
