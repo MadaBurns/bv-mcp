@@ -10,16 +10,6 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
-- **An unrecognized cron trigger no longer runs the tenant sweep.** `routeCron`
-  had no `'unknown'` route: any cron string that didn't match a named branch
-  — garbage, a typo in `wrangler.jsonc`, or a new trigger added before its
-  dispatch branch — fell into the same `'periodic'` fallback as the legitimate
-  15-minute sweep and silently ran `handleTenantCycleAlerts` plus the other
-  periodic handlers, with no distinct log line (chaos SQ-193 H4). `routeCron`
-  now maps only the actual 15-minute cron to `'periodic'`; every other
-  unmatched cron returns `'unknown'`, and `scheduled()` responds to it by
-  logging one structured warn (`category: 'cron'`, `result: 'unknown_cron'`,
-  the cron string) and running no handler at all.
 - **`scan_domain` no longer caches an ungraded outage result for 5 minutes.**
   Under a total DoH outage `scan_domain` correctly returned an ungraded result
   (`score.overall: null`, `maturity.indeterminate: true`) but wrote it to the
@@ -59,20 +49,6 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   `error=temporarily_unavailable` for `/oauth/authorize`'s post-validation code write, an
   inline 503 JSON body for `/oauth/register`'s client write) since they shared the same
   gap.
-- **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
-  consumer's catch around the scan-persist call discarded the thrown error, so a
-  `queue_dlq` finding from a failed tenant D1 write could not distinguish a
-  constraint violation from a timeout or a size limit. The consumer now logs the
-  error's name and a bounded, sanitised message (`category: 'tenant.queue'`,
-  cycle id, domain hash) and carries the same sanitised reason into the finding's
-  `detail` and `metadata.reason`.
-- **Weekly-rescan queue-send failures are now alertable, not console-only.** A failed
-  `BV_SCANNER_QUEUE.send` during the Sunday dispatch (`tenant_weekly_rescan_queue_send_failed`)
-  logged via `logError` only, so it never reached the `bv_dns_security_mcp` Analytics Engine
-  dataset and was invisible to `queryRecentAnomalies`/the daily digest, unlike the consumer's
-  `queue_batch` rows. `handleTenantWeeklyRescan` now also emits one fail-open `queue_batch` AE
-  row per affected cycle (handler `tenant_weekly_rescan_queue_send`, outcome `error`,
-  aggregate failure count — no domain names) via the same writer the queue consumer uses.
 - **A double-delivered weekly rescan no longer creates duplicate cycles.** When Cloudflare
   delivered `0 2 * * SUN` twice, or a slow tick overlapped the next one, each invocation
   inserted its own `tenant_cycles` row and queued every due domain again (measured 2x by
@@ -92,6 +68,35 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   "Tenant monitoring cycle unreconcilable" operator alert and marks the cycle
   `alert_outcome = 'unreconcilable'`, guarded so the alert is not repeated. The cycle stays
   unsettled and settles normally if the D1 recovers.
+
+## [3.90.0] - 2026-09-24
+
+### Fixed
+
+- **An unrecognized cron trigger no longer runs the tenant sweep.** `routeCron`
+  had no `'unknown'` route: any cron string that didn't match a named branch
+  — garbage, a typo in `wrangler.jsonc`, or a new trigger added before its
+  dispatch branch — fell into the same `'periodic'` fallback as the legitimate
+  15-minute sweep and silently ran `handleTenantCycleAlerts` plus the other
+  periodic handlers, with no distinct log line (chaos SQ-193 H4). `routeCron`
+  now maps only the actual 15-minute cron to `'periodic'`; every other
+  unmatched cron returns `'unknown'`, and `scheduled()` responds to it by
+  logging one structured warn (`category: 'cron'`, `result: 'unknown_cron'`,
+  the cron string) and running no handler at all.
+- **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
+  consumer's catch around the scan-persist call discarded the thrown error, so a
+  `queue_dlq` finding from a failed tenant D1 write could not distinguish a
+  constraint violation from a timeout or a size limit. The consumer now logs the
+  error's name and a bounded, sanitised message (`category: 'tenant.queue'`,
+  cycle id, domain hash) and carries the same sanitised reason into the finding's
+  `detail` and `metadata.reason`.
+- **Weekly-rescan queue-send failures are now alertable, not console-only.** A failed
+  `BV_SCANNER_QUEUE.send` during the Sunday dispatch (`tenant_weekly_rescan_queue_send_failed`)
+  logged via `logError` only, so it never reached the `bv_dns_security_mcp` Analytics Engine
+  dataset and was invisible to `queryRecentAnomalies`/the daily digest, unlike the consumer's
+  `queue_batch` rows. `handleTenantWeeklyRescan` now also emits one fail-open `queue_batch` AE
+  row per affected cycle (handler `tenant_weekly_rescan_queue_send`, outcome `error`,
+  aggregate failure count — no domain names) via the same writer the queue consumer uses.
 
 ### Added
 

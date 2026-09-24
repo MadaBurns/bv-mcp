@@ -267,6 +267,7 @@ with a cache-buster every time. Full flow: **`bv-mcp-release`**.
 | Tests: Workers pool, DNS mocking, mock isolation, flakes, wall clock in specs, AE SQL | `bv-mcp-testing` |
 | SSRF, auth tiers, quotas, gating, sessions, `/internal/*` keys, error wording, protocol versions, fuzzing | `bv-mcp-security-surface` |
 | Bindings, workflows, deploy modes, analytics, subrequest ceiling, service-binding door | `bv-mcp-operations` |
+| Reviewing and merging the open-PR backlog: required vs advisory checks, the same-name `build-and-test` hole, strict-serialization order, post-merge worktree/ticket hygiene | `bv-mcp-merge-queue` |
 | Version bump, changelog, tags, MCP Registry publish | `bv-mcp-release` |
 
 Fleet-wide concerns (change control, cross-repo seams, shell portability,
