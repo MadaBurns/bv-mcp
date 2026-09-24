@@ -29,6 +29,15 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   diff alert, which compares only the domains that were measured. One operator alert (`Tenant
   monitoring cycle settled partial`) goes to `ALERT_WEBHOOK_URL`. On the first sweep after
   deploy this settles the two stalled production cycles from 2026-09-13 and 2026-09-20.
+- **Tenant scan snapshots no longer persist `maturity_stage: 0` for domains that don't resolve.**
+  `toTenantScanSnapshot` (`src/tenants/scan-snapshot.ts`) only nulled the stage when
+  `maturity.indeterminate === true`, so an ungraded scan (NXDOMAIN / SERVFAIL / no-records —
+  `score.overall: null`) whose `maturity` carries a placeholder `stage: 0` with no
+  `indeterminate` flag (`buildNonResolvingResult` / `buildDnsBrokenResult` in
+  `src/tools/scan-domain.ts`) was stored with the same `maturity_stage` value the ladder uses
+  for a genuinely "Unprotected" domain, so tenant trend/dashboard queries counted dead domains
+  as unprotected. The stage is now `null` whenever `score.overall` is `null`; a real "Stage 0 —
+  Unprotected" scan (score present) still persists `0`.
 
 ## [3.88.1] - 2026-09-24
 
