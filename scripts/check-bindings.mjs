@@ -11,10 +11,80 @@
 // still surface with a readable message and a non-zero exit. The generated
 // worker-configuration.d.ts is still written to disk as usual (gitignored,
 // pre-commit-blocked) for tsc and editors to consume.
-import { readFileSync } from 'node:fs';
+import { readFileSync, realpathSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const extraArgs = process.argv.slice(2);
+
+const SCANNER_QUEUE_NAME = 'bv-scanner-queue';
+
+/**
+ * Pure check: does the `bv-scanner-queue` consumer in the given (already
+ * parsed) wrangler config declare a `dead_letter_queue`? Advisory only — a
+ * missing DLQ never fails this gate, since the operator must create the
+ * queue first (`npx wrangler queues create bv-scanner-dlq`, see
+ * docs/tenant-ops-runbook.md's "Dead-Letter Queue Setup" subsection) before
+ * the field means anything. SQ-169 measured 260/500 tenant-cycle messages
+ * dropped silently past `max_retries` with no DLQ to catch them.
+ *
+ * No I/O — takes the parsed config object, so it is unit-testable directly.
+ *
+ * @param {{ queues?: { consumers?: Array<Record<string, unknown>> } } | null | undefined} config
+ * @returns {{ ok: boolean, message: string | null }}
+ */
+export function assessScannerQueueDlq(config) {
+	const consumers = config && config.queues && Array.isArray(config.queues.consumers) ? config.queues.consumers : [];
+	const scannerConsumer = consumers.find((consumer) => consumer && consumer.queue === SCANNER_QUEUE_NAME);
+	if (!scannerConsumer || scannerConsumer.dead_letter_queue) {
+		return { ok: true, message: null };
+	}
+	return {
+		ok: false,
+		message:
+			`WARNING: the ${SCANNER_QUEUE_NAME} consumer has no dead_letter_queue. A message that exhausts ` +
+			'max_retries is dropped with no durable marker (SQ-169 — 260/500 messages lost this way on the ' +
+			"09-13 and 09-20 tenant cycles). Create one and wire it in — see docs/tenant-ops-runbook.md's " +
+			'"Dead-Letter Queue Setup" subsection.',
+	};
+}
+
+/**
+ * Extracts the `--config <path>` value passed through this script's own argv
+ * (mirrors what gets forwarded to `wrangler types` below). Absent when the
+ * default `wrangler.jsonc` is in play, which never carries queues — so the
+ * DLQ check has nothing to look at and is skipped silently.
+ *
+ * @param {string[]} args
+ * @returns {string | null}
+ */
+export function extractConfigPath(args) {
+	const idx = args.indexOf('--config');
+	return idx !== -1 && args[idx + 1] ? args[idx + 1] : null;
+}
+
+/**
+ * Reads and parses `configPath` best-effort and warns (never fails) if the
+ * scanner-queue consumer has no DLQ. Swallows a missing/unparseable file —
+ * this check runs after `wrangler types` already validated the config, so a
+ * read failure here just means "nothing to check," not a new failure mode.
+ *
+ * @param {string | null} configPath
+ * @param {(path: string, encoding: string) => string} readFileFn
+ */
+export function warnIfScannerQueueMissingDlq(configPath, readFileFn = readFileSync) {
+	if (!configPath) return;
+	let config;
+	try {
+		config = JSON.parse(readFileFn(configPath, 'utf8'));
+	} catch {
+		return;
+	}
+	const verdict = assessScannerQueueDlq(config);
+	if (!verdict.ok) {
+		console.warn(verdict.message);
+	}
+}
 
 function run(command, args, { captureStdout = false } = {}) {
 	return new Promise((resolve, reject) => {
@@ -73,8 +143,24 @@ async function main() {
 	}
 	console.log(`bindings check: OK (${summary.vars} vars, ${summary.bindings} bindings)`);
 
+	warnIfScannerQueueMissingDlq(extractConfigPath(extraArgs));
+
 	const tscResult = await run('npx', ['tsc', '--noEmit']);
 	process.exitCode = tscResult.code ?? 1;
 }
 
-main();
+/**
+ * True when this file was invoked as the CLI entrypoint, not merely imported
+ * (the audit test imports the pure `assessScannerQueueDlq`/`extractConfigPath`
+ * helpers above without running `main()`'s real `wrangler types` + `tsc`
+ * shell-outs as an import side effect). Same guard as
+ * `scripts/ci/sidecar-deploy-drift-check.ts`'s `isInvokedDirectly`.
+ */
+export function isInvokedDirectly(argv1, moduleUrl, realpath = realpathSync) {
+	if (!argv1) return false;
+	return realpath(argv1) === fileURLToPath(moduleUrl);
+}
+
+if (isInvokedDirectly(process.argv[1], import.meta.url)) {
+	main();
+}

@@ -17,6 +17,23 @@
 	"analytics_engine_datasets": [
 		{ "binding": "MCP_ANALYTICS", "dataset": "your_analytics_dataset" }
 	],
+	"queues": {
+		"producers": [
+			{ "binding": "BV_SCANNER_QUEUE", "queue": "bv-scanner-queue" }
+		],
+		"consumers": [
+			{
+				"queue": "bv-scanner-queue",
+				"max_batch_size": 25,
+				"max_retries": 3,
+				// Create the DLQ first with `npx wrangler queues create bv-scanner-dlq`,
+				// THEN add this field here and redeploy — see docs/tenant-ops-runbook.md's
+				// "Dead-Letter Queue Setup" subsection. Without it, a message that exhausts
+				// max_retries is dropped with no durable marker (SQ-169).
+				"dead_letter_queue": "bv-scanner-dlq"
+			}
+		]
+	},
 	"vars": {
 		// Set BV_API_KEY with `npx wrangler secret put BV_API_KEY`.
 		"PROVIDER_SIGNATURES_URL": "",
