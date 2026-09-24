@@ -85,6 +85,19 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   redirect cap (`src/tools/check-http-security.ts`) now imports the package's
   `MAX_REDIRECT_HOPS` (exported as `HTTP_SECURITY_MAX_REDIRECT_HOPS`) instead of hardcoding a
   separate, larger cap of its own. A chain that resolves within the cap is unchanged.
+- **Two silent misconfigurations now log instead of degrading invisibly.** A malformed
+  `SCORING_CONFIG` JSON env var made `parseScoringConfig` return
+  `DEFAULT_SCORING_CONFIG` from the `JSON.parse` catch before the warn path ever ran
+  — the same silent-override class as the previously-fixed inert `coreWeights`
+  override. It now emits one structured warning (`category: 'config'`,
+  `result: 'scoring_config_invalid_json'`), bounded and never echoing the raw config
+  text, at most once per isolate via the existing memoization. Separately, an
+  unparseable `ALERT_WEBHOOK_URL` made `sendAlert`'s `catch` around `new URL()`
+  return `false` without ever calling `fetch` or `logError`, dropping every operator
+  alert with zero trace. It now logs once per call (`category: 'alerting'`,
+  `result: 'webhook_url_invalid'`), recording only the URL's length and scheme, never
+  the URL value itself. Measured by chaos SQ-195; fixed by SQ-203. Both behaviors
+  (still defaulting/still returning `false`) are unchanged — logging-only fixes.
 - **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
   consumer's catch around the scan-persist call discarded the thrown error, so a
   `queue_dlq` finding from a failed tenant D1 write could not distinguish a

@@ -9,14 +9,17 @@
 // findings are also recorded as SQ-195 ticket comments.
 //
 //  H1 — Given SCORING_CONFIG is malformed JSON / fails schema validation,
-//       scan_domain scores with the default config and (per the code, only
-//       for the schema-validation-failure branch) emits one structured
-//       warning; scores equal a control run with SCORING_CONFIG unset.
+//       scan_domain scores with the default config and emits one structured
+//       warning in EITHER case (SQ-203 fixed the JSON.parse-failure branch,
+//       which used to short-circuit before the warn path ever ran); scores
+//       equal a control run with SCORING_CONFIG unset.
 //  H2 — Given SCAN_TIMEOUT_MS / PER_CHECK_TIMEOUT_MS / CACHE_TTL_SECONDS are
 //       garbage strings or negative numbers, the parse* helpers fall back to
 //       documented defaults (never 0/NaN) and scan_domain completes.
 //  H3 — Given ALERT_WEBHOOK_URL is unparseable or points at a rejecting
-//       host, sendAlert resolves (never throws) and is not retried in a loop.
+//       host, sendAlert resolves (never throws), is not retried in a loop,
+//       and logs exactly once per call in EITHER case (SQ-203 fixed the
+//       unparseable-URL branch, which used to return false with zero trace).
 //  H4 — Given BV_RECON is absent, each of the 11 recon tools returns the
 //       `unprovisioned` fail-soft shape via handleToolsCall, and scan_domain
 //       is unaffected. Given BV_RECON is present but its fetch rejects, the
@@ -99,18 +102,28 @@ describe('H1: malformed/invalid SCORING_CONFIG degrades to defaults, never crash
 		resetScoringConfigCache();
 	});
 
-	it('H1a — [FALSIFIED] malformed-JSON SCORING_CONFIG resolves to DEFAULT_SCORING_CONFIG SILENTLY: parseScoringConfig short-circuits on JSON.parse failure before the warn path ever runs, so no warning is emitted (contract text says "emits one structured warning" — that only holds for the schema-validation-failure branch, see H1b)', async () => {
-		const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+	it('H1a — malformed-JSON SCORING_CONFIG resolves to DEFAULT_SCORING_CONFIG AND emits one structured warn (category "config", result "scoring_config_invalid_json") — SQ-203 fixed parseScoringConfig short-circuiting on JSON.parse failure before the warn path ran; a SECOND call with the SAME malformed input (negative control for "once per isolate", not per scan) hits the memoized cache and does not warn again', async () => {
+		const logModule = await import('../../src/lib/log');
+		const logEventSpy = vi.spyOn(logModule, 'logEvent');
 		const { parseScoringConfigCached } = await import('../../src/lib/scoring-config');
 		const { DEFAULT_SCORING_CONFIG } = await import('@blackveil/dns-checks/scoring');
 
 		const result = parseScoringConfigCached('{this is not valid json');
 
 		expect(result).toEqual(DEFAULT_SCORING_CONFIG);
-		// Negative control lives in H1b: a config that IS valid JSON but fails
-		// schema validation DOES warn — proving this assertion is not just a
-		// mock/spy wiring failure.
-		expect(warnSpy).not.toHaveBeenCalled();
+		expect(logEventSpy).toHaveBeenCalledTimes(1);
+		const event = logEventSpy.mock.calls[0]?.[0];
+		expect(event?.category).toBe('config');
+		expect(event?.result).toBe('scoring_config_invalid_json');
+		expect(event?.severity).toBe('warn');
+		// The warning must never echo the malformed config text itself.
+		expect(JSON.stringify(event?.details)).not.toContain('this is not valid json');
+
+		// Memoization means a second call with the SAME malformed input does not
+		// re-parse and does not warn again — once per isolate, not per scan.
+		const again = parseScoringConfigCached('{this is not valid json');
+		expect(again).toEqual(DEFAULT_SCORING_CONFIG);
+		expect(logEventSpy).toHaveBeenCalledTimes(1);
 	});
 
 	it('H1b — SCORING_CONFIG that parses as JSON but fails schema validation (typo’d profile name) resolves to defaults AND emits exactly one console.warn; a VALID override (negative control) resolves without warning and actually changes the config', async () => {
@@ -211,7 +224,7 @@ describe('H2: garbage/negative SCAN_TIMEOUT_MS / PER_CHECK_TIMEOUT_MS / CACHE_TT
 // H3 — ALERT_WEBHOOK_URL failures resolve, never throw, never retry
 // ---------------------------------------------------------------------------
 describe('H3: ALERT_WEBHOOK_URL misconfiguration resolves (never throws), and is not retried in a loop', () => {
-	it('H3a — [FALSIFIED] an unparseable ALERT_WEBHOOK_URL resolves false WITHOUT calling fetch or logging: sendAlert’s catch on `new URL()` returns false directly, never reaching postWebhookJson’s log call — contract text says "the alert failure is logged"; that only holds once a real HTTP attempt is made (see H3b/H3c)', async () => {
+	it('H3a — an unparseable ALERT_WEBHOOK_URL resolves false WITHOUT calling fetch, but DOES log exactly once — SQ-203 fixed sendAlert’s catch on `new URL()` returning false directly with zero trace, never reaching postWebhookJson’s log call', async () => {
 		const logModule = await import('../../src/lib/log');
 		const logErrorSpy = vi.spyOn(logModule, 'logError');
 		const fetchSpy = vi.fn();
@@ -222,7 +235,14 @@ describe('H3: ALERT_WEBHOOK_URL misconfiguration resolves (never throws), and is
 
 		expect(delivered).toBe(false);
 		expect(fetchSpy).not.toHaveBeenCalled();
-		expect(logErrorSpy).not.toHaveBeenCalled();
+		expect(logErrorSpy).toHaveBeenCalledTimes(1);
+		const [errorArg, context] = logErrorSpy.mock.calls[0] ?? [];
+		expect(context?.category).toBe('alerting');
+		expect(context?.result).toBe('webhook_url_invalid');
+		// The raw URL value must never be logged (it may embed a token) — only its
+		// length and scheme.
+		const serialized = `${String(errorArg)} ${JSON.stringify(context)}`;
+		expect(serialized).not.toContain('not a valid url at all');
 	});
 
 	it('H3b — a rejecting host (non-2xx response) makes sendAlert resolve false, call fetch exactly once (no retry loop), and log exactly one warning', async () => {
