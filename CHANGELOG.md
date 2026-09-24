@@ -8,6 +8,22 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.89.0] - 2026-09-24
+
+### Added
+
+- **Read-only tenant D1 schema-drift checker** (`npm run check:tenant-schema`,
+  `scripts/tenants/check-schema-drift.mjs`). Tenant migrations are applied as raw SQL at
+  provisioning time with no ledger, so a migration added later never reached an existing
+  tenant database and nothing noticed: on 2026-09-24 production was missing registry
+  migration 0003 (`sub_tenants.routing_mode`) and tenant migration 0002
+  (`idx_findings_scan_id`, the index whose absence caused the weekly-cycle stall below). The
+  checker derives the expected tables, columns and indexes from the migration files and
+  compares them with the live `sqlite_master` and per-table `pragma_table_info` (D1 refuses
+  the joined form and any pragma on its internal `_cf_KV` table with `SQLITE_AUTH`), never
+  runs DDL, and exits non-zero naming each missing object. The tenant-ops runbook gains a
+  "Schema Drift" section with the operator apply command.
+
 ### Fixed
 
 - **The weekly tenant rescan completes again. It had stalled at 240 of 500 domains since
