@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.91.0] - 2026-09-24
+
 ### Fixed
 
 - **`scan_domain` no longer caches an ungraded outage result for 5 minutes.**
