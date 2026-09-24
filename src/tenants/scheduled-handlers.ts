@@ -30,6 +30,7 @@ import {
 	type FindingRow,
 } from './alerts';
 import { buildAlertPayload, sendAlert } from '../lib/alerting';
+import { createAnalyticsClient } from '../lib/analytics';
 import { logEvent, logError } from '../lib/log';
 import { resolveTenantUncached, type TenantDbHandle } from './tenant-resolver';
 import type { ScanQueueMessage } from '../schemas/tenant-internal';
@@ -45,6 +46,12 @@ export type TenantScheduledEnv = {
 	ALERT_WEBHOOK_URL?: string;
 	/** bv-web-prod binding: operator alerts to its ingest route go over it (see `sendAlert`). */
 	BV_WEB?: Fetcher;
+	/**
+	 * `bv_dns_security_mcp` dataset binding. Optional/fail-open — when absent,
+	 * `createAnalyticsClient` returns a no-op client and the weekly-rescan send
+	 * loop still completes (see the `queue_batch` emission on send failure below).
+	 */
+	MCP_ANALYTICS?: AnalyticsEngineDataset;
 };
 
 /** Default watch interval (hours) when a domain row has it NULL. Matches the schema default. */
@@ -413,6 +420,7 @@ async function rescanTenant(
 	// The complete expected count and fingerprint errors must exist before any
 	// consumer can run. A failed insert above publishes no work.
 	let sendErrors = 0;
+	const sendLoopStartedAt = Date.now();
 	for (const domain of selectedDomains) {
 		try {
 			await env.BV_SCANNER_QUEUE!.send({ cycle_id: cycleId, sub_tenant_id: tenant.id, domain }, { contentType: 'json' });
@@ -429,6 +437,22 @@ async function rescanTenant(
 	if (sendErrors > 0) {
 		await env.TENANT_REGISTRY_DB!.prepare(INCREMENT_ERRORED_SQL).bind(sendErrors, cycleId).run();
 		erroredCount += sendErrors;
+		// SQ-184: mirror the console-only failure above into `bv_dns_security_mcp`
+		// via the SAME writer + `queue_batch` field conventions as the queue
+		// consumer's batch-outcome counter (src/index.ts `worker.queue`), so a
+		// failed BV_SCANNER_QUEUE.send during the Sunday dispatch is queryable by
+		// `queryQueueFailures`/the daily digest instead of being console-only.
+		// Fail-open: `createAnalyticsClient` no-ops when MCP_ANALYTICS is unbound,
+		// and its internal write is already try/catch-guarded. No domain names —
+		// only the aggregate failure count, matching the batch schema (no blob
+		// slot exists for subTenantId/cycleId; those stay in the logError above).
+		createAnalyticsClient(env.MCP_ANALYTICS).emitQueueBatchEvent({
+			handler: 'tenant_weekly_rescan_queue_send',
+			outcome: 'error',
+			durationMs: Date.now() - sendLoopStartedAt,
+			messageCount: selectedDomains.length,
+			failureCount: sendErrors,
+		});
 	}
 
 	logEvent({

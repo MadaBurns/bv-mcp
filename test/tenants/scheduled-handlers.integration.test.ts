@@ -416,6 +416,79 @@ describe('handleTenantWeeklyRescan', () => {
 		expect(registry.calls.filter((c) => callMatches(c.sql, INCREMENT_ERRORED_SQL))).toHaveLength(0);
 	});
 
+	it('f2. a throwing BV_SCANNER_QUEUE.send emits a queue_batch AE row (SQ-184)', async () => {
+		const { handleTenantWeeklyRescan } = await import('../../src/tenants/scheduled-handlers');
+		const registry = makeMockD1({
+			rowsBySql: { [ACTIVE_TENANTS_SQL]: [{ id: TENANT_A, super_tenant_id: SUPER }] },
+		});
+		const tenant = makeMockD1({
+			rowsBySql: {
+				[DUE_DOMAINS_SQL]: [
+					{ domain: 'good1.com', last_scanned_at: null, watch_interval_hours: 168, fingerprint: null },
+					{ domain: 'broken.com', last_scanned_at: null, watch_interval_hours: 168, fingerprint: null },
+				],
+			},
+		});
+		const captured: Array<{ indexes?: string[]; blobs?: string[]; doubles?: number[] }> = [];
+		const queue = {
+			async send(msg: { domain: string }) {
+				if (msg.domain === 'broken.com') throw new Error('queue_send_failed');
+			},
+		};
+		const customEnv: TenantScheduledEnv = {
+			...env,
+			TENANT_REGISTRY_DB: registry.db,
+			BV_SCANNER_QUEUE: queue,
+			MCP_ANALYTICS: { writeDataPoint: (p) => captured.push(p) },
+			[TENANT_A_BINDING]: tenant.db,
+		} as TenantScheduledEnv;
+
+		await handleTenantWeeklyRescan(customEnv, makeCtx(), {
+			now: () => 9_999_999_999_999,
+			newCycleId: () => 'cycle-test',
+			dnsQuery: makeDnsQuery({}),
+		});
+
+		expect(registry.calls.filter((c) => callMatches(c.sql, INCREMENT_ERRORED_SQL))).toHaveLength(1);
+		expect(captured).toHaveLength(1);
+		expect(captured[0].indexes).toEqual(['queue_batch']);
+		expect(captured[0].blobs?.[0]).toBe('tenant_weekly_rescan_queue_send');
+		expect(captured[0].blobs?.[1]).toBe('error');
+		// doubles: [durationMs, failureCount, messageCount] per emitQueueBatchEvent.
+		expect(captured[0].doubles?.[1]).toBe(1);
+		expect(captured[0].doubles?.[2]).toBe(2);
+	});
+
+	it('f3. an all-succeeding rescan emits no queue_batch AE row (SQ-184)', async () => {
+		const { handleTenantWeeklyRescan } = await import('../../src/tenants/scheduled-handlers');
+		const registry = makeMockD1({
+			rowsBySql: { [ACTIVE_TENANTS_SQL]: [{ id: TENANT_A, super_tenant_id: SUPER }] },
+		});
+		const tenant = makeMockD1({
+			rowsBySql: {
+				[DUE_DOMAINS_SQL]: [{ domain: 'good1.com', last_scanned_at: null, watch_interval_hours: 168, fingerprint: null }],
+			},
+		});
+		const captured: Array<{ indexes?: string[]; blobs?: string[]; doubles?: number[] }> = [];
+		const queue = makeMockQueue();
+		const customEnv: TenantScheduledEnv = {
+			...env,
+			TENANT_REGISTRY_DB: registry.db,
+			BV_SCANNER_QUEUE: queue,
+			MCP_ANALYTICS: { writeDataPoint: (p) => captured.push(p) },
+			[TENANT_A_BINDING]: tenant.db,
+		} as TenantScheduledEnv;
+
+		await handleTenantWeeklyRescan(customEnv, makeCtx(), {
+			now: () => 9_999_999_999_999,
+			newCycleId: () => 'cycle-test',
+			dnsQuery: makeDnsQuery({}),
+		});
+
+		expect(queue.sends).toHaveLength(1);
+		expect(captured).toHaveLength(0);
+	});
+
 	it('g. BV_SCANNER_QUEUE unbound → fail-soft, no throw', async () => {
 		const { handleTenantWeeklyRescan } = await import('../../src/tenants/scheduled-handlers');
 		const registry = makeMockD1({
