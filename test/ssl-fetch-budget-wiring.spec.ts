@@ -66,10 +66,14 @@ const { restore } = setupFetchMock();
 /**
  * Reduced per-check budget for the behavioural case. Real value is 8s; every
  * simulated leg below is scaled to this so one scan fits the pool's 15s ceiling.
- * `fetchBudgetFor(3000)` = 2250ms, which is what bounds the final probe.
+ * `fetchBudgetFor(1750)` = 1000ms (750ms reserve below `REDUCED_PER_CHECK_MS`,
+ * the same margin `fetchBudgetFor` keeps at its production default), which is
+ * what bounds the final probe. This case has no retry (checkSsl returns
+ * measured, not `checkStatus: 'error'`), so unlike the mta_sts/subdomain_takeover
+ * siblings there is only ever one budget cycle to pay for.
  */
-const REDUCED_PER_CHECK_MS = 3_000;
-const REDUCED_BUDGET_MS = fetchBudgetFor(REDUCED_PER_CHECK_MS); // 2250
+const REDUCED_PER_CHECK_MS = 1_750;
+const REDUCED_BUDGET_MS = fetchBudgetFor(REDUCED_PER_CHECK_MS); // 1000
 
 /** How long the robots.txt gate fetch takes before the `https://` leg can start. */
 const ROBOTS_DELAY_MS = 250;
@@ -138,15 +142,15 @@ interface LegCounts {
  * The #641 pathology, scaled down: robots.txt and `https://` both answer, but
  * slowly, and the `http://` redirect probe never answers at all.
  *
- * Timeline against `REDUCED_BUDGET_MS` (2250):
- *   t=0     robots.txt issued, budget-bounded to 2250 → answers at 250
- *   t=250   `https://` issued, budget-bounded to 2000 → answers at 500
- *   t=500   `http://`  issued, budget-bounded to 1750 → ABORTS at 2250
- *   → checkSSL returns ~2250ms, inside the 3000ms per-check budget.
+ * Timeline against `REDUCED_BUDGET_MS` (1000):
+ *   t=0     robots.txt issued, budget-bounded to 1000 → answers at 250
+ *   t=250   `https://` issued, budget-bounded to 750  → answers at 500
+ *   t=500   `http://`  issued, budget-bounded to 500  → ABORTS at 1000
+ *   → checkSSL returns ~1000ms, inside the 1750ms per-check budget.
  *
  * WITHOUT the budget the third leg carries only the package's own 4000ms
  * timeout, so the check cannot return before ~4500ms and `safeCheck` kills it at
- * 3000ms — losing the whole category, which is the regression.
+ * 1750ms — losing the whole category, which is the regression.
  */
 function mockSlowSslLegs(counts: LegCounts) {
 	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request, init?: RequestInit) => {

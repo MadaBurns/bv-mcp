@@ -56,8 +56,16 @@ import { PER_CHECK_TIMEOUT_MS } from '../src/lib/config';
 
 const { restore } = setupFetchMock();
 
-/** Reduced per-check budget. `fetchBudgetFor(3000)` = 2250ms, which is what bounds the legs. */
-const REDUCED_PER_CHECK_MS = 3_000;
+/**
+ * Reduced per-check budget. `fetchBudgetFor(1750)` = 1000ms, which is what bounds
+ * the legs (750ms margin below `REDUCED_PER_CHECK_MS`, same reserve `fetchBudgetFor`
+ * keeps at its default — so safeCheck's killer never races our own abort). This
+ * check runs its budget cycle TWICE per stalled case (the transient-zero retry
+ * pass in scan-domain.ts fires for every `checkStatus: 'error'` result, including
+ * these), so 1000ms was chosen to still clear `ROBOTS_DELAY_MS` with margin on
+ * both the initial attempt and the retry.
+ */
+const REDUCED_PER_CHECK_MS = 1_750;
 const REDUCED_BUDGET_MS = fetchBudgetFor(REDUCED_PER_CHECK_MS);
 
 /** robots.txt answers quickly, so the policy fetch is unambiguously the leg under test. */

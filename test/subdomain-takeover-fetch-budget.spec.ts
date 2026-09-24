@@ -47,7 +47,15 @@ import { PER_CHECK_TIMEOUT_MS } from '../src/lib/config';
 
 const { restore } = setupFetchMock();
 
-const REDUCED_PER_CHECK_MS = 3_000;
+/**
+ * `fetchBudgetFor(1750)` = 1000ms (750ms reserve below `REDUCED_PER_CHECK_MS`,
+ * the same margin `fetchBudgetFor` keeps at its production default, so our own
+ * abort still lands before safeCheck's killer). The "withholds the clean
+ * verdict" case below is retried by scan-domain.ts's transient-zero pass
+ * (`checkStatus: 'error'`), so 1000ms was chosen to still clear `ROBOTS_DELAY_MS`
+ * with margin on both the initial attempt and the retry.
+ */
+const REDUCED_PER_CHECK_MS = 1_750;
 const REDUCED_BUDGET_MS = fetchBudgetFor(REDUCED_PER_CHECK_MS);
 const ROBOTS_DELAY_MS = 150;
 
