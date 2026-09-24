@@ -165,6 +165,13 @@ function makeCtx() {
 	return { waitUntil: (_p: Promise<unknown>) => undefined };
 }
 
+/** Matches `AnalyticsDatasetLike['writeDataPoint']`'s point shape (src/lib/analytics.ts). */
+interface CapturedAnalyticsPoint {
+	indexes?: string[];
+	blobs?: string[];
+	doubles?: number[];
+}
+
 // Build a stub DnsQueryFn driven by per-domain options.
 function makeDnsQuery(opts: {
 	throwForDomains?: Set<string>;
@@ -429,7 +436,7 @@ describe('handleTenantWeeklyRescan', () => {
 				],
 			},
 		});
-		const captured: Array<{ indexes?: string[]; blobs?: string[]; doubles?: number[] }> = [];
+		const captured: CapturedAnalyticsPoint[] = [];
 		const queue = {
 			async send(msg: { domain: string }) {
 				if (msg.domain === 'broken.com') throw new Error('queue_send_failed');
@@ -439,7 +446,7 @@ describe('handleTenantWeeklyRescan', () => {
 			...env,
 			TENANT_REGISTRY_DB: registry.db,
 			BV_SCANNER_QUEUE: queue,
-			MCP_ANALYTICS: { writeDataPoint: (p) => captured.push(p) },
+			MCP_ANALYTICS: { writeDataPoint: (p: CapturedAnalyticsPoint) => captured.push(p) },
 			[TENANT_A_BINDING]: tenant.db,
 		} as TenantScheduledEnv;
 
@@ -469,13 +476,13 @@ describe('handleTenantWeeklyRescan', () => {
 				[DUE_DOMAINS_SQL]: [{ domain: 'good1.com', last_scanned_at: null, watch_interval_hours: 168, fingerprint: null }],
 			},
 		});
-		const captured: Array<{ indexes?: string[]; blobs?: string[]; doubles?: number[] }> = [];
+		const captured: CapturedAnalyticsPoint[] = [];
 		const queue = makeMockQueue();
 		const customEnv: TenantScheduledEnv = {
 			...env,
 			TENANT_REGISTRY_DB: registry.db,
 			BV_SCANNER_QUEUE: queue,
-			MCP_ANALYTICS: { writeDataPoint: (p) => captured.push(p) },
+			MCP_ANALYTICS: { writeDataPoint: (p: CapturedAnalyticsPoint) => captured.push(p) },
 			[TENANT_A_BINDING]: tenant.db,
 		} as TenantScheduledEnv;
 
