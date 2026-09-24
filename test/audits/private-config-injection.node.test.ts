@@ -156,9 +156,7 @@ describe('private Wrangler config injection', () => {
 			secrets?: { required?: string[] };
 		};
 
-		expect(injected.secrets?.required, 'the generated production config must declare its required secrets').toContain(
-			'BV_API_KEY',
-		);
+		expect(injected.secrets?.required, 'the generated production config must declare its required secrets').toContain('BV_API_KEY');
 		expect(injected.secrets?.required).toContain('OAUTH_SIGNING_SECRET');
 
 		// Fail-soft capabilities must stay out: check_ssl, the recon tools and Cert Spotter
@@ -239,7 +237,10 @@ describe('private Wrangler config injection', () => {
 			'the example overlay must not shadow the public Durable Object bindings',
 		).toEqual(['QUOTA_COORDINATOR', 'PROFILE_ACCUMULATOR']);
 		expect(injected.migrations?.map((migration) => migration.tag)).toEqual(['v1', 'v2', 'v3']);
-		expect(injected.triggers?.crons, 'cron triggers come from the public config, not the overlay').toHaveLength(3);
+		const publicCrons = (JSON.parse(readFileSync(join(process.cwd(), 'wrangler.jsonc'), 'utf8')) as { triggers?: { crons?: string[] } })
+			.triggers?.crons;
+		expect(publicCrons?.length, 'the public config must declare cron triggers').toBeGreaterThan(0);
+		expect(injected.triggers?.crons, 'cron triggers come from the public config, not the overlay').toEqual(publicCrons);
 		// The shipped public config and example overlay must not reintroduce
 		// ALERT_WEBHOOK_URL as a var (#1073) — that is the exact disclosure this
 		// ticket removes, and the injector fails closed if either does.
@@ -375,7 +376,10 @@ describe('ALERT_WEBHOOK_URL secret gate — listProductionSecretNames', () => {
 	it('returns the secret names from a well-formed JSON array', () => {
 		const spawnSyncFn = vi.fn(() => ({
 			status: 0,
-			stdout: JSON.stringify([{ name: 'BV_API_KEY', type: 'secret_text' }, { name: 'ALERT_WEBHOOK_URL', type: 'secret_text' }]),
+			stdout: JSON.stringify([
+				{ name: 'BV_API_KEY', type: 'secret_text' },
+				{ name: 'ALERT_WEBHOOK_URL', type: 'secret_text' },
+			]),
 			stderr: '',
 		}));
 		expect(listProductionSecretNames('bv-dns-security-mcp', spawnSyncFn)).toEqual(['BV_API_KEY', 'ALERT_WEBHOOK_URL']);
