@@ -24,12 +24,12 @@
  * captured `CheckResult` to it instead of inserting directly.
  */
 
-import { ZodError } from 'zod';
+import { z, ZodError } from 'zod';
 import { handleToolsCall } from '../handlers/tools';
 import { createAnalyticsClient, hashDomain } from '../lib/analytics';
 import { parseScoringConfigCached } from '../lib/scoring-config';
 import { parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from '../lib/config';
-import { ScanQueueMessageSchema, type ScanQueueMessage } from '../schemas/tenant-internal';
+import { ScanQueueMessageSchema, TENANT_ID_REGEX, type ScanQueueMessage } from '../schemas/tenant-internal';
 import { streamScanResult } from '../lib/hooks/analytics-stream';
 import { synchronizeCycleProgress } from './cycle-progress';
 import { resolveTenant, type ResolverEnv, type TenantDbHandle } from './tenant-resolver';
@@ -49,6 +49,30 @@ export const MAX_ATTEMPTS = 3;
  * unexpectedly long driver message bloating the finding row.
  */
 const MAX_PERSIST_ERROR_MESSAGE_LENGTH = 200;
+/**
+ * Bound on the sanitised zod issue message carried into the poison-message
+ * log line (SQ-196). The raw message body is never logged — only the issue
+ * paths and a bounded excerpt of the first issue's message.
+ */
+const MAX_POISON_ISSUE_MESSAGE_LENGTH = 200;
+
+/**
+ * Lenient recovery shape for a poison message (SQ-196): just the three
+ * identifying fields, permissive about anything else in the body
+ * (`.passthrough()`). A message that fails the strict `ScanQueueMessageSchema`
+ * — e.g. an unexpected extra field, or a future producer field rolled out
+ * ahead of the consumer — may still carry a trustworthy `(sub_tenant_id,
+ * cycle_id, domain)` triple. Recovering it lets the domain still surface in
+ * its cycle's report via a `queue_dlq` marker instead of vanishing silently
+ * (chaos SQ-191, H1).
+ */
+const PoisonRecoverySchema = z
+	.object({
+		sub_tenant_id: z.string().regex(TENANT_ID_REGEX),
+		cycle_id: z.string().min(1).max(128).regex(/^[A-Za-z0-9_-]+$/),
+		domain: z.string().min(1).max(253),
+	})
+	.passthrough();
 
 // `f.domain = s.domain` keeps the join bounded by the base-schema domain index
 // when `idx_findings_scan_id` is missing (see COMPLETED_SCANS_SQL in cycle-progress.ts).
@@ -249,6 +273,55 @@ async function deadLetterMessage(
 }
 
 /**
+ * A message whose body failed `ScanQueueMessageSchema` (SQ-196, chaos SQ-191
+ * H1). Never retried — a malformed producer payload does not become valid by
+ * waiting — but no longer silently dropped: always logs a structured reason
+ * naming the zod issue paths (never the raw body, which may carry arbitrary
+ * producer data), and writes a `queue_dlq` row when the three identifying
+ * fields recover under {@link PoisonRecoverySchema} and the tenant resolves,
+ * so the domain still surfaces in its cycle's report.
+ */
+async function handlePoisonMessage(
+	rawBody: unknown,
+	err: unknown,
+	env: ScanQueueConsumerEnv,
+	ctx: { onPoisonAck?: () => void },
+): Promise<'ack'> {
+	const issuePaths = err instanceof ZodError ? err.issues.map((issue) => issue.path.join('.') || '(root)') : [];
+	const firstIssueMessage =
+		err instanceof ZodError && err.issues[0]
+			? sanitizeString(err.issues[0].message, MAX_POISON_ISSUE_MESSAGE_LENGTH)
+			: 'unknown';
+	logError(err instanceof Error ? err : String(err), {
+		severity: 'error',
+		category: 'tenant.queue',
+		details: { message: 'tenant_queue_poison_message', issuePaths, firstIssueMessage },
+	});
+
+	// Every dropped/DLQ'd poison message is an ack the batch outcome's
+	// failureCount should reflect (SQ-196 contract #3).
+	ctx.onPoisonAck?.();
+
+	const recovery = PoisonRecoverySchema.safeParse(rawBody);
+	if (recovery.success) {
+		try {
+			const tenant = await resolveTenant(env, recovery.data.sub_tenant_id);
+			const recoveredMsg: ScanQueueMessage = {
+				cycle_id: recovery.data.cycle_id,
+				sub_tenant_id: recovery.data.sub_tenant_id,
+				domain: recovery.data.domain,
+			};
+			await deadLetterMessage(env, tenant.db, recoveredMsg, `schema_invalid:${issuePaths[0] ?? '(root)'}`);
+		} catch {
+			// Tenant didn't resolve, or the DLQ write itself failed — already
+			// logged above; a poison message is never retried regardless.
+		}
+	}
+
+	return 'ack';
+}
+
+/**
  * Process one message. Returns:
  *   - `'ack'`     → caller should `message.ack()`
  *   - `'retry'`   → caller should rethrow to trigger Cloudflare retry
@@ -262,20 +335,15 @@ export async function processScanMessage(
 	rawBody: unknown,
 	attempts: number,
 	env: ScanQueueConsumerEnv,
-	ctx: { waitUntil: (p: Promise<unknown>) => void },
+	ctx: { waitUntil: (p: Promise<unknown>) => void; onPoisonAck?: () => void },
 ): Promise<'ack' | 'retry'> {
 	let parsed: ScanQueueMessage;
 	try {
 		parsed = ScanQueueMessageSchema.parse(rawBody);
 	} catch (err) {
-		// Malformed message — never retry-able. Try to log via DLQ if we know
-		// enough to identify the tenant; otherwise just ack and drop.
-		if (err instanceof ZodError) {
-			// We couldn't even parse the message, so we have no tenant binding to
-			// write to. Drop on the floor (queue retains delivery audit logs).
-			return 'ack';
-		}
-		return 'ack';
+		// Malformed message — never retry-able (SQ-196): logged + best-effort
+		// DLQ'd via handlePoisonMessage rather than silently dropped.
+		return handlePoisonMessage(rawBody, err, env, ctx);
 	}
 
 	let tenant;
@@ -442,11 +510,17 @@ export async function processScanMessage(
  * Cloudflare Queue to retry only the un-acked ones (per their docs). We use
  * `message.ack()` / `message.retry()` for individual control rather than
  * relying on default whole-batch behavior.
+ *
+ * `counters`, when supplied, is incremented once per poison-message ack
+ * (SQ-196) so the caller's `emitQueueBatchEvent` can fold poison acks into
+ * the batch's `failureCount` without this function's own resolved value
+ * changing shape (it always resolves `undefined`).
  */
 export async function handleScanQueue(
 	batch: MessageBatch<unknown>,
 	env: ScanQueueConsumerEnv,
 	ctx: ExecutionContext,
+	counters?: { poison: number },
 ): Promise<void> {
 	for (const message of batch.messages) {
 		const attempts = message.attempts ?? 1;
@@ -454,6 +528,11 @@ export async function handleScanQueue(
 		try {
 			outcome = await processScanMessage(message.body, attempts, env, {
 				waitUntil: (p) => ctx.waitUntil(p),
+				onPoisonAck: counters
+					? () => {
+							counters.poison += 1;
+						}
+					: undefined,
 			});
 		} catch {
 			// Defensive: any unexpected throw is treated as transient retry.

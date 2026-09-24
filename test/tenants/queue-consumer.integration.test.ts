@@ -318,6 +318,55 @@ describe('processScanMessage', () => {
 		expect(handleToolsCallMock).not.toHaveBeenCalled();
 	});
 
+	// SQ-196: a schema-parse failure is never silently dropped anymore — it
+	// always logs a structured reason, and DLQs when the three identifying
+	// fields recover under the lenient PoisonRecoverySchema AND the tenant
+	// resolves. These two tests cover the "unrecoverable" branch (this message
+	// has none of the three fields, so no D1 write is attempted, but the log
+	// line still fires) and the "lenient recovery" branch (all three fields are
+	// present and valid despite the .strict() violation, and the tenant
+	// resolves, so a queue_dlq row is written).
+	it('logs a structured tenant_queue_poison_message reason for an unrecoverable malformed message, without touching D1', async () => {
+		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+		const { customEnv, registryCalls, tenantCalls } = buildEnv();
+		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+		const outcome = await processScanMessage({ not: 'a valid message' }, 1, customEnv, makeCtx());
+
+		expect(outcome).toBe('ack');
+		expect(registryCalls).toHaveLength(0);
+		expect(tenantCalls).toHaveLength(0);
+		expect(handleToolsCallMock).not.toHaveBeenCalled();
+
+		const poisonLog = getConsoleLogs(consoleSpy).find(
+			(l) => (l.details as Record<string, unknown> | undefined)?.message === 'tenant_queue_poison_message',
+		);
+		expect(poisonLog).toBeDefined();
+		expect(poisonLog!.category).toBe('tenant.queue');
+		const details = poisonLog!.details as Record<string, unknown>;
+		expect(Array.isArray(details.issuePaths)).toBe(true);
+		expect(typeof details.firstIssueMessage).toBe('string');
+		// The raw body is never logged.
+		expect(JSON.stringify(poisonLog)).not.toContain('not a valid message');
+	});
+
+	it('recovers the three identifying fields and writes a queue_dlq row when the tenant resolves, despite a .strict() schema violation', async () => {
+		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+		const { customEnv, registryCalls, tenantCalls } = buildEnv();
+		const body = { ...validMsg, unexpected_extra_field: 'x' };
+
+		const outcome = await processScanMessage(body, 1, customEnv, makeCtx());
+
+		expect(outcome).toBe('ack');
+		expect(handleToolsCallMock).not.toHaveBeenCalled();
+		expect(registryCalls.length).toBeGreaterThan(0);
+
+		const findingInserts = tenantCalls.filter((c) => c.sql === FINDINGS_INSERT_SQL);
+		expect(findingInserts).toHaveLength(1);
+		expect(findingInserts[0]!.binds[5]).toBe('queue_dlq');
+		expect(findingInserts[0]!.binds[6]).toMatch(/^schema_invalid:/);
+	});
+
 	it('returns retry when the tenant resolver throws before the final attempt', async () => {
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
 		const customEnv = { ...env };
