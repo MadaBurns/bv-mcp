@@ -365,6 +365,10 @@ function inject() {
     publicConfig.services = mergeServices(publicConfig.services, privateConfig.services);
     publicConfig.vars = { ...publicConfig.vars, ...privateConfig.vars };
     if (privateConfig.queues) {
+        // Wholesale replace, not a per-consumer merge: every field on every producer/consumer
+        // entry — including one this script has no special handling for, such as a consumer's
+        // `dead_letter_queue` — passes through verbatim (SQ-185/SQ-169: bv-scanner-queue had
+        // none, so a message that exhausted max_retries was dropped with no marker).
         publicConfig.queues = privateConfig.queues;
     }
     

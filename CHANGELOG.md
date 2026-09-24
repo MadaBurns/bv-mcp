@@ -25,6 +25,20 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   row per affected cycle (handler `tenant_weekly_rescan_queue_send`, outcome `error`,
   aggregate failure count — no domain names) via the same writer the queue consumer uses.
 
+### Added
+
+- **`bv-scanner-queue` dead-letter queue support** (private-config injector, bindings
+  check, runbook). SQ-169 found `bv-scanner-queue` had no dead-letter queue: when the
+  consumer exhausted `max_retries=3` on the 09-13 and 09-20 tenant cycles, 260 of 500
+  messages were dropped with no marker anywhere. `scripts/inject-private-config.cjs`
+  already passes a consumer's `dead_letter_queue` field through untouched (the queues
+  merge is a wholesale replace, not per-field), now covered by a unit test and shown in
+  `wrangler.private.example.jsonc`. `npm run check:bindings:prod` warns — without
+  failing — when the `bv-scanner-queue` consumer has no `dead_letter_queue`, since the
+  operator must create the queue first. The tenant-ops runbook gains a "Dead-Letter
+  Queue Setup" subsection with the `wrangler queues create` command and how to inspect
+  dead letters.
+
 ## [3.89.0] - 2026-09-24
 
 ### Added
