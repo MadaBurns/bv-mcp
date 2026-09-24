@@ -25,12 +25,12 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   (`score.overall: null`, `maturity.indeterminate: true`) but wrote it to the
   5-minute scan cache unconditionally, so a single transient resolver blip was
   replayed as `cached: true` — and a fully blank grade — to every caller for the
-  full TTL. The scan-level cache write is now gated on the existing
-  `score.overall`, `score.evidenceInsufficient` and `maturity.indeterminate`
-  fields: an ungraded or evidence-gate-withheld result is never admitted to the
-  cache, so the next call re-probes DNS instead of replaying the outage. Partial
-  degradation (a single errored category on an otherwise graded scan) is
-  unaffected and keeps caching as before. [no-scoring-change]
+  full TTL. The scan-level cache write is now gated on `score.overall`: an
+  ungraded result (the evidence gate withheld a grade) is never admitted to the
+  cache, so the next call re-probes DNS instead of replaying the outage. A graded
+  scan keeps caching as before, including one whose maturity ladder abstained
+  (`maturity.indeterminate`, e.g. TLS unmeasured behind an edge block) and
+  partial degradation (a single errored category). [no-scoring-change]
 - **Poison scanner-queue messages are now logged and DLQ'd where recoverable,
   not silently dropped.** A message whose body failed the strict
   `ScanQueueMessageSchema` (chaos SQ-191, H1) was unconditionally acked with
