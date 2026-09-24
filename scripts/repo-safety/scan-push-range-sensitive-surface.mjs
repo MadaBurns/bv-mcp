@@ -31,7 +31,7 @@ function tryGit(args) {
 
 function gitSucceeds(args) {
 	try {
-		git(args);
+		git(args, { stdio: 'pipe' });
 		return true;
 	} catch {
 		return false;
@@ -42,19 +42,29 @@ function commitExists(sha) {
 	return /^[0-9a-f]{40}$/i.test(sha) && gitSucceeds(['cat-file', '-e', `${sha}^{commit}`]);
 }
 
-function rangeForRef(localSha, remoteSha) {
+// rev-list arguments selecting the commits a ref update introduces, or null.
+function revListArgsForRef(localSha, remoteSha) {
 	if (!localSha || localSha === ZERO_SHA) return null;
 	if (!commitExists(localSha)) return null;
 	if (remoteSha && remoteSha !== ZERO_SHA) {
-		return commitExists(remoteSha) ? `${remoteSha}..${localSha}` : localSha;
+		if (commitExists(remoteSha)) return [`${remoteSha}..${localSha}`];
+		// The remote tip is unknown locally: the branch is behind its remote (git
+		// rejects that non-fast-forward push itself) or the push rewrites history.
+		// Scan every commit not already on a remote-tracking ref, which still covers
+		// rewritten commits without rescanning history the remote already holds.
+		console.error(
+			`Repo safety push-range scanner: remote sha ${remoteSha.slice(0, 12)} is not known locally; ` +
+				'scanning only commits absent from every remote-tracking ref. If the branch is behind its remote, fetch and rebase first.',
+		);
+		return [localSha, '--not', '--remotes'];
 	}
 	const base = tryGit(['merge-base', localSha, 'origin/main']);
-	return base ? `${base}..${localSha}` : localSha;
+	return base ? [`${base}..${localSha}`] : [localSha];
 }
 
-function commitsForRange(range) {
-	if (!range) return [];
-	return git(['rev-list', '--reverse', range])
+function commitsForRange(revListArgs) {
+	if (!revListArgs) return [];
+	return git(['rev-list', '--reverse', ...revListArgs])
 		.split('\n')
 		.map((line) => line.trim())
 		.filter(Boolean);
@@ -100,7 +110,7 @@ const refUpdates = input
 
 const findings = [];
 for (const [, localSha, , remoteSha] of refUpdates) {
-	for (const commit of commitsForRange(rangeForRef(localSha, remoteSha))) {
+	for (const commit of commitsForRange(revListArgsForRef(localSha, remoteSha))) {
 		findings.push(...scanCommit(commit));
 	}
 }

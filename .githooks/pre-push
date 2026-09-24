@@ -22,8 +22,11 @@ range_for_push() {
 		return 0
 	fi
 
+	# Remote tip unknown locally: the branch is behind its remote (git rejects the
+	# non-fast-forward push itself) or the push rewrites history. Scan only commits
+	# absent from every remote-tracking ref, never history the remote already holds.
 	if [ "$remote_sha" != "$ZERO_SHA" ]; then
-		printf '%s\n' "$local_sha"
+		printf '%s\n' "$local_sha --not --remotes"
 		return 0
 	fi
 
