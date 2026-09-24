@@ -55,9 +55,6 @@
       "*/15 * * * *",
       "0 8 * * *",
       "0 2 * * SUN",
-      // Ship-dark lanes (PR #460): routeCron maps them to scan-dispatch / scan-rate-recompute,
-      // whose handlers return early until SCAN_SCHEDULE_DB is bound. Added 2026-09-24 so the
-      // triggers exist before the lane is armed (health check SQ-174).
       "* * * * *",
       "*/30 * * * *"
     ]
