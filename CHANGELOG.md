@@ -10,6 +10,19 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **Poison scanner-queue messages are now logged and DLQ'd where recoverable,
+  not silently dropped.** A message whose body failed the strict
+  `ScanQueueMessageSchema` (chaos SQ-191, H1) was unconditionally acked with
+  zero registry/tenant D1 calls and no structured log — a malformed producer
+  (or a future schema change rolled out producer-first) could silently lose a
+  whole cycle's messages, the SQ-169 shape again with a different cause. The
+  consumer now always emits one `tenant_queue_poison_message` log
+  (`category: 'tenant.queue'`) carrying the zod issue paths and a bounded,
+  sanitised excerpt of the first issue message (never the raw body), attempts
+  a lenient recovery parse of just `{ sub_tenant_id, cycle_id, domain }`, and
+  writes the standard `queue_dlq` row (reason `schema_invalid:<issue path>`)
+  when all three recover and the tenant resolves. Poison acks are folded into
+  the `queue_batch` Analytics Engine row's `failureCount`.
 - **A `persist_failed` DLQ row now carries its cause.** The tenant scanner-queue
   consumer's catch around the scan-persist call discarded the thrown error, so a
   `queue_dlq` finding from a failed tenant D1 write could not distinguish a

@@ -1804,6 +1804,10 @@ export default {
 		// semantics are unchanged; the emit runs in `finally`.
 		const queueStartedAt = Date.now();
 		let queueOutcome: 'ok' | 'error' = 'ok';
+		// SQ-196: scanner-queue poison-message acks (schema-parse failures) are
+		// counted here so the queue_batch AE row's failureCount reflects them even
+		// though handleScanQueue itself ack/retries per-message without throwing.
+		const scanQueueCounters = { poison: 0 };
 		try {
 			if (batch.queue === 'async-batch-scan-queue') {
 				if (!env.SCAN_CACHE) {
@@ -1912,7 +1916,7 @@ export default {
 				await handleAnalyticsQueue(batch, env as import('./lib/analytics-queue-consumer').AnalyticsQueueEnv);
 				return;
 			}
-			await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx);
+			await handleScanQueue(batch, env as ScanQueueConsumerEnv, ctx, scanQueueCounters);
 		} catch (err) {
 			queueOutcome = 'error';
 			throw err;
@@ -1924,8 +1928,9 @@ export default {
 				durationMs: Date.now() - queueStartedAt,
 				messageCount,
 				// Whole-batch throw → every message will be retried; report the batch
-				// size as the failure count. A clean dispatch reports 0.
-				failureCount: queueOutcome === 'error' ? messageCount : 0,
+				// size as the failure count. A clean dispatch reports its scanner-queue
+				// poison-message ack count (SQ-196), 0 for every other handler.
+				failureCount: queueOutcome === 'error' ? messageCount : scanQueueCounters.poison,
 			});
 		}
 	},
