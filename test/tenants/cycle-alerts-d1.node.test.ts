@@ -196,12 +196,11 @@ describe('Tenant cycle lifecycle against real D1', () => {
 				return tenant.prepare(sql);
 			},
 		} as unknown as D1Database;
-		await synchronizeCycleProgress(
-			registry,
-			(await resolveTenantUncached({ ...environment(), TENANT_DB_TENANT_1: recordingTenant }, 'tenant-1')).db,
-			'cycle-current',
-		);
-		await handleTenantCycleAlerts({ ...environment(), TENANT_DB_TENANT_1: recordingTenant }, ctx, {
+		// Built once as a variable (not an inline literal) so the extra tenant binding is
+		// not rejected by TypeScript's excess-property check on ResolverEnv / TenantScheduledEnv.
+		const recordingEnv = { ...environment(), TENANT_DB_TENANT_1: recordingTenant };
+		await synchronizeCycleProgress(registry, (await resolveTenantUncached(recordingEnv, 'tenant-1')).db, 'cycle-current');
+		await handleTenantCycleAlerts(recordingEnv, ctx, {
 			now: () => 20_000,
 			sendAlert: async () => ({ delivered: true }),
 		});
