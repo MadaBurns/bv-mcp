@@ -58,7 +58,18 @@ export function toTenantScanSnapshot(result: ScanDomainResult): TenantScanSnapsh
 		// `scans.maturity_stage` column would bake a fabricated "Unprotected" into
 		// history and every trend built off it; `null` is the honest value, and the
 		// column has always been nullable.
-		maturityStage: result.maturity?.indeterminate === true ? null : (result.maturity?.stage ?? null),
+		//
+		// An UNGRADED scan (`score.overall === null` — NXDOMAIN, SERVFAIL, or a scoring
+		// failure; see `buildNonResolvingResult` / `buildDnsBrokenResult` in
+		// `src/tools/scan-domain.ts`) carries the same trap: those builders still set
+		// `maturity.stage: 0` as a placeholder (not an `indeterminate` flag) because a dead
+		// domain never reaches the email-auth ladder at all. Without this check a domain
+		// that doesn't even resolve is persisted as stage 0 "Unprotected" — the exact
+		// dashboard defect this column was fixed for above. A domain with no score has no
+		// measured posture, so the stage must be `null` regardless of what the raw stage
+		// value is.
+		maturityStage:
+			result.score.overall === null || result.maturity?.indeterminate === true ? null : (result.maturity?.stage ?? null),
 		findings: result.score.findings ?? [],
 	};
 }
