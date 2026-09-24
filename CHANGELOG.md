@@ -8,8 +8,25 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.88.0] - 2026-09-24
+
 ### Fixed
 
+- **`check_lookalikes` now recognises a brand's own live-mail defensive registrations held at
+  the brand's own corporate registrar, instead of labelling them third-party impersonation and
+  telling the customer to report them for takedown** (#1108). Two defects: the HTTP redirect
+  that enrichment's existing HEAD probe already observed was never passed to
+  `isBrandHeldRegistration()`'s defensive-shape leg in this tool (only `brand_audit` wired it),
+  so a defensive name with live catch-all mail could never match; and the brand-held check
+  iterated only the `SAME_ENTITY_RDAP_CAP` (10) same-entity list, so on a seed with more
+  mail-capable candidates the rest were never checked. The 3xx `Location` is now recorded from
+  the existing `safeFetch` HEAD (`redirect: 'manual'`) — read, never followed, so no new egress
+  — and the brand-held check runs over every enriched candidate. Ruling A holds: leg 1 still
+  requires the registry-published brand-protection registrar ID (or an enterprise-gated NS
+  set); the ownership verdict stays `third_party` and the threat observation keeps its
+  calibrated severity — only the attribution wording changes. Known limit: a candidate whose
+  HTTPS root times out and redirects only over plain HTTP is still missed (`safeFetch` is
+  https-only by policy). Attribution wording only; no scoring change.
 - **`check_subdomailing` no longer treats a THROWN DNS lookup as SubdoMailing takeover
   evidence** (#1103). `probeIncludeDomain` had three fail-open sites: a thrown CNAME-target `A`
   lookup manufactured a `critical` `dangling_cname`, a thrown per-nameserver `A` lookup
