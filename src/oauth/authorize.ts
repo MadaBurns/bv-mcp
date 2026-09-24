@@ -2,7 +2,7 @@
 import type { Context } from 'hono';
 import type { AppEnv } from '../index';
 import { AuthorizeQuerySchema } from '../schemas/oauth';
-import { createAuthorizationCode, getClient, putCode } from './storage';
+import { createAuthorizationCode, getClient, putCode, StrongStateUnavailableError } from './storage';
 import { isAuthorizedRequest } from '../lib/auth';
 import {
 	isAllowedOAuthRedirectUri,
@@ -128,7 +128,15 @@ export async function handleAuthorizeGet(c: Context<AppEnv>): Promise<Response> 
 	}
 	const kv = c.env.SESSION_STORE!;
 	const kvEnvelopeKey = parseEnvelopeKey(c.env.KV_ENVELOPE_KEY) ?? undefined;
-	const client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
+	let client;
+	try {
+		client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
+	} catch (error) {
+		if (error instanceof StrongStateUnavailableError) {
+			return new Response('Client lookup state unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });
+		}
+		throw error;
+	}
 	if (!client) return new Response('Unknown client_id', { status: 400 });
 	if (!isAllowedOAuthRedirectUri(parsed.redirect_uri) || !client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
@@ -226,7 +234,15 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 		return new Response('Invalid authorization request', { status: 400 });
 	}
 
-	const client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
+	let client;
+	try {
+		client = await getClient(kv, parsed.client_id, kvEnvelopeKey);
+	} catch (error) {
+		if (error instanceof StrongStateUnavailableError) {
+			return new Response('Client lookup state unavailable', { status: 503, headers: { 'Cache-Control': 'no-store' } });
+		}
+		throw error;
+	}
 	if (!client) return new Response('Unknown client_id', { status: 400 });
 	if (!isAllowedOAuthRedirectUri(parsed.redirect_uri) || !client.redirect_uris.includes(parsed.redirect_uri)) {
 		return new Response('redirect_uri not registered to this client', { status: 400 });
@@ -259,18 +275,30 @@ export async function handleAuthorizePost(c: Context<AppEnv>): Promise<Response>
 	}
 
 	const code = createAuthorizationCode();
-	await putCode(
-		kv,
-		code,
-		{
-			client_id: parsed.client_id,
-			redirect_uri: parsed.redirect_uri,
-			code_challenge: parsed.code_challenge,
-			issued_at: Math.floor(Date.now() / 1000),
-			...(parsed.scope ? { scope: parsed.scope } : {}),
-		},
-		kvEnvelopeKey,
-	);
+	try {
+		await putCode(
+			kv,
+			code,
+			{
+				client_id: parsed.client_id,
+				redirect_uri: parsed.redirect_uri,
+				code_challenge: parsed.code_challenge,
+				issued_at: Math.floor(Date.now() / 1000),
+				...(parsed.scope ? { scope: parsed.scope } : {}),
+			},
+			kvEnvelopeKey,
+		);
+	} catch (error) {
+		if (error instanceof StrongStateUnavailableError) {
+			// redirect_uri is already validated above, so — same as the ownerOAuthEnabled-false
+			// branch — an outage is reported via the OAuth `temporarily_unavailable` redirect
+			// error rather than an inline body, per RFC 6749 §4.1.2 subsection 1
+			// (spaced form deliberately avoids an N.N.N.N-shaped secret-scanner
+			// false positive on a dotted citation — do not "tidy" this back).
+			return redirectWithError(parsed.redirect_uri, 'temporarily_unavailable', parsed.state, issuer);
+		}
+		throw error;
+	}
 
 	const success = new URL(parsed.redirect_uri);
 	success.searchParams.set('code', code);

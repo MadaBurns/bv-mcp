@@ -16,14 +16,21 @@
  * regression for each are posted as SQ-191 ticket comments (testing-methodology
  * principle 8) rather than duplicated here.
  *
- * H1 is PARTIALLY FALSIFIED: the description's "where a tenant/cycle can be
- * resolved, writes a DLQ row with a schema reason" branch does not exist.
- * `ScanQueueMessageSchema.parse` failures never reach `resolveTenant` or
- * `writeDlqRow` — a schema failure means the message has no trustworthy
- * `sub_tenant_id`/`cycle_id` to resolve in the first place (the schema is one
- * `.strict()` object, not field-by-field), so the code always just acks and
- * drops, regardless of how resolvable the raw body looks. The `never retries
- * forever` half holds. See the H1 tests below for the measured behaviour.
+ * H1 was originally PARTIALLY FALSIFIED (SQ-191): `ScanQueueMessageSchema.parse`
+ * failures never reached `resolveTenant` or `writeDlqRow` — a schema failure
+ * always just acked and dropped the message, regardless of how resolvable the
+ * raw body looked, and without even a structured log naming the cause.
+ *
+ * SQ-196 closes that gap via `handlePoisonMessage`: every schema failure now
+ * emits one structured `tenant_queue_poison_message` log carrying the zod
+ * issue paths (never the raw body). It then attempts a lenient recovery parse
+ * of just `{ sub_tenant_id, cycle_id, domain }` (`PoisonRecoverySchema`,
+ * `.passthrough()`); when all three recover AND the tenant resolves, it writes
+ * the standard `queue_dlq` row via `deadLetterMessage` with reason
+ * `schema_invalid:<first issue path>`. A message that fails to recover (or
+ * whose tenant doesn't resolve) is logged and dropped, same as before. Neither
+ * branch ever retries — a malformed producer payload does not become valid by
+ * waiting. See the H1 tests below for the corrected, measured behaviour.
  *
  * H5's "parseTenantScanSnapshot throws" is corrected to `toTenantScanSnapshot`
  * (`src/tenants/scan-snapshot.ts`) — `parseTenantScanSnapshot` only parses a
@@ -198,21 +205,17 @@ afterEach(() => {
 	vi.restoreAllMocks();
 });
 
-describe('H1: poison messages (schema failures) are acked, never DLQ-resolved, never retried', () => {
-	const poisonBodies: Array<{ name: string; body: unknown }> = [
+describe('H1: poison messages (schema failures) are always acked; DLQ-recoverable ones write a schema_invalid marker', () => {
+	const unrecoverableBodies: Array<{ name: string; body: unknown }> = [
 		{ name: 'non-JSON-shaped string body', body: 'not a valid message at all' },
 		{ name: 'null body', body: null },
 		{
-			name: 'wrong field type with an otherwise-resolvable tenant/cycle',
+			name: 'wrong field type for domain (fails the lenient recovery too)',
 			body: { cycle_id: 'cycle_poison_1', sub_tenant_id: TEST_TENANT_ID, domain: 12345 },
-		},
-		{
-			name: 'unknown extra field (schema is .strict())',
-			body: { cycle_id: 'cycle_poison_2', sub_tenant_id: TEST_TENANT_ID, domain: 'example.com', unexpected: 'x' },
 		},
 	];
 
-	for (const { name, body } of poisonBodies) {
+	for (const { name, body } of unrecoverableBodies) {
 		it(`acks a ${name} without calling handleToolsCall or touching any D1`, async () => {
 			const { processScanMessage } = await import('../../src/tenants/queue-consumer');
 			const { customEnv, registryCalls, tenantCalls } = buildEnv();
@@ -221,15 +224,39 @@ describe('H1: poison messages (schema failures) are acked, never DLQ-resolved, n
 
 			expect(outcome).toBe('ack');
 			expect(handleToolsCallMock).not.toHaveBeenCalled();
-			// FALSIFIED half of H1: even the case with a syntactically valid,
-			// resolvable sub_tenant_id/cycle_id never reaches resolveTenant or
-			// writeDlqRow — the schema is parsed as one whole object, so a
-			// failure never yields a partial (tenant, cycle) to write a DLQ row
-			// against. Zero calls on both D1s proves no DLQ write is attempted.
+			// None of the three identifying fields recover cleanly under
+			// PoisonRecoverySchema, so no DLQ write is attempted — zero calls on
+			// both D1s proves the only durable trace is the poison-message log.
 			expect(registryCalls).toHaveLength(0);
 			expect(tenantCalls).toHaveLength(0);
 		});
 	}
+
+	it('writes a queue_dlq row with a schema_invalid reason when the three identifying fields recover and the tenant resolves', async () => {
+		// Fails ScanQueueMessageSchema (.strict()) on the unrecognised key, but
+		// sub_tenant_id/cycle_id/domain are all individually well-formed — the
+		// exact "syntactically valid, resolvable" shape H1 originally falsified.
+		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
+		const { customEnv, registryCalls, tenantCalls } = buildEnv();
+		const body = { cycle_id: 'cycle_poison_2', sub_tenant_id: TEST_TENANT_ID, domain: 'example.com', unexpected: 'x' };
+
+		const outcome = await processScanMessage(body, 1, customEnv, makeCtx());
+
+		expect(outcome).toBe('ack');
+		expect(handleToolsCallMock).not.toHaveBeenCalled();
+		expect(registryCalls.length).toBeGreaterThan(0);
+
+		const findingInserts = tenantCalls.filter((c) => c.sql === FINDINGS_INSERT_SQL);
+		expect(findingInserts).toHaveLength(1);
+		expect(findingInserts[0]!.binds[5]).toBe('queue_dlq');
+		const detail = findingInserts[0]!.binds[6] as string;
+		expect(detail).toMatch(/^schema_invalid:/);
+
+		// score is null, not 0 — the domain was never actually measured.
+		const scanInserts = tenantCalls.filter((c) => c.sql === SCANS_INSERT_SQL);
+		expect(scanInserts).toHaveLength(1);
+		expect(scanInserts[0]!.binds[3]).toBeNull();
+	});
 
 	it('never retries a poison message and never increments/tracks attempts across redelivery', async () => {
 		const { processScanMessage } = await import('../../src/tenants/queue-consumer');
@@ -238,7 +265,9 @@ describe('H1: poison messages (schema failures) are acked, never DLQ-resolved, n
 
 		// Simulate three redeliveries at increasing attempt counts. If the code
 		// tracked/incremented attempts for a poison message anywhere, some call
-		// here would diverge from 'ack' or touch D1 to persist that state.
+		// here would diverge from 'ack' or touch D1 to persist that state. The
+		// domain (an array) still fails PoisonRecoverySchema, so this stays
+		// unrecoverable across all three.
 		for (const attempts of [1, 2, 3]) {
 			const outcome = await processScanMessage(body, attempts, customEnv, makeCtx());
 			expect(outcome).toBe('ack');
@@ -444,5 +473,44 @@ describe('H5: a snapshot-projection failure (toTenantScanSnapshot throws) never 
 		const scanInserts = tenant.calls.filter((c) => c.sql === SCANS_INSERT_SQL);
 		expect(scanInserts).toHaveLength(1);
 		expect(scanInserts[0]!.binds[3]).toBeNull();
+	});
+});
+
+describe('H6: the queue_batch AE row folds scanner-queue poison acks into failureCount (SQ-196)', () => {
+	it('reports failureCount = poison-message count, not the whole batch, for a mixed batch that never throws', async () => {
+		handleToolsCallMock.mockImplementation(async (call, _kv, runtimeOptions) => {
+			const domain = (call as { arguments: { domain: string } }).arguments.domain;
+			emitScanCapture(runtimeOptions, domain, { score: 90, grade: 'A', findings: [] });
+			return { isError: false, content: [{ type: 'text', text: 'ok' }] };
+		});
+		const worker = (await import('../../src/index')).default;
+		const { customEnv } = buildEnv();
+		const writeDataPoint = vi.fn();
+		const envWithSpy = { ...customEnv, MCP_ANALYTICS: { writeDataPoint } };
+		const ctx = createExecutionContext();
+		const { batch, acks, retries } = makeMessageBatch([
+			{ cycle_id: 'cycle_h6', sub_tenant_id: TEST_TENANT_ID, domain: 'healthy-a.example.com' },
+			'not a valid message at all',
+			{ cycle_id: 'cycle_h6', sub_tenant_id: TEST_TENANT_ID, domain: 'healthy-b.example.com' },
+		]);
+
+		await expect(worker.queue(batch, envWithSpy as unknown as Parameters<typeof worker.queue>[1], ctx)).resolves.toBeUndefined();
+
+		// All three ack — the two healthy scans, and the poison message, which
+		// is always acked (never retried) regardless of DLQ recoverability.
+		expect(acks).toEqual([0, 1, 2]);
+		expect(retries).toEqual([]);
+
+		const queueBatchCall = writeDataPoint.mock.calls.find(
+			(call) => (call[0] as { indexes?: string[] }).indexes?.[0] === 'queue_batch',
+		);
+		expect(queueBatchCall).toBeDefined();
+		const point = queueBatchCall![0] as { doubles: number[] };
+		// doubles: [durationMs, failureCount, messageCount] (emitQueueBatchEvent).
+		// Exactly the one poison ack counts as a failure — the two successful
+		// scans must NOT inflate it, and the whole-batch-throw shortcut (which
+		// would report messageCount here) never fires since nothing threw.
+		expect(point.doubles[1]).toBe(1);
+		expect(point.doubles[2]).toBe(3);
 	});
 });

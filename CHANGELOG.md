@@ -8,6 +8,67 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`scan_domain` no longer caches an ungraded outage result for 5 minutes.**
+  Under a total DoH outage `scan_domain` correctly returned an ungraded result
+  (`score.overall: null`, `maturity.indeterminate: true`) but wrote it to the
+  5-minute scan cache unconditionally, so a single transient resolver blip was
+  replayed as `cached: true` — and a fully blank grade — to every caller for the
+  full TTL. The scan-level cache write is now gated on `score.overall`: an
+  ungraded result (the evidence gate withheld a grade) is never admitted to the
+  cache, so the next call re-probes DNS instead of replaying the outage. A graded
+  scan keeps caching as before, including one whose maturity ladder abstained
+  (`maturity.indeterminate`, e.g. TLS unmeasured behind an edge block) and
+  partial degradation (a single errored category). [no-scoring-change]
+- **Poison scanner-queue messages are now logged and DLQ'd where recoverable,
+  not silently dropped.** A message whose body failed the strict
+  `ScanQueueMessageSchema` (chaos SQ-191, H1) was unconditionally acked with
+  zero registry/tenant D1 calls and no structured log — a malformed producer
+  (or a future schema change rolled out producer-first) could silently lose a
+  whole cycle's messages, the SQ-169 shape again with a different cause. The
+  consumer now always emits one `tenant_queue_poison_message` log
+  (`category: 'tenant.queue'`) carrying the zod issue paths and a bounded,
+  sanitised excerpt of the first issue message (never the raw body), attempts
+  a lenient recovery parse of just `{ sub_tenant_id, cycle_id, domain }`, and
+  writes the standard `queue_dlq` row (reason `schema_invalid:<issue path>`)
+  when all three recover and the tenant resolves. Poison acks are folded into
+  the `queue_batch` Analytics Engine row's `failureCount`.
+- **`POST /oauth/token`, `/oauth/authorize`, and `/oauth/register` no longer return a bare
+  500 when the OAuth `SESSION_STORE` KV read or write rejects.** SQ-192 chaos H4 measured
+  that `consumeCode()`'s initial `kv.get()` in `src/oauth/storage.ts` was unwrapped: a
+  rejecting KV binding threw past `handleToken()`'s only `StrongStateUnavailableError`
+  catch and Hono's default (no `app.onError`) handler answered a plain 500 with no OAuth
+  error shape. Every KV access in `storage.ts` that a caller depends on to distinguish a
+  genuine miss from an outage (`getClient`, `putClient`, `putCode`, `consumeCode`'s read
+  and both deletes, and the legacy-seed reads in the token-version/entitlement-generation
+  helpers) now goes through `safeKvGet`/`safeKvPut`/`safeKvDelete`, which map a rejection
+  to `StrongStateUnavailableError` while keeping a `null` miss a non-error result. The
+  token endpoint already had the 503 `temporarily_unavailable` mapping wired for that
+  error type; `authorize.ts` and `register.ts` gained the same catch (a redirect-carried
+  `error=temporarily_unavailable` for `/oauth/authorize`'s post-validation code write, an
+  inline 503 JSON body for `/oauth/register`'s client write) since they shared the same
+  gap.
+- **A double-delivered weekly rescan no longer creates duplicate cycles.** When Cloudflare
+  delivered `0 2 * * SUN` twice, or a slow tick overlapped the next one, each invocation
+  inserted its own `tenant_cycles` row and queued every due domain again (measured 2x by
+  the SQ-193 chaos suite). The cycle insert is now one guarded `INSERT … SELECT … WHERE NOT
+  EXISTS` statement. A tenant with a cycle started within the last 6 hours is skipped with
+  `tenant_weekly_rescan_skipped_duplicate` and the existing cycle id, so a double delivery
+  yields one cycle and one queue message per due domain.
+- **Overlapping alert sweeps can no longer both send one cycle's customer alert.** The
+  `alert_sent_at` stamp had no `IS NULL` guard and was written after the webhook call, so
+  two sweeps that listed the same pending cycle could both deliver it. The sweep now claims
+  the cycle first (`alert_outcome = 'sending'`, guarded on `alert_sent_at IS NULL`). Only
+  the sweep whose UPDATE changed the row sends, then records `sent` or `webhook_failed`.
+- **A cycle whose tenant D1 cannot be read now reaches an operator.** A sub-tenant whose D1
+  stayed unreadable, or whose lookup returned `Tenant not found`, logged
+  `tenant_cycle_reconcile_failed` every 15 minutes and never raised an alert, because the
+  6-hour settle needs a successful reconcile. Past that deadline the sweep now sends ONE
+  "Tenant monitoring cycle unreconcilable" operator alert and marks the cycle
+  `alert_outcome = 'unreconcilable'`, guarded so the alert is not repeated. The cycle stays
+  unsettled and settles normally if the D1 recovers.
+
 ## [3.90.0] - 2026-09-24
 
 ### Fixed

@@ -95,6 +95,15 @@ function kvReturning(value: string | null): KVNamespace {
 	} as unknown as KVNamespace;
 }
 
+/** A KVNamespace whose get() rejects — the SQ-199 KV-outage failure mode. */
+function rejectingGetKv(message = 'KV unavailable (SQ-199 unit test)'): KVNamespace {
+	return {
+		get: vi.fn().mockRejectedValue(new Error(message)),
+		put: vi.fn().mockResolvedValue(undefined),
+		delete: vi.fn().mockResolvedValue(undefined),
+	} as unknown as KVNamespace;
+}
+
 function coordinatorReturning(value: unknown): typeof env.QUOTA_COORDINATOR {
 	return {
 		getByName: vi.fn().mockReturnValue({ dispatch: vi.fn().mockResolvedValue(value) }),
@@ -163,5 +172,26 @@ describe('oauth/storage — malformed coordinator responses fail closed', () => 
 				coordinatorReturning({ state: 'complete' }),
 			),
 		).rejects.toBeInstanceOf(StrongStateUnavailableError);
+	});
+});
+
+// SQ-199: consumeCode()'s initial kv.get() previously threw unwrapped when the
+// KV binding itself rejected (a KV outage), so callers could never distinguish
+// it from a StrongStateUnavailableError raised by the coordinator. Negative
+// control: reverting the safeKvGet wrap in consumeCode() makes this assertion
+// fail because the rejection surfaces as the KV's own Error, not
+// StrongStateUnavailableError.
+describe('oauth/storage — KV outage (rejecting get) fails closed, not unwrapped', () => {
+	it('consumeCode maps a rejecting kv.get to StrongStateUnavailableError', async () => {
+		const { consumeCode, StrongStateUnavailableError } = await import('../../src/oauth/storage');
+		await expect(
+			consumeCode(rejectingGetKv(), 'any-code', undefined, env.QUOTA_COORDINATOR),
+		).rejects.toBeInstanceOf(StrongStateUnavailableError);
+	});
+
+	it('a genuine miss (kv.get resolves null) stays a non-error null, not StrongStateUnavailableError', async () => {
+		const { consumeCode } = await import('../../src/oauth/storage');
+		const result = await consumeCode(kvReturning(null), 'unknown-code', undefined, env.QUOTA_COORDINATOR);
+		expect(result).toBeNull();
 	});
 });
