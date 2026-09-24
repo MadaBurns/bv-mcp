@@ -130,6 +130,30 @@ To actually prove a query is accepted, execute it against the live API. Tests ca
 
 Two standing rules. **Never bank a delta you cannot attribute to your diff** with `-- --update`: a machine-local artifact in the baseline hides the next real error, and this one was mistaken for a regression on `main` for four rounds. And because the delta is *deterministic*, it silently rides along on every branch — including ticket verification that re-runs this gate locally — so an unexplained `+N` is a tooling question first, a code question second.
 
+## Tenant subsystem gate — use `npm run verify:tenants`, not `test/tenants` alone
+
+`npx vitest run test/tenants && npm run typecheck` looks like it covers a
+`src/tenants/` change, but it does not: it missed the exact breakage in two PRs
+merged the same day (2026-09-24). #1122 broke
+`test/chaos/tenant-cron.chaos.test.ts` and `test/chaos/tenant-queue.chaos.test.ts`
+— they live under `test/chaos/`, not `test/tenants/`, and mock D1 by matching
+**SQL text substrings** (`tenant-cron.chaos.test.ts`'s `SQL_TAGS`,
+`tenant-queue.chaos.test.ts`'s `SCAN_COMPLETION_PROBE_SQL`), so a query rewrite
+that changes wording without changing behavior silently stops matching and the
+mock falls through. And both #1122 and #1125 tripped `typecheck:tests`
+(+2, +3) because the ratchet is advisory in CI — it blocks nothing there, so a
+verifier that skips it locally is the only place it gets enforced.
+
+`npm run verify:tenants` runs all four gates together: `test/tenants`, the two
+chaos specs above, `typecheck`, `typecheck:tests`, and `lint`. Use it (not a
+hand-assembled command) for any change touching `src/tenants/`.
+
+Grepped `test/` for other files that string-match tenant SQL (`FROM scans`,
+`FROM findings`, `tenant_cycles`) outside `test/tenants/` — same day this note
+was added, the only hits were the two chaos specs already in the script above.
+If a future SQL rewrite adds a new substring-matching fixture elsewhere, add it
+to `verify:tenants` too.
+
 ## Red flags
 
 - "`typecheck:tests` is red locally but CI is green" → compare the generated-types hash the script prints; do NOT `-- --update`.
