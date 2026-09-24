@@ -51,6 +51,7 @@
 		"check:bindings": "node scripts/check-bindings.mjs",
 		"precheck:bindings:prod": "npm -w packages/dns-checks run build",
 		"check:bindings:prod": "node scripts/check-bindings.mjs --config wrangler.production.jsonc",
+		"check:tenant-schema": "node scripts/tenants/check-schema-drift.mjs --config wrangler.production.jsonc",
 		"deploy:prod": "npm run check:deploy-freshness && npm run check:sidecar-freshness && npm run check:release-integrity && npm -w packages/dns-checks run build && npm run check:bindings && node scripts/inject-private-config.cjs && node scripts/brand-audit-schema-preflight.mjs --config wrangler.production.jsonc && npm run check:bindings:prod && npx wrangler deploy --minify --config wrangler.production.jsonc",
 		"deploy:prod:staged": "npm run check:deploy-freshness && npm run check:sidecar-freshness && npm run check:release-integrity && npm -w packages/dns-checks run build && npm run check:bindings && node scripts/inject-private-config.cjs && node scripts/brand-audit-schema-preflight.mjs --config wrangler.production.jsonc && npm run check:bindings:prod && npx wrangler versions upload --minify --config wrangler.production.jsonc",
 		"deploy:prod:promote": "npx wrangler versions deploy --config wrangler.production.jsonc",
