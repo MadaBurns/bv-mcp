@@ -257,6 +257,24 @@ export function toImportanceRecord<K extends string>(
 	return result;
 }
 
+/** Cap on the JSON.parse error text surfaced by {@link parseScoringConfig}'s warn hook. */
+const MAX_PARSE_ERROR_MESSAGE_LENGTH = 200;
+
+/**
+ * Bound a caught `JSON.parse` error down to a short, log-safe message.
+ *
+ * V8's `SyntaxError#message` for a short invalid input ECHOES that input verbatim
+ * (e.g. `Unexpected token 'o', "not json" is not valid JSON`) — so quoted spans are
+ * stripped, not just length-capped, or a short malformed SCORING_CONFIG would leak
+ * straight into the log this function feeds.
+ */
+function boundParseErrorMessage(err: unknown): string {
+	const message = err instanceof Error ? err.message : String(err);
+	const noQuotedContent = message.replace(/"[^"]*"/g, '"…"').replace(/'[^']*'/g, "'…'");
+	const stripped = noQuotedContent.replace(/[\x00-\x08\x0a-\x1f\x7f]/g, ' ');
+	return stripped.length > MAX_PARSE_ERROR_MESSAGE_LENGTH ? `${stripped.slice(0, MAX_PARSE_ERROR_MESSAGE_LENGTH)}…` : stripped;
+}
+
 /** Safely merge a partial weight record into defaults. */
 function mergeWeights(
 	defaults: Record<string, number>,
@@ -361,7 +379,13 @@ export function parseScoringConfig(raw: string | undefined, options?: ParseScori
 	let parsed: Record<string, unknown>;
 	try {
 		parsed = JSON.parse(raw) as Record<string, unknown>;
-	} catch {
+	} catch (err) {
+		// Same silent-inert failure class as warnOnInertConfigKeys below, one step
+		// earlier: a malformed SCORING_CONFIG env var must still be VISIBLE, not just
+		// safely defaulted. Bounded — never echoes `raw` itself, only the parser's own
+		// error message, which is the smallest useful diagnostic.
+		const emit = options?.onWarn ?? (typeof console !== 'undefined' ? console.warn.bind(console) : undefined);
+		emit?.(`[dns-checks] SCORING_CONFIG could not be parsed as JSON (falling back to defaults): ${boundParseErrorMessage(err)}`);
 		return DEFAULT_SCORING_CONFIG;
 	}
 
