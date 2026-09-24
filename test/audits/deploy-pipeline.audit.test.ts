@@ -145,6 +145,30 @@ describe('deploy:prod pipeline integrity', () => {
 		expect(preflightIndex).toBeLessThan(deployIndex);
 	});
 
+	// SQ-187: INTELLIGENCE_DB bound to an unmigrated database (the state a database_id repoint in the
+	// private overlay can produce) makes every fire-and-forget access-log insert throw with nothing to
+	// surface it. The preflight reads the GENERATED config, so on every door it must run after the
+	// injector and before the Worker ships.
+	it.each(['deploy:prod', 'deploy:prod:staged'])('runs the access-log schema preflight after injection and before shipping in %s', (scriptName) => {
+		const script = pkg.scripts?.[scriptName] ?? '';
+		const injectIndex = script.indexOf('node scripts/inject-private-config.cjs');
+		const preflightIndex = script.indexOf('node scripts/access-log-schema-preflight.mjs --config wrangler.production.jsonc');
+		const shipIndex = script.search(/wrangler (deploy|versions upload)/);
+		expect(preflightIndex, `${scriptName} must run the access-log schema preflight against the generated config`).toBeGreaterThan(-1);
+		expect(injectIndex, 'the preflight reads the injected config, so the injector must run first').toBeLessThan(preflightIndex);
+		expect(shipIndex, `${scriptName} must end in a wrangler deploy or versions upload`).toBeGreaterThan(-1);
+		expect(preflightIndex, 'the preflight must run before the Worker ships').toBeLessThan(shipIndex);
+	});
+
+	it('also runs the access-log schema preflight on the private deploy helper, after injection and before deploy', () => {
+		const injectIndex = deployPrivateSource.indexOf('scripts/inject-private-config.cjs');
+		const preflightIndex = deployPrivateSource.indexOf("['scripts/access-log-schema-preflight.mjs', '--config', generatedConfigPath]");
+		const deployIndex = deployPrivateSource.indexOf("[wranglerCliPath, 'deploy'");
+		expect(preflightIndex, 'deploy-private.mjs must run the access-log schema preflight against the generated config').toBeGreaterThan(-1);
+		expect(injectIndex, 'the preflight reads the injected config, so the injector must run first').toBeLessThan(preflightIndex);
+		expect(preflightIndex, 'the preflight must run before wrangler deploy').toBeLessThan(deployIndex);
+	});
+
 	// The private overlay is a partial overlay, not a standalone config. Deploying it
 	// directly drops the public base (routes, cron triggers, limits, tail consumers) AND
 	// every fail-closed gate in the injector, which is how this door once deployed without
@@ -177,6 +201,7 @@ describe('deploy:prod pipeline integrity', () => {
 				'npm -w packages/dns-checks run build',
 				'node scripts/inject-private-config.cjs',
 				'brand-audit-schema-preflight.mjs',
+				'access-log-schema-preflight.mjs',
 				'npm run check:bindings:prod',
 			]) {
 				expect(stagedScript, `deploy:prod:staged must run the ${gate} gate`).toContain(gate);

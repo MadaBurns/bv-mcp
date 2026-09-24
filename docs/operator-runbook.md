@@ -86,6 +86,10 @@ Caveats:
 
 ## 3. D1 backup & restore (INTELLIGENCE_DB, BRAND_AUDIT_DB)
 
+`INTELLIGENCE_DB` is the access-log store (`mcp_access_log`, `mcp_access_log_audit`).
+Its database is `mcp-access-log-v1` once the §3a cut-over is done; until then it
+is still the decommissioned `bv-intelligence`.
+
 Posture: **D1 Time Travel is the primary recovery mechanism** (30-day
 point-in-time window on the paid plan, zero standing cost), with monthly manual
 exports as a belt-and-braces archive.
@@ -110,6 +114,104 @@ Restore rehearsal (do quarterly; ~15 min):
 Note: the access-log retention cron hard-DELETEs rows past
 `ANALYTICS_RETENTION_DAYS`; enable `ANALYTICS_ARCHIVE_ENABLED=true` +
 `MCP_ACCESS_LOG_ARCHIVE` R2 binding if pre-deletion archiving is wanted.
+
+### 3a. Moving the access log to mcp-access-log-v1 (SQ-187 cut-over)
+
+`bv-intelligence` is bv-web-prod's decommissioned database (bv-web-prod #663,
+#3749), and bv-mcp is its only live writer. The access log moves to a bv-mcp-owned
+D1, `mcp-access-log-v1`, by copy-then-switch with every row id preserved. The
+binding name stays `INTELLIGENCE_DB`; no code changes. Every step is
+operator-run from the repo root.
+
+Why not something simpler:
+
+- `wrangler d1 export` blocks every other request to the source while it runs,
+  which would stall live inserts and bv-web-prod's ETL.
+- The R2 archive path is dark, and it drops the PII columns.
+- A dual-write window needs code on every write path, plus two deploys.
+
+The tool is `scripts/access-log/copy-from-intelligence.mjs`. It is read-only on
+both databases: it sends only single `SELECT`s, writes `.sql` files, and prints
+the command that applies them. It addresses databases by name through the
+account API, with no `--config`. Set `CLOUDFLARE_ACCOUNT_ID` if your wrangler
+login sees more than one account.
+
+⚠️ The generated files hold access-log PII (`ip_hash`, `ip_masked`, user agents).
+Write them outside the repo (for example `~/access-log-cutover/`, one fresh
+directory per step) and delete them when the cut-over is done.
+
+1. **Bookmark the source.** Rollback insurance only, since a restore rewinds the
+   whole database. Record the result in the operator vault:
+   `npx wrangler d1 time-travel info bv-intelligence`
+2. **Create the target and apply the baseline** (`docs/provisioning/analytics-capture.md` §1):
+
+       npx wrangler d1 create mcp-access-log-v1 --location oc
+       npx wrangler d1 execute mcp-access-log-v1 --remote --file scripts/access-log/sql/0001_baseline.sql
+
+3. **Bulk copy.** Run:
+
+       node scripts/access-log/copy-from-intelligence.mjs --bulk --out ~/access-log-cutover/bulk
+
+   It pages the source by id (5,000 rows per read) and writes one file per page.
+   Each file holds INSERTs of at most 200 rows, with the original `id` and
+   `created_at`. It prints a JSON summary. Record `maxId` (called **H** below)
+   and `startedAt`. Run the printed `apply` loop. It uses `--file` imports, which
+   block the target while they run; that is safe because nothing reads the
+   target yet.
+4. **Raise the target's id floor.** Run the summary's `next.idFloor` command. It
+   inserts and deletes a sentinel row at H + 100000, so the Worker's own rows
+   land above every id the delta will copy. Confirm with `next.checkFloor`:
+   `seq` must be H + 100000.
+5. **Reconcile the bulk copy.**
+   `node scripts/access-log/copy-from-intelligence.mjs --verify --to-id <H> --since <unix-seconds>`
+   compares COUNT, SUM(id), MIN/MAX(created_at), per-day counts and the id sets
+   of both sides. It exits 1 unless everything matches. Pass `--since` a
+   timestamp a day or more inside the retention window, because the source's
+   retention cron is still deleting its oldest rows.
+6. **Repoint and deploy.** In `.dev/wrangler.deploy.jsonc`, set the
+   `INTELLIGENCE_DB` entry's `database_name` **and** `database_id` to the new
+   database. A stale `database_name` next to the new id makes name-based wrangler
+   commands resolve `bv-intelligence` to the new database. Then run
+   `npm run deploy:prod`. The access-log schema preflight must print
+   `passed for mcp-access-log-v1`. Update the `bv-mcp/deploy-overlay` copy in
+   the secret manager.
+7. **Settle, then copy the delta.** Wait until two reads of the source's
+   `MAX(id)`, taken 15 minutes apart, are equal. That shows the old version and
+   its `waitUntil` tails have drained. Read it with:
+   `npx wrangler d1 execute bv-intelligence --remote --command "SELECT MAX(id) FROM mcp_access_log"`.
+   Then run
+   `node scripts/access-log/copy-from-intelligence.mjs --delta --from-id <H> --out ~/access-log-cutover/delta`
+   and its printed `apply` loop. The loop applies one statement per file with
+   `--command`, because the target is live now and a `--file` import would
+   block it and drop live inserts. Delta rows are missing from `/usage` and the
+   client-IP audit only for this window.
+8. **Final reconciliation.**
+   `node scripts/access-log/copy-from-intelligence.mjs --verify --since <unix-seconds>`
+   The upper id bound defaults to the source's `MAX(id)`, which leaves out the
+   target's own rows above the floor. Every source id must be on the target. The
+   only allowed differences come from erasures run since step 3 (audit rows with
+   `action = 'analytics.subject.erase'`). Rows an erasure removed from the source
+   show as `extraOnTarget`, and rows one removed from the target show as
+   `missingOnTarget`. Step 9 replays those erasures. Any other difference means
+   the copy failed. Also compare `GET /internal/analytics/usage?days=90` totals from before
+   step 6 with totals now. They must match, allowing for calls made in between.
+9. **Replay erasures.** Run
+   `node scripts/access-log/copy-from-intelligence.mjs --replay-erasures --since <startedAt from step 3> --out ~/access-log-cutover/erasures`
+   and its printed `apply` loop; there is nothing to apply when `erasures` is 0.
+   The script reads every `analytics.subject.erase` audit row on either database
+   and emits one `DELETE` per erasure. Each `DELETE` is bounded to rows created at
+   or before that erasure, so a copied row erased on the source cannot come
+   back. Re-running `--verify` afterwards should show only the replayed
+   erasures' rows as differences.
+10. **Freeze, then drop.** Leave the two tables on `bv-intelligence` untouched
+    for 14 days as the rollback, which is inside the 30-day Time Travel window.
+    Then drop `mcp_access_log` and `mcp_access_log_audit` there, and note the
+    drop on bv-web-prod #3749.
+
+Rollback, before step 10: point `INTELLIGENCE_DB` back at `bv-intelligence` (both
+fields) and run `npm run deploy:prod`. Then copy the target's own rows back with
+the same tool, roles swapped:
+`--delta --from-id <H + 100000> --source mcp-access-log-v1 --target bv-intelligence`.
 
 ## 4. Spend monitoring (operator console — one-time setup)
 
