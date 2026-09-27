@@ -119,8 +119,8 @@ async function buildFixture(): Promise<{ result: CheckResult; expected: { mailCa
 			severity,
 			ownershipVerdict: verdict,
 			registrationDays: signals.registrationDays,
-			attributionConfidence: 'medium',
-		} as ThreatRollupMember);
+			attributionConfidence: 'corroborated',
+		} satisfies ThreatRollupMember);
 		if (hasMX) mailCapable++;
 		if (verdict === 'third_party') thirdParty++;
 	};
