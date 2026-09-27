@@ -11,6 +11,7 @@
  * never established contact returns no verdict fields at all (contract #6).
  */
 
+import { isIpInCloudflareNetwork } from '../cdn-fallback-detection';
 import { queryDns } from '../dns';
 import { RecordType, type RecordTypeName } from '../dns-types';
 import { Semaphore } from '../semaphore';
@@ -29,7 +30,7 @@ import {
 } from './dns-tcp';
 import type { RecursiveDnsQuery } from './delegation-probe';
 import { ROOT_HINTS, ROOT_SERVER_NAMES } from './root-hints';
-import type { AuthoritativeDnsInfraEvidence } from './types';
+import type { AuthoritativeDnsInfraEvidence, UnprobedNameserverEvidence } from './types';
 
 const MAX_NAMESERVERS = 3;
 // Cloudflare Workers cap simultaneous outgoing connections at 6, measured from the
@@ -58,6 +59,12 @@ const NO_CONTACT_ERROR = 'raw_dns_probe_no_contact';
  * middlebox, so no verdict-shaped field is published, not even aaFlag (orchestrator steering,
  * extends contract #6). */
 const NO_AUTHORITATIVE_ANSWER_ERROR = 'raw_dns_probe_no_authoritative_answer';
+/** Reported when every resolved nameserver address is on Cloudflare's network. The Workers
+ * runtime blocks outbound TCP sockets to Cloudflare IP ranges ("Outbound TCP sockets to
+ * Cloudflare IP ranges are blocked" — Workers TCP sockets docs, Considerations), so this lane can
+ * never reach a Cloudflare-hosted zone: a permanent platform limit, NOT a transient no-contact
+ * (#1131). */
+const CLOUDFLARE_NETWORK_UNREACHABLE_ERROR = 'raw_dns_probe_cloudflare_network_unreachable';
 
 export type RecursiveNameLookup = RecursiveDnsQuery;
 
@@ -530,10 +537,28 @@ export async function probeAuthoritativeDns(
 			resolveNameserverAddresses(nameserver, target.rootServerMode, dependencies.resolveAddresses, resolutionTimeoutMs),
 		),
 	);
-	const addressTargets: ResolvedNameserverAddress[] = resolved.flat();
+	// #1131: never connect to a Cloudflare-range address — the platform refuses the socket every
+	// time, so trying only burns lane budget and then misreports a permanent block as no-contact.
+	// A nameserver whose EVERY address is on Cloudflare is recorded as not probed; the rest are
+	// probed as normal. Root-server mode uses the static hints (no Cloudflare ranges) and is left
+	// alone.
+	const allAddressTargets: ResolvedNameserverAddress[] = resolved.flat();
+	const addressTargets = target.rootServerMode
+		? allAddressTargets
+		: allAddressTargets.filter((addressTarget) => !isIpInCloudflareNetwork(addressTarget.address));
+	const unprobedNameservers: UnprobedNameserverEvidence[] = target.rootServerMode
+		? []
+		: target.nameservers
+				.filter(
+					(_nameserver, index) => resolved[index].length > 0 && resolved[index].every((entry) => isIpInCloudflareNetwork(entry.address)),
+				)
+				.map((nameserver) => ({ nameserver, reason: 'cloudflare_network' as const }));
+	const withUnprobed = (evidence: AuthoritativeDnsInfraEvidence): AuthoritativeDnsInfraEvidence =>
+		unprobedNameservers.length > 0 ? { ...evidence, unprobedNameservers } : evidence;
 
 	if (addressTargets.length === 0) {
-		return { hostname: normalizedHostname, checkedAt, errors: [NO_CONTACT_ERROR] };
+		const error = allAddressTargets.length > 0 ? CLOUDFLARE_NETWORK_UNREACHABLE_ERROR : NO_CONTACT_ERROR;
+		return withUnprobed({ hostname: normalizedHostname, checkedAt, errors: [error] });
 	}
 
 	const semaphore = new Semaphore(MAX_CONCURRENT_SESSIONS);
@@ -550,5 +575,5 @@ export async function probeAuthoritativeDns(
 	);
 	const results = settled.filter((result): result is AddressResult => result !== undefined);
 
-	return buildEvidence(normalizedHostname, checkedAt, target, results);
+	return withUnprobed(buildEvidence(normalizedHostname, checkedAt, target, results));
 }

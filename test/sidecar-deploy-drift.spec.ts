@@ -265,6 +265,7 @@ describe('SIDECAR_TARGETS shape', () => {
 			'src/lib/dns-types.ts',
 			'src/lib/scoring.ts',
 			'src/lib/response-body.ts',
+			'src/lib/cdn-fallback-detection.ts', // #1131: Cloudflare range classification in the authoritative lane
 		]) {
 			expect(infraProbe.watchPaths, `bv-infra-probe must watch ${required}`).toContain(required);
 		}
