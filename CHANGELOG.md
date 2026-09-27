@@ -8,6 +8,24 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`check_mx` no longer counts a syntactically invalid MX exchange as a live
+  mail control (#1114).** An exchange that is not a valid hostname (RFC 1123 /
+  RFC 5321: letters, digits and hyphens, 1-63 octets per label, at most 253 in
+  total) — measured live as `MX 300 ~.` on a lookalike domain — used to read as
+  "MX records found" plus a `medium` "Dangling MX record" with
+  `controlPresent: true`, so `scan_domain` treated the domain as mail-enabled.
+  It now draws one `low` "Invalid MX exchange hostname" finding naming the
+  literal, is never resolved as a hostname, and — when no valid exchange remains
+  — the domain takes the same SPF-context no-mail path as a zone with no MX
+  (`controlPresent: false`). "Dangling MX record" stays reserved for valid names
+  that do not resolve. `check_mta_sts` now uses the same shared
+  mail-capability predicate (`isMailRoutingMxRecord`), so it no longer claims
+  such a domain "accepts inbound email". Null MX and loopback handling are
+  unchanged. `SCORING_MODEL_VERSION` 1.37.0 → 1.38.0; `@blackveil/dns-checks`
+  and `PARITY_CORPUS_VERSION` 1.54.0 → 1.55.0 (bv-web-prod re-vendor required).
+
 ## [3.91.0] - 2026-09-24
 
 ### Fixed

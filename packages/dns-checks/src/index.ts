@@ -124,7 +124,14 @@ export type { CaaParameters } from './checks/caa-analysis';
 // exchange names no provider either, but it is a DEFECT rather than a no-mail
 // declaration, so the two classifications stay separate. See the decision record on
 // `isNullMxRecord` before merging them.
-export { isNullMxRecord, isLoopbackMxRecord } from './checks/mx-analysis';
+// `isMailRoutingMxRecord` (#1114) is the shared inbound-mail-capability predicate
+// (excludes null MX and syntactically invalid exchanges; keeps loopback).
+export {
+	isNullMxRecord,
+	isLoopbackMxRecord,
+	isInvalidMxExchangeRecord,
+	isMailRoutingMxRecord,
+} from './checks/mx-analysis';
 
 // Scoring classifiers
 export { classifyDmarc, appendDmarcCleanInfo } from './scoring/classifiers/dmarc';

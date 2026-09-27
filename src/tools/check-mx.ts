@@ -6,7 +6,7 @@
  * Adds provider detection post-processing on top of the package result.
  */
 
-import { checkMX, createFinding } from '@blackveil/dns-checks';
+import { checkMX, createFinding, isMailRoutingMxRecord } from '@blackveil/dns-checks';
 import type { CheckResult } from '../lib/scoring';
 import { queryDnsRecords } from '../lib/dns';
 import { makeQueryDNS } from '../lib/dns-query-adapter';
@@ -51,7 +51,9 @@ export async function checkMx(domain: string, options?: CheckMxOptions, dnsOptio
 		const mxTargets = mxAnswers.map((answer) => {
 			const parts = answer.split(' ');
 			return (parts.slice(1).join(' ') || '').replace(/\.$/, '').toLowerCase();
-		}).filter(Boolean);
+		// Same mail-capability predicate as the package's `controlPresent` (#1114): a null
+		// MX or a syntactically invalid exchange (`300 ~.`) names no provider.
+		}).filter((exchange) => isMailRoutingMxRecord({ exchange }));
 
 		if (mxTargets.length > 0) {
 			const providerSignatures = await loadProviderSignatures({

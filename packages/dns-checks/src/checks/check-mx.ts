@@ -11,15 +11,59 @@
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
 import {
+	getInvalidMxExchangeFinding,
 	getIpTargetFindings,
 	getLoopbackMxFinding,
 	getNullMxFinding,
 	getPresenceFinding,
 	getSingleMxFinding,
+	isInvalidMxExchangeRecord,
 	isLoopbackMxRecord,
+	isMailRoutingMxRecord,
 	isNullMxRecord,
 	parseMxRecords,
 } from './mx-analysis';
+
+/**
+ * The SPF-context finding for a domain with no mail-routing MX. NIST SP 800-177r1
+ * §4.4.2 — a non-mail domain SHOULD publish "v=spf1 -all"; when it does, that is
+ * the correct posture (reward, do not penalize). Only a domain with no MX AND
+ * no/soft SPF is genuinely spoofable (the real gap). Shared by the no-MX path and
+ * the every-exchange-invalid path (#1114), which are the same posture.
+ */
+async function getNonMailSpfContextFinding(domain: string, queryDNS: DNSQueryFunction, timeout: number): Promise<Finding> {
+	let spf = '';
+	try {
+		const txtRecords = await queryDNS(domain, 'TXT', { timeout });
+		spf = (txtRecords.find((r) => r.toLowerCase().startsWith('v=spf1')) ?? '').toLowerCase();
+	} catch {
+		// TXT query failed — treat as no SPF.
+	}
+
+	if (spf.includes('-all')) {
+		return createFinding(
+			'mx',
+			'Correctly-configured non-mail domain',
+			'info',
+			`No MX records, and SPF publishes "-all" (hard fail). Per NIST SP 800-177r1 §4.4.2 this is the recommended posture for a domain that does not handle email.`,
+		);
+	}
+	if (spf) {
+		return createFinding(
+			'mx',
+			'Non-mail domain SPF not hard-fail',
+			'medium',
+			`No MX records and an SPF record that does not use "-all". Non-mail domains should publish "v=spf1 -all" to fully prevent spoofing.`,
+		);
+	}
+	return createFinding(
+		'mx',
+		'No MX and no SPF — domain spoofable',
+		'medium',
+		`No mail exchange records and no SPF policy. The domain can be spoofed; publish "v=spf1 -all" (and a null MX per RFC 7505) if it does not handle email.`,
+		{ missingControl: true },
+	);
+}
 
 /**
  * Check MX record configuration for a domain.
@@ -52,41 +96,7 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 
 	if (!answers || answers.length === 0) {
 		// No MX: scoring is SPF-CONTEXT-dependent, NOT an unconditional missing control.
-		// NIST SP 800-177r1 §4.4.2 — a non-mail domain SHOULD publish "v=spf1 -all";
-		// when it does, that is the correct posture (reward, do not penalize). Only a
-		// domain with no MX AND no/soft SPF is genuinely spoofable (the real gap).
-		let spf = '';
-		try {
-			const txtRecords = await queryDNS(domain, 'TXT', { timeout });
-			spf = (txtRecords.find((r) => r.toLowerCase().startsWith('v=spf1')) ?? '').toLowerCase();
-		} catch {
-			// TXT query failed — treat as no SPF.
-		}
-
-		let finding: Finding;
-		if (spf.includes('-all')) {
-			finding = createFinding(
-				'mx',
-				'Correctly-configured non-mail domain',
-				'info',
-				`No MX records, and SPF publishes "-all" (hard fail). Per NIST SP 800-177r1 §4.4.2 this is the recommended posture for a domain that does not handle email.`,
-			);
-		} else if (spf) {
-			finding = createFinding(
-				'mx',
-				'Non-mail domain SPF not hard-fail',
-				'medium',
-				`No MX records and an SPF record that does not use "-all". Non-mail domains should publish "v=spf1 -all" to fully prevent spoofing.`,
-			);
-		} else {
-			finding = createFinding(
-				'mx',
-				'No MX and no SPF — domain spoofable',
-				'medium',
-				`No mail exchange records and no SPF policy. The domain can be spoofed; publish "v=spf1 -all" (and a null MX per RFC 7505) if it does not handle email.`,
-				{ missingControl: true },
-			);
-		}
+		const finding = await getNonMailSpfContextFinding(domain, queryDNS, timeout);
 		// No MX records → mail control definitively absent (controlPresent: false).
 		return buildCheckResult('mx', [finding], false);
 	}
@@ -103,7 +113,25 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 		return buildCheckResult('mx', findings, false);
 	}
 
-	findings.push(getPresenceFinding(mxRecords));
+	// Syntactically invalid exchanges (`300 ~.`, `mail_server.example.com`) route no
+	// mail (#1114). Reported ONCE for the whole set, and — like loopback below —
+	// excluded from the IP-target and dangling-MX passes, so the literal is never
+	// resolved as a hostname and this `low` REPLACES the "Dangling MX record" medium
+	// it used to draw. Unlike loopback (#944 Option A), an invalid exchange is NOT a
+	// mail control: when no mail-routing record remains, the zone takes the same
+	// SPF-context no-mail path as a zone with no MX, and `controlPresent: false` lets
+	// `scan_domain`'s non-mail post-processing apply.
+	const invalidRecords = mxRecords.filter(isInvalidMxExchangeRecord);
+	const mailRoutingRecords = mxRecords.filter(isMailRoutingMxRecord);
+	if (mailRoutingRecords.length === 0) {
+		const nonMailFinding = await getNonMailSpfContextFinding(domain, queryDNS, timeout);
+		return buildCheckResult('mx', [getInvalidMxExchangeFinding(invalidRecords), nonMailFinding], false);
+	}
+
+	findings.push(getPresenceFinding(mailRoutingRecords));
+	if (invalidRecords.length > 0) {
+		findings.push(getInvalidMxExchangeFinding(invalidRecords));
+	}
 
 	// Loopback MX (`0 localhost.`, `10 127.0.0.1`, `::1`) — a misconfiguration, NOT an
 	// RFC 7505 no-mail declaration (#944; the measurement and the reasoning live in the
@@ -116,7 +144,7 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 	if (loopbackRecords.length > 0) {
 		findings.push(getLoopbackMxFinding(loopbackRecords));
 	}
-	const routableRecords = mxRecords.filter((r) => !isLoopbackMxRecord(r));
+	const routableRecords = mailRoutingRecords.filter((r) => !isLoopbackMxRecord(r));
 
 	findings.push(...getIpTargetFindings(routableRecords));
 
@@ -163,7 +191,9 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 	//
 	// Known residual, also pre-#944 and deliberately not fixed here: a zone
 	// publishing one real exchange BESIDE a loopback one has no actual redundancy
-	// but escapes this finding, because the raw count is 2. Correcting that is a
+	// but escapes this finding, because the raw count is 2. The same residual
+	// applies to one real exchange beside an invalid one (#1114), kept for the
+	// same reason: no score movement on a mixed zone beyond the new `low`. Correcting that is a
 	// scoring change in its own right and belongs in its own PR with its own
 	// version bump, not smuggled in beside a false-positive fix.
 	const singleMxFinding = getSingleMxFinding(mxRecords);

@@ -13,7 +13,7 @@ import { buildCheckResult, createFinding } from '../check-utils';
 import { describeRcode, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import { readResponseTextCapped } from '../response-body';
 import { RobotsDisallowedError, describeRobotsScope, robotsAbstentionMetadata } from '../robots-gate';
-import { isNullMxRecord, parseMxRecords } from './mx-analysis';
+import { isMailRoutingMxRecord, parseMxRecords } from './mx-analysis';
 import {
 	finalizeMissingMtaStsRecordFinding,
 	finalizeMissingTlsRptRecordFinding,
@@ -421,14 +421,18 @@ export async function checkMTASTS(
 /**
  * Lightweight MX presence probe used by the missing-mail-protections summary
  * to branch its copy and severity. Returns `true` only when the domain has at
- * least one real (non-null, RFC 7505) MX record. Any DNS failure resolves to
+ * least one mail-routing MX record — `isMailRoutingMxRecord`, the SAME predicate
+ * `check_mx` keys `controlPresent` on, so the two checks cannot disagree about a
+ * zone (#1114: a lone `300 ~.` used to read here as "accepts inbound email (MX
+ * records present)" while `check_mx` called it dangling). The RFC 7505 null MX
+ * and syntactically invalid exchanges do not count. Any DNS failure resolves to
  * `false` (treat as "no inbound mail") so a flaky lookup can't synthesise a
  * medium-severity finding out of nothing.
  *
  * DELIBERATE (#944): a loopback exchange (`0 localhost.`) still counts as
  * inbound mail here. Under the settled decision we do NOT reclassify localhost
- * as a no-mail signal — only the RFC 7505 null MX is a declaration — so this
- * predicate stays keyed on `isNullMxRecord` alone and such a domain keeps
+ * as a no-mail signal — only the RFC 7505 null MX is a declaration — so
+ * `isMailRoutingMxRecord` keeps loopback in and such a domain keeps
  * branching as inbound-mail-receiving. `check_mx` reports the misconfiguration;
  * MTA-STS behaviour is intentionally unchanged. See the decision record on
  * `isNullMxRecord` in `mx-analysis.ts`.
@@ -437,7 +441,7 @@ async function detectInboundMail(domain: string, queryDNS: DNSQueryFunction, tim
 	try {
 		const mxAnswers = await queryDNS(domain, 'MX', { timeout });
 		const parsed = parseMxRecords(mxAnswers);
-		return parsed.some((record) => !isNullMxRecord(record));
+		return parsed.some(isMailRoutingMxRecord);
 	} catch {
 		return false;
 	}

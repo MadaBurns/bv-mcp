@@ -207,6 +207,62 @@ describe('checkMx', () => {
 		expect(dangling!.detail).not.toContain('localhost');
 	});
 
+	/**
+	 * #1114 — a syntactically invalid exchange (`300 ~.`, live on `sevicenow.com`) is
+	 * not a mail control. It must not read as "MX records found" + "Dangling MX", and
+	 * `controlPresent` must be false so `scan_domain`'s non-mail post-processing applies.
+	 * "Dangling MX" stays for a VALID name that does not resolve (positive control).
+	 * Reuses `mockLoopbackZone`: every A/AAAA answers empty, so anything probed dangles.
+	 */
+	it('`300 ~.` is classified invalid, not present and not dangling (#1114)', async () => {
+		mockLoopbackZone('tilde.com', ['300 ~.']);
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('tilde.com');
+
+		expect(result.controlPresent).toBe(false);
+		const invalid = result.findings.find((f) => f.title === 'Invalid MX exchange hostname');
+		expect(invalid).toBeDefined();
+		expect(invalid!.severity).toBe('low');
+		expect(invalid!.detail).toContain('"~"');
+		expect(result.findings.find((f) => f.title === 'Dangling MX record')).toBeUndefined();
+		expect(result.findings.find((f) => f.title === 'MX records found')).toBeUndefined();
+		expect(result.findings.find((f) => f.title === 'Managed email provider detected')).toBeUndefined();
+	});
+
+	it('an underscore exchange is classified invalid, not present (#1114)', async () => {
+		mockLoopbackZone('underscore.com', ['10 mail_server.example.com.']);
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('underscore.com');
+
+		expect(result.controlPresent).toBe(false);
+		expect(result.findings.find((f) => f.title === 'Invalid MX exchange hostname')!.detail).toContain('mail_server.example.com');
+		expect(result.findings.find((f) => f.title === 'Dangling MX record')).toBeUndefined();
+	});
+
+	it('POSITIVE CONTROL: a valid-but-unresolvable exchange still yields "Dangling MX record" (#1114)', async () => {
+		mockLoopbackZone('validghost.com', ['10 ghost.validghost.com.']);
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('validghost.com');
+
+		expect(result.controlPresent).toBe(true);
+		expect(result.findings.find((f) => f.title === 'Dangling MX record')!.detail).toContain('ghost.validghost.com');
+		expect(result.findings.find((f) => f.title === 'Invalid MX exchange hostname')).toBeUndefined();
+	});
+
+	it('MIXED: a valid exchange beside `300 ~.` keeps the mail control; only the valid one is probed (#1114)', async () => {
+		mockLoopbackZone('mixedtilde.com', ['10 mx.example.com.', '300 ~.']);
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('mixedtilde.com');
+
+		expect(result.controlPresent).toBe(true);
+		const invalid = result.findings.find((f) => f.title === 'Invalid MX exchange hostname');
+		expect(invalid!.detail).toContain('"~"');
+		const dangling = result.findings.filter((f) => f.title === 'Dangling MX record');
+		expect(dangling).toHaveLength(1);
+		expect(dangling[0].detail).toContain('mx.example.com');
+		expect(dangling[0].detail).not.toContain('"~"');
+	});
+
 	it('surfaces providerDetectionFailed metadata when provider signature fetch fails', async () => {
 		const { restore: localRestore } = setupFetchMock();
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string | URL | Request) => {

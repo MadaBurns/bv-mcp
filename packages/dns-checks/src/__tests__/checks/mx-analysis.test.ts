@@ -2,13 +2,17 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+	getInvalidMxExchangeFinding,
 	getIpTargetFindings,
 	getLoopbackMxFinding,
 	getNullMxFinding,
 	getPresenceFinding,
 	getSingleMxFinding,
+	isInvalidMxExchangeRecord,
 	isLoopbackMxRecord,
+	isMailRoutingMxRecord,
 	isNullMxRecord,
+	isSyntacticallyValidHostname,
 	parseMxRecords,
 } from '../../checks/mx-analysis';
 
@@ -106,6 +110,107 @@ describe('isLoopbackMxRecord', () => {
 		expect(finding.detail).toContain('127.0.0.1');
 		expect(finding.detail).toContain('RFC 7505');
 		// MX records were MEASURED and are present — a defect, not an absent control.
+		expect(finding.metadata?.missingControl).toBeFalsy();
+	});
+});
+
+/**
+ * #1114 — an MX exchange that is not a syntactically valid hostname (`300 ~.`,
+ * measured live on a ServiceNow lookalike) cannot route mail. RFC 5321 §4.1.2
+ * `Domain` / RFC 1123 §2.1: labels are letters, digits and hyphen, 1-63 octets,
+ * no leading/trailing hyphen, total <= 253. Underscore is NOT allowed in a
+ * hostname (it is legal in general DNS owner names such as `_dmarc`, which is
+ * exactly why a hostname-specific predicate is needed here).
+ */
+describe('isSyntacticallyValidHostname', () => {
+	it('accepts RFC 1123 hostnames, with or without a trailing dot', () => {
+		for (const name of [
+			'mx.example.com',
+			'mx.example.com.',
+			'MX1.Example.COM',
+			'aspmx.l.google.com',
+			'3com.example', // RFC 1123 relaxed the first character to allow a digit
+			'a-b.example',
+			'xn--bcher-kva.example', // punycode IDN
+			'ms63602385.msv1.invalid', // M365 verification pseudo-MX: syntactically valid (#944)
+			'192.0.2.10', // IP literals are syntactically valid; `getIpTargetFindings` owns them
+			`${'a'.repeat(63)}.example`,
+		]) {
+			expect(isSyntacticallyValidHostname(name), name).toBe(true);
+		}
+	});
+
+	it('rejects names that break LDH label syntax', () => {
+		for (const name of [
+			'~',
+			'~.',
+			'mail_server.example.com',
+			'mail_server.example.com.',
+			'',
+			'.',
+			'a..example',
+			'-mx.example.com',
+			'mx-.example.com',
+			'mx example.com',
+			'*.example.com',
+			'::1',
+			`${'a'.repeat(64)}.example`,
+			`${'a.'.repeat(127)}ab`, // 255 octets
+		]) {
+			expect(isSyntacticallyValidHostname(name), JSON.stringify(name)).toBe(false);
+		}
+	});
+
+	it('enforces the 253-octet total (trailing dot not counted)', () => {
+		const at253 = `${'a'.repeat(63)}.${'b'.repeat(63)}.${'c'.repeat(63)}.${'d'.repeat(61)}`;
+		expect(at253.length).toBe(253);
+		expect(isSyntacticallyValidHostname(at253)).toBe(true);
+		expect(isSyntacticallyValidHostname(`${at253}.`)).toBe(true);
+		expect(isSyntacticallyValidHostname(`${at253}d`)).toBe(false);
+	});
+});
+
+describe('isInvalidMxExchangeRecord / isMailRoutingMxRecord (#1114)', () => {
+	it('classifies the wild `300 ~.` and an underscore exchange as invalid, not mail-routing', () => {
+		for (const raw of ['300 ~.', '10 mail_server.example.com.']) {
+			const [record] = parseMxRecords([raw]);
+			expect(isInvalidMxExchangeRecord(record), raw).toBe(true);
+			expect(isMailRoutingMxRecord(record), raw).toBe(false);
+		}
+	});
+
+	it('leaves null MX and loopback to their own classifiers', () => {
+		// Null MX is its own no-mail declaration; loopback is the #944 Option-A defect
+		// that stays a present mail control. Neither is "invalid".
+		for (const raw of ['0 .', '0 localhost.', '10 ::1', '10 127.0.0.1']) {
+			const [record] = parseMxRecords([raw]);
+			expect(isInvalidMxExchangeRecord(record), raw).toBe(false);
+		}
+		expect(isMailRoutingMxRecord(parseMxRecords(['0 .'])[0])).toBe(false);
+		// #944 Option A: loopback still counts as inbound-mail-receiving.
+		expect(isMailRoutingMxRecord(parseMxRecords(['0 localhost.'])[0])).toBe(true);
+		expect(isMailRoutingMxRecord(parseMxRecords(['10 ::1'])[0])).toBe(true);
+	});
+
+	it('treats a valid-but-unresolvable exchange as mail-routing (dangling is a separate verdict)', () => {
+		const [record] = parseMxRecords(['10 ghost.example.com.']);
+		expect(isInvalidMxExchangeRecord(record)).toBe(false);
+		expect(isMailRoutingMxRecord(record)).toBe(true);
+	});
+
+	it('accepts Worker-side shapes (trailing dot, mixed case, no raw)', () => {
+		expect(isMailRoutingMxRecord({ exchange: 'MX.Example.com.' })).toBe(true);
+		expect(isInvalidMxExchangeRecord({ exchange: '~.' })).toBe(true);
+	});
+
+	it('emits ONE low finding naming every invalid literal, without missingControl', () => {
+		const finding = getInvalidMxExchangeFinding(parseMxRecords(['300 ~.', '10 mail_server.example.com.']));
+		expect(finding.title).toBe('Invalid MX exchange hostname');
+		expect(finding.severity).toBe('low');
+		expect(finding.category).toBe('mx');
+		expect(finding.detail).toContain('"~"');
+		expect(finding.detail).toContain('mail_server.example.com');
+		expect(finding.detail).toContain('RFC 7505');
 		expect(finding.metadata?.missingControl).toBeFalsy();
 	});
 });

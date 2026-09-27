@@ -312,6 +312,37 @@ describe('check-mta-sts copy for missing-MTA-STS finding (Defect K)', () => {
 		expect(missing!.severity).toBe('low');
 		expect(missing!.detail).toContain('do not accept inbound email');
 	});
+
+	// #1114 comment — `check_mta_sts` asserted "accepts inbound email (MX records
+	// present)" for `sevicenow.com`, whose only MX is `300 ~.`. A syntactically invalid
+	// exchange routes no mail, so it shares `check_mx`'s mail-capability predicate.
+	it('treats a syntactically invalid exchange (`300 ~.`) as no inbound email — low severity (#1114)', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', []),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', []),
+			mxDns: mxResponse('example.com', [{ priority: 300, exchange: '~' }]),
+		});
+		const r = await run();
+		const missing = r.findings.find((f) => f.title.includes('No MTA-STS'));
+		expect(missing).toBeDefined();
+		expect(missing!.severity).toBe('low');
+		expect(missing!.detail).not.toContain('accepts inbound email (MX records present)');
+	});
+
+	it('a valid exchange beside an invalid one still counts as inbound email — medium (#1114)', async () => {
+		mockMultiFetch({
+			mtaStsDns: txtResponse('_mta-sts.example.com', []),
+			tlsrptDns: txtResponse('_smtp._tls.example.com', []),
+			mxDns: mxResponse('example.com', [
+				{ priority: 10, exchange: 'mx1.example.com' },
+				{ priority: 300, exchange: '~' },
+			]),
+		});
+		const r = await run();
+		const missing = r.findings.find((f) => f.title.includes('No MTA-STS'));
+		expect(missing!.severity).toBe('medium');
+		expect(missing!.detail).toContain('accepts inbound email');
+	});
 });
 
 /**

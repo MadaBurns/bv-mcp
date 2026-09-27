@@ -132,6 +132,94 @@ export function getLoopbackMxFinding(loopbackRecords: Pick<ParsedMxRecord, 'exch
 	);
 }
 
+/**
+ * One hostname label per RFC 1123 §2.1 / RFC 5321 §4.1.2 (`Let-dig [Ldh-str]`):
+ * letters, digits and hyphen only, 1-63 octets, no leading or trailing hyphen.
+ * Underscore is deliberately excluded — it is legal in DNS owner names
+ * (`_dmarc`, `_mta-sts`) but never in a hostname an SMTP client can connect to.
+ */
+const HOSTNAME_LABEL_PATTERN = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/i;
+
+/** RFC 1035 §2.3.4 / RFC 1123 §2.1: presentation-form name, trailing dot excluded. */
+const HOSTNAME_MAX_LENGTH = 253;
+
+/**
+ * True when `name` is a syntactically valid hostname (RFC 1123 §2.1, which RFC
+ * 5321 §4.1.2 requires of an MX exchange): every label matches
+ * `HOSTNAME_LABEL_PATTERN` and the whole name is at most 253 octets. One trailing
+ * dot (the FQDN root) is accepted. Case-insensitive.
+ *
+ * Syntax ONLY — it says nothing about whether the name resolves (that is the
+ * "Dangling MX record" verdict) or is routable. IP literals such as `192.0.2.10`
+ * pass (all-digit labels are legal per RFC 1123), so `getIpTargetFindings` keeps
+ * owning them, and the M365 `msNNNNNNNN.msv1.invalid` pseudo-MX passes too (see
+ * `isLoopbackMxRecord` for why that one must never be penalised).
+ */
+export function isSyntacticallyValidHostname(name: string): boolean {
+	const host = name.endsWith('.') ? name.slice(0, -1) : name;
+	if (host.length === 0 || host.length > HOSTNAME_MAX_LENGTH) {
+		return false;
+	}
+	return host.split('.').every((label) => HOSTNAME_LABEL_PATTERN.test(label));
+}
+
+/**
+ * True when an MX exchange is not a syntactically valid hostname (#1114) — e.g.
+ * the `300 ~.` measured live on a lookalike domain, or `mail_server.example.com`.
+ * No SMTP client can connect to such a name, so the record routes no mail.
+ *
+ * Null MX and loopback are EXCLUDED so each record has exactly one classifier:
+ * null MX is the RFC 7505 declaration (`isNullMxRecord`), and loopback is the
+ * #944 Option-A defect that deliberately stays a present mail control
+ * (`isLoopbackMxRecord`; `::1` would otherwise fail hostname syntax here).
+ *
+ * Unlike loopback, an invalid exchange is NOT counted as a mail control: it is
+ * not a hostname at all, so treating it as mail-enabled asserts inbound mail from
+ * a record that cannot deliver any — and "Dangling MX record" (a VALID name that
+ * does not resolve) would misdescribe it.
+ */
+export function isInvalidMxExchangeRecord(record: Pick<ParsedMxRecord, 'exchange'>): boolean {
+	return !isNullMxRecord(record) && !isLoopbackMxRecord(record) && !isSyntacticallyValidHostname(record.exchange);
+}
+
+/**
+ * THE shared "does this MX record make the domain inbound-mail-capable"
+ * predicate (#1114). `check_mx` keys `controlPresent` on it and
+ * `check_mta_sts`'s inbound-mail branch uses it, so the two can never disagree
+ * about the same zone again. Excludes the RFC 7505 null MX and syntactically
+ * invalid exchanges; loopback still counts (#944 Option A — see
+ * `isNullMxRecord`'s decision record).
+ */
+export function isMailRoutingMxRecord(record: Pick<ParsedMxRecord, 'exchange'>): boolean {
+	return !isNullMxRecord(record) && !isInvalidMxExchangeRecord(record);
+}
+
+/** Longest rendered exchange list in the invalid-exchange finding detail (DNS data is caller-controlled). */
+const INVALID_MX_DETAIL_MAX_EXCHANGES = 5;
+
+/**
+ * ONE `low` finding covering ALL invalid-exchange records (#1114), never one per
+ * record — penalties are additive and `mx` has no severity cap. `check_mx`
+ * excludes these records from the IP-target and dangling-MX passes, so this
+ * finding REPLACES the "Dangling MX record" `medium` the literal used to draw.
+ *
+ * No `missingControl`: the records were measured. When every exchange is invalid
+ * the domain is scored through the same SPF-context no-mail path as a zone with no
+ * MX, which carries its own `missingControl` when warranted.
+ */
+export function getInvalidMxExchangeFinding(invalidRecords: Pick<ParsedMxRecord, 'exchange'>[]): Finding {
+	const exchanges = invalidRecords.map((record) => `"${record.exchange}"`);
+	const rendered = exchanges.slice(0, INVALID_MX_DETAIL_MAX_EXCHANGES).join(', ');
+	const overflow = exchanges.length - INVALID_MX_DETAIL_MAX_EXCHANGES;
+	const suffix = overflow > 0 ? `, and ${overflow} more` : '';
+	return createFinding(
+		'mx',
+		'Invalid MX exchange hostname',
+		'low',
+		`MX target(s) ${rendered}${suffix} are not valid hostnames (RFC 1123 / RFC 5321: letters, digits and hyphens only), so no mail can be delivered through them and they are not counted as a mail exchange. If the domain accepts no mail, publish an RFC 7505 null MX ("0 .") instead; otherwise point the MX at a real mail exchange.`,
+	);
+}
+
 export function getNullMxFinding(): Finding {
 	return createFinding(
 		'mx',

@@ -752,8 +752,23 @@
  *   a domain whose SPF include chain hits a thrown DNS lookup during the probe phase. No weight,
  *   tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule
  *   changed.
+ * - 1.38.0 — `check_mx` no longer counts a syntactically invalid MX exchange as a live mail
+ *   control (#1114, dns-checks 1.55.0). An exchange that fails RFC 1123 / RFC 5321 hostname
+ *   syntax (letters, digits, hyphen; 1-63 per label; <= 253 total) — measured live: `300 ~.` —
+ *   previously read as "MX records found" + a `medium` "Dangling MX record" with
+ *   `controlPresent: true`. It is now classified invalid (`isInvalidMxExchangeRecord`): ONE
+ *   `low` "Invalid MX exchange hostname" finding names the literal(s), the record is excluded
+ *   from the IP-target and dangling passes (never resolved), and when no mail-routing record
+ *   remains the zone takes the same SPF-context no-mail path as a zone with no MX
+ *   (`controlPresent: false`, so `scan_domain`'s non-mail post-processing can apply).
+ *   `check_mta_sts`'s inbound-mail branch now shares the same predicate
+ *   (`isMailRoutingMxRecord`), so a lone invalid exchange takes the `low` no-inbound-mail copy
+ *   instead of the `medium` "accepts inbound email". Null MX and loopback (#944 Option A) are
+ *   unchanged. SCORE-BEARING only on zones publishing an invalid exchange. No weight, tier,
+ *   grade band, `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule
+ *   changed.
  */
-export const SCORING_MODEL_VERSION = '1.37.0';
+export const SCORING_MODEL_VERSION = '1.38.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
