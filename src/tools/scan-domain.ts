@@ -39,6 +39,7 @@ import { computeScoringConfigHash } from '../lib/scoring-version';
 import { buildCheckCacheKey, buildScanCacheKey, cacheGet, cacheSet, runWithCache } from '../lib/cache';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { queryDns } from '../lib/dns';
+import { describeNonResolvingDomain, probeApexRcode } from '../lib/apex-resolution';
 import { Semaphore } from '../lib/semaphore';
 import { SCAN_DNS_CONCURRENCY, parseScanDnsConcurrency } from '../lib/config';
 import { checkSpf } from './check-spf';
@@ -351,7 +352,7 @@ function buildUnscoredResult(domain: string, checkResults: CheckResult[], reason
  * so aggregators exclude it rather than averaging it in.
  */
 function buildNonResolvingResult(domain: string): ScanDomainResult {
-	const reason = `${domain} does not resolve (NXDOMAIN) — the domain does not exist in DNS, so there is no security posture to assess.`;
+	const reason = describeNonResolvingDomain(domain);
 	return {
 		domain,
 		score: {
@@ -657,11 +658,12 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 	// The NS lookup populates scanDns.queryCache, so the `ns` check reuses it (no double query).
 	if (!isAuthoritativeInfraProfile) {
 		try {
-			const apex = await queryDns(domain, 'NS', false, scanDns);
-			if (apex.Status === 3) {
+			// Shared with the individual check_* tools' NXDOMAIN gate (#1128) — one predicate.
+			const apexClass = await probeApexRcode(domain, scanDns);
+			if (apexClass === 'nxdomain') {
 				return { ...buildNonResolvingResult(domain), scoringConfigHash };
 			}
-			if (apex.Status === 2) {
+			if (apexClass === 'servfail') {
 				// CD-disabled retry on a fresh cache (no cd=0/default collision).
 				try {
 					const cdDisabled = await queryDns(domain, 'NS', false, {

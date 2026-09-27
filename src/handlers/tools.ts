@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
-import type { CheckResult } from '../lib/scoring';
+import type { CheckCategory, CheckResult } from '../lib/scoring';
+import { buildNonResolvingCheckResult, isNonResolvingApex } from '../lib/apex-resolution';
 import type { QueryDnsOptions, SecondaryDohConfig } from '../lib/dns-types';
 import { buildCheckCacheKey, buildScanCacheKey, runWithCacheTracked } from '../lib/cache';
 import { withRequestDedup, withStrongRequestIdempotency } from '../lib/request-dedup';
@@ -483,6 +484,47 @@ interface ToolRegistryEntry {
 	execute: (domain: string, args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => Promise<CheckResult>;
 	cacheable?: boolean;
 	cacheTtlSeconds?: number;
+}
+
+/**
+ * #1128 — `TOOL_REGISTRY` tools that abstain on a non-resolving (NXDOMAIN) apex, keyed
+ * to the category their result reports. `scan_domain` never runs these on an NXDOMAIN
+ * (`buildNonResolvingResult`); called individually they used to score the absence of
+ * every record as a measured negative (critical "No SPF record found") or a clean 100
+ * (`check_subdomain_takeover`). The gate is applied ONCE at the dispatch boundary below,
+ * using the same predicate as `scan_domain` (`lib/apex-resolution.ts`).
+ *
+ * Deliberately NOT gated: tools whose subject is the non-existence itself or whose
+ * input is not the apex's own posture — `check_lookalikes` / `check_shadow_domains`
+ * (NXDOMAIN permutations/siblings ARE the measurement), `rdap_lookup` (registration
+ * data exists independently of DNS delegation), `check_dbl` / `check_rbl` /
+ * `check_realtime_threat_feed` / `check_fast_flux` (reputation of the NAME, listed or
+ * not, whether or not it currently resolves), and the rest of the registry, which #1128
+ * observed already abstaining or staying neutral on an NXDOMAIN. Tools outside the
+ * registry (`check_resolver_consistency`, the composites) are not on this path.
+ */
+export const NXDOMAIN_GATED_TOOLS: Readonly<Record<string, CheckCategory>> = {
+	check_spf: 'spf',
+	check_dmarc: 'dmarc',
+	check_mx: 'mx',
+	check_ns: 'ns',
+	check_dnssec: 'dnssec',
+	check_dnssec_chain: 'dnssec_chain' as CheckCategory,
+	check_caa: 'caa',
+	check_dkim: 'dkim',
+	check_zone_hygiene: 'zone_hygiene',
+	check_subdomain_takeover: 'subdomain_takeover',
+	check_ssl: 'ssl',
+};
+
+/**
+ * The category to abstain under when `name` is NXDOMAIN-gated for these `args`, else
+ * `undefined`. `check_subdomain_takeover` with an explicit `subdomains` list is exempt:
+ * full FQDNs there are swept as given and need not sit under the (non-existent) apex.
+ */
+function nxdomainGateCategory(name: string, args: Record<string, unknown>): CheckCategory | undefined {
+	if (name === 'check_subdomain_takeover' && Array.isArray(args.subdomains) && args.subdomains.length > 0) return undefined;
+	return Object.hasOwn(NXDOMAIN_GATED_TOOLS, name) ? NXDOMAIN_GATED_TOOLS[name] : undefined;
 }
 
 /**
@@ -1343,15 +1385,25 @@ export async function handleToolsCall(
 				const cacheKey = buildCheckCacheKey(validDomain, checkName);
 				let cacheStatus: 'hit' | 'miss' = 'miss';
 				let result: CheckResult;
+				// #1128: a non-resolving apex abstains exactly as scan_domain does, instead of
+				// scoring every absent record. Probed inside the producer, so a cache hit costs
+				// nothing; the abstention is `partial` and therefore never cached (scan_domain
+				// does not cache its non-resolving result either). A probe failure or SERVFAIL
+				// falls through to the check unchanged (fail-open).
+				const nxdomainCategory = nxdomainGateCategory(name, validatedArgs);
+				const runRegisteredTool = async (): Promise<CheckResult> =>
+					nxdomainCategory && (await isNonResolvingApex(validDomain, buildDnsOptions(runtimeOptions)))
+						? buildNonResolvingCheckResult(nxdomainCategory, validDomain)
+						: registeredTool.execute(validDomain, validatedArgs, runtimeOptions);
 				if (registeredTool.cacheable === false) {
-					result = await registeredTool.execute(validDomain, validatedArgs, runtimeOptions);
+					result = await runRegisteredTool();
 				} else {
 					// Don't cache partial results (e.g. lookalike timeout). The predicate skips the
 					// kv.put entirely instead of the old put-then-delete anti-pattern that drove
 					// ~13M wasted SCAN_CACHE writes/week (bv-web 2026-05-14 analytics, cluster F5).
 					const tracked = await runWithCacheTracked(
 						cacheKey,
-						() => registeredTool.execute(validDomain, validatedArgs, runtimeOptions),
+						runRegisteredTool,
 						scanCacheKV,
 						registeredTool.cacheTtlSeconds,
 						/* skipCache */ extractForceRefresh(validatedArgs),
