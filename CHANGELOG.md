@@ -8,6 +8,22 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`brand_audit_get_report` without `target` now returns a real audit-level
+  aggregate instead of `aggregate: null` under `passed: true, score: 100`
+  (#1129).** Nothing writes `brand_audits.results_json`, so the audit-level call
+  on a completed audit came back empty with a clean verdict — indistinguishable
+  from "computed and empty". When `results_json` is absent the aggregate is now
+  derived on read from the per-target rows: `targetStatusCounts`, a per-target
+  summary (status, error, `hasPdf`, bucket counts, score), and a bucket
+  `rollup` counted only over targets that completed with a measured result. The
+  verdict follows the worst measured target, and the result is `partial` when
+  any target was not measured. With no measured target the call abstains
+  (`aggregateUnavailable: true`, `checkStatus: 'error'`, score 0,
+  `passed: false`, `partial: true`) rather than fabricating a pass.
+  A stored `results_json` is still returned verbatim. [no-scoring-change]
+
 ## [3.91.0] - 2026-09-24
 
 ### Fixed
