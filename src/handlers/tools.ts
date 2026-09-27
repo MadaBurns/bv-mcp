@@ -18,6 +18,7 @@ import { checkCaa } from '../tools/check-caa';
 import { checkBimi } from '../tools/check-bimi';
 import { checkTlsrpt } from '../tools/check-tlsrpt';
 import { checkLookalikes } from '../tools/check-lookalikes';
+import { compactLookalikesResult, formatLookalikeCompactSummary } from '../tools/lookalike-compact';
 import { checkShadowDomains } from '../tools/check-shadow-domains';
 import { checkTxtHygiene } from '../tools/check-txt-hygiene';
 import { checkHttpSecurity } from '../tools/check-http-security';
@@ -1390,6 +1391,22 @@ export async function handleToolsCall(
 				});
 				if (accessRefused) {
 					return { ...buildToolResult(formatAccessRefusal(result), result, effectiveFormat), isError: true };
+				}
+				if (name === 'check_lookalikes' && effectiveFormat === 'compact') {
+					// #1130: a large brand emits one or two findings per registered candidate
+					// (google.com: 76 findings, 69 KB) and overflowed the MCP tool-result cap in
+					// "compact". Compact is a presentation transform over the complete, cached
+					// result — score/passed/checkStatus are untouched — and it shrinks BOTH
+					// channels, since `structuredContent` is emitted in every format.
+					const compact = compactLookalikesResult(result);
+					return buildToolResult(
+						formatCheckResult(result, effectiveFormat, {
+							findings: compact.findings,
+							trailerLines: formatLookalikeCompactSummary(compact.summary),
+						}),
+						compact.structured,
+						effectiveFormat,
+					);
 				}
 				return buildToolResult(formatCheckResult(result, effectiveFormat), result, effectiveFormat);
 			}
