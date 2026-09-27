@@ -2,6 +2,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, dnssecResponse, tlsaResponse } from './helpers/dns-mock';
+import { DOH_TRANSPORT_FAILURES, expectDnsAbstention } from './helpers/dns-transport-failure';
 
 const { restore } = setupFetchMock();
 
@@ -120,12 +121,30 @@ describe('checkDaneHttps', () => {
 		expect(mediumFinding!.title).toBe('Malformed TLSA record');
 	});
 
-	it('should handle DNS query failure gracefully', async () => {
-		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS failure'));
+	// SQ-201: a TLSA lookup that never got an answer used to return a COMPLETED `low`
+	// "DANE HTTPS query failed" finding scored 95 — measured evidence from a cut probe.
+	it.each(DOH_TRANSPORT_FAILURES)('abstains (checkStatus error, no scored finding) when $label', async ({ install }) => {
+		install();
 
 		const result = await run();
-		expect(result.category).toBe('dane_https');
-		expect(result.findings.length).toBeGreaterThan(0);
+		expectDnsAbstention(result, 'dane_https');
+		expect(result.findings.map((f) => f.title)).toEqual(['DANE HTTPS not assessed — TLSA query failed']);
+	});
+
+	it('an answered NXDOMAIN for _443._tcp is still a measured absence, not an abstention', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('_443._tcp.example.com') && (url.includes('type=TLSA') || url.includes('type=52'))) {
+				return Promise.resolve(createDohResponse([{ name: '_443._tcp.example.com', type: 52 }], [], { status: 3 }));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.recordPresent).toBe(false);
+		expect(result.findings.map((f) => f.title)).toEqual(['No DANE TLSA for HTTPS']);
+		expect(result.score).toBe(95);
 	});
 
 	it('should handle DNSSEC check failure gracefully', async () => {

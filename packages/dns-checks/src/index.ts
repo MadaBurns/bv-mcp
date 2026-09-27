@@ -87,6 +87,7 @@ export {
 	checkSubdomainTakeover,
 	checkSubdomailing,
 	checkHTTPSecurity,
+	HTTP_SECURITY_MAX_REDIRECT_HOPS,
 	// Analysis utilities
 	parseDmarcTags,
 	parseDnskeyAlgorithm,

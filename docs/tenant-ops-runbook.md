@@ -59,6 +59,17 @@ Tenant jobs are handled by scheduled handlers:
 Cron expressions live in `wrangler.jsonc`. Avoid running duplicate dispatchers
 for the same tenant cycle.
 
+**Weekly double-fire guard.** Cloudflare can deliver the weekly `0 2 * * SUN`
+trigger twice, or let a slow tick overlap the next invocation.
+`handleTenantWeeklyRescan` inserts each tenant's `tenant_cycles` row with one
+guarded `INSERT … SELECT … WHERE NOT EXISTS` statement. When the tenant already
+has a cycle whose `started_at` is within 6 hours of the tick, the insert changes
+no row and nothing is queued for that tenant. The handler then logs
+`tenant_weekly_rescan_skipped_duplicate` with the `existingCycleId`. A double
+delivery therefore yields exactly one cycle and one queue message per due domain.
+The log line is informational. A deliberate re-dispatch within 6 hours of a
+tenant's last cycle is refused the same way, so wait out the window first.
+
 ## Alerts
 
 Cycle alerts are sent to `ALERT_WEBHOOK_URL` when a completed cycle differs
@@ -70,6 +81,31 @@ General triage:
 - Severity increased on customer-owned domains: notify the owning team.
 - Only lost findings: usually no action.
 - Repeated webhook hashes with the same cycle ID: inspect webhook delivery.
+
+**Customer-alert claim.** The cycle-alert sweep claims a settled cycle before it
+delivers the customer alert. It stamps `alert_sent_at` with
+`alert_outcome = 'sending'` through an UPDATE guarded on `alert_sent_at IS NULL`,
+and only the sweep whose UPDATE changed the row calls the webhook. That sweep
+then replaces `sending` with `sent` or `webhook_failed`. Two overlapping sweeps
+therefore deliver one alert per cycle, not two. Delivery is at most once: a row
+left at `alert_outcome = 'sending'` means the isolate died between the claim and
+the delivery result, so the customer may not have been alerted. Check the
+receiver for that cycle ID before re-sending by hand.
+
+**Unreconcilable cycles.** A cycle still incomplete 6 hours after it started is
+normally settled partial (`tenant_cycle_settled_partial`, one operator alert).
+Settling needs the cycle's progress, read from the sub-tenant's D1. When that D1
+cannot be read, or the registry lookup returns `Tenant not found`, the sweep
+cannot measure the cycle and does not settle it. Instead, the first sweep past
+the 6-hour deadline whose reconcile fails sends ONE operator alert, "Tenant
+monitoring cycle unreconcilable" (log `tenant_cycle_unreconcilable`, with the
+failure reason). It also marks the cycle `alert_outcome = 'unreconcilable'` and
+leaves `alert_sent_at` NULL. The mark is guarded on `alert_outcome IS NULL`, so
+later sweeps keep retrying the reconcile and logging
+`tenant_cycle_reconcile_failed` without alerting again. If the D1 recovers, the
+next sweep settles the cycle normally and its alert stamp replaces the marker.
+If the tenant is gone for good, close the cycle by hand:
+`UPDATE tenant_cycles SET alert_sent_at = <epoch-ms>, alert_outcome = 'skipped_no_tenant_binding' WHERE id = '<cycle-id>' AND alert_sent_at IS NULL`.
 
 ## Audit Log
 

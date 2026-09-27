@@ -152,4 +152,34 @@ describe('POST /oauth/register', () => {
 		const body = await res.json() as Record<string, unknown>;
 		expect(body.error).toBe('invalid_client_metadata');
 	});
+
+	// SQ-199: putClient()'s kv.put() previously threw unwrapped on a KV outage,
+	// so a rejecting SESSION_STORE ended in Hono's default 500 handler instead
+	// of the route's OAuth temporarily_unavailable shape.
+	it('returns 503 temporarily_unavailable when SESSION_STORE rejects on the write, never a 500', async () => {
+		const rejectingEnv = {
+			...env,
+			SESSION_STORE: {
+				get: async () => null,
+				put: async () => {
+					throw new Error('KV unavailable (SQ-199 register test — must never reach the client)');
+				},
+				delete: async () => undefined,
+			} as unknown as typeof env.SESSION_STORE,
+		} as Env;
+		const request = new Request('https://example.com/oauth/register', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', 'CF-Connecting-IP': '198.51.100.92' },
+			body: JSON.stringify({ redirect_uris: ['https://claude.ai/cb'] }),
+		});
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, rejectingEnv, ctx);
+		await waitOnExecutionContext(ctx);
+
+		expect(res.status).toBe(503);
+		const text = await res.text();
+		expect(text).not.toContain('SQ-199 register test');
+		const body = JSON.parse(text) as { error?: string };
+		expect(body.error).toBe('temporarily_unavailable');
+	});
 });

@@ -32,10 +32,11 @@ export async function checkSubdomailing(
 	const findings: Finding[] = [];
 
 	// Extract all SPF include/redirect domains recursively.
-	// `extractSpfIncludeChain` swallows a thrown queryDNS internally (resolveSpfNode never
-	// rethrows), so this catch is currently unreachable (transient-inconclusive.test.ts). Kept
-	// as the abstention shape rather than a scored `medium` so it cannot become a live
-	// fail-open finding if that internal guarantee ever changes (#1103).
+	// `extractSpfIncludeChain` throws when the ROOT domain's own TXT lookup throws (transport
+	// error / timeout). That is not a measured "No SPF record", so it abstains here in the
+	// not-assessed shape rather than scoring a verdict nobody measured (SQ-201; #1103 for the
+	// include-level twin). A thrown lookup for an INCLUDED domain is still absorbed by the walk
+	// and accounted by `probeAllIncludes`' unmeasured count below.
 	let chainResult: { domains: Map<string, string>; spfRecord: string | null };
 	try {
 		chainResult = await extractSpfIncludeChain(domain, queryDNS, { timeout });

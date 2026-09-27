@@ -38,6 +38,8 @@ const SQL_TAGS = {
 	FIND_BASELINE: 'alert_sent_at IS NOT NULL ORDER BY started_at DESC',
 	PENDING_CYCLES: 'completed_total + errored_total >= expected_total',
 	STAMP_ALERT: 'UPDATE tenant_cycles SET alert_sent_at = ?',
+	// SQ-197: the claiming sweep records the delivery result over its own `sending` claim.
+	RECORD_OUTCOME: 'UPDATE tenant_cycles SET alert_outcome = ?',
 	FINDINGS_FOR_CYCLE: 'SELECT f.domain, f.category, f.severity, f.title',
 } as const;
 
@@ -49,6 +51,7 @@ const INCREMENT_ERRORED_SQL = SQL_TAGS.INCREMENT_ERRORED;
 const FIND_BASELINE_CYCLE_SQL = SQL_TAGS.FIND_BASELINE;
 const PENDING_CYCLES_SQL = SQL_TAGS.PENDING_CYCLES;
 const STAMP_ALERT_SQL = SQL_TAGS.STAMP_ALERT;
+const RECORD_OUTCOME_SQL = SQL_TAGS.RECORD_OUTCOME;
 const FINDINGS_FOR_CYCLE_SQL = SQL_TAGS.FINDINGS_FOR_CYCLE;
 
 /** Match a recorded call by SQL substring (production SQL contains the tag). */
@@ -696,7 +699,7 @@ describe('handleTenantCycleAlerts', () => {
 		baseline_cycle_id: 'cycle-base',
 	};
 
-	it('h. fires sendTenantAlert + stamps "sent" when cycle has new findings vs baseline', async () => {
+	it('h. claims the cycle, THEN fires sendTenantAlert, then records "sent" when cycle has new findings vs baseline', async () => {
 		const { handleTenantCycleAlerts } = await import('../../src/tenants/scheduled-handlers');
 		const registry = makeMockD1({
 			rowsBySql: { [PENDING_CYCLES_SQL]: [{ ...baseCycle }] },
@@ -705,7 +708,11 @@ describe('handleTenantCycleAlerts', () => {
 			'cycle-curr': [{ domain: 'a.com', category: 'spf', severity: 'high', title: 'spf weak' }],
 			'cycle-base': [],
 		});
-		const sendAlert = vi.fn(async () => ({ delivered: true, status: 200 }));
+		let claimsBeforeSend = -1;
+		const sendAlert = vi.fn(async () => {
+			claimsBeforeSend = registry.calls.filter((c) => callMatches(c.sql, STAMP_ALERT_SQL)).length;
+			return { delivered: true, status: 200 };
+		});
 		const customEnv: TenantScheduledEnv = {
 			...env,
 			TENANT_REGISTRY_DB: registry.db,
@@ -719,9 +726,15 @@ describe('handleTenantCycleAlerts', () => {
 		});
 
 		expect(sendAlert).toHaveBeenCalledTimes(1);
+		// SQ-197: the guarded claim (alert_sent_at IS NULL) lands BEFORE the send...
+		expect(claimsBeforeSend).toBe(1);
 		const stamps = registry.calls.filter((c) => callMatches(c.sql, STAMP_ALERT_SQL));
 		expect(stamps).toHaveLength(1);
-		expect(stamps[0].binds[1]).toBe('sent');
+		expect(stamps[0].sql).toContain('AND alert_sent_at IS NULL');
+		expect(stamps[0].binds).toEqual([2_000_000, 'sending', 'cycle-curr']);
+		// ...and the delivery result replaces this sweep's own claim afterwards.
+		const records = registry.calls.filter((c) => callMatches(c.sql, RECORD_OUTCOME_SQL));
+		expect(records.map((c) => c.binds)).toEqual([['sent', 'cycle-curr', 'sending']]);
 	});
 
 	it('i. zero deltas → marks "no_diff" and does NOT call sendTenantAlert', async () => {
@@ -802,8 +815,11 @@ describe('handleTenantCycleAlerts', () => {
 		expect(sendAlert).toHaveBeenCalledTimes(1);
 		const stamps = registry.calls.filter((c) => callMatches(c.sql, STAMP_ALERT_SQL));
 		expect(stamps).toHaveLength(1);
-		expect(stamps[0].binds[1]).toBe('webhook_failed');
+		// alert_sent_at is stamped by the claim, so the next sweep does not retry.
 		expect(stamps[0].binds[0]).toBe(2_000_000);
+		expect(stamps[0].binds[1]).toBe('sending');
+		const records = registry.calls.filter((c) => callMatches(c.sql, RECORD_OUTCOME_SQL));
+		expect(records.map((c) => c.binds)).toEqual([['webhook_failed', 'cycle-curr', 'sending']]);
 	});
 
 	// l. The SQL-level filter (`completed_total + errored_total >= expected_total`)

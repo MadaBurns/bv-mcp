@@ -55,6 +55,49 @@ export class StrongStateUnavailableError extends Error {
 	}
 }
 
+// SQ-199: every KV access below that a caller depends on to distinguish a
+// genuine miss from an outage goes through these wrappers, so a rejecting
+// binding (KV outage) always surfaces as StrongStateUnavailableError instead
+// of an unhandled rejection reaching Hono's default (internals-leaking) 500
+// handler. A `null` return stays a real miss, never an error. The handful of
+// KV writes below that are commented "migration/visibility mirror" are
+// deliberately NOT wrapped this way — the strongly consistent coordinator is
+// already authoritative for those, and swallowing the mirror write is the
+// existing, intentional degrade-gracefully behavior, not a gap.
+
+/** `kv.get` wrapped so a rejecting binding throws StrongStateUnavailableError; a real miss still resolves to null. */
+async function safeKvGet(kv: KVNamespace, key: string, operation: string): Promise<string | null> {
+	try {
+		return await kv.get(key);
+	} catch {
+		throw new StrongStateUnavailableError(operation);
+	}
+}
+
+/** `kv.put` wrapped so a rejecting binding throws StrongStateUnavailableError. */
+async function safeKvPut(
+	kv: KVNamespace,
+	key: string,
+	value: string,
+	options: KVNamespacePutOptions | undefined,
+	operation: string,
+): Promise<void> {
+	try {
+		await kv.put(key, value, options);
+	} catch {
+		throw new StrongStateUnavailableError(operation);
+	}
+}
+
+/** `kv.delete` wrapped so a rejecting binding throws StrongStateUnavailableError. */
+async function safeKvDelete(kv: KVNamespace, key: string, operation: string): Promise<void> {
+	try {
+		await kv.delete(key);
+	} catch {
+		throw new StrongStateUnavailableError(operation);
+	}
+}
+
 async function coordinationKey(
 	kind: 'code' | 'jti' | 'subject' | 'subject-entitlement-generation',
 	value: string,
@@ -79,12 +122,12 @@ export function createAuthorizationCode(): string {
 export async function putClient(kv: KVNamespace, rec: ClientRecord, kvEnvelopeKey?: Uint8Array): Promise<void> {
 	const plaintext = JSON.stringify(rec);
 	const value = kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext;
-	await kv.put(clientKey(rec.client_id), value, { expirationTtl: OAUTH_CLIENT_TTL_SECONDS });
+	await safeKvPut(kv, clientKey(rec.client_id), value, { expirationTtl: OAUTH_CLIENT_TTL_SECONDS }, 'client registration write');
 }
 
 /** Look up a client by id. Returns null if not found or if stored record fails schema validation. */
 export async function getClient(kv: KVNamespace, id: string, kvEnvelopeKey?: Uint8Array): Promise<ClientRecord | null> {
-	const raw = await kv.get(clientKey(id));
+	const raw = await safeKvGet(kv, clientKey(id), 'client lookup');
 	if (!raw) return null;
 	try {
 		// Migration read-fallback: try decrypt if key present and value looks sealed;
@@ -110,7 +153,7 @@ export async function getClient(kv: KVNamespace, id: string, kvEnvelopeKey?: Uin
 export async function putCode(kv: KVNamespace, code: string, rec: CodeRecordInput, kvEnvelopeKey?: Uint8Array): Promise<void> {
 	const plaintext = JSON.stringify(rec);
 	const value = kvEnvelopeKey ? await sealKv(plaintext, kvEnvelopeKey) : plaintext;
-	await kv.put(codeKey(code), value, { expirationTtl: OAUTH_CODE_TTL_SECONDS });
+	await safeKvPut(kv, codeKey(code), value, { expirationTtl: OAUTH_CODE_TTL_SECONDS }, 'authorization-code write');
 }
 
 /**
@@ -126,7 +169,7 @@ export async function consumeCode(
 	kvEnvelopeKey?: Uint8Array,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<CodeRecord | null> {
-	const raw = await kv.get(codeKey(code));
+	const raw = await safeKvGet(kv, codeKey(code), 'authorization-code lookup');
 	if (!raw) return null;
 	let record: CodeRecord;
 	try {
@@ -145,7 +188,7 @@ export async function consumeCode(
 		}
 		record = CodeRecordSchema.parse(JSON.parse(jsonStr));
 	} catch {
-		await kv.delete(codeKey(code));
+		await safeKvDelete(kv, codeKey(code), 'authorization-code invalidation');
 		return null;
 	}
 
@@ -158,7 +201,7 @@ export async function consumeCode(
 	}
 	if (!isClaimOnceResult(claim)) throw new StrongStateUnavailableError('authorization-code consumption');
 	if (!claim.claimed) return null;
-	await kv.delete(codeKey(code));
+	await safeKvDelete(kv, codeKey(code), 'authorization-code consumption');
 	return record;
 }
 
@@ -252,7 +295,7 @@ export async function getMinimumEntitlementGeneration(
 	sub: string,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<number> {
-	const raw = await kv.get(entitlementGenerationKey(sub));
+	const raw = await safeKvGet(kv, entitlementGenerationKey(sub), 'entitlement-generation read');
 	const parsed = Number(raw);
 	const legacyValue = Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
 	let result;
@@ -283,7 +326,7 @@ export async function raiseMinimumEntitlementGeneration(
 	if (!Number.isSafeInteger(minGeneration) || minGeneration < 1) {
 		throw new StrongStateUnavailableError('entitlement-generation update');
 	}
-	const raw = await kv.get(entitlementGenerationKey(sub));
+	const raw = await safeKvGet(kv, entitlementGenerationKey(sub), 'entitlement-generation update');
 	const parsed = Number(raw);
 	const legacyValue = Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
 	let result;
@@ -318,7 +361,7 @@ export async function getTokenVersion(
 	sub: string,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<number> {
-	const raw = await kv.get(tokenVersionKey(sub));
+	const raw = await safeKvGet(kv, tokenVersionKey(sub), 'token-version read');
 	const n = Number(raw);
 	const legacyValue = Number.isSafeInteger(n) && n >= 1 ? n : 1;
 	let result;
@@ -341,7 +384,7 @@ export async function bumpTokenVersion(
 	sub: string,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<number> {
-	const raw = await kv.get(tokenVersionKey(sub));
+	const raw = await safeKvGet(kv, tokenVersionKey(sub), 'token-version bump');
 	const parsed = Number(raw);
 	const legacyValue = Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
 	let result;
@@ -373,7 +416,7 @@ export async function bumpTokenVersionIdempotently(
 	expiresAt: number,
 	quotaCoordinator?: DurableObjectNamespace<QuotaCoordinator>,
 ): Promise<{ state: 'complete'; value: number } | { state: 'conflict' }> {
-	const raw = await kv.get(tokenVersionKey(sub));
+	const raw = await safeKvGet(kv, tokenVersionKey(sub), 'idempotent token-version bump');
 	const parsed = Number(raw);
 	const legacyValue = Number.isSafeInteger(parsed) && parsed >= 1 ? parsed : 1;
 	let result;

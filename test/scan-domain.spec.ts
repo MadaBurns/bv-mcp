@@ -1237,6 +1237,75 @@ describe('scanDomain deferred cache write (Fix 3)', () => {
 	});
 });
 
+describe('scanDomain scan-cache admission predicate (SQ-200)', () => {
+	// See test/chaos/scan-domain-doh-outage.chaos.test.ts (H1) for the corresponding
+	// chaos-level coverage of the ungraded-outage path.
+	function mockAllChecksFn(domain: string) {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=TXT') || url.includes('type=16')) {
+					if (url.includes('_dmarc.')) return Promise.resolve(txtResponse(`_dmarc.${domain}`, ['v=DMARC1; p=reject']));
+					if (url.includes('_domainkey.'))
+						return Promise.resolve(txtResponse(`default._domainkey.${domain}`, ['v=DKIM1; k=rsa; p=MIGf']));
+					if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse(`_mta-sts.${domain}`, ['v=STSv1; id=20240101']));
+					if (url.includes('_smtp._tls.'))
+						return Promise.resolve(txtResponse(`_smtp._tls.${domain}`, [`v=TLSRPTv1; rua=mailto:tls@${domain}`]));
+					if (url.includes('default._bimi.'))
+						return Promise.resolve(txtResponse(`default._bimi.${domain}`, [`v=BIMI1; l=https://${domain}/logo.svg`]));
+					return Promise.resolve(txtResponse(domain, ['v=spf1 include:_spf.google.com -all']));
+				}
+				if (url.includes('type=NS') || url.includes('type=2'))
+					return Promise.resolve(nsResponse(domain, [`ns1.${domain}.`, `ns2.${domain}.`]));
+				if (url.includes('type=CAA') || url.includes('type=257')) return Promise.resolve(caaResponse(domain, ['0 issue "letsencrypt.org"']));
+				if (url.includes('type=A') || url.includes('type=1')) return Promise.resolve(dnssecResponse(domain, true));
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.includes('mta-sts.') && url.includes('.well-known'))
+				return Promise.resolve(httpResponse(`version: STSv1\nmode: enforce\nmx: *.${domain}\nmax_age: 86400`));
+			if (url.startsWith('https://')) return Promise.resolve(httpResponse('OK'));
+			return Promise.resolve(httpResponse('OK'));
+		});
+	}
+
+	it('graded scan (score.overall is a number): IS admitted to the scan cache', async () => {
+		const domain = 'cache-admit-graded.com';
+		mockAllChecksFn(domain);
+		const { scanDomain } = await import('../src/tools/scan-domain');
+
+		const result = await scanDomain(domain);
+		expect(result.score.overall).not.toBeNull();
+		expect(result.score.evidenceInsufficient).toBeFalsy();
+		expect(result.maturity.indeterminate).toBeFalsy();
+
+		const stored = await cacheGet<ScanDomainResult>(buildScanCacheKey(domain));
+		expect(stored).toBeDefined();
+		expect(stored?.score.overall).toBe(result.score.overall);
+	});
+
+	it('ungraded scan (evidence gate withheld the grade): NOT admitted to the scan cache', async () => {
+		const domain = 'cache-admit-ungraded.com';
+		// Every outbound request comes back 503, matching the chaos H1 total-outage mode:
+		// the apex probe falls through to the full matrix (transient-probe-failure
+		// fall-through in scan-domain.ts), every DNS-backed check abstains, and the
+		// evidence gate withholds the grade.
+		globalThis.fetch = vi.fn().mockResolvedValue(new Response('upstream unavailable', { status: 503 }));
+		const { scanDomain } = await import('../src/tools/scan-domain');
+
+		const result = await scanDomain(domain);
+		expect(result.score.overall).toBeNull();
+		expect(result.score.evidenceInsufficient).toBe(true);
+
+		const stored = await cacheGet<ScanDomainResult>(buildScanCacheKey(domain));
+		expect(stored).toBeUndefined();
+
+		// Negative control: reverting the isCacheableResult guard in scanDomain (i.e.
+		// writing the cache unconditionally, as before SQ-200) makes `stored` defined
+		// here with score.overall === null — this assertion, and the graded-side
+		// assertion above, are the two-sided pin on the predicate.
+	});
+});
+
 describe('adaptiveWeightCache eviction (Fix 4)', () => {
 	it('evicts expired entries first, not all entries, when at capacity', async () => {
 		const { _adaptiveWeightCacheForTest } = await import('../src/tools/scan-domain');

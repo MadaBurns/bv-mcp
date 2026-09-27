@@ -8,6 +8,116 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.91.0] - 2026-09-24
+
+### Fixed
+
+- **`scan_domain` no longer caches an ungraded outage result for 5 minutes.**
+  Under a total DoH outage `scan_domain` correctly returned an ungraded result
+  (`score.overall: null`, `maturity.indeterminate: true`) but wrote it to the
+  5-minute scan cache unconditionally, so a single transient resolver blip was
+  replayed as `cached: true` — and a fully blank grade — to every caller for the
+  full TTL. The scan-level cache write is now gated on `score.overall`: an
+  ungraded result (the evidence gate withheld a grade) is never admitted to the
+  cache, so the next call re-probes DNS instead of replaying the outage. A graded
+  scan keeps caching as before, including one whose maturity ladder abstained
+  (`maturity.indeterminate`, e.g. TLS unmeasured behind an edge block) and
+  partial degradation (a single errored category). [no-scoring-change]
+- **Poison scanner-queue messages are now logged and DLQ'd where recoverable,
+  not silently dropped.** A message whose body failed the strict
+  `ScanQueueMessageSchema` (chaos SQ-191, H1) was unconditionally acked with
+  zero registry/tenant D1 calls and no structured log — a malformed producer
+  (or a future schema change rolled out producer-first) could silently lose a
+  whole cycle's messages, the SQ-169 shape again with a different cause. The
+  consumer now always emits one `tenant_queue_poison_message` log
+  (`category: 'tenant.queue'`) carrying the zod issue paths and a bounded,
+  sanitised excerpt of the first issue message (never the raw body), attempts
+  a lenient recovery parse of just `{ sub_tenant_id, cycle_id, domain }`, and
+  writes the standard `queue_dlq` row (reason `schema_invalid:<issue path>`)
+  when all three recover and the tenant resolves. Poison acks are folded into
+  the `queue_batch` Analytics Engine row's `failureCount`.
+- **`POST /oauth/token`, `/oauth/authorize`, and `/oauth/register` no longer return a bare
+  500 when the OAuth `SESSION_STORE` KV read or write rejects.** SQ-192 chaos H4 measured
+  that `consumeCode()`'s initial `kv.get()` in `src/oauth/storage.ts` was unwrapped: a
+  rejecting KV binding threw past `handleToken()`'s only `StrongStateUnavailableError`
+  catch and Hono's default (no `app.onError`) handler answered a plain 500 with no OAuth
+  error shape. Every KV access in `storage.ts` that a caller depends on to distinguish a
+  genuine miss from an outage (`getClient`, `putClient`, `putCode`, `consumeCode`'s read
+  and both deletes, and the legacy-seed reads in the token-version/entitlement-generation
+  helpers) now goes through `safeKvGet`/`safeKvPut`/`safeKvDelete`, which map a rejection
+  to `StrongStateUnavailableError` while keeping a `null` miss a non-error result. The
+  token endpoint already had the 503 `temporarily_unavailable` mapping wired for that
+  error type; `authorize.ts` and `register.ts` gained the same catch (a redirect-carried
+  `error=temporarily_unavailable` for `/oauth/authorize`'s post-validation code write, an
+  inline 503 JSON body for `/oauth/register`'s client write) since they shared the same
+  gap.
+- **A double-delivered weekly rescan no longer creates duplicate cycles.** When Cloudflare
+  delivered `0 2 * * SUN` twice, or a slow tick overlapped the next one, each invocation
+  inserted its own `tenant_cycles` row and queued every due domain again (measured 2x by
+  the SQ-193 chaos suite). The cycle insert is now one guarded `INSERT … SELECT … WHERE NOT
+  EXISTS` statement. A tenant with a cycle started within the last 6 hours is skipped with
+  `tenant_weekly_rescan_skipped_duplicate` and the existing cycle id, so a double delivery
+  yields one cycle and one queue message per due domain.
+- **Overlapping alert sweeps can no longer both send one cycle's customer alert.** The
+  `alert_sent_at` stamp had no `IS NULL` guard and was written after the webhook call, so
+  two sweeps that listed the same pending cycle could both deliver it. The sweep now claims
+  the cycle first (`alert_outcome = 'sending'`, guarded on `alert_sent_at IS NULL`). Only
+  the sweep whose UPDATE changed the row sends, then records `sent` or `webhook_failed`.
+- **A cycle whose tenant D1 cannot be read now reaches an operator.** A sub-tenant whose D1
+  stayed unreadable, or whose lookup returned `Tenant not found`, logged
+  `tenant_cycle_reconcile_failed` every 15 minutes and never raised an alert, because the
+  6-hour settle needs a successful reconcile. Past that deadline the sweep now sends ONE
+  "Tenant monitoring cycle unreconcilable" operator alert and marks the cycle
+  `alert_outcome = 'unreconcilable'`, guarded so the alert is not repeated. The cycle stays
+  unsettled and settles normally if the D1 recovers.
+
+- **`dane_https`, `svcb_https` and `subdomailing` now abstain when their DNS probe never
+  got an answer.** Under a DoH transport failure or timeout, the other 14 DNS-backed
+  categories returned `checkStatus: 'error'` and dropped out of scoring, but these three
+  caught their own failed lookup and returned a COMPLETED result that counted as measured
+  evidence: a `low` "query failed" finding at 95 for `dane_https` and `svcb_https`, and for
+  `subdomailing` a "No SPF record" verdict at 100, because the SPF include-chain walk
+  swallowed the failed root TXT lookup. A total outage therefore read 5/19 completed instead
+  of 2/19. Each now returns the not-assessed shape (`checkStatus: 'error'`, score 0,
+  `passed: false`, `partial: true`, one `info` finding marked `errorKind: 'dns_error'`),
+  so the category is excluded from scoring, retried and kept out of the cache. An answered
+  empty or NXDOMAIN lookup is still a measured absence. Scores for domains whose lookups
+  answer are unchanged (the parity corpus is unaffected). The fix is in
+  `@blackveil/dns-checks` (`checkDANEHTTPS`, `checkSVCBHTTPS`, `checkSubdomailing`), so
+  bv-web-prod gets it when it next re-vendors the package.
+- **`check_http_security` now abstains on an exhausted redirect-hop cap instead of scoring
+  the loop's last hop.** A persistent redirect loop was correctly BOUNDED by the hop cap, but
+  once the cap was hit while the last response was still a 3xx, `analyzeSecurityHeaders()` ran
+  on that redirect response's headers as if it were the final page — `checkStatus` stayed
+  undefined (measured) and a probe that never reached the origin produced a confident "header
+  missing" slate (chaos SQ-194 H3). `followRedirects` now reports `hopCapExceeded`, and the
+  exhausted-cap branch abstains (`checkStatus: 'error'`, `errorKind: 'redirect_chain_unresolved'`,
+  no `missingControl`) so `scan_domain` excludes `http_security` (absent, not zeroed) the same
+  way the existing 503/blocked-probe/deadline branches already do. The wrapper's dual-fetch
+  redirect cap (`src/tools/check-http-security.ts`) now imports the package's
+  `MAX_REDIRECT_HOPS` (exported as `HTTP_SECURITY_MAX_REDIRECT_HOPS`) instead of hardcoding a
+  separate, larger cap of its own. A chain that resolves within the cap is unchanged. A hop
+  that was _cut_ is not a loop. That covers a spent fetch budget, a stalled hop that aborted or
+  timed out, and a refused (SSRF/robots) redirect target. The wrapper's pre-probe used to hand
+  the package a synthetic 3xx that it re-served on every follow-up hop, so a stalled hop under
+  `scan_domain` was reported as `redirect_chain_unresolved` and dropped from the score. Now,
+  when a pre-probe hop throws, the package's follow-up hop fails the same way, and the category
+  stays measured from the last 3xx that did answer (#674). The abstention fires only after the
+  full hop cap of real 3xx answers. (SQ-208)
+- **Two silent misconfigurations now log instead of degrading invisibly.** A malformed
+  `SCORING_CONFIG` JSON env var made `parseScoringConfig` return
+  `DEFAULT_SCORING_CONFIG` from the `JSON.parse` catch before the warn path ever ran
+  — the same silent-override class as the previously-fixed inert `coreWeights`
+  override. It now emits one structured warning (`category: 'config'`,
+  `result: 'scoring_config_invalid_json'`), bounded and never echoing the raw config
+  text, at most once per isolate via the existing memoization. Separately, an
+  unparseable `ALERT_WEBHOOK_URL` made `sendAlert`'s `catch` around `new URL()`
+  return `false` without ever calling `fetch` or `logError`, dropping every operator
+  alert with zero trace. It now logs once per call (`category: 'alerting'`,
+  `result: 'webhook_url_invalid'`), recording only the URL's length and scheme, never
+  the URL value itself. Measured by chaos SQ-195; fixed by SQ-203. Both behaviors
+  (still defaulting/still returning `false`) are unchanged — logging-only fixes.
+
 ## [3.90.0] - 2026-09-24
 
 ### Fixed

@@ -9,7 +9,7 @@
  */
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction } from '../types';
-import { buildCheckResult, createFinding } from '../check-utils';
+import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
 import { analyzeTlsaRecords, DANE_PIN_NOT_ASSESSED_REASONS, isTransientDanePinReason } from './dane-analysis';
 import type { TlsaVerificationContext } from './dane-analysis';
 
@@ -52,31 +52,36 @@ export async function checkDANEHTTPS(domain: string, queryDNS: DNSQueryFunction,
 
 	// Step 2: Query TLSA records at _443._tcp.{domain}
 	const tlsaName = `_443._tcp.${domain}`;
-	let hasHttpsTlsa = false;
-	// Read ONLY by `recordPresent` below — a failed lookup is "not determined", not "absent".
-	let tlsaQueryFailed = false;
-
+	let tlsaRecords: string[];
 	try {
-		const tlsaRecords = await queryDNS(tlsaName, 'TLSA', { timeout });
-		if (tlsaRecords.length > 0) {
-			hasHttpsTlsa = true;
-			findings.push(...analyzeTlsaRecords(tlsaRecords, tlsaName, hasDnssec, await resolveVerification(options)));
-		}
+		tlsaRecords = await queryDNS(tlsaName, 'TLSA', { timeout });
 	} catch {
-		// TLSA query failed — report and continue
-		tlsaQueryFailed = true;
-		findings.push(
+		// A THROWN TLSA lookup (transport error / timeout) never got a resolver's answer, so
+		// nothing was measured: abstain in the not-assessed shape (checkStatus 'error', score 0,
+		// partial) so scoring excludes the category. This used to return a COMPLETED `low`
+		// finding scored 95 — a cut probe counted as measured evidence (SQ-201). An answered-empty
+		// or NXDOMAIN lookup does not throw and still reaches the "No DANE TLSA" branch below.
+		// `recordPresent` stays undefined ("not determined"), never false.
+		return buildNotAssessedResult(
+			'dane_https',
 			createFinding(
 				'dane_https',
-				'DANE HTTPS query failed',
-				'low',
-				`DNS query for TLSA records at ${tlsaName} failed. Unable to determine DANE HTTPS status for ${domain}.`,
+				'DANE HTTPS not assessed — TLSA query failed',
+				'info',
+				`DNS query for TLSA records at ${tlsaName} failed before any resolver answered. This is not evidence either way about DANE for ${domain} — the category is excluded from scoring rather than passed. Re-run the check once name resolution is working.`,
+				{ inconclusive: true, errorKind: 'dns_error' },
 			),
+			'error',
 		);
 	}
 
+	const hasHttpsTlsa = tlsaRecords.length > 0;
+	if (hasHttpsTlsa) {
+		findings.push(...analyzeTlsaRecords(tlsaRecords, tlsaName, hasDnssec, await resolveVerification(options)));
+	}
+
 	// Step 3: If no TLSA records found, classify absence
-	if (!hasHttpsTlsa && findings.every((f) => f.title !== 'DANE HTTPS query failed')) {
+	if (!hasHttpsTlsa) {
 		findings.push(
 			createFinding(
 				'dane_https',
@@ -103,11 +108,9 @@ export async function checkDANEHTTPS(domain: string, queryDNS: DNSQueryFunction,
 	const remapped = findings.map((f) => ({ ...f, category: 'dane_https' as const }));
 
 	// `recordPresent` = a TLSA record was observed at _443._tcp. The category remap above is
-	// cosmetic (finding provenance) and does not bear on publication; a failed lookup does,
-	// so that branch stays undefined rather than claiming absence.
-	const recordPresent = tlsaQueryFailed ? undefined : hasHttpsTlsa;
-
-	const result = buildCheckResult('dane_https', remapped, undefined, recordPresent);
+	// cosmetic (finding provenance) and does not bear on publication. A failed lookup returned
+	// the not-assessed result above, so every result reaching here answered.
+	const result = buildCheckResult('dane_https', remapped, undefined, hasHttpsTlsa);
 	// An ATTEMPTED-but-unanswered pin verification with a TRANSIENT reason (cold-cache
 	// pending, host unreachable, probe 5xx/throw, capture hiccup) gets `partial: true`,
 	// which keeps it out of the scan-TTL cache so the next scan re-tries (mirrors the

@@ -10,7 +10,7 @@
  */
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
-import { buildCheckResult, createFinding } from '../check-utils';
+import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
 
 /**
  * Parse ALPN protocols from an HTTPS record data string (presentation format).
@@ -123,17 +123,23 @@ export async function checkSVCBHTTPS(
 	try {
 		httpsRecords = await queryDNS(domain, 'HTTPS', { timeout });
 	} catch {
-		findings.push(
+		// A THROWN lookup (transport error / timeout) never got a resolver's answer, so nothing
+		// was measured: abstain in the not-assessed shape (checkStatus 'error', score 0, partial)
+		// so scoring excludes the category. This used to return a COMPLETED `low` finding scored
+		// 95 — a cut probe counted as measured evidence (SQ-201). An answered-empty or NXDOMAIN
+		// lookup does not throw and still reaches the "No HTTPS record found" branch below.
+		// `recordPresent` stays undefined ("not determined"), never false.
+		return buildNotAssessedResult(
+			'svcb_https',
 			createFinding(
 				'svcb_https',
-				'HTTPS record query failed',
-				'low',
-				`DNS query for HTTPS records at ${domain} failed. Unable to determine SVCB/HTTPS status.`,
+				'SVCB/HTTPS not assessed — HTTPS record query failed',
+				'info',
+				`DNS query for HTTPS records at ${domain} failed before any resolver answered. This is not evidence either way about SVCB/HTTPS publication — the category is excluded from scoring rather than passed. Re-run the check once name resolution is working.`,
+				{ inconclusive: true, errorKind: 'dns_error' },
 			),
+			'error',
 		);
-		// The query itself failed, so publication was never observed either way —
-		// `recordPresent` stays undefined ("not determined"), never false.
-		return buildCheckResult('svcb_https', findings);
 	}
 
 	if (httpsRecords.length === 0) {

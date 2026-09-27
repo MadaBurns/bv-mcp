@@ -11,10 +11,12 @@
  * category INCONCLUSIVE (info finding + checkStatus) so the engine renormalizes
  * over the remaining categories instead of zeroing/penalizing this one.
  *
- * subdomailing is deliberately covered too, to DOCUMENT that it does NOT exhibit
- * the FP: extractSpfIncludeChain swallows a thrown queryDNS internally, so the
- * check degrades to a non-penalizing info ("No SPF record") path, never the
- * scored catch.
+ * dane_https, svcb_https and subdomailing were the last three (SQ-201, measured by
+ * the chaos DoH-outage suite). They did not score a deficiency; they did the quieter
+ * thing: returned a COMPLETED result (a `low` "query failed" finding at 95, or — for
+ * subdomailing, whose SPF-chain walk swallowed the root lookup — an info "No SPF
+ * record" at 100), so a probe that never reached a resolver counted as measured
+ * evidence. Each now abstains in the not-assessed shape.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -23,6 +25,8 @@ import { checkMX } from '../../checks/check-mx';
 import { checkCAA } from '../../checks/check-caa';
 import { checkDNSSEC } from '../../checks/check-dnssec';
 import { checkSubdomailing } from '../../checks/check-subdomailing';
+import { checkDANEHTTPS } from '../../checks/check-dane-https';
+import { checkSVCBHTTPS } from '../../checks/check-svcb-https';
 import { checkSSL } from '../../checks/check-ssl';
 import type { DNSQueryFunction, FetchFunction, RawDNSQueryFunction, Finding } from '../../types';
 
@@ -39,6 +43,21 @@ const throwingRawDNS: RawDNSQueryFunction = async () => {
 /** True when a finding would actually penalize the score (medium and above). */
 function hasScoredDeficiency(findings: Finding[]): boolean {
 	return findings.some((f) => f.severity === 'medium' || f.severity === 'high' || f.severity === 'critical');
+}
+
+/**
+ * The not-assessed shape (`buildNotAssessedResult`): excluded from scoring, retried, uncached,
+ * and carrying the dns_error marker — never a completed verdict or a missing-control claim.
+ */
+function expectAbstained(result: Awaited<ReturnType<typeof checkSubdomailing>>): void {
+	expect(result.checkStatus).toBe('error');
+	expect(result.score).toBe(0);
+	expect(result.passed).toBe(false);
+	expect(result.partial).toBe(true);
+	expect(result.recordPresent).toBeUndefined();
+	expect(result.findings.map((f) => f.severity)).toEqual(['info']);
+	expect(result.findings[0].metadata).toMatchObject({ inconclusive: true, errorKind: 'dns_error' });
+	expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
 }
 
 describe('transient DNS failure → category is INCONCLUSIVE, not a scored deficiency', () => {
@@ -101,12 +120,27 @@ describe('transient DNS failure → category is INCONCLUSIVE, not a scored defic
 		expect(hasScoredDeficiency(result.findings)).toBe(false);
 	});
 
-	it('checkSubdomailing: does NOT exhibit the FP — a thrown queryDNS is swallowed internally and degrades to a non-penalizing info path', async () => {
+	it('checkSubdomailing (SQ-201): a thrown root SPF lookup abstains (checkStatus error), not a completed "No SPF record" verdict', async () => {
 		const result = await checkSubdomailing('example.com', throwingDNS);
-		// The throw is caught inside extractSpfIncludeChain (resolve), so the scored
-		// "SubdoMailing check failed" catch is unreachable; the check reports info-only.
+		expectAbstained(result);
+		expect(result.findings.map((f) => f.title)).not.toContain('No SPF record');
+	});
+
+	it('checkSubdomailing (SQ-201): an ANSWERED root with no SPF record is still a measured "No SPF record"', async () => {
+		const noSpf: DNSQueryFunction = async () => ['google-site-verification=abc'];
+		const result = await checkSubdomailing('example.com', noSpf);
 		expect(result.checkStatus).toBeUndefined();
-		expect(hasScoredDeficiency(result.findings)).toBe(false);
+		expect(result.findings.map((f) => f.title)).toEqual(['No SPF record']);
+	});
+
+	it('checkDANEHTTPS (SQ-201): a thrown TLSA query abstains (checkStatus error), not a completed low finding at 95', async () => {
+		const result = await checkDANEHTTPS('example.com', throwingDNS, { rawQueryDNS: throwingRawDNS });
+		expectAbstained(result);
+	});
+
+	it('checkSVCBHTTPS (SQ-201): a thrown HTTPS query abstains (checkStatus error), not a completed low finding at 95', async () => {
+		const result = await checkSVCBHTTPS('example.com', throwingDNS);
+		expectAbstained(result);
 	});
 
 	it('checkSubdomailing (#1103): a resolvable SPF chain whose include lookups all throw abstains, not a scored/low finding', async () => {

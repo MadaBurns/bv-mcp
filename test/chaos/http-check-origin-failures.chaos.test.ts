@@ -31,10 +31,19 @@
  *   `test/binding-degradation-wiring.spec.ts` already documents and tests. No
  *   new test added here.
  *
- * ## Two hypotheses below are FALSIFIED by the code (see in-test comments and
- * ticket comments for the full trace); per dispatch instructions these tests
- * assert the MEASURED behaviour instead of the ticket's claim, and no src/
- * change was made.
+ * ## H3 was FALSIFIED, then fixed (SQ-204)
+ *
+ * H3 (persistent redirect loop) was originally FALSIFIED against this ticket's "the check
+ * abstains" wording: `checkHTTPSecurity`'s `followRedirects` hop-cap-exhaustion branch scored
+ * the last redirect response's headers as if it were the final page. SQ-204 fixed the
+ * exhausted-cap branch to abstain (`checkStatus: 'error'`, `errorKind: 'redirect_chain_unresolved'`,
+ * no `missingControl`) instead — see `packages/dns-checks/src/checks/check-http-security.ts`'s
+ * `hopCapExceeded` / `redirectLoopFinding`. The test below now asserts the fixed (abstaining)
+ * behaviour, not the original falsified claim.
+ *
+ * ## One hypothesis below is still FALSIFIED by the code (see in-test comments and ticket
+ * comments for the full trace); per dispatch instructions H4's test asserts the MEASURED
+ * behaviour instead of the ticket's claim, and no src/ change was made for it.
  */
 
 import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
@@ -127,13 +136,14 @@ describe('H1: origin 5xx — check_http_security abstains without claiming absen
 // H3 — persistent redirect loop
 // ---------------------------------------------------------------------------
 
-describe('H3: persistent redirect loop — check_http_security is bounded, but FALSIFIED: it does not abstain', () => {
-	it('a redirect that never terminates is bounded at the hop cap and scores the last hop as measured (not an abstention)', async () => {
+describe('H3: persistent redirect loop — check_http_security is bounded AND abstains (SQ-204 fix)', () => {
+	it('a redirect that never terminates is bounded at the hop cap and abstains instead of scoring the last hop', async () => {
 		// safeFetch itself has no hop-following logic at all (src/lib/safe-fetch.ts is
-		// a thin SSRF-validating passthrough to native `fetch`). The actual hop caps
-		// live in the wrapper's own dual-fetch prober (MAX_REDIRECT_HOPS=5 in
-		// src/tools/check-http-security.ts) and the package's `followRedirects`
-		// (MAX_REDIRECT_HOPS=3 in packages/dns-checks/src/checks/check-http-security.ts).
+		// a thin SSRF-validating passthrough to native `fetch`). The actual hop cap now
+		// lives in ONE place (SQ-204): the package's `followRedirects` `MAX_REDIRECT_HOPS`
+		// in packages/dns-checks/src/checks/check-http-security.ts, exported as
+		// `HTTP_SECURITY_MAX_REDIRECT_HOPS` and imported by the wrapper's own dual-fetch
+		// prober (src/tools/check-http-security.ts) instead of a second, independent cap.
 		// Simulate an origin that ALWAYS redirects — every hop, forever, from either
 		// layer's perspective — and prove the check still returns.
 		let hops = 0;
@@ -154,22 +164,24 @@ describe('H3: persistent redirect loop — check_http_security is bounded, but F
 
 		expect(result.category).toBe('http_security');
 		expect(hops, 'the mock must have been engaged for more than a single hop').toBeGreaterThan(1);
-		// Bounded: the mock could redirect forever, but the check only ever asked for
-		// a small, capped number of hops across both layers (5 + 3, times the dual
-		// HEAD/GET probes) — nowhere near "30 hops, forever".
+		// Bounded: the mock could redirect forever, but the check only ever asked for a
+		// small, capped number of hops (the wrapper's dual-fetch pre-probe, hop cap now
+		// shared with the package) — nowhere near "30 hops, forever".
 		expect(hops).toBeLessThan(30);
 
-		// FALSIFIED vs. the ticket's H3 wording ("the check abstains"): it does not.
-		// Once the hop cap is exhausted while STILL redirecting,
-		// packages/dns-checks/src/checks/check-http-security.ts's
-		// `response.status >= 300 && response.status < 400` branch analyzes the LAST
-		// redirect response's headers via `analyzeSecurityHeaders()` as if it were the
-		// final page. checkStatus stays undefined (measured), not 'error'/'timeout' —
-		// this is a real, scored result, not an abstention.
-		expect(result.checkStatus).toBeUndefined();
-		expect(result.findings.length).toBeGreaterThan(0);
+		// FIXED (SQ-204): once the reconciled hop cap is exhausted while STILL redirecting,
+		// packages/dns-checks/src/checks/check-http-security.ts's `hopCapExceeded` branch now
+		// abstains via `redirectLoopFinding()` instead of analyzing the last redirect
+		// response's headers as if it were the final page — `checkStatus: 'error'`, so
+		// scoring excludes the category rather than scoring a probe that never reached a
+		// final page. No `missingControl` — a cut chain must not also claim the headers are
+		// absent (issue #638 law).
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.some((f) => f.metadata?.errorKind === 'redirect_chain_unresolved')).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		expect(result.findings.some((f) => /^No /.test(f.title))).toBe(false);
 		expect(result.findings.some((f) => f.title.includes('check timed out'))).toBe(false);
-		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(true);
 	});
 });
 

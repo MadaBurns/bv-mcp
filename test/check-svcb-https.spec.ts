@@ -2,6 +2,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { DOH_TRANSPORT_FAILURES, expectDnsAbstention } from './helpers/dns-transport-failure';
 
 const { restore } = setupFetchMock();
 
@@ -219,14 +220,30 @@ describe('checkSvcbHttps', () => {
 		expect(titles).not.toContain('HTTPS record missing ALPN parameter');
 	});
 
-	it('should handle DNS query failure gracefully', async () => {
-		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS failure'));
+	// SQ-201: an HTTPS lookup that never got an answer used to return a COMPLETED `low`
+	// "HTTPS record query failed" finding scored 95 — measured evidence from a cut probe.
+	it.each(DOH_TRANSPORT_FAILURES)('abstains (checkStatus error, no scored finding) when $label', async ({ install }) => {
+		install();
 
 		const result = await run();
-		expect(result.category).toBe('svcb_https');
-		expect(result.findings.length).toBeGreaterThan(0);
-		const failFinding = result.findings.find((f) => f.title === 'HTTPS record query failed');
-		expect(failFinding).toBeDefined();
+		expectDnsAbstention(result, 'svcb_https');
+		expect(result.findings.map((f) => f.title)).toEqual(['SVCB/HTTPS not assessed — HTTPS record query failed']);
+	});
+
+	it('an answered NXDOMAIN for the HTTPS record is still a measured absence, not an abstention', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('type=HTTPS') || url.includes('type=65')) {
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 65 }], [], { status: 3 }));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.recordPresent).toBe(false);
+		expect(result.findings.map((f) => f.title)).toEqual(['No HTTPS record found']);
+		expect(result.score).toBe(95);
 	});
 
 	it('should return all findings with svcb_https category', async () => {

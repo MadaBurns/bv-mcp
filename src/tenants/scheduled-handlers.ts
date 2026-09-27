@@ -10,11 +10,13 @@
  *     sub-tenants, finds domains whose `last_scanned_at + watch_interval` has
  *     elapsed, computes a DNS fingerprint per domain, and enqueues only the
  *     domains whose fingerprint actually changed. Inserts one `tenant_cycles`
- *     row per (sub_tenant, run) so progress can be tracked.
+ *     row per (sub_tenant, run) so progress can be tracked. A double-delivered
+ *     or overlapping tick is refused by the guarded insert.
  *   - {@link handleTenantCycleAlerts} — every 15 min, alongside the existing
  *     fuzzing scan. Finds settled cycles with a pending alert, computes the
- *     diff vs the previous completed cycle, fires the webhook, and stamps
- *     `alert_sent_at` + `alert_outcome`. Idempotent across ticks.
+ *     diff vs the previous completed cycle, claims the cycle with a guarded
+ *     `alert_sent_at` stamp, and fires the webhook only from the claiming
+ *     sweep. Idempotent across ticks and overlapping sweeps.
  *
  * Both handlers are fail-soft: missing bindings / D1 errors / queue errors
  * never throw out of the cron tick (which would surface in Cloudflare's
@@ -80,9 +82,24 @@ const DUE_DOMAINS_SQL = `
 `;
 const UPDATE_FINGERPRINT_SQL =
 	'UPDATE domains SET fingerprint = ?, fingerprint_at = ? WHERE domain = ?';
-const INSERT_CYCLE_SQL =
-	'INSERT INTO tenant_cycles (id, super_tenant_id, sub_tenant_id, started_at, expected_total, completed_total, errored_total, baseline_cycle_id) ' +
-	'VALUES (?, ?, ?, ?, ?, 0, ?, ?)';
+/**
+ * Cloudflare can deliver the weekly `0 2 * * SUN` event twice or let a slow tick
+ * overlap the next invocation. A tenant cycle that started this recently belongs
+ * to the same tick, never to a new week (168h apart), so a second dispatch for the
+ * tenant inside this window is refused.
+ */
+const WEEKLY_DISPATCH_DEDUP_WINDOW_MS = 6 * 3600 * 1000;
+// One guarded statement rather than a read-then-write: D1 runs each statement
+// atomically against a single SQLite primary, so two overlapping invocations
+// cannot both pass the NOT EXISTS probe. The loser sees `meta.changes === 0` and
+// publishes nothing. The probe is served by idx_cycles_sub_tenant_ts. The first
+// seven binds keep the column order; the last two feed the guard.
+const INSERT_CYCLE_SQL = `
+	INSERT INTO tenant_cycles (id, super_tenant_id, sub_tenant_id, started_at, expected_total, completed_total, errored_total, baseline_cycle_id)
+	SELECT ?, ?, ?, ?, ?, 0, ?, ?
+	WHERE NOT EXISTS (SELECT 1 FROM tenant_cycles WHERE sub_tenant_id = ? AND started_at > ?)
+`;
+const RECENT_CYCLE_SQL = 'SELECT id FROM tenant_cycles WHERE sub_tenant_id = ? AND started_at > ? ORDER BY started_at DESC LIMIT 1';
 const INCREMENT_ERRORED_SQL =
 	'UPDATE tenant_cycles SET errored_total = errored_total + ? WHERE id = ?';
 const UNSETTLED_CYCLES_SQL = `
@@ -105,6 +122,12 @@ const SETTLE_STALLED_CYCLE_SQL = `
 	WHERE id = ? AND alert_sent_at IS NULL AND completed_total + errored_total < expected_total
 	RETURNING expected_total, completed_total, errored_total
 `;
+/** Marks a stalled cycle whose progress could not be read (see {@link escalateUnreconcilableCycle}). */
+const ALERT_OUTCOME_UNRECONCILABLE = 'unreconcilable';
+// Moves alert_outcome NULL -> 'unreconcilable' but leaves alert_sent_at NULL, so
+// the cycle stays in the reconcile loop while its operator alert fires only once.
+const MARK_UNRECONCILABLE_SQL =
+	'UPDATE tenant_cycles SET alert_outcome = ? WHERE id = ? AND alert_sent_at IS NULL AND alert_outcome IS NULL';
 const FIND_BASELINE_CYCLE_SQL =
 	'SELECT id FROM tenant_cycles WHERE sub_tenant_id = ? AND alert_sent_at IS NOT NULL ORDER BY started_at DESC LIMIT 1';
 const PENDING_CYCLES_SQL = `
@@ -115,8 +138,16 @@ const PENDING_CYCLES_SQL = `
 	ORDER BY started_at ASC
 	LIMIT ?
 `;
-const STAMP_ALERT_SQL =
-	'UPDATE tenant_cycles SET alert_sent_at = ?, alert_outcome = ? WHERE id = ?';
+// Guarded so only the sweep whose UPDATE changes the row owns the cycle's alert
+// stage. Overlapping sweeps can both list the same pending cycle (SQ-197).
+const STAMP_ALERT_SQL = 'UPDATE tenant_cycles SET alert_sent_at = ?, alert_outcome = ? WHERE id = ? AND alert_sent_at IS NULL';
+/**
+ * Provisional outcome the claiming sweep stamps BEFORE it delivers the customer
+ * alert, then replaces with `sent` or `webhook_failed`. Delivery is therefore at
+ * most once: a row left at `sending` means the isolate died mid-delivery.
+ */
+const ALERT_OUTCOME_SENDING = 'sending';
+const RECORD_ALERT_OUTCOME_SQL = 'UPDATE tenant_cycles SET alert_outcome = ? WHERE id = ? AND alert_outcome = ?';
 // Preserve durable queue failure markers as operational alerts while excluding
 // unmeasured security findings from posture comparisons.
 //
@@ -233,7 +264,9 @@ function toFindingRow(row: FindingRowDb): FindingRow {
  *      - otherwise → update fingerprint_at and skip
  *   6. Insert one `tenant_cycles` row per sub-tenant with `expected_total`
  *      = selected domains + DNS errors, then publish the selected scans.
- *      DNS errors initialize `errored_total` so the cycle can settle.
+ *      DNS errors initialize `errored_total` so the cycle can settle. The
+ *      insert is refused, and nothing is published, when the tenant already
+ *      has a cycle inside {@link WEEKLY_DISPATCH_DEDUP_WINDOW_MS}.
  *
  * Fail-soft: missing TENANT_REGISTRY_DB or BV_SCANNER_QUEUE → return early.
  * Per-domain or per-tenant errors are logged and the loop continues.
@@ -399,11 +432,31 @@ async function rescanTenant(
 		// `skipped_no_baseline` if there's no baseline anyway.
 	}
 
+	const dedupAfter = tNow - WEEKLY_DISPATCH_DEDUP_WINDOW_MS;
 	try {
-		await env
+		const inserted = await env
 			.TENANT_REGISTRY_DB!.prepare(INSERT_CYCLE_SQL)
-			.bind(cycleId, tenant.super_tenant_id, tenant.id, tNow, expectedTotal, erroredCount, baselineCycleId)
+			.bind(cycleId, tenant.super_tenant_id, tenant.id, tNow, expectedTotal, erroredCount, baselineCycleId, tenant.id, dedupAfter)
 			.run();
+		if (inserted.meta.changes === 0) {
+			// The other delivery of this tick owns the tenant's cycle and its sends.
+			const existing = await env
+				.TENANT_REGISTRY_DB!.prepare(RECENT_CYCLE_SQL)
+				.bind(tenant.id, dedupAfter)
+				.first<{ id: string }>()
+				.catch(() => null);
+			logEvent({
+				timestamp: new Date().toISOString(),
+				category: 'tenant.scheduled',
+				severity: 'warn',
+				details: {
+					message: 'tenant_weekly_rescan_skipped_duplicate',
+					subTenantId: tenant.id,
+					existingCycleId: existing?.id ?? null,
+				},
+			});
+			return;
+		}
 	} catch (err) {
 		logError(err instanceof Error ? err : String(err), {
 			severity: 'error',
@@ -514,8 +567,66 @@ async function settleStalledCycle(env: TenantScheduledEnv, cycle: UnsettledCycle
 }
 
 /**
+ * Escalate a cycle past {@link STALLED_CYCLE_SETTLE_MS} whose progress could not
+ * be reconciled this sweep: its per-tenant D1 is unreadable, or the tenant no
+ * longer resolves (`Tenant not found`). Could-not-measure is not stalled, so the
+ * cycle is not settled. It stays in the reconcile loop and settles normally once
+ * it can be measured, and that later settle and alert stamp overwrite the marker.
+ * It must not stay silent, though: the guarded mark lets exactly one sweep raise
+ * ONE operator alert. Fail-open like {@link settleStalledCycle}: nothing throws.
+ */
+async function escalateUnreconcilableCycle(
+	env: TenantScheduledEnv,
+	cycle: UnsettledCycleRow,
+	nowMs: number,
+	reason: unknown,
+): Promise<void> {
+	const marked = await env
+		.TENANT_REGISTRY_DB!.prepare(MARK_UNRECONCILABLE_SQL)
+		.bind(ALERT_OUTCOME_UNRECONCILABLE, cycle.id)
+		.run()
+		.catch((err: unknown) => {
+			logError(err instanceof Error ? err : String(err), {
+				severity: 'warn',
+				category: 'tenant.scheduled',
+				details: { message: 'tenant_cycle_unreconcilable_mark_failed', cycleId: cycle.id },
+			});
+			return null;
+		});
+	if (!marked || marked.meta.changes === 0) return; // Mark failed, or already escalated by an earlier or concurrent sweep.
+
+	const details = {
+		cycleId: cycle.id,
+		superTenantId: cycle.super_tenant_id,
+		subTenantId: cycle.sub_tenant_id,
+		ageHours: Math.round((nowMs - cycle.started_at) / 3_600_000),
+		reason: reason instanceof Error ? reason.message : String(reason),
+	};
+	logError('tenant_cycle_unreconcilable', { severity: 'error', category: 'tenant.scheduled', details });
+	await sendAlert(
+		env.ALERT_WEBHOOK_URL ?? '',
+		buildAlertPayload({
+			title: 'Tenant monitoring cycle unreconcilable',
+			severity: 'warning',
+			metrics: {
+				cycle_id: details.cycleId,
+				sub_tenant_id: details.subTenantId,
+				age_hours: details.ageHours,
+				reason: details.reason,
+			},
+			threshold: `cycle progress readable within ${STALLED_CYCLE_SETTLE_MS / 3_600_000}h of start`,
+		}),
+		{ bvWeb: env.BV_WEB },
+	).catch(() => {});
+}
+
+/**
  * Per-cycle alert sweep. Runs alongside the existing fuzzing scan on the
  * 15-minute trigger.
+ *
+ * First, every unsettled cycle is reconciled against its tenant D1. Past
+ * {@link STALLED_CYCLE_SETTLE_MS} a measured cycle is settled partial, and one
+ * whose progress cannot be read is escalated once as unreconcilable.
  *
  * For each settled cycle without an alert:
  *   1. Pull current findings (`scan_id IN (SELECT id FROM scans WHERE cycle_id = ?)`)
@@ -523,9 +634,10 @@ async function settleStalledCycle(env: TenantScheduledEnv, cycle: UnsettledCycle
  *      baseline exists; skipped and failed domains retain their prior knowledge.
  *   3. `computeCycleDiff` produces a `TenantCycleAlert` payload.
  *   4. If totals.deltas === 0 → mark `'no_diff'`, no webhook call.
- *   5. Else `sendTenantAlert(payload, env)`. On `delivered: false` mark
- *      `'webhook_failed'`; on success mark `'sent'`. Either way stamp
- *      `alert_sent_at` so we don't loop on the same cycle.
+ *   5. Else claim the cycle: stamp `alert_sent_at` with outcome `'sending'`,
+ *      guarded on `alert_sent_at IS NULL`. Only the sweep whose stamp changed
+ *      the row calls `sendTenantAlert(payload, env)`, then records `'sent'` or
+ *      `'webhook_failed'`. Either way the cycle never loops or sends twice.
  *
  * Fail-soft per cycle — one failure does not stop the rest.
  */
@@ -552,10 +664,13 @@ export async function handleTenantCycleAlerts(
 			.bind(MAX_CYCLES_PER_ALERT_TICK)
 			.all<UnsettledCycleRow>();
 		for (const cycle of unsettled.results ?? []) {
+			const stalled = now() - cycle.started_at > STALLED_CYCLE_SETTLE_MS;
+			let reconciled = false;
 			try {
 				const { db } = await resolveTenantUncached(env, cycle.sub_tenant_id);
 				await synchronizeCycleProgress(env.TENANT_REGISTRY_DB, db, cycle.id);
-				if (now() - cycle.started_at > STALLED_CYCLE_SETTLE_MS) {
+				reconciled = true;
+				if (stalled) {
 					await settleStalledCycle(env, cycle, now());
 				}
 			} catch (err) {
@@ -564,6 +679,9 @@ export async function handleTenantCycleAlerts(
 					category: 'tenant.scheduled',
 					details: { message: 'tenant_cycle_reconcile_failed', cycleId: cycle.id },
 				});
+				// A settle failure is retried next tick. A cycle that cannot even be
+				// measured past the deadline would otherwise fail here silently forever.
+				if (stalled && !reconciled) await escalateUnreconcilableCycle(env, cycle, now(), err);
 			}
 		}
 	} catch (err) {
@@ -614,11 +732,14 @@ async function processCycleAlert(
 		send: typeof sendTenantAlert;
 	},
 ): Promise<void> {
-	const stamp = async (outcome: string): Promise<void> => {
+	// Resolves whether this sweep's write changed the row. With `claimed`, it
+	// records the final outcome over this sweep's own `sending` claim.
+	const stamp = async (outcome: string, claimed = false): Promise<boolean> => {
 		try {
-			await env.TENANT_REGISTRY_DB!.prepare(STAMP_ALERT_SQL)
-				.bind(deps.now(), outcome, cycle.id)
-				.run();
+			const result = claimed
+				? await env.TENANT_REGISTRY_DB!.prepare(RECORD_ALERT_OUTCOME_SQL).bind(outcome, cycle.id, ALERT_OUTCOME_SENDING).run()
+				: await env.TENANT_REGISTRY_DB!.prepare(STAMP_ALERT_SQL).bind(deps.now(), outcome, cycle.id).run();
+			return result.meta.changes !== 0;
 		} catch (err) {
 			logError(err instanceof Error ? err : String(err), {
 				severity: 'warn',
@@ -629,6 +750,7 @@ async function processCycleAlert(
 					outcome,
 				},
 			});
+			return false;
 		}
 	};
 
@@ -701,6 +823,9 @@ async function processCycleAlert(
 		return;
 	}
 
+	// Claim before delivering: overlapping sweeps can both reach this point for
+	// one cycle, and only the sweep whose guarded stamp changed the row may send.
+	if (!(await stamp(ALERT_OUTCOME_SENDING))) return;
 	const result = await deps.send(payload, { ALERT_WEBHOOK_URL: webhookUrl });
-	await stamp(result.delivered ? 'sent' : 'webhook_failed');
+	await stamp(result.delivered ? 'sent' : 'webhook_failed', true);
 }

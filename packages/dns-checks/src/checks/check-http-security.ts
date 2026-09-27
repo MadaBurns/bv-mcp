@@ -17,8 +17,15 @@ import {
 /** Default HTTPS timeout (ms) */
 const HTTPS_TIMEOUT_MS = 4_000;
 
-/** Maximum redirect hops to follow */
-const MAX_REDIRECT_HOPS = 3;
+/**
+ * Maximum redirect hops to follow.
+ *
+ * Exported so the Worker wrapper (`src/tools/check-http-security.ts`) can import this instead
+ * of hardcoding its own separate cap (SQ-204) — two independent hop limits meant the wrapper's
+ * dual-fetch pre-probe could exhaust its own cap while still redirecting and hand this check a
+ * synthetic "final" response that was never actually final, defeating the abstention below.
+ */
+export const MAX_REDIRECT_HOPS = 3;
 
 /**
  * No-content 2xx statuses (issue #806). A terminal 204/205 satisfies `response.ok`
@@ -91,34 +98,42 @@ function blockedProbeFinding(domain: string, status: number): Finding {
  * the bv-mcp Worker passes `safeFetch` which gates the URL via
  * validateOutboundUrl(). Embedders that pass raw `fetch` are responsible for
  * their own SSRF protection.
+ *
+ * `hopCapExceeded` (SQ-204 / chaos SQ-194 H3) is true ONLY when the loop ran through all
+ * `MAX_REDIRECT_HOPS` iterations and the last fetched response is STILL a redirect — a
+ * persistent/looping chain that never reached a final page within the hop budget. It is
+ * deliberately NOT set on the other early-exit paths (no `Location` header, a protocol
+ * downgrade/unparseable target, a hostile/SSRF-rejected hop) — those are different,
+ * pre-existing shapes this ticket does not touch, and the caller's "still a redirect after
+ * max hops" branch remains their (unchanged) landing spot.
  */
 async function followRedirects(
 	response: Response,
 	fetchFn: FetchFunction,
 	budgetMs: number,
-): Promise<{ response: Response; deadlineExceeded: boolean }> {
+): Promise<{ response: Response; deadlineExceeded: boolean; hopCapExceeded: boolean }> {
 	const deadlineAt = Date.now() + budgetMs;
 	for (let hop = 0; hop < MAX_REDIRECT_HOPS; hop++) {
 		const status = response.status;
 		const isRedirect = (status >= 300 && status < 400) || response.type === 'opaqueredirect' || (status === 0 && response.headers.get('location'));
-		if (!isRedirect) break;
+		if (!isRedirect) return { response, deadlineExceeded: false, hopCapExceeded: false };
 
 		const location = response.headers.get('location');
-		if (!location) break;
+		if (!location) return { response, deadlineExceeded: false, hopCapExceeded: false };
 
 		let nextUrl: string;
 		try {
 			nextUrl = new URL(location, response.url || undefined).href;
 		} catch {
-			break;
+			return { response, deadlineExceeded: false, hopCapExceeded: false };
 		}
 
 		// Only follow HTTPS redirects
-		if (!nextUrl.startsWith('https://')) break;
+		if (!nextUrl.startsWith('https://')) return { response, deadlineExceeded: false, hopCapExceeded: false };
 
 		const remainingMs = deadlineAt - Date.now();
 		if (remainingMs < GET_FALLBACK_MIN_BUDGET_MS) {
-			return { response, deadlineExceeded: true };
+			return { response, deadlineExceeded: true, hopCapExceeded: false };
 		}
 
 		try {
@@ -140,16 +155,22 @@ async function followRedirects(
 			const e = err as { name?: string; message?: string };
 			const isTimeout = e?.name === 'TimeoutError' || e?.name === 'AbortError';
 			if (isTimeout) {
-				return { response, deadlineExceeded: true };
+				return { response, deadlineExceeded: true, hopCapExceeded: false };
 			}
 			// Includes SSRF rejection from a safeFetch wrapper — fall out of the
 			// redirect loop and let analysis run with whatever headers we already
 			// have, treating the hostile redirect target as a network failure.
-			break;
+			return { response, deadlineExceeded: false, hopCapExceeded: false };
 		}
 	}
 
-	return { response, deadlineExceeded: false };
+	// The loop ran through every hop without an early return — the chain kept redirecting
+	// (or the mock/origin never stopped). If the LAST fetched response is still a redirect,
+	// this is the persistent-loop case (SQ-204): the probe never reached a final page, so the
+	// headers it happens to be holding are just another hop, not the site's answer.
+	const status = response.status;
+	const stillRedirecting = (status >= 300 && status < 400) || response.type === 'opaqueredirect' || (status === 0 && response.headers.get('location'));
+	return { response, deadlineExceeded: false, hopCapExceeded: Boolean(stillRedirecting) };
 }
 
 /**
@@ -167,6 +188,25 @@ function deadlineExceededFinding(domain: string): Finding {
 		// No `missingControl` (issue #638) — the chain never reached a final, analyzable page, so
 		// nothing about the headers was established. See `unmeasuredZero` at the call site.
 		{ inconclusive: true },
+	);
+}
+
+/**
+ * The finding for a redirect chain that never resolved to a final page within the hop cap
+ * (SQ-204 / chaos SQ-194 H3) — the origin kept redirecting past `MAX_REDIRECT_HOPS`, so the
+ * response `followRedirects` is still holding is just another hop, not a page a browser would
+ * ever render. Scoring its (typically security-header-sparse) headers as the site's own
+ * fabricated a confident "header missing" slate from a probe that never reached the origin
+ * (issue #638 law). `errorKind: 'redirect_chain_unresolved'` reuses the vocabulary the sibling
+ * `check-ssl.ts` already established for the identical situation on its own redirect chain.
+ */
+function redirectLoopFinding(domain: string): Finding {
+	return createFinding(
+		'http_security',
+		'HTTP redirect chain did not resolve',
+		'medium',
+		`https://${domain} kept redirecting past the maximum of ${MAX_REDIRECT_HOPS} hops without reaching a final page. Security headers could not be verified — this may be a redirect loop or misconfiguration.`,
+		{ inconclusive: true, confidence: 'heuristic', errorKind: 'redirect_chain_unresolved' },
 	);
 }
 
@@ -242,6 +282,16 @@ export async function checkHTTPSecurity(
 			unmeasuredZero = true;
 			transientUnmeasured = true;
 			findings.push(deadlineExceededFinding(domain));
+		} else if (headFollowed.hopCapExceeded) {
+			// SQ-204 (chaos SQ-194 H3) — the chain hit MAX_REDIRECT_HOPS while STILL redirecting: a
+			// persistent/looping chain, not a legitimate final answer. Route to the same abstention
+			// shape as a deadline cut, mirroring `check-ssl.ts`'s `redirect_chain_unresolved` lane
+			// for its own unresolved chain. `transientUnmeasured` (not origin-persistent) because a
+			// stuck redirect chain may resolve differently on the next probe.
+			inconclusive = 'error';
+			unmeasuredZero = true;
+			transientUnmeasured = true;
+			findings.push(redirectLoopFinding(domain));
 		} else if (NO_CONTENT_STATUSES.has(response.status)) {
 			// Issue #806 — the terminal response is accepted here, so the no-content guard
 			// runs BEFORE any header-read branch (it also structurally shields the still-3xx
@@ -295,6 +345,13 @@ export async function checkHTTPSecurity(
 					unmeasuredZero = true;
 					transientUnmeasured = true;
 					findings.push(deadlineExceededFinding(domain));
+				} else if (getFollowed.hopCapExceeded) {
+					// SQ-204 — identical guard as the HEAD-triggered call above, needed here too
+					// since the GET fallback's own chain can independently hit the hop cap.
+					inconclusive = 'error';
+					unmeasuredZero = true;
+					transientUnmeasured = true;
+					findings.push(redirectLoopFinding(domain));
 				} else {
 					const followed = getFollowed.response;
 					if (NO_CONTENT_STATUSES.has(followed.status)) {

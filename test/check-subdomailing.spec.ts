@@ -1,5 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { DOH_TRANSPORT_FAILURES, expectDnsAbstention } from './helpers/dns-transport-failure';
 
 const { restore } = setupFetchMock();
 
@@ -264,14 +265,29 @@ describe('checkSubdomailing', () => {
 		expect(critical!.metadata?.includeDomain).toBe('bad.abandoned.com');
 	});
 
-	it('handles DNS query failures gracefully', async () => {
-		globalThis.fetch = vi.fn().mockRejectedValue(new Error('Network error'));
+	// SQ-201: the SPF-chain walk used to swallow a failed ROOT TXT lookup, so a probe that never
+	// got an answer returned a COMPLETED "No SPF record" verdict scored 100.
+	it.each(DOH_TRANSPORT_FAILURES)('abstains (checkStatus error, not "No SPF record") when $label', async ({ install }) => {
+		install();
 
 		const result = await run();
-		expect(result.category).toBe('subdomailing');
-		// When SPF fetch fails, check treats it as no SPF → info finding
-		expect(result.findings.length).toBeGreaterThanOrEqual(1);
-		expect(result.findings[0].severity).toBe('info');
+		expectDnsAbstention(result, 'subdomailing');
+		expect(result.findings.map((f) => f.title)).toEqual(['SubdoMailing not assessed — SPF include chain could not be resolved']);
+	});
+
+	it('an answered NXDOMAIN for the domain TXT is still a measured "No SPF record", not an abstention', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('type=TXT') || url.includes('type=16')) {
+				return Promise.resolve(createDohResponse([{ name: 'example.com', type: 16 }], [], { status: 3 }));
+			}
+			return Promise.resolve(emptyResponse('unknown', 1));
+		});
+
+		const result = await run();
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings.map((f) => f.title)).toEqual(['No SPF record']);
+		expect(result.score).toBe(100);
 	});
 
 	it('follows SPF redirect mechanism', async () => {

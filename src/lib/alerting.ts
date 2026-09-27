@@ -88,10 +88,31 @@ export async function sendAlert(webhookUrl: string, payload: AlertPayload, optio
 		const parsed = new URL(webhookUrl);
 		if (parsed.protocol !== 'https:') return false;
 	} catch {
+		// Unlike a rejecting host or a non-2xx response (handled in postWebhookJson,
+		// which always logs), this catch never reaches fetch — so without a log line
+		// here, a mistyped ALERT_WEBHOOK_URL drops every operator alert with zero trace.
+		// Never log the URL value itself: it may embed a webhook token/path secret.
+		logError('Alert webhook URL could not be parsed', {
+			severity: 'warn',
+			category: 'alerting',
+			result: 'webhook_url_invalid',
+			details: { urlLength: webhookUrl.length, urlScheme: boundedUrlScheme(webhookUrl) },
+		});
 		return false;
 	}
 
 	return postWebhookJson(webhookUrl, payload, options, 'Failed to deliver alert webhook');
+}
+
+/**
+ * Best-effort scheme extraction for a URL that failed to parse — `new URL()` gives
+ * nothing back on failure, so this is a plain string scan, bounded and never
+ * including anything past the first `:` (which is exactly where a token embedded
+ * later in the string, e.g. as a query param, would live).
+ */
+function boundedUrlScheme(rawUrl: string): string {
+	const match = /^[a-zA-Z][a-zA-Z0-9+.-]{0,15}:/.exec(rawUrl);
+	return match ? match[0].slice(0, -1) : '(none)';
 }
 
 /**

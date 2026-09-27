@@ -351,12 +351,24 @@ export function defineScoringConfigSuite(s: ScoringModule): void {
 			}
 		});
 
-		it('is silent on the paths that return defaults outright', () => {
-			for (const raw of [undefined, '', '   ', 'not json', '[1,2,3]']) {
+		it('is silent on the paths that return defaults outright without ever attempting a parse', () => {
+			for (const raw of [undefined, '', '   ', '[1,2,3]']) {
 				const warnings: string[] = [];
 				parseScoringConfig(raw as string | undefined, { onWarn: (m) => warnings.push(m) });
 				expect(warnings, `unexpected warning for ${JSON.stringify(raw)}`).toEqual([]);
 			}
+		});
+
+		// SQ-203: malformed JSON used to be silent too — parseScoringConfig returned
+		// DEFAULT_SCORING_CONFIG from the JSON.parse catch before the warn path ever
+		// ran, so an operator's typo'd SCORING_CONFIG silently scored with defaults.
+		it('warns exactly once on malformed JSON, without ever echoing the raw config text', () => {
+			const warnings: string[] = [];
+			const config = parseScoringConfig('not json', { onWarn: (m) => warnings.push(m) });
+			expect(config).toEqual(DEFAULT_SCORING_CONFIG);
+			expect(warnings).toHaveLength(1);
+			expect(warnings[0]).toContain('could not be parsed as JSON');
+			expect(warnings[0]).not.toContain('not json');
 		});
 
 		it('never throws when no onWarn sink is supplied', () => {
