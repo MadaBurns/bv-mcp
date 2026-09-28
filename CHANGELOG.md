@@ -24,7 +24,7 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   mail-capability predicate (`isMailRoutingMxRecord`), so it no longer claims
   such a domain "accepts inbound email". Null MX and loopback handling are
   unchanged. `SCORING_MODEL_VERSION` 1.37.0 → 1.38.0; `@blackveil/dns-checks`
-  and `PARITY_CORPUS_VERSION` 1.54.0 → 1.55.0 (bv-web-prod re-vendor required).
+  and `PARITY_CORPUS_VERSION` 1.55.0 → 1.56.0 (bv-web-prod re-vendor required).
 
 ## [3.91.0] - 2026-09-24
 

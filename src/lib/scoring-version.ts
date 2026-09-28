@@ -753,7 +753,7 @@
  *   tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule
  *   changed.
  * - 1.38.0 — `check_mx` no longer counts a syntactically invalid MX exchange as a live mail
- *   control (#1114, dns-checks 1.55.0). An exchange that fails RFC 1123 / RFC 5321 hostname
+ *   control (#1114, dns-checks 1.56.0). An exchange that fails RFC 1123 / RFC 5321 hostname
  *   syntax (letters, digits, hyphen; 1-63 per label; <= 253 total) — measured live: `300 ~.` —
  *   previously read as "MX records found" + a `medium` "Dangling MX record" with
  *   `controlPresent: true`. It is now classified invalid (`isInvalidMxExchangeRecord`): ONE
