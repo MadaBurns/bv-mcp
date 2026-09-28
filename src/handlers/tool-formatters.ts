@@ -126,8 +126,22 @@ export function formatAccessRefusal(result: CheckResult): string {
 	return lines.join('\n');
 }
 
-export function formatCheckResult(result: CheckResult, format: OutputFormat = 'full'): string {
+/**
+ * Optional presentation overrides for {@link formatCheckResult}. Used by tools
+ * whose compact view renders a SUBSET of findings (#1130, `check_lookalikes`):
+ * the Status/Score verdict is still computed from the complete `result`, so
+ * a shortlist can never change the verdict a caller reads.
+ */
+export interface FormatCheckResultOptions {
+	/** Findings to list instead of `result.findings`. */
+	findings?: CheckResult['findings'];
+	/** Lines appended after the findings section. */
+	trailerLines?: string[];
+}
+
+export function formatCheckResult(result: CheckResult, format: OutputFormat = 'full', options: FormatCheckResultOptions = {}): string {
 	const lines: string[] = [];
+	const listedFindings = options.findings ?? result.findings;
 	lines.push(`## ${result.category.toUpperCase()} Check`);
 	// A check that did not COMPLETE has no verdict to report. `buildCheckResult` derives
 	// `passed`/`score` from finding severities, so a lane that was never measured -- whose only
@@ -163,9 +177,9 @@ export function formatCheckResult(result: CheckResult, format: OutputFormat = 'f
 	}
 	lines.push('');
 
-	if (result.findings.length > 0) {
+	if (listedFindings.length > 0) {
 		lines.push('### Findings');
-		for (const finding of result.findings) {
+		for (const finding of listedFindings) {
 			if (format === 'compact') {
 				const isHighPriority = finding.severity === 'critical' || finding.severity === 'high';
 				const detailLimit = isHighPriority ? 4000 : 300;
@@ -223,6 +237,8 @@ export function formatCheckResult(result: CheckResult, format: OutputFormat = 'f
 			}
 		}
 	}
+
+	if (options.trailerLines) lines.push(...options.trailerLines);
 
 	appendCertificateSection(lines, result);
 
