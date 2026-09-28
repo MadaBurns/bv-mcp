@@ -11,9 +11,12 @@
  *   - `{ auditId, target }` → per-target CheckResult JSON from `brand_audit_targets.result_json`.
  *     Returns `notReady` when the target row status is queued/running, `notFound`
  *     when the row doesn't exist, and the parsed JSON when status=completed.
- *   - `{ auditId }` (no target) → audit-level aggregate JSON from
- *     `brand_audits.results_json`. Same ready/notReady gating against the audit
- *     row's status.
+ *   - `{ auditId }` (no target) → audit-level aggregate. `brand_audits.results_json`
+ *     when present; otherwise (the normal case — no writer populates it, #1129)
+ *     derived on read from the per-target rows: per-target summary + bucket
+ *     rollup over targets that completed with a measured result. With no such
+ *     target it abstains (`aggregateUnavailable`, `checkStatus: 'error'`).
+ *     Same ready/notReady gating against the audit row's status.
  *
  * When a completed target has `pdf_r2_key`, the response metadata includes
  * `pdfUrl` — the authenticated `/reports/{auditId}/{target}.pdf` download
@@ -82,6 +85,149 @@ function safeParse(json: string | null): unknown {
 	} catch {
 		return null;
 	}
+}
+
+interface AggregateTargetRow {
+	target: string;
+	status: BrandAuditStatus;
+	result_json: string | null;
+	pdf_r2_key?: string | null;
+	error: string | null;
+}
+
+const BUCKET_KEYS = ['consolidated', 'shadowIt', 'indeterminate', 'impersonation', 'impersonationSurface'] as const;
+type BucketKey = (typeof BUCKET_KEYS)[number];
+
+interface TargetAggregateEntry {
+	target: string;
+	status: BrandAuditStatus;
+	/** True only when the target completed with a stored, measured (`checkStatus` absent/'completed') result. */
+	measured: boolean;
+	error: string | null;
+	hasPdf: boolean;
+	score?: number;
+	passed?: boolean;
+	total?: number;
+	consolidated?: number;
+	shadowIt?: number;
+	indeterminate?: number;
+	impersonation?: number;
+	impersonationSurface?: number;
+}
+
+function num(v: unknown): number {
+	return typeof v === 'number' && Number.isFinite(v) ? v : 0;
+}
+
+/**
+ * Build the audit-level result from the per-target rows (#1129).
+ *
+ * A target contributes to the rollup only when it did not fail AND its stored
+ * CheckResult parses AND that result reports a measurement (`checkStatus`
+ * absent or 'completed' — a discovery-never-ran target stores the not-assessed
+ * shape and is listed but not counted). The audit verdict follows the worst
+ * measured target (min score / all passed); when no target is measured the
+ * result abstains in the not-assessed shape (`checkStatus: 'error'`, score 0,
+ * passed false, partial) instead of the `buildCheckResult` default of a clean
+ * 100 over zero evidence.
+ */
+function buildDerivedAggregateResult(
+	auditId: string,
+	status: BrandAuditStatus,
+	format: string,
+	rows: AggregateTargetRow[],
+): CheckResult {
+	const targetStatusCounts = { queued: 0, running: 0, completed: 0, failed: 0 };
+	const rollup: Record<'totalCandidates' | BucketKey, number> = {
+		totalCandidates: 0,
+		consolidated: 0,
+		shadowIt: 0,
+		indeterminate: 0,
+		impersonation: 0,
+		impersonationSurface: 0,
+	};
+	const measuredScores: number[] = [];
+	let allMeasuredPassed = true;
+
+	const targets: TargetAggregateEntry[] = rows.map((row) => {
+		if (row.status in targetStatusCounts) targetStatusCounts[row.status]++;
+		const entry: TargetAggregateEntry = {
+			target: row.target,
+			status: row.status,
+			measured: false,
+			error: row.error ?? null,
+			hasPdf: Boolean(row.pdf_r2_key),
+		};
+		if (row.status === 'failed') return entry;
+		const parsed = safeParse(row.result_json) as Partial<CheckResult> | null;
+		if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.findings)) return entry;
+		if (parsed.checkStatus !== undefined && parsed.checkStatus !== 'completed') return entry;
+
+		const summary = parsed.findings.find((f) => f?.metadata?.summary === true)?.metadata ?? {};
+		entry.measured = true;
+		entry.score = num(parsed.score);
+		entry.passed = parsed.passed === true;
+		let bucketSum = 0;
+		for (const key of BUCKET_KEYS) {
+			const n = num(summary[key]);
+			if (key !== 'impersonationSurface' || n > 0) entry[key] = n;
+			rollup[key] += n;
+			if (key !== 'impersonationSurface') bucketSum += n;
+		}
+		entry.total = typeof summary.total === 'number' ? summary.total : bucketSum;
+		rollup.totalCandidates += entry.total;
+		measuredScores.push(entry.score);
+		if (!entry.passed) allMeasuredPassed = false;
+		return entry;
+	});
+
+	const measuredTargets = measuredScores.length;
+	if (measuredTargets === 0) {
+		const base = buildCheckResult(CATEGORY, [
+			createFinding(
+				CATEGORY,
+				`Brand audit ${auditId} aggregate: not available`,
+				'info',
+				`status=${status} format=${format} — no target completed with a measured result (${rows.length} target row(s)), so there is no audit-level aggregate. Use brand_audit_status for per-target errors.`,
+				{
+					summary: true,
+					auditId,
+					status,
+					format,
+					aggregate: null,
+					aggregateUnavailable: true,
+					targetStatusCounts,
+					targets,
+				},
+			),
+		]);
+		return { ...base, score: 0, passed: false, checkStatus: 'error', partial: true };
+	}
+
+	if (rollup.impersonationSurface === 0) delete (rollup as Partial<typeof rollup>).impersonationSurface;
+	const aggregate = {
+		source: 'derived_from_targets' as const,
+		totalTargets: rows.length,
+		measuredTargets,
+		targetStatusCounts,
+		rollup,
+		targets,
+	};
+	const base = buildCheckResult(CATEGORY, [
+		createFinding(
+			CATEGORY,
+			`Brand audit ${auditId} aggregate: ${status}`,
+			'info',
+			`status=${status} format=${format} measuredTargets=${measuredTargets}/${rows.length} candidates=${rollup.totalCandidates}`,
+			{ summary: true, auditId, status, format, aggregate },
+		),
+	]);
+	return {
+		...base,
+		score: Math.min(...measuredScores),
+		passed: allMeasuredPassed,
+		...(measuredTargets < rows.length ? { partial: true } : {}),
+	};
 }
 
 export async function brandAuditGetReport(
@@ -217,10 +363,9 @@ export async function brandAuditGetReport(
 	// orchestrator never wrote the batch row, the audit row's `status` stays
 	// 'running' forever and the customer is told to keep polling. Fetch
 	// targets, decide if the batch is in fact terminal, persist (best-effort)
-	// and treat the audit as terminal in this response. We don't synthesize
-	// `results_json` itself — the orchestrator's aggregate report data is
-	// genuinely lost when it dies mid-flight. The customer can fall back to
-	// per-target gets to recover the data we have.
+	// and treat the audit as terminal in this response. We don't WRITE a
+	// synthesized `results_json`; the aggregate below is derived on read from
+	// the per-target rows (#1129).
 	let renderedAuditStatus: BrandAuditStatus = auditRow.status;
 	if (auditRow.status === 'queued' || auditRow.status === 'running') {
 		const now = (deps.now ?? Date.now)();
@@ -263,7 +408,24 @@ export async function brandAuditGetReport(
 		);
 	}
 
-	const aggregate = safeParse(auditRow.results_json);
+	const stored = safeParse(auditRow.results_json);
+	if (stored === null) {
+		// #1129 — nothing writes `brand_audits.results_json`, so the aggregate is
+		// derived on read from the per-target rows (only targets that actually
+		// completed with a measured result feed the rollup).
+		const rows =
+			(
+				await deps.db
+					.prepare(
+						'SELECT target, status, result_json, pdf_r2_key, error FROM brand_audit_targets WHERE audit_id = ? ORDER BY target',
+					)
+					.bind(auditId)
+					.all<AggregateTargetRow>()
+			).results ?? [];
+		return buildDerivedAggregateResult(auditId, renderedAuditStatus, auditRow.format, rows);
+	}
+
+	const aggregate = stored;
 	return buildCheckResult(CATEGORY, [
 		createFinding(
 			CATEGORY,

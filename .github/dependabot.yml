@@ -10,6 +10,16 @@ updates:
       semver-minor-days: 7
       semver-patch-days: 3
     open-pull-requests-limit: 10
+    # vitest majors are gated on @cloudflare/vitest-pool-workers, which peers
+    # vitest/@vitest/runner/@vitest/snapshot at a single major (0.22.0: ^4.1.0).
+    # The whole suite runs inside that pool, so a vitest major bump can't install
+    # (npm ci ERESOLVE, #1097) until a pool-workers release widens the peer range.
+    # Lift this ignore when it does, and bump vitest + pool-workers together.
+    ignore:
+      - dependency-name: 'vitest'
+        update-types: ['version-update:semver-major']
+      - dependency-name: '@vitest/*'
+        update-types: ['version-update:semver-major']
     groups:
       cloudflare:
         patterns:

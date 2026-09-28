@@ -69,6 +69,7 @@ import { checkDnssecChain } from '../tools/check-dnssec-chain';
 import { checkDnskeyStrength } from '../tools/check-dnskey-strength';
 import { checkAgentDiscovery } from '../tools/check-agent-discovery';
 import type { AgentProtocol } from '../tools/check-agent-discovery';
+import { checkLlmsTxt } from '../tools/check-llms-txt';
 import { checkFastFlux } from '../tools/check-fast-flux';
 import { checkAuthoritativeDnsInfra } from '../tools/check-authoritative-dns-infra';
 import { checkRootServerSet } from '../tools/check-root-server-set';
@@ -628,6 +629,7 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 				buildDnsOptions(ro),
 			),
 	},
+	check_llms_txt: { cacheKey: () => 'llms_txt', execute: (d, _args, ro) => checkLlmsTxt(d, buildDnsOptions(ro)) },
 	check_dnskey_strength: { cacheKey: () => 'dnskey_strength', execute: (d, _args, ro) => checkDnskeyStrength(d, buildDnsOptions(ro)) },
 	check_fast_flux: {
 		cacheKey: (_a, ro) => (ro?.reconBinding ? 'fast_flux:recon' : 'fast_flux'),
