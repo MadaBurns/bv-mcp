@@ -729,6 +729,7 @@ export const TOOL_SCHEMA_MAP: Record<string, z.ZodTypeAny> = {
 	check_dnssec_chain: BaseDomainArgs,
 	check_dnskey_strength: BaseDomainArgs,
 	check_agent_discovery: CheckAgentDiscoveryArgs,
+	check_llms_txt: BaseDomainArgs,
 	check_fast_flux: CheckFastFluxArgs,
 	check_subdomain_takeover: CheckSubdomainTakeoverArgs,
 	check_authoritative_dns_infra: BaseDomainArgs,
