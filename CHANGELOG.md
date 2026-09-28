@@ -23,6 +23,15 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   (`aggregateUnavailable: true`, `checkStatus: 'error'`, score 0,
   `passed: false`, `partial: true`) rather than fabricating a pass.
   A stored `results_json` is still returned verbatim. [no-scoring-change]
+- **`deploy:whois` and `deploy:infra-probe` failed on a fresh release worktree** (#1115).
+  Neither built `@blackveil/dns-checks`, whose `dist/` is a build output, so wrangler could
+  not resolve the package after a clean `npm ci` (`Could not resolve
+  "@blackveil/dns-checks/whois"`); the main checkout hid it because an earlier build had
+  left `dist/` behind. Both now run `npm -w packages/dns-checks run build` after the
+  integrity gate, matching `deploy:prod`. bv-infra-probe imports the package transitively
+  (`src/lib/dns.ts` → `dns-transport.ts`). A new spec derives each `deploy:*` script's
+  Worker entry from its wrangler config, walks the import graph, and fails if an importer
+  is bundled before the build step.
 
 ## [3.91.0] - 2026-09-24
 
