@@ -8,6 +8,25 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.92.0] - 2026-09-28
+
+_3.91.0 was tagged in the changelog but never deployed; this release is the first to carry its changes to production._
+
+### Added
+
+- **New tool: `check_llms_txt` (#1155).** A standalone, non-scoring audit of a
+  domain's `/llms.txt` and `/llms-full.txt`. It reports links to external hosts
+  that show dangling-service evidence (via the existing takeover sweep), install
+  commands naming packages absent from npm/PyPI (a claimable name, high), and
+  packages OSV lists as malicious (`MAL-`, critical). Every request goes through
+  `safeFetch` with bounded caps; anything not measured is listed in
+  `notAssessed`. It never affects `overall` or `grade`. Public tool count 80 → 81.
+- **Subdomain-takeover findings carry the dangling record's TTL (#1154).** The
+  TTL is added as `metadata.ttl` evidence only when an optional `rawQueryDNS`
+  is supplied to `checkSubdomainTakeover`. It is never a score input, and it is
+  omitted rather than 0 when unavailable. `@blackveil/dns-checks` 1.54.0 → 1.55.0.
+  [no-scoring-change]
+
 ### Fixed
 
 - **Individual `check_*` tools now abstain on a domain that does not exist
