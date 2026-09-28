@@ -368,6 +368,8 @@ export const FREE_TOOL_DAILY_LIMITS: Record<string, number> = {
 	check_nsec_walkability: 10,
 	check_dnssec_chain: 10,
 	check_agent_discovery: 10,
+	// Fans out to up to 50 linked hosts, the npm/PyPI registries and OSV per call.
+	check_llms_txt: 10,
 	check_dnskey_strength: 25,
 	check_fast_flux: 0,
 	check_subdomain_takeover: 25,
@@ -936,6 +938,8 @@ export const INTENTIONALLY_PARTNER_FLAT_TOOLS: ReadonlySet<string> = new Set<Too
 	'check_nsec_walkability',
 	'check_dnssec_chain',
 	'check_agent_discovery',
+	// DoH plus unmetered public lookups (npm/PyPI registries, one OSV batch), bounded per call.
+	'check_llms_txt',
 	'check_dnskey_strength',
 	'check_subdomain_takeover',
 	'check_authoritative_dns_infra',
