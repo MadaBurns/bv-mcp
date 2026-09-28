@@ -30,6 +30,7 @@ pub fn required_mode_for_tool(tool: &str) -> PermissionMode {
         "check_dnssec_chain" => PermissionMode::ReadOnly,
         "check_fast_flux" => PermissionMode::ReadOnly,
         "check_http_security" => PermissionMode::ReadOnly,
+        "check_llms_txt" => PermissionMode::ReadOnly,
         "check_lookalikes" => PermissionMode::ReadOnly,
         "check_mta_sts" => PermissionMode::ReadOnly,
         "check_mx" => PermissionMode::ReadOnly,
