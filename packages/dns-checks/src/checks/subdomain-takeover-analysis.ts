@@ -16,9 +16,56 @@
  * Licensed under BUSL-1.1
  */
 
-import type { DNSQueryFunction, FetchFunction, Finding } from '../types';
+import type { DNSQueryFunction, FetchFunction, Finding, RawDNSQueryFunction } from '../types';
 import { readResponseTextCapped } from '../response-body';
 import { createFinding } from '../check-utils';
+
+/** DoH JSON `Answer[].type` values for the record types this check inspects. */
+const DOH_TYPE_A = 1;
+const DOH_TYPE_CNAME = 5;
+const DOH_TYPE_AAAA = 28;
+
+/**
+ * One record lookup, plus the per-answer TTL the plain `DNSQueryFunction` (`string[]`)
+ * projection discards. `ttlByRecord` maps each answer's raw `data` string to its TTL;
+ * it is empty unless `rawQueryDNS` is supplied, so a caller that only has `queryDNS`
+ * gets byte-identical behaviour to before this change.
+ */
+interface RecordLookup {
+	records: string[];
+	ttlByRecord: Map<string, number>;
+}
+
+/**
+ * Look up one record type at `fqdn`, capturing the answer TTL when `rawQueryDNS` is
+ * available.
+ *
+ * When `rawQueryDNS` is supplied, this REPLACES the plain `queryDNS` call rather than
+ * adding to it (mirrors `lookupCaa` in check-caa.ts), so the TTL costs zero additional
+ * subrequests. DNSSEC validation is not needed here — only the TTL — so the `cd` flag
+ * is left at its default (`false`).
+ */
+async function lookupRecordWithTtl(
+	fqdn: string,
+	recordType: 'CNAME' | 'A' | 'AAAA',
+	dohType: number,
+	queryDNS: DNSQueryFunction,
+	rawQueryDNS: RawDNSQueryFunction | undefined,
+	timeout: number | undefined,
+): Promise<RecordLookup> {
+	if (!rawQueryDNS) {
+		return { records: await queryDNS(fqdn, recordType, { timeout }), ttlByRecord: new Map() };
+	}
+	const resp = await rawQueryDNS(fqdn, recordType, false, { timeout });
+	const answers = (resp.Answer ?? []).filter((answer) => answer.type === dohType);
+	const ttlByRecord = new Map<string, number>();
+	for (const answer of answers) {
+		if (typeof answer.TTL === 'number' && Number.isFinite(answer.TTL)) {
+			ttlByRecord.set(answer.data, answer.TTL);
+		}
+	}
+	return { records: answers.map((answer) => answer.data), ttlByRecord };
+}
 
 /**
  * `verified` is reserved for authorized proof-of-control or equivalent
@@ -537,6 +584,7 @@ export async function scanSubdomainForTakeoverInternal(
 	fetchFn: FetchFunction,
 	timeout?: number,
 	checkARecordVector = true,
+	rawQueryDNS?: RawDNSQueryFunction,
 ): Promise<SubdomainScanOutcome> {
 	// Allow subdomain to be a full FQDN (caller passes from CT enumeration) OR a
 	// short label that we append to the apex (legacy KNOWN_SUBDOMAINS path).
@@ -545,8 +593,10 @@ export async function scanSubdomainForTakeoverInternal(
 	let targetResolutionFailed = false;
 
 	try {
-		const cnameRecords = await queryDNS(fqdn, 'CNAME', { timeout });
+		const cnameLookup = await lookupRecordWithTtl(fqdn, 'CNAME', DOH_TYPE_CNAME, queryDNS, rawQueryDNS, timeout);
+		const cnameRecords = cnameLookup.records;
 		for (const rawCname of cnameRecords) {
+			const cnameTtl = cnameLookup.ttlByRecord.get(rawCname);
 			const cname = rawCname
 				.replace(/\.$/, '')
 				.replace(/[\x00-\x1F\x7F]/g, '')
@@ -573,6 +623,7 @@ export async function scanSubdomainForTakeoverInternal(
 								verificationStatus: 'potential',
 								evidence: ['cname_target_unresolved'],
 								severityRationale,
+								...(cnameTtl !== undefined ? { ttl: cnameTtl } : {}),
 							},
 						),
 					);
@@ -592,6 +643,7 @@ export async function scanSubdomainForTakeoverInternal(
 								evidenceStrength: 'provider_deprovisioned_fingerprint',
 								proofRequired: 'authorized_proof_of_control',
 								severityRationale: 'provider_deprovisioned_signal',
+								...(cnameTtl !== undefined ? { ttl: cnameTtl } : {}),
 							},
 						),
 					);
@@ -651,11 +703,21 @@ export async function scanSubdomainForTakeoverInternal(
 				// proves the host resolves via this vector, so a second query would just
 				// spend DNS-query budget confirming what is already known. This halves the
 				// common-case cost of the leg without changing what it can detect.
-				const aRecords = await queryDNS(fqdn, 'A', { timeout });
-				const aaaaRecords = aRecords.length > 0 ? [] : await queryDNS(fqdn, 'AAAA', { timeout });
+				const aLookup = await lookupRecordWithTtl(fqdn, 'A', DOH_TYPE_A, queryDNS, rawQueryDNS, timeout);
+				const aRecords = aLookup.records;
+				const aaaaLookup =
+					aRecords.length > 0
+						? { records: [] as string[], ttlByRecord: new Map<string, number>() }
+						: await lookupRecordWithTtl(fqdn, 'AAAA', DOH_TYPE_AAAA, queryDNS, rawQueryDNS, timeout);
+				const aaaaRecords = aaaaLookup.records;
 				if (aRecords.length > 0 || aaaaRecords.length > 0) {
 					const vulnerableService = await probeARecordUnclaimedFingerprint(fqdn, fetchFn);
 					if (vulnerableService) {
+						// The dangling record here is whichever of A/AAAA actually resolved.
+						// A full RRset conventionally shares one TTL, but take the minimum
+						// across answers rather than assume that to stay honest if it doesn't.
+						const answerTtls = [...(aRecords.length > 0 ? aLookup.ttlByRecord : aaaaLookup.ttlByRecord).values()];
+						const recordTtl = answerTtls.length > 0 ? Math.min(...answerTtls) : undefined;
 						findings.push(
 							createTakeoverFinding(
 								`Subdomain possible takeover signal (${vulnerableService})`,
@@ -668,6 +730,7 @@ export async function scanSubdomainForTakeoverInternal(
 									proofRequired: 'authorized_proof_of_control',
 									severityRationale: 'provider_deprovisioned_signal',
 									vector: 'a_record',
+									...(recordTtl !== undefined ? { ttl: recordTtl } : {}),
 								},
 							),
 						);
