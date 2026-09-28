@@ -7,6 +7,7 @@ import {
 	formatFindings,
 	normalizePolicy,
 	scanCommitMessage,
+	scanPathForClientDomainSurface,
 	scanPathForForbiddenSurface,
 	scanTextForSensitiveSurface,
 	shouldScanFile,
@@ -93,6 +94,7 @@ function scanCommit(commit) {
 	const findings = scanCommitMessage(commitMessage(commit), policy);
 	for (const file of changedFilesForCommit(commit)) {
 		findings.push(...scanPathForForbiddenSurface(file, policy));
+		findings.push(...scanPathForClientDomainSurface(file, policy));
 		if (shouldScanFile(file, policy)) {
 			findings.push(...scanTextForSensitiveSurface(file, blobText(commit, file), policy));
 		}

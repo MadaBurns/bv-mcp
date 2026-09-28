@@ -1,6 +1,7 @@
 /** @vitest-environment node */
 import { execFileSync, spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { describe, expect, it } from 'vitest';
@@ -124,6 +125,42 @@ describe('repo safety push-range scanner', () => {
 			expect(rangeFor(published)).toBe(`${published}..${head}`);
 		} finally {
 			rmSync(repo, { recursive: true, force: true });
+		}
+	});
+
+	it('refuses a dash-joined hashed client domain in a pushed path, even under an allowed prefix', () => {
+		const repo = makeRepo();
+		const scriptRoot = mkdtempSync(join(tmpdir(), 'bv-mcp-push-scripts-'));
+		try {
+			// Run a copy of the scanner beside a policy that carries only a synthetic
+			// domain hash, so no real client domain is needed or written anywhere.
+			const domain = 'synthetic-client.test';
+			for (const name of ['scan-push-range-sensitive-surface.mjs', 'scanner-core.mjs']) {
+				copyFileSync(join(process.cwd(), 'scripts/repo-safety', name), join(scriptRoot, name));
+			}
+			const policy = JSON.parse(readFileSync(join(process.cwd(), 'scripts/repo-safety/policy.json'), 'utf8'));
+			policy.forbiddenClientDomainsSha256 = [
+				...(policy.forbiddenClientDomainsSha256 ?? []),
+				createHash('sha256').update(domain).digest('hex'),
+			];
+			policy.allowedPathPrefixes = [...(policy.allowedPathPrefixes ?? []), 'test/'];
+			writeFileSync(join(scriptRoot, 'policy.json'), JSON.stringify(policy));
+
+			mkdirSync(join(repo, 'test'), { recursive: true });
+			const head = commitFile(repo, 'test/synthetic-client-test-fast.golden.json', '{}\n');
+
+			const result = spawnSync('node', [join(scriptRoot, 'scan-push-range-sensitive-surface.mjs')], {
+				cwd: repo,
+				input: `refs/heads/main ${head} refs/heads/main ${zeroSha}\n`,
+				encoding: 'utf8',
+			});
+
+			expect(result.status).toBe(1);
+			expect(result.stderr).toContain('client-domain');
+			expect(result.stderr).not.toContain(domain);
+		} finally {
+			rmSync(repo, { recursive: true, force: true });
+			rmSync(scriptRoot, { recursive: true, force: true });
 		}
 	});
 
