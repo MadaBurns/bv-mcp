@@ -34,11 +34,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # github-actions supports only `default-days`: Dependabot rejects the
+    # semver-*-days keys for this ecosystem and refuses the whole config.
     cooldown:
       default-days: 7
-      semver-major-days: 30
-      semver-minor-days: 7
-      semver-patch-days: 3
     open-pull-requests-limit: 5
     groups:
       # github/codeql-action/init and .../analyze are ONE action published from one
