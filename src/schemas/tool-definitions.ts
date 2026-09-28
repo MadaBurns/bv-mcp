@@ -603,6 +603,13 @@ const TOOL_DEFS = {
 		group: 'intelligence',
 		scanIncluded: false,
 	},
+	check_llms_txt: {
+		description:
+			"Inspect a domain's published /llms.txt and /llms-full.txt for links and install instructions an AI agent could inherit from someone else. Parses and dedupes the links (same-origin vs external), sweeps external link hosts for dangling CNAMEs and deprovisioned-service fingerprints (evidence of a dangling service, not proof it can be claimed), and checks package names in npm/npx/pnpm/yarn/pip/uv/pipx install commands against the npm or PyPI registry (an unregistered name is claimable) and OSV malicious-package (MAL-) advisories. Detection only; not scored. Anything not measured is listed under notAssessed.",
+		schema: BaseDomainArgs,
+		group: 'intelligence',
+		scanIncluded: false,
+	},
 	check_dnskey_strength: {
 		description:
 			'Audit the cryptographic strength of DNSKEY signing algorithms used for DNSSEC. Reports which algorithm is used for DNSSEC signing keys (RSA/SHA-1, RSA/SHA-256, ECDSA P-256, Ed25519, etc.), flags deprecated algorithms (RSA/SHA-1, DSA), independent of whether the DNSSEC chain validates. Use when asked what algorithm is used for DNSSEC signing keys, or if deprecated DNSKEY algorithms are in use.',
