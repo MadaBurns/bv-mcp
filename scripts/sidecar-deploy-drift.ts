@@ -91,6 +91,9 @@ export const SIDECAR_TARGETS: readonly SidecarTarget[] = [
 			'src/lib/dns-types.ts',
 			'src/lib/scoring.ts',
 			'src/lib/response-body.ts',
+			// #1131: the authoritative lane classifies nameserver addresses against
+			// Cloudflare's published ranges, which live here.
+			'src/lib/cdn-fallback-detection.ts',
 		],
 		deployCommand: 'npm run deploy:infra-probe',
 	},

@@ -25,6 +25,30 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   such a domain "accepts inbound email". Null MX and loopback handling are
   unchanged. `SCORING_MODEL_VERSION` 1.37.0 → 1.38.0; `@blackveil/dns-checks`
   and `PARITY_CORPUS_VERSION` 1.55.0 → 1.56.0 (bv-web-prod re-vendor required).
+- **`check_authoritative_dns_infra` no longer calls an unreachable Cloudflare-hosted zone
+  "transient" (#1131).** The raw DNS lane runs on Cloudflare Workers, whose outbound TCP
+  sockets to Cloudflare IP ranges are blocked by platform policy, so every zone on
+  Cloudflare DNS failed with "transient and environmental … retrying may succeed". The
+  sidecar now classifies resolved nameserver addresses against Cloudflare's published
+  IPv4 and (new) IPv6 ranges before connecting: when every nameserver is on Cloudflare it
+  returns `raw_dns_probe_cloudflare_network_unreachable` without opening a socket, and the
+  tool says it is a platform limitation that retrying cannot change (`errorKind:
+  'platform_unreachable'`). In a mixed delegation only the non-Cloudflare nameservers are
+  probed and an `info` finding names the ones that were not. The abstention shape
+  (`checkStatus: 'error'`, `partial: true`, excluded from scoring) and all scores are
+  unchanged. Requires `npm run deploy:infra-probe` for the sidecar half.
+- **`check_lookalikes` now honours `format: "compact"` (#1130).** A large brand
+  emits one or two findings per registered candidate — google.com returned 76
+  findings in a 69,120-byte body with `format: "compact"`, which MCP clients
+  rejected as over the tool-result cap, so an agent caller never saw the result.
+  Compact now returns, on BOTH the text and `structuredContent` channels, every
+  run-level finding (the threat rollup and scan-status notices), the 10
+  highest-severity per-candidate findings, and a `compact` summary: counts of
+  registered, mail-capable, brand-held and third-party candidates (derived from
+  the rollup-member, `isBrandHeldRegistration` and ownership-verdict signals the
+  check already emits), per-verdict counts, totals, and `truncated: true` when
+  the list was capped. `score`, `passed` and the Status line are computed from
+  the complete result; `format: "full"` output is unchanged. [no-scoring-change]
 - **`brand_audit_get_report` without `target` now returns a real audit-level
   aggregate instead of `aggregate: null` under `passed: true, score: 100`
   (#1129).** Nothing writes `brand_audits.results_json`, so the audit-level call
