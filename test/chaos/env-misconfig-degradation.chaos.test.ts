@@ -245,6 +245,26 @@ describe('H3: ALERT_WEBHOOK_URL misconfiguration resolves (never throws), and is
 		expect(serialized).not.toContain('not a valid url at all');
 	});
 
+	it('H3a-fuzz — an unparseable ALERT_WEBHOOK_URL makes sendFuzzingAlert resolve false WITHOUT calling fetch, but log exactly once (SQ-205: same silent catch as sendAlert had before SQ-203)', async () => {
+		const logModule = await import('../../src/lib/log');
+		const logErrorSpy = vi.spyOn(logModule, 'logError');
+		const fetchSpy = vi.fn();
+		globalThis.fetch = fetchSpy;
+
+		const { sendFuzzingAlert } = await import('../../src/lib/alerting');
+		const delivered = await sendFuzzingAlert('not a valid url at all', {} as unknown as Parameters<typeof sendFuzzingAlert>[1]);
+
+		expect(delivered).toBe(false);
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(logErrorSpy).toHaveBeenCalledTimes(1);
+		const [errorArg, context] = logErrorSpy.mock.calls[0] ?? [];
+		expect(context?.category).toBe('alerting');
+		expect(context?.result).toBe('webhook_url_invalid');
+		const serialized = `${String(errorArg)} ${JSON.stringify(context)}`;
+		expect(serialized).not.toContain('not a valid url at all');
+		expect(serialized).toContain(String('not a valid url at all'.length));
+	});
+
 	it('H3b — a rejecting host (non-2xx response) makes sendAlert resolve false, call fetch exactly once (no retry loop), and log exactly one warning', async () => {
 		const logModule = await import('../../src/lib/log');
 		const logErrorSpy = vi.spyOn(logModule, 'logError');

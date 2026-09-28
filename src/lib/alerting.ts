@@ -130,6 +130,13 @@ export async function sendFuzzingAlert(webhookUrl: string, payload: FuzzingAlert
 		const parsed = new URL(webhookUrl);
 		if (parsed.protocol !== 'https:') return false;
 	} catch {
+		// Same silent-drop hazard as sendAlert: never log the URL value itself (may embed a token).
+		logError('Fuzzing alert webhook URL could not be parsed', {
+			severity: 'warn',
+			category: 'alerting',
+			result: 'webhook_url_invalid',
+			details: { urlLength: webhookUrl.length, urlScheme: boundedUrlScheme(webhookUrl) },
+		});
 		return false;
 	}
 

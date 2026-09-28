@@ -8,6 +8,12 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`sendFuzzingAlert` no longer drops an unparseable `ALERT_WEBHOOK_URL` silently (SQ-205).**
+  It now logs one `webhook_url_invalid` warning (URL length and scheme only, never
+  the value), matching `sendAlert`.
+
 ## [3.92.0] - 2026-09-28
 
 _3.91.0 was tagged in the changelog but never deployed; this release is the first to carry its changes to production._
