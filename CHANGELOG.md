@@ -10,6 +10,25 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **Individual `check_*` tools now abstain on a domain that does not exist
+  (NXDOMAIN), matching `scan_domain` (#1128).** Called directly on a
+  non-resolving name, `check_spf`, `check_dmarc`, `check_mx`, `check_ns`,
+  `check_dnssec`, `check_dnssec_chain`, `check_caa`, `check_dkim`,
+  `check_zone_hygiene`, `check_subdomain_takeover` and `check_ssl` scored the
+  absence of every record as a measured negative (critical "No SPF record
+  found") or a clean 100, while `scan_domain` on the same domain returned
+  "Does not resolve". The apex-NS probe `scan_domain` uses is now a shared
+  helper (`src/lib/apex-resolution.ts`) applied once at the `TOOL_REGISTRY`
+  dispatch boundary: on a clean NXDOMAIN those tools return the #946
+  not-assessed shape (`checkStatus: 'error'`, `score: 0`, `passed: false`,
+  `partial: true`, no `controlPresent`/`recordPresent`) with one `info` finding
+  carrying `domainResolves: false` / `notAssessedReason:
+  'domain_does_not_resolve'`, rendered ungraded and never cached. SERVFAIL and
+  probe transport failures fall through to the check unchanged (fail-open, as
+  in `scan_domain`); `check_subdomain_takeover` with an explicit `subdomains`
+  list is not gated. Composite tools (`assess_spoofability`,
+  `simulate_attack_paths`) call the checks directly and are not yet covered.
+  `[no-scoring-change]` — the scan path is refactored, not changed.
 - **`check_authoritative_dns_infra` no longer calls an unreachable Cloudflare-hosted zone
   "transient" (#1131).** The raw DNS lane runs on Cloudflare Workers, whose outbound TCP
   sockets to Cloudflare IP ranges are blocked by platform policy, so every zone on
