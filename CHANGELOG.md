@@ -8,6 +8,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.93.0] - 2026-09-28
+
 ### Fixed
 
 - **`sendFuzzingAlert` no longer drops an unparseable `ALERT_WEBHOOK_URL` silently (SQ-205).**
