@@ -8,6 +8,17 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **A `SESSION_STORE` (KV) or Durable Object coordinator outage on a valid bearer
+  token now returns a retryable 503 on `/mcp`, not a 401 (SQ-234).** The JWT
+  branch of `resolveTier` swallowed `StrongStateUnavailableError` and fell
+  through to an unauthenticated result, so a good credential looked revoked and
+  clients discarded it. It now reports `storageUnavailable` and the `/mcp` auth
+  middleware answers `503 temporarily_unavailable` with `Retry-After` (same body
+  as the `/oauth/token` SQ-199 503). The request is still never served at any
+  tier; missing, malformed, expired or revoked tokens still return 401.
+
 ## [3.92.0] - 2026-09-28
 
 _3.91.0 was tagged in the changelog but never deployed; this release is the first to carry its changes to production._

@@ -17,7 +17,7 @@ import { resolveTrialKey } from './trial-keys';
 import { parseEnvelopeKey } from './kv-envelope';
 import { verifyJwt } from '../oauth/jwt';
 import { resolveIssuerStrict } from '../oauth/discovery';
-import { getMinimumEntitlementGeneration, isRevoked, getTokenVersion } from '../oauth/storage';
+import { getMinimumEntitlementGeneration, isRevoked, getTokenVersion, StrongStateUnavailableError } from '../oauth/storage';
 import { z } from 'zod';
 import type { QuotaCoordinator } from './quota-coordinator';
 import { checkControlPlaneRateLimit } from './rate-limiter';
@@ -48,6 +48,12 @@ export interface TierAuthResult {
 	oauthTenantId?: string;
 	/** Domain-separated OAuth namespace; proves keyHash came from a verified OAuth subject. */
 	oauthPrincipalKind?: OAuthPrincipalKind;
+	/**
+	 * A verified bearer JWT could not be checked against the strongly consistent
+	 * revocation/version state (KV/DO outage). Always paired with `authenticated: false`;
+	 * callers must fail closed with a retryable 503, never a 401 and never a downgrade.
+	 */
+	storageUnavailable?: boolean;
 	/** An uncached remote entitlement lookup was denied by the pre-auth abuse gate. */
 	rateLimited?: boolean;
 	retryAfterMs?: number;
@@ -255,7 +261,11 @@ export async function resolveTier(
 			}
 			// JWT verified but payload is not a recognized MCP tier — fall through so static key
 			// path still has a chance for legacy operators with unusual three-segment keys.
-		} catch {
+		} catch (error) {
+			// Only reachable for a cryptographically valid token: the storage helpers run after
+			// verifyJwt. An outage means revocation/version state is unknowable, so fail closed
+			// with a distinct result (never fall through to the legacy paths or serve the request).
+			if (error instanceof StrongStateUnavailableError) return { authenticated: false, storageUnavailable: true };
 			// Not a valid OAuth JWT — fall through to the legacy static/service-binding path
 			// so an operator using a 3-segment static key isn't accidentally rejected.
 		}

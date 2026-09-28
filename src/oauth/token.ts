@@ -24,6 +24,9 @@ import type { QuotaCoordinator } from '../lib/quota-coordinator';
 const TOKEN_RATE_LIMIT = 30;
 const TOKEN_RATE_WINDOW_SECONDS = 60;
 
+/** SQ-199/SQ-234: shared retryable body for a strong-state (KV/DO) outage on a bearer/token path. */
+export const AUTH_STATE_UNAVAILABLE_BODY = { error: 'temporarily_unavailable', error_description: 'Authorization state is unavailable' } as const;
+
 /** Atomically consume one token-endpoint request when the coordinator is bound. */
 async function tokenRateLimit(
 	kv: KVNamespace,
@@ -146,7 +149,7 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 		codeRec = await consumeCode(kv, parsed.code, kvEnvelopeKey, env.QUOTA_COORDINATOR);
 	} catch (error) {
 		if (error instanceof StrongStateUnavailableError) {
-			return c.json({ error: 'temporarily_unavailable', error_description: 'Authorization state is unavailable' }, 503, {
+			return c.json(AUTH_STATE_UNAVAILABLE_BODY, 503, {
 				'Cache-Control': 'no-store',
 			});
 		}
@@ -214,7 +217,7 @@ export async function handleToken(c: Context<AppEnv>): Promise<Response> {
 		ver = await getTokenVersion(kv, subject, env.QUOTA_COORDINATOR);
 	} catch (error) {
 		if (error instanceof StrongStateUnavailableError) {
-			return c.json({ error: 'temporarily_unavailable', error_description: 'Authorization state is unavailable' }, 503, {
+			return c.json(AUTH_STATE_UNAVAILABLE_BODY, 503, {
 				'Cache-Control': 'no-store',
 			});
 		}
