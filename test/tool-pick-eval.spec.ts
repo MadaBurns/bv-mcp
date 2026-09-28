@@ -267,6 +267,9 @@ const CORPUS: Array<{ ask: string; label: string }> = [
 
 	// intelligence — check_agent_discovery
 	{ ask: 'check the security of IETF agent discovery records for this domain', label: 'check_agent_discovery' },
+
+	// intelligence — check_llms_txt
+	{ ask: 'check the llms.txt file for dangling links and malicious install packages', label: 'check_llms_txt' },
 ];
 
 // ─── Similarity scorer ───────────────────────────────────────────────────────
