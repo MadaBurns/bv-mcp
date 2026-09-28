@@ -238,6 +238,16 @@ export interface OperationalExposureEvidence {
 	unsupportedQueriesRefused?: boolean;
 }
 
+/**
+ * A nameserver the raw DNS lane deliberately did NOT connect to. `cloudflare_network`: every
+ * resolved address is in a published Cloudflare range, and the Workers runtime blocks outbound
+ * TCP sockets to Cloudflare IP ranges by platform policy (#1131) — so no retry can reach it.
+ */
+export interface UnprobedNameserverEvidence {
+	nameserver: string;
+	reason: 'cloudflare_network';
+}
+
 export interface AuthoritativeDnsInfraEvidence {
 	hostname: string;
 	checkedAt?: string;
@@ -254,6 +264,7 @@ export interface AuthoritativeDnsInfraEvidence {
 	routing?: BgpRoutingEvidence;
 	vantage?: VantageMetricsEvidence;
 	operationalExposure?: OperationalExposureEvidence;
+	unprobedNameservers?: UnprobedNameserverEvidence[];
 	errors?: string[];
 }
 

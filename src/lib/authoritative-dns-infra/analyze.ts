@@ -205,6 +205,36 @@ const RAW_DNS_NO_CONTACT = 'raw_dns_probe_no_contact';
 /** Reported by the lane when sessions answered but none proved authoritative (AA=1) for the
  * zone — usually DNS interception on the probe's network path, or a lame delegation. */
 const RAW_DNS_NO_AUTHORITATIVE_ANSWER = 'raw_dns_probe_no_authoritative_answer';
+/** Reported by the lane when every nameserver address is on Cloudflare's network, which the
+ * Workers runtime refuses outbound TCP sockets to by platform policy — permanent, NOT transient
+ * (#1131). */
+const RAW_DNS_CLOUDFLARE_NETWORK_UNREACHABLE = 'raw_dns_probe_cloudflare_network_unreachable';
+/** `errorKind` for a lane the platform itself forbids — distinct from `dns_error` / `timeout`,
+ * which describe failures a retry can clear. */
+const PLATFORM_UNREACHABLE_ERROR_KIND = 'platform_unreachable';
+const MAX_UNPROBED_NAMESERVERS_ECHOED = 8;
+const NAMESERVER_NAME_PATTERN = /^(?=.{1,253}$)[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)*$/;
+
+/**
+ * Nameservers the sidecar deliberately did not probe because they sit on Cloudflare's network.
+ * This field crosses the service binding unvalidated and reaches client-visible finding text, so
+ * only hostname-shaped names with the one known reason are echoed (same rule as
+ * `isUnconfiguredLaneCode` for `errors`).
+ */
+function cloudflareUnprobedNameservers(evidence: AuthoritativeDnsInfraEvidence): string[] {
+	const raw: unknown = evidence.unprobedNameservers;
+	if (!Array.isArray(raw)) return [];
+	const names: string[] = [];
+	for (const entry of raw) {
+		if (typeof entry !== 'object' || entry === null) continue;
+		const { nameserver, reason } = entry as Record<string, unknown>;
+		if (reason !== 'cloudflare_network' || typeof nameserver !== 'string') continue;
+		const name = nameserver.toLowerCase().replace(/\.$/, '');
+		if (NAMESERVER_NAME_PATTERN.test(name) && !names.includes(name)) names.push(name);
+		if (names.length >= MAX_UNPROBED_NAMESERVERS_ECHOED) break;
+	}
+	return names;
+}
 
 /**
  * Drop every raw-DNS-lane claim from evidence whose own `errors` say that lane never ran.
@@ -468,9 +498,16 @@ export function analyzeAuthoritativeDnsInfraEvidence(
 			const errors = evidence.errors ?? [];
 			const noAuthoritativeAnswer = errors.includes(RAW_DNS_NO_AUTHORITATIVE_ANSWER);
 			const noContact = errors.includes(RAW_DNS_NO_CONTACT);
+			const cloudflareUnreachable = errors.includes(RAW_DNS_CLOUDFLARE_NETWORK_UNREACHABLE);
 			let detail: string;
 			if (unconfigured.length > 0) {
 				detail = `The infra probe's raw DNS lane is not provisioned for hostname targets in this deployment (${unconfigured.join(', ')}), so no capability check for ${evidence.hostname} could be verified either way. This is a provisioning state, not a transient failure — retrying returns the same result.`;
+			} else if (cloudflareUnreachable) {
+				// #1131: a permanent platform limit. "Transient … retrying may succeed" here told
+				// every Cloudflare-DNS customer (and agents) to retry a probe that can never connect.
+				const unprobed = cloudflareUnprobedNameservers(evidence);
+				const named = unprobed.length > 0 ? ` (${unprobed.join(', ')})` : '';
+				detail = `The nameservers for ${evidence.hostname}${named} are on Cloudflare's network, which this probe cannot reach: the Cloudflare Workers runtime it runs on blocks outbound TCP sockets to Cloudflare IP ranges by platform policy. Nothing about these nameservers was measured. This is a platform limitation, not a transient failure and not a problem with the domain — retrying returns the same result.`;
 			} else if (noAuthoritativeAnswer) {
 				detail = `The infra probe received responses from ${evidence.hostname}'s nameservers, but none was authoritative (AA=1) for the zone, which usually means DNS interception on the probe's network path or a lame delegation. This is transient and environmental, not a provisioning state — retrying, or a different vantage, may succeed.`;
 			} else if (noContact) {
@@ -483,9 +520,31 @@ export function analyzeAuthoritativeDnsInfraEvidence(
 					evidenceMode: 'infra_probe',
 					inconclusive: true,
 					...(unconfigured.length > 0 ? { unprovisioned: true, probeErrors: unconfigured } : {}),
+					...(unconfigured.length === 0 && cloudflareUnreachable ? { errorKind: PLATFORM_UNREACHABLE_ERROR_KIND } : {}),
 				}),
 			);
 		}
+	}
+
+	// #1131, mixed delegation: the non-Cloudflare nameservers were probed and their evidence
+	// stands; say plainly that the Cloudflare ones were not, so partial coverage is not read as
+	// full coverage. `info`, so it never moves the score.
+	const unprobed = cloudflareUnprobedNameservers(evidence);
+	if (unprobed.length > 0 && !(evidence.errors ?? []).includes(RAW_DNS_CLOUDFLARE_NETWORK_UNREACHABLE)) {
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'Cloudflare-hosted nameservers not probed',
+				'info',
+				`${unprobed.length === 1 ? 'Nameserver' : 'Nameservers'} ${unprobed.join(', ')} for ${evidence.hostname} ${unprobed.length === 1 ? 'is' : 'are'} on Cloudflare's network, which this probe cannot reach (the Cloudflare Workers runtime blocks outbound TCP sockets to Cloudflare IP ranges by platform policy), so ${unprobed.length === 1 ? 'it was' : 'they were'} not probed. The results above cover only the remaining nameservers. This is a platform limitation, not a transient failure — retrying returns the same result.`,
+				{
+					evidenceMode: 'infra_probe',
+					inconclusive: true,
+					errorKind: PLATFORM_UNREACHABLE_ERROR_KIND,
+					unprobedNameservers: unprobed,
+				},
+			),
+		);
 	}
 
 	return { findings, capabilitySummary };
