@@ -990,3 +990,97 @@ describe('tier-auth dedicated production load-test key', () => {
 		expect(result.tier).toBe('owner');
 	});
 });
+
+describe('tier-auth bearer JWT strong-state outage (SQ-234)', () => {
+	const SECRET = 'a'.repeat(32);
+	const ISSUER = 'https://example.com';
+	const REQUEST_URL = 'https://example.com/mcp';
+
+	function rejectingKv(): KVNamespace {
+		const fail = () => Promise.reject(new Error('KV unavailable (SQ-234)'));
+		return { get: fail, put: fail, delete: fail, list: fail, getWithMetadata: fail } as unknown as KVNamespace;
+	}
+
+	function healthyKv(): KVNamespace {
+		return {
+			get: async () => null,
+			put: async () => undefined,
+			delete: async () => undefined,
+			list: async () => ({ keys: [], list_complete: true, cursor: undefined }),
+		} as unknown as KVNamespace;
+	}
+
+	async function mint(secret = SECRET, ttlSeconds = 3600): Promise<string> {
+		const { signJwt, newJti } = await import('../src/oauth/jwt');
+		return signJwt(
+			{ sub: 'owner', jti: newJti(), tier: 'owner', client_id: 'test-client' },
+			{ secret, ttlSeconds, issuer: ISSUER, audience: `${ISSUER}/mcp` },
+		);
+	}
+
+	it('returns storageUnavailable (not a plain unauthenticated result) for a valid JWT when SESSION_STORE rejects', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			await mint(),
+			{ OAUTH_SIGNING_SECRET: SECRET, OAUTH_ISSUER: ISSUER, SESSION_STORE: rejectingKv() },
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result).toEqual({ authenticated: false, storageUnavailable: true });
+	});
+
+	it('returns storageUnavailable for a valid JWT when the DO coordinator fails', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const failingCoordinator = {
+			getByName: () => ({
+				dispatch: () => Promise.reject(new Error('DO unavailable (SQ-234)')),
+			}),
+		} as unknown as DurableObjectNamespace<import('../src/lib/quota-coordinator').QuotaCoordinator>;
+		const result = await resolveTier(
+			await mint(),
+			{ OAUTH_SIGNING_SECRET: SECRET, OAUTH_ISSUER: ISSUER, SESSION_STORE: healthyKv(), QUOTA_COORDINATOR: failingCoordinator },
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result).toEqual({ authenticated: false, storageUnavailable: true });
+	});
+
+	it('keeps a plain 401-shaped result for a wrong-signature JWT even with SESSION_STORE rejecting', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			await mint('b'.repeat(32)),
+			{ OAUTH_SIGNING_SECRET: SECRET, OAUTH_ISSUER: ISSUER, SESSION_STORE: rejectingKv() },
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result.authenticated).toBe(false);
+		expect(result.storageUnavailable).toBeUndefined();
+	});
+
+	it('keeps a plain unauthenticated result for an expired JWT even with SESSION_STORE rejecting', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const token = await mint(SECRET, 60);
+		vi.useFakeTimers();
+		vi.setSystemTime(Date.now() + 3600 * 1000);
+		const result = await resolveTier(
+			token,
+			{ OAUTH_SIGNING_SECRET: SECRET, OAUTH_ISSUER: ISSUER, SESSION_STORE: rejectingKv() },
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result.authenticated).toBe(false);
+		expect(result.storageUnavailable).toBeUndefined();
+	});
+
+	it('does not flag a non-JWT bearer as storageUnavailable when SESSION_STORE rejects', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			'not-a-jwt-token',
+			{ OAUTH_SIGNING_SECRET: SECRET, OAUTH_ISSUER: ISSUER, SESSION_STORE: rejectingKv() },
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result.authenticated).toBe(false);
+		expect(result.storageUnavailable).toBeUndefined();
+	});
+});

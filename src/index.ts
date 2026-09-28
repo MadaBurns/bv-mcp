@@ -73,7 +73,7 @@ import { internalRoutes } from './internal';
 import { buildAuthorizationServerMetadata, buildProtectedResourceMetadata, resolveIssuer } from './oauth/discovery';
 import { handleRegister } from './oauth/register';
 import { handleAuthorizeGet, handleAuthorizePost } from './oauth/authorize';
-import { handleToken } from './oauth/token';
+import { AUTH_STATE_UNAVAILABLE_BODY, handleToken } from './oauth/token';
 import { QuotaCoordinator } from './lib/quota-coordinator';
 export { QuotaCoordinator };
 import { ProfileAccumulator, resolveAccumulatorShardModeFromEnv } from './lib/profile-accumulator';
@@ -582,6 +582,15 @@ for (const path of authedPaths) {
 				response.headers.set('Sunset', 'Tue, 01 Dec 2026 00:00:00 GMT');
 			}
 			return response;
+		}
+
+		// SQ-234: a valid bearer whose revocation/version state could not be read (KV/DO outage) is a
+		// retryable 503, never a 401 (client would drop a good credential) and never served or downgraded.
+		if (tierResult.storageUnavailable) {
+			return Response.json(AUTH_STATE_UNAVAILABLE_BODY, {
+				status: 503,
+				headers: { 'Cache-Control': 'no-store', 'retry-after': '5' },
+			});
 		}
 
 		// If token was provided but not recognized, or if auth is required and not authenticated, reject

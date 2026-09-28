@@ -496,3 +496,107 @@ describe('H4: SESSION_STORE (OAuth storage) KV throws — POST /oauth/token', ()
 		expect(body.error).toBe('invalid_grant');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// H5 (SQ-234) — SESSION_STORE / DO coordinator failure on a VALID bearer JWT
+// over /mcp. Was a 401 (the blanket catch in resolveTier swallowed
+// StrongStateUnavailableError); must be a retryable 503 and never serve the
+// request at any tier.
+// ---------------------------------------------------------------------------
+
+describe('H5: valid bearer JWT with SESSION_STORE / DO coordinator failure — POST /mcp', () => {
+	const ISSUER = 'https://example.com';
+
+	async function mintJwt(): Promise<{ token: string; jti: string }> {
+		const { signJwt, newJti } = await import('../../src/oauth/jwt');
+		const jti = newJti();
+		const token = await signJwt(
+			{ sub: 'owner', jti, tier: 'owner', client_id: 'test-client' },
+			{ secret: TEST_SIGNING_SECRET, ttlSeconds: 3600, issuer: ISSUER, audience: `${ISSUER}/mcp` },
+		);
+		return { token, jti };
+	}
+
+	function toolsCallRequest(token: string): Request {
+		return new Request('https://example.com/mcp', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json', Accept: 'application/json', Authorization: `Bearer ${token}` },
+			body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'check_spf', arguments: { domain: 'example.com' } } }),
+		});
+	}
+
+	function envWith(overrides: Record<string, unknown>): Parameters<typeof worker.fetch>[1] {
+		return { ...env, OAUTH_SIGNING_SECRET: TEST_SIGNING_SECRET, OAUTH_ISSUER: ISSUER, ...overrides } as unknown as Parameters<
+			typeof worker.fetch
+		>[1];
+	}
+
+	async function expectRetryable503(res: Response): Promise<void> {
+		const text = await res.text();
+		expect(res.status).toBe(503);
+		expect(res.headers.get('retry-after')).toBeTruthy();
+		expect(res.headers.get('cache-control')).toBe('no-store');
+		const body = JSON.parse(text) as { error?: string; error_description?: string; result?: unknown };
+		expect(body.error).toBe('temporarily_unavailable');
+		expect(body.error_description).toBe('Authorization state is unavailable');
+		// The tool must never have been executed, and no raw outage text may leak.
+		expect(body.result).toBeUndefined();
+		expect(text).not.toContain('SQ-234');
+		expect(text.toLowerCase()).not.toContain('.ts:');
+	}
+
+	it('SESSION_STORE rejecting: 503 temporarily_unavailable + Retry-After, tool not executed (not a 401)', async () => {
+		const { token } = await mintJwt();
+		const fetchSpy = vi.spyOn(globalThis, 'fetch');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(
+			toolsCallRequest(token),
+			envWith({ SESSION_STORE: rejectingKv('KV unavailable (SQ-234)') }),
+			ctx,
+		);
+		await waitOnExecutionContext(ctx);
+		await expectRetryable503(res);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it('DO coordinator failing (SESSION_STORE healthy): 503 temporarily_unavailable + Retry-After, tool not executed', async () => {
+		const { token } = await mintJwt();
+		const failingCoordinator = {
+			getByName: () => ({ dispatch: () => Promise.reject(new Error('DO unavailable (SQ-234)')) }),
+		};
+		const fetchSpy = vi.spyOn(globalThis, 'fetch');
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(
+			toolsCallRequest(token),
+			envWith({ SESSION_STORE: healthyKv(), QUOTA_COORDINATOR: failingCoordinator }),
+			ctx,
+		);
+		await waitOnExecutionContext(ctx);
+		await expectRetryable503(res);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it('regression: an invalid (wrong-secret) bearer with SESSION_STORE rejecting is still a 401', async () => {
+		const { signJwt, newJti } = await import('../../src/oauth/jwt');
+		const token = await signJwt(
+			{ sub: 'owner', jti: newJti(), tier: 'owner', client_id: 'test-client' },
+			{ secret: 'b'.repeat(32), ttlSeconds: 3600, issuer: ISSUER, audience: `${ISSUER}/mcp` },
+		);
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(toolsCallRequest(token), envWith({ SESSION_STORE: rejectingKv() }), ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(401);
+	});
+
+	it('regression: a revoked valid bearer with a HEALTHY store is still a 401', async () => {
+		const { revokeJti } = await import('../../src/oauth/storage');
+		const { resetQuotaCoordinatorState } = await import('../../src/lib/quota-coordinator');
+		await resetQuotaCoordinatorState(env.QUOTA_COORDINATOR);
+		const { token, jti } = await mintJwt();
+		await revokeJti(env.SESSION_STORE, jti, 3600, env.QUOTA_COORDINATOR);
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(toolsCallRequest(token), envWith({}), ctx);
+		await waitOnExecutionContext(ctx);
+		expect(res.status).toBe(401);
+	});
+});
