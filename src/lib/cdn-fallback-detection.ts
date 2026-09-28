@@ -96,6 +96,68 @@ export function isIpInCloudflareRange(ip: string): boolean {
 	return false;
 }
 
+/**
+ * Cloudflare's published IPv6 edge ranges (snapshot from `cloudflare.com/ips-v6`), in
+ * published order. Kept beside the IPv4 list so there is ONE home for Cloudflare's ranges.
+ */
+export const CLOUDFLARE_IPV6_RANGES: readonly string[] = [
+	'2400:cb00::/32',
+	'2606:4700::/32',
+	'2803:f800::/32',
+	'2405:b500::/32',
+	'2405:8100::/32',
+	'2a06:98c0::/29',
+	'2c0f:f248::/32',
+];
+
+/** Expand an IPv6 literal to its eight 16-bit groups, or null on malformed input
+ * (zone ids and embedded-IPv4 forms are rejected — neither can be a Cloudflare edge literal). */
+function ipv6ToGroups(ip: string): number[] | null {
+	if (!ip.includes(':') || ip.includes('%') || ip.includes('.')) return null;
+	const halves = ip.toLowerCase().split('::');
+	if (halves.length > 2) return null;
+	const parseHalf = (half: string): number[] | null => {
+		if (half === '') return [];
+		const groups: number[] = [];
+		for (const token of half.split(':')) {
+			if (!/^[0-9a-f]{1,4}$/.test(token)) return null;
+			groups.push(Number.parseInt(token, 16));
+		}
+		return groups;
+	};
+	const left = parseHalf(halves[0]);
+	const right = parseHalf(halves[1] ?? '');
+	if (!left || !right) return null;
+	if (halves.length === 1) return left.length === 8 ? left : null;
+	if (left.length + right.length >= 8) return null;
+	return [...left, ...Array<number>(8 - left.length - right.length).fill(0), ...right];
+}
+
+function ipv6CidrContains(cidr: string, groups: number[]): boolean {
+	const [base, bits] = cidr.split('/');
+	const baseGroups = ipv6ToGroups(base);
+	const bitsNum = Number(bits);
+	if (!baseGroups || !Number.isInteger(bitsNum) || bitsNum < 0 || bitsNum > 128) return false;
+	for (let index = 0, remaining = bitsNum; remaining > 0; index += 1, remaining -= 16) {
+		const mask = remaining >= 16 ? 0xffff : (0xffff << (16 - remaining)) & 0xffff;
+		if ((baseGroups[index] & mask) !== (groups[index] & mask)) return false;
+	}
+	return true;
+}
+
+/**
+ * Whether an IPv4 OR IPv6 literal falls in any published Cloudflare range. Used where the
+ * question is "is this address on Cloudflare's network" rather than CDN attribution — e.g. the
+ * authoritative-DNS probe, whose Workers TCP sockets to Cloudflare IP ranges are blocked by
+ * platform policy (#1131). `isIpInCloudflareRange` stays IPv4-only for the attribution heuristic.
+ */
+export function isIpInCloudflareNetwork(ip: string): boolean {
+	if (isIpInCloudflareRange(ip)) return true;
+	const groups = ipv6ToGroups(ip);
+	if (!groups) return false;
+	return CLOUDFLARE_IPV6_RANGES.some((cidr) => ipv6CidrContains(cidr, groups));
+}
+
 const CF_NS_PATTERN = /\.ns\.cloudflare\.com\.?$/i;
 
 /**

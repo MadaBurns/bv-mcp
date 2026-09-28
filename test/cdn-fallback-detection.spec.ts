@@ -1,7 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import {
 	CLOUDFLARE_IPV4_RANGES,
+	CLOUDFLARE_IPV6_RANGES,
 	isIpInCloudflareRange,
+	isIpInCloudflareNetwork,
 	detectCloudflareViaNsAndIp,
 	detectCloudflareFallback,
 } from '../src/lib/cdn-fallback-detection';
@@ -63,6 +65,45 @@ describe('isIpInCloudflareRange', () => {
 		expect(isIpInCloudflareRange('')).toBe(false);
 		expect(isIpInCloudflareRange('999.999.999.999')).toBe(false);
 		expect(isIpInCloudflareRange('1.2.3')).toBe(false);
+	});
+});
+
+describe('CLOUDFLARE_IPV6_RANGES', () => {
+	it('includes all 7 published Cloudflare IPv6 ranges', () => {
+		// Snapshot of cloudflare.com/ips-v6 — a new published range must be a deliberate update.
+		expect(CLOUDFLARE_IPV6_RANGES).toEqual([
+			'2400:cb00::/32',
+			'2606:4700::/32',
+			'2803:f800::/32',
+			'2405:b500::/32',
+			'2405:8100::/32',
+			'2a06:98c0::/29',
+			'2c0f:f248::/32',
+		]);
+	});
+});
+
+describe('isIpInCloudflareNetwork (#1131)', () => {
+	it('matches both IPv4 and IPv6 Cloudflare addresses, including the live NS addresses from #1131', () => {
+		expect(isIpInCloudflareNetwork('108.162.193.59')).toBe(true); // alec.ns.cloudflare.com
+		expect(isIpInCloudflareNetwork('173.245.58.97')).toBe(true); // diva.ns.cloudflare.com
+		expect(isIpInCloudflareNetwork('172.64.33.59')).toBe(true);
+		expect(isIpInCloudflareNetwork('2606:4700:58::adf5:3b3b')).toBe(true);
+		expect(isIpInCloudflareNetwork('2803:f800:50::6ca2:c13b')).toBe(true);
+		expect(isIpInCloudflareNetwork('2A06:98C1:50::AC40:213B')).toBe(true); // inside the /29, case-insensitive
+		expect(isIpInCloudflareNetwork('2c0f:f248::1')).toBe(true);
+	});
+
+	it('does not match non-Cloudflare or malformed addresses', () => {
+		expect(isIpInCloudflareNetwork('8.8.8.8')).toBe(false);
+		expect(isIpInCloudflareNetwork('216.239.32.10')).toBe(false); // ns1.google.com
+		expect(isIpInCloudflareNetwork('2001:4860:4802:32::a')).toBe(false); // ns1.google.com
+		expect(isIpInCloudflareNetwork('2a06:98c8::1')).toBe(false); // just past the /29
+		expect(isIpInCloudflareNetwork('2606:4701::1')).toBe(false);
+		expect(isIpInCloudflareNetwork('::')).toBe(false);
+		expect(isIpInCloudflareNetwork('2606:4700::1::1')).toBe(false);
+		expect(isIpInCloudflareNetwork('not-an-ip')).toBe(false);
+		expect(isIpInCloudflareNetwork('')).toBe(false);
 	});
 });
 

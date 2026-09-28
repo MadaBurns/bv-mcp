@@ -450,4 +450,108 @@ describe('checkAuthoritativeDnsInfra', () => {
 		const summary = result.metadata?.capabilitySummary as { failed: string[] };
 		expect(summary.failed).toContain('dns53_udp_reachability');
 	});
+	// #1131: every Cloudflare-hosted zone is structurally unreachable from the probe (the Workers
+	// runtime blocks outbound TCP sockets to Cloudflare IP ranges). The abstention SHAPE is the
+	// documented #946 contract and stays; the prose must stop calling a permanent platform limit
+	// "transient … retrying may succeed".
+	it('names the Cloudflare platform limit instead of a transient failure when every nameserver is on Cloudflare (#1131)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'blackveilsecurity.com',
+			checkedAt: '2026-09-24T04:16:00.000Z',
+			errors: ['raw_dns_probe_cloudflare_network_unreachable'],
+			unprobedNameservers: [
+				{ nameserver: 'alec.ns.cloudflare.com', reason: 'cloudflare_network' },
+				{ nameserver: 'diva.ns.cloudflare.com', reason: 'cloudflare_network' },
+			],
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('blackveilsecurity.com', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		// Abstention shape unchanged (#946 contract, issue comment): excluded from scoring via checkStatus.
+		expect(result).toMatchObject({ passed: false, score: 0, checkStatus: 'error', partial: true });
+		expect(result.metadata?.inconclusive).toBe(true);
+
+		const finding = result.findings.find((f) => f.title === 'Authoritative DNS infrastructure checks inconclusive');
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('info');
+		expect(finding!.detail).not.toMatch(/is transient|retrying may succeed|retrying, or a different vantage/i);
+		expect(finding!.detail).toMatch(/Cloudflare/);
+		expect(finding!.detail).toMatch(/not a transient failure/i);
+		expect(finding!.detail).toContain('alec.ns.cloudflare.com');
+		expect(finding!.metadata?.inconclusive).toBe(true);
+		expect(finding!.metadata?.errorKind).toBe('platform_unreachable');
+		expect(finding!.metadata?.missingControl).toBeUndefined();
+		// A platform limit is not a provisioning state of this deployment.
+		expect(finding!.metadata?.unprovisioned).toBeUndefined();
+		for (const f of result.findings) expect(f.metadata?.missingControl).toBeUndefined();
+	});
+
+	it('keeps the transient wording for a genuine no-contact on non-Cloudflare nameservers (#1131)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'example.com',
+			checkedAt: '2026-09-24T04:16:00.000Z',
+			errors: ['raw_dns_probe_no_contact'],
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('example.com', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		const finding = result.findings.find((f) => f.title === 'Authoritative DNS infrastructure checks inconclusive');
+		expect(finding!.detail).toMatch(/transient/i);
+		expect(finding!.detail).not.toMatch(/Cloudflare/);
+		expect(finding!.metadata?.errorKind).toBeUndefined();
+		expect(result.findings.some((f) => f.title === 'Cloudflare-hosted nameservers not probed')).toBe(false);
+	});
+
+	it('notes Cloudflare nameservers as not probed in a mixed delegation without changing the score (#1131)', async () => {
+		const measured = {
+			hostname: 'example.com',
+			checkedAt: '2026-09-24T04:16:00.000Z',
+			reachability: { ipv4: { addresses: ['216.239.32.10'], reachable: true }, tcp53Reachable: true },
+			authoritative: { aaFlag: true, recursionAvailable: false, recursionRefused: true },
+			soaSerial: { serialsByNameserver: { 'ns1.example.net': 7 }, consistent: true },
+		};
+		const run = async (body: unknown) =>
+			checkAuthoritativeDnsInfra('example.com', {
+				infraProbe: { fetch: vi.fn(async () => new Response(JSON.stringify(body))) as unknown as typeof globalThis.fetch },
+			});
+
+		const baseline = await run(measured);
+		const mixed = await run({ ...measured, unprobedNameservers: [{ nameserver: 'alec.ns.cloudflare.com', reason: 'cloudflare_network' }] });
+
+		expect(mixed.score).toBe(baseline.score);
+		expect(mixed.passed).toBe(baseline.passed);
+		expect(mixed.checkStatus).toBe(baseline.checkStatus);
+
+		const note = mixed.findings.find((f) => f.title === 'Cloudflare-hosted nameservers not probed');
+		expect(note).toBeDefined();
+		expect(note!.severity).toBe('info');
+		expect(note!.detail).toContain('alec.ns.cloudflare.com');
+		expect(note!.detail).not.toMatch(/is transient|retrying may succeed/i);
+		expect(note!.detail).toMatch(/not a transient failure/i);
+		expect(note!.metadata?.errorKind).toBe('platform_unreachable');
+		expect(note!.metadata?.missingControl).toBeUndefined();
+		expect(note!.metadata?.unprobedNameservers).toEqual(['alec.ns.cloudflare.com']);
+		expect(baseline.findings.some((f) => f.title === 'Cloudflare-hosted nameservers not probed')).toBe(false);
+	});
+
+	it('ignores a malformed unprobedNameservers field from the sidecar rather than echoing it (#1131)', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'example.com',
+			errors: ['raw_dns_probe_cloudflare_network_unreachable'],
+			unprobedNameservers: [{ nameserver: '<script>alert(1)</script>', reason: 'cloudflare_network' }, 'bogus', null],
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('example.com', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		const text = JSON.stringify(result.findings);
+		expect(text).not.toContain('<script>');
+		const finding = result.findings.find((f) => f.title === 'Authoritative DNS infrastructure checks inconclusive');
+		expect(finding!.metadata?.errorKind).toBe('platform_unreachable');
+	});
 });

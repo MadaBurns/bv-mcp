@@ -10,6 +10,18 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Fixed
 
+- **`check_authoritative_dns_infra` no longer calls an unreachable Cloudflare-hosted zone
+  "transient" (#1131).** The raw DNS lane runs on Cloudflare Workers, whose outbound TCP
+  sockets to Cloudflare IP ranges are blocked by platform policy, so every zone on
+  Cloudflare DNS failed with "transient and environmental … retrying may succeed". The
+  sidecar now classifies resolved nameserver addresses against Cloudflare's published
+  IPv4 and (new) IPv6 ranges before connecting: when every nameserver is on Cloudflare it
+  returns `raw_dns_probe_cloudflare_network_unreachable` without opening a socket, and the
+  tool says it is a platform limitation that retrying cannot change (`errorKind:
+  'platform_unreachable'`). In a mixed delegation only the non-Cloudflare nameservers are
+  probed and an `info` finding names the ones that were not. The abstention shape
+  (`checkStatus: 'error'`, `partial: true`, excluded from scoring) and all scores are
+  unchanged. Requires `npm run deploy:infra-probe` for the sidecar half.
 - **`check_lookalikes` now honours `format: "compact"` (#1130).** A large brand
   emits one or two findings per registered candidate — google.com returned 76
   findings in a 69,120-byte body with `format: "compact"`, which MCP clients

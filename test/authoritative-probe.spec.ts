@@ -107,8 +107,8 @@ describe('probeAuthoritativeDns', () => {
 		);
 		const resolveAddresses = vi.fn(async (nameserver: string, type: 'A' | 'AAAA') => {
 			const table: Record<string, Record<'A' | 'AAAA', string[]>> = {
-				'ns1.example.com': { A: ['1.1.1.1'], AAAA: ['2606:4700:4700:0:0:0:0:1111'] },
-				'ns2.example.com': { A: ['1.0.0.1'], AAAA: ['2606:4700:4700:0:0:0:0:1112'] },
+				'ns1.example.com': { A: ['1.1.1.1'], AAAA: ['2001:4860:4860:0:0:0:0:1111'] },
+				'ns2.example.com': { A: ['1.0.0.1'], AAAA: ['2001:4860:4860:0:0:0:0:1112'] },
 			};
 			return table[nameserver]?.[type] ?? [];
 		});
@@ -145,7 +145,7 @@ describe('probeAuthoritativeDns', () => {
 		expect(evidence.hostname).toBe('example.com');
 		expect(evidence.reachability).toEqual({
 			ipv4: { addresses: ['1.1.1.1', '1.0.0.1'], reachable: true },
-			ipv6: { addresses: ['2606:4700:4700:0:0:0:0:1111', '2606:4700:4700:0:0:0:0:1112'], reachable: true },
+			ipv6: { addresses: ['2001:4860:4860:0:0:0:0:1111', '2001:4860:4860:0:0:0:0:1112'], reachable: true },
 			tcp53Reachable: true,
 		});
 		expect(evidence.authoritative).toEqual({ aaFlag: true, recursionAvailable: false, recursionRefused: true });
@@ -359,7 +359,7 @@ describe('probeAuthoritativeDns', () => {
 		);
 		const resolveAddresses = vi.fn(async (nameserver: string, type: 'A' | 'AAAA') => {
 			const index = Number(nameserver.match(/\d+/)?.[0] ?? '0');
-			return type === 'A' ? [`1.1.1.${index}`] : [`2606:4700:4700:0:0:0:0:${1100 + index}`];
+			return type === 'A' ? [`1.1.1.${index}`] : [`2001:4860:4860:0:0:0:0:${1100 + index}`];
 		});
 
 		let active = 0;
@@ -391,7 +391,7 @@ describe('probeAuthoritativeDns', () => {
 		);
 		const resolveAddresses = vi.fn(async (nameserver: string, type: 'A' | 'AAAA') => {
 			const index = Number(nameserver.match(/\d+/)?.[0] ?? '0');
-			return type === 'A' ? [`1.1.1.${index}`] : [`2606:4700:4700:0:0:0:0:${1100 + index}`];
+			return type === 'A' ? [`1.1.1.${index}`] : [`2001:4860:4860:0:0:0:0:${1100 + index}`];
 		});
 		const openSession = vi.fn(async () => ({
 			query: vi.fn(async () => {
@@ -461,5 +461,103 @@ describe('probeAuthoritativeDns', () => {
 
 		expect(openSession).toHaveBeenCalledTimes(1);
 		expect(openSession).toHaveBeenCalledWith('1.1.1.1', expect.any(Number));
+	});
+	// #1131: the Workers runtime blocks outbound TCP sockets to Cloudflare IP ranges, so a zone
+	// hosted on Cloudflare DNS can never be reached from this lane. That is a permanent platform
+	// limit, not a transient no-contact — and connecting anyway only burns the lane budget.
+	it('abstains with a distinct platform-unreachable code, never connecting, when every NS address is on Cloudflare (#1131)', async () => {
+		const recursiveQuery = vi.fn(async (name: string, type: string) =>
+			name === 'blackveilsecurity.com' && type === 'NS' ? ['alec.ns.cloudflare.com', 'diva.ns.cloudflare.com'] : [],
+		);
+		const resolveAddresses = vi.fn(async (nameserver: string, type: 'A' | 'AAAA') => {
+			const table: Record<string, Record<'A' | 'AAAA', string[]>> = {
+				'alec.ns.cloudflare.com': { A: ['108.162.193.59'], AAAA: ['2606:4700:58::adf5:3b3b'] },
+				'diva.ns.cloudflare.com': { A: ['173.245.58.97'], AAAA: ['2803:f800:50::6ca2:c061'] },
+			};
+			return table[nameserver]?.[type] ?? [];
+		});
+		const openSession = vi.fn(async () => {
+			throw new Error('proxy request failed, cannot connect to the specified address');
+		});
+
+		const evidence = await probeAuthoritativeDns('blackveilsecurity.com', { recursiveQuery, resolveAddresses, openSession }, { activeProbes: true });
+
+		expect(openSession).not.toHaveBeenCalled();
+		expect(evidence.errors).toEqual(['raw_dns_probe_cloudflare_network_unreachable']);
+		expect(evidence.errors).not.toContain('raw_dns_probe_no_contact');
+		expect(evidence.unprobedNameservers).toEqual([
+			{ nameserver: 'alec.ns.cloudflare.com', reason: 'cloudflare_network' },
+			{ nameserver: 'diva.ns.cloudflare.com', reason: 'cloudflare_network' },
+		]);
+		// No verdict-shaped field at all — nothing was measured.
+		expect(evidence).not.toHaveProperty('reachability');
+		expect(evidence).not.toHaveProperty('authoritative');
+		expect(evidence).not.toHaveProperty('soaSerial');
+		expect(evidence).not.toHaveProperty('dnssec');
+	});
+
+	it('probes only the non-Cloudflare nameservers of a mixed delegation and notes the rest as not probed (#1131)', async () => {
+		const recursiveQuery = vi.fn(async (name: string, type: string) =>
+			name === 'example.com' && type === 'NS' ? ['alec.ns.cloudflare.com', 'ns1.example.net'] : [],
+		);
+		const resolveAddresses = vi.fn(async (nameserver: string, type: 'A' | 'AAAA') => {
+			const table: Record<string, Record<'A' | 'AAAA', string[]>> = {
+				'alec.ns.cloudflare.com': { A: ['108.162.193.59'], AAAA: ['2606:4700:58::adf5:3b3b'] },
+				'ns1.example.net': { A: ['216.239.32.10'], AAAA: [] },
+			};
+			return table[nameserver]?.[type] ?? [];
+		});
+		const openSession = vi.fn(async () => ({
+			query: vi.fn(async (_name: string, type: number) =>
+				type === RecordType.SOA
+					? response({ aa: true, answers: [{ name: 'example.com', type: RecordType.SOA, data: '7' }] })
+					: response({ aa: true }),
+			),
+			close: vi.fn(async () => undefined),
+		}));
+
+		const evidence = await probeAuthoritativeDns('example.com', { recursiveQuery, resolveAddresses, openSession }, { activeProbes: false });
+
+		expect(openSession.mock.calls.map((call) => (call as unknown[])[0])).toEqual(['216.239.32.10']);
+		expect(evidence.errors).toBeUndefined();
+		expect(evidence.authoritative?.aaFlag).toBe(true);
+		expect(evidence.soaSerial).toEqual({ serialsByNameserver: { 'ns1.example.net': 7 }, consistent: true });
+		// The Cloudflare addresses were never connected to, so they are not reported as unreachable.
+		expect(evidence.reachability).toEqual({ ipv4: { addresses: ['216.239.32.10'], reachable: true }, tcp53Reachable: true });
+		expect(evidence.unprobedNameservers).toEqual([{ nameserver: 'alec.ns.cloudflare.com', reason: 'cloudflare_network' }]);
+	});
+
+	it('keeps the no-contact code (and the unprobed note) when the only non-Cloudflare nameserver fails in a mixed delegation (#1131)', async () => {
+		const recursiveQuery = vi.fn(async (name: string, type: string) =>
+			name === 'example.com' && type === 'NS' ? ['alec.ns.cloudflare.com', 'ns1.example.net'] : [],
+		);
+		const resolveAddresses = vi.fn(async (nameserver: string, type: 'A' | 'AAAA') => {
+			if (type !== 'A') return [];
+			return nameserver === 'ns1.example.net' ? ['216.239.32.10'] : ['108.162.193.59'];
+		});
+		const openSession = vi.fn(async () => {
+			throw new Error('connection refused');
+		});
+
+		const evidence = await probeAuthoritativeDns('example.com', { recursiveQuery, resolveAddresses, openSession }, { activeProbes: false });
+
+		expect(openSession).toHaveBeenCalledTimes(1);
+		expect(evidence.errors).toEqual(['raw_dns_probe_no_contact']);
+		expect(evidence.unprobedNameservers).toEqual([{ nameserver: 'alec.ns.cloudflare.com', reason: 'cloudflare_network' }]);
+	});
+
+	it('leaves a delegation with no Cloudflare addresses untouched (#1131)', async () => {
+		const recursiveQuery = vi.fn(async (name: string, type: string) => (name === 'example.com' && type === 'NS' ? ['ns1.example.net'] : []));
+		const resolveAddresses = vi.fn(async (_nameserver: string, type: 'A' | 'AAAA') => (type === 'A' ? ['216.239.32.10'] : ['2001:4860:4802:32::a']));
+		const openSession = vi.fn(async () => ({
+			query: vi.fn(async () => response({ aa: true })),
+			close: vi.fn(async () => undefined),
+		}));
+
+		const evidence = await probeAuthoritativeDns('example.com', { recursiveQuery, resolveAddresses, openSession }, { activeProbes: false });
+
+		expect(openSession).toHaveBeenCalledTimes(2);
+		expect(evidence).not.toHaveProperty('unprobedNameservers');
+		expect(evidence.errors).toBeUndefined();
 	});
 });
