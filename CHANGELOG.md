@@ -25,6 +25,28 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   such a domain "accepts inbound email". Null MX and loopback handling are
   unchanged. `SCORING_MODEL_VERSION` 1.37.0 → 1.38.0; `@blackveil/dns-checks`
   and `PARITY_CORPUS_VERSION` 1.55.0 → 1.56.0 (bv-web-prod re-vendor required).
+- **`brand_audit_get_report` without `target` now returns a real audit-level
+  aggregate instead of `aggregate: null` under `passed: true, score: 100`
+  (#1129).** Nothing writes `brand_audits.results_json`, so the audit-level call
+  on a completed audit came back empty with a clean verdict — indistinguishable
+  from "computed and empty". When `results_json` is absent the aggregate is now
+  derived on read from the per-target rows: `targetStatusCounts`, a per-target
+  summary (status, error, `hasPdf`, bucket counts, score), and a bucket
+  `rollup` counted only over targets that completed with a measured result. The
+  verdict follows the worst measured target, and the result is `partial` when
+  any target was not measured. With no measured target the call abstains
+  (`aggregateUnavailable: true`, `checkStatus: 'error'`, score 0,
+  `passed: false`, `partial: true`) rather than fabricating a pass.
+  A stored `results_json` is still returned verbatim. [no-scoring-change]
+- **`deploy:whois` and `deploy:infra-probe` failed on a fresh release worktree** (#1115).
+  Neither built `@blackveil/dns-checks`, whose `dist/` is a build output, so wrangler could
+  not resolve the package after a clean `npm ci` (`Could not resolve
+  "@blackveil/dns-checks/whois"`); the main checkout hid it because an earlier build had
+  left `dist/` behind. Both now run `npm -w packages/dns-checks run build` after the
+  integrity gate, matching `deploy:prod`. bv-infra-probe imports the package transitively
+  (`src/lib/dns.ts` → `dns-transport.ts`). A new spec derives each `deploy:*` script's
+  Worker entry from its wrangler config, walks the import graph, and fails if an importer
+  is bundled before the build step.
 
 ## [3.91.0] - 2026-09-24
 
