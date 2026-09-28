@@ -9,7 +9,7 @@
  * Licensed under BUSL-1.1
  */
 
-import type { CheckResult, DNSQueryFunction, FetchFunction, Finding } from '../types';
+import type { CheckResult, DNSQueryFunction, FetchFunction, Finding, RawDNSQueryFunction } from '../types';
 import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
 import { KNOWN_SUBDOMAINS, getNoTakeoverFinding, scanSubdomainForTakeoverInternal } from './subdomain-takeover-analysis';
 
@@ -38,6 +38,15 @@ export interface SubdomainTakeoverOptions {
 	 * rather than claiming full coverage.
 	 */
 	aRecordVectorSampleCap?: number;
+	/**
+	 * Optional raw-DoH-response query function. When supplied, it REPLACES the plain
+	 * `queryDNS` calls on the CNAME/A/AAAA lookups this check performs, so the dangling
+	 * record's answer TTL can be captured as finding evidence metadata at zero extra
+	 * subrequest cost (mirrors `check-caa.ts`'s `rawQueryDNS` option). Omitted entirely,
+	 * behaviour is byte-identical to before this option existed — TTL is simply absent
+	 * from findings. TTL is evidence only; it is never a score input.
+	 */
+	rawQueryDNS?: RawDNSQueryFunction;
 }
 
 /**
@@ -78,6 +87,7 @@ export async function checkSubdomainTakeover(
 				fetchFn,
 				timeout,
 				aRecordCap === undefined || index < aRecordCap,
+				options?.rawQueryDNS,
 			)),
 		})),
 	);

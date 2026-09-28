@@ -4,8 +4,10 @@ import { describe, expect, it, afterEach, vi } from 'vitest';
 import {
 	probeHttpFingerprint,
 	scanSubdomainForTakeover,
+	scanSubdomainForTakeoverInternal,
 	getNoTakeoverFinding,
 } from '../packages/dns-checks/src/checks/subdomain-takeover-analysis';
+import type { RawDNSQueryFunction } from '../packages/dns-checks/src/types';
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -89,6 +91,78 @@ describe('subdomain-takeover-analysis', () => {
 		expect(findings[0].metadata?.evidenceStrength).toBe('provider_deprovisioned_fingerprint');
 		expect(findings[0].metadata?.proofRequired).toBe('authorized_proof_of_control');
 		expect(findings[0].detail).toContain('not proof of exploitability');
+	});
+
+	describe('answer TTL evidence metadata (SQ-226)', () => {
+		it('omits ttl from metadata when no rawQueryDNS is supplied (unchanged default behaviour)', async () => {
+			const dns = makeDNS({
+				'preview.example.com|CNAME': ['cname.vercel-dns.com.'],
+				'cname.vercel-dns.com|A': [],
+			});
+			const fetchFn = vi.fn();
+			const findings = await scanSubdomainForTakeover('example.com', 'preview', dns, fetchFn);
+			expect(findings).toHaveLength(1);
+			expect(findings[0].metadata?.ttl).toBeUndefined();
+		});
+
+		it('carries the dangling CNAME answer TTL into finding metadata when rawQueryDNS is supplied', async () => {
+			const dns = makeDNS({ 'cname.vercel-dns.com|A': [] });
+			const rawQueryDNS: RawDNSQueryFunction = vi.fn(async (name: string, type: string) => {
+				if (name === 'preview.example.com' && type === 'CNAME') {
+					return { Answer: [{ type: 5, data: 'cname.vercel-dns.com.', TTL: 120 }] };
+				}
+				return {};
+			});
+			const fetchFn = vi.fn();
+			const { findings } = await scanSubdomainForTakeoverInternal('example.com', 'preview', dns, fetchFn, undefined, true, rawQueryDNS);
+			expect(findings).toHaveLength(1);
+			expect(findings[0].metadata?.ttl).toBe(120);
+		});
+
+		it('carries the CNAME answer TTL into the provider-fingerprint finding metadata', async () => {
+			const dns = makeDNS({ 'example.github.io|A': ['185.199.108.153'] });
+			const rawQueryDNS: RawDNSQueryFunction = vi.fn(async (name: string, type: string) => {
+				if (name === 'docs.example.com' && type === 'CNAME') {
+					return { Answer: [{ type: 5, data: 'example.github.io.', TTL: 300 }] };
+				}
+				return {};
+			});
+			const fetchFn = fetchReturning("<html><body>There isn't a GitHub Pages site here.</body></html>");
+			const { findings } = await scanSubdomainForTakeoverInternal('example.com', 'docs', dns, fetchFn, undefined, true, rawQueryDNS);
+			expect(findings).toHaveLength(1);
+			expect(findings[0].metadata?.ttl).toBe(300);
+		});
+
+		it('carries the A-record answer TTL into the A-record-vector finding metadata', async () => {
+			const rawQueryDNS: RawDNSQueryFunction = vi.fn(async (name: string, type: string) => {
+				if (name === 'orphan.example.com' && type === 'CNAME') return {};
+				if (name === 'orphan.example.com' && type === 'A') {
+					return { Answer: [{ type: 1, data: '1.2.3.4', TTL: 60 }] };
+				}
+				return {};
+			});
+			const dns = makeDNS({});
+			const fetchFn = fetchReturning('the requested domain is not authorized on cloudways server');
+			const { findings } = await scanSubdomainForTakeoverInternal('example.com', 'orphan', dns, fetchFn, undefined, true, rawQueryDNS);
+			const finding = findings.find((f) => f.metadata?.vector === 'a_record');
+			expect(finding).toBeDefined();
+			expect(finding!.metadata?.ttl).toBe(60);
+		});
+
+		it('never emits ttl:0 and omits it when the raw answer carries no TTL', async () => {
+			const dns = makeDNS({ 'cname.vercel-dns.com|A': [] });
+			const rawQueryDNS: RawDNSQueryFunction = vi.fn(async (name: string, type: string) => {
+				if (name === 'preview.example.com' && type === 'CNAME') {
+					// No TTL field on the answer — must not surface as ttl: 0.
+					return { Answer: [{ type: 5, data: 'cname.vercel-dns.com.' }] };
+				}
+				return {};
+			});
+			const fetchFn = vi.fn();
+			const { findings } = await scanSubdomainForTakeoverInternal('example.com', 'preview', dns, fetchFn, undefined, true, rawQueryDNS);
+			expect(findings).toHaveLength(1);
+			expect(findings[0].metadata?.ttl).toBeUndefined();
+		});
 	});
 
 	it('builds the stable no-takeover info finding', () => {
