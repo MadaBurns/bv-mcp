@@ -33,12 +33,15 @@ import {
 } from '../sidecar-deploy-drift';
 
 /**
- * The read-only wrangler invocation, as data so the audit can assert it
- * verbatim. It must stay a `deployments list` — no `deploy`, no `versions`,
- * and no `--name` guessing (the Worker name comes from the config, which is
- * also what the deploy commands use, so the two can never disagree).
+ * The read-only wrangler invocation prefix, as data so the audit can assert it
+ * verbatim. It must stay a `deployments list` — no `deploy`, no `versions`.
+ * Which Worker to read is appended from `SidecarTarget.deploymentsSelector`:
+ * `--config <jsonc>` (bv-whois) or an EXPLICIT `--name <worker>` (bv-infra-probe,
+ * whose config is a cf `cloudflare.config.ts` Wrangler cannot load). Names are
+ * never inferred; the audit pins each one to the `name` in its config, which is
+ * also what the deploy commands use, so the read and the write cannot disagree.
  */
-export const WRANGLER_DEPLOYMENTS_ARGV = ['wrangler', 'deployments', 'list', '--json', '--config'] as const;
+export const WRANGLER_DEPLOYMENTS_ARGV = ['wrangler', 'deployments', 'list', '--json'] as const;
 
 /** `git log` format: `<sha>\t<committer date ISO>\t<subject>`; `%x09` is a literal tab. */
 export const GIT_LOG_FORMAT = '--format=%H%x09%cI%x09%s';
@@ -84,7 +87,10 @@ export function probeSidecar(target: SidecarTarget, spawnSync: SpawnSyncLike = n
 	let deployedAtMs: number | null = null;
 	let unverifiedReason: string | null = null;
 
-	const listed = spawnSync('npx', [...WRANGLER_DEPLOYMENTS_ARGV, target.configPath], { encoding: 'utf8', timeout: WRANGLER_TIMEOUT_MS });
+	const listed = spawnSync('npx', [...WRANGLER_DEPLOYMENTS_ARGV, ...target.deploymentsSelector], {
+		encoding: 'utf8',
+		timeout: WRANGLER_TIMEOUT_MS,
+	});
 	if (isSpawnTimeout(listed)) {
 		unverifiedReason = `\`wrangler deployments list\` timed out after ${WRANGLER_TIMEOUT_MS}ms`;
 	} else if (listed.error) {
@@ -173,7 +179,10 @@ export function verifyHeadContainsUpstream(spawnSync: SpawnSyncLike = nodeSpawnS
 		return `could not fetch ${UPSTREAM}: ${fetched.error ? fetched.error.message : firstStderrLine(fetched.stderr)}`;
 	}
 
-	const mergeBase = spawnSync('git', ['merge-base', '--is-ancestor', UPSTREAM, 'HEAD'], { encoding: 'utf8', timeout: GIT_LOCAL_TIMEOUT_MS });
+	const mergeBase = spawnSync('git', ['merge-base', '--is-ancestor', UPSTREAM, 'HEAD'], {
+		encoding: 'utf8',
+		timeout: GIT_LOCAL_TIMEOUT_MS,
+	});
 	if (isSpawnTimeout(mergeBase)) {
 		return `\`git merge-base --is-ancestor ${UPSTREAM} HEAD\` timed out after ${GIT_LOCAL_TIMEOUT_MS}ms`;
 	}

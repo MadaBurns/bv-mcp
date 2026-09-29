@@ -35,8 +35,18 @@
 export interface SidecarTarget {
 	/** Wrangler `name` of the deployed Worker. Must match the config's `name`. */
 	worker: string;
-	/** Repo-relative Wrangler config, passed to `wrangler deployments list --config`. */
+	/**
+	 * Repo-relative config that declares this Worker (shown in the block message; the audit proves it
+	 * exists and names `worker`). A Wrangler jsonc for bv-whois; `cloudflare.config.ts` for the
+	 * `cf migrate` package bv-infra-probe, which Wrangler itself cannot load.
+	 */
 	configPath: string;
+	/**
+	 * How `wrangler deployments list --json` is told which Worker to read: `['--config', <jsonc>]`
+	 * when a Wrangler config names it, `['--name', <worker>]` when only a cf config does (measured on
+	 * wrangler 4.143.0: `--config <cloudflare.config.ts>` fails with "You need to provide a name").
+	 */
+	deploymentsSelector: readonly string[];
 	/**
 	 * Repo-relative paths whose commits constitute this Worker's source. A commit
 	 * touching any of them that is newer than the live deployment is drift.
@@ -58,6 +68,7 @@ export const SIDECAR_TARGETS: readonly SidecarTarget[] = [
 	{
 		worker: 'bv-whois',
 		configPath: 'packages/bv-whois/wrangler.jsonc',
+		deploymentsSelector: ['--config', 'packages/bv-whois/wrangler.jsonc'],
 		// #981 item 3: bv-whois imports `@blackveil/dns-checks/whois`, so a change
 		// under that vendored subtree changes the deployed bundle without touching
 		// `packages/bv-whois/src` at all. The config and package manifest are
@@ -73,7 +84,10 @@ export const SIDECAR_TARGETS: readonly SidecarTarget[] = [
 	},
 	{
 		worker: 'bv-infra-probe',
-		configPath: 'wrangler.infra-probe.jsonc',
+		configPath: 'packages/bv-infra-probe/cloudflare.config.ts',
+		// The name is pinned here, next to the config, and the audit proves it equals the `name` in
+		// cloudflare.config.ts — so the read and the `cf deploy` write cannot disagree about the Worker.
+		deploymentsSelector: ['--name', 'bv-infra-probe'],
 		// The entrypoint plus the module tree it bundles. `authoritative-dns-infra`
 		// is shared with the main Worker, which is precisely why it belongs here:
 		// a change there ships to the MCP Worker on the next `deploy:prod` and to

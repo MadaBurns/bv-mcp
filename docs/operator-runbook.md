@@ -62,9 +62,11 @@ runs — `check:deploy-freshness` (checkout not behind `origin/main`) and
 (`deploy:whois` runs `wrangler deploy`; `deploy:infra-probe` runs `cf deploy`
 from `packages/bv-infra-probe/`, a config-only package whose
 `cloudflare.config.ts` points at the unmoved `src/workers/infra-probe.ts`).
-`wrangler.infra-probe.jsonc` is retained as the rollback config
-(`npx wrangler rollback --config wrangler.infra-probe.jsonc`) until the
-follow-up retires it. Neither runs `check:sidecar-freshness`: that gate exists to block the
+The root `wrangler.infra-probe.jsonc` is retired (SQ-240): to roll the probe back use
+`npx wrangler rollback --name bv-infra-probe` (no config file needed), and the
+`check:sidecar-freshness` drift gate reads its live deployment with
+`wrangler deployments list --json --name bv-infra-probe` (Wrangler cannot load a cf
+`cloudflare.config.ts`). Neither sidecar deploy runs `check:sidecar-freshness`: that gate exists to block the
 MCP Worker deploy on the sidecars being current, so wiring it into a sidecar's
 own deploy would block the exact command that fixes staleness.
 
