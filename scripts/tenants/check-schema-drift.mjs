@@ -46,7 +46,7 @@
  * parsing/comparison functions plus the full orchestration against fixtures,
  * no network. We avoid static `import`s from `node:*` (mirrors
  * `provision-tenant.mjs`) so this module stays importable under
- * `@cloudflare/vitest-pool-workers`, which has no Node built-ins; the CLI
+ * `@cloudflare/vitest-plugin`, which has no Node built-ins; the CLI
  * bootstrap at the bottom dynamic-imports them only when run directly.
  */
 
@@ -410,7 +410,7 @@ export function runSchemaDriftCheck(opts, deps) {
 
 // Only run the CLI when invoked directly (node scripts/tenants/check-schema-drift.mjs ...).
 // When imported by a test, the `node:*` modules are NOT loaded — keeping the
-// module compatible with the @cloudflare/vitest-pool-workers runtime.
+// module compatible with the @cloudflare/vitest-plugin runtime.
 const isDirectInvocation = (() => {
 	try {
 		if (typeof process === 'undefined' || !process?.argv?.[1]) return false;

@@ -73,7 +73,7 @@ jobs:
       - name: Audit for moderate+ vulnerabilities
         # --omit=dev: the deployed artifact is the Cloudflare Worker, which ships
         # only production dependencies. Dev-tooling advisories (sharp/miniflare/
-        # vitest-pool-workers/wrangler) never reach the runtime and shouldn't block
+        # vitest-plugin/wrangler) never reach the runtime and shouldn't block
         # merges; they remain tracked via Dependabot. Production deps are gated here.
         run: npm audit --omit=dev --audit-level=moderate
 

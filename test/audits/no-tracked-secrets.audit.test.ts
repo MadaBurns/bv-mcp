@@ -8,7 +8,7 @@
 // match a generic pattern. A first-class audit makes the BV-key shape itself a
 // hard fail regardless of surrounding heuristics.
 //
-// Implementation: tests run in the `@cloudflare/vitest-pool-workers` runtime,
+// Implementation: tests run in the `@cloudflare/vitest-plugin` runtime,
 // which has no `node:fs` / `node:child_process`. We use Vite's bulk `?raw`
 // import via `import.meta.glob` — the file list is resolved at transform time
 // (host Node) and the contents are bundled into the test module.

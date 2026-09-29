@@ -1,4 +1,23 @@
 {
+  "permissions": {
+    "allow": [
+      "Bash(cf --version)",
+      "Bash(cf analytics_engine sql query:*)",
+      "Bash(cf auth whoami)",
+      "Bash(cf cli search:*)",
+      "Bash(cf d1 get:*)",
+      "Bash(cf d1 list:*)",
+      "Bash(cf dns records list:*)",
+      "Bash(cf kv namespaces list:*)",
+      "Bash(cf queues get:*)",
+      "Bash(cf queues list:*)",
+      "Bash(cf schema:*)",
+      "Bash(cf workers deployments list:*)",
+      "Bash(cf workers secrets list:*)",
+      "Bash(cf workers versions get:*)",
+      "Bash(cf workers versions list:*)"
+    ]
+  },
   "extraKnownMarketplaces": {
     "eigenwise-toolshed": {
       "source": {

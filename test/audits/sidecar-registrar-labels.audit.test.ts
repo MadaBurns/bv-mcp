@@ -20,7 +20,7 @@
  * checklists. Without this audit a regression could silently re-leak either
  * label into the next sidecar batch.
  *
- * Implementation: tests run in the `@cloudflare/vitest-pool-workers` runtime,
+ * Implementation: tests run in the `@cloudflare/vitest-plugin` runtime,
  * which has no `node:fs`. We use Vite's `import.meta.glob` to materialize the
  * sidecar JSON at transform time (host Node) and embed them into the test
  * module. The `reports/` directory is gitignored, so in CI the glob is empty

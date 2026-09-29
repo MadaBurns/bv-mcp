@@ -56,7 +56,7 @@
  * `deps.stderr`. The test imports `provisionTenant` and helper pure functions
  * and passes a fake `deps` object — no real wrangler calls, no real fs writes.
  * We avoid static `import`s from `node:*` because tests execute under
- * `@cloudflare/vitest-pool-workers`, which has no Node built-ins; the CLI
+ * `@cloudflare/vitest-plugin`, which has no Node built-ins; the CLI
  * bootstrap at the bottom of this file dynamic-imports them only when run
  * directly.
  */
@@ -521,7 +521,7 @@ export function listMigrationFiles(deps) {
 
 // Only run the CLI when invoked directly (node scripts/tenants/provision-tenant.mjs ...).
 // When imported by a test, the `node:*` modules are NOT loaded — keeping the
-// module compatible with the @cloudflare/vitest-pool-workers runtime.
+// module compatible with the @cloudflare/vitest-plugin runtime.
 const isDirectInvocation = (() => {
 	try {
 		if (typeof process === 'undefined' || !process?.argv?.[1]) return false;

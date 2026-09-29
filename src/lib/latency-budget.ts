@@ -5,7 +5,7 @@
  *
  * ## Measurement methodology (C-perf, 2026-06-23)
  *
- * All numbers were measured inside the @cloudflare/vitest-pool-workers runtime
+ * All numbers were measured inside the @cloudflare/vitest-pool-workers runtime (now @cloudflare/vitest-plugin)
  * using a deterministic fetch mock that introduces a FIXED 80ms delay per DNS
  * round-trip (Cloudflare DoH p50 observed in prod). 20 samples, sorted, p50/p95
  * extracted. The mock removes network jitter so the numbers reflect pure

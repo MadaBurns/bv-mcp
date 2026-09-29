@@ -1,7 +1,7 @@
 {
 	"extends": "../tsconfig.json",
 	"compilerOptions": {
-		"types": ["@cloudflare/vitest-pool-workers/types", "vite/client"]
+		"types": ["@cloudflare/vitest-plugin/types", "vite/client"]
 	},
 	/* The Cloudflare env types are generated HERMETICALLY by scripts/ci/typecheck-tests.mjs (issue
 	   #1068) into node_modules/.cache/, NOT read from the repo-root worker-configuration.d.ts —
