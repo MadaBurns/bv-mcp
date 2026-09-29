@@ -158,9 +158,10 @@ Two exceptions worth remembering because they bite during unrelated work:
 deploy `bv-infra-probe` (`npm run deploy:infra-probe` when its source changes —
 it now runs `cf deploy` from `packages/bv-infra-probe/`, a config-only package
 whose `cloudflare.config.ts` points at the unmoved `src/workers/infra-probe.ts`;
-`wrangler.infra-probe.jsonc` is RETAINED as the rollback config,
-`npx wrangler rollback --config wrangler.infra-probe.jsonc`, and as the sidecar
-drift gate's read path, until the follow-up retires it. ⚠️ cf finds wrangler only
+the root `wrangler.infra-probe.jsonc` is RETIRED (SQ-240): roll back with
+`npx wrangler rollback --name bv-infra-probe`, and the sidecar drift gate reads
+this Worker by an explicit pinned `--name bv-infra-probe` because Wrangler cannot
+load a cf `cloudflare.config.ts`. ⚠️ cf finds wrangler only
 at `packages/bv-infra-probe/node_modules/wrangler`, so that package pins a wrangler
 the root does not hold — bumping the pin to match the root re-hoists it and breaks
 `cf build`; the infra-probe audit asserts the nested lockfile entry).

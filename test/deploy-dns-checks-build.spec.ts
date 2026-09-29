@@ -146,7 +146,6 @@ describe('deploy scripts build @blackveil/dns-checks before bundling an importer
 		expect(Object.keys(WRANGLER_CONFIGS)).toEqual(
 			expect.arrayContaining([
 				'../wrangler.jsonc',
-				'../wrangler.infra-probe.jsonc',
 				'../packages/bv-whois/wrangler.jsonc',
 				'../packages/bv-infra-probe/cloudflare.config.ts',
 			]),

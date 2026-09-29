@@ -41,14 +41,15 @@ import {
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
 
 const WHOIS = SIDECAR_TARGETS[0]!;
+const INFRA_PROBE = SIDECAR_TARGETS[1]!;
 
 type SpawnCall = [string, string[], { encoding: 'utf8'; timeout?: number }];
 type SpawnResult = { status: number | null; stdout?: string; stderr?: string; error?: Error; signal?: NodeJS.Signals | null };
 
 function fakeSpawn(handler: (command: string, args: string[]) => SpawnResult) {
-	return vi.fn((command: string, args: string[], _options: { encoding: 'utf8'; timeout?: number }) => handler(command, args)) as unknown as ((
-		...call: SpawnCall
-	) => SpawnResult) & { mock: { calls: SpawnCall[] } };
+	return vi.fn((command: string, args: string[], _options: { encoding: 'utf8'; timeout?: number }) =>
+		handler(command, args),
+	) as unknown as ((...call: SpawnCall) => SpawnResult) & { mock: { calls: SpawnCall[] } };
 }
 
 const OK_DEPLOYMENTS = JSON.stringify([{ id: 'v1', created_on: '2026-05-20T22:01:09.022895Z' }]);
@@ -66,17 +67,47 @@ describe('sidecar drift CLI — process contract', () => {
 		const [command, args] = spawn.mock.calls[0]!;
 		expect(command).toBe('npx');
 		expect(args).toEqual(['wrangler', 'deployments', 'list', '--json', '--config', WHOIS.configPath]);
-		// Explicitly: nothing that mutates, and no name guessing. The Worker name
-		// comes from the config, which is also what the deploy command uses, so
-		// the read and the write can never disagree about which Worker this is.
+		// Explicitly: nothing that mutates, and bv-whois reads through its config —
+		// the same file its deploy command uses, so the read and the write can
+		// never disagree about which Worker this is.
 		expect(args).not.toContain('deploy');
 		expect(args).not.toContain('upload');
 		expect(args).not.toContain('versions');
 		expect(args).not.toContain('--name');
 	});
 
+	it('reads bv-infra-probe by its explicit pinned `--name` (Wrangler cannot load its cf config)', () => {
+		const spawn = fakeSpawn((command) => ({
+			status: 0,
+			stdout: command === 'npx' ? OK_DEPLOYMENTS : '',
+			stderr: '',
+		}));
+
+		probeSidecar(INFRA_PROBE, spawn);
+
+		const [command, args] = spawn.mock.calls[0]!;
+		expect(command).toBe('npx');
+		expect(args).toEqual(['wrangler', 'deployments', 'list', '--json', '--name', 'bv-infra-probe']);
+		expect(args).not.toContain('--config');
+		expect(args).not.toContain('deploy');
+		expect(args).not.toContain('upload');
+		expect(args).not.toContain('versions');
+	});
+
+	it('every target selects its Worker by exactly one of --config <its config> or --name <its worker>', () => {
+		for (const target of SIDECAR_TARGETS) {
+			const [flag, value, ...rest] = target.deploymentsSelector;
+			expect(rest, `${target.worker} selector has extra args`).toEqual([]);
+			if (flag === '--config') expect(value).toBe(target.configPath);
+			else {
+				expect(flag).toBe('--name');
+				expect(value).toBe(target.worker);
+			}
+		}
+	});
+
 	it('exports the argv prefix as data so it cannot drift silently', () => {
-		expect([...WRANGLER_DEPLOYMENTS_ARGV]).toEqual(['wrangler', 'deployments', 'list', '--json', '--config']);
+		expect([...WRANGLER_DEPLOYMENTS_ARGV]).toEqual(['wrangler', 'deployments', 'list', '--json']);
 	});
 
 	it('reads git history for the watched paths against HEAD, not origin/main', () => {
@@ -314,6 +345,7 @@ describe('probeSidecar uses the merge date, not the side-branch committer date (
 			const target: SidecarTarget = {
 				worker: 'fixture-sidecar',
 				configPath: 'fixture.jsonc',
+				deploymentsSelector: ['--config', 'fixture.jsonc'],
 				watchPaths: ['watched.txt'],
 				deployCommand: 'npm run deploy:fixture',
 			};
@@ -375,7 +407,11 @@ describe('isInvokedDirectly — argv guard resists a symlinked invocation path (
 
 describe('SIDECAR_TARGETS is an SSOT against the filesystem', () => {
 	function wranglerName(configPath: string): string | undefined {
-		const config = parseJsonc(readFileSync(resolve(REPO_ROOT, configPath), 'utf8')) as { name?: unknown };
+		const source = readFileSync(resolve(REPO_ROOT, configPath), 'utf8');
+		// A `cf migrate` package declares its Worker in cloudflare.config.ts (`worker: { name: '…' }`),
+		// not in a Wrangler jsonc.
+		if (configPath.endsWith('.ts')) return source.match(/\bname:\s*['"]([^'"]+)['"]/)?.[1];
+		const config = parseJsonc(source) as { name?: unknown };
 		return typeof config.name === 'string' ? config.name : undefined;
 	}
 
@@ -401,7 +437,7 @@ describe('SIDECAR_TARGETS is an SSOT against the filesystem', () => {
 		const tracked = execFileSync('git', ['ls-files'], { cwd: REPO_ROOT, encoding: 'utf8' })
 			.split('\n')
 			.map((line) => line.trim())
-			.filter((line) => /(^|\/)wrangler[\w.-]*\.jsonc$/.test(line));
+			.filter((line) => /(^|\/)wrangler[\w.-]*\.jsonc$|(^|\/)cloudflare\.config\.ts$/.test(line));
 
 		expect(tracked.length, 'git ls-files found no Wrangler configs — the filter is broken').toBeGreaterThan(1);
 

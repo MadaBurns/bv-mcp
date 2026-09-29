@@ -94,7 +94,7 @@ npm publish --access public                      # root pkg (blackveil-dns) - on
 npm publish -w packages/dns-checks --access public  # REQUIRED TOO: the root publish does NOT ship the workspace package
 npm run deploy:prod              # injects private bindings, deploys the MCP Worker ONLY
 npm run deploy:whois             # sidecar: bv-whois (packages/bv-whois/wrangler.jsonc)
-npm run deploy:infra-probe       # sidecar: bv-infra-probe (cf deploy from packages/bv-infra-probe/; wrangler.infra-probe.jsonc retained for rollback)
+npm run deploy:infra-probe       # sidecar: bv-infra-probe (cf deploy from packages/bv-infra-probe/; rollback: npx wrangler rollback --name bv-infra-probe)
 mcp-publisher publish            # MCP Registry, DNS-TXT-gated namespace
 ```
 

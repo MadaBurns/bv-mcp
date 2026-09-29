@@ -2,7 +2,6 @@
 
 import { describe, expect, it } from 'vitest';
 import mainWranglerSource from '../../wrangler.jsonc?raw';
-import infraProbeWranglerSource from '../../wrangler.infra-probe.jsonc?raw';
 import whoisWranglerSource from '../../packages/bv-whois/wrangler.jsonc?raw';
 import infraProbeCfConfigSource from '../../packages/bv-infra-probe/cloudflare.config.ts?raw';
 import infraProbeWranglerToolingSource from '../../packages/bv-infra-probe/wrangler.config.ts?raw';
@@ -18,32 +17,18 @@ interface WranglerConfig {
 }
 
 const mainConfig = JSON.parse(mainWranglerSource) as WranglerConfig;
-const infraProbeConfig = JSON.parse(infraProbeWranglerSource) as WranglerConfig;
 const whoisConfig = JSON.parse(whoisWranglerSource) as WranglerConfig;
 
 describe('infra probe wrangler wiring', () => {
-	it('binds the main MCP worker to the infra probe worker', () => {
-		expect(infraProbeConfig.name).toBe('bv-infra-probe');
-		expect(mainConfig.services).toContainEqual({
-			binding: 'BV_INFRA_PROBE',
-			service: infraProbeConfig.name,
-		});
+	it('keeps the bv-whois sidecar off public workers.dev and preview routes', () => {
+		expect(whoisConfig.workers_dev, `${whoisConfig.name} must not expose a workers.dev route`).toBe(false);
+		expect(whoisConfig.preview_urls, `${whoisConfig.name} must not expose preview URLs`).toBe(false);
 	});
 
-	it('keeps the infra probe worker on the same compatibility date as the MCP worker', () => {
-		expect(infraProbeConfig.compatibility_date).toBe(mainConfig.compatibility_date);
-	});
-
-	it('keeps service-binding-only sidecars off public workers.dev and preview routes', () => {
-		for (const config of [infraProbeConfig, whoisConfig]) {
-			expect(config.workers_dev, `${config.name} must not expose a workers.dev route`).toBe(false);
-			expect(config.preview_urls, `${config.name} must not expose preview URLs`).toBe(false);
-		}
-	});
-
-	// `deploy:infra-probe` now runs `cf deploy` from packages/bv-infra-probe/ (config only — the entry stays in
-	// src/). The same invariants must hold on the generated TS config; the root jsonc is retained (rollback path +
-	// the sidecar drift gate's read), so the two must not drift while both exist.
+	// `deploy:infra-probe` runs `cf deploy` from packages/bv-infra-probe/ (config only — the entry stays in
+	// src/). This TS config is the single source of truth for the Worker now that the root
+	// wrangler.infra-probe.jsonc is retired (SQ-240); the sidecar drift gate reads it via an explicit
+	// `--name` pinned in scripts/sidecar-deploy-drift.ts and audited against `name` here.
 	describe('packages/bv-infra-probe/cloudflare.config.ts (cf deploy)', () => {
 		const cfName = /\bname:\s*['"]([^'"]+)['"]/.exec(infraProbeCfConfigSource)?.[1];
 		const cfCompatibilityDate = /\bcompatibilityDate:\s*['"]([^'"]+)['"]/.exec(infraProbeCfConfigSource)?.[1];
@@ -73,11 +58,6 @@ describe('infra probe wrangler wiring', () => {
 
 		it('uploads source maps via the wrangler tooling config', () => {
 			expect(infraProbeWranglerToolingSource).toMatch(/\buploadSourceMaps:\s*true\b/);
-		});
-
-		it('agrees with the retained wrangler.infra-probe.jsonc on name and compatibility date', () => {
-			expect(cfName).toBe(infraProbeConfig.name);
-			expect(cfCompatibilityDate).toBe(infraProbeConfig.compatibility_date);
 		});
 
 		// cf discovers wrangler ONLY at <package>/node_modules/wrangler (no upward resolution). npm hoists a
