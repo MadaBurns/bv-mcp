@@ -266,6 +266,10 @@ describe('SIDECAR_TARGETS shape', () => {
 			'src/lib/scoring.ts',
 			'src/lib/response-body.ts',
 			'src/lib/cdn-fallback-detection.ts', // #1131: Cloudflare range classification in the authoritative lane
+			// deploy:infra-probe runs `cf deploy` from this package: its config + manifest are deploy inputs.
+			'packages/bv-infra-probe/cloudflare.config.ts',
+			'packages/bv-infra-probe/wrangler.config.ts',
+			'packages/bv-infra-probe/package.json',
 		]) {
 			expect(infraProbe.watchPaths, `bv-infra-probe must watch ${required}`).toContain(required);
 		}

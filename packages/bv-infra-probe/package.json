@@ -1,0 +1,19 @@
+{
+	"name": "@blackveil/bv-infra-probe",
+	"version": "0.1.0",
+	"description": "Deploy package for the bv-infra-probe sidecar Worker (config only; the entrypoint stays at src/workers/infra-probe.ts)",
+	"license": "BUSL-1.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"build": "cf build",
+		"deploy": "cf deploy"
+	},
+	"devDependencies": {
+		"@cloudflare/workers-types": "^5.20260929.1",
+		"cf": "^1.0.0-beta.5",
+		"typescript": "^6.0.0",
+		"wrangler": "4.142.0"
+	}
+}

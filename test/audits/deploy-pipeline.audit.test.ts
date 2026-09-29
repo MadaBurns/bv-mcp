@@ -55,7 +55,7 @@ describe('deploy:prod pipeline integrity', () => {
 	it('exposes the deploy command the sidecar gate tells the operator to run', () => {
 		// A gate that names a command package.json does not define is a dead end.
 		expect(pkg.scripts?.['deploy:whois'] ?? '').toContain('npm -w packages/bv-whois run deploy');
-		expect(pkg.scripts?.['deploy:infra-probe'] ?? '').toContain('wrangler.infra-probe.jsonc');
+		expect(pkg.scripts?.['deploy:infra-probe'] ?? '').toContain('npm -w packages/bv-infra-probe run deploy');
 		});
 
 		// #1082: deploy:whois and deploy:infra-probe used to hand off straight to
@@ -70,7 +70,7 @@ describe('deploy:prod pipeline integrity', () => {
 		// staleness.
 		describe.each([
 			['deploy:whois', 'npm -w packages/bv-whois run deploy'],
-			['deploy:infra-probe', 'npx wrangler deploy --config wrangler.infra-probe.jsonc'],
+			['deploy:infra-probe', 'npm -w packages/bv-infra-probe run deploy'],
 		])('%s gate chain', (scriptName, deployCommand) => {
 			const script = pkg.scripts?.[scriptName] ?? '';
 

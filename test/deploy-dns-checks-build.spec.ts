@@ -31,6 +31,8 @@ const SOURCES = {
 const WRANGLER_CONFIGS = {
 	...(import.meta.glob('../wrangler*.jsonc', { query: '?raw', import: 'default', eager: true }) as Record<string, string>),
 	...(import.meta.glob('../packages/*/wrangler.jsonc', { query: '?raw', import: 'default', eager: true }) as Record<string, string>),
+	// `cf migrate` packages (bv-infra-probe) carry their entry in cloudflare.config.ts, not a wrangler jsonc.
+	...(import.meta.glob('../packages/*/cloudflare.config.ts', { query: '?raw', import: 'default', eager: true }) as Record<string, string>),
 };
 
 const PACKAGE = '@blackveil/dns-checks';
@@ -126,10 +128,12 @@ export function missingBuild(script: string, entryFor: (config: string) => strin
 }
 
 function entryFor(config: string): string {
-	const raw = WRANGLER_CONFIGS[`../${config}`];
+	// `packages/X/wrangler.jsonc` is the config id bundledConfigs derives from `npm -w packages/X run deploy`;
+	// a `cf migrate` package has `packages/X/cloudflare.config.ts` instead, whose entry key is `entrypoint`.
+	const raw = WRANGLER_CONFIGS[`../${config}`] ?? WRANGLER_CONFIGS[`../${dirname(config)}/cloudflare.config.ts`];
 	if (raw === undefined) throw new Error(`wrangler config not found: ${config}`);
-	const main = /"main"\s*:\s*"([^"]+)"/.exec(raw)?.[1];
-	if (!main) throw new Error(`no "main" in ${config}`);
+	const main = /"main"\s*:\s*"([^"]+)"/.exec(raw)?.[1] ?? /\bentrypoint\s*:\s*['"]([^'"]+)['"]/.exec(raw)?.[1];
+	if (!main) throw new Error(`no "main" or "entrypoint" in ${config}`);
 	return `../${normalise(`${dirname(config)}/${main}`)}`;
 }
 
@@ -140,8 +144,16 @@ describe('deploy scripts build @blackveil/dns-checks before bundling an importer
 		expect(Object.keys(SOURCES).length).toBeGreaterThan(50);
 		expect(SOURCES['../packages/bv-whois/src/index.ts']).toBeDefined();
 		expect(Object.keys(WRANGLER_CONFIGS)).toEqual(
-			expect.arrayContaining(['../wrangler.jsonc', '../wrangler.infra-probe.jsonc', '../packages/bv-whois/wrangler.jsonc']),
+			expect.arrayContaining([
+				'../wrangler.jsonc',
+				'../wrangler.infra-probe.jsonc',
+				'../packages/bv-whois/wrangler.jsonc',
+				'../packages/bv-infra-probe/cloudflare.config.ts',
+			]),
 		);
+		// The cf-migrated package resolves to the root-tree entry it points at, and that entry reaches dns-checks.
+		expect(entryFor('packages/bv-infra-probe/wrangler.jsonc')).toBe('../src/workers/infra-probe.ts');
+		expect(reachesPackage('../src/workers/infra-probe.ts', SOURCES)).toBe(true);
 	});
 
 	it('every bundling deploy script resolves to an entry file that exists', () => {

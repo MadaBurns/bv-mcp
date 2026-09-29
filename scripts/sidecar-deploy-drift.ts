@@ -94,6 +94,12 @@ export const SIDECAR_TARGETS: readonly SidecarTarget[] = [
 			// #1131: the authoritative lane classifies nameserver addresses against
 			// Cloudflare's published ranges, which live here.
 			'src/lib/cdn-fallback-detection.ts',
+			// `deploy:infra-probe` now runs `cf deploy` from this package (config only; the entry stays
+			// in src/). Its config and manifest are deploy inputs like bv-whois's above — a change to
+			// either is an undeployed source change the entry-only watch list could not see.
+			'packages/bv-infra-probe/cloudflare.config.ts',
+			'packages/bv-infra-probe/wrangler.config.ts',
+			'packages/bv-infra-probe/package.json',
 		],
 		deployCommand: 'npm run deploy:infra-probe',
 	},
