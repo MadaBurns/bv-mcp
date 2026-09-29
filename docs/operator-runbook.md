@@ -58,8 +58,13 @@ their own commands, each running from the repo root:
 
 Since #1082 both run the same freshness and release-tag gates `deploy:prod`
 runs — `check:deploy-freshness` (checkout not behind `origin/main`) and
-`check:release-integrity` (`HEAD` at a tag) — before their own `wrangler
-deploy`. Neither runs `check:sidecar-freshness`: that gate exists to block the
+`check:release-integrity` (`HEAD` at a tag) — before their own deploy call
+(`deploy:whois` runs `wrangler deploy`; `deploy:infra-probe` runs `cf deploy`
+from `packages/bv-infra-probe/`, a config-only package whose
+`cloudflare.config.ts` points at the unmoved `src/workers/infra-probe.ts`).
+`wrangler.infra-probe.jsonc` is retained as the rollback config
+(`npx wrangler rollback --config wrangler.infra-probe.jsonc`) until the
+follow-up retires it. Neither runs `check:sidecar-freshness`: that gate exists to block the
 MCP Worker deploy on the sidecars being current, so wiring it into a sidecar's
 own deploy would block the exact command that fixes staleness.
 

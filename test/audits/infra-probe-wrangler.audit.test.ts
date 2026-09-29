@@ -4,6 +4,9 @@ import { describe, expect, it } from 'vitest';
 import mainWranglerSource from '../../wrangler.jsonc?raw';
 import infraProbeWranglerSource from '../../wrangler.infra-probe.jsonc?raw';
 import whoisWranglerSource from '../../packages/bv-whois/wrangler.jsonc?raw';
+import infraProbeCfConfigSource from '../../packages/bv-infra-probe/cloudflare.config.ts?raw';
+import infraProbeWranglerToolingSource from '../../packages/bv-infra-probe/wrangler.config.ts?raw';
+import packageLockSource from '../../package-lock.json?raw';
 import deployWorkflowSource from '../../.github/workflows/deploy-prod.yml?raw';
 
 interface WranglerConfig {
@@ -36,6 +39,53 @@ describe('infra probe wrangler wiring', () => {
 			expect(config.workers_dev, `${config.name} must not expose a workers.dev route`).toBe(false);
 			expect(config.preview_urls, `${config.name} must not expose preview URLs`).toBe(false);
 		}
+	});
+
+	// `deploy:infra-probe` now runs `cf deploy` from packages/bv-infra-probe/ (config only — the entry stays in
+	// src/). The same invariants must hold on the generated TS config; the root jsonc is retained (rollback path +
+	// the sidecar drift gate's read), so the two must not drift while both exist.
+	describe('packages/bv-infra-probe/cloudflare.config.ts (cf deploy)', () => {
+		const cfName = /\bname:\s*['"]([^'"]+)['"]/.exec(infraProbeCfConfigSource)?.[1];
+		const cfCompatibilityDate = /\bcompatibilityDate:\s*['"]([^'"]+)['"]/.exec(infraProbeCfConfigSource)?.[1];
+
+		it('deploys the Worker the main MCP worker binds BV_INFRA_PROBE to', () => {
+			expect(cfName).toBe('bv-infra-probe');
+			expect(mainConfig.services).toContainEqual({ binding: 'BV_INFRA_PROBE', service: cfName });
+		});
+
+		it('keeps the same compatibility date as the MCP worker', () => {
+			expect(cfCompatibilityDate).toBe(mainConfig.compatibility_date);
+		});
+
+		it('stays off public workers.dev and preview routes', () => {
+			expect(infraProbeCfConfigSource).toMatch(/\bworkersDev:\s*false\b/);
+			expect(infraProbeCfConfigSource).toMatch(/\bpreviewUrls:\s*false\b/);
+		});
+
+		it('declares no bindings or triggers (the probe is called only via the service binding, with no cron)', () => {
+			expect(infraProbeCfConfigSource).not.toMatch(/\bbindings\./);
+			expect(infraProbeCfConfigSource).not.toMatch(/\btriggers\./);
+		});
+
+		it('points at the entry that stays in the main Worker tree', () => {
+			expect(infraProbeCfConfigSource).toMatch(/\bentrypoint:\s*['"]\.\.\/\.\.\/src\/workers\/infra-probe\.ts['"]/);
+		});
+
+		it('uploads source maps via the wrangler tooling config', () => {
+			expect(infraProbeWranglerToolingSource).toMatch(/\buploadSourceMaps:\s*true\b/);
+		});
+
+		it('agrees with the retained wrangler.infra-probe.jsonc on name and compatibility date', () => {
+			expect(cfName).toBe(infraProbeConfig.name);
+			expect(cfCompatibilityDate).toBe(infraProbeConfig.compatibility_date);
+		});
+
+		// cf discovers wrangler ONLY at <package>/node_modules/wrangler (no upward resolution). npm hoists a
+		// wrangler that satisfies the root's version to the root, so this package pins a version the root does not
+		// hold; if a bump makes it match, it re-hoists and `cf build` fails with "wrangler ... is not installed".
+		it('keeps a nested wrangler install so cf can discover it', () => {
+			expect(packageLockSource).toContain('"packages/bv-infra-probe/node_modules/wrangler"');
+		});
 	});
 
 	// Until #717/#718 this test pinned the infra-probe deploy INSIDE publish.yml's

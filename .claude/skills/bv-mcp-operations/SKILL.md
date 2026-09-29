@@ -155,8 +155,15 @@ dropped, and silent drops have shipped misconfigured deploys before.
 Two exceptions worth remembering because they bite during unrelated work:
 `BV_WEB` **is** declared in the public `wrangler.jsonc` (audit-enforced — do not
 "clean it up" into the private overrides), and `npm run deploy:prod` does **not**
-deploy `bv-infra-probe` (`npx wrangler deploy --config wrangler.infra-probe.jsonc`
-when its source changes).
+deploy `bv-infra-probe` (`npm run deploy:infra-probe` when its source changes —
+it now runs `cf deploy` from `packages/bv-infra-probe/`, a config-only package
+whose `cloudflare.config.ts` points at the unmoved `src/workers/infra-probe.ts`;
+`wrangler.infra-probe.jsonc` is RETAINED as the rollback config,
+`npx wrangler rollback --config wrangler.infra-probe.jsonc`, and as the sidecar
+drift gate's read path, until the follow-up retires it. ⚠️ cf finds wrangler only
+at `packages/bv-infra-probe/node_modules/wrangler`, so that package pins a wrangler
+the root does not hold — bumping the pin to match the root re-hoists it and breaks
+`cf build`; the infra-probe audit asserts the nested lockfile entry).
 
 ⚠️ **`ALERT_WEBHOOK_URL` is a Worker secret, not a `vars` entry (#1073).**
 `wrangler types --config wrangler.production.jsonc` (`check:bindings:prod`,
