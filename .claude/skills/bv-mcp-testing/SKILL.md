@@ -5,7 +5,7 @@ description: "Use when writing or debugging tests in the bv-mcp / blackveil-dns 
 
 # bv-mcp Testing
 
-Tests run **inside the Workers runtime** (`@cloudflare/vitest-pool-workers`), not Node. Config: `vitest.config.mts` (15s timeout, `isolatedStorage: false`). For *which* pyramid layer to write at and the philosophy, read `~/.claude/docs/testing-methodology.md` and the global **test-patterns** skill — this skill is the bv-mcp-specific mechanics only.
+Tests run **inside the Workers runtime** (`@cloudflare/vitest-plugin`, formerly `vitest-pool-workers`), not Node. Config: `vitest.config.mts` (15s timeout, `isolatedStorage: false`). For *which* pyramid layer to write at and the philosophy, read `~/.claude/docs/testing-methodology.md` and the global **test-patterns** skill — this skill is the bv-mcp-specific mechanics only.
 
 ## The two rules that cause most flakes
 

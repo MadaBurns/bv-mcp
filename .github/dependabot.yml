@@ -10,11 +10,14 @@ updates:
       semver-minor-days: 7
       semver-patch-days: 3
     open-pull-requests-limit: 10
-    # vitest majors are gated on @cloudflare/vitest-pool-workers, which peers
-    # vitest/@vitest/runner/@vitest/snapshot at a single major (0.22.0: ^4.1.0).
-    # The whole suite runs inside that pool, so a vitest major bump can't install
-    # (npm ci ERESOLVE, #1097) until a pool-workers release widens the peer range.
-    # Lift this ignore when it does, and bump vitest + pool-workers together.
+    # vitest majors are gated on @cloudflare/vitest-plugin (the renamed
+    # vitest-pool-workers), which peers vitest/@vitest/runner/@vitest/snapshot at a
+    # single major (1.3.1: ^4.1.0). The whole suite runs inside that pool, so a
+    # vitest major bump can't install (npm ci ERESOLVE, #1097) until a plugin
+    # release widens the peer range. Lift this ignore when it does, and bump
+    # vitest + vitest-plugin together. The plugin also pins wrangler EXACTLY
+    # (1.3.1 → wrangler 4.143.0): keep wrangler in the `cloudflare` group below so
+    # the two move in one PR and no second nested wrangler reappears.
     ignore:
       - dependency-name: 'vitest'
         update-types: ['version-update:semver-major']

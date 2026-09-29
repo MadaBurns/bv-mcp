@@ -18,7 +18,7 @@ npm run typecheck  # Type-check without emitting
 
 - **Runtime**: Cloudflare Workers — no Node.js APIs (`fetch`, `crypto`, Web APIs only)
 - **Framework**: Hono v4
-- **Tests**: Vitest with `@cloudflare/vitest-pool-workers` (runs inside Workers runtime)
+- **Tests**: Vitest with `@cloudflare/vitest-plugin` (runs inside Workers runtime)
 - **Formatter**: Prettier (tabs, single quotes, semicolons, 140 print width)
 
 Run `npx prettier --write 'src/**/*.ts' 'test/**/*.ts'` before committing large formatting changes.

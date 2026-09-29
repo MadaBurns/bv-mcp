@@ -62,7 +62,7 @@ pre-commit gate + a CI job now block staged/tracked symlinks. Incident detail:
 
 - **Runtime**: Cloudflare Workers — no Node.js APIs (`fetch`, `crypto`, Web only)
 - **Framework**: Hono v4 · **TypeScript**: strict, ES2024, Bundler resolution, `isolatedModules`
-- **Testing**: Vitest + `@cloudflare/vitest-pool-workers` (tests run inside the Workers runtime)
+- **Testing**: Vitest + `@cloudflare/vitest-plugin` (tests run inside the Workers runtime)
 - **Tooling Node**: 22+ (Wrangler 4.x hard-fails on <22)
 - **Formatter**: Prettier (tabs, single quotes, semi, 140 width) · **Package mgr**: npm
 

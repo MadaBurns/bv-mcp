@@ -5,7 +5,7 @@
  *
  * ## Measurement methodology (C-perf, 2026-06-23)
  *
- * All numbers were measured inside the @cloudflare/vitest-plugin runtime
+ * All numbers were measured inside the @cloudflare/vitest-pool-workers runtime (now @cloudflare/vitest-plugin)
  * using a deterministic fetch mock that introduces a FIXED 80ms delay per DNS
  * round-trip (Cloudflare DoH p50 observed in prod). 20 samples, sorted, p50/p95
  * extracted. The mock removes network jitter so the numbers reflect pure
@@ -61,7 +61,7 @@ export interface ToolLatencyBudget {
 /**
  * Latency budget per hot-path tool.
  *
- * Measured 2026-06-23 on @cloudflare/vitest-plugin with 80ms simulated
+ * Measured 2026-06-23 on @cloudflare/vitest-pool-workers with 80ms simulated
  * DNS RTT (20 samples each). Production numbers will be proportionally higher
  * due to real DoH latency, but the RATIOS (concurrency speedup, check count)
  * are stable and testable.

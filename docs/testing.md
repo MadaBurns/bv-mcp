@@ -1,7 +1,7 @@
 # Test environments and characterization contracts
 
 `npm test` is the authoritative runtime suite. It uses
-`@cloudflare/vitest-pool-workers`, therefore route, binding, Durable Object,
+`@cloudflare/vitest-plugin`, therefore route, binding, Durable Object,
 KV, queue, and service-binding contracts execute in a Workerd-compatible
 Miniflare environment.
 

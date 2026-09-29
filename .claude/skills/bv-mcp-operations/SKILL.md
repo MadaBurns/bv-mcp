@@ -131,10 +131,13 @@ Traps measured on 2026-09-29:
   `cf` sees one unknown word and prints the ROOT help — it looks like the
   command is missing. Use `eval` or `${=cmd}` (see `shell-portability`).
 - `cf d1 …` commands take the database **UUID** positionally (`cf d1 query
-  <database-id> --sql …`); binding names and database names are refused by
-  design. Read the ID from the private overlay, never guess it.
+  <database-id> --sql …`). A binding name or database name is passed through
+  verbatim and the API rejects it (`cf d1 migrations apply` says so outright);
+  `cf` never resolves names. Read the ID from the private overlay, never guess it.
 - `cf workers secrets update NAME --worker W` creates a new Worker VERSION
-  (same as `wrangler secret put`); it is a write, keep it operator-run.
+  ("by creating a new version with that secret", per its help). Its help does
+  not say whether that version is auto-deployed — check `cf workers deployments
+  list --worker W` afterwards. It is a write; keep it operator-run.
 - `cf build`/`cf deploy`/`cf dev` refuse wrangler < 4.136.0 (the repo is on
   4.143.0 since the vitest-plugin rename). No `--config` flag exists on them.
 
