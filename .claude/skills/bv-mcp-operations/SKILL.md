@@ -1,6 +1,6 @@
 ---
 name: bv-mcp-operations
-description: Use when operating bv-mcp's infrastructure surfaces — wrangler bindings (what a BV_* service binding does, which are operator-deploy-only, fail-soft semantics), deploy paths and workflow history (deploy-prod.yml, publish.yml, removed workflows), CI/CD workflow inventory and branch protection, the scan_domain subrequest ceiling / scanner-queue batch sizing, analytics events and blob layouts, mcp_access_log, alerting lanes, or client detection. Symptoms - an absent-binding degradation, "which workflow deploys X", a Too many subrequests error, an AE query returning nothing, adding an analytics dimension, or unsure whether a check is required or advisory.
+description: Use when operating bv-mcp's infrastructure surfaces — the `cf` CLI vs wrangler (which is the deploy door, which is the query tool, JSON-by-default, `cf cli search`), wrangler bindings (what a BV_* service binding does, which are operator-deploy-only, fail-soft semantics), deploy paths and workflow history (deploy-prod.yml, publish.yml, removed workflows), CI/CD workflow inventory and branch protection, the scan_domain subrequest ceiling / scanner-queue batch sizing, analytics events and blob layouts, mcp_access_log, alerting lanes, or client detection. Symptoms - an absent-binding degradation, "which workflow deploys X", a Too many subrequests error, an AE query returning nothing, adding an analytics dimension, or unsure whether a check is required or advisory.
 ---
 
 # bv-mcp Operations
@@ -85,6 +85,58 @@ excuses a check is only safe when something else still covers the excused paths.
 **`npm run deploy:prod`, run by an operator, is the authoritative path.** `deploy-prod.yml` is the single CI implementation of that same command — **`workflow_dispatch`-only (the `v*` tag trigger was REMOVED, #717) and disarmed by default**. It gates on the repo variable `DEPLOY_PROD_ENABLED=true` via a `preflight` job that runs OUTSIDE `environment: production`, because a job declaring the environment is what parks an approval prompt — so while unprovisioned the deploy job is never created and **no workflow can queue a production deployment it cannot complete**. Armed, it flows: `production` GitHub Environment reviewer → private overlay reconstructed from `WRANGLER_DEPLOY_OVERLAY_B64` → real `npm run deploy:prod` → infra-probe deploy + OAuth probe → live `serverInfo.version` + `scan_domain` + the `compare_baseline` control-predicate smoke (#725) via `scripts/ci/verify-deploy.mjs`. Requires `CLOUDFLARE_API_TOKEN`, `WRANGLER_DEPLOY_OVERLAY_B64`, `BV_INTERNAL_DEV_KEY` in the `production` Environment (fails fast until set — as of 2026-08-20 **none of the three is set, and this workflow has never deployed anything**).
 
 ⚠️ **Two removed workflows, both dead `exit 1` stubs under `environment: production`:** `auto-deploy-main.yml` (deployed the public `wrangler.jsonc`, so it shipped without the private overlay/bindings) and `deploy-hook.yml` (#718 — dispatch-only, last succeeded 2026-05-20; CLAUDE.md wrongly called it "the active deploy path" for months). `publish.yml`'s `deploy-cloudflare` job was removed for the same reason: it declared `environment: production` and exited 1, so every tagged release left a standing approval that could only ever fail. Three contradictory deploy paths is how nobody could say which was authoritative. MCP-Registry publish stays a manual post-deploy step (`bv-mcp-release` skill).
+
+## `cf` CLI — query and API tooling, NOT the deploy door (2026-09-29)
+
+Cloudflare's new CLI (`npm i -g cf`, open beta since 2026-09-28) generates a
+command for every API operation (~3,000) and prints **JSON by default** — do
+not append `--json`; there is no such flag. Install once per machine, then
+`cf auth login` (device flow; it does NOT reuse the wrangler OAuth token).
+
+**Rule: until Phase 5 of `docs/superpowers/plans/2026-09-29-cf-cli-migration.md`
+lands, `cf` is read/query tooling here. The deploy door is still
+`npm run deploy:prod` (wrangler).** `cf build`/`cf deploy` read
+`./cloudflare.config.ts`, which this repo does not have yet; running them at
+the repo root fails harmlessly, but do not "fix" that by hand-writing one.
+
+Discovery is a search, not `--help` chaining — `cf` prints a banner saying so
+on every nested `--help`, and `cf cli search` returns five JSON matches:
+
+```bash
+cf cli search "list deployments of a worker"        # → cf workers deployments list
+cf schema workers deployments list                  # exact API request shape
+```
+
+Keep search queries anonymous (no domains, IDs, tokens) — the banner asks for
+it and the query leaves the machine.
+
+Three worked replacements for patterns this repo uses today (flags verified
+against `cf@1.0.0-beta.5`):
+
+```bash
+# 1. Is the latest deployment the one I expect?  (was: wrangler deployments list --json)
+cf workers deployments list --worker bv-dns-security-mcp --per-page 3
+#    "The first deployment in the list is the latest deployment actively serving traffic."
+
+# 2. Which secrets exist on the Worker?  (was: wrangler secret list --format json)
+cf workers secrets list --worker bv-dns-security-mcp
+
+# 3. Run an Analytics Engine SQL query without hand-rolling curl + token
+cf analytics_engine sql query --file query.sql     # NDJSON; add FORMAT JSON in the SQL for one object
+```
+
+Traps measured on 2026-09-29:
+
+- ⚠️ **zsh**: `cf $cmd --help` with a multi-word `$cmd` does not word-split, so
+  `cf` sees one unknown word and prints the ROOT help — it looks like the
+  command is missing. Use `eval` or `${=cmd}` (see `shell-portability`).
+- `cf d1 …` commands take the database **UUID** positionally (`cf d1 query
+  <database-id> --sql …`); binding names and database names are refused by
+  design. Read the ID from the private overlay, never guess it.
+- `cf workers secrets update NAME --worker W` creates a new Worker VERSION
+  (same as `wrangler secret put`); it is a write, keep it operator-run.
+- `cf build`/`cf deploy`/`cf dev` refuse wrangler < 4.136.0 (the repo is on
+  4.143.0 since the vitest-plugin rename). No `--config` flag exists on them.
 
 ## Private config injection (what `deploy:prod` actually ships)
 
