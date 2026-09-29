@@ -1,6 +1,6 @@
 // Type shape of `import { env } from 'cloudflare:test'` for the test tree.
 //
-// `@cloudflare/vitest-pool-workers` 0.22 types that `env` as `Cloudflare.Env` — the
+// `@cloudflare/vitest-plugin` 1.x types that `env` as `Cloudflare.Env` — the
 // interface `wrangler types` generates into the (gitignored) `worker-configuration.d.ts`
 // from `wrangler.jsonc`. The older `ProvidedEnv` augmentation point this file used to
 // declare no longer exists in the package's `cloudflare:test` declarations, so that

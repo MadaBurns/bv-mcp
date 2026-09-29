@@ -4,7 +4,7 @@
  * Unit tests for `scripts/tenants/provision-tenant.mjs`.
  *
  * The script never statically imports `node:*` (so it is safe to import inside
- * `@cloudflare/vitest-pool-workers` which has no Node built-ins). All side
+ * `@cloudflare/vitest-plugin` which has no Node built-ins). All side
  * effects funnel through an injected `deps` object — tests pass a fake to
  * exercise every branch without touching real wrangler / fs / crypto.
  *

@@ -1,5 +1,5 @@
 import { defineConfig } from 'vitest/config';
-import { cloudflareTest } from '@cloudflare/vitest-pool-workers';
+import { cloudflareTest } from '@cloudflare/vitest-plugin';
 import infraProbeWorker from './src/workers/infra-probe';
 import { isKnownWorkerdPoolShutdownError } from './scripts/vitest-unhandled-error-filter.mjs';
 import { NODE_POOL_AUDIT_TESTS } from './scripts/vitest-node-suites.mjs';
@@ -7,7 +7,7 @@ import { NODE_POOL_AUDIT_TESTS } from './scripts/vitest-node-suites.mjs';
 /**
  * Two projects, one command. `npm test` runs both:
  *
- * - `workers` — the product suite, inside workerd via @cloudflare/vitest-pool-workers.
+ * - `workers` — the product suite, inside workerd via @cloudflare/vitest-plugin.
  * - `node`    — audit suites that shell out to repo scripts with Node built-ins
  *               (`node:child_process`, `node:os`, real `node:fs`). workerd only has
  *               those under `nodejs_compat`, which this Worker deliberately does not
@@ -98,7 +98,7 @@ export default defineConfig({
 						'scripts/**',
 					],
 					// No coverage config: the @vitest/coverage-v8 provider can't run under the
-					// @cloudflare/vitest-pool-workers runtime (workerd lacks `node:inspector`,
+					// @cloudflare/vitest-plugin runtime (workerd lacks `node:inspector`,
 					// so instrumentation throws and reports a false 0%). Quality is gated by the
 					// structural audit suite under test/audits/ (tool-count/scoring/contract
 					// invariants), not by line-coverage numbers.

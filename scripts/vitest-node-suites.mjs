@@ -4,7 +4,7 @@
  *
  * These suites shell out to repo scripts / walk the real filesystem via Node
  * built-ins (`node:child_process`, `node:fs`, `node:os`), which do not exist in
- * workerd unless `nodejs_compat` is enabled. Until @cloudflare/vitest-pool-workers
+ * workerd unless `nodejs_compat` is enabled. Until @cloudflare/vitest-plugin
  * 0.21.2 the pool injected `nodejs_compat_v2` unconditionally, so these files
  * happened to load inside the Workers pool; 0.21.2+ resolves Node compatibility
  * from the Worker's own compatibility date/flags (wrangler.jsonc pins

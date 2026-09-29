@@ -4,7 +4,7 @@
  * Unit tests for `scripts/tenants/check-schema-drift.mjs`.
  *
  * The script never statically imports `node:*` (mirrors provision-tenant.mjs),
- * so it is safe to import inside `@cloudflare/vitest-pool-workers`. Every
+ * so it is safe to import inside `@cloudflare/vitest-plugin`. Every
  * side-effecting operation funnels through an injected `deps` object — no
  * real wrangler calls, no real fs reads, no network. Fixtures are small
  * inline SQL strings styled on the real migration files' drizzle-kit output
