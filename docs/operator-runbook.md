@@ -59,14 +59,20 @@ their own commands, each running from the repo root:
 Since #1082 both run the same freshness and release-tag gates `deploy:prod`
 runs — `check:deploy-freshness` (checkout not behind `origin/main`) and
 `check:release-integrity` (`HEAD` at a tag) — before their own deploy call
-(`deploy:whois` runs `wrangler deploy`; `deploy:infra-probe` runs `cf deploy`
+(`deploy:whois` runs `cf deploy` from `packages/bv-whois/` using its
+`cloudflare.config.ts`; `deploy:infra-probe` runs `cf deploy`
 from `packages/bv-infra-probe/`, a config-only package whose
 `cloudflare.config.ts` points at the unmoved `src/workers/infra-probe.ts`).
 The root `wrangler.infra-probe.jsonc` is retired (SQ-240): to roll the probe back use
 `npx wrangler rollback --name bv-infra-probe` (no config file needed), and the
 `check:sidecar-freshness` drift gate reads its live deployment with
 `wrangler deployments list --json --name bv-infra-probe` (Wrangler cannot load a cf
-`cloudflare.config.ts`). Neither sidecar deploy runs `check:sidecar-freshness`: that gate exists to block the
+`cloudflare.config.ts`). `packages/bv-whois/wrangler.jsonc` is retained as the
+vitest config only (an audit asserts parity with the cf config); roll bv-whois back
+with `npx wrangler rollback --name bv-whois`, and the drift gate reads it via an
+explicit `--name bv-whois`. cf finds wrangler only at
+`packages/bv-whois/node_modules/wrangler`, so that package pins a wrangler the root
+does not hold. Neither sidecar deploy runs `check:sidecar-freshness`: that gate exists to block the
 MCP Worker deploy on the sidecars being current, so wiring it into a sidecar's
 own deploy would block the exact command that fixes staleness.
 
