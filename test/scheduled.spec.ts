@@ -12,20 +12,38 @@ describe('handleScheduled', () => {
 		globalThis.fetch = originalFetch;
 	});
 
-	it('does nothing when ALERT_WEBHOOK_URL is not configured', async () => {
+	it('does nothing when ALERT_WEBHOOK_URL is not configured, but logs a labelled warning', async () => {
 		const mockFetch = vi.fn() as typeof fetch;
 		globalThis.fetch = mockFetch;
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 		const { handleScheduled } = await import('../src/scheduled');
 		await handleScheduled({} as ScheduledEnv);
 		expect(mockFetch).not.toHaveBeenCalled();
+
+		// Previously this early return was silent — an unresolved webhook looked
+		// identical to "everything is fine and there was nothing to alert on".
+		const logged = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
+		expect(logged).toContain('Analytics alerting skipped: no alert webhook resolved');
+		const parsed = JSON.parse(logSpy.mock.calls[0][0] as string);
+		expect(parsed.severity).toBe('warn');
+		logSpy.mockRestore();
 	});
 
-	it('does nothing when CF_ACCOUNT_ID or CF_ANALYTICS_TOKEN is missing', async () => {
+	it('does nothing when CF_ACCOUNT_ID or CF_ANALYTICS_TOKEN is missing, but logs an info-level (never warn) skip', async () => {
 		const mockFetch = vi.fn() as typeof fetch;
 		globalThis.fetch = mockFetch;
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 		const { handleScheduled } = await import('../src/scheduled');
 		await handleScheduled({ ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test' } as ScheduledEnv);
 		expect(mockFetch).not.toHaveBeenCalled();
+
+		// Self-host design: most self-hosts never configure AE credentials, so this
+		// is expected steady state, not a fault — info, never warn.
+		const logged = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
+		expect(logged).toContain('Analytics alerting skipped: AE credentials absent');
+		const parsed = JSON.parse(logSpy.mock.calls.find((c) => String(c[0]).includes('AE credentials absent'))![0] as string);
+		expect(parsed.severity).toBe('info');
+		logSpy.mockRestore();
 	});
 
 	it('sends alert when error rate exceeds threshold', async () => {
