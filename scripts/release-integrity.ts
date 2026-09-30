@@ -52,13 +52,16 @@ export interface VersionSurfaces {
 	changelogHeadings: string[];
 }
 
-export type ReleaseMode = 'deploy' | 'publish';
+export type ReleaseMode = 'deploy' | 'publish' | 'sidecar';
 
 export interface ReleaseIntegrityInput {
 	/**
 	 * `deploy` gates `npm run deploy:prod`; `publish` gates the registry/npm
-	 * publish. The mode changes ONLY whether the override is honoured — see
-	 * `allowUnpinned`.
+	 * publish; `sidecar` gates `deploy:infra-probe` / `deploy:whois`. Sidecars
+	 * carry no release version, so `sidecar` keeps ONLY the dirty-tree and
+	 * git-available checks and drops the exact-tag and version-surface
+	 * requirements (HEAD contains origin/main is `check:deploy-freshness`'s job).
+	 * For `deploy`/`publish` the mode changes only whether the override is honoured.
 	 */
 	mode: ReleaseMode;
 	/** Trimmed `git describe --tags --exact-match`; null when HEAD is not exactly at a tag. */
@@ -239,6 +242,37 @@ export function assessReleaseIntegrity(input: ReleaseIntegrityInput): ReleaseInt
 
 	const violations: string[] = [];
 	let version: string | null = expectVersion;
+
+	if (mode === 'sidecar') {
+		if (gitUnavailable) {
+			violations.push('git could not be consulted, so this tree cannot be verified as clean');
+		} else if (porcelain.trim().length > 0) {
+			const entries = porcelain
+				.split('\n')
+				.map((l) => l.trim())
+				.filter((l) => l.length > 0);
+			violations.push(`working tree is dirty (${entries.length} uncommitted or untracked path(s))`);
+			for (const e of entries.slice(0, 10)) violations.push(`    ${e}`);
+			if (entries.length > 10) violations.push(`    ... and ${entries.length - 10} more`);
+		}
+		if (violations.length === 0) {
+			return { ok: true, code: 'ok', version: null, violations: [], message: 'Sidecar deploy integrity OK — clean working tree.' };
+		}
+		return {
+			ok: false,
+			code: 'blocked',
+			version: null,
+			violations,
+			message: [
+				'SIDECAR DEPLOY BLOCKED — the working tree is not a clean checkout.',
+				'',
+				'Failed checks:',
+				...violations.map((v) => `  - ${v}`),
+				'',
+				'Commit or stash local changes; a sidecar deploys the WORKING TREE.',
+			].join('\n'),
+		};
+	}
 
 	if (gitUnavailable) {
 		// Not evidence of a good tree. An unprovable checkout is treated as unpinned.

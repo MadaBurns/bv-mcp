@@ -276,3 +276,33 @@ describe('parseChangelogHeadings', () => {
 		expect(parseChangelogHeadings('')).toEqual([]);
 	});
 });
+
+describe('assessReleaseIntegrity — sidecar mode (SQ-242)', () => {
+	const sidecar = (o: Partial<ReleaseIntegrityInput> = {}) => assessReleaseIntegrity(pinned({ mode: 'sidecar', ...o }));
+
+	it('PERMITS a clean tree that is not at a tag', () => {
+		const v = sidecar({ exactTag: null });
+		expect(v.ok).toBe(true);
+		expect(v.code).toBe('ok');
+	});
+
+	it('does not require version surfaces to match', () => {
+		expect(sidecar({ exactTag: null, versions: surfaces({ packageJson: null, changelogHeadings: [] }) }).ok).toBe(true);
+	});
+
+	it('still BLOCKS a dirty tree', () => {
+		const v = sidecar({ exactTag: null, porcelain: ' M src/index.ts\n' });
+		expect(v.ok).toBe(false);
+		expect(v.violations.join('\n')).toContain('working tree is dirty');
+	});
+
+	it('still BLOCKS when git is unavailable', () => {
+		expect(sidecar({ gitUnavailable: true }).ok).toBe(false);
+	});
+
+	it('deploy mode still requires a tag', () => {
+		const v = assessReleaseIntegrity(pinned({ exactTag: null }));
+		expect(v.ok).toBe(false);
+		expect(v.violations.join('\n')).toContain('HEAD is not at a tag');
+	});
+});
