@@ -50,6 +50,9 @@ describe('infra probe wrangler wiring', () => {
 		it('declares no bindings or triggers (the probe is called only via the service binding, with no cron)', () => {
 			expect(infraProbeCfConfigSource).not.toMatch(/\bbindings\./);
 			expect(infraProbeCfConfigSource).not.toMatch(/\btriggers\./);
+			// Raw-object-literal form: cf's schema keeps bindings under `env:` and triggers under `triggers:`.
+			expect(infraProbeCfConfigSource).not.toMatch(/\benv\s*:/);
+			expect(infraProbeCfConfigSource).not.toMatch(/\btriggers\s*:/);
 		});
 
 		it('points at the entry that stays in the main Worker tree', () => {
