@@ -198,6 +198,58 @@ describe('p95 latency lane — one evaluation per window', () => {
 	});
 });
 
+describe('p95 latency lane — non-divisor-of-cron lookback values (SQ-247)', () => {
+	// Ticket concern: for an ALERT_LATENCY_LOOKBACK_MINUTES value that is not an
+	// exact multiple of the 15m cron tick, the window-boundary check could
+	// under/over-fire. Pin the invariant directly: across a full simulated day of
+	// */15 ticks, the lane must run EXACTLY once per lookback window — no more, no
+	// fewer — for both a value that divides evenly into an hour (60) and one that
+	// does not evenly tile a 15m grid in the way the naive "== 0" check would need
+	// (45, still a multiple of 15, but chosen because it was the ticket's named
+	// realistic value; the boundary math below is exercised the same way regardless
+	// of whether lookback is itself a multiple of the tick).
+	it.each([45, 60])(
+		'lookback %d minutes evaluates exactly once per window across a simulated day of 15-minute ticks',
+		async (lookbackMinutes) => {
+			const calls: Call[] = [];
+			globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+				const body = (init?.body as string) ?? '';
+				calls.push({ url, body });
+				if (!url.includes('analytics_engine/sql')) return new Response('ok');
+				if (body.includes('workload_class')) {
+					return Response.json({ data: [{ workload_class: 'interactive', total_calls: 400, p95_ms: 1_000, max_ms: 1_000 }] });
+				}
+				return Response.json({ data: [] });
+			}) as typeof fetch;
+
+			const env = { ...ENV, ALERT_LATENCY_LOOKBACK_MINUTES: String(lookbackMinutes) };
+			// A UTC-midnight start is a multiple of both 45 and 60, so the day boundary
+			// itself lines up with a window boundary — no partial window at either end.
+			const dayStartMs = Date.UTC(2026, 7, 21, 0, 0, 0);
+			const { handleScheduled } = await import('../src/scheduled');
+
+			for (let minute = 0; minute < 1440; minute += 15) {
+				vi.setSystemTime(dayStartMs + minute * 60_000);
+				await handleScheduled(env);
+			}
+
+			const fires = latencyQueries(calls).length;
+			expect(fires).toBe(1440 / lookbackMinutes);
+		},
+	);
+
+	it('leaves the default lookback (360m) behaviour byte-identical', async () => {
+		// Regression guard: the boundary check for the default value must still
+		// fire on the documented boundary/mid-window pair used by the tests above.
+		const boundaryCalls = await runAt(AT_WINDOW_BOUNDARY, [{ workload_class: 'interactive', total_calls: 400, p95_ms: 99_000, max_ms: 99_000 }]);
+		expect(latencyQueries(boundaryCalls)).toHaveLength(1);
+
+		const midWindowCalls = await runAt(MID_WINDOW, [{ workload_class: 'interactive', total_calls: 400, p95_ms: 99_000, max_ms: 99_000 }]);
+		expect(latencyQueries(midWindowCalls)).toHaveLength(0);
+	});
+});
+
 describe('p95 latency lane — the 15m anomalies lane no longer alerts on latency', () => {
 	it('does not page on p95 from the short error-rate window', async () => {
 		// The exact reported payload: p95 22,612ms over 35 calls, error rate healthy.

@@ -492,12 +492,32 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	// src/lib/operator-webhook-binding.ts and
 	// docs/plans/2026-07-09-operator-alert-webhook-binding.md.
 	const webhookUrl = await resolveAlertWebhookUrl(env);
-	if (!webhookUrl) return;
+	if (!webhookUrl) {
+		logEvent({
+			timestamp: new Date().toISOString(),
+			category: 'scheduled',
+			result: 'ok',
+			severity: 'warn',
+			details: { message: 'Analytics alerting skipped: no alert webhook resolved' },
+		});
+		return;
+	}
 
 	// D1-only lane — runs even when AE credentials below are absent (self-hosts).
 	await checkAccessRollupProvisioned(env, webhookUrl);
 
-	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
+	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) {
+		// Self-host design — most self-hosts never configure Analytics Engine
+		// credentials, so this is expected steady state, not a fault. Info, never warn.
+		logEvent({
+			timestamp: new Date().toISOString(),
+			category: 'scheduled',
+			result: 'ok',
+			severity: 'info',
+			details: { message: 'Analytics alerting skipped: AE credentials absent' },
+		});
+		return;
+	}
 
 	// Resolve the AE DATASET name once (defaults to bv_dns_security_mcp — the prod
 	// dataset the MCP_ANALYTICS binding writes to; NOT the binding name). Threaded
