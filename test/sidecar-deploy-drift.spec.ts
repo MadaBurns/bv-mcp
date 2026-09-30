@@ -277,8 +277,21 @@ describe('SIDECAR_TARGETS shape', () => {
 
 	it('bv-whois watches the vendored dns-checks whois subtree and its own config/manifest', () => {
 		const whois = SIDECAR_TARGETS.find((t) => t.worker === 'bv-whois')!;
-		for (const required of ['packages/dns-checks/src/whois', 'packages/bv-whois/wrangler.jsonc', 'packages/bv-whois/package.json']) {
+		for (const required of [
+			'packages/dns-checks/src/whois',
+			// deploy:whois runs `cf deploy` from this package: its config + manifest are deploy inputs.
+			'packages/bv-whois/cloudflare.config.ts',
+			'packages/bv-whois/wrangler.config.ts',
+			'packages/bv-whois/wrangler.jsonc', // still the test-only config
+			'packages/bv-whois/package.json',
+		]) {
 			expect(whois.watchPaths, `bv-whois must watch ${required}`).toContain(required);
 		}
+	});
+
+	it('bv-whois is declared by its cf config and read by its pinned --name', () => {
+		const whois = SIDECAR_TARGETS.find((t) => t.worker === 'bv-whois')!;
+		expect(whois.configPath).toBe('packages/bv-whois/cloudflare.config.ts');
+		expect(whois.deploymentsSelector).toEqual(['--name', 'bv-whois']);
 	});
 });

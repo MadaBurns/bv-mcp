@@ -15,5 +15,5 @@
 		"allowSyntheticDefaultImports": true,
 		"forceConsistentCasingInFileNames": true
 	},
-	"include": ["src/**/*.ts"]
+	"include": ["src/**/*.ts", "cloudflare.config.ts", "wrangler.config.ts"]
 }
