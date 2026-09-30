@@ -11,4 +11,8 @@ describe('gitleaks policy', () => {
 	it('allowlists deliberate repo safety scanner secret-shape fixtures', () => {
 		expect(gitleaksConfig).toContain("'''test/audits/repo-safety-scanner\\.audit\\.test\\.ts$'''");
 	});
+
+	it('allowlists cloudflare.config.ts for the public KV namespace id rule, like wrangler.jsonc', () => {
+		expect(gitleaksConfig).toContain("'''cloudflare\\.config\\.ts$'''");
+	});
 });
