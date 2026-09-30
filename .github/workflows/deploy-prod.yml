@@ -138,7 +138,7 @@ jobs:
       # means it had never actually run. Its config is fully public and
       # self-contained (no private overlay). It now goes through the gated
       # `deploy:infra-probe` npm script (deploy-freshness + release-integrity
-      # checks before the wrangler deploy) rather than a bare wrangler call
+      # checks before the cf deploy) rather than a bare wrangler call
       # (#1082/#1095).
       - name: Deploy infra probe worker
         env:
