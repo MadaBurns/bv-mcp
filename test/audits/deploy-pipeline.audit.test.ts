@@ -76,7 +76,8 @@ describe('deploy:prod pipeline integrity', () => {
 
 			it('runs the deploy-freshness and release-integrity gates', () => {
 				expect(script, `${scriptName} must run check:deploy-freshness`).toContain('npm run check:deploy-freshness');
-				expect(script, `${scriptName} must run check:release-integrity`).toContain('npm run check:release-integrity');
+				expect(script, `${scriptName} must run the sidecar-mode release-integrity gate`).toContain('npm run check:release-integrity:sidecar');
+				expect(script.replace('check:release-integrity:sidecar', ''), `${scriptName} must not run the tag-pinned deploy-mode gate`).not.toContain('check:release-integrity');
 			});
 
 			it('does not run check:sidecar-freshness against itself', () => {
@@ -87,7 +88,7 @@ describe('deploy:prod pipeline integrity', () => {
 
 			it('runs the gates before its own wrangler deploy call, in freshness-then-release-integrity order', () => {
 				const freshnessIndex = script.indexOf('npm run check:deploy-freshness');
-				const releaseIndex = script.indexOf('npm run check:release-integrity');
+				const releaseIndex = script.indexOf('npm run check:release-integrity:sidecar');
 				const deployIndex = script.indexOf(deployCommand);
 				expect(deployIndex, `${scriptName} must contain its own deploy command`).toBeGreaterThan(-1);
 				expect(freshnessIndex, 'freshness must precede release-integrity').toBeLessThan(releaseIndex);

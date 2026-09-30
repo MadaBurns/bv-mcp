@@ -15,8 +15,9 @@
  * become reachable from anything under `test/` (a hard SIGSEGV in that pool).
  *
  * Flags:
- *   --mode deploy|publish   Which surface is being gated (default: deploy).
- *                           `publish` refuses to honour the override.
+ *   --mode deploy|publish|sidecar   Which surface is being gated (default: deploy).
+ *                           `publish` refuses to honour the override; `sidecar`
+ *                           checks tree cleanliness only (no tag requirement).
  *   --expect-version X.Y.Z  Verify against this version instead of HEAD's tag.
  *   --skip-git              Verify version surfaces only. Requires
  *                           --expect-version. This is the shape publish.yml's
@@ -80,8 +81,8 @@ function flagValue(argv: string[], name: string): string | null {
 function main(): void {
 	const argv = process.argv.slice(2);
 	const rawMode = flagValue(argv, '--mode') ?? 'deploy';
-	if (rawMode !== 'deploy' && rawMode !== 'publish') {
-		console.error(`Unknown --mode "${rawMode}" (expected deploy or publish)`);
+	if (rawMode !== 'deploy' && rawMode !== 'publish' && rawMode !== 'sidecar') {
+		console.error(`Unknown --mode "${rawMode}" (expected deploy, publish or sidecar)`);
 		process.exit(1);
 	}
 	const mode: ReleaseMode = rawMode;

@@ -167,6 +167,12 @@ at `packages/bv-infra-probe/node_modules/wrangler`, so that package pins a wrang
 the root does not hold — bumping the pin to match the root re-hoists it and breaks
 `cf build`; the infra-probe audit asserts the nested lockfile entry).
 
+⚠️ Both sidecar chains run `check:release-integrity:sidecar` (`--mode sidecar`, SQ-242),
+NOT the tag-pinned `check:release-integrity` that `deploy:prod` uses: sidecars carry no
+release version, so sidecar mode keeps the dirty-tree check and drops the exact-tag and
+version-surface requirements (HEAD ⊇ origin/main is `check:deploy-freshness`, also in
+the chain). No `BV_ALLOW_UNPINNED_DEPLOY=1` is needed for a post-release sidecar deploy.
+
 `npm run deploy:whois` likewise runs `cf deploy` from `packages/bv-whois/` using its
 `cloudflare.config.ts`; `packages/bv-whois/wrangler.jsonc` is RETAINED as the vitest
 config only (an audit asserts parity with the cf config). Roll back with
