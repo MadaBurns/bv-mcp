@@ -124,6 +124,7 @@ keywords = ["namespace", "kv"]
 [rules.allowlist]
 paths = [
   '''wrangler\.jsonc?$''',  # Placeholder IDs in public config are fine
+  '''cloudflare\.config\.ts$''',  # cf CLI configs carry the same public binding ids as wrangler.jsonc
 ]
 
 [[rules]]
