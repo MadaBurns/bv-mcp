@@ -376,19 +376,23 @@ async function checkAccessRollupProvisioned(env: ScheduledEnv, webhookUrl: strin
 			},
 		);
 
-		await sendAlert(
-			webhookUrl,
-			buildAlertPayload({
-				title: 'mcp_access_rollup table missing in production — auth_tier telemetry is fail-open, not zero',
-				severity: 'warning',
-				metrics: {
-					uncounted_internal_requests_24h: uncountedRequests ?? 'unknown (mcp_access_log query also failed)',
-					migration: '0004_mcp_access_rollup.sql (not applied)',
-				},
-				threshold: 'mcp_access_rollup_table_exists',
-			}),
-			alertOptions(env),
-		).catch(() => {});
+		// #1164: the table stays missing until an operator runs the migration, so
+		// without suppression this pages on every 15-min tick indefinitely.
+		if (await shouldSendRepeat(env, 'mcp_access_rollup_table_exists', message, Date.now())) {
+			await sendAlert(
+				webhookUrl,
+				buildAlertPayload({
+					title: 'mcp_access_rollup table missing in production — auth_tier telemetry is fail-open, not zero',
+					severity: 'warning',
+					metrics: {
+						uncounted_internal_requests_24h: uncountedRequests ?? 'unknown (mcp_access_log query also failed)',
+						migration: '0004_mcp_access_rollup.sql (not applied)',
+					},
+					threshold: 'mcp_access_rollup_table_exists',
+				}),
+				alertOptions(env),
+			).catch(() => {});
+		}
 	}
 }
 
@@ -924,22 +928,27 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// visible on its own rather than only as an absence of alerts. Non-critical:
 		// the pipeline is still working, just not completely.
 		if (laneFailures.length > 0) {
-			await sendAlert(
-				webhookUrl,
-				buildAlertPayload({
-					title: `Alerting check degraded: ${laneFailures.length} of ${lanesAttempted} analytics queries failed`,
-					severity: 'warning',
-					metrics: {
-						failed_lanes: laneFailures.map((f) => f.lane).join(', '),
-						detail: laneFailures
-							.map((f) => `${f.lane}: ${f.reason}`)
-							.join(' · ')
-							.slice(0, 400),
-					},
-					threshold: 'alerting_lane_partial_failure',
-				}),
-				alertOptions(env),
-			).catch(() => {});
+			const degradedDetail = laneFailures
+				.map((f) => `${f.lane}: ${f.reason}`)
+				.join(' · ')
+				.slice(0, 400);
+			// #1164: the same broken lane(s) fail with the same reason on every tick until
+			// an operator fixes the query — suppress the repeat, not the first page.
+			if (await shouldSendRepeat(env, 'alerting_lane_partial_failure', degradedDetail, Date.now())) {
+				await sendAlert(
+					webhookUrl,
+					buildAlertPayload({
+						title: `Alerting check degraded: ${laneFailures.length} of ${lanesAttempted} analytics queries failed`,
+						severity: 'warning',
+						metrics: {
+							failed_lanes: laneFailures.map((f) => f.lane).join(', '),
+							detail: degradedDetail,
+						},
+						threshold: 'alerting_lane_partial_failure',
+					}),
+					alertOptions(env),
+				).catch(() => {});
+			}
 		}
 
 		logEvent({
@@ -977,16 +986,20 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// now puts the AE rejection body in the message (analytics-engine.ts), so the
 		// distinguishing detail is already here; truncated to keep the payload one-line.
 		const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 300);
-		await sendAlert(
-			webhookUrl,
-			buildAlertPayload({
-				title: 'Alerting pipeline failure: analytics check could not run',
-				severity: 'critical',
-				metrics: { pipeline_failed: 1, reason: reason || '(no detail)' },
-				threshold: 'alerting_self_check',
-			}),
-			alertOptions(env),
-		).catch(() => {});
+		// #1164: an unresolved pipeline outage throws the SAME reason on every tick —
+		// suppress the repeat, not the first page.
+		if (await shouldSendRepeat(env, 'alerting_self_check', reason || '(no detail)', Date.now())) {
+			await sendAlert(
+				webhookUrl,
+				buildAlertPayload({
+					title: 'Alerting pipeline failure: analytics check could not run',
+					severity: 'critical',
+					metrics: { pipeline_failed: 1, reason: reason || '(no detail)' },
+					threshold: 'alerting_self_check',
+				}),
+				alertOptions(env),
+			).catch(() => {});
+		}
 	}
 }
 
@@ -1000,6 +1013,63 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
  */
 function alertOptions(env: ScheduledEnv): SendAlertOptions {
 	return { bvWeb: env.BV_WEB };
+}
+
+/**
+ * Repeat-alert suppression window (#1164): a persistent condition (an outage that
+ * hasn't been fixed yet, an unprovisioned table) re-evaluates true on every 15-min
+ * cron tick, so an alert whose REASON is unchanged would otherwise page forever
+ * instead of once. Keyed on `<threshold>:<hash(normalised reason)>` so a genuinely
+ * CHANGED reason under the same threshold (a different query broke) still pages
+ * immediately rather than waiting out the old reason's cooldown. 24h TTL caps a
+ * persistent condition to one reminder per day.
+ */
+const ALERT_REPEAT_COOLDOWN_SECONDS = 24 * 60 * 60;
+
+/**
+ * Gate for a repeatable alert: resolves true when the alert should be SENT this tick
+ * (first occurrence of `reason` under `threshold`, or the previous occurrence's
+ * cooldown has expired) and false when an identical alert already fired within the
+ * window. Arms the cooldown itself on a true verdict — callers do not write the KV
+ * marker separately, same shape as `checkAndSet`.
+ *
+ * FAIL-OPEN TO SENDING, never suppress on a KV fault: an unbound `RATE_LIMIT`, or a
+ * `get`/`put` that throws, both resolve true. A missed suppression costs one extra
+ * page; a false suppression costs a silent incident — same posture as the
+ * fuzzing-scan and client-ip cooldowns above/below.
+ */
+async function shouldSendRepeat(env: ScheduledEnv, threshold: string, reason: string, nowMs: number): Promise<boolean> {
+	if (!env.RATE_LIMIT) return true;
+
+	const normalized = reason.replace(/\s+/g, ' ').trim().toLowerCase();
+	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized)));
+	const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+	const key = `alert-repeat:${threshold}:${hash}`;
+
+	try {
+		const existing = await env.RATE_LIMIT.get(key);
+		if (existing !== null) return false; // identical reason already paged within the window
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'scheduled',
+			details: { message: 'alert_repeat_kv_get_failed', threshold },
+		});
+		return true; // KV down — send rather than risk a silent suppression
+	}
+
+	try {
+		await env.RATE_LIMIT.put(key, String(nowMs), { expirationTtl: ALERT_REPEAT_COOLDOWN_SECONDS });
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'scheduled',
+			details: { message: 'alert_repeat_kv_put_failed', threshold },
+		});
+		// KV write failed — next tick re-alerts too, acceptable degradation (fail
+		// open, don't silently drop the page).
+	}
+	return true;
 }
 
 /**
