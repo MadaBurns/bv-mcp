@@ -7,7 +7,10 @@
 	"type": "module",
 	"scripts": {
 		"typecheck": "tsc --noEmit",
-		"build": "cf build"
+		"build": "cf build",
+		"deploy": "cf deploy --mode production",
+		"deploy:staged": "cf workers versions create --mode production",
+		"deploy:triggers": "cf workers triggers deploy --mode production"
 	},
 	"devDependencies": {
 		"cf": "1.0.0-beta.9",

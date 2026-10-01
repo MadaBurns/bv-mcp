@@ -93,12 +93,40 @@ command for every API operation (~3,000) and prints **JSON by default** — do
 not append `--json`; there is no such flag. Install once per machine, then
 `cf auth login` (device flow; it does NOT reuse the wrangler OAuth token).
 
-**Rule: until Phase 5 of `docs/superpowers/plans/2026-09-29-cf-cli-migration.md`
-lands, `cf` is read/query tooling for the MCP Worker. The deploy door is still
-`npm run deploy:prod` (wrangler); only the two sidecars (`deploy:infra-probe`,
-`deploy:whois`) deploy via `cf deploy`.** `cf build`/`cf deploy` read
-`./cloudflare.config.ts`, which this repo does not have yet; running them at
-the repo root fails harmlessly, but do not "fix" that by hand-writing one.
+**Rule: the MCP Worker ships through `cf` since Phase 5 of
+`docs/superpowers/plans/2026-09-29-cf-cli-migration.md` (US-8, merge and first
+production deploy are operator actions, not before 2026-10-07).** The doors:
+
+| Door | Ends in (run from `packages/bv-dns-security-mcp/`, pinned `cf@1.0.0-beta.9`) |
+|---|---|
+| `npm run deploy:prod` | `cf deploy --mode production` |
+| `npm run deploy:prod:staged` | `cf workers versions create --mode production` (version upload, no traffic) |
+| `npm run deploy:prod:promote -- <version-id>` | `cf workers deployments create --worker bv-dns-security-mcp --strategy percentage --versions '[{"version_id":"<id>","percentage":100}]'` via `scripts/deploy-prod-promote.mjs`; the id is REQUIRED (arg or `BV_PROMOTE_VERSION_ID`), a UUID, never "latest" |
+| `npm run deploy:prod:triggers` | dns-checks build, then `cf workers triggers deploy --mode production` |
+| `node scripts/deploy-private.mjs` | same gates, then `cf deploy --mode production` |
+
+Every gate in front of the cf step is unchanged and in the same order
+(`check:deploy-freshness` → `check:sidecar-freshness` → `check:release-integrity`
+→ dns-checks build → `check:bindings` → `inject-private-config.cjs` → both D1
+preflights → `check:bindings:prod`). **The injector STAYS and still writes
+`wrangler.production.jsonc`**: the D1 preflights, `check:bindings:prod`, the drift
+check and every `--config wrangler.production.jsonc` script (Phase 6 ports
+those) read it, and it is the rollback config. cf evaluates
+`packages/bv-dns-security-mcp/cloudflare.config.ts`, which merges the SAME
+overlay through `scripts/lib/overlay-merge.mjs`.
+
+⚠️ **`cf deploy` WITHOUT `--mode production` ships the public-only shape** (named
+`bv-dns-security-mcp-dev` so it cannot strip production's private bindings). Every
+script hard-codes the flag and `deploy-pipeline.audit.test.ts` asserts it; if you
+run cf by hand, pass it. Never set `BV_DEPLOY_OVERLAY_PATH` on a deploy (a probe
+hook; audited). Run cf only from the config package: the repo root hoists the
+sidecars' older beta.5, which cannot type the function-form config.
+
+⚠️ **There is no `cf rollback`. Rollback = `npx wrangler rollback --config
+wrangler.production.jsonc`** (regenerate the file first with `node
+scripts/inject-private-config.cjs`). `cf` bundling does not minify by default
+(measured 2026-10-01: 4.90 MB vs 2.61 MB with `wrangler deploy --minify`); the
+fix is `minify: true` in `packages/bv-dns-security-mcp/wrangler.config.ts`.
 
 Discovery is a search, not `--help` chaining — `cf` prints a banner saying so
 on every nested `--help`, and `cf cli search` returns five JSON matches:
@@ -195,7 +223,7 @@ covers an unreachable `wrangler secret list` — same shape as
 `BV_ALLOW_STALE_SIDECARS`). ⚠️ The override is required for BOTH documented
 migration paths, including the `--secrets-file` one-deploy path — the gate
 runs (`node scripts/inject-private-config.cjs`, package.json:52) BEFORE the
-final `npx wrangler deploy` step that `--secrets-file` attaches to, so the
+final `cf deploy --mode production` step that `--secrets-file` attaches to, so the
 secret is never listed yet at gate-check time. Set it inline on that one
 command only, never exported from a shell profile — a persisted override
 silently disables the alerting guarantee on every subsequent deploy. Full
