@@ -33,6 +33,8 @@ export const NODE_POOL_AUDIT_TESTS = [
 	'test/audits/brand-report-quality-audit-script.node.test.ts',
 	'test/audits/check-bindings.node.test.ts',
 	'test/audits/cli-pack-smoke.node.test.ts',
+	// SQ-255: evaluates the root cloudflare.config.ts (node:fs overlay read) in every mode.
+	'test/audits/cloudflare-config.node.test.ts',
 	'test/audits/dependency-license.audit.test.ts',
 	'test/audits/license-headers.audit.test.ts',
 	'test/audits/overlay-merge.node.test.ts',
