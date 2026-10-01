@@ -12,6 +12,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { compareConfigs } from '../../scripts/ci/cf-binding-diff.mjs';
 
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- fixture objects are mutated through arbitrary nested paths
 type Json = Record<string, any>;
 
 const scriptPath = join(process.cwd(), 'scripts/ci/cf-binding-diff.mjs');
