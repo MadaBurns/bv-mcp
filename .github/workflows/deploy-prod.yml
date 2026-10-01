@@ -27,7 +27,7 @@ name: Deploy Prod
 # An unattended trigger + an approval gate + a concurrency group is that
 # starvation by construction, so the unattended trigger is the part that goes.
 #
-# `cancel-in-progress` MUST stay false — cancelling mid-`wrangler deploy` is how
+# `cancel-in-progress` MUST stay false — cancelling mid-`cf deploy` is how
 # a half-shipped Worker happens. With no unattended trigger, runs can no longer
 # pile up behind the group, so holding it is safe.
 

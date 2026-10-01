@@ -36,6 +36,8 @@ export const NODE_POOL_AUDIT_TESTS = [
 	// SQ-255: evaluates the root cloudflare.config.ts (node:fs overlay read) in every mode.
 	'test/audits/cloudflare-config.node.test.ts',
 	'test/audits/dependency-license.audit.test.ts',
+	// SQ-256: spawns the promote script (and a stand-in cf in a temp tree) with real node:child_process / node:fs.
+	'test/audits/deploy-prod-promote.node.test.ts',
 	'test/audits/license-headers.audit.test.ts',
 	'test/audits/overlay-merge.node.test.ts',
 	'test/audits/pretooluse-hook-scope.node.test.ts',

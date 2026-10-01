@@ -166,6 +166,8 @@ describe('workflow permissions audit (F10 — least-privilege OIDC)', () => {
 		// assertion deliberately, not reflexively.
 		expect(jobNames).toEqual(['github-release', 'validate', 'version-bump']);
 		expect(publish, 'publish.yml must not deploy the Worker — that is deploy-prod.yml').not.toContain('wrangler deploy');
+		// Phase 5 (US-8): the main Worker now ships through `cf deploy`; publish.yml must not grow that door either.
+		expect(publish, 'publish.yml must not deploy the Worker through cf either').not.toContain('cf deploy');
 	});
 
 	it('id-token: write appears in NO job (OIDC left with the removed publish-npm job)', () => {

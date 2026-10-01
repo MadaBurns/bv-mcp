@@ -1,6 +1,7 @@
 import { existsSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
 const privateConfigPath = '.dev/wrangler.deploy.jsonc';
 const generatedConfigPath = 'wrangler.production.jsonc';
@@ -14,8 +15,14 @@ if (!existsSync(privateConfigPath)) {
 }
 
 const require = createRequire(import.meta.url);
-const wranglerCliPath = require.resolve('wrangler');
 const tsxCliPath = require.resolve('tsx/cli');
+
+// The main Worker ships through `cf` (Phase 5, US-8). cf has no --config: it evaluates ./cloudflare.config.ts in its
+// cwd, and refuses to build at an npm workspace root, so it runs from the config-only package
+// packages/bv-dns-security-mcp and from THAT package's pinned install (cf 1.0.0-beta.9; the repo root hoists the
+// sidecars' older beta.5, which cannot type the function-form config).
+const cfProjectDir = fileURLToPath(new URL('../packages/bv-dns-security-mcp/', import.meta.url));
+const cfCliPath = fileURLToPath(new URL('../packages/bv-dns-security-mcp/node_modules/.bin/cf', import.meta.url));
 
 /** Run one deploy step, streaming its output and aborting the deploy on any non-zero exit. */
 function runStep(argv, description) {
@@ -34,7 +41,10 @@ function runStep(argv, description) {
 // fail-closed gate in inject-private-config.cjs: the production security vars, the
 // unknown-overlay-key guard, and the required-secrets declaration. Deploying the overlay
 // as-is once meant shipping without PROFILE_ACCUMULATOR, because the example overlay
-// carried its own stale `durable_objects` copy. Always deploy the injected config.
+// carried its own stale `durable_objects` copy. The overlay therefore only ever reaches a
+// deploy through the shared merge (scripts/lib/overlay-merge.mjs): the injector below runs it
+// (and writes wrangler.production.jsonc for the preflights and for rollback), and
+// `cf deploy --mode production` runs the same validate + merge inside cloudflare.config.ts.
 // This is the SECOND deploy door and it skips the `deploy:prod` npm chain entirely,
 // so every gate wired there has to be re-wired here or it is simply a bypass. The
 // sidecar deploy-drift gate (#945) blocks when bv-whois / bv-infra-probe are behind
@@ -66,8 +76,11 @@ runStep(['scripts/brand-audit-schema-preflight.mjs', '--config', generatedConfig
 // with nothing to surface it (SQ-187). Needs the injected config, so it runs after the injector.
 runStep(['scripts/access-log-schema-preflight.mjs', '--config', generatedConfigPath], 'Access-log schema preflight');
 
-const result = spawnSync(process.execPath, [wranglerCliPath, 'deploy', '--config', generatedConfigPath, ...process.argv.slice(2)], {
+// `--mode production` is hard-coded: a bare `cf deploy` ships the public-only shape (named
+// bv-dns-security-mcp-dev by cloudflare.config.ts so it cannot strip production's private bindings).
+const result = spawnSync(process.execPath, [cfCliPath, 'deploy', '--mode', 'production', ...process.argv.slice(2)], {
 	stdio: 'inherit',
+	cwd: cfProjectDir,
 });
 
 if (result.error) {
