@@ -8,9 +8,10 @@
 	"scripts": {
 		"typecheck": "tsc --noEmit",
 		"build": "cf build",
-		"deploy": "cf deploy --mode production",
-		"deploy:staged": "cf workers versions create --mode production",
-		"deploy:triggers": "cf workers triggers deploy --mode production"
+		"guard:overlay-env": "node -e \"if (process.env.BV_DEPLOY_OVERLAY_PATH) { console.error('Refusing to deploy: BV_DEPLOY_OVERLAY_PATH is a test hook that points cloudflare.config.ts at a different overlay than the one the injector validated. Unset it and re-run.'); process.exit(1); }\"",
+		"deploy": "npm run guard:overlay-env && cf deploy --mode production",
+		"deploy:staged": "npm run guard:overlay-env && cf workers versions create --mode production",
+		"deploy:triggers": "npm run guard:overlay-env && cf workers triggers deploy --mode production"
 	},
 	"devDependencies": {
 		"cf": "1.0.0-beta.9",

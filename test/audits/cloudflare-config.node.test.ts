@@ -6,6 +6,7 @@
 // the codemod's wrangler→cf rendering (spike ledger L34). So this pins cf-door/injector parity.
 // Node pool: reads wrangler.jsonc and overlay fixtures with real node:fs.
 
+import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -195,6 +196,51 @@ describe('(b) production mode fails closed', () => {
 	});
 });
 
+// The open-ended pass-throughs (vars, TENANT_DB_* D1s) are spread into env after every declared binding. A pass-through
+// named like a declared binding, secret or var used to replace it silently (SQ-257 seam 8: `cf build --mode production`
+// exited 0 shipping RATE_LIMIT / BV_API_KEY / BV_RECON as text vars). That collision now throws, naming the names.
+describe('(b2) pass-through names never shadow a declared binding', () => {
+	const withVars = (extra: Json): string => {
+		const overlay = loadExample();
+		overlay.vars = { ...overlay.vars, ...extra };
+		return writeOverlay(overlay);
+	};
+
+	it('throws on the reviewer input: vars named like a KV binding, a required secret and a service', () => {
+		const path = withVars({ RATE_LIMIT: 'x', BV_API_KEY: 'x', BV_RECON: 'x' });
+		expect(() => production(path)).toThrow(/RATE_LIMIT, BV_API_KEY, BV_RECON collides with a binding, secret or var this config declares/);
+	});
+
+	it.each(['RATE_LIMIT', 'BV_API_KEY', 'BV_RECON', 'TENANT_REGISTRY_DB', 'MCP_ANALYTICS', 'BV_SCANNER_QUEUE', 'QUOTA_COORDINATOR'])(
+		'throws on a var named %s, whether or not the overlay also supplies that binding',
+		(name) => {
+			expect(() => production(withVars({ [name]: 'x' }))).toThrow(new RegExp(`${name} collides`));
+		},
+	);
+
+	it('throws on a var named like a per-tenant D1 binding the overlay also declares', () => {
+		const overlay = loadExample();
+		overlay.d1_databases = [...(overlay.d1_databases ?? []), { binding: 'TENANT_DB_ACME', database_name: 'tenant-acme', database_id: 'acme-id' }];
+		overlay.vars = { ...overlay.vars, TENANT_DB_ACME: 'x' };
+		expect(() => production(writeOverlay(overlay))).toThrow(/TENANT_DB_ACME collides/);
+	});
+
+	it('still passes a legitimate novel var through as a text var', () => {
+		const w = production(withVars({ NOVEL_OVERLAY_VAR: 'novel-value' }));
+		expect(w.env.NOVEL_OVERLAY_VAR).toEqual({ type: 'text', value: 'novel-value' });
+		expect(w.env.RATE_LIMIT.type).toBe('kv');
+		expect(w.env.BV_API_KEY.type).toBe('secret');
+	});
+
+	it('still passes a TENANT_DB_* D1 through, next to the declared bindings', () => {
+		const overlay = loadExample();
+		overlay.d1_databases = [...(overlay.d1_databases ?? []), { binding: 'TENANT_DB_ACME', database_name: 'tenant-acme', database_id: 'acme-id' }];
+		const w = production(writeOverlay(overlay));
+		expect(w.env.TENANT_DB_ACME).toEqual({ type: 'd1', name: 'tenant-acme', id: 'acme-id' });
+		expect(w.env.RATE_LIMIT.type).toBe('kv');
+	});
+});
+
 describe('(c) production mode matches the injector (mergeOverlay) binding for binding', () => {
 	it('example overlay: same binding names, types and IDs, same crons and queue consumers', () => {
 		const merged = mergeOverlay(loadPublic(), loadExample());
@@ -305,5 +351,29 @@ describe('(f) config-only workspace package', () => {
 		} finally {
 			process.chdir(cwd);
 		}
+	});
+});
+
+// BV_DEPLOY_OVERLAY_PATH is a test hook: exported in an operator shell it would deploy an overlay other than the one the
+// injector validated, so every deploy door refuses it (SQ-257 seam 7). The text of each door is pinned in
+// deploy-pipeline.audit.test.ts; this runs the package guard for real. Only the guard script runs, never a deploy.
+describe('(g) deploy doors refuse BV_DEPLOY_OVERLAY_PATH', () => {
+	const guard: string = JSON.parse(readFileSync(join(root, PACKAGE_DIR, 'package.json'), 'utf8')).scripts['guard:overlay-env'];
+	const run = (overlayPath: string | undefined) => {
+		const env = { ...process.env };
+		delete env.BV_DEPLOY_OVERLAY_PATH;
+		if (overlayPath !== undefined) env.BV_DEPLOY_OVERLAY_PATH = overlayPath;
+		return spawnSync('sh', ['-c', guard], { env, encoding: 'utf8' });
+	};
+
+	it('exits 1 with a clear message when the hook is set', () => {
+		const result = run('/tmp/another-overlay.jsonc');
+		expect(result.status).toBe(1);
+		expect(result.stderr).toMatch(/Refusing to deploy: BV_DEPLOY_OVERLAY_PATH/);
+	});
+
+	it('passes when the hook is unset or empty', () => {
+		expect(run(undefined).status).toBe(0);
+		expect(run('').status).toBe(0);
 	});
 });
