@@ -94,7 +94,7 @@
 		"@streamparser/json-whatwg": "^0.0.26",
 		"@typesafe-ai/sdk": "^0.6.0",
 		"drizzle-orm": "0.45.3",
-		"marked": "^18.0.13",
+		"marked": "^18.0.14",
 		"pdf-lib": "^1.17.1",
 		"punycode": "^2.3.1",
 		"tldts": "^7.4.13",
