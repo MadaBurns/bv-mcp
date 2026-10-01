@@ -86,7 +86,7 @@ excuses a check is only safe when something else still covers the excused paths.
 
 ⚠️ **Two removed workflows, both dead `exit 1` stubs under `environment: production`:** `auto-deploy-main.yml` (deployed the public `wrangler.jsonc`, so it shipped without the private overlay/bindings) and `deploy-hook.yml` (#718 — dispatch-only, last succeeded 2026-05-20; CLAUDE.md wrongly called it "the active deploy path" for months). `publish.yml`'s `deploy-cloudflare` job was removed for the same reason: it declared `environment: production` and exited 1, so every tagged release left a standing approval that could only ever fail. Three contradictory deploy paths is how nobody could say which was authoritative. MCP-Registry publish stays a manual post-deploy step (`bv-mcp-release` skill).
 
-## `cf` CLI — query and API tooling, NOT the deploy door (2026-09-29)
+## `cf` CLI — the main Worker deploy door since Phase 5, plus query and API tooling
 
 Cloudflare's new CLI (`npm i -g cf`, open beta since 2026-09-28) generates a
 command for every API operation (~3,000) and prints **JSON by default** — do
