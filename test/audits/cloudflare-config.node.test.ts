@@ -286,6 +286,16 @@ describe('(f) config-only workspace package', () => {
 		expect(nested.version).not.toBe(lock.packages['node_modules/wrangler'].version);
 	});
 
+	// `cf build` delegates to wrangler and does NOT minify unless wrangler.config.ts says so (SQ-256 measured 4,896,014 B
+	// unminified vs 2,613,838 B for `wrangler deploy --dry-run --minify`; with `minify: true` cf build emits 2,613,838 B).
+	// The old deploy:prod passed --minify, so dropping it would ship an 87% larger bundle. The file is mode-independent,
+	// so this holds for production and non-production alike.
+	it('minifies the bundle, matching the old `wrangler deploy --minify`', () => {
+		const source = readFileSync(join(root, PACKAGE_DIR, 'wrangler.config.ts'), 'utf8');
+		expect(source).toMatch(/^\s*minify:\s*true,/m);
+		expect(source).not.toMatch(/\bmode\b/);
+	});
+
 	it('reads every file from the repo root, whatever the cwd', () => {
 		expect(PRODUCTION_OVERLAY_PATH).toBe(join(root, '.dev', 'wrangler.deploy.jsonc'));
 		const cwd = process.cwd();
