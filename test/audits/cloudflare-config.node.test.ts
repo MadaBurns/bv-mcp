@@ -1,22 +1,28 @@
-// Audit test for the root cloudflare.config.ts (US-8 Phase 5.2, SQ-255): the cf deploy config for
-// bv-dns-security-mcp. Successor of wrangler-public-no-private-bindings.audit.test.ts for the cf door.
+// Audit test for packages/bv-dns-security-mcp/cloudflare.config.ts (US-8 Phase 5.2, SQ-255): the cf deploy config
+// for bv-dns-security-mcp. Successor of wrangler-public-no-private-bindings.audit.test.ts for the cf door.
 //
 // The expected output is never a hand list: it is rendered from the SAME inputs the Wrangler-door
 // injector uses — mergeOverlay(wrangler.jsonc, overlay) from scripts/lib/overlay-merge.mjs — through
 // the codemod's wrangler→cf rendering (spike ledger L34). So this pins cf-door/injector parity.
 // Node pool: reads wrangler.jsonc and overlay fixtures with real node:fs.
 
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
-import config, { NON_PRODUCTION_WORKER_NAME, PRODUCTION_WORKER_NAME, buildCloudflareConfig } from '../../cloudflare.config';
+import config, {
+	NON_PRODUCTION_WORKER_NAME,
+	PRODUCTION_OVERLAY_PATH,
+	PRODUCTION_WORKER_NAME,
+	buildCloudflareConfig,
+} from '../../packages/bv-dns-security-mcp/cloudflare.config';
 import { mergeOverlay, parseJsonc } from '../../scripts/lib/overlay-merge.mjs';
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- loosely-typed wrangler/cf config objects
 type Json = Record<string, any>;
 
 const root = process.cwd();
+const PACKAGE_DIR = 'packages/bv-dns-security-mcp';
 const examplePath = join(root, 'wrangler.private.example.jsonc');
 const loadPublic = (): Json => parseJsonc(readFileSync(join(root, 'wrangler.jsonc'), 'utf8'));
 const loadExample = (): Json => parseJsonc(readFileSync(examplePath, 'utf8'));
@@ -81,7 +87,8 @@ function renderWorkerShape(cfg: Json, workerName: string): Json {
 		name: workerName,
 		compatibilityDate: cfg.compatibility_date,
 		compatibilityFlags: cfg.compatibility_flags,
-		entrypoint: cfg.main,
+		// The config lives two levels down; the entry stays in the root tree.
+		entrypoint: `../../${cfg.main}`,
 		limits: { cpuMs: cfg.limits.cpu_ms },
 		observability: {
 			enabled: cfg.observability.enabled,
@@ -202,7 +209,7 @@ describe('(c) production mode matches the injector (mergeOverlay) binding for bi
 		overlay.kv_namespaces[0].id = 'id-from-overlay-only';
 		const w = production(writeOverlay(overlay));
 		expect(w.env[overlay.kv_namespaces[0].binding]).toEqual({ type: 'kv', id: 'id-from-overlay-only' });
-		expect(readFileSync(join(root, 'cloudflare.config.ts'), 'utf8')).not.toContain('YOUR_RATE_LIMIT_KV_NAMESPACE_ID');
+		expect(readFileSync(join(root, PACKAGE_DIR, 'cloudflare.config.ts'), 'utf8')).not.toContain('YOUR_RATE_LIMIT_KV_NAMESPACE_ID');
 	});
 
 	it('overlay with every supported binding kind, overrides and per-tenant D1s: still exact parity', () => {
@@ -251,5 +258,42 @@ describe('(e) worker-name split (US-8 Decision 6)', () => {
 
 	it('the -dev shape never binds to or tails into the production Worker', () => {
 		expect(JSON.stringify(worker(undefined))).not.toContain(`"${PRODUCTION_WORKER_NAME}"`);
+	});
+});
+
+// cf refuses to build at the root of an npm workspace ("The Cloudflare application detection logic has been run in
+// the root of a workspace…", cf 1.0.0-beta.9 and beta.10), so the config lives in a config-only workspace package.
+describe('(f) config-only workspace package', () => {
+	const pkg = JSON.parse(readFileSync(join(root, PACKAGE_DIR, 'package.json'), 'utf8'));
+	const lock = JSON.parse(readFileSync(join(root, 'package-lock.json'), 'utf8'));
+
+	it('leaves no cf config at the repo root, where cf build is refused', () => {
+		expect(existsSync(join(root, 'cloudflare.config.ts'))).toBe(false);
+		expect(existsSync(join(root, 'wrangler.config.ts'))).toBe(false);
+	});
+
+	it('pins cf exactly to the version measured for function-form configs (beta.5 types them as an empty Env)', () => {
+		expect(pkg.private).toBe(true);
+		expect(pkg.devDependencies.cf).toBe('1.0.0-beta.9');
+	});
+
+	// cf finds wrangler ONLY at <package>/node_modules/wrangler (measured on beta.9: with just the root-hoisted copy,
+	// `cf build` fails "wrangler is declared in …/package.json but is not installed"). npm hoists a wrangler matching
+	// the root's to the root, so the package pins an exact version the root does not resolve to.
+	it('keeps a nested wrangler install so cf can discover it', () => {
+		const nested = lock.packages[`${PACKAGE_DIR}/node_modules/wrangler`];
+		expect(nested?.version).toBe(pkg.devDependencies.wrangler);
+		expect(nested.version).not.toBe(lock.packages['node_modules/wrangler'].version);
+	});
+
+	it('reads every file from the repo root, whatever the cwd', () => {
+		expect(PRODUCTION_OVERLAY_PATH).toBe(join(root, '.dev', 'wrangler.deploy.jsonc'));
+		const cwd = process.cwd();
+		process.chdir(scratch);
+		try {
+			expect(worker(undefined).env.BV_WEB).toEqual({ type: 'worker', worker: 'bv-web-prod' });
+		} finally {
+			process.chdir(cwd);
+		}
 	});
 });

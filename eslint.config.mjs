@@ -2,7 +2,7 @@ import tseslint from 'typescript-eslint';
 
 export default tseslint.config(
 	{
-		ignores: ['coverage/**', 'node_modules/**', '.claude/**', '.dev/**', '.firecrawl/**', '.worktrees/**', 'dist/**', 'crates/**/pkg/**', 'worker-configuration.d.ts', '.cloudflare/**'],
+		ignores: ['coverage/**', 'node_modules/**', '.claude/**', '.dev/**', '.firecrawl/**', '.worktrees/**', 'dist/**', 'crates/**/pkg/**', 'worker-configuration.d.ts', '**/.cloudflare/**'],
 	},
 	{
 		files: ['**/*.ts', '**/*.mts'],

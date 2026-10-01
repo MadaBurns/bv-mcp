@@ -1,0 +1,16 @@
+{
+	"name": "@blackveil/bv-dns-security-mcp",
+	"version": "0.1.0",
+	"description": "cf build/deploy package for the main bv-dns-security-mcp Worker (config only; the entrypoint stays at src/index.ts)",
+	"license": "BUSL-1.1",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"typecheck": "tsc --noEmit",
+		"build": "cf build"
+	},
+	"devDependencies": {
+		"cf": "1.0.0-beta.9",
+		"wrangler": "4.142.0"
+	}
+}

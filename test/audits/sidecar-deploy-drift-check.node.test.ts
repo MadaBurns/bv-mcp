@@ -409,8 +409,11 @@ describe('SIDECAR_TARGETS is an SSOT against the filesystem', () => {
 	function wranglerName(configPath: string): string | undefined {
 		const source = readFileSync(resolve(REPO_ROOT, configPath), 'utf8');
 		// A `cf migrate` package declares its Worker in cloudflare.config.ts (`worker: { name: '…' }`),
-		// not in a Wrangler jsonc.
-		if (configPath.endsWith('.ts')) return source.match(/\bname:\s*['"]([^'"]+)['"]/)?.[1];
+		// not in a Wrangler jsonc. The main Worker's package (packages/bv-dns-security-mcp, SQ-255) picks its
+		// name by --mode, so it has no `name:` literal; it exports the production name as PRODUCTION_WORKER_NAME.
+		if (configPath.endsWith('.ts')) {
+			return source.match(/\bPRODUCTION_WORKER_NAME\s*=\s*['"]([^'"]+)['"]/)?.[1] ?? source.match(/\bname:\s*['"]([^'"]+)['"]/)?.[1];
+		}
 		const config = parseJsonc(source) as { name?: unknown };
 		return typeof config.name === 'string' ? config.name : undefined;
 	}
@@ -427,6 +430,8 @@ describe('SIDECAR_TARGETS is an SSOT against the filesystem', () => {
 
 	it('the main Worker name matches wrangler.jsonc and is NOT a sidecar', () => {
 		expect(wranglerName('wrangler.jsonc')).toBe(MAIN_WORKER_NAME);
+		// Its cf deploy package resolves to the same Worker, so the sweep below skips it by NAME, not as a fragment.
+		expect(wranglerName('packages/bv-dns-security-mcp/cloudflare.config.ts')).toBe(MAIN_WORKER_NAME);
 		expect(SIDECAR_TARGETS.map((t) => t.worker)).not.toContain(MAIN_WORKER_NAME);
 	});
 

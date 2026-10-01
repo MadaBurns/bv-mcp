@@ -35,5 +35,5 @@
 		"skipLibCheck": true
 	},
 	"exclude": ["test"],
-	"include": ["worker-configuration.d.ts", "src/**/*.ts", "cloudflare.config.ts", "wrangler.config.ts"]
+	"include": ["worker-configuration.d.ts", "src/**/*.ts", "packages/bv-dns-security-mcp/cloudflare.config.ts", "packages/bv-dns-security-mcp/wrangler.config.ts"]
 }
