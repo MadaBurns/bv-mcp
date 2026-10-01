@@ -122,9 +122,44 @@ run cf by hand, pass it. Never set `BV_DEPLOY_OVERLAY_PATH` on a deploy (a probe
 hook; audited). Run cf only from the config package: the repo root hoists the
 sidecars' older beta.5, which cannot type the function-form config.
 
-⚠️ **There is no `cf rollback`. Rollback = `npx wrangler rollback --config
-wrangler.production.jsonc`** (regenerate the file first with `node
-scripts/inject-private-config.cjs`). `cf` bundling does not minify by default
+**Production cutover runbook (operator, in this order):**
+
+1. **Parity check: `npm run check:cf-binding-parity`.** It diffs what `cf build`
+   will deploy against the injector's `wrangler.production.jsonc`: every binding
+   as `{binding, type, resourceId}` (plus R2 jurisdiction, service
+   entrypoint/props, DO worker, producer delay), every cron, every queue consumer
+   with all its settings (DLQ, `max_retries`, batch size/timeout, concurrency,
+   retry delay), name / compat date+flags / cpu limit / observability / tail
+   consumers, and DO migrations vs cf exports. Exit 0 = identical, 1 = a
+   difference (printed; text var values show as a short sha256, never in clear),
+   2 = an input is missing. Produce its two inputs first: `node
+   scripts/inject-private-config.cjs`, then `npm -w packages/bv-dns-security-mcp
+   exec -- cf build --mode production`. The only difference it accepts is
+   migrations to exports, and it still checks the two class sets match. Do NOT
+   hand-roll a jq diff: cf's `env` is keyed by binding NAME, so `.name` yields
+   resource names and a jq diff is non-empty on identical configs (SQ-257 seam 9).
+2. `npm run deploy:prod:staged` (uploads a version, no traffic); smoke-test it.
+3. `npm run deploy:prod:promote -- <version-id>`.
+4. Wire checks per `bv-mcp-release`.
+
+⚠️ **There is no `cf rollback`. PRIMARY rollback: `npx wrangler rollback
+<version-id> --name bv-dns-security-mcp -y`.** It needs no injector, no
+`wrangler.production.jsonc` and no API secret-list call, so an API incident that
+makes the injector fail closed cannot block it; `-y` keeps it non-interactive.
+Take `<version-id>` from `cf workers deployments list --worker
+bv-dns-security-mcp`. SECONDARY (wrangler reads the config): regenerate it with
+`node scripts/inject-private-config.cjs`, then `npx wrangler rollback
+<version-id> --config wrangler.production.jsonc -y`.
+
+⚠️ **Rehearse the first rollback before relying on it.** The first cf deploy
+crosses the wrangler-`migrations` to cf-`exports` boundary for both SQLite
+Durable Objects, and the SQ-253 spike measured rollback only on cf-deployed
+throwaway workers. Rehearse it once, early, never during an incident: after
+step 2, roll back to the version that was serving (`npx wrangler rollback
+<old-id> --name bv-dns-security-mcp -y`), confirm the DOs and secrets still
+answer, then promote the staged version.
+
+`cf` bundling does not minify by default
 (measured 2026-10-01: 4.90 MB vs 2.61 MB with `wrangler deploy --minify`); the
 fix is `minify: true` in `packages/bv-dns-security-mcp/wrangler.config.ts`.
 
