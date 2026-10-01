@@ -35,6 +35,7 @@ export const NODE_POOL_AUDIT_TESTS = [
 	'test/audits/cli-pack-smoke.node.test.ts',
 	'test/audits/dependency-license.audit.test.ts',
 	'test/audits/license-headers.audit.test.ts',
+	'test/audits/overlay-merge.node.test.ts',
 	'test/audits/pretooluse-hook-scope.node.test.ts',
 	'test/audits/private-config-injection.node.test.ts',
 	'test/audits/repo-safety-push-range-scanner.audit.test.ts',
