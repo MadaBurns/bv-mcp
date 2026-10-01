@@ -92,7 +92,8 @@ Publish steps (key never echoed): `mcp-publisher validate` → `login dns --doma
 npm -w packages/dns-checks run build && npm run build
 npm publish --access public                      # root pkg (blackveil-dns) - only if npm is intended + token present
 npm publish -w packages/dns-checks --access public  # REQUIRED TOO: the root publish does NOT ship the workspace package
-npm run deploy:prod              # injects private bindings, deploys the MCP Worker ONLY (via cf deploy --mode production; rollback: npx wrangler rollback --config wrangler.production.jsonc)
+npm run check:cf-binding-parity  # runbook step 1 (first cf deploy; see bv-mcp-operations): cf build vs wrangler.production.jsonc must be identical
+npm run deploy:prod              # injects private bindings, deploys the MCP Worker ONLY (via cf deploy --mode production; PRIMARY rollback: npx wrangler rollback <version-id> --name bv-dns-security-mcp -y; secondary: injector + npx wrangler rollback <version-id> --config wrangler.production.jsonc -y)
 npm run deploy:whois             # sidecar: bv-whois (packages/bv-whois/wrangler.jsonc)
 npm run deploy:infra-probe       # sidecar: bv-infra-probe (cf deploy from packages/bv-infra-probe/; rollback: npx wrangler rollback --name bv-infra-probe)
 mcp-publisher publish            # MCP Registry, DNS-TXT-gated namespace
@@ -104,6 +105,11 @@ Worker, and until #945 nothing else did: bv-whois sat 4 source commits stale for
 live deployment predates its source, naming the commits and the exact fix command. Deploy
 the named sidecar and re-run; the escape hatch is `BV_ALLOW_STALE_SIDECARS=1` (distinct from
 `BV_ALLOW_STALE_DEPLOY`, so a deliberate rollback does not also wave the sidecars through).
+
+⚠️ **Rollback of the MCP Worker needs no injector:** `npx wrangler rollback <version-id> --name bv-dns-security-mcp -y`
+cannot be blocked by an API incident (the injector's secret-list call can). The FIRST rollback after the cf cutover
+crosses the migrations-to-exports boundary for both SQLite Durable Objects, so rehearse it once (staged upload, then
+rollback to the serving version, then promote) before relying on it; the full runbook is in `bv-mcp-operations`.
 
 Never commit `.npmrc`, registry tokens, the DNS publisher key, or generated production config. Keep the publisher key in `.dev.vars` / an approved secret manager only.
 
