@@ -116,8 +116,11 @@ function createReader(source: Wrangler, workerName: string) {
 	};
 	const secrets: string[] = source.secrets?.required ?? [];
 	const rendered = new Set<unknown>();
+	/** Every binding, secret and var name this config asked for, found or not: the names a pass-through must never reuse. */
+	const declared = new Set<string>();
 
 	function take(kind: keyof typeof lists, name: string): Wrangler | undefined {
+		declared.add(name);
 		const nameKey = kind === 'durableObjects' ? 'name' : 'binding';
 		const entry = lists[kind].find((candidate) => candidate?.[nameKey] === name);
 		if (entry === undefined) return undefined;
@@ -127,6 +130,7 @@ function createReader(source: Wrangler, workerName: string) {
 		return entry;
 	}
 	function text(name: string) {
+		declared.add(name);
 		if (!(name in vars)) return undefined;
 		if (typeof vars[name] !== 'string') fail(`var ${name} is not a string; only text vars are rendered.`);
 		rendered.add(`var:${name}`);
@@ -167,6 +171,7 @@ function createReader(source: Wrangler, workerName: string) {
 			return e && bindings.queue({ name: e.queue, deliveryDelay: e.delivery_delay });
 		},
 		secret(name: string) {
+			declared.add(name);
 			if (!secrets.includes(name)) return undefined;
 			rendered.add(`secret:${name}`);
 			return bindings.secret();
@@ -195,13 +200,25 @@ function createReader(source: Wrangler, workerName: string) {
 		/**
 		 * Renders the open-ended pass-throughs (vars, TENANT_DB_* D1s) and THROWS on anything else not yet rendered.
 		 * Call it after every declared binding has been read. Its keys are deliberately untyped.
+		 *
+		 * A pass-through named like something this config declares (a binding, a secret, a var, a tenant D1) would be
+		 * spread over it and ship as a text var in its place, so that collision throws instead of picking a winner.
 		 */
 		remainder(): Record<never, never> {
-			const extra: Record<string, Binding> = {};
-			for (const name of Object.keys(vars)) if (!rendered.has(`var:${name}`)) extra[name] = text(name)!;
-			for (const e of lists.d1) {
-				if (!rendered.has(e) && typeof e.binding === 'string' && e.binding.startsWith(TENANT_DB_PREFIX)) extra[e.binding] = d1(e.binding)!;
+			const passthroughVars = Object.keys(vars).filter((name) => !rendered.has(`var:${name}`));
+			const tenantDbs = lists.d1
+				.filter((e) => !rendered.has(e) && typeof e.binding === 'string' && e.binding.startsWith(TENANT_DB_PREFIX))
+				.map((e) => e.binding as string);
+			const collisions = [
+				...passthroughVars.filter((name) => declared.has(name) || tenantDbs.includes(name)),
+				...tenantDbs.filter((name) => declared.has(name)),
+			];
+			if (collisions.length > 0) {
+				fail(`${[...new Set(collisions)].join(', ')} collides with a binding, secret or var this config declares; it would shadow it. Rename it.`);
 			}
+			const extra: Record<string, Binding> = {};
+			for (const name of passthroughVars) extra[name] = text(name)!;
+			for (const name of tenantDbs) extra[name] = d1(name)!;
 			const undeclared = [
 				...Object.entries(lists).flatMap(([kind, list]) =>
 					list.filter((e) => !rendered.has(e)).map((e) => `${kind} ${e?.binding ?? e?.name ?? e?.queue ?? JSON.stringify(e)}`),

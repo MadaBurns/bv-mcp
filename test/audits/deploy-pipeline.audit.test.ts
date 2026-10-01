@@ -36,6 +36,8 @@ const GATES_BEFORE_SHIP = [
 	'node scripts/access-log-schema-preflight.mjs --config wrangler.production.jsonc',
 	'npm run check:bindings:prod',
 ];
+/** Every cf script in the config package starts with this overlay-env guard (see the BV_DEPLOY_OVERLAY_PATH test below). */
+const OVERLAY_GUARD = 'npm run guard:overlay-env && ';
 /** deploy-private.mjs's cf spawn: marker used to locate the ship step in its source. */
 const PRIVATE_SHIP = "[cfCliPath, 'deploy', '--mode', 'production'";
 
@@ -88,13 +90,13 @@ describe('deploy:prod pipeline integrity', () => {
 	it('hard-codes --mode production on every cf command that evaluates the config, and never deploys --prebuilt', () => {
 		for (const name of ['deploy', 'deploy:staged', 'deploy:triggers']) {
 			const script = cfPkg.scripts?.[name] ?? '';
-			expect(script, `packages/bv-dns-security-mcp must define ${name}`).toMatch(/^cf /);
+			expect(script, `packages/bv-dns-security-mcp must define ${name}`).toMatch(/^npm run guard:overlay-env && cf /);
 			expect(script, `${name} must pass --mode production explicitly`).toContain('--mode production');
 			expect(script, `${name} must build fresh, never reuse build output`).not.toContain('--prebuilt');
 		}
-		expect(cfPkg.scripts?.deploy).toBe('cf deploy --mode production');
-		expect(cfPkg.scripts?.['deploy:staged']).toBe('cf workers versions create --mode production');
-		expect(cfPkg.scripts?.['deploy:triggers']).toBe('cf workers triggers deploy --mode production');
+		expect(cfPkg.scripts?.deploy).toBe(`${OVERLAY_GUARD}cf deploy --mode production`);
+		expect(cfPkg.scripts?.['deploy:staged']).toBe(`${OVERLAY_GUARD}cf workers versions create --mode production`);
+		expect(cfPkg.scripts?.['deploy:triggers']).toBe(`${OVERLAY_GUARD}cf workers triggers deploy --mode production`);
 	});
 
 	// cf is only reachable through the config package: the root hoists the sidecars' older cf (beta.5, which
@@ -106,7 +108,9 @@ describe('deploy:prod pipeline integrity', () => {
 	});
 
 	// BV_DEPLOY_OVERLAY_PATH is a probe hook in cloudflare.config.ts that points production mode at another
-	// overlay file (e.g. the placeholder example). No deploy door may ever set it.
+	// overlay file (e.g. the placeholder example). No deploy door may ever set it, and every door that evaluates the
+	// config must REFUSE to run when an operator shell exports it: the deployed overlay would not be the one the
+	// injector validated (SQ-257 seam 7). The guard really aborting is exercised in cloudflare-config.node.test.ts.
 	it('never sets the BV_DEPLOY_OVERLAY_PATH probe hook in a deploy door', () => {
 		for (const [label, source] of [
 			['package.json', packageJsonSource],
@@ -115,8 +119,31 @@ describe('deploy:prod pipeline integrity', () => {
 			['scripts/deploy-prod-promote.mjs', promoteSource],
 			['.github/workflows/deploy-prod.yml', deployProdWorkflowSource],
 		] as const) {
-			expect(source, `${label} must not set the overlay-path probe hook`).not.toContain('BV_DEPLOY_OVERLAY_PATH');
+			expect(source, `${label} must not set the overlay-path probe hook`).not.toMatch(/BV_DEPLOY_OVERLAY_PATH\s*[=:]/);
 		}
+		// The root scripts, the promote script and the workflow reach cf only through the guarded package scripts.
+		for (const [label, source] of [
+			['package.json', packageJsonSource],
+			['scripts/deploy-prod-promote.mjs', promoteSource],
+			['.github/workflows/deploy-prod.yml', deployProdWorkflowSource],
+		] as const) {
+			expect(source, `${label} neither sets nor needs the overlay-path probe hook`).not.toContain('BV_DEPLOY_OVERLAY_PATH');
+		}
+	});
+
+	it('refuses to run any cf door, or the private deploy helper, while BV_DEPLOY_OVERLAY_PATH is set', () => {
+		const guard = cfPkg.scripts?.['guard:overlay-env'] ?? '';
+		expect(guard, 'the guard script must read the hook and exit non-zero').toMatch(
+			/process\.env\.BV_DEPLOY_OVERLAY_PATH[\s\S]*process\.exit\(1\)/,
+		);
+		for (const name of ['deploy', 'deploy:staged', 'deploy:triggers']) {
+			expect(cfPkg.scripts?.[name], `${name} must run the overlay-env guard before cf`).toMatch(/^npm run guard:overlay-env && cf /);
+		}
+		const guardIndex = deployPrivateSource.indexOf('process.env.BV_DEPLOY_OVERLAY_PATH');
+		expect(guardIndex, 'deploy-private.mjs must refuse when the hook is set').toBeGreaterThan(-1);
+		expect(deployPrivateSource.slice(guardIndex, guardIndex + 400), 'the refusal must exit non-zero').toContain('process.exit(1)');
+		// Before the first gate, so a doomed deploy does no work.
+		expect(guardIndex).toBeLessThan(deployPrivateSource.indexOf('deploy-freshness-check'));
 	});
 
 	// The pinned cf (a devDependency of the config package) arrives with the workflow's `npm ci`.
@@ -339,7 +366,7 @@ describe('deploy:prod pipeline integrity', () => {
 		it('uploads a version instead of routing traffic to it', () => {
 			expect(stagedScript, 'the staged path must upload a version, not deploy one').toContain(`${CF_PACKAGE_RUN} deploy:staged`);
 			expect(cfPkg.scripts?.['deploy:staged'], 'the staged path must create a version, not a deployment').toBe(
-				'cf workers versions create --mode production',
+				`${OVERLAY_GUARD}cf workers versions create --mode production`,
 			);
 			expect(stagedScript, 'the staged path must not send traffic to the new version').not.toMatch(/run deploy(?![\w:-])/);
 			expect(stagedScript).not.toContain('cf deploy');

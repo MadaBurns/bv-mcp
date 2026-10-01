@@ -3,6 +3,16 @@ import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 
+// BV_DEPLOY_OVERLAY_PATH is a test hook: it points cloudflare.config.ts's production mode at a different overlay
+// than the one the injector below validates and writes wrangler.production.jsonc from. Exported in an operator
+// shell it would deploy an overlay nothing here checked, so every deploy door refuses it.
+if (process.env.BV_DEPLOY_OVERLAY_PATH) {
+	console.error(
+		'Refusing to deploy: BV_DEPLOY_OVERLAY_PATH is a test hook that points cloudflare.config.ts at a different overlay than the one the injector validated. Unset it and re-run.',
+	);
+	process.exit(1);
+}
+
 const privateConfigPath = '.dev/wrangler.deploy.jsonc';
 const generatedConfigPath = 'wrangler.production.jsonc';
 
