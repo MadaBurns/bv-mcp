@@ -1304,6 +1304,29 @@ describe('scanDomain scan-cache admission predicate (SQ-200)', () => {
 		// here with score.overall === null — this assertion, and the graded-side
 		// assertion above, are the two-sided pin on the predicate.
 	});
+
+	// SQ-214: measurement-only analytics for refused (ungraded) cache writes.
+	it('ungraded scans emit ungraded_not_cached; the second identical scan is marked repeat; graded scans emit nothing', async () => {
+		const { scanDomain } = await import('../src/tools/scan-domain');
+		const emitted: Array<{ domain: string; repeat: boolean }> = [];
+		const analytics = { emitUngradedNotCachedEvent: (e: { domain: string; repeat: boolean }) => emitted.push(e) };
+		const opts = { analytics } as unknown as Parameters<typeof scanDomain>[2];
+
+		const ungraded = 'sq214-ungraded.com';
+		globalThis.fetch = vi.fn().mockResolvedValue(new Response('upstream unavailable', { status: 503 }));
+		const r1 = await scanDomain(ungraded, undefined, opts);
+		const r2 = await scanDomain(ungraded, undefined, opts);
+		expect(r1.score.overall).toBeNull();
+		expect(r2.score.overall).toBeNull();
+		expect(emitted.map((e) => e.repeat)).toEqual([false, true]);
+		expect(emitted.every((e) => e.domain === ungraded)).toBe(true);
+
+		const graded = 'sq214-graded.com';
+		mockAllChecksFn(graded);
+		const r3 = await scanDomain(graded, undefined, opts);
+		expect(r3.score.overall).not.toBeNull();
+		expect(emitted).toHaveLength(2);
+	});
 });
 
 describe('adaptiveWeightCache eviction (Fix 4)', () => {

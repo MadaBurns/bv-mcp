@@ -236,6 +236,13 @@ export const SCAN_CATEGORIES: CheckCategory[] = Object.keys(CHECK_DISPATCH) as C
 export const CHECKS_WITHOUT_DNS_POOL: ReadonlySet<CheckCategory> = new Set<CheckCategory>(['ssl', 'http_security']);
 
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
+// SQ-214: per-isolate memory of ungraded scans refused by the cache admission predicate,
+// keyed by scan cache key, so a repeat within 5 min can be flagged in analytics.
+// Measurement only; bounded; never read on any scoring or caching path.
+const UNGRADED_REPEAT_WINDOW_MS = 5 * 60 * 1000;
+const UNGRADED_REPEAT_MAX_ENTRIES = 500;
+const recentUngradedRefusals = new Map<string, number>();
+
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
 
 /** TTL for the in-memory adaptive weight cache (ms). */
@@ -1173,6 +1180,20 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		} else {
 			await cachePromise;
 		}
+	} else if (runtimeOptions?.analytics) {
+		const now = Date.now();
+		const last = recentUngradedRefusals.get(cacheKey);
+		const repeat = last !== undefined && now - last < UNGRADED_REPEAT_WINDOW_MS;
+		if (recentUngradedRefusals.size >= UNGRADED_REPEAT_MAX_ENTRIES && !recentUngradedRefusals.has(cacheKey)) {
+			for (const [k, t] of recentUngradedRefusals) {
+				if (now - t >= UNGRADED_REPEAT_WINDOW_MS) recentUngradedRefusals.delete(k);
+			}
+			if (recentUngradedRefusals.size >= UNGRADED_REPEAT_MAX_ENTRIES) {
+				recentUngradedRefusals.delete(recentUngradedRefusals.keys().next().value as string);
+			}
+		}
+		recentUngradedRefusals.set(cacheKey, now);
+		runtimeOptions.analytics.emitUngradedNotCachedEvent({ domain, repeat });
 	}
 
 	return result;

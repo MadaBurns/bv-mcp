@@ -8,6 +8,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Added
+
+- **Repeat-ungraded `scan_domain` counter (SQ-214).** When the scan-cache admission
+  predicate refuses an ungraded result (SQ-200), one `scan_ungraded` Analytics Engine row is
+  emitted (`ungraded_not_cached`, domain fingerprint, `first`/`repeat` within 5 minutes,
+  per-isolate memory). Measurement only: no caching, scoring or subrequest change; it
+  informs whether a short negative TTL is worth adding.
+
 ### Changed
 
 - **`npm run deploy:infra-probe` now deploys the `bv-infra-probe` sidecar through the
