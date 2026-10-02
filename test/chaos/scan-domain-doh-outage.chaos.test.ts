@@ -507,7 +507,7 @@ describe('chaos: scan_domain emits one primary-DoH failure summary row (SQ-209)'
 
 	function analyticsSpy() {
 		const emitDohPrimarySummary = vi.fn();
-		return { emitDohPrimarySummary, analytics: { emitDohPrimarySummary } as unknown as import('../../src/lib/analytics').AnalyticsClient };
+		return { emitDohPrimarySummary, analytics: { emitDohPrimarySummary, emitUngradedNotCachedEvent: vi.fn() } as unknown as import('../../src/lib/analytics').AnalyticsClient };
 	}
 
 	it('Given a healthy primary, exactly ONE summary row is emitted with attempts > 0 and every failure count 0 (the denominator control)', async () => {
