@@ -739,6 +739,11 @@ app.get('/health', async (c) => {
 	const resolvedClientIp = resolveClientIpFromRequestHeaders(c.req.raw.headers);
 	const clientIp = resolvedClientIp === 'unknown' ? undefined : resolvedClientIp;
 	const tier = await resolveTier(token, c.env, clientIp, c.req.url);
+	// Deliberately fail-closed (SQ-236): an owner JWT whose revocation/version state is unreadable
+	// during a storage outage resolves to `storageUnavailable` (authenticated: false), so it gets the
+	// same 403 as any non-owner credential rather than a 503 or a degraded body. A deep probe must
+	// never run on an unverified credential, and the cheap liveness path above stays available; the
+	// outage itself is reported by the /mcp 503 and by probeQuotaCoordinator for a verified owner.
 	if (!tier.authenticated || tier.tier !== 'owner') {
 		return c.json({ error: 'forbidden', error_description: 'Deep health checks require an owner-tier credential' }, 403);
 	}

@@ -1309,3 +1309,73 @@ describe('#788 email_spoof_subdomain fires on an inherited none policy', () => {
 		expect(result.find((p) => p.id === 'email_spoof_subdomain')).toBeDefined();
 	});
 });
+
+// ---------------------------------------------------------------------------
+// SQ-268 / #1128 — the NXDOMAIN gate also covers this composite
+// ---------------------------------------------------------------------------
+
+describe('simulateAttackPaths — non-resolving apex (SQ-268)', () => {
+	function urlOf(input: string | URL | Request): string {
+		return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+	}
+
+	/** Every DoH name answers `rcode` (empty); every HTTPS fetch gets a Cloudflare 530. */
+	function mockEveryName(rcode: number) {
+		const fetchMock = vi.fn().mockImplementation((input: string | URL | Request) => {
+			if (urlOf(input).includes('name=')) return Promise.resolve(createDohResponse([], [], { status: rcode }));
+			return Promise.resolve(new Response('origin DNS error', { status: 530 }));
+		});
+		globalThis.fetch = fetchMock;
+		return fetchMock;
+	}
+
+	it('NXDOMAIN → not assessed: no feasible, high or critical path and no overall risk', async () => {
+		const fetchMock = mockEveryName(3);
+		const { simulateAttackPaths, formatAttackPaths } = await import('../src/tools/simulate-attack-paths');
+		const result = await simulateAttackPaths('nx-sim-268.example');
+
+		expect(result.notAssessed?.reason).toBe('domain_does_not_resolve');
+		expect(result.notAssessed?.detail).toContain('does not resolve (NXDOMAIN)');
+		expect(result.overallRisk).toBeNull();
+		expect(result.totalPaths).toBe(0);
+		expect(result.criticalPaths).toBe(0);
+		expect(result.highPaths).toBe(0);
+		expect(result.attackPaths).toEqual([]);
+		// Only the single apex NS probe ran: no check, no secondary-resolver confirmation.
+		expect(fetchMock).toHaveBeenCalledTimes(1);
+
+		for (const format of ['full', 'compact'] as const) {
+			const text = formatAttackPaths(result, format);
+			expect(text).toContain('Not assessed');
+			expect(text).not.toContain('No feasible attack paths detected');
+			expect(text).not.toMatch(/Overall Risk/);
+		}
+	});
+
+	it('resolving control: an answered apex NS still simulates paths as before', async () => {
+		// The fixture answers the apex NS (NOERROR) and publishes neither SPF nor DMARC.
+		mockEmailSpoofOnlyDomain();
+		const { simulateAttackPaths } = await import('../src/tools/simulate-attack-paths');
+		const result = await simulateAttackPaths('example.com');
+		expect(result.notAssessed).toBeUndefined();
+		expect(result.overallRisk).toBe('critical');
+		expect(result.attackPaths.some((p) => p.id === 'email_spoof_direct')).toBe(true);
+	});
+
+	it('SERVFAIL apex falls through to the simulation (only NXDOMAIN abstains)', async () => {
+		const fetchMock = mockEveryName(2);
+		const { simulateAttackPaths } = await import('../src/tools/simulate-attack-paths');
+		const result = await simulateAttackPaths('sf-sim-268.example');
+		expect(result.notAssessed).toBeUndefined();
+		expect(result.overallRisk).not.toBeNull();
+		expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
+	});
+
+	it('a transport failure on the probe falls through to the simulation (fail-open)', async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error('network down'));
+		const { simulateAttackPaths } = await import('../src/tools/simulate-attack-paths');
+		const result = await simulateAttackPaths('down-sim-268.example');
+		expect(result.notAssessed).toBeUndefined();
+		expect(result.overallRisk).not.toBeNull();
+	});
+});

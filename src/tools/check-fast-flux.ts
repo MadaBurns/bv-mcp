@@ -17,6 +17,7 @@ import { callReconScan, isReconHit } from '../lib/recon-binding';
 import type { ReconBinding, BindingDegradationSink } from '../lib/recon-binding';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory, Finding } from '../lib/scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 
 const CATEGORY = 'fast_flux' as CheckCategory;
 
@@ -135,6 +136,7 @@ export async function checkFastFlux(
 					ip_set_changes: ipSetChanges,
 					min_ttl: overallMinTtl,
 					rounds: effectiveRounds,
+					[SUBJECT_TERMS_METADATA_KEY]: [domain],
 				},
 			),
 		);

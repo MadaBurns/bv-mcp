@@ -147,6 +147,67 @@ describe('checkDaneHttps', () => {
 		expect(result.score).toBe(95);
 	});
 
+	// SQ-207: the DNSSEC (AD) lookup is a separate probe from the TLSA lookup. When ONLY the AD
+	// lookup is cut, "DNSSEC unknown" must not be scored as "unsigned" ("DANE without DNSSEC",
+	// high) — the TLSA facet still reports from its answer and the DNSSEC facet abstains.
+	describe('DNSSEC (AD) lookup transport failure with a TLSA answer (SQ-207)', () => {
+		function cutAdLookupOnly(fail: () => Promise<Response>, usage: number) {
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if ((url.includes('type=A') || url.includes('type=1')) && !url.includes('_tcp')) return fail();
+				if (url.includes('_443._tcp.example.com') && (url.includes('type=TLSA') || url.includes('type=52'))) {
+					return Promise.resolve(
+						tlsaResponse('_443._tcp.example.com', [{ usage, selector: 1, matchingType: 1, certData: 'aabbccddee' }]),
+					);
+				}
+				return Promise.resolve(emptyResponse('example.com', 1));
+			});
+		}
+
+		it.each(DOH_TRANSPORT_FAILURES)('does not score "DANE without DNSSEC" when $label for the AD lookup only', async ({ fail }) => {
+			cutAdLookupOnly(fail, 3);
+
+			const result = await run();
+			expect(result.category).toBe('dane_https');
+			// The cut probe is not an unsigned verdict: no high finding, no missingControl.
+			expect(result.findings.some((f) => f.title === 'DANE without DNSSEC')).toBe(false);
+			expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+			for (const finding of result.findings) expect(finding.metadata?.missingControl, finding.title).not.toBe(true);
+			// The DNSSEC facet abstains with an info dns_error finding...
+			const facet = result.findings.find((f) => f.title === 'DNSSEC status not determined');
+			expect(facet).toBeDefined();
+			expect(facet?.severity).toBe('info');
+			expect(facet?.metadata?.errorKind).toBe('dns_error');
+			// ...while the TLSA facet is still reported from its successful answer.
+			expect(result.recordPresent).toBe(true);
+			expect(result.findings.some((f) => f.title.includes('DANE TLSA configured'))).toBe(true);
+			expect(result.checkStatus).toBeUndefined();
+			expect(result.score).toBe(95);
+			// A half-measured result is not cached.
+			expect(result.partial).toBe(true);
+		});
+
+		it('keeps an answered AD=false as a measured "DANE without DNSSEC" (high)', async () => {
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if ((url.includes('type=A') || url.includes('type=1')) && !url.includes('_tcp')) {
+					return Promise.resolve(dnssecResponse('example.com', false));
+				}
+				if (url.includes('_443._tcp.example.com') && (url.includes('type=TLSA') || url.includes('type=52'))) {
+					return Promise.resolve(
+						tlsaResponse('_443._tcp.example.com', [{ usage: 3, selector: 1, matchingType: 1, certData: 'aabbccddee' }]),
+					);
+				}
+				return Promise.resolve(emptyResponse('example.com', 1));
+			});
+
+			const result = await run();
+			expect(result.findings.find((f) => f.severity === 'high')?.title).toBe('DANE without DNSSEC');
+			expect(result.findings.some((f) => f.title === 'DNSSEC status not determined')).toBe(false);
+			expect(result.partial).toBeUndefined();
+		});
+	});
+
 	it('should handle DNSSEC check failure gracefully', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;

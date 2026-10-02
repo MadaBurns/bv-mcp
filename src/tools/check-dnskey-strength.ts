@@ -17,6 +17,7 @@ import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, Finding } from '../lib/scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 
 /**
  * DNSKEY algorithm registry per RFC 8624.
@@ -90,7 +91,7 @@ export async function checkDnskeyStrength(domain: string, dnsOptions?: QueryDnsO
 						`Deprecated DNSKEY algorithm (${known.name})`,
 						'high',
 						`${domain} signs with DNSKEY algorithm ${algorithm} (${known.name}), deprecated by RFC 8624. Migrate to ECDSA P-256 (13), Ed25519 (15), or Ed448 (16).`,
-						{ confidence: 'deterministic' },
+						{ confidence: 'deterministic', [SUBJECT_TERMS_METADATA_KEY]: [domain, known.name] },
 					),
 				);
 			} else if (known.notRecommended) {

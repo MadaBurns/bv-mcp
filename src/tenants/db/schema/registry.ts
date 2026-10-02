@@ -60,9 +60,20 @@ export const tenantKeys = sqliteTable('tenant_keys', {
 	scope: text('scope').notNull(),
 	expires_at: integer('expires_at'),
 	revoked_at: integer('revoked_at'),
+	/**
+	 * last_used_at is NOT TRACKED. NULL is never evidence a key is unused
+	 * (SQ-178, 2026-09-24). Key auth does not read tenant_keys at all today
+	 * (see tenant-resolver.ts:148 TODO). Fenced by
+	 * `test/audits/tenant-reserved-schema.audit.test.ts`.
+	 */
 	last_used_at: integer('last_used_at'),
 });
 
+/**
+ * billing_events is reserved. bv-mcp never writes it; the billing SSOT is
+ * bv-web-prod. An empty table does not mean no billing (SQ-178, 2026-09-24).
+ * Fenced by `test/audits/tenant-reserved-schema.audit.test.ts`.
+ */
 export const billingEvents = sqliteTable(
 	'billing_events',
 	{

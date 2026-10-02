@@ -247,13 +247,25 @@ export async function checkNsecWalkability(domain: string, dnsOptions?: QueryDns
 		const probe = await probeDenialNsec(domain, dnsOptions);
 
 		if (probe.verdict === 'walkable') {
+			// `missingControl: false`, not `subjectTerms` (SQ-102): this finding requires a SIGNED zone,
+			// so it never asserts an absent control, and its static detail carries a "no NSEC3PARAM …
+			// plain NSEC record" span only 6 characters past MISSING_CONTROL_REGEX's 64-character gap.
+			// Redacting a declared term inside that span (a dotless next-name such as "NSEC") would
+			// shorten it into a match. The declaration takes the verdict away from the prose entirely.
 			findings.push(
 				createFinding(
 					CATEGORY,
 					'Zone is walkable via plain NSEC',
 					'high',
 					`The zone for ${domain} is DNSSEC-signed (DNSKEY/DS present), publishes no NSEC3PARAM, and a DO=1 denial-of-existence probe returned a plain NSEC record whose next-name (${probe.nextName}) is a genuinely different existing owner name. The zone therefore uses plain NSEC and is fully walkable — an attacker can enumerate all zone contents by following NSEC chain links.`,
-					{ domain, walkable: true, dnssecSigned: true, nextName: probe.nextName ?? null, probe: 'nsec-next-name' },
+					{
+						domain,
+						walkable: true,
+						dnssecSigned: true,
+						nextName: probe.nextName ?? null,
+						probe: 'nsec-next-name',
+						missingControl: false,
+					},
 				),
 			);
 			return buildCheckResult(CATEGORY, findings) as CheckResult;

@@ -48,6 +48,7 @@ import type { OutputFormat } from '../handlers/tool-args';
 import type { CheckResult, Finding } from '@blackveil/dns-checks/scoring';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { isCompletedCheck, UNGRADED_DISPLAY } from '../lib/ungraded-display';
+import { describeNonResolvingDomain, isNonResolvingApex } from '../lib/apex-resolution';
 import { checkSpf } from './check-spf';
 import { checkDmarc } from './check-dmarc';
 import { checkDkim } from './check-dkim';
@@ -85,6 +86,11 @@ export interface SpoofabilityResult {
 	noSendPolicy: boolean;
 	/** `true` when no control was measurable, so `spoofabilityScore` is null. */
 	evidenceInsufficient: boolean;
+	/**
+	 * Present only when the assessment was skipped because the apex does not exist in DNS
+	 * (NXDOMAIN, SQ-268). Implies `evidenceInsufficient`; absent on every measured result.
+	 */
+	notAssessedReason?: 'domain_does_not_resolve';
 	interactionEffects: string[];
 	summary: string;
 }
@@ -363,6 +369,29 @@ function generateSummary(
  * @returns Composite spoofability assessment
  */
 export async function assessSpoofability(domain: string, dnsOptions?: QueryDnsOptions): Promise<SpoofabilityResult> {
+	// SQ-268 / #1128: a name that does not exist in DNS has no email-auth posture. Running the
+	// checks would score "No SPF/DMARC record found" as a measured critical (~100 spoofability).
+	// Same predicate as the check_* gate and scan_domain; only a clean NXDOMAIN abstains, a
+	// SERVFAIL / timeout / error falls through to the measured path.
+	if (await isNonResolvingApex(domain, dnsOptions)) {
+		const reason = `${describeNonResolvingDomain(domain)} This control was not assessed.`;
+		const notAssessed = (): ControlAssessment => ({ score: null, status: 'unmeasured', reason });
+		return {
+			domain,
+			spoofabilityScore: null,
+			riskLevel: null,
+			spfProtection: null,
+			dmarcProtection: null,
+			dkimProtection: null,
+			controls: { spf: notAssessed(), dmarc: notAssessed(), dkim: notAssessed() },
+			noSendPolicy: false,
+			evidenceInsufficient: true,
+			notAssessedReason: 'domain_does_not_resolve',
+			interactionEffects: [],
+			summary: `${describeNonResolvingDomain(domain)} Email spoofability was not assessed.`,
+		};
+	}
+
 	// Run the three email auth checks in parallel
 	const [spfResult, dmarcResult, dkimResult] = await Promise.all([
 		checkSpf(domain, dnsOptions),

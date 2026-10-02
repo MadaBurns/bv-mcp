@@ -2,6 +2,7 @@
 
 import type { Finding } from '../lib/scoring';
 import { createFinding } from '../lib/scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 
 /**
  * Common internal/sensitive subdomains to probe for public DNS resolution.
@@ -134,7 +135,7 @@ export function analyzeSoaConsistency(nsSerials: NsSerialEntry[]): Finding[] {
 				'NS SOA serial mismatch (stale zone)',
 				'high',
 				`SOA serial numbers differ across nameservers, indicating zone propagation lag or stale secondaries. ${detailParts.join('; ')}.`,
-				{ serials: serialMetadata },
+				{ serials: serialMetadata, [SUBJECT_TERMS_METADATA_KEY]: detailParts },
 			),
 		);
 	}
