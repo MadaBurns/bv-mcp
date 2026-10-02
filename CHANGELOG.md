@@ -18,6 +18,19 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   emitted (`ungraded_not_cached`, domain fingerprint, `first`/`repeat` within 5 minutes,
   per-isolate memory). Measurement only: no caching, scoring or subrequest change; it
   informs whether a short negative TTL is worth adding.
+### Added
+
+- **Primary DoH failures are now measured (SQ-209).** Every failed PRIMARY resolver attempt
+  (HTTP >= 500, non-abort network error, per-fetch timeout) emits one structured
+  `DNS primary resolver failure` log line (resolver, status class, attempt, errorKind, record
+  type only), and each completed scan emits ONE `doh_primary` Analytics Engine summary row with
+  the attempt count and the failure counts by class (zeros on a clean scan, so a rate has a
+  denominator). A separate index from `degradation`, so the binding-degradation alert is
+  unchanged. Instrumentation only: no query, retry, cache or scoring change and no new
+  subrequests. `dns-transport.ts` now documents the secondary semantics (secondaries confirm
+  EMPTY answers only; the scan path skips them; a primary 5xx abstains by design, SQ-202 ruling
+  2026-09-24, to be revisited 30 days after this counter is live). Ship note: `dns-transport.ts`
+  is a bv-infra-probe watch path, so release with `deploy:infra-probe` before `deploy:prod`.
 
 ### Changed
 

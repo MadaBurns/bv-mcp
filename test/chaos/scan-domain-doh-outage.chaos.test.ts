@@ -497,3 +497,51 @@ describe('chaos: scan_domain when one check’s DoH query hangs (H3)', () => {
 	}, 30_000);
 
 });
+
+// ---------------------------------------------------------------------------
+// H4 (SQ-209): the single-resolver incident rate is MEASURED
+// ---------------------------------------------------------------------------
+
+describe('chaos: scan_domain emits one primary-DoH failure summary row (SQ-209)', () => {
+	const domain = 'example.org';
+
+	function analyticsSpy() {
+		const emitDohPrimarySummary = vi.fn();
+		return { emitDohPrimarySummary, analytics: { emitDohPrimarySummary } as unknown as import('../../src/lib/analytics').AnalyticsClient };
+	}
+
+	it('Given a healthy primary, exactly ONE summary row is emitted with attempts > 0 and every failure count 0 (the denominator control)', async () => {
+		installNetwork({ domain, primary: 'healthy', fallback: 'healthy' });
+		const { scanDomain } = await import('../../src/tools/scan-domain');
+		const spy = analyticsSpy();
+
+		await scanDomain(domain, undefined, { secondaryDoh: SECONDARY_DOH, analytics: spy.analytics });
+
+		expect(spy.emitDohPrimarySummary).toHaveBeenCalledTimes(1);
+		const row = spy.emitDohPrimarySummary.mock.calls[0][0];
+		expect(row.attempts).toBeGreaterThan(0);
+		expect([row.http5xx, row.network, row.timeout]).toEqual([0, 0, 0]);
+		expect(row.domain).toBe(domain);
+	});
+
+	it.each([
+		{ mode: 'http503' as const, klass: 'http5xx' as const },
+		{ mode: 'timeout' as const, klass: 'timeout' as const },
+	])(
+		'Given the primary $mode on every query, exactly ONE summary row is emitted (not one per query) and its $klass count is positive',
+		async ({ mode, klass }) => {
+			const net = installNetwork({ domain, primary: mode, fallback: 'healthy' });
+			const { scanDomain } = await import('../../src/tools/scan-domain');
+			const spy = analyticsSpy();
+
+			await scanDomain(domain, undefined, { secondaryDoh: SECONDARY_DOH, analytics: spy.analytics });
+
+			// Positive control: many primary queries were issued, yet only one row was written.
+			expect(net.queries.filter((q) => q.resolver === 'primary').length).toBeGreaterThan(1);
+			expect(spy.emitDohPrimarySummary).toHaveBeenCalledTimes(1);
+			const row = spy.emitDohPrimarySummary.mock.calls[0][0];
+			expect(row[klass]).toBeGreaterThan(0);
+			expect(row.attempts).toBeGreaterThanOrEqual(row[klass]);
+		},
+	);
+});

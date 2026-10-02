@@ -180,6 +180,28 @@ export interface AnalyticsClient {
 		} & AnalyticsContext,
 	): void;
 	/**
+	 * `doh_primary` summary — ONE row per completed (non-cached) scan with the
+	 * counts of PRIMARY DoH resolver attempts and failures by class (SQ-209).
+	 * Measures the single-resolver incident rate behind the SQ-202 failover
+	 * decision: a primary 5xx / network error / timeout abstains by design (no
+	 * secondary failover). Deliberately a SEPARATE index from `degradation` so
+	 * the 15-min binding-degradation alert query is unaffected; a clean scan
+	 * still emits a row (all failure counts 0) so a rate has a denominator.
+	 *
+	 * Blob positions (doh_primary): blob1=outcome (`clean` | `failures`),
+	 * blob2=domain fingerprint, blob3=country, blob4=clientType, blob5=authTier.
+	 * Doubles: double1=attempts, double2=http5xx, double3=network, double4=timeout.
+	 */
+	emitDohPrimarySummary(
+		event: {
+			attempts: number;
+			http5xx: number;
+			network: number;
+			timeout: number;
+			domain?: string;
+		} & AnalyticsContext,
+	): void;
+	/**
 	 * R8 per-shard observability. Emits the resolved QuotaCoordinator shard index
 	 * (0 .. QUOTA_SHARD_COUNT-1) for an unauthenticated quota check so an operator can
 	 * watch shard-load distribution and detect SKEW (a hot shard) after flipping
@@ -263,6 +285,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 			emitRateLimitEvent: noop,
 			emitSessionEvent: noop,
 			emitDegradationEvent: noop,
+			emitDohPrimarySummary: noop,
 			emitQuotaShardEvent: noop,
 			emitQueueBatchEvent: noop,
 			emitTailAggregate: noop,
@@ -380,6 +403,24 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.country ?? 'unknown',
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
+				],
+			});
+		},
+		emitDohPrimarySummary: (event) => {
+			safeWrite(dataset, {
+				indexes: ['doh_primary'],
+				blobs: [
+					event.http5xx + event.network + event.timeout > 0 ? 'failures' : 'clean',
+					event.domain ? domainFingerprint(event.domain) : 'none',
+					event.country ?? 'unknown',
+					event.clientType ?? 'unknown',
+					event.authTier ?? 'anon',
+				],
+				doubles: [
+					sanitizeNumber(event.attempts),
+					sanitizeNumber(event.http5xx),
+					sanitizeNumber(event.network),
+					sanitizeNumber(event.timeout),
 				],
 			});
 		},

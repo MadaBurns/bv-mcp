@@ -78,9 +78,9 @@ describe('dns transport helpers', () => {
 		);
 		globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
 
-		await expect(
-			queryDns('example.com', 'A', false, { retries: 0, confirmWithSecondaryOnEmpty: false }),
-		).rejects.toMatchObject({ message: 'Invalid DoH response format' });
+		await expect(queryDns('example.com', 'A', false, { retries: 0, confirmWithSecondaryOnEmpty: false })).rejects.toMatchObject({
+			message: 'Invalid DoH response format',
+		});
 		expect(cancelled).toHaveBeenCalledOnce();
 	});
 
@@ -111,7 +111,9 @@ describe('dns transport helpers', () => {
 	});
 
 	it('throws a timeout error after the final abort', async () => {
-		globalThis.fetch = vi.fn().mockRejectedValue(new DOMException('The operation was aborted.', 'AbortError')) as unknown as typeof globalThis.fetch;
+		globalThis.fetch = vi
+			.fn()
+			.mockRejectedValue(new DOMException('The operation was aborted.', 'AbortError')) as unknown as typeof globalThis.fetch;
 
 		await expect(queryDns('example.com', 'TXT', false, { retries: 0, timeoutMs: 5 })).rejects.toMatchObject<DnsQueryError>({
 			message: 'DNS query timed out after 5ms',
@@ -666,9 +668,7 @@ describe('fetchDohOutcome', () => {
 	});
 
 	it('returns error with reason=http on non-2xx response', async () => {
-		globalThis.fetch = vi
-			.fn()
-			.mockResolvedValue({ ok: false, status: 502, json: async () => ({}) }) as unknown as typeof fetch;
+		globalThis.fetch = vi.fn().mockResolvedValue({ ok: false, status: 502, json: async () => ({}) }) as unknown as typeof fetch;
 		const { fetchDohOutcome } = await import('../src/lib/dns-transport');
 		const outcome = await fetchDohOutcome('https://cloudflare-dns.com/dns-query?name=example.com&type=TXT', 3000);
 		expect(outcome.kind).toBe('error');
@@ -677,9 +677,7 @@ describe('fetchDohOutcome', () => {
 
 	it('never logs a configured secondary resolver URL or its secret path', async () => {
 		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
-		globalThis.fetch = vi
-			.fn()
-			.mockResolvedValue(new Response(null, { status: 502 })) as unknown as typeof fetch;
+		globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 502 })) as unknown as typeof fetch;
 		const { fetchDohOutcome } = await import('../src/lib/dns-transport');
 		const secretUrl = 'https://secret-resolver.example/private/token-path?name=example.com&type=TXT';
 
@@ -835,5 +833,157 @@ describe('secondary confirmation preserves rcode conclusiveness', () => {
 		});
 
 		expect(result.Status).toBe(2);
+	});
+});
+
+describe('primary DoH failure instrumentation (SQ-209)', () => {
+	const savedFetch = globalThis.fetch;
+	afterEach(() => {
+		globalThis.fetch = savedFetch;
+		vi.restoreAllMocks();
+	});
+
+	const okBody = {
+		Status: 0,
+		TC: false,
+		RD: true,
+		RA: true,
+		AD: false,
+		CD: false,
+		Question: [{ name: 'example.com', type: RecordType.A }],
+		Answer: [{ name: 'example.com', type: RecordType.A, TTL: 300, data: '192.0.2.1' }],
+	};
+	const emptyBody = { ...okBody, Answer: [] };
+	const freshTally = () => ({ attempts: 0, http5xx: 0, network: 0, timeout: 0 });
+
+	function logged(spy: { mock: { calls: unknown[][] } }): string {
+		return spy.mock.calls.flat().join(' ');
+	}
+
+	it('counts a synthetic primary 5xx and logs resolver, status class, attempt and errorKind (positive control)', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		globalThis.fetch = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(null, { status: 503 }))
+			.mockResolvedValueOnce(Response.json(okBody)) as unknown as typeof fetch;
+		const tally = freshTally();
+
+		const response = await queryDns('example.com', 'A', false, {
+			retries: 1,
+			confirmWithSecondaryOnEmpty: false,
+			primaryFailureTally: tally,
+		});
+
+		expect(response.Answer?.[0]?.data).toBe('192.0.2.1');
+		expect(tally).toEqual({ attempts: 2, http5xx: 1, network: 0, timeout: 0 });
+		const out = logged(logSpy);
+		expect(out).toContain('DNS primary resolver failure');
+		expect(out).toContain('"resolver":"cloudflare"');
+		expect(out).toContain('"statusClass":"5xx"');
+		expect(out).toContain('"attempt":0');
+		expect(out).toContain('"errorKind":"http_5xx"');
+		expect(out).toContain('"recordType":"A"');
+		// No query name beyond the record type.
+		expect(out).not.toContain('example.com');
+	});
+
+	it('counts a non-timeout network error as `network`', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		globalThis.fetch = vi.fn().mockRejectedValue(new TypeError('network down')) as unknown as typeof fetch;
+		const tally = freshTally();
+
+		await expect(
+			queryDns('example.com', 'A', false, { retries: 0, confirmWithSecondaryOnEmpty: false, primaryFailureTally: tally }),
+		).rejects.toBeInstanceOf(DnsQueryError);
+
+		expect(tally).toEqual({ attempts: 1, http5xx: 0, network: 1, timeout: 0 });
+		expect(logged(logSpy)).toContain('"errorKind":"network"');
+	});
+
+	it('counts a per-fetch timeout as `timeout`', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		globalThis.fetch = vi.fn().mockRejectedValue(new DOMException('timed out', 'TimeoutError')) as unknown as typeof fetch;
+		const tally = freshTally();
+
+		await expect(
+			queryDns('example.com', 'A', false, { retries: 0, confirmWithSecondaryOnEmpty: false, primaryFailureTally: tally }),
+		).rejects.toBeInstanceOf(DnsQueryError);
+
+		expect(tally).toEqual({ attempts: 1, http5xx: 0, network: 0, timeout: 1 });
+	});
+
+	it('does not count or log a clean answer, a 4xx, or a caller abort as a primary failure', async () => {
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		const tally = freshTally();
+
+		globalThis.fetch = vi.fn().mockResolvedValue(Response.json(okBody)) as unknown as typeof fetch;
+		await queryDns('example.com', 'A', false, { retries: 0, confirmWithSecondaryOnEmpty: false, primaryFailureTally: tally });
+
+		globalThis.fetch = vi.fn().mockResolvedValue(new Response(null, { status: 404 })) as unknown as typeof fetch;
+		await expect(
+			queryDns('example.com', 'A', false, { retries: 0, confirmWithSecondaryOnEmpty: false, primaryFailureTally: tally }),
+		).rejects.toBeInstanceOf(DnsQueryError);
+
+		const controller = new AbortController();
+		controller.abort();
+		await expect(
+			queryDns('example.com', 'A', false, {
+				retries: 0,
+				confirmWithSecondaryOnEmpty: false,
+				primaryFailureTally: tally,
+				signal: controller.signal,
+			}),
+		).rejects.toBeInstanceOf(DnsQueryError);
+
+		expect(tally).toEqual({ attempts: 2, http5xx: 0, network: 0, timeout: 0 });
+		expect(logged(logSpy)).not.toContain('DNS primary resolver failure');
+	});
+
+	it('does not count a SECONDARY resolver 5xx as a primary failure', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
+			return String(url).includes('dns.google') ? new Response(null, { status: 503 }) : Response.json(emptyBody);
+		}) as unknown as typeof fetch;
+		const tally = freshTally();
+
+		await queryDns('example.com', 'A', false, { retries: 0, confirmWithSecondaryOnEmpty: true, primaryFailureTally: tally });
+
+		expect(tally).toEqual({ attempts: 1, http5xx: 0, network: 0, timeout: 0 });
+	});
+
+	it('leaves the query path unchanged: without a tally a 5xx still retries and resolves identically', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		const fetchMock = vi
+			.fn()
+			.mockResolvedValueOnce(new Response(null, { status: 502 }))
+			.mockResolvedValueOnce(Response.json(okBody));
+		globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+		const response = await queryDns('example.com', 'A', false, { retries: 1, confirmWithSecondaryOnEmpty: false });
+
+		expect(fetchMock).toHaveBeenCalledTimes(2);
+		expect(response.Answer?.[0]?.data).toBe('192.0.2.1');
+	});
+
+	// SQ-209 verify-then-file. CONFIRMED: the empty-answer secondary confirmation builds its URL
+	// WITHOUT `checkingDisabled`, so a `cd=1` primary query is "confirmed" by a validating
+	// (cd=0) secondary, and the replaced response is then cached under the `:cd1` key.
+	// This test PINS the current behaviour; a separate ticket owns the fix. When it lands, invert
+	// the expectation (the secondary URL must carry cd=1).
+	it('documents: the secondary confirmation drops cd=1 from a checkingDisabled primary query', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		const urls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
+			urls.push(String(url));
+			return Response.json(emptyBody);
+		}) as unknown as typeof fetch;
+
+		await queryDns('example.com', 'A', false, { retries: 0, confirmWithSecondaryOnEmpty: true, checkingDisabled: true });
+
+		const primaryUrl = urls.find((u) => !u.includes('dns.google'));
+		const googleUrl = urls.find((u) => u.includes('dns.google'));
+		expect(primaryUrl, 'primary fetch').toContain('cd=1');
+		expect(googleUrl, 'secondary fetch').toBeDefined();
+		expect(googleUrl).not.toContain('cd=1');
 	});
 });

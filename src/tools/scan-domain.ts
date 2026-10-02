@@ -37,7 +37,7 @@ import {
 import { applyInteractionPenalties, type InteractionEffect } from '../lib/category-interactions';
 import { computeScoringConfigHash } from '../lib/scoring-version';
 import { buildCheckCacheKey, buildScanCacheKey, cacheGet, cacheSet, runWithCache } from '../lib/cache';
-import type { QueryDnsOptions } from '../lib/dns-types';
+import type { DohPrimaryFailureTally, QueryDnsOptions } from '../lib/dns-types';
 import { queryDns } from '../lib/dns';
 import { describeNonResolvingDomain, probeApexRcode } from '../lib/apex-resolution';
 import { Semaphore } from '../lib/semaphore';
@@ -630,8 +630,12 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
 	// still use secondary confirmation when called directly by users.
+	// SQ-209: scan-scoped tally of PRIMARY DoH failures, summarised in ONE
+	// analytics row once the checks settle. Instrumentation only.
+	const primaryFailureTally: DohPrimaryFailureTally = { attempts: 0, http5xx: 0, network: 0, timeout: 0 };
 	const scanDns: QueryDnsOptions = {
 		skipSecondaryConfirmation: true,
+		primaryFailureTally,
 		queryCache: new Map(),
 		secondaryDoh: runtimeOptions?.secondaryDoh,
 		dnsSemaphore,
@@ -802,6 +806,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		await Promise.allSettled(checkPromises);
 		throw parentSignal.reason ?? new Error('scan_aborted');
 	}
+
+	// SQ-209: one per-scan primary-DoH failure summary (counts are 0 on a clean scan).
+	runtimeOptions?.analytics?.emitDohPrimarySummary?.({ ...primaryFailureTally, domain });
 
 	let checkResults = settled.filter((r): r is PromiseFulfilledResult<CheckResult> => r.status === 'fulfilled').map((r) => r.value);
 
