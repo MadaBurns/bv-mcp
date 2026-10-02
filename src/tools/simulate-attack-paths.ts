@@ -11,6 +11,7 @@ import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { Finding } from '@blackveil/dns-checks/scoring';
+import { describeNonResolvingDomain, isNonResolvingApex } from '../lib/apex-resolution';
 import { checkSpf } from './check-spf';
 import { checkDmarc } from './check-dmarc';
 import { checkDkim } from './check-dkim';
@@ -41,7 +42,14 @@ export interface AttackSimulationResult {
 	criticalPaths: number;
 	highPaths: number;
 	attackPaths: AttackPath[];
-	overallRisk: 'critical' | 'high' | 'medium' | 'low';
+	/** `null` exactly when the simulation was not run (see {@link AttackSimulationResult.notAssessed}) — never a clean `low`. */
+	overallRisk: 'critical' | 'high' | 'medium' | 'low' | null;
+	/**
+	 * Present only when no simulation was run because the apex does not exist in DNS
+	 * (NXDOMAIN, SQ-268). `totalPaths` is 0 and `overallRisk` is null: "not assessed",
+	 * never "no feasible attack paths".
+	 */
+	notAssessed?: { reason: 'domain_does_not_resolve'; detail: string };
 }
 
 /** Severity sort order: critical first. */
@@ -620,6 +628,21 @@ export async function simulateAttackPaths(
 	domain: string,
 	dnsOptions?: QueryDnsOptions,
 ): Promise<AttackSimulationResult> {
+	// SQ-268 / #1128: a non-existent name has no posture to attack. Without this gate every
+	// absent record reads as a feasible high/critical path. Only a clean NXDOMAIN abstains;
+	// SERVFAIL / timeout / error falls through to the measured simulation.
+	if (await isNonResolvingApex(domain, dnsOptions)) {
+		return {
+			domain,
+			totalPaths: 0,
+			criticalPaths: 0,
+			highPaths: 0,
+			attackPaths: [],
+			overallRisk: null,
+			notAssessed: { reason: 'domain_does_not_resolve', detail: describeNonResolvingDomain(domain) },
+		};
+	}
+
 	// Run all checks in parallel
 	const results = await Promise.allSettled([
 		checkSpf(domain, dnsOptions),
@@ -648,7 +671,7 @@ export async function simulateAttackPaths(
 	const highPaths = feasiblePaths.filter((p) => p.severity === 'high').length;
 
 	// Overall risk = most severe feasible path, or low if none
-	let overallRisk: 'critical' | 'high' | 'medium' | 'low' = 'low';
+	let overallRisk: 'critical' | 'high' | 'medium' | 'low' | null = 'low';
 	if (feasiblePaths.length > 0) {
 		overallRisk = feasiblePaths[0].severity;
 	}
@@ -705,6 +728,11 @@ function severityLabel(severity: string): string {
  * Full mode includes steps, prerequisites, and detailed impact.
  */
 export function formatAttackPaths(result: AttackSimulationResult, format: OutputFormat): string {
+	if (result.notAssessed || result.overallRisk === null) {
+		const detail = result.notAssessed ? `${sanitizeOutputText(result.notAssessed.detail, 300)} ` : '';
+		return `Attack Paths: ${sanitizeOutputText(result.domain, 100)} - Not assessed\n${detail}Attack paths were not simulated.`;
+	}
+
 	if (result.totalPaths === 0) {
 		const header = `Attack Paths: ${sanitizeOutputText(result.domain, 100)} - No feasible attack paths detected`;
 		return format === 'compact'
