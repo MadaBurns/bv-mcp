@@ -254,6 +254,27 @@ describe('checkMtaSts', () => {
 		expect(r.findings.find((f) => f.metadata?.inconclusive === true)?.metadata?.notAssessedReason).toBe('dns_query_failed');
 	});
 
+	it('a budgeted run (scan_domain) stops waiting on a hung _smtp._tls at its budget deadline and keeps the graded policy finding (SQ-266)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('_mta-sts.')) return Promise.resolve(txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']));
+				// A stuck subrequest: never settles and ignores its abort signal.
+				if (url.includes('_smtp._tls.')) return new Promise<Response>(() => {});
+				return Promise.resolve(createDohResponse([], []));
+			}
+			// The policy host answers 404: a definite, graded MTA-STS measurement.
+			return Promise.resolve(policyResponse('', 404));
+		});
+		const { checkMtaSts } = await import('../src/tools/check-mta-sts');
+		const r = await checkMtaSts('example.com', undefined, undefined, { budgetMs: 1_000 });
+		expect(r.checkStatus).toBeUndefined();
+		expect(r.findings.some((f) => f.title === 'MTA-STS policy file not accessible' && f.severity === 'high')).toBe(true);
+		const tlsRpt = r.findings.find((f) => f.metadata?.notAssessedReason === 'dns_query_failed');
+		expect(tlsRpt?.title).toBe('TLS-RPT not assessed (DNS lookup timed out)');
+		expect(tlsRpt?.severity).toBe('info');
+	});
+
 	it('returns low finding when no TLSRPT record exists', async () => {
 		mockMultiFetch({
 			mtaStsDns: txtResponse('_mta-sts.example.com', ['v=STSv1; id=20240101']),
