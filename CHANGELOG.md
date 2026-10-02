@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Fixed
+
+- **`check_dane_https` no longer scores "DANE without DNSSEC" (high) when the DNSSEC (AD) lookup is cut (SQ-207).** A transport error or timeout on the AD lookup was swallowed and left DNSSEC status `false`, so a TLSA answer with usage 2/3 was scored as an unsigned zone from a probe that never reached a resolver. The DNSSEC facet now abstains with an `info` finding `DNSSEC status not determined` (`errorKind: 'dns_error'`, no `missingControl`), the TLSA facet is still reported from its answer, and the result is `partial` so it is re-tried rather than cached. An answered AD=false is unchanged (a measured absence). The SMTP sibling `check_dane` has the same pattern and is not part of this change. Package change in `@blackveil/dns-checks`: needs the dns-checks release plus the `PARITY_CORPUS_VERSION` bump and a bv-web-prod re-vendor.
+
 ### Changed
 
 - **`npm run deploy:infra-probe` now deploys the `bv-infra-probe` sidecar through the
