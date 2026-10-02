@@ -98,6 +98,13 @@ export interface AnalyticsClient {
 			unitsCompleted?: number;
 		} & AnalyticsContext,
 	): void;
+	/**
+	 * SQ-214: a scan result was refused by the scan-cache admission predicate
+	 * (`score.overall === null`), so the next identical call re-runs the full scan.
+	 * `repeat` = an identical-key scan was refused within the previous 5 minutes
+	 * (per-isolate memory). Measurement only — informs whether a negative TTL is worth it.
+	 */
+	emitUngradedNotCachedEvent(event: { domain: string; repeat: boolean } & AnalyticsContext): void;
 	emitRateLimitEvent(
 		event: {
 			limitType: 'minute' | 'hour' | 'daily_tool' | 'daily_global' | 'daily_ip' | 'distinct_domain' | 'gated_tool';
@@ -252,6 +259,7 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 			enabled: false,
 			emitRequestEvent: noop,
 			emitToolEvent: noop,
+			emitUngradedNotCachedEvent: noop,
 			emitRateLimitEvent: noop,
 			emitSessionEvent: noop,
 			emitDegradationEvent: noop,
@@ -321,6 +329,21 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					sanitizeNumber(event.score ?? 0),
 					sanitizeNumber(event.unitsAttempted ?? 0),
 					sanitizeNumber(event.unitsCompleted ?? 0),
+				],
+			});
+		},
+		emitUngradedNotCachedEvent: (event) => {
+			safeWrite(dataset, {
+				indexes: ['scan_ungraded'],
+				// blob1 = outcome, blob2 = domain fingerprint (never the raw domain),
+				// blob3 = 'repeat' | 'first', then the standard country/clientType/authTier.
+				blobs: [
+					'ungraded_not_cached',
+					domainFingerprint(event.domain),
+					event.repeat ? 'repeat' : 'first',
+					event.country ?? 'unknown',
+					event.clientType ?? 'unknown',
+					event.authTier ?? 'anon',
 				],
 			});
 		},
