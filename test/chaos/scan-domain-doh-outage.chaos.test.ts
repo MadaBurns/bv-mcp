@@ -163,13 +163,24 @@ function webResponse(url: URL, domain: string): Response {
  * would also retry AFTER the test ended, through whatever `fetch` is installed then.
  * Raw-HTTPS probes always answer healthily, so each case isolates the DoH failure.
  */
-function installNetwork(opts: { domain: string; primary: ResolverMode; fallback: ResolverMode; hangName?: string }) {
+function installNetwork(opts: {
+	domain: string;
+	primary: ResolverMode;
+	fallback: ResolverMode;
+	hangName?: string;
+	/** Hang the mta_sts policy HTTPS fetch (mta-sts.<domain>), ignoring the abort signal. */
+	hangPolicyHost?: boolean;
+}) {
 	const queries: DohQuery[] = [];
 	let hung = 0;
 	const zone = healthyZone(opts.domain);
 	globalThis.fetch = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
 		const url = new URL(input instanceof Request ? input.url : String(input));
 		const resolver = resolverOf(url);
+		if (!resolver && opts.hangPolicyHost && url.hostname === `mta-sts.${opts.domain}`) {
+			hung += 1;
+			return new Promise<Response>(() => {});
+		}
 		if (!resolver) return webResponse(url, opts.domain);
 
 		const name = (url.searchParams.get('name') ?? '').replace(/\.$/, '').toLowerCase();
@@ -436,4 +447,53 @@ describe('chaos: scan_domain when one check’s DoH query hangs (H3)', () => {
 		expect(result.score.categoryScores).toEqual(withoutCategory(healthy.score.categoryScores, 'bimi'));
 		expect(typeof result.score.overall).toBe('number');
 	}, 30_000);
+
+	// SQ-212: the same H3 hang, but on a name SHARED by two checks and at the DEFAULT 8000 ms
+	// per-check budget (no perCheckTimeoutMs knob). `_smtp._tls.<domain>` is read by tlsrpt AND by
+	// mta_sts. The _mta-sts TXT and the policy are both healthy, so mta_sts has two definite
+	// measurements. These tests RECORD whether it still abstains; they do not assert it should.
+	it('MEASURED (default 8000 ms budget): hanging _smtp._tls.<domain> times out tlsrpt and records mta_sts status', async () => {
+		const { scanDomain } = await import('../../src/tools/scan-domain');
+		const { resolveScanTimeoutBudget } = await import('../../src/tools/scan/timeouts');
+		const options = { secondaryDoh: SECONDARY_DOH };
+		const { scanTimeoutMs, perCheckTimeoutMs: budget } = resolveScanTimeoutBudget({});
+		expect(budget).toBe(8_000);
+
+		const net = installNetwork({ domain, primary: 'healthy', fallback: 'healthy', hangName: `_smtp._tls.${domain}` });
+		const started = Date.now();
+		const result = await scanDomain(domain, undefined, options);
+		const elapsed = Date.now() - started;
+
+		expect(net.hungQueries()).toBeGreaterThan(0);
+		expect(elapsed).toBeLessThan(scanTimeoutMs);
+		const statuses = statusByCategory(result);
+		expect(statuses.tlsrpt).toBe('timeout');
+		// KNOWN GAP (SQ-212 measurement): mta_sts ABSTAINS (timeout) although its own _mta-sts TXT and policy fetch
+		// are healthy and definite: it shares the _smtp._tls lookup with tlsrpt. Follow-up: share that in-flight lookup
+		// via queryCache in packages/dns-checks. When fixed, invert this to expect only tlsrpt.
+		expect(Object.entries(statuses).filter(([, s]) => s !== 'measured')).toEqual([
+			['mta_sts', 'timeout'],
+			['tlsrpt', 'timeout'],
+		]);
+	}, 30_000);
+
+	it('MEASURED (default 8000 ms budget): a hanging mta-sts.<domain> policy host is recorded for mta_sts', async () => {
+		const { scanDomain } = await import('../../src/tools/scan-domain');
+		const { resolveScanTimeoutBudget } = await import('../../src/tools/scan/timeouts');
+		const options = { secondaryDoh: SECONDARY_DOH };
+		const { scanTimeoutMs } = resolveScanTimeoutBudget({});
+
+		const net = installNetwork({ domain, primary: 'healthy', fallback: 'healthy', hangPolicyHost: true });
+		const started = Date.now();
+		const result = await scanDomain(domain, undefined, options);
+		const elapsed = Date.now() - started;
+
+		expect(net.hungQueries()).toBeGreaterThan(0);
+		expect(elapsed).toBeLessThan(scanTimeoutMs);
+		const statuses = statusByCategory(result);
+		// The policy host never answered, so mta_sts has no policy measurement: abstaining is the correct shape.
+		// Only mta_sts is cut; every other category stays measured.
+		expect(Object.entries(statuses).filter(([, s]) => s !== 'measured')).toEqual([['mta_sts', 'timeout']]);
+	}, 30_000);
+
 });
