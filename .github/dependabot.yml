@@ -37,11 +37,13 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # default-days ONLY: github-actions does not support semver-*-days. Dependabot
+    # rejects the WHOLE file over them ("not supported for the package ecosystem
+    # 'github-actions'"; see the '.github/dependabot.yml' check run), and no npm
+    # cooldown or the vitest-major ignore above was honored from #803 (2026-08-27)
+    # until this was fixed (SQ-263, PR #1169 got through).
     cooldown:
       default-days: 7
-      semver-major-days: 30
-      semver-minor-days: 7
-      semver-patch-days: 3
     open-pull-requests-limit: 5
     groups:
       # github/codeql-action/init and .../analyze are ONE action published from one
