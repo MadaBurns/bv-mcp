@@ -37,6 +37,7 @@ import { safeFetch } from '../lib/safe-fetch';
 import { validateDomain } from '../lib/sanitize';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckCategory, CheckResult, Finding } from '../lib/scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 import { isCompletedCheck } from '../lib/ungraded-display';
 
 const CATEGORY = 'llms_txt' as CheckCategory;
@@ -674,13 +675,19 @@ export async function checkLlmsTxt(domain: string, dnsOptions?: QueryDnsOptions)
 	for (const ref of packages) {
 		const label = `${ref.ecosystem}:${ref.name}`;
 		if (ref.osv === 'malicious_advisory') {
+			const advisoryIds = (ref.maliciousIds ?? []).join(', ');
 			findings.push(
 				createFinding(
 					CATEGORY,
 					`Referenced package has a malicious-package advisory: ${label}`,
 					'critical',
-					`An install command in llms.txt names ${ref.ecosystem} package "${ref.name}", which OSV lists under malicious-package advisory ${(ref.maliciousIds ?? []).join(', ')}. Anyone, human or AI agent, following the documented install step would run code the advisory identifies as malicious. Remove or correct the reference.`,
-					{ ecosystem: ref.ecosystem, package: ref.name, osvIds: ref.maliciousIds },
+					`An install command in llms.txt names ${ref.ecosystem} package "${ref.name}", which OSV lists under malicious-package advisory ${advisoryIds}. Anyone, human or AI agent, following the documented install step would run code the advisory identifies as malicious. Remove or correct the reference.`,
+					{
+						ecosystem: ref.ecosystem,
+						package: ref.name,
+						osvIds: ref.maliciousIds,
+						[SUBJECT_TERMS_METADATA_KEY]: [label, ref.ecosystem, ref.name, advisoryIds],
+					},
 				),
 			);
 		}
@@ -691,7 +698,12 @@ export async function checkLlmsTxt(domain: string, dnsOptions?: QueryDnsOptions)
 					`Referenced package is not registered: ${label}`,
 					'high',
 					`An install command in llms.txt names ${ref.ecosystem} package "${ref.name}", but ${ref.ecosystem === 'npm' ? 'the npm registry' : 'PyPI'} returned 404 for it. An unregistered name can be claimed by anyone, and the documented install step would then run their code. Correct the reference or register the name.`,
-					{ ecosystem: ref.ecosystem, package: ref.name, registryStatus: 404 },
+					{
+						ecosystem: ref.ecosystem,
+						package: ref.name,
+						registryStatus: 404,
+						[SUBJECT_TERMS_METADATA_KEY]: [label, ref.ecosystem, ref.name],
+					},
 				),
 			);
 		}

@@ -16,6 +16,7 @@ import { queryDns, queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 
 const CATEGORY = 'dnssec_chain' as CheckCategory;
 
@@ -334,10 +335,11 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		// zone. Intended ordering: bogus (45) < island = unsigned (60) < validating (100).
 		// No `missingControl`: the DNSSEC material here is measured and present, it is the
 		// linkage that fails, and a zero would collapse the ordering again.
-		// ⚠️ Keep `reason` clear of "no … record" / "not found" / "missing" / "required":
-		// this finding is `deterministic`, so MISSING_CONTROL_REGEX (scoring/model.ts)
-		// would auto-zero it. "DS record exists but no DNSKEY found" passes only because
-		// the "record" precedes the "no" — it is one word from a silent zeroing.
+		// `reason` and the zone are declared as subject terms (SQ-102), so neither can arm
+		// MISSING_CONTROL_REGEX (scoring/model.ts) on this `deterministic` finding — "DS record
+		// exists but no DNSKEY found" used to be one word from a silent zeroing. The STATIC
+		// template around them is still load-bearing: keep it clear of "no … record" /
+		// "not found" / "missing" / "required".
 		// ⚠️ check_dnssec scores this same shape 0 (missingControl). That 45-vs-0
 		// divergence is deliberate and tracked on #851 alongside the island one.
 		findings.push(
@@ -350,6 +352,7 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 					zone: bz.zone,
 					linkage: bz.linkage,
 					penaltyOverride: 55,
+					[SUBJECT_TERMS_METADATA_KEY]: [bz.zone, reason],
 					...(brokenZones.length > 1 ? { additionalBrokenZones: brokenZones.slice(1).map((z) => z.zone) } : {}),
 				},
 			),
@@ -388,7 +391,7 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 				`DNSSEC island of trust at ${islandZone.zone}`,
 				'high',
 				`${islandZone.zone} publishes a DNSKEY, but its parent zone holds no DS digest linking to it, so the chain of trust from the root anchor terminates at the parent. The published DNSKEY is unreachable from the trust anchor and validating resolvers treat ${islandZone.zone} as insecure — DNSSEC provides no origin authentication for ${domain}. Publish a DS for the zone's KSK at the parent (via the registrar) to anchor the chain.`,
-				{ zone: islandZone.zone, linkage: 'no_ds', penaltyOverride: 40 },
+				{ zone: islandZone.zone, linkage: 'no_ds', penaltyOverride: 40, [SUBJECT_TERMS_METADATA_KEY]: [islandZone.zone, domain] },
 			),
 		);
 	} else if (dsUnmeasuredZone) {

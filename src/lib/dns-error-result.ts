@@ -30,6 +30,7 @@
  */
 
 import { buildCheckResult, createFinding, type CheckCategory, type CheckResult, type Finding } from './scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 
 // Mirrors safeCheck()'s allowlist so the surfaced detail stays bounded/safe.
 const SAFE_PREFIXES = ['DNS query', 'Check timed out', 'Check failed', 'Connection', 'timeout'];
@@ -55,6 +56,11 @@ export function isDnsErrorFinding(f: Pick<Finding, 'metadata'>): boolean {
 export function buildDnsErrorResult(category: CheckCategory, label: string, err: unknown): CheckResult {
 	const rawMessage = err instanceof Error ? err.message : 'Check failed';
 	const safeMessage = SAFE_PREFIXES.some((p) => rawMessage.startsWith(p)) ? rawMessage : 'Check failed';
-	const findings = [createFinding(category, `${label} check error`, 'high', `Check failed: ${safeMessage}`, { errorKind: 'dns_error' })];
+	const findings = [
+		createFinding(category, `${label} check error`, 'high', `Check failed: ${safeMessage}`, {
+			errorKind: 'dns_error',
+			[SUBJECT_TERMS_METADATA_KEY]: [label, safeMessage],
+		}),
+	];
 	return { ...buildCheckResult(category, findings), score: 0, passed: false, checkStatus: 'error' as const, partial: true };
 }

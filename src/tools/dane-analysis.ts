@@ -8,6 +8,7 @@
 
 import type { Finding } from '../lib/scoring';
 import { createFinding } from '../lib/scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 import { parseTlsaRecord } from '../lib/dns';
 
 /** TLSA usage field labels for human-readable output. */
@@ -91,7 +92,7 @@ export function analyzeTlsaRecords(records: string[], name: string, hasDnssec: b
 					'DANE without DNSSEC',
 					'high',
 					`TLSA record for ${name} uses ${usageLabel} but DNSSEC is not validated. Without DNSSEC, DANE records can be spoofed, negating their security benefit.`,
-					{ usage: parsed.usage, name },
+					{ usage: parsed.usage, name, [SUBJECT_TERMS_METADATA_KEY]: [name, usageLabel] },
 				),
 			);
 		}
