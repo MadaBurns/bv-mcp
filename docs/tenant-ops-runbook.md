@@ -120,6 +120,10 @@ npx wrangler d1 execute <tenant-registry-db> --remote \
 Treat unexpected anonymous internal-route audit rows as an authentication
 configuration issue.
 
+## Reserved Registry Columns
+
+Key-rotation and dormancy decisions must not use `tenant_keys.last_used_at`: it is not tracked, and NULL is never evidence a key is unused (SQ-178). `billing_events` is likewise reserved; bv-mcp never writes it and the billing SSOT is bv-web-prod, so an empty table does not mean no billing.
+
 ## Queue Troubleshooting
 
 The queue consumer in `src/tenants/queue-consumer.ts` is idempotent and
