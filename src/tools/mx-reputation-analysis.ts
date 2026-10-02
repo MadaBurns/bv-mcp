@@ -7,6 +7,7 @@
 
 import type { Finding } from '../lib/scoring';
 import { createFinding } from '../lib/scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 
 /** Pattern matching generic/residential PTR hostnames */
 const GENERIC_PTR_PATTERN = /^(ip-|host-|static-|dynamic-|dhcp|dsl|cable|pool|customer|client|user|broadband)/i;
@@ -260,7 +261,7 @@ export function analyzeDnsblResults(ip: string, results: DnsblZoneResult[], shar
 						`MX server IP listed on ${result.zone}`,
 						'high',
 						`IP ${ip} is listed on DNSBL ${result.zone}. Blacklisted mail servers will have significantly degraded email deliverability.`,
-						{ ip, zone: result.zone, returnCodes: result.returnCodes },
+						{ ip, zone: result.zone, returnCodes: result.returnCodes, [SUBJECT_TERMS_METADATA_KEY]: [ip, result.zone] },
 					),
 				);
 			}

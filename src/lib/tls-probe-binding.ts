@@ -12,6 +12,7 @@ import type { CheckResult, Finding } from './scoring';
 import { DANE_PIN_NOT_ASSESSED_REASONS } from '@blackveil/dns-checks';
 import type { ServedCertificate, TlsaVerificationContext } from '@blackveil/dns-checks';
 import { buildCheckResult, createFinding } from './scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 import { logEvent } from './log';
 import type { BindingDegradationKind, BindingDegradationSink } from './binding-degradation';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
@@ -203,12 +204,19 @@ export function mergeTlsFinding(result: CheckResult, probe: TlsProbeResult): Che
 
 	if (!isWeakTlsVersion(probe.minVersion)) return result;
 
+	const host = probe.host ?? 'this domain';
 	const finding: Finding = createFinding(
 		'ssl',
 		'Legacy TLS version offered (≤ TLS 1.1)',
 		'high',
-		`The HTTPS endpoint for ${probe.host ?? 'this domain'} still negotiates a legacy TLS version (minimum observed: ${probe.minVersion}). TLS 1.0/1.1 are deprecated (RFC 8996) and forbidden by PCI-DSS; offer TLS 1.2 as the minimum. This signal comes from the operator-only BV_TLS_PROBE service; self-hosted deploys without the probe will not see this finding.`,
-		{ tlsProbeEnriched: true, minVersion: probe.minVersion, maxVersion: probe.maxVersion, supportedVersions: probe.supportedVersions },
+		`The HTTPS endpoint for ${host} still negotiates a legacy TLS version (minimum observed: ${probe.minVersion}). TLS 1.0/1.1 are deprecated (RFC 8996) and forbidden by PCI-DSS; offer TLS 1.2 as the minimum. This signal comes from the operator-only BV_TLS_PROBE service; self-hosted deploys without the probe will not see this finding.`,
+		{
+			tlsProbeEnriched: true,
+			minVersion: probe.minVersion,
+			maxVersion: probe.maxVersion,
+			supportedVersions: probe.supportedVersions,
+			[SUBJECT_TERMS_METADATA_KEY]: [host, probe.minVersion],
+		},
 	);
 	// Preserve controlPresent — detectDomainContext reads it for profile detection,
 	// so dropping it here would flip sslPass to false for legacy-TLS-but-reachable hosts.

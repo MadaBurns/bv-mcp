@@ -39,10 +39,22 @@
  * qualifying severity with a target-controlled interpolation hole, ZERO are armed by a
  * target-controlled value that merely *contains* a trigger word (the live-defect class the
  * sibling file's assertion C exists to catch) — this tree does not currently have the
- * `missingkids.org`-shaped bug. 17 sites remain exposed to a value that supplies a trigger word
- * *exactly* (e.g. a hostname literally called `missing`); this is the SAME already-accepted,
- * non-blocking exposure class the sibling file documents and warns on rather than fails on, for
- * the same reason (closing it needs a `scoring/model.ts` change, not per-site rewording).
+ * `missingkids.org`-shaped bug.
+ *
+ * ## The exact-match population is closed, and gated (SQ-102)
+ *
+ * SQ-100 also measured 17 sites (19 when SQ-102 re-measured) that a value supplying a trigger word
+ * *exactly* could arm — a single-label NS target literally called `missing`, an npm package named
+ * `required` — and left them as a non-failing warning, on the sibling file's stated grounds that
+ * closing them needs a `scoring/model.ts` change. That premise predates SQ-97: a hole declared via
+ * `[SUBJECT_TERMS_METADATA_KEY]` is substring-redacted before MISSING_CONTROL_REGEX runs, which
+ * defeats an exact-match value as completely as a containing one, with no model change (the
+ * sibling's own planted DISCRIMINATES control proves it). SQ-102 closed the population with
+ * metadata only: 17 sites declare their string holes, `check-nsec-walkability.ts` declares
+ * `missingControl: false` because redaction is unsafe in its prose (section C), and the remaining
+ * holes are numbers in the reviewed per-file `INERT_HOLES` register. Section C's exact-match test
+ * is now a hard assertion. No scoring rule changed: a declaration redacts only the declared
+ * runtime value, so a verdict can move only where that value itself supplied the trigger text.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -147,17 +159,27 @@ const INTENDED_MISSING_CONTROLS: readonly IntendedZeroer[] = [
 const INTERPOLATION_REVIEWED: readonly { file: string; title: string; reason: string }[] = [];
 
 /**
- * Deliberately empty (unlike the sibling file, which has 7 package-specific entries). No hole in
- * this tree's qualifying-severity findings has been argued to be structurally inert yet — see the
- * "interpolated values" section below for the measured population this affects. Fail-closed by
- * construction, same as the sibling file: a new `${...}` defaults to hazardous.
+ * Holes reviewed as STRUCTURALLY unable to carry a trigger word: every entry renders a `number`
+ * (type cited in `reason`), so its text is digits, `Infinity` or `NaN`, never prose. Unlike the
+ * sibling file's global expression set, each entry is pinned to its FILE: `algorithm` is a number
+ * in `check-dnskey-strength.ts` but would be free text in, say, a DKIM `a=` parser, and a global
+ * entry would silently exempt that future hole too. Fail-closed by construction, same as the
+ * sibling file: a `${...}` not listed here defaults to hazardous, and an entry that no longer
+ * names a real qualifying-severity hole fails the staleness check in section C.
  */
-const INERT_HOLE_EXPRESSIONS: ReadonlySet<string> = new Set([]);
+const INERT_HOLES: readonly { file: string; expression: string; reason: string }[] = [
+	{ file: 'tools/brand-audit-single.ts', expression: 'verdict.limit ?? 0', reason: '`limit?: number`, defaulted to 0' },
+	{ file: 'tools/check-dnskey-strength.ts', expression: 'algorithm', reason: '`parseDnskeyAlgorithm(): number | null`, null-guarded' },
+	{ file: 'tools/check-fast-flux.ts', expression: 'allUniqueIps.size', reason: '`Set#size`' },
+	{ file: 'tools/check-fast-flux.ts', expression: 'effectiveRounds', reason: '`Math.max(3, Math.min(5, rounds ?? 3))`' },
+	{ file: 'tools/check-fast-flux.ts', expression: 'ipSetChanges', reason: '`let ipSetChanges = 0`, incremented' },
+	{ file: 'tools/check-fast-flux.ts', expression: 'overallMinTtl', reason: '`Math.min(...rounds.map((r) => r.minTtl))`' },
+];
 
 const LITERAL_TERNARY = /^[^?]*\?\s*'[^']*'\s*:\s*'[^']*'$/;
 
-function isInertHole(expression: string): boolean {
-	return INERT_HOLE_EXPRESSIONS.has(expression) || LITERAL_TERNARY.test(expression);
+function isInertHole(site: Pick<Site, 'file'>, expression: string): boolean {
+	return INERT_HOLES.some((e) => e.file === site.file && e.expression === expression) || LITERAL_TERNARY.test(expression);
 }
 
 // ---------------------------------------------------------------------------
@@ -564,6 +586,9 @@ describe('missing-control intent (root tree) — positive controls (the guard ca
 		const declarations = parseSubjectTermDeclarations(declared.metadataSource);
 		expect(declarations, 'the computed-key parser must recognize this declaration').toEqual(['token']);
 		expect(holeMatchesDeclaration('token', declarations[0])).toBe(true);
+		expect(armedBy(undeclared, STANDALONE_HOSTILE_VALUES), 'armedBy must arm the undeclared hole').toEqual(['token <- "missing"']);
+		expect(armedBy(declared, STANDALONE_HOSTILE_VALUES), 'the declaration must disarm it against every hostile value').toEqual([]);
+		expect(armedBy(declared, STANDALONE_HOSTILE_VALUES, { declarations: false }), 'stripping it must re-arm it').not.toEqual([]);
 	});
 });
 
@@ -670,33 +695,52 @@ describe('missing-control intent (root tree) — listed findings must keep zeroi
 
 // ---------------------------------------------------------------------------
 // C. No qualifying-severity root-tree site may be armed by an INTERPOLATED value that merely
-//    CONTAINS a trigger word — the live-defect class (github.com / missingkids.org).
+//    CONTAINS a trigger word — the live-defect class (github.com / missingkids.org) — nor, since
+//    SQ-102, by a value that IS one.
 // ---------------------------------------------------------------------------
 
 const INTERPOLATING_AT_RISK = CLASSIFIABLE.filter(
 	(s) =>
 		atQualifyingSeverity(s) &&
 		!zeroesCategory(s) &&
-		[...s.title.holes, ...s.detail.holes].some((h) => !isInertHole(h)) &&
+		[...s.title.holes, ...s.detail.holes].some((h) => !isInertHole(s, h)) &&
 		parseMetadata(s.metadataSource)?.missingControl !== true,
 );
 
 const EMBEDDED_HOSTILE_VALUES = ['missingkids.org', 'no-mx-record.example', 'requiredfields.co.nz'];
 const STANDALONE_HOSTILE_VALUES = ['missing', 'required', 'not found'];
 
-function armedBy(site: Site, hostileValues: readonly string[]): string[] {
+/** A "no … record" span with an UNBOUNDED gap, over prose whose every hole is one REDACTED-sized character. */
+const UNBOUNDED_NO_RECORD = /no\s+[^\r\n]*\srecord/i;
+
+function hasShortenableNoRecordSpan(site: Site): boolean {
+	return [site.title, site.detail].some((prose) => UNBOUNDED_NO_RECORD.test(render(prose, () => '-')));
+}
+
+/**
+ * `declarations: false` ignores the site's `[SUBJECT_TERMS_METADATA_KEY]` and `missingControl`
+ * declarations; `inert: false` ignores INERT_HOLES. Both default to honoured — the switches exist
+ * only so the non-vacuity tests can prove each defence is load-bearing, never to grade a site.
+ */
+function armedBy(site: Site, hostileValues: readonly string[], honour: { declarations?: boolean; inert?: boolean } = {}): string[] {
+	const { declarations: honourDeclarations = true, inert: honourInert = true } = honour;
 	const armed: string[] = [];
 	const holes = [...site.title.holes, ...site.detail.holes];
-	const declarations = parseSubjectTermDeclarations(site.metadataSource);
-	const baseMetadata = parseMetadata(site.metadataSource);
+	const declarations = honourDeclarations ? parseSubjectTermDeclarations(site.metadataSource) : [];
+	const parsedMetadata = parseMetadata(site.metadataSource);
+	const baseMetadata =
+		honourDeclarations || !parsedMetadata
+			? parsedMetadata
+			: Object.fromEntries(Object.entries(parsedMetadata).filter(([key]) => key !== 'missingControl'));
 	for (let index = 0; index < holes.length; index++) {
-		if (isInertHole(holes[index])) continue;
+		if (honourInert && isInertHole(site, holes[index])) continue;
 		const isDeclaredSubjectData = declarations.some((d) => holeMatchesDeclaration(holes[index], d));
 		for (const value of hostileValues) {
 			const fillTitle = (_e: string, i: number) => (i === index ? value : INERT_FILL);
 			const fillDetail = (_e: string, i: number) => (i + site.title.holes.length === index ? value : INERT_FILL);
 			const probe: Finding = {
 				...toFinding(site),
+				metadata: baseMetadata,
 				title: render(site.title, fillTitle),
 				detail: render(site.detail, fillDetail),
 				...(isDeclaredSubjectData ? { metadata: { ...baseMetadata, subjectTerms: [value] } } : {}),
@@ -731,18 +775,74 @@ describe('missing-control intent (root tree) — interpolated values must not ar
 		).toEqual([]);
 	});
 
-	it('reports (without failing) findings a target could arm by supplying the trigger word EXACTLY', () => {
-		// Deliberately a warning, not a failure — same as the sibling file's identical section, for
-		// the same reason: closing this needs a scoring-model change (a corpus-wide, score-moving
-		// change), not per-site rewording. Measured: 17 root-tree sites are in this category today.
-		const exposed = INTERPOLATING_AT_RISK.map((s) => ({ site: s, armed: armedBy(s, STANDALONE_HOSTILE_VALUES) })).filter((o) => o.armed.length > 0);
-		if (exposed.length > 0) {
-			console.warn(
-				`[missing-control-intent-root] ${exposed.length} high/critical finding(s) can be zeroed by a target ` +
-					`supplying a trigger word verbatim:\n${exposed.map((o) => `  - ${label(o.site)} via ${o.armed.join(', ')}`).join('\n')}`,
+	it('no high/critical finding can be armed by a target supplying the trigger word EXACTLY', () => {
+		// A non-failing warning until SQ-102 (17 sites at SQ-100, 19 when re-measured). Closed with
+		// metadata only, so a new interpolating site that reopens it fails here instead of joining a
+		// warning nobody reads.
+		const exposed = INTERPOLATING_AT_RISK.map((s) => ({ site: s, armed: armedBy(s, STANDALONE_HOSTILE_VALUES) }))
+			.filter((o) => o.armed.length > 0)
+			.map((o) => `${label(o.site)} via ${o.armed.join(', ')}`);
+		expect(
+			exposed,
+			'Each of these findings zeroes its category when an interpolated value IS a trigger word ("missing", ' +
+				'"required", "not found"): a single-label NS target, a package name, an upstream string. Declare the ' +
+				'hole via `[SUBJECT_TERMS_METADATA_KEY]` (or `missingControl: false` when the finding never asserts an ' +
+				'absent control), or list a provably numeric hole in INERT_HOLES. Never loosen armedBy to get here.',
+		).toEqual([]);
+	});
+
+	it('is NOT vacuous: stripped of every declaration and inert entry, the measured population still arms', () => {
+		// The gate above passes because each site is DEFENDED, not because the probe stopped probing:
+		// with the defences ignored, all 19 sites SQ-102 measured are armed again.
+		const undefended = INTERPOLATING_AT_RISK.filter(
+			(s) => armedBy(s, STANDALONE_HOSTILE_VALUES, { declarations: false, inert: false }).length > 0,
+		);
+		expect(undefended.length, 'the exact-match probe went blind — it should still arm the undefended sites').toBeGreaterThanOrEqual(19);
+	});
+
+	it('every declaration and every INERT_HOLES entry is load-bearing (none decorative, none stale)', () => {
+		const declaring = INTERPOLATING_AT_RISK.filter(
+			(s) => parseSubjectTermDeclarations(s.metadataSource).length > 0 || parseMetadata(s.metadataSource)?.missingControl === false,
+		);
+		expect(declaring.length, 'no defended site found — the census below is vacuous').toBeGreaterThanOrEqual(18);
+		expect(
+			declaring.filter((s) => armedBy(s, STANDALONE_HOSTILE_VALUES, { declarations: false }).length === 0).map(label),
+			'these declarations defend nothing: the site is not armed even without them — remove them or fix the probe',
+		).toEqual([]);
+		for (const entry of INERT_HOLES) {
+			const sites = INTERPOLATING_AT_RISK.filter(
+				(s) => s.file === entry.file && [...s.title.holes, ...s.detail.holes].includes(entry.expression),
 			);
+			expect(
+				sites.length,
+				`INERT_HOLES entry ${entry.file} \`${entry.expression}\` names no qualifying-severity hole — stale`,
+			).toBeGreaterThan(0);
+			for (const site of sites) {
+				expect(armedBy(site, STANDALONE_HOSTILE_VALUES, { inert: false }), `${label(site)} without INERT_HOLES`).not.toEqual([]);
+			}
 		}
-		expect(exposed.length, 'detector went silent — it should still see this population').toBeGreaterThan(0);
+	});
+
+	it('a subjectTerms declaration can only SUBTRACT: no declaring site has a "no … record" span redaction could shorten', () => {
+		// redactSubjectData swaps each declared term for ONE character, wherever the term occurs. A term
+		// inside a "no … record" span therefore shortens MISSING_CONTROL_REGEX's 64-character gap and can
+		// MANUFACTURE a zeroing the unredacted prose never had. Rendering every hole as that one character
+		// and matching with an UNBOUNDED gap finds every span a redaction could ever shorten.
+		const declaring = SITES.filter((s) => s.title.literal && s.detail.literal && parseSubjectTermDeclarations(s.metadataSource).length > 0);
+		expect(declaring.length, 'no declaring site found — the check below is vacuous').toBeGreaterThanOrEqual(17);
+		expect(declaring.filter(hasShortenableNoRecordSpan).map(label), 'declare `missingControl: false` instead').toEqual([]);
+	});
+
+	it('is NOT vacuous: the span check fires on the real walkable-NSEC detail, which is why that site declares missingControl: false', () => {
+		// Measured: "no NSEC3PARAM, … a plain NSEC record" has a 70-character gap, 6 past the bound;
+		// redacting a dotless next-name such as "NSEC" shortens it to 64 and the regex fires.
+		const nsec = CLASSIFIABLE.find(
+			(s) => s.file === 'tools/check-nsec-walkability.ts' && neutralText(s.title) === 'Zone is walkable via plain NSEC',
+		);
+		expect(nsec, 'anchor site tools/check-nsec-walkability.ts "Zone is walkable via plain NSEC" not recovered').toBeDefined();
+		expect(hasShortenableNoRecordSpan(nsec!)).toBe(true);
+		expect(parseMetadata(nsec!.metadataSource)?.missingControl).toBe(false);
+		expect(armedBy(nsec!, STANDALONE_HOSTILE_VALUES, { declarations: false }), 'undeclared, the site is armable').not.toEqual([]);
 	});
 });
 
@@ -751,17 +851,32 @@ describe('missing-control intent (root tree) — interpolated values must not ar
 // ---------------------------------------------------------------------------
 
 describe('missing-control intent (root tree) — computed metadata keys are handled, not silently dropped', () => {
-	it('this tree currently declares NO [SUBJECT_TERMS_METADATA_KEY] sites (a real, honest gap — not silently missed)', () => {
-		// Unlike the sibling file (5 real declaring sites in packages/dns-checks), this tree's 19
-		// at-risk interpolating sites (see section C) do not yet redact any of their holes via this
-		// mechanism. That is a genuine, currently-unaddressed gap in defense-in-depth — the same kind
-		// of gap the STANDALONE_HOSTILE_VALUES warning above reports — not a parser blind spot: the
-		// eager SITES.forEach(parseSubjectTermDeclarations) call above already proves the parser CAN
-		// see this shape (it does, in the planted positive control) and throws on anything it does not
-		// recognize. Fixing this gap (adding redaction to specific root-tree checks) is a follow-up,
-		// not part of widening this audit's coverage.
+	it('recognizes the real root-tree sites that declare [SUBJECT_TERMS_METADATA_KEY] (the SQ-102 census)', () => {
+		// Keyed on FILE, not line, for the sibling file's reason: lines shift on every unrelated edit.
+		// A different list means a declaration was silently lost or a new one added — update it either
+		// way, after checking the new site against section C.
 		const declaring = SITES.filter((s) => parseSubjectTermDeclarations(s.metadataSource).length > 0);
-		expect(declaring, 'a declaring site appeared — give it its own reviewed test like the sibling file has for check-dkim.ts').toEqual([]);
+		expect(declaring.map((s) => s.file).sort()).toEqual(
+			[
+				'lib/authoritative-dns-infra/delegation-analysis.ts',
+				'lib/authoritative-dns-infra/delegation-analysis.ts',
+				'lib/dns-error-result.ts',
+				'lib/tls-probe-binding.ts',
+				'tools/check-agent-discovery.ts',
+				'tools/check-agent-discovery.ts',
+				'tools/check-dnskey-strength.ts',
+				'tools/check-dnssec-chain.ts',
+				'tools/check-dnssec-chain.ts',
+				'tools/check-fast-flux.ts',
+				'tools/check-llms-txt.ts',
+				'tools/check-llms-txt.ts',
+				'tools/check-txt-hygiene.ts',
+				'tools/dane-analysis.ts',
+				'tools/mx-reputation-analysis.ts',
+				'tools/ns-analysis.ts',
+				'tools/zone-hygiene-analysis.ts',
+			].sort(),
+		);
 	});
 
 	it('the boolean-flag computed-key shape ([flag]/[marker]: true) is recognized as inert, not thrown on', () => {
@@ -798,14 +913,13 @@ const HOSTILE_DETAIL = 'No SPF record found. The control is missing and a policy
 
 describe('missing-control intent (root tree) — a declared finding is prose-independent', () => {
 	it('the declared population is non-empty', () => {
-		// Unlike the sibling file, this tree's declared population is measured to be `true`-only
-		// today (7 sites as of SQ-74: check-zone-hygiene.ts ×2, dane-analysis.ts ×2,
-		// delegation-analysis.ts, check-shadow-domains.ts, ns-analysis.ts) — no root-tree site
-		// declares `missingControl: false` yet. That asymmetry is reported honestly rather than
-		// asserted away: this test checks non-vacuity of what actually exists, not both directions
-		// the sibling file can prove because its tree happens to have both.
+		// This tree's declared population was `true`-only until SQ-102 (7 sites as of SQ-74:
+		// check-zone-hygiene.ts ×2, dane-analysis.ts ×2, delegation-analysis.ts,
+		// check-shadow-domains.ts, ns-analysis.ts). SQ-102 added the first `false`, on
+		// check-nsec-walkability.ts's walkable-NSEC finding, so the sweep below now proves both
+		// directions here too, like the sibling file.
 		expect(DECLARED_SITES.length, 'no site declares metadata.missingControl — the sweep below is vacuous').toBeGreaterThan(2);
-		expect([...new Set(DECLARED_SITES.map((s) => parseMetadata(s.metadataSource)!.missingControl))]).toEqual([true]);
+		expect([...new Set(DECLARED_SITES.map((s) => parseMetadata(s.metadataSource)!.missingControl))].sort()).toEqual([false, true]);
 	});
 
 	it.each(DECLARED_SITES.map((s) => [ref(s), s] as const))('%s keeps its verdict through any reword', (_ref, site) => {
