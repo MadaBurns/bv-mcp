@@ -298,6 +298,9 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 			const secondaryOpts = {
 				...(opts?.secondaryDoh ? { secondaryDoh: { url: opts.secondaryDoh.endpoint, token: opts.secondaryDoh.token } } : {}),
 				...(callerSignal ? { signal: callerSignal } : {}),
+				// A cd=1 (validation-off) primary must be confirmed by cd=1 secondaries: a validating
+				// secondary would otherwise "confirm" an answer the caller deliberately asked not to validate.
+				...(opts?.checkingDisabled ? { checkingDisabled: true } : {}),
 			};
 			const secondaryResult = await confirmWithSecondaryResolvers(domain, type, dnssecCheck, timeoutMs, sem, secondaryOpts);
 			// An aborted confirmation is NOT a confirmed-empty answer: the caller
@@ -343,10 +346,10 @@ export async function confirmWithSecondaryResolvers(
 	dnssecCheck: boolean,
 	timeoutMs: number,
 	sem?: Semaphore,
-	opts?: { secondaryDoh?: { url: string; token?: string }; signal?: AbortSignal },
+	opts?: { secondaryDoh?: { url: string; token?: string }; signal?: AbortSignal; checkingDisabled?: boolean },
 ): Promise<DohResponse | { kind: 'unconfirmed' }> {
-	const bvDnsUrl = opts?.secondaryDoh ? buildDohUrl(opts.secondaryDoh.url, domain, type, dnssecCheck) : null;
-	const googleUrl = buildDohUrl(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck);
+	const bvDnsUrl = opts?.secondaryDoh ? buildDohUrl(opts.secondaryDoh.url, domain, type, dnssecCheck, opts.checkingDisabled) : null;
+	const googleUrl = buildDohUrl(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck, opts?.checkingDisabled);
 	const signal = opts?.signal;
 	const candidates = [
 		bvDnsUrl

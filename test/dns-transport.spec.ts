@@ -965,12 +965,10 @@ describe('primary DoH failure instrumentation (SQ-209)', () => {
 		expect(response.Answer?.[0]?.data).toBe('192.0.2.1');
 	});
 
-	// SQ-209 verify-then-file. CONFIRMED: the empty-answer secondary confirmation builds its URL
-	// WITHOUT `checkingDisabled`, so a `cd=1` primary query is "confirmed" by a validating
-	// (cd=0) secondary, and the replaced response is then cached under the `:cd1` key.
-	// This test PINS the current behaviour; a separate ticket owns the fix. When it lands, invert
-	// the expectation (the secondary URL must carry cd=1).
-	it('documents: the secondary confirmation drops cd=1 from a checkingDisabled primary query', async () => {
+	// SQ-265 (found by SQ-209): the empty-answer secondary confirmation must carry cd=1 from a
+	// checkingDisabled primary query, otherwise a validating secondary "confirms" (and replaces,
+	// and caches under ':cd1') an answer the caller asked not to validate.
+	it('threads cd=1 into the secondary confirmation of a checkingDisabled primary query', async () => {
 		vi.spyOn(console, 'log').mockImplementation(() => undefined);
 		const urls: string[] = [];
 		globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
@@ -983,6 +981,21 @@ describe('primary DoH failure instrumentation (SQ-209)', () => {
 		const primaryUrl = urls.find((u) => !u.includes('dns.google'));
 		const googleUrl = urls.find((u) => u.includes('dns.google'));
 		expect(primaryUrl, 'primary fetch').toContain('cd=1');
+		expect(googleUrl, 'secondary fetch').toBeDefined();
+		expect(googleUrl).toContain('cd=1');
+	});
+
+	it('does not add cd=1 to the secondary confirmation when checkingDisabled is unset', async () => {
+		vi.spyOn(console, 'log').mockImplementation(() => undefined);
+		const urls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation(async (url: string) => {
+			urls.push(String(url));
+			return Response.json(emptyBody);
+		}) as unknown as typeof fetch;
+
+		await queryDns('example.com', 'A', false, { retries: 0, confirmWithSecondaryOnEmpty: true });
+
+		const googleUrl = urls.find((u) => u.includes('dns.google'));
 		expect(googleUrl, 'secondary fetch').toBeDefined();
 		expect(googleUrl).not.toContain('cd=1');
 	});
