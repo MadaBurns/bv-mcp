@@ -456,7 +456,7 @@ describe('chaos: scan_domain when one check’s DoH query hangs (H3)', () => {
 		const { scanDomain } = await import('../../src/tools/scan-domain');
 		const { resolveScanTimeoutBudget } = await import('../../src/tools/scan/timeouts');
 		const options = { secondaryDoh: SECONDARY_DOH };
-		const { scanTimeoutMs, perCheckTimeoutMs: budget } = resolveScanTimeoutBudget(options);
+		const { scanTimeoutMs, perCheckTimeoutMs: budget } = resolveScanTimeoutBudget({});
 		expect(budget).toBe(8_000);
 
 		const net = installNetwork({ domain, primary: 'healthy', fallback: 'healthy', hangName: `_smtp._tls.${domain}` });
@@ -481,7 +481,7 @@ describe('chaos: scan_domain when one check’s DoH query hangs (H3)', () => {
 		const { scanDomain } = await import('../../src/tools/scan-domain');
 		const { resolveScanTimeoutBudget } = await import('../../src/tools/scan/timeouts');
 		const options = { secondaryDoh: SECONDARY_DOH };
-		const { scanTimeoutMs } = resolveScanTimeoutBudget(options);
+		const { scanTimeoutMs } = resolveScanTimeoutBudget({});
 
 		const net = installNetwork({ domain, primary: 'healthy', fallback: 'healthy', hangPolicyHost: true });
 		const started = Date.now();
