@@ -41,6 +41,13 @@
  * `hopCapExceeded` / `redirectLoopFinding`. The test below now asserts the fixed (abstaining)
  * behaviour, not the original falsified claim.
  *
+ * ## H4 is BY DESIGN at the reader, and a known false-HIGH class downstream (SQ-211)
+ *
+ * `packages/dns-checks/src/response-body.ts` `readResponseTextCapped`: `null` means OVERSIZE only
+ * (declared Content-Length over the cap, or the stream exceeding it); stream errors PROPAGATE so each
+ * check keeps its own fail-soft handling. The false-HIGH class (an oversize body read as a measured
+ * absence rather than an abstention) is tracked as #455/#664 and measured in SQ-211.
+ *
  * ## One hypothesis below is still FALSIFIED by the code (see in-test comments and ticket
  * comments for the full trace); per dispatch instructions H4's test asserts the MEASURED
  * behaviour instead of the ticket's claim, and no src/ change was made for it.

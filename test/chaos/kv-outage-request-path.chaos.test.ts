@@ -26,6 +26,12 @@
 //       tools/list with that session id must not 500.
 //  H3 — SCAN_CACHE KV throws on every get/put around scan_domain.
 //       MEASURED: FALSIFIED as literally stated — see the H3 describe block.
+//       BY DESIGN, not a defect: src/lib/cache.ts cacheGet (:207-218) and
+//       cacheSet (:255-266) catch a KV failure, log, and fall through to the
+//       per-isolate IN_MEMORY_CACHE, so a SCAN_CACHE outage degrades to an
+//       in-process cache rather than disabling caching. The one adjacent open
+//       case — a cached UNGRADED result being served from cache — is pending
+//       SQ-200 in #1140 (3.91.0); it is NOT closed until 3.91.0 is wire-verified.
 //  H4 — SESSION_STORE (the KV `handleToken` uses for OAuth code/token state)
 //       throws during POST /oauth/token. Returns a 503 `temporarily_unavailable`
 //       OAuth error body, never a 500 or a leaked internal message (SQ-199
