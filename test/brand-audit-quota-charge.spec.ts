@@ -55,6 +55,8 @@ describe('brand_audit_single quota charge (async_handoff)', () => {
 		const result = await resultPromise;
 
 		expect(result.findings[0].metadata?.asyncHandoff).toBe(true);
+		// The abstaining handoff shape (#1196) must not change the uncharged-handoff contract.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'timeout', partial: true });
 		expect(enforceQuota).not.toHaveBeenCalled();
 	});
 

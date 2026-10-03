@@ -808,7 +808,24 @@ describe('extractDiscoveredCandidates', () => {
 			category: 'brand_discovery',
 			passed: false,
 			score: 0,
-			findings: [{ category: 'brand_discovery', title: 'Brand audit requires async processing', severity: 'info', detail: '', metadata: { asyncHandoff: true } }],
+			checkStatus: 'timeout',
+			partial: true,
+			findings: [
+				{
+					category: 'brand_discovery',
+					title: 'Brand audit requires async processing',
+					severity: 'info',
+					detail: '',
+					metadata: {
+						asyncHandoff: true,
+						timedOut: true,
+						recommendedTool: 'brand_audit_batch_start',
+						inconclusive: true,
+						errorKind: 'timeout',
+						notAssessed: 'sync_budget_exhausted',
+					},
+				},
+			],
 		} as unknown as CheckResult;
 		expect(extractDiscoveredCandidates(result)).toEqual([]);
 	});
