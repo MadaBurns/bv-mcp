@@ -39,6 +39,37 @@ describe('scan_buckets tools', () => {
 		expect(r.findings.some(f => f.metadata?.tierDenied === true)).toBe(false);
 	});
 
+	// #1193: 403 = recon watchlist gate (credential accepted, target not authorized), not a bad key.
+	it('start: 403 is a watchlist policy denial, not a credential problem', async () => {
+		const { scanBucketsStart } = await import('../src/tools/scan-buckets');
+		const sink = vi.fn();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const r = await scanBucketsStart(
+			{ target: 'example.com' },
+			{ reconBinding: binding({ error: 'forbidden', code: 'target_not_authorized' }, 403), reconAuthToken: 't', onBindingDegradation: sink },
+		);
+		const f = r.findings[0];
+		expect(f.metadata?.reconFailureReason).toBe('target_not_authorized');
+		expect(f.metadata?.reconUpstreamStatus).toBe(403);
+		expect(f.metadata?.upstreamUnavailable).toBe(true);
+		expect(f.detail).toContain('watchlist');
+		expect(f.detail).toContain('not an outage or a credential problem');
+		expect(r.checkStatus).toBe('error');
+		expect(r.partial).toBe(true);
+		expect(sink).not.toHaveBeenCalled();
+	});
+	it('start: 401 stays unauthorized and records a degradation', async () => {
+		const { scanBucketsStart } = await import('../src/tools/scan-buckets');
+		const sink = vi.fn();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const r = await scanBucketsStart(
+			{ target: 'example.com' },
+			{ reconBinding: binding({ error: 'invalid_recon_key' }, 401), reconAuthToken: 'bad', onBindingDegradation: sink },
+		);
+		expect(r.findings[0].metadata?.reconFailureReason).toBe('unauthorized');
+		expect(r.findings[0].metadata?.reconUpstreamStatus).toBe(401);
+		expect(sink).toHaveBeenCalledWith(expect.objectContaining({ degradationType: 'binding_5xx', component: 'recon' }));
+	});
 	it('start: returns scanId when started', async () => {
 		const { scanBucketsStart } = await import('../src/tools/scan-buckets');
 		const r = await scanBucketsStart({ target: 'example.com' }, { reconBinding: binding({ scanId: 'scan_1', status: 'running' }), reconAuthToken: 'tok' });
