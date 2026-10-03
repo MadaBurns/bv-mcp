@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Changed
+
+- Version-axis reconciliation (#1187). Current bv-web-prod re-vendor target is dns-checks 1.58.0 / scoring model 1.39.0, superseding the per-release re-vendor asks for dns-checks 1.56.0 (3.94.0) and dns-checks 1.57.0 (3.95.0). In-tree dns-checks 1.53.3 through 1.58.0 have no published artifact (no tag, no GitHub Release); the artifact for dns-checks 1.58.0 is to be cut via `dns-checks-release.yml` (operator step, #1187). Going forward every CHANGELOG version names its axis: `dns-checks <X.Y.Z>`, `scoring model <X.Y.Z>`, or `v<X.Y.Z>` (see the bv-mcp-release skill).
+
 ## [3.96.0] - 2026-10-03
 
 Single-fix release (Sidequest SQ-295, issue #1114). Package change in `@blackveil/dns-checks` 1.58.0 (parity corpus 1.58.0); scoring model 1.39.0.
@@ -472,7 +476,7 @@ _3.91.0 was tagged in the changelog but never deployed; this release is the firs
   (`checkStatus: 'error'`, excluded from scoring) when every include in the chain was
   unmeasured, matching the `check_subdomain_takeover` precedent (#956/#1006). SCORE-BEARING only
   on a domain whose SPF include chain hits a thrown DNS lookup during the probe phase —
-  `SCORING_MODEL_VERSION` 1.37.0, `@blackveil/dns-checks` 1.53.3.
+  `SCORING_MODEL_VERSION` 1.37.0, `@blackveil/dns-checks` 1.53.3. (in-tree version at the time; no `dns-checks-v1.53.3` artifact was ever cut — see the Unreleased note)
 - **The `check_ssl`/`check_http_security` redirect chain now shares the SAME ONE timeout
   budget as the HEAD+GET pair that precedes it, instead of a fresh `timeoutMs` per chain/hop**
   (#1093, follow-up to #1088). `check-ssl`'s `followHttpsRedirectChain` re-armed a full
