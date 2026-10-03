@@ -10,7 +10,10 @@
  *  - `registrationDays` — the "recently registered" corroborator (#264);
  *  - `registrantOrg` — the same-entity correlation input (#263);
  *  - `registrarIanaId` / `registrarName` — the brand-held-registration input;
- *  - `hasWebContent` — the "parked / unreachable" corroborator.
+ *  - `hasWebContent` — the "unreachable" corroborator, and beside it the
+ *    tri-state `webPresence` reading (#1202), which also says whether the
+ *    candidate is PARKED — read from DNS the earlier phases already fetched
+ *    (parking MX / NS) plus the phase-2 wildcard probe, never from extra HTTP.
  *
  * EVERY path here is FAIL-SOFT and the direction of each failure default is
  * load-bearing: a missing RDAP field becomes `null` ("unknown", never elevates
@@ -44,7 +47,8 @@ import { mapConcurrent } from '../lib/map-concurrent';
 import { extractRegistrantOrg, findEntityByRole } from './check-rdap-lookup';
 import { FALLBACK_RDAP_SERVERS } from './rdap-fallback-servers';
 import { isDisposableMxHost } from './lookalike-severity';
-import type { LookalikeResult } from './lookalike-dns';
+import { isParkingInfraHost } from '../tenants/discovery/shared-ns-hosts';
+import type { LookalikeResult, WildcardProbeOutcome } from './lookalike-dns';
 
 /** Per-probe budgets for the Defect L enrichment probes. Each timer is armed when the fetch is DISPATCHED, never earlier (#867). */
 const RDAP_PROBE_TIMEOUT_MS = 2500;
@@ -86,6 +90,25 @@ export type RegistrationLookupOutcome =
 	/** The enrichment deadline was already spent before this candidate's turn; no request was issued. */
 	| 'not_attempted';
 
+/**
+ * #1202 — the candidate's web reading, carried BESIDE the legacy boolean
+ * `hasWebContent` (which is `false` iff this is `none`, so no existing
+ * consumer changes):
+ *
+ *  - `content`    — the HEAD probe got an HTTP answer and no parking signal holds;
+ *  - `none`       — the HEAD probe was MEASURABLY refused (reset, refused, TLS
+ *                   failure) — the only no-content reading, and it outranks
+ *                   every parking signal, so `hasWebContent` stays exactly as it was;
+ *  - `parked`     — a parking-network MX or NS, or a wildcard zone whose HEAD
+ *                   probe answered (see {@link resolveWebPresence});
+ *  - `unmeasured` — no A record, or the probe was never issued or timed out.
+ *                   Fail-soft: never a corroborator (#264).
+ */
+export type WebPresenceReading = 'content' | 'none' | 'parked' | 'unmeasured';
+
+/** #1202 — one parking-infrastructure signal observed for a candidate. */
+export type ParkingSignal = 'parking_mx' | 'parking_ns' | 'wildcard_a';
+
 export interface LookalikeCorroborators {
 	registrationDays: number | null;
 	/** `true` iff `registrationDays` is `null`; see {@link registrationLookup} for why. */
@@ -94,6 +117,12 @@ export interface LookalikeCorroborators {
 	registrationLookup: RegistrationLookupOutcome;
 	mxOnDisposable: boolean;
 	hasWebContent: boolean;
+	/** #1202 — the tri-state web reading; `hasWebContent === (webPresence !== 'none')`. */
+	webPresence: WebPresenceReading;
+	/** #1202 — every parking signal OBSERVED (measured DNS facts), whether or not it decided {@link webPresence}. */
+	parkingSignals: ParkingSignal[];
+	/** #1202 — the phase-2 random-label wildcard probe's outcome (`not_probed` when the candidate was not eligible). */
+	wildcardProbe: WildcardProbeOutcome;
 	/**
 	 * Normalised RDAP registrant org for this candidate, harvested from the same
 	 * single RDAP fetch as {@link registrationDays}. `null` when RDAP failed,
@@ -128,6 +157,47 @@ export interface EnrichmentOptions {
 	 * Absent → each probe gets its full per-probe budget (direct callers).
 	 */
 	deadlineMs?: number;
+	/**
+	 * #1202 — each candidate's NS hosts, as the phase-1 existence query already
+	 * returned them (no new query), for the `parking_ns` signal. Absent → that
+	 * signal is never observed.
+	 */
+	candidateNs?: ReadonlyMap<string, ReadonlySet<string>>;
+}
+
+/**
+ * #1202 — the parking-infrastructure signals a candidate's ALREADY-FETCHED DNS
+ * carries: an MX exchange or NS host on a domain-parking network
+ * (`isParkingInfraHost`, keyed on the parking subset of `SHARED_NS_APEXES`),
+ * and a wildcard zone from the phase-2 random-label probe. No query is made.
+ */
+export function collectParkingSignals(
+	candidate: Pick<LookalikeResult, 'mxExchanges' | 'wildcardProbe'>,
+	nsHosts: Iterable<string> = [],
+): ParkingSignal[] {
+	const signals: ParkingSignal[] = [];
+	if (candidate.mxExchanges.some(isParkingInfraHost)) signals.push('parking_mx');
+	if ([...nsHosts].some(isParkingInfraHost)) signals.push('parking_ns');
+	if (candidate.wildcardProbe === 'wildcard') signals.push('wildcard_a');
+	return signals;
+}
+
+/**
+ * #1202 — fold the parking signals into the HEAD probe's reading:
+ *
+ *  - a MEASURED refusal (`none`) stands, so `hasWebContent` never flips;
+ *  - a parking-network MX or NS → `parked`, whatever the HEAD probe saw —
+ *    both are measured DNS answers, not an unattempted probe;
+ *  - a wildcard zone → `parked` ONLY when the HEAD probe answered (`content`):
+ *    a zone that answers every name and serves a page for it is the parking
+ *    shape, but a wildcard with no answered probe is not evidence of a page;
+ *  - otherwise the HEAD reading is unchanged (`content` / `unmeasured`).
+ */
+export function resolveWebPresence(head: WebPresenceReading, parkingSignals: readonly ParkingSignal[]): WebPresenceReading {
+	if (head === 'none') return 'none';
+	if (parkingSignals.includes('parking_mx') || parkingSignals.includes('parking_ns')) return 'parked';
+	if (head === 'content' && parkingSignals.includes('wildcard_a')) return 'parked';
+	return head;
 }
 
 /**
@@ -173,12 +243,16 @@ export async function enrichLookalikes(
 	]);
 	ordered.forEach((candidate, i) => {
 		const rdap = rdapResults[i];
+		const parkingSignals = collectParkingSignals(candidate, options.candidateNs?.get(candidate.domain));
 		map.set(candidate.domain, {
 			registrationDays: rdap.registrationDays,
 			ageUnknown: rdap.registrationDays === null,
 			registrationLookup: rdap.lookup,
 			mxOnDisposable: candidate.mxExchanges.some(isDisposableMxHost),
 			hasWebContent: webResults[i].hasWebContent,
+			webPresence: resolveWebPresence(webResults[i].webPresence, parkingSignals),
+			parkingSignals,
+			wildcardProbe: candidate.wildcardProbe ?? 'not_probed',
 			registrantOrg: rdap.registrantOrg,
 			registrarIanaId: rdap.registrarIanaId,
 			registrarName: rdap.registrarName,
@@ -360,9 +434,12 @@ export async function probePrimaryRegistration(domain: string, options: Enrichme
 
 /**
  * HEAD probe the candidate domain to confirm web content is reachable.
- * Fail-soft: any error (connection refused, timeout, DNS miss, TLS error)
- * returns `true` so a flaky probe can't synthesise a HIGH severity via the
- * "no-web-content" corroborator. Parked-or-refused domains return `false`.
+ * Returns `true` for ANY HTTP answer and for every unknown outcome (timeout,
+ * deadline, not issued), so a flaky probe can't synthesise a HIGH severity via
+ * the "no-web-content" corroborator; only a measured transport refusal returns
+ * `false`. A PARKED domain returns `true`: parking infrastructure answers 200
+ * with adverts, so this probe cannot tell it from a live site — the `parked`
+ * reading (#1202) comes from DNS signals instead, see {@link resolveWebPresence}.
  *
  * 5xx responses also count as "has content" — we got reached the server,
  * the server just errored. Phishing infra rarely 5xx's; parked-page infra
@@ -380,15 +457,21 @@ export async function probeHasWebContent(domain: string, deadlineMs?: number): P
 	return (await probeWebPresence(domain, deadlineMs)).hasWebContent;
 }
 
-/** One HEAD probe's two readings. See {@link probeHasWebContent} for the `hasWebContent` law. */
+/** One HEAD probe's readings. See {@link probeHasWebContent} for the `hasWebContent` law. */
 export interface WebPresence {
 	hasWebContent: boolean;
+	/**
+	 * #1202 — the same answer as a tri-state: `content` (HTTP answer), `none`
+	 * (measured refusal), `unmeasured` (not issued, or timed out). The probe
+	 * alone never yields `parked`; {@link resolveWebPresence} adds that from DNS.
+	 */
+	webPresence: WebPresenceReading;
 	/** 3xx `Location`, absolute; `null` = answered without a redirect; `undefined` = not measured. */
 	redirectLocation: string | null | undefined;
 }
 
-/** Not probed (no A record): content defaults to the safe `true`, the redirect is unmeasured. */
-const UNMEASURED_WEB_PRESENCE: WebPresence = { hasWebContent: true, redirectLocation: undefined };
+/** Not probed (no A record, or no budget left): content defaults to the safe `true`, the reading and the redirect are unmeasured. */
+const UNMEASURED_WEB_PRESENCE: WebPresence = { hasWebContent: true, webPresence: 'unmeasured', redirectLocation: undefined };
 
 /**
  * The HEAD probe behind {@link probeHasWebContent}, also returning the redirect
@@ -415,11 +498,15 @@ export async function probeWebPresence(domain: string, deadlineMs?: number): Pro
 			signal,
 		});
 		// Any HTTP response (incl. 3xx) means the host is reachable — content exists.
-		return { hasWebContent: Boolean(resp), redirectLocation: readRedirectLocation(resp, probeUrl) };
+		return {
+			hasWebContent: Boolean(resp),
+			webPresence: resp ? 'content' : 'none',
+			redirectLocation: readRedirectLocation(resp, probeUrl),
+		};
 	} catch {
 		// Timed out → unknown → `true` (never the HIGH corroborator).
 		// Measured transport refusal (reset, refused, DNS/TLS failure) → no content.
-		return { hasWebContent: signal.aborted, redirectLocation: undefined };
+		return { hasWebContent: signal.aborted, webPresence: signal.aborted ? 'unmeasured' : 'none', redirectLocation: undefined };
 	}
 }
 

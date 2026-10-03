@@ -413,7 +413,7 @@ function mockLookalikesFixtureDns() {
 		// requirement 5 — a domain is not an impersonation threat to itself).
 		if (name === 'testc0.com') {
 			if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.testco.com.']));
-			if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mx.mailgun.org.']));
+			if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mx.mailinator.com.']));
 		}
 
 		// THIRD-PARTY THREAT — distinct NS, live mail on a disposable provider:
@@ -421,7 +421,7 @@ function mockLookalikesFixtureDns() {
 		// carries the real HIGH, verdict !== owned_by_seed, candidate named.
 		if (name === 'twstco.com') {
 			if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, ['ns1.unrelated-dns.com.']));
-			if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mx.mailgun.org.']));
+			if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mx.mailinator.com.']));
 		}
 
 		// SHARED-PROVIDER (AKAMAI) TRAP — shares exactly ONE Akamai host with

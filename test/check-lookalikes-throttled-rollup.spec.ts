@@ -66,7 +66,7 @@ async function run(domain = 'testco.com') {
 
 /**
  * Seed `testco.com` on its own NS; candidate `twstco.com` on unrelated NS with
- * a working mail host. `mx.mailgun.org` sits in DISPOSABLE_MX_PROVIDERS, so the
+ * a working mail host. `mx.mailinator.com` sits in DISPOSABLE_MX_PROVIDERS, so the
  * #264 matrix reaches HIGH without an RDAP mock — which also leaves
  * `registrationDays: null` (age unknown), the shape #867 is about.
  *
@@ -77,7 +77,7 @@ async function run(domain = 'testco.com') {
  *  - `0`       → nothing rejects (a complete run)
  */
 function mockRun(opts: { rejectOthers: 'all' | number; candidateMx?: string }): void {
-	const { rejectOthers, candidateMx = 'mx.mailgun.org.' } = opts;
+	const { rejectOthers, candidateMx = 'mx.mailinator.com.' } = opts;
 	const rejected = new Set<string>();
 	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 		const { name, type } = parseDohQuery(input);
