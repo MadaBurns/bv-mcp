@@ -37,6 +37,7 @@
 import {
 	beginIdempotentRequestWithCoordinator,
 	completeIdempotentRequestWithCoordinator,
+	releaseIdempotentRequestWithCoordinator,
 	type QuotaCoordinator,
 } from './quota-coordinator';
 
@@ -175,7 +176,19 @@ export async function withStrongRequestIdempotency<T extends DedupableResult>(
 	}
 
 	const execution = (async (): Promise<T> => {
-		const result = await fn();
+		let result: T;
+		try {
+			result = await fn();
+		} catch (error) {
+			// The executor threw before producing a response: drop the in_progress claim so a
+			// same-key retry can run instead of being refused for the 7-day replay horizon.
+			try {
+				await releaseIdempotentRequestWithCoordinator(keys.coordinationKey, keys.requestHash, coordinator);
+			} catch {
+				// Best-effort: an unreleased claim stays fail-closed (retry refused), never a duplicate effect.
+			}
+			throw error;
+		}
 		try {
 			const serialized = JSON.stringify(result);
 			await completeIdempotentRequestWithCoordinator(keys.coordinationKey, keys.requestHash, serialized, coordinator);

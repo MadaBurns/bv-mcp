@@ -353,6 +353,60 @@ describe('checkSubdomainTakeover', () => {
 		expect(finding!.metadata?.proofRequired).toBe('authorized_proof_of_control');
 	});
 
+	describe('generic fingerprints are gated on the provider status / markers', () => {
+		function runWithHttpProbe(cname: string, httpResponse: () => Response) {
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.includes('cloudflare-dns.com')) {
+					if (url.includes('type=CNAME') || url.includes('type=5')) {
+						if (url.includes('app.example.com')) return Promise.resolve(cnameResponse('app.example.com', cname));
+						const nameMatch = url.match(/name=([^&]+)/);
+						return Promise.resolve(emptyResponse(nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown', 5));
+					}
+					if ((url.includes('type=A') || url.includes('type=1')) && url.includes(cname)) {
+						return Promise.resolve(aResponse(cname, ['203.0.113.7']));
+					}
+					return Promise.resolve(emptyResponse('unknown', 1));
+				}
+				return Promise.resolve(httpResponse());
+			});
+			return run('example.com');
+		}
+
+		it('does not flag a live Render app whose own API answers {"detail":"Not Found"}', async () => {
+			const result = await runWithHttpProbe(
+				'my-api.onrender.com',
+				() => new Response('{"detail":"Not Found"}', { status: 404, headers: { 'content-type': 'application/json' } }),
+			);
+			expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+			expect(result.findings.some((f) => f.title.includes('Render'))).toBe(false);
+		});
+
+		it('still flags a Render hostname the platform reports as having no server', async () => {
+			const result = await runWithHttpProbe(
+				'gone-app.onrender.com',
+				() => new Response('Not Found', { status: 404, headers: { 'x-render-routing': 'no-server' } }),
+			);
+			expect(result.findings.find((f) => f.title.includes('Render'))?.severity).toBe('high');
+		});
+
+		it('does not flag a live Fastly service whose body merely says "unknown domain" on a 200', async () => {
+			const result = await runWithHttpProbe(
+				'example.global.ssl.fastly.net',
+				() => new Response('<html>Please enter an unknown domain name to continue</html>', { status: 200 }),
+			);
+			expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+		});
+
+		it('still flags the Fastly 500 "unknown domain" error page', async () => {
+			const result = await runWithHttpProbe(
+				'example.global.ssl.fastly.net',
+				() => new Response('Fastly error: unknown domain: app.example.com.', { status: 500 }),
+			);
+			expect(result.findings.find((f) => f.title.includes('Fastly'))?.severity).toBe('high');
+		});
+	});
+
 	it('detects HTTP fingerprint takeover signal on resolving CNAME (GitHub Pages)', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;

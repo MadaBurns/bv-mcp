@@ -30,7 +30,9 @@ export async function checkCaa(domain: string, dnsOptions?: QueryDnsOptions, zon
 		zone: resolvedZone,
 		rawQueryDNS: async (d, type, dnssecFlag) => {
 			const resp = await queryDns(d, type as Parameters<typeof queryDns>[1], dnssecFlag ?? false, dnsOptions);
-			return { AD: resp.AD, Answer: resp.Answer };
+			// `Status` is the DoH rcode: it lets the package tell a measured "no CAA" (NOERROR /
+			// NXDOMAIN) from a SERVFAIL/REFUSED it must abstain on rather than report as absence.
+			return { AD: resp.AD, Answer: resp.Answer, Status: resp.Status };
 		},
 	}) as Promise<CheckResult>;
 }

@@ -262,6 +262,40 @@ describe('probeAuthoritativeDns', () => {
 		expect(evidence.transportParity).toBeUndefined();
 	});
 
+	// SQ-282 item 3 — parity is per nameserver: a v4-only primary must never be paired with a
+	// dual-stack secondary's v6 answer.
+	describe('transport parity pairs v4 and v6 only within the same nameserver (SQ-282)', () => {
+		function dualStackProbe(serialByAddress: Record<string, number>) {
+			const recursiveQuery = vi.fn(async (name: string, type: string) =>
+				name === 'example.com' && type === 'NS' ? ['ns1.example.com', 'ns2.example.com'] : [],
+			);
+			const resolveAddresses = vi.fn(async (nameserver: string, type: 'A' | 'AAAA') => {
+				if (nameserver === 'ns1.example.com') return type === 'A' ? ['1.1.1.1'] : []; // v4-only primary
+				return type === 'A' ? ['1.0.0.1'] : ['2001:4860:4860:0:0:0:0:1112']; // dual-stack secondary
+			});
+			const openSession = vi.fn(async (address: string) => ({
+				query: vi.fn(async (_name: string, type: number) => {
+					if (type === RecordType.SOA) {
+						return response({ aa: true, answers: [{ name: 'example.com', type: RecordType.SOA, data: String(serialByAddress[address]) }] });
+					}
+					return response({ aa: true });
+				}),
+				close: vi.fn(async () => undefined),
+			}));
+			return probeAuthoritativeDns('example.com', { recursiveQuery, resolveAddresses, openSession }, { activeProbes: false });
+		}
+
+		it('reports parity true for a v4-only primary and a dual-stack secondary whose own v4 and v6 agree', async () => {
+			const evidence = await dualStackProbe({ '1.1.1.1': 100, '1.0.0.1': 200, '2001:4860:4860:0:0:0:0:1112': 200 });
+			expect(evidence.transportParity).toEqual({ ipv4Ipv6Parity: true });
+		});
+
+		it('still reports parity false when one nameserver answers differently over v4 and v6', async () => {
+			const evidence = await dualStackProbe({ '1.1.1.1': 200, '1.0.0.1': 200, '2001:4860:4860:0:0:0:0:1112': 300 });
+			expect(evidence.transportParity).toEqual({ ipv4Ipv6Parity: false });
+		});
+	});
+
 	it('reports soaSerial.consistent false on a serial mismatch across nameservers', async () => {
 		const recursiveQuery = vi.fn(async (name: string, type: string) =>
 			name === 'example.com' && type === 'NS' ? ['ns1.example.com', 'ns2.example.com'] : [],
@@ -559,5 +593,77 @@ describe('probeAuthoritativeDns', () => {
 		expect(openSession).toHaveBeenCalledTimes(2);
 		expect(evidence).not.toHaveProperty('unprobedNameservers');
 		expect(evidence.errors).toBeUndefined();
+	});
+});
+
+describe('probeAuthoritativeDns lane budget with active probes (SQ-241)', () => {
+	const BUDGET_MS = 300;
+	// Timer jitter allowance only — far below the overrun the stacked AXFR waits produced.
+	const EPSILON_MS = 75;
+
+	/** Mirrors `openDnsTcpSession`: one deadline fixed at open, shared by every query on it. */
+	function deadlineBoundSession(timeoutMs: number) {
+		const deadline = Date.now() + timeoutMs;
+		return {
+			query: vi.fn(async (name: string, type: number) => {
+				if (Date.now() >= deadline) throw new Error('DNS TCP session deadline exceeded');
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				if (type === RecordType.SOA) return response({ aa: true, answers: [{ name, type: RecordType.SOA, data: '2026092901' }] });
+				return response({ aa: true });
+			}),
+			close: vi.fn(async () => undefined),
+		};
+	}
+
+	/** An AXFR socket whose handshake is slow and whose server then never sends a byte. */
+	function stallingAxfrSocket(options: { openedAfterMs: number; closeNeverSettles?: boolean }) {
+		return {
+			opened: new Promise((resolve) => setTimeout(resolve, options.openedAfterMs)),
+			readable: new ReadableStream<Uint8Array>(),
+			writable: new WritableStream<Uint8Array>(),
+			close: vi.fn(() => (options.closeNeverSettles ? new Promise<void>(() => undefined) : Promise.resolve())),
+		};
+	}
+
+	const recursiveQuery = vi.fn(async (name: string, type: string) => (name === 'example.com' && type === 'NS' ? ['ns1.example.com'] : []));
+	const resolveAddresses = vi.fn(async (_nameserver: string, type: 'A' | 'AAAA') => (type === 'A' ? ['1.1.1.1'] : []));
+	const openSession = vi.fn(async (_address: string, timeoutMs: number) => deadlineBoundSession(timeoutMs));
+
+	it('settles within budgetMs when a slow AXFR handshake is followed by a silent server, keeping the passive evidence', async () => {
+		const axfrSocket = stallingAxfrSocket({ openedAfterMs: 200 });
+		const openAxfrSocket = vi.fn(async () => axfrSocket);
+
+		const startedAt = Date.now();
+		const evidence = await probeAuthoritativeDns(
+			'example.com',
+			{ recursiveQuery, resolveAddresses, openSession, openAxfrSocket },
+			{ activeProbes: true, budgetMs: BUDGET_MS },
+		);
+		const elapsedMs = Date.now() - startedAt;
+
+		expect(openAxfrSocket).toHaveBeenCalledTimes(1);
+		expect(elapsedMs).toBeLessThanOrEqual(BUDGET_MS + EPSILON_MS);
+		// The unanswered AXFR is unmeasured — never a verdict — and the passive evidence stands.
+		expect(evidence.zoneTransfer).toBeUndefined();
+		expect(evidence.authoritative?.aaFlag).toBe(true);
+		expect(evidence.soaSerial).toEqual({ serialsByNameserver: { 'ns1.example.com': 2026092901 }, consistent: true });
+		expect(evidence.errors).toBeUndefined();
+		expect(axfrSocket.close).toHaveBeenCalledTimes(1);
+	});
+
+	it('settles within budgetMs even when closing the stalled AXFR socket never completes', async () => {
+		const axfrSocket = stallingAxfrSocket({ openedAfterMs: 0, closeNeverSettles: true });
+		const openAxfrSocket = vi.fn(async () => axfrSocket);
+
+		const startedAt = Date.now();
+		const outcome = await Promise.race([
+			probeAuthoritativeDns('example.com', { recursiveQuery, resolveAddresses, openSession, openAxfrSocket }, { activeProbes: true, budgetMs: BUDGET_MS }),
+			new Promise<'still pending'>((resolve) => setTimeout(() => resolve('still pending'), BUDGET_MS + 500)),
+		]);
+		const elapsedMs = Date.now() - startedAt;
+
+		expect(outcome).not.toBe('still pending');
+		expect(elapsedMs).toBeLessThanOrEqual(BUDGET_MS + EPSILON_MS);
+		expect(axfrSocket.close).toHaveBeenCalledTimes(1);
 	});
 });

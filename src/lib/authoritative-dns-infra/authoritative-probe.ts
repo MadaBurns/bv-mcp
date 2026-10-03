@@ -255,33 +255,41 @@ async function probeAxfrRefusal(
 	address: string,
 	zone: string,
 	openAxfrSocket: AxfrSocketFactory,
-	timeoutMs: number,
+	deadline: number,
 ): Promise<boolean | undefined> {
-	let socket: AxfrSocket;
+	const socketPromise = openAxfrSocket(address);
 	try {
-		socket = await withTimeout(openAxfrSocket(address), timeoutMs);
-	} catch {
-		return undefined;
-	}
-	try {
-		const id = crypto.getRandomValues(new Uint16Array(1))[0];
-		const query = buildDirectDnsQuery(zone, AXFR_QTYPE, id);
-		await withTimeout(socket.opened, timeoutMs);
-		const writer = socket.writable.getWriter();
-		try {
-			await writer.write(frameMessage(query));
-		} finally {
-			writer.releaseLock();
-		}
-		// Reads ONLY the first frame and cancels the reader immediately after — never lets
-		// zone data accumulate, whether the transfer is refused or actually allowed
-		// (US-4 contract #3).
-		const frame = await withTimeout(readFirstFramedResponse(socket.readable), timeoutMs);
-		return classifyAxfrRefusal(parseDirectDnsResponse(frame, id));
+		// ONE timer for the whole exchange, measured against the lane deadline (SQ-241). Clamping
+		// open, `opened`, and the first-frame read each to the window left when this lane STARTED
+		// let them stack: a slow handshake followed by a silent server ran the read a full extra
+		// window past the deadline, and the caller's 5 s client abort then discarded the passive
+		// evidence along with it.
+		return await withTimeout(
+			(async () => {
+				const socket = await socketPromise;
+				const id = crypto.getRandomValues(new Uint16Array(1))[0];
+				const query = buildDirectDnsQuery(zone, AXFR_QTYPE, id);
+				await socket.opened;
+				const writer = socket.writable.getWriter();
+				try {
+					await writer.write(frameMessage(query));
+				} finally {
+					writer.releaseLock();
+				}
+				// Reads ONLY the first frame and cancels the reader immediately after — never lets
+				// zone data accumulate, whether the transfer is refused or actually allowed
+				// (US-4 contract #3).
+				const frame = await readFirstFramedResponse(socket.readable);
+				return classifyAxfrRefusal(parseDirectDnsResponse(frame, id));
+			})(),
+			Math.max(1, deadline - Date.now()),
+		);
 	} catch {
 		return undefined;
 	} finally {
-		await socket.close().catch(() => undefined);
+		// Always closed, including a socket that finished opening only after the timer fired,
+		// but never awaited: closing a stalled socket must not hold the lane past its deadline.
+		void socketPromise.then((socket) => socket.close()).catch(() => undefined);
 	}
 }
 
@@ -373,7 +381,7 @@ async function probeAddress(
 	await session.close().catch(() => undefined);
 
 	if (activeProbes && Date.now() < deadline) {
-		result.axfrRefused = await probeAxfrRefusal(target.address, zone, openAxfrSocket, Math.max(1, deadline - Date.now()));
+		result.axfrRefused = await probeAxfrRefusal(target.address, zone, openAxfrSocket, deadline);
 	}
 
 	return result;
@@ -403,10 +411,19 @@ function buildFamilyReachability(
 function computeTransportParity(results: AddressResult[]): boolean | undefined {
 	// Only an authoritative (AA=1) answer is trustworthy evidence about the zone; comparing a
 	// lame/intercepted answer against a genuine one would misreport parity.
-	const ipv4 = results.find((result) => result.family === 'ipv4' && result.aaFlag === true);
-	const ipv6 = results.find((result) => result.family === 'ipv6' && result.aaFlag === true);
-	if (!ipv4 || !ipv6) return undefined;
-	return ipv4.soaRcode === ipv6.soaRcode && ipv4.soaSerial === ipv6.soaSerial;
+	// Pair v4 with v6 only WITHIN one nameserver (SQ-282): a v4-only primary and a dual-stack
+	// secondary legitimately carry different serials, and crossing them is a false mismatch.
+	const authoritative = results.filter((result) => result.aaFlag === true);
+	const nameservers = new Set(authoritative.map((result) => result.nameserver));
+	let compared = false;
+	for (const nameserver of nameservers) {
+		const ipv4 = authoritative.find((result) => result.nameserver === nameserver && result.family === 'ipv4');
+		const ipv6 = authoritative.find((result) => result.nameserver === nameserver && result.family === 'ipv6');
+		if (!ipv4 || !ipv6) continue;
+		compared = true;
+		if (ipv4.soaRcode !== ipv6.soaRcode || ipv4.soaSerial !== ipv6.soaSerial) return false;
+	}
+	return compared ? true : undefined;
 }
 
 function setsEqual(a: string[], b: string[]): boolean {

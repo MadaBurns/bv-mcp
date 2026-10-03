@@ -98,6 +98,13 @@ export interface AnalyticsClient {
 			unitsCompleted?: number;
 		} & AnalyticsContext,
 	): void;
+	/**
+	 * SQ-214: a scan result was refused by the scan-cache admission predicate
+	 * (`score.overall === null`), so the next identical call re-runs the full scan.
+	 * `repeat` = an identical-key scan was refused within the previous 5 minutes
+	 * (per-isolate memory). Measurement only — informs whether a negative TTL is worth it.
+	 */
+	emitUngradedNotCachedEvent(event: { domain: string; repeat: boolean } & AnalyticsContext): void;
 	emitRateLimitEvent(
 		event: {
 			limitType: 'minute' | 'hour' | 'daily_tool' | 'daily_global' | 'daily_ip' | 'distinct_domain' | 'gated_tool';
@@ -170,6 +177,28 @@ export interface AnalyticsClient {
 			// exclusion does NOT swallow it and it reaches the 15-min cron alert. The alert
 			// keys on degradationType (blob1), not component (blob2) -- a new alertable
 			// signal must carry a non-excluded degradationType.
+		} & AnalyticsContext,
+	): void;
+	/**
+	 * `doh_primary` summary — ONE row per completed (non-cached) scan with the
+	 * counts of PRIMARY DoH resolver attempts and failures by class (SQ-209).
+	 * Measures the single-resolver incident rate behind the SQ-202 failover
+	 * decision: a primary 5xx / network error / timeout abstains by design (no
+	 * secondary failover). Deliberately a SEPARATE index from `degradation` so
+	 * the 15-min binding-degradation alert query is unaffected; a clean scan
+	 * still emits a row (all failure counts 0) so a rate has a denominator.
+	 *
+	 * Blob positions (doh_primary): blob1=outcome (`clean` | `failures`),
+	 * blob2=domain fingerprint, blob3=country, blob4=clientType, blob5=authTier.
+	 * Doubles: double1=attempts, double2=http5xx, double3=network, double4=timeout.
+	 */
+	emitDohPrimarySummary(
+		event: {
+			attempts: number;
+			http5xx: number;
+			network: number;
+			timeout: number;
+			domain?: string;
 		} & AnalyticsContext,
 	): void;
 	/**
@@ -252,9 +281,11 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 			enabled: false,
 			emitRequestEvent: noop,
 			emitToolEvent: noop,
+			emitUngradedNotCachedEvent: noop,
 			emitRateLimitEvent: noop,
 			emitSessionEvent: noop,
 			emitDegradationEvent: noop,
+			emitDohPrimarySummary: noop,
 			emitQuotaShardEvent: noop,
 			emitQueueBatchEvent: noop,
 			emitTailAggregate: noop,
@@ -324,6 +355,21 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 				],
 			});
 		},
+		emitUngradedNotCachedEvent: (event) => {
+			safeWrite(dataset, {
+				indexes: ['scan_ungraded'],
+				// blob1 = outcome, blob2 = domain fingerprint (never the raw domain),
+				// blob3 = 'repeat' | 'first', then the standard country/clientType/authTier.
+				blobs: [
+					'ungraded_not_cached',
+					domainFingerprint(event.domain),
+					event.repeat ? 'repeat' : 'first',
+					event.country ?? 'unknown',
+					event.clientType ?? 'unknown',
+					event.authTier ?? 'anon',
+				],
+			});
+		},
 		emitRateLimitEvent: (event) => {
 			safeWrite(dataset, {
 				indexes: ['rate_limit'],
@@ -357,6 +403,24 @@ export function createAnalyticsClient(dataset?: AnalyticsDatasetLike): Analytics
 					event.country ?? 'unknown',
 					event.clientType ?? 'unknown',
 					event.authTier ?? 'anon',
+				],
+			});
+		},
+		emitDohPrimarySummary: (event) => {
+			safeWrite(dataset, {
+				indexes: ['doh_primary'],
+				blobs: [
+					event.http5xx + event.network + event.timeout > 0 ? 'failures' : 'clean',
+					event.domain ? domainFingerprint(event.domain) : 'none',
+					event.country ?? 'unknown',
+					event.clientType ?? 'unknown',
+					event.authTier ?? 'anon',
+				],
+				doubles: [
+					sanitizeNumber(event.attempts),
+					sanitizeNumber(event.http5xx),
+					sanitizeNumber(event.network),
+					sanitizeNumber(event.timeout),
 				],
 			});
 		},

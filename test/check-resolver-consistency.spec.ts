@@ -2,7 +2,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, servfailResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -122,5 +122,44 @@ describe('formatResolverConsistency', () => {
 		expect(compact.length).toBeLessThanOrEqual(full.length);
 		expect(compact).toContain('Resolver Consistency:');
 		expect(compact).not.toContain('# DNS Resolver Consistency Check');
+	});
+});
+
+describe('checkResolverConsistency — resolvers that never answered (T6 item 6)', () => {
+	async function run(domain = 'example.com', recordType?: string) {
+		const { checkResolverConsistency } = await import('../src/tools/check-resolver-consistency');
+		return checkResolverConsistency(domain, recordType);
+	}
+
+	it('abstains when every resolver SERVFAILs instead of reporting consistent records', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+			const u = new URL(typeof url === 'string' ? url : url.toString());
+			return Promise.resolve(servfailResponse(u.searchParams.get('name') ?? 'example.com', 1));
+		});
+
+		const result = await run('example.com', 'A');
+
+		expect(result.findings.some((f) => f.title === 'A records consistent')).toBe(false);
+		expect(result.findings.some((f) => f.detail.includes('agree'))).toBe(false);
+		expect(result.checkStatus).toBe('error');
+		expect(result.passed).toBe(false);
+		expect(result.score).toBe(0);
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+	});
+
+	it('does not abstain the whole check when only some record types lack a resolver quorum', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+			const u = new URL(typeof url === 'string' ? url : url.toString());
+			const name = u.searchParams.get('name') ?? 'example.com';
+			if (u.searchParams.get('type') === 'MX') return Promise.resolve(servfailResponse(name, 15));
+			return Promise.resolve(createDohResponse([{ name, type: 1 }], []));
+		});
+
+		const result = await run('example.com');
+
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.findings.some((f) => f.title === 'MX records consistent')).toBe(false);
+		expect(result.findings.some((f) => f.title === 'MX records incomplete across resolvers')).toBe(true);
 	});
 });

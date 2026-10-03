@@ -11,7 +11,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, RawDNSResponse } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
-import { describeRcode, isInconclusiveRcode } from '../dns-rcode';
+import { describeRcode, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import { analyzeTlsaRecords } from './dane-analysis';
 
 /**
@@ -95,6 +95,9 @@ export async function checkDANE(
 	// MX hosts whose _25._tcp TLSA lookup errored. Read ONLY by `recordPresent` below, to tell
 	// "we looked and found no TLSA" from "we never got a look"; never scored, never a finding.
 	let tlsaLookupFailures = 0;
+	// MX hosts whose DNSSEC (AD) lookup THREW (transport error / timeout) AND that publish a TLSA
+	// RRset: for those, DNSSEC status was never measured (SQ-264, sibling of SQ-207).
+	const dnssecUnmeasuredHosts: string[] = [];
 
 	// Query MX records and check TLSA for each MX host.
 	// Per RFC 7672 §3.1.3, SMTP DANE security requires DNSSEC on the MX host's zone —
@@ -116,26 +119,52 @@ export async function checkDANE(
 
 		// Check DNSSEC on the MX host's zone (RFC 7672 §3.1.3)
 		let mxHasDnssec = false;
+		let dnssecLookupFailed = false;
 		if (rawQueryDNS) {
 			try {
 				const resp = await rawQueryDNS(mxHost, 'A', true, { timeout });
 				mxHasDnssec = resp.AD === true;
 			} catch {
-				// DNSSEC check for MX host failed — treat as unsigned
+				// A THROWN AD lookup never got a resolver's answer, so DNSSEC status is UNKNOWN — not
+				// "unsigned". It must not reach `analyzeTlsaRecords` as `hasDnssec: false`, which would
+				// score "DANE without DNSSEC" (high) from a cut probe (SQ-264; same defect SQ-207 fixed
+				// in check-dane-https). An answered AD=false does not throw and keeps that finding: it
+				// is a measured absence.
+				dnssecLookupFailed = true;
 			}
 		}
 
 		const tlsaName = `_25._tcp.${mxHost}`;
 		try {
-			const tlsaRecords = await queryDNS(tlsaName, 'TLSA', { timeout });
-			if (tlsaRecords.length > 0) {
+			const tlsaOutcome = await queryWithRcode(queryDNS, tlsaName, 'TLSA', timeout);
+			const tlsaRecords = tlsaOutcome.records;
+			if (isInconclusiveRcode(tlsaOutcome.rcode)) {
+				// SERVFAIL/REFUSED is an empty answer that measured nothing — count it with the
+				// thrown lookups so "every lookup failed" below is recognised (SQ-279).
+				tlsaLookupFailures++;
+			} else if (tlsaRecords.length > 0) {
 				hasMxTlsa = true;
-				findings.push(...analyzeTlsaRecords(tlsaRecords, tlsaName, mxHasDnssec));
+				// An unmeasured DNSSEC status is passed as `true` ONLY to suppress the unsigned verdict
+				// (`hasDnssec` gates nothing else in the analyzer); the facet is reported honestly below.
+				findings.push(...analyzeTlsaRecords(tlsaRecords, tlsaName, mxHasDnssec || dnssecLookupFailed));
+				if (dnssecLookupFailed) dnssecUnmeasuredHosts.push(mxHost);
 			}
 		} catch {
 			// Individual MX TLSA query failed — skip this host
 			tlsaLookupFailures++;
 		}
+	}
+
+	if (dnssecUnmeasuredHosts.length > 0) {
+		findings.push(
+			createFinding(
+				'dane',
+				'DNSSEC status not determined',
+				'info',
+				`The DNSSEC (AD) lookup failed before any resolver answered for MX host(s) ${dnssecUnmeasuredHosts.join(', ')}, so whether their TLSA records are DNSSEC-validated could not be determined. This is not evidence that the MX host zone is unsigned — no DNSSEC penalty is applied. Re-run the check once name resolution is working.`,
+				{ inconclusive: true, errorKind: 'dns_error' },
+			),
+		);
 	}
 
 	// Step 3: classify absence. Branch on whether the domain actually accepts mail
@@ -158,6 +187,12 @@ export async function checkDANE(
 					`${domain} publishes no usable MX records (none, or an RFC 7505 null MX), so it does not accept inbound email. SMTP DANE (TLSA at _25._tcp) is therefore not applicable.`,
 				),
 			);
+		} else if (tlsaLookupFailures === realMxHosts) {
+			// Every `_25._tcp` lookup threw or was SERVFAIL/REFUSED: no host was ever observed
+			// to lack a TLSA, so "No DANE TLSA for MX servers" would certify an absence nobody
+			// measured. THROW, like the unresolvable-MX case above, so the caller files the
+			// category INCONCLUSIVE (SQ-279). Prefix per sanitizeErrorMessage/buildDnsErrorResult.
+			throw new Error(`DNS query for TLSA records of the MX hosts of ${domain} failed; SMTP DANE status could not be determined`);
 		} else {
 			findings.push(
 				createFinding(
@@ -188,5 +223,7 @@ export async function checkDANE(
 	// sweep is a failed measurement — neither is "we looked and there was nothing".
 	const recordPresent = hasMxTlsa ? true : realMxHosts > 0 && tlsaLookupFailures < realMxHosts ? false : undefined;
 
-	return buildCheckResult('dane', findings, undefined, recordPresent);
+	const result = buildCheckResult('dane', findings, undefined, recordPresent);
+	// A failed AD lookup keeps the half-measured result out of the cache so it is re-tried.
+	return dnssecUnmeasuredHosts.length > 0 ? { ...result, partial: true } : result;
 }

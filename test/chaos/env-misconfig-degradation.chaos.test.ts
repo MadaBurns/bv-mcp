@@ -27,6 +27,11 @@
 //  H5 — Given a client sends an unsupported MCP-Protocol-Version header, POST
 //       /mcp (strict) and GET /mcp SSE (lenient) apply opposite postures.
 //
+// By-design note (H4): the fail-soft `unprovisioned` shape is the documented contract of
+// src/lib/recon-binding.ts (:9-11 — no function throws; callers degrade to pre-binding
+// behaviour; :128-132 — a present-binding 5xx is recorded and returns null). The related
+// #695 was CLOSED 2026-08-19 after #703 (live by v3.59.0).
+//
 // Scope note (per dispatch instructions — grepped test/ first, duplicates
 // skipped):
 //  - test/chaos/oauth-misconfiguration.chaos.test.ts already covers OAuth

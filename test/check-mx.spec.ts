@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, servfailResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -29,6 +29,18 @@ describe('checkMx', () => {
 		expect(result.findings[0].severity).toBe('medium');
 		expect(result.findings[0].title).toMatch(/No MX and no SPF/i);
 		expect(result.findings[0].detail).toContain('v=spf1 -all');
+	});
+
+	it('SERVFAIL on MX and TXT abstains instead of certifying "no MX and no SPF" (SQ-279)', async () => {
+		// A DoH SERVFAIL is HTTP 200 with an empty Answer, so the string[] projection used to
+		// hand the core check an EMPTY MX set: a spoofable-domain missingControl (score 0)
+		// for a lookup that never concluded. The adapter's rcode channel now reaches the check.
+		globalThis.fetch = vi.fn().mockResolvedValue(servfailResponse('flaky.com', 15));
+		const result = await run('flaky.com');
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => /No MX and no SPF/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
 	});
 
 	it('should return pass if MX records found', async () => {
@@ -205,6 +217,71 @@ describe('checkMx', () => {
 		expect(dangling).toBeDefined();
 		expect(dangling!.detail).toContain('mx.example.com');
 		expect(dangling!.detail).not.toContain('localhost');
+	});
+
+	/**
+	 * #1114 — an MX exchange that fails RFC 1123 hostname syntax (`~`, `*`) is not a
+	 * real mail-exchange target. `sevicenow.com` publishes `MX 300 ~.`; before this
+	 * fix, check_mx reported `controlPresent:true` + "MX records found" +
+	 * "Dangling MX record" for it, so scan_domain's non-mail post-processing treated
+	 * the domain as mail-enabled. Same no-mail-idiom pattern as #944/#959.
+	 */
+	it('classifies `~` as an invalid MX exchange, not a mail control (#1114)', async () => {
+		mockMxRecords('invalidmx.com', ['300 ~.']);
+		const result = await run('invalidmx.com');
+
+		const finding = result.findings.find((f) => f.title === 'Invalid MX exchange');
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('info');
+		expect(finding!.detail).toContain('~');
+
+		// Must NOT be reported as a present mail control, and must NOT masquerade as
+		// either "MX records found" or a "Dangling MX record".
+		expect(result.findings.find((f) => f.title === 'MX records found')).toBeUndefined();
+		expect(result.findings.find((f) => f.title === 'Dangling MX record')).toBeUndefined();
+		expect(result.controlPresent).toBe(false);
+	});
+
+	it('classifies `*` as an invalid MX exchange (garbage literal, #1114)', async () => {
+		mockMxRecords('garbagemx.com', ['10 *.']);
+		const result = await run('garbagemx.com');
+
+		// `*` is markdown-unsafe and neutralized to a space by the shared finding-detail
+		// sanitizer (F7/OWASP LLM01, `sanitizeStructuredString`) — assert on the
+		// classification, not the literal character surviving in `detail`.
+		const finding = result.findings.find((f) => f.title === 'Invalid MX exchange');
+		expect(finding).toBeDefined();
+		expect(finding!.severity).toBe('info');
+		expect(finding!.detail).toContain('do not form a syntactically valid hostname');
+		expect(result.controlPresent).toBe(false);
+	});
+
+	it('excludes an invalid exchange from IP/dangling checks while a valid sibling record is still probed (#1114)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				const answers = [
+					{ name: 'mixedinvalid.com', type: 15, TTL: 300, data: '10 mx.mixedinvalid.com.' },
+					{ name: 'mixedinvalid.com', type: 15, TTL: 300, data: '20 ~.' },
+				];
+				return Promise.resolve(createDohResponse([{ name: 'mixedinvalid.com', type: 15 }], answers));
+			}
+			// A/AAAA probe for the one routable hostname resolves; `~` is never queried.
+			return Promise.resolve(
+				createDohResponse(
+					[{ name: 'mx.mixedinvalid.com', type: 1 }],
+					[{ name: 'mx.mixedinvalid.com', type: 1, TTL: 300, data: '203.0.113.1' }],
+				),
+			);
+		});
+		const { checkMx } = await import('../src/tools/check-mx');
+		const result = await checkMx('mixedinvalid.com');
+
+		expect(result.findings.find((f) => f.title === 'Invalid MX exchange')).toBeDefined();
+		expect(result.findings.find((f) => f.title === 'Dangling MX record')).toBeUndefined();
+		expect(result.findings.find((f) => f.title === 'MX points to IP address')).toBeUndefined();
+		// A real, routable exchange is still published beside the invalid one → still a mail control.
+		expect(result.controlPresent).toBe(true);
 	});
 
 	it('surfaces providerDetectionFailed metadata when provider signature fetch fails', async () => {

@@ -101,6 +101,31 @@ describe('alert query isolation', () => {
 		expect(sent).not.toContain('analytics check could not run');
 	});
 
+	it('#1164: suppresses the repeat degraded notice on a second tick with the SAME failed query', async () => {
+		// Minimal in-memory KV — enough surface for the get/put the repeat-suppression
+		// helper needs.
+		const store = new Map<string, string>();
+		const rateLimit = {
+			async get(key: string) {
+				return store.has(key) ? (store.get(key) as string) : null;
+			},
+			async put(key: string, value: string) {
+				store.set(key, value);
+			},
+		} as unknown as KVNamespace;
+		const envWithKv = { ...ENV, RATE_LIMIT: rateLimit };
+
+		const { handleScheduled } = await import('../src/scheduled');
+
+		const firstTick = mockAnalytics(/index1 = 'tool_call'/);
+		await handleScheduled(envWithKv);
+		expect(alertTitles(firstTick).join('\n')).toContain('Alerting check degraded');
+
+		const secondTick = mockAnalytics(/index1 = 'tool_call'/);
+		await handleScheduled(envWithKv);
+		expect(alertTitles(secondTick).join('\n')).not.toContain('Alerting check degraded');
+	});
+
 	it('a failing MIDDLE query does not suppress the queries after it', async () => {
 		const calls = mockAnalytics(/index1 = 'degradation'/);
 		const { handleScheduled } = await import('../src/scheduled');

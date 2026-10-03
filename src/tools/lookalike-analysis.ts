@@ -62,7 +62,7 @@ const HOMOGLYPHS: Array<[string, string]> = [
 	['w', 'vv'],
 ];
 
-/** Common TLD swap pairs */
+/** Common TLD swap pairs. Country forms (.co.uk, .jp, .de, ...) are owned by `generateTldVariants`, not this table (#974, #1191). */
 const TLD_SWAPS: Array<[string, string]> = [
 	['.com', '.co'],
 	['.com', '.net'],
@@ -296,8 +296,43 @@ const CC_FAMILY_SECOND_LEVELS: readonly string[] = ['co', 'com', 'net', 'org'];
  */
 const MAJOR_CC_SECOND_LEVEL_TLDS: readonly string[] = ['co.uk', 'com.au', 'co.nz'];
 
-/** Cap on exact-label TLD variants returned. The three tables above yield at most 14, so it never bites today. */
-export const MAX_TLD_VARIANTS = 16;
+/**
+ * Bare foreign ccTLDs probed for EVERY seed (#1191): `blackrock.com` ->
+ * `blackrock.jp`, `.de`, `.hk`, ... No other lane can emit a
+ * `<seed-label>.<foreign bare ccTLD>` form. Bounded to the highest-volume
+ * registrable ccTLDs plus those observed in brand-estate work. Each entry still
+ * has to pass `isPublicSuffixApex`, and a hit is just a candidate: ownership
+ * attribution (Ruling A) decides whether it is a collision, not this table.
+ */
+export const MAJOR_CC_BARE_TLDS: readonly string[] = [
+	'de',
+	'uk',
+	'nl',
+	'fr',
+	'it',
+	'jp',
+	'cn',
+	'ch',
+	'ca',
+	'es',
+	'se',
+	'pl',
+	'in',
+	'hk',
+	'sg',
+	'ae',
+	'be',
+	'ie',
+	'nz',
+	'br',
+];
+
+/**
+ * Cap on exact-label TLD variants returned. The tables above yield at most 34
+ * (6 generic + 5 own-ccTLD family + 3 country second-level + 20 bare ccTLDs),
+ * so it never bites today.
+ */
+export const MAX_TLD_VARIANTS = 34;
 
 /**
  * Generate EXACT-LABEL TLD VARIANTS (#974): the seed's registrable label under
@@ -328,7 +363,7 @@ export function generateTldVariants(domain: string): string[] {
 	const family = /^[a-z]{2}$/.test(topLevel) ? [topLevel, ...CC_FAMILY_SECOND_LEVELS.map((sl) => `${sl}.${topLevel}`)] : [];
 
 	const results: string[] = [];
-	for (const variantSuffix of [...COMMON_VARIANT_TLDS, ...family, ...MAJOR_CC_SECOND_LEVEL_TLDS]) {
+	for (const variantSuffix of [...COMMON_VARIANT_TLDS, ...family, ...MAJOR_CC_SECOND_LEVEL_TLDS, ...MAJOR_CC_BARE_TLDS]) {
 		if (!isPublicSuffixApex(variantSuffix)) continue;
 		const candidate = `${label}.${variantSuffix}`;
 		if (candidate === seedApex || candidate === normalizedDomain || results.includes(candidate)) continue;

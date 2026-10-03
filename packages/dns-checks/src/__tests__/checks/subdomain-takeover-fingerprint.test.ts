@@ -187,3 +187,44 @@ describe('isTlsCertAltnameMismatch', () => {
 		expect(isTlsCertAltnameMismatch(message)).toBe(expected);
 	});
 });
+
+describe('generic fingerprints are gated on the status the provider returns for an unclaimed host', () => {
+	const RENDER_CNAME = 'my-api.onrender.com';
+	const FASTLY_CNAME = 'example.global.ssl.fastly.net';
+
+	it('does not read a live Render app answering {"detail":"Not Found"} as a takeover', async () => {
+		const fetchFn: FetchFunction = async () =>
+			new Response('{"detail":"Not Found"}', { status: 404, headers: { 'content-type': 'application/json' } });
+		expect(await probeHttpFingerprint('api.example.com', RENDER_CNAME, fetchFn)).toBeNull();
+	});
+
+	it('does not read a bare 200 body containing "Not Found" on Render as a takeover', async () => {
+		const fetchFn: FetchFunction = async () => new Response('<p>Item Not Found</p>', { status: 200 });
+		expect(await probeHttpFingerprint('api.example.com', RENDER_CNAME, fetchFn)).toBeNull();
+	});
+
+	it('matches Render only when the platform marks the host as having no server', async () => {
+		const fetchFn: FetchFunction = async () => new Response('Not Found', { status: 404, headers: { 'x-render-routing': 'no-server' } });
+		expect(await probeHttpFingerprint('api.example.com', RENDER_CNAME, fetchFn)).toBe('Render');
+	});
+
+	it('still matches the Render "has not been deployed" page on a 404', async () => {
+		const fetchFn: FetchFunction = async () => new Response('This service has not been deployed', { status: 404 });
+		expect(await probeHttpFingerprint('api.example.com', RENDER_CNAME, fetchFn)).toBe('Render');
+	});
+
+	it('does not read the bare phrase "unknown domain" on a Fastly-fronted 200 as a takeover', async () => {
+		const fetchFn: FetchFunction = async () => new Response('Enter an unknown domain to look up', { status: 200 });
+		expect(await probeHttpFingerprint('www.example.com', FASTLY_CNAME, fetchFn)).toBeNull();
+	});
+
+	it('does not read the bare phrase "unknown domain" on a Fastly-fronted 404 as a takeover', async () => {
+		const fetchFn: FetchFunction = async () => new Response('unknown domain', { status: 404 });
+		expect(await probeHttpFingerprint('www.example.com', FASTLY_CNAME, fetchFn)).toBeNull();
+	});
+
+	it('matches the Fastly 500 "unknown domain" error page', async () => {
+		const fetchFn: FetchFunction = async () => new Response('Fastly error: unknown domain: www.example.com.', { status: 500 });
+		expect(await probeHttpFingerprint('www.example.com', FASTLY_CNAME, fetchFn)).toBe('Fastly');
+	});
+});

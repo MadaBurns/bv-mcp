@@ -7,6 +7,8 @@ import { readBoundedText } from './request-body';
 const COORDINATOR_NAME = 'global-quota-coordinator';
 const CLEANUP_ALARM_INTERVAL_MS = 15 * 60 * 1000;
 const KEY_PREFIX = 'quota:';
+/** Cloudflare DO storage rejects `delete(keys[])` with more than 128 keys. */
+const DO_STORAGE_DELETE_MAX_KEYS = 128;
 const COORDINATOR_HTTP_MAX_BODY_BYTES = 64 * 1024;
 const COORDINATOR_REQUEST_MAX_BODY_BYTES = 16 * 1024;
 
@@ -222,6 +224,10 @@ export interface IdempotencyCompleteResult {
 	completed: boolean;
 }
 
+export interface IdempotencyReleaseResult {
+	released: boolean;
+}
+
 /** Atomic subject-version mutation plus replay result. Idempotency is scoped to the subject shard. */
 export type IdempotentVersionBumpResult = { state: 'complete'; value: number } | { state: 'conflict' };
 
@@ -354,6 +360,12 @@ export type QuotaCoordinatorRequest =
 			result: string;
 	  }
 	| {
+			/** Drop a still-`in_progress` claim (the executor threw) so a same-key retry can run. */
+			kind: 'idempotency-release';
+			coordinationKey: string;
+			requestHash: string;
+	  }
+	| {
 			/**
 			 * R8: batch multiple per-IP/per-principal sub-checks into ONE round trip.
 			 * `shardKey` is the routing key (caller-provided) — ALL sub-checks in a
@@ -385,6 +397,7 @@ export type QuotaCoordinatorResponse =
 	| IdempotentVersionBumpResult
 	| IdempotencyBeginResult
 	| IdempotencyCompleteResult
+	| IdempotencyReleaseResult
 	| EvaluateResponse
 	| undefined;
 
@@ -413,6 +426,7 @@ function routingNameForPayload(payload: QuotaCoordinatorRequest, routing: ShardR
 		case 'version-bump-idempotent':
 		case 'idempotency-begin':
 		case 'idempotency-complete':
+		case 'idempotency-release':
 			return securityStateShardNameForKey(payload.coordinationKey);
 	}
 	// Flag-OFF (ADAM #2): every quota payload stays on the singleton — byte-for-byte
@@ -717,6 +731,22 @@ export async function completeIdempotentRequestWithCoordinator(
 }
 
 /**
+ * Release a claim that is still `in_progress` (the executor threw before producing a
+ * response) so a retry with the same key may execute. A `complete` claim is never touched.
+ */
+export async function releaseIdempotentRequestWithCoordinator(
+	coordinationKey: string,
+	requestHash: string,
+	namespace?: DurableObjectNamespace<QuotaCoordinator>,
+): Promise<IdempotencyReleaseResult | undefined> {
+	return callCoordinator<IdempotencyReleaseResult>(namespace, {
+		kind: 'idempotency-release',
+		coordinationKey,
+		requestHash,
+	});
+}
+
+/**
  * Thrown when a real DO `evaluate` round trip returned a 2xx body that we cannot
  * parse into the expected `{ results: EvaluateResult[] }` shape (LINUS MUST-FIX #1:
  * version skew / a future DO ordering checks differently). The DO transaction has
@@ -976,6 +1006,7 @@ const VALID_KINDS = new Set<string>([
 	'version-bump-idempotent',
 	'idempotency-begin',
 	'idempotency-complete',
+	'idempotency-release',
 	'evaluate',
 	'reset',
 ]);
@@ -1122,6 +1153,7 @@ export function validateQuotaPayload(raw: unknown): { valid: true; payload: Quot
 		'version-bump-idempotent': ['coordinationKey', 'idempotencyCoordinationKey', 'requestHash', 'defaultValue', 'expiresAt'],
 		'idempotency-begin': ['coordinationKey', 'requestHash', 'expiresAt'],
 		'idempotency-complete': ['coordinationKey', 'requestHash', 'result'],
+		'idempotency-release': ['coordinationKey', 'requestHash'],
 	};
 	const missing = requireFields(...(requiredByKind[kind as QuotaCoordinatorRequest['kind']] ?? []));
 	if (missing) return { valid: false, error: `Invalid ${kind}: missing ${missing}` };
@@ -1650,6 +1682,19 @@ export class QuotaCoordinator extends DurableObject<Env> {
 		});
 	}
 
+	private async handleIdempotencyRelease(
+		payload: Extract<QuotaCoordinatorRequest, { kind: 'idempotency-release' }>,
+	): Promise<IdempotencyReleaseResult> {
+		const now = Date.now();
+		const key = coordinatedIdempotencyKey(payload.coordinationKey);
+		return this.ctx.storage.transaction(async (txn: DurableObjectTransaction): Promise<IdempotencyReleaseResult> => {
+			const existing = this.normalizeIdempotencyRecord(await txn.get<IdempotencyRecord>(key), now);
+			if (!existing || existing.requestHash !== payload.requestHash || existing.status !== 'in_progress') return { released: false };
+			await txn.delete(key);
+			return { released: true };
+		});
+	}
+
 	/** Type-safe RPC entrypoint used by Worker callers. */
 	async dispatch(payload: QuotaCoordinatorRequest): Promise<QuotaCoordinatorResponse> {
 		const validation = validateQuotaPayload(payload);
@@ -1688,6 +1733,8 @@ export class QuotaCoordinator extends DurableObject<Env> {
 				return this.handleIdempotencyBegin(validPayload);
 			case 'idempotency-complete':
 				return this.handleIdempotencyComplete(validPayload);
+			case 'idempotency-release':
+				return this.handleIdempotencyRelease(validPayload);
 			case 'evaluate':
 				return this.handleEvaluate(validPayload);
 			case 'reset':
@@ -1729,8 +1776,9 @@ export class QuotaCoordinator extends DurableObject<Env> {
 				expiredKeys.push(key);
 			}
 		}
-		if (expiredKeys.length > 0) {
-			await this.ctx.storage.delete(expiredKeys);
+		// DO storage caps delete(keys[]) at 128 keys per call; a larger batch throws every alarm.
+		for (let i = 0; i < expiredKeys.length; i += DO_STORAGE_DELETE_MAX_KEYS) {
+			await this.ctx.storage.delete(expiredKeys.slice(i, i + DO_STORAGE_DELETE_MAX_KEYS));
 		}
 
 		if (records.size > expiredKeys.length) {

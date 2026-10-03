@@ -314,3 +314,60 @@ describe('checkLookalikes - review follow-ups on the degraded-run contract (#847
 		expect(result.partial).toBe(true);
 	});
 });
+
+describe('checkLookalikes - SERVFAIL is unresolved, never an absence (SQ-282)', () => {
+	const servfail = (name: string, type: string) => createDohResponse([{ name, type: type === 'NS' ? 2 : type === 'MX' ? 15 : 1 }], [], { status: 2 });
+
+	it('counts a candidate whose NS query SERVFAILs as unresolved, not as unregistered (item 1a)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'test.com' && isNs(type)) return Promise.resolve(nsResponse(name, ['ns1.cloudflare.com.']));
+			if (name === 'tst.com' && isNs(type)) return Promise.resolve(servfail(name, 'NS'));
+			return Promise.resolve(empty());
+		});
+		const result = await run('test.com');
+
+		// The run must say it is incomplete (the SERVFAIL name is UNKNOWN), and must not be cached as a census.
+		const incomplete = result.findings.find((f) => /enumeration was incomplete/i.test(f.title));
+		expect(incomplete).toBeDefined();
+		expect(result.partial).toBe(true);
+	});
+
+	it('emits an unmeasured verdict, never third_party, when the seed NS lookup SERVFAILs (item 1b)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'test.com' && isNs(type)) return Promise.resolve(servfail(name, 'NS'));
+			if (name === 'tst.com') {
+				if (isNs(type)) return Promise.resolve(nsResponse(name, ['ns1-05.azure-dns.com.', 'ns2-05.azure-dns.net.']));
+				if (isA(type)) return Promise.resolve(aResponse(name));
+				if (isMx(type)) return Promise.resolve(mxResponse(name));
+			}
+			return Promise.resolve(empty());
+		});
+		const result = await run('test.com');
+
+		expect(result.findings.some((f) => f.metadata?.ownershipVerdict === 'third_party')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.findingAxis === 'threat_observation')).toBe(false);
+		const attribution = result.findings.filter((f) => f.metadata?.lookalikeDomain === 'tst.com' && f.metadata?.findingAxis === 'attribution');
+		expect(attribution.length).toBeGreaterThan(0);
+		for (const f of attribution) expect(f.metadata?.ownershipVerdict).toBe('unmeasured');
+	});
+
+	it('does NOT report registered-but-dark when the candidate A and MX lookups SERVFAIL (item 1c)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name, type } = parseDohQuery(input);
+			if (name === 'test.com' && isNs(type)) return Promise.resolve(nsResponse(name, ['ns1.cloudflare.com.']));
+			if (name === 'tst.com') {
+				if (isNs(type)) return Promise.resolve(nsResponse(name, ['ns1-05.azure-dns.com.']));
+				if (isA(type)) return Promise.resolve(servfail(name, 'A'));
+				if (isMx(type)) return Promise.resolve(servfail(name, 'MX'));
+			}
+			return Promise.resolve(empty());
+		});
+		const result = await run('test.com');
+
+		expect(result.findings.some((f) => /Registered, no active infrastructure/.test(f.title))).toBe(false);
+		const incomplete = result.findings.find((f) => /enumeration was incomplete/i.test(f.title));
+		expect(incomplete).toBeDefined();
+	});
+});

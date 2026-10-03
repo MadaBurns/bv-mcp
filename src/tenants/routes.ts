@@ -21,7 +21,13 @@ import { handleToolsCall } from '../handlers/tools';
 import { createAnalyticsClient, hashForAnalytics, hashIpForAnalytics } from '../lib/analytics';
 import { resolveClientIpFromHeaderGetter } from '../lib/client-ip';
 import { parseScoringConfigCached } from '../lib/scoring-config';
-import { MAX_INTERNAL_BATCH_BODY_BYTES, MAX_TENANT_PORTFOLIO_BODY_BYTES, parseCacheTtl, parsePerCheckTimeout, parseScanTimeout } from '../lib/config';
+import {
+	MAX_INTERNAL_BATCH_BODY_BYTES,
+	MAX_TENANT_PORTFOLIO_BODY_BYTES,
+	parseCacheTtl,
+	parsePerCheckTimeout,
+	parseScanTimeout,
+} from '../lib/config';
 import { validateDomain, sanitizeDomain } from '../lib/sanitize';
 import {
 	PortfolioRequestSchema,
@@ -90,8 +96,7 @@ const DEFAULT_SCAN_CONCURRENCY = 10;
 /** Keep default sync scans small; larger sets use the existing queue producer. */
 export const MAX_DEFAULT_SYNC_SCAN_DOMAINS = 50;
 const PORTFOLIO_UPSERT_SQL =
-	'INSERT INTO domains (domain, source, added_at) VALUES (?, ?, ?) ' +
-	'ON CONFLICT(domain) DO UPDATE SET source = excluded.source';
+	'INSERT INTO domains (domain, source, added_at) VALUES (?, ?, ?) ' + 'ON CONFLICT(domain) DO UPDATE SET source = excluded.source';
 const PORTFOLIO_PROBE_SQL = 'SELECT domain FROM domains WHERE domain = ? LIMIT 1';
 const SCANS_INSERT_SQL =
 	'INSERT INTO scans (id, domain, scan_at, score, grade, maturity_stage, finding_count, result_json, cycle_id) ' +
@@ -108,9 +113,10 @@ const SCANS_INSERT_SQL =
 const FINDINGS_COLUMNS = 8;
 /** 12 rows × 8 cols = 96 bound params ≤ D1/workerd's 100-param-per-statement cap. */
 const FINDINGS_INSERT_CHUNK = Math.floor(100 / FINDINGS_COLUMNS);
-const FINDINGS_INSERT_PREFIX =
-	'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) VALUES ';
+const FINDINGS_INSERT_PREFIX = 'INSERT INTO findings (id, scan_id, domain, category, severity, title, detail, metadata) VALUES ';
 const FINDINGS_ROW_PLACEHOLDERS = '(?, ?, ?, ?, ?, ?, ?, ?)';
+/** `domain IN (?, …)` lookups stay ≤ 90 bound params, under D1/workerd's 100-param-per-statement cap. */
+const DOMAIN_IDS_LOOKUP_CHUNK = 90;
 const REPORT_SCANS_SQL = 'SELECT score, grade FROM scans WHERE cycle_id = ?';
 const REPORT_FINDINGS_SQL =
 	'SELECT category, severity, COUNT(*) as count FROM findings WHERE scan_id IN (SELECT id FROM scans WHERE cycle_id = ?) GROUP BY category, severity';
@@ -400,11 +406,7 @@ function rateLimited(
 	resetAt: number,
 ): Response {
 	const retryAfterSeconds = Math.max(1, Math.ceil((resetAt - Date.now()) / 1000));
-	return c.json(
-		{ error: 'Rate limit exceeded', retry_after: retryAfterSeconds },
-		429,
-		{ 'Retry-After': String(retryAfterSeconds) },
-	);
+	return c.json({ error: 'Rate limit exceeded', retry_after: retryAfterSeconds }, 429, { 'Retry-After': String(retryAfterSeconds) });
 }
 
 // ─── POST /internal/tenants/portfolio ──────────────────────────────────────────
@@ -595,7 +597,14 @@ tenantRoutes.post('/scan', async (c) => {
 			return c.json({ error: tenantOrErr.error }, 400);
 		}
 
-		let body: { cycle_id?: string; domain_ids?: string[]; domains?: string[]; concurrency?: number; force_refresh?: boolean; mode?: 'sync' | 'queue' };
+		let body: {
+			cycle_id?: string;
+			domain_ids?: string[];
+			domains?: string[];
+			concurrency?: number;
+			force_refresh?: boolean;
+			mode?: 'sync' | 'queue';
+		};
 		try {
 			body = ScanRequestSchema.parse(JSON.parse(raw)) as typeof body;
 		} catch (err) {
@@ -650,12 +659,18 @@ tenantRoutes.post('/scan', async (c) => {
 		if (body.domain_ids && body.domain_ids.length > 0) {
 			// Enforce portfolio enrollment so a tenant can't burn quota on arbitrary
 			// strings dressed as IDs. validateDomain() runs below regardless.
-			const placeholders = body.domain_ids.map(() => '?').join(',');
-			const enrolledRows = await tenantDb
-				.prepare(`SELECT domain FROM domains WHERE domain IN (${placeholders})`)
-				.bind(...body.domain_ids)
-				.all<{ domain: string }>();
-			const enrolledSet = new Set((enrolledRows.results ?? []).map((r) => r.domain));
+			// D1 caps bound parameters at 100 per statement, and the schema admits up to
+			// MAX_PORTFOLIO_DOMAINS ids — chunk the lookup and union the enrolled set.
+			const enrolledSet = new Set<string>();
+			for (let i = 0; i < body.domain_ids.length; i += DOMAIN_IDS_LOOKUP_CHUNK) {
+				const chunk = body.domain_ids.slice(i, i + DOMAIN_IDS_LOOKUP_CHUNK);
+				const placeholders = chunk.map(() => '?').join(',');
+				const enrolledRows = await tenantDb
+					.prepare(`SELECT domain FROM domains WHERE domain IN (${placeholders})`)
+					.bind(...chunk)
+					.all<{ domain: string }>();
+				for (const r of enrolledRows.results ?? []) enrolledSet.add(r.domain);
+			}
 			targets = body.domain_ids.filter((d) => enrolledSet.has(d));
 			if (targets.length === 0) {
 				const requested = body.domain_ids.length;
@@ -676,174 +691,168 @@ tenantRoutes.post('/scan', async (c) => {
 			targets = (rows.results ?? []).map((r) => r.domain);
 		}
 
-	// Validate / sanitize.
-	const validated: string[] = [];
-	for (const d of targets) {
-		const v = validateDomain(d);
-		if (!v.valid) continue;
-		const s = sanitizeDomain(d);
-		if (s) validated.push(s);
-	}
+		// Validate / sanitize.
+		const validated: string[] = [];
+		for (const d of targets) {
+			const v = validateDomain(d);
+			if (!v.valid) continue;
+			const s = sanitizeDomain(d);
+			if (s) validated.push(s);
+		}
 
-	if (body.mode === 'sync' && validated.length > MAX_DEFAULT_SYNC_SCAN_DOMAINS) {
-		dispatchAudit(c, {
-			action: 'scan.start',
-			resourceType: 'cycle',
-			resourceId: safeResourceId(body.cycle_id),
-			subTenantId: safeResourceId(tenantOrErr),
-			outcome: 'denied',
-			blob: { reason: 'sync_scan_too_large', validatedDomains: validated.length },
-		});
-		return c.json(
-			{ error: `Invalid mode: sync scans are limited to ${MAX_DEFAULT_SYNC_SCAN_DOMAINS} domains; use queue mode` },
-			400,
-		);
-	}
-
-	const shouldQueue = body.mode === 'queue' || validated.length > MAX_DEFAULT_SYNC_SCAN_DOMAINS;
-	const scannerQueue = c.env.BV_SCANNER_QUEUE;
-	if (shouldQueue && !scannerQueue) {
-		dispatchAudit(c, {
-			action: 'scan.start',
-			resourceType: 'cycle',
-			resourceId: safeResourceId(body.cycle_id),
-			subTenantId: safeResourceId(tenantOrErr),
-			outcome: 'denied',
-			blob: { reason: 'queue_binding_missing', requestedMode: body.mode ?? 'auto' },
-		});
-		return c.json({ error: 'Invalid mode: queue dispatch is required for this scan size but is not configured on this deployment' }, 400);
-	}
-
-	// Charge one unit per validated domain, not one unit per HTTP request. With
-	// QUOTA_COORDINATOR this is an atomic all-or-nothing reservation committed
-	// before the first queue message or inline scan can start.
-	if (validated.length > 0) {
-		const rl = await maybeRateLimit(c, tenant.subTenantId, 'scans:day', tenant.tier, validated.length);
-		if (rl.unavailable) {
+		if (body.mode === 'sync' && validated.length > MAX_DEFAULT_SYNC_SCAN_DOMAINS) {
 			dispatchAudit(c, {
 				action: 'scan.start',
 				resourceType: 'cycle',
 				resourceId: safeResourceId(body.cycle_id),
 				subTenantId: safeResourceId(tenantOrErr),
 				outcome: 'denied',
-				blob: { reason: 'rate_limit_state_unavailable', bucket: 'scans:day', requested: validated.length },
+				blob: { reason: 'sync_scan_too_large', validatedDomains: validated.length },
 			});
-			return c.json({ error: 'Scan quota state is unavailable; no scans were dispatched' }, 503, { 'Retry-After': '30' });
+			return c.json({ error: `Invalid mode: sync scans are limited to ${MAX_DEFAULT_SYNC_SCAN_DOMAINS} domains; use queue mode` }, 400);
 		}
-		if (!rl.allowed) {
+
+		const shouldQueue = body.mode === 'queue' || validated.length > MAX_DEFAULT_SYNC_SCAN_DOMAINS;
+		const scannerQueue = c.env.BV_SCANNER_QUEUE;
+		if (shouldQueue && !scannerQueue) {
 			dispatchAudit(c, {
 				action: 'scan.start',
 				resourceType: 'cycle',
 				resourceId: safeResourceId(body.cycle_id),
 				subTenantId: safeResourceId(tenantOrErr),
 				outcome: 'denied',
-				blob: { reason: 'rate_limit_exceeded', bucket: 'scans:day', tier: tenant.tier, requested: validated.length },
+				blob: { reason: 'queue_binding_missing', requestedMode: body.mode ?? 'auto' },
 			});
-			return rateLimited(c, rl.resetAt);
+			return c.json({ error: 'Invalid mode: queue dispatch is required for this scan size but is not configured on this deployment' }, 400);
 		}
-	}
 
-	const cycleId = body.cycle_id ?? newCycleId();
-	const concurrency = body.concurrency ?? DEFAULT_SCAN_CONCURRENCY;
-	const startedAt = Date.now();
-
-	// Phase 2 fast-path: enqueue one message per domain and return 202.
-	// Validation has already run above, so the producer never burns queue
-	// space on bad input. The consumer (handleScanQueue) is responsible for
-	// running the actual scan + persisting rows.
-	if (shouldQueue) {
-		let queued = 0;
-		for (const domain of validated) {
-			try {
-				await scannerQueue!.send(
-					{
-						cycle_id: cycleId,
-						sub_tenant_id: tenant.subTenantId,
-						domain,
-						force_refresh: body.force_refresh,
-					},
-					{ contentType: 'json' },
-				);
-				queued += 1;
-			} catch {
-				// Per-message send failures are logged elsewhere; surface aggregate
-				// shortfall in the response so the caller can decide to retry.
+		// Charge one unit per validated domain, not one unit per HTTP request. With
+		// QUOTA_COORDINATOR this is an atomic all-or-nothing reservation committed
+		// before the first queue message or inline scan can start.
+		if (validated.length > 0) {
+			const rl = await maybeRateLimit(c, tenant.subTenantId, 'scans:day', tenant.tier, validated.length);
+			if (rl.unavailable) {
+				dispatchAudit(c, {
+					action: 'scan.start',
+					resourceType: 'cycle',
+					resourceId: safeResourceId(body.cycle_id),
+					subTenantId: safeResourceId(tenantOrErr),
+					outcome: 'denied',
+					blob: { reason: 'rate_limit_state_unavailable', bucket: 'scans:day', requested: validated.length },
+				});
+				return c.json({ error: 'Scan quota state is unavailable; no scans were dispatched' }, 503, { 'Retry-After': '30' });
+			}
+			if (!rl.allowed) {
+				dispatchAudit(c, {
+					action: 'scan.start',
+					resourceType: 'cycle',
+					resourceId: safeResourceId(body.cycle_id),
+					subTenantId: safeResourceId(tenantOrErr),
+					outcome: 'denied',
+					blob: { reason: 'rate_limit_exceeded', bucket: 'scans:day', tier: tenant.tier, requested: validated.length },
+				});
+				return rateLimited(c, rl.resetAt);
 			}
 		}
-		return c.json(
-			{
-				cycle_id: cycleId,
-				total: validated.length,
-				queued,
-				started_at: startedAt,
-			},
-			202,
-		);
-	}
 
-	const cacheTtlSeconds = parseCacheTtl(c.env.CACHE_TTL_SECONDS);
-	const runtimeBase = {
-		providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
-		providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS?.split(',')
-			.map((h) => h.trim())
-			.filter(Boolean),
-		providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
-		analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
-		profileAccumulator: c.env.PROFILE_ACCUMULATOR,
-		profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
-		waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
-		scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
-		cacheTtlSeconds,
-		scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
-		perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
-		secondaryDoh: c.env.BV_DOH_ENDPOINT ? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN } : undefined,
-	};
+		const cycleId = body.cycle_id ?? newCycleId();
+		const concurrency = body.concurrency ?? DEFAULT_SCAN_CONCURRENCY;
+		const startedAt = Date.now();
 
-	let completed = 0;
-	let errored = 0;
+		// Phase 2 fast-path: enqueue one message per domain and return 202.
+		// Validation has already run above, so the producer never burns queue
+		// space on bad input. The consumer (handleScanQueue) is responsible for
+		// running the actual scan + persisting rows.
+		if (shouldQueue) {
+			let queued = 0;
+			for (const domain of validated) {
+				try {
+					await scannerQueue!.send(
+						{
+							cycle_id: cycleId,
+							sub_tenant_id: tenant.subTenantId,
+							domain,
+							force_refresh: body.force_refresh,
+						},
+						{ contentType: 'json' },
+					);
+					queued += 1;
+				} catch {
+					// Per-message send failures are logged elsewhere; surface aggregate
+					// shortfall in the response so the caller can decide to retry.
+				}
+			}
+			return c.json(
+				{
+					cycle_id: cycleId,
+					total: validated.length,
+					queued,
+					started_at: startedAt,
+				},
+				202,
+			);
+		}
 
-	for (let i = 0; i < validated.length; i += concurrency) {
-		const chunk = validated.slice(i, i + concurrency);
-		const settled = await Promise.allSettled(
-			chunk.map(async (domain) => {
-				// Phase 6: Fingerprint pre-flight
-				if (!body.force_refresh) {
-					try {
-						// Look up the last scan and fingerprint for this domain
-						const lastScan = await tenantDb
-							.prepare('SELECT result_json, scan_at FROM scans WHERE domain = ? ORDER BY scan_at DESC LIMIT 1')
-							.bind(domain)
-							.first<{ result_json: string; scan_at: number }>();
+		const cacheTtlSeconds = parseCacheTtl(c.env.CACHE_TTL_SECONDS);
+		const runtimeBase = {
+			providerSignaturesUrl: c.env.PROVIDER_SIGNATURES_URL,
+			providerSignaturesAllowedHosts: c.env.PROVIDER_SIGNATURES_ALLOWED_HOSTS?.split(',')
+				.map((h) => h.trim())
+				.filter(Boolean),
+			providerSignaturesSha256: c.env.PROVIDER_SIGNATURES_SHA256,
+			analytics: createAnalyticsClient(c.env.MCP_ANALYTICS),
+			profileAccumulator: c.env.PROFILE_ACCUMULATOR,
+			profileAccumulatorShardMode: resolveAccumulatorShardModeFromEnv(c.env.PROFILE_ACCUMULATOR_SHARDING),
+			waitUntil: (promise: Promise<unknown>) => c.executionCtx.waitUntil(promise),
+			scoringConfig: parseScoringConfigCached(c.env.SCORING_CONFIG),
+			cacheTtlSeconds,
+			scanTimeoutMs: parseScanTimeout(c.env.SCAN_TIMEOUT_MS),
+			perCheckTimeoutMs: parsePerCheckTimeout(c.env.PER_CHECK_TIMEOUT_MS),
+			secondaryDoh: c.env.BV_DOH_ENDPOINT ? { endpoint: c.env.BV_DOH_ENDPOINT, token: c.env.BV_DOH_TOKEN } : undefined,
+		};
 
-						if (lastScan && lastScan.result_json) {
-							const domainRow = await tenantDb
-								.prepare('SELECT fingerprint FROM domains WHERE domain = ?')
+		let completed = 0;
+		let errored = 0;
+
+		for (let i = 0; i < validated.length; i += concurrency) {
+			const chunk = validated.slice(i, i + concurrency);
+			const settled = await Promise.allSettled(
+				chunk.map(async (domain) => {
+					// Phase 6: Fingerprint pre-flight
+					if (!body.force_refresh) {
+						try {
+							// Look up the last scan and fingerprint for this domain
+							const lastScan = await tenantDb
+								.prepare('SELECT result_json, scan_at FROM scans WHERE domain = ? ORDER BY scan_at DESC LIMIT 1')
 								.bind(domain)
-								.first<{ fingerprint: string | null }>();
+								.first<{ result_json: string; scan_at: number }>();
 
-							const now = Date.now();
-							const oneDayMs = 24 * 3600 * 1000;
-							const isRecent = now - lastScan.scan_at < oneDayMs;
+							if (lastScan && lastScan.result_json) {
+								const domainRow = await tenantDb
+									.prepare('SELECT fingerprint FROM domains WHERE domain = ?')
+									.bind(domain)
+									.first<{ fingerprint: string | null }>();
 
-							if (isRecent) {
-								const fp = await computeFingerprint(domain);
-								if (fp.kind === 'ok' && !fingerprintsDiffer(fp.fingerprint, domainRow?.fingerprint ?? null)) {
-									const captured = parseTenantScanSnapshot(lastScan.result_json);
-									// Return the cached result as if it were a fresh scan, but skip handleToolsCall
-									return { domain, result: { isError: false }, captured, skippedByFingerprint: true };
+								const now = Date.now();
+								const oneDayMs = 24 * 3600 * 1000;
+								const isRecent = now - lastScan.scan_at < oneDayMs;
+
+								if (isRecent) {
+									const fp = await computeFingerprint(domain);
+									if (fp.kind === 'ok' && !fingerprintsDiffer(fp.fingerprint, domainRow?.fingerprint ?? null)) {
+										const captured = parseTenantScanSnapshot(lastScan.result_json);
+										// Return the cached result as if it were a fresh scan, but skip handleToolsCall
+										return { domain, result: { isError: false }, captured, skippedByFingerprint: true };
+									}
 								}
 							}
+						} catch {
+							// Fingerprint pre-flight is best-effort. Fall through to full scan on error.
 						}
-					} catch {
-						// Fingerprint pre-flight is best-effort. Fall through to full scan on error.
 					}
-				}
 
-				let captured: TenantScanSnapshot | null = null;
-				const result = await handleToolsCall(
-					{ name: 'scan_domain', arguments: { domain } },
-					c.env.SCAN_CACHE,
-					{
+					let captured: TenantScanSnapshot | null = null;
+					const result = await handleToolsCall({ name: 'scan_domain', arguments: { domain } }, c.env.SCAN_CACHE, {
 						...runtimeBase,
 						// scan_domain is an orchestrator and never invokes `resultCapture`
 						// (a single-CheckResult hook). Using that hook here left `captured`
@@ -852,56 +861,60 @@ tenantRoutes.post('/scan', async (c) => {
 						scanResultCapture: (r) => {
 							captured = toTenantScanSnapshot(r);
 						},
-					},
-				);
-				return { domain, result, captured: captured as TenantScanSnapshot | null, skippedByFingerprint: false };
-			}),
-		);
+					});
+					return { domain, result, captured: captured as TenantScanSnapshot | null, skippedByFingerprint: false };
+				}),
+			);
 
-		for (const s of settled) {
-			if (s.status === 'rejected') {
-				errored += 1;
-				continue;
-			}
-			const { domain, result, captured, skippedByFingerprint } = s.value as { domain: string; result: { isError: boolean }; captured: TenantScanSnapshot | null; skippedByFingerprint: boolean };
-			if (result.isError) {
-				errored += 1;
-				continue;
-			}
-			completed += 1;
-
-			// Skip persistence if we reused an existing scan result for the same cycle
-			if (skippedByFingerprint) continue;
-
-			// Persist to per-tenant D1. Failures here count as scan-recording errors
-			// but don't fail the whole cycle (consistent with §7.1 partial-result
-			// design — D1 write failures get re-enqueued elsewhere).
-			try {
-				const scanId = newRowId();
-				await tenantDb
-					.prepare(SCANS_INSERT_SQL)
-					.bind(
-						scanId,
-						domain,
-						Date.now(),
-						captured?.score ?? null,
-						captured?.grade ?? null,
-						captured?.maturityStage ?? null,
-						captured?.findings.length ?? 0,
-						captured ? JSON.stringify(captured) : null,
-						cycleId,
-					)
-					.run();
-
-				if (captured?.findings.length) {
-					await persistFindings(tenantDb, scanId, domain, captured.findings);
+			for (const s of settled) {
+				if (s.status === 'rejected') {
+					errored += 1;
+					continue;
 				}
-			} catch {
-				// Persistence failure — logged via analytics elsewhere; don't fail
-				// the cycle on a single row error.
+				const { domain, result, captured, skippedByFingerprint } = s.value as {
+					domain: string;
+					result: { isError: boolean };
+					captured: TenantScanSnapshot | null;
+					skippedByFingerprint: boolean;
+				};
+				if (result.isError) {
+					errored += 1;
+					continue;
+				}
+				completed += 1;
+
+				// Skip persistence if we reused an existing scan result for the same cycle
+				if (skippedByFingerprint) continue;
+
+				// Persist to per-tenant D1. Failures here count as scan-recording errors
+				// but don't fail the whole cycle (consistent with §7.1 partial-result
+				// design — D1 write failures get re-enqueued elsewhere).
+				try {
+					const scanId = newRowId();
+					await tenantDb
+						.prepare(SCANS_INSERT_SQL)
+						.bind(
+							scanId,
+							domain,
+							Date.now(),
+							captured?.score ?? null,
+							captured?.grade ?? null,
+							captured?.maturityStage ?? null,
+							captured?.findings.length ?? 0,
+							captured ? JSON.stringify(captured) : null,
+							cycleId,
+						)
+						.run();
+
+					if (captured?.findings.length) {
+						await persistFindings(tenantDb, scanId, domain, captured.findings);
+					}
+				} catch {
+					// Persistence failure — logged via analytics elsewhere; don't fail
+					// the cycle on a single row error.
+				}
 			}
 		}
-	}
 
 		dispatchAudit(c, {
 			action: 'scan.start',
@@ -1067,9 +1080,7 @@ tenantRoutes.post('/discover', async (c) => {
 			// paths, dropping (skipping) invalid rows rather than failing the request
 			// (mirrors /scan's DB-read target handling). All seeds invalid → empty set
 			// → the existing "No seed domains..." 400 below handles it.
-			const rows = await tenantDb
-				.prepare('SELECT domain FROM domains WHERE watch = 1 LIMIT 10')
-				.all<{ domain: string }>();
+			const rows = await tenantDb.prepare('SELECT domain FROM domains WHERE watch = 1 LIMIT 10').all<{ domain: string }>();
 			const dbSeeds: string[] = [];
 			for (const r of rows.results ?? []) {
 				const v = validateDomain(r.domain);
@@ -1250,10 +1261,7 @@ tenantRoutes.get('/report/:cycle_id', async (c) => {
 			return rateLimited(c, rl.resetAt);
 		}
 
-		const scans = await tenantDb
-			.prepare(REPORT_SCANS_SQL)
-			.bind(params.cycle_id)
-			.all<{ score: number | null; grade: string | null }>();
+		const scans = await tenantDb.prepare(REPORT_SCANS_SQL).bind(params.cycle_id).all<{ score: number | null; grade: string | null }>();
 		const findings = await tenantDb
 			.prepare(REPORT_FINDINGS_SQL)
 			.bind(params.cycle_id)

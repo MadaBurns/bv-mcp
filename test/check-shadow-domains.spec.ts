@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
-import { setupFetchMock, createDohResponse, nxdomainResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, nxdomainResponse, servfailResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -1916,5 +1916,92 @@ describe('isSameMxInfra (unit)', () => {
 		expect(isSameMxInfra(['mail.example.com', 'mail2.other.net'], ['mail.example.com.'])).toBe(false);
 		expect(isSameMxInfra([], ['mail.example.com.'])).toBe(false);
 		expect(isSameMxInfra(['mail.elsewhere.net'], ['mail.example.com.'])).toBe(false);
+	});
+});
+
+describe('checkShadowDomains — failed SPF/DMARC probes abstain (T6 item 5)', () => {
+	const sharedNs = ['ns1.shared-registrar.com.', 'ns2.shared-registrar.com.'];
+
+	/** An owned (shared-NS) example.net with MX; `txt`/`dmarc` decide how those two probes behave. */
+	function mockVariant(opts: {
+		txt: 'empty' | 'reject' | 'servfail' | 'spf';
+		dmarc: 'empty' | 'reject' | 'servfail';
+	}) {
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			const { name, type } = q;
+			if (name === target) {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(target, ['10 mail.example.com.']));
+			}
+			if (name === 'example.net') {
+				if (type === 'NS' || type === '2') return Promise.resolve(nsRecords(name, sharedNs));
+				if (type === 'A' || type === '1') return Promise.resolve(aRecords(name, ['192.0.2.1']));
+				if (type === 'MX' || type === '15') return Promise.resolve(mxRecords(name, ['10 mail.shadow.com.']));
+				if (type === 'TXT' || type === '16') {
+					if (opts.txt === 'reject') return Promise.reject(new Error('DNS query failed'));
+					if (opts.txt === 'servfail') return Promise.resolve(servfailResponse(name, 16));
+					if (opts.txt === 'spf') return Promise.resolve(txtRecords(name, ['v=spf1 -all']));
+					return Promise.resolve(emptyResponse());
+				}
+			}
+			if (name === '_dmarc.example.net' && (type === 'TXT' || type === '16')) {
+				if (opts.dmarc === 'reject') return Promise.reject(new Error('DNS query failed'));
+				if (opts.dmarc === 'servfail') return Promise.resolve(servfailResponse(name, 16));
+				return Promise.resolve(emptyResponse());
+			}
+			return Promise.resolve(emptyResponse());
+		});
+		return target;
+	}
+
+	async function run(domain: string) {
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		return checkShadowDomains(domain);
+	}
+
+	function netFindings(result: Awaited<ReturnType<typeof run>>) {
+		return result.findings.filter((f) => (f.metadata as { variant?: string } | undefined)?.variant === 'example.net');
+	}
+
+	it('control: genuinely empty SPF + DMARC answers still produce the high "fully spoofable" finding', async () => {
+		const target = mockVariant({ txt: 'empty', dmarc: 'empty' });
+		const result = await run(target);
+		const spoofable = netFindings(result).find((f) => /fully spoofable/i.test(f.title));
+		expect(spoofable).toBeDefined();
+		expect(spoofable!.severity).toBe('high');
+		expect(spoofable!.metadata?.missingControl).toBe(true);
+	});
+
+	it('does not report "fully spoofable" (or missingControl) when both SPF and DMARC probes were rejected', async () => {
+		const target = mockVariant({ txt: 'reject', dmarc: 'reject' });
+		const result = await run(target);
+		const found = netFindings(result);
+		expect(found.length).toBeGreaterThan(0);
+		expect(found.some((f) => /fully spoofable/i.test(f.title))).toBe(false);
+		expect(found.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		const abstain = found.find((f) => f.metadata?.inconclusive === true);
+		expect(abstain).toBeDefined();
+		expect(abstain!.metadata?.errorKind).toBe('dns_error');
+		expect(abstain!.severity).toBe('info');
+	});
+
+	it('does not report "lacks DMARC" when SPF was found but the DMARC probe was rejected', async () => {
+		const target = mockVariant({ txt: 'spf', dmarc: 'reject' });
+		const result = await run(target);
+		const found = netFindings(result);
+		expect(found.some((f) => /lacks DMARC|fully spoofable/i.test(f.title))).toBe(false);
+		expect(found.some((f) => f.metadata?.inconclusive === true)).toBe(true);
+	});
+
+	it('treats SERVFAIL on the SPF/DMARC probes as unmeasured, not as absent records', async () => {
+		const target = mockVariant({ txt: 'servfail', dmarc: 'servfail' });
+		const result = await run(target);
+		const found = netFindings(result);
+		expect(found.some((f) => /fully spoofable/i.test(f.title))).toBe(false);
+		expect(found.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		expect(found.some((f) => f.metadata?.inconclusive === true)).toBe(true);
 	});
 });

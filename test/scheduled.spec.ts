@@ -12,20 +12,38 @@ describe('handleScheduled', () => {
 		globalThis.fetch = originalFetch;
 	});
 
-	it('does nothing when ALERT_WEBHOOK_URL is not configured', async () => {
+	it('does nothing when ALERT_WEBHOOK_URL is not configured, but logs a labelled warning', async () => {
 		const mockFetch = vi.fn() as typeof fetch;
 		globalThis.fetch = mockFetch;
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 		const { handleScheduled } = await import('../src/scheduled');
 		await handleScheduled({} as ScheduledEnv);
 		expect(mockFetch).not.toHaveBeenCalled();
+
+		// Previously this early return was silent — an unresolved webhook looked
+		// identical to "everything is fine and there was nothing to alert on".
+		const logged = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
+		expect(logged).toContain('Analytics alerting skipped: no alert webhook resolved');
+		const parsed = JSON.parse(logSpy.mock.calls[0][0] as string);
+		expect(parsed.severity).toBe('warn');
+		logSpy.mockRestore();
 	});
 
-	it('does nothing when CF_ACCOUNT_ID or CF_ANALYTICS_TOKEN is missing', async () => {
+	it('does nothing when CF_ACCOUNT_ID or CF_ANALYTICS_TOKEN is missing, but logs an info-level (never warn) skip', async () => {
 		const mockFetch = vi.fn() as typeof fetch;
 		globalThis.fetch = mockFetch;
+		const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
 		const { handleScheduled } = await import('../src/scheduled');
 		await handleScheduled({ ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test' } as ScheduledEnv);
 		expect(mockFetch).not.toHaveBeenCalled();
+
+		// Self-host design: most self-hosts never configure AE credentials, so this
+		// is expected steady state, not a fault — info, never warn.
+		const logged = logSpy.mock.calls.map((call) => String(call[0])).join('\n');
+		expect(logged).toContain('Analytics alerting skipped: AE credentials absent');
+		const parsed = JSON.parse(logSpy.mock.calls.find((c) => String(c[0]).includes('AE credentials absent'))![0] as string);
+		expect(parsed.severity).toBe('info');
+		logSpy.mockRestore();
 	});
 
 	it('sends alert when error rate exceeds threshold', async () => {
@@ -317,6 +335,169 @@ describe('handleScheduled', () => {
 		// which is exactly what a 7-day-continuous 422 outage cost. The thrown message
 		// now carries the AE rejection body (see analytics-engine-error-detail.spec.ts).
 		expect(webhookCall!.body).toContain('Authentication error: token expired');
+	});
+});
+
+/**
+ * #1164: a persistent condition (here, a stuck analytics-pipeline outage) must page
+ * ONCE, not on every 15-min tick forever. `shouldSendRepeat` gates the watchdog alert
+ * on a `RATE_LIMIT` KV marker keyed by `<threshold>:<hash(reason)>` — exercised here
+ * through the watchdog path since it is the simplest to drive with a controlled,
+ * repeatable failure reason.
+ */
+describe('alert repeat suppression (#1164)', () => {
+	let originalFetch: typeof globalThis.fetch;
+
+	beforeEach(() => {
+		originalFetch = globalThis.fetch;
+	});
+
+	afterEach(() => {
+		globalThis.fetch = originalFetch;
+		vi.restoreAllMocks();
+	});
+
+	/** Minimal in-memory KV: enough surface for `get`/`put`, with optional forced throws. */
+	function makeFakeKv(opts: { getThrows?: boolean; putThrows?: boolean } = {}) {
+		const store = new Map<string, string>();
+		return {
+			async get(key: string) {
+				if (opts.getThrows) throw new Error('KV get failed');
+				return store.has(key) ? (store.get(key) as string) : null;
+			},
+			async put(key: string, value: string) {
+				if (opts.putThrows) throw new Error('KV put failed');
+				store.set(key, value);
+			},
+		} as unknown as KVNamespace;
+	}
+
+	/** Mocks fetch so every AE query throws `errorMessage`, driving the watchdog lane. */
+	function mockWatchdogFetch(errorMessage: string): Array<{ url: string; body: string }> {
+		const calls: Array<{ url: string; body: string }> = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			calls.push({ url, body: init?.body as string });
+			if (url.includes('analytics_engine/sql')) throw new Error(errorMessage);
+			return new Response('ok');
+		}) as typeof fetch;
+		return calls;
+	}
+
+	function watchdogAlerts(calls: Array<{ url: string; body: string }>): Array<{ url: string; body: string }> {
+		return calls.filter((c) => c.url.includes('hooks.slack.com') && c.body.includes('Alerting pipeline failure'));
+	}
+
+	it('sends exactly one watchdog alert across N consecutive ticks with the SAME reason', async () => {
+		const rateLimit = makeFakeKv();
+		const calls = mockWatchdogFetch('Authentication error: token expired');
+		const { handleScheduled } = await import('../src/scheduled');
+		const env = {
+			CF_ACCOUNT_ID: 'test-account',
+			CF_ANALYTICS_TOKEN: 'test-token',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+			RATE_LIMIT: rateLimit,
+		} as unknown as ScheduledEnv;
+
+		await handleScheduled(env);
+		await handleScheduled(env);
+		await handleScheduled(env);
+
+		expect(watchdogAlerts(calls)).toHaveLength(1);
+	});
+
+	it('sends again when the reason CHANGES', async () => {
+		const rateLimit = makeFakeKv();
+		const { handleScheduled } = await import('../src/scheduled');
+		const env = {
+			CF_ACCOUNT_ID: 'test-account',
+			CF_ANALYTICS_TOKEN: 'test-token',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+			RATE_LIMIT: rateLimit,
+		} as unknown as ScheduledEnv;
+
+		const firstTick = mockWatchdogFetch('Authentication error: token expired');
+		await handleScheduled(env);
+		expect(watchdogAlerts(firstTick)).toHaveLength(1);
+
+		const secondTick = mockWatchdogFetch('Network error: connection reset');
+		await handleScheduled(env);
+		expect(watchdogAlerts(secondTick)).toHaveLength(1);
+	});
+
+	it('still sends when the KV get/put throws — fail OPEN to sending, never silently suppress', async () => {
+		const rateLimit = makeFakeKv({ getThrows: true, putThrows: true });
+		const calls = mockWatchdogFetch('Authentication error: token expired');
+		const { handleScheduled } = await import('../src/scheduled');
+		const env = {
+			CF_ACCOUNT_ID: 'test-account',
+			CF_ANALYTICS_TOKEN: 'test-token',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+			RATE_LIMIT: rateLimit,
+		} as unknown as ScheduledEnv;
+
+		await handleScheduled(env);
+		await handleScheduled(env);
+
+		expect(watchdogAlerts(calls)).toHaveLength(2);
+	});
+
+	it('sends every tick when RATE_LIMIT is unbound — no suppression possible', async () => {
+		const calls = mockWatchdogFetch('Authentication error: token expired');
+		const { handleScheduled } = await import('../src/scheduled');
+		const env = {
+			CF_ACCOUNT_ID: 'test-account',
+			CF_ANALYTICS_TOKEN: 'test-token',
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+		} as unknown as ScheduledEnv;
+
+		await handleScheduled(env);
+		await handleScheduled(env);
+
+		expect(watchdogAlerts(calls)).toHaveLength(2);
+	});
+
+	it('also suppresses the repeat on the access-rollup provisioning warning (same mechanism, different threshold)', async () => {
+		const rateLimit = makeFakeKv();
+		const fetchCalls: Array<{ url: string; body: string }> = [];
+		globalThis.fetch = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.toString() : (input as Request).url;
+			fetchCalls.push({ url, body: init?.body as string });
+			return new Response('ok');
+		}) as typeof fetch;
+
+		const db = {
+			prepare(sql: string) {
+				const stmt = {
+					bind() {
+						return stmt;
+					},
+					async first<T = unknown>(): Promise<T | null> {
+						if (sql.includes('FROM mcp_access_rollup')) {
+							throw new Error('D1_ERROR: no such table: mcp_access_rollup: SQLITE_ERROR');
+						}
+						return null;
+					},
+					async run() {
+						return { success: true } as unknown as D1Result;
+					},
+				};
+				return stmt;
+			},
+		} as unknown as D1Database;
+
+		const { handleScheduled } = await import('../src/scheduled');
+		const env = {
+			INTELLIGENCE_DB: db,
+			ALERT_WEBHOOK_URL: 'https://hooks.slack.com/test',
+			RATE_LIMIT: rateLimit,
+		} as unknown as ScheduledEnv;
+
+		await handleScheduled(env);
+		await handleScheduled(env);
+
+		const rollupAlerts = fetchCalls.filter((c) => c.url.includes('hooks.slack.com') && c.body.includes('mcp_access_rollup table missing'));
+		expect(rollupAlerts).toHaveLength(1);
 	});
 });
 

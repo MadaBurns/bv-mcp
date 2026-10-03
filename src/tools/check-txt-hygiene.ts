@@ -17,6 +17,7 @@ import { getEffectiveTld } from '../lib/public-suffix';
 import { validateDomain } from '../lib/sanitize';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 import {
 	type VerificationCategory,
 	VERIFICATION_PATTERNS,
@@ -205,7 +206,7 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 					`${jurisdictionLabel} jurisdiction service on government domain`,
 					'high',
 					`${foundClause} on government domain ${domain}${countClause}. This service operates under ${jurisdictionLabel} jurisdiction and may pose data sovereignty concerns.`,
-					metadata,
+					{ ...metadata, [SUBJECT_TERMS_METADATA_KEY]: [jurisdictionLabel, foundClause, domain, countClause] },
 				),
 			);
 		} else {

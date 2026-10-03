@@ -11,12 +11,13 @@
  * earns no bonus, it is not penalised as a missing control.
  */
 
-import { parseDnskeyAlgorithm } from '@blackveil/dns-checks';
-import { queryDnsRecords, DnsQueryError } from '../lib/dns';
+import { buildRcodeAbstentionResult, parseDnskeyAlgorithm } from '@blackveil/dns-checks';
+import { queryDnsRecordsWithRcode, DnsQueryError } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, Finding } from '../lib/scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 
 /**
  * DNSKEY algorithm registry per RFC 8624.
@@ -49,7 +50,14 @@ const DNSKEY_ALGORITHMS: Record<number, { name: string; deprecated?: boolean; no
  */
 export async function checkDnskeyStrength(domain: string, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	try {
-		const records = await queryDnsRecords(domain, 'DNSKEY', dnsOptions);
+		const { records, rcode, inconclusive } = await queryDnsRecordsWithRcode(domain, 'DNSKEY', dnsOptions);
+
+		// A DNSSEC-bogus zone typically SERVFAILs its DNSKEY. That is HTTP 200 with an empty
+		// answer set, byte-identical to "publishes no DNSKEY", but the resolver never concluded —
+		// so it must not be reported as "no DNSSEC deployed" (SQ-279).
+		if (records.length === 0 && inconclusive) {
+			return buildRcodeAbstentionResult('dnskey_strength', 'DNSKEY strength', domain, 'DNSKEY', rcode) as CheckResult;
+		}
 
 		if (records.length === 0) {
 			// No DNSKEY published — DNSSEC not deployed at this label. Hardening bonus simply not earned.
@@ -90,7 +98,7 @@ export async function checkDnskeyStrength(domain: string, dnsOptions?: QueryDnsO
 						`Deprecated DNSKEY algorithm (${known.name})`,
 						'high',
 						`${domain} signs with DNSKEY algorithm ${algorithm} (${known.name}), deprecated by RFC 8624. Migrate to ECDSA P-256 (13), Ed25519 (15), or Ed448 (16).`,
-						{ confidence: 'deterministic' },
+						{ confidence: 'deterministic', [SUBJECT_TERMS_METADATA_KEY]: [domain, known.name] },
 					),
 				);
 			} else if (known.notRecommended) {

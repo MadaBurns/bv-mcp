@@ -15,6 +15,7 @@ import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import type { CheckResult, CheckCategory } from '@blackveil/dns-checks/scoring';
 import { buildCheckResult, createFinding } from '@blackveil/dns-checks/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { checkMultiResolverConsistency, type ConsistencyResult } from '../lib/dns-multi-resolver';
 import type { RecordTypeName } from '../lib/dns-types';
 
@@ -45,6 +46,20 @@ export async function checkResolverConsistency(
 		: DEFAULT_TYPES;
 
 	const results = await checkMultiResolverConsistency(domain, types);
+
+	// Consistency is a comparison BETWEEN resolvers, so it needs at least two answers per
+	// record type. If no record type reached that quorum, nothing was compared and every
+	// per-type finding would be a failure note dressed as a measurement: abstain in the
+	// shared not-assessed shape (checkStatus 'error', score 0, passed false, partial) instead.
+	// A quorum on some types but not others stays a per-type INCOMPLETE finding below.
+	const answeredCount = (r: ConsistencyResult) => r.resolverAnswers.filter((a) => a.status === 'ok').length;
+	if (results.every((r) => answeredCount(r) < 2)) {
+		return buildDnsErrorResult(
+			CATEGORY,
+			'Resolver consistency',
+			new Error('DNS query failed: fewer than 2 public resolvers returned a usable answer for any record type'),
+		) as CheckResult;
+	}
 
 	const findings = results.map((result: ConsistencyResult) => {
 		switch (result.status) {

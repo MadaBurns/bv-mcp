@@ -10,6 +10,7 @@
  * deps injection seam exposed on the orchestrator — no live DNS or HTTP.
  */
 
+import { buildCtCoverage } from '../src/lib/ct-coverage';
 import { describe, it, expect, vi } from 'vitest';
 import characterizationFixture from './fixtures/characterization-brand-discovery.json';
 import type {
@@ -29,7 +30,7 @@ function jsonResponse(status: number, body: unknown): Response {
 }
 
 function okSan(coOwned: string[]): SanCorrelationResult {
-	return { seedDomain: 'example.com', coOwnedDomains: coOwned, certIds: [], queryStatus: 'ok' };
+	return { seedDomain: 'example.com', coOwnedDomains: coOwned, certIds: [], queryStatus: 'ok', coverage: buildCtCoverage([]) };
 }
 
 function okNs(domains: Array<{ domain: string; confidence: number }>): NsCorrelationResult {
@@ -248,6 +249,44 @@ describe('discoverBrandDomains', () => {
 		expect(candidates).toHaveLength(0);
 	});
 
+	it('surfaces the SAN correlator CT coverage next to signalStatus and forwards its budget and Certspotter token (#1189)', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const coverage = buildCtCoverage([
+			{ source: 'crtsh', outcome: 'rate_limited', contributed: false },
+			{ source: 'certspotter', outcome: 'provider_restricted', contributed: false },
+		]);
+		const correlateSans = vi.fn().mockResolvedValue({ ...okSan([]), coverage });
+		const deps = makeDeps({ correlateSans });
+		const result = await discoverBrandDomains('example.com', { signals: ['san'], certspotterToken: 'cs-token' }, deps);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		// An empty SAN answer is readable only through this record: crt.sh throttled, Certspotter restricted.
+		expect(summary?.metadata?.sanCoverage).toEqual(coverage);
+		expect(summary?.metadata?.signalStatus).toMatchObject({ san: { status: 'ok' } });
+		// The arm hands the correlator an explicit whole-call budget and the token.
+		const [, options] = correlateSans.mock.calls[0] as [string, { timeoutMs?: number; certspotterToken?: string }];
+		expect(options.timeoutMs).toBe(15_000);
+		expect(options.certspotterToken).toBe('cs-token');
+	});
+
+	it('hands the recursive SAN arm one budget for both its total and the per-candidate correlator timeout (#1189)', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const correlateSansRecursive = vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			crossConfirmed: [],
+			probed: [],
+			queryStatus: 'ok' as const,
+		});
+		const deps = makeDeps({ correlateSans: vi.fn().mockResolvedValue(okSan(['sibling.example.net'])), correlateSansRecursive });
+		await discoverBrandDomains('example.com', { signals: ['san', 'san_recursive'], certspotterToken: 'cs-token' }, deps);
+
+		expect(correlateSansRecursive).toHaveBeenCalledOnce();
+		const options = correlateSansRecursive.mock.calls[0][2] as { timeoutMs?: number; totalBudgetMs?: number; certspotterToken?: string };
+		expect(options.timeoutMs).toBeDefined();
+		expect(options.timeoutMs).toBe(options.totalBudgetMs);
+		expect(options.certspotterToken).toBe('cs-token');
+	});
+
 	it('reports a PARTIAL sweep that lost a primary signal as UNMEASURED, not as a passing score (#734)', async () => {
 		// #670 closed the all-signals-failed case with `.every()`. A run where the
 		// primary certificate channel dies but secondary signals answer therefore
@@ -267,6 +306,7 @@ describe('discoverBrandDomains', () => {
 				coOwnedDomains: [],
 				certIds: [],
 				queryStatus: 'timeout',
+				coverage: buildCtCoverage([]),
 			} satisfies SanCorrelationResult),
 			// ...while secondary signals answer cleanly, so `allFailed` is false.
 			// Two corroborating signals, because a single-signal candidate is dropped
@@ -324,6 +364,7 @@ describe('discoverBrandDomains', () => {
 				coOwnedDomains: [],
 				certIds: [],
 				queryStatus: 'timeout',
+				coverage: buildCtCoverage([]),
 			} satisfies SanCorrelationResult),
 		});
 
@@ -370,7 +411,7 @@ describe('discoverBrandDomains', () => {
 			(_seed: string, opts: { signal?: AbortSignal } = {}): Promise<SanCorrelationResult> =>
 				new Promise<SanCorrelationResult>((resolve) => {
 					const finish = () =>
-						resolve({ seedDomain: 'example.com', coOwnedDomains: [], certIds: [], queryStatus: 'timeout' });
+						resolve({ seedDomain: 'example.com', coOwnedDomains: [], certIds: [], queryStatus: 'timeout', coverage: buildCtCoverage([]) });
 					if (opts.signal?.aborted) return finish();
 					opts.signal?.addEventListener('abort', finish, { once: true });
 				}),
@@ -715,6 +756,37 @@ describe('discoverBrandDomains', () => {
 					detail: expect.objectContaining({ remainingMs: 19_000 }),
 				}),
 			]),
+		});
+	});
+
+	it('labels an aborted run skipped_aborted in BOTH signalStatus and the san_recursive phase, not skipped_no_first_order (#1190)', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const correlateSansRecursive = vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			crossConfirmed: [],
+			probed: [],
+			queryStatus: 'ok',
+		});
+		const deps = makeDeps({
+			correlateSans: vi.fn().mockResolvedValue(okSan(['sibling.example.net'])),
+			correlateSansRecursive,
+		});
+		const controller = new AbortController();
+		controller.abort();
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['san', 'san_recursive'], signal: controller.signal, min_confidence: 0.1 },
+			deps,
+		);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(correlateSansRecursive).not.toHaveBeenCalled();
+		expect(summary?.metadata?.signalStatus).toMatchObject({
+			san_recursive: { status: 'skipped_aborted' },
+		});
+		expect(summary?.metadata?.discoveryPerformance).toMatchObject({
+			phases: expect.arrayContaining([expect.objectContaining({ name: 'san_recursive', status: 'skipped_aborted' })]),
 		});
 	});
 

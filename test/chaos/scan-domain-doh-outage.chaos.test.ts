@@ -132,9 +132,13 @@ function resolverOf(url: URL): Resolver | null {
 	return null;
 }
 
-/** Healthy raw-HTTPS answers for the non-DoH probes (ssl, http_security, the mta_sts policy). */
-function webResponse(url: URL, domain: string): Response {
+/**
+ * Healthy raw-HTTPS answers for the non-DoH probes (ssl, http_security, the mta_sts policy).
+ * `policyStatus` replaces the healthy policy with that HTTP status: a definite, graded answer.
+ */
+function webResponse(url: URL, domain: string, policyStatus?: number): Response {
 	if (url.hostname === `mta-sts.${domain}` && url.pathname === '/.well-known/mta-sts.txt') {
+		if (policyStatus !== undefined) return new Response('not found', { status: policyStatus });
 		return new Response(`version: STSv1\nmode: enforce\nmx: mx1.${domain}\nmax_age: 86400\n`, { status: 200 });
 	}
 	if (url.pathname === '/robots.txt') return new Response('not found', { status: 404 });
@@ -163,14 +167,27 @@ function webResponse(url: URL, domain: string): Response {
  * would also retry AFTER the test ended, through whatever `fetch` is installed then.
  * Raw-HTTPS probes always answer healthily, so each case isolates the DoH failure.
  */
-function installNetwork(opts: { domain: string; primary: ResolverMode; fallback: ResolverMode; hangName?: string }) {
+function installNetwork(opts: {
+	domain: string;
+	primary: ResolverMode;
+	fallback: ResolverMode;
+	hangName?: string;
+	/** Hang the mta_sts policy HTTPS fetch (mta-sts.<domain>), ignoring the abort signal. */
+	hangPolicyHost?: boolean;
+	/** Serve the mta_sts policy with this HTTP status (e.g. 404) instead of the healthy policy. */
+	policyStatus?: number;
+}) {
 	const queries: DohQuery[] = [];
 	let hung = 0;
 	const zone = healthyZone(opts.domain);
 	globalThis.fetch = vi.fn(async (input: RequestInfo | URL): Promise<Response> => {
 		const url = new URL(input instanceof Request ? input.url : String(input));
 		const resolver = resolverOf(url);
-		if (!resolver) return webResponse(url, opts.domain);
+		if (!resolver && opts.hangPolicyHost && url.hostname === `mta-sts.${opts.domain}`) {
+			hung += 1;
+			return new Promise<Response>(() => {});
+		}
+		if (!resolver) return webResponse(url, opts.domain, opts.policyStatus);
 
 		const name = (url.searchParams.get('name') ?? '').replace(/\.$/, '').toLowerCase();
 		const type = url.searchParams.get('type') ?? '';
@@ -394,7 +411,7 @@ describe('chaos: scan_domain when one check’s DoH query hangs (H3)', () => {
 	 * BIMI's selector record. It is read by the bimi check only: hanging it leaves every
 	 * other category byte-identical to the healthy control (measured). A shared name
 	 * would not isolate one check. For example, `_smtp._tls.<domain>` is also read by
-	 * mta_sts, so hanging it times out both tlsrpt AND mta_sts.
+	 * mta_sts (see the SQ-212 / SQ-266 variants below).
 	 */
 	const hungName = `default._bimi.${domain}`;
 	/** Shrunk via the shipped knob so the test waits 2s, not the 8s default. */
@@ -436,4 +453,148 @@ describe('chaos: scan_domain when one check’s DoH query hangs (H3)', () => {
 		expect(result.score.categoryScores).toEqual(withoutCategory(healthy.score.categoryScores, 'bimi'));
 		expect(typeof result.score.overall).toBe('number');
 	}, 30_000);
+
+	// SQ-212: the same H3 hang, but on a name SHARED by two checks and at the DEFAULT 8000 ms
+	// per-check budget (no perCheckTimeoutMs knob). `_smtp._tls.<domain>` is read by tlsrpt AND by
+	// mta_sts; on the scan path both await ONE queryCache promise, so sharing alone cannot un-hang
+	// mta_sts. SQ-266: mta_sts now stops waiting at its own fetch-budget deadline (`tlsRptDeadline`,
+	// 750 ms inside safeCheck's kill) and records TLS-RPT as not assessed. Whether it then stays
+	// measured is the #889 rule (dns-checks check-mta-sts-not-assessed.test.ts): only a GRADED
+	// MTA-STS finding is definite evidence. A healthy policy grades nothing, so it still abstains.
+	it('Given _smtp._tls.<domain> hangs and the MTA-STS policy is healthy (default 8000 ms budget), tlsrpt is killed by its per-check budget and mta_sts returns its OWN TLS-RPT-not-assessed abstention (nothing graded to keep), not the per-check kill', async () => {
+		const { scanDomain } = await import('../../src/tools/scan-domain');
+		const { resolveScanTimeoutBudget } = await import('../../src/tools/scan/timeouts');
+		const options = { secondaryDoh: SECONDARY_DOH };
+		const { scanTimeoutMs, perCheckTimeoutMs: budget } = resolveScanTimeoutBudget({});
+		expect(budget).toBe(8_000);
+
+		const net = installNetwork({ domain, primary: 'healthy', fallback: 'healthy', hangName: `_smtp._tls.${domain}` });
+		const started = Date.now();
+		const result = await scanDomain(domain, undefined, options);
+		const elapsed = Date.now() - started;
+
+		expect(net.hungQueries()).toBeGreaterThan(0);
+		expect(elapsed).toBeLessThan(scanTimeoutMs);
+		const statuses = statusByCategory(result);
+		expect(Object.entries(statuses).filter(([, s]) => s !== 'measured')).toEqual([
+			['mta_sts', 'timeout'],
+			['tlsrpt', 'timeout'],
+		]);
+		expect(result.score.categoryScores).not.toHaveProperty('mta_sts');
+		expect(result.score.categoryScores).not.toHaveProperty('tlsrpt');
+
+		// The two timeouts have DIFFERENT causes. tlsrpt was killed by safeCheck at the per-check limit.
+		const tlsrpt = result.checks.find((c) => c.category === 'tlsrpt');
+		expect(tlsrpt?.findings.map((f) => f.detail).join(' ')).toContain('per-check time limit');
+		// mta_sts landed its own abstention before that kill: the TLS-RPT sub-probe is marked not assessed
+		// (by reason, not title), the _mta-sts record it DID observe is still credited, and nothing it
+		// carries came from the kill.
+		const mtaSts = result.checks.find((c) => c.category === 'mta_sts');
+		expect(mtaSts?.findings.find((f) => f.metadata?.notAssessedReason === 'dns_query_failed')?.severity).toBe('info');
+		expect(mtaSts?.recordPresent).toBe(true);
+		expect(mtaSts?.findings.map((f) => f.detail).join(' ')).not.toContain('per-check time limit');
+	}, 30_000);
+
+	// SQ-266: the inversion of the SQ-212 gap. Same hang on the shared `_smtp._tls.<domain>`, but the policy
+	// host answers 404: a DEFINITE, graded MTA-STS measurement (high "policy file not accessible"). That
+	// evidence must not be discarded with tlsrpt's hung lookup.
+	it('Given _smtp._tls.<domain> hangs and the MTA-STS policy returns 404 (default 8000 ms budget), only tlsrpt times out: mta_sts keeps its measured result and scores exactly as with a healthy _smtp._tls', async () => {
+		const { scanDomain } = await import('../../src/tools/scan-domain');
+		const { resolveScanTimeoutBudget } = await import('../../src/tools/scan/timeouts');
+		const options = { secondaryDoh: SECONDARY_DOH };
+		const { scanTimeoutMs } = resolveScanTimeoutBudget({});
+
+		// Control: the same 404 policy with every DoH name answering.
+		installNetwork({ domain, primary: 'healthy', fallback: 'healthy', policyStatus: 404 });
+		const control = await scanDomain(domain, undefined, options);
+		expect(statusByCategory(control).mta_sts).toBe('measured');
+		expect(control.score.categoryScores).toHaveProperty('mta_sts');
+		expect(control.score.categoryScores).toHaveProperty('tlsrpt');
+
+		IN_MEMORY_CACHE.clear();
+		const net = installNetwork({ domain, primary: 'healthy', fallback: 'healthy', policyStatus: 404, hangName: `_smtp._tls.${domain}` });
+		const started = Date.now();
+		const result = await scanDomain(domain, undefined, options);
+		const elapsed = Date.now() - started;
+
+		expect(net.hungQueries()).toBeGreaterThan(0);
+		expect(elapsed).toBeLessThan(scanTimeoutMs);
+		const statuses = statusByCategory(result);
+		expect(Object.entries(statuses).filter(([, s]) => s !== 'measured')).toEqual([['tlsrpt', 'timeout']]);
+
+		const mtaSts = result.checks.find((c) => c.category === 'mta_sts');
+		expect(mtaSts?.findings.some((f) => f.title === 'MTA-STS policy file not accessible' && f.severity === 'high')).toBe(true);
+		expect(mtaSts?.findings.find((f) => f.metadata?.notAssessedReason === 'dns_query_failed')?.severity).toBe('info');
+		// Only tlsrpt leaves the score; mta_sts and every other category match the control.
+		expect(result.score.categoryScores.mta_sts).toBe(control.score.categoryScores.mta_sts);
+		expect(result.score.categoryScores).toEqual(withoutCategory(control.score.categoryScores, 'tlsrpt'));
+	}, 30_000);
+
+	it('MEASURED (default 8000 ms budget): a hanging mta-sts.<domain> policy host is recorded for mta_sts', async () => {
+		const { scanDomain } = await import('../../src/tools/scan-domain');
+		const { resolveScanTimeoutBudget } = await import('../../src/tools/scan/timeouts');
+		const options = { secondaryDoh: SECONDARY_DOH };
+		const { scanTimeoutMs } = resolveScanTimeoutBudget({});
+
+		const net = installNetwork({ domain, primary: 'healthy', fallback: 'healthy', hangPolicyHost: true });
+		const started = Date.now();
+		const result = await scanDomain(domain, undefined, options);
+		const elapsed = Date.now() - started;
+
+		expect(net.hungQueries()).toBeGreaterThan(0);
+		expect(elapsed).toBeLessThan(scanTimeoutMs);
+		const statuses = statusByCategory(result);
+		// The policy host never answered, so mta_sts has no policy measurement: abstaining is the correct shape.
+		// Only mta_sts is cut; every other category stays measured.
+		expect(Object.entries(statuses).filter(([, s]) => s !== 'measured')).toEqual([['mta_sts', 'timeout']]);
+	}, 30_000);
+
+});
+
+// ---------------------------------------------------------------------------
+// H4 (SQ-209): the single-resolver incident rate is MEASURED
+// ---------------------------------------------------------------------------
+
+describe('chaos: scan_domain emits one primary-DoH failure summary row (SQ-209)', () => {
+	const domain = 'example.org';
+
+	function analyticsSpy() {
+		const emitDohPrimarySummary = vi.fn();
+		return { emitDohPrimarySummary, analytics: { emitDohPrimarySummary, emitUngradedNotCachedEvent: vi.fn() } as unknown as import('../../src/lib/analytics').AnalyticsClient };
+	}
+
+	it('Given a healthy primary, exactly ONE summary row is emitted with attempts > 0 and every failure count 0 (the denominator control)', async () => {
+		installNetwork({ domain, primary: 'healthy', fallback: 'healthy' });
+		const { scanDomain } = await import('../../src/tools/scan-domain');
+		const spy = analyticsSpy();
+
+		await scanDomain(domain, undefined, { secondaryDoh: SECONDARY_DOH, analytics: spy.analytics });
+
+		expect(spy.emitDohPrimarySummary).toHaveBeenCalledTimes(1);
+		const row = spy.emitDohPrimarySummary.mock.calls[0][0];
+		expect(row.attempts).toBeGreaterThan(0);
+		expect([row.http5xx, row.network, row.timeout]).toEqual([0, 0, 0]);
+		expect(row.domain).toBe(domain);
+	});
+
+	it.each([
+		{ mode: 'http503' as const, klass: 'http5xx' as const },
+		{ mode: 'timeout' as const, klass: 'timeout' as const },
+	])(
+		'Given the primary $mode on every query, exactly ONE summary row is emitted (not one per query) and its $klass count is positive',
+		async ({ mode, klass }) => {
+			const net = installNetwork({ domain, primary: mode, fallback: 'healthy' });
+			const { scanDomain } = await import('../../src/tools/scan-domain');
+			const spy = analyticsSpy();
+
+			await scanDomain(domain, undefined, { secondaryDoh: SECONDARY_DOH, analytics: spy.analytics });
+
+			// Positive control: many primary queries were issued, yet only one row was written.
+			expect(net.queries.filter((q) => q.resolver === 'primary').length).toBeGreaterThan(1);
+			expect(spy.emitDohPrimarySummary).toHaveBeenCalledTimes(1);
+			const row = spy.emitDohPrimarySummary.mock.calls[0][0];
+			expect(row[klass]).toBeGreaterThan(0);
+			expect(row.attempts).toBeGreaterThanOrEqual(row[klass]);
+		},
+	);
 });

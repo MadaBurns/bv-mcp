@@ -98,6 +98,16 @@ export function parseJsonRpcRequest(rawBody: string): ParsedJsonRpcRequestResult
 				isBatch: true,
 			};
 		}
+		// A bare `null` / primitive body is not a request object (JSON-RPC 2.0 §4). The batch
+		// path rejects such entries per element, so the single path must too — otherwise
+		// validateJsonRpcRequest dereferences `body.id` on null and the route 500s.
+		if (parsed === null || typeof parsed !== 'object') {
+			return {
+				ok: false,
+				status: 400,
+				payload: jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Invalid JSON-RPC 2.0 request'),
+			};
+		}
 		return {
 			ok: true,
 			body: parsed as JsonRpcRequest, // validated by validateJsonRpcRequest above
@@ -112,6 +122,13 @@ export function parseJsonRpcRequest(rawBody: string): ParsedJsonRpcRequestResult
 	}
 }
 
+/** Methods whose params the dispatcher dereferences unconditionally, with the string field each requires. */
+const REQUIRED_STRING_PARAM = new Map<string, string>([
+	['tools/call', 'name'],
+	['resources/read', 'uri'],
+	['prompts/get', 'name'],
+]);
+
 export function validateJsonRpcRequest(body: JsonRpcRequest): { status: 400; payload: ReturnType<typeof jsonRpcError> } | undefined {
 	const result = JsonRpcRequestSchema.safeParse(body);
 	if (!result.success) {
@@ -121,11 +138,16 @@ export function validateJsonRpcRequest(body: JsonRpcRequest): { status: 400; pay
 			: 'Invalid JSON-RPC 2.0 request';
 		return {
 			status: 400,
-			payload: jsonRpcError(
-				body.id ?? null,
-				JSON_RPC_ERRORS.INVALID_REQUEST,
-				message,
-			),
+			// JSON-RPC 2.0 §5: when the id cannot be determined (here the id itself is the
+			// invalid part), respond with id null rather than echoing the malformed value.
+			payload: jsonRpcError(hasIdIssue ? null : (body?.id ?? null), JSON_RPC_ERRORS.INVALID_REQUEST, message),
+		};
+	}
+	const requiredParam = REQUIRED_STRING_PARAM.get(result.data.method);
+	if (requiredParam !== undefined && typeof result.data.params?.[requiredParam] !== 'string') {
+		return {
+			status: 400,
+			payload: jsonRpcError(result.data.id ?? null, JSON_RPC_ERRORS.INVALID_PARAMS, `Invalid params: ${requiredParam} must be a string`),
 		};
 	}
 	return undefined;

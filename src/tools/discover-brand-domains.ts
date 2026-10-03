@@ -58,6 +58,7 @@ import {
 import { createDiscoveryDnsContext, type DiscoveryDnsContext } from '../tenants/discovery/dns-context';
 import type { OutputFormat } from '../handlers/tool-args';
 import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from '../lib/scoring';
+import type { CtCoverage } from '../lib/ct-coverage';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isSubdomainOf } from '../lib/sanitize';
 import { generateMarkovLookalikes } from './markov-generator';
@@ -197,6 +198,21 @@ const DEFAULT_SIGNAL_CONFIDENCE: Record<DiscoverSignal, number> = {
 /** Threshold above which a candidate is considered auto-include rather than review. */
 const AUTO_INCLUDE_THRESHOLD = 0.85;
 
+/**
+ * Whole-call budget (ms) handed to the SAN correlator by the first-order `san`
+ * arm. The correlator splits it between crt.sh and its Certspotter failover
+ * (#1189), so this is the one number the arm and the correlator agree on.
+ */
+const SAN_FIRST_ORDER_BUDGET_MS = 15_000;
+
+/**
+ * Total wall-clock budget (ms) of the second-order `san_recursive` arm. The same
+ * constant is the per-candidate correlator `timeoutMs`, which
+ * `correlateSansRecursive` clamps to the remaining arm budget — a candidate can
+ * therefore never be granted more time than the arm has left (#1189).
+ */
+const SAN_RECURSIVE_BUDGET_MS = 15_000;
+
 /** Per-candidate aggregation state during collection. */
 interface CandidateAggregator {
 	domain: string;
@@ -279,6 +295,11 @@ export interface DiscoverBrandDomainsOptions {
 	 * back to (rate-limited) direct crt.sh, which errors for large brands.
 	 */
 	certstreamAuthToken?: string;
+	/**
+	 * SSLMate Cert Spotter API token. Threaded into the SAN correlator's Certspotter
+	 * failover (used only when crt.sh could not answer). Absent → unauthenticated.
+	 */
+	certspotterToken?: string;
 	/**
 	 * Abort signal — checked at major phase boundaries (post-allSettled, before
 	 * recursive SAN expansion) so that a budget-exceeded consumer can interrupt
@@ -451,6 +472,37 @@ function addCandidateSeed(agg: Map<string, CandidateAggregator>, domain: string,
 
 /** Run a single signal handler, swallowing errors into a typed status report. */
 type SignalOutcome<R> = { ok: true; value: R } | { ok: false; error: string };
+
+/**
+ * Every status string `discoverBrandDomains` can put into `signalStatus[signal].status`
+ * or hand to `recordInstantPhase` (#1190). It is read off the emission sites, not
+ * invented: the module-derived members are the union of each detector's
+ * `queryStatus` (san-correlator, dmarc-rua-miner, spf-include-detector, ...), and the
+ * `skipped_*` members are this file's own skip branches. `budget_exceeded` is
+ * emitted by a detector but the recursive-SAN arm folds it to `partial` before it
+ * reaches `signalStatus`; it stays in the union because the other arms forward
+ * `queryStatus` verbatim. `skipped_no_handles` is a phase-only status
+ * (`bounty_scope` has no `signalStatus` row when the seed has no handles).
+ *
+ * Output schemas keep `status: z.string()` on purpose: a consumer must tolerate a
+ * status this build does not know. The union is an emitter-side contract, enforced
+ * by `test/audits/signal-status-vocabulary.audit.test.ts`.
+ */
+export type SignalStatusValue =
+	| 'ok'
+	| 'partial'
+	| 'failed'
+	| 'rate_limited'
+	| 'timeout'
+	| 'error'
+	| 'no_spf'
+	| 'no_dmarc'
+	| 'budget_exceeded'
+	| 'skipped_tiered'
+	| 'skipped_no_first_order'
+	| 'skipped_aborted'
+	| 'skipped_deadline'
+	| 'skipped_no_handles';
 
 async function runSignal<R>(fn: () => Promise<R>): Promise<SignalOutcome<R>> {
 	try {
@@ -666,6 +718,16 @@ export async function discoverBrandDomains(
 	const d: DiscoverBrandDomainsDeps = { ...defaultDeps(), ...(deps ?? {}) };
 	const now = options.now ?? Date.now;
 	const discoveryStartedAtMs = now();
+	// Minimum time that must remain before `options.deadlineMs` for the recursive-SAN
+	// arm to run at all (else `skipped_deadline`). UNDOCUMENTED — value predates this
+	// ticket (it arrived with the arm in #143 and carries no derivation); see #1190.
+	// It is NOT derivable from the arm's own budget (`totalBudgetMs: 15_000` below), and
+	// the cost of what runs after it (remaining signals, aggregation, RDAP enrichment) has
+	// not been measured here, so the value is left unchanged. Known consequence: the
+	// synchronous `discover_brand_domains` tool path sets a 24s deadline
+	// (DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS in src/handlers/tools.ts), which is always
+	// below this gate, so that path skips this arm with `skipped_deadline` whenever it would
+	// otherwise run.
 	const RECURSIVE_SAN_MIN_DEADLINE_HEADROOM_MS = 70_000;
 	const deadlineRemainingMs = (): number | null => {
 		if (typeof options.deadlineMs !== 'number' || !Number.isFinite(options.deadlineMs)) return null;
@@ -830,7 +892,7 @@ export async function discoverBrandDomains(
 	const candidateUniverseStartedAtMs = await startPhase('candidate_universe', { depth });
 	const markovCandidates = d.generateMarkovLookalikes(seedDomain, depth === 'deep' ? 60 : 20);
 	let activeLookalikes: string[] = [];
-	const preSignalStatus: Record<string, { status: string; error?: string }> = {};
+	const preSignalStatus: Record<string, { status: SignalStatusValue; error?: string }> = {};
 	if (depth === 'deep') {
 		const activeStartedAtMs = await startPhase('active_lookalike');
 		const activeOut = await runSignal<CheckResult>(() => d.checkLookalikes(seedDomain));
@@ -1095,7 +1157,7 @@ export async function discoverBrandDomains(
 		});
 	}
 
-	const signalStatus: Record<string, { status: string; error?: string }> = { ...preSignalStatus };
+	const signalStatus: Record<string, { status: SignalStatusValue; error?: string }> = { ...preSignalStatus };
 
 	// Phase-5 ground-truth signals (app-links + bounty-scope). Their domains
 	// land directly in the aggregator as confidence-1.0 observations and join
@@ -1180,6 +1242,10 @@ export async function discoverBrandDomains(
 
 	// Captured first-order SAN hits — fed into the second-order recursive pass below.
 	let firstOrderSanCandidates: string[] = [];
+	// What the first-order SAN correlator actually asked (#1189): without it an
+	// empty SAN result cannot be told apart from "crt.sh throttled, Certspotter
+	// restricted / not consulted".
+	let sanCoverage: CtCoverage | undefined;
 
 	if (signals.includes('san')) {
 		jobs.push({
@@ -1191,6 +1257,8 @@ export async function discoverBrandDomains(
 						d.correlateSans(seedDomain, {
 							...(options.certstream ? { certstream: options.certstream } : {}),
 							...(options.certstreamAuthToken ? { certstreamAuthToken: options.certstreamAuthToken } : {}),
+							...(options.certspotterToken ? { certspotterToken: options.certspotterToken } : {}),
+							timeoutMs: SAN_FIRST_ORDER_BUDGET_MS,
 							signal: options.signal,
 						}),
 					(value) => value.queryStatus,
@@ -1201,6 +1269,7 @@ export async function discoverBrandDomains(
 					return;
 				}
 				signalStatus.san = { status: out.value.queryStatus };
+				sanCoverage = out.value.coverage;
 				firstOrderSanCandidates = out.value.coOwnedDomains.slice();
 				for (const dom of out.value.coOwnedDomains) {
 					addObservation(aggregator, dom, 'san', DEFAULT_SIGNAL_CONFIDENCE.san, {
@@ -1524,7 +1593,7 @@ export async function discoverBrandDomains(
 		// Tiered mode skipped the sweep entirely → nothing to do for san_recursive.
 		signalStatus.san_recursive ??= { status: 'skipped_tiered' };
 	} else if (options.signal?.aborted) {
-		signalStatus.san_recursive ??= { status: 'skipped_no_first_order' };
+		signalStatus.san_recursive ??= { status: 'skipped_aborted' };
 		await recordInstantPhase('san_recursive', 'skipped_aborted');
 	} else if (signals.includes('san_recursive') && firstOrderSanCandidates.length > 0) {
 		const remainingMs = deadlineRemainingMs();
@@ -1542,6 +1611,8 @@ export async function discoverBrandDomains(
 					d.correlateSansRecursive(seedDomain, firstOrderSanCandidates, {
 						certstream: options.certstream,
 						certstreamAuthToken: options.certstreamAuthToken,
+						...(options.certspotterToken ? { certspotterToken: options.certspotterToken } : {}),
+						timeoutMs: SAN_RECURSIVE_BUDGET_MS,
 						// Caps tightened (2026-05-19) to fit Cloudflare Worker CPU budget.
 						// Each candidate triggers a fresh crt.sh fetch (~200KB-2MB JSON parse
 						// for tier-1 brands), so 20 candidates × 8 concurrency was the single
@@ -1549,7 +1620,7 @@ export async function discoverBrandDomains(
 						// the remaining 11 signal probes + RDAP enrichment.
 						maxCandidates: 10,
 						concurrency: 4,
-						totalBudgetMs: 15_000,
+						totalBudgetMs: SAN_RECURSIVE_BUDGET_MS,
 						signal: options.signal,
 					}),
 				(value) => (value.queryStatus === 'budget_exceeded' ? 'partial' : value.queryStatus),
@@ -1772,6 +1843,8 @@ export async function discoverBrandDomains(
 			summary: true,
 			signals,
 			signalStatus,
+			// Additive (#1189): the CT sources the first-order SAN signal consulted.
+			...(sanCoverage ? { sanCoverage } : {}),
 			minConfidence,
 			totalAggregated: aggregator.size,
 			surfaced: candidateFindings.length,

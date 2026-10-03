@@ -10,6 +10,7 @@
 import type { DnsAnswer, DohResponse, RecordTypeName } from './dns-types';
 import { RecordType } from './dns-types';
 import { CLOUDFLARE_DOH_ENDPOINT } from './dns-endpoints';
+import { isInconclusiveRcode } from '@blackveil/dns-checks';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from './response-body';
 
 /** Public DoH resolver endpoints. */
@@ -148,6 +149,12 @@ async function fetchResolver(resolverName: string, endpoint: string, domain: str
 
 		const data = await readJsonResponseCapped<DohResponse>(response, DOH_MAX_BODY_BYTES);
 		if (typeof data?.Status !== 'number') {
+			return { resolver: resolverName, status: 'error', answers: [] };
+		}
+		// SERVFAIL/REFUSED is the resolver saying "I could not answer", not "this name has no
+		// such records" (NOERROR/NXDOMAIN are the conclusions). Filing it as an `ok` empty
+		// answer let four failing resolvers "agree" on an empty set and read as CONSISTENT.
+		if (isInconclusiveRcode(data.Status)) {
 			return { resolver: resolverName, status: 'error', answers: [] };
 		}
 

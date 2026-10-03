@@ -107,6 +107,30 @@ describe('checkAuthoritativeDnsInfra', () => {
 		expect(result.score).toBeGreaterThan(0);
 	});
 
+	// SQ-282 item 4 — the probe is TCP-only; per-family `reachable` is TCP evidence and must not
+	// be read as a UDP/53 pass when nothing ever measured UDP.
+	it('reports UDP/53 reachability as not measured (inconclusive), never passed, from TCP-only evidence', async () => {
+		const fetch = vi.fn(async () => new Response(JSON.stringify({
+			hostname: 'a.root-servers.net',
+			checkedAt: '2026-05-21T00:00:00.000Z',
+			reachability: {
+				ipv4: { addresses: ['198.41.0.4'], reachable: true },
+				ipv6: { addresses: ['2001:503:ba3e::2:30'], reachable: true },
+				tcp53Reachable: true,
+			},
+			authoritative: { aaFlag: true, recursionAvailable: false },
+		})));
+
+		const result = await checkAuthoritativeDnsInfra('a.root-servers.net', {
+			infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch },
+		});
+
+		const summary = result.metadata?.capabilitySummary as { passed: string[]; failed: string[]; inconclusive: string[] };
+		expect(summary.passed).not.toContain('dns53_udp_reachability');
+		expect(summary.inconclusive).toContain('dns53_udp_reachability');
+		expect(summary.passed).toContain('dns53_tcp_reachability');
+	});
+
 	it('passes healthy infra probe evidence with a capability summary', async () => {
 		const fetch = vi.fn(async () => new Response(JSON.stringify({
 			hostname: 'a.root-servers.net',

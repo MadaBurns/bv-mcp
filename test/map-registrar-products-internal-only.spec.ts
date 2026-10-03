@@ -28,7 +28,11 @@ const PUBLIC_TOOL_COUNT = TOOLS.length - INTERNAL_ONLY_TOOLS.size;
 // mapRegistrarProducts resolves without live DNS. (Mirrors map-registrar-products.integration.test.ts.)
 const mockScanDomain = vi.fn();
 const mockCheckRdap = vi.fn();
-vi.mock('../src/tools/scan-domain', () => ({ scanDomain: (...a: unknown[]) => mockScanDomain(...a) }));
+vi.mock('../src/tools/scan-domain', async (importOriginal) => {
+	// Spread the real module: src/handlers/resources.ts imports SCAN_CATEGORIES from it (SQ-285).
+	const orig = await importOriginal<typeof import('../src/tools/scan-domain')>();
+	return { ...orig, scanDomain: (...a: unknown[]) => mockScanDomain(...a) };
+});
 vi.mock('../src/tools/check-rdap-lookup', async (importOriginal) => {
 	const orig = await importOriginal<typeof import('../src/tools/check-rdap-lookup')>();
 	return { ...orig, checkRdapLookup: (...a: unknown[]) => mockCheckRdap(...a) };

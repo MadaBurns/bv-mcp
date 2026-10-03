@@ -736,7 +736,7 @@ const TOOL_DEFS = {
 	},
 	scan_buckets_start: {
 		description:
-			'Start an async cloud-bucket discovery scan for a target domain. Operator-deploy only; degrades to info when unprovisioned. Returns a scanId immediately — poll progress with scan_buckets_status and retrieve results with scan_buckets_findings.',
+			'Start an async cloud-bucket discovery scan for a target domain. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns a scanId immediately — poll progress with scan_buckets_status and retrieve results with scan_buckets_findings.',
 		schema: ScanBucketsStartArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -744,21 +744,21 @@ const TOOL_DEFS = {
 	},
 	scan_buckets_status: {
 		description:
-			'Poll the status of a cloud-bucket discovery scan by scanId. Operator-deploy only; degrades to info when unprovisioned. Returns scan status (running | completed | failed) and progress metadata.',
+			'Poll the status of a cloud-bucket discovery scan by scanId. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns scan status (running | completed | failed) and progress metadata.',
 		schema: ScanBucketsStatusArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	scan_buckets_findings: {
 		description:
-			'Retrieve findings from a completed cloud-bucket discovery scan by scanId. Operator-deploy only; degrades to info when unprovisioned. The scanId is required so reads can be owner-scoped; target and provider filters are optional.',
+			'Retrieve findings from a completed cloud-bucket discovery scan by scanId. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. The scanId is required so reads can be owner-scoped; target and provider filters are optional.',
 		schema: ScanBucketsFindingsArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	osint_investigate_domain_start: {
 		description:
-			'Start an async OSINT investigation for a domain. Operator-deploy only; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
+			'Start an async OSINT investigation for a domain. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status and retrieve results with osint_investigation_report.',
 		schema: OsintInvestigateArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -766,7 +766,7 @@ const TOOL_DEFS = {
 	},
 	osint_investigate_infrastructure_start: {
 		description:
-			'Start an async deep-infrastructure OSINT investigation for a query (domain, IP, or org). Operator-deploy only; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status.',
+			'Start an async deep-infrastructure OSINT investigation for a query (domain, IP, or org). Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status.',
 		schema: OsintInvestigateArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -774,7 +774,7 @@ const TOOL_DEFS = {
 	},
 	osint_investigate_supply_chain_start: {
 		description:
-			'Start an async supply-chain OSINT investigation for a query. Operator-deploy only; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status.',
+			'Start an async supply-chain OSINT investigation for a query. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns an investigationId immediately — poll with osint_investigation_status.',
 		schema: OsintInvestigateArgs,
 		group: 'intelligence',
 		scanIncluded: false,
@@ -798,14 +798,14 @@ const TOOL_DEFS = {
 	},
 	osint_investigation_status: {
 		description:
-			'Poll the status of an OSINT investigation by investigationId. Operator-deploy only; degrades to info when unprovisioned. Returns current status (running | completed | failed) and progress metadata.',
+			'Poll the status of an OSINT investigation by investigationId. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned. Returns current status (running | completed | failed) and progress metadata.',
 		schema: OsintInvestigationIdArgs,
 		group: 'intelligence',
 		scanIncluded: false,
 	},
 	osint_investigation_report: {
 		description:
-			'Retrieve the final report of a completed OSINT investigation by investigationId. Operator-deploy only; degrades to info when unprovisioned or not yet complete.',
+			'Retrieve the final report of a completed OSINT investigation by investigationId. Operator-deploy only; targets must be operator-authorized on the recon watchlist; degrades to info when unprovisioned or not yet complete.',
 		schema: OsintInvestigationIdArgs,
 		group: 'intelligence',
 		scanIncluded: false,

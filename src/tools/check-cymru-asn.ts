@@ -6,7 +6,8 @@
  * Team Cymru's DNS-based ASN service (origin.asn.cymru.com / asn.cymru.com).
  */
 
-import { queryDnsRecords, queryTxtRecords } from '../lib/dns';
+import { queryDnsRecordsWithRcode, queryTxtRecords } from '../lib/dns';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { isValidIPv4, reverseIPv4 } from '../lib/ip-utils';
 import { callReconScan, isReconHit } from '../lib/recon-binding';
@@ -15,6 +16,9 @@ import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 
 const CATEGORY = 'asn' as CheckCategory;
+
+/** Cap on A-record addresses looked up in Team Cymru (serial loop, two DoH queries each — SQ-282). */
+const MAX_ADDRESSES_EXAMINED = 10;
 
 /**
  * ASNs associated with hosting providers commonly used for malicious infrastructure.
@@ -82,9 +86,13 @@ export async function checkCymruAsn(
 	// Step 1: Resolve domain A records
 	let ips: string[] = [];
 	try {
-		ips = await queryDnsRecords(domain, 'A', dnsOptions);
-	} catch {
-		// A resolution failed
+		const outcome = await queryDnsRecordsWithRcode(domain, 'A', dnsOptions);
+		// SERVFAIL/REFUSED: the resolver never concluded, so an empty set is not "no A records".
+		if (outcome.inconclusive) throw new Error(`DNS query for A records of ${domain} did not conclude (rcode ${outcome.rcode})`);
+		ips = outcome.records;
+	} catch (err) {
+		// A failed lookup is a non-measurement — abstain rather than certify a clean info result (SQ-282).
+		return buildDnsErrorResult(CATEGORY, 'ASN lookup', err);
 	}
 
 	if (ips.length === 0) {
@@ -131,7 +139,22 @@ export async function checkCymruAsn(
 		);
 	}
 
-	// Step 2: Query Cymru origin for each IP
+	// Step 2: Query Cymru origin for each IP. The loop is serial (two DoH round
+	// trips per address), so an unbounded A set (~100 records) outruns the tool
+	// timeout — cap it and say so (SQ-282).
+	const totalIps = ips.length;
+	if (totalIps > MAX_ADDRESSES_EXAMINED) {
+		ips = ips.slice(0, MAX_ADDRESSES_EXAMINED);
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'ASN lookup limited to a subset of addresses',
+				'info',
+				`${domain} resolves to ${totalIps} IPv4 addresses; only the first ${MAX_ADDRESSES_EXAMINED} were looked up in Team Cymru. ASN coverage is partial.`,
+				{ domain, truncated: true, examined: MAX_ADDRESSES_EXAMINED, total: totalIps },
+			),
+		);
+	}
 	const seenAsns = new Set<number>();
 
 	for (const ip of ips) {

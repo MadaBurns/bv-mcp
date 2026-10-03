@@ -39,7 +39,7 @@ import type { SendAlertOptions } from './lib/alerting';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { logEvent, logError } from './lib/log';
 import { scoreWindow } from './lib/fuzzing-detector';
-import { readWindow } from './lib/fuzzing-counter';
+import { readWindow, COUNTER_TTL_SECONDS } from './lib/fuzzing-counter';
 import { buildFuzzingAlertPayload } from './schemas/alerting';
 import { FUZZ_THRESHOLDS } from './lib/config';
 import {
@@ -60,9 +60,9 @@ import { resolveAlertWebhookUrl } from './lib/operator-webhook-binding';
 interface AnomalyRow {
 	total_calls?: number;
 	error_count?: number;
-	/** Pre-dispatch arg-validation rejections (blob4='none') — no tool ran. */
+	/** Pre-dispatch arg-validation rejections (blob16='input_error') — no tool ran. */
 	input_error_count?: number;
-	/** Errors from tools that actually EXECUTED (blob4!='none') — the honest signal. */
+	/** Errors from tools that actually EXECUTED (blob16!='input_error') — the honest signal. */
 	real_error_count?: number;
 	error_pct?: number;
 	real_error_pct?: number;
@@ -376,19 +376,25 @@ async function checkAccessRollupProvisioned(env: ScheduledEnv, webhookUrl: strin
 			},
 		);
 
-		await sendAlert(
-			webhookUrl,
-			buildAlertPayload({
-				title: 'mcp_access_rollup table missing in production — auth_tier telemetry is fail-open, not zero',
-				severity: 'warning',
-				metrics: {
-					uncounted_internal_requests_24h: uncountedRequests ?? 'unknown (mcp_access_log query also failed)',
-					migration: '0004_mcp_access_rollup.sql (not applied)',
-				},
-				threshold: 'mcp_access_rollup_table_exists',
-			}),
-			alertOptions(env),
-		).catch(() => {});
+		// #1164: the table stays missing until an operator runs the migration, so
+		// without suppression this pages on every 15-min tick indefinitely.
+		if (await shouldSendRepeat(env, 'mcp_access_rollup_table_exists', message)) {
+			const delivered = await sendAlert(
+				webhookUrl,
+				buildAlertPayload({
+					title: 'mcp_access_rollup table missing in production — auth_tier telemetry is fail-open, not zero',
+					severity: 'warning',
+					metrics: {
+						uncounted_internal_requests_24h: uncountedRequests ?? 'unknown (mcp_access_log query also failed)',
+						migration: '0004_mcp_access_rollup.sql (not applied)',
+					},
+					threshold: 'mcp_access_rollup_table_exists',
+				}),
+				alertOptions(env),
+			).catch(() => false);
+			// Arm the cooldown only on an accepted delivery: a down webhook must not suppress the page after recovery.
+			if (delivered) await armRepeatCooldown(env, 'mcp_access_rollup_table_exists', message, Date.now());
+		}
 	}
 }
 
@@ -488,12 +494,32 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 	// src/lib/operator-webhook-binding.ts and
 	// docs/plans/2026-07-09-operator-alert-webhook-binding.md.
 	const webhookUrl = await resolveAlertWebhookUrl(env);
-	if (!webhookUrl) return;
+	if (!webhookUrl) {
+		logEvent({
+			timestamp: new Date().toISOString(),
+			category: 'scheduled',
+			result: 'ok',
+			severity: 'warn',
+			details: { message: 'Analytics alerting skipped: no alert webhook resolved' },
+		});
+		return;
+	}
 
 	// D1-only lane — runs even when AE credentials below are absent (self-hosts).
 	await checkAccessRollupProvisioned(env, webhookUrl);
 
-	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) return;
+	if (!env.CF_ACCOUNT_ID || !env.CF_ANALYTICS_TOKEN) {
+		// Self-host design — most self-hosts never configure Analytics Engine
+		// credentials, so this is expected steady state, not a fault. Info, never warn.
+		logEvent({
+			timestamp: new Date().toISOString(),
+			category: 'scheduled',
+			result: 'ok',
+			severity: 'info',
+			details: { message: 'Analytics alerting skipped: AE credentials absent' },
+		});
+		return;
+	}
 
 	// Resolve the AE DATASET name once (defaults to bv_dns_security_mcp — the prod
 	// dataset the MCP_ANALYTICS binding writes to; NOT the binding name). Threaded
@@ -599,7 +625,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 
 			// JUDGE THE REAL ERROR RATE, NOT THE CONFLATED ONE.
 			//
-			// `error_pct` counts pre-dispatch arg-validation rejections (blob4='none') as
+			// `error_pct` counts pre-dispatch arg-validation rejections (blob16='input_error') as
 			// service errors. Those are a fuzzer or a probe sending a bad/absent domain to a
 			// public endpoint — no tool ran, so nothing about the service was measured. The
 			// split already existed in `queryErrorRate` for the per-tool report (where it
@@ -924,22 +950,28 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// visible on its own rather than only as an absence of alerts. Non-critical:
 		// the pipeline is still working, just not completely.
 		if (laneFailures.length > 0) {
-			await sendAlert(
-				webhookUrl,
-				buildAlertPayload({
-					title: `Alerting check degraded: ${laneFailures.length} of ${lanesAttempted} analytics queries failed`,
-					severity: 'warning',
-					metrics: {
-						failed_lanes: laneFailures.map((f) => f.lane).join(', '),
-						detail: laneFailures
-							.map((f) => `${f.lane}: ${f.reason}`)
-							.join(' · ')
-							.slice(0, 400),
-					},
-					threshold: 'alerting_lane_partial_failure',
-				}),
-				alertOptions(env),
-			).catch(() => {});
+			const degradedDetail = laneFailures
+				.map((f) => `${f.lane}: ${f.reason}`)
+				.join(' · ')
+				.slice(0, 400);
+			// #1164: the same broken lane(s) fail with the same reason on every tick until
+			// an operator fixes the query — suppress the repeat, not the first page.
+			if (await shouldSendRepeat(env, 'alerting_lane_partial_failure', degradedDetail)) {
+				const delivered = await sendAlert(
+					webhookUrl,
+					buildAlertPayload({
+						title: `Alerting check degraded: ${laneFailures.length} of ${lanesAttempted} analytics queries failed`,
+						severity: 'warning',
+						metrics: {
+							failed_lanes: laneFailures.map((f) => f.lane).join(', '),
+							detail: degradedDetail,
+						},
+						threshold: 'alerting_lane_partial_failure',
+					}),
+					alertOptions(env),
+				).catch(() => false);
+				if (delivered) await armRepeatCooldown(env, 'alerting_lane_partial_failure', degradedDetail, Date.now());
+			}
 		}
 
 		logEvent({
@@ -977,16 +1009,21 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// now puts the AE rejection body in the message (analytics-engine.ts), so the
 		// distinguishing detail is already here; truncated to keep the payload one-line.
 		const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 300);
-		await sendAlert(
-			webhookUrl,
-			buildAlertPayload({
-				title: 'Alerting pipeline failure: analytics check could not run',
-				severity: 'critical',
-				metrics: { pipeline_failed: 1, reason: reason || '(no detail)' },
-				threshold: 'alerting_self_check',
-			}),
-			alertOptions(env),
-		).catch(() => {});
+		// #1164: an unresolved pipeline outage throws the SAME reason on every tick —
+		// suppress the repeat, not the first page.
+		if (await shouldSendRepeat(env, 'alerting_self_check', reason || '(no detail)')) {
+			const delivered = await sendAlert(
+				webhookUrl,
+				buildAlertPayload({
+					title: 'Alerting pipeline failure: analytics check could not run',
+					severity: 'critical',
+					metrics: { pipeline_failed: 1, reason: reason || '(no detail)' },
+					threshold: 'alerting_self_check',
+				}),
+				alertOptions(env),
+			).catch(() => false);
+			if (delivered) await armRepeatCooldown(env, 'alerting_self_check', reason || '(no detail)', Date.now());
+		}
 	}
 }
 
@@ -1000,6 +1037,73 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
  */
 function alertOptions(env: ScheduledEnv): SendAlertOptions {
 	return { bvWeb: env.BV_WEB };
+}
+
+/**
+ * Repeat-alert suppression window (#1164): a persistent condition (an outage that
+ * hasn't been fixed yet, an unprovisioned table) re-evaluates true on every 15-min
+ * cron tick, so an alert whose REASON is unchanged would otherwise page forever
+ * instead of once. Keyed on `<threshold>:<hash(normalised reason)>` so a genuinely
+ * CHANGED reason under the same threshold (a different query broke) still pages
+ * immediately rather than waiting out the old reason's cooldown. 24h TTL caps a
+ * persistent condition to one reminder per day.
+ */
+const ALERT_REPEAT_COOLDOWN_SECONDS = 24 * 60 * 60;
+
+/** KV key for a repeatable alert's cooldown marker: `<threshold>:<hash(normalised reason)>`. */
+async function repeatAlertKey(threshold: string, reason: string): Promise<string> {
+	const normalized = reason.replace(/\s+/g, ' ').trim().toLowerCase();
+	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized)));
+	const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+	return `alert-repeat:${threshold}:${hash}`;
+}
+
+/**
+ * Gate for a repeatable alert: resolves true when the alert should be SENT this tick
+ * (first occurrence of `reason` under `threshold`, or the previous occurrence's
+ * cooldown has expired) and false when an identical alert already fired within the
+ * window. READ-ONLY: it does not arm the cooldown. Callers send the alert and then
+ * call {@link armRepeatCooldown} only if `sendAlert` reports the webhook ACCEPTED it
+ * — arming before delivery let a down webhook suppress the same alert for 24 h after
+ * it recovered (same delivery-gated shape as `handleClientIpHeaderAudit`).
+ *
+ * FAIL-OPEN TO SENDING, never suppress on a KV fault: an unbound `RATE_LIMIT`, or a
+ * `get` that throws, both resolve true. A missed suppression costs one extra
+ * page; a false suppression costs a silent incident — same posture as the
+ * fuzzing-scan and client-ip cooldowns above/below.
+ */
+async function shouldSendRepeat(env: ScheduledEnv, threshold: string, reason: string): Promise<boolean> {
+	if (!env.RATE_LIMIT) return true;
+
+	try {
+		const existing = await env.RATE_LIMIT.get(await repeatAlertKey(threshold, reason));
+		if (existing !== null) return false; // identical reason already paged within the window
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'scheduled',
+			details: { message: 'alert_repeat_kv_get_failed', threshold },
+		});
+	}
+	return true; // not seen, or KV down — send rather than risk a silent suppression
+}
+
+/**
+ * Arm the {@link shouldSendRepeat} cooldown for `reason` under `threshold`. Call ONLY
+ * after the webhook accepted the alert. A failed write is logged and swallowed: the
+ * next tick re-alerts, which is the acceptable degradation (fail open).
+ */
+async function armRepeatCooldown(env: ScheduledEnv, threshold: string, reason: string, nowMs: number): Promise<void> {
+	if (!env.RATE_LIMIT) return;
+	try {
+		await env.RATE_LIMIT.put(await repeatAlertKey(threshold, reason), String(nowMs), { expirationTtl: ALERT_REPEAT_COOLDOWN_SECONDS });
+	} catch (err) {
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'warn',
+			category: 'scheduled',
+			details: { message: 'alert_repeat_kv_put_failed', threshold },
+		});
+	}
 }
 
 /**
@@ -1072,7 +1176,11 @@ export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
 			break;
 		}
 		try {
-			const events = await readWindow(env.RATE_LIMIT, principalId, nowSec, FUZZ_THRESHOLDS.windowSeconds);
+			// Look back over the whole counter lifetime, NOT one FUZZ_THRESHOLDS.windowSeconds: the cron
+			// ticks every 15 min, so a 60 s read would only score bursts that ended within the last
+			// minute. scoreWindow still applies the per-windowSeconds threshold by sliding that window
+			// across the events, so the longer read does not sum sub-threshold bursts.
+			const events = await readWindow(env.RATE_LIMIT, principalId, nowSec, COUNTER_TTL_SECONDS);
 			const verdict = scoreWindow(events, FUZZ_THRESHOLDS);
 			if (!verdict.suspected) continue;
 

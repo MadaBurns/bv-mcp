@@ -633,6 +633,7 @@ function emitRequestAnalytics(
 	hasJsonRpcError: boolean,
 	jsonRpcErrorCode?: number,
 	jsonRpcErrorDescription?: string,
+	httpStatus?: number,
 ): void {
 	options.analytics?.emitRequestEvent({
 		method,
@@ -653,22 +654,25 @@ function emitRequestAnalytics(
 
 	// Fuzzing-detection: record an event if the error matches a known fuzz pattern.
 	// Best-effort and non-blocking — see docs/plans/2026-05-07-fuzzing-detection-tdd-plan.md.
-	if (status === 'error' && options.rateLimitKv && jsonRpcErrorCode !== undefined) {
-		void recordFuzzEvent(options, method, jsonRpcErrorCode, jsonRpcErrorDescription);
+	if (status === 'error' && options.rateLimitKv && (jsonRpcErrorCode !== undefined || httpStatus !== undefined)) {
+		void recordFuzzEvent(options, method, jsonRpcErrorCode, jsonRpcErrorDescription, httpStatus);
 	}
 }
 
 async function recordFuzzEvent(
 	options: ExecuteMcpRequestOptions,
 	method: string,
-	jsonRpcErrorCode: number,
+	jsonRpcErrorCode: number | undefined,
 	jsonRpcErrorDescription: string | undefined,
+	httpStatus: number | undefined,
 ): Promise<void> {
 	const dispatchPath = method === 'tools/call' ? 'tools/call' : 'dispatch';
 	const kind = classifyFuzzError({
 		jsonRpcCode: jsonRpcErrorCode,
 		dispatchPath,
 		description: jsonRpcErrorDescription,
+		// auth_fail is classified from the HTTP status alone (auth fails outside JSON-RPC framing).
+		httpStatus,
 	});
 	if (!kind) return;
 	// Principal selection: keyHash for authenticated, ipHash for anonymous.
@@ -721,7 +725,8 @@ function buildAuthRequiredResponse(
 		country: options.country,
 		authTier: options.authTier ?? 'anon',
 	});
-	emitRequestAnalytics(options, method, 'error', true);
+	// 401: thread the HTTP status so the fuzz counter can classify it as `auth_fail`.
+	emitRequestAnalytics(options, method, 'error', true, undefined, undefined, 401);
 	if (accessLogInput) {
 		recordMcpAccessLog(options, { ...accessLogInput, rateLimited: true, status: 'unknown' });
 	}

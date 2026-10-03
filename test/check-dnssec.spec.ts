@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { RecordType } from '../src/lib/dns';
-import { setupFetchMock, createDohResponse, mockFetchError } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, mockFetchError, servfailResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -117,6 +117,32 @@ describe('DNSSEC finding consolidation', () => {
 		const result = await run();
 		const spuriousFinding = result.findings.find((f) => f.title === 'DNSSEC inherited from TLD');
 		expect(spuriousFinding).toBeUndefined();
+	});
+
+	it('abstains (no missingControl "chain of trust incomplete") when DS answers but DNSKEY SERVFAILs (SQ-279)', async () => {
+		// A DNSSEC-bogus zone typically SERVFAILs its DNSKEY. That is HTTP 200 with an empty
+		// Answer, so the DNSKEY probe used to read as "absent" beside a published DS.
+		const inner = mockDnssecResponses(true, false, true);
+		globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+			if (/type=(DNSKEY|48)\b/.test(url)) return Promise.resolve(servfailResponse('example.com', 48));
+			return inner(url);
+		});
+		const result = await run();
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => f.title === 'DNSSEC chain of trust incomplete')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+	});
+
+	it('abstains instead of reporting "DNSSEC not enabled" when DNSKEY and DS both SERVFAIL (SQ-279)', async () => {
+		const inner = mockDnssecResponses(false, false, false);
+		globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+			if (/type=(DNSKEY|48|DS|43)\b/.test(url)) return Promise.resolve(servfailResponse('example.com', 48));
+			return inner(url);
+		});
+		const result = await run();
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.some((f) => f.title === 'DNSSEC not enabled')).toBe(false);
 	});
 
 	it('emits HIGH when DNSKEY+DS present but AD not set', async () => {

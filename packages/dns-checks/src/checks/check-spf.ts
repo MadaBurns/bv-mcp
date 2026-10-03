@@ -311,7 +311,7 @@ export async function checkSPF(domain: string, queryDNS: DNSQueryFunction, optio
 	}
 
 	// Check for deprecated ptr mechanism
-	if (/\bptr\b/i.test(spf)) {
+	if (spf.split(/\s+/).some((term) => /^[+\-~?]?ptr(?::.*)?$/i.test(term))) {
 		findings.push(
 			createFinding(
 				'spf',
@@ -324,7 +324,7 @@ export async function checkSPF(domain: string, queryDNS: DNSQueryFunction, optio
 	}
 
 	// Trust surface analysis — flag multi-tenant SaaS platform includes
-	const trustSurfaceFindings = analyzeTrustSurface(spf, trustSurfaceContext);
+	const trustSurfaceFindings = analyzeTrustSurface(spf, { ...trustSurfaceContext, domain });
 	findings.push(...trustSurfaceFindings);
 
 	// Informational trust-surface findings should not suppress the clean SPF status.

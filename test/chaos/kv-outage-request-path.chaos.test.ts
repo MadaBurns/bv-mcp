@@ -26,6 +26,16 @@
 //       tools/list with that session id must not 500.
 //  H3 — SCAN_CACHE KV throws on every get/put around scan_domain.
 //       MEASURED: FALSIFIED as literally stated — see the H3 describe block.
+//       BY DESIGN, not a defect: src/lib/cache.ts cacheGet (:207-218) and
+//       cacheSet (:255-266) catch a KV failure, log, and fall through to the
+//       per-isolate IN_MEMORY_CACHE, so a SCAN_CACHE outage degrades to an
+//       in-process cache rather than disabling caching. The one adjacent case
+//       — a cached UNGRADED result being served from cache — is CLOSED by SQ-200
+//       (#1140: the scan-cache write is admitted only when score.overall !== null).
+//       CHANGELOG files it under 3.91.0, and the first git tag that contains it is v3.92.0.
+//       Wire-verified 2026-10-02: the live /mcp initialize returned serverInfo.version 3.93.0,
+//       and that tag contains it. The in-repo pin is scan-domain-doh-outage.chaos.test.ts H1
+//       ("should NOT write the ungraded result to the 5-min scan cache").
 //  H4 — SESSION_STORE (the KV `handleToken` uses for OAuth code/token state)
 //       throws during POST /oauth/token. Returns a 503 `temporarily_unavailable`
 //       OAuth error body, never a 500 or a leaked internal message (SQ-199
@@ -598,5 +608,127 @@ describe('H5: valid bearer JWT with SESSION_STORE / DO coordinator failure — P
 		const res = await worker.fetch(toolsCallRequest(token), envWith({}), ctx);
 		await waitOnExecutionContext(ctx);
 		expect(res.status).toBe(401);
+	});
+
+	// -----------------------------------------------------------------------
+	// SQ-236 — outage-path gaps left by SQ-234. A token the strong state (or its
+	// KV mirror) already proves bad stays a 401; only an unknowable token is 503.
+	// -----------------------------------------------------------------------
+
+	type CoordinatorPayload = { kind: string };
+
+	function fakeCoordinator(handler: (payload: CoordinatorPayload) => unknown): unknown {
+		return { getByName: () => ({ dispatch: async (payload: CoordinatorPayload) => handler(payload) }) };
+	}
+
+	/** KV holding only the legacy pre-strong-state revocation mirror entry for every jti. */
+	function legacyRevokedKv(): KVNamespace {
+		return {
+			get: async (key: string) => (key.includes(':revoked:') ? '1' : null),
+			put: async () => undefined,
+			delete: async () => undefined,
+			list: async () => ({ keys: [], list_complete: true, cursor: undefined }),
+		} as unknown as KVNamespace;
+	}
+
+	async function mintJwtWithVersion(ver: number): Promise<string> {
+		const { signJwt, newJti } = await import('../../src/oauth/jwt');
+		return signJwt(
+			{ sub: 'owner', jti: newJti(), tier: 'owner', client_id: 'test-client', ver },
+			{ secret: TEST_SIGNING_SECRET, ttlSeconds: 3600, issuer: ISSUER, audience: `${ISSUER}/mcp` },
+		);
+	}
+
+	async function send(request: Request, overrides: Record<string, unknown>): Promise<Response> {
+		const ctx = createExecutionContext();
+		const res = await worker.fetch(request, envWith(overrides), ctx);
+		await waitOnExecutionContext(ctx);
+		return res;
+	}
+
+	it('a revoked bearer (strong marker present) with SESSION_STORE rejecting is a 401, not a 503', async () => {
+		const { token } = await mintJwt();
+		const fetchSpy = vi.spyOn(globalThis, 'fetch');
+		const res = await send(toolsCallRequest(token), {
+			SESSION_STORE: rejectingKv(),
+			QUOTA_COORDINATOR: fakeCoordinator((payload) => (payload.kind === 'marker-has' ? { present: true } : undefined)),
+		});
+		expect(res.status).toBe(401);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it('a legacy-revoked bearer whose strong-state migration write throws is still a 401, not a 503', async () => {
+		const { token } = await mintJwt();
+		const res = await send(toolsCallRequest(token), {
+			SESSION_STORE: legacyRevokedKv(),
+			QUOTA_COORDINATOR: fakeCoordinator((payload) => {
+				if (payload.kind === 'marker-has') return { present: false };
+				throw new Error('DO unavailable (SQ-236)');
+			}),
+		});
+		expect(res.status).toBe(401);
+	});
+
+	it('a legacy-revoked bearer whose migration write returns a malformed reply is still a 401, not a 503', async () => {
+		const { token } = await mintJwt();
+		const res = await send(toolsCallRequest(token), {
+			SESSION_STORE: legacyRevokedKv(),
+			QUOTA_COORDINATOR: fakeCoordinator((payload) => (payload.kind === 'marker-has' ? { present: false } : { unexpected: true })),
+		});
+		expect(res.status).toBe(401);
+	});
+
+	it('a stale token-version bearer is a 401 when the version store answers, and a 503 (never served) when it cannot', async () => {
+		const token = await mintJwtWithVersion(1);
+		const answering = await send(toolsCallRequest(token), {
+			SESSION_STORE: healthyKv(),
+			QUOTA_COORDINATOR: fakeCoordinator((payload) => (payload.kind === 'marker-has' ? { present: false } : { value: 2 })),
+		});
+		expect(answering.status).toBe(401);
+
+		const fetchSpy = vi.spyOn(globalThis, 'fetch');
+		const failing = await send(toolsCallRequest(token), {
+			SESSION_STORE: healthyKv(),
+			QUOTA_COORDINATOR: fakeCoordinator((payload) => {
+				if (payload.kind === 'marker-has') return { present: false };
+				throw new Error('DO unavailable (SQ-236)');
+			}),
+		});
+		await expectRetryable503(failing);
+		expect(fetchSpy).not.toHaveBeenCalled();
+	});
+
+	it('GET /mcp (SSE) with a valid bearer and SESSION_STORE rejecting: 503 temporarily_unavailable, no stream opened', async () => {
+		const { token } = await mintJwt();
+		const res = await send(
+			new Request('https://example.com/mcp', {
+				method: 'GET',
+				headers: { Accept: 'text/event-stream', Authorization: `Bearer ${token}` },
+			}),
+			{ SESSION_STORE: rejectingKv('KV unavailable (SQ-234)') },
+		);
+		await expectRetryable503(res);
+		expect(res.headers.get('content-type') ?? '').not.toContain('text/event-stream');
+	});
+
+	it('GET /reports/:auditId/:target with a valid bearer and SESSION_STORE rejecting: 503 temporarily_unavailable', async () => {
+		const { token } = await mintJwt();
+		const res = await send(
+			new Request('https://example.com/reports/audit-1/report.pdf', { method: 'GET', headers: { Authorization: `Bearer ${token}` } }),
+			{ SESSION_STORE: rejectingKv('KV unavailable (SQ-234)') },
+		);
+		await expectRetryable503(res);
+	});
+
+	it('GET /health?deep=1 with an owner bearer during the outage is deliberately fail-closed: 403, not 503 or a degraded body', async () => {
+		const { token } = await mintJwt();
+		const res = await send(
+			new Request('https://example.com/health?deep=1', { method: 'GET', headers: { Authorization: `Bearer ${token}` } }),
+			{ SESSION_STORE: rejectingKv('KV unavailable (SQ-234)') },
+		);
+		expect(res.status).toBe(403);
+		const body = (await res.json()) as { error?: string; bindings?: unknown };
+		expect(body.error).toBe('forbidden');
+		expect(body.bindings).toBeUndefined();
 	});
 });

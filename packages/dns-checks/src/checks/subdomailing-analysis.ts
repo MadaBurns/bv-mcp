@@ -23,6 +23,11 @@ import { extractLookupDomains } from './spf-analysis';
 /** Maximum number of include domains to probe (latency cap). */
 export const MAX_INCLUDE_PROBES = 15;
 
+/** RFC 7208 section 4.5: the version string is case-insensitive (`V=SPF1` is a valid record). */
+function isSpfRecord(record: string): boolean {
+	return /^v=spf1(?:\s|$)/i.test(record.trimStart());
+}
+
 /** Maximum SPF include recursion depth. */
 const MAX_RECURSION_DEPTH = 3;
 
@@ -196,7 +201,7 @@ async function resolveSpfNode(
 		return null;
 	}
 
-	const spfRecord = txtRecords.find((r) => r.trimStart().startsWith('v=spf1'));
+	const spfRecord = txtRecords.find(isSpfRecord);
 	if (!spfRecord) return null;
 
 	return { spfRecord, ...extractLookupDomains(spfRecord) };
@@ -425,7 +430,7 @@ export async function probeIncludeDomain(
 	// ── 3. Void include (no SPF record) ─────────────────────────────────────
 	try {
 		const txtRecords = await queryDNS(includeDomain, 'TXT', { timeout });
-		const hasSpf = txtRecords.some((r) => r.trimStart().startsWith('v=spf1'));
+		const hasSpf = txtRecords.some(isSpfRecord);
 		if (!hasSpf) {
 			return {
 				...base,

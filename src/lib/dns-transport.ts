@@ -1,8 +1,35 @@
 // SPDX-License-Identifier: BUSL-1.1
 
+/**
+ * DoH transport: one primary resolver (Cloudflare) with an optional secondary
+ * confirmation step.
+ *
+ * Secondary-resolver semantics (read before changing the failure paths):
+ *  - Secondaries (bv-dns / Google) confirm EMPTY primary answers only. They are
+ *    never consulted when the primary fails (HTTP >= 500, network error, timeout).
+ *  - The scan path sets `skipSecondaryConfirmation: true` (scan-domain.ts), so a
+ *    scan never reaches the secondary step at all; only direct `check_*` calls do.
+ *  - A primary 5xx therefore abstains BY DESIGN: after the bounded retries the
+ *    query throws `DnsQueryError` and the check records an inconclusive result
+ *    rather than failing over to a second resolver (SQ-202 ruling 2026-09-24;
+ *    revisit 30 days after the primary-failure counter below is live).
+ *  - SQ-209 measures how often that single-resolver exposure actually bites:
+ *    every failed primary attempt emits one structured log line, and each scan
+ *    emits one `doh_primary` Analytics Engine summary row (see
+ *    `AnalyticsClient.emitDohPrimarySummary`). Instrumentation only — it changes
+ *    no query, retry, cache or scoring behaviour and adds no subrequests.
+ */
+
 import { isInconclusiveRcode } from '@blackveil/dns-checks';
 import { DNS_TIMEOUT_MS, DNS_RETRIES, DNS_CONFIRM_WITH_SECONDARY_ON_EMPTY, DOH_EDGE_CACHE_TTL, DNS_RETRY_BASE_DELAY_MS } from './config';
-import { type DohResponse, type DohOutcome, type QueryDnsOptions, RecordType, type RecordTypeName } from './dns-types';
+import {
+	type DohResponse,
+	type DohOutcome,
+	type DohPrimaryFailureTally,
+	type QueryDnsOptions,
+	RecordType,
+	type RecordTypeName,
+} from './dns-types';
 import { DohResponseSchema } from '../schemas/dns';
 import { logError } from './log';
 import type { Semaphore } from './semaphore';
@@ -21,6 +48,40 @@ function resolverLabel(url: string): 'cloudflare' | 'google' | 'configured_secon
 		// Invalid URLs are classified without reflecting their contents into logs.
 	}
 	return 'configured_secondary';
+}
+
+/**
+ * Record one failed PRIMARY attempt: a structured log line (resolver, status
+ * class, attempt, errorKind, record type only — no query name) and the scan's
+ * tally. Never throws, so it cannot alter the retry path.
+ */
+function recordPrimaryFailure(
+	tally: DohPrimaryFailureTally | undefined,
+	errorKind: 'http_5xx' | 'network' | 'timeout',
+	attempt: number,
+	url: string,
+	type: RecordTypeName,
+): void {
+	try {
+		if (tally) {
+			if (errorKind === 'http_5xx') tally.http5xx++;
+			else if (errorKind === 'timeout') tally.timeout++;
+			else tally.network++;
+		}
+		logError('DNS primary resolver failure', {
+			severity: 'warn',
+			category: 'dns-transport',
+			details: {
+				resolver: resolverLabel(url),
+				statusClass: errorKind === 'http_5xx' ? '5xx' : 'none',
+				attempt,
+				errorKind,
+				recordType: type,
+			},
+		});
+	} catch {
+		// Instrumentation must never affect the query path.
+	}
 }
 
 function buildDohUrl(endpoint: string, domain: string, type: RecordTypeName, dnssecCheck: boolean, checkingDisabled = false): string {
@@ -171,6 +232,7 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 			// Queue wait is bounded by the caller, not by the resolver timeout.
 			// Give every dispatched attempt its full allowance, including body reads.
 			const dispatch = () => {
+				if (opts?.primaryFailureTally) opts.primaryFailureTally.attempts++;
 				const timeoutSignal = AbortSignal.timeout(timeoutMs);
 				fetchSignal = callerSignal ? AbortSignal.any([timeoutSignal, callerSignal]) : timeoutSignal;
 				return fetch(url, {
@@ -189,12 +251,14 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 				throw new DnsQueryError(`DNS query aborted by caller`, domain, type);
 			}
 			if (err instanceof Error && (err.name === 'AbortError' || err.name === 'TimeoutError')) {
+				recordPrimaryFailure(opts?.primaryFailureTally, 'timeout', attempt, url, type);
 				if (attempt < retries) {
 					await retryDelay(attempt);
 					continue;
 				}
 				throw new DnsQueryError(`DNS query timed out after ${timeoutMs}ms`, domain, type);
 			}
+			recordPrimaryFailure(opts?.primaryFailureTally, 'network', attempt, url, type);
 			if (attempt < retries) {
 				await retryDelay(attempt);
 				continue;
@@ -205,6 +269,7 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 		if (!response.ok) {
 			const status = response.status;
 			await disposeUnreadResponseBody(response);
+			if (status >= 500) recordPrimaryFailure(opts?.primaryFailureTally, 'http_5xx', attempt, url, type);
 			if (attempt < retries && status >= 500) {
 				await retryDelay(attempt);
 				continue;
@@ -233,6 +298,9 @@ async function queryDnsUncached(domain: string, type: RecordTypeName, dnssecChec
 			const secondaryOpts = {
 				...(opts?.secondaryDoh ? { secondaryDoh: { url: opts.secondaryDoh.endpoint, token: opts.secondaryDoh.token } } : {}),
 				...(callerSignal ? { signal: callerSignal } : {}),
+				// A cd=1 (validation-off) primary must be confirmed by cd=1 secondaries: a validating
+				// secondary would otherwise "confirm" an answer the caller deliberately asked not to validate.
+				...(opts?.checkingDisabled ? { checkingDisabled: true } : {}),
 			};
 			const secondaryResult = await confirmWithSecondaryResolvers(domain, type, dnssecCheck, timeoutMs, sem, secondaryOpts);
 			// An aborted confirmation is NOT a confirmed-empty answer: the caller
@@ -278,10 +346,10 @@ export async function confirmWithSecondaryResolvers(
 	dnssecCheck: boolean,
 	timeoutMs: number,
 	sem?: Semaphore,
-	opts?: { secondaryDoh?: { url: string; token?: string }; signal?: AbortSignal },
+	opts?: { secondaryDoh?: { url: string; token?: string }; signal?: AbortSignal; checkingDisabled?: boolean },
 ): Promise<DohResponse | { kind: 'unconfirmed' }> {
-	const bvDnsUrl = opts?.secondaryDoh ? buildDohUrl(opts.secondaryDoh.url, domain, type, dnssecCheck) : null;
-	const googleUrl = buildDohUrl(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck);
+	const bvDnsUrl = opts?.secondaryDoh ? buildDohUrl(opts.secondaryDoh.url, domain, type, dnssecCheck, opts.checkingDisabled) : null;
+	const googleUrl = buildDohUrl(GOOGLE_DOH_ENDPOINT, domain, type, dnssecCheck, opts?.checkingDisabled);
 	const signal = opts?.signal;
 	const candidates = [
 		bvDnsUrl

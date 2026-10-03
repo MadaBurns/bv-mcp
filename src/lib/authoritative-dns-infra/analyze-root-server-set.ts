@@ -60,8 +60,13 @@ function rootHintsMatchOfficial(evidence: RootServerSetEvidence): boolean {
 	});
 }
 
-function valuesConverge(record: Record<string, string | number> | undefined): boolean | undefined {
+/**
+ * `minValues` is how many observations must exist before agreement means anything: a single
+ * value (or none) was never compared against another, so it is not-measured, not converged.
+ */
+function valuesConverge(record: Record<string, string | number> | undefined, minValues = 0): boolean | undefined {
 	if (!record) return undefined;
+	if (Object.keys(record).length < minValues) return undefined;
 	const unique = new Set(Object.values(record));
 	return unique.size <= 1;
 }
@@ -284,7 +289,7 @@ export function analyzeRootServerSetEvidence(probeEvidence: RootServerSetEvidenc
 		capabilitySummary,
 		findings,
 		'stale_root_zone_serial_detection',
-		valuesConverge(evidence.serialsByRoot),
+		valuesConverge(evidence.serialsByRoot, 2),
 		{
 			title: 'Root zone serials differ across roots',
 			severity: 'medium',

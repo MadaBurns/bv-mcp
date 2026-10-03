@@ -161,13 +161,28 @@ const TAKEOVER_SERVICES = [
 ];
 
 /**
+ * One provider's fingerprint. `statuses` / `headers`, when present, are extra gates that must ALL
+ * hold before a body pattern counts: a generic phrase ("Not Found", "unknown domain") is only
+ * evidence when the response also carries the status / header the provider emits for an unclaimed
+ * host, otherwise a live app's own error body reads as a takeover.
+ */
+interface FingerprintEntry {
+	service: string;
+	patterns: string[];
+	/** HTTP statuses the provider returns for an unclaimed host. */
+	statuses?: number[];
+	/** Response headers (lower-case name -> expected lower-case value substring) the provider sets for an unclaimed host. */
+	headers?: Record<string, string>;
+}
+
+/**
  * Provider-specific "this endpoint has been deprovisioned" body fragments.
  * A match means the target is takeover-eligible. Substrings are matched
  * case-insensitively. Multiple patterns per service are allowed — first match
  * wins. **Order longer matches first** to disambiguate sibling services
  * (e.g. AFD vs Azure CDN).
  */
-const TAKEOVER_FINGERPRINTS: { service: string; patterns: string[] }[] = [
+const TAKEOVER_FINGERPRINTS: FingerprintEntry[] = [
 	// AWS
 	{ service: 'amazonaws.com', patterns: ['NoSuchBucket', 'The specified bucket does not exist'] },
 	{ service: 'cloudfront.net', patterns: ['NoSuchBucket', "Bad request.\nWe can't connect"] },
@@ -233,7 +248,9 @@ const TAKEOVER_FINGERPRINTS: { service: string; patterns: string[] }[] = [
 	// Hosting platforms
 	{ service: 'github.io', patterns: ["There isn't a GitHub Pages site here", '<h2>404</h2>'] },
 	{ service: 'herokuapp.com', patterns: ['no-such-app', 'No such app', "There's nothing here, yet"] },
-	{ service: 'fastly.net', patterns: ['Fastly error: unknown domain', 'unknown domain'] },
+	// Fastly answers an unmapped Host with a 500 "Fastly error: unknown domain: <host>". The bare phrase
+	// "unknown domain" is NOT a marker on its own — it appears in ordinary page copy.
+	{ service: 'fastly.net', patterns: ['Fastly error: unknown domain'], statuses: [500] },
 	{ service: 'netlify.app', patterns: ['Not Found - Request ID', '<h1>Not Found</h1>'] },
 	{ service: 'pantheonsite.io', patterns: ['The gods are displeased'] },
 	{ service: 'tumblr.com', patterns: ["There's nothing here", 'Whatever you were looking for'] },
@@ -243,7 +260,10 @@ const TAKEOVER_FINGERPRINTS: { service: string; patterns: string[] }[] = [
 	{ service: 'firebaseapp.com', patterns: ['Site Not Found', 'project has been deleted'] },
 	{ service: 'web.app', patterns: ['Site Not Found', 'project has been deleted'] },
 	{ service: 'vercel.app', patterns: ['<title>404: NOT_FOUND</title>', 'DEPLOYMENT_NOT_FOUND'] },
-	{ service: 'onrender.com', patterns: ['Not Found', 'has not been deployed'] },
+	// Render: an unclaimed hostname is a 404 carrying `x-render-routing: no-server`. A bare "Not Found"
+	// body is also what a live Render app's own 404 (e.g. a JSON API) says, so it needs the header.
+	{ service: 'onrender.com', patterns: ['Not Found'], statuses: [404], headers: { 'x-render-routing': 'no-server' } },
+	{ service: 'onrender.com', patterns: ['has not been deployed'], statuses: [404] },
 	{ service: 'surge.sh', patterns: ['project not found'] },
 	{ service: 'webflow.io', patterns: ['The page you are looking for doesn'] },
 	{ service: 'pages.dev', patterns: ['Failed to load Cloudflare Pages content'] },
@@ -257,7 +277,7 @@ const TAKEOVER_FINGERPRINTS: { service: string; patterns: string[] }[] = [
  * signal, so this list is probed for every swept subdomain that resolves via
  * A/AAAA with no CNAME. Keep this list to verbatim-evidenced providers only.
  */
-const A_RECORD_UNCLAIMED_FINGERPRINTS: { service: string; patterns: string[] }[] = [
+const A_RECORD_UNCLAIMED_FINGERPRINTS: FingerprintEntry[] = [
 	// Cloudways: verbatim text from the provider's "unmapped domain" block page
 	// (issue #973). Shared IP, no CNAME — the domain resolves straight to the
 	// platform's edge, which serves this page for any hostname it doesn't have
@@ -420,7 +440,7 @@ export async function probeARecordUnclaimedFingerprint(fqdn: string, fetchFn: Fe
  */
 async function matchFingerprintOverHttp(
 	fqdn: string,
-	matchingEntries: { service: string; patterns: string[] }[],
+	matchingEntries: FingerprintEntry[],
 	fetchFn: FetchFunction,
 	options?: { httpFallbackOnFailure?: boolean },
 ): Promise<string | null> {
@@ -470,7 +490,7 @@ async function matchFingerprintOverHttp(
  */
 async function fetchAndMatchFingerprint(
 	url: string,
-	matchingEntries: { service: string; patterns: string[] }[],
+	matchingEntries: FingerprintEntry[],
 	fetchFn: FetchFunction,
 ): Promise<string | null> {
 	const response = await fetchFn(url, {
@@ -498,7 +518,11 @@ async function fetchAndMatchFingerprint(
 	if (body === null) return null;
 
 	const lowerBody = body.toLowerCase();
-	for (const { service, patterns } of matchingEntries) {
+	for (const { service, patterns, statuses, headers } of matchingEntries) {
+		if (statuses && !statuses.includes(response.status)) continue;
+		if (headers && !Object.entries(headers).every(([name, value]) => (response.headers.get(name) ?? '').toLowerCase().includes(value))) {
+			continue;
+		}
 		for (const pattern of patterns) {
 			if (lowerBody.includes(pattern.toLowerCase())) {
 				return SERVICE_DISPLAY_NAMES[service] ?? service;

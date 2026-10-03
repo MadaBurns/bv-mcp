@@ -2,6 +2,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { setupFetchMock, createDohResponse, dnssecResponse, tlsaResponse } from './helpers/dns-mock';
+import { DOH_TRANSPORT_FAILURES } from './helpers/dns-transport-failure';
 
 const { restore } = setupFetchMock();
 
@@ -211,6 +212,25 @@ describe('checkDane', () => {
 		expect(result.findings.some((f) => f.title === 'SMTP DANE not applicable (no inbound mail)')).toBe(false);
 	});
 
+	it('reports a domain whose every TLSA lookup SERVFAILs as INCONCLUSIVE, not "No DANE TLSA" (SQ-279)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(mxResponse('flaky.example', [{ priority: 10, exchange: 'mx1.flaky.example' }]));
+			}
+			if (url.includes('_25._tcp.mx1.flaky.example')) {
+				// SERVFAIL: HTTP 200, rcode 2, no answers.
+				return Promise.resolve(createDohResponse([{ name: '_25._tcp.mx1.flaky.example', type: 52 }], [], { status: 2 }));
+			}
+			return Promise.resolve(emptyResponse('flaky.example', 1));
+		});
+
+		const result = await run('flaky.example');
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.some((f) => f.title === 'No DANE TLSA for MX servers')).toBe(false);
+	});
+
 	it('still reports a genuine NOERROR/no-MX domain as not applicable at 100', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
@@ -278,5 +298,72 @@ describe('checkDane', () => {
 		expect(result.category).toBe('dane');
 		// Should classify as missing DANE since null MX exchange is skipped
 		expect(result.findings.length).toBeGreaterThan(0);
+	});
+
+	// SQ-264 (sibling of SQ-207): the per-MX DNSSEC (AD) lookup is a separate probe from the TLSA
+	// lookup. When ONLY the AD lookup is cut, "DNSSEC unknown" must not be scored as "unsigned"
+	// ("DANE without DNSSEC", high) — the TLSA facet still reports from its answer and the DNSSEC
+	// facet abstains.
+	describe('per-MX DNSSEC (AD) lookup transport failure with a TLSA answer (SQ-264)', () => {
+		function mockMx(adResponse: () => Promise<Response>, withTlsa: boolean) {
+			globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+				const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+				if (url.includes('type=MX') || url.includes('type=15')) {
+					return Promise.resolve(mxResponse('example.com', [{ priority: 10, exchange: 'mx1.example.com' }]));
+				}
+				if (url.includes('_25._tcp.mx1.example.com') && (url.includes('type=TLSA') || url.includes('type=52'))) {
+					return Promise.resolve(
+						withTlsa
+							? tlsaResponse('_25._tcp.mx1.example.com', [{ usage: 3, selector: 1, matchingType: 1, certData: 'aabbccddee' }])
+							: emptyResponse('_25._tcp.mx1.example.com', 52),
+					);
+				}
+				// The per-MX AD lookup: an A query for the MX host itself.
+				if (url.includes('name=mx1.example.com') && !url.includes('_tcp')) return adResponse();
+				return Promise.resolve(emptyResponse('example.com', 1));
+			});
+		}
+
+		it.each(DOH_TRANSPORT_FAILURES)('does not score "DANE without DNSSEC" when $label for the AD lookup only', async ({ fail }) => {
+			mockMx(fail, true);
+
+			const result = await run();
+			expect(result.category).toBe('dane');
+			// The cut probe is not an unsigned verdict: no high finding, no missingControl.
+			expect(result.findings.some((f) => f.title === 'DANE without DNSSEC')).toBe(false);
+			expect(result.findings.some((f) => f.severity === 'high')).toBe(false);
+			for (const finding of result.findings) expect(finding.metadata?.missingControl, finding.title).not.toBe(true);
+			// The DNSSEC facet abstains with an inconclusive info dns_error finding...
+			const facet = result.findings.find((f) => f.title === 'DNSSEC status not determined');
+			expect(facet).toBeDefined();
+			expect(facet?.severity).toBe('info');
+			expect(facet?.metadata?.errorKind).toBe('dns_error');
+			expect(facet?.metadata?.inconclusive).toBe(true);
+			// ...while the TLSA facet is still reported from its successful answer.
+			expect(result.recordPresent).toBe(true);
+			expect(result.findings.some((f) => f.title.includes('DANE TLSA configured'))).toBe(true);
+			expect(result.checkStatus).toBeUndefined();
+			expect(result.score).toBe(95);
+			// A half-measured result is not cached.
+			expect(result.partial).toBe(true);
+		});
+
+		it('keeps an answered AD=false as a measured "DANE without DNSSEC" (high), not partial', async () => {
+			mockMx(() => Promise.resolve(dnssecResponse('mx1.example.com', false)), true);
+
+			const result = await run();
+			expect(result.findings.find((f) => f.severity === 'high')?.title).toBe('DANE without DNSSEC');
+			expect(result.findings.some((f) => f.title === 'DNSSEC status not determined')).toBe(false);
+			expect(result.partial).toBeUndefined();
+		});
+
+		it('does not flag the DNSSEC facet or mark partial when no TLSA is published (nothing to validate)', async () => {
+			mockMx(DOH_TRANSPORT_FAILURES[0].fail, false);
+
+			const result = await run();
+			expect(result.findings.some((f) => f.title === 'DNSSEC status not determined')).toBe(false);
+			expect(result.findings.some((f) => f.title === 'No DANE TLSA for MX servers')).toBe(true);
+			expect(result.partial).toBeUndefined();
+		});
 	});
 });

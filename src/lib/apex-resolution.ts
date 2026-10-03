@@ -48,13 +48,18 @@ export function describeNonResolvingDomain(domain: string): string {
 
 /**
  * True only when the apex NS probe returned a clean NXDOMAIN. A throw or any other
- * rcode is `false` (fail-open). Direct tool calls do NOT skip the secondary-resolver
- * confirmation, so an NXDOMAIN here has been corroborated where a secondary was
- * reachable — a stronger gate than `scan_domain`'s single-resolver probe.
+ * rcode is `false` (fail-open).
+ *
+ * The probe ALWAYS skips the secondary-resolver confirmation, like `scan_domain`'s
+ * probe: confirmation fires on an empty answer, so a hostname input would add two
+ * secondary DoH queries per call (x up to 500 on `/internal/tools/batch`), and a
+ * secondary that disagreed could replace the primary's rcode and flip a resolving
+ * name to "does not resolve" (SQ-268 F3/F4). Pass `dnsOptions.queryCache` to let the
+ * caller's own checks reuse the probe's NS answer.
  */
 export async function isNonResolvingApex(domain: string, dnsOptions?: QueryDnsOptions): Promise<boolean> {
 	try {
-		return (await probeApexRcode(domain, dnsOptions)) === 'nxdomain';
+		return (await probeApexRcode(domain, { ...dnsOptions, skipSecondaryConfirmation: true })) === 'nxdomain';
 	} catch {
 		return false;
 	}

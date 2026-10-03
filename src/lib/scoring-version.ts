@@ -752,8 +752,37 @@
  *   a domain whose SPF include chain hits a thrown DNS lookup during the probe phase. No weight,
  *   tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule
  *   changed.
+ * - 1.38.0 — Bug-hunt wave (Sidequest US-9, SQ-279..291; dns-checks 1.57.0). SCORE-BEARING in five
+ *   ways, all fixes of fail-open behaviour. (a) `check_mx`, `check_ns`, `check_dane`, `check_caa`,
+ *   `check_dnssec`, `check_dnskey_strength`, `check_lookalikes`, `check_cymru_asn`, `check_zone_hygiene`,
+ *   `check_ptr`, `check_shadow_domains`, `check_resolver_consistency` and `resolve_spf_chain` now
+ *   ABSTAIN (`checkStatus: 'error'`, excluded from scoring and renormalized) on a DoH SERVFAIL /
+ *   REFUSED or a thrown lookup instead of certifying absence ("No MX", "No CAA", "lame delegation",
+ *   "No DANE", "DNSSEC not enabled", "all resolvers agree") or setting `missingControl` on something
+ *   nobody measured. (b) `src/tools/check-ns.ts` and `check-caa.ts` forward the DoH `Status`, which
+ *   arms the lame-delegation `verified` claimability path (critical) that CHANGELOG 3.5x documented
+ *   as designed but was unreachable in prod. (c) Non-mail downgrade adjusters clear `missingControl`
+ *   when they rewrite a finding to not-applicable, so the category is no longer zeroed (web_only
+ *   no-MX host: SPF missing 85→90, SPF+DMARC missing 79→90; scores only move UP). (d) DMARC multi-
+ *   record TXT strings are parsed separately (no `p=rejectother`), the SPF `ptr` mechanism is matched
+ *   as a term, and a first-party `_spf.<zone>` include is not a shared platform. (e) CSP
+ *   `'unsafe-inline'` is inert beside a nonce/hash/`'strict-dynamic'`, HSTS without `max-age` is a
+ *   medium finding (was silent), NS provider diversity groups by registrable domain, Render/Fastly
+ *   takeover fingerprints are gated on status + headers. The maturity ladder reads the DMARC policy
+ *   from structured metadata (malformed DMARC: Hardened→Basic). No weight, tier, grade band,
+ *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
+ * - 1.39.0 — `check_mx` no longer counts a syntactically invalid MX exchange (`MX 300 ~.`, `10 *.`;
+ *   RFC 1123 label syntax, underscore deliberately excluded pending a corpus measurement) as a present
+ *   mail control (#1114, dns-checks 1.58.0). An all-invalid MX set now takes the no-MX SPF-context
+ *   verdict (`controlPresent: false`) plus one `info` "Invalid MX exchange" finding; in a mixed set the
+ *   invalid records are excluded from the "MX records found" count and from the IP-target, dangling and
+ *   single-MX passes, so garbage can no longer surface as "Dangling MX record". SCORE-BEARING only for
+ *   domains publishing an invalid exchange: `controlPresent` flips to false there, which downgrades the
+ *   mail-enabled severities of dependent checks (DKIM, MTA-STS, BIMI), and a mixed set may gain the low
+ *   "Single MX record". The SQ-279 inconclusive-rcode abstention branch is untouched. No weight, tier,
+ *   grade band, `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.37.0';
+export const SCORING_MODEL_VERSION = '1.39.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

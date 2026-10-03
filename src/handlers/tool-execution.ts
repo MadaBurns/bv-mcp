@@ -53,13 +53,19 @@ interface ToolExecutionBase {
 function classifyToolFailure(error: unknown, domain?: string): ToolOutcomeReason {
 	const err = error instanceof Error ? error : undefined;
 	const text = `${err?.name ?? ''} ${err?.message ?? String(error)}`.toLowerCase();
-	if (!domain && /(invalid|required|validation|argument|schema|parse)/.test(text)) return 'input_error';
+	// Input errors are the pre-dispatch rejections whose messages `validateToolArgs` /
+	// `extractAndValidateDomain` throw with a fixed prefix (plus the unknown-tool result): no tool
+	// ran. Match that prefix, NOT the bare words anywhere in the text, and NOT the absence of a
+	// domain — domainless tools (batch_scan, scan_buckets_*, osint_*, brand_audit_*) never have one,
+	// so a real failure there must stay `internal_error` and reach the alert's real_error_count.
+	const message = (err?.message ?? String(error)).trim().toLowerCase();
+	if (!domain && /^(invalid\b|missing required parameter|domain validation failed|unknown tool)/.test(message)) return 'input_error';
 	if (/batch[_ -]?budget|budget[_ -]?exceeded/.test(text)) return 'batch_budget_exceeded';
 	if (/scan[_ -]?timeout|scan deadline|scan timed out/.test(text)) return 'scan_timeout';
 	if (/429|rate[_ -]?limit|too many requests/.test(text)) return 'upstream_rate_limited';
 	if (/client.*abort|disconnect|request.*abort/.test(text)) return 'client_aborted';
 	if (err?.name === 'AbortError' || /timed? ?out|timeout|deadline/.test(text)) return 'upstream_timeout';
-	return !domain ? 'input_error' : 'internal_error';
+	return 'internal_error';
 }
 
 /**

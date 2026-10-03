@@ -34,6 +34,7 @@ import {
 import { buildAlertPayload, sendAlert } from '../lib/alerting';
 import { createAnalyticsClient } from '../lib/analytics';
 import { logEvent, logError } from '../lib/log';
+import { resolveAlertWebhookUrl } from '../lib/operator-webhook-binding';
 import { resolveTenantUncached, type TenantDbHandle } from './tenant-resolver';
 import type { ScanQueueMessage } from '../schemas/tenant-internal';
 
@@ -806,7 +807,10 @@ async function processCycleAlert(
 		return;
 	}
 
-	const webhookUrl = env.ALERT_WEBHOOK_URL ?? '';
+	// Same precedence as every other cron alert sender: the bv-web-prod
+	// admin-managed URL wins over the static ALERT_WEBHOOK_URL secret when
+	// resolvable (see resolveAlertWebhookUrl's docblock — do not reorder).
+	const webhookUrl = (await resolveAlertWebhookUrl(env)) ?? '';
 	const payload = computeCycleDiff(currentFindings, baselineFindings, {
 		currentCycleId: cycle.id,
 		baselineCycleId: cycle.baseline_cycle_id,
@@ -826,6 +830,6 @@ async function processCycleAlert(
 	// Claim before delivering: overlapping sweeps can both reach this point for
 	// one cycle, and only the sweep whose guarded stamp changed the row may send.
 	if (!(await stamp(ALERT_OUTCOME_SENDING))) return;
-	const result = await deps.send(payload, { ALERT_WEBHOOK_URL: webhookUrl });
+	const result = await deps.send(payload, { ALERT_WEBHOOK_URL: webhookUrl }, { bvWeb: env.BV_WEB });
 	await stamp(result.delivered ? 'sent' : 'webhook_failed', true);
 }

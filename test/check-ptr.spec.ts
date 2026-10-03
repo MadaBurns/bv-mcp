@@ -396,3 +396,141 @@ describe('checkPtr', () => {
 		expect(result.findings[0].metadata?.errorKind).toBe('dns_error');
 	});
 });
+
+/**
+ * Like `routeDns`, but a key listed in `servfail` answers RCODE 2 (the resolver could not
+ * answer) instead of NOERROR, and every dispatched query key is recorded.
+ */
+function routeDnsWithServfail(records: Record<string, string[]>, servfail: string[] = []) {
+	const TYPE_CODE: Record<string, number> = { A: 1, MX: 15, PTR: 12, TXT: 16, NS: 2 };
+	const queried: string[] = [];
+	globalThis.fetch = vi.fn().mockImplementation((input: string | Request) => {
+		const url = new URL(typeof input === 'string' ? input : (input as Request).url);
+		const name = (url.searchParams.get('name') ?? '').replace(/\.$/, '');
+		const type = url.searchParams.get('type') ?? '';
+		const key = `${type} ${name}`;
+		queried.push(key);
+		const failed = servfail.includes(key);
+		const data = failed ? [] : (records[key] ?? []);
+		return Promise.resolve({
+			ok: true,
+			status: 200,
+			json: () =>
+				Promise.resolve({
+					Status: failed ? 2 : 0,
+					TC: false,
+					RD: true,
+					RA: true,
+					AD: false,
+					CD: false,
+					Question: [{ name, type: TYPE_CODE[type] ?? 0 }],
+					Answer: data.map((d) => ({ name, type: TYPE_CODE[type] ?? 0, TTL: 300, data: d })),
+				}),
+		} as unknown as Response);
+	});
+	return queried;
+}
+
+describe('checkPtr — FCrDNS across all PTR names and failed lookups (T6 item 4)', () => {
+	it('forward-confirms against EVERY PTR name, not only the first', async () => {
+		routeDnsWithServfail({
+			'MX example.com': ['10 mail.example.org.'],
+			'A mail.example.org': ['192.0.2.10'],
+			'PTR 10.2.0.192.in-addr.arpa': ['old-host.example.net.', 'mail.example.org.'],
+			'A old-host.example.net': ['198.51.100.9'], // first PTR name does NOT confirm
+		});
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.findings.some((f) => /misconfigured/i.test(f.title))).toBe(false);
+		expect(result.findings[0].title).toMatch(/forward-confirmed/i);
+		expect(result.controlPresent).toBe(true);
+	});
+
+	it('still reports a mismatch when no PTR name forward-resolves back (genuine NOERROR answers)', async () => {
+		routeDnsWithServfail({
+			'MX example.com': ['10 mail.example.org.'],
+			'A mail.example.org': ['192.0.2.10'],
+			'PTR 10.2.0.192.in-addr.arpa': ['old-host.example.net.', 'older-host.example.net.'],
+			'A old-host.example.net': ['198.51.100.9'],
+			'A older-host.example.net': ['198.51.100.8'],
+		});
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		const low = result.findings.find((f) => /misconfigured/i.test(f.title));
+		expect(low).toBeDefined();
+		expect(low!.severity).toBe('low');
+		expect(low!.detail).toContain('old-host.example.net');
+		expect(low!.detail).toContain('older-host.example.net');
+	});
+
+	it('bounds the number of PTR names forward-confirmed per IP', async () => {
+		const names = Array.from({ length: 12 }, (_, i) => `h${i}.example.net.`);
+		const queried = routeDnsWithServfail({
+			'MX example.com': ['10 mail.example.org.'],
+			'A mail.example.org': ['192.0.2.10'],
+			'PTR 10.2.0.192.in-addr.arpa': names,
+		});
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		await checkPtr('example.com', undefined, DNS);
+		const forwardLookups = queried.filter((k) => /^A h\d+\.example\.net$/.test(k));
+		expect(forwardLookups.length).toBeGreaterThan(0);
+		expect(forwardLookups.length).toBeLessThanOrEqual(5);
+	});
+
+	it('treats a forward-lookup SERVFAIL as inconclusive, never as a "mismatched" PTR', async () => {
+		routeDnsWithServfail(
+			{
+				'MX example.com': ['10 mail.example.org.'],
+				'A mail.example.org': ['192.0.2.10'],
+				'PTR 10.2.0.192.in-addr.arpa': ['ptr-host.example.net.'],
+			},
+			['A ptr-host.example.net'],
+		);
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.findings.some((f) => /misconfigured/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		// Every IP is unmeasured, so the check abstains in the shared not-assessed shape.
+		expect(result.checkStatus).toBe('error');
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+	});
+
+	it('treats a PTR-query SERVFAIL as inconclusive, never as "no reverse DNS"', async () => {
+		routeDnsWithServfail(
+			{
+				'MX example.com': ['10 mail.example.org.'],
+				'A mail.example.org': ['192.0.2.10'],
+			},
+			['PTR 10.2.0.192.in-addr.arpa'],
+		);
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.findings.some((f) => /No reverse DNS/i.test(f.title))).toBe(false);
+		expect(result.checkStatus).toBe('error');
+	});
+
+	it('keeps measured IPs and flags the unmeasured one when only some lookups SERVFAIL', async () => {
+		routeDnsWithServfail(
+			{
+				'MX example.com': ['10 mail.example.org.', '20 mail2.example.org.'],
+				'A mail.example.org': ['192.0.2.10'],
+				'A mail2.example.org': ['192.0.2.11'],
+				'PTR 10.2.0.192.in-addr.arpa': ['mail.example.org.'],
+				'PTR 11.2.0.192.in-addr.arpa': ['ptr2.example.net.'],
+			},
+			['A ptr2.example.net'],
+		);
+		const { checkPtr } = await import('../src/tools/check-ptr');
+		const result = await checkPtr('example.com', undefined, DNS);
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.partial).toBe(true);
+		// The clean claim covers ALL IPs; one is unmeasured, so it must not be made.
+		expect(result.findings.some((f) => /^Forward-confirmed reverse DNS present$/.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => /misconfigured/i.test(f.title))).toBe(false);
+		const note = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(note).toBeDefined();
+		expect(note!.severity).toBe('info');
+		expect(note!.metadata?.errorKind).toBe('dns_error');
+	});
+});

@@ -113,6 +113,9 @@ export function isUsableDriftBaseline(value: unknown): value is ScanScore & { ov
 	return Array.isArray(candidate.findings);
 }
 
+/** Severity rank for comparing two severities (higher = worse). Unknown severities rank 0. */
+const SEVERITY_RANK: Record<string, number> = { info: 0, low: 1, medium: 2, high: 3, critical: 4 };
+
 /** Build a unique key for matching findings across snapshots. */
 function findingKey(f: { category: string; title: string }): string {
 	return `${f.category}::${f.title}`;
@@ -192,10 +195,20 @@ export function computeDrift(domain: string, baseline: ScanScore, current: ScanS
 
 	if (bothGraded) {
 		// --- Category deltas (only changed categories) ---
-		const allCategories = new Set([...Object.keys(baseline.categoryScores ?? {}), ...Object.keys(current.categoryScores ?? {})]);
-		for (const cat of allCategories) {
-			const baseVal = (baseline.categoryScores as Record<string, number>)?.[cat] ?? 0;
-			const curVal = (current.categoryScores as Record<string, number>)?.[cat] ?? 0;
+		// A category scored on only ONE side was not measured on the other (a timed-out check is
+		// excluded from categoryScores rather than zeroed), so it has nothing to diff against.
+		// Defaulting the missing side to 0 rendered `100 -> 0` and ticked its findings off as
+		// "Resolved" (SQ-291). Such a category is not comparable: no delta, no finding diff.
+		const baseScores = (baseline.categoryScores ?? {}) as Record<string, number>;
+		const curScores = (current.categoryScores ?? {}) as Record<string, number>;
+		const notComparable = new Set<string>();
+		for (const cat of new Set([...Object.keys(baseScores), ...Object.keys(curScores)])) {
+			if (!(cat in baseScores) || !(cat in curScores)) {
+				notComparable.add(cat);
+				continue;
+			}
+			const baseVal = baseScores[cat];
+			const curVal = curScores[cat];
 			if (baseVal !== curVal) {
 				categoryDeltas[cat] = { from: baseVal, to: curVal, delta: curVal - baseVal };
 			}
@@ -204,11 +217,11 @@ export function computeDrift(domain: string, baseline: ScanScore, current: ScanS
 		// --- Finding diffs ---
 		const baselineMap = new Map<string, Finding>();
 		for (const f of baseline.findings ?? []) {
-			baselineMap.set(findingKey(f), f);
+			if (!notComparable.has(f.category)) baselineMap.set(findingKey(f), f);
 		}
 		const currentMap = new Map<string, Finding>();
 		for (const f of current.findings ?? []) {
-			currentMap.set(findingKey(f), f);
+			if (!notComparable.has(f.category)) currentMap.set(findingKey(f), f);
 		}
 
 		// Findings in baseline but not in current → improvements (resolved)
@@ -236,7 +249,15 @@ export function computeDrift(domain: string, baseline: ScanScore, current: ScanS
 	}
 
 	// Count critical/high regressions for classification
-	const newCriticalHighCount = regressions.filter((f) => f.severity === 'critical' || f.severity === 'high').length;
+	// An escalation (by severity rank) INTO critical/high is a regression for classification just
+	// like a new critical/high finding; it used to land only in `changed` and leave the verdict
+	// "stable" (SQ-291).
+	const newCriticalHighCount =
+		regressions.filter((f) => f.severity === 'critical' || f.severity === 'high').length +
+		changed.filter(
+			(f) =>
+				(f.severity === 'critical' || f.severity === 'high') && (SEVERITY_RANK[f.severity] ?? 0) > (SEVERITY_RANK[f.previousSeverity] ?? 0),
+		).length;
 
 	const classification = bothGraded ? classifyDrift(scoreDelta ?? 0, newCriticalHighCount, improvements.length) : 'inconclusive';
 

@@ -37,7 +37,7 @@ import {
 import { applyInteractionPenalties, type InteractionEffect } from '../lib/category-interactions';
 import { computeScoringConfigHash } from '../lib/scoring-version';
 import { buildCheckCacheKey, buildScanCacheKey, cacheGet, cacheSet, runWithCache } from '../lib/cache';
-import type { QueryDnsOptions } from '../lib/dns-types';
+import type { DohPrimaryFailureTally, QueryDnsOptions } from '../lib/dns-types';
 import { queryDns } from '../lib/dns';
 import { describeNonResolvingDomain, probeApexRcode } from '../lib/apex-resolution';
 import { Semaphore } from '../lib/semaphore';
@@ -70,6 +70,7 @@ import { logError } from '../lib/log';
 import { createRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
 import { fetchBudgetFor } from '../lib/fetch-budget';
 import { isSatisfiedControl } from '../lib/control-presence';
+import { isCompletedCheck } from '../lib/ungraded-display';
 import {
 	getAdaptiveWeights,
 	publishAdaptiveWeightSummary,
@@ -236,6 +237,13 @@ export const SCAN_CATEGORIES: CheckCategory[] = Object.keys(CHECK_DISPATCH) as C
 export const CHECKS_WITHOUT_DNS_POOL: ReadonlySet<CheckCategory> = new Set<CheckCategory>(['ssl', 'http_security']);
 
 /** In-memory cache for adaptive weight responses from the ProfileAccumulator DO. */
+// SQ-214: per-isolate memory of ungraded scans refused by the cache admission predicate,
+// keyed by scan cache key, so a repeat within 5 min can be flagged in analytics.
+// Measurement only; bounded; never read on any scoring or caching path.
+const UNGRADED_REPEAT_WINDOW_MS = 5 * 60 * 1000;
+const UNGRADED_REPEAT_MAX_ENTRIES = 500;
+const recentUngradedRefusals = new Map<string, number>();
+
 const adaptiveWeightCache = new Map<string, { weights: AdaptiveWeightsResponse; expires: number }>();
 
 /** TTL for the in-memory adaptive weight cache (ms). */
@@ -623,8 +631,12 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 
 	// Skip secondary DNS confirmation in scan context for speed — individual checks
 	// still use secondary confirmation when called directly by users.
+	// SQ-209: scan-scoped tally of PRIMARY DoH failures, summarised in ONE
+	// analytics row once the checks settle. Instrumentation only.
+	const primaryFailureTally: DohPrimaryFailureTally = { attempts: 0, http5xx: 0, network: 0, timeout: 0 };
 	const scanDns: QueryDnsOptions = {
 		skipSecondaryConfirmation: true,
+		primaryFailureTally,
 		queryCache: new Map(),
 		secondaryDoh: runtimeOptions?.secondaryDoh,
 		dnsSemaphore,
@@ -795,6 +807,9 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		await Promise.allSettled(checkPromises);
 		throw parentSignal.reason ?? new Error('scan_aborted');
 	}
+
+	// SQ-209: one per-scan primary-DoH failure summary (counts are 0 on a clean scan).
+	runtimeOptions?.analytics?.emitDohPrimarySummary?.({ ...primaryFailureTally, domain });
 
 	let checkResults = settled.filter((r): r is PromiseFulfilledResult<CheckResult> => r.status === 'fulfilled').map((r) => r.value);
 
@@ -1063,7 +1078,15 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				// above is always `canonicalScore` (never the adaptive one), so this only
 				// changes what the reporting/statistics layer records, not what any domain
 				// is scored or graded.
-				categoryFindings: checkResults.map((r) => ({ category: r.category, score: r.score, passed: isSatisfiedControl(r) })),
+				//
+				// Timed-out / errored checks are left OUT: `safeCheck` stamps them
+				// `score: 0, passed: false`, which is a measurement gap, not a measurement.
+				// `computeScanScore` already excludes them from the reported score; recording
+				// them here as failed controls skewed the adaptive-weight deltas and
+				// `topFailingCategories` toward whichever category happened to time out.
+				categoryFindings: checkResults
+					.filter((r) => isCompletedCheck(r))
+					.map((r) => ({ category: r.category, score: r.score, passed: isSatisfiedControl(r) })),
 				timestamp: Date.now(),
 				overallScore: score.overall,
 			};
@@ -1173,6 +1196,20 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 		} else {
 			await cachePromise;
 		}
+	} else if (runtimeOptions?.analytics) {
+		const now = Date.now();
+		const last = recentUngradedRefusals.get(cacheKey);
+		const repeat = last !== undefined && now - last < UNGRADED_REPEAT_WINDOW_MS;
+		if (recentUngradedRefusals.size >= UNGRADED_REPEAT_MAX_ENTRIES && !recentUngradedRefusals.has(cacheKey)) {
+			for (const [k, t] of recentUngradedRefusals) {
+				if (now - t >= UNGRADED_REPEAT_WINDOW_MS) recentUngradedRefusals.delete(k);
+			}
+			if (recentUngradedRefusals.size >= UNGRADED_REPEAT_MAX_ENTRIES) {
+				recentUngradedRefusals.delete(recentUngradedRefusals.keys().next().value as string);
+			}
+		}
+		recentUngradedRefusals.set(cacheKey, now);
+		runtimeOptions.analytics.emitUngradedNotCachedEvent({ domain, repeat });
 	}
 
 	return result;

@@ -8,7 +8,8 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { queryTxtRecords } from '../lib/dns';
+import { describeRcode } from '@blackveil/dns-checks';
+import { queryTxtRecordsWithRcode } from '../lib/dns';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 
 export interface SpfNode {
@@ -21,9 +22,21 @@ export interface SpfNode {
 }
 
 export interface SpfIssue {
-	type: 'over_limit' | 'at_limit' | 'approaching_limit' | 'circular_include' | 'void_lookup' | 'redundant_include';
+	type:
+		| 'over_limit'
+		| 'at_limit'
+		| 'approaching_limit'
+		| 'circular_include'
+		| 'void_lookup'
+		| 'redundant_include'
+		| 'lookup_limit_exceeded'
+		| 'lookup_inconclusive'
+		| 'redirect_ignored';
 	severity: 'critical' | 'high' | 'medium' | 'low';
 	detail: string;
+	/** Set on `lookup_inconclusive`: the probe never concluded, so nothing is claimed about the record. */
+	inconclusive?: boolean;
+	errorKind?: 'dns_error' | 'transport_error';
 }
 
 export interface SpfChainResult {
@@ -34,14 +47,25 @@ export interface SpfChainResult {
 	overLimit: boolean;
 	tree: SpfNode;
 	issues: SpfIssue[];
+	/** True when at least one TXT lookup in the chain never concluded (SERVFAIL/REFUSED/transport error). */
+	inconclusive?: boolean;
 }
 
-/** Mechanisms that cost 1 DNS lookup per RFC 7208 §4.6.4. */
-const LOOKUP_MECHANISMS = /^(include:|redirect=|a(?:$|[:\/])|mx(?:$|[:\/])|exists:|ptr(?:$|[:\/]))/i;
+/**
+ * Mechanisms that cost 1 DNS lookup per RFC 7208 §4.6.4. Mechanisms take an optional
+ * qualifier (`+ - ~ ?`, RFC 7208 §4.6.1 / §5); `redirect=` is a modifier and takes none.
+ */
+const LOOKUP_MECHANISMS = /^([+\-~?]?(include:|a(?:$|[:\/])|mx(?:$|[:\/])|exists:|ptr(?:$|[:\/]))|redirect=)/i;
+
+/** An `all` mechanism, with or without a qualifier. */
+const ALL_MECHANISM = /^[+\-~?]?all$/i;
+
+/** RFC 7208 §4.6.4: at most 10 DNS-querying terms; the 11th is a PermError. */
+const LOOKUP_LIMIT = 10;
 
 /** Extract the target domain from include:/redirect= directives. */
 function extractTarget(mechanism: string): string | null {
-	const includeMatch = mechanism.match(/^include:(.+)$/i);
+	const includeMatch = mechanism.match(/^[+\-~?]?include:(.+)$/i);
 	if (includeMatch) return includeMatch[1].trim().toLowerCase();
 	const redirectMatch = mechanism.match(/^redirect=(.+)$/i);
 	if (redirectMatch) return redirectMatch[1].trim().toLowerCase();
@@ -56,26 +80,39 @@ function parseMechanisms(record: string): string[] {
 		.filter((m) => m.length > 0);
 }
 
-/** Count lookup-costing mechanisms (not counting recursive children). */
-function countDirectLookups(mechanisms: string[]): number {
-	return mechanisms.filter((m) => LOOKUP_MECHANISMS.test(m)).length;
+/** Mutable state shared by one chain resolution. */
+interface ChainState {
+	/** DNS-querying terms evaluated so far across the whole chain (RFC 7208 §4.6.4 counts every evaluation). */
+	counted: number;
+	/** An include/redirect past the 10th lookup was not expanded. */
+	truncated: boolean;
+	/** At least one TXT lookup never concluded. */
+	inconclusive: boolean;
 }
 
 /**
  * Recursively resolve an SPF include chain.
+ *
+ * `path` holds only the domains on the CURRENT recursion path (a true cycle); `allSeen`
+ * counts every evaluation (a domain reached via two paths is redundant, not circular, and
+ * RFC 7208 still charges each evaluation against the lookup limit).
+ *
+ * The node count is bounded by construction: a child is only expanded while
+ * `state.counted <= LOOKUP_LIMIT`, so a chain holds at most LOOKUP_LIMIT + 1 nodes.
  */
 async function resolveNode(
 	domain: string,
-	visited: Set<string>,
+	path: Set<string>,
 	allSeen: Map<string, number>,
 	depth: number,
 	issues: SpfIssue[],
+	state: ChainState,
 	dnsOptions?: QueryDnsOptions,
 ): Promise<SpfNode> {
 	const normalized = domain.toLowerCase();
 
-	// Circular detection
-	if (visited.has(normalized)) {
+	// Circular detection: only an ancestor on the current path is a cycle.
+	if (path.has(normalized)) {
 		issues.push({
 			type: 'circular_include',
 			severity: 'high',
@@ -84,7 +121,7 @@ async function resolveNode(
 		return { domain: normalized, record: null, lookups: 0, mechanisms: [], children: [], error: 'circular' };
 	}
 
-	// Redundant detection
+	// Redundant detection: reached before via a different path.
 	const seenCount = allSeen.get(normalized) ?? 0;
 	if (seenCount > 0) {
 		issues.push({
@@ -100,48 +137,86 @@ async function resolveNode(
 		return { domain: normalized, record: null, lookups: 0, mechanisms: [], children: [], error: 'max depth exceeded' };
 	}
 
-	visited.add(normalized);
-
-	let txtRecords: string[];
+	path.add(normalized);
 	try {
-		txtRecords = await queryTxtRecords(normalized, dnsOptions);
-	} catch {
-		return { domain: normalized, record: null, lookups: 0, mechanisms: [], children: [], error: 'DNS query failed' };
-	}
-
-	const spfRecord = txtRecords.find((r) => r.toLowerCase().startsWith('v=spf1'));
-	if (!spfRecord) {
-		issues.push({
-			type: 'void_lookup',
-			severity: 'medium',
-			detail: `${normalized} has no SPF record. This include wastes a DNS lookup.`,
-		});
-		return { domain: normalized, record: null, lookups: 0, mechanisms: [], children: [] };
-	}
-
-	const mechanisms = parseMechanisms(spfRecord);
-	const directLookups = countDirectLookups(mechanisms);
-
-	// Recursively resolve include:/redirect= targets
-	const children: SpfNode[] = [];
-	for (const mech of mechanisms) {
-		const target = extractTarget(mech);
-		if (target) {
-			const child = await resolveNode(target, visited, allSeen, depth + 1, issues, dnsOptions);
-			children.push(child);
+		let txtRecords: string[];
+		try {
+			const outcome = await queryTxtRecordsWithRcode(normalized, dnsOptions);
+			if (outcome.inconclusive) {
+				state.inconclusive = true;
+				const reason = `DNS lookup inconclusive (${describeRcode(outcome.rcode)})`;
+				issues.push({
+					type: 'lookup_inconclusive',
+					severity: 'medium',
+					detail: `${normalized}: ${reason}. The record was not measured, so no conclusion is drawn about it.`,
+					inconclusive: true,
+					errorKind: 'dns_error',
+				});
+				return { domain: normalized, record: null, lookups: 0, mechanisms: [], children: [], error: reason };
+			}
+			txtRecords = outcome.records;
+		} catch {
+			state.inconclusive = true;
+			issues.push({
+				type: 'lookup_inconclusive',
+				severity: 'medium',
+				detail: `${normalized}: DNS query failed. The record was not measured, so no conclusion is drawn about it.`,
+				inconclusive: true,
+				errorKind: 'transport_error',
+			});
+			return { domain: normalized, record: null, lookups: 0, mechanisms: [], children: [], error: 'DNS query failed' };
 		}
+
+		const spfRecord = txtRecords.find((r) => r.toLowerCase().startsWith('v=spf1'));
+		if (!spfRecord) {
+			issues.push({
+				type: 'void_lookup',
+				severity: 'medium',
+				detail: `${normalized} has no SPF record. This include wastes a DNS lookup.`,
+			});
+			return { domain: normalized, record: null, lookups: 0, mechanisms: [], children: [] };
+		}
+
+		const mechanisms = parseMechanisms(spfRecord);
+		// RFC 7208 §6.1: redirect is ignored when the record has an `all` mechanism.
+		const hasAll = mechanisms.some((m) => ALL_MECHANISM.test(m));
+
+		// Count in evaluation order and resolve include:/redirect= targets while within the limit.
+		const children: SpfNode[] = [];
+		let ownLookups = 0;
+		for (const mech of mechanisms) {
+			if (hasAll && /^redirect=/i.test(mech)) {
+				issues.push({
+					type: 'redirect_ignored',
+					severity: 'low',
+					detail: `${normalized}: ${mech} is ignored because the record has an "all" mechanism (RFC 7208 §6.1); it is neither followed nor counted.`,
+				});
+				continue;
+			}
+			if (!LOOKUP_MECHANISMS.test(mech)) continue;
+			ownLookups++;
+			state.counted++;
+			const target = extractTarget(mech);
+			if (!target) continue;
+			if (state.counted > LOOKUP_LIMIT) {
+				state.truncated = true;
+				continue;
+			}
+			children.push(await resolveNode(target, path, allSeen, depth + 1, issues, state, dnsOptions));
+		}
+
+		const childLookups = children.reduce((sum, c) => sum + c.lookups, 0);
+
+		return {
+			domain: normalized,
+			record: spfRecord,
+			lookups: ownLookups + childLookups,
+			mechanisms,
+			children,
+		};
+	} finally {
+		path.delete(normalized);
 	}
-
-	const childLookups = children.reduce((sum, c) => sum + c.lookups, 0);
-	const totalLookups = directLookups + childLookups;
-
-	return {
-		domain: normalized,
-		record: spfRecord,
-		lookups: totalLookups,
-		mechanisms,
-		children,
-	};
 }
 
 /** Compute max depth of the tree. */
@@ -159,11 +234,12 @@ function computeMaxDepth(node: SpfNode, current: number = 0): number {
 export async function resolveSpfChain(domain: string, dnsOptions?: QueryDnsOptions): Promise<SpfChainResult> {
 	const issues: SpfIssue[] = [];
 	const allSeen = new Map<string, number>();
-	const tree = await resolveNode(domain, new Set(), allSeen, 0, issues, dnsOptions);
+	const state: ChainState = { counted: 0, truncated: false, inconclusive: false };
+	const tree = await resolveNode(domain, new Set(), allSeen, 0, issues, state, dnsOptions);
 
 	const totalLookups = tree.lookups;
 	const maxDepth = computeMaxDepth(tree);
-	const limit = 10;
+	const limit = LOOKUP_LIMIT;
 	const overLimit = totalLookups > limit;
 
 	// Add limit-related issues
@@ -194,7 +270,15 @@ export async function resolveSpfChain(domain: string, dnsOptions?: QueryDnsOptio
 		});
 	}
 
-	return { domain, totalLookups, maxDepth, limit, overLimit, tree, issues };
+	if (state.truncated) {
+		issues.push({
+			type: 'lookup_limit_exceeded',
+			severity: 'high',
+			detail: `Resolution stopped after the ${limit}th lookup: remaining include/redirect targets were not expanded, so the reported lookup count is a lower bound.`,
+		});
+	}
+
+	return { domain, totalLookups, maxDepth, limit, overLimit, tree, issues, ...(state.inconclusive ? { inconclusive: true } : {}) };
 }
 
 /** Render a tree node as text lines with box-drawing characters. */
@@ -233,7 +317,9 @@ export function formatSpfChain(result: SpfChainResult, format: OutputFormat = 'f
 			? 'AT LIMIT'
 			: result.totalLookups >= 8
 				? 'WARNING'
-				: 'OK';
+				: result.inconclusive
+					? 'INCONCLUSIVE'
+					: 'OK';
 
 	if (format === 'compact') {
 		lines.push(`SPF Chain: ${result.domain} — ${result.totalLookups}/${result.limit} lookups (${status})`);

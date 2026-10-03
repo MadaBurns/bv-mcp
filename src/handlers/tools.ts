@@ -396,12 +396,21 @@ interface ToolRuntimeOptions {
 	 * Undefined on BSL self-hosts.
 	 */
 	tier2Lookup?: (domain: string) => Promise<import('../lib/brand-tier2-evidence').Tier2Result>;
+	/**
+	 * Per-call DNS query cache (`QueryDnsOptions.queryCache`). Set by the registry dispatch for an
+	 * NXDOMAIN-gated tool so the gate's apex NS probe and the check itself share one NS answer
+	 * (SQ-268). Never set by callers.
+	 */
+	dnsQueryCache?: QueryDnsOptions['queryCache'];
 }
 
 /** Build QueryDnsOptions for individual check calls from runtime options. */
 function buildDnsOptions(runtimeOptions?: ToolRuntimeOptions): QueryDnsOptions | undefined {
-	if (!runtimeOptions?.secondaryDoh) return undefined;
-	return { secondaryDoh: runtimeOptions.secondaryDoh };
+	if (!runtimeOptions?.secondaryDoh && !runtimeOptions?.dnsQueryCache) return undefined;
+	return {
+		...(runtimeOptions.secondaryDoh ? { secondaryDoh: runtimeOptions.secondaryDoh } : {}),
+		...(runtimeOptions.dnsQueryCache ? { queryCache: runtimeOptions.dnsQueryCache } : {}),
+	};
 }
 
 /**
@@ -479,10 +488,24 @@ async function brandAuditWatchUnprovisioned(): Promise<CheckResult> {
 	]);
 }
 
+/**
+ * Cache-key fragment for a caller-supplied list: `<count>:<sha256 hex prefix>` of the FULL
+ * sorted list, or `0` when empty. Truncating the joined plaintext (the old 64/128-char slice)
+ * let two different lists sharing a prefix collide on one cached result; hashing keeps every
+ * element significant while the key stays bounded. JSON-encoded so a `|` inside an item cannot
+ * make two different lists serialize identically.
+ */
+async function hashListForCacheKey(items: string[]): Promise<string> {
+	if (items.length === 0) return '0';
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(items.slice().sort())));
+	const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+	return `${items.length}:${hex.slice(0, 32)}`;
+}
+
 /** Entry shape for {@link TOOL_REGISTRY}. */
 interface ToolRegistryEntry {
 	/** cacheKey may consult runtimeOptions to bind principal (defense against owner-scoped IDOR via cache). */
-	cacheKey: (args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => string;
+	cacheKey: (args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => string | Promise<string>;
 	execute: (domain: string, args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => Promise<CheckResult>;
 	cacheable?: boolean;
 	cacheTtlSeconds?: number;
@@ -502,8 +525,11 @@ interface ToolRegistryEntry {
  * data exists independently of DNS delegation), `check_dbl` / `check_rbl` /
  * `check_realtime_threat_feed` / `check_fast_flux` (reputation of the NAME, listed or
  * not, whether or not it currently resolves), and the rest of the registry, which #1128
- * observed already abstaining or staying neutral on an NXDOMAIN. Tools outside the
- * registry (`check_resolver_consistency`, the composites) are not on this path.
+ * observed already abstaining or staying neutral on an NXDOMAIN. `check_mta_sts`,
+ * `check_bimi` and `check_tlsrpt` were NOT in that group — each emits an absence
+ * finding on an NXDOMAIN — and are gated since SQ-268. Tools outside the registry are
+ * not on this path: `check_resolver_consistency` is not gated, and the composites
+ * (`assess_spoofability`, `simulate_attack_paths`) apply the same predicate themselves.
  */
 export const NXDOMAIN_GATED_TOOLS: Readonly<Record<string, CheckCategory>> = {
 	check_spf: 'spf',
@@ -517,6 +543,9 @@ export const NXDOMAIN_GATED_TOOLS: Readonly<Record<string, CheckCategory>> = {
 	check_zone_hygiene: 'zone_hygiene',
 	check_subdomain_takeover: 'subdomain_takeover',
 	check_ssl: 'ssl',
+	check_mta_sts: 'mta_sts',
+	check_bimi: 'bimi',
+	check_tlsrpt: 'tlsrpt',
 };
 
 /**
@@ -683,15 +712,13 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 			}),
 	},
 	check_subdomain_takeover: {
-		cacheKey: (args) => {
+		cacheKey: async (args) => {
 			const subs = Array.isArray(args.subdomains) ? (args.subdomains as string[]) : null;
 			// Cache key folds caller-supplied list CONTENTS (not just size) so two
 			// different same-length lists don't collide on one entry (5-min TTL,
 			// global per domain+checkName) — mirrors the discover_brand_domains
-			// sibling. Sorted + length-prefixed + bounded to keep keys finite.
-			return subs && subs.length > 0
-				? `subdomain_takeover:custom:${subs.length}:${subs.slice().sort().join('|').slice(0, 128)}`
-				: 'subdomain_takeover:default';
+			// sibling. Sorted + length-prefixed + SHA-256 of the full list to keep keys finite.
+			return subs && subs.length > 0 ? `subdomain_takeover:custom:${await hashListForCacheKey(subs)}` : 'subdomain_takeover:default';
 		},
 		execute: (d, args, ro) => {
 			const subs = Array.isArray(args.subdomains) ? (args.subdomains as string[]) : undefined;
@@ -712,7 +739,7 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 		cacheable: false,
 	},
 	discover_brand_domains: {
-		cacheKey: (args) => {
+		cacheKey: async (args) => {
 			const signals = (args.signals as string[] | undefined)?.slice().sort().join(',') ?? 'all';
 			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
 			const depth = typeof args.depth === 'string' ? args.depth : 'standard';
@@ -726,8 +753,8 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 			const discoveryMode = typeof args.discovery_mode === 'string' ? args.discovery_mode : 'classic';
 			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
-			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
-			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
+			const aliasHash = await hashListForCacheKey(aliases);
+			const candHash = await hashListForCacheKey(candDomains);
 			return `discover_brand:${signals}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}`;
 		},
 		execute: (d, args, ro) => {
@@ -762,6 +789,7 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 					min_confidence: args.min_confidence as number | undefined,
 					certstream: ro?.certstream,
 					certstreamAuthToken: ro?.certstreamAuthToken,
+					...(ro?.certspotterToken && { certspotterToken: ro.certspotterToken }),
 					deadlineMs,
 					signal: AbortSignal.timeout(DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS),
 				},
@@ -870,7 +898,7 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 		cacheable: false,
 	},
 	brand_audit_single: {
-		cacheKey: (args, ro) => {
+		cacheKey: async (args, ro) => {
 			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
 			const fmt = typeof args.format === 'string' ? args.format : 'both';
 			const depth = typeof args.depth === 'string' ? args.depth : 'standard';
@@ -884,8 +912,8 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 				typeof args.discovery_mode === 'string' ? args.discovery_mode : ro?.discoveryModeDefault === 'tiered' ? 'tiered' : 'classic';
 			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
-			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
-			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
+			const aliasHash = await hashListForCacheKey(aliases);
+			const candHash = await hashListForCacheKey(candDomains);
 			const view = typeof args.view === 'string' ? args.view : 'standard';
 			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}:vw${view}`;
 		},
@@ -1383,7 +1411,7 @@ export async function handleToolsCall(
 			// Dispatch to the appropriate tool — check registry first, then special cases
 			const registeredTool = TOOL_REGISTRY[name];
 			if (registeredTool) {
-				const checkName = registeredTool.cacheKey(validatedArgs, runtimeOptions);
+				const checkName = await registeredTool.cacheKey(validatedArgs, runtimeOptions);
 				// Versioned (cache:v<version>:...) so a deploy auto-invalidates — see buildCheckCacheKey.
 				const cacheKey = buildCheckCacheKey(validDomain, checkName);
 				let cacheStatus: 'hit' | 'miss' = 'miss';
@@ -1394,10 +1422,15 @@ export async function handleToolsCall(
 				// does not cache its non-resolving result either). A probe failure or SERVFAIL
 				// falls through to the check unchanged (fail-open).
 				const nxdomainCategory = nxdomainGateCategory(name, validatedArgs);
-				const runRegisteredTool = async (): Promise<CheckResult> =>
-					nxdomainCategory && (await isNonResolvingApex(validDomain, buildDnsOptions(runtimeOptions)))
+				const runRegisteredTool = async (): Promise<CheckResult> => {
+					if (!nxdomainCategory) return registeredTool.execute(validDomain, validatedArgs, runtimeOptions);
+					// One per-call cache shared by the probe and the check, so check_ns / check_dnssec /
+					// check_zone_hygiene reuse the probe's apex NS answer (SQ-268 F3).
+					const gatedOptions: ToolRuntimeOptions = { ...runtimeOptions, dnsQueryCache: new Map() };
+					return (await isNonResolvingApex(validDomain, buildDnsOptions(gatedOptions)))
 						? buildNonResolvingCheckResult(nxdomainCategory, validDomain)
-						: registeredTool.execute(validDomain, validatedArgs, runtimeOptions);
+						: registeredTool.execute(validDomain, validatedArgs, gatedOptions);
+				};
 				if (registeredTool.cacheable === false) {
 					result = await runRegisteredTool();
 				} else {
@@ -1593,6 +1626,8 @@ export async function handleToolsCall(
 									updatedAt: job.updatedAt,
 									expiresAt: job.expiresAt,
 									error: job.error,
+									// A `completed` job whose budget cut off a tail is NOT a clean completion (SQ-291).
+									...(job.incomplete !== undefined && { incomplete: job.incomplete, unscanned: job.unscanned ?? [] }),
 								};
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: job.status, logDetails: payload, severity: 'info' });
 					return buildToolResult(JSON.stringify(payload, null, 2), payload, effectiveFormat);
@@ -2017,9 +2052,15 @@ export async function handleToolsCall(
 				}
 				case 'simulate_attack_paths': {
 					const result = await simulateAttackPaths(validDomain, buildDnsOptions(runtimeOptions));
-					logResult = `${result.totalPaths} paths, risk: ${result.overallRisk}`;
+					logResult = result.overallRisk === null ? 'not assessed' : `${result.totalPaths} paths, risk: ${result.overallRisk}`;
 					logDetails = { totalPaths: result.totalPaths, overallRisk: result.overallRisk };
-					logToolSuccess({ ...ctx(), status: result.overallRisk === 'low' ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					logToolSuccess({
+						...ctx(),
+						status: result.overallRisk === null ? 'inconclusive' : result.overallRisk === 'low' ? 'pass' : 'fail',
+						logResult,
+						logDetails,
+						severity: 'info',
+					});
 					return buildToolResult(formatAttackPaths(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'query_signins': {

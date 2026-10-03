@@ -23,6 +23,7 @@ import { RecordType } from '../lib/dns-types';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory, Finding } from '../lib/scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 import { safeFetch } from '../lib/safe-fetch';
 
 const CATEGORY = 'agent_discovery' as CheckCategory;
@@ -215,7 +216,7 @@ async function verifyCapIntegrity(rec: ParsedSvcb, findings: Finding[]): Promise
 						`Capability document hash mismatch (${rec.owner})`,
 						'high',
 						`The fetched capability document at ${capUri} does NOT match the published cap-sha256 pin — the document was altered, replaced, or the pin is stale.`,
-						{ owner: rec.owner, capUri, expected: pin, gotSha256Hex: hex },
+						{ owner: rec.owner, capUri, expected: pin, gotSha256Hex: hex, [SUBJECT_TERMS_METADATA_KEY]: [rec.owner, capUri] },
 					),
 		);
 	} catch (err) {
@@ -311,7 +312,7 @@ export async function checkAgentDiscovery(
 				'Agent-discovery records are not DNSSEC-anchored',
 				'high',
 				`Agent-discovery records for ${domain} were not returned with an authenticated-data (AD) DNSSEC signal. The advertised agent endpoints are spoofable by an on-path resolver, and any DANE/TLSA binding on them is untrustworthy (RFC 6698 §10.1). Sign the zone to make agent discovery verifiable.`,
-				{ adFlag: false },
+				{ adFlag: false, [SUBJECT_TERMS_METADATA_KEY]: [domain] },
 			),
 		);
 	} else {
