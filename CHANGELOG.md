@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 _Entries for released versions below were edited on 2026-09-09 to remove a third-party vendor name. Tool, view, file and type identifiers in those entries are shown under their current (post-rename) names; at the versions listed they shipped under earlier names. A further edit on 2026-09-23 redacted client domain names cited as fact-check examples in historical entries, shown as `<redacted>` or a neutral brand description; no scoring, detection, or behavioral semantics changed._
 
+## [3.95.0] - 2026-10-03
+
+- TODO: fill in release notes.
+
 ## [Unreleased]
 
 ## [3.94.0] - 2026-10-03

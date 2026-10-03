@@ -1366,8 +1366,10 @@ describe('simulateAttackPaths — non-resolving apex (SQ-268)', () => {
 		const fetchMock = mockEveryName(2);
 		const { simulateAttackPaths } = await import('../src/tools/simulate-attack-paths');
 		const result = await simulateAttackPaths('sf-sim-268.example');
-		expect(result.notAssessed).toBeUndefined();
-		expect(result.overallRisk).not.toBeNull();
+		// SERVFAIL must not abstain as NXDOMAIN; the simulation ran. SQ-291: every check was
+		// inconclusive, so the result is "unmeasured", never a clean low.
+		expect(result.notAssessed?.reason).not.toBe('domain_does_not_resolve');
+		expect(result.overallRisk).not.toBe('low');
 		expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
 	});
 
