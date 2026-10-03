@@ -430,7 +430,7 @@ describe('POST /internal/tenants/scan', () => {
 			[TEST_TENANT_BINDING]: tenantDb,
 			BV_SCANNER_QUEUE: { send: queueSend },
 			QUOTA_COORDINATOR: undefined,
-		} as TestEnv;
+		} as unknown as TestEnv;
 		const res = await sendRequest(makeReq({ mode: 'queue', domain_ids: enrolled }), customEnv);
 		expect(res.status).toBe(202);
 		const body = (await res.json()) as { total: number };
