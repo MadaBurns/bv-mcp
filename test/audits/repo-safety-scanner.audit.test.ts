@@ -71,6 +71,15 @@ describe('repo safety scanner helper', () => {
 		expect(scanCommitMessage(trailers).filter((finding) => finding.ruleId === 'real-email')).toEqual([]);
 	});
 
+	// Dependabot bodies carry `compare/pkg@a...pkg@b` URLs that match the email regex.
+	it('ignores a dependabot compare-URL package@version range but still flags real addresses', () => {
+		const url = 'https://github.com/drizzle-team/drizzle-orm/compare/drizzle-kit@0.31.10...drizzle-kit@0.31.11';
+		expect(scanCommitMessage(`bump drizzle-kit\n\nLook at the [changelog](${url}).`).filter((f) => f.ruleId === 'real-email')).toEqual([]);
+		const query = scanCommitMessage('see https://example.org/x?to=someone@customer.invalid').map((f) => f.ruleId);
+		expect(query).toContain('real-email');
+		expect(scanCommitMessage('contact someone@customer.invalid').map((f) => f.ruleId)).toContain('real-email');
+	});
+
 	// The allowlist is exact-address/noreply-only, NOT the github.com domain — a real
 	// github.com address in source must still be caught.
 	it('still flags a non-trailer github.com address', () => {
