@@ -32,7 +32,8 @@ function makeHammerMockD1(name: string) {
 					calls.push({ db: name, sql, binds });
 					// Simulate slight D1 latency (5-10ms)
 					await new Promise((r) => setTimeout(r, 5 + Math.random() * 5));
-					if (sql.includes('sub_tenants')) {
+					// SQ-289: the normalized-id collision probe must find no sibling row (this mock answers every other sub_tenants read).
+					if (sql.includes('sub_tenants') && !sql.includes('upper(replace(')) {
 						return { id: name.replace('TENANT_DB_', '').toLowerCase(), active: 1, d1_db_id: 'fake-id' } as unknown as T;
 					}
 					return null;
