@@ -70,6 +70,7 @@ import { logError } from '../lib/log';
 import { createRobotsFetchMemo, type RobotsFetchMemo } from '../lib/robots-memo';
 import { fetchBudgetFor } from '../lib/fetch-budget';
 import { isSatisfiedControl } from '../lib/control-presence';
+import { isCompletedCheck } from '../lib/ungraded-display';
 import {
 	getAdaptiveWeights,
 	publishAdaptiveWeightSummary,
@@ -1077,7 +1078,15 @@ export async function scanDomain(domain: string, kv?: KVNamespace, runtimeOption
 				// above is always `canonicalScore` (never the adaptive one), so this only
 				// changes what the reporting/statistics layer records, not what any domain
 				// is scored or graded.
-				categoryFindings: checkResults.map((r) => ({ category: r.category, score: r.score, passed: isSatisfiedControl(r) })),
+				//
+				// Timed-out / errored checks are left OUT: `safeCheck` stamps them
+				// `score: 0, passed: false`, which is a measurement gap, not a measurement.
+				// `computeScanScore` already excludes them from the reported score; recording
+				// them here as failed controls skewed the adaptive-weight deltas and
+				// `topFailingCategories` toward whichever category happened to time out.
+				categoryFindings: checkResults
+					.filter((r) => isCompletedCheck(r))
+					.map((r) => ({ category: r.category, score: r.score, passed: isSatisfiedControl(r) })),
 				timestamp: Date.now(),
 				overallScore: score.overall,
 			};
