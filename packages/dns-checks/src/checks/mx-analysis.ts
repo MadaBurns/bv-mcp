@@ -132,6 +132,64 @@ export function getLoopbackMxFinding(loopbackRecords: Pick<ParsedMxRecord, 'exch
 	);
 }
 
+/**
+ * RFC 1123 hostname label: letters, digits, hyphen; no leading or trailing hyphen.
+ *
+ * Underscore is deliberately EXCLUDED. It is not legal in a hostname label (it is
+ * a service-label character, e.g. `_dmarc`), and no corpus measurement shows
+ * underscore-bearing MX exchanges in the wild, so this stays on the strict class
+ * named in #1114 instead of special-casing a character nobody has measured.
+ */
+const RFC1123_LABEL_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
+
+/**
+ * True when an MX exchange fails RFC 1123 hostname syntax, e.g. `~` or `*` from
+ * `MX 300 ~.` / `MX 10 *.` (#1114: `sevicenow.com` publishes the former). Such a
+ * literal cannot be a mail-exchange hostname, so it is neither a routable target
+ * nor a "Dangling MX" (that title stays for syntactically valid names that do
+ * not resolve).
+ *
+ * The empty exchange is the RFC 7505 null MX and is classified by
+ * `isNullMxRecord`, not here. Dotted-quad IPv4 exchanges are all-digit labels,
+ * hence syntactically valid, and stay with the IP-target pass. Callers must
+ * classify loopback FIRST: `::1` is not a valid hostname but is a loopback
+ * defect (#944), not garbage.
+ *
+ * Accepts any object carrying an `exchange` so Worker-side MX shapes can share
+ * the classification.
+ */
+export function isInvalidMxExchange(record: Pick<ParsedMxRecord, 'exchange'>): boolean {
+	const exchange = record.exchange.replace(/\.$/, '').toLowerCase();
+	if (exchange === '') {
+		return false;
+	}
+	return !exchange.split('.').every((label) => RFC1123_LABEL_PATTERN.test(label));
+}
+
+/** Longest rendered exchange list in the invalid-exchange finding detail. */
+const INVALID_MX_DETAIL_MAX_EXCHANGES = 5;
+
+/**
+ * ONE `info` finding covering ALL syntactically invalid MX exchanges, never one
+ * per record (mirrors `getLoopbackMxFinding`).
+ *
+ * No `missingControl`: this names a defect in the published record. The
+ * absent-control verdict for an all-invalid set comes from the caller's no-mail
+ * (SPF-context) path.
+ */
+export function getInvalidMxExchangeFinding(invalidRecords: Pick<ParsedMxRecord, 'exchange'>[]): Finding {
+	const exchanges = invalidRecords.map((record) => record.exchange);
+	const rendered = exchanges.slice(0, INVALID_MX_DETAIL_MAX_EXCHANGES).join(', ');
+	const overflow = exchanges.length - INVALID_MX_DETAIL_MAX_EXCHANGES;
+	const suffix = overflow > 0 ? `, and ${overflow} more` : '';
+	return createFinding(
+		'mx',
+		'Invalid MX exchange',
+		'info',
+		`MX target(s) "${rendered}"${suffix} do not form a syntactically valid hostname, so they cannot route mail.`,
+	);
+}
+
 export function getNullMxFinding(): Finding {
 	return createFinding(
 		'mx',
