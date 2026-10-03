@@ -262,6 +262,40 @@ describe('probeAuthoritativeDns', () => {
 		expect(evidence.transportParity).toBeUndefined();
 	});
 
+	// SQ-282 item 3 — parity is per nameserver: a v4-only primary must never be paired with a
+	// dual-stack secondary's v6 answer.
+	describe('transport parity pairs v4 and v6 only within the same nameserver (SQ-282)', () => {
+		function dualStackProbe(serialByAddress: Record<string, number>) {
+			const recursiveQuery = vi.fn(async (name: string, type: string) =>
+				name === 'example.com' && type === 'NS' ? ['ns1.example.com', 'ns2.example.com'] : [],
+			);
+			const resolveAddresses = vi.fn(async (nameserver: string, type: 'A' | 'AAAA') => {
+				if (nameserver === 'ns1.example.com') return type === 'A' ? ['1.1.1.1'] : []; // v4-only primary
+				return type === 'A' ? ['1.0.0.1'] : ['2001:4860:4860:0:0:0:0:1112']; // dual-stack secondary
+			});
+			const openSession = vi.fn(async (address: string) => ({
+				query: vi.fn(async (_name: string, type: number) => {
+					if (type === RecordType.SOA) {
+						return response({ aa: true, answers: [{ name: 'example.com', type: RecordType.SOA, data: String(serialByAddress[address]) }] });
+					}
+					return response({ aa: true });
+				}),
+				close: vi.fn(async () => undefined),
+			}));
+			return probeAuthoritativeDns('example.com', { recursiveQuery, resolveAddresses, openSession }, { activeProbes: false });
+		}
+
+		it('reports parity true for a v4-only primary and a dual-stack secondary whose own v4 and v6 agree', async () => {
+			const evidence = await dualStackProbe({ '1.1.1.1': 100, '1.0.0.1': 200, '2001:4860:4860:0:0:0:0:1112': 200 });
+			expect(evidence.transportParity).toEqual({ ipv4Ipv6Parity: true });
+		});
+
+		it('still reports parity false when one nameserver answers differently over v4 and v6', async () => {
+			const evidence = await dualStackProbe({ '1.1.1.1': 200, '1.0.0.1': 200, '2001:4860:4860:0:0:0:0:1112': 300 });
+			expect(evidence.transportParity).toEqual({ ipv4Ipv6Parity: false });
+		});
+	});
+
 	it('reports soaSerial.consistent false on a serial mismatch across nameservers', async () => {
 		const recursiveQuery = vi.fn(async (name: string, type: string) =>
 			name === 'example.com' && type === 'NS' ? ['ns1.example.com', 'ns2.example.com'] : [],

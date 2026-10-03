@@ -64,12 +64,9 @@ function pushCapabilityResult(
 }
 
 function reachabilityStatus(evidence: AuthoritativeDnsInfraEvidence): CapabilityStatus {
-	if (typeof evidence.reachability?.udp53Reachable === 'boolean') {
-		return evidence.reachability.udp53Reachable;
-	}
-	const addressSets = [evidence.reachability?.ipv4, evidence.reachability?.ipv6].filter(Boolean);
-	if (addressSets.length === 0) return undefined;
-	return addressSets.some((set) => set?.reachable === true);
+	// Only a real UDP measurement counts. The per-family `reachable` flags come from the TCP/53
+	// probe, so deriving a UDP verdict from them would certify an unmeasured transport (SQ-282).
+	return typeof evidence.reachability?.udp53Reachable === 'boolean' ? evidence.reachability.udp53Reachable : undefined;
 }
 
 function recursionRefusedStatus(evidence: AuthoritativeDnsInfraEvidence): CapabilityStatus {
