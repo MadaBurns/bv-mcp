@@ -16,6 +16,43 @@ describe('osint investigation tools', () => {
 		// finding on tools that emit `info` on every branch, success included.
 		expect(r.checkStatus).toBe('error');
 	});
+	// #1193: bv-recon's second gate (recon_watchlist) answers 403 for a non-authorized target while
+	// the credential is fine. The prose must say so, not send the operator to rotate a working key.
+	it('domain start: 403 is a watchlist policy denial, not a credential problem', async () => {
+		const { osintInvestigateDomainStart } = await import('../src/tools/osint-investigate');
+		const sink = vi.fn();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const r = await osintInvestigateDomainStart('example.com', {
+			reconBinding: binding({ error: 'forbidden', code: 'target_not_authorized' }, 403),
+			reconAuthToken: 't',
+			onBindingDegradation: sink,
+		});
+		const f = r.findings[0];
+		expect(f.metadata?.reconFailureReason).toBe('target_not_authorized');
+		expect(f.metadata?.reconUpstreamStatus).toBe(403);
+		expect(f.metadata?.upstreamUnavailable).toBe(true);
+		expect(f.detail).toContain('watchlist');
+		expect(f.detail.toLowerCase()).not.toContain('credential problem\u0000');
+		expect(f.detail).toContain('not an outage or a credential problem');
+		expect(f.detail).not.toContain('check the operator credential');
+		expect(r.checkStatus).toBe('error');
+		expect(r.partial).toBe(true);
+		expect(sink).not.toHaveBeenCalled();
+	});
+	it('domain start: 401 keeps the credential prose and records a degradation', async () => {
+		const { osintInvestigateDomainStart } = await import('../src/tools/osint-investigate');
+		const sink = vi.fn();
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const r = await osintInvestigateDomainStart('example.com', {
+			reconBinding: binding({ error: 'invalid_recon_key' }, 401),
+			reconAuthToken: 'bad',
+			onBindingDegradation: sink,
+		});
+		const f = r.findings[0];
+		expect(f.metadata?.reconFailureReason).toBe('unauthorized');
+		expect(f.detail).toContain('operator credential');
+		expect(sink).toHaveBeenCalledWith(expect.objectContaining({ degradationType: 'binding_5xx', component: 'recon' }));
+	});
 	it('domain start: returns investigationId when bound', async () => {
 		const { osintInvestigateDomainStart } = await import('../src/tools/osint-investigate');
 		const r = await osintInvestigateDomainStart('example.com', { reconBinding: binding({ investigationId: 'inv_1', status: 'running' }), reconAuthToken: 't' });

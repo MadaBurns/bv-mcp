@@ -77,10 +77,11 @@ function notFound(title: string, detail: string, meta: Record<string, unknown> =
 
 /**
  * The binding IS bound and the call still yielded no data: the credential was rejected
- * (`unauthorized`), the upstream returned some other non-2xx (`upstream_status`), a 2xx body
+ * (`unauthorized`), the credential was accepted but the target is not on the operator-authorized
+ * recon watchlist (`target_not_authorized` — a policy answer, see `reconUnavailable`), the upstream returned some other non-2xx (`upstream_status`), a 2xx body
  * failed schema validation (`malformed`), or the fetch threw (`transport`).
  *
- * Those four are exactly what remains once `unbound` and `not_found` are excluded by the `reason`
+ * Those five are exactly what remains once `unbound` and `not_found` are excluded by the `reason`
  * type — they are routed to `unprovisioned()` and `notFound()` — so this prose no longer has to
  * hedge about the id being unknown or expired. That hedge existed only because `callRecon*` used
  * to collapse every condition into one `null`; it does not any more.
@@ -92,7 +93,8 @@ function notFound(title: string, detail: string, meta: Record<string, unknown> =
  * binding that is already bound.
  *
  * The specific `reason` rides along in metadata so an operator reading a structured response can
- * see WHY without a log dive: `unauthorized` means fix the credential, `malformed` means the
+ * see WHY without a log dive: `unauthorized` means fix the credential, `target_not_authorized`
+ * means authorize the target on the watchlist (the credential works), `malformed` means the
  * bv-recon response contract drifted, `transport`/`upstream_status` mean wait and re-poll.
  */
 function upstreamUnavailable(
@@ -116,7 +118,16 @@ interface UnavailableProse {
 	notFound: string;
 	/** Bound, but the call failed: auth, non-2xx, contract drift, or transport. */
 	upstream: string;
+	/**
+	 * 403 `target_not_authorized` — the recon watchlist refused the target. Optional: defaults to
+	 * `TARGET_NOT_AUTHORIZED_PROSE`, which is target-agnostic and true at every call site.
+	 */
+	targetNotAuthorized?: string;
 }
+
+/** A policy decision, not an outage and not a credential problem (the key was accepted). */
+const TARGET_NOT_AUTHORIZED_PROSE =
+	'The recon service refused this target because it is not on the operator-authorized recon watchlist. This is a policy decision, not an outage or a credential problem — ask the operator to authorize the target. Nothing was read.';
 
 /**
  * The single mapping from a `ReconFailureReason` to the result shape that is TRUE for it, so all
@@ -130,6 +141,8 @@ function reconUnavailable(
 ): CheckResult {
 	if (reason === 'unbound') return unprovisioned(prose.unbound);
 	if (reason === 'not_found') return notFound(title, prose.notFound, meta);
+	if (reason === 'target_not_authorized')
+		return upstreamUnavailable(reason, title, prose.targetNotAuthorized ?? TARGET_NOT_AUTHORIZED_PROSE, { reconUpstreamStatus: 403, ...meta });
 	return upstreamUnavailable(reason, title, prose.upstream, meta);
 }
 

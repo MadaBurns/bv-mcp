@@ -176,18 +176,29 @@ export type ReconOpaque = Record<string, unknown>;
  *                    this discriminant existed only `callReconScan` honored it, so every poll of
  *                    an unknown id on THIS path emitted a false `binding_5xx` into the operator
  *                    degradation alert.
- * - `unauthorized` — 401/403. The binding is bound but the credential was rejected: an operator
+ * - `unauthorized` — 401. The binding is bound but the credential was rejected: an operator
  *                    misconfiguration, distinct from an outage and from a data miss.
+ * - `target_not_authorized` — 403. The credential was ACCEPTED; bv-recon's second gate
+ *                    (`isTargetAuthorized`, the operator-curated `recon_watchlist` D1 table) refused
+ *                    this target. A by-design policy answer from a healthy upstream — not an outage and
+ *                    not a credential problem — so it is SILENT like `not_found` (no degradation).
  * - `upstream_status` — any other non-2xx. Genuine upstream failure.
  * - `malformed`    — 2xx whose body failed schema validation. Contract drift, not an outage.
  * - `transport`    — the fetch threw (network, timeout, abort).
  *
- * Everything except `unbound` and `not_found` still records a degradation, with the SAME
+ * Everything except `unbound`, `not_found` and `target_not_authorized` still records a degradation, with the SAME
  * `BindingDegradationKind` mapping as before this refactor — the discriminant is for callers;
  * re-tuning alert routing is a separate, operator-visible decision and is deliberately not
  * bundled in here.
  */
-export type ReconFailureReason = 'unbound' | 'not_found' | 'unauthorized' | 'upstream_status' | 'malformed' | 'transport';
+export type ReconFailureReason =
+	| 'unbound'
+	| 'not_found'
+	| 'unauthorized'
+	| 'target_not_authorized'
+	| 'upstream_status'
+	| 'malformed'
+	| 'transport';
 
 /** Discriminated result of an async recon call. Replaces the former `T | null`. */
 export type ReconOutcome<T> = { ok: true; data: T } | { ok: false; reason: ReconFailureReason; status?: number };
@@ -225,7 +236,16 @@ async function reconJson(
 			await disposeUnreadResponseBody(resp);
 			return reconFailure('not_found', 404);
 		}
-		if (resp.status === 401 || resp.status === 403) {
+		// 403 is bv-recon's watchlist gate (`isTargetAuthorized`, `recon_watchlist`): the key was
+		// accepted and the target is simply not operator-authorized. A policy answer from a healthy
+		// upstream, so SILENT like the 404 above — recording `binding_5xx` would page the operator
+		// on every customer query about a non-watchlisted target.
+		if (resp.status === 403) {
+			await disposeUnreadResponseBody(resp);
+			return reconFailure('target_not_authorized', 403);
+		}
+		// 401 is a rejected bearer (`requireReconKey`): a genuine operator misconfiguration.
+		if (resp.status === 401) {
 			await disposeUnreadResponseBody(resp);
 			recordReconDegradation('binding_5xx', telemetry, { route: path, status: resp.status });
 			return reconFailure('unauthorized', resp.status);

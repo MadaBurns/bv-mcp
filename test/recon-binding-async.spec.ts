@@ -155,13 +155,18 @@ describe('ReconOutcome failure discriminants', () => {
 		expect(warn.mock.calls.map((c) => String(c[0])).join('\n')).toContain('binding_degradation');
 	});
 
-	it('unauthorized: 403 is the same discriminant as 401', async () => {
-		const { callReconBucketFindings } = await import('../src/lib/recon-binding');
+	it('target_not_authorized: 403 is the recon watchlist gate, NOT a credential rejection, and is SILENT', async () => {
+		const { callReconBucketFindings, callReconBucketScanStart } = await import('../src/lib/recon-binding');
 		const sink = vi.fn();
-		vi.spyOn(console, 'log').mockImplementation(() => {});
-		const out = await callReconBucketFindings(binding({ error: 'forbidden' }, 403), 'bad-tok', 'scan_1', undefined, sink);
-		expect(out).toEqual({ ok: false, reason: 'unauthorized', status: 403 });
-		expect(sink).toHaveBeenCalledWith(expect.objectContaining({ degradationType: 'binding_5xx', component: 'recon' }));
+		const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const body = { error: 'forbidden', code: 'target_not_authorized' };
+		const out = await callReconBucketFindings(binding(body, 403), 'good-tok', 'scan_1', undefined, sink);
+		expect(out).toEqual({ ok: false, reason: 'target_not_authorized', status: 403 });
+		const start = await callReconBucketScanStart(binding(body, 403), 'good-tok', { target: 'example.com' }, undefined, sink);
+		expect(start).toEqual({ ok: false, reason: 'target_not_authorized', status: 403 });
+		// A by-design policy answer from a healthy upstream must not page the operator.
+		expect(sink).not.toHaveBeenCalled();
+		expect(log.mock.calls.map((c) => String(c[0])).join('\n')).not.toContain('binding_degradation');
 	});
 
 	it('upstream_status: a 502 records a degradation and carries the status', async () => {
@@ -250,6 +255,7 @@ describe('isRetryableReconFailure', () => {
 			unbound: false,
 			not_found: true,
 			unauthorized: false,
+			target_not_authorized: false,
 			upstream_status: true,
 			malformed: false,
 			transport: true,
