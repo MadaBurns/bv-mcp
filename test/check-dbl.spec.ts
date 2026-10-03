@@ -183,6 +183,76 @@ describe('checkDbl', () => {
 		expect(errorFinding).toBeDefined();
 	});
 
+	it('abstains when every blocklist zone errors instead of claiming the domain is not listed', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('dbl.spamhaus.org') || url.includes('multi.uribl.com') || url.includes('multi.surbl.org')) {
+				return Promise.reject(new Error('DNS timeout'));
+			}
+			return Promise.resolve(emptyResponse('example.com'));
+		});
+
+		const result = await run();
+		expect(result.category).toBe('dbl');
+		// #900: zero zones answered, so the old tail still asserted "Domain not listed on any
+		// blocklist" with zonesChecked: 0 — a non-answer that scored 85, `passed: true`, and was
+		// cached for the tool's full 3600 s TTL.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.map((f) => f.metadata?.errorKind)).toEqual(['dns_error']);
+		expect(result.findings.some((f) => /not listed/i.test(f.title))).toBe(false);
+	});
+
+	it('bounds the no-listings claim when only some blocklist zones answered', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('multi.surbl.org')) {
+				return Promise.reject(new Error('DNS timeout'));
+			}
+			if (url.includes('dbl.spamhaus.org')) {
+				return Promise.resolve(emptyResponse('example.com.dbl.spamhaus.org'));
+			}
+			if (url.includes('multi.uribl.com')) {
+				return Promise.resolve(emptyResponse('example.com.multi.uribl.com'));
+			}
+			return Promise.resolve(emptyResponse('example.com'));
+		});
+
+		const result = await run();
+		expect(result.category).toBe('dbl');
+		// Two zones answered and one errored: a real measurement, but not an unqualified clean.
+		expect(result.findings.some((f) => f.title === 'Domain not listed on any blocklist')).toBe(false);
+		const bounded = result.findings.find((f) => f.title === 'No listings on the zones that answered');
+		expect(bounded).toBeDefined();
+		expect(bounded!.metadata).toMatchObject({ zonesChecked: 2, unansweredZones: 1, quotaLimited: 0 });
+	});
+
+	it('excludes a quota-stubbed zone from the count the no-listings claim cites', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			// 127.255.255.x is a Spamhaus quota/rate-limit stub, not a verdict.
+			if (url.includes('dbl.spamhaus.org')) {
+				return Promise.resolve(aResponse('example.com.dbl.spamhaus.org', ['127.255.255.254']));
+			}
+			if (url.includes('multi.uribl.com')) {
+				return Promise.resolve(emptyResponse('example.com.multi.uribl.com'));
+			}
+			if (url.includes('multi.surbl.org')) {
+				return Promise.resolve(emptyResponse('example.com.multi.surbl.org'));
+			}
+			return Promise.resolve(emptyResponse('example.com'));
+		});
+
+		const result = await run();
+		expect(result.category).toBe('dbl');
+		const quotaFinding = result.findings.find((f) => f.metadata?.quotaError === true);
+		expect(quotaFinding).toBeDefined();
+		// Three zones answered, only two gave a usable verdict — the claim must not cite three.
+		expect(result.findings.some((f) => f.title === 'Domain not listed on any blocklist')).toBe(false);
+		const bounded = result.findings.find((f) => f.title === 'No listings on the zones that answered');
+		expect(bounded).toBeDefined();
+		expect(bounded!.metadata).toMatchObject({ zonesChecked: 2, unansweredZones: 0, quotaLimited: 1 });
+	});
+
 	it('should use domain as-is without stripping subdomains', async () => {
 		const queriedNames = new Set<string>();
 

@@ -12,6 +12,7 @@
 
 import type { CheckCategory, CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 
@@ -148,10 +149,14 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 
 	let listedCount = 0;
 	let checkedCount = 0;
+	let zoneErrors = 0;
+	/** Zones that answered only with a quota/rate-limit stub — a response, but not a verdict. */
+	let quotaLimited = 0;
 
 	for (const result of results) {
 		if (result.status === 'rejected') {
 			// DNS error for this zone — report and continue with partial results
+			zoneErrors++;
 			const zoneIndex = results.indexOf(result);
 			const zone = DBL_ZONES[zoneIndex];
 			findings.push(
@@ -178,6 +183,7 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 
 		// Spamhaus quota/error detection
 		if (zone.zone === 'dbl.spamhaus.org' && /^127\.255\.255\./.test(ip)) {
+			quotaLimited++;
 			findings.push(
 				createFinding(
 					CATEGORY,
@@ -223,7 +229,15 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		}
 	}
 
-	// If no listings and no errors produced findings, add a clean summary
+	if (checkedCount === 0) {
+		// Every zone rejected the lookup, so nothing was measured. The tail below would
+		// still emit an affirmative "Domain not listed on any blocklist" with `zonesChecked: 0`,
+		// scoring 85 / `passed: true` and — because check_dbl caches for 3600 s and the result
+		// was not `partial` — pinning that non-answer for an hour (#900).
+		return buildDnsErrorResult(CATEGORY, 'DBL', new Error(`DNS query failed: all ${DBL_ZONES.length} blocklist lookups for ${domain} errored`)) as CheckResult;
+	}
+
+	// No listings: claim clean only when every zone actually answered.
 	if (listedCount === 0 && findings.length === 0) {
 		findings.push(
 			createFinding(
@@ -239,10 +253,10 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		findings.push(
 			createFinding(
 				CATEGORY,
-				'Domain not listed on any blocklist',
-				'info',
-				`${domain} was not found on any of the successfully queried blocklists.`,
-				{ zonesChecked: checkedCount },
+				'No listings on the zones that answered',
+				'low',
+				`${domain} was not found on the ${checkedCount - quotaLimited} blocklist(s) that returned a usable answer; ${zoneErrors} errored and ${quotaLimited} were rate-limited.`,
+				{ zonesChecked: checkedCount - quotaLimited, unansweredZones: zoneErrors, quotaLimited },
 			),
 		);
 	}
