@@ -1366,8 +1366,11 @@ describe('simulateAttackPaths — non-resolving apex (SQ-268)', () => {
 		const fetchMock = mockEveryName(2);
 		const { simulateAttackPaths } = await import('../src/tools/simulate-attack-paths');
 		const result = await simulateAttackPaths('sf-sim-268.example');
-		expect(result.notAssessed).toBeUndefined();
-		expect(result.overallRisk).not.toBeNull();
+		// SERVFAIL is not NXDOMAIN, so the non-resolving gate does not abstain and the checks run. With every
+		// name failing, those checks are unmeasured (SQ-291): not assessed for that reason, never a clean verdict.
+		expect(result.notAssessed?.reason).toBe('checks_unmeasured');
+		expect(result.overallRisk).toBeNull();
+		expect(result.unmeasuredChecks?.length).toBeGreaterThan(0);
 		expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
 	});
 
