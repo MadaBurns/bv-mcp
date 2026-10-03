@@ -35,8 +35,10 @@ import { describe, it, expect } from 'vitest';
 import {
 	ENTERPRISE_GATED_NS_APEXES,
 	isEnterpriseGatedNsHost,
+	isParkingInfraHost,
 	isPooledSharedNsHost,
 	isSharedNsHost,
+	PARKING_APEXES,
 	POOLED_SHARED_NS_APEXES,
 	SHARED_NS_APEXES,
 } from '../../src/tenants/discovery/shared-ns-hosts';
@@ -293,6 +295,41 @@ describe('POOLED_SHARED_NS_APEXES — the only shared providers a complete NS-se
 
 	it('#939 added no pooled apex — Akamai remains the only member (each new platform was measured uniform or small-pool)', () => {
 		expect([...POOLED_SHARED_NS_APEXES]).toEqual(['akam.net']);
+	});
+});
+
+describe('PARKING_APEXES / isParkingInfraHost — the parking subset check_lookalikes reads as "parked" (#1202)', () => {
+	it('is a strict subset of SHARED_NS_APEXES (single-sourced, so it cannot drift)', () => {
+		expect(PARKING_APEXES.size).toBeGreaterThan(0);
+		expect(PARKING_APEXES.size).toBeLessThan(SHARED_NS_APEXES.size);
+		for (const apex of PARKING_APEXES) expect(SHARED_NS_APEXES.has(apex), apex).toBe(true);
+	});
+
+	it('classifies parking-network MX and NS hosts (the measured blsckrock.com MX is park-mx.above.com)', () => {
+		for (const host of [
+			'park-mx.above.com',
+			'ns1.above.com',
+			'ns1.sedoparking.com',
+			'ns1.parkingcrew.net',
+			'dns1.bodis.com',
+			'ns1.dan.com',
+		]) {
+			expect(isParkingInfraHost(host), host).toBe(true);
+		}
+	});
+
+	it('does NOT classify registrar / hosting defaults that serve live zones too, other shared platforms, or empty input', () => {
+		for (const host of [
+			'ns1.dns-parking.com',
+			'ns01.domaincontrol.com',
+			'dns1.registrar-servers.com',
+			'ns01.one.com',
+			'a1-97.akam.net',
+			'mxa.mailgun.org',
+			'',
+		]) {
+			expect(isParkingInfraHost(host), host).toBe(false);
+		}
 	});
 });
 
