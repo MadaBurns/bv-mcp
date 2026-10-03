@@ -2,11 +2,13 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+	getInvalidMxExchangeFinding,
 	getIpTargetFindings,
 	getLoopbackMxFinding,
 	getNullMxFinding,
 	getPresenceFinding,
 	getSingleMxFinding,
+	isInvalidMxExchange,
 	isLoopbackMxRecord,
 	isNullMxRecord,
 	parseMxRecords,
@@ -106,6 +108,26 @@ describe('isLoopbackMxRecord', () => {
 		expect(finding.detail).toContain('127.0.0.1');
 		expect(finding.detail).toContain('RFC 7505');
 		// MX records were MEASURED and are present — a defect, not an absent control.
+		expect(finding.metadata?.missingControl).toBeFalsy();
+	});
+
+	it('classifies exchanges that fail RFC 1123 label syntax as invalid (#1114)', () => {
+		for (const bad of ['~', '*', 'a..b', '-lead.example.com', 'trail-.example.com', 'under_score.example.com', 'sp ace.example.com']) {
+			expect(isInvalidMxExchange({ exchange: bad }), bad).toBe(true);
+		}
+		for (const good of ['mx.example.com', 'MX1.Example.COM.', 'a-b.example.com', 'xn--bcher-kva.example', '192.0.2.1']) {
+			expect(isInvalidMxExchange({ exchange: good }), good).toBe(false);
+		}
+		// Null MX is classified by isNullMxRecord, not here.
+		expect(isInvalidMxExchange({ exchange: '' })).toBe(false);
+	});
+
+	it('emits ONE info finding for the whole invalid set, naming the exchanges (#1114)', () => {
+		const finding = getInvalidMxExchangeFinding(parseMxRecords(['300 ~.', '10 foo bar.']));
+		expect(finding.title).toBe('Invalid MX exchange');
+		expect(finding.severity).toBe('info');
+		expect(finding.category).toBe('mx');
+		expect(finding.detail).toContain('~');
 		expect(finding.metadata?.missingControl).toBeFalsy();
 	});
 });

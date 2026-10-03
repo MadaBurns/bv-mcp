@@ -771,8 +771,18 @@
  *   takeover fingerprints are gated on status + headers. The maturity ladder reads the DMARC policy
  *   from structured metadata (malformed DMARC: Hardened→Basic). No weight, tier, grade band,
  *   `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
+ * - 1.39.0 — `check_mx` no longer counts a syntactically invalid MX exchange (`MX 300 ~.`, `10 *.`;
+ *   RFC 1123 label syntax, underscore deliberately excluded pending a corpus measurement) as a present
+ *   mail control (#1114, dns-checks 1.58.0). An all-invalid MX set now takes the no-MX SPF-context
+ *   verdict (`controlPresent: false`) plus one `info` "Invalid MX exchange" finding; in a mixed set the
+ *   invalid records are excluded from the "MX records found" count and from the IP-target, dangling and
+ *   single-MX passes, so garbage can no longer surface as "Dangling MX record". SCORE-BEARING only for
+ *   domains publishing an invalid exchange: `controlPresent` flips to false there, which downgrades the
+ *   mail-enabled severities of dependent checks (DKIM, MTA-STS, BIMI), and a mixed set may gain the low
+ *   "Single MX record". The SQ-279 inconclusive-rcode abstention branch is untouched. No weight, tier,
+ *   grade band, `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.38.0';
+export const SCORING_MODEL_VERSION = '1.39.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';
