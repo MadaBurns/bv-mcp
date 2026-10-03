@@ -96,6 +96,20 @@ const NS_LOOKUP_CONCURRENCY = 4;
  */
 const SPECULATIVE_LOOKUP_BUDGET = 1 + MAX_INCLUDE_PROBES;
 
+/**
+ * True when an SPF `include:` / `redirect=` target contains an RFC 7208 §7 macro: `%{` (a macro
+ * expansion such as `%{d}` / `%{ir}`), or one of the literal escapes `%%`, `%_`, `%-`.
+ *
+ * Such a target is a TEMPLATE, not a hostname. It can only be expanded by a receiving MTA that
+ * holds the sender's envelope (client IP, sender, HELO), so it is not resolvable out-of-band:
+ * querying it verbatim asks about a name that does not exist and would misreport a healthy
+ * macro-expanding include (e.g. Proofpoint's `%{ir}.%{v}.%{d}.spf.has.pphosted.com`) as a
+ * `void_include` (#1200). Callers must report it not-assessable instead of probing it.
+ */
+export function isSpfMacroTarget(name: string): boolean {
+	return /%[{%_-]/.test(name);
+}
+
 export type SubdomailingRiskType = 'dangling_cname' | 'dangling_ns' | 'expired_domain' | 'void_include';
 
 export interface SubdomailingProbeResult {
@@ -115,6 +129,12 @@ export interface SubdomailingProbeResult {
 	 * fully cleared, so callers must not count it toward "resolves correctly".
 	 */
 	unmeasured?: true;
+	/**
+	 * True when the target is an RFC 7208 §7 macro template (`isSpfMacroTarget`) that was
+	 * deliberately NOT probed. Always paired with `unmeasured: true`, but distinct from it: no
+	 * lookup threw, a template simply cannot be resolved out-of-band (#1200).
+	 */
+	macroTemplate?: true;
 }
 
 /**
@@ -243,6 +263,11 @@ function replayIncludeWalk(domain: string, adjacency: ReadonlyMap<string, SpfNod
 		if (visited.has(normalized)) return;
 		visited.add(normalized);
 
+		// A macro template is a childless leaf (#1200): the caller already collected it (one cap
+		// slot, DFS order intact), but it cannot be expanded out-of-band, so it is neither
+		// recursed into nor queued in `unresolved` (which would spend a TXT lookup on a non-name).
+		if (isSpfMacroTarget(normalized)) return;
+
 		if (!adjacency.has(normalized)) {
 			unresolved.push(normalized);
 			return;
@@ -340,10 +365,22 @@ export async function probeIncludeDomain(
 	options?: { timeout?: number },
 ): Promise<SubdomailingProbeResult> {
 	const timeout = options?.timeout ?? PROBE_TIMEOUT_MS;
-	const base: Omit<SubdomailingProbeResult, 'riskType' | 'severity' | 'detail' | 'unmeasured'> = {
+	const base: Omit<SubdomailingProbeResult, 'riskType' | 'severity' | 'detail' | 'unmeasured' | 'macroTemplate'> = {
 		domain: includeDomain,
 		mechanism,
 	};
+
+	// A macro template is not a hostname: issue NO query for it (#1200). Not-assessable, not safe.
+	if (isSpfMacroTarget(includeDomain)) {
+		return {
+			...base,
+			riskType: null,
+			severity: 'info',
+			unmeasured: true,
+			macroTemplate: true,
+			detail: `SPF ${mechanism} is a macro-expanded template (RFC 7208 §7) that only a receiving MTA can expand with the sender's envelope; it cannot be resolved out-of-band and was not probed. This is not evidence that it is safe or unsafe.`,
+		};
+	}
 
 	// Set when a takeover-relevant lookup THREW rather than answering, so evidence for that
 	// vector is missing. Only an ANSWERED-EMPTY (`[]`) result is evidence of non-resolution
@@ -475,6 +512,12 @@ export interface SubdomailingProbeSummary {
 	 * instead of claiming every include "resolves correctly" (#1103).
 	 */
 	unmeasuredCount: number;
+	/**
+	 * How many probed targets were RFC 7208 §7 macro templates that were deliberately not queried
+	 * (`SubdomailingProbeResult.macroTemplate`). Kept separate from `unmeasuredCount`, which means
+	 * "a lookup THREW": a template was never looked up at all (#1200).
+	 */
+	macroTemplateCount: number;
 }
 
 /**
@@ -499,10 +542,12 @@ export async function probeAllIncludes(
 	const results = await Promise.allSettled(entries.map(([domain, mechanism]) => probeIncludeDomain(domain, mechanism, gatedQuery, options)));
 
 	let unmeasuredCount = 0;
+	let macroTemplateCount = 0;
 	for (const result of results) {
 		if (result.status !== 'fulfilled') continue;
 		const probe = result.value;
-		if (probe.unmeasured) unmeasuredCount++;
+		if (probe.macroTemplate) macroTemplateCount++;
+		else if (probe.unmeasured) unmeasuredCount++;
 		if (probe.riskType === null) continue;
 
 		findings.push(
@@ -517,7 +562,7 @@ export async function probeAllIncludes(
 		);
 	}
 
-	return { findings, probedCount: entries.length, unmeasuredCount };
+	return { findings, probedCount: entries.length, unmeasuredCount, macroTemplateCount };
 }
 
 function titleForRisk(riskType: SubdomailingRiskType): string {
