@@ -152,4 +152,29 @@ describe('checkDMARC', () => {
 			expect(result.findings.find((f) => f.title === 'DMARC policy set to none')?.detail).toContain('take no action');
 		});
 	});
+
+	describe('record selection (RFC 7489 section 6.6.3, multi-record)', () => {
+		it('discards non-DMARC TXT records instead of concatenating them into the policy', async () => {
+			const queryDNS = createMockDNS({ '_dmarc.example.com': ['v=DMARC1; p=reject', 'other'] });
+			const result = await checkDMARC('example.com', queryDNS);
+			expect(result.findings.some((f) => f.title === 'Invalid DMARC policy value')).toBe(false);
+			expect(result.metadata?.dmarcPolicy).toBe('reject');
+			expect(result.controlPresent).toBe(true);
+		});
+
+		it('treats two v=DMARC1 records as no valid policy (distinct finding), not an enforcing control', async () => {
+			const queryDNS = createMockDNS({ '_dmarc.example.com': ['v=DMARC1; p=reject', 'v=DMARC1; p=none'] });
+			const result = await checkDMARC('example.com', queryDNS);
+			expect(result.controlPresent).toBe(false);
+			expect(result.findings.some((f) => f.title === 'Invalid DMARC policy value')).toBe(false);
+			expect(result.findings.some((f) => f.title === 'Multiple DMARC records — no valid policy')).toBe(true);
+		});
+
+		it('does not count a non-DMARC record that merely mentions v=DMARC1 as a second record', async () => {
+			const queryDNS = createMockDNS({ '_dmarc.example.com': ['v=DMARC1; p=quarantine', 'note: see v=DMARC1 docs'] });
+			const result = await checkDMARC('example.com', queryDNS);
+			expect(result.metadata?.dmarcPolicy).toBe('quarantine');
+			expect(result.findings.some((f) => f.title === 'Multiple DMARC records — no valid policy')).toBe(false);
+		});
+	});
 });

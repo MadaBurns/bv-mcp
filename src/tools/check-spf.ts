@@ -72,11 +72,12 @@ async function augmentTrustSurface(core: CheckResult, domain: string, dnsOptions
 		const ctxSource = coreTrustFindings[0]?.metadata;
 		const context: TrustSurfaceContext = ctxSource
 			? {
+					domain,
 					corroboratedByWeakDmarc: ctxSource.dmarcCorroborated === true,
 					...(typeof ctxSource.dmarcPolicy === 'string' ? { dmarcPolicy: ctxSource.dmarcPolicy } : {}),
 					...(typeof ctxSource.dmarcAlignmentMode === 'string' ? { dmarcAlignmentMode: ctxSource.dmarcAlignmentMode } : {}),
 				}
-			: {};
+			: { domain };
 
 		const workerTrustFindings = analyzeTrustSurface(spf, context);
 

@@ -87,6 +87,21 @@ describe('check_spf worker-layer trust-surface post-processor (#566)', () => {
 		expect(summary!.metadata?.platformCount).toBe(2);
 	});
 
+	it("does not count the scanned domain's own first-party _spf.<zone> include as a shared platform", async () => {
+		const spf = 'v=spf1 include:_spf.spotto.ai include:_spf.google.com -all';
+		mockMultiDomainTxt({
+			'spotto.ai': [spf],
+			'_spf.spotto.ai': ['v=spf1 ip4:192.0.2.1 -all'],
+			'_spf.google.com': ['v=spf1 -all'],
+		});
+		const { checkSpf } = await import('../src/tools/check-spf');
+		const result = await checkSpf('spotto.ai');
+
+		expect(result.findings.some((f) => f.metadata?.includeDomain === '_spf.spotto.ai')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.platformCount != null)).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.platform === 'Google Workspace')).toBe(true);
+	});
+
 	it('leaves the SPF score byte-identical to the core checkSPF result', async () => {
 		baseMock(SPOTTO);
 		const { checkSPF } = await import('@blackveil/dns-checks');
