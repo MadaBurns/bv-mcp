@@ -12,6 +12,7 @@
 
 import type { CheckCategory, CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 
@@ -48,6 +49,37 @@ const SPAMHAUS_CODES: Record<string, string> = {
 	'127.0.1.105': 'Abused legit malware domain',
 	'127.0.1.106': 'Abused legit botnet C&C domain',
 };
+
+type SpamhausStubKind = 'typo' | 'public_resolver' | 'excessive_queries' | 'unknown';
+
+/**
+ * Spamhaus 127.255.255.x answers are three distinct non-verdict conditions, not one "quota":
+ * .252 = typing error in the DNSBL name, .254 = query refused because it arrived via a public/open
+ * resolver, .255 = excessive query volume. Anything else in the range is an unrecognised error code.
+ * The public-resolver refusal is PERSISTENT from a DoH vantage (our resolvers are public resolvers).
+ */
+function describeSpamhausStub(ip: string): { stubKind: SpamhausStubKind; detail: string } {
+	const tail = 'This is not a listing. Results from this zone are unavailable.';
+	switch (ip) {
+		case '127.255.255.252':
+			return {
+				stubKind: 'typo',
+				detail: `Spamhaus DBL returned ${ip}, indicating a typing error in the DNSBL name that was queried. ${tail}`,
+			};
+		case '127.255.255.254':
+			return {
+				stubKind: 'public_resolver',
+				detail: `Spamhaus DBL returned ${ip}: the query was refused because it arrived via a public/open DNS resolver, not a quota or rate limit. This persists from a DNS-over-HTTPS vantage rather than clearing on retry. ${tail}`,
+			};
+		case '127.255.255.255':
+			return {
+				stubKind: 'excessive_queries',
+				detail: `Spamhaus DBL returned ${ip}, indicating excessive query volume (a quota or rate limit). ${tail}`,
+			};
+		default:
+			return { stubKind: 'unknown', detail: `Spamhaus DBL returned ${ip}, indicating a query quota or rate limit. ${tail}` };
+	}
+}
 
 function decodeSpamhaus(ip: string): DblDecodeResult | null {
 	// 127.255.255.x = quota/rate limit error — NOT a listing
@@ -148,10 +180,16 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 
 	let listedCount = 0;
 	let checkedCount = 0;
+	let zoneErrors = 0;
+	/** Zones that answered only with a quota/rate-limit stub — a response, but not a verdict. */
+	let quotaLimited = 0;
+	/** Zones that answered with a non-empty code no decoder recognises — also not a verdict. */
+	let unrecognized = 0;
 
 	for (const result of results) {
 		if (result.status === 'rejected') {
 			// DNS error for this zone — report and continue with partial results
+			zoneErrors++;
 			const zoneIndex = results.indexOf(result);
 			const zone = DBL_ZONES[zoneIndex];
 			findings.push(
@@ -178,14 +216,15 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 
 		// Spamhaus quota/error detection
 		if (zone.zone === 'dbl.spamhaus.org' && /^127\.255\.255\./.test(ip)) {
+			quotaLimited++;
+			const { stubKind, detail } = describeSpamhausStub(ip);
 			findings.push(
-				createFinding(
-					CATEGORY,
-					`${zone.name} query rate-limited`,
-					'low',
-					`Spamhaus DBL returned ${ip}, indicating a query quota or rate limit. This is not a listing. Results from this zone are unavailable.`,
-					{ zone: zone.zone, returnCode: ip, quotaError: true },
-				),
+				createFinding(CATEGORY, `${zone.name} query rate-limited`, 'low', detail, {
+					zone: zone.zone,
+					returnCode: ip,
+					quotaError: true,
+					stubKind,
+				}),
 			);
 			continue;
 		}
@@ -194,11 +233,12 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		if (zone.zone === 'multi.uribl.com') {
 			const uriblOctet = parseInt(ip.split('.')[3], 10);
 			if (uriblOctet === 1) {
+				quotaLimited++;
 				findings.push(
 					createFinding(
 						CATEGORY,
 						`${zone.name} query rate-limited`,
-						'info',
+						'low',
 						`URIBL returned ${ip}, indicating the querier is rate-limited or blocked. This is not a listing. Results from this zone are unavailable.`,
 						{ zone: zone.zone, returnCode: ip, quotaError: true },
 					),
@@ -212,18 +252,69 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		if (decoded) {
 			listedCount++;
 			findings.push(
+				createFinding(CATEGORY, `Listed on ${zone.name}`, zone.severity, `${domain} is listed on ${zone.name}: ${decoded.detail}`, {
+					zone: zone.zone,
+					returnCode: ip,
+					labels: decoded.label,
+				}),
+			);
+		} else {
+			// A non-empty answer no decoder recognises is not "not listed" — flag it and keep it out of the usable count.
+			unrecognized++;
+			findings.push(
 				createFinding(
 					CATEGORY,
-					`Listed on ${zone.name}`,
-					zone.severity,
-					`${domain} is listed on ${zone.name}: ${decoded.detail}`,
-					{ zone: zone.zone, returnCode: ip, labels: decoded.label },
+					`${zone.name} returned an unrecognised code`,
+					'low',
+					`${zone.name} (${zone.zone}) returned ${ip} for ${domain}, which this check does not recognise. This is not treated as a verdict from this zone.`,
+					{ zone: zone.zone, returnCode: ip, unrecognizedResponse: true },
 				),
 			);
 		}
 	}
 
-	// If no listings and no errors produced findings, add a clean summary
+	if (checkedCount === 0) {
+		// Every zone rejected the lookup, so nothing was measured. The tail below would
+		// still emit an affirmative "Domain not listed on any blocklist" with `zonesChecked: 0`,
+		// scoring 85 / `passed: true` and — because check_dbl caches for 3600 s and the result
+		// was not `partial` — pinning that non-answer for an hour (#900).
+		return buildDnsErrorResult(
+			CATEGORY,
+			'DBL',
+			new Error(`DNS query failed: all ${DBL_ZONES.length} blocklist lookups for ${domain} errored`),
+		) as CheckResult;
+	}
+
+	// Zones that gave a usable verdict: answered, and not with a stub or an unrecognised code.
+	const usable = checkedCount - quotaLimited - unrecognized;
+
+	if (listedCount === 0 && usable === 0) {
+		// Every zone answered, but none with a verdict (e.g. Spamhaus' public-resolver refusal
+		// plus a URIBL rate-limit stub plus an unrecognised SURBL code). Nothing was measured, so
+		// this is the same abstention as the all-errored case above — not a `low` "found on the
+		// 0 blocklist(s)" sentence that still scores as a pass (#1197). The per-zone findings are
+		// kept so the caller can see WHY; the note carries `inconclusive` + `errorKind` and never
+		// `missingControl`, and `partial` keeps the non-answer out of the 3600 s cache.
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'DBL not assessed — no blocklist returned a usable verdict',
+				'info',
+				`All ${checkedCount} blocklist zones answered for ${domain}, but ${quotaLimited} returned a rate-limit or access stub and ${unrecognized} returned an unrecognised code, so no zone gave a verdict. This is not evidence that the domain is clean or listed.`,
+				{
+					inconclusive: true,
+					errorKind: 'dns_error',
+					zonesChecked: 0,
+					unansweredZones: zoneErrors,
+					quotaLimited,
+					unrecognizedResponses: unrecognized,
+				},
+			),
+		);
+		return { ...buildCheckResult(CATEGORY, findings), score: 0, passed: false, checkStatus: 'error', partial: true } as CheckResult;
+	}
+
+	// No listings: claim clean only when every zone actually answered.
 	if (listedCount === 0 && findings.length === 0) {
 		findings.push(
 			createFinding(
@@ -235,14 +326,14 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 			),
 		);
 	} else if (listedCount === 0 && findings.every((f) => f.severity === 'low')) {
-		// Only errors/quota — add an info note that no actual listings were found
+		// Only errors/quota/unrecognised codes — bound the claim to the zones that gave a usable verdict
 		findings.push(
 			createFinding(
 				CATEGORY,
-				'Domain not listed on any blocklist',
-				'info',
-				`${domain} was not found on any of the successfully queried blocklists.`,
-				{ zonesChecked: checkedCount },
+				'No listings on the zones that answered',
+				'low',
+				`${domain} was not found on the ${usable} blocklist(s) that returned a usable answer; ${zoneErrors} errored, ${quotaLimited} were rate-limited and ${unrecognized} returned an unrecognised code.`,
+				{ zonesChecked: usable, unansweredZones: zoneErrors, quotaLimited, unrecognizedResponses: unrecognized },
 			),
 		);
 	}

@@ -44,6 +44,14 @@ export interface BrandAuditSingleDeps extends BrandAuditPipelineDeps {
 	enforceQuota?: EnforceBrandAuditQuota;
 }
 
+/**
+ * The sync budget expired before the audit finished, so nothing was measured. That is an
+ * abstention (#1196), not a clean pass: `checkStatus: 'timeout'` + score 0 / passed false /
+ * partial true is the shape pinned by test/audits/check-abstention-shape.audit.test.ts.
+ * `'timeout'` (not `'error'`) so scan_domain's transient-zero retry never re-runs an audit
+ * that was already handed off. The finding carries `inconclusive` + `errorKind` and
+ * deliberately NOT `missingControl` — a probe that never completed cannot claim absence.
+ */
 function buildAsyncHandoffResult(target: string, deadlineMs?: number): CheckResult {
 	return {
 		...buildCheckResult(CATEGORY, [
@@ -58,9 +66,15 @@ function buildAsyncHandoffResult(target: string, deadlineMs?: number): CheckResu
 					target,
 					recommendedTool: 'brand_audit_batch_start',
 					...(typeof deadlineMs === 'number' ? { deadlineMs } : {}),
+					inconclusive: true,
+					errorKind: 'timeout',
+					notAssessed: 'sync_budget_exhausted',
 				},
 			),
 		]),
+		score: 0,
+		passed: false,
+		checkStatus: 'timeout',
 		partial: true,
 	} as CheckResult;
 }

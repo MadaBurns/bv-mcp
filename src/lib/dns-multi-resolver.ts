@@ -21,6 +21,15 @@ export const RESOLVERS = [
 	{ name: 'OpenDNS', endpoint: 'https://doh.opendns.com/dns-query' },
 ] as const;
 
+/**
+ * Minimum number of responding resolvers (out of the {@link RESOLVERS} fan-out) needed to
+ * call a unanimous answer CONSISTENT (#1199). "Consistent across resolvers" is not a claim
+ * two responders can support, so below this quorum a unanimous result is INCOMPLETE.
+ * Divergent answers from 2+ responders (SPLIT_HORIZON / SUSPICIOUS) are positive evidence
+ * and are not gated: quorum only guards the clean claim.
+ */
+export const CONSISTENCY_QUORUM = 3;
+
 /** Per-resolver timeout (ms). */
 const RESOLVER_TIMEOUT_MS = 3_000;
 
@@ -45,6 +54,16 @@ export interface ConsistencyResult {
 	status: ConsistencyStatus;
 	resolverAnswers: ResolverAnswer[];
 	detail: string;
+	/** Fan-out size: how many resolvers were queried. */
+	resolversQueried: number;
+	/** How many resolvers returned a usable (`ok`) answer. */
+	respondedCount: number;
+	/** Names of the resolvers that errored or timed out. */
+	unreachableResolvers: string[];
+	/** Responders required before a unanimous answer may be called CONSISTENT. */
+	quorum: number;
+	/** `respondedCount >= quorum`. */
+	quorumMet: boolean;
 }
 
 /** Build a DoH URL for a given endpoint, domain, and type. */
@@ -192,6 +211,15 @@ function classifyConsistency(resolverAnswers: ResolverAnswer[], type: RecordType
 	const uniqueSets = new Set(answerSets);
 
 	if (uniqueSets.size === 1) {
+		if (okAnswers.length < CONSISTENCY_QUORUM) {
+			const unreachable = resolverAnswers.filter((r) => r.status !== 'ok').map((r) => r.resolver);
+			return {
+				status: 'INCOMPLETE',
+				detail:
+					`Only ${okAnswers.length} of ${resolverAnswers.length} resolvers answered for ${type} records (${unreachable.join(', ')} unreachable); ` +
+					`the ${okAnswers.length} that answered agree, but that is below the quorum of ${CONSISTENCY_QUORUM} needed to call the records consistent.`,
+			};
+		}
 		const emptyResult = okAnswers[0].answers.length === 0;
 		if (emptyResult) {
 			return { status: 'CONSISTENT', detail: `No ${type} records found — all ${okAnswers.length} resolvers agree.` };
@@ -259,10 +287,11 @@ export async function queryMultiResolver(domain: string, type: RecordTypeName): 
 				// Return whatever has completed so far
 				resolve(
 					Promise.all(
-						queries.map((q) =>
+						queries.map((q, i) =>
 							Promise.race([
 								q,
-								new Promise<ResolverAnswer>((r) => setTimeout(() => r({ resolver: 'unknown', status: 'timeout', answers: [] }), 0)),
+								// Name the late resolver by fan-out index so unreachableResolvers stays accurate.
+								new Promise<ResolverAnswer>((r) => setTimeout(() => r({ resolver: RESOLVERS[i].name, status: 'timeout', answers: [] }), 0)),
 							]),
 						),
 					),
@@ -273,7 +302,18 @@ export async function queryMultiResolver(domain: string, type: RecordTypeName): 
 
 	const { status, detail } = classifyConsistency(resolverAnswers, type);
 
-	return { recordType: type, status, resolverAnswers, detail };
+	const respondedCount = resolverAnswers.filter((r) => r.status === 'ok').length;
+	return {
+		recordType: type,
+		status,
+		resolverAnswers,
+		detail,
+		resolversQueried: resolverAnswers.length,
+		respondedCount,
+		unreachableResolvers: resolverAnswers.filter((r) => r.status !== 'ok').map((r) => r.resolver),
+		quorum: CONSISTENCY_QUORUM,
+		quorumMet: respondedCount >= CONSISTENCY_QUORUM,
+	};
 }
 
 /**
