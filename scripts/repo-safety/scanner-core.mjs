@@ -280,6 +280,14 @@ export function isAllowedEmail(value, policy = DEFAULT_POLICY) {
 	return normalized.allowedEmailDomains.includes(domain) || normalized.allowedEmailDomains.some((allowed) => domain.endsWith(`.${allowed}`));
 }
 
+// Dependabot compare URLs (a `/compare/` path joining two name-at-version tokens with `...`) look like emails; skip a match that sits in a URL
+// path (not query/fragment) and whose "domain" is a semver-led range, so an address in a URL query string is still flagged.
+/** @param {string} line @param {RegExpMatchArray} match */
+function isUrlPathPackageVersion(line, match) {
+	if (!/^\d+\.\d+[\d.]*\.\.\./.test(match[0].split('@').pop() ?? '')) return false;
+	return /https?:\/\/[^\s?#]*\/[^\s?#@]*$/i.test(line.slice(0, match.index));
+}
+
 /** @param {string} value @param {RepoSafetyPolicy} [policy] */
 export function isAllowedInternalHostname(value, policy = DEFAULT_POLICY) {
 	const normalized = normalizePolicy(policy);
@@ -482,6 +490,7 @@ export function scanTextForSensitiveSurface(file, text, policy = DEFAULT_POLICY)
 			}
 
 			for (const match of line.matchAll(EMAIL_PATTERN)) {
+				if (isUrlPathPackageVersion(line, match)) continue;
 				if (!isAllowedEmail(match[0], normalized)) findings.push(finding(file, line, lineIndex, match, 'real-email'));
 			}
 		}

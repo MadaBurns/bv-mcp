@@ -275,6 +275,13 @@ export interface BrandAuditConsumerDeps {
 	 */
 	certstreamAuthToken?: string;
 	/**
+	 * Optional Certspotter bearer token for the SAN correlator's Certspotter failover.
+	 * Threaded through the pipeline (and the `discover_only` branch) into
+	 * `discoverBrandDomains` so queued audits use the authenticated quota rather than
+	 * the shared anonymous one. Sourced from `resolveCertspotterToken` in src/index.ts.
+	 */
+	certspotterToken?: string;
+	/**
 	 * Optional internal-call closure for the registrar deep-scan queue job.
 	 * Wraps handleToolsCall so the deep-scan orchestrator can invoke scan_domain
 	 * and discover_subdomains without going through HTTP framing. Constructed at
@@ -443,6 +450,7 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		...(deps.whoisBinding ? { whoisBinding: deps.whoisBinding } : {}),
 		...(deps.certstream ? { certstream: deps.certstream } : {}),
 		...(deps.certstreamAuthToken ? { certstreamAuthToken: deps.certstreamAuthToken } : {}),
+		...(deps.certspotterToken ? { certspotterToken: deps.certspotterToken } : {}),
 		// The same brandAuditQueue binding that powers the Phase 2b retry-enqueue
 		// at line 416 doubles as the registrar fast→full deep-scan trigger inside the
 		// pipeline (brand-audit-pipeline.ts:1061). The send() signature there is
@@ -463,6 +471,7 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		deps.whoisBinding ||
 		deps.certstream ||
 		deps.certstreamAuthToken ||
+		deps.certspotterToken ||
 		deps.brandAuditQueue;
 	const singleOptions: BrandAuditSingleOptions = {
 		auditId: message.auditId,
@@ -808,6 +817,7 @@ export async function processDiscoverOnlyMessage(rawBody: unknown, deps: BrandAu
 		discovery_mode: message.discovery_mode,
 		certstream: deps.certstream,
 		certstreamAuthToken: deps.certstreamAuthToken,
+		...(deps.certspotterToken ? { certspotterToken: deps.certspotterToken } : {}),
 		signal: controller.signal,
 		deadlineMs: messageStartedAt + BRAND_AUDIT_MESSAGE_TIMEOUT_MS,
 	};

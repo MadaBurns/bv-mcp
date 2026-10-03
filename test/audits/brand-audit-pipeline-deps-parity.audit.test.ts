@@ -48,6 +48,13 @@ const REQUIRED_DEPS: Array<{ name: string; queuePattern: RegExp; handlerPattern:
 		handlerPattern: /certstream:\s*ro\?\.certstream/,
 	},
 	{
+		name: 'certspotterToken',
+		queuePattern: /\.\.\.\(deps\.certspotterToken\s*\?\s*\{\s*certspotterToken:\s*deps\.certspotterToken\s*\}\s*:\s*\{\}\),?/,
+		// Conditional-spread form: distinguishes the brand_audit_single deps arg from the
+		// discover_brand_domains call's `&&` spread elsewhere in the same file.
+		handlerPattern: /\.\.\.\(ro\?\.certspotterToken\s*\?\s*\{\s*certspotterToken:\s*ro\.certspotterToken\s*\}\s*:\s*\{\}\),?/,
+	},
+	{
 		name: 'whoisBinding',
 		queuePattern: /\.\.\.\(deps\.whoisBinding\s*\?\s*\{\s*whoisBinding:\s*deps\.whoisBinding\s*\}\s*:\s*\{\}\),?/,
 		handlerPattern: /whoisBinding:\s*ro\?\.whoisBinding/,
