@@ -155,7 +155,10 @@ describe('core SPF trust-surface corroboration prose matches the DMARC metadata'
 		// The aggregate is unchanged: still the one scored signal, still escalating to `high`
 		// under corroboration and still naming the platform count.
 		expect(aggregate[0].severity).toBe('high');
-		expect(findings.filter((f) => f.severity !== 'info'), 'exactly ONE scored finding for the whole trust surface').toHaveLength(1);
+		expect(
+			findings.filter((f) => f.severity !== 'info'),
+			'exactly ONE scored finding for the whole trust surface',
+		).toHaveLength(1);
 
 		// The per-platform findings stay fully detailed — same corroboration prose, same
 		// metadata — so a customer can still see which platforms are authorized and why.
@@ -240,7 +243,10 @@ describe('core SPF trust-surface — unrecognized shared senders count (#572 par
 	it('matches the `_spf` and `spfNN` label forms, and the label anywhere in the host', () => {
 		for (const host of ['_spf.some-esp.example', 'spf2.some-esp.example', 'eu._spf.some-esp.example']) {
 			const findings = analyzeTrustSurface(`v=spf1 include:${host} -all`);
-			expect(findings.map((f) => f.metadata?.includeDomain), `expected ${host} to be counted`).toEqual([host]);
+			expect(
+				findings.map((f) => f.metadata?.includeDomain),
+				`expected ${host} to be counted`,
+			).toEqual([host]);
 		}
 	});
 
@@ -321,5 +327,48 @@ describe('core SPF trust-surface — unrecognized shared senders count (#572 par
 		expect(findings).toHaveLength(1);
 		expect(findings[0].metadata?.platform).toBe('Google Workspace');
 		expect(findings[0].metadata?.recognized).toBeUndefined();
+	});
+});
+
+describe('first-party includes are not a shared platform', () => {
+	const weak = { corroboratedByWeakDmarc: true, dmarcPolicy: 'none' };
+
+	it("ignores the scanned domain's own _spf.<zone> include", () => {
+		expect(analyzeTrustSurface('v=spf1 include:_spf.example.com -all', { ...weak, domain: 'example.com' })).toEqual([]);
+	});
+
+	it('ignores includes under the registrable domain when scanning a subdomain', () => {
+		const findings = analyzeTrustSurface('v=spf1 include:_spf.example.com include:spf.mail.example.com -all', {
+			...weak,
+			domain: 'news.example.com',
+		});
+		expect(findings).toEqual([]);
+	});
+
+	it('does not raise the high aggregate when one of two includes is first-party', () => {
+		const findings = analyzeTrustSurface('v=spf1 include:_spf.example.com include:_spf.google.com -all', {
+			...weak,
+			domain: 'example.com',
+		});
+		expect(findings.some((f) => f.title.startsWith('SPF trust surface:'))).toBe(false);
+		expect(findings.filter((f) => f.metadata?.trustSurface === true)).toHaveLength(1);
+		expect(findings[0].metadata?.platform).toBe('Google Workspace');
+	});
+
+	it('still flags third-party platforms and unrelated domains with the same suffix label', () => {
+		const findings = analyzeTrustSurface('v=spf1 include:_spf.notexample.com include:_spf.google.com -all', {
+			...weak,
+			domain: 'example.com',
+		});
+		expect(findings.some((f) => f.title.startsWith('SPF trust surface: 2'))).toBe(true);
+	});
+
+	it('does not treat a shared public suffix as first-party (example.co.uk vs other.co.uk)', () => {
+		const findings = analyzeTrustSurface('v=spf1 include:_spf.other.co.uk -all', { ...weak, domain: 'example.co.uk' });
+		expect(findings).toHaveLength(1);
+	});
+
+	it('is unchanged when no scanned domain is supplied', () => {
+		expect(analyzeTrustSurface('v=spf1 include:_spf.example.com -all', weak)).toHaveLength(1);
 	});
 });
