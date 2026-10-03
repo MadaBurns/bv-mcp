@@ -9,6 +9,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { isCompletedCheck } from '../lib/ungraded-display';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { Finding } from '@blackveil/dns-checks/scoring';
 import { describeNonResolvingDomain, isNonResolvingApex } from '../lib/apex-resolution';
@@ -670,8 +671,9 @@ export async function simulateAttackPaths(
 	results.forEach((result, i) => {
 		if (result.status === 'rejected') {
 			unmeasuredChecks.push({ check: checkNames[i], reason: 'rejected' });
-		} else if (result.value.checkStatus === 'timeout' || result.value.checkStatus === 'error') {
-			unmeasuredChecks.push({ check: checkNames[i], reason: result.value.checkStatus });
+		} else if (!isCompletedCheck(result.value)) {
+			// Not completed means checkStatus is exactly 'timeout' | 'error' (CheckStatus minus 'completed'/absent).
+			unmeasuredChecks.push({ check: checkNames[i], reason: result.value.checkStatus as 'timeout' | 'error' });
 		} else {
 			allFindings.push(...result.value.findings);
 		}

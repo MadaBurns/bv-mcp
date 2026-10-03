@@ -14,7 +14,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import type { CheckCategory, Finding } from '../lib/scoring';
-import { hasCompletedEvidence } from '../lib/ungraded-display';
+import { hasCompletedEvidence, isCompletedCheck } from '../lib/ungraded-display';
 // Shared with `map_compliance` (#705) — see `lib/control-presence.ts`. The two
 // surfaces answer the same customer question ("does this domain have control X")
 // and must not drift on what "satisfied" and "applicable" mean.
@@ -239,7 +239,7 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 	// absent or `'completed'`), so an all-transient outage abstains the same way
 	// a zero-check scan does.
 	const scanMeasured = hasCompletedEvidence(scan.checks);
-	const anyCheckUnmeasured = scan.checks.some((value) => value.checkStatus === 'timeout' || value.checkStatus === 'error');
+	const anyCheckUnmeasured = scan.checks.some((value) => !isCompletedCheck(value));
 
 	if (baseline.require_dmarc_enforce) {
 		if (!scanMeasured || categoryUnmeasured(scan, 'dmarc')) {
