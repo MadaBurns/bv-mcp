@@ -1086,6 +1086,15 @@ app.post('/mcp', async (c) => {
 			return new Response(null, { status: 202 });
 		}
 
+		// A one-element `[initialize]` batch creates a session; surface its id the same way the
+		// single-request path does. (initialize cannot be batched with other messages, so at most
+		// one entry carries a session header.)
+		const sessionHeaders: Record<string, string> = {};
+		for (const result of results) {
+			const newSessionId = result.kind === 'response' ? result.headers['mcp-session-id'] : undefined;
+			if (newSessionId) sessionHeaders['mcp-session-id'] = newSessionId;
+		}
+
 		if (acceptsSSE(accept)) {
 			const ssePayload = sseEvent(responsePayloads);
 			return new Response(ssePayload, {
@@ -1094,11 +1103,12 @@ app.post('/mcp', async (c) => {
 					'Content-Type': 'text/event-stream',
 					'Cache-Control': 'no-cache',
 					'Content-Length': String(TEXT_ENCODER.encode(ssePayload).byteLength),
+					...sessionHeaders,
 				},
 			});
 		}
 
-		return c.json(responsePayloads, { status: 200 });
+		return c.json(responsePayloads, { status: 200, headers: sessionHeaders });
 	}
 
 	const singleResult = await executeMcpRequest({
@@ -1190,20 +1200,21 @@ app.post('/mcp', async (c) => {
 		return new Response(null, { status: 202 });
 	}
 
+	// An id that is not a string/number is answered with `id: null` (JSON-RPC 2.0 §5), so it
+	// must not be echoed back as the SSE event id either.
+	const requestId = (parsedBodies[0] as JsonRpcRequest).id;
+	const eventId = typeof requestId === 'string' || typeof requestId === 'number' ? singleResult.eventId : undefined;
+
 	if (singleResult.streamOperation) {
-		return createStreamingSseResponse(
-			singleResult.streamOperation,
-			(payload) => sseEvent(payload, singleResult.eventId),
-			singleResult.headers,
-		);
+		return createStreamingSseResponse(singleResult.streamOperation, (payload) => sseEvent(payload, eventId), singleResult.headers);
 	}
 
 	if (acceptsSSE(accept)) {
 		if (singleResult.useErrorEnvelope) {
-			return sseErrorResponse(singleResult.payload, singleResult.httpStatus, accept, singleResult.headers, singleResult.eventId);
+			return sseErrorResponse(singleResult.payload, singleResult.httpStatus, accept, singleResult.headers, eventId);
 		}
 
-		const ssePayload = sseEvent(singleResult.payload, singleResult.eventId);
+		const ssePayload = sseEvent(singleResult.payload, eventId);
 		return new Response(ssePayload, {
 			status: 200,
 			headers: {
