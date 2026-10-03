@@ -16,6 +16,7 @@
  */
 
 import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { queryDnsRecords, queryMxRecords, queryPtrRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { isValidIPv4 } from '../lib/ip-utils';
@@ -51,16 +52,11 @@ export async function checkMxReputation(domain: string, dnsOptions?: QueryDnsOpt
 	let mxRecords: Array<{ priority: number; exchange: string }>;
 	try {
 		mxRecords = await queryMxRecords(domain, dnsOptions);
-	} catch {
-		findings.push(
-			createFinding(
-				'mx_reputation',
-				'MX lookup failed',
-				'medium',
-				`Could not query MX records for ${domain}. Unable to check mail server reputation.`,
-			),
-		);
-		return buildCheckResult('mx_reputation', findings);
+	} catch (err) {
+		// Nothing was measured. The `medium` finding this branch used to emit scored 85 with
+		// `passed: true`, and because this tool caches for 60 minutes and the result was not
+		// `partial`, it pinned that non-answer for the whole TTL (#900).
+		return buildDnsErrorResult('mx_reputation', 'MX reputation', err) as CheckResult;
 	}
 
 	// Step 2: No MX records — nothing to check
@@ -174,9 +170,10 @@ export async function checkMxReputation(domain: string, dnsOptions?: QueryDnsOpt
 						returnCodes: returnCodes.length > 0 ? returnCodes : undefined,
 					});
 				} catch {
-					// DNSBL query failed (timeout, NXDOMAIN, etc.) — treat as not listed.
-					// NXDOMAIN is the explicit "not on this blocklist" signal for most DNSBLs.
-					dnsblResults.push({ zone, status: 'not_listed' });
+					// Transport failure, NOT NXDOMAIN: the zone gave no verdict, so it must not
+					// be scored as `not_listed` — that would let a dead resolver produce an
+					// affirmative "not listed on any checked DNSBLs" (#900).
+					dnsblResults.push({ zone, status: 'error' });
 				}
 			}
 

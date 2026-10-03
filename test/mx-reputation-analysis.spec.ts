@@ -129,6 +129,17 @@ describe('mx-reputation-analysis', () => {
 				expect(findings.find((f) => f.title.includes('MX reputation clean'))).toBeUndefined();
 			});
 
+			it('emits a queryError finding and omits the clean summary when a zone query fails', () => {
+				const findings = analyzeDnsblResults('198.51.100.1', [
+					{ zone: 'bl.spamcop.net', status: 'error' },
+					{ zone: 'b.barracudacentral.org', status: 'not_listed' },
+				]);
+				expect(findings.find((f) => f.title.includes('MX reputation clean'))).toBeUndefined();
+				const failed = findings.find((f) => f.title === 'DNSBL query failed on bl.spamcop.net');
+				expect(failed).toBeDefined();
+				expect(failed!.metadata?.queryError).toBe(true);
+			});
+
 			it('still surfaces real listings even when other zones are inconclusive (mixed-state)', () => {
 				const findings = analyzeDnsblResults('198.51.100.1', [
 					{ zone: 'zen.spamhaus.org', status: 'listed', returnCodes: ['127.0.0.2'] },
