@@ -247,8 +247,8 @@ describe('error-rate lane — query shape', () => {
 		const sql = calls.find((c) => c.url.includes('analytics_engine/sql') && c.body.includes('real_error_pct'))?.body ?? '';
 
 		expect(sql).not.toBe('');
-		expect(sql).toContain("blob3 = 'error' AND blob4 != 'none'");
-		expect(sql).toContain("blob3 = 'error' AND blob4 = 'none'");
+		expect(sql).toContain("blob3 = 'error' AND blob16 != 'input_error'");
+		expect(sql).toContain("blob3 = 'error' AND blob16 = 'input_error'");
 		expect(sql).toContain('real_error_count');
 		expect(sql).toContain('input_error_count');
 		// Divide-by-zero guard must use if(), not GREATEST() — AE's SQL API 422s on the

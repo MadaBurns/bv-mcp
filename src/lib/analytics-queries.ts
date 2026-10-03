@@ -215,13 +215,18 @@ ORDER BY request_count DESC`;
  * Anomaly detection query for alerting. Returns error rate and p95 latency for the
  * last N minutes.
  *
- * Carries the SAME input-vs-real error split as {@link queryErrorRate}, and for the
+ * Carries an input-vs-real error split like {@link queryErrorRate}, and for the
  * same reason — except here it is load-bearing rather than diagnostic, because this
- * is the query that PAGES. `input_error_count` (blob4='none') is a request rejected
- * at pre-dispatch arg validation: no tool ran, nothing was measured, and the caller
- * is overwhelmingly a fuzzer or a probe hitting the public endpoint. `real_error_count`
- * (blob4!='none') is a tool that actually executed and failed — the only class of
- * error that means the service is unhealthy.
+ * is the query that PAGES. `input_error_count` (blob16='input_error') is a request
+ * rejected at pre-dispatch arg validation: no tool ran, nothing was measured, and the
+ * caller is overwhelmingly a fuzzer or a probe hitting the public endpoint.
+ * `real_error_count` (blob16!='input_error') is a tool that actually executed and
+ * failed — the only class of error that means the service is unhealthy.
+ *
+ * The split keys on blob16 (the bounded outcome reason `classifyToolFailure` writes), NOT
+ * on blob4='none': blob4 is the domain fingerprint, 'none' for every tool without a required
+ * domain (batch_scan, scan_buckets_*, osint_*, brand_audit_*), so that proxy filed their real
+ * failures under input errors and the page never saw them (T10).
  *
  * `error_pct` is retained (unused by the alert, kept for back-compat with any reader
  * that selects it) but MUST NOT be what the alert judges: at low volume a single
@@ -233,11 +238,11 @@ export function queryRecentAnomalies(minutes: string, dataset?: string): string 
 	return `SELECT
   SUM(_sample_interval) AS total_calls,
   SUM(if(blob3 = 'error', _sample_interval, 0)) AS error_count,
-  SUM(if(blob3 = 'error' AND blob4 = 'none', _sample_interval, 0)) AS input_error_count,
-  SUM(if(blob3 = 'error' AND blob4 != 'none', _sample_interval, 0)) AS real_error_count,
+  SUM(if(blob3 = 'error' AND blob16 = 'input_error', _sample_interval, 0)) AS input_error_count,
+  SUM(if(blob3 = 'error' AND blob16 != 'input_error', _sample_interval, 0)) AS real_error_count,
   SUM(if(blob3 = 'error', _sample_interval, 0)) * 100.0
     / if(SUM(_sample_interval) > 0, SUM(_sample_interval), 1) AS error_pct,
-  SUM(if(blob3 = 'error' AND blob4 != 'none', _sample_interval, 0)) * 100.0
+  SUM(if(blob3 = 'error' AND blob16 != 'input_error', _sample_interval, 0)) * 100.0
     / if(SUM(_sample_interval) > 0, SUM(_sample_interval), 1) AS real_error_pct,
   quantileExactWeighted(0.95)(double1, _sample_interval) AS p95_ms
 FROM ${resolveAnalyticsDataset(dataset)}
@@ -367,9 +372,12 @@ ORDER BY total_calls DESC`;
  *    a degraded fallback (R9 — this MUST reach the alert).
  *
  * Excludes the `kv_fallback` member (deliberate session-store noise, alerted
- * separately if at all) and the `quota_coordinator_fallback` member (R8 — a
+ * separately if at all), the `quota_coordinator_fallback` member (R8 — a
  * quota-guardrail concern queried/alerted separately, NOT a service-binding
- * failure). The filter keys on degradationType (blob1), NOT component (blob2) --
+ * failure), and `shard_below_benchmark_floor` (a per-profile accumulator shard's
+ * expected cold-start warm-up while `PROFILE_ACCUMULATOR_SHARDING='profile'` — the
+ * alert threshold is 1, so a single benign warm-up read would otherwise page).
+ * The filter keys on degradationType (blob1), NOT component (blob2) --
  * a new alertable signal must therefore use a non-excluded degradationType, not
  * merely a distinct component.
  *
@@ -386,6 +394,7 @@ WHERE index1 = 'degradation'
   AND blob1 != 'kv_fallback'
   AND blob1 != 'quota_coordinator_fallback'
   AND blob1 != 'quota_shard_salt_missing'
+  AND blob1 != 'shard_below_benchmark_floor'
   AND timestamp > NOW() - INTERVAL '${minutes}' MINUTE
 GROUP BY component, degradation_type
 ORDER BY event_count DESC`;

@@ -39,7 +39,7 @@ import type { SendAlertOptions } from './lib/alerting';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { logEvent, logError } from './lib/log';
 import { scoreWindow } from './lib/fuzzing-detector';
-import { readWindow } from './lib/fuzzing-counter';
+import { readWindow, COUNTER_TTL_SECONDS } from './lib/fuzzing-counter';
 import { buildFuzzingAlertPayload } from './schemas/alerting';
 import { FUZZ_THRESHOLDS } from './lib/config';
 import {
@@ -60,9 +60,9 @@ import { resolveAlertWebhookUrl } from './lib/operator-webhook-binding';
 interface AnomalyRow {
 	total_calls?: number;
 	error_count?: number;
-	/** Pre-dispatch arg-validation rejections (blob4='none') — no tool ran. */
+	/** Pre-dispatch arg-validation rejections (blob16='input_error') — no tool ran. */
 	input_error_count?: number;
-	/** Errors from tools that actually EXECUTED (blob4!='none') — the honest signal. */
+	/** Errors from tools that actually EXECUTED (blob16!='input_error') — the honest signal. */
 	real_error_count?: number;
 	error_pct?: number;
 	real_error_pct?: number;
@@ -378,8 +378,8 @@ async function checkAccessRollupProvisioned(env: ScheduledEnv, webhookUrl: strin
 
 		// #1164: the table stays missing until an operator runs the migration, so
 		// without suppression this pages on every 15-min tick indefinitely.
-		if (await shouldSendRepeat(env, 'mcp_access_rollup_table_exists', message, Date.now())) {
-			await sendAlert(
+		if (await shouldSendRepeat(env, 'mcp_access_rollup_table_exists', message)) {
+			const delivered = await sendAlert(
 				webhookUrl,
 				buildAlertPayload({
 					title: 'mcp_access_rollup table missing in production — auth_tier telemetry is fail-open, not zero',
@@ -391,7 +391,9 @@ async function checkAccessRollupProvisioned(env: ScheduledEnv, webhookUrl: strin
 					threshold: 'mcp_access_rollup_table_exists',
 				}),
 				alertOptions(env),
-			).catch(() => {});
+			).catch(() => false);
+			// Arm the cooldown only on an accepted delivery: a down webhook must not suppress the page after recovery.
+			if (delivered) await armRepeatCooldown(env, 'mcp_access_rollup_table_exists', message, Date.now());
 		}
 	}
 }
@@ -623,7 +625,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 
 			// JUDGE THE REAL ERROR RATE, NOT THE CONFLATED ONE.
 			//
-			// `error_pct` counts pre-dispatch arg-validation rejections (blob4='none') as
+			// `error_pct` counts pre-dispatch arg-validation rejections (blob16='input_error') as
 			// service errors. Those are a fuzzer or a probe sending a bad/absent domain to a
 			// public endpoint — no tool ran, so nothing about the service was measured. The
 			// split already existed in `queryErrorRate` for the per-tool report (where it
@@ -954,8 +956,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 				.slice(0, 400);
 			// #1164: the same broken lane(s) fail with the same reason on every tick until
 			// an operator fixes the query — suppress the repeat, not the first page.
-			if (await shouldSendRepeat(env, 'alerting_lane_partial_failure', degradedDetail, Date.now())) {
-				await sendAlert(
+			if (await shouldSendRepeat(env, 'alerting_lane_partial_failure', degradedDetail)) {
+				const delivered = await sendAlert(
 					webhookUrl,
 					buildAlertPayload({
 						title: `Alerting check degraded: ${laneFailures.length} of ${lanesAttempted} analytics queries failed`,
@@ -967,7 +969,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 						threshold: 'alerting_lane_partial_failure',
 					}),
 					alertOptions(env),
-				).catch(() => {});
+				).catch(() => false);
+				if (delivered) await armRepeatCooldown(env, 'alerting_lane_partial_failure', degradedDetail, Date.now());
 			}
 		}
 
@@ -1008,8 +1011,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').trim().slice(0, 300);
 		// #1164: an unresolved pipeline outage throws the SAME reason on every tick —
 		// suppress the repeat, not the first page.
-		if (await shouldSendRepeat(env, 'alerting_self_check', reason || '(no detail)', Date.now())) {
-			await sendAlert(
+		if (await shouldSendRepeat(env, 'alerting_self_check', reason || '(no detail)')) {
+			const delivered = await sendAlert(
 				webhookUrl,
 				buildAlertPayload({
 					title: 'Alerting pipeline failure: analytics check could not run',
@@ -1018,7 +1021,8 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 					threshold: 'alerting_self_check',
 				}),
 				alertOptions(env),
-			).catch(() => {});
+			).catch(() => false);
+			if (delivered) await armRepeatCooldown(env, 'alerting_self_check', reason || '(no detail)', Date.now());
 		}
 	}
 }
@@ -1046,28 +1050,33 @@ function alertOptions(env: ScheduledEnv): SendAlertOptions {
  */
 const ALERT_REPEAT_COOLDOWN_SECONDS = 24 * 60 * 60;
 
+/** KV key for a repeatable alert's cooldown marker: `<threshold>:<hash(normalised reason)>`. */
+async function repeatAlertKey(threshold: string, reason: string): Promise<string> {
+	const normalized = reason.replace(/\s+/g, ' ').trim().toLowerCase();
+	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized)));
+	const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
+	return `alert-repeat:${threshold}:${hash}`;
+}
+
 /**
  * Gate for a repeatable alert: resolves true when the alert should be SENT this tick
  * (first occurrence of `reason` under `threshold`, or the previous occurrence's
  * cooldown has expired) and false when an identical alert already fired within the
- * window. Arms the cooldown itself on a true verdict — callers do not write the KV
- * marker separately, same shape as `checkAndSet`.
+ * window. READ-ONLY: it does not arm the cooldown. Callers send the alert and then
+ * call {@link armRepeatCooldown} only if `sendAlert` reports the webhook ACCEPTED it
+ * — arming before delivery let a down webhook suppress the same alert for 24 h after
+ * it recovered (same delivery-gated shape as `handleClientIpHeaderAudit`).
  *
  * FAIL-OPEN TO SENDING, never suppress on a KV fault: an unbound `RATE_LIMIT`, or a
- * `get`/`put` that throws, both resolve true. A missed suppression costs one extra
+ * `get` that throws, both resolve true. A missed suppression costs one extra
  * page; a false suppression costs a silent incident — same posture as the
  * fuzzing-scan and client-ip cooldowns above/below.
  */
-async function shouldSendRepeat(env: ScheduledEnv, threshold: string, reason: string, nowMs: number): Promise<boolean> {
+async function shouldSendRepeat(env: ScheduledEnv, threshold: string, reason: string): Promise<boolean> {
 	if (!env.RATE_LIMIT) return true;
 
-	const normalized = reason.replace(/\s+/g, ' ').trim().toLowerCase();
-	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized)));
-	const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
-	const key = `alert-repeat:${threshold}:${hash}`;
-
 	try {
-		const existing = await env.RATE_LIMIT.get(key);
+		const existing = await env.RATE_LIMIT.get(await repeatAlertKey(threshold, reason));
 		if (existing !== null) return false; // identical reason already paged within the window
 	} catch (err) {
 		logError(err instanceof Error ? err : String(err), {
@@ -1075,21 +1084,26 @@ async function shouldSendRepeat(env: ScheduledEnv, threshold: string, reason: st
 			category: 'scheduled',
 			details: { message: 'alert_repeat_kv_get_failed', threshold },
 		});
-		return true; // KV down — send rather than risk a silent suppression
 	}
+	return true; // not seen, or KV down — send rather than risk a silent suppression
+}
 
+/**
+ * Arm the {@link shouldSendRepeat} cooldown for `reason` under `threshold`. Call ONLY
+ * after the webhook accepted the alert. A failed write is logged and swallowed: the
+ * next tick re-alerts, which is the acceptable degradation (fail open).
+ */
+async function armRepeatCooldown(env: ScheduledEnv, threshold: string, reason: string, nowMs: number): Promise<void> {
+	if (!env.RATE_LIMIT) return;
 	try {
-		await env.RATE_LIMIT.put(key, String(nowMs), { expirationTtl: ALERT_REPEAT_COOLDOWN_SECONDS });
+		await env.RATE_LIMIT.put(await repeatAlertKey(threshold, reason), String(nowMs), { expirationTtl: ALERT_REPEAT_COOLDOWN_SECONDS });
 	} catch (err) {
 		logError(err instanceof Error ? err : String(err), {
 			severity: 'warn',
 			category: 'scheduled',
 			details: { message: 'alert_repeat_kv_put_failed', threshold },
 		});
-		// KV write failed — next tick re-alerts too, acceptable degradation (fail
-		// open, don't silently drop the page).
 	}
-	return true;
 }
 
 /**
@@ -1162,7 +1176,11 @@ export async function handleFuzzingScan(env: ScheduledEnv): Promise<void> {
 			break;
 		}
 		try {
-			const events = await readWindow(env.RATE_LIMIT, principalId, nowSec, FUZZ_THRESHOLDS.windowSeconds);
+			// Look back over the whole counter lifetime, NOT one FUZZ_THRESHOLDS.windowSeconds: the cron
+			// ticks every 15 min, so a 60 s read would only score bursts that ended within the last
+			// minute. scoreWindow still applies the per-windowSeconds threshold by sliding that window
+			// across the events, so the longer read does not sum sub-threshold bursts.
+			const events = await readWindow(env.RATE_LIMIT, principalId, nowSec, COUNTER_TTL_SECONDS);
 			const verdict = scoreWindow(events, FUZZ_THRESHOLDS);
 			if (!verdict.suspected) continue;
 

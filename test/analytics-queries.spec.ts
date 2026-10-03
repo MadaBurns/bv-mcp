@@ -201,6 +201,31 @@ describe('analytics query builders', () => {
 		expect(kept.some((r) => r.blob1 === 'cost_ceiling_degraded' && r.blob2 === 'global_cost_ceiling')).toBe(true);
 	});
 
+	it('queryBindingDegradation excludes the benign shard_below_benchmark_floor warm-up signal (T10)', () => {
+		// With PROFILE_ACCUMULATOR_SHARDING='profile' a cold shard emits this once per warm-up read;
+		// the alert threshold is 1, so counting it pages "Service-binding degradation" for a
+		// documented, expected state. Same blob1 (degradationType) exclusion shape as the others.
+		const sql = queryBindingDegradation('15');
+		expect(sql).toContain("blob1 != 'shard_below_benchmark_floor'");
+		// ...without dropping the genuine binding-failure members.
+		expect(sql).not.toContain("blob1 != 'binding_5xx'");
+		expect(sql).not.toContain("blob1 != 'cost_ceiling_degraded'");
+	});
+
+	it('queryRecentAnomalies splits input vs real errors on the outcome reason (blob16), not on blob4=none (T10)', () => {
+		// blob4 is the domain fingerprint: it is 'none' for EVERY tool without a required domain
+		// (batch_scan, scan_buckets_*, osint_*, brand_audit_*), so keying "no tool ran" on it counted
+		// real failures of those tools as input errors and kept them out of real_error_count.
+		const sql = queryRecentAnomalies('15');
+		expect(sql).toContain("blob3 = 'error' AND blob16 = 'input_error'");
+		expect(sql).toContain("blob3 = 'error' AND blob16 != 'input_error'");
+		expect(sql).not.toContain("blob4 = 'none'");
+		expect(sql).not.toContain("blob4 != 'none'");
+		expect(sql).toContain('input_error_count');
+		expect(sql).toContain('real_error_count');
+		expect(sql).toContain('real_error_pct');
+	});
+
 	it('queryBindingDegradation sanitizes minutes parameter', () => {
 		const sql = queryBindingDegradation("10'; DROP TABLE --");
 		expect(sql).toContain("INTERVAL '10' MINUTE");
