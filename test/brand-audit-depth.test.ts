@@ -167,6 +167,20 @@ describe('buildBrandAuditDepthSummary', () => {
 		expect(summary.warnings).toContain('Recursive SAN signal skipped to preserve audit deadline headroom; mutual certificate confirmation coverage is incomplete.');
 	});
 
+	it('counts an aborted recursive SAN as skipped without the deadline-headroom warning (#1190)', () => {
+		const summary = buildBrandAuditDepthSummary({
+			candidateUniverse: { seeded: 150, probed: 150, surfaced: 2, dropped: { cap: 154 }, sources: {} },
+			signalStatus: {
+				san: { status: 'ok' },
+				san_recursive: { status: 'skipped_aborted' },
+			},
+			registrarSources: ['rdap'],
+		});
+
+		expect(summary.signalCoverage.skipped).toBe(1);
+		expect(summary.warnings.join('\n')).not.toContain('deadline headroom');
+	});
+
 	it('surfaces non-SAN signal missingness as a coverage warning', () => {
 		const summary = buildBrandAuditDepthSummary({
 			candidateUniverse: { seeded: 150, probed: 150, surfaced: 8, dropped: { corroborationGate: 142 }, sources: {} },

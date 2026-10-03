@@ -718,6 +718,37 @@ describe('discoverBrandDomains', () => {
 		});
 	});
 
+	it('labels an aborted run skipped_aborted in BOTH signalStatus and the san_recursive phase, not skipped_no_first_order (#1190)', async () => {
+		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
+		const correlateSansRecursive = vi.fn().mockResolvedValue({
+			seedDomain: 'example.com',
+			crossConfirmed: [],
+			probed: [],
+			queryStatus: 'ok',
+		});
+		const deps = makeDeps({
+			correlateSans: vi.fn().mockResolvedValue(okSan(['sibling.example.net'])),
+			correlateSansRecursive,
+		});
+		const controller = new AbortController();
+		controller.abort();
+
+		const result = await discoverBrandDomains(
+			'example.com',
+			{ signals: ['san', 'san_recursive'], signal: controller.signal, min_confidence: 0.1 },
+			deps,
+		);
+
+		const summary = result.findings.find((f) => f.metadata?.summary === true);
+		expect(correlateSansRecursive).not.toHaveBeenCalled();
+		expect(summary?.metadata?.signalStatus).toMatchObject({
+			san_recursive: { status: 'skipped_aborted' },
+		});
+		expect(summary?.metadata?.discoveryPerformance).toMatchObject({
+			phases: expect.arrayContaining([expect.objectContaining({ name: 'san_recursive', status: 'skipped_aborted' })]),
+		});
+	});
+
 	it('marks the result unmeasured when signal modules all throw (DNS-failure resilience, #670)', async () => {
 		const { discoverBrandDomains } = await import('../src/tools/discover-brand-domains');
 		const failing = vi.fn().mockRejectedValue(new Error('DNS error'));
