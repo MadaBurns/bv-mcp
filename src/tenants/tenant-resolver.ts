@@ -66,7 +66,7 @@ const ACTIVE_PROBE_SQL = 'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1';
  * requested one (see {@link tenantIdToBindingSuffix}: `-`→`_`, upper-cased). Binds:
  * (normalized suffix, requested id). Cold path only — not run on cache hits.
  */
-const NORMALIZED_COLLISION_SQL = "SELECT id FROM sub_tenants WHERE active = 1 AND upper(replace(id, '-', '_')) = ? AND id != ? LIMIT 1";
+const NORMALIZED_COLLISION_SQL = "SELECT id FROM sub_tenants WHERE upper(replace(id, '-', '_')) = ? AND id != ? AND active = 1 LIMIT 1";
 
 /** Same regex enforced by `TENANT_ID_REGEX` in `src/schemas/tenant-internal.ts`. */
 const TENANT_ID_REGEX = /^[a-z][a-z0-9_-]{0,63}$/;
