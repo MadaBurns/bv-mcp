@@ -39,7 +39,8 @@ const HTTPS_TIMEOUT_MS = 4_000;
  * - `policy_fetch_failed` — the policy fetch THREW (transport error, TLS/egress failure, the
  *                            package's own `AbortSignal.timeout`, a resolver failure for the
  *                            `mta-sts.` host) before any HTTP response was received.
- * - `dns_query_failed`    — the `_mta-sts` or `_smtp._tls` TXT lookup rejected.
+ * - `dns_query_failed`    — the `_mta-sts` or `_smtp._tls` TXT lookup rejected, or the `_smtp._tls`
+ *                            lookup had not settled when the caller's `tlsRptDeadline` fired.
  */
 export type MtaStsNotAssessedReason = 'robots_disallowed' | 'policy_fetch_failed' | 'dns_query_failed';
 
@@ -86,6 +87,27 @@ function buildNotAssessedResult(findings: Finding[], status: CheckStatus, txtRec
 		checkStatus: status,
 		partial: true,
 	};
+}
+
+/**
+ * Run `lookup`, but stop waiting for it when `deadline` aborts first, rejecting with the
+ * deadline's reason (`AbortSignal.timeout` → a `TimeoutError`, which classifies as `'timeout'`).
+ *
+ * The lookup is ABANDONED, never cancelled: on the scan path the `_smtp._tls` answer is one
+ * shared `queryCache` promise the `tlsrpt` check is awaiting too, so ending OUR wait must not
+ * abort THEIR query. An already-aborted deadline issues no query at all, so this can only ever
+ * remove a subrequest, never add one. No deadline → plain `lookup()`, unchanged.
+ */
+function settleBeforeDeadline<T>(lookup: () => Promise<T>, deadline: AbortSignal | undefined): Promise<T> {
+	if (!deadline) return lookup();
+	if (deadline.aborted) return Promise.reject(deadline.reason);
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(deadline.reason);
+		deadline.addEventListener('abort', onAbort, { once: true });
+		lookup()
+			.then(resolve, reject)
+			.finally(() => deadline.removeEventListener('abort', onAbort));
+	});
 }
 
 /**
@@ -136,7 +158,21 @@ function buildDnsNotAssessedFinding(label: string, name: string, status: CheckSt
 export async function checkMTASTS(
 	domain: string,
 	queryDNS: DNSQueryFunction,
-	options?: { timeout?: number; fetchFn?: FetchFunction; zone?: ZoneContext },
+	options?: {
+		timeout?: number;
+		fetchFn?: FetchFunction;
+		zone?: ZoneContext;
+		/**
+		 * When this aborts before the `_smtp._tls` lookup settles, stop waiting for it and record
+		 * the TLS-RPT sub-probe as not assessed (`'timeout'`), exactly like a lookup that rejected
+		 * (SQ-266). That lookup is the one this check SHARES with `checkTLSRPT`: a caller that kills
+		 * a check at a fixed budget (bv-mcp's `scan_domain`, 8s) passes a deadline just inside it, so
+		 * a hung TLS-RPT name no longer takes the already-measured `_mta-sts` record and policy down
+		 * with it. Whether the result then stays measured is the unchanged #889 rule
+		 * (`hasDefiniteMtaStsMeasurement`). Absent → the wait is unbounded, as before.
+		 */
+		tlsRptDeadline?: AbortSignal;
+	},
 ): Promise<CheckResult> {
 	const timeout = options?.timeout ?? 5000;
 	const fetchFn = options?.fetchFn;
@@ -313,7 +349,10 @@ export async function checkMTASTS(
 	};
 
 	try {
-		const tlsRptOutcome = await queryWithRcode(queryDNS, `_smtp._tls.${domain}`, 'TXT', timeout);
+		const tlsRptOutcome = await settleBeforeDeadline(
+			() => queryWithRcode(queryDNS, `_smtp._tls.${domain}`, 'TXT', timeout),
+			options?.tlsRptDeadline,
+		);
 		if (isInconclusiveRcode(tlsRptOutcome.rcode)) {
 			// Answered HTTP 200 with an empty answer set and a resolver failure inside it:
 			// `finalizeMissingTlsRptRecordFinding` would grade that as a missing record.
@@ -326,6 +365,7 @@ export async function checkMTASTS(
 		}
 	} catch (err) {
 		// Was a scored `low` "TLS-RPT DNS query failed" (category 95) recorded as measured.
+		// Also the `tlsRptDeadline` path: the deadline's TimeoutError classifies as `'timeout'`.
 		const status = classifyTransportFailure(err);
 		recordTlsRptNotAssessed(status, buildDnsNotAssessedFinding('TLS-RPT', `_smtp._tls.${domain}`, status));
 	}

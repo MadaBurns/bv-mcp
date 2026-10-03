@@ -312,3 +312,55 @@ describe('checkMTASTS — a TLS-RPT sub-probe failure must not blank a DEFINITE 
 		expect(hasScoredDeficiency(r.findings)).toBe(false);
 	});
 });
+
+describe('checkMTASTS — tlsRptDeadline bounds the shared _smtp._tls wait (SQ-266)', () => {
+	const policy404: FetchFunction = async () => new Response('Not Found', { status: 404 });
+
+	/** `healthyDNS`, except the `_smtp._tls` lookup never settles: a stuck subrequest that ignores its own abort. */
+	function hungTlsRptDNS(asked: string[] = []): DNSQueryFunction {
+		const base = healthyDNS();
+		return async (name, type, opts) => {
+			asked.push(name);
+			return name === '_smtp._tls.example.com' ? new Promise<string[]>(() => {}) : base(name, type, opts);
+		};
+	}
+
+	it('graded MTA-STS evidence + a hung _smtp._tls → the check returns at the deadline MEASURED: the high scores, TLS-RPT not assessed (timeout)', async () => {
+		const r = await checkMTASTS('example.com', hungTlsRptDNS(), { fetchFn: policy404, tlsRptDeadline: AbortSignal.timeout(50) });
+
+		expect(r.checkStatus).toBeUndefined();
+		expect(r.score).toBe(75);
+		expect(r.findings.some((f) => f.title === 'MTA-STS policy file not accessible' && f.severity === 'high')).toBe(true);
+		const tls = r.findings.find((f) => f.metadata?.notAssessedReason === 'dns_query_failed');
+		expect(tls?.title).toBe('TLS-RPT not assessed (DNS lookup timed out)');
+		expect(tls?.severity).toBe('info');
+		expect(r.findings.some((f) => f.title === 'TLS-RPT record missing')).toBe(false);
+	});
+
+	it('healthy policy + a hung _smtp._tls → the check returns at the deadline as the #889 abstention (timeout), the _mta-sts record still credited', async () => {
+		const r = await checkMTASTS('example.com', hungTlsRptDNS(), { fetchFn: okPolicy, tlsRptDeadline: AbortSignal.timeout(50) });
+
+		// Nothing graded to keep (the unchanged #889-review rule above), so it abstains, but the
+		// CHECK now lands this itself instead of being killed mid-await by its caller's budget.
+		expect(r.checkStatus).toBe('timeout');
+		expect(r.partial).toBe(true);
+		expect(r.controlPresent).toBe(true);
+		expect(r.recordPresent).toBe(true);
+		expect(notAssessed(r.findings)?.metadata?.notAssessedReason).toBe('dns_query_failed');
+	});
+
+	it('a lookup that settles before the deadline is untouched: identical to the no-deadline result', async () => {
+		const bounded = await checkMTASTS('example.com', healthyDNS(), { fetchFn: okPolicy, tlsRptDeadline: AbortSignal.timeout(10_000) });
+		const unbounded = await checkMTASTS('example.com', healthyDNS(), { fetchFn: okPolicy });
+		expect(bounded).toEqual(unbounded);
+		expect(bounded.checkStatus).toBeUndefined();
+	});
+
+	it('an already-expired deadline issues no _smtp._tls query (it can only remove a subrequest, never add one)', async () => {
+		const asked: string[] = [];
+		const r = await checkMTASTS('example.com', hungTlsRptDNS(asked), { fetchFn: policy404, tlsRptDeadline: AbortSignal.abort() });
+		expect(asked).not.toContain('_smtp._tls.example.com');
+		expect(r.checkStatus).toBeUndefined();
+		expect(r.score).toBe(75);
+	});
+});
