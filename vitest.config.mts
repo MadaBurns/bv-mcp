@@ -66,7 +66,7 @@ export default defineConfig({
 						if (isKnownWorkerdPoolShutdownError(error)) return false;
 					},
 					exclude: [
-						'node_modules/**',
+						'**/node_modules/**', // nested workspace installs (packages/*/node_modules) ship their own test sources
 						'.claude/**',
 						'.dev/**',
 						'.firecrawl/**',

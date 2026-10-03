@@ -30,12 +30,20 @@ const injectScript = require('../../scripts/inject-private-config.cjs') as {
 // `require()` the module directly and inject a fake lister instead.
 const ALLOW_MISSING_ALERT_SECRET_ENV = { ...process.env, BV_ALLOW_MISSING_ALERT_SECRET: '1' };
 
+// The injector loads its pure merge core from ./lib/overlay-merge.mjs, so a fixture that
+// copies the script into a temp dir must bring that module with it.
+function copyInjector(cwd: string): void {
+	mkdirSync(join(cwd, 'scripts/lib'), { recursive: true });
+	copyFileSync(join(process.cwd(), 'scripts/inject-private-config.cjs'), join(cwd, 'scripts/inject-private-config.cjs'));
+	copyFileSync(join(process.cwd(), 'scripts/lib/overlay-merge.mjs'), join(cwd, 'scripts/lib/overlay-merge.mjs'));
+}
+
 describe('private Wrangler config injection', () => {
 	it('preserves public service bindings that are not overridden by the private overlay', () => {
 		const cwd = mkdtempSync(join(tmpdir(), 'bv-mcp-inject-'));
 		mkdirSync(join(cwd, 'scripts'));
 		mkdirSync(join(cwd, '.dev'));
-		copyFileSync(join(process.cwd(), 'scripts/inject-private-config.cjs'), join(cwd, 'scripts/inject-private-config.cjs'));
+		copyInjector(cwd);
 
 		writeFileSync(
 			join(cwd, 'wrangler.jsonc'),
@@ -72,7 +80,7 @@ describe('private Wrangler config injection', () => {
 		const cwd = mkdtempSync(join(tmpdir(), 'bv-mcp-inject-'));
 		mkdirSync(join(cwd, 'scripts'));
 		mkdirSync(join(cwd, '.dev'));
-		copyFileSync(join(process.cwd(), 'scripts/inject-private-config.cjs'), join(cwd, 'scripts/inject-private-config.cjs'));
+		copyInjector(cwd);
 		writeFileSync(join(cwd, 'wrangler.jsonc'), JSON.stringify({ name: 'bv-mcp-test', main: 'src/index.ts' }));
 		writePrivateOverlay(cwd, {
 			vars: {
@@ -97,7 +105,7 @@ describe('private Wrangler config injection', () => {
 		const cwd = mkdtempSync(join(tmpdir(), 'bv-mcp-inject-'));
 		mkdirSync(join(cwd, 'scripts'));
 		mkdirSync(join(cwd, '.dev'));
-		copyFileSync(join(process.cwd(), 'scripts/inject-private-config.cjs'), join(cwd, 'scripts/inject-private-config.cjs'));
+		copyInjector(cwd);
 		writeFileSync(join(cwd, 'wrangler.jsonc'), JSON.stringify({ name: 'bv-mcp-test', main: 'src/index.ts' }));
 		writePrivateOverlay(cwd, {
 			vars: {
@@ -219,7 +227,7 @@ describe('private Wrangler config injection', () => {
 		const cwd = mkdtempSync(join(tmpdir(), 'bv-mcp-inject-'));
 		mkdirSync(join(cwd, 'scripts'));
 		mkdirSync(join(cwd, '.dev'));
-		copyFileSync(join(process.cwd(), 'scripts/inject-private-config.cjs'), join(cwd, 'scripts/inject-private-config.cjs'));
+		copyInjector(cwd);
 		copyFileSync(join(process.cwd(), 'wrangler.jsonc'), join(cwd, 'wrangler.jsonc'));
 		copyFileSync(join(process.cwd(), 'wrangler.private.example.jsonc'), join(cwd, '.dev/wrangler.deploy.jsonc'));
 
@@ -256,7 +264,7 @@ function setupInjectFixture(publicExtras: Record<string, unknown> = {}): string 
 	const cwd = mkdtempSync(join(tmpdir(), 'bv-mcp-inject-'));
 	mkdirSync(join(cwd, 'scripts'));
 	mkdirSync(join(cwd, '.dev'));
-	copyFileSync(join(process.cwd(), 'scripts/inject-private-config.cjs'), join(cwd, 'scripts/inject-private-config.cjs'));
+	copyInjector(cwd);
 	writeFileSync(join(cwd, 'wrangler.jsonc'), JSON.stringify({ name: 'bv-mcp-test', main: 'src/index.ts', ...publicExtras }));
 	return cwd;
 }

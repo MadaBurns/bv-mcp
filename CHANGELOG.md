@@ -10,6 +10,19 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ### Changed
 
+- **`npm run deploy:prod`, `:staged`, `:promote` and `:triggers` now ship the main Worker
+  through the `cf` CLI (SQ-256; internal/ops, Phase 5.3 of the cf migration).** Every gate
+  in front of the final step is unchanged and in the same order; only that step moved from
+  `wrangler deploy|versions upload|versions deploy|triggers deploy --config
+  wrangler.production.jsonc` to `cf deploy|workers versions create|workers deployments
+  create|workers triggers deploy --mode production`, run from the config-only package
+  `packages/bv-dns-security-mcp/` (cf pinned there at `1.0.0-beta.9`). The injector still
+  writes `wrangler.production.jsonc` for the D1 preflights, `check:bindings:prod` and
+  rollback (`npx wrangler rollback --config wrangler.production.jsonc`); `deploy-private.mjs`
+  drops only its generated-config deploy. `deploy:prod:promote` now requires an explicit
+  version id (`-- <id>` or `BV_PROMOTE_VERSION_ID`, a UUID) and fails closed without one.
+  Not yet deployed through cf: first production use is an operator action.
+
 - Version-axis reconciliation (#1187). Current bv-web-prod re-vendor target is dns-checks 1.58.0 / scoring model 1.39.0, superseding the per-release re-vendor asks for dns-checks 1.56.0 (3.94.0) and dns-checks 1.57.0 (3.95.0). In-tree dns-checks 1.53.3 through 1.58.0 have no published artifact (no tag, no GitHub Release); the artifact for dns-checks 1.58.0 is to be cut via `dns-checks-release.yml` (operator step, #1187). Going forward every CHANGELOG version names its axis: `dns-checks <X.Y.Z>`, `scoring model <X.Y.Z>`, or `v<X.Y.Z>` (see the bv-mcp-release skill).
 
 ## [3.96.0] - 2026-10-03

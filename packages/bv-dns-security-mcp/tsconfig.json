@@ -1,0 +1,9 @@
+{
+	"extends": "../../tsconfig.json",
+	// The config runs in Node (it reads files). TypeScript 6 auto-includes no @types; the root program gets Node's
+	// via src/cli.ts's reference directive, this one names them.
+	"compilerOptions": { "types": ["node"] },
+	// Config files only. The root `npm run typecheck` already checks both (the root tsconfig includes them) along with
+	// the entry (../../src/index.ts); runtime types come from the root's generated worker-configuration.d.ts.
+	"include": ["../../worker-configuration.d.ts", "cloudflare.config.ts", "wrangler.config.ts"]
+}
