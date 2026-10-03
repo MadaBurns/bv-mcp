@@ -613,6 +613,12 @@ export interface DiscoverSubdomainsOptions {
 	 * tier's 15s per-query timeout is unchanged, so large estates still 504.
 	 */
 	certspotterToken?: string;
+	/**
+	 * Fetch implementation for the Certspotter source only. Absent → global `fetch`
+	 * (unchanged behaviour). The SAN correlator injects its own so one mock/SSRF
+	 * wrapper covers every CT backend it consults.
+	 */
+	fetchFn?: typeof fetch;
 }
 
 /** Extract CN= value from an issuer_name string (e.g. "C=US, O=Let's Encrypt, CN=R3" -> "R3"). */
@@ -1037,7 +1043,7 @@ const COMPACT_ISSUE_DETAIL_CAP = 200;
 // values, so one definition serves both.
 
 /** Normalized result of one direct-source attempt. */
-interface SourceResult {
+export interface SourceResult {
 	outcome: CtSourceOutcome;
 	entries: CrtShEntry[];
 	/** Retry delay advertised by an upstream 429, clamped before persistence. */
@@ -1230,7 +1236,11 @@ function hasNextCertspotterPage(response: Response): boolean {
  * the pages already read and marks the enumeration incomplete — partial real
  * data beats discarding it and reporting an outage.
  */
-async function fetchCertspotterEntries(domain: string, signal: AbortSignal, options?: DiscoverSubdomainsOptions): Promise<SourceResult> {
+export async function fetchCertspotterEntries(
+	domain: string,
+	signal: AbortSignal,
+	options?: DiscoverSubdomainsOptions,
+): Promise<SourceResult> {
 	const base = `https://api.certspotter.com/v1/issuances?domain=${encodeURIComponent(domain)}&include_subdomains=true&expand=dns_names&expand=issuer`;
 	const entries: CrtShEntry[] = [];
 	// Authenticated when a token is provisioned, unauthenticated otherwise — the
@@ -1256,7 +1266,11 @@ async function fetchCertspotterEntries(domain: string, signal: AbortSignal, opti
 			}
 
 			const url = after ? `${base}&after=${encodeURIComponent(after)}` : base;
-			const response = await fetch(url, { signal, redirect: 'manual', ...(certspotterHeaders && { headers: certspotterHeaders }) });
+			const response = await (options?.fetchFn ?? fetch)(url, {
+				signal,
+				redirect: 'manual',
+				...(certspotterHeaders && { headers: certspotterHeaders }),
+			});
 
 			if (!response.ok) {
 				const retryAfterSeconds = response.status === 429 ? parseRetryAfterSeconds(response.headers.get('retry-after')) : undefined;
