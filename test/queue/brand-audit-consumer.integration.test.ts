@@ -247,6 +247,36 @@ describe('processBrandAuditMessage', () => {
 		);
 	});
 
+	it('passes the Certspotter token into brandAuditSingle deps for queued audits, and omits it when unset', async () => {
+		// Parity with the synchronous brand_audit_single path (handlers/tools.ts). Without the token
+		// every queued audit's SAN failover hits Certspotter on the shared anonymous quota.
+		const { processBrandAuditMessage } = await import('../../src/queue/brand-audit-consumer');
+		const run = async (certspotterToken?: string) => {
+			const { db } = makeMockD1({
+				target: { status: 'queued', completed_at: null },
+				auditAfter: { completed_targets: 1, total_targets: 1 },
+			});
+			const brandAuditSingle = vi.fn().mockResolvedValue({ category: 'brand_discovery', score: 100, findings: [] });
+			await processBrandAuditMessage(
+				{ auditId: 'aud-1', target: 'example.com', format: 'json' },
+				{ db, brandAuditSingle, ...(certspotterToken ? { certspotterToken } : {}), now: () => 1_750_000_000_000 },
+			);
+			return brandAuditSingle;
+		};
+
+		// Token-only deployment must still take the 3-arg path (hasSingleDeps gate).
+		expect(await run('cs-token')).toHaveBeenCalledWith(
+			'example.com',
+			expect.objectContaining({ auditId: 'aud-1' }),
+			expect.objectContaining({ certspotterToken: 'cs-token' }),
+		);
+
+		// Unset token leaves the key absent (no behaviour change).
+		const unset = await run();
+		const thirdArg = unset.mock.calls[0]?.[2] as Record<string, unknown> | undefined;
+		expect(thirdArg === undefined || !('certspotterToken' in thirdArg)).toBe(true);
+	});
+
 	it('passes the brandAuditQueue binding into brandAuditSingle deps for queued audits ((registrar deep_scan enqueue))', async () => {
 		// The pipeline at brand-audit-pipeline.ts:1061 only enqueues the
 		// {phase:'deep_scan'} message when deps.brandAuditQueue is present.

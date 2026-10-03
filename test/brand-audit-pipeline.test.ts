@@ -466,6 +466,32 @@ describe('runBrandAuditPipeline', () => {
 	});
 });
 
+describe('runBrandAuditPipeline — certspotterToken forwarding', () => {
+	it('forwards deps.certspotterToken into the discoverBrandDomains options', async () => {
+		const discoverBrandDomains = vi.fn().mockResolvedValue(discoveryResult('example.com', ['example.net']));
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+
+		await runBrandAuditPipeline(
+			'example.com',
+			{},
+			{ discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup, certspotterToken: 'cs-token' },
+		);
+
+		const [, discoveryOpts] = discoverBrandDomains.mock.calls[0]!;
+		expect((discoveryOpts as { certspotterToken?: string }).certspotterToken).toBe('cs-token');
+	});
+
+	it('omits certspotterToken from the discovery options when unset (no behaviour change)', async () => {
+		const discoverBrandDomains = vi.fn().mockResolvedValue(discoveryResult('example.com', ['example.net']));
+		const checkRdapLookup = vi.fn().mockResolvedValue(rdapResult('MarkMonitor Inc.', 'Example Inc.'));
+
+		await runBrandAuditPipeline('example.com', {}, { discoverBrandDomains: discoverBrandDomains as never, checkRdapLookup });
+
+		const [, discoveryOpts] = discoverBrandDomains.mock.calls[0]!;
+		expect('certspotterToken' in (discoveryOpts as object)).toBe(false);
+	});
+});
+
 // ----------------------------------------------------------------------------
 // T13 — BlackVeil-production env-var override for discovery_mode default.
 //
