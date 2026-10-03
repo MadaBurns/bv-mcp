@@ -14,7 +14,7 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import { buildDnsErrorResult } from '../lib/dns-error-result';
-import { queryDnsRecords, queryMxRecords, queryPtrRecords } from '../lib/dns';
+import { queryDnsRecords, queryDnsRecordsWithRcode, queryMxRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { mapConcurrent } from '../lib/map-concurrent';
 import { detectProviderMatches, loadProviderSignatures } from '../lib/provider-signatures';
@@ -61,9 +61,12 @@ interface MailHostIp {
 
 /** Per-IP FCrDNS outcome. `detail` is the human-readable fragment for this IP. */
 interface PtrOutcome {
-	status: 'confirmed' | 'mismatched' | 'missing';
+	status: 'confirmed' | 'mismatched' | 'missing' | 'inconclusive';
 	detail: string;
 }
+
+/** Max PTR names forward-confirmed per IP (one forward A lookup each, serial, early exit on a match). */
+const MAX_PTR_NAMES_PER_IP = 4;
 
 export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOptions?: QueryDnsOptions): Promise<CheckResult> {
 	try {
@@ -146,16 +149,39 @@ export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOpt
 		const outcomes = await mapConcurrent(mailHostIps, PTR_LOOKUP_CONCURRENCY, async ({ host, ip }): Promise<PtrOutcome | null> => {
 			if (firstError !== undefined) return null;
 			try {
-				const ptrHosts = await queryPtrRecords(ip, dnsOptions);
+				// SERVFAIL/REFUSED on either lookup is the resolver failing to answer, not the
+				// zone publishing nothing: file it as `inconclusive`, never as a missing or
+				// mismatched PTR (the string-only `queryPtrRecords`/`queryDnsRecords` cannot tell).
+				const reverseName = ip.split('.').reverse().join('.') + '.in-addr.arpa';
+				const ptrOutcome = await queryDnsRecordsWithRcode(reverseName, 'PTR', dnsOptions);
+				const ptrHosts = [...new Set(ptrOutcome.records.map((h) => h.replace(/\.$/, '').toLowerCase()))];
 				if (ptrHosts.length === 0) {
+					if (ptrOutcome.inconclusive) return { status: 'inconclusive', detail: `${host} (${ip}): PTR lookup did not complete` };
 					return { status: 'missing', detail: `${host} (${ip}): no PTR record` };
 				}
-				const ptrHost = ptrHosts[0].replace(/\.$/, '').toLowerCase();
-				const forwardIps = await queryDnsRecords(ptrHost, 'A', dnsOptions);
-				if (forwardIps.includes(ip)) {
-					return { status: 'confirmed', detail: `${host} (${ip}): FCrDNS OK -> ${ptrHost}` };
+				// FCrDNS holds if ANY PTR name forward-resolves back to the IP (an IP may
+				// legitimately carry several PTR names), so check them in order and stop at the
+				// first confirmation. Bounded: a hostile or sloppy zone can publish arbitrarily many.
+				const checked = ptrHosts.slice(0, MAX_PTR_NAMES_PER_IP);
+				let unmeasured = false;
+				for (const ptrHost of checked) {
+					const forward = await queryDnsRecordsWithRcode(ptrHost, 'A', dnsOptions);
+					if (forward.records.includes(ip)) {
+						return { status: 'confirmed', detail: `${host} (${ip}): FCrDNS OK -> ${ptrHost}` };
+					}
+					if (forward.inconclusive) unmeasured = true;
 				}
-				return { status: 'mismatched', detail: `${host} (${ip}): PTR ${ptrHost} does not forward-resolve back to ${ip}` };
+				// An unmeasured name could have been the confirming one, so a mismatch cannot be claimed.
+				if (unmeasured) {
+					return { status: 'inconclusive', detail: `${host} (${ip}): forward lookup of PTR ${checked.join(', ')} did not complete` };
+				}
+				return {
+					status: 'mismatched',
+					detail:
+						checked.length === 1
+							? `${host} (${ip}): PTR ${checked[0]} does not forward-resolve back to ${ip}`
+							: `${host} (${ip}): none of the PTR names (${checked.join(', ')}) forward-resolve back to ${ip}`,
+				};
 			} catch (err) {
 				firstError ??= err;
 				return null;
@@ -167,6 +193,7 @@ export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOpt
 		let confirmed = 0;
 		let mismatched = 0;
 		let missing = 0;
+		let inconclusive = 0;
 		const detailParts: string[] = [];
 
 		for (const outcome of outcomes) {
@@ -174,8 +201,20 @@ export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOpt
 			if (!outcome) continue;
 			if (outcome.status === 'confirmed') confirmed++;
 			else if (outcome.status === 'mismatched') mismatched++;
+			else if (outcome.status === 'inconclusive') inconclusive++;
 			else missing++;
 			detailParts.push(outcome.detail);
+		}
+
+		// Every IP's lookups were answered SERVFAIL/REFUSED: nothing was measured, so abstain in
+		// the shared not-assessed shape (checkStatus 'error' -> excluded from the score and never
+		// cached) rather than file the failure as a missing or mismatched PTR.
+		if (totalIps > 0 && inconclusive === totalIps) {
+			return buildDnsErrorResult(
+				'ptr',
+				'PTR',
+				new Error(`DNS query failed: reverse DNS lookups for all ${totalIps} mail-server IP(s) were not answered`),
+			);
 		}
 
 		if (totalIps === 0) {
@@ -223,18 +262,20 @@ export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOpt
 				),
 			);
 		}
-		if (confirmed === 0 && mismatched === 0) {
+		if (confirmed === 0 && mismatched === 0 && missing > 0) {
 			// PTR absent entirely — bonus simply not earned, no penalty.
 			findings.push(
 				createFinding(
 					'ptr',
 					'No reverse DNS (PTR) for mail servers',
 					'info',
-					`None of the ${totalIps} mail-server IP(s) have a PTR record. ${detail}`,
+					inconclusive > 0
+						? `None of the ${totalIps - inconclusive} mail-server IP(s) that could be checked have a PTR record. ${detail}`
+						: `None of the ${totalIps} mail-server IP(s) have a PTR record. ${detail}`,
 					{ missing, totalIps, controlPresent: false },
 				),
 			);
-		} else if (confirmed > 0 && mismatched === 0) {
+		} else if (confirmed > 0 && mismatched === 0 && missing > 0) {
 			// Partial coverage: some IPs confirmed, others missing.
 			findings.push(
 				createFinding(
@@ -245,6 +286,21 @@ export async function checkPtr(domain: string, options?: CheckPtrOptions, dnsOpt
 					{ confirmed, missing, totalIps },
 				),
 			);
+		}
+
+		if (inconclusive > 0) {
+			// Some IPs were never measured (SERVFAIL/REFUSED). Say so instead of letting the
+			// findings above read as a verdict on all of them; `partial` keeps it out of the cache.
+			findings.push(
+				createFinding(
+					'ptr',
+					'Reverse DNS (PTR) not fully assessed',
+					'info',
+					`${inconclusive} of ${totalIps} mail-server IP(s) could not be assessed because a reverse or forward DNS lookup was not answered. No conclusion is drawn for them. ${detail}`,
+					{ inconclusive: true, errorKind: 'dns_error', unassessed: inconclusive, totalIps },
+				),
+			);
+			return { ...buildCheckResult('ptr', findings, confirmed > 0), partial: true };
 		}
 
 		return buildCheckResult('ptr', findings, confirmed > 0);

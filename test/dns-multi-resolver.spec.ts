@@ -225,3 +225,42 @@ describe('checkMultiResolverConsistency', () => {
 		expect(results).toHaveLength(5);
 	});
 });
+
+describe('queryMultiResolver — SERVFAIL/REFUSED are not agreeing empties (T6 item 6)', () => {
+	function mockRcode(status: number) {
+		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+			const u = new URL(typeof url === 'string' ? url : url.toString());
+			const name = u.searchParams.get('name') ?? 'example.com';
+			return Promise.resolve(createDohResponse([{ name, type: 1 }], [], { status }));
+		});
+	}
+
+	it('records four SERVFAILs as errors, never as CONSISTENT "all resolvers agree"', async () => {
+		mockRcode(2);
+
+		const result = await queryMultiResolver('example.com', 'A');
+
+		expect(result.status).not.toBe('CONSISTENT');
+		expect(result.status).toBe('INCOMPLETE');
+		expect(result.detail).not.toContain('agree');
+		expect(result.resolverAnswers.every((r) => r.status === 'error')).toBe(true);
+	});
+
+	it('records four REFUSEDs as errors, never as CONSISTENT', async () => {
+		mockRcode(5);
+
+		const result = await queryMultiResolver('example.com', 'A');
+
+		expect(result.status).toBe('INCOMPLETE');
+		expect(result.resolverAnswers.every((r) => r.status === 'error')).toBe(true);
+	});
+
+	it('still treats NXDOMAIN from every resolver as a real, agreeing empty answer', async () => {
+		mockRcode(3);
+
+		const result = await queryMultiResolver('example.com', 'A');
+
+		expect(result.status).toBe('CONSISTENT');
+		expect(result.resolverAnswers.every((r) => r.status === 'ok')).toBe(true);
+	});
+});

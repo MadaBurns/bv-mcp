@@ -6,7 +6,7 @@
  * For each variant, probes NS, A, MX, SPF, and DMARC records to classify risk.
  */
 
-import { queryDnsRecords, queryMxRecords, queryTxtRecords } from '../lib/dns';
+import { queryDnsRecords, queryMxRecords, queryTxtRecordsWithRcode } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
@@ -84,6 +84,8 @@ interface VariantProbeResult {
 	mx: string[];
 	hasSpf: boolean;
 	dmarcPolicy: string | null;
+	/** An SPF/DMARC probe was rejected or answered SERVFAIL/REFUSED, so the email-auth ladder cannot be climbed. */
+	authProbeFailed: boolean;
 }
 
 /**
@@ -139,28 +141,40 @@ async function probeVariant(variant: string, dnsOpts: QueryDnsOptions, prefetche
 		nsPromise,
 		queryDnsRecords(variant, 'A', dnsOpts),
 		queryMxRecords(variant, dnsOpts),
-		queryTxtRecords(variant, dnsOpts),
-		queryTxtRecords(`_dmarc.${variant}`, dnsOpts),
+		queryTxtRecordsWithRcode(variant, dnsOpts),
+		queryTxtRecordsWithRcode(`_dmarc.${variant}`, dnsOpts),
 	]);
 
 	const ns = nsResult.status === 'fulfilled' ? nsResult.value : [];
 	const hasA = aResult.status === 'fulfilled' && aResult.value.length > 0;
 	const mx = mxResult.status === 'fulfilled' ? mxResult.value.map((r) => r.exchange) : [];
 
+	// A SPF/DMARC probe that was rejected, or answered SERVFAIL/REFUSED, did not measure
+	// "no record" — it measured nothing. Folding it into `[]` below let a mail-bearing
+	// variant read as "no SPF and no DMARC" (the high `missingControl` rung) on a resolver
+	// hiccup. The flag lets `classifyVariant` abstain instead of climbing the ladder.
+	const txtFailed = txtResult.status !== 'fulfilled' || txtResult.value.inconclusive;
+	const dmarcFailed = dmarcResult.status !== 'fulfilled' || dmarcResult.value.inconclusive;
+
 	// Check for SPF
-	const txtValues = txtResult.status === 'fulfilled' ? txtResult.value : [];
+	const txtValues = txtResult.status === 'fulfilled' ? txtResult.value.records : [];
 	const hasSpf = txtValues.some((r) => r.toLowerCase().startsWith('v=spf1'));
 
 	// Parse DMARC policy
 	let dmarcPolicy: string | null = null;
-	const dmarcValues = dmarcResult.status === 'fulfilled' ? dmarcResult.value : [];
+	const dmarcValues = dmarcResult.status === 'fulfilled' ? dmarcResult.value.records : [];
 	const dmarcRecord = dmarcValues.find((r) => r.toLowerCase().startsWith('v=dmarc1'));
 	if (dmarcRecord) {
 		const pMatch = dmarcRecord.match(/;\s*p=([^;\s]+)/i);
 		dmarcPolicy = pMatch ? pMatch[1].toLowerCase() : 'none';
 	}
 
-	return { variant, ns, hasA, mx, hasSpf, dmarcPolicy };
+	// Which failure matters: the ladder reads `hasSpf` only when no DMARC record was found, so
+	// a failed SPF probe is harmless beside a DMARC record that was actually observed; a failed
+	// DMARC probe never is (it leaves `dmarcPolicy === null`, the "no DMARC" rungs).
+	const authProbeFailed = dmarcFailed || (txtFailed && dmarcPolicy === null);
+
+	return { variant, ns, hasA, mx, hasSpf, dmarcPolicy, authProbeFailed };
 }
 
 /**
@@ -325,6 +339,20 @@ function classifyVariant(probe: VariantProbeResult, primaryMx: string[], ownersh
 			'info',
 			`${variant} declares an RFC 7505 null MX (priority 0 to "." or "localhost"), explicitly refusing mail. This is the recommended anti-spoofing posture for non-mail domains.`,
 			meta,
+		);
+	}
+
+	if (hasMx && probe.authProbeFailed) {
+		// The SPF/DMARC evidence this ladder climbs on was never measured (probe rejected or
+		// SERVFAIL/REFUSED). Reporting "no SPF or DMARC" here would certify absence from a
+		// non-answer, and the `high` rung carries `missingControl`. Abstain for this candidate:
+		// `info`, `inconclusive` + `errorKind`, and no `missingControl`.
+		return createFinding(
+			'shadow_domains',
+			'Shadow domain email authentication not assessed',
+			'info',
+			`${variant} has mail servers, but the SPF or DMARC lookup did not complete, so its email-authentication posture could not be assessed. No conclusion is drawn; re-run to complete this probe.`,
+			{ ...meta, inconclusive: true, errorKind: 'dns_error' },
 		);
 	}
 
