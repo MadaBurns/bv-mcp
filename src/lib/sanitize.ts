@@ -182,6 +182,22 @@ export function validateDomain(input: string): ValidationResult {
 }
 
 /**
+ * UTS #39 section 5.2 "Highly Restrictive": Latin may combine with the CJK writing
+ * systems that are legitimately written together: Japanese (Han + Hiragana + Katakana),
+ * Chinese (Han + Bopomofo) or Korean (Han + Hangul). Every other multi-script mix
+ * (e.g. Latin + Cyrillic/Greek, Hangul + Hiragana) stays rejected as a homoglyph risk.
+ */
+const PERMITTED_CJK_SCRIPT_SETS: readonly ReadonlySet<string>[] = [
+	new Set(['Han', 'Hiragana', 'Katakana']),
+	new Set(['Han', 'Bopomofo']),
+	new Set(['Han', 'Hangul']),
+];
+
+function isPermittedScriptCombination(scripts: ReadonlySet<string>): boolean {
+	return PERMITTED_CJK_SCRIPT_SETS.some((allowed) => [...scripts].every((script) => script === 'Latin' || allowed.has(script)));
+}
+
+/**
  * Detect whether a single domain label (pre-punycode, NFC-normalized, lowercased)
  * mixes characters from more than one Unicode script.
  * ASCII letters a-z, digits 0-9, and hyphens are treated as Latin script.
@@ -218,6 +234,8 @@ function hasMixedScripts(label: string): boolean {
 			scripts.add('Katakana');
 		} else if (/\p{Script=Hangul}/u.test(char)) {
 			scripts.add('Hangul');
+		} else if (/\p{Script=Bopomofo}/u.test(char)) {
+			scripts.add('Bopomofo');
 		} else if (/\p{Script=Arabic}/u.test(char)) {
 			scripts.add('Arabic');
 		} else if (/\p{Script=Hebrew}/u.test(char)) {
@@ -228,9 +246,8 @@ function hasMixedScripts(label: string): boolean {
 			scripts.add('Thai');
 		}
 		// Other scripts/common: skip (don't contribute to mix detection)
-		if (scripts.size > 1) return true;
 	}
-	return scripts.size > 1;
+	return scripts.size > 1 && !isPermittedScriptCombination(scripts);
 }
 
 /**

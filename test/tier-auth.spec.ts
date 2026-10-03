@@ -154,11 +154,9 @@ describe('tier-auth KV cache validation', () => {
 		expect(result.authenticated).toBe(true);
 		expect(result.tier).toBe('developer');
 		expect(bvWeb.fetch).toHaveBeenCalledOnce();
-		expect(kv.put).toHaveBeenCalledWith(
-			`tier:${result.keyHash}`,
-			JSON.stringify({ tier: 'developer', revokedAt: null }),
-			{ expirationTtl: 300 },
-		);
+		expect(kv.put).toHaveBeenCalledWith(`tier:${result.keyHash}`, JSON.stringify({ tier: 'developer', revokedAt: null }), {
+			expirationTtl: 300,
+		});
 	});
 
 	it('downgrades service-bound owner tier when the request IP is outside OWNER_ALLOW_IPS', async () => {
@@ -187,11 +185,9 @@ describe('tier-auth KV cache validation', () => {
 
 		expect(result.authenticated).toBe(true);
 		expect(result.tier).toBe('partner');
-		expect(kv.put).toHaveBeenCalledWith(
-			`tier:${result.keyHash}`,
-			JSON.stringify({ tier: 'owner', revokedAt: null }),
-			{ expirationTtl: 300 },
-		);
+		expect(kv.put).toHaveBeenCalledWith(`tier:${result.keyHash}`, JSON.stringify({ tier: 'owner', revokedAt: null }), {
+			expirationTtl: 300,
+		});
 	});
 
 	it('treats null tier from bv-web as an unauthenticated revoked or unknown key', async () => {
@@ -384,9 +380,7 @@ describe('tier-auth KV cache validation', () => {
 		const { resolveTier } = await import('../src/lib/tier-auth');
 		const cancelled = vi.fn();
 		const bvWeb = {
-			fetch: vi.fn().mockResolvedValue(
-				new Response(new ReadableStream<Uint8Array>({ cancel: cancelled }), { status: 400 }),
-			),
+			fetch: vi.fn().mockResolvedValue(new Response(new ReadableStream<Uint8Array>({ cancel: cancelled }), { status: 400 })),
 		} as unknown as Fetcher;
 
 		const result = await resolveTier(
@@ -1224,5 +1218,64 @@ describe('tier-auth bearer JWT strong-state outage (SQ-234)', () => {
 			REQUEST_URL,
 		);
 		expect(result).toEqual({ authenticated: false, storageUnavailable: true });
+	});
+});
+
+describe('tier-auth trial key strong-state outage (SQ-289)', () => {
+	const REQUEST_URL = 'https://example.com/mcp';
+
+	function trialKv(): { kv: KVNamespace; puts: Array<[string, string]> } {
+		const puts: Array<[string, string]> = [];
+		const record = JSON.stringify({
+			tier: 'developer',
+			expiresAt: Date.now() + 3_600_000,
+			maxUses: 10,
+			currentUses: 0,
+			label: 'sq-289-trial',
+			createdAt: Date.now(),
+		});
+		const kv = {
+			get: vi.fn(async (key: string) => (key.startsWith('trial:') ? record : null)),
+			put: vi.fn(async (key: string, value: string) => {
+				puts.push([key, value]);
+			}),
+			delete: vi.fn(async () => undefined),
+		} as unknown as KVNamespace;
+		return { kv, puts };
+	}
+
+	it('returns storageUnavailable and does not write a tier: negative cache entry when QUOTA_COORDINATOR throws', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const { kv, puts } = trialKv();
+		const failingCoordinator = {
+			getByName: () => ({ dispatch: () => Promise.reject(new Error('DO unavailable (SQ-289)')) }),
+		} as unknown as DurableObjectNamespace<import('../src/lib/quota-coordinator').QuotaCoordinator>;
+
+		const result = await resolveTier('trial-token', { RATE_LIMIT: kv, QUOTA_COORDINATOR: failingCoordinator }, '203.0.113.1', REQUEST_URL);
+
+		expect(result).toEqual({ authenticated: false, storageUnavailable: true });
+		expect(puts.filter(([key]) => key.startsWith('tier:'))).toEqual([]);
+	});
+
+	it('still negative-caches an exhausted trial key (reason other than unavailable)', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const { kv, puts } = trialKv();
+		const exhaustedCoordinator = {
+			getByName: () => ({
+				dispatch: async (payload: { kind: string }) =>
+					payload.kind === 'marker-has' ? { present: false } : { allowed: false, used: 10, limit: 10 },
+			}),
+		} as unknown as DurableObjectNamespace<import('../src/lib/quota-coordinator').QuotaCoordinator>;
+
+		const result = await resolveTier(
+			'trial-token',
+			{ RATE_LIMIT: kv, QUOTA_COORDINATOR: exhaustedCoordinator },
+			'203.0.113.1',
+			REQUEST_URL,
+		);
+
+		expect(result.authenticated).toBe(false);
+		expect(result.storageUnavailable).toBeUndefined();
+		expect(puts.filter(([key]) => key.startsWith('tier:'))).toHaveLength(1);
 	});
 });

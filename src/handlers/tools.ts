@@ -488,10 +488,24 @@ async function brandAuditWatchUnprovisioned(): Promise<CheckResult> {
 	]);
 }
 
+/**
+ * Cache-key fragment for a caller-supplied list: `<count>:<sha256 hex prefix>` of the FULL
+ * sorted list, or `0` when empty. Truncating the joined plaintext (the old 64/128-char slice)
+ * let two different lists sharing a prefix collide on one cached result; hashing keeps every
+ * element significant while the key stays bounded. JSON-encoded so a `|` inside an item cannot
+ * make two different lists serialize identically.
+ */
+async function hashListForCacheKey(items: string[]): Promise<string> {
+	if (items.length === 0) return '0';
+	const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(JSON.stringify(items.slice().sort())));
+	const hex = Array.from(new Uint8Array(digest), (b) => b.toString(16).padStart(2, '0')).join('');
+	return `${items.length}:${hex.slice(0, 32)}`;
+}
+
 /** Entry shape for {@link TOOL_REGISTRY}. */
 interface ToolRegistryEntry {
 	/** cacheKey may consult runtimeOptions to bind principal (defense against owner-scoped IDOR via cache). */
-	cacheKey: (args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => string;
+	cacheKey: (args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => string | Promise<string>;
 	execute: (domain: string, args: Record<string, unknown>, runtimeOptions?: ToolRuntimeOptions) => Promise<CheckResult>;
 	cacheable?: boolean;
 	cacheTtlSeconds?: number;
@@ -698,15 +712,13 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 			}),
 	},
 	check_subdomain_takeover: {
-		cacheKey: (args) => {
+		cacheKey: async (args) => {
 			const subs = Array.isArray(args.subdomains) ? (args.subdomains as string[]) : null;
 			// Cache key folds caller-supplied list CONTENTS (not just size) so two
 			// different same-length lists don't collide on one entry (5-min TTL,
 			// global per domain+checkName) — mirrors the discover_brand_domains
-			// sibling. Sorted + length-prefixed + bounded to keep keys finite.
-			return subs && subs.length > 0
-				? `subdomain_takeover:custom:${subs.length}:${subs.slice().sort().join('|').slice(0, 128)}`
-				: 'subdomain_takeover:default';
+			// sibling. Sorted + length-prefixed + SHA-256 of the full list to keep keys finite.
+			return subs && subs.length > 0 ? `subdomain_takeover:custom:${await hashListForCacheKey(subs)}` : 'subdomain_takeover:default';
 		},
 		execute: (d, args, ro) => {
 			const subs = Array.isArray(args.subdomains) ? (args.subdomains as string[]) : undefined;
@@ -727,7 +739,7 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 		cacheable: false,
 	},
 	discover_brand_domains: {
-		cacheKey: (args) => {
+		cacheKey: async (args) => {
 			const signals = (args.signals as string[] | undefined)?.slice().sort().join(',') ?? 'all';
 			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
 			const depth = typeof args.depth === 'string' ? args.depth : 'standard';
@@ -741,8 +753,8 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 			const discoveryMode = typeof args.discovery_mode === 'string' ? args.discovery_mode : 'classic';
 			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
-			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
-			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
+			const aliasHash = await hashListForCacheKey(aliases);
+			const candHash = await hashListForCacheKey(candDomains);
 			return `discover_brand:${signals}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}`;
 		},
 		execute: (d, args, ro) => {
@@ -885,7 +897,7 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 		cacheable: false,
 	},
 	brand_audit_single: {
-		cacheKey: (args, ro) => {
+		cacheKey: async (args, ro) => {
 			const minConf = typeof args.min_confidence === 'number' ? args.min_confidence : 0.5;
 			const fmt = typeof args.format === 'string' ? args.format : 'both';
 			const depth = typeof args.depth === 'string' ? args.depth : 'standard';
@@ -899,8 +911,8 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 				typeof args.discovery_mode === 'string' ? args.discovery_mode : ro?.discoveryModeDefault === 'tiered' ? 'tiered' : 'classic';
 			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
-			const aliasHash = aliases.length === 0 ? '0' : `${aliases.length}:${aliases.slice().sort().join('|').slice(0, 64)}`;
-			const candHash = candDomains.length === 0 ? '0' : `${candDomains.length}:${candDomains.slice().sort().join('|').slice(0, 64)}`;
+			const aliasHash = await hashListForCacheKey(aliases);
+			const candHash = await hashListForCacheKey(candDomains);
 			const view = typeof args.view === 'string' ? args.view : 'standard';
 			return `brand_audit_single:${fmt}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}:vw${view}`;
 		},
@@ -1398,7 +1410,7 @@ export async function handleToolsCall(
 			// Dispatch to the appropriate tool — check registry first, then special cases
 			const registeredTool = TOOL_REGISTRY[name];
 			if (registeredTool) {
-				const checkName = registeredTool.cacheKey(validatedArgs, runtimeOptions);
+				const checkName = await registeredTool.cacheKey(validatedArgs, runtimeOptions);
 				// Versioned (cache:v<version>:...) so a deploy auto-invalidates — see buildCheckCacheKey.
 				const cacheKey = buildCheckCacheKey(validDomain, checkName);
 				let cacheStatus: 'hit' | 'miss' = 'miss';
@@ -1613,6 +1625,8 @@ export async function handleToolsCall(
 									updatedAt: job.updatedAt,
 									expiresAt: job.expiresAt,
 									error: job.error,
+									// A `completed` job whose budget cut off a tail is NOT a clean completion (SQ-291).
+									...(job.incomplete !== undefined && { incomplete: job.incomplete, unscanned: job.unscanned ?? [] }),
 								};
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: job.status, logDetails: payload, severity: 'info' });
 					return buildToolResult(JSON.stringify(payload, null, 2), payload, effectiveFormat);

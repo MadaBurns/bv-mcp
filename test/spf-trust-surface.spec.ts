@@ -57,7 +57,10 @@ describe('analyzeTrustSurface', () => {
 		expect(summary).toBeDefined();
 		expect(summary!.metadata?.platformCount).toBe(2);
 		expect(summary!.metadata?.dmarcCorroborated).toBe(true);
-		expect(findings.filter((f) => f.severity !== 'info'), 'exactly ONE scored finding for the whole trust surface').toHaveLength(1);
+		expect(
+			findings.filter((f) => f.severity !== 'info'),
+			'exactly ONE scored finding for the whole trust surface',
+		).toHaveLength(1);
 	});
 
 	/**
@@ -154,5 +157,30 @@ describe('analyzeTrustSurface', () => {
 		expect(findings).toHaveLength(1);
 		expect(findings[0].metadata?.platform).toBe('Salesforce');
 		expect(findings[0].metadata?.includeDomain).toBe('eu._spf.salesforce.com');
+	});
+
+	describe('first-party includes are not a shared platform', () => {
+		const weak = { corroboratedByWeakDmarc: true, dmarcPolicy: 'none' };
+
+		it("ignores the scanned domain's own _spf.<zone> include", () => {
+			expect(analyzeTrustSurface('v=spf1 include:_spf.example.com -all', { ...weak, domain: 'example.com' })).toEqual([]);
+		});
+
+		it('ignores includes under the registrable domain when scanning a subdomain', () => {
+			expect(analyzeTrustSurface('v=spf1 include:_spf.example.com -all', { ...weak, domain: 'news.example.com' })).toEqual([]);
+		});
+
+		it('does not raise the high aggregate when one of two includes is first-party', () => {
+			const findings = analyzeTrustSurface('v=spf1 include:_spf.example.com include:_spf.google.com -all', {
+				...weak,
+				domain: 'example.com',
+			});
+			expect(findings.some((f) => f.title.startsWith('SPF trust surface:'))).toBe(false);
+			expect(findings.filter((f) => f.metadata?.trustSurface === true)).toHaveLength(1);
+		});
+
+		it('does not treat a shared public suffix as first-party (example.co.uk vs other.co.uk)', () => {
+			expect(analyzeTrustSurface('v=spf1 include:_spf.other.co.uk -all', { ...weak, domain: 'example.co.uk' })).toHaveLength(1);
+		});
 	});
 });

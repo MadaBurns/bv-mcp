@@ -9,6 +9,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import { sanitizeOutputText } from '../lib/output-sanitize';
+import { isCompletedCheck } from '../lib/ungraded-display';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import type { Finding } from '@blackveil/dns-checks/scoring';
 import { describeNonResolvingDomain, isNonResolvingApex } from '../lib/apex-resolution';
@@ -49,7 +50,12 @@ export interface AttackSimulationResult {
 	 * (NXDOMAIN, SQ-268). `totalPaths` is 0 and `overallRisk` is null: "not assessed",
 	 * never "no feasible attack paths".
 	 */
-	notAssessed?: { reason: 'domain_does_not_resolve'; detail: string };
+	notAssessed?: { reason: 'domain_does_not_resolve' | 'checks_unmeasured'; detail: string };
+	/**
+	 * Checks whose input was never measured (rejected, or `checkStatus` timeout/error), SQ-291.
+	 * Absent when every check was measured. Their vectors are unevaluated, not "blocked".
+	 */
+	unmeasuredChecks?: Array<{ check: string; reason: 'rejected' | 'timeout' | 'error' }>;
 }
 
 /** Severity sort order: critical first. */
@@ -644,6 +650,7 @@ export async function simulateAttackPaths(
 	}
 
 	// Run all checks in parallel
+	const checkNames = ['spf', 'dmarc', 'dkim', 'dnssec', 'ssl', 'mta_sts', 'caa', 'http_security', 'dane', 'subdomain_takeover'];
 	const results = await Promise.allSettled([
 		checkSpf(domain, dnsOptions),
 		checkDmarc(domain, dnsOptions),
@@ -657,23 +664,36 @@ export async function simulateAttackPaths(
 		checkSubdomainTakeover(domain, dnsOptions),
 	]);
 
-	// Collect all findings from fulfilled checks
+	// Collect findings from measured checks. A rejected check, or one reporting checkStatus
+	// timeout/error, was never measured: its vectors are unevaluated, never "blocked" (SQ-291).
 	const allFindings: Finding[] = [];
-	for (const result of results) {
-		if (result.status === 'fulfilled') {
+	const unmeasuredChecks: NonNullable<AttackSimulationResult['unmeasuredChecks']> = [];
+	results.forEach((result, i) => {
+		if (result.status === 'rejected') {
+			unmeasuredChecks.push({ check: checkNames[i], reason: 'rejected' });
+		} else if (!isCompletedCheck(result.value)) {
+			// Not completed means checkStatus is exactly 'timeout' | 'error' (CheckStatus minus 'completed'/absent).
+			unmeasuredChecks.push({ check: checkNames[i], reason: result.value.checkStatus as 'timeout' | 'error' });
+		} else {
 			allFindings.push(...result.value.findings);
 		}
-	}
+	});
 
 	const feasiblePaths = evaluateAttackPathsFromFindings(allFindings);
 
 	const criticalPaths = feasiblePaths.filter((p) => p.severity === 'critical').length;
 	const highPaths = feasiblePaths.filter((p) => p.severity === 'high').length;
 
-	// Overall risk = most severe feasible path, or low if none
-	let overallRisk: 'critical' | 'high' | 'medium' | 'low' | null = 'low';
-	if (feasiblePaths.length > 0) {
-		overallRisk = feasiblePaths[0].severity;
+	// Overall risk = most severe feasible path. With no feasible path, "low" is only claimed when
+	// every check was measured; otherwise the unmeasured vectors could be exploitable (SQ-291).
+	let overallRisk: 'critical' | 'high' | 'medium' | 'low' | null = feasiblePaths.length > 0 ? feasiblePaths[0].severity : 'low';
+	let notAssessed: AttackSimulationResult['notAssessed'];
+	if (feasiblePaths.length === 0 && unmeasuredChecks.length > 0) {
+		overallRisk = null;
+		notAssessed = {
+			reason: 'checks_unmeasured',
+			detail: `${unmeasuredChecks.length} of ${checkNames.length} checks could not be measured (${unmeasuredChecks.map((c) => c.check).join(', ')}); no attack path was confirmed, but the unmeasured vectors were not ruled out.`,
+		};
 	}
 
 	return {
@@ -683,6 +703,8 @@ export async function simulateAttackPaths(
 		highPaths,
 		attackPaths: feasiblePaths,
 		overallRisk,
+		...(notAssessed ? { notAssessed } : {}),
+		...(unmeasuredChecks.length > 0 ? { unmeasuredChecks } : {}),
 	};
 }
 
@@ -750,6 +772,13 @@ export function formatAttackPaths(result: AttackSimulationResult, format: Output
 
 	const header = `Attack Paths: ${sanitizeOutputText(result.domain, 100)} - ${result.totalPaths} feasible attack${result.totalPaths === 1 ? '' : 's'} (${severityCounts.join(', ')})`;
 	const lines: string[] = [header, `Overall Risk: ${severityLabel(result.overallRisk)}`, ''];
+
+	if (result.unmeasuredChecks && result.unmeasuredChecks.length > 0) {
+		lines.push(
+			`Note: ${result.unmeasuredChecks.length} check(s) could not be measured (${result.unmeasuredChecks.map((c) => c.check).join(', ')}); their attack vectors were not evaluated.`,
+			'',
+		);
+	}
 
 	for (const path of result.attackPaths) {
 		if (format === 'compact') {

@@ -12,8 +12,8 @@ describe('check_subdomain_takeover cacheKey', () => {
 		const { TOOL_REGISTRY } = await import('../src/handlers/tools');
 		const cacheKey = TOOL_REGISTRY.check_subdomain_takeover.cacheKey;
 
-		const keyA = cacheKey({ subdomains: ['a', 'b', 'c'] });
-		const keyB = cacheKey({ subdomains: ['x', 'y', 'z'] });
+		const keyA = await cacheKey({ subdomains: ['a', 'b', 'c'] });
+		const keyB = await cacheKey({ subdomains: ['x', 'y', 'z'] });
 
 		expect(keyA).not.toBe(keyB);
 	});
@@ -22,8 +22,8 @@ describe('check_subdomain_takeover cacheKey', () => {
 		const { TOOL_REGISTRY } = await import('../src/handlers/tools');
 		const cacheKey = TOOL_REGISTRY.check_subdomain_takeover.cacheKey;
 
-		const keyA = cacheKey({ subdomains: ['a', 'b', 'c'] });
-		const keyB = cacheKey({ subdomains: ['a', 'b', 'c'] });
+		const keyA = await cacheKey({ subdomains: ['a', 'b', 'c'] });
+		const keyB = await cacheKey({ subdomains: ['a', 'b', 'c'] });
 
 		expect(keyA).toBe(keyB);
 	});
@@ -32,6 +32,6 @@ describe('check_subdomain_takeover cacheKey', () => {
 		const { TOOL_REGISTRY } = await import('../src/handlers/tools');
 		const cacheKey = TOOL_REGISTRY.check_subdomain_takeover.cacheKey;
 
-		expect(cacheKey({})).toBe('subdomain_takeover:default');
+		expect(await cacheKey({})).toBe('subdomain_takeover:default');
 	});
 });

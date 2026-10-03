@@ -115,6 +115,50 @@ describe('checkDANE — INCONCLUSIVE (the measurement could not be made)', () =>
 	});
 });
 
+describe('checkDANE — INCONCLUSIVE when every TLSA lookup failed (SQ-279 item 3)', () => {
+	/** Two mail hosts; `tlsa` decides what each `_25._tcp.<host>` lookup does. */
+	function mailHosts(tlsa: (name: string) => { records?: string[]; rcode?: number; throws?: boolean }): DNSQueryFunction {
+		const answer = (name: string, type: string) => {
+			if (type === 'MX') return { records: ['10 mx1.example.com.', '20 mx2.example.com.'], rcode: NOERROR };
+			if (type === 'TLSA') {
+				const t = tlsa(name);
+				if (t.throws) throw new Error('DNS query failed: timeout');
+				return { records: t.records ?? [], rcode: t.rcode ?? NOERROR };
+			}
+			return { records: [], rcode: NOERROR };
+		};
+		const queryDNS = (async (name: string, type: string) => answer(name, type).records) as DNSQueryFunction;
+		queryDNS.withRcode = async (name: string, type: string) => answer(name, type);
+		return queryDNS;
+	}
+
+	it('THROWS (inconclusive) instead of "No DANE TLSA for MX servers" when every TLSA lookup throws', async () => {
+		const queryDNS = mailHosts(() => ({ throws: true }));
+		const { raw } = recordingRaw({ AD: false, Status: NOERROR });
+		await expect(checkDANE('example.com', queryDNS, { rawQueryDNS: raw })).rejects.toThrow(/^DNS query /);
+	});
+
+	it('THROWS (inconclusive) when every TLSA lookup answers SERVFAIL', async () => {
+		const queryDNS = mailHosts(() => ({ rcode: SERVFAIL }));
+		const { raw } = recordingRaw({ AD: false, Status: NOERROR });
+		await expect(checkDANE('example.com', queryDNS, { rawQueryDNS: raw })).rejects.toThrow(/^DNS query /);
+	});
+
+	it('still grades the medium gap when the TLSA lookups were MEASURED absent (NOERROR / NXDOMAIN)', async () => {
+		const queryDNS = mailHosts((name) => (name.includes('mx1') ? { rcode: NOERROR } : { rcode: NXDOMAIN }));
+		const { raw } = recordingRaw({ AD: false, Status: NOERROR });
+		const result = await checkDANE('example.com', queryDNS, { rawQueryDNS: raw });
+		expect(result.findings.map((f) => f.title)).toEqual(['No DANE TLSA for MX servers']);
+	});
+
+	it('still grades the medium gap when only SOME hosts failed and the rest were measured absent', async () => {
+		const queryDNS = mailHosts((name) => (name.includes('mx1') ? { throws: true } : { rcode: NOERROR }));
+		const { raw } = recordingRaw({ AD: false, Status: NOERROR });
+		const result = await checkDANE('example.com', queryDNS, { rawQueryDNS: raw });
+		expect(result.findings.map((f) => f.title)).toEqual(['No DANE TLSA for MX servers']);
+	});
+});
+
 describe('checkDANE — MISSING (measured, control absent) and the clean path', () => {
 	/** Mail-accepting domain publishing no TLSA. */
 	const mailDNS: DNSQueryFunction = async (_name, type) => (type === 'MX' ? ['10 mail.example.com.'] : []);

@@ -67,10 +67,9 @@ export interface CompareDomainsOptions {
 	kv?: KVNamespace;
 	runtimeOptions?: ScanRuntimeOptions;
 	/**
-	 * Optional abort signal forwarded to `scanDomain` if/when it gains
-	 * cancellation support. Today scan-domain does not accept a signal, so this
-	 * is reserved for future plumbing; the per-iteration deadline guard below
-	 * is what actually bounds wall-clock for now.
+	 * Optional abort signal. Combined with the remaining `deadlineMs` budget into
+	 * the `signal` handed to each `scanDomain` call, and raced against it, so an
+	 * abort ends an in-flight scan as well as stopping the loop.
 	 */
 	signal?: AbortSignal;
 	/**
@@ -121,22 +120,48 @@ export async function compareDomains(rawDomains: string[], options: CompareDomai
 		// blow past the handler's 28s TOOL_CALL_TIMEOUT_MS race and discard
 		// already-completed scans. Remaining domains surface in `errors` with
 		// `budget_exceeded`, mirroring batch_scan's neighbouring shape.
-		if (options.deadlineMs !== undefined && Date.now() >= options.deadlineMs) {
+		if ((options.deadlineMs !== undefined && Date.now() >= options.deadlineMs) || options.signal?.aborted) {
 			errors[domain] = 'budget_exceeded';
 			structuredResults[domain] = null;
 			partial = true;
 			continue;
 		}
+		// The deadline must also bound a scan that is already RUNNING: a scan started just
+		// inside the budget otherwise outlives the handler's 28s race and discards every
+		// finished comparison (SQ-291). The remaining budget and the caller's signal become
+		// the scan's own signal (scanDomain aborts its in-flight work on it), and the scan is
+		// raced against that signal so a scan that ignores it cannot hold the loop either.
+		const budgetSignals: AbortSignal[] = [];
+		if (options.signal) budgetSignals.push(options.signal);
+		if (options.runtimeOptions?.signal) budgetSignals.push(options.runtimeOptions.signal);
+		if (options.deadlineMs !== undefined) budgetSignals.push(AbortSignal.timeout(Math.max(1, options.deadlineMs - Date.now())));
+		const scanSignal = budgetSignals.length > 0 ? AbortSignal.any(budgetSignals) : undefined;
 		try {
-			// scanDomain doesn't currently accept an AbortSignal; the deadline
-			// guard above is the active bound. `options.signal` is held for the
-			// day scan-domain plumbs cancellation through.
-			const scanResult = await scan(domain, options.kv, options.runtimeOptions);
+			const scanPromise = scan(domain, options.kv, scanSignal ? { ...options.runtimeOptions, signal: scanSignal } : options.runtimeOptions);
+			let scanResult: Awaited<typeof scanPromise>;
+			if (scanSignal) {
+				scanPromise.catch(() => undefined); // the loser of the race must not surface as unhandled
+				scanResult = await Promise.race([
+					scanPromise,
+					new Promise<never>((_, reject) => {
+						const onAbort = () => reject(new Error('budget_exceeded'));
+						if (scanSignal.aborted) onAbort();
+						else scanSignal.addEventListener('abort', onAbort, { once: true });
+					}),
+				]);
+			} else {
+				scanResult = await scanPromise;
+			}
 			structuredResults[domain] = buildStructuredScanResult(scanResult, {
 				scoringConfigHash: computeScoringConfigHash(options.runtimeOptions?.scoringConfig),
 			});
 		} catch (err) {
-			errors[domain] = err instanceof Error ? err.message : 'Scan failed';
+			if (scanSignal?.aborted) {
+				errors[domain] = 'budget_exceeded';
+				partial = true;
+			} else {
+				errors[domain] = err instanceof Error ? err.message : 'Scan failed';
+			}
 			structuredResults[domain] = null;
 		}
 	}

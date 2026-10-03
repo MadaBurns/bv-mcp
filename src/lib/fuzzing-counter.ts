@@ -10,12 +10,21 @@
  * acceptable for fuzzing detection where exact counts don't matter, only
  * that the magnitude trips the threshold.
  *
- * TTL is the window length, clamped to KV's 60s minimum.
+ * TTL is {@link COUNTER_TTL_SECONDS}: long enough that a burst recorded right after one
+ * 15-minute cron tick is still readable at the next tick (see handleFuzzingScan).
  */
 
 import type { FuzzKind, FuzzEvent } from './fuzzing-detector';
 
 const BUCKET_SECONDS = 10;
+
+/**
+ * Counter-key lifetime AND the maximum look-back handleFuzzingScan applies. The scan is driven by
+ * the 15-minute cron (900 s) and scores a 60 s sliding window, so a key must survive one full
+ * inter-tick interval plus a window (960 s) or a burst shortly after a tick expires unscored.
+ * 1200 s gives that with slack; readers filter by bucket epoch so older entries are inert.
+ */
+export const COUNTER_TTL_SECONDS = 1200;
 const KEY_PREFIX = 'fuzz:p:';
 
 function bucketEpoch(epochSec: number): number {
@@ -40,9 +49,7 @@ export async function recordEvent(kv: KVNamespace, principalId: string, kind: Fu
 		const key = keyFor(principalId, bucket, kind);
 		const current = await kv.get(key);
 		const next = current === null ? 1 : Number.parseInt(current, 10) + 1;
-		// TTL of 600s (10 min) is far more than any realistic windowSeconds default and
-		// gives KV slack to evict; readers filter by epoch so stale entries are inert.
-		await kv.put(key, String(next), { expirationTtl: 600 });
+		await kv.put(key, String(next), { expirationTtl: COUNTER_TTL_SECONDS });
 	} catch {
 		// Swallow — see chaos test "KV down".
 	}

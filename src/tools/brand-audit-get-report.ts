@@ -29,7 +29,7 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
-import { BRAND_AUDIT_TARGET_DEADLINE_MS } from '../lib/brand-audit-reaper';
+import { BRAND_AUDIT_TARGET_DEADLINE_MS, targetRunningSince } from '../lib/brand-audit-reaper';
 import type { BrandAuditStepStore } from '../lib/brand-audit-step-store';
 
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
@@ -270,7 +270,7 @@ export async function brandAuditGetReport(
 		// `brand_audit_status`. Best-effort UPDATE persists the flip; failure is
 		// swallowed because the response is the durability contract.
 		const now = (deps.now ?? Date.now)();
-		const isStuck = targetRow.status === 'running' && now - targetRow.created_at > BRAND_AUDIT_TARGET_DEADLINE_MS;
+		const isStuck = targetRow.status === 'running' && now - targetRunningSince(targetRow) > BRAND_AUDIT_TARGET_DEADLINE_MS;
 		if (isStuck) {
 			try {
 				await deps.db
@@ -374,12 +374,12 @@ export async function brandAuditGetReport(
 				'SELECT audit_id, target, status, created_at, completed_at FROM brand_audit_targets WHERE audit_id = ?',
 			)
 			.bind(auditId)
-			.all<{ status: BrandAuditStatus; created_at: number; result_json?: string | null }>();
+			.all<{ status: BrandAuditStatus; created_at: number; completed_at: number | null; result_json?: string | null }>();
 		const rows = targetRows.results ?? [];
 		const counts = {
 			queued: rows.filter((r) => r.status === 'queued').length,
-			running: rows.filter((r) => r.status === 'running' && now - r.created_at <= BRAND_AUDIT_TARGET_DEADLINE_MS).length,
-			stuck: rows.filter((r) => r.status === 'running' && now - r.created_at > BRAND_AUDIT_TARGET_DEADLINE_MS).length,
+			running: rows.filter((r) => r.status === 'running' && now - targetRunningSince(r) <= BRAND_AUDIT_TARGET_DEADLINE_MS).length,
+			stuck: rows.filter((r) => r.status === 'running' && now - targetRunningSince(r) > BRAND_AUDIT_TARGET_DEADLINE_MS).length,
 			completed: rows.filter((r) => r.status === 'completed').length,
 			failed: rows.filter((r) => r.status === 'failed').length,
 		};

@@ -31,10 +31,15 @@ const TOOL_ALIASES: Record<string, ToolAlias> = {
 	generate_rollout_plan: { name: 'generate', injectArgs: { artifact: 'rollout_plan' } },
 };
 
+/** Own-property lookup: a bare index would resolve `constructor` / `__proto__` through Object.prototype. */
+function lookupAlias(normalized: string): ToolAlias | undefined {
+	return Object.hasOwn(TOOL_ALIASES, normalized) ? TOOL_ALIASES[normalized] : undefined;
+}
+
 /** Resolve a (possibly aliased) tool name to its canonical name. Name-only — for routing/metrics. */
 export function normalizeToolName(name: string): string {
 	const normalized = name.trim().toLowerCase();
-	return TOOL_ALIASES[normalized]?.name ?? normalized;
+	return lookupAlias(normalized)?.name ?? normalized;
 }
 
 /**
@@ -44,7 +49,7 @@ export function normalizeToolName(name: string): string {
  */
 export function resolveToolAlias(name: string, args: Record<string, unknown>): { name: string; args: Record<string, unknown> } {
 	const normalized = name.trim().toLowerCase();
-	const alias = TOOL_ALIASES[normalized];
+	const alias = lookupAlias(normalized);
 	if (!alias) return { name: normalized, args };
 	return { name: alias.name, args: alias.injectArgs ? { ...args, ...alias.injectArgs } : args };
 }

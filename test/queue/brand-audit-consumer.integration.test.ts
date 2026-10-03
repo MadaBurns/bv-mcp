@@ -61,10 +61,10 @@ function makeMockD1(opts: MakeMockOpts = {}) {
 					let changes = 1;
 					const isClaim =
 						sql.includes('UPDATE brand_audit_targets') &&
-						sql.includes('SET status = \'running\' WHERE') &&
+						sql.includes('SET status = \'running\', completed_at = ? WHERE') &&
 						sql.includes('status = ?');
 					if (isClaim) {
-						const expected = binds[2] as string | undefined;
+						const expected = binds[3] as string | undefined;
 						const currentStatus = opts.target?.status ?? 'queued';
 						if (expected && currentStatus !== expected) {
 							changes = 0;
@@ -137,9 +137,9 @@ describe('processBrandAuditMessage', () => {
 		const claimAttempt = calls.find(
 			(c) =>
 				c.sql.includes('UPDATE brand_audit_targets') &&
-				c.sql.includes('SET status = \'running\' WHERE') &&
+				c.sql.includes('SET status = \'running\', completed_at = ? WHERE') &&
 				c.sql.includes('status = ?') &&
-				c.binds[2] === 'queued',
+				c.binds[3] === 'queued',
 		);
 		expect(claimAttempt).toBeDefined();
 		const terminalUpdate = calls.find(

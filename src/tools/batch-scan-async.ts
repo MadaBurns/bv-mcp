@@ -9,6 +9,13 @@ import type { ScanRuntimeOptions } from './scan/post-processing';
 export const ASYNC_BATCH_RESULT_TTL_SECONDS = 7 * 24 * 60 * 60;
 const JOB_PREFIX = 'async-batch:v1:';
 const RUNNING_LEASE_MS = 2 * 60 * 1000;
+/**
+ * Wall-clock budget for the queue job's batch scan. The 25s default of `batchScan` is sized for the
+ * synchronous tool path under the Worker request cap; a queue consumer has no such cap, and ten cold
+ * domains at 3-wide concurrency need ~60s. Kept below RUNNING_LEASE_MS so a live job never looks
+ * stale to a duplicate delivery.
+ */
+const ASYNC_BATCH_BUDGET_MS = 90_000;
 
 export type AsyncBatchStatus = 'queued' | 'running' | 'completed' | 'failed';
 
@@ -25,6 +32,10 @@ export interface AsyncBatchJob {
 	dnsChecksPackageVersion: string;
 	scoringConfigHash: string;
 	result?: CompactBatchScanResult;
+	/** Set with `status: 'completed'`: TRUE when the batch budget cut off a tail of domains that were never scanned. */
+	incomplete?: boolean;
+	/** Domains that were never scanned (input order); empty when the batch finished. */
+	unscanned?: string[];
 	error?: string;
 }
 
@@ -136,8 +147,13 @@ export async function processAsyncBatchMessage(
 			force_refresh: job.forceRefresh,
 			kv: deps.kv,
 			runtimeOptions: deps.runtimeOptions,
+			budgetMs: ASYNC_BATCH_BUDGET_MS,
 		});
 		job.result = compactBatchScanResults(results);
+		// Recorded on the job itself so `batch_scan_status` can say "completed, but these
+		// domains were never scanned" without a caller having to fetch the findings (SQ-291).
+		job.incomplete = job.result.incomplete;
+		job.unscanned = job.result.unscanned;
 		job.status = 'completed';
 		job.updatedAt = now();
 		await deps.kv.put(jobKey(job.jobId), JSON.stringify(job), { expirationTtl: ASYNC_BATCH_RESULT_TTL_SECONDS });

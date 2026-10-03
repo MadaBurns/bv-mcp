@@ -393,21 +393,62 @@ describe('POST /internal/tenants/scan', () => {
 		const body = (await res.json()) as { error: string };
 		expect(body.error).toMatch(/Invalid domain_ids/);
 	});
+
+	it('SQ-289: enrolled-domain lookup chunks domain_ids under the D1 100-bound-parameter cap (150 ids)', async () => {
+		const D1_MAX_BOUND_PARAMS = 100;
+		const enrolled = Array.from({ length: 150 }, (_, i) => `enrolled-${i}.example.com`);
+		const maxBindsSeen: number[] = [];
+		const tenantBase = makeMockD1();
+		const tenantDb = {
+			...tenantBase.db,
+			prepare(sql: string) {
+				let binds: unknown[] = [];
+				const stmt = {
+					bind(...args: unknown[]) {
+						binds = args;
+						return stmt;
+					},
+					async all<T = unknown>() {
+						if (binds.length > D1_MAX_BOUND_PARAMS) throw new Error('D1_ERROR: too many SQL variables');
+						maxBindsSeen.push(binds.length);
+						const results = sql.startsWith('SELECT domain FROM domains WHERE domain IN') ? binds.map((domain) => ({ domain })) : [];
+						return { results: results as T[], success: true, meta: {} } as unknown as D1Result<T>;
+					},
+				};
+				return stmt as unknown as D1PreparedStatement;
+			},
+		} as unknown as D1Database;
+		const registry = makeMockD1({
+			[REGISTRY_LOOKUP_SQL]: [{ id: TEST_TENANT_ID, super_tenant_id: 'super-tenant-1', d1_db_id: 'fake-d1-uuid', active: 1 }],
+		});
+		const queueSend = async () => {};
+		const customEnv = {
+			...env,
+			BV_MCP_TENANT_KEY: TEST_INTERNAL_KEY,
+			REQUIRE_INTERNAL_AUTH: 'true',
+			TENANT_REGISTRY_DB: registry.db,
+			[TEST_TENANT_BINDING]: tenantDb,
+			BV_SCANNER_QUEUE: { send: queueSend },
+			QUOTA_COORDINATOR: undefined,
+		} as unknown as TestEnv;
+		const res = await sendRequest(makeReq({ mode: 'queue', domain_ids: enrolled }), customEnv);
+		expect(res.status).toBe(202);
+		const body = (await res.json()) as { total: number };
+		expect(body.total).toBe(150);
+		expect(Math.max(...maxBindsSeen)).toBeLessThanOrEqual(D1_MAX_BOUND_PARAMS);
+	});
 });
 
 describe('GET /internal/tenants/report/:cycle_id', () => {
 	function makeReq(cycleId: string, headers: Record<string, string> = {}): Request {
-		return new Request<unknown, IncomingRequestCfProperties>(
-			`http://example.com/internal/tenants/report/${encodeURIComponent(cycleId)}`,
-			{
-				method: 'GET',
-				headers: {
-					Authorization: `Bearer ${TEST_INTERNAL_KEY}`,
-					'X-Tenant': TEST_TENANT_ID,
-					...headers,
-				},
+		return new Request<unknown, IncomingRequestCfProperties>(`http://example.com/internal/tenants/report/${encodeURIComponent(cycleId)}`, {
+			method: 'GET',
+			headers: {
+				Authorization: `Bearer ${TEST_INTERNAL_KEY}`,
+				'X-Tenant': TEST_TENANT_ID,
+				...headers,
 			},
-		);
+		});
 	}
 
 	it('returns 200 with summary + findings_by_category for a known cycle', async () => {

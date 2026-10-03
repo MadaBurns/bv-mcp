@@ -10,6 +10,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
 import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
+import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import {
 	type CaaRecord,
 	parseCaaRecord,
@@ -42,6 +43,11 @@ interface CaaLookup {
 	minTtl?: number;
 	/** DoH `AD` flag on the response that carried the CAA RRset. */
 	dnssecAuthenticated?: boolean;
+	/**
+	 * The response code the lookup came back with, when the injected resolver exposes one.
+	 * An EMPTY `records` under a SERVFAIL/REFUSED is a failed measurement, not "no CAA".
+	 */
+	rcode?: number;
 }
 
 function parseAll(data: string[]): CaaRecord[] {
@@ -65,7 +71,8 @@ async function lookupCaa(
 	timeout: number,
 ): Promise<CaaLookup> {
 	if (!rawQueryDNS) {
-		return { records: parseAll(await queryDNS(name, 'CAA', { timeout })) };
+		const outcome = await queryWithRcode(queryDNS, name, 'CAA', timeout);
+		return { records: parseAll(outcome.records), rcode: outcome.rcode };
 	}
 	const resp = await rawQueryDNS(name, 'CAA', true, { timeout });
 	// Filter by RR type exactly as the Worker's `queryDnsRecords` projection does,
@@ -74,6 +81,7 @@ async function lookupCaa(
 	const ttls = answers.map((answer) => answer.TTL).filter((ttl): ttl is number => typeof ttl === 'number' && Number.isFinite(ttl));
 	return {
 		records: parseAll(answers.map((answer) => answer.data)),
+		rcode: resp.Status,
 		minTtl: ttls.length > 0 ? Math.min(...ttls) : undefined,
 		// `AD !== true` is the honest reading: an answer the resolver did not
 		// authenticate is exactly the "Insecure" determination (RFC 4035 §4.3) that
@@ -123,20 +131,24 @@ async function climbForCaa(
 	queryDNS: DNSQueryFunction,
 	rawQueryDNS: RawDNSQueryFunction | undefined,
 	timeout: number,
-): Promise<CaaLookup & { foundAt: string | null }> {
+): Promise<CaaLookup & { foundAt: string | null; unansweredRcode?: number }> {
 	const ancestors = ancestorChainToFloor(start, floor).slice(1);
+	// First SERVFAIL/REFUSED seen on an ancestor: that level was never read, so a climb that
+	// finds nothing cannot claim "no CAA anywhere up the tree".
+	let unansweredRcode: number | undefined;
 	for (const ancestor of ancestors) {
 		try {
 			const lookup = await lookupCaa(ancestor, queryDNS, rawQueryDNS, timeout);
 			if (lookup.records.length > 0) {
 				return { ...lookup, foundAt: ancestor };
 			}
+			if (unansweredRcode === undefined && isInconclusiveRcode(lookup.rcode)) unansweredRcode = lookup.rcode;
 		} catch {
 			// Fail-soft: a resolver error at this ancestor doesn't fail the whole check —
 			// treat as "no CAA at this level" and keep climbing toward the floor.
 		}
 	}
-	return { records: [], foundAt: null };
+	return { records: [], foundAt: null, unansweredRcode };
 }
 
 /**
@@ -196,6 +208,12 @@ export async function checkCAA(
 
 	const caaRecords: CaaRecord[] = lookup.records;
 
+	// SERVFAIL/REFUSED arrives as an EMPTY answer set, byte-identical to a name that publishes
+	// no CAA. "No CAA records" would certify an absence the resolver never reported (SQ-279).
+	if (caaRecords.length === 0 && isInconclusiveRcode(lookup.rcode)) {
+		return buildRcodeAbstentionResult('caa', 'CAA', domain, 'CAA', lookup.rcode);
+	}
+
 	if (caaRecords.length === 0) {
 		// RFC 8659: CAA is located by climbing from the FQDN toward the apex. A non-apex
 		// label with no CAA of its own inherits the nearest ancestor's CAA RRset. Bounded
@@ -223,6 +241,9 @@ export async function checkCAA(
 				// A CAA RRset governing this name IS published — at the ancestor, per the RFC 8659
 				// climb. Publication is what `recordPresent` reports, so inheritance counts as true.
 				return buildCheckResult('caa', findings, true, true);
+			}
+			if (climbed.unansweredRcode !== undefined) {
+				return buildRcodeAbstentionResult('caa', 'CAA', domain, 'CAA', climbed.unansweredRcode);
 			}
 			// Climb reached the registrable floor with nothing found — genuinely no CAA
 			// anywhere up the tree. Fall through to the existing "No CAA records" finding.

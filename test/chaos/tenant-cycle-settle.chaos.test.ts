@@ -42,6 +42,8 @@ const SQL_TAGS = {
 	SYNC_PROGRESS: 'SET completed_total = MAX(completed_total, ?)',
 	// Registry: src/tenants/tenant-resolver.ts (convention routing)
 	REGISTRY_LOOKUP: 'd1_db_id, routing_mode, active FROM sub_tenants',
+	// Registry: src/tenants/tenant-resolver.ts NORMALIZED_COLLISION_SQL (SQ-289) — cold path, after REGISTRY_LOOKUP
+	COLLISION_LOOKUP: "WHERE upper(replace(id, '-', '_')) = ?",
 	// Per-tenant D1: src/tenants/cycle-progress.ts
 	COMPLETED_SCANS: 'SELECT COUNT(*) AS completed_total FROM scans s',
 	// Per-tenant D1: src/tenants/scheduled-handlers.ts (customer diff)
@@ -59,6 +61,7 @@ const REGISTRY_TAGS: readonly SqlTag[] = [
 	'RECORD_OUTCOME',
 	'SYNC_PROGRESS',
 	'REGISTRY_LOOKUP',
+	'COLLISION_LOOKUP',
 ];
 const TENANT_TAGS: readonly SqlTag[] = ['COMPLETED_SCANS', 'CYCLE_FINDINGS', 'BASELINE_FINDINGS'];
 
@@ -237,6 +240,9 @@ function makeRegistry(
 					? { id, super_tenant_id: SUPER, d1_db_id: `db-${id}`, routing_mode: 'convention', active: 1 }
 					: null;
 			}
+			case 'COLLISION_LOOKUP':
+				// No other active tenant normalizes to the same binding suffix, so the collision deny never fires.
+				return null;
 			case 'SYNC_PROGRESS': {
 				const [completed, id] = binds as [number, string];
 				const cycle = cycles.get(id);
@@ -460,11 +466,13 @@ describe('Tenant stalled-cycle settle chaos (#1122)', () => {
 		expect(calls.map((c) => `${c.db}:${c.tag}`)).toEqual([
 			'registry:UNSETTLED_CYCLES',
 			'registry:REGISTRY_LOOKUP',
+			'registry:COLLISION_LOOKUP',
 			`${TENANT_1}:COMPLETED_SCANS`,
 			'registry:SYNC_PROGRESS',
 			'registry:SETTLE_STALLED',
 			'registry:PENDING_CYCLES',
 			'registry:REGISTRY_LOOKUP',
+			'registry:COLLISION_LOOKUP',
 			'registry:STAMP_ALERT',
 		]);
 		expect(registry.cycle('cycle-1')).toMatchObject({

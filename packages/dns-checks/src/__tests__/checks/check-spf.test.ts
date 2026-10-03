@@ -8,6 +8,7 @@ import {
 	estimateTxtRrsetBytes,
 	extractLookupDomains,
 	extractSpfSignalDomains,
+	isNoSendPolicy,
 } from '../../checks/spf-analysis';
 import type { DNSQueryFunction } from '../../types';
 
@@ -150,6 +151,30 @@ describe('checkSPF', () => {
 		});
 		const result = await checkSPF('example.com', queryDNS);
 		expect(result.findings.some((f) => f.title === 'Deprecated ptr mechanism')).toBe(true);
+	});
+
+	it('does not flag deprecated ptr for a hostname that merely contains "ptr" (include:ptr.vendor.com)', async () => {
+		const queryDNS = createMockDNS({
+			'example.com': ['v=spf1 include:ptr.vendor.com -all'],
+			'_dmarc.example.com': [],
+		});
+		const result = await checkSPF('example.com', queryDNS);
+		expect(result.findings.some((f) => f.title === 'Deprecated ptr mechanism')).toBe(false);
+	});
+
+	it.each(['v=spf1 +ptr -all', 'v=spf1 ptr:example.com -all', 'v=spf1 ?ptr:Example.com ~all', 'v=spf1 -PTR -all'])(
+		'still flags the ptr mechanism as a term: %s',
+		async (spf) => {
+			const queryDNS = createMockDNS({ 'example.com': [spf], '_dmarc.example.com': [] });
+			const result = await checkSPF('example.com', queryDNS);
+			expect(result.findings.some((f) => f.title === 'Deprecated ptr mechanism')).toBe(true);
+		},
+	);
+
+	it('does not classify "v=spf1 ptr -all" as a no-send policy (ptr authorizes senders)', () => {
+		expect(isNoSendPolicy('v=spf1 ptr -all')).toBe(false);
+		expect(isNoSendPolicy('v=spf1 ptr:example.com ~all')).toBe(false);
+		expect(isNoSendPolicy('v=spf1 -all')).toBe(true);
 	});
 
 	it('flags overly broad IP ranges', async () => {

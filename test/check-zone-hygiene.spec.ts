@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { setupFetchMock, createDohResponse, nsResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, nsResponse, servfailResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -585,5 +585,134 @@ describe('checkZoneHygiene', () => {
 			);
 			expect(probes.size).toBe(1);
 		});
+	});
+});
+
+describe('checkZoneHygiene — failed probes are not measurements (T6 items 1-3)', () => {
+	type Behaviour = 'ok' | 'empty' | 'servfail' | 'reject';
+
+	/**
+	 * Route DoH by type. NS/SOA behaviour is selectable; the sensitive-subdomain sweep A
+	 * queries (never the `_bv-probe-` canary) answer per `sweep(name)`.
+	 */
+	function mockZone(opts: { ns?: Behaviour; soa?: Behaviour; sweep?: (name: string) => 'empty' | 'servfail' | 'reject' }) {
+		const { ns = 'ok', soa = 'ok', sweep = () => 'empty' } = opts;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const name = decodeURIComponent(url.match(/name=([^&]+)/)?.[1] ?? 'example.com');
+			const type = url.match(/type=([^&]+)/)?.[1] ?? '';
+
+			if (type === 'NS' || type === '2') {
+				if (ns === 'reject') return Promise.reject(new Error('DNS query failed'));
+				if (ns === 'servfail') return Promise.resolve(servfailResponse(name, 2));
+				if (ns === 'empty') return Promise.resolve(emptyResponse(name, 2));
+				return Promise.resolve(nsResponse(name, ['ns1.example.com.', 'ns2.example.com.']));
+			}
+			if (type === 'SOA' || type === '6') {
+				if (soa === 'reject') return Promise.reject(new Error('DNS query failed'));
+				if (soa === 'servfail') return Promise.resolve(servfailResponse(name, 6));
+				if (soa === 'empty') return Promise.resolve(emptyResponse(name, 6));
+				return Promise.resolve(soaResponse(name, 'ns1.example.com. admin.example.com. 2024010101 7200 3600 1209600 300'));
+			}
+			if ((type === 'A' || type === '1') && !name.includes('_bv-probe-')) {
+				const verdict = sweep(name);
+				if (verdict === 'reject') return Promise.reject(new Error('DNS query failed'));
+				if (verdict === 'servfail') return Promise.resolve(servfailResponse(name, 1));
+			}
+			return Promise.resolve(emptyResponse(name, 1));
+		});
+	}
+
+	async function run(domain = 'example.com') {
+		const { checkZoneHygiene } = await import('../src/tools/check-zone-hygiene');
+		return checkZoneHygiene(domain);
+	}
+
+	// ---- item 1: a failed sweep query is not "does not resolve" ----
+
+	it('item 1: withholds the clean "no sensitive subdomains" claim when a sweep query is rejected', async () => {
+		mockZone({ sweep: (n) => (n.startsWith('vpn.') ? 'reject' : 'empty') });
+		const result = await run();
+		expect(result.findings.some((f) => f.title === 'No sensitive subdomains resolve publicly')).toBe(false);
+		const note = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(note).toBeDefined();
+		expect(note!.severity).toBe('info');
+		expect(note!.metadata?.errorKind).toBe('dns_error');
+		expect(String(note!.detail)).toContain('vpn.example.com');
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		expect(result.partial).toBe(true);
+	});
+
+	it('item 1: treats a SERVFAIL sweep answer as unmeasured, not as "does not resolve"', async () => {
+		mockZone({ sweep: (n) => (n.startsWith('admin.') ? 'servfail' : 'empty') });
+		const result = await run();
+		expect(result.findings.some((f) => f.title === 'No sensitive subdomains resolve publicly')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(true);
+	});
+
+	it('item 1: abstains (excluded from the score) when EVERY sweep query failed', async () => {
+		mockZone({ ns: 'servfail', sweep: () => 'reject' });
+		const result = await run();
+		expect(result.findings.some((f) => f.title === 'No sensitive subdomains resolve publicly')).toBe(false);
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+	});
+
+	it('item 1: still reports a real hit when other sweep queries failed', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const name = decodeURIComponent(url.match(/name=([^&]+)/)?.[1] ?? 'example.com');
+			if (url.includes('type=NS')) return Promise.resolve(nsResponse(name, ['ns1.example.com.']));
+			if (url.includes('type=SOA')) return Promise.resolve(soaResponse(name, 'ns1.example.com. a.example.com. 1 7200 3600 1209600 300'));
+			if (name === 'staging.example.com') return Promise.resolve(aResponse(name, ['192.0.2.7']));
+			if (name === 'vpn.example.com') return Promise.reject(new Error('DNS query failed'));
+			return Promise.resolve(emptyResponse(name, 1));
+		});
+		const result = await run();
+		expect(result.findings.some((f) => f.title === 'Internal subdomain resolves publicly: staging.example.com')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'No sensitive subdomains resolve publicly')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(true);
+	});
+
+	// ---- item 2: no fabricated per-NS serial comparison ----
+
+	it('item 2: does not certify SOA serial consistency "across all nameservers" from a single resolver answer', async () => {
+		mockZone({});
+		const result = await run();
+		expect(result.findings.some((f) => /consistent across all nameservers/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => /Insufficient NS responses/i.test(f.title))).toBe(false);
+		// The real SOA measurement is still reported.
+		expect(result.findings.some((f) => f.title === 'SOA record details')).toBe(true);
+	});
+
+	// ---- item 3: SERVFAIL on NS / SOA is not a missing control ----
+
+	it('item 3: abstains (no missingControl) when the NS query answers SERVFAIL', async () => {
+		mockZone({ ns: 'servfail' });
+		const result = await run();
+		expect(result.findings.some((f) => f.title === 'No NS records found')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		const note = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(note).toBeDefined();
+		expect(note!.metadata?.errorKind).toBe('dns_error');
+		expect(result.partial).toBe(true);
+	});
+
+	it('item 3: abstains (no missingControl) when the SOA query answers SERVFAIL', async () => {
+		mockZone({ soa: 'servfail' });
+		const result = await run();
+		expect(result.findings.some((f) => f.title === 'No SOA record found')).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.inconclusive === true)).toBe(true);
+	});
+
+	it('item 3 control: a genuine NOERROR-empty NS answer is still a measured missing control', async () => {
+		mockZone({ ns: 'empty' });
+		const result = await run();
+		const noNs = result.findings.find((f) => f.title === 'No NS records found');
+		expect(noNs).toBeDefined();
+		expect(noNs!.metadata?.missingControl).toBe(true);
 	});
 });

@@ -350,7 +350,10 @@ export async function resolveTier(
 			);
 			if (trialResult) {
 				if (!trialResult.authenticated) {
-					// Expired or exhausted — cache as revoked to avoid repeated lookups
+					// Strong-state outage (QuotaCoordinator DO error): retryable 503, same as the
+					// JWT path. Never negative-cache it — that would harden the outage into a lockout.
+					if (trialResult.reason === 'unavailable') return { authenticated: false, storageUnavailable: true };
+					// Expired, exhausted or revoked — cache as revoked to avoid repeated lookups
 					await env.RATE_LIMIT.put(`tier:${keyHash}`, JSON.stringify({ tier: 'free', revokedAt: Date.now() }), {
 						expirationTtl: TRIAL_KEY_CACHE_TTL,
 					});

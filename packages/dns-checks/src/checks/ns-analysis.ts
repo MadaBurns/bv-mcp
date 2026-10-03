@@ -67,13 +67,50 @@ export function getSingleNsFinding(nsRecords: string[]): Finding | null {
 	);
 }
 
+/**
+ * Second-level labels that act as public suffixes under a two-letter ccTLD (`co.nz`, `com.au`,
+ * `org.uk`, `govt.nz`, ...). The package carries no Public Suffix List (it must stay free of
+ * runtime dependencies), so this is a deliberately small heuristic for provider grouping only:
+ * a miss degrades to the old last-two-labels grouping, never to a crash.
+ */
+const CCTLD_SECOND_LEVEL_SUFFIXES = new Set([
+	'co',
+	'com',
+	'org',
+	'net',
+	'gov',
+	'govt',
+	'edu',
+	'ac',
+	'or',
+	'ne',
+	'go',
+	'gob',
+	'mil',
+	'sch',
+	'school',
+	'ltd',
+	'plc',
+	'geek',
+	'gen',
+	'kiwi',
+	'maori',
+	'iwi',
+	'cri',
+	'health',
+]);
+
+/** Provider (registrable-ish) domain of a nameserver host, aware of common `co.xx` style suffixes. */
+function nameserverProviderDomain(record: string): string {
+	const parts = record.replace(/\.$/, '').split('.');
+	const tld = parts[parts.length - 1] ?? '';
+	const sld = parts[parts.length - 2] ?? '';
+	const takeThree = parts.length >= 3 && tld.length === 2 && CCTLD_SECOND_LEVEL_SUFFIXES.has(sld);
+	return parts.slice(takeThree ? -3 : -2).join('.');
+}
+
 export function getNameserverDiversityFinding(nsRecords: string[]): Finding | null {
-	const providerDomains = new Set(
-		nsRecords.map((record) => {
-			const parts = record.split('.');
-			return parts.slice(-2).join('.');
-		}),
-	);
+	const providerDomains = new Set(nsRecords.map(nameserverProviderDomain));
 
 	if (providerDomains.size !== 1 || nsRecords.length <= 1) {
 		return null;

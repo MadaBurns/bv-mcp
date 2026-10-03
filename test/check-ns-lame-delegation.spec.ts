@@ -16,7 +16,7 @@
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { RecordType } from '../src/lib/dns';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, servfailResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 afterEach(() => restore());
@@ -33,6 +33,8 @@ interface MockOptions {
 	throwing?: string[];
 	/** Nameserver hostnames reachable over IPv6 only (A empty, AAAA answers). */
 	ipv6Only?: string[];
+	/** Nameserver hostnames whose A/AAAA lookups answer SERVFAIL (resolver could not answer — SQ-279). */
+	servfailing?: string[];
 }
 
 /**
@@ -62,6 +64,9 @@ function mockDelegation(opts: MockOptions) {
 			if ((opts.throwing ?? []).includes(name)) {
 				return Promise.reject(new Error('Network error'));
 			}
+			if ((opts.servfailing ?? []).includes(name)) {
+				return Promise.resolve(servfailResponse(name, type === 'A' ? RecordType.A : RecordType.AAAA));
+			}
 			if (type === 'A' && opts.reachable.includes(name)) {
 				return Promise.resolve(
 					createDohResponse([{ name, type: RecordType.A }], [{ name, type: RecordType.A, TTL: 300, data: '192.0.2.53' }]),
@@ -86,6 +91,19 @@ async function run(domain = DOMAIN) {
 }
 
 describe('checkNs — lame delegation (Sitting Ducks)', () => {
+	it('does NOT call a nameserver lame when its A and AAAA lookups SERVFAIL (SQ-279)', async () => {
+		// The Worker's rawQueryDNS wrapper used to drop the DoH Status, so a SERVFAIL host
+		// lookup arrived as an empty answer and was filed as a CRITICAL lame delegation.
+		mockDelegation({
+			nsRecords: ['ns1.provider-a.com.', 'ns2.provider-b.net.'],
+			reachable: ['ns1.provider-a.com'],
+			servfailing: ['ns2.provider-b.net'],
+		});
+		const r = await run();
+		expect(r.findings.find((finding) => finding.title.match(/lame delegation/i))).toBeUndefined();
+		expect(r.findings.find((finding) => finding.metadata?.lameDelegation !== undefined)).toBeUndefined();
+	});
+
 	it('emits a CRITICAL finding when SOME delegated nameservers do not answer for the zone', async () => {
 		mockDelegation({
 			nsRecords: ['ns1.provider-a.com.', 'ns2.provider-b.net.'],

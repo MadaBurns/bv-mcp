@@ -61,6 +61,13 @@ const REGISTRY_LOOKUP_FALLBACK_SQL = 'SELECT id, super_tenant_id, d1_db_id, acti
  */
 const ACTIVE_PROBE_SQL = 'SELECT active FROM sub_tenants WHERE id = ? LIMIT 1';
 
+/**
+ * Another ACTIVE registry row whose id normalizes to the same binding suffix as the
+ * requested one (see {@link tenantIdToBindingSuffix}: `-`→`_`, upper-cased). Binds:
+ * (normalized suffix, requested id). Cold path only — not run on cache hits.
+ */
+const NORMALIZED_COLLISION_SQL = "SELECT id FROM sub_tenants WHERE upper(replace(id, '-', '_')) = ? AND id != ? AND active = 1 LIMIT 1";
+
 /** Same regex enforced by `TENANT_ID_REGEX` in `src/schemas/tenant-internal.ts`. */
 const TENANT_ID_REGEX = /^[a-z][a-z0-9_-]{0,63}$/;
 
@@ -404,6 +411,18 @@ async function loadResolvedTenant(env: ResolverEnv, subTenantId: string): Promis
 		throw new Error(`Tenant not found: ${subTenantId}`);
 	}
 	if (!row.active) {
+		throw new Error(`Tenant not found: ${subTenantId}`);
+	}
+
+	// SQ-289: `acme-corp` and `acme_corp` both satisfy TENANT_ID_REGEX yet share one
+	// binding suffix (`TENANT_DB_ACME_CORP`) and prefix, so two ACTIVE rows would alias
+	// onto the same D1. Deny both rather than letting either read/write the other's data.
+	// A throw here propagates (transient, retryable) — it must not fail open.
+	const collision = await env
+		.TENANT_REGISTRY_DB!.prepare(NORMALIZED_COLLISION_SQL)
+		.bind(tenantIdToBindingSuffix(subTenantId), subTenantId)
+		.first<{ id: string }>();
+	if (collision && collision.id !== subTenantId) {
 		throw new Error(`Tenant not found: ${subTenantId}`);
 	}
 

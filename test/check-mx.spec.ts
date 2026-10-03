@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, servfailResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -29,6 +29,18 @@ describe('checkMx', () => {
 		expect(result.findings[0].severity).toBe('medium');
 		expect(result.findings[0].title).toMatch(/No MX and no SPF/i);
 		expect(result.findings[0].detail).toContain('v=spf1 -all');
+	});
+
+	it('SERVFAIL on MX and TXT abstains instead of certifying "no MX and no SPF" (SQ-279)', async () => {
+		// A DoH SERVFAIL is HTTP 200 with an empty Answer, so the string[] projection used to
+		// hand the core check an EMPTY MX set: a spoofable-domain missingControl (score 0)
+		// for a lookup that never concluded. The adapter's rcode channel now reaches the check.
+		globalThis.fetch = vi.fn().mockResolvedValue(servfailResponse('flaky.com', 15));
+		const result = await run('flaky.com');
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => /No MX and no SPF/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
 	});
 
 	it('should return pass if MX records found', async () => {

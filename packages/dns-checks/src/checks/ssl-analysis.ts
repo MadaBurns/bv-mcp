@@ -63,19 +63,33 @@ export function getHttpsFindings(domain: string, responseUrl: string | undefined
 		return findings;
 	}
 
-	const maxAgeMatch = hstsHeader.match(/max-age=(\d+)/i);
-	if (maxAgeMatch) {
-		const maxAge = parseInt(maxAgeMatch[1], 10);
-		if (maxAge < 31536000) {
-			findings.push(
-				createFinding(
-					'ssl',
-					'HSTS max-age too short',
-					'low',
-					`HSTS max-age is ${maxAge} seconds (${Math.round(maxAge / 86400)} days). Recommended minimum is 31536000 (1 year).`,
-				),
-			);
-		}
+	// RFC 6797 §6.1: `max-age` is REQUIRED and its value may be a quoted-string. Match it as a whole
+	// directive (anchored on `;` / start) so a name like `x-max-age` does not count.
+	const maxAgeMatch = hstsHeader.match(/(?:^|;)\s*max-age\s*=\s*(?:"(\d+)"|(\d+))\s*(?=;|$)/i);
+	if (!maxAgeMatch) {
+		// A user agent ignores an HSTS header without a valid max-age, so this is present-but-invalid,
+		// not absent; includeSubDomains is moot until max-age exists.
+		findings.push(
+			createFinding(
+				'ssl',
+				'Invalid HSTS header (no max-age)',
+				'medium',
+				`${domain} sends a Strict-Transport-Security header without a valid max-age directive. RFC 6797 §6.1 requires max-age, so browsers ignore the header and HSTS is not enforced.`,
+			),
+		);
+		return findings;
+	}
+
+	const maxAge = parseInt(maxAgeMatch[1] ?? maxAgeMatch[2], 10);
+	if (maxAge < 31536000) {
+		findings.push(
+			createFinding(
+				'ssl',
+				'HSTS max-age too short',
+				'low',
+				`HSTS max-age is ${maxAge} seconds (${Math.round(maxAge / 86400)} days). Recommended minimum is 31536000 (1 year).`,
+			),
+		);
 	}
 
 	if (!/includeSubDomains/i.test(hstsHeader)) {

@@ -9,7 +9,7 @@
 
 import type { OutputFormat } from '../handlers/tool-args';
 import type { QueryDnsOptions } from '../lib/dns-types';
-import { queryTxtRecords, queryDnsRecords, querySrvRecords, queryMxRecords } from '../lib/dns';
+import { queryTxtRecords, queryTxtRecordsWithRcode, queryDnsRecordsWithRcode, querySrvRecords, queryMxRecords } from '../lib/dns';
 import {
 	isNullMxRecord,
 	isLoopbackMxRecord,
@@ -73,6 +73,12 @@ export interface SupplyChainMap {
 		medium: number;
 		low: number;
 	};
+	/**
+	 * Lookups that never concluded (transport failure, or SERVFAIL/REFUSED), SQ-291. Present only
+	 * when at least one source was not measured: an empty `dependencies` list then means "not
+	 * observed", never "no third-party dependencies".
+	 */
+	unmeasured?: Array<{ source: 'txt' | 'ns' | 'caa' | 'mx' | 'a' | 'srv'; reason: 'rejected' | 'inconclusive' }>;
 }
 
 /** Extract include: and redirect= domains from an SPF record string. */
@@ -311,11 +317,11 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 	const { dnsOptions, precomputedCdn } = options;
 	// Query all record types in parallel — allSettled so one failure doesn't block others
 	const [txtSettled, nsSettled, caaSettled, mxSettled, aSettled, srvBatchSettled] = await Promise.allSettled([
-		queryTxtRecords(domain, dnsOptions),
-		queryDnsRecords(domain, 'NS', dnsOptions),
-		queryDnsRecords(domain, 'CAA', dnsOptions),
+		queryTxtRecordsWithRcode(domain, dnsOptions),
+		queryDnsRecordsWithRcode(domain, 'NS', dnsOptions),
+		queryDnsRecordsWithRcode(domain, 'CAA', dnsOptions),
 		queryMxRecords(domain, dnsOptions),
-		queryDnsRecords(domain, 'A', dnsOptions),
+		queryDnsRecordsWithRcode(domain, 'A', dnsOptions),
 		Promise.allSettled(
 			SRV_PREFIXES.map(async (prefix) => {
 				const name = `${prefix}.${domain}`;
@@ -325,8 +331,30 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 		),
 	]);
 
+	// A rejected lookup, or a SERVFAIL/REFUSED one, never concluded: record it so an empty
+	// source is not read as "no such dependency" (SQ-291).
+	const unmeasured: NonNullable<SupplyChainMap['unmeasured']> = [];
+	const noteOutcome = (
+		source: 'txt' | 'ns' | 'caa' | 'a',
+		settled: PromiseSettledResult<{ records: string[]; inconclusive: boolean }>,
+	): string[] => {
+		if (settled.status === 'rejected') {
+			unmeasured.push({ source, reason: 'rejected' });
+			return [];
+		}
+		if (settled.value.inconclusive) unmeasured.push({ source, reason: 'inconclusive' });
+		return settled.value.records;
+	};
+	const txtRecords = noteOutcome('txt', txtSettled);
+	const nsRecordsMeasured = noteOutcome('ns', nsSettled);
+	const caaRecordsMeasured = noteOutcome('caa', caaSettled);
+	const aRecordsMeasured = noteOutcome('a', aSettled);
+	if (mxSettled.status === 'rejected') unmeasured.push({ source: 'mx', reason: 'rejected' });
+	if (srvBatchSettled.status === 'rejected' || srvBatchSettled.value.some((r) => r.status === 'rejected')) {
+		unmeasured.push({ source: 'srv', reason: 'rejected' });
+	}
+
 	// Extract SPF includes from TXT records
-	const txtRecords = txtSettled.status === 'fulfilled' ? txtSettled.value : [];
 	const spfRecord = txtRecords.find((r) => r.toLowerCase().startsWith('v=spf1'));
 	const spfIncludes = spfRecord ? extractSpfIncludesFromRecord(spfRecord) : [];
 
@@ -343,7 +371,7 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 	}
 
 	// Extract NS hostnames
-	const rawNsRecords = nsSettled.status === 'fulfilled' ? nsSettled.value : [];
+	const rawNsRecords = nsRecordsMeasured;
 	const nsHosts = rawNsRecords.map((r) => r.replace(/\.$/, '').toLowerCase());
 
 	// Extract MX exchange hosts (email-receiving providers). An RFC 7505 null MX
@@ -368,7 +396,7 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 		.map((r) => r.exchange.replace(/\.$/, '').toLowerCase());
 
 	// Apex A-records for the ASN-based CDN tier (resolved to origin ASN below)
-	const aRecords = aSettled.status === 'fulfilled' ? aSettled.value : [];
+	const aRecords = aRecordsMeasured;
 
 	// Extract CAA issuers (only issue and issuewild tags). The deny-all form
 	// (`issue ";"` / `issuewild ";"`) authorises NO CA and so yields no
@@ -379,7 +407,7 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 	// Grants are counted per tag so a `;` entry beside a grant of the SAME tag is
 	// reported as a conflict, not as a denial (RFC 8659: a CA is authorised if it
 	// matches ANY `issue` record, so the empty entry simply matches no CA).
-	const rawCaaRecords = caaSettled.status === 'fulfilled' ? caaSettled.value : [];
+	const rawCaaRecords = caaRecordsMeasured;
 	const caaIssuers = new Set<string>();
 	const caaGrantsByTag = new Map<string, number>();
 	const caaNoIssuanceTags = new Set<string>();
@@ -797,7 +825,7 @@ export async function mapSupplyChain(domain: string, options: MapSupplyChainOpti
 		low: dependencies.filter((d) => d.trustLevel === 'low').length,
 	};
 
-	return { domain, dependencies, signals, summary };
+	return { domain, dependencies, signals, summary, ...(unmeasured.length > 0 ? { unmeasured } : {}) };
 }
 
 /** Format supply chain map as human-readable text. */
@@ -809,6 +837,11 @@ export function formatSupplyChain(result: SupplyChainMap, format: OutputFormat =
 		);
 		for (const dep of result.dependencies) {
 			lines.push(`- [${dep.trustLevel.toUpperCase()}] ${sanitizeOutputText(dep.provider, 80)}: ${dep.roles.join(', ')}`);
+		}
+		if (result.unmeasured && result.unmeasured.length > 0) {
+			lines.push(
+				`Not measured: ${result.unmeasured.map((u) => u.source).join(', ')} lookups did not conclude; dependencies from these sources are unknown.`,
+			);
 		}
 		if (result.signals.length > 0) {
 			lines.push('');
@@ -836,8 +869,18 @@ export function formatSupplyChain(result: SupplyChainMap, format: OutputFormat =
 			lines.push(`  Sources: ${dep.sources.join(', ')}`);
 			lines.push('');
 		}
+	} else if (result.unmeasured && result.unmeasured.length > 0) {
+		lines.push('Not assessed: no dependencies could be mapped because some DNS lookups did not conclude.');
+		lines.push('');
 	} else {
 		lines.push('No third-party dependencies detected from DNS data.');
+		lines.push('');
+	}
+
+	if (result.unmeasured && result.unmeasured.length > 0) {
+		lines.push(
+			`Not measured: ${result.unmeasured.map((u) => `${u.source} (${u.reason})`).join(', ')}. Dependencies from these sources are unknown, not absent.`,
+		);
 		lines.push('');
 	}
 

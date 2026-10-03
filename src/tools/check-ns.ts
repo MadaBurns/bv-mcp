@@ -43,7 +43,9 @@ export async function checkNs(
 			zone: resolvedZone,
 			rawQueryDNS: async (d, type, dnssecFlag) => {
 				const resp = await queryDns(d, type as Parameters<typeof queryDns>[1], dnssecFlag ?? false, dnsOptions);
-				return { AD: resp.AD, Answer: resp.Answer };
+				// `Status` is the DoH rcode: it lets the package tell a measured empty answer
+				// (NOERROR/NXDOMAIN) from a SERVFAIL/REFUSED it must not read as "no address".
+				return { AD: resp.AD, Answer: resp.Answer, Status: resp.Status };
 			},
 		},
 	) as CheckResult;

@@ -21,6 +21,8 @@ export interface TrustSurfaceContext {
 	corroboratedByWeakDmarc?: boolean;
 	dmarcPolicy?: string;
 	dmarcAlignmentMode?: string;
+	/** The scanned domain; includes under its registrable domain are first-party, not shared platforms. */
+	domain?: string;
 }
 
 /** Known multi-tenant SaaS platforms whose shared SPF includes widen the trust surface. */
@@ -63,6 +65,32 @@ const GENERIC_SHARED_SENDER_RE = /(^|\.)_?spf\d*\./i;
 
 function isGenericSharedSender(domain: string): boolean {
 	return GENERIC_SHARED_SENDER_RE.test(domain.toLowerCase());
+}
+
+/**
+ * Second-level labels that, under a two-letter ccTLD, form a public suffix (`co.uk`,
+ * `com.au`, `ac.nz`...). A small heuristic standing in for a Public Suffix List, which this
+ * runtime-agnostic module does not carry.
+ */
+const CC_SECOND_LEVEL_LABELS: ReadonlySet<string> = new Set(['co', 'com', 'org', 'net', 'gov', 'edu', 'ac', 'or', 'ne', 'go', 'mil']);
+
+/** Best-effort registrable domain: last two labels, or last three under a `co.uk`-style suffix. */
+function approximateRegistrableDomain(name: string): string {
+	const labels = name.toLowerCase().replace(/\.$/, '').split('.').filter(Boolean);
+	const take =
+		labels.length >= 3 && labels[labels.length - 1].length === 2 && CC_SECOND_LEVEL_LABELS.has(labels[labels.length - 2]) ? 3 : 2;
+	return labels.slice(-take).join('.');
+}
+
+/**
+ * An include under the scanned domain's OWN registrable domain (e.g. `_spf.example.com` while
+ * scanning `example.com`) is the domain's first-party SPF, not delegation to a shared platform.
+ * The registrable domain is approximated (no PSL), erring toward treating an include as
+ * third-party when the suffix is ambiguous.
+ */
+function isFirstPartyInclude(includeDomain: string, scannedDomain: string | undefined): boolean {
+	if (!scannedDomain) return false;
+	return approximateRegistrableDomain(includeDomain) === approximateRegistrableDomain(scannedDomain);
 }
 
 /**
@@ -148,7 +176,7 @@ function describeCorroboration(context: TrustSurfaceContext): string {
  */
 export function analyzeTrustSurface(spfRecord: string, context: TrustSurfaceContext = {}): Finding[] {
 	const findings: Finding[] = [];
-	const domains = extractIncludeAndRedirectDomains(spfRecord);
+	const domains = extractIncludeAndRedirectDomains(spfRecord).filter((d) => !isFirstPartyInclude(d, context.domain));
 	const delegated: { name: string; includeDomain: string; recognized: boolean }[] = [];
 	const corroboratedByWeakDmarc = context.corroboratedByWeakDmarc === true;
 	/**

@@ -21,6 +21,7 @@ import type { CheckResult, Finding } from '../../lib/scoring';
 import type { DomainProfile } from '../../lib/scoring';
 import { nistScoreToGrade } from '../../lib/scoring';
 import { isCompletedCheck } from '../../lib/ungraded-display';
+import { declaredMissingControl, dmarcPolicyTag } from '@blackveil/dns-checks/scoring';
 // `passed` means "did not penalize", NOT "the control exists" (CLAUDE.md). The
 // three signals below (DNSSEC, CAA, MTA-STS) each have a graded-not-zeroed
 // absence path — an unsigned zone, no CAA, or no MTA-STS all still score
@@ -119,6 +120,36 @@ export function ladderForProfile(profile?: DomainProfile): MaturityLadder {
  */
 function measured(check?: CheckResult): boolean {
 	return check != null && isCompletedCheck(check);
+}
+
+/**
+ * The DMARC policy a MEASURED dmarc result actually publishes, read from the
+ * structured `dmarcPolicy` metadata `check-dmarc` emits — not from finding titles.
+ *
+ * The old inference was "no 'policy set to none|quarantine' title, so it must be
+ * reject", which staged every record that merely LACKED those titles as enforcing:
+ * multiple records ("no valid policy"), a record with no `p=` tag and an invalid
+ * `p=` value all reached Stage 4. Here a policy counts only when the tag parsed to
+ * none/quarantine/reject (`not-specified` and `invalid` match nothing) AND no
+ * finding declares the record unusable (`missingControl: true` — how the multiple-
+ * record case is flagged; its `p=` tag still reads as the first record's value).
+ *
+ * LEGACY FALLBACK: results with no `dmarcPolicy` metadata at all (hand-built or
+ * pre-#991 cached results; a real no-record result is gated out by `hasDmarc`) keep
+ * the previous title inference so they stage exactly as before.
+ */
+function dmarcPublishedPolicy(dmarcCheck: CheckResult | undefined): { none: boolean; quarantine: boolean; reject: boolean } {
+	if (!dmarcCheck || !measured(dmarcCheck)) return { none: false, quarantine: false, reject: false };
+	const tag = dmarcPolicyTag(dmarcCheck);
+	if (tag === undefined) {
+		const titles = dmarcCheck.findings;
+		const none = titles.some((f: Finding) => /policy set to none/i.test(f.title));
+		const quarantine = titles.some((f: Finding) => /policy set to quarantine/i.test(f.title));
+		const present = !titles.some((f: Finding) => /No DMARC record/i.test(f.title));
+		return { none, quarantine, reject: present && !none && !quarantine };
+	}
+	const usable = !dmarcCheck.findings.some((f: Finding) => declaredMissingControl(f) === true);
+	return { none: usable && tag === 'none', quarantine: usable && tag === 'quarantine', reject: usable && tag === 'reject' };
 }
 
 /**
@@ -261,10 +292,7 @@ function computeWebOnlyLadder(byCategory: Map<string, CheckResult>): MaturitySta
 	// Anti-spoof posture: a published SPF -all (or restrictive include) + DMARC reject is
 	// strong evidence even on a non-sending domain (defence against impersonation).
 	const hasSpfRecord = measured(spfCheck) && !spfCheck!.findings.some((f: Finding) => /No SPF record/i.test(f.title));
-	const hasDmarcReject =
-		measured(dmarcCheck) &&
-		!dmarcCheck!.findings.some((f: Finding) => /No DMARC record/i.test(f.title)) &&
-		!dmarcCheck!.findings.some((f: Finding) => /policy set to (none|quarantine)/i.test(f.title));
+	const hasDmarcReject = dmarcPublishedPolicy(dmarcCheck).reject;
 	const hasAntiSpoof = hasSpfRecord || hasDmarcReject;
 
 	// Stage 4 — Comprehensive: SSL + DNSSEC + HSTS + anti-spoof email policy.
@@ -430,10 +458,7 @@ export function computeMaturityStage(checks: CheckResult[], profile?: DomainProf
 
 	// Determine DMARC presence and policy
 	const hasDmarc = measured(dmarcCheck) && !dmarcCheck!.findings.some((f: Finding) => /No DMARC record/i.test(f.title));
-	const dmarcPolicyNone = dmarcCheck?.findings.some((f: Finding) => /policy set to none/i.test(f.title)) ?? false;
-	const dmarcPolicyQuarantine = dmarcCheck?.findings.some((f: Finding) => /policy set to quarantine/i.test(f.title)) ?? false;
-	// reject = no "policy set to none" and no "policy set to quarantine" and DMARC exists
-	const dmarcPolicyReject = hasDmarc && !dmarcPolicyNone && !dmarcPolicyQuarantine;
+	const { none: dmarcPolicyNone, quarantine: dmarcPolicyQuarantine, reject: dmarcPolicyReject } = dmarcPublishedPolicy(dmarcCheck);
 	const hasRua = measured(dmarcCheck) && !dmarcCheck!.findings.some((f: Finding) => /No aggregate reporting/i.test(f.title));
 
 	// Determine MTA-STS, DNSSEC, BIMI

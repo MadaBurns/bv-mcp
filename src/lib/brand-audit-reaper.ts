@@ -16,9 +16,9 @@
  *   3. (Now closed via atomic claim in the consumer) — queue redelivery
  *      stampede races on D1, leaving the row repeatedly thrashed.
  *
- * Called from the 15-minute cron handler. Targets whose `created_at` is
- * older than {@link STUCK_TARGET_THRESHOLD_MS} (15 min) AND still in
- * `running` are unambiguously stuck — no legitimate audit takes that long
+ * Called from the 15-minute cron handler. Targets that have been `running`
+ * for longer than {@link STUCK_TARGET_THRESHOLD_MS} (measured from the consumer's
+ * CLAIM, see {@link targetRunningSince}) are unambiguously stuck — no legitimate audit takes that long
  * because the consumer cap is 5 min. Flip them to `failed`, increment the
  * parent's `completed_targets` counter, and finalize the parent when its
  * `completed_targets >= total_targets`.
@@ -47,12 +47,12 @@ export const STUCK_TARGET_THRESHOLD_MS = 10 * 60 * 1000;
  * Per-target running-budget deadline used by the read path
  * (`brand_audit_status`, `brand_audit_get_report`) to synthesise `failed` for
  * targets whose consumer could no longer self-flip. Set to the consumer cap
- * (300s) plus 120s of grace — accounts for:
- *   1. Cloudflare Queue delivery lag between INSERT (`created_at`) and the
- *      consumer's running-flip. Typically sub-second in prod, but bursts can
- *      push 30–60s during redeliveries.
- *   2. Cap-fire macrotask + D1 catch-handler UPDATE when microtasks are
- *      partially starved.
+ * (300s) plus 120s of grace — accounts for cap-fire macrotask + D1
+ * catch-handler UPDATE when microtasks are partially starved.
+ *
+ * Aged from the consumer's claim ({@link targetRunningSince}), NOT from enqueue:
+ * queue delivery lag / serial processing of a large batch is time the target
+ * spent `queued`, not running, and must not count against its budget.
  *
  * 7 minutes leaves a buffer wide enough that a legitimate 5-minute audit
  * isn't truncated by a polling read at the cliff. Anything older is the
@@ -62,6 +62,20 @@ export const STUCK_TARGET_THRESHOLD_MS = 10 * 60 * 1000;
  * path closes the dead zone before the cron reaper would.
  */
 export const BRAND_AUDIT_TARGET_DEADLINE_MS = 7 * 60 * 1000;
+
+/**
+ * When a `running` target started running, for aging purposes.
+ *
+ * The consumer's atomic claim stamps `completed_at` with the claim time while the
+ * row is `running` (the column is otherwise unused until the row turns terminal, so
+ * no schema migration is needed). Aging from `created_at` (enqueue time) instead
+ * reaps late targets of a large batch, which the consumer claims serially long
+ * after enqueue, within seconds of them starting. Legacy rows claimed before this
+ * stamp existed have `completed_at = NULL` and fall back to `created_at`.
+ */
+export function targetRunningSince(row: { created_at: number; completed_at: number | null }): number {
+	return row.completed_at ?? row.created_at;
+}
 
 /** Hard cap on reaps per cron tick — prevents runaway D1 spend on infra incidents. */
 export const MAX_REAP_PER_TICK = 50;
@@ -106,7 +120,7 @@ export async function reapStuckBrandAudits(deps: ReaperDeps): Promise<ReaperResu
 	let stuck: StuckTargetRow[];
 	try {
 		const rows = await deps.db
-			.prepare('SELECT audit_id, target FROM brand_audit_targets WHERE status = ? AND created_at < ? LIMIT ?')
+			.prepare('SELECT audit_id, target FROM brand_audit_targets WHERE status = ? AND COALESCE(completed_at, created_at) < ? LIMIT ?')
 			.bind('running', threshold, MAX_REAP_PER_TICK + 1)
 			.all<StuckTargetRow>();
 		stuck = rows.results ?? [];

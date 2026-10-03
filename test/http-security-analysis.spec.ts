@@ -159,6 +159,16 @@ describe('analyzeSecurityHeaders', () => {
 		expect(finding!.severity).toBe('medium');
 	});
 
+	it("should not flag unsafe-inline when a nonce / hash / 'strict-dynamic' source makes it inert (CSP3 §6.7.3)", () => {
+		for (const scriptSrc of ["'nonce-abc123' 'unsafe-inline'", "'sha256-abc=' 'unsafe-inline'", "'strict-dynamic' 'unsafe-inline' https:"]) {
+			const headers = makeHeaders({
+				'content-security-policy': `default-src 'self'; script-src ${scriptSrc}; frame-ancestors 'none'`,
+			});
+			const findings = analyzeSecurityHeaders(headers);
+			expect(findings.find((f) => f.title === 'CSP allows unsafe-inline scripts')).toBeUndefined();
+		}
+	});
+
 	it('should return medium finding for CSP with unsafe-eval', () => {
 		const headers = makeHeaders({
 			'content-security-policy': "default-src 'self'; script-src 'self' 'unsafe-eval'; frame-ancestors 'none'",

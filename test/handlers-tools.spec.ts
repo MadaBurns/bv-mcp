@@ -275,6 +275,7 @@ describe('handleToolsCall - per-tool cache TTL', () => {
 	});
 
 	it('check_spf caches with default 5-minute TTL (300s)', async () => {
+		IN_MEMORY_CACHE.clear(); // earlier KV-less tests populate the memory tier, which cacheGet now reads first (SQ-286)
 		mockTxtRecords(['v=spf1 -all']);
 		const mockKV = {
 			get: vi.fn().mockResolvedValue(null),
@@ -811,6 +812,9 @@ describe('handleToolsCall - caching behaviour', () => {
 	});
 
 	it('cacheTtlSeconds override is passed to KV storage as expirationTtl', async () => {
+		// Earlier tests populate the memory tier, which cacheGet now reads before KV (SQ-286). Clear the
+		// instance the handler actually uses (a module reset upstream can detach the static import).
+		(await import('../src/lib/cache')).IN_MEMORY_CACHE.clear();
 		mockTxtRecords(['v=spf1 -all']);
 		const mockKV = {
 			get: vi.fn().mockResolvedValue(null),

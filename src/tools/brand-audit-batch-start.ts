@@ -3,10 +3,12 @@
 /**
  * brand_audit_batch_start — producer for the async brand-audit flow.
  *
- * Validates the domain list (max 50, deduplicated, non-empty), optionally consumes
- * per-tier monthly quota atomically at enqueue time (so a partial-failure batch
- * can't refund quota), writes the parent `brand_audits` row to D1, then enqueues
- * one `{ auditId, target }` message per target onto BRAND_AUDIT_QUEUE.
+ * Validates the domain list (max 50, deduplicated, non-empty), writes the parent
+ * `brand_audits` + per-target rows to D1, optionally consumes per-tier monthly
+ * quota atomically (AFTER persistence, BEFORE enqueue: the coordinator has no
+ * refund, so persistence failure must not cost quota and a partial-enqueue batch
+ * still can't refund it), then enqueues one `{ auditId, target }` message per
+ * target onto BRAND_AUDIT_QUEUE.
  *
  * Returns a `CheckResult` whose summary metadata carries `{ auditId, queuedAt,
  * targetCount, etaSeconds }`. The caller polls with `brand_audit_status` and
@@ -16,9 +18,10 @@
  *   - Empty/invalid domain list → `invalidInput` finding, no quota consumed
  *   - Over 50 domains → `batchTooLarge` finding, no quota consumed
  *   - Quota exceeded (when enforceQuota dep is wired) → `quotaExceeded` finding,
- *     no D1 write
+ *     nothing enqueued; the rows persisted ahead of the charge are deleted
  *   - D1 parent or child insert fails → `persistenceFailure` finding, no queue.send
- *     fires (caller can safely retry — no half-written state visible to consumers)
+ *     fires and no quota is consumed (caller can safely retry — no half-written
+ *     state visible to consumers)
  *   - queue.send fails for SOME targets mid-loop → `partialEnqueue` finding listing
  *     `failedToEnqueue: [{ target, error }]`. The audit row's status is flipped to
  *     `'failed'` so the polling tool stops claiming progress against targets that
@@ -156,28 +159,6 @@ export async function brandAuditBatchStart(
 		return buildErrorResult('invalidInput', 'No usable targets after normalisation.');
 	}
 
-	const enforce = deps.enforceQuota;
-	if (enforce) {
-		const verdict = await enforce(targets.length);
-		if (!verdict.allowed) {
-			const retryHint =
-				typeof verdict.retryAfterMs === 'number'
-					? ` retry after ${Math.ceil(verdict.retryAfterMs / 1000)}s`
-					: '';
-			return buildErrorResult(
-				'quotaExceeded',
-				`Monthly quota of ${verdict.limit ?? 0} targets reached for this principal.${retryHint}`,
-				{
-					target: ownerId,
-					limit: verdict.limit ?? 0,
-					remaining: verdict.remaining ?? 0,
-					retryAfterMs: verdict.retryAfterMs,
-					requested: targets.length,
-				},
-			);
-		}
-	}
-
 	const auditId = (deps.generateId ?? defaultGenerateId)();
 	const now = (deps.now ?? Date.now)();
 	const format: BrandAuditFormat = options.format ?? 'both';
@@ -204,6 +185,39 @@ export async function brandAuditBatchStart(
 			`Failed to persist brand audit row: ${err instanceof Error ? err.message : String(err)}`,
 			{ auditId },
 		);
+	}
+
+	// Charge AFTER the rows exist. The quota coordinator has no refund primitive, so
+	// charging first meant a D1 persistence failure — reported to the caller as
+	// "safe to retry" — still consumed quota. Nothing is enqueued before this
+	// point, so a denial only has to remove the not-yet-enqueued rows.
+	const enforce = deps.enforceQuota;
+	if (enforce) {
+		let verdict: Awaited<ReturnType<EnforceBrandAuditQuota>>;
+		try {
+			verdict = await enforce(targets.length);
+		} catch (err) {
+			await discardUnenqueuedAudit(deps.db, auditId);
+			throw err;
+		}
+		if (!verdict.allowed) {
+			await discardUnenqueuedAudit(deps.db, auditId);
+			const retryHint =
+				typeof verdict.retryAfterMs === 'number'
+					? ` retry after ${Math.ceil(verdict.retryAfterMs / 1000)}s`
+					: '';
+			return buildErrorResult(
+				'quotaExceeded',
+				`Monthly quota of ${verdict.limit ?? 0} targets reached for this principal.${retryHint}`,
+				{
+					target: ownerId,
+					limit: verdict.limit ?? 0,
+					remaining: verdict.remaining ?? 0,
+					retryAfterMs: verdict.retryAfterMs,
+					requested: targets.length,
+				},
+			);
+		}
 	}
 
 	const enqueued: string[] = [];
@@ -274,6 +288,20 @@ export async function brandAuditBatchStart(
 			},
 		),
 	]);
+}
+
+/**
+ * Remove an audit (and its target rows) that was persisted but never enqueued.
+ * Best-effort: the rows are inert if this fails — status `queued`, no queue
+ * message, never claimed, never reaped.
+ */
+async function discardUnenqueuedAudit(db: D1Database, auditId: string): Promise<void> {
+	try {
+		await db.prepare('DELETE FROM brand_audit_targets WHERE audit_id = ?').bind(auditId).run();
+		await db.prepare('DELETE FROM brand_audits WHERE id = ?').bind(auditId).run();
+	} catch {
+		// Swallow — see above.
+	}
 }
 
 function defaultGenerateId(): string {

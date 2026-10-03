@@ -44,7 +44,7 @@
  * `domains.map(queryDns...)` fan-out anywhere in this module.
  */
 
-import { DnsQueryError, queryDnsRecords, queryMxRecords, queryTxtRecords } from '../lib/dns';
+import { DnsQueryError, queryDnsRecords, queryDnsRecordsWithRcode, queryMxRecords, queryTxtRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { mapConcurrent } from '../lib/map-concurrent';
 import { isInBailiwick, parseDmarcReportReceivers, type DmarcReportAuthorisation } from '../lib/ownership-attribution';
@@ -306,12 +306,14 @@ async function probeDetailBatch(batch: string[], deadlineMs: number | undefined)
 		// Armed HERE, at dispatch — the pool guarantees a connection slot is free.
 		const deadline = deadlineSignal(deadlineMs);
 		try {
-			const records = await queryDnsRecords(
+			const outcome = await queryDnsRecordsWithRcode(
 				leg.domain,
 				leg.type,
 				deadline ? { ...PHASE2_DNS_OPTS, signal: deadline.signal } : PHASE2_DNS_OPTS,
 			);
-			return { ok: true, records };
+			// SERVFAIL/REFUSED is a resolver that never concluded — UNFETCHED, not "no A / no MX" (SQ-282).
+			if (outcome.inconclusive) return { ok: false, reason: 'failed' };
+			return { ok: true, records: outcome.records };
 		} catch (err) {
 			return { ok: false, reason: classifyDnsFailure(err, deadline) };
 		} finally {
@@ -411,8 +413,10 @@ export async function filterByNsExistence(
 		// resolver, not a queue.
 		const deadline = deadlineSignal(options.deadlineMs);
 		try {
-			const ns = await queryDnsRecords(domain, 'NS', deadline ? { ...PHASE1_DNS_OPTS, signal: deadline.signal } : PHASE1_DNS_OPTS);
-			return { domain, measured: true, ns };
+			const outcome = await queryDnsRecordsWithRcode(domain, 'NS', deadline ? { ...PHASE1_DNS_OPTS, signal: deadline.signal } : PHASE1_DNS_OPTS);
+			// SERVFAIL/REFUSED is UNKNOWN, not "unregistered" (SQ-282): count it as unresolved.
+			if (outcome.inconclusive) return { domain, measured: false, reason: 'failed' };
+			return { domain, measured: true, ns: outcome.records };
 		} catch (err) {
 			return { domain, measured: false, reason: classifyDnsFailure(err, deadline) };
 		} finally {
@@ -464,8 +468,10 @@ export interface PrimaryNsResult {
  */
 export async function queryPrimaryNs(domain: string): Promise<PrimaryNsResult> {
 	try {
-		const ns = await queryDnsRecords(domain, 'NS', SEED_DNS_OPTS);
-		return { ns: normalizeNsSet(ns), resolved: true };
+		const outcome = await queryDnsRecordsWithRcode(domain, 'NS', SEED_DNS_OPTS);
+		// A SERVFAIL'd seed NS lookup is an UNFETCHED set, same as a rejection (SQ-282).
+		if (outcome.inconclusive) return { ns: new Set<string>(), resolved: false };
+		return { ns: normalizeNsSet(outcome.records), resolved: true };
 	} catch {
 		return { ns: new Set<string>(), resolved: false };
 	}

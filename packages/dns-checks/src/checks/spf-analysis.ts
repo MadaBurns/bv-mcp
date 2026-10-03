@@ -266,6 +266,6 @@ export function isNoSendPolicy(spf: string): boolean {
 	if (!allMatch) return false;
 	const qualifier = allMatch[0][0];
 	if (qualifier !== '-' && qualifier !== '~') return false;
-	const hasAuthorizing = /\b(include:|a[:/\s]|a$|mx[:/\s]|mx$|ip4:|ip6:|redirect=|exists:)/i.test(spf);
+	const hasAuthorizing = /\b(include:|a[:/\s]|a$|mx[:/\s]|mx$|ptr[:/\s]|ptr$|ip4:|ip6:|redirect=|exists:)/i.test(spf);
 	return !hasAuthorizing;
 }

@@ -77,12 +77,20 @@ async function dmarcTreeWalk(
 		if (isInconclusiveRcode(outcome.rcode)) {
 			return { txtRecords: [], foundAt: null, inconclusive: { name: queryName, rcode: outcome.rcode } };
 		}
-		if (/v=dmarc1/i.test(outcome.records.join(''))) {
+		if (outcome.records.some(isDmarcRecord)) {
 			return { txtRecords: outcome.records, foundAt: name };
 		}
 		// NXDOMAIN or NODATA at this name — continue up the tree.
 	}
 	return { txtRecords: [], foundAt: null };
+}
+
+/**
+ * RFC 7489 section 6.6.3: only TXT records that START with the version tag are DMARC
+ * records; anything else at `_dmarc.<name>` is discarded, never merged into a record.
+ */
+function isDmarcRecord(record: string): boolean {
+	return /^\s*v=dmarc1/i.test(record);
 }
 
 const DMARC_POLICY_TOKENS = new Set(['none', 'quarantine', 'reject']);
@@ -129,14 +137,15 @@ export async function checkDMARC(domain: string, queryDNS: DNSQueryFunction, opt
 	// A record found above the queried domain is inherited via the org domain.
 	const inheritedFromParent = walk.foundAt !== domain;
 
-	// Concatenate to handle DMARC data split across multiple TXT strings.
-	const concatenatedTxt = walk.txtRecords.join('');
-	const dmarcMatch = concatenatedTxt.match(/v=dmarc1[^]*/i);
-	const dmarcRecords = dmarcMatch ? [dmarcMatch[0]] : [];
-	const dmarcMatches = concatenatedTxt.match(/v=dmarc1/gi);
-	const recordCount = dmarcMatches?.length ?? 1;
+	// Select DMARC records individually (RFC 7489 section 6.6.3). Joining every TXT record at the
+	// name fused unrelated records into one policy value and could count two records as one.
+	// More than one DMARC record is "no valid policy" — classifyDmarc emits that finding.
+	const dmarcRecords = walk.txtRecords.filter(isDmarcRecord);
+	const recordCount = dmarcRecords.length;
 
-	const tags = parseDmarcTags(dmarcRecords[0]);
+	// With more than one record there is NO valid policy: never read a tag off an arbitrary one of
+	// them, or the first record's p=reject would set controlPresent despite the conflict.
+	const tags = parseDmarcTags(recordCount === 1 ? dmarcRecords[0] : '');
 	const p = tags.get('p') ?? null;
 	const sp = tags.get('sp');
 
