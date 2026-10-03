@@ -2,6 +2,7 @@
 
 import type { Finding } from '../lib/scoring';
 import { createFinding } from '../lib/scoring';
+import { getRegistrableDomain } from '../lib/public-suffix';
 import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 
 const RESILIENT_NS_PROVIDERS: Record<string, string> = {
@@ -61,10 +62,11 @@ export function getSingleNsFinding(nsRecords: string[]): Finding | null {
 }
 
 export function getNameserverDiversityFinding(nsRecords: string[]): Finding | null {
+	// Group by PSL registrable domain so two providers under `co.nz` / `co.uk` are not read as one.
 	const providerDomains = new Set(
 		nsRecords.map((record) => {
-			const parts = record.split('.');
-			return parts.slice(-2).join('.');
+			const host = record.replace(/\.$/, '').toLowerCase();
+			return getRegistrableDomain(host) ?? host.split('.').slice(-2).join('.');
 		}),
 	);
 
