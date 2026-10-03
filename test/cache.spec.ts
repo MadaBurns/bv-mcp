@@ -177,6 +177,31 @@ describe('cacheGet / cacheSet (KV-backed)', () => {
 		expect(IN_MEMORY_CACHE.get('errkey')).toBe('errval');
 	});
 
+	it('with KV: a sub-60s TTL entry (memory-only write) is served by cacheGet without consulting KV', async () => {
+		const mockKV = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+		};
+		await cacheSet('poller:sub60', { status: 'running' }, mockKV as unknown as KVNamespace, 15);
+		expect(mockKV.put).not.toHaveBeenCalled(); // KV rejects expirationTtl < 60
+		const result = await cacheGet<{ status: string }>('poller:sub60', mockKV as unknown as KVNamespace);
+		expect(result).toEqual({ status: 'running' });
+	});
+
+	it('with KV: an expired sub-60s memory entry is not served and falls through to KV', async () => {
+		const now = Date.now();
+		vi.spyOn(Date, 'now').mockReturnValue(now);
+		const mockKV = {
+			get: vi.fn().mockResolvedValue(null),
+			put: vi.fn().mockResolvedValue(undefined),
+		};
+		await cacheSet('poller:expiry', 'v', mockKV as unknown as KVNamespace, 15);
+		vi.spyOn(Date, 'now').mockReturnValue(now + 16_000);
+		const result = await cacheGet<string>('poller:expiry', mockKV as unknown as KVNamespace);
+		expect(result).toBeUndefined();
+		expect(mockKV.get).toHaveBeenCalledWith('poller:expiry', 'json');
+	});
+
 	it('IN_MEMORY_CACHE is the global in-memory TTLCache instance', () => {
 		expect(IN_MEMORY_CACHE).toBeInstanceOf(TTLCache);
 		IN_MEMORY_CACHE.set('test', 'val');

@@ -205,6 +205,10 @@ export const IN_MEMORY_CACHE = new TTLCache<unknown>({
  * @param kv - Optional KV namespace for persistent caching
  */
 export async function cacheGet<T>(key: string, kv?: KVNamespace): Promise<T | undefined> {
+       // Sub-60s TTL entries (KV's minimum expirationTtl) are written to memory only, so
+       // memory must be consulted before KV (TTLCache.get already honors expiry).
+       const inMemory = IN_MEMORY_CACHE.get(key);
+       if (inMemory !== undefined) return inMemory as T;
        if (kv) {
 	       try {
 		       const val = await kv.get(key, 'json');
