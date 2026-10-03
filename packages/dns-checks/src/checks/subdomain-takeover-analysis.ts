@@ -827,10 +827,18 @@ export async function scanSubdomainForTakeover(
  * text from a coverage claim to a sampling disclosure — the CNAME vector is always
  * swept in full regardless.
  */
-export function getNoTakeoverFinding(domain: string, options?: { aRecordVectorSampled?: boolean }): Finding {
-	const aRecordCoverage = options?.aRecordVectorSampled
-		? 'checked on a sampled subset of them'
-		: 'checked on every one of them';
+export function getNoTakeoverFinding(domain: string, options?: { aRecordVectorSampled?: boolean; sweep?: SweepDescriptor }): Finding {
+	const aRecordCoverage = options?.aRecordVectorSampled ? 'checked on a sampled subset of them' : 'checked on every one of them';
+	const sweep = options?.sweep;
+	// #1201: state the denominator — how many names the all-clear is a claim about, and
+	// whose list they came from — instead of "the known/active subdomains".
+	const swept = sweep
+		? `the ${sweep.sweptCount} subdomains swept (${sweep.sweepSource === 'caller' ? 'caller-supplied' : 'built-in'} list)`
+		: 'the known/active subdomains swept by this check';
+	const truncation =
+		sweep?.truncatedTo !== undefined
+			? ` The caller-supplied list exceeded the ${sweep.truncatedTo}-name cap and was truncated to the first ${sweep.truncatedTo} unique names; the remainder were not swept, so this is a partial answer and is not cached.`
+			: '';
 	return createTakeoverFinding(
 		'No dangling CNAME records found',
 		'info',
@@ -839,8 +847,28 @@ export function getNoTakeoverFinding(domain: string, options?: { aRecordVectorSa
 		// State the coverage rather than the absence: dangling CNAMEs against a known
 		// third-party service list, plus the Cloudways unmapped-domain HTTP fingerprint
 		// on A/AAAA-only hosts (or a disclosed sample of them, see `aRecordVectorSampled`).
-		`No dangling CNAME records or unclaimed shared-hosting A/AAAA records were found for ${domain} among the known/active subdomains swept by this check. Coverage is limited to CNAME targets on a known third-party service list, checked on every swept subdomain, and the Cloudways unmapped-domain HTTP fingerprint on A/AAAA-only hosts, ${aRecordCoverage}; other takeover vectors are not modelled.`,
+		`No dangling CNAME records or unclaimed shared-hosting A/AAAA records were found for ${domain} among ${swept}. Coverage is limited to CNAME targets on a known third-party service list, checked on every swept subdomain, and the Cloudways unmapped-domain HTTP fingerprint on A/AAAA-only hosts, ${aRecordCoverage}; other takeover vectors are not modelled.${truncation}`,
 		'not_exploitable',
 		['no_takeover_signals_detected'],
+		sweep ? { ...sweep } : {},
 	);
+}
+
+/**
+ * #1201 — the sweep denominator, stamped into the metadata of every finding
+ * `checkSubdomainTakeover` returns so a reader can tell what an all-clear (or a
+ * finding list) was drawn from. Optional keys are ABSENT, never `undefined`/0, when
+ * they do not apply.
+ */
+export interface SweepDescriptor {
+	/** How many subdomains were actually swept. */
+	sweptCount: number;
+	/** Whose list: the caller's `subdomains`, or the built-in `KNOWN_SUBDOMAINS`. */
+	sweepSource: 'caller' | 'builtin';
+	/** Raw length of the caller list as received (before trim/dedupe/cap). Caller sweeps only. */
+	requestedCount?: number;
+	/** The cap the deduped caller list was cut to. Set only when it exceeded the cap. */
+	truncatedTo?: number;
+	/** The A/AAAA-vector sample cap. Set only when it actually cut the sweep short. */
+	aRecordVectorSampledTo?: number;
 }
