@@ -58,6 +58,7 @@ import {
 import { createDiscoveryDnsContext, type DiscoveryDnsContext } from '../tenants/discovery/dns-context';
 import type { OutputFormat } from '../handlers/tool-args';
 import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from '../lib/scoring';
+import type { CtCoverage } from '../lib/ct-coverage';
 import { sanitizeOutputText } from '../lib/output-sanitize';
 import { isSubdomainOf } from '../lib/sanitize';
 import { generateMarkovLookalikes } from './markov-generator';
@@ -197,6 +198,21 @@ const DEFAULT_SIGNAL_CONFIDENCE: Record<DiscoverSignal, number> = {
 /** Threshold above which a candidate is considered auto-include rather than review. */
 const AUTO_INCLUDE_THRESHOLD = 0.85;
 
+/**
+ * Whole-call budget (ms) handed to the SAN correlator by the first-order `san`
+ * arm. The correlator splits it between crt.sh and its Certspotter failover
+ * (#1189), so this is the one number the arm and the correlator agree on.
+ */
+const SAN_FIRST_ORDER_BUDGET_MS = 15_000;
+
+/**
+ * Total wall-clock budget (ms) of the second-order `san_recursive` arm. The same
+ * constant is the per-candidate correlator `timeoutMs`, which
+ * `correlateSansRecursive` clamps to the remaining arm budget — a candidate can
+ * therefore never be granted more time than the arm has left (#1189).
+ */
+const SAN_RECURSIVE_BUDGET_MS = 15_000;
+
 /** Per-candidate aggregation state during collection. */
 interface CandidateAggregator {
 	domain: string;
@@ -279,6 +295,11 @@ export interface DiscoverBrandDomainsOptions {
 	 * back to (rate-limited) direct crt.sh, which errors for large brands.
 	 */
 	certstreamAuthToken?: string;
+	/**
+	 * SSLMate Cert Spotter API token. Threaded into the SAN correlator's Certspotter
+	 * failover (used only when crt.sh could not answer). Absent → unauthenticated.
+	 */
+	certspotterToken?: string;
 	/**
 	 * Abort signal — checked at major phase boundaries (post-allSettled, before
 	 * recursive SAN expansion) so that a budget-exceeded consumer can interrupt
@@ -1221,6 +1242,10 @@ export async function discoverBrandDomains(
 
 	// Captured first-order SAN hits — fed into the second-order recursive pass below.
 	let firstOrderSanCandidates: string[] = [];
+	// What the first-order SAN correlator actually asked (#1189): without it an
+	// empty SAN result cannot be told apart from "crt.sh throttled, Certspotter
+	// restricted / not consulted".
+	let sanCoverage: CtCoverage | undefined;
 
 	if (signals.includes('san')) {
 		jobs.push({
@@ -1232,6 +1257,8 @@ export async function discoverBrandDomains(
 						d.correlateSans(seedDomain, {
 							...(options.certstream ? { certstream: options.certstream } : {}),
 							...(options.certstreamAuthToken ? { certstreamAuthToken: options.certstreamAuthToken } : {}),
+							...(options.certspotterToken ? { certspotterToken: options.certspotterToken } : {}),
+							timeoutMs: SAN_FIRST_ORDER_BUDGET_MS,
 							signal: options.signal,
 						}),
 					(value) => value.queryStatus,
@@ -1242,6 +1269,7 @@ export async function discoverBrandDomains(
 					return;
 				}
 				signalStatus.san = { status: out.value.queryStatus };
+				sanCoverage = out.value.coverage;
 				firstOrderSanCandidates = out.value.coOwnedDomains.slice();
 				for (const dom of out.value.coOwnedDomains) {
 					addObservation(aggregator, dom, 'san', DEFAULT_SIGNAL_CONFIDENCE.san, {
@@ -1583,6 +1611,8 @@ export async function discoverBrandDomains(
 					d.correlateSansRecursive(seedDomain, firstOrderSanCandidates, {
 						certstream: options.certstream,
 						certstreamAuthToken: options.certstreamAuthToken,
+						...(options.certspotterToken ? { certspotterToken: options.certspotterToken } : {}),
+						timeoutMs: SAN_RECURSIVE_BUDGET_MS,
 						// Caps tightened (2026-05-19) to fit Cloudflare Worker CPU budget.
 						// Each candidate triggers a fresh crt.sh fetch (~200KB-2MB JSON parse
 						// for tier-1 brands), so 20 candidates × 8 concurrency was the single
@@ -1590,7 +1620,7 @@ export async function discoverBrandDomains(
 						// the remaining 11 signal probes + RDAP enrichment.
 						maxCandidates: 10,
 						concurrency: 4,
-						totalBudgetMs: 15_000,
+						totalBudgetMs: SAN_RECURSIVE_BUDGET_MS,
 						signal: options.signal,
 					}),
 				(value) => (value.queryStatus === 'budget_exceeded' ? 'partial' : value.queryStatus),
@@ -1813,6 +1843,8 @@ export async function discoverBrandDomains(
 			summary: true,
 			signals,
 			signalStatus,
+			// Additive (#1189): the CT sources the first-order SAN signal consulted.
+			...(sanCoverage ? { sanCoverage } : {}),
 			minConfidence,
 			totalAggregated: aggregator.size,
 			surfaced: candidateFindings.length,

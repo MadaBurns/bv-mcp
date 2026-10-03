@@ -11,6 +11,7 @@
  * spec file only declare the mocks that differ from baseline.
  */
 
+import { buildCtCoverage } from '../../src/lib/ct-coverage';
 import { vi } from 'vitest';
 import type {
 	SanCorrelationResult,
@@ -33,7 +34,7 @@ export const VERY_STALE_FRESHNESS = {
 };
 
 export function okSan(coOwned: string[]): SanCorrelationResult {
-	return { seedDomain: 'example.com', coOwnedDomains: coOwned, certIds: [], queryStatus: 'ok' };
+	return { seedDomain: 'example.com', coOwnedDomains: coOwned, certIds: [], queryStatus: 'ok', coverage: buildCtCoverage([]) };
 }
 
 export function okNs(domains: Array<{ domain: string; confidence: number }>): NsCorrelationResult {

@@ -789,6 +789,7 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 					min_confidence: args.min_confidence as number | undefined,
 					certstream: ro?.certstream,
 					certstreamAuthToken: ro?.certstreamAuthToken,
+					...(ro?.certspotterToken && { certspotterToken: ro.certspotterToken }),
 					deadlineMs,
 					signal: AbortSignal.timeout(DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS),
 				},
