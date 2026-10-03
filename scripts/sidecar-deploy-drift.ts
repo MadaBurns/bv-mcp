@@ -37,14 +37,14 @@ export interface SidecarTarget {
 	worker: string;
 	/**
 	 * Repo-relative config that declares this Worker (shown in the block message; the audit proves it
-	 * exists and names `worker`). A Wrangler jsonc for bv-whois; `cloudflare.config.ts` for the
-	 * `cf migrate` package bv-infra-probe, which Wrangler itself cannot load.
+	 * exists and names `worker`). Both sidecars are `cf migrate` packages, so this is each package's
+	 * `cloudflare.config.ts`, which Wrangler itself cannot load.
 	 */
 	configPath: string;
 	/**
-	 * How `wrangler deployments list --json` is told which Worker to read: `['--config', <jsonc>]`
-	 * when a Wrangler config names it, `['--name', <worker>]` when only a cf config does (measured on
-	 * wrangler 4.143.0: `--config <cloudflare.config.ts>` fails with "You need to provide a name").
+	 * How `wrangler deployments list --json` is told which Worker to read: `['--name', <worker>]` for a
+	 * cf config (measured on wrangler 4.143.0: `--config <cloudflare.config.ts>` fails with "You need to
+	 * provide a name"), or `['--config', <jsonc>]` when a Wrangler config names the Worker.
 	 */
 	deploymentsSelector: readonly string[];
 	/**
@@ -67,15 +67,20 @@ export interface SidecarTarget {
 export const SIDECAR_TARGETS: readonly SidecarTarget[] = [
 	{
 		worker: 'bv-whois',
-		configPath: 'packages/bv-whois/wrangler.jsonc',
-		deploymentsSelector: ['--config', 'packages/bv-whois/wrangler.jsonc'],
+		configPath: 'packages/bv-whois/cloudflare.config.ts',
+		// The name is pinned here, next to the config, and the audit proves it equals the `name` in
+		// cloudflare.config.ts — so the read and the `cf deploy` write cannot disagree about the Worker.
+		deploymentsSelector: ['--name', 'bv-whois'],
 		// #981 item 3: bv-whois imports `@blackveil/dns-checks/whois`, so a change
 		// under that vendored subtree changes the deployed bundle without touching
 		// `packages/bv-whois/src` at all. The config and package manifest are
 		// watched too — the #881/#883 dependency bumps there were themselves
-		// undeployed source changes this gate could not see.
+		// undeployed source changes this gate could not see. `wrangler.jsonc` stays watched as the
+		// test-only config; the cf config and its wrangler.config.ts are the deploy inputs now.
 		watchPaths: [
 			'packages/bv-whois/src',
+			'packages/bv-whois/cloudflare.config.ts',
+			'packages/bv-whois/wrangler.config.ts',
 			'packages/bv-whois/wrangler.jsonc',
 			'packages/bv-whois/package.json',
 			'packages/dns-checks/src/whois',

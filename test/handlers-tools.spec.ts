@@ -1252,3 +1252,127 @@ describe('handleToolsCall - check_dkim cache key per selector', () => {
 		expect(keyArray.some((k: string) => k.includes('selector2'))).toBe(true);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// SQ-268 / #1128 — NXDOMAIN gate: check_mta_sts / check_bimi / check_tlsrpt + probe cost
+// ---------------------------------------------------------------------------
+
+describe('SQ-268 NXDOMAIN gate — check_mta_sts / check_bimi / check_tlsrpt and probe cost', () => {
+	const NEWLY_GATED: Array<[tool: string, category: string]> = [
+		['check_mta_sts', 'mta_sts'],
+		['check_bimi', 'bimi'],
+		['check_tlsrpt', 'tlsrpt'],
+	];
+
+	let seq = 0;
+	/** Unique per case so the in-memory check cache can never serve a prior case. */
+	function freshDomain(tag: string): string {
+		seq += 1;
+		return `nx268-${tag.replace(/_/g, '-')}-${seq}-${Date.now()}.com`;
+	}
+
+	function urlOf(input: string | URL | Request): string {
+		return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+	}
+
+	/** Every DNS name answers `rcode` (empty); every HTTPS fetch gets a Cloudflare 530 (a non-existent host). */
+	function mockEveryName(rcode: number) {
+		const fetchMock = vi.fn().mockImplementation((input: string | URL | Request) => {
+			if (urlOf(input).includes('name=')) return Promise.resolve(createDohResponse([], [], { status: rcode }));
+			return Promise.resolve(new Response('origin DNS error', { status: 530 }));
+		});
+		globalThis.fetch = fetchMock;
+		return fetchMock;
+	}
+
+	/** A resolving apex: NS answered at `domain`, empty NOERROR for every other name. */
+	function mockResolving(domain: string) {
+		const fetchMock = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = urlOf(input);
+			if (url.includes('name=')) {
+				if (url.includes('type=NS') && url.includes(`name=${domain}&`)) {
+					return Promise.resolve(nsResponse(domain, ['ns1.example.net.', 'ns2.example.net.']));
+				}
+				return Promise.resolve(createDohResponse([], []));
+			}
+			return Promise.resolve(new Response('ok', { status: 200 }));
+		});
+		globalThis.fetch = fetchMock;
+		return fetchMock;
+	}
+
+	async function callCapturing(name: string, args: Record<string, unknown>) {
+		const { handleToolsCall } = await import('../src/handlers/tools');
+		let captured: import('../src/lib/scoring').CheckResult | undefined;
+		const out = await handleToolsCall({ name, arguments: args }, undefined, {
+			resultCapture: (r: import('../src/lib/scoring').CheckResult) => {
+				captured = r;
+			},
+		});
+		expect(captured, `${name} did not reach resultCapture`).toBeDefined();
+		return { result: captured!, out };
+	}
+
+	const isAbstention = (r: import('../src/lib/scoring').CheckResult) =>
+		r.findings.some((f) => f.metadata?.notAssessedReason === 'domain_does_not_resolve');
+
+	it('NXDOMAIN_GATED_TOOLS lists the three newly gated checks with their categories', async () => {
+		const { NXDOMAIN_GATED_TOOLS } = await import('../src/handlers/tools');
+		for (const [tool, category] of NEWLY_GATED) expect(NXDOMAIN_GATED_TOOLS[tool]).toBe(category);
+	});
+
+	it.each(NEWLY_GATED)('%s on an NXDOMAIN apex → not-assessed, no absence finding', async (tool, category) => {
+		const domain = freshDomain(tool);
+		mockEveryName(3);
+		const { result } = await callCapturing(tool, { domain });
+
+		expect(result.category).toBe(category);
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+		expect(result.findings).toHaveLength(1);
+		const [finding] = result.findings;
+		expect(finding.severity).toBe('info');
+		expect(finding.detail).toContain(`${domain} does not resolve (NXDOMAIN)`);
+		expect(finding.metadata?.missingControl).toBeUndefined();
+		expect(finding.metadata?.notAssessedReason).toBe('domain_does_not_resolve');
+	});
+
+	it.each(NEWLY_GATED)('%s on a resolving apex runs the check unchanged (control)', async (tool, category) => {
+		const domain = freshDomain(`ok-${tool}`);
+		mockResolving(domain);
+		const { result } = await callCapturing(tool, { domain });
+		expect(isAbstention(result)).toBe(false);
+		expect(result.category).toBe(category);
+		// The check ran against an empty record set: a measured result, not the abstention shape.
+		expect(result.findings.some((f) => f.metadata?.domainResolves === false)).toBe(false);
+	});
+
+	it.each(NEWLY_GATED)('%s on a SERVFAIL apex still falls through to the check (only NXDOMAIN abstains)', async (tool) => {
+		const domain = freshDomain(`sf-${tool}`);
+		mockEveryName(2);
+		const { result } = await callCapturing(tool, { domain });
+		expect(isAbstention(result)).toBe(false);
+	});
+
+	it('the probe never fans out to a secondary resolver (one primary NS query on an NXDOMAIN apex)', async () => {
+		const domain = freshDomain('cost');
+		const fetchMock = mockEveryName(3);
+		await callCapturing('check_spf', { domain });
+		const urls = fetchMock.mock.calls.map((c) => urlOf(c[0] as string));
+		expect(urls).toHaveLength(1);
+		expect(urls[0]).toContain('cloudflare-dns.com');
+		expect(urls[0]).toContain('type=NS');
+	});
+
+	it('check_ns reuses the probe NS answer: the apex NS name is queried once, not twice', async () => {
+		const domain = freshDomain('reuse');
+		const fetchMock = mockResolving(domain);
+		await callCapturing('check_ns', { domain });
+		const apexNsQueries = fetchMock.mock.calls
+			.map((c) => urlOf(c[0] as string))
+			.filter((u) => u.includes('type=NS') && u.includes(`name=${domain}&`));
+		expect(apexNsQueries).toHaveLength(1);
+	});
+});

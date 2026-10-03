@@ -561,3 +561,75 @@ describe('probeAuthoritativeDns', () => {
 		expect(evidence.errors).toBeUndefined();
 	});
 });
+
+describe('probeAuthoritativeDns lane budget with active probes (SQ-241)', () => {
+	const BUDGET_MS = 300;
+	// Timer jitter allowance only — far below the overrun the stacked AXFR waits produced.
+	const EPSILON_MS = 75;
+
+	/** Mirrors `openDnsTcpSession`: one deadline fixed at open, shared by every query on it. */
+	function deadlineBoundSession(timeoutMs: number) {
+		const deadline = Date.now() + timeoutMs;
+		return {
+			query: vi.fn(async (name: string, type: number) => {
+				if (Date.now() >= deadline) throw new Error('DNS TCP session deadline exceeded');
+				await new Promise((resolve) => setTimeout(resolve, 5));
+				if (type === RecordType.SOA) return response({ aa: true, answers: [{ name, type: RecordType.SOA, data: '2026092901' }] });
+				return response({ aa: true });
+			}),
+			close: vi.fn(async () => undefined),
+		};
+	}
+
+	/** An AXFR socket whose handshake is slow and whose server then never sends a byte. */
+	function stallingAxfrSocket(options: { openedAfterMs: number; closeNeverSettles?: boolean }) {
+		return {
+			opened: new Promise((resolve) => setTimeout(resolve, options.openedAfterMs)),
+			readable: new ReadableStream<Uint8Array>(),
+			writable: new WritableStream<Uint8Array>(),
+			close: vi.fn(() => (options.closeNeverSettles ? new Promise<void>(() => undefined) : Promise.resolve())),
+		};
+	}
+
+	const recursiveQuery = vi.fn(async (name: string, type: string) => (name === 'example.com' && type === 'NS' ? ['ns1.example.com'] : []));
+	const resolveAddresses = vi.fn(async (_nameserver: string, type: 'A' | 'AAAA') => (type === 'A' ? ['1.1.1.1'] : []));
+	const openSession = vi.fn(async (_address: string, timeoutMs: number) => deadlineBoundSession(timeoutMs));
+
+	it('settles within budgetMs when a slow AXFR handshake is followed by a silent server, keeping the passive evidence', async () => {
+		const axfrSocket = stallingAxfrSocket({ openedAfterMs: 200 });
+		const openAxfrSocket = vi.fn(async () => axfrSocket);
+
+		const startedAt = Date.now();
+		const evidence = await probeAuthoritativeDns(
+			'example.com',
+			{ recursiveQuery, resolveAddresses, openSession, openAxfrSocket },
+			{ activeProbes: true, budgetMs: BUDGET_MS },
+		);
+		const elapsedMs = Date.now() - startedAt;
+
+		expect(openAxfrSocket).toHaveBeenCalledTimes(1);
+		expect(elapsedMs).toBeLessThanOrEqual(BUDGET_MS + EPSILON_MS);
+		// The unanswered AXFR is unmeasured — never a verdict — and the passive evidence stands.
+		expect(evidence.zoneTransfer).toBeUndefined();
+		expect(evidence.authoritative?.aaFlag).toBe(true);
+		expect(evidence.soaSerial).toEqual({ serialsByNameserver: { 'ns1.example.com': 2026092901 }, consistent: true });
+		expect(evidence.errors).toBeUndefined();
+		expect(axfrSocket.close).toHaveBeenCalledTimes(1);
+	});
+
+	it('settles within budgetMs even when closing the stalled AXFR socket never completes', async () => {
+		const axfrSocket = stallingAxfrSocket({ openedAfterMs: 0, closeNeverSettles: true });
+		const openAxfrSocket = vi.fn(async () => axfrSocket);
+
+		const startedAt = Date.now();
+		const outcome = await Promise.race([
+			probeAuthoritativeDns('example.com', { recursiveQuery, resolveAddresses, openSession, openAxfrSocket }, { activeProbes: true, budgetMs: BUDGET_MS }),
+			new Promise<'still pending'>((resolve) => setTimeout(() => resolve('still pending'), BUDGET_MS + 500)),
+		]);
+		const elapsedMs = Date.now() - startedAt;
+
+		expect(outcome).not.toBe('still pending');
+		expect(elapsedMs).toBeLessThanOrEqual(BUDGET_MS + EPSILON_MS);
+		expect(axfrSocket.close).toHaveBeenCalledTimes(1);
+	});
+});

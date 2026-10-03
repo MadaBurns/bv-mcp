@@ -5,19 +5,24 @@ import mainWranglerSource from '../../wrangler.jsonc?raw';
 import whoisWranglerSource from '../../packages/bv-whois/wrangler.jsonc?raw';
 import infraProbeCfConfigSource from '../../packages/bv-infra-probe/cloudflare.config.ts?raw';
 import infraProbeWranglerToolingSource from '../../packages/bv-infra-probe/wrangler.config.ts?raw';
+import whoisCfConfigSource from '../../packages/bv-whois/cloudflare.config.ts?raw';
+import whoisWranglerToolingSource from '../../packages/bv-whois/wrangler.config.ts?raw';
 import packageLockSource from '../../package-lock.json?raw';
 import deployWorkflowSource from '../../.github/workflows/deploy-prod.yml?raw';
 
 interface WranglerConfig {
 	name?: string;
 	compatibility_date?: string;
+	compatibility_flags?: string[];
 	workers_dev?: boolean;
 	preview_urls?: boolean;
 	services?: Array<{ binding?: string; service?: string }>;
+	kv_namespaces?: Array<{ binding?: string; id?: string }>;
 }
 
 const mainConfig = JSON.parse(mainWranglerSource) as WranglerConfig;
-const whoisConfig = JSON.parse(whoisWranglerSource) as WranglerConfig;
+// bv-whois/wrangler.jsonc carries leading `//` comment lines (test-only config note), which JSON.parse rejects.
+const whoisConfig = JSON.parse(whoisWranglerSource.replace(/^\s*\/\/.*$/gm, '')) as WranglerConfig;
 
 describe('infra probe wrangler wiring', () => {
 	it('keeps the bv-whois sidecar off public workers.dev and preview routes', () => {
@@ -50,6 +55,9 @@ describe('infra probe wrangler wiring', () => {
 		it('declares no bindings or triggers (the probe is called only via the service binding, with no cron)', () => {
 			expect(infraProbeCfConfigSource).not.toMatch(/\bbindings\./);
 			expect(infraProbeCfConfigSource).not.toMatch(/\btriggers\./);
+			// Raw-object-literal form: cf's schema keeps bindings under `env:` and triggers under `triggers:`.
+			expect(infraProbeCfConfigSource).not.toMatch(/\benv\s*:/);
+			expect(infraProbeCfConfigSource).not.toMatch(/\btriggers\s*:/);
 		});
 
 		it('points at the entry that stays in the main Worker tree', () => {
@@ -65,6 +73,58 @@ describe('infra probe wrangler wiring', () => {
 		// hold; if a bump makes it match, it re-hoists and `cf build` fails with "wrangler ... is not installed".
 		it('keeps a nested wrangler install so cf can discover it', () => {
 			expect(packageLockSource).toContain('"packages/bv-infra-probe/node_modules/wrangler"');
+		});
+	});
+
+	// `deploy:whois` runs `cf deploy` from packages/bv-whois/. cloudflare.config.ts is the deploy config; wrangler.jsonc stays
+	// as the TEST-ONLY config (cloudflareTest cannot load a cf config), so the two must agree on everything that matters at runtime.
+	describe('packages/bv-whois/cloudflare.config.ts (cf deploy) parity with wrangler.jsonc', () => {
+		const cfName = /\bname:\s*['"]([^'"]+)['"]/.exec(whoisCfConfigSource)?.[1];
+		const cfCompatibilityDate = /\bcompatibilityDate:\s*['"]([^'"]+)['"]/.exec(whoisCfConfigSource)?.[1];
+		const cfFlags = [...(/\bcompatibilityFlags:\s*\[([^\]]*)\]/.exec(whoisCfConfigSource)?.[1] ?? '').matchAll(/['"]([^'"]+)['"]/g)].map(
+			(m) => m[1],
+		);
+		const cfKv = /\b(\w+):\s*bindings\.kv\(\s*\{\s*id:\s*['"]([^'"]+)['"]/.exec(whoisCfConfigSource);
+		const jsoncKv = whoisConfig.kv_namespaces?.[0];
+
+		it('deploys the same Worker name as the test config', () => {
+			expect(cfName).toBe('bv-whois');
+			expect(cfName).toBe(whoisConfig.name);
+		});
+
+		it('keeps the same compatibility date as the test config and the MCP worker', () => {
+			expect(cfCompatibilityDate).toBe(whoisConfig.compatibility_date);
+			expect(cfCompatibilityDate).toBe(mainConfig.compatibility_date);
+		});
+
+		it('carries both compatibility flags of the test config', () => {
+			expect(whoisConfig.compatibility_flags).toEqual(expect.arrayContaining(['global_fetch_strictly_public', 'nodejs_compat']));
+			expect([...cfFlags].sort()).toEqual([...(whoisConfig.compatibility_flags ?? [])].sort());
+		});
+
+		it('declares the WHOIS_CACHE KV binding with the same id as the test config', () => {
+			expect(whoisConfig.kv_namespaces).toHaveLength(1);
+			expect(jsoncKv?.binding).toBe('WHOIS_CACHE');
+			expect(cfKv?.[1]).toBe(jsoncKv?.binding);
+			expect(cfKv?.[2]).toBe(jsoncKv?.id);
+		});
+
+		it('stays off public workers.dev and preview routes', () => {
+			expect(whoisCfConfigSource).toMatch(/\bworkersDev:\s*false\b/);
+			expect(whoisCfConfigSource).toMatch(/\bpreviewUrls:\s*false\b/);
+		});
+
+		it('points at the same entry as the test config', () => {
+			expect(whoisCfConfigSource).toMatch(/\bentrypoint:\s*['"]src\/index\.ts['"]/);
+		});
+
+		it('uploads source maps via the wrangler tooling config', () => {
+			expect(whoisWranglerToolingSource).toMatch(/\buploadSourceMaps:\s*true\b/);
+		});
+
+		// Same constraint as bv-infra-probe: cf finds wrangler only at <package>/node_modules/wrangler.
+		it('keeps a nested wrangler install so cf can discover it', () => {
+			expect(packageLockSource).toContain('"packages/bv-whois/node_modules/wrangler"');
 		});
 	});
 

@@ -251,8 +251,15 @@ export async function isRevoked(
 		throw new StrongStateUnavailableError('token revocation check');
 	}
 	if (!legacyRevoked) return false;
-	const migrated = await setMarkerWithCoordinator(key, Date.now() + OAUTH_JWT_TTL_SECONDS * 1000, quotaCoordinator);
-	if (!isMarkerResult(migrated) || !migrated.present) throw new StrongStateUnavailableError('token revocation migration');
+	// The KV mirror already proves this token revoked, so the answer is `true` regardless of whether
+	// copying the entry into strong state succeeds. The migration write is best-effort: a throwing DO
+	// or a malformed reply must not turn a known-revoked token into a 503 (or a swallowed raw error);
+	// the next check simply retries the migration while the KV entry lives.
+	try {
+		await setMarkerWithCoordinator(key, Date.now() + OAUTH_JWT_TTL_SECONDS * 1000, quotaCoordinator);
+	} catch {
+		// Best-effort; see above.
+	}
 	return true;
 }
 

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { type Finding, createFinding } from '../scoring';
+import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 import type { DelegationConsistencyEvidence } from './delegation-types';
 
 function canonical(values: string[]): string {
@@ -51,13 +52,18 @@ export function analyzeDelegationConsistency(evidence: DelegationConsistencyEvid
 		.map((observation) => observation.nameserver);
 	if (nonAuthoritative.length > 0) {
 		failedChecks.push('authoritative_aa');
+		const nonAuthoritativeList = nonAuthoritative.join(', ');
 		findings.push(
 			createFinding(
 				'ns',
 				'Delegated nameserver is not authoritative',
 				'high',
-				`The parent delegates ${evidence.hostname} to ${nonAuthoritative.join(', ')}, but direct RD=0 queries did not return the authoritative AA flag. Remove stale registrar delegation entries or provision the zone on those nameservers.`,
-				{ nonAuthoritativeNameservers: nonAuthoritative, evidenceMode: 'direct_dns_tcp' },
+				`The parent delegates ${evidence.hostname} to ${nonAuthoritativeList}, but direct RD=0 queries did not return the authoritative AA flag. Remove stale registrar delegation entries or provision the zone on those nameservers.`,
+				{
+					nonAuthoritativeNameservers: nonAuthoritative,
+					evidenceMode: 'direct_dns_tcp',
+					[SUBJECT_TERMS_METADATA_KEY]: [evidence.hostname, nonAuthoritativeList],
+				},
 			),
 		);
 	}
@@ -67,16 +73,18 @@ export function analyzeDelegationConsistency(evidence: DelegationConsistencyEvid
 	);
 	if (childMismatches.length > 0) {
 		failedChecks.push('parent_child_ns_match');
+		const mismatchedNameservers = childMismatches.map((observation) => observation.nameserver).join(', ');
 		findings.push(
 			createFinding(
 				'ns',
 				'Parent and child NS sets do not match',
 				'high',
-				`The parent delegation for ${evidence.hostname} does not match the NS set published by ${childMismatches.map((observation) => observation.nameserver).join(', ')}. Resolvers may use stale or unintended authoritative servers until both sides are aligned.`,
+				`The parent delegation for ${evidence.hostname} does not match the NS set published by ${mismatchedNameservers}. Resolvers may use stale or unintended authoritative servers until both sides are aligned.`,
 				{
 					parentNs: evidence.parentDelegationNs,
 					childObservations: childMismatches,
 					evidenceMode: 'direct_dns_tcp',
+					[SUBJECT_TERMS_METADATA_KEY]: [evidence.hostname, mismatchedNameservers],
 				},
 			),
 		);

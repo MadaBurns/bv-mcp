@@ -88,6 +88,24 @@ export interface QueryDnsOptions {
 	 * internal timeout still flows through the existing retry path.
 	 */
 	signal?: AbortSignal;
+	/**
+	 * Optional scan-scoped tally of PRIMARY resolver failures (SQ-209). When set,
+	 * `queryDns` increments it per primary attempt; the scan emits one summary row
+	 * from it. Pure instrumentation — never alters the query path.
+	 */
+	primaryFailureTally?: DohPrimaryFailureTally;
+}
+
+/** Counts of primary DoH attempts and failures by class (caller aborts excluded). */
+export interface DohPrimaryFailureTally {
+	/** Primary fetch attempts dispatched (denominator for the incident rate). */
+	attempts: number;
+	/** Attempts answered with HTTP >= 500. */
+	http5xx: number;
+	/** Attempts that rejected with a non-timeout, non-caller-abort network error. */
+	network: number;
+	/** Attempts that hit the per-fetch timeout. */
+	timeout: number;
 }
 
 /**

@@ -396,12 +396,21 @@ interface ToolRuntimeOptions {
 	 * Undefined on BSL self-hosts.
 	 */
 	tier2Lookup?: (domain: string) => Promise<import('../lib/brand-tier2-evidence').Tier2Result>;
+	/**
+	 * Per-call DNS query cache (`QueryDnsOptions.queryCache`). Set by the registry dispatch for an
+	 * NXDOMAIN-gated tool so the gate's apex NS probe and the check itself share one NS answer
+	 * (SQ-268). Never set by callers.
+	 */
+	dnsQueryCache?: QueryDnsOptions['queryCache'];
 }
 
 /** Build QueryDnsOptions for individual check calls from runtime options. */
 function buildDnsOptions(runtimeOptions?: ToolRuntimeOptions): QueryDnsOptions | undefined {
-	if (!runtimeOptions?.secondaryDoh) return undefined;
-	return { secondaryDoh: runtimeOptions.secondaryDoh };
+	if (!runtimeOptions?.secondaryDoh && !runtimeOptions?.dnsQueryCache) return undefined;
+	return {
+		...(runtimeOptions.secondaryDoh ? { secondaryDoh: runtimeOptions.secondaryDoh } : {}),
+		...(runtimeOptions.dnsQueryCache ? { queryCache: runtimeOptions.dnsQueryCache } : {}),
+	};
 }
 
 /**
@@ -502,8 +511,11 @@ interface ToolRegistryEntry {
  * data exists independently of DNS delegation), `check_dbl` / `check_rbl` /
  * `check_realtime_threat_feed` / `check_fast_flux` (reputation of the NAME, listed or
  * not, whether or not it currently resolves), and the rest of the registry, which #1128
- * observed already abstaining or staying neutral on an NXDOMAIN. Tools outside the
- * registry (`check_resolver_consistency`, the composites) are not on this path.
+ * observed already abstaining or staying neutral on an NXDOMAIN. `check_mta_sts`,
+ * `check_bimi` and `check_tlsrpt` were NOT in that group — each emits an absence
+ * finding on an NXDOMAIN — and are gated since SQ-268. Tools outside the registry are
+ * not on this path: `check_resolver_consistency` is not gated, and the composites
+ * (`assess_spoofability`, `simulate_attack_paths`) apply the same predicate themselves.
  */
 export const NXDOMAIN_GATED_TOOLS: Readonly<Record<string, CheckCategory>> = {
 	check_spf: 'spf',
@@ -517,6 +529,9 @@ export const NXDOMAIN_GATED_TOOLS: Readonly<Record<string, CheckCategory>> = {
 	check_zone_hygiene: 'zone_hygiene',
 	check_subdomain_takeover: 'subdomain_takeover',
 	check_ssl: 'ssl',
+	check_mta_sts: 'mta_sts',
+	check_bimi: 'bimi',
+	check_tlsrpt: 'tlsrpt',
 };
 
 /**
@@ -1394,10 +1409,15 @@ export async function handleToolsCall(
 				// does not cache its non-resolving result either). A probe failure or SERVFAIL
 				// falls through to the check unchanged (fail-open).
 				const nxdomainCategory = nxdomainGateCategory(name, validatedArgs);
-				const runRegisteredTool = async (): Promise<CheckResult> =>
-					nxdomainCategory && (await isNonResolvingApex(validDomain, buildDnsOptions(runtimeOptions)))
+				const runRegisteredTool = async (): Promise<CheckResult> => {
+					if (!nxdomainCategory) return registeredTool.execute(validDomain, validatedArgs, runtimeOptions);
+					// One per-call cache shared by the probe and the check, so check_ns / check_dnssec /
+					// check_zone_hygiene reuse the probe's apex NS answer (SQ-268 F3).
+					const gatedOptions: ToolRuntimeOptions = { ...runtimeOptions, dnsQueryCache: new Map() };
+					return (await isNonResolvingApex(validDomain, buildDnsOptions(gatedOptions)))
 						? buildNonResolvingCheckResult(nxdomainCategory, validDomain)
-						: registeredTool.execute(validDomain, validatedArgs, runtimeOptions);
+						: registeredTool.execute(validDomain, validatedArgs, gatedOptions);
+				};
 				if (registeredTool.cacheable === false) {
 					result = await runRegisteredTool();
 				} else {
@@ -2017,9 +2037,15 @@ export async function handleToolsCall(
 				}
 				case 'simulate_attack_paths': {
 					const result = await simulateAttackPaths(validDomain, buildDnsOptions(runtimeOptions));
-					logResult = `${result.totalPaths} paths, risk: ${result.overallRisk}`;
+					logResult = result.overallRisk === null ? 'not assessed' : `${result.totalPaths} paths, risk: ${result.overallRisk}`;
 					logDetails = { totalPaths: result.totalPaths, overallRisk: result.overallRisk };
-					logToolSuccess({ ...ctx(), status: result.overallRisk === 'low' ? 'pass' : 'fail', logResult, logDetails, severity: 'info' });
+					logToolSuccess({
+						...ctx(),
+						status: result.overallRisk === null ? 'inconclusive' : result.overallRisk === 'low' ? 'pass' : 'fail',
+						logResult,
+						logDetails,
+						severity: 'info',
+					});
 					return buildToolResult(formatAttackPaths(result, effectiveFormat), result, effectiveFormat);
 				}
 				case 'query_signins': {

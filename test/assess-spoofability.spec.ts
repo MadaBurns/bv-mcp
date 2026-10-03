@@ -445,3 +445,93 @@ describe('formatSpoofability', () => {
 		expect(compact).not.toContain('#');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// SQ-268 / #1128 — the NXDOMAIN gate also covers this composite
+// ---------------------------------------------------------------------------
+
+describe('assessSpoofability — non-resolving apex (SQ-268)', () => {
+	function urlOf(input: string | URL | Request): string {
+		return typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+	}
+
+	/** Every DoH name answers `rcode` with an empty answer set. Returns the mock so calls can be inspected. */
+	function mockEveryName(rcode: number) {
+		const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(createDohResponse([], [], { status: rcode })));
+		globalThis.fetch = fetchMock;
+		return fetchMock;
+	}
+
+	const txtQueries = (fetchMock: ReturnType<typeof vi.fn>) =>
+		fetchMock.mock.calls.map((c) => urlOf(c[0] as string)).filter((u) => u.includes('type=TXT'));
+
+	it('NXDOMAIN → not assessed: no score, no risk level, no measured control, no TXT lookup', async () => {
+		const fetchMock = mockEveryName(3);
+		const { assessSpoofability } = await import('../src/tools/assess-spoofability');
+		const result = await assessSpoofability('nx-spoof-268.example');
+
+		expect(result.evidenceInsufficient).toBe(true);
+		expect(result.notAssessedReason).toBe('domain_does_not_resolve');
+		expect(result.spoofabilityScore).toBeNull();
+		expect(result.riskLevel).not.toBe('critical');
+		expect(result.riskLevel).toBeNull();
+		expect(result.spfProtection).toBeNull();
+		expect(result.dmarcProtection).toBeNull();
+		expect(result.dkimProtection).toBeNull();
+		for (const control of Object.values(result.controls)) {
+			expect(control.status).toBe('unmeasured');
+			expect(control.score).toBeNull();
+			expect(control.reason).toContain('does not resolve (NXDOMAIN)');
+		}
+		expect(result.summary).toContain('does not resolve (NXDOMAIN)');
+		// The auth checks never ran, so nothing was scored as an absent record.
+		expect(txtQueries(fetchMock)).toHaveLength(0);
+	});
+
+	it('NXDOMAIN → the probe skips the secondary-resolver confirmation (one primary query, no secondary fan-out)', async () => {
+		const fetchMock = mockEveryName(3);
+		const { assessSpoofability } = await import('../src/tools/assess-spoofability');
+		await assessSpoofability('nx-spoof-268-cost.example');
+		const urls = fetchMock.mock.calls.map((c) => urlOf(c[0] as string));
+		expect(urls).toHaveLength(1);
+		expect(urls[0]).toContain('cloudflare-dns.com');
+	});
+
+	it('resolving control: an answered apex NS is measured exactly as before', async () => {
+		mockEmailAuth({ spf: null, dmarc: null, dkim: false });
+		const inner = globalThis.fetch;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+			const u = new URL(urlOf(input));
+			if (requestedType(u) === 2) {
+				return Promise.resolve(
+					createDohResponse([{ name: 'example.com', type: 2 }], [{ name: 'example.com', type: 2, TTL: 300, data: 'ns1.example.net.' }]),
+				);
+			}
+			return (inner as typeof fetch)(input, init);
+		});
+		const { assessSpoofability } = await import('../src/tools/assess-spoofability');
+		const result = await assessSpoofability('example.com');
+		expect(result.notAssessedReason).toBeUndefined();
+		expect(result.evidenceInsufficient).toBe(false);
+		expect(result.spoofabilityScore).toBeGreaterThanOrEqual(70);
+		expect(result.spfProtection).toBe(0);
+		expect(result.dmarcProtection).toBe(0);
+	});
+
+	it('SERVFAIL apex falls through to the measured path (only NXDOMAIN abstains)', async () => {
+		const fetchMock = mockEveryName(2);
+		const { assessSpoofability } = await import('../src/tools/assess-spoofability');
+		const result = await assessSpoofability('sf-spoof-268.example');
+		expect(result.notAssessedReason).toBeUndefined();
+		expect(txtQueries(fetchMock).length).toBeGreaterThan(0);
+	});
+
+	it('a transport failure on the probe falls through to the measured path (fail-open)', async () => {
+		const fetchMock = vi.fn().mockRejectedValue(new Error('network down'));
+		globalThis.fetch = fetchMock;
+		const { assessSpoofability } = await import('../src/tools/assess-spoofability');
+		const result = await assessSpoofability('down-spoof-268.example');
+		expect(result.notAssessedReason).toBeUndefined();
+		expect(txtQueries(fetchMock).length).toBeGreaterThan(0);
+	});
+});

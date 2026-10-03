@@ -1,3 +1,5 @@
+// TEST-ONLY config: cloudflareTest's `wrangler.configPath` loads this file (it cannot load a cf config). Deploy goes through cf:
+// `npm -w packages/bv-whois run deploy` uses cloudflare.config.ts. Keep the two in sync (asserted by test/audits/infra-probe-wrangler.audit.test.ts).
 {
 	"$schema": "../../node_modules/wrangler/config-schema.json",
 	"name": "bv-whois",

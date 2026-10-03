@@ -6,7 +6,7 @@
  * Two jobs:
  *
  * 1. Pin the CLI shell's process contract — it must issue a READ-ONLY
- *    `wrangler deployments list --json --config <path>` and nothing else, and a
+ *    `wrangler deployments list --json` (selected by `--name` or `--config`) and nothing else, and a
  *    failed probe must block. The gate's value is entirely in what it refuses,
  *    so an argv drift that turned it into a no-op would be invisible otherwise.
  * 2. Prove `SIDECAR_TARGETS` is a true SSOT against the filesystem — every
@@ -55,7 +55,7 @@ function fakeSpawn(handler: (command: string, args: string[]) => SpawnResult) {
 const OK_DEPLOYMENTS = JSON.stringify([{ id: 'v1', created_on: '2026-05-20T22:01:09.022895Z' }]);
 
 describe('sidecar drift CLI — process contract', () => {
-	it('issues exactly the read-only `wrangler deployments list --json --config <path>`', () => {
+	it('reads bv-whois by its explicit pinned `--name` (read-only `wrangler deployments list --json`)', () => {
 		const spawn = fakeSpawn((command) => ({
 			status: 0,
 			stdout: command === 'npx' ? OK_DEPLOYMENTS : '',
@@ -66,14 +66,14 @@ describe('sidecar drift CLI — process contract', () => {
 
 		const [command, args] = spawn.mock.calls[0]!;
 		expect(command).toBe('npx');
-		expect(args).toEqual(['wrangler', 'deployments', 'list', '--json', '--config', WHOIS.configPath]);
-		// Explicitly: nothing that mutates, and bv-whois reads through its config —
-		// the same file its deploy command uses, so the read and the write can
-		// never disagree about which Worker this is.
+		expect(args).toEqual(['wrangler', 'deployments', 'list', '--json', '--name', 'bv-whois']);
+		// Explicitly: nothing that mutates. The name is pinned next to the cf config and the SSOT audit
+		// below proves it equals the config's `name`, so the read and the `cf deploy` write cannot
+		// disagree about which Worker this is.
+		expect(args).not.toContain('--config');
 		expect(args).not.toContain('deploy');
 		expect(args).not.toContain('upload');
 		expect(args).not.toContain('versions');
-		expect(args).not.toContain('--name');
 	});
 
 	it('reads bv-infra-probe by its explicit pinned `--name` (Wrangler cannot load its cf config)', () => {
@@ -445,7 +445,10 @@ describe('SIDECAR_TARGETS is an SSOT against the filesystem', () => {
 			const name = wranglerName(path);
 			// Overlay/example fragments carry no `name` and are not deployable alone.
 			if (name === undefined || name === MAIN_WORKER_NAME) return false;
-			return !SIDECAR_TARGETS.some((target) => target.configPath === path);
+			// Match by WORKER NAME, not path: a sidecar can have several tracked configs naming it (bv-whois
+			// keeps wrangler.jsonc as its test-only config beside cloudflare.config.ts). A Worker that is
+			// not listed still fails.
+			return !SIDECAR_TARGETS.some((target) => target.worker === name);
 		});
 
 		expect(unmanaged, `add these Workers to SIDECAR_TARGETS in scripts/sidecar-deploy-drift.ts: ${unmanaged.join(', ')}`).toEqual([]);

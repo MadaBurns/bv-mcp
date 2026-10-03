@@ -94,8 +94,9 @@ not append `--json`; there is no such flag. Install once per machine, then
 `cf auth login` (device flow; it does NOT reuse the wrangler OAuth token).
 
 **Rule: until Phase 5 of `docs/superpowers/plans/2026-09-29-cf-cli-migration.md`
-lands, `cf` is read/query tooling here. The deploy door is still
-`npm run deploy:prod` (wrangler).** `cf build`/`cf deploy` read
+lands, `cf` is read/query tooling for the MCP Worker. The deploy door is still
+`npm run deploy:prod` (wrangler); only the two sidecars (`deploy:infra-probe`,
+`deploy:whois`) deploy via `cf deploy`.** `cf build`/`cf deploy` read
 `./cloudflare.config.ts`, which this repo does not have yet; running them at
 the repo root fails harmlessly, but do not "fix" that by hand-writing one.
 
@@ -166,6 +167,19 @@ at `packages/bv-infra-probe/node_modules/wrangler`, so that package pins a wrang
 the root does not hold — bumping the pin to match the root re-hoists it and breaks
 `cf build`; the infra-probe audit asserts the nested lockfile entry).
 
+⚠️ Both sidecar chains run `check:release-integrity:sidecar` (`--mode sidecar`, SQ-242),
+NOT the tag-pinned `check:release-integrity` that `deploy:prod` uses: sidecars carry no
+release version, so sidecar mode keeps the dirty-tree check and drops the exact-tag and
+version-surface requirements (HEAD ⊇ origin/main is `check:deploy-freshness`, also in
+the chain). No `BV_ALLOW_UNPINNED_DEPLOY=1` is needed for a post-release sidecar deploy.
+
+`npm run deploy:whois` likewise runs `cf deploy` from `packages/bv-whois/` using its
+`cloudflare.config.ts`; `packages/bv-whois/wrangler.jsonc` is RETAINED as the vitest
+config only (an audit asserts parity with the cf config). Roll back with
+`npx wrangler rollback --name bv-whois`; the drift gate reads it via an explicit
+`--name bv-whois`; cf finds wrangler only at `packages/bv-whois/node_modules/wrangler`,
+so that package too pins a wrangler the root does not hold.
+
 ⚠️ **`ALERT_WEBHOOK_URL` is a Worker secret, not a `vars` entry (#1073).**
 `wrangler types --config wrangler.production.jsonc` (`check:bindings:prod`,
 run immediately after the injector) renders every plaintext var inline, so a
@@ -232,7 +246,7 @@ in "Binding notes" below.
 | `BV_DOH_ENDPOINT` / `BV_DOH_TOKEN`                                                 | Secret           | Optional secondary DoH. ⚠️ Both Secrets, never `vars`                                                                                       |
 | `CERTSPOTTER_TOKEN`                                                                | Secret           | Cert Spotter CT auth. Fail-soft; raises rate limits ONLY (15s timeout stays — #735)                                                         |
 | `BV_CERTSTREAM`                                                                    | Service          | CT logs: `/enumerate` + `/sans`; crt.sh fallback w/ jittered backoff                                                                        |
-| `BV_WHOIS`                                                                         | Service          | WHOIS/43 shim; optional, RDAP-only fallback. ⚠️ Sidecar Worker — `deploy:prod` does NOT deploy it (`npm run deploy:whois`)                  |
+| `BV_WHOIS`                                                                         | Service          | WHOIS/43 shim; optional, RDAP-only fallback. ⚠️ Sidecar Worker — `deploy:prod` does NOT deploy it (`npm run deploy:whois`, via cf)           |
 | `BV_INFRA_GRAPH` / `BV_INTEL_GATEWAY` / `BV_ENTERPRISE`                            | Service          | **Operator only.** Tier-1/2/0 `discovery_mode='tiered'` lookups; absent → classic sweep                                                     |
 | `BV_RECON` / `BV_RECON_KEY`                                                        | Service / Secret | **Operator only.** bv-recon behind the recon tools; fail-soft → `unprovisioned`                                                             |
 | `BV_TLS_PROBE` / `BV_TLS_PROBE_KEY`                                                | Service / Secret | **Operator only.** TLS-intercepted vantage — legacy-TLS enrichment (#910) and DANE pin verification (#906) are both disabled. |

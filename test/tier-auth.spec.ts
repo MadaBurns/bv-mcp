@@ -1083,4 +1083,146 @@ describe('tier-auth bearer JWT strong-state outage (SQ-234)', () => {
 		expect(result.authenticated).toBe(false);
 		expect(result.storageUnavailable).toBeUndefined();
 	});
+
+	// SQ-236: outage-path coverage for tokens the strong state (or its KV mirror) already
+	// proves are NOT valid. A known-bad token must stay a plain 401-shaped result — only a token
+	// whose validity is genuinely unknowable may become storageUnavailable (503).
+	type CoordinatorPayload = { kind: string };
+	type CoordinatorNamespace = DurableObjectNamespace<import('../src/lib/quota-coordinator').QuotaCoordinator>;
+
+	function fakeCoordinator(handler: (payload: CoordinatorPayload) => unknown): CoordinatorNamespace {
+		return {
+			getByName: () => ({ dispatch: async (payload: CoordinatorPayload) => handler(payload) }),
+		} as unknown as CoordinatorNamespace;
+	}
+
+	/** KV that holds only the legacy pre-strong-state revocation mirror entry for every jti. */
+	function legacyRevokedKv(): KVNamespace {
+		return {
+			get: async (key: string) => (key.includes(':revoked:') ? '1' : null),
+			put: async () => undefined,
+			delete: async () => undefined,
+			list: async () => ({ keys: [], list_complete: true, cursor: undefined }),
+		} as unknown as KVNamespace;
+	}
+
+	async function mintWithVersion(ver: number): Promise<string> {
+		const { signJwt, newJti } = await import('../src/oauth/jwt');
+		return signJwt(
+			{ sub: 'owner', jti: newJti(), tier: 'owner', client_id: 'test-client', ver },
+			{ secret: SECRET, ttlSeconds: 3600, issuer: ISSUER, audience: `${ISSUER}/mcp` },
+		);
+	}
+
+	it('a revoked token (strong marker present) stays a plain unauthenticated result even with SESSION_STORE rejecting', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			await mint(),
+			{
+				OAUTH_SIGNING_SECRET: SECRET,
+				OAUTH_ISSUER: ISSUER,
+				SESSION_STORE: rejectingKv(),
+				QUOTA_COORDINATOR: fakeCoordinator((payload) => (payload.kind === 'marker-has' ? { present: true } : undefined)),
+			},
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result.authenticated).toBe(false);
+		expect(result.storageUnavailable).toBeUndefined();
+	});
+
+	it('a legacy-revoked token stays revoked (not storageUnavailable) when the migration write throws', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			await mint(),
+			{
+				OAUTH_SIGNING_SECRET: SECRET,
+				OAUTH_ISSUER: ISSUER,
+				SESSION_STORE: legacyRevokedKv(),
+				QUOTA_COORDINATOR: fakeCoordinator((payload) => {
+					if (payload.kind === 'marker-has') return { present: false };
+					throw new Error('DO unavailable (SQ-236)');
+				}),
+			},
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result.authenticated).toBe(false);
+		expect(result.storageUnavailable).toBeUndefined();
+	});
+
+	it('a legacy-revoked token stays revoked (not storageUnavailable) when the migration write returns a malformed reply', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			await mint(),
+			{
+				OAUTH_SIGNING_SECRET: SECRET,
+				OAUTH_ISSUER: ISSUER,
+				SESSION_STORE: legacyRevokedKv(),
+				QUOTA_COORDINATOR: fakeCoordinator((payload) => (payload.kind === 'marker-has' ? { present: false } : { unexpected: true })),
+			},
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result.authenticated).toBe(false);
+		expect(result.storageUnavailable).toBeUndefined();
+	});
+
+	it('a legacy-revoked token is still migrated into strong state when the coordinator is healthy', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const kinds: string[] = [];
+		const result = await resolveTier(
+			await mint(),
+			{
+				OAUTH_SIGNING_SECRET: SECRET,
+				OAUTH_ISSUER: ISSUER,
+				SESSION_STORE: legacyRevokedKv(),
+				QUOTA_COORDINATOR: fakeCoordinator((payload) => {
+					kinds.push(payload.kind);
+					return { present: payload.kind === 'marker-set' };
+				}),
+			},
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result.authenticated).toBe(false);
+		expect(result.storageUnavailable).toBeUndefined();
+		expect(kinds).toContain('marker-set');
+	});
+
+	it('a stale token-version token is a plain unauthenticated result when the strong version store answers', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			await mintWithVersion(1),
+			{
+				OAUTH_SIGNING_SECRET: SECRET,
+				OAUTH_ISSUER: ISSUER,
+				SESSION_STORE: healthyKv(),
+				QUOTA_COORDINATOR: fakeCoordinator((payload) => (payload.kind === 'marker-has' ? { present: false } : { value: 2 })),
+			},
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result.authenticated).toBe(false);
+		expect(result.storageUnavailable).toBeUndefined();
+	});
+
+	it('a stale-version token whose version read fails is storageUnavailable, never authenticated', async () => {
+		const { resolveTier } = await import('../src/lib/tier-auth');
+		const result = await resolveTier(
+			await mintWithVersion(1),
+			{
+				OAUTH_SIGNING_SECRET: SECRET,
+				OAUTH_ISSUER: ISSUER,
+				SESSION_STORE: healthyKv(),
+				QUOTA_COORDINATOR: fakeCoordinator((payload) => {
+					if (payload.kind === 'marker-has') return { present: false };
+					throw new Error('DO unavailable (SQ-236)');
+				}),
+			},
+			undefined,
+			REQUEST_URL,
+		);
+		expect(result).toEqual({ authenticated: false, storageUnavailable: true });
+	});
 });

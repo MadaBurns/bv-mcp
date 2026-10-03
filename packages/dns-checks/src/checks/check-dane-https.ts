@@ -39,6 +39,8 @@ export async function checkDANEHTTPS(domain: string, queryDNS: DNSQueryFunction,
 	const rawQueryDNS = options?.rawQueryDNS;
 	const findings: Finding[] = [];
 	let hasDnssec = false;
+	// True when the AD lookup THREW (transport error / timeout): DNSSEC status was never measured.
+	let dnssecLookupFailed = false;
 
 	// Step 1: Check DNSSEC status for the domain
 	if (rawQueryDNS) {
@@ -46,7 +48,11 @@ export async function checkDANEHTTPS(domain: string, queryDNS: DNSQueryFunction,
 			const resp = await rawQueryDNS(domain, 'A', true, { timeout });
 			hasDnssec = resp.AD === true;
 		} catch {
-			// DNSSEC check failed — continue without it
+			// A THROWN AD lookup never got a resolver's answer, so DNSSEC status is UNKNOWN — not
+			// "unsigned". It must not reach `analyzeTlsaRecords` as `hasDnssec: false`, which would
+			// score a "DANE without DNSSEC" (high) from a cut probe (SQ-207). An answered AD=false
+			// does not throw and keeps that finding: it is a measured absence.
+			dnssecLookupFailed = true;
 		}
 	}
 
@@ -77,7 +83,20 @@ export async function checkDANEHTTPS(domain: string, queryDNS: DNSQueryFunction,
 
 	const hasHttpsTlsa = tlsaRecords.length > 0;
 	if (hasHttpsTlsa) {
-		findings.push(...analyzeTlsaRecords(tlsaRecords, tlsaName, hasDnssec, await resolveVerification(options)));
+		// An unmeasured DNSSEC status is passed as `true` ONLY to suppress the unsigned verdict
+		// (`hasDnssec` gates nothing else in the analyzer); the facet is reported honestly below.
+		findings.push(...analyzeTlsaRecords(tlsaRecords, tlsaName, hasDnssec || dnssecLookupFailed, await resolveVerification(options)));
+		if (dnssecLookupFailed) {
+			findings.push(
+				createFinding(
+					'dane_https',
+					'DNSSEC status not determined',
+					'info',
+					`The DNSSEC (AD) lookup for ${domain} failed before any resolver answered, so whether the TLSA record at ${tlsaName} is DNSSEC-validated could not be determined. This is not evidence that ${domain} is unsigned — no DNSSEC penalty is applied. Re-run the check once name resolution is working.`,
+					{ inconclusive: true, errorKind: 'dns_error' },
+				),
+			);
+		}
 	}
 
 	// Step 3: If no TLSA records found, classify absence
@@ -123,7 +142,8 @@ export async function checkDANEHTTPS(domain: string, queryDNS: DNSQueryFunction,
 			(f.metadata?.certificateProbe === 'pending' || f.metadata?.certificateProbe === 'failed') &&
 			isTransientDanePinReason(f.metadata?.notAssessedReason),
 	);
-	return retryable ? { ...result, partial: true } : result;
+	// A failed AD lookup likewise keeps the half-measured result out of the cache so it is re-tried.
+	return retryable || (dnssecLookupFailed && hasHttpsTlsa) ? { ...result, partial: true } : result;
 }
 
 /**
