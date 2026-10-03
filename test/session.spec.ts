@@ -16,6 +16,26 @@ afterEach(() => {
 });
 
 describe('session', () => {
+	it('evicts the in-memory session when a KV tombstone (cross-isolate delete) is observed, so it cannot revive after the tombstone expires', async () => {
+		const tombstones = new Set<string>();
+		const kv = {
+			get: vi.fn(async (key: string) => (tombstones.has(key) ? '1' : null)),
+			put: vi.fn(async () => undefined),
+			delete: vi.fn(async () => undefined),
+		} as unknown as KVNamespace;
+
+		// This isolate holds the session in memory; another isolate deleted it (KV tombstone only).
+		const id = await createSession(kv);
+		tombstones.add(`session-tombstone:${id}`);
+		expect(await validateSession(id, kv)).toBe(false);
+
+		// Tombstone TTL (10 min) lapses in KV and locally; session TTL (2h) has not.
+		tombstones.clear();
+		const now = Date.now();
+		vi.spyOn(Date, 'now').mockReturnValue(now + 11 * 60 * 1000);
+		expect(await validateSession(id, kv)).toBe(false);
+	});
+
 	it('uses KV-backed session lifecycle when SESSION_STORE is provided', async () => {
 		const kvStore = new Map<string, string>();
 		const kv = {

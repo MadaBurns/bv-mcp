@@ -187,7 +187,12 @@ export async function validateSession(id: string, kv?: KVNamespace): Promise<boo
 
 	// Check for explicit tombstone (session was deleted) — prevents revival after DELETE
 	if (isSessionTombstoned(id)) return false;
-	if (kv && (await isSessionTombstonedInKV(id, kv))) return false;
+	if (kv && (await isSessionTombstonedInKV(id, kv))) {
+		// Deleted on another isolate: evict any local copy (and tombstone locally) so the session
+		// cannot revive from this isolate's memory once the 10-minute KV tombstone expires.
+		deleteSessionInMemory(id);
+		return false;
+	}
 
 	// Check in-memory first (same-isolate fast path, avoids KV replication lag)
 	const inMemoryRecord = ACTIVE_SESSIONS.get(id);
