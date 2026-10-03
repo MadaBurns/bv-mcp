@@ -118,10 +118,20 @@
  * no candidate), SPF `include:` / HTTP redirect (free-text, deleted
  * 2026-07-27).
  *
- * CT SAN overlap (0 of 3300 crt.sh certs cover both apexes) is a different
- * class: NOT rejected on security grounds, but on a single-pair, single-backend,
- * apex-only coverage measurement whose query shape was not recorded at the
- * time. It is being re-measured (#1188, #1189).
+ * CT SAN co-listing is a third class of rejection, neither attacker-forgeable
+ * free text nor a coverage-measured absence: co-listing on a certificate that
+ * includes the seed proves only a common certificate BUYER, which may be a
+ * shared platform, not common ownership (a CA validates each name against
+ * whoever ordered the cert, e.g. a vendor the seed delegated to). Measured
+ * (SQ-302, 2026-10-04, #1188, #1189): a 2025 Amazon Trust Services cert lists
+ * 25 `csxd.<customer>` names across 23 registrable domains, co-listing
+ * `blackrock.com` with unrelated organisations; a 2015 shared Cloudflare cert
+ * carries 37 names across 19 domains. Issuer exclusion, fan-out caps and
+ * `san_recursive` mutual inclusion each fail as discriminators (the same
+ * shared cert answers both directions). The older "0 of 3300" figure was a
+ * crt.sh search artifact — `name_value` lists only query-matched names — and
+ * is not evidence either way. The signal is fetched by `discover_brand_domains`
+ * at weight 0.1 and is deliberately not an input here.
  *
  * Residual, stated not hidden: a seed that is itself a DMARC report-
  * processing PROVIDER (Agari/Valimail-shaped) publishes authorisation records
@@ -1191,7 +1201,7 @@ export type AttributionConfidence = 'corroborated' | 'single_signal' | 'uncorrob
  * long, OR an explicit corroborating signal supplied by the caller
  * (MX/SPF overlap with the primary domain is the one wired in this slice —
  * cert-SAN is fetched by `discover_brand_domains` but is deliberately not an
- * input to this function (whether it should be is open, #1188); page-content
+ * input to this function (common cert buyer is not common owner, #1188); page-content
  * corroboration is not wired in, since neither tool fetches it today). Below the threshold with no corroboration, a short
  * brand label (e.g. `bnz`, 3 characters) collides with too much unrelated
  * global DNS for a bare label match to mean anything on its own — see spec
