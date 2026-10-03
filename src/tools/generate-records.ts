@@ -29,8 +29,12 @@ export interface GeneratedRecord {
 
 // ─── SPF Record Generator ─────────────────────────────────────────────
 
-/** Well-known include domains for major email providers. */
-const KNOWN_SPF_INCLUDES: Record<string, string> = {
+/**
+ * Well-known include domains for major email providers. Exported so
+ * `test/audits/disposable-mx-providers.audit.test.ts` can pin that no provider
+ * recommended here is also a lookalike "disposable MX" corroborator (#1198).
+ */
+export const KNOWN_SPF_INCLUDES: Record<string, string> = {
 	'google': '_spf.google.com',
 	'google workspace': '_spf.google.com',
 	'microsoft': 'spf.protection.outlook.com',

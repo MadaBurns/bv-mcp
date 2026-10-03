@@ -912,7 +912,7 @@ describe('checkLookalikes - issue #264 severity calibration wiring', () => {
 	});
 
 	it('caps mail-infra + disposable MX at info despite calibrating internally to HIGH', async () => {
-		mockWithRdap({ mailDomain: 'tst.com', mxExchange: 'smtp.mailgun.org.', registrationDaysAgo: null });
+		mockWithRdap({ mailDomain: 'tst.com', mxExchange: 'smtp.mailinator.com.', registrationDaysAgo: null });
 		const result = await run('test.com');
 		const tstFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tst.com');
 		expect(tstFinding).toBeDefined();
@@ -1722,7 +1722,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 	 * The textbook pre-phishing setup the opus review proved Task 7 had made
 	 * invisible: a confusable label on unrelated nameservers (third_party) with
 	 * LIVE mail infrastructure on a disposable provider — the #264 matrix's HIGH
-	 * tier. `mailgun.org` is in DISPOSABLE_MX_PROVIDERS, so the HIGH is reached
+	 * tier. `mailinator.com` is in DISPOSABLE_MX_PROVIDERS, so the HIGH is reached
 	 * without needing an RDAP registration-age mock.
 	 */
 	function mockPrePhishingFixture(): void {
@@ -1736,7 +1736,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailinator.com.' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -1836,7 +1836,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
 					}
 					if (type === 'MX' || type === '15') {
-						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailinator.com.' }]));
 					}
 				}
 				// Every other permutation's lookup FAILS rather than answering empty.
@@ -1986,7 +1986,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 					// Live mail infra on a DISPOSABLE provider — the #264 HIGH tier.
 					// If ownership were ignored on the threat axis this would surface
 					// as a HIGH against the customer's own domain.
-					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailinator.com.' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -2213,7 +2213,7 @@ describe('checkLookalikes - Task 7b fix round 1 (RDAP org gating + scan_status a
 					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailinator.com.' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
