@@ -30,6 +30,8 @@ The package version is a **coordination signal, not a registry fact** (npm publi
 
 Re-verify: `git log --oneline -5 -- packages/dns-checks/package.json` should show one bump per scoring-affecting PR; `grep -n PARITY_CORPUS_VERSION packages/dns-checks/src/parity-fixtures.ts` must equal `packages/dns-checks/package.json`'s version.
 
+**CHANGELOG version axes (#1187).** The package and `SCORING_MODEL_VERSION` share the `1.x.0` namespace (a bare "1.38.0" has meant both), so every CHANGELOG line naming a version MUST name its axis: `dns-checks <X.Y.Z>` for the package, `scoring model <X.Y.Z>` for `SCORING_MODEL_VERSION`, `v<X.Y.Z>` for the Worker — never a bare `1.x.0`. A `## [x.y.z]` heading must correspond to a pushed tag + GitHub Release. Known gaps: `## [3.91.0]` is an orphan heading (no tag or Release; operator to confirm whether it was folded into 3.92.0) and `dns-checks-v1.52.0` is a tag without a Release. In-tree dns-checks 1.53.3–1.58.0 have no published artifact (cut via `dns-checks-release.yml`, operator step).
+
 ## Pre-bump locally before tagging
 
 Pre-bumping is **enforced, not merely advised**. `publish.yml`'s `version-bump` job is a read-only _verification gate_ (PR #632): it asserts `package.json`, `package-lock.json`, `server.json` (plus `packages[0].version` if that stanza ever returns) and the `CHANGELOG.md` heading already match the tag, and fails the release with a per-surface `::error::` if any disagree. It edits and pushes nothing. So do the bump first:
