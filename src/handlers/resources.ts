@@ -11,6 +11,7 @@
 
 import { TOOLS } from '../schemas/tool-definitions';
 import { INTERNAL_ONLY_TOOLS } from '../lib/config';
+import { SCAN_CATEGORIES } from '../tools/scan-domain';
 
 /** MCP Resource descriptor */
 interface McpResource {
@@ -76,7 +77,10 @@ const RESOURCES: McpResource[] = [
 const PUBLIC_TOOLS = TOOLS.filter((tool) => !INTERNAL_ONLY_TOOLS.has(tool.name));
 export const TOOL_COUNT = PUBLIC_TOOLS.length;
 export const CHECK_TOOL_COUNT = PUBLIC_TOOLS.filter((tool) => tool.name.startsWith('check_')).length;
-export const SCAN_CATEGORY_COUNT = TOOLS.filter((tool) => tool.scanIncluded).length;
+// Derived from the dispatch table `scan_domain` actually runs, NOT from `scanIncluded`: the
+// `subdomain_takeover` special slot is `scanIncluded: false` yet runs, so counting the flag
+// advertised 18 over a 19-category scan.
+export const SCAN_CATEGORY_COUNT = SCAN_CATEGORIES.length;
 
 /** Resource content keyed by URI */
 const RESOURCE_CONTENT: Record<string, string> = {
@@ -295,7 +299,9 @@ export function handleResourcesRead(params: Record<string, unknown>): {
 	if (typeof uri !== 'string') {
 		throw new Error('Missing required parameter: uri');
 	}
-	const content = RESOURCE_CONTENT[uri];
+	// Own-property check: a bare index would resolve `constructor` / `toString` / `__proto__`
+	// through Object.prototype and serve a non-string as a "resource".
+	const content = Object.hasOwn(RESOURCE_CONTENT, uri) ? RESOURCE_CONTENT[uri] : undefined;
 	if (!content) {
 		throw new Error(`Resource not found: ${uri}`);
 	}
