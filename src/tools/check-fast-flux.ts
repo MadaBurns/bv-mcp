@@ -15,6 +15,7 @@ import { queryDns } from '../lib/dns';
 import type { DnsAnswer, QueryDnsOptions } from '../lib/dns-types';
 import { callReconScan, isReconHit } from '../lib/recon-binding';
 import type { ReconBinding, BindingDegradationSink } from '../lib/recon-binding';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory, Finding } from '../lib/scoring';
 import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
@@ -29,6 +30,13 @@ const TYPE_AAAA = 28;
 interface RoundResult {
 	ips: string[];
 	minTtl: number;
+	/**
+	 * True when at least one of this round's queries completed, so `ips` is an
+	 * observation. A round whose queries all REJECTED carries `ips: []` too, and
+	 * conflating the two is what made this tool report a clean pass on a dead
+	 * resolver (#900).
+	 */
+	measured: boolean;
 }
 
 /**
@@ -75,25 +83,43 @@ export async function checkFastFlux(
 			const ips = answers.map((a) => a.data).sort();
 			const minTtl = answers.length > 0 ? Math.min(...answers.map((a) => a.TTL)) : Infinity;
 
-			roundResults.push({ ips, minTtl });
+			// `allSettled` above means a rejecting query never reaches the `catch`;
+			// the settled status is the only record of whether this round observed anything.
+			roundResults.push({ ips, minTtl, measured: aResult.status === 'fulfilled' || aaaaResult.status === 'fulfilled' });
 		} catch {
 			// Round failed entirely — record empty result
-			roundResults.push({ ips: [], minTtl: Infinity });
+			roundResults.push({ ips: [], minTtl: Infinity, measured: false });
 		}
 	}
 
-	// Check if all rounds failed
+	// Nothing was observed on any round: this is a resolver failure, not a measurement.
+	// Returning a scored result here would report `passed: true` for a control that never
+	// ran and cache the non-answer for the check's whole TTL (see CLAUDE.md #900).
+	if (roundResults.every((r) => !r.measured)) {
+		return buildDnsErrorResult(CATEGORY, 'Fast-flux', new Error(`DNS query failed: all ${effectiveRounds} rounds`));
+	}
+
+	// Rounds that resolved to at least one address — the only ones that can bound the TTL.
 	const successfulRounds = roundResults.filter((r) => r.ips.length > 0);
 	if (successfulRounds.length === 0) {
-		const findings: Finding[] = [
+		// Every round answered, and every answer was empty: the domain has no addresses,
+		// so it cannot be rotating them. That is a genuine non-flux measurement.
+		return buildCheckResult(CATEGORY, [
 			createFinding(
 				CATEGORY,
-				'DNS queries failed',
-				'medium',
-				`All ${effectiveRounds} query rounds failed for ${domain}. Unable to assess fast-flux behavior.`,
+				'Stable resolution — no fast-flux indicators',
+				'info',
+				`${domain} returned no A or AAAA addresses across ${effectiveRounds} rounds. No fast-flux behavior detected.`,
+				{
+					domain,
+					flux_detected: false,
+					unique_ips: 0,
+					ip_set_changes: 0,
+					min_ttl: null,
+					rounds: effectiveRounds,
+				},
 			),
-		];
-		return buildCheckResult(CATEGORY, findings) as CheckResult;
+		]) as CheckResult;
 	}
 
 	// Collect all unique IPs across all rounds
