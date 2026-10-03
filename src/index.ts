@@ -1853,9 +1853,46 @@ export default {
 		// counted here so the queue_batch AE row's failureCount reflects them even
 		// though handleScanQueue itself ack/retries per-message without throwing.
 		const scanQueueCounters = { poison: 0 };
+		// Messages this dispatch destroyed because a binding it needs is
+		// unprovisioned. Counted into the AE row's `failureCount` — NOT into
+		// `outcome`, which stays 'ok' because nothing threw and Cloudflare therefore
+		// will not redeliver. See `logBindingMissing` for why that field is the only
+		// channel an operator can alarm on.
+		let bindingDrops = 0;
+		/**
+		 * A queue whose bindings are missing cannot retry — it either acks (the
+		 * batch is destroyed) or defers the whole batch (nothing is lost yet).
+		 * Silent either way, this dispatch previously reported
+		 * `outcome='ok', failureCount=0`, so misconfiguration was indistinguishable
+		 * from an idle queue: `queryQueueFailures` (src/lib/analytics-queries.ts)
+		 * filters `HAVING error_batch_count > 0 OR failure_count > 0`, and
+		 * `queryRecentAnomalies` only sees `index1='tool_call'`, which a queue
+		 * invocation never writes. This emits the attribution the operator needs
+		 * (queue + binding + count) and the caller adds the alertable count.
+		 *
+		 * `action` is what tells an operator whether the backlog self-clears once
+		 * the binding is provisioned: `'retried'` does, `'acked'` does not — those
+		 * messages are gone and the audits have to be re-requested.
+		 *
+		 * `env` is read, never spread, so no binding value or secret can land in the
+		 * log line; `logEvent` additionally sanitizes `details`.
+		 */
+		const logBindingMissing = (queue: string, binding: string, count: number, action: 'acked' | 'retried'): void => {
+			logError(`Queue binding missing: ${binding}`, {
+				category: 'queue',
+				result: 'binding_missing',
+				severity: 'error',
+				details: { queue, binding, action, messageCount: count },
+			});
+		};
 		try {
 			if (batch.queue === 'async-batch-scan-queue') {
 				if (!env.SCAN_CACHE) {
+					// Deferred, not destroyed: `retryAll` redelivers, so this does NOT
+					// join `bindingDrops`. It still gets attributed — a queue that has
+					// been retrying every batch for a day is an outage nothing else
+					// reports.
+					logBindingMissing(batch.queue, 'SCAN_CACHE', batch.messages.length, 'retried');
 					batch.retryAll({ delaySeconds: 300 });
 					return;
 				}
@@ -1882,8 +1919,12 @@ export default {
 			if (batch.queue === 'brand-audit-queue') {
 				const db = env.BRAND_AUDIT_DB;
 				if (!db) {
-					// Binding missing — ack every message to avoid hot-looping. Operator
-					// must provision per docs/provisioning/brand-audit-bindings.md.
+					// Binding missing — ack every message to avoid hot-looping. The ack
+					// destroys the batch, so it is counted into `bindingDrops` (which the
+					// finally block reports as AE `failureCount`) and attributed in the log;
+					// see `logBindingMissing` for why `outcome` alone cannot carry this.
+					logBindingMissing(batch.queue, 'BRAND_AUDIT_DB', batch.messages.length, 'acked');
+					bindingDrops += batch.messages.length;
 					for (const m of batch.messages) m.ack();
 					return;
 				}
@@ -1946,7 +1987,14 @@ export default {
 				const db = env.BRAND_AUDIT_DB;
 				const bucket = env.BRAND_REPORTS;
 				if (!db || !bucket) {
-					// Required bindings missing — ack to avoid hot-looping.
+					// Required bindings missing — ack to avoid hot-looping, which destroys
+					// the render jobs. Named binding, counted loss (see above). Provisioning
+					// per docs/provisioning/brand-audit-bindings.md.
+					// Name every missing binding: reporting one of two would leave the
+					// operator provisioning in series, re-alerting after each fix.
+					const missing = [!db && 'BRAND_AUDIT_DB', !bucket && 'BRAND_REPORTS'].filter(Boolean).join('+');
+					logBindingMissing(batch.queue, missing, batch.messages.length, 'acked');
+					bindingDrops += batch.messages.length;
 					for (const m of batch.messages) m.ack();
 					return;
 				}
@@ -1975,7 +2023,11 @@ export default {
 				// Whole-batch throw → every message will be retried; report the batch
 				// size as the failure count. A clean dispatch reports its scanner-queue
 				// poison-message ack count (SQ-196), 0 for every other handler.
-				failureCount: queueOutcome === 'error' ? messageCount : scanQueueCounters.poison,
+				// Binding-missing acks join that same counter: they are per-message
+				// destroys without a throw, which is exactly the shape `queryQueueFailures`
+				// exists to catch, and `outcome` cannot represent it (nothing threw, so
+				// Cloudflare will not redeliver).
+				failureCount: queueOutcome === 'error' ? messageCount : scanQueueCounters.poison + bindingDrops,
 			});
 		}
 	},
