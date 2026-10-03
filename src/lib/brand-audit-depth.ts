@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import type { BrandAuditMetricsSummary } from './brand-audit-metrics';
+import type { SignalStatusValue } from '../tools/discover-brand-domains';
 
 export type RegistrarCoverageSource = 'rdap' | 'whois' | 'redacted' | 'notfound' | 'lookup_failed' | 'unknown';
 
@@ -60,6 +61,17 @@ function normalizeSignalStatus(status: string): NormalizedSignalStatus {
 	return 'failed';
 }
 
+/**
+ * `signalStatus` arrives as plain strings (the pipeline re-reads it from stored
+ * metadata, which can carry a status this build does not emit), so the INPUT stays
+ * `string`. The status being matched against is typed `SignalStatusValue`, so a
+ * misspelled literal at a call site fails typecheck instead of silently never
+ * matching (#1190).
+ */
+function hasStatus(entry: { status: string } | undefined, expected: SignalStatusValue): boolean {
+	return entry?.status === expected;
+}
+
 function signalNamesByStatus(
 	signalStatus: BrandAuditDepthInput['signalStatus'],
 	normalizedStatus: NormalizedSignalStatus,
@@ -97,23 +109,23 @@ export function buildBrandAuditDepthSummary(input: BrandAuditDepthInput): BrandA
 
 	const warnings: string[] = [];
 	const specificallyWarnedSignals = new Set<string>();
-	if (signalCoverage.partial > 0 && input.signalStatus.san?.status === 'partial') {
+	if (signalCoverage.partial > 0 && hasStatus(input.signalStatus.san, 'partial')) {
 		warnings.push('SAN signal returned partial results; certificate-derived sibling coverage is incomplete.');
 		specificallyWarnedSignals.add('san');
 	}
-	if (signalCoverage.partial > 0 && input.signalStatus.san?.status === 'rate_limited') {
+	if (signalCoverage.partial > 0 && hasStatus(input.signalStatus.san, 'rate_limited')) {
 		warnings.push('SAN signal was rate limited; certificate-derived sibling coverage is incomplete.');
 		specificallyWarnedSignals.add('san');
 	}
-	if (signalCoverage.partial > 0 && input.signalStatus.san_recursive?.status === 'partial') {
+	if (signalCoverage.partial > 0 && hasStatus(input.signalStatus.san_recursive, 'partial')) {
 		warnings.push('Recursive SAN signal returned partial results; mutual certificate confirmation coverage is incomplete.');
 		specificallyWarnedSignals.add('san_recursive');
 	}
-	if (input.signalStatus.san_recursive?.status === 'skipped_deadline') {
+	if (hasStatus(input.signalStatus.san_recursive, 'skipped_deadline')) {
 		warnings.push('Recursive SAN signal skipped to preserve audit deadline headroom; mutual certificate confirmation coverage is incomplete.');
 		specificallyWarnedSignals.add('san_recursive');
 	}
-	if (signalCoverage.timeout > 0 && input.signalStatus.san?.status === 'timeout') {
+	if (signalCoverage.timeout > 0 && hasStatus(input.signalStatus.san, 'timeout')) {
 		warnings.push('SAN signal timed out; certificate-derived sibling coverage is incomplete.');
 		specificallyWarnedSignals.add('san');
 	}

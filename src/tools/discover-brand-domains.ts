@@ -452,6 +452,37 @@ function addCandidateSeed(agg: Map<string, CandidateAggregator>, domain: string,
 /** Run a single signal handler, swallowing errors into a typed status report. */
 type SignalOutcome<R> = { ok: true; value: R } | { ok: false; error: string };
 
+/**
+ * Every status string `discoverBrandDomains` can put into `signalStatus[signal].status`
+ * or hand to `recordInstantPhase` (#1190). It is read off the emission sites, not
+ * invented: the module-derived members are the union of each detector's
+ * `queryStatus` (san-correlator, dmarc-rua-miner, spf-include-detector, ...), and the
+ * `skipped_*` members are this file's own skip branches. `budget_exceeded` is
+ * emitted by a detector but the recursive-SAN arm folds it to `partial` before it
+ * reaches `signalStatus`; it stays in the union because the other arms forward
+ * `queryStatus` verbatim. `skipped_no_handles` is a phase-only status
+ * (`bounty_scope` has no `signalStatus` row when the seed has no handles).
+ *
+ * Output schemas keep `status: z.string()` on purpose: a consumer must tolerate a
+ * status this build does not know. The union is an emitter-side contract, enforced
+ * by `test/audits/signal-status-vocabulary.audit.test.ts`.
+ */
+export type SignalStatusValue =
+	| 'ok'
+	| 'partial'
+	| 'failed'
+	| 'rate_limited'
+	| 'timeout'
+	| 'error'
+	| 'no_spf'
+	| 'no_dmarc'
+	| 'budget_exceeded'
+	| 'skipped_tiered'
+	| 'skipped_no_first_order'
+	| 'skipped_aborted'
+	| 'skipped_deadline'
+	| 'skipped_no_handles';
+
 async function runSignal<R>(fn: () => Promise<R>): Promise<SignalOutcome<R>> {
 	try {
 		const value = await fn();
@@ -666,6 +697,16 @@ export async function discoverBrandDomains(
 	const d: DiscoverBrandDomainsDeps = { ...defaultDeps(), ...(deps ?? {}) };
 	const now = options.now ?? Date.now;
 	const discoveryStartedAtMs = now();
+	// Minimum time that must remain before `options.deadlineMs` for the recursive-SAN
+	// arm to run at all (else `skipped_deadline`). UNDOCUMENTED — value predates this
+	// ticket (it arrived with the arm in #143 and carries no derivation); see #1190.
+	// It is NOT derivable from the arm's own budget (`totalBudgetMs: 15_000` below), and
+	// the cost of what runs after it (remaining signals, aggregation, RDAP enrichment) has
+	// not been measured here, so the value is left unchanged. Known consequence: the
+	// synchronous `discover_brand_domains` tool path sets a 24s deadline
+	// (DISCOVER_BRAND_DOMAINS_SYNC_BUDGET_MS in src/handlers/tools.ts), which is always
+	// below this gate, so that path skips this arm with `skipped_deadline` whenever it would
+	// otherwise run.
 	const RECURSIVE_SAN_MIN_DEADLINE_HEADROOM_MS = 70_000;
 	const deadlineRemainingMs = (): number | null => {
 		if (typeof options.deadlineMs !== 'number' || !Number.isFinite(options.deadlineMs)) return null;
@@ -830,7 +871,7 @@ export async function discoverBrandDomains(
 	const candidateUniverseStartedAtMs = await startPhase('candidate_universe', { depth });
 	const markovCandidates = d.generateMarkovLookalikes(seedDomain, depth === 'deep' ? 60 : 20);
 	let activeLookalikes: string[] = [];
-	const preSignalStatus: Record<string, { status: string; error?: string }> = {};
+	const preSignalStatus: Record<string, { status: SignalStatusValue; error?: string }> = {};
 	if (depth === 'deep') {
 		const activeStartedAtMs = await startPhase('active_lookalike');
 		const activeOut = await runSignal<CheckResult>(() => d.checkLookalikes(seedDomain));
@@ -1095,7 +1136,7 @@ export async function discoverBrandDomains(
 		});
 	}
 
-	const signalStatus: Record<string, { status: string; error?: string }> = { ...preSignalStatus };
+	const signalStatus: Record<string, { status: SignalStatusValue; error?: string }> = { ...preSignalStatus };
 
 	// Phase-5 ground-truth signals (app-links + bounty-scope). Their domains
 	// land directly in the aggregator as confidence-1.0 observations and join
@@ -1524,7 +1565,7 @@ export async function discoverBrandDomains(
 		// Tiered mode skipped the sweep entirely → nothing to do for san_recursive.
 		signalStatus.san_recursive ??= { status: 'skipped_tiered' };
 	} else if (options.signal?.aborted) {
-		signalStatus.san_recursive ??= { status: 'skipped_no_first_order' };
+		signalStatus.san_recursive ??= { status: 'skipped_aborted' };
 		await recordInstantPhase('san_recursive', 'skipped_aborted');
 	} else if (signals.includes('san_recursive') && firstOrderSanCandidates.length > 0) {
 		const remainingMs = deadlineRemainingMs();
