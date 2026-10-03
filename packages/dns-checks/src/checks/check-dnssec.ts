@@ -11,6 +11,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
 import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
+import { isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import { auditDnskeyAlgorithms, auditDsDigestTypes, auditNsec3Params } from './dnssec-analysis';
 import { isRegistryManagedDnssec } from './registry-managed-dnssec';
 
@@ -92,15 +93,22 @@ export async function checkDNSSEC(
 	let dnskeyQueryFailed = false;
 	let dsQueryFailed = false;
 
+	// A SERVFAIL/REFUSED answer is an EMPTY record set exactly like a NOERROR/NODATA one, but it
+	// measured nothing — a DNSSEC-bogus zone typically SERVFAILs its DNSKEY. It is recorded as a
+	// failed lookup (same as a throw) so the unmeasured-chain lane below owns it (SQ-279).
 	try {
-		dnskeyRecords = await queryDNS(target, 'DNSKEY', { timeout });
+		const dnskeyOutcome = await queryWithRcode(queryDNS, target, 'DNSKEY', timeout);
+		dnskeyRecords = dnskeyOutcome.records;
+		if (dnskeyRecords.length === 0 && isInconclusiveRcode(dnskeyOutcome.rcode)) dnskeyQueryFailed = true;
 	} catch {
 		// Non-critical: DNSKEY query failure — treat as absent
 		dnskeyQueryFailed = true;
 	}
 
 	try {
-		dsRecords = await queryDNS(target, 'DS', { timeout });
+		const dsOutcome = await queryWithRcode(queryDNS, target, 'DS', timeout);
+		dsRecords = dsOutcome.records;
+		if (dsRecords.length === 0 && isInconclusiveRcode(dsOutcome.rcode)) dsQueryFailed = true;
 	} catch {
 		// Non-critical: DS query failure — treat as absent
 		dsQueryFailed = true;
@@ -127,7 +135,7 @@ export async function checkDNSSEC(
 	}
 
 	// Consolidated finding logic
-	if (dnskeyRecords.length === 0 && dsRecords.length === 0) {
+	if (dnskeyRecords.length === 0 && dsRecords.length === 0 && !dnskeyQueryFailed && !dsQueryFailed) {
 		// Fully absent — HIGH severity, but the SCORE penalty is decoupled to −40 via
 		// `penaltyOverride`. NIST SP 800-81r3 (Mar 2026) makes DNSSEC a baseline
 		// deployment goal and RFC 9364 (BCP 237) states origin-authentication via DNSSEC
@@ -254,11 +262,14 @@ export async function checkDNSSEC(
 	// re-run the leg; `partial: true` is what `runCachedCheck`'s `!r.partial` predicate
 	// requires to keep a transient non-answer out of the 5-minute cache. Never
 	// `missingControl` — the probe did not complete (#638 law).
-	const chainUnmeasured =
-		(dsQueryFailed && dnskeyRecords.length > 0 && dsRecords.length === 0) ||
-		(dnskeyQueryFailed && dsRecords.length > 0 && dnskeyRecords.length === 0);
+	//
+	// A failed leg with NOTHING published on either side is also unmeasured: "DNSSEC not enabled"
+	// needs BOTH legs observed empty, and the gate on that branch above routes the failed-leg
+	// shape here instead (SQ-279). A failed leg beside a published one (e.g. DS failed while
+	// the DNSKEY answered) is the original shape this lane was built for.
+	const chainUnmeasured = (dsQueryFailed && dsRecords.length === 0) || (dnskeyQueryFailed && dnskeyRecords.length === 0);
 	if (chainUnmeasured) {
-		const unmeasuredLeg = dsQueryFailed ? 'DS' : 'DNSKEY';
+		const unmeasuredLeg = dsQueryFailed && dnskeyQueryFailed ? 'DS and DNSKEY' : dsQueryFailed ? 'DS' : 'DNSKEY';
 		findings.push(
 			createFinding(
 				'dnssec',
@@ -269,11 +280,12 @@ export async function checkDNSSEC(
 			),
 		);
 		return {
-			// `recordPresent` stays TRUE (material really was observed on the leg that
-			// answered), but `controlPresent` must be `undefined`, not `false`: `false` is
-			// a definitive "not doing work" observation, and one leg of this chain was
-			// never read. `undefined` is the contract's "could not be determined".
-			...buildCheckResult('dnssec', findings, undefined, true),
+			// `recordPresent` is TRUE when material really was observed on the leg that
+			// answered, and `undefined` when no leg published anything (both lookups failed:
+			// nothing was observed either way). `controlPresent` must be `undefined`, not
+			// `false`: `false` is a definitive "not doing work" observation, and one leg of
+			// this chain was never read. `undefined` is the contract's "could not be determined".
+			...buildCheckResult('dnssec', findings, undefined, dnskeyRecords.length > 0 || dsRecords.length > 0 ? true : undefined),
 			checkStatus: 'error',
 			score: 0,
 			passed: false,

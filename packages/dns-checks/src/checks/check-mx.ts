@@ -10,6 +10,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
+import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import {
 	getIpTargetFindings,
 	getLoopbackMxFinding,
@@ -34,7 +35,14 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 	const timeout = options?.timeout ?? 5000;
 	let answers: string[];
 	try {
-		answers = await queryDNS(domain, 'MX', { timeout });
+		const mxOutcome = await queryWithRcode(queryDNS, domain, 'MX', timeout);
+		// SERVFAIL/REFUSED arrive as an EMPTY answer set, byte-identical to a name that
+		// publishes no MX. Concluding "no MX" from it would file a spoofable-domain
+		// missingControl for a lookup that never concluded (SQ-279).
+		if (isInconclusiveRcode(mxOutcome.rcode)) {
+			return buildRcodeAbstentionResult('mx', 'MX', domain, 'MX', mxOutcome.rcode);
+		}
+		answers = mxOutcome.records;
 	} catch {
 		// Transient resolver failure — we could not MEASURE the mail-exchange posture. Mark the
 		// category INCONCLUSIVE (checkStatus) so the scoring engine renormalizes over the remaining
@@ -57,14 +65,29 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 		// domain with no MX AND no/soft SPF is genuinely spoofable (the real gap).
 		let spf = '';
 		try {
-			const txtRecords = await queryDNS(domain, 'TXT', { timeout });
-			spf = (txtRecords.find((r) => r.toLowerCase().startsWith('v=spf1')) ?? '').toLowerCase();
+			const txtOutcome = await queryWithRcode(queryDNS, domain, 'TXT', timeout);
+			spf = (txtOutcome.records.find((r) => r.toLowerCase().startsWith('v=spf1')) ?? '').toLowerCase();
+			// An unanswered SPF probe is not "no SPF": the no-MX verdict below cannot be
+			// reached from a TXT lookup that never concluded.
+			if (!spf && isInconclusiveRcode(txtOutcome.rcode)) {
+				return buildRcodeAbstentionResult('mx', 'MX', domain, 'TXT', txtOutcome.rcode);
+			}
 		} catch {
-			// TXT query failed — treat as no SPF.
+			return buildNotAssessedResult(
+				'mx',
+				createFinding(
+					'mx',
+					'MX records not assessed',
+					'info',
+					`Could not query the SPF (TXT) record for ${domain} due to a transient DNS failure, so the no-MX posture could not be classified; this control was not assessed.`,
+					{ inconclusive: true, errorKind: 'dns_error' },
+				),
+			);
 		}
 
 		let finding: Finding;
-		if (spf.includes('-all')) {
+		// Anchored to the `all` TERM: a substring test matched `include:-all.example`.
+		if (spf.split(/\s+/).includes('-all')) {
 			finding = createFinding(
 				'mx',
 				'Correctly-configured non-mail domain',
@@ -125,19 +148,22 @@ export async function checkMX(domain: string, queryDNS: DNSQueryFunction, option
 	const hostnameRecords = routableRecords.filter((r) => !ipPattern.test(r.exchange));
 	const resolutions = await Promise.all(
 		hostnameRecords.map(async (r) => {
-			try {
-				const [a, aaaa] = await Promise.all([
-					queryDNS(r.exchange, 'A', { timeout }).catch(() => []),
-					queryDNS(r.exchange, 'AAAA', { timeout }).catch(() => []),
-				]);
-				return { record: r, resolved: a.length > 0 || aaaa.length > 0 };
-			} catch {
-				return { record: r, resolved: false };
-			}
+			// A lookup that THREW or answered SERVFAIL/REFUSED measured nothing about the target, so
+			// it can only support "resolves" — never "dangling" (SQ-279; a timeout is not absence).
+			const probe = async (type: 'A' | 'AAAA'): Promise<{ resolved: boolean; unmeasured: boolean }> => {
+				try {
+					const outcome = await queryWithRcode(queryDNS, r.exchange, type, timeout);
+					return { resolved: outcome.records.length > 0, unmeasured: isInconclusiveRcode(outcome.rcode) };
+				} catch {
+					return { resolved: false, unmeasured: true };
+				}
+			};
+			const [a, aaaa] = await Promise.all([probe('A'), probe('AAAA')]);
+			return { record: r, resolved: a.resolved || aaaa.resolved, unmeasured: a.unmeasured || aaaa.unmeasured };
 		}),
 	);
-	for (const { record, resolved } of resolutions) {
-		if (!resolved) {
+	for (const { record, resolved, unmeasured } of resolutions) {
+		if (!resolved && !unmeasured) {
 			findings.push(
 				createFinding(
 					'mx',

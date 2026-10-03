@@ -848,6 +848,8 @@ const ADDRESSED: ParityDohResponse = { status: RCODE_NOERROR, answers: [{ type: 
 const REGISTERED_ZONE: ParityDohResponse = { status: RCODE_NOERROR, answers: [{ type: 2, data: 'ns1.registrar.example.' }] };
 const NXDOMAIN: ParityDohResponse = { status: RCODE_NXDOMAIN, answers: [] };
 const SERVFAIL: ParityDohResponse = { status: RCODE_SERVFAIL, answers: [] };
+/** NOERROR with no answers — the name exists but publishes no record of this type. */
+const NODATA: ParityDohResponse = { status: RCODE_NOERROR, answers: [] };
 
 export const NS_PARITY_FIXTURES: NsParityFixture[] = [
 	{
@@ -885,12 +887,31 @@ export const NS_PARITY_FIXTURES: NsParityFixture[] = [
 	},
 	{
 		// Same lameness, same `critical`, same category score — and deliberately NOT
-		// `verified`. SERVFAIL is the resolver failing, not proof the name is unregistered,
-		// and the base domain is owned. Stamping this `verified` would publish a hijack
-		// claim from evidence that does not exist. The pair is the drift alarm: if these two
-		// fixtures ever agree on confidence, the claimability gate has been removed.
+		// `verified`. The dead host answers NOERROR/NODATA (it exists, it just has no address)
+		// and the base domain is owned, so nothing proves the name is unregistered. Stamping
+		// this `verified` would publish a hijack claim from evidence that does not exist. The
+		// pair is the drift alarm: if these two fixtures ever agree on confidence, the
+		// claimability gate has been removed.
 		check: 'ns',
 		name: 'partial lame delegation, dead NS base domain REGISTERED (not shown claimable → deterministic)',
+		domain: 'example.com',
+		ns: ['ns1.alpha.example', 'ns2.provider.example'],
+		doh: {
+			'example.com': { SOA: HEALTHY_SOA },
+			'ns1.alpha.example': { A: ADDRESSED },
+			'ns2.provider.example': { A: NODATA, AAAA: NODATA },
+			'provider.example': { NS: REGISTERED_ZONE },
+		},
+		expectedScore: 60,
+		expectedMissingControl: false,
+		expectedLameConfidence: 'deterministic',
+	},
+	{
+		// SQ-279: a SERVFAIL on the host's A and AAAA is the resolver failing — it measured
+		// NOTHING about the nameserver, so it is neither lame nor claimable. Before the fix this
+		// was read as `no_address` and filed as the same critical lame delegation as above.
+		check: 'ns',
+		name: 'nameserver host A/AAAA SERVFAIL (unmeasured, not lame)',
 		domain: 'example.com',
 		ns: ['ns1.alpha.example', 'ns2.provider.example'],
 		doh: {
@@ -899,8 +920,8 @@ export const NS_PARITY_FIXTURES: NsParityFixture[] = [
 			'ns2.provider.example': { A: SERVFAIL, AAAA: SERVFAIL },
 			'provider.example': { NS: REGISTERED_ZONE },
 		},
-		expectedScore: 60,
+		expectedScore: 100,
 		expectedMissingControl: false,
-		expectedLameConfidence: 'deterministic',
+		expectedLameConfidence: null,
 	},
 ];

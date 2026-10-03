@@ -10,41 +10,34 @@ import {
 	FindingConfidenceSchema,
 	CategoryTierSchema,
 } from '../schemas/scoring';
+import { CATEGORY_TIERS } from '../types';
 
 describe('CheckCategorySchema', () => {
 	it('accepts all valid categories', () => {
-		const categories = [
-			'spf',
-			'dmarc',
-			'dkim',
-			'dnssec',
-			'ssl',
-			'mta_sts',
-			'ns',
-			'caa',
-			'subdomain_takeover',
-			'mx',
-			'bimi',
-			'tlsrpt',
-			'lookalikes',
-			'shadow_domains',
-			'txt_hygiene',
-			'http_security',
-			'dane',
-			'ptr',
-			'mx_reputation',
-			'srv',
-			'zone_hygiene',
-			'dane_https',
-			'svcb_https',
-			'subdomailing',
-			'brand_discovery',
-			'authoritative_dns_infra',
-		];
+		// Derived from CATEGORY_TIERS, which is typed `Record<CheckCategory, CategoryTier>`: the
+		// compiler forces its keys to equal the `CheckCategory` union in types.ts, so this list
+		// cannot drift from the union the way a hand-copied one did (`dnskey_strength` was
+		// missing from the schema, and every result for that check failed validation — SQ-279).
+		const categories = Object.keys(CATEGORY_TIERS);
+		expect(categories).toContain('dnskey_strength');
 		for (const cat of categories) {
 			const result = CheckCategorySchema.safeParse(cat);
 			expect(result.success, `expected '${cat}' to be valid`).toBe(true);
 		}
+	});
+
+	it('is in exact parity with the CheckCategory union (no stale extras either)', () => {
+		expect([...CheckCategorySchema.options].sort()).toEqual(Object.keys(CATEGORY_TIERS).sort());
+	});
+
+	it('validates a dnskey_strength CheckResult', () => {
+		const result = CheckResultSchema.safeParse({
+			category: 'dnskey_strength',
+			passed: true,
+			score: 100,
+			findings: [],
+		});
+		expect(result.success).toBe(true);
 	});
 
 	it('rejects unknown categories', () => {

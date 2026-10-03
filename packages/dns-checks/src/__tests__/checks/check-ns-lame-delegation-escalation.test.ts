@@ -34,7 +34,6 @@ import { scoreIndicatesMissingControl } from '../../scoring';
 import type { Finding, RawDNSResponse } from '../../types';
 
 const RCODE_NOERROR = 0;
-const RCODE_SERVFAIL = 2;
 const RCODE_NXDOMAIN = 3;
 
 const A_ANSWER = { type: 1, data: '192.0.2.1' };
@@ -101,17 +100,19 @@ describe('claimability gate on the partial lame-delegation finding', () => {
 	});
 
 	it('keeps deterministic confidence for a lame-but-not-shown-claimable nameserver', async () => {
-		// ns2.provider.example is address-less because its A/AAAA lookups SERVFAIL. The
-		// delegation is lame — but SERVFAIL is a resolver failure, not proof the name is
-		// unregistered, and the base domain provider.example is registered. Nothing here
+		// ns2.provider.example is address-less because its A/AAAA lookups answer NOERROR
+		// with no records (NODATA). The delegation is lame — but that is not proof the name
+		// is unregistered, and the base domain provider.example is registered. Nothing here
 		// shows an attacker could claim it, so nothing may be attested as `verified`.
+		// (A SERVFAIL on those lookups is NOT this shape: it is unmeasured, not lame — see
+		// `ns-lame-delegation.test.ts`, SQ-279 item 2.)
 		const { queryDNS, rawQueryDNS } = resolvers(
 			['ns1.healthy.example', 'ns2.provider.example'],
 			{
 				'ns1.healthy.example': { A: { Status: RCODE_NOERROR, Answer: [A_ANSWER] } },
 				'ns2.provider.example': {
-					A: { Status: RCODE_SERVFAIL, Answer: [] },
-					AAAA: { Status: RCODE_SERVFAIL, Answer: [] },
+					A: { Status: RCODE_NOERROR, Answer: [] },
+					AAAA: { Status: RCODE_NOERROR, Answer: [] },
 				},
 				'provider.example': { NS: { Status: RCODE_NOERROR, Answer: [NS_ANSWER] } },
 			},
