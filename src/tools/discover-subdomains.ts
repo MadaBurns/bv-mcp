@@ -1266,11 +1266,9 @@ export async function fetchCertspotterEntries(
 			}
 
 			const url = after ? `${base}&after=${encodeURIComponent(after)}` : base;
-			const response = await (options?.fetchFn ?? fetch)(url, {
-				signal,
-				redirect: 'manual',
-				...(certspotterHeaders && { headers: certspotterHeaders }),
-			});
+			const init: RequestInit = { signal, redirect: 'manual', ...(certspotterHeaders && { headers: certspotterHeaders }) };
+			// Fixed first-party host (see safe-fetch-required audit ALLOWLIST); a caller-injected fetch wins.
+			const response = options?.fetchFn ? await options.fetchFn(url, init) : await fetch(url, init);
 
 			if (!response.ok) {
 				const retryAfterSeconds = response.status === 429 ? parseRetryAfterSeconds(response.headers.get('retry-after')) : undefined;
