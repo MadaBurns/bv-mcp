@@ -8,6 +8,21 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.96.0] - 2026-10-03
+
+Single-fix release (Sidequest SQ-295, issue #1114). Package change in `@blackveil/dns-checks` 1.58.0 (parity corpus 1.58.0); scoring model 1.39.0.
+
+### Fixed
+
+- `check_mx`: an MX exchange that is not an RFC 1123 hostname (`MX 300 ~.`, `MX 10 *.`) is no longer counted as a present mail control (#1114). When every record is invalid the domain takes the no-MX (SPF-context) verdict, so `controlPresent` is `false`, with one `info` "Invalid MX exchange" finding naming the literals. When a valid exchange sits beside an invalid one, the invalid record is excluded from "MX records found", the IP-target pass, the dangling-MX pass and the single-MX count. "Dangling MX record" stays reserved for syntactically valid names that do not resolve. An inconclusive MX rcode still abstains before any classification.
+
+Score impact: affected domains (an MX set made only of invalid exchanges) flip `controlPresent` from `true` to `false`, and scan-level mail-enabled severities for DKIM / MTA-STS / BIMI downgrade for them. A valid exchange beside an invalid one now also reports "Single MX record".
+
+### Changed
+
+- `@blackveil/dns-checks` 1.57.0 → 1.58.0, `PARITY_CORPUS_VERSION` 1.58.0 (parity fixtures carry the invalid-exchange case). bv-web-prod re-vendor required.
+- `SCORING_MODEL_VERSION` 1.38.0 → 1.39.0.
+
 ## [3.95.0] - 2026-10-03
 
 Deep codebase bug hunt (Sidequest US-9, SQ-270..292): nine read-only review slices over the whole Worker and `@blackveil/dns-checks`, then thirteen fix tickets in which every item was reproduced by a failing test before the code changed. The dominant defect class was **fail-open on an unmeasured probe**: a DoH SERVFAIL/REFUSED reached checks as an empty answer and was certified as absence, or a swallowed rejection produced a clean verdict. Package change in `@blackveil/dns-checks` 1.57.0 (parity corpus 1.57.0); scoring model 1.38.0.
