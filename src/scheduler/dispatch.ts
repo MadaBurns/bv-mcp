@@ -22,6 +22,7 @@
 import { isScanDispatchEnabled, resolveScanDispatchConfig, type ScalingFlagEnv } from '../lib/scaling-flags';
 import { claimDue } from './schedule-index';
 import { rateKeyForLane } from './rate';
+import { logError, logEvent } from '../lib/log';
 
 /** Scheduling lanes. Aligned with the `scan:rate:target:{fast,slow}` KV keys. */
 export const SCAN_LANES = ['fast', 'slow'] as const;
@@ -71,6 +72,9 @@ interface ScheduledScanMessage {
  * starve the others, and the whole call no-ops when disabled or unprovisioned.
  */
 export async function dispatchDueScans(env: ScanDispatchEnv, { now, tickSeconds = DEFAULT_TICK_SECONDS }: DispatchOptions): Promise<void> {
+	let currentLane: ScanLane | undefined;
+	let claimedCount = 0;
+	let sentCount = 0;
 	try {
 		if (!isScanDispatchEnabled(env)) return;
 		const db = env.SCAN_SCHEDULE_DB;
@@ -79,7 +83,25 @@ export async function dispatchDueScans(env: ScanDispatchEnv, { now, tickSeconds 
 		const cap = resolveScanDispatchConfig(env).batchSize;
 
 		for (const lane of SCAN_LANES) {
+			currentLane = lane;
+			claimedCount = 0;
+			sentCount = 0;
 			try {
+				// Resolve the lane's queue BEFORE claiming: claiming advances the
+				// row's schedule, so an unbound queue must never consume a row it
+				// cannot deliver.
+				const queue = resolveLaneQueue(env, lane);
+				if (!queue) {
+					logEvent({
+						timestamp: new Date().toISOString(),
+						severity: 'warn',
+						category: 'scan.dispatch',
+						result: 'queue unbound — lane not dispatched',
+						details: { lane },
+					});
+					continue;
+				}
+
 				const target = await readRateTarget(env, lane);
 				const rateBasedLimit = target !== undefined ? Math.max(1, Math.ceil(target * tickSeconds)) : cap;
 				const limit = Math.min(rateBasedLimit, cap);
@@ -88,21 +110,33 @@ export async function dispatchDueScans(env: ScanDispatchEnv, { now, tickSeconds 
 				// claim SQL — the lane is only the SELECT filter, never the advance
 				// (C2). So no lane-cadence scalar is passed here.
 				const claimed = await claimDue(db, { lane, now, limit });
-				if (claimed.length === 0) continue;
-
-				const queue = resolveLaneQueue(env, lane);
-				if (!queue) continue;
+				claimedCount = claimed.length;
+				if (claimedCount === 0) continue;
 
 				for (const row of claimed) {
 					const message: ScheduledScanMessage = { tenant_id: row.tenant_id, domain: row.domain, lane: row.lane, scheduled_at: now };
 					await queue.send(message, { contentType: 'json' });
+					sentCount += 1;
 				}
-			} catch {
-				// Fail-soft per lane.
+			} catch (err) {
+				// Fail-soft per lane — but never silently: a mid-loop send failure
+				// leaves the rest of this tick's claimed rows for this lane
+				// undelivered (already claimed; not unclaimed), so record exactly
+				// how many were claimed vs actually sent before the throw.
+				logError(err instanceof Error ? err : String(err), {
+					severity: 'error',
+					category: 'scan.dispatch',
+					details: { message: 'scan_dispatch_lane_failed', lane, claimed: claimedCount, sent: sentCount },
+				});
 			}
 		}
-	} catch {
+	} catch (err) {
 		// Fail-soft — a scheduler tick must never throw.
+		logError(err instanceof Error ? err : String(err), {
+			severity: 'error',
+			category: 'scan.dispatch',
+			details: { message: 'scan_dispatch_tick_failed', lane: currentLane, claimed: claimedCount, sent: sentCount },
+		});
 	}
 }
 

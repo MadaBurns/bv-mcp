@@ -127,3 +127,104 @@ describe('sendTenantAlert', () => {
 		expect(fetchFn).not.toHaveBeenCalled();
 	});
 });
+
+describe('sendTenantAlert service-binding dispatch', () => {
+	const INGEST_URL = 'https://www.blackveilsecurity.com/api/internal/ops/bv-mcp-alerts/abc123';
+	const ingestEnv: TenantAlertEnv = { ALERT_WEBHOOK_URL: INGEST_URL };
+
+	it('delivers the bv-web ingest URL over the service binding, not the public path', async () => {
+		const fetchFn = vi.fn();
+		const bvWeb = { fetch: vi.fn().mockResolvedValue(okResponse(200)) };
+
+		const out = await sendTenantAlert(validPayload, ingestEnv, {
+			fetchFn,
+			bvWeb: bvWeb as unknown as Fetcher,
+		});
+
+		expect(out).toEqual({ delivered: true, status: 200 });
+		expect(bvWeb.fetch).toHaveBeenCalledTimes(1);
+		expect(fetchFn).not.toHaveBeenCalled();
+	});
+
+	it('leaves a generic (non bv-web) webhook on the injected fetchFn even when a binding is available', async () => {
+		const fetchFn = vi.fn().mockResolvedValue(okResponse(200));
+		const bvWeb = { fetch: vi.fn().mockResolvedValue(okResponse(200)) };
+
+		const out = await sendTenantAlert(validPayload, env, {
+			fetchFn,
+			bvWeb: bvWeb as unknown as Fetcher,
+		});
+
+		expect(out).toEqual({ delivered: true, status: 200 });
+		expect(fetchFn).toHaveBeenCalledTimes(1);
+		expect(bvWeb.fetch).not.toHaveBeenCalled();
+	});
+});
+
+describe('sendTenantAlert non-delivery logging', () => {
+	it('403 → delivered:false AND a warn log carrying the cycle id, never the payload body', async () => {
+		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const fetchFn = vi.fn().mockResolvedValue(okResponse(403));
+
+		const out = await sendTenantAlert(validPayload, env, { fetchFn });
+
+		expect(out).toEqual({ delivered: false, status: 403 });
+		const logCalls = consoleSpy.mock.calls.map((c) => String(c[0]));
+		const alertLog = logCalls.find((log) => log.includes('"category":"tenant_alert"'));
+		expect(alertLog).toBeDefined();
+		expect(alertLog).toContain('"cycleId":"cyc-current"');
+		expect(alertLog).toContain('"reason":403');
+		expect(alertLog).not.toContain('highlights');
+		consoleSpy.mockRestore();
+	});
+
+	it('timeout → delivered:false AND a warn log with reason "timeout"', async () => {
+		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const fetchFn = vi.fn().mockImplementation(
+			() => new Promise<Response>(() => {
+				/* never resolves */
+			}),
+		);
+
+		const out = await sendTenantAlert(validPayload, env, { fetchFn, timeoutMs: 10 });
+
+		expect(out).toEqual({ delivered: false });
+		const logCalls = consoleSpy.mock.calls.map((c) => String(c[0]));
+		const alertLog = logCalls.find((log) => log.includes('"category":"tenant_alert"'));
+		expect(alertLog).toBeDefined();
+		expect(alertLog).toContain('"reason":"timeout"');
+		consoleSpy.mockRestore();
+	});
+
+	it('network error → delivered:false AND a warn log with reason "network"', async () => {
+		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const fetchFn = vi.fn().mockRejectedValue(new Error('econnreset'));
+
+		const out = await sendTenantAlert(validPayload, env, { fetchFn });
+
+		expect(out).toEqual({ delivered: false });
+		const logCalls = consoleSpy.mock.calls.map((c) => String(c[0]));
+		const alertLog = logCalls.find((log) => log.includes('"category":"tenant_alert"'));
+		expect(alertLog).toBeDefined();
+		expect(alertLog).toContain('"reason":"network"');
+		consoleSpy.mockRestore();
+	});
+
+	it('5xx twice → exactly one warn log (not one per attempt)', async () => {
+		const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+		const fetchFn = vi
+			.fn()
+			.mockResolvedValueOnce(okResponse(503))
+			.mockResolvedValueOnce(okResponse(502));
+		const sleepFn = vi.fn().mockResolvedValue(undefined);
+
+		const out = await sendTenantAlert(validPayload, env, { fetchFn, sleepFn, retryDelayMs: 5 });
+
+		expect(out).toEqual({ delivered: false, status: 502 });
+		const logCalls = consoleSpy.mock.calls.map((c) => String(c[0]));
+		const alertLogs = logCalls.filter((log) => log.includes('"category":"tenant_alert"'));
+		expect(alertLogs).toHaveLength(1);
+		expect(alertLogs[0]).toContain('"reason":502');
+		consoleSpy.mockRestore();
+	});
+});
