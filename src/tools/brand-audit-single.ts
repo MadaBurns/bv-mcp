@@ -71,45 +71,71 @@ function buildAsyncHandoffResult(target: string, deadlineMs?: number): CheckResu
  * Programmer-error throws (invalid seed domain) propagate from `discoverBrandDomains`.
  * Discovery failures surface as a `missingControl: true` summary finding with zero candidates.
  */
+/**
+ * Consume one quota unit. Returns the refusal result when the unit is denied,
+ * `null` when it was granted (or no quota is wired).
+ */
+async function chargeQuotaUnit(enforce: EnforceBrandAuditQuota | undefined, target: string): Promise<CheckResult | null> {
+	if (!enforce) return null;
+	const verdict = await enforce(1);
+	if (verdict.allowed) return null;
+	const retryHint = typeof verdict.retryAfterMs === 'number' ? ` retry after ${Math.ceil(verdict.retryAfterMs / 1000)}s` : '';
+	return buildCheckResult(CATEGORY, [
+		createFinding(
+			CATEGORY,
+			'Brand-audit quota exceeded',
+			'high',
+			`Monthly quota of ${verdict.limit ?? 0} targets reached for this principal.${retryHint}`,
+			{ quotaExceeded: true, target, limit: verdict.limit ?? 0, remaining: verdict.remaining ?? 0, retryAfterMs: verdict.retryAfterMs },
+		),
+	]);
+}
+
 export async function brandAuditSingle(
 	target: string,
 	options: BrandAuditSingleOptions = {},
 	deps: BrandAuditSingleDeps = {},
 ): Promise<CheckResult> {
 	const enforce = deps.enforceQuota;
-	if (enforce) {
-		const verdict = await enforce(1);
-		if (!verdict.allowed) {
-			const retryHint = typeof verdict.retryAfterMs === 'number' ? ` retry after ${Math.ceil(verdict.retryAfterMs / 1000)}s` : '';
-			return buildCheckResult(CATEGORY, [
-				createFinding(
-					CATEGORY,
-					'Brand-audit quota exceeded',
-					'high',
-					`Monthly quota of ${verdict.limit ?? 0} targets reached for this principal.${retryHint}`,
-					{ quotaExceeded: true, target, limit: verdict.limit ?? 0, remaining: verdict.remaining ?? 0, retryAfterMs: verdict.retryAfterMs },
-				),
-			]);
-		}
+	const canHandOff =
+		options.timeoutBehavior === 'async_handoff' && typeof options.deadlineMs === 'number' && Number.isFinite(options.deadlineMs);
+
+	// The quota coordinator has no refund primitive, so a unit charged up front for
+	// a call that then hands off to `brand_audit_batch_start` (which charges again
+	// for the same target) is lost. When a handoff is possible the charge is
+	// therefore DEFERRED until the pipeline has finished inside the sync budget.
+	// Without a handoff path nothing can double-charge, so charge up front and
+	// refuse before any work runs.
+	if (!canHandOff) {
+		const refused = await chargeQuotaUnit(enforce, target);
+		if (refused) return refused;
 	}
 
-	if (options.timeoutBehavior === 'async_handoff' && typeof options.deadlineMs === 'number' && Number.isFinite(options.deadlineMs)) {
+	if (canHandOff) {
 		const now = options.now ?? Date.now;
-		const delayMs = Math.max(0, options.deadlineMs - now());
+		const delayMs = Math.max(0, (options.deadlineMs as number) - now());
 		const controller = options.signal ? null : new AbortController();
 		const pipelineOptions = controller ? { ...options, signal: controller.signal } : options;
 		let timeoutId: ReturnType<typeof setTimeout> | undefined;
+		let handedOff = false;
 		const timeout = new Promise<CheckResult>((resolve) => {
 			timeoutId = setTimeout(() => {
+				handedOff = true;
 				controller?.abort(new Error('brand_audit_single sync budget exhausted'));
 				resolve(buildAsyncHandoffResult(target, options.deadlineMs));
 			}, delayMs);
 		});
+		let result: CheckResult;
 		try {
-			return await Promise.race([runBrandAuditPipeline(target, pipelineOptions, deps), timeout]);
+			result = await Promise.race([runBrandAuditPipeline(target, pipelineOptions, deps), timeout]);
 		} finally {
 			if (timeoutId) clearTimeout(timeoutId);
 		}
+		// A handoff is uncharged (the batch start that follows is the one charge); a
+		// thrown pipeline never reaches here, so a failed audit is uncharged too. A
+		// completed result is released only against a granted unit.
+		if (handedOff) return result;
+		return (await chargeQuotaUnit(enforce, target)) ?? result;
 	}
 
 	return runBrandAuditPipeline(target, options, deps);

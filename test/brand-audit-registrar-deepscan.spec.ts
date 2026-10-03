@@ -169,10 +169,11 @@ describe('runDeepScan — production internal-call envelope', () => {
 			structured: { domain: args.domain, score: 80, grade: 'B+', categoryScores: {}, findings: [] },
 		});
 		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
-		const result = await runDeepScan({ anchorApex: 'contoso.com', apexes: ['contoso.com'], internalCall: legacyShapedCall });
-
-		expect(result.postureSnapshot.apexesScanned).toBe(0);
-		expect(result.postureSnapshot.apexes).toHaveLength(0);
+		// Every call "fails" (no `structuredContent` anywhere), so the deep scan now
+		// refuses to publish an empty `ready` payload at all — loud instead of silent.
+		await expect(runDeepScan({ anchorApex: 'contoso.com', apexes: ['contoso.com'], internalCall: legacyShapedCall })).rejects.toThrow(
+			/every internal call failed/,
+		);
 	});
 
 	it('runs scan_domain + discover_subdomains + check_subdomain_takeover for each apex', async () => {
@@ -261,8 +262,16 @@ describe('runDeepScan — production internal-call envelope', () => {
 	});
 
 	it('treats an isError envelope as a failed call rather than a zero-value result', async () => {
-		const erroringCall = async (tool: string): Promise<unknown> =>
-			tool === 'scan_domain' ? { content: [{ type: 'text', text: 'Error: Invalid domain' }], isError: true } : { content: [] };
+		// Only scan_domain errors; discover_subdomains still answers, so this is a PARTIAL
+		// failure (an every-call failure throws — see brand-audit-deepscan-degraded.spec.ts).
+		const erroringCall = async (tool: string, args: { domain: string }): Promise<unknown> => {
+			if (tool === 'scan_domain') return { content: [{ type: 'text', text: 'Error: Invalid domain' }], isError: true };
+			if (tool === 'discover_subdomains') {
+				const discovery = makeDiscoveryResult(args.domain, []);
+				return buildToolResult(formatSubdomainDiscovery(discovery), discovery, 'full');
+			}
+			return { content: [] };
+		};
 		const { runDeepScan } = await import('../src/lib/brand-audit-registrar-deepscan');
 		const result = await runDeepScan({ anchorApex: 'a.com', apexes: ['a.com'], internalCall: erroringCall });
 

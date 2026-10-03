@@ -104,7 +104,7 @@ describe('brandAuditBatchStart', () => {
 		expect(sentTargets).toEqual(['apple.com', 'brand-zeta.example.com', 'microsoft.com']);
 	});
 
-	it('refuses when quota is exceeded — no D1 write, no queue send', async () => {
+	it('refuses when quota is exceeded — no queue send, persisted rows removed (charge happens after persistence)', async () => {
 		const { brandAuditBatchStart } = await import('../src/tools/brand-audit-batch-start');
 		const { db, calls } = makeMockD1();
 		const queueSend = vi.fn();
@@ -116,7 +116,9 @@ describe('brandAuditBatchStart', () => {
 		const errorFinding = result.findings.find((f) => f.metadata?.quotaExceeded === true);
 		expect(errorFinding).toBeDefined();
 		expect(errorFinding?.severity).toBe('high');
-		expect(calls.length).toBe(0);
+		// Rows are written before the charge (SQ-290) and discarded on denial: nothing is left behind.
+		expect(calls.filter((c) => c.sql.startsWith('INSERT')).length).toBe(2);
+		expect(calls.filter((c) => c.sql.startsWith('DELETE')).length).toBe(2);
 		expect(queueSend).not.toHaveBeenCalled();
 	});
 
