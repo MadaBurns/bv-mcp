@@ -61,6 +61,16 @@ export async function checkResolverConsistency(
 		) as CheckResult;
 	}
 
+	// Fan-out coverage rides on EVERY finding (denominator included), so a reader can always
+	// tell how many of the queried resolvers a statement is based on (#1199).
+	const coverage = (r: ConsistencyResult) => ({
+		resolversQueried: r.resolversQueried,
+		respondedCount: r.respondedCount,
+		unreachableResolvers: r.unreachableResolvers,
+		quorum: r.quorum,
+		quorumMet: r.quorumMet,
+	});
+
 	const findings = results.map((result: ConsistencyResult) => {
 		switch (result.status) {
 			case 'CONSISTENT':
@@ -71,8 +81,9 @@ export async function checkResolverConsistency(
 					result.detail,
 					{
 						recordType: result.recordType,
-						resolverCount: result.resolverAnswers.filter((r) => r.status === 'ok').length,
+						resolverCount: answeredCount(result),
 						status: result.status,
+						...coverage(result),
 					},
 				);
 
@@ -85,6 +96,7 @@ export async function checkResolverConsistency(
 					{
 						recordType: result.recordType,
 						status: result.status,
+						...coverage(result),
 						resolverAnswers: result.resolverAnswers.map((r) => ({
 							resolver: r.resolver,
 							status: r.status,
@@ -102,6 +114,7 @@ export async function checkResolverConsistency(
 					{
 						recordType: result.recordType,
 						status: result.status,
+						...coverage(result),
 						resolverAnswers: result.resolverAnswers.map((r) => ({
 							resolver: r.resolver,
 							status: r.status,
@@ -119,6 +132,7 @@ export async function checkResolverConsistency(
 					{
 						recordType: result.recordType,
 						status: result.status,
+						...coverage(result),
 						resolverAnswers: result.resolverAnswers.map((r) => ({
 							resolver: r.resolver,
 							status: r.status,
@@ -129,7 +143,10 @@ export async function checkResolverConsistency(
 		}
 	});
 
-	return buildCheckResult(CATEGORY, findings);
+	const checkResult = buildCheckResult(CATEGORY, findings);
+	// A record type that ended below quorum means the fan-out was degraded: keep this result out of
+	// the 5-minute cache (handlers/tools.ts caches only `!partial`) so a retry can reach the resolvers.
+	return results.some((r) => !r.quorumMet) ? { ...checkResult, partial: true } : checkResult;
 }
 
 /** Format resolver consistency results as human-readable text. */
@@ -157,6 +174,10 @@ export function formatResolverConsistency(result: CheckResult, format: OutputFor
 		const icon = status === 'CONSISTENT' ? '✓' : status === 'SUSPICIOUS' ? '✗' : '⚠';
 		lines.push(`${icon} ${finding.title}`);
 		lines.push(`  ${finding.detail}`);
+		const { respondedCount, resolversQueried } = finding.metadata ?? {};
+		if (typeof respondedCount === 'number' && typeof resolversQueried === 'number') {
+			lines.push(`  answered ${respondedCount}/${resolversQueried}`);
+		}
 
 		const resolverAnswers = finding.metadata?.resolverAnswers as Array<{ resolver: string; status: string; answers: string[] }> | undefined;
 		if (resolverAnswers) {

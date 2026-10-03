@@ -161,5 +161,85 @@ describe('checkResolverConsistency — resolvers that never answered (T6 item 6)
 		expect(result.checkStatus).toBeUndefined();
 		expect(result.findings.some((f) => f.title === 'MX records consistent')).toBe(false);
 		expect(result.findings.some((f) => f.title === 'MX records incomplete across resolvers')).toBe(true);
+		// A degraded type means a degraded fan-out: not cacheable.
+		expect(result.partial).toBe(true);
+	});
+});
+
+describe('checkResolverConsistency — fan-out coverage and quorum (#1199)', () => {
+	async function load() {
+		return import('../src/tools/check-resolver-consistency');
+	}
+
+	/** Cloudflare + Google answer `answers`; Quad9 + OpenDNS are unreachable. */
+	function mockTwoOfFour(cloudflare: string, google: string) {
+		globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+			const urlStr = typeof url === 'string' ? url : url.toString();
+			const isCloudflare = urlStr.includes('cloudflare');
+			if (!isCloudflare && !urlStr.includes('dns.google')) return Promise.reject(new Error('unreachable'));
+			const name = new URL(urlStr).searchParams.get('name') ?? 'example.com';
+			const data = isCloudflare ? cloudflare : google;
+			return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data }]));
+		});
+	}
+
+	it('below-quorum unanimous answers: INCOMPLETE low finding, coverage metadata, partial: true', async () => {
+		mockTwoOfFour('192.0.2.1', '192.0.2.1');
+		const { checkResolverConsistency } = await load();
+
+		const result = await checkResolverConsistency('example.com', 'A');
+
+		expect(result.findings).toHaveLength(1);
+		const finding = result.findings[0];
+		expect(finding.title).toBe('A records incomplete across resolvers');
+		expect(finding.severity).toBe('low');
+		expect(finding.metadata).toMatchObject({
+			status: 'INCOMPLETE',
+			resolversQueried: 4,
+			respondedCount: 2,
+			unreachableResolvers: ['Quad9', 'OpenDNS'],
+			quorum: 3,
+			quorumMet: false,
+		});
+		expect(result.partial).toBe(true);
+		// Not the all-abstain path: 2 answered, so the check is still a measurement.
+		expect(result.checkStatus).toBeUndefined();
+	});
+
+	it('full fan-out: coverage on the CONSISTENT finding, resolverCount kept, not partial', async () => {
+		mockConsistentDns();
+		const { checkResolverConsistency } = await load();
+
+		const result = await checkResolverConsistency('example.com', 'A');
+
+		expect(result.findings[0].metadata).toMatchObject({
+			status: 'CONSISTENT',
+			resolverCount: 4,
+			resolversQueried: 4,
+			respondedCount: 4,
+			unreachableResolvers: [],
+			quorum: 3,
+			quorumMet: true,
+		});
+		expect(result.partial).toBeUndefined();
+	});
+
+	it('divergent answers carry coverage on the SPLIT_HORIZON finding', async () => {
+		mockTwoOfFour('192.0.2.1', '198.51.100.7');
+		const { checkResolverConsistency } = await load();
+
+		const result = await checkResolverConsistency('example.com', 'A');
+
+		expect(result.findings[0].metadata).toMatchObject({ status: 'SPLIT_HORIZON', respondedCount: 2, quorumMet: false });
+		expect(result.partial).toBe(true);
+	});
+
+	it('full format prints answered N/M per type', async () => {
+		mockTwoOfFour('192.0.2.1', '192.0.2.1');
+		const { checkResolverConsistency, formatResolverConsistency } = await load();
+
+		const text = formatResolverConsistency(await checkResolverConsistency('example.com', 'A'));
+
+		expect(text).toContain('answered 2/4');
 	});
 });
