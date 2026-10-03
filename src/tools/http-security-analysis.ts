@@ -30,7 +30,11 @@ function analyzeCspQuality(cspValue: string): Finding[] {
 	const defaultSrcMatch = lower.match(/default-src\s+([^;]+)/);
 	const effectiveScriptSrc = scriptSrcMatch?.[1] ?? defaultSrcMatch?.[1] ?? '';
 
-	if (effectiveScriptSrc.includes("'unsafe-inline'")) {
+	// CSP3 §6.7.3: a nonce-source, hash-source or 'strict-dynamic' in the same source list makes a
+	// supporting browser ignore 'unsafe-inline' — it is the documented CSP1 back-compat fallback, not a weakness.
+	const unsafeInlineIsInert = /'(?:nonce-[^']+|sha(?:256|384|512)-[^']+|strict-dynamic)'/.test(effectiveScriptSrc);
+
+	if (effectiveScriptSrc.includes("'unsafe-inline'") && !unsafeInlineIsInert) {
 		findings.push(
 			createFinding(
 				'http_security',

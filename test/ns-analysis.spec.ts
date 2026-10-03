@@ -29,6 +29,10 @@ describe('ns-analysis', () => {
 	it('detects low nameserver diversity for same-provider hosts', () => {
 		expect(getNameserverDiversityFinding(['ns1.cloudflare.com', 'ns2.cloudflare.com'])?.detail).toContain('cloudflare.com');
 		expect(getNameserverDiversityFinding(['ns1.a.com', 'ns2.b.net'])).toBeNull();
+		// Multi-label public suffixes: two unrelated providers under co.nz / co.uk are NOT one provider.
+		expect(getNameserverDiversityFinding(['ns1.alpha.co.nz', 'ns1.beta.co.nz'])).toBeNull();
+		expect(getNameserverDiversityFinding(['ns1.alpha.co.uk', 'ns1.beta.co.uk'])).toBeNull();
+		expect(getNameserverDiversityFinding(['ns1.alpha.co.nz', 'ns2.alpha.co.nz'])?.detail).toContain('alpha.co.nz');
 	});
 
 	it('parses SOA values and emits validation findings', () => {
