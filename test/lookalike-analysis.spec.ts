@@ -233,6 +233,33 @@ describe('generateTldVariants (#974)', () => {
 		expect(results).not.toContain('example.com');
 	});
 
+	it('emits bare foreign ccTLD candidates for a .com seed (#1191)', () => {
+		const results = generateTldVariants('blackrock.com');
+		expect(results).toEqual(expect.arrayContaining(['blackrock.jp', 'blackrock.de', 'blackrock.hk']));
+		expect(results).not.toContain('blackrock.com');
+		expect(new Set(results).size).toBe(results.length);
+		expect(results.length).toBeLessThanOrEqual(MAX_TLD_VARIANTS);
+		// Pre-existing sources keep their order: the new table only appends.
+		expect(results.slice(0, 8)).toEqual([
+			'blackrock.net',
+			'blackrock.org',
+			'blackrock.co',
+			'blackrock.io',
+			'blackrock.ai',
+			'blackrock.co.uk',
+			'blackrock.com.au',
+			'blackrock.co.nz',
+		]);
+	});
+
+	it('a .jp seed does not emit itself and still emits its family forms (#1191)', () => {
+		const results = generateTldVariants('example.jp');
+		expect(results).not.toContain('example.jp');
+		expect(results).toContain('example.co.jp');
+		expect(results).toContain('example.de');
+		expect(new Set(results).size).toBe(results.length);
+	});
+
 	it('the motor lane alone never reached them — the reason the lane exists', () => {
 		const motor = generateLookalikes('example.co.nz');
 		expect(['example.net', 'example.co', 'example.io', 'example.ai'].filter((d) => motor.includes(d))).toEqual([]);
@@ -240,7 +267,7 @@ describe('generateTldVariants (#974)', () => {
 	});
 
 	it('is capped, deduplicated, never returns the seed apex for a subdomain seed, and returns [] without a suffix', () => {
-		for (const seed of ['example.co.nz', 'example.com', 'example.co.uk', 'shop.example.com']) {
+		for (const seed of ['example.co.nz', 'example.com', 'example.co.uk', 'shop.example.com', 'example.jp', 'example.nz']) {
 			const results = generateTldVariants(seed);
 			expect(results.length).toBeLessThanOrEqual(MAX_TLD_VARIANTS);
 			expect(new Set(results).size).toBe(results.length);

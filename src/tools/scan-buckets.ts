@@ -40,8 +40,8 @@ function unprovisioned(detail: string): CheckResult {
  * deployment" told an operator to configure a binding that is already bound (#695).
  *
  * `marker` separates the two unmeasured-but-bound cases, which must not be conflated:
- * `upstreamUnavailable` = the service failed us (credential refused, non-2xx, schema mismatch,
- * fetch threw); `upstreamNotFound` = the service answered normally with a definitive 404 and the
+ * `upstreamUnavailable` = the service failed us (credential refused, target not on the recon
+ * watchlist, non-2xx, schema mismatch, fetch threw); `upstreamNotFound` = the service answered normally with a definitive 404 and the
  * id simply does not exist. Both withhold the verdict; only the first claims an outage, and
  * claiming one that did not happen is the same class of dishonesty #695 was about.
  *
@@ -69,7 +69,19 @@ interface ReconFailureProse {
 	notFound: { title: string; detail: string };
 	/** `unauthorized` | `upstream_status` | `malformed` | `transport` — the recon service failed us. */
 	unavailable: { title: string; detail: string };
+	/**
+	 * `target_not_authorized` (403) — the recon watchlist refused the target. Optional: defaults to
+	 * `TARGET_NOT_AUTHORIZED_PROSE`, which is target-agnostic and true at every call site.
+	 */
+	targetNotAuthorized?: { title: string; detail: string };
 }
+
+/** A policy decision, not an outage and not a credential problem (the key was accepted). */
+const TARGET_NOT_AUTHORIZED_PROSE = {
+	title: 'Bucket scan target not authorized',
+	detail:
+		'The recon service refused this target because it is not on the operator-authorized recon watchlist. This is a policy decision, not an outage or a credential problem — ask the operator to authorize the target. Nothing was scanned.',
+};
 
 /**
  * Map a `ReconOutcome` failure onto the honest unmeasured result for it.
@@ -93,7 +105,11 @@ function reconFailureResult(
 ): CheckResult {
 	if (failure.reason === 'unbound') return unprovisioned(prose.unbound);
 	const notFound = failure.reason === 'not_found';
-	const { title, detail } = notFound ? prose.notFound : prose.unavailable;
+	const { title, detail } = notFound
+		? prose.notFound
+		: failure.reason === 'target_not_authorized'
+			? (prose.targetNotAuthorized ?? TARGET_NOT_AUTHORIZED_PROSE)
+			: prose.unavailable;
 	return upstreamUnmeasured(notFound ? 'upstreamNotFound' : 'upstreamUnavailable', title, detail, {
 		...meta,
 		reconFailureReason: failure.reason,

@@ -115,8 +115,23 @@
  * blocked), SOA RNAME (Route 53 templates `awsdns-hostmaster.amazon.com` into
  * every tenant zone), the NS-platform chain (`amzndns.com` and public
  * `awsdns-33.com` carry the same RNAME), seed SPF (`spf1/2/3.amazon.com` name
- * no candidate), CT SAN overlap (0 of 3300 crt.sh certs cover both apexes),
- * SPF `include:` / HTTP redirect (free-text, deleted 2026-07-27).
+ * no candidate), SPF `include:` / HTTP redirect (free-text, deleted
+ * 2026-07-27).
+ *
+ * CT SAN co-listing is a third class of rejection, neither attacker-forgeable
+ * free text nor a coverage-measured absence: co-listing on a certificate that
+ * includes the seed proves only a common certificate BUYER, which may be a
+ * shared platform, not common ownership (a CA validates each name against
+ * whoever ordered the cert, e.g. a vendor the seed delegated to). Measured
+ * (SQ-302, 2026-10-04, #1188, #1189): a 2025 Amazon Trust Services cert lists
+ * 25 `csxd.<customer>` names across 23 registrable domains, co-listing
+ * `blackrock.com` with unrelated organisations; a 2015 shared Cloudflare cert
+ * carries 37 names across 19 domains. Issuer exclusion, fan-out caps and
+ * `san_recursive` mutual inclusion each fail as discriminators (the same
+ * shared cert answers both directions). The older "0 of 3300" figure was a
+ * crt.sh search artifact — `name_value` lists only query-matched names — and
+ * is not evidence either way. The signal is fetched by `discover_brand_domains`
+ * at weight 0.1 and is deliberately not an input here.
  *
  * Residual, stated not hidden: a seed that is itself a DMARC report-
  * processing PROVIDER (Agari/Valimail-shaped) publishes authorisation records
@@ -366,6 +381,12 @@ export interface ClassifyOwnershipInput {
 	 * demands. Consulted after every seed-side NS arm. SPF `include:`, HTTP
 	 * redirect and SOA MNAME/RNAME remain excluded: all are free-text
 	 * declarations a self-hosted zone can publish at no cost.
+	 *
+	 * The §7.1 arm requires every candidate MX inside the seed's own bailiwick
+	 * (`mxRoutedIntoSeed`), which excludes gateway-relayed portfolios.
+	 * KNOWN UNATTRIBUTED SHAPE: a regional sibling on its own DNS platform
+	 * behind a managed mail gateway (e.g. `*.pphosted.com`) has NO reachable
+	 * path to `owned_by_seed` today (#1192) — do not file it again.
 	 */
 }
 
@@ -881,6 +902,10 @@ export function classifyOwnership(input: ClassifyOwnershipInput): OwnershipAsses
  * A single exchange OUTSIDE the seed apex disqualifies the set (a squatter
  * listing the seed's MX alongside its own is not shaped like a same-entity
  * domain at all).
+ *
+ * Consequence: MX must sit inside the seed's OWN bailiwick, so managed-gateway
+ * estates (Proofpoint, Google Workspace, M365, Mimecast, Barracuda — MX in the
+ * gateway's bailiwick) never pass, even for the seed's own MX (#1192).
  */
 export function mxRoutedIntoSeed(candidateMx: readonly string[] | undefined, seedDomain: string): boolean {
 	if (!candidateMx || candidateMx.length === 0) return false;
@@ -1175,8 +1200,9 @@ export type AttributionConfidence = 'corroborated' | 'single_signal' | 'uncorrob
  * EITHER a brand label at least `MIN_ATTRIBUTION_LABEL_LENGTH` characters
  * long, OR an explicit corroborating signal supplied by the caller
  * (MX/SPF overlap with the primary domain is the one wired in this slice —
- * cert-SAN and page-content corroboration are not, since neither tool
- * fetches them today). Below the threshold with no corroboration, a short
+ * cert-SAN is fetched by `discover_brand_domains` but is deliberately not an
+ * input to this function (common cert buyer is not common owner, #1188); page-content
+ * corroboration is not wired in, since neither tool fetches it today). Below the threshold with no corroboration, a short
  * brand label (e.g. `bnz`, 3 characters) collides with too much unrelated
  * global DNS for a bare label match to mean anything on its own — see spec
  * §5 D4. This is a WORDING signal only: whatever it returns, the finding is

@@ -15,6 +15,7 @@
  * report renderers).
  */
 
+import { buildCtCoverage } from '../../src/lib/ct-coverage';
 import { describe, it, expect } from 'vitest';
 import {
 	DiscoverySignalResultSchema,
@@ -49,6 +50,7 @@ function representativeSanResult(): SanCorrelationResult {
 		coOwnedDomains: ['sibling.example.net', 'sibling.example.org'],
 		certIds: [123456, 789012],
 		queryStatus: 'ok',
+		coverage: buildCtCoverage([{ source: 'crtsh', outcome: 'ok', contributed: true }]),
 	};
 }
 

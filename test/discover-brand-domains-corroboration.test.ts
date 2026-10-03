@@ -13,6 +13,7 @@
  * Refs: LR-1 (single dmarc_rua), LR-2 (single ns on multi-tenant infra).
  */
 
+import { buildCtCoverage } from '../src/lib/ct-coverage';
 import { describe, it, expect, vi } from 'vitest';
 import type {
 	SanCorrelationResult,
@@ -23,7 +24,7 @@ import type {
 import type { DiscoverBrandDomainsDeps } from '../src/tools/discover-brand-domains';
 
 function okSan(coOwned: string[]): SanCorrelationResult {
-	return { seedDomain: 'example.com', coOwnedDomains: coOwned, certIds: [], queryStatus: 'ok' };
+	return { seedDomain: 'example.com', coOwnedDomains: coOwned, certIds: [], queryStatus: 'ok', coverage: buildCtCoverage([]) };
 }
 
 function okNs(domains: Array<{ domain: string; confidence: number }>): NsCorrelationResult {
