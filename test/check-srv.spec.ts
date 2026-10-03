@@ -151,15 +151,16 @@ describe('checkSrv', () => {
 		expect(low.some((f) => f.title.includes('Autodiscover'))).toBe(true);
 	});
 
-	it('should handle DNS query failure for all probes gracefully', async () => {
+	it('abstains when every SRV prefix query errors instead of scoring a medium finding', async () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS failure'));
 
 		const result = await run();
 		expect(result.category).toBe('srv');
-		expect(result.findings.length).toBeGreaterThan(0);
-		const errorFinding = result.findings.find((f) => f.title === 'SRV DNS queries failed');
-		expect(errorFinding).toBeDefined();
-		expect(errorFinding!.severity).toBe('medium');
+		// #900: every probe rejected, so nothing was measured. The previous shape routed a
+		// single `medium` finding through a bare buildCheckResult, which scored 85 and
+		// derived `passed: true` — a non-answer that read as a completed assessment.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.map((f) => f.metadata?.errorKind)).toEqual(['dns_error']);
 	});
 
 	it('should include summary finding with service count', async () => {
