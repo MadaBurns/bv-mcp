@@ -10,6 +10,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, ZoneContext } from '../types';
 import { buildNotAssessedResult, buildCheckResult, createFinding } from '../check-utils';
+import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import {
 	MAX_LAME_DELEGATION_PROBES,
 	assessLameDelegation,
@@ -62,6 +63,9 @@ async function probeNameserverReachable(
 	timeout: number,
 ): Promise<{ outcome: NameserverProbeOutcome; hostNxdomain: boolean }> {
 	let hostNxdomain = false;
+	// A SERVFAIL/REFUSED answer is empty exactly like a NOERROR/NODATA one, but it measured
+	// nothing: a resolver that could not answer cannot show the name has no address (SQ-279).
+	let unanswered = false;
 
 	try {
 		const a = await rawQueryDNS(nameserver, 'A', false, { timeout });
@@ -69,6 +73,7 @@ async function probeNameserverReachable(
 			return { outcome: 'resolves', hostNxdomain: false };
 		}
 		hostNxdomain = a.Status === RCODE_NXDOMAIN;
+		unanswered = isInconclusiveRcode(a.Status);
 	} catch {
 		return { outcome: 'unknown', hostNxdomain: false };
 	}
@@ -81,10 +86,12 @@ async function probeNameserverReachable(
 		// BOTH families must agree the name does not exist. An adapter that omits `Status`
 		// leaves this false, which is the conservative direction: no rcode, no claim.
 		hostNxdomain = hostNxdomain && aaaa.Status === RCODE_NXDOMAIN;
+		unanswered = unanswered || isInconclusiveRcode(aaaa.Status);
 	} catch {
 		return { outcome: 'unknown', hostNxdomain: false };
 	}
 
+	if (unanswered) return { outcome: 'unknown', hostNxdomain: false };
 	return { outcome: 'no_address', hostNxdomain };
 }
 
@@ -194,7 +201,13 @@ export async function checkNS(
 
 	let nsRecords: string[] = [];
 	try {
-		nsRecords = normalizeNsRecords(await queryDNS(domain, 'NS', { timeout }));
+		const nsOutcome = await queryWithRcode(queryDNS, domain, 'NS', timeout);
+		// SERVFAIL/REFUSED look like an empty NS set and would file "No NS records found"
+		// (critical, missingControl) for a lookup that never concluded (SQ-279).
+		if (isInconclusiveRcode(nsOutcome.rcode)) {
+			return buildRcodeAbstentionResult('ns', 'NS', domain, 'NS', nsOutcome.rcode);
+		}
+		nsRecords = normalizeNsRecords(nsOutcome.records);
 	} catch {
 		// Transient resolver failure (timeout / SERVFAIL / network flake) — we could not
 		// MEASURE the nameserver posture. Mark the category INCONCLUSIVE (checkStatus) so the
@@ -275,7 +288,10 @@ export async function checkNS(
 		try {
 			const soaResp = await rawQueryDNS(domain, 'SOA', false, { timeout });
 			const soaRecords = (soaResp.Answer ?? []).filter((a) => a.type === 6);
-			if (soaRecords.length === 0) {
+			if (soaRecords.length === 0 && isInconclusiveRcode(soaResp.Status)) {
+				// A SERVFAIL/REFUSED SOA lookup is not "no SOA" — it never concluded (SQ-279).
+				// Same non-critical treatment as a thrown probe: no finding either way.
+			} else if (soaRecords.length === 0) {
 				findings.push(
 					createFinding(
 						'ns',

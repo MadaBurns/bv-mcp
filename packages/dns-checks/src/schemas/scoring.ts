@@ -36,6 +36,7 @@ export const CheckCategorySchema = z.enum([
 	'subdomailing',
 	'brand_discovery',
 	'authoritative_dns_infra',
+	'dnskey_strength',
 ]);
 
 /** Severity levels. */

@@ -11,7 +11,7 @@
 
 import type { CheckResult, DNSQueryFunction, Finding, RawDNSQueryFunction, RawDNSResponse } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
-import { describeRcode, isInconclusiveRcode } from '../dns-rcode';
+import { describeRcode, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
 import { analyzeTlsaRecords } from './dane-analysis';
 
 /**
@@ -136,8 +136,13 @@ export async function checkDANE(
 
 		const tlsaName = `_25._tcp.${mxHost}`;
 		try {
-			const tlsaRecords = await queryDNS(tlsaName, 'TLSA', { timeout });
-			if (tlsaRecords.length > 0) {
+			const tlsaOutcome = await queryWithRcode(queryDNS, tlsaName, 'TLSA', timeout);
+			const tlsaRecords = tlsaOutcome.records;
+			if (isInconclusiveRcode(tlsaOutcome.rcode)) {
+				// SERVFAIL/REFUSED is an empty answer that measured nothing — count it with the
+				// thrown lookups so "every lookup failed" below is recognised (SQ-279).
+				tlsaLookupFailures++;
+			} else if (tlsaRecords.length > 0) {
 				hasMxTlsa = true;
 				// An unmeasured DNSSEC status is passed as `true` ONLY to suppress the unsigned verdict
 				// (`hasDnssec` gates nothing else in the analyzer); the facet is reported honestly below.
@@ -182,6 +187,12 @@ export async function checkDANE(
 					`${domain} publishes no usable MX records (none, or an RFC 7505 null MX), so it does not accept inbound email. SMTP DANE (TLSA at _25._tcp) is therefore not applicable.`,
 				),
 			);
+		} else if (tlsaLookupFailures === realMxHosts) {
+			// Every `_25._tcp` lookup threw or was SERVFAIL/REFUSED: no host was ever observed
+			// to lack a TLSA, so "No DANE TLSA for MX servers" would certify an absence nobody
+			// measured. THROW, like the unresolvable-MX case above, so the caller files the
+			// category INCONCLUSIVE (SQ-279). Prefix per sanitizeErrorMessage/buildDnsErrorResult.
+			throw new Error(`DNS query for TLSA records of the MX hosts of ${domain} failed; SMTP DANE status could not be determined`);
 		} else {
 			findings.push(
 				createFinding(

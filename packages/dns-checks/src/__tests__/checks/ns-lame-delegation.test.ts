@@ -11,6 +11,8 @@
  */
 
 import { describe, expect, it } from 'vitest';
+import { checkNS } from '../../checks/check-ns';
+import type { DNSQueryFunction, RawDNSResponse } from '../../types';
 import {
 	MAX_LAME_DELEGATION_PROBES,
 	assessLameDelegation,
@@ -113,5 +115,89 @@ describe('lame-delegation findings', () => {
 		// a dead zone from a resolver-side outage.
 		const a = assessLameDelegation(probes(['ns1.a.com', 'no_address'], ['ns2.b.net', 'no_address']));
 		expect(getTotalLameDelegationFinding('example.com', a).metadata?.domainResolves).toBeUndefined();
+	});
+});
+
+// ── SQ-279 item 2: an UNANSWERED host lookup is not a missing address ─────────────────
+//
+// `probeNameserverReachable` read `A: SERVFAIL` + `AAAA: SERVFAIL` as `no_address`, i.e. a
+// lame delegation, and the SOA probe read a SERVFAIL as "No SOA record". A resolver that
+// could not answer measured nothing; only NOERROR/NXDOMAIN-empty answers are evidence.
+
+const SERVFAIL = 2;
+const NXDOMAIN = 3;
+const A_ANSWER = { type: 1, data: '192.0.2.1' };
+
+function nsResolvers(raw: Record<string, Partial<Record<string, RawDNSResponse>>>) {
+	const queryDNS = (async (name: string, type: string) => {
+		if (type === 'NS' && name === 'victim.example') return ['ns1.healthy.example.', 'ns2.provider.example.'];
+		return [];
+	}) as never;
+	const rawQueryDNS = (async (name: string, type: string): Promise<RawDNSResponse> =>
+		raw[name]?.[type] ?? { Status: 0, Answer: [] }) as never;
+	return { queryDNS, rawQueryDNS };
+}
+
+describe('checkNS — SERVFAIL is unmeasured, not lame (SQ-279 item 2)', () => {
+	it('does not file a lame delegation when a nameserver host A and AAAA both SERVFAIL', async () => {
+		const { queryDNS, rawQueryDNS } = nsResolvers({
+			'ns1.healthy.example': { A: { Status: 0, Answer: [A_ANSWER] } },
+			'ns2.provider.example': { A: { Status: SERVFAIL, Answer: [] }, AAAA: { Status: SERVFAIL, Answer: [] } },
+		});
+		const result = await checkNS('victim.example', queryDNS, { rawQueryDNS });
+		expect(result.findings.find((f) => f.metadata?.lameDelegation !== undefined)).toBeUndefined();
+	});
+
+	it('does not file a lame delegation when A is NOERROR-empty but AAAA SERVFAILs', async () => {
+		const { queryDNS, rawQueryDNS } = nsResolvers({
+			'ns1.healthy.example': { A: { Status: 0, Answer: [A_ANSWER] } },
+			'ns2.provider.example': { A: { Status: 0, Answer: [] }, AAAA: { Status: SERVFAIL, Answer: [] } },
+		});
+		const result = await checkNS('victim.example', queryDNS, { rawQueryDNS });
+		expect(result.findings.find((f) => f.metadata?.lameDelegation !== undefined)).toBeUndefined();
+	});
+
+	it('still files the partial lame delegation for a MEASURED address-less host (positive control)', async () => {
+		const { queryDNS, rawQueryDNS } = nsResolvers({
+			'ns1.healthy.example': { A: { Status: 0, Answer: [A_ANSWER] } },
+			'ns2.provider.example': { A: { Status: NXDOMAIN, Answer: [] }, AAAA: { Status: NXDOMAIN, Answer: [] } },
+		});
+		const result = await checkNS('victim.example', queryDNS, { rawQueryDNS });
+		expect(result.findings.find((f) => f.metadata?.lameDelegation === 'partial')).toBeDefined();
+	});
+
+	it('does not file "No SOA record" when the SOA lookup SERVFAILs', async () => {
+		const { queryDNS, rawQueryDNS } = nsResolvers({
+			'ns1.healthy.example': { A: { Status: 0, Answer: [A_ANSWER] } },
+			'ns2.provider.example': { A: { Status: 0, Answer: [A_ANSWER] } },
+			'victim.example': { SOA: { Status: SERVFAIL, Answer: [] } },
+		});
+		const result = await checkNS('victim.example', queryDNS, { rawQueryDNS });
+		expect(result.findings.find((f) => f.title === 'No SOA record')).toBeUndefined();
+	});
+
+	it('abstains (no "No NS records found" critical) when the NS lookup itself SERVFAILs', async () => {
+		const queryDNS = (async () => []) as unknown as DNSQueryFunction;
+		queryDNS.withRcode = async () => ({ records: [], rcode: SERVFAIL });
+		const result = await checkNS('victim.example', queryDNS, { rawQueryDNS: (async () => ({ Status: 0, Answer: [] })) as never });
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		expect(result.findings.some((f) => f.title === 'No NS records found')).toBe(false);
+	});
+
+	it('still files "No NS records found" for a NOERROR-empty NS answer (positive control)', async () => {
+		const queryDNS = (async () => []) as unknown as DNSQueryFunction;
+		queryDNS.withRcode = async () => ({ records: [], rcode: 0 });
+		const result = await checkNS('victim.example', queryDNS, { rawQueryDNS: (async () => ({ Status: 0, Answer: [] })) as never });
+		expect(result.findings.some((f) => f.title === 'No NS records found')).toBe(true);
+	});
+
+	it('still files "No SOA record" for a NOERROR-empty SOA answer (positive control)', async () => {
+		const { queryDNS, rawQueryDNS } = nsResolvers({
+			'ns1.healthy.example': { A: { Status: 0, Answer: [A_ANSWER] } },
+			'ns2.provider.example': { A: { Status: 0, Answer: [A_ANSWER] } },
+		});
+		const result = await checkNS('victim.example', queryDNS, { rawQueryDNS });
+		expect(result.findings.find((f) => f.title === 'No SOA record')).toBeDefined();
 	});
 });

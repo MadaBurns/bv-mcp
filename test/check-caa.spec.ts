@@ -1,6 +1,6 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import { RecordType, parseCaaRecord } from '../src/lib/dns';
-import { setupFetchMock, createDohResponse, mockFetchResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, mockFetchResponse, servfailResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -44,6 +44,19 @@ describe('checkCaa', () => {
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');
 		expect(result.findings[0].title).toMatch(/not assessed/i);
+	});
+
+	it('abstains instead of reporting "No CAA records" when the CAA lookup answers SERVFAIL (SQ-279)', async () => {
+		// A DoH SERVFAIL is HTTP 200 with an empty Answer: the wrapper's rawQueryDNS used to drop
+		// the Status, so the package read it as a measured absence and filed a medium deficiency.
+		globalThis.fetch = vi.fn().mockImplementation((url: string) => {
+			if (/type=(CAA|257)\b/.test(url)) return Promise.resolve(servfailResponse('example.com', 257));
+			return Promise.resolve(createDohResponse([{ name: 'example.com', type: 2 }], []));
+		});
+		const result = await run();
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => /No CAA/i.test(f.title))).toBe(false);
 	});
 
 	it('should report medium finding when no issue tag present', async () => {

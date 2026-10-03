@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: BUSL-1.1
 
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
+import { setupFetchMock, createDohResponse, nxdomainResponse, servfailResponse } from './helpers/dns-mock';
 
 const { restore } = setupFetchMock();
 
@@ -81,6 +81,24 @@ describe('checkDnskeyStrength', () => {
 		expect(info!.severity).toBe('info');
 		// Hardening bonus-only: absence is not penalised as a missing control.
 		expect(info!.metadata?.missingControl).toBeUndefined();
+	});
+
+	it('abstains (never "publishes no DNSKEY … deploy DNSSEC") when the DNSKEY lookup answers SERVFAIL (SQ-279)', async () => {
+		// A DNSSEC-bogus zone typically SERVFAILs its DNSKEY: HTTP 200, rcode 2, empty Answer.
+		// That measured nothing, so it must not be reported as a zone with no DNSSEC deployed.
+		globalThis.fetch = vi.fn().mockResolvedValue(servfailResponse('example.com', 48));
+		const result = await run();
+		expect(result.category).toBe('dnskey_strength');
+		expect(result).toMatchObject({ checkStatus: 'error', score: 0, passed: false, partial: true });
+		expect(result.findings.some((f) => f.title.includes('No DNSKEY'))).toBe(false);
+		expect(result.findings[0].metadata?.errorKind).toBe('dns_error');
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+	});
+
+	it('still reports "No DNSKEY records published" for NXDOMAIN (a conclusion, not an outage)', async () => {
+		globalThis.fetch = vi.fn().mockResolvedValue(nxdomainResponse('example.com', 48));
+		const result = await run();
+		expect(result.findings.some((f) => f.title.includes('No DNSKEY'))).toBe(true);
 	});
 
 	it('handles a DNS error gracefully (no throw) with the retryable, non-cacheable abstention shape', async () => {

@@ -212,6 +212,25 @@ describe('checkDane', () => {
 		expect(result.findings.some((f) => f.title === 'SMTP DANE not applicable (no inbound mail)')).toBe(false);
 	});
 
+	it('reports a domain whose every TLSA lookup SERVFAILs as INCONCLUSIVE, not "No DANE TLSA" (SQ-279)', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(mxResponse('flaky.example', [{ priority: 10, exchange: 'mx1.flaky.example' }]));
+			}
+			if (url.includes('_25._tcp.mx1.flaky.example')) {
+				// SERVFAIL: HTTP 200, rcode 2, no answers.
+				return Promise.resolve(createDohResponse([{ name: '_25._tcp.mx1.flaky.example', type: 52 }], [], { status: 2 }));
+			}
+			return Promise.resolve(emptyResponse('flaky.example', 1));
+		});
+
+		const result = await run('flaky.example');
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.some((f) => f.title === 'No DANE TLSA for MX servers')).toBe(false);
+	});
+
 	it('still reports a genuine NOERROR/no-MX domain as not applicable at 100', async () => {
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
 			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
