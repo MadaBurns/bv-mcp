@@ -116,7 +116,9 @@ describe('brandAuditSingle', () => {
 			const result = await resultPromise;
 
 			expect(result.category).toBe('brand_discovery');
-			expect((result as CheckResult & { partial?: boolean }).partial).toBe(true);
+			// #1196: the handoff is an abstention (nothing was measured), never a clean 100/pass.
+			// 'timeout' (not 'error') keeps scan_domain's transient-zero retry off a handed-off audit.
+			expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'timeout', partial: true });
 			expect(result.findings[0]).toMatchObject({
 				title: 'Brand audit requires async processing',
 				severity: 'info',
@@ -125,8 +127,13 @@ describe('brandAuditSingle', () => {
 					timedOut: true,
 					target: 'example.com',
 					recommendedTool: 'brand_audit_batch_start',
+					deadlineMs: 24_000,
+					inconclusive: true,
+					errorKind: 'timeout',
+					notAssessed: 'sync_budget_exhausted',
 				},
 			});
+			expect(result.findings.some((f) => f.metadata?.missingControl !== undefined)).toBe(false);
 		} finally {
 			vi.useRealTimers();
 		}
