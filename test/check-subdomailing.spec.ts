@@ -321,4 +321,71 @@ describe('checkSubdomailing', () => {
 		expect(result.findings).toHaveLength(1);
 		expect(result.findings[0].severity).toBe('info');
 	});
+
+	it('#1200: an SPF macro-template include is not probed, not scored void_include, and is disclosed in the summary', async () => {
+		const urls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			urls.push(url);
+
+			if (url.includes('type=TXT') || url.includes('type=16')) {
+				if (url.includes('name=example.com')) {
+					return Promise.resolve(
+						txtResponse('example.com', ['v=spf1 include:%{ir}.%{v}.%{d}.spf.has.pphosted.com include:spf.example.net -all']),
+					);
+				}
+				if (url.includes('spf.example.net')) {
+					return Promise.resolve(txtResponse('spf.example.net', ['v=spf1 ip4:203.0.113.0/24 -all']));
+				}
+				return Promise.resolve(txtResponse('unknown', []));
+			}
+			if (url.includes('type=CNAME') || url.includes('type=5')) {
+				return Promise.resolve(emptyResponse('spf.example.net', 5));
+			}
+			if (url.includes('type=NS') || url.includes('type=2')) {
+				return Promise.resolve(emptyResponse('spf.example.net', 2));
+			}
+			return Promise.resolve(emptyResponse('unknown', 1));
+		});
+
+		const result = await run();
+		expect(result.category).toBe('subdomailing');
+		expect(result.findings.some((f) => f.metadata?.riskType === 'void_include')).toBe(false);
+		expect(result.findings).toHaveLength(1);
+		const summary = result.findings[0];
+		expect(summary.severity).toBe('info');
+		expect(summary.title).toMatch(/No SubdoMailing risk/i);
+		expect(summary.detail).toContain('1 macro-template include(s) not probed');
+		expect(summary.detail).not.toContain('All resolve correctly');
+		expect(summary.metadata?.macroTemplateCount).toBe(1);
+		expect(summary.metadata?.unmeasuredCount).toBeUndefined();
+
+		// No TXT/CNAME/NS (or any) query was issued for the template name…
+		expect(urls.filter((u) => u.includes('pphosted'))).toHaveLength(0);
+		// …while the second, literal include was probed normally (CNAME + NS + TXT).
+		const probed = urls.filter((u) => u.includes('spf.example.net'));
+		expect(probed.some((u) => u.includes('type=CNAME') || u.includes('type=5'))).toBe(true);
+		expect(probed.some((u) => u.includes('type=NS') || u.includes('type=2'))).toBe(true);
+		expect(probed.some((u) => u.includes('type=TXT') || u.includes('type=16'))).toBe(true);
+	});
+
+	it('#1200: a chain whose only include is a macro template abstains (not-assessed) rather than passing', async () => {
+		const urls: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			urls.push(url);
+			if ((url.includes('type=TXT') || url.includes('type=16')) && url.includes('name=example.com')) {
+				return Promise.resolve(txtResponse('example.com', ['v=spf1 include:%{ir}.%{v}.%{d}.spf.has.pphosted.com -all']));
+			}
+			return Promise.resolve(emptyResponse('unknown', 1));
+		});
+
+		const result = await run();
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.findings).toHaveLength(1);
+		expect(result.findings[0].title).toMatch(/not assessed/i);
+		expect(result.findings[0].metadata?.macroTemplateCount).toBe(1);
+		expect(urls.filter((u) => u.includes('pphosted'))).toHaveLength(0);
+	});
 });

@@ -442,6 +442,106 @@ describe('probeWithAdaptiveBatching — bounded to the Workers connection cap', 
 });
 
 // ---------------------------------------------------------------------------
+// Phase 2 — the #1202 random-label wildcard probe.
+// ---------------------------------------------------------------------------
+
+const WILDCARD_PROBE_NAME = /^_bv-probe-[a-z0-9]+\./;
+
+describe('probeWildcardA / the phase-2 wildcard probe (#1202)', () => {
+	it('runs one probe per mail + web candidate inside the six-slot pool, on a fresh random label each time', async () => {
+		const { fetchImpl, stats } = buildSixSlotDohRuntime(() => 30);
+		const probeNames: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: FetchInput, init?: RequestInit) => {
+			const { name } = dohQuery(input);
+			if (WILDCARD_PROBE_NAME.test(name)) probeNames.push(name);
+			return fetchImpl(input, init);
+		});
+		const { probeWithAdaptiveBatching } = await loadDns();
+		const candidates = Array.from({ length: 25 }, (_, i) => `cand${i}.com`);
+
+		const results = await probeWithAdaptiveBatching(candidates, { deadlineMs: Date.now() + 14_000 });
+
+		expect(stats.peakInFlight).toBeLessThanOrEqual(6);
+		expect(stats.peakWaiting).toBe(0);
+		// Exactly ONE extra query per candidate (the emulated zone answers A for every name).
+		expect(probeNames).toHaveLength(25);
+		expect(new Set(probeNames).size).toBe(25);
+		for (const r of results) {
+			if (r.status !== 'fulfilled') throw new Error('rejected');
+			expect(r.value.wildcardProbe).toBe('wildcard');
+			expect(r.value.probeDegraded).toBe(false);
+		}
+	});
+
+	it('probes only candidates with BOTH an A and a real MX record; a concluded empty answer is no_wildcard', async () => {
+		const probed: string[] = [];
+		globalThis.fetch = vi.fn().mockImplementation((input: FetchInput) => {
+			const { name, type } = dohQuery(input);
+			if (WILDCARD_PROBE_NAME.test(name)) {
+				probed.push(name.replace(WILDCARD_PROBE_NAME, ''));
+				return Promise.resolve(createDohResponse([{ name, type: 1 }], [], { status: 3 }));
+			}
+			const isA = type === 'A' || type === '1';
+			const isMx = type === 'MX' || type === '15';
+			if ((name === 'both.com' && (isA || isMx)) || (name === 'aonly.com' && isA) || (name === 'mxonly.com' && isMx)) {
+				return Promise.resolve(typedAnswer(name, type));
+			}
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const { probeWithAdaptiveBatching } = await loadDns();
+		const results = await probeWithAdaptiveBatching(['both.com', 'aonly.com', 'mxonly.com'], { deadlineMs: Date.now() + 5_000 });
+		const byDomain = new Map(results.map((r) => (r.status === 'fulfilled' ? [r.value.domain, r.value] : ['?', undefined])));
+
+		expect(probed).toEqual(['both.com']);
+		expect(byDomain.get('both.com')?.wildcardProbe).toBe('no_wildcard');
+		expect(byDomain.get('aonly.com')?.wildcardProbe).toBeUndefined();
+		expect(byDomain.get('mxonly.com')?.wildcardProbe).toBeUndefined();
+	});
+
+	it('fails soft: SERVFAIL, a transport failure, a hang past the deadline and a spent deadline are all not_probed', async () => {
+		const { probeWildcardA } = await loadDns();
+
+		globalThis.fetch = vi.fn().mockImplementation((input: FetchInput) => {
+			const { name } = dohQuery(input);
+			return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: '192.0.2.9' }], { status: 2 }));
+		});
+		expect(await probeWildcardA('servfail.com')).toBe('not_probed');
+
+		globalThis.fetch = vi.fn().mockImplementation(() => Promise.reject(new TypeError('connection reset')));
+		expect(await probeWildcardA('broken.com')).toBe('not_probed');
+
+		globalThis.fetch = vi
+			.fn()
+			.mockImplementation((_input: FetchInput, init?: RequestInit) =>
+				delayHonouringSignal(60_000, () => createDohResponse([], []), init?.signal),
+			);
+		const started = Date.now();
+		expect(await probeWildcardA('hang.com', started + 200)).toBe('not_probed');
+		expect(Date.now() - started).toBeLessThan(1_000);
+
+		const spy = vi.fn();
+		globalThis.fetch = spy;
+		expect(await probeWildcardA('late.com', Date.now() - 1)).toBe('not_probed');
+		expect(spy).not.toHaveBeenCalled();
+	});
+
+	it('a starved run issues no wildcard query and records no wildcard on any candidate', async () => {
+		const fetchSpy = vi.fn().mockImplementation((input: FetchInput) => {
+			const { name, type } = dohQuery(input);
+			return Promise.resolve(typedAnswer(name, type));
+		});
+		globalThis.fetch = fetchSpy;
+		const { probeWithAdaptiveBatching } = await loadDns();
+		const results = await probeWithAdaptiveBatching(['cut0.com', 'cut1.com'], { deadlineMs: Date.now() - 1 });
+		expect(fetchSpy).not.toHaveBeenCalled();
+		for (const r of results) {
+			if (r.status !== 'fulfilled') throw new Error('rejected');
+			expect(r.value.wildcardProbe).toBeUndefined();
+		}
+	});
+});
+
+// ---------------------------------------------------------------------------
 // End to end through checkLookalikes — the enumeration contract #892 reads.
 // ---------------------------------------------------------------------------
 

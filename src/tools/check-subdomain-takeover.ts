@@ -96,6 +96,18 @@ function resolveProbeFetch(budget: FetchBudget, budgeted: boolean): { fetchFn: F
 	return { fetchFn: withRobotsGate(observingFetch), wasCut: () => cut };
 }
 
+/** The #1201 sweep-descriptor keys the package stamps on every finding it returns. */
+const SWEEP_DESCRIPTOR_KEYS = ['sweptCount', 'sweepSource', 'requestedCount', 'truncatedTo', 'aRecordVectorSampledTo'] as const;
+
+/**
+ * Read the sweep descriptor off the package result's first finding (every finding carries
+ * the same one), so the cut-probe note states the denominator too. Absent keys stay absent.
+ */
+function readSweepDescriptor(result: CheckResult): Record<string, unknown> {
+	const meta = (result.findings[0]?.metadata ?? {}) as Record<string, unknown>;
+	return Object.fromEntries(SWEEP_DESCRIPTOR_KEYS.filter((key) => meta[key] !== undefined).map((key) => [key, meta[key]]));
+}
+
 /**
  * A fingerprint probe was cut short. Record the gap honestly.
  *
@@ -110,13 +122,14 @@ function resolveProbeFetch(budget: FetchBudget, budgeted: boolean): { fetchFn: F
  *    test/audits/measured-vs-unmeasured-metadata.audit.test.ts.
  */
 function markProbeInconclusive(result: CheckResult, domain: string): CheckResult {
+	const sweep = readSweepDescriptor(result);
 	const note = createFinding(
 		'subdomain_takeover',
 		'Takeover fingerprint probe did not complete',
 		'info',
 		`At least one HTTP fingerprint probe for ${domain} was cut short by this check's time budget, so the CNAME target it addressed was verified as neither deprovisioned nor healthy. ` +
 			`Re-run check_subdomain_takeover directly (no scan-level per-check budget) to complete the probe.`,
-		{ inconclusive: true, errorKind: 'timeout' },
+		{ inconclusive: true, errorKind: 'timeout', ...sweep },
 	);
 
 	// Any non-`info` finding is real, measured evidence (the package only emits

@@ -57,7 +57,13 @@ import {
 	type LookalikeResult,
 	type UnresolvedByReason,
 } from './lookalike-dns';
-import { EMPTY_RDAP_PROBE, enrichLookalikes, probePrimaryRegistration } from './lookalike-enrichment';
+import {
+	collectParkingSignals,
+	EMPTY_RDAP_PROBE,
+	enrichLookalikes,
+	probePrimaryRegistration,
+	resolveWebPresence,
+} from './lookalike-enrichment';
 import {
 	computeSameEntityCandidates,
 	isBrandHeldRegistration,
@@ -512,7 +518,8 @@ async function checkLookalikesCore(
 		return !sameOwner && (r.hasMX || r.hasA);
 	});
 	const enrichmentDeadlineMs = startedAt + budget.timeoutMs - budget.enrichmentReserveMs;
-	const enrichment = await enrichLookalikes(candidatesToEnrich, { deadlineMs: enrichmentDeadlineMs });
+	// #1202 — the phase-1 NS answers ride along for the parking-NS signal; no new query.
+	const enrichment = await enrichLookalikes(candidatesToEnrich, { deadlineMs: enrichmentDeadlineMs, candidateNs: lookalikeNsMap });
 
 	// Same-entity correlation (issue #263): a flagged lookalike that shares the
 	// scan domain's RDAP registrant org is almost certainly the org's own
@@ -633,8 +640,16 @@ async function checkLookalikesCore(
 		const sameOwner = ownership.verdict === 'owned_by_seed';
 
 		if (sameOwner) {
-			// Structurally owned by the seed — the customer's own domain.
-			findings.push(buildOwnedBySeedFinding(result, domain, ownership));
+			// Structurally owned by the seed — the customer's own domain. Never
+			// HEAD-probed (it skipped enrichment), so its web reading is the
+			// DNS-only one (#1202): parked on parking MX / NS, else unmeasured.
+			const parkingSignals = collectParkingSignals(result, lookalikeNsMap.get(result.domain));
+			findings.push(
+				buildOwnedBySeedFinding(result, domain, ownership, {
+					webPresence: resolveWebPresence('unmeasured', parkingSignals),
+					parkingSignals,
+				}),
+			);
 			// Task 7b requirement 5: an `owned_by_seed` candidate gets NO
 			// threat-observation finding — the customer's own domain is not an
 			// impersonation threat to itself. This `continue` (together with the
@@ -663,6 +678,9 @@ async function checkLookalikesCore(
 			registrationLookup: 'not_attempted' as const,
 			mxOnDisposable: false,
 			hasWebContent: true,
+			webPresence: 'unmeasured' as const,
+			parkingSignals: [],
+			wildcardProbe: 'not_probed' as const,
 			registrantOrg: null,
 		};
 		const signals: LookalikeSignals = {
@@ -672,6 +690,9 @@ async function checkLookalikesCore(
 			registrationLookup: corroborators.registrationLookup,
 			mxOnDisposable: corroborators.mxOnDisposable,
 			hasWebContent: corroborators.hasWebContent,
+			webPresence: corroborators.webPresence,
+			parkingSignals: corroborators.parkingSignals,
+			wildcardProbe: corroborators.wildcardProbe,
 		};
 		const severity = calibrateLookalikeSeverity(signals);
 		const corroboratorReasons = describeCorroborators(signals);
@@ -696,7 +717,7 @@ async function checkLookalikesCore(
 		if (brandHeld !== undefined) {
 			findings.push(buildBrandHeldFinding(result, domain, ownership, brandHeld));
 		} else if (matchedOrg !== undefined) {
-			findings.push(buildSharedRegistrantOrgFinding(result, domain, ownership, matchedOrg));
+			findings.push(buildSharedRegistrantOrgFinding(result, domain, ownership, matchedOrg, signals));
 		} else {
 			// AXIS 1 — the ownership verdict caps the ATTRIBUTION finding's
 			// severity. `attributionConfidence()` (fed the MX-overlap

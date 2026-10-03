@@ -725,3 +725,97 @@ describe('checkSubdomainTakeover', () => {
 		expect(high!.title).toContain('vercel-dns.com');
 	});
 });
+
+// #1201 — the Worker wrapper must not strip the package's sweep descriptor on either path.
+describe('checkSubdomainTakeover wrapper sweep descriptor (#1201)', () => {
+	function mockAllEmpty() {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const nameMatch = url.match(/name=([^&]+)/);
+			const name = nameMatch ? decodeURIComponent(nameMatch[1]) : 'unknown';
+			return Promise.resolve(emptyResponse(name, url.includes('type=CNAME') || url.includes('type=5') ? 5 : 1));
+		});
+	}
+
+	const callerNames = ['a.example.com', 'b.example.com', 'c.example.com', 'd.example.com', 'e.example.com'];
+
+	it('scan path (budgetMs set): preserves the descriptor and discloses the 2-name A/AAAA sample', async () => {
+		mockAllEmpty();
+		const { checkSubdomainTakeover } = await import('../src/tools/check-subdomain-takeover');
+		const result = await checkSubdomainTakeover('example.com', undefined, { subdomains: callerNames, budgetMs: 5_000 });
+		const clean = result.findings.find((f) => f.title.includes('No dangling CNAME'));
+		expect(clean).toBeDefined();
+		expect(clean!.metadata?.sweptCount).toBe(5);
+		expect(clean!.metadata?.sweepSource).toBe('caller');
+		expect(clean!.metadata?.requestedCount).toBe(5);
+		expect(clean!.metadata?.aRecordVectorSampledTo).toBe(2);
+		expect(clean!.detail).toContain('among the 5 subdomains swept (caller-supplied list)');
+	});
+
+	it('direct path (no budgetMs): descriptor present, A/AAAA vector not sampled', async () => {
+		mockAllEmpty();
+		const { checkSubdomainTakeover } = await import('../src/tools/check-subdomain-takeover');
+		const result = await checkSubdomainTakeover('example.com', undefined, { subdomains: callerNames });
+		const clean = result.findings.find((f) => f.title.includes('No dangling CNAME'));
+		expect(clean!.metadata?.sweptCount).toBe(5);
+		expect(clean!.metadata).not.toHaveProperty('aRecordVectorSampledTo');
+	});
+
+	it('scan path, built-in list: sweptCount 15 and aRecordVectorSampledTo 2', async () => {
+		mockAllEmpty();
+		const { checkSubdomainTakeover } = await import('../src/tools/check-subdomain-takeover');
+		const result = await checkSubdomainTakeover('example.com', undefined, { budgetMs: 5_000 });
+		const meta = result.findings[0].metadata;
+		expect(meta?.sweptCount).toBe(15);
+		expect(meta?.sweepSource).toBe('builtin');
+		expect(meta?.aRecordVectorSampledTo).toBe(2);
+	});
+
+	it('an unusable caller list reaches the client as not-assessed, never as the built-in sweep', async () => {
+		mockAllEmpty();
+		const { checkSubdomainTakeover } = await import('../src/tools/check-subdomain-takeover');
+		const result = await checkSubdomainTakeover('example.com', undefined, { subdomains: ['  ', ''] });
+		expect(result.checkStatus).toBe('error');
+		expect(result.partial).toBe(true);
+		expect(result.findings[0].metadata?.reason).toBe('caller_list_unusable');
+		expect(result.findings.some((f) => f.title.includes('No dangling CNAME'))).toBe(false);
+	});
+
+	it('a budget-cut probe note carries the sweep descriptor', async () => {
+		// `app.example.com` → a resolving takeover-service target, so the fingerprint probe
+		// fires; robots.txt answers fast and the probe itself stalls until aborted.
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			if (url.includes('cloudflare-dns.com')) {
+				if (url.includes('type=CNAME') || url.includes('type=5')) {
+					return Promise.resolve(
+						url.includes('name=app.example.com') ? cnameResponse('app.example.com', 'live-app.herokuapp.com') : emptyResponse('unknown', 5),
+					);
+				}
+				return Promise.resolve(
+					url.includes('live-app.herokuapp.com') ? aResponse('live-app.herokuapp.com', ['203.0.113.10']) : emptyResponse('unknown', 1),
+				);
+			}
+			if (url.endsWith('/robots.txt')) return Promise.resolve(new Response('User-agent: *\nDisallow:\n', { status: 200 }));
+			return new Promise<Response>((_resolve, reject) => {
+				const signal = init?.signal;
+				const fail = () => reject(Object.assign(new Error('aborted (timeout)'), { name: 'AbortError' }));
+				if (!signal) return;
+				if (signal.aborted) return fail();
+				signal.addEventListener('abort', fail, { once: true });
+			});
+		});
+		const { checkSubdomainTakeover } = await import('../src/tools/check-subdomain-takeover');
+		const result = await checkSubdomainTakeover('example.com', undefined, {
+			subdomains: ['app.example.com', 'www.example.com'],
+			budgetMs: 1_000,
+		});
+		const note = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(note, 'the cut probe must be reported').toBeDefined();
+		expect(note!.metadata?.errorKind).toBe('timeout');
+		expect(note!.metadata?.sweptCount).toBe(2);
+		expect(note!.metadata?.sweepSource).toBe('caller');
+		expect(note!.metadata?.requestedCount).toBe(2);
+		expect(result.findings.some((f) => f.title.includes('No dangling CNAME'))).toBe(false);
+	}, 15_000);
+});

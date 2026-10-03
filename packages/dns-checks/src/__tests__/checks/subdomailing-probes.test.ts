@@ -4,8 +4,9 @@
  * Unit coverage for the SubdoMailing probe primitives: `probeIncludeDomain` (per-domain
  * takeover-risk classification) and `probeAllIncludes` (fan-out + finding assembly).
  *
- * `extractSpfIncludeChain` / the SPF-walk materialization is out of scope here — this file
- * only drives the two probe functions directly with a mocked `DNSQueryFunction`.
+ * The SPF-walk materialization is out of scope here except for the #1200 macro-template leaf
+ * behaviour at the bottom — this file otherwise only drives the two probe functions directly
+ * with a mocked `DNSQueryFunction`.
  *
  * Two source-behavior notes surfaced while writing these tests (not fixed — TEST-ONLY scope,
  * see #1094c):
@@ -21,7 +22,13 @@
  */
 
 import { describe, it, expect, vi } from 'vitest';
-import { MAX_INCLUDE_PROBES, probeAllIncludes, probeIncludeDomain } from '../../checks/subdomailing-analysis';
+import {
+	MAX_INCLUDE_PROBES,
+	extractSpfIncludeChain,
+	isSpfMacroTarget,
+	probeAllIncludes,
+	probeIncludeDomain,
+} from '../../checks/subdomailing-analysis';
 import type { DNSQueryFunction } from '../../types';
 
 type DnsRule = string[] | Error;
@@ -347,5 +354,94 @@ describe('probeAllIncludes', () => {
 		});
 		const { findings } = await probeAllIncludes(includes, queryDNS);
 		expect(findings).toHaveLength(0);
+	});
+});
+
+describe('#1200: SPF macro-template targets are not-assessable, never probed as a literal hostname', () => {
+	const MACRO = '%{ir}.%{v}.%{d}.spf.has.pphosted.com';
+
+	describe('isSpfMacroTarget', () => {
+		it.each(['%{ir}.%{v}.%{d}.spf.has.pphosted.com', '%{d}.example.com', 'a%%b.example.com', 'a%_b.example.com', 'a%-b.example.com'])(
+			'is true for an RFC 7208 §7 macro: %s',
+			(name) => {
+				expect(isSpfMacroTarget(name)).toBe(true);
+			},
+		);
+
+		it.each(['spf.example.net', '_spf.google.com', 'mail-50.example.com', 'pct.example.com'])('is false for a literal hostname: %s', (name) => {
+			expect(isSpfMacroTarget(name)).toBe(false);
+		});
+	});
+
+	it('probeIncludeDomain returns a macroTemplate not-assessed result and issues NO DNS query for the name', async () => {
+		const calls: RecordedCall[] = [];
+		const queryDNS = createMockDNS({}, calls);
+		const result = await probeIncludeDomain(MACRO, `include:${MACRO}`, queryDNS);
+		expect(result.riskType).toBeNull();
+		expect(result.severity).toBe('info');
+		expect(result.unmeasured).toBe(true);
+		expect(result.macroTemplate).toBe(true);
+		expect(result.detail).toContain('macro-expanded template (RFC 7208 §7)');
+		expect(result.detail).toContain('This is not evidence that it is safe or unsafe.');
+		expect(result.detail).not.toContain('no SPF record');
+		expect(queryDNS).not.toHaveBeenCalled();
+		expect(calls).toHaveLength(0);
+	});
+
+	it('probeAllIncludes counts a macro template in macroTemplateCount, NOT unmeasuredCount, and emits no finding for it', async () => {
+		const calls: RecordedCall[] = [];
+		const includes = new Map<string, string>([
+			[MACRO, `include:${MACRO}`],
+			['spf.example.net', 'include:spf.example.net'],
+		]);
+		const queryDNS = createMockDNS({ 'spf.example.net:CNAME': [], 'spf.example.net:NS': [], 'spf.example.net:TXT': ['v=spf1 -all'] }, calls);
+		const summary = await probeAllIncludes(includes, queryDNS);
+		expect(summary.findings).toHaveLength(0);
+		expect(summary.probedCount).toBe(2);
+		expect(summary.macroTemplateCount).toBe(1);
+		expect(summary.unmeasuredCount).toBe(0);
+		expect(calls.some((c) => c.domain === MACRO)).toBe(false);
+		expect(calls.filter((c) => c.domain === 'spf.example.net')).toHaveLength(3);
+	});
+
+	it('extractSpfIncludeChain keeps a macro include as a childless leaf: collected, but never TXT-queried or recursed into', async () => {
+		const calls: RecordedCall[] = [];
+		const queryDNS = createMockDNS(
+			{
+				'example.com:TXT': [`v=spf1 include:${MACRO} include:spf.example.net -all`],
+				// If the walk wrongly recursed it would find this and collect `hidden.example.org`.
+				[`${MACRO}:TXT`]: ['v=spf1 include:hidden.example.org -all'],
+				'spf.example.net:TXT': ['v=spf1 -all'],
+			},
+			calls,
+		);
+		const { domains } = await extractSpfIncludeChain('example.com', queryDNS);
+		expect(Array.from(domains.keys())).toEqual([MACRO, 'spf.example.net']);
+		expect(domains.get(MACRO)).toBe(`include:${MACRO}`);
+		expect(calls.filter((c) => c.domain.includes('%'))).toHaveLength(0);
+		expect(calls.map((c) => c.domain)).not.toContain('hidden.example.org');
+	});
+
+	it('a macro redirect= target is also a childless leaf', async () => {
+		const calls: RecordedCall[] = [];
+		const queryDNS = createMockDNS({ 'example.com:TXT': ['v=spf1 redirect=%{d}.redir.example.org'] }, calls);
+		const { domains } = await extractSpfIncludeChain('example.com', queryDNS);
+		expect(Array.from(domains.entries())).toEqual([['%{d}.redir.example.org', 'redirect=%{d}.redir.example.org']]);
+		expect(calls.filter((c) => c.domain.includes('%'))).toHaveLength(0);
+	});
+
+	it('a macro include still consumes exactly one MAX_INCLUDE_PROBES slot (DFS cap semantics preserved)', async () => {
+		const parts = [`include:${MACRO}`];
+		const rules: Record<string, DnsRule> = {};
+		for (let i = 0; i < MAX_INCLUDE_PROBES + 3; i++) {
+			parts.push(`include:inc${i}.example.com`);
+			rules[`inc${i}.example.com:TXT`] = ['v=spf1 -all'];
+		}
+		rules['example.com:TXT'] = [`v=spf1 ${parts.join(' ')} -all`];
+		const { domains } = await extractSpfIncludeChain('example.com', createMockDNS(rules));
+		expect(domains.size).toBe(MAX_INCLUDE_PROBES);
+		expect(domains.has(MACRO)).toBe(true);
+		expect(domains.has(`inc${MAX_INCLUDE_PROBES - 2}.example.com`)).toBe(true);
+		expect(domains.has(`inc${MAX_INCLUDE_PROBES - 1}.example.com`)).toBe(false);
 	});
 });
