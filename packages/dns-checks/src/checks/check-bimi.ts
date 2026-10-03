@@ -169,6 +169,68 @@ async function validateBimiSvg(logoUrl: string, fetchFn: FetchFunction, timeout:
 }
 
 /**
+ * Split a BIMI record into its tag list.
+ *
+ * Values keep their case. The DMARC analogue in `dmarc-utils.ts` lowercases, which would
+ * corrupt a URL: `l=` and `a=` carry hrefs whose path is case-sensitive. Surrounding
+ * whitespace and the optional quoting the BIMI draft allows for a URL containing spaces
+ * are removed.
+ *
+ * Tag lookup is anchored on the `;` delimiter, which is the whole point of this parser.
+ * The scans it replaces (`/\bl=/i`, `/\ba=/i`) matched those two characters wherever they
+ * fell, and `?` and `=` are both non-word characters, so `\b` did not anchor anything: a
+ * record publishing `l=https://cdn.example.com/mark.svg?source=a=1` was read as carrying
+ * a mark certificate, and reported "authority evidence present" for a value of `1`.
+ */
+export function parseBimiTags(record: string): Map<string, string> {
+	const tags = new Map<string, string>();
+	for (const part of record.split(';')) {
+		const trimmed = part.trim();
+		const eq = trimmed.indexOf('=');
+		if (eq <= 0) continue;
+		const key = trimmed.slice(0, eq).trim().toLowerCase();
+		let value = trimmed.slice(eq + 1).trim();
+		if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
+			value = value.slice(1, -1);
+		}
+		if (key) tags.set(key, value);
+	}
+	return tags;
+}
+
+/**
+ * The `l=` tag is a URI list: the BIMI draft separates multiple logo locations with
+ * commas so a domain can offer more than one. Splitting it is what lets each entry be
+ * judged on its own — a single greedy capture took the whole list as one URL, which then
+ * failed the fetch as a malformed target.
+ */
+export function parseBimiLogoUrls(value: string | undefined): string[] {
+	if (!value) return [];
+	return value
+		.split(',')
+		.map((entry) => entry.trim())
+		.filter((entry) => entry.length > 0);
+}
+
+/**
+ * Whether a logo reference points at an SVG.
+ *
+ * Judged on the URL path, not the whole string: a CDN- or SAS-signed logo URL such as
+ * `https://cdn.example.com/mark.svg?Policy=abc&Signature=xyz` is a normal way to publish a
+ * BIMI logo, and `endsWith(".svg")` called it invalid format.
+ */
+export function logoReferenceIsSvg(url: string): boolean {
+	let path = url;
+	try {
+		path = new URL(url).pathname;
+	} catch {
+		// Not a parseable URL — fall back to the raw string so a genuinely broken
+		// reference still reads as broken rather than silently passing.
+	}
+	return path.toLowerCase().endsWith('.svg');
+}
+
+/**
  * Check BIMI records for a domain.
  * Validates the presence and configuration of BIMI TXT records,
  * including logo URL format and mark-certificate authority evidence.
@@ -270,12 +332,13 @@ export async function checkBIMI(
 	}
 
 	const bimi = bimiRecords[0];
+	const bimiTags = parseBimiTags(bimi);
 
-	// Extract l= tag (logo URL)
-	const logoMatch = bimi.match(/\bl=([^\s;]+)/i);
-	const logoUrl = logoMatch?.[1];
+	// Extract l= tag — a URI list, so more than one logo location is legal.
+	const logoUrls = parseBimiLogoUrls(bimiTags.get('l'));
+	const logoUrl = logoUrls[0];
 
-	if (!logoUrl) {
+	if (logoUrls.length === 0) {
 		findings.push(
 			createFinding(
 				'bimi',
@@ -285,20 +348,22 @@ export async function checkBIMI(
 			),
 		);
 	} else {
-		// Validate logo URL format
-		const isHttps = logoUrl.toLowerCase().startsWith('https://');
-		const isSvg = logoUrl.toLowerCase().endsWith('.svg');
-
-		if (!isHttps || !isSvg) {
+		// Validate every logo URL format. Only the first is content-validated below (one
+		// outbound fetch per check), but a malformed second entry is a real defect and
+		// must not pass because the first one happened to be well-formed.
+		const invalid = logoUrls.filter((url) => !url.toLowerCase().startsWith('https://') || !logoReferenceIsSvg(url));
+		if (invalid.length > 0) {
+			const first = invalid[0];
 			const issues: string[] = [];
-			if (!isHttps) issues.push('must use HTTPS');
-			if (!isSvg) issues.push('must be an SVG file (SVG Tiny PS format)');
+			if (!first.toLowerCase().startsWith('https://')) issues.push('must use HTTPS');
+			if (!logoReferenceIsSvg(first)) issues.push('must be an SVG file (SVG Tiny PS format)');
+			const extra = invalid.length > 1 ? ` (${invalid.length} of ${logoUrls.length} logo URLs are invalid)` : '';
 			findings.push(
 				createFinding(
 					'bimi',
 					'BIMI logo URL invalid format',
 					'medium',
-					`BIMI logo URL "${logoUrl}" is invalid: ${issues.join(' and ')}. BIMI requires an HTTPS URL pointing to an SVG Tiny PS image.`,
+					`BIMI logo URL "${first}" is invalid: ${issues.join(' and ')}. BIMI requires an HTTPS URL pointing to an SVG Tiny PS image.${extra}`,
 				),
 			);
 		}
@@ -313,8 +378,7 @@ export async function checkBIMI(
 	// only and must not name the certificate type. Wording-only: severities,
 	// finding count and controlPresent/recordPresent are unchanged on both
 	// branches, so no score moves (check-bimi-remediation-accuracy.test.ts).
-	const authMatch = bimi.match(/\ba=([^\s;]+)/i);
-	const authUrl = authMatch?.[1];
+	const authUrl = bimiTags.get('a');
 
 	if (!authUrl) {
 		findings.push(
@@ -336,8 +400,8 @@ export async function checkBIMI(
 		);
 	}
 
-	// If logo URL is valid and present, validate the SVG content
-	if (logoUrl && logoUrl.toLowerCase().startsWith('https://') && logoUrl.toLowerCase().endsWith('.svg')) {
+	// If the logo URL is a valid HTTPS SVG reference, validate the SVG content it points at.
+	if (logoUrl && logoUrl.toLowerCase().startsWith('https://') && logoReferenceIsSvg(logoUrl)) {
 		if (fetchFn) {
 			findings.push(...(await validateBimiSvg(logoUrl, fetchFn, BIMI_FETCH_TIMEOUT_MS)));
 		} else {
