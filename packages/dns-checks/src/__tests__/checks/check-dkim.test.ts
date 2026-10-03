@@ -2,6 +2,7 @@
 
 import { describe, it, expect, vi } from 'vitest';
 import { checkDKIM } from '../../checks/check-dkim';
+import { COMMON_DKIM_SELECTORS } from '../../checks/dkim-selectors';
 import type { DNSQueryFunction } from '../../types';
 
 function createMockDNS(records: Record<string, string[]>): DNSQueryFunction {
@@ -54,6 +55,97 @@ describe('checkDKIM', () => {
 		const result = await checkDKIM('example.com', queryDNS);
 		// Single revoked key = high finding
 		expect(result.findings.some((f) => f.title.includes('Revoked DKIM key'))).toBe(true);
+	});
+
+	// A DKIM record is only evidence of a signing key if it carries one. RFC 6376 §3.6.1
+	// makes `p=` required, so a record that omits it cannot verify a signature — yet the
+	// tag reader returns `undefined` for an absent tag and `''` for an empty one, and the
+	// old `isRevoked = publicKey === ''` test credited the absent case as a valid key.
+	// A stale `v=DKIM1; t=y` left behind by a half-finished rotation therefore scored a
+	// confident 100 (or 95 with the testing-mode finding).
+	describe('key records without key material (absent p=)', () => {
+		it('grades an absent p= tag as a deficiency instead of crediting it as a valid key', async () => {
+			const result = await checkDKIM('example.com', createMockDNS({ 'sel._domainkey.example.com': ['v=DKIM1; t=y'] }), {
+				selector: 'sel',
+			});
+			const finding = result.findings.find((f) => f.title === 'DKIM key record has no public key: sel');
+			expect(finding?.severity).toBe('high');
+			expect(result.score).toBeLessThan(80);
+		});
+
+		it('rates it exactly like a revoked key, alone and alongside a healthy selector', async () => {
+			const keyless = await checkDKIM('example.com', createMockDNS({ 'sel._domainkey.example.com': ['v=DKIM1'] }), {
+				selector: 'sel',
+			});
+			const revoked = await checkDKIM('example.com', createMockDNS({ 'sel._domainkey.example.com': ['v=DKIM1; p='] }), {
+				selector: 'sel',
+			});
+			expect(keyless.findings.map((f) => f.severity)).toEqual(revoked.findings.map((f) => f.severity));
+
+			const [s1, s2] = COMMON_DKIM_SELECTORS;
+			const healthyKey = 'v=DKIM1; p=' + 'A'.repeat(400);
+			const mixed = (second: string) =>
+				checkDKIM(
+					'example.com',
+					createMockDNS({ [`${s1}._domainkey.example.com`]: [healthyKey], [`${s2}._domainkey.example.com`]: [second] }),
+				);
+			const mixedKeyless = await mixed('v=DKIM1; p=');
+			const mixedRevoked = await mixed('v=DKIM1; p=;');
+			expect(mixedKeyless.findings.find((f) => f.title.startsWith('Revoked DKIM key:'))?.severity).toBe('medium');
+			expect(mixedRevoked.findings.find((f) => f.title.startsWith('Revoked DKIM key:'))?.severity).toBe('medium');
+		});
+
+		it('aggregates all-keyless probes with an accurate count instead of claiming zero revoked keys', async () => {
+			const [s1, s2] = COMMON_DKIM_SELECTORS;
+			const result = await checkDKIM(
+				'example.com',
+				createMockDNS({
+					[`${s1}._domainkey.example.com`]: ['v=DKIM1'],
+					[`${s2}._domainkey.example.com`]: ['v=DKIM1'],
+				}),
+			);
+			const aggregate = result.findings.find((f) => f.title === 'DKIM keys revoked');
+			expect(aggregate).toBeDefined();
+			expect(aggregate?.detail).toContain('All 2 observed');
+			// The per-selector findings it replaces are gone, so the defect is counted once.
+			expect(result.findings.filter((f) => f.title.startsWith('DKIM key record has no public key:'))).toHaveLength(0);
+		});
+	});
+
+	// The key-type scan used to be a bare `/k=/i` over the raw record. Base64 key material
+	// ending in `k==` therefore matched, and the check reported the padding as a declared
+	// key type — inventing a medium "Unknown DKIM key type: =" finding on a healthy key.
+	describe('k= tag parsing is anchored to the tag, not the substring', () => {
+		it('does not read base64 padding as a key type', async () => {
+			const keyless = await checkDKIM(
+				'example.com',
+				createMockDNS({ 'sel._domainkey.example.com': [`v=DKIM1; p=${'A'.repeat(349)}k==`] }),
+				{
+					selector: 'sel',
+				},
+			);
+			const control = await checkDKIM(
+				'example.com',
+				createMockDNS({ 'sel._domainkey.example.com': [`v=DKIM1; p=${'A'.repeat(349)}Q==`] }),
+				{
+					selector: 'sel',
+				},
+			);
+			expect(keyless.findings.some((f) => f.title.startsWith('Unknown DKIM key type'))).toBe(false);
+			expect(keyless.score).toBe(control.score);
+			expect(keyless.score).toBe(100);
+		});
+
+		it('still reports a genuinely unknown k= value', async () => {
+			const result = await checkDKIM(
+				'example.com',
+				createMockDNS({ 'sel._domainkey.example.com': [`v=DKIM1; k=dsa; p=${'A'.repeat(400)}`] }),
+				{
+					selector: 'sel',
+				},
+			);
+			expect(result.findings.some((f) => f.title === 'Unknown DKIM key type: dsa')).toBe(true);
+		});
 	});
 
 	it('detects ed25519 key type', async () => {
