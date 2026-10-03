@@ -365,6 +365,11 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 	// concurrent consumers all enter the orchestrator on the same target,
 	// contend for D1 / DNS / RDAP, and produce thrashing instead of progress.
 	let claimed = false;
+	// Everything after a successful claim that returns 'retry' MUST give the claim
+	// back first: the redelivery would otherwise see `running`, fail its own claim
+	// and ack, stranding a (possibly finished) audit until the reaper fails it.
+	const priorCompletedAt = existing.completed_at;
+	const releaseClaim = () => releaseTargetClaim(deps.db, message.auditId, message.target, isRetry ? 'completed' : 'queued', isRetry ? priorCompletedAt : null);
 	try {
 		// Phase 2b: retry messages claim from `completed` (since the original pass
 		// already flipped the row); originals still claim from `queued`. The
@@ -372,10 +377,13 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		// duplicate deliveries of a retry both attempt to flip completed→running;
 		// only the first one to commit wins. fromStatus is parameterized to match
 		// the rest of the file's binding pattern.
+		//
+		// The claim also stamps `completed_at` with the claim time: a `running` row
+		// ages from here (see `targetRunningSince`), not from enqueue.
 		const fromStatus = isRetry ? 'completed' : 'queued';
 		const claim = await deps.db
-			.prepare("UPDATE brand_audit_targets SET status = 'running' WHERE audit_id = ? AND target = ? AND status = ?")
-			.bind(message.auditId, message.target, fromStatus)
+			.prepare("UPDATE brand_audit_targets SET status = 'running', completed_at = ? WHERE audit_id = ? AND target = ? AND status = ?")
+			.bind(messageStartedAt, message.auditId, message.target, fromStatus)
 			.run();
 		claimed = (claim.meta?.changes ?? 0) > 0;
 		// Parent audit flip is best-effort; safe to no-op when already running.
@@ -384,6 +392,7 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 			.bind(messageStartedAt, message.auditId)
 			.run();
 	} catch {
+		if (claimed) await releaseClaim();
 		return 'retry';
 	}
 
@@ -499,6 +508,7 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 	} catch (err) {
 		if (err instanceof BrandAuditStepStoreError) {
 			clearTimeout(timeoutId);
+			await releaseClaim();
 			return 'retry';
 		}
 		runtimeError = err instanceof Error ? err.message : String(err);
@@ -521,6 +531,13 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 		}
 	}
 
+	//
+	// Both writes are guarded on `status = 'running'` (the state our claim put the
+	// row in). If the reaper / read-path closure already failed the row while we
+	// were running, a late result MUST NOT overwrite it, and — because the
+	// parent's counter was already ticked for that transition — MUST NOT tick it
+	// a second time (that finalised audits while siblings were still running).
+	let finalWriteLanded = false;
 	try {
 		if (isRetry && runtimeError) {
 			// Phase 2b: a retry pass that throws MUST NOT destroy the original
@@ -531,20 +548,31 @@ export async function processBrandAuditMessage(rawBody: unknown, deps: BrandAudi
 			// completed→running; without restoring it the row sits stuck in
 			// 'running' until the cron reaper sweeps at 15min). Surfaced by audit
 			// synthetic-audit-brandepsilon.com on 2026-05-19.
-			await deps.db
-				.prepare("UPDATE brand_audit_targets SET status = 'completed', error = ?, completed_at = ? WHERE audit_id = ? AND target = ?")
+			const write = await deps.db
+				.prepare(
+					"UPDATE brand_audit_targets SET status = 'completed', error = ?, completed_at = ? WHERE audit_id = ? AND target = ? AND status = 'running'",
+				)
 				.bind(errorString, clock(), message.auditId, message.target)
 				.run();
+			finalWriteLanded = (write.meta?.changes ?? 0) > 0;
 		} else {
-			await deps.db
+			const write = await deps.db
 				.prepare(
-					'UPDATE brand_audit_targets SET status = ?, result_json = ?, error = ?, completed_at = ? WHERE audit_id = ? AND target = ?',
+					"UPDATE brand_audit_targets SET status = ?, result_json = ?, error = ?, completed_at = ? WHERE audit_id = ? AND target = ? AND status = 'running'",
 				)
 				.bind(finalStatus, resultJson, errorString, clock(), message.auditId, message.target)
 				.run();
+			finalWriteLanded = (write.meta?.changes ?? 0) > 0;
 		}
 	} catch {
+		await releaseClaim();
 		return 'retry';
+	}
+	if (!finalWriteLanded) {
+		// The row left `running` under us (reaped / failed by the read path). That
+		// transition owns the terminal state and the counter tick; drop this result
+		// and skip every downstream side effect (retry enqueue, PDF, webhook, tick).
+		return 'ack';
 	}
 
 	// 4a. Phase 2b: retry enqueue decision. When the original pass produced
@@ -733,10 +761,14 @@ export async function processDiscoverOnlyMessage(rawBody: unknown, deps: BrandAu
 
 	// 2. Atomic claim — flip queued → running.
 	let claimed = false;
+	// A 'retry' after the claim must give it back (see processBrandAuditMessage).
+	const releaseClaim = () => releaseTargetClaim(deps.db, message.auditId, message.target, 'queued', null);
 	try {
+		// The claim stamps `completed_at` with the claim time: a `running` row ages
+		// from here (see `targetRunningSince`), not from enqueue.
 		const claim = await deps.db
-			.prepare("UPDATE brand_audit_targets SET status = 'running' WHERE audit_id = ? AND target = ? AND status = 'queued'")
-			.bind(message.auditId, message.target)
+			.prepare("UPDATE brand_audit_targets SET status = 'running', completed_at = ? WHERE audit_id = ? AND target = ? AND status = 'queued'")
+			.bind(messageStartedAt, message.auditId, message.target)
 			.run();
 		claimed = (claim.meta?.changes ?? 0) > 0;
 		await deps.db
@@ -744,6 +776,7 @@ export async function processDiscoverOnlyMessage(rawBody: unknown, deps: BrandAu
 			.bind(messageStartedAt, message.auditId)
 			.run();
 	} catch {
+		if (claimed) await releaseClaim();
 		return 'retry';
 	}
 	if (!claimed) {
@@ -815,14 +848,22 @@ export async function processDiscoverOnlyMessage(rawBody: unknown, deps: BrandAu
 			);
 		}
 	}
+	// Guarded on `status = 'running'`: a late result must not overwrite a row the
+	// reaper / read path already failed, nor tick the parent counter a second time.
+	let finalWriteLanded = false;
 	try {
-		await deps.db
-			.prepare('UPDATE brand_audit_targets SET status = ?, result_json = ?, error = ?, completed_at = ? WHERE audit_id = ? AND target = ?')
+		const write = await deps.db
+			.prepare(
+				"UPDATE brand_audit_targets SET status = ?, result_json = ?, error = ?, completed_at = ? WHERE audit_id = ? AND target = ? AND status = 'running'",
+			)
 			.bind(finalStatus, resultJson, errorString, clock(), message.auditId, message.target)
 			.run();
+		finalWriteLanded = (write.meta?.changes ?? 0) > 0;
 	} catch {
+		await releaseClaim();
 		return 'retry';
 	}
+	if (!finalWriteLanded) return 'ack';
 
 	// 5. Single-target finalization — bump completed_targets + flip audit terminal.
 	try {
@@ -849,6 +890,29 @@ export async function processDiscoverOnlyMessage(rawBody: unknown, deps: BrandAu
 	}
 
 	return 'ack';
+}
+
+/**
+ * Give back an atomic claim (`running` → the pre-claim status) so a redelivered
+ * message can claim the row again. Guarded on `status = 'running'` so it can never
+ * clobber a row the reaper / read path has already moved to a terminal state.
+ * Best-effort: if D1 is still down, the reaper remains the backstop.
+ */
+async function releaseTargetClaim(
+	db: D1Database,
+	auditId: string,
+	target: string,
+	toStatus: 'queued' | 'completed',
+	completedAt: number | null,
+): Promise<void> {
+	try {
+		await db
+			.prepare("UPDATE brand_audit_targets SET status = ?, completed_at = ? WHERE audit_id = ? AND target = ? AND status = 'running'")
+			.bind(toStatus, completedAt, auditId, target)
+			.run();
+	} catch {
+		// Swallow — see above.
+	}
 }
 
 /** Strip newlines / runaway-length from error strings before persisting. */

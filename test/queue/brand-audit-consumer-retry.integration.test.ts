@@ -79,9 +79,10 @@ function makeMockD1(initial: { target: AuditTargetRow & { result_json?: string |
 					}
 					if (sql.includes('UPDATE brand_audit_targets')) {
 						// Atomic claim: parameterized predicate `status = ?` with the
-						// expected value bound as the third arg.
-						if (sql.includes("SET status = 'running' WHERE audit_id = ? AND target = ? AND status = ?")) {
-							const expected = binds[2] as AuditTargetRow['status'];
+						// expected value bound as the fourth arg (after the claim stamp,
+						// audit id and target).
+						if (sql.includes("SET status = 'running', completed_at = ? WHERE audit_id = ? AND target = ? AND status = ?")) {
+							const expected = binds[3] as AuditTargetRow['status'];
 							if (targetRow.status !== expected) return { success: true, meta: { changes: 0 } };
 							targetRow.status = 'running';
 							return { success: true, meta: { changes: 1 } };

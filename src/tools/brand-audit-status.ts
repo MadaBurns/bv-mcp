@@ -15,7 +15,7 @@
 
 import { buildCheckResult, createFinding, type CheckResult } from '../lib/scoring';
 import type { BrandAuditStatus } from '../lib/db/brand-audit-schema';
-import { BRAND_AUDIT_TARGET_DEADLINE_MS } from '../lib/brand-audit-reaper';
+import { BRAND_AUDIT_TARGET_DEADLINE_MS, targetRunningSince } from '../lib/brand-audit-reaper';
 import type { BrandAuditStepStore } from '../lib/brand-audit-step-store';
 
 import { BRAND_DISCOVERY_CATEGORY as CATEGORY } from '../lib/brand-audit-category';
@@ -112,7 +112,7 @@ export async function brandAuditStatus(
 	const deadZoneTargets: BrandAuditTargetRow[] = [];
 	const renderedTargets = targets.map((t) => {
 		const hasResultJson = typeof t.result_json === 'string' && t.result_json.length > 0;
-		const isStuck = t.status === 'running' && now - t.created_at > BRAND_AUDIT_TARGET_DEADLINE_MS;
+		const isStuck = t.status === 'running' && now - targetRunningSince(t) > BRAND_AUDIT_TARGET_DEADLINE_MS;
 		if (isStuck) {
 			deadZoneTargets.push(t);
 		}
@@ -125,7 +125,13 @@ export async function brandAuditStatus(
 		return {
 			row: t,
 			status: renderedStatus,
-			completedAt: renderedStatus === 'completed' ? t.completed_at ?? audit.completed_at : t.completed_at,
+			// A `running` row's completed_at is the consumer's claim stamp, not a completion time.
+			completedAt:
+				renderedStatus === 'completed'
+					? (t.completed_at ?? audit.completed_at)
+					: renderedStatus === 'running'
+						? null
+						: t.completed_at,
 			synthesisedError: isStuck
 				? `target stuck >${Math.floor(BRAND_AUDIT_TARGET_DEADLINE_MS / 60_000)}min in running; consumer cap did not flip status (read-path closure)`
 				: null,

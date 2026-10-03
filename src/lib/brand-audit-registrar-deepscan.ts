@@ -18,9 +18,11 @@
  * the real production builders.
  *
  * Parallel cap 5. Per-apex failures are partial: a failed scan_domain omits
- * that apex (apexesScanned < apexesTotal); a failed discover_subdomains or
- * check_subdomain_takeover only drops that apex's inventory / dangling
- * section. Stage still reaches 'ready'.
+ * that apex's posture row (apexesScanned < apexesTotal) but not its takeover /
+ * inventory results; a failed discover_subdomains or check_subdomain_takeover
+ * only drops that apex's inventory / dangling section. Stage still reaches
+ * 'ready'. If EVERY call for EVERY apex fails, runDeepScan throws instead of
+ * publishing an empty 'ready' payload.
  */
 
 import type { BrandAuditRegistrar } from '../schemas/brand-audit-registrar';
@@ -228,10 +230,21 @@ function gradedApexPosture(scan: ScanDomainStructured): { score: number | null; 
 	return { score: scan.score, grade: scan.grade };
 }
 
+/** Best → worst. Same order as `GRADE_ORDER` in `src/tools/compare-baseline.ts`. */
+const GRADE_ORDER = ['A+', 'A', 'B+', 'B', 'C+', 'C', 'D+', 'D', 'E', 'F'];
+
+/** Rank of a grade letter (0 = best). An unrecognised letter ranks worst, never best. */
+function gradeRank(grade: string): number {
+	const i = GRADE_ORDER.indexOf(grade);
+	return i === -1 ? GRADE_ORDER.length : i;
+}
+
 function medianGrade(grades: Array<string | null>): string | null {
 	const present = grades.filter((g): g is string => g !== null);
 	if (present.length === 0) return null;
-	const sorted = [...present].sort();
+	// Rank, don't string-sort: lexically 'A' < 'A+', so ['A+', 'A', 'B'] "sorted"
+	// to A, A+, B and reported A+ as the median.
+	const sorted = [...present].sort((a, b) => gradeRank(a) - gradeRank(b));
 	return sorted[Math.floor(sorted.length / 2)];
 }
 
@@ -263,28 +276,41 @@ export async function runDeepScan(input: RunDeepScanInput): Promise<RunDeepScanR
 		return { apex, scan, discover, takeover };
 	});
 
+	// Total failure is not a result. With every call for every apex failed there is
+	// nothing to report, and publishing `stage: 'ready'` with `danglingDnsTotal: 0`
+	// would certify a clean deep scan that never ran — `brand_audit_get_report`
+	// prefers the full payload over the fast one. Throwing leaves
+	// `registrar_complement_full` unwritten, so the report keeps serving the fast
+	// payload (the consumer treats a deep-scan throw as a contained, non-retryable
+	// failure).
+	if (perApex.length > 0 && perApex.every((r) => !r.scan && !r.discover && !r.takeover)) {
+		throw new Error('registrar deep-scan: every internal call failed; refusing to publish an empty ready payload');
+	}
+
 	const postureApexes: BrandAuditRegistrar['postureSnapshot']['apexes'] = [];
 	const dangling: BrandAuditRegistrar['deepScan']['danglingDns'] = [];
 	const inventory: BrandAuditRegistrar['deepScan']['subdomainInventoryByApex'] = {};
 	const grades: Array<string | null> = [];
 
 	for (const r of perApex) {
-		// scan_domain is the load-bearing call: without a posture there is nothing
-		// to report for this apex, so it is omitted entirely (partial result).
-		if (!r.scan) continue;
-		const posture = gradedApexPosture(r.scan);
-		postureApexes.push({
-			apex: r.apex,
-			grade: posture.grade,
-			score: posture.score,
-			dmarc: null,
-			spf: null,
-			dnssec: null,
-			dkim: null,
-			mtaSts: null,
-			scannedAt: new Date().toISOString(),
-		});
-		grades.push(posture.grade);
+		// scan_domain is the load-bearing call for POSTURE only: without it the apex
+		// has no posture row (partial result). The takeover and subdomain results
+		// are independent measurements and are carried regardless.
+		if (r.scan) {
+			const posture = gradedApexPosture(r.scan);
+			postureApexes.push({
+				apex: r.apex,
+				grade: posture.grade,
+				score: posture.score,
+				dmarc: null,
+				spf: null,
+				dnssec: null,
+				dkim: null,
+				mtaSts: null,
+				scannedAt: new Date().toISOString(),
+			});
+			grades.push(posture.grade);
+		}
 		const apexDangling = extractDangling(r.apex, r.takeover);
 		dangling.push(...apexDangling);
 		if (r.discover) {
