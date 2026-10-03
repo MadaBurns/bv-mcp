@@ -674,6 +674,22 @@ function rebuildUnlessAbstained(result: CheckResult, adjusted: Finding[]): Check
 	return rebuildPreservingSignals(result, adjusted);
 }
 
+/**
+ * Retract a DECLARED `metadata.missingControl: true` when a finding is downgraded to
+ * "not applicable". Spread the result into the downgraded finding.
+ *
+ * `findingsIndicateMissingControl` honours a declared `true` with NO severity gate, so
+ * a finding rewritten to `info` / "not applicable" but still carrying the declaration
+ * kept zeroing its category and failing `passed` — the prose said "expected" while the
+ * score said "absent". `missingControl: false` is the scoring layer's own "measured,
+ * not a missing control" declaration (it outranks the prose regex in both directions).
+ * Undeclared findings get no patch: they already fall through to the severity-gated
+ * prose inference, which `info` clears.
+ */
+function notApplicableMetadata(finding: Finding): { metadata?: Finding['metadata'] } {
+	return finding.metadata?.missingControl === true ? { metadata: { ...finding.metadata, missingControl: false } } : {};
+}
+
 function adjustForNonApexNonMailHost(results: CheckResult[]): CheckResult[] {
 	const mailCategories: CheckCategory[] = ['spf', 'dmarc', 'dkim', 'mta_sts', 'bimi', 'tlsrpt', 'dane', 'subdomailing'];
 	return results.map((result) => {
@@ -684,6 +700,7 @@ function adjustForNonApexNonMailHost(results: CheckResult[]): CheckResult[] {
 					...finding,
 					severity: 'info' as const,
 					detail: `${finding.detail} (not applicable — this non-apex host has no MX; mail controls are evaluated at its mail domain)`,
+					...notApplicableMetadata(finding),
 				};
 			}
 			return finding;
@@ -704,7 +721,7 @@ function adjustForNonMailDomain(results: CheckResult[]): CheckResult[] {
 				// no-MX domain got the downgrade — keep this single-branch to prevent a
 				// re-introduction of that split.
 				const reason = 'expected — no MX records and parent domain DMARC policy covers subdomains';
-				return { ...finding, severity: 'info' as const, detail: `${finding.detail} (${reason})` };
+				return { ...finding, severity: 'info' as const, detail: `${finding.detail} (${reason})`, ...notApplicableMetadata(finding) };
 			}
 			return finding;
 		});
@@ -817,6 +834,7 @@ function adjustForNoSendDomain(results: CheckResult[]): CheckResult[] {
 					...finding,
 					severity: 'info' as const,
 					detail: `${finding.detail} (expected — domain SPF policy rejects all outbound mail)`,
+					...notApplicableMetadata(finding),
 				};
 			}
 			return finding;
