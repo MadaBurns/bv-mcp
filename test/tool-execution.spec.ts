@@ -463,7 +463,7 @@ describe('logToolFailure outcomeReason — classified by cause, not by the prese
 				emitRateLimitEvent: vi.fn(),
 				emitSessionEvent: vi.fn(),
 				emitDegradationEvent: vi.fn(),
-			},
+			} as unknown as import('../src/lib/analytics').AnalyticsClient,
 			error,
 			args: {},
 		});
