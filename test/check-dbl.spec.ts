@@ -335,6 +335,24 @@ describe('checkDbl', () => {
 		expect(result.findings.some((f) => f.metadata?.zonesChecked === 3)).toBe(false);
 	});
 
+	it('#1197: abstains when every zone answered but none gave a usable verdict (all stubs / unrecognised codes)', async () => {
+		// Spamhaus public-resolver stub, URIBL rate-limit stub, SURBL code with no known flag bit set.
+		mockZones({ spamhaus: '127.255.255.254', uribl: '127.0.0.1', surbl: '127.0.0.1' });
+
+		const result = await run();
+		// Three zones answered, zero verdicts: nothing was measured, so this is an abstention —
+		// not a `low` "found on the 0 blocklist(s)" sentence that still scores as a pass.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.some((f) => /not listed|no listings/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		// The per-zone stub / unrecognised-code findings survive so the caller can see WHY.
+		expect(result.findings.filter((f) => f.metadata?.quotaError === true)).toHaveLength(2);
+		expect(result.findings.filter((f) => f.metadata?.unrecognizedResponse === true)).toHaveLength(1);
+		const note = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(note).toBeDefined();
+		expect(note!.metadata).toMatchObject({ errorKind: 'dns_error', zonesChecked: 0, quotaLimited: 2, unrecognizedResponses: 1 });
+	});
+
 	it('emits the unqualified clean record only when every zone returned a usable verdict', async () => {
 		mockZones({ spamhaus: null, uribl: null, surbl: null });
 

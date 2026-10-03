@@ -285,6 +285,35 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		) as CheckResult;
 	}
 
+	// Zones that gave a usable verdict: answered, and not with a stub or an unrecognised code.
+	const usable = checkedCount - quotaLimited - unrecognized;
+
+	if (listedCount === 0 && usable === 0) {
+		// Every zone answered, but none with a verdict (e.g. Spamhaus' public-resolver refusal
+		// plus a URIBL rate-limit stub plus an unrecognised SURBL code). Nothing was measured, so
+		// this is the same abstention as the all-errored case above — not a `low` "found on the
+		// 0 blocklist(s)" sentence that still scores as a pass (#1197). The per-zone findings are
+		// kept so the caller can see WHY; the note carries `inconclusive` + `errorKind` and never
+		// `missingControl`, and `partial` keeps the non-answer out of the 3600 s cache.
+		findings.push(
+			createFinding(
+				CATEGORY,
+				'DBL not assessed — no blocklist returned a usable verdict',
+				'info',
+				`All ${checkedCount} blocklist zones answered for ${domain}, but ${quotaLimited} returned a rate-limit or access stub and ${unrecognized} returned an unrecognised code, so no zone gave a verdict. This is not evidence that the domain is clean or listed.`,
+				{
+					inconclusive: true,
+					errorKind: 'dns_error',
+					zonesChecked: 0,
+					unansweredZones: zoneErrors,
+					quotaLimited,
+					unrecognizedResponses: unrecognized,
+				},
+			),
+		);
+		return { ...buildCheckResult(CATEGORY, findings), score: 0, passed: false, checkStatus: 'error', partial: true } as CheckResult;
+	}
+
 	// No listings: claim clean only when every zone actually answered.
 	if (listedCount === 0 && findings.length === 0) {
 		findings.push(
@@ -298,7 +327,6 @@ export async function checkDbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		);
 	} else if (listedCount === 0 && findings.every((f) => f.severity === 'low')) {
 		// Only errors/quota/unrecognised codes — bound the claim to the zones that gave a usable verdict
-		const usable = checkedCount - quotaLimited - unrecognized;
 		findings.push(
 			createFinding(
 				CATEGORY,
