@@ -446,3 +446,54 @@ describe('logToolFailure', () => {
 		expect(JSON.stringify(errorLog)).not.toContain('google');
 	});
 });
+
+describe('logToolFailure outcomeReason — classified by cause, not by the presence of a domain (T10)', () => {
+	async function reasonFor(toolName: string, domain: string | undefined, error: unknown): Promise<unknown> {
+		const { logToolFailure } = await import('../src/handlers/tool-execution');
+		vi.spyOn(console, 'log').mockImplementation(() => {});
+		const emitToolEvent = vi.fn();
+		logToolFailure({
+			toolName,
+			durationMs: 10,
+			domain,
+			analytics: {
+				enabled: true,
+				emitToolEvent,
+				emitRequestEvent: vi.fn(),
+				emitRateLimitEvent: vi.fn(),
+				emitSessionEvent: vi.fn(),
+				emitDegradationEvent: vi.fn(),
+			},
+			error,
+			args: {},
+		});
+		return (emitToolEvent.mock.calls[0][0] as { outcomeReason?: string }).outcomeReason;
+	}
+
+	it('a thrown runtime error from a domainless tool (batch_scan) is internal_error, not input_error', async () => {
+		expect(await reasonFor('batch_scan', undefined, new TypeError("Cannot read properties of undefined (reading 'length')"))).toBe(
+			'internal_error',
+		);
+	});
+
+	it('a runtime error that merely mentions parse/schema mid-sentence is still internal_error for a domainless tool', async () => {
+		expect(
+			await reasonFor('osint_investigate_domain_start', undefined, new Error('Failed to parse upstream response against schema')),
+		).toBe('internal_error');
+	});
+
+	it('pre-dispatch validation failures stay input_error (domainless tools and a domain tool whose domain failed)', async () => {
+		expect(await reasonFor('batch_scan', undefined, new Error('Invalid domains: Too many items'))).toBe('input_error');
+		expect(await reasonFor('scan_buckets_start', undefined, new Error('Missing required parameter: domains'))).toBe('input_error');
+		expect(await reasonFor('check_spf', undefined, new Error('Domain validation failed: invalid domain'))).toBe('input_error');
+		expect(await reasonFor('check_spf', undefined, new Error('Missing required parameter: domain'))).toBe('input_error');
+	});
+
+	it('an unknown tool name is still input_error (caller typo / probe), not a service failure', async () => {
+		expect(await reasonFor('definitely_not_a_tool', undefined, 'Unknown tool: definitely_not_a_tool')).toBe('input_error');
+	});
+
+	it('a failure of a domain-bearing tool stays internal_error', async () => {
+		expect(await reasonFor('check_spf', 'example.com', new Error('boom'))).toBe('internal_error');
+	});
+});
