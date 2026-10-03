@@ -411,10 +411,19 @@ function buildFamilyReachability(
 function computeTransportParity(results: AddressResult[]): boolean | undefined {
 	// Only an authoritative (AA=1) answer is trustworthy evidence about the zone; comparing a
 	// lame/intercepted answer against a genuine one would misreport parity.
-	const ipv4 = results.find((result) => result.family === 'ipv4' && result.aaFlag === true);
-	const ipv6 = results.find((result) => result.family === 'ipv6' && result.aaFlag === true);
-	if (!ipv4 || !ipv6) return undefined;
-	return ipv4.soaRcode === ipv6.soaRcode && ipv4.soaSerial === ipv6.soaSerial;
+	// Pair v4 with v6 only WITHIN one nameserver (SQ-282): a v4-only primary and a dual-stack
+	// secondary legitimately carry different serials, and crossing them is a false mismatch.
+	const authoritative = results.filter((result) => result.aaFlag === true);
+	const nameservers = new Set(authoritative.map((result) => result.nameserver));
+	let compared = false;
+	for (const nameserver of nameservers) {
+		const ipv4 = authoritative.find((result) => result.nameserver === nameserver && result.family === 'ipv4');
+		const ipv6 = authoritative.find((result) => result.nameserver === nameserver && result.family === 'ipv6');
+		if (!ipv4 || !ipv6) continue;
+		compared = true;
+		if (ipv4.soaRcode !== ipv6.soaRcode || ipv4.soaSerial !== ipv6.soaSerial) return false;
+	}
+	return compared ? true : undefined;
 }
 
 function setsEqual(a: string[], b: string[]): boolean {

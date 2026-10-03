@@ -259,4 +259,52 @@ describe('checkCymruAsn', () => {
 		expect(finding).toBeDefined();
 		expect(finding!.metadata?.invalidIps).toEqual(['999.0.2.1']);
 	});
+
+	// SQ-282 item 2 — a failed A lookup is a non-measurement, not "no A records".
+	it('abstains (checkStatus error, not passed) when the A lookup rejects', async () => {
+		globalThis.fetch = vi.fn().mockImplementation(() => Promise.reject(new Error('DNS timeout')));
+
+		const result = await run();
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+	});
+
+	it('abstains when the A lookup answers SERVFAIL, rather than reporting "No A records found"', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const name = new URL(url).searchParams.get('name') ?? '';
+			return Promise.resolve(createDohResponse([{ name, type: 1 }], [], { status: 2 }));
+		});
+
+		const result = await run();
+
+		expect(result.checkStatus).toBe('error');
+		expect(result.passed).toBe(false);
+		expect(result.findings.some((f) => f.title === 'No A records found')).toBe(false);
+	});
+
+	// SQ-282 item 2 — the serial per-address loop must be bounded.
+	it('caps the number of addresses examined and documents the truncation in a finding', async () => {
+		const ips = Array.from({ length: 100 }, (_, i) => `198.51.100.${i + 1}`);
+		// A Set: an empty answer is re-asked on the secondary resolver, so names repeat.
+		const originQueries = new Set<string>();
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const name = new URL(url).searchParams.get('name') ?? '';
+			if (name === 'example.com') return Promise.resolve(aResponse('example.com', ips));
+			if (name.endsWith('.origin.asn.cymru.com')) originQueries.add(name);
+			return Promise.resolve(emptyResponse(name));
+		});
+
+		const result = await run();
+
+		expect(originQueries.size).toBeGreaterThan(0);
+		expect(originQueries.size).toBeLessThanOrEqual(10);
+		const truncation = result.findings.find((f) => f.metadata?.truncated === true);
+		expect(truncation).toBeDefined();
+		expect(truncation!.metadata?.examined).toBe(originQueries.size);
+		expect(truncation!.metadata?.total).toBe(100);
+	});
 });

@@ -437,4 +437,36 @@ describe('checkRootServerSet', () => {
 		expect(titles).toContain('Root server set checks passed');
 		expect(titles).not.toContain('Root server set checks inconclusive');
 	});
+
+	// SQ-282 item 5 — staleness is a comparison; fewer than two serials compared nothing.
+	describe('stale_root_zone_serial_detection needs at least two serials (SQ-282)', () => {
+		async function summaryFor(serialsByRoot: Record<string, number> | undefined) {
+			const fetch = vi.fn(async () => new Response(JSON.stringify({
+				hostname: '.',
+				checkedAt: '2026-05-21T00:00:00.000Z',
+				rootHints: ROOT_HINTS,
+				observedRootServers: ROOT_SERVER_NAMES,
+				...(serialsByRoot ? { serialsByRoot } : {}),
+			})));
+			const result = await checkRootServerSet({ infraProbe: { fetch: fetch as unknown as typeof globalThis.fetch } });
+			return result.metadata?.capabilitySummary as { passed: string[]; failed: string[]; inconclusive: string[] };
+		}
+
+		it('is inconclusive, not passed, when only one root reported a serial', async () => {
+			const summary = await summaryFor({ 'a.root-servers.net': 2026052101 });
+			expect(summary.passed).not.toContain('stale_root_zone_serial_detection');
+			expect(summary.inconclusive).toContain('stale_root_zone_serial_detection');
+		});
+
+		it('is inconclusive, not passed, when no root reported a serial', async () => {
+			const summary = await summaryFor(undefined);
+			expect(summary.passed).not.toContain('stale_root_zone_serial_detection');
+			expect(summary.inconclusive).toContain('stale_root_zone_serial_detection');
+		});
+
+		it('passes when two roots reported the same serial', async () => {
+			const summary = await summaryFor({ 'a.root-servers.net': 2026052101, 'b.root-servers.net': 2026052101 });
+			expect(summary.passed).toContain('stale_root_zone_serial_detection');
+		});
+	});
 });
