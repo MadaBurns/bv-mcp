@@ -353,6 +353,11 @@ export async function checkMtaSts(
 		timeout: dnsOptions?.timeoutMs ?? HTTPS_TIMEOUT_MS,
 		fetchFn: observingFetch,
 		zone: resolvedZone,
+		// SQ-266: on the scan path `_smtp._tls.<domain>` is ONE shared queryCache promise that tlsrpt
+		// awaits too. If it hangs, stop waiting at this check's own budget deadline (750 ms inside
+		// safeCheck's kill, see fetchBudgetFor) so the check returns what it measured instead of being
+		// discarded along with tlsrpt. No budget (every direct call) → undefined → the wait is unbounded.
+		tlsRptDeadline: budget.signal(),
 	})) as CheckResult;
 
 	if (policyWafEvent) return excludeForWaf(result, domain, policyWafEvent, policyWafStatus);

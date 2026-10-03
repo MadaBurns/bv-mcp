@@ -29,9 +29,13 @@
 //       BY DESIGN, not a defect: src/lib/cache.ts cacheGet (:207-218) and
 //       cacheSet (:255-266) catch a KV failure, log, and fall through to the
 //       per-isolate IN_MEMORY_CACHE, so a SCAN_CACHE outage degrades to an
-//       in-process cache rather than disabling caching. The one adjacent open
-//       case — a cached UNGRADED result being served from cache — is pending
-//       SQ-200 in #1140 (3.91.0); it is NOT closed until 3.91.0 is wire-verified.
+//       in-process cache rather than disabling caching. The one adjacent case
+//       — a cached UNGRADED result being served from cache — is CLOSED by SQ-200
+//       (#1140: the scan-cache write is admitted only when score.overall !== null).
+//       CHANGELOG files it under 3.91.0, and the first git tag that contains it is v3.92.0.
+//       Wire-verified 2026-10-02: the live /mcp initialize returned serverInfo.version 3.93.0,
+//       and that tag contains it. The in-repo pin is scan-domain-doh-outage.chaos.test.ts H1
+//       ("should NOT write the ungraded result to the 5-min scan cache").
 //  H4 — SESSION_STORE (the KV `handleToken` uses for OAuth code/token state)
 //       throws during POST /oauth/token. Returns a 503 `temporarily_unavailable`
 //       OAuth error body, never a 500 or a leaked internal message (SQ-199
