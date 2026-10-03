@@ -6,11 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 _Entries for released versions below were edited on 2026-09-09 to remove a third-party vendor name. Tool, view, file and type identifiers in those entries are shown under their current (post-rename) names; at the versions listed they shipped under earlier names. A further edit on 2026-09-23 redacted client domain names cited as fact-check examples in historical entries, shown as `<redacted>` or a neutral brand description; no scoring, detection, or behavioral semantics changed._
 
-## [3.94.0] - 2026-10-03
-
-- TODO: fill in release notes.
-
 ## [Unreleased]
+
+## [3.94.0] - 2026-10-03
 
 ### Fixed
 
@@ -18,6 +16,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 - **`check_dane_https` no longer scores "DANE without DNSSEC" (high) when the DNSSEC (AD) lookup is cut (SQ-207).** A transport error or timeout on the AD lookup was swallowed and left DNSSEC status `false`, so a TLSA answer with usage 2/3 was scored as an unsigned zone from a probe that never reached a resolver. The DNSSEC facet now abstains with an `info` finding `DNSSEC status not determined` (`errorKind: 'dns_error'`, no `missingControl`), the TLSA facet is still reported from its answer, and the result is `partial` so it is re-tried rather than cached. An answered AD=false is unchanged (a measured absence). The SMTP sibling `check_dane` has the same pattern and is not part of this change. Package change in `@blackveil/dns-checks`: needs the dns-checks release plus the `PARITY_CORPUS_VERSION` bump and a bv-web-prod re-vendor.
 - **`check_dane` (SMTP) no longer scores "DANE without DNSSEC" (high) when a per-MX DNSSEC (AD) lookup is cut (SQ-264).** Sibling of the SQ-207 fix. A transport error or timeout on an MX host's AD lookup was swallowed and treated as unsigned, so a published `_25._tcp` TLSA record was scored as an unsigned zone from a probe that never reached a resolver. Such an MX host now contributes an `info` finding `DNSSEC status not determined` (`errorKind: 'dns_error'`, `inconclusive`, no `missingControl`), the TLSA finding is still reported from its answer, and the result is `partial` so it is re-tried rather than cached. An answered AD=false is unchanged (a measured absence). Package change in `@blackveil/dns-checks`: needs the dns-checks release plus the `PARITY_CORPUS_VERSION` bump and a bv-web-prod re-vendor.
 - **`scan_domain`: a hung `_smtp._tls` lookup no longer takes `mta_sts` down with `tlsrpt` (SQ-266).** Both checks read `_smtp._tls.<domain>` and, on the scan path, already await ONE shared query. When it never answered, the 8s per-check kill discarded `mta_sts` too, including a graded `_mta-sts`/policy measurement it had already made. `checkMTASTS` takes a new optional `tlsRptDeadline` signal; `check_mta_sts` passes its fetch-budget deadline (750 ms inside the kill), so it stops waiting there and records TLS-RPT as not assessed (`info`, `notAssessedReason: 'dns_query_failed'`). A graded MTA-STS finding (e.g. a policy 404) now stays measured and scores as it would with a healthy `_smtp._tls`; with nothing graded (a healthy policy) the check still abstains as before (#889), now with its own findings rather than the kill's. No score change for a domain whose `_smtp._tls` lookup settles inside the per-check budget: the deadline never fires on a settled lookup, and it is inert on direct calls (no budget). No dns-checks version bump (the scoring-contract gate does not cover `checks/`).
+- **Cron alerting and scan dispatch no longer fail silently (#1182).** The tenant cycle alert resolves its webhook through `resolveAlertWebhookUrl` like every other cron sender (an admin-managed URL overrides the `ALERT_WEBHOOK_URL` secret), delivers over the `bvWeb` service binding when the URL is bv-web's ingest route, and logs one structured warning (cycle id and reason, never the payload) for every non-delivered outcome. The alerting self-check, lane partial-failure and `mcp_access_rollup` provisioning alerts gain a 24h `RATE_LIMIT` KV cooldown per threshold and reason (#1164), fail-open to sending when KV is unbound or throws. The two analytics-alerting early returns (no webhook, no Analytics Engine credentials) now log instead of returning silently. `dispatchDueScans` resolves a lane's queue BEFORE `claimDue`, so an unbound queue can no longer advance a row's schedule without enqueueing it, and a `queue.send` that throws mid-loop logs the lane with claimed and sent counts instead of dropping the rest of the tick.
+
 ### Added
 
 - **Repeat-ungraded `scan_domain` counter (SQ-214).** When the scan-cache admission
@@ -25,7 +25,6 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   emitted (`ungraded_not_cached`, domain fingerprint, `first`/`repeat` within 5 minutes,
   per-isolate memory). Measurement only: no caching, scoring or subrequest change; it
   informs whether a short negative TTL is worth adding.
-### Added
 
 - **Primary DoH failures are now measured (SQ-209).** Every failed PRIMARY resolver attempt
   (HTTP >= 500, non-abort network error, per-fetch timeout) emits one structured
@@ -54,6 +53,8 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
   differs from the root's so npm nests it: `cf` discovers its delegate only at
   `<package>/node_modules/wrangler`, and a hoisted install fails `cf build`; an audit
   asserts the nested lockfile entry. Phase 3 of the cf migration.
+- **hono 4.13.10 → 4.13.11 (#1180).** Upstream security fix: `serveStatic` decoded the request path a second time, letting a crafted request bypass middleware mounted on a static prefix (GHSA-5r4p-p66f-jhc7). bv-mcp does not use `serveStatic`; the bump is hygiene.
+- **`@blackveil/dns-checks` 1.55.0 → 1.56.0 and `PARITY_CORPUS_VERSION` to match.** Lockstep coordination bump for the two abstention-vs-penalty check corrections in this release (SQ-207 `check_dane_https`, SQ-264 `check_dane`): a cut DNSSEC (AD) lookup no longer scores "DANE without DNSSEC". bv-web-prod must re-vendor 1.56.0 after this release deploys. Held draft #1153 previously claimed 1.56.0 and should move to 1.57.0.
 
 ## [3.93.0] - 2026-09-28
 
