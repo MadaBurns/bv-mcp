@@ -156,6 +156,17 @@ function dmarcEnforced(scan: ScanDomainResult): boolean {
 	return policy === 'quarantine' || policy === 'reject';
 }
 
+/**
+ * Did this category's check fail to execute (`checkStatus` timeout/error)? Its result then
+ * carries `passed: false` / score 0 as an artefact of the failure, not a measurement, so a
+ * rule that needs it is inconclusive. Whole-scan `hasCompletedEvidence` cannot see this: one
+ * completed sibling check satisfies it while the category the rule needs never ran (SQ-291).
+ */
+function categoryUnmeasured(scan: ScanDomainResult, category: CheckCategory): boolean {
+	const status = scan.checks.find((value) => value.category === category)?.checkStatus;
+	return status === 'timeout' || status === 'error';
+}
+
 /** Compare a scan result against a policy baseline. */
 export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline): BaselineResult {
 	const violations: BaselineViolation[] = [];
@@ -228,9 +239,10 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 	// absent or `'completed'`), so an all-transient outage abstains the same way
 	// a zero-check scan does.
 	const scanMeasured = hasCompletedEvidence(scan.checks);
+	const anyCheckUnmeasured = scan.checks.some((value) => value.checkStatus === 'timeout' || value.checkStatus === 'error');
 
 	if (baseline.require_dmarc_enforce) {
-		if (!scanMeasured) {
+		if (!scanMeasured || categoryUnmeasured(scan, 'dmarc')) {
 			inconclusiveRules.push('require_dmarc_enforce');
 		} else {
 			checkedRules++;
@@ -265,6 +277,8 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 				// never counts a rule nobody could answer.
 				inconclusiveRules.push(requirement.key);
 				notApplicableRules.push(requirement.key);
+			} else if (categoryUnmeasured(scan, requirement.category)) {
+				inconclusiveRules.push(requirement.key);
 			} else {
 				checkedRules++;
 				if (!categorySatisfied(scan, requirement.category)) {
@@ -292,6 +306,10 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 					expected: baseline.max_critical_findings,
 					actual: criticalCount,
 				});
+			} else if (anyCheckUnmeasured) {
+				// The count is only a lower bound: a check that never ran may hold more.
+				checkedRules--;
+				inconclusiveRules.push('max_critical_findings');
 			}
 		}
 	}
@@ -309,6 +327,9 @@ export function compareBaseline(scan: ScanDomainResult, baseline: PolicyBaseline
 					expected: baseline.max_high_findings,
 					actual: highCount,
 				});
+			} else if (anyCheckUnmeasured) {
+				checkedRules--;
+				inconclusiveRules.push('max_high_findings');
 			}
 		}
 	}

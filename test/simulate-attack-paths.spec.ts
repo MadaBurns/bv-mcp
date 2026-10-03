@@ -1375,7 +1375,9 @@ describe('simulateAttackPaths — non-resolving apex (SQ-268)', () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error('network down'));
 		const { simulateAttackPaths } = await import('../src/tools/simulate-attack-paths');
 		const result = await simulateAttackPaths('down-sim-268.example');
-		expect(result.notAssessed).toBeUndefined();
-		expect(result.overallRisk).not.toBeNull();
+		// The probe failure does not abstain as NXDOMAIN; the simulation ran. SQ-291: with the
+		// network down no check measured anything, so it is "unmeasured", never a clean low.
+		expect(result.notAssessed?.reason).not.toBe('domain_does_not_resolve');
+		expect(result.overallRisk).not.toBe('low');
 	});
 });

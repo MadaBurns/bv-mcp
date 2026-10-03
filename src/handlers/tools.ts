@@ -1613,6 +1613,8 @@ export async function handleToolsCall(
 									updatedAt: job.updatedAt,
 									expiresAt: job.expiresAt,
 									error: job.error,
+									// A `completed` job whose budget cut off a tail is NOT a clean completion (SQ-291).
+									...(job.incomplete !== undefined && { incomplete: job.incomplete, unscanned: job.unscanned ?? [] }),
 								};
 					logToolSuccess({ ...ctx(), status: 'pass', logResult: job.status, logDetails: payload, severity: 'info' });
 					return buildToolResult(JSON.stringify(payload, null, 2), payload, effectiveFormat);
