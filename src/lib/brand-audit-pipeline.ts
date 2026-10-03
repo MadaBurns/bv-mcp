@@ -147,6 +147,13 @@ export interface BrandAuditPipelineDeps {
 	certstream?: { fetch: typeof fetch };
 	/** Bearer token for the bv-certstream-worker `/sans` endpoint — forwarded to `discoverBrandDomains`. */
 	certstreamAuthToken?: string;
+	/**
+	 * Optional Certspotter bearer token — forwarded to `discoverBrandDomains` so the SAN
+	 * correlator's Certspotter failover (which every crt.sh-only apex reaches) draws on the
+	 * authenticated quota instead of the small shared anonymous one. Same env source
+	 * (`resolveCertspotterToken`) as the synchronous `discover_brand_domains` path.
+	 */
+	certspotterToken?: string;
 	whoisBinding?: { fetch: typeof fetch };
 	/**
 	 * Tier 0 (tenant-declared portfolio) lookup closure, wrapping the
@@ -709,6 +716,7 @@ export async function runBrandAuditPipeline(
 			candidate_domains: options.candidate_domains,
 			certstream: deps.certstream,
 			certstreamAuthToken: deps.certstreamAuthToken,
+			...(deps.certspotterToken ? { certspotterToken: deps.certspotterToken } : {}),
 			signal,
 			deadlineMs: options.deadlineMs,
 			onProgress: persistDiscoveryProgress,

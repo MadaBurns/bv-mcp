@@ -100,6 +100,24 @@ describe('handleBrandAuditQueue — discover_only branch', () => {
 		expect(calls.some((c) => c.sql.includes('UPDATE brand_audits') && c.sql.includes("status = 'completed'"))).toBe(true);
 	});
 
+	it('forwards certspotterToken into discoverBrandDomains options, and omits it when unset', async () => {
+		const { handleBrandAuditQueue } = await import('../src/queue/brand-audit-consumer');
+		const run = async (deps: Record<string, unknown>) => {
+			const { db } = makeRecordingD1('queued');
+			const discoverBrandDomains = vi.fn().mockResolvedValue({ category: 'brand_discovery', passed: true, score: 100, findings: [] });
+			const { batch } = makeDiscoverOnlyBatch({ auditId: 'disc-cs', target: 'brand-example.net', phase: 'discover_only' });
+			await handleBrandAuditQueue(batch, { db, discoverBrandDomains, ...deps });
+			return discoverBrandDomains.mock.calls[0]![1] as Record<string, unknown>;
+		};
+
+		const withToken = await run({ certstreamAuthToken: 'cert-stream-token', certspotterToken: 'cs-token' });
+		expect(withToken.certspotterToken).toBe('cs-token');
+		expect(withToken.certstreamAuthToken).toBe('cert-stream-token');
+
+		const withoutToken = await run({});
+		expect('certspotterToken' in withoutToken).toBe(false);
+	});
+
 	it('acks without re-running when the target is already completed (idempotency)', async () => {
 		const { handleBrandAuditQueue } = await import('../src/queue/brand-audit-consumer');
 		const { db } = makeRecordingD1('completed');
