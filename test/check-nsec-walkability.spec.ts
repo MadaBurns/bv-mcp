@@ -282,8 +282,10 @@ describe('checkNsecWalkability', () => {
 		const result = await run();
 		expect(result.category).toBe('nsec_walkability');
 
-		// Should not throw — return info finding about the error
-		const infoFinding = result.findings.find((f) => f.severity === 'info');
-		expect(infoFinding).toBeDefined();
+		// "Gracefully" used to mean an `info` finding through a bare buildCheckResult, which
+		// scored the failed lookup 100 / `passed: true` and cached the non-answer for the TTL.
+		// The contract is now the #900 abstention shape: nothing observed, nothing passed.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.map((f) => f.metadata?.errorKind)).toEqual(['dns_error']);
 	});
 });

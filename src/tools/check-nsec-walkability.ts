@@ -11,6 +11,7 @@ import { queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions, DnsAuthority, DohResponse } from '../lib/dns-types';
 import { DNS_TIMEOUT_MS } from '../lib/config';
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 import { CLOUDFLARE_DOH_ENDPOINT } from '../lib/dns-endpoints';
 import { disposeUnreadResponseBody, readJsonResponseCapped } from '../lib/response-body';
@@ -206,17 +207,12 @@ export async function checkNsecWalkability(domain: string, dnsOptions?: QueryDns
 	let nsec3Records: string[] = [];
 	try {
 		nsec3Records = await queryDnsRecords(domain, 'NSEC3PARAM', dnsOptions);
-	} catch {
-		findings.push(
-			createFinding(
-				CATEGORY,
-				'NSEC3PARAM query failed',
-				'info',
-				`DNS query for NSEC3PARAM records at ${domain} failed. Unable to assess zone walkability. Note: this analysis cannot probe for actual NSEC/NSEC3 denial records via DoH and analyzes configuration parameters only.`,
-				{ domain },
-			),
-		);
-		return buildCheckResult(CATEGORY, findings) as CheckResult;
+	} catch (err) {
+		// The old branch pushed an `info` finding through a bare buildCheckResult: a failed
+		// NSEC3PARAM lookup scored 100 and `passed: true`, and with `partial` unset both cache
+		// predicates stored that non-answer for the check's TTL. The finding's own prose said
+		// "Unable to assess zone walkability" — nothing passed, so abstain (#900).
+		return buildDnsErrorResult(CATEGORY, 'NSEC3PARAM', err) as CheckResult;
 	}
 
 	if (nsec3Records.length === 0) {
