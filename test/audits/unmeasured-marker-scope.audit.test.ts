@@ -51,8 +51,8 @@ function stripComments(src: string): string {
 describe('unmeasured-marker scope', () => {
 	it.each(UNMEASURED_MARKERS)('withholds the verdict uniformly for %s without changing scalars or cache markers', (marker) => {
 		const input = {
-			...buildCheckResult('osint_investigation', [
-				createFinding('osint_investigation', 'Unavailable', 'info', 'Nothing read.', { [marker]: true }),
+			...buildCheckResult('brand_discovery', [
+				createFinding('brand_discovery', 'Unavailable', 'info', 'Nothing read.', { [marker]: true }),
 			]),
 			partial: true,
 		};
@@ -73,8 +73,8 @@ describe('unmeasured-marker scope', () => {
 
 	it('keeps measured success and access refusals unchanged; upstream metadata cannot forge the marker', () => {
 		for (const marker of [undefined, ...ACCESS_REFUSAL_MARKERS]) {
-			const input = buildCheckResult('osint_investigation', [
-				createFinding('osint_investigation', 'Observation', 'info', 'Synthetic observation.', marker ? { [marker]: true } : {}),
+			const input = buildCheckResult('brand_discovery', [
+				createFinding('brand_discovery', 'Observation', 'info', 'Synthetic observation.', marker ? { [marker]: true } : {}),
 			]);
 			expect(markUnmeasured(input)).toBe(input);
 			expect(input.verdictWithheld).toBeUndefined();
