@@ -54,6 +54,43 @@ export interface VersionSurfaces {
 
 export type ReleaseMode = 'deploy' | 'publish' | 'sidecar';
 
+/** Package source/build-input identity only; not an installed-dependency or tarball-byte proof. */
+export interface DnsChecksIdentityInput {
+	version: string | null;
+	tagCommit: string | null;
+	tagVersion: string | null;
+	changedPaths: string[];
+	gitUnavailable: boolean;
+}
+
+/** Shipping inputs; test exclusions mirror the package's declaration-build exclusion. */
+export function isDnsChecksIdentityPath(path: string): boolean {
+	if (path === 'scripts/ci/dns-checks-prepack.ts' || path === 'scripts/pack-integrity.ts') return true;
+	const prefix = 'packages/dns-checks/';
+	if (!path.startsWith(prefix)) return false;
+	const relative = path.slice(prefix.length);
+	if (relative.startsWith('test/') || relative.startsWith('dist/') || relative.startsWith('node_modules/')) return false;
+	if (relative === 'tsconfig.test.json' || /^vitest\.config\./.test(relative)) return false;
+	if (relative.startsWith('src/') && relative.split('/').includes('__tests__')) return false;
+	return true;
+}
+
+/** Fail closed when the package version's local tag does not identify the shipping inputs. */
+export function dnsChecksIdentityViolations(input: DnsChecksIdentityInput | undefined): string[] {
+	if (!input || input.gitUnavailable) return ['dns-checks source identity could not be verified with git'];
+	if (!input.version || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(input.version)) {
+		return ['dns-checks package version could not be established'];
+	}
+	const tag = `dns-checks-v${input.version}`;
+	if (!input.tagCommit) return [`local tag ${tag} is absent or cannot resolve to a commit; source identity is unverified`];
+	if (input.tagVersion !== input.version) return [`${tag} package manifest version is ${input.tagVersion ?? 'unreadable'}, expected ${input.version}`];
+	const changed = [...new Set(input.changedPaths.filter(isDnsChecksIdentityPath))].sort();
+	return changed.length === 0 ? [] : [
+		`dns-checks ${input.version} shipping inputs differ from ${tag} (${input.tagCommit.slice(0, 12)}):`,
+		...changed.map((path) => `    ${path}`),
+	];
+}
+
 export interface ReleaseIntegrityInput {
 	/**
 	 * `deploy` gates `npm run deploy:prod`; `publish` gates the registry/npm
@@ -61,7 +98,8 @@ export interface ReleaseIntegrityInput {
 	 * carry no release version, so `sidecar` keeps ONLY the dirty-tree and
 	 * git-available checks and drops the exact-tag and version-surface
 	 * requirements (HEAD contains origin/main is `check:deploy-freshness`'s job).
-	 * For `deploy`/`publish` the mode changes only whether the override is honoured.
+	 * Deploy also requires the package source identity check; publish does not
+	 * require an existing dns-checks tag because it can create the first artifact.
 	 */
 	mode: ReleaseMode;
 	/** Trimmed `git describe --tags --exact-match`; null when HEAD is not exactly at a tag. */
@@ -71,7 +109,7 @@ export interface ReleaseIntegrityInput {
 	/** True when git could not be consulted at all (not a repo, git missing, command failed). */
 	gitUnavailable: boolean;
 	versions: VersionSurfaces;
-	/** Operator override, from the environment. Honoured in `deploy` mode only. */
+	/** Deploy-only override for app-tag/version/cleanliness checks; never waives package identity. */
 	allowUnpinned: boolean;
 	/**
 	 * Expected version supplied explicitly instead of derived from the tag.
@@ -79,12 +117,14 @@ export interface ReleaseIntegrityInput {
 	 */
 	expectVersion?: string | null;
 	/**
-	 * Skip the git-derived checks (tag + cleanliness) and verify only that the
+	 * Skip the app git-derived checks (tag + cleanliness) and verify that the
 	 * version surfaces agree with `expectVersion`. This is the shape
 	 * `publish.yml`'s `version-bump` job needs; it is NOT a bypass, because
-	 * `expectVersion` becomes mandatory when it is set.
+	 * `expectVersion` becomes mandatory when it is set. Deploy still checks package identity.
 	 */
 	skipGit?: boolean;
+	/** Mandatory for deploy mode, including override and --skip-git; other modes do not enforce it. */
+	dnsChecksIdentity?: DnsChecksIdentityInput;
 }
 
 export type ReleaseIntegrityCode =
@@ -207,6 +247,18 @@ export function assessReleaseIntegrity(input: ReleaseIntegrityInput): ReleaseInt
 	const { mode, exactTag, porcelain, gitUnavailable, versions, allowUnpinned } = input;
 	const skipGit = input.skipGit === true;
 	const expectVersion = input.expectVersion ?? null;
+	if (mode === 'deploy') {
+		const identityViolations = dnsChecksIdentityViolations(input.dnsChecksIdentity);
+		if (identityViolations.length > 0) {
+			return {
+				ok: false,
+				code: 'blocked',
+				version: expectVersion,
+				violations: identityViolations,
+				message: `DEPLOY BLOCKED — dns-checks source identity is not established.\n${identityViolations.join('\n')}\nReconcile the package version and its immutable artifact through the release process. No deploy override bypasses this check.`,
+			};
+		}
+	}
 
 	// CI-reuse shape: caller already knows the version, wants surfaces only.
 	// `expectVersion` is mandatory here — silently falling back to the tree's own
