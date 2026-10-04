@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Added
+
+- Unmeasured results expose `verdictWithheld: true` in the public result type and MCP output schema (#1193). Existing status, score, passed and cache markers remain unchanged; false or absence does not establish measurement. dns-checks 1.60.0 / parity corpus 1.60.0 carry the additive contract; scoring model unchanged. A new immutable package artifact and consumer re-vendor are required before deployment; recon target authorization remains an operator action.
+
 ## [3.97.0] - 2026-10-04
 
 Fail-open scanner wave (Sidequest SQ-307..312; issues #1196–#1202, landed as #1203 and #1204): seven places where an unmeasured probe, a stub answer or an unexpandable record was reported as a verdict. Each fix was reproduced by a failing test before the code changed. Package change in `@blackveil/dns-checks` 1.59.0 (parity corpus 1.59.0); scoring model 1.40.0.
