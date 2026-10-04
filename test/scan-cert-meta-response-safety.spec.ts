@@ -4,6 +4,29 @@ import { describe, expect, it, vi } from 'vitest';
 import { fetchCertIssuerFromCertstream } from '../src/tools/scan/post-processing';
 
 describe('cert-meta response safety', () => {
+	it('accepts a measured issuer string without changing it', async () => {
+		const certstream = { fetch: vi.fn().mockResolvedValue(Response.json({ issuer: 'Cloudflare Inc ECC CA-3' })) };
+		expect(await fetchCertIssuerFromCertstream('example.test', certstream)).toBe('Cloudflare Inc ECC CA-3');
+	});
+
+	it.each([
+		{ worker: 'synthetic-ct-worker', enabled: true },
+		{ issuer: ['Cloudflare Inc ECC CA-3'] },
+		{ issuer: { name: 'Cloudflare Inc ECC CA-3' } },
+		{ issuer: 42 },
+		{ issuer: true },
+		{ issuer: null },
+		{ issuer: '' },
+		{ issuer: '   ' },
+		{ issuer: 'Cloudflare Inc ECC CA-3', error: 'measurement failed' },
+		['Cloudflare Inc ECC CA-3'],
+		'Cloudflare Inc ECC CA-3',
+		null,
+	])('withholds issuer evidence for malformed or unrelated HTTP 200 payload %j', async (payload) => {
+		const certstream = { fetch: vi.fn().mockResolvedValue(Response.json(payload)) };
+		expect(await fetchCertIssuerFromCertstream('example.test', certstream)).toBeNull();
+	});
+
 	it('keeps the timeout active while the response body stalls after headers', async () => {
 		let requestSignal: AbortSignal | null | undefined;
 		const certstream = {

@@ -217,9 +217,13 @@ export async function fetchCertIssuerFromCertstream(
 			await disposeUnreadResponseBody(response);
 			return null;
 		}
-		const data = await readJsonResponseCapped<{ issuer?: string | null; error?: string }>(response, CERT_META_MAX_BODY_BYTES);
-		if (!data) return null;
-		if (data.error || !data.issuer) return null;
+		// A typed JSON read does not validate the wire schema. In particular an
+		// issuer array would be coerced into a Cloudflare match by downstream RegExp.test.
+		// The existing body cap bounds the string; health or malformed payloads provide no issuer evidence.
+		const data = await readJsonResponseCapped<unknown>(response, CERT_META_MAX_BODY_BYTES);
+		if (data === null || typeof data !== 'object' || Array.isArray(data)) return null;
+		if (!('issuer' in data) || typeof data.issuer !== 'string' || data.issuer.trim().length === 0) return null;
+		if ('error' in data && data.error) return null;
 		return data.issuer;
 	} catch {
 		return null;
