@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import securityWorkflow from '../../.github/workflows/security.yml?raw';
 import hygieneWorkflow from '../../.github/workflows/repo-hygiene.yml?raw';
 import registryDriftWorkflow from '../../.github/workflows/registry-drift-check.yml?raw';
+import dnsChecksReleaseWorkflow from '../../.github/workflows/dns-checks-release.yml?raw';
 import packageJsonText from '../../package.json?raw';
 
 const packageJson = JSON.parse(packageJsonText) as { scripts?: Record<string, string> };
@@ -13,6 +14,16 @@ const activeWorkflowModules = import.meta.glob('../../.github/workflows/*.yml', 
 const activeWorkflows = Object.entries(activeWorkflowModules) as Array<[string, string]>;
 
 describe('workflow safety gates', () => {
+	it('dns-checks publication leaves an explicit manual promotion handoff without cross-repo credentials or dispatch', () => {
+		expect(dnsChecksReleaseWorkflow).toContain('Record manual bv-web-prod promotion handoff');
+		expect(dnsChecksReleaseWorkflow).toContain('Manual bv-web-prod promotion required');
+		expect(dnsChecksReleaseWorkflow).toContain('steps.pack.outputs.sha256');
+		expect(dnsChecksReleaseWorkflow).toContain('SOURCE_COMMIT="$(git rev-parse HEAD)"');
+		expect(dnsChecksReleaseWorkflow).not.toContain('SOURCE_COMMIT: ${{ github.sha }}');
+		expect(dnsChecksReleaseWorkflow).not.toContain('BV_WEB_PROD_REPO_TOKEN');
+		expect(dnsChecksReleaseWorkflow).not.toContain('/dispatches');
+		expect(dnsChecksReleaseWorkflow).not.toContain('promotion-secret');
+	});
 	it('security and repo hygiene workflows run on push and pull_request', () => {
 		for (const [name, body] of Object.entries({ 'security.yml': securityWorkflow, 'repo-hygiene.yml': hygieneWorkflow })) {
 			expect(body, `${name} must run on push`).toMatch(/^\s*push:/m);
