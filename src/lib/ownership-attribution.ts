@@ -382,6 +382,16 @@ export interface ClassifyOwnershipInput {
 	 * redirect and SOA MNAME/RNAME remain excluded: all are free-text
 	 * declarations a self-hosted zone can publish at no cost.
 	 *
+	 * Candidate DMARC `p=reject`, including a stricter policy than the seed's,
+	 * does not establish ownership (#1192, SQ-302): the candidate controls that
+	 * policy and can still send aligned, authenticated mail. Strict policy is
+	 * not a seed-published authorisation or an ownership-confidence input here.
+	 * Likewise, a certificate SAN naming the seed and candidate demonstrates
+	 * validation for those names, not common organisational ownership (#1188).
+	 * A shared platform may obtain that validation for unrelated customers;
+	 * reciprocal CT lookup can observe the same issuance again. Discovery's
+	 * bounded provenance describes observed certificates, not seed-side control.
+	 *
 	 * The §7.1 arm requires every candidate MX inside the seed's own bailiwick
 	 * (`mxRoutedIntoSeed`), which excludes gateway-relayed portfolios.
 	 * KNOWN UNATTRIBUTED SHAPE: a regional sibling on its own DNS platform
