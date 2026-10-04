@@ -169,6 +169,27 @@ describe('checkLookalikes', () => {
 		const incomplete = result.findings.find((f) => /enumeration was incomplete/i.test(f.title));
 		expect(incomplete).toBeDefined();
 		expect(result.partial).toBe(true);
+		// #900 — saying so in prose was not enough. Every `info` finding above made
+		// `buildCheckResult` derive score 100 / `passed: true`, so the scalars read by
+		// the aggregators certified an estate this run never looked at.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error' });
+	});
+
+	it('scores a partial-but-real enumeration instead of abstaining, when some lookups measured an absence', async () => {
+		let callCount = 0;
+		globalThis.fetch = vi.fn().mockImplementation(() => {
+			callCount++;
+			if (callCount % 3 === 0) return Promise.reject(new Error('DNS timeout'));
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('test.com');
+
+		// The boundary the abstention must NOT cross: an empty answer is a measurement, so a
+		// run that resolved most candidates as having no NS has a real (if incomplete) answer.
+		// It stays scored and merely declares itself partial.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.passed).toBe(true);
+		expect(result.partial).toBe(true);
 	});
 
 	it('exports adaptive batching constants', async () => {
@@ -806,6 +827,10 @@ describe('checkLookalikes - timeout partial flag', () => {
 		expect(result.findings[0].title).toBe('Lookalike check incomplete');
 		expect(result.findings[0].severity).toBe('info');
 		expect(result.findings[0].detail).toContain('did not complete within the time limit');
+		// #900 — that single `info` finding used to derive score 100 / `passed: true`, so a
+		// run that timed out mid-flight reported "no lookalikes" to everything branching on
+		// `.passed`. The finding text was honest; the verdict was not.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'timeout' });
 	});
 
 	it('does not mark successful results as partial', async () => {

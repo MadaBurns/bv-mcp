@@ -741,6 +741,16 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 	const buckets = await bucketVariantsByRegistration(variants, dnsOpts, registrationCache);
 	const registeredVariants = buckets.registered;
 
+	// #900 accounting, read by the abstention stamp at the foot of this function.
+	// `unknownVerdicts` counts variants left without a registration verdict — the cache
+	// predicate. `unmeasuredVerdicts` counts only those whose lookup never settled, because an
+	// `empty_noerror` answer IS an observation (the nameservers replied with nothing) and must
+	// not read as a total failure. Both are needed because every probe failure in this check is
+	// swallowed by `Promise.allSettled` and resurfaces as an `info` finding, which
+	// `buildCheckResult` scores as a clean estate.
+	let unknownVerdicts = 0;
+	let unmeasuredVerdicts = 0;
+
 	// Only NXDOMAIN supports an "unregistered" claim.
 	for (const variant of buckets.unregistered) {
 		// Nothing was observed for these variants — they are never detail-probed,
@@ -796,6 +806,8 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 	if (buckets.unknown.length > 0) {
 		/** Emit the honest unknown verdict, carrying whatever the probe actually observed. */
 		const pushUnknownFinding = (variant: string, reason: UnknownReason, probe?: VariantProbeResult) => {
+			unknownVerdicts++;
+			if (reason !== 'empty_noerror') unmeasuredVerdicts++;
 			findings.push(
 				createFinding(
 					'shadow_domains',
@@ -996,5 +1008,28 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		);
 	}
 
-	return buildCheckResult('shadow_domains', findings);
+	const result = buildCheckResult('shadow_domains', findings);
+
+	// #900 — a run whose every variant lookup failed is a NON-ANSWER, and until this stamp it
+	// read as the cleanest possible estate: every `unknown` finding is `info`, so
+	// `buildCheckResult` derived score 100 / `passed: true` (the verdict four surfaces read —
+	// #705 #706 #725 #809) and `partial` was never set, so the per-check cache served that
+	// fabricated clean verdict for its whole TTL. Abstain when no variant's lookup settled at
+	// all — the twin of `measuredNothing` in check-root-server-set.ts. An `empty_noerror`
+	// verdict keeps this false: that nameservers answered with nothing is a measurement, not a
+	// transport failure, and the check's own prose says so.
+	if (unmeasuredVerdicts === variants.length) {
+		result.score = 0;
+		result.passed = false;
+		result.checkStatus = 'error';
+	}
+	// The cache clause, independently: `unknownVerdicts > 0` means a variant went unreported,
+	// `timedOut` that registered variants were never detail-probed. Either makes this a partial
+	// answer, and both cache predicates are `!partial` — serving it would hide a later,
+	// complete one for the TTL.
+	if (unknownVerdicts > 0 || timedOut) {
+		result.partial = true;
+	}
+
+	return result;
 }
