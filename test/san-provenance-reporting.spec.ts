@@ -54,7 +54,10 @@ describe('SAN provenance report plumbing preserves discovery', () => {
 		expect(candidate(after.result)?.metadata?.combinedConfidence).toEqual(candidate(before.result)?.metadata?.combinedConfidence);
 		expect(candidate(after.result)?.severity).toEqual(candidate(before.result)?.severity);
 		expect(after.result.findings.map((finding) => finding.title)).toEqual(before.result.findings.map((finding) => finding.title));
-		expect(after.recursive.mock.calls[0][2].firstOrderCertificateProvenance).toBe(firstOrder);
+		expect(after.recursive).toHaveBeenCalledTimes(1);
+		const recursiveOptions = after.recursive.mock.calls[0]?.[2];
+		if (!recursiveOptions) throw new Error('Expected recursive SAN options to be forwarded');
+		expect(recursiveOptions.firstOrderCertificateProvenance).toBe(firstOrder);
 		const serialized = JSON.stringify(after.result);
 		const wireResult = JSON.parse(serialized) as typeof after.result;
 		expect(serialized).not.toContain('ab'.repeat(32));
