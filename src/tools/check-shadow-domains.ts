@@ -807,7 +807,23 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 		/** Emit the honest unknown verdict, carrying whatever the probe actually observed. */
 		const pushUnknownFinding = (variant: string, reason: UnknownReason, probe?: VariantProbeResult) => {
 			unknownVerdicts++;
-			if (reason !== 'empty_noerror') unmeasuredVerdicts++;
+			// `reason` is Phase 1's answer to "is this registered?", not to "did anything get
+			// measured?". They diverge whenever the full-timeout re-probe succeeds after a tight
+			// Phase-1 window: the variant's registration still stands unknown, but its SPF and
+			// `_dmarc` absence were then MEASURED, and abstaining on the stale reason would throw
+			// away a real answer (score 0, `checkStatus: error`, excluded from the scan).
+			//
+			// `probeVariant` never rejects, so a fulfilled probe is not by itself evidence of a
+			// measurement — SERVFAIL folds into `[]` there. `authProbeFailed` is the probe's own
+			// statement that its email-auth lookups never concluded, which is what keeps #900 shut
+			// through this path (a settled-but-all-SERVFAIL probe still counts as unmeasured).
+			// Callers with no probe — an un-re-probed variant at the stage deadline, or one whose
+			// re-probe itself failed to settle — fall back to Phase 1's reason.
+			// Deliberately monotonic: this predicate can only *reduce* the abstention count
+			// relative to Phase 1's reason, never add to it, so no run that abstained before
+			// abstains now.
+			const measured = reason === 'empty_noerror' || (probe !== undefined && !probe.authProbeFailed);
+			if (!measured) unmeasuredVerdicts++;
 			findings.push(
 				createFinding(
 					'shadow_domains',
@@ -1015,9 +1031,11 @@ export async function checkShadowDomains(domain: string, dnsOptions?: QueryDnsOp
 	// `buildCheckResult` derived score 100 / `passed: true` (the verdict four surfaces read —
 	// #705 #706 #725 #809) and `partial` was never set, so the per-check cache served that
 	// fabricated clean verdict for its whole TTL. Abstain when no variant's lookup settled at
-	// all — the twin of `measuredNothing` in check-root-server-set.ts. An `empty_noerror`
-	// verdict keeps this false: that nameservers answered with nothing is a measurement, not a
-	// transport failure, and the check's own prose says so.
+	// all — the twin of `measuredNothing` in check-root-server-set.ts. "Settled at all" is the
+	// `unmeasuredVerdicts` count above, which is why it is not simply `unknownVerdicts`: an
+	// `empty_noerror` verdict keeps this false (nameservers answering with nothing is a
+	// measurement, and the check's own prose says so), and so does a re-probe whose SPF and
+	// `_dmarc` lookups answered conclusively-empty after Phase 1 failed on its tight window.
 	if (unmeasuredVerdicts === variants.length) {
 		result.score = 0;
 		result.passed = false;

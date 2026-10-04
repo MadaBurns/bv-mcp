@@ -2102,4 +2102,58 @@ describe('checkShadowDomains — total probe failure abstains (#900)', () => {
 		expect(result.partial).toBe(true);
 		expect(result.findings.some((f) => f.metadata?.registrationState === 'unregistered')).toBe(true);
 	});
+
+	it('does not abstain when Phase 1 failed but the full-timeout re-probe measured conclusive empties', async () => {
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			if (q.name === target) {
+				if (q.type === 'NS' || q.type === '2') return Promise.resolve(nsRecords(q.name, ['ns1.brand-dns.net.', 'ns2.brand-dns.net.']));
+				if (q.type === 'MX' || q.type === '15') return Promise.resolve(mxRecords(q.name, ['10 mail.example.com.']));
+				return Promise.resolve(emptyResponse());
+			}
+			// Every variant: the registration lookups (NS/SOA/A/MX) reject inside the tight
+			// Phase-1 window AND inside `probeVariant`, but the SPF and `_dmarc` TXT lookups the
+			// full-timeout re-probe makes are answered NOERROR with no records.
+			if (q.type === 'TXT' || q.type === '16') return Promise.resolve(emptyResponse());
+			return Promise.reject(new Error('DNS query failed'));
+		});
+		const result = await runUnderFakeClock(target);
+
+		// The re-probe is what did the measuring here, and it measured ABSENCE conclusively:
+		// `pushUnknownFinding` must not count the variant from the stale Phase-1 reason, or a run
+		// holding a real answer reports score 0 / `checkStatus: error`, is dropped from the scan
+		// and is never cached — self-inflicted denial of service against our own verdict.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.passed).toBe(true);
+		expect(result.score).toBeGreaterThan(0);
+		// Registration is still undetermined for every variant, so the answer is incomplete and
+		// must not be cached — the other clause, unaffected by this fix.
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.registrationState === 'unknown')).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+	});
+
+	it('still abstains when the re-probe settled and its own auth lookups SERVFAILed', async () => {
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			if (q.name === target) {
+				if (q.type === 'NS' || q.type === '2') return Promise.resolve(nsRecords(q.name, ['ns1.brand-dns.net.', 'ns2.brand-dns.net.']));
+				if (q.type === 'MX' || q.type === '15') return Promise.resolve(mxRecords(q.name, ['10 mail.example.com.']));
+				return Promise.resolve(emptyResponse());
+			}
+			if (q.type === 'TXT' || q.type === '16') return Promise.resolve(servfailResponse(q.name, 16));
+			return Promise.reject(new Error('DNS query failed'));
+		});
+		const result = await runUnderFakeClock(target);
+
+		// The over-correction guard. `probeVariant` never rejects, so "it settled" proves only
+		// that its sub-queries were allSettled — SERVFAIL folds into `[]` there. A settled probe
+		// that measured nothing must still abstain, or #900 reopens through the re-probe.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+	});
 });
