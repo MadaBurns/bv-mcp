@@ -91,7 +91,7 @@ export interface LookalikeSignals {
 	/**
 	 * #1202 — the tri-state web reading carried beside {@link hasWebContent}
 	 * (`false` there iff `none` here). Optional so callers that never measured
-	 * it (`computeSameEntityCandidates`, hand-built fixtures) keep today's
+	 * it (hand-built fixtures) keep today's
 	 * matrix exactly; absent is read as "not parked".
 	 */
 	webPresence?: WebPresenceReading;

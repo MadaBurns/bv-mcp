@@ -35,6 +35,7 @@ import {
 	resolveAnalyticsDataset,
 } from './lib/analytics-queries';
 import { buildAlertPayload, buildDigestPayload, sendAlert, sendFuzzingAlert } from './lib/alerting';
+import { shouldSendRepeat, armRepeatCooldown, recoverRepeatAlert } from './lib/alert-repeat';
 import type { SendAlertOptions } from './lib/alerting';
 import { queryAnalyticsEngine } from './lib/analytics-engine';
 import { logEvent, logError } from './lib/log';
@@ -345,6 +346,7 @@ async function checkAccessRollupProvisioned(env: ScheduledEnv, webhookUrl: strin
 
 	try {
 		await db.prepare('SELECT 1 FROM mcp_access_rollup LIMIT 1').first();
+		await recoverRepeatAlert(env, webhookUrl, 'mcp_access_rollup_table_exists');
 		return; // table exists — nothing to report
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
@@ -950,6 +952,7 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 		// visible on its own rather than only as an absence of alerts. Non-critical:
 		// the pipeline is still working, just not completely.
 		if (laneFailures.length > 0) {
+			await recoverRepeatAlert(env, webhookUrl, 'alerting_self_check');
 			const degradedDetail = laneFailures
 				.map((f) => `${f.lane}: ${f.reason}`)
 				.join(' · ')
@@ -972,6 +975,11 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
 				).catch(() => false);
 				if (delivered) await armRepeatCooldown(env, 'alerting_lane_partial_failure', degradedDetail, Date.now());
 			}
+		}
+
+		if (laneFailures.length === 0) {
+			await recoverRepeatAlert(env, webhookUrl, 'alerting_self_check');
+			await recoverRepeatAlert(env, webhookUrl, 'alerting_lane_partial_failure');
 		}
 
 		logEvent({
@@ -1037,73 +1045,6 @@ export async function handleScheduled(env: ScheduledEnv): Promise<void> {
  */
 function alertOptions(env: ScheduledEnv): SendAlertOptions {
 	return { bvWeb: env.BV_WEB };
-}
-
-/**
- * Repeat-alert suppression window (#1164): a persistent condition (an outage that
- * hasn't been fixed yet, an unprovisioned table) re-evaluates true on every 15-min
- * cron tick, so an alert whose REASON is unchanged would otherwise page forever
- * instead of once. Keyed on `<threshold>:<hash(normalised reason)>` so a genuinely
- * CHANGED reason under the same threshold (a different query broke) still pages
- * immediately rather than waiting out the old reason's cooldown. 24h TTL caps a
- * persistent condition to one reminder per day.
- */
-const ALERT_REPEAT_COOLDOWN_SECONDS = 24 * 60 * 60;
-
-/** KV key for a repeatable alert's cooldown marker: `<threshold>:<hash(normalised reason)>`. */
-async function repeatAlertKey(threshold: string, reason: string): Promise<string> {
-	const normalized = reason.replace(/\s+/g, ' ').trim().toLowerCase();
-	const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(normalized)));
-	const hash = Array.from(digest, (byte) => byte.toString(16).padStart(2, '0')).join('');
-	return `alert-repeat:${threshold}:${hash}`;
-}
-
-/**
- * Gate for a repeatable alert: resolves true when the alert should be SENT this tick
- * (first occurrence of `reason` under `threshold`, or the previous occurrence's
- * cooldown has expired) and false when an identical alert already fired within the
- * window. READ-ONLY: it does not arm the cooldown. Callers send the alert and then
- * call {@link armRepeatCooldown} only if `sendAlert` reports the webhook ACCEPTED it
- * — arming before delivery let a down webhook suppress the same alert for 24 h after
- * it recovered (same delivery-gated shape as `handleClientIpHeaderAudit`).
- *
- * FAIL-OPEN TO SENDING, never suppress on a KV fault: an unbound `RATE_LIMIT`, or a
- * `get` that throws, both resolve true. A missed suppression costs one extra
- * page; a false suppression costs a silent incident — same posture as the
- * fuzzing-scan and client-ip cooldowns above/below.
- */
-async function shouldSendRepeat(env: ScheduledEnv, threshold: string, reason: string): Promise<boolean> {
-	if (!env.RATE_LIMIT) return true;
-
-	try {
-		const existing = await env.RATE_LIMIT.get(await repeatAlertKey(threshold, reason));
-		if (existing !== null) return false; // identical reason already paged within the window
-	} catch (err) {
-		logError(err instanceof Error ? err : String(err), {
-			severity: 'warn',
-			category: 'scheduled',
-			details: { message: 'alert_repeat_kv_get_failed', threshold },
-		});
-	}
-	return true; // not seen, or KV down — send rather than risk a silent suppression
-}
-
-/**
- * Arm the {@link shouldSendRepeat} cooldown for `reason` under `threshold`. Call ONLY
- * after the webhook accepted the alert. A failed write is logged and swallowed: the
- * next tick re-alerts, which is the acceptable degradation (fail open).
- */
-async function armRepeatCooldown(env: ScheduledEnv, threshold: string, reason: string, nowMs: number): Promise<void> {
-	if (!env.RATE_LIMIT) return;
-	try {
-		await env.RATE_LIMIT.put(await repeatAlertKey(threshold, reason), String(nowMs), { expirationTtl: ALERT_REPEAT_COOLDOWN_SECONDS });
-	} catch (err) {
-		logError(err instanceof Error ? err : String(err), {
-			severity: 'warn',
-			category: 'scheduled',
-			details: { message: 'alert_repeat_kv_put_failed', threshold },
-		});
-	}
 }
 
 /**

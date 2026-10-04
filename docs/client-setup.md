@@ -418,6 +418,14 @@ The `?api_key=<YOUR_API_KEY>` fallback is legacy/self-host compatibility only. H
 
 Do not configure both legacy `?api_key=` and `Authorization` for the same server. A stale placeholder in either location can make startup fail with `401 Unauthorized` or silently drop to the free tier, depending on deployment flags.
 
+### Large subdomain takeover inventories
+
+The public `/mcp` endpoint accepts at most **10,240 bytes for the entire request body**, including the JSON-RPC envelope. Although `check_subdomain_takeover` accepts up to 1,000 entries in its `subdomains` argument, a large inventory can exceed that byte limit and receive HTTP **413** before the tool runs.
+
+Split inventories into separate calls, starting with about **200 names per call**. This is a starting size, not a guaranteed limit: long names and extra arguments consume more bytes. Measure the UTF-8 size of the serialized JSON-RPC body (for example, `new TextEncoder().encode(JSON.stringify(request)).byteLength`) and reduce each chunk until it is below 10,240 bytes. Keep the original `domain` and explicitly pass each chunk as `subdomains`; do not retry a rejected request by dropping that argument, which selects the built-in list instead.
+
+For each response, inspect the findings' sweep metadata: `sweepSource` should be `caller`, and `sweptCount` describes that chunk's coverage. Account for `requestedCount`, `truncatedTo`, `aRecordVectorSampledTo`, and `partial` where present; retain findings and coverage from every chunk. A clean result for one chunk does not establish that the remaining inventory was assessed. Each call remains subject to the tier's quotas and tool limits.
+
 ### Static API Key Tiers
 
 Static API keys via `Authorization: Bearer` authenticate as a specific tier:

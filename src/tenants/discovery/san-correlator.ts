@@ -4,14 +4,16 @@
  * SAN-cert correlator (Phase-4 brand-discovery, tier-1 signal).
  *
  * Queries crt.sh for a seed domain, extracts every Subject Alternative Name
- * from the matched certificates, and returns the set of *sibling* co-owned
- * domains: not the seed itself, not subdomains of the seed (those are the
+ * from the matched certificates, and returns a set of *sibling* discovery
+ * candidates: not the seed itself, not subdomains of the seed (those are the
  * job of `discover_subdomains`), and not invalid hostnames.
  *
  * Adopted from the well-known technique used by `bit4woo/teemo`. Because CT
- * logs are append-only and global, a single wildcard or multi-domain cert
- * publicly correlates everything the customer renews together — a near-
- * deterministic ownership signal at zero query cost.
+ * logs are append-only and global, a multi-domain cert publicly correlates
+ * names renewed together. Shared vendors and CDNs also co-list unrelated
+ * customers, so this is a discovery lead, not proof of common ownership.
+ * The legacy `coOwnedDomains` field names these candidates; ownership verdicts
+ * remain the responsibility of `classifyOwnership` (#1188).
  *
  * Backends (a ladder, not a fan-out): the bv-certstream binding, then direct
  * crt.sh, then — when crt.sh could not answer the co-listing question (it failed,
@@ -206,7 +208,7 @@ function extractSiblingsFromNameValue(nameValue: string, seedLower: string): str
 }
 
 /**
- * THE SAN → co-owned-domain filter, shared by every backend: drop the seed, drop
+ * THE SAN → sibling-candidate filter, shared by every backend: drop the seed, drop
  * subdomains of the seed, unwrap wildcards (`*.foo.com` → `foo.com`), drop invalid
  * hostnames. Returns deduped, sorted hosts.
  */
@@ -424,7 +426,7 @@ async function attemptCorrelation(
 }
 
 /**
- * Correlate co-owned sibling domains for a seed via crt.sh SAN clustering.
+ * Correlate sibling discovery candidates for a seed via crt.sh SAN clustering.
  * Uses a streaming JSON parser to handle large certificate histories (Tier-1 brands).
  *
  * Retries on transient `error` / `rate_limited` / `timeout` statuses with
@@ -468,8 +470,9 @@ export interface SanRecursiveResult {
  *
  * For each first-order sibling, queries crt.sh again with that sibling as the
  * seed; if the ORIGINAL seed appears in the sibling's SAN list, that's a
- * cross-cert mutual SAN inclusion — near-deterministic ownership evidence
- * that a single first-order hit cannot establish on its own.
+ * mutual SAN inclusion. The same shared certificate can answer both directions,
+ * so cross-confirmation is a discovery signal, not independent ownership
+ * evidence (#1188).
  *
  * Bounded by `maxCandidates` (top-N by shortest registrable apex first —
  * shorter apex tends to be the canonical brand domain, which has the densest
@@ -627,7 +630,7 @@ async function attemptCertspotter(
 }
 
 /**
- * Correlate co-owned sibling domains for a seed. Ladder: bv-certstream binding →
+ * Correlate sibling discovery candidates for a seed. Ladder: bv-certstream binding →
  * direct crt.sh (jittered-backoff retries) → Certspotter, the last ONLY when the
  * first two could not answer (#1189). Never throws on transient failure.
  *

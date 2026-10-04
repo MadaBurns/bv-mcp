@@ -138,5 +138,18 @@ export async function checkSubdomailing(
 		);
 	}
 
+	// A measured risk must not hide the unassessed part of the same chain (#1205).
+	if (riskFindings.length > 0 && macroTemplateCount > 0) {
+		findings.push(
+			createFinding(
+				'subdomailing',
+				'SPF macro-template includes not assessed',
+				'info',
+				`${macroTemplateCount} SPF include/redirect target(s) are macro templates and were not probed (RFC 7208 §7: only a receiving MTA can expand them). These targets are not confirmed safe; the reported risks apply to the literal targets that were assessed.`,
+				{ includeCount: probedCount, macroTemplateCount },
+			),
+		);
+	}
+
 	return buildCheckResult('subdomailing', findings);
 }

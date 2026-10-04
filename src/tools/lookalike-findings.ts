@@ -135,13 +135,14 @@ function describeParkingSignals(parkingSignals: readonly ParkingSignal[] = []): 
 /**
  * #1202 — the web clause on the INFO-only attribution findings (owned-by-seed,
  * shared registrant org). Never "has web presence" for a parking page or an
- * unprobed host. Info-only matters: the unmeasured wording names "no A record",
+ * unprobed or refused host. Info-only matters: the unmeasured wording names "no A record",
  * the `no … record` shape `scoreIndicatesMissingControl()` matches — harmless on
  * an `info` finding, which that gate never reads; do NOT reuse it on a threat
  * observation, which can be `high`.
  */
 function webPresenceClause(hasA: boolean, web: Pick<LookalikeSignals, 'webPresence' | 'parkingSignals'> | undefined): string {
 	if (web?.webPresence === 'parked') return ` Parked (${describeParkingSignals(web.parkingSignals)}).`;
+	if (web?.webPresence === 'none') return ' Web presence not measured — probe refused.';
 	if (web?.webPresence === 'unmeasured') {
 		return hasA ? ' Web presence unmeasured (A record present, no completed web probe).' : ' Web presence unmeasured (no A record).';
 	}

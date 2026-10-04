@@ -143,6 +143,7 @@ describe('collectParkingSignals — read from DNS already fetched, no query (#12
 		const { collectParkingSignals } = await load();
 		expect(collectParkingSignals({ mxExchanges: ['mx.plain.com'] }, ['ns1.plain-dns.com'])).toEqual([]);
 		expect(collectParkingSignals({ mxExchanges: ['mx.plain.com'] }, ['ns1.dns-parking.com', 'ns01.domaincontrol.com'])).toEqual([]);
+		expect(collectParkingSignals({ mxExchanges: ['mx.example.test'] }, ['ns1.dnsowl.com', 'ns2.dnsowl.com'])).toEqual([]);
 		for (const wildcardProbe of ['no_wildcard', 'not_probed', undefined] as const) {
 			expect(collectParkingSignals({ mxExchanges: ['mx.plain.com'], wildcardProbe }), String(wildcardProbe)).toEqual([]);
 		}
