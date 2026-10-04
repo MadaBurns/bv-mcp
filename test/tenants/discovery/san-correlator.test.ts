@@ -14,6 +14,110 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { correlateSans } from '../../../src/tenants/discovery/san-correlator';
 
+describe('additive per-certificate SAN provenance', () => {
+	it('caps retained certificate provenance without capping discovered candidates', async () => {
+		const result = await correlateSans('example.com', {
+			fetchFn: vi.fn(async () => jsonResponse(Array.from({ length: 65 }, (_, i) => ({
+				id: i + 1, name_value: 'example.com', common_name: `candidate${i}.example.net`,
+			})))), maxRetries: 0,
+		});
+		expect(result.coOwnedDomains).toHaveLength(65);
+		expect(result.certIds).toHaveLength(65);
+		expect(result.certificateProvenance).toHaveLength(64);
+		expect(result.certificateProvenanceTruncated).toBe(true);
+	});
+	it('retains discovered candidates but withholds fan-out when Certspotter pagination is cut short', async () => {
+		let page = 0;
+		const result = await correlateSans('example.com', {
+			fetchFn: vi.fn(async (input) => {
+				if (!String(input).includes('certspotter')) return jsonResponse([]);
+				page++;
+				if (page > 1) return new Response('throttled', { status: 429 });
+				return jsonResponse([{ id: '1', tbs_sha256: 'ab'.repeat(32), dns_names: ['example.com', 'example.net'] }], {
+					headers: { Link: '<https://api.certspotter.com/v1/issuances?after=1>; rel="next"' },
+				});
+			}), maxRetries: 0,
+		});
+		expect(result.coOwnedDomains).toEqual(['example.net']);
+		expect(result.queryStatus).toBe('partial');
+		expect(result.certificateProvenance?.[0]).toMatchObject({ coverage: 'unknown', registrableDomainCount: null });
+	});
+
+	it('keeps aggregate certstream candidates as unknown provenance', async () => {
+		const result = await correlateSans('example.com', {
+			certstream: { fetch: vi.fn(async () => jsonResponse({ names: ['example.com', 'example.net'], timedOut: false })) },
+		});
+		expect(result.coOwnedDomains).toEqual(['example.net']);
+		expect(result.certificateProvenance?.[0]).toEqual({
+			source: 'certstream', issuanceSha256: null, candidateDomains: ['example.net'], candidateMappingComplete: true, coverage: 'unknown', registrableDomainCount: null,
+		});
+	});
+
+	it('preserves reciprocal candidates and carries their confirming observation without asserting certificate independence', async () => {
+		const { correlateSansRecursive } = await import('../../../src/tenants/discovery/san-correlator');
+		const result = await correlateSansRecursive('example.com', ['example.net'], {
+			fetchFn: vi.fn(async (input) => String(input).includes('certspotter')
+				? jsonResponse([{ id: '2', tbs_sha256: 'ab'.repeat(32), dns_names: ['example.com', 'example.net'] }])
+				: jsonResponse([])), maxRetries: 0,
+		});
+		expect(result.crossConfirmed.map((candidate) => candidate.candidate)).toEqual(['example.net']);
+		expect(result.crossConfirmed[0].certificateProvenance?.[0]).toMatchObject({
+			issuanceSha256: 'ab'.repeat(32), candidateDomains: ['example.com'], candidateMappingComplete: true, coverage: 'complete', registrableDomainCount: 2,
+		});
+	});
+	it('retains Certspotter identities through normalization without changing discovered candidates', async () => {
+		const hash = 'ab'.repeat(32);
+		const query = async (cursor: string, tbsSha256: unknown) =>
+			correlateSans('example.com', {
+				fetchFn: vi.fn(async (input) =>
+					String(input).includes('certspotter')
+						? jsonResponse([{ id: cursor, tbs_sha256: tbsSha256, dns_names: ['example.com', '*.example.net'] }])
+						: jsonResponse([{ id: 1, name_value: 'example.com' }]),
+				),
+				maxRetries: 0,
+			});
+		const first = await query('1', hash);
+		const second = await query('2', hash.toUpperCase());
+		expect(first.coOwnedDomains).toEqual(['example.net']);
+		expect(second.coOwnedDomains).toEqual(first.coOwnedDomains);
+		expect(first.certIds).toEqual([]);
+		expect(first.certificateProvenance).toEqual(second.certificateProvenance);
+		expect(first.certificateProvenance).toEqual([
+			{
+				source: 'certspotter',
+				issuanceSha256: hash,
+				candidateDomains: ['example.net'],
+				candidateMappingComplete: true,
+				coverage: 'complete',
+				registrableDomainCount: 2,
+			},
+		]);
+		const unidentified = await query('3', undefined);
+		expect(unidentified.coOwnedDomains).toEqual(first.coOwnedDomains);
+		expect(unidentified.certificateProvenance?.[0]).toMatchObject({
+			issuanceSha256: null,
+			coverage: 'unknown',
+			registrableDomainCount: null,
+		});
+	});
+
+	it('maps crt.sh observations separately and never treats query-matched names as full certificate fan-out', async () => {
+		const result = await correlateSans('example.com', {
+			fetchFn: vi.fn(async () =>
+				jsonResponse([
+					{ id: 1, name_value: 'example.com', common_name: 'first.example.net' },
+					{ id: 2, name_value: 'example.com', common_name: 'second.example.org' },
+				]),
+			),
+			maxRetries: 0,
+		});
+		expect(result.coOwnedDomains).toEqual(['first.example.net', 'second.example.org']);
+		expect(result.certIds).toEqual([1, 2]);
+		expect(result.certificateProvenance?.map((cert) => cert.candidateDomains)).toEqual([['first.example.net'], ['second.example.org']]);
+		expect(result.certificateProvenance?.every((cert) => cert.coverage === 'unknown' && cert.registrableDomainCount === null)).toBe(true);
+	});
+});
+
 interface CrtShFixtureEntry {
 	id?: number;
 	name_value: string;
