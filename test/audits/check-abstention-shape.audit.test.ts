@@ -107,6 +107,41 @@ function abstentionViolations(result: CheckResult): string[] {
 }
 
 /**
+ * The vacuous branch of {@link abstentionViolations} is where this bug class actually hides.
+ *
+ * `abstentionViolations` only speaks when a result DECLARES abstention (`checkStatus`), so a
+ * tool that swallows a total probe failure and returns a normal-looking completed result
+ * satisfies the contract trivially — the implication is true because its antecedent is false.
+ * `check_fast_flux` is that tool: it fans its A/AAAA queries out with `Promise.allSettled`, so a
+ * rejecting `fetch` never reaches its `catch`; every round comes back with zero answers, it
+ * falls into its "all rounds failed" branch, and emits a single `medium` finding through a bare
+ * `buildCheckResult` — score 85 (medium = 15, `types.ts:350`), `passed: true` (`model.ts:549`:
+ * `score >= 50 && !hasMissingControl`, and its prose matches no clause of
+ * `MISSING_CONTROL_REGEX`), `partial` undefined. That is the exact #900 shape the header of this
+ * file forbids, and it was green here.
+ *
+ * So the antecedent is supplied from the outside instead: this sweep HAS already made every
+ * probe fail. Anything that comes back neither abstaining, nor carrying a #695 unmeasured
+ * marker, nor throwing, is claiming a measurement it did not take.
+ *
+ * Both clauses are load-bearing and independent: `passed` is the verdict four surfaces read
+ * (#705 #706 #725 #809), and `partial` is what both cache predicates check (`!partial`), so a
+ * result missing only the latter still poisons the 5-minute per-domain cache.
+ */
+function falseCleanViolations(result: CheckResult): string[] {
+	if (result.checkStatus === 'error' || result.checkStatus === 'timeout') return [];
+	if (isUnmeasuredResult(result)) return [];
+	const violations: string[] = [];
+	if (result.passed === true) {
+		violations.push('passed true on a run whose every probe failed — an unmeasured control did not pass');
+	}
+	if (result.partial !== true) {
+		violations.push('partial not true — a non-answer would be served from the per-check cache for its whole TTL');
+	}
+	return violations;
+}
+
+/**
  * Wall-clock budget to fast-forward through per invocation. Nothing here waits on
  * a real remote — `fetch` rejects on the first call — but several checks sleep
  * between rounds on the way to their abstention (`check_fast_flux` alone paces two
@@ -165,6 +200,7 @@ describe('check abstention shape (Worker direct-call registry)', () => {
 			const result = await runTool(name, kind, make);
 			if (result === 'throws') return;
 			expect(abstentionViolations(result), `${name} (${kind}) → ${JSON.stringify(result)}`).toEqual([]);
+			expect(falseCleanViolations(result), `${name} (${kind}) → ${JSON.stringify(result)}`).toEqual([]);
 		});
 	});
 
@@ -174,6 +210,7 @@ describe('check abstention shape (Worker direct-call registry)', () => {
 			if (result === 'throws') return;
 			if (isUnmeasuredResult(result)) return;
 			expect(abstentionViolations(result), `${name} (${kind}) → ${JSON.stringify(result)}`).toEqual([]);
+			expect(falseCleanViolations(result), `${name} (${kind}) → ${JSON.stringify(result)}`).toEqual([]);
 		});
 	});
 
@@ -209,6 +246,29 @@ describe('check abstention shape (Worker direct-call registry)', () => {
 
 			expect(abstentionViolations(buildDnsErrorResult('spf', 'SPF', new Error('DNS query failed')))).toEqual([]);
 			expect(abstentionViolations(buildCheckResult('spf', [info]))).toEqual([]);
+		});
+
+		it('the false-clean predicate fires on a completed-looking result and stays quiet on a real abstention', async () => {
+			// Positive control: without this, `falseCleanViolations` could return [] for every
+			// input and the clause it adds would be silently dead.
+			const { buildCheckResult, createFinding } = await import('../../src/lib/scoring');
+			const { buildDnsErrorResult } = await import('../../src/lib/dns-error-result');
+			const info = createFinding('spf', 'SPF not assessed', 'info', 'resolver failed');
+
+			// The check_fast_flux shape: bare buildCheckResult under a total probe failure.
+			expect(falseCleanViolations(buildCheckResult('spf', [info]))).toEqual([
+				expect.stringContaining('passed true'),
+				expect.stringContaining('partial not true'),
+			]);
+			// A zeroed but still-cacheable non-answer: the `passed` lie is gone, the cache poison
+			// is not — proving the two clauses are independent rather than one test.
+			expect(falseCleanViolations({ ...buildCheckResult('spf', [info]), passed: false })).toEqual([
+				expect.stringContaining('partial not true'),
+			]);
+			// And quiet on the shapes that legitimately abstain, so the predicate cannot simply
+			// fire on every swept tool.
+			expect(falseCleanViolations(buildDnsErrorResult('spf', 'SPF', new Error('DNS query failed')))).toEqual([]);
+			expect(falseCleanViolations({ ...buildCheckResult('spf', [info]), checkStatus: 'timeout' as const })).toEqual([]);
 		});
 	});
 });

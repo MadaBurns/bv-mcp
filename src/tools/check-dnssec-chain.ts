@@ -16,6 +16,7 @@ import { queryDns, queryDnsRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 
 const CATEGORY = 'dnssec_chain' as CheckCategory;
@@ -83,6 +84,13 @@ interface ZoneResult {
 	 * whether the parent holds a DS" (unmeasured) — the #638 distinction.
 	 */
 	dsQueryFailed: boolean;
+	/**
+	 * The DNSKEY probe threw rather than returning an empty answer. Symmetric to
+	 * `dsQueryFailed`: an unanswered DNSKEY lookup is indistinguishable from a
+	 * measured "no DNSKEY" by `determineLinkage()`, which is how a transient failure
+	 * used to reach the HIGH "DS record exists but no DNSKEY found" verdict.
+	 */
+	dnskeyQueryFailed: boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -184,11 +192,16 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 
 		// Query DNSKEY
 		let dnskeyRecords: ParsedDnskey[] = [];
+		let dnskeyQueryFailed = false;
 		try {
 			const rawDnskey = await queryDnsRecords(zone, 'DNSKEY', dnsOptions);
 			dnskeyRecords = rawDnskey.map(parseDnskeyRecord).filter((r): r is ParsedDnskey => r !== null);
 		} catch {
-			// DNSKEY query failed — treat as no DNSKEY
+			// DNSKEY query failed. Like the DS probe above, a thrown lookup is NOT a
+			// measured empty: `dsRecords.length === 0` here made `determineLinkage()`
+			// answer 'no_dnskey', which armed the HIGH "DS record exists but no DNSKEY
+			// found" verdict about a zone whose key set was never observed (#638/#900).
+			dnskeyQueryFailed = true;
 		}
 
 		// Determine linkage. The root has no parent DS; an empty root DNSKEY means
@@ -212,14 +225,23 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 			algorithms,
 			weakAlgorithms,
 			dsQueryFailed,
+			dnskeyQueryFailed,
 		});
 
-		if (linkage === 'no_dnskey' || linkage === 'broken') {
+		// 'no_dnskey' means the DS is present but the DNSKEY set came back empty —
+		// which `determineLinkage()` also returns when that lookup threw. Only a
+		// MEASURED empty is a bogus delegation; an unanswered probe is reported as
+		// unassessable below instead of scored. 'broken' (algorithm mismatch) needs
+		// records on both sides, so it is always a measurement.
+		if (linkage === 'broken' || (linkage === 'no_dnskey' && !dnskeyQueryFailed)) {
 			chainBroken = true;
 		}
 
-		// Stop walking if zone has no DS and no DNSKEY (unsigned from here down)
-		if (zone !== '.' && dsRecords.length === 0 && dnskeyRecords.length === 0) {
+		// Stop walking if zone has no DS and no DNSKEY (unsigned from here down).
+		// Both empties must be measured: a thrown lookup leaves the same empty arrays,
+		// and stopping there attributed "not signed" to a zone nobody observed, which
+		// also short-circuited the walk before the genuinely unsigned zone below it.
+		if (zone !== '.' && !dsQueryFailed && !dnskeyQueryFailed && dsRecords.length === 0 && dnskeyRecords.length === 0) {
 			break;
 		}
 	}
@@ -267,13 +289,33 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	// finding would score 60 off a delegation nobody measured. An unmeasured DS is
 	// reported through the inconclusive lane below instead, never as a deficiency.
 	const islandZone = zoneResults.find((z) => z.zone !== '.' && z.linkage === 'no_ds' && z.dnskeyRecords.length > 0 && !z.dsQueryFailed);
-	// A zone whose DS probe failed while its DNSKEY resolved is the SAME shape as an
-	// island — we simply do not know which. It must not be laundered into a complete
-	// chain either (that was the original #834 accidental-100 arriving via the
-	// failure path), so it blocks chainComplete without producing a scored finding.
-	const dsUnmeasuredZone = zoneResults.find((z) => z.zone !== '.' && z.dsQueryFailed && z.dnskeyRecords.length > 0);
+	// Any zone in the walk whose DS or DNSKEY lookup never completed leaves that
+	// delegation unobserved. A zone whose DS probe failed while its DNSKEY resolved
+	// is the SAME shape as an island — we simply do not know which — and it must not
+	// be laundered into a complete chain (that was the original #834 accidental-100
+	// arriving via the failure path). Symmetrically, a failed DNSKEY probe on a zone
+	// that does hold a DS looks exactly like a bogus delegation, and a walk where
+	// BOTH probes failed at every zone looked complete below the root, so the rule is
+	// "every delegation observed": an unobserved one blocks `chainComplete` and is
+	// reported as inconclusive below, never scored in either direction. The root is
+	// excluded — it has no parent DS, and its own retrieval failure is handled by the
+	// `unverified` anchor lane and `rootVerified`.
+	const unmeasuredDelegationZone = zoneResults.find((z) => z.zone !== '.' && (z.dsQueryFailed || z.dnskeyQueryFailed));
 	const chainComplete =
-		reachedTarget && !chainBroken && targetSigned && islandZone === undefined && dsUnmeasuredZone === undefined && rootVerified;
+		reachedTarget && !chainBroken && targetSigned && islandZone === undefined && unmeasuredDelegationZone === undefined && rootVerified;
+	// The chain verdict is attributed to `lastZone`: the target when the walk reached
+	// it, the ancestor it stopped at otherwise. If NEITHER of that zone's lookups
+	// completed, this run observed nothing about the zone the verdict is about, and no
+	// verdict — not the -40 "terminates unsigned" and not a clean 100 — is available.
+	// Abstain (#900).
+	const chainUnobserved = lastZone !== undefined && lastZone.zone !== '.' && lastZone.dsQueryFailed && lastZone.dnskeyQueryFailed;
+	if (chainUnobserved) {
+		return buildDnsErrorResult(
+			CATEGORY,
+			'DNSSEC chain',
+			new Error(`DNS query failed: no DS or DNSKEY lookup for ${domain} or its ancestors completed, so the chain of trust was never observed`),
+		) as CheckResult;
+	}
 
 	// --- Findings ---
 
@@ -323,7 +365,7 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	// bogus chain BELOW the floor this ordering exists to establish, which is the
 	// very defect being fixed. Additional broken zones are reported in metadata.
 	if (chainBroken) {
-		const brokenZones = zoneResults.filter((z) => z.linkage === 'no_dnskey' || z.linkage === 'broken');
+		const brokenZones = zoneResults.filter((z) => z.linkage === 'broken' || (z.linkage === 'no_dnskey' && !z.dnskeyQueryFailed));
 		// The SHALLOWEST break is the causal one — everything below it is downstream
 		// consequence, not an independent deficiency worth its own penalty.
 		const bz = brokenZones[0]!;
@@ -361,9 +403,20 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		// The zone where the chain of trust terminated unsigned: the target itself
 		// when the walk got there, otherwise the unsigned ancestor it stopped at.
 		const terminalZone = stoppedEarly ? (lastZone?.zone ?? domain) : domain;
+		// Either measured absence alone proves the chain does not reach this zone — no
+		// DS at the parent means no delegation, no DNSKEY means nothing to validate —
+		// but the sentence below names both, so it may only assert the halves this run
+		// actually observed. `chainUnobserved` already returned when both failed.
+		const unobserved = lastZone!.dsQueryFailed ? 'DS' : lastZone!.dnskeyQueryFailed ? 'DNSKEY' : null;
+		const evidenceNote =
+			unobserved === 'DS'
+				? ` (its DS lookup did not complete; this conclusion rests on the measured absence of a DNSKEY, without which a zone cannot be signed at all)`
+				: unobserved === 'DNSKEY'
+					? ` (its DNSKEY lookup did not complete; this conclusion rests on the measured absence of a DS at its parent, which by itself ends the chain of trust)`
+					: '';
 		const detail = stoppedEarly
-			? `DNSSEC is not configured for ${terminalZone}: the chain-of-trust walk found neither a DS at its parent zone nor a DNSKEY published by ${terminalZone} itself, so the chain of trust terminates at ${terminalZone} before reaching ${domain}. Any DNSSEC material published below ${terminalZone} is an unreachable island of trust. Without an intact chain, DNS responses for ${domain} are not cryptographically verified, leaving SPF, DMARC, and DKIM vulnerable to DNS-level manipulation.`
-			: `DNSSEC is not configured for ${domain}: the chain-of-trust walk found neither a DS at the parent zone nor a DNSKEY published by ${domain} itself, so the chain terminates here. Without DNSSEC, DNS responses for ${domain} are not cryptographically verified, leaving SPF, DMARC, and DKIM vulnerable to DNS-level manipulation.`;
+			? `DNSSEC is not configured for ${terminalZone}: the chain-of-trust walk found neither a DS at its parent zone nor a DNSKEY published by ${terminalZone} itself, so the chain of trust terminates at ${terminalZone} before reaching ${domain}. Any DNSSEC material published below ${terminalZone} is an unreachable island of trust. Without an intact chain, DNS responses for ${domain} are not cryptographically verified, leaving SPF, DMARC, and DKIM vulnerable to DNS-level manipulation.${evidenceNote}`
+			: `DNSSEC is not configured for ${domain}: the chain-of-trust walk found neither a DS at the parent zone nor a DNSKEY published by ${domain} itself, so the chain terminates here. Without DNSSEC, DNS responses for ${domain} are not cryptographically verified, leaving SPF, DMARC, and DKIM vulnerable to DNS-level manipulation.${evidenceNote}`;
 		findings.push(
 			createFinding(CATEGORY, 'DNSSEC chain terminates unsigned', 'high', detail, {
 				zone: terminalZone,
@@ -394,19 +447,27 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 				{ zone: islandZone.zone, linkage: 'no_ds', penaltyOverride: 40, [SUBJECT_TERMS_METADATA_KEY]: [islandZone.zone, domain] },
 			),
 		);
-	} else if (dsUnmeasuredZone) {
-		// The DS probe for a zone that publishes a DNSKEY never completed. That is the
-		// island-of-trust shape OR a perfectly anchored zone — indistinguishable from
-		// here. Report it as unmeasured (`inconclusive` + `errorKind`, NEVER
-		// `missingControl` — #638 law) with no penalty, and let the `partial` flag
-		// below keep the non-answer out of the dispatch cache so a retry can measure it.
+	}
+
+	// An unobserved delegation, reported independently of the else-if chain above:
+	// it carries no penalty, so it cannot stack, and suppressing it would hide the
+	// gap when a measured termination finding also fires. `inconclusive` +
+	// `errorKind`, NEVER `missingControl` — #638 law — and `partial` below keeps the
+	// non-answer out of the dispatch cache so a retry can measure it.
+	if (unmeasuredDelegationZone) {
+		const failedProbes =
+			unmeasuredDelegationZone.dsQueryFailed && unmeasuredDelegationZone.dnskeyQueryFailed
+				? 'DS and DNSKEY lookups'
+				: unmeasuredDelegationZone.dsQueryFailed
+					? 'DS lookup'
+					: 'DNSKEY lookup';
 		findings.push(
 			createFinding(
 				CATEGORY,
-				`DNSSEC delegation not assessable at ${dsUnmeasuredZone.zone}`,
+				`DNSSEC delegation not assessable at ${unmeasuredDelegationZone.zone}`,
 				'info',
-				`The DS lookup for ${dsUnmeasuredZone.zone} did not complete, so the delegation linking its parent to the DNSKEY it publishes could not be observed. The chain of trust for ${domain} is therefore unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.`,
-				{ zone: dsUnmeasuredZone.zone, inconclusive: true, confidence: 'heuristic', errorKind: 'dns_error' },
+				`The ${failedProbes} for ${unmeasuredDelegationZone.zone} did not complete, so that link in the chain of trust could not be observed. The chain of trust for ${domain} is therefore unverified for this run — this reflects the lookup, not the zone's configuration. Re-run to assess it.`,
+				{ zone: unmeasuredDelegationZone.zone, inconclusive: true, confidence: 'heuristic', errorKind: 'dns_error' },
 			),
 		);
 	}
@@ -461,6 +522,10 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		zone: z.zone,
 		dsCount: z.dsRecords.length,
 		dnskeyCount: z.dnskeyRecords.length,
+		// A `0` count from a thrown lookup is not an observed absence; without these
+		// the per-zone table reads `dsCount: 0` as "the parent holds no DS".
+		dsObserved: z.zone === '.' ? false : !z.dsQueryFailed,
+		dnskeyObserved: !z.dnskeyQueryFailed,
 		kskCount: z.dnskeyRecords.filter((k) => k.isKsk).length,
 		zskCount: z.dnskeyRecords.filter((k) => !k.isKsk).length,
 		linkage: z.linkage,
@@ -475,6 +540,11 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		summaryStatus = `${domain} has no DS and no DNSKEY — domain is not signed`;
 	} else if (islandZone) {
 		summaryStatus = `island of trust — ${islandZone.zone} publishes a DNSKEY but its parent holds no DS, so validating resolvers treat the zone as insecure`;
+	} else if (unmeasuredDelegationZone) {
+		// `chainComplete` is false here for a reason that is not a defect: a lookup
+		// never completed. The old fallthrough printed "chain broken", which reads as
+		// a diagnosis of the zone and is a claim this run never measured.
+		summaryStatus = `not assessable — the ${unmeasuredDelegationZone.dsQueryFailed ? 'DS' : 'DNSKEY'} lookup for ${unmeasuredDelegationZone.zone} did not complete`;
 	} else if (chainComplete) {
 		summaryStatus = 'complete chain from root to target';
 	} else {
@@ -507,7 +577,7 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	// Same reasoning again for a failed AD probe on an otherwise complete chain
 	// (#851): the run did not establish the validation outcome, so it must not be
 	// served from cache as though it had.
-	if (zoneResults.find((z) => z.zone === '.')?.linkage === 'unverified' || dsUnmeasuredZone || (chainComplete && adQueryFailed)) {
+	if (zoneResults.find((z) => z.zone === '.')?.linkage === 'unverified' || unmeasuredDelegationZone || (chainComplete && adQueryFailed)) {
 		result.partial = true;
 	}
 	return result;

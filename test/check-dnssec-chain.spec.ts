@@ -318,6 +318,87 @@ describe('checkDnssecChain', () => {
 		expect(result.partial).toBe(true);
 	});
 
+	it('abstains instead of reporting an unsigned chain when no DS or DNSKEY lookup completed (#900)', async () => {
+		// Every probe in the walk rejects. The old code read each thrown lookup as an
+		// empty answer, so the walk "stopped at com — zone has no DS and no DNSKEY
+		// (not signed)" and emitted a HIGH "DNSSEC chain terminates unsigned" at score
+		// 60: a confident diagnosis of the zone's configuration derived from a resolver
+		// that never answered. Nothing about the chain was observed, so the only honest
+		// output is an abstention (#900).
+		mockDnsFetch({
+			'.:DNSKEY': 'REJECT',
+			'com:DS': 'REJECT',
+			'com:DNSKEY': 'REJECT',
+			'example.com:DS': 'REJECT',
+			'example.com:DNSKEY': 'REJECT',
+			'example.com:A': 'REJECT',
+		});
+
+		const result = await run();
+
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.map((f) => f.title)).toContain('DNSSEC chain check error');
+		expect(result.findings[0]!.metadata?.errorKind).toBe('dns_error');
+		// No verdict in either direction may survive the abstention.
+		expect(result.findings.some((f) => /terminates unsigned/i.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => /chain summary/i.test(f.title))).toBe(false);
+	});
+
+	it('does not report a broken chain when the DNSKEY probe never answered', async () => {
+		// `determineLinkage()` returns 'no_dnskey' for a thrown DNSKEY lookup exactly
+		// as it does for a measured empty one, so an unanswered probe used to produce
+		// the HIGH "DS record exists but no DNSKEY found" verdict (#638 law: an
+		// unmeasured absence is inconclusive, never a scored deficiency).
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': dsResponse('com', ['12345 8 2 AABBCCDD']),
+			'com:DNSKEY': 'REJECT',
+			'example.com:DS': dsResponse('example.com', ['54321 8 2 DDEEFF00']),
+			'example.com:DNSKEY': dnskeyResponse('example.com', ['257 3 8 AwEAAexample...']),
+			'example.com:A': adResponse('example.com', true),
+		});
+
+		const result = await run();
+
+		expect(result.findings.find((f) => f.severity === 'high')).toBeUndefined();
+		const inconclusive = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(inconclusive).toBeDefined();
+		expect(inconclusive!.metadata?.zone).toBe('com');
+		expect(inconclusive!.metadata?.errorKind).toBe('dns_error');
+		const summary = result.findings.find((f) => f.severity === 'info' && f.metadata?.chainComplete !== undefined);
+		expect(summary!.metadata!.chainComplete).toBe(false);
+		expect(summary!.detail).not.toMatch(/chain broken/i);
+		expect(result.partial).toBe(true);
+	});
+
+	it('keeps walking past a zone whose probes never answered instead of blaming it', async () => {
+		// The early `break` means "this zone is unsigned, so stop" — a conclusion that
+		// needs a MEASURED absence. With both of com's lookups thrown, the old code
+		// stopped there and attributed the unsigned termination to `.com`, printing
+		// "the chain-of-trust walk found neither a DS at its parent zone nor a DNSKEY
+		// published by com". The measured NODATA at `example.com` is the zone that is
+		// actually unsigned, and it is the only one this run may name.
+		mockDnsFetch({
+			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
+			'com:DS': 'REJECT',
+			'com:DNSKEY': 'REJECT',
+			'example.com:DS': emptyDsResponse('example.com'),
+			'example.com:DNSKEY': emptyDnskeyResponse('example.com'),
+			'example.com:A': adResponse('example.com', false),
+		});
+
+		const result = await run();
+
+		const unsigned = result.findings.find((f) => /terminates unsigned/i.test(f.title));
+		expect(unsigned).toBeDefined();
+		expect(unsigned!.metadata?.zone).toBe('example.com');
+		expect(unsigned!.detail).not.toMatch(/DNSKEY published by com/i);
+		// com's failed lookups are still disclosed, unpenalised.
+		const inconclusive = result.findings.find((f) => f.metadata?.inconclusive === true);
+		expect(inconclusive!.metadata?.zone).toBe('com');
+		expect(result.partial).toBe(true);
+	});
+
 	it('broken linkage (DS exists but no DNSKEY) produces high severity', async () => {
 		mockDnsFetch({
 			'.:DNSKEY': dnskeyResponse('.', ['257 3 8 AwEAAagAI...']),
