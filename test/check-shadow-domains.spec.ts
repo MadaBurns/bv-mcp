@@ -2109,7 +2109,7 @@ describe('checkShadowDomains — total probe failure abstains (#900)', () => {
 			const q = parseDohQuery(input);
 			if (!q) return Promise.resolve(emptyResponse());
 			if (q.name === target) {
-				if (q.type === 'NS' || q.type === '2') return Promise.resolve(nsRecords(q.name, ['ns1.brand-dns.net.', 'ns2.brand-dns.net.']));
+				if (q.type === 'NS' || q.type === '2') return Promise.resolve(nsRecords(q.name, ['ns1.example.test.', 'ns2.example.test.']));
 				if (q.type === 'MX' || q.type === '15') return Promise.resolve(mxRecords(q.name, ['10 mail.example.com.']));
 				return Promise.resolve(emptyResponse());
 			}
@@ -2141,7 +2141,7 @@ describe('checkShadowDomains — total probe failure abstains (#900)', () => {
 			const q = parseDohQuery(input);
 			if (!q) return Promise.resolve(emptyResponse());
 			if (q.name === target) {
-				if (q.type === 'NS' || q.type === '2') return Promise.resolve(nsRecords(q.name, ['ns1.brand-dns.net.', 'ns2.brand-dns.net.']));
+				if (q.type === 'NS' || q.type === '2') return Promise.resolve(nsRecords(q.name, ['ns1.example.test.', 'ns2.example.test.']));
 				if (q.type === 'MX' || q.type === '15') return Promise.resolve(mxRecords(q.name, ['10 mail.example.com.']));
 				return Promise.resolve(emptyResponse());
 			}
