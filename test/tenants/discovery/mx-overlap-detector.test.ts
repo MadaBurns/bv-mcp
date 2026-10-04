@@ -76,6 +76,103 @@ describe('detectMxOverlap', () => {
 		expect(result2.coOwnedDomains).toHaveLength(0);
 	});
 
+	describe('per-provider tenant extraction (Proofpoint)', () => {
+		const run = async (byDomain: Record<string, string[]>) =>
+			detectMxOverlap('foo.com', { candidateDomains: ['bar.com'], dohFn: mockDoh(byDomain) });
+
+		it('same id behind different mxa-/mxb- rotation labels matches at the isolated-tenant weight', async () => {
+			const result = await run({
+				'foo.com': ['mxa-00162b01.gslb.pphosted.com.', 'mxb-00162b01.gslb.pphosted.com.'],
+				'bar.com': ['mxb-00162b01.gslb.pphosted.com.'],
+			});
+			expect(result.coOwnedDomains).toHaveLength(1);
+			expect(result.coOwnedDomains[0].confidence).toBe(0.65);
+			expect(result.coOwnedDomains[0].evidence.sharedSaas).toBe(true);
+			expect(result.coOwnedDomains[0].evidence.sharedTenant).toBe('pphosted.com:00162b01');
+		});
+
+		it('matches when seed and candidate list only different rotation labels or host families', async () => {
+			const result = await run({
+				'foo.com': ['mxa-00162b01.gslb.pphosted.com.'],
+				'bar.com': ['mx0b-00162b01.pphosted.com.'],
+			});
+			expect(result.coOwnedDomains).toHaveLength(1);
+			expect(result.coOwnedDomains[0].evidence.sharedTenant).toBe('pphosted.com:00162b01');
+		});
+
+		it('different per-customer ids on Proofpoint → no signal', async () => {
+			const result = await run({
+				'foo.com': ['mxa-00162b01.gslb.pphosted.com.', 'mxb-00162b01.gslb.pphosted.com.'],
+				'bar.com': ['mxa-00190b01.gslb.pphosted.com.', 'mxb-00190b01.gslb.pphosted.com.'],
+			});
+			expect(result.coOwnedDomains).toHaveLength(0);
+		});
+
+		it('bare pphosted.com host with no extractable id keeps the shared-platform weight', async () => {
+			const result = await run({
+				'foo.com': ['mx.pphosted.com.'],
+				'bar.com': ['mx.pphosted.com.'],
+			});
+			expect(result.coOwnedDomains).toHaveLength(1);
+			expect(result.coOwnedDomains[0].confidence).toBe(0.5);
+			expect(result.coOwnedDomains[0].evidence.sharedSaas).toBe(true);
+			expect(result.coOwnedDomains[0].evidence.sharedTenant).toBeUndefined();
+		});
+
+		it('an id-shaped label that is not a verified Proofpoint format is not treated as isolated', async () => {
+			const result = await run({
+				'foo.com': ['mxa-notanid.gslb.pphosted.com.'],
+				'bar.com': ['mxb-notanid.gslb.pphosted.com.'],
+			});
+			expect(result.coOwnedDomains).toHaveLength(0);
+		});
+
+		it('M365 same-tenant match is unchanged: 0.5, no sharedTenant label', async () => {
+			const result = await run({
+				'foo.com': ['acme-com.mail.protection.outlook.com.'],
+				'bar.com': ['acme-com.mail.protection.outlook.com.'],
+			});
+			expect(result.coOwnedDomains).toHaveLength(1);
+			expect(result.coOwnedDomains[0].confidence).toBe(0.5);
+			expect(result.coOwnedDomains[0].evidence.sharedTenant).toBeUndefined();
+		});
+	});
+
+	describe('per-provider tenant extraction (Forcepoint mailcontrol)', () => {
+		const run = async (byDomain: Record<string, string[]>) =>
+			detectMxOverlap('foo.com', { candidateDomains: ['bar.com'], dohFn: mockDoh(byDomain) });
+
+		it('same cust id behind different -1/-2 rotation labels matches at the isolated-tenant weight', async () => {
+			const result = await run({
+				'foo.com': ['cust78413-1.in.mailcontrol.com.'],
+				'bar.com': ['cust78413-2.in.mailcontrol.com.'],
+			});
+			expect(result.coOwnedDomains).toHaveLength(1);
+			expect(result.coOwnedDomains[0].confidence).toBe(0.65);
+			expect(result.coOwnedDomains[0].evidence.sharedSaas).toBe(true);
+			expect(result.coOwnedDomains[0].evidence.sharedTenant).toBe('mailcontrol.com:78413');
+		});
+
+		it('different cust ids → no signal', async () => {
+			const result = await run({
+				'foo.com': ['cust78413-1.in.mailcontrol.com.', 'cust78413-2.in.mailcontrol.com.'],
+				'bar.com': ['cust12345-1.in.mailcontrol.com.', 'cust12345-2.in.mailcontrol.com.'],
+			});
+			expect(result.coOwnedDomains).toHaveLength(0);
+		});
+
+		it('non-cust mailcontrol host (shared cluster) is not promoted: 0.5, no label', async () => {
+			const result = await run({
+				'foo.com': ['cluster-a.mailcontrol.com.'],
+				'bar.com': ['cluster-a.mailcontrol.com.'],
+			});
+			expect(result.coOwnedDomains).toHaveLength(1);
+			expect(result.coOwnedDomains[0].confidence).toBe(0.5);
+			expect(result.coOwnedDomains[0].evidence.sharedSaas).toBe(true);
+			expect(result.coOwnedDomains[0].evidence.sharedTenant).toBeUndefined();
+		});
+	});
+
 	it('partial MX overlap (1 of 3 matches) → conf ~ 0.5', async () => {
 		const dohFn = mockDoh({
 			'apple.com': ['mx-in-smtp.apple.com.', 'fallback.apple.com.', 'mx2.icloud.com.'],
