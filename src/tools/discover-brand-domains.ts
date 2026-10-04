@@ -178,7 +178,7 @@ const DEFAULT_MIN_CONFIDENCE = 0.5;
 /** Default per-signal confidence used when the underlying module doesn't supply one. */
 const DEFAULT_SIGNAL_CONFIDENCE: Record<DiscoverSignal, number> = {
 	san: 0.1, // SAN co-ownership — speculative; multi-tenant CDN risk
-	san_recursive: 0.85, // Second-order SAN: candidate's own crt.sh listing also names the seed — near-deterministic mutual cross-cert inclusion
+	san_recursive: 0.85, // Discovery confidence only: reciprocal SAN co-listing can repeat the same shared certificate; not ownership proof.
 	ns: 0.9, // NS overlap — very strong organization signal (module always overrides with shared/seedNs ratio)
 	dmarc_rua: 0.6, // DMARC RUA `related` — module always supplies; matches dmarc-rua-miner emission
 	dkim_key_reuse: 0.95, // DKIM key reuse — near-deterministic (module always overrides)

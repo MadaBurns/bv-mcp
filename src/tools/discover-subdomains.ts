@@ -2009,7 +2009,7 @@ function wasWere(sources: readonly string[]): string {
 	return sources.length === 1 ? 'was' : 'were';
 }
 
-function ctFailureGuidance(coverage: CtCoverage | undefined): string {
+function ctFailureGuidance(domain: string, coverage: CtCoverage | undefined): string {
 	const perSource = coverage?.perSource ?? [];
 	const timedOut = perSource.filter((s) => s.outcome === 'timeout').map((s) => s.source);
 	const limited = perSource.filter((s) => s.outcome === 'rate_limited').map((s) => s.source);
@@ -2020,30 +2020,27 @@ function ctFailureGuidance(coverage: CtCoverage | undefined): string {
 
 	const parts: string[] = [];
 	if (timedOut.length > 0) {
-		// The pagination measurement is CERTSPOTTER'S (#738 item 1). crt.sh does not
-		// take `limit=`/`after=` in that form and its 504 was never measured, so
-		// printing that clause for a crtsh timeout states a falsehood — which, while
-		// crt.sh was the source timing out, was every call. Each source now gets the
-		// claim that was actually measured for it, and the crt.sh clause names the
-		// knob that really binds it: this tool's own per-source CT budget, not the
-		// whole-scan SCAN_TIMEOUT_MS (which does not apply — `discover_subdomains` is
-		// not a `scan_domain` category).
+		// A timeout outcome does not distinguish a local abort from a provider-side timeout.
+		// Name the configured budget without claiming a particular upstream status or cause.
 		const upstreamCapped = timedOut.filter((s) => s === 'certspotter');
 		const budgetCapped = timedOut.filter((s) => s !== 'certspotter');
 		if (upstreamCapped.length > 0) {
 			parts.push(
-				`${upstreamCapped.join(', ')} timed out upstream — this is deterministic for this domain, not transient, so an identical retry will time out again. Page size is NOT the lever: limit=10, limit=100 and after=0 were measured returning the same HTTP 504.`,
+				`${upstreamCapped.join(', ')} did not complete within the ${CERTSPOTTER_TIMEOUT_MS / 1000}s per-source CT budget (CERTSPOTTER_TIMEOUT_MS). Whether the caller deadline or an upstream timeout ended the request was not established; repeatability and whether retrying will help were not measured.`,
 			);
 		}
-		if (budgetCapped.length > 0) {
+		for (const source of budgetCapped) {
+			const pslCrtsh = source === 'crtsh' && isPublicSuffixApex(domain);
+			const budgetMs = pslCrtsh ? CT_SOURCE_TIMEOUT_MS_PSL_APEX : CT_SOURCE_TIMEOUT_MS;
+			const budgetName = pslCrtsh ? 'CT_SOURCE_TIMEOUT_MS_PSL_APEX' : 'CT_SOURCE_TIMEOUT_MS';
 			parts.push(
-				`${budgetCapped.join(', ')} did not answer inside this tool's ${CT_SOURCE_TIMEOUT_MS / 1000}s per-source CT budget (CT_SOURCE_TIMEOUT_MS — the knob that bounds this source; SCAN_TIMEOUT_MS does not apply here). Why it was slow was not measured, so a retry may or may not help.`,
+				`${source} did not answer inside this tool's ${budgetMs / 1000}s per-source CT budget (${budgetName} — the knob that bounds this source; SCAN_TIMEOUT_MS does not apply here). Why it was slow was not measured, so a retry may or may not help.`,
 			);
 		}
 	}
 	if (limited.length > 0) {
 		parts.push(
-			`${limited.join(', ')} rate-limited this caller (HTTP 429) — the unauthenticated quota is spent. Back off; retrying extends the lockout and the quota is shared with the next domain scanned.`,
+			`${limited.join(', ')} rate-limited this caller (HTTP 429). Back off; the response does not establish this caller's credential tier or which provider limit was reached.`,
 		);
 	}
 	if (restricted.length > 0) {
@@ -2093,7 +2090,7 @@ export function formatSubdomainDiscovery(result: SubdomainDiscoveryResult, forma
 	const coverageLine = result.coverage ? `\n${formatCoverageLine(result.coverage)}` : '';
 
 	if (result.sourceUnavailable) {
-		return `Subdomain Discovery: ${result.domain} — Certificate Transparency source unavailable; could not enumerate subdomains. This does not mean the domain has no subdomains. ${ctFailureGuidance(result.coverage)}${coverageLine}`;
+		return `Subdomain Discovery: ${result.domain} — Certificate Transparency source unavailable; could not enumerate subdomains. This does not mean the domain has no subdomains. ${ctFailureGuidance(result.domain, result.coverage)}${coverageLine}`;
 	}
 	if (result.totalSubdomains === 0) {
 		// A STALE empty set is not a confident "none found" — say so, or the

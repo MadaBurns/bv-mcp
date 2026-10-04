@@ -421,9 +421,9 @@ describe('discover_subdomains — rendered text always states the sample caveat'
 		it('does NOT tell the caller to retry when the source timed out', async () => {
 			const output = await renderUnavailable([{ source: 'certspotter', outcome: 'timeout' }]);
 			expect(output).not.toMatch(/retry shortly/i);
-			// and it must say WHY retrying will not help
+			// A timeout alone does not establish its cause or repeatability.
 			expect(output).toMatch(/certspotter/);
-			expect(output).toMatch(/deterministic|too large|not transient/i);
+			expect(output).toMatch(/not established|not measured/i);
 		});
 
 		it('still offers a retry when the failure was an upstream error', async () => {
@@ -449,8 +449,8 @@ describe('discover_subdomains — rendered text always states the sample caveat'
 			);
 			expect(output).toMatch(/certstream/);
 			expect(output).toMatch(/not configured|no configured fallback|never consulted/i);
-			// The mixed case must not silently drop the deterministic warning.
-			expect(output).toMatch(/deterministic|too large|not transient/i);
+			// The mixed case must retain uncertainty about the timeout cause.
+			expect(output).toMatch(/not established|not measured/i);
 		});
 	});
 });
