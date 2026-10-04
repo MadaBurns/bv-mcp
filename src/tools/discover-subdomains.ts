@@ -332,6 +332,8 @@ const MANY_ISSUERS_THRESHOLD = 3;
 
 /** A single crt.sh JSON response entry. */
 interface CrtShEntry {
+	/** Optional full-name issuance data retained for SAN discovery; never an ownership verdict. */
+	sanIssuance?: { tbsSha256: unknown; dnsNames: unknown };
 	name_value: string;
 	issuer_name: string;
 	not_before: string;
@@ -1098,6 +1100,7 @@ async function rememberSourceCooldown(source: string, retryAfterSeconds: number 
  * `id` is the pagination cursor — `&after=<id>` fetches the next page.
  */
 interface CertspotterIssuance {
+	tbs_sha256?: unknown;
 	id?: string | number;
 	dns_names?: string[];
 	not_before?: string;
@@ -1304,6 +1307,7 @@ export async function fetchCertspotterEntries(
 				if (item && (typeof item.id === 'string' || typeof item.id === 'number')) lastId = String(item.id);
 				if (!item || !Array.isArray(item.dns_names) || item.dns_names.length === 0) continue;
 				entries.push({
+					sanIssuance: { tbsSha256: item.tbs_sha256, dnsNames: item.dns_names },
 					name_value: item.dns_names.join('\n'),
 					issuer_name: item.issuer?.name ?? '',
 					not_before: item.not_before ?? '',

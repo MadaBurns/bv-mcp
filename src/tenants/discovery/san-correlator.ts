@@ -35,6 +35,8 @@ import { disposeUnreadResponseBody, readJsonResponseCapped } from '../../lib/res
 import { safeFetch } from '../../lib/safe-fetch';
 import { validateDomain } from '../../lib/sanitize';
 import { fetchCertspotterEntries } from '../../tools/discover-subdomains';
+import { buildSanCertificateProvenance, MAX_SAN_PROVENANCE_OBSERVATIONS, type SanCertificateProvenance } from './san-provenance';
+import { compareSanCertificateProvenance, type SanProvenanceComparison } from './san-provenance-comparison';
 
 /**
  * Default WHOLE-CALL budget (ms): certstream + crt.sh + the Certspotter failover
@@ -156,6 +158,10 @@ interface CertstreamSansResponse {
 }
 
 export interface SanCorrelationResult {
+	/** Per-observation provenance for discovery-only inspection; absent on legacy injected answers. */
+	certificateProvenance?: SanCertificateProvenance[];
+	/** More certificate observations existed than the bounded provenance sample retains. */
+	certificateProvenanceTruncated?: boolean;
 	seedDomain: string;
 	/** Deduped, alphabetically sorted, lowercase ASCII sibling domains. */
 	coOwnedDomains: string[];
@@ -279,11 +285,15 @@ async function attemptCertstreamSans(
 	// drop invalid hostnames. The worker doesn't pre-filter — sibling-vs-subdomain
 	// semantics live in the consumer.
 	const siblings = filterSiblingNames(data.names, seedLower);
+	const certificateProvenance = [
+		buildSanCertificateProvenance({ source: 'certstream', candidateDomains: siblings, responseComplete: false }),
+	];
 	if (data.timedOut) {
 		return siblings.length > 0
 			? {
 					seedDomain: seedLower,
 					coOwnedDomains: siblings,
+					certificateProvenance,
 					certIds: [],
 					queryStatus: 'partial',
 				}
@@ -293,6 +303,7 @@ async function attemptCertstreamSans(
 	return {
 		seedDomain: seedLower,
 		coOwnedDomains: siblings,
+		certificateProvenance,
 		certIds: [],
 		queryStatus: 'ok',
 	};
@@ -348,6 +359,7 @@ async function attemptCorrelation(
 
 	const siblings = new Set<string>();
 	const certIds: number[] = [];
+	const certificateProvenance: SanCertificateProvenance[] = [];
 	let certsProcessed = 0;
 	let certsSinceNewDomain = 0;
 	let bytesProcessed = 0;
@@ -380,6 +392,17 @@ async function attemptCorrelation(
 
 				let foundNew = false;
 				if (typeof entry.id === 'number') certIds.push(entry.id);
+				const observedNames = [entry.name_value, entry.common_name]
+					.filter((field): field is string => typeof field === 'string')
+					.join('\n');
+				if (certificateProvenance.length < MAX_SAN_PROVENANCE_OBSERVATIONS)
+					certificateProvenance.push(
+						buildSanCertificateProvenance({
+							source: 'crtsh',
+							candidateDomains: extractSiblingsFromNameValue(observedNames, seedLower),
+							responseComplete: false,
+						}),
+					);
 				for (const field of [entry.name_value, entry.common_name]) {
 					if (typeof field !== 'string' || !field) continue;
 					for (const sibling of extractSiblingsFromNameValue(field, seedLower)) {
@@ -410,6 +433,8 @@ async function attemptCorrelation(
 				seedDomain: seedLower,
 				coOwnedDomains: Array.from(siblings).sort(),
 				certIds,
+				certificateProvenance,
+				certificateProvenanceTruncated: certsProcessed > certificateProvenance.length,
 				queryStatus: 'ok',
 			};
 		}
@@ -421,6 +446,8 @@ async function attemptCorrelation(
 		seedDomain: seedLower,
 		coOwnedDomains: Array.from(siblings).sort(),
 		certIds,
+		certificateProvenance,
+		certificateProvenanceTruncated: certsProcessed > certificateProvenance.length,
 		queryStatus: 'ok',
 	};
 }
@@ -437,6 +464,9 @@ async function attemptCorrelation(
  */
 /** Options for the second-order recursive SAN expansion. */
 export interface SanRecursiveOptions extends SanCorrelationOptions {
+	/** Optional first-order evidence for reporting only; never changes recursive candidate eligibility. */
+	firstOrderCertificateProvenance?: readonly SanCertificateProvenance[];
+	firstOrderCertificateProvenanceTruncated?: boolean;
 	/** Hard cap on the number of first-order candidates to probe in the second pass. Defaults to 20. */
 	maxCandidates?: number;
 	/** Parallel concurrency limit for second-order crt.sh queries. Defaults to 8. */
@@ -447,6 +477,11 @@ export interface SanRecursiveOptions extends SanCorrelationOptions {
 
 /** Per-candidate cross-confirmation outcome from the second-order pass. */
 export interface SanRecursiveCandidate {
+	provenanceComparison?: SanProvenanceComparison;
+	/** Provenance of the reciprocal observation, not a claim of independent certificates. */
+	certificateProvenance?: SanCertificateProvenance[];
+	/** More certificate observations existed than the bounded provenance sample retains. */
+	certificateProvenanceTruncated?: boolean;
 	/** The first-order sibling whose SANs we queried. */
 	candidate: string;
 	/** crt.sh `id` values of the certs that surfaced the seed in the candidate's SAN list. */
@@ -552,8 +587,22 @@ export async function correlateSansRecursive(
 			if (subResult.queryStatus !== 'ok') continue;
 			if (subResult.coOwnedDomains.includes(seedLower)) {
 				crossConfirmed.push({
+					provenanceComparison: compareSanCertificateProvenance({
+						seed: seedLower,
+						candidate,
+						firstOrder: options.firstOrderCertificateProvenance,
+						firstOrderTruncated: options.firstOrderCertificateProvenanceTruncated,
+						reciprocal: subResult.certificateProvenance,
+						reciprocalTruncated: subResult.certificateProvenanceTruncated,
+					}),
 					candidate,
 					certIds: subResult.certIds.slice(0, 5),
+					...(subResult.certificateProvenance
+						? {
+								certificateProvenance: subResult.certificateProvenance,
+								certificateProvenanceTruncated: subResult.certificateProvenanceTruncated,
+							}
+						: {}),
 					queryStatus: subResult.queryStatus,
 				});
 			}
@@ -603,7 +652,13 @@ async function attemptCertspotter(
 	fetchFn: typeof fetch,
 	certspotterToken: string | undefined,
 	callerSignal?: AbortSignal,
-): Promise<{ outcome: CtSourceOutcome; siblings: string[]; truncated: boolean }> {
+): Promise<{
+	outcome: CtSourceOutcome;
+	siblings: string[];
+	truncated: boolean;
+	certificateProvenance: SanCertificateProvenance[];
+	certificateProvenanceTruncated: boolean;
+}> {
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 	const signal = callerSignal ? AbortSignal.any([controller.signal, callerSignal]) : controller.signal;
@@ -614,14 +669,27 @@ async function attemptCertspotter(
 			...(certspotterToken ? { certspotterToken } : {}),
 		});
 		const names: string[] = [];
+		const certificateProvenance: SanCertificateProvenance[] = [];
 		for (const entry of result.entries.slice(0, maxCerts)) {
 			if (typeof entry.name_value === 'string') names.push(...entry.name_value.split(/[\n,]/));
+			if (certificateProvenance.length < MAX_SAN_PROVENANCE_OBSERVATIONS)
+				certificateProvenance.push(
+					buildSanCertificateProvenance({
+						source: 'certspotter',
+						tbsSha256: entry.sanIssuance?.tbsSha256,
+						dnsNames: entry.sanIssuance?.dnsNames,
+						candidateDomains: typeof entry.name_value === 'string' ? extractSiblingsFromNameValue(entry.name_value, seedLower) : [],
+						responseComplete: result.enumerationComplete === true && result.entries.length <= maxCerts,
+					}),
+				);
 		}
 		const siblings = filterSiblingNames(names, seedLower);
 		const answered = result.outcome === 'ok' || result.outcome === 'empty';
 		return {
 			outcome: answered && siblings.length === 0 ? 'empty' : result.outcome,
 			siblings,
+			certificateProvenance,
+			certificateProvenanceTruncated: Math.min(result.entries.length, maxCerts) > certificateProvenance.length,
 			truncated: answered && result.enumerationComplete === false,
 		};
 	} finally {
@@ -743,6 +811,8 @@ export async function correlateSans(seedDomain: string, options: SanCorrelationO
 				return withCoverage({
 					seedDomain: seedLower,
 					coOwnedDomains: cs.siblings,
+					certificateProvenance: cs.certificateProvenance,
+					certificateProvenanceTruncated: cs.certificateProvenanceTruncated,
 					certIds: [],
 					queryStatus: cs.truncated ? 'partial' : 'ok',
 				});
