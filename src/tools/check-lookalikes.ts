@@ -33,6 +33,7 @@ import { callReconScan, isReconHit } from '../lib/recon-binding';
 import type { ReconBinding, BindingDegradationSink, ReconScanResult } from '../lib/recon-binding';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult } from '../lib/scoring';
+import { attachMxOwnershipPredicateReporting } from '../lib/mx-ownership-predicate';
 import {
 	generateCognitiveLookalikes,
 	generateCombosquats,
@@ -885,6 +886,7 @@ async function checkLookalikesCore(
 		}
 	}
 
+	attachMxOwnershipPredicateReporting(findings, results, domain, primaryMxList);
 	const result = buildCheckResult('lookalikes', findings);
 	// A degraded ownership comparison is TRANSIENT (throttled/timed-out seed NS
 	// lookup), but `check_lookalikes` is cached for an hour and the dispatcher
