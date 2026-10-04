@@ -40,6 +40,13 @@ const DNSSEC_ALGORITHMS: Record<number, string> = {
 /** Algorithms considered weak / deprecated. */
 const WEAK_ALGORITHMS = new Set([1, 3, 5, 6, 7]);
 
+/**
+ * How many zones the chain walk may probe after a lookup stops answering, before it stops
+ * paying. Bounds the cost of a caller-supplied label depth against a resolver that hangs;
+ * see the cost bound in the walk loop.
+ */
+const UNOBSERVED_ZONE_BUDGET = 2;
+
 /** DS digest type names. */
 const DIGEST_TYPES: Record<number, string> = { 1: 'SHA-1', 2: 'SHA-256', 4: 'SHA-384' };
 
@@ -173,7 +180,8 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	let chainBroken = false;
 	const weakAlgsFound: string[] = [];
 	// See the cost bound at the foot of the loop.
-	let consecutiveUnobservedZones = 0;
+	let unobservedZones = 0;
+	let walkBudgetSpent = false;
 
 	for (const zone of zones) {
 		// Query DS (skip for root — root has no parent to hold DS)
@@ -248,23 +256,28 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		}
 
 		// COST BOUND (#900 follow-up). Removing the failure-blind `break` above took the only
-		// early exit a dead resolver used to hit, so on a transport-dead resolver the walk now
-		// runs its full length: two SEQUENTIAL full-timeout probes per zone (DS, then DNSKEY),
-		// retries included, times label depth — and label depth is caller-controlled, since
+		// early exit a dead resolver used to hit, so on a resolver that stops answering the walk
+		// now runs its full length: two SEQUENTIAL probes per zone (DS, then DNSKEY), retries
+		// included, times label depth — and label depth is caller-controlled, since
 		// `buildZoneHierarchy` walks every label of the submitted name. That is self-inflicted
 		// denial of service against our own request budget and DoH subrequest quota.
 		//
-		// Two consecutive zones with BOTH probes unanswered is the point where the resolver is
-		// demonstrably not answering, and deeper zones cost the same for no new information.
-		// Stopping there is verdict-neutral, not merely cheaper: the zone we stop on is by
-		// construction `lastZone`, and `chainUnobserved` below tests exactly that zone's two
-		// failure flags, so this exit always lands on the same abstention a full walk would have
-		// produced — it only produces it sooner. (One both-failed zone is NOT enough to stop: a
-		// single SERVFAILing parent above a measurable child is a real, walk-through case, and
-		// the test "keeps walking past a zone whose probes never answered" pins it.)
-		if (zone !== '.' && dsQueryFailed && dnskeyQueryFailed) consecutiveUnobservedZones++;
-		else consecutiveUnobservedZones = 0;
-		if (consecutiveUnobservedZones >= 2) break;
+		// The bound counts every zone whose DS OR DNSKEY lookup never completed, cumulatively
+		// rather than consecutively. Counting only BOTH-failed zones, or only CONSECUTIVE ones, is
+		// dodgeable by the caller: a submitted name whose every level answers DS promptly and
+		// blackholes DNSKEY resets a consecutive counter on every zone, so the walk still runs the
+		// full label depth at one full timeout per zone — and the cost lives in the single hanging
+		// probe, not in the pair.
+		//
+		// Two is enough, and it is verdict-neutral rather than verdict-changing: ANY unobserved
+		// delegation already blocks `chainComplete` below and marks the run `partial`, so a third
+		// hanging zone cannot buy back a conclusion — it only spends more. The zones we stop
+		// between are reported by `walkBudgetSpent`, which abstains instead of answering.
+		if (zone !== '.' && (dsQueryFailed || dnskeyQueryFailed)) unobservedZones++;
+		if (unobservedZones >= UNOBSERVED_ZONE_BUDGET) {
+			walkBudgetSpent = true;
+			break;
+		}
 	}
 
 	// Check AD flag on target domain.
@@ -292,9 +305,10 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	// The walk loop exits early via the unsigned-zone `break` (no DS AND no DNSKEY at a
 	// non-root zone), so `stoppedEarly` normally means "the chain of trust terminated
 	// unsigned at an ANCESTOR of the target". Its only other exit is the transport cost
-	// bound, which stops on a zone whose own probes both failed — and `chainUnobserved`
-	// below returns the abstention before this flag can name any zone, so the cost bound
-	// can never be read as "unsigned ancestor".
+	// bound, which breaks once 2 zones have any probe that never answered — a zone can be
+	// only partially observed (e.g. DS resolves, DNSKEY hangs) and still count toward it.
+	// `chainUnobserved` below returns the abstention before this flag can name any zone, so
+	// the cost bound can never be read as "unsigned ancestor".
 	const stoppedEarly = !reachedTarget;
 	// Chain is complete only if we reached the target AND it's not broken AND the target zone is actually signed
 	const targetSigned = reachedTarget && (lastZone.dsRecords.length > 0 || lastZone.dnskeyRecords.length > 0);
@@ -328,11 +342,11 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	const chainComplete =
 		reachedTarget && !chainBroken && targetSigned && islandZone === undefined && unmeasuredDelegationZone === undefined && rootVerified;
 	// The chain verdict is attributed to `lastZone`: the target when the walk reached
-	// it, the ancestor it stopped at otherwise. If NEITHER of that zone's lookups
-	// completed, this run observed nothing about the zone the verdict is about, and no
-	// verdict — not the -40 "terminates unsigned" and not a clean 100 — is available.
-	// Abstain (#900).
-	const chainUnobserved = lastZone !== undefined && lastZone.zone !== '.' && lastZone.dsQueryFailed && lastZone.dnskeyQueryFailed;
+	// it, the ancestor it stopped at otherwise. If the walk stopped because its budget of
+	// unobserved zones ran out, or if NEITHER of that zone's lookups completed, this run
+	// observed nothing about the zone the verdict is about, and no verdict — not the -40
+	// "terminates unsigned" and not a clean 100 — is available. Abstain (#900).
+	const chainUnobserved = walkBudgetSpent || (lastZone !== undefined && lastZone.zone !== '.' && lastZone.dsQueryFailed && lastZone.dnskeyQueryFailed);
 	if (chainUnobserved) {
 		return buildDnsErrorResult(
 			CATEGORY,

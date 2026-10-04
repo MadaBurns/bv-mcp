@@ -368,6 +368,39 @@ describe('checkDnssecChain', () => {
 		expect([...probedZones].sort()).toEqual(['.', 'com', 'example.com']);
 	});
 
+	it('bounds the walk when only the DNSKEY probe hangs at every level (#900 follow-up)', async () => {
+		// The consecutive-both-failed bound above is dodgeable, and the caller controls the dodge:
+		// submit a deep name whose every level answers DS fast and blackholes DNSKEY. Each zone
+		// then hits the `else` that resets the counter, so the walk runs its full label depth at
+		// one full-timeout probe per zone — the same self-inflicted cost the first bound exists to
+		// stop. It is also a regression: the failure-blind `break` this stack replaced exited this
+		// exact pattern immediately, because a hung DNSKEY leaves the same empty array a measured
+		// absence does.
+		const domain = 'a.b.c.d.e.f.example.com';
+		const probedZones = new Set<string>();
+		globalThis.fetch = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const u = new URL(typeof url === 'string' ? url : url instanceof Request ? url.url : url.toString());
+			const name = u.searchParams.get('name') ?? '';
+			const type = u.searchParams.get('type') ?? '';
+			if (type === 'DS' || type === 'DNSKEY') probedZones.add(name);
+			if (type === 'DNSKEY') return Promise.reject(new Error('network timeout'));
+			if (type === 'DS') return Promise.resolve(dsResponse(name, ['12345 8 2 AABBCCDD']));
+			return Promise.resolve(createDohResponse([{ name, type: 1 }], []));
+		});
+
+		const result = await run(domain);
+
+		// The walk stops paying for zones it cannot observe: the root plus three levels, where the
+		// third hung lookup is the budget. Walking this name to its target would ask nine zones.
+		expect(probedZones.size).toBeLessThanOrEqual(4);
+		// And it stops honestly. Reaching the target is no longer possible, so no settled verdict is
+		// available: not the -40 "terminates unsigned" diagnosis of a zone nobody measured, and not
+		// score 100 / `passed: true` for a chain in which not one delegation below the root was
+		// observed. Abstain (#900).
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.some((f) => /terminates unsigned/i.test(f.title))).toBe(false);
+	});
+
 	it('does not report a broken chain when the DNSKEY probe never answered', async () => {
 		// `determineLinkage()` returns 'no_dnskey' for a thrown DNSKEY lookup exactly
 		// as it does for a measured empty one, so an unanswered probe used to produce
