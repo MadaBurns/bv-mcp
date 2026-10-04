@@ -1977,6 +1977,7 @@ export default {
 					whoisBinding: env.BV_WHOIS,
 					certstream: env.BV_CERTSTREAM,
 					certstreamAuthToken: certstreamAuthToken(env),
+					certspotterToken: certspotterToken(env),
 					internalCall,
 					...tierLookups,
 				};

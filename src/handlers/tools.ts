@@ -959,6 +959,7 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 				{
 					certstream: ro?.certstream,
 					certstreamAuthToken: ro?.certstreamAuthToken,
+					...(ro?.certspotterToken ? { certspotterToken: ro.certspotterToken } : {}),
 					whoisBinding: ro?.whoisBinding,
 					enforceQuota: buildMonthlyEnforceQuota(ro),
 					// The brand-audit queue binding doubles as the registrar fast→full
