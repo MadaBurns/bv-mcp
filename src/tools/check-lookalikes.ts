@@ -243,10 +243,18 @@ export async function checkLookalikes(domain: string, reconOptions: CheckLookali
 		checkLookalikesCore(domain, reconOptions, budget),
 		new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Lookalike check timed out')), budget.timeoutMs)),
 	]).catch(() => {
-		const result = buildCheckResult('lookalikes', [buildTimeoutFinding()]);
-		// Mark as partial so callers can skip caching
-		result.partial = true;
-		return result;
+		// #900 — this non-answer used to be a clean one. `buildTimeoutFinding` is `info`,
+		// so `buildCheckResult` derived score 100 / `passed: true` for a run that probed
+		// nothing: the prose said "results may be incomplete" while the machine-read
+		// verdict (`passed` is read by four surfaces — #705 #706 #725 #809) certified no
+		// lookalikes. `partial` alone was not enough — it gates the cache, not the verdict.
+		return {
+			...buildCheckResult('lookalikes', [buildTimeoutFinding()]),
+			score: 0,
+			passed: false,
+			checkStatus: 'timeout' as const,
+			partial: true,
+		};
 	});
 }
 
@@ -383,6 +391,19 @@ async function checkLookalikesCore(
 		findings.push(withUnresolvedReasons(buildIncompleteEnumerationFinding(domain, nsOnlyEnumeration), nsResult.unresolvedByReason));
 		const result = buildCheckResult('lookalikes', findings);
 		result.partial = true;
+		// #900 — `unresolvedCount === permutationsProbed` means not one candidate
+		// resolution was MEASURED: every lookup was a transport failure, so this branch
+		// observed nothing about the estate. The incomplete-enumeration finding is `info`,
+		// so `buildCheckResult` derived score 100 / `passed: true` — indistinguishable, on
+		// the scalars every aggregator reads, from a probed estate with no lookalikes.
+		// Abstain (the twin of `measuredNothing` in check-root-server-set.ts). When at
+		// least one lookup DID measure an absence, the run has a real (if partial) answer:
+		// `partial: true` alone stays, and the heuristic-confidence finding above carries it.
+		if (nsUnresolved === permsToProbe.length) {
+			result.score = 0;
+			result.passed = false;
+			result.checkStatus = 'error';
+		}
 		return result;
 	}
 

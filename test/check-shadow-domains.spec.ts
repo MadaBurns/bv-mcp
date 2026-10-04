@@ -2005,3 +2005,155 @@ describe('checkShadowDomains — failed SPF/DMARC probes abstain (T6 item 5)', (
 		expect(found.some((f) => f.metadata?.inconclusive === true)).toBe(true);
 	});
 });
+
+describe('checkShadowDomains — total probe failure abstains (#900)', () => {
+	/**
+	 * Every probe failure in this check is swallowed by `Promise.allSettled` and resurfaces as
+	 * an `info` finding, which `buildCheckResult` used to score as the cleanest possible estate:
+	 * score 100 / `passed: true` (the verdict four surfaces read — #705 #706 #725 #809) with no
+	 * `partial`, so the per-check cache served the fabricated clean verdict for its whole TTL.
+	 *
+	 * Fake timers, as in `test/audits/check-abstention-shape.audit.test.ts`: the adaptive backoff
+	 * sleeps 500ms per failing batch, so ~26 unresolved variants would otherwise burn seconds of
+	 * wall clock — and, worse, could trip the check's own `SHADOW_TIMEOUT_MS` deadline and make
+	 * the outcome depend on host load. This asserts result SHAPE, never timing.
+	 */
+	async function runUnderFakeClock(domain: string) {
+		const { checkShadowDomains } = await import('../src/tools/check-shadow-domains');
+		vi.useFakeTimers();
+		try {
+			const pending = checkShadowDomains(domain);
+			// Attach the handler BEFORE advancing: the advance flushes microtasks, so a
+			// re-throw would otherwise settle unhandled.
+			const settled = pending.then(
+				(value) => ({ ok: true as const, value }),
+				(err: unknown) => ({ ok: false as const, err }),
+			);
+			await vi.advanceTimersByTimeAsync(60_000);
+			const outcome = await settled;
+			if (!outcome.ok) throw outcome.err;
+			return outcome.value;
+		} finally {
+			vi.useRealTimers();
+		}
+	}
+
+	it('abstains when every variant lookup failed: score 0, passed false, checkStatus error, partial true', async () => {
+		globalThis.fetch = vi.fn().mockImplementation(() => Promise.reject(new Error('DNS query failed')));
+		const result = await runUnderFakeClock('example.com');
+
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		// The disclosure findings survive the stamp — the run says what it could not measure…
+		expect(result.findings.some((f) => f.metadata?.registrationState === 'unknown')).toBe(true);
+		// …and nothing may claim absence for a probe that never completed (#638 law).
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+		expect(result.findings.find((f) => /No shadow domain issues detected/i.test(f.title))).toBeUndefined();
+	});
+
+	it('control: an estate where every variant NXDOMAINed stays scored and is NOT partial', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			return Promise.resolve(nxdomainResponse(q.name));
+		});
+		const result = await runUnderFakeClock('example.com');
+
+		// The negative control the abstention must not swallow: a name that answers NXDOMAIN IS a
+		// measurement — the narrowest legitimate path to "unregistered" — so this run has a real,
+		// complete answer and must keep its score and stay cacheable.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.partial).toBeUndefined();
+		expect(result.passed).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.registrationState === 'unregistered')).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.registrationState === 'unknown')).toBe(false);
+	});
+
+	it('control: nameservers that answered with nothing are a measurement, not a total failure', async () => {
+		globalThis.fetch = vi.fn().mockImplementation(() => Promise.resolve(emptyResponse()));
+		const result = await runUnderFakeClock('example.com');
+
+		// `empty_noerror` is the one `UnknownReason` that is NOT a transport failure, and the
+		// `unmeasuredVerdicts` predicate exists solely to keep it out of the abstention count.
+		// Without that carve-out this run — every variant answered NOERROR with no records —
+		// would abstain, and a genuinely unregistered-looking estate would report "not measured".
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.score).toBeGreaterThan(0);
+		// It is still an incomplete answer (no variant got a registration verdict), and an
+		// incomplete answer must never be served from the cache for a whole TTL.
+		expect(result.partial).toBe(true);
+	});
+
+	it('does not abstain, but stays partial, when one variant measured and the rest failed', async () => {
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			// One variant is measured (NXDOMAIN); every other lookup fails outright.
+			if (q.name === 'example.net') return Promise.resolve(nxdomainResponse(q.name));
+			return Promise.reject(new Error('DNS query failed'));
+		});
+		const result = await runUnderFakeClock(target);
+
+		// Pins the cache clause INDEPENDENTLY of the abstention clause: `unmeasuredVerdicts` is
+		// below `variants.length` here, so the run keeps its score, yet a variant still went
+		// unreported and both `shouldCache` predicates are `!partial`.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.score).toBeGreaterThan(0);
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.registrationState === 'unregistered')).toBe(true);
+	});
+
+	it('does not abstain when Phase 1 failed but the full-timeout re-probe measured conclusive empties', async () => {
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			if (q.name === target) {
+				if (q.type === 'NS' || q.type === '2') return Promise.resolve(nsRecords(q.name, ['ns1.example.test.', 'ns2.example.test.']));
+				if (q.type === 'MX' || q.type === '15') return Promise.resolve(mxRecords(q.name, ['10 mail.example.com.']));
+				return Promise.resolve(emptyResponse());
+			}
+			// Every variant: the registration lookups (NS/SOA/A/MX) reject inside the tight
+			// Phase-1 window AND inside `probeVariant`, but the SPF and `_dmarc` TXT lookups the
+			// full-timeout re-probe makes are answered NOERROR with no records.
+			if (q.type === 'TXT' || q.type === '16') return Promise.resolve(emptyResponse());
+			return Promise.reject(new Error('DNS query failed'));
+		});
+		const result = await runUnderFakeClock(target);
+
+		// The re-probe is what did the measuring here, and it measured ABSENCE conclusively:
+		// `pushUnknownFinding` must not count the variant from the stale Phase-1 reason, or a run
+		// holding a real answer reports score 0 / `checkStatus: error`, is dropped from the scan
+		// and is never cached — self-inflicted denial of service against our own verdict.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.passed).toBe(true);
+		expect(result.score).toBeGreaterThan(0);
+		// Registration is still undetermined for every variant, so the answer is incomplete and
+		// must not be cached — the other clause, unaffected by this fix.
+		expect(result.partial).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.registrationState === 'unknown')).toBe(true);
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+	});
+
+	it('still abstains when the re-probe settled and its own auth lookups SERVFAILed', async () => {
+		const target = 'example.com';
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const q = parseDohQuery(input);
+			if (!q) return Promise.resolve(emptyResponse());
+			if (q.name === target) {
+				if (q.type === 'NS' || q.type === '2') return Promise.resolve(nsRecords(q.name, ['ns1.example.test.', 'ns2.example.test.']));
+				if (q.type === 'MX' || q.type === '15') return Promise.resolve(mxRecords(q.name, ['10 mail.example.com.']));
+				return Promise.resolve(emptyResponse());
+			}
+			if (q.type === 'TXT' || q.type === '16') return Promise.resolve(servfailResponse(q.name, 16));
+			return Promise.reject(new Error('DNS query failed'));
+		});
+		const result = await runUnderFakeClock(target);
+
+		// The over-correction guard. `probeVariant` never rejects, so "it settled" proves only
+		// that its sub-queries were allSettled — SERVFAIL folds into `[]` there. A settled probe
+		// that measured nothing must still abstain, or #900 reopens through the re-probe.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.some((f) => f.metadata?.missingControl === true)).toBe(false);
+	});
+});
