@@ -7,7 +7,26 @@ description: "Use when bumping the version or cutting a release of the bv-mcp / 
 
 A version lives in **4 hand-edited places** (plus the auto-derived `SERVER_VERSION`) that must match the tag, and the publish/registry flow has stale-prod foot-guns. Pre-bump locally, then tag — and publish the MCP Registry **only after** the prod deploy.
 
-## Version-sync surfaces (all must equal `X.Y.Z`)
+## dns-checks consumer promotion (#1187)
+
+Consumer promotion is initiated manually. `dns-checks-release.yml` publishes the immutable package artifact and records its package version, release tag, SHA-256 and **tagged checkout commit** in the Actions summary. It does not hold a cross-repository credential or send a promotion dispatch. Artifact publication does not mean bv-web-prod has re-vendored it.
+
+After operator authorization, use those exact summary values to initiate the existing consumer workflow from an authenticated operator terminal, or prepare a reviewed re-vendor PR by hand. Verify that the downloadable artifact, attached checksum and internal package version agree; never substitute the producer workflow's default-branch commit for the tagged source commit. Do not reuse an immutable version tag for changed package source.
+
+```bash
+# Set these from the verified release summary; do not guess a version or commit.
+test -n "$VERSION" && test -n "$SHA256" && test -n "$SOURCE_COMMIT" &&
+gh api repos/MadaBurns/bv-web-prod/dispatches --method POST \
+  -f event_type=dns-checks-released \
+  -f "client_payload[version]=$VERSION" \
+  -f "client_payload[sha256]=$SHA256" \
+  -f "client_payload[source_commit]=$SOURCE_COMMIT" \
+  -f "client_payload[release_tag]=dns-checks-v$VERSION"
+```
+
+The consumer workflow still needs its own producer-read credential and repository settings that permit it to create a PR. Confirm download, integrity, all parity guards, typecheck and actual PR creation; a successful dispatch only proves acceptance of the event. Review/merge and deployment remain separate actions. Leave #1187 open until the required artifact and a real consumer promotion PR are verified.
+
+## Worker version-sync surfaces (all must equal `X.Y.Z`)
 
 1. `package.json` `version` + `package-lock.json` (use `npm version --no-git-tag-version`).
 2. `server.json` — **`version`** (top-level).
