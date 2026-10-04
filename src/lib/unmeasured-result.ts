@@ -61,6 +61,9 @@ export const UNMEASURED_MARKERS = ['unprovisioned', 'upstreamUnavailable', 'upst
 /** Markers meaning "the caller was refused" — authorization, not availability. */
 export const ACCESS_REFUSAL_MARKERS = ['tierDenied', 'notOwned'] as const;
 
+/** Top-level result marker, emitted locally only after an unmeasured finding marker is established. */
+export const VERDICT_WITHHELD_MARKER = 'verdictWithheld' as const;
+
 function hasMarker(findings: readonly Finding[], markers: readonly string[]): boolean {
 	return findings.some((f) => markers.some((m) => f.metadata?.[m] === true));
 }
@@ -87,11 +90,15 @@ export function isAccessRefusal(result: Pick<CheckResult, 'findings'>): boolean 
  * `info` on every branch INCLUDING success, so the surviving 100s would gain false
  * credibility from the contrast. The verdict is withheld, not inverted.
  *
- * Returns the input unchanged when it carries no marker, or already has a status.
+ * `verdictWithheld: true` makes this distinction explicit for machine consumers
+ * even when the unchanged scalars resemble a successful measurement. Existing
+ * status and cache markers are preserved.
+ * Returns the input unchanged when it carries no unmeasured marker.
  */
 export function markUnmeasured(result: CheckResult): CheckResult {
-	if (result.checkStatus || !isUnmeasuredResult(result)) return result;
-	return { ...result, checkStatus: 'error' };
+	if (!isUnmeasuredResult(result)) return result;
+	if (result.checkStatus && result.verdictWithheld === true) return result;
+	return { ...result, checkStatus: result.checkStatus ?? 'error', verdictWithheld: true };
 }
 
 /**
@@ -114,7 +121,7 @@ export function markUnmeasured(result: CheckResult): CheckResult {
  * hole — but it makes the invariant structural instead of conventional.
  */
 export function stripReservedMarkers<T extends Record<string, unknown>>(upstream: T): T {
-	const reserved = new Set<string>([...UNMEASURED_MARKERS, ...ACCESS_REFUSAL_MARKERS]);
+	const reserved = new Set<string>([...UNMEASURED_MARKERS, ...ACCESS_REFUSAL_MARKERS, VERDICT_WITHHELD_MARKER]);
 	if (!Object.keys(upstream).some((k) => reserved.has(k))) return upstream;
 	return Object.fromEntries(Object.entries(upstream).filter(([k]) => !reserved.has(k))) as T;
 }

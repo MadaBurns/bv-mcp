@@ -1474,7 +1474,7 @@ export async function handleToolsCall(
 				// than at each builder so one rule covers the osint, bucket, brand-audit and
 				// threat-feed families, and so a future unavailable-lane builder inherits it.
 				//
-				// `markUnmeasured` only stamps `checkStatus`; it never rewrites the scalars. See
+				// `markUnmeasured` stamps `checkStatus`/`verdictWithheld`; it never rewrites the scalars. See
 				// `src/lib/unmeasured-result.ts` for why inverting them would be worse than
 				// leaving them.
 				result = markUnmeasured(result);

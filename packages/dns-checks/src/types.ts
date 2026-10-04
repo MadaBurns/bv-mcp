@@ -183,6 +183,8 @@ export interface CheckResult {
 	checkStatus?: CheckStatus;
 	/** When true, the result is incomplete (e.g. timeout) and should not be cached long-term. */
 	partial?: boolean;
+	/** True when no verdict was issued; score/passed remain unchanged. False/absent does not imply measurement: still check status/refusals. */
+	verdictWithheld?: boolean;
 	/**
 	 * Whether the checked control is *meaningfully present and active* — distinct from `passed`.
 	 * `true` = an active record/response was observed (real mail MX, non-revoked DKIM key, MTA-STS

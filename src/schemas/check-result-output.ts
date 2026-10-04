@@ -41,6 +41,8 @@ export const CheckResultOutputSchema = z
 		// against the older schema, turning an additive package change into a breaking one.
 		checkStatus: z.string().optional(),
 		partial: z.boolean().optional(),
+		// Only true asserts withholding; false/absence does not establish measurement or override status/refusals.
+		verdictWithheld: z.boolean().optional(),
 	})
 	.loose();
 
