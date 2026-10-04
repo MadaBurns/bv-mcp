@@ -50,6 +50,7 @@ function pinned(overrides: Partial<ReleaseIntegrityInput> = {}): ReleaseIntegrit
 		gitUnavailable: false,
 		versions: surfaces(),
 		allowUnpinned: false,
+		dnsChecksIdentity: { version: '1.59.0', tagCommit: 'fixture-commit', tagVersion: '1.59.0', changedPaths: [], gitUnavailable: false },
 		...overrides,
 	};
 }

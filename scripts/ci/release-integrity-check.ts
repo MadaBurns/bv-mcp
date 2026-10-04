@@ -19,15 +19,16 @@
  *                           `publish` refuses to honour the override; `sidecar`
  *                           checks tree cleanliness only (no tag requirement).
  *   --expect-version X.Y.Z  Verify against this version instead of HEAD's tag.
- *   --skip-git              Verify version surfaces only. Requires
+ *   --skip-git              Skip app-tag/cleanliness checks. Requires
  *                           --expect-version. This is the shape publish.yml's
  *                           `version-bump` job needs if it ever swaps its inline
- *                           bash for this script.
+ *                           bash for this script. Deploy mode still verifies
+ *                           dns-checks source identity with git, without an override.
  */
 
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { assessReleaseIntegrity, parseChangelogHeadings, type ReleaseMode, type VersionSurfaces } from '../release-integrity';
+import { assessReleaseIntegrity, parseChangelogHeadings, type DnsChecksIdentityInput, type ReleaseMode, type VersionSurfaces } from '../release-integrity';
 
 function git(args: string[]): { ok: boolean; stdout: string } {
 	const res = spawnSync('git', args, { encoding: 'utf8' });
@@ -78,6 +79,32 @@ function flagValue(argv: string[], name: string): string | null {
 	return typeof v === 'string' && !v.startsWith('--') ? v : null;
 }
 
+/** Compare the working shipping inputs (including untracked additions) with the version's exact local tag. No network. */
+function readDnsChecksIdentity(): DnsChecksIdentityInput {
+	const version = versionOf(readJson('packages/dns-checks/package.json'));
+	const empty: DnsChecksIdentityInput = { version, tagCommit: null, tagVersion: null, changedPaths: [], gitUnavailable: false };
+	if (!git(['rev-parse', '--is-inside-work-tree']).ok) return { ...empty, gitUnavailable: true };
+	if (!version || !/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(version)) return empty;
+	const ref = `refs/tags/dns-checks-v${version}`;
+	const commit = git(['rev-parse', '--verify', `${ref}^{commit}`]);
+	if (!commit.ok) return empty;
+	const manifest = git(['show', `${ref}:packages/dns-checks/package.json`]);
+	let tagVersion: string | null = null;
+	try { tagVersion = versionOf(JSON.parse(manifest.stdout)); } catch { /* unreadable fails closed in the core */ }
+	const paths = ['packages/dns-checks', 'scripts/ci/dns-checks-prepack.ts', 'scripts/pack-integrity.ts'];
+	// Renames must report BOTH paths: moving runtime code into an excluded test
+	// directory is still a shipping deletion, never a test-only change.
+	const diff = git(['diff', '--no-ext-diff', '--no-renames', '--name-only', '-z', ref, '--', ...paths]);
+	const untracked = git(['ls-files', '--others', '--exclude-standard', '-z', '--', ...paths]);
+	return {
+		version,
+		tagCommit: commit.stdout.trim(),
+		tagVersion,
+		changedPaths: [...diff.stdout.split('\0'), ...untracked.stdout.split('\0')].filter(Boolean),
+		gitUnavailable: !manifest.ok || !diff.ok || !untracked.ok,
+	};
+}
+
 function main(): void {
 	const argv = process.argv.slice(2);
 	const rawMode = flagValue(argv, '--mode') ?? 'deploy';
@@ -116,6 +143,7 @@ function main(): void {
 		allowUnpinned: process.env.BV_ALLOW_UNPINNED_DEPLOY === '1',
 		expectVersion,
 		skipGit,
+		...(mode === 'deploy' ? { dnsChecksIdentity: readDnsChecksIdentity() } : {}),
 	});
 
 	if (!verdict.ok) {
