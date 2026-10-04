@@ -172,6 +172,8 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	const zoneResults: ZoneResult[] = [];
 	let chainBroken = false;
 	const weakAlgsFound: string[] = [];
+	// See the cost bound at the foot of the loop.
+	let consecutiveUnobservedZones = 0;
 
 	for (const zone of zones) {
 		// Query DS (skip for root — root has no parent to hold DS)
@@ -244,6 +246,25 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 		if (zone !== '.' && !dsQueryFailed && !dnskeyQueryFailed && dsRecords.length === 0 && dnskeyRecords.length === 0) {
 			break;
 		}
+
+		// COST BOUND (#900 follow-up). Removing the failure-blind `break` above took the only
+		// early exit a dead resolver used to hit, so on a transport-dead resolver the walk now
+		// runs its full length: two SEQUENTIAL full-timeout probes per zone (DS, then DNSKEY),
+		// retries included, times label depth — and label depth is caller-controlled, since
+		// `buildZoneHierarchy` walks every label of the submitted name. That is self-inflicted
+		// denial of service against our own request budget and DoH subrequest quota.
+		//
+		// Two consecutive zones with BOTH probes unanswered is the point where the resolver is
+		// demonstrably not answering, and deeper zones cost the same for no new information.
+		// Stopping there is verdict-neutral, not merely cheaper: the zone we stop on is by
+		// construction `lastZone`, and `chainUnobserved` below tests exactly that zone's two
+		// failure flags, so this exit always lands on the same abstention a full walk would have
+		// produced — it only produces it sooner. (One both-failed zone is NOT enough to stop: a
+		// single SERVFAILing parent above a measurable child is a real, walk-through case, and
+		// the test "keeps walking past a zone whose probes never answered" pins it.)
+		if (zone !== '.' && dsQueryFailed && dnskeyQueryFailed) consecutiveUnobservedZones++;
+		else consecutiveUnobservedZones = 0;
+		if (consecutiveUnobservedZones >= 2) break;
 	}
 
 	// Check AD flag on target domain.
@@ -268,9 +289,12 @@ export async function checkDnssecChain(domain: string, dnsOptions?: QueryDnsOpti
 	// Determine chain completeness
 	const lastZone = zoneResults[zoneResults.length - 1];
 	const reachedTarget = lastZone?.zone === domain;
-	// The walk loop only ever exits early via the unsigned-zone `break` (no DS AND
-	// no DNSKEY at a non-root zone), so `stoppedEarly` means exactly "the chain of
-	// trust terminated unsigned at an ANCESTOR of the target".
+	// The walk loop exits early via the unsigned-zone `break` (no DS AND no DNSKEY at a
+	// non-root zone), so `stoppedEarly` normally means "the chain of trust terminated
+	// unsigned at an ANCESTOR of the target". Its only other exit is the transport cost
+	// bound, which stops on a zone whose own probes both failed — and `chainUnobserved`
+	// below returns the abstention before this flag can name any zone, so the cost bound
+	// can never be read as "unsigned ancestor".
 	const stoppedEarly = !reachedTarget;
 	// Chain is complete only if we reached the target AND it's not broken AND the target zone is actually signed
 	const targetSigned = reachedTarget && (lastZone.dsRecords.length > 0 || lastZone.dnskeyRecords.length > 0);

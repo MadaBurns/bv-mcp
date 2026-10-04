@@ -344,6 +344,30 @@ describe('checkDnssecChain', () => {
 		expect(result.findings.some((f) => /chain summary/i.test(f.title))).toBe(false);
 	});
 
+	it('bounds the walk when the resolver is dead instead of probing every label (#900 follow-up)', async () => {
+		// Making the early `break` rcode-honest removed the only exit a dead resolver used to
+		// hit, so the walk ran its full length against a resolver that never answered: two
+		// SEQUENTIAL full-timeout probes per zone, retries included, times a caller-controlled
+		// label depth. Zone count is not the bound — the budget is.
+		const domain = 'a.b.c.d.example.com';
+		const probedZones = new Set<string>();
+		globalThis.fetch = vi.fn().mockImplementation((url: string | URL | Request) => {
+			const u = new URL(typeof url === 'string' ? url : url instanceof Request ? url.url : url.toString());
+			const name = u.searchParams.get('name') ?? '';
+			const type = u.searchParams.get('type') ?? '';
+			if (type === 'DS' || type === 'DNSKEY') probedZones.add(name);
+			return Promise.reject(new Error('network timeout'));
+		});
+
+		const result = await run(domain);
+
+		// Verdict-NEUTRAL, not verdict-changing: the zone the cost bound stops on is `lastZone`
+		// with both probes failed, so this is the same abstention a full walk produced — sooner.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		// Root (DNSKEY only) + two consecutive both-failed zones, and no deeper label is asked.
+		expect([...probedZones].sort()).toEqual(['.', 'com', 'example.com']);
+	});
+
 	it('does not report a broken chain when the DNSKEY probe never answered', async () => {
 		// `determineLinkage()` returns 'no_dnskey' for a thrown DNSKEY lookup exactly
 		// as it does for a measured empty one, so an unanswered probe used to produce
