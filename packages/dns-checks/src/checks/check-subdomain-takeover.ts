@@ -12,6 +12,7 @@
 import type { CheckResult, DNSQueryFunction, FetchFunction, Finding, RawDNSQueryFunction } from '../types';
 import { buildCheckResult, buildNotAssessedResult, createFinding } from '../check-utils';
 import { KNOWN_SUBDOMAINS, getNoTakeoverFinding, scanSubdomainForTakeoverInternal } from './subdomain-takeover-analysis';
+import type { SweepDescriptor } from './subdomain-takeover-analysis';
 
 /** Cap on caller-supplied subdomain lists to bound per-call DNS+HTTP cost. */
 const MAX_SUBDOMAINS = 1000;
@@ -24,7 +25,10 @@ export interface SubdomainTakeoverOptions {
 	 * provided, this list is swept *instead of* the built-in 15-name
 	 * `KNOWN_SUBDOMAINS`. Caller is expected to source these from a real
 	 * enumeration (CT logs, brand-audit discovery, etc.). Deduped and capped
-	 * at `MAX_SUBDOMAINS` per call.
+	 * at `MAX_SUBDOMAINS` per call. A list that is cut by the cap is reported
+	 * (`truncatedTo`) and the result is `partial`; a non-empty list with no usable
+	 * name abstains (`caller_list_unusable`) — the built-in names are never silently
+	 * substituted for a caller's list (#1201). An empty array means "no list".
 	 */
 	subdomains?: readonly string[];
 	/**
@@ -67,15 +71,57 @@ export async function checkSubdomainTakeover(
 	const fetchFn: FetchFunction = options?.fetchFn ?? (async () => new Response('', { status: 200 }));
 	const findings: Finding[] = [];
 
-	const explicit = options?.subdomains
-		? Array.from(new Set(options.subdomains.map((s) => s.trim()).filter(Boolean))).slice(0, MAX_SUBDOMAINS)
-		: null;
-	const subdomainsToScan = explicit && explicit.length > 0 ? explicit : KNOWN_SUBDOMAINS;
+	// #1201 — which list is being swept. A non-empty caller list is the sweep; if it
+	// collapses to nothing usable the check abstains, it never substitutes the built-in
+	// names for the caller's (that would answer a question the caller did not ask).
+	const callerList = options?.subdomains !== undefined && options.subdomains.length > 0 ? options.subdomains : null;
+	const dedupedCaller = callerList ? Array.from(new Set(callerList.map((s) => s.trim()).filter(Boolean))) : [];
+	const truncated = dedupedCaller.length > MAX_SUBDOMAINS;
+	const explicit = dedupedCaller.slice(0, MAX_SUBDOMAINS);
+	const subdomainsToScan = callerList ? explicit : KNOWN_SUBDOMAINS;
 
 	const aRecordCap = options?.aRecordVectorSampleCap;
 	// True only when the cap actually cuts the sweep short — a cap ≥ the sweep size
 	// checks every subdomain anyway and is not a sample.
 	const aRecordVectorSampled = aRecordCap !== undefined && subdomainsToScan.length > aRecordCap;
+
+	// The sweep denominator, computed once and stamped on EVERY finding returned below.
+	const sweep: SweepDescriptor = {
+		sweptCount: subdomainsToScan.length,
+		sweepSource: callerList ? 'caller' : 'builtin',
+		...(callerList ? { requestedCount: callerList.length } : {}),
+		...(truncated ? { truncatedTo: MAX_SUBDOMAINS } : {}),
+		...(aRecordVectorSampled ? { aRecordVectorSampledTo: aRecordCap } : {}),
+	};
+	// A caller list that was not fully swept is a partial answer: `partial: true` keeps it
+	// out of both `!partial` cache predicates (#900 class).
+	const finish = (found: Finding[]): CheckResult => {
+		const result = buildCheckResult(
+			'subdomain_takeover',
+			found.map((f) => ({ ...f, metadata: { ...(f.metadata ?? {}), ...sweep } })),
+		);
+		return truncated ? { ...result, partial: true } : result;
+	};
+
+	if (callerList && explicit.length === 0) {
+		return buildNotAssessedResult(
+			'subdomain_takeover',
+			createFinding(
+				'subdomain_takeover',
+				'Subdomain takeover not assessed — caller subdomain list unusable',
+				'info',
+				`The caller supplied ${callerList.length} subdomain entries for ${domain}, but none contained a usable name after trimming whitespace, so nothing was swept. The built-in ${KNOWN_SUBDOMAINS.length}-name list was deliberately not substituted for the caller's list. This is not evidence that the domain is free of dangling CNAMEs — the category is excluded from scoring rather than passed. Re-run with at least one non-blank subdomain, or omit the list to sweep the built-in names.`,
+				{
+					evidence: ['caller_list_unusable'],
+					inconclusive: true,
+					errorKind: 'invalid_input',
+					reason: 'caller_list_unusable',
+					...sweep,
+				},
+			),
+			'error',
+		);
+	}
 
 	const outcomes = await Promise.all(
 		subdomainsToScan.map(async (subdomain, index) => ({
@@ -109,7 +155,7 @@ export async function checkSubdomainTakeover(
 	// to reach this guard without being evidence (the thrown CNAME-target path) is now an
 	// `info` abstention, so the comment is true as written (#983).
 	if (findings.some((f) => f.severity !== 'info')) {
-		return buildCheckResult('subdomain_takeover', findings);
+		return finish(findings);
 	}
 
 	// Issue #948 — abstain when ZERO swept subdomains answered.
@@ -138,6 +184,7 @@ export async function checkSubdomainTakeover(
 					inconclusive: true,
 					errorKind: 'dns_error',
 					subdomainsUnmeasured: unmeasured,
+					...sweep,
 				},
 			),
 			'error',
@@ -150,7 +197,7 @@ export async function checkSubdomainTakeover(
 	// through `subdomainsUnmeasured` exactly like a subdomain whose CNAME query threw, and
 	// without this the result would carry only an "it failed" note and no verdict at all.
 	if (findings.every((f) => (f.metadata as { inconclusive?: boolean } | undefined)?.inconclusive === true)) {
-		const clean = getNoTakeoverFinding(domain, { aRecordVectorSampled });
+		const clean = getNoTakeoverFinding(domain, { aRecordVectorSampled, sweep });
 		findings.push(
 			unmeasured.length > 0
 				? { ...clean, metadata: { ...(clean.metadata ?? {}), subdomainsUnmeasured: unmeasured } }
@@ -158,5 +205,5 @@ export async function checkSubdomainTakeover(
 		);
 	}
 
-	return buildCheckResult('subdomain_takeover', findings);
+	return finish(findings);
 }

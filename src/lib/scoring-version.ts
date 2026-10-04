@@ -781,8 +781,23 @@
  *   mail-enabled severities of dependent checks (DKIM, MTA-STS, BIMI), and a mixed set may gain the low
  *   "Single MX record". The SQ-279 inconclusive-rcode abstention branch is untouched. No weight, tier,
  *   grade band, `SEVERITY_PENALTIES` entry, missing-control rule or profile-detection rule changed.
+ * - 1.40.0 — Fail-open scanner wave (Sidequest SQ-307..312, issues #1196–#1202; dns-checks 1.59.0).
+ *   SCORE-BEARING in two places. (a) `check_subdomailing` treats an SPF `include:`/`redirect=` target
+ *   containing an RFC 7208 §7 macro (`%{…}`, `%%`, `%_`, `%-`) as an unexpandable template: it is not
+ *   probed, not scored `void_include`, and does not consume a TXT lookup (#1200). A chain with a template
+ *   beside literal includes loses a `low` penalty it never earned (95 → 100); a chain whose ONLY include
+ *   is a template (the Proofpoint hosted-SPF shape) now ABSTAINS (`checkStatus: 'error'`, excluded from
+ *   scoring and renormalised) instead of scoring 95. (b) Standalone `check_lookalikes` (`scanIncluded:
+ *   false`, so `scan_domain` is unchanged): `mailgun.org` leaves `DISPOSABLE_MX_PROVIDERS` (#1198), so a
+ *   mail-capable lookalike fronting Mailgun drops HIGH → MEDIUM; a tri-state `webPresence` reading lets a
+ *   lookalike on parking infrastructure or a wildcard zone corroborate as `parked`, so a mail-capable
+ *   parked lookalike rises MEDIUM → HIGH (#1202). Also in this wave but score-neutral: `check_dbl`,
+ *   `brand_audit_single` and `check_resolver_consistency` abstain instead of passing on stubbed, handed-off
+ *   or below-quorum measurements (intelligence-only categories), and `check_subdomain_takeover` stamps its
+ *   sweep denominator. No weight, tier, grade band, `SEVERITY_PENALTIES` entry, missing-control rule or
+ *   profile-detection rule changed.
  */
-export const SCORING_MODEL_VERSION = '1.39.0';
+export const SCORING_MODEL_VERSION = '1.40.0';
 
 /** Marker returned for an unset / default (un-overridden) scoring config. */
 const DEFAULT_CONFIG_MARKER = 'default';

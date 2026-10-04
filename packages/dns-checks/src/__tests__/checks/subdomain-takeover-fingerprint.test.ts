@@ -21,7 +21,8 @@ import {
 	isTlsCertAltnameMismatch,
 	TLS_SNI_MISMATCH_DISPLAY,
 } from '../../checks/subdomain-takeover-analysis';
-import type { FetchFunction } from '../../types';
+import { checkSubdomainTakeover } from '../../checks/check-subdomain-takeover';
+import type { DNSQueryFunction, FetchFunction } from '../../types';
 
 // A CNAME target that matches the 'amazonaws.com' TAKEOVER_FINGERPRINTS entry
 // (SERVICE_DISPLAY_NAMES['amazonaws.com'] === 'AWS S3').
@@ -226,5 +227,120 @@ describe('generic fingerprints are gated on the status the provider returns for 
 	it('matches the Fastly 500 "unknown domain" error page', async () => {
 		const fetchFn: FetchFunction = async () => new Response('Fastly error: unknown domain: www.example.com.', { status: 500 });
 		expect(await probeHttpFingerprint('www.example.com', FASTLY_CNAME, fetchFn)).toBe('Fastly');
+	});
+});
+
+// #1201 — every result states its sweep denominator, and a caller list that was not fully
+// used is a partial (uncacheable) answer instead of a silently substituted built-in sweep.
+describe('checkSubdomainTakeover sweep descriptor (#1201)', () => {
+	const emptyDns: DNSQueryFunction = async () => [];
+
+	function names(count: number): string[] {
+		return Array.from({ length: count }, (_, i) => `host-${i}.example.com`);
+	}
+
+	it('built-in sweep: states sweptCount 15 and sweepSource builtin on the clean finding', async () => {
+		const result = await checkSubdomainTakeover('example.com', emptyDns);
+		const meta = result.findings[0].metadata as Record<string, unknown>;
+		expect(meta.sweptCount).toBe(15);
+		expect(meta.sweepSource).toBe('builtin');
+		expect(meta).not.toHaveProperty('requestedCount');
+		expect(meta).not.toHaveProperty('truncatedTo');
+		expect(result.findings[0].detail).toContain('among the 15 subdomains swept (built-in list)');
+		expect(result.partial).toBeUndefined();
+	});
+
+	it('caller list of 3: states sweptCount 3, sweepSource caller, requestedCount 3', async () => {
+		const result = await checkSubdomainTakeover('example.com', emptyDns, { subdomains: names(3) });
+		const meta = result.findings[0].metadata as Record<string, unknown>;
+		expect(meta.sweptCount).toBe(3);
+		expect(meta.sweepSource).toBe('caller');
+		expect(meta.requestedCount).toBe(3);
+		expect(meta).not.toHaveProperty('truncatedTo');
+		expect(result.findings[0].detail).toContain('among the 3 subdomains swept (caller-supplied list)');
+		expect(result.partial).toBeUndefined();
+	});
+
+	it('1001-name caller list: truncatedTo 1000, partial true, and the detail says so', async () => {
+		const result = await checkSubdomainTakeover('example.com', emptyDns, { subdomains: names(1001) });
+		const meta = result.findings[0].metadata as Record<string, unknown>;
+		expect(meta.sweptCount).toBe(1000);
+		expect(meta.requestedCount).toBe(1001);
+		expect(meta.truncatedTo).toBe(1000);
+		expect(result.partial).toBe(true);
+		expect(result.findings[0].detail).toContain('truncated to the first 1000');
+	});
+
+	it('whitespace-only caller list: not assessed, no built-in fallback, no DNS issued', async () => {
+		let calls = 0;
+		const countingDns: DNSQueryFunction = async () => {
+			calls += 1;
+			return [];
+		};
+		const result = await checkSubdomainTakeover('example.com', countingDns, { subdomains: ['  ', '', '\t'] });
+		expect(calls).toBe(0);
+		expect(result.checkStatus).toBe('error');
+		expect(result.score).toBe(0);
+		expect(result.passed).toBe(false);
+		expect(result.partial).toBe(true);
+		const meta = result.findings[0].metadata as Record<string, unknown>;
+		expect(meta.reason).toBe('caller_list_unusable');
+		expect(meta.inconclusive).toBe(true);
+		expect(meta).not.toHaveProperty('missingControl');
+		expect(meta.sweptCount).toBe(0);
+		expect(meta.sweepSource).toBe('caller');
+		expect(meta.requestedCount).toBe(3);
+		expect(result.findings.some((f) => f.title === 'No dangling CNAME records found')).toBe(false);
+	});
+
+	it('an empty caller array is "no list supplied" and still sweeps the built-in names', async () => {
+		const result = await checkSubdomainTakeover('example.com', emptyDns, { subdomains: [] });
+		const meta = result.findings[0].metadata as Record<string, unknown>;
+		expect(meta.sweepSource).toBe('builtin');
+		expect(meta.sweptCount).toBe(15);
+	});
+
+	it('aRecordVectorSampleCap smaller than the sweep: states aRecordVectorSampledTo', async () => {
+		const result = await checkSubdomainTakeover('example.com', emptyDns, { aRecordVectorSampleCap: 2 });
+		expect((result.findings[0].metadata as Record<string, unknown>).aRecordVectorSampledTo).toBe(2);
+	});
+
+	it('aRecordVectorSampleCap at or above the sweep size is not a sample: no aRecordVectorSampledTo', async () => {
+		const result = await checkSubdomainTakeover('example.com', emptyDns, { aRecordVectorSampleCap: 15 });
+		expect(result.findings[0].metadata as Record<string, unknown>).not.toHaveProperty('aRecordVectorSampledTo');
+	});
+
+	it('the #948 abstention carries the descriptor', async () => {
+		const failingDns: DNSQueryFunction = async () => {
+			throw new Error('resolver down');
+		};
+		const result = await checkSubdomainTakeover('example.com', failingDns, { subdomains: names(2) });
+		expect(result.checkStatus).toBe('error');
+		const meta = result.findings[0].metadata as Record<string, unknown>;
+		expect(meta.sweptCount).toBe(2);
+		expect(meta.sweepSource).toBe('caller');
+		expect(meta.requestedCount).toBe(2);
+	});
+
+	it('a dangling-CNAME finding carries the descriptor without changing its title or severity', async () => {
+		const danglingDns: DNSQueryFunction = async (name, type) =>
+			type === 'CNAME' && name === 'staging.example.com' ? ['old-app.herokuapp.com.'] : [];
+		const result = await checkSubdomainTakeover('example.com', danglingDns, { subdomains: ['staging.example.com', 'www.example.com'] });
+		const dangling = result.findings.find((f) => f.title.startsWith('Dangling CNAME'));
+		expect(dangling).toBeDefined();
+		expect(dangling?.severity).toBe('high');
+		expect(dangling?.title).toBe('Dangling CNAME: staging.example.com → old-app.herokuapp.com');
+		const meta = dangling?.metadata as Record<string, unknown>;
+		expect(meta.sweptCount).toBe(2);
+		expect(meta.sweepSource).toBe('caller');
+		expect(meta.requestedCount).toBe(2);
+	});
+
+	it('a truncated caller list is partial even when a dangling finding makes the result non-clean', async () => {
+		const danglingDns: DNSQueryFunction = async (name, type) =>
+			type === 'CNAME' && name === 'host-0.example.com' ? ['old-app.herokuapp.com.'] : [];
+		const result = await checkSubdomainTakeover('example.com', danglingDns, { subdomains: names(1001) });
+		expect(result.partial).toBe(true);
+		expect((result.findings[0].metadata as Record<string, unknown>).truncatedTo).toBe(1000);
 	});
 });

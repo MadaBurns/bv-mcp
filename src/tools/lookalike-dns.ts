@@ -59,6 +59,27 @@ export const FAILURE_THRESHOLD = 2;
 /** Canary label used for wildcard detection on parent domains */
 export const WILDCARD_CANARY_LABEL = '_bv-wc-probe';
 
+/**
+ * Prefix of the per-CANDIDATE random-label wildcard probe (#1202): the query is
+ * `_bv-probe-<random>.<candidate>`, the same shape `check_ns` uses for its own
+ * wildcard detection. Random per query so a resolver cache cannot answer it.
+ */
+export const WILDCARD_PROBE_LABEL_PREFIX = '_bv-probe-';
+
+/**
+ * #1202 — what the candidate's random-label A query showed.
+ *
+ *  - `wildcard`    — the random label answered with an A record: the zone
+ *                    answers for arbitrary names, the parking-network shape.
+ *  - `no_wildcard` — the query CONCLUDED (NOERROR / NXDOMAIN) with no A record.
+ *  - `not_probed`  — no measurement: the candidate is not mail + web capable
+ *                    (the only tier where the reading can move severity), the
+ *                    phase deadline left no budget, or the query failed, timed
+ *                    out or came back inconclusive. Read as "not wildcard"
+ *                    (fail-soft), never as a measured absence.
+ */
+export type WildcardProbeOutcome = 'wildcard' | 'no_wildcard' | 'not_probed';
+
 /** Lean DNS options for Phase 1 existence checks — fast, no retries, no secondary confirmation. */
 export const PHASE1_DNS_OPTS: QueryDnsOptions = {
 	timeoutMs: 2000,
@@ -237,6 +258,13 @@ export interface LookalikeResult {
 	probeDegraded: boolean;
 	/** Why the probe is degraded (present iff `probeDegraded`). See {@link DnsProbeFailureReason}. */
 	probeDegradedReason?: DnsProbeFailureReason;
+	/**
+	 * #1202 — the random-label wildcard probe, set by {@link probeWithAdaptiveBatching}
+	 * on candidates with BOTH an A and a real MX record. Absent = not probed
+	 * (any other candidate, or a hand-built fixture); consumers read absence
+	 * as `not_probed`.
+	 */
+	wildcardProbe?: WildcardProbeOutcome;
 }
 
 /**
@@ -335,6 +363,48 @@ async function probeDetailBatch(batch: string[], deadlineMs: number | undefined)
 			probeDegraded: reason !== undefined,
 			...(reason !== undefined ? { probeDegradedReason: reason } : {}),
 		};
+	});
+}
+
+/**
+ * #1202 — ONE random-label A query (`_bv-probe-<random>.<domain>`): does the
+ * candidate's zone answer for arbitrary names? On the lean Phase-1 preset (no
+ * retry, no secondary-resolver confirmation), so it is exactly one DoH fetch;
+ * deadline-aware like every other query in this module. Fail-soft in every
+ * branch: a query that is not issued, fails, times out or comes back
+ * inconclusive is `not_probed` — "not wildcard", never a measured absence.
+ */
+export async function probeWildcardA(domain: string, deadlineMs?: number): Promise<WildcardProbeOutcome> {
+	if (remainingMs(deadlineMs) <= 0) return 'not_probed';
+	// Armed HERE, at dispatch — the pool guarantees a connection slot is free.
+	const deadline = deadlineSignal(deadlineMs);
+	const probeName = `${WILDCARD_PROBE_LABEL_PREFIX}${Math.random().toString(36).substring(2, 10)}.${domain}`;
+	try {
+		const outcome = await queryDnsRecordsWithRcode(
+			probeName,
+			'A',
+			deadline ? { ...PHASE1_DNS_OPTS, signal: deadline.signal } : PHASE1_DNS_OPTS,
+		);
+		if (outcome.inconclusive) return 'not_probed';
+		return outcome.records.length > 0 ? 'wildcard' : 'no_wildcard';
+	} catch {
+		return 'not_probed';
+	} finally {
+		deadline?.clear();
+	}
+}
+
+/**
+ * #1202 — run {@link probeWildcardA} for every candidate with BOTH an A and a
+ * real MX record (the mail-capable tier is the only place the parked reading
+ * can change severity), through the same connection-cap pool and phase
+ * deadline as the A/MX legs, and record the outcome on the result.
+ */
+async function annotateWildcardProbes(results: LookalikeResult[], deadlineMs: number | undefined): Promise<void> {
+	const eligible = results.filter((r) => r.hasA && r.hasMX);
+	const outcomes = await mapConcurrent(eligible, LOOKALIKE_DNS_PROBE_CONCURRENCY, (r) => probeWildcardA(r.domain, deadlineMs));
+	eligible.forEach((r, i) => {
+		r.wildcardProbe = outcomes[i];
 	});
 }
 
@@ -608,6 +678,9 @@ export async function queryPrimaryA(domain: string): Promise<string[]> {
  * Every candidate comes back FULFILLED — a degraded one carries
  * `probeDegraded: true` + `probeDegradedReason`. The `PromiseSettledResult`
  * return shape is kept for the orchestrator's existing accounting.
+ *
+ * After the batches, every mail + web candidate gets one random-label wildcard
+ * A query (#1202, {@link probeWildcardA}) under the same deadline and pool.
  */
 export async function probeWithAdaptiveBatching(
 	permutations: string[],
@@ -647,6 +720,15 @@ export async function probeWithAdaptiveBatching(
 			delayMs = 0;
 		}
 	}
+
+	// #1202 — the wildcard probe needs the A and MX answers to pick its
+	// candidates, so it follows the batches, inside the same phase deadline. It
+	// never degrades a candidate and never feeds the backoff: it is a
+	// corroborator, not a measurement of the candidate's own infrastructure.
+	await annotateWildcardProbes(
+		allResults.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : [])),
+		options.deadlineMs,
+	);
 
 	return allResults;
 }

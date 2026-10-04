@@ -1031,13 +1031,15 @@ describe('missing-control intent — computed subjectTerms declarations are not 
 		const declaring = SITES.filter((s) => parseSubjectTermDeclarations(s.metadataSource).length > 0);
 		expect(
 			declaring.map((s) => s.file).sort(),
-			'expected exactly the 4 check-dkim.ts sites ("Malformed DKIM key", the weak/legacy RSA key finding, ' +
-				'"Deprecated hash algorithm (h=sha1)", "No DKIM records found") + 1 dane-analysis.ts site (the TLSA ' +
+			'expected exactly the 5 check-dkim.ts sites ("Malformed DKIM key", the weak/legacy RSA key finding, ' +
+				'"Deprecated hash algorithm (h=sha1)", "No DKIM records found", "DKIM key record has no public key") ' +
+				'+ 1 dane-analysis.ts site (the TLSA ' +
 				'pin mismatch) known to declare this shape; a different count means either a declaration was ' +
 				'silently lost again or a new one was added — either way this list (and the report in SQ-97) needs ' +
 				'updating',
 		).toEqual(
 			[
+				'checks/check-dkim.ts',
 				'checks/check-dkim.ts',
 				'checks/check-dkim.ts',
 				'checks/check-dkim.ts',

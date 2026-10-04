@@ -61,9 +61,9 @@ import {
 } from '../lib/ownership-attribution';
 import type { Finding } from '../lib/scoring';
 import { createFinding } from '../lib/scoring';
-import type { LookalikeResult } from './lookalike-dns';
+import type { LookalikeResult, WildcardProbeOutcome } from './lookalike-dns';
 import type { LookalikeSeverity, LookalikeSignals } from './lookalike-severity';
-import type { RegistrationLookupOutcome } from './lookalike-enrichment';
+import type { ParkingSignal, RegistrationLookupOutcome, WebPresenceReading } from './lookalike-enrichment';
 
 export type LookalikeFindingAxis = 'attribution' | 'threat_observation' | 'scan_status';
 
@@ -101,8 +101,61 @@ export function registrationAgeMetadata(signals: LookalikeSignals): { ageUnknown
 }
 
 /**
+ * #1202 — the web-reading evidence that travels beside `hasWebContent` on every
+ * finding that carries it. A signals bag built without the tri-state (see
+ * `computeSameEntityCandidates`) is one where nothing was folded in: absent
+ * `webPresence` reads `none` when the boolean says so, else `unmeasured` —
+ * never `content`, which would claim a probe answer nobody recorded.
+ */
+export function webPresenceMetadata(signals: LookalikeSignals): {
+	webPresence: WebPresenceReading;
+	parkingSignals: ParkingSignal[];
+	wildcardProbe: WildcardProbeOutcome;
+} {
+	return {
+		webPresence: signals.webPresence ?? (signals.hasWebContent ? 'unmeasured' : 'none'),
+		parkingSignals: signals.parkingSignals ?? [],
+		wildcardProbe: signals.wildcardProbe ?? 'not_probed',
+	};
+}
+
+/** Display order and wording of the parking signals, shared by every prose site. */
+const PARKING_SIGNAL_LABELS: ReadonlyArray<readonly [ParkingSignal, string]> = [
+	['wildcard_a', 'wildcard DNS'],
+	['parking_mx', 'parking MX'],
+	['parking_ns', 'parking nameserver'],
+];
+
+/** e.g. `wildcard DNS / parking MX`; `parking infrastructure` when no signal is named. */
+function describeParkingSignals(parkingSignals: readonly ParkingSignal[] = []): string {
+	const labels = PARKING_SIGNAL_LABELS.filter(([signal]) => parkingSignals.includes(signal)).map(([, label]) => label);
+	return labels.length > 0 ? labels.join(' / ') : 'parking infrastructure';
+}
+
+/**
+ * #1202 — the web clause on the INFO-only attribution findings (owned-by-seed,
+ * shared registrant org). Never "has web presence" for a parking page or an
+ * unprobed or refused host. Info-only matters: the unmeasured wording names "no A record",
+ * the `no … record` shape `scoreIndicatesMissingControl()` matches — harmless on
+ * an `info` finding, which that gate never reads; do NOT reuse it on a threat
+ * observation, which can be `high`.
+ */
+function webPresenceClause(hasA: boolean, web: Pick<LookalikeSignals, 'webPresence' | 'parkingSignals'> | undefined): string {
+	if (web?.webPresence === 'parked') return ` Parked (${describeParkingSignals(web.parkingSignals)}).`;
+	if (web?.webPresence === 'none') return ' Web presence not measured — probe refused.';
+	if (web?.webPresence === 'unmeasured') {
+		return hasA ? ' Web presence unmeasured (A record present, no completed web probe).' : ' Web presence unmeasured (no A record).';
+	}
+	return hasA ? ' Has web presence.' : '';
+}
+
+/**
  * Build a short human-readable list of corroborating signals for the finding
  * detail. Empty string when none apply (mail-infra-alone case).
+ *
+ * WORDING CONSTRAINT: this text lands on threat observations that can be
+ * `high`, so it must avoid the `missing` / `required` / `not found` /
+ * `no <...> record` shapes `scoreIndicatesMissingControl()` matches.
  */
 export function describeCorroborators(signals: LookalikeSignals): string {
 	const parts: string[] = [];
@@ -111,6 +164,7 @@ export function describeCorroborators(signals: LookalikeSignals): string {
 	}
 	if (signals.mxOnDisposable) parts.push('disposable MX provider');
 	if (!signals.hasWebContent) parts.push('no reachable web content');
+	if (signals.webPresence === 'parked') parts.push(`parked on ${describeParkingSignals(signals.parkingSignals)} infrastructure`);
 	return parts.join(', ');
 }
 
@@ -119,13 +173,22 @@ export function describeCorroborators(signals: LookalikeSignals): string {
  * domain). Emitted instead of, never alongside, a threat observation: Task 7b
  * requirement 5 is that an `owned_by_seed` candidate gets no threat finding at
  * all, since the customer's own domain is not an impersonation threat to itself.
+ *
+ * `web` (#1202) is the candidate's web reading; owned candidates are never
+ * HEAD-probed, so the caller supplies the DNS-only reading (`parked` or
+ * `unmeasured`). Absent → the pre-#1202 wording.
  */
-export function buildOwnedBySeedFinding(result: LookalikeResult, seedDomain: string, ownership: OwnershipAssessment): Finding {
+export function buildOwnedBySeedFinding(
+	result: LookalikeResult,
+	seedDomain: string,
+	ownership: OwnershipAssessment,
+	web?: Pick<LookalikeSignals, 'webPresence' | 'parkingSignals'>,
+): Finding {
 	return createFinding(
 		'lookalikes',
 		`Lookalike domain likely owned by same entity: ${result.domain}`,
 		'info',
-		`The domain ${result.domain} is owned by the same organisation as ${seedDomain} (${ownership.rationale}).${result.hasMX ? ' Has active mail infrastructure.' : ''}${result.hasA ? ' Has web presence.' : ''}`,
+		`The domain ${result.domain} is owned by the same organisation as ${seedDomain} (${ownership.rationale}).${result.hasMX ? ' Has active mail infrastructure.' : ''}${webPresenceClause(result.hasA, web)}`,
 		{
 			lookalikeDomain: result.domain,
 			hasA: result.hasA,
@@ -264,12 +327,14 @@ export function buildSharedRegistrantOrgFinding(
 	seedDomain: string,
 	ownership: OwnershipAssessment,
 	matchedOrg: string,
+	/** #1202 — the candidate's web reading; absent → the pre-#1202 wording. */
+	web?: Pick<LookalikeSignals, 'webPresence' | 'parkingSignals'>,
 ): Finding {
 	return createFinding(
 		'lookalikes',
 		`Lookalike domain shares registrant organisation with scanned domain: ${result.domain}`,
 		'info',
-		`The domain ${result.domain} shares the same RDAP registrant organisation as ${seedDomain} ("${matchedOrg}"), which may indicate a defensive registration or regional presence by the same owner. This is a registrant-organisation signal, not structural ownership evidence — RDAP registrant fields are self-declared and not independently verified. Nameserver-based evidence: ${ownership.rationale}${result.hasMX ? ' Has active mail infrastructure.' : ''}${result.hasA ? ' Has web presence.' : ''}`,
+		`The domain ${result.domain} shares the same RDAP registrant organisation as ${seedDomain} ("${matchedOrg}"), which may indicate a defensive registration or regional presence by the same owner. This is a registrant-organisation signal, not structural ownership evidence — RDAP registrant fields are self-declared and not independently verified. Nameserver-based evidence: ${ownership.rationale}${result.hasMX ? ' Has active mail infrastructure.' : ''}${webPresenceClause(result.hasA, web)}`,
 		{
 			lookalikeDomain: result.domain,
 			hasA: result.hasA,
@@ -312,6 +377,7 @@ export function buildRawAttributionFinding(
 					...registrationAgeMetadata(signals),
 					mxOnDisposable: signals.mxOnDisposable,
 					hasWebContent: signals.hasWebContent,
+					...webPresenceMetadata(signals),
 					findingAxis: 'attribution' satisfies LookalikeFindingAxis,
 				},
 			)
@@ -328,6 +394,7 @@ export function buildRawAttributionFinding(
 					...registrationAgeMetadata(signals),
 					mxOnDisposable: signals.mxOnDisposable,
 					hasWebContent: signals.hasWebContent,
+					...webPresenceMetadata(signals),
 					findingAxis: 'attribution' satisfies LookalikeFindingAxis,
 				},
 			);
@@ -388,7 +455,8 @@ export function applyOwnershipGate(finding: Finding, ownership: OwnershipAssessm
  * WORDING CONTRACT (customer-facing, legal-sensitive — BlackVeil names real
  * third-party organisations in reports). The text:
  *  - states only what was OBSERVED (MX/A presence, registration recency,
- *    disposable MX, absent web content) — no claim of intent.
+ *    disposable MX, absent web content, parking infrastructure) — no claim of
+ *    intent.
  *    "Impersonation-shaped" / "consistent with pre-phishing staging" is the
  *    ceiling; the words "malicious"/"attacker" are deliberately absent;
  *  - says EXPLICITLY that the domain does not appear to belong to the scanned
@@ -478,6 +546,7 @@ export function buildThreatObservationFinding(
 			...registrationAgeMetadata(signals),
 			mxOnDisposable: signals.mxOnDisposable,
 			hasWebContent: signals.hasWebContent,
+			...webPresenceMetadata(signals),
 			findingAxis: 'threat_observation' satisfies LookalikeFindingAxis,
 			// The verdict travels on EVERY classified finding, threat axis
 			// included, so a consumer can read "high observed threat, NOT owned by

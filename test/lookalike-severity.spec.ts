@@ -8,6 +8,7 @@
  *   - mail-infra + recent registration (<90d) → HIGH
  *   - mail-infra + disposable MX provider     → HIGH
  *   - mail-infra + no web content             → HIGH
+ *   - mail-infra + parked web reading (#1202) → HIGH
  *   - web only                                → LOW
  *   - web only + recent registration          → MEDIUM
  *
@@ -87,5 +88,27 @@ describe('calibrateLookalikeSeverity — issue #264 matrix', () => {
 	it('disposable MX alone (no A) — treated as mail-infra HIGH (disposable corroborator)', () => {
 		expect(calibrateLookalikeSeverity(base({ hasA: false, hasMX: true, mxOnDisposable: true })))
 			.toBe('high');
+	});
+});
+
+describe('calibrateLookalikeSeverity — the parked web reading (#1202)', () => {
+	it('mail-infra + parked → HIGH, with no other corroborator (old registration, plain MX, web answered)', () => {
+		expect(
+			calibrateLookalikeSeverity(base({ hasA: true, hasMX: true, registrationDays: 1500, hasWebContent: true, webPresence: 'parked' })),
+		).toBe('high');
+	});
+
+	it('mail-infra + content / unmeasured / absent reading stays MEDIUM — unmeasured is never a corroborator (#264)', () => {
+		for (const webPresence of ['content', 'unmeasured', undefined] as const) {
+			expect(
+				calibrateLookalikeSeverity(base({ hasA: true, hasMX: true, registrationDays: 1500, hasWebContent: true, webPresence })),
+				String(webPresence),
+			).toBe('medium');
+		}
+	});
+
+	it('web-only + parked does not move: LOW stays LOW, recent stays MEDIUM', () => {
+		expect(calibrateLookalikeSeverity(base({ hasA: true, hasMX: false, registrationDays: 1500, webPresence: 'parked' }))).toBe('low');
+		expect(calibrateLookalikeSeverity(base({ hasA: true, hasMX: false, registrationDays: 30, webPresence: 'parked' }))).toBe('medium');
 	});
 });

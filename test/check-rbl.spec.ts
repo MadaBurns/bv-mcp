@@ -291,6 +291,35 @@ describe('checkRbl', () => {
 		expect(spamcopFinding).toBeDefined();
 	});
 
+	it('abstains when every blocklist lookup errors instead of claiming clean reputation', async () => {
+		// A failed zone answers `listed: false`, so all six failing produced
+		// "IP reputation clean — not listed on any RBL" at score 100: a passing grade
+		// derived from zero measurements, cached for the check's TTL.
+		buildFetchMock({
+			mxEntries: [{ priority: 10, exchange: 'mail.example.com' }],
+			mxIps: { 'mail.example.com': ['203.0.113.1'] },
+			dnsErrors: new Set(RBL_ZONES),
+		});
+
+		const result = await run();
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.find((f) => /clean/i.test(f.title))).toBeUndefined();
+	});
+
+	it('does not claim clean reputation when only some blocklist zones answered', async () => {
+		buildFetchMock({
+			mxEntries: [{ priority: 10, exchange: 'mail.example.com' }],
+			mxIps: { 'mail.example.com': ['203.0.113.1'] },
+			dnsErrors: new Set(['psbl.surriel.com']),
+		});
+
+		const result = await run();
+		expect(result.findings.find((f) => f.title.includes('IP reputation clean'))).toBeUndefined();
+		const bounded = result.findings.find((f) => f.title.includes('zones that answered'));
+		expect(bounded).toBeDefined();
+		expect(bounded!.metadata).toMatchObject({ unansweredZones: 1, answeredZones: 5 });
+	});
+
 	it('should fall back to domain A records when no MX records', async () => {
 		buildFetchMock({
 			mxEntries: [], // No MX records

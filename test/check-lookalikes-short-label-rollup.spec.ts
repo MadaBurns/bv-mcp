@@ -80,7 +80,7 @@ function mockSeedWithCandidates(seed: string, candidates: string[]): void {
 		if (name === seed && isNs(type)) return Promise.resolve(nsResponse(name, ['ns1.primary-dns.com.']));
 		if (candidates.includes(name)) {
 			if (isNs(type)) return Promise.resolve(nsResponse(name, ['ns1.unrelated-dns.com.']));
-			if (isMx(type)) return Promise.resolve(mxResponse(name, 'mx.mailgun.org.'));
+			if (isMx(type)) return Promise.resolve(mxResponse(name, 'mx.mailinator.com.'));
 		}
 		return Promise.resolve(empty());
 	});

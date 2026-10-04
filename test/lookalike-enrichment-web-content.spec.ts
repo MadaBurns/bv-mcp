@@ -80,3 +80,166 @@ describe('probeHasWebContent — failure direction (#894 residual 2)', () => {
 		expect(enrichment.get('slow.com')?.hasWebContent).toBe(true);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// #1202 — the tri-state web reading carried beside `hasWebContent`.
+// ---------------------------------------------------------------------------
+
+type Candidate = Parameters<Awaited<ReturnType<typeof load>>['enrichLookalikes']>[0][number];
+
+function candidate(overrides: Partial<Candidate> & { domain: string }): Candidate {
+	return { hasA: true, hasMX: true, mxExchanges: [`mx.${overrides.domain}`], probeDegraded: false, ...overrides };
+}
+
+/** RDAP answers with no events; every HEAD probe gets `head`. Returns the HEAD-probe call count. */
+function mockHead(head: 'ok' | 'refused' | 'hang'): { headCalls: () => number } {
+	let headCalls = 0;
+	globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request, init?: RequestInit) => {
+		const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+		if (url.pathname.includes('/domain/')) return Promise.resolve(new Response(JSON.stringify({ events: [] }), { status: 200 }));
+		headCalls++;
+		if (head === 'refused') return Promise.reject(new TypeError('connection refused'));
+		if (head === 'hang') return hangHonouringSignal(init?.signal);
+		return Promise.resolve(new Response(null, { status: 200 }));
+	});
+	return { headCalls: () => headCalls };
+}
+
+describe('probeWebPresence — the HEAD probe reading (#1202)', () => {
+	it('HTTP answer → content; measured refusal → none; timeout and not-issued → unmeasured (never content)', async () => {
+		const { probeWebPresence } = await load();
+		mockHead('ok');
+		expect(await probeWebPresence('live.com')).toMatchObject({ hasWebContent: true, webPresence: 'content' });
+		mockHead('refused');
+		expect(await probeWebPresence('dark.com')).toMatchObject({ hasWebContent: false, webPresence: 'none' });
+		mockHead('hang');
+		expect(await probeWebPresence('slow.com', Date.now() + 150)).toMatchObject({ hasWebContent: true, webPresence: 'unmeasured' });
+		const late = mockHead('ok');
+		expect(await probeWebPresence('late.com', Date.now() - 1)).toMatchObject({ hasWebContent: true, webPresence: 'unmeasured' });
+		expect(late.headCalls()).toBe(0);
+	});
+});
+
+describe('collectParkingSignals — read from DNS already fetched, no query (#1202)', () => {
+	it('each signal alone', async () => {
+		const { collectParkingSignals } = await load();
+		expect(collectParkingSignals({ mxExchanges: ['park-mx.above.com'] })).toEqual(['parking_mx']);
+		expect(collectParkingSignals({ mxExchanges: ['mx.plain.com'] }, ['ns1.sedoparking.com', 'ns2.sedoparking.com'])).toEqual([
+			'parking_ns',
+		]);
+		expect(collectParkingSignals({ mxExchanges: ['mx.plain.com'], wildcardProbe: 'wildcard' })).toEqual(['wildcard_a']);
+	});
+
+	it('combined, in a stable order', async () => {
+		const { collectParkingSignals } = await load();
+		expect(collectParkingSignals({ mxExchanges: ['park-mx.above.com'], wildcardProbe: 'wildcard' }, ['ns1.above.com'])).toEqual([
+			'parking_mx',
+			'parking_ns',
+			'wildcard_a',
+		]);
+	});
+
+	it('nothing for plain hosts, registrar defaults that serve live zones too, or a wildcard probe that measured nothing', async () => {
+		const { collectParkingSignals } = await load();
+		expect(collectParkingSignals({ mxExchanges: ['mx.plain.com'] }, ['ns1.plain-dns.com'])).toEqual([]);
+		expect(collectParkingSignals({ mxExchanges: ['mx.plain.com'] }, ['ns1.dns-parking.com', 'ns01.domaincontrol.com'])).toEqual([]);
+		expect(collectParkingSignals({ mxExchanges: ['mx.example.test'] }, ['ns1.dnsowl.com', 'ns2.dnsowl.com'])).toEqual([]);
+		for (const wildcardProbe of ['no_wildcard', 'not_probed', undefined] as const) {
+			expect(collectParkingSignals({ mxExchanges: ['mx.plain.com'], wildcardProbe }), String(wildcardProbe)).toEqual([]);
+		}
+	});
+});
+
+describe('resolveWebPresence — folding parking signals into the HEAD reading (#1202)', () => {
+	it('parking MX or NS → parked whatever the HEAD probe saw, except a measured refusal', async () => {
+		const { resolveWebPresence } = await load();
+		for (const signal of ['parking_mx', 'parking_ns'] as const) {
+			expect(resolveWebPresence('content', [signal]), signal).toBe('parked');
+			expect(resolveWebPresence('unmeasured', [signal]), signal).toBe('parked');
+			expect(resolveWebPresence('none', [signal]), signal).toBe('none');
+		}
+	});
+
+	it('a wildcard zone is parked ONLY when the HEAD probe answered (fail-soft: an unanswered probe never makes it parked)', async () => {
+		const { resolveWebPresence } = await load();
+		expect(resolveWebPresence('content', ['wildcard_a'])).toBe('parked');
+		expect(resolveWebPresence('unmeasured', ['wildcard_a'])).toBe('unmeasured');
+		expect(resolveWebPresence('none', ['wildcard_a'])).toBe('none');
+	});
+
+	it('no parking signal leaves the HEAD reading unchanged', async () => {
+		const { resolveWebPresence } = await load();
+		for (const head of ['content', 'none', 'unmeasured'] as const) expect(resolveWebPresence(head, [])).toBe(head);
+	});
+});
+
+describe('enrichLookalikes — webPresence beside an unchanged hasWebContent (#1202)', () => {
+	it('no A record: unmeasured, not content — and no HEAD probe is issued', async () => {
+		const { headCalls } = mockHead('ok');
+		const { enrichLookalikes } = await load();
+		const c = (await enrichLookalikes([candidate({ domain: 'mxonly.com', hasA: false, mxExchanges: ['mxa.mailgun.org'] })])).get(
+			'mxonly.com',
+		);
+		expect(c).toMatchObject({ hasWebContent: true, webPresence: 'unmeasured', parkingSignals: [], wildcardProbe: 'not_probed' });
+		expect(headCalls()).toBe(0);
+	});
+
+	it('no A record but a parking-network MX: parked from the MX answer alone', async () => {
+		mockHead('ok');
+		const { enrichLookalikes } = await load();
+		const c = (await enrichLookalikes([candidate({ domain: 'parkmx.com', hasA: false, mxExchanges: ['park-mx.above.com'] })])).get(
+			'parkmx.com',
+		);
+		expect(c).toMatchObject({ hasWebContent: true, webPresence: 'parked', parkingSignals: ['parking_mx'] });
+	});
+
+	it('parking NS from the phase-1 answers passed in candidateNs', async () => {
+		mockHead('ok');
+		const { enrichLookalikes } = await load();
+		const enrichment = await enrichLookalikes([candidate({ domain: 'parkns.com' })], {
+			candidateNs: new Map([['parkns.com', new Set(['ns1.sedoparking.com'])]]),
+		});
+		expect(enrichment.get('parkns.com')).toMatchObject({ hasWebContent: true, webPresence: 'parked', parkingSignals: ['parking_ns'] });
+	});
+
+	it('a wildcard zone whose HEAD probe answered is parked; with a plain zone the same answer is content', async () => {
+		mockHead('ok');
+		const { enrichLookalikes } = await load();
+		const enrichment = await enrichLookalikes([
+			candidate({ domain: 'wild.com', wildcardProbe: 'wildcard' }),
+			candidate({ domain: 'plain.com', wildcardProbe: 'no_wildcard' }),
+		]);
+		expect(enrichment.get('wild.com')).toMatchObject({
+			hasWebContent: true,
+			webPresence: 'parked',
+			parkingSignals: ['wildcard_a'],
+			wildcardProbe: 'wildcard',
+		});
+		expect(enrichment.get('plain.com')).toMatchObject({
+			hasWebContent: true,
+			webPresence: 'content',
+			parkingSignals: [],
+			wildcardProbe: 'no_wildcard',
+		});
+	});
+
+	it('a wildcard zone whose HEAD probe hung stays unmeasured — a starved probe never synthesises parked', async () => {
+		mockHead('hang');
+		const { enrichLookalikes } = await load();
+		const enrichment = await enrichLookalikes([candidate({ domain: 'wildslow.com', wildcardProbe: 'wildcard' })], {
+			deadlineMs: Date.now() + 200,
+		});
+		expect(enrichment.get('wildslow.com')).toMatchObject({
+			hasWebContent: true,
+			webPresence: 'unmeasured',
+			parkingSignals: ['wildcard_a'],
+		});
+	});
+
+	it('a measured refusal stays none (hasWebContent false, exactly as before) even on a parking MX', async () => {
+		mockHead('refused');
+		const { enrichLookalikes } = await load();
+		const enrichment = await enrichLookalikes([candidate({ domain: 'refused.com', mxExchanges: ['park-mx.above.com'] })]);
+		expect(enrichment.get('refused.com')).toMatchObject({ hasWebContent: false, webPresence: 'none', parkingSignals: ['parking_mx'] });
+	});
+});

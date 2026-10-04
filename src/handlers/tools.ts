@@ -703,7 +703,17 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 	check_llms_txt: { cacheKey: () => 'llms_txt', execute: (d, _args, ro) => checkLlmsTxt(d, buildDnsOptions(ro)) },
 	check_dnskey_strength: { cacheKey: () => 'dnskey_strength', execute: (d, _args, ro) => checkDnskeyStrength(d, buildDnsOptions(ro)) },
 	check_fast_flux: {
-		cacheKey: (_a, ro) => (ro?.reconBinding ? 'fast_flux:recon' : 'fast_flux'),
+		// `rounds` changes the probe count, and rapid rotation is only detectable
+		// across rounds, so a shared key would serve a 3-round answer to a caller
+		// that asked for 5 (or vice versa) for the whole TTL window. The value is
+		// folded CLAMPED, mirroring `Math.max(3, Math.min(5, rounds ?? 3))` inside
+		// checkFastFlux, so an out-of-range request collides with the run it
+		// actually performs instead of minting unbounded keys.
+		cacheKey: (args, ro) => {
+			const rounds = Math.max(3, Math.min(5, typeof args.rounds === 'number' ? args.rounds : 3));
+			const base = ro?.reconBinding ? 'fast_flux:recon' : 'fast_flux';
+			return `${base}:r${rounds}`;
+		},
 		execute: (d, args, ro) =>
 			checkFastFlux(d, (args.rounds as number | undefined) ?? 3, buildDnsOptions(ro), undefined, {
 				reconBinding: ro?.reconBinding,
@@ -753,9 +763,18 @@ export const TOOL_REGISTRY: Record<string, ToolRegistryEntry> = {
 			const discoveryMode = typeof args.discovery_mode === 'string' ? args.discovery_mode : 'classic';
 			const aliases = (args.brand_aliases as string[] | undefined) ?? [];
 			const candDomains = (args.candidate_domains as string[] | undefined) ?? [];
+			// The selector list goes straight into the `dkim_key_reuse` signal probe
+			// (src/tools/discover-brand-domains.ts), so it changes which candidates are
+			// corroborated and at what confidence. Omitted means "built-in common
+			// selectors"; an explicit list means "exactly these" — the two must not
+			// share this tool's 1-hour cache entry. `hashListForCacheKey` maps an empty
+			// list to the same '0' the other two components use, so omitted and explicit-
+			// but-empty stay equivalent while any real roster gets its own entry.
+			const selectors = (args.dkim_selectors as string[] | undefined) ?? [];
 			const aliasHash = await hashListForCacheKey(aliases);
 			const candHash = await hashListForCacheKey(candDomains);
-			return `discover_brand:${signals}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:m${minConf}`;
+			const selHash = await hashListForCacheKey(selectors);
+			return `discover_brand:${signals}:d${depth}:p${plannerMode}:dm${discoveryMode}:a${aliasHash}:c${candHash}:k${selHash}:m${minConf}`;
 		},
 		execute: (d, args, ro) => {
 			// Bound the synchronous discovery against the server's 28s tool-call

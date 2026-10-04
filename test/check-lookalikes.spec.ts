@@ -169,6 +169,27 @@ describe('checkLookalikes', () => {
 		const incomplete = result.findings.find((f) => /enumeration was incomplete/i.test(f.title));
 		expect(incomplete).toBeDefined();
 		expect(result.partial).toBe(true);
+		// #900 — saying so in prose was not enough. Every `info` finding above made
+		// `buildCheckResult` derive score 100 / `passed: true`, so the scalars read by
+		// the aggregators certified an estate this run never looked at.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error' });
+	});
+
+	it('scores a partial-but-real enumeration instead of abstaining, when some lookups measured an absence', async () => {
+		let callCount = 0;
+		globalThis.fetch = vi.fn().mockImplementation(() => {
+			callCount++;
+			if (callCount % 3 === 0) return Promise.reject(new Error('DNS timeout'));
+			return Promise.resolve(createDohResponse([], []));
+		});
+		const result = await run('test.com');
+
+		// The boundary the abstention must NOT cross: an empty answer is a measurement, so a
+		// run that resolved most candidates as having no NS has a real (if incomplete) answer.
+		// It stays scored and merely declares itself partial.
+		expect(result.checkStatus).toBeUndefined();
+		expect(result.passed).toBe(true);
+		expect(result.partial).toBe(true);
 	});
 
 	it('exports adaptive batching constants', async () => {
@@ -612,7 +633,10 @@ describe('checkLookalikes - shared nameserver detection', () => {
 		expect(tstFinding).toBeDefined();
 		expect(tstFinding!.severity).toBe('info');
 		expect(tstFinding!.title).toContain('likely owned by same entity');
-		expect(tstFinding!.detail).toContain('web presence');
+		// #1202 — an owned candidate is never HEAD-probed, so its A record is
+		// reported as present with the web reading UNMEASURED, never "has web presence".
+		expect(tstFinding!.detail).toContain('Web presence unmeasured (A record present, no completed web probe).');
+		expect(tstFinding!.detail).not.toContain('Has web presence');
 		expect(tstFinding!.metadata?.ownershipVerdict).toBe('owned_by_seed');
 	});
 
@@ -803,6 +827,10 @@ describe('checkLookalikes - timeout partial flag', () => {
 		expect(result.findings[0].title).toBe('Lookalike check incomplete');
 		expect(result.findings[0].severity).toBe('info');
 		expect(result.findings[0].detail).toContain('did not complete within the time limit');
+		// #900 — that single `info` finding used to derive score 100 / `passed: true`, so a
+		// run that timed out mid-flight reported "no lookalikes" to everything branching on
+		// `.passed`. The finding text was honest; the verdict was not.
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'timeout' });
 	});
 
 	it('does not mark successful results as partial', async () => {
@@ -912,7 +940,7 @@ describe('checkLookalikes - issue #264 severity calibration wiring', () => {
 	});
 
 	it('caps mail-infra + disposable MX at info despite calibrating internally to HIGH', async () => {
-		mockWithRdap({ mailDomain: 'tst.com', mxExchange: 'smtp.mailgun.org.', registrationDaysAgo: null });
+		mockWithRdap({ mailDomain: 'tst.com', mxExchange: 'smtp.mailinator.com.', registrationDaysAgo: null });
 		const result = await run('test.com');
 		const tstFinding = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tst.com');
 		expect(tstFinding).toBeDefined();
@@ -1722,7 +1750,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 	 * The textbook pre-phishing setup the opus review proved Task 7 had made
 	 * invisible: a confusable label on unrelated nameservers (third_party) with
 	 * LIVE mail infrastructure on a disposable provider — the #264 matrix's HIGH
-	 * tier. `mailgun.org` is in DISPOSABLE_MX_PROVIDERS, so the HIGH is reached
+	 * tier. `mailinator.com` is in DISPOSABLE_MX_PROVIDERS, so the HIGH is reached
 	 * without needing an RDAP registration-age mock.
 	 */
 	function mockPrePhishingFixture(): void {
@@ -1736,7 +1764,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailinator.com.' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -1836,7 +1864,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
 					}
 					if (type === 'MX' || type === '15') {
-						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailinator.com.' }]));
 					}
 				}
 				// Every other permutation's lookup FAILS rather than answering empty.
@@ -1986,7 +2014,7 @@ describe('checkLookalikes - Task 7b two-axis split (attribution vs threat observ
 					// Live mail infra on a DISPOSABLE provider — the #264 HIGH tier.
 					// If ownership were ignored on the threat axis this would surface
 					// as a HIGH against the customer's own domain.
-					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailinator.com.' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -2213,7 +2241,7 @@ describe('checkLookalikes - Task 7b fix round 1 (RDAP org gating + scan_status a
 					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
 				}
 				if (type === 'MX' || type === '15') {
-					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailgun.org.' }]));
+					return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: '10 mx.mailinator.com.' }]));
 				}
 			}
 			return Promise.resolve(createDohResponse([], []));
@@ -2373,5 +2401,110 @@ describe('isSameEntityOrgMatch - fix round 2 residual (direct semantic pin)', ()
 		const attributedCandidate = result.findings.find((f) => f.metadata?.lookalikeDomain === 'tes.com');
 		expect(attributedCandidate).toBeDefined();
 		expect(attributedCandidate?.metadata?.ownershipVerdict).not.toBe('unmeasured');
+	});
+});
+
+/**
+ * #1202 / #1198 — the two adjacent candidates measured on blackrock.com,
+ * 2026-10-04, re-staged on the testco.com seed (twstco.com is a generated
+ * permutation): both third-party, both four-plus years old, so the age leg
+ * never fires and whatever corroborator remains is the whole story.
+ */
+describe('checkLookalikes - #1202 parked web reading and #1198 Mailgun (tool level)', () => {
+	const PARKING_IP = '103.224.182.244';
+	const OLD_REGISTRATION = new Date(Date.now() - 1669 * 24 * 60 * 60 * 1000).toISOString();
+
+	function mockCandidate(opts: { mx: string; hasA: boolean; wildcard: boolean }): void {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = new URL(typeof input === 'string' ? input : input instanceof URL ? input.href : input.url);
+			if (url.pathname === '/dns-query') {
+				const { name, type } = parseDohQuery(input);
+				const isA = type === 'A' || type === '1';
+				if (name === 'testco.com' && (type === 'NS' || type === '2')) {
+					return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.primary-dns.com.' }]));
+				}
+				if (name === 'twstco.com') {
+					if (type === 'NS' || type === '2') {
+						return Promise.resolve(createDohResponse([{ name, type: 2 }], [{ name, type: 2, TTL: 300, data: 'ns1.unrelated-dns.com.' }]));
+					}
+					if (type === 'MX' || type === '15') {
+						return Promise.resolve(createDohResponse([{ name, type: 15 }], [{ name, type: 15, TTL: 300, data: `10 ${opts.mx}` }]));
+					}
+					if (isA && opts.hasA)
+						return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: PARKING_IP }]));
+				}
+				// The wildcard zone answers an arbitrary label with the apex address.
+				if (isA && opts.wildcard && /^_bv-probe-[a-z0-9]+\.twstco\.com$/.test(name)) {
+					return Promise.resolve(createDohResponse([{ name, type: 1 }], [{ name, type: 1, TTL: 300, data: PARKING_IP }]));
+				}
+				return Promise.resolve(createDohResponse([], []));
+			}
+			if (url.pathname.includes('/domain/')) {
+				return Promise.resolve(
+					new Response(JSON.stringify({ events: [{ eventAction: 'registration', eventDate: OLD_REGISTRATION }] }), { status: 200 }),
+				);
+			}
+			// HEAD probe: the parking page answers 200 with adverts.
+			return Promise.resolve(new Response(null, { status: 200 }));
+		});
+	}
+
+	async function threatFor(candidate: string) {
+		const { checkLookalikes } = await import('../src/tools/check-lookalikes');
+		const result = await checkLookalikes('testco.com');
+		const threat = result.findings.find(
+			(f) => f.metadata?.findingAxis === 'threat_observation' && f.metadata?.lookalikeDomain === candidate,
+		);
+		const attribution = result.findings.find((f) => f.metadata?.findingAxis === 'attribution' && f.metadata?.lookalikeDomain === candidate);
+		expect(threat, 'threat observation').toBeDefined();
+		expect(attribution, 'attribution finding').toBeDefined();
+		return { threat: threat!, attribution: attribution! };
+	}
+
+	it('blsckrock.com shape — wildcard A, MX park-mx.above.com, HEAD 200: parked, and HIGH on that alone', async () => {
+		mockCandidate({ mx: 'park-mx.above.com.', hasA: true, wildcard: true });
+		const { threat, attribution } = await threatFor('twstco.com');
+
+		expect(threat.severity).toBe('high');
+		expect(threat.metadata).toMatchObject({
+			registrationDays: 1669,
+			mxOnDisposable: false,
+			hasWebContent: true,
+			webPresence: 'parked',
+			parkingSignals: ['parking_mx', 'wildcard_a'],
+			wildcardProbe: 'wildcard',
+		});
+		expect(threat.detail).toContain('also observed: parked on wildcard DNS / parking MX infrastructure');
+		expect(threat.detail).not.toMatch(/has web presence/i);
+		expect(attribution.metadata).toMatchObject({ hasWebContent: true, webPresence: 'parked', wildcardProbe: 'wildcard' });
+	});
+
+	it('control — same answered page on a plain MX and a non-wildcard zone: content, MEDIUM', async () => {
+		mockCandidate({ mx: 'mx.twstco.com.', hasA: true, wildcard: false });
+		const { threat } = await threatFor('twstco.com');
+
+		expect(threat.severity).toBe('medium');
+		expect(threat.metadata).toMatchObject({
+			hasWebContent: true,
+			webPresence: 'content',
+			parkingSignals: [],
+			wildcardProbe: 'no_wildcard',
+		});
+		expect(threat.detail).not.toContain('parked');
+	});
+
+	it('blackrockk.com shape — Mailgun MX, no A record: no longer disposable, web reading unmeasured (not content), MEDIUM', async () => {
+		mockCandidate({ mx: 'mxa.mailgun.org.', hasA: false, wildcard: false });
+		const { threat } = await threatFor('twstco.com');
+
+		expect(threat.severity).toBe('medium');
+		expect(threat.metadata).toMatchObject({
+			hasA: false,
+			mxOnDisposable: false,
+			hasWebContent: true,
+			webPresence: 'unmeasured',
+			wildcardProbe: 'not_probed',
+		});
+		expect(threat.detail).not.toContain('disposable MX provider');
 	});
 });

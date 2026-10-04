@@ -12,8 +12,13 @@
  *   - mail-infra + recent registration (<90d) → HIGH
  *   - mail-infra + disposable MX provider     → HIGH
  *   - mail-infra + no web content             → HIGH
+ *   - mail-infra + parked web reading (#1202) → HIGH
  *   - web only                                → LOW
  *   - web only + recent registration (<90d)   → MEDIUM
+ *
+ * `webPresence === 'parked'` corroborates exactly as "no web content" does: a
+ * parked lookalike carries no legitimate operator content, which is what the
+ * no-content leg approximates. `'unmeasured'` is NEVER a corroborator (#264).
  *
  * `registrationDays === null` means "unknown" (RDAP failed or returned no
  * event); treated as not-recent so the fallback never elevates severity
@@ -21,7 +26,8 @@
  */
 
 import type { Severity } from '../lib/scoring';
-import type { RegistrationLookupOutcome } from './lookalike-enrichment';
+import type { ParkingSignal, RegistrationLookupOutcome, WebPresenceReading } from './lookalike-enrichment';
+import type { WildcardProbeOutcome } from './lookalike-dns';
 
 /** Severity assigned to lookalikes that should not surface as a finding at all. */
 export type LookalikeSeverity = Extract<Severity, 'low' | 'medium' | 'high'>;
@@ -35,10 +41,17 @@ export const RECENT_REGISTRATION_DAYS = 90;
  * #264 matrix. Easy to extend later as new providers surface in the wild.
  *
  * Match is performed as an exact-equality OR endsWith('.' + suffix) check, so
- * `smtp.mailgun.org` matches `mailgun.org` but `legit-mailgun.com` does not.
+ * `mx.mailinator.com` matches `mailinator.com` but `legit-mailinator.com` does not.
+ *
+ * MEMBERSHIP BAR (#1198): a genuinely throwaway inbox service, or a sandbox
+ * that never delivers (`mailtrap.io`). A mainstream sending provider is NOT
+ * disposable however often it fronts a lookalike: `mailgun.org` sat here while
+ * `generate-records.ts` recommended `include:mailgun.org` to customers, and on
+ * a 4.5-year-old candidate it was the sole HIGH corroborator. The list must
+ * stay disjoint from the providers the product recommends — pinned by
+ * `test/audits/disposable-mx-providers.audit.test.ts`.
  */
 export const DISPOSABLE_MX_PROVIDERS: readonly string[] = [
-	'mailgun.org',
 	'mailtrap.io',
 	'inbox.eu',
 	'temp-mail.org',
@@ -75,6 +88,17 @@ export interface LookalikeSignals {
 	 * "no-content corroborator" out of nothing.
 	 */
 	hasWebContent: boolean;
+	/**
+	 * #1202 — the tri-state web reading carried beside {@link hasWebContent}
+	 * (`false` there iff `none` here). Optional so callers that never measured
+	 * it (hand-built fixtures) keep today's
+	 * matrix exactly; absent is read as "not parked".
+	 */
+	webPresence?: WebPresenceReading;
+	/** #1202 — the parking signals observed; feeds the finding prose and metadata only, never the calibrator. */
+	parkingSignals?: ParkingSignal[];
+	/** #1202 — the phase-2 wildcard probe's outcome; metadata only, never read by the calibrator. */
+	wildcardProbe?: WildcardProbeOutcome;
 }
 
 /**
@@ -101,17 +125,19 @@ export function isRecentRegistration(registrationDays: number | null): boolean {
  * Implementation notes:
  *   - Mail-infra is the primary axis; web-only is the fallback axis.
  *   - HIGH requires mail-infra AND at least one corroborator
- *     (recent registration, disposable MX, or no web content).
+ *     (recent registration, disposable MX, no web content, or a parked web
+ *     reading — #1202).
  *   - MEDIUM is the mail-infra default (no corroborator), OR web-only +
  *     recent registration.
- *   - LOW is web-only with no corroborator.
+ *   - LOW is web-only with no corroborator. A parked reading does not move
+ *     the web-only tier.
  */
 export function calibrateLookalikeSeverity(signals: LookalikeSignals): LookalikeSeverity {
 	const recent = isRecentRegistration(signals.registrationDays);
 
 	if (signals.hasMX) {
 		// Mail-infra present — look for corroborators that elevate to HIGH.
-		if (recent || signals.mxOnDisposable || !signals.hasWebContent) {
+		if (recent || signals.mxOnDisposable || !signals.hasWebContent || signals.webPresence === 'parked') {
 			return 'high';
 		}
 		return 'medium';

@@ -10,6 +10,7 @@
 
 import type { Finding } from '../types';
 import { createFinding } from '../check-utils';
+import { parseTlsRptRua } from './tls-rpt-utils';
 
 /**
  * MTA_STS_ABSENCE_IS_GRADED_NOT_ZEROING — why no MTA-STS absence path sets `missingControl: true`.
@@ -253,8 +254,10 @@ export function getTlsRptRecordFindings(records: string[]): { findings: Finding[
 	}
 
 	const tlsrptRecord = validRecords[0];
-	const ruaMatch = tlsrptRecord.match(/rua\s*=\s*([^;\s]+)/i);
-	if (!ruaMatch) {
+	// Shared with the `tlsrpt` category's reader of the same record, so one `_smtp._tls`
+	// policy cannot be graded valid here and invalid there (see tls-rpt-utils).
+	const rua = parseTlsRptRua(tlsrptRecord);
+	if (!rua.present || rua.uris.length === 0) {
 		return {
 			findings: [
 				createFinding(
@@ -268,17 +271,14 @@ export function getTlsRptRecordFindings(records: string[]): { findings: Finding[
 		};
 	}
 
-	const ruaValue = ruaMatch[1];
-	const isValidMailto = /^mailto:[^@\s]+@[^@\s]+\.[^@\s]+$/.test(ruaValue);
-	const isValidHttps = /^https:\/\/.+/.test(ruaValue);
-	if (!isValidMailto && !isValidHttps) {
+	if (rua.invalid.length > 0) {
 		return {
 			findings: [
 				createFinding(
 					'mta_sts',
 					'TLS-RPT invalid rua format',
 					'medium',
-					`TLS-RPT rua value "${ruaValue}" is not a valid mailto: or https: URI.`,
+					`TLS-RPT rua value "${rua.invalid.join(', ')}" is not a valid mailto: or https: URI.`,
 				),
 			],
 			hasTlsRptRecord: true,

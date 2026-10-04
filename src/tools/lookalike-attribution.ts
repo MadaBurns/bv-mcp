@@ -177,6 +177,7 @@ export function computeSameEntityCandidates(
 			registrationDays: corroborators?.registrationDays ?? null,
 			mxOnDisposable: corroborators?.mxOnDisposable ?? false,
 			hasWebContent: corroborators?.hasWebContent ?? true,
+			webPresence: corroborators?.webPresence,
 		});
 		eligible.push({ domain: result.domain, severity });
 	}

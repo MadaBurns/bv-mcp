@@ -57,7 +57,13 @@ import {
 	type LookalikeResult,
 	type UnresolvedByReason,
 } from './lookalike-dns';
-import { EMPTY_RDAP_PROBE, enrichLookalikes, probePrimaryRegistration } from './lookalike-enrichment';
+import {
+	collectParkingSignals,
+	EMPTY_RDAP_PROBE,
+	enrichLookalikes,
+	probePrimaryRegistration,
+	resolveWebPresence,
+} from './lookalike-enrichment';
 import {
 	computeSameEntityCandidates,
 	isBrandHeldRegistration,
@@ -237,10 +243,18 @@ export async function checkLookalikes(domain: string, reconOptions: CheckLookali
 		checkLookalikesCore(domain, reconOptions, budget),
 		new Promise<never>((_, reject) => setTimeout(() => reject(new Error('Lookalike check timed out')), budget.timeoutMs)),
 	]).catch(() => {
-		const result = buildCheckResult('lookalikes', [buildTimeoutFinding()]);
-		// Mark as partial so callers can skip caching
-		result.partial = true;
-		return result;
+		// #900 — this non-answer used to be a clean one. `buildTimeoutFinding` is `info`,
+		// so `buildCheckResult` derived score 100 / `passed: true` for a run that probed
+		// nothing: the prose said "results may be incomplete" while the machine-read
+		// verdict (`passed` is read by four surfaces — #705 #706 #725 #809) certified no
+		// lookalikes. `partial` alone was not enough — it gates the cache, not the verdict.
+		return {
+			...buildCheckResult('lookalikes', [buildTimeoutFinding()]),
+			score: 0,
+			passed: false,
+			checkStatus: 'timeout' as const,
+			partial: true,
+		};
 	});
 }
 
@@ -377,6 +391,19 @@ async function checkLookalikesCore(
 		findings.push(withUnresolvedReasons(buildIncompleteEnumerationFinding(domain, nsOnlyEnumeration), nsResult.unresolvedByReason));
 		const result = buildCheckResult('lookalikes', findings);
 		result.partial = true;
+		// #900 — `unresolvedCount === permutationsProbed` means not one candidate
+		// resolution was MEASURED: every lookup was a transport failure, so this branch
+		// observed nothing about the estate. The incomplete-enumeration finding is `info`,
+		// so `buildCheckResult` derived score 100 / `passed: true` — indistinguishable, on
+		// the scalars every aggregator reads, from a probed estate with no lookalikes.
+		// Abstain (the twin of `measuredNothing` in check-root-server-set.ts). When at
+		// least one lookup DID measure an absence, the run has a real (if partial) answer:
+		// `partial: true` alone stays, and the heuristic-confidence finding above carries it.
+		if (nsUnresolved === permsToProbe.length) {
+			result.score = 0;
+			result.passed = false;
+			result.checkStatus = 'error';
+		}
 		return result;
 	}
 
@@ -512,7 +539,8 @@ async function checkLookalikesCore(
 		return !sameOwner && (r.hasMX || r.hasA);
 	});
 	const enrichmentDeadlineMs = startedAt + budget.timeoutMs - budget.enrichmentReserveMs;
-	const enrichment = await enrichLookalikes(candidatesToEnrich, { deadlineMs: enrichmentDeadlineMs });
+	// #1202 — the phase-1 NS answers ride along for the parking-NS signal; no new query.
+	const enrichment = await enrichLookalikes(candidatesToEnrich, { deadlineMs: enrichmentDeadlineMs, candidateNs: lookalikeNsMap });
 
 	// Same-entity correlation (issue #263): a flagged lookalike that shares the
 	// scan domain's RDAP registrant org is almost certainly the org's own
@@ -633,8 +661,16 @@ async function checkLookalikesCore(
 		const sameOwner = ownership.verdict === 'owned_by_seed';
 
 		if (sameOwner) {
-			// Structurally owned by the seed — the customer's own domain.
-			findings.push(buildOwnedBySeedFinding(result, domain, ownership));
+			// Structurally owned by the seed — the customer's own domain. Never
+			// HEAD-probed (it skipped enrichment), so its web reading is the
+			// DNS-only one (#1202): parked on parking MX / NS, else unmeasured.
+			const parkingSignals = collectParkingSignals(result, lookalikeNsMap.get(result.domain));
+			findings.push(
+				buildOwnedBySeedFinding(result, domain, ownership, {
+					webPresence: resolveWebPresence('unmeasured', parkingSignals),
+					parkingSignals,
+				}),
+			);
 			// Task 7b requirement 5: an `owned_by_seed` candidate gets NO
 			// threat-observation finding — the customer's own domain is not an
 			// impersonation threat to itself. This `continue` (together with the
@@ -663,6 +699,9 @@ async function checkLookalikesCore(
 			registrationLookup: 'not_attempted' as const,
 			mxOnDisposable: false,
 			hasWebContent: true,
+			webPresence: 'unmeasured' as const,
+			parkingSignals: [],
+			wildcardProbe: 'not_probed' as const,
 			registrantOrg: null,
 		};
 		const signals: LookalikeSignals = {
@@ -672,6 +711,9 @@ async function checkLookalikesCore(
 			registrationLookup: corroborators.registrationLookup,
 			mxOnDisposable: corroborators.mxOnDisposable,
 			hasWebContent: corroborators.hasWebContent,
+			webPresence: corroborators.webPresence,
+			parkingSignals: corroborators.parkingSignals,
+			wildcardProbe: corroborators.wildcardProbe,
 		};
 		const severity = calibrateLookalikeSeverity(signals);
 		const corroboratorReasons = describeCorroborators(signals);
@@ -696,7 +738,7 @@ async function checkLookalikesCore(
 		if (brandHeld !== undefined) {
 			findings.push(buildBrandHeldFinding(result, domain, ownership, brandHeld));
 		} else if (matchedOrg !== undefined) {
-			findings.push(buildSharedRegistrantOrgFinding(result, domain, ownership, matchedOrg));
+			findings.push(buildSharedRegistrantOrgFinding(result, domain, ownership, matchedOrg, signals));
 		} else {
 			// AXIS 1 — the ownership verdict caps the ATTRIBUTION finding's
 			// severity. `attributionConfidence()` (fed the MX-overlap

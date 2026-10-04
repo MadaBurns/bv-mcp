@@ -82,6 +82,30 @@
 import { registeredApex } from './infrastructure-providers';
 
 /**
+ * The domain-PARKING subset of {@link SHARED_NS_APEXES} — monetisation
+ * networks whose nameservers and mail exchangers front parked domains. Defined
+ * here once and spread into `SHARED_NS_APEXES`, so the two can never drift.
+ *
+ * Consumed by {@link isParkingInfraHost}, which `check_lookalikes` uses to read
+ * a candidate's MX or NS as parking infrastructure (#1202 — e.g.
+ * `park-mx.above.com`). Registrar / hosting DEFAULTS that serve parked AND
+ * live zones alike (GoDaddy `domaincontrol.com`, Hostinger `dns-parking.com`)
+ * are deliberately NOT in this subset: their hostnames say nothing about
+ * whether the zone is parked.
+ */
+export const PARKING_APEXES: ReadonlySet<string> = new Set([
+	'sedoparking.com',
+	'parkingcrew.com',
+	'parkingcrew.net',
+	'bodis.com',
+	'cashparking.com',
+	'dan.com',
+	'above.com',
+	'internettraffic.com',
+	'parklogic.com',
+]);
+
+/**
  * Apex-form (2-label) domains of NS providers that assign shared NS
  * hostnames across many unrelated customers.
  *
@@ -113,17 +137,10 @@ import { registeredApex } from './infrastructure-providers';
  * >=50% bar is met by that half alone (Squarespace: 4 platform + 4 NS1 hosts).
  */
 export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
-	// Parking services
-	'sedoparking.com',
-	'parkingcrew.com',
-	'parkingcrew.net',
-	'bodis.com',
-	'cashparking.com',
-	'dan.com',
-	'above.com',
-	'internettraffic.com',
+	// Parking services — single-sourced in PARKING_APEXES above.
+	...PARKING_APEXES,
+	// NameSilo default nameservers serve live and parked registrants alike (#1206).
 	'dnsowl.com',
-	'parklogic.com',
 	// GoDaddy default / parked / shared — ~50 `nsNN`/`nsNN+1` pairs over 489
 	// sampled tenants (#939: stonyfield.com and centerforfoodsafety.org both
 	// on ns33/ns34.domaincontrol.com, 2026-09-09).
@@ -340,6 +357,17 @@ export function isSharedNsHost(nsHost: string): boolean {
 	if (!nsHost) return false;
 	const apex = registeredApex(nsHost);
 	return SHARED_NS_APEXES.has(apex);
+}
+
+/**
+ * True if `host` — a nameserver OR mail-exchanger hostname, e.g.
+ * `ns1.sedoparking.com` or `park-mx.above.com` — belongs to a domain-parking
+ * network, i.e. its registered apex is in {@link PARKING_APEXES}. Always
+ * implies `isSharedNsHost(host)`.
+ */
+export function isParkingInfraHost(host: string): boolean {
+	if (!host) return false;
+	return PARKING_APEXES.has(registeredApex(host));
 }
 
 /**

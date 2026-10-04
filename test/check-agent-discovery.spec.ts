@@ -86,6 +86,33 @@ describe('checkAgentDiscovery', () => {
 		expect(result.passed).toBe(true);
 	});
 
+	it('abstains instead of claiming no records when every discovery query fails', async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS failure'));
+		const result = await run();
+
+		// Pre-fix every candidate query landed in the loop's `catch { continue }`, so
+		// `records.length === 0` produced an affirmative "The domain does not
+		// participate in DNS-based agent discovery" at score 100 / `passed: true` (#900).
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.some((f) => /No BANDAID/i.test(f.title))).toBe(false);
+		expect(result.findings.map((f) => f.metadata?.errorKind)).toEqual(['dns_error']);
+	});
+
+	it('still measures absence when one candidate fails but another answers', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const href = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			const name = new URL(href).searchParams.get('name');
+			if (name === '_agents.example.com') return Promise.reject(new Error('DNS failure'));
+			return Promise.resolve(svcbResponse(name ?? '', []));
+		});
+		const result = await run();
+
+		// The guard counts ANSWERED queries, so a single NODATA response is enough to
+		// make "no records published" a real measurement rather than an abstention.
+		expect(result.checkStatus).not.toBe('error');
+		expect(result.findings.some((f) => /No BANDAID/i.test(f.title))).toBe(true);
+	});
+
 	it('flags HIGH when discovery records exist but the zone is NOT DNSSEC-anchored', async () => {
 		mockAgentFetch({
 			svcb: { '_agents.example.com': ['1 chat.example.com. alpn="mcp"'] },

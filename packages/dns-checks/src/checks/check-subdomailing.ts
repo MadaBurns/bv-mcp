@@ -71,8 +71,29 @@ export async function checkSubdomailing(
 	}
 
 	// Probe all include domains for takeover risks
-	const { findings: riskFindings, probedCount, unmeasuredCount } = await probeAllIncludes(chainResult.domains, queryDNS, { timeout });
+	const {
+		findings: riskFindings,
+		probedCount,
+		unmeasuredCount,
+		macroTemplateCount,
+	} = await probeAllIncludes(chainResult.domains, queryDNS, { timeout });
 	findings.push(...riskFindings);
+
+	// Nothing in the chain could be assessed and at least one target was a macro template (#1200):
+	// a template is deliberately never queried, so there is no measurement to pass. Abstain.
+	if (macroTemplateCount > 0 && unmeasuredCount + macroTemplateCount === probedCount) {
+		return buildNotAssessedResult(
+			'subdomailing',
+			createFinding(
+				'subdomailing',
+				'SubdoMailing not assessed — SPF includes are not resolvable out-of-band',
+				'info',
+				`No SPF include/redirect domain in the chain for ${domain} could be assessed: ${macroTemplateCount} macro-template include(s) (RFC 7208 §7) were not probed because only a receiving MTA can expand them, and ${unmeasuredCount} hit a DNS lookup that threw. This is not evidence that the domain is free of SubdoMailing risk — the category is excluded from scoring rather than passed.`,
+				{ inconclusive: true, errorKind: 'dns_error', includeCount: probedCount, unmeasuredCount, macroTemplateCount },
+			),
+			'error',
+		);
+	}
 
 	// Every include probe was unmeasured (a thrown lookup, never an answered-empty result) —
 	// abstain rather than assert a clean verdict over a chain nothing actually resolved
@@ -95,13 +116,17 @@ export async function checkSubdomailing(
 	// includes could not be queried (#1103).
 	if (findings.length === 0) {
 		findings.push(
-			unmeasuredCount > 0
+			unmeasuredCount > 0 || macroTemplateCount > 0
 				? createFinding(
 						'subdomailing',
 						'No SubdoMailing risk detected',
 						'info',
-						`Analyzed ${probedCount} SPF include/redirect domain(s) for ${domain}. ${probedCount - unmeasuredCount} of ${probedCount} resolved with no takeover indicators; ${unmeasuredCount} could not be queried (DNS lookup failure) and are not confirmed safe.`,
-						{ includeCount: probedCount, unmeasuredCount },
+						`Analyzed ${probedCount} SPF include/redirect domain(s) for ${domain}. ${probedCount - unmeasuredCount - macroTemplateCount} of ${probedCount} resolved with no takeover indicators${unmeasuredCount > 0 ? `; ${unmeasuredCount} could not be queried (DNS lookup failure) and are not confirmed safe` : ''}${macroTemplateCount > 0 ? `; ${macroTemplateCount} macro-template include(s) not probed (RFC 7208 §7: only a receiving MTA can expand them) and not confirmed safe` : ''}.`,
+						{
+							includeCount: probedCount,
+							...(unmeasuredCount > 0 ? { unmeasuredCount } : {}),
+							...(macroTemplateCount > 0 ? { macroTemplateCount } : {}),
+						},
 					)
 				: createFinding(
 						'subdomailing',
@@ -110,6 +135,19 @@ export async function checkSubdomailing(
 						`Analyzed ${probedCount} SPF include/redirect domain(s) for ${domain}. All resolve correctly with no takeover indicators.`,
 						{ includeCount: probedCount },
 					),
+		);
+	}
+
+	// A measured risk must not hide the unassessed part of the same chain (#1205).
+	if (riskFindings.length > 0 && macroTemplateCount > 0) {
+		findings.push(
+			createFinding(
+				'subdomailing',
+				'SPF macro-template includes not assessed',
+				'info',
+				`${macroTemplateCount} SPF include/redirect target(s) are macro templates and were not probed (RFC 7208 §7: only a receiving MTA can expand them). These targets are not confirmed safe; the reported risks apply to the literal targets that were assessed.`,
+				{ includeCount: probedCount, macroTemplateCount },
+			),
 		);
 	}
 

@@ -3,7 +3,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
 import { setupFetchMock, createDohResponse } from './helpers/dns-mock';
-import { queryMultiResolver, checkMultiResolverConsistency, RESOLVERS } from '../src/lib/dns-multi-resolver';
+import { queryMultiResolver, checkMultiResolverConsistency, RESOLVERS, CONSISTENCY_QUORUM } from '../src/lib/dns-multi-resolver';
 
 const { restore } = setupFetchMock();
 
@@ -85,7 +85,9 @@ describe('queryMultiResolver', () => {
 
 		const result = await queryMultiResolver('example.com', 'A');
 		// All resolvers timeout — should be INCOMPLETE
-		expect(['INCOMPLETE', 'CONSISTENT']).toContain(result.status);
+		expect(result.status).toBe('INCOMPLETE');
+		expect(result.respondedCount).toBe(0);
+		expect(result.quorumMet).toBe(false);
 	});
 
 	it('caps and cancels oversized resolver response bodies', async () => {
@@ -205,6 +207,119 @@ describe('queryMultiResolver', () => {
 			// is correct or desirable, only that it is understood and unchanged.
 			expect(result.status).toBe('CONSISTENT');
 		});
+	});
+});
+
+/**
+ * Mock a fan-out where the named resolvers answer from `answersByResolver` and every other
+ * resolver is unreachable (fetch rejects). Resolver identity comes from the request URL.
+ */
+function mockReachable(answersByResolver: Record<string, string[]>) {
+	const hostToName: Array<[string, string]> = [
+		['cloudflare', 'Cloudflare'],
+		['dns.google', 'Google'],
+		['quad9', 'Quad9'],
+		['opendns', 'OpenDNS'],
+	];
+	globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+		const urlStr = typeof url === 'string' ? url : url.toString();
+		const name = hostToName.find(([host]) => urlStr.includes(host))?.[1] ?? '';
+		const data = answersByResolver[name];
+		if (!data) return Promise.reject(new Error(`${name} unreachable`));
+		const u = new URL(urlStr);
+		const qname = u.searchParams.get('name') ?? 'example.com';
+		return Promise.resolve(
+			createDohResponse(
+				[{ name: qname, type: 1 }],
+				data.map((d) => ({ name: qname, type: 1, TTL: 300, data: d })),
+			),
+		);
+	});
+}
+
+describe('queryMultiResolver — responder quorum (#1199)', () => {
+	it('exports a quorum of 3', () => {
+		expect(CONSISTENCY_QUORUM).toBe(3);
+	});
+
+	it('2-of-4 unanimous non-empty answers are INCOMPLETE, not CONSISTENT, and name the unreachable resolvers', async () => {
+		mockReachable({ Cloudflare: ['192.0.2.1'], Google: ['192.0.2.1'] });
+
+		const result = await queryMultiResolver('example.com', 'A');
+
+		expect(result.status).toBe('INCOMPLETE');
+		expect(result.quorumMet).toBe(false);
+		expect(result.quorum).toBe(3);
+		expect(result.resolversQueried).toBe(4);
+		expect(result.respondedCount).toBe(2);
+		expect(result.unreachableResolvers).toEqual(['Quad9', 'OpenDNS']);
+		expect(result.detail).toContain('Only 2 of 4 resolvers answered for A records (Quad9, OpenDNS unreachable)');
+		expect(result.detail).toContain('below the quorum of 3');
+	});
+
+	it('2-of-4 unanimous EMPTY answers are INCOMPLETE too (no "all agree" claim)', async () => {
+		mockReachable({ Cloudflare: [], Google: [] });
+
+		const result = await queryMultiResolver('example.com', 'A');
+
+		expect(result.status).toBe('INCOMPLETE');
+		expect(result.detail).not.toContain('all 2 resolvers agree');
+		expect(result.quorumMet).toBe(false);
+	});
+
+	it('3-of-4 unanimous answers are CONSISTENT with one unreachable resolver reported', async () => {
+		mockReachable({ Cloudflare: ['192.0.2.1'], Google: ['192.0.2.1'], Quad9: ['192.0.2.1'] });
+
+		const result = await queryMultiResolver('example.com', 'A');
+
+		expect(result.status).toBe('CONSISTENT');
+		expect(result.quorumMet).toBe(true);
+		expect(result.respondedCount).toBe(3);
+		expect(result.unreachableResolvers).toHaveLength(1);
+		expect(result.unreachableResolvers).toEqual(['OpenDNS']);
+	});
+
+	it('4-of-4 unanimous answers are CONSISTENT with no unreachable resolvers', async () => {
+		mockConsistentResolvers([{ name: 'example.com', type: 1, TTL: 300, data: '93.184.216.34' }]);
+
+		const result = await queryMultiResolver('example.com', 'A');
+
+		expect(result.status).toBe('CONSISTENT');
+		expect(result.unreachableResolvers).toEqual([]);
+		expect(result.respondedCount).toBe(4);
+		expect(result.quorumMet).toBe(true);
+	});
+
+	it('2-of-4 DIVERGENT answers stay SPLIT_HORIZON (quorum gates only the clean claim)', async () => {
+		mockReachable({ Cloudflare: ['192.0.2.1'], Google: ['198.51.100.7'] });
+
+		const result = await queryMultiResolver('example.com', 'A');
+
+		expect(result.status).toBe('SPLIT_HORIZON');
+		expect(result.quorumMet).toBe(false);
+		expect(result.unreachableResolvers).toEqual(['Quad9', 'OpenDNS']);
+	});
+
+	it('names late resolvers by fan-out index (not "unknown") when the overall timeout fires', async () => {
+		vi.useFakeTimers();
+		try {
+			globalThis.fetch = vi.fn().mockImplementation((url: string | URL) => {
+				const urlStr = typeof url === 'string' ? url : url.toString();
+				if (urlStr.includes('quad9') || urlStr.includes('opendns')) return new Promise(() => {}); // never settles
+				const qname = new URL(urlStr).searchParams.get('name') ?? 'example.com';
+				return Promise.resolve(createDohResponse([{ name: qname, type: 1 }], [{ name: qname, type: 1, TTL: 300, data: '192.0.2.1' }]));
+			});
+
+			const pending = queryMultiResolver('example.com', 'A');
+			await vi.advanceTimersByTimeAsync(5_100);
+			const result = await pending;
+
+			expect(result.unreachableResolvers).toEqual(['Quad9', 'OpenDNS']);
+			expect(result.resolverAnswers.map((r) => r.resolver)).toEqual(['Cloudflare', 'Google', 'Quad9', 'OpenDNS']);
+			expect(result.status).toBe('INCOMPLETE');
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 
