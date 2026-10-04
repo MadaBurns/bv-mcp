@@ -22,6 +22,7 @@
  */
 
 import { describe, it, expect, vi, afterEach } from 'vitest';
+import type { Mock } from 'vitest';
 
 // Static imports in src/index.ts — the mocks must be registered before the
 // dynamic `import('../src')` in each test.
@@ -44,14 +45,33 @@ interface CapturedPoint {
 	doubles?: number[];
 }
 
-function makeBatch(queue: string, count: number): MessageBatch<unknown> {
-	const messages = Array.from({ length: count }, (_, i) => ({
-		id: `m${i}`,
-		body: { auditId: `a${i}`, target: 'example.com', format: 'json' },
-		ack: vi.fn(),
-		retry: vi.fn(),
-	}));
-	return { queue, messages, retryAll: vi.fn() } as unknown as MessageBatch<unknown>;
+interface BatchHarness {
+	batch: MessageBatch<unknown>;
+	/**
+	 * The per-message `ack` spies, held by reference. `MessageBatch` types `ack` as the plain
+	 * `() => void` the runtime gives a real message, so reaching `.mock` back through
+	 * `batch.messages` is a type error — and a cast there would silence the check on the wrong
+	 * object. These are the same function objects the batch carries, so counting calls here
+	 * asserts exactly what reaching through the batch did.
+	 */
+	acks: Mock<() => void>[];
+	retryAll: Mock<() => void>;
+}
+
+function makeBatch(queue: string, count: number): BatchHarness {
+	const acks: Mock<() => void>[] = [];
+	const messages = Array.from({ length: count }, (_, i) => {
+		const ack: Mock<() => void> = vi.fn();
+		acks.push(ack);
+		return {
+			id: `m${i}`,
+			body: { auditId: `a${i}`, target: 'example.com', format: 'json' },
+			ack,
+			retry: vi.fn(),
+		};
+	});
+	const retryAll: Mock<() => void> = vi.fn();
+	return { batch: { queue, messages, retryAll } as unknown as MessageBatch<unknown>, acks, retryAll };
 }
 
 function makeCtx(): ExecutionContext {
@@ -63,18 +83,24 @@ async function dispatch(queue: string, count: number, env: Record<string, unknow
 	const captured: CapturedPoint[] = [];
 	const logs = vi.spyOn(console, 'log').mockImplementation(() => {});
 	const worker = (await import('../src')).default;
-	const batch = makeBatch(queue, count);
+	const harness = makeBatch(queue, count);
+	// The handler's parameter is `BvMcpEnv`, which src/index.ts keeps module-private, so the
+	// assertion goes through the generated global `Env` (as `freemium-model.spec.ts` does)
+	// rather than inventing an export to satisfy one spec. The extra hop through `unknown` is
+	// the fake's `writeDataPoint` parameter: it accepts the narrower `CapturedPoint` instead of
+	// the generated `AETypes`, which makes the two object types non-overlapping for TS2352.
+	const envArg = { MCP_ANALYTICS: { writeDataPoint: (p: CapturedPoint) => captured.push(p) }, ...env } as unknown as Env;
 
 	let thrown: unknown;
 	try {
-		await worker.queue!(batch, { MCP_ANALYTICS: { writeDataPoint: (p: CapturedPoint) => captured.push(p) }, ...env }, makeCtx());
+		await worker.queue!(harness.batch, envArg, makeCtx());
 	} catch (err) {
 		thrown = err;
 	}
 
 	return {
 		thrown,
-		batch,
+		harness,
 		point: captured.find((p) => p.indexes?.[0] === 'queue_batch'),
 		logged: logs.mock.calls.map((c) => String(c[0])).join('\n'),
 	};
@@ -87,8 +113,8 @@ describe('brand-audit-queue without BRAND_AUDIT_DB', () => {
 
 		expect(r.thrown).toBeUndefined();
 		expect(handleBrandAuditQueue).not.toHaveBeenCalled();
-		expect(r.batch.messages.every((m) => m.ack.mock.calls.length === 1)).toBe(true);
-		expect(r.batch.retryAll).not.toHaveBeenCalled();
+		expect(r.harness.acks.every((ack) => ack.mock.calls.length === 1)).toBe(true);
+		expect(r.harness.retryAll).not.toHaveBeenCalled();
 	});
 
 	it('reports the destroyed messages in the alertable failureCount instead of a clean batch', async () => {
@@ -118,7 +144,7 @@ describe('brand-audit-pdf-queue without BRAND_REPORTS', () => {
 		const r = await dispatch('brand-audit-pdf-queue', 2, { BRAND_AUDIT_DB: {} });
 
 		expect(handleBrandAuditPdfQueue).not.toHaveBeenCalled();
-		expect(r.batch.messages.every((m) => m.ack.mock.calls.length === 1)).toBe(true);
+		expect(r.harness.acks.every((ack) => ack.mock.calls.length === 1)).toBe(true);
 		expect(r.point!.doubles?.[1]).toBe(2);
 		expect(r.logged).toContain('binding_missing');
 		expect(r.logged).toContain('BRAND_REPORTS');
@@ -137,8 +163,8 @@ describe('async-batch-scan-queue without SCAN_CACHE', () => {
 		const r = await dispatch('async-batch-scan-queue', 4, {});
 
 		expect(processAsyncBatchMessage).not.toHaveBeenCalled();
-		expect(r.batch.retryAll).toHaveBeenCalledTimes(1);
-		expect(r.batch.messages.some((m) => m.ack.mock.calls.length > 0)).toBe(false);
+		expect(r.harness.retryAll).toHaveBeenCalledTimes(1);
+		expect(r.harness.acks.some((ack) => ack.mock.calls.length > 0)).toBe(false);
 		// Nothing was destroyed, so the alertable counter must stay clean.
 		expect(r.point!.doubles?.[1]).toBe(0);
 		// …but the invocation must still be attributable.
