@@ -55,6 +55,8 @@ import {
 	type TxtVerificationResult,
 	type CnameAlignmentResult,
 } from '../tenants/discovery';
+import type { SanCertificateProvenance } from '../tenants/discovery/san-provenance';
+import { summarizeSanCandidateProvenance } from '../tenants/discovery/san-provenance-comparison';
 import { createDiscoveryDnsContext, type DiscoveryDnsContext } from '../tenants/discovery/dns-context';
 import type { OutputFormat } from '../handlers/tool-args';
 import { buildCheckResult, createFinding, type CheckResult, type Finding, type Severity } from '../lib/scoring';
@@ -1242,6 +1244,8 @@ export async function discoverBrandDomains(
 
 	// Captured first-order SAN hits — fed into the second-order recursive pass below.
 	let firstOrderSanCandidates: string[] = [];
+	let firstOrderCertificateProvenance: readonly SanCertificateProvenance[] | undefined;
+	let firstOrderCertificateProvenanceTruncated: boolean | undefined;
 	// What the first-order SAN correlator actually asked (#1189): without it an
 	// empty SAN result cannot be told apart from "crt.sh throttled, Certspotter
 	// restricted / not consulted".
@@ -1271,10 +1275,21 @@ export async function discoverBrandDomains(
 				signalStatus.san = { status: out.value.queryStatus };
 				sanCoverage = out.value.coverage;
 				firstOrderSanCandidates = out.value.coOwnedDomains.slice();
+				firstOrderCertificateProvenance = out.value.certificateProvenance;
+				firstOrderCertificateProvenanceTruncated = out.value.certificateProvenanceTruncated;
 				for (const dom of out.value.coOwnedDomains) {
 					addObservation(aggregator, dom, 'san', DEFAULT_SIGNAL_CONFIDENCE.san, {
 						seed: out.value.seedDomain,
 						certIds: out.value.certIds.slice(0, 5),
+						...(firstOrderCertificateProvenance
+							? {
+									certificateProvenanceSummary: summarizeSanCandidateProvenance(
+										dom,
+										firstOrderCertificateProvenance,
+										firstOrderCertificateProvenanceTruncated,
+									),
+								}
+							: {}),
 					});
 				}
 			},
@@ -1609,6 +1624,8 @@ export async function discoverBrandDomains(
 				'san_recursive',
 				() =>
 					d.correlateSansRecursive(seedDomain, firstOrderSanCandidates, {
+						firstOrderCertificateProvenance,
+						firstOrderCertificateProvenanceTruncated,
 						certstream: options.certstream,
 						certstreamAuthToken: options.certstreamAuthToken,
 						...(options.certspotterToken ? { certspotterToken: options.certspotterToken } : {}),
@@ -1641,6 +1658,7 @@ export async function discoverBrandDomains(
 						seed: recursiveOut.value.seedDomain,
 						certIds: cc.certIds,
 						probedCount: recursiveOut.value.probed.length,
+						...(cc.provenanceComparison ? { provenanceComparison: cc.provenanceComparison } : {}),
 					});
 				}
 			}

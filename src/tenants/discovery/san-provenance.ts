@@ -17,8 +17,8 @@ export interface SanCertificateProvenance {
 }
 
 /** Bound work on provider-controlled names; crossing the cap withholds the fan-out count. */
-const MAX_PROVENANCE_DNS_NAMES = 4096;
-const MAX_PROVENANCE_CANDIDATES = 32;
+export const MAX_PROVENANCE_DNS_NAMES = 4096;
+export const MAX_PROVENANCE_CANDIDATES = 32;
 export const MAX_SAN_PROVENANCE_OBSERVATIONS = 64;
 
 export function buildSanCertificateProvenance(input: {

@@ -36,6 +36,7 @@ import { safeFetch } from '../../lib/safe-fetch';
 import { validateDomain } from '../../lib/sanitize';
 import { fetchCertspotterEntries } from '../../tools/discover-subdomains';
 import { buildSanCertificateProvenance, MAX_SAN_PROVENANCE_OBSERVATIONS, type SanCertificateProvenance } from './san-provenance';
+import { compareSanCertificateProvenance, type SanProvenanceComparison } from './san-provenance-comparison';
 
 /**
  * Default WHOLE-CALL budget (ms): certstream + crt.sh + the Certspotter failover
@@ -463,6 +464,9 @@ async function attemptCorrelation(
  */
 /** Options for the second-order recursive SAN expansion. */
 export interface SanRecursiveOptions extends SanCorrelationOptions {
+	/** Optional first-order evidence for reporting only; never changes recursive candidate eligibility. */
+	firstOrderCertificateProvenance?: readonly SanCertificateProvenance[];
+	firstOrderCertificateProvenanceTruncated?: boolean;
 	/** Hard cap on the number of first-order candidates to probe in the second pass. Defaults to 20. */
 	maxCandidates?: number;
 	/** Parallel concurrency limit for second-order crt.sh queries. Defaults to 8. */
@@ -473,6 +477,7 @@ export interface SanRecursiveOptions extends SanCorrelationOptions {
 
 /** Per-candidate cross-confirmation outcome from the second-order pass. */
 export interface SanRecursiveCandidate {
+	provenanceComparison?: SanProvenanceComparison;
 	/** Provenance of the reciprocal observation, not a claim of independent certificates. */
 	certificateProvenance?: SanCertificateProvenance[];
 	/** More certificate observations existed than the bounded provenance sample retains. */
@@ -582,6 +587,14 @@ export async function correlateSansRecursive(
 			if (subResult.queryStatus !== 'ok') continue;
 			if (subResult.coOwnedDomains.includes(seedLower)) {
 				crossConfirmed.push({
+					provenanceComparison: compareSanCertificateProvenance({
+						seed: seedLower,
+						candidate,
+						firstOrder: options.firstOrderCertificateProvenance,
+						firstOrderTruncated: options.firstOrderCertificateProvenanceTruncated,
+						reciprocal: subResult.certificateProvenance,
+						reciprocalTruncated: subResult.certificateProvenanceTruncated,
+					}),
 					candidate,
 					certIds: subResult.certIds.slice(0, 5),
 					...(subResult.certificateProvenance
