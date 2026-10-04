@@ -92,6 +92,24 @@ function representativeMxResult(): MxOverlapResult {
 	};
 }
 
+/** Isolated per-customer tenant match — carries the optional `evidence.sharedTenant` label. */
+function representativeMxIsolatedTenantResult(): MxOverlapResult {
+	return {
+		coOwnedDomains: [
+			{
+				domain: 'example.net',
+				confidence: 0.65,
+				evidence: {
+					matched: ['mxa-00162b01.gslb.pphosted.com'],
+					sharedSaas: true,
+					sharedTenant: 'pphosted.com:00162b01',
+				},
+			},
+		],
+		queryStatus: 'ok',
+	};
+}
+
 function representativeTxtResult(): TxtVerificationResult {
 	return {
 		seedDomain: 'example.com',
@@ -148,6 +166,7 @@ const DETECTOR_CASES: readonly DetectorCase[] = [
 	{ name: 'dkim-key-reuse', build: representativeDkimResult },
 	{ name: 'spf-include-detector', build: representativeSpfResult },
 	{ name: 'mx-overlap-detector', build: representativeMxResult },
+	{ name: 'mx-overlap-detector (isolated tenant)', build: representativeMxIsolatedTenantResult },
 	{ name: 'txt-verification-detector', build: representativeTxtResult },
 	{ name: 'cname-alignment-detector', build: representativeCnameResult },
 	{ name: 'bounty-scope-detector', build: representativeBountyResult },
