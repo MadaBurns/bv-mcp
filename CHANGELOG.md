@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Documentation
+
+- Release identity clarification (#1187): the published `dns-checks-v1.59.0` artifact identifies tagged source `7518cfb4`; it does not include the later package changes recorded on main. The deploy source-identity guard rejects shipping inputs that differ from their declared package version's tag. Promoting newer package source requires a newly versioned immutable artifact. The earlier dns-checks 1.58.0 re-vendor instruction below records historical triage, not a current release command.
+
 ## [3.97.0] - 2026-10-04
 
 Fail-open scanner wave (Sidequest SQ-307..312; issues #1196–#1202, landed as #1203 and #1204): seven places where an unmeasured probe, a stub answer or an unexpandable record was reported as a verdict. Each fix was reproduced by a failing test before the code changed. Package change in `@blackveil/dns-checks` 1.59.0 (parity corpus 1.59.0); scoring model 1.40.0.
