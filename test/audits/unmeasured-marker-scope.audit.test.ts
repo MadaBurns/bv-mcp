@@ -19,7 +19,15 @@
  */
 import { describe, expect, it } from 'vitest';
 import { SCAN_CATEGORIES } from '../../src/tools/scan-domain';
-import { UNMEASURED_MARKERS, ACCESS_REFUSAL_MARKERS } from '../../src/lib/unmeasured-result';
+import {
+	UNMEASURED_MARKERS,
+	ACCESS_REFUSAL_MARKERS,
+	VERDICT_WITHHELD_MARKER,
+	markUnmeasured,
+	stripReservedMarkers,
+} from '../../src/lib/unmeasured-result';
+import { buildCheckResult, createFinding } from '../../src/lib/scoring';
+import { CheckResultOutputSchema, buildCheckResultOutputJsonSchema } from '../../src/schemas/check-result-output';
 
 // The Workers test pool sandboxes `node:fs`, so sources are read the way the sibling
 // metadata audit reads them: Vite's raw glob, resolved at transform time.
@@ -33,7 +41,7 @@ const SOURCES = (import.meta as unknown as GlobbingImportMeta).glob(['../../src/
 	import: 'default',
 });
 
-const MARKERS = [...UNMEASURED_MARKERS, ...ACCESS_REFUSAL_MARKERS];
+const MARKERS = [...UNMEASURED_MARKERS, ...ACCESS_REFUSAL_MARKERS, VERDICT_WITHHELD_MARKER];
 
 /** Strip comments so a marker NAMED in an explanatory comment is not read as an emission. */
 function stripComments(src: string): string {
@@ -41,6 +49,39 @@ function stripComments(src: string): string {
 }
 
 describe('unmeasured-marker scope', () => {
+	it.each(UNMEASURED_MARKERS)('withholds the verdict uniformly for %s without changing scalars or cache markers', (marker) => {
+		const input = {
+			...buildCheckResult('osint_investigation', [
+				createFinding('osint_investigation', 'Unavailable', 'info', 'Nothing read.', { [marker]: true }),
+			]),
+			partial: true,
+		};
+		for (const checkStatus of [undefined, 'error', 'timeout', 'completed'] as const) {
+			const result = markUnmeasured({ ...input, checkStatus });
+			expect(result).toMatchObject({
+				verdictWithheld: true,
+				score: input.score,
+				passed: input.passed,
+				partial: true,
+				checkStatus: checkStatus ?? 'error',
+			});
+			expect(result.findings).toBe(input.findings);
+			expect(markUnmeasured(result)).toBe(result);
+			expect(CheckResultOutputSchema.parse(result).verdictWithheld).toBe(true);
+		}
+	});
+
+	it('keeps measured success and access refusals unchanged; upstream metadata cannot forge the marker', () => {
+		for (const marker of [undefined, ...ACCESS_REFUSAL_MARKERS]) {
+			const input = buildCheckResult('osint_investigation', [
+				createFinding('osint_investigation', 'Observation', 'info', 'Synthetic observation.', marker ? { [marker]: true } : {}),
+			]);
+			expect(markUnmeasured(input)).toBe(input);
+			expect(input.verdictWithheld).toBeUndefined();
+		}
+		expect(stripReservedMarkers({ verdictWithheld: true, observed: true })).toEqual({ observed: true });
+		expect(buildCheckResultOutputJsonSchema().properties.verdictWithheld).toEqual({ type: 'boolean' });
+	});
 	it('no scan-included tool emits an unmeasured or refusal marker', () => {
 		// SCAN_CATEGORIES is the set scan_domain actually dispatches (keys of CHECK_DISPATCH),
 		// which is the set whose scores would move — a stronger anchor than the declared
