@@ -39,7 +39,7 @@ Fail-open scanner wave (Sidequest SQ-307..312; issues #1196–#1202, landed as #
   version id (`-- <id>` or `BV_PROMOTE_VERSION_ID`, a UUID) and fails closed without one.
   Not yet deployed through cf: first production use is an operator action.
 
-- Version-axis reconciliation (#1187). Current bv-web-prod re-vendor target is dns-checks 1.58.0 / scoring model 1.39.0, superseding the per-release re-vendor asks for dns-checks 1.56.0 (3.94.0) and dns-checks 1.57.0 (3.95.0). In-tree dns-checks 1.53.3 through 1.58.0 have no published artifact (no tag, no GitHub Release); the artifact for dns-checks 1.58.0 is to be cut via `dns-checks-release.yml` (operator step, #1187). Going forward every CHANGELOG version names its axis: `dns-checks <X.Y.Z>`, `scoring model <X.Y.Z>`, or `v<X.Y.Z>` (see the bv-mcp-release skill).
+- Version-axis reconciliation (#1187). At the SQ-301 triage on 2026-10-04, the bv-web-prod re-vendor target was dns-checks 1.58.0 / scoring model 1.39.0, superseding the per-release re-vendor asks for dns-checks 1.56.0 (3.94.0) and dns-checks 1.57.0 (3.95.0). At that triage, in-tree dns-checks 1.53.3 through 1.58.0 had no published artifact (no tag, no GitHub Release); the artifact for dns-checks 1.58.0 was to be cut via `dns-checks-release.yml` (operator step, #1187). Going forward every CHANGELOG version names its axis: `dns-checks <X.Y.Z>`, `scoring model <X.Y.Z>`, or `v<X.Y.Z>` (see the bv-mcp-release skill).
 
 ## [3.96.0] - 2026-10-03
 
