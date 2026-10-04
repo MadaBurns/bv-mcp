@@ -174,8 +174,11 @@ export function analyzePtrRecords(
  *   Verify out-of-band before escalating.
  * - `not_listed`: the DNSBL returned no A record (typical NXDOMAIN-like result for
  *   a clean IP).
+ * - `error`: the zone query itself failed (transport error or timeout). Distinct from
+ *   `not_listed` because NXDOMAIN is a verdict and a timeout is not — conflating them
+ *   lets a dead resolver produce an affirmative "not listed on any checked DNSBLs".
  */
-export type DnsblStatus = 'listed' | 'inconclusive' | 'not_listed';
+export type DnsblStatus = 'listed' | 'inconclusive' | 'not_listed' | 'error';
 
 export interface DnsblZoneResult {
 	zone: string;
@@ -276,13 +279,25 @@ export function analyzeDnsblResults(ip: string, results: DnsblZoneResult[], shar
 					{ ip, zone: result.zone, returnCodes: result.returnCodes, inconclusive: true },
 				),
 			);
+		} else if (result.status === 'error') {
+			// An `error` zone can neither confirm nor deny a listing, so it suppresses the
+			// clean summary below and surfaces its own gap finding here.
+			findings.push(
+				createFinding(
+					'mx_reputation',
+					`DNSBL query failed on ${result.zone}`,
+					'info',
+					`The query for ${ip} on ${result.zone} could not be completed, so this zone contributes no verdict in either direction.`,
+					{ ip, zone: result.zone, queryError: true },
+				),
+			);
 		}
 		// not_listed: no per-zone finding emitted; aggregated into the summary below
 	}
 
-	// Summary finding when every zone came back clean (no listings AND no inconclusive
-	// queries). If ANY query was inconclusive, the summary is omitted — the user has
-	// per-zone inconclusive findings to act on instead.
+	// Summary finding when every zone came back clean (no listings, no inconclusive
+	// queries AND no failed queries). If ANY zone is not a positive `not_listed` verdict,
+	// the summary is omitted — the user has per-zone findings to act on instead.
 	const allClean = results.length > 0 && results.every((r) => r.status === 'not_listed');
 	if (allClean) {
 		findings.push(

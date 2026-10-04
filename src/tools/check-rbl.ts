@@ -23,6 +23,7 @@ import { queryDnsRecords, queryMxRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { reverseIPv4, isPrivateIP, isValidIPv4 } from '../lib/ip-utils';
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import type { CheckResult, CheckCategory } from '../lib/scoring';
 
 interface RblZone {
@@ -64,6 +65,9 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 	// Step 1: Resolve MX → hosts → IPs. Fall back to domain A records.
 	let ips: string[] = [];
 	let usedFallback = false;
+	// True once any lookup in that chain failed. "No addresses" is only an observation when the
+	// whole chain answered; a resolver outage used to land on the info finding below and score 100.
+	let addressLookupIncomplete = false;
 
 	try {
 		const mxRecords = await queryMxRecords(domain, dnsOptions);
@@ -74,10 +78,12 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 			);
 			for (const r of ipResults) {
 				if (r.status === 'fulfilled') ips.push(...r.value);
+				else addressLookupIncomplete = true;
 			}
 		}
 	} catch {
 		// MX resolution failed
+		addressLookupIncomplete = true;
 	}
 
 	if (ips.length === 0) {
@@ -86,10 +92,14 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 			if (ips.length > 0) usedFallback = true;
 		} catch {
 			// A resolution also failed
+			addressLookupIncomplete = true;
 		}
 	}
 
 	if (ips.length === 0) {
+		if (addressLookupIncomplete) {
+			return buildDnsErrorResult(CATEGORY, 'RBL', new Error(`DNS query failed: no MX or A lookup for ${domain} completed`)) as CheckResult;
+		}
 		findings.push(
 			createFinding(CATEGORY, 'No IP addresses found', 'info', `Could not resolve any IP addresses for ${domain} (no MX or A records).`, {
 				domain,
@@ -138,6 +148,11 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 	// Step 2: Check each IP against all RBL zones
 	let totalListings = 0;
 	let checkedPublicIps = 0;
+	// A zone that errored reports `listed: false`, so without this counter an outage on every
+	// zone produced the "IP reputation clean" finding below — a passing grade derived from
+	// zero measurements.
+	let zoneQueries = 0;
+	let zoneQueryErrors = 0;
 
 	for (const ip of ips) {
 		if (isPrivateIP(ip)) {
@@ -177,7 +192,11 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 		);
 
 		for (const settled of rblResults) {
-			if (settled.status === 'rejected') continue;
+			zoneQueries++;
+			if (settled.status === 'rejected') {
+				zoneQueryErrors++;
+				continue;
+			}
 			const result = settled.value;
 
 			if (result.positiveRep) {
@@ -191,7 +210,11 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 				continue;
 			}
 
-			if (result.error || !result.listed) continue;
+			if (result.error) {
+				zoneQueryErrors++;
+				continue;
+			}
+			if (!result.listed) continue;
 
 			ipListingCount++;
 			totalListings++;
@@ -229,13 +252,28 @@ export async function checkRbl(domain: string, dnsOptions?: QueryDnsOptions): Pr
 				ips,
 			}),
 		);
+	} else if (zoneQueries > 0 && zoneQueryErrors === zoneQueries) {
+		// Every zone lookup for every checked IP failed: nothing was measured, so nothing passed.
+		return buildDnsErrorResult(CATEGORY, 'RBL', new Error(`DNS query failed: all ${zoneQueries} blocklist lookups for ${domain} errored`)) as CheckResult;
 	} else if (totalListings === 0 && !findings.some((f) => f.title.includes('Listed'))) {
-		findings.push(
-			createFinding(CATEGORY, 'IP reputation clean — not listed on any RBL', 'info', `All checked IPs for ${domain} are clean on ${RBL_ZONES.length} RBLs.`, {
-				ips,
-				zones: RBL_ZONES.map((z) => z.zone),
-			}),
-		);
+		if (zoneQueryErrors > 0) {
+			findings.push(
+				createFinding(
+					CATEGORY,
+					'No RBL listings on the zones that answered',
+					'low',
+					`${zoneQueryErrors} of ${zoneQueries} blocklist lookups for ${domain} failed, so clean reputation could not be established on every zone. No listings were returned by the ${zoneQueries - zoneQueryErrors} zones that did answer.`,
+					{ ips, unansweredZones: zoneQueryErrors, answeredZones: zoneQueries - zoneQueryErrors },
+				),
+			);
+		} else {
+			findings.push(
+				createFinding(CATEGORY, 'IP reputation clean — not listed on any RBL', 'info', `All checked IPs for ${domain} are clean on ${RBL_ZONES.length} RBLs.`, {
+					ips,
+					zones: RBL_ZONES.map((z) => z.zone),
+				}),
+			);
+		}
 	}
 
 	return buildCheckResult(CATEGORY, findings) as CheckResult;

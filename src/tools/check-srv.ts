@@ -8,7 +8,8 @@
  * Workers-compatible: uses fetch API only (DNS-over-HTTPS).
  */
 
-import { type CheckResult, type Finding, buildCheckResult, createFinding } from '../lib/scoring';
+import { type CheckResult, buildCheckResult, createFinding } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { querySrvRecords } from '../lib/dns';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { SRV_PREFIXES, analyzeSrvResults } from './srv-analysis';
@@ -46,15 +47,9 @@ export async function checkSrv(domain: string, dnsOptions?: QueryDnsOptions): Pr
 
 	// If all probes failed, report a DNS error
 	if (successful.length === 0) {
-		const findings: Finding[] = [
-			createFinding(
-				'srv',
-				'SRV DNS queries failed',
-				'medium',
-				`All ${SRV_PREFIXES.length} SRV prefix queries failed for ${domain}. Unable to determine service footprint.`,
-			),
-		];
-		return buildCheckResult('srv', findings);
+		// `medium` through a bare buildCheckResult scored 85 and `passed: true`, so a direct
+		// call reported an unmeasured footprint as passing and cached it for the TTL (#900).
+		return buildDnsErrorResult('srv', 'SRV', new Error(`DNS query failed: all ${SRV_PREFIXES.length} prefix queries for ${domain} errored`));
 	}
 
 	const findings = analyzeSrvResults(successful);

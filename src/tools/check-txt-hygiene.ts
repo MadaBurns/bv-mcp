@@ -17,6 +17,7 @@ import { getEffectiveTld } from '../lib/public-suffix';
 import { validateDomain } from '../lib/sanitize';
 import type { CheckResult, Finding } from '../lib/scoring';
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 import {
 	type VerificationCategory,
@@ -96,7 +97,16 @@ export async function checkTxtHygiene(domain: string, dnsOptions?: QueryDnsOptio
 		queryTxtRecords(domain, dnsOptions),
 		queryTxtRecords(`_dmarc.${domain}`, dnsOptions),
 	]);
-	const rootTxtRecords = rootResult.status === 'fulfilled' ? rootResult.value : [];
+	// A rejected root query is NOT an empty TXT set. Before this guard,
+	// `status !== 'fulfilled'` collapsed into `[]` and the tool reported
+	// "No TXT records found" followed by "TXT record hygiene rating: Clean (0 records)"
+	// at score 100 / `passed: true` — a fabricated clean verdict derived from a resolver
+	// that never answered (#900). The `_dmarc` sub-query stays tolerated: its failure can
+	// only remove a supplementary finding, never manufacture a clean one.
+	if (rootResult.status !== 'fulfilled') {
+		return buildDnsErrorResult('txt_hygiene', 'TXT hygiene', rootResult.reason) as CheckResult;
+	}
+	const rootTxtRecords = rootResult.value;
 	const dmarcTxtRecords = dmarcResult.status === 'fulfilled' ? dmarcResult.value : [];
 
 	// Handle no TXT records

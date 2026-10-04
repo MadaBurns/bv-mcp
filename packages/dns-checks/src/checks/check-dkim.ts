@@ -149,6 +149,12 @@ export async function checkDKIM(
 			for (const record of result.records) {
 				const publicKey = getDkimTagValue(record, 'p');
 				const isRevoked = publicKey === '';
+				// RFC 6376 §3.6.1 makes `p=` a REQUIRED tag, so a key record that omits it carries
+				// no key material and cannot verify a signature. Absent (`undefined`) and
+				// present-but-empty (`''`, a deliberate revocation) are both non-functional, but
+				// only the second is an administrative act, so they are reported separately and
+				// only real key material counts as a valid key.
+				const hasKeyMaterial = publicKey !== undefined && publicKey !== '';
 
 				// Check for empty public key (revoked)
 				if (isRevoked) {
@@ -160,20 +166,45 @@ export async function checkDKIM(
 							`DKIM selector "${result.selector}" has an empty public key (p=), indicating the key has been revoked.`,
 						),
 					);
+				} else if (!hasKeyMaterial) {
+					findings.push(
+						createFinding(
+							'dkim',
+							`DKIM key record has no public key: ${result.selector}`,
+							// Mirrors the revoked-key rating exactly: `medium` while another selector still
+							// verifies, escalated to `high` by the !hasValidKey pass below. A keyless record and
+							// a revoked one are equally unable to verify a signature; only the intent differs,
+							// and intent does not move the score.
+							'medium',
+							`DKIM selector "${result.selector}" publishes a key record with no key material — RFC 6376 §3.6.1 requires a "p=" tag carrying the base64 public key, so nothing can verify a signature made with this selector. Publish the full key, or remove the record if the selector is retired.`,
+							{
+								selector: result.selector,
+								// A graded deficiency in a record that IS published, not an absent
+								// control — declaring it keeps the score off the prose-inference
+								// zeroing path (see findingsIndicateMissingControl).
+								missingControl: false,
+								[SUBJECT_TERMS_METADATA_KEY]: [result.selector],
+							},
+						),
+					);
 				} else {
 					hasValidKey = true;
 				}
 
-				// Check key type (should be rsa or ed25519)
-				const keyTypeMatch = record.match(/k=([^;\s]+)/i);
-				const parsedKeyType = keyTypeMatch ? keyTypeMatch[1].toLowerCase() : null;
-				if (keyTypeMatch && !['rsa', 'ed25519'].includes(parsedKeyType!)) {
+				// Check key type (should be rsa or ed25519).
+				// Tag-aware parse, as `t=` already uses below: a bare `/k=/i` scan matches `k=`
+				// wherever the two characters appear, including inside another tag's value, and
+				// base64 key material ending in `k==` makes it read the padding itself as a
+				// declared key type — inventing a medium finding on a healthy record.
+				const declaredKeyTypeTag = getDkimTagValue(record, 'k');
+				const parsedKeyType = declaredKeyTypeTag ? declaredKeyTypeTag.toLowerCase() : null;
+				if (parsedKeyType !== null && !['rsa', 'ed25519'].includes(parsedKeyType)) {
 					findings.push(
 						createFinding(
 							'dkim',
-							`Unknown DKIM key type: ${keyTypeMatch[1]}`,
+							`Unknown DKIM key type: ${declaredKeyTypeTag}`,
 							'medium',
-							`DKIM selector "${result.selector}" uses unknown key type "${keyTypeMatch[1]}". Expected "rsa" or "ed25519".`,
+							`DKIM selector "${result.selector}" uses unknown key type "${declaredKeyTypeTag}". Expected "rsa" or "ed25519".`,
 						),
 					);
 				}
@@ -388,31 +419,43 @@ export async function checkDKIM(
 	}
 
 	// Retiring an old selector alongside an active one keeps its existing medium
-	// rating. Only a revoked-only observation gets the stronger unavailable-key rating.
+	// rating. Only an observation with no verifying key at all gets the stronger
+	// unavailable-key rating, whether every selector was revoked or simply keyless.
 	if (!hasValidKey) {
 		for (const finding of findings) {
-			if (finding.title.startsWith('Revoked DKIM key:')) finding.severity = 'high';
+			if (finding.title.startsWith('Revoked DKIM key:') || finding.title.startsWith('DKIM key record has no public key:')) {
+				finding.severity = 'high';
+			}
 		}
 	}
 
-	// Consolidate revoked selectors without claiming that the domain does not send.
+	// Consolidate unverifiable selectors without claiming that the domain does not send.
 	// Selector probing cannot rule out active keys under other names.
+	//
+	// A selector with no `p=` tag is unverifiable in exactly the way a revoked one is, so it
+	// belongs in this aggregate. Counting only the revoked titles used to emit "All 0 observed
+	// DKIM selector(s) have revoked keys" for a domain whose every probed selector was keyless,
+	// while the per-selector findings stayed in the list alongside it.
+	const UNVERIFIABLE_KEY_TITLES = ['Revoked DKIM key:', 'DKIM key record has no public key:'];
 	if (foundSelectors.length > 1 && !hasValidKey) {
-		const revokedCount = findings.filter((f) => f.title.startsWith('Revoked DKIM key:')).length;
-		// Remove individual revoked findings
-		for (let i = findings.length - 1; i >= 0; i--) {
-			if (findings[i].title.startsWith('Revoked DKIM key:')) {
-				findings.splice(i, 1);
+		const isUnverifiable = (title: string) => UNVERIFIABLE_KEY_TITLES.some((prefix) => title.startsWith(prefix));
+		const unverifiableCount = findings.filter((f) => isUnverifiable(f.title)).length;
+		if (unverifiableCount > 0) {
+			// Remove the individual findings this aggregate replaces.
+			for (let i = findings.length - 1; i >= 0; i--) {
+				if (isUnverifiable(findings[i].title)) {
+					findings.splice(i, 1);
+				}
 			}
+			findings.push(
+				createFinding(
+					'dkim',
+					'DKIM keys revoked',
+					'high',
+					`All ${unverifiableCount} observed DKIM selector(s) publish keys that cannot verify a signature — an empty p= tag (revoked) or no p= tag at all. Other unprobed selectors may still be active; confirm the selectors used by current senders.`,
+				),
+			);
 		}
-		findings.push(
-			createFinding(
-				'dkim',
-				'DKIM keys revoked',
-				'high',
-				`All ${revokedCount} observed DKIM selector(s) have revoked keys (empty p= tag) and cannot verify signatures. Other unprobed selectors may still be active; confirm the selectors used by current senders.`,
-			),
-		);
 	}
 
 	// In selector-probing mode, multiple selectors can expose identical key profiles.

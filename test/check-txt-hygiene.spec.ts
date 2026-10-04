@@ -550,4 +550,58 @@ describe('checkTxtHygiene', () => {
 		const googleFinding = result.findings.find((f) => f.severity === 'info' && f.title.includes('Google Search Console'));
 		expect(googleFinding).toBeDefined();
 	});
+
+	it('abstains instead of reporting a clean TXT hygiene rating when the apex query fails', async () => {
+		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS failure'));
+		const result = await run();
+
+		// The `allSettled` mapping turned a rejected query into `[]`, so a resolver that
+		// never answered produced "No TXT records found" plus
+		// "TXT record hygiene rating: Clean (0 records)" at score 100 (#900).
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.some((f) => /No TXT records found|hygiene rating/i.test(f.title + f.detail))).toBe(false);
+		expect(result.findings.map((f) => f.metadata?.errorKind)).toEqual(['dns_error']);
+	});
+
+	it('keeps reporting a measured clean apex when the query answers with no TXT records', async () => {
+		mockDnsResponses({});
+		const result = await run();
+
+		// NODATA is a verdict: this must stay a real, passing measurement, not an abstention.
+		expect(result.checkStatus).not.toBe('error');
+		expect(result.passed).toBe(true);
+		expect(result.findings.some((f) => f.title === 'No TXT records found')).toBe(true);
+	});
+
+	it('abstains when only the apex query fails, even though _dmarc answered', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name } = parseDohQuery(input);
+			if (name === 'example.com') return Promise.reject(new Error('DNS failure'));
+			return Promise.resolve(
+				createDohResponse([{ name, type: 16 }], [{ name, type: 16, TTL: 300, data: '"v=DMARC1; p=reject"' }]),
+			);
+		});
+		const result = await run();
+
+		// The subject of this check is the apex TXT set, so a supplementary answer cannot
+		// substitute for it.
+		expect(result.checkStatus).toBe('error');
+		expect(result.findings.some((f) => /hygiene rating/i.test(f.detail))).toBe(false);
+	});
+
+	it('tolerates a failed _dmarc sub-query when the apex answered', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const { name } = parseDohQuery(input);
+			if (name === '_dmarc.example.com') return Promise.reject(new Error('DNS failure'));
+			return Promise.resolve(
+				createDohResponse([{ name, type: 16 }], [{ name, type: 16, TTL: 300, data: '"google-site-verification=abc123"' }]),
+			);
+		});
+		const result = await run();
+
+		// Only a missing APEX measurement is an abstention; the `_dmarc` lookup is
+		// supplementary and its failure can only drop a finding, never fake a clean one.
+		expect(result.checkStatus).not.toBe('error');
+		expect(result.findings.some((f) => /TXT record hygiene summary/i.test(f.title))).toBe(true);
+	});
 });

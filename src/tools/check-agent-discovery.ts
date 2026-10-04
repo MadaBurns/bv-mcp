@@ -22,6 +22,7 @@ import { queryDns } from '../lib/dns';
 import { RecordType } from '../lib/dns-types';
 import type { QueryDnsOptions } from '../lib/dns-types';
 import { buildCheckResult, createFinding } from '../lib/scoring';
+import { buildDnsErrorResult } from '../lib/dns-error-result';
 import type { CheckResult, CheckCategory, Finding } from '../lib/scoring';
 import { SUBJECT_TERMS_METADATA_KEY } from '@blackveil/dns-checks/scoring';
 import { safeFetch } from '../lib/safe-fetch';
@@ -257,13 +258,18 @@ export async function checkAgentDiscovery(
 	// separate probe on a fixed name (which may sit across a zone cut).
 	let dnssecAnchored = false;
 	let anchorObserved = false;
+	// Resolved queries, including NXDOMAIN/empty answers. A query that THREW is not a
+	// measurement — it is the resolver failing to answer. Without this counter the loop
+	// below cannot tell "nobody published agent records" from "we could not ask".
+	let queriesCompleted = 0;
 	for (const owner of names) {
 		let resp;
 		try {
 			resp = await queryDns(owner, 'SVCB', true, dnsOptions);
 		} catch {
-			continue; // NXDOMAIN / transient — try the next candidate
+			continue; // transient transport failure — try the next candidate
 		}
+		queriesCompleted++;
 		const answers = (resp.Answer ?? []).filter((a) => a.type === RecordType.SVCB);
 		if (answers.length === 0) continue;
 		if (!anchorObserved) {
@@ -274,6 +280,14 @@ export async function checkAgentDiscovery(
 			const parsed = parseSvcb(owner, a.data);
 			if (parsed) records.push(parsed);
 		}
+	}
+
+	// Every candidate query failed to answer, so nothing was measured. Falling through
+	// to the branch below would publish an affirmative "No BANDAID agent-discovery
+	// records found … The domain does not participate" at score 100 / `passed: true`
+	// from a resolver that never replied (#900).
+	if (queriesCompleted === 0) {
+		return buildDnsErrorResult(CATEGORY, 'agent discovery', new Error(`DNS query failed: all ${names.length} SVCB discovery lookups for ${domain} errored`)) as CheckResult;
 	}
 
 	// No discovery records at all — benign, informational.

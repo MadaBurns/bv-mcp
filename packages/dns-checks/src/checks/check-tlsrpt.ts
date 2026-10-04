@@ -12,6 +12,7 @@
 import type { CheckResult, DNSQueryFunction, Finding } from '../types';
 import { buildCheckResult, createFinding } from '../check-utils';
 import { buildRcodeAbstentionResult, isInconclusiveRcode, queryWithRcode } from '../dns-rcode';
+import { parseTlsRptRua } from './tls-rpt-utils';
 
 /**
  * Check TLS-RPT records for a domain.
@@ -68,9 +69,10 @@ export async function checkTLSRPT(domain: string, queryDNS: DNSQueryFunction, op
 
 	const record = tlsrptRecords[0];
 
-	// Check for rua= tag
-	const ruaMatch = record.match(/\brua=([^\s;]+)/i);
-	if (!ruaMatch) {
+	// Check for rua= tag. Shared with the `mta_sts` scan's TLS-RPT reader so that the same
+	// record cannot produce opposite verdicts in two scored categories (see tls-rpt-utils).
+	const rua = parseTlsRptRua(record);
+	if (!rua.present || rua.uris.length === 0) {
 		findings.push(
 			createFinding(
 				'tlsrpt',
@@ -84,30 +86,19 @@ export async function checkTLSRPT(domain: string, queryDNS: DNSQueryFunction, op
 		return buildCheckResult('tlsrpt', findings, undefined, true);
 	}
 
-	const ruaValue = ruaMatch[1];
-	// Split comma-separated URIs and validate each
-	const uris = ruaValue.split(',').map((u) => u.trim());
-	const invalidUris: string[] = [];
-
-	for (const uri of uris) {
-		if (!uri.toLowerCase().startsWith('mailto:') && !uri.toLowerCase().startsWith('https://')) {
-			invalidUris.push(uri);
-		}
-	}
-
-	if (invalidUris.length > 0) {
+	if (rua.invalid.length > 0) {
 		findings.push(
 			createFinding(
 				'tlsrpt',
 				'TLS-RPT invalid reporting URI scheme',
 				'medium',
-				`TLS-RPT reporting URI(s) use invalid scheme: ${invalidUris.join(', ')}. Only mailto: and https:// schemes are supported per RFC 8460.`,
+				`TLS-RPT reporting URI(s) use invalid scheme: ${rua.invalid.join(', ')}. Only mailto: and https:// schemes are supported per RFC 8460.`,
 			),
 		);
 	}
 
 	// If record is valid
-	if (invalidUris.length === 0 && tlsrptRecords.length <= 1) {
+	if (rua.invalid.length === 0 && tlsrptRecords.length <= 1) {
 		findings.push(
 			createFinding(
 				'tlsrpt',

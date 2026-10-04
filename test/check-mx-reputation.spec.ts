@@ -147,14 +147,46 @@ describe('checkMxReputation', () => {
 		expect(infoFinding!.severity).toBe('info');
 	});
 
-	it('should handle MX DNS query failure gracefully', async () => {
+	it('abstains when the MX query errors instead of scoring a medium finding', async () => {
 		globalThis.fetch = vi.fn().mockRejectedValue(new Error('DNS failure'));
 
 		const result = await run();
 		expect(result.category).toBe('mx_reputation');
-		const finding = result.findings.find((f) => f.title === 'MX lookup failed');
-		expect(finding).toBeDefined();
-		expect(finding!.severity).toBe('medium');
+		// A `medium` finding through a bare buildCheckResult scored 85 with `passed: true`,
+		// so a direct call reported an unmeasured reputation as passing and cached that
+		// non-answer for the tool's 60-minute TTL (#900).
+		expect(result).toMatchObject({ score: 0, passed: false, checkStatus: 'error', partial: true });
+		expect(result.findings.map((f) => f.metadata?.errorKind)).toEqual(['dns_error']);
+	});
+
+	it('does not claim a clean DNSBL reputation when every zone query fails on transport', async () => {
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+
+			if (url.includes('type=MX') || url.includes('type=15')) {
+				return Promise.resolve(mxResponse('example.com', [{ priority: 10, exchange: 'mail.example.com' }]));
+			}
+			if (url.includes('name=mail.example.com') && (url.includes('type=A') || url.includes('type=1'))) {
+				return Promise.resolve(aResponse('mail.example.com', ['198.51.100.1']));
+			}
+			if (url.includes('in-addr.arpa') && (url.includes('type=PTR') || url.includes('type=12'))) {
+				return Promise.resolve(ptrResponse('198.51.100.1', ['mail.example.com']));
+			}
+			// Both DNSBL zones time out — no verdict in either direction.
+			if (url.includes('spamcop') || url.includes('barracuda')) {
+				return Promise.reject(new Error('resolver timeout'));
+			}
+			return Promise.resolve(emptyResponse('example.com', 1));
+		});
+
+		const result = await run();
+		expect(result.category).toBe('mx_reputation');
+		// The old inner catch recoded a transport failure as `not_listed`, so `allClean`
+		// fired and a dead resolver produced an affirmative "not listed on any checked
+		// DNSBLs" (#900).
+		expect(result.findings.some((f) => /MX reputation clean/.test(f.title))).toBe(false);
+		expect(result.findings.some((f) => f.title === 'DNSBL query failed on bl.spamcop.net')).toBe(true);
+		expect(result.findings.some((f) => f.title === 'DNSBL query failed on b.barracudacentral.org')).toBe(true);
 	});
 
 	it('should return medium finding for FCrDNS mismatch', async () => {
