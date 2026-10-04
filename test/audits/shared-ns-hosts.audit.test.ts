@@ -52,7 +52,7 @@ const SHARED_NS_MUST_MATCH: ReadonlyArray<readonly [string, string]> = [
 	['dns1.bodis.com', 'Bodis parking'],
 	['ns1.dan.com', 'Dan.com / Sedo parking'],
 	['ns1.above.com', 'Above.com parking'],
-	['ns1.dnsowl.com', 'DNSOwl parking'],
+	['ns1.dnsowl.com', 'NameSilo default DNS'],
 	// Pre-#939 parking entries that had no pin until the every-member invariant
 	// below was added; pinned for that invariant, not re-measured.
 	['ns1.parkingcrew.net', 'ParkingCrew (.net apex)'],
@@ -321,6 +321,7 @@ describe('PARKING_APEXES / isParkingInfraHost — the parking subset check_looka
 	it('does NOT classify registrar / hosting defaults that serve live zones too, other shared platforms, or empty input', () => {
 		for (const host of [
 			'ns1.dns-parking.com',
+			'ns1.dnsowl.com',
 			'ns01.domaincontrol.com',
 			'dns1.registrar-servers.com',
 			'ns01.one.com',

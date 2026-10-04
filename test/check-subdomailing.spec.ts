@@ -369,6 +369,32 @@ describe('checkSubdomailing', () => {
 		expect(probed.some((u) => u.includes('type=TXT') || u.includes('type=16'))).toBe(true);
 	});
 
+	it('#1205: discloses skipped macro templates beside a measured void-include risk without changing its score', async () => {
+		const urls: string[] = [];
+		let withTemplate = false;
+		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {
+			const url = typeof input === 'string' ? input : input instanceof URL ? input.href : input.url;
+			urls.push(url);
+			if ((url.includes('type=TXT') || url.includes('type=16')) && url.includes('name=example.com')) {
+				return Promise.resolve(txtResponse('example.com', [
+					`v=spf1 ${withTemplate ? 'include:%{ir}.%{v}.%{d}.spf.example.test ' : ''}include:dead.example.test -all`,
+				]));
+			}
+			return Promise.resolve(emptyResponse('dead.example.test', 16));
+		});
+
+		const literalOnly = await run();
+		withTemplate = true;
+		const result = await run();
+		expect(result.findings.some((f) => f.metadata?.riskType === 'void_include')).toBe(true);
+		const disclosure = result.findings.find((f) => f.metadata?.macroTemplateCount === 1);
+		expect(disclosure?.severity).toBe('info');
+		expect(disclosure?.detail).toContain('were not probed');
+		expect(disclosure?.detail).toContain('not confirmed safe');
+		expect(result.score).toBe(literalOnly.score);
+		expect(urls.some((url) => url.includes('spf.example.test'))).toBe(false);
+	});
+
 	it('#1200: a chain whose only include is a macro template abstains (not-assessed) rather than passing', async () => {
 		const urls: string[] = [];
 		globalThis.fetch = vi.fn().mockImplementation((input: string | URL | Request) => {

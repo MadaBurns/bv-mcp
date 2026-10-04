@@ -102,7 +102,6 @@ export const PARKING_APEXES: ReadonlySet<string> = new Set([
 	'dan.com',
 	'above.com',
 	'internettraffic.com',
-	'dnsowl.com',
 	'parklogic.com',
 ]);
 
@@ -140,6 +139,8 @@ export const PARKING_APEXES: ReadonlySet<string> = new Set([
 export const SHARED_NS_APEXES: ReadonlySet<string> = new Set([
 	// Parking services — single-sourced in PARKING_APEXES above.
 	...PARKING_APEXES,
+	// NameSilo default nameservers serve live and parked registrants alike (#1206).
+	'dnsowl.com',
 	// GoDaddy default / parked / shared — ~50 `nsNN`/`nsNN+1` pairs over 489
 	// sampled tenants (#939: stonyfield.com and centerforfoodsafety.org both
 	// on ns33/ns34.domaincontrol.com, 2026-09-09).
