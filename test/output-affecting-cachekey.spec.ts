@@ -55,12 +55,19 @@ describe('check_fast_flux cacheKey', () => {
 });
 
 describe('discover_brand_domains cacheKey', () => {
+	// This cacheKey became `async` upstream when the sibling alias/candidate
+	// components moved to `hashListForCacheKey` (SHA-256 via `crypto.subtle`).
+	// Every comparison below MUST await: two distinct Promises are never
+	// `Object.is`-equal, so an un-awaited `toBe` fails on identical keys and —
+	// far worse — an un-awaited `.not.toBe` PASSES VACUOUSLY on keys that are
+	// actually identical, silently gutting the assertions that carry this bug
+	// class. `check_fast_flux` above is still synchronous, hence unawaited.
 	it('produces DIFFERENT keys for different same-length dkim_selectors lists', async () => {
 		const { TOOL_REGISTRY } = await import('../src/handlers/tools');
 		const cacheKey = TOOL_REGISTRY.discover_brand_domains.cacheKey;
 
-		expect(cacheKey({ dkim_selectors: ['google', 'selector1'] })).not.toBe(
-			cacheKey({ dkim_selectors: ['k1', 'selector2'] }),
+		expect(await cacheKey({ dkim_selectors: ['google', 'selector1'] })).not.toBe(
+			await cacheKey({ dkim_selectors: ['k1', 'selector2'] }),
 		);
 	});
 
@@ -68,7 +75,7 @@ describe('discover_brand_domains cacheKey', () => {
 		const { TOOL_REGISTRY } = await import('../src/handlers/tools');
 		const cacheKey = TOOL_REGISTRY.discover_brand_domains.cacheKey;
 
-		expect(cacheKey({ dkim_selectors: ['b', 'a'] })).toBe(cacheKey({ dkim_selectors: ['a', 'b'] }));
+		expect(await cacheKey({ dkim_selectors: ['b', 'a'] })).toBe(await cacheKey({ dkim_selectors: ['a', 'b'] }));
 	});
 
 	it('distinguishes an omitted selector list from an explicit one', async () => {
@@ -77,7 +84,7 @@ describe('discover_brand_domains cacheKey', () => {
 
 		// Omitted means "probe the built-in common selectors"; an explicit list
 		// means "probe exactly these". Different probes, different candidates.
-		expect(cacheKey({})).not.toBe(cacheKey({ dkim_selectors: ['google'] }));
+		expect(await cacheKey({})).not.toBe(await cacheKey({ dkim_selectors: ['google'] }));
 	});
 
 	it('stays stable when the other output-affecting arguments are unchanged', async () => {
@@ -85,7 +92,7 @@ describe('discover_brand_domains cacheKey', () => {
 		const cacheKey = TOOL_REGISTRY.discover_brand_domains.cacheKey;
 
 		const base = { signals: ['san', 'ns'], depth: 'deep', discovery_mode: 'tiered', min_confidence: 0.8 };
-		expect(cacheKey(base)).toBe(cacheKey({ ...base }));
-		expect(cacheKey(base)).not.toBe(cacheKey({ ...base, min_confidence: 0.9 }));
+		expect(await cacheKey(base)).toBe(await cacheKey({ ...base }));
+		expect(await cacheKey(base)).not.toBe(await cacheKey({ ...base, min_confidence: 0.9 }));
 	});
 });
