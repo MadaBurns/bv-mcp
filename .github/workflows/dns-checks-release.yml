@@ -35,7 +35,7 @@ jobs:
           test "$ACTUAL_VERSION" = "$EXPECTED_VERSION"
           # A release commit can carry BOTH vX.Y.Z and dns-checks-vA.B.C (#1213); `describe
           # --exact-match` returns only one of them, so match against every tag on HEAD (#1226).
-          git tag --points-at HEAD | grep -qx "dns-checks-v$EXPECTED_VERSION"
+          git tag --points-at HEAD | grep -qxF "dns-checks-v$EXPECTED_VERSION"
 
       - name: Pack immutable artifact and checksum
         id: pack
