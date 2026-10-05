@@ -24,6 +24,12 @@ describe('workflow safety gates', () => {
 		expect(dnsChecksReleaseWorkflow).not.toContain('/dispatches');
 		expect(dnsChecksReleaseWorkflow).not.toContain('promotion-secret');
 	});
+
+	it('dns-checks release verifies its tag against every tag on HEAD, not git describe (#1226)', () => {
+		// A two-tag release commit (vX.Y.Z + dns-checks-vA.B.C) makes `describe --exact-match` pick one arbitrarily.
+		expect(dnsChecksReleaseWorkflow).toContain('git tag --points-at HEAD | grep -qxF "dns-checks-v$EXPECTED_VERSION"');
+		expect(dnsChecksReleaseWorkflow).not.toContain('git describe');
+	});
 	it('security and repo hygiene workflows run on push and pull_request', () => {
 		for (const [name, body] of Object.entries({ 'security.yml': securityWorkflow, 'repo-hygiene.yml': hygieneWorkflow })) {
 			expect(body, `${name} must run on push`).toMatch(/^\s*push:/m);
