@@ -8,6 +8,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.98.1] - 2026-10-05
+
+Release-gate fix. v3.98.0 was tagged but never deployed: its own `check:release-integrity` blocked the pinned deploy. v3.98.1 ships everything listed under 3.98.0 plus this fix. dns-checks 1.60.0 (unchanged; `dns-checks-v1.60.0` stays on the 3.98.0 commit); scoring model 1.40.0 (unchanged).
+
+### Fixed
+
+- `check:release-integrity` read HEAD's tag with `git describe --tags --exact-match`, which returns only one tag; on a release commit that also carries the `dns-checks-v<version>` tag required by #1213 it returned the dns-checks tag and blocked a correctly pinned `deploy:prod`. It now reads every tag via `git tag --points-at HEAD` and selects the single `vX.Y.Z` tag (`selectReleaseTag`); no release tag or two release tags still block (#1224).
+
 ## [3.98.0] - 2026-10-05
 
 Fail-open follow-up wave (#900) plus discovery provenance and release-identity hardening. Package change in `@blackveil/dns-checks` 1.60.0 (parity corpus 1.60.0); scoring model 1.40.0 (unchanged). A `dns-checks-v1.60.0` tag on the release commit is required by the deploy source-identity gate (#1213); bv-web-prod re-vendor of dns-checks 1.60.0 required to reach the published security reports.
