@@ -162,6 +162,27 @@ export function versionFromTag(tag: string): string | null {
 }
 
 /**
+ * Pick the tag the release gate should judge from every tag pointing at HEAD
+ * (`git tag --points-at HEAD`).
+ *
+ * A release commit legitimately carries two tags since #1213: `vX.Y.Z` and the
+ * `dns-checks-vA.B.C` tag the source-identity check diffs against.
+ * `git describe --tags --exact-match` returns only ONE of them, and on the
+ * 3.98.0 release commit it returned the dns-checks tag, blocking a correctly
+ * pinned deploy. Prefer the single release tag; with none, return a
+ * non-release tag (sorted, for a deterministic message) so the verdict still
+ * says "not a vX.Y.Z release tag"; with several release tags there is no single
+ * version to judge, so return them joined, which fails `versionFromTag`.
+ */
+export function selectReleaseTag(tags: readonly string[]): string | null {
+	const all = tags.map((t) => t.trim()).filter((t) => t.length > 0);
+	const release = all.filter((t) => RELEASE_TAG_RE.test(t));
+	if (release.length === 1) return release[0];
+	if (release.length > 1) return [...release].sort().join(', ');
+	return all.length > 0 ? [...all].sort()[0] : null;
+}
+
+/**
  * Parse `## [X.Y.Z]` headings out of a CHANGELOG body.
  *
  * Mirrors `publish.yml`'s `grep -q "^## \[$VERSION\]"`. Kept as a parser rather
