@@ -36,7 +36,8 @@
  *
  * Runs in the Workers pool: the sources arrive via Vite `import.meta.glob(?raw)`,
  * so no filesystem is needed. CHANGELOG.md is not scanned (a historical record
- * that legitimately names the tables); `docs/**` is.
+ * that legitimately names the tables); `docs/**` is, minus the gitignored
+ * `docs/{plans,code-review,superpowers}` local-notes directories.
  */
 
 import { describe, expect, it } from 'vitest';
@@ -57,6 +58,12 @@ const RAW_SOURCES = (import.meta as unknown as GlobbingImportMeta).glob(
 		'../../test/**/*.{ts,mjs,js}',
 		'../../packages/*/src/**/*.{ts,js}',
 		'../../docs/**/*.md',
+		// Gitignored + pre-commit-blocked local notes: never tracked, so never shipped. Vite's
+		// glob ignores .gitignore, so without these exclusions the fence fails on any checkout
+		// that holds them (and on Sidequest's merged-tree verification of the shared checkout).
+		'!../../docs/plans/**',
+		'!../../docs/code-review/**',
+		'!../../docs/superpowers/**',
 		'!**/node_modules/**',
 	],
 	{ eager: true, query: '?raw', import: 'default' },
