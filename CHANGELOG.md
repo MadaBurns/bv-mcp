@@ -8,13 +8,39 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.98.0] - 2026-10-05
+
+Fail-open follow-up wave (#900) plus discovery provenance and release-identity hardening. Package change in `@blackveil/dns-checks` 1.60.0 (parity corpus 1.60.0); scoring model 1.40.0 (unchanged). A `dns-checks-v1.60.0` tag on the release commit is required by the deploy source-identity gate (#1213); bv-web-prod re-vendor of dns-checks 1.60.0 required to reach the published security reports.
+
 ### Added
 
-- Unmeasured results expose `verdictWithheld: true` in the public result type and MCP output schema (#1193). Existing status, score, passed and cache markers remain unchanged; false or absence does not establish measurement. dns-checks 1.60.0 / parity corpus 1.60.0 carry the additive contract; scoring model unchanged. A new immutable package artifact and consumer re-vendor are required before deployment; recon target authorization remains an operator action.
+- Unmeasured results expose `verdictWithheld: true` in the public result type and MCP output schema (#1193, #1220). Existing status, score, passed and cache markers remain unchanged; false or absence does not establish measurement. dns-checks 1.60.0 / parity corpus 1.60.0 carry the additive contract; scoring model unchanged. Recon target authorization remains an operator action.
+- Brand discovery: MX overlap isolates the per-customer tenant id for Proofpoint (`pphosted.com`) and Forcepoint (`mailcontrol.com`) instead of a host-minus-suffix prefix; a shared isolated tenant id is recorded as `evidence.sharedTenant`, a shared platform alone is not ownership-bearing (#1221). Also fixes the same-tenant check comparing a candidate against only the first seed host on a suffix.
+- SAN discovery retains bounded per-observation certificate provenance (Certspotter `tbs_sha256`, full DNS names, candidate mappings; at most 64 observations / 32 mappings with truncation markers) and reports observed SAN issuance comparisons (#1214, refs #1188). Candidate lists, confidence and ownership verdicts are unchanged.
+- `check_lookalikes` findings report the measured candidate MX ownership predicate and descriptive seed MX placement (#1216, refs #1192). No verdict, ranking, confidence or score change.
+
+### Fixed
+
+- Abstention on unmeasured DNS (#1208, #900): `check_fast_flux`, `check_rbl`, `check_nsec_walkability`, `check_srv`, `check_mx_reputation`, `check_agent_discovery` and `check_txt_hygiene` no longer return score 85–100 / `passed: true` when every probe rejected; they return the DNS-error abstention (score 0, `passed: false`, `checkStatus: 'error'`, `partial: true`). Genuine NODATA remains a measurement. Record parsing: DKIM grades keyless `p=` records and no longer reads base64 padding as `k=`; BIMI tags parse as delimited fields; TLS-RPT `rua=` shares the MTA-STS parser. Cache keys: `check_fast_flux` now includes `rounds` and `discover_brand_domains` includes `dkim_selectors`.
+- `check_dnssec_chain`: an unobserved chain (DS and DNSKEY probes both failed) abstains instead of being diagnosed as broken, and the walk stops after two consecutive both-failed zones (#1209, #900). `check_lookalikes` / `check_shadow_domains` abstain when no candidate lookup measured anything; the re-probe's own `authProbeFailed` is counted so a measured full-timeout re-probe is not over-abstained.
+- Score impact (#1208, #1209): only failure paths move — a scan-included check whose probes all failed is now excluded from the scan score (renormalised) rather than credited; measured results are unchanged.
+- Brand audit async path carries `certspotterToken` through queue dispatch → pipeline → `discoverBrandDomains`, so SAN failover is not bound by the unauthenticated quota (#1189, #1195).
+- `check_subdomailing` discloses unassessed SPF macro-template targets alongside measured risks without changing score (#1205); lookalike attribution ranking receives the parked web reading and refused-probe prose is corrected (#1206); operator alerts send recovery notifications and reset incident cooldowns (#1164) (#1211).
+- CT-source guidance reports the configured source budget (8 s crt.sh/certstream, 22 s public-suffix crt.sh, 14 s Certspotter) and no longer infers a provider failure cause or quota exhaustion from HTTP 429 (#1212, refs #1147).
+- Certstream certificate-metadata adapter validates the issuer response at runtime; a malformed issuer can no longer produce a false CDN certificate signal (#1215, refs #1147).
+- Dependencies: root `undici` override to ≥ 7.29.1 resolves six Dependabot alerts (#1210).
+
+### Changed
+
+- Release integrity: deploy mode checks dns-checks source/build inputs against the exact `dns-checks-v<version>` tag and fails closed on a missing tag, manifest mismatch or changed shipping inputs; app deploy overrides cannot waive it (#1213).
+- `dns-checks-release.yml` publishes the immutable artifact and records a manual-promotion handoff (version, tag, SHA-256, tagged checkout commit) instead of attempting a credential-less consumer dispatch (#1217, refs #1187).
+- Repo-safety scanner `real-email` rule ignores semver ranges in URL paths (dependabot compare URLs) (#1195).
+- Schema-fence audit skips gitignored local-notes docs (#1222).
 
 ### Documentation
 
-- Release identity clarification (#1187): the published `dns-checks-v1.59.0` artifact identifies tagged source `7518cfb4`; it does not include the later package changes recorded on main. The deploy source-identity guard rejects shipping inputs that differ from their declared package version's tag. Promoting newer package source requires a newly versioned immutable artifact. The earlier dns-checks 1.58.0 re-vendor instruction below records historical triage, not a current release command.
+- Release identity clarification (#1187, #1218): the published `dns-checks-v1.59.0` artifact identifies tagged source `7518cfb4`; it does not include later package changes. Promoting newer package source requires a newly versioned immutable artifact. The earlier dns-checks 1.58.0 re-vendor instruction below records historical triage, not a current release command.
+- Ownership Ruling A explains why a stricter candidate DMARC policy and a SAN containing seed and candidate names do not establish organizational ownership (#1219).
 
 ## [3.97.0] - 2026-10-04
 
