@@ -28,7 +28,7 @@
 
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
-import { assessReleaseIntegrity, parseChangelogHeadings, type DnsChecksIdentityInput, type ReleaseMode, type VersionSurfaces } from '../release-integrity';
+import { assessReleaseIntegrity, parseChangelogHeadings, selectReleaseTag, type DnsChecksIdentityInput, type ReleaseMode, type VersionSurfaces } from '../release-integrity';
 
 function git(args: string[]): { ok: boolean; stdout: string } {
 	const res = spawnSync('git', args, { encoding: 'utf8' });
@@ -125,13 +125,12 @@ function main(): void {
 		if (!status.ok) gitUnavailable = true;
 		else porcelain = status.stdout;
 
-		// Non-zero simply means "HEAD is not at a tag", which is a verdict, not an
-		// error — so it must not be folded into `gitUnavailable`.
-		const described = git(['describe', '--tags', '--exact-match']);
-		if (described.ok) {
-			const tag = described.stdout.trim();
-			if (tag.length > 0) exactTag = tag;
-		}
+		// No tag at HEAD is empty output (exit 0) — a verdict, not an error; it
+		// leaves exactTag null rather than folding into `gitUnavailable`.
+		// `--points-at`, not `describe --exact-match`: a release commit carries both
+		// `vX.Y.Z` and `dns-checks-vA.B.C`, and describe returns only one of them.
+		const pointing = git(['tag', '--points-at', 'HEAD']);
+		if (pointing.ok) exactTag = selectReleaseTag(pointing.stdout.split('\n'));
 	}
 
 	const verdict = assessReleaseIntegrity({

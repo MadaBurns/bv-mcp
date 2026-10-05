@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 import {
 	assessReleaseIntegrity,
 	parseChangelogHeadings,
+	selectReleaseTag,
 	versionFromTag,
 	type ReleaseIntegrityInput,
 	type VersionSurfaces,
@@ -117,6 +118,33 @@ describe('assessReleaseIntegrity — BLOCKS a stale or dirty checkout', () => {
 		const v = assessReleaseIntegrity(pinned({ exactTag: null }));
 		expect(v.ok).toBe(false);
 		expect(v.violations.join('\n')).toContain('HEAD is not at a tag');
+	});
+
+	describe('selectReleaseTag (git tag --points-at HEAD)', () => {
+		it('picks the release tag when HEAD also carries the dns-checks tag (3.98.0 regression)', () => {
+			expect(selectReleaseTag(['dns-checks-v1.60.0', 'v3.98.0', ''])).toBe('v3.98.0');
+			expect(selectReleaseTag(['v3.98.0', 'dns-checks-v1.60.0'])).toBe('v3.98.0');
+			const v = assessReleaseIntegrity(pinned({ exactTag: selectReleaseTag(['dns-checks-v1.55.0', `v${VERSION}`]) }));
+			expect(v.ok).toBe(true);
+		});
+
+		it('returns null when HEAD carries no tag', () => {
+			expect(selectReleaseTag([''])).toBeNull();
+			expect(selectReleaseTag([])).toBeNull();
+		});
+
+		it('returns a non-release tag alone so the gate still BLOCKS', () => {
+			const tag = selectReleaseTag(['dns-checks-v1.60.0']);
+			expect(tag).toBe('dns-checks-v1.60.0');
+			const v = assessReleaseIntegrity(pinned({ exactTag: tag }));
+			expect(v.ok).toBe(false);
+			expect(v.violations.join('\n')).toContain('not a vX.Y.Z release tag');
+		});
+
+		it('BLOCKS when HEAD carries two release tags', () => {
+			const v = assessReleaseIntegrity(pinned({ exactTag: selectReleaseTag([`v${VERSION}`, 'v3.55.1']) }));
+			expect(v.ok).toBe(false);
+		});
 	});
 
 	it('BLOCKS when HEAD is at a non-release tag', () => {
