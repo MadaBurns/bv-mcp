@@ -2,15 +2,18 @@
 
 This document defines MCP client integration for `bv-mcp`.
 
-Important: you do not need to install an npm package to use the hosted MCP service from an editor. npm installation is only for embedding the scanner API inside your own application.
+Important: you do not need to install an npm package to use the hosted MCP service from an editor.
 
-Library install:
+npm packages:
+
+- `blackveil-dns` (the root package) is bin-only: it ships the `blackveil-dns-mcp` stdio bin and the `blackveil` CLI bin. It has no `main` or `exports`, so there is no library import from it.
+- The reusable library (check functions, scoring, schemas) is the separate `@blackveil/dns-checks` package:
 
 ```bash
-npm install blackveil-dns
+npm install @blackveil/dns-checks
 ```
 
-The package exports `scanDomain`, `explainFinding`, and reusable check functions. It also exports `McpTool`, `TOOLS`, and `TOOL_SCHEMA_MAP` for consumers who need access to the tool definitions and schemas at build time.
+Published npm versions can lag this repository. Publishing is gated off by policy (issue #719, closed as not planned), so the npm packages are not guaranteed to match the current source. Build from this repository if you need current behavior.
 
 ## Endpoint
 
@@ -432,10 +435,10 @@ Static API keys via `Authorization: Bearer` authenticate as a specific tier:
 
 | Tier | Quota | Use Case | Source |
 |---|---|---|---|
-| free | 25 domain scans/day, 3 concurrent. High-cost tools have tighter per-tool limits; `batch_scan` and other multi-domain/offensive tools require a paid tier (developer+). | Unauthenticated, public testing (e.g. Claude.ai web) | Per-IP rate limit (no key) |
+| free | Anonymous (no key): 25 `scan_domain` scans/day per IP, at most 12 distinct domains/day, 3 concurrent. With a free key: 50/day per tool. High-cost tools have tighter per-tool limits; `batch_scan` and other multi-domain/offensive tools require a paid tier (developer+). | Unauthenticated, public testing (e.g. Claude.ai web) | Per-IP rate limit (no key) |
 | **agent** | **200 scans/day, 5 concurrent** | **Team automation, CI/CD scripts** | **`BV_API_KEY` environment variable** |
-| developer | 500 scans/day, 10 concurrent | OAuth + MCP Developer plan | Stripe subscription (bv-web) |
-| enterprise | 10,000 scans/day, 25 concurrent | OAuth + MCP Enterprise plan | Stripe subscription (bv-web) |
+| developer | 500 scans/day, 10 concurrent | OAuth + Developer plan | Subscription (bv-web) |
+| enterprise | 10,000 scans/day, 25 concurrent | OAuth + Enterprise plan | Sales-led subscription (bv-web) |
 
 Free hosted usage keeps core DNS and email checks open for trial traffic, while high-cost or private-probe tools have tighter unauthenticated limits: `check_fast_flux` to 3/day, `check_lookalikes` and `check_shadow_domains` to 5/day, and `check_authoritative_dns_infra`, `check_subdomain_takeover`, and `check_root_server_set` to 25/day. The full brand-discovery surface — `discover_brand_domains` and the async `brand_audit_*` tools — requires an authenticated paid tier.
 
@@ -471,8 +474,8 @@ Authorization: Bearer bv_Kx8eZ2rdtUPfdzR8e_...
 | Tier | Authentication | Plan/Payment | TTL | Use |
 |---|---|---|---|---|
 | **agent** | Static `BV_API_KEY` | Internal/team | Indefinite | Automation, CI/CD |
-| **developer** (OAuth) | Stripe subscription | MCP Developer ($39/mo) | 1 hour (JWT) | Individual developers |
-| **enterprise** (OAuth) | Stripe subscription | MCP Enterprise ($199/mo) | 1 hour (JWT) | Organizations |
+| **developer** (OAuth) | Stripe subscription | Developer ($39/mo, provisioned by BlackVeil; not self-serve checkout) | 1 hour (JWT) | Individual developers |
+| **enterprise** (OAuth) | Sales-led subscription | Enterprise (contact us) | 1 hour (JWT) | Organizations |
 
 | Client | Recommended Auth Method | Notes |
 |--------|-------------------------|-------|
@@ -528,7 +531,7 @@ owner alias after that key is removed.
 
 **Reference client** (probes, rotation, and rollback runbook): [`scripts/oauth/README.md`](../scripts/oauth/README.md) and [`scripts/oauth/prod-probe.py`](../scripts/oauth/prod-probe.py).
 
-**OAuth Tier Resolution**: See [`docs/oauth-stripe-integration.md`](./oauth-stripe-integration.md) for how Stripe subscriptions map to OAuth tiers.
+**OAuth Tier Resolution**: the OAuth issuer resolves the customer's plan to a tier through a bv-web entitlement lookup before issuing a code; the response is schema-validated and cannot grant `owner` or `partner`.
 
 ### Troubleshooting Client-Specific Behavior
 
