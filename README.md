@@ -340,14 +340,14 @@ These live under the internal auth gate (`/internal/*`) and are called by bv-web
 
 ## Pricing
 
-|                | **Free**             | **Developer**                                              | **Enterprise**                              |
-| -------------- | -------------------- | ---------------------------------------------------------- | ------------------------------------------- |
-| **Price**      | $0                   | $39/mo (provisioned by BlackVeil, not self-serve checkout) | [Contact us](https://blackveilsecurity.com) |
-| **Scans/day**  | See below            | 500 per tool                                               | 10,000+ per tool                            |
-| **Checks/day** | Tool-specific limits | Tool-specific limits                                       | Contract limits                             |
-| **Rate limit** | 50 req/min           | None                                                       | None                                        |
-| **API access** | No                   | Yes                                                        | Yes                                         |
-| **MCP access** | Yes                  | Yes                                                        | Yes                                         |
+|                | **Free**                                 | **Developer**                                              | **Enterprise**                              |
+| -------------- | ---------------------------------------- | ---------------------------------------------------------- | ------------------------------------------- |
+| **Price**      | $0                                       | $39/mo (provisioned by BlackVeil, not self-serve checkout) | [Contact us](https://blackveilsecurity.com) |
+| **Scans/day**  | 25 (anonymous, per IP); 50 with a free key | 500 per tool                                               | 10,000+ per tool                            |
+| **Checks/day** | Tool-specific limits                     | Tool-specific limits                                       | Contract limits                             |
+| **Rate limit** | 50 req/min                               | None                                                       | None                                        |
+| **API access** | No                                       | Yes                                                        | Yes                                         |
+| **MCP access** | Yes                                      | Yes                                                        | Yes                                         |
 
 Free-tier daily limits depend on whether you send a key. Anonymous (no key): 25 `scan_domain` scans/day per IP, across at most 12 distinct domains/day. Free key: 50/day per tool. Free keys do not carry the REST scan API (see [REST / HTTP](#rest--http)); "API access" above means that keyed API. Limits are read from `TIER_DAILY_LIMITS`, `FREE_TOOL_DAILY_LIMITS` and `FREE_DISTINCT_DOMAIN_DAILY_LIMIT` in `src/lib/config.ts`.
 
