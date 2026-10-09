@@ -540,15 +540,18 @@ export function isAgentAllowedTool(toolName: string): boolean {
 	return AGENT_ALLOWED_TOOLS.has(toolName);
 }
 
-/** URL shown in the upgrade-required (HTTP 403) message. */
-export const UPGRADE_URL = 'https://blackveilsecurity.com/pricing';
-
 /**
- * Self-serve checkout URL — the upgrade destination for tools a free caller can
- * plausibly convert on directly (bounded-scope, non-enumerating). Defaults to the
- * pricing/checkout page. PUBLIC-SURFACE: operator-owned copy.
+ * Self-serve upgrade URL — the destination for tools a free caller can plausibly
+ * convert on directly (bounded-scope, non-enumerating). Points at the MCP
+ * enterprise contact form, NOT /pricing: no self-serve plan grants a bv-mcp tier
+ * today (bv-web-prod `oauth-tier-map.ts` maps only the non-self-serve
+ * mcp_developer / mcp_enterprise / registrar_partner plans), so a /pricing
+ * destination sent buyers to a Pro plan that does not unlock the refused tool.
+ * Switch back to /pricing only once the Developer tier is sold self-serve with
+ * the contract-flag gate ON (twin ruling SQ-329, 2026-10-09).
+ * PUBLIC-SURFACE: operator-owned copy.
  */
-export const UPGRADE_SELF_SERVE_URL = UPGRADE_URL;
+export const UPGRADE_SELF_SERVE_URL = 'https://blackveilsecurity.com/contact?service=mcp-enterprise';
 
 /**
  * Sales/contact URL — the upgrade destination for enumerating recon/OSINT tools

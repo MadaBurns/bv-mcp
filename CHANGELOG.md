@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+### Changed
+
+- The `self_serve` upgrade envelope on paid-only 403s and volume 429s now points at `https://blackveilsecurity.com/contact?service=mcp-enterprise` instead of `/pricing`. No self-serve plan grants a bv-mcp tier, so `/pricing` sent buyers to a Pro plan that does not unlock the refused tool; the contact form is what the site itself links for these tools. `channel`, `tier_required` and wording are unchanged; `UPGRADE_URL` (unused) is removed. Revert to `/pricing` only once the Developer tier is sold self-serve with the contract-flag gate on (twin ruling SQ-329).
+
 ## [3.98.1] - 2026-10-05
 
 Release-gate fix. v3.98.0 was tagged but never deployed: its own `check:release-integrity` blocked the pinned deploy. v3.98.1 ships everything listed under 3.98.0 plus this fix. dns-checks 1.60.0 (unchanged; `dns-checks-v1.60.0` stays on the 3.98.0 commit); scoring model 1.40.0 (unchanged).
