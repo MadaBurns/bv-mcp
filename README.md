@@ -282,6 +282,35 @@ For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback en
 
 ---
 
+## CLI
+
+The root package also ships a `blackveil` bin (`src/cli.ts`, built to `dist/cli.js`): a client for the hosted endpoint, not a local scanner. It calls `https://dns-mcp.blackveilsecurity.com/mcp` and works without a key; set `BLACKVEIL_API_KEY` to use a keyed tier's quota (keys are never accepted on the command line). `BLACKVEIL_MCP_URL` overrides the endpoint (HTTPS required except loopback).
+
+```bash
+blackveil scan example.com --format json
+blackveil check spf example.com
+blackveil batch --file domains.txt --fail-below 70
+blackveil policy example.com --policy policy.json
+blackveil drift save example.com --out baseline.json
+blackveil drift compare example.com --baseline baseline.json
+blackveil evidence verify baseline.json
+```
+
+Commands: `scan`, `check`, `batch`, `policy`, `drift save|compare`, `evidence verify`. Output formats (`--format`): `human` (default), `json`, `ndjson`, `evidence`; `--out <file>` writes to a file, `--fail-below <0-100>` or `--policy <file>` turns a scan into a pass/fail gate. Exit codes: `0` pass, `1` verified policy or integrity failure, `2` usage/input, `3` auth/quota/transport/tool error, `4` ungraded/inconclusive. `blackveil --help` prints the full usage (source of truth: `src/cli/command.ts`).
+
+Published npm versions can lag this repository (npm publishing is gated off; see [#719](https://github.com/MadaBurns/bv-mcp/issues/719)), so build from source (`npm ci && npm run build`) if you need the current CLI.
+
+---
+
+## REST / HTTP
+
+The hosted engine is also reachable without MCP framing through BlackVeil's public API (pointer only; the API's own docs are authoritative):
+
+- **Keyless single checks**: `POST https://www.blackveilsecurity.com/api/v1/tools/lookup` — OpenAPI spec at [`https://www.blackveilsecurity.com/openapi.json`](https://www.blackveilsecurity.com/openapi.json).
+- **Keyed, metered full scan**: `POST https://www.blackveilsecurity.com/api/scan/v1/scan` with a tenant API key, on plans that include API access (see [Pricing](#pricing)).
+
+---
+
 ## Operator configuration
 
 These settings apply to operators running their own deployment. They are optional — self-hosted (BUSL) deployments fall back to privacy-preserving defaults when they are unset.
@@ -311,16 +340,18 @@ These live under the internal auth gate (`/internal/*`) and are called by bv-web
 
 ## Pricing
 
-|                | **Free**   | **Pro** | **Enterprise**                              |
-| -------------- | ---------- | ------- | ------------------------------------------- |
-| **Price**      | $0         | $39/mo  | [Contact us](https://blackveilsecurity.com) |
-| **Scans/day**  | 25         | 500     | 10,000+                                     |
-| **Checks/day** | Tool-specific limits | Tool-specific limits | Contract limits                  |
-| **Rate limit** | 50 req/min | None    | None                                        |
-| **API access** | Yes        | Yes     | Yes                                         |
-| **MCP access** | Yes        | Yes     | Yes                                         |
+|                | **Free**                                 | **Developer**                                              | **Enterprise**                              |
+| -------------- | ---------------------------------------- | ---------------------------------------------------------- | ------------------------------------------- |
+| **Price**      | $0                                       | $39/mo (provisioned by BlackVeil, not self-serve checkout) | [Contact us](https://blackveilsecurity.com) |
+| **Scans/day**  | 25 (anonymous, per IP); 50 with a free key | 500 per tool                                               | 10,000+ per tool                            |
+| **Checks/day** | Tool-specific limits                     | Tool-specific limits                                       | Contract limits                             |
+| **Rate limit** | 50 req/min                               | None                                                       | None                                        |
+| **API access** | No                                       | Yes                                                        | Yes                                         |
+| **MCP access** | Yes                                      | Yes                                                        | Yes                                         |
 
-Offensive/recon and multi-domain tools (subdomain discovery, attack-path simulation, lookalike/shadow-domain detection, fast-flux detection, supply-chain mapping, real-time threat feed, bucket/OSINT investigations, `batch_scan`, `compare_domains`, brand audits) require a paid plan (Pro / developer tier or higher); free, unauthenticated, and agent-tier callers get an HTTP 403 upgrade-required response. Unauthenticated callers are additionally capped at a small number of distinct domains per day (best-effort, fail-open). The OSINT/bucket status and report pollers stay free.
+Free-tier daily limits depend on whether you send a key. Anonymous (no key): 25 `scan_domain` scans/day per IP, across at most 12 distinct domains/day. Free key: 50/day per tool. Free keys do not carry the REST scan API (see [REST / HTTP](#rest--http)); "API access" above means that keyed API. Limits are read from `TIER_DAILY_LIMITS`, `FREE_TOOL_DAILY_LIMITS` and `FREE_DISTINCT_DOMAIN_DAILY_LIMIT` in `src/lib/config.ts`.
+
+Offensive/recon and multi-domain tools (subdomain discovery, attack-path simulation, lookalike/shadow-domain detection, fast-flux detection, supply-chain mapping, real-time threat feed, bucket/OSINT investigations, `batch_scan`, `compare_domains`, brand audits) require a paid plan (Developer tier or higher); free, unauthenticated, and agent-tier callers get an HTTP 403 upgrade-required response. Unauthenticated callers are additionally capped at 12 distinct domains per day (best-effort, fail-open). The OSINT/bucket status and report pollers stay free.
 
 ---
 
@@ -352,6 +383,12 @@ These demonstrate core functionality — paste any of them into Claude with the 
 This tool is intended for **authorized security assessments** of domains you own or have explicit permission to test. Do not use it for unauthorized reconnaissance, harassment, or any activity that violates applicable laws. Findings from attack simulation, spoofability, and subdomain discovery tools should be used to **improve your own security posture**, not to exploit others.
 
 If you discover a vulnerability in a third-party domain, please follow [coordinated disclosure](https://www.cisa.gov/coordinated-vulnerability-disclosure-process) practices.
+
+---
+
+## Self-hosting and license
+
+The supported self-host path is the stdio bin (`blackveil-dns-mcp`) for non-commercial use. The Cloudflare Worker configuration in this repository references BlackVeil-private bindings and is not a third-party deploy target. Under the [LICENSE](LICENSE) Additional Use Grant, providing the Licensed Work as a hosted service to third parties for a fee, or embedding it in a commercial product, is commercial use and needs a separate licence from BLACKVEIL.
 
 ---
 
