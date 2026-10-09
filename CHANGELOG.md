@@ -8,6 +8,10 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.98.2] - 2026-10-09
+
+Public-surface copy fix plus a docs-only package patch. v3.98.2 ships the self-serve upgrade URL change (#1234), the npm-state and commercial-licence docs (#1235) and `@blackveil/dns-checks` 1.60.1 (README-only, parity corpus 1.60.1; #1236). Scoring model 1.40.0 (unchanged). The release commit carries BOTH `v3.98.2` and `dns-checks-v1.60.1`; the two-tag case is handled by `selectReleaseTag` (#1224).
+
 ### Changed
 
 - `@blackveil/dns-checks` 1.60.1 (parity corpus 1.60.1), README-only: the package README now links the commercial-licence contact (#1235). No code, scoring or schema change; scoring model 1.40.0 unchanged. Cut because `packages/dns-checks/README.md` ships inside the package, so the deploy source-identity gate (#1213) requires a fresh `dns-checks-v1.60.1` tag once the 1.60.0 inputs changed.
