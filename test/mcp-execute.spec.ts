@@ -392,7 +392,7 @@ describe('executeMcpRequest — per-tool daily limits (free tier)', () => {
 		// affordance (prose unchanged), always self_serve channel per isVolume429.
 		expect(payload.error.data?.upgrade).toMatchObject({
 			channel: 'self_serve',
-			url: 'https://blackveilsecurity.com/pricing',
+			url: 'https://blackveilsecurity.com/contact?service=mcp-enterprise',
 			tier_required: 'developer',
 		});
 	});
