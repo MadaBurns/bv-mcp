@@ -62,4 +62,4 @@ The MCP server package layers additional worker-only tools on top of this librar
 
 ## License
 
-Business Source License 1.1 (BUSL-1.1). See [LICENSE](./LICENSE). Non-commercial use is permitted under the Additional Use Grant; the Licensed Work converts to the MIT License on the Change Date (2030-03-17).
+Business Source License 1.1 (BUSL-1.1). See [LICENSE](./LICENSE). Non-commercial use is permitted under the Additional Use Grant; the Licensed Work converts to the MIT License on the Change Date (2030-03-17). Commercial licences are available on request via [https://blackveilsecurity.com/contact](https://blackveilsecurity.com/contact).
