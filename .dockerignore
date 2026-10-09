@@ -1,0 +1,18 @@
+# Build-context filter for .oss-scanner/Dockerfile. The scanner clones the
+# repository fresh, so this matters mainly for LOCAL image builds, where
+# the context would otherwise include gigabytes of node_modules and Rust
+# build output. Everything excluded here is rebuilt inside the image.
+node_modules
+**/node_modules
+.worktrees
+.wrangler
+dist
+**/dist
+**/pkg
+**/target
+.dev
+.dev.vars*
+.git
+*.env*
+.qoder
+coverage
