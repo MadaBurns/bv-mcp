@@ -284,7 +284,7 @@ For full hosted setup examples, stdio usage, OAuth setup, and legacy fallback en
 
 ## CLI
 
-The root package also ships a `blackveil` bin (`src/cli.ts`, built to `dist/cli.js`): a client for the hosted endpoint, not a local scanner. It calls `https://dns-mcp.blackveilsecurity.com/mcp` and works without a key; set `BLACKVEIL_API_KEY` to use a keyed tier's quota (keys are never accepted on the command line). `BLACKVEIL_MCP_URL` overrides the endpoint (HTTPS required except loopback).
+This repository's root package ships a `blackveil` bin (`src/cli.ts`, built to `dist/cli.js`): a client for the hosted endpoint, not a local scanner. It calls `https://dns-mcp.blackveilsecurity.com/mcp` and works without a key; set `BLACKVEIL_API_KEY` to use a keyed tier's quota (keys are never accepted on the command line). `BLACKVEIL_MCP_URL` overrides the endpoint (HTTPS required except loopback).
 
 ```bash
 blackveil scan example.com --format json
@@ -298,7 +298,7 @@ blackveil evidence verify baseline.json
 
 Commands: `scan`, `check`, `batch`, `policy`, `drift save|compare`, `evidence verify`. Output formats (`--format`): `human` (default), `json`, `ndjson`, `evidence`; `--out <file>` writes to a file, `--fail-below <0-100>` or `--policy <file>` turns a scan into a pass/fail gate. Exit codes: `0` pass, `1` verified policy or integrity failure, `2` usage/input, `3` auth/quota/transport/tool error, `4` ungraded/inconclusive. `blackveil --help` prints the full usage (source of truth: `src/cli/command.ts`).
 
-Published npm versions can lag this repository (npm publishing is gated off; see [#719](https://github.com/MadaBurns/bv-mcp/issues/719)), so build from source (`npm ci && npm run build`) if you need the current CLI.
+The npm package `blackveil-dns` is frozen at 2.13.0 (published 2026-05-12), and that artifact carries only the `blackveil-dns-mcp` stdio bin, not `blackveil`, so `npm i -g blackveil-dns` does not install this CLI. Publishing is closed by policy ([#719](https://github.com/MadaBurns/bv-mcp/issues/719), closed as not planned). Build from source (`npm ci && npm run build`) for the CLI, or use [blackveil-dns-action](https://github.com/MadaBurns/blackveil-dns-action) in CI; it calls the hosted endpoint and needs no npm package.
 
 ---
 
@@ -388,7 +388,7 @@ If you discover a vulnerability in a third-party domain, please follow [coordina
 
 ## Self-hosting and license
 
-The supported self-host path is the stdio bin (`blackveil-dns-mcp`) for non-commercial use. The Cloudflare Worker configuration in this repository references BlackVeil-private bindings and is not a third-party deploy target. Under the [LICENSE](LICENSE) Additional Use Grant, providing the Licensed Work as a hosted service to third parties for a fee, or embedding it in a commercial product, is commercial use and needs a separate licence from BLACKVEIL.
+The supported self-host path is the stdio bin (`blackveil-dns-mcp`) for non-commercial use. The Cloudflare Worker configuration in this repository references BlackVeil-private bindings and is not a third-party deploy target. Under the [LICENSE](LICENSE) Additional Use Grant, providing the Licensed Work as a hosted service to third parties for a fee, or embedding it in a commercial product, is commercial use and needs a separate licence from BLACKVEIL. Commercial licences are available on request via [https://blackveilsecurity.com/contact](https://blackveilsecurity.com/contact).
 
 ---
 
