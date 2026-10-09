@@ -65,6 +65,10 @@ function noSendSpf(): CheckResult {
 
 describe('#994 — scan post-processing preserves controlPresent / recordPresent / metadata', () => {
 	beforeEach(() => {
+		// Fresh module graph per test: a vi.doMock() inside a test only applies to modules imported AFTER it.
+		// Without this, post-processing stays cached from an earlier test, the DNS mock is ignored, and the
+		// test silently queries live DNS for example.com (passes online, fails offline).
+		vi.resetModules();
 		resetProviderSignatureState();
 	});
 

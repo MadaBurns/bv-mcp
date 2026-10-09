@@ -981,6 +981,9 @@ describe('addOutboundProviderInference — provider detection coverage', () => {
 		const NON_CF_A = ['8.8.8.8'];
 
 		beforeEach(() => {
+			// Reset BEFORE mocking: afterEach resets too, but the first test in this block would otherwise reuse a
+			// post-processing module cached by earlier tests, so its dns-records mock is ignored and live DNS answers.
+			vi.resetModules();
 			vi.doMock('../src/lib/dns', () => ({
 				queryTxtRecords: vi.fn().mockResolvedValue([]),
 			}));
