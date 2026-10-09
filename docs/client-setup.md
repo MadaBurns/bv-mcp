@@ -7,7 +7,7 @@ Important: you do not need to install an npm package to use the hosted MCP servi
 npm packages:
 
 - `blackveil-dns` (the root package) is bin-only. In this repository it ships the `blackveil-dns-mcp` stdio bin and the `blackveil` CLI bin; the published npm artifact (2.13.0, 2026-05-12) carries only `blackveil-dns-mcp`. It has no `main` or `exports`, so there is no library import from it.
-- The reusable library (check functions, scoring, schemas) is the separate `@blackveil/dns-checks` package. `npm install @blackveil/dns-checks` resolves to 1.3.12 (published 2026-06-01); `packages/dns-checks` in this repository is far ahead of it (1.60.0 as of 2026-10).
+- The reusable library (check functions, scoring, schemas) is the separate `@blackveil/dns-checks` package. `npm install @blackveil/dns-checks` resolves to 1.3.12 (published 2026-06-01); `packages/dns-checks` in this repository is far ahead of it (1.60.1 as of 2026-10).
 
 Publishing is closed by policy (issue #719, closed as not planned), so the npm packages do not match the current source and will not be refreshed. Build from this repository if you need current behavior. For CI, use [blackveil-dns-action](https://github.com/MadaBurns/blackveil-dns-action), which calls the hosted endpoint and needs no npm package.
 
