@@ -2,8 +2,8 @@
 //
 // Unit + integration coverage for the citation link-back on tool-call results.
 // Domain-bearing, non-error results carry a `source` / `report_url` field pointing
-// at the public per-domain scorecard (`/security-report/<domain>`) — the GSI SEO /
-// AI-search funnel target. The field is additive and rides through the `.loose()`
+// at the public scanner, including domains outside the scorecard corpus.
+// The field is additive and rides through the `.loose()`
 // CheckResult outputSchema; non-domain tools and errors get no citation.
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -14,29 +14,33 @@ const { restore } = setupFetchMock();
 
 afterEach(() => restore());
 
-const EXPECTED = 'https://www.blackveilsecurity.com/security-report/example.com';
+const EXPECTED = 'https://www.blackveilsecurity.com/scanner?domain=example.com';
 
 describe('buildReportUrl', () => {
-	it('builds the public scorecard URL for a domain', async () => {
+	it('links domains to the scanner without requiring a persisted scorecard', async () => {
 		const { buildReportUrl } = await import('../src/handlers/tool-formatters');
 		expect(buildReportUrl('example.com')).toBe(EXPECTED);
 	});
 
 	it('URL-encodes any stray character (defence-in-depth)', async () => {
 		const { buildReportUrl } = await import('../src/handlers/tool-formatters');
-		expect(buildReportUrl('a b.com')).toBe(
-			'https://www.blackveilsecurity.com/security-report/a%20b.com',
-		);
+		expect(buildReportUrl('a b.com')).toBe('https://www.blackveilsecurity.com/scanner?domain=a%20b.com');
+	});
+
+	it('keeps query delimiters inside the domain parameter', async () => {
+		const { buildReportUrl } = await import('../src/handlers/tool-formatters');
+		const url = new URL(buildReportUrl('example.test&extra=value#fragment'));
+		expect(url.pathname).toBe('/scanner');
+		expect(url.searchParams.get('domain')).toBe('example.test&extra=value#fragment');
+		expect([...url.searchParams.keys()]).toEqual(['domain']);
+		expect(url.hash).toBe('');
 	});
 });
 
 describe('withReportCitation', () => {
 	it('injects source + report_url for a domain-bearing result', async () => {
 		const { withReportCitation } = await import('../src/handlers/tool-formatters');
-		const out = withReportCitation(
-			{ content: [{ type: 'text', text: 'x' }], structuredContent: { score: 80 } },
-			'example.com',
-		);
+		const out = withReportCitation({ content: [{ type: 'text', text: 'x' }], structuredContent: { score: 80 } }, 'example.com');
 		expect(out.structuredContent).toEqual({ score: 80, source: EXPECTED, report_url: EXPECTED });
 	});
 
@@ -62,10 +66,7 @@ describe('withReportCitation', () => {
 
 	it('preserves existing structuredContent keys', async () => {
 		const { withReportCitation } = await import('../src/handlers/tool-formatters');
-		const out = withReportCitation(
-			{ content: [], structuredContent: { category: 'spf', passed: true } },
-			'example.com',
-		);
+		const out = withReportCitation({ content: [], structuredContent: { category: 'spf', passed: true } }, 'example.com');
 		const sc = out.structuredContent as Record<string, unknown>;
 		expect(sc.category).toBe('spf');
 		expect(sc.passed).toBe(true);
@@ -74,7 +75,7 @@ describe('withReportCitation', () => {
 });
 
 describe('citation - integration through handleToolsCall', () => {
-	it('check_spf carries source + report_url pointing at the domain scorecard', async () => {
+	it('check_spf carries source + report_url pointing at the scanner', async () => {
 		IN_MEMORY_CACHE.clear();
 		mockTxtRecords(['v=spf1 -all']);
 

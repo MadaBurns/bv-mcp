@@ -2193,7 +2193,7 @@ export async function handleToolsCall(
 			dispatch(),
 			new Promise<never>((_, reject) => setTimeout(() => reject(new Error('__tool_timeout__')), TOOL_CALL_TIMEOUT_MS)),
 		]);
-		// Citation link-back to the public scorecard (GSI SEO / AI-search funnel).
+		// Public scanner fallback; a successful check does not prove a scorecard exists.
 		// No-op for non-domain tools (`domain` undefined) and error results.
 		return withReportCitation(dispatched, domain);
 	} catch (err) {

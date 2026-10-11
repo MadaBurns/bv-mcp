@@ -320,7 +320,7 @@ describe('(f) config-only workspace package', () => {
 
 	it('pins cf exactly to the version measured for function-form configs (beta.5 types them as an empty Env)', () => {
 		expect(pkg.private).toBe(true);
-		expect(pkg.devDependencies.cf).toBe('1.0.0-beta.9');
+		expect(pkg.devDependencies.cf).toBe('1.0.0-beta.14');
 	});
 
 	// cf finds wrangler ONLY at <package>/node_modules/wrangler (measured on beta.9: with just the root-hoisted copy,
