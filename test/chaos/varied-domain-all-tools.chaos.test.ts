@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { IN_MEMORY_CACHE } from '../../src/lib/cache';
 import { handleToolsCall } from '../../src/handlers/tools';
 import { TOOLS } from '../../src/schemas/tool-definitions';
+import { CheckResultOutputSchema } from '../../src/schemas/check-result-output';
 import { createDohResponse } from '../helpers/dns-mock';
 
 const DOMAIN_VARIANTS = [
@@ -452,10 +453,31 @@ describe('chaos: varied-domain all-tools scanning', () => {
 		const failures: Array<{ name: string; message: string }> = [];
 		const results = new Map<string, ToolResult>();
 
-		for (const toolCase of makeToolCases()) {
+		const outputCases = makeToolCases().flatMap((entry) =>
+			entry.arguments.format === 'compact' || entry.arguments.format === 'full'
+				? ['compact', 'full'].map((format) => ({ ...entry, arguments: { ...entry.arguments, format } }))
+				: [entry],
+		);
+		for (const toolCase of outputCases) {
 			const result = await handleToolsCall(toolCase, undefined, runtimeOptions);
 			results.set(toolCase.name, result);
 			const text = result.content.map((entry) => ('text' in entry ? entry.text : '')).join('\n');
+			const definition = TOOLS.find((tool) => tool.name === toolCase.name)!;
+			if (definition.outputSchema && !result.isError) {
+				const parsed = CheckResultOutputSchema.safeParse(result.structuredContent);
+				expect(parsed.success, `${toolCase.name}/${toolCase.arguments.format}: ${JSON.stringify(parsed.error?.issues)}`).toBe(true);
+			}
+			const payload = result.structuredContent as Record<string, unknown> | undefined;
+			if (payload?.score !== undefined) {
+				expect(Number.isFinite(payload.score), toolCase.name).toBe(true);
+				expect(payload.score, toolCase.name).toBeGreaterThanOrEqual(0);
+				expect(payload.score, toolCase.name).toBeLessThanOrEqual(100);
+			}
+			const legacy = structuredPayload(result);
+			if (legacy && payload) {
+				const core = Array.isArray(legacy) ? { results: legacy } : legacy;
+				expect.soft(payload, toolCase.name).toMatchObject(core);
+			}
 			if (toolCase.name === 'query_ual') {
 				expect(result.isError).toBe(true);
 				expect(result.structuredContent).toEqual({ ok: false, error: 'query_ual_deprecated' });
@@ -489,5 +511,5 @@ describe('chaos: varied-domain all-tools scanning', () => {
 		for (const category of expectedScanCategories) {
 			expect(statuses).toHaveProperty(category);
 		}
-	}, 45_000);
+	}, 120_000);
 });
