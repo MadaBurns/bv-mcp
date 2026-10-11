@@ -14,7 +14,7 @@
 		"deploy:triggers": "npm run guard:overlay-env && cf workers triggers deploy --mode production"
 	},
 	"devDependencies": {
-		"cf": "1.0.0-beta.9",
-		"wrangler": "4.142.0"
+		"cf": "1.0.0-beta.14",
+		"wrangler": "4.149.0"
 	}
 }

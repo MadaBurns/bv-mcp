@@ -67,7 +67,7 @@ import { processAsyncBatchMessage } from './tools/batch-scan-async';
 import { executeMcpRequest } from './mcp/execute';
 import { classifyProtocolVersionHeader } from './mcp/dispatch';
 import { parseScoringConfigCached } from './lib/scoring-config';
-import { closeLegacyStream, enqueueLegacyMessage, openLegacySseStream } from './lib/legacy-sse';
+import { closeLegacyStream, enqueueLegacyMessage, hasActiveLegacyStream, openLegacySseStream } from './lib/legacy-sse';
 import { resolveClientIpFromHeaders, resolveClientIpFromRequestHeaders } from './lib/client-ip';
 import { internalRoutes } from './internal';
 import { buildAuthorizationServerMetadata, buildProtectedResourceMetadata, resolveIssuer } from './oauth/discovery';
@@ -1278,6 +1278,14 @@ app.post('/mcp/messages', async (c) => {
 		closeLegacyStream(sessionId);
 		return c.json(jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Not Found: session expired or terminated'), 404);
 	}
+	// Stream controllers are isolate-local; reject before dispatch (including mutations)
+	// if this isolate cannot deliver the response, even when the KV session is valid.
+	if (!hasActiveLegacyStream(sessionId)) {
+		return c.json(
+			jsonRpcError(null, JSON_RPC_ERRORS.INVALID_REQUEST, 'Resource not found: legacy SSE stream unavailable. Reconnect or use POST /mcp.'),
+			404,
+		);
+	}
 
 	const bodyReadResult = await readRequestBody(c.req.raw, MAX_REQUEST_BODY_BYTES);
 	if (!bodyReadResult.ok) {
@@ -1408,7 +1416,21 @@ app.post('/mcp/messages', async (c) => {
 
 	const responsePayloads = results.flatMap((result) => (result.kind === 'response' ? [result.payload] : []));
 	if (responsePayloads.length > 0) {
-		enqueueLegacyMessage(sessionId, parsedRequest.isBatch ? responsePayloads : responsePayloads[0]);
+		if (!enqueueLegacyMessage(sessionId, parsedRequest.isBatch ? responsePayloads : responsePayloads[0])) {
+			// Execution may have completed a mutation before the stream closed. Preserve
+			// its responses in the HTTP error instead of reporting acceptance or inviting a retry.
+			return c.json(
+				jsonRpcError(
+					null,
+					JSON_RPC_ERRORS.INTERNAL_ERROR,
+					'Resource not found: legacy SSE stream closed during execution. Inspect completed responses before retrying.',
+					{
+						responses: responsePayloads,
+					},
+				),
+				409,
+			);
+		}
 	}
 
 	return new Response(null, { status: 202 });

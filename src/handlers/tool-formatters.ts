@@ -72,23 +72,22 @@ export function buildToolResult(
 }
 
 /**
- * Public per-domain security scorecard base — the citation link-back target that
- * feeds the GSI SEO / AI-search funnel (mirrors the `source` link a caller sees
- * from comparable hosted scanners).
+ * The scanner supports domains outside the public scorecard corpus. A successful
+ * MCP check does not establish that a persisted /security-report page exists.
  */
-const PUBLIC_REPORT_BASE_URL = 'https://www.blackveilsecurity.com/security-report';
+const PUBLIC_REPORT_BASE_URL = 'https://www.blackveilsecurity.com/scanner';
 
 /**
- * Public scorecard URL for a domain. `domain` has already passed
+ * Public scanner fallback URL for a domain. `domain` has already passed
  * `extractAndValidateDomain` (validateDomain + sanitizeDomain) upstream;
  * `encodeURIComponent` is defence-in-depth against any stray character.
  */
 export function buildReportUrl(domain: string): string {
-	return `${PUBLIC_REPORT_BASE_URL}/${encodeURIComponent(domain)}`;
+	return `${PUBLIC_REPORT_BASE_URL}?domain=${encodeURIComponent(domain)}`;
 }
 
 /**
- * Attach a citation link back to the public per-domain scorecard. Emitted ONLY
+ * Attach a link to the public scanner, which does not require corpus membership. Emitted ONLY
  * for a domain-bearing, non-error result — non-domain tools (`domain` undefined)
  * and error results are a no-op. Additive: the `source`/`report_url` keys ride
  * through the `.loose()` CheckResult outputSchema, so strict MCP clients that

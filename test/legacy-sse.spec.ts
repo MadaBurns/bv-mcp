@@ -6,6 +6,52 @@ afterEach(() => {
 });
 
 describe('legacy SSE stream management', () => {
+	it('reports delivery failure for a missing stream or a full pre-controller queue', async () => {
+		const { enqueueLegacyMessage, resetLegacySseState, setLegacyStreamRecordForTest } = await import('../src/lib/legacy-sse');
+		try {
+			expect(enqueueLegacyMessage('missing', { id: 1 })).toBe(false);
+			setLegacyStreamRecordForTest('full', { queue: Array(100).fill('event'), createdAt: Date.now() });
+			expect(enqueueLegacyMessage('full', { id: 1 })).toBe(false);
+		} finally {
+			resetLegacySseState();
+		}
+	});
+
+	it('reports delivery failure and removes a controller that closed during execution', async () => {
+		const { enqueueLegacyMessage, resetLegacySseState, setLegacyStreamRecordForTest, getLegacyStreamRecord } =
+			await import('../src/lib/legacy-sse');
+		let closedController!: ReadableStreamDefaultController<Uint8Array>;
+		new ReadableStream<Uint8Array>({
+			start(controller) {
+				closedController = controller;
+				controller.close();
+			},
+		});
+		try {
+			setLegacyStreamRecordForTest('closed', { controller: closedController, queue: [], createdAt: Date.now() });
+			expect(enqueueLegacyMessage('closed', { id: 1 })).toBe(false);
+			expect(getLegacyStreamRecord('closed')).toBeUndefined();
+		} finally {
+			resetLegacySseState();
+		}
+	});
+
+	it('rejects an expired stream even before its lifetime timer runs', async () => {
+		const { openLegacySseStream, hasActiveLegacyStream, enqueueLegacyMessage, resetLegacySseState, MAX_LEGACY_STREAM_LIFETIME_MS } =
+			await import('../src/lib/legacy-sse');
+		const now = Date.now();
+		const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(now);
+		try {
+			openLegacySseStream('expired', '/mcp/messages?sessionId=expired');
+			expect(hasActiveLegacyStream('expired')).toBe(true);
+			nowSpy.mockReturnValue(now + MAX_LEGACY_STREAM_LIFETIME_MS);
+			expect(hasActiveLegacyStream('expired')).toBe(false);
+			expect(enqueueLegacyMessage('expired', { id: 1 })).toBe(false);
+		} finally {
+			resetLegacySseState();
+		}
+	});
+
 	it('adds a createdAt timestamp to new stream records', async () => {
 		const { openLegacySseStream, resetLegacySseState, getLegacyStreamRecord } = await import('../src/lib/legacy-sse');
 		try {

@@ -1424,6 +1424,62 @@ describe('DNS Security MCP Server', () => {
 			await Promise.all(openResponses.map((response) => response.body?.cancel()));
 		});
 
+		it('rejects a valid session without a local SSE stream before executing a tool', async () => {
+			const sessionId = await initSession();
+			const fetchSpy = vi.spyOn(globalThis, 'fetch');
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(
+				new Request(`http://example.com/mcp/messages?sessionId=${sessionId}`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						jsonrpc: '2.0',
+						id: 1,
+						method: 'tools/call',
+						params: { name: 'check_spf', arguments: { domain: 'example.test' } },
+					}),
+				}),
+				env,
+				ctx,
+			);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(404);
+			expect(await response.text()).toContain('legacy SSE stream unavailable');
+			expect(fetchSpy).not.toHaveBeenCalled();
+		});
+
+		it('returns completed responses over HTTP when the SSE stream closes during execution', async () => {
+			const { getLegacyStreamRecord } = await import('../src/lib/legacy-sse');
+			const openCtx = createExecutionContext();
+			const streamResponse = await worker.fetch(
+				new Request('http://example.com/mcp/sse', {
+					headers: { Accept: 'text/event-stream' },
+				}),
+				env,
+				openCtx,
+			);
+			await waitOnExecutionContext(openCtx);
+			const endpoint = parseSseEvent(await readSseChunk(streamResponse), 'endpoint');
+			const sessionId = streamResponse.headers.get('mcp-session-id')!;
+			// Simulate a disconnect between the admission check and response delivery.
+			getLegacyStreamRecord(sessionId)!.controller!.close();
+			const ctx = createExecutionContext();
+			const response = await worker.fetch(
+				new Request(endpoint, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ jsonrpc: '2.0', id: 7, method: 'tools/list' }),
+				}),
+				env,
+				ctx,
+			);
+			await waitOnExecutionContext(ctx);
+			expect(response.status).toBe(409);
+			const payload = (await response.json()) as { error: { data: { responses: { id: number; result: { tools: unknown[] } }[] } } };
+			expect(payload.error.data.responses[0].id).toBe(7);
+			expect(payload.error.data.responses[0].result.tools.length).toBeGreaterThan(0);
+		});
+
 		it('delivers initialize responses over the legacy SSE stream', async () => {
 			const openRequest = new Request('http://example.com/mcp/sse', {
 				method: 'GET',

@@ -138,15 +138,32 @@ export function openLegacySseStream(sessionId: string, endpointUrl: string, prin
 	});
 }
 
+/** A KV-backed session alone cannot deliver a response on this isolate. */
+export function hasActiveLegacyStream(sessionId: string): boolean {
+	const record = LEGACY_STREAMS.get(sessionId);
+	return !!record?.controller && Date.now() - record.createdAt < MAX_LEGACY_STREAM_LIFETIME_MS;
+}
+
 export function enqueueLegacyMessage(sessionId: string, payload: unknown): boolean {
 	const record = LEGACY_STREAMS.get(sessionId);
 	if (!record) return false;
+	if (Date.now() - record.createdAt >= MAX_LEGACY_STREAM_LIFETIME_MS) {
+		closeLegacyStream(sessionId);
+		return false;
+	}
 
 	const event = sseEvent(payload);
 	if (record.controller) {
-		record.controller.enqueue(new TextEncoder().encode(event));
+		try {
+			record.controller.enqueue(new TextEncoder().encode(event));
+		} catch {
+			closeLegacyStream(sessionId);
+			return false;
+		}
 	} else if (record.queue.length < MAX_LEGACY_QUEUE_DEPTH) {
 		record.queue.push(event);
+	} else {
+		return false;
 	}
 
 	return true;
