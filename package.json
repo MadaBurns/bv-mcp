@@ -1,6 +1,6 @@
 {
 	"name": "blackveil-dns",
-	"version": "3.98.2",
+	"version": "3.98.3",
 	"license": "BUSL-1.1",
 	"type": "module",
 	"bin": {
@@ -114,7 +114,7 @@
 		"typescript": "6.0.3",
 		"typescript-eslint": "8.71.0",
 		"vitest": "4.1.11",
-		"wrangler": "^4.149.0"
+		"wrangler": "4.148.0"
 	},
 	"pnpm": {
 		"overrides": {
@@ -125,6 +125,7 @@
 		"esbuild": "0.28.1",
 		"ws": "^8.20.1",
 		"sharp": "0.35.5",
-		"undici": "^7.29.1"
+		"undici": "^7.29.1",
+		"miniflare": "5.20261006.1-alpha"
 	}
 }

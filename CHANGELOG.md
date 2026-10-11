@@ -8,6 +8,14 @@ _Entries for released versions below were edited on 2026-09-09 to remove a third
 
 ## [Unreleased]
 
+## [3.98.3] - 2026-10-11
+
+### Fixed
+
+- Legacy SSE requests reject unavailable streams before dispatch and return completed responses if delivery fails after dispatch.
+- Tool result citations use the public scanner URL for domains outside the published report corpus (#1228).
+- Development dependencies resolve sharp 0.35.5 and patched Miniflare while preserving the nested Wrangler installs required by CF deployment tooling.
+
 ## [3.98.2] - 2026-10-09
 
 Public-surface copy fix plus a docs-only package patch. v3.98.2 ships the self-serve upgrade URL change (#1234), the npm-state and commercial-licence docs (#1235) and `@blackveil/dns-checks` 1.60.1 (README-only, parity corpus 1.60.1; #1236). Scoring model 1.40.0 (unchanged). The release commit carries BOTH `v3.98.2` and `dns-checks-v1.60.1`; the two-tag case is handled by `selectReleaseTag` (#1224).
