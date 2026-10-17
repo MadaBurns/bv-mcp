@@ -11,9 +11,7 @@
 // missing, empty, placeholder or non-UUID value, so a deploy without it fails before upload. wrangler.jsonc, the test-only config,
 // keeps the YOUR_* placeholder.
 import { bindings, defineConfig, triggers } from 'cf/config';
-// cf evaluates this file with Node's native ESM loader, which needs the explicit `.ts` extension; this package's tsconfig does not set
-// allowImportingTsExtensions (adding it is the root fix; until then the TS5097 on the next line is suppressed).
-// @ts-expect-error TS5097
+// cf evaluates this file with Node's native ESM loader, which needs the explicit `.ts` extension (tsconfig: allowImportingTsExtensions).
 import { CT_INDEX_D1_ID_ENV, resolveCtIndexD1Id } from '../../scripts/ct-index-deploy-ready.ts';
 
 export default defineConfig({

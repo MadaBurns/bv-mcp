@@ -1,7 +1,7 @@
 // TEST-ONLY config: cloudflareTest's `wrangler.configPath` loads this file (it cannot load a cf config). Deploy goes through cf:
 // `npm -w packages/bv-ct-index run deploy` uses cloudflare.config.ts. Keep the two in sync (asserted by test/audits/infra-probe-wrangler.audit.test.ts).
-// The R2 bucket, D1 database and queue are not created yet. The operator creates them (US-12 runbook) and replaces the D1
-// placeholder id below and in cloudflare.config.ts; until then `cf deploy` fails on the placeholder rather than binding a guess.
+// The D1 id below stays a placeholder: never paste the real id into a tracked file. Deploy reads it from BV_CT_INDEX_D1_ID
+// (cloudflare.config.ts fails closed without it); remote migrations use a gitignored copy (see `npm run provision:ct-index`).
 {
 	"$schema": "../../node_modules/wrangler/config-schema.json",
 	"name": "bv-ct-index",
