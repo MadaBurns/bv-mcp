@@ -106,7 +106,7 @@
 	},
 	"devDependencies": {
 		"@cloudflare/vitest-plugin": "^1.4.0",
-		"@types/node": "26.6.4",
+		"@types/node": "26.6.5",
 		"@types/punycode": "^2.1.4",
 		"drizzle-kit": "^0.31.11",
 		"eslint": "10.11.0",
