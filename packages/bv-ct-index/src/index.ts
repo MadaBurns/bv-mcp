@@ -52,9 +52,14 @@ export default {
 				console.log(JSON.stringify({ event: 'ct_tailer_tick', ...summary }));
 				break;
 			}
-			case COMPACTION_CRON:
-				await runCompactionCron(env, controller.scheduledTime);
+			case COMPACTION_CRON: {
+				// Logged so a tail shows what was enqueued: an `ok` cron with no line says nothing about the plan.
+				const { killed, snapshot, jobs } = await runCompactionCron(env, controller.scheduledTime);
+				const tiers = [1, 2, 3].map((tier) => jobs.filter((job) => job.tier === tier).length);
+				const inputs = jobs.reduce((sum, job) => sum + job.inputs.length, 0);
+				console.log(JSON.stringify({ event: 'ct_compaction_plan', killed, snapshot, jobs: jobs.length, tiers, inputs }));
 				break;
+			}
 		}
 	},
 	async queue(batch, env) {

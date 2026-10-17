@@ -8,7 +8,16 @@ import { beforeEach, describe, expect, it } from 'vitest';
 import { SIBLING_PREFIX } from '../codec';
 import { runCompactionJob } from '../indexer/compact';
 import { rollbackGeneration } from '../indexer/generations';
-import { GROUP_MAX_SHARDS, components, cutsFor, runCompactionCron } from '../indexer/plan';
+import {
+	DEFAULT_PLAN_LIMITS,
+	GROUP_MAX_SHARDS,
+	MAX_JOB_INPUTS,
+	boundedChunks,
+	components,
+	cutsFor,
+	runCompactionCron,
+} from '../indexer/plan';
+import type { PlanLimits } from '../indexer/plan';
 import { createReader } from '../indexer/read';
 import type { NameObservation, SiblingObservation } from '../types';
 import {
@@ -223,6 +232,85 @@ describe('planner', () => {
 			if (i > 0) expect(position - [0, ...positions][i - 1]!).toBeLessThanOrEqual(GROUP_MAX_SHARDS);
 		}
 		expect(cutsFor([...shards].reverse())).toEqual(cuts);
+	});
+});
+
+describe('bounded job sizes (SQ-362)', () => {
+	/** Runs the cron with explicit plan limits, then every job it enqueued, in order. */
+	async function planAndDrain(env: ReturnType<typeof testEnv>, nowMs: number, plan: PlanLimits) {
+		const before = env.queue.sent.length;
+		await runCompactionCron(env, nowMs, plan);
+		const jobs = env.queue.sent.slice(before);
+		const outcomes = [];
+		for (const job of jobs) outcomes.push(await runCompactionJob(env, job, SMALL, nowMs));
+		return { jobs, outcomes };
+	}
+
+	it('splits an hour of more than MAX_JOB_INPUTS T0 runs into bounded T1 jobs that all apply', async () => {
+		const env = testEnv();
+		const names: NameObservation[] = [];
+		const runs = MAX_JOB_INPUTS + 3;
+		for (let i = 0; i < runs; i++) {
+			const batch = many(4, `r${i}`);
+			names.push(...batch);
+			await ingest(env, at(0, 1, 0) + i * 60_000, batch);
+		}
+		const t0 = (await catalog()).map((run) => run.id);
+		expect(t0).toHaveLength(runs);
+
+		const { jobs, outcomes } = await cronAndDrain(env, at(0, 2, 17), SMALL);
+		expect(jobs.map((job) => job.tier)).toEqual([1, 1]);
+		expect(jobs.every((job) => job.inputs.length <= MAX_JOB_INPUTS)).toBe(true);
+		expect(jobs.flatMap((job) => job.inputs).sort()).toEqual([...t0].sort());
+		expect(outcomes).toEqual(['applied', 'applied']);
+		expect(new Set((await catalog()).map((run) => run.tier))).toEqual(new Set([1]));
+		await assertCatalogInvariants();
+		expect((await readAll(at(0, 2, 17))).names).toEqual(expectedRows(names, Math.floor(at(0, 2, 17) / 1000)));
+	});
+
+	it('caps rows per job, chunks T2 per key range, and T3 still merges every chunk', async () => {
+		const env = testEnv();
+		const names: NameObservation[] = [];
+		for (let i = 0; i < 3; i++) {
+			const batch = many(40, `r${i}`);
+			names.push(...batch);
+			await ingest(env, at(0, 1, 5 + i), batch);
+		}
+		// 40 + 40 > 70 rows: each T0 run is its own T1 job.
+		const t1 = await planAndDrain(env, at(0, 2, 17), { maxInputs: 100, maxRows: 70 });
+		expect(t1.jobs.map((job) => job.inputs.length)).toEqual([1, 1, 1]);
+		expect(t1.outcomes).toEqual(['applied', 'applied', 'applied']);
+		// Every T1 job wrote a run below the sibling keyspace (com, org) and one above it (se, uk).
+		expect((await catalog()).filter((run) => run.tier === 1)).toHaveLength(6);
+
+		// Day 1: three T1 runs per key range, at most two per T2 job.
+		const t2 = await planAndDrain(env, at(1, 0, 17), { maxInputs: 2, maxRows: 1_000_000 });
+		expect(t2.jobs.map((job) => [job.tier, job.inputs.length])).toEqual([
+			[2, 2],
+			[2, 1],
+			[2, 2],
+			[2, 1],
+		]);
+		expect(t2.outcomes.every((outcome) => outcome === 'applied')).toBe(true);
+		expect(new Set((await catalog()).map((run) => run.tier))).toEqual(new Set([2]));
+
+		const t3 = await planAndDrain(env, at(1, 1, 17), DEFAULT_PLAN_LIMITS);
+		expect(t3.jobs.map((job) => job.tier)).toEqual([3, 3]);
+		expect(new Set((await catalog()).map((run) => run.tier))).toEqual(new Set([3]));
+		await assertCatalogInvariants();
+		const now = Math.floor(at(1, 1, 17) / 1000);
+		expect((await readAll(at(1, 1, 17))).names).toEqual(expectedRows(names, now));
+	});
+
+	it('boundedChunks keeps creation order and gives an oversized run its own chunk', () => {
+		const run = (id: string, rows: number, created_at = '2026-10-17T07:00:00.000Z') => ({ id, rows, created_at });
+		const runs = [run('c', 5), run('a', 5, '2026-10-17T06:59:00.000Z'), run('b', 50), run('d', 5), run('e', 5)];
+		expect(boundedChunks(runs, { maxInputs: 2, maxRows: 20 }).map((chunk) => chunk.map((r) => r.id))).toEqual([
+			['a'],
+			['b'],
+			['c', 'd'],
+			['e'],
+		]);
 	});
 });
 

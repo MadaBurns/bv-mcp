@@ -25,6 +25,10 @@ export default defineConfig({
 		observability: {
 			enabled: true,
 		},
+		// Same as wrangler.jsonc `limits.cpu_ms`: compaction jobs need more than the 30 s default (5 min is the consumer maximum).
+		limits: {
+			cpuMs: 300_000,
+		},
 		triggers: [
 			// Tailer every minute; compactor hourly at :17.
 			triggers.scheduled({ schedule: '* * * * *' }),
