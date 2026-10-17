@@ -1,0 +1,64 @@
+// THROWAWAY benchmark Worker for US-12 (SQ-352). Operator-run only: see RUNBOOK.md, which deploys it, runs it and
+// DELETES the Worker, the R2 bucket and the D1 database afterwards. No deploy chain ships it, it is NOT in
+// SIDECAR_TARGETS (test/audits/sidecar-deploy-drift-check.node.test.ts exempts exactly this path and name), and the
+// bv-ct-index package's own deploy (cloudflare.config.ts, entrypoint src/index.ts) never bundles bench/.
+// The name is exactly `bv-ct-index-bench`: deploy is upsert-by-name, so it must never be a real Worker's name.
+{
+	"$schema": "../../../node_modules/wrangler/config-schema.json",
+	"name": "bv-ct-index-bench",
+	"main": "src/index.ts",
+	// The operator curls it directly, so it needs a workers.dev route. Every route except GET /health wants BENCH_KEY.
+	"workers_dev": true,
+	"preview_urls": false,
+	"compatibility_date": "2026-07-29",
+	"compatibility_flags": ["global_fetch_strictly_public"],
+	// Raised so a slow merge reports its time instead of dying at the 30 s default; the pass bar is still < 30 s.
+	"limits": {
+		"cpu_ms": 300000
+	},
+	// No `placement` here: placement off, as the bv-ct-index sidecar ships. `--env smart` is the smart-placement run.
+	"r2_buckets": [
+		{
+			"binding": "BENCH",
+			"bucket_name": "bv-ct-index-bench"
+		}
+	],
+	"d1_databases": [
+		{
+			"binding": "BENCH_DB",
+			"database_name": "bv-ct-index-bench",
+			// Placeholder: RUNBOOK.md step 1 pastes the real id in locally. Do not commit the real id.
+			"database_id": "YOUR_BV_CT_INDEX_BENCH_D1_DATABASE_ID",
+			// The real catalog schema (runs, meta, ops_ledger), so the bench measures the shipped index and query shape.
+			"migrations_dir": "../migrations"
+		}
+	],
+	"observability": {
+		"enabled": true
+	},
+	"env": {
+		// Same Worker (same name), redeployed with smart placement. Bindings are not inherited by an env, so they repeat.
+		"smart": {
+			"name": "bv-ct-index-bench",
+			"workers_dev": true,
+			"preview_urls": false,
+			"placement": {
+				"mode": "smart"
+			},
+			"r2_buckets": [
+				{
+					"binding": "BENCH",
+					"bucket_name": "bv-ct-index-bench"
+				}
+			],
+			"d1_databases": [
+				{
+					"binding": "BENCH_DB",
+					"database_name": "bv-ct-index-bench",
+					"database_id": "YOUR_BV_CT_INDEX_BENCH_D1_DATABASE_ID",
+					"migrations_dir": "../migrations"
+				}
+			]
+		}
+	}
+}
